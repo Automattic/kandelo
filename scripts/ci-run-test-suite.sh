@@ -138,7 +138,7 @@ prepare_ci_homebrew_browser_mirror() {
         echo "ci-run-test-suite: closed Homebrew browser mirror is incomplete" >&2
         return 1
     }
-    export VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT=/homebrew-main-shell-bottles
+    export KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT=/homebrew-main-shell-bottles
     export KANDELO_PLAYWRIGHT_VITE_MODE=homebrew-closed-acceptance
 }
 

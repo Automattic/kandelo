@@ -2,10 +2,8 @@ import { defineConfig } from "@playwright/test";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { shouldReuseExistingPlaywrightServer } from "./playwright-server-policy";
-import {
-  HOMEBREW_CLOSED_ACCEPTANCE_VITE_MODE,
-  homebrewClosedAcceptanceAssetRoot,
-} from "./lib/homebrew-closed-acceptance";
+import { HOMEBREW_CLOSED_ACCEPTANCE_VITE_MODE } from "./lib/homebrew-closed-acceptance";
+import { playwrightWebServerEnvironment } from "./playwright-closed-acceptance";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.KANDELO_PLAYWRIGHT_PORT ?? 5401);
@@ -19,9 +17,11 @@ if (
     `unsupported KANDELO_PLAYWRIGHT_VITE_MODE: ${configuredViteMode}`,
   );
 }
-homebrewClosedAcceptanceAssetRoot(
-  configuredViteMode ?? (serveSealedDist ? "production" : "development"),
-  process.env.VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT,
+const effectiveViteMode =
+  configuredViteMode ?? (serveSealedDist ? "production" : "development");
+const webServerEnvironment = playwrightWebServerEnvironment(
+  effectiveViteMode,
+  process.env,
 );
 const viteModeArgument =
   configuredViteMode === HOMEBREW_CLOSED_ACCEPTANCE_VITE_MODE
@@ -89,6 +89,7 @@ export default defineConfig({
       ? `npx vite preview${viteModeArgument} --config ${join(__dirname, "vite.config.ts")} --host 127.0.0.1 --port ${port} --strictPort`
       : `npx vite${viteModeArgument} --config ${join(__dirname, "vite.config.ts")} --host 127.0.0.1 --port ${port} --strictPort`,
     port,
+    env: webServerEnvironment,
     reuseExistingServer: shouldReuseExistingPlaywrightServer(process.env),
     timeout: 30_000,
   },

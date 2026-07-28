@@ -17,7 +17,7 @@ const expectedBootstrapSha256 =
 const expectedBootstrapBytes =
   process.env.KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES;
 const closedMirrorRoot =
-  process.env.VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT;
+  process.env.KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT;
 const transportMode = process.env.KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE;
 const mirrorPlanUrl = process.env.KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL;
 const runtimeSupport = parseHomebrewRuntimeSupportContract(

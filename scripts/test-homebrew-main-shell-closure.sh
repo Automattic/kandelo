@@ -18,6 +18,7 @@ GUEST_LIFECYCLE_NODE="$REPO_ROOT/homebrew/test/homebrew_guest_lifecycle_node.ts"
 GUEST_LIFECYCLE_FIXTURE="$REPO_ROOT/scripts/create-homebrew-guest-lifecycle-fixture.ts"
 BROWSER_SMOKE="$REPO_ROOT/apps/browser-demos/test/kandelo-homebrew-main-shell.spec.ts"
 CLOSED_ACCEPTANCE_TEST="$REPO_ROOT/apps/browser-demos/homebrew-closed-acceptance.test.ts"
+PLAYWRIGHT_ACCEPTANCE_TEST="$REPO_ROOT/apps/browser-demos/playwright-closed-acceptance.test.ts"
 SHELL_VFS_URL_TEST="$REPO_ROOT/apps/browser-demos/shell-vfs-image-url.test.ts"
 EAGER_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts"
 MATERIALIZED_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-materialized-vfs-image.ts"
@@ -128,6 +129,10 @@ check_closed_browser_acceptance_contract() {
     "$workflow" ||
     return 1
   grep -Fq \
+    'apps/browser-demos/playwright-closed-acceptance.test.ts' \
+    "$workflow" ||
+    return 1
+  grep -Fq \
     'apps/browser-demos/shell-vfs-image-url.test.ts' \
     "$workflow" ||
     return 1
@@ -153,10 +158,20 @@ check_closed_browser_acceptance_contract() {
     '"KANDELO_PLAYWRIGHT_VITE_MODE=homebrew-closed-acceptance"' \
     <<<"$preview_closed_branch")" -eq 1 ] &&
     [ "$(grep -Fc \
-      '"VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT=/homebrew-main-shell-bottles"' \
+      '"KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT=/homebrew-main-shell-bottles"' \
       <<<"$preview_closed_branch")" -eq 1 ] &&
+    [ "$(grep -Fc \
+      '"VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT=/homebrew-main-shell-bottles"' \
+      <<<"$preview_closed_branch")" -eq 0 ] &&
     [ "$(grep -Fc 'KANDELO_PLAYWRIGHT_VITE_MODE=homebrew-closed-acceptance' \
       <<<"$browser_block")" -eq 1 ] ||
+    return 1
+  grep -Fq \
+    'process.env.KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT' \
+    "$BROWSER_SMOKE" &&
+    ! grep -Fq \
+      'process.env.VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT' \
+      "$BROWSER_SMOKE" ||
     return 1
 
   local offline_block
@@ -245,6 +260,11 @@ sed '/KANDELO_PLAYWRIGHT_VITE_MODE=homebrew-closed-acceptance/d' \
   "$WORKFLOW" >"$TMP_ROOT/closed-browser-missing-preview-mode.yml"
 expect_closed_browser_acceptance_contract_rejected \
   "$TMP_ROOT/closed-browser-missing-preview-mode.yml"
+sed \
+  's/"KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT=/"VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT=/' \
+  "$WORKFLOW" >"$TMP_ROOT/closed-browser-leaked-preview-root.yml"
+expect_closed_browser_acceptance_contract_rejected \
+  "$TMP_ROOT/closed-browser-leaked-preview-root.yml"
 sed 's/--mode homebrew-closed-acceptance/--mode production/' \
   "$WORKFLOW" >"$TMP_ROOT/closed-browser-wrong-build-mode.yml"
 expect_closed_browser_acceptance_contract_rejected \
@@ -1880,6 +1900,7 @@ done
   npx tsx --test \
     "$CLOSED_ACCEPTANCE_TEST" \
     "$IMAGE_CONTRACT_TEST" \
+    "$PLAYWRIGHT_ACCEPTANCE_TEST" \
     "$SHELL_VFS_URL_TEST"
 ) || fail "post-archive image contract unit tests failed"
 
