@@ -4,7 +4,8 @@
 
 import * as React from "react";
 import { useGalleryItems, useKernelHost, useStatus } from "../kernel-host/react";
-import { galleryItemUrl, mountsWithRootImageUrl, vfsImageUrlFromDescriptor } from "../url-state";
+import { descriptorFromGalleryItem } from "../gallery-descriptor";
+import { galleryItemUrl, vfsImageUrlFromDescriptor } from "../url-state";
 import { buildShareUrl, encodeBootDescriptor } from "../../../../../web-libs/kandelo-session/src/boot-descriptor";
 import type {
   GalleryItem,
@@ -297,45 +298,4 @@ async function writeClipboardText(text: string): Promise<void> {
   const copied = document.execCommand("copy");
   document.body.removeChild(textarea);
   if (!copied) throw new Error("document.execCommand('copy') returned false");
-}
-
-/**
- * Apply a GalleryItem to a base BootDescriptor — used by the App to convert
- * a row click into an applyBootDescriptor() call. Lifts argv, packages, any
- * direct VFS image URL, and the expected user context from the gallery item;
- * other fields stay from the current descriptor.
- */
-export function descriptorFromGalleryItem(
-  item: GalleryItem,
-  base: BootDescriptor,
-): BootDescriptor {
-  const mounts = item.vfsImageUrl
-    ? mountsWithRootImageUrl(base.mounts, item.vfsImageUrl)
-    : base.mounts;
-  const rootBoot = item.bootCommand[0] === "/sbin/dinit";
-  const nodeBoot = item.id === "node";
-  // WHY: a gallery switch changes runtime profiles. Carrying the previous
-  // descriptor's environment into the next profile leaks Node npm settings
-  // into Shell (or root service settings into user sessions). The live host
-  // merges these identity overrides onto the selected profile's canonical
-  // environment.
-  const userEnv = nodeBoot
-    ? { HOME: "/work", PWD: "/work", USER: "user", LOGNAME: "user" }
-    : { HOME: "/home/user", USER: "user", LOGNAME: "user" };
-  const rootEnv = { HOME: "/root", USER: "root", LOGNAME: "root" };
-  return {
-    ...base,
-    id: item.id,
-    title: item.title,
-    packages: item.packages,
-    mounts,
-    boot: {
-      ...base.boot,
-      argv: item.bootCommand,
-      cwd: rootBoot ? "/root" : nodeBoot ? "/work" : "/home/user",
-      env: rootBoot ? rootEnv : userEnv,
-      uid: rootBoot ? 0 : 1000,
-      gid: rootBoot ? 0 : 1000,
-    },
-  };
 }
