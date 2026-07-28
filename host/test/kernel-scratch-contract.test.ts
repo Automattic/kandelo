@@ -554,6 +554,22 @@ const reviewedScalarKernelExportCall = (
 
 const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   reviewedScalarKernelExportCall(
+    "apps/browser-demos/test/fixtures/reusable-kernel-export-stack-worker.ts::runProbe::kernel-export-direct-use::exports.kernel_create_process()",
+  ),
+  reviewedScalarKernelExportCall(
+    "apps/browser-demos/test/fixtures/reusable-kernel-export-stack-worker.ts::runProbe::kernel-export-direct-use::exports.kernel_exit(0)",
+  ),
+  reviewedScalarKernelExportCall(
+    "apps/browser-demos/test/fixtures/reusable-kernel-export-stack-worker.ts::runProbe::kernel-export-direct-use::exports.kernel_get_stack_pointer()",
+    3,
+  ),
+  reviewedScalarKernelExportCall(
+    "apps/browser-demos/test/fixtures/reusable-kernel-export-stack-worker.ts::runProbe::kernel-export-direct-use::exports.kernel_reap_process(pid)",
+  ),
+  reviewedScalarKernelExportCall(
+    "apps/browser-demos/test/fixtures/reusable-kernel-export-stack-worker.ts::runProbe::kernel-export-direct-use::exports.kernel_set_current_tid(pid, pid)",
+  ),
+  reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#attachThreadChannelWithinKernelEntry::kernel-export-direct-use::setMaxAddr(pid, this.toKernelPtr(tlsPageAddr))",
   ),
   reviewedScalarKernelExportCall(
@@ -941,6 +957,12 @@ const auditAllowances: AuditAllowance[] = [
     disposition: "non-kernel",
     authorityOwner: "process-memory",
     why: "This browser epoll reproduction creates its test process memory, not the kernel's linear memory.",
+  },
+  {
+    key: "apps/browser-demos/test/fixtures/reusable-kernel-export-stack-worker.ts::runProbe::wasm-instance-authority::WebAssembly.instantiate(module, imports)",
+    disposition: "kernel-control",
+    authorityOwner: "kernel",
+    why: "This exact dedicated test-worker site is injected through the module-secret kernel harness and retains the raw instance only long enough to verify returning kernel exports restore the Wasm shadow stack; production still publishes only the gated facade.",
   },
   {
     key: 'host/src/browser-kernel-worker-entry.ts::createSharedProcessMemory::wasm-memory-authority::new WebAssembly.Memory({ initial: BigInt(initialPages), maximum: BigInt(maximumPages), shared: true, address: "i64", } as unknown as WebAssembly.MemoryDescriptor)',
