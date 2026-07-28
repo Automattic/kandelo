@@ -1,7 +1,19 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
-import { mkdtempSync, rmSync, readFileSync, existsSync, statSync } from "node:fs";
+import {
+  existsSync,
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { MemoryFileSystem } from "../../src/vfs/memory-fs";
 import { HostFileSystem } from "../../src/vfs/host-fs";
 import {
@@ -10,8 +22,10 @@ import {
   resolveForBrowser,
   type MountSpec,
 } from "../../src/vfs/default-mounts";
-import { resolveForNode } from "../../src/vfs/default-mounts-node";
-import { restoreBrowserKernelInitMounts } from "../../src/browser-kernel-vfs-init";
+import {
+  resolveForNode,
+  resolveForNodeKernelSession,
+} from "../../src/vfs/default-mounts-node";
 import {
   addSealedLazyAtomicTestTree,
   forgeLazyAtomicSeal,
@@ -22,6 +36,7 @@ const O_RDONLY = 0x0000;
 const O_WRONLY = 0x0001;
 const O_CREAT = 0x0040;
 const O_TRUNC = 0x0200;
+const O_APPEND = 0x0400;
 const PERMISSION_MASK = 0o777;
 const FILE_TYPE_MASK = 0xf000;
 const DIRECTORY_MODE = 0x4000;
@@ -85,6 +100,19 @@ async function withUmask<T>(
   } finally {
     process.umask(previous);
   }
+}
+
+function typeScriptSources(root: string): string[] {
+  const files: string[] = [];
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...typeScriptSources(path));
+    } else if (entry.isFile() && entry.name.endsWith(".ts")) {
+      files.push(path);
+    }
+  }
+  return files;
 }
 
 describe("DEFAULT_MOUNT_SPEC", () => {
@@ -284,6 +312,264 @@ describe("resolveForNode", () => {
   it("rejects trailing slash on non-root mount paths", () => {
     const bad: MountSpec[] = [{ path: "/tmp/", source: "scratch" }];
     expect(() => resolveForNode(bad, image, sessionDir)).toThrow();
+  });
+});
+
+describe("Node worker session seed trees", () => {
+  it("keeps exact native append branding limited to the private-session resolver", () => {
+    const sourceRoot = fileURLToPath(new URL("../../src/", import.meta.url));
+    const token = "createSessionOwnedHostFileSystem";
+    const uses = typeScriptSources(sourceRoot)
+      .map((path) => ({
+        count: readFileSync(path, "utf8").split(token).length - 1,
+        file: relative(sourceRoot, path).replaceAll("\\", "/"),
+      }))
+      .filter(({ count }) => count > 0)
+      .sort((left, right) => left.file.localeCompare(right.file));
+
+    expect(uses).toEqual([
+      { count: 2, file: "vfs/default-mounts-node.ts" },
+      { count: 1, file: "vfs/host-fs.ts" },
+    ]);
+  });
+
+  it("authenticates the root image before inspecting or staging seeds", async () => {
+    const sessionRoot = mkdtempSync(join(tmpdir(), "kandelo-seed-auth-"));
+    const forgedImage = await buildForgedLegacyDinitImage("member");
+    try {
+      await expect(
+        resolveForNodeKernelSession(
+          DEFAULT_MOUNT_SPEC,
+          forgedImage,
+          sessionRoot,
+          [{
+            sourcePath: join(sessionRoot, "does-not-exist"),
+            destinationPath: "/tmp/kandelo-run",
+          }],
+        ),
+      ).rejects.toThrow(/activation member/i);
+      expect(existsSync(join(sessionRoot, "tmp"))).toBe(false);
+      expect(existsSync(join(sessionRoot, ".seed-staging-0"))).toBe(false);
+    } finally {
+      rmSync(sessionRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("breaks external hardlink aliases before granting exact append authority", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-snapshot-source-"));
+    const sessionRoot = mkdtempSync(join(tmpdir(), "kandelo-snapshot-session-"));
+    const outside = join(fixtureRoot, "outside");
+    const source = join(fixtureRoot, "fixtures");
+    const staged = join(source, "suite", "fixture");
+    try {
+      mkdirSync(join(source, "suite"), { recursive: true });
+      writeFileSync(outside, "seed");
+      linkSync(outside, staged);
+
+      const mounts = await resolveForNodeKernelSession(
+        DEFAULT_MOUNT_SPEC,
+        await buildFixtureImage(),
+        sessionRoot,
+        [{
+          sourcePath: source,
+          destinationPath: "/tmp/kandelo-run",
+        }],
+      );
+      const mount = mounts.find((entry) => entry.mountPoint === "/tmp")!;
+
+      // The source entry still aliases the external file. Mutating it after
+      // initialization must not replace bytes inside the worker-owned copy.
+      writeFileSync(outside, "external");
+      expect(readFileSync(staged, "utf8")).toBe("external");
+      expect(new TextDecoder().decode(
+        readMountFile(mount.backend, "/kandelo-run/suite/fixture"),
+      )).toBe("seed");
+
+      const bytes = new TextEncoder().encode("+guest");
+      const fd = mount.backend.open(
+        "/kandelo-run/suite/fixture",
+        O_WRONLY | O_APPEND,
+        0,
+      );
+      try {
+        expect(mount.backend.append(fd, bytes, bytes.byteLength, null)).toEqual({
+          written: bytes.byteLength,
+          end: 10,
+        });
+      } finally {
+        mount.backend.close(fd);
+      }
+
+      expect(new TextDecoder().decode(
+        readMountFile(mount.backend, "/kandelo-run/suite/fixture"),
+      )).toBe("seed+guest");
+      expect(readFileSync(outside, "utf8")).toBe("external");
+    } finally {
+      rmSync(sessionRoot, { recursive: true, force: true });
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects image destinations and a source that contains the private session", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-snapshot-validation-"));
+    const source = join(fixtureRoot, "source");
+    const nestedSession = join(source, "worker-session");
+    mkdirSync(nestedSession, { recursive: true });
+    try {
+      await expect(
+        resolveForNodeKernelSession(
+          DEFAULT_MOUNT_SPEC,
+          await buildFixtureImage(),
+          nestedSession,
+          [{ sourcePath: source, destinationPath: "/etc/fixtures" }],
+        )
+      ).rejects.toThrow(/below a scratch mount/i);
+
+      await expect(
+        resolveForNodeKernelSession(
+          DEFAULT_MOUNT_SPEC,
+          await buildFixtureImage(),
+          nestedSession,
+          [{
+            sourcePath: source,
+            destinationPath: "/tmp/kandelo-run",
+          }],
+        )
+      ).rejects.toThrow(/contains the private session/i);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects source symlinks before publishing a seeded backend", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-seed-symlink-"));
+    const sessionRoot = mkdtempSync(join(tmpdir(), "kandelo-seed-session-"));
+    const source = join(fixtureRoot, "source");
+    mkdirSync(source);
+    writeFileSync(join(fixtureRoot, "outside"), "outside");
+    symlinkSync("../outside", join(source, "escape"));
+    try {
+      await expect(
+        resolveForNodeKernelSession(
+          DEFAULT_MOUNT_SPEC,
+          await buildFixtureImage(),
+          sessionRoot,
+          [{
+            sourcePath: source,
+            destinationPath: "/tmp/kandelo-run",
+          }],
+        ),
+      ).rejects.toThrow(/symlink or unsupported special entry/i);
+    } finally {
+      rmSync(sessionRoot, { recursive: true, force: true });
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("publishes no final destination when a later seed copy fails", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-seed-atomic-"));
+    const sessionRoot = mkdtempSync(join(tmpdir(), "kandelo-seed-session-"));
+    const valid = join(fixtureRoot, "valid");
+    const invalid = join(fixtureRoot, "invalid");
+    mkdirSync(valid);
+    mkdirSync(invalid);
+    writeFileSync(join(valid, "complete"), "complete");
+    writeFileSync(join(fixtureRoot, "outside"), "outside");
+    symlinkSync("../outside", join(invalid, "escape"));
+    try {
+      await expect(
+        resolveForNodeKernelSession(
+          DEFAULT_MOUNT_SPEC,
+          await buildFixtureImage(),
+          sessionRoot,
+          [
+            { sourcePath: valid, destinationPath: "/tmp/first" },
+            { sourcePath: invalid, destinationPath: "/tmp/second" },
+          ],
+        ),
+      ).rejects.toThrow(/symlink or unsupported special entry/i);
+      expect(existsSync(join(sessionRoot, "tmp", "first"))).toBe(false);
+      expect(existsSync(join(sessionRoot, "tmp", "second"))).toBe(false);
+    } finally {
+      rmSync(sessionRoot, { recursive: true, force: true });
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects overlapping, mount-shadowed, and mount-root destinations", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-seed-overlap-"));
+    const sessionRoot = mkdtempSync(join(tmpdir(), "kandelo-seed-session-"));
+    const first = join(fixtureRoot, "first");
+    const second = join(fixtureRoot, "second");
+    mkdirSync(first);
+    mkdirSync(second);
+    const image = await buildFixtureImage();
+    try {
+      await expect(
+        resolveForNodeKernelSession(
+          DEFAULT_MOUNT_SPEC,
+          image,
+          sessionRoot,
+          [
+            { sourcePath: first, destinationPath: "/tmp/fixtures" },
+            { sourcePath: second, destinationPath: "/tmp/fixtures/nested" },
+          ],
+        ),
+      ).rejects.toThrow(/destinations overlap/i);
+
+      await expect(
+        resolveForNodeKernelSession(
+          DEFAULT_MOUNT_SPEC,
+          image,
+          sessionRoot,
+          [{ sourcePath: first, destinationPath: "/tmp/extra/fixtures" }],
+          ["/tmp/extra"],
+        ),
+      ).rejects.toThrow(/overlaps another mount/i);
+
+      await expect(
+        resolveForNodeKernelSession(
+          DEFAULT_MOUNT_SPEC,
+          image,
+          sessionRoot,
+          [{ sourcePath: first, destinationPath: "/tmp" }],
+        ),
+      ).rejects.toThrow(/below a scratch mount/i);
+
+      await expect(
+        resolveForNodeKernelSession(
+          DEFAULT_MOUNT_SPEC,
+          image,
+          sessionRoot,
+          [
+            { sourcePath: first, destinationPath: "/tmp/fixtures" },
+            { sourcePath: second, destinationPath: "/tmp//fixtures" },
+          ],
+        ),
+      ).rejects.toThrow(/canonical POSIX path/i);
+
+      await expect(
+        resolveForNodeKernelSession(
+          DEFAULT_MOUNT_SPEC,
+          image,
+          sessionRoot,
+          [{ sourcePath: first, destinationPath: "/tmp/extra/fixtures" }],
+          ["/tmp//extra"],
+        ),
+      ).rejects.toThrow(/canonical POSIX path/i);
+
+      await expect(
+        resolveForNodeKernelSession(
+          DEFAULT_MOUNT_SPEC,
+          image,
+          sessionRoot,
+          [{ sourcePath: "relative", destinationPath: "/tmp/relative" }],
+        ),
+      ).rejects.toThrow(/source path must be absolute/i);
+    } finally {
+      rmSync(sessionRoot, { recursive: true, force: true });
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
   });
 });
 
