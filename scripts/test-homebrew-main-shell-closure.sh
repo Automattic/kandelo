@@ -9,6 +9,7 @@ SOURCE_LOCK="$REPO_ROOT/homebrew/main-shell-migration-lock.json"
 RUNTIME_SUPPORT="$REPO_ROOT/homebrew/main-shell-homebrew-runtime-support.json"
 LAZY_ARTIFACT_LOCK="$REPO_ROOT/homebrew/main-shell-lazy-artifact-lock.json"
 LAZY_ARTIFACT_CHECKER="$REPO_ROOT/scripts/verify-homebrew-main-shell-artifact-lock.sh"
+FINALIZER_TEST="$REPO_ROOT/scripts/test-finalize-homebrew-main-shell-release.py"
 WORKFLOW="$REPO_ROOT/.github/workflows/homebrew-main-shell-ci.yml"
 IMAGE_CONTRACT="$REPO_ROOT/scripts/homebrew-main-shell-image-contract.ts"
 IMAGE_CONTRACT_TEST="$REPO_ROOT/scripts/homebrew-main-shell-image-contract.test.ts"
@@ -58,6 +59,10 @@ expect_failure() {
 command -v git >/dev/null 2>&1 || fail "git is required"
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 command -v node >/dev/null 2>&1 || fail "node is required"
+command -v python3 >/dev/null 2>&1 || fail "python3 is required"
+
+python3 "$FINALIZER_TEST" ||
+  fail "main-shell release finalizer contract tests failed"
 
 SOURCE_ROOT_COUNT="$(jq -er '.packages | length' "$SOURCE_LOCK")"
 SOURCE_CLOSURE_COUNT="$(jq -er '.formula_closure | length' "$SOURCE_LOCK")"
@@ -1844,6 +1849,10 @@ expect_failure "--materialize-package-tree requires a package tree" \
   "$BUILDER" --tap-root "$tap" \
   --work-dir "$TMP_ROOT/work-materialize-without-package-tree" \
   --migration-lock "$lock" --materialize-package-tree
+expect_failure "--review-pending-artifact requires --lazy-shell" \
+  "$BUILDER" --tap-root "$tap" \
+  --work-dir "$TMP_ROOT/work-review-without-lazy-shell" \
+  --migration-lock "$lock" --review-pending-artifact
 
 printf '%s\n' "untracked" >"$tap/untracked-file"
 expect_failure "exact tap checkout is dirty" \
@@ -1879,6 +1888,12 @@ expect_failure "lock is invalid or uses a different timestamp epoch" \
   "$BUILDER" --lazy-shell --tap-root "$tap_worktree" \
   --work-dir "$TMP_ROOT/work-extra-lazy-lock-field" --migration-lock "$lock" \
   --lazy-artifact-lock "$extra_field_lock"
+expect_failure "--review-pending-artifact requires a pending artifact lock" \
+  "$BUILDER" --lazy-shell --tap-root "$tap_worktree" \
+  --work-dir "$TMP_ROOT/work-review-sealed-lazy-lock" \
+  --migration-lock "$lock" \
+  --lazy-artifact-lock "$LAZY_ARTIFACT_LOCK" \
+  --review-pending-artifact
 wrong_bootstrap_source_binding="$TMP_ROOT/main-shell-wrong-bootstrap-source-binding.json"
 jq '
   .inputs.bootstrap_source_lock_sha256 =
@@ -1916,6 +1931,11 @@ expect_failure "reviewed artifact identity is still pending" \
   bash "$LAZY_ARTIFACT_CHECKER" \
     --lock "$pending_fixture_lock" --expected-source-date-epoch 0 \
     --artifact "$artifact_fixture"
+
+grep -Fq -- '--review-pending-artifact' "$SHELL_BUILDER" &&
+  fail "the publishable shell package recipe must never bypass the reviewed artifact seal"
+grep -Fq -- '--review-pending-artifact' "$WORKFLOW" &&
+  fail "main-shell CI must never bypass the reviewed artifact seal"
 
 wrong_sha_lock="$TMP_ROOT/lazy-shell-wrong-sha-lock.json"
 jq '.image.sha256 = "0000000000000000000000000000000000000000000000000000000000000000"' \
