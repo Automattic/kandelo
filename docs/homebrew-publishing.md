@@ -1111,27 +1111,42 @@ artifact lock to agree with `TF` before preparing any bytes.
 Preparation resolves the public shell generation into a fresh cache, verifies
 the main-shell artifact lock, and anonymously recovers the exact bottle set
 declared by the embedded mirror plan. The only inter-job transfer is a
-one-day, same-run artifact with an exact manifest, bounded inventory and byte
-count, shell/bootstrap identities, publication manifest, and mirror payloads.
-No PAT, GitHub App token, cross-repository workflow artifact, run ID, or
-caller-selected artifact repository participates in that handoff.
+pair of one-day, same-run artifacts with exact manifests and bounded
+inventories. One owns the bottle-mirror publication manifest and payloads. The
+other owns only the fixed lifecycle inputs: the exact shell image, bootstrap
+tree specification, bootstrap ZIP, and bootstrap environment. No PAT, GitHub
+App token, cross-repository workflow artifact, run ID, or caller-selected
+artifact repository participates in either handoff.
+
+The fixed lifecycle inputs use a separate content-addressed immutable release
+in the first-party tap. Their canonical package generations expose these
+outputs only as members of package archives, but the browser's lazy Homebrew
+bootstrap contract requires a direct ZIP URL. Publishing direct assets avoids
+adding a second archive-member extraction implementation to the browser and
+keeps the lifecycle-input ownership separate from the bottle mirror. The
+lifecycle collection identity binds all four asset hashes and sizes, Kandelo
+and tap/canary revisions, and the exact public mirror-plan URL, hash, and size.
+Its temporary handoff expires after one day; its immutable release is durable
+content-addressed evidence and is not a temporary release to delete after the
+run.
 
 Only the publication job receives `contents: write`. It uses the tap caller's
 own `GITHUB_TOKEN`, rechecks both live Kandelo and tap authority immediately
 before every release, tag, or asset write, and calls
 `scripts/publish-immutable-github-release.sh` with exact `Mpre` and live `TA`.
-The immutable release targets `TA`. The sealed shell locks, guest manifest,
-recovery report, and bounded handoff retain `TF` as the bottle catalog that
+Both immutable releases target `TA`. The sealed shell locks, guest manifest,
+recovery report, and bounded handoffs retain `TF` as the bottle catalog that
 owns every recovered payload; the embedded mirror plan is intentionally a
 content identity for the payload set, not a second catalog lock. Keeping these
 identities separate avoids the impossible cycle in which Kandelo `Mpre` would
-need to contain the SHA of a tap caller that itself pins `Mpre`.
-The publisher rejects a manifest whose target commit differs from live `TA`,
-publishes seal-last, and anonymously rehashes the resulting immutable release.
-A dependent read-only job then resolves the public package generation again,
-installs from exact product catalog `TF`, requires `TA` to remain public tap
-main, and proves the public mirror in both the Node guest lifecycle and
-Chromium; the closed-acceptance filesystem root must be absent.
+need to contain the SHA of a tap caller that itself pins `Mpre`. Each publisher
+rejects a manifest whose target commit differs from live `TA`, publishes
+seal-last, and anonymously rehashes the resulting immutable release. A
+dependent read-only job then resolves the public package generation again,
+anonymously re-reads every direct lifecycle input, installs from exact product
+catalog `TF`, requires `TA` to remain public tap main, and runs the same stock
+first-party and independent third-party tap lifecycle in Node and Chromium.
+Both closed-acceptance filesystem roots must be absent.
 
 The schema-1 tag is content-addressed from bottle payloads, while an immutable
 release also records the `TA` that created it. The current publisher therefore

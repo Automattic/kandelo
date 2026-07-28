@@ -24,12 +24,45 @@ expect_rejected "$TMP_ROOT/no-write.yml"
 sed 's/retention-days: 1/retention-days: 30/' \
   "$WORKFLOW" >"$TMP_ROOT/long-handoff.yml"
 expect_rejected "$TMP_ROOT/long-handoff.yml"
+sed '/lifecycle-artifact-digest:/d' \
+  "$WORKFLOW" >"$TMP_ROOT/no-lifecycle-digest.yml"
+expect_rejected "$TMP_ROOT/no-lifecycle-digest.yml"
+sed 's/homebrew-guest-lifecycle-inputs-handoff/homebrew-guest-lifecycle-inputs-cache/g' \
+  "$WORKFLOW" >"$TMP_ROOT/renamed-lifecycle-handoff.yml"
+expect_rejected "$TMP_ROOT/renamed-lifecycle-handoff.yml"
 sed '/name: homebrew-main-shell-mirror-handoff/a\
           run-id: 123' "$WORKFLOW" >"$TMP_ROOT/cross-run.yml"
 expect_rejected "$TMP_ROOT/cross-run.yml"
-sed 's/--transport-mode public/--transport-mode closed/' \
+sed '/scripts\/create-homebrew-guest-lifecycle-fixture.ts/,/--out "$fixture"/{
+  s/--transport-mode public/--transport-mode closed/
+}' \
   "$WORKFLOW" >"$TMP_ROOT/closed-proof.yml"
 expect_rejected "$TMP_ROOT/closed-proof.yml"
+sed '/- name: Prove public shell and live tap lifecycle in Chromium/,/run: |/{
+  /        env:/a\
+          VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT: /tmp/closed-inputs
+}' "$WORKFLOW" >"$TMP_ROOT/closed-browser-env.yml"
+expect_rejected "$TMP_ROOT/closed-browser-env.yml"
+sed 's#--manifest "$lifecycle/publish.json"#--manifest "$handoff/publish.json"#' \
+  "$WORKFLOW" >"$TMP_ROOT/lifecycle-published-as-mirror.yml"
+expect_rejected "$TMP_ROOT/lifecycle-published-as-mirror.yml"
+awk '
+  /bash kandelo\/scripts\/publish-immutable-github-release\.sh/ {
+    publishers += 1
+    if (publishers == 2) {
+      sub(/bash kandelo\/scripts\/publish-immutable-github-release\.sh/,
+          "true # omitted second immutable publisher")
+    }
+  }
+  { print }
+' "$WORKFLOW" >"$TMP_ROOT/no-lifecycle-publisher.yml"
+expect_rejected "$TMP_ROOT/no-lifecycle-publisher.yml"
+sed 's/(.assets | length) == 4/(.assets | length) == 3/' \
+  "$WORKFLOW" >"$TMP_ROOT/wrong-lifecycle-asset-count.yml"
+expect_rejected "$TMP_ROOT/wrong-lifecycle-asset-count.yml"
+sed 's|cmp "$lifecycle/$name" "$RUNNER_TEMP/public-$name"|true|' \
+  "$WORKFLOW" >"$TMP_ROOT/no-lifecycle-public-compare.yml"
+expect_rejected "$TMP_ROOT/no-lifecycle-public-compare.yml"
 sed 's/--target-commitish "$TAP_AUTHORITY_REF"/--target-commitish "$TAP_CATALOG_REF"/' \
   "$WORKFLOW" >"$TMP_ROOT/catalog-as-authority.yml"
 expect_rejected "$TMP_ROOT/catalog-as-authority.yml"
