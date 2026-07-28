@@ -39,6 +39,7 @@ import {
 } from "./shell-lazy-archives";
 import {
   saveImage,
+  sourceDateEpochMilliseconds,
   writeVfsFile,
   writeVfsBinary,
   ensureDirRecursive,
@@ -176,6 +177,8 @@ export function saveShellDerivedVfsImage(
   const {
     expectedMaxByteLength = SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
     kernelAbi: requestedKernelAbi,
+    normalizeTimestampsMs =
+      sourceDateEpochMilliseconds(process.env.SOURCE_DATE_EPOCH),
     ...saveOptions
   } = options;
   if (
@@ -222,10 +225,14 @@ export function saveShellDerivedVfsImage(
     inheritedKernelAbi,
     expectedMaxByteLength,
   );
+  // WHY: capacity rebases and product writes use the wall clock. Normalizing
+  // only the detached snapshot keeps live timestamps truthful while ensuring
+  // identical package inputs produce one cacheable VFS artifact.
   return saveImage(fs, outFile, {
     ...saveOptions,
     kernelAbi: inheritedKernelAbi,
     metadata,
+    normalizeTimestampsMs,
     expectedMaxByteLength,
     headroom: {
       minimumFreeBytes: SHELL_DERIVED_VFS_MIN_FREE_BYTES,
