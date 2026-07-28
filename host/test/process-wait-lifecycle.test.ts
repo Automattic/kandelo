@@ -1521,6 +1521,7 @@ describe("Rust-owned process wait lifecycle", () => {
       cleanupUdpBindings: vi.fn(),
       cleanupTcpListeners: vi.fn(),
       hostReaped: new Set([pid]),
+      kernel: { releaseProcessViews: vi.fn() },
     }) as any;
 
     worker.deactivateProcess(pid);

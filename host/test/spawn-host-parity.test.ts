@@ -44,15 +44,63 @@ function posixSpawnHandlerSource(src: string): string {
   return src.slice(start, end);
 }
 
+function forkHandlerSource(src: string): string {
+  const start = src.indexOf("async function handleFork(");
+  const end = src.indexOf("\nasync function handleExec(", start);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  return src.slice(start, end);
+}
+
 function centralizedInitMessageSource(handler: string): string {
   const start = handler.indexOf("const initData: CentralizedWorkerInitMessage");
-  const end = handler.indexOf("\n  };", start);
   expect(start).toBeGreaterThanOrEqual(0);
+  const closing = handler.slice(start).match(/\n\s*};/);
+  const end = closing?.index === undefined
+    ? -1
+    : start + closing.index + closing[0].length;
   expect(end).toBeGreaterThan(start);
   return handler.slice(start, end);
 }
 
+function expectDeadStartUsesOrdinaryTeardown(handler: string, entry: string): void {
+  expect(
+    handler,
+    `${entry} must transfer a dead child to ordinary lifecycle teardown`,
+  ).toMatch(
+    /const signal = kernelWorker\.finalizePendingChildTermination\(childPid\);\s*lifecycleTeardownStarted = true;\s*await awaitFinalizedProcessTeardown\(/s,
+  );
+  expect(
+    handler,
+    `${entry} must not roll back a lifecycle-owned generation`,
+  ).toMatch(
+    /catch \(error\) \{\s*if \(lifecycleTeardownStarted\) throw error;/s,
+  );
+}
+
 describe("spawn host parity", () => {
+  it("both hosts own the exact fork clone before their first async yield", () => {
+    for (const entry of [nodeEntry, browserEntry]) {
+      const handler = forkHandlerSource(readFileSync(entry, "utf8"));
+      const clone = handler.indexOf("acquireForkMemoryClone(");
+      const firstAwait = handler.indexOf("await ");
+      expect(clone, `${entry} must acquire the fork clone`).toBeGreaterThanOrEqual(0);
+      expect(firstAwait, `${entry} must retain an async launch path`).toBeGreaterThanOrEqual(0);
+      // WHY: after the first yield, sibling exec can release and recycle the
+      // parent generation. The helper's owned synchronous copy is the fork
+      // snapshot; doing it later creates an ABA/two-owner race.
+      expect(clone, `${entry} must clone before yielding`).toBeLessThan(firstAwait);
+    }
+  });
+
+  it("all fork and spawn dead-start paths transfer cleanup exactly once", () => {
+    for (const entry of [nodeEntry, browserEntry]) {
+      const source = readFileSync(entry, "utf8");
+      expectDeadStartUsesOrdinaryTeardown(forkHandlerSource(source), entry);
+      expectDeadStartUsesOrdinaryTeardown(posixSpawnHandlerSource(source), entry);
+    }
+  });
+
   it("Node kernel-worker-entry wires both onResolveSpawn and onSpawn", () => {
     const src = readFileSync(nodeEntry, "utf8");
     expect(src, `${nodeEntry} must define handlePosixSpawn`).toMatch(

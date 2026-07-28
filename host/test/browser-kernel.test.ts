@@ -14,6 +14,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHash } from "node:crypto";
+import { WASM_PAGE_SIZE } from "../src/constants";
 import type { HttpResponse } from "../src/networking";
 
 const defaultArtifactModuleState = vi.hoisted(() => ({ loads: 0 }));
@@ -944,5 +945,121 @@ describe("BrowserKernel", () => {
     w.simulateMessage({ type: "response", requestId: destroyMsg.requestId, result: true });
     await destroyPromise;
     expect(w.terminated).toBe(true);
+  });
+
+  it("drops framebuffer Memory aliases on clean and trap exits", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const dispatch = (
+      kernel as unknown as {
+        handleWorkerMessage(message: unknown): void;
+      }
+    ).handleWorkerMessage.bind(kernel);
+
+    for (const [pid, status] of [[41, 0], [42, -1]] as const) {
+      const memory = new WebAssembly.Memory({
+        initial: 1,
+        maximum: 1,
+        shared: true,
+      });
+      dispatch({
+        type: "fb_bind",
+        pid,
+        generation: pid,
+        addr: 0,
+        len: WASM_PAGE_SIZE,
+        w: 128,
+        h: 128,
+        stride: 512,
+        fmt: "BGRA32",
+        memory,
+      });
+      expect(kernel.getProcessMemory(pid)).toBe(memory);
+      expect(kernel.framebuffers.get(pid)).toBeDefined();
+
+      dispatch({ type: "exit", pid, generation: pid, status });
+      expect(kernel.getProcessMemory(pid)).toBeUndefined();
+      expect(kernel.framebuffers.get(pid)).toBeUndefined();
+    }
+  });
+
+  it("keeps an exec successor when stale framebuffer messages arrive", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const worker = new MockWorker("mock://kernel");
+    (
+      kernel as unknown as { kernelWorkerHandle: MockWorker }
+    ).kernelWorkerHandle = worker;
+    const dispatch = (
+      kernel as unknown as {
+        handleWorkerMessage(message: unknown): void;
+      }
+    ).handleWorkerMessage.bind(kernel);
+    const pid = 41;
+    const oldMemory = new WebAssembly.Memory({
+      initial: 1,
+      maximum: 1,
+      shared: true,
+    });
+    const successorMemory = new WebAssembly.Memory({
+      initial: 1,
+      maximum: 1,
+      shared: true,
+    });
+
+    const bind = (
+      generation: number,
+      memory: WebAssembly.Memory,
+    ) => dispatch({
+      type: "fb_bind",
+      pid,
+      generation,
+      addr: 64,
+      len: 1024,
+      w: 16,
+      h: 16,
+      stride: 64,
+      fmt: "BGRA32",
+      memory,
+    });
+    bind(1, oldMemory);
+    bind(2, successorMemory);
+
+    // WHY: exec preserves the PID. Queued teardown from generation 1 must
+    // never clear or reinstall its alias after generation 2 is visible.
+    dispatch({
+      type: "fb_rebind_memory",
+      pid,
+      generation: 1,
+      memory: oldMemory,
+    });
+    dispatch({ type: "fb_unbind", pid, generation: 1 });
+    dispatch({ type: "exit", pid, generation: 1, status: 0 });
+    dispatch({
+      type: "fb_release_generation",
+      requestId: 73,
+      pid,
+      generation: 1,
+    });
+
+    expect(kernel.getProcessMemory(pid)).toBe(successorMemory);
+    expect(kernel.framebuffers.get(pid)).toBeDefined();
+    expect(worker.lastMessage("fb_release_generation_ack")).toEqual({
+      type: "fb_release_generation_ack",
+      requestId: 73,
+    });
+
+    dispatch({
+      type: "fb_release_generation",
+      requestId: 74,
+      pid,
+      generation: 2,
+    });
+    expect(kernel.getProcessMemory(pid)).toBeUndefined();
+    expect(kernel.framebuffers.get(pid)).toBeUndefined();
+    expect(worker.lastMessage("fb_release_generation_ack")).toEqual({
+      type: "fb_release_generation_ack",
+      requestId: 74,
+    });
   });
 });
