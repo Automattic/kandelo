@@ -14,6 +14,7 @@ import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { HostDiagnosticMessage } from "./host-diagnostic";
 import type { LazyDownloadEvent } from "./vfs/memory-fs";
 import type { ClosedLazyAsset } from "./vfs/closed-lazy-assets";
+import type { NodeSessionSeedTree } from "./vfs/default-mounts-node";
 
 export type { HttpRequest, HttpResponse };
 export type { HostDiagnostic } from "./host-diagnostic";
@@ -52,6 +53,11 @@ export interface InitMessage {
     uid?: number;
     gid?: number;
   }>;
+  /**
+   * Quiescent host trees copied beneath existing worker-owned scratch mounts
+   * before ready. Guest mutations never write back to the source.
+   */
+  sessionSeedTrees?: NodeSessionSeedTree[];
   /** Attach a real-TCP backend (TcpNetworkBackend) to the worker's PlatformIO
    *  so wasm programs can dial external hosts via Node `net.Socket`. */
   enableTcpNetwork?: boolean;

@@ -610,6 +610,7 @@ async function buildVirtualPlatformIO(
     uid?: number;
     gid?: number;
   }>,
+  sessionSeedTrees?: InitMessage["sessionSeedTrees"],
   rootfsLazyUrlBase?: InitMessage["rootfsLazyUrlBase"],
   rootfsLazyAssets?: InitMessage["rootfsLazyAssets"],
 ): Promise<VirtualPlatformIO> {
@@ -621,6 +622,8 @@ async function buildVirtualPlatformIO(
       DEFAULT_MOUNT_SPEC,
       new Uint8Array(rootfsImage),
       bootSessionDir,
+      sessionSeedTrees,
+      (extraMounts ?? []).map((mount) => mount.mountPoint),
     );
   } catch (error) {
     // WHY: imported-seal rejection occurs before scratch setup, but the Node
@@ -682,7 +685,10 @@ function cleanupSessionDir(): void {
     try {
       rmSync(sessionDir, { recursive: true, force: true });
     } catch {
-      // best-effort: tests should still pass even if cleanup races a hold
+      // WHY: a graceful/fatal worker path must attempt cleanup, but native
+      // handles can transiently retain files and abrupt process termination
+      // cannot run this hook. Never treat this best-effort cleanup as the
+      // ownership proof; private inode creation before ready is that proof.
     }
   }
   sessionDir = null;
@@ -696,11 +702,15 @@ async function handleInit(msg: InitMessage) {
   defaultThreadSlots = msg.config.defaultThreadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
   execPrograms = msg.execPrograms ?? {};
   workerAdapter = new NodeWorkerAdapter();
+  if (!msg.rootfsImage && (msg.sessionSeedTrees?.length ?? 0) > 0) {
+    throw new Error("sessionSeedTrees requires rootfsImage");
+  }
 
   const io: PlatformIO = msg.rootfsImage
     ? await buildVirtualPlatformIO(
       msg.rootfsImage,
       msg.extraMounts,
+      msg.sessionSeedTrees,
       msg.rootfsLazyUrlBase,
       msg.rootfsLazyAssets,
     )

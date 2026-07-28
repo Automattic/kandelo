@@ -188,7 +188,15 @@ run_test() {
     # process.stdin when not a TTY) does not drain the outer while-loop's
     # process-substitution pipe and cause it to exit after the first test.
     set +e
-    output=$(cd "$REPO_ROOT" && timeout "$TEST_TIMEOUT" node --experimental-wasm-exnref --import tsx/esm examples/run-example.ts "${wasm}" </dev/null 2>&1)
+    output=$(cd "$REPO_ROOT" && \
+        KERNEL_CWD= \
+        KANDELO_RUNNER_FIXTURE_ROOT= \
+        KANDELO_RUNNER_FIXTURE_CWD= \
+        KANDELO_RUNNER_GUEST_PROGRAM= \
+        KANDELO_RUNNER_VFS=isolated \
+        timeout "$TEST_TIMEOUT" node --experimental-wasm-exnref \
+            --import tsx/esm examples/run-example.ts "${wasm}" \
+            </dev/null 2>&1)
     rc=$?
     set -e
 
