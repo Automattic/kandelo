@@ -74,8 +74,15 @@ const publicLimitsHeader = readFileSync(
   new URL("../../libc/musl-overlay/include/limits.h", import.meta.url),
   "utf8",
 );
-const muslSelectHeader = readFileSync(
-  new URL("../../libc/musl/include/sys/select.h", import.meta.url),
+const processLayoutsHeader = readFileSync(
+  new URL(
+    "../../libc/musl-overlay/include/bits/kandelo_process_layouts.h",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const processNativeLayoutsSource = readFileSync(
+  new URL("../../tests/abi/process-native-layouts.c", import.meta.url),
   "utf8",
 );
 const spawnContractHeader = readFileSync(
@@ -1652,8 +1659,21 @@ describe("kernel scratch static contract", () => {
     expect(publicLimitsHeader).toContain(
       "#define IOV_MAX KANDELO_POSIX_IOV_MAX",
     );
-    expect(muslSelectHeader).toContain(
-      `#define FD_SETSIZE ${SELECT_FD_SETSIZE}`,
+    expect(processLayoutsHeader).toContain(
+      `#define KANDELO_SELECT_FD_SETSIZE ${SELECT_FD_SETSIZE}u`,
+    );
+    expect(processLayoutsHeader).toContain(
+      `#define KANDELO_SELECT_FD_SET_BYTES ${SELECT_FD_SET_BYTES}u`,
+    );
+    // WHY: Vitest checkouts intentionally need not initialize the musl
+    // submodule. This tracked compile-time probe is exercised against both
+    // installed musl sysroots by the ABI check, so it detects real C layout
+    // drift without making an ordinary host test depend on submodule state.
+    expect(processNativeLayoutsSource).toContain(
+      "_Static_assert(FD_SETSIZE == KANDELO_SELECT_FD_SETSIZE,",
+    );
+    expect(processNativeLayoutsSource).toContain(
+      "_Static_assert(sizeof(fd_set) == KANDELO_SELECT_FD_SET_BYTES,",
     );
     expect(SELECT_FD_SET_BYTES).toBe(SELECT_FD_SETSIZE / 8);
 
