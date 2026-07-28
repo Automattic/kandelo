@@ -3746,10 +3746,17 @@ def check_publisher(workflow)
     '! /usr/bin/cmp -s -- "$runner_source" "$runner"',
     'trusted tap recipe runner changed while it was staged',
     '[ "$runner_sha_after" != "$runner_sha" ]',
+    '"--property=ProtectHome=tmpfs"',
+    '"--property=BindPaths=$allowed_request_root"',
+    '"--property=ReadWritePaths=$allowed_request_root"',
+    '"--property=BindReadOnlyPaths=$HOMEBREW_PATCHED_NATIVE_PREFIX/Cellar"',
+    '"--property=BindReadOnlyPaths=$HOMEBREW_PATCHED_PREFIX/Cellar"',
   ].each do |fragment|
     check(recipe_runner_prepare_contract.include?(fragment),
           "privileged recipe-runner staging lacks #{fragment}")
   end
+  check(!recipe_runner_prepare_contract.include?('"--property=ProtectHome=yes"'),
+        "recipe supervisor masks its explicitly bound Homebrew roots")
   check(!recipe_runner_prepare_contract.include?("kandelo_root"),
         "privileged recipe-runner staging still accepts a second checkout authority")
   check(launcher.include?(

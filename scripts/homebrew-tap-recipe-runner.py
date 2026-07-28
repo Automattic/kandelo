@@ -740,9 +740,10 @@ def normalize_config_paths(config: dict[str, Any]) -> None:
         config[key] = canonical_real_directory(config[key], label=key)
 
     # WHY: these are mount destinations in the empty recipe-service root, not
-    # host inputs. The supervisor deliberately runs with ProtectHome=yes, so a
-    # production tap alias below /home must remain hidden until the inner
-    # service binds the root-owned projection over this exact destination.
+    # host inputs. The supervisor deliberately runs with ProtectHome=tmpfs and
+    # exposes only explicitly selected inputs, so a production tap alias below
+    # /home remains hidden until the inner service binds the root-owned
+    # projection over this exact destination.
     for key in (
         "platform_alias_root",
         "recipe_alias_root",

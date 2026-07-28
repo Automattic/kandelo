@@ -665,6 +665,9 @@ homebrew_patched_launcher_prepare_recipe_runner() {
   # created before that boundary accepts one peer-credential-authenticated
   # request, then closes its socket. It receives no workflow environment or
   # publisher credentials.
+  # WHY: `ProtectHome=yes` makes nested bind destinations inaccessible.
+  # `tmpfs` still hides every home directory by default while allowing only
+  # the explicitly bound publisher roots below to reappear.
   "$sudo_bin" -n -- "$systemd_run_bin" --quiet --collect \
     "--unit=$supervisor_unit" "--slice=$systemd_slice" \
     "--property=KillMode=control-group" "--property=SendSIGKILL=yes" \
@@ -673,7 +676,7 @@ homebrew_patched_launcher_prepare_recipe_runner() {
     "--property=PrivateNetwork=yes" "--property=PrivateDevices=yes" \
     "--property=PrivateIPC=yes" \
     "--property=RestrictAddressFamilies=AF_UNIX" \
-    "--property=ProtectSystem=strict" "--property=ProtectHome=yes" \
+    "--property=ProtectSystem=strict" "--property=ProtectHome=tmpfs" \
     "--property=ProtectKernelTunables=yes" \
     "--property=ProtectKernelModules=yes" \
     "--property=ProtectControlGroups=yes" \
@@ -685,6 +688,7 @@ homebrew_patched_launcher_prepare_recipe_runner() {
     "--property=SupplementaryGroups=" "--property=UMask=0022" \
     "--property=CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_KILL" \
     "--property=AmbientCapabilities=" \
+    "--property=BindPaths=$allowed_request_root" \
     "--property=ReadWritePaths=$allowed_request_root" \
     "--property=ReadWritePaths=$HOMEBREW_PATCHED_PROTECTED_DIR" \
     "--property=BindReadOnlyPaths=$HOMEBREW_PATCHED_NATIVE_PREFIX/Cellar" \

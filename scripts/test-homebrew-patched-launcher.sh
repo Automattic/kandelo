@@ -1741,6 +1741,61 @@ EOF
   fi
   /usr/bin/sudo -n -- /usr/sbin/useradd --system --user-group --create-home \
     --home-dir "$isolated_home" --shell /usr/sbin/nologin "$ISOLATION_BUILD_USER"
+  supervisor_home_fixture="$isolated_home/supervisor-home-fixture"
+  supervisor_target_cellar="$supervisor_home_fixture/target-cellar"
+  supervisor_native_cellar="$supervisor_home_fixture/native-cellar"
+  supervisor_request_root="$supervisor_home_fixture/request-root"
+  supervisor_hidden_sibling="$supervisor_home_fixture/hidden-sibling"
+  /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
+    /usr/bin/mkdir -p \
+      "$supervisor_target_cellar" "$supervisor_native_cellar" \
+      "$supervisor_request_root" "$supervisor_hidden_sibling"
+  printf 'target dependency\n' |
+    /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
+      /usr/bin/tee "$supervisor_target_cellar/marker" >/dev/null
+  printf 'native dependency\n' |
+    /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
+      /usr/bin/tee "$supervisor_native_cellar/marker" >/dev/null
+  printf 'must remain hidden\n' |
+    /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
+      /usr/bin/tee "$supervisor_hidden_sibling/secret" >/dev/null
+  supervisor_projection_unit="kandelo-recipe-home-projection-$$-${RANDOM}"
+  # WHY: `ProtectHome=tmpfs` must hide the ambient home tree while reopening
+  # only the exact immutable Cellars and mutable request exchange used by the
+  # persistent recipe supervisor. This live namespace check guards the systemd
+  # behavior that `ProtectHome=yes` cannot provide.
+  /usr/bin/sudo -n -- /usr/bin/systemd-run \
+    --quiet --wait --collect --pipe \
+    "--unit=$supervisor_projection_unit" \
+    "--property=ProtectSystem=strict" "--property=ProtectHome=tmpfs" \
+    "--property=BindReadOnlyPaths=$supervisor_target_cellar" \
+    "--property=BindReadOnlyPaths=$supervisor_native_cellar" \
+    "--property=BindPaths=$supervisor_request_root" \
+    "--property=ReadWritePaths=$supervisor_request_root" \
+    --service-type=exec --expand-environment=no -- \
+    /usr/bin/env -i /usr/bin/bash -c '
+      set -euo pipefail
+      [ "$(/usr/bin/cat "$1/marker")" = "target dependency" ]
+      [ "$(/usr/bin/cat "$2/marker")" = "native dependency" ]
+      [ ! -e "$4/secret" ] && [ ! -r "$4/secret" ]
+      printf "request exchange\n" >"$3/response"
+    ' bash \
+    "$supervisor_target_cellar" "$supervisor_native_cellar" \
+    "$supervisor_request_root" "$supervisor_hidden_sibling"
+  [ "$(/usr/bin/cat "$supervisor_request_root/response")" = \
+      "request exchange" ] ||
+    fail "recipe supervisor home projection did not preserve its writable request exchange"
+  legacy_projection_unit="kandelo-recipe-home-legacy-$$-${RANDOM}"
+  if /usr/bin/sudo -n -- /usr/bin/systemd-run \
+      --quiet --wait --collect --pipe \
+      "--unit=$legacy_projection_unit" \
+      "--property=ProtectSystem=strict" "--property=ProtectHome=yes" \
+      "--property=BindReadOnlyPaths=$supervisor_target_cellar" \
+      --service-type=exec --expand-environment=no -- \
+      /usr/bin/test -r "$supervisor_target_cellar/marker" \
+      >/dev/null 2>&1; then
+    fail "legacy recipe supervisor unexpectedly reopened a ProtectHome=yes Cellar"
+  fi
   # WHY: staging preflight runs before the publisher creates its production
   # identities. The live fixture must own the same exact third identity so it
   # exercises schema-3 isolation instead of relying on later workflow state.
