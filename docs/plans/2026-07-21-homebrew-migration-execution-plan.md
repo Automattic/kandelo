@@ -1,7 +1,7 @@
 # Homebrew Migration Living Execution Plan
 
 - Status: active
-- Last reconciled: 2026-07-26
+- Last reconciled: 2026-07-28
 - Primary repositories: `Automattic/kandelo` and
   `Kandelo-dev/homebrew-tap-core`
 - Purpose: preserve the complete Homebrew migration scope, record what has
@@ -12,6 +12,40 @@ supported. Update the status and evidence here as work lands. Do not delete a
 goal merely because it is not part of the next pull request. A goal leaves this
 plan only when it is completed with evidence or explicitly superseded with the
 replacement decision recorded in the disposition log.
+
+## Current Execution Checkpoint: 2026-07-28
+
+The post-restart critical path remains the Homebrew product cutover. Host
+process-memory reclamation is a parallel quality track; it must not replace,
+serialize, or silently narrow the migration scope below.
+
+1. Finish and merge PR #1123, which gives the isolated tap-recipe supervisor a
+   sealed sysroot outside `ProtectHome`. Its exact head must pass Linux/systemd
+   validation and the seven closed-recipe Formulae must dry-run concurrently.
+2. Keep PR #1124 fresh-allocation-only. Prove exact generation teardown and
+   actual bounded memory behavior without reusing process address spaces.
+   Prefer the least complex design that passes real Node.js and browser RSS
+   evidence; syscall relays, separate coordinators, and kernel-worker rotation
+   remain fallbacks rather than presumed requirements. This host-runtime work
+   requires approval before merge.
+3. Complete the exact first-party and independent third-party in-guest
+   Homebrew lifecycle, rebuilding only artifacts whose actual selected inputs
+   are stale.
+4. Rotate and merge the tap publication caller, then publish and anonymously
+   verify the immutable public bottle mirror.
+5. Land the prepared Pages/product cutover: Bash and its boot-critical closure
+   remain embedded; `brew` and optional software remain bottle-backed lazy
+   groups; Node.js and Chromium must prove the same exact product.
+6. Migrate every remaining registry, service, support, and composite-image
+   role to the core tap before removing the legacy registry bridge.
+7. Retain the later scope already defined below: per-program lazy references
+   where package structure permits them, a normal `man` package and ordinary
+   package-owned manual pages, and bottle-declared composable VFS layers.
+
+Throughput rule: overlap independent validation and Formula matrices, batch
+coherent packaging changes, and do not restart an expensive full-product run
+for a narrow failure until its remaining results have been harvested. Preserve
+exact producer/tap identities throughout that concurrency.
 
 ## Superseded Checkpoint: Admit The #1097 Rootfs Closure
 
