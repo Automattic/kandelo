@@ -24,6 +24,7 @@ import {
   findRepoRoot,
   localBinariesDir,
   programOutputClosureRelPaths,
+  programWasmArtifactPolicy,
   resetBinaryResolverManifestCacheForTests,
   resolveBinary,
   setProgramIndexContextCheckerForTests,
@@ -349,16 +350,28 @@ describe("program package source freshness boundary", () => {
     });
 
     expect(programOutputClosureRelPaths(relPath)).toBeNull();
+    expect(programWasmArtifactPolicy(relPath)).toBeNull();
     expect(resolveBinary(relPath)).toBe(path);
     expect(tryResolveBinary(relPath)).toBe(path);
     expect(tryResolveBinaries([relPath])).toEqual([path]);
     expect(tryResolveBinarySet([relPath])).toEqual([path]);
 
-    expect(calls).toHaveLength(5);
+    expect(calls).toHaveLength(6);
     for (const call of calls) {
       expect(call.sourceRepoRoot).toBe(findRepoRoot());
       expect(call.registryRoots).toEqual([fixtureRegistryRoot]);
     }
+  });
+
+  it("reports executable Wasm policy from the selected generated projection", () => {
+    const fixture = createScalarOutputFixture();
+
+    expect(programWasmArtifactPolicy(fixture.relPath)).toEqual({
+      packageName: fixture.name,
+      relPath: fixture.relPath,
+      sourceArtifact: fixture.sourceArtifact,
+      forkInstrumentation: "auto",
+    });
   });
 
   it("checks one projection once for a batch of independent optional artifacts", () => {

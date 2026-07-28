@@ -100,7 +100,6 @@ import {
 
 import kernelWasmUrl from "@kernel-wasm?url";
 import shellVfsUrl from "@binaries/programs/wasm32/shell.vfs.zst?url";
-import nodeWasmUrl from "@binaries/programs/wasm32/node.wasm?url";
 import dinitWasmUrl from "@binaries/programs/wasm32/dinit/dinit.wasm?url";
 import dashWasmUrl from "@binaries/programs/wasm32/dash.wasm?url";
 import bashWasmUrl from "@binaries/programs/wasm32/bash.wasm?url";
@@ -265,7 +264,6 @@ type InitEnvProfile = "service" | "wordpress";
 interface LiveDemoSpec {
   image: LiveVfsImage;
   shell?: ShellProfile;
-  includeNodeUtility?: boolean;
   autoCommand?: string;
   memoryPages?: number;
   maxVfsByteLength?: number;
@@ -347,7 +345,6 @@ const LIVE_DEMO_SPECS: Record<LiveDemoId, LiveDemoSpec> = {
   node: {
     image: "node",
     shell: "node",
-    includeNodeUtility: true,
     memoryPages: 4096,
     maxVfsByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
     network: true,
@@ -453,7 +450,6 @@ interface LiveProfile {
   software?: SoftwareProfile;
   descriptor: BootDescriptor;
   shell: ShellProfile;
-  includeNodeUtility: boolean;
   maxVfsByteLength: number;
   maxMemoryPages?: number;
   autoCommand?: string;
@@ -806,7 +802,6 @@ function customVfsProfile(
     vfsUrl,
     descriptor: desc,
     shell: "default",
-    includeNodeUtility: false,
     maxVfsByteLength: CUSTOM_VFS_PROFILE_MAX_BYTES,
     framebufferTest: fb === "test",
   };
@@ -823,7 +818,6 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       software,
       descriptor: desc,
       shell: "default",
-      includeNodeUtility: false,
       maxVfsByteLength: DEFAULT_VFS_PROFILE_MAX_BYTES,
       autoCommand: software.autoCommand,
       fallbackPresentation: software.presentation,
@@ -843,7 +837,6 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
     vfsSource,
     descriptor: desc,
     shell: spec.shell ?? "default",
-    includeNodeUtility: spec.includeNodeUtility ?? false,
     maxVfsByteLength:
       spec.maxVfsByteLength ??
       (spec.image === "shell"
@@ -1313,10 +1306,7 @@ async function bootProfile(
     patchMariaDbUnixSocketConfig(buildFs);
     patchWordPressRuntimeConfig(buildFs, "mariadb");
   }
-  bindImageOwnedRuntimeUrls(
-    buildFs,
-    profile.includeNodeUtility ? { nodeAssetUrl: nodeWasmUrl } : {},
-  );
+  bindImageOwnedRuntimeUrls(buildFs);
   if (profile.init?.programUrl) {
     tick(`staging ${profile.init.argv[0]}...`);
     const bytes = await fetch(profile.init.programUrl)

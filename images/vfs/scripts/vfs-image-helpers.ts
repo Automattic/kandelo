@@ -108,6 +108,12 @@ export interface SaveImageOptions {
   metadata?: VfsImageMetadata;
   kernelAbi?: number;
   skipWasmArtifactCheck?: boolean;
+  /**
+   * Exact materialized VFS paths whose package policy intentionally disables
+   * fork instrumentation. Declarations narrow one check; every other Wasm
+   * artifact check and the whole-image walk still run.
+   */
+  wasmArtifactPolicies?: readonly VfsWasmArtifactPolicy[];
   /** Normalize all serialized inode times for reproducible product images. */
   normalizeTimestampsMs?: number;
   /** Runtime allocation reserve that must remain after build-time population. */
@@ -119,6 +125,11 @@ export interface SaveImageOptions {
 export interface VfsImageHeadroom {
   minimumFreeBytes: number;
   minimumFreeInodes: number;
+}
+
+export interface VfsWasmArtifactPolicy {
+  path: string;
+  forkInstrumentation: "disabled";
 }
 
 const MAX_SOURCE_DATE_EPOCH_SECONDS = Math.floor(
@@ -259,22 +270,114 @@ function isWasm(bytes: Uint8Array): boolean {
     bytes[3] === 0x6d;
 }
 
-function assertNoStaleWasmArtifacts(fs: MemoryFileSystem, kernelAbi: number): void {
+function declaredWasmArtifactPolicies(
+  declarations: readonly VfsWasmArtifactPolicy[],
+): Map<string, VfsWasmArtifactPolicy> {
+  const byPath = new Map<string, VfsWasmArtifactPolicy>();
+  for (const [index, declaration] of declarations.entries()) {
+    if (
+      typeof declaration !== "object" ||
+      declaration === null ||
+      Array.isArray(declaration)
+    ) {
+      throw new Error(
+        `VFS Wasm artifact policy ${index + 1} must be an object`,
+      );
+    }
+    const keys = Object.keys(declaration).sort();
+    if (
+      keys.length !== 2 ||
+      keys[0] !== "forkInstrumentation" ||
+      keys[1] !== "path"
+    ) {
+      throw new Error(
+        `VFS Wasm artifact policy ${index + 1} must contain exactly ` +
+          "forkInstrumentation and path",
+      );
+    }
+    const { path, forkInstrumentation } = declaration;
+    if (
+      typeof path !== "string" ||
+      path === "/" ||
+      !path.startsWith("/") ||
+      path.includes("\\") ||
+      path.includes("\0") ||
+      path.slice(1).split("/").some(
+        (component) =>
+          component.length === 0 || component === "." || component === "..",
+      )
+    ) {
+      throw new Error(
+        `VFS Wasm artifact policy ${index + 1} path must be a canonical ` +
+          `absolute file path: ${JSON.stringify(path)}`,
+      );
+    }
+    if (forkInstrumentation !== "disabled") {
+      throw new Error(
+        `VFS Wasm artifact policy for ${path} has unsupported fork ` +
+          `instrumentation policy ${JSON.stringify(forkInstrumentation)}`,
+      );
+    }
+    if (byPath.has(path)) {
+      throw new Error(`Duplicate VFS Wasm artifact policy path: ${path}`);
+    }
+    byPath.set(path, declaration);
+  }
+  return byPath;
+}
+
+function assertNoStaleWasmArtifacts(
+  fs: MemoryFileSystem,
+  kernelAbi: number,
+  declarations: readonly VfsWasmArtifactPolicy[] = [],
+): void {
   const failures: string[] = [];
+  const policies = declaredWasmArtifactPolicies(declarations);
+  const unusedPolicyPaths = new Set(policies.keys());
   for (const path of walkVfsFiles(fs, "/")) {
     // WHY: a deferred entry deliberately has no local bytes to inspect; its
     // closed package identity is validated at registration/materialization.
     // Every non-deferred read failure could otherwise hide a stale artifact.
     if (fs.isPathDeferred(path)) continue;
     const bytes = readVfsBytes(fs, path);
-    if (!isWasm(bytes)) continue;
+    const policy = policies.get(path);
+    if (policy) unusedPolicyPaths.delete(path);
+    if (!isWasm(bytes)) {
+      if (policy) {
+        failures.push(
+          `${path}: declared Wasm artifact policy names a non-Wasm file`,
+        );
+      }
+      continue;
+    }
     const artifactBytes = new Uint8Array(bytes.byteLength);
     artifactBytes.set(bytes);
-    const reasons = describeWasmArtifactPolicyFailures(
-      artifactBytes.buffer,
-      { expectedAbi: kernelAbi },
+    try {
+      const reasons = describeWasmArtifactPolicyFailures(
+        artifactBytes.buffer,
+        policy?.forkInstrumentation === "disabled"
+          ? {
+              expectedAbi: kernelAbi,
+              requireForkInstrumentation: false,
+              forbidForkInstrumentation: true,
+            }
+          : { expectedAbi: kernelAbi },
+      );
+      if (reasons.length > 0) {
+        failures.push(`${path}: ${reasons.join("; ")}`);
+      }
+    } catch (error) {
+      failures.push(
+        `${path}: cannot inspect Wasm artifact: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+  for (const path of unusedPolicyPaths) {
+    failures.push(
+      `${path}: declared Wasm artifact policy did not match a materialized regular file`,
     );
-    if (reasons.length > 0) failures.push(`${path}: ${reasons.join("; ")}`);
   }
   if (failures.length > 0) {
     throw new Error(
@@ -300,8 +403,21 @@ export async function saveImage(
     assertVfsImageHeadroom(fs, options.headroom, outFile);
   }
   const kernelAbi = options.kernelAbi ?? ABI_VERSION;
+  if (
+    options.skipWasmArtifactCheck &&
+    (options.wasmArtifactPolicies?.length ?? 0) > 0
+  ) {
+    throw new Error(
+      "VFS Wasm artifact policies cannot be used when the whole-image " +
+        "Wasm artifact check is disabled",
+    );
+  }
   if (!options.skipWasmArtifactCheck) {
-    assertNoStaleWasmArtifacts(fs, kernelAbi);
+    assertNoStaleWasmArtifacts(
+      fs,
+      kernelAbi,
+      options.wasmArtifactPolicies ?? [],
+    );
   }
   const metadata = options.metadata ??
     {

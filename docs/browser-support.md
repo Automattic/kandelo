@@ -335,6 +335,15 @@ artifact. Host-tree copies fail the build on any read or VFS write error.
 Intentional omissions are declared through the copy helper's `exclude` option,
 and every unexcluded symlink must be preserved explicitly or the build fails.
 
+`saveImage()` also walks every materialized Wasm file and rejects stale ABI or
+fork-instrumentation state. A package that intentionally disables fork
+instrumentation may narrow that check only with an exact canonical VFS path in
+`wasmArtifactPolicies`; the builder's declaration must agree with the selected
+generated package projection. Missing, deferred, non-Wasm, duplicate, or
+noncanonical policy paths fail the build, and all other Wasm paths retain the
+normal whole-image validation. `skipWasmArtifactCheck` is not an alternative
+for a product-specific executable policy.
+
 Gallery launch URLs retain both the logical demo id and the resolved VFS image
 URL. Each built-in VFS image has one trusted source and resource identity; the
 logical id separately selects launch behavior. This lets the shell, Doom, and
@@ -499,7 +508,7 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `bash packages/registry/erlang-vfs/build-erlang-vfs.sh` | ABI-bound BEAM emulator, relocatable core OTP tree, executable helpers, and boot files |
 | Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
 | Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | platform base plus the complete reviewed current-shell closure: embedded `libcxx`/Ncurses/Bash, with the other 35 Formula trees independently lazy. `/usr/bin/brew` names a separate lazy source and atomic runtime-support layer whose only additional Formula is Ruby. |
-| Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | npm 10.9.2 dist + writable `/work` |
+| Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | embedded package-resolved Node executable + npm 10.9.2 dist + writable `/work`; shell Formula trees remain lazy |
 | WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
 | MariaDB test | `mariadb-test.vfs.zst` | `bash images/vfs/scripts/build-mariadb-test-vfs-image.sh` | MariaDB + test suite |

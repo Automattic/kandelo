@@ -21,7 +21,7 @@ export const COREUTILS_NAMES = [
   "yes",
 ] as const;
 
-export interface ShellLazyBinarySpec {
+export interface VfsBinarySpec {
   id: string;
   resolverPath: string;
   vfsPath: string;
@@ -30,7 +30,7 @@ export interface ShellLazyBinarySpec {
 
 export const SHELL_LAZY_URL_PREFIX = "kandelo-lazy:";
 
-export function shellLazyPlaceholderUrl(spec: ShellLazyBinarySpec): string {
+export function shellLazyPlaceholderUrl(spec: VfsBinarySpec): string {
   return `${SHELL_LAZY_URL_PREFIX}${spec.resolverPath}`;
 }
 
@@ -110,11 +110,15 @@ export const SHELL_LAZY_BINARY_SPECS = [
   },
   { id: "lsof", resolverPath: "programs/lsof.wasm", vfsPath: "/usr/bin/lsof", symlinks: ["/bin/lsof"] },
   { id: "nano", resolverPath: "programs/nano.wasm", vfsPath: "/usr/bin/nano", symlinks: ["/bin/nano"] },
-] as const satisfies readonly ShellLazyBinarySpec[];
+] as const satisfies readonly VfsBinarySpec[];
 
-export const NODE_LAZY_BINARY_SPEC = {
+export const NODE_BINARY_SPEC = {
   id: "node",
   resolverPath: "programs/node.wasm",
   vfsPath: "/usr/bin/node",
-  symlinks: ["/bin/node", "/usr/local/bin/node"],
-} as const satisfies ShellLazyBinarySpec;
+  symlinks: [
+    "/bin/node",
+    "/usr/local/bin/node",
+    "/usr/bin/spidermonkey-node",
+  ],
+} as const satisfies VfsBinarySpec;

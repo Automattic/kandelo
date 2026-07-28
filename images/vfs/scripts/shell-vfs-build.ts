@@ -24,6 +24,7 @@ import {
   resolveBinary,
   tryResolveBinary,
   findRepoRoot,
+  programWasmArtifactPolicy,
 } from "../../../host/src/binary-resolver";
 import {
   COREUTILS_NAMES,
@@ -87,6 +88,43 @@ export function resolveVfsArtifact(relPath: string, depName?: string): string {
   const resolved = tryResolveVfsArtifact(relPath, depName);
   if (resolved) return resolved;
   return resolveBinary(relPath);
+}
+
+/**
+ * Resolve an executable Wasm dependency only when the builder's declared fork
+ * policy agrees with the selected generated package projection.
+ *
+ * WHY: a VFS path-scoped exception must not become an independent source of
+ * package truth. The image builder states its intent explicitly, while the
+ * resolver proves that the exact package owning those bytes states the same
+ * policy.
+ */
+export function resolvePolicyBoundVfsWasmArtifact(
+  relPath: string,
+  depName: string,
+  forkInstrumentation: "auto" | "disabled",
+): string {
+  const expectedPackageName = artifactDepName(relPath, depName);
+  const packagePolicy = programWasmArtifactPolicy(relPath);
+  if (packagePolicy === null) {
+    throw new Error(
+      `VFS Wasm artifact ${relPath} has no selected generated package policy`,
+    );
+  }
+  if (packagePolicy.packageName !== expectedPackageName) {
+    throw new Error(
+      `VFS Wasm artifact ${relPath} is owned by package ` +
+        `${packagePolicy.packageName}, expected ${expectedPackageName}`,
+    );
+  }
+  if (packagePolicy.forkInstrumentation !== forkInstrumentation) {
+    throw new Error(
+      `VFS Wasm artifact ${relPath} declares fork instrumentation ` +
+        `${packagePolicy.forkInstrumentation}, but its image builder requires ` +
+        `${forkInstrumentation}`,
+    );
+  }
+  return resolveVfsArtifact(relPath, depName);
 }
 
 export async function loadShellBaseFileSystem(
