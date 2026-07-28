@@ -183,12 +183,14 @@ function shellDerivedImageMetadata(
     inherited.baseImage,
     "direct shell base binding",
   );
+  const baseSha256 = baseImage.sha256;
+  const baseBytes = baseImage.bytes;
   if (
-    typeof baseImage.sha256 !== "string" ||
-    !/^[0-9a-f]{64}$/.test(baseImage.sha256) ||
-    typeof baseImage.bytes !== "number" ||
-    !Number.isSafeInteger(baseImage.bytes) ||
-    baseImage.bytes <= 0 ||
+    typeof baseSha256 !== "string" ||
+    !/^[0-9a-f]{64}$/.test(baseSha256) ||
+    typeof baseBytes !== "number" ||
+    !Number.isSafeInteger(baseBytes) ||
+    baseBytes <= 0 ||
     baseImage.kernelAbi !== kernelAbi
   ) {
     throw new Error("shell-derived VFS has an invalid direct shell base binding");
@@ -214,7 +216,11 @@ function shellDerivedImageMetadata(
     kernelAbi,
     createdBy: SHELL_DERIVED_CREATED_BY,
     capacity: { maxByteLength },
-    baseImage,
+    baseImage: {
+      sha256: baseSha256,
+      bytes: baseBytes,
+      kernelAbi,
+    },
     packageDeferredTrees: inherited.packageDeferredTrees,
     homebrewBootstrap,
     homebrew: {

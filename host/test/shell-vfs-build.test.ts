@@ -81,6 +81,7 @@ function shellImageMetadata(maxByteLength: number): VfsImageMetadata {
       sha256: "b".repeat(64),
       bytes: 123_456,
       kernelAbi: ABI_VERSION,
+      sourceSignature: "must not be relabeled as a derived-image signature",
     },
     packageDeferredTrees: [
       {
@@ -434,7 +435,11 @@ describe("shell VFS base composition", () => {
         kernelAbi: ABI_VERSION,
         createdBy: "images/vfs/scripts/saveShellDerivedVfsImage",
         capacity: { maxByteLength: profileMaxBytes },
-        baseImage: inheritedMetadata.baseImage,
+        baseImage: {
+          sha256: "b".repeat(64),
+          bytes: 123_456,
+          kernelAbi: ABI_VERSION,
+        },
         packageDeferredTrees: inheritedMetadata.packageDeferredTrees,
         homebrewBootstrap: inheritedMetadata.homebrewBootstrap,
         homebrew: {
