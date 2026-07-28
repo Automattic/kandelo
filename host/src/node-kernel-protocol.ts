@@ -32,8 +32,10 @@ export interface InitMessage {
     dataBufferSize?: number;
     useSharedMemory?: boolean;
   };
-  /** Virtual path → host filesystem path for exec resolution */
+  /** Virtual path → immutable host filesystem generation for exec resolution. */
   execPrograms?: Record<string, string>;
+  /** Virtual path → worker-owned exact program bytes for pre-VFS resolution. */
+  execProgramBytes?: Record<string, ArrayBuffer>;
   /**
    * Bytes of `host/wasm/rootfs.vfs`, read on the main thread and forwarded
    * to the worker. When present, the worker materialises the default mount

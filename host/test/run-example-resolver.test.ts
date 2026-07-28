@@ -138,4 +138,32 @@ describe("run-example exec resolver", () => {
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it("keeps explicit isolated exec mappings ahead of lazy rootfs stubs", () => {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--experimental-wasm-exnref",
+        "--import",
+        "tsx/esm",
+        runExample,
+        spawnSmokeWasm,
+      ],
+      {
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          KANDELO_RUNNER_VFS: "isolated",
+          TIMEOUT: "30000",
+        },
+        encoding: "utf8",
+        timeout: 45_000,
+      },
+    );
+
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain("spawned-ok");
+    expect(result.stdout).toContain("OK");
+    expect(result.stderr).not.toContain("LazyHttpResponseError");
+  }, 45_000);
 });
