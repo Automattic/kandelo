@@ -139,6 +139,7 @@ prepare_ci_homebrew_browser_mirror() {
         return 1
     }
     export VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT=/homebrew-main-shell-bottles
+    export KANDELO_PLAYWRIGHT_VITE_MODE=homebrew-closed-acceptance
 }
 
 case "$suite" in

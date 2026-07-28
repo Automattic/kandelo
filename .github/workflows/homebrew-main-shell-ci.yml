@@ -188,6 +188,8 @@ jobs:
         run: |
           set -euo pipefail
           npx tsx --test \
+            apps/browser-demos/homebrew-closed-acceptance.test.ts \
+            apps/browser-demos/homebrew-closed-acceptance-vite-config.test.ts \
             apps/browser-demos/playwright-server-policy.test.ts \
             homebrew/test/homebrew_guest_lifecycle_browser_fixture.test.ts \
             homebrew/test/homebrew_guest_lifecycle_contract.test.ts \
@@ -798,16 +800,21 @@ jobs:
         run: |
           set -euo pipefail
           build_env=()
+          build_args=()
           if [ "$SHELL_ACTIVATION_MODE" = bottles ] &&
              [ "$TRANSPORT_MODE" = closed ]; then
             build_env+=(
               "VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT=/homebrew-main-shell-bottles"
             )
+            # WHY: optimized Vite builds are all PROD. This exact mode admits
+            # the verified local mirror and its private fixture page without
+            # granting either capability to public or source-rootfs builds.
+            build_args+=(-- --mode homebrew-closed-acceptance)
           fi
           bash ../../scripts/dev-shell.sh env \
             "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
             "${build_env[@]}" \
-            npm run build
+            npm run build "${build_args[@]}"
           test -f dist/index.html
           test -f dist/shell.vfs.zst
 
@@ -910,6 +917,7 @@ jobs:
               )
               if [ "$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" = closed ]; then
                 playwright_env+=(
+                  "KANDELO_PLAYWRIGHT_VITE_MODE=homebrew-closed-acceptance"
                   "VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT=/homebrew-main-shell-bottles"
                 )
               elif [ "$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" != public ]; then
@@ -925,7 +933,8 @@ jobs:
           (
             cd apps/browser-demos
             reports=("$shell_report")
-            if [ "$SHELL_ACTIVATION_MODE" = bottles ]; then
+            if [ "$SHELL_ACTIVATION_MODE" = bottles ] &&
+               [ "$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" = closed ]; then
               # This offline browser contract must reject before any external
               # fixture fetch. The separately gated live test runs only when
               # an exact immutable fixture is explicitly supplied.

@@ -13,6 +13,9 @@ import {
 import {
   composeBootDescriptorVfs,
 } from "../../lib/init/homebrew-package-layers";
+import {
+  homebrewClosedAcceptanceAssetRoot,
+} from "../../lib/homebrew-closed-acceptance";
 import type {
   BootDescriptor,
 } from "../../../../web-libs/kandelo-session/src/kernel-host";
@@ -28,10 +31,11 @@ const corsProxyUrl = new URL(
   `${import.meta.env.BASE_URL}__kandelo_cors_proxy?url=`,
   window.location.href,
 ).href;
-const closedLifecycleAssetRoot = (
+const closedLifecycleAssetRoot = homebrewClosedAcceptanceAssetRoot(
+  import.meta.env.MODE,
   import.meta.env.VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT as
-    string | undefined
-)?.trim();
+    string | undefined,
+);
 
 interface HomebrewVfsAcceptanceRequest {
   vfsUrl: string;

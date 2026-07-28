@@ -38,6 +38,9 @@ import {
   homebrewRuntimeLayerReferences,
 } from "../../../lib/init/homebrew-package-layers";
 import {
+  homebrewClosedAcceptanceAssetRoot,
+} from "../../../lib/homebrew-closed-acceptance";
+import {
   finalizeKernelOwnedImage,
   settleWebKitReclaim,
   trackTransientImageBuffer,
@@ -2801,16 +2804,12 @@ async function loadProfileClosedLazyAssets(
   tick: (message: string) => void,
   assertCurrent: () => void,
 ) {
-  const bundleRoot = (
+  const bundleRoot = homebrewClosedAcceptanceAssetRoot(
+    import.meta.env.MODE,
     import.meta.env.VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT as
-      string | undefined
-  )?.trim();
+      string | undefined,
+  );
   if (!bundleRoot || profile.image !== "shell") return undefined;
-  if (import.meta.env.PROD) {
-    throw new Error(
-      "local Homebrew bottle preloading is acceptance-only and unavailable in production",
-    );
-  }
   tick("verifying exact local Homebrew bottle mirror...");
   const embeddedPlanBytes = new Uint8Array(
     readVfsFile(fs, HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH),

@@ -17,6 +17,7 @@ NODE_SMOKE="$REPO_ROOT/scripts/homebrew-main-shell-node-smoke.ts"
 GUEST_LIFECYCLE_NODE="$REPO_ROOT/homebrew/test/homebrew_guest_lifecycle_node.ts"
 GUEST_LIFECYCLE_FIXTURE="$REPO_ROOT/scripts/create-homebrew-guest-lifecycle-fixture.ts"
 BROWSER_SMOKE="$REPO_ROOT/apps/browser-demos/test/kandelo-homebrew-main-shell.spec.ts"
+CLOSED_ACCEPTANCE_TEST="$REPO_ROOT/apps/browser-demos/homebrew-closed-acceptance.test.ts"
 EAGER_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts"
 MATERIALIZED_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-materialized-vfs-image.ts"
 STAGING_WORKFLOW="$REPO_ROOT/.github/workflows/staging-build.yml"
@@ -96,6 +97,86 @@ expect_candidate_mirror_contract_rejected() {
   }
 }
 
+check_closed_browser_acceptance_contract() {
+  local workflow="$1"
+  local build_block browser_block build_closed_branch preview_closed_branch
+  build_block="$(sed -n \
+    '/- name: Build the sealed browser product tree/,/- name: Boot the exact installed bytes in Node/p' \
+    "$workflow")"
+  browser_block="$(sed -n \
+    '/- name: Boot the current main-shell path in Chromium/,/- name: Upload exact closure evidence/p' \
+    "$workflow")"
+  build_closed_branch="$(awk '
+    index($0, "if [ \"$SHELL_ACTIVATION_MODE\" = bottles ] &&") {
+      inside = 1
+    }
+    inside { print }
+    inside && $0 ~ /^[[:space:]]*fi$/ { exit }
+  ' <<<"$build_block")"
+  preview_closed_branch="$(awk '
+    index($0, "if [ \"$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE\" = closed ]; then") {
+      inside = 1
+    }
+    inside { print }
+    inside && index($0, "elif [ \"$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE\" != public ]") {
+      exit
+    }
+  ' <<<"$browser_block")"
+  grep -Fq \
+    'apps/browser-demos/homebrew-closed-acceptance-vite-config.test.ts' \
+    "$workflow" ||
+    return 1
+
+  grep -Fq 'if [ "$SHELL_ACTIVATION_MODE" = bottles ] &&' \
+    <<<"$build_closed_branch" &&
+    grep -Fq '[ "$TRANSPORT_MODE" = closed ]; then' \
+      <<<"$build_closed_branch" &&
+    [ "$(grep -Fc -- \
+      'build_args+=(-- --mode homebrew-closed-acceptance)' \
+      <<<"$build_closed_branch")" -eq 1 ] &&
+    [ "$(grep -Fc \
+      '"VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT=/homebrew-main-shell-bottles"' \
+      <<<"$build_closed_branch")" -eq 1 ] &&
+    [ "$(grep -Fc -- '--mode homebrew-closed-acceptance' \
+      <<<"$build_block")" -eq 1 ] ||
+    return 1
+
+  # WHY: serving a sealed dist still loads Vite's config. Bind preview to the
+  # same exact mode/root pair used to compile it so neither public bottles nor
+  # source-rootfs runs can inherit the closed mirror by environment leakage.
+  [ "$(grep -Fc \
+    '"KANDELO_PLAYWRIGHT_VITE_MODE=homebrew-closed-acceptance"' \
+    <<<"$preview_closed_branch")" -eq 1 ] &&
+    [ "$(grep -Fc \
+      '"VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT=/homebrew-main-shell-bottles"' \
+      <<<"$preview_closed_branch")" -eq 1 ] &&
+    [ "$(grep -Fc 'KANDELO_PLAYWRIGHT_VITE_MODE=homebrew-closed-acceptance' \
+      <<<"$browser_block")" -eq 1 ] ||
+    return 1
+
+  local offline_block
+  offline_block="$(awk '
+    index($0, "if [ \"$SHELL_ACTIVATION_MODE\" = bottles ] &&") {
+      inside = 1
+    }
+    inside { print }
+    inside && index($0, "# Run the rebooting live lifecycle") { exit }
+  ' <<<"$browser_block")"
+  grep -Fq \
+    '[ "$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" = closed ]; then' \
+    <<<"$offline_block" &&
+    grep -Fq 'KANDELO_BROWSER_DEMO_INPUTS=homebrew-vfs-test' \
+      <<<"$offline_block" ||
+    return 1
+}
+
+expect_closed_browser_acceptance_contract_rejected() {
+  local workflow="$1"
+  if check_closed_browser_acceptance_contract "$workflow"; then
+    fail "closed browser acceptance mutation unexpectedly passed: $workflow"
+  fi
+}
+
 command -v git >/dev/null 2>&1 || fail "git is required"
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 command -v node >/dev/null 2>&1 || fail "node is required"
@@ -148,6 +229,21 @@ sed '/--target-commitish.*bottle_candidate.outputs.tap_sha/p' \
   "$WORKFLOW" >"$TMP_ROOT/mirror-duplicate-target.yml"
 expect_candidate_mirror_contract_rejected \
   "$TMP_ROOT/mirror-duplicate-target.yml"
+
+check_closed_browser_acceptance_contract "$WORKFLOW" ||
+  fail "closed browser acceptance mode/input contract is incomplete"
+sed '/build_args+=(-- --mode homebrew-closed-acceptance)/d' \
+  "$WORKFLOW" >"$TMP_ROOT/closed-browser-missing-build-mode.yml"
+expect_closed_browser_acceptance_contract_rejected \
+  "$TMP_ROOT/closed-browser-missing-build-mode.yml"
+sed '/KANDELO_PLAYWRIGHT_VITE_MODE=homebrew-closed-acceptance/d' \
+  "$WORKFLOW" >"$TMP_ROOT/closed-browser-missing-preview-mode.yml"
+expect_closed_browser_acceptance_contract_rejected \
+  "$TMP_ROOT/closed-browser-missing-preview-mode.yml"
+sed 's/--mode homebrew-closed-acceptance/--mode production/' \
+  "$WORKFLOW" >"$TMP_ROOT/closed-browser-wrong-build-mode.yml"
+expect_closed_browser_acceptance_contract_rejected \
+  "$TMP_ROOT/closed-browser-wrong-build-mode.yml"
 
 generation_block="$(sed -n \
   '/- name: Select one verified package generation/,/- name: Resolve current direct browser bundling inputs/p' \
@@ -1776,7 +1872,7 @@ done
 
 (
   cd "$REPO_ROOT"
-  npx tsx --test "$IMAGE_CONTRACT_TEST"
+  npx tsx --test "$CLOSED_ACCEPTANCE_TEST" "$IMAGE_CONTRACT_TEST"
 ) || fail "post-archive image contract unit tests failed"
 
 # Exercise the package wrapper twice at once while replacing only its composer

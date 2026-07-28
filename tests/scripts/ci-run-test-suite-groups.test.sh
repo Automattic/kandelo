@@ -133,6 +133,8 @@ if [ "${1:-}" = "playwright" ] && [ "${2:-}" = "test" ] &&
     [ -n "${CLOSED_ROOT_CAPTURE:-}" ]; then
     printf '%s\n' "${VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT:-}" \
         >> "$CLOSED_ROOT_CAPTURE"
+    printf '%s\n' "${KANDELO_PLAYWRIGHT_VITE_MODE:-<unset>}" \
+        >> "$CLOSED_MODE_CAPTURE"
 fi
 exit 0
 EOF
@@ -245,6 +247,7 @@ browser_capture="$TMP_DIR/browser-run.args"
 blocker_capture="$TMP_DIR/browser-blockers"
 recovery_capture="$TMP_DIR/browser-recovery.args"
 closed_root_capture="$TMP_DIR/browser-closed-root"
+closed_mode_capture="$TMP_DIR/browser-closed-mode"
 fixture_shell_image="$TMP_DIR/shell.vfs.zst"
 runner_temp="$TMP_DIR/runner"
 printf 'shell image\n' > "$fixture_shell_image"
@@ -261,6 +264,7 @@ PATH="$FIXTURE/bin:$PATH" RUN_CAPTURE="$browser_capture" \
     BLOCKER_CAPTURE="$blocker_capture" \
     RECOVERY_CAPTURE="$recovery_capture" \
     CLOSED_ROOT_CAPTURE="$closed_root_capture" \
+    CLOSED_MODE_CAPTURE="$closed_mode_capture" \
     FIXTURE_SHELL_IMAGE="$fixture_shell_image" \
     RUNNER_TEMP="$runner_temp" \
     PREPARE_BROWSER_ASSETS=true \
@@ -277,6 +281,10 @@ grep -Eq -- \
     "$recovery_capture"
 [ "$(grep -Fxc /homebrew-main-shell-bottles "$closed_root_capture")" -eq 2 ] || {
     echo "browser Playwright invocations did not inherit the closed mirror root" >&2
+    exit 1
+}
+[ "$(grep -Fxc homebrew-closed-acceptance "$closed_mode_capture")" -eq 2 ] || {
+    echo "browser Playwright invocations did not select the closed Vite mode" >&2
     exit 1
 }
 [ ! -e "$FIXTURE/apps/browser-demos/public/homebrew-main-shell-bottles" ] || {
@@ -296,11 +304,12 @@ write_resolved_browser_mirror_state \
     true \
     "$FIXTURE/.ci-test-publication-blockers.json" \
     "$FIXTURE/.ci-homebrew-browser-mirror-state.json"
-rm -f "$recovery_capture" "$closed_root_capture"
+rm -f "$recovery_capture" "$closed_root_capture" "$closed_mode_capture"
 PATH="$FIXTURE/bin:$PATH" RUN_CAPTURE="$browser_capture" \
     BLOCKER_CAPTURE="$blocker_capture" \
     RECOVERY_CAPTURE="$recovery_capture" \
     CLOSED_ROOT_CAPTURE="$closed_root_capture" \
+    CLOSED_MODE_CAPTURE="$closed_mode_capture" \
     FIXTURE_SHELL_IMAGE="$fixture_shell_image" \
     RUNNER_TEMP="$runner_temp" \
     PREPARE_BROWSER_ASSETS=true \
@@ -310,6 +319,10 @@ grep -Fq -- \
     "$recovery_capture"
 [ "$(grep -Fxc /homebrew-main-shell-bottles "$closed_root_capture")" -eq 2 ] || {
     echo "resolved unpublished shell did not use its closed mirror" >&2
+    exit 1
+}
+[ "$(grep -Fxc homebrew-closed-acceptance "$closed_mode_capture")" -eq 2 ] || {
+    echo "resolved unpublished shell did not select the closed Vite mode" >&2
     exit 1
 }
 [ ! -e "$FIXTURE/apps/browser-demos/public/homebrew-main-shell-bottles" ] || {
@@ -338,17 +351,22 @@ write_browser_mirror_state \
     false \
     "$FIXTURE/.ci-test-publication-blockers.json" \
     "$FIXTURE/.ci-homebrew-browser-mirror-state.json"
-rm -f "$recovery_capture"
+rm -f "$recovery_capture" "$closed_root_capture" "$closed_mode_capture"
 PATH="$FIXTURE/bin:$PATH" RUN_CAPTURE="$browser_capture" \
     BLOCKER_CAPTURE="$blocker_capture" \
     RECOVERY_CAPTURE="$recovery_capture" \
     CLOSED_ROOT_CAPTURE="$closed_root_capture" \
+    CLOSED_MODE_CAPTURE="$closed_mode_capture" \
     FIXTURE_SHELL_IMAGE="$fixture_shell_image" \
     RUNNER_TEMP="$runner_temp" \
     PREPARE_BROWSER_ASSETS=true \
     bash "$FIXTURE/scripts/ci-run-test-suite.sh" browser
 [ ! -e "$recovery_capture" ] || {
     echo "canonical shell unexpectedly received a closed Homebrew mirror" >&2
+    exit 1
+}
+[ "$(grep -Fxc '<unset>' "$closed_mode_capture")" -eq 2 ] || {
+    echo "canonical shell unexpectedly selected the closed Vite mode" >&2
     exit 1
 }
 rm "$FIXTURE/.ci-homebrew-browser-mirror-state.json"
@@ -1080,6 +1098,7 @@ browser_cache_capture="$TMP_DIR/relocated-browser-cache"
 browser_xtask_capture="$TMP_DIR/relocated-browser-xtask"
 relocated_recovery_capture="$TMP_DIR/relocated-browser-recovery.args"
 relocated_closed_root_capture="$TMP_DIR/relocated-browser-closed-root"
+relocated_closed_mode_capture="$TMP_DIR/relocated-browser-closed-mode"
 relocated_runner_temp="$TMP_DIR/relocated-runner"
 mkdir "$relocated_runner_temp"
 PATH="$FIXTURE/bin:$PATH" \
@@ -1089,6 +1108,7 @@ PATH="$FIXTURE/bin:$PATH" \
     BLOCKER_CAPTURE="$TMP_DIR/relocated-browser-blockers" \
     RECOVERY_CAPTURE="$relocated_recovery_capture" \
     CLOSED_ROOT_CAPTURE="$relocated_closed_root_capture" \
+    CLOSED_MODE_CAPTURE="$relocated_closed_mode_capture" \
     FIXTURE_SHELL_IMAGE="$(realpath "$pack_extract/binaries/programs/wasm32/shell.vfs.zst")" \
     RUNNER_TEMP="$relocated_runner_temp" \
     PREPARE_BROWSER_ASSETS=true \
@@ -1113,6 +1133,10 @@ grep -Fxq -- \
 grep -Fxq materialized "$TMP_DIR/relocated-browser-blockers"
 [ "$(grep -Fxc /homebrew-main-shell-bottles "$relocated_closed_root_capture")" -eq 2 ] || {
     echo "relocated browser Playwright invocations did not inherit the closed mirror root" >&2
+    exit 1
+}
+[ "$(grep -Fxc homebrew-closed-acceptance "$relocated_closed_mode_capture")" -eq 2 ] || {
+    echo "relocated browser Playwright invocations did not select the closed Vite mode" >&2
     exit 1
 }
 [ ! -e "$pack_extract/apps/browser-demos/public/homebrew-main-shell-bottles" ] || {
