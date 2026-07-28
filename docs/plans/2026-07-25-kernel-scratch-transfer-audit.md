@@ -847,6 +847,28 @@ browser, or timing results. If the PR makes a memory or performance claim, the
 external exact-head ledger must contain the performance guide's matching
 measurements and artifact fingerprints.
 
+## Conformance storage ownership
+
+The conformance suites must exercise the same append and inode-ownership rules
+as ordinary guests. Pointing them at the checkout through raw
+`NodePlatformIO`, then weakening exact append for one failing test, would be a
+test-specific exception and would conceal the real externally mutable backing.
+Instead, the generic Node boot contract may copy a quiescent source tree into a
+strict descendant of an existing per-boot scratch mount. It authenticates the
+root image first, copies regular files and directories into unpublished staging
+paths without preserving hardlink aliases, rejects symlinks and special files,
+then renames the complete trees before constructing the branded scratch
+backends or publishing readiness. Guest writes never reach the source tree.
+
+Libc and Open POSIX tests use the canonical root image and `/tmp`; the initial
+program crosses as an immutable value, and its exact self-exec alias resolves
+only to those cached bytes. Each Sortix invocation stages only its executable,
+source file when present, and shared object when present as regular files in a
+private fixture, then launches the worker-owned VFS path. The suite/parent
+layout remains intact for tests that open `..`, inspect their source, load a
+shared object, or exec/spawn themselves. Parallel invocations receive separate
+session copies. This is lifecycle ownership rather than a test allowlist.
+
 ## ABI decision
 
 `ABI_VERSION` is 43 in the post-retarget implementation:
@@ -968,6 +990,11 @@ measurements and artifact fingerprints.
   compatibility fallback.
 - `KernelScratchRegion` remains an internal TypeScript value, but that fact
   does not neutralize the required export and synchronization changes.
+- `NodeKernelHost.sessionSeedTrees` and its main-thread/worker initialization
+  field are optional Node configuration. They change no Wasm export, import,
+  syscall layout, pointer interpretation, required adapter capability, or
+  accepted guest limit. They therefore require no epoch beyond the already
+  unpublished ABI 43.
 
 PR #1097 merged as
 `c7d039794a43788acfa0b0aea30a700c257f57cb` with ABI 42. Retargeting is

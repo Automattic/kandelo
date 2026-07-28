@@ -41,7 +41,7 @@ import {
   WASM_PAGE_SIZE,
 } from "./constants";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
-import type { MountSpec } from "./vfs/default-mounts";
+import type { NodeSessionSeedTree } from "./vfs/default-mounts-node";
 
 export type { HttpRequest, HttpResponse };
 
@@ -145,6 +145,16 @@ export interface NodeKernelHostOptions {
     /** Virtual group for existing host-backed mount entries. Defaults to root. */
     gid?: number;
   }>;
+  /**
+   * Seed an existing per-boot scratch mount from an absolute, quiescent host
+   * directory.
+   *
+   * Initialization copies each tree before the worker publishes readiness and
+   * never writes changes back. Destinations must be strict descendants of a
+   * declared scratch mount. The source must remain quiescent until init()
+   * resolves.
+   */
+  sessionSeedTrees?: readonly NodeSessionSeedTree[];
 }
 
 export interface SpawnOptions {
@@ -222,9 +232,19 @@ export class NodeKernelHost {
     const rootfsLazyAssets = this.options.rootfsLazyAssets === undefined
       ? undefined
       : snapshotClosedLazyAssets(this.options.rootfsLazyAssets);
-    const rootfsLazyAssetSources = this.options.rootfsLazyAssetSources === undefined
-      ? undefined
-      : snapshotClosedLazyAssetSources(this.options.rootfsLazyAssetSources);
+    const sessionSeedTrees = this.options.sessionSeedTrees?.map(
+      (seed) => ({
+        sourcePath: seed.sourcePath,
+        destinationPath: seed.destinationPath,
+      }),
+    );
+    if (
+      sessionSeedTrees !== undefined
+      && sessionSeedTrees.length > 0
+      && rootfsImage === null
+    ) {
+      throw new Error("sessionSeedTrees requires rootfsImage");
+    }
 
     this.worker = spawnKernelWorkerThread();
     this.workerStarted = true;
@@ -354,6 +374,7 @@ export class NodeKernelHost {
           rootfsLazyAssets,
           rootfsLazyAssetSources,
           extraMounts: this.options.extraMounts,
+          sessionSeedTrees,
           enableTcpNetwork: this.options.enableTcpNetwork,
         };
         const transfer = (rootfsLazyAssets ?? []).map(
