@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { tmpdir } from "node:os";
 import { zstdCompressSync } from "node:zlib";
 import {
@@ -37,6 +37,10 @@ import {
   MemoryFileSystem,
   type VfsImageMetadata,
 } from "../src/vfs/memory-fs";
+import {
+  resolvePolicyBoundVfsWasmArtifact,
+  tryResolveVfsArtifact,
+} from "../../images/vfs/scripts/shell-vfs-build";
 
 const cleanupDirs = new Set<string>();
 const cleanupEmptyDirs = new Set<string>();
@@ -370,8 +374,94 @@ describe("program package source freshness boundary", () => {
       packageName: fixture.name,
       relPath: fixture.relPath,
       sourceArtifact: fixture.sourceArtifact,
+      cacheKey: fixtureCacheKey(fixture.name),
       forkInstrumentation: "auto",
     });
+  });
+
+  it("binds a direct dependency override to its projected cache generation and source artifact", () => {
+    const fixture = createScalarOutputFixture("disabled");
+    const envName =
+      `WASM_POSIX_DEP_${fixture.name.replaceAll("-", "_").toUpperCase()}_DIR`;
+    const hadPrevious = Object.prototype.hasOwnProperty.call(
+      process.env,
+      envName,
+    );
+    const previous = process.env[envName];
+    const acceptedBytes = executableWasmWithAbi(ABI_VERSION);
+
+    try {
+      const arbitraryRoot = fixtureArbitraryRoot();
+      writeFileSync(
+        join(arbitraryRoot, basename(fixture.relPath)),
+        acceptedBytes,
+      );
+      process.env[envName] = arbitraryRoot;
+      expect(
+        tryResolveVfsArtifact(fixture.relPath, fixture.name),
+      ).toBe(join(arbitraryRoot, basename(fixture.relPath)));
+      expect(() =>
+        resolvePolicyBoundVfsWasmArtifact(
+          fixture.relPath,
+          fixture.name,
+          "disabled",
+        )
+      ).toThrow(/does not name its selected immutable package generation/);
+
+      const wrongCacheRoot = fixtureCanonicalRoot(
+        fixture.name,
+        "wasm32",
+        "f".repeat(64),
+      );
+      writeCanonicalMember(
+        wrongCacheRoot,
+        fixture.sourceArtifact,
+        acceptedBytes,
+      );
+      process.env[envName] = wrongCacheRoot;
+      expect(() =>
+        resolvePolicyBoundVfsWasmArtifact(
+          fixture.relPath,
+          fixture.name,
+          "disabled",
+        )
+      ).toThrow(/does not name its selected immutable package generation/);
+
+      const canonicalRoot = fixtureCanonicalRoot(fixture.name);
+      // This is the same basename the former fast path accepted, but it is
+      // not the source-artifact path declared by the package projection.
+      writeFileSync(
+        join(canonicalRoot, basename(fixture.relPath)),
+        acceptedBytes,
+      );
+      process.env[envName] = canonicalRoot;
+      expect(() =>
+        resolvePolicyBoundVfsWasmArtifact(
+          fixture.relPath,
+          fixture.name,
+          "disabled",
+        )
+      ).toThrow(/member .* is invalid/);
+
+      const expected = writeCanonicalMember(
+        canonicalRoot,
+        fixture.sourceArtifact,
+        acceptedBytes,
+      );
+      expect(
+        resolvePolicyBoundVfsWasmArtifact(
+          fixture.relPath,
+          fixture.name,
+          "disabled",
+        ),
+      ).toBe(realpathSync(expected));
+    } finally {
+      if (hadPrevious) {
+        process.env[envName] = previous ?? "";
+      } else {
+        delete process.env[envName];
+      }
+    }
   });
 
   it("checks one projection once for a batch of independent optional artifacts", () => {
@@ -700,7 +790,9 @@ guest_path = "/usr/share/runtime.dat"
   return { name, members };
 }
 
-function createScalarOutputFixture(): {
+function createScalarOutputFixture(
+  forkInstrumentation: "auto" | "disabled" = "auto",
+): {
   name: string;
   relPath: string;
   sourceArtifact: string;
@@ -725,13 +817,14 @@ spdx = "MIT"
 [[outputs]]
 name = "${outputName}"
 wasm = "${sourceArtifact}"
+${forkInstrumentation === "disabled" ? 'fork_instrumentation = "disabled"' : ""}
 `);
   writeFixturePackageProjection(name, [{
     kind: "output",
     sourceArtifact,
     mirrorPath: `${outputName}.wasm`,
     outputName,
-    forkInstrumentation: "auto",
+    forkInstrumentation,
   }]);
   for (const root of [localBinariesDir(), binariesDir()]) {
     cleanupDirs.add(join(root, relPath));

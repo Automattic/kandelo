@@ -8,8 +8,8 @@ if [ ! -f "$REPO_ROOT/packages/registry/npm/dist/bin/npm-cli.js" ]; then
     bash "$REPO_ROOT/packages/registry/npm/fetch-npm.sh"
 fi
 
-# The Node VFS layers npm and a lazy node binary on top of the resolved shell
-# VFS image. The shell package owns its own lazy archive inputs.
+# The Node VFS embeds its always-used Node executable and layers npm on top of
+# the resolved shell VFS image. The shell package still owns its lazy archives.
 bash "$REPO_ROOT/images/vfs/scripts/build-node-vfs-image.sh"
 
 VFS="$REPO_ROOT/apps/browser-demos/public/node-vfs.vfs.zst"

@@ -333,8 +333,8 @@
     "node-vfs": {
       "manifestSha256": "d377eedb72d2d18652b3422c04deaae11a6efee84ee042b204151cfd69c04656",
       "cacheKeys": {
-        "wasm32": "e01db6dce9257fb6fb8e9750ba137e17e57f9f2bd91c61cb8881c27557d98a44",
-        "wasm64": "a4ae01e58cffd28af1f2f438a068bf6a046ad11574e3bdb0d1b86ca2fd28a045"
+        "wasm32": "fb4a53ce520a739b1a9690eeefa862cb1647d711bbc346989982fd5dc734b0e7",
+        "wasm64": "578ab412042669dbc7bed078c7c243aac28e7f604dfa4a0eb1cdc9e6f3602114"
       }
     },
     "openssl": {
@@ -1909,7 +1909,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "e01db6dce9257fb6fb8e9750ba137e17e57f9f2bd91c61cb8881c27557d98a44"
+        "wasm32": "fb4a53ce520a739b1a9690eeefa862cb1647d711bbc346989982fd5dc734b0e7"
       },
       "dependencyClosures": {
         "wasm32": [

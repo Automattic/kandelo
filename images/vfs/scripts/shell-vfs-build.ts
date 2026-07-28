@@ -25,6 +25,8 @@ import {
   tryResolveBinary,
   findRepoRoot,
   programWasmArtifactPolicy,
+  resolveDirectProgramPackageArtifact,
+  type ResolvedDirectProgramPackageArtifact,
 } from "../../../host/src/binary-resolver";
 import {
   COREUTILS_NAMES,
@@ -66,6 +68,23 @@ function artifactDepName(relPath: string, depName?: string): string {
   return basename(relPath).replace(/\.(wasm|zip|zst)$/, "");
 }
 
+function policyBoundDirectDepArtifact(
+  relPath: string,
+  depName?: string,
+): ResolvedDirectProgramPackageArtifact | null {
+  const packageName = artifactDepName(relPath, depName);
+  const depDir = process.env[`WASM_POSIX_DEP_${depEnvKey(packageName)}_DIR`];
+  if (!depDir) return null;
+  // WHY: xtask's direct-dependency variable is only a lookup hint. Resolve it
+  // through package policy so a same-basename file in an arbitrary directory
+  // cannot impersonate the selected package/cache generation.
+  return resolveDirectProgramPackageArtifact(
+    relPath,
+    packageName,
+    depDir,
+  );
+}
+
 function depArtifactPath(relPath: string, depName?: string): string | null {
   const packageName = artifactDepName(relPath, depName);
   const depDir = process.env[`WASM_POSIX_DEP_${depEnvKey(packageName)}_DIR`];
@@ -97,7 +116,10 @@ export function resolveVfsArtifact(relPath: string, depName?: string): string {
  * WHY: a VFS path-scoped exception must not become an independent source of
  * package truth. The image builder states its intent explicitly, while the
  * resolver proves that the exact package owning those bytes states the same
- * policy.
+ * policy. This helper is deliberately narrower than generic VFS artifact
+ * lookup: a policy exception requires an immutable xtask cache generation;
+ * relocated inputs and local source overrides need their own content-bound
+ * receipt before they can safely carry the same authority.
  */
 export function resolvePolicyBoundVfsWasmArtifact(
   relPath: string,
@@ -105,7 +127,8 @@ export function resolvePolicyBoundVfsWasmArtifact(
   forkInstrumentation: "auto" | "disabled",
 ): string {
   const expectedPackageName = artifactDepName(relPath, depName);
-  const packagePolicy = programWasmArtifactPolicy(relPath);
+  const direct = policyBoundDirectDepArtifact(relPath, depName);
+  const packagePolicy = direct ?? programWasmArtifactPolicy(relPath);
   if (packagePolicy === null) {
     throw new Error(
       `VFS Wasm artifact ${relPath} has no selected generated package policy`,
@@ -124,7 +147,7 @@ export function resolvePolicyBoundVfsWasmArtifact(
         `${forkInstrumentation}`,
     );
   }
-  return resolveVfsArtifact(relPath, depName);
+  return direct?.path ?? resolveVfsArtifact(relPath, depName);
 }
 
 export async function loadShellBaseFileSystem(

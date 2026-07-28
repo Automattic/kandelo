@@ -342,7 +342,12 @@ instrumentation may narrow that check only with an exact canonical VFS path in
 generated package projection. Missing, deferred, non-Wasm, duplicate, or
 noncanonical policy paths fail the build, and all other Wasm paths retain the
 normal whole-image validation. `skipWasmArtifactCheck` is not an alternative
-for a product-specific executable policy.
+for a product-specific executable policy. A direct dependency may authorize
+such a policy only from its exact immutable xtask program-cache generation,
+including the selected cache key and declared source-artifact path. Generic VFS
+artifact lookup continues to support relocated build inputs and local source
+overrides, but those paths do not carry enough identity to authorize a Wasm
+validation exception without a separate content-bound receipt.
 
 Gallery launch URLs retain both the logical demo id and the resolved VFS image
 URL. Each built-in VFS image has one trusted source and resource identity; the

@@ -299,7 +299,17 @@ export interface ProgramWasmArtifactPolicy {
   packageName: string;
   relPath: string;
   sourceArtifact: string;
+  cacheKey: string;
   forkInstrumentation: "auto" | "disabled";
+}
+
+export interface ResolvedDirectProgramPackageArtifact {
+  path: string;
+  packageName: string;
+  relPath: string;
+  sourceArtifact: string;
+  cacheKey: string;
+  forkInstrumentation: "auto" | "disabled" | null;
 }
 
 function manifestError(manifestPath: string, detail: string): Error {
@@ -1684,6 +1694,139 @@ export function programWasmArtifactPolicy(
       packageName: member.packageName,
       relPath: member.relPath,
       sourceArtifact: member.sourceArtifact,
+      cacheKey: member.cacheKey,
+      forkInstrumentation: member.forkInstrumentation,
+    };
+  });
+}
+
+/**
+ * Resolve one xtask direct program dependency from its immutable cache
+ * generation, binding the returned bytes to the selected package projection.
+ *
+ * The direct-dependency environment variable is a transport hint, not package
+ * authority. Its root must be the exact selected cache generation and every
+ * projected member must still occupy its declared source-artifact path.
+ */
+export function resolveDirectProgramPackageArtifact(
+  relPath: string,
+  expectedPackageName: string,
+  directDependencyRoot: string,
+): ResolvedDirectProgramPackageArtifact {
+  return withFreshProgramIndexes([relPath], () => {
+    const adjusted = applyDefaultArch(relPath);
+    const closure = discoverProgramPackageClosure(adjusted);
+    if (!closure) {
+      throw new Error(
+        `Direct dependency artifact ${JSON.stringify(adjusted)} is not owned ` +
+          "by a selected generated program package",
+      );
+    }
+    if (closure.packageName !== expectedPackageName) {
+      throw new Error(
+        `Direct dependency artifact ${JSON.stringify(adjusted)} is owned by ` +
+          `package ${JSON.stringify(closure.packageName)}, not ` +
+          JSON.stringify(expectedPackageName),
+      );
+    }
+    if (!isAbsolute(directDependencyRoot)) {
+      throw new Error(
+        `Direct dependency ${JSON.stringify(expectedPackageName)} root must ` +
+          `be absolute: ${JSON.stringify(directDependencyRoot)}`,
+      );
+    }
+
+    let canonicalRoot: string;
+    try {
+      const metadata = lstatSync(directDependencyRoot);
+      if (!metadata.isDirectory() || metadata.isSymbolicLink()) {
+        throw new Error("root is not a real directory");
+      }
+      canonicalRoot = realpathSync(directDependencyRoot);
+    } catch (error) {
+      throw new Error(
+        `Direct dependency ${JSON.stringify(expectedPackageName)} root is ` +
+          `invalid: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+      );
+    }
+
+    const generationFailure = mutableGenerationIdentityFailure(
+      {
+        label: "xtask direct dependency",
+        root: binaryProgramCacheRoot(),
+        identity: "program-cache",
+        allowRegularFileClosure: false,
+        candidatesFor: () => [],
+      },
+      canonicalRoot,
+      closure.members,
+    );
+    if (generationFailure) {
+      throw new Error(
+        `Direct dependency ${JSON.stringify(expectedPackageName)} does not ` +
+          `name its selected immutable package generation: ${generationFailure}`,
+      );
+    }
+
+    const pinnedMembers = new Map<string, string>();
+    for (const member of closure.members) {
+      const candidate = join(
+        canonicalRoot,
+        ...member.sourceArtifact.split("/"),
+      );
+      try {
+        const metadata = lstatSync(candidate);
+        if (!metadata.isFile() || metadata.isSymbolicLink()) {
+          throw new Error("member is not a regular non-symlink file");
+        }
+        const pinned = realpathSync(candidate);
+        if (
+          canonicalRootForArtifact(pinned, member.sourceArtifact) !==
+            canonicalRoot
+        ) {
+          throw new Error(
+            `member does not occupy declared source artifact ` +
+              JSON.stringify(member.sourceArtifact),
+          );
+        }
+        if (
+          hasBinaryArtifactPolicyFailures(
+            pinned,
+            member.relPath,
+            member.forkInstrumentation,
+          )
+        ) {
+          throw new Error("member is rejected by artifact policy");
+        }
+        pinnedMembers.set(member.relPath, pinned);
+      } catch (error) {
+        throw new Error(
+          `Direct dependency ${JSON.stringify(expectedPackageName)} member ` +
+            `${JSON.stringify(member.relPath)} is invalid: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+        );
+      }
+    }
+
+    const member = closure.members.find(
+      (candidate) => candidate.relPath === adjusted,
+    );
+    const path = pinnedMembers.get(adjusted);
+    if (!member || !path) {
+      throw new Error(
+        `Direct dependency package ${JSON.stringify(expectedPackageName)} ` +
+          `omits requested projected member ${JSON.stringify(adjusted)}`,
+      );
+    }
+    return {
+      path,
+      packageName: member.packageName,
+      relPath: member.relPath,
+      sourceArtifact: member.sourceArtifact,
+      cacheKey: member.cacheKey,
       forkInstrumentation: member.forkInstrumentation,
     };
   });
