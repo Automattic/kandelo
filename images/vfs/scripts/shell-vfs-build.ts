@@ -13,9 +13,13 @@
  * their base image and keep its lazy metadata intact.
  */
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync, existsSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
-import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import {
+  MemoryFileSystem,
+  type VfsImageMetadata,
+} from "../../../host/src/vfs/memory-fs";
 import {
   resolveBinary,
   tryResolveBinary,
@@ -43,6 +47,12 @@ import {
   SHELL_DERIVED_VFS_MIN_FREE_INODES,
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
 } from "../../../web-libs/kandelo-session/src/vfs-capacity";
+import {
+  KANDELO_DEMO_CONFIG_PATH,
+} from "../../../web-libs/kandelo-session/src/demo-config";
+
+const SHELL_DERIVED_CREATED_BY =
+  "images/vfs/scripts/saveShellDerivedVfsImage";
 
 function depEnvKey(name: string): string {
   return name.replaceAll("-", "_").toUpperCase();
@@ -96,7 +106,7 @@ export function saveShellDerivedVfsImage(
   outFile: string,
   options: Omit<
     SaveImageOptions,
-    "headroom" | "expectedMaxByteLength"
+    "headroom" | "expectedMaxByteLength" | "metadata"
   > & {
     /** Explicit escape hatch for a reviewed product profile above 768 MiB. */
     expectedMaxByteLength?: number;
@@ -104,6 +114,7 @@ export function saveShellDerivedVfsImage(
 ): Promise<Uint8Array> {
   const {
     expectedMaxByteLength = SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+    kernelAbi: requestedKernelAbi,
     ...saveOptions
   } = options;
   if (
@@ -119,14 +130,154 @@ export function saveShellDerivedVfsImage(
         "an explicitly reviewed, strictly larger profile",
     );
   }
+  const inheritedMetadata = fs.getImageMetadata();
+  if (inheritedMetadata === null) {
+    throw new Error(
+      `${outFile} shell-derived VFS omits inherited shell image metadata`,
+    );
+  }
+  const inheritedKernelAbi = inheritedMetadata.kernelAbi;
+  if (
+    typeof inheritedKernelAbi !== "number" ||
+    !Number.isSafeInteger(inheritedKernelAbi) ||
+    inheritedKernelAbi < 0
+  ) {
+    throw new Error(
+      `${outFile} shell-derived VFS omits its inherited kernel ABI`,
+    );
+  }
+  if (
+    requestedKernelAbi !== undefined &&
+    requestedKernelAbi !== inheritedKernelAbi
+  ) {
+    throw new Error(
+      `${outFile} cannot replace inherited kernel ABI ${inheritedKernelAbi} ` +
+        `with ABI ${requestedKernelAbi}`,
+    );
+  }
+  const metadata = shellDerivedImageMetadata(
+    fs,
+    inheritedMetadata,
+    inheritedKernelAbi,
+    expectedMaxByteLength,
+  );
   return saveImage(fs, outFile, {
     ...saveOptions,
+    kernelAbi: inheritedKernelAbi,
+    metadata,
     expectedMaxByteLength,
     headroom: {
       minimumFreeBytes: SHELL_DERIVED_VFS_MIN_FREE_BYTES,
       minimumFreeInodes: SHELL_DERIVED_VFS_MIN_FREE_INODES,
     },
   });
+}
+
+function shellDerivedImageMetadata(
+  fs: MemoryFileSystem,
+  inherited: VfsImageMetadata,
+  kernelAbi: number,
+  maxByteLength: number,
+): VfsImageMetadata {
+  const baseImage = requiredRecord(
+    inherited.baseImage,
+    "direct shell base binding",
+  );
+  if (
+    typeof baseImage.sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/.test(baseImage.sha256) ||
+    typeof baseImage.bytes !== "number" ||
+    !Number.isSafeInteger(baseImage.bytes) ||
+    baseImage.bytes <= 0 ||
+    baseImage.kernelAbi !== kernelAbi
+  ) {
+    throw new Error("shell-derived VFS has an invalid direct shell base binding");
+  }
+  if (!Array.isArray(inherited.packageDeferredTrees)) {
+    throw new Error("shell-derived VFS omits inherited package tree bindings");
+  }
+  const homebrewBootstrap = requiredRecord(
+    inherited.homebrewBootstrap,
+    "Homebrew bootstrap ownership",
+  );
+  const homebrew = requiredRecord(
+    inherited.homebrew,
+    "Homebrew composition metadata",
+  );
+  const demoConfig = readRequiredVfsBytes(fs, KANDELO_DEMO_CONFIG_PATH);
+
+  // WHY: only composition-owned declarations survive derivation. Copying
+  // arbitrary top-level metadata would mislabel the shell composer's direct
+  // base, signatures, or attestations as claims about this new product.
+  return {
+    version: 1,
+    kernelAbi,
+    createdBy: SHELL_DERIVED_CREATED_BY,
+    capacity: { maxByteLength },
+    baseImage,
+    packageDeferredTrees: inherited.packageDeferredTrees,
+    homebrewBootstrap,
+    homebrew: {
+      ...homebrew,
+      // Every derived builder replaces the shell gallery profile, so bind
+      // the bytes that are actually present instead of retaining its digest.
+      demoConfig: {
+        path: KANDELO_DEMO_CONFIG_PATH,
+        sha256: sha256Hex(demoConfig),
+        bytes: demoConfig.byteLength,
+      },
+    },
+  };
+}
+
+function requiredRecord(
+  value: unknown,
+  label: string,
+): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`shell-derived VFS omits valid ${label}`);
+  }
+  return value as Record<string, unknown>;
+}
+
+function readRequiredVfsBytes(
+  fs: MemoryFileSystem,
+  path: string,
+): Uint8Array {
+  const size = fs.stat(path).size;
+  if (!Number.isSafeInteger(size) || size < 0) {
+    throw new Error(`shell-derived VFS has an invalid ${path} size`);
+  }
+  const bytes = new Uint8Array(size);
+  const fd = fs.open(path, 0, 0);
+  try {
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const count = fs.read(
+        fd,
+        bytes.subarray(offset),
+        null,
+        bytes.byteLength - offset,
+      );
+      if (
+        !Number.isSafeInteger(count) ||
+        count <= 0 ||
+        count > bytes.byteLength - offset
+      ) {
+        throw new Error(
+          `shell-derived VFS could not read complete ${path} bytes`,
+        );
+      }
+      offset += count;
+    }
+  } finally {
+    fs.close(fd);
+  }
+  return bytes;
+}
+
+function sha256Hex(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 /**
@@ -150,6 +301,26 @@ export async function loadShellBaseFileSystemFromImage(
   // WHY: rebasing copies lazy metadata into a new authority boundary, so
   // authenticate imported atomic seals before deciding whether to copy it.
   await fs.verifyImportedLazyAtomicGroupSeals();
+  const metadata = fs.getImageMetadata();
+  if (
+    metadata === null ||
+    typeof metadata.kernelAbi !== "number" ||
+    !Number.isSafeInteger(metadata.kernelAbi) ||
+    metadata.kernelAbi < 0
+  ) {
+    throw new Error("shell base image omits its required kernel ABI");
+  }
+  // WHY: `baseImage` names the direct input to this product, not an ancestor
+  // used by the shell composer. Rebind it before a rebase copies metadata so
+  // Node and service outputs identify the exact shell artifact they consumed.
+  fs.setImageMetadata({
+    ...metadata,
+    baseImage: {
+      sha256: sha256Hex(shellImage),
+      bytes: shellImage.byteLength,
+      kernelAbi: metadata.kernelAbi,
+    },
+  });
   const stats = fs.statfs("/");
   const effectiveMaxByteLength = stats.blocks * stats.bsize;
   if (effectiveMaxByteLength === maxByteLength) return fs;

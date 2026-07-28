@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { zstdCompressSync } from "node:zlib";
 import {
   mkdtempSync,
@@ -16,7 +17,11 @@ import {
   saveShellDerivedVfsImage,
 } from "../../images/vfs/scripts/shell-vfs-build";
 import { restoreTrustedShellRootfs } from "../../images/vfs/scripts/shell-rootfs-restore";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import {
+  MemoryFileSystem,
+  type VfsImageMetadata,
+} from "../src/vfs/memory-fs";
+import { ABI_VERSION } from "../src/generated/abi";
 import type { ZipEntry } from "../src/vfs/zip";
 import {
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
@@ -31,6 +36,8 @@ const O_RDONLY = 0x0000;
 const O_WRONLY = 0x0001;
 const O_CREAT = 0x0040;
 const O_TRUNC = 0x0200;
+const DEMO_CONFIG_PATH = "/etc/kandelo/demo.json";
+const SOURCE_DEMO_CONFIG = '{"version":1,"profiles":{"shell":{}}}\n';
 
 function writeFile(fs: MemoryFileSystem, path: string, text: string): void {
   const fd = fs.open(path, O_WRONLY | O_CREAT | O_TRUNC, 0o644);
@@ -64,6 +71,63 @@ function lazyArchiveEntry(): ZipEntry {
   };
 }
 
+function shellImageMetadata(maxByteLength: number): VfsImageMetadata {
+  return {
+    version: 1,
+    kernelAbi: ABI_VERSION,
+    createdBy: "shell-vfs-build.test/source",
+    capacity: { maxByteLength },
+    baseImage: {
+      sha256: "b".repeat(64),
+      bytes: 123_456,
+      kernelAbi: ABI_VERSION,
+    },
+    packageDeferredTrees: [
+      {
+        id: "homebrew-bootstrap/source-tree",
+        state: "deferred",
+        package: {
+          name: "homebrew-bootstrap",
+          output: "homebrew-bootstrap.zip",
+        },
+      },
+    ],
+    homebrewBootstrap: {
+      entrypoint: "/usr/bin/brew",
+      prefix: "/home/linuxbrew/.linuxbrew",
+    },
+    homebrew: {
+      tapRepository: "Kandelo-dev/homebrew-tap-core",
+      tapName: "Kandelo-dev/tap-core",
+      tapCommit: "a".repeat(40),
+      demoConfig: {
+        path: DEMO_CONFIG_PATH,
+        sha256: sha256Hex(SOURCE_DEMO_CONFIG),
+        bytes: new TextEncoder().encode(SOURCE_DEMO_CONFIG).byteLength,
+      },
+    },
+    sourceAttestation: { mustNotBeRelabeledAsDerived: true },
+  };
+}
+
+function sha256Hex(value: string | Uint8Array): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function loadedShellImageMetadata(
+  sourceMaxByteLength: number,
+  image: Uint8Array,
+): VfsImageMetadata {
+  return {
+    ...shellImageMetadata(sourceMaxByteLength),
+    baseImage: {
+      sha256: sha256Hex(image),
+      bytes: image.byteLength,
+      kernelAbi: ABI_VERSION,
+    },
+  };
+}
+
 async function sourceImage(
   byteLength: number,
   maxByteLength: number,
@@ -72,6 +136,9 @@ async function sourceImage(
   const buffer = new SharedArrayBuffer(byteLength, { maxByteLength });
   const fs = MemoryFileSystem.create(buffer, maxByteLength);
   writeFile(fs, "/ordinary.txt", "preserved contents");
+  fs.mkdir("/etc", 0o755);
+  fs.mkdir("/etc/kandelo", 0o755);
+  writeFile(fs, DEMO_CONFIG_PATH, SOURCE_DEMO_CONFIG);
   fs.registerLazyFile(
     "/bin/lazy-tool",
     "https://example.invalid/lazy-tool.wasm",
@@ -91,7 +158,7 @@ async function sourceImage(
     });
   }
   return fs.saveImage({
-    metadata: { version: 1, createdBy: "shell-vfs-build.test" },
+    metadata: shellImageMetadata(maxByteLength),
   });
 }
 
@@ -221,6 +288,9 @@ describe("shell VFS base composition", () => {
     const stats = rebased.statfs("/");
     expect(stats.blocks * stats.bsize).toBe(8 * MiB);
     expectContentsPreserved(rebased);
+    expect(rebased.getImageMetadata()).toEqual(
+      loadedShellImageMetadata(32 * MiB, compressed),
+    );
   });
 
   it("rebases upward to the downstream image's exact capacity", async () => {
@@ -232,6 +302,9 @@ describe("shell VFS base composition", () => {
     const stats = rebased.statfs("/");
     expect(stats.blocks * stats.bsize).toBe(32 * MiB);
     expectContentsPreserved(rebased);
+    expect(rebased.getImageMetadata()).toEqual(
+      loadedShellImageMetadata(8 * MiB, image),
+    );
   });
 
   it("preserves the source filesystem when capacities already match", async () => {
@@ -242,6 +315,9 @@ describe("shell VFS base composition", () => {
     expect(restored.sharedBuffer.byteLength).toBe(4 * MiB);
     expect(restored.sharedBuffer.maxByteLength).toBe(8 * MiB);
     expectContentsPreserved(restored);
+    expect(restored.getImageMetadata()).toEqual(
+      loadedShellImageMetadata(8 * MiB, image),
+    );
   });
 
   it.each([
@@ -273,6 +349,10 @@ describe("shell VFS base composition", () => {
       new SharedArrayBuffer(16 * MiB, { maxByteLength: largerProfile }),
       largerProfile,
     );
+    fs.setImageMetadata(shellImageMetadata(largerProfile));
+    fs.mkdir("/etc", 0o755);
+    fs.mkdir("/etc/kandelo", 0o755);
+    writeFile(fs, DEMO_CONFIG_PATH, SOURCE_DEMO_CONFIG);
 
     await expect(
       saveShellDerivedVfsImage(fs, "/tmp/not-written.vfs.zst"),
@@ -303,6 +383,19 @@ describe("shell VFS base composition", () => {
     );
   });
 
+  it("rejects a derived product that has lost the shell metadata it owns", () => {
+    const fs = MemoryFileSystem.create(
+      new SharedArrayBuffer(16 * MiB, {
+        maxByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+      }),
+      SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+    );
+
+    expect(() =>
+      saveShellDerivedVfsImage(fs, "/tmp/not-written.vfs.zst")
+    ).toThrow(/omits inherited shell image metadata/);
+  });
+
   const capacityProfiles: Array<[string, number, number | undefined]> = [
     ["the standard profile", SHELL_DERIVED_VFS_PROFILE_MAX_BYTES, undefined],
     ["an explicit larger product profile", 1024 * MiB, 1024 * MiB],
@@ -317,6 +410,13 @@ describe("shell VFS base composition", () => {
       new SharedArrayBuffer(16 * MiB, { maxByteLength: profileMaxBytes }),
       profileMaxBytes,
     );
+    const inheritedMetadata = shellImageMetadata(512 * MiB);
+    fs.setImageMetadata(inheritedMetadata);
+    fs.mkdir("/etc", 0o755);
+    fs.mkdir("/etc/kandelo", 0o755);
+    const derivedDemoConfig =
+      `{"version":1,"profiles":{"${_label}":{}}}\n`;
+    writeFile(fs, DEMO_CONFIG_PATH, derivedDemoConfig);
     writeFile(fs, "/product.txt", "complete product");
     const dir = mkdtempSync(join(tmpdir(), "shell-derived-capacity-"));
     try {
@@ -329,6 +429,23 @@ describe("shell VFS base composition", () => {
       expect(MemoryFileSystem.readImageCapacity(image).maxByteLength).toBe(
         profileMaxBytes,
       );
+      expect(MemoryFileSystem.readImageMetadata(image)).toEqual({
+        version: 1,
+        kernelAbi: ABI_VERSION,
+        createdBy: "images/vfs/scripts/saveShellDerivedVfsImage",
+        capacity: { maxByteLength: profileMaxBytes },
+        baseImage: inheritedMetadata.baseImage,
+        packageDeferredTrees: inheritedMetadata.packageDeferredTrees,
+        homebrewBootstrap: inheritedMetadata.homebrewBootstrap,
+        homebrew: {
+          ...(inheritedMetadata.homebrew as Record<string, unknown>),
+          demoConfig: {
+            path: DEMO_CONFIG_PATH,
+            sha256: sha256Hex(derivedDemoConfig),
+            bytes: new TextEncoder().encode(derivedDemoConfig).byteLength,
+          },
+        },
+      });
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
