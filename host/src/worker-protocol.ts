@@ -1,5 +1,15 @@
 // --- Host → Worker messages ---
 
+/**
+ * Host-internal channel marker for retiring an exec-discarded process Worker
+ * without issuing SYS_EXIT for the persistent process.
+ *
+ * WHY: both the kernel worker that publishes the marker and worker-main that
+ * consumes it must share one token. A duplicated literal would fail as a
+ * silent timeout and lose the exact ownership fence for that old generation.
+ */
+export const EXEC_RETIRE_SIGNAL_CODE = 0x4b455852; // "KEXR"
+
 export type HostToWorkerMessage =
   | CentralizedWorkerInitMessage
   | CentralizedThreadInitMessage
@@ -92,6 +102,8 @@ export type WorkerToHostMessage =
   | WorkerReadyMessage
   | WorkerExitMessage
   | ThreadExitMessage
+  | WorkerMemoryQuiescentMessage
+  | WorkerExecRetiredMessage
   | WorkerErrorMessage
   | ExecRequestMessage
   | ExecCompleteMessage
@@ -113,6 +125,23 @@ export interface ThreadExitMessage {
   type: "thread_exit";
   pid: number;
   tid: number;
+}
+
+/**
+ * Process-worker ownership fence emitted only after worker-main has returned
+ * and can no longer access its Shared WebAssembly.Memory.
+ */
+export interface WorkerMemoryQuiescentMessage {
+  type: "memory_quiescent";
+  pid: number;
+  tid?: number;
+}
+
+/** Internal acknowledgement that an exec-discarded process Worker unwound. */
+export interface WorkerExecRetiredMessage {
+  type: "exec_retired";
+  pid: number;
+  tid?: number;
 }
 
 export interface WorkerErrorMessage {

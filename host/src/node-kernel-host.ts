@@ -32,6 +32,7 @@ import {
   snapshotClosedLazyAssets,
   type ClosedLazyAsset,
 } from "./vfs/closed-lazy-assets";
+import { DEFAULT_MAX_PAGES, WASM_PAGE_SIZE } from "./constants";
 
 export type { HttpRequest, HttpResponse };
 
@@ -53,6 +54,12 @@ export interface NodeKernelHostOptions {
   /** Maximum wasm memory pages per process (default: 16384 = 1GB). Initial
    *  memory is smaller and grows on demand up to this cap. */
   maxPages?: number;
+  /**
+   * Hard session budget for simultaneously live process address spaces.
+   * Retired generations are never reused and pass through a separate short,
+   * bounded admission window before new churn proceeds.
+   */
+  maxProcessMemoryBytes?: number;
   /** Host default pthread slots when a wasm binary declares -1 (default: 16). */
   defaultThreadSlots?: number;
   /** Size of the data buffer for syscall data transfer (default: 65536).
@@ -241,12 +248,18 @@ export class NodeKernelHost {
         this.worker.once("error", errorHandler);
         this.worker.once("exit", exitHandler);
 
+        const maxWorkers = this.options.maxWorkers ?? 4;
+        const maxPages = this.options.maxPages ?? DEFAULT_MAX_PAGES;
+        const maxProcessMemoryBytes =
+          this.options.maxProcessMemoryBytes
+          ?? maxWorkers * maxPages * WASM_PAGE_SIZE;
         const initMsg: MainToKernelMessage = {
           type: "init",
           kernelWasmBytes: wasmBytes,
           config: {
-            maxWorkers: this.options.maxWorkers ?? 4,
-            maxPages: this.options.maxPages,
+            maxWorkers,
+            maxPages,
+            maxProcessMemoryBytes,
             defaultThreadSlots: this.options.defaultThreadSlots,
             dataBufferSize: this.options.dataBufferSize ?? 65536,
             useSharedMemory: true,

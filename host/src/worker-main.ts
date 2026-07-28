@@ -5,10 +5,11 @@
  * All syscalls go through a shared-memory channel to the
  * CentralizedKernelWorker on the main thread.
  */
-import type {
-  CentralizedWorkerInitMessage,
-  CentralizedThreadInitMessage,
-  WorkerToHostMessage,
+import {
+  EXEC_RETIRE_SIGNAL_CODE,
+  type CentralizedWorkerInitMessage,
+  type CentralizedThreadInitMessage,
+  type WorkerToHostMessage,
 } from "./worker-protocol";
 import {
   createCppExceptionTag,
@@ -32,6 +33,8 @@ import {
   CH_DATA,
   CH_ERRNO,
   CH_RETURN,
+  CH_SIG_BASE,
+  CH_SIG_SIGNUM,
   CH_STATUS,
   CH_SYSCALL,
   CH_TOTAL_SIZE,
@@ -73,6 +76,9 @@ function alignUp(value: number, align: number): number {
 const SYS_MMAP_NR = ABI_SYSCALLS.Mmap;
 const PROT_READ_WRITE = 3;
 const MAP_PRIVATE_ANONYMOUS = 0x22;
+const CH_SIG_SI_CODE = CH_SIG_BASE + 24;
+
+class ExecRetirement extends Error {}
 
 function continuationMmap(
   memory: WebAssembly.Memory,
@@ -202,6 +208,18 @@ function buildKernelImports(
     kernel_exit: (status: number): void => {
       const view = new DataView(memory.buffer);
       const base = channelOffset;
+      if (
+        view.getUint32(base + CH_SIG_SIGNUM, true) === 9
+        && view.getUint32(base + CH_SIG_SI_CODE, true)
+          === EXEC_RETIRE_SIGNAL_CODE
+      ) {
+        // Exec keeps the kernel Process alive. The old browser Worker must
+        // unwind without publishing SYS_EXIT, then its wrapper emits the
+        // exact-generation memory_quiescent ownership fence.
+        view.setUint32(base + CH_SIG_SIGNUM, 0, true);
+        view.setUint32(base + CH_SIG_SI_CODE, 0, true);
+        throw new ExecRetirement();
+      }
       view.setInt32(base + CH_SYSCALL, ABI_SYSCALLS.Exit, true);
       view.setBigInt64(base + CH_ARGS, BigInt(status), true);
       const i32 = new Int32Array(memory.buffer);
@@ -1979,6 +1997,13 @@ export async function centralizedWorkerMain(
       port.postMessage({ type: "exit", pid, status: exitCode } satisfies WorkerToHostMessage);
     }
   } catch (err) {
+    if (err instanceof ExecRetirement) {
+      port.postMessage({
+        type: "exec_retired",
+        pid: initData.pid,
+      } satisfies WorkerToHostMessage);
+      return;
+    }
     let errMsg: string;
     if (err instanceof Error) {
       errMsg = `${err.message}\n${err.stack}`;
@@ -2969,6 +2994,14 @@ export async function centralizedThreadWorkerMain(
     } satisfies WorkerToHostMessage);
   } catch (err) {
     releasePthreadForkLock();
+    if (err instanceof ExecRetirement) {
+      port.postMessage({
+        type: "exec_retired",
+        pid,
+        tid,
+      } satisfies WorkerToHostMessage);
+      return;
+    }
     const message = err instanceof Error
       ? `${err.message}\n${err.stack ?? ""}`
       : String(err);

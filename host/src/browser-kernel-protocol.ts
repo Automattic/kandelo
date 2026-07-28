@@ -43,6 +43,8 @@ export interface InitMessage {
   config: {
     maxWorkers: number;
     maxMemoryPages: number;
+    /** Hard session budget for simultaneously live address spaces. */
+    maxProcessMemoryBytes: number;
     /** Host default pthread slots for process-wasm declarations of -1. */
     defaultThreadSlots?: number;
     env: string[];
@@ -349,6 +351,15 @@ export interface KmsAttachStatsMessage {
   stats: SharedArrayBuffer;
 }
 
+/**
+ * Confirms that the browser main thread has dropped every framebuffer alias
+ * for one exact process execution generation.
+ */
+export interface FbReleaseGenerationAckMessage {
+  type: "fb_release_generation_ack";
+  requestId: number;
+}
+
 export type MainToKernelMessage =
   | InitMessage
   | SpawnMessage
@@ -385,7 +396,8 @@ export type MainToKernelMessage =
   | DrainSyscallTraceMessage
   | HttpRequestMessage
   | KmsAttachCanvasMessage
-  | KmsAttachStatsMessage;
+  | KmsAttachStatsMessage
+  | FbReleaseGenerationAckMessage;
 
 // ── Kernel Worker → Main Thread ──
 
@@ -408,6 +420,8 @@ export interface ResponseMessage {
 export interface ExitMessage {
   type: "exit";
   pid: number;
+  /** Host-only execution identity. PIDs persist across exec. */
+  generation: number;
   status: number;
 }
 
@@ -448,6 +462,8 @@ export interface ListenTcpMessage {
 export interface FbBindMessage {
   type: "fb_bind";
   pid: number;
+  /** Host-only execution identity. PIDs persist across exec. */
+  generation: number;
   addr: number;
   len: number;
   w: number;
@@ -460,6 +476,8 @@ export interface FbBindMessage {
 export interface FbUnbindMessage {
   type: "fb_unbind";
   pid: number;
+  /** The exact execution generation whose binding was removed. */
+  generation: number;
 }
 
 /**
@@ -470,6 +488,8 @@ export interface FbUnbindMessage {
 export interface FbRebindMemoryMessage {
   type: "fb_rebind_memory";
   pid: number;
+  /** The exact execution generation whose Memory grew. */
+  generation: number;
   memory: WebAssembly.Memory;
 }
 
@@ -483,8 +503,23 @@ export interface FbRebindMemoryMessage {
 export interface FbWriteMessage {
   type: "fb_write";
   pid: number;
+  /** The exact execution generation that produced these pixels. */
+  generation: number;
   offset: number;
   bytes: Uint8Array;
+}
+
+/**
+ * A process-generation teardown fence. The main thread first drops its
+ * structured-clone Memory wrapper and cached framebuffer views, then replies
+ * with FbReleaseGenerationAckMessage. The kernel worker does not classify a
+ * framebuffer-exposed generation as exactly retired before this round trip.
+ */
+export interface FbReleaseGenerationMessage {
+  type: "fb_release_generation";
+  requestId: number;
+  pid: number;
+  generation: number;
 }
 
 /**
@@ -526,6 +561,7 @@ export type KernelToMainMessage =
   | FbUnbindMessage
   | FbRebindMemoryMessage
   | FbWriteMessage
+  | FbReleaseGenerationMessage
   | ProcEventMessage
   | HttpBridgePendingMessage
   | LazyDownloadMessage;

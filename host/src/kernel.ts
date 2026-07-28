@@ -237,6 +237,14 @@ export interface KernelCallbacks {
    */
   getProcessMemory?: (pid: number) => WebAssembly.Memory | undefined;
   /**
+   * Observe a persistent kernel-realm wrapper of process Memory for weak
+   * retirement telemetry. This callback must not retain either argument.
+   */
+  onProcessMemoryTarget?: (
+    memory: WebAssembly.Memory,
+    target: object,
+  ) => void;
+  /**
    * Resolve the KMS scanout canvas for `crtcId`, if one is registered.
    * Used by `host_gl_create_context` to auto-attach the canvas to the
    * DRM-master pid's GL binding so user programs that drive the modeset
@@ -327,6 +335,21 @@ export class WasmPosixKernel {
    */
   mergeCallbacks(callbacks: Partial<KernelCallbacks>): void {
     this.callbacks = { ...this.callbacks, ...callbacks };
+  }
+
+  /**
+   * Release every device-side alias owned by one process generation.
+   *
+   * Normal guest close/unmap paths remain authoritative for device semantics;
+   * this idempotent host backstop covers exec, traps, and forced termination
+   * where those guest hooks may never run.
+   */
+  releaseProcessViews(pid: number): void {
+    this.gl_submit_queue.removePid(pid);
+    this.gl.unbind(pid);
+    this.framebuffers.unbind(pid);
+    this.bos.releaseProcess(pid);
+    if (this.kms.isMasterPid(pid)) this.kms.dropMaster();
   }
 
   /**
@@ -986,6 +1009,15 @@ export class WasmPosixKernel {
                 b.cmdbufAddr,
                 b.cmdbufLen,
               );
+              this.callbacks.onProcessMemoryTarget?.(
+                memory,
+                memory.buffer,
+              );
+              this.callbacks.onProcessMemoryTarget?.(
+                memory,
+                b.cmdbufView,
+              );
+              this.callbacks.onProcessMemoryTarget?.(memory, b);
             } catch {
               return -5; // EIO
             }

@@ -89,6 +89,27 @@ export class SubmitQueue {
     if (i >= 0) lane.splice(i, 1);
   }
 
+  /**
+   * Purge every queued frame for an exiting process.
+   *
+   * The current drain is synchronous, but this backstop keeps a thrown decoder
+   * or future deferred drain from retaining a `SubmitFrame.memorySab` after
+   * the process generation is gone.
+   */
+  removePid(pid: number): void {
+    for (const [key, entry] of Array.from(this.byKey)) {
+      if (entry.binding.pid !== pid) continue;
+      entry.frames.length = 0;
+      this.byKey.delete(key);
+      const compositorIndex = this.compositor.indexOf(entry);
+      if (compositorIndex >= 0) {
+        this.compositor.splice(compositorIndex, 1);
+      }
+      const clientIndex = this.clients.indexOf(entry);
+      if (clientIndex >= 0) this.clients.splice(clientIndex, 1);
+    }
+  }
+
   isEmpty(): boolean {
     return this.byKey.size === 0;
   }
