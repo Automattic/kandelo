@@ -150,11 +150,10 @@ The authoritative advertised `ARG_MAX` and `PATH_MAX` live in
 `crates/shared/src/lib.rs::spawn_contract`; together they generate the C and
 TypeScript consumers. See
 `docs/plans/2026-07-25-kernel-scratch-transfer-audit.md` for the ownership
-audit and the focused rehearsal Node.js and Chromium measurements, including
-their baseline-harness provenance and final-base limitations.
-Those focused results establish the retained-capacity and kernel-memory effect
-for their deterministic workload, but do not establish a speedup or broad
-performance no-regression claim.
+audit and the exact measurement plan. That audit does not currently record
+uncontended exact-head Node.js or Chromium retained-memory results, so it
+supports no retained-capacity, speedup, or broad performance no-regression
+claim.
 
 ## Section 2 — Kernel side
 

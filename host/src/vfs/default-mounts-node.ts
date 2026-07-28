@@ -195,10 +195,8 @@ function materializeSessionSeedTrees(
 ): void {
   if (seeds.length === 0) return;
   const sessionRoot = realpathSync(sessionDir);
-  const scratchRoots = spec
-    .filter((mount) => mount.source === "scratch")
-    .map((mount) => mount.path)
-    .sort((left, right) => right.length - left.length);
+  const routingMounts = [...spec]
+    .sort((left, right) => right.path.length - left.path.length);
 
   validateSpec(seeds.map((seed) => ({
     path: seed.destinationPath,
@@ -218,13 +216,30 @@ function materializeSessionSeedTrees(
     requireCanonicalGuestPath(mountPoint, "shadowing mount point");
   }
   const prepared = seeds.map((seed, index) => {
-    const scratchRoot = scratchRoots.find(
-      (root) => guestPathStrictlyContains(root, seed.destinationPath),
+    const owner = routingMounts.find(
+      (mount) => guestPathContains(mount.path, seed.destinationPath),
     );
-    if (scratchRoot === undefined) {
+    if (
+      owner === undefined
+      || owner.source !== "scratch"
+      || !guestPathStrictlyContains(owner.path, seed.destinationPath)
+    ) {
       throw new Error(
-        `session seed destination must be below a scratch mount: ${seed.destinationPath}`,
+        `session seed destination must be below a scratch mount and routed through a scratch mount: ${seed.destinationPath}`,
       );
+    }
+    // WHY: the VFS routes by longest mount prefix. Even when the destination
+    // itself belongs to `owner`, a nested declared mount would hide part of
+    // the copied tree and make publication differ from the owned bytes.
+    for (const mount of spec) {
+      if (
+        mount !== owner
+        && guestPathContains(seed.destinationPath, mount.path)
+      ) {
+        throw new Error(
+          `session seed destination overlaps another declared mount: ${seed.destinationPath} and ${mount.path}`,
+        );
+      }
     }
     for (const mountPoint of shadowingMountPoints) {
       if (
