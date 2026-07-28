@@ -1544,8 +1544,10 @@ describe("kernel scratch static contract", () => {
     }
     expect(formatAuditFailures(result)).toEqual([]);
     // This intentionally builds one TypeScript program for every repository
-    // runtime source; keep CI headroom above the focused local 25–35 second run.
-  }, 60_000);
+    // runtime source. Focused local runs take roughly 35 seconds, while the
+    // exact-head parallel CI run exceeded 60 seconds. Keep a finite two-minute
+    // watchdog without weakening the default-deny audit's scope or assertions.
+  }, 120_000);
 
   it("keeps variable-transfer parsing private and allocation-region-bearing", () => {
     const prefixOnlyFixture = kernelExportNamesFromSnapshot(
