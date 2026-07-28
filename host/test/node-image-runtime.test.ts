@@ -1,139 +1,75 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import {
-  bindImageOwnedNodeRuntime,
-} from "../../apps/browser-demos/lib/init/node-image-runtime";
 import { bindImageOwnedRuntimeUrls } from "../../apps/browser-demos/lib/init/image-owned-runtime-urls";
-import { assertShellLazyUrlsResolved } from "../../apps/browser-demos/lib/init/shell-lazy-url-contract";
-import {
-  NODE_LAZY_BINARY_SPEC,
-  shellLazyPlaceholderUrl,
-} from "../../images/vfs/lib/init/shell-binaries";
-import {
-  ensureDirRecursive,
-  writeVfsBinary,
-} from "../src/vfs/image-helpers";
+import { NODE_BINARY_SPEC } from "../../images/vfs/lib/init/shell-binaries";
+import { ensureDirRecursive, writeVfsBinary } from "../src/vfs/image-helpers";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 
-const NODE_ASSET_URL = "/assets/node-current.wasm";
-const BASH_PATH =
-  "/home/linuxbrew/.linuxbrew/Cellar/bash/5.2.37/bin/bash";
-const SPIDERMONKEY_NODE_ALIAS = "/usr/bin/spidermonkey-node";
+const NODE_BYTES = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]);
+const BASH_PATH = "/home/linuxbrew/.linuxbrew/Cellar/bash/5.2.37/bin/bash";
 
 describe("image-owned Node demo runtime", () => {
-  it("binds only Node transport metadata and preserves every VFS identity", async () => {
+  it("preserves embedded Node bytes and aliases while binding shell transports", async () => {
     const fs = runtimeImage();
-    const bashBytes = readVfsFile(fs, BASH_PATH);
-    const bashIdentity = fileIdentity(fs, BASH_PATH);
-    const bashAliasIdentity = fileIdentity(fs, "/bin/bash", true);
-    const deferredTrees = structuredClone(fs.exportLazyArchiveEntries());
-    const nodeIdentity = fs.getLazyEntry(NODE_LAZY_BINARY_SPEC.vfsPath)!;
-
-    bindImageOwnedNodeRuntime(fs, NODE_ASSET_URL);
-
-    expect(readVfsFile(fs, BASH_PATH)).toEqual(bashBytes);
-    expect(fileIdentity(fs, BASH_PATH)).toEqual(bashIdentity);
-    expect(fileIdentity(fs, "/bin/bash", true)).toEqual(bashAliasIdentity);
-    expect(fs.exportLazyArchiveEntries()).toEqual(deferredTrees);
-    expect(fs.isPathDeferred("/bin/dash")).toBe(true);
-    expect(fs.isPathDeferred("/bin/coreutils")).toBe(true);
-    expect(fs.getLazyEntry(NODE_LAZY_BINARY_SPEC.vfsPath)).toEqual({
-      ...nodeIdentity,
-      url: NODE_ASSET_URL,
-    });
-    expect(fs.isPathDeferred(NODE_LAZY_BINARY_SPEC.vfsPath)).toBe(true);
-    expect(fs.readlink(SPIDERMONKEY_NODE_ALIAS)).toBe(
-      NODE_LAZY_BINARY_SPEC.vfsPath,
+    const nodeIdentity = fileIdentity(fs, NODE_BINARY_SPEC.vfsPath);
+    const aliasIdentities = new Map(
+      NODE_BINARY_SPEC.symlinks.map((path) => [
+        path,
+        fileIdentity(fs, path, true),
+      ]),
     );
+    const deferredTrees = structuredClone(fs.exportLazyArchiveEntries());
+
+    bindImageOwnedRuntimeUrls(fs);
+
+    expect(readVfsFile(fs, NODE_BINARY_SPEC.vfsPath)).toEqual(NODE_BYTES);
+    expect(fileIdentity(fs, NODE_BINARY_SPEC.vfsPath)).toEqual(nodeIdentity);
+    expect(fs.isPathDeferred(NODE_BINARY_SPEC.vfsPath)).toBe(false);
+    expect(fs.getLazyEntry(NODE_BINARY_SPEC.vfsPath)).toBeNull();
+    expect(fs.exportLazyArchiveEntries()).toEqual(deferredTrees);
+    for (const path of NODE_BINARY_SPEC.symlinks) {
+      expect(fs.readlink(path)).toBe(NODE_BINARY_SPEC.vfsPath);
+      expect(fileIdentity(fs, path, true)).toEqual(aliasIdentities.get(path));
+    }
 
     const restored = MemoryFileSystem.fromImage(await fs.saveImage());
-    expect(readVfsFile(restored, BASH_PATH)).toEqual(bashBytes);
-    expect(restored.exportLazyArchiveEntries()).toEqual(deferredTrees);
-    expect(restored.getLazyEntry(NODE_LAZY_BINARY_SPEC.vfsPath)?.url).toBe(
-      NODE_ASSET_URL,
-    );
-    expect(restored.isPathDeferred(NODE_LAZY_BINARY_SPEC.vfsPath)).toBe(true);
-    expect(restored.readlink(SPIDERMONKEY_NODE_ALIAS)).toBe(
-      NODE_LAZY_BINARY_SPEC.vfsPath,
-    );
+    expect(readVfsFile(restored, NODE_BINARY_SPEC.vfsPath)).toEqual(NODE_BYTES);
+    expect(restored.isPathDeferred(NODE_BINARY_SPEC.vfsPath)).toBe(false);
+    for (const path of NODE_BINARY_SPEC.symlinks) {
+      expect(restored.readlink(path)).toBe(NODE_BINARY_SPEC.vfsPath);
+    }
   });
 
-  it("is idempotent when a current image already owns the compatibility alias", () => {
-    const fs = runtimeImage({ compatibilityAlias: true });
-    const aliasIdentity = fileIdentity(fs, SPIDERMONKEY_NODE_ALIAS, true);
-
-    bindImageOwnedNodeRuntime(fs, NODE_ASSET_URL);
-    bindImageOwnedNodeRuntime(fs, NODE_ASSET_URL);
-
-    expect(fileIdentity(fs, SPIDERMONKEY_NODE_ALIAS, true)).toEqual(
-      aliasIdentity,
+  it("does not keep a separate browser Node asset transport", () => {
+    const root = resolve(import.meta.dirname, "../..");
+    const liveSetup = readFileSync(
+      resolve(
+        root,
+        "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts",
+      ),
+      "utf8",
     );
-    expect(fs.getLazyEntry(NODE_LAZY_BINARY_SPEC.vfsPath)?.url).toBe(
-      NODE_ASSET_URL,
+    const runtimeBinder = readFileSync(
+      resolve(root, "apps/browser-demos/lib/init/image-owned-runtime-urls.ts"),
+      "utf8",
     );
-  });
-
-  it("binds profile-owned URLs before the final unresolved-URL check", () => {
-    const fs = runtimeImage();
-    expect(() => assertShellLazyUrlsResolved(fs)).toThrow(
-      /\/usr\/bin\/node -> kandelo-lazy:programs\/node\.wasm/,
+    const builder = readFileSync(
+      resolve(root, "images/vfs/scripts/build-node-vfs-image.ts"),
+      "utf8",
     );
 
-    bindImageOwnedRuntimeUrls(fs, { nodeAssetUrl: NODE_ASSET_URL });
-
-    expect(() => assertShellLazyUrlsResolved(fs)).not.toThrow();
-    expect(fs.getLazyEntry(NODE_LAZY_BINARY_SPEC.vfsPath)?.url).toBe(
-      NODE_ASSET_URL,
-    );
-  });
-
-  it("rejects missing or eager Node bytes instead of staging over the image", () => {
-    const missing = createFs();
-    expect(() => bindImageOwnedNodeRuntime(missing, NODE_ASSET_URL)).toThrow(
-      "must own deferred /usr/bin/node",
-    );
-
-    const eager = createFs();
-    ensureDirRecursive(eager, "/usr/bin");
-    writeVfsBinary(eager, NODE_LAZY_BINARY_SPEC.vfsPath, new Uint8Array([1]));
-    expect(() => bindImageOwnedNodeRuntime(eager, NODE_ASSET_URL)).toThrow(
-      "must own deferred /usr/bin/node",
-    );
-    expect(readVfsFile(eager, NODE_LAZY_BINARY_SPEC.vfsPath)).toEqual(
-      new Uint8Array([1]),
-    );
-  });
-
-  it("rejects an unexpected transport or conflicting alias without mutation", () => {
-    const unexpected = runtimeImage({ nodeUrl: "/assets/stale-node.wasm" });
-    const unexpectedNode = unexpected.getLazyEntry(
-      NODE_LAZY_BINARY_SPEC.vfsPath,
-    );
-    expect(() =>
-      bindImageOwnedNodeRuntime(unexpected, NODE_ASSET_URL)
-    ).toThrow("unexpected URL");
-    expect(unexpected.getLazyEntry(NODE_LAZY_BINARY_SPEC.vfsPath)).toEqual(
-      unexpectedNode,
-    );
-    expect(() => unexpected.lstat(SPIDERMONKEY_NODE_ALIAS)).toThrow();
-
-    const conflict = runtimeImage();
-    writeVfsBinary(
-      conflict,
-      SPIDERMONKEY_NODE_ALIAS,
-      new Uint8Array([9, 9]),
-    );
-    const conflictNode = conflict.getLazyEntry(NODE_LAZY_BINARY_SPEC.vfsPath);
-    expect(() =>
-      bindImageOwnedNodeRuntime(conflict, NODE_ASSET_URL)
-    ).toThrow("conflicts with the image-owned Node runtime");
-    expect(conflict.getLazyEntry(NODE_LAZY_BINARY_SPEC.vfsPath)).toEqual(
-      conflictNode,
-    );
-    expect(readVfsFile(conflict, SPIDERMONKEY_NODE_ALIAS)).toEqual(
-      new Uint8Array([9, 9]),
-    );
+    expect(liveSetup).not.toContain("node.wasm?url");
+    expect(liveSetup).not.toContain("nodeAssetUrl");
+    expect(runtimeBinder).not.toContain("nodeAssetUrl");
+    expect(
+      existsSync(
+        resolve(root, "apps/browser-demos/lib/init/node-image-runtime.ts"),
+      ),
+    ).toBe(false);
+    expect(builder).toContain("writeVfsBinary(");
+    expect(builder).toContain("wasmArtifactPolicies:");
+    expect(builder).not.toContain("registerLazyFile(");
   });
 
   it("routes every Kandelo demo through the single image-owned assembler", () => {
@@ -142,11 +78,8 @@ describe("image-owned Node demo runtime", () => {
       resolve(root, "apps/browser-demos/pages/kandelo/main.tsx"),
       "utf8",
     );
-    expect(entrypoint).toContain(
-      'import("./kernel-host/live-setup")',
-    );
+    expect(entrypoint).toContain('import("./kernel-host/live-setup")');
     expect(entrypoint).not.toContain("useSpiderMonkeyNodeHost");
-    expect(entrypoint).not.toContain("live-spidermonkey-node-setup");
     expect(
       existsSync(
         resolve(
@@ -163,19 +96,13 @@ describe("image-owned Node demo runtime", () => {
       ),
       "utf8",
     );
-    expect(liveSetup).toContain("bindImageOwnedRuntimeUrls(");
+    expect(liveSetup).toContain("bindImageOwnedRuntimeUrls(buildFs)");
     expect(liveSetup).not.toContain("assertShellLazyUrlsResolved(buildFs)");
-    expect(liveSetup).not.toContain("bindImageOwnedNodeRuntime(buildFs");
   });
 });
 
-function runtimeImage(
-  options: {
-    compatibilityAlias?: boolean;
-    nodeUrl?: string;
-  } = {},
-): MemoryFileSystem {
-  const fs = createFs();
+function runtimeImage(): MemoryFileSystem {
+  const fs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
   for (const path of [
     "/bin",
     "/usr/bin",
@@ -185,7 +112,7 @@ function runtimeImage(
     ensureDirRecursive(fs, path);
   }
 
-  writeVfsBinary(fs, BASH_PATH, new Uint8Array([0, 97, 115, 109, 1]), 0o755);
+  writeVfsBinary(fs, BASH_PATH, NODE_BYTES, 0o755);
   fs.symlink(BASH_PATH, "/bin/bash");
   fs.registerLazyTree(
     {
@@ -222,25 +149,11 @@ function runtimeImage(
       roots: ["/bin"],
     },
   );
-  fs.registerLazyFile(
-    NODE_LAZY_BINARY_SPEC.vfsPath,
-    options.nodeUrl ?? shellLazyPlaceholderUrl(NODE_LAZY_BINARY_SPEC),
-    12_345,
-    0o755,
-  );
-  fs.symlink(NODE_LAZY_BINARY_SPEC.vfsPath, "/bin/node");
-  fs.symlink(NODE_LAZY_BINARY_SPEC.vfsPath, "/usr/local/bin/node");
-  if (options.compatibilityAlias) {
-    fs.symlink(
-      NODE_LAZY_BINARY_SPEC.vfsPath,
-      SPIDERMONKEY_NODE_ALIAS,
-    );
+  writeVfsBinary(fs, NODE_BINARY_SPEC.vfsPath, NODE_BYTES, 0o755);
+  for (const path of NODE_BINARY_SPEC.symlinks) {
+    fs.symlink(NODE_BINARY_SPEC.vfsPath, path);
   }
   return fs;
-}
-
-function createFs(): MemoryFileSystem {
-  return MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
 }
 
 function fileIdentity(
@@ -264,10 +177,7 @@ function fileIdentity(
   };
 }
 
-function readVfsFile(
-  fs: MemoryFileSystem,
-  path: string,
-): Uint8Array {
+function readVfsFile(fs: MemoryFileSystem, path: string): Uint8Array {
   const size = fs.stat(path).size;
   const bytes = new Uint8Array(size);
   const fd = fs.open(path, 0, 0);
@@ -280,7 +190,11 @@ function readVfsFile(
         null,
         bytes.byteLength - offset,
       );
-      if (count <= 0) throw new Error(`short read from ${path}`);
+      if (count <= 0 || count > bytes.byteLength - offset) {
+        throw new Error(
+          `incomplete VFS test read for ${path}: ${offset} of ${size}`,
+        );
+      }
       offset += count;
     }
     return bytes;

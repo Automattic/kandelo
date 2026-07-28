@@ -4,6 +4,7 @@
  *
  * Layout produced:
  *   Shell VFS base         — dash + shell utility symlinks/config/lazy archives
+ *   /usr/bin/node          — exact resolved Node executable bytes
  *   /usr/local/lib/npm/...   — full npm dist (bin/npm-cli.js + lib + node_modules)
  *   /usr/bin/npm          — wrapper that runs npm through the node binary
  *   /work/package.json       — empty starter package, used as --prefix and HOME
@@ -16,22 +17,23 @@
  *
  * Usage: npx tsx images/vfs/scripts/build-node-vfs-image.ts
  */
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   ensureDirRecursive,
   walkAndWrite,
+  writeVfsBinary,
+  type VfsWasmArtifactPolicy,
 } from "./vfs-image-helpers";
 import { symlinkWithParentDirectories } from "./derived-vfs-symlink";
 import {
   loadShellBaseFileSystem,
-  resolveVfsArtifact,
+  resolvePolicyBoundVfsWasmArtifact,
   saveShellDerivedVfsImage,
 } from "./shell-vfs-build";
 import {
-  NODE_LAZY_BINARY_SPEC,
-  shellLazyPlaceholderUrl,
+  NODE_BINARY_SPEC,
 } from "../lib/init/shell-binaries";
 import {
   SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
@@ -54,6 +56,10 @@ const NPM_MOUNT = "/usr/local/lib/npm";
 const NODE_IMAGE_MAX_BYTES = SHELL_DERIVED_VFS_PROFILE_MAX_BYTES;
 const DEMO_UID = 1000;
 const DEMO_GID = 1000;
+const NODE_WASM_ARTIFACT_POLICY = {
+  path: NODE_BINARY_SPEC.vfsPath,
+  forkInstrumentation: "disabled",
+} as const satisfies VfsWasmArtifactPolicy;
 
 async function main() {
   if (!existsSync(join(NPM_DIST, "bin", "npm-cli.js"))) {
@@ -64,7 +70,7 @@ async function main() {
 
   console.log("Loading shell base image...");
   const fs = await loadShellBaseFileSystem(NODE_IMAGE_MAX_BYTES);
-  populateNodeLazyBinary(fs);
+  populateNodeBinary(fs);
 
   // Node/npm workspace additions.
   ensureDirRecursive(fs, "/usr/local/lib");
@@ -103,23 +109,31 @@ async function main() {
     },
   });
 
-  await saveShellDerivedVfsImage(fs, OUT_FILE);
+  await saveShellDerivedVfsImage(fs, OUT_FILE, {
+    wasmArtifactPolicies: [NODE_WASM_ARTIFACT_POLICY],
+  });
 }
 
-function populateNodeLazyBinary(fs: MemoryFileSystem): void {
-  const resolved = resolveVfsArtifact(NODE_LAZY_BINARY_SPEC.resolverPath, NODE_LAZY_BINARY_SPEC.id);
-  const size = statSync(resolved).size;
-  fs.registerLazyFile(
-    NODE_LAZY_BINARY_SPEC.vfsPath,
-    shellLazyPlaceholderUrl(NODE_LAZY_BINARY_SPEC),
-    size,
+function populateNodeBinary(fs: MemoryFileSystem): void {
+  const resolved = resolvePolicyBoundVfsWasmArtifact(
+    NODE_BINARY_SPEC.resolverPath,
+    NODE_BINARY_SPEC.id,
+    NODE_WASM_ARTIFACT_POLICY.forkInstrumentation,
+  );
+  // WHY: the dedicated Node demo always executes Node. Embedding its package-
+  // resolved bytes avoids a second browser transport whose authority was not
+  // part of the image's closed lazy-bottle plan.
+  writeVfsBinary(
+    fs,
+    NODE_BINARY_SPEC.vfsPath,
+    new Uint8Array(readFileSync(resolved)),
     0o755,
   );
-  for (const link of NODE_LAZY_BINARY_SPEC.symlinks) {
+  for (const link of NODE_BINARY_SPEC.symlinks) {
     // WHY: the minimal bottle-composed shell deliberately omits optional
     // directory skeletons such as /usr/local/bin. This derived image owns the
     // Node aliases, so it must also own their parent directories.
-    symlinkWithParentDirectories(fs, NODE_LAZY_BINARY_SPEC.vfsPath, link);
+    symlinkWithParentDirectories(fs, NODE_BINARY_SPEC.vfsPath, link);
   }
 }
 

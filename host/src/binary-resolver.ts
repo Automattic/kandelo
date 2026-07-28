@@ -295,6 +295,13 @@ interface ProgramPackageClosure {
   members: ProgramPackageClosureMember[];
 }
 
+export interface ProgramWasmArtifactPolicy {
+  packageName: string;
+  relPath: string;
+  sourceArtifact: string;
+  forkInstrumentation: "auto" | "disabled";
+}
+
 function manifestError(manifestPath: string, detail: string): Error {
   return new Error(`Invalid package manifest ${manifestPath}: ${detail}`);
 }
@@ -1642,6 +1649,44 @@ export function programOutputClosureRelPaths(relPath: string): string[] | null {
       (member) => member.relPath,
     ) ?? null
   );
+}
+
+/**
+ * Return the selected package policy for one executable Wasm resolver path.
+ *
+ * VFS builders use this to bind a path-scoped validation declaration to the
+ * same generated package projection that owns the resolved bytes. Returning
+ * `null` means the path is not package-owned; a package-owned runtime file is
+ * rejected because only declared executable outputs carry fork policy.
+ */
+export function programWasmArtifactPolicy(
+  relPath: string,
+): ProgramWasmArtifactPolicy | null {
+  return withFreshProgramIndexes([relPath], () => {
+    const adjusted = applyDefaultArch(relPath);
+    if (!adjusted.endsWith(".wasm")) return null;
+    const closure = discoverProgramPackageClosure(adjusted);
+    if (!closure) return null;
+    const member = closure.members.find(({ relPath }) => relPath === adjusted);
+    if (!member) {
+      throw manifestError(
+        closure.manifestPath,
+        `resolver path ${JSON.stringify(adjusted)} is absent from its discovered package closure`,
+      );
+    }
+    if (member.forkInstrumentation === null) {
+      throw manifestError(
+        closure.manifestPath,
+        `resolver path ${JSON.stringify(adjusted)} is not a declared executable output`,
+      );
+    }
+    return {
+      packageName: member.packageName,
+      relPath: member.relPath,
+      sourceArtifact: member.sourceArtifact,
+      forkInstrumentation: member.forkInstrumentation,
+    };
+  });
 }
 
 function stripProgramArch(relPath: string): string | null {
