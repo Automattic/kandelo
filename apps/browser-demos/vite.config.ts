@@ -27,6 +27,10 @@ import {
   createBatchedBrowserBinaryResolution,
   type BrowserBinaryResolution,
 } from "./vite-binary-resolution";
+import {
+  homebrewClosedAcceptanceAssetRoot,
+  homebrewClosedAcceptanceInputNames,
+} from "./lib/homebrew-closed-acceptance";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
@@ -681,7 +685,19 @@ const demoInputs = {
   // available third-party VFS builds without adding page inputs.
 };
 
-function selectedDemoInputs(): typeof demoInputs | Record<string, string> {
+function selectedDemoInputs(
+  mode: string,
+): typeof demoInputs | Record<string, string> {
+  const acceptanceInputs = homebrewClosedAcceptanceInputNames(mode);
+  if (acceptanceInputs !== undefined) {
+    // WHY: the sealed closed-transport proof previews one optimized tree.
+    // Keep the real product inputs in that tree while admitting the private
+    // test page; selecting only the fixture page makes other URLs fall back to
+    // index.html and tests the wrong application.
+    return Object.fromEntries(
+      acceptanceInputs.map((name) => [name, demoInputs[name]]),
+    );
+  }
   const requested = process.env.KANDELO_BROWSER_DEMO_INPUTS
     ?.split(",")
     .map((name) => name.trim())
@@ -700,72 +716,82 @@ function selectedDemoInputs(): typeof demoInputs | Record<string, string> {
 
 const disableBrowserTestHmr = process.env.KANDELO_BROWSER_TEST_NO_HMR === "1";
 
-export default defineConfig({
-  base: process.env.VITE_BASE || "/",
-  resolve: {
-    alias: {
-      "@host": path.resolve(repoRoot, "host/src"),
+export default defineConfig(({ mode }) => {
+  // Validate this at configuration time as well as in browser code. A leaked
+  // root must fail the build rather than quietly granting a normal product
+  // build access to CI's local bottle mirror.
+  homebrewClosedAcceptanceAssetRoot(
+    mode,
+    process.env.VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT,
+  );
+
+  return {
+    base: process.env.VITE_BASE || "/",
+    resolve: {
+      alias: {
+        "@host": path.resolve(repoRoot, "host/src"),
+      },
     },
-  },
-  plugins: [
-    react(),
-    resolveKernelArtifactsAlias(binaryDevAccess),
-    resolveBinariesAlias(binaryDevAccess, browserBinaryResolution),
-    rewriteNavLinks(),
-    injectGitRevision(),
-    injectCoiServiceWorker(),
-    forceFreshDevWorkerResponses(),
-    injectCorsProxyUrl(),
-    devCorsProxyMiddleware(),
-  ],
-  server: {
-    host: "127.0.0.1",
-    port: preferredLocalPort,
-    headers: crossOriginIsolationHeaders,
-    hmr: disableBrowserTestHmr ? false : undefined,
-    watch: disableBrowserTestHmr ? {
-      ignored: [
-        "**/test-runs/**",
-        "**/host/dist/**",
-      ],
-    } : undefined,
-    fs: {
-      // Multi-member package resolution returns canonical generation paths so
-      // a live mirror swap cannot change the bytes after validation. Resolver
-      // plugins approve exact files, and the pre-serving guard rejects every
-      // other cache path (including symlinks and approved-path descendants).
-      allow: [repoRoot, browserProgramCacheRoot],
-    },
-  },
-  preview: {
-    host: "127.0.0.1",
-    port: preferredLocalPort,
-    headers: crossOriginIsolationHeaders,
-  },
-  build: {
-    // Use terser instead of esbuild for minification. esbuild's minifier
-    // drops variable declarations from TypeScript const-enum IIFEs in
-    // @xterm/xterm's pre-built ESM bundle, producing assignments to
-    // undeclared variables that throw ReferenceError in strict mode
-    // (Firefox).
-    minify: "terser",
-    rollupOptions: {
-      input: selectedDemoInputs(),
-    },
-  },
-  worker: {
-    format: "es",
-    plugins: () => [
+    plugins: [
+      react(),
       resolveKernelArtifactsAlias(binaryDevAccess),
       resolveBinariesAlias(binaryDevAccess, browserBinaryResolution),
-      dropWorkerEntryExports(),
+      rewriteNavLinks(),
+      injectGitRevision(),
+      injectCoiServiceWorker(),
+      forceFreshDevWorkerResponses(),
+      injectCorsProxyUrl(),
+      devCorsProxyMiddleware(),
     ],
-  },
-  assetsInclude: [
-    "**/*.wasm",
-    "**/*.sql",
-    "**/*.vfs",
-    "**/*.vfs.zst",
-    "**/*.zip",
-  ],
+    server: {
+      host: "127.0.0.1",
+      port: preferredLocalPort,
+      headers: crossOriginIsolationHeaders,
+      hmr: disableBrowserTestHmr ? false : undefined,
+      watch: disableBrowserTestHmr ? {
+        ignored: [
+          "**/test-runs/**",
+          "**/host/dist/**",
+        ],
+      } : undefined,
+      fs: {
+        // Multi-member package resolution returns canonical generation paths so
+        // a live mirror swap cannot change the bytes after validation. Resolver
+        // plugins approve exact files, and the pre-serving guard rejects every
+        // other cache path (including symlinks and approved-path descendants).
+        allow: [repoRoot, browserProgramCacheRoot],
+      },
+    },
+    preview: {
+      host: "127.0.0.1",
+      port: preferredLocalPort,
+      headers: crossOriginIsolationHeaders,
+    },
+    build: {
+      // Use terser instead of esbuild for minification. esbuild's minifier
+      // drops variable declarations from TypeScript const-enum IIFEs in
+      // @xterm/xterm's pre-built ESM bundle, producing assignments to
+      // undeclared variables that throw ReferenceError in strict mode
+      // (Firefox).
+      minify: "terser",
+      rollupOptions: {
+        input: selectedDemoInputs(mode),
+      },
+    },
+    worker: {
+      format: "es",
+      plugins: () => [
+        resolveKernelArtifactsAlias(binaryDevAccess),
+        resolveBinariesAlias(binaryDevAccess, browserBinaryResolution),
+        dropWorkerEntryExports(),
+      ],
+    },
+    assetsInclude: [
+      "**/*.wasm",
+      "**/*.sql",
+      "**/*.vfs",
+      "**/*.vfs.zst",
+      "**/*.zip",
+    ],
+  };
 });
