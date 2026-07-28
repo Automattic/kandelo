@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,9 +21,11 @@ import {
   type PackageDeferredZipTreeSpec,
 } from "../src/vfs/package-deferred-tree";
 import { loadShellBaseFileSystemFromImage } from "../../images/vfs/scripts/shell-vfs-build";
+import { ABI_VERSION } from "../src/generated/abi";
 
 const O_RDONLY = 0;
 const encoder = new TextEncoder();
+const DINIT_DEMO_CONFIG = '{"version":1,"profiles":{"dinit-fixture":{}}}\n';
 
 // WHY: this suite owns the helper's fallback choice, while binary-resolver
 // tests own artifact-policy and provenance validation. Substitute only the
@@ -230,8 +233,40 @@ describe("dinit-derived image binary ownership", () => {
   it("preserves resident Dinit through canonical shell-derived composition", async () => {
     const shell = createFs();
     ensureDirRecursive(shell, "/sbin");
+    ensureDirRecursive(shell, "/etc/kandelo");
     writeVfsBinary(shell, "/sbin/dinit", encoder.encode("bottled dinit"));
     writeVfsBinary(shell, "/sbin/dinitctl", encoder.encode("bottled dinitctl"));
+    writeVfsFile(shell, "/etc/kandelo/demo.json", DINIT_DEMO_CONFIG);
+    shell.setImageMetadata({
+      version: 1,
+      kernelAbi: ABI_VERSION,
+      createdBy: "dinit-image-helpers.test/shell-fixture",
+      capacity: {
+        maxByteLength: shell.statfs("/").blocks * shell.statfs("/").bsize,
+      },
+      baseImage: {
+        sha256: "a".repeat(64),
+        bytes: 1,
+        kernelAbi: ABI_VERSION,
+      },
+      packageDeferredTrees: [],
+      homebrewBootstrap: {
+        entrypoint: "/usr/bin/brew",
+        prefix: "/home/linuxbrew/.linuxbrew",
+      },
+      homebrew: {
+        tapRepository: "Kandelo-dev/homebrew-tap-core",
+        tapName: "Kandelo-dev/tap-core",
+        tapCommit: "b".repeat(40),
+        demoConfig: {
+          path: "/etc/kandelo/demo.json",
+          sha256: createHash("sha256")
+            .update(DINIT_DEMO_CONFIG)
+            .digest("hex"),
+          bytes: encoder.encode(DINIT_DEMO_CONFIG).byteLength,
+        },
+      },
+    });
     const shellImage = await shell.saveImage();
     const shellCapacity =
       MemoryFileSystem.readImageCapacity(shellImage).maxByteLength;
@@ -252,5 +287,20 @@ describe("dinit-derived image binary ownership", () => {
     expect(readGuestFile(derived, "/etc/dinit.d/service")).toContain(
       "type = internal",
     );
+  });
+
+  it("rejects an unversioned shell fixture before derived composition", async () => {
+    const shell = createFs();
+    ensureDirRecursive(shell, "/sbin");
+    writeVfsBinary(shell, "/sbin/dinit", encoder.encode("bottled dinit"));
+    writeVfsBinary(shell, "/sbin/dinitctl", encoder.encode("bottled dinitctl"));
+    const shellImage = await shell.saveImage();
+
+    await expect(
+      loadShellBaseFileSystemFromImage(
+        shellImage,
+        MemoryFileSystem.readImageCapacity(shellImage).maxByteLength,
+      ),
+    ).rejects.toThrow("shell base image omits its required kernel ABI");
   });
 });
