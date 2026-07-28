@@ -17,6 +17,8 @@
 //!     verifies; the resolver doesn't fetch anything itself).
 //!   * `WASM_POSIX_DEP_TARGET_ARCH` — `wasm32` or `wasm64`; the arch
 //!     the build script must produce objects for.
+//!   * `WASM_POSIX_BINARY_CACHE_ROOT` — the exact cache root selected for
+//!     this resolution, including an explicit `ResolveOpts::cache_root`.
 //!   * `WASM_POSIX_DEP_<UPPER>_DIR` — for each *direct* declared dep
 //!     (where `UPPER` is the dep name upper-cased with `-` → `_`),
 //!     the resolved cache path of that dep's `{lib,include,…}`.
@@ -2701,6 +2703,9 @@ use crate::util::hex;
 /// Kept as a struct so tests can pass tempdirs without reaching into
 /// `$HOME` / `$XDG_CACHE_HOME`.
 pub struct ResolveOpts<'a> {
+    /// Authoritative root for this resolution. Source-build children receive
+    /// its canonical absolute spelling as `WASM_POSIX_BINARY_CACHE_ROOT`, so
+    /// nested resolvers cannot drift back to an unrelated ambient default.
     pub cache_root: &'a Path,
     /// Optional `local-libs/` directory. When a `<name>/build/`
     /// subdirectory exists under this root, it wins over the cache
@@ -3468,6 +3473,7 @@ fn ensure_built_uncached(
                 arch,
                 abi_version,
                 &cache_key_sha_hex,
+                opts.cache_root,
                 &canonical,
                 &dep_dirs,
                 &pkgconfig_path,
@@ -3570,6 +3576,7 @@ fn ensure_built_uncached(
                 arch,
                 abi_version,
                 &cache_key_sha_hex,
+                opts.cache_root,
                 &canonical,
                 &dep_dirs,
                 &pkgconfig_path,
@@ -4611,6 +4618,7 @@ fn build_into_cache(
     arch: TargetArch,
     abi_version: u32,
     cache_key_sha: &str,
+    cache_root: &Path,
     canonical: &Path,
     dep_dirs: &BTreeMap<String, DirectDep>,
     pkgconfig_path: &str,
@@ -4621,6 +4629,13 @@ fn build_into_cache(
         .ok_or_else(|| format!("canonical path has no parent: {}", canonical.display()))?;
     std::fs::create_dir_all(parent)
         .map_err(|e| format!("create cache parent {}: {e}", parent.display()))?;
+    let selected_cache_root = std::fs::canonicalize(cache_root).map_err(|e| {
+        format!(
+            "{}: resolve selected package cache root {}: {e}",
+            target.spec(),
+            cache_root.display(),
+        )
+    })?;
 
     let tmp = parent.join(format!(
         "{}.tmp-{}",
@@ -4708,6 +4723,11 @@ fn build_into_cache(
         cmd.env("WASM_POSIX_DEP_SOURCE_SHA256", &target.source.sha256);
         cmd.env("WASM_POSIX_DEP_TARGET_ARCH", arch.as_str());
         cmd.env("WASM_POSIX_DEP_PKG_CONFIG_PATH", pkgconfig_path);
+        // WHY: child recipes can invoke the TypeScript/standalone resolver.
+        // Passing the exact ResolveOpts root keeps those nested lookups on the
+        // same cache even when archive-stage selected --cache-root and the
+        // parent process inherited a different ambient value.
+        cmd.env("WASM_POSIX_BINARY_CACHE_ROOT", &selected_cache_root);
         git_inputs.export_to(&mut cmd);
         for (name, dep) in dep_dirs {
             // Per design 12: library/program deps export under
@@ -14073,7 +14093,7 @@ libs = ["lib/libE.a"]
     }
 
     #[test]
-    fn transitive_deps_are_built_and_exposed_via_env() {
+    fn transitive_deps_and_selected_cache_root_are_exposed_via_env() {
         let root = tempdir("transitive-reg");
         let cache = tempdir("transitive-cache");
 
@@ -14099,8 +14119,17 @@ headers = ["include/foo.h"]
             r#"
 test -n "${WASM_POSIX_DEP_LIBFOO_DIR:-}" || { echo "LIBFOO_DIR not set" >&2; exit 1; }
 test -f "$WASM_POSIX_DEP_LIBFOO_DIR/include/foo.h" || { echo "foo.h missing" >&2; exit 1; }
+test -n "${WASM_POSIX_BINARY_CACHE_ROOT:-}" || { echo "BINARY_CACHE_ROOT not set" >&2; exit 1; }
+cache_root_real="$(cd "$WASM_POSIX_BINARY_CACHE_ROOT" && pwd -P)"
+dep_dir_real="$(cd "$WASM_POSIX_DEP_LIBFOO_DIR" && pwd -P)"
+case "$dep_dir_real/" in
+  "$cache_root_real/libs/"*) ;;
+  *) echo "direct dependency escaped selected cache root" >&2; exit 1 ;;
+esac
 mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
 cp "$WASM_POSIX_DEP_LIBFOO_DIR/include/foo.h" "$WASM_POSIX_DEP_OUT_DIR/lib/libBar.a"
+printf '%s\n%s\n' "$WASM_POSIX_BINARY_CACHE_ROOT" "$WASM_POSIX_DEP_LIBFOO_DIR" \
+  > "$WASM_POSIX_DEP_OUT_DIR/cache-root-handoff"
 "#,
             r#"[outputs]
 libs = ["lib/libBar.a"]
@@ -14113,6 +14142,19 @@ libs = ["lib/libBar.a"]
 
         let pseudo = std::fs::read_to_string(bar_path.join("lib/libBar.a")).unwrap();
         assert_eq!(pseudo.trim(), "foo header body");
+        let handoff = std::fs::read_to_string(bar_path.join("cache-root-handoff")).unwrap();
+        let mut handoff = handoff.lines().map(PathBuf::from);
+        assert_eq!(
+            handoff.next().unwrap(),
+            std::fs::canonicalize(&cache).unwrap(),
+        );
+        assert!(
+            std::fs::canonicalize(handoff.next().unwrap())
+                .unwrap()
+                .starts_with(std::fs::canonicalize(cache.join("libs")).unwrap()),
+            "direct dependency must remain below the selected cache root",
+        );
+        assert!(handoff.next().is_none());
     }
 
     #[test]

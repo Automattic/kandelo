@@ -798,7 +798,17 @@ standalone resolver bundle, and Vite share this override. Absolute values are
 used directly; relative values are anchored at the Kandelo repository root so
 different process working directories cannot silently select different
 caches. Installed npm consumers without a Kandelo source root must use an
-absolute value.
+absolute value. The resolver also exports the exact selected root to every
+source-build child as `WASM_POSIX_BINARY_CACHE_ROOT`. This value comes from
+that invocation's `ResolveOpts` (including `archive-stage --cache-root`), not
+from ambient child state, so nested Rust, TypeScript, and standalone resolver
+calls share the direct dependencies' cache identity.
+
+This is an identity and pathname contract, not an operating-system lease.
+Normal same-user cache generations are immutable; force-source rebuild or
+stale-cache repair must not remove or replace a generation while a build or
+consumer is using it. See [Atomic cache install](#atomic-cache-install) for
+the supported creation race and this maintenance boundary.
 
 ## Build-script contract
 
@@ -814,6 +824,7 @@ that doesn't respect them cannot be cached safely.
 | `WASM_POSIX_DEP_SOURCE_URL`          | Upstream tarball URL (`source.url` from package.toml).                                                                                                                                                                                                                                                                                           |
 | `WASM_POSIX_DEP_SOURCE_SHA256`       | Expected sha256 of the downloaded tarball. Scripts **must** verify after download — the resolver does not fetch.                                                                                                                                                                                                                                 |
 | `WASM_POSIX_DEP_TARGET_ARCH`         | Requested package architecture (`wasm32` or `wasm64`). A package that supports only one must reject the other before invoking its toolchain.                                                                                                                                                                                                     |
+| `WASM_POSIX_BINARY_CACHE_ROOT`       | Canonical absolute cache root selected by the current resolver invocation. It overrides inherited ambient state and keeps nested resolvers aligned with direct dependency paths, including an explicit `archive-stage --cache-root`.                                                                                                             |
 | `WASM_POSIX_DEP_WORK_DIR`            | Caller-owned, single-writer scratch root disjoint from `OUT_DIR`. The resolver creates a fresh private directory for every source build and removes it on success or failure. The sealed Homebrew Formula bridge provides the equivalent boundary from Homebrew's buildpath. Direct ad-hoc script invocation may retain a package-local default. |
 | `WASM_POSIX_DEP_RECIPE_DIR`          | Formula-owned, read-only closed recipe input root for a tap-native Homebrew build. It is absent from registry package builds. Every member is attested by path, size, mode, and SHA-256; scripts must not mutate it.                                                                                                                            |
 | `WASM_POSIX_DEP_SOURCE_DIR`          | Optional caller-verified, already-extracted source root. When present it takes precedence over downloading `SOURCE_URL`; the URL and SHA remain provenance/cache identity.                                                                                                                                                                       |

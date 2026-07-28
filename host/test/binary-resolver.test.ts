@@ -27,6 +27,7 @@ import {
   programWasmArtifactPolicy,
   resetBinaryResolverManifestCacheForTests,
   resolveBinary,
+  resolveDirectProgramPackageArtifact,
   setProgramIndexContextCheckerForTests,
   tryResolveBinary,
   tryResolveBinaries,
@@ -462,6 +463,65 @@ describe("program package source freshness boundary", () => {
         delete process.env[envName];
       }
     }
+  });
+
+  it("rejects a direct dependency whose projected package closure is incomplete", () => {
+    const fixture = createMultiOutputFixture();
+    const canonicalRoot = fixtureCanonicalRoot(fixture.name);
+    for (const member of fixture.members.slice(0, -1)) {
+      writeCanonicalMember(
+        canonicalRoot,
+        member.sourceArtifact,
+        member.relPath,
+      );
+    }
+
+    expect(() =>
+      resolveDirectProgramPackageArtifact(
+        fixture.members[0]!.relPath,
+        fixture.name,
+        canonicalRoot,
+      )
+    ).toThrow(
+      new RegExp(
+        `member "${fixture.members.at(-1)!.relPath}" is invalid`,
+      ),
+    );
+  });
+
+  it("rejects a direct dependency member that escapes through a symlinked parent", () => {
+    const fixture = createMultiOutputFixture();
+    const canonicalRoot = fixtureCanonicalRoot(fixture.name);
+    for (const member of fixture.members.slice(0, -1)) {
+      writeCanonicalMember(
+        canonicalRoot,
+        member.sourceArtifact,
+        member.relPath,
+      );
+    }
+    const escapedMember = fixture.members.at(-1)!;
+    const escapedParent = fixtureArbitraryRoot();
+    writeFileSync(
+      join(escapedParent, basename(escapedMember.sourceArtifact)),
+      escapedMember.relPath,
+    );
+    symlinkSync(
+      escapedParent,
+      join(canonicalRoot, dirname(escapedMember.sourceArtifact)),
+    );
+
+    expect(() =>
+      resolveDirectProgramPackageArtifact(
+        fixture.members[0]!.relPath,
+        fixture.name,
+        canonicalRoot,
+      )
+    ).toThrow(
+      new RegExp(
+        `member "${escapedMember.relPath}" is invalid: ` +
+          "member does not occupy declared source artifact",
+      ),
+    );
   });
 
   it("checks one projection once for a batch of independent optional artifacts", () => {
