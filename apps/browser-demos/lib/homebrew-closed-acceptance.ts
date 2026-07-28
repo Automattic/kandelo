@@ -1,5 +1,9 @@
 export const HOMEBREW_CLOSED_ACCEPTANCE_VITE_MODE =
   "homebrew-closed-acceptance";
+export const HOMEBREW_CLOSED_ACCEPTANCE_VITE_ROOT_ENV =
+  "VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT";
+export const HOMEBREW_CLOSED_ACCEPTANCE_PLAYWRIGHT_ROOT_ENV =
+  "KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT";
 
 const HOMEBREW_CLOSED_ACCEPTANCE_INPUTS = [
   "main",
@@ -18,17 +22,40 @@ export function homebrewClosedAcceptanceAssetRoot(
   mode: string,
   configuredRoot: string | undefined,
 ): string | undefined {
+  return validateHomebrewClosedAcceptanceRoot(
+    mode,
+    configuredRoot,
+    HOMEBREW_CLOSED_ACCEPTANCE_VITE_ROOT_ENV,
+  );
+}
+
+export function homebrewClosedAcceptancePlaywrightRoot(
+  mode: string,
+  configuredRoot: string | undefined,
+): string | undefined {
+  return validateHomebrewClosedAcceptanceRoot(
+    mode,
+    configuredRoot,
+    HOMEBREW_CLOSED_ACCEPTANCE_PLAYWRIGHT_ROOT_ENV,
+  );
+}
+
+function validateHomebrewClosedAcceptanceRoot(
+  mode: string,
+  configuredRoot: string | undefined,
+  authorityEnvironmentName: string,
+): string | undefined {
   const root = configuredRoot?.trim() || undefined;
   const enabled = mode === HOMEBREW_CLOSED_ACCEPTANCE_VITE_MODE;
   if (enabled && root === undefined) {
     throw new Error(
       `${HOMEBREW_CLOSED_ACCEPTANCE_VITE_MODE} requires ` +
-        "VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT",
+        authorityEnvironmentName,
     );
   }
   if (!enabled && root !== undefined) {
     throw new Error(
-      "VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT is permitted only in " +
+      `${authorityEnvironmentName} is permitted only in ` +
         HOMEBREW_CLOSED_ACCEPTANCE_VITE_MODE,
     );
   }

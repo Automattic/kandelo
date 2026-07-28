@@ -191,6 +191,7 @@ jobs:
             apps/browser-demos/homebrew-closed-acceptance.test.ts \
             apps/browser-demos/homebrew-closed-acceptance-vite-config.test.ts \
             apps/browser-demos/playwright-server-policy.test.ts \
+            apps/browser-demos/playwright-closed-acceptance.test.ts \
             apps/browser-demos/shell-vfs-image-url.test.ts \
             homebrew/test/homebrew_guest_lifecycle_browser_fixture.test.ts \
             homebrew/test/homebrew_guest_lifecycle_contract.test.ts \
@@ -919,7 +920,7 @@ jobs:
               if [ "$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" = closed ]; then
                 playwright_env+=(
                   "KANDELO_PLAYWRIGHT_VITE_MODE=homebrew-closed-acceptance"
-                  "VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT=/homebrew-main-shell-bottles"
+                  "KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT=/homebrew-main-shell-bottles"
                 )
               elif [ "$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" != public ]; then
                 echo "unsupported transport mode: $KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" >&2
