@@ -862,12 +862,21 @@ backends or publishing readiness. Guest writes never reach the source tree.
 
 Libc and Open POSIX tests use the canonical root image and `/tmp`; the initial
 program crosses as an immutable value, and its exact self-exec alias resolves
-only to those cached bytes. Each Sortix invocation stages only its executable,
-source file when present, and shared object when present as regular files in a
-private fixture, then launches the worker-owned VFS path. The suite/parent
-layout remains intact for tests that open `..`, inspect their source, load a
-shared object, or exec/spawn themselves. Parallel invocations receive separate
-session copies. This is lifecycle ownership rather than a test allowlist.
+only to those cached bytes. Explicit runner-provided tools use a pre-VFS worker
+capability, so a same-named lazy root-image stub cannot start an ambient fetch
+before the capability is considered. Resolver-owned immutable generations use
+`execPrograms`; direct checkout or build outputs are copied during
+`NodeKernelHost.init` and cross as worker-lifetime `execProgramBytes`. Every
+execution receives a fresh copy of those retained exact bytes, so later source
+replacement cannot change either sequential or asynchronous resolution. In
+isolated mode the main-thread `onResolveExec` fallback serves only the immutable
+self-exec alias and otherwise returns no program. Each Sortix invocation stages
+only its executable, source file when present, and shared object when present as
+regular files in a private fixture, then launches the worker-owned VFS path. The
+suite/parent layout remains intact for tests that open `..`, inspect their
+source, load a shared object, or exec/spawn themselves. Parallel invocations
+receive separate session copies. This is lifecycle ownership rather than a test
+allowlist.
 
 ## ABI decision
 
@@ -990,11 +999,11 @@ session copies. This is lifecycle ownership rather than a test allowlist.
   compatibility fallback.
 - `KernelScratchRegion` remains an internal TypeScript value, but that fact
   does not neutralize the required export and synchronization changes.
-- `NodeKernelHost.sessionSeedTrees` and its main-thread/worker initialization
-  field are optional Node configuration. They change no Wasm export, import,
-  syscall layout, pointer interpretation, required adapter capability, or
-  accepted guest limit. They therefore require no epoch beyond the already
-  unpublished ABI 43.
+- `NodeKernelHost.sessionSeedTrees`, `execProgramBytes`, and their
+  main-thread/worker initialization fields are optional Node configuration.
+  They change no Wasm export, import, syscall layout, pointer interpretation,
+  required adapter capability, or accepted guest limit. They therefore require
+  no epoch beyond the already unpublished ABI 43.
 
 PR #1097 merged as
 `c7d039794a43788acfa0b0aea30a700c257f57cb` with ABI 42. Retargeting is
