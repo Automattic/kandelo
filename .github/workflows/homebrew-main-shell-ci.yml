@@ -682,10 +682,14 @@ jobs:
             (.assets | length) == $expected_assets
           ' "$mirror_report" >/dev/null
           publish_manifest="$RUNNER_TEMP/homebrew-main-shell-bottle-publish.json"
+          # WHY: target_commitish is the release-write authority carried by
+          # this bounded handoff. Bind it to the exact checked-out tap catalog
+          # rather than the Kandelo workflow head or event-selected data.
           bash scripts/dev-shell.sh npx tsx \
             scripts/create-homebrew-bottle-mirror-publish-manifest.ts \
               --bundle "$mirror_dir" \
               --recovery-report "$mirror_report" \
+              --target-commitish "${{ steps.bottle_candidate.outputs.tap_sha }}" \
               --out "$publish_manifest"
           jq -e \
             --arg target "${{ steps.bottle_candidate.outputs.tap_sha }}" \
