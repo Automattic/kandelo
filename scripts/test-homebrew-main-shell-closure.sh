@@ -128,6 +128,85 @@ grep -Fq 'echo "SOURCE_SHELL_BINARY_INDEX_URL=file://${empty_index}" >> "$GITHUB
   grep -Fq 'echo "SOURCE_SHELL_BINARY_CACHE_ROOT=$source_cache" >> "$GITHUB_ENV"' \
     <<<"$generation_block" ||
   fail "source activation must publish one closure-local empty index and cache root"
+
+check_bootstrap_materialization_contract() {
+  local block="$1"
+  local materialize_line
+  local resolve_line
+  local -a resolve_lines
+
+  grep -Fq \
+    "bootstrap_package=\$(jq -er '.package.name' \\" \
+    <<<"$block" &&
+    grep -Fq \
+      "runtime_bootstrap_package=\$(jq -er '.activation.bootstrap_package.name' \\" \
+      <<<"$block" &&
+    grep -Fq '[ "$bootstrap_package" = "$runtime_bootstrap_package" ]' \
+      <<<"$block" ||
+    return 1
+  grep -Fq 'bash scripts/dev-shell.sh env \' <<<"$block" &&
+    grep -Fq \
+      '"WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" \' \
+      <<<"$block" &&
+    grep -Fq \
+      '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
+      <<<"$block" &&
+    grep -Fq \
+      'bash scripts/fetch-binaries.sh --package "$bootstrap_package"' \
+      <<<"$block" ||
+    return 1
+  ! grep -Fq -- '--fetch-only' <<<"$block" || return 1
+
+  materialize_line="$(grep -nF \
+    'bash scripts/fetch-binaries.sh --package "$bootstrap_package"' \
+    <<<"$block" | cut -d: -f1)"
+  mapfile -t resolve_lines < <(
+    grep -nF 'bash scripts/resolve-binary.sh \' <<<"$block" |
+      cut -d: -f1
+  )
+  [ -n "$materialize_line" ] && [ "${#resolve_lines[@]}" -eq 2 ] ||
+    return 1
+  for resolve_line in "${resolve_lines[@]}"; do
+    [ "$materialize_line" -lt "$resolve_line" ] || return 1
+  done
+}
+
+bottle_candidate_workflow_block="$(sed -n \
+  '/- name: Build the exact lazy shell from public bottles/,/- name: Select the source shell for dependent browser VFS builds/p' \
+  "$WORKFLOW")"
+check_bootstrap_materialization_contract "$bottle_candidate_workflow_block" ||
+  fail "bottle composition must materialize its declared bootstrap package from the selected index/cache before direct resolution"
+
+# Mutate each critical property independently. These fixtures prove the
+# structural check fails closed instead of passing because another nearby
+# package fetch or environment assignment happens to contain similar text.
+bootstrap_without_index="$(
+  grep -Fv \
+    '"WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" \' \
+    <<<"$bottle_candidate_workflow_block"
+)"
+if check_bootstrap_materialization_contract "$bootstrap_without_index"; then
+  fail "bootstrap materialization contract accepted a missing selected index"
+fi
+bootstrap_without_cache="$(
+  grep -Fv \
+    '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
+    <<<"$bottle_candidate_workflow_block"
+)"
+if check_bootstrap_materialization_contract "$bootstrap_without_cache"; then
+  fail "bootstrap materialization contract accepted a missing isolated cache"
+fi
+bootstrap_after_resolution="$(
+  grep -Fv \
+    'bash scripts/fetch-binaries.sh --package "$bootstrap_package"' \
+    <<<"$bottle_candidate_workflow_block"
+  printf '%s\n' \
+    '          bash scripts/fetch-binaries.sh --package "$bootstrap_package"'
+)"
+if check_bootstrap_materialization_contract "$bootstrap_after_resolution"; then
+  fail "bootstrap materialization contract accepted resolution before fetch"
+fi
+
 grep -Fq 'GH_TOKEN:' <<<"$(sed -n \
   '/- name: Resolve current direct browser bundling inputs/,/- name: Build the exact lazy shell/p' \
   "$WORKFLOW")" &&

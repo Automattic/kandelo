@@ -19,6 +19,7 @@ import { ensureDirRecursive } from "../../host/src/vfs/image-helpers";
 import type { ZipEntry } from "../../host/src/vfs/zip";
 import {
   buildSourceRootfsShellImage,
+  composeSourceRootfsDemoConfig,
   SOURCE_ROOTFS_SHELL_EXTENDED_DEPENDENCIES,
 } from "../../images/vfs/scripts/build-source-rootfs-shell-image";
 import {
@@ -72,6 +73,19 @@ const ROOTFS_LAZY_IDS = new Set([
   "m4",
   "make",
 ]);
+
+interface SourceRootfsDemoOverlayFixture {
+  profiles: {
+    doom: {
+      presentation: {
+        runningPrimary: string[];
+      };
+      assets: Array<{
+        sha256: string;
+      }>;
+    };
+  };
+}
 
 afterEach(() => {
   for (const root of roots.splice(0)) {
@@ -492,6 +506,114 @@ describe("source-rootfs shell bridge", () => {
     ]);
   });
 
+  it("treats structurally identical base and overlay profiles as one shared contract", () => {
+    const root = tempRoot();
+    const basePath = join(repoRoot, "homebrew/main-shell-demo.json");
+    const base = JSON.parse(readFileSync(basePath, "utf8"));
+    const overlay = JSON.parse(
+      readFileSync(
+        join(repoRoot, "homebrew/source-rootfs-shell-demo-profiles.json"),
+        "utf8",
+      ),
+    );
+    const reverseObjectKeys = (value: unknown): unknown => {
+      if (Array.isArray(value)) return value.map(reverseObjectKeys);
+      if (typeof value !== "object" || value === null) return value;
+      return Object.fromEntries(
+        Object.entries(value)
+          .reverse()
+          .map(([key, entry]) => [key, reverseObjectKeys(entry)]),
+      );
+    };
+    const reorderedOverlayPath = join(root, "reordered-overlay.json");
+    writeFileSync(
+      reorderedOverlayPath,
+      JSON.stringify(reverseObjectKeys(overlay)),
+    );
+
+    const composed = text(
+      composeSourceRootfsDemoConfig(basePath, reorderedOverlayPath),
+    );
+
+    // The base entries remain authoritative even when equivalent overlay JSON
+    // uses different formatting and object-key order.
+    expect(composed).toBe(`${JSON.stringify(base, null, 2)}\n`);
+  });
+
+  it("adds an image-owned overlay profile that is absent from the base", () => {
+    const root = tempRoot();
+    const base = JSON.parse(
+      readFileSync(join(repoRoot, "homebrew/main-shell-demo.json"), "utf8"),
+    );
+    const expectedDoom = base.profiles.doom;
+    delete base.profiles.doom;
+    const basePath = join(root, "base-without-doom.json");
+    writeFileSync(basePath, JSON.stringify(base));
+    const overlayPath = join(
+      repoRoot,
+      "homebrew/source-rootfs-shell-demo-profiles.json",
+    );
+
+    const composed = parseKandeloDemoConfig(
+      text(composeSourceRootfsDemoConfig(basePath, overlayPath)),
+    );
+
+    expect(composed).not.toBeNull();
+    expect(composed!.profiles?.doom).toEqual(expectedDoom);
+    expect(composed!.profiles?.modeset).toEqual(base.profiles.modeset);
+    expect(composed!.profiles?.shell).toEqual(base.profiles.shell);
+  });
+
+  const profileDriftCases: Array<{
+    label: string;
+    mutate: (overlay: SourceRootfsDemoOverlayFixture) => void;
+  }> = [
+    {
+      label: "nested presentation",
+      mutate: (overlay) => {
+        overlay.profiles.doom.presentation.runningPrimary = [
+          "terminal",
+          "framebuffer",
+          "syslog",
+        ];
+      },
+    },
+    {
+      label: "nested asset",
+      mutate: (overlay) => {
+        overlay.profiles.doom.assets[0].sha256 = "0".repeat(64);
+      },
+    },
+  ];
+
+  it.each(profileDriftCases)(
+    "rejects $label drift in an overlapping profile",
+    ({ mutate }: {
+      label: string;
+      mutate: (overlay: SourceRootfsDemoOverlayFixture) => void;
+    }) => {
+      const root = tempRoot();
+      const overlay = JSON.parse(
+        readFileSync(
+          join(repoRoot, "homebrew/source-rootfs-shell-demo-profiles.json"),
+          "utf8",
+        ),
+      ) as SourceRootfsDemoOverlayFixture;
+      mutate(overlay);
+      const overlayPath = join(root, "drifted-overlay.json");
+      writeFileSync(overlayPath, JSON.stringify(overlay));
+
+      expect(() =>
+        composeSourceRootfsDemoConfig(
+          join(repoRoot, "homebrew/main-shell-demo.json"),
+          overlayPath,
+        ),
+      ).toThrow(
+        "source-rootfs demo profile overlay drifts from base profile doom",
+      );
+    },
+  );
+
   it("rejects an implicit or wrong rootfs ABI before writing an output", async () => {
     const root = tempRoot();
     const paths = fixturePaths(root);
@@ -538,6 +660,11 @@ describe("source-rootfs shell bridge", () => {
     const root = tempRoot();
     const paths = fixturePaths(root);
     await writeRootfs(paths.rootfsPath);
+    const demo = JSON.parse(readFileSync(paths.demoConfigPath, "utf8"));
+    delete demo.profiles.doom;
+    delete demo.profiles.modeset;
+    const demoConfigPath = join(root, "base-without-owned-profiles.json");
+    writeFileSync(demoConfigPath, JSON.stringify(demo));
     const demoProfileOverlayPath = join(root, "wrong-demo-command.json");
     writeFileSync(
       demoProfileOverlayPath,
@@ -550,6 +677,7 @@ describe("source-rootfs shell bridge", () => {
     await expect(
       buildSourceRootfsShellImage({
         ...paths,
+        demoConfigPath,
         demoProfileOverlayPath,
         outFile: join(root, "wrong-demo-command.vfs.zst"),
         sourceDateEpoch: "0",
