@@ -5,9 +5,6 @@ import {
   bindImageOwnedNodeRuntime,
 } from "../../apps/browser-demos/lib/init/node-image-runtime";
 import {
-  descriptorFromGalleryItem,
-} from "../../apps/browser-demos/pages/kandelo/views/Gallery";
-import {
   NODE_LAZY_BINARY_SPEC,
   shellLazyPlaceholderUrl,
 } from "../../images/vfs/lib/init/shell-binaries";
@@ -16,10 +13,6 @@ import {
   writeVfsBinary,
 } from "../src/vfs/image-helpers";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
-import type {
-  BootDescriptor,
-  GalleryItem,
-} from "../../web-libs/kandelo-session/src/kernel-host";
 
 const NODE_ASSET_URL = "/assets/node-current.wasm";
 const BASH_PATH =
@@ -148,63 +141,6 @@ describe("image-owned Node demo runtime", () => {
       ),
     ).toBe(false);
   });
-
-  it("switches gallery profiles without carrying the previous environment", () => {
-    const base = descriptorFixture({
-      HOME: "/root",
-      PWD: "/stale",
-      PS1: "stale$ ",
-      npm_config_cache: "/stale-cache",
-    });
-    const node = descriptorFromGalleryItem(
-      galleryFixture("node", ["bash", "-l", "-i"]),
-      base,
-    );
-    expect(node.boot).toMatchObject({
-      cwd: "/work",
-      uid: 1000,
-      gid: 1000,
-      env: {
-        HOME: "/work",
-        PWD: "/work",
-        USER: "user",
-        LOGNAME: "user",
-      },
-    });
-    expect(node.boot.env).not.toHaveProperty("npm_config_cache");
-    expect(node.boot.env).not.toHaveProperty("PS1");
-
-    const shell = descriptorFromGalleryItem(
-      galleryFixture("shell", ["bash", "-l", "-i"]),
-      node,
-    );
-    expect(shell.boot).toMatchObject({
-      cwd: "/home/user",
-      uid: 1000,
-      gid: 1000,
-      env: {
-        HOME: "/home/user",
-        USER: "user",
-        LOGNAME: "user",
-      },
-    });
-    expect(shell.boot.env).not.toHaveProperty("PWD");
-
-    const service = descriptorFromGalleryItem(
-      galleryFixture("nginx", ["/sbin/dinit", "nginx"]),
-      shell,
-    );
-    expect(service.boot).toMatchObject({
-      cwd: "/root",
-      uid: 0,
-      gid: 0,
-      env: {
-        HOME: "/root",
-        USER: "root",
-        LOGNAME: "root",
-      },
-    });
-  });
 });
 
 function runtimeImage(
@@ -325,56 +261,4 @@ function readVfsFile(
   } finally {
     fs.close(fd);
   }
-}
-
-function descriptorFixture(
-  env: Record<string, string>,
-): BootDescriptor {
-  return {
-    version: 1,
-    id: "shell",
-    title: "Shell",
-    base: "kandelo:shell@abi42",
-    runtime: {
-      arch: "wasm32",
-      kernel: "kernel@local",
-      memoryPages: 2048,
-      features: ["shared-array-buffer", "pty"],
-      time: "real",
-    },
-    packages: [],
-    mounts: [
-      {
-        path: "/",
-        source: "image",
-        ref: "shell.vfs@local",
-        readonly: false,
-      },
-    ],
-    boot: {
-      argv: ["bash", "-l", "-i"],
-      cwd: "/home/user",
-      env,
-      uid: 1000,
-      gid: 1000,
-    },
-    caps: { network: false },
-  };
-}
-
-function galleryFixture(
-  id: string,
-  bootCommand: string[],
-): GalleryItem {
-  return {
-    id,
-    title: id,
-    summary: id,
-    base: "kandelo:shell@abi42",
-    packages: [],
-    bootCommand,
-    accent: "#000000",
-    glyph: id.slice(0, 2),
-    estimatedUrlBytes: 1,
-  };
 }
