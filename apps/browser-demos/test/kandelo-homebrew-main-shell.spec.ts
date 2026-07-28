@@ -9,6 +9,10 @@ import {
   isVfsImageUrl,
   SHELL_VFS_IMAGE_PATH_PATTERN_SOURCE,
 } from "../lib/shell-vfs-image-url";
+import {
+  runParentShellProbe,
+  runTerminalCommand,
+} from "./support/terminal-command";
 
 const strict = process.env.KANDELO_HOMEBREW_MAIN_SHELL_STRICT === "1";
 const expectedImageSha256 = process.env.KANDELO_HOMEBREW_MAIN_SHELL_SHA256;
@@ -160,28 +164,6 @@ async function lazyDownloadDiagnostics(page: Page): Promise<string> {
       })),
     );
   return JSON.stringify(rows);
-}
-
-async function runTerminalCommand(
-  page: Page,
-  command: string,
-  expected: string | RegExp,
-  timeout = 180_000,
-) {
-  const input = page.getByRole("textbox", { name: "Terminal input" }).first();
-  if (await input.count()) {
-    await input.focus();
-  } else {
-    await page.locator(".kshell-host").first().click();
-  }
-  await page.keyboard.insertText(command);
-  await page.waitForTimeout(250);
-  await page.keyboard.press("Enter");
-  await waitForTerminalContent(page, expected, timeout);
-}
-
-function bashCommand(script: string): string {
-  return `/bin/bash -c '${script.replaceAll("'", `'"'"'`)}'`;
 }
 
 async function readLazyDownloadRows(page: Page): Promise<LazyDownloadRow[]> {
@@ -624,7 +606,10 @@ test("a fresh exact shell activates brew support atomically after independent ba
   test.setTimeout(420_000);
 
   const shell = await bootExactShellPage(page);
-  await runTerminalCommand(
+  // WHY: this is an identity assertion about the interactive image-owned
+  // shell, so executing it through the isolated child-Bash helper would make
+  // `$0` report the helper's shell and could hide an incorrect default.
+  await runParentShellProbe(
     page,
     'printf \'HOMEBREW_MAIN_SHELL_PATH:%s:%s\\n\' "$0" "${PATH%%:*}"',
     "HOMEBREW_MAIN_SHELL_PATH:bash:/home/linuxbrew/.linuxbrew/bin",
@@ -655,16 +640,16 @@ test("a fresh exact shell activates brew support atomically after independent ba
   const bzip2PriorSources = new Set(lazyRows.map(({ source }) => source));
   await runTerminalCommand(
     page,
-    bashCommand(
-      // Exercise the ordinary file workflow. The lazy-layer assertion belongs
-      // to bzip2 itself and should not depend on terminal-device semantics.
-      "printf 'mostly-lazy-shell\\n' > /tmp/kandelo-bzip2-smoke; " +
-        "bzip2 -f /tmp/kandelo-bzip2-smoke; " +
-        "bzip2 -d -f /tmp/kandelo-bzip2-smoke.bz2; " +
-        "IFS= read -r bzip2_result < /tmp/kandelo-bzip2-smoke; " +
-        'test "$bzip2_result" = mostly-lazy-shell; ' +
-        "printf 'HOMEBREW_BZIP2_OK\\n'",
-    ),
+    // Exercise the ordinary file workflow. The lazy-layer assertion belongs
+    // to bzip2 itself and should not depend on terminal-device semantics.
+    // The helper preserves ordinary Bash semantics, so each multi-step probe
+    // opts into errexit rather than letting the final OK print mask a failure.
+    "set -eu; printf 'mostly-lazy-shell\\n' > /tmp/kandelo-bzip2-smoke; " +
+      "bzip2 -f /tmp/kandelo-bzip2-smoke; " +
+      "bzip2 -d -f /tmp/kandelo-bzip2-smoke.bz2; " +
+      "IFS= read -r bzip2_result < /tmp/kandelo-bzip2-smoke; " +
+      'test "$bzip2_result" = mostly-lazy-shell; ' +
+      "printf 'HOMEBREW_BZIP2_OK\\n'",
     "HOMEBREW_BZIP2_OK",
   );
   lazyRows = await waitForLazyPackageRows(
@@ -683,10 +668,8 @@ test("a fresh exact shell activates brew support atomically after independent ba
   const m4PriorSources = new Set(lazyRows.map(({ source }) => source));
   await runTerminalCommand(
     page,
-    bashCommand(
-      'test "$(printf mostly-lazy-shell | m4)" = mostly-lazy-shell; ' +
-        "printf 'HOMEBREW_M4_OK\\n'",
-    ),
+    'set -eu; test "$(printf mostly-lazy-shell | m4)" = mostly-lazy-shell; ' +
+      "printf 'HOMEBREW_M4_OK\\n'",
     "HOMEBREW_M4_OK",
   );
   lazyRows = await waitForLazyPackageRows(
@@ -705,13 +688,11 @@ test("a fresh exact shell activates brew support atomically after independent ba
   const repeatPriorSources = new Set(lazyRows.map(({ source }) => source));
   await runTerminalCommand(
     page,
-    bashCommand(
-      "/bin/sh -c 'printf repeat-dash >/dev/null'; " +
-        "printf repeat-bzip2 > /tmp/kandelo-repeat-bzip2; " +
-        "bzip2 -f /tmp/kandelo-repeat-bzip2; " +
-        "printf repeat-m4 | m4 >/dev/null; " +
-        "printf 'HOMEBREW_BASE_REUSE_OK\\n'",
-    ),
+    "set -eu; /bin/sh -c 'printf repeat-dash >/dev/null'; " +
+      "printf repeat-bzip2 > /tmp/kandelo-repeat-bzip2; " +
+      "bzip2 -f /tmp/kandelo-repeat-bzip2; " +
+      "printf repeat-m4 | m4 >/dev/null; " +
+      "printf 'HOMEBREW_BASE_REUSE_OK\\n'",
     "HOMEBREW_BASE_REUSE_OK",
   );
   lazyRows = await readLazyDownloadRows(page);
@@ -728,12 +709,12 @@ test("a fresh exact shell activates brew support atomically after independent ba
   // only the runtime-support activation root and does not execute Homebrew.
   await runTerminalCommand(
     page,
-    bashCommand(`
+    `
 set -eu
 IFS= read -r brew_shebang < /usr/bin/brew
 test "$brew_shebang" = '#!/bin/bash -pu'
 printf 'HOMEBREW_ATOMIC_RUNTIME_ACTIVATED\n'
-`.trim()),
+`.trim(),
     "HOMEBREW_ATOMIC_RUNTIME_ACTIVATED",
     300_000,
   );
@@ -775,7 +756,7 @@ printf 'HOMEBREW_ATOMIC_RUNTIME_ACTIVATED\n'
   // process environment while the lifecycle test separately proves installs.
   await runTerminalCommand(
     page,
-    bashCommand(`
+    `
 set -eu
 test "$(/usr/bin/brew --prefix)" = /home/linuxbrew/.linuxbrew
 probe=/home/linuxbrew/.linuxbrew/Library/Homebrew/cmd/kandelo-env-probe.sh
@@ -787,7 +768,7 @@ KANDELO_BREW_ENV_PROBE
 test "$(/usr/bin/brew kandelo-env-probe)" = wasm32_kandelo
 rm -f "$probe"
 printf 'HOMEBREW_OPERATIONAL_RUNTIME_OK\n'
-`.trim()),
+`.trim(),
     "HOMEBREW_OPERATIONAL_RUNTIME_OK",
     300_000,
   );

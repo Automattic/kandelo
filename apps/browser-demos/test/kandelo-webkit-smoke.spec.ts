@@ -30,6 +30,8 @@ async function waitForPrompt(page: Page, timeout = 120_000) {
 }
 
 async function runTerminalLine(page: Page, command: string) {
+  // WHY: this smoke intentionally tests raw WebKit input plus a persistent
+  // parent-shell prompt; callers split success tokens so echo cannot match.
   await page.locator(".kshell-host").first().click();
   const terminalInput = page.getByRole("textbox", { name: "Terminal input" }).first();
   if (await terminalInput.count()) {

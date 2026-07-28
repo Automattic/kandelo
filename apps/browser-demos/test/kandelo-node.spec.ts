@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { runTerminalCommand } from "./support/terminal-command";
 
 async function gotoOrSkip(page: Page, path: string) {
   await page.goto(path, { waitUntil: "domcontentloaded" });
@@ -24,28 +25,6 @@ async function waitForPrompt(page: Page, timeout = 120_000) {
     .toContain("spidermonkey-node$");
 }
 
-async function runTerminalCommand(
-  page: Page,
-  command: string,
-  expected: string | RegExp,
-  timeout = 120_000,
-) {
-  await page.locator(".kshell-host").first().click();
-  const terminalInput = page.getByRole("textbox", { name: "Terminal input" }).first();
-  if (await terminalInput.count()) {
-    await terminalInput.focus();
-  }
-  await page.keyboard.insertText(command);
-  await page.waitForTimeout(250);
-  await page.keyboard.press("Enter");
-  const assertion = expect.poll(() => terminalText(page), { timeout });
-  if (typeof expected === "string") {
-    await assertion.toContain(expected);
-  } else {
-    await assertion.toMatch(expected);
-  }
-}
-
 test("@slow Kandelo Node demo installs cowsay with npm", async ({ page }) => {
   test.setTimeout(300_000);
   const runtimeErrors: string[] = [];
@@ -69,11 +48,12 @@ test("@slow Kandelo Node demo installs cowsay with npm", async ({ page }) => {
       "&& ./node_modules/.bin/cowsay Kandelo >/tmp/kandelo-cowsay.out 2>&1",
       "&& ! grep -E 'TAR_ENTRY_ERROR|EACCES' /tmp/kandelo-npm.log; then",
       "cat /tmp/kandelo-cowsay.out;",
-      "export PS1=\"KANDELO_\"\"NPM_OK $ \";",
+      "printf 'KANDELO_NPM_OK\\n';",
       "else",
       "cat /tmp/kandelo-npm.log;",
       "cat /tmp/kandelo-cowsay.out 2>/dev/null;",
-      "export PS1=\"KANDELO_\"\"NPM_FAIL $ \";",
+      "printf 'KANDELO_NPM_FAIL\\n';",
+      "exit 1;",
       "fi",
     ].join(" "),
   ].join("; ");
