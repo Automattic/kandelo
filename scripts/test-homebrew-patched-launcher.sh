@@ -2257,6 +2257,13 @@ EOF
       "$protected_platform_root/scripts/homebrew-tap-recipe-runner.py" \
       "$HOMEBREW_PATCHED_RECIPE_RUNNER" ||
     fail "isolated launcher did not stage the admitted root-owned recipe runner"
+  grep -F \
+    "HOMEBREW_KANDELO_TAP_RECIPE_RUNNER=$HOMEBREW_PATCHED_RECIPE_RUNNER" \
+    "$HOMEBREW_PATCHED_BREW_BIN" >/dev/null &&
+    grep -F \
+      "HOMEBREW_KANDELO_TAP_RECIPE_SEALED_ROOT=$HOMEBREW_PATCHED_RECIPE_SEALED_ROOT" \
+      "$HOMEBREW_PATCHED_BREW_BIN" >/dev/null ||
+    fail "isolated wrapper did not freeze the staged recipe boundary paths"
   recipe_config_json="$(
     /usr/bin/sudo -n -- /usr/bin/cat "$HOMEBREW_PATCHED_RECIPE_RUNNER_CONFIG"
   )"

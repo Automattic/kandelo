@@ -2722,6 +2722,7 @@ homebrew_patched_launcher_isolate() {
   local config_root config_file unsafe_config_entry trust_file trust_lock
   local primary_tap_root primary_tap_owner_root taps_root
   local recipe_user recipe_uid jq_bin node_bin protected_anchor protected_nonce
+  local recipe_runner_path recipe_sealed_root
   local xtask_bin xtask_relative xtask_alias xtask_mode xtask_links
   local xtask_uid xtask_state xtask_sha256 xtask_state_after xtask_sha256_after
   local xtask_alias_state xtask_alias_sha256 tap_recipe_isolation tier2_schema
@@ -3246,6 +3247,12 @@ homebrew_patched_launcher_isolate() {
   HOMEBREW_PATCHED_PROTECTED_DIR_STATE="$(
     /usr/bin/stat -c '%d:%i:%u:%g' "$HOMEBREW_PATCHED_PROTECTED_DIR"
   )" || return
+  # WHY: the wrapper source is frozen before privileged recipe-runner staging.
+  # Derive its two fixed paths from the already-selected protected build root
+  # instead of serializing lifecycle globals that are intentionally populated
+  # only after the runner and sealed-output directory have been authenticated.
+  recipe_runner_path="$HOMEBREW_PATCHED_PROTECTED_DIR/homebrew-tap-recipe-runner"
+  recipe_sealed_root="$HOMEBREW_PATCHED_PROTECTED_DIR/sealed-outputs"
   protected_xtask="$HOMEBREW_PATCHED_PROTECTED_DIR/xtask"
   # WHY: a read-only bind preserves the source inode's uid. Stage the already
   # validated bytes as one root-owned inode before Formula code runs so tap
@@ -3536,8 +3543,8 @@ homebrew_patched_launcher_isolate() {
       printf ' %q %q %q %q' \
         "HOMEBREW_KANDELO_FORK_INSTRUMENT=$source_alias_dir/kandelo/tools/bin/wasm-fork-instrument" \
         "HOMEBREW_KANDELO_LOCAL_ROOT_SPILL=$source_alias_dir/kandelo/tools/bin/wasm-local-root-spill" \
-        "HOMEBREW_KANDELO_TAP_RECIPE_RUNNER=$HOMEBREW_PATCHED_RECIPE_RUNNER" \
-        "HOMEBREW_KANDELO_TAP_RECIPE_SEALED_ROOT=$HOMEBREW_PATCHED_RECIPE_SEALED_ROOT"
+        "HOMEBREW_KANDELO_TAP_RECIPE_RUNNER=$recipe_runner_path" \
+        "HOMEBREW_KANDELO_TAP_RECIPE_SEALED_ROOT=$recipe_sealed_root"
     fi
     printf ' "${bottle_tag_env[@]}" "$command_path" "$@")\n'
     printf 'if [ "$source_audit" != 1 ]; then exec "${systemd_command[@]}"; fi\n'
@@ -3623,6 +3630,11 @@ homebrew_patched_launcher_isolate() {
       "$sysroot" "$source_alias_dir/sysroot" \
       "$HOMEBREW_TEMP" "$systemd_slice" "$unit_prefix" "$sudo_bin" \
       "$systemd_run_bin" "$jq_bin" "$node_bin" || return
+    if [ "$HOMEBREW_PATCHED_RECIPE_RUNNER" != "$recipe_runner_path" ] || \
+       [ "$HOMEBREW_PATCHED_RECIPE_SEALED_ROOT" != "$recipe_sealed_root" ]; then
+      echo "homebrew-patched-launcher: staged recipe boundary differs from the frozen wrapper paths" >&2
+      return 2
+    fi
   else
     "$sudo_bin" chmod 0555 "$HOMEBREW_PATCHED_PROTECTED_DIR"
   fi
