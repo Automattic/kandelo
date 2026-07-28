@@ -37,9 +37,11 @@ supported scripts.
 Build scripts must honor the resolver contract. They install only into
 `WASM_POSIX_DEP_OUT_DIR`, verify downloaded source hashes, consume direct deps
 through `WASM_POSIX_DEP_<NAME>_DIR`, declare every dep they use, and produce
-the outputs declared in package metadata. A build script that relies on ambient
-host tools, global SDK links, undeclared transitive deps, or files outside its
-contract is not cache-safe.
+the outputs declared in package metadata. Nested resolvers must honor the
+resolver-supplied `WASM_POSIX_BINARY_CACHE_ROOT`; it identifies the same cache
+that owns those direct dependencies, including an archive-stage override. A
+build script that relies on ambient host tools, global SDK links, undeclared
+transitive deps, or files outside its contract is not cache-safe.
 
 Builds must use the worktree-local SDK. Source `sdk/activate.sh` from package
 scripts; do not rely on `npm link` or a globally installed wrapper. If a build

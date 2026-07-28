@@ -939,6 +939,100 @@ built_by = "test"
     }
 
     #[test]
+    fn cli_custom_cache_root_reaches_direct_dependency_consumers() {
+        let dir = tempdir("e2-cache-root-handoff");
+        let registry = dir.join("registry");
+        let cache_root = dir.join("selected-cache");
+        let out_dir = dir.join("out");
+        fs::create_dir_all(&registry).unwrap();
+        write_wasm32_only_fixture(&registry, "dep");
+
+        let consumer_dir = registry.join("consumer");
+        fs::create_dir_all(&consumer_dir).unwrap();
+        fs::write(
+            consumer_dir.join("package.toml"),
+            r#"
+kind = "library"
+name = "consumer"
+version = "1.0.0"
+depends_on = ["dep@1.0.0"]
+
+[source]
+url = "https://example.test/consumer-1.0.0.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[license]
+spdx = "TestLicense"
+
+[outputs]
+libs = ["lib/libConsumer.a"]
+files = ["cache-root-handoff"]
+"#,
+        )
+        .unwrap();
+        let script_path = consumer_dir.join("build-consumer.sh");
+        fs::write(
+            &script_path,
+            r#"#!/bin/bash
+set -euo pipefail
+test -n "${WASM_POSIX_BINARY_CACHE_ROOT:-}"
+test -n "${WASM_POSIX_DEP_DEP_DIR:-}"
+cache_root_real="$(cd "$WASM_POSIX_BINARY_CACHE_ROOT" && pwd -P)"
+dep_dir_real="$(cd "$WASM_POSIX_DEP_DEP_DIR" && pwd -P)"
+case "$dep_dir_real/" in
+  "$cache_root_real/libs/"*) ;;
+  *) echo "direct dependency escaped selected cache root" >&2; exit 1 ;;
+esac
+mkdir -p "$WASM_POSIX_DEP_OUT_DIR/lib"
+printf 'consumer\n' > "$WASM_POSIX_DEP_OUT_DIR/lib/libConsumer.a"
+printf '%s\n%s\n' "$WASM_POSIX_BINARY_CACHE_ROOT" "$WASM_POSIX_DEP_DEP_DIR" \
+  > "$WASM_POSIX_DEP_OUT_DIR/cache-root-handoff"
+"#,
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&script_path).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&script_path, permissions).unwrap();
+
+        super::run(archive_stage_args(
+            &registry,
+            &cache_root,
+            &out_dir,
+            "consumer",
+        ))
+        .expect("archive-stage must hand its explicit cache root to recipes");
+
+        let consumer_cache = fs::read_dir(cache_root.join("libs"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("consumer-"))
+            })
+            .expect("consumer cache entry");
+        let handoff = fs::read_to_string(consumer_cache.join("cache-root-handoff")).unwrap();
+        let mut handoff = handoff.lines().map(PathBuf::from);
+        assert_eq!(
+            handoff.next().unwrap(),
+            fs::canonicalize(&cache_root).unwrap(),
+        );
+        let direct_dep = fs::canonicalize(handoff.next().unwrap()).unwrap();
+        assert_eq!(
+            direct_dep.parent().unwrap(),
+            fs::canonicalize(&cache_root).unwrap().join("libs"),
+        );
+        assert!(
+            direct_dep
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("dep-")),
+            "direct dependency must use archive-stage's selected cache root",
+        );
+        assert!(handoff.next().is_none());
+    }
+
+    #[test]
     fn cli_archive_filename_uses_build_toml_revision() {
         let dir = tempdir("e2-build-revision");
         let registry = dir.join("registry");
