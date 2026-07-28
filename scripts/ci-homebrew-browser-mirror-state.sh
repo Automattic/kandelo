@@ -128,7 +128,7 @@ validate_state() {
               (.revision | type == "number" and . >= 0 and floor == .) and
               (.cache_key_sha |
                 type == "string" and test("^[0-9a-f]{64}$")) and
-              (.mirror_required | type == "boolean") and
+              .mirror_required == true and
               (.image | type == "object") and
               (.image | keys | sort) == ["bytes", "sha256"] and
               (.image.sha256 |
@@ -344,6 +344,13 @@ case "$command" in
             version="$(jq -er '.version' <<<"$shell_entry")"
             revision="$(jq -er '.revision' <<<"$shell_entry")"
             cache_key_sha="$(jq -er '.cache_key_sha' <<<"$shell_entry")"
+            # WHY: the canonical package index and the immutable bottle-mirror
+            # release are independent publication authorities. A later PR can
+            # correctly resolve an unchanged canonical shell while that
+            # shell's content-addressed mirror is still unpublished. Generic
+            # browser staging is therefore always a closed-acceptance lane:
+            # recover the image-authenticated bottle bytes locally and leave
+            # anonymous public transport to the dedicated publication proof.
             mirror_required=true
             host_target="$(rustc -vV 2>/dev/null | awk '/^host/ {print $2}')"
             repo_root="$(git rev-parse --show-toplevel)"
@@ -367,8 +374,7 @@ case "$command" in
                 exit 1
             }
             case "$canonical_current" in
-                true) mirror_required=false ;;
-                false) ;;
+                true|false) ;;
                 *)
                     echo "ci-homebrew-browser-mirror-state: package index validator returned invalid state" >&2
                     exit 1
