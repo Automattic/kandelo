@@ -23,6 +23,18 @@ npx tsx examples/run-example.ts hello
 different initial user or group. The maximum unsigned 32-bit value is reserved
 by the host protocol and is rejected rather than being mistaken for an ID.
 
+The runner has two explicit filesystem modes. Its default `raw` mode preserves
+the legacy direct host-filesystem behavior and accepts `KERNEL_CWD`.
+`KANDELO_RUNNER_VFS=isolated` instead boots the canonical root image with
+lifecycle-owned scratch storage and uses `/tmp` as the guest working directory.
+Conformance harnesses may additionally provide one quiescent fixture directory
+with `KANDELO_RUNNER_FIXTURE_ROOT`, a relative
+`KANDELO_RUNNER_FIXTURE_CWD`, and an optional relative
+`KANDELO_RUNNER_GUEST_PROGRAM`. The worker copies that tree under
+`/tmp/kandelo-run` before readiness; the guest cannot mutate the source, and
+ambient host executable lookup is disabled. These controls are runner plumbing,
+not guest environment variables.
+
 See [docs/sdk-guide.md](../docs/sdk-guide.md) for full SDK documentation.
 
 ## Programs
