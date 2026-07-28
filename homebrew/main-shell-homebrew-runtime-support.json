@@ -5,7 +5,7 @@
   "catalog": {
     "tap_repository": "kandelo-dev/homebrew-tap-core",
     "tap_name": "kandelo-dev/tap-core",
-    "tap_commit": "9820ef5643dc50f5876e53a1bbf6a309fc62f9a7"
+    "tap_commit": "6ad0e3dbc60e5572c4288c86919238f71c1bc110"
   },
   "base_formula_order": [
     "kandelo-dev/tap-core/dash",
@@ -49,11 +49,16 @@
   ],
   "activation": {
     "mode": "first-use-atomic",
-    "roots": ["/usr/bin/brew"],
+    "roots": [
+      "/usr/bin/brew"
+    ],
     "capability": "homebrew:runtime",
     "bootstrap_package": {
       "name": "homebrew-bootstrap",
-      "outputs": ["homebrew-bootstrap.zip", "homebrew-brew.env"],
+      "outputs": [
+        "homebrew-bootstrap.zip",
+        "homebrew-brew.env"
+      ],
       "required_kernel_abi": 42
     },
     "base_image_default": "deferred",
@@ -112,7 +117,9 @@
     "kandelo-dev/tap-core/tar",
     "kandelo-dev/tap-core/posix-utils-lite"
   ],
-  "additional_formula_order": ["kandelo-dev/tap-core/ruby"],
+  "additional_formula_order": [
+    "kandelo-dev/tap-core/ruby"
+  ],
   "required_commands": [
     {
       "path": "/usr/bin/ruby",
@@ -152,11 +159,11 @@
   ],
   "availability": {
     "audited_catalog": {
-      "checkout_commit": "9820ef5643dc50f5876e53a1bbf6a309fc62f9a7",
-      "metadata_sha256": "bf9014ebcc9aff269d403c418b6e083d06b76d59d90c87f456a4584abe857134",
-      "metadata_tap_commit": "93b3e778f3404a754a8da1cecd931eac9415ca64",
-      "kandelo_commit": "88d26f4c627a363e01e567574916aff4e00828ee",
-      "runtime_bottle_provenance_sha256": "6524beb7511575c912f8d5b36909dcd0c35ed6f6dbc78eb342921a0c5262ceb0",
+      "checkout_commit": "6ad0e3dbc60e5572c4288c86919238f71c1bc110",
+      "metadata_sha256": "34f1cb2454ff6d9c134195302a5c5fcac85b9502f2522d3e584bf55d539c9a7d",
+      "metadata_tap_commit": "b5ffda55d9b0e27efdfdec30ebb38d48a21518c4",
+      "kandelo_commit": "c647adda31d0918de944135543fb94039135cef1",
+      "runtime_bottle_provenance_sha256": "b9070afcb5ddcdc112c1b994c16f8f46251d78dff3877e01adf30b226e4c31d2",
       "kandelo_abi": 42,
       "release_tag": "bottles-abi-v42",
       "required_arch": "wasm32"

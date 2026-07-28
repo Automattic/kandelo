@@ -409,6 +409,31 @@ export function requiredMainShellPublicPaths(
   return expected;
 }
 
+/**
+ * Bound command-driven downloads after the atomic Homebrew cohort is active.
+ *
+ * Homebrew may change which already-admitted helper commands a read-only
+ * invocation uses. That operational detail must not become a second package
+ * lock, but it also must not let Homebrew activate an unrelated shell bottle.
+ */
+export function assertMainShellOperationalRuntimeFetches(
+  runtimeSupport: HomebrewRuntimeSupportContract,
+  fetchedPackages: readonly string[],
+): void {
+  const fetched = [...fetchedPackages];
+  assertUnique(fetched, "operational Homebrew runtime fetches");
+  const reviewed = new Set(runtimeSupport.formulaOrder);
+  const outsideRuntime = fetched.filter(
+    (packageName) => !reviewed.has(packageName),
+  );
+  if (outsideRuntime.length !== 0) {
+    fail(
+      "operational Homebrew runtime fetched packages outside the reviewed " +
+        `support closure: ${JSON.stringify(outsideRuntime.sort())}`,
+    );
+  }
+}
+
 function assertDemoConfig(
   input: MainShellImageContractInput,
   homebrew: Record<string, unknown>,

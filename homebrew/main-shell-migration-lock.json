@@ -3,7 +3,7 @@
   "tap_repository": "kandelo-dev/homebrew-tap-core",
   "tap_name": "kandelo-dev/tap-core",
   "catalog": {
-    "tap_commit": "9820ef5643dc50f5876e53a1bbf6a309fc62f9a7"
+    "tap_commit": "6ad0e3dbc60e5572c4288c86919238f71c1bc110"
   },
   "consumer": {
     "profile": "main-shell",
@@ -11,7 +11,10 @@
   },
   "packages": [
     {
-      "registry": { "name": "dash", "version": "0.5.12" },
+      "registry": {
+        "name": "dash",
+        "version": "0.5.12"
+      },
       "formula": {
         "name": "dash",
         "version": "0.5.12",
@@ -20,7 +23,10 @@
       }
     },
     {
-      "registry": { "name": "bash", "version": "5.2.37" },
+      "registry": {
+        "name": "bash",
+        "version": "5.2.37"
+      },
       "formula": {
         "name": "bash",
         "version": "5.2.37",
@@ -29,7 +35,10 @@
       }
     },
     {
-      "registry": { "name": "ncurses", "version": "6.5" },
+      "registry": {
+        "name": "ncurses",
+        "version": "6.5"
+      },
       "formula": {
         "name": "ncurses",
         "version": "6.5",
@@ -38,7 +47,10 @@
       }
     },
     {
-      "registry": { "name": "coreutils", "version": "9.6" },
+      "registry": {
+        "name": "coreutils",
+        "version": "9.6"
+      },
       "formula": {
         "name": "coreutils",
         "version": "9.6",
@@ -47,7 +59,10 @@
       }
     },
     {
-      "registry": { "name": "gawk", "version": "5.3.0" },
+      "registry": {
+        "name": "gawk",
+        "version": "5.3.0"
+      },
       "formula": {
         "name": "gawk",
         "version": "5.3.0",
@@ -56,7 +71,10 @@
       }
     },
     {
-      "registry": { "name": "grep", "version": "3.11" },
+      "registry": {
+        "name": "grep",
+        "version": "3.11"
+      },
       "formula": {
         "name": "grep",
         "version": "3.11",
@@ -65,7 +83,10 @@
       }
     },
     {
-      "registry": { "name": "sed", "version": "4.9" },
+      "registry": {
+        "name": "sed",
+        "version": "4.9"
+      },
       "formula": {
         "name": "sed",
         "version": "4.9",
@@ -74,7 +95,10 @@
       }
     },
     {
-      "registry": { "name": "bc", "version": "1.07.1" },
+      "registry": {
+        "name": "bc",
+        "version": "1.07.1"
+      },
       "formula": {
         "name": "bc",
         "version": "1.07.1",
@@ -83,7 +107,10 @@
       }
     },
     {
-      "registry": { "name": "file", "version": "5.45" },
+      "registry": {
+        "name": "file",
+        "version": "5.45"
+      },
       "formula": {
         "name": "file-formula",
         "version": "5.45",
@@ -92,7 +119,10 @@
       }
     },
     {
-      "registry": { "name": "m4", "version": "1.4.19" },
+      "registry": {
+        "name": "m4",
+        "version": "1.4.19"
+      },
       "formula": {
         "name": "m4",
         "version": "1.4.21",
@@ -101,7 +131,10 @@
       }
     },
     {
-      "registry": { "name": "make", "version": "4.4.1" },
+      "registry": {
+        "name": "make",
+        "version": "4.4.1"
+      },
       "formula": {
         "name": "make",
         "version": "4.4.1",
@@ -110,7 +143,10 @@
       }
     },
     {
-      "registry": { "name": "findutils", "version": "4.10.0" },
+      "registry": {
+        "name": "findutils",
+        "version": "4.10.0"
+      },
       "formula": {
         "name": "findutils",
         "version": "4.10.0",
@@ -119,7 +155,10 @@
       }
     },
     {
-      "registry": { "name": "diffutils", "version": "3.10" },
+      "registry": {
+        "name": "diffutils",
+        "version": "3.10"
+      },
       "formula": {
         "name": "diffutils",
         "version": "3.12",
@@ -128,7 +167,10 @@
       }
     },
     {
-      "registry": { "name": "posix-utils-lite", "version": "0.1.0" },
+      "registry": {
+        "name": "posix-utils-lite",
+        "version": "0.1.0"
+      },
       "formula": {
         "name": "posix-utils-lite",
         "version": "0.1.0",
@@ -137,7 +179,10 @@
       }
     },
     {
-      "registry": { "name": "fbdoom", "version": "0.1.0" },
+      "registry": {
+        "name": "fbdoom",
+        "version": "0.1.0"
+      },
       "formula": {
         "name": "fbdoom",
         "version": "0.1.0",
@@ -146,7 +191,10 @@
       }
     },
     {
-      "registry": { "name": "modeset", "version": "0.1.0" },
+      "registry": {
+        "name": "modeset",
+        "version": "0.1.0"
+      },
       "formula": {
         "name": "modeset",
         "version": "0.1.0",
@@ -155,7 +203,10 @@
       }
     },
     {
-      "registry": { "name": "less", "version": "668" },
+      "registry": {
+        "name": "less",
+        "version": "668"
+      },
       "formula": {
         "name": "less",
         "version": "668",
@@ -164,7 +215,10 @@
       }
     },
     {
-      "registry": { "name": "tar", "version": "1.35" },
+      "registry": {
+        "name": "tar",
+        "version": "1.35"
+      },
       "formula": {
         "name": "tar",
         "version": "1.35",
@@ -173,7 +227,10 @@
       }
     },
     {
-      "registry": { "name": "curl", "version": "8.11.1" },
+      "registry": {
+        "name": "curl",
+        "version": "8.11.1"
+      },
       "formula": {
         "name": "curl",
         "version": "8.11.1",
@@ -182,7 +239,10 @@
       }
     },
     {
-      "registry": { "name": "netcat", "version": "0.7.1" },
+      "registry": {
+        "name": "netcat",
+        "version": "0.7.1"
+      },
       "formula": {
         "name": "netcat",
         "version": "0.7.1",
@@ -191,7 +251,10 @@
       }
     },
     {
-      "registry": { "name": "wget", "version": "1.25.0" },
+      "registry": {
+        "name": "wget",
+        "version": "1.25.0"
+      },
       "formula": {
         "name": "wget",
         "version": "1.25.0",
@@ -200,7 +263,10 @@
       }
     },
     {
-      "registry": { "name": "git", "version": "2.47.1" },
+      "registry": {
+        "name": "git",
+        "version": "2.47.1"
+      },
       "formula": {
         "name": "git",
         "version": "2.47.1",
@@ -209,7 +275,10 @@
       }
     },
     {
-      "registry": { "name": "gzip", "version": "1.13" },
+      "registry": {
+        "name": "gzip",
+        "version": "1.13"
+      },
       "formula": {
         "name": "gzip",
         "version": "1.14",
@@ -218,7 +287,10 @@
       }
     },
     {
-      "registry": { "name": "bzip2", "version": "1.0.8" },
+      "registry": {
+        "name": "bzip2",
+        "version": "1.0.8"
+      },
       "formula": {
         "name": "bzip2",
         "version": "1.0.8",
@@ -227,7 +299,10 @@
       }
     },
     {
-      "registry": { "name": "xz", "version": "5.6.2" },
+      "registry": {
+        "name": "xz",
+        "version": "5.6.2"
+      },
       "formula": {
         "name": "xz",
         "version": "5.6.2",
@@ -236,7 +311,10 @@
       }
     },
     {
-      "registry": { "name": "zstd", "version": "1.5.6" },
+      "registry": {
+        "name": "zstd",
+        "version": "1.5.6"
+      },
       "formula": {
         "name": "zstd",
         "version": "1.5.7",
@@ -245,7 +323,10 @@
       }
     },
     {
-      "registry": { "name": "zip", "version": "3.0" },
+      "registry": {
+        "name": "zip",
+        "version": "3.0"
+      },
       "formula": {
         "name": "zip",
         "version": "3.0",
@@ -254,7 +335,10 @@
       }
     },
     {
-      "registry": { "name": "unzip", "version": "6.0" },
+      "registry": {
+        "name": "unzip",
+        "version": "6.0"
+      },
       "formula": {
         "name": "unzip",
         "version": "6.0",
@@ -263,7 +347,10 @@
       }
     },
     {
-      "registry": { "name": "lsof", "version": "0.1.0" },
+      "registry": {
+        "name": "lsof",
+        "version": "0.1.0"
+      },
       "formula": {
         "name": "lsof",
         "version": "0.1.0",
@@ -272,7 +359,10 @@
       }
     },
     {
-      "registry": { "name": "nano", "version": "8.0" },
+      "registry": {
+        "name": "nano",
+        "version": "8.0"
+      },
       "formula": {
         "name": "nano",
         "version": "8.0",
@@ -281,7 +371,10 @@
       }
     },
     {
-      "registry": { "name": "vim", "version": "9.1.0900" },
+      "registry": {
+        "name": "vim",
+        "version": "9.1.0900"
+      },
       "formula": {
         "name": "vim",
         "version": "9.2.0750",
@@ -290,7 +383,10 @@
       }
     },
     {
-      "registry": { "name": "nethack", "version": "3.6.7" },
+      "registry": {
+        "name": "nethack",
+        "version": "3.6.7"
+      },
       "formula": {
         "name": "nethack",
         "version": "3.6.7",
@@ -379,7 +475,10 @@
   ],
   "compatibility": {
     "mirror_link_manifest_bin": {
-      "targets": ["/usr/bin", "/bin"]
+      "targets": [
+        "/usr/bin",
+        "/bin"
+      ]
     },
     "link_conflict_owners": [
       {
@@ -403,7 +502,10 @@
         "package": "kandelo-dev/tap-core/dash",
         "source_kind": "link",
         "source": "bin/dash",
-        "targets": ["/usr/bin/sh", "/bin/sh"]
+        "targets": [
+          "/usr/bin/sh",
+          "/bin/sh"
+        ]
       },
       {
         "package": "kandelo-dev/tap-core/bzip2",
@@ -420,7 +522,10 @@
         "package": "kandelo-dev/tap-core/gawk",
         "source_kind": "link",
         "source": "bin/gawk",
-        "targets": ["/usr/bin/awk", "/bin/awk"]
+        "targets": [
+          "/usr/bin/awk",
+          "/bin/awk"
+        ]
       },
       {
         "package": "kandelo-dev/tap-core/grep",
@@ -437,7 +542,10 @@
         "package": "kandelo-dev/tap-core/netcat",
         "source_kind": "link",
         "source": "bin/nc",
-        "targets": ["/usr/bin/netcat", "/bin/netcat"]
+        "targets": [
+          "/usr/bin/netcat",
+          "/bin/netcat"
+        ]
       },
       {
         "package": "kandelo-dev/tap-core/git",
@@ -454,13 +562,17 @@
         "package": "kandelo-dev/tap-core/fbdoom",
         "source_kind": "link",
         "source": "bin/fbdoom",
-        "targets": ["/usr/local/bin/fbdoom"]
+        "targets": [
+          "/usr/local/bin/fbdoom"
+        ]
       },
       {
         "package": "kandelo-dev/tap-core/modeset",
         "source_kind": "link",
         "source": "bin/modeset",
-        "targets": ["/usr/local/bin/modeset"]
+        "targets": [
+          "/usr/local/bin/modeset"
+        ]
       }
     ],
     "public_commands": {
@@ -671,7 +783,10 @@
         "git-remote-http",
         "git-remote-https"
       ],
-      "usr_local_bin_only": ["fbdoom", "modeset"],
+      "usr_local_bin_only": [
+        "fbdoom",
+        "modeset"
+      ],
       "supporting_paths": [
         {
           "package": "kandelo-dev/tap-core/libmagic",

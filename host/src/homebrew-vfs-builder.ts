@@ -308,10 +308,16 @@ export async function buildHomebrewVfs(
     throw new HomebrewVfsBuildError("Homebrew consumer-state mode is invalid");
   }
   const linkResolution = resolveLinkConflicts(plan, options.compatibilityPolicy);
-  const runtimeStateDeclarations = prepareRuntimeState(
-    plan,
-    options.compatibilityPolicy?.runtime_state,
-  );
+  // WHY: a deferred bottle collection owns only package trees and link
+  // conflict resolution. Consumer-owned files are validated against the final
+  // composed namespace later; asking a focused delta to validate base-owned
+  // runtime state makes a truthful partial plan look incomplete.
+  const runtimeStateDeclarations = consumerState === "apply"
+    ? prepareRuntimeState(
+      plan,
+      options.compatibilityPolicy?.runtime_state,
+    )
+    : [];
 
   ensureDirRecursive(fs, "/etc/kandelo");
 

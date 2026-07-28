@@ -222,18 +222,6 @@ export async function buildHomebrewMaterializedVfs(
     }
   }
 
-  const consumer = applyHomebrewVfsConsumerState(plan, {
-    fs: options.fs,
-    compatibilityPolicy: options.compatibilityPolicy,
-    writeProfile: options.writeProfile,
-  });
-  if (
-    JSON.stringify(consumer.linkConflicts) !==
-      JSON.stringify(collection.report.link_conflicts ?? [])
-  ) {
-    throw new Error("Homebrew consumer conflict ownership differs from the global collection");
-  }
-
   let runtimeSupportBindings: BoundCollectionTree[] = [];
   let runtimeSupportPlan: HomebrewVfsPlan | undefined;
   let runtimeSupportPackageReports:
@@ -322,8 +310,6 @@ export async function buildHomebrewMaterializedVfs(
     sha256: digest(mirrorPlanBytes),
     bytes: mirrorPlanBytes,
   };
-  let runtimeSupportConsumer:
-    ReturnType<typeof applyHomebrewVfsConsumerState> | undefined;
   assertHomebrewBottleMirrorBundle(mirrorPlan, mirrorPayloads, mirrorPlanAsset);
   const mirrorByPackage = new Map(
     mirrorPlan.assets.map((asset) => [asset.package, asset]),
@@ -353,40 +339,9 @@ export async function buildHomebrewMaterializedVfs(
       atomicActivationGroup:
         runtimeSupport.contract.activation.atomicGroup,
     });
-    // WHY: /usr/bin and /bin are image-owned entry points. Keeping these tiny
-    // symlinks eager preserves the normal command namespace while their
-    // Homebrew-prefix targets still activate the sealed lazy support cohort.
-    runtimeSupportConsumer = applyHomebrewVfsConsumerState(
-      runtimeSupportPlan!,
-      {
-        fs: options.fs,
-        compatibilityPolicy: options.compatibilityPolicy,
-        writeProfile: false,
-      },
-    );
-    if (
-      JSON.stringify(runtimeSupportConsumer.linkConflicts) !==
-        JSON.stringify(runtimeSupportCollectionConflicts)
-    ) {
-      throw new Error(
-        "Homebrew runtime-support consumer conflict ownership differs from its collection",
-      );
-    }
   }
   writeHomebrewBottleMirrorPlan(options.fs, mirrorPlanAsset);
 
-  const compatibilityLinks =
-    consumer.compatibilityLinks === undefined &&
-      runtimeSupportConsumer?.compatibilityLinks === undefined
-      ? undefined
-      : [
-          ...(consumer.compatibilityLinks ?? []),
-          ...(runtimeSupportConsumer?.compatibilityLinks ?? []),
-        ];
-  const linkConflicts = [
-    ...consumer.linkConflicts,
-    ...(runtimeSupportConsumer?.linkConflicts ?? []),
-  ];
   const compositionPlan: HomebrewVfsPlan = {
     ...plan,
     packages: [
@@ -394,6 +349,29 @@ export async function buildHomebrewMaterializedVfs(
       ...(runtimeSupportPlan?.packages ?? []),
     ],
   };
+  // WHY: compatibility links and runtime state are consumer-owned final-image
+  // policy, not bottle-layer contents. Apply them once after the optional
+  // runtime-support delta joins the base plan so base-owned declarations are
+  // neither rejected by a Ruby-only delta nor silently omitted or duplicated.
+  const consumer = applyHomebrewVfsConsumerState(compositionPlan, {
+    fs: options.fs,
+    compatibilityPolicy: options.compatibilityPolicy,
+    writeProfile: options.writeProfile,
+  });
+  const collectionConflicts = [
+    ...(collection.report.link_conflicts ?? []),
+    ...runtimeSupportCollectionConflicts,
+  ];
+  if (
+    JSON.stringify(consumer.linkConflicts) !==
+      JSON.stringify(collectionConflicts)
+  ) {
+    throw new Error(
+      "Homebrew consumer conflict ownership differs from the complete bottle collection",
+    );
+  }
+  const compatibilityLinks = consumer.compatibilityLinks;
+  const linkConflicts = consumer.linkConflicts;
   const report: HomebrewVfsBuildReport = {
     ...collection.report,
     ...(compatibilityLinks === undefined ? {} : {

@@ -26,6 +26,7 @@ import {
   loadHomebrewBottleMirrorBindings,
 } from "./homebrew-closed-lazy-assets";
 import {
+  assertMainShellOperationalRuntimeFetches,
   assertMainShellImageContract,
   requiredMainShellPublicPaths,
   type MainShellPublicPathEntry,
@@ -227,6 +228,21 @@ if (pendingTrees.length !== mirrorPlan.assets.length) {
   );
 }
 assertPendingTreeHomebrewBottleMirrorBinding(pendingTrees, mirrorPlan);
+const expectedPendingBottlePackages =
+  guestPendingBottlePackages(guestManifest);
+const mirrorPackages = mirrorPlan.assets
+  .map((asset) => asset.package)
+  .sort();
+if (
+  JSON.stringify(mirrorPackages) !==
+  JSON.stringify(expectedPendingBottlePackages)
+) {
+  throw new Error(
+    "main-shell bottle mirror packages differ from the guest materialization " +
+      `contract: actual=${JSON.stringify(mirrorPackages)} ` +
+      `expected=${JSON.stringify(expectedPendingBottlePackages)}`,
+  );
+}
 const runtimeSupportPackages = packagesForUrls(
   pendingRuntimeSupportTrees.map((tree) => tree.content!.transports[0]!),
   mirrorPlan,
@@ -436,19 +452,70 @@ printf 'homebrew-m4-ok\\n'
     "base shell proof",
   );
 
-  const brewEventStart = lazyDownloads.length;
-  const brewStdoutStart = stdout.length;
-  const brewStderrStart = stderr.length;
+  const runtimeActivationEventStart = lazyDownloads.length;
+  const runtimeActivationStdoutStart = stdout.length;
+  const runtimeActivationStderrStart = stderr.length;
+  // WHY: admitted lazy base commands intentionally have public paths before
+  // materialization. Probing one here could activate its bottle tree and
+  // contaminate the exact atomic cohort checked below, so this phase resolves
+  // only the runtime-support activation root and does not execute Homebrew.
+  const runtimeActivationCommand = `
+set -eu
+IFS= read -r brew_shebang < /usr/bin/brew
+test "$brew_shebang" = '#!/bin/bash -pu' ||
+  { printf 'homebrew runtime activation: unexpected brew launcher\\n' >&2; exit 1; }
+printf 'homebrew-atomic-runtime-activated\n'
+`.trim();
+  await spawnWithTimeout(
+    host,
+    shellBytes,
+    [shellConfig.argv[0], "-c", runtimeActivationCommand],
+    "atomic Homebrew runtime activation phase",
+    () => ({
+      stdout: stdout.slice(runtimeActivationStdoutStart),
+      stderr: stderr.slice(runtimeActivationStderrStart),
+    }),
+  );
+  const runtimeActivationStdout = stdout.slice(runtimeActivationStdoutStart);
+  const runtimeActivationStderr = stderr.slice(runtimeActivationStderrStart);
+  if (
+    runtimeActivationStdout !== "homebrew-atomic-runtime-activated\n" ||
+    runtimeActivationStderr !== ""
+  ) {
+    throw new Error(
+      `atomic Homebrew runtime activation returned unexpected output; ` +
+        `stdout=${JSON.stringify(runtimeActivationStdout)} ` +
+        `stderr=${JSON.stringify(runtimeActivationStderr)}`,
+    );
+  }
+  const runtimeActivationEvents = lazyDownloads.slice(
+    runtimeActivationEventStart,
+  );
+  assertHomebrewBootstrapTransport(
+    runtimeActivationEvents,
+    homebrewBootstrapTree,
+    homebrewBootstrapTransportUrl,
+  );
+  assertFetchedPackageSet(
+    withoutTransportUrl(
+      runtimeActivationEvents,
+      homebrewBootstrapTransportUrl,
+    ),
+    pendingTrees,
+    mirrorPlan,
+    RUNTIME_SUPPORT_EXPECTED_PACKAGES,
+    "atomic Homebrew runtime activation",
+  );
+
+  const brewOperationEventStart = lazyDownloads.length;
+  const brewOperationStdoutStart = stdout.length;
+  const brewOperationStderrStart = stderr.length;
   const brewCommand = `
 set -eu
 brew_smoke_fail() {
   printf 'homebrew runtime smoke: %s\\n' "$1" >&2
   exit 1
 }
-test ! -e /usr/bin/file ||
-  brew_smoke_fail '/usr/bin/file must remain outside the admitted runtime'
-test -x /usr/bin/brew ||
-  brew_smoke_fail '/usr/bin/brew is not executable after atomic activation'
 brew_version="$(/usr/bin/brew --version 2>&1)" ||
   brew_smoke_fail 'brew --version failed'
 case "$brew_version" in
@@ -479,38 +546,44 @@ brew_tag="$(
 rm -f "$probe"
 test "$brew_tag" = wasm32_kandelo ||
   brew_smoke_fail "brew returned the wrong Kandelo bottle tag: $brew_tag"
-printf 'homebrew-atomic-runtime-ok\n'
+printf 'homebrew-operational-runtime-ok\n'
 `.trim();
   await spawnWithTimeout(
     host,
     shellBytes,
     [shellConfig.argv[0], "-c", brewCommand],
-    "atomic Homebrew runtime phase",
+    "operational Homebrew runtime phase",
     () => ({
-      stdout: stdout.slice(brewStdoutStart),
-      stderr: stderr.slice(brewStderrStart),
+      stdout: stdout.slice(brewOperationStdoutStart),
+      stderr: stderr.slice(brewOperationStderrStart),
     }),
   );
-  const brewStdout = stdout.slice(brewStdoutStart);
-  const brewStderr = stderr.slice(brewStderrStart);
-  if (brewStdout !== "homebrew-atomic-runtime-ok\n" || brewStderr !== "") {
+  const brewStdout = stdout.slice(brewOperationStdoutStart);
+  const brewStderr = stderr.slice(brewOperationStderrStart);
+  if (
+    brewStdout !== "homebrew-operational-runtime-ok\n" ||
+    brewStderr !== ""
+  ) {
     throw new Error(
-      `atomic Homebrew runtime returned unexpected output; ` +
+      `operational Homebrew runtime returned unexpected output; ` +
         `stdout=${JSON.stringify(brewStdout)} stderr=${JSON.stringify(brewStderr)}`,
     );
   }
-  const brewEvents = lazyDownloads.slice(brewEventStart);
-  assertHomebrewBootstrapTransport(
-    brewEvents,
-    homebrewBootstrapTree,
+  const brewOperationEvents = lazyDownloads.slice(brewOperationEventStart);
+  assertNoTransportForUrl(
+    brewOperationEvents,
     homebrewBootstrapTransportUrl,
+    "operational Homebrew runtime",
   );
-  assertFetchedPackageSet(
-    withoutTransportUrl(brewEvents, homebrewBootstrapTransportUrl),
+  const operationalRuntimePackages = fetchedPackagesForEvents(
+    brewOperationEvents,
     pendingTrees,
     mirrorPlan,
-    RUNTIME_SUPPORT_EXPECTED_PACKAGES,
-    "atomic Homebrew runtime first use",
+    "operational Homebrew runtime",
+  );
+  assertMainShellOperationalRuntimeFetches(
+    runtimeSupport,
+    operationalRuntimePackages,
   );
 
   const repeatBrewEventStart = lazyDownloads.length;
@@ -526,17 +599,27 @@ printf 'homebrew-atomic-runtime-ok\n'
     "repeated Homebrew runtime use",
   );
 
+  const expectedFetchedPackages = [...new Set([
+    ...BASE_EXPECTED_FETCHED_PACKAGES,
+    ...RUNTIME_SUPPORT_EXPECTED_PACKAGES,
+    ...operationalRuntimePackages,
+  ])].sort();
   assertFetchedPackageSet(
     withoutTransportUrl(lazyDownloads, homebrewBootstrapTransportUrl),
     pendingTrees,
     mirrorPlan,
-    [...BASE_EXPECTED_FETCHED_PACKAGES, ...RUNTIME_SUPPORT_EXPECTED_PACKAGES],
+    expectedFetchedPackages,
     "complete lazy shell and Homebrew runtime surface",
   );
   const transportEvidence = assertBottleTransportEvents(
     withoutTransportUrl(lazyDownloads, homebrewBootstrapTransportUrl),
     pendingTrees,
     mirrorPlan,
+    expectedFetchedPackages,
+  );
+  const untouchedPackages = assertUntouchedMirrorPackages(
+    mirrorPlan,
+    expectedFetchedPackages,
   );
   const counts = mainShellCounts(migrationLock);
   console.log(
@@ -544,7 +627,8 @@ printf 'homebrew-atomic-runtime-ok\n'
       `${counts.formulae}-Formula archive, image-owned ` +
       "offline Bash, retained lazy /bin/sh, lazy bzip2 and m4, metadata, and " +
       "one atomic Homebrew runtime activation passed " +
-      `(${transportEvidence.bottles} bottles, ` +
+      `(${transportEvidence.bottles} bottles fetched, ` +
+      `${untouchedPackages.length} remain deferred, ` +
       `${transportEvidence.bytes} bytes).`,
   );
 } finally {
@@ -774,6 +858,7 @@ function assertBottleTransportEvents(
   events: readonly LazyDownloadEvent[],
   pendingTrees: readonly SerializedLazyArchiveEntry[],
   plan: HomebrewBottleMirrorPlan,
+  expectedPackages: readonly string[],
 ): { bottles: number; bytes: number } {
   const evidence = assertCompleteBottleTransport(
     events,
@@ -781,23 +866,25 @@ function assertBottleTransportEvents(
     "Homebrew main-shell command surface",
   );
   const fetchedPackages = packagesForUrls(evidence.urls, plan);
-  const expectedPackages = [
-    ...BASE_EXPECTED_FETCHED_PACKAGES,
-    ...RUNTIME_SUPPORT_EXPECTED_PACKAGES,
-  ].sort();
-  if (JSON.stringify(fetchedPackages) !== JSON.stringify(expectedPackages)) {
+  const expected = [...expectedPackages].sort();
+  if (JSON.stringify(fetchedPackages) !== JSON.stringify(expected)) {
     throw new Error(
       `main-shell smoke fetched ${JSON.stringify(fetchedPackages)}, expected ` +
-        `the exact lazy base ${JSON.stringify(expectedPackages)}`,
-    );
-  }
-  if (evidence.bottles !== pendingTrees.length) {
-    throw new Error(
-      `main-shell smoke fetched ${evidence.bottles} trees, expected all ` +
-        `${pendingTrees.length} reviewed lazy bottle trees`,
+        `the exact exercised package set ${JSON.stringify(expected)}`,
     );
   }
   return { bottles: evidence.bottles, bytes: evidence.bytes };
+}
+
+function fetchedPackagesForEvents(
+  events: readonly LazyDownloadEvent[],
+  pendingTrees: readonly SerializedLazyArchiveEntry[],
+  plan: HomebrewBottleMirrorPlan,
+  label: string,
+): string[] {
+  if (events.length === 0) return [];
+  const evidence = assertCompleteBottleTransport(events, pendingTrees, label);
+  return packagesForUrls(evidence.urls, plan);
 }
 
 function assertFetchedPackageSet(
@@ -818,6 +905,26 @@ function assertFetchedPackageSet(
   }
 }
 
+function assertUntouchedMirrorPackages(
+  plan: HomebrewBottleMirrorPlan,
+  fetchedPackages: readonly string[],
+): string[] {
+  const fetched = new Set(fetchedPackages);
+  const untouched = plan.assets
+    .map((asset) => asset.package)
+    .filter((packageName) => !fetched.has(packageName))
+    .sort();
+  // WHY: this acceptance test deliberately samples the broad shell closure.
+  // Fetching every mirrored bottle would prove transport but would destroy the
+  // product property that uninvoked software remains lazy.
+  if (untouched.length === 0) {
+    throw new Error(
+      "main-shell smoke materialized every mirrored package instead of preserving laziness",
+    );
+  }
+  return untouched;
+}
+
 function packagesForUrls(
   urls: readonly string[],
   plan: HomebrewBottleMirrorPlan,
@@ -836,6 +943,33 @@ function packagesForUrls(
       return packageName;
     })
     .sort();
+}
+
+function guestPendingBottlePackages(guestManifest: unknown): string[] {
+  const guest = asRecord(guestManifest, "guest Homebrew manifest");
+  const materialization = asRecord(
+    guest.materialization,
+    "guest Homebrew materialization",
+  );
+  const runtimeSupport = asRecord(
+    materialization.runtime_support,
+    "guest Homebrew runtime-support materialization",
+  );
+  const deferred = stringArray(
+    materialization.deferred_package_order,
+    "guest Homebrew deferred_package_order",
+  );
+  const runtime = stringArray(
+    runtimeSupport.package_order,
+    "guest Homebrew runtime-support package_order",
+  );
+  const packages = [...deferred, ...runtime];
+  if (new Set(packages).size !== packages.length) {
+    throw new Error(
+      "guest Homebrew pending package orders contain a duplicate identity",
+    );
+  }
+  return packages.sort();
 }
 
 function mainShellCounts(migrationLock: unknown): {
@@ -1264,6 +1398,16 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function asRecord(value: unknown, label: string): Record<string, unknown> {
   if (!isRecord(value)) throw new Error(`${label} is not an object`);
   return value;
+}
+
+function stringArray(value: unknown, label: string): string[] {
+  if (
+    !Array.isArray(value) ||
+    value.some((entry) => typeof entry !== "string" || entry.length === 0)
+  ) {
+    throw new Error(`${label} is not an array of nonempty strings`);
+  }
+  return [...value];
 }
 
 function canonicalJson(value: unknown): string {

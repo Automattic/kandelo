@@ -918,7 +918,7 @@ finalizer with `--artifact <shell.vfs.zst> --apply`, reproduce the same image
 through the ordinary sealed path, and only then return the recipe to
 `publication_state = "ready"`.
 
-The checked-in `9820ef5643dc50f5876e53a1bbf6a309fc62f9a7` first-party tap value is the final shell
+The checked-in `6ad0e3dbc60e5572c4288c86919238f71c1bc110` first-party tap value is the final shell
 catalog authority. The shell recipe remains `UNPUBLISHED` so archive staging
 can substitute the exact landed Kandelo commit, while
 `publication_state = "ready"` admits that normal exact-main path. The lazy
@@ -2599,6 +2599,12 @@ guest Homebrew manifest, and bounded image metadata bind every applied entry;
 file entries additionally bind their content SHA-256 and byte count. This
 mechanism preserves package-conditioned machine state without assigning that
 state to a bottle or adding package-name branches to the image builder.
+Partial bottle collections own only their package trees and reviewed link
+conflict selection. After the base and optional runtime-support trees are
+registered, the composer validates and applies aliases, profile links, and
+runtime state exactly once against the complete merged package plan. A
+base-owned declaration therefore remains valid beside a runtime-support-only
+delta, while an owner missing from the final plan still fails closed.
 
 The main-shell composer copies the exact tracked
 `homebrew/main-shell-demo.json` bytes into the image. That canonical

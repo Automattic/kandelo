@@ -6,14 +6,14 @@
   "inputs": {
     "bootstrap_source_lock_sha256": "91052d9d0b1ab6bc2ea034ad9159da6ea9217fd7b9201710aa25ff7502b33fb7",
     "bootstrap_tree_spec_sha256": "b1f4b479a8364282700bdada99257160f66a3b314cc6a237d1d52c868a4a9b62",
-    "brewfile_sha256": "4dc6e46b3f2061b357a84a2b5edc3b5108c1bfbca0d6accd02e172b358efd7da",
-    "demo_config_sha256": "1ef5f56b4a4425fc19d38da260a5742aa6be53655b8c16489d9427bf96b2d1e2",
+    "brewfile_sha256": "6f59fe83d93548bd2521a0fe9af1942ab321b2fb249939bf9e6a37f7de0f4722",
+    "demo_config_sha256": "6a09a53f0b169400948aa4f5c9c7a4b904ed7007ad0912d9cd73a66f7b57e455",
     "materialization_policy_sha256": "fb170c25f71e6e7fdd3470901b3ab3a42e7765648d55f62fad38230e30461fe0",
-    "migration_lock_sha256": "8082195c72a5a542ef0c29f97bfa2063cb78d00717840a6728d6db58fd8ff4f8",
-    "runtime_support_sha256": "72c6749010d9088ea8a2da8766fccfa4f8aa05c6a523fce194745396e4f934fa"
+    "migration_lock_sha256": "9b19540a88790fa5d7a03b3aa2270365c25e0f24a528bdaf9e7bf6a0b71ed738",
+    "runtime_support_sha256": "d14cd4ebbe184c3179a1a033263b35c8b35a7ec44a691bd8bcfd6acbde386a18"
   },
   "image": {
-    "sha256": "a364990cd90b828c7e8d9f903e1d50f17ef4b9043837495ce41ddaee5dca7cb5",
-    "bytes": 5688131
+    "sha256": "d82a397d9b441269b6ea8a0fe1a37d82983a52bd6ed40b8d7387a16c3037218c",
+    "bytes": 5752199
   }
 }
