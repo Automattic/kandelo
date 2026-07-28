@@ -496,6 +496,39 @@ describe("Node worker session seed trees", () => {
     }
   });
 
+  it("publishes a seed through the deepest declared scratch mount", async () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-seed-routing-"));
+    const sessionRoot = mkdtempSync(join(tmpdir(), "kandelo-seed-session-"));
+    const source = join(fixtureRoot, "source");
+    mkdirSync(source);
+    writeFileSync(join(source, "value"), "seed");
+    const nestedScratchSpec: MountSpec[] = [
+      { path: "/", source: "image", readonly: true },
+      { path: "/tmp", source: "scratch" },
+      { path: "/tmp/nested", source: "scratch" },
+    ];
+    try {
+      const mounts = await resolveForNodeKernelSession(
+        nestedScratchSpec,
+        await buildFixtureImage(),
+        sessionRoot,
+        [{
+          sourcePath: source,
+          destinationPath: "/tmp/nested/fixtures",
+        }],
+      );
+      const owner = mounts.find(
+        (mount) => mount.mountPoint === "/tmp/nested",
+      )!;
+      expect(new TextDecoder().decode(
+        readMountFile(owner.backend, "/fixtures/value"),
+      )).toBe("seed");
+    } finally {
+      rmSync(sessionRoot, { recursive: true, force: true });
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
   it("rejects overlapping, mount-shadowed, and mount-root destinations", async () => {
     const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-seed-overlap-"));
     const sessionRoot = mkdtempSync(join(tmpdir(), "kandelo-seed-session-"));
@@ -526,6 +559,37 @@ describe("Node worker session seed trees", () => {
           ["/tmp/extra"],
         ),
       ).rejects.toThrow(/overlaps another mount/i);
+
+      const nestedImageSpec: MountSpec[] = [
+        { path: "/", source: "image", readonly: true },
+        { path: "/tmp", source: "scratch" },
+        { path: "/tmp/shadow", source: "image", readonly: true },
+      ];
+      await expect(
+        resolveForNodeKernelSession(
+          nestedImageSpec,
+          image,
+          sessionRoot,
+          [{
+            sourcePath: first,
+            destinationPath: "/tmp/shadow/fixtures",
+          }],
+        ),
+      ).rejects.toThrow(/routed through a scratch mount/i);
+
+      const nestedScratchSpec: MountSpec[] = [
+        { path: "/", source: "image", readonly: true },
+        { path: "/tmp", source: "scratch" },
+        { path: "/tmp/fixtures/nested", source: "scratch" },
+      ];
+      await expect(
+        resolveForNodeKernelSession(
+          nestedScratchSpec,
+          image,
+          sessionRoot,
+          [{ sourcePath: first, destinationPath: "/tmp/fixtures" }],
+        ),
+      ).rejects.toThrow(/overlaps another declared mount/i);
 
       await expect(
         resolveForNodeKernelSession(
