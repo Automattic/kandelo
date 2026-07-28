@@ -56,6 +56,46 @@ expect_failure() {
   }
 }
 
+check_candidate_mirror_publish_authority() {
+  local workflow="$1"
+  local block
+  block="$(sed -n \
+    '/- name: Recover the exact bottle mirror/,/- name: Create the exact closed Chromium lifecycle fixture/p' \
+    "$workflow")"
+  [ "$(grep -Fc 'scripts/create-homebrew-bottle-mirror-publish-manifest.ts' \
+      <<<"$block")" -eq 1 ] || {
+    echo "candidate mirror must create exactly one publish manifest" >&2
+    return 1
+  }
+  # WHY: producing valid mirror bytes is not enough. The manifest also carries
+  # the commit allowed to own a later release write, so the caller and its
+  # postcondition must use the exact catalog checkout rather than github.sha.
+  [ "$(grep -Fc -- \
+      '--target-commitish "${{ steps.bottle_candidate.outputs.tap_sha }}" \' \
+      <<<"$block")" -eq 1 ] || {
+    echo "candidate mirror target must be the exact checked-out tap catalog" >&2
+    return 1
+  }
+  [ "$(grep -Fc -- \
+      '--arg target "${{ steps.bottle_candidate.outputs.tap_sha }}" \' \
+      <<<"$block")" -eq 1 ] || {
+    echo "candidate mirror postcondition must verify the same exact tap catalog" >&2
+    return 1
+  }
+}
+
+expect_candidate_mirror_contract_rejected() {
+  local workflow="$1"
+  local output
+  if output="$(check_candidate_mirror_publish_authority "$workflow" 2>&1)"; then
+    fail "candidate mirror authority mutation unexpectedly passed: $workflow"
+  fi
+  grep -Fq 'candidate mirror' <<<"$output" || {
+    printf '%s\n' "$output" >&2
+    fail "candidate mirror authority mutation failed without contract evidence"
+  }
+}
+
 command -v git >/dev/null 2>&1 || fail "git is required"
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 command -v node >/dev/null 2>&1 || fail "node is required"
@@ -93,6 +133,21 @@ checker_line="$(grep -n 'node scripts/check-homebrew-main-shell-brewfile.mjs' "$
 grep -Fq '"$tap_root/Kandelo/metadata.json"' "$WORKFLOW" &&
   grep -Fq 'homebrew/main-shell-homebrew-runtime-support.json' "$WORKFLOW" ||
   fail "fetched-catalog validation must fail closed over the runtime-support layer"
+
+check_candidate_mirror_publish_authority "$WORKFLOW" ||
+  fail "candidate mirror publication authority contract is incomplete"
+sed '/--target-commitish.*bottle_candidate.outputs.tap_sha/d' \
+  "$WORKFLOW" >"$TMP_ROOT/mirror-missing-target.yml"
+expect_candidate_mirror_contract_rejected \
+  "$TMP_ROOT/mirror-missing-target.yml"
+sed 's/steps\.bottle_candidate\.outputs\.tap_sha/github.sha/g' \
+  "$WORKFLOW" >"$TMP_ROOT/mirror-wrong-target.yml"
+expect_candidate_mirror_contract_rejected \
+  "$TMP_ROOT/mirror-wrong-target.yml"
+sed '/--target-commitish.*bottle_candidate.outputs.tap_sha/p' \
+  "$WORKFLOW" >"$TMP_ROOT/mirror-duplicate-target.yml"
+expect_candidate_mirror_contract_rejected \
+  "$TMP_ROOT/mirror-duplicate-target.yml"
 
 generation_block="$(sed -n \
   '/- name: Select one verified package generation/,/- name: Resolve current direct browser bundling inputs/p' \
