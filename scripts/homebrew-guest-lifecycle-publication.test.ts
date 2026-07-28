@@ -31,8 +31,9 @@ const repositoryRoot = dirname(here);
 const refs = {
   kandeloRef: "1".repeat(40),
   tapCatalogRef: "2".repeat(40),
-  tapAuthorityRef: "3".repeat(40),
-  canaryRef: "4".repeat(40),
+  tapMirrorAuthorityRef: "3".repeat(40),
+  tapCallerAuthorityRef: "4".repeat(40),
+  canaryRef: "5".repeat(40),
 };
 
 test("creates and revalidates one separate immutable lifecycle-input handoff", () => {
@@ -64,7 +65,7 @@ test("creates and revalidates one separate immutable lifecycle-input handoff", (
       readFileSync(join(out, "publish.json"), "utf8"),
     );
     assert.equal(manifest.repository, "kandelo-dev/homebrew-tap-core");
-    assert.equal(manifest.target_commitish, refs.tapAuthorityRef);
+    assert.equal(manifest.target_commitish, refs.tapCallerAuthorityRef);
     assert.deepEqual(
       manifest.assets.map((asset: { name: string }) => asset.name),
       [
@@ -153,9 +154,29 @@ test("binds the publication identity to exact refs and bottle plan", () => {
           root: out,
           bottleMirrorPlan: inputs.bottleMirrorPlan,
           ...refs,
-          canaryRef: "5".repeat(40),
+          canaryRef: "6".repeat(40),
         }),
       /publication manifest differs/,
+    );
+    assert.throws(
+      () =>
+        verifyHomebrewGuestLifecyclePublication({
+          root: out,
+          bottleMirrorPlan: inputs.bottleMirrorPlan,
+          ...refs,
+          tapMirrorAuthorityRef: "7".repeat(40),
+        }),
+      /publication manifest differs/,
+    );
+    assert.throws(
+      () =>
+        verifyHomebrewGuestLifecyclePublication({
+          root: out,
+          bottleMirrorPlan: inputs.bottleMirrorPlan,
+          ...refs,
+          tapCallerAuthorityRef: refs.tapMirrorAuthorityRef,
+        }),
+      /must be distinct commits/,
     );
 
     const changedPlan = join(root, "changed-plan.json");
@@ -298,8 +319,10 @@ function runShellVerifier(root: string, bottleMirrorPlan: string) {
       refs.kandeloRef,
       "--tap-catalog-ref",
       refs.tapCatalogRef,
-      "--tap-authority-ref",
-      refs.tapAuthorityRef,
+      "--tap-mirror-authority-ref",
+      refs.tapMirrorAuthorityRef,
+      "--tap-caller-authority-ref",
+      refs.tapCallerAuthorityRef,
       "--canary-ref",
       refs.canaryRef,
     ],

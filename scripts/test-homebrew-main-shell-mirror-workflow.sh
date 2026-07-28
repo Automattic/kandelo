@@ -46,33 +46,49 @@ expect_rejected "$TMP_ROOT/closed-browser-env.yml"
 sed 's#--manifest "$lifecycle/publish.json"#--manifest "$handoff/publish.json"#' \
   "$WORKFLOW" >"$TMP_ROOT/lifecycle-published-as-mirror.yml"
 expect_rejected "$TMP_ROOT/lifecycle-published-as-mirror.yml"
-awk '
-  /bash kandelo\/scripts\/publish-immutable-github-release\.sh/ {
-    publishers += 1
-    if (publishers == 2) {
-      sub(/bash kandelo\/scripts\/publish-immutable-github-release\.sh/,
-          "true # omitted second immutable publisher")
-    }
-  }
-  { print }
-' "$WORKFLOW" >"$TMP_ROOT/no-lifecycle-publisher.yml"
+sed \
+  's#bash kandelo/scripts/publish-immutable-github-release.sh#true#' \
+  "$WORKFLOW" >"$TMP_ROOT/no-lifecycle-publisher.yml"
 expect_rejected "$TMP_ROOT/no-lifecycle-publisher.yml"
+sed \
+  's#bash kandelo/scripts/verify-existing-immutable-github-release.sh#true#' \
+  "$WORKFLOW" >"$TMP_ROOT/no-mirror-verifier.yml"
+expect_rejected "$TMP_ROOT/no-mirror-verifier.yml"
+sed \
+  's#verify-existing-immutable-github-release.sh#publish-immutable-github-release.sh#' \
+  "$WORKFLOW" >"$TMP_ROOT/republished-mirror.yml"
+expect_rejected "$TMP_ROOT/republished-mirror.yml"
 sed 's/(.assets | length) == 4/(.assets | length) == 3/' \
   "$WORKFLOW" >"$TMP_ROOT/wrong-lifecycle-asset-count.yml"
 expect_rejected "$TMP_ROOT/wrong-lifecycle-asset-count.yml"
 sed 's|cmp "$lifecycle/$name" "$RUNNER_TEMP/public-$name"|true|' \
   "$WORKFLOW" >"$TMP_ROOT/no-lifecycle-public-compare.yml"
 expect_rejected "$TMP_ROOT/no-lifecycle-public-compare.yml"
-sed 's/--target-commitish "$TAP_AUTHORITY_REF"/--target-commitish "$TAP_CATALOG_REF"/' \
+sed 's/--target-commitish "$TAP_MIRROR_AUTHORITY_REF"/--target-commitish "$TAP_CATALOG_REF"/' \
   "$WORKFLOW" >"$TMP_ROOT/catalog-as-authority.yml"
 expect_rejected "$TMP_ROOT/catalog-as-authority.yml"
-sed 's/--core-revision "$TAP_CATALOG_REF"/--core-revision "$TAP_AUTHORITY_REF"/' \
+sed 's/--core-revision "$TAP_CATALOG_REF"/--core-revision "$TAP_CALLER_AUTHORITY_REF"/' \
   "$WORKFLOW" >"$TMP_ROOT/authority-as-catalog.yml"
 expect_rejected "$TMP_ROOT/authority-as-catalog.yml"
+sed '/      mirror-authority-ref:/,/        required: true/d' \
+  "$WORKFLOW" >"$TMP_ROOT/no-mirror-authority-input.yml"
+expect_rejected "$TMP_ROOT/no-mirror-authority-input.yml"
+awk '
+  /git -C tap-authority merge-base --is-ancestor/ {
+    ancestry += 1
+    if (ancestry == 2) {
+      print "          true # omitted TA0 -> TA1 ancestry"
+      getline
+      next
+    }
+  }
+  { print }
+' "$WORKFLOW" >"$TMP_ROOT/no-caller-ancestry.yml"
+expect_rejected "$TMP_ROOT/no-caller-ancestry.yml"
 sed '/check-homebrew-main-shell-release-locks.py/d' \
   "$WORKFLOW" >"$TMP_ROOT/no-structured-lock-check.yml"
 expect_rejected "$TMP_ROOT/no-structured-lock-check.yml"
-sed '/      - name: Upload immutable publication receipt/i\
+sed '/      - name: Upload mirror verification and lifecycle publication receipts/i\
       - name: Injected write-capable command\
         shell: bash\
         run: echo unsafe' \

@@ -203,6 +203,7 @@ jobs:
             scripts/homebrew-guest-lifecycle-publication.test.ts \
             scripts/homebrew-main-shell-image-contract.test.ts \
             scripts/homebrew-closed-lazy-assets.test.ts
+          bash scripts/test-verify-existing-immutable-github-release.sh
           npx esbuild homebrew/test/homebrew_guest_lifecycle_node.ts \
             --bundle \
             --platform=node \

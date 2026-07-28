@@ -10,9 +10,9 @@ WORKFLOW = ARGV.empty? ?
   File.join(ROOT, ".github/workflows/reusable-homebrew-main-shell-mirror-publish.yml") :
   File.expand_path(ARGV.fetch(0))
 PUBLISH_JOB_DIGEST =
-  "ecf30ab4dee90d803d03da0a4be5d6159e411a63fe36bb0796578f3de623379b"
+  "64bd13ea5a8d00953acfec3e02607f7ae70837706c868827bed5259c6043aeb2"
 WORKFLOW_DIGEST =
-  "6f0727c4aec8dbad13170a798b444adc8154db8c64dca2114c7b71f49bd87bd2"
+  "09658618406600fb61c601a2beaa1979583bcc4a737307b4e704c92ce6339969"
 DOWNLOAD_ACTION =
   "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 UPLOAD_ACTION =
@@ -71,7 +71,9 @@ check(events.is_a?(Hash) && events.keys == ["workflow_call"],
 call = events.fetch("workflow_call")
 check(call.keys.sort == ["inputs"], "workflow_call may expose only inputs")
 inputs = call.fetch("inputs")
-check(inputs.keys.sort == %w[canary-ref kandelo-ref tap-catalog-ref],
+check(inputs.keys.sort == %w[
+        canary-ref kandelo-ref mirror-authority-ref tap-catalog-ref
+      ],
       "workflow input identity set differs")
 inputs.each do |name, spec|
   check(spec["required"] == true && spec["type"] == "string",
@@ -200,59 +202,80 @@ check(jobs.fetch("prepare").fetch("outputs") == {
     "${{ steps.lifecycle-handoff.outputs.artifact-digest }}",
 }, "handoff digest output differs")
 check(publish_source.scan("${{ github.token }}").length == 2,
-      "tap token must have exactly the authority checks and publisher uses")
+      "tap token must have exactly the authority check and release operation uses")
 check(!prepare_source.include?("${{ github.token }}") &&
       !proof_source.include?("${{ github.token }}"),
       "tap token escaped the publication job")
-check(publish_source.include?("--exact-target-main-sha \"$TAP_AUTHORITY_REF\""),
-      "publisher is not bound to exact live tap main")
+check(publish_source.include?(
+  "--exact-target-main-sha \"$TAP_CALLER_AUTHORITY_REF\""
+), "lifecycle-input publisher is not bound to exact live tap main")
 check(
-  prepare_source.include?("git -C tap-authority merge-base --is-ancestor") &&
-    prepare_source.include?('"$TAP_CATALOG_REF" "$TAP_AUTHORITY_REF"'),
-  "tap catalog is not proven to precede publication authority",
+  prepare_source.scan(
+    "git -C tap-authority merge-base --is-ancestor"
+  ).length == 2 &&
+    prepare_source.include?(
+      '"$TAP_CATALOG_REF" "$TAP_MIRROR_AUTHORITY_REF"'
+    ) &&
+    prepare_source.include?(
+      '"$TAP_MIRROR_AUTHORITY_REF" "$TAP_CALLER_AUTHORITY_REF"'
+    ),
+  "TF -> mirror authority -> caller authority ancestry is not enforced",
 )
 check(prepare_source.include?(
   ".github/scripts/check-homebrew-main-shell-release-locks.py"
 ), "structured shell release-lock validation is missing")
 check(prepare_source.include?(
-  '--target-commitish "$TAP_AUTHORITY_REF"'
-), "release target is not the protected tap caller")
+  '--target-commitish "$TAP_MIRROR_AUTHORITY_REF"'
+), "mirror manifest does not retain its original tap authority")
 check(publish_source.include?("publish-immutable-github-release.sh"),
       "immutable publisher is missing")
 publication_step = named_step(
   publish_job,
-  "Publish and anonymously re-read immutable public inputs",
+  "Verify the existing mirror and publish only lifecycle inputs",
 )
 publication_run = publication_step.fetch("run")
 check(publication_step["id"] == "release",
       "immutable publication output identity differs")
-check(publication_run.scan("publish-immutable-github-release.sh").length == 2,
-      "mirror and lifecycle inputs must use exactly two immutable publications")
-check(publication_run.scan('--exact-kandelo-main-sha "$KANDELO_REF"').length == 2 &&
+check(publication_run.scan(
+  "verify-existing-immutable-github-release.sh"
+).length == 1 &&
+      publication_run.scan("publish-immutable-github-release.sh").length == 1,
+      "consume-only proof must verify one mirror and publish one lifecycle release")
+check(publication_run.scan(
+  '--exact-target-commit-sha "$TAP_MIRROR_AUTHORITY_REF"'
+).length == 1 &&
       publication_run.scan(
-        '--exact-target-main-sha "$TAP_AUTHORITY_REF"'
-      ).length == 2,
-      "both immutable publications must bind the exact authorities")
+        '--exact-kandelo-main-sha "$KANDELO_REF"'
+      ).length == 1 &&
+      publication_run.scan(
+        '--exact-target-main-sha "$TAP_CALLER_AUTHORITY_REF"'
+      ).length == 1,
+      "mirror verification and lifecycle publication authorities differ")
 check(publication_run.include?('--manifest "$handoff/publish.json"') &&
       publication_run.include?('--asset-root "$handoff/mirror"') &&
       publication_run.include?('--manifest "$lifecycle/publish.json"') &&
       publication_run.include?('--asset-root "$lifecycle"'),
-      "mirror and lifecycle publication roots differ")
+      "mirror verification and lifecycle publication roots differ")
 check(
   publication_run.scan(
     '.visibility == "public-anonymous-readback"'
   ).length == 2 &&
+    publication_run.include?('.operation == "verified-existing"') &&
     publication_run.include?('(.assets | length) == 4') &&
+    publication_run.include?('"mirror-receipt=$mirror_receipt"') &&
     publication_run.include?('"lifecycle-receipt=$lifecycle_receipt"'),
-  "both public release receipts are not checked exactly",
+  "mirror verification and lifecycle publication receipts are not exact",
 )
-receipt_upload = named_step(publish_job, "Upload immutable publication receipt")
+receipt_upload = named_step(
+  publish_job,
+  "Upload mirror verification and lifecycle publication receipts",
+)
 receipt_paths = receipt_upload.fetch("with").fetch("path").
   lines.map(&:strip).reject(&:empty?)
 check(receipt_paths == [
-  "${{ steps.release.outputs.receipt }}",
+  "${{ steps.release.outputs.mirror-receipt }}",
   "${{ steps.release.outputs.lifecycle-receipt }}",
-], "immutable publication receipt set differs")
+], "mirror verification and lifecycle publication receipt set differs")
 check(publish_source.scan(
   "verify-homebrew-guest-lifecycle-publication.sh"
 ).length == 1 &&
@@ -346,10 +369,16 @@ check(whole_source.include?(
 ) && whole_source.include?(
   '${CALLER_REPOSITORY,,}" = kandelo-dev/homebrew-tap-core'
 ), "protected tap caller identity is missing")
-check(whole_source.scan('TAP_AUTHORITY_REF: ${{ github.sha }}').length >= 4,
-      "jobs do not derive tap authority from the protected caller SHA")
+check(whole_source.scan(
+  'TAP_CALLER_AUTHORITY_REF: ${{ github.sha }}'
+).length >= 4,
+      "jobs do not derive caller authority from the protected tap SHA")
+check(whole_source.scan(
+  'TAP_MIRROR_AUTHORITY_REF: ${{ inputs.mirror-authority-ref }}'
+).length >= 4,
+      "jobs do not bind the admitted immutable mirror authority")
 check(!whole_source.include?("inputs.tap-authority-ref"),
-      "event data may not select tap publication authority")
+      "event data may not select the live tap caller authority")
 # WHY: preparation supplies the exact bytes later accepted by the token-bearing
 # job, and public-proof supplies the release claim. Freezing only the write job
 # would still permit either side of that authority/evidence chain to change.

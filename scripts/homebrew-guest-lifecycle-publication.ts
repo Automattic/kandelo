@@ -62,7 +62,8 @@ interface ExactAsset {
 interface ExactRefs {
   kandeloRef: string;
   tapCatalogRef: string;
-  tapAuthorityRef: string;
+  tapMirrorAuthorityRef: string;
+  tapCallerAuthorityRef: string;
   canaryRef: string;
 }
 
@@ -135,7 +136,7 @@ export function createHomebrewGuestLifecyclePublication(
     planIdentity,
   );
   const manifest = publicationManifest(
-    options.tapAuthorityRef,
+    options.tapCallerAuthorityRef,
     identity,
     sourceAssets.map((asset) => asset.exact),
     planIdentity,
@@ -175,7 +176,8 @@ export function createHomebrewGuestLifecyclePublication(
       kind: KIND,
       kandelo_ref: options.kandeloRef,
       tap_catalog_ref: options.tapCatalogRef,
-      tap_authority_ref: options.tapAuthorityRef,
+      tap_mirror_authority_ref: options.tapMirrorAuthorityRef,
+      tap_caller_authority_ref: options.tapCallerAuthorityRef,
       canary_ref: options.canaryRef,
       bottle_mirror: planIdentity,
       release: {
@@ -251,7 +253,7 @@ export function verifyHomebrewGuestLifecyclePublication(
   };
   const identity = deriveIdentity(options, exactAssets, planIdentity);
   const expectedManifest = publicationManifest(
-    options.tapAuthorityRef,
+    options.tapCallerAuthorityRef,
     identity,
     exactAssets,
     planIdentity,
@@ -275,7 +277,8 @@ export function verifyHomebrewGuestLifecyclePublication(
     kind: KIND,
     kandelo_ref: options.kandeloRef,
     tap_catalog_ref: options.tapCatalogRef,
-    tap_authority_ref: options.tapAuthorityRef,
+    tap_mirror_authority_ref: options.tapMirrorAuthorityRef,
+    tap_caller_authority_ref: options.tapCallerAuthorityRef,
     canary_ref: options.canaryRef,
     bottle_mirror: planIdentity,
     release: {
@@ -352,7 +355,8 @@ function deriveIdentity(
     repository: REPOSITORY,
     kandelo_ref: refs.kandeloRef,
     tap_catalog_ref: refs.tapCatalogRef,
-    tap_authority_ref: refs.tapAuthorityRef,
+    tap_mirror_authority_ref: refs.tapMirrorAuthorityRef,
+    tap_caller_authority_ref: refs.tapCallerAuthorityRef,
     canary_ref: refs.canaryRef,
     bottle_mirror: plan,
     assets,
@@ -370,7 +374,8 @@ function exactRefs(value: ExactRefs): ExactRefs {
   return {
     kandeloRef: value.kandeloRef,
     tapCatalogRef: value.tapCatalogRef,
-    tapAuthorityRef: value.tapAuthorityRef,
+    tapMirrorAuthorityRef: value.tapMirrorAuthorityRef,
+    tapCallerAuthorityRef: value.tapCallerAuthorityRef,
     canaryRef: value.canaryRef,
   };
 }
@@ -379,12 +384,18 @@ function assertExactRefs(value: ExactRefs): void {
   for (const [label, ref] of [
     ["Kandelo", value.kandeloRef],
     ["tap catalog", value.tapCatalogRef],
-    ["tap authority", value.tapAuthorityRef],
+    ["tap mirror authority", value.tapMirrorAuthorityRef],
+    ["tap caller authority", value.tapCallerAuthorityRef],
     ["canary", value.canaryRef],
   ] as const) {
     if (!GIT_SHA_RE.test(ref)) {
       throw new Error(`${label} ref must be one exact lowercase Git SHA`);
     }
+  }
+  if (value.tapMirrorAuthorityRef === value.tapCallerAuthorityRef) {
+    throw new Error(
+      "tap mirror and caller authorities must be distinct commits",
+    );
   }
 }
 
@@ -507,7 +518,8 @@ function refsFromFlags(values: ReadonlyMap<string, string>): ExactRefs {
   return {
     kandeloRef: values.get("--kandelo-ref")!,
     tapCatalogRef: values.get("--tap-catalog-ref")!,
-    tapAuthorityRef: values.get("--tap-authority-ref")!,
+    tapMirrorAuthorityRef: values.get("--tap-mirror-authority-ref")!,
+    tapCallerAuthorityRef: values.get("--tap-caller-authority-ref")!,
     canaryRef: values.get("--canary-ref")!,
   };
 }
@@ -523,7 +535,8 @@ function main(args: readonly string[]): void {
       "--bottle-mirror-plan",
       "--kandelo-ref",
       "--tap-catalog-ref",
-      "--tap-authority-ref",
+      "--tap-mirror-authority-ref",
+      "--tap-caller-authority-ref",
       "--canary-ref",
       "--out",
     ]);
@@ -545,7 +558,8 @@ function main(args: readonly string[]): void {
       "--bottle-mirror-plan",
       "--kandelo-ref",
       "--tap-catalog-ref",
-      "--tap-authority-ref",
+      "--tap-mirror-authority-ref",
+      "--tap-caller-authority-ref",
       "--canary-ref",
     ]);
     const identity = verifyHomebrewGuestLifecyclePublication({
@@ -566,11 +580,13 @@ function usage(): never {
       "--homebrew-bootstrap-archive <bootstrap.zip> " +
       "--homebrew-bootstrap-env <brew.env> --bottle-mirror-plan <plan.json> " +
       "--kandelo-ref <M> --tap-catalog-ref <TF> " +
-      "--tap-authority-ref <TA> --canary-ref <C> --out <new-directory>\n" +
+      "--tap-mirror-authority-ref <TA0> --tap-caller-authority-ref <TA1> " +
+      "--canary-ref <C> --out <new-directory>\n" +
       "or: homebrew-guest-lifecycle-publication.ts verify " +
       "--root <directory> --bottle-mirror-plan <plan.json> " +
       "--kandelo-ref <M> --tap-catalog-ref <TF> " +
-      "--tap-authority-ref <TA> --canary-ref <C>",
+      "--tap-mirror-authority-ref <TA0> --tap-caller-authority-ref <TA1> " +
+      "--canary-ref <C>",
   );
 }
 

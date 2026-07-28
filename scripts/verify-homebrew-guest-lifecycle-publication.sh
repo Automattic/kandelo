@@ -5,7 +5,8 @@ ROOT=""
 PLAN=""
 KANDELO_REF=""
 TAP_CATALOG_REF=""
-TAP_AUTHORITY_REF=""
+TAP_MIRROR_AUTHORITY_REF=""
+TAP_CALLER_AUTHORITY_REF=""
 CANARY_REF=""
 MAX_HANDOFF_BYTES="$((512 * 1024 * 1024))"
 
@@ -15,7 +16,10 @@ while [ "$#" -gt 0 ]; do
     --bottle-mirror-plan) PLAN="$2"; shift 2 ;;
     --kandelo-ref) KANDELO_REF="$2"; shift 2 ;;
     --tap-catalog-ref) TAP_CATALOG_REF="$2"; shift 2 ;;
-    --tap-authority-ref) TAP_AUTHORITY_REF="$2"; shift 2 ;;
+    --tap-mirror-authority-ref)
+      TAP_MIRROR_AUTHORITY_REF="$2"; shift 2 ;;
+    --tap-caller-authority-ref)
+      TAP_CALLER_AUTHORITY_REF="$2"; shift 2 ;;
     --canary-ref) CANARY_REF="$2"; shift 2 ;;
     *)
       echo "verify-homebrew-guest-lifecycle-publication: unknown flag $1" >&2
@@ -25,13 +29,18 @@ while [ "$#" -gt 0 ]; do
 done
 
 for ref in \
-  "$KANDELO_REF" "$TAP_CATALOG_REF" "$TAP_AUTHORITY_REF" "$CANARY_REF"
+  "$KANDELO_REF" "$TAP_CATALOG_REF" \
+  "$TAP_MIRROR_AUTHORITY_REF" "$TAP_CALLER_AUTHORITY_REF" "$CANARY_REF"
 do
   [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || {
     echo "verify-homebrew-guest-lifecycle-publication: exact refs are required" >&2
     exit 2
   }
 done
+[ "$TAP_MIRROR_AUTHORITY_REF" != "$TAP_CALLER_AUTHORITY_REF" ] || {
+  echo "verify-homebrew-guest-lifecycle-publication: mirror and caller authorities must differ" >&2
+  exit 2
+}
 if [ -z "$ROOT" ] || [ ! -d "$ROOT" ] || [ -L "$ROOT" ]; then
   echo "verify-homebrew-guest-lifecycle-publication: root must be a regular directory" >&2
   exit 2
@@ -83,20 +92,23 @@ plan_url="$(jq -er '.release_root + "/" + .manifest_asset' "$PLAN")"
 jq -e \
   --arg kandelo "$KANDELO_REF" \
   --arg tap_catalog "$TAP_CATALOG_REF" \
-  --arg tap_authority "$TAP_AUTHORITY_REF" \
+  --arg tap_mirror_authority "$TAP_MIRROR_AUTHORITY_REF" \
+  --arg tap_caller_authority "$TAP_CALLER_AUTHORITY_REF" \
   --arg canary "$CANARY_REF" \
   --arg plan_url "$plan_url" \
   --arg plan_sha "$plan_sha" \
   --argjson plan_bytes "$plan_bytes" '
   (keys | sort) == [
     "bottle_mirror", "canary_ref", "files", "kandelo_ref", "kind",
-    "release", "schema", "tap_authority_ref", "tap_catalog_ref"
+    "release", "schema", "tap_caller_authority_ref", "tap_catalog_ref",
+    "tap_mirror_authority_ref"
   ] and
   .schema == 1 and
   .kind == "kandelo-homebrew-guest-lifecycle-inputs-handoff" and
   .kandelo_ref == $kandelo and
   .tap_catalog_ref == $tap_catalog and
-  .tap_authority_ref == $tap_authority and
+  .tap_mirror_authority_ref == $tap_mirror_authority and
+  .tap_caller_authority_ref == $tap_caller_authority and
   .canary_ref == $canary and
   .bottle_mirror == {
     url: $plan_url, sha256: $plan_sha, bytes: $plan_bytes
@@ -145,7 +157,7 @@ do
 done
 
 jq -e \
-  --arg tap "$TAP_AUTHORITY_REF" \
+  --arg tap "$TAP_CALLER_AUTHORITY_REF" \
   --slurpfile handoff "$HANDOFF" '
   .schema == 1 and
   .repository == $handoff[0].release.repository and
