@@ -397,6 +397,77 @@ describe("shell VFS base composition", () => {
     ).toThrow(/omits inherited shell image metadata/);
   });
 
+  it("serializes equivalent derived products reproducibly across wall clocks", async () => {
+    const sourceDateEpochSeconds = 946_684_800;
+    const canonicalTimestampMs = sourceDateEpochSeconds * 1000;
+    const explicitTimestampMs = canonicalTimestampMs + 123_000;
+    const priorSourceDateEpoch = process.env.SOURCE_DATE_EPOCH;
+    process.env.SOURCE_DATE_EPOCH = String(sourceDateEpochSeconds);
+
+    const buildAt = async (
+      runtimeTimestampMs: number,
+      normalizeTimestampsMs?: number,
+    ): Promise<Uint8Array> => {
+      const now = vi.spyOn(Date, "now").mockReturnValue(runtimeTimestampMs);
+      const fs = MemoryFileSystem.create(
+        new SharedArrayBuffer(16 * MiB, {
+          maxByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+        }),
+        SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+      );
+      const dir = mkdtempSync(join(tmpdir(), "shell-derived-reproducible-"));
+      try {
+        fs.setImageMetadata(shellImageMetadata(512 * MiB));
+        fs.mkdir("/etc", 0o755);
+        fs.mkdir("/etc/kandelo", 0o755);
+        writeFile(fs, DEMO_CONFIG_PATH, SOURCE_DEMO_CONFIG);
+        writeFile(fs, "/product.txt", "complete product");
+
+        const image = await saveShellDerivedVfsImage(
+          fs,
+          join(dir, "product.vfs.zst"),
+          normalizeTimestampsMs === undefined
+            ? {}
+            : { normalizeTimestampsMs },
+        );
+        const restored = MemoryFileSystem.fromImage(image);
+        const expectedTimestamp =
+          normalizeTimestampsMs ?? canonicalTimestampMs;
+        for (const path of [
+          "/",
+          "/etc",
+          "/etc/kandelo",
+          DEMO_CONFIG_PATH,
+          "/product.txt",
+        ]) {
+          const stat = restored.lstat(path);
+          expect(stat.atimeMs, `${path} atime`).toBe(expectedTimestamp);
+          expect(stat.mtimeMs, `${path} mtime`).toBe(expectedTimestamp);
+          expect(stat.ctimeMs, `${path} ctime`).toBe(expectedTimestamp);
+        }
+        return image;
+      } finally {
+        now.mockRestore();
+        rmSync(dir, { recursive: true, force: true });
+      }
+    };
+
+    try {
+      const first = await buildAt(1_700_000_000_000);
+      const second = await buildAt(1_800_000_000_000);
+      expect(second.byteLength).toBe(first.byteLength);
+      expect(Buffer.from(second).equals(Buffer.from(first))).toBe(true);
+
+      await buildAt(1_900_000_000_000, explicitTimestampMs);
+    } finally {
+      if (priorSourceDateEpoch === undefined) {
+        delete process.env.SOURCE_DATE_EPOCH;
+      } else {
+        process.env.SOURCE_DATE_EPOCH = priorSourceDateEpoch;
+      }
+    }
+  });
+
   const capacityProfiles: Array<[string, number, number | undefined]> = [
     ["the standard profile", SHELL_DERIVED_VFS_PROFILE_MAX_BYTES, undefined],
     ["an explicit larger product profile", 1024 * MiB, 1024 * MiB],
