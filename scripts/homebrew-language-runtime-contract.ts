@@ -97,14 +97,14 @@ export const LANGUAGE_RUNTIME_INVOCATIONS: readonly LanguageRuntimeInvocation[] 
     erlangInvocation("keg", `${ERLANG_KEG}/bin/erl`),
   ];
 
-export interface MainShellLanguageRuntimeInvocation extends LanguageRuntimeInvocation {
+export interface OptionalShellLanguageLayerInvocation extends LanguageRuntimeInvocation {
   packageName: string;
   dependencyPackages: readonly string[];
   launcherPackages: readonly string[];
   terminalCommand: string;
 }
 
-const MAIN_SHELL_PYTHON_PROGRAM = [
+const OPTIONAL_SHELL_LAYER_PYTHON_PROGRAM = [
   "import json, os, site, sys, tempfile, zlib",
   `expected_prefix = '${PYTHON_PREFIX}'`,
   "assert sys.version_info[:3] == (3, 13, 3)",
@@ -122,10 +122,10 @@ const MAIN_SHELL_PYTHON_PROGRAM = [
   "assert handle.read() == 'python-file-ok'",
   "handle.close()",
   "os.unlink(path)",
-  "print('main-shell-python-ok:3.13.3')",
+  "print('optional-shell-layer-python-ok:3.13.3')",
 ].join("; ");
 
-const MAIN_SHELL_PERL_PROGRAM = [
+const OPTIONAL_SHELL_LAYER_PERL_PROGRAM = [
   "use strict; use warnings",
   "use Config",
   "use File::Spec",
@@ -151,10 +151,10 @@ const MAIN_SHELL_PERL_PROGRAM = [
   "close $reader",
   "my $waited = waitpid($pid, 0)",
   "die 'child failed' unless $waited == $pid && $? == 0 && $child eq 'child:6'",
-  'print "main-shell-perl-ok:v5.40.3\\n"',
+  'print "optional-shell-layer-perl-ok:v5.40.3\\n"',
 ].join("; ");
 
-const MAIN_SHELL_ERLANG_EXPRESSION =
+const OPTIONAL_SHELL_LAYER_ERLANG_EXPRESSION =
   [
     'ok = file:write_file("/tmp/kandelo-erlang-runtime.txt", <<"erlang-file-ok">>)',
     '{ok, <<"erlang-file-ok">>} = file:read_file("/tmp/kandelo-erlang-runtime.txt")',
@@ -162,11 +162,11 @@ const MAIN_SHELL_ERLANG_EXPRESSION =
     "Parent = self()",
     "spawn(fun() -> Parent ! {child, lists:sum([1,2,3])} end)",
     "receive {child, 6} -> ok after 5000 -> erlang:error(child_timeout) end",
-    'io:format("main-shell-erlang-ok:28.2~n")',
+    'io:format("optional-shell-layer-erlang-ok:28.2~n")',
     "halt()",
   ].join(", ") + ".";
 
-const MAIN_SHELL_RUBY_PROGRAM = [
+const OPTIONAL_SHELL_LAYER_RUBY_PROGRAM = [
   "raise 'RUBYLIB leaked' if ENV.key?('RUBYLIB')",
   "raise 'wrong Ruby version' unless RUBY_VERSION == '4.0.5'",
   "require 'rbconfig'",
@@ -189,10 +189,10 @@ const MAIN_SHELL_RUBY_PROGRAM = [
   "Tempfile.create('kandelo-ruby', '/tmp') { |file| file.write('ruby-file-ok'); file.flush; file.rewind; raise 'file failed' unless file.read == 'ruby-file-ok' }",
   "raise 'RubyGems version failed' unless Gem::VERSION == '4.0.10'",
   "raise 'Bundler version failed' unless Bundler::VERSION == '4.0.10'",
-  "puts 'main-shell-ruby-ok:4.0.5:rubygems-4.0.10:bundler-4.0.10'",
+  "puts 'optional-shell-layer-ruby-ok:4.0.5:rubygems-4.0.10:bundler-4.0.10'",
 ].join("; ");
 
-function mainShellInvocation(
+function optionalShellLanguageLayerInvocation(
   label: string,
   packageName: string,
   dependencyPackages: readonly string[],
@@ -200,7 +200,7 @@ function mainShellInvocation(
   command: string,
   args: readonly string[],
   expectedStdout: string,
-): MainShellLanguageRuntimeInvocation {
+): OptionalShellLanguageLayerInvocation {
   const argv = [SHELL, "-c", SHELL_EXEC, "sh", command, ...args];
   return {
     label,
@@ -220,48 +220,50 @@ function shellQuote(value: string): string {
 }
 
 /**
- * Acceptance cases for language bottles installed as independent lazy trees in
- * the main shell. These deliberately use only the normal PATH and package
- * wrappers: no language-specific runtime or library-path overrides are allowed.
+ * Acceptance cases for optional language-bottle layers mounted onto the shell
+ * base. These fixtures are not the default shell's package inventory or an
+ * input to its composition. They deliberately use only the normal PATH and
+ * package wrappers: no language-specific runtime or library-path overrides are
+ * allowed.
  */
-export const MAIN_SHELL_LANGUAGE_RUNTIME_INVOCATIONS: readonly MainShellLanguageRuntimeInvocation[] =
-  [
-    mainShellInvocation(
-      "main-shell Python",
+export const OPTIONAL_SHELL_LANGUAGE_LAYER_INVOCATIONS:
+  readonly OptionalShellLanguageLayerInvocation[] = [
+    optionalShellLanguageLayerInvocation(
+      "optional shell-layer Python",
       "kandelo-dev/tap-core/python",
       ["kandelo-dev/tap-core/zlib"],
       [],
       "python",
-      ["-c", MAIN_SHELL_PYTHON_PROGRAM],
-      "main-shell-python-ok:3.13.3\n",
+      ["-c", OPTIONAL_SHELL_LAYER_PYTHON_PROGRAM],
+      "optional-shell-layer-python-ok:3.13.3\n",
     ),
-    mainShellInvocation(
-      "main-shell Perl",
+    optionalShellLanguageLayerInvocation(
+      "optional shell-layer Perl",
       "kandelo-dev/tap-core/perl",
       [],
       [],
       "perl",
-      ["-e", MAIN_SHELL_PERL_PROGRAM],
-      "main-shell-perl-ok:v5.40.3\n",
+      ["-e", OPTIONAL_SHELL_LAYER_PERL_PROGRAM],
+      "optional-shell-layer-perl-ok:v5.40.3\n",
     ),
-    mainShellInvocation(
-      "main-shell Erlang",
+    optionalShellLanguageLayerInvocation(
+      "optional shell-layer Erlang",
       "kandelo-dev/tap-core/erlang",
       [],
       // WHY: erl is installed as a #!/bin/sh wrapper. Track the selected
       // shell bottle explicitly without pretending it is an Erlang library.
       ["kandelo-dev/tap-core/dash"],
       "erl",
-      [...ERLANG_ARGS, "-eval", MAIN_SHELL_ERLANG_EXPRESSION],
-      "main-shell-erlang-ok:28.2\n",
+      [...ERLANG_ARGS, "-eval", OPTIONAL_SHELL_LAYER_ERLANG_EXPRESSION],
+      "optional-shell-layer-erlang-ok:28.2\n",
     ),
-    mainShellInvocation(
-      "main-shell Ruby",
+    optionalShellLanguageLayerInvocation(
+      "optional shell-layer Ruby",
       "kandelo-dev/tap-core/ruby",
       ["kandelo-dev/tap-core/zlib"],
       [],
       "ruby",
-      ["-e", MAIN_SHELL_RUBY_PROGRAM],
-      "main-shell-ruby-ok:4.0.5:rubygems-4.0.10:bundler-4.0.10\n",
+      ["-e", OPTIONAL_SHELL_LAYER_RUBY_PROGRAM],
+      "optional-shell-layer-ruby-ok:4.0.5:rubygems-4.0.10:bundler-4.0.10\n",
     ),
   ];

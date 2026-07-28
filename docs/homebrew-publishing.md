@@ -910,9 +910,9 @@ The checked-in `9820ef5643dc50f5876e53a1bbf6a309fc62f9a7` first-party tap value 
 catalog authority. The shell recipe remains `UNPUBLISHED` so archive staging
 can substitute the exact landed Kandelo commit, while
 `publication_state = "ready"` admits that normal exact-main path. The lazy
-artifact lock independently rejects every output while its identity is pending;
-final review must seal the deterministic compressed digest and size before
-publication. Exact-live-main equality remains necessary authority, not
+artifact lock independently binds every deterministic input plus the compressed
+digest and size; any input drift rejects the output until final review measures
+and reseals it. Exact-live-main equality remains necessary authority, not
 sufficient release evidence: the exact-Mpre rebuild and closed first- and
 third-party lifecycle proof are still required.
 
@@ -2329,11 +2329,12 @@ NetHack archive trees; copies the exact tracked
 `/etc/kandelo`; and composes the lean
 `homebrew/main-shell-demo.json` base with
 `homebrew/source-rootfs-shell-demo-profiles.json`. That source-only overlay
-owns the Doom and modeset profiles because this temporary image also installs
-their executables eagerly. The final bottled base deliberately omits both.
-Its browser gate therefore does not run the modeset demo; an optional bottled
-layer that later owns that executable and profile must carry its own acceptance
-proof.
+repeats the canonical Doom and modeset profiles byte-for-byte for compatibility
+with this temporary image, which installs their executables eagerly. The
+bottled product instead keeps those same profiles in the canonical demo
+configuration and resolves their executable trees lazily. Its browser gate
+therefore exercises modeset from the same profile contract as the source
+comparison lane.
 
 The rootfs build-time archive recipes migrated by this bridge bind their
 direct-build defaults and resolver inputs to package-manifest versions, URLs,
@@ -2437,7 +2438,10 @@ launcher outputs to seven reviewed runtime roots—Ruby, Git, curl, Findutils,
 Gawk, Tar, and `posix-utils-lite`—and to their exact 21-Formula
 dependency-first closure derived from tap metadata. The complete shell already
 supplies 20 of those Formulae, so activation adds only Ruby as an atomic lazy
-bottle tree.
+bottle tree. The complete declared image inventory is therefore 39 Formulae:
+three embedded base Formulae, 35 deferred base Formulae, and one deferred
+runtime-support Formula. The public bottle mirror transports those 36 deferred
+payloads; the three embedded Formulae already reside in the sealed shell image.
 
 The availability audit covers all 25 Formulae considered during the runtime
 rollout. Every one now has an admitted public wasm32 ABI-42 identity, including
@@ -2585,13 +2589,16 @@ mechanism preserves package-conditioned machine state without assigning that
 state to a bottle or adding package-name branches to the image builder.
 
 The main-shell composer copies the exact tracked
-`homebrew/main-shell-demo.json` bytes into the image. That base configuration
-contains only the shell profile and uses Bash builtins plus the three declared
-lazy commands; Doom, modeset, Git defaults, language runtimes, and game state
-belong to optional product layers rather than this base. The platform base
-intentionally does not serialize `/dev`: Node and browser hosts both mount the
-authoritative `DeviceFileSystem` at `/dev` and a shared-memory filesystem at
-`/dev/shm` during boot.
+`homebrew/main-shell-demo.json` bytes into the image. That canonical
+configuration contains the shell, Doom, and modeset profiles. The shell reaches
+embedded Bash without a download; the Doom and modeset profiles name
+independently lazy executable trees, so retaining their presentation metadata
+does not materialize either program at boot. The migration lock separately
+owns Git defaults and NetHack's writable game state. Additional language
+runtimes remain explicit optional layers rather than default-shell contents.
+The platform base intentionally does not serialize `/dev`: Node and browser
+hosts both mount the authoritative `DeviceFileSystem` at `/dev` and a
+shared-memory filesystem at `/dev/shm` during boot.
 
 The wrapper currently selects sidecars with `--runtime node` because older
 finalized sidecars predate truthful browser-compatibility recording. That is a
@@ -3061,7 +3068,7 @@ public under stale authority. A
 failed attempt leaves any older receipt untouched. Success atomically replaces
 the receipt with the release ID and every asset's ID, URL, digest, and size.
 This same bounded 256-asset contract can carry the production shell mirror's
-39 bottle payloads plus its canonical plan without adding a second publication
+36 bottle payloads plus its canonical plan without adding a second publication
 protocol.
 
 An immutable schema-3 acceptance release may already contain the five eager
@@ -3503,11 +3510,11 @@ synthetic direct-TAR Chromium first-use validation, immutable multi-payload
 runtime-layer publication, receipt-owned Homebrew text relocation without
 changing original-bottle identity, diagnostic gallery gating, and lossless
 under-lock tap composition with Formula source-closure drift rejection. The
-expanded 42-Formula candidate also has exact local Node and Chromium evidence
-for isolated lazy Python, Perl, Erlang, and Ruby startup; that is not yet public
-release evidence. Cutting over and republishing the production main shell with
-its Bash closure embedded and the remaining closure deferred, live
-public-release browser retrieval through the service-worker transport, durable
-generic gallery publication, broader package coverage, general guest
-`brew install`, and broader release/gallery operator runbooks remain separate
-work.
+optional language-layer fixtures define isolated normal-path acceptance cases
+for Python, Perl, Erlang, and Ruby, but they are not members of the default
+main-shell image and do not by themselves constitute public release evidence.
+Cutting over and republishing the production main shell with its Bash closure
+embedded and the remaining closure deferred, live public-release browser
+retrieval through the service-worker transport, durable generic gallery
+publication, broader package coverage, general guest `brew install`, and
+broader release/gallery operator runbooks remain separate work.
