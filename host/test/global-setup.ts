@@ -19,6 +19,13 @@ const repoRoot = join(__dirname, "../..");
 const examplesDir = join(repoRoot, "examples");
 const fixturesDir = join(__dirname, "fixtures");
 
+const C_TEST_FIXTURES = [
+  {
+    src: join(fixturesDir, "process-memory-reclamation-churn.c"),
+    out: join(fixturesDir, "process-memory-reclamation-churn.wasm"),
+  },
+];
+
 /** Program fixtures resolved through the normal local-binaries contract. */
 const RESOLVED_PROGRAM_FIXTURES = [
   {
@@ -71,6 +78,7 @@ const TEST_PROGRAMS = [
   "thread-exit-group.c",
   "fifo_lifecycle_test.c",
   "kernel_allocator_churn_test.c",
+  "fork_memory_clone_test.c",
 ];
 
 const FORK_INSTRUMENTED_PROGRAMS = new Set([
@@ -80,6 +88,7 @@ const FORK_INSTRUMENTED_PROGRAMS = new Set([
   "wait_lifecycle_test.c",
   "fifo_lifecycle_test.c",
   "kernel_allocator_churn_test.c",
+  "fork_memory_clone_test.c",
 ]);
 
 /** WAT fixtures used by host runtime tests. */
@@ -97,6 +106,16 @@ function needsRebuild(srcFile: string, outFile: string): boolean {
 }
 
 export async function setup() {
+  for (const { src, out } of C_TEST_FIXTURES) {
+    if (!needsRebuild(src, out)) continue;
+
+    console.log(`[global-setup] Compiling ${src.slice(repoRoot.length + 1)}...`);
+    execFileSync("wasm32posix-cc", [src, "-o", out], {
+      cwd: repoRoot,
+      stdio: "pipe",
+    });
+  }
+
   for (const { src, out } of RESOLVED_PROGRAM_FIXTURES) {
     if (!needsRebuild(src, out)) continue;
 

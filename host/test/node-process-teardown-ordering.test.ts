@@ -18,6 +18,22 @@ function functionSource(name: string, nextName: string): string {
 }
 
 describe("Node process Worker teardown ordering", () => {
+  it("does not diagnose a naturally closed Worker during semantic exit teardown", () => {
+    const start = nodeEntry.indexOf("function installCrashSafetyNet(");
+    const end = nodeEntry.indexOf(
+      "\nfunction installProcessWorkerListeners(",
+      start,
+    );
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const safetyNet = nodeEntry.slice(start, end);
+    const inFlightGuard = safetyNet.indexOf("processTeardowns.has(worker)");
+    const crashDiagnostic = safetyNet.indexOf("reportHostDiagnostic");
+
+    expect(inFlightGuard).toBeGreaterThanOrEqual(0);
+    expect(inFlightGuard).toBeLessThan(crashDiagnostic);
+  });
+
   it("does not let a trailing Worker event overtake an in-flight kernel exit teardown", () => {
     const finalize = functionSource(
       "finalizeProcessWorker",

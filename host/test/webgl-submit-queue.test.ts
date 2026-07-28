@@ -153,4 +153,24 @@ describe("SubmitQueue", () => {
     expect(drainOne(q)?.binding.pid).toBe(10);
     expect(q.isEmpty()).toBe(true);
   });
+
+  it("purges every queued frame for one exiting pid without disturbing peers", () => {
+    const q = new SubmitQueue();
+    q.enqueue(mkBinding(10, 1), mkFrame(1));
+    q.enqueue(mkBinding(10, 1), mkFrame(2));
+    q.enqueue(mkBinding(10, 2), mkFrame(3));
+    q.enqueue(mkBinding(11, 1), mkFrame(4));
+    const exitingEntry = q.pickNext()!;
+    expect(exitingEntry.binding.pid).toBe(10);
+
+    q.removePid(10);
+
+    // Clear the already-returned entry as well as both internal lanes so no
+    // caller-held queue token can retain its process-memory backing.
+    expect(exitingEntry.frames).toEqual([]);
+    expect(q.pickNext()?.binding.pid).toBe(11);
+    expect(q.isEmpty()).toBe(false);
+    drainOne(q);
+    expect(q.isEmpty()).toBe(true);
+  });
 });

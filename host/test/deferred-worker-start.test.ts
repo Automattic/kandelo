@@ -57,6 +57,30 @@ describe("DeferredWorkerHandle", () => {
     expect(handle.start()).toBe(false);
     expect(create).toHaveBeenCalledOnce();
   });
+
+  it("drops captured factories and queued handlers after start or cancel", async () => {
+    const adapter = new MockWorkerAdapter();
+    const started = new DeferredWorkerHandle(() =>
+      adapter.createWorker({ pid: 41 }),
+    );
+    started.on("message", () => {});
+    expect(started.start()).toBe(true);
+
+    const canceled = new DeferredWorkerHandle(() =>
+      adapter.createWorker({ pid: 42 }),
+    );
+    canceled.on("message", () => {});
+    await canceled.terminate();
+
+    for (const handle of [started, canceled]) {
+      const internals = handle as unknown as {
+        create: unknown;
+        handlers: Map<string, unknown>;
+      };
+      expect(internals.create).toBeNull();
+      expect(internals.handlers.size).toBe(0);
+    }
+  });
 });
 
 describe("stopped process Worker launch gate", () => {

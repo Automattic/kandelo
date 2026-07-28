@@ -223,4 +223,64 @@ describe("GbmBoRegistry — SAB-backed bo store", () => {
     const reg = new GbmBoRegistry();
     expect(() => reg.syncFromMemory(999)).not.toThrow();
   });
+
+  it("releases only one process ownership while preserving shared bo bytes", () => {
+    const memParent = newMemory();
+    const memChild = newMemory();
+    const events: string[] = [];
+    const reg = new GbmBoRegistry({
+      getProcessMemory: (pid) =>
+        pid === 100 ? memParent : pid === 200 ? memChild : undefined,
+    });
+    reg.onChange((pid, bo, event) => events.push(`${pid}:${bo}:${event}`));
+    reg.create({
+      pid: 100,
+      bo_id: 1,
+      size: BO_SIZE,
+      w: 16,
+      h: 16,
+      stride: 64,
+    });
+    reg.bind(100, 1, BO_ADDR, BO_SIZE);
+    reg.bind(200, 1, BO_ADDR, BO_SIZE);
+    fillPattern(memParent, BO_ADDR, BO_SIZE, 0x61);
+
+    reg.releaseProcess(100);
+
+    expect(reg.get(100, 1)).toBeUndefined();
+    expect(reg.get(200, 1)?.binding).toEqual({
+      addr: BO_ADDR,
+      len: BO_SIZE,
+    });
+    reg.primeBindFromSab(200, 1, memChild);
+    expectPattern(readPattern(memChild, BO_ADDR, BO_SIZE), 0x61);
+    expect(events).toContain("100:1:unbind");
+    expect(events).not.toContain("100:1:destroy");
+  });
+
+  it("drops the bo when process teardown releases its final handle", () => {
+    const mem = newMemory();
+    const events: string[] = [];
+    const reg = new GbmBoRegistry({
+      getProcessMemory: (pid) => pid === 100 ? mem : undefined,
+    });
+    reg.onChange((pid, bo, event) => events.push(`${pid}:${bo}:${event}`));
+    reg.create({
+      pid: 100,
+      bo_id: 1,
+      size: BO_SIZE,
+      w: 16,
+      h: 16,
+      stride: 64,
+    });
+    reg.bind(100, 1, BO_ADDR, BO_SIZE);
+
+    reg.releaseProcess(100);
+
+    expect(reg.get(100, 1)).toBeUndefined();
+    expect(events.slice(-2)).toEqual([
+      "100:1:unbind",
+      "100:1:destroy",
+    ]);
+  });
 });

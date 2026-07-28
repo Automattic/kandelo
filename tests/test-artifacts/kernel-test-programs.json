@@ -28,6 +28,7 @@
       "resolver_path": "programs/exec-child.wasm",
       "consumers": [
         "apps/browser-demos/test/nonzero-exit-diagnostic.spec.ts",
+        "apps/browser-demos/test/process-memory-retirement.spec.ts",
         "host/test/exec.test.ts",
         "host/test/fixtures/ordinary-nonzero-exit.ts"
       ]
@@ -40,6 +41,7 @@
       "binary": "programs/wasm32/fork-exec.wasm",
       "resolver_path": "programs/fork-exec.wasm",
       "consumers": [
+        "apps/browser-demos/test/process-memory-retirement.spec.ts",
         "host/test/exec.test.ts",
         "host/test/wasm64.test.ts",
         "run.sh"
