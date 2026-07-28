@@ -153,6 +153,44 @@ struct SpawnInheritFromParent {
     sockets: crate::socket::SocketTable,
 }
 
+/// Return each socket-table slot owned by at least one live OFD, exactly once.
+///
+/// `peer_idx` is not authority to retain another slot. Only a socket OFD
+/// inherited through the child's descriptor table is an owning root.
+fn socket_indices_named_by_live_ofds(process: &Process) -> Result<Vec<usize>, Errno> {
+    let socket_ofd_count = process
+        .ofd_table
+        .iter()
+        .filter(|(_, ofd)| ofd.file_type == FileType::Socket)
+        .count();
+    let mut indices = Vec::new();
+    indices
+        .try_reserve_exact(socket_ofd_count)
+        .map_err(|_| Errno::ENOMEM)?;
+    for (_, ofd) in process.ofd_table.iter() {
+        if ofd.file_type != FileType::Socket {
+            continue;
+        }
+        let index = crate::socket::SocketTable::index_from_ofd_handle(ofd.host_handle)?;
+        if process.sockets.get(index).is_none() {
+            return Err(Errno::EBADF);
+        }
+        if !indices.contains(&index) {
+            indices.push(index);
+        }
+    }
+    Ok(indices)
+}
+
+/// Allocation-free ownership query for process teardown.
+fn socket_index_is_named_by_live_ofd(process: &Process, socket_index: usize) -> bool {
+    process.ofd_table.iter().any(|(_, ofd)| {
+        ofd.file_type == FileType::Socket
+            && crate::socket::SocketTable::index_from_ofd_handle(ofd.host_handle)
+                == Ok(socket_index)
+    })
+}
+
 /// Bump cross-process refcounts on resources the child inherited from the
 /// parent (host file handles, global pipes, PTYs, and the global pipes
 /// referenced by sockets with `global_pipes`).
@@ -168,16 +206,60 @@ pub(crate) fn bump_inherited_resource_refcounts(
     parent_pid: u32,
     child: &Process,
 ) -> Result<(), Errno> {
+    // Resolve and deduplicate every fallible socket root before the first
+    // machine-wide refcount mutation. An allocation or malformed handle must
+    // fail without requiring rollback of unrelated inherited resources.
+    let owned_socket_indices = socket_indices_named_by_live_ofds(child)?;
+
     // Backings for eventfd/timerfd/signalfd/memfd/procfs are indexed by the
     // inherited OFD's stable negative handle. Add these fallible references
     // first, rolling them back if a stale handle is encountered, before
     // touching the older infallible global-resource refcounts below.
+    let inherited_ofd_count = child.ofd_table.iter().count();
     let mut shared_backings_bumped: Vec<(FileType, i64)> = Vec::new();
+    shared_backings_bumped
+        .try_reserve_exact(inherited_ofd_count)
+        .map_err(|_| Errno::ENOMEM)?;
+    let mut unix_registry_owners_added = Vec::new();
+    unix_registry_owners_added
+        .try_reserve_exact(owned_socket_indices.len())
+        .map_err(|_| Errno::ENOMEM)?;
     for (_idx, ofd) in child.ofd_table.iter() {
         match crate::descriptor_backing::add_ref_for_ofd(ofd.file_type, ofd.host_handle) {
             Ok(true) => shared_backings_bumped.push((ofd.file_type, ofd.host_handle)),
             Ok(false) => {}
             Err(err) => {
+                for (file_type, host_handle) in shared_backings_bumped.into_iter().rev() {
+                    crate::descriptor_backing::release_for_ofd(file_type, host_handle);
+                }
+                return Err(err);
+            }
+        }
+    }
+
+    // A bound socket's historical sockaddr can be stale after rename+reuse.
+    // Inherit only from the exact parent owner tuple. This operation can
+    // allocate, so rollback both earlier registry additions and descriptor
+    // backing refs before returning an error.
+    for &sock_idx in &owned_socket_indices {
+        let sock = child
+            .sockets
+            .get(sock_idx)
+            .expect("validated socket OFD lost its table slot");
+        if sock.bind_path.is_none() {
+            continue;
+        }
+        let result = unsafe { crate::unix_socket::global_unix_socket_registry() }
+            .add_inherited_owner(parent_pid, sock_idx, child.pid, sock_idx);
+        match result {
+            Ok(true) => unix_registry_owners_added.push(sock_idx),
+            Ok(false) => {}
+            Err(err) => {
+                let registry =
+                    unsafe { crate::unix_socket::global_unix_socket_registry() };
+                for added_sock_idx in unix_registry_owners_added.into_iter().rev() {
+                    registry.remove_owner_exact(child.pid, added_sock_idx);
+                }
                 for (file_type, host_handle) in shared_backings_bumped.into_iter().rev() {
                     crate::descriptor_backing::release_for_ofd(file_type, host_handle);
                 }
@@ -252,27 +334,23 @@ pub(crate) fn bump_inherited_resource_refcounts(
         }
     }
 
-    // Shared listener backlog (AF_INET/AF_INET6 listeners) and host_net_handle
-    // (connected AF_INET sockets): increment one ref per socket entry that
-    // carries one. close() and process exit each drop one ref; last-drop
-    // either frees the listener slot or calls host_net_close. Iterates
-    // `child.sockets` directly (not via OFDs) so an unaccepted-but-stored
-    // listener inherits a refcount even if no fd in the child happens to
-    // reference it — this matches the prior fork-deserialize-time bump.
+    // Shared listener backlog, host_net_handle, INET binding ownership, and
+    // AF_UNIX registry ownership belong only to socket slots named by live
+    // child OFDs. `peer_idx` is not a capability: acquiring ownership for its
+    // target would let CLOFORK or retry-only peer state survive in a child
+    // that inherited no descriptor for it.
     let backlog_table = unsafe { crate::socket::shared_listener_backlog_table() };
-    for sock_idx in 0..child.sockets.len() {
-        if let Some(sock) = child.sockets.get(sock_idx) {
-            crate::socket::inherit_inet_binding_owners(parent_pid, child.pid, sock_idx);
-            if let Some(shared_idx) = sock.shared_backlog_idx {
-                backlog_table.add_ref(shared_idx);
-            }
-            if let Some(net_handle) = sock.host_net_handle {
-                crate::socket::host_net_handle_fork_ref(net_handle);
-            }
-            if let Some(path) = sock.bind_path.as_deref() {
-                let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
-                registry.add_owner(path, child.pid, sock_idx);
-            }
+    for sock_idx in owned_socket_indices {
+        let sock = child
+            .sockets
+            .get(sock_idx)
+            .expect("validated socket OFD lost its table slot");
+        crate::socket::inherit_inet_binding_owners(parent_pid, child.pid, sock_idx);
+        if let Some(shared_idx) = sock.shared_backlog_idx {
+            backlog_table.add_ref(shared_idx);
+        }
+        if let Some(net_handle) = sock.host_net_handle {
+            crate::socket::host_net_handle_fork_ref(net_handle);
         }
     }
 
@@ -422,7 +500,12 @@ impl ProcessTable {
         if pid == SYNTHETIC_INIT_PID {
             return None;
         }
-        let proc = self.processes.remove(&pid)?;
+        let mut proc = self.processes.remove(&pid)?;
+        // Whole-process teardown consumes the OFD table itself, but retry
+        // bindings can also own machine-global MQ/IPC pins and SCM_RIGHTS
+        // references. Drop those before the ordinary backing walk and its
+        // deferred ancillary cleanup boundary.
+        crate::syscalls::discard_blocking_retry_bindings_for_process_removal(&mut proc);
         let _ = unsafe { crate::pipe::global_pipe_table().cancel_fifo_opens_for_process(pid) };
         let mut host_closes: Vec<i64> = Vec::new();
         let mut host_dir_closes: Vec<i64> = Vec::new();
@@ -581,15 +664,21 @@ impl ProcessTable {
         }
 
         // Drop cross-process refcounts for socket-side resources, once per
-        // socket entry. Mirrors the per-socket bump in
+        // deduplicated OFD-named socket root. Mirrors the root-only bump in
         // `bump_inherited_resource_refcounts` so a fork/spawn parent and
         // child each contribute exactly one ref on inheritance and one
         // drop on exit. Sockets that the process closed via sys_close are
         // already removed from `proc.sockets` (sys_close calls
         // `sockets.free` on its happy path), so this loop visits only
-        // entries the process held until exit.
+        // owning roots the process held until exit.
         let shared_backlog_table = unsafe { crate::socket::shared_listener_backlog_table() };
         for sock_idx in 0..proc.sockets.len() {
+            // A process-local slot without a live OFD never acquired these
+            // machine-wide inherited references, so teardown must not
+            // decrement them.
+            if !socket_index_is_named_by_live_ofd(&proc, sock_idx) {
+                continue;
+            }
             if let Some(sock) = proc.sockets.get(sock_idx) {
                 if let Some(shared_idx) = sock.shared_backlog_idx {
                     shared_backlog_table.dec_ref(shared_idx);
@@ -599,6 +688,17 @@ impl ProcessTable {
                         host_net_closes.push(net_handle);
                     }
                 }
+            }
+        }
+
+        // WHY: AF_UNIX datagrams can own retained SCM_RIGHTS descriptors.
+        // `proc` remains live until this function returns, but the deferred
+        // release queue is drained below. Drop every queued datagram now so
+        // crash/forced-removal cleanup observes those releases in this same
+        // transaction rather than leaving them for an unrelated later syscall.
+        for sock_idx in 0..proc.sockets.len() {
+            if let Some(sock) = proc.sockets.get_mut(sock_idx) {
+                sock.dgram_queue.clear();
             }
         }
 
@@ -631,10 +731,8 @@ impl ProcessTable {
                 host_closes.push(handle);
             }
             if released.final_ofd_reference {
-                deferred_lock_state_changed |= self
-                    .advisory_locks
-                    .remove_ofd(released.ofd_id)
-                    .changed;
+                deferred_lock_state_changed |=
+                    self.advisory_locks.remove_ofd(released.ofd_id).changed;
             }
         }
 
@@ -746,6 +844,11 @@ impl ProcessTable {
         self.current_pid = pid;
         self.current_tid = tid;
         self.current_tid_pid = pid;
+        self.processes
+            .get_mut(&pid)
+            .expect("validated process disappeared during serialized bind")
+            .blocked_retries
+            .bind_task(tid);
         Ok(())
     }
 
@@ -782,6 +885,13 @@ impl ProcessTable {
     /// Consume the ambient task binding after one serialized channel call.
     /// A stale binding must never authorize a later mailbox dispatch.
     pub fn clear_current_tid_binding(&mut self) {
+        if self.current_tid_pid != 0 {
+            if let Some(process) = self.processes.get_mut(&self.current_tid_pid) {
+                process
+                    .blocked_retries
+                    .clear_bound_task(self.current_tid);
+            }
+        }
         self.current_pid = 0;
         self.current_tid = 0;
         self.current_tid_pid = 0;
@@ -887,8 +997,11 @@ impl ProcessTable {
         &self.advisory_locks
     }
 
-    #[cfg(test)]
-    pub fn advisory_locks_mut(&mut self) -> &mut AdvisoryLockManager {
+    /// Borrow the machine lock manager for resource cleanup that has no live
+    /// process owner, such as a direct host-pipe operation dropping queued
+    /// SCM_RIGHTS. This is crate-private so callers cannot bypass the
+    /// process-and-lock paired access used by ordinary syscalls.
+    pub(crate) fn advisory_locks_mut(&mut self) -> &mut AdvisoryLockManager {
         &mut self.advisory_locks
     }
 
@@ -1036,6 +1149,14 @@ impl ProcessTable {
         child.ofd_table = inherit.ofd_table;
         child.sockets = inherit.sockets;
 
+        // Retry pins are kernel capabilities owned by the parent task, not
+        // descriptors inherited by a new process. Rebuild local OFD counts
+        // from the child's actual fd aliases before acquiring any shared
+        // backing references, then keep only the socket graph those OFDs own.
+        child.ofd_table.retain_fd_references(&child.fd_table)?;
+        let socket_roots = socket_indices_named_by_live_ofds(&child)?;
+        child.sockets.retain_inherited_roots(&socket_roots)?;
+
         // A host directory iterator is process-local mutable state, not part
         // of the positive backing-handle ownership that fork/spawn refcount.
         // Cloning it here would give parent and child one host handle with
@@ -1146,12 +1267,7 @@ impl ProcessTable {
             match action {
                 FileAction::Close { fd } => {
                     // POSIX: close errors are silently ignored for spawn.
-                    let _ = crate::syscalls::sys_close_with_locks(
-                        child,
-                        advisory_locks,
-                        host,
-                        *fd,
-                    );
+                    let _ = crate::syscalls::sys_close_with_locks(child, advisory_locks, host, *fd);
                 }
                 FileAction::Dup2 { srcfd, fd } => {
                     if srcfd == fd {
@@ -1225,8 +1341,7 @@ impl ProcessTable {
         for fd in cloexec_fds {
             // POSIX: close errors here are silently ignored — same policy
             // as the FileAction::Close handler above.
-            let _ =
-                crate::syscalls::sys_close_with_locks(child, advisory_locks, host, fd);
+            let _ = crate::syscalls::sys_close_with_locks(child, advisory_locks, host, fd);
         }
 
         Ok(())
@@ -1293,9 +1408,7 @@ impl ProcessTable {
     /// Keeping lifecycle filtering here prevents kernel subsystems from
     /// treating the immutable synthetic init record or retained exited records
     /// as runnable processes while scanning machine-wide state.
-    pub(crate) fn live_processes_descending(
-        &self,
-    ) -> impl Iterator<Item = (u32, &Process)> {
+    pub(crate) fn live_processes_descending(&self) -> impl Iterator<Item = (u32, &Process)> {
         self.processes.iter().rev().filter_map(|(&pid, process)| {
             if pid == SYNTHETIC_INIT_PID
                 || matches!(process.state, ProcessState::Exited | ProcessState::Limbo)
@@ -1372,20 +1485,14 @@ impl ProcessTable {
         event_mask: u32,
         flags: u32,
     ) -> Result<Option<(u32, ChildWaitEvent)>, Errno> {
-        use wasm_posix_shared::wait::{
-            EVENT_CONTINUED, EVENT_EXITED, EVENT_STOPPED, WNOWAIT,
-        };
+        use wasm_posix_shared::wait::{EVENT_CONTINUED, EVENT_EXITED, EVENT_STOPPED, WNOWAIT};
 
         let valid_events = EVENT_EXITED | EVENT_STOPPED | EVENT_CONTINUED;
         if event_mask == 0 || event_mask & !valid_events != 0 || flags & !WNOWAIT != 0 {
             return Err(Errno::EINVAL);
         }
 
-        let parent_pgid = self
-            .processes
-            .get(&parent_pid)
-            .ok_or(Errno::ESRCH)?
-            .pgid;
+        let parent_pgid = self.processes.get(&parent_pid).ok_or(Errno::ESRCH)?.pgid;
         let mut saw_matching_child = false;
 
         for (&child_pid, child) in &mut self.processes {
@@ -1463,11 +1570,14 @@ mod wait_tests {
         let tid = table
             .create_thread(parent_pid, parent_pid, 0x1000, 0, 0)
             .unwrap();
-        let fork_pid = table.fork_process_for_caller(parent_pid, parent_pid).unwrap();
+        let fork_pid = table
+            .fork_process_for_caller(parent_pid, parent_pid)
+            .unwrap();
         let mut host = NoopHost;
         let spawn_pid = table
             .spawn_child_for_caller(
-                parent_pid, parent_pid,
+                parent_pid,
+                parent_pid,
                 &[b"/bin/child".as_slice()],
                 &[],
                 &[],
@@ -1676,16 +1786,19 @@ mod wait_tests {
         assert_eq!(table.bind_current_tid(pid, tid), Ok(()));
         assert_eq!(table.current_tid(), tid);
         assert!(table.has_current_tid_binding(pid));
+        assert_eq!(table.get(pid).unwrap().blocked_retries.bound_tid(), Some(tid));
 
         assert_eq!(table.bind_current_tid(pid, tid + 1), Err(Errno::ESRCH));
         assert!(!table.has_current_tid_binding(pid));
         assert_eq!(table.current_tid(), 0);
+        assert_eq!(table.get(pid).unwrap().blocked_retries.bound_tid(), None);
 
         assert_eq!(table.bind_current_tid(pid, tid), Ok(()));
         table.clear_current_tid_binding();
         assert!(!table.has_current_tid_binding(pid));
         assert_eq!(table.current_pid(), 0);
         assert_eq!(table.current_tid(), 0);
+        assert_eq!(table.get(pid).unwrap().blocked_retries.bound_tid(), None);
         assert!(table.current_process().is_none());
         assert!(table.current_process_and_advisory_locks().is_none());
 
@@ -1835,9 +1948,10 @@ mod tests {
         let read_ofd = child
             .ofd_table
             .create(FileType::Pipe, O_RDONLY, -1, b"pipe-read".to_vec());
-        let write_ofd = child
-            .ofd_table
-            .create(FileType::Pipe, O_WRONLY, -1, b"pipe-write".to_vec());
+        let write_ofd =
+            child
+                .ofd_table
+                .create(FileType::Pipe, O_WRONLY, -1, b"pipe-write".to_vec());
         let read_fd = child
             .fd_table
             .alloc_at_min(OpenFileDescRef(read_ofd), 0, 2048)
@@ -1907,6 +2021,745 @@ mod tests {
     }
 
     #[test]
+    fn spawn_recomputes_child_ofd_refs_without_inheriting_a_sibling_retry_pin() {
+        use crate::fd::OpenFileDescRef;
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+        use wasm_posix_shared::flags::O_RDONLY;
+
+        const HANDLE: i64 = 9_470_001;
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let caller_tid = table
+            .create_thread(parent_pid, parent_pid, 0x1000, 0, 0)
+            .unwrap();
+        let mut host = NoopHost;
+        let (fd, ofd_index, token) = {
+            let (parent, locks) = table
+                .process_and_advisory_locks(parent_pid)
+                .unwrap();
+            let ofd_index = parent.ofd_table.create(
+                FileType::Regular,
+                O_RDONLY,
+                HANDLE,
+                b"/retry-pinned".to_vec(),
+            );
+            let fd = parent
+                .fd_table
+                .alloc(OpenFileDescRef(ofd_index), 0)
+                .unwrap();
+            let token = crate::syscalls::ensure_blocking_retry_ofd_binding(
+                parent,
+                locks,
+                &mut host,
+                parent_pid,
+                3,
+                fd,
+                None,
+            )
+            .unwrap();
+            assert_eq!(parent.ofd_table.get(ofd_index).unwrap().ref_count, 2);
+            (fd, ofd_index, token)
+        };
+
+        let child_pid = table
+            .spawn_child_for_caller(
+                parent_pid,
+                caller_tid,
+                &[b"/bin/child".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .unwrap();
+        let child = table.get(child_pid).unwrap();
+        assert_eq!(child.blocked_retries.binding_count(), 0);
+        assert_eq!(child.ofd_table.get(ofd_index).unwrap().ref_count, 1);
+
+        {
+            let (child, locks) = table
+                .process_and_advisory_locks(child_pid)
+                .unwrap();
+            crate::syscalls::sys_close_with_locks(child, locks, &mut host, fd).unwrap();
+            assert!(child.ofd_table.get(ofd_index).is_none());
+        }
+        assert_eq!(crate::ofd::host_handle_ref_count(HANDLE), 1);
+
+        {
+            let (parent, locks) = table
+                .process_and_advisory_locks(parent_pid)
+                .unwrap();
+            crate::syscalls::release_blocking_retry_binding(
+                parent,
+                locks,
+                &mut host,
+                parent_pid,
+                token,
+            )
+            .unwrap();
+            crate::syscalls::sys_close_with_locks(parent, locks, &mut host, fd).unwrap();
+        }
+        assert_eq!(crate::ofd::host_handle_ref_count(HANDLE), 0);
+    }
+
+    #[test]
+    fn fork_and_spawn_exclude_retry_only_ofd_and_socket_state() {
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+        use wasm_posix_shared::socket::{AF_INET, SOCK_DGRAM};
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let caller_tid = table
+            .create_thread(parent_pid, parent_pid, 0x1000, 0, 0)
+            .unwrap();
+        let mut host = NoopHost;
+        let (ofd_index, socket_index, token) = {
+            let (parent, locks) = table
+                .process_and_advisory_locks(parent_pid)
+                .unwrap();
+            let fd =
+                crate::syscalls::sys_socket(parent, &mut host, AF_INET, SOCK_DGRAM, 0).unwrap();
+            let ofd_index = parent.fd_table.get(fd).unwrap().ofd_ref.0;
+            let socket_index = crate::socket::SocketTable::index_from_ofd_handle(
+                parent.ofd_table.get(ofd_index).unwrap().host_handle,
+            )
+            .unwrap();
+            let token = crate::syscalls::ensure_blocking_retry_ofd_binding(
+                parent,
+                locks,
+                &mut host,
+                parent_pid,
+                56,
+                fd,
+                None,
+            )
+            .unwrap();
+            crate::syscalls::sys_close_with_locks(parent, locks, &mut host, fd).unwrap();
+            assert!(parent.ofd_table.get(ofd_index).is_some());
+            assert!(parent.sockets.get(socket_index).is_some());
+            (ofd_index, socket_index, token)
+        };
+
+        let fork_pid = table
+            .fork_process_for_caller(parent_pid, caller_tid)
+            .unwrap();
+        let mut host = NoopHost;
+        let spawn_pid = table
+            .spawn_child_for_caller(
+                parent_pid,
+                caller_tid,
+                &[b"/bin/child".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .unwrap();
+        for child_pid in [fork_pid, spawn_pid] {
+            let child = table.get(child_pid).unwrap();
+            assert_eq!(child.blocked_retries.binding_count(), 0);
+            assert!(child.ofd_table.get(ofd_index).is_none());
+            assert!(child.sockets.get(socket_index).is_none());
+        }
+
+        let (parent, locks) = table
+            .process_and_advisory_locks(parent_pid)
+            .unwrap();
+        crate::syscalls::release_blocking_retry_binding(
+            parent,
+            locks,
+            &mut host,
+            parent_pid,
+            token,
+        )
+        .unwrap();
+        assert!(parent.ofd_table.get(ofd_index).is_none());
+        assert!(parent.sockets.get(socket_index).is_none());
+    }
+
+    #[test]
+    fn fork_clofork_unix_datagram_peer_fails_truthfully_without_an_orphan_proxy() {
+        use crate::process::test_host::NoopHost;
+        use wasm_posix_shared::fd_flags::FD_CLOFORK;
+        use wasm_posix_shared::socket::{AF_UNIX, SOCK_DGRAM};
+
+        const ABSTRACT_PATH: &[u8] = b"\0kandelo-clofork-peer-proxy";
+
+        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+        registry.unregister(ABSTRACT_PATH);
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let mut host = NoopHost;
+        let (source_fd, peer_fd, peer_index) = {
+            let parent = table.get_mut(parent_pid).unwrap();
+            let source_fd =
+                crate::syscalls::sys_socket(parent, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+            let peer_fd =
+                crate::syscalls::sys_socket(parent, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+            let mut address = vec![0u8; 2 + ABSTRACT_PATH.len()];
+            address[0] = AF_UNIX as u8;
+            address[2..].copy_from_slice(ABSTRACT_PATH);
+            crate::syscalls::sys_bind(parent, &mut host, peer_fd, &address).unwrap();
+            crate::syscalls::sys_connect(parent, &mut host, source_fd, &address).unwrap();
+            parent.fd_table.get_mut(peer_fd).unwrap().fd_flags |= FD_CLOFORK;
+
+            let peer_ofd_index = parent.fd_table.get(peer_fd).unwrap().ofd_ref.0;
+            let peer_index = crate::socket::SocketTable::index_from_ofd_handle(
+                parent.ofd_table.get(peer_ofd_index).unwrap().host_handle,
+            )
+            .unwrap();
+            (source_fd, peer_fd, peer_index)
+        };
+
+        let child_pid = table
+            .fork_process_for_caller(parent_pid, parent_pid)
+            .unwrap();
+        let child = table.get(child_pid).unwrap();
+        assert!(child.fd_table.get(source_fd).is_ok());
+        assert!(child.fd_table.get(peer_fd).is_err());
+        assert!(
+            child.sockets.get(peer_index).is_none(),
+            "a non-inherited peer must not survive as a fake local endpoint"
+        );
+
+        let owner = unsafe { crate::unix_socket::global_unix_socket_registry() }
+            .lookup(ABSTRACT_PATH)
+            .unwrap();
+        assert_eq!((owner.pid, owner.sock_idx), (parent_pid, peer_index));
+
+        {
+            let (parent, locks) = table.process_and_advisory_locks(parent_pid).unwrap();
+            crate::syscalls::sys_close_with_locks(parent, locks, &mut host, peer_fd).unwrap();
+        }
+        assert!(
+            unsafe { crate::unix_socket::global_unix_socket_registry() }
+                .lookup(ABSTRACT_PATH)
+                .is_none(),
+            "closing the sole owning descriptor must not reveal a child proxy as an owner"
+        );
+        assert_eq!(
+            crate::syscalls::sys_send(
+                table.get_mut(child_pid).unwrap(),
+                &mut host,
+                source_fd,
+                b"orphan",
+                0,
+            ),
+            Err(Errno::ECONNREFUSED),
+            "a child must not report success by queueing into an unreachable proxy"
+        );
+        {
+            let (child, locks) = table.process_and_advisory_locks(child_pid).unwrap();
+            crate::syscalls::sys_close_with_locks(child, locks, &mut host, source_fd).unwrap();
+            assert!(child.sockets.get(peer_index).is_none());
+        }
+
+        table.remove_process(child_pid).unwrap();
+        table.remove_process(parent_pid).unwrap();
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(ABSTRACT_PATH);
+    }
+
+    #[test]
+    fn fork_and_spawn_drop_a_connected_unix_datagram_peer_owned_only_by_retry() {
+        use crate::process::test_host::NoopHost;
+        use crate::spawn::SpawnAttrs;
+        use wasm_posix_shared::socket::{AF_UNIX, SOCK_DGRAM};
+
+        const ABSTRACT_PATH: &[u8] = b"\0kandelo-retry-only-connected-peer";
+
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(ABSTRACT_PATH);
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let caller_tid = table
+            .create_thread(parent_pid, parent_pid, 0x1000, 0, 0)
+            .unwrap();
+        let mut host = NoopHost;
+        let (source_fd, peer_fd, source_index, peer_index, token) = {
+            let (parent, locks) = table
+                .process_and_advisory_locks(parent_pid)
+                .unwrap();
+            let source_fd =
+                crate::syscalls::sys_socket(parent, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+            let peer_fd =
+                crate::syscalls::sys_socket(parent, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+            let mut address = vec![0u8; 2 + ABSTRACT_PATH.len()];
+            address[0] = AF_UNIX as u8;
+            address[2..].copy_from_slice(ABSTRACT_PATH);
+            crate::syscalls::sys_bind(parent, &mut host, peer_fd, &address).unwrap();
+            crate::syscalls::sys_connect(parent, &mut host, source_fd, &address).unwrap();
+
+            let source_ofd = parent.fd_table.get(source_fd).unwrap().ofd_ref.0;
+            let source_index = crate::socket::SocketTable::index_from_ofd_handle(
+                parent.ofd_table.get(source_ofd).unwrap().host_handle,
+            )
+            .unwrap();
+            let peer_ofd = parent.fd_table.get(peer_fd).unwrap().ofd_ref.0;
+            let peer_index = crate::socket::SocketTable::index_from_ofd_handle(
+                parent.ofd_table.get(peer_ofd).unwrap().host_handle,
+            )
+            .unwrap();
+            let token = crate::syscalls::ensure_blocking_retry_ofd_binding(
+                parent,
+                locks,
+                &mut host,
+                parent_pid,
+                56,
+                peer_fd,
+                None,
+            )
+            .unwrap();
+            crate::syscalls::sys_close_with_locks(parent, locks, &mut host, peer_fd).unwrap();
+            assert!(parent.sockets.get(peer_index).is_some());
+            (source_fd, peer_fd, source_index, peer_index, token)
+        };
+
+        let fork_pid = table
+            .fork_process_for_caller(parent_pid, caller_tid)
+            .unwrap();
+        let spawn_pid = table
+            .spawn_child_for_caller(
+                parent_pid,
+                caller_tid,
+                &[b"/bin/child".as_slice()],
+                &[],
+                &[],
+                &SpawnAttrs::empty(),
+                &mut host,
+            )
+            .unwrap();
+        for child_pid in [fork_pid, spawn_pid] {
+            let child = table.get(child_pid).unwrap();
+            assert!(child.fd_table.get(source_fd).is_ok());
+            assert!(child.fd_table.get(peer_fd).is_err());
+            assert!(child.sockets.get(peer_index).is_none());
+            assert_eq!(child.sockets.get(source_index).unwrap().peer_idx, None);
+        }
+
+        {
+            let (parent, locks) = table
+                .process_and_advisory_locks(parent_pid)
+                .unwrap();
+            crate::syscalls::release_blocking_retry_binding(
+                parent,
+                locks,
+                &mut host,
+                parent_pid,
+                token,
+            )
+            .unwrap();
+            assert!(parent.sockets.get(peer_index).is_none());
+        }
+        assert!(
+            unsafe { crate::unix_socket::global_unix_socket_registry() }
+                .lookup(ABSTRACT_PATH)
+                .is_none()
+        );
+
+        for child_pid in [fork_pid, spawn_pid] {
+            assert_eq!(
+                crate::syscalls::sys_send(
+                    table.get_mut(child_pid).unwrap(),
+                    &mut host,
+                    source_fd,
+                    b"orphan",
+                    0,
+                ),
+                Err(Errno::ECONNREFUSED)
+            );
+        }
+
+        table.remove_process(fork_pid).unwrap();
+        table.remove_process(spawn_pid).unwrap();
+        table.remove_process(parent_pid).unwrap();
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(ABSTRACT_PATH);
+    }
+
+    #[test]
+    fn fork_preserves_both_owned_unix_datagram_socketpair_roots() {
+        use crate::process::test_host::NoopHost;
+        use wasm_posix_shared::socket::{AF_UNIX, SOCK_DGRAM};
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let mut host = NoopHost;
+        let (sender_fd, receiver_fd) = crate::syscalls::sys_socketpair(
+            table.get_mut(parent_pid).unwrap(),
+            &mut host,
+            AF_UNIX,
+            SOCK_DGRAM,
+            0,
+        )
+        .unwrap();
+
+        let child_pid = table
+            .fork_process_for_caller(parent_pid, parent_pid)
+            .unwrap();
+        assert_eq!(
+            crate::syscalls::sys_send(
+                table.get_mut(child_pid).unwrap(),
+                &mut host,
+                sender_fd,
+                b"owned-pair",
+                0,
+            ),
+            Ok(10)
+        );
+        let mut received = [0u8; 16];
+        assert_eq!(
+            crate::syscalls::sys_recv(
+                table.get_mut(child_pid).unwrap(),
+                &mut host,
+                receiver_fd,
+                &mut received,
+                0,
+            ),
+            Ok(10)
+        );
+        assert_eq!(&received[..10], b"owned-pair");
+
+        table.remove_process(child_pid).unwrap();
+        table.remove_process(parent_pid).unwrap();
+    }
+
+    #[test]
+    fn fork_clofork_unix_stream_keeps_pipe_data_but_not_process_local_oob_peer() {
+        use crate::process::test_host::NoopHost;
+        use wasm_posix_shared::fd_flags::FD_CLOFORK;
+        use wasm_posix_shared::socket::{
+            AF_UNIX, MSG_NOSIGNAL, MSG_OOB, SOCK_STREAM,
+        };
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let mut host = NoopHost;
+        let (sender_fd, receiver_fd, receiver_index) = {
+            let parent = table.get_mut(parent_pid).unwrap();
+            let (sender_fd, receiver_fd) = crate::syscalls::sys_socketpair(
+                parent,
+                &mut host,
+                AF_UNIX,
+                SOCK_STREAM,
+                0,
+            )
+            .unwrap();
+            parent.fd_table.get_mut(receiver_fd).unwrap().fd_flags |= FD_CLOFORK;
+            let receiver_ofd = parent.fd_table.get(receiver_fd).unwrap().ofd_ref.0;
+            let receiver_index = crate::socket::SocketTable::index_from_ofd_handle(
+                parent.ofd_table.get(receiver_ofd).unwrap().host_handle,
+            )
+            .unwrap();
+            (sender_fd, receiver_fd, receiver_index)
+        };
+
+        let child_pid = table
+            .fork_process_for_caller(parent_pid, parent_pid)
+            .unwrap();
+        let child = table.get(child_pid).unwrap();
+        assert!(child.fd_table.get(sender_fd).is_ok());
+        assert!(child.fd_table.get(receiver_fd).is_err());
+        assert!(child.sockets.get(receiver_index).is_none());
+
+        assert_eq!(
+            crate::syscalls::sys_send(
+                table.get_mut(child_pid).unwrap(),
+                &mut host,
+                sender_fd,
+                b"pipe-data",
+                0,
+            ),
+            Ok(9)
+        );
+        let mut received = [0u8; 16];
+        assert_eq!(
+            crate::syscalls::sys_recv(
+                table.get_mut(parent_pid).unwrap(),
+                &mut host,
+                receiver_fd,
+                &mut received,
+                0,
+            ),
+            Ok(9)
+        );
+        assert_eq!(&received[..9], b"pipe-data");
+
+        assert_eq!(
+            crate::syscalls::sys_send(
+                table.get_mut(child_pid).unwrap(),
+                &mut host,
+                sender_fd,
+                b"X",
+                MSG_OOB | MSG_NOSIGNAL,
+            ),
+            Err(Errno::EPIPE)
+        );
+
+        table.remove_process(child_pid).unwrap();
+        table.remove_process(parent_pid).unwrap();
+    }
+
+    #[test]
+    fn inherited_unix_registry_owner_is_deduplicated_across_fd_aliases() {
+        use crate::process::test_host::NoopHost;
+        use wasm_posix_shared::socket::{AF_UNIX, SOCK_DGRAM};
+
+        const ABSTRACT_PATH: &[u8] = b"\0kandelo-inherited-alias-owner";
+
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(ABSTRACT_PATH);
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let mut host = NoopHost;
+        let (bound_fd, alias_fd, socket_index) = {
+            let parent = table.get_mut(parent_pid).unwrap();
+            let bound_fd =
+                crate::syscalls::sys_socket(parent, &mut host, AF_UNIX, SOCK_DGRAM, 0).unwrap();
+            let mut address = vec![0u8; 2 + ABSTRACT_PATH.len()];
+            address[0] = AF_UNIX as u8;
+            address[2..].copy_from_slice(ABSTRACT_PATH);
+            crate::syscalls::sys_bind(parent, &mut host, bound_fd, &address).unwrap();
+            let alias_fd = crate::syscalls::sys_dup(parent, bound_fd).unwrap();
+            let ofd_index = parent.fd_table.get(bound_fd).unwrap().ofd_ref.0;
+            let socket_index = crate::socket::SocketTable::index_from_ofd_handle(
+                parent.ofd_table.get(ofd_index).unwrap().host_handle,
+            )
+            .unwrap();
+            (bound_fd, alias_fd, socket_index)
+        };
+
+        let child_pid = table
+            .fork_process_for_caller(parent_pid, parent_pid)
+            .unwrap();
+
+        {
+            let (parent, locks) = table
+                .process_and_advisory_locks(parent_pid)
+                .unwrap();
+            crate::syscalls::sys_close_with_locks(parent, locks, &mut host, bound_fd).unwrap();
+            crate::syscalls::sys_close_with_locks(parent, locks, &mut host, alias_fd).unwrap();
+        }
+        let owner = unsafe { crate::unix_socket::global_unix_socket_registry() }
+            .lookup(ABSTRACT_PATH)
+            .unwrap();
+        assert_eq!((owner.pid, owner.sock_idx), (child_pid, socket_index));
+
+        {
+            let (child, locks) = table.process_and_advisory_locks(child_pid).unwrap();
+            crate::syscalls::sys_close_with_locks(child, locks, &mut host, bound_fd).unwrap();
+            let owner = unsafe { crate::unix_socket::global_unix_socket_registry() }
+                .lookup(ABSTRACT_PATH)
+                .unwrap();
+            assert_eq!((owner.pid, owner.sock_idx), (child_pid, socket_index));
+            crate::syscalls::sys_close_with_locks(child, locks, &mut host, alias_fd).unwrap();
+        }
+        assert!(
+            unsafe { crate::unix_socket::global_unix_socket_registry() }
+                .lookup(ABSTRACT_PATH)
+                .is_none()
+        );
+
+        table.remove_process(child_pid).unwrap();
+        table.remove_process(parent_pid).unwrap();
+        unsafe { crate::unix_socket::global_unix_socket_registry() }.unregister(ABSTRACT_PATH);
+    }
+
+    #[test]
+    fn inherited_unix_owner_follows_rename_while_old_name_is_reused() {
+        use crate::fd::OpenFileDescRef;
+        use crate::process::test_host::NoopHost;
+        use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
+        use wasm_posix_shared::fd_flags::FD_CLOFORK;
+        use wasm_posix_shared::flags::O_RDWR;
+
+        const OLD_NAME: &[u8] = b"/tmp/kandelo-owner-before-rename.sock";
+        const NEW_NAME: &[u8] = b"/tmp/kandelo-owner-after-rename.sock";
+
+        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+        registry.unregister(OLD_NAME);
+        registry.unregister(NEW_NAME);
+
+        let mut table = ProcessTable::new();
+        let parent_pid = table.create_process().unwrap();
+        let mut host = NoopHost;
+        let (renamed_fd, renamed_index, reused_fd, reused_index) = {
+            let parent = table.get_mut(parent_pid).unwrap();
+            let mut renamed_socket =
+                SocketInfo::new(SocketDomain::Unix, SocketType::Dgram, 0);
+            renamed_socket.bind_path = Some(OLD_NAME.to_vec());
+            renamed_socket.state = SocketState::Bound;
+            let renamed_index = parent.sockets.alloc(renamed_socket);
+            let renamed_ofd = parent.ofd_table.create(
+                FileType::Socket,
+                O_RDWR,
+                -((renamed_index as i64) + 1),
+                b"/dev/socket".to_vec(),
+            );
+            let renamed_fd = parent
+                .fd_table
+                .alloc(OpenFileDescRef(renamed_ofd), 0)
+                .unwrap();
+            assert!(
+                unsafe { crate::unix_socket::global_unix_socket_registry() }.register(
+                    OLD_NAME.to_vec(),
+                    parent_pid,
+                    renamed_index,
+                )
+            );
+
+            assert!(
+                unsafe { crate::unix_socket::global_unix_socket_registry() }
+                    .rename_path(OLD_NAME, NEW_NAME)
+            );
+
+            let mut reused_socket =
+                SocketInfo::new(SocketDomain::Unix, SocketType::Dgram, 0);
+            reused_socket.bind_path = Some(OLD_NAME.to_vec());
+            reused_socket.state = SocketState::Bound;
+            let reused_index = parent.sockets.alloc(reused_socket);
+            let reused_ofd = parent.ofd_table.create(
+                FileType::Socket,
+                O_RDWR,
+                -((reused_index as i64) + 1),
+                b"/dev/socket".to_vec(),
+            );
+            let reused_fd = parent
+                .fd_table
+                .alloc(OpenFileDescRef(reused_ofd), 0)
+                .unwrap();
+            parent.fd_table.get_mut(reused_fd).unwrap().fd_flags |= FD_CLOFORK;
+            assert!(
+                unsafe { crate::unix_socket::global_unix_socket_registry() }.register(
+                    OLD_NAME.to_vec(),
+                    parent_pid,
+                    reused_index,
+                )
+            );
+            (renamed_fd, renamed_index, reused_fd, reused_index)
+        };
+
+        let child_pid = table
+            .fork_process_for_caller(parent_pid, parent_pid)
+            .unwrap();
+        assert!(table.get(child_pid).unwrap().fd_table.get(renamed_fd).is_ok());
+        assert!(table.get(child_pid).unwrap().fd_table.get(reused_fd).is_err());
+
+        {
+            let (parent, locks) = table
+                .process_and_advisory_locks(parent_pid)
+                .unwrap();
+            crate::syscalls::sys_close_with_locks(parent, locks, &mut host, renamed_fd).unwrap();
+        }
+        let renamed_owner = unsafe { crate::unix_socket::global_unix_socket_registry() }
+            .lookup(NEW_NAME)
+            .unwrap();
+        assert_eq!(
+            (renamed_owner.pid, renamed_owner.sock_idx),
+            (child_pid, renamed_index)
+        );
+        let reused_owner = unsafe { crate::unix_socket::global_unix_socket_registry() }
+            .lookup(OLD_NAME)
+            .unwrap();
+        assert_eq!(
+            (reused_owner.pid, reused_owner.sock_idx),
+            (parent_pid, reused_index)
+        );
+
+        {
+            let (child, locks) = table.process_and_advisory_locks(child_pid).unwrap();
+            crate::syscalls::sys_close_with_locks(child, locks, &mut host, renamed_fd).unwrap();
+        }
+        assert!(
+            unsafe { crate::unix_socket::global_unix_socket_registry() }
+                .lookup(NEW_NAME)
+                .is_none()
+        );
+        {
+            let (parent, locks) = table
+                .process_and_advisory_locks(parent_pid)
+                .unwrap();
+            crate::syscalls::sys_close_with_locks(parent, locks, &mut host, reused_fd).unwrap();
+        }
+        assert!(
+            unsafe { crate::unix_socket::global_unix_socket_registry() }
+                .lookup(OLD_NAME)
+                .is_none()
+        );
+
+        table.remove_process(child_pid).unwrap();
+        table.remove_process(parent_pid).unwrap();
+        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+        registry.unregister(OLD_NAME);
+        registry.unregister(NEW_NAME);
+    }
+
+    #[test]
+    fn invalid_socket_root_fails_before_any_inherited_authority_is_mutated() {
+        use crate::socket::{SocketDomain, SocketInfo, SocketType};
+        use wasm_posix_shared::flags::{O_RDONLY, O_RDWR};
+
+        const ABSTRACT_PATH: &[u8] = b"\0kandelo-invalid-root-atomicity";
+        const HOST_HANDLE: i64 = 9_490_001;
+        const PARENT_PID: u32 = 9_490_010;
+        const CHILD_PID: u32 = 9_490_011;
+
+        let registry = unsafe { crate::unix_socket::global_unix_socket_registry() };
+        registry.unregister(ABSTRACT_PATH);
+        assert!(registry.register(ABSTRACT_PATH.to_vec(), PARENT_PID, 0));
+
+        let mut child = Process::new(CHILD_PID);
+        let socket_index = child.sockets.alloc(SocketInfo::new(
+            SocketDomain::Unix,
+            SocketType::Dgram,
+            0,
+        ));
+        assert_eq!(socket_index, 0);
+        child.sockets.get_mut(socket_index).unwrap().bind_path =
+            Some(ABSTRACT_PATH.to_vec());
+        child.ofd_table.create(
+            FileType::Regular,
+            O_RDONLY,
+            HOST_HANDLE,
+            b"/host-backed".to_vec(),
+        );
+        child.ofd_table.create(
+            FileType::Socket,
+            O_RDWR,
+            -((socket_index as i64) + 1),
+            b"/dev/socket".to_vec(),
+        );
+        child.ofd_table.create(
+            FileType::Socket,
+            O_RDWR,
+            -100,
+            b"/dev/socket".to_vec(),
+        );
+
+        assert_eq!(
+            bump_inherited_resource_refcounts(PARENT_PID, &child),
+            Err(Errno::EBADF)
+        );
+        assert_eq!(crate::ofd::host_handle_ref_count(HOST_HANDLE), 0);
+        let owner = unsafe { crate::unix_socket::global_unix_socket_registry() }
+            .lookup(ABSTRACT_PATH)
+            .unwrap();
+        assert_eq!((owner.pid, owner.sock_idx), (PARENT_PID, socket_index));
+
+        assert!(
+            unsafe { crate::unix_socket::global_unix_socket_registry() }
+                .remove_owner_exact(PARENT_PID, socket_index)
+        );
+        assert!(
+            unsafe { crate::unix_socket::global_unix_socket_registry() }
+                .lookup(ABSTRACT_PATH)
+                .is_none()
+        );
+    }
+
+    #[test]
     fn spawn_reopens_inherited_directory_without_owning_the_parent_iterator() {
         use crate::fd::OpenFileDescRef;
         use crate::ofd::PendingDirEntry;
@@ -1937,10 +2790,7 @@ mod tests {
                 d_type: 8,
                 name: b"pending".to_vec(),
             });
-            parent
-                .fd_table
-                .alloc(OpenFileDescRef(ofd_idx), 0)
-                .unwrap()
+            parent.fd_table.alloc(OpenFileDescRef(ofd_idx), 0).unwrap()
         };
 
         let mut host = NoopHost;
@@ -1956,7 +2806,12 @@ mod tests {
             )
             .unwrap();
 
-        let child_entry = table.get(child_pid).unwrap().fd_table.get(inherited_fd).unwrap();
+        let child_entry = table
+            .get(child_pid)
+            .unwrap()
+            .fd_table
+            .get(inherited_fd)
+            .unwrap();
         let child_ofd = table
             .get(child_pid)
             .unwrap()
@@ -1982,7 +2837,10 @@ mod tests {
             .get(parent_entry.ofd_ref.0)
             .unwrap();
         assert_eq!(parent_ofd.dir_host_handle, ITERATOR_HANDLE);
-        assert_eq!(parent_ofd.dir_pending_entry.as_ref().unwrap().name, b"pending");
+        assert_eq!(
+            parent_ofd.dir_pending_entry.as_ref().unwrap().name,
+            b"pending"
+        );
 
         // Crash/rollback-style child cleanup must not close the iterator that
         // remains owned by the parent. Parent cleanup releases it exactly once.
@@ -2028,10 +2886,7 @@ mod tests {
                 d_type: 8,
                 name: b"next".to_vec(),
             });
-            parent
-                .fd_table
-                .alloc(OpenFileDescRef(ofd_idx), 0)
-                .unwrap()
+            parent.fd_table.alloc(OpenFileDescRef(ofd_idx), 0).unwrap()
         };
 
         let child_pid = table
@@ -2070,7 +2925,7 @@ mod tests {
 
     #[test]
     fn process_exit_closes_tcp_pipes_orderly() {
-        use crate::pipe::{global_pipe_table, PipeBuffer, DEFAULT_PIPE_CAPACITY};
+        use crate::pipe::{DEFAULT_PIPE_CAPACITY, PipeBuffer, global_pipe_table};
         use crate::socket::{SocketDomain, SocketInfo, SocketState, SocketType};
 
         let pipe_table = unsafe { global_pipe_table() };
@@ -2124,7 +2979,17 @@ mod tests {
             socket.state = SocketState::Bound;
             socket.bind_addr = [127, 0, 0, 1];
             socket.bind_port = port;
-            proc.sockets.alloc(socket)
+            let sock_idx = proc.sockets.alloc(socket);
+            let ofd_idx = proc.ofd_table.create(
+                FileType::Socket,
+                wasm_posix_shared::flags::O_RDWR,
+                -((sock_idx as i64) + 1),
+                b"/dev/socket".to_vec(),
+            );
+            proc.fd_table
+                .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+                .unwrap();
+            sock_idx
         };
         crate::socket::udp_register(pid, sock_idx, [127, 0, 0, 1], port, false).unwrap();
         sock_idx
@@ -2200,7 +3065,10 @@ mod tests {
         assert_eq!(table.create_process().unwrap(), PARENT);
         let sock_idx = install_bound_udp4_socket(&mut table, PARENT, PORT);
 
-        assert_eq!(table.fork_process_for_caller(PARENT, PARENT).unwrap(), CHILD);
+        assert_eq!(
+            table.fork_process_for_caller(PARENT, PARENT).unwrap(),
+            CHILD
+        );
         assert_udp_owner(PORT, PARENT, sock_idx, true);
         assert_udp_owner(PORT, CHILD, sock_idx, true);
 
@@ -2243,7 +3111,8 @@ mod tests {
 
         let child_pid = table
             .spawn_child_for_caller(
-                PARENT, PARENT,
+                PARENT,
+                PARENT,
                 &[b"/bin/child".as_slice()],
                 &[],
                 &[],

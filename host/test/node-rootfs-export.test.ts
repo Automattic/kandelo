@@ -12,9 +12,11 @@ const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, "../..");
 const kernelPath = tryResolveBinary("kernel.wasm");
 const blockForeverPath = join(repoRoot, "examples/block-forever.wasm");
+const spawnSmokePath = join(repoRoot, "examples/spawn-smoke.wasm");
 const wasiHelloPath = join(here, "fixtures/wasi-hello.wasm");
 const haveKernel = kernelPath !== null;
 const haveBlockForever = existsSync(blockForeverPath);
+const haveSpawnSmoke = existsSync(spawnSmokePath);
 const haveWasiHello = existsSync(wasiHelloPath);
 
 function asArrayBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -91,6 +93,37 @@ async function createExecutableRootfs(
 }
 
 describe("NodeKernelHost rootfs export contract", () => {
+  it("rejects ambiguous path and byte exec sources before starting a worker", async () => {
+    const host = new NodeKernelHost({
+      execPrograms: { "/bin/tool": wasiHelloPath },
+      execProgramBytes: { "/bin/tool": new Uint8Array([0]) },
+    });
+    try {
+      await expect(host.init(new ArrayBuffer(0))).rejects.toThrow(
+        'exec program "/bin/tool" has both path and byte sources',
+      );
+    } finally {
+      await host.destroy();
+    }
+  });
+
+  it("rejects concurrently mutable shared exec bytes before starting a worker", async () => {
+    const host = new NodeKernelHost({
+      execProgramBytes: {
+        "/bin/tool": new Uint8Array(
+          new SharedArrayBuffer(1),
+        ) as unknown as Uint8Array<ArrayBuffer>,
+      },
+    });
+    try {
+      await expect(host.init(new ArrayBuffer(0))).rejects.toThrow(
+        "bytes must use an ordinary ArrayBuffer",
+      );
+    } finally {
+      await host.destroy();
+    }
+  });
+
   it("rejects export before initialization without starting a worker", async () => {
     const host = new NodeKernelHost({ rootfsImage: new Uint8Array() });
     await expect(host.readFileFromVfs("/missing")).rejects.toThrow(
@@ -195,6 +228,78 @@ describe("NodeKernelHost rootfs export contract", () => {
         await terminating;
         await expect(exit).resolves.toBe(143);
         await expect(host.exportRootfsImage()).resolves.toBeInstanceOf(Uint8Array);
+      } finally {
+        await host.destroy();
+      }
+    },
+  );
+
+  it.skipIf(!haveKernel || !haveSpawnSmoke || !haveWasiHello)(
+    "uses worker-owned exact bytes before a same-path lazy VFS entry",
+    async () => {
+      const kernel = new Uint8Array(readFileSync(kernelPath!));
+      const spawnSmoke = new Uint8Array(readFileSync(spawnSmokePath));
+      const programSource = new Uint8Array(readFileSync(wasiHelloPath));
+      const fs = MemoryFileSystem.create(
+        new SharedArrayBuffer(8 * 1024 * 1024),
+      );
+      fs.mkdir("/bin", 0o755);
+      fs.registerLazyFile(
+        "/bin/exact-tool",
+        "https://packages.example.test/must-not-fetch.wasm",
+        programSource.byteLength,
+        0o755,
+      );
+      const rootfs = await fs.saveImage();
+      let stdout = "";
+      let lazyDownloads = 0;
+      let ambientResolveRequests = 0;
+      const host = new NodeKernelHost({
+        rootfsImage: rootfs,
+        rootfsLazyAssets: [{
+          url: "https://packages.example.test/must-not-fetch.wasm",
+          sha256: "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
+          size: 1,
+          bytes: new Uint8Array([0]),
+        }],
+        execProgramBytes: { "/bin/exact-tool": programSource },
+        onLazyDownload: () => {
+          lazyDownloads += 1;
+        },
+        onResolveExec: () => {
+          ambientResolveRequests += 1;
+          return null;
+        },
+        onStdout: (_pid, bytes) => {
+          stdout += new TextDecoder().decode(bytes);
+        },
+      });
+      try {
+        await host.init(asArrayBuffer(kernel));
+        // The host copied the exact generation during init. Later caller
+        // replacement must not affect sequential reuse, and each overlapping
+        // launch must receive an independently transferable copy.
+        programSource.fill(0);
+        for (let invocation = 0; invocation < 2; invocation += 1) {
+          await expect(host.spawn(
+            asArrayBuffer(spawnSmoke),
+            ["spawn-smoke", "/bin/exact-tool"],
+          )).resolves.toBe(0);
+        }
+        await expect(Promise.all([
+          host.spawn(
+            asArrayBuffer(spawnSmoke),
+            ["spawn-smoke", "/bin/exact-tool"],
+          ),
+          host.spawn(
+            asArrayBuffer(spawnSmoke),
+            ["spawn-smoke", "/bin/exact-tool"],
+          ),
+        ])).resolves.toEqual([0, 0]);
+        expect(stdout.match(/Hello from WASI\n/g)).toHaveLength(4);
+        expect(stdout.match(/OK\n/g)).toHaveLength(4);
+        expect(lazyDownloads).toBe(0);
+        expect(ambientResolveRequests).toBe(0);
       } finally {
         await host.destroy();
       }

@@ -1,5 +1,5 @@
 {
-  "abi_version": 42,
+  "abi_version": 43,
   "channel_buffers": {
     "data_offset": 72,
     "data_size": 65536,
@@ -36,35 +36,872 @@
         "offset": 64,
         "size": 4,
         "type": "i32"
+      },
+      {
+        "name": "request_flags",
+        "offset": 68,
+        "size": 4,
+        "type": "u32"
       }
     ],
+    "request_flags": {
+      "cancellation_point": 1,
+      "cancellation_wake_allowed": 2,
+      "known_mask": 3
+    },
     "size": 72
   },
+  "channel_scalar_contract": {
+    "default_argument_kind": "i32",
+    "default_result_kind": "i32",
+    "syscalls": [
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "read",
+        "number": 3,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "write",
+        "number": 4,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "split-i64-low-u32"
+          },
+          {
+            "index": 2,
+            "kind": "split-i64-high-i32"
+          }
+        ],
+        "musl_name": "lseek",
+        "number": 5,
+        "result": "i64"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "readlink",
+        "number": 19,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "getcwd",
+        "number": 23,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 3,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "readdir",
+        "number": 26,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "getenv",
+        "number": 43,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          },
+          {
+            "index": 1,
+            "kind": "process-size"
+          },
+          {
+            "index": 5,
+            "kind": "i64"
+          }
+        ],
+        "musl_name": "mmap",
+        "number": 46,
+        "result": "process-address"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          },
+          {
+            "index": 1,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "munmap",
+        "number": 47,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "brk",
+        "number": 48,
+        "result": "process-address"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          },
+          {
+            "index": 1,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "mprotect",
+        "number": 49,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "u32"
+          }
+        ],
+        "musl_name": "bind",
+        "number": 51,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "u32"
+          }
+        ],
+        "musl_name": "connect",
+        "number": 54,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "send",
+        "number": 55,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "recv",
+        "number": 56,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 4,
+            "kind": "u32"
+          }
+        ],
+        "musl_name": "setsockopt",
+        "number": 59,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "poll",
+        "number": 60,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          },
+          {
+            "index": 5,
+            "kind": "u32"
+          }
+        ],
+        "musl_name": "sendto",
+        "number": 62,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "recvfrom",
+        "number": 63,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          },
+          {
+            "index": 3,
+            "kind": "i64"
+          }
+        ],
+        "musl_name": "pread",
+        "number": 64,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          },
+          {
+            "index": 3,
+            "kind": "i64"
+          }
+        ],
+        "musl_name": "pwrite",
+        "number": 65,
+        "result": "i32"
+      },
+      {
+        "arguments": [],
+        "musl_name": "time",
+        "number": 66,
+        "result": "i64"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "exact-u32"
+          }
+        ],
+        "musl_name": "signal",
+        "number": 73,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "i64"
+          }
+        ],
+        "musl_name": "ftruncate",
+        "number": 79,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "i64"
+          }
+        ],
+        "musl_name": "truncate",
+        "number": 85,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 3,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "readlinkat",
+        "number": 102,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "realpath",
+        "number": 109,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "split-i64-high-i32"
+          },
+          {
+            "index": 2,
+            "kind": "split-i64-low-u32"
+          }
+        ],
+        "musl_name": "_llseek",
+        "number": 119,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "getrandom",
+        "number": 120,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "getdents64",
+        "number": 122,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          },
+          {
+            "index": 1,
+            "kind": "process-size"
+          },
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "mremap",
+        "number": 126,
+        "result": "process-address"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          },
+          {
+            "index": 1,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "madvise",
+        "number": 128,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "setgroups",
+        "number": 136,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "futex",
+        "number": 200,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "set_tid_address",
+        "number": 203,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "u32"
+          }
+        ],
+        "musl_name": "sched_setaffinity",
+        "number": 237,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "u32"
+          }
+        ],
+        "musl_name": "sched_getaffinity",
+        "number": 238,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 5,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "epoll_pwait",
+        "number": 241,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "signalfd4",
+        "number": 246,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "process-size"
+          },
+          {
+            "index": 4,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "ppoll",
+        "number": 251,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          },
+          {
+            "index": 1,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "set_robust_list",
+        "number": 261,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "process-address"
+          },
+          {
+            "index": 2,
+            "kind": "process-address"
+          }
+        ],
+        "musl_name": "get_robust_list",
+        "number": 262,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          },
+          {
+            "index": 1,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "msync",
+        "number": 278,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          },
+          {
+            "index": 1,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "mlock",
+        "number": 279,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          },
+          {
+            "index": 1,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "mlock2",
+        "number": 280,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 0,
+            "kind": "process-address"
+          },
+          {
+            "index": 1,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "munlock",
+        "number": 281,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 4,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "copy_file_range",
+        "number": 290,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 4,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "splice",
+        "number": 291,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "i64"
+          },
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "readahead",
+        "number": 293,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 3,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "sendfile",
+        "number": 294,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 3,
+            "kind": "split-i64-low-u32"
+          },
+          {
+            "index": 4,
+            "kind": "split-i64-high-i32"
+          }
+        ],
+        "musl_name": "preadv",
+        "number": 295,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 3,
+            "kind": "split-i64-low-u32"
+          },
+          {
+            "index": 4,
+            "kind": "split-i64-high-i32"
+          }
+        ],
+        "musl_name": "pwritev",
+        "number": 296,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 3,
+            "kind": "split-i64-low-u32"
+          },
+          {
+            "index": 4,
+            "kind": "split-i64-high-i32"
+          }
+        ],
+        "musl_name": "preadv2",
+        "number": 297,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 3,
+            "kind": "split-i64-low-u32"
+          },
+          {
+            "index": 4,
+            "kind": "split-i64-high-i32"
+          }
+        ],
+        "musl_name": "pwritev2",
+        "number": 298,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "i64"
+          },
+          {
+            "index": 3,
+            "kind": "i64"
+          }
+        ],
+        "musl_name": "fallocate",
+        "number": 308,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "mq_timedsend",
+        "number": 333,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "mq_timedreceive",
+        "number": 334,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          },
+          {
+            "index": 3,
+            "kind": "i64"
+          }
+        ],
+        "musl_name": "msgrcv",
+        "number": 338,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "msgsnd",
+        "number": 339,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "semop",
+        "number": 342,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 1,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "shmget",
+        "number": 344,
+        "result": "i32"
+      },
+      {
+        "arguments": [
+          {
+            "index": 2,
+            "kind": "process-size"
+          }
+        ],
+        "musl_name": "signalfd",
+        "number": 377,
+        "result": "i32"
+      }
+    ]
+  },
   "channel_signal_area": {
-    "base": 65560,
+    "area_size": 56,
+    "base": 65552,
+    "delivery_size": 56,
+    "reserved_tail_size": 0,
     "slots": [
       {
         "meaning": "u32, signal number (0=none)",
         "name": "SIG_SIGNUM",
-        "offset": 65560,
+        "offset": 65552,
         "size": 4
       },
       {
         "meaning": "u32, handler table index",
         "name": "SIG_HANDLER",
-        "offset": 65564,
+        "offset": 65556,
         "size": 4
       },
       {
         "meaning": "u32, sa_flags",
         "name": "SIG_FLAGS",
-        "offset": 65568,
+        "offset": 65560,
         "size": 4
+      },
+      {
+        "meaning": "raw u64 sigval bits (wasm32 uses low 32 bits)",
+        "name": "SIG_SI_VALUE",
+        "offset": 65564,
+        "size": 8
       },
       {
         "meaning": "u64 (LE), saved blocked mask",
         "name": "SIG_OLD_MASK",
-        "offset": 65576,
+        "offset": 65572,
+        "size": 8
+      },
+      {
+        "meaning": "i32, siginfo si_code",
+        "name": "SIG_SI_CODE",
+        "offset": 65580,
+        "size": 4
+      },
+      {
+        "meaning": "i32, pid or SI_TIMER timer ID",
+        "name": "SIGINFO_WORD_1",
+        "offset": 65584,
+        "size": 4
+      },
+      {
+        "meaning": "raw u32 uid bits or i32 SI_TIMER overrun",
+        "name": "SIGINFO_WORD_2",
+        "offset": 65588,
+        "size": 4
+      },
+      {
+        "meaning": "u64, caller-native alternate stack pointer or zero",
+        "name": "SIG_ALT_SP",
+        "offset": 65592,
+        "size": 8
+      },
+      {
+        "meaning": "u64, caller-native alternate stack size",
+        "name": "SIG_ALT_SIZE",
+        "offset": 65600,
         "size": 8
       }
     ]
@@ -114,7 +951,7 @@
   },
   "host_adapter": {
     "manifest": {
-      "abi_version": 42,
+      "abi_version": 43,
       "channel_data_offset": 72,
       "channel_data_size": 65536,
       "channel_header_size": 72,
@@ -186,24 +1023,29 @@
     "optional_kernel_exports": [
       "kernel_reserve_host_region",
       "kernel_reserve_host_region_at",
-      "kernel_set_cwd",
       "kernel_set_max_addr",
-      "kernel_set_mmap_base",
-      "kernel_set_process_argv"
+      "kernel_set_mmap_base"
     ],
     "optional_kernel_features": 0,
     "required_kernel_exports": [
       "__abi_version",
       "kernel_alloc_scratch",
+      "kernel_blocking_retry_release",
+      "kernel_blocking_retry_token",
+      "kernel_commit_process_exit",
       "kernel_create_process",
       "kernel_create_process_with_stdio",
       "kernel_dequeue_signal",
       "kernel_exec_prepare",
       "kernel_exec_setup_for_thread",
       "kernel_fork_process",
+      "kernel_get_cwd",
+      "kernel_get_dirfd_path",
+      "kernel_get_fd_path",
       "kernel_get_parent_pid",
       "kernel_get_process_exit_signal",
       "kernel_get_process_state",
+      "kernel_get_socket_timeout_ms",
       "kernel_handle_channel",
       "kernel_has_sa_nocldstop",
       "kernel_host_adapter_manifest_len",
@@ -212,15 +1054,39 @@
       "kernel_ipc_shmat_for_task",
       "kernel_ipc_shmdt_for_process",
       "kernel_ipc_shmdt_for_task",
+      "kernel_is_fd_nonblock",
       "kernel_mark_process_signaled",
+      "kernel_mq_descriptor_msgsize",
+      "kernel_msqid_ds_bytes",
+      "kernel_pick_signal_target_tid",
       "kernel_pipe_has_readers",
       "kernel_posix_timer_fire",
-      "kernel_prepare_write_operation",
+      "kernel_process_metadata_begin",
+      "kernel_process_metadata_cancel",
+      "kernel_process_metadata_commit",
+      "kernel_process_metadata_stage",
       "kernel_reap_exited_child",
       "kernel_remove_process",
+      "kernel_semctl_array_bytes",
+      "kernel_semid_ds_bytes",
       "kernel_set_current_tid",
+      "kernel_set_cwd",
+      "kernel_shmid_ds_bytes",
       "kernel_spawn_process",
+      "kernel_spawn_reserved_process",
+      "kernel_spawn_scratch_begin",
+      "kernel_spawn_scratch_cancel",
+      "kernel_spawn_scratch_capacity",
+      "kernel_spawn_scratch_pointer",
+      "kernel_spawn_scratch_retained_capacity",
       "kernel_thread_exit",
+      "kernel_thread_has_deliverable",
+      "kernel_transfer_channel_execute",
+      "kernel_transfer_io_execute",
+      "kernel_transfer_scratch_begin",
+      "kernel_transfer_scratch_cancel",
+      "kernel_transfer_scratch_capacity",
+      "kernel_transfer_scratch_pointer",
       "kernel_validate_task",
       "kernel_wait_child_poll"
     ],
@@ -263,6 +1129,410 @@
       "number": 386
     }
   ],
+  "ioctl_request_contracts": {
+    "1074025521": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
+    "1074291721": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 8,
+      "wasm64Size": 8
+    },
+    "17920": {
+      "argKind": "pointer",
+      "direction": "out",
+      "wasm32Size": 160,
+      "wasm64Size": 160
+    },
+    "17921": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 160,
+      "wasm64Size": 160
+    },
+    "17922": {
+      "argKind": "pointer",
+      "direction": "out",
+      "wasm32Size": 80,
+      "wasm64Size": 80
+    },
+    "17926": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 160,
+      "wasm64Size": 160
+    },
+    "19251": {
+      "argKind": "pointer",
+      "direction": "out",
+      "wasm32Size": 1,
+      "wasm64Size": 1
+    },
+    "19268": {
+      "argKind": "pointer",
+      "direction": "out",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
+    "19269": {
+      "argKind": "scalar-i32",
+      "direction": "none",
+      "wasm32Size": 0,
+      "wasm64Size": 0
+    },
+    "20480": {
+      "argKind": "none",
+      "direction": "none",
+      "wasm32Size": 0,
+      "wasm64Size": 0
+    },
+    "20481": {
+      "argKind": "none",
+      "direction": "none",
+      "wasm32Size": 0,
+      "wasm64Size": 0
+    },
+    "2147766283": {
+      "argKind": "pointer",
+      "direction": "out",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
+    "2147767344": {
+      "argKind": "pointer",
+      "direction": "out",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
+    "21505": {
+      "argKind": "pointer",
+      "direction": "out",
+      "wasm32Size": 60,
+      "wasm64Size": 60
+    },
+    "21506": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 60,
+      "wasm64Size": 60
+    },
+    "21507": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 60,
+      "wasm64Size": 60
+    },
+    "21508": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 60,
+      "wasm64Size": 60
+    },
+    "21513": {
+      "argKind": "scalar-i32",
+      "direction": "none",
+      "wasm32Size": 0,
+      "wasm64Size": 0
+    },
+    "21514": {
+      "argKind": "scalar-i32",
+      "direction": "none",
+      "wasm32Size": 0,
+      "wasm64Size": 0
+    },
+    "21515": {
+      "argKind": "scalar-i32",
+      "direction": "none",
+      "wasm32Size": 0,
+      "wasm64Size": 0
+    },
+    "21518": {
+      "argKind": "scalar-i32",
+      "direction": "none",
+      "wasm32Size": 0,
+      "wasm64Size": 0
+    },
+    "21519": {
+      "argKind": "pointer",
+      "direction": "out",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
+    "21520": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
+    "21523": {
+      "argKind": "pointer",
+      "direction": "out",
+      "wasm32Size": 8,
+      "wasm64Size": 8
+    },
+    "21524": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 8,
+      "wasm64Size": 8
+    },
+    "21531": {
+      "argKind": "pointer",
+      "direction": "out",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
+    "21537": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
+    "21538": {
+      "argKind": "none",
+      "direction": "none",
+      "wasm32Size": 0,
+      "wasm64Size": 0
+    },
+    "21545": {
+      "argKind": "pointer",
+      "direction": "out",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
+    "21584": {
+      "argKind": "none",
+      "direction": "none",
+      "wasm32Size": 0,
+      "wasm64Size": 0
+    },
+    "21585": {
+      "argKind": "none",
+      "direction": "none",
+      "wasm32Size": 0,
+      "wasm64Size": 0
+    },
+    "21586": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
+    "25630": {
+      "argKind": "none",
+      "direction": "none",
+      "wasm32Size": 0,
+      "wasm64Size": 0
+    },
+    "25631": {
+      "argKind": "none",
+      "direction": "none",
+      "wasm32Size": 0,
+      "wasm64Size": 0
+    },
+    "3221508098": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
+    "3221508099": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
+    "3221508101": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
+    "3221508102": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
+    "3221508106": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
+    "3221513391": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
+    "3221513396": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
+    "3222037549": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 12,
+      "wasm64Size": 12
+    },
+    "3222037550": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 12,
+      "wasm64Size": 12
+    },
+    "3222299660": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 16,
+      "wasm64Size": 16
+    },
+    "3222299706": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 16,
+      "wasm64Size": 16
+    },
+    "3222299827": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 16,
+      "wasm64Size": 16
+    },
+    "3222561958": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 20,
+      "wasm64Size": 20
+    },
+    "3222824112": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 24,
+      "wasm64Size": 24
+    },
+    "3223348402": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 32,
+      "wasm64Size": 32
+    },
+    "3223610368": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 36,
+      "wasm64Size": null
+    },
+    "3225445376": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": null,
+      "wasm64Size": 64
+    },
+    "3225445536": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 64,
+      "wasm64Size": 64
+    },
+    "3226494119": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 80,
+      "wasm64Size": 80
+    },
+    "3228066977": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 104,
+      "wasm64Size": 104
+    },
+    "3228066978": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 104,
+      "wasm64Size": 104
+    },
+    "3228067000": {
+      "argKind": "pointer",
+      "direction": "inout",
+      "wasm32Size": 104,
+      "wasm64Size": 104
+    },
+    "35077": {
+      "argKind": "pointer",
+      "direction": "out",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
+    "64": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 4,
+      "wasm64Size": 4
+    },
+    "65": {
+      "argKind": "none",
+      "direction": "none",
+      "wasm32Size": 0,
+      "wasm64Size": 0
+    },
+    "66": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 16,
+      "wasm64Size": 16
+    },
+    "67": {
+      "argKind": "none",
+      "direction": "none",
+      "wasm32Size": 0,
+      "wasm64Size": 0
+    },
+    "68": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 32,
+      "wasm64Size": 32
+    },
+    "69": {
+      "argKind": "none",
+      "direction": "none",
+      "wasm32Size": 0,
+      "wasm64Size": 0
+    },
+    "70": {
+      "argKind": "none",
+      "direction": "none",
+      "wasm32Size": 0,
+      "wasm64Size": 0
+    },
+    "71": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 8,
+      "wasm64Size": 8
+    },
+    "72": {
+      "argKind": "none",
+      "direction": "none",
+      "wasm32Size": 0,
+      "wasm64Size": 0
+    },
+    "73": {
+      "argKind": "pointer",
+      "direction": "in",
+      "wasm32Size": 24,
+      "wasm64Size": null
+    }
+  },
   "kernel_exports": [
     {
       "kind": "func",
@@ -321,6 +1591,16 @@
     },
     {
       "kind": "func",
+      "name": "kernel_blocking_retry_release",
+      "signature": "(i32,i32,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_blocking_retry_token",
+      "signature": "(i32,i32,i32) -> (i64)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_brk",
       "signature": "(i32) -> (i32)"
     },
@@ -356,11 +1636,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_clear_process_metadata",
-      "signature": "(i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_clock_getres",
       "signature": "(i32,i32) -> (i32)"
     },
@@ -391,6 +1666,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_commit_process_exit",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_connect",
       "signature": "(i32,i32,i32) -> (i32)"
     },
@@ -412,7 +1692,7 @@
     {
       "kind": "func",
       "name": "kernel_dequeue_signal",
-      "signature": "(i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -587,7 +1867,7 @@
     {
       "kind": "func",
       "name": "kernel_fstatfs",
-      "signature": "(i32,i32) -> (i32)"
+      "signature": "(i32,i32,i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -613,6 +1893,11 @@
       "kind": "func",
       "name": "kernel_get_cwd",
       "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_get_dirfd_path",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -757,12 +2042,12 @@
     {
       "kind": "func",
       "name": "kernel_getgroups",
-      "signature": "(i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
       "name": "kernel_getitimer",
-      "signature": "(i32,i32) -> (i32)"
+      "signature": "(i32,i32,i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -827,7 +2112,7 @@
     {
       "kind": "func",
       "name": "kernel_getsockopt",
-      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -847,7 +2132,7 @@
     {
       "kind": "func",
       "name": "kernel_handle_channel",
-      "signature": "(i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -887,7 +2172,7 @@
     {
       "kind": "func",
       "name": "kernel_ioctl",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1026,8 +2311,13 @@
     },
     {
       "kind": "func",
+      "name": "kernel_mq_descriptor_msgsize",
+      "signature": "(i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_mq_drain_notification",
-      "signature": "(i32) -> (i32)"
+      "signature": "(i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1038,6 +2328,11 @@
       "kind": "func",
       "name": "kernel_mremap",
       "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_msqid_ds_bytes",
+      "signature": "(i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1087,7 +2382,7 @@
     {
       "kind": "func",
       "name": "kernel_pipe2",
-      "signature": "(i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1127,7 +2422,7 @@
     {
       "kind": "func",
       "name": "kernel_poll",
-      "signature": "(i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1151,18 +2446,23 @@
     },
     {
       "kind": "func",
-      "name": "kernel_pread",
-      "signature": "(i32,i32,i32,i64) -> (i32)"
+      "name": "kernel_process_metadata_begin",
+      "signature": "(i32) -> (i32)"
     },
     {
       "kind": "func",
-      "name": "kernel_preadv",
+      "name": "kernel_process_metadata_cancel",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_process_metadata_commit",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_process_metadata_stage",
       "signature": "(i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_prepare_write_operation",
-      "signature": "(i32,i32,i32,i64,i32,i32) -> (i64)"
     },
     {
       "kind": "func",
@@ -1196,28 +2496,8 @@
     },
     {
       "kind": "func",
-      "name": "kernel_push_process_metadata_entry",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_pwrite",
-      "signature": "(i32,i32,i32,i64) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_pwritev",
-      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_raise",
       "signature": "(i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_read",
-      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1238,11 +2518,6 @@
       "kind": "func",
       "name": "kernel_readlinkat",
       "signature": "(i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_readv",
-      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1272,7 +2547,7 @@
     {
       "kind": "func",
       "name": "kernel_recvmsg",
-      "signature": "(i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -1327,7 +2602,17 @@
     {
       "kind": "func",
       "name": "kernel_select",
-      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i32,i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_semctl_array_bytes",
+      "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_semid_ds_bytes",
+      "signature": "(i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -1342,7 +2627,7 @@
     {
       "kind": "func",
       "name": "kernel_sendmsg",
-      "signature": "(i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -1391,11 +2676,6 @@
     },
     {
       "kind": "func",
-      "name": "kernel_set_process_argv",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
       "name": "kernel_set_process_credentials",
       "signature": "(i32,i32,i32) -> (i32)"
     },
@@ -1437,7 +2717,7 @@
     {
       "kind": "func",
       "name": "kernel_setitimer",
-      "signature": "(i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -1476,6 +2756,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_shmid_ds_bytes",
+      "signature": "(i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_shutdown",
       "signature": "(i32,i32) -> (i32)"
     },
@@ -1487,7 +2772,7 @@
     {
       "kind": "func",
       "name": "kernel_sigaltstack",
-      "signature": "(i32,i32) -> (i32)"
+      "signature": "(i32,i32,i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -1517,12 +2802,42 @@
     {
       "kind": "func",
       "name": "kernel_socketpair",
-      "signature": "(i32,i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
       "name": "kernel_spawn_process",
       "signature": "(i32,i32,i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_spawn_reserved_process",
+      "signature": "(i32,i32,i64,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_spawn_scratch_begin",
+      "signature": "(i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_spawn_scratch_cancel",
+      "signature": "(i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_spawn_scratch_capacity",
+      "signature": "(i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_spawn_scratch_pointer",
+      "signature": "(i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_spawn_scratch_retained_capacity",
+      "signature": "() -> (i32)"
     },
     {
       "kind": "func",
@@ -1532,7 +2847,7 @@
     {
       "kind": "func",
       "name": "kernel_statfs",
-      "signature": "(i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -1592,7 +2907,7 @@
     {
       "kind": "func",
       "name": "kernel_timer_create",
-      "signature": "(i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -1633,6 +2948,36 @@
       "kind": "func",
       "name": "kernel_tkill",
       "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_transfer_channel_execute",
+      "signature": "(i32,i32,i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_transfer_io_execute",
+      "signature": "(i32,i32,i64,i32,i32,i32,i64,i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_transfer_scratch_begin",
+      "signature": "(i32) -> (i64)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_transfer_scratch_cancel",
+      "signature": "(i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_transfer_scratch_capacity",
+      "signature": "(i64) -> (i32)"
+    },
+    {
+      "kind": "func",
+      "name": "kernel_transfer_scratch_pointer",
+      "signature": "(i64) -> (i32)"
     },
     {
       "kind": "func",
@@ -1692,17 +3037,7 @@
     {
       "kind": "func",
       "name": "kernel_wait_child_poll",
-      "signature": "(i32,i32,i32,i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_write",
-      "signature": "(i32,i32,i32) -> (i32)"
-    },
-    {
-      "kind": "func",
-      "name": "kernel_writev",
-      "signature": "(i32,i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32,i32,i32,i32,i32) -> (i32)"
     },
     {
       "kind": "memory",
@@ -2065,6 +3400,81 @@
       ],
       "size": 32
     },
+    "KernelCmsghdrWire": {
+      "fields": [
+        {
+          "name": "cmsg_len",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "cmsg_level",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "cmsg_type",
+          "offset": 8,
+          "span": 4
+        }
+      ],
+      "size": 12
+    },
+    "KernelIovecWire": {
+      "fields": [
+        {
+          "name": "base",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "len",
+          "offset": 4,
+          "span": 4
+        }
+      ],
+      "size": 8
+    },
+    "KernelMsghdrWire": {
+      "fields": [
+        {
+          "name": "name",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "name_len",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "iov",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "iov_len",
+          "offset": 12,
+          "span": 4
+        },
+        {
+          "name": "control",
+          "offset": 16,
+          "span": 4
+        },
+        {
+          "name": "control_len",
+          "offset": 20,
+          "span": 4
+        },
+        {
+          "name": "flags",
+          "offset": 24,
+          "span": 4
+        }
+      ],
+      "size": 28
+    },
     "KernelWaitResult": {
       "fields": [
         {
@@ -2111,6 +3521,26 @@
           "name": "d_namlen",
           "offset": 12,
           "span": 4
+        }
+      ],
+      "size": 16
+    },
+    "WasmEpollEvent": {
+      "fields": [
+        {
+          "name": "events",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "_pad",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "data",
+          "offset": 8,
+          "span": 8
         }
       ],
       "size": 16
@@ -2409,6 +3839,16 @@
         }
       ],
       "size": 72
+    },
+    "WasmSysvMessageHeader": {
+      "fields": [
+        {
+          "name": "mtype",
+          "offset": 0,
+          "span": 8
+        }
+      ],
+      "size": 8
     },
     "WasmTimespec": {
       "fields": [
@@ -3147,6 +4587,19 @@
     "TIMESTAMP_RESOLUTION": 23,
     "VDISABLE": 8
   },
+  "platform_limits": {
+    "arg_max_bytes": 4194304,
+    "fd_set_bytes": 128,
+    "fd_setsize": 1024,
+    "iov_max": 1024,
+    "max_reportable_transfer_bytes": 2147483647,
+    "max_transfer_allocation_bytes": 4294967295,
+    "ngroups_max": 32,
+    "path_max_bytes": 4096,
+    "process_startup_max_argv_count": 4096,
+    "process_startup_max_envp_count": 4096,
+    "sysv_msg_max_bytes": 8192
+  },
   "process_expected_globals": [
     "__channel_base",
     "__tls_base"
@@ -3214,6 +4667,176 @@
       "pages_per_slot": 4
     },
     "wasm_page_size": 65536
+  },
+  "process_metadata_contract": {
+    "kind_argv": 0,
+    "kind_environment": 1
+  },
+  "process_native_layouts": {
+    "cmsghdr": {
+      "wasm32": {
+        "align": 4,
+        "data_offset": 12,
+        "len_offset": 0,
+        "level_offset": 4,
+        "size": 12,
+        "type_offset": 8
+      },
+      "wasm64": {
+        "align": 8,
+        "data_offset": 16,
+        "len_offset": 0,
+        "level_offset": 8,
+        "size": 16,
+        "type_offset": 12
+      }
+    },
+    "iovec": {
+      "wasm32": {
+        "base_offset": 0,
+        "len_offset": 4,
+        "size": 8
+      },
+      "wasm64": {
+        "base_offset": 0,
+        "len_offset": 8,
+        "size": 16
+      }
+    },
+    "kernel_message_wire": {
+      "flattened_iovec_count": 1
+    },
+    "msghdr": {
+      "wasm32": {
+        "control_offset": 16,
+        "controllen_offset": 20,
+        "flags_offset": 24,
+        "iov_offset": 8,
+        "iovlen_offset": 12,
+        "name_offset": 0,
+        "namelen_offset": 4,
+        "size": 28
+      },
+      "wasm64": {
+        "control_offset": 32,
+        "controllen_offset": 40,
+        "flags_offset": 48,
+        "iov_offset": 16,
+        "iovlen_offset": 24,
+        "name_offset": 0,
+        "namelen_offset": 8,
+        "size": 56
+      }
+    },
+    "multicast_group_request": {
+      "wasm32": {
+        "group_offset": 4,
+        "group_req_size": 132,
+        "group_source_req_size": 260,
+        "source_offset": 132
+      },
+      "wasm64": {
+        "group_offset": 8,
+        "group_req_size": 136,
+        "group_source_req_size": 264,
+        "source_offset": 136
+      }
+    },
+    "scm_rights": {
+      "fd_bytes": 4,
+      "level": 1,
+      "type": 1
+    },
+    "sigevent": {
+      "wasm32": {
+        "notify_offset": 8,
+        "payload_offset": 12,
+        "signo_offset": 4,
+        "size": 64,
+        "value_offset": 0,
+        "value_size": 4
+      },
+      "wasm64": {
+        "notify_offset": 12,
+        "payload_offset": 16,
+        "signo_offset": 8,
+        "size": 64,
+        "value_offset": 0,
+        "value_size": 8
+      }
+    },
+    "siginfo": {
+      "code_offset": 8,
+      "errno_offset": 4,
+      "signo_offset": 0,
+      "wasm32": {
+        "pid_offset": 12,
+        "size": 128,
+        "uid_offset": 16,
+        "value_offset": 20,
+        "value_size": 4
+      },
+      "wasm64": {
+        "pid_offset": 16,
+        "size": 128,
+        "uid_offset": 20,
+        "value_offset": 24,
+        "value_size": 8
+      }
+    },
+    "socket_message_flags": {
+      "trunc": 32
+    }
+  },
+  "process_snapshot_wire": {
+    "count_offset": 0,
+    "count_size": 4,
+    "header": {
+      "fields": [
+        {
+          "name": "pid",
+          "offset": 0,
+          "span": 4
+        },
+        {
+          "name": "ppid",
+          "offset": 4,
+          "span": 4
+        },
+        {
+          "name": "uid",
+          "offset": 8,
+          "span": 4
+        },
+        {
+          "name": "gid",
+          "offset": 12,
+          "span": 4
+        },
+        {
+          "name": "vsize",
+          "offset": 16,
+          "span": 8
+        },
+        {
+          "name": "state",
+          "offset": 24,
+          "span": 4
+        },
+        {
+          "name": "comm_len",
+          "offset": 28,
+          "span": 4
+        },
+        {
+          "name": "cmdline_len",
+          "offset": 32,
+          "span": 4
+        }
+      ],
+      "size": 36
+    },
+    "records_offset": 4
   },
   "program_artifact": {
     "fork_instrumentation": {
@@ -3339,12 +4962,71 @@
       ]
     }
   },
+  "spawn_contract": {
+    "action_record": {
+      "bytes": 28,
+      "offsets": {
+        "fd": 4,
+        "mode": 24,
+        "newfd": 8,
+        "oflag": 20,
+        "op": 0,
+        "path_len": 16,
+        "path_off": 12
+      }
+    },
+    "attribute_bits": {
+      "resetids": 1,
+      "setpgroup": 2,
+      "setschedparam": 16,
+      "setscheduler": 32,
+      "setsid": 128,
+      "setsigdef": 4,
+      "setsigmask": 8,
+      "usevfork": 64
+    },
+    "count_caps": {
+      "actions": 1024,
+      "argv": 4096,
+      "envp": 4096
+    },
+    "header": {
+      "bytes": 40,
+      "offsets": {
+        "action_count": 8,
+        "argc": 0,
+        "attr_flags": 12,
+        "envc": 4,
+        "pad": 20,
+        "pgrp": 16,
+        "sigdef": 24,
+        "sigmask": 32
+      }
+    },
+    "opcodes": {
+      "chdir": 3,
+      "close": 1,
+      "dup2": 2,
+      "fchdir": 4,
+      "open": 0
+    },
+    "platform_aliases": {
+      "arg_max_bytes": 4194304,
+      "path_max_bytes": 4096
+    },
+    "string_offset_bytes": 4,
+    "syscall_number": 500,
+    "wire_max_bytes": 8417320
+  },
   "syscall_arg_descriptors": {
     "1": [
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -3353,14 +5035,20 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
       {
         "argIndex": 3,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -3369,14 +5057,20 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
       {
         "argIndex": 2,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -3385,13 +5079,17 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
       {
         "argIndex": 2,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 3,
           "type": "arg"
@@ -3413,13 +5111,17 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -3430,15 +5132,19 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
-          "size": 88,
+          "size": 112,
           "type": "fixed"
         }
       }
@@ -3447,6 +5153,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "size": 8,
           "type": "fixed"
@@ -3457,7 +5164,10 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
@@ -3486,6 +5196,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "deref"
@@ -3494,6 +5205,7 @@
       {
         "argIndex": 2,
         "direction": "inout",
+        "required": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -3504,6 +5216,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "deref"
@@ -3512,6 +5225,7 @@
       {
         "argIndex": 2,
         "direction": "inout",
+        "required": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -3522,6 +5236,7 @@
       {
         "argIndex": 3,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 8,
           "type": "fixed"
@@ -3532,15 +5247,19 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
-          "size": 88,
+          "size": 112,
           "type": "fixed"
         }
       }
@@ -3549,6 +5268,7 @@
       {
         "argIndex": 0,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 1,
           "type": "arg"
@@ -3559,6 +5279,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -3569,6 +5290,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "nullable": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -3579,6 +5301,7 @@
       {
         "argIndex": 2,
         "direction": "in",
+        "required": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -3591,12 +5314,15 @@
         "direction": "in",
         "nullable": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
       {
         "argIndex": 2,
         "direction": "in",
+        "nullable": true,
         "size": {
           "size": 32,
           "type": "fixed"
@@ -3607,16 +5333,21 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
       {
         "argIndex": 2,
         "direction": "out",
+        "required": true,
         "size": {
-          "size": 72,
-          "type": "fixed"
+          "type": "process-layout",
+          "wasm32Size": 88,
+          "wasm64Size": 120
         }
       }
     ],
@@ -3624,7 +5355,10 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -3633,9 +5367,11 @@
       {
         "argIndex": 2,
         "direction": "out",
+        "required": true,
         "size": {
-          "size": 72,
-          "type": "fixed"
+          "type": "process-layout",
+          "wasm32Size": 88,
+          "wasm64Size": 120
         }
       }
     ],
@@ -3643,6 +5379,7 @@
       {
         "argIndex": 0,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -3651,6 +5388,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -3659,6 +5397,7 @@
       {
         "argIndex": 2,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -3669,6 +5408,7 @@
       {
         "argIndex": 0,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -3677,6 +5417,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -3685,28 +5426,21 @@
       {
         "argIndex": 2,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 4,
           "type": "fixed"
         }
       }
     ],
-    "137": [
+    "136": [
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
-          "argIndex": 2,
-          "type": "arg"
-        }
-      }
-    ],
-    "138": [
-      {
-        "argIndex": 1,
-        "direction": "inout",
-        "size": {
-          "argIndex": 2,
+          "argIndex": 0,
+          "multiplier": 4,
           "type": "arg"
         }
       }
@@ -3715,6 +5449,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "nullable": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -3723,6 +5458,7 @@
       {
         "argIndex": 3,
         "direction": "out",
+        "nullable": true,
         "size": {
           "size": 144,
           "type": "fixed"
@@ -3733,7 +5469,10 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -3742,15 +5481,19 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 256,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
-          "size": 256,
+          "size": 4,
           "type": "fixed"
         }
       }
@@ -3759,7 +5502,10 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -3768,14 +5514,20 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -3784,14 +5536,20 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -3800,14 +5558,20 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -3816,13 +5580,17 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -3833,7 +5601,10 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -3842,9 +5613,11 @@
       {
         "argIndex": 2,
         "direction": "in",
+        "required": true,
         "size": {
-          "size": 128,
-          "type": "fixed"
+          "type": "process-layout",
+          "wasm32Size": 128,
+          "wasm64Size": 128
         }
       }
     ],
@@ -3852,6 +5625,7 @@
       {
         "argIndex": 0,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 8,
           "type": "fixed"
@@ -3862,6 +5636,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "size": 8,
           "type": "fixed"
@@ -3870,14 +5645,17 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "nullable": true,
         "size": {
-          "size": 128,
-          "type": "fixed"
+          "type": "process-layout",
+          "wasm32Size": 128,
+          "wasm64Size": 128
         }
       },
       {
         "argIndex": 2,
         "direction": "in",
+        "nullable": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -3888,17 +5666,21 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "nullable": true,
         "size": {
-          "size": 12,
-          "type": "fixed"
+          "type": "process-layout",
+          "wasm32Size": 12,
+          "wasm64Size": 24
         }
       },
       {
         "argIndex": 1,
         "direction": "out",
+        "nullable": true,
         "size": {
-          "size": 12,
-          "type": "fixed"
+          "type": "process-layout",
+          "wasm32Size": 12,
+          "wasm64Size": 24
         }
       }
     ],
@@ -3906,7 +5688,10 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -3915,7 +5700,10 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -3924,18 +5712,11 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
-        }
-      }
-    ],
-    "223": [
-      {
-        "argIndex": 1,
-        "direction": "inout",
-        "size": {
-          "size": 16,
-          "type": "fixed"
         }
       }
     ],
@@ -3943,9 +5724,11 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
-          "size": 16,
-          "type": "fixed"
+          "type": "process-layout",
+          "wasm32Size": 16,
+          "wasm64Size": 32
         }
       }
     ],
@@ -3953,17 +5736,21 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
-          "size": 16,
-          "type": "fixed"
+          "type": "process-layout",
+          "wasm32Size": 16,
+          "wasm64Size": 32
         }
       },
       {
         "argIndex": 2,
         "direction": "out",
+        "nullable": true,
         "size": {
-          "size": 16,
-          "type": "fixed"
+          "type": "process-layout",
+          "wasm32Size": 16,
+          "wasm64Size": 32
         }
       }
     ],
@@ -3971,6 +5758,7 @@
       {
         "argIndex": 0,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 1,
           "type": "arg"
@@ -3981,8 +5769,31 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
-          "size": 36,
+          "size": 48,
+          "type": "fixed"
+        }
+      }
+    ],
+    "231": [
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "size": 48,
+          "type": "fixed"
+        }
+      }
+    ],
+    "233": [
+      {
+        "argIndex": 2,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "size": 48,
           "type": "fixed"
         }
       }
@@ -3991,6 +5802,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -4012,8 +5824,53 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
+        }
+      }
+    ],
+    "244": [
+      {
+        "argIndex": 2,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "size": 32,
+          "type": "fixed"
+        }
+      },
+      {
+        "argIndex": 3,
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "size": 32,
+          "type": "fixed"
+        }
+      }
+    ],
+    "245": [
+      {
+        "argIndex": 1,
+        "direction": "out",
+        "required": true,
+        "size": {
+          "size": 32,
+          "type": "fixed"
+        }
+      }
+    ],
+    "246": [
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "size": 8,
+          "type": "fixed"
         }
       }
     ],
@@ -4021,7 +5878,10 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -4030,6 +5890,7 @@
       {
         "argIndex": 2,
         "direction": "in",
+        "nullable": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -4038,6 +5899,7 @@
       {
         "argIndex": 3,
         "direction": "out",
+        "nullable": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -4048,6 +5910,7 @@
       {
         "argIndex": 0,
         "direction": "inout",
+        "required": true,
         "size": {
           "argIndex": 1,
           "multiplier": 8,
@@ -4055,10 +5918,23 @@
         }
       }
     ],
+    "256": [
+      {
+        "argIndex": 0,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 250,
+          "tooLongErrno": 22,
+          "type": "cstring"
+        }
+      }
+    ],
     "26": [
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -4066,7 +5942,13 @@
       },
       {
         "argIndex": 2,
+        "copyOutLength": {
+          "argIndex": 1,
+          "offset": 12,
+          "type": "u32-field"
+        },
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 3,
           "type": "arg"
@@ -4077,16 +5959,32 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
       {
         "argIndex": 4,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 256,
           "type": "fixed"
+        }
+      }
+    ],
+    "269": [
+      {
+        "argIndex": 0,
+        "direction": "out",
+        "required": true,
+        "size": {
+          "type": "process-layout",
+          "wasm32Size": 312,
+          "wasm64Size": 368
         }
       }
     ],
@@ -4094,7 +5992,10 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -4103,7 +6004,10 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -4114,8 +6018,9 @@
         "direction": "out",
         "required": true,
         "size": {
-          "size": 128,
-          "type": "fixed"
+          "type": "process-layout",
+          "wasm32Size": 128,
+          "wasm64Size": 128
         }
       },
       {
@@ -4128,11 +6033,65 @@
         }
       }
     ],
+    "290": [
+      {
+        "argIndex": 1,
+        "direction": "inout",
+        "nullable": true,
+        "size": {
+          "size": 8,
+          "type": "fixed"
+        }
+      },
+      {
+        "argIndex": 3,
+        "direction": "inout",
+        "nullable": true,
+        "size": {
+          "size": 8,
+          "type": "fixed"
+        }
+      }
+    ],
+    "291": [
+      {
+        "argIndex": 1,
+        "direction": "inout",
+        "nullable": true,
+        "size": {
+          "size": 8,
+          "type": "fixed"
+        }
+      },
+      {
+        "argIndex": 3,
+        "direction": "inout",
+        "nullable": true,
+        "size": {
+          "size": 8,
+          "type": "fixed"
+        }
+      }
+    ],
+    "294": [
+      {
+        "argIndex": 2,
+        "direction": "inout",
+        "nullable": true,
+        "size": {
+          "size": 8,
+          "type": "fixed"
+        }
+      }
+    ],
     "299": [
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -4141,9 +6100,52 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
+        }
+      }
+    ],
+    "306": [
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
+          "type": "cstring"
+        }
+      },
+      {
+        "argIndex": 3,
+        "direction": "in",
+        "required": true,
+        "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
+          "type": "cstring"
+        }
+      }
+    ],
+    "325": [
+      {
+        "argIndex": 0,
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "size": 4,
+          "type": "fixed"
+        }
+      },
+      {
+        "argIndex": 1,
+        "direction": "out",
+        "nullable": true,
+        "size": {
+          "size": 4,
+          "type": "fixed"
         }
       }
     ],
@@ -4151,14 +6153,17 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "nullable": true,
         "size": {
-          "size": 16,
-          "type": "fixed"
+          "type": "process-layout",
+          "wasm32Size": 64,
+          "wasm64Size": 64
         }
       },
       {
         "argIndex": 2,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -4169,6 +6174,7 @@
       {
         "argIndex": 2,
         "direction": "in",
+        "required": true,
         "size": {
           "size": 32,
           "type": "fixed"
@@ -4177,6 +6183,7 @@
       {
         "argIndex": 3,
         "direction": "out",
+        "nullable": true,
         "size": {
           "size": 32,
           "type": "fixed"
@@ -4187,6 +6194,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 32,
           "type": "fixed"
@@ -4197,16 +6205,21 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 256,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
       {
         "argIndex": 3,
         "direction": "in",
+        "nullable": true,
         "size": {
-          "size": 32,
-          "type": "fixed"
+          "type": "process-layout",
+          "wasm32Size": 32,
+          "wasm64Size": 64
         }
       }
     ],
@@ -4214,7 +6227,10 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 256,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -4223,6 +6239,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -4231,6 +6248,7 @@
       {
         "argIndex": 4,
         "direction": "in",
+        "nullable": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -4241,6 +6259,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -4249,6 +6268,7 @@
       {
         "argIndex": 3,
         "direction": "out",
+        "nullable": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -4257,6 +6277,7 @@
       {
         "argIndex": 4,
         "direction": "in",
+        "nullable": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -4267,9 +6288,11 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "nullable": true,
         "size": {
-          "size": 16,
-          "type": "fixed"
+          "type": "process-layout",
+          "wasm32Size": 64,
+          "wasm64Size": 64
         }
       }
     ],
@@ -4277,50 +6300,21 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "nullable": true,
         "size": {
-          "size": 32,
-          "type": "fixed"
+          "type": "process-layout",
+          "wasm32Size": 32,
+          "wasm64Size": 64
         }
       },
       {
         "argIndex": 2,
         "direction": "out",
+        "nullable": true,
         "size": {
-          "size": 32,
-          "type": "fixed"
-        }
-      }
-    ],
-    "338": [
-      {
-        "argIndex": 1,
-        "copyRetvalAdd": 4,
-        "direction": "out",
-        "size": {
-          "add": 4,
-          "argIndex": 2,
-          "type": "arg"
-        }
-      }
-    ],
-    "339": [
-      {
-        "argIndex": 1,
-        "direction": "in",
-        "size": {
-          "add": 4,
-          "argIndex": 2,
-          "type": "arg"
-        }
-      }
-    ],
-    "340": [
-      {
-        "argIndex": 2,
-        "direction": "inout",
-        "size": {
-          "size": 96,
-          "type": "fixed"
+          "type": "process-layout",
+          "wasm32Size": 32,
+          "wasm64Size": 64
         }
       }
     ],
@@ -4328,6 +6322,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "argIndex": 2,
           "multiplier": 6,
@@ -4335,20 +6330,11 @@
         }
       }
     ],
-    "347": [
-      {
-        "argIndex": 2,
-        "direction": "inout",
-        "size": {
-          "size": 88,
-          "type": "fixed"
-        }
-      }
-    ],
     "36": [
       {
         "argIndex": 1,
         "direction": "in",
+        "nullable": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -4357,6 +6343,7 @@
       {
         "argIndex": 2,
         "direction": "out",
+        "nullable": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -4367,6 +6354,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "nullable": true,
         "size": {
           "size": 8,
           "type": "fixed"
@@ -4375,6 +6363,18 @@
       {
         "argIndex": 2,
         "direction": "out",
+        "nullable": true,
+        "size": {
+          "size": 8,
+          "type": "fixed"
+        }
+      }
+    ],
+    "377": [
+      {
+        "argIndex": 1,
+        "direction": "in",
+        "required": true,
         "size": {
           "size": 8,
           "type": "fixed"
@@ -4385,7 +6385,10 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -4394,7 +6397,10 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -4403,6 +6409,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "nullable": true,
         "size": {
           "argIndex": 2,
           "type": "deref"
@@ -4411,6 +6418,7 @@
       {
         "argIndex": 2,
         "direction": "inout",
+        "nullable": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -4421,6 +6429,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -4431,6 +6440,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -4441,6 +6451,7 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -4451,13 +6462,17 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 65537,
+          "tooLongErrno": 7,
           "type": "cstring"
         }
       },
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -4468,14 +6483,20 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 65537,
+          "tooLongErrno": 7,
           "type": "cstring"
         }
       },
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 65537,
+          "tooLongErrno": 7,
           "type": "cstring"
         }
       }
@@ -4484,7 +6505,10 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 65537,
+          "tooLongErrno": 7,
           "type": "cstring"
         }
       }
@@ -4493,6 +6517,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -4503,6 +6528,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "nullable": true,
         "size": {
           "argIndex": 2,
           "type": "deref"
@@ -4511,6 +6537,7 @@
       {
         "argIndex": 2,
         "direction": "inout",
+        "nullable": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -4521,6 +6548,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -4531,6 +6559,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -4541,6 +6570,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -4551,6 +6581,7 @@
       {
         "argIndex": 3,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 4,
           "type": "deref"
@@ -4559,6 +6590,7 @@
       {
         "argIndex": 4,
         "direction": "inout",
+        "required": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -4569,6 +6601,7 @@
       {
         "argIndex": 3,
         "direction": "in",
+        "required": true,
         "size": {
           "argIndex": 4,
           "type": "arg"
@@ -4579,8 +6612,9 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
-          "size": 88,
+          "size": 112,
           "type": "fixed"
         }
       }
@@ -4589,6 +6623,7 @@
       {
         "argIndex": 0,
         "direction": "inout",
+        "required": true,
         "size": {
           "argIndex": 1,
           "multiplier": 8,
@@ -4600,6 +6635,7 @@
       {
         "argIndex": 3,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 8,
           "type": "fixed"
@@ -4610,6 +6646,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -4618,6 +6655,7 @@
       {
         "argIndex": 4,
         "direction": "in",
+        "required": true,
         "size": {
           "argIndex": 5,
           "type": "arg"
@@ -4628,6 +6666,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -4636,6 +6675,7 @@
       {
         "argIndex": 4,
         "direction": "out",
+        "nullable": true,
         "size": {
           "argIndex": 5,
           "type": "deref"
@@ -4644,6 +6684,7 @@
       {
         "argIndex": 5,
         "direction": "inout",
+        "nullable": true,
         "size": {
           "size": 4,
           "type": "fixed"
@@ -4654,6 +6695,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -4664,6 +6706,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "argIndex": 2,
           "type": "arg"
@@ -4674,7 +6717,10 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -4683,8 +6729,9 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
-          "size": 256,
+          "size": 60,
           "type": "fixed"
         }
       }
@@ -4693,18 +6740,9 @@
       {
         "argIndex": 2,
         "direction": "in",
+        "required": true,
         "size": {
-          "size": 256,
-          "type": "fixed"
-        }
-      }
-    ],
-    "72": [
-      {
-        "argIndex": 2,
-        "direction": "inout",
-        "size": {
-          "size": 256,
+          "size": 60,
           "type": "fixed"
         }
       }
@@ -4713,6 +6751,7 @@
       {
         "argIndex": 0,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 390,
           "type": "fixed"
@@ -4723,6 +6762,7 @@
       {
         "argIndex": 0,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 8,
           "type": "fixed"
@@ -4733,6 +6773,7 @@
       {
         "argIndex": 1,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -4743,6 +6784,7 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
           "size": 16,
           "type": "fixed"
@@ -4753,7 +6795,10 @@
       {
         "argIndex": 0,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -4762,6 +6807,7 @@
       {
         "argIndex": 0,
         "direction": "out",
+        "required": true,
         "size": {
           "size": 8,
           "type": "fixed"
@@ -4772,15 +6818,19 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
       {
         "argIndex": 2,
         "direction": "out",
+        "required": true,
         "size": {
-          "size": 88,
+          "size": 112,
           "type": "fixed"
         }
       }
@@ -4789,7 +6839,10 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -4798,7 +6851,10 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -4807,14 +6863,20 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       },
       {
         "argIndex": 3,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -4823,7 +6885,10 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -4832,7 +6897,10 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -4841,7 +6909,10 @@
       {
         "argIndex": 1,
         "direction": "in",
+        "required": true,
         "size": {
+          "maxBytes": 4096,
+          "tooLongErrno": 36,
           "type": "cstring"
         }
       }
@@ -5425,6 +7496,10 @@
       "number": 203
     },
     {
+      "name": "Tkill",
+      "number": 204
+    },
+    {
       "name": "RtSigqueueinfo",
       "number": 205
     },
@@ -5481,8 +7556,20 @@
       "number": 230
     },
     {
+      "name": "SchedSetparam",
+      "number": 231
+    },
+    {
+      "name": "SchedSetscheduler",
+      "number": 233
+    },
+    {
       "name": "SchedRrGetInterval",
       "number": 236
+    },
+    {
+      "name": "SchedSetaffinity",
+      "number": 237
     },
     {
       "name": "SchedGetaffinity",
@@ -5501,6 +7588,22 @@
       "number": 241
     },
     {
+      "name": "TimerfdCreate",
+      "number": 243
+    },
+    {
+      "name": "TimerfdSettime",
+      "number": 244
+    },
+    {
+      "name": "TimerfdGettime",
+      "number": 245
+    },
+    {
+      "name": "Signalfd4",
+      "number": 246
+    },
+    {
       "name": "Prlimit64",
       "number": 250
     },
@@ -5511,6 +7614,10 @@
     {
       "name": "Pselect6",
       "number": 252
+    },
+    {
+      "name": "MemfdCreate",
+      "number": 256
     },
     {
       "name": "Statx",
@@ -5525,6 +7632,10 @@
       "number": 262
     },
     {
+      "name": "Sysinfo",
+      "number": 269
+    },
+    {
       "name": "Mknod",
       "number": 271
     },
@@ -5537,8 +7648,32 @@
       "number": 278
     },
     {
+      "name": "Mlock",
+      "number": 279
+    },
+    {
+      "name": "Mlock2",
+      "number": 280
+    },
+    {
+      "name": "Munlock",
+      "number": 281
+    },
+    {
       "name": "Waitid",
       "number": 288
+    },
+    {
+      "name": "CopyFileRange",
+      "number": 290
+    },
+    {
+      "name": "Splice",
+      "number": 291
+    },
+    {
+      "name": "Readahead",
+      "number": 293
     },
     {
       "name": "Sendfile",
@@ -5553,12 +7688,28 @@
       "number": 296
     },
     {
+      "name": "Preadv2",
+      "number": 297
+    },
+    {
+      "name": "Pwritev2",
+      "number": 298
+    },
+    {
       "name": "Lchown",
       "number": 299
     },
     {
+      "name": "Renameat2",
+      "number": 306
+    },
+    {
       "name": "Fallocate",
       "number": 308
+    },
+    {
+      "name": "Getcpu",
+      "number": 325
     },
     {
       "name": "TimerCreate",
@@ -5647,6 +7798,10 @@
     {
       "name": "Shmctl",
       "number": 347
+    },
+    {
+      "name": "Signalfd",
+      "number": 377
     },
     {
       "name": "EpollCreate",

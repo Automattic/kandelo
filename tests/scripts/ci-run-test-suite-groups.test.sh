@@ -16,10 +16,21 @@ mkdir -p \
     "$FIXTURE/apps/browser-demos" \
     "$FIXTURE/bin"
 cp \
+    "$REPO_ROOT/scripts/browser-memory64-example-fixtures.sh" \
+    "$REPO_ROOT/scripts/browser-memory64-example-fixtures.txt" \
     "$REPO_ROOT/scripts/ci-run-test-suite.sh" \
     "$REPO_ROOT/scripts/pack-ci-test-workspace.sh" \
     "$REPO_ROOT/scripts/stage-portable-resolver-binaries.sh" \
     "$FIXTURE/scripts/"
+
+BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$REPO_ROOT"
+BROWSER_MEMORY64_FIXTURES_MANIFEST="$REPO_ROOT/scripts/browser-memory64-example-fixtures.txt"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/browser-memory64-example-fixtures.sh"
+memory64_sources="$(browser_memory64_fixture_sources)"
+while IFS= read -r source; do
+    cp "$REPO_ROOT/$source" "$FIXTURE/$source"
+done <<< "$memory64_sources"
 
 cat > "$FIXTURE/bin/npm" <<'EOF'
 #!/usr/bin/env bash
@@ -322,9 +333,13 @@ prepared_files=(
     examples/gencat.wasm
     examples/pthread_channel_reuse_test.wasm
     examples/wait_lifecycle_test.wasm
-    examples/wait_lifecycle_test.wasm64.wasm
-    examples/terminal_attributes_api_test.wasm64.wasm
 )
+BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$FIXTURE"
+BROWSER_MEMORY64_FIXTURES_MANIFEST="$FIXTURE/scripts/browser-memory64-example-fixtures.txt"
+memory64_outputs="$(browser_memory64_fixture_outputs)"
+while IFS= read -r output; do
+    prepared_files+=("$output")
+done <<< "$memory64_outputs"
 for benchmark in \
     pipe-throughput.wasm \
     file-throughput.wasm \

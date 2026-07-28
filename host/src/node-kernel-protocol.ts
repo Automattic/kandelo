@@ -14,6 +14,7 @@ import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { HostDiagnosticMessage } from "./host-diagnostic";
 import type { LazyDownloadEvent } from "./vfs/memory-fs";
 import type { ClosedLazyAsset } from "./vfs/closed-lazy-assets";
+import type { NodeSessionSeedTree } from "./vfs/default-mounts-node";
 
 export type { HttpRequest, HttpResponse };
 export type { HostDiagnostic } from "./host-diagnostic";
@@ -31,8 +32,10 @@ export interface InitMessage {
     dataBufferSize?: number;
     useSharedMemory?: boolean;
   };
-  /** Virtual path → host filesystem path for exec resolution */
+  /** Virtual path → immutable host filesystem generation for exec resolution. */
   execPrograms?: Record<string, string>;
+  /** Virtual path → worker-owned exact program bytes for pre-VFS resolution. */
+  execProgramBytes?: Record<string, ArrayBuffer>;
   /**
    * Bytes of `host/wasm/rootfs.vfs`, read on the main thread and forwarded
    * to the worker. When present, the worker materialises the default mount
@@ -52,6 +55,11 @@ export interface InitMessage {
     uid?: number;
     gid?: number;
   }>;
+  /**
+   * Quiescent host trees copied beneath existing worker-owned scratch mounts
+   * before ready. Guest mutations never write back to the source.
+   */
+  sessionSeedTrees?: NodeSessionSeedTree[];
   /** Attach a real-TCP backend (TcpNetworkBackend) to the worker's PlatformIO
    *  so wasm programs can dial external hosts via Node `net.Socket`. */
   enableTcpNetwork?: boolean;
@@ -155,6 +163,12 @@ export interface GetKernelMemoryPagesRequestMessage {
   requestId: number;
 }
 
+/** Read the retained capacity of the kernel-owned large-spawn region. */
+export interface GetSpawnScratchCapacityRequestMessage {
+  type: "get_spawn_scratch_capacity";
+  requestId: number;
+}
+
 export interface ResolveExecResponseMessage {
   type: "resolve_exec_response";
   requestId: number;
@@ -234,6 +248,7 @@ export type MainToKernelMessage =
   | ReadVfsFileMessage
   | GetForkCountRequestMessage
   | GetKernelMemoryPagesRequestMessage
+  | GetSpawnScratchCapacityRequestMessage
   | ResolveExecResponseMessage
   | EnumProcsRequestMessage
   | ReadProcMapsRequestMessage
@@ -252,6 +267,12 @@ export interface ReadyMessage {
 /** Initialization failed before the worker could publish a usable kernel. */
 export interface InitErrorMessage {
   type: "init_error";
+  error: string;
+}
+
+/** The dedicated kernel instance is poisoned and has stopped permanently. */
+export interface KernelFatalMessage {
+  type: "kernel_fatal";
   error: string;
 }
 
@@ -311,6 +332,7 @@ export type ProcEventMessage =
 export type KernelToMainMessage =
   | ReadyMessage
   | InitErrorMessage
+  | KernelFatalMessage
   | ResponseMessage
   | ExitMessage
   | StdoutMessage

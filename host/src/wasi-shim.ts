@@ -26,7 +26,14 @@ import {
   CH_RETURN,
   CH_STATUS,
   CH_SYSCALL,
+  PROCESS_IOVEC_WASM32_BASE_OFFSET,
+  PROCESS_IOVEC_WASM32_LEN_OFFSET,
+  PROCESS_IOVEC_WASM32_SIZE,
   STRUCT_SIZE_WASM_STAT,
+  STRUCT_SIZE_WASM_POLL_FD,
+  WASM_POLL_FD_EVENTS_OFFSET,
+  WASM_POLL_FD_FD_OFFSET,
+  WASM_POLL_FD_REVENTS_OFFSET,
 } from "./generated/abi";
 
 // --- Channel layout (must match crates/shared/src/lib.rs + libc/glue/channel_syscall.c) ---
@@ -96,6 +103,34 @@ const F_SETFL = 4;
 const SEEK_SET = 0;
 const SEEK_CUR = 1;
 const SEEK_END = 2;
+
+type SyscallScalar = number | bigint;
+const MIN_SIGNED_I64 = -(1n << 63n);
+const MAX_SIGNED_I64 = (1n << 63n) - 1n;
+
+function checkedSignedI64Scalar(value: SyscallScalar, label: string): bigint {
+  if (typeof value === "number") {
+    if (!Number.isSafeInteger(value)) {
+      throw new RangeError(`${label} must be a safe integer`);
+    }
+    return BigInt(value);
+  }
+  if (value < MIN_SIGNED_I64 || value > MAX_SIGNED_I64) {
+    throw new RangeError(`${label} is outside signed i64`);
+  }
+  return value;
+}
+
+function splitSignedI64Words(value: bigint): {
+  low: bigint;
+  high: bigint;
+} {
+  const signed = checkedSignedI64Scalar(value, "seek offset");
+  return {
+    low: BigInt.asUintN(32, signed),
+    high: BigInt.asIntN(32, signed >> 32n),
+  };
+}
 
 // S_IFMT mode bits
 const S_IFDIR = 0o040000;
@@ -349,13 +384,13 @@ function modeToFiletype(mode: number): number {
   }
 }
 
-function wasiWhenceToPosix(wasiWhence: number): number {
+function wasiWhenceToPosix(wasiWhence: number): number | null {
   // WASI and POSIX happen to use the same numbering for whence
   switch (wasiWhence) {
     case WASI_WHENCE_SET: return SEEK_SET;
     case WASI_WHENCE_CUR: return SEEK_CUR;
     case WASI_WHENCE_END: return SEEK_END;
-    default: return SEEK_SET;
+    default: return null;
   }
 }
 
@@ -445,26 +480,45 @@ export class WasiShim {
       0,
     );
 
-    if (errno === 0 && result >= 0) {
-      this.preopens.set(result, "/");
+    if (errno === 0 && result >= 0n) {
+      this.preopens.set(this.syscallResultNumber(result), "/");
     }
   }
 
   /** Issue a syscall through the channel and wait for the result. */
   private doSyscall(
     syscallNum: number,
-    a0 = 0, a1 = 0, a2 = 0, a3 = 0, a4 = 0, a5 = 0,
-  ): { result: number; errno: number } {
+    a0: SyscallScalar = 0,
+    a1: SyscallScalar = 0,
+    a2: SyscallScalar = 0,
+    a3: SyscallScalar = 0,
+    a4: SyscallScalar = 0,
+    a5: SyscallScalar = 0,
+  ): { result: bigint; errno: number } {
+    if (
+      !Number.isSafeInteger(syscallNum)
+      || syscallNum < 0
+      || syscallNum > 0x7fff_ffff
+    ) {
+      throw new RangeError("syscall number must be a non-negative i32");
+    }
+    // Validate the complete record before publishing any channel word. Native
+    // DataView#setBigInt64 wraps out-of-range values modulo 2^64; allowing that
+    // here would turn a direct JavaScript caller mistake into another syscall.
+    const args = [a0, a1, a2, a3, a4, a5].map((value, index) =>
+      checkedSignedI64Scalar(value, `syscall argument ${index}`)
+    );
     const base = this.channelOffset;
     const view = new DataView(this.memory.buffer);
 
     view.setInt32(base + CH_SYSCALL, syscallNum, true);
-    view.setBigInt64(base + CH_ARGS + 0 * CH_ARG_SIZE, BigInt(a0), true);
-    view.setBigInt64(base + CH_ARGS + 1 * CH_ARG_SIZE, BigInt(a1), true);
-    view.setBigInt64(base + CH_ARGS + 2 * CH_ARG_SIZE, BigInt(a2), true);
-    view.setBigInt64(base + CH_ARGS + 3 * CH_ARG_SIZE, BigInt(a3), true);
-    view.setBigInt64(base + CH_ARGS + 4 * CH_ARG_SIZE, BigInt(a4), true);
-    view.setBigInt64(base + CH_ARGS + 5 * CH_ARG_SIZE, BigInt(a5), true);
+    for (let index = 0; index < args.length; index++) {
+      view.setBigInt64(
+        base + CH_ARGS + index * CH_ARG_SIZE,
+        args[index],
+        true,
+      );
+    }
 
     const i32 = new Int32Array(this.memory.buffer);
     const statusIdx = base / 4;
@@ -475,13 +529,25 @@ export class WasiShim {
     // Block until kernel signals completion
     while (Atomics.wait(i32, statusIdx, CH_PENDING) === "ok") { /* */ }
 
-    const result = Number(view.getBigInt64(base + CH_RETURN, true));
+    // WHY: CH_RETURN is an i64 scalar. Converting every result to Number here
+    // silently rounds valid offsets above 2^53 before the caller can decide
+    // whether its own result contract permits narrowing.
+    const result = view.getBigInt64(base + CH_RETURN, true);
     const errno = view.getUint32(base + CH_ERRNO, true);
 
     // Reset to idle
     Atomics.store(i32, statusIdx, CH_IDLE);
 
     return { result, errno };
+  }
+
+  /** Narrow a result only after the caller's ABI contract proves Number is sufficient. */
+  private syscallResultNumber(result: bigint): number {
+    const narrowed = Number(result);
+    if (!Number.isSafeInteger(narrowed) || BigInt(narrowed) !== result) {
+      throw new RangeError(`syscall result ${result} cannot be represented exactly`);
+    }
+    return narrowed;
   }
 
   /** Get the channel data area address. */
@@ -708,7 +774,7 @@ export class WasiShim {
     const { result, errno } = this.doSyscall(SYS_READV, fd, iovsPtr, iovsLen);
     if (errno) return translateLinuxErrno(errno);
     const view = new DataView(this.memory.buffer);
-    view.setUint32(nreadOut, result, true);
+    view.setUint32(nreadOut, this.syscallResultNumber(result), true);
     return WASI_ESUCCESS;
   }
 
@@ -716,7 +782,7 @@ export class WasiShim {
     const { result, errno } = this.doSyscall(SYS_WRITEV, fd, iovsPtr, iovsLen);
     if (errno) return translateLinuxErrno(errno);
     const view = new DataView(this.memory.buffer);
-    view.setUint32(nwrittenOut, result, true);
+    view.setUint32(nwrittenOut, this.syscallResultNumber(result), true);
     return WASI_ESUCCESS;
   }
 
@@ -730,30 +796,45 @@ export class WasiShim {
     // Calculate total read size from iovecs
     let totalLen = 0;
     for (let i = 0; i < iovsLen; i++) {
-      totalLen += view.getUint32(iovsPtr + i * 8 + 4, true);
+      totalLen += view.getUint32(
+        iovsPtr
+          + i * PROCESS_IOVEC_WASM32_SIZE
+          + PROCESS_IOVEC_WASM32_LEN_OFFSET,
+        true,
+      );
     }
     totalLen = Math.min(totalLen, CH_DATA_SIZE - 256);
 
     const { result, errno } = this.doSyscall(
-      SYS_PREAD, fd, this.dataArea, totalLen,
-      Number(offset & 0xFFFFFFFFn),
-      Number((offset >> 32n) & 0xFFFFFFFFn),
+      SYS_PREAD,
+      fd,
+      this.dataArea,
+      totalLen,
+      offset,
     );
     if (errno) return translateLinuxErrno(errno);
+    const bytesRead = this.syscallResultNumber(result);
 
     // Scatter data from data area into iovecs
-    let remaining = result;
+    let remaining = bytesRead;
     let srcOff = 0;
     for (let i = 0; i < iovsLen && remaining > 0; i++) {
-      const bufPtr = view.getUint32(iovsPtr + i * 8, true);
-      const bufLen = view.getUint32(iovsPtr + i * 8 + 4, true);
+      const entry = iovsPtr + i * PROCESS_IOVEC_WASM32_SIZE;
+      const bufPtr = view.getUint32(
+        entry + PROCESS_IOVEC_WASM32_BASE_OFFSET,
+        true,
+      );
+      const bufLen = view.getUint32(
+        entry + PROCESS_IOVEC_WASM32_LEN_OFFSET,
+        true,
+      );
       const copyLen = Math.min(bufLen, remaining);
       mem.copyWithin(bufPtr, this.dataArea + srcOff, this.dataArea + srcOff + copyLen);
       srcOff += copyLen;
       remaining -= copyLen;
     }
 
-    view.setUint32(nreadOut, result, true);
+    view.setUint32(nreadOut, bytesRead, true);
     return WASI_ESUCCESS;
   }
 
@@ -766,42 +847,57 @@ export class WasiShim {
     // Gather iovec data into data area
     let totalLen = 0;
     for (let i = 0; i < iovsLen; i++) {
-      const bufPtr = view.getUint32(iovsPtr + i * 8, true);
-      const bufLen = view.getUint32(iovsPtr + i * 8 + 4, true);
+      const entry = iovsPtr + i * PROCESS_IOVEC_WASM32_SIZE;
+      const bufPtr = view.getUint32(
+        entry + PROCESS_IOVEC_WASM32_BASE_OFFSET,
+        true,
+      );
+      const bufLen = view.getUint32(
+        entry + PROCESS_IOVEC_WASM32_LEN_OFFSET,
+        true,
+      );
       const copyLen = Math.min(bufLen, CH_DATA_SIZE - 256 - totalLen);
       mem.copyWithin(this.dataArea + totalLen, bufPtr, bufPtr + copyLen);
       totalLen += copyLen;
     }
 
     const { result, errno } = this.doSyscall(
-      SYS_PWRITE, fd, this.dataArea, totalLen,
-      Number(offset & 0xFFFFFFFFn),
-      Number((offset >> 32n) & 0xFFFFFFFFn),
+      SYS_PWRITE,
+      fd,
+      this.dataArea,
+      totalLen,
+      offset,
     );
     if (errno) return translateLinuxErrno(errno);
 
-    view.setUint32(nwrittenOut, result, true);
+    view.setUint32(nwrittenOut, this.syscallResultNumber(result), true);
     return WASI_ESUCCESS;
   }
 
   fd_seek(fd: number, offset: bigint, whence: number, newOffsetOut: number): number {
     const posixWhence = wasiWhenceToPosix(whence);
-    // lseek on wasm32: args are fd, offset_lo, offset_hi, whence
-    // But our SYS_LSEEK takes (fd, offset_lo, offset_hi, result_ptr, whence)
-    // Actually checking the kernel — it uses a simpler 64-bit lseek
-    const offsetNum = Number(offset);
-    const { result, errno } = this.doSyscall(SYS_LSEEK, fd, offsetNum, posixWhence);
+    if (posixWhence === null) return WASI_EINVAL;
+    // Unlike pread/pwrite, the Kandelo SYS_LSEEK ABI deliberately carries the
+    // signed offset as low-u32/high-i32 words: (fd, low, high, whence).
+    const { low, high } = splitSignedI64Words(offset);
+    const { result, errno } = this.doSyscall(
+      SYS_LSEEK,
+      fd,
+      low,
+      high,
+      posixWhence,
+    );
     if (errno) return translateLinuxErrno(errno);
     const view = new DataView(this.memory.buffer);
-    view.setBigUint64(newOffsetOut, BigInt(result), true);
+    view.setBigUint64(newOffsetOut, result, true);
     return WASI_ESUCCESS;
   }
 
   fd_tell(fd: number, offsetOut: number): number {
-    const { result, errno } = this.doSyscall(SYS_LSEEK, fd, 0, SEEK_CUR);
+    const { result, errno } = this.doSyscall(SYS_LSEEK, fd, 0, 0, SEEK_CUR);
     if (errno) return translateLinuxErrno(errno);
     const view = new DataView(this.memory.buffer);
-    view.setBigUint64(offsetOut, BigInt(result), true);
+    view.setBigUint64(offsetOut, result, true);
     return WASI_ESUCCESS;
   }
 
@@ -827,7 +923,9 @@ export class WasiShim {
 
     // Get flags via fcntl
     const { result: flags, errno: fcntlErr } = this.doSyscall(SYS_FCNTL, fd, F_GETFL);
-    const fdflags = fcntlErr ? 0 : posixFlagToWasiFdflags(flags);
+    const fdflags = fcntlErr
+      ? 0
+      : posixFlagToWasiFdflags(this.syscallResultNumber(flags));
 
     // WASI fdstat: filetype(u8) + pad(1) + fdflags(u16) + pad(4) + rights_base(u64) + rights_inheriting(u64) = 24 bytes
     view.setUint8(fdstatPtr, filetype);
@@ -859,7 +957,7 @@ export class WasiShim {
   }
 
   fd_filestat_set_size(fd: number, size: bigint): number {
-    const { errno } = this.doSyscall(SYS_FTRUNCATE, fd, Number(size));
+    const { errno } = this.doSyscall(SYS_FTRUNCATE, fd, size);
     return errno ? translateLinuxErrno(errno) : WASI_ESUCCESS;
   }
 
@@ -912,7 +1010,13 @@ export class WasiShim {
 
   fd_allocate(fd: number, offset: bigint, len: bigint): number {
     const { errno } = this.doSyscall(
-      SYS_FALLOCATE, fd, Number(offset), Number(len),
+      // Kandelo follows Linux here: (fd, mode, offset, len). WASI only
+      // exposes allocation mode zero.
+      SYS_FALLOCATE,
+      fd,
+      0,
+      offset,
+      len,
     );
     return errno ? translateLinuxErrno(errno) : WASI_ESUCCESS;
   }
@@ -929,10 +1033,11 @@ export class WasiShim {
 
     // Use getdents64 to read directory entries into data area
     const maxRead = Math.min(CH_DATA_SIZE - 256, 32768);
-    const { result: bytesRead, errno } = this.doSyscall(
+    const { result, errno } = this.doSyscall(
       SYS_GETDENTS64, fd, this.dataArea, maxRead,
     );
     if (errno) return translateLinuxErrno(errno);
+    const bytesRead = this.syscallResultNumber(result);
 
     // Parse Linux dirent64 entries and write WASI dirents
     // Linux dirent64: d_ino(8) d_off(8) d_reclen(2) d_type(1) d_name(...)
@@ -1077,9 +1182,14 @@ export class WasiShim {
       SYS_READLINKAT, kernelDirfd, pathAddr, resultAddr, maxLen,
     );
     if (errno) return translateLinuxErrno(errno);
+    const resultLength = this.syscallResultNumber(result);
     // Copy result to caller's buffer
-    new Uint8Array(this.memory.buffer).copyWithin(buf, resultAddr, resultAddr + result);
-    new DataView(this.memory.buffer).setUint32(sizeOut, result, true);
+    new Uint8Array(this.memory.buffer).copyWithin(
+      buf,
+      resultAddr,
+      resultAddr + resultLength,
+    );
+    new DataView(this.memory.buffer).setUint32(sizeOut, resultLength, true);
     return WASI_ESUCCESS;
   }
 
@@ -1127,12 +1237,20 @@ export class WasiShim {
         posixFlags = (posixFlags & ~3) | O_RDONLY;
         const retry = this.doSyscall(SYS_OPENAT, kernelDirfd, pathAddr, posixFlags, 0o666);
         if (retry.errno) return translateLinuxErrno(retry.errno);
-        new DataView(this.memory.buffer).setUint32(fdOut, retry.result, true);
+        new DataView(this.memory.buffer).setUint32(
+          fdOut,
+          this.syscallResultNumber(retry.result),
+          true,
+        );
         return WASI_ESUCCESS;
       }
       return translateLinuxErrno(errno);
     }
-    new DataView(this.memory.buffer).setUint32(fdOut, result, true);
+    new DataView(this.memory.buffer).setUint32(
+      fdOut,
+      this.syscallResultNumber(result),
+      true,
+    );
     return WASI_ESUCCESS;
   }
 
@@ -1198,10 +1316,13 @@ export class WasiShim {
         SYS_GETRANDOM, this.dataArea, chunkSize, 0,
       );
       if (errno) return translateLinuxErrno(errno);
+      const bytesRead = this.syscallResultNumber(result);
       new Uint8Array(this.memory.buffer).copyWithin(
-        buf + offset, this.dataArea, this.dataArea + result,
+        buf + offset,
+        this.dataArea,
+        this.dataArea + bytesRead,
       );
-      offset += result;
+      offset += bytesRead;
     }
     return WASI_ESUCCESS;
   }
@@ -1239,7 +1360,11 @@ export class WasiShim {
   proc_raise(sig: number): number {
     // kill(getpid(), sig)
     const { result: pid } = this.doSyscall(SYS_GETPID);
-    const { errno } = this.doSyscall(SYS_KILL, pid, sig);
+    const { errno } = this.doSyscall(
+      SYS_KILL,
+      this.syscallResultNumber(pid),
+      sig,
+    );
     return errno ? translateLinuxErrno(errno) : WASI_ESUCCESS;
   }
 
@@ -1337,12 +1462,18 @@ export class WasiShim {
       }
     }
 
-    // Write pollfd structs: fd(i32) + events(i16) + revents(i16) = 8 bytes
+    // WASI Preview 1 is wasm32-only here, but poll(2) still consumes the
+    // generated Kandelo syscall record rather than a private shim layout.
     const pollfdAddr = this.dataArea;
     for (let i = 0; i < pollfds.length; i++) {
-      view.setInt32(pollfdAddr + i * 8, pollfds[i].fd, true);
-      view.setInt16(pollfdAddr + i * 8 + 4, pollfds[i].events, true);
-      view.setInt16(pollfdAddr + i * 8 + 6, 0, true);
+      const entry = pollfdAddr + i * STRUCT_SIZE_WASM_POLL_FD;
+      view.setInt32(entry + WASM_POLL_FD_FD_OFFSET, pollfds[i].fd, true);
+      view.setInt16(
+        entry + WASM_POLL_FD_EVENTS_OFFSET,
+        pollfds[i].events,
+        true,
+      );
+      view.setInt16(entry + WASM_POLL_FD_REVENTS_OFFSET, 0, true);
     }
 
     const { errno } = this.doSyscall(
@@ -1353,7 +1484,12 @@ export class WasiShim {
     // Read results and write WASI events
     let nevents = 0;
     for (let i = 0; i < pollfds.length; i++) {
-      const revents = view.getInt16(pollfdAddr + i * 8 + 6, true);
+      const revents = view.getInt16(
+        pollfdAddr
+          + i * STRUCT_SIZE_WASM_POLL_FD
+          + WASM_POLL_FD_REVENTS_OFFSET,
+        true,
+      );
       if (revents) {
         const evBase = outPtr + nevents * 32;
         view.setBigUint64(evBase, pollfds[i].userdata, true);
@@ -1393,7 +1529,12 @@ export class WasiShim {
     // Gather total size from iovecs, read into data area, then scatter
     let totalLen = 0;
     for (let i = 0; i < iovsLen; i++) {
-      totalLen += view.getUint32(iovsPtr + i * 8 + 4, true);
+      totalLen += view.getUint32(
+        iovsPtr
+          + i * PROCESS_IOVEC_WASM32_SIZE
+          + PROCESS_IOVEC_WASM32_LEN_OFFSET,
+        true,
+      );
     }
     totalLen = Math.min(totalLen, CH_DATA_SIZE - 256);
 
@@ -1401,20 +1542,28 @@ export class WasiShim {
       SYS_RECVFROM, fd, this.dataArea, totalLen, 0, 0, 0,
     );
     if (errno) return translateLinuxErrno(errno);
+    const bytesRead = this.syscallResultNumber(result);
 
     // Scatter into iovecs
-    let remaining = result;
+    let remaining = bytesRead;
     let srcOff = 0;
     for (let i = 0; i < iovsLen && remaining > 0; i++) {
-      const bufPtr = view.getUint32(iovsPtr + i * 8, true);
-      const bufLen = view.getUint32(iovsPtr + i * 8 + 4, true);
+      const entry = iovsPtr + i * PROCESS_IOVEC_WASM32_SIZE;
+      const bufPtr = view.getUint32(
+        entry + PROCESS_IOVEC_WASM32_BASE_OFFSET,
+        true,
+      );
+      const bufLen = view.getUint32(
+        entry + PROCESS_IOVEC_WASM32_LEN_OFFSET,
+        true,
+      );
       const copyLen = Math.min(bufLen, remaining);
       mem.copyWithin(bufPtr, this.dataArea + srcOff, this.dataArea + srcOff + copyLen);
       srcOff += copyLen;
       remaining -= copyLen;
     }
 
-    view.setUint32(roDataLenOut, result, true);
+    view.setUint32(roDataLenOut, bytesRead, true);
     view.setUint16(roFlagsOut, 0, true);
     return WASI_ESUCCESS;
   }
@@ -1429,8 +1578,15 @@ export class WasiShim {
     // Gather from iovecs into data area
     let totalLen = 0;
     for (let i = 0; i < iovsLen; i++) {
-      const bufPtr = view.getUint32(iovsPtr + i * 8, true);
-      const bufLen = view.getUint32(iovsPtr + i * 8 + 4, true);
+      const entry = iovsPtr + i * PROCESS_IOVEC_WASM32_SIZE;
+      const bufPtr = view.getUint32(
+        entry + PROCESS_IOVEC_WASM32_BASE_OFFSET,
+        true,
+      );
+      const bufLen = view.getUint32(
+        entry + PROCESS_IOVEC_WASM32_LEN_OFFSET,
+        true,
+      );
       const copyLen = Math.min(bufLen, CH_DATA_SIZE - 256 - totalLen);
       mem.copyWithin(this.dataArea + totalLen, bufPtr, bufPtr + copyLen);
       totalLen += copyLen;
@@ -1441,7 +1597,7 @@ export class WasiShim {
     );
     if (errno) return translateLinuxErrno(errno);
 
-    view.setUint32(nwrittenOut, result, true);
+    view.setUint32(nwrittenOut, this.syscallResultNumber(result), true);
     return WASI_ESUCCESS;
   }
 

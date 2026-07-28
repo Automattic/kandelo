@@ -140,6 +140,9 @@ export interface RunProgramOptions {
    *  only (NodeKernelHost.getForkCount); main-thread mode falls back to
    *  reading from the kernel instance directly. */
   captureForkCount?: boolean;
+  /** Capture kernel-owned large-spawn retention and memory pages immediately
+   * after program exit, before the dedicated kernel worker is destroyed. */
+  captureSpawnScratchStats?: boolean;
   /** Use the canonical rootfs image in worker-thread mode. Defaults to true. */
   useDefaultRootfs?: boolean;
   /** Exact VFS image for tests that stage package runtime files. Overrides
@@ -166,6 +169,8 @@ export interface RunProgramResult {
    *  before the kernel is destroyed. Only populated when
    *  `captureForkCount: true` is set on the run options. */
   forkCount?: bigint;
+  spawnScratchCapacity?: number;
+  kernelMemoryPages?: number;
 }
 
 /**
@@ -274,10 +279,16 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
 
   let exitCode: number;
   let forkCount: bigint | undefined;
+  let spawnScratchCapacity: number | undefined;
+  let kernelMemoryPages: number | undefined;
   try {
     exitCode = await Promise.race([exitPromise, timeoutPromise]);
     if (options.captureForkCount && capturedPid !== undefined) {
       forkCount = await host.getForkCount(capturedPid);
+    }
+    if (options.captureSpawnScratchStats) {
+      spawnScratchCapacity = await host.getSpawnScratchCapacity();
+      kernelMemoryPages = await host.getKernelMemoryPages();
     }
   } finally {
     if (timeoutId !== undefined) clearTimeout(timeoutId);
@@ -292,7 +303,16 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
     offset += chunk.length;
   }
 
-  return { exitCode, stdout, stderr, hostDiagnostics, stdoutBytes, forkCount };
+  return {
+    exitCode,
+    stdout,
+    stderr,
+    hostDiagnostics,
+    stdoutBytes,
+    forkCount,
+    spawnScratchCapacity,
+    kernelMemoryPages,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -332,6 +352,8 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
   const processPtrWidths = new Map<number, 4 | 8>();
   const forkReplayContexts = new Map<number, ForkReplayContext>();
   let mainThreadForkCount: bigint | undefined;
+  let spawnScratchCapacity: number | undefined;
+  let kernelMemoryPages: number | undefined;
 
   let pid = 0;
 
@@ -442,8 +464,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
       onExec: async (execPid, path, argv, envp, callerTid) => {
         const wasmPath = options.execPrograms?.get(path);
         if (!wasmPath) return -2;
-        if (!kernelWorker.supportsExecMetadataReplacement()) return -38;
-
         const newProgramBytes = loadProgramWasm(wasmPath);
         const newPtrWidth = detectPtrWidth(newProgramBytes);
         const sourcePtrWidth = processPtrWidths.get(execPid) ?? newPtrWidth;
@@ -605,10 +625,6 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
       },
       onExit: (exitPid, exitStatus) => {
         if (exitPid === pid) {
-          if (options.captureForkCount) {
-            mainThreadForkCount = kernelWorker.getForkCount(exitPid);
-          }
-          kernelWorker.unregisterProcess(exitPid);
           processProgramBytes.delete(exitPid);
           processLayouts.delete(exitPid);
           threadAllocators.delete(exitPid);
@@ -726,6 +742,23 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
 
   const exitCode = await exitPromise;
   clearTimeout(timer);
+  // WHY: onExit is a detached protocol-publication callback. A result-bearing
+  // kernel query there would be rejected as reentrant, while unregister would
+  // merely queue and could retire the zombie before its counter is observed.
+  // The resolved promise resumes only after that detached stack has unwound,
+  // so capture first from this fresh caller root. Always request unregister
+  // even if a broken counter query exposes a separate lifecycle failure.
+  try {
+    if (options.captureForkCount) {
+      mainThreadForkCount = kernelWorker.getForkCount(pid);
+    }
+  } finally {
+    kernelWorker.unregisterProcess(pid);
+  }
+  if (options.captureSpawnScratchStats) {
+    spawnScratchCapacity = kernelWorker.getSpawnScratchCapacity();
+    kernelMemoryPages = kernelWorker.getKernelMemoryPages();
+  }
 
   const totalLen = stdoutChunks.reduce((sum, c) => sum + c.length, 0);
   const stdoutBytes = new Uint8Array(totalLen);
@@ -742,5 +775,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     hostDiagnostics: [],
     stdoutBytes,
     forkCount: mainThreadForkCount,
+    spawnScratchCapacity,
+    kernelMemoryPages,
   };
 }

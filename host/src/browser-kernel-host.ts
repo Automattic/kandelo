@@ -172,7 +172,11 @@ export class BrowserKernel {
     Pick<BrowserKernelOptions, "maxWorkers" | "env">
   > &
     BrowserKernelOptions;
-  private exitResolvers = new Map<number, (status: number) => void>();
+  private exitResolvers = new Map<number, {
+    resolve: (status: number) => void;
+    reject: (error: Error) => void;
+  }>();
+  private kernelFatalError: Error | null = null;
   private unclaimedExitStatuses = new Map<number, { status: number; sequence: number }>();
   private exitSequence = 0;
   private pendingRequests = new Map<number, { resolve: (val: any) => void; reject: (err: Error) => void }>();
@@ -327,6 +331,7 @@ export class BrowserKernel {
         "owned VFS image must be one whole ordinary ArrayBuffer",
       );
     }
+    this.kernelFatalError = null;
     const closedLazyAssets = opts.closedLazyAssets === undefined
       ? undefined
       : snapshotClosedLazyAssets(opts.closedLazyAssets);
@@ -339,10 +344,8 @@ export class BrowserKernel {
     };
     this.kernelWorkerHandle.onerror = (e: ErrorEvent) => {
       const err = new Error(`Kernel worker error: ${e.message}`);
-      for (const [, { reject }] of this.pendingRequests) {
-        reject(err);
-      }
-      this.pendingRequests.clear();
+      this.failKernelHost(err);
+      this.kernelWorkerHandle.terminate();
       this.options.onHttpBridgePendingRequests?.(0);
       const diagnostic: HostDiagnostic = {
         pid: 0,
@@ -385,6 +388,8 @@ export class BrowserKernel {
             settleResolve();
           } else if (e.data?.type === "init_error") {
             settleReject(new Error(`Kernel worker init failed: ${e.data.error}`));
+          } else if (e.data?.type === "kernel_fatal") {
+            settleReject(new Error(`Kernel worker failed: ${e.data.error}`));
           }
         };
         const errorHandler = (e: ErrorEvent) => {
@@ -646,6 +651,24 @@ export class BrowserKernel {
     });
     if (!Number.isSafeInteger(result) || result < 0) {
       throw new Error(`kernel worker returned an invalid memory-page count: ${String(result)}`);
+    }
+    return result;
+  }
+
+  /**
+   * Return the retained capacity of the kernel-owned large-spawn region.
+   * Zero means no spawn has exceeded the ordinary channel-sized scratch.
+   */
+  async getSpawnScratchCapacity(): Promise<number> {
+    const requestId = this.nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "get_spawn_scratch_capacity",
+      requestId,
+    });
+    if (!Number.isSafeInteger(result) || result < 0) {
+      throw new Error(
+        `kernel worker returned an invalid spawn scratch capacity: ${String(result)}`,
+      );
     }
     return result;
   }
@@ -984,7 +1007,7 @@ export class BrowserKernel {
     // Resolve exit promise
     const resolver = this.exitResolvers.get(pid);
     this.exitResolvers.delete(pid);
-    if (resolver) resolver(status);
+    if (resolver) resolver.resolve(status);
   }
 
   /**
@@ -1078,7 +1101,7 @@ export class BrowserKernel {
   /** Destroy the kernel and release all resources. */
   async destroy(): Promise<void> {
     if (!this.workerStarted) return;
-    if (this.initialized) {
+    if (this.initialized && this.kernelFatalError === null) {
       const requestId = this.nextRequestId++;
       await this.request(requestId, {
         type: "destroy",
@@ -1140,6 +1163,7 @@ export class BrowserKernel {
   }
 
   private sendToKernel(msg: MainToKernelMessage, transfer?: Transferable[]): void {
+    if (this.kernelFatalError !== null) throw this.kernelFatalError;
     this.kernelWorkerHandle.postMessage(msg, transfer ?? []);
   }
 
@@ -1149,16 +1173,33 @@ export class BrowserKernel {
     if (unclaimed !== undefined && unclaimed.sequence > spawnStartedBeforeExitSequence) {
       return Promise.resolve(unclaimed.status);
     }
-    return new Promise<number>((resolve) => {
-      this.exitResolvers.set(pid, resolve);
+    return new Promise<number>((resolve, reject) => {
+      if (this.kernelFatalError !== null) {
+        reject(this.kernelFatalError);
+        return;
+      }
+      this.exitResolvers.set(pid, { resolve, reject });
     });
   }
 
   private request(requestId: number, msg: MainToKernelMessage, transfer?: Transferable[]): Promise<any> {
     return new Promise((resolve, reject) => {
+      if (this.kernelFatalError !== null) {
+        reject(this.kernelFatalError);
+        return;
+      }
       this.pendingRequests.set(requestId, { resolve, reject });
       this.sendToKernel(msg, transfer);
     });
+  }
+
+  private failKernelHost(error: Error): void {
+    if (this.kernelFatalError !== null) return;
+    this.kernelFatalError = error;
+    for (const { reject } of this.pendingRequests.values()) reject(error);
+    this.pendingRequests.clear();
+    for (const { reject } of this.exitResolvers.values()) reject(error);
+    this.exitResolvers.clear();
   }
 
   private emitLazyDownload(event: LazyDownloadEvent): void {
@@ -1176,6 +1217,13 @@ export class BrowserKernel {
         // permanent listener also receives these messages, so account for
         // them explicitly rather than relying on an implicit fall-through.
         break;
+      case "kernel_fatal": {
+        const error = new Error(`Kernel worker failed: ${msg.error}`);
+        this.failKernelHost(error);
+        this.options.onHttpBridgePendingRequests?.(0);
+        this.kernelWorkerHandle.terminate();
+        break;
+      }
       case "response": {
         const pending = this.pendingRequests.get(msg.requestId);
         if (pending) {
@@ -1192,7 +1240,7 @@ export class BrowserKernel {
         const resolver = this.exitResolvers.get(msg.pid);
         if (resolver) {
           this.exitResolvers.delete(msg.pid);
-          resolver(msg.status);
+          resolver.resolve(msg.status);
         } else {
           this.unclaimedExitStatuses.set(msg.pid, {
             status: msg.status,

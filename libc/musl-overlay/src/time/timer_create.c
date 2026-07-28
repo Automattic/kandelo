@@ -8,30 +8,6 @@
 #include "pthread_impl.h"
 #include "atomic.h"
 
-/*
- * Kandelo's timer_create syscall wire is four fixed-width i32 fields on both
- * wasm32 and wasm64. Direct SIGEV_SIGNAL/SIGEV_THREAD_ID delivery currently
- * carries the sival_int representation. SIGEV_THREAD callback values do not
- * cross this wire: the helper copies the full union sigval locally.
- */
-struct ksigevent {
-	int32_t sigev_value;
-	int32_t sigev_signo;
-	int32_t sigev_notify;
-	int32_t sigev_tid;
-};
-
-_Static_assert(sizeof(struct ksigevent) == 16,
-	"kernel sigevent wire must remain four i32 fields");
-_Static_assert(offsetof(struct ksigevent, sigev_value) == 0,
-	"kernel sigevent value offset");
-_Static_assert(offsetof(struct ksigevent, sigev_signo) == 4,
-	"kernel sigevent signo offset");
-_Static_assert(offsetof(struct ksigevent, sigev_notify) == 8,
-	"kernel sigevent notify offset");
-_Static_assert(offsetof(struct ksigevent, sigev_tid) == 12,
-	"kernel sigevent tid offset");
-
 struct start_args {
 	pthread_barrier_t b;
 	struct sigevent *sev;
@@ -98,7 +74,7 @@ int timer_create(
 	pthread_attr_t attr;
 	int r;
 	struct start_args args;
-	struct ksigevent ksev, *ksevp = 0;
+	struct sigevent ksev = {0}, *ksevp = 0;
 	int timerid;
 	sigset_t set;
 
@@ -108,16 +84,17 @@ int timer_create(
 	case SIGEV_THREAD_ID:
 		if (evp) {
 			/*
-			 * The kernel ABI currently carries sival_int. A direct
-			 * SIGEV_SIGNAL/SIGEV_THREAD_ID sival_ptr wider than 32 bits
-			 * remains unsupported and must stay documented as such.
+			 * Pass the native union without selecting a member. The host
+			 * stages the complete caller-native structure, and the kernel
+			 * preserves these raw pointer-width bits through delivery.
 			 */
-			ksev.sigev_value = evp->sigev_value.sival_int;
+			ksev.sigev_value = evp->sigev_value;
 			ksev.sigev_signo = evp->sigev_notify == SIGEV_NONE
 				? 0
 				: evp->sigev_signo;
 			ksev.sigev_notify = evp->sigev_notify;
-			ksev.sigev_tid = evp->sigev_notify == SIGEV_THREAD_ID
+			ksev.sigev_notify_thread_id =
+				evp->sigev_notify == SIGEV_THREAD_ID
 				? evp->sigev_notify_thread_id
 				: 0;
 			ksevp = &ksev;
@@ -161,10 +138,10 @@ int timer_create(
 		 * The callback value stays in the helper's local `val`; the kernel
 		 * notification only wakes the exact helper TID.
 		 */
-		ksev.sigev_value = 0;
+		ksev.sigev_value.sival_ptr = 0;
 		ksev.sigev_signo = SIGTIMER;
 		ksev.sigev_notify = SIGEV_THREAD_ID;
-		ksev.sigev_tid = td->tid;
+		ksev.sigev_notify_thread_id = td->tid;
 
 		if (syscall(SYS_timer_create, clk, &ksev, &timerid) < 0) {
 			timerid = -1;

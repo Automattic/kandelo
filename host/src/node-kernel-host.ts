@@ -12,7 +12,7 @@
  *   const exitCode = await host.spawn(programBytes, ["hello"], { env: [...] });
  *   await host.destroy();
  */
-import { readFileSync, existsSync, statSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { pathToFileURL } from "node:url";
@@ -28,10 +28,12 @@ import type {
 import type { ProcessSnapshot, SyscallTraceEvent } from "./kernel-worker";
 import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 import type { LazyDownloadEvent } from "./vfs/memory-fs";
+import { compiledWorkerEntryIsCurrent } from "./compiled-worker-entry";
 import {
   snapshotClosedLazyAssets,
   type ClosedLazyAsset,
 } from "./vfs/closed-lazy-assets";
+import type { NodeSessionSeedTree } from "./vfs/default-mounts-node";
 
 export type { HttpRequest, HttpResponse };
 
@@ -58,8 +60,22 @@ export interface NodeKernelHostOptions {
   /** Size of the data buffer for syscall data transfer (default: 65536).
    *  Increase for programs that do large pwrite() calls (e.g. InnoDB). */
   dataBufferSize?: number;
-  /** Virtual path → host filesystem path for exec resolution inside the worker */
+  /**
+   * Virtual path → immutable host filesystem generation for exec resolution
+   * inside the worker.
+   */
   execPrograms?: Record<string, string>;
+  /**
+   * Virtual path → exact program bytes for pre-VFS exec resolution.
+   *
+   * Ordinary ArrayBuffer-backed bytes are copied during init and owned by the
+   * worker for its complete lifetime; concurrently mutable SharedArrayBuffer
+   * views are rejected. Use this for mutable build outputs; `execPrograms` is
+   * suitable only when its host path names a generation that remains immutable.
+   */
+  execProgramBytes?: Readonly<
+    Record<string, ArrayBuffer | Uint8Array<ArrayBuffer>>
+  >;
   /** Attach a real-TCP backend in the worker so wasm programs can dial
    *  external hosts via Node `net.Socket`. */
   enableTcpNetwork?: boolean;
@@ -119,6 +135,16 @@ export interface NodeKernelHostOptions {
     /** Virtual group for existing host-backed mount entries. Defaults to root. */
     gid?: number;
   }>;
+  /**
+   * Seed an existing per-boot scratch mount from an absolute, quiescent host
+   * directory.
+   *
+   * Initialization copies each tree before the worker publishes readiness and
+   * never writes changes back. Destinations must be strict descendants of a
+   * declared scratch mount. The source must remain quiescent until init()
+   * resolves.
+   */
+  sessionSeedTrees?: readonly NodeSessionSeedTree[];
 }
 
 export interface SpawnOptions {
@@ -150,7 +176,13 @@ export class NodeKernelHost {
   private workerStarted = false;
   private initialized = false;
   private pendingRequests = new Map<number, { resolve: (val: any) => void; reject: (err: Error) => void }>();
-  private exitResolvers = new Map<number, (status: number) => void>();
+  private exitResolvers = new Map<number, {
+    resolve: (status: number) => void;
+    reject: (error: Error) => void;
+  }>();
+  private kernelFatalError: Error | null = null;
+  private kernelWorkerExitExpected = false;
+  private workerTermination: Promise<number> | null = null;
   private unclaimedExitStatuses = new Map<number, { status: number; sequence: number }>();
   private exitSequence = 0;
   private _nextRequestId = 1;
@@ -163,6 +195,7 @@ export class NodeKernelHost {
 
   /** Initialize the kernel by spawning a dedicated worker_thread */
   async init(kernelWasmBytes?: ArrayBuffer): Promise<void> {
+    if (this.kernelFatalError !== null) throw this.kernelFatalError;
     const wasmBytes = kernelWasmBytes ?? loadKernelWasm();
     const rootfsImage = resolveRootfsImage(this.options.rootfsImage);
     if (this.options.rootfsLazyAssets !== undefined && rootfsImage === null) {
@@ -174,22 +207,49 @@ export class NodeKernelHost {
     if (this.options.rootfsLazyUrlBase === "") {
       throw new Error("rootfsLazyUrlBase must not be empty");
     }
+    const execProgramBytes = snapshotExecProgramBytes(
+      this.options.execProgramBytes,
+    );
+    for (const path of Object.keys(execProgramBytes ?? {})) {
+      if (
+        Object.prototype.hasOwnProperty.call(
+          this.options.execPrograms ?? {},
+          path,
+        )
+      ) {
+        throw new Error(
+          `exec program ${JSON.stringify(path)} has both path and byte sources`,
+        );
+      }
+    }
     const rootfsLazyAssets = this.options.rootfsLazyAssets === undefined
       ? undefined
       : snapshotClosedLazyAssets(this.options.rootfsLazyAssets);
+    const sessionSeedTrees = this.options.sessionSeedTrees?.map(
+      (seed) => ({
+        sourcePath: seed.sourcePath,
+        destinationPath: seed.destinationPath,
+      }),
+    );
+    if (
+      sessionSeedTrees !== undefined
+      && sessionSeedTrees.length > 0
+      && rootfsImage === null
+    ) {
+      throw new Error("sessionSeedTrees requires rootfsImage");
+    }
 
     this.worker = spawnKernelWorkerThread();
     this.workerStarted = true;
+    this.kernelWorkerExitExpected = false;
+    this.workerTermination = null;
 
     this.worker.on("message", (msg: KernelToMainMessage) => {
       this.handleWorkerMessage(msg);
     });
     this.worker.on("error", (err) => {
       const error = err instanceof Error ? err : new Error(String(err));
-      for (const [, { reject }] of this.pendingRequests) {
-        reject(error);
-      }
-      this.pendingRequests.clear();
+      this.failKernelHost(error);
       const diagnostic: HostDiagnostic = {
         pid: 0,
         source: "kernel worker",
@@ -203,6 +263,31 @@ export class NodeKernelHost {
         this.options.onHostDiagnostic?.(diagnostic);
       } catch (callbackError) {
         console.error("[NodeKernelHost] onHostDiagnostic callback failed:", callbackError);
+      }
+    });
+    this.worker.on("exit", (code) => {
+      this.workerStarted = false;
+      this.initialized = false;
+      if (this.kernelWorkerExitExpected || this.kernelFatalError !== null) {
+        return;
+      }
+      const error = new Error(
+        `Kernel worker exited unexpectedly (code ${code})`,
+      );
+      this.failKernelHost(error);
+      const diagnostic: HostDiagnostic = {
+        pid: 0,
+        source: "kernel worker",
+        message: `[NodeKernelHost] ${error.message}`,
+      };
+      console.error(diagnostic.message);
+      try {
+        this.options.onHostDiagnostic?.(diagnostic);
+      } catch (callbackError) {
+        console.error(
+          "[NodeKernelHost] onHostDiagnostic callback failed:",
+          callbackError,
+        );
       }
     });
 
@@ -224,10 +309,21 @@ export class NodeKernelHost {
         };
         const readyHandler = (msg: KernelToMainMessage) => {
           if (msg.type === "ready") {
-            settle(resolve);
+            if (this.kernelFatalError !== null) {
+              settle(() => reject(this.kernelFatalError!));
+            } else {
+              settle(resolve);
+            }
           } else if (msg.type === "init_error") {
             settle(() =>
               reject(new Error(`Kernel worker init failed: ${msg.error}`))
+            );
+          } else if (msg.type === "kernel_fatal") {
+            settle(() =>
+              reject(
+                this.kernelFatalError
+                  ?? new Error(`Kernel worker failed: ${msg.error}`),
+              )
             );
           }
         };
@@ -235,7 +331,12 @@ export class NodeKernelHost {
           settle(() => reject(err));
         };
         const exitHandler = (code: number) => {
-          settle(() => reject(new Error(`kernel worker exited before ready (code ${code})`)));
+          settle(() =>
+            reject(
+              this.kernelFatalError
+                ?? new Error(`kernel worker exited before ready (code ${code})`),
+            )
+          );
         };
         this.worker.on("message", readyHandler);
         this.worker.once("error", errorHandler);
@@ -252,22 +353,27 @@ export class NodeKernelHost {
             useSharedMemory: true,
           },
           execPrograms: this.options.execPrograms,
+          execProgramBytes,
           rootfsImage: rootfsImage ?? undefined,
           rootfsLazyUrlBase: this.options.rootfsLazyUrlBase,
           rootfsLazyAssets,
           extraMounts: this.options.extraMounts,
+          sessionSeedTrees,
           enableTcpNetwork: this.options.enableTcpNetwork,
         };
-        const transfer = (rootfsLazyAssets ?? []).map(
-          (asset) => asset.bytes.buffer as ArrayBuffer,
-        );
+        const transfer = [
+          ...(rootfsLazyAssets ?? []).map(
+            (asset) => asset.bytes.buffer as ArrayBuffer,
+          ),
+          ...new Set(Object.values(execProgramBytes ?? {})),
+        ];
         this.worker.postMessage(initMsg, transfer);
       });
     } catch (error) {
       // WHY: a worker that rejected initialization owns no usable kernel and
       // must not remain alive as a half-initialized hidden resource.
-      await this.worker.terminate().catch(() => {});
-      this.workerStarted = false;
+      this.kernelWorkerExitExpected = true;
+      await this.terminateWorker().catch(() => {});
       throw error;
     }
     this.initialized = true;
@@ -347,8 +453,12 @@ export class NodeKernelHost {
     const exit = unclaimedExitStatus !== undefined &&
       unclaimedExitStatus.sequence > spawnStartedBeforeExitSequence
       ? Promise.resolve(unclaimedExitStatus.status)
-      : new Promise<number>((resolve) => {
-          this.exitResolvers.set(pid, resolve);
+      : new Promise<number>((resolve, reject) => {
+          if (this.kernelFatalError !== null) {
+            reject(this.kernelFatalError);
+            return;
+          }
+          this.exitResolvers.set(pid, { resolve, reject });
         });
 
     this.options.onProcessEvent?.({ kind: "spawn", pid });
@@ -466,6 +576,24 @@ export class NodeKernelHost {
   }
 
   /**
+   * Return the retained capacity of the kernel-owned large-spawn region.
+   * Zero means no spawn has exceeded the ordinary channel-sized scratch.
+   */
+  async getSpawnScratchCapacity(): Promise<number> {
+    const requestId = this._nextRequestId++;
+    const result = await this.request(requestId, {
+      type: "get_spawn_scratch_capacity",
+      requestId,
+    });
+    if (!Number.isSafeInteger(result) || result < 0) {
+      throw new Error(
+        `kernel worker returned an invalid spawn scratch capacity: ${String(result)}`,
+      );
+    }
+    return result;
+  }
+
+  /**
    * Snapshot the kernel's process table — one row per live process. Used
    * by Kandelo's Inspector → Procs tab. Mirrors `BrowserKernel.enumProcs`.
    */
@@ -559,7 +687,7 @@ export class NodeKernelHost {
     });
     const resolver = this.exitResolvers.get(pid);
     this.exitResolvers.delete(pid);
-    if (resolver) resolver(status);
+    resolver?.resolve(status);
   }
 
   /** Subscribe to worker-owned lazy VFS transport progress. */
@@ -615,7 +743,8 @@ export class NodeKernelHost {
   /** Destroy the kernel and release all resources */
   async destroy(): Promise<void> {
     if (!this.workerStarted) return;
-    if (this.initialized) {
+    this.kernelWorkerExitExpected = true;
+    if (this.initialized && this.kernelFatalError === null) {
       const requestId = this._nextRequestId++;
       let timeoutId: ReturnType<typeof setTimeout> | undefined;
       try {
@@ -631,9 +760,7 @@ export class NodeKernelHost {
         if (timeoutId !== undefined) clearTimeout(timeoutId);
       }
     }
-    await this.worker.terminate().catch(() => {});
-    this.workerStarted = false;
-    this.initialized = false;
+    await this.terminateWorker().catch(() => {});
     this.exitResolvers.clear();
     this.pendingRequests.clear();
     this.lazyDownloadListeners.clear();
@@ -642,14 +769,41 @@ export class NodeKernelHost {
   // ── Private ──
 
   private sendToWorker(msg: MainToKernelMessage): void {
+    if (this.kernelFatalError !== null) throw this.kernelFatalError;
     this.worker.postMessage(msg);
   }
 
   private request(requestId: number, msg: MainToKernelMessage): Promise<any> {
     return new Promise((resolve, reject) => {
+      if (this.kernelFatalError !== null) {
+        reject(this.kernelFatalError);
+        return;
+      }
       this.pendingRequests.set(requestId, { resolve, reject });
       this.sendToWorker(msg);
     });
+  }
+
+  private failKernelHost(error: Error): void {
+    if (this.kernelFatalError !== null) return;
+    this.kernelFatalError = error;
+    for (const { reject } of this.pendingRequests.values()) reject(error);
+    this.pendingRequests.clear();
+    for (const { reject } of this.exitResolvers.values()) reject(error);
+    this.exitResolvers.clear();
+    this.unclaimedExitStatuses.clear();
+  }
+
+  private terminateWorker(): Promise<number> {
+    if (this.workerTermination !== null) return this.workerTermination;
+    const worker = this.worker;
+    this.workerTermination = worker.terminate().finally(() => {
+      if (this.worker === worker) {
+        this.workerStarted = false;
+        this.initialized = false;
+      }
+    });
+    return this.workerTermination;
   }
 
   private handleWorkerMessage(msg: KernelToMainMessage): void {
@@ -660,6 +814,16 @@ export class NodeKernelHost {
         // listener also receives init terminal messages, so account for them
         // explicitly rather than relying on implicit fall-through.
         break;
+      case "kernel_fatal": {
+        const error = new Error(`Kernel worker failed: ${msg.error}`);
+        this.failKernelHost(error);
+        // WHY: after a trapped kernel export, Rust may retain an active global
+        // transfer borrow. No later request or process completion is safe to
+        // observe, so stop the poisoned worker after rejecting every waiter.
+        this.kernelWorkerExitExpected = true;
+        void this.terminateWorker().catch(() => {});
+        break;
+      }
       case "response": {
         const pending = this.pendingRequests.get(msg.requestId);
         if (pending) {
@@ -676,7 +840,7 @@ export class NodeKernelHost {
         const resolver = this.exitResolvers.get(msg.pid);
         if (resolver) {
           this.exitResolvers.delete(msg.pid);
-          resolver(msg.status);
+          resolver.resolve(msg.status);
         } else {
           this.unclaimedExitStatuses.set(msg.pid, {
             status: msg.status,
@@ -785,6 +949,36 @@ function loadKernelWasm(): ArrayBuffer {
   return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
 }
 
+function snapshotExecProgramBytes(
+  sources: NodeKernelHostOptions["execProgramBytes"],
+): Record<string, ArrayBuffer> | undefined {
+  if (sources === undefined) return undefined;
+  const snapshots: Record<string, ArrayBuffer> = Object.create(null);
+  const copies = new WeakMap<object, ArrayBuffer>();
+  for (const [path, source] of Object.entries(sources)) {
+    if (
+      !(source instanceof ArrayBuffer)
+      && (!(source instanceof Uint8Array)
+        || !(source.buffer instanceof ArrayBuffer))
+    ) {
+      throw new Error(
+        `exec program ${JSON.stringify(path)} bytes must use an ordinary ArrayBuffer`,
+      );
+    }
+    let snapshot = copies.get(source);
+    if (snapshot === undefined) {
+      const bytes = source instanceof ArrayBuffer
+        ? new Uint8Array(source)
+        : source;
+      snapshot = new ArrayBuffer(bytes.byteLength);
+      new Uint8Array(snapshot).set(bytes);
+      copies.set(source, snapshot);
+    }
+    snapshots[path] = snapshot;
+  }
+  return snapshots;
+}
+
 /**
  * Materialise the rootfs image bytes the worker will mount at `/`.
  * Returns `null` when the caller hasn't opted in; the worker then
@@ -848,10 +1042,10 @@ function spawnKernelWorkerThread(): NodeThreadWorker {
   const distJs = entryTs.replace(/\/src\/([^/]+)\.ts$/, "/dist/$1.js");
 
   // Check for compiled .js version first (much faster startup)
-  if (compiledEntryIsCurrent(entryTs, distJs)) {
+  if (compiledWorkerEntryIsCurrent(entryTs, distJs)) {
     return new NodeThreadWorker(distJs);
   }
-  if (compiledEntryIsCurrent(entryTs, entryJs)) {
+  if (compiledWorkerEntryIsCurrent(entryTs, entryJs)) {
     return new NodeThreadWorker(entryJs);
   }
 
@@ -866,10 +1060,4 @@ function spawnKernelWorkerThread(): NodeThreadWorker {
     `await import('${entryUrl}');`,
   ].join("\n");
   return new NodeThreadWorker(bootstrap, { eval: true });
-}
-
-function compiledEntryIsCurrent(sourcePath: string, compiledPath: string): boolean {
-  if (!existsSync(compiledPath)) return false;
-  if (!existsSync(sourcePath)) return true;
-  return statSync(compiledPath).mtimeMs >= statSync(sourcePath).mtimeMs;
 }

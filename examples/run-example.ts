@@ -19,6 +19,10 @@ import { NodeKernelHost } from "../host/src/node-kernel-host";
 import { tryResolveBinaries } from "../host/src/binary-resolver";
 import { writeAllSync } from "./run-example-output";
 import { isWithinRealDirectory } from "./run-example-paths";
+import {
+    buildRunExampleGuestEnvironment,
+    resolveRunExampleFilesystem,
+} from "./run-example-vfs";
 
 const repoRoot = resolve(dirname(new URL(import.meta.url).pathname), "..");
 
@@ -48,14 +52,18 @@ function parseKernelCredential(name: "KERNEL_UID" | "KERNEL_GID"): number | unde
 interface OptionalBinary {
     readonly relPaths: readonly string[];
     readonly fallback?: string;
+    readonly snapshotResolved?: boolean;
 }
 
 function optionalBinary(...relPaths: string[]): OptionalBinary {
     return { relPaths };
 }
 
-function optionalBinaryWithFallback(fallback: string, ...relPaths: string[]): OptionalBinary {
-    return { relPaths, fallback };
+function snapshotOptionalBinaryWithFallback(
+    fallback: string,
+    ...relPaths: string[]
+): OptionalBinary {
+    return { relPaths, fallback, snapshotResolved: true };
 }
 
 // These declarations describe optional program sources without probing package
@@ -103,7 +111,7 @@ const testfixtureBuild = resolve(
 );
 const testfixtureWasm = existsSync(testfixtureBuild) ? testfixtureBuild : null;
 const mysqltestWasm = optionalBinary("programs/mariadb/mysqltest.wasm");
-const echoWasm = optionalBinaryWithFallback(
+const echoWasm = snapshotOptionalBinaryWithFallback(
     resolve(repoRoot, "examples/echo.wasm"),
     "programs/echo.wasm",
 );
@@ -295,7 +303,12 @@ for (const name of coreutilsNames) {
     builtinProgramSources[`/usr/bin/${name}`] = coreutilsWasm;
 }
 
-function resolveBuiltinPrograms(): Record<string, string | null> {
+interface ResolvedBuiltinPrograms {
+    programs: Record<string, string | null>;
+    snapshotNames: ReadonlySet<string>;
+}
+
+function resolveBuiltinPrograms(): ResolvedBuiltinPrograms {
     const references = Array.from(new Set(
         Object.values(builtinProgramSources).filter(
             (source): source is OptionalBinary =>
@@ -311,25 +324,33 @@ function resolveBuiltinPrograms(): Record<string, string | null> {
     const resolvedByPath = new Map(
         relPaths.map((relPath, index) => [relPath, resolvedPaths[index]]),
     );
-    const resolvedByReference = new Map(
-        references.map((reference) => [
+    const resolvedByReference = new Map(references.map((reference) => {
+        const resolved = reference.relPaths
+            .map((relPath) => resolvedByPath.get(relPath) ?? null)
+            .find((path) => path !== null);
+        return [
             reference,
-            reference.relPaths
-                .map((relPath) => resolvedByPath.get(relPath) ?? null)
-                .find((path) => path !== null) ??
-                reference.fallback ??
-                null,
-        ]),
-    );
+            {
+                path: resolved ?? reference.fallback ?? null,
+                snapshot: reference.snapshotResolved === true
+                    || (resolved === undefined && reference.fallback !== undefined),
+            },
+        ] as const;
+    }));
 
     const programs: Record<string, string | null> = {};
+    const snapshotNames = new Set<string>();
     for (const [name, source] of Object.entries(builtinProgramSources)) {
-        programs[name] =
-            typeof source === "object" && source !== null
-                ? resolvedByReference.get(source) ?? null
-                : source;
+        if (typeof source === "object" && source !== null) {
+            const resolved = resolvedByReference.get(source);
+            programs[name] = resolved?.path ?? null;
+            if (resolved?.snapshot) snapshotNames.add(name);
+        } else {
+            programs[name] = source;
+            if (source !== null) snapshotNames.add(name);
+        }
     }
-    return programs;
+    return { programs, snapshotNames };
 }
 
 function loadBytes(path: string): ArrayBuffer {
@@ -359,11 +380,13 @@ function tryLoadGuestCandidate(candidate: string, kernelCwd: string): ArrayBuffe
 function resolveProgram(
     path: string,
     builtinPrograms: Record<string, string | null>,
+    allowAmbientHostCandidates: boolean,
 ): ArrayBuffer | null {
     const mapped = builtinPrograms[path];
     if (mapped) {
         return loadBytes(mapped);
     }
+    if (!allowAmbientHostCandidates) return null;
     const kernelCwd = resolve(process.env.KERNEL_CWD || process.cwd());
     const candidates = [
         // Resolve relative to kernel CWD (sortix tests exec themselves by relative path)
@@ -380,18 +403,6 @@ function resolveProgram(
     return null;
 }
 
-function guestEnv(): string[] {
-    const kernelPath = process.env.KERNEL_PATH ?? "/usr/local/bin:/usr/bin:/bin";
-    const inherited = Object.entries(process.env)
-        .filter(([k, v]) =>
-            v !== undefined &&
-            k !== "PATH" &&
-            k !== "KANDELO_GUEST_OUTPUT_FILE"
-        )
-        .map(([k, v]) => `${k}=${v}`);
-    return [...inherited, `PATH=${kernelPath}`];
-}
-
 async function main() {
     const name = process.argv[2];
     if (!name) {
@@ -400,7 +411,34 @@ async function main() {
     }
     const uid = parseKernelCredential("KERNEL_UID");
     const gid = parseKernelCredential("KERNEL_GID");
-    const builtinPrograms = resolveBuiltinPrograms();
+    const runnerFilesystem = resolveRunExampleFilesystem(
+        process.env,
+        process.cwd(),
+    );
+    const resolvedBuiltins = resolveBuiltinPrograms();
+    const builtinPrograms = resolvedBuiltins.programs;
+    let isolatedExecPrograms: Record<string, string> | undefined;
+    let isolatedExecProgramBytes: Record<string, ArrayBuffer> | undefined;
+    if (runnerFilesystem.isolated) {
+        const paths: Record<string, string> = {};
+        const bytes: Record<string, ArrayBuffer> = {};
+        const snapshotsByPath = new Map<string, ArrayBuffer>();
+        for (const [programName, programPath] of Object.entries(builtinPrograms)) {
+            if (programPath === null || !existsSync(programPath)) continue;
+            if (resolvedBuiltins.snapshotNames.has(programName)) {
+                let snapshot = snapshotsByPath.get(programPath);
+                if (snapshot === undefined) {
+                    snapshot = loadBytes(programPath);
+                    snapshotsByPath.set(programPath, snapshot);
+                }
+                bytes[programName] = snapshot;
+            } else {
+                paths[programName] = programPath;
+            }
+        }
+        if (Object.keys(paths).length > 0) isolatedExecPrograms = paths;
+        if (Object.keys(bytes).length > 0) isolatedExecProgramBytes = bytes;
+    }
 
     let programPath: string;
     if (name.endsWith(".wasm")) {
@@ -410,6 +448,12 @@ async function main() {
     } else {
         programPath = resolve(`examples/${name}.wasm`);
     }
+    // WHY: an isolated value-copy launch and any exact self-exec alias must
+    // observe one immutable program generation. Read once before worker init;
+    // later source replacement cannot silently change the executable.
+    const initialProgramBytes = runnerFilesystem.guestProgram === undefined
+        ? loadBytes(programPath)
+        : undefined;
 
     // Git system config via environment (Node.js VFS is the host filesystem,
     // so we can't write /etc/gitconfig; use GIT_CONFIG_COUNT instead).
@@ -460,25 +504,65 @@ async function main() {
     try {
         host = new NodeKernelHost({
             maxWorkers: 4,
+            rootfsImage: runnerFilesystem.rootfsImage,
+            sessionSeedTrees: runnerFilesystem.sessionSeedTrees,
+            // WHY: isolated mode must give explicitly resolved guest tools
+            // precedence over same-named lazy rootfs stubs. `execPrograms` is
+            // the worker's narrow, pre-VFS capability; waiting for the
+            // fallback callback would let the stub start transport I/O first.
+            execPrograms: isolatedExecPrograms,
+            // Direct build outputs are not immutable resolver generations.
+            // Snapshot their exact bytes before worker startup so replacement
+            // cannot change a later asynchronous exec.
+            execProgramBytes: isolatedExecProgramBytes,
             onStdout: (_pid, data) => writeGuestOutput(process.stdout, data),
             onStderr: (_pid, data) => writeGuestOutput(process.stderr, data),
-            onResolveExec: (path) => resolveProgram(path, builtinPrograms),
+            onResolveExec: (path) => {
+                if (
+                    initialProgramBytes !== undefined
+                    && path === programPath
+                ) {
+                    return initialProgramBytes.slice(0);
+                }
+                if (runnerFilesystem.isolated) return null;
+                return resolveProgram(
+                    path,
+                    builtinPrograms,
+                    true,
+                );
+            },
         });
 
         await host.init();
 
-        const processArgv = [programPath, ...process.argv.slice(3)];
+        const processArgv = [
+            runnerFilesystem.guestProgram ?? programPath,
+            ...process.argv.slice(3),
+        ];
         const timeoutMs = parseInt(process.env.TIMEOUT || "30000", 10);
-        const exitPromise = host.spawn(loadBytes(programPath), processArgv, {
+        const spawnOptions = {
             env: [
-                ...guestEnv(),
+                ...buildRunExampleGuestEnvironment(
+                    process.env,
+                    runnerFilesystem.guestCwd,
+                    runnerFilesystem.isolated,
+                    process.env.KERNEL_PATH ?? "/usr/local/bin:/usr/bin:/bin",
+                    uid !== undefined && uid !== 0 ? "/home/user" : "/root",
+                ),
                 ...gitEnv,
             ],
-            cwd: process.env.KERNEL_CWD || process.cwd(),
+            cwd: runnerFilesystem.guestCwd,
             uid,
             gid,
             stdin: stdinData,
-        });
+        };
+        const exitPromise = runnerFilesystem.guestProgram === undefined
+            ? host.spawn(initialProgramBytes!, processArgv, spawnOptions)
+            : host.spawnFromVfs(
+                runnerFilesystem.guestProgram,
+                processArgv,
+                spawnOptions,
+            ).then(({ exit }) => exit);
         const timeoutPromise = new Promise<number>((_, reject) => {
             setTimeout(() => reject(new Error("Process timed out")), timeoutMs);
         });

@@ -17,10 +17,18 @@ import {
   CH_ERRNO,
   CH_HEADER_SIZE,
   CH_RETURN,
+  CH_SIG_ALT_SIZE,
+  CH_SIG_ALT_SP,
+  CH_SIG_AREA_SIZE,
   CH_SIG_BASE,
+  CH_SIG_DELIVERY_SIZE,
   CH_SIG_FLAGS,
   CH_SIG_HANDLER,
+  CH_SIGINFO_WORD_1,
+  CH_SIGINFO_WORD_2,
   CH_SIG_OLD_MASK,
+  CH_SIG_SI_CODE,
+  CH_SIG_SI_VALUE,
   CH_SIG_SIGNUM,
   CH_STATUS,
   CH_SYSCALL,
@@ -55,12 +63,42 @@ import {
   PROCESS_MEMORY_THREAD_SLOTS_NONE,
   PROCESS_MEMORY_THREAD_SLOTS_USE_HOST_DEFAULT,
   PROCESS_MEMORY_WASM_PAGE_SIZE,
+  PROCESS_METADATA_KIND_ARGV,
+  PROCESS_METADATA_KIND_ENVIRONMENT,
+  PROCESS_SNAPSHOT_CMDLINE_LEN_OFFSET,
+  PROCESS_SNAPSHOT_COMM_LEN_OFFSET,
+  PROCESS_SNAPSHOT_COUNT_BYTES,
+  PROCESS_SNAPSHOT_COUNT_OFFSET,
+  PROCESS_SNAPSHOT_GID_OFFSET,
+  PROCESS_SNAPSHOT_HEADER_BYTES,
+  PROCESS_SNAPSHOT_PID_OFFSET,
+  PROCESS_SNAPSHOT_PPID_OFFSET,
+  PROCESS_SNAPSHOT_RECORDS_OFFSET,
+  PROCESS_SNAPSHOT_STATE_OFFSET,
+  PROCESS_SNAPSHOT_UID_OFFSET,
+  PROCESS_SNAPSHOT_VSIZE_OFFSET,
+  PROCESS_SIGINFO_CODE_OFFSET,
+  PROCESS_SIGINFO_ERRNO_OFFSET,
+  PROCESS_SIGINFO_SIGNO_OFFSET,
+  PROCESS_SIGINFO_WASM32_PID_OFFSET,
+  PROCESS_SIGINFO_WASM32_SIZE,
+  PROCESS_SIGINFO_WASM32_UID_OFFSET,
+  PROCESS_SIGINFO_WASM32_VALUE_OFFSET,
+  PROCESS_SIGINFO_WASM32_VALUE_SIZE,
+  PROCESS_SIGINFO_WASM64_PID_OFFSET,
+  PROCESS_SIGINFO_WASM64_SIZE,
+  PROCESS_SIGINFO_WASM64_UID_OFFSET,
+  PROCESS_SIGINFO_WASM64_VALUE_OFFSET,
+  PROCESS_SIGINFO_WASM64_VALUE_SIZE,
   STRUCT_SIZE_WASM_DIRENT,
   STRUCT_SIZE_WASM_POLL_FD,
   STRUCT_SIZE_WASM_STAT,
   STRUCT_SIZE_WASM_STATFS,
   STRUCT_SIZE_WASM_TIMESPEC,
   SYSCALL_ARGS,
+  WASM_DIRENT_INO_OFFSET,
+  WASM_DIRENT_NAME_LENGTH_OFFSET,
+  WASM_DIRENT_TYPE_OFFSET,
   WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE,
   WPK_FORK_LINKED_FRAME_FORMAT_MAGIC,
   WPK_FORK_LINKED_FRAME_FORMAT_SECTION,
@@ -84,6 +122,26 @@ interface NamedNumber {
 function fieldOffset(name: string): number {
   const field = snapshot.channel_header.fields.find((f: { name: string }) => f.name === name);
   if (!field) throw new Error(`missing channel_header field ${name}`);
+  return field.offset;
+}
+
+function structFieldOffset(structName: string, fieldName: string): number {
+  const field = snapshot.marshalled_structs[structName].fields.find(
+    (candidate: { name: string }) => candidate.name === fieldName,
+  );
+  if (!field) {
+    throw new Error(`missing ${structName} field ${fieldName}`);
+  }
+  return field.offset;
+}
+
+function processSnapshotFieldOffset(fieldName: string): number {
+  const field = snapshot.process_snapshot_wire.header.fields.find(
+    (candidate: { name: string }) => candidate.name === fieldName,
+  );
+  if (!field) {
+    throw new Error(`missing process snapshot field ${fieldName}`);
+  }
   return field.offset;
 }
 
@@ -166,6 +224,40 @@ describe("generated host ABI bindings", () => {
     expect(CH_TOTAL_SIZE).toBe(snapshot.channel_buffers.min_channel_size);
   });
 
+  it("match the packed process-snapshot wire contract", () => {
+    expect(PROCESS_SNAPSHOT_COUNT_OFFSET)
+      .toBe(snapshot.process_snapshot_wire.count_offset);
+    expect(PROCESS_SNAPSHOT_COUNT_BYTES)
+      .toBe(snapshot.process_snapshot_wire.count_size);
+    expect(PROCESS_SNAPSHOT_RECORDS_OFFSET)
+      .toBe(snapshot.process_snapshot_wire.records_offset);
+    expect(PROCESS_SNAPSHOT_HEADER_BYTES)
+      .toBe(snapshot.process_snapshot_wire.header.size);
+    expect(PROCESS_SNAPSHOT_PID_OFFSET)
+      .toBe(processSnapshotFieldOffset("pid"));
+    expect(PROCESS_SNAPSHOT_PPID_OFFSET)
+      .toBe(processSnapshotFieldOffset("ppid"));
+    expect(PROCESS_SNAPSHOT_UID_OFFSET)
+      .toBe(processSnapshotFieldOffset("uid"));
+    expect(PROCESS_SNAPSHOT_GID_OFFSET)
+      .toBe(processSnapshotFieldOffset("gid"));
+    expect(PROCESS_SNAPSHOT_VSIZE_OFFSET)
+      .toBe(processSnapshotFieldOffset("vsize"));
+    expect(PROCESS_SNAPSHOT_STATE_OFFSET)
+      .toBe(processSnapshotFieldOffset("state"));
+    expect(PROCESS_SNAPSHOT_COMM_LEN_OFFSET)
+      .toBe(processSnapshotFieldOffset("comm_len"));
+    expect(PROCESS_SNAPSHOT_CMDLINE_LEN_OFFSET)
+      .toBe(processSnapshotFieldOffset("cmdline_len"));
+  });
+
+  it("match the atomic process-metadata transaction contract", () => {
+    expect(PROCESS_METADATA_KIND_ARGV)
+      .toBe(snapshot.process_metadata_contract.kind_argv);
+    expect(PROCESS_METADATA_KIND_ENVIRONMENT)
+      .toBe(snapshot.process_metadata_contract.kind_environment);
+  });
+
   it("match status and signal delivery metadata", () => {
     expect(CHANNEL_STATUS.Idle).toBe(statusNumber("Idle"));
     expect(CHANNEL_STATUS.Pending).toBe(statusNumber("Pending"));
@@ -176,7 +268,20 @@ describe("generated host ABI bindings", () => {
     expect(CH_SIG_SIGNUM).toBe(signalOffset("SIG_SIGNUM"));
     expect(CH_SIG_HANDLER).toBe(signalOffset("SIG_HANDLER"));
     expect(CH_SIG_FLAGS).toBe(signalOffset("SIG_FLAGS"));
+    expect(CH_SIG_SI_VALUE).toBe(signalOffset("SIG_SI_VALUE"));
     expect(CH_SIG_OLD_MASK).toBe(signalOffset("SIG_OLD_MASK"));
+    expect(CH_SIG_SI_CODE).toBe(signalOffset("SIG_SI_CODE"));
+    expect(CH_SIGINFO_WORD_1).toBe(signalOffset("SIGINFO_WORD_1"));
+    expect(CH_SIGINFO_WORD_2).toBe(signalOffset("SIGINFO_WORD_2"));
+    expect(CH_SIG_ALT_SP).toBe(signalOffset("SIG_ALT_SP"));
+    expect(CH_SIG_ALT_SIZE).toBe(signalOffset("SIG_ALT_SIZE"));
+    expect(CH_SIG_AREA_SIZE).toBe(snapshot.channel_signal_area.area_size);
+    expect(CH_SIG_DELIVERY_SIZE).toBe(
+      snapshot.channel_signal_area.delivery_size,
+    );
+    expect(
+      CH_SIG_AREA_SIZE - CH_SIG_DELIVERY_SIZE,
+    ).toBe(snapshot.channel_signal_area.reserved_tail_size);
   });
 
   it("match Rust-owned syscall and struct metadata", () => {
@@ -193,11 +298,52 @@ describe("generated host ABI bindings", () => {
 
     expect(STRUCT_SIZE_WASM_STAT).toBe(snapshot.marshalled_structs.WasmStat.size);
     expect(STRUCT_SIZE_WASM_DIRENT).toBe(snapshot.marshalled_structs.WasmDirent.size);
+    expect(WASM_DIRENT_INO_OFFSET).toBe(structFieldOffset("WasmDirent", "d_ino"));
+    expect(WASM_DIRENT_TYPE_OFFSET).toBe(structFieldOffset("WasmDirent", "d_type"));
+    expect(WASM_DIRENT_NAME_LENGTH_OFFSET).toBe(
+      structFieldOffset("WasmDirent", "d_namlen"),
+    );
     expect(STRUCT_SIZE_WASM_TIMESPEC).toBe(snapshot.marshalled_structs.WasmTimespec.size);
     expect(STRUCT_SIZE_WASM_POLL_FD).toBe(snapshot.marshalled_structs.WasmPollFd.size);
     expect(STRUCT_SIZE_WASM_STATFS).toBe(snapshot.marshalled_structs.WasmStatfs.size);
 
     expect(SYSCALL_ARGS).toEqual(snapshot.syscall_arg_descriptors);
+  });
+
+  it("match caller-native siginfo layouts for both pointer widths", () => {
+    const siginfo = snapshot.process_native_layouts.siginfo;
+    expect(PROCESS_SIGINFO_SIGNO_OFFSET).toBe(siginfo.signo_offset);
+    expect(PROCESS_SIGINFO_ERRNO_OFFSET).toBe(siginfo.errno_offset);
+    expect(PROCESS_SIGINFO_CODE_OFFSET).toBe(siginfo.code_offset);
+    expect({
+      size: PROCESS_SIGINFO_WASM32_SIZE,
+      pid_offset: PROCESS_SIGINFO_WASM32_PID_OFFSET,
+      uid_offset: PROCESS_SIGINFO_WASM32_UID_OFFSET,
+      value_offset: PROCESS_SIGINFO_WASM32_VALUE_OFFSET,
+      value_size: PROCESS_SIGINFO_WASM32_VALUE_SIZE,
+    }).toEqual(siginfo.wasm32);
+    expect({
+      size: PROCESS_SIGINFO_WASM64_SIZE,
+      pid_offset: PROCESS_SIGINFO_WASM64_PID_OFFSET,
+      uid_offset: PROCESS_SIGINFO_WASM64_UID_OFFSET,
+      value_offset: PROCESS_SIGINFO_WASM64_VALUE_OFFSET,
+      value_size: PROCESS_SIGINFO_WASM64_VALUE_SIZE,
+    }).toEqual(siginfo.wasm64);
+  });
+
+  it("makes every generated pointer nullability decision explicit", () => {
+    for (const [syscall, descriptors] of Object.entries(SYSCALL_ARGS)) {
+      for (const descriptor of descriptors) {
+        const nullable = descriptor.nullable === true;
+        const required = descriptor.required === true;
+        if (nullable === required) {
+          throw new Error(
+            `syscall ${syscall} arg ${descriptor.argIndex} must be exactly one of nullable or required`,
+          );
+        }
+      }
+    }
+    expect(SYSCALL_ARGS[ABI_SYSCALLS.Prctl]).toBeUndefined();
   });
 
   it("match Rust-owned host adapter manifest metadata", () => {

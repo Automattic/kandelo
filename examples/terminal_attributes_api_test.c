@@ -19,9 +19,12 @@ struct pty_pair {
 enum {
     KANDELO_SYS_TCGETATTR = 70,
     KANDELO_SYS_TCSETATTR = 71,
-    KANDELO_LEGACY_TERMIOS_SIZE = 48,
-    KANDELO_LEGACY_BUFFER_SIZE = 256,
+    KANDELO_TERMIOS_SIZE = 60,
+    KANDELO_CHANNEL_BUFFER_SIZE = KANDELO_TERMIOS_SIZE + 1,
 };
+
+_Static_assert(sizeof(struct termios) == KANDELO_TERMIOS_SIZE,
+               "Kandelo expects musl's 60-byte struct termios");
 
 static void fail(const char *what)
 {
@@ -104,28 +107,29 @@ static void expect_termios(const struct termios *actual,
     check(actual->__c_ospeed == expected->__c_ospeed, what);
 }
 
-static int legacy_tcgetattr(int fd, unsigned char buffer[KANDELO_LEGACY_BUFFER_SIZE])
+static int custom_tcgetattr(int fd,
+                            unsigned char buffer[KANDELO_CHANNEL_BUFFER_SIZE])
 {
-    memset(buffer, 0xa5, KANDELO_LEGACY_BUFFER_SIZE);
+    memset(buffer, 0xa5, KANDELO_CHANNEL_BUFFER_SIZE);
     return (int)syscall(KANDELO_SYS_TCGETATTR, (long)fd,
                         (long)(uintptr_t)buffer, 0L, 0L, 0L, 0L);
 }
 
-static int legacy_tcsetattr(int fd, int action,
-                            unsigned char buffer[KANDELO_LEGACY_BUFFER_SIZE])
+static int custom_tcsetattr(int fd, int action,
+                            unsigned char buffer[KANDELO_CHANNEL_BUFFER_SIZE])
 {
     return (int)syscall(KANDELO_SYS_TCSETATTR, (long)fd, (long)action,
                         (long)(uintptr_t)buffer, 0L, 0L, 0L);
 }
 
-static uint32_t legacy_lflag(const unsigned char *buffer)
+static uint32_t custom_lflag(const unsigned char *buffer)
 {
     uint32_t value;
     memcpy(&value, buffer + 12, sizeof(value));
     return value;
 }
 
-static void legacy_set_lflag(unsigned char *buffer, uint32_t value)
+static void custom_set_lflag(unsigned char *buffer, uint32_t value)
 {
     memcpy(buffer + 12, &value, sizeof(value));
 }
@@ -346,19 +350,21 @@ static void test_standard_termios_roundtrip(struct pty_pair pair)
     }
 }
 
-static void test_legacy_channel(struct pty_pair pair)
+static void test_custom_channel(struct pty_pair pair)
 {
     const int actions[] = { TCSANOW, TCSADRAIN, TCSAFLUSH };
-    unsigned char original[KANDELO_LEGACY_BUFFER_SIZE];
-    unsigned char changed[KANDELO_LEGACY_BUFFER_SIZE];
-    unsigned char observed[KANDELO_LEGACY_BUFFER_SIZE];
+    unsigned char original[KANDELO_CHANNEL_BUFFER_SIZE];
+    unsigned char changed[KANDELO_CHANNEL_BUFFER_SIZE];
+    unsigned char observed[KANDELO_CHANNEL_BUFFER_SIZE];
     size_t action_index;
     size_t endpoint_index;
     size_t i;
 
     reset_pair(pair);
-    if (legacy_tcgetattr(pair.master, original) < 0)
-        fail("legacy tcgetattr roundtrip source");
+    if (custom_tcgetattr(pair.master, original) < 0)
+        fail("custom tcgetattr roundtrip source");
+    check(original[KANDELO_TERMIOS_SIZE] == 0xa5,
+          "custom tcgetattr exact-capacity canary");
     memcpy(changed, original, sizeof(changed));
     {
         const uint32_t flags[] = {
@@ -369,51 +375,58 @@ static void test_legacy_channel(struct pty_pair pair)
         };
         memcpy(changed, flags, sizeof(flags));
     }
-    for (i = 0; i < NCCS; i++) changed[16 + i] = (unsigned char)(0x40 + i);
-    if (legacy_tcsetattr(pair.slave, TCSANOW, changed) < 0)
-        fail("legacy tcsetattr roundtrip");
-    if (legacy_tcgetattr(pair.master, observed) < 0)
-        fail("legacy tcgetattr roundtrip result");
-    check(memcmp(observed, changed, KANDELO_LEGACY_TERMIOS_SIZE) == 0,
-          "legacy 48-byte roundtrip");
-    if (legacy_tcsetattr(pair.master, TCSANOW, original) < 0)
-        fail("restore legacy termios");
+    changed[16] = 7;
+    for (i = 0; i < NCCS; i++) changed[17 + i] = (unsigned char)(0x40 + i);
+    {
+        const uint32_t speeds[] = { B57600, B115200 };
+        memcpy(changed + 52, speeds, sizeof(speeds));
+    }
+    if (custom_tcsetattr(pair.slave, TCSANOW, changed) < 0)
+        fail("custom tcsetattr roundtrip");
+    if (custom_tcgetattr(pair.master, observed) < 0)
+        fail("custom tcgetattr roundtrip result");
+    check(memcmp(observed, changed, KANDELO_TERMIOS_SIZE) == 0,
+          "custom 60-byte roundtrip");
+    check(observed[KANDELO_TERMIOS_SIZE] == 0xa5,
+          "custom tcgetattr capacity+1 canary");
+    if (custom_tcsetattr(pair.master, TCSANOW, original) < 0)
+        fail("restore custom termios");
 
     for (action_index = 0;
          action_index < sizeof(actions) / sizeof(actions[0]); action_index++) {
         int action = actions[action_index];
         reset_pair(pair);
-        write_all(pair.master, "pending", 7, "seed legacy pending input");
-        if (legacy_tcgetattr(pair.slave, changed) < 0)
-            fail("legacy action tcgetattr");
-        legacy_set_lflag(changed, legacy_lflag(changed) & ~ICANON);
-        if (legacy_tcsetattr(pair.slave, action, changed) < 0)
-            fail("legacy action tcsetattr");
+        write_all(pair.master, "pending", 7, "seed custom pending input");
+        if (custom_tcgetattr(pair.slave, changed) < 0)
+            fail("custom action tcgetattr");
+        custom_set_lflag(changed, custom_lflag(changed) & ~ICANON);
+        if (custom_tcsetattr(pair.slave, action, changed) < 0)
+            fail("custom action tcsetattr");
         if (action == TCSAFLUSH)
-            expect_eagain(pair.slave, "legacy TCSAFLUSH input");
+            expect_eagain(pair.slave, "custom TCSAFLUSH input");
         else
-            expect_read(pair.slave, "pending", 7, "legacy preserved input");
+            expect_read(pair.slave, "pending", 7, "custom preserved input");
     }
 
     for (endpoint_index = 0; endpoint_index < 2; endpoint_index++) {
         int terminal = endpoint_index == 0 ? pair.master : pair.slave;
         reset_pair(pair);
-        write_all(pair.master, "legacy", 6, "seed invalid legacy input");
-        if (legacy_tcgetattr(terminal, original) < 0)
-            fail("legacy invalid source");
+        write_all(pair.master, "custom", 6, "seed invalid custom input");
+        if (custom_tcgetattr(terminal, original) < 0)
+            fail("custom invalid source");
         memcpy(changed, original, sizeof(changed));
-        legacy_set_lflag(changed, legacy_lflag(changed) & ~ICANON);
+        custom_set_lflag(changed, custom_lflag(changed) & ~ICANON);
         errno = 0;
-        check(legacy_tcsetattr(terminal, 99, changed) == -1,
-              "invalid legacy tcsetattr result");
-        check(errno == EINVAL, "invalid legacy tcsetattr errno");
-        if (legacy_tcgetattr(terminal, observed) < 0)
-            fail("legacy invalid result");
-        check(memcmp(observed, original, KANDELO_LEGACY_TERMIOS_SIZE) == 0,
-              "invalid legacy tcsetattr attributes");
+        check(custom_tcsetattr(terminal, 99, changed) == -1,
+              "invalid custom tcsetattr result");
+        check(errno == EINVAL, "invalid custom tcsetattr errno");
+        if (custom_tcgetattr(terminal, observed) < 0)
+            fail("custom invalid result");
+        check(memcmp(observed, original, KANDELO_TERMIOS_SIZE) == 0,
+              "invalid custom tcsetattr attributes");
         set_canonical(pair.slave, 0, TCSANOW);
-        expect_read(pair.slave, "legacy", 6,
-                    "invalid legacy tcsetattr preserves input");
+        expect_read(pair.slave, "custom", 6,
+                    "invalid custom tcsetattr preserves input");
     }
 }
 
@@ -427,7 +440,7 @@ static void test_error_shapes(struct pty_pair pair)
 {
     const char *regular_path = "/tmp/terminal-attributes-api-regular";
     struct termios value = attributes(pair.slave);
-    unsigned char legacy[KANDELO_LEGACY_BUFFER_SIZE];
+    unsigned char custom[KANDELO_CHANNEL_BUFFER_SIZE];
     int regular = open(regular_path, O_CREAT | O_TRUNC | O_RDWR, 0600);
     if (regular < 0) fail("open regular error-shape file");
 
@@ -447,17 +460,17 @@ static void test_error_shapes(struct pty_pair pair)
     expect_api_error(tcflush(regular, TCIFLUSH), ENOTTY, "tcflush ENOTTY");
 
     errno = 0;
-    expect_api_error(legacy_tcgetattr(-1, legacy), EBADF,
-                     "legacy tcgetattr EBADF");
+    expect_api_error(custom_tcgetattr(-1, custom), EBADF,
+                     "custom tcgetattr EBADF");
     errno = 0;
-    expect_api_error(legacy_tcsetattr(-1, TCSANOW, legacy), EBADF,
-                     "legacy tcsetattr EBADF");
+    expect_api_error(custom_tcsetattr(-1, TCSANOW, custom), EBADF,
+                     "custom tcsetattr EBADF");
     errno = 0;
-    expect_api_error(legacy_tcgetattr(regular, legacy), ENOTTY,
-                     "legacy tcgetattr ENOTTY");
+    expect_api_error(custom_tcgetattr(regular, custom), ENOTTY,
+                     "custom tcgetattr ENOTTY");
     errno = 0;
-    expect_api_error(legacy_tcsetattr(regular, TCSANOW, legacy), ENOTTY,
-                     "legacy tcsetattr ENOTTY");
+    expect_api_error(custom_tcsetattr(regular, TCSANOW, custom), ENOTTY,
+                     "custom tcsetattr ENOTTY");
 
     if (close(regular) < 0) fail("close regular error-shape file");
     if (unlink(regular_path) < 0) fail("unlink regular error-shape file");
@@ -491,7 +504,7 @@ int main(void)
     test_delimited_and_edited_order(pair);
     test_tcflush_selectors(pair);
     test_invalid_tcsetattr_is_non_mutating(pair);
-    test_legacy_channel(pair);
+    test_custom_channel(pair);
     test_error_shapes(pair);
     test_hangup(&pair);
 

@@ -37,10 +37,11 @@ use crate::terminal::{NCCS, TerminalState, WinSize};
 const FORK_MAGIC: u32 = 0x464F524B; // "FORK"
 #[cfg(test)]
 const EXEC_MAGIC: u32 = 0x45584543; // "EXEC"
-// v13 preserves the terminal's authoritative foreground process group across
-// fork and the test-only serialized exec format instead of reconstructing it
-// as synthetic PID 1.
-const FORK_VERSION: u32 = 13;
+// This header version is also shared by the cfg(test) legacy exec-state
+// fixture. v14 widens that fixture's directed-signal metadata to complete raw
+// `union sigval` bits plus sender credentials. Production fork serialization
+// still clears and omits every pending directed signal.
+const FORK_VERSION: u32 = 14;
 
 // Bounds for deserialization to prevent OOM from malformed buffers.
 const MAX_FDS: u32 = 65536;
@@ -257,8 +258,10 @@ fn write_directed_signal_state(
     w.write_u32(count)?;
     for entry in &state.rt_queue {
         w.write_u32(entry.signum)?;
-        w.write_i32(entry.si_value)?;
+        w.write_u64(entry.si_value_bits)?;
         w.write_i32(entry.si_code)?;
+        w.write_u32(entry.sender_pid)?;
+        w.write_u32(entry.sender_uid)?;
         w.write_i32(entry.timer_id.map(|id| id as i32).unwrap_or(-1))?;
     }
     Ok(())
@@ -280,8 +283,10 @@ fn read_directed_signal_state(r: &mut Reader<'_>) -> Result<PerThreadSignalState
         {
             return Err(Errno::EINVAL);
         }
-        let si_value = r.read_i32()?;
+        let si_value_bits = r.read_u64()?;
         let si_code = r.read_i32()?;
+        let sender_pid = r.read_u32()?;
+        let sender_uid = r.read_u32()?;
         let timer_id = match r.read_i32()? {
             -1 => None,
             id if id >= 0 => Some(id as u32),
@@ -289,8 +294,10 @@ fn read_directed_signal_state(r: &mut Reader<'_>) -> Result<PerThreadSignalState
         };
         state.rt_queue.push_back(RtSigEntry {
             signum,
-            si_value,
+            si_value_bits,
             si_code,
+            sender_pid,
+            sender_uid,
             timer_id,
         });
     }
@@ -564,10 +571,7 @@ const DRI_TAG_RENDER_NODE: u8 = 1;
 const DRI_TAG_CARD: u8 = 2;
 const DRI_TAG_PRIME_BO: u8 = 3;
 
-fn write_dri_fd_state(
-    w: &mut Writer<'_>,
-    dri: &crate::ofd::DriFdState,
-) -> Result<(), Errno> {
+fn write_dri_fd_state(w: &mut Writer<'_>, dri: &crate::ofd::DriFdState) -> Result<(), Errno> {
     w.write_u32(dri.handles.len() as u32)?;
     for (handle, bo_id) in &dri.handles {
         w.write_u32(*handle)?;
@@ -825,7 +829,11 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         .collect();
     let mut inherited_ofd_refs: BTreeMap<usize, u32> = BTreeMap::new();
     for (_, entry) in &fd_entries {
-        *inherited_ofd_refs.entry(entry.ofd_ref.0).or_insert(0) += 1;
+        if proc.ofd_table.get(entry.ofd_ref.0).is_none() {
+            return Err(Errno::EBADF);
+        }
+        let count = inherited_ofd_refs.entry(entry.ofd_ref.0).or_insert(0);
+        *count = count.checked_add(1).ok_or(Errno::EOVERFLOW)?;
     }
     w.write_u32(fd_entries.len() as u32)?;
     for (fd_num, entry) in &fd_entries {
@@ -962,20 +970,36 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
     // ── Socket table (v10) ──
     {
         use crate::socket::{SocketDomain, SocketState, SocketType};
-        if proc.sockets.len() > MAX_SOCKET_SLOTS {
+        let socket_root_count = ofd_entries
+            .iter()
+            .filter(|(_, ofd)| ofd.file_type == FileType::Socket)
+            .count();
+        let mut socket_roots = Vec::new();
+        socket_roots
+            .try_reserve_exact(socket_root_count)
+            .map_err(|_| Errno::ENOMEM)?;
+        for (_, ofd) in &ofd_entries {
+            if ofd.file_type == FileType::Socket {
+                socket_roots.push(SocketTable::index_from_ofd_handle(ofd.host_handle)?);
+            }
+        }
+        let mut inherited_sockets = proc.sockets.clone();
+        inherited_sockets.retain_inherited_roots(&socket_roots)?;
+
+        if inherited_sockets.len() > MAX_SOCKET_SLOTS {
             return Err(Errno::EINVAL);
         }
         // Count actual sockets
         let mut sock_count = 0u32;
-        for idx in 0..proc.sockets.len() {
-            if proc.sockets.get(idx).is_some() {
+        for idx in 0..inherited_sockets.len() {
+            if inherited_sockets.get(idx).is_some() {
                 sock_count += 1;
             }
         }
-        w.write_u32(proc.sockets.len() as u32)?; // total slots (for index preservation)
+        w.write_u32(inherited_sockets.len() as u32)?; // total slots (for index preservation)
         w.write_u32(sock_count)?;
-        for idx in 0..proc.sockets.len() {
-            if let Some(sock) = proc.sockets.get(idx) {
+        for idx in 0..inherited_sockets.len() {
+            if let Some(sock) = inherited_sockets.get(idx) {
                 w.write_u32(idx as u32)?;
                 w.write_u32(match sock.domain {
                     SocketDomain::Unix => 0,
@@ -1522,7 +1546,8 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
     child.rlimits = rlimits;
     child.alarm_deadline_ns = 0;
     child.alarm_interval_ns = 0;
-    child.thread_name = [0u8; 16];
+    child.thread_name =
+        [0u8; wasm_posix_shared::kernel_scratch_wire::PRCTL_NAME_BYTES as usize];
     child.fork_child = true;
     child.sigsuspend_saved_mask = None;
     child.fork_exec_path = fork_exec_path;
@@ -1982,7 +2007,8 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     process.rlimits = rlimits;
     process.alarm_deadline_ns = 0;
     process.alarm_interval_ns = 0;
-    process.thread_name = [0u8; 16];
+    process.thread_name =
+        [0u8; wasm_posix_shared::kernel_scratch_wire::PRCTL_NAME_BYTES as usize];
     process.fork_child = false;
     process.sigsuspend_saved_mask = None;
     process.fork_exec_path = None;
@@ -2010,6 +2036,23 @@ mod tests {
     use super::*;
     use crate::process::Process;
     use crate::signal::SignalHandler;
+
+    fn install_socket_for_fork(
+        proc: &mut Process,
+        socket: crate::socket::SocketInfo,
+    ) -> usize {
+        let socket_index = proc.sockets.alloc(socket);
+        let ofd_index = proc.ofd_table.create(
+            FileType::Socket,
+            wasm_posix_shared::flags::O_RDWR,
+            -((socket_index as i64) + 1),
+            b"/dev/socket".to_vec(),
+        );
+        proc.fd_table
+            .alloc(OpenFileDescRef(ofd_index), 0)
+            .unwrap();
+        socket_index
+    }
 
     #[test]
     fn test_roundtrip_default_process() {
@@ -2071,10 +2114,7 @@ mod tests {
             700,
             b"/dir".to_vec(),
         );
-        parent
-            .fd_table
-            .alloc(OpenFileDescRef(ofd_idx), 0)
-            .unwrap();
+        parent.fd_table.alloc(OpenFileDescRef(ofd_idx), 0).unwrap();
         {
             let ofd = parent.ofd_table.get_mut(ofd_idx).unwrap();
             ofd.offset = 4;
@@ -2101,7 +2141,10 @@ mod tests {
 
         let parent_ofd = parent.ofd_table.get(ofd_idx).unwrap();
         assert_eq!(parent_ofd.dir_host_handle, 701);
-        assert_eq!(parent_ofd.dir_pending_entry.as_ref().unwrap().name, b"pending");
+        assert_eq!(
+            parent_ofd.dir_pending_entry.as_ref().unwrap().name,
+            b"pending"
+        );
     }
 
     #[test]
@@ -2294,7 +2337,8 @@ mod tests {
         let mut proc = Process::new(1);
         proc.main_thread_signals.raise(25);
         proc.main_thread_signals.raise_with_value(32, 101);
-        proc.main_thread_signals.raise_with_value(32, 202);
+        proc.main_thread_signals
+            .raise_with_metadata(32, 0x0123_4567_89ab_cdef, -1, 77, 88);
         proc.main_thread_signals.raise_timer(10, 303, 7);
 
         let serialized = serialize_exec_state_with_growing_buffer(&proc).unwrap();
@@ -2308,10 +2352,10 @@ mod tests {
             restored.main_thread_signals.consume_one(32),
             Some((101, -1))
         );
-        assert_eq!(
-            restored.main_thread_signals.consume_one(32),
-            Some((202, -1))
-        );
+        let full_width = restored.main_thread_signals.consume_one_info(32);
+        assert_eq!(full_width.si_value_bits, 0x0123_4567_89ab_cdef);
+        assert_eq!(full_width.si_code, -1);
+        assert_eq!((full_width.sender_pid, full_width.sender_uid), (77, 88));
         assert_eq!(restored.main_thread_signals.pending, 0);
     }
 
@@ -2319,9 +2363,7 @@ mod tests {
     fn test_exec_rejects_oversized_main_directed_queue() {
         let mut proc = Process::new(1);
         for value in 0..=MAX_DIRECTED_SIGNAL_QUEUE {
-            assert!(proc
-                .main_thread_signals
-                .raise_with_value(32, value as i32));
+            assert!(proc.main_thread_signals.raise_with_value(32, value as u64));
         }
 
         assert_eq!(
@@ -2500,7 +2542,7 @@ mod tests {
                 included_sources: vec![[10, 88, 0, 3], [10, 88, 0, 4]],
             },
         ];
-        let socket_idx = proc.sockets.alloc(socket);
+        let socket_idx = install_socket_for_fork(&mut proc, socket);
 
         let mut buf = vec![0u8; 64 * 1024];
         let written = serialize_fork_state(&proc, &mut buf).unwrap();
@@ -2545,7 +2587,7 @@ mod tests {
         let mut proc = Process::new(1);
         let mut socket = SocketInfo::new(SocketDomain::Inet, SocketType::Dgram, 17);
         socket.bind_device = Some(vec![b'x'; MAX_SOCKET_STRING_LEN + 1]);
-        proc.sockets.alloc(socket);
+        install_socket_for_fork(&mut proc, socket);
         let mut buf = vec![0u8; 64 * 1024];
         assert_eq!(serialize_fork_state(&proc, &mut buf), Err(Errno::EINVAL));
 
@@ -2558,7 +2600,7 @@ mod tests {
             blocked_sources: vec![[127, 0, 0, 2]; MAX_IPV4_MULTICAST_SOURCES + 1],
             included_sources: vec![],
         }];
-        proc.sockets.alloc(socket);
+        install_socket_for_fork(&mut proc, socket);
         assert_eq!(serialize_fork_state(&proc, &mut buf), Err(Errno::EINVAL));
     }
 
@@ -2743,7 +2785,10 @@ mod tests {
         // For fork-from-pthread, the host then retains only the caller slot
         // with `kernel_reserve_host_region_at`.
         assert!(child.memory.reserved_regions().is_empty());
-        assert_eq!(child.memory.reserve_host_region_at(caller, slot_len), caller);
+        assert_eq!(
+            child.memory.reserve_host_region_at(caller, slot_len),
+            caller
+        );
         assert_eq!(child.memory.reserved_regions().len(), 1);
         assert!(child.memory.overlaps_host_reserved_region(caller, slot_len));
 
@@ -2909,9 +2954,12 @@ mod tests {
         handles: &[(u32, crate::dri::BoId)],
     ) -> usize {
         use crate::ofd::{DriFdState, DriOfdState};
-        let ofd_idx =
-            proc.ofd_table
-                .create(crate::ofd::FileType::CharDevice, 0, host_handle, path.to_vec());
+        let ofd_idx = proc.ofd_table.create(
+            crate::ofd::FileType::CharDevice,
+            0,
+            host_handle,
+            path.to_vec(),
+        );
         let mut dri = DriFdState::default();
         for &(h, bo) in handles {
             dri.handles.insert(h, bo);
@@ -3092,12 +3140,13 @@ mod tests {
             crate::ofd::FileType::Regular,
             0,
             -200,
-            alloc::format!("/dev/dri/prime-{bo}-{cookie:x}")
-                .into_bytes(),
+            alloc::format!("/dev/dri/prime-{bo}-{cookie:x}").into_bytes(),
         );
-        proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state = Some(
-            alloc::boxed::Box::new(DriOfdState::PrimeBo(PrimeBoState { bo_id: bo, cookie })),
-        );
+        proc.ofd_table.get_mut(ofd_idx).unwrap().dri_state =
+            Some(alloc::boxed::Box::new(DriOfdState::PrimeBo(PrimeBoState {
+                bo_id: bo,
+                cookie,
+            })));
         proc.fd_table
             .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
             .unwrap();

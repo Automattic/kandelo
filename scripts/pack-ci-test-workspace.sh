@@ -6,6 +6,10 @@ cd "$REPO_ROOT"
 
 PORTABLE_CACHE_REL=".ci-test-binary-cache"
 PUBLICATION_BLOCKERS_REL=".ci-test-publication-blockers.json"
+BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$REPO_ROOT"
+BROWSER_MEMORY64_FIXTURES_MANIFEST="$REPO_ROOT/scripts/browser-memory64-example-fixtures.txt"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/browser-memory64-example-fixtures.sh"
 
 publication_blockers=""
 out=""
@@ -49,21 +53,26 @@ if [ ! -x "$xtask_path" ]; then
     exit 1
 fi
 
-for required in \
-    local-binaries/kernel.wasm \
-    host/wasm/rootfs.vfs \
-    examples/gencat.wasm \
-    examples/pthread_channel_reuse_test.wasm \
-    examples/wait_lifecycle_test.wasm \
-    examples/wait_lifecycle_test.wasm64.wasm \
-    examples/terminal_attributes_api_test.wasm64.wasm \
-    benchmarks/wasm/pipe-throughput.wasm \
-    benchmarks/wasm/file-throughput.wasm \
-    benchmarks/wasm/syscall-latency.wasm \
-    benchmarks/wasm/fork-bench.wasm \
-    benchmarks/wasm/clone-bench.wasm \
-    benchmarks/wasm/spawn-bench.wasm \
-    benchmarks/wasm/hello.wasm; do
+required_items=(
+    local-binaries/kernel.wasm
+    host/wasm/rootfs.vfs
+    examples/gencat.wasm
+    examples/pthread_channel_reuse_test.wasm
+    examples/wait_lifecycle_test.wasm
+    benchmarks/wasm/pipe-throughput.wasm
+    benchmarks/wasm/file-throughput.wasm
+    benchmarks/wasm/syscall-latency.wasm
+    benchmarks/wasm/fork-bench.wasm
+    benchmarks/wasm/clone-bench.wasm
+    benchmarks/wasm/spawn-bench.wasm
+    benchmarks/wasm/hello.wasm
+)
+memory64_example_outputs="$(browser_memory64_fixture_outputs)"
+while IFS= read -r output; do
+    required_items+=("$output")
+done <<< "$memory64_example_outputs"
+
+for required in "${required_items[@]}"; do
     if [ ! -f "$required" ]; then
         echo "pack-ci-test-workspace: missing required artifact: $required" >&2
         exit 1

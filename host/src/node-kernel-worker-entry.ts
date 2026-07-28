@@ -39,9 +39,9 @@ import {
   ensureMountParentDirectories,
   HostFileSystem,
   MemoryFileSystem,
-  resolveForNode,
   readPreparedPlatformFile,
 } from "./vfs";
+import { resolveForNodeKernelSession } from "./vfs/default-mounts-node";
 import type { MountConfig } from "./vfs/types";
 import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
 import { resolveLazyUrl } from "./vfs/lazy-url";
@@ -101,9 +101,11 @@ let workerAdapter: NodeWorkerAdapter;
 let maxPages: number = DEFAULT_MAX_PAGES;
 let defaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS;
 let execPrograms: Record<string, string> = {};
+let execProgramBytes: Record<string, ArrayBuffer> = {};
 let vfsExecIO: PlatformIO | null = null;
 let rootfsMemfs: MemoryFileSystem | null = null;
 let initReady = false;
+let kernelFatalReported = false;
 /** Per-boot scratch directory; cleaned up on `destroy`. Only set when the
  *  worker constructs a `VirtualPlatformIO` from the default mount spec. */
 let sessionDir: string | null = null;
@@ -364,6 +366,52 @@ function reportHostDiagnostic(
   post({ type: "host_diagnostic", ...diagnostic });
 }
 
+function terminatePoisonedKernelWorker(error: Error): void {
+  if (kernelFatalReported) return;
+  kernelFatalReported = true;
+  const detail = error.stack
+    ? `${error.message}\n${error.stack}`
+    : error.message;
+  try {
+    try {
+      reportHostDiagnostic({
+        pid: 0,
+        source: "kernel fatal",
+        message: `[node-kernel-worker] fatal kernel instance failure: ${detail}`,
+      });
+    } catch (reportError) {
+      console.error(
+        "[node-kernel-worker] could not report fatal diagnostic:",
+        reportError,
+      );
+    }
+    try {
+      post({ type: "kernel_fatal", error: detail });
+    } catch (postError) {
+      console.error(
+        "[node-kernel-worker] could not post fatal state:",
+        postError,
+      );
+    }
+  } finally {
+    // WHY: a trapped kernel export can strand Rust's global transfer
+    // reservation in Executing state. Do not call back into that generation;
+    // terminate its process workers directly and stop this worker thread.
+    for (const info of processes.values()) {
+      intentionallyTerminated.add(info.worker as object);
+      void info.worker.terminate().catch(() => {});
+    }
+    for (const threads of threadWorkers.values()) {
+      for (const thread of threads) {
+        intentionallyTerminated.add(thread.worker as object);
+        void thread.worker.terminate().catch(() => {});
+      }
+    }
+    cleanupSessionDir();
+    queueMicrotask(() => process.exit(1));
+  }
+}
+
 function reportWorkerProtocolError(message: string): void {
   reportHostDiagnostic({
     pid: 0,
@@ -455,7 +503,17 @@ function bufferToArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 }
 
 function resolveExecLocal(path: string): ArrayBuffer | null {
-  const mapped = execPrograms[path];
+  const owned = Object.prototype.hasOwnProperty.call(execProgramBytes, path)
+    ? execProgramBytes[path]
+    : undefined;
+  if (owned !== undefined) {
+    // WHY: process-worker launch transfers its program buffer. Preserve the
+    // worker-lifetime snapshot by lending a fresh copy to every execution.
+    return owned.slice(0);
+  }
+  const mapped = Object.prototype.hasOwnProperty.call(execPrograms, path)
+    ? execPrograms[path]
+    : undefined;
   if (mapped && existsSync(mapped)) {
     const bytes = readFileSync(mapped);
     return bufferToArrayBuffer(bytes);
@@ -563,6 +621,7 @@ async function buildVirtualPlatformIO(
     uid?: number;
     gid?: number;
   }>,
+  sessionSeedTrees?: InitMessage["sessionSeedTrees"],
   rootfsLazyUrlBase?: InitMessage["rootfsLazyUrlBase"],
   rootfsLazyAssets?: InitMessage["rootfsLazyAssets"],
 ): Promise<VirtualPlatformIO> {
@@ -570,10 +629,12 @@ async function buildVirtualPlatformIO(
   sessionDir = bootSessionDir;
   let specMounts: MountConfig[];
   try {
-    specMounts = await resolveForNode(
+    specMounts = await resolveForNodeKernelSession(
       DEFAULT_MOUNT_SPEC,
       new Uint8Array(rootfsImage),
       bootSessionDir,
+      sessionSeedTrees,
+      (extraMounts ?? []).map((mount) => mount.mountPoint),
     );
   } catch (error) {
     // WHY: imported-seal rejection occurs before scratch setup, but the Node
@@ -635,7 +696,10 @@ function cleanupSessionDir(): void {
     try {
       rmSync(sessionDir, { recursive: true, force: true });
     } catch {
-      // best-effort: tests should still pass even if cleanup races a hold
+      // WHY: a graceful/fatal worker path must attempt cleanup, but native
+      // handles can transiently retain files and abrupt process termination
+      // cannot run this hook. Never treat this best-effort cleanup as the
+      // ownership proof; private inode creation before ready is that proof.
     }
   }
   sessionDir = null;
@@ -648,12 +712,17 @@ async function handleInit(msg: InitMessage) {
   maxPages = msg.config.maxPages ?? DEFAULT_MAX_PAGES;
   defaultThreadSlots = msg.config.defaultThreadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
   execPrograms = msg.execPrograms ?? {};
+  execProgramBytes = msg.execProgramBytes ?? {};
   workerAdapter = new NodeWorkerAdapter();
+  if (!msg.rootfsImage && (msg.sessionSeedTrees?.length ?? 0) > 0) {
+    throw new Error("sessionSeedTrees requires rootfsImage");
+  }
 
   const io: PlatformIO = msg.rootfsImage
     ? await buildVirtualPlatformIO(
       msg.rootfsImage,
       msg.extraMounts,
+      msg.sessionSeedTrees,
       msg.rootfsLazyUrlBase,
       msg.rootfsLazyAssets,
     )
@@ -673,6 +742,7 @@ async function handleInit(msg: InitMessage) {
     },
     io,
     {
+      onKernelFatal: terminatePoisonedKernelWorker,
       onFork: ({ parentPid, childPid, parentMemory, continuation }) => {
         // Notify the main thread of every kernel-side process event so
         // Inspector-style UIs (Kandelo) can refresh their process table
@@ -996,8 +1066,6 @@ async function handleExec(
 ): Promise<number> {
   const initiatingInfo = processes.get(pid);
   if (!initiatingInfo) return -3; // ESRCH
-  if (!kernelWorker.supportsExecMetadataReplacement()) return -38; // ENOSYS
-
   const resolved = await resolveExecutableForLaunch(path, argv);
   if (!resolved) return -2; // ENOENT
   if ("errno" in resolved) return -resolved.errno;
@@ -1607,7 +1675,7 @@ async function handleDestroy(msg: { requestId: number }) {
   // matching the browser host (which does the same and is likewise a no-op cost
   // on Chrome/V8). Phases mirror browser-kernel-worker-entry.ts handleDestroy.
   let woken = new Set<number>();
-  try { woken = kernelWorker.killAllBlockedForTeardown(); } catch (e) {
+  try { woken = await kernelWorker.killAllBlockedForTeardown(); } catch (e) {
     console.error(`[node-kernel-worker] killAllBlockedForTeardown failed: ${e}`);
   }
   // Drain only for the pids we woke — a process we did not wake (e.g. one
@@ -1809,6 +1877,23 @@ port.on("message", (msg: MainToKernelMessage) => {
           type: "response",
           requestId: msg.requestId,
           result: kernelWorker.getKernelMemoryPages(),
+        });
+      } catch (err) {
+        post({
+          type: "response",
+          requestId: msg.requestId,
+          result: undefined,
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
+      break;
+    }
+    case "get_spawn_scratch_capacity": {
+      try {
+        post({
+          type: "response",
+          requestId: msg.requestId,
+          result: kernelWorker.getSpawnScratchCapacity(),
         });
       } catch (err) {
         post({

@@ -36,6 +36,10 @@ import {
   CH_SYSCALL,
   CH_TOTAL_SIZE,
   HOST_INTERCEPTED_SYSCALLS,
+  POSIX_ARG_MAX_BYTES,
+  PROCESS_METADATA_ENTRY_MAX_BYTES,
+  PROCESS_STARTUP_MAX_ARGV_COUNT,
+  PROCESS_STARTUP_MAX_ENVP_COUNT,
   WPK_FORK_REQUIRED_EXPORTS,
   WPK_FORK_REQUIRED_IMPORTS,
 } from "./generated/abi";
@@ -144,46 +148,145 @@ function continuationMunmap(
  * Both process and thread workers need these because the musl overlay CRT
  * imports kernel.* functions for argc/argv, environ, fork state, and clone.
  *
- * On wasm64, pointer params arrive as BigInt (i64). The helper `n()` converts
- * BigInt|number → number for memory access (all addresses < 4GB).
+ * Startup metadata pointers are checked against their declared process
+ * pointer width before any guest-memory view is created.
  */
 type KernelImports = Record<string, WebAssembly.ExportValue> & {
   kernel_exit: (status: number) => void;
   kernel_fork: (...args: unknown[]) => number;
 };
 
+const STARTUP_E2BIG = 7;
+const STARTUP_EFAULT = 14;
+const STARTUP_EINVAL = 22;
+const STARTUP_ERANGE = 34;
+
+interface EncodedStartupMetadata {
+  argv: readonly Uint8Array[];
+  env: readonly Uint8Array[];
+}
+
+function encodeStartupMetadata(
+  argv: readonly string[],
+  env: readonly string[],
+  ptrWidth: 4 | 8,
+): EncodedStartupMetadata {
+  if (argv.length > PROCESS_STARTUP_MAX_ARGV_COUNT) {
+    throw new RangeError(
+      `startup argv count exceeds ${PROCESS_STARTUP_MAX_ARGV_COUNT}: errno ${STARTUP_E2BIG}`,
+    );
+  }
+  if (env.length > PROCESS_STARTUP_MAX_ENVP_COUNT) {
+    throw new RangeError(
+      `startup environment count exceeds ${PROCESS_STARTUP_MAX_ENVP_COUNT}: errno ${STARTUP_E2BIG}`,
+    );
+  }
+
+  const encoder = new TextEncoder();
+  // The two terminating null pointers count even for empty vectors.
+  let representedBytes = 2 * ptrWidth;
+  const encodeVector = (
+    values: readonly string[],
+    label: string,
+  ): readonly Uint8Array[] => values.map((value, index) => {
+    if (typeof value !== "string") {
+      throw new TypeError(`${label}[${index}] must be a string`);
+    }
+    const encoded = encoder.encode(value);
+    if (encoded.byteLength > PROCESS_METADATA_ENTRY_MAX_BYTES) {
+      throw new RangeError(
+        `${label}[${index}] exceeds the per-entry startup transfer limit: ` +
+          `errno ${STARTUP_E2BIG}`,
+      );
+    }
+    representedBytes += ptrWidth + encoded.byteLength + 1;
+    if (
+      !Number.isSafeInteger(representedBytes)
+      || representedBytes > POSIX_ARG_MAX_BYTES
+    ) {
+      throw new RangeError(
+        `startup argv/environment representation exceeds ARG_MAX: ` +
+          `errno ${STARTUP_E2BIG}`,
+      );
+    }
+    return encoded;
+  });
+
+  // WHY: startup imports can be queried twice (size, then exact copy). Encode
+  // once so no caller mutation or coercion can make the second observation
+  // name different bytes after the guest has allocated its lifetime region.
+  return {
+    argv: encodeVector(argv, "startup argv"),
+    env: encodeVector(env, "startup environment"),
+  };
+}
+
 function buildKernelImports(
   memory: WebAssembly.Memory,
   channelOffset: number,
+  ptrWidth: 4 | 8,
   argv?: string[],
   envVars?: string[],
   onKernelExit?: (status: number) => void,
 ): KernelImports {
-  const _argv = argv || [];
-  const _envVars = envVars || [];
-  const encoder = new TextEncoder();
-  /** Convert wasm64 BigInt pointer to number (safe since addresses < 4GB) */
-  const n = (v: number | bigint): number => typeof v === "bigint" ? Number(v) : v;
+  const metadata = encodeStartupMetadata(argv ?? [], envVars ?? [], ptrWidth);
+  // The legacy clone payload remains a fixed wasm32 pair in CH_DATA.
+  const n = (value: number | bigint): number =>
+    typeof value === "bigint" ? Number(value) : value;
+  const copyEntry = (
+    entries: readonly Uint8Array[],
+    index: number,
+    bufPtr: WasmGuestPointer,
+    bufCapacity: number,
+    label: string,
+  ): number => {
+    if (
+      !Number.isSafeInteger(index)
+      || index < 0
+      || index >= entries.length
+      || !Number.isSafeInteger(bufCapacity)
+      || bufCapacity < 0
+    ) {
+      return -STARTUP_EINVAL;
+    }
+    const encoded = entries[index];
+    if (bufCapacity === 0) {
+      // Zero capacity is a side-effect-free complete-length query. The CRT
+      // follows it with one exact-capacity copy into its mmap-owned region.
+      return encoded.byteLength;
+    }
+    if (bufCapacity < encoded.byteLength) return -STARTUP_ERANGE;
+    if (bufPtr === 0 || bufPtr === 0n) return -STARTUP_EFAULT;
+
+    let range: { offset: number; length: number };
+    try {
+      range = checkedWasmMemoryRange(
+        memory,
+        bufPtr,
+        encoded.byteLength,
+        ptrWidth,
+        label,
+      );
+    } catch {
+      return -STARTUP_EFAULT;
+    }
+    // The encoded source is an immutable launch snapshot, and this direct
+    // import has no await or callback between the range proof and full copy.
+    new Uint8Array(memory.buffer, range.offset, range.length).set(encoded);
+    return encoded.byteLength;
+  };
 
   return {
     // CRT argv support
-    kernel_get_argc: (): number => _argv.length,
+    kernel_get_argc: (): number => metadata.argv.length,
     kernel_argv_read: (index: number, bufPtr: number | bigint, bufMax: number): number => {
-      if (index >= _argv.length) return 0;
-      const encoded = encoder.encode(_argv[index]);
-      const len = Math.min(encoded.length, bufMax);
-      new Uint8Array(memory.buffer, n(bufPtr), len).set(encoded.subarray(0, len));
-      return len;
+      return copyEntry(metadata.argv, index, bufPtr, bufMax, "kernel_argv_read");
     },
 
     // CRT environ support
-    kernel_environ_count: (): number => _envVars.length,
+    kernel_environ_count: (): number => metadata.env.length,
     kernel_environ_get: (index: number, bufPtr: number | bigint, bufMax: number): number => {
-      if (index >= _envVars.length) return -1;
-      const encoded = encoder.encode(_envVars[index]);
-      const len = Math.min(encoded.length, bufMax);
-      new Uint8Array(memory.buffer, n(bufPtr), len).set(encoded.subarray(0, len));
-      return len;
+      return copyEntry(metadata.env, index, bufPtr, bufMax, "kernel_environ_get");
     },
 
     // Fork/exec state — not a fork child.
@@ -269,6 +372,17 @@ function buildKernelImports(
       return result;
     },
   };
+}
+
+/** @internal Exported for focused startup import contract tests. */
+export function buildKernelImportsForTest(
+  memory: WebAssembly.Memory,
+  channelOffset: number,
+  ptrWidth: 4 | 8,
+  argv: string[] = [],
+  env: string[] = [],
+): Record<string, WebAssembly.ExportValue> {
+  return buildKernelImports(memory, channelOffset, ptrWidth, argv, env);
 }
 
 export interface DlopenSupport {
@@ -1044,7 +1158,37 @@ export function buildDlopenImports(
 }
 
 /**
- * Build import object for a Wasm module, stubbing unresolved imports.
+ * Reject process artifacts that request a kernel function outside the exact
+ * channel-mode CRT contract.
+ *
+ * WHY: supplying a zero-returning placeholder makes an obsolete or corrupt
+ * direct-kernel syscall import look like success. It also cannot safely bridge
+ * the process and kernel address spaces. Fail before instantiation so stale
+ * artifacts are rebuilt through the supported channel path.
+ */
+export function assertSupportedKernelFunctionImports(
+  module: WebAssembly.Module,
+  kernelImports: Record<string, WebAssembly.ExportValue>,
+): void {
+  for (const imp of WebAssembly.Module.imports(module)) {
+    if (
+      imp.kind === "function"
+      && imp.module === "kernel"
+      && (
+        !Object.hasOwn(kernelImports, imp.name)
+        || typeof kernelImports[imp.name] !== "function"
+      )
+    ) {
+      throw new Error(
+        `Unsupported kernel import kernel.${imp.name}; `
+          + "rebuild this program with the current Kandelo SDK",
+      );
+    }
+  }
+}
+
+/**
+ * Build the exact import object for a channel-mode Wasm module.
  */
 function buildImportObject(
   module: WebAssembly.Module,
@@ -1064,6 +1208,8 @@ function buildImportObject(
   forkContinuation?: LinkedForkContinuation,
   onContinuationAbort?: () => void,
 ): WebAssembly.Imports {
+  assertSupportedKernelFunctionImports(module, kernelImports);
+
   const envImports: Record<string, WebAssembly.ExportValue> = { memory };
   /** Convert wasm64 BigInt pointer to number (safe since addresses < 4GB) */
   const n = (v: number | bigint): number => typeof v === "bigint" ? Number(v) : v;
@@ -1327,18 +1473,15 @@ function buildImportObject(
     for (let i = 0; i < count; i++) view.setBigUint64(begin + i * 8, arr[i], true);
   };
 
-  // Stub any remaining unresolved function imports
+  // Environment integrations fail at the point of use when the host does not
+  // implement them. Kernel imports were validated above and are never faked.
   for (const imp of WebAssembly.Module.imports(module)) {
     if (imp.kind !== "function") continue;
     if (imp.module === "env") {
-      if (!envImports[imp.name]) {
+      if (!Object.hasOwn(envImports, imp.name)) {
         envImports[imp.name] = (..._args: unknown[]) => {
           throw new Error(`Unimplemented import: env.${imp.name}`);
         };
-      }
-    } else if (imp.module === "kernel") {
-      if (!kernelImports[imp.name]) {
-        kernelImports[imp.name] = (..._args: unknown[]) => 0;
       }
     }
   }
@@ -1628,6 +1771,7 @@ export async function centralizedWorkerMain(
     const kernelImports = buildKernelImports(
       memory,
       channelOffset,
+      ptrWidth,
       initData.argv || [],
       initData.env || [],
       (status) => { kernelExitStatus = status; },
@@ -2710,6 +2854,7 @@ export async function centralizedThreadWorkerMain(
     const kernelImports = buildKernelImports(
       memory,
       channelOffset,
+      ptrWidth,
       undefined,
       undefined,
       (status) => {

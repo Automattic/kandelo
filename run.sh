@@ -31,6 +31,10 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+BROWSER_MEMORY64_FIXTURES_REPO_ROOT="$REPO_ROOT"
+BROWSER_MEMORY64_FIXTURES_MANIFEST="$REPO_ROOT/scripts/browser-memory64-example-fixtures.txt"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/browser-memory64-example-fixtures.sh"
 
 # Activate the worktree-local SDK toolchain (no global npm link required).
 # Build scripts also source this directly; sourcing here makes the tools
@@ -199,15 +203,22 @@ has_resolvable() {
 KERNEL_REQUIRED_EXPORTS=(
     __abi_version
     kernel_alloc_scratch
+    kernel_blocking_retry_release
+    kernel_blocking_retry_token
+    kernel_commit_process_exit
     kernel_create_process
     kernel_create_process_with_stdio
     kernel_dequeue_signal
     kernel_exec_prepare
     kernel_exec_setup_for_thread
     kernel_fork_process
+    kernel_get_cwd
+    kernel_get_dirfd_path
+    kernel_get_fd_path
     kernel_get_parent_pid
     kernel_get_process_exit_signal
     kernel_get_process_state
+    kernel_get_socket_timeout_ms
     kernel_handle_channel
     kernel_has_sa_nocldstop
     kernel_host_adapter_manifest_len
@@ -216,15 +227,39 @@ KERNEL_REQUIRED_EXPORTS=(
     kernel_ipc_shmat_for_task
     kernel_ipc_shmdt_for_process
     kernel_ipc_shmdt_for_task
+    kernel_is_fd_nonblock
     kernel_mark_process_signaled
+    kernel_mq_descriptor_msgsize
+    kernel_msqid_ds_bytes
+    kernel_pick_signal_target_tid
     kernel_pipe_has_readers
     kernel_posix_timer_fire
-    kernel_prepare_write_operation
+    kernel_process_metadata_begin
+    kernel_process_metadata_cancel
+    kernel_process_metadata_commit
+    kernel_process_metadata_stage
     kernel_reap_exited_child
     kernel_remove_process
+    kernel_semctl_array_bytes
+    kernel_semid_ds_bytes
     kernel_set_current_tid
+    kernel_set_cwd
+    kernel_shmid_ds_bytes
     kernel_spawn_process
+    kernel_spawn_reserved_process
+    kernel_spawn_scratch_begin
+    kernel_spawn_scratch_cancel
+    kernel_spawn_scratch_capacity
+    kernel_spawn_scratch_pointer
+    kernel_spawn_scratch_retained_capacity
     kernel_thread_exit
+    kernel_thread_has_deliverable
+    kernel_transfer_channel_execute
+    kernel_transfer_io_execute
+    kernel_transfer_scratch_begin
+    kernel_transfer_scratch_cancel
+    kernel_transfer_scratch_capacity
+    kernel_transfer_scratch_pointer
     kernel_validate_task
     kernel_wait_child_poll
 )
@@ -342,12 +377,20 @@ has_sysroot64() { [ -f "$REPO_ROOT/sysroot64/lib/libc.a" ]; }
 has_sdk()       { command -v wasm32posix-cc &>/dev/null; }
 has_host()      { [ -d "$REPO_ROOT/host/dist" ]; }
 has_rootfs()    { [ -f "$REPO_ROOT/host/wasm/rootfs.vfs" ]; }
+has_browser_memory64_example_fixtures() {
+    local output
+    local outputs
+    outputs="$(browser_memory64_fixture_outputs)" || return 1
+    while IFS= read -r output; do
+        [ -f "$REPO_ROOT/$output" ] || return 1
+    done <<< "$outputs"
+}
 has_programs() {
     has_resolvable programs/fork-exec.wasm &&
     has_resolvable programs/fbtest.wasm &&
     [ -f "$REPO_ROOT/examples/pthread_channel_reuse_test.wasm" ] &&
     [ -f "$REPO_ROOT/examples/wait_lifecycle_test.wasm" ] &&
-    [ -f "$REPO_ROOT/examples/wait_lifecycle_test.wasm64.wasm" ] &&
+    has_browser_memory64_example_fixtures &&
     [ -f "$REPO_ROOT/benchmarks/wasm/pipe-throughput.wasm" ] &&
     [ -f "$REPO_ROOT/benchmarks/wasm/file-throughput.wasm" ] &&
     [ -f "$REPO_ROOT/benchmarks/wasm/syscall-latency.wasm" ] &&

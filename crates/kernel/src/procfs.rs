@@ -25,8 +25,7 @@ pub const PROCFS_BUF_BASE: i64 = 200;
 /// Check if a host_handle is a procfs buffer handle.
 #[inline]
 pub fn is_procfs_buf_handle(h: i64) -> bool {
-    h <= -PROCFS_BUF_BASE
-        && h > -crate::descriptor_backing::SYNTHETIC_REGULAR_HANDLE_BASE
+    h <= -PROCFS_BUF_BASE && h > -crate::descriptor_backing::SYNTHETIC_REGULAR_HANDLE_BASE
 }
 
 /// Decode a procfs buffer index from a host_handle.
@@ -49,25 +48,25 @@ fn procfs_buf_handle(idx: usize) -> i64 {
 /// A parsed procfs path entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcfsEntry {
-    Root,              // /proc
-    Mounts,            // /proc/mounts
-    SelfLink,          // /proc/self (symlink → /proc/<pid>)
-    ThreadSelfLink,    // /proc/thread-self (symlink)
-    PidDir(u32),       // /proc/<pid>
-    PidMounts(u32),    // /proc/<pid>/mounts
-    PidMountinfo(u32), // /proc/<pid>/mountinfo
-    FdDir(u32),        // /proc/<pid>/fd
-    FdLink(u32, i32),  // /proc/<pid>/fd/<N> (symlink)
-    FdInfoDir(u32),    // /proc/<pid>/fdinfo
-    FdInfo(u32, i32),  // /proc/<pid>/fdinfo/<N>
-    Stat(u32),         // /proc/<pid>/stat
-    Status(u32),       // /proc/<pid>/status
-    Cmdline(u32),      // /proc/<pid>/cmdline
-    Environ(u32),      // /proc/<pid>/environ
-    Maps(u32),         // /proc/<pid>/maps
-    Cwd(u32),          // /proc/<pid>/cwd (symlink)
-    Exe(u32),          // /proc/<pid>/exe (symlink)
-    Root_(u32),        // /proc/<pid>/root (symlink)
+    Root,                 // /proc
+    Mounts,               // /proc/mounts
+    SelfLink,             // /proc/self (symlink → /proc/<pid>)
+    ThreadSelfLink,       // /proc/thread-self (symlink)
+    PidDir(u32),          // /proc/<pid>
+    PidMounts(u32),       // /proc/<pid>/mounts
+    PidMountinfo(u32),    // /proc/<pid>/mountinfo
+    FdDir(u32),           // /proc/<pid>/fd
+    FdLink(u32, i32),     // /proc/<pid>/fd/<N> (symlink)
+    FdInfoDir(u32),       // /proc/<pid>/fdinfo
+    FdInfo(u32, i32),     // /proc/<pid>/fdinfo/<N>
+    Stat(u32),            // /proc/<pid>/stat
+    Status(u32),          // /proc/<pid>/status
+    Cmdline(u32),         // /proc/<pid>/cmdline
+    Environ(u32),         // /proc/<pid>/environ
+    Maps(u32),            // /proc/<pid>/maps
+    Cwd(u32),             // /proc/<pid>/cwd (symlink)
+    Exe(u32),             // /proc/<pid>/exe (symlink)
+    Root_(u32),           // /proc/<pid>/root (symlink)
     NetDir(Option<u32>),  // /proc/net or /proc/<pid>/net
     NetTcp(Option<u32>),  // /proc/net/tcp or /proc/<pid>/net/tcp
     NetUnix(Option<u32>), // /proc/net/unix or /proc/<pid>/net/unix
@@ -336,9 +335,7 @@ pub fn generate_status(proc: &Process) -> Vec<u8> {
     let state_str = match proc.state {
         crate::process::ProcessState::Running => "R (running)",
         crate::process::ProcessState::Stopped => "T (stopped)",
-        crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo => {
-            "Z (zombie)"
-        }
+        crate::process::ProcessState::Exited | crate::process::ProcessState::Limbo => "Z (zombie)",
     };
 
     let content = format!(
@@ -673,8 +670,11 @@ pub fn procfs_open(
 /// Generate content for a procfs regular file entry.
 fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<Vec<u8>, Errno> {
     match entry {
-        ProcfsEntry::Stat(pid) | ProcfsEntry::Status(pid) | ProcfsEntry::Cmdline(pid)
-        | ProcfsEntry::Environ(pid) | ProcfsEntry::Maps(pid) => {
+        ProcfsEntry::Stat(pid)
+        | ProcfsEntry::Status(pid)
+        | ProcfsEntry::Cmdline(pid)
+        | ProcfsEntry::Environ(pid)
+        | ProcfsEntry::Maps(pid) => {
             validate_pid(proc, *pid)?;
             if *pid == proc.pid {
                 match entry {
@@ -687,9 +687,13 @@ fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<Vec<u8>, Errn
                 }
             } else {
                 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-                { crate::wasm_api::procfs_generate_for_pid(*pid, entry).ok_or(Errno::ENOENT) }
+                {
+                    crate::wasm_api::procfs_generate_for_pid(*pid, entry).ok_or(Errno::ENOENT)
+                }
                 #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-                { Err(Errno::ENOENT) }
+                {
+                    Err(Errno::ENOENT)
+                }
             }
         }
         ProcfsEntry::FdInfo(pid, fd) => {
@@ -698,9 +702,14 @@ fn generate_content(proc: &Process, entry: &ProcfsEntry) -> Result<Vec<u8>, Errn
                 generate_fdinfo(proc, *fd).ok_or(Errno::ENOENT)
             } else {
                 #[cfg(any(target_arch = "wasm32", target_arch = "wasm64"))]
-                { crate::wasm_api::procfs_generate_for_pid(*pid, entry).ok_or(Errno::ENOENT) }
+                {
+                    crate::wasm_api::procfs_generate_for_pid(*pid, entry).ok_or(Errno::ENOENT)
+                }
                 #[cfg(not(any(target_arch = "wasm32", target_arch = "wasm64")))]
-                { let _ = fd; Err(Errno::ENOENT) }
+                {
+                    let _ = fd;
+                    Err(Errno::ENOENT)
+                }
             }
         }
         ProcfsEntry::Mounts => Ok(MOUNTS_CONTENT.to_vec()),
@@ -1043,7 +1052,11 @@ fn dir_entries(
 /// Get the process name from argv[0] or thread_name.
 fn process_name(proc: &Process) -> &str {
     // Try thread_name first (set by prctl PR_SET_NAME)
-    let name_len = proc.thread_name.iter().position(|&b| b == 0).unwrap_or(16);
+    let name_len = proc
+        .thread_name
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap_or(wasm_posix_shared::kernel_scratch_wire::PRCTL_NAME_BYTES as usize);
     if name_len > 0 {
         if let Ok(s) = core::str::from_utf8(&proc.thread_name[..name_len]) {
             if !s.is_empty() {
@@ -1449,14 +1462,8 @@ mod tests {
         assert!(!exhausted);
 
         let mut suffix_buf = [0u8; 4096];
-        let (suffix_bytes, resumed_end, exhausted) = procfs_getdents64(
-            &proc,
-            b"/proc",
-            &mut suffix_buf,
-            resume_cookie,
-            &pids,
-        )
-        .unwrap();
+        let (suffix_bytes, resumed_end, exhausted) =
+            procfs_getdents64(&proc, b"/proc", &mut suffix_buf, resume_cookie, &pids).unwrap();
         assert!(exhausted);
         assert_eq!(resumed_end, end_cookie);
 
@@ -1478,14 +1485,8 @@ mod tests {
         let last_name = entries.last().unwrap().0.clone();
         let mut exact = vec![0u8; dirent_len(&last_name)];
 
-        let (bytes, cookie, exhausted) = procfs_getdents64(
-            &proc,
-            b"/proc",
-            &mut exact,
-            end_cookie - 1,
-            &pids,
-        )
-        .unwrap();
+        let (bytes, cookie, exhausted) =
+            procfs_getdents64(&proc, b"/proc", &mut exact, end_cookie - 1, &pids).unwrap();
         assert_eq!(bytes, exact.len());
         assert_eq!(cookie, end_cookie);
         assert!(exhausted);

@@ -1,4 +1,10 @@
 import { defineConfig } from "tsup";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { hostBuildFingerprintBanner } from "./src/compiled-worker-entry";
+
+const hostRoot = dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   entry: [
@@ -19,4 +25,7 @@ export default defineConfig({
   clean: true,
   target: "es2022",
   splitting: false,
+  banner: {
+    js: hostBuildFingerprintBanner(hostRoot),
+  },
 });

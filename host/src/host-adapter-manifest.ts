@@ -12,6 +12,43 @@ import {
   HOST_ADAPTER_VERSION,
   HOST_ADAPTER_WORKER_FEATURES,
 } from "./generated/abi";
+import {
+  hasValidatedKernelEntryExport,
+  readValidatedKernelHostAdapterManifestScalar,
+  type KernelHostAdapterManifestScalarExport,
+  validateKernelEntryMemoryOwnership,
+} from "./kernel-entry-gate";
+
+// WHY: kernel initialization crosses host hooks before the manifest is read.
+// Capture every intrinsic that receives the private kernel Memory, its backing
+// buffer, or a view over those bytes before userland can replace globals or
+// configurable prototype accessors.
+const IntrinsicDataView = DataView;
+const IntrinsicNumber = Number;
+const IntrinsicTypeError = TypeError;
+const intrinsicApply = Reflect.apply;
+const intrinsicNumberIsSafeInteger = Number.isSafeInteger;
+const intrinsicObjectEntries = Object.entries;
+const intrinsicObjectSetPrototypeOf = Object.setPrototypeOf;
+const intrinsicArrayPush = Array.prototype.push;
+const intrinsicArrayJoin = Array.prototype.join;
+const intrinsicMemoryBuffer = Object.getOwnPropertyDescriptor(
+  WebAssembly.Memory.prototype,
+  "buffer",
+)!.get!;
+const intrinsicArrayBufferByteLength = Object.getOwnPropertyDescriptor(
+  ArrayBuffer.prototype,
+  "byteLength",
+)!.get!;
+const intrinsicSharedArrayBufferByteLength =
+  typeof SharedArrayBuffer === "undefined"
+    ? null
+    : Object.getOwnPropertyDescriptor(
+      SharedArrayBuffer.prototype,
+      "byteLength",
+    )!.get!;
+const intrinsicDataViewGetUint16 = DataView.prototype.getUint16;
+const intrinsicDataViewGetUint32 = DataView.prototype.getUint32;
 
 export interface HostAdapterManifest {
   magic: number;
@@ -27,7 +64,34 @@ export interface HostAdapterManifest {
   channelMinSize: number;
 }
 
-type ManifestExport = () => number | bigint;
+function wasmMemoryBuffer(memory: WebAssembly.Memory): ArrayBufferLike {
+  return intrinsicApply(
+    intrinsicMemoryBuffer,
+    memory,
+    [],
+  ) as ArrayBufferLike;
+}
+
+function bufferByteLength(buffer: ArrayBufferLike): number {
+  try {
+    return intrinsicApply(
+      intrinsicArrayBufferByteLength,
+      buffer,
+      [],
+    ) as number;
+  } catch {
+    if (intrinsicSharedArrayBufferByteLength !== null) {
+      return intrinsicApply(
+        intrinsicSharedArrayBufferByteLength,
+        buffer,
+        [],
+      ) as number;
+    }
+    throw new IntrinsicTypeError(
+      "kernel Memory has no genuine attached buffer",
+    );
+  }
+}
 
 export function detectHostAdapterWorkerFeatures(): number {
   let features = 0;
@@ -50,21 +114,22 @@ export function readKernelHostAdapterManifest(
   instance: WebAssembly.Instance,
   memory: WebAssembly.Memory,
 ): HostAdapterManifest {
-  const ptrFn = requiredManifestExport(
-    instance,
-    "kernel_host_adapter_manifest_ptr",
-  );
-  const lenFn = requiredManifestExport(
-    instance,
-    "kernel_host_adapter_manifest_len",
-  );
-
+  // WHY: a valid pointer in one kernel generation says nothing about a
+  // different generation's Memory. Authenticate the pair before reading any
+  // bytes so a larger unrelated linear memory cannot satisfy the range check.
+  validateKernelEntryMemoryOwnership(instance, memory);
   const pointer = wasmPointerToNumber(
-    ptrFn(),
+    requiredManifestExportValue(
+      instance,
+      "kernel_host_adapter_manifest_ptr",
+    ),
     "kernel_host_adapter_manifest_ptr",
   );
   const length = wasmPointerToNumber(
-    lenFn(),
+    requiredManifestExportValue(
+      instance,
+      "kernel_host_adapter_manifest_len",
+    ),
     "kernel_host_adapter_manifest_len",
   );
   if (length < HOST_ADAPTER_MANIFEST_SIZE) {
@@ -73,15 +138,17 @@ export function readKernelHostAdapterManifest(
         `(expected at least ${HOST_ADAPTER_MANIFEST_SIZE})`,
     );
   }
-  if (pointer + HOST_ADAPTER_MANIFEST_SIZE > memory.buffer.byteLength) {
+  const buffer = wasmMemoryBuffer(memory);
+  const memoryByteLength = bufferByteLength(buffer);
+  if (pointer > memoryByteLength - HOST_ADAPTER_MANIFEST_SIZE) {
     throw new Error(
       `kernel host adapter manifest is out of bounds: ptr=${pointer} ` +
-        `size=${HOST_ADAPTER_MANIFEST_SIZE} memory=${memory.buffer.byteLength}`,
+        `size=${HOST_ADAPTER_MANIFEST_SIZE} memory=${memoryByteLength}`,
     );
   }
 
-  const view = new DataView(
-    memory.buffer,
+  const view = new IntrinsicDataView(
+    buffer,
     pointer,
     HOST_ADAPTER_MANIFEST_SIZE,
   );
@@ -168,8 +235,13 @@ export function validateKernelHostAdapterManifest(
     CH_TOTAL_SIZE,
   );
 
-  for (const exportName of HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS) {
-    if (typeof instance.exports[exportName] !== "function") {
+  for (
+    let index = 0;
+    index < HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS.length;
+    index++
+  ) {
+    const exportName = HOST_ADAPTER_REQUIRED_KERNEL_EXPORTS[index]!;
+    if (!hasValidatedKernelEntryExport(instance, exportName)) {
       throw new Error(
         `kernel wasm is missing required host adapter export ${exportName}`,
       );
@@ -179,23 +251,27 @@ export function validateKernelHostAdapterManifest(
   return manifest;
 }
 
-function requiredManifestExport(
+function requiredManifestExportValue(
   instance: WebAssembly.Instance,
-  name: string,
-): ManifestExport {
-  const value = instance.exports[name];
-  if (typeof value !== "function") {
+  name: KernelHostAdapterManifestScalarExport,
+): number | bigint {
+  if (!hasValidatedKernelEntryExport(instance, name)) {
     throw new Error(
       `kernel wasm is missing required host adapter export ${name}`,
     );
   }
-  return value as ManifestExport;
+  return readValidatedKernelHostAdapterManifestScalar(
+    instance,
+    name,
+  );
 }
 
 function wasmPointerToNumber(value: number | bigint, exportName: string): number {
-  const numberValue = typeof value === "bigint" ? Number(value) : value;
+  const numberValue = typeof value === "bigint"
+    ? IntrinsicNumber(value)
+    : value;
   if (
-    !Number.isSafeInteger(numberValue) ||
+    !intrinsicNumberIsSafeInteger(numberValue) ||
     numberValue < 0
   ) {
     throw new Error(
@@ -209,14 +285,22 @@ function u16(
   view: DataView,
   field: keyof typeof HOST_ADAPTER_MANIFEST_FIELDS,
 ): number {
-  return view.getUint16(HOST_ADAPTER_MANIFEST_FIELDS[field].offset, true);
+  return intrinsicApply(
+    intrinsicDataViewGetUint16,
+    view,
+    [HOST_ADAPTER_MANIFEST_FIELDS[field].offset, true],
+  ) as number;
 }
 
 function u32(
   view: DataView,
   field: keyof typeof HOST_ADAPTER_MANIFEST_FIELDS,
 ): number {
-  return view.getUint32(HOST_ADAPTER_MANIFEST_FIELDS[field].offset, true);
+  return intrinsicApply(
+    intrinsicDataViewGetUint32,
+    view,
+    [HOST_ADAPTER_MANIFEST_FIELDS[field].offset, true],
+  ) as number;
 }
 
 function assertManifestChannelField(
@@ -233,13 +317,27 @@ function assertManifestChannelField(
 }
 
 function formatFeatureMask(mask: number): string {
-  const names: string[] = [];
+  const names = intrinsicObjectSetPrototypeOf([], null) as string[];
   let knownMask = 0;
-  for (const [name, bit] of Object.entries(HOST_ADAPTER_WORKER_FEATURES)) {
+  const entries = intrinsicObjectEntries(HOST_ADAPTER_WORKER_FEATURES);
+  for (let index = 0; index < entries.length; index++) {
+    const entry = entries[index]!;
+    const name = entry[0];
+    const bit = entry[1];
     knownMask |= bit;
-    if ((mask & bit) !== 0) names.push(name);
+    if ((mask & bit) !== 0) {
+      intrinsicApply(intrinsicArrayPush, names, [name]);
+    }
   }
   const unknown = mask & ~knownMask;
-  if (unknown !== 0) names.push(`unknown(0x${unknown.toString(16)})`);
-  return names.length === 0 ? "none" : names.join(", ");
+  if (unknown !== 0) {
+    intrinsicApply(
+      intrinsicArrayPush,
+      names,
+      [`unknown(0x${unknown.toString(16)})`],
+    );
+  }
+  return names.length === 0
+    ? "none"
+    : intrinsicApply(intrinsicArrayJoin, names, [", "]) as string;
 }

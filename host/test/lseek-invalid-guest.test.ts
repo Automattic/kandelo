@@ -7,10 +7,15 @@ import { NodePlatformIO } from "../src/platform/node";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "../..");
-const program = join(repoRoot, "examples/lseek_invalid_test.wasm");
+const programs = [
+  ["wasm32", join(repoRoot, "examples/lseek_invalid_test.wasm")],
+  ["wasm64", join(repoRoot, "examples/lseek_invalid_test.wasm64.wasm")],
+] as const;
 
-describe.skipIf(!existsSync(program))("invalid lseek guest", () => {
-  it("keeps the host-file offset unchanged", async () => {
+describe("invalid lseek guest", () => {
+  it.each(programs.filter(([, program]) => existsSync(program)))(
+    "%s keeps the host-file offset unchanged",
+    async (_arch, program) => {
     const tempRoot = mkdtempSync(join(tmpdir(), "kandelo-lseek-"));
     try {
       const result = await runCentralizedProgram({
@@ -27,5 +32,6 @@ describe.skipIf(!existsSync(program))("invalid lseek guest", () => {
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }
-  });
+    },
+  );
 });

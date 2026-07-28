@@ -5,15 +5,8 @@
  * number and arguments to a shared-memory channel, notifies the kernel
  * worker, and blocks until the result is ready.
  *
- * The channel layout matches wasm_posix_shared::channel:
- *   Offset  Size  Field
- *   0       4B    status (IDLE=0, PENDING=1, COMPLETE=2, ERROR=3)
- *   4       4B    syscall number
- *   8       48B   arguments (6 x i64)
- *   56      8B    return value (i64)
- *   64      4B    errno (i32)
- *   68      4B    reserved/pad
- *   72      64KB  data transfer buffer
+ * The exact channel status values, layout, and signal-delivery slots come
+ * from wasm_posix_shared through the generated abi_constants.h header.
  *
  * Each thread has its own channel region within the process's shared
  * WebAssembly.Memory. The base address is stored in __channel_base,
@@ -23,7 +16,13 @@
  * User programs compiled with this glue have zero kernel imports.
  */
 
+#include <stddef.h>
 #include <stdint.h>
+#include <fcntl.h>
+#include <signal.h>
+#include <sys/file.h>
+#include <bits/kandelo_channel_scalars.h>
+#include <bits/kandelo_process_layouts.h>
 #include "abi_constants.h"
 
 #ifdef __cplusplus
@@ -72,48 +71,140 @@ int __wasm_posix_thread_slots(void) {
 int *__errno_location(void);
 #define errno (*__errno_location())
 
-/* Channel status values */
-#define CH_IDLE     0
-#define CH_PENDING  1
-#define CH_COMPLETE 2
-#define CH_ERROR    3
+/* Short aliases retain the glue's readable field names without owning values. */
+#define CH_IDLE        WASM_POSIX_CHANNEL_STATUS_IDLE
+#define CH_PENDING     WASM_POSIX_CHANNEL_STATUS_PENDING
+#define CH_STATUS      WASM_POSIX_CHANNEL_STATUS_OFFSET
+#define CH_SYSCALL     WASM_POSIX_CHANNEL_SYSCALL_OFFSET
+#define CH_ARGS        WASM_POSIX_CHANNEL_ARGS_OFFSET
+#define CH_ARG_SIZE    WASM_POSIX_CHANNEL_ARG_SIZE
+#define CH_RETURN      WASM_POSIX_CHANNEL_RETURN_OFFSET
+#define CH_ERRNO       WASM_POSIX_CHANNEL_ERRNO_OFFSET
+#define CH_REQUEST_FLAGS WASM_POSIX_CHANNEL_REQUEST_FLAGS_OFFSET
+#define CH_REQUEST_FLAG_CANCELLATION_POINT \
+    WASM_POSIX_CHANNEL_REQUEST_FLAG_CANCELLATION_POINT
+#define CH_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED \
+    WASM_POSIX_CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED
+#define CH_SIG_SIGNUM  WASM_POSIX_CHANNEL_SIG_SIGNUM_OFFSET
+#define CH_SIG_HANDLER WASM_POSIX_CHANNEL_SIG_HANDLER_OFFSET
+#define CH_SIG_FLAGS   WASM_POSIX_CHANNEL_SIG_FLAGS_OFFSET
+#define CH_SIG_SI_VALUE WASM_POSIX_CHANNEL_SIG_SI_VALUE_OFFSET
+#define CH_SIG_OLD_MASK WASM_POSIX_CHANNEL_SIG_OLD_MASK_OFFSET
+#define CH_SIG_SI_CODE WASM_POSIX_CHANNEL_SIG_SI_CODE_OFFSET
+#define CH_SIGINFO_WORD_1 WASM_POSIX_CHANNEL_SIGINFO_WORD_1_OFFSET
+#define CH_SIGINFO_WORD_2 WASM_POSIX_CHANNEL_SIGINFO_WORD_2_OFFSET
+#define CH_SIG_ALT_SP  WASM_POSIX_CHANNEL_SIG_ALT_SP_OFFSET
+#define CH_SIG_ALT_SIZE WASM_POSIX_CHANNEL_SIG_ALT_SIZE_OFFSET
 
-/* Channel layout offsets */
-#define CH_STATUS   0
-#define CH_SYSCALL  4
-#define CH_ARGS     8
-#define CH_ARG_SIZE 8
-#define CH_RETURN   56
-#define CH_ERRNO    64
-#define CH_DATA     72
-#define CH_DATA_SIZE 65536
+_Static_assert(WASM_POSIX_CHANNEL_ARGS_COUNT == 6u,
+               "channel syscall glue requires six argument slots");
+_Static_assert(WASM_POSIX_CHANNEL_REQUEST_FLAGS_SIZE == sizeof(uint32_t),
+               "channel request flags must remain one u32");
+_Static_assert(
+    WASM_POSIX_CHANNEL_REQUEST_FLAGS_KNOWN_MASK
+        == (WASM_POSIX_CHANNEL_REQUEST_FLAG_CANCELLATION_POINT
+            | WASM_POSIX_CHANNEL_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED),
+    "channel request flag mask drift"
+);
+_Static_assert(WASM_POSIX_CHANNEL_SIG_DELIVERY_SIZE
+                   <= WASM_POSIX_CHANNEL_SIG_AREA_SIZE,
+               "signal delivery wire must fit its reserved channel area");
+_Static_assert(sizeof(uint32_t) == WASM_POSIX_CHANNEL_SIG_WORD_BYTES,
+               "signal delivery word width must match generated ABI");
+_Static_assert(sizeof(uint64_t) == WASM_POSIX_CHANNEL_SIG_SI_VALUE_BYTES,
+               "signal delivery sigval width must match generated ABI");
+_Static_assert(sizeof(uint64_t) == WASM_POSIX_CHANNEL_SIG_OLD_MASK_BYTES,
+               "signal delivery mask width must match generated ABI");
+_Static_assert(sizeof(uint64_t) == WASM_POSIX_CHANNEL_SIG_ALT_SP_BYTES,
+               "signal delivery alt-stack pointer width must match generated ABI");
+_Static_assert(sizeof(uint64_t) == WASM_POSIX_CHANNEL_SIG_ALT_SIZE_BYTES,
+               "signal delivery alt-stack size width must match generated ABI");
 
-/* Signal delivery area — last 48 bytes of data buffer */
-#define CH_SIG_BASE     (CH_DATA + CH_DATA_SIZE - 48)
-#define CH_SIG_SIGNUM   (CH_SIG_BASE)
-#define CH_SIG_HANDLER  (CH_SIG_BASE + 4)
-#define CH_SIG_FLAGS    (CH_SIG_BASE + 8)
-#define CH_SIG_SI_VALUE (CH_SIG_BASE + 12)
-#define CH_SIG_OLD_MASK (CH_SIG_BASE + 16)
-#define CH_SIG_SI_CODE  (CH_SIG_BASE + 24)
-#define CH_SIG_SI_PID   (CH_SIG_BASE + 28)
-#define CH_SIG_SI_UID   (CH_SIG_BASE + 32)
-#define CH_SIG_ALT_SP   (CH_SIG_BASE + 36)
-#define CH_SIG_ALT_SIZE (CH_SIG_BASE + 40)
-
-#define SA_SIGINFO 4
-#define SA_RESTART 0x10000000u
 #define EFAULT 14
 #define EINTR 4
 #define EINVAL 22
-#define SYS_OPEN 1
-#define SYS_OPENAT 69
-#define SYS_SIGACTION 36
-#define SYS_WAIT4 139
-#define SYS_WAITID 288
-#define SYS_SIGPROCMASK 37
-#define SYS_RT_SIGRETURN 208
-#define SIG_SETMASK 2
+#define SYS_SIGACTION __NR_sigaction
+#define SYS_WAIT4 __NR_wait4
+#define SYS_WAITID __NR_waitid
+#define SYS_SIGPROCMASK __NR_sigprocmask
+#define SYS_RT_SIGRETURN __NR_rt_sigreturn
+
+#define KANDELO_FUTEX_WAIT 0
+#define KANDELO_FUTEX_WAIT_BITSET 9
+#define KANDELO_FUTEX_CMD_MASK 0x7f
+
+/*
+ * Classify only operations whose zero-progress interruption may be submitted
+ * again after the caught handler runs.
+ *
+ * WHY: CH_SIG_FLAGS carries the effective action flags for this interruption.
+ * The host clears SA_RESTART in its owned signal record when an exact socket
+ * OFD has SO_RCVTIMEO/SO_SNDTIMEO, so the socket cases below cannot reset a
+ * live deadline. Relative-time readiness calls, signal waits, sleeps, and
+ * SysV IPC are deliberately absent: Linux exposes EINTR for them even when
+ * the action was installed with SA_RESTART.
+ */
+static int kandelo_should_restart_after_handler(
+    long n,
+    long long a1,
+    long long a2,
+    long long a3,
+    long long a4,
+    long long a5,
+    long long a6)
+{
+    (void)a1;
+    (void)a3;
+    (void)a5;
+    (void)a6;
+
+    switch (n) {
+    case __NR_open:
+    case __NR_openat:
+    case __NR_wait4:
+    case __NR_waitid:
+    case __NR_read:
+    case __NR_write:
+    case __NR_pread:
+    case __NR_pwrite:
+    case __NR_readv:
+    case __NR_writev:
+    case __NR_preadv:
+    case __NR_pwritev:
+    case __NR_preadv2:
+    case __NR_pwritev2:
+    case __NR_accept:
+    case __NR_accept4:
+    case __NR_connect:
+    case __NR_send:
+    case __NR_recv:
+    case __NR_sendto:
+    case __NR_recvfrom:
+    case __NR_sendmsg:
+    case __NR_recvmsg:
+    case __NR_mq_timedsend:
+    case __NR_mq_timedreceive:
+        return 1;
+    case __NR_fcntl:
+        /*
+         * musl aliases the feature-gated F_SETLKW64 spelling to this same
+         * target command. Classify the canonical value so ordinary builds
+         * do not depend on _LARGEFILE64_SOURCE exposing the alias.
+         */
+        return a2 == F_SETLKW
+            || a2 == F_OFD_SETLKW;
+    case __NR_flock:
+        return (a2 & LOCK_NB) == 0;
+    case __NR_futex: {
+        const long long command = a2 & KANDELO_FUTEX_CMD_MASK;
+        return a4 == 0
+            && (command == KANDELO_FUTEX_WAIT
+                || command == KANDELO_FUTEX_WAIT_BITSET);
+    }
+    default:
+        return 0;
+    }
+}
 
 /* The kernel ABI deliberately keeps sigaction's transport record fixed at
  * 16 bytes: u32 table index, u32 flags, u64 mask.  musl's internal
@@ -127,6 +218,55 @@ struct kandelo_sigaction_wire {
 
 _Static_assert(sizeof(struct kandelo_sigaction_wire) == 16,
                "sigaction wire record must stay 16 bytes");
+
+#if __SIZEOF_POINTER__ == 8
+#define KANDELO_NATIVE_SIGINFO_SIZE KANDELO_PROCESS_SIGINFO_WASM64_SIZE
+#define KANDELO_NATIVE_SIGINFO_PID_OFFSET \
+    KANDELO_PROCESS_SIGINFO_WASM64_PID_OFFSET
+#define KANDELO_NATIVE_SIGINFO_UID_OFFSET \
+    KANDELO_PROCESS_SIGINFO_WASM64_UID_OFFSET
+#define KANDELO_NATIVE_SIGINFO_VALUE_OFFSET \
+    KANDELO_PROCESS_SIGINFO_WASM64_VALUE_OFFSET
+#define KANDELO_NATIVE_SIGINFO_VALUE_SIZE \
+    KANDELO_PROCESS_SIGINFO_WASM64_VALUE_SIZE
+#else
+#define KANDELO_NATIVE_SIGINFO_SIZE KANDELO_PROCESS_SIGINFO_WASM32_SIZE
+#define KANDELO_NATIVE_SIGINFO_PID_OFFSET \
+    KANDELO_PROCESS_SIGINFO_WASM32_PID_OFFSET
+#define KANDELO_NATIVE_SIGINFO_UID_OFFSET \
+    KANDELO_PROCESS_SIGINFO_WASM32_UID_OFFSET
+#define KANDELO_NATIVE_SIGINFO_VALUE_OFFSET \
+    KANDELO_PROCESS_SIGINFO_WASM32_VALUE_OFFSET
+#define KANDELO_NATIVE_SIGINFO_VALUE_SIZE \
+    KANDELO_PROCESS_SIGINFO_WASM32_VALUE_SIZE
+#endif
+
+_Static_assert(sizeof(siginfo_t) == KANDELO_NATIVE_SIGINFO_SIZE,
+               "generated siginfo_t size must match musl");
+_Static_assert(offsetof(siginfo_t, si_signo)
+                   == KANDELO_PROCESS_SIGINFO_SIGNO_OFFSET,
+               "generated siginfo_t signo offset must match musl");
+_Static_assert(offsetof(siginfo_t, si_errno)
+                   == KANDELO_PROCESS_SIGINFO_ERRNO_OFFSET,
+               "generated siginfo_t errno offset must match musl");
+_Static_assert(offsetof(siginfo_t, si_code)
+                   == KANDELO_PROCESS_SIGINFO_CODE_OFFSET,
+               "generated siginfo_t code offset must match musl");
+_Static_assert(offsetof(siginfo_t, si_pid) == KANDELO_NATIVE_SIGINFO_PID_OFFSET,
+               "generated siginfo_t pid offset must match musl");
+_Static_assert(offsetof(siginfo_t, si_uid) == KANDELO_NATIVE_SIGINFO_UID_OFFSET,
+               "generated siginfo_t uid offset must match musl");
+_Static_assert(offsetof(siginfo_t, si_value)
+                   == KANDELO_NATIVE_SIGINFO_VALUE_OFFSET,
+               "generated siginfo_t value offset must match musl");
+_Static_assert(sizeof(union sigval) == KANDELO_NATIVE_SIGINFO_VALUE_SIZE,
+               "generated siginfo_t value width must match musl");
+_Static_assert(offsetof(siginfo_t, si_timerid)
+                   == KANDELO_NATIVE_SIGINFO_PID_OFFSET,
+               "generated siginfo_t timer ID offset must match musl");
+_Static_assert(offsetof(siginfo_t, si_overrun)
+                   == KANDELO_NATIVE_SIGINFO_UID_OFFSET,
+               "generated siginfo_t timer overrun offset must match musl");
 
 /* Per-thread channel base address.
  *
@@ -174,7 +314,6 @@ uintptr_t __get_channel_base_addr(void) {
  * in browser web workers. */
 #define SYS_FORK  212
 #define SYS_VFORK 213
-#define SYS_SPAWN 500  /* non-forking posix_spawn — see docs/plans/2026-05-04-non-forking-posix-spawn-design.md */
 
 __attribute__((import_module("kernel"), import_name("kernel_fork")))
 int32_t kernel_fork(void);
@@ -236,7 +375,7 @@ int vfork(void)
 static long __do_syscall(long n, long long a1, long long a2, long long a3,
                          long long a4, long long a5, long long a6);
 extern long __syscall_cp_check(long r);
-extern int __syscall_cp_cancel_pending_disabled(void);
+extern int __syscall_cp_cancel_wake_allowed(void);
 
 static uint32_t __deliver_pending_signal(uintptr_t base, int *delivered)
 {
@@ -277,25 +416,43 @@ static uint32_t __deliver_pending_signal(uintptr_t base, int *delivered)
      * host terminate() can reclaim its thread + memory. Without this, each image
      * switch leaks a machine's worth of un-killable worker threads and Safari
      * OOMs. */
-    if (signum == 9 /* SIGKILL */) {
+    if (signum == SIGKILL) {
         extern _Noreturn void kernel_exit(int32_t status)
             __attribute__((import_module("kernel"), import_name("kernel_exit")));
-        kernel_exit(128 + 9);
+        kernel_exit(128 + SIGKILL);
     }
 
     uint32_t handler = *sig_handler_ptr;
     uint32_t flags   = *sig_flags_ptr;
 
-    /* Read saved old blocked mask (8 bytes at CH_SIG_OLD_MASK) */
+    /* Read the saved old blocked mask from its generated channel slot. */
     uint64_t old_mask;
-    __builtin_memcpy(&old_mask, (void *)(uintptr_t)(base + CH_SIG_OLD_MASK), 8);
+    __builtin_memcpy(&old_mask,
+                     (void *)(uintptr_t)(base + CH_SIG_OLD_MASK),
+                     sizeof(old_mask));
 
     /* Read alt stack info — non-zero alt_sp means we need to switch
      * the wasm shadow stack (__stack_pointer) to the alt stack buffer
      * before calling the handler.  This makes &local_var land inside
      * the alt stack range, matching real sigaltstack behavior. */
-    uint32_t alt_sp   = *(uint32_t *)(uintptr_t)(base + CH_SIG_ALT_SP);
-    uint32_t alt_size = *(uint32_t *)(uintptr_t)(base + CH_SIG_ALT_SIZE);
+    uint64_t alt_sp_wire;
+    uint64_t alt_size_wire;
+    __builtin_memcpy(&alt_sp_wire,
+                     (void *)(uintptr_t)(base + CH_SIG_ALT_SP),
+                     sizeof(alt_sp_wire));
+    __builtin_memcpy(&alt_size_wire,
+                     (void *)(uintptr_t)(base + CH_SIG_ALT_SIZE),
+                     sizeof(alt_size_wire));
+    if (alt_sp_wire > UINTPTR_MAX ||
+        alt_size_wire > SIZE_MAX ||
+        alt_sp_wire > UINTPTR_MAX - alt_size_wire) {
+        /* The kernel validates this range before storing sigaltstack state.
+         * Reaching this branch means the shared ABI was violated; trapping is
+         * safer than wrapping the process shadow-stack pointer. */
+        __builtin_trap();
+    }
+    uintptr_t alt_sp = (uintptr_t)alt_sp_wire;
+    size_t alt_size = (size_t)alt_size_wire;
 
     /* Clear signal delivery area before calling handler */
     *sig_signum_ptr = 0;
@@ -317,25 +474,40 @@ static uint32_t __deliver_pending_signal(uintptr_t base, int *delivered)
      * handler_index to a function pointer and calling it uses
      * call_indirect, which looks up the indirect function table. */
     if (flags & SA_SIGINFO) {
-        /* Build a minimal siginfo_t on the stack for SA_SIGINFO handlers */
-        int32_t si_value_int = *(int32_t *)(uintptr_t)(base + CH_SIG_SI_VALUE);
-        int32_t si_code  = *(int32_t *)(uintptr_t)(base + CH_SIG_SI_CODE);
-        int32_t si_pid   = *(int32_t *)(uintptr_t)(base + CH_SIG_SI_PID);
-        int32_t si_uid   = *(int32_t *)(uintptr_t)(base + CH_SIG_SI_UID);
-        /* siginfo_t's payload union aligns to long: offset 12 on wasm32 and
-         * 16 on wasm64. pid/uid occupy its first pair and si_value/si_status
-         * occupies the following union member. */
-        const uint32_t fields_offset = __SIZEOF_POINTER__ == 8 ? 16 : 12;
-        char siginfo_buf[128];
-        __builtin_memset(siginfo_buf, 0, sizeof(siginfo_buf));
-        *(int *)(siginfo_buf + 0) = (int)signum;       /* si_signo */
-        *(int *)(siginfo_buf + 8) = si_code;            /* si_code */
-        *(int *)(siginfo_buf + fields_offset) = si_pid; /* si_pid */
-        *(int *)(siginfo_buf + fields_offset + 4) = si_uid; /* si_uid */
-        *(int *)(siginfo_buf + fields_offset + 8) = si_value_int;
-        void (*sa)(int, void *, void *) =
-            (void (*)(int, void *, void *))(uintptr_t)handler;
-        sa((int)signum, (void *)siginfo_buf, (void *)0);
+        /* Build the native musl type so its compiler-owned alignment and
+         * effective type cannot drift from the generated layout assertions. */
+        uint64_t si_value_bits;
+        __builtin_memcpy(&si_value_bits,
+                         (void *)(uintptr_t)(base + CH_SIG_SI_VALUE),
+                         sizeof(si_value_bits));
+        int32_t si_code =
+            *(int32_t *)(uintptr_t)(base + CH_SIG_SI_CODE);
+        int32_t siginfo_word_1 =
+            *(int32_t *)(uintptr_t)(base + CH_SIGINFO_WORD_1);
+        int32_t siginfo_word_2 =
+            *(int32_t *)(uintptr_t)(base + CH_SIGINFO_WORD_2);
+        siginfo_t info;
+        __builtin_memset(&info, 0, sizeof(info));
+        info.si_signo = (int)signum;
+        info.si_code = si_code;
+        if (si_code == SI_TIMER) {
+            info.si_timerid = siginfo_word_1;
+            info.si_overrun = siginfo_word_2;
+        } else {
+            info.si_pid = (pid_t)siginfo_word_1;
+            info.si_uid = (uid_t)(uint32_t)siginfo_word_2;
+        }
+        /*
+         * WHY: union sigval is pointer-width native data. Copying its raw
+         * bytes preserves both sival_int's low 32 bits and a wasm64
+         * sival_ptr without selecting the wrong union member. In a mixed
+         * wasm32/wasm64 machine, copying the native union width deliberately
+         * gives a wasm32 recipient the low 32 bits.
+         */
+        __builtin_memcpy(&info.si_value, &si_value_bits, sizeof(info.si_value));
+        void (*sa)(int, siginfo_t *, void *) =
+            (void (*)(int, siginfo_t *, void *))(uintptr_t)handler;
+        sa((int)signum, &info, (void *)0);
     } else {
         void (*sa)(int) = (void (*)(int))(uintptr_t)handler;
         sa((int)signum);
@@ -458,6 +630,24 @@ restart_wait_syscall:
     *(int64_t *)(uintptr_t)(base + CH_ARGS + 3 * CH_ARG_SIZE) = (int64_t)a4;
     *(int64_t *)(uintptr_t)(base + CH_ARGS + 4 * CH_ARG_SIZE) = (int64_t)a5;
     *(int64_t *)(uintptr_t)(base + CH_ARGS + 5 * CH_ARG_SIZE) = (int64_t)a6;
+    /* WHY: syscall number alone cannot distinguish a public cancellation
+     * point from an internal plain syscall using the same number (for example
+     * waitpid and wait4). Publish the call-site identity before the
+     * release-ordered PENDING store. The host consumes and clears it with this
+     * request, so mailbox reuse cannot inherit cancellation authority. */
+    uint32_t request_flags = 0u;
+    if (cancellation_point) {
+        request_flags |= CH_REQUEST_FLAG_CANCELLATION_POINT;
+        /*
+         * WHY: the host cannot inspect musl's private pthread state. Freeze
+         * whether this exact cancellation point may be woken before PENDING
+         * is published. A disabled target keeps the operation and any finite
+         * deadline intact while pthread_cancel remains pending.
+         */
+        if (__syscall_cp_cancel_wake_allowed())
+            request_flags |= CH_REQUEST_FLAG_CANCELLATION_WAKE_ALLOWED;
+    }
+    *(uint32_t *)(uintptr_t)(base + CH_REQUEST_FLAGS) = request_flags;
 
     /* Set status to PENDING and wake the kernel worker.
      * Use inline asm to read __channel_base directly from the wasm global,
@@ -535,16 +725,13 @@ restart_wait_syscall:
         &delivered_signal
     );
 
-    /* wait4()/waitid() and blocking FIFO open/openat are host-deferred, so a
-     * caught signal completes the channel with EINTR in order to run its handler.
-     * SA_RESTART makes that interruption transparent: after the handler and
-     * mask restoration finish, submit the same operation again. Keep the
-     * retry list deliberately narrow; several other EINTR-returning calls have
-     * timeout/cancellation rules that forbid this generic treatment. */
+    /* A host-deferred blocking operation completes the channel with EINTR so
+     * the caught handler runs at the real interruption boundary. SA_RESTART
+     * resubmits only the explicitly classified zero-progress operations after
+     * handler mask restoration and cancellation preflight. */
     if (err == EINTR && delivered_signal &&
         (delivered_flags & SA_RESTART) != 0 &&
-        (n == SYS_WAIT4 || n == SYS_WAITID ||
-         n == SYS_OPEN || n == SYS_OPENAT)) {
+        kandelo_should_restart_after_handler(n, a1, a2, a3, a4, a5, a6)) {
         /* __syscall_cp's outer cancellation check has not run yet. A signal
          * handler may have enabled a cancellation that was already pending,
          * or the host may have used this EINTR completion to wake a canceled
@@ -556,19 +743,6 @@ restart_wait_syscall:
             if (checked != -(long)EINTR)
                 return checked;
         }
-        goto restart_wait_syscall;
-    }
-
-    /* pthread_cancel wakes a host-deferred FIFO open with EINTR so an enabled
-     * target can unwind through __syscall_cp_check. If cancellation is
-     * disabled, POSIX requires the request to remain pending while open keeps
-     * blocking. The host has already released the exact FIFO reservation, so
-     * resubmit the operation to establish a fresh waiter. A separate
-     * delivered_signal bit is essential here: sigaction flags may legitimately
-     * be zero, and a real non-SA_RESTART handler must leave EINTR observable. */
-    if (err == EINTR && cancellation_point && !delivered_signal &&
-        (n == SYS_OPEN || n == SYS_OPENAT) &&
-        __syscall_cp_cancel_pending_disabled()) {
         goto restart_wait_syscall;
     }
 
@@ -633,12 +807,13 @@ long __syscall6(long n, long long a1, long long a2, long long a3, long long a4, 
  * handler can interrupt and re-direct to __cp_cancel.  Wasm has no
  * equivalent, so we implement deferred cancellation on the guest side:
  * libc/musl-overlay/src/thread/wasm32posix/pthread_cancel.c provides
- * __testcancel (pthread_exit path) and __syscall_cp_check (the
+ * __syscall_cp_cancel_preflight and __syscall_cp_check (the
  * one-function moral equivalent of stock __syscall_cp_asm +
  * __syscall_cp_c).  We invoke them here around the blocking dispatch.
  *
- * - Pre-dispatch:  __testcancel() — if cancellation is pending and
- *   enabled, pthread_exit(PTHREAD_CANCELED) before we block.
+ * - Pre-dispatch: enabled cancellation exits before dispatch; MASKED
+ *   cancellation returns ECANCELED so condition waits can relock first;
+ *   DISABLE leaves the operation live.
  * - Post-dispatch: __syscall_cp_check(r) — if cancellation arrived
  *   while we were blocked (host woke us with -EINTR on cancel), this
  *   either calls pthread_exit (ENABLE state) or synthesizes
@@ -652,12 +827,13 @@ long __syscall6(long n, long long a1, long long a2, long long a3, long long a4, 
  * Async cancellation of a pure-CPU loop is not supported: there is no
  * wasm facility to preempt a running thread mid-computation.
  */
-extern void __testcancel(void);
+extern long __syscall_cp_cancel_preflight(void);
 
 long __syscall_cp(long n, long long a1, long long a2, long long a3,
                   long long a4, long long a5, long long a6)
 {
-    __testcancel();
+    long pending = __syscall_cp_cancel_preflight();
+    if (pending) return pending;
     long r = __do_syscall_impl(n, a1, a2, a3, a4, a5, a6, 1);
     return __syscall_cp_check(r);
 }

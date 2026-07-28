@@ -30,6 +30,15 @@ if [ ! -d "$OVERLAY_DIR/include" ]; then
     exit 0
 fi
 
+# WHY: `run.sh` invokes this incrementally, so copying alone would retain a
+# generated header after its authoritative overlay is renamed or removed.
+# Mirror only Kandelo's reserved bits-header namespace; unrelated musl and
+# third-party headers in the caller-provided sysroot remain untouched.
+if [ -d "$SYSROOT/include/bits" ]; then
+    find "$SYSROOT/include/bits" -maxdepth 1 \
+        \( -type f -o -type l \) -name 'kandelo_*.h' -delete
+fi
+
 cd "$OVERLAY_DIR/include"
 find . -name '*.h' | while read -r f; do
     mkdir -p "$SYSROOT/include/$(dirname "$f")"

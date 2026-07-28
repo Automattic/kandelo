@@ -3,6 +3,8 @@
 import { joinSafeI64, splitSafeI64 } from "./i64";
 import type { StatResult } from "../types";
 import { writeOpfsStatResult } from "./opfs-stat";
+import { OPFS_APPEND_CONTRACT_FAILURE } from "./opfs-channel";
+import { opfsAppendWritableLength } from "./opfs-append";
 import {
   marshalNextOpfsDirectoryEntry,
   type OpfsDirectoryIterator,
@@ -52,10 +54,12 @@ const Opcode = {
   READDIR: 17,
   CLOSEDIR: 18,
   STATFS: 19,
+  APPEND: 20,
 } as const;
 
 // Errno values (negative, matching Linux)
 const ENOENT = -2;
+const EIO = -5;
 const EBADF = -9;
 const EEXIST = -17;
 const ENOTDIR = -20;
@@ -116,6 +120,10 @@ class WorkerChannel {
 
   getArg(index: number): number {
     return this.view.getInt32(ARGS_OFFSET + index * 4, true);
+  }
+
+  setArg(index: number, value: number): void {
+    this.view.setInt32(ARGS_OFFSET + index * 4, value, true);
   }
 
   getI64Arg(index: number): number {
@@ -781,6 +789,76 @@ async function handleWrite(): Promise<void> {
   }
 }
 
+async function handleAppend(): Promise<void> {
+  const handle = channel.getArg(0);
+  const length = channel.getArg(1);
+  const limitLo = channel.getArg(2);
+  const limitHi = channel.getArg(3);
+  const hasLimit = channel.getArg(4);
+  const entry = fileHandles.get(handle);
+  const accessHandle = entry && accessHandleFor(entry);
+  if (!entry || !accessHandle) {
+    channel.notifyError(EBADF);
+    return;
+  }
+
+  try {
+    // WHY: the proxy worker serializes requests. Resolve EOF and write in this
+    // single handler so no second Kandelo operation can insert bytes between
+    // them. Apply the file-size ceiling in the same handler for the same
+    // reason. appendMode is intentionally ignored; Rust owns the live OFD
+    // flag.
+    const writeAt = accessHandle.getSize();
+    let limit: number | null = null;
+    if (hasLimit) {
+      try {
+        limit = joinSafeI64(limitLo, limitHi);
+      } catch (error) {
+        if (error instanceof RangeError) {
+          channel.notifyError(EOVERFLOW);
+          return;
+        }
+        throw error;
+      }
+      if (limit < 0) {
+        channel.notifyError(EINVAL);
+        return;
+      }
+    }
+    // WHY: reject an unrepresentable complete result before the backing can
+    // mutate. Checking only the actual end after write would be too late.
+    const writableLength = opfsAppendWritableLength(writeAt, length, limit);
+    if (writableLength === null) {
+      channel.notifyError(EOVERFLOW);
+      return;
+    }
+    const data = channel.dataBuffer.slice(0, writableLength);
+    const bytesWritten = writableLength === 0
+      ? 0
+      : accessHandle.write(data, { at: writeAt });
+    if (
+      !Number.isSafeInteger(bytesWritten)
+      || bytesWritten < 0
+      || bytesWritten > writableLength
+    ) {
+      // The write already ran, so an ordinary errno would let the kernel keep
+      // using an unknowable OFD cursor. Surface the dedicated fatal contract
+      // marker through the synchronous channel instead.
+      channel.notifyError(OPFS_APPEND_CONTRACT_FAILURE);
+      return;
+    }
+    const end = writeAt + bytesWritten;
+    entry.position = end;
+    channel.result = bytesWritten;
+    const [endLow, endHigh] = splitSafeI64(end);
+    channel.setArg(2, endLow);
+    channel.setArg(3, endHigh);
+    channel.notifyComplete();
+  } catch (err) {
+    channel.notifyError(mapError(err));
+  }
+}
+
 async function handleSeek(): Promise<void> {
   const handle = channel.getArg(0);
   const offsetLo = channel.getArg(1);
@@ -1313,6 +1391,7 @@ async function dispatch(): Promise<void> {
     case Opcode.READDIR: return handleReaddir();
     case Opcode.CLOSEDIR: return handleClosedir();
     case Opcode.STATFS: return handleStatfs();
+    case Opcode.APPEND: return handleAppend();
     default:
       channel.notifyError(ENOTSUP);
   }

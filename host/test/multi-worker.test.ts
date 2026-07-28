@@ -2,13 +2,23 @@
 //
 // Tests CentralizedKernelWorker process management and fork flow.
 import { describe, it, expect, vi } from "vitest";
-import { readFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  type CentralizedKernelCallbacks,
+  createCentralizedKernelWorkerTestDouble,
   CAPTURED_STDIO,
   CentralizedKernelWorker,
   shouldDeliverPosixTimerSignal,
+
 } from "../src/kernel-worker";
+import { KernelReentrantEntryError } from "../src/kernel-entry-gate";
 import { resolveBinary } from "../src/binary-resolver";
 import { NodePlatformIO } from "../src/platform/node";
 import {
@@ -21,18 +31,24 @@ import { writeForkContinuationAnchor } from "../src/fork-continuation";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, WASM_PAGE_SIZE } from "../src/constants";
 import {
   ABI_SYSCALLS,
+  CHANNEL_STATUS_COMPLETE,
+  CHANNEL_STATUS_PENDING,
   CH_ARGS,
+  CH_ARGS_COUNT,
   CH_ARG_SIZE,
   CH_DATA,
   CH_ERRNO,
   CH_RETURN,
+  CH_STATUS,
   CH_SYSCALL,
   HOST_INTERCEPTED_SYSCALLS,
   PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
   PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE,
   PROCESS_STATE_EXITED,
+  PROCESS_STATE_RUNNING,
   WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
 } from "../src/generated/abi";
+import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 
 const MAX_PAGES = 1024; // 64 MiB: enough to prove initial < maximum.
 const WASM32_CONTINUATION_HEADER_SIZE =
@@ -82,6 +98,195 @@ function createProcessMemory(): {
   return { memory, channelOffset, layout };
 }
 
+function createRegistrationTestWorker(
+  kernelExports: Readonly<Record<string, unknown>>,
+  kernelExportNames: readonly string[],
+): CentralizedKernelWorker {
+  const worker = createCentralizedKernelWorkerTestDouble();
+  const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
+  installKernelWorkerTestScratch(
+    worker,
+    kernelMemory,
+    128,
+    4,
+    {
+      kernelExports,
+      kernelExportNames,
+    },
+  );
+  return worker;
+}
+
+type TestWorker = ReturnType<
+  typeof createCentralizedKernelWorkerTestDouble
+>;
+type TestChannel = ReturnType<
+  TestWorker["testAuthority"][
+    "replaceProcessRegistrationForLifecycleTest"
+  ]
+>[number];
+
+interface GatedLifecycleHarness {
+  readonly worker: TestWorker;
+  readonly kernelMemory: WebAssembly.Memory;
+  readonly kernelExports: Record<string, unknown>;
+}
+
+function createGatedLifecycleHarness(options: {
+  readonly callbacks?: CentralizedKernelCallbacks;
+  readonly kernelExports?: Readonly<Record<string, unknown>>;
+  readonly pointerWidth?: 4 | 8;
+} = {}): GatedLifecycleHarness {
+  const kernelMemory = new WebAssembly.Memory({
+    initial: 2,
+    maximum: 2,
+  });
+  const kernelExports: Record<string, unknown> = {
+    kernel_clear_fork_child: vi.fn(() => 0),
+    kernel_drain_wakeup_events: vi.fn(() => 0),
+    kernel_get_parent_pid: vi.fn(() => -1),
+    kernel_get_process_exit_signal: vi.fn(() => -1),
+    kernel_get_process_state: vi.fn(() => PROCESS_STATE_RUNNING),
+    kernel_mark_process_signaled: vi.fn(() => 0),
+    kernel_remove_process: vi.fn(() => 0),
+    kernel_set_current_tid: vi.fn(() => 0),
+    kernel_set_max_addr: vi.fn(() => 0),
+    kernel_thread_exit: vi.fn(() => 0),
+    kernel_validate_task: vi.fn(() => 0),
+    ...(options.kernelExports ?? {}),
+  };
+  const worker = createCentralizedKernelWorkerTestDouble({
+    callbacks: options.callbacks,
+  });
+  installKernelWorkerTestScratch(
+    worker,
+    kernelMemory,
+    128,
+    options.pointerWidth ?? 4,
+    {
+      kernelExports,
+      kernelExportNames: Object.keys(kernelExports),
+    },
+  );
+  return { worker, kernelMemory, kernelExports };
+}
+
+function registerLifecycleProcess(
+  harness: GatedLifecycleHarness,
+  pid: number,
+  memory: WebAssembly.Memory,
+  channelOffset: number,
+  pointerWidth: 4 | 8 = 4,
+): void {
+  harness.worker.registerProcess(pid, memory, [channelOffset], {
+    ptrWidth: pointerWidth,
+    maxAddr: memory.buffer.byteLength,
+  });
+}
+
+function writePendingSyscall(
+  memory: WebAssembly.Memory,
+  channelOffset: number,
+  syscall: number,
+  args: readonly number[],
+): void {
+  const view = new DataView(memory.buffer, channelOffset, CH_TOTAL_SIZE);
+  view.setUint32(CH_SYSCALL, syscall, true);
+  for (let index = 0; index < CH_ARGS_COUNT; index++) {
+    view.setBigInt64(
+      CH_ARGS + index * CH_ARG_SIZE,
+      BigInt(args[index] ?? 0),
+      true,
+    );
+  }
+  const statusView = new Int32Array(
+    memory.buffer,
+    channelOffset,
+    CH_TOTAL_SIZE / Int32Array.BYTES_PER_ELEMENT,
+  );
+  Atomics.store(
+    statusView,
+    CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
+    CHANNEL_STATUS_PENDING,
+  );
+  Atomics.notify(
+    statusView,
+    CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
+    1,
+  );
+}
+
+async function waitForCondition(
+  condition: () => boolean,
+  description: string,
+): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if (condition()) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+  }
+  throw new Error(`timed out waiting for ${description}`);
+}
+
+async function waitForMailboxCompletion(
+  memory: WebAssembly.Memory,
+  channelOffset: number,
+): Promise<void> {
+  const statusView = new Int32Array(
+    memory.buffer,
+    channelOffset,
+    CH_TOTAL_SIZE / Int32Array.BYTES_PER_ELEMENT,
+  );
+  await waitForCondition(
+    () => Atomics.load(
+      statusView,
+      CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
+    ) === CHANNEL_STATUS_COMPLETE,
+    `channel ${channelOffset} completion`,
+  );
+}
+
+function readMailboxResult(
+  memory: WebAssembly.Memory,
+  channelOffset: number,
+): { readonly value: number; readonly errno: number } {
+  const view = new DataView(memory.buffer, channelOffset, CH_TOTAL_SIZE);
+  return {
+    value: Number(view.getBigInt64(CH_RETURN, true)),
+    errno: view.getUint32(CH_ERRNO, true),
+  };
+}
+
+function expectUnexpectedMailboxEio(
+  memory: WebAssembly.Memory,
+  channelOffset: number,
+): void {
+  // WHY: the unexpected-handler boundary deliberately publishes -EIO/EIO.
+  // CH_ERRNO is authoritative on error: channel_syscall.c returns `-err`,
+  // then musl maps that to the POSIX-visible -1 with errno=EIO.
+  expect(readMailboxResult(memory, channelOffset)).toEqual({
+    value: -5,
+    errno: 5,
+  });
+}
+
+function kernelChannelResult(
+  kernelMemory: WebAssembly.Memory,
+  result: number,
+  errno = 0,
+): ReturnType<typeof vi.fn> {
+  return vi.fn((rawOffset: number | bigint) => {
+    const offset = Number(rawOffset);
+    const view = new DataView(
+      kernelMemory.buffer,
+      offset,
+      CH_TOTAL_SIZE,
+    );
+    view.setBigInt64(CH_RETURN, BigInt(result), true);
+    view.setUint32(CH_ERRNO, errno, true);
+    return 0;
+  });
+}
+
 function attachProcess(
   kw: CentralizedKernelWorker,
   pid: number,
@@ -94,47 +299,6 @@ function attachProcess(
   });
 }
 
-function issueThreadAttachment(
-  worker: CentralizedKernelWorker,
-  pid: number,
-  tid: number,
-) {
-  const channel = (worker as any).processes.get(pid)?.channels[0];
-  if (!channel) throw new Error(`No main channel for process ${pid}`);
-  const kernelMemory = new WebAssembly.Memory({ initial: 1, maximum: 1 });
-  const kernelView = new DataView(kernelMemory.buffer);
-  let attachment: Parameters<CentralizedKernelWorker["attachThreadChannel"]>[0]
-    | undefined;
-  new DataView(channel.memory.buffer, channel.channelOffset)
-    .setUint32(CH_DATA, 0, true);
-  new DataView(channel.memory.buffer, channel.channelOffset)
-    .setUint32(CH_DATA + 4, 0, true);
-  (worker as any).callbacks = {
-    onClone: (
-      value: Parameters<CentralizedKernelWorker["attachThreadChannel"]>[0],
-    ) => {
-      attachment = value;
-      return new Promise<void>(() => {});
-    },
-  };
-  (worker as any).kernel ??= {
-    toKernelPtr: (value: number | bigint) => Number(value),
-  };
-  (worker as any).kernelMemory = kernelMemory;
-  (worker as any).scratchOffset = 0;
-  (worker as any).currentHandlePid = 0;
-  (worker as any).threadCtidPtrs ??= new Map();
-  (worker as any).bindKernelTidForChannel = vi.fn();
-  (worker as any).kernelInstance.exports.kernel_handle_channel = vi.fn(() => {
-    kernelView.setBigInt64(CH_RETURN, BigInt(tid), true);
-    kernelView.setUint32(CH_ERRNO, 0, true);
-    return 0;
-  });
-  (worker as any).handleClone(channel, [0, 0, 0, 0, 0, 0]);
-  if (!attachment) throw new Error("clone callback did not receive attachment");
-  return attachment;
-}
-
 function createAndRegisterProcess(
   kw: CentralizedKernelWorker,
   entry: ReturnType<typeof createProcessMemory>,
@@ -142,6 +306,31 @@ function createAndRegisterProcess(
   const pid = kw.createProcess(CAPTURED_STDIO);
   attachProcess(kw, pid, entry);
   return pid;
+}
+
+async function issueDirectKernelOpen(
+  worker: CentralizedKernelWorker,
+  pid: number,
+  process: ReturnType<typeof createProcessMemory>,
+  path: string,
+  flags = 0,
+  mode = 0,
+): Promise<{ value: number; errno: number }> {
+  const pathPointer = 4 * WASM_PAGE_SIZE;
+  const encoded = new TextEncoder().encode(`${path}\0`);
+  new Uint8Array(process.memory.buffer).set(encoded, pathPointer);
+  writePendingSyscall(
+    process.memory,
+    process.channelOffset,
+    ABI_SYSCALLS.Open,
+    [pathPointer, flags, mode],
+  );
+  await waitForMailboxCompletion(
+    process.memory,
+    process.channelOffset,
+  );
+  expect(worker.getProcessMemory(pid)).toBe(process.memory);
+  return readMailboxResult(process.memory, process.channelOffset);
 }
 
 describe("CentralizedKernelWorker Process Management", () => {
@@ -154,31 +343,28 @@ describe("CentralizedKernelWorker Process Management", () => {
   it("uses the kernel-assigned fork PID without host-side retries", async () => {
     const parentPid = 77;
     const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
-    const channel = { pid: parentPid, channelOffset: WASM_PAGE_SIZE, memory };
-    publishMainForkContinuation(memory, channel.channelOffset);
+    const channelOffset = WASM_PAGE_SIZE;
+    publishMainForkContinuation(memory, channelOffset);
     const kernelForkProcess = vi.fn(() => 101);
-    const completeChannel = vi.fn();
     const onFork = vi.fn(() => Promise.resolve([WASM_PAGE_SIZE]));
-    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+    const harness = createGatedLifecycleHarness({
       callbacks: { onFork },
-      processes: new Map([[parentPid, { channels: [channel] }]]),
-      channelTids: new Map(),
-      threadForkContexts: new Map(),
-      sharedMappings: new Map(),
-      tcpListenerTargets: new Map(),
-      epollInterests: new Map(),
-      completeChannel,
-      kernelInstance: {
-        exports: {
-          kernel_fork_process: kernelForkProcess,
-          kernel_clear_fork_child: vi.fn(() => 0),
-          kernel_get_process_exit_signal: vi.fn(() => -1),
-        },
-      },
-    }) as CentralizedKernelWorker;
+      kernelExports: { kernel_fork_process: kernelForkProcess },
+    });
+    registerLifecycleProcess(
+      harness,
+      parentPid,
+      memory,
+      channelOffset,
+    );
 
-    (kw as any).handleFork(channel, [0]);
-    await Promise.resolve();
+    writePendingSyscall(
+      memory,
+      channelOffset,
+      HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
+      [0],
+    );
+    await waitForMailboxCompletion(memory, channelOffset);
 
     expect(kernelForkProcess).toHaveBeenCalledOnce();
     expect(kernelForkProcess).toHaveBeenCalledWith(parentPid, parentPid);
@@ -191,14 +377,10 @@ describe("CentralizedKernelWorker Process Management", () => {
         forkBufAddr: TEST_FORK_CONTINUATION,
       },
     });
-    expect(completeChannel).toHaveBeenCalledWith(
-      channel,
-      HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
-      [0],
-      undefined,
-      101,
-      0,
-    );
+    expect(readMailboxResult(memory, channelOffset)).toEqual({
+      value: 101,
+      errno: 0,
+    });
   });
 
   it("carries the exact pthread continuation anchor into the fork launch", async () => {
@@ -214,16 +396,6 @@ describe("CentralizedKernelWorker Process Management", () => {
       maximum: 8,
       shared: true,
     });
-    const mainChannel = {
-      pid: parentPid,
-      channelOffset: mainChannelOffset,
-      memory,
-    };
-    const threadChannel = {
-      pid: parentPid,
-      channelOffset: threadChannelOffset,
-      memory,
-    };
     writeForkContinuationAnchor(
       memory,
       threadChannelOffset - FORK_SAVE_BUFFER_SIZE,
@@ -231,44 +403,70 @@ describe("CentralizedKernelWorker Process Management", () => {
       TEST_THREAD_FORK_CONTINUATION,
     );
     const onFork = vi.fn(() => Promise.resolve([threadChannelOffset]));
-    const reserveHostRegionAt = vi.fn();
-    const completeChannel = vi.fn();
-    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
-      callbacks: { onFork },
-      processes: new Map([
-        [parentPid, {
-          channels: [mainChannel, threadChannel],
-          ptrWidth: 4,
-        }],
-      ]),
-      channelTids: new Map([
-        [`${parentPid}:${threadChannelOffset}`, threadTid],
-      ]),
-      threadForkContexts: new Map([
-        [`${parentPid}:${threadChannelOffset}`, { fnPtr, argPtr }],
-      ]),
-      sharedMappings: new Map(),
-      tcpListenerTargets: new Map(),
-      epollInterests: new Map(),
-      reserveHostRegionAt,
-      completeChannel,
-      kernelInstance: {
-        exports: {
-          kernel_fork_process: vi.fn(() => childPid),
-          kernel_clear_fork_child: vi.fn(() => 0),
-          kernel_get_process_exit_signal: vi.fn(() => -1),
-        },
-      },
-    }) as CentralizedKernelWorker;
-
-    (kw as any).handleFork(threadChannel, [0]);
-    await Promise.resolve();
-
     const slotStart =
       threadChannelOffset
       - PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE * WASM_PAGE_SIZE;
     const slotLen =
       PROCESS_MEMORY_PAGES_PER_THREAD_SLOT * WASM_PAGE_SIZE;
+    const reserveHostRegionAt = vi.fn(
+      (_pid: number, address: number) => address,
+    );
+    let harness!: GatedLifecycleHarness;
+    const onClone = vi.fn((attachment) => {
+      harness.worker.attachThreadChannel(
+        attachment,
+        threadChannelOffset,
+      );
+      return Promise.resolve();
+    });
+    const kernelHandleChannel = vi.fn((rawOffset: number | bigint) => {
+      const offset = Number(rawOffset);
+      const kernelView = new DataView(
+        harness.kernelMemory.buffer,
+        offset,
+        CH_TOTAL_SIZE,
+      );
+      kernelView.setBigInt64(CH_RETURN, BigInt(threadTid), true);
+      kernelView.setUint32(CH_ERRNO, 0, true);
+      return 0;
+    });
+    harness = createGatedLifecycleHarness({
+      callbacks: { onClone, onFork },
+      kernelExports: {
+        kernel_fork_process: vi.fn(() => childPid),
+        kernel_handle_channel: kernelHandleChannel,
+        kernel_reserve_host_region_at: reserveHostRegionAt,
+      },
+    });
+    registerLifecycleProcess(
+      harness,
+      parentPid,
+      memory,
+      mainChannelOffset,
+    );
+    const mainView = new DataView(
+      memory.buffer,
+      mainChannelOffset,
+      CH_TOTAL_SIZE,
+    );
+    mainView.setUint32(CH_DATA, fnPtr, true);
+    mainView.setUint32(CH_DATA + 4, argPtr, true);
+    writePendingSyscall(
+      memory,
+      mainChannelOffset,
+      ABI_SYSCALLS.Clone,
+      [0, 5 * WASM_PAGE_SIZE, 0, 0, 0],
+    );
+    await waitForMailboxCompletion(memory, mainChannelOffset);
+
+    writePendingSyscall(
+      memory,
+      threadChannelOffset,
+      HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
+      [0],
+    );
+    await waitForMailboxCompletion(memory, threadChannelOffset);
+
     expect(reserveHostRegionAt).toHaveBeenCalledWith(
       childPid,
       slotStart,
@@ -287,62 +485,57 @@ describe("CentralizedKernelWorker Process Management", () => {
         slotLen,
       },
     });
-    expect(completeChannel).toHaveBeenCalledWith(
-      threadChannel,
-      HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
-      [0],
-      undefined,
-      childPid,
-      0,
-    );
+    expect(readMailboxResult(memory, threadChannelOffset)).toEqual({
+      value: childPid,
+      errno: 0,
+    });
   });
 
   it("reads and carries an exact wasm64 continuation anchor with i64 representation", async () => {
     const parentPid = 77;
     const childPid = 103;
+    const channelOffset = WASM_PAGE_SIZE;
     const memory = new WebAssembly.Memory({
       initial: 8,
       maximum: 8,
       shared: true,
     });
-    const channel = { pid: parentPid, channelOffset: WASM_PAGE_SIZE, memory };
     const continuationAddress =
       5 * WASM_PAGE_SIZE + WASM64_CONTINUATION_HEADER_SIZE;
     publishMainForkContinuation(
       memory,
-      channel.channelOffset,
+      channelOffset,
       8,
       continuationAddress,
     );
     const onFork = vi.fn(() => Promise.resolve([WASM_PAGE_SIZE]));
-    const completeChannel = vi.fn();
-    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+    const harness = createGatedLifecycleHarness({
       callbacks: { onFork },
-      processes: new Map([
-        [parentPid, { channels: [channel], ptrWidth: 8 }],
-      ]),
-      channelTids: new Map(),
-      threadForkContexts: new Map(),
-      sharedMappings: new Map(),
-      tcpListenerTargets: new Map(),
-      epollInterests: new Map(),
-      completeChannel,
-      kernelInstance: {
-        exports: {
-          kernel_fork_process: vi.fn(() => childPid),
-          kernel_clear_fork_child: vi.fn(() => 0),
-          kernel_get_process_exit_signal: vi.fn(() => -1),
-        },
+      pointerWidth: 8,
+      kernelExports: {
+        kernel_fork_process: vi.fn(() => childPid),
       },
-    }) as CentralizedKernelWorker;
+    });
+    registerLifecycleProcess(
+      harness,
+      parentPid,
+      memory,
+      channelOffset,
+      8,
+    );
     const readBigUint64 = vi.spyOn(DataView.prototype, "getBigUint64");
 
     try {
-      (kw as any).handleFork(channel, [0]);
-      await Promise.resolve();
+      writePendingSyscall(
+        memory,
+        channelOffset,
+        HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
+        [0],
+      );
+      await waitForMailboxCompletion(memory, channelOffset);
 
       expect(readBigUint64).toHaveBeenCalledWith(
-        channel.channelOffset - FORK_SAVE_BUFFER_SIZE,
+        channelOffset - FORK_SAVE_BUFFER_SIZE,
         true,
       );
       expect(onFork).toHaveBeenCalledWith({
@@ -354,50 +547,44 @@ describe("CentralizedKernelWorker Process Management", () => {
           forkBufAddr: continuationAddress,
         },
       });
-      expect(completeChannel).toHaveBeenCalledWith(
-        channel,
-        HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
-        [0],
-        undefined,
-        childPid,
-        0,
-      );
+      expect(readMailboxResult(memory, channelOffset)).toEqual({
+        value: childPid,
+        errno: 0,
+      });
     } finally {
       readBigUint64.mockRestore();
     }
   });
 
-  it("rejects a missing continuation anchor before allocating a child", () => {
+  it("rejects a missing continuation anchor before allocating a child", async () => {
     const parentPid = 77;
+    const channelOffset = WASM_PAGE_SIZE;
     const memory = new WebAssembly.Memory({
       initial: 4,
       maximum: 4,
       shared: true,
     });
-    const channel = { pid: parentPid, channelOffset: WASM_PAGE_SIZE, memory };
     const kernelForkProcess = vi.fn(() => 101);
     const onFork = vi.fn(() => Promise.resolve([WASM_PAGE_SIZE]));
-    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+    const harness = createGatedLifecycleHarness({
       callbacks: { onFork },
-      processes: new Map([
-        [parentPid, { channels: [channel], ptrWidth: 4 }],
-      ]),
-      channelTids: new Map(),
-      threadForkContexts: new Map(),
-      sharedMappings: new Map(),
-      tcpListenerTargets: new Map(),
-      epollInterests: new Map(),
-      kernelInstance: {
-        exports: {
-          kernel_fork_process: kernelForkProcess,
-          kernel_get_process_exit_signal: vi.fn(() => -1),
-        },
-      },
-    }) as CentralizedKernelWorker;
-
-    expect(() => (kw as any).handleFork(channel, [0])).toThrow(
-      "invalid fork continuation anchor 0",
+      kernelExports: { kernel_fork_process: kernelForkProcess },
+    });
+    registerLifecycleProcess(
+      harness,
+      parentPid,
+      memory,
+      channelOffset,
     );
+    writePendingSyscall(
+      memory,
+      channelOffset,
+      HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
+      [0],
+    );
+    await waitForMailboxCompletion(memory, channelOffset);
+
+    expectUnexpectedMailboxEio(memory, channelOffset);
     expect(kernelForkProcess).not.toHaveBeenCalled();
     expect(onFork).not.toHaveBeenCalled();
   });
@@ -415,43 +602,41 @@ describe("CentralizedKernelWorker Process Management", () => {
     },
   ])(
     "rejects a nonzero $label continuation anchor before allocating a child",
-    ({ continuationAddress }) => {
+    async ({ continuationAddress }) => {
       const parentPid = 77;
+      const channelOffset = WASM_PAGE_SIZE;
       const memory = new WebAssembly.Memory({
         initial: 4,
         maximum: 4,
         shared: true,
       });
-      const channel = { pid: parentPid, channelOffset: WASM_PAGE_SIZE, memory };
       publishMainForkContinuation(
         memory,
-        channel.channelOffset,
+        channelOffset,
         4,
         continuationAddress,
       );
       const kernelForkProcess = vi.fn(() => 101);
       const onFork = vi.fn(() => Promise.resolve([WASM_PAGE_SIZE]));
-      const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      const harness = createGatedLifecycleHarness({
         callbacks: { onFork },
-        processes: new Map([
-          [parentPid, { channels: [channel], ptrWidth: 4 }],
-        ]),
-        channelTids: new Map(),
-        threadForkContexts: new Map(),
-        sharedMappings: new Map(),
-        tcpListenerTargets: new Map(),
-        epollInterests: new Map(),
-        kernelInstance: {
-          exports: {
-            kernel_fork_process: kernelForkProcess,
-            kernel_get_process_exit_signal: vi.fn(() => -1),
-          },
-        },
-      }) as CentralizedKernelWorker;
-
-      expect(() => (kw as any).handleFork(channel, [0])).toThrow(
-        `invalid fork continuation anchor ${continuationAddress}`,
+        kernelExports: { kernel_fork_process: kernelForkProcess },
+      });
+      registerLifecycleProcess(
+        harness,
+        parentPid,
+        memory,
+        channelOffset,
       );
+      writePendingSyscall(
+        memory,
+        channelOffset,
+        HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
+        [0],
+      );
+      await waitForMailboxCompletion(memory, channelOffset);
+
+      expectUnexpectedMailboxEio(memory, channelOffset);
       expect(kernelForkProcess).not.toHaveBeenCalled();
       expect(onFork).not.toHaveBeenCalled();
     },
@@ -459,157 +644,190 @@ describe("CentralizedKernelWorker Process Management", () => {
 
   it("inherits child fd mirrors when the parent channel becomes stale during fork", async () => {
     const parentPid = 77;
-    const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
-    const oldChannel = { pid: parentPid, channelOffset: WASM_PAGE_SIZE, memory };
-    publishMainForkContinuation(memory, oldChannel.channelOffset);
-    const replacementChannel = {
-      pid: parentPid,
-      channelOffset: 2 * WASM_PAGE_SIZE,
-      memory,
-    };
-    const completeChannel = vi.fn();
+    const childPid = 100;
+    const listenerFd = 4;
+    const listenerPort = 8080;
+    const oldChannelOffset = WASM_PAGE_SIZE;
+    const replacementChannelOffset = 2 * WASM_PAGE_SIZE;
+    const childChannelOffset = WASM_PAGE_SIZE;
+    const parentMemory = new WebAssembly.Memory({
+      initial: 4,
+      maximum: 4,
+      shared: true,
+    });
+    const childMemory = new WebAssembly.Memory({
+      initial: 4,
+      maximum: 4,
+      shared: true,
+    });
+    publishMainForkContinuation(parentMemory, oldChannelOffset);
     let finishFork!: (offsets: number[]) => void;
     const forkLaunch = new Promise<number[]>((resolve) => {
       finishFork = resolve;
     });
-    const close = vi.fn();
-    const listener = {
-      server: { close },
-      pid: parentPid,
-      port: 8080,
-      connections: new Set(),
-    };
-    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
-      callbacks: { onFork: vi.fn(() => forkLaunch) },
-      processes: new Map([[parentPid, { channels: [oldChannel] }]]),
-      channelTids: new Map(),
-      threadForkContexts: new Map(),
-      sharedMappings: new Map(),
-      tcpListenerTargets: new Map([[8080, [{ pid: parentPid, fd: 4 }]]]),
-      tcpListenerRRIndex: new Map([[8080, 0]]),
-      tcpVirtualListenerKeys: new Map(),
-      tcpListeners: new Map([[`${parentPid}:4`, listener]]),
-      tcpConnections: new Map(),
-      shmMappings: new Map(),
-      io: { network: undefined },
-      epollInterests: new Map([[`${parentPid}:6`, [
-        { fd: 8, events: 1, data: 11n },
-      ]]]),
-      completeChannel,
-      kernelInstance: {
-        exports: {
-          kernel_fork_process: vi.fn(() => 100),
-          kernel_clear_fork_child: vi.fn(() => 0),
-          kernel_get_process_exit_signal: vi.fn(() => -1),
-        },
+    const onFork = vi.fn(() => forkLaunch);
+    const harness = createGatedLifecycleHarness({
+      callbacks: { onFork },
+      kernelExports: {
+        kernel_fork_process: vi.fn(() => childPid),
+        kernel_get_fd_accept_wake_idx: (
+          _pid: number,
+          fd: number,
+        ) => fd === listenerFd ? 41 : -1,
       },
-    }) as CentralizedKernelWorker;
+    });
+    const [oldChannel] = harness.worker.testAuthority
+      .replaceProcessRegistrationForLifecycleTest({
+        pid: parentPid,
+        memory: parentMemory,
+        channelOffsets: [oldChannelOffset],
+        tcpListener: {
+          fd: listenerFd,
+          port: listenerPort,
+        },
+      });
+    if (oldChannel === undefined) {
+      throw new Error("fork lifecycle test did not install its parent channel");
+    }
+    expect(harness.worker.pickListenerTarget(listenerPort)).toEqual({
+      pid: parentPid,
+      fd: listenerFd,
+    });
 
-    (kw as any).handleFork(oldChannel, [0]);
-    (kw as any).processes.set(parentPid, { channels: [replacementChannel] });
-    expect((kw as any).tcpListenerTargets.get(8080)).toContainEqual({ pid: 100, fd: 4 });
-    (kw as any).cleanupTcpListeners(parentPid);
-    expect(close).not.toHaveBeenCalled();
-    expect((kw as any).tcpListeners.has("100:4")).toBe(true);
-    finishFork([WASM_PAGE_SIZE]);
-    await Promise.resolve();
+    writePendingSyscall(
+      parentMemory,
+      oldChannelOffset,
+      HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
+      [0],
+    );
+    harness.worker.testAuthority
+      .dispatchScratchBoundarySyscallForTest(oldChannel);
+    await waitForCondition(
+      () => onFork.mock.calls.length === 1,
+      "fork worker launch",
+    );
 
-    expect((kw as any).tcpListenerTargets.get(8080)).toEqual([{ pid: 100, fd: 4 }]);
-    expect((kw as any).epollInterests.get("100:6")).toEqual([
-      { fd: 8, events: 1, data: 11n },
-    ]);
-    expect(completeChannel).not.toHaveBeenCalled();
+    // The fork path must install child mirrors before the async worker launch.
+    // Replace the parent generation while that launch is pending, then remove
+    // only the replacement registration. The old channel is now stale, but
+    // the public listener lookup must still find the eagerly inherited child.
+    harness.worker.testAuthority.replaceProcessRegistrationForLifecycleTest({
+      pid: parentPid,
+      memory: parentMemory,
+      channelOffsets: [replacementChannelOffset],
+    });
+    registerLifecycleProcess(
+      harness,
+      childPid,
+      childMemory,
+      childChannelOffset,
+    );
+    harness.worker.unregisterProcess(parentPid);
+    expect(harness.worker.pickListenerTarget(listenerPort)).toEqual({
+      pid: childPid,
+      fd: listenerFd,
+    });
+
+    finishFork([childChannelOffset]);
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    expect(
+      Atomics.load(
+        new Int32Array(parentMemory.buffer, oldChannelOffset),
+        CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
+      ),
+    ).toBe(CHANNEL_STATUS_PENDING);
+    expect(harness.worker.pickListenerTarget(listenerPort)).toEqual({
+      pid: childPid,
+      fd: listenerFd,
+    });
+    harness.worker.unregisterProcess(childPid);
   });
 
   it("removes eager child registrations and mirrors when fork worker launch fails", async () => {
     const parentPid = 77;
     const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
-    const channel = { pid: parentPid, channelOffset: WASM_PAGE_SIZE, memory };
-    publishMainForkContinuation(memory, channel.channelOffset);
-    const completeChannel = vi.fn();
-    const deactivateProcess = vi.fn();
+    const channelOffset = WASM_PAGE_SIZE;
+    publishMainForkContinuation(memory, channelOffset);
     const removeProcess = vi.fn(() => 0);
-    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
-      callbacks: { onFork: vi.fn(() => Promise.reject(new Error("launch failed"))) },
-      processes: new Map([[parentPid, { channels: [channel] }]]),
-      channelTids: new Map(),
-      threadForkContexts: new Map(),
-      tcpListenerTargets: new Map([[8080, [{ pid: parentPid, fd: 4 }]]]),
-      epollInterests: new Map(),
-      completeChannel,
-      deactivateProcess,
-      kernelInstance: {
-        exports: {
-          kernel_fork_process: vi.fn(() => 100),
-          kernel_clear_fork_child: vi.fn(() => 0),
-          kernel_remove_process: removeProcess,
-          kernel_get_process_exit_signal: vi.fn(() => -1),
-        },
+    const onFork = vi.fn(() => Promise.reject(new Error("launch failed")));
+    const harness = createGatedLifecycleHarness({
+      callbacks: { onFork },
+      kernelExports: {
+        kernel_fork_process: vi.fn(() => 100),
+        kernel_remove_process: removeProcess,
       },
-    }) as CentralizedKernelWorker;
+    });
+    registerLifecycleProcess(harness, parentPid, memory, channelOffset);
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
 
-    (kw as any).handleFork(channel, [0]);
-    await Promise.resolve();
-    await Promise.resolve();
+    try {
+      writePendingSyscall(
+        memory,
+        channelOffset,
+        HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
+        [0],
+      );
+      await waitForMailboxCompletion(memory, channelOffset);
 
-    expect(deactivateProcess).toHaveBeenCalledWith(100);
-    expect(removeProcess).toHaveBeenCalledWith(100);
-    expect(completeChannel).toHaveBeenCalledWith(
-      channel,
-      HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
-      [0],
-      undefined,
-      -1,
-      12,
-    );
+      expect(onFork).toHaveBeenCalledOnce();
+      expect(removeProcess).toHaveBeenCalledWith(100);
+      expect(readMailboxResult(memory, channelOffset)).toEqual({
+        value: -1,
+        errno: 12,
+      });
+      expect(error).toHaveBeenCalledWith(
+        "[kernel-worker] fork worker launch failed: Error: launch failed",
+      );
+    } finally {
+      error.mockRestore();
+    }
   });
 
   it("terminates the parent when a failed fork launch cannot remove the child", async () => {
     const parentPid = 77;
     const childPid = 100;
     const memory = new WebAssembly.Memory({ initial: 4, maximum: 4, shared: true });
-    const channel = { pid: parentPid, channelOffset: WASM_PAGE_SIZE, memory };
-    publishMainForkContinuation(memory, channel.channelOffset);
-    const completeChannel = vi.fn();
-    const deactivateProcess = vi.fn();
+    const channelOffset = WASM_PAGE_SIZE;
+    publishMainForkContinuation(memory, channelOffset);
     const removeProcess = vi.fn(() => -5);
-    const notifyHostProcessCrashed = vi.fn();
+    const markProcessSignaled = vi.fn(() => 0);
     const onExit = vi.fn();
-    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+    const harness = createGatedLifecycleHarness({
       callbacks: {
         onFork: vi.fn(() => Promise.reject(new Error("launch failed"))),
         onExit,
       },
-      processes: new Map([[parentPid, { channels: [channel] }]]),
-      channelTids: new Map(),
-      threadForkContexts: new Map(),
-      tcpListenerTargets: new Map([[8080, [{ pid: parentPid, fd: 4 }]]]),
-      epollInterests: new Map(),
-      completeChannel,
-      deactivateProcess,
-      notifyHostProcessCrashed,
-      kernelInstance: {
-        exports: {
-          kernel_fork_process: vi.fn(() => childPid),
-          kernel_clear_fork_child: vi.fn(() => 0),
-          kernel_remove_process: removeProcess,
-          kernel_get_process_exit_signal: vi.fn(() => -1),
-        },
+      kernelExports: {
+        kernel_fork_process: vi.fn(() => childPid),
+        kernel_mark_process_signaled: markProcessSignaled,
+        kernel_remove_process: removeProcess,
       },
-    }) as CentralizedKernelWorker;
+    });
+    registerLifecycleProcess(harness, parentPid, memory, channelOffset);
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
 
     try {
-      (kw as any).handleFork(channel, [0]);
-      await Promise.resolve();
-      await Promise.resolve();
+      writePendingSyscall(
+        memory,
+        channelOffset,
+        HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
+        [0],
+      );
+      await waitForCondition(
+        () => onExit.mock.calls.length === 1,
+        "fatal fork rollback parent termination",
+      );
 
-      expect(deactivateProcess).toHaveBeenCalledWith(childPid);
       expect(removeProcess).toHaveBeenCalledWith(childPid);
-      expect(notifyHostProcessCrashed).toHaveBeenCalledWith(parentPid, 11);
+      expect(markProcessSignaled).toHaveBeenCalledWith(parentPid, 11);
       expect(onExit).toHaveBeenCalledWith(parentPid, 139);
-      expect(channel.handling).toBe(true);
-      expect(completeChannel).not.toHaveBeenCalled();
+      expect(
+        Atomics.load(
+          new Int32Array(memory.buffer, channelOffset),
+          CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
+        ),
+      ).toBe(CHANNEL_STATUS_PENDING);
       expect(error).toHaveBeenCalledWith(
         "[handleSyscall] FATAL could not roll back fork child 100: " +
           "Kernel could not remove process 100: errno 5",
@@ -619,7 +837,7 @@ describe("CentralizedKernelWorker Process Management", () => {
     }
   });
 
-  it("completes pthread SYS_EXIT channels (clearing the exiting guest's atomic-wait waiter) even when the host terminates the worker", () => {
+  it("completes pthread SYS_EXIT channels (clearing the exiting guest's atomic-wait waiter) even when the host terminates the worker", async () => {
     // Regression guard for the reused-slot notify-steal deadlock. On thread
     // exit the kernel must flip the channel status word off CH_PENDING
     // (completeChannelRaw) so the exiting guest's in-wasm memory.atomic.wait32
@@ -640,43 +858,70 @@ describe("CentralizedKernelWorker Process Management", () => {
       maximum: 4,
       shared: true,
     });
-    const channel = {
-      pid,
-      channelOffset: threadChannelOffset,
-      memory,
-      handling: true,
-    };
     const onThreadExit = vi.fn(() => true);
-    const completeChannelRaw = vi.fn((ch: typeof channel) => {
-      ch.handling = false;
+    let harness!: GatedLifecycleHarness;
+    const onClone = vi.fn((attachment) => {
+      harness.worker.attachThreadChannel(attachment, threadChannelOffset);
+      return Promise.resolve();
+    });
+    let kernelMemory!: WebAssembly.Memory;
+    const handleChannel = vi.fn((rawOffset: number | bigint) => {
+      const view = new DataView(
+        kernelMemory.buffer,
+        Number(rawOffset),
+        CH_TOTAL_SIZE,
+      );
+      view.setBigInt64(CH_RETURN, BigInt(tid), true);
+      view.setUint32(CH_ERRNO, 0, true);
+      return 0;
+    });
+    const threadExit = vi.fn(() => 0);
+    harness = createGatedLifecycleHarness({
+      callbacks: { onClone, onThreadExit },
+      kernelExports: {
+        kernel_handle_channel: handleChannel,
+        kernel_thread_exit: threadExit,
+      },
+    });
+    kernelMemory = harness.kernelMemory;
+    registerLifecycleProcess(
+      harness,
+      pid,
+      memory,
+      mainChannelOffset,
+    );
+
+    writePendingSyscall(
+      memory,
+      mainChannelOffset,
+      ABI_SYSCALLS.Clone,
+      [0, 0, 0, 0, 0, 0],
+    );
+    await waitForMailboxCompletion(memory, mainChannelOffset);
+    expect(readMailboxResult(memory, mainChannelOffset)).toEqual({
+      value: tid,
+      errno: 0,
     });
 
-    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
-      callbacks: { onThreadExit },
-      processes: new Map([
-        [pid, { channels: [{ channelOffset: mainChannelOffset }] }],
-      ]),
-      channelTids: new Map([[`${pid}:${threadChannelOffset}`, tid]]),
-      threadForkContexts: new Map([
-        [`${pid}:${threadChannelOffset}`, { fnPtr: 1, argPtr: 2 }],
-      ]),
-      threadCtidPtrs: new Map(),
-      activeChannels: [channel],
-      notifyThreadExit: vi.fn(),
-      removeChannel: vi.fn(),
-      completeChannelRaw,
-    });
-
-    (kw as any).handleExit(channel, ABI_SYSCALLS.Exit, [0]);
+    writePendingSyscall(
+      memory,
+      threadChannelOffset,
+      ABI_SYSCALLS.Exit,
+      [0],
+    );
+    await waitForMailboxCompletion(memory, threadChannelOffset);
 
     // Still asks the host to tear down the backing thread Worker...
     expect(onThreadExit).toHaveBeenCalledWith(pid, tid, threadChannelOffset);
     // ...but now completes the channel so the guest's wait waiter is cleared.
-    expect(completeChannelRaw).toHaveBeenCalledWith(channel, 0, 0);
-    expect(channel.handling).toBe(false);
+    expect(readMailboxResult(memory, threadChannelOffset)).toEqual({
+      value: 0,
+      errno: 0,
+    });
+    expect(threadExit).toHaveBeenCalledWith(pid, tid);
   });
 
-  it("keeps completing pthread SYS_EXIT channels when no host terminator is installed", () => {
+  it("keeps completing pthread SYS_EXIT channels when no host terminator is installed", async () => {
     const pid = 124;
     const mainChannelOffset = WASM_PAGE_SIZE;
     const threadChannelOffset = 2 * WASM_PAGE_SIZE;
@@ -686,123 +931,289 @@ describe("CentralizedKernelWorker Process Management", () => {
       maximum: 4,
       shared: true,
     });
-    const channel = {
+    let harness!: GatedLifecycleHarness;
+    const onClone = vi.fn((attachment) => {
+      harness.worker.attachThreadChannel(attachment, threadChannelOffset);
+      return Promise.resolve();
+    });
+    let kernelMemory!: WebAssembly.Memory;
+    const handleChannel = vi.fn((rawOffset: number | bigint) => {
+      const view = new DataView(
+        kernelMemory.buffer,
+        Number(rawOffset),
+        CH_TOTAL_SIZE,
+      );
+      view.setBigInt64(CH_RETURN, BigInt(tid), true);
+      view.setUint32(CH_ERRNO, 0, true);
+      return 0;
+    });
+    const threadExit = vi.fn(() => 0);
+    harness = createGatedLifecycleHarness({
+      callbacks: { onClone },
+      kernelExports: {
+        kernel_handle_channel: handleChannel,
+        kernel_thread_exit: threadExit,
+      },
+    });
+    kernelMemory = harness.kernelMemory;
+    registerLifecycleProcess(
+      harness,
       pid,
-      channelOffset: threadChannelOffset,
       memory,
-      handling: true,
-    };
-    const completeChannelRaw = vi.fn((ch: typeof channel) => {
-      ch.handling = false;
+      mainChannelOffset,
+    );
+
+    writePendingSyscall(
+      memory,
+      mainChannelOffset,
+      ABI_SYSCALLS.Clone,
+      [0, 0, 0, 0, 0, 0],
+    );
+    await waitForMailboxCompletion(memory, mainChannelOffset);
+
+    writePendingSyscall(
+      memory,
+      threadChannelOffset,
+      ABI_SYSCALLS.Exit,
+      [0],
+    );
+    await waitForMailboxCompletion(memory, threadChannelOffset);
+
+    expect(readMailboxResult(memory, threadChannelOffset)).toEqual({
+      value: 0,
+      errno: 0,
     });
-
-    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
-      callbacks: {},
-      processes: new Map([
-        [pid, { channels: [{ channelOffset: mainChannelOffset }] }],
-      ]),
-      channelTids: new Map([[`${pid}:${threadChannelOffset}`, tid]]),
-      threadForkContexts: new Map(),
-      threadCtidPtrs: new Map(),
-      activeChannels: [channel],
-      notifyThreadExit: vi.fn(),
-      removeChannel: vi.fn(),
-      completeChannelRaw,
-      abandonChannel: vi.fn(),
-    });
-
-    (kw as any).handleExit(channel, ABI_SYSCALLS.Exit, [0]);
-
-    expect(completeChannelRaw).toHaveBeenCalledWith(channel, 0, 0);
-    expect((kw as any).abandonChannel).not.toHaveBeenCalled();
-    expect(channel.handling).toBe(false);
+    expect(threadExit).toHaveBeenCalledWith(pid, tid);
   });
 
   it("rejects pthread exit when the channel lost its kernel-allocated TID", () => {
     const pid = 124;
+    const mainChannelOffset = WASM_PAGE_SIZE;
+    const threadChannelOffset = 2 * WASM_PAGE_SIZE;
     const memory = new WebAssembly.Memory({
       initial: 4,
       maximum: 4,
       shared: true,
     });
-    const mainChannel = {
-      pid,
-      channelOffset: WASM_PAGE_SIZE,
-      memory,
-    };
-    const threadChannel = {
-      pid,
-      channelOffset: 2 * WASM_PAGE_SIZE,
-      memory,
-    };
-    const finalizeThreadExit = vi.fn();
-    const completeChannelRaw = vi.fn();
-    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
-      processes: new Map([
-        [pid, { channels: [mainChannel, threadChannel], memory }],
-      ]),
-      channelTids: new Map(),
-      finalizeThreadExit,
-      completeChannelRaw,
-      callbacks: { onThreadExit: vi.fn() },
-    }) as CentralizedKernelWorker;
+    const threadExit = vi.fn(() => 0);
+    const onThreadExit = vi.fn();
+    const harness = createGatedLifecycleHarness({
+      callbacks: { onThreadExit },
+      kernelExports: { kernel_thread_exit: threadExit },
+    });
+    const [registrationWitness] =
+      harness.worker.testAuthority
+        .replaceProcessRegistrationForLifecycleTest({
+          pid,
+          memory,
+          channelOffsets: [mainChannelOffset],
+        });
     const expected =
-      `No kernel-validated TID for non-main channel ${threadChannel.channelOffset} ` +
+      `No kernel-validated TID for non-main channel ${threadChannelOffset} ` +
       `of process ${pid}`;
 
-    expect(() => (kw as any).handleExit(
-      threadChannel,
-      ABI_SYSCALLS.Exit,
-      [0],
-    )).toThrow(expected);
-    expect(finalizeThreadExit).not.toHaveBeenCalled();
-    expect(completeChannelRaw).not.toHaveBeenCalled();
+    let failure: unknown;
+    try {
+      harness.worker.testAuthority
+        .dispatchUntrackedThreadExitForTaskAuthorityTest(
+          pid,
+          registrationWitness!,
+          threadChannelOffset,
+          0,
+        );
+    } catch (cause) {
+      failure = cause;
+    }
+    expect(failure).toMatchObject({
+      message:
+        "void kernel ingress untracked pthread exit task-authority test failed",
+      cause: { message: expected },
+    });
+    expect(threadExit).not.toHaveBeenCalled();
+    expect(onThreadExit).not.toHaveBeenCalled();
   });
 
-  it("clears pthread child TID when forced thread cleanup skips guest SYS_EXIT", () => {
+  it("rejects a stale process-generation witness for untracked pthread exit", () => {
+    const pid = 124;
+    const mainChannelOffset = WASM_PAGE_SIZE;
+    const threadChannelOffset = 2 * WASM_PAGE_SIZE;
+    const oldMemory = new WebAssembly.Memory({
+      initial: 4,
+      maximum: 4,
+      shared: true,
+    });
+    const newMemory = new WebAssembly.Memory({
+      initial: 4,
+      maximum: 4,
+      shared: true,
+    });
+    const threadExit = vi.fn(() => 0);
+    const onThreadExit = vi.fn();
+    const createProcess = vi.fn(() => 900);
+    const harness = createGatedLifecycleHarness({
+      callbacks: { onThreadExit },
+      kernelExports: {
+        kernel_create_process_with_stdio: createProcess,
+        kernel_thread_exit: threadExit,
+      },
+    });
+    const [staleWitness] =
+      harness.worker.testAuthority
+        .replaceProcessRegistrationForLifecycleTest({
+          pid,
+          memory: oldMemory,
+          channelOffsets: [mainChannelOffset],
+        });
+    harness.worker.testAuthority
+      .replaceProcessRegistrationForLifecycleTest({
+        pid,
+        memory: newMemory,
+        channelOffsets: [mainChannelOffset],
+      });
+
+    expect(() =>
+      harness.worker.testAuthority
+        .dispatchUntrackedThreadExitForTaskAuthorityTest(
+          pid,
+          staleWitness!,
+          threadChannelOffset,
+          0,
+        )
+    ).toThrow(
+      "task-authority test requires an untracked channel in the current process Memory generation",
+    );
+    expect(threadExit).not.toHaveBeenCalled();
+    expect(onThreadExit).not.toHaveBeenCalled();
+
+    // The stale capability is rejected without poisoning the selected
+    // generation or retaining work for a later entry.
+    expect(harness.worker.createProcess(CAPTURED_STDIO)).toBe(900);
+    expect(createProcess).toHaveBeenCalledOnce();
+  });
+
+  it("rejects busy untracked pthread exit before reading or retaining its witness", async () => {
+    const witnessRead = vi.fn();
+    const hostileWitness = new Proxy(
+      Object.create(null) as TestChannel,
+      {
+        get() {
+          witnessRead();
+          throw new Error("busy entry read the caller-owned witness");
+        },
+      },
+    );
+    const threadExit = vi.fn(() => 0);
+    const onThreadExit = vi.fn();
+    let harness!: GatedLifecycleHarness;
+    const createProcess = vi.fn(() => {
+      expect(() =>
+        harness.worker.testAuthority
+          .dispatchUntrackedThreadExitForTaskAuthorityTest(
+            124,
+            hostileWitness,
+            2 * WASM_PAGE_SIZE,
+            0,
+          )
+      ).toThrow(KernelReentrantEntryError);
+      return 901;
+    });
+    harness = createGatedLifecycleHarness({
+      callbacks: { onThreadExit },
+      kernelExports: {
+        kernel_create_process_with_stdio: createProcess,
+        kernel_thread_exit: threadExit,
+      },
+    });
+
+    expect(harness.worker.createProcess(CAPTURED_STDIO)).toBe(901);
+    await Promise.resolve();
+
+    expect(witnessRead).not.toHaveBeenCalled();
+    expect(threadExit).not.toHaveBeenCalled();
+    expect(onThreadExit).not.toHaveBeenCalled();
+  });
+
+  it("clears pthread child TID when forced thread cleanup skips guest SYS_EXIT", async () => {
     const pid = 125;
     const mainChannelOffset = WASM_PAGE_SIZE;
     const threadChannelOffset = 2 * WASM_PAGE_SIZE;
     const tid = 79;
+    const replacementTid = 80;
     const ctidPtr = 0x00040000;
     const memory = new WebAssembly.Memory({
       initial: 16,
       maximum: 16,
       shared: true,
     });
-    const channel = {
-      pid,
-      channelOffset: threadChannelOffset,
-      memory,
-      i32View: new Int32Array(memory.buffer, threadChannelOffset),
-      consecutiveSyscalls: 0,
-    };
     new DataView(memory.buffer).setInt32(ctidPtr, tid, true);
+    let harness!: GatedLifecycleHarness;
+    const onClone = vi.fn((attachment) => {
+      harness.worker.attachThreadChannel(attachment, threadChannelOffset);
+      return Promise.resolve();
+    });
+    let kernelMemory!: WebAssembly.Memory;
+    let cloneCount = 0;
+    const handleChannel = vi.fn((rawOffset: number | bigint) => {
+      const view = new DataView(
+        kernelMemory.buffer,
+        Number(rawOffset),
+        CH_TOTAL_SIZE,
+      );
+      view.setBigInt64(
+        CH_RETURN,
+        BigInt(cloneCount++ === 0 ? tid : replacementTid),
+        true,
+      );
+      view.setUint32(CH_ERRNO, 0, true);
+      return 0;
+    });
+    const threadExit = vi.fn(() => 0);
+    harness = createGatedLifecycleHarness({
+      callbacks: { onClone },
+      kernelExports: {
+        kernel_handle_channel: handleChannel,
+        kernel_thread_exit: threadExit,
+      },
+    });
+    kernelMemory = harness.kernelMemory;
+    registerLifecycleProcess(
+      harness,
+      pid,
+      memory,
+      mainChannelOffset,
+    );
 
-    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
-      processes: new Map([
-        [pid, { memory, channels: [{ channelOffset: mainChannelOffset }, channel] }],
-      ]),
-      activeChannels: [channel],
-      pendingSleeps: new Map(),
-      channelTids: new Map([[`${pid}:${threadChannelOffset}`, tid]]),
-      threadForkContexts: new Map([
-        [`${pid}:${threadChannelOffset}`, { fnPtr: 1, argPtr: 2 }],
-      ]),
-      threadCtidPtrs: new Map([[`${pid}:${tid}`, ctidPtr]]),
-      pendingSignalWaits: new Map(),
-      signalWaitDeadlines: new Map(),
-      notifyThreadExit: vi.fn(),
-    }) as CentralizedKernelWorker;
+    writePendingSyscall(
+      memory,
+      mainChannelOffset,
+      ABI_SYSCALLS.Clone,
+      [0x00200000, 0, 0, 0, ctidPtr, 0],
+    );
+    await waitForMailboxCompletion(memory, mainChannelOffset);
 
-    kw.finalizeThreadExit(pid, tid, threadChannelOffset);
+    harness.worker.finalizeThreadExit(pid, tid, threadChannelOffset);
 
     expect(new DataView(memory.buffer).getInt32(ctidPtr, true)).toBe(0);
-    expect((kw as any).threadCtidPtrs.has(`${pid}:${tid}`)).toBe(false);
-    expect((kw as any).channelTids.has(`${pid}:${threadChannelOffset}`)).toBe(false);
-    expect((kw as any).threadForkContexts.has(`${pid}:${threadChannelOffset}`)).toBe(false);
-    expect((kw as any).activeChannels).toEqual([]);
-    expect((kw as any).notifyThreadExit).toHaveBeenCalledWith(pid, tid);
+    expect(threadExit).toHaveBeenCalledWith(pid, tid);
+
+    // Reusing the exact channel offset proves forced cleanup released the
+    // transport attachment as well as the guest clear-TID word.
+    writePendingSyscall(
+      memory,
+      mainChannelOffset,
+      ABI_SYSCALLS.Clone,
+      [0, 0, 0, 0, 0, 0],
+    );
+    await waitForMailboxCompletion(memory, mainChannelOffset);
+    expect(readMailboxResult(memory, mainChannelOffset)).toEqual({
+      value: replacementTid,
+      errno: 0,
+    });
+    harness.worker.finalizeThreadExit(
+      pid,
+      replacementTid,
+      threadChannelOffset,
+    );
   });
 
   it("registers pthread clear-TID before the host clone callback can complete", async () => {
@@ -817,77 +1228,75 @@ describe("CentralizedKernelWorker Process Management", () => {
       maximum: 16,
       shared: true,
     });
-    const processView = new DataView(memory.buffer, mainChannelOffset);
-    processView.setUint32(CH_DATA, 11, true);
-    processView.setUint32(CH_DATA + 4, 22, true);
-
-    const kernelMemory = new WebAssembly.Memory({
-      initial: 1,
-      maximum: 1,
-    });
-    const kernelView = new DataView(kernelMemory.buffer);
-    const threadCtidPtrs = new Map<string, number>();
     let resolveClone!: () => void;
-    let kw!: CentralizedKernelWorker;
+    let harness!: GatedLifecycleHarness;
     const onClone = vi.fn((attachment) => {
-      expect(threadCtidPtrs.get(`${pid}:${tid}`)).toBe(ctidPtr);
-      kw.attachThreadChannel(attachment, 2 * WASM_PAGE_SIZE);
+      harness.worker.attachThreadChannel(
+        attachment,
+        2 * WASM_PAGE_SIZE,
+      );
       return new Promise<void>((resolve) => {
         resolveClone = resolve;
       });
     });
-    const channel = { pid, channelOffset: mainChannelOffset, memory };
-
-    kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+    let kernelMemory!: WebAssembly.Memory;
+    const handleChannel = vi.fn((rawOffset: number | bigint) => {
+      const view = new DataView(
+        kernelMemory.buffer,
+        Number(rawOffset),
+        CH_TOTAL_SIZE,
+      );
+      view.setBigInt64(CH_RETURN, BigInt(tid), true);
+      view.setUint32(CH_ERRNO, 0, true);
+      return 0;
+    });
+    const threadExit = vi.fn(() => 0);
+    harness = createGatedLifecycleHarness({
       callbacks: { onClone },
-      kernel: {
-        toKernelPtr(value: number | bigint): number {
-          return Number(value);
-        },
-      },
-      kernelMemory,
-      scratchOffset: 0,
-      currentHandlePid: 0,
-      activeChannels: [channel],
-      channelTids: new Map<string, number>(),
-      execHandoffPids: new Set<number>(),
-      hostReaped: new Set<number>(),
-      processes: new Map([
-        [pid, { channels: [channel], memory, explicitMaxAddr: true }],
-      ]),
-      threadCtidPtrs,
-      threadForkContexts: new Map<string, { fnPtr: number; argPtr: number }>(),
-      usePolling: true,
-      completeChannel: vi.fn(),
-      bindKernelTidForChannel: vi.fn(),
-      kernelInstance: {
-        exports: {
-          kernel_get_process_exit_signal: vi.fn(() => -1),
-          kernel_validate_task: vi.fn(() => 0),
-          kernel_handle_channel: vi.fn(() => {
-            kernelView.setBigInt64(CH_RETURN, BigInt(tid), true);
-            kernelView.setUint32(CH_ERRNO, 0, true);
-            return 0;
-          }),
-        },
+      kernelExports: {
+        kernel_handle_channel: handleChannel,
+        kernel_thread_exit: threadExit,
       },
     });
-
-    (kw as any).handleClone(
-      channel,
-      [0x00200000, stackPtr, 0, tlsPtr, ctidPtr, 0],
+    kernelMemory = harness.kernelMemory;
+    registerLifecycleProcess(
+      harness,
+      pid,
+      memory,
+      mainChannelOffset,
     );
 
-    expect(onClone).toHaveBeenCalledTimes(1);
-    expect(threadCtidPtrs.get(`${pid}:${tid}`)).toBe(ctidPtr);
+    writePendingSyscall(
+      memory,
+      mainChannelOffset,
+      ABI_SYSCALLS.Clone,
+      [0x00200000, stackPtr, 0, tlsPtr, ctidPtr, 0],
+    );
+    await waitForCondition(
+      () => onClone.mock.calls.length === 1,
+      "pending clone callback",
+    );
+
+    // Forced cleanup can find and clear the word before the callback promise
+    // settles, proving the clone path published clear-TID ownership first.
+    new DataView(memory.buffer).setInt32(ctidPtr, tid, true);
+    harness.worker.finalizeThreadExit(
+      pid,
+      tid,
+      2 * WASM_PAGE_SIZE,
+    );
+    expect(new DataView(memory.buffer).getInt32(ctidPtr, true)).toBe(0);
+    expect(threadExit).toHaveBeenCalledWith(pid, tid);
+
     resolveClone();
-    await Promise.resolve();
-    expect((kw as any).completeChannel).toHaveBeenCalled();
+    await waitForMailboxCompletion(memory, mainChannelOffset);
   });
 
   it("does not erase replacement clear-TID metadata from a stale clone completion", async () => {
     const pid = 126;
     const tid = 79;
+    const oldCtidPtr = 0x00040000;
+    const newCtidPtr = 0x00050000;
     const oldMemory = new WebAssembly.Memory({
       initial: 16,
       maximum: 16,
@@ -899,113 +1308,181 @@ describe("CentralizedKernelWorker Process Management", () => {
       shared: true,
     });
     const channelOffset = WASM_PAGE_SIZE;
-    const oldChannel = { pid, channelOffset, memory: oldMemory };
-    const newChannel = { pid, channelOffset, memory: newMemory };
-    const processView = new DataView(oldMemory.buffer, channelOffset);
-    processView.setUint32(CH_DATA, 11, true);
-    processView.setUint32(CH_DATA + 4, 22, true);
-    const kernelMemory = new WebAssembly.Memory({ initial: 1, maximum: 1 });
-    const kernelView = new DataView(kernelMemory.buffer);
-    const threadCtidPtrs = new Map<string, number>();
+    const threadChannelOffset = 2 * WASM_PAGE_SIZE;
+    new DataView(oldMemory.buffer).setInt32(oldCtidPtr, tid, true);
+    new DataView(newMemory.buffer).setInt32(newCtidPtr, tid, true);
     let resolveClone!: () => void;
-    const onClone = vi.fn(() => new Promise<void>((resolve) => {
-      resolveClone = resolve;
-    }));
-    const completeChannel = vi.fn();
-    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+    let cloneCount = 0;
+    let harness!: GatedLifecycleHarness;
+    const onClone = vi.fn((attachment) => {
+      cloneCount++;
+      if (cloneCount === 1) {
+        return new Promise<void>((resolve) => {
+          resolveClone = resolve;
+        });
+      }
+      harness.worker.attachThreadChannel(
+        attachment,
+        threadChannelOffset,
+      );
+      return Promise.resolve();
+    });
+    let kernelMemory!: WebAssembly.Memory;
+    const handleChannel = vi.fn((rawOffset: number | bigint) => {
+      const view = new DataView(
+        kernelMemory.buffer,
+        Number(rawOffset),
+        CH_TOTAL_SIZE,
+      );
+      view.setBigInt64(CH_RETURN, BigInt(tid), true);
+      view.setUint32(CH_ERRNO, 0, true);
+      return 0;
+    });
+    const threadExit = vi.fn(() => 0);
+    harness = createGatedLifecycleHarness({
       callbacks: { onClone },
-      kernel: { toKernelPtr: (value: number | bigint) => Number(value) },
-      kernelMemory,
-      scratchOffset: 0,
-      currentHandlePid: 0,
-      processes: new Map([[pid, { channels: [oldChannel] }]]),
-      threadCtidPtrs,
-      completeChannel,
-      bindKernelTidForChannel: vi.fn(),
-      kernelInstance: {
-        exports: {
-          kernel_handle_channel: vi.fn(() => {
-            kernelView.setBigInt64(CH_RETURN, BigInt(tid), true);
-            kernelView.setUint32(CH_ERRNO, 0, true);
-            return 0;
-          }),
+      kernelExports: {
+        kernel_handle_channel: handleChannel,
+        kernel_thread_exit: threadExit,
+      },
+    });
+    kernelMemory = harness.kernelMemory;
+    registerLifecycleProcess(
+      harness,
+      pid,
+      oldMemory,
+      channelOffset,
+    );
+
+    writePendingSyscall(
+      oldMemory,
+      channelOffset,
+      ABI_SYSCALLS.Clone,
+      [0x00200000, 0x00800000, 0, 0x00900000, oldCtidPtr, 0],
+    );
+    await waitForCondition(
+      () => onClone.mock.calls.length === 1,
+      "old-generation clone callback",
+    );
+
+    const [newChannel] =
+      harness.worker.testAuthority
+        .replaceProcessRegistrationForLifecycleTest({
+          pid,
+          memory: newMemory,
+          channelOffsets: [channelOffset],
+        });
+    writePendingSyscall(
+      newMemory,
+      channelOffset,
+      ABI_SYSCALLS.Clone,
+      [0x00200000, 0x00800000, 0, 0x00900000, newCtidPtr, 0],
+    );
+    harness.worker.testAuthority
+      .dispatchScratchBoundarySyscallForTest(newChannel!);
+    await waitForMailboxCompletion(newMemory, channelOffset);
+    expect(readMailboxResult(newMemory, channelOffset)).toEqual({
+      value: tid,
+      errno: 0,
+    });
+
+    resolveClone();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+    harness.worker.finalizeThreadExit(
+      pid,
+      tid,
+      threadChannelOffset,
+    );
+    expect(new DataView(newMemory.buffer).getInt32(newCtidPtr, true)).toBe(0);
+    expect(threadExit).toHaveBeenCalledTimes(1);
+    expect(threadExit).toHaveBeenCalledWith(pid, tid);
+    expect(
+      Atomics.load(
+        new Int32Array(oldMemory.buffer, channelOffset),
+        CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
+      ),
+    ).toBe(CHANNEL_STATUS_PENDING);
+  });
+
+  it("does not lower compact process max_addr when adding dynamic pthread channels", async () => {
+    const setMaxAddr = vi.fn(() => 0);
+    const highThreadChannelOffset = 0x04000000 + 2 * WASM_PAGE_SIZE;
+    let kw!: CentralizedKernelWorker;
+    kw = createCentralizedKernelWorkerTestDouble({
+      callbacks: {
+        onClone: (attachment) => {
+          kw.attachThreadChannel(attachment, highThreadChannelOffset);
+          return Promise.resolve();
         },
       },
     });
-
-    (kw as any).handleClone(
-      oldChannel,
-      [0, 0x00800000, 0, 0x00900000, 0x00040000, 0],
-    );
-    (kw as any).processes.set(pid, { channels: [newChannel] });
-    threadCtidPtrs.set(`${pid}:${tid}`, 0x00050000);
-    resolveClone();
-    await Promise.resolve();
-
-    expect(threadCtidPtrs.get(`${pid}:${tid}`)).toBe(0x00050000);
-    expect(completeChannel).not.toHaveBeenCalled();
-  });
-
-  it("does not lower compact process max_addr when adding dynamic pthread channels", () => {
-    const setMaxAddr = vi.fn(() => 0);
-    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
-      initialized: true,
-      hostReaped: new Set(),
-      processes: new Map(),
-      activeChannels: [],
-      channelTids: new Map(),
-      threadForkContexts: new Map(),
-      usePolling: true,
-      kernel: {
-        toKernelPtr(value: number | bigint): number {
-          return Number(value);
-        },
-      },
-      kernelInstance: {
-        exports: {
+    const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
+    installKernelWorkerTestScratch(
+      kw,
+      kernelMemory,
+      128,
+      4,
+      {
+        kernelExports: {
+          kernel_drain_wakeup_events: vi.fn(() => 0),
+          kernel_get_process_exit_signal: vi.fn(() => -1),
           kernel_get_process_state: vi.fn(() => 0),
+          kernel_handle_channel: vi.fn((offset: number) => {
+            const kernelView = new DataView(kernelMemory.buffer, offset);
+            kernelView.setBigInt64(CH_RETURN, 7n, true);
+            kernelView.setUint32(CH_ERRNO, 0, true);
+            return 0;
+          }),
           kernel_set_brk_base: vi.fn(() => 0),
-          kernel_set_mmap_base: vi.fn(() => 0),
+          kernel_set_current_tid: vi.fn(() => 0),
           kernel_set_max_addr: setMaxAddr,
+          kernel_set_mmap_base: vi.fn(() => 0),
           kernel_validate_task: vi.fn(() => 0),
         },
+        kernelExportNames: [
+          "kernel_drain_wakeup_events",
+          "kernel_get_process_exit_signal",
+          "kernel_get_process_state",
+          "kernel_handle_channel",
+          "kernel_set_brk_base",
+          "kernel_set_current_tid",
+          "kernel_set_max_addr",
+          "kernel_set_mmap_base",
+          "kernel_validate_task",
+        ],
       },
-    }) as CentralizedKernelWorker;
-    const highThreadChannelOffset = 0x04000000 + 2 * WASM_PAGE_SIZE;
+    );
     const memory = new WebAssembly.Memory({
       initial: highThreadChannelOffset / WASM_PAGE_SIZE + 1,
       maximum: DEFAULT_MAX_PAGES,
       shared: true,
     });
     const maxAddr = 0x20000000;
+    const mainChannelOffset = 4 * WASM_PAGE_SIZE;
 
-    kw.registerProcess(321, memory, [4 * WASM_PAGE_SIZE], {
+    kw.registerProcess(321, memory, [mainChannelOffset], {
       brkBase: 4 * WASM_PAGE_SIZE,
       mmapBase: 4 * WASM_PAGE_SIZE,
       maxAddr,
     });
-    kw.attachThreadChannel(
-      issueThreadAttachment(kw, 321, 7),
-      highThreadChannelOffset,
+    writePendingSyscall(
+      memory,
+      mainChannelOffset,
+      ABI_SYSCALLS.Clone,
+      [0, 0, 0, 0, 0, 0],
     );
+    await waitForMailboxCompletion(memory, mainChannelOffset);
 
     expect(setMaxAddr).toHaveBeenCalledTimes(1);
     expect(setMaxAddr).toHaveBeenCalledWith(321, maxAddr);
   });
 
   it("rejects attaching host state to an unknown kernel process", () => {
-    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
-      initialized: true,
-      hostReaped: new Set(),
-      processes: new Map(),
-      activeChannels: [],
-      usePolling: true,
-      kernelInstance: {
-        exports: {
-          kernel_get_process_state: vi.fn(() => -3),
-        },
-      },
-    }) as CentralizedKernelWorker;
+    const kw = createRegistrationTestWorker(
+      { kernel_get_process_state: vi.fn(() => -3) },
+      ["kernel_get_process_state"],
+    );
     const memory = new WebAssembly.Memory({
       initial: 16,
       maximum: 16,
@@ -1018,18 +1495,10 @@ describe("CentralizedKernelWorker Process Management", () => {
   });
 
   it("rejects attaching host state to an exited kernel process", () => {
-    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
-      initialized: true,
-      hostReaped: new Set(),
-      processes: new Map(),
-      activeChannels: [],
-      usePolling: true,
-      kernelInstance: {
-        exports: {
-          kernel_get_process_state: vi.fn(() => PROCESS_STATE_EXITED),
-        },
-      },
-    }) as CentralizedKernelWorker;
+    const kw = createRegistrationTestWorker(
+      { kernel_get_process_state: vi.fn(() => PROCESS_STATE_EXITED) },
+      ["kernel_get_process_state"],
+    );
     const memory = new WebAssembly.Memory({
       initial: 16,
       maximum: 16,
@@ -1042,18 +1511,11 @@ describe("CentralizedKernelWorker Process Management", () => {
   });
 
   it("rejects attaching a host Worker to the kernel-reserved init PID", () => {
-    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
-      initialized: true,
-      hostReaped: new Set(),
-      processes: new Map(),
-      activeChannels: [],
-      usePolling: true,
-      kernelInstance: {
-        exports: {
-          kernel_get_process_state: vi.fn(() => 0),
-        },
-      },
-    }) as CentralizedKernelWorker;
+    const getProcessState = vi.fn(() => PROCESS_STATE_RUNNING);
+    const kw = createRegistrationTestWorker(
+      { kernel_get_process_state: getProcessState },
+      ["kernel_get_process_state"],
+    );
     const memory = new WebAssembly.Memory({
       initial: 16,
       maximum: 16,
@@ -1063,139 +1525,307 @@ describe("CentralizedKernelWorker Process Management", () => {
     expect(() => kw.registerProcess(1, memory, [4 * WASM_PAGE_SIZE])).toThrow(
       "Cannot register the kernel-reserved init process",
     );
+    expect(getProcessState).not.toHaveBeenCalled();
   });
 
-  it("rejects a thread channel whose TID is not owned by the kernel process", () => {
+  it("rejects a thread channel whose TID is not owned by the kernel process", async () => {
     const pid = 321;
     const mainChannelOffset = 4 * WASM_PAGE_SIZE;
     const threadChannelOffset = 8 * WASM_PAGE_SIZE;
+    const tid = 999;
     const validateTask = vi.fn(() => -3);
     const memory = new WebAssembly.Memory({
       initial: 16,
       maximum: 16,
       shared: true,
     });
-    const mainChannel = {
+    let attachmentFailure: unknown;
+    let harness!: GatedLifecycleHarness;
+    const onClone = vi.fn((attachment) => {
+      try {
+        harness.worker.attachThreadChannel(
+          attachment,
+          threadChannelOffset,
+        );
+      } catch (cause) {
+        attachmentFailure = cause;
+        throw cause;
+      }
+      throw new Error("kernel-invalid TID was unexpectedly attached");
+    });
+    let kernelMemory!: WebAssembly.Memory;
+    const handleChannel = vi.fn((rawOffset: number | bigint) => {
+      const view = new DataView(
+        kernelMemory.buffer,
+        Number(rawOffset),
+        CH_TOTAL_SIZE,
+      );
+      view.setBigInt64(CH_RETURN, BigInt(tid), true);
+      view.setUint32(CH_ERRNO, 0, true);
+      return 0;
+    });
+    const threadExit = vi.fn(() => 0);
+    harness = createGatedLifecycleHarness({
+      callbacks: { onClone },
+      kernelExports: {
+        kernel_handle_channel: handleChannel,
+        kernel_thread_exit: threadExit,
+        kernel_validate_task: validateTask,
+      },
+    });
+    kernelMemory = harness.kernelMemory;
+    registerLifecycleProcess(
+      harness,
       pid,
       memory,
-      channelOffset: mainChannelOffset,
-      i32View: new Int32Array(memory.buffer, mainChannelOffset),
-      consecutiveSyscalls: 0,
-    };
-    const channels = [mainChannel];
-    const activeChannels = [mainChannel];
-    const channelTids = new Map<string, number>();
-    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
-      initialized: true,
-      hostReaped: new Set(),
-      execHandoffPids: new Set(),
-      processes: new Map([[pid, { pid, memory, channels }]]),
-      activeChannels,
-      channelTids,
-      threadForkContexts: new Map(),
-      usePolling: true,
-      kernelInstance: {
-        exports: {
-          kernel_validate_task: validateTask,
-        },
-      },
-    }) as CentralizedKernelWorker;
-
-    expect(() => kw.attachThreadChannel(
-      issueThreadAttachment(kw, pid, 999),
-      threadChannelOffset,
-    )).toThrow(
-      "Kernel rejected tid 999 for process 321: errno 3",
+      mainChannelOffset,
     );
+
+    writePendingSyscall(
+      memory,
+      mainChannelOffset,
+      ABI_SYSCALLS.Clone,
+      [0, 0, 0, 0, 0, 0],
+    );
+    await waitForCondition(
+      () => attachmentFailure !== undefined,
+      "kernel-invalid thread attachment rejection",
+    );
+
+    expect(attachmentFailure).toMatchObject({
+      message: "void kernel ingress thread channel attachment failed",
+      cause: {
+        message: "Kernel rejected tid 999 for process 321: errno 3",
+      },
+    });
     expect(validateTask).toHaveBeenCalledWith(pid, 999);
-    expect(channels).toHaveLength(1);
-    expect(activeChannels).toHaveLength(1);
-    expect(channelTids.size).toBe(0);
+    expect(threadExit).not.toHaveBeenCalled();
+    expect(harness.worker.getProcessMemory(pid)).toBe(memory);
+    expect(
+      Atomics.load(
+        new Int32Array(memory.buffer, mainChannelOffset),
+        CH_STATUS / Int32Array.BYTES_PER_ELEMENT,
+      ),
+    ).toBe(CHANNEL_STATUS_PENDING);
   });
 
-  it("rejects non-canonical or leader identities before attaching a thread channel", () => {
+  it("rejects non-canonical or leader identities before attaching a thread channel", async () => {
     const pid = 321;
-    const memory = new WebAssembly.Memory({
-      initial: 16,
-      maximum: 16,
-      shared: true,
-    });
-    const mainChannel = {
-      pid,
-      memory,
-      channelOffset: 4 * WASM_PAGE_SIZE,
-      i32View: new Int32Array(memory.buffer, 4 * WASM_PAGE_SIZE),
-      consecutiveSyscalls: 0,
-    };
     const validateTask = vi.fn(() => 0);
-    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
-      initialized: true,
-      hostReaped: new Set(),
-      execHandoffPids: new Set(),
-      processes: new Map([[pid, { pid, memory, channels: [mainChannel] }]]),
-      activeChannels: [mainChannel],
-      channelTids: new Map(),
-      threadForkContexts: new Map(),
-      usePolling: true,
-      kernelInstance: {
-        exports: { kernel_validate_task: validateTask },
-      },
-    }) as CentralizedKernelWorker;
-
     for (const tid of [pid, 0x8000_0000, 0x1_0000_0001]) {
-      expect(() => kw.attachThreadChannel(
-        issueThreadAttachment(kw, pid, tid),
-        8 * WASM_PAGE_SIZE,
-      )).toThrow(
-        "requires a positive, non-leader kernel TID",
+      const memory = new WebAssembly.Memory({
+        initial: 16,
+        maximum: 16,
+        shared: true,
+      });
+      const mainChannelOffset = 4 * WASM_PAGE_SIZE;
+      const threadChannelOffset = 8 * WASM_PAGE_SIZE;
+      let attachmentFailure: unknown;
+      let harness!: GatedLifecycleHarness;
+      const onClone = vi.fn((attachment) => {
+        try {
+          harness.worker.attachThreadChannel(
+            attachment,
+            threadChannelOffset,
+          );
+        } catch (cause) {
+          attachmentFailure = cause;
+          throw cause;
+        }
+        throw new Error("non-canonical TID was unexpectedly attached");
+      });
+      let kernelMemory!: WebAssembly.Memory;
+      const handleChannel = vi.fn((rawOffset: number | bigint) => {
+        const view = new DataView(
+          kernelMemory.buffer,
+          Number(rawOffset),
+          CH_TOTAL_SIZE,
+        );
+        view.setBigInt64(CH_RETURN, BigInt(tid), true);
+        view.setUint32(CH_ERRNO, 0, true);
+        return 0;
+      });
+      harness = createGatedLifecycleHarness({
+        callbacks: { onClone },
+        kernelExports: {
+          kernel_handle_channel: handleChannel,
+          kernel_validate_task: validateTask,
+        },
+      });
+      kernelMemory = harness.kernelMemory;
+      registerLifecycleProcess(
+        harness,
+        pid,
+        memory,
+        mainChannelOffset,
       );
+
+      writePendingSyscall(
+        memory,
+        mainChannelOffset,
+        ABI_SYSCALLS.Clone,
+        [0, 0, 0, 0, 0, 0],
+      );
+      await waitForCondition(
+        () => attachmentFailure !== undefined,
+        `non-canonical thread attachment rejection for ${tid}`,
+      );
+      expect(attachmentFailure).toMatchObject({
+        message: "void kernel ingress thread channel attachment failed",
+        cause: {
+          message: expect.stringContaining(
+            "requires a positive, non-leader kernel TID",
+          ),
+        },
+      });
     }
     expect(validateTask).not.toHaveBeenCalled();
-    expect((kw as any).activeChannels).toEqual([mainChannel]);
-    expect((kw as any).channelTids.size).toBe(0);
   });
 
   it("should register and unregister processes", async () => {
-    const kw = new CentralizedKernelWorker(
-      { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
-      new NodePlatformIO(),
-    );
-    await kw.init(loadKernelWasm());
+    const threadChannelOffsets = new Map<number, number>();
+    const threadTids = new Map<number, number>();
+    let harness!: GatedLifecycleHarness;
+    const onClone = vi.fn((attachment) => {
+      const channelOffset = threadChannelOffsets.get(attachment.pid);
+      if (channelOffset === undefined) {
+        throw new Error(
+          `missing test thread channel for process ${attachment.pid}`,
+        );
+      }
+      harness.worker.attachThreadChannel(attachment, channelOffset);
+      threadTids.set(attachment.pid, attachment.tid);
+      return Promise.resolve();
+    });
+    let kernelMemory!: WebAssembly.Memory;
+    const handleChannel = vi.fn((
+      rawOffset: number | bigint,
+      _capacity: number,
+      pid: number,
+    ) => {
+      const view = new DataView(
+        kernelMemory.buffer,
+        Number(rawOffset),
+        CH_TOTAL_SIZE,
+      );
+      view.setBigInt64(CH_RETURN, BigInt(pid + 1000), true);
+      view.setUint32(CH_ERRNO, 0, true);
+      return 0;
+    });
+    harness = createGatedLifecycleHarness({
+      callbacks: { onClone },
+      kernelExports: { kernel_handle_channel: handleChannel },
+    });
+    kernelMemory = harness.kernelMemory;
+    const kw = harness.worker;
 
     const proc1 = createProcessMemory();
     const proc2 = createProcessMemory();
     expect(proc1.memory.buffer.byteLength).toBeLessThan(MAX_PAGES * WASM_PAGE_SIZE);
     expect(proc2.memory.buffer.byteLength).toBeLessThan(MAX_PAGES * WASM_PAGE_SIZE);
 
-    const firstPid = createAndRegisterProcess(kw, proc1);
-    const secondPid = createAndRegisterProcess(kw, proc2);
-    expect(firstPid).not.toBe(secondPid);
+    const firstPid = 500;
+    const secondPid = 501;
+    registerLifecycleProcess(
+      harness,
+      firstPid,
+      proc1.memory,
+      proc1.channelOffset,
+    );
+    registerLifecycleProcess(
+      harness,
+      secondPid,
+      proc2.memory,
+      proc2.channelOffset,
+    );
 
-    // Process teardown must retire every image-owned thread transport record,
-    // including metadata for workers that did not reach their own SYS_EXIT.
-    (kw as any).channelTids.set(`${firstPid}:1000`, 1001);
-    (kw as any).threadForkContexts.set(`${firstPid}:1000`, { fnPtr: 1, argPtr: 2 });
-    (kw as any).threadCtidPtrs.set(`${firstPid}:1001`, 2000);
-    (kw as any).channelTids.set(`${secondPid}:3000`, 3001);
-    (kw as any).threadForkContexts.set(`${secondPid}:3000`, { fnPtr: 3, argPtr: 4 });
-    (kw as any).threadCtidPtrs.set(`${secondPid}:3001`, 4000);
+    const firstThreadChannelOffset =
+      proc1.channelOffset === WASM_PAGE_SIZE
+        ? 2 * WASM_PAGE_SIZE
+        : WASM_PAGE_SIZE;
+    const secondThreadChannelOffset =
+      proc2.channelOffset === WASM_PAGE_SIZE
+        ? 2 * WASM_PAGE_SIZE
+        : WASM_PAGE_SIZE;
+    const firstCtidPtr = 4 * WASM_PAGE_SIZE;
+    const secondCtidPtr = 5 * WASM_PAGE_SIZE;
+    threadChannelOffsets.set(firstPid, firstThreadChannelOffset);
+    threadChannelOffsets.set(secondPid, secondThreadChannelOffset);
+    for (const [pid, process, ctidPtr] of [
+      [firstPid, proc1, firstCtidPtr],
+      [secondPid, proc2, secondCtidPtr],
+    ] as const) {
+      writePendingSyscall(
+        process.memory,
+        process.channelOffset,
+        ABI_SYSCALLS.Clone,
+        [0x00200000, 0, 0, 0, ctidPtr, 0],
+      );
+      await waitForMailboxCompletion(
+        process.memory,
+        process.channelOffset,
+      );
+      const tid = threadTids.get(pid);
+      if (tid === undefined) {
+        throw new Error(
+          `clone did not attach for process ${pid}: ${
+            JSON.stringify(readMailboxResult(
+              process.memory,
+              process.channelOffset,
+            ))
+          }`,
+        );
+      }
+      new DataView(process.memory.buffer).setInt32(
+        ctidPtr,
+        tid,
+        true,
+      );
+      expect(
+        kw.testAuthority
+          .inspectThreadTransportStateForLifecycleTest(pid),
+      ).toEqual({
+        channelTidEntries: 1,
+        forkContextEntries: 1,
+        clearTidEntries: 1,
+        activeThreadChannels: 1,
+      });
+    }
 
     // Unregister both without error
     kw.unregisterProcess(firstPid);
-    expect(Array.from((kw as any).channelTids.keys())).toEqual([`${secondPid}:3000`]);
-    expect(Array.from((kw as any).threadForkContexts.keys())).toEqual([`${secondPid}:3000`]);
-    expect(Array.from((kw as any).threadCtidPtrs.keys())).toEqual([`${secondPid}:3001`]);
-    kw.unregisterProcess(secondPid);
-    expect((kw as any).processes.has(firstPid)).toBe(false);
-    expect((kw as any).processes.has(secondPid)).toBe(false);
     expect(
-      (kw as any).activeChannels.some(
-        (ch: any) => ch.pid === firstPid || ch.pid === secondPid,
-      ),
-    ).toBe(false);
-    expect((kw as any).channelTids.size).toBe(0);
-    expect((kw as any).threadForkContexts.size).toBe(0);
-    expect((kw as any).threadCtidPtrs.size).toBe(0);
+      kw.testAuthority
+        .inspectThreadTransportStateForLifecycleTest(firstPid),
+    ).toEqual({
+      channelTidEntries: 0,
+      forkContextEntries: 0,
+      clearTidEntries: 0,
+      activeThreadChannels: 0,
+    });
+    expect(
+      kw.testAuthority
+        .inspectThreadTransportStateForLifecycleTest(secondPid),
+    ).toEqual({
+      channelTidEntries: 1,
+      forkContextEntries: 1,
+      clearTidEntries: 1,
+      activeThreadChannels: 1,
+    });
+    expect(kw.getProcessMemory(firstPid)).toBeUndefined();
+    expect(kw.getProcessMemory(secondPid)).toBe(proc2.memory);
+
+    kw.unregisterProcess(secondPid);
+    expect(
+      kw.testAuthority
+        .inspectThreadTransportStateForLifecycleTest(secondPid),
+    ).toEqual({
+      channelTidEntries: 0,
+      forkContextEntries: 0,
+      clearTidEntries: 0,
+      activeThreadChannels: 0,
+    });
+    expect(kw.getProcessMemory(secondPid)).toBeUndefined();
 
     // Unregistering non-existent pid should not throw
     kw.unregisterProcess(999);
@@ -1216,30 +1846,15 @@ describe("CentralizedKernelWorker Process Management", () => {
 
     // Issue open(2) directly through the real kernel export so the Rust
     // Process owns the exact host handle that unregisterProcess must release.
-    const kernelMemory = (kw as any).kernelMemory as WebAssembly.Memory;
-    const scratchOffset = (kw as any).scratchOffset as number;
-    const pathPtr = scratchOffset + CH_DATA;
-    const path = new TextEncoder().encode(
-      `${join(process.cwd(), "../Cargo.toml")}\0`,
+    const opened = await issueDirectKernelOpen(
+      kw,
+      pid,
+      procMemory,
+      join(process.cwd(), "../Cargo.toml"),
     );
-    new Uint8Array(kernelMemory.buffer).set(path, pathPtr);
-    const channel = new DataView(kernelMemory.buffer, scratchOffset);
-    channel.setUint32(CH_SYSCALL, ABI_SYSCALLS.Open, true);
-    for (let i = 0; i < 6; i++) {
-      channel.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
-    }
-    channel.setBigInt64(CH_ARGS, BigInt(pathPtr), true);
-    const handleChannel = (kw as any).kernelInstance.exports
-      .kernel_handle_channel as (offset: number, pid: number) => number;
-    const setCurrentTid = (kw as any).kernelInstance.exports
-      .kernel_set_current_tid as (pid: number, tid: number) => number;
-    expect(setCurrentTid(pid, pid)).toBe(0);
-    handleChannel(kw.toKernelPtr(scratchOffset) as number, pid);
 
-    expect(channel.getUint32(CH_ERRNO, true)).toBe(0);
-    expect(Number(channel.getBigInt64(CH_RETURN, true))).toBeGreaterThanOrEqual(
-      3,
-    );
+    expect(opened.errno).toBe(0);
+    expect(opened.value).toBeGreaterThanOrEqual(3);
     expect(open).toHaveBeenCalledOnce();
     const hostHandle = open.mock.results[0].value;
     expect(close).not.toHaveBeenCalledWith(hostHandle);
@@ -1250,86 +1865,82 @@ describe("CentralizedKernelWorker Process Management", () => {
   });
 
   it("releases a retained mmap handle before forced descriptor teardown", async () => {
+    const tempDirectory = mkdtempSync(
+      join(tmpdir(), "kandelo-mmap-teardown-"),
+    );
+    const filePath = join(tempDirectory, "mapped.bin");
+    writeFileSync(filePath, new Uint8Array(4096).fill(0x41));
     const io = new NodePlatformIO();
     const open = vi.spyOn(io, "open");
+    const write = vi.spyOn(io, "write");
     const close = vi.spyOn(io, "close");
     const kw = new CentralizedKernelWorker(
       { maxWorkers: 4, dataBufferSize: 65536, useSharedMemory: true },
       io,
     );
-    await kw.init(loadKernelWasm());
+    let pid: number | undefined;
+    try {
+      await kw.init(loadKernelWasm());
 
-    const procMemory = createProcessMemory();
-    const pid = createAndRegisterProcess(kw, procMemory);
-    const kernelMemory = (kw as any).kernelMemory as WebAssembly.Memory;
-    const scratchOffset = (kw as any).scratchOffset as number;
-    const pathPtr = scratchOffset + CH_DATA;
-    const path = new TextEncoder().encode(
-      `${join(process.cwd(), "../Cargo.toml")}\0`,
-    );
-    new Uint8Array(kernelMemory.buffer).set(path, pathPtr);
-    const channel = new DataView(kernelMemory.buffer, scratchOffset);
-    channel.setUint32(CH_SYSCALL, ABI_SYSCALLS.Open, true);
-    for (let i = 0; i < 6; i++) {
-      channel.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
+      const procMemory = createProcessMemory();
+      pid = createAndRegisterProcess(kw, procMemory);
+      const opened = await issueDirectKernelOpen(
+        kw,
+        pid,
+        procMemory,
+        filePath,
+        2, // O_RDWR
+      );
+      const guestFd = opened.value;
+      expect(opened.errno).toBe(0);
+      expect(guestFd).toBeGreaterThanOrEqual(3);
+      expect(open).toHaveBeenCalledOnce();
+      const hostHandle = open.mock.results[0]!.value;
+
+      writePendingSyscall(
+        procMemory.memory,
+        procMemory.channelOffset,
+        ABI_SYSCALLS.Mmap,
+        [
+          0,
+          4096,
+          3, // PROT_READ | PROT_WRITE
+          1, // MAP_SHARED
+          guestFd,
+          0,
+        ],
+      );
+      await waitForMailboxCompletion(
+        procMemory.memory,
+        procMemory.channelOffset,
+      );
+      const mapped = readMailboxResult(
+        procMemory.memory,
+        procMemory.channelOffset,
+      );
+      expect(mapped.errno).toBe(0);
+      expect(mapped.value).toBeGreaterThan(0);
+
+      new Uint8Array(procMemory.memory.buffer)[mapped.value] = 0x42;
+      kw.unregisterProcess(pid);
+
+      const hostWriteCall = write.mock.calls.findIndex(
+        ([handle]) => handle === hostHandle,
+      );
+      const hostCloseCall = close.mock.calls.findIndex(
+        ([handle]) => handle === hostHandle,
+      );
+      expect(hostWriteCall).toBeGreaterThanOrEqual(0);
+      expect(hostCloseCall).toBeGreaterThanOrEqual(0);
+      expect(write.mock.invocationCallOrder[hostWriteCall]!).toBeLessThan(
+        close.mock.invocationCallOrder[hostCloseCall]!,
+      );
+      expect(readFileSync(filePath)[0]).toBe(0x42);
+      expect(kw.getProcessMemory(pid)).toBeUndefined();
+    } finally {
+      if (pid !== undefined) kw.unregisterProcess(pid);
+      rmSync(tempDirectory, { recursive: true, force: true });
     }
-    channel.setBigInt64(CH_ARGS, BigInt(pathPtr), true);
-    const handleChannel = (kw as any).kernelInstance.exports
-      .kernel_handle_channel as (offset: number, pid: number) => number;
-    const setCurrentTid = (kw as any).kernelInstance.exports
-      .kernel_set_current_tid as (pid: number, tid: number) => number;
-    expect(setCurrentTid(pid, pid)).toBe(0);
-    handleChannel(kw.toKernelPtr(scratchOffset) as number, pid);
-    const guestFd = Number(channel.getBigInt64(CH_RETURN, true));
-    expect(channel.getUint32(CH_ERRNO, true)).toBe(0);
-    expect(guestFd).toBeGreaterThanOrEqual(3);
-    const hostHandle = open.mock.results[0].value;
-    const stat = io.fstat(hostHandle);
-    const backingKey = io.fileHandleIdentity(
-      hostHandle,
-      BigInt(stat.dev),
-      BigInt(stat.ino),
-    )!;
-
-    const retainedKernel = (kw as any).kernel;
-    retainedKernel.retainHostFileHandle(hostHandle);
-    const release = vi.spyOn(retainedKernel, "releaseHostFileHandle");
-    (kw as any).sharedMmapBackings.set(backingKey, {
-      key: backingKey,
-      handle: hostHandle,
-      writable: false,
-      size: stat.size,
-      sizeValid: true,
-      pages: new Map(),
-      dirtyPages: new Set(),
-      refCount: 1,
-      version: 0,
-    });
-    (kw as any).sharedMappings.set(pid, new Map([[0x1000, {
-      fd: guestFd,
-      fileOffset: 0,
-      len: 4096,
-      writable: false,
-      writeAllowed: false,
-      backingKind: "file",
-      backingKey,
-      snapshot: new Uint8Array(4096),
-      seenVersion: 0,
-    }]]));
-
-    kw.unregisterProcess(pid);
-
-    expect(release).toHaveBeenCalledWith(hostHandle);
-    expect(close).toHaveBeenCalledWith(hostHandle);
-    const hostCloseCall = close.mock.calls.findIndex(([handle]) => handle === hostHandle);
-    expect(hostCloseCall).toBeGreaterThanOrEqual(0);
-    expect(release.mock.invocationCallOrder[0]!).toBeLessThan(
-      close.mock.invocationCallOrder[hostCloseCall]!,
-    );
-    expect((kw as any).sharedMappings.has(pid)).toBe(false);
-    expect((kw as any).sharedMmapBackings.has(backingKey)).toBe(false);
-    expect((retainedKernel as any).retainedHostFileHandles.size).toBe(0);
-    expect(open).toHaveBeenCalledOnce();
   });
 
   it("repeated compact-layout launches do not leave process registrations behind", async () => {
@@ -1348,9 +1959,8 @@ describe("CentralizedKernelWorker Process Management", () => {
       kw.unregisterProcess(pid);
     }
 
-    expect((kw as any).activeChannels.length).toBe(0);
     for (const pid of pids) {
-      expect((kw as any).processes.has(pid)).toBe(false);
+      expect(kw.getProcessMemory(pid)).toBeUndefined();
     }
   });
 
