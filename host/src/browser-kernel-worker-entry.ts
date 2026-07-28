@@ -51,6 +51,12 @@ import {
   threadWorkerFailureDisposition,
 } from "./thread-worker-disposition";
 import { VmInterruptTimerManager } from "./vm-interrupt-timer";
+import {
+  createWorkerQuiescence,
+  type WorkerQuiescence,
+  waitForExecRetirement as waitForExecRetirementFence,
+  waitForWorkerQuiescence as waitForWorkerQuiescenceFence,
+} from "./worker-quiescence";
 import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
 import { reapHostOwnedExitedProcess } from "./host-owned-process-reap";
 import type {
@@ -61,10 +67,16 @@ import type {
 import { ThreadPageAllocator } from "./thread-allocator";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD } from "./constants";
 import {
+  acquireForkMemoryClone,
   computeProcessMemoryLayout,
-  createProcessMemory,
+  createProcessMemoryRetirementPressureHook,
   DEFAULT_PROCESS_THREAD_SLOTS,
+  deriveProcessMemoryRetirementLimits,
+  ProcessMemoryCapacityError,
+  ProcessMemoryAllocator,
+  ProcessMemoryRetirementBacklogError,
   type ProcessMemoryLayout,
+  type ProcessMemoryLease,
 } from "./process-memory";
 import type {
   HostDiagnostic,
@@ -80,6 +92,9 @@ let memfs: MemoryFileSystem;
 let io: VirtualPlatformIO;
 let maxPages: number = DEFAULT_MAX_PAGES;
 let defaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS;
+let processMemoryAllocator: ProcessMemoryAllocator;
+const processMemoryRetirementPressureHook =
+  createProcessMemoryRetirementPressureHook();
 let defaultEnv: string[] = [];
 const ENOEXEC = 8;
 
@@ -102,7 +117,17 @@ interface ForkReplayContext {
 }
 
 interface ProcessInfo {
+  /** Host-only identity for one execution image. A PID persists across exec. */
+  generation: number;
   memory: WebAssembly.Memory;
+  memoryLease: ProcessMemoryLease;
+  workerQuiescence: WorkerQuiescence;
+  execRetirement: WorkerQuiescence;
+  memoryRetirementSafe: boolean;
+  /** True once this generation's Memory was cloned to browser main for fb0. */
+  framebufferExposed: boolean;
+  /** Exact browser-main alias teardown, shared by competing failure paths. */
+  framebufferRelease?: Promise<boolean>;
   programBytes: ArrayBuffer;
   programModule?: WebAssembly.Module;
   worker: ReturnType<BrowserWorkerAdapter["createWorker"]>;
@@ -122,9 +147,18 @@ const vmInterruptTimers = new VmInterruptTimerManager<ProcessInfo>(
 // Includes standalone thread-worker teardown promises that may outlive the
 // process map entry they came from.
 const workerTeardowns = new Set<Promise<void>>();
+let nextProcessGeneration = 1;
+let nextFramebufferReleaseRequestId = 1;
+const pendingFramebufferReleaseAcks = new Map<
+  number,
+  { resolve: (released: boolean) => void; timeout: ReturnType<typeof setTimeout> }
+>();
 const threadedProcessPids = new Set<number>();
 const THREADED_WORKER_TERMINATION_SETTLE_MS = 250;
 const NODE_PROCESS_WORKER_TERMINATION_SETTLE_MS = 2000;
+const PROCESS_WORKER_QUIESCENCE_WAIT_MS = 100;
+const EXEC_WORKER_RETIREMENT_WAIT_MS = 5000;
+const FRAMEBUFFER_RELEASE_ACK_WAIT_MS = 2000;
 // [JSC-TERMINATE-ATOMICS-WAIT-LEAK] On destroy we wake every Atomics.wait-blocked
 // worker so it cooperatively exits (on JSC — Safari and Bun — Worker.terminate()
 // can't free a blocked worker). These bound the wait for those workers to run
@@ -198,10 +232,37 @@ interface ThreadWorkerInfo {
   channelOffset: number;
   tid: number;
   basePage: number;
+  quiescent: boolean;
+  workerQuiescence: WorkerQuiescence;
+  execRetirement: WorkerQuiescence;
   termination?: Promise<void>;
 }
 const threadWorkers = new Map<number, ThreadWorkerInfo[]>();
 const threadExits = new ThreadExitCoordinator();
+
+async function waitForWorkerQuiescence(
+  quiescence: WorkerQuiescence,
+): Promise<boolean> {
+  const quiescent = await waitForWorkerQuiescenceFence(
+    quiescence,
+    PROCESS_WORKER_QUIESCENCE_WAIT_MS,
+  );
+  // The timeout is not evidence that terminate completed. It only bounds
+  // teardown latency; a missing explicit terminal message uses the forced
+  // retirement path.
+  return quiescent;
+}
+
+async function waitForExecRetirement(
+  retirement: WorkerQuiescence,
+  quiescence: WorkerQuiescence,
+): Promise<boolean> {
+  return waitForExecRetirementFence(
+    retirement,
+    quiescence,
+    EXEC_WORKER_RETIREMENT_WAIT_MS,
+  );
+}
 
 function handleVmInterruptTimer(msg: {
   pid: number;
@@ -227,6 +288,8 @@ function processWorkerTerminationSettleMs(argv: readonly string[] | undefined): 
   // Chrome can still have SpiderMonkey Node's process Worker teardown in
   // flight after worker.terminate() resolves. Launching another Node-mode
   // process too quickly can make the second process trap in its wasm runtime.
+  // This compatibility delay never proves Memory retirement safe; only the
+  // exact worker-entry memory_quiescent fence does that.
   return name === "node" || name === "spidermonkey-node" || name === "spidermonkey-node.wasm"
     ? NODE_PROCESS_WORKER_TERMINATION_SETTLE_MS
     : 0;
@@ -262,6 +325,18 @@ async function waitForProcessTeardowns(): Promise<void> {
   }
 }
 
+async function awaitFinalizedProcessTeardown(
+  pid: number,
+  exitStatus: number,
+  expectedWorker: ProcessInfo["worker"],
+  crashSignum?: number,
+): Promise<void> {
+  if (!processTeardowns.has(expectedWorker)) {
+    handleExit(pid, exitStatus, crashSignum, expectedWorker);
+  }
+  await processTeardowns.get(expectedWorker);
+}
+
 async function terminateTrackedWorker(
   worker: ReturnType<BrowserWorkerAdapter["createWorker"]>,
   settleMs = 0,
@@ -276,10 +351,23 @@ async function terminateTrackedWorker(
   await teardown;
 }
 
-async function terminateThreadWorkers(pid: number): Promise<void> {
+async function terminateThreadWorkers(
+  pid: number,
+  requireExecRetirement = false,
+): Promise<boolean> {
   const threads = threadWorkers.get(pid);
-  if (!threads) return;
+  if (!threads) return true;
   threadWorkers.delete(pid);
+  const quiescence = await Promise.all(
+    threads.map((thread) =>
+      requireExecRetirement
+        ? waitForExecRetirement(
+            thread.execRetirement,
+            thread.workerQuiescence,
+          )
+        : waitForWorkerQuiescence(thread.workerQuiescence)),
+  );
+  const allQuiescent = quiescence.every(Boolean);
   for (const thread of threads) {
     intentionallyTerminated.add(thread.worker as object);
   }
@@ -290,6 +378,7 @@ async function terminateThreadWorkers(pid: number): Promise<void> {
     );
     threadExits.release(pid, t.channelOffset);
   }
+  return allQuiescent;
 }
 const ptyByPid = new Map<number, number>();
 
@@ -305,6 +394,56 @@ const activeBridgeRequests = new Set<number>();
 
 function post(msg: KernelToMainMessage, transfer?: Transferable[]) {
   (globalThis as any).postMessage(msg, transfer ?? []);
+}
+
+function allocateProcessGeneration(): number {
+  const generation = nextProcessGeneration++;
+  if (!Number.isSafeInteger(generation)) {
+    throw new Error("browser process execution generation space exhausted");
+  }
+  return generation;
+}
+
+/**
+ * Prove that browser main no longer owns this generation's structured-clone
+ * Memory wrapper or any typed framebuffer view derived from it.
+ *
+ * WHY: Worker quiescence only fences the process and kernel-worker realms.
+ * Browser main is an independent owner after fb_bind posts WebAssembly.Memory,
+ * so its exact-generation acknowledgement is part of retirement too. A
+ * timeout does not pretend success: callers route the lease through forced
+ * retirement, which remains safe because process Memory is never reused.
+ */
+function releaseMainFramebufferGeneration(
+  pid: number,
+  info: ProcessInfo,
+): Promise<boolean> {
+  if (!info.framebufferExposed) return Promise.resolve(true);
+  if (info.framebufferRelease) return info.framebufferRelease;
+
+  const requestId = nextFramebufferReleaseRequestId++;
+  info.framebufferRelease = new Promise<boolean>((resolve) => {
+    const timeout = setTimeout(() => {
+      if (!pendingFramebufferReleaseAcks.delete(requestId)) return;
+      resolve(false);
+    }, FRAMEBUFFER_RELEASE_ACK_WAIT_MS);
+    pendingFramebufferReleaseAcks.set(requestId, { resolve, timeout });
+    post({
+      type: "fb_release_generation",
+      requestId,
+      pid,
+      generation: info.generation,
+    });
+  });
+  return info.framebufferRelease;
+}
+
+function acknowledgeMainFramebufferRelease(requestId: number): void {
+  const pending = pendingFramebufferReleaseAcks.get(requestId);
+  if (!pending) return;
+  pendingFramebufferReleaseAcks.delete(requestId);
+  clearTimeout(pending.timeout);
+  pending.resolve(true);
 }
 
 function reportHostDiagnostic(
@@ -470,26 +609,6 @@ async function handleLazyRegistration(msg: LazyRegistrationMessage): Promise<voi
   }
 }
 
-function createSharedProcessMemory(
-  ptrWidth: 4 | 8,
-  initialPages: number,
-  maximumPages: number,
-): WebAssembly.Memory {
-  if (ptrWidth === 8) {
-    return new WebAssembly.Memory({
-      initial: BigInt(initialPages),
-      maximum: BigInt(maximumPages),
-      shared: true,
-      address: "i64",
-    } as unknown as WebAssembly.MemoryDescriptor);
-  }
-  return new WebAssembly.Memory({
-    initial: initialPages,
-    maximum: maximumPages,
-    shared: true,
-  });
-}
-
 function threadAllocatorForLayout(
   layout: ProcessMemoryLayout,
   ptrWidth: 4 | 8,
@@ -559,17 +678,18 @@ function processMemoryAllocationDiagnostics(
   };
 }
 
-function createFreshProcessMemory(
+async function createFreshProcessMemory(
   pid: number,
   programBytes: ArrayBuffer,
   ptrWidth: 4 | 8,
   processMaxPages = maxPages,
   context?: ProcessMemoryAllocationContext,
-): {
+): Promise<{
   memory: WebAssembly.Memory;
+  memoryLease: ProcessMemoryLease;
   layout: ProcessMemoryLayout;
   threadAllocator: ThreadPageAllocator;
-} {
+}> {
   const heapBase = extractHeapBase(programBytes);
   const layout = computeProcessMemoryLayout({
     maxPages: processMaxPages,
@@ -578,9 +698,13 @@ function createFreshProcessMemory(
     programBytes,
     heapBase,
   });
-  let memory: WebAssembly.Memory;
+  let memoryLease: ProcessMemoryLease;
   try {
-    memory = createProcessMemory(ptrWidth, layout);
+    memoryLease = await processMemoryAllocator.acquireWhenAvailable({
+      ptrWidth,
+      initialPages: layout.initialPages,
+      maximumPages: layout.maximumPages,
+    });
   } catch (e) {
     console.error(
       "[kernel-worker] process memory allocation failed",
@@ -590,12 +714,21 @@ function createFreshProcessMemory(
     );
     throw e;
   }
-  new Uint8Array(memory.buffer, layout.channelOffset, CH_TOTAL_SIZE).fill(0);
-  return {
-    memory,
-    layout,
-    threadAllocator: threadAllocatorForLayout(layout, ptrWidth, pid),
-  };
+  try {
+    const memory = memoryLease.memory;
+    new Uint8Array(memory.buffer, layout.channelOffset, CH_TOTAL_SIZE).fill(0);
+    return {
+      memory,
+      memoryLease,
+      layout,
+      threadAllocator: threadAllocatorForLayout(layout, ptrWidth, pid),
+    };
+  } catch (error) {
+    // No browser Worker or kernel registration exists yet, so rollback is an
+    // exact single-owner release rather than forced retirement.
+    memoryLease.release();
+    throw error;
+  }
 }
 
 // ── Init ──
@@ -606,6 +739,21 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   maxPages = msg.config.maxMemoryPages;
   defaultThreadSlots = msg.config.defaultThreadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
   defaultEnv = msg.config.env;
+  processMemoryAllocator = new ProcessMemoryAllocator({
+    // The byte budget is the concurrency authority. Keep the separate count
+    // ceiling high enough that small address spaces do not inherit the
+    // historically unenforced maxWorkers value as a new process-count limit.
+    maxMemories: Math.max(
+      1,
+      Math.floor(msg.config.maxProcessMemoryBytes / PAGE_SIZE),
+    ),
+    maxTotalBytes: msg.config.maxProcessMemoryBytes,
+    ...deriveProcessMemoryRetirementLimits(
+      msg.config.maxWorkers,
+      msg.config.maxProcessMemoryBytes,
+    ),
+    retirementPressureHook: processMemoryRetirementPressureHook,
+  });
 
   // Create VFS — prefer pre-built image bytes (kernel-owned FS); fall back
   // to the legacy shared-SAB path so the existing demos keep working.
@@ -689,6 +837,9 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     },
     io,
     {
+      onProcessMemoryTarget: (memory, target) => {
+        processMemoryAllocator.observeTarget(memory, target);
+      },
       onFork: ({ parentPid, childPid, parentMemory, continuation }) => {
         // Tell the main thread a kernel-side fork happened so Inspector
         // panes can refresh their process table without polling.
@@ -757,13 +908,17 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   // postMessage so a main-thread renderer can read pixels directly
   // from the process's wasm Memory SAB.
   kernelWorker.framebuffers.onChange((pid, ev) => {
+    const processInfo = processes.get(pid);
+    if (!processInfo) return;
     if (ev === "bind") {
       const b = kernelWorker.framebuffers.get(pid);
       const memory = kernelWorker.getProcessMemory(pid);
       if (!b || !memory) return;
+      processInfo.framebufferExposed = true;
       post({
         type: "fb_bind",
         pid,
+        generation: processInfo.generation,
         addr: b.addr,
         len: b.len,
         w: b.w,
@@ -773,7 +928,11 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         memory,
       });
     } else {
-      post({ type: "fb_unbind", pid });
+      post({
+        type: "fb_unbind",
+        pid,
+        generation: processInfo.generation,
+      });
     }
   });
   // memory.grow invalidates the previously-shared SAB; forward the new
@@ -785,19 +944,35 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     origRebind(pid);
     if (!kernelWorker.framebuffers.get(pid)) return;
     const memory = kernelWorker.getProcessMemory(pid);
-    if (memory) post({ type: "fb_rebind_memory", pid, memory });
+    const processInfo = processes.get(pid);
+    if (memory && processInfo) {
+      post({
+        type: "fb_rebind_memory",
+        pid,
+        generation: processInfo.generation,
+        memory,
+      });
+    }
   };
   // Write-based fb deltas (fbDOOM-style): forward each pixel chunk
   // to the main thread, which mirrors them into its own registry.
   // The bytes here are non-shared (kernel.ts copies from the kernel
   // memory before invoking fbWrite), so they transfer cleanly.
   kernelWorker.framebuffers.onWrite((pid, offset, bytes) => {
+    const processInfo = processes.get(pid);
+    if (!processInfo) return;
     const buf = bytes.buffer.slice(
       bytes.byteOffset,
       bytes.byteOffset + bytes.byteLength,
     );
     post(
-      { type: "fb_write", pid, offset, bytes: new Uint8Array(buf) },
+      {
+        type: "fb_write",
+        pid,
+        generation: processInfo.generation,
+        offset,
+        bytes: new Uint8Array(buf),
+      },
       [buf],
     );
   });
@@ -821,6 +996,10 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
 async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>) {
   let releaseMutation: (() => void) | undefined;
   let createdPid: number | undefined;
+  let createdMemoryLease: ProcessMemoryLease | undefined;
+  let createdMemoryRegistered = false;
+  let workerCreationAttempted = false;
+  let createdWorker: ProcessInfo["worker"] | undefined;
   try {
     releaseMutation = rootfsSnapshotGate.beginMutation("spawn a process");
     await waitForProcessTeardowns();
@@ -855,13 +1034,15 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     const ptrWidth = detectPtrWidth(programBytes);
     const {
       memory,
+      memoryLease,
       layout,
       threadAllocator,
-    } = createFreshProcessMemory(pid, programBytes, ptrWidth, pages, {
+    } = await createFreshProcessMemory(pid, programBytes, ptrWidth, pages, {
       operation: "spawn",
       path,
       argv: msg.argv,
     });
+    createdMemoryLease = memoryLease;
     const channelOffset = layout.channelOffset;
     const launchEnv = msg.env ?? defaultEnv;
 
@@ -873,6 +1054,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       mmapBase: layout.mmapBase,
       maxAddr: layout.maxAddr,
     });
+    createdMemoryRegistered = true;
 
     kernelWorker.setCredentials(pid, { uid: msg.uid, gid: msg.gid });
     if (msg.cwd) {
@@ -909,9 +1091,17 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
     };
 
+    workerCreationAttempted = true;
     const worker = workerAdapter.createWorker(initData);
+    createdWorker = worker;
     processes.set(pid, {
+      generation: allocateProcessGeneration(),
       memory,
+      memoryLease,
+      workerQuiescence: createWorkerQuiescence(),
+      execRetirement: createWorkerQuiescence(),
+      memoryRetirementSafe: true,
+      framebufferExposed: false,
       programBytes,
       worker,
       argv: msg.argv,
@@ -922,13 +1112,53 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     });
 
     installProcessWorkerListeners(worker, pid);
+    createdMemoryLease = undefined;
     createdPid = undefined;
 
     respond(msg.requestId, pid);
   } catch (e) {
     if (createdPid !== undefined) {
-      kernelWorker.unregisterProcess(createdPid);
-      kernelWorker.removeProcessFromKernelTable(createdPid);
+      if (createdWorker) await terminateTrackedWorker(createdWorker);
+      let detached = !createdMemoryRegistered;
+      if (createdMemoryRegistered) {
+        try {
+          detached = kernelWorker.unregisterProcess(
+            createdPid,
+            createdMemoryLease?.memory,
+          );
+        } catch {
+          // Keep ownership if the kernel can still reach this address space.
+        }
+      }
+      const info = processes.get(createdPid);
+      if (detached) {
+        const lease = info?.memoryLease ?? createdMemoryLease;
+        if (createdMemoryRegistered && lease) {
+          await kernelWorker.settleRetiredChannelListeners(
+            createdPid,
+            lease.memory,
+          );
+        }
+        const framebufferReleased = info
+          ? await releaseMainFramebufferGeneration(createdPid, info)
+          : true;
+        if (info?.worker === createdWorker) processes.delete(createdPid);
+        // Browser Worker termination has no completion event. Once creation
+        // was attempted, retire it through the forced-termination path.
+        if (workerCreationAttempted || !framebufferReleased) {
+          lease?.releaseAfterForcedTermination();
+        }
+        else if (lease) {
+          lease.release();
+        }
+      } else if (info?.worker === createdWorker) {
+        processes.delete(createdPid);
+      }
+      try {
+        kernelWorker.removeProcessFromKernelTable(createdPid);
+      } catch {
+        // Preserve the original spawn failure.
+      }
     }
     respondError(msg.requestId, String(e));
   } finally {
@@ -1028,10 +1258,19 @@ function installProcessWorkerListeners(
     );
   });
   worker.on("message", (msg: unknown) => {
-    if (intentionallyTerminated.has(worker as object)) return;
     const process = processes.get(pid);
     if (!process || process.worker !== worker) return;
     const m = msg as WorkerToHostMessage;
+    if (m.type === "memory_quiescent" && m.tid === undefined) {
+      // The browser entry emits this only after worker-main returns. Unlike
+      // Browser Worker.terminate(), this is an exact-generation ownership
+      // fence and can authorize dropping the allocator's strong reference.
+      process.workerQuiescence.settle();
+    }
+    if (m.type === "exec_retired" && m.tid === undefined) {
+      process.execRetirement.settle();
+    }
+    if (intentionallyTerminated.has(worker as object)) return;
     if (m.type === "error") {
       const signum = classifiedSignalOrFallback(m.message);
       const status = classifiedTrapExitStatus(m.message) ?? -1;
@@ -1064,101 +1303,171 @@ async function handleFork(
     throw new Error(`Unknown parent generation for pid ${parentPid}`);
   }
 
-  // Capture the exact program/layout generation associated with the kernel's
-  // already-created child before yielding to unrelated worker teardowns.
-  await waitForProcessTeardowns();
-
-  // Pre-compile module for TurboFan-optimized code (smaller stack frames).
-  if (!parentInfo.programModule) {
-    parentInfo.programModule = await WebAssembly.compile(parentInfo.programBytes);
-  }
-  if (!kernelWorker.shouldLaunchPendingChild(childPid)) return [];
-
-  const parentBuf = new Uint8Array(parentMemory.buffer);
-  const parentPages = Math.ceil(parentBuf.byteLength / PAGE_SIZE);
   const ptrWidth = parentInfo.ptrWidth;
   const childLayout = parentInfo.layout;
-  const childMemory = createSharedProcessMemory(
+  // WHY: teardown and compilation below yield. A sibling exec may then retire
+  // the parent's exact generation, so the committed fork must own its clone
+  // before the first await.
+  const childMemoryLease = acquireForkMemoryClone(
+    processMemoryAllocator,
+    parentMemory,
     ptrWidth,
-    parentPages,
     childLayout.maximumPages,
   );
-  new Uint8Array(childMemory.buffer).set(parentBuf);
-
+  const childMemory = childMemoryLease.memory;
   const childChannelOffset = childLayout.channelOffset;
-  new Uint8Array(childMemory.buffer, childChannelOffset, CH_TOTAL_SIZE).fill(0);
-
-  kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], {
-    ptrWidth,
-    maxAddr: childLayout.maxAddr,
-    mmapBase: childLayout.mmapBase,
-  });
-  kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
-
-  const activeForkBufAddr = continuation.forkBufAddr;
-  const forkReplayContext: ForkReplayContext | undefined =
-    continuation.kind === "thread"
-    ? {
-        fnPtr: continuation.fnPtr,
-        argPtr: continuation.argPtr,
-        forkBufAddr: activeForkBufAddr,
-      }
-    : parentInfo.forkReplayContext
-      ? { ...parentInfo.forkReplayContext, forkBufAddr: activeForkBufAddr }
-      : undefined;
-  const forkBufAddr = activeForkBufAddr;
-  const childInitData: CentralizedWorkerInitMessage = {
-    type: "centralized_init",
-    pid: childPid,
-    programBytes: parentInfo.programBytes,
-    programModule: parentInfo.programModule,
-    memory: childMemory,
-    channelOffset: childChannelOffset,
-    isForkChild: true,
-    forkBufAddr,
-    forkChildThreadFnPtr: forkReplayContext?.fnPtr,
-    forkChildThreadArgPtr: forkReplayContext?.argPtr,
-    ptrWidth,
-    kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
-  };
-
-  const childWorker = new DeferredWorkerHandle(
-    () => workerAdapter.createWorker(childInitData),
-  );
-
-  processes.set(childPid, {
-    memory: childMemory,
-    programBytes: parentInfo.programBytes,
-    programModule: parentInfo.programModule,
-    worker: childWorker,
-    argv: parentInfo.argv,
-    channelOffset: childChannelOffset,
-    ptrWidth,
-    layout: childLayout,
-    threadAllocator: threadAllocatorForLayout(childLayout, ptrWidth, childPid),
-    forkReplayContext,
-  });
-
-  installProcessWorkerListeners(childWorker, childPid);
-
+  let childWorker: DeferredWorkerHandle | undefined;
+  let registered = false;
+  let workerStartAttempted = false;
+  let lifecycleTeardownStarted = false;
   try {
+    await waitForProcessTeardowns();
+    // Preserve fork's exact syscall-time snapshot before any await, then hold
+    // only Worker launch until the bounded retirement window admits churn.
+    await processMemoryAllocator.waitForRetirementBacklogCapacity(
+      childMemory.buffer.byteLength,
+    );
+
+    // Pre-compile module for TurboFan-optimized code (smaller stack frames).
+    if (!parentInfo.programModule) {
+      parentInfo.programModule = await WebAssembly.compile(parentInfo.programBytes);
+    }
+    if (!kernelWorker.shouldLaunchPendingChild(childPid)) {
+      childMemoryLease.release();
+      return [];
+    }
+
+    // Everything after acquire is one transaction. A copy, registration,
+    // allocator, DeferredWorker, or listener failure must not strand the
+    // backing outside explicit lease ownership.
+    new Uint8Array(
+      childMemory.buffer,
+      childChannelOffset,
+      CH_TOTAL_SIZE,
+    ).fill(0);
+
+    kernelWorker.registerProcess(childPid, childMemory, [childChannelOffset], {
+      ptrWidth,
+      maxAddr: childLayout.maxAddr,
+      mmapBase: childLayout.mmapBase,
+    });
+    registered = true;
+    kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
+
+    const activeForkBufAddr = continuation.forkBufAddr;
+    const forkReplayContext: ForkReplayContext | undefined =
+      continuation.kind === "thread"
+        ? {
+            fnPtr: continuation.fnPtr,
+            argPtr: continuation.argPtr,
+            forkBufAddr: activeForkBufAddr,
+          }
+        : parentInfo.forkReplayContext
+          ? { ...parentInfo.forkReplayContext, forkBufAddr: activeForkBufAddr }
+          : undefined;
+    const childInitData: CentralizedWorkerInitMessage = {
+      type: "centralized_init",
+      pid: childPid,
+      programBytes: parentInfo.programBytes,
+      programModule: parentInfo.programModule,
+      memory: childMemory,
+      channelOffset: childChannelOffset,
+      isForkChild: true,
+      forkBufAddr: activeForkBufAddr,
+      forkChildThreadFnPtr: forkReplayContext?.fnPtr,
+      forkChildThreadArgPtr: forkReplayContext?.argPtr,
+      ptrWidth,
+      kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+    };
+
+    childWorker = new DeferredWorkerHandle(
+      () => workerAdapter.createWorker(childInitData),
+    );
+    const worker = childWorker;
+    processes.set(childPid, {
+      generation: allocateProcessGeneration(),
+      memory: childMemory,
+      memoryLease: childMemoryLease,
+      workerQuiescence: createWorkerQuiescence(),
+      execRetirement: createWorkerQuiescence(),
+      memoryRetirementSafe: true,
+      framebufferExposed: false,
+      programBytes: parentInfo.programBytes,
+      programModule: parentInfo.programModule,
+      worker,
+      argv: parentInfo.argv,
+      channelOffset: childChannelOffset,
+      ptrWidth,
+      layout: childLayout,
+      threadAllocator: threadAllocatorForLayout(childLayout, ptrWidth, childPid),
+      forkReplayContext,
+    });
+
+    installProcessWorkerListeners(worker, childPid);
     const startDisposition = kernelWorker.startProcessWorkerWhenRunnable(
       childPid,
       childMemory,
-      () => { childWorker.start(); },
-      () => { void childWorker.terminate(); },
+      () => {
+        workerStartAttempted = true;
+        worker.start();
+      },
+      () => { void worker.terminate(); },
     );
     if (startDisposition === "stale") {
       throw new Error(`Fork child ${childPid} changed generation before Worker launch`);
     }
+    if (startDisposition === "dead") {
+      await worker.terminate();
+      processes.get(childPid)?.workerQuiescence.settle();
+      const signal = kernelWorker.finalizePendingChildTermination(childPid);
+      lifecycleTeardownStarted = true;
+      await awaitFinalizedProcessTeardown(
+        childPid,
+        signal > 0 ? signalExitStatus(signal) : 0,
+        worker,
+        signal > 0 ? signal : undefined,
+      );
+      return [];
+    }
   } catch (error) {
-    if (processes.get(childPid)?.worker === childWorker) {
-      processes.delete(childPid);
+    if (lifecycleTeardownStarted) throw error;
+    if (childWorker) await terminateTrackedWorker(childWorker);
+    let detached = !registered;
+    if (registered) {
+      try {
+        detached = kernelWorker.deactivateProcess(childPid, childMemory);
+      } catch {
+        // Preserve ownership when the kernel can still reach this Memory.
+      }
+    }
+    const childInfo = processes.get(childPid);
+    if (childWorker && childInfo?.worker === childWorker) {
+      vmInterruptTimers.clear(childPid, childInfo);
       threadModuleCache.delete(childPid);
       ptyByPid.delete(childPid);
-      vmInterruptTimers.clear(childPid);
     }
-    void childWorker.terminate();
+    if (detached) {
+      if (registered) {
+        await kernelWorker.settleRetiredChannelListeners(
+          childPid,
+          childMemory,
+        );
+      }
+      const framebufferReleased = childInfo
+        ? await releaseMainFramebufferGeneration(childPid, childInfo)
+        : true;
+      if (childWorker && childInfo?.worker === childWorker) {
+        processes.delete(childPid);
+      }
+      if (workerStartAttempted || !framebufferReleased) {
+        childMemoryLease.releaseAfterForcedTermination();
+      }
+      else {
+        childMemoryLease.release();
+      }
+    } else if (childWorker && childInfo?.worker === childWorker) {
+      processes.delete(childPid);
+    }
     throw error;
   }
 
@@ -1188,52 +1497,133 @@ async function handleExec(
     initiatingInfo.ptrWidth,
   );
   if (metadataResult < 0) return metadataResult;
-  let prepared: ReturnType<typeof createFreshProcessMemory>;
+  let prepared: Awaited<ReturnType<typeof createFreshProcessMemory>>;
   try {
-    prepared = createFreshProcessMemory(pid, bytes, ptrWidth, maxPages, {
+    prepared = await createFreshProcessMemory(
+      pid,
+      bytes,
+      ptrWidth,
+      maxPages,
+      {
       operation: "exec",
       path,
       argv: launchArgv,
-    });
-  } catch {
-    return -12; // ENOMEM
+      },
+    );
+  } catch (error) {
+    if (error instanceof ProcessMemoryRetirementBacklogError) return -11;
+    if (error instanceof ProcessMemoryCapacityError) return -12;
+    throw error;
   }
+  let preparedTransferred = false;
+  let preparedLeaseConsumed = false;
+  let replacementRegistered = false;
+  let replacementStartAttempted = false;
+  let oldMemoryRetirementSafe = false;
+  let initiatingLeaseConsumed = false;
 
   // Resolution/compilation yielded to the event loop. Another exec may have
   // replaced the host execution generation for this persistent PID; a stale
   // continuation must not commit exec state against it.
   if (processes.get(pid) !== initiatingInfo
       || kernelWorker.isExecHandoffActive(pid)
-      || !kernelWorker.isProcessExecutionActive(pid)) return -3; // ESRCH
+      || !kernelWorker.isProcessExecutionActive(pid)) {
+    prepared.memoryLease.release();
+    return -3; // ESRCH
+  }
   const prepareResult = kernelWorker.kernelExecPrepare(pid, callerTid);
-  if (prepareResult < 0) return prepareResult;
+  if (prepareResult < 0) {
+    prepared.memoryLease.release();
+    return prepareResult;
+  }
   const addressSpaceResult = kernelWorker.prepareAddressSpaceForExec(pid);
-  if (addressSpaceResult < 0) return addressSpaceResult;
+  if (addressSpaceResult < 0) {
+    prepared.memoryLease.release();
+    return addressSpaceResult;
+  }
   let replacementWorker: ReturnType<BrowserWorkerAdapter["createWorker"]> | undefined;
   try {
     const setupResult = kernelWorker.kernelExecSetup(pid, callerTid);
-    if (setupResult < 0) return setupResult;
-    vmInterruptTimers.clear(pid);
+    if (setupResult < 0) {
+      prepared.memoryLease.release();
+      return setupResult;
+    }
+    vmInterruptTimers.clear(pid, initiatingInfo);
 
-    // Invalidate the discarded image synchronously at the commit point. This
-    // keeps stale clone/listener continuations out even if later detach or
-    // replacement-worker setup fails.
+    // Wake the exact old execution generation through the existing internal
+    // SIGKILL path. worker-main recognizes the exec-retire marker, skips
+    // SYS_EXIT for the persistent PID, returns, and lets worker-entry publish
+    // the only browser-safe memory ownership fence.
+    // Suppress ordinary crash/exit finalizers before the first retirement
+    // wake. The persistent PID is already past exec's commit point, so an
+    // error from the discarded generation must never kill the replacement.
     if (initiatingInfo.worker) {
       intentionallyTerminated.add(initiatingInfo.worker as object);
     }
+    for (const thread of threadWorkers.get(pid) ?? []) {
+      intentionallyTerminated.add(thread.worker as object);
+    }
+    const retiredOffsets =
+      kernelWorker.wakeProcessWorkersForExecRetirement(
+        pid,
+        initiatingInfo.memory,
+      );
+    const mainRetirementStarted = retiredOffsets.has(
+      initiatingInfo.channelOffset,
+    );
     threadedProcessPids.delete(pid);
-    kernelWorker.prepareProcessForExec(pid);
+    if (!kernelWorker.prepareProcessForExec(pid, initiatingInfo.memory)) {
+      throw new Error(`Exec pid ${pid} changed generation during commit`);
+    }
 
     const finalizeResult = kernelWorker.finalizeAddressSpaceForExec(pid);
     if (finalizeResult < 0) {
       throw new Error("failed to detach the discarded address space");
     }
 
-    await terminateThreadWorkers(pid);
+    const [mainQuiescent, threadsQuiescent] = await Promise.all([
+      mainRetirementStarted
+        ? waitForExecRetirement(
+            initiatingInfo.execRetirement,
+            initiatingInfo.workerQuiescence,
+          )
+        : Promise.resolve(false),
+      terminateThreadWorkers(pid, true),
+    ]);
     if (initiatingInfo.worker) {
+      intentionallyTerminated.add(initiatingInfo.worker as object);
       await initiatingInfo.worker.terminate().catch(() => {});
     }
-    if (kernelWorker.finalizeExecHandoffTermination(pid) > 0) return 0;
+    if (mainQuiescent) {
+      // Thread fences retire their own exact listeners during slot reclaim.
+      // Settle the main channel independently so one unresponsive sibling
+      // cannot retain an otherwise finished waitAsync closure.
+      await kernelWorker.settleRetiredChannelListeners(
+        pid,
+        initiatingInfo.memory,
+        initiatingInfo.channelOffset,
+      );
+    }
+    const mainFramebufferReleased =
+      await releaseMainFramebufferGeneration(pid, initiatingInfo);
+    oldMemoryRetirementSafe =
+      mainQuiescent
+      && threadsQuiescent
+      && initiatingInfo.memoryRetirementSafe
+      && mainFramebufferReleased;
+    const handoffExitSignal =
+      kernelWorker.finalizeExecHandoffTermination(pid);
+    if (handoffExitSignal > 0) {
+      prepared.memoryLease.release();
+      preparedLeaseConsumed = true;
+      await awaitFinalizedProcessTeardown(
+        pid,
+        signalExitStatus(handoffExitSignal),
+        initiatingInfo.worker,
+        handoffExitSignal,
+      );
+      return 0;
+    }
 
     // DIAGNOSTIC: track pid → exec path so the sysprof dump can name
     // each pid (otherwise the table is just opaque numbers).
@@ -1244,6 +1634,7 @@ async function handleExec(
     }
     const {
       memory: newMemory,
+      memoryLease: newMemoryLease,
       layout: newLayout,
       threadAllocator: newThreadAllocator,
     } = prepared;
@@ -1262,6 +1653,9 @@ async function handleExec(
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
     };
 
+    replacementWorker = new DeferredWorkerHandle(
+      () => workerAdapter.createWorker(execInitData),
+    );
     kernelWorker.registerProcess(pid, newMemory, [newChannelOffset], {
       preserveProcessState: true,
       ptrWidth,
@@ -1273,15 +1667,19 @@ async function handleExec(
       argv: launchArgv,
       env: envp,
     });
-    replacementWorker = new DeferredWorkerHandle(
-      () => workerAdapter.createWorker(execInitData),
-    );
+    replacementRegistered = true;
 
     // Clear cached thread module — the new program binary is different
     threadModuleCache.delete(pid);
 
     processes.set(pid, {
+      generation: allocateProcessGeneration(),
       memory: newMemory,
+      memoryLease: newMemoryLease,
+      workerQuiescence: createWorkerQuiescence(),
+      execRetirement: createWorkerQuiescence(),
+      memoryRetirementSafe: true,
+      framebufferExposed: false,
       programBytes: bytes,
       programModule,
       worker: replacementWorker,
@@ -1291,6 +1689,11 @@ async function handleExec(
       layout: newLayout,
       threadAllocator: newThreadAllocator,
     });
+    preparedTransferred = true;
+
+    if (oldMemoryRetirementSafe) initiatingInfo.memoryLease.release();
+    else initiatingInfo.memoryLease.releaseAfterForcedTermination();
+    initiatingLeaseConsumed = true;
 
     // Wire post-exec error/exit handling. The handleFork listener (on the
     // pre-exec worker) is gone with the terminated worker; without re-arming
@@ -1299,15 +1702,28 @@ async function handleExec(
     const startDisposition = kernelWorker.startProcessWorkerWhenRunnable(
       pid,
       newMemory,
-      () => { (replacementWorker as DeferredWorkerHandle).start(); },
+      () => {
+        replacementStartAttempted = true;
+        (replacementWorker as DeferredWorkerHandle).start();
+      },
       () => { void replacementWorker?.terminate(); },
     );
     if (startDisposition === "stale") {
       throw new Error(`Exec pid ${pid} changed generation before Worker launch`);
     }
     if (startDisposition === "dead") {
+      // startProcessWorkerWhenRunnable proved that the replacement Worker was
+      // never started. Publish the equivalent ownership fence so the ordinary
+      // exit teardown can retire listeners and release its lease safely.
+      processes.get(pid)?.workerQuiescence.settle();
       kernelWorker.finishProcessExecHandoff(pid);
-      kernelWorker.finalizeExecHandoffTermination(pid);
+      const signal = kernelWorker.finalizeExecHandoffTermination(pid);
+      await awaitFinalizedProcessTeardown(
+        pid,
+        signal > 0 ? signalExitStatus(signal) : 0,
+        replacementWorker,
+        signal > 0 ? signal : undefined,
+      );
       return 0;
     }
     kernelWorker.finishProcessExecHandoff(pid);
@@ -1318,12 +1734,51 @@ async function handleExec(
     }
     threadedProcessPids.delete(pid);
     try {
-      kernelWorker.prepareProcessForExec(pid);
+      const failedGenerationMemory =
+        preparedTransferred || replacementRegistered
+          ? prepared.memoryLease.memory
+          : initiatingInfo.memory;
+      kernelWorker.prepareProcessForExec(pid, failedGenerationMemory);
     } catch {
       // Continue with best-effort process death below.
     }
     if (replacementWorker && processes.get(pid)?.worker !== replacementWorker) {
       await terminateTrackedWorker(replacementWorker);
+    }
+    if (!preparedTransferred && !preparedLeaseConsumed) {
+      let replacementDetached = !replacementRegistered;
+      if (replacementRegistered) {
+        try {
+          replacementDetached = kernelWorker.deactivateProcess(
+            pid,
+            prepared.memoryLease.memory,
+          );
+        } catch {
+          replacementDetached = false;
+        }
+      }
+      if (replacementDetached) {
+        if (replacementRegistered) {
+          await kernelWorker.settleRetiredChannelListeners(
+            pid,
+            prepared.memoryLease.memory,
+          );
+        }
+        if (replacementStartAttempted) {
+          prepared.memoryLease.releaseAfterForcedTermination();
+        } else {
+          prepared.memoryLease.release();
+        }
+        preparedLeaseConsumed = true;
+      }
+    }
+    if (preparedTransferred && !initiatingLeaseConsumed) {
+      if (oldMemoryRetirementSafe) {
+        initiatingInfo.memoryLease.release();
+      } else {
+        initiatingInfo.memoryLease.releaseAfterForcedTermination();
+      }
+      initiatingLeaseConsumed = true;
     }
 
     const message = err instanceof Error ? err.message : String(err);
@@ -1341,7 +1796,9 @@ async function handleExec(
     try {
       handleExit(pid, signalExitStatus(SIGSEGV), SIGSEGV);
     } catch {
-      try { kernelWorker.deactivateProcess(pid); } catch { /* best-effort */ }
+      try {
+        kernelWorker.deactivateProcess(pid, initiatingInfo.memory);
+      } catch { /* best-effort */ }
     }
     return 0;
   }
@@ -1398,74 +1855,154 @@ async function handlePosixSpawn(
 
   const { programBytes, programModule, argv } = program;
   const ptrWidth = detectPtrWidth(programBytes);
+  let fresh: Awaited<ReturnType<typeof createFreshProcessMemory>>;
+  try {
+    fresh = await createFreshProcessMemory(
+      childPid,
+      programBytes,
+      ptrWidth,
+      maxPages,
+      {
+        operation: "posix_spawn",
+        path: argv[0],
+        argv,
+      },
+    );
+  } catch (error) {
+    if (error instanceof ProcessMemoryRetirementBacklogError) {
+      return -11; // EAGAIN
+    }
+    if (error instanceof ProcessMemoryCapacityError) return -12; // ENOMEM
+    throw error;
+  }
   const {
     memory: newMemory,
+    memoryLease,
     layout: newLayout,
     threadAllocator,
-  } = createFreshProcessMemory(childPid, programBytes, ptrWidth, maxPages, {
-    operation: "posix_spawn",
-    path: argv[0],
-    argv,
-  });
+  } = fresh;
+  // Allocation admission yielded. Do not resurrect a child that exited or was
+  // killed while the short retirement window drained.
+  if (!kernelWorker.shouldLaunchPendingChild(childPid)) {
+    memoryLease.release();
+    return 0;
+  }
   const newChannelOffset = newLayout.channelOffset;
-
-  // Kernel already created the child via kernel_spawn_process.
-  kernelWorker.registerProcess(childPid, newMemory, [newChannelOffset], {
-    ptrWidth,
-    brkBase: newLayout.brkBase,
-    mmapBase: newLayout.mmapBase,
-    maxAddr: newLayout.maxAddr,
-  });
-
-  const initData: CentralizedWorkerInitMessage = {
-    type: "centralized_init",
-    pid: childPid,
-    programBytes,
-    programModule,
-    memory: newMemory,
-    channelOffset: newChannelOffset,
-    argv,
-    env: envp,
-    ptrWidth,
-    kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
-  };
-
-  const newWorker = new DeferredWorkerHandle(
-    () => workerAdapter.createWorker(initData),
-  );
-
-  processes.set(childPid, {
-    memory: newMemory,
-    programBytes,
-    programModule,
-    worker: newWorker,
-    argv,
-    channelOffset: newChannelOffset,
-    ptrWidth,
-    layout: newLayout,
-    threadAllocator,
-  });
-
-  installProcessWorkerListeners(newWorker, childPid);
-
+  let newWorker: DeferredWorkerHandle | undefined;
+  let registered = false;
+  let workerStartAttempted = false;
+  let lifecycleTeardownStarted = false;
   try {
+    // Kernel already created the child via kernel_spawn_process. Treat every
+    // subsequent host attachment as one rollback-capable transaction.
+    kernelWorker.registerProcess(childPid, newMemory, [newChannelOffset], {
+      ptrWidth,
+      brkBase: newLayout.brkBase,
+      mmapBase: newLayout.mmapBase,
+      maxAddr: newLayout.maxAddr,
+    });
+    registered = true;
+
+    const initData: CentralizedWorkerInitMessage = {
+      type: "centralized_init",
+      pid: childPid,
+      programBytes,
+      programModule,
+      memory: newMemory,
+      channelOffset: newChannelOffset,
+      argv,
+      env: envp,
+      ptrWidth,
+      kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+    };
+
+    newWorker = new DeferredWorkerHandle(
+      () => workerAdapter.createWorker(initData),
+    );
+    const worker = newWorker;
+    processes.set(childPid, {
+      generation: allocateProcessGeneration(),
+      memory: newMemory,
+      memoryLease,
+      workerQuiescence: createWorkerQuiescence(),
+      execRetirement: createWorkerQuiescence(),
+      memoryRetirementSafe: true,
+      framebufferExposed: false,
+      programBytes,
+      programModule,
+      worker,
+      argv,
+      channelOffset: newChannelOffset,
+      ptrWidth,
+      layout: newLayout,
+      threadAllocator,
+    });
+
+    installProcessWorkerListeners(worker, childPid);
     const startDisposition = kernelWorker.startProcessWorkerWhenRunnable(
       childPid,
       newMemory,
-      () => { newWorker.start(); },
-      () => { void newWorker.terminate(); },
+      () => {
+        workerStartAttempted = true;
+        worker.start();
+      },
+      () => { void worker.terminate(); },
     );
     if (startDisposition === "stale") {
       throw new Error(`Spawn child ${childPid} changed generation before Worker launch`);
     }
+    if (startDisposition === "dead") {
+      await worker.terminate();
+      processes.get(childPid)?.workerQuiescence.settle();
+      const signal = kernelWorker.finalizePendingChildTermination(childPid);
+      lifecycleTeardownStarted = true;
+      await awaitFinalizedProcessTeardown(
+        childPid,
+        signal > 0 ? signalExitStatus(signal) : 0,
+        worker,
+        signal > 0 ? signal : undefined,
+      );
+      return 0;
+    }
   } catch (error) {
-    if (processes.get(childPid)?.worker === newWorker) {
-      processes.delete(childPid);
+    if (lifecycleTeardownStarted) throw error;
+    if (newWorker) await terminateTrackedWorker(newWorker);
+    let detached = !registered;
+    if (registered) {
+      try {
+        detached = kernelWorker.deactivateProcess(childPid, memory);
+      } catch {
+        // Preserve ownership when the kernel can still reach this Memory.
+      }
+    }
+    const childInfo = processes.get(childPid);
+    if (newWorker && childInfo?.worker === newWorker) {
+      vmInterruptTimers.clear(childPid, childInfo);
       threadModuleCache.delete(childPid);
       ptyByPid.delete(childPid);
-      vmInterruptTimers.clear(childPid);
     }
-    void newWorker.terminate();
+    if (detached) {
+      if (registered) {
+        await kernelWorker.settleRetiredChannelListeners(
+          childPid,
+          newMemory,
+        );
+      }
+      const framebufferReleased = childInfo
+        ? await releaseMainFramebufferGeneration(childPid, childInfo)
+        : true;
+      if (newWorker && childInfo?.worker === newWorker) {
+        processes.delete(childPid);
+      }
+      if (workerStartAttempted || !framebufferReleased) {
+        memoryLease.releaseAfterForcedTermination();
+      }
+      else {
+        memoryLease.release();
+      }
+    } else if (newWorker && childInfo?.worker === newWorker) {
+      processes.delete(childPid);
+    }
     throw error;
   }
 
@@ -1560,6 +2097,9 @@ async function handleClone(
     channelOffset: alloc.channelOffset,
     tid,
     basePage: alloc.slotStartPage,
+    quiescent: false,
+    workerQuiescence: createWorkerQuiescence(),
+    execRetirement: createWorkerQuiescence(),
   };
   threadWorkers.get(pid)!.push(threadEntry);
 
@@ -1572,10 +2112,23 @@ async function handleClone(
       kernelWorker.isExecHandoffActive(pid),
     );
   let reclaimed = false;
-  const reclaimThread = () => {
+  const reclaimThread = async () => {
     if (reclaimed) return;
     reclaimed = true;
-    processInfo.threadAllocator.free(alloc.basePage);
+    if (threadEntry.quiescent) {
+      // The browser entry returned from worker-main before publishing this
+      // fence, so neither guest code nor its Worker can race slot reuse.
+      await kernelWorker.settleRetiredChannelListeners(
+        pid,
+        memory,
+        alloc.channelOffset,
+      );
+      processInfo.threadAllocator.free(alloc.basePage);
+    } else {
+      // Hard browser termination is not a quiescence barrier. Keep the slot
+      // and ultimately prevents safe retirement of the process backing.
+      processInfo.memoryRetirementSafe = false;
+    }
     if (belongsToCurrentProcessImage()) {
       threadExits.release(pid, alloc.channelOffset);
     }
@@ -1586,7 +2139,7 @@ async function handleClone(
       threadEntry.termination = terminateTrackedWorker(
         threadWorker,
         THREADED_WORKER_TERMINATION_SETTLE_MS,
-      ).finally(reclaimThread);
+      ).then(reclaimThread);
     }
     return threadEntry.termination;
   };
@@ -1595,7 +2148,7 @@ async function handleClone(
   const isCurrentThreadGeneration = () =>
     !intentionallyTerminated.has(threadWorker as object)
     && belongsToCurrentProcessImage();
-  const failThread = (reason: string) => {
+  const failThread = (reason: string, awaitQuiescence = false) => {
     if (!isCurrentThreadGeneration()) {
       void terminateThreadEntry();
       return;
@@ -1610,7 +2163,7 @@ async function handleClone(
       message: `[kernel-worker] pid=${pid} tid=${tid}: ${reason}`,
     });
     kernelWorker.finalizeThreadExit(pid, tid, alloc.channelOffset);
-    void terminateThreadEntry();
+    if (!awaitQuiescence) void terminateThreadEntry();
     if (disposition.kind === "guest-fatal-trap") {
       handleExit(pid, disposition.exitStatus, disposition.signum);
     }
@@ -1618,16 +2171,26 @@ async function handleClone(
 
   threadWorker.on("message", (msg: unknown) => {
     const m = msg as WorkerToHostMessage;
-    if (m.type === "thread_exit") {
+    if (m.type === "exec_retired" && m.tid === tid) {
+      threadEntry.execRetirement.settle();
+    } else if (m.type === "thread_exit") {
       if (!isCurrentThreadGeneration()) {
         void terminateThreadEntry();
         return;
       }
+      // The browser wrapper publishes memory_quiescent after worker-main
+      // returns. Do not turn this earlier semantic exit into a retirement fence.
+    } else if (m.type === "memory_quiescent" && m.tid === tid) {
+      threadEntry.quiescent = true;
+      threadEntry.workerQuiescence.settle();
       void terminateThreadEntry();
     } else if ((m as { type?: string }).type === "error") {
       // worker-main posted {type:"error"} — instantiation failure, top-level
       // throw, etc. Without this the parent's pthread_join blocks forever.
-      failThread((m as { message?: string }).message ?? "thread error");
+      failThread(
+        (m as { message?: string }).message ?? "thread error",
+        true,
+      );
     } else if (m.type === "vm_interrupt_timer") {
       if (!isCurrentThreadGeneration() || m.pid !== pid) return;
       handleVmInterruptTimer(m, pid, processInfo);
@@ -1666,7 +2229,12 @@ async function handleClone(
 }
 
 function handleThreadExit(pid: number, channelOffset: number): boolean {
-  return threadExits.requestExit(pid, channelOffset);
+  // The kernel has completed the exit syscall, but the browser Worker may not
+  // yet have resumed from Atomics.wait. The worker-entry memory_quiescent
+  // message, not Worker.terminate(), authorizes slot reclamation.
+  void pid;
+  void channelOffset;
+  return true;
 }
 
 function signalFromExitStatus(exitStatus: number): number | null {
@@ -1692,7 +2260,7 @@ async function finishProcessExit(
   const info = processes.get(pid);
   if (!info || info.worker !== expectedWorker) return;
   if (processTeardowns.has(expectedWorker)) return;
-  vmInterruptTimers.clear(pid);
+  vmInterruptTimers.clear(pid, info);
 
   const threadedSettleMs = threadedProcessPids.has(pid)
     ? THREADED_WORKER_TERMINATION_SETTLE_MS
@@ -1720,7 +2288,10 @@ async function finishProcessExit(
     // termination is in flight those duplicate exits still need channel
     // completions, otherwise the worker can park in Atomics.wait with no
     // registered listener left to wake it.
-    await terminateThreadWorkers(pid);
+    const workerQuiescent = await waitForWorkerQuiescence(
+      info.workerQuiescence,
+    );
+    const threadsQuiescent = await terminateThreadWorkers(pid);
     await terminateTrackedWorker(expectedWorker, settleMs);
 
     // Exec may have installed a replacement while old worker termination was
@@ -1733,8 +2304,7 @@ async function finishProcessExit(
     // channel once the worker is gone.
     let deactivated = false;
     try {
-      kernelWorker.deactivateProcess(pid);
-      deactivated = true;
+      deactivated = kernelWorker.deactivateProcess(pid, info.memory);
     } catch (error) {
       reportHostDiagnostic({
         pid,
@@ -1746,10 +2316,30 @@ async function finishProcessExit(
       });
     }
 
+    if (!deactivated) return;
+    // Retired waitAsync callbacks are kernel-realm aliases too. Notify and
+    // settle them after Worker termination even on the forced path; the guest
+    // backing is never reused, so a late Worker wake cannot corrupt a peer.
+    await kernelWorker.settleRetiredChannelListeners(pid, info.memory);
+    const mainFramebufferReleased =
+      await releaseMainFramebufferGeneration(pid, info);
     processes.delete(pid);
     threadModuleCache.delete(pid);
     ptyByPid.delete(pid);
-    if (!deactivated) return;
+    if (
+      workerQuiescent
+      && threadsQuiescent
+      && info.memoryRetirementSafe
+      && mainFramebufferReleased
+    ) {
+      info.memoryLease.release();
+    } else {
+      // Browser Worker.terminate() returns before the underlying Worker has
+      // necessarily stopped. Chromium and Firefox can still mutate/notify
+      // the Shared Memory after that synthetic boundary, so only an explicit
+      // final worker message permits dropping the host's strong reference.
+      info.memoryLease.releaseAfterForcedTermination();
+    }
 
     try {
       reapHostOwnedExitedProcess(kernelInstance, pid);
@@ -1766,7 +2356,12 @@ async function finishProcessExit(
   })();
   processTeardowns.set(expectedWorker, teardown);
 
-  post({ type: "exit", pid, status: exitStatus });
+  post({
+    type: "exit",
+    pid,
+    generation: info.generation,
+    status: exitStatus,
+  });
 
   try {
     await teardown;
@@ -1902,7 +2497,8 @@ async function handleExportRootfsImage(
 
 async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: "terminate_process" }>) {
   const pid = msg.pid;
-  vmInterruptTimers.clear(pid);
+  const info = processes.get(pid);
+  if (info) vmInterruptTimers.clear(pid, info);
 
   // Terminate thread workers
   const threads = threadWorkers.get(pid);
@@ -1921,19 +2517,32 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
   }
 
   // Terminate main process worker
-  const info = processes.get(pid);
   if (info?.worker) {
     await terminateTrackedWorker(info.worker);
   }
 
+  let unregistered = false;
   try {
-    kernelWorker.unregisterProcess(pid);
+    unregistered = kernelWorker.unregisterProcess(pid, info?.memory);
   } catch {}
 
-  processes.delete(pid);
-  threadModuleCache.delete(pid);
-  threadedProcessPids.delete(pid);
-  ptyByPid.delete(pid);
+  if (info && unregistered) {
+    await kernelWorker.settleRetiredChannelListeners(pid, info.memory);
+    await releaseMainFramebufferGeneration(pid, info);
+    processes.delete(pid);
+    threadModuleCache.delete(pid);
+    threadedProcessPids.delete(pid);
+    ptyByPid.delete(pid);
+    // terminate_process has no terminal worker message, so its backing must
+    // stay owned by the terminated Worker until that realm actually stops;
+    // this kernel realm drops its alias because the backing is never reused.
+    info.memoryLease.releaseAfterForcedTermination();
+  } else if (!info) {
+    processes.delete(pid);
+    threadModuleCache.delete(pid);
+    threadedProcessPids.delete(pid);
+    ptyByPid.delete(pid);
+  }
   respond(msg.requestId, true);
 }
 
@@ -2101,7 +2710,17 @@ async function handleDestroy(msg: Extract<MainToKernelMessage, { type: "destroy"
       await terminateThreadWorkers(pid);
       await terminateTrackedWorker(info.worker);
     }
-    try { kernelWorker.unregisterProcess(pid); } catch {}
+    if (processes.get(pid) !== info) continue;
+    let unregistered = false;
+    try {
+      unregistered = kernelWorker.unregisterProcess(pid, info.memory);
+    } catch {}
+    if (unregistered) {
+      await kernelWorker.settleRetiredChannelListeners(pid, info.memory);
+      await releaseMainFramebufferGeneration(pid, info);
+      processes.delete(pid);
+      info.memoryLease.releaseAfterForcedTermination();
+    }
   }
   for (const threads of threadWorkers.values()) {
     for (const t of threads) {
@@ -2411,6 +3030,9 @@ sw.onmessage = (e: MessageEvent) => {
       break;
     case "kms_attach_stats":
       kernelWorker.attachKmsStats(msg.crtcId, msg.stats);
+      break;
+    case "fb_release_generation_ack":
+      acknowledgeMainFramebufferRelease(msg.requestId);
       break;
     default: {
       // Every typed MainToKernelMessage must have a case above. Browser

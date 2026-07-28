@@ -26,6 +26,8 @@ export interface InitMessage {
   config: {
     maxWorkers: number;
     maxPages?: number;
+    /** Hard session budget for simultaneously live address spaces. */
+    maxProcessMemoryBytes: number;
     /** Host default pthread slots for process-wasm declarations of -1. */
     defaultThreadSlots?: number;
     dataBufferSize?: number;

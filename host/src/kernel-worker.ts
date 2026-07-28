@@ -83,10 +83,12 @@ import { validateKernelHostAdapterManifest } from "./host-adapter-manifest";
 import { WASM_PAGE_SIZE } from "./constants";
 import {
   FORK_SAVE_BUFFER_SIZE,
+  ProcessMemoryRetirementBacklogError,
   PROCESS_MMAP_BASE,
   growMemoryToCover,
 } from "./process-memory";
 import { readForkContinuationAnchor } from "./fork-continuation";
+import { EXEC_RETIRE_SIGNAL_CODE } from "./worker-protocol";
 
 import type { KernelConfig, NetworkAddress, PlatformIO, TcpConnectionPeer, UdpDatagram } from "./types";
 
@@ -973,6 +975,16 @@ function isSpawnResolveError(
 /** Callbacks for fork/exec/exit handling. */
 export interface CentralizedKernelCallbacks {
   /**
+   * Observe an object in the persistent kernel realm that can retain one
+   * process-memory generation. The allocator uses this only for bounded weak
+   * retirement telemetry; explicit generation teardown remains authoritative.
+   */
+  onProcessMemoryTarget?: (
+    memory: WebAssembly.Memory,
+    target: object,
+  ) => void;
+
+  /**
    * Called when a process forks. The kernel has already cloned the Process
    * in its ProcessTable. The callback should spawn a child Worker with
    * a copy of the parent's Memory and register it with the kernel.
@@ -1103,6 +1115,17 @@ export class CentralizedKernelWorker {
   private kernelAbiVersion: number = 0;
   private processes = new Map<number, ProcessRegistration>();
   private activeChannels: ChannelInfo[] = [];
+  /**
+   * Exact channel generations detached from dispatch but whose engine-owned
+   * Atomics.waitAsync listener may still need to be woken after its guest
+   * Worker has stopped.
+   */
+  private retiredChannelListeners = new Set<ChannelInfo>();
+  private pendingChannelListenerCounts = new Map<ChannelInfo, number>();
+  private retiredChannelSettlements = new Map<
+    ChannelInfo,
+    { promise: Promise<void>; resolve: () => void; notified: boolean }
+  >();
   /** Pids whose old image committed exec but whose replacement has no channel yet. */
   private execHandoffPids = new Set<number>();
   private scratchOffset = 0;
@@ -1472,6 +1495,12 @@ export class CentralizedKernelWorker {
       getProcessMemory: (pid: number): WebAssembly.Memory | undefined => {
         return this.processes.get(pid)?.memory;
       },
+      onProcessMemoryTarget: (
+        memory: WebAssembly.Memory,
+        target: object,
+      ): void => {
+        this.callbacks.onProcessMemoryTarget?.(memory, target);
+      },
       // KMS scanout canvas lookup for the GL bridge's auto-attach
       // path. `host_gl_create_context` calls this when a DRM-master
       // pid has no canvas bound yet; the kernel-worker's KMS registry
@@ -1829,6 +1858,13 @@ export class CentralizedKernelWorker {
     };
     this.processes.set(pid, registration);
     this.activeChannels.push(...channels);
+    this.observeProcessMemoryTarget(memory, memory);
+    this.observeProcessMemoryTarget(memory, memory.buffer);
+    this.observeProcessMemoryTarget(memory, registration);
+    for (const channel of channels) {
+      this.observeProcessMemoryTarget(memory, channel);
+      this.observeProcessMemoryTarget(memory, channel.i32View);
+    }
 
     if (this.usePolling) {
       // Polling mode: start the poller (no per-channel listeners)
@@ -2257,9 +2293,13 @@ export class CentralizedKernelWorker {
    * Unregister a process. Stops listening on its channels and removes
    * it from the kernel's process table.
    */
-  unregisterProcess(pid: number): void {
+  unregisterProcess(
+    pid: number,
+    expectedMemory?: WebAssembly.Memory,
+  ): boolean {
     const registration = this.processes.get(pid);
-    if (!registration) return;
+    if (!registration) return true;
+    if (expectedMemory && registration.memory !== expectedMemory) return false;
 
     this.retireAsyncChannelsForProcess(pid);
     this.discardStoppedChannelStateForProcess(pid);
@@ -2270,6 +2310,7 @@ export class CentralizedKernelWorker {
     // Shared backing publication and SysV detach require the process memory and
     // kernel Process to remain available, so do this before either is removed.
     this.releaseAllSharedMemoryForProcess(pid);
+    this.releaseProcessViews(pid, registration.memory);
 
     // Remove channels from active list
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
@@ -2323,6 +2364,7 @@ export class CentralizedKernelWorker {
       this.activePtyIndices.delete(ptyIdx);
       this.ptyOutputCallbacks.delete(ptyIdx);
     }
+    return true;
   }
 
   /**
@@ -2356,13 +2398,22 @@ export class CentralizedKernelWorker {
     }
   }
 
-  deactivateProcess(pid: number): void {
+  deactivateProcess(
+    pid: number,
+    expectedMemory?: WebAssembly.Memory,
+  ): boolean {
+    const registration = this.processes.get(pid);
+    if (!registration) return true;
+    if (expectedMemory && registration.memory !== expectedMemory) return false;
     this.retireAsyncChannelsForProcess(pid);
     this.discardStoppedChannelStateForProcess(pid);
     this.waitingForChild = (this.waitingForChild ?? []).filter(
       (waiter) => waiter.parentPid !== pid && waiter.channel.pid !== pid,
     );
     this.releaseAllSharedMemoryForProcess(pid);
+    if (registration) {
+      this.releaseProcessViews(pid, registration.memory);
+    }
     this.activeChannels = this.activeChannels.filter((ch) => ch.pid !== pid);
     this.clearProcessThreadTransportState(pid);
     this.processes.delete(pid);
@@ -2397,6 +2448,22 @@ export class CentralizedKernelWorker {
     // registration. Kernel task IDs are not reused, but retaining stale
     // transport lifecycle state would still be misleading and wasteful.
     this.hostReaped.delete(pid);
+    return true;
+  }
+
+  /**
+   * Drop persistent device/view aliases only for the exact current process
+   * generation. A stale exec continuation must never clear the replacement
+   * image merely because it inherited the same numeric pid.
+   */
+  private releaseProcessViews(
+    pid: number,
+    expectedMemory: WebAssembly.Memory,
+  ): boolean {
+    const registration = this.processes.get(pid);
+    if (!registration || registration.memory !== expectedMemory) return false;
+    this.kernel.releaseProcessViews(pid);
+    return true;
   }
 
   /**
@@ -2798,9 +2865,27 @@ export class CentralizedKernelWorker {
    * Preserves alarm()/ITIMER_REAL, but cancels timer_create() timers: POSIX
    * keeps interval timers across exec and deletes per-process POSIX timers.
   */
-  prepareProcessForExec(pid: number): void {
+  prepareProcessForExec(
+    pid: number,
+    expectedMemory?: WebAssembly.Memory,
+  ): boolean {
     const registration = this.processes.get(pid);
+    if (
+      expectedMemory
+      && (!registration || registration.memory !== expectedMemory)
+    ) {
+      return false;
+    }
+    if (registration) {
+      this.releaseProcessViews(pid, registration.memory);
+    }
     (this.execHandoffPids ??= new Set()).add(pid);
+    for (const channel of registration?.channels ?? []) {
+      this.retireChannelListener(channel);
+    }
+    for (const channel of this.activeChannels ?? []) {
+      if (channel.pid === pid) this.retireChannelListener(channel);
+    }
     if (registration) registration.channels = [];
     // The old image's exact mailboxes can never publish after exec. Preserve
     // the pid-level stop state: exec changes the image, not process state.
@@ -2870,6 +2955,7 @@ export class CentralizedKernelWorker {
     // Network endpoints use process presence as their liveness signal; deleting
     // the pid across awaited worker termination would make UDP drop datagrams
     // and could permanently evict this owner from a shared TCP listener.
+    return true;
   }
 
   /** True while exec has committed but the replacement channel is not installed. */
@@ -3001,6 +3087,11 @@ export class CentralizedKernelWorker {
       i32View: new Int32Array(registration.memory.buffer, channelOffset),
       consecutiveSyscalls: 0,
     };
+    this.observeProcessMemoryTarget(registration.memory, channel);
+    this.observeProcessMemoryTarget(
+      registration.memory,
+      channel.i32View,
+    );
 
     try {
       registration.channels.push(channel);
@@ -3069,6 +3160,7 @@ export class CentralizedKernelWorker {
    * No guest result is published: the channel generation is being removed.
    */
   private retireExactChannelAsyncState(channel: ChannelInfo): void {
+    this.retireChannelListener(channel);
     this.cancelParkedFifoOpen(channel);
     this.discardStoppedChannelState(channel);
     this.resumePreparedSignals?.delete(channel);
@@ -3171,6 +3263,117 @@ export class CentralizedKernelWorker {
     for (const channel of channels) this.retireExactChannelAsyncState(channel);
   }
 
+  /** Detach one exact listener generation without waking its guest Worker. */
+  private retireChannelListener(channel: ChannelInfo): void {
+    (this.retiredChannelListeners ??= new Set()).add(channel);
+  }
+
+  /**
+   * Release waitAsync listeners after the corresponding guest Worker stopped.
+   *
+   * `Atomics.waitAsync` has no cancellation API. Engines retain its unresolved
+   * Promise in a global waiter registry, and the Promise reaction closes over
+   * `channel`, pinning the process's entire Shared WebAssembly.Memory even
+   * after every ordinary host map has released it. Notify only after Worker
+   * termination: while a guest is live, it can also be waiting on CH_STATUS.
+   *
+   * The exact retired token remains until every pending listener callback has
+   * run and acknowledged the stale generation. Pool owners can await the
+   * returned Promise before reusing the backing or pthread slot.
+   */
+  settleRetiredChannelListeners(
+    pid: number,
+    expectedMemory?: WebAssembly.Memory,
+    expectedChannelOffset?: number,
+  ): Promise<void> {
+    const retired = this.retiredChannelListeners;
+    if (!retired || retired.size === 0) return Promise.resolve();
+    const settlements: Promise<void>[] = [];
+
+    for (const channel of Array.from(retired)) {
+      if (channel.pid !== pid) continue;
+      if (expectedMemory && channel.memory !== expectedMemory) continue;
+      if (
+        expectedChannelOffset !== undefined
+        && channel.channelOffset !== expectedChannelOffset
+      ) {
+        continue;
+      }
+
+      const state = this.retiredListenerSettlement(channel);
+      settlements.push(state.promise);
+      if ((this.pendingChannelListenerCounts?.get(channel) ?? 0) === 0) {
+        this.acknowledgeRetiredChannelListener(channel);
+        continue;
+      }
+      if (state.notified) continue;
+      state.notified = true;
+      try {
+        const view = new Int32Array(
+          channel.memory.buffer,
+          channel.channelOffset,
+        );
+        // Omit the count so duplicate waitAsync registrations, if introduced
+        // by a future listener bug, cannot leave one Promise retaining Memory.
+        Atomics.notify(view, CH_STATUS / Int32Array.BYTES_PER_ELEMENT);
+      } catch {
+        // A detached or otherwise invalid retired buffer has no live waiter.
+        this.acknowledgeRetiredChannelListener(channel);
+      }
+    }
+    return Promise.all(settlements).then(() => {});
+  }
+
+  private retiredListenerSettlement(channel: ChannelInfo): {
+    promise: Promise<void>;
+    resolve: () => void;
+    notified: boolean;
+  } {
+    const settlements = this.retiredChannelSettlements ??= new Map();
+    const existing = settlements.get(channel);
+    if (existing) return existing;
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => {
+      resolve = done;
+    });
+    const state = { promise, resolve, notified: false };
+    settlements.set(channel, state);
+    return state;
+  }
+
+  private acknowledgeRetiredChannelListener(channel: ChannelInfo): void {
+    if ((this.pendingChannelListenerCounts?.get(channel) ?? 0) !== 0) return;
+    (this.retiredChannelListeners ??= new Set()).delete(channel);
+    const state = this.retiredChannelSettlements?.get(channel);
+    if (!state) return;
+    this.retiredChannelSettlements.delete(channel);
+    state.resolve();
+  }
+
+  private beginChannelListenerWait(channel: ChannelInfo): void {
+    const counts = this.pendingChannelListenerCounts ??= new Map();
+    counts.set(channel, (counts.get(channel) ?? 0) + 1);
+  }
+
+  private finishChannelListenerWait(channel: ChannelInfo): boolean {
+    const counts = this.pendingChannelListenerCounts ??= new Map();
+    const remaining = (counts.get(channel) ?? 1) - 1;
+    if (remaining > 0) counts.set(channel, remaining);
+    else counts.delete(channel);
+    return remaining <= 0;
+  }
+
+  private observeProcessMemoryTarget(
+    memory: WebAssembly.Memory,
+    target: object,
+  ): void {
+    try {
+      this.callbacks.onProcessMemoryTarget?.(memory, target);
+    } catch {
+      // Weak retirement telemetry must never change process correctness.
+    }
+  }
+
   /**
    * Return whether this exact channel object belongs to the pid's current
    * registration. Exec deliberately reuses the numeric pid (and commonly the
@@ -3179,7 +3382,8 @@ export class CentralizedKernelWorker {
    */
   private isRegisteredChannel(channel: ChannelInfo): boolean {
     const registration = this.processes.get(channel.pid);
-    return registration !== undefined
+    return !(this.retiredChannelListeners?.has(channel) ?? false)
+      && registration !== undefined
       && registration.channels.includes(channel);
   }
 
@@ -3356,12 +3560,29 @@ export class CentralizedKernelWorker {
     const waitResult = Atomics.waitAsync(i32View, statusIndex, currentStatus);
 
     if (waitResult.async) {
-      waitResult.value.then(() => {
-        // Check that this exact registration generation is still current.
-        if (!this.isRegisteredChannel(channel)) return;
-        // Status changed — re-enter to check new value
-        this.listenOnChannel(channel);
-      });
+      this.beginChannelListenerWait(channel);
+      waitResult.value.then(
+        () => {
+          const finalListener = this.finishChannelListenerWait(channel);
+          if (this.retiredChannelListeners?.has(channel)) {
+            if (finalListener) this.acknowledgeRetiredChannelListener(channel);
+            return;
+          }
+          // Check that this exact registration generation is still current.
+          if (!this.isRegisteredChannel(channel)) return;
+          // Status changed — re-enter to check new value
+          this.listenOnChannel(channel);
+        },
+        () => {
+          const finalListener = this.finishChannelListenerWait(channel);
+          if (
+            finalListener
+            && this.retiredChannelListeners?.has(channel)
+          ) {
+            this.acknowledgeRetiredChannelListener(channel);
+          }
+        },
+      );
     } else {
       // Synchronous result — status already changed from what we expected
       // Re-check on next tick to avoid stack overflow from tight loops
@@ -5539,6 +5760,74 @@ export class CentralizedKernelWorker {
       }
     }
     return woken;
+  }
+
+  /**
+   * Cooperatively unwind the exact browser Worker generation discarded by
+   * exec without exiting the persistent kernel Process.
+   *
+   * Every parked channel receives an internal SIGKILL marker plus EINTR. The
+   * guest glue enters its existing non-returning kernel_exit import; worker-main
+   * recognizes the exec marker, skips SYS_EXIT, and returns so the browser
+   * wrapper can publish an exact memory_quiescent ownership fence.
+   */
+  wakeProcessWorkersForExecRetirement(
+    pid: number,
+    expectedMemory: WebAssembly.Memory,
+  ): Set<number> {
+    const wokenOffsets = new Set<number>();
+    const registration = this.processes.get(pid);
+    if (!registration) return wokenOffsets;
+    if (registration.memory !== expectedMemory) {
+      throw new Error(
+        `Exec retirement generation changed for pid ${pid}`,
+      );
+    }
+    const execCallers = registration.channels.filter((channel) => {
+      if (channel.memory !== expectedMemory) return false;
+      const view = new DataView(
+        expectedMemory.buffer,
+        channel.channelOffset,
+      );
+      const syscall = view.getUint32(CH_SYSCALL, true);
+      const status = Atomics.load(
+        new Int32Array(expectedMemory.buffer, channel.channelOffset),
+        CH_STATUS / 4,
+      );
+      return status === CH_PENDING
+        && (syscall === SYS_EXECVE || syscall === SYS_EXECVEAT);
+    });
+    if (execCallers.length !== 1) {
+      throw new Error(
+        `Exec retirement expected exactly one execve/execveat caller for pid ${pid}, found ${execCallers.length}`,
+      );
+    }
+    for (const channel of registration.channels) {
+      if (channel.memory !== expectedMemory) {
+        throw new Error(
+          `Exec retirement found a mixed memory generation for pid ${pid}`,
+        );
+      }
+      const i32 = new Int32Array(
+        channel.memory.buffer,
+        channel.channelOffset,
+      );
+      if (Atomics.load(i32, CH_STATUS / 4) !== CH_PENDING) continue;
+      const view = new DataView(
+        channel.memory.buffer,
+        channel.channelOffset,
+      );
+      view.setUint32(CH_SIG_SIGNUM, SIGKILL, true);
+      view.setUint32(CH_SIG_HANDLER, 0, true);
+      view.setUint32(CH_SIG_SI_CODE, EXEC_RETIRE_SIGNAL_CODE, true);
+      // WHY: this is not an ordinary syscall completion. Exec has already
+      // committed and the generation is being retired, so relistening or
+      // copying scratch-backed outputs would let the discarded Worker issue
+      // more work. Publish only EINTR plus the private retirement marker.
+      this.completeChannelRaw(channel, -1, EINTR_ERRNO);
+      wokenOffsets.add(channel.channelOffset);
+    }
+    return wokenOffsets;
   }
 
   /** Complete a blocked channel with EINTR and queue SIGKILL so the guest glue
@@ -9571,7 +9860,17 @@ export class CentralizedKernelWorker {
         return;
       }
       if (this.isAsyncChannelProcessActive(channel)) {
-        this.completeChannel(channel, SYS_FORK, _origArgs, undefined, -1, 12);
+        const errno = err instanceof ProcessMemoryRetirementBacklogError
+          ? 11 // EAGAIN
+          : 12; // ENOMEM
+        this.completeChannel(
+          channel,
+          SYS_FORK,
+          _origArgs,
+          undefined,
+          -1,
+          errno,
+        );
       }
     };
 
@@ -11864,6 +12163,10 @@ export class CentralizedKernelWorker {
       const ptrWidth = this.processes.get(channel.pid)?.ptrWidth ?? 4;
       growMemoryToCover(channel.memory, end, ptrWidth);
       if (channel.memory.buffer.byteLength < end) return false;
+      this.observeProcessMemoryTarget(
+        channel.memory,
+        channel.memory.buffer,
+      );
       // Growth appends zero pages and does not overwrite the MAP_FIXED target.
       // Rebind only consumers whose cached view was detached by memory.grow.
       this.kernel.framebuffers.rebindMemory(channel.pid);
@@ -11914,6 +12217,10 @@ export class CentralizedKernelWorker {
     if (endAddr > 0 && endAddr > currentBytes) {
       const ptrWidth = this.processes.get(pid)?.ptrWidth ?? 4;
       growMemoryToCover(processMemory, endAddr, ptrWidth);
+      this.observeProcessMemoryTarget(
+        processMemory,
+        processMemory.buffer,
+      );
       // Memory.grow detaches any TypedArray bound to the previous SAB.
       // Any cached framebuffer view on this pid is now invalid; the
       // renderer must rebuild it on the next frame from the new
