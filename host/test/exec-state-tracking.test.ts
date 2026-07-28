@@ -5,15 +5,93 @@ import {
 } from "../src/kernel-worker";
 import {
   ABI_SYSCALLS,
+  CHANNEL_STATUS_COMPLETE,
+  CHANNEL_STATUS_PENDING,
   CH_ARG_SIZE,
   CH_ARGS,
   CH_DATA,
   CH_DATA_SIZE,
   CH_RETURN,
+  CH_SIG_BASE,
+  CH_SIG_HANDLER,
+  CH_SIG_SIGNUM,
+  CH_STATUS,
+  CH_SYSCALL,
   HOST_INTERCEPTED_SYSCALLS,
 } from "../src/generated/abi";
+import { EXEC_RETIRE_SIGNAL_CODE } from "../src/worker-protocol";
 
 describe("exec host-state transition", () => {
+  it("retires only the exact pending exec generation without relistening", () => {
+    const memory = new WebAssembly.Memory({
+      initial: 5,
+      maximum: 5,
+      shared: true,
+    });
+    const mainChannel = createChannel(7, memory, 0);
+    const threadChannel = createChannel(7, memory, 3 * 65536);
+    const main = new DataView(memory.buffer, mainChannel.channelOffset);
+    const thread = new DataView(memory.buffer, threadChannel.channelOffset);
+    Atomics.store(
+      mainChannel.i32View,
+      CH_STATUS / 4,
+      CHANNEL_STATUS_PENDING,
+    );
+    Atomics.store(
+      threadChannel.i32View,
+      CH_STATUS / 4,
+      CHANNEL_STATUS_PENDING,
+    );
+    main.setUint32(CH_SYSCALL, ABI_SYSCALLS.Read, true);
+    thread.setUint32(
+      CH_SYSCALL,
+      HOST_INTERCEPTED_SYSCALLS.SYS_EXECVE,
+      true,
+    );
+
+    const completeRaw = vi.fn((
+      channel: ReturnType<typeof createChannel>,
+      retVal: number,
+      errVal: number,
+    ) => {
+      expect(retVal).toBe(-1);
+      expect(errVal).toBe(4);
+      Atomics.store(
+        channel.i32View,
+        CH_STATUS / 4,
+        CHANNEL_STATUS_COMPLETE,
+      );
+    });
+    const worker = createWorker({
+      processes: new Map([[
+        7,
+        { pid: 7, memory, channels: [mainChannel, threadChannel] },
+      ]]),
+      completeChannelRaw: completeRaw,
+    });
+
+    expect(worker.wakeProcessWorkersForExecRetirement(7, memory)).toEqual(
+      new Set([0, 3 * 65536]),
+    );
+    expect(completeRaw).toHaveBeenCalledTimes(2);
+    for (const view of [main, thread]) {
+      expect(view.getUint32(CH_SIG_SIGNUM, true)).toBe(9);
+      expect(view.getUint32(CH_SIG_HANDLER, true)).toBe(0);
+      expect(view.getUint32(CH_SIG_BASE + 24, true)).toBe(
+        EXEC_RETIRE_SIGNAL_CODE,
+      );
+    }
+
+    const replacement = new WebAssembly.Memory({
+      initial: 5,
+      maximum: 5,
+      shared: true,
+    });
+    expect(() =>
+      worker.wakeProcessWorkersForExecRetirement(7, replacement),
+    ).toThrow("generation changed");
+  });
+
   it("rejects an async continuation from a replaced process generation", () => {
     const oldMemory = new WebAssembly.Memory({ initial: 1 });
     const newMemory = new WebAssembly.Memory({ initial: 1 });
@@ -1137,6 +1215,7 @@ function createWorker(overrides: Record<string, unknown>): any {
     tcpConnections: new Map(),
     hostReaped: new Set(),
     callbacks: {},
+    kernel: { releaseProcessViews: vi.fn() },
     io: { network: undefined },
     ...overrides,
   });
@@ -1175,7 +1254,10 @@ function issueThreadAttachment(
         return new Promise<void>(() => {});
       },
     },
-    kernel: { toKernelPtr: (value: number | bigint) => Number(value) },
+    kernel: {
+      toKernelPtr: (value: number | bigint) => Number(value),
+      releaseProcessViews: vi.fn(),
+    },
     kernelMemory,
     scratchOffset: 0,
     currentHandlePid: 0,

@@ -403,7 +403,10 @@ function createFcntlHarness(
 
 function createWorker(exports: Record<string, unknown>): any {
   return Object.assign(Object.create(CentralizedKernelWorker.prototype), {
-    kernel: { toKernelPtr: (value: number | bigint) => value },
+    kernel: {
+      releaseProcessViews: vi.fn(),
+      toKernelPtr: (value: number | bigint) => value,
+    },
     kernelInstance: {
       exports: {
         kernel_get_process_exit_signal: vi.fn(() => -1),

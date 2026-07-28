@@ -118,7 +118,9 @@ describe("host-owned exited-process reaping", () => {
     ]) {
       const source = readFileSync(join(__dirname, entry), "utf8");
       const finishExit = source.slice(source.indexOf("async function finishProcessExit"));
-      const deactivateAt = finishExit.indexOf("kernelWorker.deactivateProcess(pid)");
+      const deactivateAt = finishExit.indexOf(
+        "kernelWorker.deactivateProcess(pid, info.memory)",
+      );
       const terminateAt = finishExit.indexOf("terminateTrackedWorker(expectedWorker");
       const reapAt = finishExit.indexOf("reapHostOwnedExitedProcess(");
       expect(deactivateAt).toBeGreaterThanOrEqual(0);
