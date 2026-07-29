@@ -7305,6 +7305,7 @@ assert_matrix_skips_unchanged_cache_key
 assert_resolved_primary_override_is_bounded
 bash "$REPO_ROOT/scripts/test-homebrew-tap-identity.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-publisher-overlay-patch.sh"
+ruby "$REPO_ROOT/scripts/test-homebrew-publisher-lifecycle-source.rb"
 bash "$REPO_ROOT/scripts/test-homebrew-publisher-real-lifecycle.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-oci-layout.sh"
 assert_index_artifact_download_topologies

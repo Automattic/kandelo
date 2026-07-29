@@ -207,22 +207,37 @@ exact Homebrew commit in
 `homebrew/homebrew-native-compatibility-roots.json`. The updater derives
 the repository from the Brew executable and rejects a wrong commit or
 any staged, unstaged, untracked, or source-affecting Git index/config
-state. Homebrew may create only its checksum-pinned portable Ruby under
+state. It disables and rejects Git replacement objects, rejects legacy
+grafts and checkout transformations, and compares every tracked file's
+raw bytes, executable meaning, and symlink target with the reviewed Git
+tree. Homebrew may create only its checksum-pinned portable Ruby under
 the one ignored vendor directory. The updater inventories that complete
 runtime after bootstrap and requires the tracked checkout and ignored
 runtime to remain byte-for-byte unchanged through lock generation.
 
 ```bash
+brew_commit="$(
+  jq -er '.homebrew_commit' \
+    homebrew/homebrew-native-compatibility-roots.json
+)"
+brew_source="$(mktemp -d /tmp/kandelo-reviewed-brew.XXXXXX)"
+git -C "$brew_source" init
+git -C "$brew_source" remote add origin \
+  https://github.com/Homebrew/brew.git
+git -C "$brew_source" fetch --depth=1 origin "$brew_commit"
+git -C "$brew_source" checkout --detach FETCH_HEAD
 KANDELO_HOMEBREW_SUDO_BIN=/usr/bin/sudo \
   scripts/dev-shell.sh bash \
     scripts/update-homebrew-native-compatibility-lock.sh \
-      /home/linuxbrew/.linuxbrew/bin/brew \
+      "$brew_source/bin/brew" \
       homebrew/homebrew-native-compatibility-lock.json
 ```
 
-The `/home/linuxbrew/.linuxbrew` argument above is the native Linux CI
-runner's upstream Homebrew installation. It is not a Kandelo guest path
-and must never enter a bottle, VFS image, or guest-visible link.
+The source must be a fresh, unbootstrapped checkout. The updater creates
+its own disposable native prefix so Homebrew's mutable locks and Cellar
+state cannot enter the reviewed source. Native publisher host paths are
+not Kandelo guest paths and must never enter a bottle, VFS image, or
+guest-visible link.
 
 Review the resulting selected-record diff. Confirm that the two signed
 feeds still agree, inspect the upstream `homebrew/core` change, and
@@ -244,6 +259,15 @@ and a verified TLS connection, and retains the resulting evidence. The
 generated lock is uploaded last as diagnostic evidence, including when
 an earlier substantive check fails, so an artifact-service failure
 cannot prevent the lifecycle checks from starting.
+
+The general publisher regression suite also runs a real patched
+Homebrew build-and-test lifecycle. Staging preflight checks out the
+same exact reviewed Homebrew commit and passes that path only to the
+suite invocation. CI refuses to substitute Homebrew from the runner
+image when the declared checkout is absent or invalid. Local runs may
+reuse a known clone, but still verify the exact commit and the two
+lifecycle-sensitive source blobs before creating a disposable
+worktree.
 
 After that preflight is green, merge the publisher change, rotate the
 tap's immutable Kandelo workflow pin, and dispatch the trusted tap-main

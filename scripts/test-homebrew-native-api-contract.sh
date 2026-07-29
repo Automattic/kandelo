@@ -649,21 +649,33 @@ SOURCE_REPO="$TMP_ROOT/source-repo"
 git init -q "$SOURCE_REPO"
 git -C "$SOURCE_REPO" config user.name "Kandelo Test"
 git -C "$SOURCE_REPO" config user.email "kandelo-test@example.invalid"
+# macOS initializes these local compatibility settings automatically.
+# The production source proof is Linux-only and forbids them explicitly.
+git -C "$SOURCE_REPO" config --unset-all core.ignorecase || true
+git -C "$SOURCE_REPO" config --unset-all core.precomposeunicode || true
 mkdir -p "$SOURCE_REPO/bin"
 mkdir -p "$SOURCE_REPO/Library/Homebrew/vendor"
 printf 'reviewed\n' >"$SOURCE_REPO/source.rb"
+ln -s source.rb "$SOURCE_REPO/source-link.rb"
 printf '4.0.6\n' \
   >"$SOURCE_REPO/Library/Homebrew/vendor/portable-ruby-version"
 cat >"$SOURCE_REPO/.gitignore" <<'EOF'
 /ignored-state
 /Library/Homebrew/vendor/portable-ruby
+/var
 EOF
 cat >"$SOURCE_REPO/bin/brew" <<'EOF'
 #!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = "create-prefix-lock" ]; then
+  prefix="$(cd "$(dirname "$0")/.." && pwd -P)"
+  mkdir -p "$prefix/var/homebrew/locks"
+  : >"$prefix/var/homebrew/locks/vendor-install-ruby"
+fi
 exit 0
 EOF
 chmod 0755 "$SOURCE_REPO/bin/brew"
-git -C "$SOURCE_REPO" add .gitignore source.rb bin/brew \
+git -C "$SOURCE_REPO" add .gitignore source.rb source-link.rb bin/brew \
   Library/Homebrew/vendor/portable-ruby-version
 git -C "$SOURCE_REPO" commit -q -m "reviewed source"
 SOURCE_COMMIT="$(git -C "$SOURCE_REPO" rev-parse HEAD)"
@@ -689,9 +701,115 @@ chmod 0755 "$SOURCE_WRAPPER"
 SOURCE_RESULT="$(bash "$SOURCE_CHECK" "$SOURCE_BREW" "$SOURCE_POLICY")"
 [ "$SOURCE_RESULT" = "$(cd "$SOURCE_REPO" && pwd -P)" ] ||
   fail "clean reviewed Brew checkout did not bind to its canonical root"
+
+"$SOURCE_REPO/bin/brew" create-prefix-lock
+expect_failure "direct Brew prefix lock leakage" \
+  "brew checkout has unreviewed ignored state: var/homebrew/locks/vendor-install-ruby" \
+  bash "$SOURCE_CHECK" "$SOURCE_BREW" "$SOURCE_POLICY"
+rm -rf "$SOURCE_REPO/var"
+
+ISOLATED_PREFIX="$TMP_ROOT/isolated-native-prefix"
+mkdir -p "$ISOLATED_PREFIX/bin"
+ln -s "$SOURCE_REPO/bin/brew" "$ISOLATED_PREFIX/bin/brew"
+"$ISOLATED_PREFIX/bin/brew" create-prefix-lock
+[ -f "$ISOLATED_PREFIX/var/homebrew/locks/vendor-install-ruby" ] &&
+  [ ! -e "$SOURCE_REPO/var" ] ||
+  fail "isolated Brew prefix did not contain its mutable lock state"
+[ "$(
+  bash "$SOURCE_CHECK" \
+    "$ISOLATED_PREFIX/bin/brew" "$SOURCE_POLICY"
+)" = "$SOURCE_RESULT" ] ||
+  fail "isolated Brew prefix no longer resolved to reviewed source"
+
 expect_failure "wrapped Brew executable" \
   "brew executable is outside the reviewed checkout" \
   bash "$SOURCE_CHECK" "$SOURCE_WRAPPER" "$SOURCE_POLICY"
+
+SOURCE_TREE_MANIFEST="$TMP_ROOT/source-tree.manifest"
+GIT_NO_REPLACE_OBJECTS=1 \
+  git -C "$SOURCE_REPO" ls-tree -r -t -z --full-tree \
+    "$SOURCE_COMMIT" >"$SOURCE_TREE_MANIFEST"
+rm "$SOURCE_REPO/source-link.rb"
+ln -s bin/brew "$SOURCE_REPO/source-link.rb"
+expect_failure "raw tracked symlink target" \
+  "tracked Homebrew source symlink target changed" \
+  ruby --disable=gems,rubyopt "$ORACLE" attest-source \
+    "$SOURCE_COMMIT" "$SOURCE_RESULT" "$SOURCE_TREE_MANIFEST" \
+    "$TMP_ROOT/symlink-attestation.json"
+git -C "$SOURCE_REPO" checkout -q -- source-link.rb
+chmod 0644 "$SOURCE_REPO/bin/brew"
+expect_failure "raw tracked executable mode" \
+  "tracked Homebrew source executable mode changed" \
+  ruby --disable=gems,rubyopt "$ORACLE" attest-source \
+    "$SOURCE_COMMIT" "$SOURCE_RESULT" "$SOURCE_TREE_MANIFEST" \
+    "$TMP_ROOT/mode-attestation.json"
+chmod 0755 "$SOURCE_REPO/bin/brew"
+
+# A replacement ref can make HEAD keep the reviewed object name while
+# checkout and status use a different commit's tree. The source guard must
+# disable replacement resolution and reject the hidden authority itself.
+printf 'replacement source\n' >"$SOURCE_REPO/source.rb"
+git -C "$SOURCE_REPO" add source.rb
+git -C "$SOURCE_REPO" commit -q -m "replacement source"
+REPLACEMENT_COMMIT="$(git -C "$SOURCE_REPO" rev-parse HEAD)"
+git -C "$SOURCE_REPO" replace "$SOURCE_COMMIT" "$REPLACEMENT_COMMIT"
+git -C "$SOURCE_REPO" checkout -q -f "$SOURCE_COMMIT"
+[ "$(git -C "$SOURCE_REPO" rev-parse HEAD)" = "$SOURCE_COMMIT" ] &&
+  [ -z "$(git -C "$SOURCE_REPO" status --porcelain)" ] &&
+  grep -Fx "replacement source" "$SOURCE_REPO/source.rb" >/dev/null ||
+  fail "replacement-ref fixture did not hide substituted source"
+expect_failure "Git replacement refs" \
+  "brew checkout has Git replacement refs" \
+  bash "$SOURCE_CHECK" "$SOURCE_BREW" "$SOURCE_POLICY"
+git -C "$SOURCE_REPO" replace -d "$SOURCE_COMMIT" >/dev/null
+git -C "$SOURCE_REPO" reset -q --hard "$SOURCE_COMMIT"
+
+GRAFTS_PATH="$(
+  git -C "$SOURCE_REPO" rev-parse \
+    --path-format=absolute --git-path info/grafts
+)"
+mkdir -p "$(dirname "$GRAFTS_PATH")"
+: >"$GRAFTS_PATH"
+expect_failure "legacy Git grafts" \
+  "brew checkout has legacy Git grafts" \
+  bash "$SOURCE_CHECK" "$SOURCE_BREW" "$SOURCE_POLICY"
+rm "$GRAFTS_PATH"
+
+while IFS="=" read -r config_key config_value; do
+  git -C "$SOURCE_REPO" config "$config_key" "$config_value"
+  expect_failure "checkout-transforming Git config $config_key" \
+    "brew checkout has source-affecting local Git configuration" \
+    bash "$SOURCE_CHECK" "$SOURCE_BREW" "$SOURCE_POLICY"
+  git -C "$SOURCE_REPO" config --unset-all "$config_key"
+done <<'EOF'
+core.autocrlf=true
+core.checkstat=minimal
+core.eol=crlf
+core.ignorecase=true
+core.precomposeunicode=true
+core.symlinks=false
+core.trustctime=false
+EOF
+
+# Reviewed attributes can also canonicalize bytes without local Git config.
+# A clean status is therefore insufficient; raw checked-out bytes must match
+# the blob object named by the exact commit.
+printf '*.txt text eol=crlf\n' >"$SOURCE_REPO/.gitattributes"
+printf 'line one\nline two\n' >"$SOURCE_REPO/transformed.txt"
+git -C "$SOURCE_REPO" add .gitattributes transformed.txt
+git -C "$SOURCE_REPO" commit -q -m "source with checkout transformation"
+TRANSFORM_COMMIT="$(git -C "$SOURCE_REPO" rev-parse HEAD)"
+TRANSFORM_POLICY="$TMP_ROOT/transform-policy.json"
+jq --arg commit "$TRANSFORM_COMMIT" \
+  '.homebrew_commit = $commit' "$SOURCE_POLICY" >"$TRANSFORM_POLICY"
+rm "$SOURCE_REPO/transformed.txt"
+git -C "$SOURCE_REPO" checkout -q -- transformed.txt
+[ -z "$(git -C "$SOURCE_REPO" status --porcelain)" ] ||
+  fail "checkout-transformation fixture is not Git-clean"
+expect_failure "raw tracked source transformation" \
+  "tracked Homebrew source bytes differ from Git tree" \
+  bash "$SOURCE_CHECK" "$SOURCE_BREW" "$TRANSFORM_POLICY"
+git -C "$SOURCE_REPO" reset -q --hard "$SOURCE_COMMIT"
 
 printf 'dirty\n' >>"$SOURCE_REPO/source.rb"
 expect_failure "dirty Brew worktree" "brew checkout is not clean" \
@@ -726,12 +844,12 @@ git -C "$SOURCE_REPO" config --unset core.fsmonitor
 mkdir "$SOURCE_REPO/ignored-state"
 printf 'ignored executable state\n' >"$SOURCE_REPO/ignored-state/tool"
 expect_failure "unreviewed ignored Brew state" \
-  "brew checkout has unreviewed ignored state" \
+  "brew checkout has unreviewed ignored state: ignored-state/tool" \
   bash "$SOURCE_CHECK" "$SOURCE_BREW" "$SOURCE_POLICY"
 rm -r "$SOURCE_REPO/ignored-state"
 mkdir "$SOURCE_REPO/ignored-state"
 expect_failure "unreviewed empty ignored Brew directory" \
-  "brew checkout has an unreviewed ignored directory" \
+  "brew checkout has an unreviewed ignored directory: ignored-state/" \
   bash "$SOURCE_CHECK" "$SOURCE_BREW" "$SOURCE_POLICY"
 rm -r "$SOURCE_REPO/ignored-state"
 
@@ -746,6 +864,9 @@ bash "$SOURCE_CHECK" "$SOURCE_BREW" "$SOURCE_POLICY" \
   "$SOURCE_ATTESTATION_BEFORE" >/dev/null
 jq -e '
   .kind == "kandelo-homebrew-native-source-attestation" and
+  .tracked_source.entries >= 6 and
+  .tracked_source.bytes > 0 and
+  (.tracked_source.sha256 | test("^[0-9a-f]{64}$")) and
   .ignored_runtime.present == true and
   .ignored_runtime.entries == 5 and
   (.ignored_runtime.sha256 | test("^[0-9a-f]{64}$"))

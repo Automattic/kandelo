@@ -19,6 +19,7 @@ clean_git() {
     PATH=/usr/bin:/bin \
     LC_ALL=C \
     GIT_CONFIG_NOSYSTEM=1 \
+    GIT_NO_REPLACE_OBJECTS=1 \
     /usr/bin/git "$@"
 }
 
@@ -80,10 +81,35 @@ BREW_REPOSITORY="$(cd "$BREW_REPOSITORY" && pwd -P)"
   echo "homebrew-native-check-brew-source: brew checkout does not track executable modes" >&2
   exit 2
 }
+REPLACEMENT_REFS="$(
+  clean_git -C "$BREW_REPOSITORY" for-each-ref \
+    --format='%(refname)' refs/replace/
+)"
+[ -z "$REPLACEMENT_REFS" ] || {
+  echo "homebrew-native-check-brew-source: brew checkout has Git replacement refs" >&2
+  exit 2
+}
+GRAFTS_PATH="$(
+  clean_git -C "$BREW_REPOSITORY" rev-parse \
+    --path-format=absolute --git-path info/grafts
+)"
+[ ! -e "$GRAFTS_PATH" ] && [ ! -L "$GRAFTS_PATH" ] || {
+  echo "homebrew-native-check-brew-source: brew checkout has legacy Git grafts" >&2
+  exit 2
+}
+UNSAFE_CONFIG_PATTERN='^(core\.('
+UNSAFE_CONFIG_PATTERN+='attributesfile|autocrlf|checkstat|eol|excludesfile|'
+UNSAFE_CONFIG_PATTERN+='fsmonitor|hookspath|ignorecase|ignorestat|'
+UNSAFE_CONFIG_PATTERN+='precomposeunicode|sparsecheckout|'
+UNSAFE_CONFIG_PATTERN+='sparsecheckoutcone|symlinks|trustctime|worktree)'
+UNSAFE_CONFIG_PATTERN+='|diff\.(external|.*\.(command|textconv))'
+UNSAFE_CONFIG_PATTERN+='|extensions\.worktreeconfig|filter\..*'
+UNSAFE_CONFIG_PATTERN+='|include(if\..*)?\..*'
+UNSAFE_CONFIG_PATTERN+='|status\.showuntrackedfiles'
+UNSAFE_CONFIG_PATTERN+='|submodule\..*\.ignore)$'
 UNSAFE_CONFIG="$(
   clean_git -C "$BREW_REPOSITORY" config --local --name-only \
-    --get-regexp \
-    '^(core\.(attributesfile|excludesfile|fsmonitor|hookspath|ignorestat|sparsecheckout|sparsecheckoutcone|worktree)|diff\.(external|.*\.(command|textconv))|extensions\.worktreeconfig|filter\..*|include(if\..*)?\..*|status\.showuntrackedfiles|submodule\..*\.ignore)$' \
+    --get-regexp "$UNSAFE_CONFIG_PATTERN" \
     || true
 )"
 [ -z "$UNSAFE_CONFIG" ] || {
@@ -115,7 +141,9 @@ while IFS= read -r -d '' ignored_path; do
     Library/Homebrew/vendor/portable-ruby|\
     Library/Homebrew/vendor/portable-ruby/*) ;;
     *)
-      echo "homebrew-native-check-brew-source: brew checkout has unreviewed ignored state" >&2
+      printf \
+        'homebrew-native-check-brew-source: brew checkout has unreviewed ignored state: %q\n' \
+        "$ignored_path" >&2
       exit 2
       ;;
   esac
@@ -128,7 +156,9 @@ while IFS= read -r -d '' ignored_directory; do
     Library/Homebrew/vendor/portable-ruby/|\
     Library/Homebrew/vendor/portable-ruby/*) ;;
     *)
-      echo "homebrew-native-check-brew-source: brew checkout has an unreviewed ignored directory: $ignored_directory" >&2
+      printf \
+        'homebrew-native-check-brew-source: brew checkout has an unreviewed ignored directory: %q\n' \
+        "$ignored_directory" >&2
       exit 2
       ;;
   esac
@@ -138,17 +168,27 @@ done < <(
 )
 
 temporary_attestation=""
+tracked_tree_manifest="$(
+  mktemp "${TMPDIR:-/tmp}/kandelo-brew-tree.XXXXXX"
+)"
 if [ -z "$ATTESTATION_OUTPUT" ]; then
   temporary_attestation="$(mktemp "${TMPDIR:-/tmp}/kandelo-brew-source.XXXXXX")"
   rm -f "$temporary_attestation"
   ATTESTATION_OUTPUT="$temporary_attestation"
 fi
 cleanup() {
+  rm -f -- "$tracked_tree_manifest"
   if [ -n "$temporary_attestation" ]; then
     rm -f -- "$temporary_attestation"
   fi
 }
 trap cleanup EXIT
+
+# WHY: Git's clean status compares canonicalized content and may trust its
+# stat cache. Export the reviewed tree with replacement objects disabled so
+# the oracle can compare raw bytes, Git executable bits, and symlink targets.
+clean_git -C "$BREW_REPOSITORY" ls-tree -r -t -z --full-tree \
+  "$EXPECTED_COMMIT" >"$tracked_tree_manifest"
 RUBY_BIN="$(command -v ruby)"
 /usr/bin/env -i \
   HOME=/nonexistent \
@@ -157,6 +197,6 @@ RUBY_BIN="$(command -v ruby)"
   LC_ALL=C.UTF-8 \
   "$RUBY_BIN" --disable=gems,rubyopt "$ORACLE" \
     attest-source "$EXPECTED_COMMIT" "$BREW_REPOSITORY" \
-    "$ATTESTATION_OUTPUT"
+    "$tracked_tree_manifest" "$ATTESTATION_OUTPUT"
 
 printf '%s\n' "$BREW_REPOSITORY"

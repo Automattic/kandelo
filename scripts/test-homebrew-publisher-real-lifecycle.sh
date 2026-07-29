@@ -53,11 +53,25 @@ cleanup() {
 }
 trap cleanup EXIT
 
-consider_brew_source "${KANDELO_HOMEBREW_SOURCE_REPOSITORY:-}"
-for candidate in /opt/homebrew /home/linuxbrew/.linuxbrew/Homebrew /usr/local/Homebrew; do
-  [ -z "$BREW_SOURCE" ] || break
-  consider_brew_source "$candidate"
-done
+DECLARED_BREW_SOURCE="${KANDELO_HOMEBREW_SOURCE_REPOSITORY:-}"
+if [ -n "$DECLARED_BREW_SOURCE" ]; then
+  consider_brew_source "$DECLARED_BREW_SOURCE"
+  # WHY: an explicit CI checkout is reviewed test authority. Falling back to
+  # an ambient installation when that checkout is wrong would make a broken
+  # workflow pass according to whichever Homebrew a runner happens to retain.
+  [ -n "$BREW_SOURCE" ] || fail \
+    "the declared Homebrew source does not contain the pinned lifecycle commit"
+elif [ -n "${CI:-}" ]; then
+  fail "CI must declare KANDELO_HOMEBREW_SOURCE_REPOSITORY"
+else
+  # Local developers may reuse an existing clone. The exact commit and the
+  # two lifecycle-sensitive blobs are still verified by consider_brew_source.
+  for candidate in /opt/homebrew /home/linuxbrew/.linuxbrew/Homebrew \
+      /usr/local/Homebrew; do
+    [ -z "$BREW_SOURCE" ] || break
+    consider_brew_source "$candidate"
+  done
+fi
 [ -n "$BREW_SOURCE" ] || fail \
   "the pinned Homebrew commit is unavailable; set KANDELO_HOMEBREW_SOURCE_REPOSITORY"
 

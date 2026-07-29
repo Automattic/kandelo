@@ -12,6 +12,9 @@ MAX_API_TOTAL_BYTES = 256 * 1024 * 1024
 MAX_API_FILES = 64
 MAX_SOURCE_RUNTIME_BYTES = 2 * 1024 * 1024 * 1024
 MAX_SOURCE_RUNTIME_ENTRIES = 100_000
+MAX_SOURCE_TREE_MANIFEST_BYTES = 64 * 1024 * 1024
+MAX_SOURCE_TREE_BYTES = 2 * 1024 * 1024 * 1024
+MAX_SOURCE_TREE_ENTRIES = 100_000
 NAME_PATTERN = /\A[a-z0-9][a-z0-9+@._-]{0,254}\z/
 TARGET_TAG = "x86_64_linux"
 
@@ -66,6 +69,13 @@ rescue Errno::ENOENT => e
   fail_contract("cannot read #{path}: #{e.message}")
 end
 
+def source_identity(stat)
+  [
+    stat.dev, stat.ino, stat.mode, stat.nlink, stat.size,
+    stat.mtime.to_i, stat.mtime.nsec, stat.ctime.to_i, stat.ctime.nsec
+  ]
+end
+
 def source_runtime_inventory(repository)
   runtime_relative = "Library/Homebrew/vendor/portable-ruby"
   runtime_root = repository/runtime_relative
@@ -111,14 +121,8 @@ def source_runtime_inventory(repository)
       fail_contract("ignored portable Ruby contains an unsafe filesystem entry")
     end
     after = path.lstat
-    identity = lambda do |stat|
-      [
-        stat.dev, stat.ino, stat.mode, stat.nlink, stat.size,
-        stat.mtime.to_i, stat.mtime.nsec
-      ]
-    end
     fail_contract("ignored portable Ruby changed during attestation") unless
-      identity.call(before) == identity.call(after)
+      source_identity(before) == source_identity(after)
     entries << record
     fail_contract("ignored portable Ruby contains too many entries") if
       entries.length > MAX_SOURCE_RUNTIME_ENTRIES
@@ -137,6 +141,114 @@ def source_runtime_inventory(repository)
   }
 rescue Errno::ENOENT, Errno::ELOOP => e
   fail_contract("cannot inventory ignored portable Ruby: #{e.message}")
+end
+
+def git_blob_sha1(path, before)
+  digest = Digest::SHA1.new
+  digest.update("blob #{before.size}\0")
+  bytes = 0
+  File.open(path, "rb") do |file|
+    while (chunk = file.read(1024 * 1024))
+      bytes += chunk.bytesize
+      digest.update(chunk)
+    end
+  end
+  fail_contract("tracked Homebrew source changed during attestation") unless
+    bytes == before.size
+  digest.hexdigest
+end
+
+def tracked_source_inventory(repository, manifest_path)
+  manifest_stat = File.lstat(manifest_path)
+  fail_contract("tracked source manifest is not a regular file") unless
+    manifest_stat.file?
+  if manifest_stat.size > MAX_SOURCE_TREE_MANIFEST_BYTES
+    fail_contract("tracked source manifest exceeds the size limit")
+  end
+
+  manifest = File.binread(manifest_path)
+  manifest_after = File.lstat(manifest_path)
+  unless source_identity(manifest_stat) == source_identity(manifest_after)
+    fail_contract("tracked source manifest changed during attestation")
+  end
+  records = manifest.split("\0", -1)
+  fail_contract("tracked source manifest is not NUL terminated") unless
+    records.pop == ""
+
+  aggregate = Digest::SHA256.new
+  seen = {}
+  total_bytes = 0
+  entries = 0
+
+  records.each do |record|
+    metadata, relative = record.split("\t", 2)
+    mode, type, object = metadata.to_s.split(" ", 3)
+    unless relative && !relative.empty? &&
+           /\A[0-9a-f]{40}\z/.match?(object.to_s) &&
+           !relative.start_with?("/") &&
+           relative.split("/").none? { |part| part.empty? || part == "." ||
+             part == ".." }
+      fail_contract("tracked source manifest contains an invalid entry")
+    end
+    fail_contract("tracked source manifest repeats a path") if seen[relative]
+    seen[relative] = true
+
+    path = repository.join(relative)
+    before = path.lstat
+    case [mode, type]
+    when ["040000", "tree"]
+      fail_contract("tracked Homebrew source directory changed type") unless
+        before.directory? && !before.symlink?
+    when ["100644", "blob"], ["100755", "blob"]
+      fail_contract("tracked Homebrew source file changed type") unless
+        before.file? && !before.symlink?
+      executable = (before.mode & 0o111).positive?
+      expected_executable = mode == "100755"
+      unless executable == expected_executable
+        fail_contract("tracked Homebrew source executable mode changed")
+      end
+      unless git_blob_sha1(path, before) == object
+        fail_contract("tracked Homebrew source bytes differ from Git tree")
+      end
+      total_bytes += before.size
+    when ["120000", "blob"]
+      fail_contract("tracked Homebrew source symlink changed type") unless
+        before.symlink?
+      target = path.readlink.to_s.b
+      digest = Digest::SHA1.hexdigest("blob #{target.bytesize}\0#{target}")
+      unless digest == object
+        fail_contract("tracked Homebrew source symlink target changed")
+      end
+      total_bytes += target.bytesize
+    else
+      fail_contract("tracked source manifest contains an unsupported entry")
+    end
+
+    after = path.lstat
+    unless source_identity(before) == source_identity(after)
+      fail_contract("tracked Homebrew source changed during attestation")
+    end
+    entries += 1
+    if entries > MAX_SOURCE_TREE_ENTRIES
+      fail_contract("tracked Homebrew source contains too many entries")
+    end
+    if total_bytes > MAX_SOURCE_TREE_BYTES
+      fail_contract("tracked Homebrew source exceeds the size limit")
+    end
+    aggregate.update([relative.bytesize].pack("Q>"))
+    aggregate.update(relative.b)
+    aggregate.update("\0#{mode}\0#{type}\0#{object}\0")
+  rescue Errno::ENOENT, Errno::ELOOP => e
+    fail_contract("cannot inventory tracked Homebrew source: #{e.message}")
+  end
+
+  {
+    "entries" => entries,
+    "bytes" => total_bytes,
+    "sha256" => aggregate.hexdigest,
+  }
+rescue Errno::ENOENT, Errno::ELOOP => e
+  fail_contract("cannot read tracked source manifest: #{e.message}")
 end
 
 def api_inventory
@@ -381,9 +493,9 @@ end
 mode = ARGV.shift
 case mode
 when "attest-source"
-  fail_contract("usage: attest-source COMMIT REPOSITORY OUT") unless
-    ARGV.length == 3
-  expected_commit, repository_path, output = ARGV
+  fail_contract("usage: attest-source COMMIT REPOSITORY TREE OUT") unless
+    ARGV.length == 4
+  expected_commit, repository_path, tree_manifest, output = ARGV
   fail_contract("expected Homebrew commit is invalid") unless
     /\A[0-9a-f]{40}\z/.match?(expected_commit)
   repository = Pathname(repository_path)
@@ -395,6 +507,9 @@ when "attest-source"
     "kind" => "kandelo-homebrew-native-source-attestation",
     "homebrew_commit" => expected_commit,
     "repository" => repository.to_s,
+    "tracked_source" => tracked_source_inventory(
+      repository, Pathname(tree_manifest)
+    ),
     "ignored_runtime" => source_runtime_inventory(repository),
   })
 when "prime"
