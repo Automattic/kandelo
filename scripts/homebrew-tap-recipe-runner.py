@@ -59,6 +59,33 @@ SYSROOT_LIMITS = {
     "max_file_bytes": 1_073_741_824,
     "max_path_bytes": 4_096,
 }
+FORMULA_TEST_RUNTIME_LIMITS = {
+    "max_bytes": 536_870_912,
+    "max_entries": 65_536,
+    "max_file_bytes": 268_435_456,
+    "max_path_bytes": 4_096,
+}
+# The Formula test root is a runtime closure, not another source checkout.
+# Keep this list closed so installing a new npm dependency or adding checkout
+# state cannot silently grant Formula tests new read authority.
+FORMULA_TEST_RUNTIME_DIRECTORIES = (
+    Path(".ci-test-binary-cache"),
+    Path("binaries"),
+    Path("host/src"),
+    Path("host/wasm"),
+    Path("node_modules/@esbuild"),
+    Path("node_modules/esbuild"),
+    Path("node_modules/fflate"),
+    Path("node_modules/fzstd"),
+    Path("node_modules/tsx"),
+)
+FORMULA_TEST_RUNTIME_FILES = (
+    Path("Cargo.toml"),
+    Path("examples/run-example-output.ts"),
+    Path("examples/run-example-paths.ts"),
+    Path("examples/run-example.ts"),
+    Path("package.json"),
+)
 # Linux reserves one trailing NUL in sockaddr_un.sun_path, leaving 107 bytes
 # for a pathname. The protected build identity intentionally retains all 64
 # digest characters, so the control socket uses the shortest meaningful name.
@@ -2557,6 +2584,22 @@ def contained_symlink(relative: str, target: str, limit: int) -> None:
             fail(f"tree symlink escapes its root: {relative!r}")
 
 
+def safe_relative_symlink_text(relative: str, target: str, limit: int) -> None:
+    """Validate link syntax when containment is checked in an aggregate tree."""
+    safe_relative_path(relative, limit)
+    try:
+        target_bytes = target.encode("utf-8", "strict")
+    except UnicodeEncodeError:
+        fail(f"tree contains an unsafe symlink target: {relative!r}")
+    if (
+        not target
+        or target.startswith("/")
+        or not safe_tree_text(target)
+        or len(target_bytes) > limit
+    ):
+        fail(f"tree contains an unsafe symlink target: {relative!r}")
+
+
 def recipe_relative_path(value: Any, *, label: str) -> str:
     try:
         encoded = value.encode("ascii", "strict") if type(value) is str else b""
@@ -2635,6 +2678,8 @@ def write_regular_at(
     *,
     mode: int,
     label: str,
+    owner_uid: int = 0,
+    owner_gid: int = 0,
 ) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
@@ -2650,7 +2695,7 @@ def write_regular_at(
             if written <= 0:
                 fail(f"{label} could not be written completely")
             view = view[written:]
-        os.fchown(fd, 0, 0)
+        os.fchown(fd, owner_uid, owner_gid)
         os.fchmod(fd, mode)
         os.fsync(fd)
     finally:
@@ -2888,7 +2933,19 @@ def copy_input_tree(
     destination_gid: int = 0,
     require_single_link_files: bool = True,
     destination_precreated: bool = False,
+    projection_prefix: str = "",
+    seal_root: bool = True,
 ) -> tuple[int, int]:
+    if projection_prefix:
+        safe_relative_path(projection_prefix, limits["max_path_bytes"])
+        if (
+            projection_prefix.startswith("/")
+            or any(
+                component in {"", ".", ".."}
+                for component in PurePosixPath(projection_prefix).parts
+            )
+        ):
+            fail("tree projection prefix is not one canonical relative path")
     if destination_precreated:
         before_destination = destination.lstat()
         if (
@@ -3035,7 +3092,20 @@ def copy_input_tree(
                         fail(f"source file changed while copied: {relative}")
                 elif stat.S_ISLNK(before.st_mode):
                     target = os.readlink(name, dir_fd=current_source_fd)
-                    contained_symlink(relative, target, limits["max_path_bytes"])
+                    projected_relative = (
+                        f"{projection_prefix}/{relative}"
+                        if projection_prefix
+                        else relative
+                    )
+                    # WHY: portable resolver mirrors intentionally link from
+                    # binaries/ into a sibling cache. Validate against the
+                    # final projection-relative path rather than treating each
+                    # independently copied subtree as its own authority root.
+                    contained_symlink(
+                        projected_relative,
+                        target,
+                        limits["max_path_bytes"],
+                    )
                     os.symlink(target, name, dir_fd=current_destination_fd)
                     os.chown(
                         name,
@@ -3062,10 +3132,9 @@ def copy_input_tree(
                         fail(f"source symlink changed while copied: {relative}")
                 else:
                     fail(f"source tree contains an unsupported node: {relative}")
-            os.fchown(
-                current_destination_fd, destination_uid, destination_gid
-            )
-            os.fchmod(current_destination_fd, 0o555)
+            os.fchown(current_destination_fd, destination_uid, destination_gid)
+            if seal_root or relative_dir:
+                os.fchmod(current_destination_fd, 0o555)
             os.utime(
                 current_destination_fd,
                 ns=(
@@ -3199,6 +3268,28 @@ def validate_tree_symlink_targets(
             resolved.append(component)
 
 
+def validate_tree_regular_links_closed(
+    records: dict[str, TreeNode], label: str
+) -> None:
+    """Require every hard link to a selected regular inode to be selected."""
+    selected_links: dict[tuple[int, int], int] = {}
+    declared_links: dict[tuple[int, int], int] = {}
+    for relative, (kind, identity, _, _) in records.items():
+        if kind != "f":
+            continue
+        inode = (identity[0], identity[1])
+        selected_links[inode] = selected_links.get(inode, 0) + 1
+        previous = declared_links.setdefault(inode, identity[3])
+        if previous != identity[3]:
+            fail(f"{label} has inconsistent hard-link state: {relative}")
+    for inode, selected in selected_links.items():
+        declared = declared_links[inode]
+        if selected != declared:
+            fail(
+                f"{label} regular-file hard links escape the selected closure"
+            )
+
+
 def inspect_tree_snapshot(
     root: Path,
     limits: dict[str, int],
@@ -3207,6 +3298,7 @@ def inspect_tree_snapshot(
     hash_files: bool,
     sealed_owner: tuple[int, int] | None = None,
     require_single_link_files: bool = False,
+    validate_symlinks: bool = True,
 ) -> tuple[TreeSnapshot, int, int]:
     """Inspect one tree through held directory descriptors and return its identity."""
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
@@ -3302,9 +3394,14 @@ def inspect_tree_snapshot(
                     records[relative] = ("f", identity, None, digest)
                 elif stat.S_ISLNK(before.st_mode):
                     target = os.readlink(name, dir_fd=current_fd)
-                    contained_symlink(
-                        relative, target, limits["max_path_bytes"]
-                    )
+                    if validate_symlinks:
+                        contained_symlink(
+                            relative, target, limits["max_path_bytes"]
+                        )
+                    else:
+                        safe_relative_symlink_text(
+                            relative, target, limits["max_path_bytes"]
+                        )
                     if before.st_nlink != 1:
                         fail(f"{label} symlink is not single-linked: {relative}")
                     if sealed_owner is not None and (
@@ -3344,7 +3441,8 @@ def inspect_tree_snapshot(
         fail(f"{label} root disappeared after inspection: {error}")
     if file_identity(root_after) != file_identity(root_stat):
         fail(f"{label} root changed during inspection")
-    validate_tree_symlink_targets(records, label)
+    if validate_symlinks:
+        validate_tree_symlink_targets(records, label)
     return (file_identity(root_stat), records), entries, total_bytes
 
 
@@ -3439,6 +3537,583 @@ def remove_staging_tree(path: Path, label: str) -> None:
         fail(f"{label} could not be cleaned up: {error}")
     if path.exists() or path.is_symlink():
         fail(f"{label} cleanup left staging state")
+
+
+def ensure_projection_parent(
+    root: Path,
+    relative: Path,
+    *,
+    owner_uid: int,
+    owner_gid: int,
+) -> Path:
+    """Create only real root-owned parents below one private staging root."""
+    current = root
+    for component in relative.parts:
+        if component in {"", ".", ".."}:
+            fail("Formula test runtime has a noncanonical destination path")
+        current /= component
+        try:
+            before = current.lstat()
+        except FileNotFoundError:
+            current.mkdir(mode=0o700)
+            os.chown(current, owner_uid, owner_gid)
+            before = current.lstat()
+        if (
+            not stat.S_ISDIR(before.st_mode)
+            or current.resolve(strict=True) != current
+            or before.st_uid != owner_uid
+            or before.st_gid != owner_gid
+            or stat.S_IMODE(before.st_mode) not in {0o700, 0o555}
+        ):
+            fail("Formula test runtime destination ancestry is unsafe")
+    return current
+
+
+def read_stable_projection_file(
+    path: Path,
+    limits: dict[str, int],
+    label: str,
+) -> tuple[bytes, os.stat_result]:
+    """Read one workflow input without following a replaceable final link."""
+    try:
+        before = path.lstat()
+        resolved = path.resolve(strict=True)
+    except OSError as error:
+        fail(f"{label} is unavailable: {error}")
+    if (
+        resolved != path
+        or not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+        or before.st_size < 0
+        or before.st_size > limits["max_file_bytes"]
+    ):
+        fail(f"{label} has unsafe type, links, path, or size")
+    flags = os.O_RDONLY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
+    try:
+        fd = os.open(path, flags)
+    except OSError as error:
+        fail(f"{label} cannot be opened safely: {error}")
+    chunks: list[bytes] = []
+    copied = 0
+    try:
+        if file_identity(os.fstat(fd)) != file_identity(before):
+            fail(f"{label} changed before it was opened")
+        while True:
+            chunk = os.read(fd, min(1_048_576, before.st_size + 1 - copied))
+            if not chunk:
+                break
+            copied += len(chunk)
+            if copied > before.st_size:
+                fail(f"{label} grew while it was read")
+            chunks.append(chunk)
+        opened_after = os.fstat(fd)
+    finally:
+        os.close(fd)
+    try:
+        after = path.lstat()
+    except OSError as error:
+        fail(f"{label} disappeared after it was read: {error}")
+    if (
+        copied != before.st_size
+        or file_identity(opened_after) != file_identity(before)
+        or file_identity(after) != file_identity(before)
+    ):
+        fail(f"{label} changed while it was read")
+    return b"".join(chunks), before
+
+
+def add_projection_parent_records(
+    records: dict[str, TreeNode],
+    relative: Path,
+    identity: tuple[int, ...],
+) -> None:
+    parent = relative.parent
+    pending: list[str] = []
+    while str(parent) != ".":
+        pending.append(parent.as_posix())
+        parent = parent.parent
+    for rendered in reversed(pending):
+        existing = records.get(rendered)
+        if existing is not None and existing[0] != "d":
+            fail(f"Formula test runtime projection collides at {rendered}")
+        records.setdefault(rendered, ("d", identity, None, None))
+
+
+def add_projection_tree_records(
+    records: dict[str, TreeNode],
+    prefix: Path,
+    snapshot: TreeSnapshot,
+) -> None:
+    root_identity, source_records = snapshot
+    add_projection_parent_records(records, prefix, root_identity)
+    rendered_prefix = prefix.as_posix()
+    if rendered_prefix in records:
+        fail(f"Formula test runtime projection repeats {rendered_prefix}")
+    records[rendered_prefix] = ("d", root_identity, None, None)
+    for relative, node in source_records.items():
+        projected = f"{rendered_prefix}/{relative}"
+        if projected in records:
+            fail(f"Formula test runtime projection repeats {projected}")
+        records[projected] = node
+
+
+def copy_projection_file(
+    source: Path,
+    destination_root: Path,
+    relative: Path,
+    limits: dict[str, int],
+    *,
+    owner_uid: int,
+    owner_gid: int,
+    expected_data: bytes | None = None,
+    expected_identity: tuple[int, ...] | None = None,
+) -> tuple[bytes, os.stat_result]:
+    data, before = read_stable_projection_file(
+        source, limits, f"Formula test runtime input {relative.as_posix()}"
+    )
+    if (
+        expected_data is not None
+        and (
+            expected_identity is None
+            or data != expected_data
+            or file_identity(before) != expected_identity
+        )
+    ):
+        fail(
+            "Formula test runtime input changed before staging: "
+            f"{relative.as_posix()}"
+        )
+    parent = ensure_projection_parent(
+        destination_root,
+        relative.parent,
+        owner_uid=owner_uid,
+        owner_gid=owner_gid,
+    )
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        directory_flags |= os.O_NOFOLLOW
+    parent_fd = os.open(parent, directory_flags)
+    try:
+        write_regular_at(
+            parent_fd,
+            relative.name,
+            data,
+            mode=0o555 if stat.S_IMODE(before.st_mode) & 0o111 else 0o444,
+            label=f"staged Formula test runtime input {relative.as_posix()}",
+            owner_uid=owner_uid,
+            owner_gid=owner_gid,
+        )
+    finally:
+        os.close(parent_fd)
+    return data, before
+
+
+def stage_formula_test_runtime_tree(
+    source: Path,
+    platform: Path,
+    checker: Path,
+    checker_relative: str,
+    destination: Path,
+    *,
+    owner_uid: int,
+    owner_gid: int,
+    limits: dict[str, int] = FORMULA_TEST_RUNTIME_LIMITS,
+) -> tuple[str, int, int]:
+    """Publish the closed Node/host closure used only by ``brew test``."""
+    source = canonical_real_directory(
+        source, label="Formula test runtime source"
+    )
+    source_root_identity = file_identity(source.lstat())
+    platform = canonical_real_directory(
+        platform,
+        label="Formula test platform projection",
+        owner_uid=owner_uid,
+        exact_mode=0o555,
+    )
+    checker = canonical_real_file(
+        checker, label="Formula test program-index checker", executable=True
+    )
+    checker_path = Path(
+        recipe_relative_path(
+            checker_relative, label="Formula test program-index checker path"
+        )
+    )
+    checker_parts = checker_path.parts
+    if (
+        len(checker_parts) != 4
+        or checker_parts[0] != "target"
+        or not re.fullmatch(r"[A-Za-z0-9_.+-]+", checker_parts[1])
+        or checker_parts[2:] != ("release", "xtask")
+    ):
+        fail(
+            "Formula test program-index checker must use "
+            "target/<host>/release/xtask"
+        )
+    checker_stat = checker.lstat()
+    if (
+        checker_stat.st_uid != owner_uid
+        or checker_stat.st_gid != owner_gid
+        or checker_stat.st_nlink != 1
+        or stat.S_IMODE(checker_stat.st_mode) != 0o555
+    ):
+        fail("Formula test program-index checker is not sealed")
+    destination_parent = canonical_real_directory(
+        destination.parent,
+        label="Formula test runtime projection parent",
+        owner_uid=owner_uid,
+    )
+    if destination.parent != destination_parent:
+        fail("Formula test runtime destination left its canonical parent")
+    if destination.exists() or destination.is_symlink():
+        fail("Formula test runtime destination is occupied")
+    if (
+        is_within(source, destination_parent)
+        or is_within(destination_parent, source)
+    ):
+        fail("Formula test runtime source overlaps its protected destination")
+
+    platform_before, _, selected_bytes = inspect_tree_snapshot(
+        platform,
+        limits,
+        "Formula test platform projection",
+        hash_files=True,
+        sealed_owner=(owner_uid, owner_gid),
+        require_single_link_files=True,
+    )
+    selected_directories: dict[Path, TreeSnapshot] = {}
+    for relative in FORMULA_TEST_RUNTIME_DIRECTORIES:
+        candidate = canonical_real_directory(
+            source / relative,
+            label=f"Formula test runtime input {relative.as_posix()}",
+        )
+        snapshot, _, _ = inspect_tree_snapshot(
+            candidate,
+            limits,
+            f"Formula test runtime input {relative.as_posix()}",
+            hash_files=True,
+            require_single_link_files=False,
+            validate_symlinks=False,
+        )
+        selected_directories[relative] = snapshot
+
+    expected_records = dict(platform_before[1])
+    for relative, source_snapshot in selected_directories.items():
+        add_projection_tree_records(
+            expected_records, relative, source_snapshot
+        )
+        selected_bytes += sum(
+            identity[6]
+            for kind, identity, _, _ in source_snapshot[1].values()
+            if kind == "f"
+        )
+
+    selected_files: dict[Path, tuple[bytes, tuple[int, ...]]] = {}
+    for relative in FORMULA_TEST_RUNTIME_FILES:
+        data, before = read_stable_projection_file(
+            source / relative,
+            limits,
+            f"Formula test runtime input {relative.as_posix()}",
+        )
+        identity = file_identity(before)
+        add_projection_parent_records(expected_records, relative, identity)
+        if relative.as_posix() in expected_records:
+            fail(
+                "Formula test runtime projection repeats "
+                f"{relative.as_posix()}"
+            )
+        expected_records[relative.as_posix()] = (
+            "f",
+            identity,
+            None,
+            hashlib.sha256(data).hexdigest(),
+        )
+        selected_files[relative] = (data, identity)
+        selected_bytes += len(data)
+
+    checker_data, checker_before = read_stable_projection_file(
+        checker, limits, "Formula test program-index checker"
+    )
+    checker_identity = file_identity(checker_before)
+    add_projection_parent_records(
+        expected_records, checker_path, checker_identity
+    )
+    if checker_path.as_posix() in expected_records:
+        fail("Formula test runtime projection repeats its checker")
+    expected_records[checker_path.as_posix()] = (
+        "f",
+        checker_identity,
+        None,
+        hashlib.sha256(checker_data).hexdigest(),
+    )
+    selected_bytes += len(checker_data)
+    if len(expected_records) > limits["max_entries"]:
+        fail("Formula test runtime source closure exceeds the entry limit")
+    if selected_bytes > limits["max_bytes"]:
+        fail("Formula test runtime source closure exceeds the byte limit")
+    # WHY: npm installs esbuild's command as a hard link to the architecture
+    # package's executable. Hard links are safe only when the entire inode link
+    # set is selected; otherwise an undeclared path could retain mutation
+    # authority while root copies the reviewed bytes.
+    validate_tree_regular_links_closed(
+        expected_records, "Formula test runtime source closure"
+    )
+    validate_tree_symlink_targets(
+        expected_records, "Formula test runtime source closure"
+    )
+
+    selection = Path(
+        tempfile.mkdtemp(prefix=".formula-test-selection-", dir=destination_parent)
+    )
+    os.chown(selection, owner_uid, owner_gid)
+    published = False
+    try:
+        copy_input_tree(
+            platform,
+            selection,
+            limits,
+            expected_root_identity=platform_before[0],
+            destination_uid=owner_uid,
+            destination_gid=owner_gid,
+            destination_precreated=True,
+            seal_root=False,
+        )
+        for relative, source_snapshot in selected_directories.items():
+            destination_parent_path = ensure_projection_parent(
+                selection,
+                relative.parent,
+                owner_uid=owner_uid,
+                owner_gid=owner_gid,
+            )
+            copy_input_tree(
+                source / relative,
+                destination_parent_path / relative.name,
+                limits,
+                expected_root_identity=source_snapshot[0],
+                destination_uid=owner_uid,
+                destination_gid=owner_gid,
+                require_single_link_files=False,
+                projection_prefix=relative.as_posix(),
+            )
+
+        for relative, (expected_data, expected_identity) in selected_files.items():
+            copy_projection_file(
+                source / relative,
+                selection,
+                relative,
+                limits,
+                owner_uid=owner_uid,
+                owner_gid=owner_gid,
+                expected_data=expected_data,
+                expected_identity=expected_identity,
+            )
+
+        copy_projection_file(
+            checker,
+            selection,
+            checker_path,
+            limits,
+            owner_uid=owner_uid,
+            owner_gid=owner_gid,
+            expected_data=checker_data,
+            expected_identity=checker_identity,
+        )
+
+        platform_after, _, _ = inspect_tree_snapshot(
+            platform,
+            limits,
+            "Formula test platform projection",
+            hash_files=False,
+            sealed_owner=(owner_uid, owner_gid),
+            require_single_link_files=True,
+        )
+        if tree_identity_signature(platform_after) != tree_identity_signature(
+            platform_before
+        ):
+            fail("Formula test platform projection changed during staging")
+        for relative, before in selected_directories.items():
+            after, _, _ = inspect_tree_snapshot(
+                source / relative,
+                limits,
+                f"Formula test runtime input {relative.as_posix()}",
+                hash_files=False,
+                require_single_link_files=False,
+                validate_symlinks=False,
+            )
+            if tree_identity_signature(after) != tree_identity_signature(before):
+                fail(
+                    "Formula test runtime input changed during staging: "
+                    f"{relative.as_posix()}"
+                )
+        for relative, (expected_data, expected_identity) in selected_files.items():
+            actual_data, actual = read_stable_projection_file(
+                source / relative,
+                limits,
+                f"Formula test runtime input {relative.as_posix()}",
+            )
+            if (
+                file_identity(actual) != expected_identity
+                or actual_data != expected_data
+            ):
+                fail(
+                    "Formula test runtime input changed during staging: "
+                    f"{relative.as_posix()}"
+                )
+        checker_data_after, checker_after = read_stable_projection_file(
+            checker, limits, "Formula test program-index checker"
+        )
+        if (
+            file_identity(checker_after) != checker_identity
+            or checker_data_after != checker_data
+        ):
+            fail("Formula test program-index checker changed during staging")
+        if file_identity(source.lstat()) != source_root_identity:
+            fail("Formula test runtime source root changed during staging")
+
+        # WHY: the selection is private until every source identity and
+        # cross-subtree symlink has validated. Seal all synthetic parents only
+        # after the complete closure exists; otherwise adding host/wasm after
+        # host/src would require reopening an authenticated directory.
+        directories = [
+            Path(directory)
+            for directory, _, _ in os.walk(
+                selection, topdown=False, followlinks=False
+            )
+        ]
+        for directory in directories:
+            os.chown(directory, owner_uid, owner_gid)
+            os.chmod(directory, 0o555)
+        staged_snapshot, staged_entries, staged_bytes = inspect_tree_snapshot(
+            selection,
+            limits,
+            "Formula test runtime selection",
+            hash_files=True,
+            sealed_owner=(owner_uid, owner_gid),
+            require_single_link_files=True,
+        )
+        if tree_content_signature(
+            staged_snapshot[1], "Formula test runtime selection"
+        ) != tree_content_signature(
+            expected_records, "Formula test runtime source closure"
+        ):
+            fail("Formula test runtime differs from its selected source closure")
+        digest = sealed_tree_manifest(
+            staged_snapshot, "Formula test runtime selection"
+        )
+
+        # WHY: the selection already is a fully authenticated, sealed sibling
+        # of its destination. Rename that exact inode instead of copying the
+        # potentially large runtime a second time through /run's tmpfs.
+        if destination.exists() or destination.is_symlink():
+            fail("Formula test runtime destination appeared during staging")
+        parent_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            parent_flags |= os.O_NOFOLLOW
+        parent_before = destination_parent.lstat()
+        parent_fd = os.open(destination_parent, parent_flags)
+        try:
+            opened_parent = os.fstat(parent_fd)
+            parent_authority = (
+                opened_parent.st_dev,
+                opened_parent.st_ino,
+                opened_parent.st_mode,
+                opened_parent.st_uid,
+                opened_parent.st_gid,
+            )
+            if parent_authority != (
+                parent_before.st_dev,
+                parent_before.st_ino,
+                parent_before.st_mode,
+                parent_before.st_uid,
+                parent_before.st_gid,
+            ):
+                fail(
+                    "Formula test runtime parent changed before publication"
+                )
+            selection_before = os.stat(
+                selection.name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+            try:
+                os.stat(
+                    destination.name,
+                    dir_fd=parent_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                pass
+            else:
+                fail(
+                    "Formula test runtime destination appeared during staging"
+                )
+            os.rename(
+                selection.name,
+                destination.name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+            published = True
+            published_stat = os.stat(
+                destination.name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+            # Rename may update directory ctime. Device, inode, type/mode,
+            # links, owner, and size still identify the validated tree.
+            if file_identity(published_stat)[:7] != file_identity(
+                selection_before
+            )[:7]:
+                fail(
+                    "published Formula test runtime is not the validated "
+                    "selection"
+                )
+            os.fsync(parent_fd)
+            opened_parent_after = os.fstat(parent_fd)
+            if parent_authority != (
+                opened_parent_after.st_dev,
+                opened_parent_after.st_ino,
+                opened_parent_after.st_mode,
+                opened_parent_after.st_uid,
+                opened_parent_after.st_gid,
+            ):
+                fail("Formula test runtime parent changed during publication")
+        finally:
+            os.close(parent_fd)
+        final_snapshot, final_entries, final_bytes = inspect_tree_snapshot(
+            destination,
+            limits,
+            "published Formula test runtime",
+            hash_files=True,
+            sealed_owner=(owner_uid, owner_gid),
+            require_single_link_files=True,
+        )
+        if (
+            sealed_tree_manifest(
+                final_snapshot, "published Formula test runtime"
+            )
+            != digest
+            or final_entries != staged_entries
+            or final_bytes != staged_bytes
+        ):
+            fail(
+                "published Formula test runtime changed after its atomic rename"
+            )
+        return digest, final_entries, final_bytes
+    except BaseException as error:
+        if published:
+            try:
+                remove_staging_tree(
+                    destination, "published Formula test runtime"
+                )
+            except RunnerError as cleanup_error:
+                raise cleanup_error from error
+        raise
+    finally:
+        remove_staging_tree(selection, "Formula test runtime selection")
 
 
 def stage_sysroot_tree(
@@ -3652,6 +4327,82 @@ def stage_sysroot(source_value: str, destination_value: str) -> int:
         fail("sysroot projection source overlaps the protected runner root")
     stage_sysroot_tree(
         source,
+        destination,
+        owner_uid=0,
+        owner_gid=0,
+    )
+    return 0
+
+
+def stage_formula_test_runtime(
+    source_value: str,
+    platform_value: str,
+    checker_value: str,
+    checker_relative: str,
+    destination_value: str,
+) -> int:
+    """Root-only CLI boundary for the exact Formula test runtime closure."""
+    if os.geteuid() != 0:
+        fail("Formula test runtime staging must run as root")
+    runner = Path(__file__).resolve(strict=True)
+    runner_stat = runner.lstat()
+    parent_stat = runner.parent.lstat()
+    try:
+        anchor_stat = PROTECTED_PUBLISHER_ROOT.lstat()
+    except OSError as error:
+        fail(f"protected publisher root is unavailable: {error}")
+    if (
+        not stat.S_ISREG(runner_stat.st_mode)
+        or runner_stat.st_uid != 0
+        or runner_stat.st_gid != 0
+        or runner_stat.st_nlink != 1
+        or stat.S_IMODE(runner_stat.st_mode) != 0o555
+        or not stat.S_ISDIR(parent_stat.st_mode)
+        or runner.parent.resolve(strict=True) != runner.parent
+        or parent_stat.st_uid != 0
+        or parent_stat.st_gid != 0
+        or stat.S_IMODE(parent_stat.st_mode) not in {0o755, 0o555}
+        or runner.parent.parent != PROTECTED_PUBLISHER_ROOT
+        or not PROTECTED_BUILD_RE.fullmatch(runner.parent.name)
+        or not stat.S_ISDIR(anchor_stat.st_mode)
+        or PROTECTED_PUBLISHER_ROOT.resolve(strict=True)
+        != PROTECTED_PUBLISHER_ROOT
+        or anchor_stat.st_uid != 0
+        or anchor_stat.st_gid != 0
+        or stat.S_IMODE(anchor_stat.st_mode) != 0o711
+    ):
+        fail(
+            "Formula test runtime stager is outside its sealed root-owned "
+            "boundary"
+        )
+    destination = Path(destination_value)
+    if destination != runner.parent / "formula-test-runtime":
+        fail("Formula test runtime projection left the protected runner root")
+    source = canonical_real_directory(
+        source_value, label="Formula test runtime source"
+    )
+    platform = canonical_real_directory(
+        platform_value,
+        label="Formula test platform projection",
+        owner_uid=0,
+        exact_mode=0o555,
+    )
+    checker = canonical_real_file(
+        checker_value,
+        label="Formula test program-index checker",
+        executable=True,
+    )
+    if is_within(source, runner.parent) or is_within(runner.parent, source):
+        fail("Formula test runtime source overlaps the protected runner root")
+    if platform.parent != runner.parent:
+        fail("Formula test platform projection left the protected runner root")
+    if checker.parent != runner.parent:
+        fail("Formula test checker left the protected runner root")
+    stage_formula_test_runtime_tree(
+        source,
+        platform,
+        checker,
+        checker_relative,
         destination,
         owner_uid=0,
         owner_gid=0,
@@ -4679,13 +5430,17 @@ def supervisor() -> int:
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=False)
     parser.add_argument("--audit-native-links", action="store_true")
+    parser.add_argument("--checker")
+    parser.add_argument("--checker-relative")
     parser.add_argument("--destination")
     parser.add_argument("--formula")
     parser.add_argument("--manifest-sha256")
     parser.add_argument("--only-additional-trees", action="store_true")
+    parser.add_argument("--platform")
     parser.add_argument("--request")
     parser.add_argument("--response")
     parser.add_argument("--source")
+    parser.add_argument("--stage-formula-test-runtime", action="store_true")
     parser.add_argument("--stage-native-closure", action="store_true")
     parser.add_argument("--stage-recipe", action="store_true")
     parser.add_argument("--stage-sysroot", action="store_true")
@@ -4695,6 +5450,7 @@ def parse_arguments() -> argparse.Namespace:
     selected_modes = (
         int(arguments.audit_native_links)
         + int(arguments.supervisor)
+        + int(arguments.stage_formula_test_runtime)
         + int(arguments.stage_native_closure)
         + int(arguments.stage_recipe)
         + int(arguments.stage_sysroot)
@@ -4709,12 +5465,18 @@ def parse_arguments() -> argparse.Namespace:
         arguments.formula,
         arguments.manifest_sha256,
     )
+    formula_test_runtime_values = (
+        arguments.platform,
+        arguments.checker,
+        arguments.checker_relative,
+    )
     if arguments.audit_native_links:
         if (
             arguments.source is None
             or arguments.destination is not None
             or arguments.request is not None
             or arguments.response is not None
+            or any(value is not None for value in formula_test_runtime_values)
             or any(value is not None for value in recipe_identity_values)
             or (arguments.only_additional_trees and not arguments.tree)
         ):
@@ -4725,6 +5487,7 @@ def parse_arguments() -> argparse.Namespace:
             or arguments.response is not None
             or arguments.only_additional_trees
             or arguments.tree
+            or any(value is not None for value in formula_test_runtime_values)
             or any(
                 value is not None
                 for value in (*projection_values, *recipe_identity_values)
@@ -4737,6 +5500,7 @@ def parse_arguments() -> argparse.Namespace:
             or arguments.response is not None
             or arguments.only_additional_trees
             or arguments.tree
+            or any(value is not None for value in formula_test_runtime_values)
             or any(
                 value is None
                 for value in (*projection_values, *recipe_identity_values)
@@ -4749,16 +5513,32 @@ def parse_arguments() -> argparse.Namespace:
             or arguments.response is not None
             or arguments.only_additional_trees
             or arguments.tree
+            or any(value is not None for value in formula_test_runtime_values)
             or any(value is None for value in projection_values)
             or any(value is not None for value in recipe_identity_values)
         ):
             fail("native closure staging requires only --source and --destination")
+    elif arguments.stage_formula_test_runtime:
+        if (
+            arguments.request is not None
+            or arguments.response is not None
+            or arguments.only_additional_trees
+            or arguments.tree
+            or any(value is None for value in projection_values)
+            or any(value is None for value in formula_test_runtime_values)
+            or any(value is not None for value in recipe_identity_values)
+        ):
+            fail(
+                "Formula test runtime staging requires only its source, "
+                "platform, checker, checker-relative path, and destination"
+            )
     elif arguments.stage_sysroot:
         if (
             arguments.request is not None
             or arguments.response is not None
             or arguments.only_additional_trees
             or arguments.tree
+            or any(value is not None for value in formula_test_runtime_values)
             or any(value is None for value in projection_values)
             or any(value is not None for value in recipe_identity_values)
         ):
@@ -4768,6 +5548,7 @@ def parse_arguments() -> argparse.Namespace:
         or arguments.response is None
         or arguments.only_additional_trees
         or arguments.tree
+        or any(value is not None for value in formula_test_runtime_values)
         or any(
             value is not None
             for value in (*projection_values, *recipe_identity_values)
@@ -4797,6 +5578,14 @@ def main() -> int:
             )
         if arguments.stage_native_closure:
             return stage_native_closure(arguments.source, arguments.destination)
+        if arguments.stage_formula_test_runtime:
+            return stage_formula_test_runtime(
+                arguments.source,
+                arguments.platform,
+                arguments.checker,
+                arguments.checker_relative,
+                arguments.destination,
+            )
         if arguments.stage_sysroot:
             return stage_sysroot(arguments.source, arguments.destination)
         if os.geteuid() == 0:

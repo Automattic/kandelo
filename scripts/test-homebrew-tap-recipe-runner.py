@@ -1014,6 +1014,323 @@ class SysrootProjectionTests(unittest.TestCase):
             )
 
 
+class FormulaTestRuntimeProjectionTests(unittest.TestCase):
+    def make_fixture(
+        self, root: Path
+    ) -> tuple[Path, Path, Path, Path]:
+        source = root / "source"
+        platform = root / "protected/platform"
+        protected = root / "protected"
+        source.mkdir()
+        platform.mkdir(parents=True)
+
+        platform_file = platform / "sdk/config.site"
+        platform_file.parent.mkdir()
+        platform_file.write_text("sealed target facts\n")
+        platform_file.chmod(0o444)
+        platform_file.parent.chmod(0o555)
+        platform.chmod(0o555)
+
+        directory_files = {
+            ".ci-test-binary-cache/programs/fixture-rev1-wasm32-"
+            + ("a" * 64)
+            + "/fixture.wasm": b"program generation\n",
+            "host/src/binary-resolver.ts": b"export const resolver = true;\n",
+            "host/src/node-kernel-host.ts": b"export const host = true;\n",
+            "host/wasm/kandelo-kernel.wasm": b"kernel\n",
+            "node_modules/@esbuild/linux-x64/bin/esbuild": b"native loader\n",
+            "node_modules/@esbuild/linux-x64/package.json": b'{"version":"1"}\n',
+            "node_modules/esbuild/package.json": b'{"name":"esbuild"}\n',
+            "node_modules/fflate/package.json": b'{"name":"fflate"}\n',
+            "node_modules/fzstd/package.json": b'{"name":"fzstd"}\n',
+            "node_modules/tsx/package.json": b'{"name":"tsx"}\n',
+        }
+        for relative, data in directory_files.items():
+            path = source / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+            path.chmod(
+                0o755
+                if relative.endswith("/esbuild")
+                else 0o644
+            )
+        esbuild_command = source / "node_modules/esbuild/bin/esbuild"
+        esbuild_command.parent.mkdir()
+        os.link(
+            source / "node_modules/@esbuild/linux-x64/bin/esbuild",
+            esbuild_command,
+        )
+        generation = next(
+            (source / ".ci-test-binary-cache/programs").iterdir()
+        )
+        mirror = source / "binaries/programs/wasm32/fixture.wasm"
+        mirror.parent.mkdir(parents=True)
+        mirror.symlink_to(
+            "../../../.ci-test-binary-cache/programs/"
+            f"{generation.name}/fixture.wasm"
+        )
+
+        selected_files = {
+            "Cargo.toml": b"[workspace]\nmembers = []\n",
+            "package.json": b'{"name":"kandelo","type":"module"}\n',
+            "examples/run-example-output.ts": b"export const output = true;\n",
+            "examples/run-example-paths.ts": b"export const paths = true;\n",
+            "examples/run-example.ts": b"export const run = true;\n",
+        }
+        for relative, data in selected_files.items():
+            path = source / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(data)
+            path.chmod(0o644)
+
+        # These are attractive but explicitly undeclared authority. Their
+        # presence in the source proves the projection is an allowlist rather
+        # than a copied checkout with a few paths hidden later.
+        (source / "packages/registry/poison").mkdir(parents=True)
+        (source / "packages/registry/poison/build.sh").write_text("poison\n")
+        (source / "local-binaries").mkdir()
+        (source / "local-binaries/poison.wasm").write_bytes(b"poison\n")
+        (source / "node_modules/undeclared").mkdir()
+        (source / "node_modules/undeclared/index.js").write_text("poison\n")
+        (source / "target/host/release").mkdir(parents=True)
+        (source / "target/host/release/xtask").write_text("mutable poison\n")
+
+        checker = protected / "xtask"
+        checker.write_bytes(b"reviewed checker\n")
+        checker.chmod(0o555)
+        return source, platform, checker, protected
+
+    def stage(
+        self,
+        root: Path,
+        source: Path,
+        platform: Path,
+        checker: Path,
+        protected: Path,
+        *,
+        destination_name: str = "formula-test-runtime",
+        limits: dict[str, int] | None = None,
+    ) -> tuple[Path, str, int, int]:
+        destination = protected / destination_name
+        checker_stat = checker.lstat()
+        digest, entries, total = runner.stage_formula_test_runtime_tree(
+            source,
+            platform,
+            checker,
+            "target/fixture-host/release/xtask",
+            destination,
+            owner_uid=checker_stat.st_uid,
+            owner_gid=checker_stat.st_gid,
+            limits=(
+                limits
+                if limits is not None
+                else runner.FORMULA_TEST_RUNTIME_LIMITS
+            ),
+        )
+        return destination, digest, entries, total
+
+    def test_projects_only_the_closed_runtime_with_stable_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source, platform, checker, protected = self.make_fixture(root)
+
+            destination, digest, entries, total = self.stage(
+                root, source, platform, checker, protected
+            )
+            second, second_digest, second_entries, second_total = self.stage(
+                root,
+                source,
+                platform,
+                checker,
+                protected,
+                destination_name="formula-test-runtime-second",
+            )
+
+            self.assertRegex(digest, r"^[0-9a-f]{64}$")
+            self.assertEqual(
+                (digest, entries, total),
+                (second_digest, second_entries, second_total),
+            )
+            self.assertEqual(
+                (
+                    destination
+                    / "binaries/programs/wasm32/fixture.wasm"
+                ).read_bytes(),
+                b"program generation\n",
+            )
+            self.assertEqual(
+                (
+                    destination / "target/fixture-host/release/xtask"
+                ).read_bytes(),
+                b"reviewed checker\n",
+            )
+            projected_esbuild = (
+                destination / "node_modules/esbuild/bin/esbuild"
+            )
+            self.assertEqual(projected_esbuild.read_bytes(), b"native loader\n")
+            self.assertEqual(projected_esbuild.lstat().st_nlink, 1)
+            for forbidden in (
+                "packages",
+                "local-binaries",
+                "node_modules/undeclared",
+                "target/host",
+            ):
+                self.assertFalse((destination / forbidden).exists())
+            for projected in (destination, second):
+                projected_stat = projected.lstat()
+                snapshot, _, _ = runner.inspect_tree_snapshot(
+                    projected,
+                    runner.FORMULA_TEST_RUNTIME_LIMITS,
+                    "Formula test runtime fixture",
+                    hash_files=True,
+                    sealed_owner=(
+                        projected_stat.st_uid,
+                        projected_stat.st_gid,
+                    ),
+                    require_single_link_files=True,
+                )
+                self.assertEqual(
+                    runner.sealed_tree_manifest(
+                        snapshot, "Formula test runtime fixture"
+                    ),
+                    digest,
+                )
+
+    def test_rejects_cross_projection_symlink_escape_before_publish(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source, platform, checker, protected = self.make_fixture(root)
+            mirror = source / "binaries/programs/wasm32/fixture.wasm"
+            mirror.unlink()
+            mirror.symlink_to("../../../../outside")
+
+            with self.assertRaisesRegex(runner.RunnerError, "escapes"):
+                self.stage(root, source, platform, checker, protected)
+
+            self.assertFalse((protected / "formula-test-runtime").exists())
+            self.assertEqual(
+                list(protected.glob(".formula-test-selection-*")), []
+            )
+
+    def test_rejects_hard_link_with_authority_outside_the_projection(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source, platform, checker, protected = self.make_fixture(root)
+            outside = source / "node_modules/undeclared/esbuild-copy"
+            outside.parent.mkdir(exist_ok=True)
+            os.link(
+                source / "node_modules/esbuild/bin/esbuild",
+                outside,
+            )
+
+            with self.assertRaisesRegex(
+                runner.RunnerError, "hard links escape"
+            ):
+                self.stage(root, source, platform, checker, protected)
+
+            self.assertFalse((protected / "formula-test-runtime").exists())
+            self.assertEqual(
+                list(protected.glob(".formula-test-selection-*")), []
+            )
+
+    def test_rejects_the_aggregate_closure_before_copying(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source, platform, checker, protected = self.make_fixture(root)
+            limits = dict(runner.FORMULA_TEST_RUNTIME_LIMITS)
+            limits["max_bytes"] = 100
+            limits["max_file_bytes"] = 100
+
+            with self.assertRaisesRegex(
+                runner.RunnerError, "source closure exceeds the byte limit"
+            ):
+                self.stage(
+                    root,
+                    source,
+                    platform,
+                    checker,
+                    protected,
+                    limits=limits,
+                )
+
+            self.assertFalse((protected / "formula-test-runtime").exists())
+            self.assertEqual(
+                list(protected.glob(".formula-test-selection-*")), []
+            )
+
+    def test_rejects_late_selected_file_mutation_and_cleans_staging(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source, platform, checker, protected = self.make_fixture(root)
+            original_copy = runner.copy_projection_file
+
+            def copy_then_mutate(
+                source_file: Path,
+                destination_root: Path,
+                relative: Path,
+                limits: dict[str, int],
+                **kwargs: int,
+            ) -> tuple[bytes, os.stat_result]:
+                result = original_copy(
+                    source_file,
+                    destination_root,
+                    relative,
+                    limits,
+                    **kwargs,
+                )
+                if relative == Path("package.json"):
+                    source_file.write_text(
+                        '{"name":"kandelo","type":"commonjs"}\n'
+                    )
+                return result
+
+            with (
+                mock.patch.object(
+                    runner, "copy_projection_file", copy_then_mutate
+                ),
+                self.assertRaisesRegex(
+                    runner.RunnerError, "changed during staging"
+                ),
+            ):
+                self.stage(root, source, platform, checker, protected)
+
+            self.assertFalse((protected / "formula-test-runtime").exists())
+            self.assertEqual(
+                list(protected.glob(".formula-test-selection-*")), []
+            )
+
+    def test_cli_requires_the_complete_formula_test_runtime_identity(
+        self,
+    ) -> None:
+        arguments_list = [
+            str(RUNNER_PATH),
+            "--stage-formula-test-runtime",
+            "--source",
+            "/source",
+            "--platform",
+            "/protected/platform",
+            "--checker",
+            "/protected/xtask",
+            "--checker-relative",
+            "target/host/release/xtask",
+            "--destination",
+            "/protected/formula-test-runtime",
+        ]
+        with mock.patch.object(sys, "argv", arguments_list):
+            arguments = runner.parse_arguments()
+        self.assertTrue(arguments.stage_formula_test_runtime)
+
+        with (
+            mock.patch.object(sys, "argv", arguments_list[:-2]),
+            self.assertRaisesRegex(runner.RunnerError, "requires only"),
+        ):
+            runner.parse_arguments()
+
+
 class ServiceRootProjectionTests(unittest.TestCase):
     def test_creates_only_declared_mount_destinations(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

@@ -712,6 +712,45 @@ NATIVE_INTERPRETER_EOF
       if ls "$hidden_root" >/dev/null 2>&1; then exit 1; fi
     done
     ;;
+  test)
+    [ "$#" -eq 2 ] && [ "$2" = fixture ]
+    runtime_root="${HOMEBREW_KANDELO_ROOT:?}"
+    [ "${KANDELO_HOMEBREW_KANDELO_ROOT:-}" = "$runtime_root" ]
+    [ "${HOMEBREW_KANDELO_XTASK_BIN:-}" = \
+      "$runtime_root/target/x86_64-unknown-linux-gnu/release/xtask" ]
+    [ "${WASM_POSIX_XTASK_BIN:-}" = \
+      "$runtime_root/target/x86_64-unknown-linux-gnu/release/xtask" ]
+    [ -z "${NODE_PATH+x}" ]
+    for required in \
+      Cargo.toml package.json examples/run-example.ts \
+      host/src/node-kernel-host.ts host/wasm/kandelo-kernel.wasm \
+      node_modules/tsx/package.json node_modules/esbuild/package.json \
+      node_modules/fflate/package.json node_modules/fzstd/package.json \
+      .ci-test-binary-cache/programs \
+      binaries/programs/wasm32/fixture.wasm; do
+      [ -r "$runtime_root/$required" ]
+    done
+    for forbidden in .git packages local-binaries tools/xtask source-marker; do
+      [ ! -e "$runtime_root/$forbidden" ] &&
+        [ ! -L "$runtime_root/$forbidden" ]
+    done
+    # WHY: this is the exact failure boundary from the seven-package canary:
+    # Node must resolve both the tsx loader and every transitive host-source
+    # import from the closed alias, without ambient NODE_PATH authority.
+    set +e
+    runtime_output="$(
+      cd "$runtime_root" &&
+        "$HOMEBREW_KANDELO_NODE" --import tsx/esm \
+          examples/run-example.ts 2>&1
+    )"
+    runtime_status="$?"
+    set -e
+    [ "$runtime_status" -eq 1 ]
+    case "$runtime_output" in
+      *"Usage: npx tsx examples/run-example.ts <name>"*) ;;
+      *) printf '%s\n' "$runtime_output" >&2; exit 1 ;;
+    esac
+    ;;
   assert-primary-tap-root)
     [ "$#" -eq 2 ]
     [ "${HOMEBREW_KANDELO_PRIMARY_TAP_ROOT:-}" = "$2" ]
@@ -878,8 +917,13 @@ grep -Fq 'expected_protected_xtask=%q' <<<"$xtask_audit_source" &&
   grep -Fq 'for forbidden_xtask in "$expected_xtask" "$expected_protected_xtask"' \
     <<<"$xtask_audit_source" &&
   grep -Fq '[ -r "$forbidden_xtask" ]' <<<"$xtask_audit_source" &&
-  grep -Fq 'tap_recipe_inaccessible_paths=("-$xtask_alias" "$protected_xtask")' \
+  grep -Fq 'tap_recipe_inaccessible_paths=("-$xtask_alias")' \
     <<<"$isolate_source" &&
+  grep -Fq '"--property=InaccessiblePaths=$protected_xtask"' \
+    <<<"$isolate_source" &&
+  grep -Fq 'homebrew_patched_launcher_prepare_formula_test_runtime' \
+    <<<"$isolate_source" &&
+  grep -Fq 'if [ "$formula_test" != 1 ]; then' <<<"$isolate_source" &&
   grep -Fq 'tools/bin/wasm-fork-instrument' <<<"$projection_source" &&
   grep -Fq 'tools/bin/wasm-local-root-spill' <<<"$projection_source" ||
   fail "schema-3 isolation does not remove both resolver paths from a minimal platform projection"
@@ -1817,6 +1861,31 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   printf '%s\n' "$protected_bottle_content" >"$private_bottle"
   printf 'reviewed source\n' >"$isolated_kandelo/source-marker"
   cp -R "$platform_fixture"/. "$isolated_kandelo"/
+  mkdir -p "$isolated_kandelo/examples" "$isolated_kandelo/host" \
+    "$isolated_kandelo/host/wasm" "$isolated_kandelo/node_modules" \
+    "$isolated_kandelo/.ci-test-binary-cache/programs/fixture" \
+    "$isolated_kandelo/binaries/programs/wasm32"
+  cp -a -- "$REPO_ROOT/host/src" "$isolated_kandelo/host/"
+  cp -a -- \
+    "$REPO_ROOT/node_modules/@esbuild" \
+    "$REPO_ROOT/node_modules/esbuild" \
+    "$REPO_ROOT/node_modules/fflate" \
+    "$REPO_ROOT/node_modules/fzstd" \
+    "$REPO_ROOT/node_modules/tsx" \
+    "$isolated_kandelo/node_modules/"
+  cp -- "$REPO_ROOT/Cargo.toml" "$REPO_ROOT/package.json" \
+    "$isolated_kandelo/"
+  cp -- \
+    "$REPO_ROOT/examples/run-example.ts" \
+    "$REPO_ROOT/examples/run-example-output.ts" \
+    "$REPO_ROOT/examples/run-example-paths.ts" \
+    "$isolated_kandelo/examples/"
+  cp -- "$REPO_ROOT/package.json" \
+    "$isolated_kandelo/host/wasm/kandelo-kernel.wasm"
+  cp -- "$REPO_ROOT/package.json" \
+    "$isolated_kandelo/.ci-test-binary-cache/programs/fixture/fixture.wasm"
+  ln -s ../../../.ci-test-binary-cache/programs/fixture/fixture.wasm \
+    "$isolated_kandelo/binaries/programs/wasm32/fixture.wasm"
   printf 'reviewed tap\n' >"$isolated_tap/tap-marker"
   printf 'reviewed dependency tap\n' >"$isolated_dependency_tap/tap-marker"
   printf 'reviewed sysroot\n' >"$isolated_sysroot/lib/libc.a"
@@ -2370,6 +2439,7 @@ EOF
   protected_dir="$HOMEBREW_PATCHED_PROTECTED_DIR"
   source_alias_dir="$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR"
   protected_platform_root="$HOMEBREW_PATCHED_PLATFORM_ROOT"
+  protected_formula_test_root="$HOMEBREW_PATCHED_FORMULA_TEST_ROOT"
   protected_sysroot_root="$HOMEBREW_PATCHED_SYSROOT_ROOT"
   protected_xtask="$HOMEBREW_PATCHED_PROTECTED_DIR/xtask"
   protected_native_link_auditor="$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR"
@@ -2387,6 +2457,16 @@ EOF
       "$isolated_kandelo/scripts/homebrew-tap-recipe-runner.py" \
       "$protected_native_link_auditor" ||
     fail "isolated launcher did not stage an independent native link auditor"
+  [ "$protected_formula_test_root" = \
+      "$protected_dir/formula-test-runtime" ] &&
+    [ "$HOMEBREW_PATCHED_FORMULA_TEST_XTASK_RELATIVE" = \
+      "target/x86_64-unknown-linux-gnu/release/xtask" ] &&
+    [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a' \
+      "$protected_formula_test_root")" = "0:0:555" ] &&
+    [ -f "$protected_formula_test_root/node_modules/tsx/package.json" ] &&
+    [ ! -e "$protected_formula_test_root/packages" ] &&
+    [ ! -e "$protected_formula_test_root/local-binaries" ] ||
+    fail "isolated launcher did not stage the closed Formula test runtime"
   [ "${HOMEBREW_PATCHED_LAUNCHER%/*}" = "$isolated_prefix/bin" ] &&
     [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g' \
       "$HOMEBREW_PATCHED_LAUNCHER")" = "0:0" ] &&
@@ -2555,6 +2635,8 @@ EOF
     "$isolated_sysroot_owner" "$isolated_dependency_tap" \
     "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/kandelo/tools/bin/wasm-fork-instrument" \
     "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR/kandelo/tools/bin/wasm-local-root-spill"
+  NODE_PATH=caller-poison \
+    "$HOMEBREW_PATCHED_BREW_BIN" test fixture
   HOMEBREW_KANDELO_PRIMARY_TAP_ROOT=caller-poison \
     "$HOMEBREW_PATCHED_BREW_BIN" assert-primary-tap-root \
       "$isolated_primary_tap"
@@ -2904,6 +2986,14 @@ EOF
     fail "populated sealed-output root lost its portable directory seal"
   homebrew_patched_launcher_verify_isolation
   /usr/bin/sudo -n -- /usr/bin/chmod 0644 \
+    "$protected_formula_test_root/host/src/node-kernel-host.ts"
+  if homebrew_patched_launcher_verify_isolation >/dev/null 2>&1; then
+    fail "isolation verification accepted mutable Formula test runtime bytes"
+  fi
+  /usr/bin/sudo -n -- /usr/bin/chmod 0444 \
+    "$protected_formula_test_root/host/src/node-kernel-host.ts"
+  homebrew_patched_launcher_verify_isolation
+  /usr/bin/sudo -n -- /usr/bin/chmod 0644 \
     "$protected_sysroot_root/lib/libc.a"
   if homebrew_patched_launcher_verify_isolation >/dev/null 2>&1; then
     fail "isolation verification accepted a mutable projected sysroot file"
@@ -3050,6 +3140,7 @@ EOF
     fail "isolated cleanup left the publisher Tier-2 attestation"
   [ ! -e "$protected_dir" ] && [ ! -e "$source_alias_dir" ] && \
     [ ! -e "$protected_platform_root" ] && \
+    [ ! -e "$protected_formula_test_root" ] && \
     [ -z "$HOMEBREW_PATCHED_PROTECTED_DIR" ] && \
     [ -z "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR" ] && \
     [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK" ] && \
@@ -3060,6 +3151,9 @@ EOF
     [ -z "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_SHA256" ] && \
     [ -z "$HOMEBREW_PATCHED_PLATFORM_ROOT" ] && \
     [ -z "$HOMEBREW_PATCHED_PLATFORM_SHA256" ] && \
+    [ -z "$HOMEBREW_PATCHED_FORMULA_TEST_ROOT" ] && \
+    [ -z "$HOMEBREW_PATCHED_FORMULA_TEST_SHA256" ] && \
+    [ -z "$HOMEBREW_PATCHED_FORMULA_TEST_XTASK_RELATIVE" ] && \
     [ -z "$HOMEBREW_PATCHED_SYSROOT_ROOT" ] && \
     [ -z "$HOMEBREW_PATCHED_SYSROOT_SHA256" ] ||
     fail "isolated cleanup left the protected checker or source aliases"

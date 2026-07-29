@@ -19,6 +19,9 @@ HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_STATE=""
 HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_SHA256=""
 HOMEBREW_PATCHED_PLATFORM_ROOT=""
 HOMEBREW_PATCHED_PLATFORM_SHA256=""
+HOMEBREW_PATCHED_FORMULA_TEST_ROOT=""
+HOMEBREW_PATCHED_FORMULA_TEST_SHA256=""
+HOMEBREW_PATCHED_FORMULA_TEST_XTASK_RELATIVE=""
 HOMEBREW_PATCHED_SYSROOT_ROOT=""
 HOMEBREW_PATCHED_SYSROOT_SHA256=""
 HOMEBREW_PATCHED_RECIPE_RUNNER=""
@@ -382,6 +385,142 @@ homebrew_patched_launcher_verify_platform_projection() {
   )" || return
   [ "$actual_sha256" = "$HOMEBREW_PATCHED_PLATFORM_SHA256" ] || {
     echo "homebrew-patched-launcher: protected platform projection changed after isolation" >&2
+    return 1
+  }
+}
+
+homebrew_patched_launcher_formula_test_runtime_manifest() {
+  if [ "$#" -ne 1 ]; then
+    echo "homebrew_patched_launcher_formula_test_runtime_manifest: expected ROOT" >&2
+    return 2
+  fi
+  local root="$1" checker entry relative file_bytes total_bytes=0
+  local -a entries=()
+  local -a required_files=(
+    Cargo.toml
+    package.json
+    examples/run-example.ts
+    examples/run-example-output.ts
+    examples/run-example-paths.ts
+    host/src/binary-resolver.ts
+    host/src/node-kernel-host.ts
+    host/wasm/kandelo-kernel.wasm
+    node_modules/tsx/package.json
+    node_modules/esbuild/package.json
+    node_modules/fflate/package.json
+    node_modules/fzstd/package.json
+  )
+  local -a required_directories=(
+    .ci-test-binary-cache/programs
+    binaries
+    host/src
+    host/wasm
+    node_modules/@esbuild
+  )
+  [ "$root" = "$HOMEBREW_PATCHED_PROTECTED_DIR/formula-test-runtime" ] || {
+    echo "homebrew-patched-launcher: Formula test runtime left its protected root" >&2
+    return 2
+  }
+  homebrew_patched_launcher_collect_sorted_find_entries \
+    "$root" entries "Formula test runtime" -mindepth 1 || return
+  [ "${#entries[@]}" -le 65536 ] || {
+    echo "homebrew-patched-launcher: Formula test runtime exceeds the entry limit" >&2
+    return 2
+  }
+  for entry in "${entries[@]}"; do
+    relative="${entry#"$root"/}"
+    if [[ "$relative" != */* ]]; then
+      case "$relative" in
+        .ci-test-binary-cache|Cargo.toml|binaries|crates|examples|host|libc|\
+          node_modules|package.json|scripts|sdk|target|tools) ;;
+        *)
+          echo "homebrew-patched-launcher: Formula test runtime exposes an undeclared top-level input: $relative" >&2
+          return 2
+          ;;
+      esac
+    fi
+    if [ -f "$entry" ] && [ ! -L "$entry" ]; then
+      file_bytes="$(/usr/bin/stat -c '%s' "$entry")" || return 2
+      [[ "$file_bytes" =~ ^[0-9]+$ ]] &&
+        [ "$file_bytes" -le 268435456 ] || {
+        echo "homebrew-patched-launcher: Formula test runtime file exceeds the byte limit" >&2
+        return 2
+      }
+      total_bytes=$((total_bytes + file_bytes))
+      [ "$total_bytes" -le 536870912 ] || {
+        echo "homebrew-patched-launcher: Formula test runtime exceeds the byte limit" >&2
+        return 2
+      }
+    fi
+  done
+  for checker in "${required_files[@]}"; do
+    [ -f "$root/$checker" ] && [ ! -L "$root/$checker" ] || {
+      echo "homebrew-patched-launcher: Formula test runtime lacks required file: $checker" >&2
+      return 2
+    }
+  done
+  for checker in "${required_directories[@]}"; do
+    [ -d "$root/$checker" ] && [ ! -L "$root/$checker" ] || {
+      echo "homebrew-patched-launcher: Formula test runtime lacks required directory: $checker" >&2
+      return 2
+    }
+  done
+  for checker in .git Cargo.lock packages local-binaries target/.rustc_info.json \
+    tools/xtask scripts/dev-shell.sh scripts/install-local-binary.sh; do
+    if [ -e "$root/$checker" ] || [ -L "$root/$checker" ]; then
+      echo "homebrew-patched-launcher: Formula test runtime exposes undeclared checkout authority: $checker" >&2
+      return 2
+    fi
+  done
+  checker="$root/$HOMEBREW_PATCHED_FORMULA_TEST_XTASK_RELATIVE"
+  [ -n "$HOMEBREW_PATCHED_FORMULA_TEST_XTASK_RELATIVE" ] &&
+    [[ "$HOMEBREW_PATCHED_FORMULA_TEST_XTASK_RELATIVE" =~ ^target/[A-Za-z0-9_.+-]+/release/xtask$ ]] &&
+    [ -f "$checker" ] && [ ! -L "$checker" ] &&
+    [ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$checker" 2>/dev/null)" = \
+      "0:0:555:1" ] || {
+    echo "homebrew-patched-launcher: Formula test runtime checker is invalid" >&2
+    return 2
+  }
+  for entry in "${entries[@]}"; do
+    relative="${entry#"$root"/}"
+    case "$relative" in
+      target|target/"${HOMEBREW_PATCHED_FORMULA_TEST_XTASK_RELATIVE#target/}"|\
+        "${HOMEBREW_PATCHED_FORMULA_TEST_XTASK_RELATIVE%/*}"|\
+        "${HOMEBREW_PATCHED_FORMULA_TEST_XTASK_RELATIVE%/release/xtask}") ;;
+      target/*)
+        echo "homebrew-patched-launcher: Formula test runtime target tree contains undeclared state: $relative" >&2
+        return 2
+        ;;
+    esac
+  done
+  # WHY: binaries/ intentionally contains relative links into the transported
+  # sibling cache. Revalidate every hop as part of the authenticated manifest;
+  # a digest alone would faithfully authenticate an escaping link.
+  homebrew_assert_tree_symlinks_contained \
+    "$root" "Formula test runtime" || return
+  homebrew_patched_launcher_sysroot_projection_manifest "$root"
+}
+
+homebrew_patched_launcher_verify_formula_test_runtime() {
+  if [ -z "$HOMEBREW_PATCHED_FORMULA_TEST_ROOT" ] && \
+     [ -z "$HOMEBREW_PATCHED_FORMULA_TEST_SHA256" ] && \
+     [ -z "$HOMEBREW_PATCHED_FORMULA_TEST_XTASK_RELATIVE" ]; then
+    return 0
+  fi
+  if [ -z "$HOMEBREW_PATCHED_FORMULA_TEST_ROOT" ] || \
+     [ -z "$HOMEBREW_PATCHED_FORMULA_TEST_SHA256" ] || \
+     [ -z "$HOMEBREW_PATCHED_FORMULA_TEST_XTASK_RELATIVE" ]; then
+    echo "homebrew-patched-launcher: protected Formula test runtime state is incomplete" >&2
+    return 2
+  fi
+  local actual_sha256
+  actual_sha256="$(
+    homebrew_patched_launcher_manifest_sha256 \
+      homebrew_patched_launcher_formula_test_runtime_manifest \
+      "$HOMEBREW_PATCHED_FORMULA_TEST_ROOT"
+  )" || return
+  [ "$actual_sha256" = "$HOMEBREW_PATCHED_FORMULA_TEST_SHA256" ] || {
+    echo "homebrew-patched-launcher: protected Formula test runtime changed after isolation" >&2
     return 1
   }
 }
@@ -956,6 +1095,106 @@ homebrew_patched_launcher_prepare_platform_projection() {
   [ -n "$digest" ] || return 2
   HOMEBREW_PATCHED_PLATFORM_ROOT="$destination"
   HOMEBREW_PATCHED_PLATFORM_SHA256="$digest"
+}
+
+homebrew_patched_launcher_prepare_formula_test_runtime() {
+  if [ "$#" -ne 6 ]; then
+    echo "homebrew_patched_launcher_prepare_formula_test_runtime: expected KANDELO-ROOT DESTINATION PLATFORM CHECKER CHECKER-RELATIVE SUDO" >&2
+    return 2
+  fi
+  local kandelo_root="$1" destination="$2" platform_root="$3" checker="$4"
+  local checker_relative="$5" sudo_bin="$6"
+  local admitted_runner stager runner_sha admitted_sha digest status=0
+
+  [ -z "$HOMEBREW_PATCHED_FORMULA_TEST_ROOT" ] &&
+    [ -z "$HOMEBREW_PATCHED_FORMULA_TEST_SHA256" ] &&
+    [ -z "$HOMEBREW_PATCHED_FORMULA_TEST_XTASK_RELATIVE" ] || {
+    echo "homebrew-patched-launcher: Formula test runtime state is already populated" >&2
+    return 2
+  }
+  [ -n "$HOMEBREW_PATCHED_PROTECTED_DIR" ] &&
+    [ "$destination" = \
+      "$HOMEBREW_PATCHED_PROTECTED_DIR/formula-test-runtime" ] &&
+    [ "$platform_root" = "$HOMEBREW_PATCHED_PLATFORM_ROOT" ] &&
+    [ "$checker" = "$HOMEBREW_PATCHED_PROTECTED_XTASK" ] || {
+    echo "homebrew-patched-launcher: Formula test runtime inputs left the protected boundary" >&2
+    return 2
+  }
+  [[ "$checker_relative" =~ ^target/[A-Za-z0-9_.+-]+/release/xtask$ ]] || {
+    echo "homebrew-patched-launcher: Formula test checker path is invalid" >&2
+    return 2
+  }
+  [ ! -e "$destination" ] && [ ! -L "$destination" ] || {
+    echo "homebrew-patched-launcher: Formula test runtime destination is occupied" >&2
+    return 2
+  }
+  admitted_runner="$(
+    homebrew_patched_launcher_admit_recipe_runner_source "$platform_root"
+  )" || return
+  stager="$HOMEBREW_PATCHED_PROTECTED_DIR/formula-test-runtime-stager"
+  [ ! -e "$stager" ] && [ ! -L "$stager" ] || {
+    echo "homebrew-patched-launcher: Formula test runtime stager destination is occupied" >&2
+    return 2
+  }
+  "$sudo_bin" -n -- /usr/bin/install -o root -g root -m 0555 -- \
+    "$admitted_runner" "$stager" || return
+  runner_sha="$(/usr/bin/sha256sum "$stager" 2>/dev/null || true)"
+  runner_sha="${runner_sha%% *}"
+  admitted_sha="$(/usr/bin/sha256sum "$admitted_runner" 2>/dev/null || true)"
+  admitted_sha="${admitted_sha%% *}"
+  if [ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$stager" 2>/dev/null || true)" != \
+       "0:0:555:1" ] || [ "$runner_sha" != "$admitted_sha" ] || \
+     ! /usr/bin/cmp -s -- "$admitted_runner" "$stager"; then
+    echo "homebrew-patched-launcher: Formula test runtime stager is not the admitted protected program" >&2
+    "$sudo_bin" -n -- /usr/bin/rm -f -- "$stager" || true
+    return 2
+  fi
+
+  # WHY: Formula builds retain the minimal SDK projection. Node execution is a
+  # different boundary: tests need the reviewed host source, loader packages,
+  # exact kernel, checker, and portable package generations. The privileged
+  # stager selects only that fixed closure, authenticates stable pre/post
+  # source identities, and publishes it atomically without exposing the
+  # registry or the workflow-owned checkout.
+  if "$sudo_bin" -n -- /usr/bin/env -i /usr/bin/python3 -I "$stager" \
+      --stage-formula-test-runtime \
+      --source "$kandelo_root" \
+      --platform "$platform_root" \
+      --checker "$checker" \
+      --checker-relative "$checker_relative" \
+      --destination "$destination"; then
+    :
+  else
+    status=$?
+  fi
+  if ! "$sudo_bin" -n -- /usr/bin/rm -f -- "$stager"; then
+    echo "homebrew-patched-launcher: could not remove the Formula test runtime stager" >&2
+    status=2
+  fi
+  if [ "$status" -ne 0 ]; then
+    if [ -e "$destination" ] || [ -L "$destination" ]; then
+      "$sudo_bin" -n -- /usr/bin/rm -rf -- "$destination" || return 2
+    fi
+    return "$status"
+  fi
+
+  HOMEBREW_PATCHED_FORMULA_TEST_XTASK_RELATIVE="$checker_relative"
+  digest="$(
+    homebrew_patched_launcher_manifest_sha256 \
+      homebrew_patched_launcher_formula_test_runtime_manifest "$destination"
+  )" || {
+    status=$?
+    HOMEBREW_PATCHED_FORMULA_TEST_XTASK_RELATIVE=""
+    "$sudo_bin" -n -- /usr/bin/rm -rf -- "$destination" || return 2
+    return "$status"
+  }
+  [ -n "$digest" ] || {
+    HOMEBREW_PATCHED_FORMULA_TEST_XTASK_RELATIVE=""
+    "$sudo_bin" -n -- /usr/bin/rm -rf -- "$destination" || return 2
+    return 2
+  }
+  HOMEBREW_PATCHED_FORMULA_TEST_ROOT="$destination"
+  HOMEBREW_PATCHED_FORMULA_TEST_SHA256="$digest"
 }
 
 homebrew_patched_launcher_prepare_sysroot_projection() {
@@ -1933,6 +2172,10 @@ homebrew_patched_launcher_cleanup() {
     echo "homebrew-patched-launcher: protected platform projection changed; preserving launcher state for inspection" >&2
     return 1
   fi
+  if ! homebrew_patched_launcher_verify_formula_test_runtime; then
+    echo "homebrew-patched-launcher: protected Formula test runtime changed; preserving launcher state for inspection" >&2
+    return 1
+  fi
   if ! homebrew_patched_launcher_verify_sysroot_projection; then
     echo "homebrew-patched-launcher: protected sysroot projection changed; preserving launcher state for inspection" >&2
     return 1
@@ -2005,6 +2248,9 @@ homebrew_patched_launcher_cleanup() {
     HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_SHA256=""
     HOMEBREW_PATCHED_PLATFORM_ROOT=""
     HOMEBREW_PATCHED_PLATFORM_SHA256=""
+    HOMEBREW_PATCHED_FORMULA_TEST_ROOT=""
+    HOMEBREW_PATCHED_FORMULA_TEST_SHA256=""
+    HOMEBREW_PATCHED_FORMULA_TEST_XTASK_RELATIVE=""
     HOMEBREW_PATCHED_SYSROOT_ROOT=""
     HOMEBREW_PATCHED_SYSROOT_SHA256=""
     HOMEBREW_PATCHED_RECIPE_RUNNER=""
@@ -2080,6 +2326,9 @@ homebrew_patched_launcher_cleanup() {
   HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_SHA256=""
   HOMEBREW_PATCHED_PLATFORM_ROOT=""
   HOMEBREW_PATCHED_PLATFORM_SHA256=""
+  HOMEBREW_PATCHED_FORMULA_TEST_ROOT=""
+  HOMEBREW_PATCHED_FORMULA_TEST_SHA256=""
+  HOMEBREW_PATCHED_FORMULA_TEST_XTASK_RELATIVE=""
   HOMEBREW_PATCHED_SYSROOT_ROOT=""
   HOMEBREW_PATCHED_SYSROOT_SHA256=""
   HOMEBREW_PATCHED_RECIPE_RUNNER=""
@@ -3455,6 +3704,11 @@ homebrew_patched_launcher_isolate() {
       "$kandelo_root" "$HOMEBREW_PATCHED_PROTECTED_DIR/platform" \
       "$sudo_bin" || return
     platform_source_root="$HOMEBREW_PATCHED_PLATFORM_ROOT"
+    homebrew_patched_launcher_prepare_formula_test_runtime \
+      "$kandelo_root" \
+      "$HOMEBREW_PATCHED_PROTECTED_DIR/formula-test-runtime" \
+      "$platform_source_root" "$protected_xtask" "$xtask_relative" \
+      "$sudo_bin" || return
   fi
   source_alias_dir="$work_dir/source-aliases"
   "$sudo_bin" install -d -o root -g root -m 0555 \
@@ -3462,7 +3716,7 @@ homebrew_patched_launcher_isolate() {
     "$source_alias_dir/sysroot"
   HOMEBREW_PATCHED_SOURCE_ALIAS_DIR="$source_alias_dir"
   xtask_alias="$source_alias_dir/kandelo/$xtask_relative"
-  tap_recipe_inaccessible_paths=("-$xtask_alias" "$protected_xtask")
+  tap_recipe_inaccessible_paths=("-$xtask_alias")
   for tap_recipe_relative in \
     packages/registry local-binaries .ci-test-binary-cache \
     scripts/install-local-binary.sh; do
@@ -3557,7 +3811,8 @@ homebrew_patched_launcher_isolate() {
       printf ' %q' "$protected_root"
     done
     if [ "$tap_recipe_isolation" = "1" ]; then
-      printf ' %q' "$platform_source_root"
+      printf ' %q %q' "$platform_source_root" \
+        "$HOMEBREW_PATCHED_FORMULA_TEST_ROOT"
     fi
     printf ')\nfor hidden_root in "${hidden_roots[@]}"; do\n'
     printf '  if [ -r "$hidden_root" ] || [ -w "$hidden_root" ] || [ -x "$hidden_root" ]; then\n'
@@ -3635,12 +3890,40 @@ homebrew_patched_launcher_isolate() {
         "$variable" "$variable" "$variable"
     done
     printf 'command_path=%q\n' "$HOMEBREW_PATCHED_LAUNCHER"
+    printf 'platform_projection=%q\n' "$platform_source_root"
+    printf 'formula_test_projection=%q\n' \
+      "$HOMEBREW_PATCHED_FORMULA_TEST_ROOT"
+    printf 'kandelo_alias=%q\n' "$source_alias_dir/kandelo"
     printf 'source_audit=0\n'
+    printf 'formula_test=0\n'
+    printf 'kandelo_projection="$platform_projection"\n'
+    printf 'formula_test_env=()\n'
     printf 'if [ "${1:-}" = __kandelo_verify_source_aliases ]; then\n'
     printf '  [ "$#" -eq 1 ] || { echo "homebrew-patched-launcher: source audit accepts no arguments" >&2; exit 2; }\n'
     printf '  command_path=%q\n' "$protected_audit"
     printf '  source_audit=1\n'
     printf '  shift\nfi\n'
+    if [ "$tap_recipe_isolation" = "1" ]; then
+      printf 'if [ "$source_audit" = 0 ] && [ "${1:-}" = test ]; then\n'
+      printf '  [ -n "$formula_test_projection" ] || { echo "homebrew-patched-launcher: Formula test runtime is unavailable" >&2; exit 2; }\n'
+      printf '  formula_test=1\n'
+      printf '  kandelo_projection="$formula_test_projection"\n'
+      printf '  formula_test_env+=('
+      printf ' %q' \
+        "HOMEBREW_KANDELO_XTASK_BIN=$xtask_alias" \
+        "WASM_POSIX_XTASK_BIN=$xtask_alias"
+      printf ' )\n'
+      printf 'fi\n'
+    fi
+    printf 'formula_inaccessible_args=()\n'
+    if [ "$tap_recipe_isolation" = "1" ]; then
+      printf 'if [ "$formula_test" != 1 ]; then\n'
+      for tap_recipe_path in "${tap_recipe_inaccessible_paths[@]}"; do
+        printf '  formula_inaccessible_args+=(%q)\n' \
+          "--property=InaccessiblePaths=$tap_recipe_path"
+      done
+      printf 'fi\n'
+    fi
     printf 'working_directory=%q\n' "$work_dir"
     printf 'unit=%q-$$-${RANDOM}.service\n' "$unit_prefix"
     printf 'collect_args=(--collect)\n'
@@ -3652,7 +3935,6 @@ homebrew_patched_launcher_isolate() {
       "--uid=$build_user" "--gid=$build_group" \
       "--property=KillMode=control-group" "--property=SendSIGKILL=yes" \
       "--property=TimeoutStopSec=10s" "--property=NoNewPrivileges=yes" \
-      "--property=BindReadOnlyPaths=$platform_source_root:$source_alias_dir/kandelo" \
       "--property=BindReadOnlyPaths=$tap_root:$source_alias_dir/tap" \
       "--property=BindReadOnlyPaths=$sysroot:$source_alias_dir/sysroot" \
       "--property=BindReadOnlyPaths=$taps_root" \
@@ -3661,6 +3943,7 @@ homebrew_patched_launcher_isolate() {
       "--property=InaccessiblePaths=$output_root" \
       "--service-type=exec" \
       "--expand-environment=no"
+    printf ' "--property=BindReadOnlyPaths=$kandelo_projection:$kandelo_alias"'
     if [ "$tap_recipe_isolation" != "1" ]; then
       printf ' %q' "--property=BindReadOnlyPaths=$protected_xtask:$xtask_alias"
     fi
@@ -3677,10 +3960,10 @@ homebrew_patched_launcher_isolate() {
       # platform tooling, but never the old package-registry resolver surface.
       # Masking these paths in the service makes an accidental absolute-path
       # fallback fail even after Formula code reconstructs the source alias.
-      for tap_recipe_path in "${tap_recipe_inaccessible_paths[@]}"; do
-        printf ' %q' "--property=InaccessiblePaths=$tap_recipe_path"
-      done
-      printf ' %q' "--property=InaccessiblePaths=$platform_source_root"
+      printf ' %q %q %q' \
+        "--property=InaccessiblePaths=$protected_xtask" \
+        "--property=InaccessiblePaths=$platform_source_root" \
+        "--property=InaccessiblePaths=$HOMEBREW_PATCHED_FORMULA_TEST_ROOT"
     fi
     if [ -n "$HOMEBREW_PATCHED_NATIVE_PREFIX" ]; then
       printf ' %q' \
@@ -3690,6 +3973,7 @@ homebrew_patched_launcher_isolate() {
         "--property=InaccessiblePaths=$HOMEBREW_PATCHED_NATIVE_CONFIG" \
         "--property=InaccessiblePaths=$HOMEBREW_PATCHED_NATIVE_HOME"
     fi
+    printf ' "${formula_inaccessible_args[@]}"'
     printf ' --working-directory="$working_directory" -- %q -i' "$env_bin"
     printf ' %q' "HOME=$build_home" "USER=$build_user" "LOGNAME=$build_user" \
       "TMPDIR=$HOMEBREW_TEMP"
@@ -3717,7 +4001,7 @@ homebrew_patched_launcher_isolate() {
         "HOMEBREW_KANDELO_TAP_RECIPE_RUNNER=$recipe_runner_path" \
         "HOMEBREW_KANDELO_TAP_RECIPE_SEALED_ROOT=$recipe_sealed_root"
     fi
-    printf ' "${bottle_tag_env[@]}" "$command_path" "$@")\n'
+    printf ' "${bottle_tag_env[@]}" "${formula_test_env[@]}" "$command_path" "$@")\n'
     printf 'if [ "$source_audit" != 1 ]; then exec "${systemd_command[@]}"; fi\n'
     # WHY: --collect erases a failed transient unit before its namespace error
     # can be inspected. The startup audit carries no credentials, so preserve
@@ -4144,6 +4428,7 @@ homebrew_patched_launcher_verify_isolation() {
   homebrew_patched_launcher_verify_protected_xtask || return
   homebrew_patched_launcher_verify_native_link_auditor || return
   homebrew_patched_launcher_verify_platform_projection || return
+  homebrew_patched_launcher_verify_formula_test_runtime || return
   homebrew_patched_launcher_verify_sysroot_projection || return
   homebrew_patched_launcher_verify_recipe_runner || return
   [ "$(homebrew_patched_launcher_integrity)" = "$HOMEBREW_PATCHED_INTEGRITY_SHA256" ] || {
