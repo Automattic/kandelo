@@ -77,7 +77,11 @@ function makeTapFixture(ledger: Ledger): string {
       formula.recipe_state === "registry_bridge"
         ? "  KANDELO_REGISTRY_BRIDGE = true\n"
         : "";
+    const archGuards = formula.declared_architectures
+      .map((arch) => `  kandelo_require_arch!("${arch}")`)
+      .join("\n");
     const bottleLines = formula.declared_architectures
+      .filter((arch) => formula.architecture_evidence[arch] === "success")
       .map(
         (arch) =>
           `    sha256 cellar: :any_skip_relocation, ${arch}_kandelo: "${"0".repeat(64)}"`,
@@ -85,7 +89,7 @@ function makeTapFixture(ledger: Ledger): string {
       .join("\n");
     writeFileSync(
       join(formulaRoot, `${name}.rb`),
-      `class Fixture\n${bridge}  bottle do\n${bottleLines}\n  end\nend\n`,
+      `class Fixture\n${bridge}${archGuards}\n  bottle do\n${bottleLines}\n  end\nend\n`,
     );
 
     const bottles = Object.entries(formula.architecture_evidence)
@@ -132,7 +136,7 @@ describe("Homebrew registry ownership ledger", () => {
     const ledger = loadLedger();
 
     expect(validateLedger(ledger, { repoRoot })).toEqual([]);
-    expect(Object.keys(ledger.registry_entries)).toHaveLength(76);
+    expect(Object.keys(ledger.registry_entries)).toHaveLength(80);
     expect(ledger.registry_entries["node-compat"].role).toBe("still_unowned");
     expect(ledger.registry_entries.npm.role).toBe("still_unowned");
   });
@@ -175,7 +179,7 @@ describe("Homebrew registry ownership ledger", () => {
   it("requires every declared architecture and non-success disposition", () => {
     const ledger = cloneLedger();
     ledger.tap_formulae.icu.declared_architectures.push("wasm64");
-    const pending = ledger.tap_formulae.icu.architecture_evidence.wasm32;
+    const pending = ledger.tap_formulae.msmtpd.architecture_evidence.wasm32;
     if (typeof pending !== "string") delete pending.first_error_or_artifact;
 
     const errors = validateLedger(ledger, { repoRoot });
@@ -183,7 +187,7 @@ describe("Homebrew registry ownership ledger", () => {
       "tap Formula icu architecture evidence differs (missing: wasm64)",
     );
     expect(errors).toContain(
-      "tap Formula icu.wasm32 fields differs (missing: first_error_or_artifact)",
+      "tap Formula msmtpd.wasm32 fields differs (missing: first_error_or_artifact)",
     );
   });
 
@@ -201,11 +205,13 @@ describe("Homebrew registry ownership ledger", () => {
   it("generates an operator report from the checked ledger", () => {
     const report = formatReport(loadLedger());
 
-    expect(report).toContain("Current registry entries: 76.");
-    expect(report).toContain("Tap Formulae: 61.");
-    expect(report).toContain("Still unowned (14):");
+    expect(report).toContain("Current registry entries: 80.");
+    expect(report).toContain("Tap Formulae: 66.");
+    expect(report).toContain("Still unowned (10):");
     expect(report).toContain("Registry-bridge Formulae (10):");
-    expect(report).toContain("Formula architecture success (67):");
-    expect(report).toContain("Formula architecture pending (1): icu:wasm32");
+    expect(report).toContain("Formula architecture success (70):");
+    expect(report).toContain(
+      "Formula architecture pending (3): msmtpd:wasm32, nginx:wasm32, redis:wasm32",
+    );
   });
 });

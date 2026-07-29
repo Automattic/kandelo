@@ -151,10 +151,16 @@ function listRegistryDirectories(repoRoot) {
 }
 
 function formulaArchitectureTags(source) {
+  // WHY: a newly landed Formula can truthfully support an architecture before
+  // its first bottle exists. The install guard owns that support declaration;
+  // a missing bottle block is publication evidence, not an absent target.
   return sorted(
     [
       ...source.matchAll(/\bwasm(32|64)_kandelo\s*:/g),
       ...source.matchAll(/:\s*wasm(32|64)_kandelo\b/g),
+      ...source.matchAll(
+        /\bkandelo_require_arch!\(\s*["']wasm(32|64)["']\s*\)/g,
+      ),
     ].map((match) => `wasm${match[1]}`),
   ).filter((value, index, all) => index === 0 || value !== all[index - 1]);
 }
