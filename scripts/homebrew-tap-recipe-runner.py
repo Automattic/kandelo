@@ -41,6 +41,7 @@ MAX_RESOURCES = 32
 MAX_RECIPE_FILE_BYTES = 16_777_216
 MAX_RECIPE_BYTES = 67_108_864
 MAX_RECIPE_LOG_BYTES = 33_554_432
+MAX_RECIPE_FAILURE_DIAGNOSTIC_BYTES = 65_536
 MAX_RESOURCE_ENTRIES = 65_536
 MAX_RESOURCE_FILE_BYTES = 268_435_456
 MAX_RESOURCE_BYTES = 1_073_741_824
@@ -279,6 +280,16 @@ def safe_text(value: str, *, allow_colon: bool = True) -> bool:
     return allow_colon or ":" not in value
 
 
+def safe_systemd_path_text(value: str) -> bool:
+    """Accept text that can occupy one side of systemd's colon-delimited bind."""
+    return safe_text(value, allow_colon=False)
+
+
+def safe_tree_text(value: str) -> bool:
+    """Accept POSIX tree text that is never parsed as systemd bind syntax."""
+    return safe_text(value, allow_colon=True)
+
+
 def open_regular_file(
     path: Path,
     *,
@@ -366,7 +377,7 @@ def canonical_real_directory(
         rendered = value
     else:
         fail(f"{label} is not an absolute path")
-    if not rendered.startswith("/") or not safe_text(rendered, allow_colon=False):
+    if not rendered.startswith("/") or not safe_systemd_path_text(rendered):
         fail(f"{label} is not one systemd-safe absolute path")
     try:
         before = path.lstat()
@@ -396,7 +407,7 @@ def canonical_real_file(
         rendered = value
     else:
         fail(f"{label} is not an absolute path")
-    if not rendered.startswith("/") or not safe_text(rendered, allow_colon=False):
+    if not rendered.startswith("/") or not safe_systemd_path_text(rendered):
         fail(f"{label} is not one systemd-safe absolute path")
     try:
         before = path.lstat()
@@ -595,7 +606,7 @@ def prepare_mount_destination(
     if (
         not destination.is_absolute()
         or destination == Path("/")
-        or not safe_text(rendered, allow_colon=False)
+        or not safe_systemd_path_text(rendered)
         or ".." in PurePosixPath(rendered).parts
         or Path(os.path.normpath(rendered)) != destination
     ):
@@ -666,7 +677,7 @@ def prepare_service_root(
         if (
             not source.is_absolute()
             or not destination.is_absolute()
-            or not safe_text(rendered_source, allow_colon=False)
+            or not safe_systemd_path_text(rendered_source)
             or ".." in PurePosixPath(rendered_source).parts
             or Path(os.path.normpath(rendered_source)) != source
         ):
@@ -961,7 +972,7 @@ def canonical_requested_path(value: Any, *, label: str) -> Path:
     if (
         type(value) is not str
         or not value.startswith("/")
-        or not safe_text(value, allow_colon=False)
+        or not safe_systemd_path_text(value)
         or len(value.encode("utf-8")) > EXPECTED_LIMITS["max_path_bytes"]
     ):
         fail(f"{label} is not one bounded absolute path")
@@ -1288,6 +1299,67 @@ def dependency_keg_binds(
     return binds
 
 
+def native_execution_roots(
+    target_kegs: dict[str, Path],
+    native_kegs: dict[str, Path],
+    native_formulae: list[str],
+    native_requirements: list[str],
+    target_dependency_names: list[str],
+) -> tuple[dict[str, Path], dict[str, Path]]:
+    """Select runner-authoritative direct proxy and Requirement PATH roots."""
+    collisions = sorted(set(native_formulae) & set(target_dependency_names))
+    if collisions:
+        fail(
+            "target dependencies collide with direct native tools in the "
+            f"target Cellar: {collisions!r}"
+        )
+
+    proxies: dict[str, Path] = {}
+    for name in native_formulae:
+        native = native_kegs.get(name)
+        proxy = target_kegs.get(name)
+        if native is None:
+            fail(f"native closure omits direct Formula tool {name}")
+        if proxy is None:
+            fail(f"target Cellar omits direct native tool proxy {name}")
+        # WHY: Formula support observes Homebrew's target-Cellar proxy and puts
+        # that exact path in the request and PATH. The root-owned plan still
+        # selects the name, while the authenticated native closure selects the
+        # only version the proxy is allowed to represent.
+        if proxy.name != native.name:
+            fail(f"direct native tool proxy {name} changed its selected version")
+        proxies[name] = proxy
+
+    requirements: dict[str, Path] = {}
+    for name in native_requirements:
+        native = native_kegs.get(name)
+        if native is None:
+            fail(f"native closure omits direct Requirement tool {name}")
+        requirements[name] = native
+    return proxies, requirements
+
+
+def requested_native_proxy_roots(
+    supplied: Any,
+    proxies: dict[str, Path],
+) -> list[Path]:
+    """Match Formula-supplied proxy paths to names selected by the runner plan."""
+    if (
+        type(supplied) is not list
+        or not all(type(item) is str for item in supplied)
+        or len(supplied) != len(set(supplied))
+    ):
+        fail("tap recipe request changed its declared native tool roots")
+    supplied_paths = [
+        canonical_requested_path(item, label="native tool proxy root")
+        for item in supplied
+    ]
+    expected = sorted(proxies.values(), key=str)
+    if supplied_paths != expected:
+        fail("tap recipe request changed its declared native tool roots")
+    return expected
+
+
 def validate_sealed_dependency_tree(root: Path, label: str) -> None:
     """Require one dependency keg to be an immutable root-owned tree."""
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
@@ -1341,7 +1413,7 @@ def validate_sealed_dependency_tree(root: Path, label: str) -> None:
                     target = os.readlink(name, dir_fd=current_fd)
                     if (
                         not target
-                        or not safe_text(target, allow_colon=False)
+                        or not safe_tree_text(target)
                         or len(target.encode("utf-8", "strict"))
                         > EXPECTED_LIMITS["max_path_bytes"]
                     ):
@@ -1640,26 +1712,19 @@ def validate_request(
         config["native_closure_manifest"],
         direct_native_names,
     )
-    native_kegs = {
-        name: all_native_kegs[name] for name in config["native_formulae"]
-    }
-    requirement_kegs = {
-        name: all_native_kegs[name]
-        for name in config["native_requirement_formulae"]
-    }
-    supplied_native = request["native_roots"]
-    expected_native = sorted(str(path) for path in native_kegs.values())
-    if (
-        type(supplied_native) is not list
-        or not all(type(item) is str for item in supplied_native)
-        or supplied_native != expected_native
-        or len(supplied_native) != len(set(supplied_native))
-    ):
-        fail("tap recipe request changed its declared native tool roots")
-    native_roots = [
-        canonical_real_directory(path, label="native tool root")
-        for path in supplied_native
+    target_dependency_short_names = [
+        name.rpartition("/")[2] for name in expected_dependency_names
     ]
+    native_proxy_kegs, requirement_kegs = native_execution_roots(
+        all_target_kegs,
+        all_native_kegs,
+        config["native_formulae"],
+        config["native_requirement_formulae"],
+        target_dependency_short_names,
+    )
+    native_roots = requested_native_proxy_roots(
+        request["native_roots"], native_proxy_kegs
+    )
     requirement_roots = list(requirement_kegs.values())
     # authenticated_native_keg_roots already validates every native tree while
     # matching it to the post-seal handoff. Target kegs follow their separate
@@ -1694,23 +1759,25 @@ def validate_request(
 
 
 def safe_relative_path(relative: str, limit: int) -> None:
+    """Validate one internal POSIX tree path, not a systemd bind operand."""
     try:
         encoded = relative.encode("utf-8", "strict")
     except UnicodeEncodeError:
         fail(f"tree contains an unsafe path: {relative!r}")
     if (
         len(encoded) > limit
-        or not safe_text(relative, allow_colon=False)
+        or not safe_tree_text(relative)
     ):
         fail(f"tree contains an unsafe or oversized path: {relative!r}")
 
 
 def contained_symlink(relative: str, target: str, limit: int) -> None:
+    """Require a POSIX symlink to stay inside its copied or sealed tree."""
     safe_relative_path(relative, limit)
     if (
         not target
         or target.startswith("/")
-        or not safe_text(target, allow_colon=False)
+        or not safe_tree_text(target)
         or len(target.encode("utf-8", "strict")) > limit
     ):
         fail(f"tree contains an unsafe symlink target: {relative!r}")
@@ -3173,7 +3240,13 @@ def teardown_recipe_unit(unit: str, config: dict[str, Any]) -> None:
         fail(f"recipe service survived teardown with state {load_state}")
 
 
-def run_bounded_command(command: list[str], *, timeout_seconds: int) -> int:
+def run_bounded_command(
+    command: list[str],
+    *,
+    timeout_seconds: int,
+    max_output_bytes: int = MAX_RECIPE_LOG_BYTES,
+    output_limit_error: str = "tap recipe exceeded its diagnostic output limit",
+) -> int:
     """Stream recipe diagnostics without granting unbounded runner memory/disk."""
     process = subprocess.Popen(
         command,
@@ -3211,8 +3284,8 @@ def run_bounded_command(command: list[str], *, timeout_seconds: int) -> int:
                         selector.unregister(key.fileobj)
                         break
                     total += len(chunk)
-                    if total > MAX_RECIPE_LOG_BYTES:
-                        fail("tap recipe exceeded its diagnostic output limit")
+                    if total > max_output_bytes:
+                        fail(output_limit_error)
                     try:
                         sys.stdout.buffer.write(chunk)
                         sys.stdout.buffer.flush()
@@ -3237,6 +3310,76 @@ def run_bounded_command(command: list[str], *, timeout_seconds: int) -> int:
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait()
+
+
+def report_recipe_unit_failure(unit: str) -> None:
+    """Emit bounded manager evidence before teardown removes the failed unit."""
+    service = f"{unit}.service"
+    commands = (
+        (
+            8_192,
+            [
+                "/usr/bin/systemctl",
+                "show",
+                "--no-pager",
+                "--property=LoadState",
+                "--property=ActiveState",
+                "--property=SubState",
+                "--property=Result",
+                "--property=ExecMainCode",
+                "--property=ExecMainStatus",
+                service,
+            ],
+        ),
+        (
+            MAX_RECIPE_FAILURE_DIAGNOSTIC_BYTES - 8_192,
+            [
+                "/usr/bin/journalctl",
+                "--no-pager",
+                "--quiet",
+                "--output=short-monotonic",
+                "--unit",
+                service,
+                "--lines",
+                "100",
+            ],
+        ),
+    )
+    try:
+        print(
+            f"homebrew-tap-recipe-runner: bounded diagnostics for {service}",
+            file=sys.stderr,
+            flush=True,
+        )
+    except BrokenPipeError:
+        pass
+    for limit, command in commands:
+        try:
+            status = run_bounded_command(
+                command,
+                timeout_seconds=30,
+                max_output_bytes=limit,
+                output_limit_error=(
+                    "tap recipe systemd failure diagnostics exceeded their byte limit"
+                ),
+            )
+            if status != 0:
+                print(
+                    "homebrew-tap-recipe-runner: a bounded systemd diagnostic "
+                    f"command exited with status {status}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+        except (BrokenPipeError, RunnerError, OSError, subprocess.SubprocessError) as error:
+            try:
+                print(
+                    "homebrew-tap-recipe-runner: bounded systemd diagnostics "
+                    f"were incomplete: {error}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            except BrokenPipeError:
+                pass
 
 
 def run_recipe(
@@ -3356,7 +3499,10 @@ def run_recipe(
             "--property=PrivateIPC=yes",
             f"--property=RootDirectory={service_root}",
             "--property=MountAPIVFS=yes",
-            "--property=TemporaryFileSystem=/etc:ro",
+            # WHY: RootDirectory already supplies a private sealed /etc with
+            # exact file bind mountpoints. A second read-only empty tmpfs would
+            # hide those mountpoints before systemd can bind passwd, group,
+            # alternatives, and the loader cache into the service.
             "--property=TemporaryFileSystem=/tmp:rw,nosuid,nodev,mode=1777,size=1073741824",
             "--property=ProtectSystem=strict",
             "--property=ProtectHome=tmpfs",
@@ -3414,7 +3560,11 @@ def run_recipe(
         command.extend(["/usr/bin/bash", str(request["entrypoint"])])
         return_code: int | None = None
         try:
-            return_code = run_bounded_command(command, timeout_seconds=7_260)
+            try:
+                return_code = run_bounded_command(command, timeout_seconds=7_260)
+            finally:
+                if return_code is None or return_code != 0:
+                    report_recipe_unit_failure(unit)
         finally:
             teardown_recipe_unit(unit, config)
         if return_code is None or return_code != 0:

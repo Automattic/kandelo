@@ -2267,9 +2267,16 @@ homebrew_patched_launcher_seal_native_prefix() {
       "$HOMEBREW_PATCHED_NATIVE_PREFIX"
     "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/find \
       "$HOMEBREW_PATCHED_NATIVE_PREFIX" -xdev -type d -exec /usr/bin/chmod 0555 {} +
+    # WHY: Homebrew bottles may preserve owner-only or group-only read modes.
+    # Merely removing write bits can leave a root-owned 0400 file unreadable
+    # to the recipe identity. Preserve only executable meaning and publish one
+    # canonical readable mode for every regular file in the sealed closure.
     "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/find \
-      "$HOMEBREW_PATCHED_NATIVE_PREFIX" -xdev -type f \
-      -exec /usr/bin/chmod a-w,u-s,g-s {} +
+      "$HOMEBREW_PATCHED_NATIVE_PREFIX" -xdev -type f -perm /0111 \
+      -exec /usr/bin/chmod 0555 {} +
+    "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/find \
+      "$HOMEBREW_PATCHED_NATIVE_PREFIX" -xdev -type f ! -perm /0111 \
+      -exec /usr/bin/chmod 0444 {} +
     homebrew_assert_tree_not_writable_by_user \
       "$HOMEBREW_PATCHED_BUILD_USER" "$HOMEBREW_PATCHED_NATIVE_PREFIX"
     homebrew_assert_tree_not_replaceable_by_user \

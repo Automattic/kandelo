@@ -61,6 +61,20 @@ class ProtocolTests(unittest.TestCase):
             runner.SLICE_RE.fullmatch("kandelo-homebrew-build-123.slice")
         )
 
+    def test_posix_tree_colons_do_not_enter_systemd_bind_grammar(self) -> None:
+        runner.safe_relative_path("share/man/man3/App::Cpan.3", 4_096)
+        runner.contained_symlink(
+            "share/man/man3/App::Alias.3", "App::Cpan.3", 4_096
+        )
+        self.assertTrue(runner.safe_tree_text("App::Cpan.3"))
+        self.assertFalse(runner.safe_systemd_path_text("/tmp/App::Cpan.3"))
+        with self.assertRaisesRegex(runner.RunnerError, "bounded absolute path"):
+            runner.canonical_requested_path(
+                "/tmp/App::Cpan.3", label="systemd bind path"
+            )
+        with self.assertRaisesRegex(runner.RunnerError, "unsafe"):
+            runner.safe_relative_path("share/man/bad\nname", 4_096)
+
     def test_protected_runner_socket_fits_the_linux_pathname_limit(self) -> None:
         protected = Path("/run/kandelo-homebrew-publisher") / (
             "build-" + ("a" * 64)
@@ -270,6 +284,41 @@ class ProtocolTests(unittest.TestCase):
             )
         self.assertLess(time.monotonic() - started, 2.0)
 
+    def test_command_output_limit_is_caller_bounded(self) -> None:
+        with self.assertRaisesRegex(runner.RunnerError, "fixture output limit"):
+            runner.run_bounded_command(
+                [sys.executable, "-c", "print('x' * 4096)"],
+                timeout_seconds=5,
+                max_output_bytes=128,
+                output_limit_error="fixture output limit",
+            )
+
+    def test_failed_unit_diagnostics_are_bounded_and_nonfatal(self) -> None:
+        with mock.patch.object(
+            runner,
+            "run_bounded_command",
+            side_effect=[1, runner.RunnerError("bounded fixture failure")],
+        ) as bounded:
+            runner.report_recipe_unit_failure("kandelo-homebrew-build-123")
+
+        self.assertEqual(bounded.call_count, 2)
+        limits = [
+            call.kwargs["max_output_bytes"] for call in bounded.call_args_list
+        ]
+        self.assertEqual(
+            sum(limits), runner.MAX_RECIPE_FAILURE_DIAGNOSTIC_BYTES
+        )
+        self.assertTrue(
+            any(
+                argument == "--property=ExecMainStatus"
+                for argument in bounded.call_args_list[0].args[0]
+            )
+        )
+        self.assertIn(
+            "kandelo-homebrew-build-123.service",
+            bounded.call_args_list[1].args[0],
+        )
+
 
 @unittest.skipUnless(
     Path("/nix/var/nix/profiles/default/bin/nix-store").exists(),
@@ -392,11 +441,13 @@ class SysrootProjectionTests(unittest.TestCase):
         (source / "bin").mkdir(parents=True)
         (source / "include/real").mkdir(parents=True)
         (source / "lib").mkdir()
+        (source / "share/man/man3").mkdir(parents=True)
         files = {
             "metadata.txt": b"sysroot metadata\n",
             "bin/tool": b"#!/bin/sh\nexit 0\n",
             "include/real/fixture.h": b"#define FIXTURE 1\n",
             "lib/libc.a": b"archive\n",
+            "share/man/man3/App::Cpan.3": b"documented module\n",
         }
         for relative, data in files.items():
             path = source / relative
@@ -404,6 +455,7 @@ class SysrootProjectionTests(unittest.TestCase):
             path.chmod(0o755 if relative == "bin/tool" else 0o644)
         (source / "lib/libc-link.a").symlink_to("libc.a")
         (source / "include/alias").symlink_to("real", target_is_directory=True)
+        (source / "share/man/man3/App::Alias.3").symlink_to("App::Cpan.3")
         return source, sum(len(data) for data in files.values())
 
     def stage(
@@ -432,7 +484,7 @@ class SysrootProjectionTests(unittest.TestCase):
 
             destination, digest, entries, total = self.stage(root, source)
 
-            self.assertEqual(entries, 10)
+            self.assertEqual(entries, 15)
             self.assertEqual(total, expected_bytes)
             self.assertRegex(digest, r"^[0-9a-f]{64}$")
             self.assertTrue((destination / "lib/libc-link.a").is_symlink())
@@ -441,6 +493,16 @@ class SysrootProjectionTests(unittest.TestCase):
             )
             self.assertTrue((destination / "include/alias").is_symlink())
             self.assertEqual(os.readlink(destination / "include/alias"), "real")
+            self.assertEqual(
+                os.readlink(destination / "share/man/man3/App::Alias.3"),
+                "App::Cpan.3",
+            )
+            self.assertEqual(
+                (
+                    destination / "share/man/man3/App::Alias.3"
+                ).read_bytes(),
+                b"documented module\n",
+            )
             self.assertEqual(
                 (destination / "include/alias/fixture.h").read_bytes(),
                 (source / "include/real/fixture.h").read_bytes(),
@@ -1190,6 +1252,165 @@ class NativeClosureAuthenticationTests(unittest.TestCase):
                 {"shared": target_cellar / "shared/native-1.0"},
             )
 
+    def test_selects_proxy_formulae_and_native_requirements_by_plan_identity(
+        self,
+    ) -> None:
+        target_cellar = Path("/target/Cellar")
+        native_cellar = Path("/native/Cellar")
+        target_kegs = {
+            "gpatch": target_cellar / "gpatch/2.8",
+            "ncurses": target_cellar / "ncurses/6.5",
+        }
+        native_kegs = {
+            "binaryen": native_cellar / "binaryen/131",
+            "gpatch": native_cellar / "gpatch/2.8",
+            "openssl@3": native_cellar / "openssl@3/3.6.3",
+            "wabt": native_cellar / "wabt/1.0.41",
+        }
+
+        proxies, requirements = runner.native_execution_roots(
+            target_kegs,
+            native_kegs,
+            ["gpatch"],
+            ["binaryen", "wabt"],
+            ["ncurses"],
+        )
+
+        self.assertEqual(proxies, {"gpatch": target_kegs["gpatch"]})
+        self.assertEqual(
+            requirements,
+            {
+                "binaryen": native_kegs["binaryen"],
+                "wabt": native_kegs["wabt"],
+            },
+        )
+        self.assertNotIn("openssl@3", requirements)
+        self.assertEqual(
+            runner.requested_native_proxy_roots(
+                [str(target_kegs["gpatch"])], proxies
+            ),
+            [target_kegs["gpatch"]],
+        )
+
+    def test_rejects_missing_substituted_versioned_or_colliding_native_proxies(
+        self,
+    ) -> None:
+        target_cellar = Path("/target/Cellar")
+        native_cellar = Path("/native/Cellar")
+        native = {"gpatch": native_cellar / "gpatch/2.8"}
+
+        fixtures = (
+            (
+                "missing proxy",
+                {},
+                [],
+                "omits direct native tool proxy",
+            ),
+            (
+                "version mismatch",
+                {"gpatch": target_cellar / "gpatch/2.7"},
+                [],
+                "changed its selected version",
+            ),
+            (
+                "target collision",
+                {"gpatch": target_cellar / "gpatch/2.8"},
+                ["gpatch"],
+                "collide with direct native tools",
+            ),
+        )
+        for label, target, dependencies, error in fixtures:
+            with (
+                self.subTest(label=label),
+                self.assertRaisesRegex(runner.RunnerError, error),
+            ):
+                runner.native_execution_roots(
+                    target,
+                    native,
+                    ["gpatch"],
+                    [],
+                    dependencies,
+                )
+
+        proxies = {"gpatch": target_cellar / "gpatch/2.8"}
+        for supplied in (
+            ["/substituted/Cellar/gpatch/2.8"],
+            [str(proxies["gpatch"]), str(proxies["gpatch"])],
+            [],
+        ):
+            with (
+                self.subTest(supplied=supplied),
+                self.assertRaisesRegex(
+                    runner.RunnerError, "changed its declared native tool roots"
+                ),
+            ):
+                runner.requested_native_proxy_roots(supplied, proxies)
+        two_proxies = {
+            "automake": target_cellar / "automake/1.18.1",
+            "gpatch": target_cellar / "gpatch/2.8",
+        }
+        with self.assertRaisesRegex(
+            runner.RunnerError, "changed its declared native tool roots"
+        ):
+            runner.requested_native_proxy_roots(
+                [
+                    str(two_proxies["gpatch"]),
+                    str(two_proxies["automake"]),
+                ],
+                two_proxies,
+            )
+
+
+class SealedDependencyPathTests(unittest.TestCase):
+    @staticmethod
+    def root_owned(value: os.stat_result) -> os.stat_result:
+        return os.stat_result(
+            (
+                value.st_mode,
+                value.st_ino,
+                value.st_dev,
+                value.st_nlink,
+                0,
+                0,
+                value.st_size,
+                value.st_atime,
+                value.st_mtime,
+                value.st_ctime,
+            )
+        )
+
+    def test_accepts_colons_in_sealed_keg_members_and_symlink_targets(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            keg = Path(temporary).resolve() / "Cellar/perl/5.42"
+            man = keg / "share/man/man3"
+            man.mkdir(parents=True)
+            page = man / "App::Cpan.3"
+            page.write_text("documented module\n")
+            page.chmod(0o444)
+            alias = man / "App::Alias.3"
+            alias.symlink_to("App::Cpan.3")
+            for directory in (man, man.parent, man.parent.parent, keg):
+                directory.chmod(0o555)
+
+            real_stat = os.stat
+            real_fstat = os.fstat
+
+            def root_stat(*args, **kwargs):
+                return self.root_owned(real_stat(*args, **kwargs))
+
+            def root_fstat(*args, **kwargs):
+                return self.root_owned(real_fstat(*args, **kwargs))
+
+            with (
+                mock.patch.object(runner.os, "stat", side_effect=root_stat),
+                mock.patch.object(runner.os, "fstat", side_effect=root_fstat),
+            ):
+                runner.validate_sealed_dependency_tree(
+                    keg, "native dependency perl"
+                )
+
 
 @unittest.skipUnless(
     sys.platform.startswith("linux")
@@ -1416,15 +1637,22 @@ class OutputSealingTests(unittest.TestCase):
             raw.mkdir(mode=0o755)
             raw.chmod(0o755)
             executable = raw / "program"
-            data = raw / "data"
+            data = raw / "App::Cpan.3"
+            alias = raw / "App::Alias.3"
             executable.write_bytes(b"wasm")
             data.write_bytes(b"data")
             executable.chmod(0o755)
             data.chmod(0o644)
+            alias.symlink_to("App::Cpan.3")
             sealed = self.seal(root)
             self.assertEqual(stat.S_IMODE(sealed.stat().st_mode), 0o555)
             self.assertEqual(stat.S_IMODE((sealed / "program").stat().st_mode), 0o555)
-            self.assertEqual(stat.S_IMODE((sealed / "data").stat().st_mode), 0o444)
+            self.assertEqual(
+                stat.S_IMODE((sealed / "App::Cpan.3").stat().st_mode), 0o444
+            )
+            self.assertEqual(
+                os.readlink(sealed / "App::Alias.3"), "App::Cpan.3"
+            )
 
     def test_rejects_modes_outside_the_published_output_contract(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

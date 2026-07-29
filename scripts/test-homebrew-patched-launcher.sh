@@ -385,13 +385,19 @@ case "${1:-}" in
   install-native-fixture)
     [ "$#" -eq 2 ]
     mkdir -p "$prefix/Cellar/$2/0.9/bin" "$prefix/Cellar/$2/1.0/bin" \
-      "$prefix/opt"
+      "$prefix/Cellar/$2/1.0/share/mode-fixtures" "$prefix/opt"
     printf 'unselected native fixture\n' >"$prefix/Cellar/$2/0.9/bin/$2"
     printf '#!/usr/bin/env bash\nprintf "native fixture\\n"\n' \
       >"$prefix/Cellar/$2/1.0/bin/$2"
     chmod 0755 "$prefix/Cellar/$2/1.0/bin/$2"
     printf '{"name":"%s","version":"1.0"}\n' "$2" \
       >"$prefix/Cellar/$2/1.0/INSTALL_RECEIPT.json"
+    for fixture_mode in 0600 0640 0644 0700 0750 0755; do
+      printf 'native mode fixture %s\n' "$fixture_mode" \
+        >"$prefix/Cellar/$2/1.0/share/mode-fixtures/$fixture_mode"
+      chmod "$fixture_mode" \
+        "$prefix/Cellar/$2/1.0/share/mode-fixtures/$fixture_mode"
+    done
     ln -s "$2" "$prefix/Cellar/$2/1.0/bin/$2-link"
     ln -s "../Cellar/$2/1.0" "$prefix/opt/$2"
     ;;
@@ -1499,10 +1505,19 @@ homebrew_patched_launcher_select_host_git
   fail "host Git selection did not replace caller state with protected Nix Git"
 
 if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
+   [ -x /usr/bin/python3 ] && \
    [ -x /usr/bin/systemd-run ] && [ -x /usr/bin/systemctl ] && \
    [ -x /usr/bin/getent ] && [ -x /usr/bin/pgrep ] && [ -x /usr/bin/pkill ] && \
    [ -x /usr/bin/setsid ] && \
    [ -d /run/systemd/system ] && /usr/bin/sudo -n true >/dev/null 2>&1; then
+  # WHY: portable unit tests cannot exercise systemd's mount ordering. Run the
+  # production interpreter as root on the Linux CI host so a private /etc or
+  # other namespace property cannot hide exact bind destinations unnoticed.
+  /usr/bin/sudo -n -- /usr/bin/env -i \
+    KANDELO_RUN_SYSTEMD_RECIPE_ROOT_TEST=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    /usr/bin/python3 "$REPO_ROOT/scripts/test-homebrew-tap-recipe-runner.py" \
+    LiveSystemdServiceRootTests
   ISOLATION_BUILD_USER="kandelo-hb-$$-${RANDOM}"
   ISOLATION_BUILD_USER="${ISOLATION_BUILD_USER:0:31}"
   ISOLATION_ROOT="$(mktemp -d /tmp/kandelo-launcher-test.XXXXXX)"
@@ -2480,6 +2495,18 @@ EOF
   homebrew_patched_launcher_seal_native_prefix
   [ "$(stat -c '%u:%g:%a' "$isolated_native_prefix")" = "0:0:555" ] ||
     fail "sealed native prefix ownership or mode is unsafe"
+  for fixture_mode in 0600 0640 0644; do
+    [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a' \
+      "$isolated_native_prefix/Cellar/cmake/1.0/share/mode-fixtures/$fixture_mode")" = \
+      "0:0:444" ] ||
+      fail "native nonexecutable mode $fixture_mode was not normalized to 0444"
+  done
+  for fixture_mode in 0700 0750 0755; do
+    [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a' \
+      "$isolated_native_prefix/Cellar/cmake/1.0/share/mode-fixtures/$fixture_mode")" = \
+      "0:0:555" ] ||
+      fail "native executable mode $fixture_mode was not normalized to 0555"
+  done
   /usr/bin/sudo -n -- jq -e \
     --arg cellar "$isolated_native_prefix/Cellar" '
       .schema == 1 and .cellar == $cellar and

@@ -608,13 +608,22 @@ rechecks the executable afterward. An independent checkout path is not a
 second source of privileged runner code.
 
 The host `/`, workflow checkout, credentials, and host service-manager sockets
-are absent rather than merely read-only. `/etc` and `/tmp` are private service
-filesystems. The supervisor tears down the complete control group, proves the
-recipe UID owns no process, validates the output without following unsafe
-nodes, and returns only a root-owned sealed output tree. The Linux isolation
-test executes a malicious recipe that probes an unrelated host sentinel and
-tries to start another systemd unit; both paths must fail while declared inputs
-and output still work.
+are absent rather than merely read-only. `/etc` is the private sealed directory
+from the empty `RootDirectory=` skeleton, populated only through exact file and
+directory binds; `/tmp` is a private size-bounded tmpfs. A second empty `/etc`
+tmpfs would hide those prepared bind destinations, so the Linux isolation test
+executes this real mount topology under systemd rather than treating it as a
+portable unit-test claim. The supervisor tears down the complete control group,
+proves the recipe UID owns no process, validates the output without following
+unsafe nodes, and returns only a root-owned sealed output tree. That isolation
+test also executes a malicious recipe that probes an unrelated host sentinel
+and tries to start another systemd unit; both paths must fail while declared
+inputs and output still work.
+
+Files below copied source, resource, dependency, and output trees retain normal
+POSIX pathname rules, including `:` in names such as Perl manual pages.
+Only absolute host paths used as operands in systemd's colon-delimited bind
+syntax reject that character.
 
 The service bounds execution time, process count, descriptors, private
 `/tmp`, and captured diagnostics. Its host-backed private work and output
@@ -1005,7 +1014,11 @@ The recipe supervisor starts before native Homebrew runs and reserves one exact
 manifest path below its root-owned build directory. That path must still be
 absent when the supervisor loads its static direct-tool plan. After the native
 installs finish, the publisher makes the complete native prefix root-owned and
-read-only. The same admitted root runner then writes, with exclusive creation,
+read-only. Directories become mode `0555`; regular files that carried any
+executable bit become `0555`, and every other regular file becomes `0444`.
+This preserves executable meaning while ensuring that a bottle's original
+owner-only mode cannot make a root-owned build input unreadable to the recipe
+identity. The same admitted root runner then writes, with exclusive creation,
 a mode-`0400` inventory of every Formula name and exact keg path it found in
 that sealed Cellar. When the recipe request arrives, the supervisor rescans
 every root-owned, read-only keg and requires exact equality with that inventory.
@@ -1024,6 +1037,11 @@ dependency's selected keg is copied into a root-owned, read-only proxy under the
 canonical target Cellar. Its target `opt` link points to that real target keg.
 Homebrew requires a keg's grandparent to resolve to the active Cellar, so a rack
 symlink into the native prefix is not a valid substitute.
+Formula support therefore records the exact target-Cellar proxy paths it put on
+`PATH`, while the root-owned runner plan selects their Formula names and the
+authenticated native closure selects their only permitted versions. The runner
+rejects a missing, substituted, version-mismatched, or target-dependency-
+colliding proxy before executing recipe code.
 If that direct keg contains a relative link into its recursive native closure,
 the publisher rewrites the copied link to the exact resolved path in the sealed
 native prefix. This preserves host tools whose launchers are supplied by another
