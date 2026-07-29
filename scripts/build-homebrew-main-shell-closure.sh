@@ -11,6 +11,7 @@ BOTTLE_CACHE=""
 PACKAGE_TREE_SPEC=""
 PACKAGE_TREE_ARCHIVE=""
 HOMEBREW_BOOTSTRAP_ENV=""
+HOMEBREW_BOOTSTRAP_BOTTLE_REPORT=""
 HOMEBREW_BOOTSTRAP_SOURCE_LOCK="$REPO_ROOT/homebrew/homebrew-bootstrap-source-lock.json"
 HOMEBREW_BOOTSTRAP_SOURCE_LOCK_CHECKER="$REPO_ROOT/scripts/verify-homebrew-bootstrap-source-lock.mjs"
 BREWFILE="$REPO_ROOT/homebrew/main-shell.Brewfile"
@@ -57,6 +58,8 @@ Options:
                             exact dependency output named by the recipe
   --homebrew-bootstrap-env <env>
                             exact package-owned launcher environment
+  --homebrew-bootstrap-bottle-report <json>
+                            verified public-bottle extraction evidence
   --materialize-package-tree
                             embed that same tree for an eager derivative
   --review-pending-artifact
@@ -106,6 +109,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --homebrew-bootstrap-env)
       HOMEBREW_BOOTSTRAP_ENV="${2:-}"
+      shift 2
+      ;;
+    --homebrew-bootstrap-bottle-report)
+      HOMEBREW_BOOTSTRAP_BOTTLE_REPORT="${2:-}"
       shift 2
       ;;
     --migration-lock)
@@ -166,6 +173,11 @@ if { [ -n "$PACKAGE_TREE_SPEC" ] && [ -z "$HOMEBREW_BOOTSTRAP_ENV" ]; } ||
   echo "build-homebrew-main-shell-closure: Homebrew bootstrap environment and package tree must be provided together" >&2
   exit 2
 fi
+if [ -z "$PACKAGE_TREE_SPEC" ] &&
+   [ -n "$HOMEBREW_BOOTSTRAP_BOTTLE_REPORT" ]; then
+  echo "build-homebrew-main-shell-closure: Homebrew bootstrap bottle report requires a package tree" >&2
+  exit 2
+fi
 if [ "$MATERIALIZE_PACKAGE_TREE" = true ] && [ -z "$PACKAGE_TREE_SPEC" ]; then
   echo "build-homebrew-main-shell-closure: --materialize-package-tree requires a package tree" >&2
   exit 2
@@ -189,12 +201,19 @@ if [ -n "$HOMEBREW_BOOTSTRAP_ENV" ] &&
   echo "build-homebrew-main-shell-closure: Homebrew bootstrap environment must be a regular non-symlink file" >&2
   exit 2
 fi
+if [ -n "$HOMEBREW_BOOTSTRAP_BOTTLE_REPORT" ] &&
+   { [ ! -f "$HOMEBREW_BOOTSTRAP_BOTTLE_REPORT" ] ||
+     [ -L "$HOMEBREW_BOOTSTRAP_BOTTLE_REPORT" ]; }; then
+  echo "build-homebrew-main-shell-closure: Homebrew bootstrap bottle report must be a regular non-symlink file" >&2
+  exit 2
+fi
 if [ -n "$PACKAGE_TREE_ARCHIVE" ] &&
+   [ -z "$HOMEBREW_BOOTSTRAP_BOTTLE_REPORT" ] &&
    { [ ! -f "$HOMEBREW_BOOTSTRAP_SOURCE_LOCK" ] ||
      [ -L "$HOMEBREW_BOOTSTRAP_SOURCE_LOCK" ] ||
      [ ! -f "$HOMEBREW_BOOTSTRAP_SOURCE_LOCK_CHECKER" ] ||
      [ -L "$HOMEBREW_BOOTSTRAP_SOURCE_LOCK_CHECKER" ]; }; then
-  echo "build-homebrew-main-shell-closure: Homebrew bootstrap source-lock contract is unavailable" >&2
+  echo "build-homebrew-main-shell-closure: transitional Homebrew bootstrap source-lock contract is unavailable" >&2
   exit 2
 fi
 if ! [[ "$MAX_BYTES" =~ ^[1-9][0-9]*$ ]] || [ $((MAX_BYTES % 4096)) -ne 0 ]; then
@@ -271,10 +290,12 @@ for tool in git jq node ruby sha256sum wc; do
   }
 done
 
-if [ -n "$PACKAGE_TREE_ARCHIVE" ]; then
-  # WHY: a cache key or package name does not authenticate bytes supplied by a
-  # manual reseal caller. Bind the deferred tree to the same exact ZIP that the
-  # homebrew-bootstrap package recipe and resolver are allowed to publish.
+if [ -n "$PACKAGE_TREE_ARCHIVE" ] &&
+   [ -z "$HOMEBREW_BOOTSTRAP_BOTTLE_REPORT" ]; then
+  # WHY: the source-rootfs compatibility lane still resolves the old package
+  # while the product shell consumes the public bottle. Keep that detached ZIP
+  # authenticated until the compatibility lane is retired; it is not used by
+  # the bottled product workflow.
   node "$HOMEBREW_BOOTSTRAP_SOURCE_LOCK_CHECKER" \
     --lock "$HOMEBREW_BOOTSTRAP_SOURCE_LOCK" \
     --archive "$PACKAGE_TREE_ARCHIVE"
@@ -387,6 +408,7 @@ PACKAGE_TREE_ARCHIVE_SHA=""
 PACKAGE_TREE_ARCHIVE_BYTES=0
 HOMEBREW_BOOTSTRAP_ENV_SHA=""
 HOMEBREW_BOOTSTRAP_ENV_BYTES=0
+HOMEBREW_BOOTSTRAP_BOTTLE_JSON=null
 if [ -n "$PACKAGE_TREE_SPEC" ]; then
   PACKAGE_TREE_ARGS=(
     --package-tree-spec "$PACKAGE_TREE_SPEC"
@@ -403,6 +425,30 @@ if [ -n "$PACKAGE_TREE_SPEC" ]; then
   HOMEBREW_BOOTSTRAP_ENV_SHA="$(sha256sum "$HOMEBREW_BOOTSTRAP_ENV")"
   HOMEBREW_BOOTSTRAP_ENV_SHA="${HOMEBREW_BOOTSTRAP_ENV_SHA%% *}"
   HOMEBREW_BOOTSTRAP_ENV_BYTES="$(wc -c <"$HOMEBREW_BOOTSTRAP_ENV" | tr -d '[:space:]')"
+
+  if [ -n "$HOMEBREW_BOOTSTRAP_BOTTLE_REPORT" ]; then
+    VERIFIED_BOOTSTRAP_REPORT="$WORK_DIR/homebrew-bootstrap-bottle-report.json"
+    # WHY: the archive and environment are detached from their bottle here.
+    # Reuse the same typed parser that performed extraction so the tap schema,
+    # Formula sidecar, recipe lock, link manifest, provenance, and output-byte
+    # contract cannot drift into a second shell implementation.
+    "$REPO_ROOT/node_modules/.bin/tsx" \
+      "$REPO_ROOT/scripts/verify-homebrew-support-data-extraction.ts" \
+      --tap-root "$TAP_ROOT" \
+      --expected-tap-sha "$EXPECTED_TAP_SHA" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --tap-name kandelo-dev/tap-core \
+      --package homebrew-bootstrap \
+      --arch wasm32 \
+      --expected-abi "$ABI_VERSION" \
+      --report "$HOMEBREW_BOOTSTRAP_BOTTLE_REPORT" \
+      --output "archive=$PACKAGE_TREE_ARCHIVE" \
+      --output "environment=$HOMEBREW_BOOTSTRAP_ENV" \
+      --verified-report-out "$VERIFIED_BOOTSTRAP_REPORT"
+    HOMEBREW_BOOTSTRAP_BOTTLE_JSON="$(
+      jq -c . "$VERIFIED_BOOTSTRAP_REPORT"
+    )"
+  fi
 fi
 MATERIALIZATION_JSON=null
 VFS_IMAGE_BUILDER="$REPO_ROOT/images/vfs/scripts/build-homebrew-vfs-image.ts"
@@ -442,6 +488,18 @@ if [ ! -f "$OUT" ] || [ -L "$OUT" ] || [ ! -f "$REPORT" ] || [ -L "$REPORT" ]; t
   echo "build-homebrew-main-shell-closure: image builder did not produce regular image and report files" >&2
   exit 1
 fi
+if [ "$HOMEBREW_BOOTSTRAP_BOTTLE_JSON" != null ]; then
+  REPORT_WITH_BOOTSTRAP="$WORK_DIR/main-shell-report-with-bootstrap.json"
+  if [ -e "$REPORT_WITH_BOOTSTRAP" ] || [ -L "$REPORT_WITH_BOOTSTRAP" ]; then
+    echo "build-homebrew-main-shell-closure: private bootstrap report staging path already exists" >&2
+    exit 1
+  fi
+  jq \
+    --argjson bottle "$HOMEBREW_BOOTSTRAP_BOTTLE_JSON" \
+    '. + {homebrew_bootstrap_bottle: $bottle}' \
+    "$REPORT" >"$REPORT_WITH_BOOTSTRAP"
+  mv "$REPORT_WITH_BOOTSTRAP" "$REPORT"
+fi
 if [ "$LAZY_SHELL" = true ] && [ "$MATERIALIZE_PACKAGE_TREE" = false ]; then
   if [ "$REVIEW_PENDING_ARTIFACT" = true ]; then
     # WHY: the reviewed catalog changes before its deterministic image digest
@@ -468,6 +526,7 @@ jq -e \
   --slurpfile runtime_support "$RUNTIME_SUPPORT" \
   --argjson materialization "$MATERIALIZATION_JSON" \
   --argjson package_tree_spec "$PACKAGE_TREE_JSON" \
+  --argjson homebrew_bootstrap_bottle "$HOMEBREW_BOOTSTRAP_BOTTLE_JSON" \
   --arg package_tree_archive_sha "$PACKAGE_TREE_ARCHIVE_SHA" \
   --argjson package_tree_archive_bytes "$PACKAGE_TREE_ARCHIVE_BYTES" \
   --arg homebrew_bootstrap_env_sha "$HOMEBREW_BOOTSTRAP_ENV_SHA" \
@@ -667,8 +726,10 @@ jq -e \
   (.base_image.metadata.kernelAbi == $abi) and
   (.base_image.metadata.homebrew == null) and
   (if $package_tree_spec == null then
-    (.package_deferred_trees == null)
+    (.package_deferred_trees == null) and
+    (.homebrew_bootstrap_bottle == null)
   else
+    (.homebrew_bootstrap_bottle == $homebrew_bootstrap_bottle) and
     (.package_deferred_trees | length == 1) and
     (.package_deferred_trees[0] as $tree |
       $tree.schema == $package_tree_spec.schema and
