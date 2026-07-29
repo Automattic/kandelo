@@ -2518,7 +2518,14 @@ def check_publisher(workflow)
     "SupplementaryGroups=",
     "tap recipe exceeded its diagnostic output limit",
     "MAX_RECIPE_FAILURE_DIAGNOSTIC_BYTES = 65_536",
-    "report_recipe_unit_failure(unit)",
+    "max_tail_bytes=MAX_RECIPE_FAILURE_DIAGNOSTIC_BYTES",
+    "systemd-run --pipe makes this exact credential-free recipe",
+    "sanitize_recipe_diagnostic(diagnostic_tail)",
+    "BoundedCommandError(",
+    "recipe_execution_error_from_command(error)",
+    "RecipeExecutionError(",
+    "runner_error_reply(error)",
+    "accept_runner_reply(reply)",
     "teardown_recipe_unit(unit, config)",
     'validate_sealed_dependency_tree(root, f"target dependency {name}")',
     "native closure manifest appeared before native Homebrew was sealed",
@@ -2533,6 +2540,9 @@ def check_publisher(workflow)
     check(recipe_runner.include?(fragment),
           "tap recipe runner lacks closed-boundary contract #{fragment}")
   end
+  check(!recipe_runner.include?("/usr/bin/journalctl") &&
+        !recipe_runner.include?("report_recipe_unit_failure"),
+        "tap recipe failure diagnostics query a manager journal outside the exact recipe pipe")
   check(!recipe_runner.include?("PrivateTmp=yes"),
         "tap recipe runner masks publisher bind targets with PrivateTmp")
   check(!recipe_runner.include?("TemporaryFileSystem=/etc"),

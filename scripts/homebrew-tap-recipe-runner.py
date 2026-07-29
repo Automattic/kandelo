@@ -42,6 +42,8 @@ MAX_RECIPE_FILE_BYTES = 16_777_216
 MAX_RECIPE_BYTES = 67_108_864
 MAX_RECIPE_LOG_BYTES = 33_554_432
 MAX_RECIPE_FAILURE_DIAGNOSTIC_BYTES = 65_536
+MAX_REPLY_MESSAGE_BYTES = 2_048
+MAX_REPLY_DIAGNOSTIC_BYTES = 4_096
 MAX_RESOURCE_ENTRIES = 65_536
 MAX_RESOURCE_FILE_BYTES = 268_435_456
 MAX_RESOURCE_BYTES = 1_073_741_824
@@ -221,6 +223,22 @@ class RunnerError(RuntimeError):
     """An expected fail-closed validation or execution error."""
 
 
+class BoundedCommandError(RunnerError):
+    """A bounded command failure that retains only its already-limited tail."""
+
+    def __init__(self, message: str, diagnostic_tail: bytes) -> None:
+        super().__init__(message)
+        self.diagnostic_tail = diagnostic_tail
+
+
+class RecipeExecutionError(RunnerError):
+    """A recipe failure with output from its credential-free service only."""
+
+    def __init__(self, message: str, diagnostic: str) -> None:
+        super().__init__(message)
+        self.diagnostic = diagnostic
+
+
 def fail(message: str) -> None:
     raise RunnerError(message)
 
@@ -278,6 +296,77 @@ def safe_text(value: str, *, allow_colon: bool = True) -> bool:
     ):
         return False
     return allow_colon or ":" not in value
+
+
+def bounded_safe_text(value: str, max_bytes: int) -> str:
+    """Return a printable UTF-8 prefix without splitting its last character."""
+    if max_bytes < 1:
+        return ""
+    encoded = value.encode("utf-8", "replace")[:max_bytes]
+    while encoded:
+        try:
+            result = encoded.decode("utf-8", "strict")
+            break
+        except UnicodeDecodeError as error:
+            encoded = encoded[:error.start]
+    else:
+        result = ""
+    return result if safe_text(result) else ""
+
+
+def sanitize_recipe_diagnostic(data: bytes) -> str:
+    """Turn the bounded recipe-unit tail into one workflow-safe reply field."""
+    # WHY: recipe output is untrusted even though its service has no publisher
+    # credentials. Keep the useful line boundaries without allowing control
+    # bytes, ANSI escapes, or GitHub workflow commands to cross the socket as
+    # active syntax. The workflow independently stops command parsing around
+    # this client, so this normalization is defense in depth rather than the
+    # only injection boundary.
+    text = data.decode("utf-8", "replace")
+    pieces: list[str] = []
+    pending_separator = False
+    for character in text:
+        codepoint = ord(character)
+        if character in "\r\n":
+            pending_separator = bool(pieces)
+            continue
+        if character == "\t":
+            character = " "
+            codepoint = ord(character)
+        if (
+            codepoint < 32
+            or 127 <= codepoint <= 159
+            or 0xD800 <= codepoint <= 0xDFFF
+        ):
+            character = "?"
+        if pending_separator:
+            pieces.extend((" ", "|", " "))
+            pending_separator = False
+        pieces.append(character)
+    rendered = "".join(pieces).strip()
+    # Select a suffix because the failing command and compiler error are
+    # conventionally at the end of a recipe log. Re-encode by character so a
+    # multibyte UTF-8 sequence can never be split at the protocol boundary.
+    selected: list[str] = []
+    selected_bytes = 0
+    for character in reversed(rendered):
+        width = len(character.encode("utf-8"))
+        if selected_bytes + width > MAX_REPLY_DIAGNOSTIC_BYTES:
+            break
+        selected.append(character)
+        selected_bytes += width
+    result = "".join(reversed(selected)).strip()
+    return result if safe_text(result) else ""
+
+
+def recipe_execution_error_from_command(
+    error: BoundedCommandError,
+) -> RecipeExecutionError:
+    """Preserve a bounded command reason and sanitize only its captured tail."""
+    return RecipeExecutionError(
+        str(error),
+        sanitize_recipe_diagnostic(error.diagnostic_tail),
+    )
 
 
 def safe_systemd_path_text(value: str) -> bool:
@@ -3245,9 +3334,12 @@ def run_bounded_command(
     *,
     timeout_seconds: int,
     max_output_bytes: int = MAX_RECIPE_LOG_BYTES,
+    max_tail_bytes: int = 0,
     output_limit_error: str = "tap recipe exceeded its diagnostic output limit",
-) -> int:
-    """Stream recipe diagnostics without granting unbounded runner memory/disk."""
+) -> tuple[int, bytes]:
+    """Stream bounded diagnostics and optionally retain their bounded suffix."""
+    if max_tail_bytes < 0 or max_tail_bytes > max_output_bytes:
+        fail("tap recipe diagnostic tail has an invalid byte limit")
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -3266,11 +3358,16 @@ def run_bounded_command(
     selector.register(process.stdout, selectors.EVENT_READ)
     deadline = time.monotonic() + timeout_seconds
     total = 0
+    tail = bytearray()
+
+    def command_fail(message: str) -> None:
+        raise BoundedCommandError(message, bytes(tail))
+
     try:
         while selector.get_map():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                fail("tap recipe exceeded its execution deadline")
+                command_fail("tap recipe exceeded its execution deadline")
             events = selector.select(min(remaining, 1.0))
             if not events:
                 continue
@@ -3283,9 +3380,13 @@ def run_bounded_command(
                     if not chunk:
                         selector.unregister(key.fileobj)
                         break
+                    if max_tail_bytes:
+                        tail.extend(chunk)
+                        if len(tail) > max_tail_bytes:
+                            del tail[:-max_tail_bytes]
                     total += len(chunk)
                     if total > max_output_bytes:
-                        fail(output_limit_error)
+                        command_fail(output_limit_error)
                     try:
                         sys.stdout.buffer.write(chunk)
                         sys.stdout.buffer.flush()
@@ -3295,11 +3396,11 @@ def run_bounded_command(
                         pass
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            fail("tap recipe exceeded its execution deadline")
+            command_fail("tap recipe exceeded its execution deadline")
         try:
-            return process.wait(timeout=remaining)
+            return process.wait(timeout=remaining), bytes(tail)
         except subprocess.TimeoutExpired:
-            fail("tap recipe exceeded its execution deadline")
+            command_fail("tap recipe exceeded its execution deadline")
     finally:
         selector.close()
         process.stdout.close()
@@ -3310,76 +3411,6 @@ def run_bounded_command(
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait()
-
-
-def report_recipe_unit_failure(unit: str) -> None:
-    """Emit bounded manager evidence before teardown removes the failed unit."""
-    service = f"{unit}.service"
-    commands = (
-        (
-            8_192,
-            [
-                "/usr/bin/systemctl",
-                "show",
-                "--no-pager",
-                "--property=LoadState",
-                "--property=ActiveState",
-                "--property=SubState",
-                "--property=Result",
-                "--property=ExecMainCode",
-                "--property=ExecMainStatus",
-                service,
-            ],
-        ),
-        (
-            MAX_RECIPE_FAILURE_DIAGNOSTIC_BYTES - 8_192,
-            [
-                "/usr/bin/journalctl",
-                "--no-pager",
-                "--quiet",
-                "--output=short-monotonic",
-                "--unit",
-                service,
-                "--lines",
-                "100",
-            ],
-        ),
-    )
-    try:
-        print(
-            f"homebrew-tap-recipe-runner: bounded diagnostics for {service}",
-            file=sys.stderr,
-            flush=True,
-        )
-    except BrokenPipeError:
-        pass
-    for limit, command in commands:
-        try:
-            status = run_bounded_command(
-                command,
-                timeout_seconds=30,
-                max_output_bytes=limit,
-                output_limit_error=(
-                    "tap recipe systemd failure diagnostics exceeded their byte limit"
-                ),
-            )
-            if status != 0:
-                print(
-                    "homebrew-tap-recipe-runner: a bounded systemd diagnostic "
-                    f"command exited with status {status}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-        except (BrokenPipeError, RunnerError, OSError, subprocess.SubprocessError) as error:
-            try:
-                print(
-                    "homebrew-tap-recipe-runner: bounded systemd diagnostics "
-                    f"were incomplete: {error}",
-                    file=sys.stderr,
-                    flush=True,
-                )
-            except BrokenPipeError:
-                pass
 
 
 def run_recipe(
@@ -3559,12 +3590,21 @@ def run_recipe(
         )
         command.extend(["/usr/bin/bash", str(request["entrypoint"])])
         return_code: int | None = None
+        failure_diagnostic = ""
         try:
-            try:
-                return_code = run_bounded_command(command, timeout_seconds=7_260)
-            finally:
-                if return_code is None or return_code != 0:
-                    report_recipe_unit_failure(unit)
+            # WHY: systemd-run --pipe makes this exact credential-free recipe
+            # service inherit systemd-run's stdout/stderr. Retaining the suffix
+            # in the same bounded drain proves the reply cannot include the
+            # supervisor, publisher environment, or an unrelated unit journal.
+            return_code, diagnostic_tail = run_bounded_command(
+                command,
+                timeout_seconds=7_260,
+                max_tail_bytes=MAX_RECIPE_FAILURE_DIAGNOSTIC_BYTES,
+            )
+            if return_code != 0:
+                failure_diagnostic = sanitize_recipe_diagnostic(diagnostic_tail)
+        except BoundedCommandError as error:
+            raise recipe_execution_error_from_command(error) from None
         finally:
             teardown_recipe_unit(unit, config)
         if return_code is None or return_code != 0:
@@ -3573,7 +3613,10 @@ def run_recipe(
                 if return_code is None
                 else str(return_code)
             )
-            fail(f"tap recipe exited with status {status}")
+            raise RecipeExecutionError(
+                f"tap recipe exited with status {status}",
+                failure_diagnostic,
+            )
 
         sealed = config["sealed_root"] / request_sha256
         if sealed.exists() or sealed.is_symlink():
@@ -3711,6 +3754,89 @@ def runner_paths() -> tuple[Path, Path, Path]:
     )
 
 
+def runner_error_reply(error: RunnerError) -> dict[str, Any]:
+    """Build one byte-bounded, control-free authenticated error reply."""
+    message = bounded_safe_text(str(error), MAX_REPLY_MESSAGE_BYTES)
+    if not message:
+        message = "tap recipe runner rejected an unsafe error message"
+    reply: dict[str, Any] = {
+        "message": message,
+        "schema": 1,
+        "status": "error",
+    }
+    if isinstance(error, RecipeExecutionError):
+        diagnostic = error.diagnostic
+        if (
+            diagnostic
+            and safe_text(diagnostic)
+            and len(diagnostic.encode("utf-8")) <= MAX_REPLY_DIAGNOSTIC_BYTES
+        ):
+            reply["diagnostic"] = diagnostic
+    payload = compact_json(reply)
+    if len(payload) > MAX_MESSAGE_BYTES:
+        # These independent field bounds leave ample JSON overhead. Treat any
+        # future schema growth that violates that proof as a programmer error,
+        # never as permission to send a truncated datagram.
+        fail("tap recipe runner error reply exceeds its protocol bound")
+    return reply
+
+
+def parse_runner_reply(reply: bytes) -> dict[str, Any]:
+    """Validate the exact status-dependent supervisor reply schema."""
+    if len(reply) > MAX_MESSAGE_BYTES:
+        fail("tap recipe runner returned an oversized reply")
+    document = parse_json_bytes(reply, "tap recipe runner reply")
+    if type(document) is not dict:
+        fail("tap recipe runner returned an invalid reply")
+    base_keys = {"message", "schema", "status"}
+    keys = set(document)
+    if keys not in (base_keys, base_keys | {"diagnostic"}):
+        fail("tap recipe runner returned an invalid reply")
+    message = document.get("message")
+    status = document.get("status")
+    if (
+        not is_exact_integer(document.get("schema"))
+        or document["schema"] != 1
+        or type(status) is not str
+        or status not in {"ok", "error"}
+        or type(message) is not str
+        or not message
+        or not safe_text(message)
+        or len(message.encode("utf-8")) > MAX_REPLY_MESSAGE_BYTES
+        or compact_json(document) != reply
+    ):
+        fail("tap recipe runner returned an invalid reply")
+    diagnostic = document.get("diagnostic")
+    if "diagnostic" in document and (
+        status != "error"
+        or type(diagnostic) is not str
+        or not diagnostic
+        or not safe_text(diagnostic)
+        or len(diagnostic.encode("utf-8")) > MAX_REPLY_DIAGNOSTIC_BYTES
+    ):
+        fail("tap recipe runner returned an invalid reply")
+    return document
+
+
+def accept_runner_reply(reply: bytes) -> None:
+    """Expose a validated recipe diagnostic, then preserve the ordinary error."""
+    document = parse_runner_reply(reply)
+    if document["status"] == "ok":
+        return
+    diagnostic = document.get("diagnostic")
+    if diagnostic:
+        # WHY: the outer workflow stops GitHub command parsing before invoking
+        # the bottle builder. Prefixing this already control-free, single-line
+        # field also prevents recipe text from becoming the first token of a
+        # workflow log record.
+        print(
+            f"homebrew-tap-recipe-runner: recipe diagnostics: {diagnostic}",
+            file=sys.stderr,
+            flush=True,
+        )
+    fail(document["message"])
+
+
 def client(request: str, response: str) -> int:
     _, socket_path, _ = runner_paths()
     message = compact_json(
@@ -3725,23 +3851,7 @@ def client(request: str, response: str) -> int:
         reply = connection.recv(MAX_MESSAGE_BYTES + 1)
     finally:
         connection.close()
-    if len(reply) > MAX_MESSAGE_BYTES:
-        fail("tap recipe runner returned an oversized reply")
-    document = parse_json_bytes(reply, "tap recipe runner reply")
-    if (
-        type(document) is not dict
-        or set(document) != {"message", "schema", "status"}
-        or not is_exact_integer(document["schema"])
-        or document["schema"] != 1
-        or document["status"] not in {"ok", "error"}
-        or type(document["status"]) is not str
-        or type(document["message"]) is not str
-        or not safe_text(document["message"])
-        or len(document["message"].encode("utf-8")) > 2_048
-    ):
-        fail("tap recipe runner returned an invalid reply")
-    if document["status"] != "ok":
-        fail(document["message"])
+    accept_runner_reply(reply)
     return 0
 
 
@@ -3811,7 +3921,7 @@ def supervisor() -> int:
                 )
                 reply = {"message": "tap recipe output sealed", "schema": 1, "status": "ok"}
             except RunnerError as error:
-                reply = {"message": str(error)[:2_048], "schema": 1, "status": "error"}
+                reply = runner_error_reply(error)
             except (OSError, subprocess.SubprocessError) as error:
                 print(
                     f"homebrew-tap-recipe-runner: internal execution failure: {error}",

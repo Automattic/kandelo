@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import io
 import json
 import os
 import shutil
@@ -268,56 +269,203 @@ class ProtocolTests(unittest.TestCase):
 
     def test_command_deadline_survives_a_descendant_inheriting_stdout(self) -> None:
         started = time.monotonic()
-        with self.assertRaisesRegex(runner.RunnerError, "execution deadline"):
+        with self.assertRaisesRegex(
+            runner.BoundedCommandError, "execution deadline"
+        ) as raised:
             runner.run_bounded_command(
                 [
                     sys.executable,
                     "-c",
                     (
                         "import subprocess, sys; "
+                        "print('timeout-tail', file=sys.stderr, flush=True); "
                         "subprocess.Popen("
                         "[sys.executable, '-c', 'import time; time.sleep(3)'], "
                         "stdout=sys.stdout, stderr=sys.stderr)"
                     ),
                 ],
                 timeout_seconds=1,
+                max_tail_bytes=128,
             )
         self.assertLess(time.monotonic() - started, 2.0)
+        self.assertIn(b"timeout-tail", raised.exception.diagnostic_tail)
+        converted = runner.recipe_execution_error_from_command(raised.exception)
+        self.assertEqual(converted.diagnostic, "timeout-tail")
+        self.assertEqual(
+            runner.runner_error_reply(converted)["diagnostic"], "timeout-tail"
+        )
 
     def test_command_output_limit_is_caller_bounded(self) -> None:
-        with self.assertRaisesRegex(runner.RunnerError, "fixture output limit"):
+        with self.assertRaisesRegex(
+            runner.BoundedCommandError, "fixture output limit"
+        ) as raised:
             runner.run_bounded_command(
-                [sys.executable, "-c", "print('x' * 4096)"],
+                [
+                    sys.executable,
+                    "-c",
+                    (
+                        "import os; "
+                        "os.write(2, (b'x' * 4096) + b' output-cap-tail')"
+                    ),
+                ],
                 timeout_seconds=5,
                 max_output_bytes=128,
+                max_tail_bytes=128,
                 output_limit_error="fixture output limit",
             )
-
-    def test_failed_unit_diagnostics_are_bounded_and_nonfatal(self) -> None:
-        with mock.patch.object(
-            runner,
-            "run_bounded_command",
-            side_effect=[1, runner.RunnerError("bounded fixture failure")],
-        ) as bounded:
-            runner.report_recipe_unit_failure("kandelo-homebrew-build-123")
-
-        self.assertEqual(bounded.call_count, 2)
-        limits = [
-            call.kwargs["max_output_bytes"] for call in bounded.call_args_list
-        ]
-        self.assertEqual(
-            sum(limits), runner.MAX_RECIPE_FAILURE_DIAGNOSTIC_BYTES
-        )
         self.assertTrue(
-            any(
-                argument == "--property=ExecMainStatus"
-                for argument in bounded.call_args_list[0].args[0]
+            raised.exception.diagnostic_tail.endswith(b"output-cap-tail")
+        )
+        converted = runner.recipe_execution_error_from_command(raised.exception)
+        self.assertTrue(converted.diagnostic.endswith("output-cap-tail"))
+        self.assertTrue(
+            runner.runner_error_reply(converted)["diagnostic"].endswith(
+                "output-cap-tail"
             )
         )
-        self.assertIn(
-            "kandelo-homebrew-build-123.service",
-            bounded.call_args_list[1].args[0],
+
+    def test_command_tail_captures_stderr_from_the_exact_pipe(self) -> None:
+        status, tail = runner.run_bounded_command(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import os; "
+                    "os.write(1, b'stdout-marker\\n'); "
+                    "os.write(2, b'stderr-marker\\n')"
+                ),
+            ],
+            timeout_seconds=5,
+            max_output_bytes=1_024,
+            max_tail_bytes=1_024,
         )
+        self.assertEqual(status, 0)
+        self.assertIn(b"stdout-marker", tail)
+        self.assertIn(b"stderr-marker", tail)
+
+    def test_command_tail_capture_drains_but_retains_only_its_bound(self) -> None:
+        status, tail = runner.run_bounded_command(
+            [sys.executable, "-c", "print('prefix' + ('x' * 256) + 'suffix')"],
+            timeout_seconds=5,
+            max_output_bytes=8_192,
+            max_tail_bytes=128,
+        )
+        self.assertEqual(status, 0)
+        self.assertEqual(len(tail), 128)
+        self.assertNotIn(b"prefix", tail)
+        self.assertTrue(tail.rstrip().endswith(b"suffix"))
+
+    def test_diagnostic_tail_rejects_impossible_or_unbounded_limits(self) -> None:
+        for max_tail_bytes in (-1, 129):
+            with self.subTest(max_tail_bytes=max_tail_bytes), self.assertRaisesRegex(
+                runner.RunnerError, "tail has an invalid byte limit"
+            ):
+                runner.run_bounded_command(
+                    [sys.executable, "-c", "print('must not run')"],
+                    timeout_seconds=5,
+                    max_output_bytes=128,
+                    max_tail_bytes=max_tail_bytes,
+                )
+
+    def test_failure_diagnostics_do_not_query_any_unit_journal(self) -> None:
+        source = RUNNER_PATH.read_text()
+        self.assertNotIn("journalctl", source)
+        self.assertNotIn("capture_recipe_unit_failure", source)
+        self.assertIn('"--pipe"', source)
+        self.assertIn("max_tail_bytes=MAX_RECIPE_FAILURE_DIAGNOSTIC_BYTES", source)
+
+    def test_recipe_diagnostic_tail_is_safe_text_and_byte_bounded(self) -> None:
+        diagnostic = runner.sanitize_recipe_diagnostic(
+            b"discard-me\n::error::not-a-command\x1b[31m"
+            + ("é" * 5_000).encode()
+            + b"\n\x1b[31mcompiler\tfailed\x00"
+        )
+        self.assertTrue(runner.safe_text(diagnostic))
+        self.assertLessEqual(
+            len(diagnostic.encode("utf-8")),
+            runner.MAX_REPLY_DIAGNOSTIC_BYTES,
+        )
+        self.assertNotIn("\n", diagnostic)
+        self.assertNotIn("\x1b", diagnostic)
+        self.assertNotIn("discard-me", diagnostic)
+        self.assertTrue(diagnostic.endswith("?[31mcompiler failed?"))
+
+    def test_error_reply_bounds_and_prints_only_valid_recipe_diagnostics(self) -> None:
+        ordinary = runner.runner_error_reply(
+            runner.RunnerError("ordinary validation failure")
+        )
+        self.assertEqual(
+            ordinary,
+            {
+                "message": "ordinary validation failure",
+                "schema": 1,
+                "status": "error",
+            },
+        )
+        self.assertEqual(
+            runner.parse_runner_reply(runner.compact_json(ordinary)), ordinary
+        )
+        for message in ("a" * 4_096, "é" * 2_048):
+            with self.subTest(message_kind=message[:1]):
+                bounded = runner.runner_error_reply(runner.RunnerError(message))
+                encoded = bounded["message"].encode("utf-8")
+                self.assertEqual(len(encoded), runner.MAX_REPLY_MESSAGE_BYTES)
+                self.assertTrue(runner.safe_text(bounded["message"]))
+
+        recipe = runner.runner_error_reply(
+            runner.RecipeExecutionError(
+                "tap recipe exited with status 1", "::error::cc failed"
+            )
+        )
+        self.assertEqual(recipe["diagnostic"], "::error::cc failed")
+        payload = runner.compact_json(recipe)
+        self.assertLessEqual(len(payload), runner.MAX_MESSAGE_BYTES)
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(sys, "stderr", stderr),
+            self.assertRaisesRegex(
+                runner.RunnerError, "tap recipe exited with status 1"
+            ),
+        ):
+            runner.accept_runner_reply(payload)
+        self.assertEqual(
+            stderr.getvalue(),
+            "homebrew-tap-recipe-runner: recipe diagnostics: ::error::cc failed\n",
+        )
+
+        unsafe = runner.runner_error_reply(
+            runner.RecipeExecutionError(
+                "tap recipe exited with status 1", "safe\n::error::unsafe"
+            )
+        )
+        self.assertNotIn("diagnostic", unsafe)
+        oversized = runner.runner_error_reply(
+            runner.RecipeExecutionError(
+                "tap recipe exited with status 1",
+                "x" * (runner.MAX_REPLY_DIAGNOSTIC_BYTES + 1),
+            )
+        )
+        self.assertNotIn("diagnostic", oversized)
+
+    def test_reply_parser_rejects_controls_and_success_diagnostics(self) -> None:
+        for document in (
+            {
+                "diagnostic": "line\ninjection",
+                "message": "failed",
+                "schema": 1,
+                "status": "error",
+            },
+            {
+                "diagnostic": "not allowed on success",
+                "message": "sealed",
+                "schema": 1,
+                "status": "ok",
+            },
+        ):
+            with self.subTest(document=document), self.assertRaisesRegex(
+                runner.RunnerError, "invalid reply"
+            ):
+                runner.parse_runner_reply(runner.compact_json(document))
 
 
 @unittest.skipUnless(
