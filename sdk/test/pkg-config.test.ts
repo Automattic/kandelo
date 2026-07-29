@@ -17,6 +17,22 @@ describe('buildPkgConfigEnv', () => {
     expect(env.PKG_CONFIG_PATH).toBe(cachePath);
   });
 
+  it('keeps exact-main dependency metadata only inside the target-cache namespace', () => {
+    const oldRunnerPath =
+      '/home/runner/work/_temp/exact-main-package-cache.abc/libs/icu/lib/pkgconfig';
+    const targetRunnerPath =
+      '/home/runner/work/_temp/kandelo/exact-main-package-cache.abc/libs/icu/lib/pkgconfig';
+
+    expect(
+      buildPkgConfigEnv({ PKG_CONFIG_PATH: oldRunnerPath }, SYSROOT)
+        .PKG_CONFIG_PATH,
+    ).toBe('');
+    expect(
+      buildPkgConfigEnv({ PKG_CONFIG_PATH: targetRunnerPath }, SYSROOT)
+        .PKG_CONFIG_PATH,
+    ).toBe(targetRunnerPath);
+  });
+
   it('defaults PKG_CONFIG_PATH to empty string when caller does not set it', () => {
     const env = buildPkgConfigEnv({}, SYSROOT);
     expect(env.PKG_CONFIG_PATH).toBe('');
