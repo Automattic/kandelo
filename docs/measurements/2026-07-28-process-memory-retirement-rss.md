@@ -194,21 +194,90 @@ checks. They deliberately answer different questions:
    allocation authority. It does not claim that a JavaScript engine collected
    physical backing by a deadline.
 2. A weekly and manually dispatchable workflow runs engine-local
-   physical telemetry. On each browser and runner it records two
-   48-child retirement trials and a matched control containing 16
-   deliberately live Kandelo processes. Each process touches 8 MiB.
-   The control must first show a strong memory slope and growth,
-   proving that the sampler can see process backing in that run.
+   physical telemetry. On each browser and runner it records four retirement
+   trials and four deliberately-live controls. Both kinds use 1 MiB and 32 MiB
+   children twice in low/high/high/low order. Their positions are symmetric
+   across the complete eight-trial sequence. The classifier preserves the
+   early low/high and late high/low estimates as two independent ABBA
+   replicates. It does not average one leaking replicate behind a descent in
+   the other.
 
-The scheduled workflow reports a regression only when both production trials
-grow like the sensitive live-process control without a meaningful descent.
-It reports a pass only when every trial both separates from the
-control and stays below an absolute 2 MiB-per-child late slope and
-64 MiB late growth. The absolute limits prevent a smaller unbounded
-leak from passing merely because a deliberately live process is
-larger. A descending but newly rising trace, one disagreeing trial,
-an insensitive control, or an exceeded absolute limit is
-inconclusive rather than a false pass.
+Each retirement trial reaps four warm-up children and then 96 measured
+children. Each control holds one warm-up child and four measured children
+live. The smaller control is not expected to make an absolute memory level
+portable. Both high-minus-low live-control replicates must independently
+expose at least 8 MiB of physical signal per child at warm-up and sustained
+churn before the run may say anything positive about retirement.
+
+One unmeasured context first initializes the browser realm, module graph,
+Kandelo kernel, and worker machinery. Every measured trial then records
+explicit samples before context creation, after kernel initialization, after
+warm-up, after each workload wave, after kernel destruction, and around
+200 ms, 1 s, and 3 s after context closure. Classification uses the stabilized
+last close sample while retaining all three values in the artifact.
+
+During active churn, each retirement replicate must independently stay at or
+below both 4 MiB per child and 15% of its paired live signal. The first
+four-child warm-up remains an advisory because an engine may not have
+scheduled collection yet; the later 96-child window must show separation.
+Each of the four retirement trials, rather than their median, must also stay
+below a 0.5 MiB-per-child late slope and 32 MiB of late growth. This prevents
+one size-independent leak from being averaged behind three flat or descending
+trials.
+
+Kernel-destroy and context-close contrasts use absolute bytes, without
+dividing by all 100 retirement children. Each replicate must stay below both
+4 MiB and 15% of one paired live child's measured backing. This catches, for
+example, four permanently retained warm-up generations that the old
+per-100-child denominator could hide. The deliberately-live controls must
+lose the same size signal after their kernel and context are destroyed.
+
+A strong size-proportional residual after context closure is a regression when
+both matched replicates agree and their live controls cleared. One leaking
+replicate, a signed descent disagreement, an exceeded per-trial trend, or a
+control-retained signal is inconclusive rather than a false pass. A later
+workload-health error cannot erase a physical regression already diagnosed
+from the captured samples; it is appended to that regression instead. The raw
+artifact also stores the pre-health `physicalVerdict` separately from the
+final verdict.
+
+Fixed size-independent cache or just-in-time compiler level changes cannot be
+found through a size contrast alone. Across the eight warmed contexts, the
+classifier therefore gates the median stabilized close residual at the
+smaller of 4 MiB and 15% of one live child's signal, and the upper quartile at
+the smaller of 8 MiB and 30%. It also limits the Theil-Sen pre-context slope
+to 0.5 MiB per context and the difference between the first and last
+two-context means to 32 MiB. A consistent residue plus baseline accumulation
+is a regression; one exceeded or noisy dimension is inconclusive.
+
+Each trace carries a key made from the engine version, exact Playwright engine
+revision, Playwright package version, and runner image. Automated rolling
+median and median-absolute-deviation history is deferred; compare only traces
+with the same key, and treat a revision change as a new baseline.
+
+### Pre-hardening smoke calibration — 2026-07-29
+
+The first eight-trial harness was smoke-tested on the same Apple Silicon host
+and Playwright 1.61.0 engines named above. The kernel and host runtime came
+from candidate `2f44cda0f`; the harness itself was an uncommitted working
+tree. These aggregate numbers predate the independent-replicate, stabilized
+close, absolute terminal, and fixed-realm gates documented above. They explain
+why the size contrast was selected, but they are not validation evidence for
+the hardened classifier.
+
+| Engine | Mean live size signal per child | Mean retired active signal | Mean destroy signal | Mean close signal | Old median late slope | Old classifier |
+|---|---:|---:|---:|---:|---:|---|
+| Chromium 149.0.7827.55 | 30.927 MiB | 2.666 MiB | 0 | 0 | +0.189 | pass |
+| Firefox 151.0 | 27.056 MiB | 0.048 MiB | 0 | 0 | -0.713 | pass |
+| WebKit 26.5 | 0.006 MiB | 0 | 0 | 0 | -0.003 | inconclusive |
+
+The complete macOS commands were correctly inconclusive. Chromium and Firefox
+could not prove Linux-style RSS-plus-swap accounting. WebKit's visible root
+tree excluded its launchd-owned XPC helpers, so even deliberately-live 32 MiB
+children produced no measurable signal. Linux CI remains the required
+three-engine evidence because its launch nonce and exact-install-root scan can
+attribute reparented helpers and `/proc` can account for swap. The smoke run
+does not replace that workflow and does not establish a collection deadline.
 
 On Linux, every sample includes both resident set size (RSS) and the
 `Swap` value from `/proc/<pid>/smaps_rollup`. The classifier uses
@@ -252,73 +321,41 @@ Playwright versions, runner metadata, workload parameters,
 diagnostics, and server logs. The reporter also rejects a trace whose
 recorded commit does not equal the workflow's checked-out commit.
 
-Ordinary unrelated pull requests run only the deterministic
-three-engine ownership gate. A pull request that changes
-process-memory ownership, retirement fences, collection-pressure
-policy, Playwright, or browser-engine dependencies must manually
-dispatch the physical workflow for its exact head. All three engine
-traces must pass before merge, and moving the branch invalidates the
-earlier trace. This limits noisy physical runs to changes that can
-affect the contract without leaving those changes to the next weekly
-run. Browser dependency bumps use this explicit gate instead of a
-path-only automatic trigger because the same lockfiles also carry many
-unrelated JavaScript updates, and the evidence must name the PR's exact
-head rather than a synthetic merge commit.
+Every pull request starts a cheap scope job. A tested path matcher
+requires physical telemetry when a change touches process-memory
+ownership, retirement fences, collection pressure, browser worker and
+graphics aliases, the telemetry harness, or the root/browser/host
+dependency manifests and locks. Broad shared paths can cause extra
+runs, but a new closure can retain `WebAssembly.Memory` without using
+any known keyword. A future browser-side owner must therefore be added
+to this matcher. Node-only ownership paths keep their deterministic
+Node tests unless they also touch browser/shared ownership. Scheduled
+and manually dispatched runs bypass path scope and always measure.
+The always-on scope job runs the matcher/gate control tests first.
+No-match status is distinct from a matcher error; the latter fails
+scope and the aggregate gate rather than skipping the matrix.
 
-This is currently documented maintainer policy; repository automation
-does not mechanically dispatch or enforce the exact-head run.
+Both jobs explicitly check out
+`github.event.pull_request.head.sha` for a pull request, rather than
+GitHub's synthetic merge ref. Scheduled and manually dispatched runs
+use `github.sha`. The reporter compares the trace's Git commit with
+that same expected SHA. A branch update starts another exact-head run.
+Concurrency is keyed per pull request or ref, so an unrelated pull
+request cannot evict another pull request's pending sentinel. Runs for
+one pull request remain non-cancelling; if more than one newer run is
+queued, GitHub may discard an obsolete pending run while preserving the
+active run and newest head.
 
-### Planned exact-head enforcement
-
-Land the telemetry workflow before enforcing it. GitHub cannot
-`workflow_dispatch` a new workflow until that workflow exists on the
-default branch, so making this first telemetry change require its own
-dispatch would create a bootstrap deadlock.
-
-A focused follow-up should:
-
-1. Add a `physical_memory_telemetry_required` change-scope output for
-   browser/shared process-memory owners, retirement fences,
-   collection pressure, this harness, and actual Playwright engine
-   version changes in `apps/browser-demos/package-lock.json`.
-2. Make `prepare-merge` use trusted base-branch code to select the
-   latest `workflow_dispatch` run for the exact pull-request head.
-   It must reject a missing run or a newer failure rather than letting
-   an older pass hide it.
-3. Require that run to succeed and retain non-expired Chromium,
-   Firefox, and WebKit trace artifacts. The workflow itself already
-   rejects a trace whose commit differs from `GITHUB_SHA`.
-4. Test wrong-head, scheduled-only, active, failed, missing-artifact,
-   expired-artifact, and exact-success cases.
-
-Explicit paths are intentionally preferable to hunk-keyword
-classification: a new closure can retain `WebAssembly.Memory` without
-using an existing keyword. Broad shared host files may cause some
-extra runs. A future new process-memory owner must be added to the
-classifier. Node-only ownership paths should keep their deterministic
-Node tests unless the same change also touches browser/shared
-ownership.
-
-The initial static path set should include
-`host/src/process-memory.ts`,
-`host/src/process-memory-creator-gate.ts`,
-`host/src/process-generation-detach.ts`,
-`host/src/kernel-realm-destroy.ts`,
-`host/src/worker-quiescence.ts`,
-`host/src/deferred-worker-handle.ts`, the shared/browser kernel worker
-entry, protocol, and host files, `host/src/dri/registry.ts`,
-`host/src/webgl/submit-queue.ts`, and this workflow, sampler, and churn
-fixture, including its focused Vite configuration. Playwright
-classification should compare the parsed
-`@playwright/test`, `playwright`, and `playwright-core` lock entries
-between base and head; unrelated lockfile churn should not trigger it.
-
-This follow-up is expected to take roughly half to one working day,
-including its first real three-engine dispatch. Dispatching a pull
-request branch trusts that exact head's workflow definition after
-review, like ordinary pull-request CI. A default-branch dispatcher
-that checks out a `target_sha` and emits a trusted attestation would
-be stronger but is a materially larger follow-up.
+All three engine traces must pass before a relevant change may claim
+physical reclamation evidence. Preparation and measurement jobs are
+skipped for an unrelated pull request. One always-present aggregate
+gate reports "not applicable" in that case and otherwise requires
+successful preparation plus the complete matrix. That stable gate is
+the check suitable for branch protection. Manually dispatch the
+workflow if a relevant owner falls outside the matcher, then add that
+owner. A trusted default-branch dispatcher that checks out a requested
+SHA and emits an attestation would be stronger against unreviewed
+workflow changes, but is not the current design.
 
 A dedicated cgroup-v2 survival sentinel would be stronger on Linux: put the
 whole browser launch in one cgroup, record `memory.current`, `memory.peak`, and
@@ -336,12 +373,12 @@ can be reevaluated without weakening the matched-control test.
 
 This design can detect a future leak of process generations without
 comparing Firefox's absolute RSS with Chromium or WebKit. No finite
-noisy run can rule out an arbitrarily small leak; the absolute limits
-state the smallest persistent late trend this workflow treats as
-acceptable. The workflow still cannot promise a collection deadline
-or prove that every retained byte belongs to one Wasm backing. An
-inconclusive result requires repetition or investigation; it is not
-positive reclamation evidence.
+noisy run can rule out an arbitrarily small leak; the per-child
+size-contrast and late-trend limits state the smallest persistent
+effect this workflow treats as acceptable. The workflow still cannot
+promise a collection deadline or prove that every retained byte
+belongs to one Wasm backing. An inconclusive result requires
+repetition or investigation; it is not positive reclamation evidence.
 
 ### What each persistent check proves
 

@@ -1,6 +1,7 @@
 name: Process memory retirement telemetry
 
 on:
+  pull_request:
   schedule:
     - cron: "23 7 * * 2"
   workflow_dispatch:
@@ -9,16 +10,96 @@ permissions:
   contents: read
 
 concurrency:
-  group: process-memory-retirement-telemetry
+  group: >-
+    process-memory-retirement-telemetry-${{
+      github.event.pull_request.number || github.ref
+    }}
   cancel-in-progress: false
 
 jobs:
+  # WHY: the expensive matrix compares retired and deliberately-live
+  # low/high trials on one engine and runner. It is a differential sentinel,
+  # not an absolute RSS ceiling, so unrelated pull requests need only this
+  # cheap applicability decision and the aggregate gate below.
+  scope:
+    name: Decide whether physical memory telemetry applies
+    runs-on: ubuntu-latest
+    outputs:
+      required: ${{ steps.scope.outputs.required }}
+      reason: ${{ steps.scope.outputs.reason }}
+      target_sha: ${{ steps.scope.outputs.target_sha }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Validate scope and aggregate-gate controls
+        run: bash .github/scripts/test-process-memory-telemetry-control.sh
+
+      - name: Classify the exact-head change
+        id: scope
+        shell: bash
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          TARGET_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          actual_sha="$(git rev-parse HEAD)"
+          if [ "$actual_sha" != "$TARGET_SHA" ]; then
+            echo "::error::scope checkout $actual_sha != $TARGET_SHA"
+            exit 1
+          fi
+          echo "target_sha=$actual_sha" >> "$GITHUB_OUTPUT"
+
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "required=true" >> "$GITHUB_OUTPUT"
+            echo "reason=scheduled or manually dispatched run" \
+              >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ -z "$BASE_SHA" ]; then
+            echo "::error::pull request event did not provide a base SHA"
+            exit 1
+          fi
+          if ! git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null; then
+            git fetch origin "$BASE_SHA" --no-tags
+          fi
+          changed_files="$(git diff --name-only "$BASE_SHA...HEAD")"
+          if [ -z "$changed_files" ]; then
+            echo "required=true" >> "$GITHUB_OUTPUT"
+            echo "reason=empty diff; measuring as a fail-safe" \
+              >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          matches="$(
+            printf '%s\n' "$changed_files" |
+              bash .github/scripts/process-memory-telemetry-scope.sh
+          )"
+          if [ -n "$matches" ]; then
+            {
+              echo "required=true"
+              echo "reason=browser process-memory ownership inputs changed"
+            } >> "$GITHUB_OUTPUT"
+            printf 'Physical-memory telemetry inputs:\n%s\n' "$matches"
+          else
+            {
+              echo "required=false"
+              echo "reason=no browser process-memory ownership inputs changed"
+            } >> "$GITHUB_OUTPUT"
+          fi
+
   prepare:
     name: Build exact memory-test inputs
+    needs: scope
+    if: needs.scope.outputs.required == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.scope.outputs.target_sha }}
       - uses: ./.github/actions/setup-nix
 
       - name: Materialize the pinned musl source
@@ -49,8 +130,9 @@ jobs:
           retention-days: 7
 
   measure:
-    name: ${{ matrix.engine }} matched physical-memory trend
-    needs: prepare
+    name: ${{ matrix.engine }} counterbalanced memory sentinel
+    needs: [scope, prepare]
+    if: needs.scope.outputs.required == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
@@ -59,6 +141,8 @@ jobs:
         engine: [chromium, firefox, webkit]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.scope.outputs.target_sha }}
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "22"
@@ -87,7 +171,7 @@ jobs:
           name: process-memory-telemetry-inputs
           path: process-memory-telemetry-inputs
 
-      - name: Measure retired and deliberately live process memory
+      - name: Measure low/high retired and live process memory
         id: measure
         continue-on-error: true
         shell: bash
@@ -115,10 +199,11 @@ jobs:
           if-no-files-found: error
           retention-days: 90
 
-      - name: Report matched-trend verdict
+      - name: Report engine-local size-contrast verdict
         if: always()
         shell: bash
         env:
+          EXPECTED_SHA: ${{ needs.scope.outputs.target_sha }}
           MEASURE_OUTCOME: ${{ steps.measure.outcome }}
         run: |
           result="process-memory-telemetry-results/${{ matrix.engine }}.json"
@@ -129,15 +214,20 @@ jobs:
           status="$(jq -r '.verdict.status' "$result")"
           reason="$(jq -r '.verdict.reason' "$result")"
           measured_commit="$(jq -r '.commit' "$result")"
+          baseline_key="$(jq -r '.longitudinalBaselineKey' "$result")"
           {
             echo "### ${{ matrix.engine }} process memory"
             echo
             echo "- Verdict: \`$status\`"
             echo "- Reason: $reason"
+            echo "- Longitudinal baseline: \`$baseline_key\`"
             echo "- Raw trace: \`process-memory-rss-${{ matrix.engine }}\`"
+            jq -r \
+              '.verdict.advisories[]? | "- Advisory: " + .' \
+              "$result"
           } >> "$GITHUB_STEP_SUMMARY"
-          if [ "$measured_commit" != "$GITHUB_SHA" ]; then
-            echo "::error::trace commit $measured_commit != $GITHUB_SHA"
+          if [ "$measured_commit" != "$EXPECTED_SHA" ]; then
+            echo "::error::trace commit $measured_commit != $EXPECTED_SHA"
             exit 1
           fi
           case "$status" in
@@ -162,3 +252,24 @@ jobs:
               exit 1
               ;;
           esac
+
+  gate:
+    name: Process memory retirement telemetry gate
+    needs: [scope, prepare, measure]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Require applicable engine results
+        env:
+          MEASURE_RESULT: ${{ needs.measure.result }}
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          SCOPE_REASON: ${{ needs.scope.outputs.reason }}
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          TELEMETRY_REQUIRED: ${{ needs.scope.outputs.required }}
+        run: |
+          echo "Scope: $SCOPE_REASON"
+          bash .github/scripts/process-memory-telemetry-gate.sh

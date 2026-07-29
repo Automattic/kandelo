@@ -26,9 +26,13 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 
 import {
+  applyProcessMemoryRssHealthErrors,
   classifyProcessMemoryRss,
+  PROCESS_MEMORY_POST_CONTEXT_CLOSE_OFFSETS_MS,
+  type ProcessMemoryRssPhase,
   type ProcessMemoryRssSample,
-  type ProcessMemoryRssVerdict,
+  type ProcessMemoryRssTrial,
+  type ProcessMemoryRssTrialKind,
   type ProcessRssEntry,
 } from "../process-memory-rss-telemetry";
 import {
@@ -56,13 +60,14 @@ const memoryFsModulePath = resolve(
   "host/src/vfs/memory-fs.ts",
 );
 const MIB = 1024 * 1024;
-const PRODUCTION_TRIALS = 2;
 const PRODUCTION_WARMUP_CHILDREN = 4;
 const PRODUCTION_WAVE_CHILDREN = 8;
-const PRODUCTION_WAVES = 6;
-const CONTROL_WAVE_CHILDREN = 4;
+const PRODUCTION_WAVES = 12;
+const CONTROL_WARMUP_CHILDREN = 1;
+const CONTROL_WAVE_CHILDREN = 1;
 const CONTROL_WAVES = 4;
-const CHILD_MIB = 8;
+const LOW_CHILD_MIB = 1;
+const HIGH_CHILD_MIB = 32;
 const SAMPLE_DELAY_MS = 200;
 const LAUNCH_NONCE_KEY = "KANDELO_MEMORY_TELEMETRY_NONCE";
 const VITE_ERROR_MARKERS = [
@@ -93,6 +98,22 @@ interface BrowserRunResult {
   readonly runtimeErrors: readonly string[];
   readonly samplingIssues: readonly string[];
 }
+
+interface TrialPlan {
+  readonly kind: ProcessMemoryRssTrialKind;
+  readonly childMiB: number;
+}
+
+const TRIAL_PLAN: readonly TrialPlan[] = [
+  { kind: "retired", childMiB: LOW_CHILD_MIB },
+  { kind: "live-control", childMiB: LOW_CHILD_MIB },
+  { kind: "retired", childMiB: HIGH_CHILD_MIB },
+  { kind: "live-control", childMiB: HIGH_CHILD_MIB },
+  { kind: "live-control", childMiB: HIGH_CHILD_MIB },
+  { kind: "retired", childMiB: HIGH_CHILD_MIB },
+  { kind: "live-control", childMiB: LOW_CHILD_MIB },
+  { kind: "retired", childMiB: LOW_CHILD_MIB },
+];
 
 interface ProcessSamplingContext {
   readonly engine: EngineName;
@@ -591,6 +612,57 @@ function recordRuntimeErrors(page: Page): string[] {
   return errors;
 }
 
+async function appendProcessMemorySample(
+  samples: ProcessMemoryRssSample[],
+  samplingIssues: Set<string>,
+  samplingContext: ProcessSamplingContext,
+  startedAt: number,
+  phase: ProcessMemoryRssPhase,
+  completedChildren: number,
+): Promise<void> {
+  const snapshot = await processTree(samplingContext);
+  if (!snapshot.processAttributionComplete) {
+    samplingIssues.add(snapshot.attributionReason);
+  }
+  if (!snapshot.swapAccountingComplete) {
+    samplingIssues.add(snapshot.swapAccountingReason);
+  }
+  samples.push({
+    phase,
+    completedChildren,
+    elapsedMs: Date.now() - startedAt,
+    rssBytes: snapshot.rssBytes,
+    swapBytes: snapshot.swapBytes,
+    processAttributionComplete: snapshot.processAttributionComplete,
+    swapAccountingComplete: snapshot.swapAccountingComplete,
+    hostSwapDisabled: snapshot.hostSwapDisabled,
+    exactInstallRoots: snapshot.exactInstallRoots,
+    processes: snapshot.processes,
+  });
+}
+
+async function appendPostContextCloseSamples(
+  samples: ProcessMemoryRssSample[],
+  samplingIssues: Set<string>,
+  samplingContext: ProcessSamplingContext,
+  startedAt: number,
+  completedChildren: number,
+): Promise<void> {
+  let previousOffset = 0;
+  for (const offset of PROCESS_MEMORY_POST_CONTEXT_CLOSE_OFFSETS_MS) {
+    await delay(offset - previousOffset);
+    previousOffset = offset;
+    await appendProcessMemorySample(
+      samples,
+      samplingIssues,
+      samplingContext,
+      startedAt,
+      "post-context-close",
+      completedChildren,
+    );
+  }
+}
+
 async function installTsxEvaluationHelper(page: Page): Promise<void> {
   // WHY: this standalone harness is loaded through tsx, whose function-name
   // transform references its private `__name` helper. Playwright serializes
@@ -602,47 +674,114 @@ async function installTsxEvaluationHelper(page: Page): Promise<void> {
   );
 }
 
+async function warmBrowserRealm(
+  browser: Browser,
+  baseUrl: string,
+  kernelBase64: string,
+): Promise<void> {
+  // WHY: the first browser realm pays engine startup, module compilation,
+  // worker, and Kandelo initialization costs that are unrelated to retained
+  // child address spaces. Exercise those paths once before the eight measured
+  // contexts so the within-run baseline trend starts after that cold start.
+  const context = await browser.newContext();
+  try {
+    const page = await context.newPage();
+    await installTsxEvaluationHelper(page);
+    await page.goto(new URL("/trap-signal-test.html", baseUrl).href);
+    await page.evaluate(
+      async ({
+        browserKernelUrl,
+        memoryFsUrl,
+        kernelBytesBase64,
+      }) => {
+        const { BrowserKernel } = await import(
+          /* @vite-ignore */ browserKernelUrl
+        );
+        const { MemoryFileSystem } = await import(
+          /* @vite-ignore */ memoryFsUrl
+        );
+        const binary = atob(kernelBytesBase64);
+        const kernelBytes = new Uint8Array(binary.length);
+        for (let index = 0; index < binary.length; index += 1) {
+          kernelBytes[index] = binary.charCodeAt(index);
+        }
+        const imageOwner = MemoryFileSystem.create(
+          new SharedArrayBuffer(2 * 1024 * 1024),
+        );
+        const kernel = new BrowserKernel({
+          maxWorkers: 1,
+          maxProcessMemoryBytes: 64 * 1024 * 1024,
+        });
+        try {
+          await kernel.initFromImage({
+            kernelWasm: kernelBytes.buffer,
+            vfsImage: await imageOwner.saveImage(),
+          });
+        } finally {
+          await kernel.destroy();
+        }
+      },
+      {
+        browserKernelUrl: new URL(
+          `/@fs/${browserKernelModulePath}`,
+          baseUrl,
+        ).href,
+        memoryFsUrl: new URL(`/@fs/${memoryFsModulePath}`, baseUrl).href,
+        kernelBytesBase64: kernelBase64,
+      },
+    );
+  } finally {
+    await context.close();
+  }
+  await delay(PROCESS_MEMORY_POST_CONTEXT_CLOSE_OFFSETS_MS.at(-1)!);
+}
+
 async function runProductionTrial(
   browser: Browser,
   samplingContext: ProcessSamplingContext,
   baseUrl: string,
   kernelBase64: string,
   programBase64: string,
+  childMiB: number,
 ): Promise<BrowserRunResult> {
-  const context = await browser.newContext();
-  const page = await context.newPage();
-  const runtimeErrors = recordRuntimeErrors(page);
   const samples: ProcessMemoryRssSample[] = [];
   const samplingIssues = new Set<string>();
   const startedAt = Date.now();
+  await appendProcessMemorySample(
+    samples,
+    samplingIssues,
+    samplingContext,
+    startedAt,
+    "pre-context",
+    0,
+  );
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  const runtimeErrors = recordRuntimeErrors(page);
   await installTsxEvaluationHelper(page);
   await page.exposeBinding(
     "__kandeloRecordProcessMemoryRss",
-    async (_source, completedChildren: number) => {
-      const snapshot = await processTree(samplingContext);
-      if (!snapshot.processAttributionComplete) {
-        samplingIssues.add(snapshot.attributionReason);
-      }
-      if (!snapshot.swapAccountingComplete) {
-        samplingIssues.add(snapshot.swapAccountingReason);
-      }
-      samples.push({
-        completedChildren,
-        elapsedMs: Date.now() - startedAt,
-        rssBytes: snapshot.rssBytes,
-        swapBytes: snapshot.swapBytes,
-        processAttributionComplete:
-          snapshot.processAttributionComplete,
-        swapAccountingComplete: snapshot.swapAccountingComplete,
-        hostSwapDisabled: snapshot.hostSwapDisabled,
-        exactInstallRoots: snapshot.exactInstallRoots,
-        processes: snapshot.processes,
-      });
+    async (
+      _source,
+      request: {
+        phase: ProcessMemoryRssPhase;
+        completedChildren: number;
+      },
+    ) => {
+      await appendProcessMemorySample(
+        samples,
+        samplingIssues,
+        samplingContext,
+        startedAt,
+        request.phase,
+        request.completedChildren,
+      );
     },
   );
   await page.goto(new URL("/trap-signal-test.html", baseUrl).href);
+  let result: Omit<BrowserRunResult, "samples" | "runtimeErrors" | "samplingIssues">;
   try {
-    const result = await page.evaluate(
+    result = await page.evaluate(
       async ({
         browserKernelUrl,
         memoryFsUrl,
@@ -759,33 +898,47 @@ async function runProductionTrial(
           vfsImage: await imageOwner.saveImage(),
         });
 
-        try {
-          await runWave(warmupChildren);
+        const record = async (
+          phase:
+            | "initialized"
+            | "post-warmup"
+            | "post-wave"
+            | "post-kernel-destroy",
+          completedChildren: number,
+        ): Promise<void> => {
           await new Promise<void>((resolveSample) =>
             setTimeout(resolveSample, sampleDelayMs)
           );
           await (
             globalThis as typeof globalThis & {
               __kandeloRecordProcessMemoryRss:
-                (completed: number) => Promise<void>;
+                (request: {
+                  phase: string;
+                  completedChildren: number;
+                }) => Promise<void>;
             }
-          ).__kandeloRecordProcessMemoryRss(0);
+          ).__kandeloRecordProcessMemoryRss({
+            phase,
+            completedChildren,
+          });
+        };
+
+        try {
+          await record("initialized", 0);
+          await runWave(warmupChildren);
+          await record("post-warmup", 0);
           for (let wave = 1; wave <= waveCount; wave += 1) {
             await runWave(waveChildren);
-            await new Promise<void>((resolveSample) =>
-              setTimeout(resolveSample, sampleDelayMs)
-            );
-            await (
-              globalThis as typeof globalThis & {
-                __kandeloRecordProcessMemoryRss:
-                  (completed: number) => Promise<void>;
-              }
-            ).__kandeloRecordProcessMemoryRss(wave * waveChildren);
+            await record("post-wave", wave * waveChildren);
           }
-          return { stdout, stderr, diagnostics };
         } finally {
           await kernel.destroy();
         }
+        await record(
+          "post-kernel-destroy",
+          waveChildren * waveCount,
+        );
+        return { stdout, stderr, diagnostics };
       },
       {
         browserKernelUrl: new URL(
@@ -798,19 +951,26 @@ async function runProductionTrial(
         warmupChildren: PRODUCTION_WARMUP_CHILDREN,
         waveChildren: PRODUCTION_WAVE_CHILDREN,
         waveCount: PRODUCTION_WAVES,
-        childMiB: CHILD_MIB,
+        childMiB,
         sampleDelayMs: SAMPLE_DELAY_MS,
       },
     );
-    return {
-      samples,
-      ...result,
-      runtimeErrors,
-      samplingIssues: [...samplingIssues],
-    };
   } finally {
     await context.close();
   }
+  await appendPostContextCloseSamples(
+    samples,
+    samplingIssues,
+    samplingContext,
+    startedAt,
+    PRODUCTION_WAVE_CHILDREN * PRODUCTION_WAVES,
+  );
+  return {
+    samples,
+    ...result,
+    runtimeErrors,
+    samplingIssues: [...samplingIssues],
+  };
 }
 
 async function runLiveControl(
@@ -819,46 +979,52 @@ async function runLiveControl(
   baseUrl: string,
   kernelBase64: string,
   programBase64: string,
+  childMiB: number,
 ): Promise<BrowserRunResult> {
-  const context = await browser.newContext();
-  const page = await context.newPage();
-  const runtimeErrors = recordRuntimeErrors(page);
   const samples: ProcessMemoryRssSample[] = [];
   const samplingIssues = new Set<string>();
   const startedAt = Date.now();
+  await appendProcessMemorySample(
+    samples,
+    samplingIssues,
+    samplingContext,
+    startedAt,
+    "pre-context",
+    0,
+  );
+  const context = await browser.newContext();
+  const page = await context.newPage();
+  const runtimeErrors = recordRuntimeErrors(page);
   await installTsxEvaluationHelper(page);
   await page.exposeBinding(
     "__kandeloRecordProcessMemoryRss",
-    async (_source, completedChildren: number) => {
-      const snapshot = await processTree(samplingContext);
-      if (!snapshot.processAttributionComplete) {
-        samplingIssues.add(snapshot.attributionReason);
-      }
-      if (!snapshot.swapAccountingComplete) {
-        samplingIssues.add(snapshot.swapAccountingReason);
-      }
-      samples.push({
-        completedChildren,
-        elapsedMs: Date.now() - startedAt,
-        rssBytes: snapshot.rssBytes,
-        swapBytes: snapshot.swapBytes,
-        processAttributionComplete:
-          snapshot.processAttributionComplete,
-        swapAccountingComplete: snapshot.swapAccountingComplete,
-        hostSwapDisabled: snapshot.hostSwapDisabled,
-        exactInstallRoots: snapshot.exactInstallRoots,
-        processes: snapshot.processes,
-      });
+    async (
+      _source,
+      request: {
+        phase: ProcessMemoryRssPhase;
+        completedChildren: number;
+      },
+    ) => {
+      await appendProcessMemorySample(
+        samples,
+        samplingIssues,
+        samplingContext,
+        startedAt,
+        request.phase,
+        request.completedChildren,
+      );
     },
   );
   await page.goto(new URL("/trap-signal-test.html", baseUrl).href);
+  let result: Omit<BrowserRunResult, "samples" | "runtimeErrors" | "samplingIssues">;
   try {
-    const result = await page.evaluate(
+    result = await page.evaluate(
       async ({
         browserKernelUrl,
         memoryFsUrl,
         kernelBytesBase64,
         programBytesBase64,
+        warmupChildren,
         waveChildren,
         waveCount,
         childMiB,
@@ -888,7 +1054,7 @@ async function runLiveControl(
           message: string;
         }> = [];
         const kernel = new BrowserKernel({
-          maxWorkers: waveChildren * waveCount + 2,
+          maxWorkers: warmupChildren + waveChildren * waveCount + 2,
           maxProcessMemoryBytes: 768 * 1024 * 1024,
           onStdout: (data: Uint8Array) => {
             stdout += decoder.decode(data);
@@ -935,27 +1101,53 @@ async function runLiveControl(
           );
         };
 
-        try {
+        const record = async (
+          phase:
+            | "initialized"
+            | "post-warmup"
+            | "post-wave"
+            | "post-kernel-destroy",
+          completedChildren: number,
+        ): Promise<void> => {
+          await new Promise<void>((resolveSample) =>
+            setTimeout(resolveSample, sampleDelayMs)
+          );
           await (
             globalThis as typeof globalThis & {
               __kandeloRecordProcessMemoryRss:
-                (completed: number) => Promise<void>;
+                (request: {
+                  phase: string;
+                  completedChildren: number;
+                }) => Promise<void>;
             }
-          ).__kandeloRecordProcessMemoryRss(0);
-          let started = 0;
+          ).__kandeloRecordProcessMemoryRss({
+            phase,
+            completedChildren,
+          });
+        };
+        const spawnLiveChildren = async (count: number): Promise<void> => {
+          for (let child = 0; child < count; child += 1) {
+            const process = await kernel.spawnFromVfs(
+              "/bin/process-memory-reclamation-churn",
+              [
+                "process-memory-reclamation-churn",
+                "hold",
+                String(childMiB),
+              ],
+            );
+            void process.exit.catch(() => undefined);
+          }
+        };
+
+        try {
+          await record("initialized", 0);
+          let started = warmupChildren;
+          await spawnLiveChildren(warmupChildren);
+          await waitForReadyCount(started);
+          await record("post-warmup", 0);
           for (let wave = 1; wave <= waveCount; wave += 1) {
-            for (let child = 0; child < waveChildren; child += 1) {
-              const process = await kernel.spawnFromVfs(
-                "/bin/process-memory-reclamation-churn",
-                [
-                  "process-memory-reclamation-churn",
-                  "hold",
-                  String(childMiB),
-                ],
-              );
-              void process.exit.catch(() => undefined);
-              started += 1;
-            }
+            await spawnLiveChildren(waveChildren);
+            started += waveChildren;
             await waitForReadyCount(started);
             const liveProcesses = (await kernel.enumProcs()).filter(
               (process: { pid: number }) => process.pid !== 1,
@@ -966,20 +1158,16 @@ async function runLiveControl(
                 "remained live",
               );
             }
-            await new Promise<void>((resolveSample) =>
-              setTimeout(resolveSample, sampleDelayMs)
-            );
-            await (
-              globalThis as typeof globalThis & {
-                __kandeloRecordProcessMemoryRss:
-                  (completed: number) => Promise<void>;
-              }
-            ).__kandeloRecordProcessMemoryRss(started);
+            await record("post-wave", wave * waveChildren);
           }
-          return { stdout, stderr, diagnostics };
         } finally {
           await kernel.destroy();
         }
+        await record(
+          "post-kernel-destroy",
+          waveChildren * waveCount,
+        );
+        return { stdout, stderr, diagnostics };
       },
       {
         browserKernelUrl: new URL(
@@ -989,21 +1177,29 @@ async function runLiveControl(
         memoryFsUrl: new URL(`/@fs/${memoryFsModulePath}`, baseUrl).href,
         kernelBytesBase64: kernelBase64,
         programBytesBase64: programBase64,
+        warmupChildren: CONTROL_WARMUP_CHILDREN,
         waveChildren: CONTROL_WAVE_CHILDREN,
         waveCount: CONTROL_WAVES,
-        childMiB: CHILD_MIB,
+        childMiB,
         sampleDelayMs: SAMPLE_DELAY_MS,
       },
     );
-    return {
-      samples,
-      ...result,
-      runtimeErrors,
-      samplingIssues: [...samplingIssues],
-    };
   } finally {
     await context.close();
   }
+  await appendPostContextCloseSamples(
+    samples,
+    samplingIssues,
+    samplingContext,
+    startedAt,
+    CONTROL_WAVE_CHILDREN * CONTROL_WAVES,
+  );
+  return {
+    samples,
+    ...result,
+    runtimeErrors,
+    samplingIssues: [...samplingIssues],
+  };
 }
 
 function outputLines(output: string): string[] {
@@ -1016,6 +1212,7 @@ function outputLines(output: string): string[] {
 function validateCommonRun(
   label: string,
   run: BrowserRunResult,
+  expectedPhases: readonly ProcessMemoryRssPhase[],
   expectedCompletedChildren: readonly number[],
 ): string[] {
   const errors: string[] = [];
@@ -1037,6 +1234,13 @@ function validateCommonRun(
   const actualCompletedChildren = run.samples.map(
     (sample) => sample.completedChildren,
   );
+  const actualPhases = run.samples.map((sample) => sample.phase);
+  if (JSON.stringify(actualPhases) !== JSON.stringify(expectedPhases)) {
+    errors.push(
+      `${label} sampled phases ${JSON.stringify(actualPhases)} instead of ` +
+        JSON.stringify(expectedPhases),
+    );
+  }
   if (
     JSON.stringify(actualCompletedChildren)
     !== JSON.stringify(expectedCompletedChildren)
@@ -1057,29 +1261,50 @@ function validateCommonRun(
 
 function validateProductionTrial(
   run: BrowserRunResult,
-  trialIndex: number,
+  sequenceIndex: number,
+  childMiB: number,
 ): string[] {
-  const label = `production trial ${trialIndex + 1}`;
+  const label = `retirement trial ${sequenceIndex + 1}`;
+  const expectedPhases: ProcessMemoryRssPhase[] = [
+    "pre-context",
+    "initialized",
+    "post-warmup",
+    ...Array.from(
+      { length: PRODUCTION_WAVES },
+      () => "post-wave" as const,
+    ),
+    "post-kernel-destroy",
+    ...PROCESS_MEMORY_POST_CONTEXT_CLOSE_OFFSETS_MS.map(
+      () => "post-context-close" as const,
+    ),
+  ];
   const expectedCompletedChildren = [
+    0,
+    0,
     0,
     ...Array.from(
       { length: PRODUCTION_WAVES },
       (_unused, index) => (index + 1) * PRODUCTION_WAVE_CHILDREN,
     ),
+    PRODUCTION_WAVES * PRODUCTION_WAVE_CHILDREN,
+    ...PROCESS_MEMORY_POST_CONTEXT_CLOSE_OFFSETS_MS.map(
+      () => PRODUCTION_WAVES * PRODUCTION_WAVE_CHILDREN,
+    ),
   ];
   const errors = validateCommonRun(
     label,
     run,
+    expectedPhases,
     expectedCompletedChildren,
   );
   const expectedLines = [
     `PROCESS_MEMORY_RECLAMATION_PASS ` +
-      `count=${PRODUCTION_WARMUP_CHILDREN} child_mib=${CHILD_MIB}`,
+      `count=${PRODUCTION_WARMUP_CHILDREN} child_mib=${childMiB}`,
     ...Array.from(
       { length: PRODUCTION_WAVES },
       () => (
         `PROCESS_MEMORY_RECLAMATION_PASS ` +
-        `count=${PRODUCTION_WAVE_CHILDREN} child_mib=${CHILD_MIB}`
+        `count=${PRODUCTION_WAVE_CHILDREN} child_mib=${childMiB}`
       ),
     ),
   ];
@@ -1091,17 +1316,44 @@ function validateProductionTrial(
   return errors;
 }
 
-function validateControl(run: BrowserRunResult): string[] {
-  const expectedCompletedChildren = Array.from(
-    { length: CONTROL_WAVES + 1 },
-    (_unused, index) => index * CONTROL_WAVE_CHILDREN,
-  );
+function validateControl(
+  run: BrowserRunResult,
+  sequenceIndex: number,
+): string[] {
+  const expectedPhases: ProcessMemoryRssPhase[] = [
+    "pre-context",
+    "initialized",
+    "post-warmup",
+    ...Array.from(
+      { length: CONTROL_WAVES },
+      () => "post-wave" as const,
+    ),
+    "post-kernel-destroy",
+    ...PROCESS_MEMORY_POST_CONTEXT_CLOSE_OFFSETS_MS.map(
+      () => "post-context-close" as const,
+    ),
+  ];
+  const expectedCompletedChildren = [
+    0,
+    0,
+    0,
+    ...Array.from(
+      { length: CONTROL_WAVES },
+      (_unused, index) => (index + 1) * CONTROL_WAVE_CHILDREN,
+    ),
+    CONTROL_WAVES * CONTROL_WAVE_CHILDREN,
+    ...PROCESS_MEMORY_POST_CONTEXT_CLOSE_OFFSETS_MS.map(
+      () => CONTROL_WAVES * CONTROL_WAVE_CHILDREN,
+    ),
+  ];
   const errors = validateCommonRun(
-    "live-process control",
+    `live-process control ${sequenceIndex + 1}`,
     run,
+    expectedPhases,
     expectedCompletedChildren,
   );
-  const expectedReadyCount = CONTROL_WAVES * CONTROL_WAVE_CHILDREN;
+  const expectedReadyCount =
+    CONTROL_WARMUP_CHILDREN + CONTROL_WAVES * CONTROL_WAVE_CHILDREN;
   const lines = outputLines(run.stdout);
   if (
     lines.length !== expectedReadyCount
@@ -1113,18 +1365,6 @@ function validateControl(run: BrowserRunResult): string[] {
     );
   }
   return errors;
-}
-
-function inconclusiveVerdict(
-  verdict: ProcessMemoryRssVerdict,
-  reason: string,
-): ProcessMemoryRssVerdict {
-  return {
-    status: "inconclusive",
-    reason,
-    production: verdict.production,
-    control: verdict.control,
-  };
 }
 
 async function gitHead(): Promise<string> {
@@ -1244,31 +1484,56 @@ async function main(): Promise<void> {
       readFile(options.kernelPath).then((bytes) => bytes.toString("base64")),
       readFile(options.programPath).then((bytes) => bytes.toString("base64")),
     ]);
-    const production: BrowserRunResult[] = [];
-    for (let trial = 0; trial < PRODUCTION_TRIALS; trial += 1) {
-      production.push(await runProductionTrial(
-        browser,
-        samplingContext,
-        baseUrl,
-        kernelBase64,
-        programBase64,
-      ));
+    await warmBrowserRealm(browser, baseUrl, kernelBase64);
+    const runs: Array<{
+      plan: TrialPlan;
+      result: BrowserRunResult;
+      sequenceIndex: number;
+    }> = [];
+    for (
+      let sequenceIndex = 0;
+      sequenceIndex < TRIAL_PLAN.length;
+      sequenceIndex += 1
+    ) {
+      const plan = TRIAL_PLAN[sequenceIndex]!;
+      const result = plan.kind === "retired"
+        ? await runProductionTrial(
+            browser,
+            samplingContext,
+            baseUrl,
+            kernelBase64,
+            programBase64,
+            plan.childMiB,
+          )
+        : await runLiveControl(
+            browser,
+            samplingContext,
+            baseUrl,
+            kernelBase64,
+            programBase64,
+            plan.childMiB,
+          );
+      runs.push({ plan, result, sequenceIndex });
     }
-    const control = await runLiveControl(
-      browser,
-      samplingContext,
-      baseUrl,
-      kernelBase64,
-      programBase64,
-    );
-    let verdict = classifyProcessMemoryRss(
-      production.map((trial) => trial.samples),
-      control.samples,
-    );
-    const allSamples = [
-      ...production.flatMap((trial) => trial.samples),
-      ...control.samples,
-    ];
+    const trials: ProcessMemoryRssTrial[] = runs.map((run) => {
+      const retired = run.plan.kind === "retired";
+      return {
+        kind: run.plan.kind,
+        sequenceIndex: run.sequenceIndex,
+        childMiB: run.plan.childMiB,
+        warmupChildren:
+          retired
+            ? PRODUCTION_WARMUP_CHILDREN
+            : CONTROL_WARMUP_CHILDREN,
+        waveChildren:
+          retired ? PRODUCTION_WAVE_CHILDREN : CONTROL_WAVE_CHILDREN,
+        waves: retired ? PRODUCTION_WAVES : CONTROL_WAVES,
+        samples: run.result.samples,
+      };
+    });
+    const physicalVerdict = classifyProcessMemoryRss(trials);
+    let verdict = physicalVerdict;
+    const allSamples = runs.flatMap((run) => run.result.samples);
     const minimumAttributedProcessCount = Math.min(
       ...allSamples.map((sample) => sample.processes.length),
     );
@@ -1325,8 +1590,15 @@ async function main(): Promise<void> {
     };
 
     const healthErrors = [
-      ...production.flatMap(validateProductionTrial),
-      ...validateControl(control),
+      ...runs.flatMap((run) => {
+        return run.plan.kind === "retired"
+          ? validateProductionTrial(
+              run.result,
+              run.sequenceIndex,
+              run.plan.childMiB,
+            )
+          : validateControl(run.result, run.sequenceIndex);
+      }),
       ...viteProcessErrors,
     ];
     if (vite.exitCode !== null || vite.signalCode !== null) {
@@ -1358,9 +1630,9 @@ async function main(): Promise<void> {
       );
     }
     if (healthErrors.length > 0) {
-      verdict = inconclusiveVerdict(
+      verdict = applyProcessMemoryRssHealthErrors(
         verdict,
-        `workload validation failed: ${healthErrors[0]}`,
+        healthErrors,
       );
     }
     const playwrightPackage = JSON.parse(
@@ -1370,7 +1642,7 @@ async function main(): Promise<void> {
       ),
     ) as { version: string };
     const output = {
-      schema: 2,
+      schema: 3,
       measuredAt: new Date().toISOString(),
       commit: await gitHead(),
       runner: {
@@ -1394,25 +1666,43 @@ async function main(): Promise<void> {
       browser: {
         engine: options.engine,
         version: browser.version(),
+        playwrightRevision:
+          samplingContext.playwrightInstallation?.revision ?? null,
         executablePath: type.executablePath(),
         playwrightVersion: playwrightPackage.version,
         rootPid,
       },
+      longitudinalBaselineKey: [
+        options.engine,
+        browser.version(),
+        `revision-${
+          samplingContext.playwrightInstallation?.revision ?? "unknown"
+        }`,
+        `playwright-${playwrightPackage.version}`,
+        process.env.ImageOS ?? `${platform()}-${release()}-${arch()}`,
+      ].join("/"),
       attribution,
       swapAccounting,
       workload: {
-        productionTrials: PRODUCTION_TRIALS,
+        trialPlan: TRIAL_PLAN,
         productionWarmupChildren: PRODUCTION_WARMUP_CHILDREN,
         productionWaveChildren: PRODUCTION_WAVE_CHILDREN,
         productionWaves: PRODUCTION_WAVES,
+        controlWarmupChildren: CONTROL_WARMUP_CHILDREN,
         controlWaveChildren: CONTROL_WAVE_CHILDREN,
         controlWaves: CONTROL_WAVES,
-        childMiB: CHILD_MIB,
+        lowChildMiB: LOW_CHILD_MIB,
+        highChildMiB: HIGH_CHILD_MIB,
         sampleDelayMs: SAMPLE_DELAY_MS,
+        postContextCloseSampleOffsetsMs:
+          PROCESS_MEMORY_POST_CONTEXT_CLOSE_OFFSETS_MS,
       },
-      production,
-      control,
+      trials: trials.map((trial, index) => ({
+        ...trial,
+        ...runs[index]!.result,
+      })),
       healthErrors,
+      physicalVerdict,
       verdict,
       viteLogs,
     };

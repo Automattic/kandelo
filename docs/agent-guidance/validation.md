@@ -72,20 +72,39 @@ Physical resident set size (RSS) is not an absolute cross-engine contract.
 For process-memory retirement work, pair the deterministic cross-browser
 ownership test above with the scheduled
 `process-memory-retirement-telemetry.yml` matched-control trace. The scheduled
-workflow compares two production trials with deliberately live Kandelo
-processes on the same engine and runner. An inconclusive trace is evidence to
-repeat or investigate, not evidence that reclamation passed.
+workflow compares counterbalanced 1 MiB and 32 MiB retirement trials with
+deliberately live Kandelo processes at both sizes on the same engine and
+runner. After one unmeasured warm-up realm, it preserves two independent ABBA
+size contrasts. Each live contrast must expose at least 8 MiB per child. Every
+live replicate must meet that sensitivity floor at warm-up and sustained
+churn. Every retirement contrast must remain below 4 MiB per child and 15% of
+its paired live signal during churn. Every individual retirement trial must
+also remain below the late slope and growth bounds.
 
-Any pull request that changes process-memory ownership, a retirement
-fence, or the collection-pressure policy must manually dispatch that
-telemetry workflow for the pull request's exact head before merge. The
-same rule applies to Playwright or browser-engine dependency bumps
-because an engine policy change can alter collection without changing
-Kandelo source. All three engine jobs must report `pass`, and their
-90-day artifacts must record the exact head commit. If the branch
-moves, rerun the workflow. Ordinary unrelated pull requests run only
-the deterministic three-engine ownership gate; noisy physical
-telemetry is not a universal per-PR gate.
+The workflow samples before a browser context, after kernel initialization,
+after warm-up and workload waves, after kernel destruction, and around 200 ms,
+1 s, and 3 s after context closure. It uses the stabilized final close sample.
+Terminal size contrasts are absolute byte residuals, not values divided by
+all retired children. Across contexts, median and upper-quartile close
+residuals plus Theil-Sen and first/last baseline trends prevent a fixed
+per-realm leak from canceling out of the size contrast. An inconclusive trace
+is evidence to repeat or investigate, not evidence that reclamation passed.
 
-This exact-head dispatch is currently a maintainer policy, not a
-mechanically enforced branch rule.
+The workflow starts a cheap scope job on every pull request. Its reviewed path
+matcher covers process-memory owners, retirement fences, browser worker and
+graphics aliases, the telemetry harness, and Playwright dependency manifests.
+Applicable changes run the three-engine matrix; unrelated changes skip it.
+Scheduled and manually dispatched runs always measure.
+The scope job first runs the checked-in matcher and aggregate-gate control
+tests. Empty matches are allowed, but matcher errors fail the scope job and
+therefore the aggregate gate instead of skipping telemetry.
+
+Every job explicitly checks out the pull request's exact head rather than
+GitHub's synthetic merge ref. All three applicable engine jobs must report
+`pass`, their 90-day artifacts must record that head, and a moved branch starts
+a new run. An always-present aggregate gate succeeds as "not applicable" for
+an unrelated change and otherwise requires preparation plus the complete
+matrix. That stable aggregate job is the check suitable for branch protection.
+Manually dispatch the workflow when a relevant ownership change falls outside
+the matcher, and add every new long-lived browser process-memory owner to it.
+The physical sentinel is differential evidence, not an absolute RSS ceiling.
