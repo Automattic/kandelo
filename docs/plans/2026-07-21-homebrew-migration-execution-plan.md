@@ -88,6 +88,20 @@ cross-engine evidence is
 pressure remains only a bounded timing hint. This is a host-runtime approval
 boundary, not a Homebrew-only autonomous merge.
 
+Keep process-memory regression coverage in two layers. Relevant pull requests
+must run the deterministic process-lifecycle and ownership budget under
+Chromium, Firefox, and WebKit; that gate must fail when an exited generation
+remains reachable from Kandelo. Scheduled and targeted physical-memory
+sentinels must compare production with a deliberate retained-memory control
+inside the same engine and run. Record allocation-size scaling, batch growth,
+post-pressure descent, browser and operating-system versions, and raw traces.
+Do not compare absolute RSS across engines or promise a deterministic garbage
+collection deadline. A physical sentinel is credible only when its retained
+control proves that the run could have detected proportional backing-store
+retention. Until those sentinels are stable enough for every pull request,
+keep them scheduled and require recent green evidence for changes to process
+memory ownership or worker retirement.
+
 Throughput rules for this checkpoint:
 
 - dispatch independent Formulae concurrently up to the publisher's bounded
