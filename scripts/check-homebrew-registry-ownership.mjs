@@ -570,6 +570,9 @@ export function formatReport(ledger) {
   const bridgeFormulae = objectEntries(ledger.tap_formulae)
     .filter(([, formula]) => formula.recipe_state === "registry_bridge")
     .map(([name]) => name);
+  const tapNativeFormulae = objectEntries(ledger.tap_formulae)
+    .filter(([, formula]) => formula.recipe_state === "tap_native")
+    .map(([name]) => name);
   const evidence = {};
   for (const [name, formula] of objectEntries(ledger.tap_formulae)) {
     for (const [arch, value] of objectEntries(formula.architecture_evidence)) {
@@ -595,8 +598,9 @@ export function formatReport(ledger) {
   }
   lines.push(
     "",
-    "## Explicit migration gaps",
+    "## Formula and migration status",
     "",
+    `- Registry-independent Formulae (${tapNativeFormulae.length}): ${tapNativeFormulae.join(", ")}`,
     `- Still unowned (${byRole.still_unowned.length}): ${byRole.still_unowned.join(", ")}`,
     `- Registry-bridge Formulae (${bridgeFormulae.length}): ${bridgeFormulae.join(", ")}`,
   );

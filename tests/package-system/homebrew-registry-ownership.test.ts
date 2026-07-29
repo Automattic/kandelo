@@ -207,6 +207,7 @@ describe("Homebrew registry ownership ledger", () => {
 
     expect(report).toContain("Current registry entries: 80.");
     expect(report).toContain("Tap Formulae: 66.");
+    expect(report).toContain("Registry-independent Formulae (56):");
     expect(report).toContain("Still unowned (10):");
     expect(report).toContain("Registry-bridge Formulae (10):");
     expect(report).toContain("Formula architecture success (70):");
