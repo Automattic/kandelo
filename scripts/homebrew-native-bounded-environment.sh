@@ -64,7 +64,14 @@ homebrew_native_bounded_run() {
       "NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt"
     )
   fi
-  if [ "$mode" = api-oracle ]; then
+  if [ "$mode" = api-client ]; then
+    # WHY: native publisher bottles are built for the fixed Linuxbrew prefix,
+    # while each publisher realm uses an exact-length disposable prefix.
+    # Match the production launcher so Homebrew pours and relocates the complete
+    # native dependency closure instead of silently building fixed-prefix
+    # dependencies from source.
+    clean_env+=("HOMEBREW_RELOCATE_BUILD_PREFIX=1")
+  elif [ "$mode" = api-oracle ]; then
     # The oracle reads the already verified cache directly. Dependency
     # resolution and installation deliberately omit this switch so exact cf5
     # continues to use the signed API rather than a Git checkout.

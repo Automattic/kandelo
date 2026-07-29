@@ -1238,6 +1238,11 @@ CMake or WABT; they are not Kandelo package dependencies, target bottle
 contents, or VFS inputs. Kandelo bottles are still built from the upstream
 sources declared by the tap Formulae.
 
+The exact Linux compatibility proof uses the same bounded native-client
+setting. Its API oracle and conservative-lock generator do not receive the
+relocation switch, and adversarial tests prove that inherited caller values
+cannot cross either boundary.
+
 The recipe supervisor starts before native Homebrew runs and reserves one exact
 manifest path below its root-owned build directory. That path must still be
 absent when the supervisor loads its static direct-tool plan. After the native

@@ -584,16 +584,19 @@ case "$expected_api_mode" in
     [ -z "${HOMEBREW_NO_INSTALL_FROM_API+x}" ] || exit 91
     [ -z "${HOMEBREW_FORCE_LIBC_FORMULA+x}" ] || exit 89
     [ -z "${HOMEBREW_FORCE_COMPILER_FORMULA+x}" ] || exit 88
+    [ "${HOMEBREW_RELOCATE_BUILD_PREFIX:-}" = 1 ] || exit 87
     ;;
   compatibility-lock)
     [ -z "${HOMEBREW_NO_INSTALL_FROM_API+x}" ] || exit 91
     [ "${HOMEBREW_FORCE_LIBC_FORMULA:-}" = 1 ] || exit 89
     [ "${HOMEBREW_FORCE_COMPILER_FORMULA:-}" = 1 ] || exit 88
+    [ -z "${HOMEBREW_RELOCATE_BUILD_PREFIX+x}" ] || exit 87
     ;;
   oracle)
     [ "${HOMEBREW_NO_INSTALL_FROM_API:-}" = 1 ] || exit 91
     [ -z "${HOMEBREW_FORCE_LIBC_FORMULA+x}" ] || exit 89
     [ -z "${HOMEBREW_FORCE_COMPILER_FORMULA+x}" ] || exit 88
+    [ -z "${HOMEBREW_RELOCATE_BUILD_PREFIX+x}" ] || exit 87
     ;;
   *) exit 90 ;;
 esac
@@ -622,6 +625,7 @@ env \
   HOMEBREW_GIT_PATH=/bin/false \
   HOMEBREW_FORCE_LIBC_FORMULA=caller-poison \
   HOMEBREW_FORCE_COMPILER_FORMULA=caller-poison \
+  HOMEBREW_RELOCATE_BUILD_PREFIX=caller-poison \
   RUBYOPT=-rdoes-not-exist \
   BUNDLE_GEMFILE=/does/not/exist \
   KANDELO_NATIVE_ENV_POISON=present \
@@ -644,6 +648,7 @@ grep -Fx "home=$BOUNDED_STATE/home" "$BOUNDED_RECORD" >/dev/null &&
 env \
   HOMEBREW_FORCE_LIBC_FORMULA=caller-poison \
   HOMEBREW_FORCE_COMPILER_FORMULA=caller-poison \
+  HOMEBREW_RELOCATE_BUILD_PREFIX=caller-poison \
   bash -c '
     set -euo pipefail
     . "$1"
@@ -663,6 +668,7 @@ env \
   HOMEBREW_GIT_PATH=/bin/false \
   HOMEBREW_FORCE_LIBC_FORMULA=caller-poison \
   HOMEBREW_FORCE_COMPILER_FORMULA=caller-poison \
+  HOMEBREW_RELOCATE_BUILD_PREFIX=caller-poison \
   RUBYOPT=-rdoes-not-exist \
   BUNDLE_GEMFILE=/does/not/exist \
   KANDELO_NATIVE_ENV_POISON=present \

@@ -3304,6 +3304,7 @@ def check_publisher(workflow)
     "api-client|api-compatibility-lock|api-oracle",
     '"HOMEBREW_FORCE_LIBC_FORMULA=1"',
     '"HOMEBREW_FORCE_COMPILER_FORMULA=1"',
+    '"HOMEBREW_RELOCATE_BUILD_PREFIX=1"',
   ].each do |fragment|
     check(native_bounded_environment.include?(fragment),
           "native Homebrew bounded environment lacks #{fragment}")

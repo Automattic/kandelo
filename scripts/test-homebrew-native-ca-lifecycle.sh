@@ -107,9 +107,11 @@ homebrew_native_bounded_run \
 # runtime closure includes both openssl@3 and ca-certificates. Installing the
 # admitted root proves Homebrew executes the signed internal `run` step that
 # creates cert.pem; merely parsing that record would not prove compatibility.
-homebrew_native_bounded_run \
-  "$NATIVE_BREW" "$CACHE" "$STATE" api-client \
-  install --force-bottle --as-dependency --formula homebrew/core/ruby
+if ! homebrew_native_bounded_run \
+    "$NATIVE_BREW" "$CACHE" "$STATE" api-client \
+    install --force-bottle --as-dependency --formula homebrew/core/ruby; then
+  fail "admitted native bottle installation failed"
+fi
 
 homebrew_native_bounded_run \
   "$NATIVE_BREW" "$CACHE" "$STATE" api-oracle \
