@@ -401,9 +401,78 @@ case "${1:-}" in
     ln -s "$2" "$prefix/Cellar/$2/1.0/bin/$2-link"
     ln -s "../Cellar/$2/1.0" "$prefix/opt/$2"
     ;;
-  create-native-link)
-    [ "$#" -eq 3 ]
-    ln -s "$2" "$prefix/$3"
+  install-native-launch-closure-fixture)
+    [ "$#" -eq 2 ]
+    native_compiler="$2"
+    [ -x "$native_compiler" ]
+    native_system_loader=""
+    for loader_candidate in \
+      /lib64/ld-linux-x86-64.so.2 \
+      /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 \
+      /lib/ld-linux-aarch64.so.1 \
+      /lib/aarch64-linux-gnu/ld-linux-aarch64.so.1; do
+      if [ -f "$loader_candidate" ]; then
+        native_system_loader="$loader_candidate"
+        break
+      fi
+    done
+    [ -n "$native_system_loader" ] || {
+      echo "could not identify the native compiler's ELF interpreter" >&2
+      exit 1
+    }
+    native_loader_alias="$prefix/lib/ld.so"
+    native_interpreter_source="${HOMEBREW_TEMP:?}/native-interpreter.c"
+    native_interpreter="$prefix/Cellar/perl/1.0/bin/perl"
+    mkdir -p "${native_loader_alias%/*}"
+    ln -s "$native_system_loader" "$native_loader_alias"
+    cat >"$native_interpreter_source" <<'NATIVE_INTERPRETER_EOF'
+#include <stdio.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+  if (argc < 2) {
+    return 64;
+  }
+  argv[0] = "/usr/bin/bash";
+  execv(argv[0], argv);
+  perror("execv");
+  return 127;
+}
+NATIVE_INTERPRETER_EOF
+    "$native_compiler" "$native_interpreter_source" \
+      -Wl,--dynamic-linker="$native_loader_alias" \
+      -o "$native_interpreter"
+    rm -f "$native_interpreter_source"
+    automake_support_keg="$prefix/Cellar/automake/1.0/share/automake-1.18/Automake"
+    automake_support_prefix="$prefix/share/automake-1.18/Automake"
+    mkdir -p "$automake_support_keg" "$automake_support_prefix"
+    printf 'closed native Automake support\n' \
+      >"$automake_support_keg/Config.pm"
+    ln -s \
+      ../../../Cellar/automake/1.0/share/automake-1.18/Automake/Config.pm \
+      "$automake_support_prefix/Config.pm"
+    for native_child_tool in automake bison flex python; do
+      native_child_script="$prefix/Cellar/$native_child_tool/1.0/bin/$native_child_tool"
+      {
+        printf '#!%s\n' "$prefix/opt/perl/bin/perl"
+        if [ "$native_child_tool" = "automake" ]; then
+          printf '[ "$(/usr/bin/cat %q)" = %q ]\n' \
+            "$prefix/share/automake-1.18/Automake/Config.pm" \
+            "closed native Automake support"
+        fi
+        printf 'echo %q\n' "closed native child tool: $native_child_tool"
+      } >"$native_child_script"
+      chmod 0755 "$native_child_script"
+    done
+    ;;
+  create-native-runtime-link)
+    [ "$#" -eq 4 ]
+    case "$2" in
+      lib|share) ;;
+      *) exit 64 ;;
+    esac
+    mkdir -p "$prefix/$2"
+    ln -s "$3" "$prefix/$2/$4"
     ;;
   create-native-fifo)
     [ "$#" -eq 2 ]
@@ -413,6 +482,17 @@ case "${1:-}" in
     [ "$#" -eq 2 ]
     rm -f "$prefix/$2"
     ;;
+  remove-native-runtime-entry)
+    [ "$#" -eq 3 ]
+    case "$2" in
+      lib|share) ;;
+      *) exit 64 ;;
+    esac
+    rm -f "$prefix/$2/$3"
+    # WHY: these negative canaries create fixed runtime roots before the real
+    # fixture. Remove only an empty directory so test ownership cannot leak.
+    rmdir "$prefix/$2"
+    ;;
   remove-native-version)
     [ "$#" -eq 3 ]
     rm -rf "$prefix/Cellar/$2/$3"
@@ -420,6 +500,10 @@ case "${1:-}" in
   create-native-relative-link)
     [ "$#" -eq 4 ]
     ln -s "$3" "$prefix/Cellar/$2/1.0/bin/$4"
+    ;;
+  remove-native-relative-link)
+    [ "$#" -eq 3 ]
+    rm -f "$prefix/Cellar/$2/1.0/bin/$3"
     ;;
   assert-native-target-boundary)
     [ "$#" -eq 12 ]
@@ -1151,22 +1235,45 @@ GITHUB_ACTIONS=false homebrew_patched_launcher_run_native create-native-relative
   abslink /tmp/untrusted-native-tool absolute-escape
 [ -d "$native_prefix/Cellar/cmake/1.0" ] || fail "native Formula was not installed"
 [ ! -e "$prefix/Cellar/cmake" ] || fail "native Formula polluted the target Cellar"
+if homebrew_patched_launcher_seal_native_prefix >/dev/null 2>&1; then
+  fail "native projection audit accepted escaping keg links"
+fi
+GITHUB_ACTIONS=false homebrew_patched_launcher_run_native \
+  remove-native-relative-link badlink relative-escape
+GITHUB_ACTIONS=false homebrew_patched_launcher_run_native \
+  remove-native-relative-link abslink absolute-escape
 homebrew_patched_launcher_seal_native_prefix
 if GITHUB_ACTIONS=false homebrew_patched_launcher_run_native --prefix >/dev/null 2>&1; then
   fail "sealed native Homebrew unexpectedly accepted another command"
 fi
 
+# The non-privileged developer fixture remains caller-owned after the launcher
+# seal flag, which lets this test simulate post-seal tampering. The bridge must
+# re-audit the source component-by-component: a /tmp hop that currently resolves
+# back into Ninja is not authority the copied proxy may retain.
+native_mutable_hop="$TMPDIR/native-mutable-hop"
+ln -s "$native_prefix/Cellar/ninja/1.0/bin/ninja" "$native_mutable_hop"
+ln -s "$native_mutable_hop" \
+  "$native_prefix/Cellar/badlink/1.0/bin/relative-escape"
+[ "$(readlink -f "$native_prefix/Cellar/badlink/1.0/bin/relative-escape")" = \
+  "$native_prefix/Cellar/ninja/1.0/bin/ninja" ] ||
+  fail "native mutable-hop fixture did not re-enter the sealed keg"
 if homebrew_patched_launcher_bridge_native_formula badlink >/dev/null 2>&1; then
-  fail "native Formula proxy accepted a relative symlink outside the native prefix"
+  fail "native Formula proxy accepted a mutable link hop that re-entered its closure"
 fi
+rm -f "$native_prefix/Cellar/badlink/1.0/bin/relative-escape" \
+  "$native_mutable_hop"
 [ ! -e "$prefix/Cellar/badlink" ] && [ ! -L "$prefix/Cellar/badlink" ] && \
   [ ! -e "$prefix/opt/badlink" ] && [ ! -L "$prefix/opt/badlink" ] ||
   fail "rejected native Formula proxy changed target state"
 [ "${#HOMEBREW_PATCHED_NATIVE_BRIDGE_NAMES[@]}" -eq 0 ] ||
   fail "rejected native Formula proxy left lifecycle state"
+ln -s /tmp/untrusted-native-tool \
+  "$native_prefix/Cellar/abslink/1.0/bin/absolute-escape"
 if homebrew_patched_launcher_bridge_native_formula abslink >/dev/null 2>&1; then
   fail "native Formula proxy accepted an unsafe absolute symlink"
 fi
+rm -f "$native_prefix/Cellar/abslink/1.0/bin/absolute-escape"
 [ ! -e "$prefix/Cellar/abslink" ] && [ ! -L "$prefix/Cellar/abslink" ] && \
   [ ! -e "$prefix/opt/abslink" ] && [ ! -L "$prefix/opt/abslink" ] ||
   fail "rejected absolute native Formula link changed target state"
@@ -1956,6 +2063,23 @@ fi
 [ -r "$WASM_POSIX_DEP_RECIPE_DIR/recipe.json" ]
 [ -r "$WASM_POSIX_GLUE_DIR/abi_constants.h" ]
 [ -r "$WASM_POSIX_SYSROOT/lib/libc.a" ]
+for native_child_tool in automake bison flex python; do
+  [ "$("$native_child_tool")" = \
+    "closed native child tool: $native_child_tool" ]
+done
+# Exercise the actual split LLVM symlinkJoin in the empty service root. The
+# exact linker path is the SDK contract; allowing Clang to search for `ld`
+# would hide a missing lld closure behind whatever happens to be on PATH.
+printf 'int fixture(void) { return 0; }\n' >"$WASM_POSIX_DEP_WORK_DIR/link.c"
+"$WASM_POSIX_LLVM_DIR/clang" \
+  --target=wasm32-unknown-unknown \
+  -nostdlib \
+  -Wl,--no-entry \
+  -fuse-ld="$WASM_POSIX_LLVM_DIR/wasm-ld" \
+  "$WASM_POSIX_DEP_WORK_DIR/link.c" \
+  -o "$WASM_POSIX_DEP_WORK_DIR/link.wasm"
+[ "$(/usr/bin/od -An -N4 -tx1 "$WASM_POSIX_DEP_WORK_DIR/link.wasm" |
+  /usr/bin/tr -d ' \n')" = "0061736d" ]
 printf 'closed root projection\n' >"$WASM_POSIX_DEP_OUT_DIR/canary.txt"
 EOF
   } >"$isolated_recipe_script"
@@ -2155,15 +2279,19 @@ EOF
   mkdir -p "${replaceable_xtask%/*}"
   cp "$isolated_xtask" "$replaceable_xtask"
   /usr/bin/sudo -n -- chown "$ISOLATION_BUILD_USER" "${replaceable_xtask%/*}"
+  /usr/bin/sudo -n -- chmod 0555 "${replaceable_xtask%/*}"
   # This negative case must expose the deliberately replaceable inner
-  # directory. The positive production-shaped case below restores the private
-  # runner-home boundary before exercising the read-only source alias.
+  # directory. Its current mode is read-only, but its owner can chmod it and
+  # replace the checker; effective writability alone is not a safe boundary.
+  # The positive production-shaped case below restores the private runner-home
+  # boundary before exercising the read-only source alias.
   chmod 0711 "$isolated_source_parent"
   assert_xtask_rejected "$replaceable_xtask" \
     "build user can replace protected source" \
     "a build-user-replaceable program-index checker"
   chmod 0700 "$isolated_source_parent"
   /usr/bin/sudo -n -- chown "$(id -u):$(id -g)" "${replaceable_xtask%/*}"
+  chmod 0755 "${replaceable_xtask%/*}"
   rm -rf "$isolated_kandelo/target/replaceable"
 
   assert_primary_tap_rejected() {
@@ -2244,10 +2372,21 @@ EOF
   protected_platform_root="$HOMEBREW_PATCHED_PLATFORM_ROOT"
   protected_sysroot_root="$HOMEBREW_PATCHED_SYSROOT_ROOT"
   protected_xtask="$HOMEBREW_PATCHED_PROTECTED_DIR/xtask"
+  protected_native_link_auditor="$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR"
   [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a:%h' "$protected_xtask")" = \
       "0:0:555:1" ] &&
     /usr/bin/sudo -n -- /usr/bin/cmp -s -- "$isolated_xtask" "$protected_xtask" ||
     fail "isolated launcher did not stage one exact root-owned checker inode"
+  [ "$protected_native_link_auditor" = \
+      "$protected_dir/native-link-auditor" ] &&
+    [ "$protected_native_link_auditor" != \
+      "$HOMEBREW_PATCHED_RECIPE_RUNNER" ] &&
+    [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a:%h' \
+      "$protected_native_link_auditor")" = "0:0:555:1" ] &&
+    /usr/bin/sudo -n -- /usr/bin/cmp -s -- \
+      "$isolated_kandelo/scripts/homebrew-tap-recipe-runner.py" \
+      "$protected_native_link_auditor" ||
+    fail "isolated launcher did not stage an independent native link auditor"
   [ "${HOMEBREW_PATCHED_LAUNCHER%/*}" = "$isolated_prefix/bin" ] &&
     [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g' \
       "$HOMEBREW_PATCHED_LAUNCHER")" = "0:0" ] &&
@@ -2468,12 +2607,25 @@ EOF
   [ "$native_pgrep_status" -eq 1 ] ||
     fail "native Formula process check did not prove an empty UID"
 
-  homebrew_patched_launcher_run_native create-native-link \
-    "$isolated_output" unsafe-link
+  # WHY: only Cellar kegs, exact opt aliases, and fixed prefix runtime roots
+  # enter the closed recipe root. A general prefix-root link is unprojected
+  # Homebrew state, so put this escape canary in prefix/lib where it would
+  # become recipe authority.
+  homebrew_patched_launcher_run_native create-native-runtime-link \
+    lib "$isolated_output" unsafe-link
   if homebrew_patched_launcher_seal_native_prefix >/dev/null 2>&1; then
     fail "native Homebrew accepted an escaping symlink"
   fi
-  homebrew_patched_launcher_run_native remove-native-entry unsafe-link
+  homebrew_patched_launcher_run_native \
+    remove-native-runtime-entry lib unsafe-link
+  homebrew_patched_launcher_run_native create-native-runtime-link \
+    share "$isolated_output" unsafe-link
+  if homebrew_patched_launcher_audit_native_projection_links \
+      >/dev/null 2>&1; then
+    fail "native Homebrew pre-seal audit ignored a prefix/share escape"
+  fi
+  homebrew_patched_launcher_run_native \
+    remove-native-runtime-entry share unsafe-link
   homebrew_patched_launcher_run_native create-native-fifo unsafe-fifo
   if homebrew_patched_launcher_seal_native_prefix >/dev/null 2>&1; then
     fail "native Homebrew accepted a special filesystem entry"
@@ -2482,16 +2634,33 @@ EOF
   homebrew_patched_launcher_run_native install-native-fixture cmake
   homebrew_patched_launcher_run_native install-native-fixture ninja
   homebrew_patched_launcher_run_native install-native-fixture openssl@3
+  for native_child_tool in automake bison flex python; do
+    homebrew_patched_launcher_run_native \
+      install-native-fixture "$native_child_tool"
+  done
+  homebrew_patched_launcher_run_native install-native-fixture perl
+  # WHY: isolation transfers the native prefix to the build identity before
+  # any native bottle is installed. Model bottle relocation through that same
+  # identity instead of letting the workflow runner mutate private keg state.
+  homebrew_patched_launcher_run_native \
+    install-native-launch-closure-fixture "${LLVM_BIN:?}/clang"
   # CMake and Ninja are direct tool roots in the static plan. openssl@3 models
-  # a transitive Homebrew dependency that must remain in the sealed execution
-  # closure without becoming a caller-supplied PATH/root authority.
+  # a transitive library. The four child tools and Perl model the recursive
+  # executable closure used by Autotools: the runner, not the request, derives
+  # their PATH roots, while relocated script and ELF interpreter paths require
+  # the exact prefix-level loader alias.
   homebrew_patched_launcher_run_native remove-native-version cmake 0.9
   homebrew_patched_launcher_run_native remove-native-version ninja 0.9
   homebrew_patched_launcher_run_native remove-native-version openssl@3 0.9
+  for native_child_tool in automake bison flex python perl; do
+    homebrew_patched_launcher_run_native \
+      remove-native-version "$native_child_tool" 0.9
+  done
   homebrew_patched_launcher_run_native create-native-relative-link \
     cmake cmake-cross-final cmake-cross
   homebrew_patched_launcher_run_native create-native-relative-link \
     cmake ../../../ninja/1.0/bin/ninja cmake-cross-final
+  homebrew_patched_launcher_audit_native_projection_links
   homebrew_patched_launcher_seal_native_prefix
   [ "$(stat -c '%u:%g:%a' "$isolated_native_prefix")" = "0:0:555" ] ||
     fail "sealed native prefix ownership or mode is unsafe"
@@ -2508,9 +2677,20 @@ EOF
       fail "native executable mode $fixture_mode was not normalized to 0555"
   done
   /usr/bin/sudo -n -- jq -e \
-    --arg cellar "$isolated_native_prefix/Cellar" '
-      .schema == 1 and .cellar == $cellar and
-      [.kegs[].formula] == ["cmake", "ninja", "openssl@3"] and
+    --arg cellar "$isolated_native_prefix/Cellar" \
+    --arg runtime_lib "$isolated_native_prefix/lib" \
+    --arg runtime_share "$isolated_native_prefix/share" '
+      .schema == 2 and .cellar == $cellar and
+      (.runtime_roots | length) == 2 and
+      .runtime_roots[0].root == $runtime_lib and
+      .runtime_roots[1].root == $runtime_share and
+      (.runtime_roots | all(
+        .tree_sha256 | test("^[0-9a-f]{64}$")
+      )) and
+      [.kegs[].formula] == [
+        "automake", "bison", "cmake", "flex", "ninja", "openssl@3",
+        "perl", "python"
+      ] and
       (.kegs | all(
         .root == ($cellar + "/" + .formula + "/1.0")
       ))
@@ -2816,6 +2996,27 @@ EOF
   /usr/bin/sudo -n -- mv -- "$protected_xtask.original" "$protected_xtask"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-no-new-privileges
   homebrew_patched_launcher_verify_isolation
+  /usr/bin/sudo -n -- mv -- \
+    "$protected_native_link_auditor" \
+    "$protected_native_link_auditor.original"
+  /usr/bin/sudo -n -- /usr/bin/install -o root -g root -m 0555 -- \
+    /usr/bin/true "$protected_native_link_auditor"
+  if homebrew_patched_launcher_verify_isolation \
+      >/dev/null 2>"$ISOLATION_ROOT/replaced-native-link-auditor.err"; then
+    fail "isolation verification accepted a replaced native link auditor"
+  fi
+  grep -F "root-owned native link auditor changed after isolation" \
+    "$ISOLATION_ROOT/replaced-native-link-auditor.err" >/dev/null ||
+    fail "isolation verification did not explain a replaced native link auditor"
+  if homebrew_patched_launcher_audit_native_projection_links \
+      >/dev/null 2>&1; then
+    fail "native link audit executed a replaced protected auditor"
+  fi
+  /usr/bin/sudo -n -- rm -f -- "$protected_native_link_auditor"
+  /usr/bin/sudo -n -- mv -- \
+    "$protected_native_link_auditor.original" \
+    "$protected_native_link_auditor"
+  homebrew_patched_launcher_verify_isolation
   homebrew_patched_launcher_teardown "$ISOLATION_BUILD_USER"
   /usr/bin/sudo -n -- chmod 0755 "$target_proxy_rack"
   if homebrew_patched_launcher_verify_isolation >/dev/null 2>&1; then
@@ -2854,6 +3055,9 @@ EOF
     [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK" ] && \
     [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK_STATE" ] && \
     [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK_SHA256" ] && \
+    [ -z "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR" ] && \
+    [ -z "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_STATE" ] && \
+    [ -z "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_SHA256" ] && \
     [ -z "$HOMEBREW_PATCHED_PLATFORM_ROOT" ] && \
     [ -z "$HOMEBREW_PATCHED_PLATFORM_SHA256" ] && \
     [ -z "$HOMEBREW_PATCHED_SYSROOT_ROOT" ] && \
@@ -2865,6 +3069,112 @@ EOF
     [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_DIR" ] && \
     [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_PATH" ] ||
     fail "isolated cleanup left the protected bottle or lifecycle state"
+
+  # Exercise a genuinely recipe-free schema-2 lifecycle after the schema-3
+  # fixture is fully gone. The native auditor must be staged, used, verified,
+  # and retired even though no platform projection, recipe runner, supervisor,
+  # or native-closure handoff exists.
+  schema3_native_base="$ISOLATION_NATIVE_BASE"
+  case "$schema3_native_base" in
+    /tmp/k.*) ;;
+    *) fail "schema-3 native fixture has an unsafe cleanup path" ;;
+  esac
+  /usr/bin/sudo -n -- rm -rf -- "$schema3_native_base"
+  ISOLATION_NATIVE_BASE="$(mktemp -d /tmp/k.XXXXXX)"
+  ISOLATION_NATIVE_BASE="$(cd "$ISOLATION_NATIVE_BASE" && pwd -P)"
+  schema2_native_base="$ISOLATION_NATIVE_BASE"
+  schema2_native_prefix="$(
+    homebrew_patched_launcher_native_prefix_path "$schema2_native_base"
+  )"
+  schema2_native_cache="$schema2_native_base/c"
+  schema2_native_temp="$schema2_native_base/t"
+  schema2_native_config="$schema2_native_base/g"
+  schema2_native_home="$schema2_native_base/h"
+  schema2_prefix="$ISOLATION_ROOT/schema2-prefix"
+  schema2_work="$ISOLATION_ROOT/schema2-work"
+  schema2_cache="$ISOLATION_ROOT/schema2-cache"
+  schema2_temp="$ISOLATION_ROOT/schema2-temp"
+  schema2_output="$ISOLATION_ROOT/schema2-output"
+  schema2_config="$ISOLATION_ROOT/schema2-config"
+  schema2_dependency_plan="$schema2_output/host-dependencies.json"
+  schema2_attestation="$schema2_output/tier2-attestation.json"
+  mkdir -p "$schema2_prefix/bin" "$schema2_work" "$schema2_cache" \
+    "$schema2_temp" "$schema2_output" "$schema2_config/homebrew"
+  chmod 0711 "$schema2_native_base"
+  ln -s "$isolated_repo/bin/brew" "$schema2_prefix/bin/brew"
+  printf 'reviewed-trust\n' >"$schema2_config/homebrew/trust.json"
+  : >"$schema2_config/homebrew/trust.json.lock"
+  chmod 0600 "$schema2_config/homebrew/trust.json" \
+    "$schema2_config/homebrew/trust.json.lock"
+  printf '%s\n' \
+    '{"build":["cmake"],"build_and_test":["cmake"],"formula":"hello","full_name":"kandelo-dev/tap-core/hello","native_requirements":[],"runtime_and_test":[],"schema":4,"tap":"kandelo-dev/tap-core","target_taps":[{"tap_commit":"1111111111111111111111111111111111111111","tap_name":"kandelo-dev/tap-core","tap_repository":"kandelo-dev/homebrew-tap-core"}]}' \
+    >"$schema2_dependency_plan"
+  printf '%s\n' "$active_tier2_attestation_json" >"$schema2_attestation"
+  chmod 0600 "$schema2_dependency_plan" "$schema2_attestation"
+
+  export HOMEBREW_CACHE="$schema2_cache"
+  export HOMEBREW_TEMP="$schema2_temp"
+  export XDG_CONFIG_HOME="$schema2_config"
+  homebrew_patched_launcher_prepare \
+    "$schema2_prefix/bin/brew" "$patch_file" "$schema2_work" \
+    "$publisher_patch_file"
+  homebrew_patched_launcher_seed_bundler_groups bottle formula_test
+  schema2_overlay="$HOMEBREW_PATCHED_OVERLAY"
+  schema2_primary_tap="$schema2_overlay/Library/Taps/kandelo-dev/homebrew-tap-core"
+  mkdir -p "$schema2_primary_tap"
+  printf 'selected primary tap\n' >"$schema2_primary_tap/primary-tap-marker"
+  export HOMEBREW_KANDELO_PRIMARY_TAP_ROOT="$schema2_primary_tap"
+  homebrew_patched_launcher_prepare_native_prefix \
+    "$schema2_native_prefix" "$schema2_native_cache" "$schema2_native_temp" \
+    "$schema2_native_config" "$schema2_native_home"
+  homebrew_patched_launcher_stage_dependency_plan "$schema2_dependency_plan"
+  homebrew_patched_launcher_stage_tier2_attestation "$schema2_attestation"
+  homebrew_patched_launcher_isolate \
+    "$ISOLATION_BUILD_USER" "$schema2_work" "$isolated_kandelo" "$isolated_tap" \
+    "$schema2_output" "$isolated_sysroot_owner" "$isolated_dependency_tap"
+  schema2_protected_dir="$HOMEBREW_PATCHED_PROTECTED_DIR"
+  schema2_native_auditor="$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR"
+  [ -n "$schema2_native_auditor" ] && \
+    [ "$schema2_native_auditor" = \
+      "$schema2_protected_dir/native-link-auditor" ] && \
+    [ -z "$HOMEBREW_PATCHED_PLATFORM_ROOT" ] && \
+    [ -z "$HOMEBREW_PATCHED_SYSROOT_ROOT" ] && \
+    [ -z "$HOMEBREW_PATCHED_RECIPE_RUNNER" ] && \
+    [ -z "$HOMEBREW_PATCHED_RECIPE_RUNNER_STATE" ] && \
+    [ -z "$HOMEBREW_PATCHED_RECIPE_RUNNER_SHA256" ] && \
+    [ -z "$HOMEBREW_PATCHED_RECIPE_RUNNER_CONFIG" ] && \
+    [ -z "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" ] && \
+    [ -z "$HOMEBREW_PATCHED_RECIPE_SEALED_ROOT" ] && \
+    [ -z "$HOMEBREW_PATCHED_RECIPE_SUPERVISOR_UNIT" ] && \
+    [ -z "$HOMEBREW_PATCHED_RECIPE_USER" ] && \
+    [ -z "$HOMEBREW_PATCHED_RECIPE_UID" ] && \
+    [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a:%h' \
+      "$schema2_native_auditor")" = "0:0:555:1" ] &&
+    /usr/bin/sudo -n -- /usr/bin/cmp -s -- \
+      "$isolated_kandelo/scripts/homebrew-tap-recipe-runner.py" \
+      "$schema2_native_auditor" ||
+    fail "schema-2 lifecycle did not stage an independent native link auditor"
+  homebrew_patched_launcher_run_native create-native-runtime-link \
+    lib "$schema2_output" unsafe-link
+  if homebrew_patched_launcher_seal_native_prefix >/dev/null 2>&1; then
+    fail "schema-2 native audit accepted an escaping link"
+  fi
+  homebrew_patched_launcher_run_native \
+    remove-native-runtime-entry lib unsafe-link
+  homebrew_patched_launcher_run_native install-native-fixture cmake
+  homebrew_patched_launcher_audit_native_projection_links
+  homebrew_patched_launcher_seal_native_prefix
+  [ -z "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" ] ||
+    fail "schema-2 native sealing published a recipe-only closure handoff"
+  homebrew_patched_launcher_verify_isolation
+  homebrew_patched_launcher_teardown "$ISOLATION_BUILD_USER"
+  homebrew_patched_launcher_cleanup
+  [ ! -e "$schema2_protected_dir" ] && \
+    [ -z "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR" ] && \
+    [ -z "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_STATE" ] && \
+    [ -z "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_SHA256" ] ||
+    fail "schema-2 cleanup left the protected native link auditor"
+
   /usr/bin/sudo -n -- /usr/sbin/userdel "$ISOLATION_RECIPE_USER"
   ! id "$ISOLATION_RECIPE_USER" >/dev/null 2>&1 ||
     fail "tap recipe identity survived retirement"

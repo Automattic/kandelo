@@ -14,6 +14,9 @@ HOMEBREW_PATCHED_SOURCE_ALIAS_DIR=""
 HOMEBREW_PATCHED_PROTECTED_XTASK=""
 HOMEBREW_PATCHED_PROTECTED_XTASK_STATE=""
 HOMEBREW_PATCHED_PROTECTED_XTASK_SHA256=""
+HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR=""
+HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_STATE=""
+HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_SHA256=""
 HOMEBREW_PATCHED_PLATFORM_ROOT=""
 HOMEBREW_PATCHED_PLATFORM_SHA256=""
 HOMEBREW_PATCHED_SYSROOT_ROOT=""
@@ -112,6 +115,118 @@ homebrew_patched_launcher_verify_protected_xtask() {
     echo "homebrew-patched-launcher: root-owned program-index checker changed after isolation" >&2
     return 1
   fi
+}
+
+homebrew_patched_launcher_verify_native_link_auditor() {
+  if [ -z "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR" ] && \
+     [ -z "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_STATE" ] && \
+     [ -z "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_SHA256" ]; then
+    return 0
+  fi
+  if [ -z "$HOMEBREW_PATCHED_PROTECTED_DIR" ] || \
+     [ "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR" != \
+       "$HOMEBREW_PATCHED_PROTECTED_DIR/native-link-auditor" ] || \
+     [ -z "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_STATE" ] || \
+     [ -z "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_SHA256" ]; then
+    echo "homebrew-patched-launcher: protected native link auditor state is incomplete" >&2
+    return 2
+  fi
+
+  local actual_sha256
+  actual_sha256="$(
+    /usr/bin/sha256sum "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR" \
+      2>/dev/null || true
+  )"
+  actual_sha256="${actual_sha256%% *}"
+  if [ ! -f "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR" ] || \
+     [ -L "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR" ] || \
+     [ "$(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' \
+       "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR" 2>/dev/null || true)" != \
+       "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_STATE" ] || \
+     [ "$actual_sha256" != \
+       "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_SHA256" ]; then
+    echo "homebrew-patched-launcher: root-owned native link auditor changed after isolation" >&2
+    return 1
+  fi
+}
+
+homebrew_patched_launcher_prepare_native_link_auditor() {
+  if [ "$#" -ne 3 ]; then
+    echo "homebrew_patched_launcher_prepare_native_link_auditor: expected KANDELO-ROOT BUILD-USER SUDO" >&2
+    return 2
+  fi
+  local kandelo_root="$1" build_user="$2" sudo_bin="$3"
+  local source="$kandelo_root/scripts/homebrew-tap-recipe-runner.py"
+  local destination source_state source_state_after source_sha source_sha_after
+  local source_state_without_size source_links
+  local auditor_state auditor_sha
+
+  [ -n "$HOMEBREW_PATCHED_PROTECTED_DIR" ] || {
+    echo "homebrew-patched-launcher: protected native link auditor root is unavailable" >&2
+    return 2
+  }
+  destination="$HOMEBREW_PATCHED_PROTECTED_DIR/native-link-auditor"
+  [ -z "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR" ] && \
+    [ -z "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_STATE" ] && \
+    [ -z "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_SHA256" ] && \
+    [ ! -e "$destination" ] && [ ! -L "$destination" ] || {
+    echo "homebrew-patched-launcher: protected native link auditor state is already populated" >&2
+    return 2
+  }
+  [ -f "$source" ] && [ ! -L "$source" ] && \
+    [ "$(/usr/bin/realpath -- "$source" 2>/dev/null || true)" = "$source" ] || {
+    echo "homebrew-patched-launcher: native link auditor source is unavailable" >&2
+    return 2
+  }
+  homebrew_assert_tree_not_replaceable_by_user "$build_user" "$source" || return
+  if "$sudo_bin" -n -H -u "$build_user" -- /usr/bin/test -w "$source"; then
+    echo "homebrew-patched-launcher: Formula identity can change the native link auditor source" >&2
+    return 2
+  fi
+  source_state="$(
+    /usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' "$source"
+  )" || return 2
+  source_state_without_size="${source_state%:*}"
+  source_links="${source_state_without_size##*:}"
+  [ "$source_links" = "1" ] || {
+    echo "homebrew-patched-launcher: native link auditor source is not single-linked" >&2
+    return 2
+  }
+  source_sha="$(/usr/bin/sha256sum "$source")" || return 2
+  source_sha="${source_sha%% *}"
+  [[ "$source_sha" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "homebrew-patched-launcher: native link auditor source cannot be authenticated" >&2
+    return 2
+  }
+
+  # WHY: native build tools are used by both registry-bridge and tap-native
+  # Formulae. Stage their link-chain auditor independently of either recipe
+  # schema so every native prefix crosses the same root-owned audit boundary.
+  "$sudo_bin" /usr/bin/install -o root -g root -m 0555 -- \
+    "$source" "$destination" || return
+  source_state_after="$(
+    /usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' "$source"
+  )" || return 2
+  source_sha_after="$(/usr/bin/sha256sum "$source")" || return 2
+  source_sha_after="${source_sha_after%% *}"
+  auditor_state="$(
+    /usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' "$destination"
+  )" || return 2
+  auditor_sha="$(/usr/bin/sha256sum "$destination")" || return 2
+  auditor_sha="${auditor_sha%% *}"
+  if [ "$source_state_after" != "$source_state" ] || \
+     [ "$source_sha_after" != "$source_sha" ] || \
+     [ "$auditor_sha" != "$source_sha" ] || \
+     [ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$destination")" != \
+       "0:0:555:1" ] || \
+     ! /usr/bin/cmp -s -- "$source" "$destination"; then
+    echo "homebrew-patched-launcher: native link auditor changed while it was staged" >&2
+    return 2
+  fi
+
+  HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR="$destination"
+  HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_STATE="$auditor_state"
+  HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_SHA256="$auditor_sha"
 }
 
 homebrew_patched_launcher_sealed_directory_state() {
@@ -1281,12 +1396,22 @@ homebrew_assert_tree_not_replaceable_by_user() {
   }
   while [ "$current" != "/" ]; do
     parent="$(dirname "$current")"
+    current_uid="$(
+      "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/stat -c '%u' "$current"
+    )" || return 2
+    parent_uid="$(
+      "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/stat -c '%u' "$parent"
+    )" || return 2
+    # WHY: an owner may chmod a currently read-only inode or ancestor and then
+    # replace it. Effective writability alone is therefore not an ownership
+    # boundary for code that will be copied into a privileged execution path.
+    if [ "$current_uid" = "$user_uid" ] || [ "$parent_uid" = "$user_uid" ]; then
+      echo "homebrew-patched-launcher: build user can replace protected source: $current" >&2
+      return 1
+    fi
     if "$HOMEBREW_PATCHED_SUDO_BIN" -H -u "$user" -- /usr/bin/test -w "$parent"; then
       mode="$(/usr/bin/stat -c '%a' "$parent")"
-      current_uid="$(/usr/bin/stat -c '%u' "$current")"
-      parent_uid="$(/usr/bin/stat -c '%u' "$parent")"
-      if [ $((8#$mode & 01000)) -eq 0 ] || \
-         [ "$current_uid" = "$user_uid" ] || [ "$parent_uid" = "$user_uid" ]; then
+      if [ $((8#$mode & 01000)) -eq 0 ]; then
         echo "homebrew-patched-launcher: build user can replace protected source: $current" >&2
         return 1
       fi
@@ -1800,6 +1925,10 @@ homebrew_patched_launcher_cleanup() {
     echo "homebrew-patched-launcher: protected checker changed; preserving launcher state for inspection" >&2
     return 1
   fi
+  if ! homebrew_patched_launcher_verify_native_link_auditor; then
+    echo "homebrew-patched-launcher: protected native link auditor changed; preserving launcher state for inspection" >&2
+    return 1
+  fi
   if ! homebrew_patched_launcher_verify_platform_projection; then
     echo "homebrew-patched-launcher: protected platform projection changed; preserving launcher state for inspection" >&2
     return 1
@@ -1871,6 +2000,9 @@ homebrew_patched_launcher_cleanup() {
     HOMEBREW_PATCHED_PROTECTED_XTASK=""
     HOMEBREW_PATCHED_PROTECTED_XTASK_STATE=""
     HOMEBREW_PATCHED_PROTECTED_XTASK_SHA256=""
+    HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR=""
+    HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_STATE=""
+    HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_SHA256=""
     HOMEBREW_PATCHED_PLATFORM_ROOT=""
     HOMEBREW_PATCHED_PLATFORM_SHA256=""
     HOMEBREW_PATCHED_SYSROOT_ROOT=""
@@ -1943,6 +2075,9 @@ homebrew_patched_launcher_cleanup() {
   HOMEBREW_PATCHED_TIER2_ATTESTATION=""
   HOMEBREW_PATCHED_TIER2_ATTESTATION_SHA256=""
   HOMEBREW_PATCHED_TIER2_ATTESTATION_STATE=""
+  HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR=""
+  HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_STATE=""
+  HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_SHA256=""
   HOMEBREW_PATCHED_PLATFORM_ROOT=""
   HOMEBREW_PATCHED_PLATFORM_SHA256=""
   HOMEBREW_PATCHED_SYSROOT_ROOT=""
@@ -2208,6 +2343,49 @@ homebrew_patched_launcher_run_native() {
   "$HOMEBREW_PATCHED_SUDO_BIN" -n -- "$HOMEBREW_PATCHED_NATIVE_RUNNER" "$@"
 }
 
+homebrew_patched_launcher_audit_native_projection_links() {
+  local runner python
+  local -a audit_args
+  if [ -z "$HOMEBREW_PATCHED_NATIVE_PREFIX" ]; then
+    echo "homebrew-patched-launcher: native Homebrew is unavailable" >&2
+    return 2
+  fi
+  audit_args=(
+    --audit-native-links
+    --source "$HOMEBREW_PATCHED_NATIVE_PREFIX"
+  )
+  if [ "${1:-}" = "--only-additional-trees" ]; then
+    audit_args+=(--only-additional-trees)
+    shift
+  fi
+  while [ "$#" -gt 0 ]; do
+    audit_args+=(--tree "$1")
+    shift
+  done
+  if [ -n "$HOMEBREW_PATCHED_BUILD_USER" ]; then
+    runner="$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR"
+    python=/usr/bin/python3
+    [ -n "$runner" ] || {
+      echo "homebrew-patched-launcher: native link-chain auditor is unavailable" >&2
+      return 2
+    }
+    homebrew_patched_launcher_verify_native_link_auditor || return
+    "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/env -i \
+      "$python" -I "$runner" "${audit_args[@]}"
+    return
+  fi
+  runner="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/homebrew-tap-recipe-runner.py"
+  python="$(command -v python3)" || {
+    echo "homebrew-patched-launcher: python3 is required for native link auditing" >&2
+    return 2
+  }
+  [ -f "$runner" ] && [ ! -L "$runner" ] || {
+    echo "homebrew-patched-launcher: native link-chain auditor is unavailable" >&2
+    return 2
+  }
+  "$python" -I "$runner" "${audit_args[@]}"
+}
+
 homebrew_patched_launcher_seal_native_prefix() {
   if [ "$#" -ne 0 ]; then
     echo "homebrew_patched_launcher_seal_native_prefix: expected no arguments" >&2
@@ -2233,36 +2411,11 @@ homebrew_patched_launcher_seal_native_prefix() {
       echo "homebrew-patched-launcher: native Homebrew contains a special entry: $unsafe_entry" >&2
       return 1
     }
-    "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/find \
-      "$HOMEBREW_PATCHED_NATIVE_PREFIX" -xdev -type l \
-      -exec /usr/bin/bash -c '
-        set -euo pipefail
-        native_prefix="$1"
-        native_brew="$2"
-        overlay_brew="$3"
-        shift 3
-        for link; do
-          target="$(/usr/bin/readlink "$link")"
-          if [ "$link" = "$native_brew" ] && [ "$target" = "$overlay_brew" ]; then
-            continue
-          fi
-          if [[ "$target" = /* ]]; then
-            resolved="$(/usr/bin/realpath -m -- "$target")"
-          else
-            resolved="$(/usr/bin/realpath -m -- "${link%/*}/$target")"
-          fi
-          case "$resolved" in
-            "$native_prefix"|"$native_prefix"/*|/bin/*|/etc/ssl/*|/lib/*|/lib64/*|/usr/*) ;;
-            *)
-              echo "homebrew-patched-launcher: native Homebrew symlink escapes protected roots: $link -> $target" >&2
-              exit 1
-              ;;
-          esac
-        done
-      ' kandelo-native-link-audit \
-      "$HOMEBREW_PATCHED_NATIVE_PREFIX" \
-      "$HOMEBREW_PATCHED_NATIVE_BREW_BIN" \
-      "$HOMEBREW_PATCHED_OVERLAY/bin/brew" {} + || return 1
+    # WHY: a final realpath can leave the future mount namespace through a
+    # writable link and re-enter a keg. Audit every component using the same
+    # Cellar/opt/prefix-lib/host projection model as the recipe runner. Other
+    # prefix paths (including the overlay brew link) are never mounted.
+    homebrew_patched_launcher_audit_native_projection_links || return
     "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/chown -hR root:root \
       "$HOMEBREW_PATCHED_NATIVE_PREFIX"
     "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/find \
@@ -2298,14 +2451,20 @@ homebrew_patched_launcher_seal_native_prefix() {
         --source "$HOMEBREW_PATCHED_NATIVE_PREFIX/Cellar" \
         --destination "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" || return
     fi
+  else
+    # The developer path has no privileged staging handoff, so run the same
+    # component-safe projection audit before changing launcher state.
+    homebrew_patched_launcher_audit_native_projection_links || return
   fi
   HOMEBREW_PATCHED_NATIVE_SEALED=1
 }
 
 # Preserve relative links from a direct native Formula into its recursive
-# closure without copying that closure into the target Cellar. The source
-# prefix has already been sealed root-owned and read-only, so an absolute link
-# to the exact resolved source is stable for the remainder of Formula execution.
+# closure without copying that closure into the target Cellar. The component
+# audit has already admitted every hop and the source prefix is root-owned and
+# read-only in the privileged path. `realpath` below therefore selects the
+# canonical destination of an already-proved chain; it is not the confinement
+# check. The copied tree is component-audited again before it is exposed.
 homebrew_patched_launcher_rewrite_native_bridge_links() {
   if [ "$#" -ne 2 ]; then
     echo "homebrew_patched_launcher_rewrite_native_bridge_links: expected NATIVE_KEG TARGET_KEG" >&2
@@ -2397,8 +2556,7 @@ homebrew_patched_launcher_bridge_native_formula() {
   fi
   local formula="$1" native_rack native_opt native_opt_target native_version
   local target_cellar target_opt target_rack target_keg target_opt_target
-  local build_gid="" target_state_root unsafe_link bridge_status=0
-  local audit_bash audit_readlink audit_realpath
+  local build_gid="" target_state_root bridge_status=0
   if ! [[ "$formula" =~ ^[a-z0-9][a-z0-9@+_.-]*$ ]]; then
     echo "homebrew-patched-launcher: invalid native Formula name: $formula" >&2
     return 2
@@ -2435,59 +2593,17 @@ homebrew_patched_launcher_bridge_native_formula() {
   [ ! -e "$target_rack" ] && [ ! -L "$target_rack" ] && \
     [ ! -e "$target_opt/$formula" ] && [ ! -L "$target_opt/$formula" ] || {
       echo "homebrew-patched-launcher: target prefix already contains native Formula name: $formula" >&2
-      return 1
-    }
+    return 1
+  }
 
-  if [ -n "$HOMEBREW_PATCHED_BUILD_USER" ]; then
-    audit_bash=/usr/bin/bash
-    audit_readlink=/usr/bin/readlink
-    audit_realpath=/usr/bin/realpath
-  else
-    audit_bash="$(command -v bash)"
-    audit_readlink="$(command -v readlink)"
-    audit_realpath="$(command -v realpath)"
+  # Re-audit here as well as at seal time. This is redundant for the immutable
+  # privileged prefix, but keeps the non-privileged developer path honest and
+  # makes bridge creation depend on the same component-safe closure contract.
+  if ! homebrew_patched_launcher_audit_native_projection_links \
+    --only-additional-trees "$native_opt_target"; then
+    echo "homebrew-patched-launcher: native Formula has a symlink that cannot be safely relocated: $formula" >&2
+    return 1
   fi
-  unsafe_link="$(/usr/bin/find "$native_opt_target" -xdev -type l \
-    -exec "$audit_bash" -c '
-      set -euo pipefail
-      readlink_bin="$1"
-      realpath_bin="$2"
-      native_keg="$3"
-      native_prefix="$4"
-      shift 4
-      for link; do
-        target="$("$readlink_bin" "$link")"
-        if [[ "$target" = /* ]]; then
-          resolved="$("$realpath_bin" -m -- "$target")"
-          case "$resolved" in
-            "$native_prefix"|"$native_prefix"/*|/bin/*|/etc/ssl/*|/lib/*|/lib64/*|/usr/*) ;;
-            *)
-              printf "%s -> %s\n" "$link" "$target"
-              exit 1
-              ;;
-          esac
-          continue
-        fi
-        resolved="$("$realpath_bin" -m -- "${link%/*}/$target")"
-        case "$resolved" in
-          "$native_keg"|"$native_keg"/*) ;;
-          "$native_prefix"|"$native_prefix"/*)
-            [ -e "$resolved" ] || {
-              printf "%s -> %s\n" "$link" "$target"
-              exit 1
-            }
-            ;;
-          *)
-            printf "%s -> %s\n" "$link" "$target"
-            exit 1
-            ;;
-        esac
-      done
-    ' kandelo-native-proxy-link-audit "$audit_readlink" "$audit_realpath" \
-      "$native_opt_target" "$HOMEBREW_PATCHED_NATIVE_PREFIX" {} +)" || {
-      echo "homebrew-patched-launcher: native Formula has a symlink that cannot be safely relocated: ${unsafe_link:-$formula}" >&2
-      return 1
-    }
 
   if [ -n "$HOMEBREW_PATCHED_BUILD_USER" ]; then
     build_gid="$(/usr/bin/id -g "$HOMEBREW_PATCHED_BUILD_USER")"
@@ -2541,6 +2657,10 @@ homebrew_patched_launcher_bridge_native_formula() {
         -exec /usr/bin/chmod a-w,u-s,g-s {} + || bridge_status=1
     fi
     if [ "$bridge_status" -eq 0 ]; then
+      homebrew_patched_launcher_audit_native_projection_links \
+        --only-additional-trees "$target_keg" || bridge_status=1
+    fi
+    if [ "$bridge_status" -eq 0 ]; then
       "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/ln -s \
         "$target_opt_target" "$target_opt/$formula" || bridge_status=1
     fi
@@ -2555,6 +2675,9 @@ homebrew_patched_launcher_bridge_native_formula() {
     elif ! find "$target_rack" -type d -exec chmod a-w {} +; then
       bridge_status=1
     elif ! find "$target_rack" -type f -exec chmod a-w,u-s,g-s {} +; then
+      bridge_status=1
+    elif ! homebrew_patched_launcher_audit_native_projection_links \
+      --only-additional-trees "$target_keg"; then
       bridge_status=1
     elif ! ln -s "$target_opt_target" "$target_opt/$formula"; then
       bridge_status=1
@@ -3322,6 +3445,10 @@ homebrew_patched_launcher_isolate() {
   HOMEBREW_PATCHED_PROTECTED_XTASK="$protected_xtask"
   HOMEBREW_PATCHED_PROTECTED_XTASK_STATE="$xtask_alias_state"
   HOMEBREW_PATCHED_PROTECTED_XTASK_SHA256="$xtask_alias_sha256"
+  if [ -n "$HOMEBREW_PATCHED_NATIVE_PREFIX" ]; then
+    homebrew_patched_launcher_prepare_native_link_auditor \
+      "$kandelo_root" "$build_user" "$sudo_bin" || return
+  fi
   platform_source_root="$kandelo_root"
   if [ "$tap_recipe_isolation" = "1" ]; then
     homebrew_patched_launcher_prepare_platform_projection \
@@ -4015,6 +4142,7 @@ homebrew_patched_launcher_verify_isolation() {
   homebrew_patched_launcher_verify_overlay_seal \
     "$HOMEBREW_PATCHED_BUILD_USER" || return
   homebrew_patched_launcher_verify_protected_xtask || return
+  homebrew_patched_launcher_verify_native_link_auditor || return
   homebrew_patched_launcher_verify_platform_projection || return
   homebrew_patched_launcher_verify_sysroot_projection || return
   homebrew_patched_launcher_verify_recipe_runner || return
@@ -4029,6 +4157,12 @@ homebrew_patched_launcher_verify_isolation() {
     return 1
   }
   if [ -n "$HOMEBREW_PATCHED_NATIVE_PREFIX" ]; then
+    [ -n "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR" ] && \
+      [ -n "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_STATE" ] && \
+      [ -n "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_SHA256" ] || {
+      echo "homebrew-patched-launcher: protected native link auditor was not initialized" >&2
+      return 2
+    }
     [ "$HOMEBREW_PATCHED_NATIVE_SEALED" = "1" ] || {
       echo "homebrew-patched-launcher: native Homebrew was not sealed" >&2
       return 1

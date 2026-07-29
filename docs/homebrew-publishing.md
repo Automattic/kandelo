@@ -1028,17 +1028,39 @@ This preserves executable meaning while ensuring that a bottle's original
 owner-only mode cannot make a root-owned build input unreadable to the recipe
 identity. The same admitted root runner then writes, with exclusive creation,
 a mode-`0400` inventory of every Formula name and exact keg path it found in
-that sealed Cellar. When the recipe request arrives, the supervisor rescans
-every root-owned, read-only keg and requires exact equality with that inventory.
-A late extra rack, removed or replaced keg, mutable tree, duplicate name, or
-missing planned direct tool fails closed.
+that sealed Cellar. It also records the runner-selected prefix `lib` and
+`share` runtime roots and each root's type/mode/content manifest digest when
+present. Relocated native executables can name `<prefix>/lib/ld.so` directly,
+while interpreted tools such as Automake can name modules below
+`<prefix>/share`. Cellar and `opt` projections alone are therefore not an
+executable closure. The runner admits only those two fixed runtime roots, not
+the whole prefix. Every symlink in every projected keg and runtime tree is
+resolved component by component in the exact mount namespace the recipe will
+receive. `<prefix>/opt/<formula>` is modeled as the exact selected-keg bind,
+and conventional system targets are allowed only when that same host runtime
+root is projected. A chain that visits `/tmp`, another prefix directory, an
+unknown `opt` alias, or any other unmounted host path fails even if its
+host-side final `realpath` re-enters a sealed keg. Runtime fingerprints
+include indirect link hops and the terminal identity, so changing an
+intermediate alias cannot preserve the authenticated digest. When the recipe
+request arrives, the supervisor rescans every root-owned, read-only tree,
+rehashes the runtime trees, and requires exact equality with that inventory.
+A late extra rack, removed or replaced keg, mutable tree, duplicate name,
+changed loader chain, changed runtime root, or missing planned direct tool
+fails closed.
 
 The manifest authenticates the complete transitive execution closure, while
-the earlier static plan still decides which direct tools and Requirements may
-contribute executable directories to the recipe environment. Transitive kegs
-are mounted only at their native Cellar and `opt` paths so direct tools can
-follow legitimate cross-keg links; they do not silently become additional
-`PATH` roots or caller-selected dependencies.
+the earlier static plan still decides which tools are direct Formula inputs.
+Those direct tools enter through their target-Cellar proxies. Executable
+precedence is explicit: publisher-only Requirements, direct proxies,
+authenticated transitive helpers, then fixed SDK and system paths. Thus a
+transitive keg cannot shadow a declared direct tool with a same-named command.
+The runner derives child-tool directories from all remaining authenticated
+native kegs without accepting paths from the Formula request.
+This lets a planned tool start its legitimate interpreter or helper, such as
+Automake starting relocated Perl or a build starting Bison, Flex, or Python.
+It does not make those transitive tools target dependencies, copy them into
+the target Cellar, or give the caller authority to select their versions.
 
 The target build can read that sealed prefix, but only each planned direct
 dependency's selected keg is copied into a root-owned, read-only proxy under the
@@ -1053,7 +1075,11 @@ colliding proxy before executing recipe code.
 If that direct keg contains a relative link into its recursive native closure,
 the publisher rewrites the copied link to the exact resolved path in the sealed
 native prefix. This preserves host tools whose launchers are supplied by another
-keg without copying or exposing that transitive keg in the target Cellar.
+keg without copying or exposing that transitive keg in the target Cellar. The
+component-safe audit runs before sealing, again before the bridge copy, and on
+the copied proxy before its `opt` alias is exposed; `realpath` is therefore only
+canonicalization of an already-admitted immutable chain, not the confinement
+decision.
 Unselected keg versions and native transitive dependencies stay in the native
 prefix and cannot claim target Cellar names. Native install logs remain
 separate from Kandelo bottle dependency provenance.
