@@ -42,6 +42,7 @@ import {
 const SIGCHLD = 17;
 const SIGTERM = 15;
 const SYS_TKILL = 204;
+const ESRCH = 3;
 const SCRATCH_OFFSET = 4096;
 
 interface TestChannel {
@@ -91,7 +92,9 @@ function createChannel(
   return channel;
 }
 
-function createWorkerHarness(): SignalHarness {
+function createWorkerHarness(
+  options: { readonly excludedExports?: readonly string[] } = {},
+): SignalHarness {
   const kernelMemory = new WebAssembly.Memory({ initial: 2, maximum: 2 });
   const completeChannel = vi.fn();
   const onExit = vi.fn();
@@ -106,6 +109,7 @@ function createWorkerHarness(): SignalHarness {
     view.setUint32(CH_ERRNO, 0, true);
     return 0;
   };
+  implementations.kernel_generate_host_signal = () => 0;
   implementations.kernel_pick_signal_target_tid = (pid: number) => pid;
   implementations.kernel_thread_has_deliverable = () => 1;
   implementations.kernel_get_process_exit_signal = () => -1;
@@ -120,6 +124,9 @@ function createWorkerHarness(): SignalHarness {
     kernelMemory,
     () => implementations,
     () => SCRATCH_OFFSET,
+    4,
+    undefined,
+    options.excludedExports,
   );
   const gatedInstance = createKernelEntryGatedInstance(rawInstance, gate);
   const scratch = allocateKernelScratchRegion(
@@ -528,12 +535,7 @@ describe("signal delivery to a process blocked in accept()", () => {
     registerProcess(harness, pid, [channel]);
     const pickSignalTarget = vi.fn(() => pid);
     let exited = false;
-    harness.implementations.kernel_handle_channel = (
-      pointer: number | bigint,
-    ) => {
-      const view = new DataView(harness.kernelMemory.buffer, Number(pointer));
-      view.setBigInt64(CH_RETURN, 0n, true);
-      view.setUint32(CH_ERRNO, 0, true);
+    harness.implementations.kernel_generate_host_signal = () => {
       exited = true;
       return 0;
     };
@@ -554,7 +556,7 @@ describe("signal delivery to a process blocked in accept()", () => {
     const channel = createChannel(pid);
     registerProcess(harness, pid, [channel]);
     const pickSignalTarget = vi.fn(() => pid);
-    harness.implementations.kernel_handle_channel = () => {
+    harness.implementations.kernel_generate_host_signal = () => {
       throw new Error("synthetic kernel trap");
     };
     harness.implementations.kernel_pick_signal_target_tid = pickSignalTarget;
@@ -562,7 +564,7 @@ describe("signal delivery to a process blocked in accept()", () => {
     try {
       expect(() => {
         harness.worker.testAuthority.sendSignalForTest(pid, SIGTERM);
-      }).toThrow(/kernel_handle_channel failed/);
+      }).toThrow(/kernel_generate_host_signal failed/);
       await Promise.resolve();
 
       expect(harness.onExit).not.toHaveBeenCalled();
@@ -573,20 +575,66 @@ describe("signal delivery to a process blocked in accept()", () => {
     }
   });
 
-  it("preserves the ambient host PID when signal TID binding is rejected", () => {
+  it("fails the kernel generation when host-signal generation is absent", async () => {
+    const harness = createWorkerHarness({
+      excludedExports: ["kernel_generate_host_signal"],
+    });
+    const pickSignalTarget = vi.fn(() => 53);
+    harness.implementations.kernel_pick_signal_target_tid = pickSignalTarget;
+
+    expect(() => {
+      harness.worker.testAuthority.sendSignalForTest(53, SIGTERM);
+    }).toThrow(/kernel host-signal generation export is unavailable/);
+    await Promise.resolve();
+
+    expect(pickSignalTarget).not.toHaveBeenCalled();
+    expect(harness.onKernelFatal).toHaveBeenCalledOnce();
+  });
+
+  it("fails the kernel generation when host-signal generation is rejected", async () => {
+    const harness = createWorkerHarness();
+    const pickSignalTarget = vi.fn(() => 54);
+    harness.implementations.kernel_generate_host_signal = () => -16;
+    harness.implementations.kernel_pick_signal_target_tid = pickSignalTarget;
+
+    expect(() => {
+      harness.worker.testAuthority.sendSignalForTest(54, SIGTERM);
+    }).toThrow(/kernel rejected host signal 15 for pid 54: -16/);
+    await Promise.resolve();
+
+    expect(pickSignalTarget).not.toHaveBeenCalled();
+    expect(harness.onKernelFatal).toHaveBeenCalledOnce();
+  });
+
+  it("treats ESRCH from host-signal generation as retired target proof", () => {
+    const harness = createWorkerHarness();
+    const pickSignalTarget = vi.fn(() => 55);
+    harness.implementations.kernel_generate_host_signal = () => -ESRCH;
+    harness.implementations.kernel_pick_signal_target_tid = pickSignalTarget;
+
+    harness.worker.testAuthority.sendSignalForTest(55, SIGTERM);
+
+    expect(pickSignalTarget).not.toHaveBeenCalled();
+    expect(harness.onKernelFatal).not.toHaveBeenCalled();
+  });
+
+  it("generates a host signal without consuming task-channel authority", () => {
     const harness = createWorkerHarness();
     const state = mutableState(harness);
     const targetPid = 54;
     const priorPid = 91;
-    const setCurrentTid = vi.fn(() => -3);
+    const generateHostSignal = vi.fn(() => 0);
+    const setCurrentTid = vi.fn(() => 0);
     const handleChannel = vi.fn();
     state.currentHandlePid = priorPid;
+    harness.implementations.kernel_generate_host_signal = generateHostSignal;
     harness.implementations.kernel_set_current_tid = setCurrentTid;
     harness.implementations.kernel_handle_channel = handleChannel;
 
     harness.worker.testAuthority.sendSignalForTest(targetPid, SIGTERM);
 
-    expect(setCurrentTid).toHaveBeenCalledWith(targetPid, targetPid);
+    expect(generateHostSignal).toHaveBeenCalledWith(targetPid, SIGTERM);
+    expect(setCurrentTid).not.toHaveBeenCalled();
     expect(handleChannel).not.toHaveBeenCalled();
     expect(state.currentHandlePid).toBe(priorPid);
   });
