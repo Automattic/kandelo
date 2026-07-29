@@ -842,6 +842,17 @@ timeout) cannot complete immediately. The process worker remains blocked in
 `Atomics.wait` while the host parks and wakes its pending channel through
 `Atomics.waitAsync`.
 
+The retry boundary also owns caught-signal delivery. Once Rust dequeues a
+caught signal into `CH_SIG`, that channel is the signal record's sole owner
+until libc runs the handler and clears it. If the syscall would otherwise
+remain blocked, the host captures and releases its exact retry authority, then
+completes the channel with `EINTR` before it can park again. Public nonblocking
+`EAGAIN` outcomes remain `EAGAIN`. After the handler, libc resubmits only its
+reviewed zero-progress `SA_RESTART` allowlist, including `accept` and
+`accept4`; timeout-bearing operations suppress restart when a new submission
+would reset their deadline. The shared `CentralizedKernelWorker` state machine
+provides the same behavior in Node.js and browser hosts.
+
 For a represented retry, the initial call uses token zero. Before returning
 `EAGAIN`, Rust pins any exact target required by that operation. The host
 detaches the complete request, queries the authoritative token, and either
@@ -2025,6 +2036,12 @@ Signals are delivered at syscall boundaries. When a process has a pending signal
 3. The glue reads the signal info and calls the handler on the process's stack (or alternate signal stack if SA_ONSTACK)
 4. After the handler returns, the glue calls `SYS_RT_SIGRETURN` to restore the signal mask
 5. If the signal interrupted a blocking syscall, EINTR is returned
+
+The host distinguishes the kernel's internal `EAGAIN` retry sentinel from a
+completed nonblocking `EAGAIN`. When a caught signal is prepared while an
+internal retry is still blocked, the host publishes `EINTR` without discarding
+the prepared `CH_SIG` record. Libc runs the handler before deciding whether
+`SA_RESTART` permits resubmitting that syscall.
 
 Features: RT signal queuing with `si_value`, cross-process `kill`/`killpg`, `sigaltstack` with shadow stack swap, `sigsuspend`, `sigtimedwait`, `setitimer`/`alarm` via host timers.
 

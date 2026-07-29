@@ -1900,6 +1900,11 @@
     },
     {
       "kind": "func",
+      "name": "kernel_generate_host_signal",
+      "signature": "(i32,i32) -> (i32)"
+    },
+    {
+      "kind": "func",
       "name": "kernel_get_argc",
       "signature": "() -> (i32)"
     },
