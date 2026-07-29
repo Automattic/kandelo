@@ -879,8 +879,18 @@ match the parent before any asynchronous Worker launch work can yield.
 Browser `Worker.terminate()` is not treated as proof that a Worker stopped
 touching shared memory. Cooperative exit and exec publish an exact terminal
 message after worker-main returns. Forced paths drop host aliases without ever
-recycling the backing. A small retirement admission window bounds rapid churn;
-garbage-collection observations are diagnostic evidence only.
+recycling the backing. Whole-kernel destroy terminates nested process/thread
+Workers before terminating the containing kernel Worker realm, which is the
+final fallback for incomplete graceful detach.
+
+`maxProcessMemoryBytes` is a sampled allocation-admission budget, not a hard
+aggregate growth cap: direct `WebAssembly.Memory.grow()` has no JavaScript
+callback, so the next process allocation is where the allocator observes and
+rejects an over-budget live set. A short retirement threshold similarly pauses
+new churn after it is crossed, but an already-grown generation or simultaneous
+exits can exceed it. JavaScript cannot hard-bound native backing that the
+browser engine has not reclaimed. Garbage-collection observations and bounded,
+coalesced ordinary-allocation pressure are diagnostic/reclamation aids only.
 
 ### npm registry access in the browser
 The node demo's `npm install` uses `--registry=http://proxy.local/` so registry traffic can pass through the host fetch bridge instead of requiring the JavaScript runtime to own every TLS edge case. The kernel resolves `proxy.local` via `host_getaddrinfo` (it is deliberately absent from the synthetic `/etc/hosts`), and the host-side TLS backend re-routes those requests through the existing cors-proxy (dev) or service worker (prod) onto `https://registry.npmjs.org/`. Tarball URLs in JSON responses are rewritten to the same alias so subsequent fetches stay on the same path.
