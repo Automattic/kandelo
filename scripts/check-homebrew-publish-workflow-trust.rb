@@ -24,6 +24,10 @@ ROOTFS_PUBLICATION_SELECTION_SHA256 =
   "4f64ae46fb71e0ebc4eac6cec8f288583b1ec922844d6a555632867b4efcbcda"
 TAP_CALLER_ROOT = File.join(REPO_ROOT, "homebrew/homebrew-tap-core/.github/workflows")
 CHECKOUT_ACTION = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
+# WHY: the reusable publishers freeze v6 in their reviewed step digests. This
+# read-only PR workflow follows the repository-wide v7 pin independently.
+NATIVE_COMPATIBILITY_CHECKOUT_ACTION =
+  "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
 NIX_ACTION = "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25"
 MAGIC_NIX_ACTION = "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d"
 UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
@@ -811,14 +815,14 @@ def check_native_compatibility_workflow(workflow)
     "Retain exact generated Linux lock",
   ], "native compatibility Linux proof order changed")
   checkout = named_step(steps, "Checkout exact PR head")
-  check(checkout["uses"] == CHECKOUT_ACTION &&
+  check(checkout["uses"] == NATIVE_COMPATIBILITY_CHECKOUT_ACTION &&
         checkout["with"] == {
           "persist-credentials" => false,
           "ref" => "${{ github.event.pull_request.head.sha }}",
           "submodules" => false,
         }, "native compatibility source checkout changed")
   brew_checkout = named_step(steps, "Checkout exact reviewed Homebrew source")
-  check(brew_checkout["uses"] == CHECKOUT_ACTION &&
+  check(brew_checkout["uses"] == NATIVE_COMPATIBILITY_CHECKOUT_ACTION &&
         brew_checkout["with"] == {
           "persist-credentials" => false,
           "repository" => "Homebrew/brew",
