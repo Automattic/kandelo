@@ -59,7 +59,7 @@ describe("process-memory reclamation under real sequential spawn churn", () => {
       expect(result.stderr).toEqual([]);
       expect(result.diagnostics).toEqual([]);
       expect(result.samples).toHaveLength(7);
-      expect(result.pressureBytes).toBe(32 * MIB);
+      expect(result.pressureBytes).toBe(4 * MIB);
 
       // A stale listener, Worker, lease, or process-table reference would keep
       // the retired Memory live even when ordinary allocation pressure makes

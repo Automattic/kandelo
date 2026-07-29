@@ -32,10 +32,10 @@ function asyncFunction(source: string, name: string, nextName: string): string {
 }
 
 function destroyFunction(source: string): string {
-  const start = source.indexOf("async function handleDestroy(");
+  const start = source.indexOf("async function performDestroy(");
   const end = source.indexOf("\nfunction handlePtyWrite(", start);
-  expect(start, "handleDestroy must exist").toBeGreaterThanOrEqual(0);
-  expect(end, "handlePtyWrite must follow handleDestroy").toBeGreaterThan(
+  expect(start, "performDestroy must exist").toBeGreaterThanOrEqual(0);
+  expect(end, "handlePtyWrite must follow performDestroy").toBeGreaterThan(
     start,
   );
   return source.slice(start, end);
@@ -56,14 +56,19 @@ describe("process generation detach host parity", () => {
         fork,
         posixSpawn,
         asyncFunction(source, "finishProcessExit", terminate),
-        asyncFunction(source, terminate, "handleDestroy"),
+        asyncFunction(source, terminate, "performDestroy"),
       ];
 
       for (const surface of lifecycleSurfaces) {
         expect(surface).toContain("detachExactProcessGeneration({");
       }
       const destroy = destroyFunction(source);
+      expect(destroy).toContain(
+        "processMemoryCreators.closeAndRunAfterDrain(",
+      );
+      expect(destroy).toContain("performDestroy,");
       expect(destroy).toContain("processGenerationDetaches.retryPending()");
+      expect(destroy).toContain("processMemoryAllocator.clear()");
       expect(destroy).not.toContain("processes.clear()");
       // The outer kernel Worker can be a safe final containment boundary only
       // after it has explicitly terminated every process Worker and the
@@ -84,6 +89,21 @@ describe("process generation detach host parity", () => {
         );
         expect(rollback).toContain("generation = childGeneration ??");
       }
+
+      // Every callback that can expose a process Memory to a new process or
+      // pthread Worker must enter the same destroy admission gate.
+      for (const operation of [
+        "a host-spawned process Worker",
+        "a fork process Worker",
+        "an exec process Worker",
+        "a posix_spawn process Worker",
+        "a pthread Worker",
+      ]) {
+        expect(source).toContain(`"${operation}"`);
+      }
+      expect(
+        source.match(/processMemoryCreators\s*\.run\(/g),
+      ).toHaveLength(5);
     });
 
     it(`${host} keeps exact kernel detach calls inside the shared wrapper`, () => {

@@ -460,9 +460,16 @@ export function deriveProcessMemoryRetirementAdmissionThresholds(
  * after a later macrotask, so a burst of exits does not allocate once per
  * process. The real churn harness can set the Node-only measurement control
  * `KANDELO_RECLAIM_PRESSURE_BYTES=0` to retain an explicit negative control.
+ *
+ * WHY 4 MiB: it was the smallest repeatedly bounded setting tested on
+ * Node/V8 and Chromium/V8, and Firefox/SpiderMonkey also descended after its
+ * initial peak. The hook was neutral on WebKit/JSC, where exact ownership and
+ * whole-worker containment remain the safety mechanism. Preserve the dated
+ * cross-engine evidence before changing this default:
+ * docs/measurements/2026-07-28-process-memory-retirement-rss.md.
  */
 export function createProcessMemoryRetirementPressureHook(
-  pressureBytes = 32 * 1024 * 1024,
+  pressureBytes = 4 * 1024 * 1024,
 ): (retirement: ProcessMemoryRetirementNotice) => void {
   if (!Number.isSafeInteger(pressureBytes) || pressureBytes < 0) {
     throw new Error(
@@ -477,7 +484,9 @@ export function createProcessMemoryRetirementPressureHook(
     setTimeout(() => {
       // WHY: a bounded ordinary allocation makes native-memory churn visible
       // to current engines. It is only a reclamation nudge; ownership,
-      // correctness, and admission never depend on collection timing.
+      // correctness, and admission never depend on collection timing. The
+      // cross-engine size evidence is recorded in
+      // docs/measurements/2026-07-28-process-memory-retirement-rss.md.
       pressure = new ArrayBuffer(pressureBytes);
       // Keep the newest bounded allocation rooted until the next retirement.
       void pressure;
