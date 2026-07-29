@@ -830,6 +830,136 @@ class ResourceProjectionTests(unittest.TestCase):
                 runner.copy_input_tree(source, root / "mutated-copy", limits)
 
 
+class TargetDependencySelectionTests(unittest.TestCase):
+    @staticmethod
+    def make_rack(cellar: Path, name: str, *, mode: int = 0o555) -> Path:
+        keg = cellar / name / "1.0"
+        keg.mkdir(parents=True)
+        keg.chmod(mode)
+        keg.parent.chmod(mode)
+        return keg
+
+    @staticmethod
+    def translate_fixture_root_ownership():
+        original = runner.canonical_real_directory
+
+        def canonical_with_fixture_root(
+            value: object,
+            *,
+            label: str,
+            owner_uid: int | None = None,
+            exact_mode: int | None = None,
+        ) -> Path:
+            # Temporary fixtures belong to the test user. Translate production
+            # root ownership to that user, but preserve nonzero owner checks so
+            # the active Formula rack boundary remains exercised.
+            expected_owner_uid = os.getuid() if owner_uid == 0 else owner_uid
+            return original(
+                value,
+                label=label,
+                owner_uid=expected_owner_uid,
+                exact_mode=exact_mode,
+            )
+
+        return mock.patch.object(
+            runner,
+            "canonical_real_directory",
+            side_effect=canonical_with_fixture_root,
+        )
+
+    def test_ignores_only_the_active_formula_rack_and_selects_sealed_dependencies(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            cellar = Path(temporary).resolve() / "Cellar"
+            cellar.mkdir()
+            cellar.chmod(0o1775)
+            dependency = self.make_rack(cellar, "dependency")
+            self.make_rack(cellar, "active", mode=0o755)
+
+            with self.translate_fixture_root_ownership():
+                closure, selected = runner.target_dependency_keg_roots(
+                    cellar,
+                    "kandelo-dev/tap-core/active",
+                    ["kandelo-dev/tap-core/dependency"],
+                    os.getuid(),
+                )
+
+                self.assertEqual(closure, {"dependency": dependency})
+                self.assertEqual(selected, {"dependency": dependency})
+                with self.assertRaisesRegex(runner.RunnerError, "wrong mode"):
+                    runner.installed_keg_roots(cellar, "native dependency")
+
+    def test_rejects_an_unsealed_extra_rack(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            cellar = Path(temporary).resolve() / "Cellar"
+            cellar.mkdir()
+            cellar.chmod(0o1775)
+            self.make_rack(cellar, "dependency")
+            self.make_rack(cellar, "active")
+            self.make_rack(cellar, "unexpected", mode=0o755)
+
+            with (
+                self.translate_fixture_root_ownership(),
+                self.assertRaisesRegex(runner.RunnerError, "wrong mode"),
+            ):
+                runner.target_dependency_keg_roots(
+                    cellar,
+                    "kandelo-dev/tap-core/active",
+                    ["kandelo-dev/tap-core/dependency"],
+                    os.getuid(),
+                )
+
+    def test_rejects_a_same_name_rack_not_owned_by_the_formula_identity(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            cellar = Path(temporary).resolve() / "Cellar"
+            cellar.mkdir()
+            cellar.chmod(0o1775)
+            self.make_rack(cellar, "dependency")
+            self.make_rack(cellar, "active")
+
+            with (
+                self.translate_fixture_root_ownership(),
+                self.assertRaisesRegex(runner.RunnerError, "wrong owner"),
+            ):
+                runner.target_dependency_keg_roots(
+                    cellar,
+                    "kandelo-dev/tap-core/active",
+                    ["kandelo-dev/tap-core/dependency"],
+                    os.getuid() + 1,
+                )
+
+    def test_rejects_self_dependencies_and_colliding_short_names(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            cellar = Path(temporary).resolve() / "Cellar"
+            cellar.mkdir()
+            cellar.chmod(0o1775)
+
+            with self.assertRaisesRegex(
+                runner.RunnerError, "cannot depend on its own"
+            ):
+                runner.target_dependency_keg_roots(
+                    cellar,
+                    "kandelo-dev/tap-core/active",
+                    ["kandelo-dev/tap-core/active"],
+                    os.getuid(),
+                )
+            with self.assertRaisesRegex(
+                runner.RunnerError, "collide in the target Cellar"
+            ):
+                runner.target_dependency_keg_roots(
+                    cellar,
+                    "kandelo-dev/tap-core/active",
+                    [
+                        "first-owner/first-tap/shared",
+                        "second-owner/second-tap/shared",
+                    ],
+                    os.getuid(),
+                )
+
+
 @unittest.skipUnless(
     sys.platform.startswith("linux")
     and os.geteuid() == 0

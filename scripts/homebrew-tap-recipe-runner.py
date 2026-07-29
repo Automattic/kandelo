@@ -1089,8 +1089,20 @@ def versioned_keg_roots(cellar: Path, formulae: list[str], label: str) -> dict[s
     return result
 
 
-def installed_keg_roots(cellar: Path, label: str) -> dict[str, Path]:
+def installed_keg_roots(
+    cellar: Path,
+    label: str,
+    *,
+    excluded_formula: str | None = None,
+    excluded_owner_uid: int | None = None,
+) -> dict[str, Path]:
     """Return the complete sealed Formula closure installed in one Cellar."""
+    if (excluded_formula is None) != (excluded_owner_uid is None):
+        fail(f"{label} Cellar exclusion has an incomplete identity")
+    if excluded_formula is not None and not FORMULA_RE.fullmatch(excluded_formula):
+        fail(f"{label} Cellar exclusion has an invalid Formula name")
+    if excluded_owner_uid is not None and excluded_owner_uid <= 0:
+        fail(f"{label} Cellar exclusion has an invalid owner")
     cellar = canonical_real_directory(
         cellar, label=f"{label} Cellar", owner_uid=0
     )
@@ -1098,13 +1110,58 @@ def installed_keg_roots(cellar: Path, label: str) -> dict[str, Path]:
     if cellar_mode not in {0o555, 0o1775}:
         fail(f"{label} Cellar has an unsafe mode")
     names: list[str] = []
+    entries = 0
     for child in sorted(cellar.iterdir(), key=lambda path: path.name):
-        if len(names) >= MAX_DEPENDENCY_KEGS:
+        entries += 1
+        if entries > MAX_DEPENDENCY_KEGS:
             fail(f"{label} Cellar exceeds the keg limit")
         if not FORMULA_RE.fullmatch(child.name):
             fail(f"{label} Cellar contains an invalid Formula name")
+        # WHY: Homebrew creates the selected Formula's writable rack before it
+        # asks the privileged runner to execute the recipe. That rack is
+        # untrusted install state, not a dependency: authenticating it would
+        # reject a normal build, while binding it would expose mutable state to
+        # the recipe service. Callers may exclude only one exact attested short
+        # name and only when that rack is a real directory owned by the Formula
+        # identity; a root-owned dependency with the same name must fail rather
+        # than silently disappear. Every other Cellar child remains in the
+        # sealed inventory.
+        if child.name == excluded_formula:
+            canonical_real_directory(
+                child,
+                label=f"{label} active Formula rack {child.name}",
+                owner_uid=excluded_owner_uid,
+            )
+            continue
         names.append(child.name)
     return versioned_keg_roots(cellar, names, label)
+
+
+def target_dependency_keg_roots(
+    cellar: Path,
+    formula: str,
+    dependencies: list[str],
+    build_uid: int,
+) -> tuple[dict[str, Path], dict[str, Path]]:
+    """Select the active Formula's complete target dependency closure."""
+    formula_short = formula.rpartition("/")[2]
+    dependency_names = [name.rpartition("/")[2] for name in dependencies]
+    if formula_short in dependency_names:
+        fail("selected Formula cannot depend on its own target Cellar rack")
+    if len(dependency_names) != len(set(dependency_names)):
+        fail("attested target dependencies collide in the target Cellar")
+
+    closure = installed_keg_roots(
+        cellar,
+        "target dependency",
+        excluded_formula=formula_short,
+        excluded_owner_uid=build_uid,
+    )
+    missing = sorted(set(dependency_names) - set(closure))
+    if missing:
+        fail(f"target Cellar omits declared dependencies: {missing!r}")
+    selected = {name: closure[name] for name in dependency_names}
+    return closure, selected
 
 
 def validate_sealed_dependency_tree(root: Path, label: str) -> None:
@@ -1435,14 +1492,12 @@ def validate_request(
         or set(supplied_dependencies) != set(expected_dependency_keys)
     ):
         fail("tap recipe request has the wrong target dependencies")
-    all_target_kegs = installed_keg_roots(
-        config["target_cellar"], "target dependency"
+    all_target_kegs, target_kegs = target_dependency_keg_roots(
+        config["target_cellar"],
+        config["formula"],
+        expected_dependency_names,
+        config["build_uid"],
     )
-    expected_target_names = [name.rpartition("/")[2] for name in expected_dependency_names]
-    missing_target_names = sorted(set(expected_target_names) - set(all_target_kegs))
-    if missing_target_names:
-        fail(f"target Cellar omits declared dependencies: {missing_target_names!r}")
-    target_kegs = {name: all_target_kegs[name] for name in expected_target_names}
     dependencies: dict[str, Path] = {}
     for key, full_name in expected_dependency_keys.items():
         short = full_name.rpartition("/")[2]
