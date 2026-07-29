@@ -167,6 +167,14 @@ After reuse handoffs exist, the rebuild graph has three logical levels:
 `homebrew-bootstrap` follows Git and Ruby. Its remaining build/test tools are
 admitted reuse candidates.
 
+The tap-owned bootstrap recipe is also a target-package input. Before that
+entrant can build, replace the retired prefix in its Kandelo patch and
+regenerate its exact Homebrew source revision, patch digest, patched-tree
+identities, deterministic output identities, source lock, and recipe lock.
+The campaign must reject a bootstrap recipe whose patch or lock still names a
+retired guest prefix; native Linux publisher paths are not an exception for
+target recipe bytes.
+
 Do not impose three global barriers. Keep at most eight jobs active and start
 each Formula as soon as its exact dependencies have candidate handoffs.
 Prioritize Ncurses, OpenSSL, libmagic, libiconv, and libpng because they
