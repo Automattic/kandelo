@@ -24,6 +24,14 @@ const C_TEST_FIXTURES = [
     src: join(fixturesDir, "process-memory-reclamation-churn.c"),
     out: join(fixturesDir, "process-memory-reclamation-churn.wasm"),
   },
+  {
+    // WHY: this executable validates host-runtime fork ownership only. Keep it
+    // out of examples/, whose generic build loop treats every C file as a
+    // developer-facing example/local program.
+    src: join(fixturesDir, "fork-memory-clone.c"),
+    out: join(fixturesDir, "fork-memory-clone.wasm"),
+    forkInstrument: true,
+  },
 ];
 
 /** Program fixtures resolved through the normal local-binaries contract. */
@@ -78,7 +86,6 @@ const TEST_PROGRAMS = [
   "thread-exit-group.c",
   "fifo_lifecycle_test.c",
   "kernel_allocator_churn_test.c",
-  "fork_memory_clone_test.c",
 ];
 
 const FORK_INSTRUMENTED_PROGRAMS = new Set([
@@ -88,7 +95,6 @@ const FORK_INSTRUMENTED_PROGRAMS = new Set([
   "wait_lifecycle_test.c",
   "fifo_lifecycle_test.c",
   "kernel_allocator_churn_test.c",
-  "fork_memory_clone_test.c",
 ]);
 
 /** WAT fixtures used by host runtime tests. */
@@ -105,15 +111,46 @@ function needsRebuild(srcFile: string, outFile: string): boolean {
   return srcStat.mtimeMs > outStat.mtimeMs;
 }
 
-export async function setup() {
-  for (const { src, out } of C_TEST_FIXTURES) {
-    if (!needsRebuild(src, out)) continue;
-
-    console.log(`[global-setup] Compiling ${src.slice(repoRoot.length + 1)}...`);
+function compileCTestProgram(
+  src: string,
+  out: string,
+  forkInstrument: boolean,
+): void {
+  if (!forkInstrument) {
     execFileSync("wasm32posix-cc", [src, "-o", out], {
       cwd: repoRoot,
       stdio: "pipe",
     });
+    return;
+  }
+
+  const linked = `${out}.linked`;
+  try {
+    execFileSync("wasm32posix-cc", [src, "-o", linked], {
+      cwd: repoRoot,
+      stdio: "pipe",
+    });
+    execFileSync(
+      "bash",
+      [
+        join(repoRoot, "scripts/run-wasm-fork-instrument.sh"),
+        linked,
+        "-o",
+        out,
+      ],
+      { cwd: repoRoot, stdio: "pipe" },
+    );
+  } finally {
+    rmSync(linked, { force: true });
+  }
+}
+
+export async function setup() {
+  for (const { src, out, forkInstrument = false } of C_TEST_FIXTURES) {
+    if (!needsRebuild(src, out)) continue;
+
+    console.log(`[global-setup] Compiling ${src.slice(repoRoot.length + 1)}...`);
+    compileCTestProgram(src, out, forkInstrument);
   }
 
   for (const { src, out } of RESOLVED_PROGRAM_FIXTURES) {
@@ -139,32 +176,7 @@ export async function setup() {
     if (!needsRebuild(src, out)) continue;
 
     console.log(`[global-setup] Compiling ${cFile}...`);
-    if (FORK_INSTRUMENTED_PROGRAMS.has(cFile)) {
-      const linked = `${out}.linked`;
-      try {
-        execFileSync("wasm32posix-cc", [src, "-o", linked], {
-          cwd: repoRoot,
-          stdio: "pipe",
-        });
-        execFileSync(
-          "bash",
-          [
-            join(repoRoot, "scripts/run-wasm-fork-instrument.sh"),
-            linked,
-            "-o",
-            out,
-          ],
-          { cwd: repoRoot, stdio: "pipe" },
-        );
-      } finally {
-        rmSync(linked, { force: true });
-      }
-    } else {
-      execFileSync("wasm32posix-cc", [src, "-o", out], {
-        cwd: repoRoot,
-        stdio: "pipe",
-      });
-    }
+    compileCTestProgram(src, out, FORK_INSTRUMENTED_PROGRAMS.has(cFile));
   }
 
   for (const watFile of WAT_FIXTURES) {
