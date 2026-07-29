@@ -144,6 +144,20 @@ section must explain:
 - who or what is affected; and
 - why the change matters to Kandelo's users, platform contracts, or maintainers.
 
+Prefer concise PR titles that remain suitable as merge subjects.
+The title should name the purpose of the change without trying to
+carry its implementation, validation record, or full rationale.
+
+Manually wrap ordinary prose in PR descriptions and commit-message
+bodies at 72 columns before publishing it. Editor or renderer soft
+wrapping does not satisfy this rule: the stored text itself should be
+wrapped. Preserve intentional paragraph boundaries and the
+indentation of Markdown lists. Markdown tables, code blocks, and
+generated text are exempt. An indivisible URL or identifier may also
+exceed 72 columns when breaking or reflowing it would damage its
+semantics. These exceptions do not justify leaving surrounding
+ordinary prose unwrapped.
+
 Write for a junior developer who has not followed the incident or earlier PRs.
 Define necessary terms, expand acronyms on first use, and use a concrete example
 when it makes the failure easier to understand. Links may supply evidence or
