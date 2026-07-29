@@ -178,24 +178,3 @@ jobs:
           path: ${{ runner.temp }}/homebrew-native-proof/compatibility-lock.json
           if-no-files-found: ignore
           retention-days: 14
-
-  publisher-realms:
-    needs: [exact-linux-contract]
-    permissions:
-      contents: read
-    # WHY: local reusable binding executes the PR merge-candidate workflow
-    # bytes while kandelo-ref selects the exact PR head source. Dry-run still
-    # runs independent build and verifier realms but makes every package,
-    # index, tap, and release mutation unreachable.
-    uses: ./.github/workflows/reusable-homebrew-bottle-publish.yml
-    with:
-      kandelo-repository: Automattic/kandelo
-      kandelo-ref: ${{ github.event.pull_request.head.sha }}
-      tap-repository: kandelo-dev/homebrew-tap-core
-      tap-name: kandelo-dev/tap-core
-      tap-ref: 408a1cbf4e30984fbe5a76e54e9d3ac450af05de
-      formulae: bzip2
-      arches: wasm32
-      force: true
-      dry-run: true
-      native-compatibility-pr: true

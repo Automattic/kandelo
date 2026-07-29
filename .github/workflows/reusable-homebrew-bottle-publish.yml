@@ -45,9 +45,6 @@ on:
       dry-run:
         type: boolean
         default: false
-      native-compatibility-pr:
-        type: boolean
-        default: false
       require-vfs-acceptance:
         type: boolean
         default: false
@@ -77,17 +74,12 @@ jobs:
         shell: bash
         env:
           CALLER_EVENT_NAME: ${{ github.event_name }}
-          CALLER_PR_HEAD: ${{ github.event.pull_request.head.sha }}
           CALLER_REF: ${{ github.ref }}
           CALLER_REPOSITORY: ${{ github.repository }}
           CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
-          ARCHES: ${{ inputs.arches }}
           DRY_RUN: ${{ inputs.dry-run }}
-          FORCE: ${{ inputs.force }}
-          FORMULAE: ${{ inputs.formulae }}
           KANDELO_REPOSITORY: ${{ inputs.kandelo-repository }}
           KANDELO_REF: ${{ inputs.kandelo-ref }}
-          NATIVE_COMPATIBILITY_PR: ${{ inputs.native-compatibility-pr }}
           PACKAGE_GENERATION_WASM32: ${{ inputs.package-generation-wasm32 }}
           PACKAGE_GENERATION_WASM64: ${{ inputs.package-generation-wasm64 }}
           TAP_NAME: ${{ inputs.tap-name }}
@@ -167,42 +159,15 @@ jobs:
           normalized_caller_repository="$(printf '%s' "$CALLER_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           normalized_tap_repository="$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           normalized_tap_name="$(printf '%s' "$TAP_NAME" | tr '[:upper:]' '[:lower:]')"
-          if [ "$NATIVE_COMPATIBILITY_PR" = "true" ]; then
-            # WHY: the ordinary publisher admits only a tap-main dispatch.
-            # This exception has no secrets or write jobs and exists so the
-            # PR merge-candidate version of this reusable workflow can prove
-            # both isolated native realms before it reaches main.
-            [ "$normalized_caller_repository" = "automattic/kandelo" ] &&
-              [ "$CALLER_EVENT_NAME" = "pull_request" ] &&
-              [[ "$CALLER_REF" =~ ^refs/pull/([1-9][0-9]*)/merge$ ]] &&
-              [ "$CALLER_WORKFLOW_REF" = \
-                "Automattic/kandelo/.github/workflows/homebrew-native-publisher-compatibility.yml@refs/pull/${BASH_REMATCH[1]}/merge" ] &&
-              [[ "$CALLER_PR_HEAD" =~ ^[0-9a-f]{40}$ ]] &&
-              [ "$KANDELO_REF" = "$CALLER_PR_HEAD" ] &&
-              [ "$DRY_RUN" = "true" ] &&
-              [ "$FORCE" = "true" ] &&
-              [ "$FORMULAE" = "bzip2" ] &&
-              [ "$ARCHES" = "wasm32" ] &&
-              [ "$normalized_tap_repository" = \
-                "kandelo-dev/homebrew-tap-core" ] &&
-              [ "$normalized_tap_name" = "kandelo-dev/tap-core" ] &&
-              [ "$TAP_REF" = \
-                "408a1cbf4e30984fbe5a76e54e9d3ac450af05de" ] &&
-              [ -z "$PACKAGE_GENERATION_WASM32" ] &&
-              [ -z "$PACKAGE_GENERATION_WASM64" ] || {
-              echo "::error::native compatibility PR caller is not the fixed read-only proof"; exit 2;
-            }
-          else
-            [ "$normalized_caller_repository" = "$normalized_tap_repository" ] || {
-              echo "::error::the caller repository must own the target tap repository"; exit 2;
-            }
-            [ "$CALLER_REF" = "refs/heads/main" ] || {
-              echo "::error::publication requires the tap main branch"; exit 2;
-            }
-            [ "$CALLER_EVENT_NAME" = "repository_dispatch" ] || {
-              echo "::error::publication requires the reviewed repository_dispatch caller"; exit 2;
-            }
-          fi
+          [ "$normalized_caller_repository" = "$normalized_tap_repository" ] || {
+            echo "::error::the caller repository must own the target tap repository"; exit 2;
+          }
+          [ "$CALLER_REF" = "refs/heads/main" ] || {
+            echo "::error::publication requires the tap main branch"; exit 2;
+          }
+          [ "$CALLER_EVENT_NAME" = "repository_dispatch" ] || {
+            echo "::error::publication requires the reviewed repository_dispatch caller"; exit 2;
+          }
           [ -z "$BOTTLE_ROOT_URL" ] || {
             echo "::error::the publisher derives the bottle root from the tap repository"; exit 2;
           }
@@ -218,11 +183,9 @@ jobs:
             echo "::error::tap-name must be owner/name derived from the conventional repository"; exit 2;
           }
           if [ "$DRY_RUN" = "true" ]; then
-            if [ "$NATIVE_COMPATIBILITY_PR" != "true" ]; then
-              [ "$CALLER_WORKFLOW_REF" = "$CALLER_REPOSITORY/.github/workflows/dry-run-bottles.yml@refs/heads/main" ] || {
-                echo "::error::dry-run publication requires the reviewed tap dry-run workflow"; exit 2;
-              }
-            fi
+            [ "$CALLER_WORKFLOW_REF" = "$CALLER_REPOSITORY/.github/workflows/dry-run-bottles.yml@refs/heads/main" ] || {
+              echo "::error::dry-run publication requires the reviewed tap dry-run workflow"; exit 2;
+            }
             validated_kandelo_ref="$(normalize_dry_run_source_ref "Kandelo" "$KANDELO_REF")"
             validated_tap_ref="$(normalize_dry_run_source_ref "tap" "$TAP_REF")"
             validated_generation_wasm32=""

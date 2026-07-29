@@ -220,6 +220,10 @@ KANDELO_HOMEBREW_SUDO_BIN=/usr/bin/sudo \
       homebrew/homebrew-native-compatibility-lock.json
 ```
 
+The `/home/linuxbrew/.linuxbrew` argument above is the native Linux CI
+runner's upstream Homebrew installation. It is not a Kandelo guest path
+and must never enter a bottle, VFS image, or guest-visible link.
+
 Review the resulting selected-record diff. Confirm that the two signed
 feeds still agree, inspect the upstream `homebrew/core` change, and
 verify every changed Formula, bottle, and install-plan step is expected.
@@ -241,22 +245,29 @@ generated lock is uploaded last as diagnostic evidence, including when
 an earlier substantive check fails, so an artifact-service failure
 cannot prevent the lifecycle checks from starting.
 
-After that preflight is green, the same workflow calls the local
-publisher in read-only dry-run mode for one fixed `bzip2`/wasm32 lane.
-GitHub loads the reusable workflow from the pull request's merge
-candidate, while the publisher's Kandelo source input is the exact pull
-request head. The lane runs independently frozen build and verifier
-realms but cannot upload packages, write an index or tap, or publish a
-release.
+After that preflight is green, merge the publisher change, rotate the
+tap's immutable Kandelo workflow pin, and dispatch the trusted tap-main
+dry-run for one fixed `bzip2`/wasm32 lane. That lane runs independently
+frozen build and verifier realms without uploading packages, writing an
+index or tap, or publishing a release.
 
-Those two checks are deliberately compositional. The Ruby lifecycle
-proves the signed install plan and certificate output in the exact,
-bounded cf5 environment. The `bzip2` lane separately proves the real
-systemd-isolated build and verifier realms with their nonempty native
-tool closures. It does not claim that Ruby and `ca-certificates` ran
-inside that systemd lane. A future integrated lane may select a cheap
-Formula whose native closure includes Ruby, but the current retained
-gate keeps the two claims distinct.
+Do not call the complete publisher from merge-candidate pull-request
+code. GitHub validates every permission requested by the reusable
+workflow, including write-capable jobs that dry-run conditions skip.
+Granting those permissions to the pull request would let changed
+workflow bytes make a write job reachable. The exact Linux input and
+TLS proof is therefore the read-only pre-merge gate; the complete
+publisher-realm dry-run is the immediate post-merge gate from reviewed
+tap-main workflow bytes.
+
+Those two checks are deliberately compositional. The pre-merge Ruby
+lifecycle proves the signed install plan and certificate output in the
+exact, bounded cf5 environment. The post-merge `bzip2` dry-run
+separately proves the real systemd-isolated build and verifier realms
+with their nonempty native tool closures. It does not claim that Ruby
+and `ca-certificates` ran inside that systemd lane. A future integrated
+lane may select a cheap Formula whose native closure includes Ruby, but
+the current retained gates keep the two claims distinct.
 
 ## Repositories And Ownership
 

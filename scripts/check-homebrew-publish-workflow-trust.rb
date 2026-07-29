@@ -29,7 +29,6 @@ MAGIC_NIX_ACTION = "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17
 UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "cf5bc21c6b127e168ef7cfa982ba7db62874690e"
-NATIVE_COMPATIBILITY_TAP_SHA = "408a1cbf4e30984fbe5a76e54e9d3ac450af05de"
 NATIVE_CA_PROOF_SHA256 =
   "2760a5c1f33de6d9c3235e1e3ee5086aade4d5566df22357e6ab30708db6eac3"
 NATIVE_LOCK_GENERATION_RUN_SHA256 =
@@ -40,7 +39,7 @@ NATIVE_CA_PROOF_RUN_SHA256 =
   "c8192c2521864005b34e9eaa39d44d11d580997db39d6e64f2afe30fe447eb91"
 NATIVE_CA_VALIDATION_RUN_SHA256 =
   "03a44f5ed33df47783fe971de60d0b2fe08b73ef642af12298a863642bd598aa"
-PUBLISHER_PLAN_DIGEST = "1c01b151307aee55b9c6d5f9a445e8afb494f8470247b3653fcaa5dc891ddcf1"
+PUBLISHER_PLAN_DIGEST = "59a72fdf1dbe3b115208e760d9b28869dcf98e293b4a8b555d4a8b557c58d1c4"
 PUBLISHER_BUILD_DIGEST = "9c46f62b918968696fcab222dd2735e85af894e13beacdd6d27a3a0d6b3ef7aa"
 PUBLISHER_UPLOAD_DIGEST = "a44f8b7b2eb1d4b9436496cc9a099b80fb70be52143820e77fb7196e807d302f"
 PUBLISHER_INDEX_DIGEST = "7b05a7e4b076628ab999f9edb2e39a6641c4bb9a2563afcf19be15a119566bbe"
@@ -131,18 +130,13 @@ end
 def caller_validation_result(source, overrides = {})
   env = {
     "CALLER_EVENT_NAME" => "repository_dispatch",
-    "CALLER_PR_HEAD" => "",
     "CALLER_REF" => "refs/heads/main",
     "CALLER_REPOSITORY" => "kandelo-dev/homebrew-tap-core",
     "CALLER_WORKFLOW_REF" =>
       "kandelo-dev/homebrew-tap-core/.github/workflows/dry-run-bottles.yml@refs/heads/main",
-    "ARCHES" => "wasm32",
     "DRY_RUN" => "true",
-    "FORCE" => "false",
-    "FORMULAE" => "bzip2",
     "KANDELO_REPOSITORY" => "Automattic/kandelo",
     "KANDELO_REF" => "main",
-    "NATIVE_COMPATIBILITY_PR" => "false",
     "PACKAGE_GENERATION_WASM32" => "",
     "PACKAGE_GENERATION_WASM64" => "",
     "TAP_NAME" => "kandelo-dev/tap-core",
@@ -472,52 +466,6 @@ def check_caller_validation_behavior(workflow)
           ), "publisher write path accepts #{label} as its tap source")
   end
 
-  pr_head = "9" * 40
-  compatibility_caller = {
-    "ARCHES" => "wasm32",
-    "CALLER_EVENT_NAME" => "pull_request",
-    "CALLER_PR_HEAD" => pr_head,
-    "CALLER_REF" => "refs/pull/123/merge",
-    "CALLER_REPOSITORY" => "Automattic/kandelo",
-    "CALLER_WORKFLOW_REF" =>
-      "Automattic/kandelo/.github/workflows/" \
-      "homebrew-native-publisher-compatibility.yml@refs/pull/123/merge",
-    "DRY_RUN" => "true",
-    "FORCE" => "true",
-    "FORMULAE" => "bzip2",
-    "KANDELO_REF" => pr_head,
-    "NATIVE_COMPATIBILITY_PR" => "true",
-    "TAP_REF" => NATIVE_COMPATIBILITY_TAP_SHA,
-  }.freeze
-  compatibility = caller_validation_result(source, compatibility_caller)
-  check(compatibility["status"] == 0 &&
-        compatibility["outputs"] == expected_caller_outputs(
-          pr_head, NATIVE_COMPATIBILITY_TAP_SHA
-        ), "publisher rejects its fixed read-only exact-PR compatibility caller")
-  {
-    "write mode" => { "DRY_RUN" => "false" },
-    "unforced build" => { "FORCE" => "false" },
-    "different Formula" => { "FORMULAE" => "zlib" },
-    "different architecture" => { "ARCHES" => "wasm64" },
-    "different tap source" => { "TAP_REF" => "8" * 40 },
-    "head substitution" => { "KANDELO_REF" => "8" * 40 },
-    "workflow substitution" => {
-      "CALLER_WORKFLOW_REF" =>
-        "Automattic/kandelo/.github/workflows/staging-build.yml@" \
-        "refs/pull/123/merge",
-    },
-    "generation authority" => {
-      "PACKAGE_GENERATION_WASM32" => SELF_TEST_PACKAGE_GENERATION_WASM32,
-    },
-  }.each do |label, override|
-    rejected = caller_validation_result(
-      source, compatibility_caller.merge(override)
-    )
-    check(rejected["status"] == 2 &&
-          rejected["stdout"].include?(
-            "native compatibility PR caller is not the fixed read-only proof"
-          ), "publisher compatibility caller accepts #{label}")
-  end
 end
 
 def check_kandelo_main_admission_behavior(workflow)
@@ -794,7 +742,7 @@ def check_tap_callers
   )
 end
 
-def check_native_compatibility_caller(workflow)
+def check_native_compatibility_workflow(workflow)
   ca_proof_path = File.join(
     REPO_ROOT, "scripts/test-homebrew-native-ca-lifecycle.sh"
   )
@@ -842,7 +790,7 @@ def check_native_compatibility_caller(workflow)
   check_common(workflow, "native compatibility workflow")
 
   jobs = workflow_jobs(workflow)
-  check(jobs.keys == %w[exact-linux-contract publisher-realms],
+  check(jobs.keys == %w[exact-linux-contract],
         "native compatibility workflow job set changed")
   linux = jobs.fetch("exact-linux-contract")
   check(linux.keys.sort == %w[permissions runs-on steps timeout-minutes] &&
@@ -980,27 +928,6 @@ def check_native_compatibility_caller(workflow)
           "if-no-files-found" => "error",
           "retention-days" => 14,
         }, "native compatibility CA evidence changed")
-
-  publisher = jobs.fetch("publisher-realms")
-  check(publisher.keys.sort == %w[needs permissions uses with] &&
-        publisher["needs"] == ["exact-linux-contract"] &&
-        exact_permissions?(publisher["permissions"], {
-          "contents" => "read",
-        }) &&
-        publisher["uses"] ==
-          "./.github/workflows/reusable-homebrew-bottle-publish.yml" &&
-        publisher["with"] == {
-          "kandelo-repository" => "Automattic/kandelo",
-          "kandelo-ref" => "${{ github.event.pull_request.head.sha }}",
-          "tap-repository" => "kandelo-dev/homebrew-tap-core",
-          "tap-name" => "kandelo-dev/tap-core",
-          "tap-ref" => NATIVE_COMPATIBILITY_TAP_SHA,
-          "formulae" => "bzip2",
-          "arches" => "wasm32",
-          "force" => true,
-          "dry-run" => true,
-          "native-compatibility-pr" => true,
-        }, "native compatibility publisher realm binding changed")
 end
 
 def check_repository_canary(workflow)
@@ -1208,7 +1135,6 @@ def check_publisher(workflow)
     "package-generation-wasm64" => { "type" => "string", "default" => "" },
     "force" => { "type" => "boolean", "default" => false },
     "dry-run" => { "type" => "boolean", "default" => false },
-    "native-compatibility-pr" => { "type" => "boolean", "default" => false },
     "require-vfs-acceptance" => { "type" => "boolean", "default" => false },
   }, "publisher inputs changed")
   check(!workflow.key?("permissions"), "publisher requests workflow-wide permissions")
@@ -1327,18 +1253,12 @@ def check_publisher(workflow)
         validation["shell"] == "bash" &&
         validation["env"] == {
           "CALLER_EVENT_NAME" => "${{ github.event_name }}",
-          "CALLER_PR_HEAD" => "${{ github.event.pull_request.head.sha }}",
           "CALLER_REF" => "${{ github.ref }}",
           "CALLER_REPOSITORY" => "${{ github.repository }}",
           "CALLER_WORKFLOW_REF" => "${{ github.workflow_ref }}",
-          "ARCHES" => "${{ inputs.arches }}",
           "DRY_RUN" => "${{ inputs.dry-run }}",
-          "FORCE" => "${{ inputs.force }}",
-          "FORMULAE" => "${{ inputs.formulae }}",
           "KANDELO_REPOSITORY" => "${{ inputs.kandelo-repository }}",
           "KANDELO_REF" => "${{ inputs.kandelo-ref }}",
-          "NATIVE_COMPATIBILITY_PR" =>
-            "${{ inputs.native-compatibility-pr }}",
           "PACKAGE_GENERATION_WASM32" => "${{ inputs.package-generation-wasm32 }}",
           "PACKAGE_GENERATION_WASM64" => "${{ inputs.package-generation-wasm64 }}",
           "TAP_NAME" => "${{ inputs.tap-name }}",
@@ -1351,13 +1271,6 @@ def check_publisher(workflow)
     'normalized_caller_repository="$(printf \'%s\' "$CALLER_REPOSITORY" | tr \'[:upper:]\' \'[:lower:]\')"',
     'normalized_tap_repository="$(printf \'%s\' "$TAP_REPOSITORY" | tr \'[:upper:]\' \'[:lower:]\')"',
     'normalized_tap_name="$(printf \'%s\' "$TAP_NAME" | tr \'[:upper:]\' \'[:lower:]\')"',
-    '[ "$NATIVE_COMPATIBILITY_PR" = "true" ]',
-    '[[ "$CALLER_REF" =~ ^refs/pull/([1-9][0-9]*)/merge$ ]]',
-    'homebrew-native-publisher-compatibility.yml@refs/pull/${BASH_REMATCH[1]}/merge',
-    '[ "$KANDELO_REF" = "$CALLER_PR_HEAD" ]',
-    '[ "$FORMULAE" = "bzip2" ]',
-    '[ "$ARCHES" = "wasm32" ]',
-    NATIVE_COMPATIBILITY_TAP_SHA,
     '[ "$normalized_caller_repository" = "$normalized_tap_repository" ]',
     '[ "$CALLER_REF" = "refs/heads/main" ]',
     '[ "$CALLER_EVENT_NAME" = "repository_dispatch" ]',
@@ -6977,7 +6890,7 @@ def self_test(publisher, native_compatibility, maintenance,
     expect_rejection(label) do
       mutated = deep_copy(native_compatibility)
       mutation.call(mutated)
-      check_native_compatibility_caller(mutated)
+      check_native_compatibility_workflow(mutated)
     end
   end
 
@@ -8171,7 +8084,7 @@ begin
     publisher, native_compatibility, maintenance, repository_canary
   )
   check_publisher(publisher)
-  check_native_compatibility_caller(native_compatibility)
+  check_native_compatibility_workflow(native_compatibility)
   check_caller_validation_behavior(publisher)
   check_kandelo_main_admission_behavior(publisher)
   check_tap_source_binding_behavior(publisher)
