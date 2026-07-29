@@ -25,6 +25,7 @@ Core validation surface:
 | Host integration tests | `cd host && npx vitest run` | Host/runtime behavior |
 | Browser app/runtime tests | `cd apps/browser-demos && npx playwright test --grep-invert "@slow" --project=chromium` | Browser host, UI, demo, service worker, VFS image behavior |
 | Browser package-tree contract | `cd apps/browser-demos && npx playwright test test/package-deferred-tree-browser.spec.ts --project=chromium --project=firefox --project=webkit` | Browser lazy/eager package-tree parity, including Safari/WebKit |
+| Browser process-memory ownership | `cd apps/browser-demos && npx playwright test test/process-memory-retirement.spec.ts --project=chromium --project=firefox --project=webkit` | Exact-generation retirement under a strict live-memory budget on every browser engine |
 | Browser asset check | `bash scripts/ci-check-browser-assets.sh` | Browser asset/import changes |
 | musl libc-test | `scripts/run-libc-tests.sh` | libc, syscall, and kernel semantic changes |
 | Open POSIX Test Suite | `scripts/run-posix-tests.sh` | POSIX API behavior |
@@ -66,3 +67,11 @@ tests where possible and manually verify user-visible browser demo fixes with:
 ```bash
 ./run.sh browser
 ```
+
+Physical resident set size (RSS) is not an absolute cross-engine contract.
+For process-memory retirement work, pair the deterministic cross-browser
+ownership test above with the scheduled
+`process-memory-retirement-telemetry.yml` matched-control trace. The scheduled
+workflow compares two production trials with deliberately live Kandelo
+processes on the same engine and runner. An inconclusive trace is evidence to
+repeat or investigate, not evidence that reclamation passed.

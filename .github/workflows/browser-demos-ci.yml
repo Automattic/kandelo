@@ -63,6 +63,7 @@ jobs:
             test/boot-current-boundary.spec.ts \
             test/coi.spec.ts \
             test/package-deferred-tree-browser.spec.ts \
+            test/process-memory-rss-telemetry.spec.ts \
             test/vfs-import-seal-boundary.spec.ts \
             test/wasm-trap-signal.spec.ts \
             --project=chromium \

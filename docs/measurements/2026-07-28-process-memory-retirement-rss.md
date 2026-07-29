@@ -182,3 +182,88 @@ matched 32 MiB controls, and the later 4 MiB calibration remained bounded on
 both engines at much lower retained logical cost. WebKit remains engine-timed,
 so whole-worker containment and non-reuse—not RSS timing—remain the
 correctness boundary.
+
+## Persistent regression coverage added 2026-07-29
+
+The one-time measurements above are now backed by two different persistent
+checks. They deliberately answer different questions:
+
+1. Every host-runtime pull request runs 100 real fork/exec cycles under a
+   64 MiB live-address-space budget in Chromium, Firefox, and WebKit. This
+   fails deterministically if Kandelo stops releasing exact-generation
+   allocation authority. It does not claim that a JavaScript engine collected
+   physical backing by a deadline.
+2. A weekly and manually dispatchable workflow runs engine-local RSS
+   telemetry. On each browser and runner it records two 48-child retirement
+   trials and a matched control containing 16 deliberately live Kandelo
+   processes. Each process touches 8 MiB. The control must first show a strong
+   RSS slope and growth, proving that the sampler can see resident process
+   backing in that run.
+
+The scheduled workflow reports a regression only when both production trials
+grow like the sensitive live-process control without a meaningful descent.
+It reports a pass only when both late-window slope and growth stay separated
+from the control in both trials. A descending but newly rising trace, one
+disagreeing trial, or an insensitive control is reported as inconclusive rather
+than converted into a false pass or a flaky failure. Each run retains raw
+per-sample process trees, RSS values, browser and Playwright versions, runner
+metadata, workload parameters, diagnostics, and server logs as a workflow
+artifact.
+
+The trace also records its process-attribution model, the minimum attributed
+process count, and whether all expected browser descendants were attributable.
+The scheduled Linux runner follows the Playwright BrowserServer root and every
+transitive child. A run without an attributable page process is inconclusive.
+On macOS, WebKit's launchd-owned XPC helpers are outside that tree, so this
+standalone harness truthfully reports incomplete attribution there instead of
+using a deceptively small RSS sum.
+
+A dedicated cgroup-v2 survival sentinel would be stronger on Linux: put the
+whole browser launch in one cgroup, record `memory.current`, `memory.peak`, and
+`memory.events`. It must also record `memory.swap.current` or safely disable
+swap inside only that test cgroup: touched shared pages leaving RSS through
+swap is not proof that their backing became collectible. The sentinel would
+prove production completes below a calibrated memory-plus-swap limit while the
+retained control reaches that limit. It would retain helper attribution even
+if a process were reparented. This is not the current merge gate because
+GitHub-hosted runners do not expose cgroup delegation as a stable workflow
+contract, and an intentional cgroup out-of-memory kill needs an external
+supervisor to preserve the trace. The current artifact records the runner's
+cgroup-v2 membership and available memory and swap controls so that feasibility
+can be reevaluated without weakening the matched-control test.
+
+This design can detect a future leak of process generations without comparing
+Firefox's absolute RSS with Chromium or WebKit. It still cannot promise a
+collection deadline or prove that every retained byte belongs to one Wasm
+backing. An inconclusive scheduled result requires repetition or investigation;
+it is not positive reclamation evidence.
+
+### What each persistent check proves
+
+The 64 MiB browser test is intentionally not described as proof that every
+JavaScript alias disappeared. It proves that real fork/exec generations can
+repeatedly pass the allocator's live-address-space gate and that the public
+kernel process table returns to only its permanent, address-space-free PID 1
+after every cycle. The allocator releases that authority only after the exact
+detach transaction commits, but its short retirement backlog is not a
+garbage-collection deadline.
+
+The internal ownership edges are covered separately:
+
+| Ownership edge | Persistent evidence |
+|---|---|
+| Fresh leases, live-byte accounting, duplicate release, and bounded retirement telemetry | `host/test/process-memory-allocator.test.ts` |
+| A deliberately retained typed-array wrapper blocks finalization | `host/test/process-memory-retained-wrapper.test.ts` |
+| Process Worker terminal identity and quiescence ordering | `host/test/worker-quiescence.test.ts` and `host/test/node-process-teardown-ordering.test.ts` |
+| Main and pthread syscall-channel waiter settlement | `host/test/channel-listener-reclamation.test.ts` and `host/test/multi-worker.test.ts` |
+| Kernel device, buffer-object, graphics, and framebuffer view removal | `host/test/process-view-teardown.test.ts` |
+| Browser-main framebuffer wrapper and generation-tombstone removal | `host/test/browser-kernel.test.ts` |
+| Kernel process-table reaping | the three-engine browser churn test and `host/test/host-owned-process-reap.test.ts` |
+| Engine-visible physical-memory separation from retained live processes | the scheduled matched-control RSS telemetry |
+
+No public API exposes the allocator's internal lease, channel-listener,
+pthread-Worker, and framebuffer-owner collections as one aggregate count.
+Adding a test-only aggregate would risk making a synthetic inspection path the
+contract. The tests above instead assert each owning subsystem at its
+authoritative boundary, while the cross-engine end-to-end test and RSS trace
+exercise their composition.

@@ -13,6 +13,10 @@ const memoryFsModulePath = resolve(
   repoRoot,
   "host/src/vfs/memory-fs.ts",
 );
+const kernelWasmPath = resolve(
+  repoRoot,
+  "local-binaries/kernel.wasm",
+);
 const forkExecWasmPath = resolve(
   repoRoot,
   "local-binaries/programs/wasm32/fork-exec.wasm",
@@ -22,6 +26,7 @@ const execChildWasmPath = resolve(
   "local-binaries/programs/wasm32/exec-child.wasm",
 );
 const CHURN_ITERATIONS = 100;
+
 test("browser retires exact-fenced process memory across repeated fork and exec", async ({
   page,
   baseURL,
@@ -46,6 +51,7 @@ test("browser retires exact-fenced process memory across repeated fork and exec"
       churnIterations,
       browserKernelUrl,
       memoryFsUrl,
+      kernelBytes,
       forkExecBytes,
       execChildBytes,
     }) => {
@@ -59,6 +65,7 @@ test("browser retires exact-fenced process memory across repeated fork and exec"
       let stdout = "";
       let stderr = "";
       const diagnostics: Array<{ source: string; message: string }> = [];
+      const observedPids = new Set<number>();
       const kernel = new BrowserKernel({
         maxWorkers: 4,
         // The SDK's fallback brk base makes each fixture address space about
@@ -77,6 +84,9 @@ test("browser retires exact-fenced process memory across repeated fork and exec"
           source: string;
           message: string;
         }) => diagnostics.push(diagnostic),
+        onProcessEvent: (event: { pid: number }) => {
+          observedPids.add(event.pid);
+        },
       });
 
       try {
@@ -92,6 +102,7 @@ test("browser retires exact-fenced process memory across repeated fork and exec"
           new Uint8Array(execChildBytes),
         );
         await kernel.initFromImage({
+          kernelWasm: new Uint8Array(kernelBytes).buffer,
           vfsImage: await imageOwner.saveImage(),
         });
 
@@ -101,8 +112,37 @@ test("browser retires exact-fenced process memory across repeated fork and exec"
             new Uint8Array(forkExecBytes).buffer,
             ["fork-exec"],
           ));
+          const deadline = Date.now() + 2_000;
+          let remainingProcesses = await kernel.enumProcs();
+          // WHY: PID 1 is the kernel's permanent init authority and has no
+          // guest address space. Every spawned process generation must still
+          // disappear before the next churn cycle starts.
+          while (
+            remainingProcesses.some(
+              (process: { pid: number }) => process.pid !== 1,
+            )
+          ) {
+            if (Date.now() >= deadline) {
+              throw new Error(
+                `process table stayed live after iteration ${iteration}: ${
+                  JSON.stringify(remainingProcesses)
+                }`,
+              );
+            }
+            await new Promise<void>((resolvePoll) =>
+              setTimeout(resolvePoll, 10)
+            );
+            remainingProcesses = await kernel.enumProcs();
+          }
         }
-        return { exitCodes, stdout, stderr, diagnostics };
+        return {
+          exitCodes,
+          stdout,
+          stderr,
+          diagnostics,
+          observedPidCount: observedPids.size,
+          remainingProcesses: await kernel.enumProcs(),
+        };
       } finally {
         await kernel.destroy();
       }
@@ -114,6 +154,7 @@ test("browser retires exact-fenced process memory across repeated fork and exec"
         baseURL,
       ).href,
       memoryFsUrl: new URL(`/@fs/${memoryFsModulePath}`, baseURL).href,
+      kernelBytes: Array.from(readFileSync(kernelWasmPath)),
       forkExecBytes: Array.from(readFileSync(forkExecWasmPath)),
       execChildBytes: Array.from(readFileSync(execChildWasmPath)),
     },
@@ -127,5 +168,9 @@ test("browser retires exact-fenced process memory across repeated fork and exec"
   );
   expect(result.stderr).toBe("");
   expect(result.diagnostics).toEqual([]);
+  expect(result.observedPidCount).toBeGreaterThan(CHURN_ITERATIONS);
+  expect(result.remainingProcesses).toEqual([
+    expect.objectContaining({ pid: 1, ppid: 0, comm: "init" }),
+  ]);
   expect(runtimeErrors).toEqual([]);
 });

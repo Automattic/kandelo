@@ -1,0 +1,153 @@
+name: Process memory retirement telemetry
+
+on:
+  schedule:
+    - cron: "23 7 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: process-memory-retirement-telemetry
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Build exact memory-test inputs
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: ./.github/actions/setup-nix
+
+      - name: Materialize the pinned musl source
+        run: git submodule update --init --depth 1 libc/musl
+
+      - name: Build the kernel and memory-churn fixture
+        run: |
+          bash scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+            bash scripts/build-musl.sh
+            bash packages/registry/kernel/build-kernel.sh
+            wasm32posix-cc \
+              host/test/fixtures/process-memory-reclamation-churn.c \
+              -o host/test/fixtures/process-memory-reclamation-churn.wasm
+            mkdir -p process-memory-telemetry-inputs
+            cp target/wasm32-unknown-unknown/release/kandelo_kernel.wasm \
+              process-memory-telemetry-inputs/kandelo-kernel.wasm
+            cp host/test/fixtures/process-memory-reclamation-churn.wasm \
+              process-memory-telemetry-inputs/
+          '
+
+      - name: Upload exact test inputs
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: process-memory-telemetry-inputs
+          path: process-memory-telemetry-inputs
+          if-no-files-found: error
+          retention-days: 7
+
+  measure:
+    name: ${{ matrix.engine }} matched RSS trend
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [chromium, firefox, webkit]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: |
+            package-lock.json
+            apps/browser-demos/package-lock.json
+            host/package-lock.json
+
+      - name: Install JavaScript dependencies
+        run: |
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+            npm ci --no-audit --no-fund
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+            npm --prefix host ci --no-audit --no-fund
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+            npm --prefix apps/browser-demos ci --no-audit --no-fund
+
+      - name: Install ${{ matrix.engine }}
+        working-directory: apps/browser-demos
+        run: npx playwright install --with-deps ${{ matrix.engine }}
+
+      - name: Download exact test inputs
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: process-memory-telemetry-inputs
+          path: process-memory-telemetry-inputs
+
+      - name: Measure retired and deliberately live process memory
+        id: measure
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p process-memory-telemetry-results
+          npx tsx \
+            apps/browser-demos/scripts/process-memory-retirement-rss.ts \
+            --engine "${{ matrix.engine }}" \
+            --kernel \
+              process-memory-telemetry-inputs/kandelo-kernel.wasm \
+            --program \
+              process-memory-telemetry-inputs/process-memory-reclamation-churn.wasm \
+            --output \
+              "process-memory-telemetry-results/${{ matrix.engine }}.json" \
+            2>&1 |
+            tee "process-memory-telemetry-results/${{ matrix.engine }}.log"
+
+      - name: Upload raw engine-local trace
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: process-memory-rss-${{ matrix.engine }}
+          path: process-memory-telemetry-results
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Report matched-trend verdict
+        if: always()
+        shell: bash
+        run: |
+          result="process-memory-telemetry-results/${{ matrix.engine }}.json"
+          test -f "$result" || {
+            echo "::error::RSS telemetry did not produce a JSON trace"
+            exit 1
+          }
+          status="$(jq -r '.verdict.status' "$result")"
+          reason="$(jq -r '.verdict.reason' "$result")"
+          {
+            echo "### ${{ matrix.engine }} process-memory RSS"
+            echo
+            echo "- Verdict: \`$status\`"
+            echo "- Reason: $reason"
+            echo "- Raw trace: \`process-memory-rss-${{ matrix.engine }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          case "$status" in
+            pass)
+              ;;
+            inconclusive)
+              echo "::warning::$reason"
+              # An insensitive sampler supplies no reclamation evidence.
+              # Preserve the trace, but do not present this run as green.
+              exit 1
+              ;;
+            regression)
+              echo "::error::$reason"
+              exit 1
+              ;;
+            *)
+              echo "::error::unknown RSS telemetry verdict: $status"
+              exit 1
+              ;;
+          esac

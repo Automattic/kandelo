@@ -188,11 +188,17 @@ case "$suite" in
             run_timed 20m "Run Chromium browser demo smoke suite" \
                 npx playwright test --grep-invert "@slow|@trap-signal" \
                     --project=chromium
-            run_timed 10m "Run cross-browser contract smoke suite" \
+            # WHY: RSS timing is not a portable PR gate, but the exact
+            # ownership invariant is. Every supported engine must survive
+            # repeated real fork/exec generations inside the same strict
+            # live-memory budget before scheduled RSS telemetry is meaningful.
+            run_timed 15m "Run cross-browser contract smoke suite" \
                 npx playwright test \
                     test/boot-current-boundary.spec.ts \
                     test/coi.spec.ts \
                     test/package-deferred-tree-browser.spec.ts \
+                    test/process-memory-rss-telemetry.spec.ts \
+                    test/process-memory-retirement.spec.ts \
                     test/vfs-import-seal-boundary.spec.ts \
                     test/wasm-trap-signal.spec.ts \
                     --project=chromium --project=firefox --project=webkit

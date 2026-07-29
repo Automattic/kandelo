@@ -394,6 +394,9 @@ assert_matches ci_control_changed_files \
 assert_matches ci_control_changed_files \
   ".github/workflows/prepare-merge.yml" \
   ".github/workflows/prepare-merge.yml"
+assert_matches ci_control_changed_files \
+  ".github/workflows/process-memory-retirement-telemetry.yml" \
+  ".github/workflows/process-memory-retirement-telemetry.yml"
 for package_index_contract in \
   tools/xtask/src/index_candidate.rs \
   tools/xtask/src/index_toml.rs \

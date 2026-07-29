@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
+#include <unistd.h>
 
 extern char **environ;
 
@@ -43,6 +44,39 @@ static int touch_memory(long mib) {
     checksum += memory[bytes - 1];
     free((void *)memory);
     return checksum == 0 ? 11 : 0;
+}
+
+static int hold_memory(long mib) {
+    const size_t bytes = (size_t)mib * 1024u * 1024u;
+    volatile unsigned char *memory = malloc(bytes);
+    if (memory == NULL) {
+        fprintf(stderr, "control malloc(%zu) failed\n", bytes);
+        return 12;
+    }
+
+    uint32_t checksum = 0;
+    for (size_t offset = 0; offset < bytes; offset += 4096u) {
+        unsigned char value = (unsigned char)((offset >> 12) | 1u);
+        memory[offset] = value;
+        checksum += memory[offset];
+    }
+    memory[bytes - 1] = (unsigned char)(checksum | 1u);
+    checksum += memory[bytes - 1];
+    if (checksum == 0) {
+        return 13;
+    }
+
+    /*
+     * WHY: scheduled RSS telemetry needs a positive control measured by the
+     * same Kandelo process path. Keeping a real process and its touched
+     * address space live proves that the engine-local sampler can distinguish
+     * retained memory before it judges retired-memory behavior.
+     */
+    printf("PROCESS_MEMORY_CONTROL_READY\n");
+    fflush(stdout);
+    for (;;) {
+        pause();
+    }
 }
 
 static int run_parent(long count, long child_mib) {
@@ -112,6 +146,14 @@ int main(int argc, char **argv) {
             return 2;
         }
         return touch_memory(child_mib);
+    }
+    if (argc == 3 && strcmp(argv[1], "hold") == 0) {
+        long child_mib = parse_positive(argv[2], 64);
+        if (child_mib < 0) {
+            fprintf(stderr, "invalid control MiB: %s\n", argv[2]);
+            return 2;
+        }
+        return hold_memory(child_mib);
     }
     if (argc != 3) {
         fprintf(stderr, "usage: %s <count> <child-mib>\n", argv[0]);
