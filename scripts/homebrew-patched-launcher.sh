@@ -16,10 +16,13 @@ HOMEBREW_PATCHED_PROTECTED_XTASK_STATE=""
 HOMEBREW_PATCHED_PROTECTED_XTASK_SHA256=""
 HOMEBREW_PATCHED_PLATFORM_ROOT=""
 HOMEBREW_PATCHED_PLATFORM_SHA256=""
+HOMEBREW_PATCHED_SYSROOT_ROOT=""
+HOMEBREW_PATCHED_SYSROOT_SHA256=""
 HOMEBREW_PATCHED_RECIPE_RUNNER=""
 HOMEBREW_PATCHED_RECIPE_RUNNER_STATE=""
 HOMEBREW_PATCHED_RECIPE_RUNNER_SHA256=""
 HOMEBREW_PATCHED_RECIPE_RUNNER_CONFIG=""
+HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE=""
 HOMEBREW_PATCHED_RECIPE_SEALED_ROOT=""
 HOMEBREW_PATCHED_RECIPE_SUPERVISOR_UNIT=""
 HOMEBREW_PATCHED_RECIPE_USER=""
@@ -63,11 +66,15 @@ HOMEBREW_PATCHED_STAGED_INPUT_DIR=""
 HOMEBREW_PATCHED_STAGED_INPUT_PATH=""
 
 homebrew_sha256_stream() {
+  local output digest
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum | awk '{print $1}'
+    output="$(sha256sum)" || return
   else
-    shasum -a 256 | awk '{print $1}'
+    output="$(shasum -a 256)" || return
   fi
+  digest="${output%% *}"
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 2
+  printf '%s\n' "$digest"
 }
 
 homebrew_patched_launcher_integrity() {
@@ -123,6 +130,65 @@ homebrew_patched_launcher_sealed_directory_state() {
   printf '%s\n' "$state"
 }
 
+homebrew_patched_launcher_collect_sorted_find_entries() {
+  if [ "$#" -lt 3 ]; then
+    echo "homebrew_patched_launcher_collect_sorted_find_entries: expected ROOT ARRAY LABEL [FIND-EXPRESSION...]" >&2
+    return 2
+  fi
+  local root="$1" array_name="$2" label="$3"
+  shift 3
+  local raw_file sorted_file status=0
+  local -n output_entries="$array_name"
+  output_entries=()
+  raw_file="$(/usr/bin/mktemp /tmp/kandelo-find-raw.XXXXXX)" || return
+  sorted_file="$(/usr/bin/mktemp /tmp/kandelo-find-sorted.XXXXXX)" || {
+    /usr/bin/rm -f -- "$raw_file"
+    return 2
+  }
+  # WHY: `mapfile < <(find ...)` reports only mapfile's status. Materializing
+  # each phase lets a traversal or sort error reject the projection instead of
+  # silently authenticating the subset produced before that error.
+  if /usr/bin/find "$root" "$@" -print0 >"$raw_file"; then
+    if LC_ALL=C /usr/bin/sort -z "$raw_file" >"$sorted_file"; then
+      # shellcheck disable=SC2034 # writes through the caller-selected nameref
+      mapfile -d '' output_entries <"$sorted_file" || status=$?
+    else
+      status=$?
+    fi
+  else
+    status=$?
+  fi
+  if ! /usr/bin/rm -f -- "$raw_file" "$sorted_file"; then
+    echo "homebrew-patched-launcher: could not remove the $label traversal inventory" >&2
+    return 2
+  fi
+  if [ "$status" -ne 0 ]; then
+    echo "homebrew-patched-launcher: could not enumerate the $label tree" >&2
+    return "$status"
+  fi
+}
+
+homebrew_patched_launcher_manifest_sha256() {
+  if [ "$#" -ne 2 ]; then
+    echo "homebrew_patched_launcher_manifest_sha256: expected MANIFEST-FUNCTION ROOT" >&2
+    return 2
+  fi
+  local manifest_function="$1" root="$2" manifest_file digest status=0
+  manifest_file="$(/usr/bin/mktemp /tmp/kandelo-manifest.XXXXXX)" || return
+  if "$manifest_function" "$root" >"$manifest_file"; then
+    digest="$(homebrew_sha256_stream <"$manifest_file")" || status=$?
+  else
+    status=$?
+  fi
+  if ! /usr/bin/rm -f -- "$manifest_file"; then
+    echo "homebrew-patched-launcher: could not remove a projection manifest" >&2
+    return 2
+  fi
+  [ "$status" -eq 0 ] || return "$status"
+  [ -n "$digest" ] || return 2
+  printf '%s\n' "$digest"
+}
+
 homebrew_patched_launcher_platform_projection_manifest() {
   if [ "$#" -ne 1 ]; then
     echo "homebrew_patched_launcher_platform_projection_manifest: expected ROOT" >&2
@@ -138,9 +204,8 @@ homebrew_patched_launcher_platform_projection_manifest() {
     echo "homebrew-patched-launcher: platform projection root is not sealed" >&2
     return 2
   }
-  mapfile -d '' entries < <(
-    /usr/bin/find "$root" -mindepth 1 -print0 | LC_ALL=C /usr/bin/sort -z
-  )
+  homebrew_patched_launcher_collect_sorted_find_entries \
+    "$root" entries "platform projection" -mindepth 1 || return
   [ "${#entries[@]}" -le 512 ] || {
     echo "homebrew-patched-launcher: platform projection exceeds the entry limit" >&2
     return 2
@@ -196,11 +261,113 @@ homebrew_patched_launcher_verify_platform_projection() {
   fi
   local actual_sha256
   actual_sha256="$(
-    homebrew_patched_launcher_platform_projection_manifest \
-      "$HOMEBREW_PATCHED_PLATFORM_ROOT" | homebrew_sha256_stream
+    homebrew_patched_launcher_manifest_sha256 \
+      homebrew_patched_launcher_platform_projection_manifest \
+      "$HOMEBREW_PATCHED_PLATFORM_ROOT"
   )" || return
   [ "$actual_sha256" = "$HOMEBREW_PATCHED_PLATFORM_SHA256" ] || {
     echo "homebrew-patched-launcher: protected platform projection changed after isolation" >&2
+    return 1
+  }
+}
+
+homebrew_patched_launcher_sysroot_projection_manifest() {
+  if [ "$#" -ne 1 ]; then
+    echo "homebrew_patched_launcher_sysroot_projection_manifest: expected ROOT" >&2
+    return 2
+  fi
+  local root="$1" entry relative digest state target file_bytes total_bytes=0
+  local -a entries=()
+  [ -d "$root" ] && [ ! -L "$root" ] || {
+    echo "homebrew-patched-launcher: sysroot projection is not one real directory" >&2
+    return 2
+  }
+  homebrew_patched_launcher_sealed_directory_state "$root" >/dev/null || {
+    echo "homebrew-patched-launcher: sysroot projection root is not sealed" >&2
+    return 2
+  }
+  homebrew_patched_launcher_collect_sorted_find_entries \
+    "$root" entries "sysroot projection" -mindepth 1 || return
+  [ "${#entries[@]}" -le 65536 ] || {
+    echo "homebrew-patched-launcher: sysroot projection exceeds the entry limit" >&2
+    return 2
+  }
+  for entry in "${entries[@]}"; do
+    relative="${entry#"$root"/}"
+    [ "$relative" != "$entry" ] && [ -n "$relative" ] &&
+      [[ "$relative" != *$'\n'* ]] && [[ "$relative" != *$'\t'* ]] || {
+      echo "homebrew-patched-launcher: sysroot projection has an unsafe path" >&2
+      return 2
+    }
+    if [ -d "$entry" ] && [ ! -L "$entry" ]; then
+      state="$(
+        homebrew_patched_launcher_sealed_directory_state "$entry"
+      )" || {
+        echo "homebrew-patched-launcher: sysroot projection directory is not sealed: $relative" >&2
+        return 2
+      }
+      printf 'd\t%s\t%s\n' "$state" "$relative"
+    elif [ -f "$entry" ] && [ ! -L "$entry" ]; then
+      state="$(/usr/bin/stat -c '%u:%g:%a:%h:%s' "$entry")" || return 2
+      case "$state" in
+        0:0:444:1:*|0:0:555:1:*) ;;
+        *)
+          echo "homebrew-patched-launcher: sysroot projection file is not sealed: $relative" >&2
+          return 2
+          ;;
+      esac
+      file_bytes="${state##*:}"
+      [[ "$file_bytes" =~ ^[0-9]+$ ]] &&
+        [ "$file_bytes" -le 1073741824 ] || {
+        echo "homebrew-patched-launcher: sysroot projection file exceeds the byte limit: $relative" >&2
+        return 2
+      }
+      total_bytes=$((total_bytes + file_bytes))
+      [ "$total_bytes" -le 2147483648 ] || {
+        echo "homebrew-patched-launcher: sysroot projection exceeds the byte limit" >&2
+        return 2
+      }
+      digest="$(/usr/bin/sha256sum "$entry")" || return 2
+      digest="${digest%% *}"
+      printf 'f\t%s\t%s\t%s\n' "$state" "$digest" "$relative"
+    elif [ -L "$entry" ]; then
+      state="$(/usr/bin/stat -c '%u:%g:%h' "$entry")" || return 2
+      [ "$state" = "0:0:1" ] || {
+        echo "homebrew-patched-launcher: sysroot projection symlink is not sealed: $relative" >&2
+        return 2
+      }
+      target="$(/usr/bin/readlink -- "$entry")" || return 2
+      [ -n "$target" ] && [[ "$target" != /* ]] &&
+        [[ "$target" != *$'\n'* ]] && [[ "$target" != *$'\t'* ]] || {
+        echo "homebrew-patched-launcher: sysroot projection has an unsafe symlink: $relative" >&2
+        return 2
+      }
+      printf 'l\t%s\t%s\t%s\n' "$state" "$target" "$relative"
+    else
+      echo "homebrew-patched-launcher: sysroot projection contains an unsupported node: $relative" >&2
+      return 2
+    fi
+  done
+}
+
+homebrew_patched_launcher_verify_sysroot_projection() {
+  if [ -z "$HOMEBREW_PATCHED_SYSROOT_ROOT" ] && \
+     [ -z "$HOMEBREW_PATCHED_SYSROOT_SHA256" ]; then
+    return 0
+  fi
+  if [ -z "$HOMEBREW_PATCHED_SYSROOT_ROOT" ] || \
+     [ -z "$HOMEBREW_PATCHED_SYSROOT_SHA256" ]; then
+    echo "homebrew-patched-launcher: protected sysroot projection state is incomplete" >&2
+    return 2
+  fi
+  local actual_sha256
+  actual_sha256="$(
+    homebrew_patched_launcher_manifest_sha256 \
+      homebrew_patched_launcher_sysroot_projection_manifest \
+      "$HOMEBREW_PATCHED_SYSROOT_ROOT"
+  )" || return
+  [ "$actual_sha256" = "$HOMEBREW_PATCHED_SYSROOT_SHA256" ] || {
+    echo "homebrew-patched-launcher: protected sysroot projection changed after isolation" >&2
     return 1
   }
 }
@@ -210,6 +377,7 @@ homebrew_patched_launcher_verify_recipe_runner() {
      [ -z "$HOMEBREW_PATCHED_RECIPE_RUNNER_STATE" ] && \
      [ -z "$HOMEBREW_PATCHED_RECIPE_RUNNER_SHA256" ] && \
      [ -z "$HOMEBREW_PATCHED_RECIPE_RUNNER_CONFIG" ] && \
+     [ -z "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" ] && \
      [ -z "$HOMEBREW_PATCHED_RECIPE_SEALED_ROOT" ]; then
     return 0
   fi
@@ -218,6 +386,8 @@ homebrew_patched_launcher_verify_recipe_runner() {
        "$HOMEBREW_PATCHED_PROTECTED_DIR/homebrew-tap-recipe-runner" ] || \
      [ "$HOMEBREW_PATCHED_RECIPE_RUNNER_CONFIG" != \
        "$HOMEBREW_PATCHED_PROTECTED_DIR/runner-config.json" ] || \
+     [ "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" != \
+       "$HOMEBREW_PATCHED_PROTECTED_DIR/native-closure.json" ] || \
      [ "$HOMEBREW_PATCHED_RECIPE_SEALED_ROOT" != \
        "$HOMEBREW_PATCHED_PROTECTED_DIR/sealed-outputs" ] || \
      [ -z "$HOMEBREW_PATCHED_RECIPE_RUNNER_STATE" ] || \
@@ -244,6 +414,16 @@ homebrew_patched_launcher_verify_recipe_runner() {
      [ "$(/usr/bin/stat -c '%u:%g:%a:%h' \
        "$HOMEBREW_PATCHED_PROTECTED_DIR/recipe-group" 2>/dev/null || true)" != \
        "0:0:444:1" ] || \
+     {
+       if [ "$HOMEBREW_PATCHED_NATIVE_SEALED" = "1" ]; then
+         [ "$(/usr/bin/stat -c '%u:%g:%a:%h' \
+           "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" 2>/dev/null || true)" != \
+           "0:0:400:1" ]
+       else
+         [ -e "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" ] || \
+           [ -L "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" ]
+       fi
+     } || \
      ! homebrew_patched_launcher_sealed_directory_state \
        "$HOMEBREW_PATCHED_RECIPE_SEALED_ROOT" >/dev/null 2>&1; then
     echo "homebrew-patched-launcher: protected recipe runner boundary changed" >&2
@@ -300,6 +480,7 @@ homebrew_patched_launcher_prepare_recipe_runner() {
   local passwd_file="$HOMEBREW_PATCHED_PROTECTED_DIR/recipe-passwd"
   local group_file="$HOMEBREW_PATCHED_PROTECTED_DIR/recipe-group"
   local sealed_root="$HOMEBREW_PATCHED_PROTECTED_DIR/sealed-outputs"
+  local native_closure="$HOMEBREW_PATCHED_PROTECTED_DIR/native-closure.json"
   # WHY: the protected directory retains the full 64-hex build identity.
   # `/s` keeps the resulting pathname within Linux sockaddr_un.sun_path.
   local socket_path="$HOMEBREW_PATCHED_PROTECTED_DIR/s"
@@ -308,6 +489,7 @@ homebrew_patched_launcher_prepare_recipe_runner() {
   local runner_source_sha runner_source_sha_after
   local runner_source_state runner_source_state_after
   local runner_sha runner_sha_after runner_state attempt socket_state
+  local supervisor_state
 
   runner_source="$(
     homebrew_patched_launcher_admit_recipe_runner_source "$platform_host_root"
@@ -376,6 +558,10 @@ homebrew_patched_launcher_prepare_recipe_runner() {
     echo "homebrew-patched-launcher: trusted tap recipe runner changed while it was staged" >&2
     return 2
   fi
+  homebrew_patched_launcher_prepare_sysroot_projection \
+    "$sysroot_host_root" "$HOMEBREW_PATCHED_PROTECTED_DIR/sysroot" \
+    "$runner" "$platform_host_root" "$sudo_bin" || return
+  sysroot_host_root="$HOMEBREW_PATCHED_SYSROOT_ROOT"
   # WHY: Formula validation must see the same path it normally uses, but the
   # privileged runner must not trust or expose the mutable tap checkout. Copy
   # only the manifest-closed selected recipe, then bind that projection over
@@ -407,6 +593,7 @@ homebrew_patched_launcher_prepare_recipe_runner() {
     --arg group_file "$group_file" \
     --arg llvm_bin "$llvm_bin" \
     --arg native_cellar "$HOMEBREW_PATCHED_NATIVE_PREFIX/Cellar" \
+    --arg native_closure_manifest "$native_closure" \
     --arg node_bin "$node_bin" \
     --arg platform_alias_root "$platform_alias_root" \
     --arg platform_host_root "$platform_host_root" \
@@ -441,6 +628,7 @@ homebrew_patched_launcher_prepare_recipe_runner() {
         llvm_bin: $llvm_bin,
         manifest_sha256: $a.tap_recipe.manifest_sha256,
         native_cellar: $native_cellar,
+        native_closure_manifest: $native_closure_manifest,
         native_formulae: (($h.build_and_test - $requirements) | sort | unique),
         native_requirement_formulae: $requirements,
         node_bin: $node_bin,
@@ -482,6 +670,7 @@ homebrew_patched_launcher_prepare_recipe_runner() {
   HOMEBREW_PATCHED_RECIPE_RUNNER_STATE="$runner_state"
   HOMEBREW_PATCHED_RECIPE_RUNNER_SHA256="$runner_sha"
   HOMEBREW_PATCHED_RECIPE_RUNNER_CONFIG="$config"
+  HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE="$native_closure"
   HOMEBREW_PATCHED_RECIPE_SEALED_ROOT="$sealed_root"
   HOMEBREW_PATCHED_RECIPE_USER="$recipe_user"
   HOMEBREW_PATCHED_RECIPE_UID="$recipe_uid"
@@ -494,6 +683,9 @@ homebrew_patched_launcher_prepare_recipe_runner() {
   # created before that boundary accepts one peer-credential-authenticated
   # request, then closes its socket. It receives no workflow environment or
   # publisher credentials.
+  # WHY: `ProtectHome=yes` makes nested bind destinations inaccessible.
+  # `tmpfs` still hides every home directory by default while allowing only
+  # the explicitly bound publisher roots below to reappear.
   "$sudo_bin" -n -- "$systemd_run_bin" --quiet --collect \
     "--unit=$supervisor_unit" "--slice=$systemd_slice" \
     "--property=KillMode=control-group" "--property=SendSIGKILL=yes" \
@@ -502,7 +694,7 @@ homebrew_patched_launcher_prepare_recipe_runner() {
     "--property=PrivateNetwork=yes" "--property=PrivateDevices=yes" \
     "--property=PrivateIPC=yes" \
     "--property=RestrictAddressFamilies=AF_UNIX" \
-    "--property=ProtectSystem=strict" "--property=ProtectHome=yes" \
+    "--property=ProtectSystem=strict" "--property=ProtectHome=tmpfs" \
     "--property=ProtectKernelTunables=yes" \
     "--property=ProtectKernelModules=yes" \
     "--property=ProtectControlGroups=yes" \
@@ -514,6 +706,7 @@ homebrew_patched_launcher_prepare_recipe_runner() {
     "--property=SupplementaryGroups=" "--property=UMask=0022" \
     "--property=CapabilityBoundingSet=CAP_CHOWN CAP_DAC_OVERRIDE CAP_FOWNER CAP_KILL" \
     "--property=AmbientCapabilities=" \
+    "--property=BindPaths=$allowed_request_root" \
     "--property=ReadWritePaths=$allowed_request_root" \
     "--property=ReadWritePaths=$HOMEBREW_PATCHED_PROTECTED_DIR" \
     "--property=BindReadOnlyPaths=$HOMEBREW_PATCHED_NATIVE_PREFIX/Cellar" \
@@ -524,7 +717,7 @@ homebrew_patched_launcher_prepare_recipe_runner() {
     "--property=BindReadOnlyPaths=${node_bin%/*}" \
     --service-type=exec --expand-environment=no -- \
     /usr/bin/env -i /usr/bin/python3 -I "$runner" --supervisor || return
-  for ((attempt = 0; attempt < 100; attempt++)); do
+  for ((attempt = 0; attempt < 600; attempt++)); do
     if [ -S "$socket_path" ]; then
       socket_state="$(/usr/bin/stat -c '%u:%g:%a' "$socket_path")" || return
       [ "$socket_state" = "$build_uid:$build_gid:600" ] || {
@@ -533,9 +726,24 @@ homebrew_patched_launcher_prepare_recipe_runner() {
       }
       return 0
     fi
+    if (( attempt % 20 == 19 )); then
+      supervisor_state="$(
+        "$sudo_bin" -n -- "$systemctl_bin" show \
+          --property=ActiveState --value "$supervisor_unit" 2>/dev/null
+      )" || supervisor_state=""
+      case "$supervisor_state" in
+        failed|inactive) break ;;
+      esac
+    fi
     sleep 0.05
   done
   echo "homebrew-patched-launcher: recipe supervisor did not become ready" >&2
+  # The supervisor receives an empty environment and no publisher credential,
+  # so its bounded service status and journal are safe diagnostic evidence.
+  "$sudo_bin" -n -- "$systemctl_bin" status --no-pager --full \
+    "$supervisor_unit" >&2 || true
+  "$sudo_bin" -n -- /usr/bin/journalctl --no-pager --quiet \
+    --unit "$supervisor_unit" --lines 100 >&2 || true
   return 1
 }
 
@@ -575,9 +783,8 @@ homebrew_patched_launcher_prepare_platform_projection() {
   for relative in "${roots[@]}"; do
     source="$kandelo_root/$relative"
     if [ -d "$source" ] && [ ! -L "$source" ]; then
-      mapfile -d '' entries < <(
-        /usr/bin/find "$source" -print0 | LC_ALL=C /usr/bin/sort -z
-      )
+      homebrew_patched_launcher_collect_sorted_find_entries \
+        "$source" entries "platform input $relative" || return
     elif [ -f "$source" ] && [ ! -L "$source" ]; then
       entries=("$source")
     else
@@ -620,20 +827,94 @@ homebrew_patched_launcher_prepare_platform_projection() {
   # WHY: GNU install applies -m only to the final path component and creates
   # missing ancestors as 0755. Build the root-owned tree first, then seal every
   # directory together so path depth cannot change the projection contract.
-  mapfile -d '' projection_directories < <(
-    /usr/bin/find "$destination" -type d -print0 | LC_ALL=C /usr/bin/sort -z
-  )
+  homebrew_patched_launcher_collect_sorted_find_entries \
+    "$destination" projection_directories "platform projection directories" \
+    -type d || return
   for entry in "${projection_directories[@]}"; do
     "$sudo_bin" /usr/bin/chown root:root "$entry" || return
     "$sudo_bin" /usr/bin/chmod 0555 "$entry" || return
   done
-  HOMEBREW_PATCHED_PLATFORM_ROOT="$destination"
   digest="$(
-    homebrew_patched_launcher_platform_projection_manifest "$destination" |
-      homebrew_sha256_stream
+    homebrew_patched_launcher_manifest_sha256 \
+      homebrew_patched_launcher_platform_projection_manifest "$destination"
   )" || return
   [ -n "$digest" ] || return 2
+  HOMEBREW_PATCHED_PLATFORM_ROOT="$destination"
   HOMEBREW_PATCHED_PLATFORM_SHA256="$digest"
+}
+
+homebrew_patched_launcher_prepare_sysroot_projection() {
+  if [ "$#" -ne 5 ]; then
+    echo "homebrew_patched_launcher_prepare_sysroot_projection: expected SYSROOT DESTINATION RUNNER PLATFORM-ROOT SUDO" >&2
+    return 2
+  fi
+  local sysroot="$1" destination="$2" runner="$3" platform_root="$4"
+  local sudo_bin="$5" admitted_runner runner_sha admitted_sha digest status
+
+  [ -z "$HOMEBREW_PATCHED_SYSROOT_ROOT" ] &&
+    [ -z "$HOMEBREW_PATCHED_SYSROOT_SHA256" ] || {
+    echo "homebrew-patched-launcher: sysroot projection state is already populated" >&2
+    return 2
+  }
+  [ -n "$HOMEBREW_PATCHED_PROTECTED_DIR" ] &&
+    [ "$destination" = "$HOMEBREW_PATCHED_PROTECTED_DIR/sysroot" ] &&
+    [ "$runner" = \
+      "$HOMEBREW_PATCHED_PROTECTED_DIR/homebrew-tap-recipe-runner" ] || {
+    echo "homebrew-patched-launcher: sysroot projection left the protected runner root" >&2
+    return 2
+  }
+  [ ! -e "$destination" ] && [ ! -L "$destination" ] || {
+    echo "homebrew-patched-launcher: sysroot projection destination is occupied" >&2
+    return 2
+  }
+  admitted_runner="$(
+    homebrew_patched_launcher_admit_recipe_runner_source "$platform_root"
+  )" || return
+  runner_sha="$(/usr/bin/sha256sum "$runner" 2>/dev/null || true)"
+  runner_sha="${runner_sha%% *}"
+  admitted_sha="$(/usr/bin/sha256sum "$admitted_runner" 2>/dev/null || true)"
+  admitted_sha="${admitted_sha%% *}"
+  if [ ! -f "$runner" ] || [ -L "$runner" ] || \
+     [ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$runner" 2>/dev/null || true)" != \
+       "0:0:555:1" ] || [ "$runner_sha" != "$admitted_sha" ] || \
+     ! /usr/bin/cmp -s -- "$admitted_runner" "$runner"; then
+    echo "homebrew-patched-launcher: sysroot staging runner is not the admitted protected program" >&2
+    return 2
+  fi
+
+  # WHY: ProtectHome hides the workflow checkout from the persistent recipe
+  # supervisor. The already admitted root-owned runner traverses the source via
+  # held descriptors, validates stable pre/post identities, and atomically
+  # publishes a sealed /run projection without granting the recipe checkout
+  # access. Relative contained symlinks remain symlinks so SDK path semantics
+  # do not change at this security boundary.
+  if "$sudo_bin" -n -- /usr/bin/env -i /usr/bin/python3 -I "$runner" \
+      --stage-sysroot --source "$sysroot" --destination "$destination"; then
+    :
+  else
+    status=$?
+    if [ -e "$destination" ] || [ -L "$destination" ]; then
+      "$sudo_bin" -n -- /usr/bin/rm -rf -- "$destination" || return 2
+    fi
+    return "$status"
+  fi
+  digest="$(
+    homebrew_patched_launcher_manifest_sha256 \
+      homebrew_patched_launcher_sysroot_projection_manifest "$destination"
+  )" || {
+    status=$?
+    "$sudo_bin" -n -- /usr/bin/rm -rf -- "$destination" || return 2
+    return "$status"
+  }
+  [ -n "$digest" ] || {
+    "$sudo_bin" -n -- /usr/bin/rm -rf -- "$destination" || return 2
+    return 2
+  }
+  # Publish these as one logical state transition. Cleanup treats one populated
+  # value without the other as tampering, so neither global is visible until
+  # the root-owned output and its complete manifest both validate.
+  HOMEBREW_PATCHED_SYSROOT_ROOT="$destination"
+  HOMEBREW_PATCHED_SYSROOT_SHA256="$digest"
 }
 
 homebrew_patched_launcher_seal_target_dependencies() {
@@ -1523,6 +1804,10 @@ homebrew_patched_launcher_cleanup() {
     echo "homebrew-patched-launcher: protected platform projection changed; preserving launcher state for inspection" >&2
     return 1
   fi
+  if ! homebrew_patched_launcher_verify_sysroot_projection; then
+    echo "homebrew-patched-launcher: protected sysroot projection changed; preserving launcher state for inspection" >&2
+    return 1
+  fi
   if ! homebrew_patched_launcher_verify_recipe_runner; then
     echo "homebrew-patched-launcher: protected recipe runner changed; preserving launcher state for inspection" >&2
     return 1
@@ -1588,10 +1873,13 @@ homebrew_patched_launcher_cleanup() {
     HOMEBREW_PATCHED_PROTECTED_XTASK_SHA256=""
     HOMEBREW_PATCHED_PLATFORM_ROOT=""
     HOMEBREW_PATCHED_PLATFORM_SHA256=""
+    HOMEBREW_PATCHED_SYSROOT_ROOT=""
+    HOMEBREW_PATCHED_SYSROOT_SHA256=""
     HOMEBREW_PATCHED_RECIPE_RUNNER=""
     HOMEBREW_PATCHED_RECIPE_RUNNER_STATE=""
     HOMEBREW_PATCHED_RECIPE_RUNNER_SHA256=""
     HOMEBREW_PATCHED_RECIPE_RUNNER_CONFIG=""
+    HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE=""
     HOMEBREW_PATCHED_RECIPE_SEALED_ROOT=""
     HOMEBREW_PATCHED_RECIPE_SUPERVISOR_UNIT=""
     HOMEBREW_PATCHED_RECIPE_USER=""
@@ -1657,10 +1945,13 @@ homebrew_patched_launcher_cleanup() {
   HOMEBREW_PATCHED_TIER2_ATTESTATION_STATE=""
   HOMEBREW_PATCHED_PLATFORM_ROOT=""
   HOMEBREW_PATCHED_PLATFORM_SHA256=""
+  HOMEBREW_PATCHED_SYSROOT_ROOT=""
+  HOMEBREW_PATCHED_SYSROOT_SHA256=""
   HOMEBREW_PATCHED_RECIPE_RUNNER=""
   HOMEBREW_PATCHED_RECIPE_RUNNER_STATE=""
   HOMEBREW_PATCHED_RECIPE_RUNNER_SHA256=""
   HOMEBREW_PATCHED_RECIPE_RUNNER_CONFIG=""
+  HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE=""
   HOMEBREW_PATCHED_RECIPE_SEALED_ROOT=""
   HOMEBREW_PATCHED_RECIPE_SUPERVISOR_UNIT=""
   HOMEBREW_PATCHED_RECIPE_USER=""
@@ -1976,13 +2267,37 @@ homebrew_patched_launcher_seal_native_prefix() {
       "$HOMEBREW_PATCHED_NATIVE_PREFIX"
     "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/find \
       "$HOMEBREW_PATCHED_NATIVE_PREFIX" -xdev -type d -exec /usr/bin/chmod 0555 {} +
+    # WHY: Homebrew bottles may preserve owner-only or group-only read modes.
+    # Merely removing write bits can leave a root-owned 0400 file unreadable
+    # to the recipe identity. Preserve only executable meaning and publish one
+    # canonical readable mode for every regular file in the sealed closure.
     "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/find \
-      "$HOMEBREW_PATCHED_NATIVE_PREFIX" -xdev -type f \
-      -exec /usr/bin/chmod a-w,u-s,g-s {} +
+      "$HOMEBREW_PATCHED_NATIVE_PREFIX" -xdev -type f -perm /0111 \
+      -exec /usr/bin/chmod 0555 {} +
+    "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/find \
+      "$HOMEBREW_PATCHED_NATIVE_PREFIX" -xdev -type f ! -perm /0111 \
+      -exec /usr/bin/chmod 0444 {} +
     homebrew_assert_tree_not_writable_by_user \
       "$HOMEBREW_PATCHED_BUILD_USER" "$HOMEBREW_PATCHED_NATIVE_PREFIX"
     homebrew_assert_tree_not_replaceable_by_user \
       "$HOMEBREW_PATCHED_BUILD_USER" "$HOMEBREW_PATCHED_NATIVE_PREFIX"
+    if [ -n "$HOMEBREW_PATCHED_RECIPE_RUNNER" ]; then
+      [ "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" = \
+        "$HOMEBREW_PATCHED_PROTECTED_DIR/native-closure.json" ] || {
+        echo "homebrew-patched-launcher: native closure handoff path is incomplete" >&2
+        return 2
+      }
+      # WHY: the supervisor was deliberately started while this path was
+      # absent. Publish the inventory only after every native install has
+      # finished and the entire prefix is root-owned/read-only. The target
+      # Formula therefore cannot add a sealed-looking rack to the closure it
+      # later receives.
+      "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/env -i \
+        /usr/bin/python3 -I "$HOMEBREW_PATCHED_RECIPE_RUNNER" \
+        --stage-native-closure \
+        --source "$HOMEBREW_PATCHED_NATIVE_PREFIX/Cellar" \
+        --destination "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" || return
+    fi
   fi
   HOMEBREW_PATCHED_NATIVE_SEALED=1
 }
@@ -2451,6 +2766,7 @@ homebrew_patched_launcher_isolate() {
   local config_root config_file unsafe_config_entry trust_file trust_lock
   local primary_tap_root primary_tap_owner_root taps_root
   local recipe_user recipe_uid jq_bin node_bin protected_anchor protected_nonce
+  local recipe_runner_path recipe_sealed_root
   local xtask_bin xtask_relative xtask_alias xtask_mode xtask_links
   local xtask_uid xtask_state xtask_sha256 xtask_state_after xtask_sha256_after
   local xtask_alias_state xtask_alias_sha256 tap_recipe_isolation tier2_schema
@@ -2975,6 +3291,12 @@ homebrew_patched_launcher_isolate() {
   HOMEBREW_PATCHED_PROTECTED_DIR_STATE="$(
     /usr/bin/stat -c '%d:%i:%u:%g' "$HOMEBREW_PATCHED_PROTECTED_DIR"
   )" || return
+  # WHY: the wrapper source is frozen before privileged recipe-runner staging.
+  # Derive its two fixed paths from the already-selected protected build root
+  # instead of serializing lifecycle globals that are intentionally populated
+  # only after the runner and sealed-output directory have been authenticated.
+  recipe_runner_path="$HOMEBREW_PATCHED_PROTECTED_DIR/homebrew-tap-recipe-runner"
+  recipe_sealed_root="$HOMEBREW_PATCHED_PROTECTED_DIR/sealed-outputs"
   protected_xtask="$HOMEBREW_PATCHED_PROTECTED_DIR/xtask"
   # WHY: a read-only bind preserves the source inode's uid. Stage the already
   # validated bytes as one root-owned inode before Formula code runs so tap
@@ -3265,8 +3587,8 @@ homebrew_patched_launcher_isolate() {
       printf ' %q %q %q %q' \
         "HOMEBREW_KANDELO_FORK_INSTRUMENT=$source_alias_dir/kandelo/tools/bin/wasm-fork-instrument" \
         "HOMEBREW_KANDELO_LOCAL_ROOT_SPILL=$source_alias_dir/kandelo/tools/bin/wasm-local-root-spill" \
-        "HOMEBREW_KANDELO_TAP_RECIPE_RUNNER=$HOMEBREW_PATCHED_RECIPE_RUNNER" \
-        "HOMEBREW_KANDELO_TAP_RECIPE_SEALED_ROOT=$HOMEBREW_PATCHED_RECIPE_SEALED_ROOT"
+        "HOMEBREW_KANDELO_TAP_RECIPE_RUNNER=$recipe_runner_path" \
+        "HOMEBREW_KANDELO_TAP_RECIPE_SEALED_ROOT=$recipe_sealed_root"
     fi
     printf ' "${bottle_tag_env[@]}" "$command_path" "$@")\n'
     printf 'if [ "$source_audit" != 1 ]; then exec "${systemd_command[@]}"; fi\n'
@@ -3348,9 +3670,15 @@ homebrew_patched_launcher_isolate() {
     homebrew_patched_launcher_prepare_recipe_runner \
       "$build_user" "$build_group" "$recipe_user" "$primary_tap_root" \
       "$platform_source_root" \
-      "$source_alias_dir/kandelo" "$sysroot" "$source_alias_dir/sysroot" \
+      "$source_alias_dir/kandelo" \
+      "$sysroot" "$source_alias_dir/sysroot" \
       "$HOMEBREW_TEMP" "$systemd_slice" "$unit_prefix" "$sudo_bin" \
       "$systemd_run_bin" "$jq_bin" "$node_bin" || return
+    if [ "$HOMEBREW_PATCHED_RECIPE_RUNNER" != "$recipe_runner_path" ] || \
+       [ "$HOMEBREW_PATCHED_RECIPE_SEALED_ROOT" != "$recipe_sealed_root" ]; then
+      echo "homebrew-patched-launcher: staged recipe boundary differs from the frozen wrapper paths" >&2
+      return 2
+    fi
   else
     "$sudo_bin" chmod 0555 "$HOMEBREW_PATCHED_PROTECTED_DIR"
   fi
@@ -3688,6 +4016,7 @@ homebrew_patched_launcher_verify_isolation() {
     "$HOMEBREW_PATCHED_BUILD_USER" || return
   homebrew_patched_launcher_verify_protected_xtask || return
   homebrew_patched_launcher_verify_platform_projection || return
+  homebrew_patched_launcher_verify_sysroot_projection || return
   homebrew_patched_launcher_verify_recipe_runner || return
   [ "$(homebrew_patched_launcher_integrity)" = "$HOMEBREW_PATCHED_INTEGRITY_SHA256" ] || {
     echo "homebrew-patched-launcher: patched Homebrew source changed during Formula execution" >&2

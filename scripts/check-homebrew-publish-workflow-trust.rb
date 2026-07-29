@@ -2485,6 +2485,7 @@ def check_publisher(workflow)
   )
   [
     "--stage-recipe",
+    "--stage-native-closure",
     "selected-recipe",
     "tap recipe manifest differs from the publisher attestation",
     "dir_fd=",
@@ -2508,22 +2509,44 @@ def check_publisher(workflow)
     "NIX_STORE_ROOT_RE",
     "prepare_service_root(service_root, readonly_binds, readwrite_binds)",
     '".." in PurePosixPath(rendered).parts',
+    "safe_systemd_path_text(",
+    "safe_tree_text(",
     "RootDirectory={service_root}",
     "MountAPIVFS=yes",
-    "TemporaryFileSystem=/etc:ro",
     "ProtectHome=tmpfs",
     "RestrictAddressFamilies=AF_UNIX",
     "SupplementaryGroups=",
     "tap recipe exceeded its diagnostic output limit",
+    "MAX_RECIPE_FAILURE_DIAGNOSTIC_BYTES = 65_536",
+    "max_tail_bytes=MAX_RECIPE_FAILURE_DIAGNOSTIC_BYTES",
+    "systemd-run --pipe makes this exact credential-free recipe",
+    "sanitize_recipe_diagnostic(diagnostic_tail)",
+    "BoundedCommandError(",
+    "recipe_execution_error_from_command(error)",
+    "RecipeExecutionError(",
+    "runner_error_reply(error)",
+    "accept_runner_reply(reply)",
     "teardown_recipe_unit(unit, config)",
-    "validate_sealed_dependency_tree(root, label)",
+    'validate_sealed_dependency_tree(root, f"target dependency {name}")',
+    "native closure manifest appeared before native Homebrew was sealed",
+    "authenticated_native_keg_roots(",
+    "native Cellar differs from its authenticated sealed closure",
+    "native Cellar omits declared direct tools",
+    "native_execution_roots(",
+    "requested_native_proxy_roots(",
+    "dependency_keg_binds(",
     "recipe output file has unsafe links, mode, or size",
   ].each do |fragment|
     check(recipe_runner.include?(fragment),
           "tap recipe runner lacks closed-boundary contract #{fragment}")
   end
+  check(!recipe_runner.include?("/usr/bin/journalctl") &&
+        !recipe_runner.include?("report_recipe_unit_failure"),
+        "tap recipe failure diagnostics query a manager journal outside the exact recipe pipe")
   check(!recipe_runner.include?("PrivateTmp=yes"),
         "tap recipe runner masks publisher bind targets with PrivateTmp")
+  check(!recipe_runner.include?("TemporaryFileSystem=/etc"),
+        "tap recipe runner hides its sealed /etc bind destinations")
   check(!recipe_runner.include?("BindReadOnlyPaths=/:"),
         "tap recipe runner exposes the host root inside its service root")
   check(!recipe_runner.include?('label="Nix runtime store"'),
@@ -2538,6 +2561,13 @@ def check_publisher(workflow)
     "publisher validation does not run the focused recipe-runner contract tests"
   )
   [
+    "KANDELO_RUN_SYSTEMD_RECIPE_ROOT_TEST=1",
+    "LiveSystemdServiceRootTests",
+  ].each do |fragment|
+    check(launcher_test.include?(fragment),
+          "Linux publisher validation does not execute #{fragment}")
+  end
+  [
     "tap recipe can read an unrelated host file",
     "tap recipe escaped its root through host procfs",
     "/run/systemd/private",
@@ -2546,6 +2576,9 @@ def check_publisher(workflow)
     "WASM_POSIX_DEP_RESOURCE_FIXTURE_DATA_DIR",
     '"fixture-data": $resource_root',
     "tap recipe canary did not return its declared output",
+    "recipe supervisor did not reserve an absent native closure handoff",
+    "native sealing did not publish its complete root-owned closure",
+    "isolated native Formula proxy exposed a transitive-only keg",
   ].each do |fragment|
     check(launcher_test.include?(fragment),
           "publisher validation lacks malicious recipe canary #{fragment}")
@@ -3627,7 +3660,8 @@ def check_publisher(workflow)
     'homebrew_patched_launcher_seal_native_prefix',
     '/usr/bin/chown -hR root:root',
     '-type d -exec /usr/bin/chmod 0555 {} +',
-    "-type f \\\n      -exec /usr/bin/chmod a-w,u-s,g-s {} +",
+    "-type f -perm /0111 \\\n      -exec /usr/bin/chmod 0555 {} +",
+    "-type f ! -perm /0111 \\\n      -exec /usr/bin/chmod 0444 {} +",
     'homebrew_patched_launcher_bridge_native_formula',
     'homebrew_patched_launcher_rewrite_native_bridge_links',
     'native Formula cross-keg link is unresolved',
@@ -3746,12 +3780,36 @@ def check_publisher(workflow)
     '! /usr/bin/cmp -s -- "$runner_source" "$runner"',
     'trusted tap recipe runner changed while it was staged',
     '[ "$runner_sha_after" != "$runner_sha" ]',
+    '"--property=ProtectHome=tmpfs"',
+    '"--property=BindPaths=$allowed_request_root"',
+    '"--property=ReadWritePaths=$allowed_request_root"',
+    '"--property=BindReadOnlyPaths=$HOMEBREW_PATCHED_NATIVE_PREFIX/Cellar"',
+    '"--property=BindReadOnlyPaths=$HOMEBREW_PATCHED_PREFIX/Cellar"',
+    '--arg native_closure_manifest "$native_closure"',
   ].each do |fragment|
     check(recipe_runner_prepare_contract.include?(fragment),
           "privileged recipe-runner staging lacks #{fragment}")
   end
+  check(!recipe_runner_prepare_contract.include?('"--property=ProtectHome=yes"'),
+        "recipe supervisor masks its explicitly bound Homebrew roots")
   check(!recipe_runner_prepare_contract.include?("kandelo_root"),
         "privileged recipe-runner staging still accepts a second checkout authority")
+  native_closure_handoff_contract = launcher[
+    /homebrew_patched_launcher_seal_native_prefix\(\) \{\n(.*?)\n\}\n\n# Preserve relative links/m,
+    1
+  ]
+  check(native_closure_handoff_contract,
+        "isolated Brew launcher lost the sealed native closure handoff")
+  [
+    'homebrew_assert_tree_not_replaceable_by_user',
+    '"$HOMEBREW_PATCHED_RECIPE_RUNNER"',
+    "--stage-native-closure",
+    '--source "$HOMEBREW_PATCHED_NATIVE_PREFIX/Cellar"',
+    '--destination "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE"',
+  ].each do |fragment|
+    check(native_closure_handoff_contract.include?(fragment),
+          "sealed native closure handoff lacks #{fragment}")
+  end
   check(launcher.include?(
           '"$build_user" "$build_group" "$recipe_user" "$primary_tap_root" \\' \
           "\n      \"$platform_source_root\" \\\n"

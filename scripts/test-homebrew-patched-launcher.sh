@@ -385,13 +385,19 @@ case "${1:-}" in
   install-native-fixture)
     [ "$#" -eq 2 ]
     mkdir -p "$prefix/Cellar/$2/0.9/bin" "$prefix/Cellar/$2/1.0/bin" \
-      "$prefix/opt"
+      "$prefix/Cellar/$2/1.0/share/mode-fixtures" "$prefix/opt"
     printf 'unselected native fixture\n' >"$prefix/Cellar/$2/0.9/bin/$2"
     printf '#!/usr/bin/env bash\nprintf "native fixture\\n"\n' \
       >"$prefix/Cellar/$2/1.0/bin/$2"
     chmod 0755 "$prefix/Cellar/$2/1.0/bin/$2"
     printf '{"name":"%s","version":"1.0"}\n' "$2" \
       >"$prefix/Cellar/$2/1.0/INSTALL_RECEIPT.json"
+    for fixture_mode in 0600 0640 0644 0700 0750 0755; do
+      printf 'native mode fixture %s\n' "$fixture_mode" \
+        >"$prefix/Cellar/$2/1.0/share/mode-fixtures/$fixture_mode"
+      chmod "$fixture_mode" \
+        "$prefix/Cellar/$2/1.0/share/mode-fixtures/$fixture_mode"
+    done
     ln -s "$2" "$prefix/Cellar/$2/1.0/bin/$2-link"
     ln -s "../Cellar/$2/1.0" "$prefix/opt/$2"
     ;;
@@ -1499,14 +1505,33 @@ homebrew_patched_launcher_select_host_git
   fail "host Git selection did not replace caller state with protected Nix Git"
 
 if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
+   [ -x /usr/bin/python3 ] && \
    [ -x /usr/bin/systemd-run ] && [ -x /usr/bin/systemctl ] && \
    [ -x /usr/bin/getent ] && [ -x /usr/bin/pgrep ] && [ -x /usr/bin/pkill ] && \
    [ -x /usr/bin/setsid ] && \
    [ -d /run/systemd/system ] && /usr/bin/sudo -n true >/dev/null 2>&1; then
+  # WHY: portable unit tests cannot exercise systemd's mount ordering. Run the
+  # production interpreter as root on the Linux CI host so a private /etc or
+  # other namespace property cannot hide exact bind destinations unnoticed.
+  /usr/bin/sudo -n -- /usr/bin/env -i \
+    KANDELO_RUN_SYSTEMD_RECIPE_ROOT_TEST=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    /usr/bin/python3 "$REPO_ROOT/scripts/test-homebrew-tap-recipe-runner.py" \
+    LiveSystemdServiceRootTests
   ISOLATION_BUILD_USER="kandelo-hb-$$-${RANDOM}"
   ISOLATION_BUILD_USER="${ISOLATION_BUILD_USER:0:31}"
   ISOLATION_ROOT="$(mktemp -d /tmp/kandelo-launcher-test.XXXXXX)"
   /usr/bin/sudo -n -- chmod 1777 "$ISOLATION_ROOT"
+  if (
+    set +o pipefail
+    # shellcheck disable=SC2034 # output is intentionally ignored in this failure check
+    failed_find_entries=()
+    homebrew_patched_launcher_collect_sorted_find_entries \
+      "$ISOLATION_ROOT/missing-tree" failed_find_entries \
+      "missing regression fixture" >/dev/null 2>&1
+  ); then
+    fail "sorted traversal accepted a failed find without pipefail"
+  fi
   platform_fixture="$ISOLATION_ROOT/platform-fixture"
   platform_projection="$ISOLATION_ROOT/platform-projection"
   mkdir -p \
@@ -1731,6 +1756,61 @@ EOF
   fi
   /usr/bin/sudo -n -- /usr/sbin/useradd --system --user-group --create-home \
     --home-dir "$isolated_home" --shell /usr/sbin/nologin "$ISOLATION_BUILD_USER"
+  supervisor_home_fixture="$isolated_home/supervisor-home-fixture"
+  supervisor_target_cellar="$supervisor_home_fixture/target-cellar"
+  supervisor_native_cellar="$supervisor_home_fixture/native-cellar"
+  supervisor_request_root="$supervisor_home_fixture/request-root"
+  supervisor_hidden_sibling="$supervisor_home_fixture/hidden-sibling"
+  /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
+    /usr/bin/mkdir -p \
+      "$supervisor_target_cellar" "$supervisor_native_cellar" \
+      "$supervisor_request_root" "$supervisor_hidden_sibling"
+  printf 'target dependency\n' |
+    /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
+      /usr/bin/tee "$supervisor_target_cellar/marker" >/dev/null
+  printf 'native dependency\n' |
+    /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
+      /usr/bin/tee "$supervisor_native_cellar/marker" >/dev/null
+  printf 'must remain hidden\n' |
+    /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
+      /usr/bin/tee "$supervisor_hidden_sibling/secret" >/dev/null
+  supervisor_projection_unit="kandelo-recipe-home-projection-$$-${RANDOM}"
+  # WHY: `ProtectHome=tmpfs` must hide the ambient home tree while reopening
+  # only the exact immutable Cellars and mutable request exchange used by the
+  # persistent recipe supervisor. This live namespace check guards the systemd
+  # behavior that `ProtectHome=yes` cannot provide.
+  /usr/bin/sudo -n -- /usr/bin/systemd-run \
+    --quiet --wait --collect --pipe \
+    "--unit=$supervisor_projection_unit" \
+    "--property=ProtectSystem=strict" "--property=ProtectHome=tmpfs" \
+    "--property=BindReadOnlyPaths=$supervisor_target_cellar" \
+    "--property=BindReadOnlyPaths=$supervisor_native_cellar" \
+    "--property=BindPaths=$supervisor_request_root" \
+    "--property=ReadWritePaths=$supervisor_request_root" \
+    --service-type=exec --expand-environment=no -- \
+    /usr/bin/env -i /usr/bin/bash -c '
+      set -euo pipefail
+      [ "$(/usr/bin/cat "$1/marker")" = "target dependency" ]
+      [ "$(/usr/bin/cat "$2/marker")" = "native dependency" ]
+      [ ! -e "$4/secret" ] && [ ! -r "$4/secret" ]
+      printf "request exchange\n" >"$3/response"
+    ' bash \
+    "$supervisor_target_cellar" "$supervisor_native_cellar" \
+    "$supervisor_request_root" "$supervisor_hidden_sibling"
+  [ "$(/usr/bin/cat "$supervisor_request_root/response")" = \
+      "request exchange" ] ||
+    fail "recipe supervisor home projection did not preserve its writable request exchange"
+  legacy_projection_unit="kandelo-recipe-home-legacy-$$-${RANDOM}"
+  if /usr/bin/sudo -n -- /usr/bin/systemd-run \
+      --quiet --wait --collect --pipe \
+      "--unit=$legacy_projection_unit" \
+      "--property=ProtectSystem=strict" "--property=ProtectHome=yes" \
+      "--property=BindReadOnlyPaths=$supervisor_target_cellar" \
+      --service-type=exec --expand-environment=no -- \
+      /usr/bin/test -r "$supervisor_target_cellar/marker" \
+      >/dev/null 2>&1; then
+    fail "legacy recipe supervisor unexpectedly reopened a ProtectHome=yes Cellar"
+  fi
   # WHY: staging preflight runs before the publisher creates its production
   # identities. The live fixture must own the same exact third identity so it
   # exercises schema-3 isolation instead of relying on later workflow state.
@@ -2162,6 +2242,7 @@ EOF
   protected_dir="$HOMEBREW_PATCHED_PROTECTED_DIR"
   source_alias_dir="$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR"
   protected_platform_root="$HOMEBREW_PATCHED_PLATFORM_ROOT"
+  protected_sysroot_root="$HOMEBREW_PATCHED_SYSROOT_ROOT"
   protected_xtask="$HOMEBREW_PATCHED_PROTECTED_DIR/xtask"
   [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a:%h' "$protected_xtask")" = \
       "0:0:555:1" ] &&
@@ -2191,6 +2272,46 @@ EOF
       "$protected_platform_root/scripts/homebrew-tap-recipe-runner.py" \
       "$HOMEBREW_PATCHED_RECIPE_RUNNER" ||
     fail "isolated launcher did not stage the admitted root-owned recipe runner"
+  grep -F \
+    "HOMEBREW_KANDELO_TAP_RECIPE_RUNNER=$HOMEBREW_PATCHED_RECIPE_RUNNER" \
+    "$HOMEBREW_PATCHED_BREW_BIN" >/dev/null &&
+    grep -F \
+      "HOMEBREW_KANDELO_TAP_RECIPE_SEALED_ROOT=$HOMEBREW_PATCHED_RECIPE_SEALED_ROOT" \
+      "$HOMEBREW_PATCHED_BREW_BIN" >/dev/null ||
+    fail "isolated wrapper did not freeze the staged recipe boundary paths"
+  recipe_config_json="$(
+    /usr/bin/sudo -n -- /usr/bin/cat "$HOMEBREW_PATCHED_RECIPE_RUNNER_CONFIG"
+  )"
+  [ "$(jq -r '.native_closure_manifest' <<<"$recipe_config_json")" = \
+      "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" ] &&
+    [ ! -e "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" ] &&
+    [ ! -L "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" ] ||
+    fail "recipe supervisor did not reserve an absent native closure handoff"
+  [ "$protected_sysroot_root" = "$protected_dir/sysroot" ] &&
+    [ "$(jq -r '.sysroot_host_root' <<<"$recipe_config_json")" = \
+      "$protected_sysroot_root" ] &&
+    [ "$(jq -r '.sysroot_alias_root' <<<"$recipe_config_json")" = \
+      "$source_alias_dir/sysroot" ] &&
+    [ "$protected_sysroot_root" != "$isolated_sysroot" ] &&
+    [ -L "$protected_sysroot_root/contained-link" ] &&
+    [ "$(/usr/bin/sudo -n -- /usr/bin/readlink \
+      "$protected_sysroot_root/contained-link")" = "lib/libc.a" ] &&
+    /usr/bin/sudo -n -- /usr/bin/cmp -s -- \
+      "$isolated_sysroot/lib/libc.a" "$protected_sysroot_root/lib/libc.a" &&
+    /usr/bin/sudo -n -- /usr/bin/cmp -s -- \
+      "$isolated_sysroot/lib/libc.a" "$protected_sysroot_root/contained-link" ||
+    fail "recipe supervisor did not select the sealed sysroot projection"
+  [ "$(/usr/bin/sudo -n -- /usr/bin/find "$protected_sysroot_root" \
+    -type l -print | wc -l)" -eq 1 ] ||
+    fail "sealed sysroot projection changed its safe symlink closure"
+  while IFS= read -r -d '' protected_sysroot_directory; do
+    [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a' \
+      "$protected_sysroot_directory")" = "0:0:555" ] ||
+      fail "recipe sysroot projection left an unsealed ancestor"
+  done < <(
+    /usr/bin/sudo -n -- /usr/bin/find \
+      "$protected_sysroot_root" -type d -print0
+  )
   missing_namespace_error="$ISOLATION_ROOT/missing-namespace.err"
   mv "$isolated_output" "$isolated_output.missing"
   set +e
@@ -2360,11 +2481,13 @@ EOF
   homebrew_patched_launcher_run_native remove-native-entry unsafe-fifo
   homebrew_patched_launcher_run_native install-native-fixture cmake
   homebrew_patched_launcher_run_native install-native-fixture ninja
-  # The portable bridge test above covers exclusion of an unselected keg. The
-  # supervisor protocol deliberately receives one exact version for each
-  # declared native tool, matching a fresh publisher prefix.
+  homebrew_patched_launcher_run_native install-native-fixture openssl@3
+  # CMake and Ninja are direct tool roots in the static plan. openssl@3 models
+  # a transitive Homebrew dependency that must remain in the sealed execution
+  # closure without becoming a caller-supplied PATH/root authority.
   homebrew_patched_launcher_run_native remove-native-version cmake 0.9
   homebrew_patched_launcher_run_native remove-native-version ninja 0.9
+  homebrew_patched_launcher_run_native remove-native-version openssl@3 0.9
   homebrew_patched_launcher_run_native create-native-relative-link \
     cmake cmake-cross-final cmake-cross
   homebrew_patched_launcher_run_native create-native-relative-link \
@@ -2372,6 +2495,29 @@ EOF
   homebrew_patched_launcher_seal_native_prefix
   [ "$(stat -c '%u:%g:%a' "$isolated_native_prefix")" = "0:0:555" ] ||
     fail "sealed native prefix ownership or mode is unsafe"
+  for fixture_mode in 0600 0640 0644; do
+    [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a' \
+      "$isolated_native_prefix/Cellar/cmake/1.0/share/mode-fixtures/$fixture_mode")" = \
+      "0:0:444" ] ||
+      fail "native nonexecutable mode $fixture_mode was not normalized to 0444"
+  done
+  for fixture_mode in 0700 0750 0755; do
+    [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a' \
+      "$isolated_native_prefix/Cellar/cmake/1.0/share/mode-fixtures/$fixture_mode")" = \
+      "0:0:555" ] ||
+      fail "native executable mode $fixture_mode was not normalized to 0555"
+  done
+  /usr/bin/sudo -n -- jq -e \
+    --arg cellar "$isolated_native_prefix/Cellar" '
+      .schema == 1 and .cellar == $cellar and
+      [.kegs[].formula] == ["cmake", "ninja", "openssl@3"] and
+      (.kegs | all(
+        .root == ($cellar + "/" + .formula + "/1.0")
+      ))
+    ' "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" >/dev/null &&
+    [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a:%h' \
+      "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE")" = "0:0:400:1" ] ||
+    fail "native sealing did not publish its complete root-owned closure"
   if /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
     /bin/sh -c ': >"$1"' sh "$isolated_native_prefix/build-user-write" \
     >/dev/null 2>&1; then
@@ -2397,7 +2543,11 @@ EOF
   target_proxy_rack="$isolated_prefix/Cellar/cmake"
   target_proxy_keg="$target_proxy_rack/1.0"
   target_proxy_opt="$isolated_prefix/opt/cmake"
+  ninja_proxy_rack="$isolated_prefix/Cellar/ninja"
+  ninja_proxy_keg="$ninja_proxy_rack/1.0"
+  ninja_proxy_opt="$isolated_prefix/opt/ninja"
   homebrew_patched_launcher_bridge_native_formula cmake
+  homebrew_patched_launcher_bridge_native_formula ninja
   [ -L "$target_proxy_opt/bin/cmake-cross" ] && \
     [ -L "$target_proxy_opt/bin/cmake-cross-final" ] && \
     [ "$(readlink "$target_proxy_opt/bin/cmake-cross")" = \
@@ -2406,11 +2556,16 @@ EOF
       "$isolated_native_prefix/Cellar/ninja/1.0/bin/ninja" ] && \
     [ "$("$target_proxy_opt/bin/cmake-cross")" = "native fixture" ] ||
     fail "isolated native Formula proxy did not preserve its sealed native closure"
-  [ ! -e "$isolated_prefix/Cellar/ninja" ] && \
-    [ ! -L "$isolated_prefix/Cellar/ninja" ] && \
-    [ ! -e "$isolated_prefix/opt/ninja" ] && \
-    [ ! -L "$isolated_prefix/opt/ninja" ] ||
-    fail "isolated native Formula proxy exposed its transitive closure"
+  [ -d "$ninja_proxy_rack" ] && [ ! -L "$ninja_proxy_rack" ] && \
+    [ -d "$ninja_proxy_keg" ] && [ ! -L "$ninja_proxy_keg" ] && \
+    [ "$(readlink "$ninja_proxy_opt")" = "../Cellar/ninja/1.0" ] && \
+    [ "$("$ninja_proxy_opt/bin/ninja")" = "native fixture" ] ||
+    fail "isolated native Formula proxy omitted a declared direct tool"
+  [ ! -e "$isolated_prefix/Cellar/openssl@3" ] && \
+    [ ! -L "$isolated_prefix/Cellar/openssl@3" ] && \
+    [ ! -e "$isolated_prefix/opt/openssl@3" ] && \
+    [ ! -L "$isolated_prefix/opt/openssl@3" ] ||
+    fail "isolated native Formula proxy exposed a transitive-only keg"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-native-target-boundary \
     "$isolated_native_prefix" "$target_proxy_rack" "$target_proxy_keg" \
     "$target_proxy_opt" "../Cellar/cmake/1.0" "$native_runner" \
@@ -2448,22 +2603,19 @@ EOF
   printf 'reviewed resource\n' |
     /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
       /usr/bin/tee "$recipe_resource_root/payload.txt" >/dev/null
-  recipe_config_json="$(
-    /usr/bin/sudo -n -- /usr/bin/cat "$HOMEBREW_PATCHED_RECIPE_RUNNER_CONFIG"
-  )"
   mapfile -t recipe_native_formulae < <(
     jq -r '.native_formulae[]' <<<"$recipe_config_json"
   )
-  recipe_native_cellar="$(jq -r '.native_cellar' <<<"$recipe_config_json")"
+  recipe_target_cellar="$isolated_prefix/Cellar"
   recipe_native_roots=()
   for native_formula in "${recipe_native_formulae[@]}"; do
-    # The workflow-side harness reads the root-owned supervisor contract to
-    # construct this direct protocol canary. Formula code discovers these kegs
-    # inside the isolated Brew service; the workflow user intentionally cannot
-    # enumerate the protected native-prefix parent on the host.
+    # WHY: recipe code receives each declared direct native tool through its
+    # canonical target-Cellar proxy. The sealed native prefix is authenticated
+    # closure storage, not caller authority; accepting its paths here would let
+    # the canary miss a direct proxy that production Formula support requires.
     mapfile -t native_versions < <(
       /usr/bin/sudo -n -- \
-        /usr/bin/find "$recipe_native_cellar/$native_formula" \
+        /usr/bin/find "$recipe_target_cellar/$native_formula" \
           -mindepth 1 -maxdepth 1 -type d -print
     )
     [ "${#native_versions[@]}" -eq 1 ] ||
@@ -2571,6 +2723,26 @@ EOF
     "$HOMEBREW_PATCHED_RECIPE_SEALED_ROOT" >/dev/null ||
     fail "populated sealed-output root lost its portable directory seal"
   homebrew_patched_launcher_verify_isolation
+  /usr/bin/sudo -n -- /usr/bin/chmod 0644 \
+    "$protected_sysroot_root/lib/libc.a"
+  if homebrew_patched_launcher_verify_isolation >/dev/null 2>&1; then
+    fail "isolation verification accepted a mutable projected sysroot file"
+  fi
+  /usr/bin/sudo -n -- /usr/bin/chmod 0444 \
+    "$protected_sysroot_root/lib/libc.a"
+  homebrew_patched_launcher_verify_isolation
+  /usr/bin/sudo -n -- /usr/bin/rm -f \
+    "$protected_sysroot_root/contained-link"
+  /usr/bin/sudo -n -- /usr/bin/ln -s lib/../lib/libc.a \
+    "$protected_sysroot_root/contained-link"
+  if homebrew_patched_launcher_verify_isolation >/dev/null 2>&1; then
+    fail "isolation verification accepted a changed projected sysroot symlink"
+  fi
+  /usr/bin/sudo -n -- /usr/bin/rm -f \
+    "$protected_sysroot_root/contained-link"
+  /usr/bin/sudo -n -- /usr/bin/ln -s lib/libc.a \
+    "$protected_sysroot_root/contained-link"
+  homebrew_patched_launcher_verify_isolation
 
   cp "$isolated_xtask" "$isolated_xtask.backup"
   # WHY: production checkers are sealed 0555. Only the private fixture owner
@@ -2668,6 +2840,9 @@ EOF
     fail "isolated cleanup left the native Formula proxy rack"
   [ ! -e "$target_proxy_opt" ] && [ ! -L "$target_proxy_opt" ] ||
     fail "isolated cleanup left the native Formula proxy opt link"
+  [ ! -e "$ninja_proxy_rack" ] && [ ! -L "$ninja_proxy_rack" ] &&
+    [ ! -e "$ninja_proxy_opt" ] && [ ! -L "$ninja_proxy_opt" ] ||
+    fail "isolated cleanup left the second native Formula proxy"
   [ ! -e "$isolated_prefix/.kandelo-publisher-build-dependencies.json" ] ||
     fail "isolated cleanup left the publisher dependency plan"
   [ ! -e "$isolated_prefix/.kandelo-publisher-tier2-attestation.json" ] ||
@@ -2680,7 +2855,9 @@ EOF
     [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK_STATE" ] && \
     [ -z "$HOMEBREW_PATCHED_PROTECTED_XTASK_SHA256" ] && \
     [ -z "$HOMEBREW_PATCHED_PLATFORM_ROOT" ] && \
-    [ -z "$HOMEBREW_PATCHED_PLATFORM_SHA256" ] ||
+    [ -z "$HOMEBREW_PATCHED_PLATFORM_SHA256" ] && \
+    [ -z "$HOMEBREW_PATCHED_SYSROOT_ROOT" ] && \
+    [ -z "$HOMEBREW_PATCHED_SYSROOT_SHA256" ] ||
     fail "isolated cleanup left the protected checker or source aliases"
   [ ! -e "$protected_bottle" ] && [ ! -e "$protected_bottle_dir" ] && \
     [ -z "$(find "$isolated_shared_temp" -mindepth 1 -print -quit)" ] && \

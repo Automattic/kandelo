@@ -23,6 +23,7 @@ import stat
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -33,16 +34,27 @@ MAX_REQUEST_BYTES = 262_144
 MAX_RESPONSE_BYTES = 4_096
 MAX_MESSAGE_BYTES = 8_192
 MAX_RECIPE_MANIFEST_BYTES = 65_536
+MAX_NATIVE_CLOSURE_MANIFEST_BYTES = 262_144
 MAX_RECIPE_FILES = 512
 MAX_DEPENDENCY_KEGS = 512
 MAX_RESOURCES = 32
 MAX_RECIPE_FILE_BYTES = 16_777_216
 MAX_RECIPE_BYTES = 67_108_864
 MAX_RECIPE_LOG_BYTES = 33_554_432
+MAX_RECIPE_FAILURE_DIAGNOSTIC_BYTES = 65_536
+MAX_REPLY_MESSAGE_BYTES = 2_048
+MAX_REPLY_DIAGNOSTIC_BYTES = 4_096
 MAX_RESOURCE_ENTRIES = 65_536
 MAX_RESOURCE_FILE_BYTES = 268_435_456
 MAX_RESOURCE_BYTES = 1_073_741_824
 MAX_RESOURCE_PATH_BYTES = 4_096
+MAX_SYMLINK_EXPANSIONS = 40
+SYSROOT_LIMITS = {
+    "max_bytes": 2_147_483_648,
+    "max_entries": 65_536,
+    "max_file_bytes": 1_073_741_824,
+    "max_path_bytes": 4_096,
+}
 # Linux reserves one trailing NUL in sockaddr_un.sun_path, leaving 107 bytes
 # for a pathname. The protected build identity intentionally retains all 64
 # digest characters, so the control socket uses the shortest meaningful name.
@@ -66,6 +78,7 @@ CONFIG_KEYS = {
     "llvm_bin",
     "manifest_sha256",
     "native_cellar",
+    "native_closure_manifest",
     "native_formulae",
     "native_requirement_formulae",
     "node_bin",
@@ -123,10 +136,14 @@ UNIT_RE = re.compile(r"^kandelo-homebrew-build-[0-9]+$")
 SLICE_RE = re.compile(r"^kandelo-homebrew-build-[0-9]+[.]slice$")
 VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+,-]{0,254}$")
 RESOURCE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._+-]{0,127}$")
+PROTECTED_BUILD_RE = re.compile(r"^build-[0-9a-f]{64}$")
+PROTECTED_PUBLISHER_ROOT = Path("/run/kandelo-homebrew-publisher")
 ResourceStagingIdentity = tuple[
     tuple[int, ...],
     dict[str, tuple[int, ...]],
 ]
+TreeNode = tuple[str, tuple[int, ...], str | None, str | None]
+TreeSnapshot = tuple[tuple[int, ...], dict[str, TreeNode]]
 SAFE_FIXED_ENV_KEYS = {
     "ACLOCAL_PATH",
     "AR",
@@ -206,6 +223,22 @@ class RunnerError(RuntimeError):
     """An expected fail-closed validation or execution error."""
 
 
+class BoundedCommandError(RunnerError):
+    """A bounded command failure that retains only its already-limited tail."""
+
+    def __init__(self, message: str, diagnostic_tail: bytes) -> None:
+        super().__init__(message)
+        self.diagnostic_tail = diagnostic_tail
+
+
+class RecipeExecutionError(RunnerError):
+    """A recipe failure with output from its credential-free service only."""
+
+    def __init__(self, message: str, diagnostic: str) -> None:
+        super().__init__(message)
+        self.diagnostic = diagnostic
+
+
 def fail(message: str) -> None:
     raise RunnerError(message)
 
@@ -263,6 +296,87 @@ def safe_text(value: str, *, allow_colon: bool = True) -> bool:
     ):
         return False
     return allow_colon or ":" not in value
+
+
+def bounded_safe_text(value: str, max_bytes: int) -> str:
+    """Return a printable UTF-8 prefix without splitting its last character."""
+    if max_bytes < 1:
+        return ""
+    encoded = value.encode("utf-8", "replace")[:max_bytes]
+    while encoded:
+        try:
+            result = encoded.decode("utf-8", "strict")
+            break
+        except UnicodeDecodeError as error:
+            encoded = encoded[:error.start]
+    else:
+        result = ""
+    return result if safe_text(result) else ""
+
+
+def sanitize_recipe_diagnostic(data: bytes) -> str:
+    """Turn the bounded recipe-unit tail into one workflow-safe reply field."""
+    # WHY: recipe output is untrusted even though its service has no publisher
+    # credentials. Keep the useful line boundaries without allowing control
+    # bytes, ANSI escapes, or GitHub workflow commands to cross the socket as
+    # active syntax. The workflow independently stops command parsing around
+    # this client, so this normalization is defense in depth rather than the
+    # only injection boundary.
+    text = data.decode("utf-8", "replace")
+    pieces: list[str] = []
+    pending_separator = False
+    for character in text:
+        codepoint = ord(character)
+        if character in "\r\n":
+            pending_separator = bool(pieces)
+            continue
+        if character == "\t":
+            character = " "
+            codepoint = ord(character)
+        if (
+            codepoint < 32
+            or 127 <= codepoint <= 159
+            or 0xD800 <= codepoint <= 0xDFFF
+        ):
+            character = "?"
+        if pending_separator:
+            pieces.extend((" ", "|", " "))
+            pending_separator = False
+        pieces.append(character)
+    rendered = "".join(pieces).strip()
+    # Select a suffix because the failing command and compiler error are
+    # conventionally at the end of a recipe log. Re-encode by character so a
+    # multibyte UTF-8 sequence can never be split at the protocol boundary.
+    selected: list[str] = []
+    selected_bytes = 0
+    for character in reversed(rendered):
+        width = len(character.encode("utf-8"))
+        if selected_bytes + width > MAX_REPLY_DIAGNOSTIC_BYTES:
+            break
+        selected.append(character)
+        selected_bytes += width
+    result = "".join(reversed(selected)).strip()
+    return result if safe_text(result) else ""
+
+
+def recipe_execution_error_from_command(
+    error: BoundedCommandError,
+) -> RecipeExecutionError:
+    """Preserve a bounded command reason and sanitize only its captured tail."""
+    return RecipeExecutionError(
+        str(error),
+        sanitize_recipe_diagnostic(error.diagnostic_tail),
+    )
+
+
+def safe_systemd_path_text(value: str) -> bool:
+    """Accept text that can occupy one side of systemd's colon-delimited bind."""
+    return safe_text(value, allow_colon=False)
+
+
+def safe_tree_text(value: str) -> bool:
+    """Accept POSIX tree text that is never parsed as systemd bind syntax."""
+    return safe_text(value, allow_colon=True)
 
 
 def open_regular_file(
@@ -352,7 +466,7 @@ def canonical_real_directory(
         rendered = value
     else:
         fail(f"{label} is not an absolute path")
-    if not rendered.startswith("/") or not safe_text(rendered, allow_colon=False):
+    if not rendered.startswith("/") or not safe_systemd_path_text(rendered):
         fail(f"{label} is not one systemd-safe absolute path")
     try:
         before = path.lstat()
@@ -382,7 +496,7 @@ def canonical_real_file(
         rendered = value
     else:
         fail(f"{label} is not an absolute path")
-    if not rendered.startswith("/") or not safe_text(rendered, allow_colon=False):
+    if not rendered.startswith("/") or not safe_systemd_path_text(rendered):
         fail(f"{label} is not one systemd-safe absolute path")
     try:
         before = path.lstat()
@@ -581,7 +695,7 @@ def prepare_mount_destination(
     if (
         not destination.is_absolute()
         or destination == Path("/")
-        or not safe_text(rendered, allow_colon=False)
+        or not safe_systemd_path_text(rendered)
         or ".." in PurePosixPath(rendered).parts
         or Path(os.path.normpath(rendered)) != destination
     ):
@@ -652,7 +766,7 @@ def prepare_service_root(
         if (
             not source.is_absolute()
             or not destination.is_absolute()
-            or not safe_text(rendered_source, allow_colon=False)
+            or not safe_systemd_path_text(rendered_source)
             or ".." in PurePosixPath(rendered_source).parts
             or Path(os.path.normpath(rendered_source)) != source
         ):
@@ -710,6 +824,47 @@ def is_within(path: Path, root: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def normalize_config_paths(config: dict[str, Any]) -> None:
+    """Separate host inputs from paths that exist only in the child service."""
+    host_directory_keys = (
+        "allowed_request_root",
+        "native_cellar",
+        "platform_host_root",
+        "protected_root",
+        "recipe_host_root",
+        "sealed_root",
+        "sysroot_host_root",
+        "target_cellar",
+    )
+    for key in host_directory_keys:
+        config[key] = canonical_real_directory(config[key], label=key)
+
+    native_closure_manifest = canonical_requested_path(
+        config["native_closure_manifest"], label="native_closure_manifest"
+    )
+    if native_closure_manifest != config["protected_root"] / "native-closure.json":
+        fail("native closure manifest left the protected runner root")
+    # WHY: the supervisor starts before native Homebrew runs. Requiring this
+    # exact root-only handoff to be absent now proves that the later manifest
+    # was published only after the native prefix was sealed, rather than being
+    # preseeded by Formula-owned state.
+    if native_closure_manifest.exists() or native_closure_manifest.is_symlink():
+        fail("native closure manifest appeared before native Homebrew was sealed")
+    config["native_closure_manifest"] = native_closure_manifest
+
+    # WHY: these are mount destinations in the empty recipe-service root, not
+    # host inputs. The supervisor deliberately runs with ProtectHome=tmpfs and
+    # exposes only explicitly selected inputs, so a production tap alias below
+    # /home remains hidden until the inner service binds the root-owned
+    # projection over this exact destination.
+    for key in (
+        "platform_alias_root",
+        "recipe_alias_root",
+        "sysroot_alias_root",
+    ):
+        config[key] = canonical_requested_path(config[key], label=key)
 
 
 def validate_config(path: Path) -> dict[str, Any]:
@@ -819,21 +974,7 @@ def validate_config(path: Path) -> dict[str, Any]:
     ):
         fail("recipe runner config has an invalid systemd unit prefix")
 
-    path_keys = (
-        "allowed_request_root",
-        "native_cellar",
-        "platform_alias_root",
-        "platform_host_root",
-        "protected_root",
-        "recipe_alias_root",
-        "recipe_host_root",
-        "sealed_root",
-        "sysroot_alias_root",
-        "sysroot_host_root",
-        "target_cellar",
-    )
-    for key in path_keys:
-        config[key] = canonical_real_directory(config[key], label=key)
+    normalize_config_paths(config)
     config["node_bin"] = canonical_real_file(
         config["node_bin"], label="configured Node", executable=True
     )
@@ -920,7 +1061,7 @@ def canonical_requested_path(value: Any, *, label: str) -> Path:
     if (
         type(value) is not str
         or not value.startswith("/")
-        or not safe_text(value, allow_colon=False)
+        or not safe_systemd_path_text(value)
         or len(value.encode("utf-8")) > EXPECTED_LIMITS["max_path_bytes"]
     ):
         fail(f"{label} is not one bounded absolute path")
@@ -1063,8 +1204,20 @@ def versioned_keg_roots(cellar: Path, formulae: list[str], label: str) -> dict[s
     return result
 
 
-def installed_keg_roots(cellar: Path, label: str) -> dict[str, Path]:
+def installed_keg_roots(
+    cellar: Path,
+    label: str,
+    *,
+    excluded_formula: str | None = None,
+    excluded_owner_uid: int | None = None,
+) -> dict[str, Path]:
     """Return the complete sealed Formula closure installed in one Cellar."""
+    if (excluded_formula is None) != (excluded_owner_uid is None):
+        fail(f"{label} Cellar exclusion has an incomplete identity")
+    if excluded_formula is not None and not FORMULA_RE.fullmatch(excluded_formula):
+        fail(f"{label} Cellar exclusion has an invalid Formula name")
+    if excluded_owner_uid is not None and excluded_owner_uid <= 0:
+        fail(f"{label} Cellar exclusion has an invalid owner")
     cellar = canonical_real_directory(
         cellar, label=f"{label} Cellar", owner_uid=0
     )
@@ -1072,13 +1225,228 @@ def installed_keg_roots(cellar: Path, label: str) -> dict[str, Path]:
     if cellar_mode not in {0o555, 0o1775}:
         fail(f"{label} Cellar has an unsafe mode")
     names: list[str] = []
+    entries = 0
     for child in sorted(cellar.iterdir(), key=lambda path: path.name):
-        if len(names) >= MAX_DEPENDENCY_KEGS:
+        entries += 1
+        if entries > MAX_DEPENDENCY_KEGS:
             fail(f"{label} Cellar exceeds the keg limit")
         if not FORMULA_RE.fullmatch(child.name):
             fail(f"{label} Cellar contains an invalid Formula name")
+        # WHY: Homebrew creates the selected Formula's writable rack before it
+        # asks the privileged runner to execute the recipe. That rack is
+        # untrusted install state, not a dependency: authenticating it would
+        # reject a normal build, while binding it would expose mutable state to
+        # the recipe service. Callers may exclude only one exact attested short
+        # name and only when that rack is a real directory owned by the Formula
+        # identity; a root-owned dependency with the same name must fail rather
+        # than silently disappear. Every other Cellar child remains in the
+        # sealed inventory.
+        if child.name == excluded_formula:
+            canonical_real_directory(
+                child,
+                label=f"{label} active Formula rack {child.name}",
+                owner_uid=excluded_owner_uid,
+            )
+            continue
         names.append(child.name)
     return versioned_keg_roots(cellar, names, label)
+
+
+def native_closure_document(cellar: Path, kegs: dict[str, Path]) -> dict[str, Any]:
+    """Describe one exact, already-sealed native Cellar inventory."""
+    return {
+        "cellar": str(cellar),
+        "kegs": [
+            {"formula": name, "root": str(root)}
+            for name, root in sorted(kegs.items())
+        ],
+        "schema": 1,
+    }
+
+
+def parse_native_closure_manifest(
+    data: bytes, cellar: Path, *, label: str
+) -> dict[str, Path]:
+    """Parse the root-owned handoff without trusting it to select filesystem paths."""
+    document = parse_json_bytes(data, label)
+    if (
+        type(document) is not dict
+        or set(document) != {"cellar", "kegs", "schema"}
+        or not is_exact_integer(document["schema"])
+        or document["schema"] != 1
+        or type(document["cellar"]) is not str
+        or document["cellar"] != str(cellar)
+        or type(document["kegs"]) is not list
+        or len(document["kegs"]) > MAX_DEPENDENCY_KEGS
+        or compact_json(document) != data
+    ):
+        fail(f"{label} has an unexpected schema")
+
+    result: dict[str, Path] = {}
+    previous_name = ""
+    roots: set[Path] = set()
+    for record in document["kegs"]:
+        if (
+            type(record) is not dict
+            or set(record) != {"formula", "root"}
+            or type(record["formula"]) is not str
+            or not FORMULA_RE.fullmatch(record["formula"])
+            or type(record["root"]) is not str
+        ):
+            fail(f"{label} contains an invalid keg record")
+        name = record["formula"]
+        root = canonical_requested_path(
+            record["root"], label=f"{label} keg root {name}"
+        )
+        if name <= previous_name:
+            fail(f"{label} has repeated or unsorted Formula names")
+        if root in roots:
+            fail(f"{label} maps multiple Formulae to one keg")
+        if root.parent.parent != cellar or root.parent.name != name:
+            fail(f"{label} keg {name} left its canonical Cellar rack")
+        previous_name = name
+        roots.add(root)
+        result[name] = root
+    return result
+
+
+def authenticated_native_keg_roots(
+    cellar: Path,
+    manifest_path: Path,
+    direct_formulae: list[str],
+) -> dict[str, Path]:
+    """Match the live sealed Cellar to the supervisor's post-seal inventory."""
+    data, _ = open_regular_file(
+        manifest_path,
+        owner_uid=0,
+        exact_mode=0o400,
+        max_bytes=MAX_NATIVE_CLOSURE_MANIFEST_BYTES,
+        label="native closure manifest",
+    )
+    expected = parse_native_closure_manifest(
+        data, cellar, label="native closure manifest"
+    )
+    actual = installed_keg_roots(cellar, "native dependency")
+    if expected != actual:
+        fail("native Cellar differs from its authenticated sealed closure")
+    missing = sorted(set(direct_formulae) - set(actual))
+    if missing:
+        fail(f"native Cellar omits declared direct tools: {missing!r}")
+    for name, root in sorted(actual.items()):
+        validate_sealed_dependency_tree(root, f"native dependency {name}")
+    return actual
+
+
+def target_dependency_keg_roots(
+    cellar: Path,
+    formula: str,
+    dependencies: list[str],
+    build_uid: int,
+) -> tuple[dict[str, Path], dict[str, Path]]:
+    """Select the active Formula's complete target dependency closure."""
+    formula_short = formula.rpartition("/")[2]
+    dependency_names = [name.rpartition("/")[2] for name in dependencies]
+    if formula_short in dependency_names:
+        fail("selected Formula cannot depend on its own target Cellar rack")
+    if len(dependency_names) != len(set(dependency_names)):
+        fail("attested target dependencies collide in the target Cellar")
+
+    closure = installed_keg_roots(
+        cellar,
+        "target dependency",
+        excluded_formula=formula_short,
+        excluded_owner_uid=build_uid,
+    )
+    missing = sorted(set(dependency_names) - set(closure))
+    if missing:
+        fail(f"target Cellar omits declared dependencies: {missing!r}")
+    selected = {name: closure[name] for name in dependency_names}
+    return closure, selected
+
+
+def dependency_keg_binds(
+    target_cellar: Path,
+    target_kegs: dict[str, Path],
+    native_cellar: Path,
+    native_kegs: dict[str, Path],
+) -> list[tuple[Path, Path]]:
+    """Project both complete closures without collapsing their Cellar realms."""
+    binds: list[tuple[Path, Path]] = []
+    destinations: dict[Path, Path] = {}
+    for cellar, kegs in (
+        (target_cellar, target_kegs),
+        (native_cellar, native_kegs),
+    ):
+        for name, keg in sorted(kegs.items()):
+            for destination in (keg, cellar.parent / "opt" / name):
+                previous = destinations.get(destination)
+                if previous is not None and previous != keg:
+                    fail(f"dependency closure bind collides at {destination}")
+                destinations[destination] = keg
+                binds.append((keg, destination))
+    binds.sort(key=lambda pair: (str(pair[1]), str(pair[0])))
+    return binds
+
+
+def native_execution_roots(
+    target_kegs: dict[str, Path],
+    native_kegs: dict[str, Path],
+    native_formulae: list[str],
+    native_requirements: list[str],
+    target_dependency_names: list[str],
+) -> tuple[dict[str, Path], dict[str, Path]]:
+    """Select runner-authoritative direct proxy and Requirement PATH roots."""
+    collisions = sorted(set(native_formulae) & set(target_dependency_names))
+    if collisions:
+        fail(
+            "target dependencies collide with direct native tools in the "
+            f"target Cellar: {collisions!r}"
+        )
+
+    proxies: dict[str, Path] = {}
+    for name in native_formulae:
+        native = native_kegs.get(name)
+        proxy = target_kegs.get(name)
+        if native is None:
+            fail(f"native closure omits direct Formula tool {name}")
+        if proxy is None:
+            fail(f"target Cellar omits direct native tool proxy {name}")
+        # WHY: Formula support observes Homebrew's target-Cellar proxy and puts
+        # that exact path in the request and PATH. The root-owned plan still
+        # selects the name, while the authenticated native closure selects the
+        # only version the proxy is allowed to represent.
+        if proxy.name != native.name:
+            fail(f"direct native tool proxy {name} changed its selected version")
+        proxies[name] = proxy
+
+    requirements: dict[str, Path] = {}
+    for name in native_requirements:
+        native = native_kegs.get(name)
+        if native is None:
+            fail(f"native closure omits direct Requirement tool {name}")
+        requirements[name] = native
+    return proxies, requirements
+
+
+def requested_native_proxy_roots(
+    supplied: Any,
+    proxies: dict[str, Path],
+) -> list[Path]:
+    """Match Formula-supplied proxy paths to names selected by the runner plan."""
+    if (
+        type(supplied) is not list
+        or not all(type(item) is str for item in supplied)
+        or len(supplied) != len(set(supplied))
+    ):
+        fail("tap recipe request changed its declared native tool roots")
+    supplied_paths = [
+        canonical_requested_path(item, label="native tool proxy root")
+        for item in supplied
+    ]
+    expected = sorted(proxies.values(), key=str)
+    if supplied_paths != expected:
+        fail("tap recipe request changed its declared native tool roots")
+    return expected
 
 
 def validate_sealed_dependency_tree(root: Path, label: str) -> None:
@@ -1134,7 +1502,7 @@ def validate_sealed_dependency_tree(root: Path, label: str) -> None:
                     target = os.readlink(name, dir_fd=current_fd)
                     if (
                         not target
-                        or not safe_text(target, allow_colon=False)
+                        or not safe_tree_text(target)
                         or len(target.encode("utf-8", "strict"))
                         > EXPECTED_LIMITS["max_path_bytes"]
                     ):
@@ -1409,14 +1777,12 @@ def validate_request(
         or set(supplied_dependencies) != set(expected_dependency_keys)
     ):
         fail("tap recipe request has the wrong target dependencies")
-    all_target_kegs = installed_keg_roots(
-        config["target_cellar"], "target dependency"
+    all_target_kegs, target_kegs = target_dependency_keg_roots(
+        config["target_cellar"],
+        config["formula"],
+        expected_dependency_names,
+        config["build_uid"],
     )
-    expected_target_names = [name.rpartition("/")[2] for name in expected_dependency_names]
-    missing_target_names = sorted(set(expected_target_names) - set(all_target_kegs))
-    if missing_target_names:
-        fail(f"target Cellar omits declared dependencies: {missing_target_names!r}")
-    target_kegs = {name: all_target_kegs[name] for name in expected_target_names}
     dependencies: dict[str, Path] = {}
     for key, full_name in expected_dependency_keys.items():
         short = full_name.rpartition("/")[2]
@@ -1427,47 +1793,34 @@ def validate_request(
             fail(f"tap recipe request changed target dependency {full_name}")
         dependencies[key] = supplied
 
-    all_native_kegs = installed_keg_roots(
-        config["native_cellar"], "native dependency"
-    )
-    expected_native_names = sorted(
+    direct_native_names = sorted(
         {*config["native_formulae"], *config["native_requirement_formulae"]}
     )
-    if sorted(all_native_kegs) != expected_native_names:
-        fail("native Cellar differs from its complete declared tool closure")
-    native_kegs = {
-        name: all_native_kegs[name] for name in config["native_formulae"]
-    }
-    requirement_kegs = {
-        name: all_native_kegs[name]
-        for name in config["native_requirement_formulae"]
-    }
-    supplied_native = request["native_roots"]
-    expected_native = sorted(str(path) for path in native_kegs.values())
-    if (
-        type(supplied_native) is not list
-        or not all(type(item) is str for item in supplied_native)
-        or supplied_native != expected_native
-        or len(supplied_native) != len(set(supplied_native))
-    ):
-        fail("tap recipe request changed its declared native tool roots")
-    native_roots = [
-        canonical_real_directory(path, label="native tool root")
-        for path in supplied_native
+    all_native_kegs = authenticated_native_keg_roots(
+        config["native_cellar"],
+        config["native_closure_manifest"],
+        direct_native_names,
+    )
+    target_dependency_short_names = [
+        name.rpartition("/")[2] for name in expected_dependency_names
     ]
+    native_proxy_kegs, requirement_kegs = native_execution_roots(
+        all_target_kegs,
+        all_native_kegs,
+        config["native_formulae"],
+        config["native_requirement_formulae"],
+        target_dependency_short_names,
+    )
+    native_roots = requested_native_proxy_roots(
+        request["native_roots"], native_proxy_kegs
+    )
     requirement_roots = list(requirement_kegs.values())
-    sealed_roots = {
-        **{
-            str(path): (path, f"target dependency {name}")
-            for name, path in all_target_kegs.items()
-        },
-        **{
-            str(path): (path, f"native dependency {name}")
-            for name, path in all_native_kegs.items()
-        },
-    }
-    for _, (root, label) in sorted(sealed_roots.items()):
-        validate_sealed_dependency_tree(root, label)
+    # authenticated_native_keg_roots already validates every native tree while
+    # matching it to the post-seal handoff. Target kegs follow their separate
+    # immutable-bottle plan and are authenticated here from the complete sealed
+    # target Cellar while the selected Formula's mutable rack stays excluded.
+    for name, root in sorted(all_target_kegs.items()):
+        validate_sealed_dependency_tree(root, f"target dependency {name}")
     validate_environment(
         request, config, dependencies, native_roots, requirement_roots
     )
@@ -1476,15 +1829,12 @@ def validate_request(
     # Mount each sealed keg twice: at its canonical Cellar path and at the opt
     # alias the toolchain expects. This supplies the complete closure without
     # trusting build-user-created opt links or exposing an undeclared rack.
-    dependency_binds: list[tuple[Path, Path]] = []
-    for cellar, kegs in (
-        (config["target_cellar"], all_target_kegs),
-        (config["native_cellar"], all_native_kegs),
-    ):
-        for name, keg in kegs.items():
-            dependency_binds.append((keg, keg))
-            dependency_binds.append((keg, cellar.parent / "opt" / name))
-    dependency_binds.sort(key=lambda pair: (str(pair[1]), str(pair[0])))
+    dependency_binds = dependency_keg_binds(
+        config["target_cellar"],
+        all_target_kegs,
+        config["native_cellar"],
+        all_native_kegs,
+    )
     return (
         request,
         data,
@@ -1498,23 +1848,25 @@ def validate_request(
 
 
 def safe_relative_path(relative: str, limit: int) -> None:
+    """Validate one internal POSIX tree path, not a systemd bind operand."""
     try:
         encoded = relative.encode("utf-8", "strict")
     except UnicodeEncodeError:
         fail(f"tree contains an unsafe path: {relative!r}")
     if (
         len(encoded) > limit
-        or not safe_text(relative, allow_colon=False)
+        or not safe_tree_text(relative)
     ):
         fail(f"tree contains an unsafe or oversized path: {relative!r}")
 
 
 def contained_symlink(relative: str, target: str, limit: int) -> None:
+    """Require a POSIX symlink to stay inside its copied or sealed tree."""
     safe_relative_path(relative, limit)
     if (
         not target
         or target.startswith("/")
-        or not safe_text(target, allow_colon=False)
+        or not safe_tree_text(target)
         or len(target.encode("utf-8", "strict")) > limit
     ):
         fail(f"tree contains an unsafe symlink target: {relative!r}")
@@ -1858,8 +2210,20 @@ def copy_input_tree(
     limits: dict[str, int],
     *,
     expected_root_identity: tuple[int, ...] | None = None,
+    destination_uid: int = 0,
+    destination_gid: int = 0,
+    require_single_link_files: bool = True,
+    destination_precreated: bool = False,
 ) -> tuple[int, int]:
-    destination.mkdir(mode=0o700)
+    if destination_precreated:
+        before_destination = destination.lstat()
+        if (
+            not stat.S_ISDIR(before_destination.st_mode)
+            or any(destination.iterdir())
+        ):
+            fail("precreated destination is not one empty real directory")
+    else:
+        destination.mkdir(mode=0o700)
     entries = 0
     total_bytes = 0
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
@@ -1916,7 +2280,9 @@ def copy_input_tree(
                     child_destination_fd = os.open(
                         name, directory_flags, dir_fd=current_destination_fd
                     )
-                    os.fchown(child_destination_fd, 0, 0)
+                    os.fchown(
+                        child_destination_fd, destination_uid, destination_gid
+                    )
                     pending.append(
                         (
                             child_source_fd,
@@ -1927,7 +2293,7 @@ def copy_input_tree(
                     )
                 elif stat.S_ISREG(before.st_mode):
                     if (
-                        before.st_nlink != 1
+                        (require_single_link_files and before.st_nlink != 1)
                         or before.st_size > limits["max_file_bytes"]
                     ):
                         fail(f"source file has unsafe links or size: {relative}")
@@ -1965,7 +2331,7 @@ def copy_input_tree(
                                     fail(f"source file copy stopped early: {relative}")
                                 view = view[written:]
                         opened_after = os.fstat(input_fd)
-                        os.fchown(output_fd, 0, 0)
+                        os.fchown(output_fd, destination_uid, destination_gid)
                         os.fchmod(
                             output_fd,
                             0o555
@@ -1991,8 +2357,8 @@ def copy_input_tree(
                     os.symlink(target, name, dir_fd=current_destination_fd)
                     os.chown(
                         name,
-                        0,
-                        0,
+                        destination_uid,
+                        destination_gid,
                         dir_fd=current_destination_fd,
                         follow_symlinks=False,
                     )
@@ -2006,7 +2372,9 @@ def copy_input_tree(
                         fail(f"source symlink changed while copied: {relative}")
                 else:
                     fail(f"source tree contains an unsupported node: {relative}")
-            os.fchown(current_destination_fd, 0, 0)
+            os.fchown(
+                current_destination_fd, destination_uid, destination_gid
+            )
             os.fchmod(current_destination_fd, 0o555)
             os.fsync(current_destination_fd)
             if file_identity(os.fstat(current_source_fd)) != file_identity(
@@ -2036,6 +2404,667 @@ def copy_input_tree(
     if file_identity(final_source) != file_identity(root_stat):
         fail("source root changed while copied")
     return entries, total_bytes
+
+
+def hash_regular_at(
+    parent_fd: int,
+    name: str,
+    before: os.stat_result,
+    *,
+    max_bytes: int,
+    label: str,
+) -> str:
+    """Hash one held regular file without following its final path component."""
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_size < 0
+        or before.st_size > max_bytes
+    ):
+        fail(f"{label} has an unsafe type or size")
+    flags = os.O_RDONLY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    if hasattr(os, "O_NONBLOCK"):
+        flags |= os.O_NONBLOCK
+    try:
+        fd = os.open(name, flags, dir_fd=parent_fd)
+    except OSError as error:
+        fail(f"{label} cannot be opened safely: {error}")
+    digest = hashlib.sha256()
+    copied = 0
+    try:
+        if file_identity(os.fstat(fd)) != file_identity(before):
+            fail(f"{label} changed before it was opened")
+        while True:
+            chunk = os.read(fd, min(1_048_576, before.st_size + 1 - copied))
+            if not chunk:
+                break
+            copied += len(chunk)
+            if copied > before.st_size:
+                fail(f"{label} grew while it was hashed")
+            digest.update(chunk)
+        opened_after = os.fstat(fd)
+    finally:
+        os.close(fd)
+    after = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    if (
+        copied != before.st_size
+        or file_identity(opened_after) != file_identity(before)
+        or file_identity(after) != file_identity(before)
+    ):
+        fail(f"{label} changed while it was hashed")
+    return digest.hexdigest()
+
+
+def validate_tree_symlink_targets(
+    records: dict[str, TreeNode], label: str
+) -> None:
+    """Require every relative symlink to terminate at a node in this tree."""
+
+    for relative, (kind, _, target, _) in sorted(records.items()):
+        if kind != "l":
+            continue
+        if target is None:
+            fail(f"{label} has an invalid symlink record: {relative}")
+        remaining = [
+            *PurePosixPath(relative).parent.parts,
+            *PurePosixPath(target).parts,
+        ]
+        resolved: list[str] = []
+        states: set[tuple[tuple[str, ...], tuple[str, ...]]] = set()
+        expansions = 0
+        while remaining:
+            component = remaining.pop(0)
+            if component in ("", "."):
+                continue
+            if component == "..":
+                if not resolved:
+                    fail(f"{label} symlink escapes its root: {relative}")
+                resolved.pop()
+                continue
+            candidate = "/".join([*resolved, component])
+            node = records.get(candidate)
+            if node is None:
+                fail(f"{label} has a dangling symlink: {relative}")
+            node_kind, _, node_target, _ = node
+            if node_kind == "l":
+                state = (tuple(resolved), tuple([component, *remaining]))
+                if state in states or expansions >= MAX_SYMLINK_EXPANSIONS:
+                    fail(f"{label} has a symlink loop: {relative}")
+                states.add(state)
+                expansions += 1
+                if node_target is None:
+                    fail(f"{label} has an invalid symlink: {candidate}")
+                remaining = [*PurePosixPath(node_target).parts, *remaining]
+                continue
+            if remaining and node_kind != "d":
+                fail(f"{label} symlink traverses a non-directory: {relative}")
+            resolved.append(component)
+
+
+def inspect_tree_snapshot(
+    root: Path,
+    limits: dict[str, int],
+    label: str,
+    *,
+    hash_files: bool,
+    sealed_owner: tuple[int, int] | None = None,
+    require_single_link_files: bool = False,
+) -> tuple[TreeSnapshot, int, int]:
+    """Inspect one tree through held directory descriptors and return its identity."""
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        directory_flags |= os.O_NOFOLLOW
+    try:
+        root_before = root.lstat()
+        root_fd = os.open(root, directory_flags)
+    except OSError as error:
+        fail(f"{label} root cannot be opened safely: {error}")
+    root_stat = os.fstat(root_fd)
+    if (
+        not stat.S_ISDIR(root_stat.st_mode)
+        or file_identity(root_stat) != file_identity(root_before)
+    ):
+        os.close(root_fd)
+        fail(f"{label} root changed before inspection")
+    if sealed_owner is not None and (
+        root_stat.st_uid != sealed_owner[0]
+        or root_stat.st_gid != sealed_owner[1]
+        or stat.S_IMODE(root_stat.st_mode) != 0o555
+    ):
+        os.close(root_fd)
+        fail(f"{label} root is not sealed")
+
+    records: dict[str, TreeNode] = {}
+    entries = 0
+    total_bytes = 0
+    pending: list[tuple[int, str, os.stat_result]] = [(root_fd, "", root_stat)]
+    while pending:
+        current_fd, relative_dir, expected_directory = pending.pop()
+        try:
+            if file_identity(os.fstat(current_fd)) != file_identity(
+                expected_directory
+            ):
+                fail(f"{label} directory changed before inspection")
+            try:
+                names = os.listdir(current_fd)
+            except OSError as error:
+                fail(f"{label} cannot be enumerated: {error}")
+            entries += len(names)
+            if entries > limits["max_entries"]:
+                fail(f"{label} exceeds the entry limit")
+            for name in sorted(names):
+                relative = f"{relative_dir}/{name}" if relative_dir else name
+                safe_relative_path(relative, limits["max_path_bytes"])
+                before = os.stat(
+                    name, dir_fd=current_fd, follow_symlinks=False
+                )
+                if before.st_dev != root_stat.st_dev:
+                    fail(f"{label} crosses a filesystem: {relative}")
+                identity = file_identity(before)
+                if stat.S_ISDIR(before.st_mode):
+                    if sealed_owner is not None and (
+                        before.st_uid != sealed_owner[0]
+                        or before.st_gid != sealed_owner[1]
+                        or stat.S_IMODE(before.st_mode) != 0o555
+                    ):
+                        fail(f"{label} directory is not sealed: {relative}")
+                    child_fd = os.open(name, directory_flags, dir_fd=current_fd)
+                    if file_identity(os.fstat(child_fd)) != identity:
+                        os.close(child_fd)
+                        fail(f"{label} directory changed: {relative}")
+                    records[relative] = ("d", identity, None, None)
+                    pending.append((child_fd, relative, before))
+                elif stat.S_ISREG(before.st_mode):
+                    mode = stat.S_IMODE(before.st_mode)
+                    if before.st_size > limits["max_file_bytes"] or (
+                        require_single_link_files and before.st_nlink != 1
+                    ):
+                        fail(f"{label} file has unsafe links or size: {relative}")
+                    if sealed_owner is not None and (
+                        before.st_uid != sealed_owner[0]
+                        or before.st_gid != sealed_owner[1]
+                        or before.st_nlink != 1
+                        or mode not in {0o444, 0o555}
+                    ):
+                        fail(f"{label} file is not sealed: {relative}")
+                    if before.st_size > limits["max_bytes"] - total_bytes:
+                        fail(f"{label} exceeds its total byte limit")
+                    total_bytes += before.st_size
+                    digest = (
+                        hash_regular_at(
+                            current_fd,
+                            name,
+                            before,
+                            max_bytes=limits["max_file_bytes"],
+                            label=f"{label} file {relative}",
+                        )
+                        if hash_files
+                        else None
+                    )
+                    records[relative] = ("f", identity, None, digest)
+                elif stat.S_ISLNK(before.st_mode):
+                    target = os.readlink(name, dir_fd=current_fd)
+                    contained_symlink(
+                        relative, target, limits["max_path_bytes"]
+                    )
+                    if before.st_nlink != 1:
+                        fail(f"{label} symlink is not single-linked: {relative}")
+                    if sealed_owner is not None and (
+                        before.st_uid != sealed_owner[0]
+                        or before.st_gid != sealed_owner[1]
+                    ):
+                        fail(f"{label} symlink has unsafe ownership: {relative}")
+                    after = os.stat(
+                        name, dir_fd=current_fd, follow_symlinks=False
+                    )
+                    if (
+                        file_identity(after) != identity
+                        or os.readlink(name, dir_fd=current_fd) != target
+                    ):
+                        fail(f"{label} symlink changed: {relative}")
+                    records[relative] = ("l", identity, target, None)
+                else:
+                    fail(f"{label} contains an unsupported node: {relative}")
+            if file_identity(os.fstat(current_fd)) != file_identity(
+                expected_directory
+            ):
+                fail(
+                    f"{label} directory changed during inspection: "
+                    f"{relative_dir or '.'}"
+                )
+        finally:
+            os.close(current_fd)
+            # WHY: a rejected sibling must not leak a held descriptor into the
+            # persistent root supervisor or a later staging invocation.
+            if sys.exc_info()[0] is not None:
+                while pending:
+                    pending_fd, _, _ = pending.pop()
+                    os.close(pending_fd)
+    try:
+        root_after = root.lstat()
+    except OSError as error:
+        fail(f"{label} root disappeared after inspection: {error}")
+    if file_identity(root_after) != file_identity(root_stat):
+        fail(f"{label} root changed during inspection")
+    validate_tree_symlink_targets(records, label)
+    return (file_identity(root_stat), records), entries, total_bytes
+
+
+def tree_identity_signature(snapshot: TreeSnapshot) -> tuple[
+    tuple[int, ...], dict[str, tuple[str, tuple[int, ...], str | None]]
+]:
+    root_identity, records = snapshot
+    return (
+        root_identity,
+        {
+            relative: (kind, identity, target)
+            for relative, (kind, identity, target, _) in records.items()
+        },
+    )
+
+
+def tree_content_signature(
+    records: dict[str, TreeNode], label: str
+) -> dict[str, tuple[Any, ...]]:
+    result: dict[str, tuple[Any, ...]] = {}
+    for relative, (kind, identity, target, digest) in records.items():
+        if kind == "d":
+            result[relative] = ("d",)
+        elif kind == "l":
+            result[relative] = ("l", target)
+        elif kind == "f":
+            if digest is None:
+                fail(f"{label} file lacks a content digest: {relative}")
+            # The sealed projection intentionally drops write/special bits but
+            # must preserve whether the source was executable.
+            normalized_mode = (
+                0o555 if stat.S_IMODE(identity[2]) & 0o111 else 0o444
+            )
+            result[relative] = (
+                "f",
+                normalized_mode,
+                identity[6],
+                digest,
+            )
+        else:
+            fail(f"{label} has an invalid tree record: {relative}")
+    return result
+
+
+def sealed_tree_manifest(
+    snapshot: TreeSnapshot,
+    label: str,
+) -> str:
+    _, records = snapshot
+    manifest: list[list[Any]] = [["d", "", 0o555, 0]]
+    for relative, (kind, identity, target, digest) in records.items():
+        if kind == "d":
+            manifest.append(["d", relative, 0o555, 0])
+        elif kind == "l":
+            manifest.append(["l", relative, 0, target])
+        elif kind == "f":
+            if digest is None:
+                fail(f"{label} file lacks a content digest: {relative}")
+            manifest.append(
+                [
+                    "f",
+                    relative,
+                    stat.S_IMODE(identity[2]),
+                    0,
+                    identity[6],
+                    digest,
+                ]
+            )
+        else:
+            fail(f"{label} has an invalid manifest record: {relative}")
+    manifest.sort(key=lambda record: record[1])
+    return hashlib.sha256(compact_json(manifest)).hexdigest()
+
+
+def remove_staging_tree(path: Path, label: str) -> None:
+    """Remove one known-private staging tree, including already sealed directories."""
+    try:
+        current = path.lstat()
+    except FileNotFoundError:
+        return
+    if not stat.S_ISDIR(current.st_mode):
+        fail(f"{label} cleanup target is not a real directory")
+
+    try:
+        # shutil cannot unlink children from a sealed 0555 parent as an
+        # unprivileged test owner. Reopen only known-private real directories
+        # first; os.walk does not traverse the preserved symlinks.
+        for directory, _, _ in os.walk(path, topdown=True, followlinks=False):
+            os.chmod(directory, 0o700)
+        shutil.rmtree(path)
+    except OSError as error:
+        fail(f"{label} could not be cleaned up: {error}")
+    if path.exists() or path.is_symlink():
+        fail(f"{label} cleanup left staging state")
+
+
+def stage_sysroot_tree(
+    source: Path,
+    destination: Path,
+    *,
+    owner_uid: int,
+    owner_gid: int,
+    limits: dict[str, int] = SYSROOT_LIMITS,
+) -> tuple[str, int, int]:
+    """Copy and atomically publish one content-closed, sealed sysroot tree."""
+    source = canonical_real_directory(source, label="sysroot projection source")
+    destination_parent = canonical_real_directory(
+        destination.parent,
+        label="sysroot projection parent",
+        owner_uid=owner_uid,
+    )
+    if destination.parent != destination_parent:
+        fail("sysroot projection destination left its canonical parent")
+    if destination.exists() or destination.is_symlink():
+        fail("sysroot projection destination is occupied")
+
+    source_before, _, _ = inspect_tree_snapshot(
+        source,
+        limits,
+        "sysroot source",
+        hash_files=True,
+    )
+    temporary = Path(
+        tempfile.mkdtemp(prefix=".sysroot-stage-", dir=destination_parent)
+    )
+    os.chown(temporary, owner_uid, owner_gid)
+    published = False
+    try:
+        copied_entries, copied_bytes = copy_input_tree(
+            source,
+            temporary,
+            limits,
+            expected_root_identity=source_before[0],
+            destination_uid=owner_uid,
+            destination_gid=owner_gid,
+            require_single_link_files=False,
+            destination_precreated=True,
+        )
+        source_after, _, _ = inspect_tree_snapshot(
+            source,
+            limits,
+            "sysroot source",
+            hash_files=False,
+        )
+        if tree_identity_signature(source_after) != tree_identity_signature(
+            source_before
+        ):
+            fail("sysroot source changed while it was staged")
+        staged_snapshot, staged_entries, staged_bytes = inspect_tree_snapshot(
+            temporary,
+            limits,
+            "staged sysroot",
+            hash_files=True,
+            sealed_owner=(owner_uid, owner_gid),
+            require_single_link_files=True,
+        )
+        if (
+            copied_entries != staged_entries
+            or copied_bytes != staged_bytes
+            or tree_content_signature(staged_snapshot[1], "staged sysroot")
+            != tree_content_signature(source_before[1], "sysroot source")
+        ):
+            fail("staged sysroot differs from its stable source closure")
+        digest = sealed_tree_manifest(staged_snapshot, "staged sysroot")
+
+        # WHY: the parent is a root-owned private publisher directory. Validate
+        # completely under a random sibling first, then perform one same-device
+        # rename so neither Formula identity can observe or replace a partial
+        # sysroot at the configured destination.
+        if destination.exists() or destination.is_symlink():
+            fail("sysroot projection destination appeared during staging")
+        parent_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+        if hasattr(os, "O_NOFOLLOW"):
+            parent_flags |= os.O_NOFOLLOW
+        parent_before = destination_parent.lstat()
+        parent_fd = os.open(destination_parent, parent_flags)
+        try:
+            opened_parent = os.fstat(parent_fd)
+            parent_authority = (
+                opened_parent.st_dev,
+                opened_parent.st_ino,
+                opened_parent.st_mode,
+                opened_parent.st_uid,
+                opened_parent.st_gid,
+            )
+            if parent_authority != (
+                parent_before.st_dev,
+                parent_before.st_ino,
+                parent_before.st_mode,
+                parent_before.st_uid,
+                parent_before.st_gid,
+            ):
+                fail("sysroot projection parent changed before publication")
+            temporary_before = os.stat(
+                temporary.name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+            try:
+                os.stat(
+                    destination.name,
+                    dir_fd=parent_fd,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                pass
+            else:
+                fail("sysroot projection destination appeared during staging")
+            os.rename(
+                temporary.name,
+                destination.name,
+                src_dir_fd=parent_fd,
+                dst_dir_fd=parent_fd,
+            )
+            published = True
+            published_stat = os.stat(
+                destination.name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+            # Rename updates directory ctime on some filesystems; device,
+            # inode, type/mode, links, owner, and size still identify the exact
+            # validated tree that crossed the publication boundary.
+            if file_identity(published_stat)[:7] != file_identity(
+                temporary_before
+            )[:7]:
+                fail("published sysroot is not the validated staging tree")
+            os.fsync(parent_fd)
+            opened_parent_after = os.fstat(parent_fd)
+            if parent_authority != (
+                opened_parent_after.st_dev,
+                opened_parent_after.st_ino,
+                opened_parent_after.st_mode,
+                opened_parent_after.st_uid,
+                opened_parent_after.st_gid,
+            ):
+                fail("sysroot projection parent changed during publication")
+        finally:
+            os.close(parent_fd)
+        final_snapshot, final_entries, final_bytes = inspect_tree_snapshot(
+            destination,
+            limits,
+            "published sysroot",
+            hash_files=True,
+            sealed_owner=(owner_uid, owner_gid),
+            require_single_link_files=True,
+        )
+        final_digest = sealed_tree_manifest(final_snapshot, "published sysroot")
+        if (
+            final_digest != digest
+            or final_entries != staged_entries
+            or final_bytes != staged_bytes
+        ):
+            fail("published sysroot changed after its atomic rename")
+        return final_digest, final_entries, final_bytes
+    except BaseException as error:
+        try:
+            if published:
+                remove_staging_tree(destination, "published sysroot")
+            remove_staging_tree(temporary, "sysroot staging directory")
+        except RunnerError as cleanup_error:
+            raise cleanup_error from error
+        raise
+
+
+def stage_sysroot(source_value: str, destination_value: str) -> int:
+    """Root-only CLI boundary for staging the publisher's immutable sysroot."""
+    if os.geteuid() != 0:
+        fail("sysroot staging must run as root")
+    runner = Path(__file__).resolve(strict=True)
+    runner_stat = runner.lstat()
+    parent_stat = runner.parent.lstat()
+    try:
+        anchor_stat = PROTECTED_PUBLISHER_ROOT.lstat()
+    except OSError as error:
+        fail(f"protected publisher root is unavailable: {error}")
+    if (
+        not stat.S_ISREG(runner_stat.st_mode)
+        or runner_stat.st_uid != 0
+        or runner_stat.st_gid != 0
+        or runner_stat.st_nlink != 1
+        or stat.S_IMODE(runner_stat.st_mode) != 0o555
+        or not stat.S_ISDIR(parent_stat.st_mode)
+        or runner.parent.resolve(strict=True) != runner.parent
+        or parent_stat.st_uid != 0
+        or parent_stat.st_gid != 0
+        or stat.S_IMODE(parent_stat.st_mode) not in {0o755, 0o555}
+        or runner.parent.parent != PROTECTED_PUBLISHER_ROOT
+        or not PROTECTED_BUILD_RE.fullmatch(runner.parent.name)
+        or not stat.S_ISDIR(anchor_stat.st_mode)
+        or PROTECTED_PUBLISHER_ROOT.resolve(strict=True)
+        != PROTECTED_PUBLISHER_ROOT
+        or anchor_stat.st_uid != 0
+        or anchor_stat.st_gid != 0
+        or stat.S_IMODE(anchor_stat.st_mode) != 0o711
+    ):
+        fail("sysroot staging runner is outside its sealed root-owned boundary")
+    destination = Path(destination_value)
+    if destination != runner.parent / "sysroot":
+        fail("sysroot projection left the protected runner root")
+    source = canonical_real_directory(
+        source_value, label="sysroot projection source"
+    )
+    if is_within(source, runner.parent) or is_within(runner.parent, source):
+        fail("sysroot projection source overlaps the protected runner root")
+    stage_sysroot_tree(
+        source,
+        destination,
+        owner_uid=0,
+        owner_gid=0,
+    )
+    return 0
+
+
+def stage_native_closure(source_value: str, destination_value: str) -> int:
+    """Publish the exact native Cellar only after it becomes immutable."""
+    if os.geteuid() != 0:
+        fail("native closure staging must run as root")
+    runner = Path(__file__).resolve(strict=True)
+    runner_stat = runner.lstat()
+    parent_stat = runner.parent.lstat()
+    try:
+        anchor_stat = PROTECTED_PUBLISHER_ROOT.lstat()
+    except OSError as error:
+        fail(f"protected publisher root is unavailable: {error}")
+    if (
+        not stat.S_ISREG(runner_stat.st_mode)
+        or runner_stat.st_uid != 0
+        or runner_stat.st_gid != 0
+        or runner_stat.st_nlink != 1
+        or stat.S_IMODE(runner_stat.st_mode) != 0o555
+        or not stat.S_ISDIR(parent_stat.st_mode)
+        or runner.parent.resolve(strict=True) != runner.parent
+        or parent_stat.st_uid != 0
+        or parent_stat.st_gid != 0
+        or stat.S_IMODE(parent_stat.st_mode) != 0o555
+        or runner.parent.parent != PROTECTED_PUBLISHER_ROOT
+        or not PROTECTED_BUILD_RE.fullmatch(runner.parent.name)
+        or not stat.S_ISDIR(anchor_stat.st_mode)
+        or PROTECTED_PUBLISHER_ROOT.resolve(strict=True)
+        != PROTECTED_PUBLISHER_ROOT
+        or anchor_stat.st_uid != 0
+        or anchor_stat.st_gid != 0
+        or stat.S_IMODE(anchor_stat.st_mode) != 0o711
+    ):
+        fail("native closure staging runner is outside its sealed root-owned boundary")
+
+    destination = canonical_requested_path(
+        destination_value, label="native closure manifest destination"
+    )
+    if destination != runner.parent / "native-closure.json":
+        fail("native closure manifest left the protected runner root")
+    if destination.exists() or destination.is_symlink():
+        fail("native closure manifest destination is occupied")
+    cellar = canonical_real_directory(
+        source_value,
+        label="sealed native dependency Cellar",
+        owner_uid=0,
+        exact_mode=0o555,
+    )
+    if is_within(cellar, runner.parent) or is_within(runner.parent, cellar):
+        fail("native dependency Cellar overlaps the protected runner root")
+
+    kegs = installed_keg_roots(cellar, "native dependency")
+    for name, root in sorted(kegs.items()):
+        validate_sealed_dependency_tree(root, f"native dependency {name}")
+    data = compact_json(native_closure_document(cellar, kegs))
+    if len(data) > MAX_NATIVE_CLOSURE_MANIFEST_BYTES:
+        fail("native closure manifest exceeds its byte limit")
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        directory_flags |= os.O_NOFOLLOW
+    parent_before = runner.parent.lstat()
+    parent_authority = (
+        parent_before.st_dev,
+        parent_before.st_ino,
+        parent_before.st_mode,
+        parent_before.st_uid,
+        parent_before.st_gid,
+    )
+    parent_fd = os.open(runner.parent, directory_flags)
+    try:
+        if file_identity(os.fstat(parent_fd)) != file_identity(parent_before):
+            fail("protected runner root changed before native closure publication")
+        # WHY: O_EXCL plus the prestarted supervisor's earlier absence check
+        # turns this file into a one-way handoff. Neither native Homebrew nor the
+        # later target Formula can replace the exact closure the root runner saw.
+        write_regular_at(
+            parent_fd,
+            destination.name,
+            data,
+            mode=0o400,
+            label="native closure manifest",
+        )
+        os.fsync(parent_fd)
+        parent_after = os.fstat(parent_fd)
+        if parent_authority != (
+            parent_after.st_dev,
+            parent_after.st_ino,
+            parent_after.st_mode,
+            parent_after.st_uid,
+            parent_after.st_gid,
+        ):
+            fail("protected runner root changed during native closure publication")
+    finally:
+        os.close(parent_fd)
+    published, _ = open_regular_file(
+        destination,
+        owner_uid=0,
+        exact_mode=0o400,
+        max_bytes=MAX_NATIVE_CLOSURE_MANIFEST_BYTES,
+        label="published native closure manifest",
+    )
+    if published != data:
+        fail("published native closure manifest changed")
+    return 0
 
 
 def seal_output_tree(
@@ -2300,8 +3329,17 @@ def teardown_recipe_unit(unit: str, config: dict[str, Any]) -> None:
         fail(f"recipe service survived teardown with state {load_state}")
 
 
-def run_bounded_command(command: list[str], *, timeout_seconds: int) -> int:
-    """Stream recipe diagnostics without granting unbounded runner memory/disk."""
+def run_bounded_command(
+    command: list[str],
+    *,
+    timeout_seconds: int,
+    max_output_bytes: int = MAX_RECIPE_LOG_BYTES,
+    max_tail_bytes: int = 0,
+    output_limit_error: str = "tap recipe exceeded its diagnostic output limit",
+) -> tuple[int, bytes]:
+    """Stream bounded diagnostics and optionally retain their bounded suffix."""
+    if max_tail_bytes < 0 or max_tail_bytes > max_output_bytes:
+        fail("tap recipe diagnostic tail has an invalid byte limit")
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -2320,11 +3358,16 @@ def run_bounded_command(command: list[str], *, timeout_seconds: int) -> int:
     selector.register(process.stdout, selectors.EVENT_READ)
     deadline = time.monotonic() + timeout_seconds
     total = 0
+    tail = bytearray()
+
+    def command_fail(message: str) -> None:
+        raise BoundedCommandError(message, bytes(tail))
+
     try:
         while selector.get_map():
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                fail("tap recipe exceeded its execution deadline")
+                command_fail("tap recipe exceeded its execution deadline")
             events = selector.select(min(remaining, 1.0))
             if not events:
                 continue
@@ -2337,9 +3380,13 @@ def run_bounded_command(command: list[str], *, timeout_seconds: int) -> int:
                     if not chunk:
                         selector.unregister(key.fileobj)
                         break
+                    if max_tail_bytes:
+                        tail.extend(chunk)
+                        if len(tail) > max_tail_bytes:
+                            del tail[:-max_tail_bytes]
                     total += len(chunk)
-                    if total > MAX_RECIPE_LOG_BYTES:
-                        fail("tap recipe exceeded its diagnostic output limit")
+                    if total > max_output_bytes:
+                        command_fail(output_limit_error)
                     try:
                         sys.stdout.buffer.write(chunk)
                         sys.stdout.buffer.flush()
@@ -2349,11 +3396,11 @@ def run_bounded_command(command: list[str], *, timeout_seconds: int) -> int:
                         pass
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            fail("tap recipe exceeded its execution deadline")
+            command_fail("tap recipe exceeded its execution deadline")
         try:
-            return process.wait(timeout=remaining)
+            return process.wait(timeout=remaining), bytes(tail)
         except subprocess.TimeoutExpired:
-            fail("tap recipe exceeded its execution deadline")
+            command_fail("tap recipe exceeded its execution deadline")
     finally:
         selector.close()
         process.stdout.close()
@@ -2483,7 +3530,10 @@ def run_recipe(
             "--property=PrivateIPC=yes",
             f"--property=RootDirectory={service_root}",
             "--property=MountAPIVFS=yes",
-            "--property=TemporaryFileSystem=/etc:ro",
+            # WHY: RootDirectory already supplies a private sealed /etc with
+            # exact file bind mountpoints. A second read-only empty tmpfs would
+            # hide those mountpoints before systemd can bind passwd, group,
+            # alternatives, and the loader cache into the service.
             "--property=TemporaryFileSystem=/tmp:rw,nosuid,nodev,mode=1777,size=1073741824",
             "--property=ProtectSystem=strict",
             "--property=ProtectHome=tmpfs",
@@ -2540,8 +3590,21 @@ def run_recipe(
         )
         command.extend(["/usr/bin/bash", str(request["entrypoint"])])
         return_code: int | None = None
+        failure_diagnostic = ""
         try:
-            return_code = run_bounded_command(command, timeout_seconds=7_260)
+            # WHY: systemd-run --pipe makes this exact credential-free recipe
+            # service inherit systemd-run's stdout/stderr. Retaining the suffix
+            # in the same bounded drain proves the reply cannot include the
+            # supervisor, publisher environment, or an unrelated unit journal.
+            return_code, diagnostic_tail = run_bounded_command(
+                command,
+                timeout_seconds=7_260,
+                max_tail_bytes=MAX_RECIPE_FAILURE_DIAGNOSTIC_BYTES,
+            )
+            if return_code != 0:
+                failure_diagnostic = sanitize_recipe_diagnostic(diagnostic_tail)
+        except BoundedCommandError as error:
+            raise recipe_execution_error_from_command(error) from None
         finally:
             teardown_recipe_unit(unit, config)
         if return_code is None or return_code != 0:
@@ -2550,7 +3613,10 @@ def run_recipe(
                 if return_code is None
                 else str(return_code)
             )
-            fail(f"tap recipe exited with status {status}")
+            raise RecipeExecutionError(
+                f"tap recipe exited with status {status}",
+                failure_diagnostic,
+            )
 
         sealed = config["sealed_root"] / request_sha256
         if sealed.exists() or sealed.is_symlink():
@@ -2688,6 +3754,89 @@ def runner_paths() -> tuple[Path, Path, Path]:
     )
 
 
+def runner_error_reply(error: RunnerError) -> dict[str, Any]:
+    """Build one byte-bounded, control-free authenticated error reply."""
+    message = bounded_safe_text(str(error), MAX_REPLY_MESSAGE_BYTES)
+    if not message:
+        message = "tap recipe runner rejected an unsafe error message"
+    reply: dict[str, Any] = {
+        "message": message,
+        "schema": 1,
+        "status": "error",
+    }
+    if isinstance(error, RecipeExecutionError):
+        diagnostic = error.diagnostic
+        if (
+            diagnostic
+            and safe_text(diagnostic)
+            and len(diagnostic.encode("utf-8")) <= MAX_REPLY_DIAGNOSTIC_BYTES
+        ):
+            reply["diagnostic"] = diagnostic
+    payload = compact_json(reply)
+    if len(payload) > MAX_MESSAGE_BYTES:
+        # These independent field bounds leave ample JSON overhead. Treat any
+        # future schema growth that violates that proof as a programmer error,
+        # never as permission to send a truncated datagram.
+        fail("tap recipe runner error reply exceeds its protocol bound")
+    return reply
+
+
+def parse_runner_reply(reply: bytes) -> dict[str, Any]:
+    """Validate the exact status-dependent supervisor reply schema."""
+    if len(reply) > MAX_MESSAGE_BYTES:
+        fail("tap recipe runner returned an oversized reply")
+    document = parse_json_bytes(reply, "tap recipe runner reply")
+    if type(document) is not dict:
+        fail("tap recipe runner returned an invalid reply")
+    base_keys = {"message", "schema", "status"}
+    keys = set(document)
+    if keys not in (base_keys, base_keys | {"diagnostic"}):
+        fail("tap recipe runner returned an invalid reply")
+    message = document.get("message")
+    status = document.get("status")
+    if (
+        not is_exact_integer(document.get("schema"))
+        or document["schema"] != 1
+        or type(status) is not str
+        or status not in {"ok", "error"}
+        or type(message) is not str
+        or not message
+        or not safe_text(message)
+        or len(message.encode("utf-8")) > MAX_REPLY_MESSAGE_BYTES
+        or compact_json(document) != reply
+    ):
+        fail("tap recipe runner returned an invalid reply")
+    diagnostic = document.get("diagnostic")
+    if "diagnostic" in document and (
+        status != "error"
+        or type(diagnostic) is not str
+        or not diagnostic
+        or not safe_text(diagnostic)
+        or len(diagnostic.encode("utf-8")) > MAX_REPLY_DIAGNOSTIC_BYTES
+    ):
+        fail("tap recipe runner returned an invalid reply")
+    return document
+
+
+def accept_runner_reply(reply: bytes) -> None:
+    """Expose a validated recipe diagnostic, then preserve the ordinary error."""
+    document = parse_runner_reply(reply)
+    if document["status"] == "ok":
+        return
+    diagnostic = document.get("diagnostic")
+    if diagnostic:
+        # WHY: the outer workflow stops GitHub command parsing before invoking
+        # the bottle builder. Prefixing this already control-free, single-line
+        # field also prevents recipe text from becoming the first token of a
+        # workflow log record.
+        print(
+            f"homebrew-tap-recipe-runner: recipe diagnostics: {diagnostic}",
+            file=sys.stderr,
+            flush=True,
+        )
+    fail(document["message"])
+
+
 def client(request: str, response: str) -> int:
     _, socket_path, _ = runner_paths()
     message = compact_json(
@@ -2702,23 +3851,7 @@ def client(request: str, response: str) -> int:
         reply = connection.recv(MAX_MESSAGE_BYTES + 1)
     finally:
         connection.close()
-    if len(reply) > MAX_MESSAGE_BYTES:
-        fail("tap recipe runner returned an oversized reply")
-    document = parse_json_bytes(reply, "tap recipe runner reply")
-    if (
-        type(document) is not dict
-        or set(document) != {"message", "schema", "status"}
-        or not is_exact_integer(document["schema"])
-        or document["schema"] != 1
-        or document["status"] not in {"ok", "error"}
-        or type(document["status"]) is not str
-        or type(document["message"]) is not str
-        or not safe_text(document["message"])
-        or len(document["message"].encode("utf-8")) > 2_048
-    ):
-        fail("tap recipe runner returned an invalid reply")
-    if document["status"] != "ok":
-        fail(document["message"])
+    accept_runner_reply(reply)
     return 0
 
 
@@ -2788,7 +3921,7 @@ def supervisor() -> int:
                 )
                 reply = {"message": "tap recipe output sealed", "schema": 1, "status": "ok"}
             except RunnerError as error:
-                reply = {"message": str(error)[:2_048], "schema": 1, "status": "error"}
+                reply = runner_error_reply(error)
             except (OSError, subprocess.SubprocessError) as error:
                 print(
                     f"homebrew-tap-recipe-runner: internal execution failure: {error}",
@@ -2830,15 +3963,24 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--request")
     parser.add_argument("--response")
     parser.add_argument("--source")
+    parser.add_argument("--stage-native-closure", action="store_true")
     parser.add_argument("--stage-recipe", action="store_true")
+    parser.add_argument("--stage-sysroot", action="store_true")
     parser.add_argument("--supervisor", action="store_true")
     arguments = parser.parse_args()
-    selected_modes = int(arguments.supervisor) + int(arguments.stage_recipe)
+    selected_modes = (
+        int(arguments.supervisor)
+        + int(arguments.stage_native_closure)
+        + int(arguments.stage_recipe)
+        + int(arguments.stage_sysroot)
+    )
     if selected_modes > 1:
         fail("tap recipe runner modes are mutually exclusive")
-    staging_values = (
+    projection_values = (
         arguments.source,
         arguments.destination,
+    )
+    recipe_identity_values = (
         arguments.formula,
         arguments.manifest_sha256,
     )
@@ -2846,20 +3988,45 @@ def parse_arguments() -> argparse.Namespace:
         if (
             arguments.request is not None
             or arguments.response is not None
-            or any(value is not None for value in staging_values)
+            or any(
+                value is not None
+                for value in (*projection_values, *recipe_identity_values)
+            )
         ):
             fail("tap recipe supervisor accepts no request arguments")
     elif arguments.stage_recipe:
         if (
             arguments.request is not None
             or arguments.response is not None
-            or any(value is None for value in staging_values)
+            or any(
+                value is None
+                for value in (*projection_values, *recipe_identity_values)
+            )
         ):
             fail("tap recipe staging requires its exact projection arguments")
+    elif arguments.stage_native_closure:
+        if (
+            arguments.request is not None
+            or arguments.response is not None
+            or any(value is None for value in projection_values)
+            or any(value is not None for value in recipe_identity_values)
+        ):
+            fail("native closure staging requires only --source and --destination")
+    elif arguments.stage_sysroot:
+        if (
+            arguments.request is not None
+            or arguments.response is not None
+            or any(value is None for value in projection_values)
+            or any(value is not None for value in recipe_identity_values)
+        ):
+            fail("sysroot staging requires only --source and --destination")
     elif (
         arguments.request is None
         or arguments.response is None
-        or any(value is not None for value in staging_values)
+        or any(
+            value is not None
+            for value in (*projection_values, *recipe_identity_values)
+        )
     ):
         fail("tap recipe runner requires --request and --response")
     return arguments
@@ -2877,6 +4044,10 @@ def main() -> int:
                 arguments.formula,
                 arguments.manifest_sha256,
             )
+        if arguments.stage_native_closure:
+            return stage_native_closure(arguments.source, arguments.destination)
+        if arguments.stage_sysroot:
+            return stage_sysroot(arguments.source, arguments.destination)
         if os.geteuid() == 0:
             fail("tap recipe client must not run as root")
         return client(arguments.request, arguments.response)
