@@ -206,6 +206,10 @@ for retired_prefix in "${retired_prefixes[@]}"; do
       docs/homebrew-publishing.md\|*"These Linuxbrew bottles provide CI executables"*) ;;
       .github/workflows/reusable-homebrew-bottle-publish.yml\|*"# preinstalled Linuxbrew tree"*) ;;
       .github/workflows/reusable-homebrew-bottle-publish.yml\|*"# depending on the runner's unrelated native Linuxbrew installation"*) ;;
+      apps/browser-demos/test/kandelo-homebrew-main-shell.spec.ts\|*"test ! -e /home/linuxbrew && test ! -L /home/linuxbrew"*) ;;
+      scripts/homebrew-main-shell-node-smoke.ts\|*'assertPathAbsent(fs, "/home/linuxbrew");'*) ;;
+      scripts/homebrew-main-shell-node-smoke.ts\|*"test ! -e /home/linuxbrew && test ! -L /home/linuxbrew"*) ;;
+      scripts/homebrew-main-shell-node-smoke.ts\|*"retired Linuxbrew guest path was recreated"*) ;;
       scripts/test-homebrew-publisher-real-lifecycle.sh\|*"for candidate in /opt/homebrew $retired_prefix/Homebrew /usr/local/Homebrew"*) ;;
       scripts/test-homebrew-patched-launcher.sh\|*"fixed-prefix Linuxbrew bottle path lengths"*) ;;
       scripts/homebrew-patched-launcher.sh\|*"matches Linuxbrew's bottle"*) ;;

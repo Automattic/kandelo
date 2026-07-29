@@ -759,6 +759,9 @@ printf 'HOMEBREW_ATOMIC_RUNTIME_ACTIVATED\n'
     `
 set -eu
 test "$(/usr/bin/brew --prefix)" = /opt/kandelo/homebrew
+# WHY: -e follows symlinks, while -L also catches a dangling compatibility
+# alias. Neither form of the retired guest layout belongs in Kandelo.
+test ! -e /home/linuxbrew && test ! -L /home/linuxbrew
 probe=/opt/kandelo/homebrew/Library/Homebrew/cmd/kandelo-env-probe.sh
 cat > "$probe" <<'KANDELO_BREW_ENV_PROBE'
 homebrew-kandelo-env-probe() {

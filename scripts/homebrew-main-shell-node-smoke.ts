@@ -10,6 +10,7 @@ import {
   type LazyDownloadEvent,
   type SerializedLazyArchiveEntry,
 } from "../host/src/vfs/memory-fs";
+import { ENOENT, SFSError } from "../host/src/vfs/sharedfs-vendor";
 import type { ClosedLazyAsset } from "../host/src/vfs/closed-lazy-assets";
 import {
   assertPackageDeferredZipTreeState,
@@ -530,6 +531,10 @@ test "$(/usr/bin/brew --cellar 2>&1)" = /opt/kandelo/homebrew/Cellar ||
   brew_smoke_fail 'brew --cellar differs from the guest Cellar'
 test "$(/usr/bin/brew --cache 2>&1)" = /home/user/.cache/Homebrew ||
   brew_smoke_fail 'brew --cache differs from the guest cache'
+# WHY: check both existence and symlink identity so a dangling compatibility
+# alias cannot make the retired guest layout appear absent.
+test ! -e /home/linuxbrew && test ! -L /home/linuxbrew ||
+  brew_smoke_fail 'retired Linuxbrew guest path was recreated'
 # WHY: \`brew ruby\` is a developer command and may query Homebrew's developer
 # package API. A temporary stock Bash command observes the same post-brew.env
 # process environment without turning this offline smoke into a network test;
@@ -710,6 +715,9 @@ function assertHomebrewBootstrapConsumerContract(
   }
   assertTreeOwner(fs, "/opt/kandelo/homebrew", 1000, 1000);
   assertTreeOwner(fs, "/home/user/.cache", 1000, 1000);
+  // WHY: a canonical prefix is insufficient if the image also preserves a
+  // Linux-shaped compatibility tree that users or packages can discover.
+  assertPathAbsent(fs, "/home/linuxbrew");
 
   const imageMetadata = asRecord(metadata, "main-shell image metadata");
   const expected = {
@@ -737,6 +745,16 @@ function assertHomebrewBootstrapConsumerContract(
   ) {
     throw new Error("main-shell Homebrew consumer metadata changed");
   }
+}
+
+function assertPathAbsent(fs: MemoryFileSystem, path: string): void {
+  try {
+    fs.lstat(path);
+  } catch (error) {
+    if (error instanceof SFSError && error.code === ENOENT) return;
+    throw error;
+  }
+  throw new Error(`main-shell image still contains retired guest path ${path}`);
 }
 
 function assertTreeOwner(
