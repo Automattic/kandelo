@@ -1001,12 +1001,29 @@ CMake or WABT; they are not Kandelo package dependencies, target bottle
 contents, or VFS inputs. Kandelo bottles are still built from the upstream
 sources declared by the tap Formulae.
 
-After those checks, the publisher makes the complete native prefix root-owned
-and read-only. The target build can read that sealed prefix, but only each
-planned direct dependency's selected keg is copied into a root-owned, read-only
-proxy under the canonical target Cellar. Its target `opt` link points to that
-real target keg. Homebrew requires a keg's grandparent to resolve to the active
-Cellar, so a rack symlink into the native prefix is not a valid substitute.
+The recipe supervisor starts before native Homebrew runs and reserves one exact
+manifest path below its root-owned build directory. That path must still be
+absent when the supervisor loads its static direct-tool plan. After the native
+installs finish, the publisher makes the complete native prefix root-owned and
+read-only. The same admitted root runner then writes, with exclusive creation,
+a mode-`0400` inventory of every Formula name and exact keg path it found in
+that sealed Cellar. When the recipe request arrives, the supervisor rescans
+every root-owned, read-only keg and requires exact equality with that inventory.
+A late extra rack, removed or replaced keg, mutable tree, duplicate name, or
+missing planned direct tool fails closed.
+
+The manifest authenticates the complete transitive execution closure, while
+the earlier static plan still decides which direct tools and Requirements may
+contribute executable directories to the recipe environment. Transitive kegs
+are mounted only at their native Cellar and `opt` paths so direct tools can
+follow legitimate cross-keg links; they do not silently become additional
+`PATH` roots or caller-selected dependencies.
+
+The target build can read that sealed prefix, but only each planned direct
+dependency's selected keg is copied into a root-owned, read-only proxy under the
+canonical target Cellar. Its target `opt` link points to that real target keg.
+Homebrew requires a keg's grandparent to resolve to the active Cellar, so a rack
+symlink into the native prefix is not a valid substitute.
 If that direct keg contains a relative link into its recursive native closure,
 the publisher rewrites the copied link to the exact resolved path in the sealed
 native prefix. This preserves host tools whose launchers are supplied by another

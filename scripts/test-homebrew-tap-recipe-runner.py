@@ -142,6 +142,10 @@ class ProtocolTests(unittest.TestCase):
                 path = root / key
                 path.mkdir()
                 config[key] = str(path)
+            native_closure_manifest = (
+                Path(config["protected_root"]) / "native-closure.json"
+            )
+            config["native_closure_manifest"] = str(native_closure_manifest)
             aliases = {
                 "platform_alias_root": "/home/runner/kandelo-platform",
                 "recipe_alias_root": "/home/runner/work/tap/Kandelo/recipes/fixture",
@@ -156,6 +160,21 @@ class ProtocolTests(unittest.TestCase):
             for key, value in aliases.items():
                 self.assertEqual(config[key], Path(value))
                 self.assertFalse(Path(value).exists())
+            self.assertEqual(
+                config["native_closure_manifest"], native_closure_manifest
+            )
+
+            native_closure_manifest.write_text('{"schema":1}')
+            preseeded = {
+                key: str(root / key)
+                for key in host_keys
+            }
+            preseeded["native_closure_manifest"] = str(native_closure_manifest)
+            preseeded.update(aliases)
+            with self.assertRaisesRegex(
+                runner.RunnerError, "appeared before native Homebrew was sealed"
+            ):
+                runner.normalize_config_paths(preseeded)
 
     def test_sysroot_staging_cli_accepts_only_its_two_paths(self) -> None:
         with mock.patch.object(
@@ -186,6 +205,45 @@ class ProtocolTests(unittest.TestCase):
                     "/source",
                     "--destination",
                     "/protected/sysroot",
+                    "--formula",
+                    "unexpected",
+                ],
+            ),
+            self.assertRaisesRegex(runner.RunnerError, "only --source"),
+        ):
+            runner.parse_arguments()
+
+    def test_native_closure_staging_cli_accepts_only_its_two_paths(self) -> None:
+        with mock.patch.object(
+            sys,
+            "argv",
+            [
+                str(RUNNER_PATH),
+                "--stage-native-closure",
+                "--source",
+                "/native/Cellar",
+                "--destination",
+                "/protected/native-closure.json",
+            ],
+        ):
+            arguments = runner.parse_arguments()
+        self.assertTrue(arguments.stage_native_closure)
+        self.assertEqual(arguments.source, "/native/Cellar")
+        self.assertEqual(
+            arguments.destination, "/protected/native-closure.json"
+        )
+
+        with (
+            mock.patch.object(
+                sys,
+                "argv",
+                [
+                    str(RUNNER_PATH),
+                    "--stage-native-closure",
+                    "--source",
+                    "/native/Cellar",
+                    "--destination",
+                    "/protected/native-closure.json",
                     "--formula",
                     "unexpected",
                 ],
@@ -958,6 +1016,179 @@ class TargetDependencySelectionTests(unittest.TestCase):
                     ],
                     os.getuid(),
                 )
+
+
+class NativeClosureAuthenticationTests(unittest.TestCase):
+    make_rack = staticmethod(TargetDependencySelectionTests.make_rack)
+    translate_fixture_root_ownership = staticmethod(
+        TargetDependencySelectionTests.translate_fixture_root_ownership
+    )
+
+    @staticmethod
+    def manifest(cellar: Path, kegs: dict[str, Path]) -> bytes:
+        return runner.compact_json(runner.native_closure_document(cellar, kegs))
+
+    def authenticate(
+        self,
+        cellar: Path,
+        manifest: bytes,
+        direct_formulae: list[str],
+    ) -> dict[str, Path]:
+        with (
+            self.translate_fixture_root_ownership(),
+            mock.patch.object(
+                runner, "open_regular_file", return_value=(manifest, mock.sentinel.stat)
+            ),
+            mock.patch.object(
+                runner, "validate_sealed_dependency_tree"
+            ) as validate_tree,
+        ):
+            result = runner.authenticated_native_keg_roots(
+                cellar,
+                cellar.parent / "native-closure.json",
+                direct_formulae,
+            )
+        self.validation_calls = validate_tree.call_args_list
+        return result
+
+    def test_accepts_transitive_kegs_but_exposes_direct_roots_separately(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            cellar = Path(temporary).resolve() / "native/Cellar"
+            cellar.mkdir(parents=True)
+            direct = self.make_rack(cellar, "wabt")
+            transitive = self.make_rack(cellar, "openssl@3")
+            cellar.chmod(0o555)
+            closure = {"openssl@3": transitive, "wabt": direct}
+
+            authenticated = self.authenticate(
+                cellar, self.manifest(cellar, closure), ["wabt"]
+            )
+
+            self.assertEqual(authenticated, closure)
+            self.assertEqual(
+                {name: authenticated[name] for name in ["wabt"]},
+                {"wabt": direct},
+            )
+            self.assertEqual(
+                self.validation_calls,
+                [
+                    mock.call(transitive, "native dependency openssl@3"),
+                    mock.call(direct, "native dependency wabt"),
+                ],
+            )
+
+    def test_rejects_sealed_extra_rack_outside_the_authenticated_inventory(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            cellar = Path(temporary).resolve() / "native/Cellar"
+            cellar.mkdir(parents=True)
+            direct = self.make_rack(cellar, "wabt")
+            transitive = self.make_rack(cellar, "openssl@3")
+            self.make_rack(cellar, "injected")
+            cellar.chmod(0o555)
+            expected = {"openssl@3": transitive, "wabt": direct}
+
+            with self.assertRaisesRegex(
+                runner.RunnerError, "authenticated sealed closure"
+            ):
+                self.authenticate(
+                    cellar, self.manifest(cellar, expected), ["wabt"]
+                )
+
+    def test_rejects_mutable_racks_even_when_the_manifest_names_them(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            cellar = Path(temporary).resolve() / "native/Cellar"
+            cellar.mkdir(parents=True)
+            direct = self.make_rack(cellar, "wabt")
+            mutable = self.make_rack(cellar, "mutable", mode=0o755)
+            cellar.chmod(0o555)
+            expected = {"mutable": mutable, "wabt": direct}
+
+            with self.assertRaisesRegex(runner.RunnerError, "wrong mode"):
+                self.authenticate(
+                    cellar, self.manifest(cellar, expected), ["wabt"]
+                )
+
+    def test_rejects_a_missing_declared_direct_tool(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            cellar = Path(temporary).resolve() / "native/Cellar"
+            cellar.mkdir(parents=True)
+            transitive = self.make_rack(cellar, "openssl@3")
+            cellar.chmod(0o555)
+            expected = {"openssl@3": transitive}
+
+            with self.assertRaisesRegex(
+                runner.RunnerError, "omits declared direct tools"
+            ):
+                self.authenticate(
+                    cellar, self.manifest(cellar, expected), ["wabt"]
+                )
+
+    def test_rejects_manifest_name_order_and_keg_collisions(self) -> None:
+        cellar = Path("/native/Cellar")
+        fixtures = {
+            "unsorted": {
+                "cellar": str(cellar),
+                "kegs": [
+                    {"formula": "zlib", "root": f"{cellar}/zlib/1.0"},
+                    {"formula": "openssl@3", "root": f"{cellar}/openssl@3/1.0"},
+                ],
+                "schema": 1,
+            },
+            "duplicate root": {
+                "cellar": str(cellar),
+                "kegs": [
+                    {"formula": "first", "root": f"{cellar}/first/1.0"},
+                    {"formula": "second", "root": f"{cellar}/first/1.0"},
+                ],
+                "schema": 1,
+            },
+        }
+        for label, document in fixtures.items():
+            with self.subTest(label=label), self.assertRaises(runner.RunnerError):
+                runner.parse_native_closure_manifest(
+                    runner.compact_json(document),
+                    cellar,
+                    label="native closure manifest",
+                )
+
+    def test_projects_complete_target_and_native_closures_in_distinct_realms(
+        self,
+    ) -> None:
+        target_cellar = Path("/target/Cellar")
+        native_cellar = Path("/native/Cellar")
+        target_shared = target_cellar / "shared/target-1.0"
+        target_transitive = target_cellar / "target-transitive/1.0"
+        native_shared = native_cellar / "shared/native-1.0"
+        native_transitive = native_cellar / "native-transitive/1.0"
+
+        binds = runner.dependency_keg_binds(
+            target_cellar,
+            {"shared": target_shared, "target-transitive": target_transitive},
+            native_cellar,
+            {"native-transitive": native_transitive, "shared": native_shared},
+        )
+
+        self.assertEqual(len(binds), 8)
+        self.assertIn((target_shared, Path("/target/opt/shared")), binds)
+        self.assertIn((native_shared, Path("/native/opt/shared")), binds)
+        self.assertIn(
+            (target_transitive, Path("/target/opt/target-transitive")), binds
+        )
+        self.assertIn(
+            (native_transitive, Path("/native/opt/native-transitive")), binds
+        )
+
+        with self.assertRaisesRegex(runner.RunnerError, "bind collides"):
+            runner.dependency_keg_binds(
+                target_cellar,
+                {"shared": target_shared},
+                target_cellar,
+                {"shared": target_cellar / "shared/native-1.0"},
+            )
 
 
 @unittest.skipUnless(

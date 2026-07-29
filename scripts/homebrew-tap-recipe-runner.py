@@ -34,6 +34,7 @@ MAX_REQUEST_BYTES = 262_144
 MAX_RESPONSE_BYTES = 4_096
 MAX_MESSAGE_BYTES = 8_192
 MAX_RECIPE_MANIFEST_BYTES = 65_536
+MAX_NATIVE_CLOSURE_MANIFEST_BYTES = 262_144
 MAX_RECIPE_FILES = 512
 MAX_DEPENDENCY_KEGS = 512
 MAX_RESOURCES = 32
@@ -74,6 +75,7 @@ CONFIG_KEYS = {
     "llvm_bin",
     "manifest_sha256",
     "native_cellar",
+    "native_closure_manifest",
     "native_formulae",
     "native_requirement_formulae",
     "node_bin",
@@ -739,6 +741,19 @@ def normalize_config_paths(config: dict[str, Any]) -> None:
     for key in host_directory_keys:
         config[key] = canonical_real_directory(config[key], label=key)
 
+    native_closure_manifest = canonical_requested_path(
+        config["native_closure_manifest"], label="native_closure_manifest"
+    )
+    if native_closure_manifest != config["protected_root"] / "native-closure.json":
+        fail("native closure manifest left the protected runner root")
+    # WHY: the supervisor starts before native Homebrew runs. Requiring this
+    # exact root-only handoff to be absent now proves that the later manifest
+    # was published only after the native prefix was sealed, rather than being
+    # preseeded by Formula-owned state.
+    if native_closure_manifest.exists() or native_closure_manifest.is_symlink():
+        fail("native closure manifest appeared before native Homebrew was sealed")
+    config["native_closure_manifest"] = native_closure_manifest
+
     # WHY: these are mount destinations in the empty recipe-service root, not
     # host inputs. The supervisor deliberately runs with ProtectHome=tmpfs and
     # exposes only explicitly selected inputs, so a production tap alias below
@@ -1137,6 +1152,91 @@ def installed_keg_roots(
     return versioned_keg_roots(cellar, names, label)
 
 
+def native_closure_document(cellar: Path, kegs: dict[str, Path]) -> dict[str, Any]:
+    """Describe one exact, already-sealed native Cellar inventory."""
+    return {
+        "cellar": str(cellar),
+        "kegs": [
+            {"formula": name, "root": str(root)}
+            for name, root in sorted(kegs.items())
+        ],
+        "schema": 1,
+    }
+
+
+def parse_native_closure_manifest(
+    data: bytes, cellar: Path, *, label: str
+) -> dict[str, Path]:
+    """Parse the root-owned handoff without trusting it to select filesystem paths."""
+    document = parse_json_bytes(data, label)
+    if (
+        type(document) is not dict
+        or set(document) != {"cellar", "kegs", "schema"}
+        or not is_exact_integer(document["schema"])
+        or document["schema"] != 1
+        or type(document["cellar"]) is not str
+        or document["cellar"] != str(cellar)
+        or type(document["kegs"]) is not list
+        or len(document["kegs"]) > MAX_DEPENDENCY_KEGS
+        or compact_json(document) != data
+    ):
+        fail(f"{label} has an unexpected schema")
+
+    result: dict[str, Path] = {}
+    previous_name = ""
+    roots: set[Path] = set()
+    for record in document["kegs"]:
+        if (
+            type(record) is not dict
+            or set(record) != {"formula", "root"}
+            or type(record["formula"]) is not str
+            or not FORMULA_RE.fullmatch(record["formula"])
+            or type(record["root"]) is not str
+        ):
+            fail(f"{label} contains an invalid keg record")
+        name = record["formula"]
+        root = canonical_requested_path(
+            record["root"], label=f"{label} keg root {name}"
+        )
+        if name <= previous_name:
+            fail(f"{label} has repeated or unsorted Formula names")
+        if root in roots:
+            fail(f"{label} maps multiple Formulae to one keg")
+        if root.parent.parent != cellar or root.parent.name != name:
+            fail(f"{label} keg {name} left its canonical Cellar rack")
+        previous_name = name
+        roots.add(root)
+        result[name] = root
+    return result
+
+
+def authenticated_native_keg_roots(
+    cellar: Path,
+    manifest_path: Path,
+    direct_formulae: list[str],
+) -> dict[str, Path]:
+    """Match the live sealed Cellar to the supervisor's post-seal inventory."""
+    data, _ = open_regular_file(
+        manifest_path,
+        owner_uid=0,
+        exact_mode=0o400,
+        max_bytes=MAX_NATIVE_CLOSURE_MANIFEST_BYTES,
+        label="native closure manifest",
+    )
+    expected = parse_native_closure_manifest(
+        data, cellar, label="native closure manifest"
+    )
+    actual = installed_keg_roots(cellar, "native dependency")
+    if expected != actual:
+        fail("native Cellar differs from its authenticated sealed closure")
+    missing = sorted(set(direct_formulae) - set(actual))
+    if missing:
+        fail(f"native Cellar omits declared direct tools: {missing!r}")
+    for name, root in sorted(actual.items()):
+        validate_sealed_dependency_tree(root, f"native dependency {name}")
+    return actual
+
+
 def target_dependency_keg_roots(
     cellar: Path,
     formula: str,
@@ -1162,6 +1262,30 @@ def target_dependency_keg_roots(
         fail(f"target Cellar omits declared dependencies: {missing!r}")
     selected = {name: closure[name] for name in dependency_names}
     return closure, selected
+
+
+def dependency_keg_binds(
+    target_cellar: Path,
+    target_kegs: dict[str, Path],
+    native_cellar: Path,
+    native_kegs: dict[str, Path],
+) -> list[tuple[Path, Path]]:
+    """Project both complete closures without collapsing their Cellar realms."""
+    binds: list[tuple[Path, Path]] = []
+    destinations: dict[Path, Path] = {}
+    for cellar, kegs in (
+        (target_cellar, target_kegs),
+        (native_cellar, native_kegs),
+    ):
+        for name, keg in sorted(kegs.items()):
+            for destination in (keg, cellar.parent / "opt" / name):
+                previous = destinations.get(destination)
+                if previous is not None and previous != keg:
+                    fail(f"dependency closure bind collides at {destination}")
+                destinations[destination] = keg
+                binds.append((keg, destination))
+    binds.sort(key=lambda pair: (str(pair[1]), str(pair[0])))
+    return binds
 
 
 def validate_sealed_dependency_tree(root: Path, label: str) -> None:
@@ -1508,14 +1632,14 @@ def validate_request(
             fail(f"tap recipe request changed target dependency {full_name}")
         dependencies[key] = supplied
 
-    all_native_kegs = installed_keg_roots(
-        config["native_cellar"], "native dependency"
-    )
-    expected_native_names = sorted(
+    direct_native_names = sorted(
         {*config["native_formulae"], *config["native_requirement_formulae"]}
     )
-    if sorted(all_native_kegs) != expected_native_names:
-        fail("native Cellar differs from its complete declared tool closure")
+    all_native_kegs = authenticated_native_keg_roots(
+        config["native_cellar"],
+        config["native_closure_manifest"],
+        direct_native_names,
+    )
     native_kegs = {
         name: all_native_kegs[name] for name in config["native_formulae"]
     }
@@ -1537,18 +1661,12 @@ def validate_request(
         for path in supplied_native
     ]
     requirement_roots = list(requirement_kegs.values())
-    sealed_roots = {
-        **{
-            str(path): (path, f"target dependency {name}")
-            for name, path in all_target_kegs.items()
-        },
-        **{
-            str(path): (path, f"native dependency {name}")
-            for name, path in all_native_kegs.items()
-        },
-    }
-    for _, (root, label) in sorted(sealed_roots.items()):
-        validate_sealed_dependency_tree(root, label)
+    # authenticated_native_keg_roots already validates every native tree while
+    # matching it to the post-seal handoff. Target kegs follow their separate
+    # immutable-bottle plan and are authenticated here from the complete sealed
+    # target Cellar while the selected Formula's mutable rack stays excluded.
+    for name, root in sorted(all_target_kegs.items()):
+        validate_sealed_dependency_tree(root, f"target dependency {name}")
     validate_environment(
         request, config, dependencies, native_roots, requirement_roots
     )
@@ -1557,15 +1675,12 @@ def validate_request(
     # Mount each sealed keg twice: at its canonical Cellar path and at the opt
     # alias the toolchain expects. This supplies the complete closure without
     # trusting build-user-created opt links or exposing an undeclared rack.
-    dependency_binds: list[tuple[Path, Path]] = []
-    for cellar, kegs in (
-        (config["target_cellar"], all_target_kegs),
-        (config["native_cellar"], all_native_kegs),
-    ):
-        for name, keg in kegs.items():
-            dependency_binds.append((keg, keg))
-            dependency_binds.append((keg, cellar.parent / "opt" / name))
-    dependency_binds.sort(key=lambda pair: (str(pair[1]), str(pair[0])))
+    dependency_binds = dependency_keg_binds(
+        config["target_cellar"],
+        all_target_kegs,
+        config["native_cellar"],
+        all_native_kegs,
+    )
     return (
         request,
         data,
@@ -2691,6 +2806,111 @@ def stage_sysroot(source_value: str, destination_value: str) -> int:
     return 0
 
 
+def stage_native_closure(source_value: str, destination_value: str) -> int:
+    """Publish the exact native Cellar only after it becomes immutable."""
+    if os.geteuid() != 0:
+        fail("native closure staging must run as root")
+    runner = Path(__file__).resolve(strict=True)
+    runner_stat = runner.lstat()
+    parent_stat = runner.parent.lstat()
+    try:
+        anchor_stat = PROTECTED_PUBLISHER_ROOT.lstat()
+    except OSError as error:
+        fail(f"protected publisher root is unavailable: {error}")
+    if (
+        not stat.S_ISREG(runner_stat.st_mode)
+        or runner_stat.st_uid != 0
+        or runner_stat.st_gid != 0
+        or runner_stat.st_nlink != 1
+        or stat.S_IMODE(runner_stat.st_mode) != 0o555
+        or not stat.S_ISDIR(parent_stat.st_mode)
+        or runner.parent.resolve(strict=True) != runner.parent
+        or parent_stat.st_uid != 0
+        or parent_stat.st_gid != 0
+        or stat.S_IMODE(parent_stat.st_mode) != 0o555
+        or runner.parent.parent != PROTECTED_PUBLISHER_ROOT
+        or not PROTECTED_BUILD_RE.fullmatch(runner.parent.name)
+        or not stat.S_ISDIR(anchor_stat.st_mode)
+        or PROTECTED_PUBLISHER_ROOT.resolve(strict=True)
+        != PROTECTED_PUBLISHER_ROOT
+        or anchor_stat.st_uid != 0
+        or anchor_stat.st_gid != 0
+        or stat.S_IMODE(anchor_stat.st_mode) != 0o711
+    ):
+        fail("native closure staging runner is outside its sealed root-owned boundary")
+
+    destination = canonical_requested_path(
+        destination_value, label="native closure manifest destination"
+    )
+    if destination != runner.parent / "native-closure.json":
+        fail("native closure manifest left the protected runner root")
+    if destination.exists() or destination.is_symlink():
+        fail("native closure manifest destination is occupied")
+    cellar = canonical_real_directory(
+        source_value,
+        label="sealed native dependency Cellar",
+        owner_uid=0,
+        exact_mode=0o555,
+    )
+    if is_within(cellar, runner.parent) or is_within(runner.parent, cellar):
+        fail("native dependency Cellar overlaps the protected runner root")
+
+    kegs = installed_keg_roots(cellar, "native dependency")
+    for name, root in sorted(kegs.items()):
+        validate_sealed_dependency_tree(root, f"native dependency {name}")
+    data = compact_json(native_closure_document(cellar, kegs))
+    if len(data) > MAX_NATIVE_CLOSURE_MANIFEST_BYTES:
+        fail("native closure manifest exceeds its byte limit")
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        directory_flags |= os.O_NOFOLLOW
+    parent_before = runner.parent.lstat()
+    parent_authority = (
+        parent_before.st_dev,
+        parent_before.st_ino,
+        parent_before.st_mode,
+        parent_before.st_uid,
+        parent_before.st_gid,
+    )
+    parent_fd = os.open(runner.parent, directory_flags)
+    try:
+        if file_identity(os.fstat(parent_fd)) != file_identity(parent_before):
+            fail("protected runner root changed before native closure publication")
+        # WHY: O_EXCL plus the prestarted supervisor's earlier absence check
+        # turns this file into a one-way handoff. Neither native Homebrew nor the
+        # later target Formula can replace the exact closure the root runner saw.
+        write_regular_at(
+            parent_fd,
+            destination.name,
+            data,
+            mode=0o400,
+            label="native closure manifest",
+        )
+        os.fsync(parent_fd)
+        parent_after = os.fstat(parent_fd)
+        if parent_authority != (
+            parent_after.st_dev,
+            parent_after.st_ino,
+            parent_after.st_mode,
+            parent_after.st_uid,
+            parent_after.st_gid,
+        ):
+            fail("protected runner root changed during native closure publication")
+    finally:
+        os.close(parent_fd)
+    published, _ = open_regular_file(
+        destination,
+        owner_uid=0,
+        exact_mode=0o400,
+        max_bytes=MAX_NATIVE_CLOSURE_MANIFEST_BYTES,
+        label="published native closure manifest",
+    )
+    if published != data:
+        fail("published native closure manifest changed")
+    return 0
+
+
 def seal_output_tree(
     raw_root: Path,
     sealed_root: Path,
@@ -3483,12 +3703,14 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--request")
     parser.add_argument("--response")
     parser.add_argument("--source")
+    parser.add_argument("--stage-native-closure", action="store_true")
     parser.add_argument("--stage-recipe", action="store_true")
     parser.add_argument("--stage-sysroot", action="store_true")
     parser.add_argument("--supervisor", action="store_true")
     arguments = parser.parse_args()
     selected_modes = (
         int(arguments.supervisor)
+        + int(arguments.stage_native_closure)
         + int(arguments.stage_recipe)
         + int(arguments.stage_sysroot)
     )
@@ -3522,6 +3744,14 @@ def parse_arguments() -> argparse.Namespace:
             )
         ):
             fail("tap recipe staging requires its exact projection arguments")
+    elif arguments.stage_native_closure:
+        if (
+            arguments.request is not None
+            or arguments.response is not None
+            or any(value is None for value in projection_values)
+            or any(value is not None for value in recipe_identity_values)
+        ):
+            fail("native closure staging requires only --source and --destination")
     elif arguments.stage_sysroot:
         if (
             arguments.request is not None
@@ -3554,6 +3784,8 @@ def main() -> int:
                 arguments.formula,
                 arguments.manifest_sha256,
             )
+        if arguments.stage_native_closure:
+            return stage_native_closure(arguments.source, arguments.destination)
         if arguments.stage_sysroot:
             return stage_sysroot(arguments.source, arguments.destination)
         if os.geteuid() == 0:

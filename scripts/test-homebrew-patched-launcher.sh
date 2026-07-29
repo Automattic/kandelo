@@ -2267,6 +2267,11 @@ EOF
   recipe_config_json="$(
     /usr/bin/sudo -n -- /usr/bin/cat "$HOMEBREW_PATCHED_RECIPE_RUNNER_CONFIG"
   )"
+  [ "$(jq -r '.native_closure_manifest' <<<"$recipe_config_json")" = \
+      "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" ] &&
+    [ ! -e "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" ] &&
+    [ ! -L "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" ] ||
+    fail "recipe supervisor did not reserve an absent native closure handoff"
   [ "$protected_sysroot_root" = "$protected_dir/sysroot" ] &&
     [ "$(jq -r '.sysroot_host_root' <<<"$recipe_config_json")" = \
       "$protected_sysroot_root" ] &&
@@ -2461,11 +2466,13 @@ EOF
   homebrew_patched_launcher_run_native remove-native-entry unsafe-fifo
   homebrew_patched_launcher_run_native install-native-fixture cmake
   homebrew_patched_launcher_run_native install-native-fixture ninja
-  # The portable bridge test above covers exclusion of an unselected keg. The
-  # supervisor protocol deliberately receives one exact version for each
-  # declared native tool, matching a fresh publisher prefix.
+  homebrew_patched_launcher_run_native install-native-fixture openssl@3
+  # CMake and Ninja are direct tool roots in the static plan. openssl@3 models
+  # a transitive Homebrew dependency that must remain in the sealed execution
+  # closure without becoming a caller-supplied PATH/root authority.
   homebrew_patched_launcher_run_native remove-native-version cmake 0.9
   homebrew_patched_launcher_run_native remove-native-version ninja 0.9
+  homebrew_patched_launcher_run_native remove-native-version openssl@3 0.9
   homebrew_patched_launcher_run_native create-native-relative-link \
     cmake cmake-cross-final cmake-cross
   homebrew_patched_launcher_run_native create-native-relative-link \
@@ -2473,6 +2480,17 @@ EOF
   homebrew_patched_launcher_seal_native_prefix
   [ "$(stat -c '%u:%g:%a' "$isolated_native_prefix")" = "0:0:555" ] ||
     fail "sealed native prefix ownership or mode is unsafe"
+  /usr/bin/sudo -n -- jq -e \
+    --arg cellar "$isolated_native_prefix/Cellar" '
+      .schema == 1 and .cellar == $cellar and
+      [.kegs[].formula] == ["cmake", "ninja", "openssl@3"] and
+      (.kegs | all(
+        .root == ($cellar + "/" + .formula + "/1.0")
+      ))
+    ' "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" >/dev/null &&
+    [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a:%h' \
+      "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE")" = "0:0:400:1" ] ||
+    fail "native sealing did not publish its complete root-owned closure"
   if /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
     /bin/sh -c ': >"$1"' sh "$isolated_native_prefix/build-user-write" \
     >/dev/null 2>&1; then
@@ -2512,6 +2530,11 @@ EOF
     [ ! -e "$isolated_prefix/opt/ninja" ] && \
     [ ! -L "$isolated_prefix/opt/ninja" ] ||
     fail "isolated native Formula proxy exposed its transitive closure"
+  [ ! -e "$isolated_prefix/Cellar/openssl@3" ] && \
+    [ ! -L "$isolated_prefix/Cellar/openssl@3" ] && \
+    [ ! -e "$isolated_prefix/opt/openssl@3" ] && \
+    [ ! -L "$isolated_prefix/opt/openssl@3" ] ||
+    fail "isolated native Formula proxy exposed a transitive-only keg"
   "$HOMEBREW_PATCHED_BREW_BIN" assert-native-target-boundary \
     "$isolated_native_prefix" "$target_proxy_rack" "$target_proxy_keg" \
     "$target_proxy_opt" "../Cellar/cmake/1.0" "$native_runner" \

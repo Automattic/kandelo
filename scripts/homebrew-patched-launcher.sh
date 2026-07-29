@@ -22,6 +22,7 @@ HOMEBREW_PATCHED_RECIPE_RUNNER=""
 HOMEBREW_PATCHED_RECIPE_RUNNER_STATE=""
 HOMEBREW_PATCHED_RECIPE_RUNNER_SHA256=""
 HOMEBREW_PATCHED_RECIPE_RUNNER_CONFIG=""
+HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE=""
 HOMEBREW_PATCHED_RECIPE_SEALED_ROOT=""
 HOMEBREW_PATCHED_RECIPE_SUPERVISOR_UNIT=""
 HOMEBREW_PATCHED_RECIPE_USER=""
@@ -376,6 +377,7 @@ homebrew_patched_launcher_verify_recipe_runner() {
      [ -z "$HOMEBREW_PATCHED_RECIPE_RUNNER_STATE" ] && \
      [ -z "$HOMEBREW_PATCHED_RECIPE_RUNNER_SHA256" ] && \
      [ -z "$HOMEBREW_PATCHED_RECIPE_RUNNER_CONFIG" ] && \
+     [ -z "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" ] && \
      [ -z "$HOMEBREW_PATCHED_RECIPE_SEALED_ROOT" ]; then
     return 0
   fi
@@ -384,6 +386,8 @@ homebrew_patched_launcher_verify_recipe_runner() {
        "$HOMEBREW_PATCHED_PROTECTED_DIR/homebrew-tap-recipe-runner" ] || \
      [ "$HOMEBREW_PATCHED_RECIPE_RUNNER_CONFIG" != \
        "$HOMEBREW_PATCHED_PROTECTED_DIR/runner-config.json" ] || \
+     [ "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" != \
+       "$HOMEBREW_PATCHED_PROTECTED_DIR/native-closure.json" ] || \
      [ "$HOMEBREW_PATCHED_RECIPE_SEALED_ROOT" != \
        "$HOMEBREW_PATCHED_PROTECTED_DIR/sealed-outputs" ] || \
      [ -z "$HOMEBREW_PATCHED_RECIPE_RUNNER_STATE" ] || \
@@ -410,6 +414,16 @@ homebrew_patched_launcher_verify_recipe_runner() {
      [ "$(/usr/bin/stat -c '%u:%g:%a:%h' \
        "$HOMEBREW_PATCHED_PROTECTED_DIR/recipe-group" 2>/dev/null || true)" != \
        "0:0:444:1" ] || \
+     {
+       if [ "$HOMEBREW_PATCHED_NATIVE_SEALED" = "1" ]; then
+         [ "$(/usr/bin/stat -c '%u:%g:%a:%h' \
+           "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" 2>/dev/null || true)" != \
+           "0:0:400:1" ]
+       else
+         [ -e "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" ] || \
+           [ -L "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" ]
+       fi
+     } || \
      ! homebrew_patched_launcher_sealed_directory_state \
        "$HOMEBREW_PATCHED_RECIPE_SEALED_ROOT" >/dev/null 2>&1; then
     echo "homebrew-patched-launcher: protected recipe runner boundary changed" >&2
@@ -466,6 +480,7 @@ homebrew_patched_launcher_prepare_recipe_runner() {
   local passwd_file="$HOMEBREW_PATCHED_PROTECTED_DIR/recipe-passwd"
   local group_file="$HOMEBREW_PATCHED_PROTECTED_DIR/recipe-group"
   local sealed_root="$HOMEBREW_PATCHED_PROTECTED_DIR/sealed-outputs"
+  local native_closure="$HOMEBREW_PATCHED_PROTECTED_DIR/native-closure.json"
   # WHY: the protected directory retains the full 64-hex build identity.
   # `/s` keeps the resulting pathname within Linux sockaddr_un.sun_path.
   local socket_path="$HOMEBREW_PATCHED_PROTECTED_DIR/s"
@@ -578,6 +593,7 @@ homebrew_patched_launcher_prepare_recipe_runner() {
     --arg group_file "$group_file" \
     --arg llvm_bin "$llvm_bin" \
     --arg native_cellar "$HOMEBREW_PATCHED_NATIVE_PREFIX/Cellar" \
+    --arg native_closure_manifest "$native_closure" \
     --arg node_bin "$node_bin" \
     --arg platform_alias_root "$platform_alias_root" \
     --arg platform_host_root "$platform_host_root" \
@@ -612,6 +628,7 @@ homebrew_patched_launcher_prepare_recipe_runner() {
         llvm_bin: $llvm_bin,
         manifest_sha256: $a.tap_recipe.manifest_sha256,
         native_cellar: $native_cellar,
+        native_closure_manifest: $native_closure_manifest,
         native_formulae: (($h.build_and_test - $requirements) | sort | unique),
         native_requirement_formulae: $requirements,
         node_bin: $node_bin,
@@ -653,6 +670,7 @@ homebrew_patched_launcher_prepare_recipe_runner() {
   HOMEBREW_PATCHED_RECIPE_RUNNER_STATE="$runner_state"
   HOMEBREW_PATCHED_RECIPE_RUNNER_SHA256="$runner_sha"
   HOMEBREW_PATCHED_RECIPE_RUNNER_CONFIG="$config"
+  HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE="$native_closure"
   HOMEBREW_PATCHED_RECIPE_SEALED_ROOT="$sealed_root"
   HOMEBREW_PATCHED_RECIPE_USER="$recipe_user"
   HOMEBREW_PATCHED_RECIPE_UID="$recipe_uid"
@@ -1861,6 +1879,7 @@ homebrew_patched_launcher_cleanup() {
     HOMEBREW_PATCHED_RECIPE_RUNNER_STATE=""
     HOMEBREW_PATCHED_RECIPE_RUNNER_SHA256=""
     HOMEBREW_PATCHED_RECIPE_RUNNER_CONFIG=""
+    HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE=""
     HOMEBREW_PATCHED_RECIPE_SEALED_ROOT=""
     HOMEBREW_PATCHED_RECIPE_SUPERVISOR_UNIT=""
     HOMEBREW_PATCHED_RECIPE_USER=""
@@ -1932,6 +1951,7 @@ homebrew_patched_launcher_cleanup() {
   HOMEBREW_PATCHED_RECIPE_RUNNER_STATE=""
   HOMEBREW_PATCHED_RECIPE_RUNNER_SHA256=""
   HOMEBREW_PATCHED_RECIPE_RUNNER_CONFIG=""
+  HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE=""
   HOMEBREW_PATCHED_RECIPE_SEALED_ROOT=""
   HOMEBREW_PATCHED_RECIPE_SUPERVISOR_UNIT=""
   HOMEBREW_PATCHED_RECIPE_USER=""
@@ -2254,6 +2274,23 @@ homebrew_patched_launcher_seal_native_prefix() {
       "$HOMEBREW_PATCHED_BUILD_USER" "$HOMEBREW_PATCHED_NATIVE_PREFIX"
     homebrew_assert_tree_not_replaceable_by_user \
       "$HOMEBREW_PATCHED_BUILD_USER" "$HOMEBREW_PATCHED_NATIVE_PREFIX"
+    if [ -n "$HOMEBREW_PATCHED_RECIPE_RUNNER" ]; then
+      [ "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" = \
+        "$HOMEBREW_PATCHED_PROTECTED_DIR/native-closure.json" ] || {
+        echo "homebrew-patched-launcher: native closure handoff path is incomplete" >&2
+        return 2
+      }
+      # WHY: the supervisor was deliberately started while this path was
+      # absent. Publish the inventory only after every native install has
+      # finished and the entire prefix is root-owned/read-only. The target
+      # Formula therefore cannot add a sealed-looking rack to the closure it
+      # later receives.
+      "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/env -i \
+        /usr/bin/python3 -I "$HOMEBREW_PATCHED_RECIPE_RUNNER" \
+        --stage-native-closure \
+        --source "$HOMEBREW_PATCHED_NATIVE_PREFIX/Cellar" \
+        --destination "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" || return
+    fi
   fi
   HOMEBREW_PATCHED_NATIVE_SEALED=1
 }
