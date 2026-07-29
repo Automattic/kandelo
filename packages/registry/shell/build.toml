@@ -73,7 +73,7 @@ revision    = 22
 # tap authority and every deterministic input are bound. `UNPUBLISHED` remains
 # for staging to substitute exact landed Mpre; the artifact lock independently
 # rejects bytes whenever its reviewed input or output identity is stale.
-publication_state = "ready"
+publication_state = "pending"
 
 [[git_inputs]]
 name = "homebrew_tap_core"

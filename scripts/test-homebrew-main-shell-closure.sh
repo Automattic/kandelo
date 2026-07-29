@@ -1110,9 +1110,20 @@ grep -Fq "commit = \"$locked_tap_sha\"" "$SHELL_BUILD_TOML" ||
   fail "shell Git input commit must equal the reviewed migration lock"
 grep -Eq '^revision[[:space:]]*=[[:space:]]*22$' "$SHELL_BUILD_TOML" ||
   fail "reduced lazy shell must reserve the next canonical shell revision 22"
-grep -Eq '^publication_state[[:space:]]*=[[:space:]]*"ready"$' \
+artifact_state="$(jq -er '.state' "$LAZY_ARTIFACT_LOCK")"
+case "$artifact_state" in
+  pending|sealed) ;;
+  *) fail "lazy artifact lock has an unknown publication state" ;;
+esac
+if [ "$artifact_state" = sealed ]; then
+  expected_publication_state=ready
+else
+  expected_publication_state=pending
+fi
+grep -Eq \
+  "^publication_state[[:space:]]*=[[:space:]]*\"$expected_publication_state\"$" \
   "$SHELL_BUILD_TOML" ||
-  fail "final-TF shell publication must be ready"
+  fail "shell publication state must agree with its lazy artifact lock"
 for shell_input in \
   homebrew/main-shell-demo.json \
   web-libs/kandelo-session/src/demo-config.ts
@@ -2147,17 +2158,31 @@ expect_failure "lock is invalid or uses a different timestamp epoch" \
   "$BUILDER" --lazy-shell --tap-root "$tap_worktree" \
   --work-dir "$TMP_ROOT/work-wrong-lazy-epoch" --migration-lock "$lock" \
   --lazy-artifact-lock "$wrong_epoch_lock"
+old_schema_lock="$TMP_ROOT/main-shell-old-schema-lock.json"
+jq '.schema = 2' "$LAZY_ARTIFACT_LOCK" >"$old_schema_lock"
+expect_failure "lock is invalid or uses a different timestamp epoch" \
+  bash "$LAZY_ARTIFACT_CHECKER" \
+    --lock "$old_schema_lock" --expected-source-date-epoch 0
 extra_field_lock="$TMP_ROOT/main-shell-extra-field-lock.json"
 jq '.unexpected = true' "$LAZY_ARTIFACT_LOCK" >"$extra_field_lock"
 expect_failure "lock is invalid or uses a different timestamp epoch" \
   "$BUILDER" --lazy-shell --tap-root "$tap_worktree" \
   --work-dir "$TMP_ROOT/work-extra-lazy-lock-field" --migration-lock "$lock" \
   --lazy-artifact-lock "$extra_field_lock"
+sealed_review_lock="$TMP_ROOT/main-shell-sealed-review-lock.json"
+jq '
+  .state = "sealed" |
+  .image = {
+    sha256:
+      "0000000000000000000000000000000000000000000000000000000000000000",
+    bytes: 1
+  }
+' "$LAZY_ARTIFACT_LOCK" >"$sealed_review_lock"
 expect_failure "--review-pending-artifact requires a pending artifact lock" \
   "$BUILDER" --lazy-shell --tap-root "$tap_worktree" \
   --work-dir "$TMP_ROOT/work-review-sealed-lazy-lock" \
   --migration-lock "$lock" \
-  --lazy-artifact-lock "$LAZY_ARTIFACT_LOCK" \
+  --lazy-artifact-lock "$sealed_review_lock" \
   --review-pending-artifact
 wrong_bootstrap_source_binding="$TMP_ROOT/main-shell-wrong-bootstrap-source-binding.json"
 jq '
@@ -2169,6 +2194,36 @@ expect_failure \
   bash "$LAZY_ARTIFACT_CHECKER" \
     --lock "$wrong_bootstrap_source_binding" \
     --expected-source-date-epoch 0
+
+# Exercise the verifier against an actual changed input rather than only
+# changing the reviewed digest. The copied checker resolves its repository root
+# from this isolated fixture, so this does not mutate the working checkout.
+artifact_checker_root="$TMP_ROOT/artifact-checker-root"
+mkdir -p "$artifact_checker_root/scripts" "$artifact_checker_root/homebrew"
+cp "$LAZY_ARTIFACT_CHECKER" "$artifact_checker_root/scripts/"
+for relative_path in \
+  homebrew/homebrew-bootstrap-source-lock.json \
+  homebrew/main-shell-brew-package-tree.json \
+  homebrew/main-shell.Brewfile \
+  homebrew/main-shell-default.json \
+  homebrew/main-shell-demo.json \
+  homebrew/main-shell-materialization-policy.json \
+  homebrew/main-shell-migration-lock.json \
+  homebrew/main-shell-homebrew-runtime-support.json \
+  homebrew/main-shell-lazy-artifact-lock.json
+do
+  cp "$REPO_ROOT/$relative_path" "$artifact_checker_root/$relative_path"
+done
+fixture_checker="$artifact_checker_root/scripts/verify-homebrew-main-shell-artifact-lock.sh"
+fixture_checked_lock="$artifact_checker_root/homebrew/main-shell-lazy-artifact-lock.json"
+bash "$fixture_checker" \
+  --lock "$fixture_checked_lock" --expected-source-date-epoch 0 ||
+  fail "artifact checker rejected its exact shell-config binding"
+printf '\n' >>"$artifact_checker_root/homebrew/main-shell-default.json"
+expect_failure \
+  "bound input digest changed: homebrew/main-shell-default.json" \
+  bash "$fixture_checker" \
+    --lock "$fixture_checked_lock" --expected-source-date-epoch 0
 
 # Exercise the final compressed-artifact checks without rebuilding the full
 # bottle closure. SHA-256 and byte count are independent promises: matching one
