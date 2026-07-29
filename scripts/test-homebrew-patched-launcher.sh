@@ -414,6 +414,13 @@ case "${1:-}" in
     [ "$#" -eq 2 ]
     rm -f "$prefix/$2"
     ;;
+  remove-native-runtime-entry)
+    [ "$#" -eq 2 ]
+    rm -f "$prefix/lib/$2"
+    # WHY: this negative canary creates prefix/lib before the real loader
+    # fixture. Remove only an empty directory so it cannot leak test ownership.
+    rmdir "$prefix/lib"
+    ;;
   remove-native-version)
     [ "$#" -eq 3 ]
     rm -rf "$prefix/Cellar/$2/$3"
@@ -2521,7 +2528,7 @@ EOF
   if homebrew_patched_launcher_seal_native_prefix >/dev/null 2>&1; then
     fail "native Homebrew accepted an escaping symlink"
   fi
-  homebrew_patched_launcher_run_native remove-native-entry lib/unsafe-link
+  homebrew_patched_launcher_run_native remove-native-runtime-entry unsafe-link
   homebrew_patched_launcher_run_native create-native-fifo unsafe-fifo
   if homebrew_patched_launcher_seal_native_prefix >/dev/null 2>&1; then
     fail "native Homebrew accepted a special filesystem entry"
