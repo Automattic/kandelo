@@ -336,6 +336,17 @@ Some syscalls (read from empty pipe, accept on socket, poll with timeout) cannot
 
 This mechanism is critical: the process worker blocks on `Atomics.wait` while the host manages async retry via `Atomics.waitAsync`.
 
+The retry boundary also owns caught-signal delivery. Once Rust dequeues a
+caught signal into `CH_SIG`, that channel is the signal record's sole owner
+until libc runs the handler and clears it. If the syscall is still blocked, the
+host therefore completes the channel with `EINTR` before it can park again.
+This lets libc run the handler and prevents a later retry from losing the
+signal. The glue transparently retries only the narrow set of operations for
+which `SA_RESTART` is safe, including `accept` and `accept4`; a public
+nonblocking `EAGAIN` remains `EAGAIN`. The shared
+`CentralizedKernelWorker` state machine provides the same behavior in Node.js
+and browser hosts.
+
 `F_SETLKW` uses the same parking mechanism with a narrower wake contract. A
 conflict returns the internal retry result, and the host parks only that lock
 request. Unlock, conversion, close, exit, and other Rust-side changes that may
@@ -1250,6 +1261,12 @@ Signals are delivered at syscall boundaries. When a process has a pending signal
 3. The glue reads the signal info and calls the handler on the process's stack (or alternate signal stack if SA_ONSTACK)
 4. After the handler returns, the glue calls `SYS_RT_SIGRETURN` to restore the signal mask
 5. If the signal interrupted a blocking syscall, EINTR is returned
+
+The host distinguishes the kernel's internal `EAGAIN` retry sentinel from a
+completed nonblocking `EAGAIN`. When a caught signal is prepared while an
+internal retry is still blocked, the host publishes `EINTR` without discarding
+the prepared `CH_SIG` record. Libc runs the handler before deciding whether
+`SA_RESTART` permits resubmitting that syscall.
 
 Features: RT signal queuing with `si_value`, cross-process `kill`/`killpg`, `sigaltstack` with shadow stack swap, `sigsuspend`, `sigtimedwait`, `setitimer`/`alarm` via host timers.
 

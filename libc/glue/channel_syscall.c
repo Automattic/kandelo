@@ -108,6 +108,8 @@ int *__errno_location(void);
 #define EINVAL 22
 #define SYS_OPEN 1
 #define SYS_OPENAT 69
+#define SYS_ACCEPT 53
+#define SYS_ACCEPT4 384
 #define SYS_SIGACTION 36
 #define SYS_WAIT4 139
 #define SYS_WAITID 288
@@ -535,16 +537,21 @@ restart_wait_syscall:
         &delivered_signal
     );
 
-    /* wait4()/waitid() and blocking FIFO open/openat are host-deferred, so a
-     * caught signal completes the channel with EINTR in order to run its handler.
-     * SA_RESTART makes that interruption transparent: after the handler and
-     * mask restoration finish, submit the same operation again. Keep the
-     * retry list deliberately narrow; several other EINTR-returning calls have
-     * timeout/cancellation rules that forbid this generic treatment. */
+    /* These calls can remain parked in host-owned waits after the kernel has
+     * returned its internal EAGAIN sentinel. A caught signal completes the
+     * channel with EINTR so its handler can run. SA_RESTART makes that
+     * interruption transparent by submitting the operation again after the
+     * handler and mask restoration finish.
+     *
+     * Keep this list deliberately narrow: several other EINTR-returning calls
+     * have timeout, partial-I/O, or cancellation rules that forbid generic
+     * resubmission. accept/accept4 are safe here because the host interrupts
+     * only an EAGAIN attempt that did not remove a connection from the queue. */
     if (err == EINTR && delivered_signal &&
         (delivered_flags & SA_RESTART) != 0 &&
         (n == SYS_WAIT4 || n == SYS_WAITID ||
-         n == SYS_OPEN || n == SYS_OPENAT)) {
+         n == SYS_OPEN || n == SYS_OPENAT ||
+         n == SYS_ACCEPT || n == SYS_ACCEPT4)) {
         /* __syscall_cp's outer cancellation check has not run yet. A signal
          * handler may have enabled a cancellation that was already pending,
          * or the host may have used this EINTR completion to wake a canceled
