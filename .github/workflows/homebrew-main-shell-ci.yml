@@ -639,25 +639,39 @@ jobs:
           runtime_bootstrap_package=$(jq -er '.activation.bootstrap_package.name' \
             homebrew/main-shell-homebrew-runtime-support.json)
           [ "$bootstrap_package" = "$runtime_bootstrap_package" ]
-          # WHY: selecting an index does not download its packages, and
-          # resolve-binary intentionally reads only materialized resolver
-          # mirrors. Resolve the package declared by the reviewed tree through
-          # the normal package path first. This product proof consumes package
-          # publication; it must report a missing exact archive instead of
-          # compiling a replacement whose bytes the publisher never admitted.
-          # Pass both trust roots explicitly because the Nix dev shell admits
-          # only declared context.
-          bash scripts/dev-shell.sh env \
-            "WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" \
-            "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
-            bash scripts/fetch-binaries.sh \
-              --fetch-only --package "$bootstrap_package"
-          bootstrap=$(bash scripts/resolve-binary.sh \
-            programs/homebrew-bootstrap/homebrew-bootstrap.zip)
-          bootstrap_env=$(bash scripts/resolve-binary.sh \
-            programs/homebrew-bootstrap/homebrew-brew.env)
+          tap_abi=$(jq -er '.kandelo_abi' \
+            "$tap_root/Kandelo/metadata.json")
+          source_abi=$(sed -nE \
+            's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
+            crates/shared/src/lib.rs)
+          [ "$tap_abi" = "$source_abi" ]
+          bootstrap_root="$RUNNER_TEMP/homebrew-bootstrap-bottle"
+          test ! -e "$bootstrap_root"
+          # WHY: the bootstrap is now Formula-owned software. Extract only its
+          # recipe-declared support files from the exact public bottle, binding
+          # catalog, Formula, recipe lock, keg, archive, and build provenance
+          # without consulting the transitional Kandelo package registry.
+          env -u GH_TOKEN -u GITHUB_TOKEN \
+            -u HOMEBREW_GITHUB_API_TOKEN \
+            -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+            -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+            bash scripts/dev-shell.sh \
+              node_modules/.bin/tsx \
+              scripts/extract-homebrew-support-data-bottle.ts \
+                --tap-root "$tap_root" \
+                --expected-tap-sha "$tap_sha" \
+                --tap-repository kandelo-dev/homebrew-tap-core \
+                --tap-name kandelo-dev/tap-core \
+                --package "$bootstrap_package" \
+                --arch wasm32 \
+                --expected-abi "$tap_abi" \
+                --output-directory "$bootstrap_root"
+          bootstrap="$bootstrap_root/homebrew-bootstrap.zip"
+          bootstrap_env="$bootstrap_root/homebrew-brew.env"
+          bootstrap_bottle_report="$bootstrap_root/report.json"
           test -f "$bootstrap"
           test -f "$bootstrap_env"
+          test -f "$bootstrap_bottle_report"
           artifact_state=$(jq -er '.state' \
             homebrew/main-shell-lazy-artifact-lock.json)
           case "$CALLER_EVENT_NAME:$artifact_state" in
@@ -688,6 +702,8 @@ jobs:
                 --package-tree-spec homebrew/main-shell-brew-package-tree.json \
                 --package-tree-archive "$bootstrap" \
                 --homebrew-bootstrap-env "$bootstrap_env" \
+                --homebrew-bootstrap-bottle-report \
+                  "$bootstrap_bottle_report" \
                 --work-dir "$candidate_root" \
                 "${artifact_review_args[@]}"
           test -f "$candidate_root/main-shell.vfs.zst"
@@ -703,6 +719,7 @@ jobs:
             echo "report=$candidate_root/main-shell-report.json"
             echo "bootstrap=$bootstrap"
             echo "bootstrap_env=$bootstrap_env"
+            echo "bootstrap_bottle_report=$bootstrap_bottle_report"
             echo "tap_sha=$tap_sha"
           } >> "$GITHUB_OUTPUT"
 
@@ -1187,6 +1204,7 @@ jobs:
             ${{ steps.bottle_candidate.outputs.report }}
             ${{ steps.bottle_candidate.outputs.bootstrap }}
             ${{ steps.bottle_candidate.outputs.bootstrap_env }}
+            ${{ steps.bottle_candidate.outputs.bootstrap_bottle_report }}
             ${{ runner.temp }}/homebrew-main-shell-bottles
             ${{ runner.temp }}/homebrew-main-shell-bottle-recovery.json
             ${{ runner.temp }}/homebrew-main-shell-bottle-publish.json

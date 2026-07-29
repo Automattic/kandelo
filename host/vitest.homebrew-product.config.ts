@@ -9,6 +9,8 @@ export default defineConfig({
       "test/sharedfs-safety.test.ts",
       "test/vfs-image.test.ts",
       "test/homebrew-runtime-support.test.ts",
+      "test/homebrew-support-data-bottle.test.ts",
+      "test/homebrew-vfs-fetch.test.ts",
       "test/homebrew-vfs-builder.test.ts",
       "test/homebrew-vfs-image-save.test.ts",
       "test/derived-vfs-symlink.test.ts",
