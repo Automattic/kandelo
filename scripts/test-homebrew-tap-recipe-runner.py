@@ -1087,6 +1087,12 @@ class FormulaTestRuntimeProjectionTests(unittest.TestCase):
         # presence in the source proves the projection is an allowlist rather
         # than a copied checkout with a few paths hidden later.
         (source / "packages/registry/poison").mkdir(parents=True)
+        (source / "packages/registry/program-packages.json").write_bytes(
+            b'{"format":"unrelated-global-poison"}\n'
+        )
+        (source / "packages/registry/poison/package.toml").write_text(
+            "source-only poison\n"
+        )
         (source / "packages/registry/poison/build.sh").write_text("poison\n")
         (source / "local-binaries").mkdir()
         (source / "local-binaries/poison.wasm").write_bytes(b"poison\n")
@@ -1094,6 +1100,15 @@ class FormulaTestRuntimeProjectionTests(unittest.TestCase):
         (source / "node_modules/undeclared/index.js").write_text("poison\n")
         (source / "target/host/release").mkdir(parents=True)
         (source / "target/host/release/xtask").write_text("mutable poison\n")
+        selected_program_index = (
+            source
+            / "target/fixture-host/release/formula-test-program-packages.json"
+        )
+        selected_program_index.parent.mkdir(parents=True)
+        selected_program_index.write_bytes(
+            b'{"format":"kandelo-program-packages-v2",'
+            b'"identities":{},"packages":{}}\n'
+        )
 
         checker = protected / "xtask"
         checker.write_bytes(b"reviewed checker\n")
@@ -1118,6 +1133,11 @@ class FormulaTestRuntimeProjectionTests(unittest.TestCase):
             platform,
             checker,
             "target/fixture-host/release/xtask",
+            (
+                source
+                / "target/fixture-host/release/"
+                "formula-test-program-packages.json"
+            ),
             destination,
             owner_uid=checker_stat.st_uid,
             owner_gid=checker_stat.st_gid,
@@ -1163,6 +1183,15 @@ class FormulaTestRuntimeProjectionTests(unittest.TestCase):
                     destination / "target/fixture-host/release/xtask"
                 ).read_bytes(),
                 b"reviewed checker\n",
+            )
+            self.assertEqual(
+                (
+                    destination / "host/wasm/program-packages.json"
+                ).read_bytes(),
+                (
+                    b'{"format":"kandelo-program-packages-v2",'
+                    b'"identities":{},"packages":{}}\n'
+                ),
             )
             projected_esbuild = (
                 destination / "node_modules/esbuild/bin/esbuild"
@@ -1282,10 +1311,8 @@ class FormulaTestRuntimeProjectionTests(unittest.TestCase):
                     limits,
                     **kwargs,
                 )
-                if relative == Path("package.json"):
-                    source_file.write_text(
-                        '{"name":"kandelo","type":"commonjs"}\n'
-                    )
+                if relative == Path("host/wasm/program-packages.json"):
+                    source_file.write_text('{"format":"changed"}\n')
                 return result
 
             with (
@@ -1317,6 +1344,8 @@ class FormulaTestRuntimeProjectionTests(unittest.TestCase):
             "/protected/xtask",
             "--checker-relative",
             "target/host/release/xtask",
+            "--program-index",
+            "/source/target/host/release/formula-test-program-packages.json",
             "--destination",
             "/protected/formula-test-runtime",
         ]

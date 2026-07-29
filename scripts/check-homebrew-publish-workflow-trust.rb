@@ -27,10 +27,10 @@ UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
 PUBLISHER_PLAN_DIGEST = "59a72fdf1dbe3b115208e760d9b28869dcf98e293b4a8b555d4a8b557c58d1c4"
-PUBLISHER_BUILD_DIGEST = "326932e9110ac8347db410b889c454058fee1dada05fdc95056aef2ebb0223e8"
+PUBLISHER_BUILD_DIGEST = "15cc8579e57374818daf304a1746f55e3211a8b57d7e70b1f5bd294f7374495a"
 PUBLISHER_UPLOAD_DIGEST = "a44f8b7b2eb1d4b9436496cc9a099b80fb70be52143820e77fb7196e807d302f"
 PUBLISHER_INDEX_DIGEST = "7b05a7e4b076628ab999f9edb2e39a6641c4bb9a2563afcf19be15a119566bbe"
-PUBLISHER_VERIFY_DIGEST = "9c44194a007f49f97b2d4380d9d212530a7f4cb888c0fd0110422393a3eb2bd3"
+PUBLISHER_VERIFY_DIGEST = "7c6489e473ccd2c235682c436fc805139178f9c5993096e905a8d231d98aaea2"
 PUBLISHER_FINALIZE_DIGEST = "b17e7bf5d0a5ef512e49f74c224a94958642dfdd80a27439f2a0335816a0886b"
 PUBLISHER_VFS_RELEASE_DIGEST = "2db9ec075edf382e326066d5f49a32947f5a584fce26a966fb9fff23bbbe3c26"
 MAINTENANCE_VALIDATE_DIGEST = "30ebccd5d44e004e37f168e81284d7ceb18accfa067c05248c1cc19398a7515f"
@@ -2553,6 +2553,9 @@ def check_publisher(workflow)
     "recipe output file has unsafe links, mode, or size",
     "FORMULA_TEST_RUNTIME_DIRECTORIES = (",
     'Path("node_modules/tsx")',
+    "FORMULA_TEST_RUNTIME_PROGRAM_INDEX_DESTINATION = Path(",
+    '"host/wasm/program-packages.json"',
+    "Formula test selected program-package projection",
     "validate_tree_regular_links_closed(",
     "regular-file hard links escape the selected closure",
     "Formula test runtime input changed during staging",
@@ -3889,6 +3892,7 @@ def check_publisher(workflow)
     '--platform "$platform_root"',
     '--checker "$checker"',
     '--checker-relative "$checker_relative"',
+    '--program-index "$program_index"',
     '--destination "$destination"',
     '/usr/bin/rm -f -- "$stager"',
     "homebrew_patched_launcher_formula_test_runtime_manifest",
@@ -4267,12 +4271,16 @@ def check_publisher(workflow)
     '--root "$PWD"', '--checker "$xtask"',
     '[ "$sealed_xtask" = "$xtask" ]',
     'printf "xtask-bin=%s\\n" "$xtask" >>"$GITHUB_OUTPUT"',
-    "for package in dash coreutils grep sed rootfs", '"$xtask"',
+    'formula_test_packages="dash,coreutils,grep,sed,rootfs"',
+    'for package in ${formula_test_packages//,/ }; do', '"$xtask"',
     "build-deps --arch wasm32", '--binaries-dir "$PWD/binaries"', '--fetch-only resolve "$package"',
     'cache_root="$("$xtask" build-deps cache-root)"',
     'case "$cache_root" in',
     'bash scripts/materialize-resolver-binaries.sh',
     '"$PWD/binaries" "$cache_root"',
+    'formula-test-program-packages.json',
+    'build-deps program-index-selected',
+    '--source-repo-root "$PWD"',
   ].each do |fragment|
     check(runtime_run.include?(fragment), "publisher Formula test runtime lacks #{fragment}")
   end
@@ -4289,6 +4297,12 @@ def check_publisher(workflow)
           "Formula checker handoff made the exact-source program projection stale"
         ),
         "publisher regression does not protect exact-source program cache keys")
+  check(publisher_test.include?(
+          "assert_formula_test_program_projection_is_current_and_bounded"
+        ) && publisher_test.include?(
+          "Formula checker could not generate its selected source projection"
+        ),
+        "publisher regression does not protect the selected Formula-test projection")
   checker_sealer = File.read(
     File.join(REPO_ROOT, "scripts/seal-homebrew-formula-checker.sh")
   )
@@ -5167,8 +5181,8 @@ def check_publisher(workflow)
     'bash scripts/seal-homebrew-formula-checker.sh',
     '--root "$PWD"', '--checker "$xtask"',
     '[ "$sealed_xtask" = "$xtask" ]',
-    'printf "xtask-bin=%s\\n" "$xtask" >>"$GITHUB_OUTPUT"',
-    "for package in dash coreutils grep sed rootfs",
+    'formula_test_packages="dash,coreutils,grep,sed,rootfs"',
+    'for package in ${formula_test_packages//,/ }; do',
     '"$xtask"',
     "build-deps --arch wasm32", '--binaries-dir "$PWD/binaries"',
     '--fetch-only resolve "$package"',
@@ -5176,6 +5190,10 @@ def check_publisher(workflow)
     'case "$cache_root" in',
     'bash scripts/materialize-resolver-binaries.sh',
     '"$PWD/binaries" "$cache_root"',
+    'formula-test-program-packages.json',
+    'build-deps program-index-selected',
+    '--source-repo-root "$PWD"',
+    'printf "xtask-bin=%s\\n" "$xtask" >>"$GITHUB_OUTPUT"',
   ].each do |fragment|
     check(verifier_runtime_run.include?(fragment),
           "publisher Formula verification runtime lacks #{fragment}")
@@ -6929,7 +6947,9 @@ def self_test(publisher, maintenance, repository_canary)
     "Formula test runtime package drift" => lambda { |w|
       step = mutate_named_step(w, "build-and-test",
                                "Materialize Formula test platform runtime")
-      step["run"] = step.fetch("run").sub("dash coreutils grep sed rootfs", "dash")
+      step["run"] = step.fetch("run").sub(
+        "dash,coreutils,grep,sed,rootfs", "dash"
+      )
     },
     "Formula test runtime ordering bypass" => lambda { |w|
       steps = w.fetch("jobs").fetch("build-and-test").fetch("steps")

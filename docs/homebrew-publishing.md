@@ -580,10 +580,20 @@ closed allowlist: the platform projection; `host/src`; the built
 `host/wasm` kernel inputs; the three `examples/run-example*.ts` entry files;
 the exact `tsx`, `esbuild`, platform `@esbuild`, `fflate`, and `fzstd`
 installations; the portable `binaries/` and `.ci-test-binary-cache/` pair; and
-the reviewed release `xtask`. Root `Cargo.toml` and `package.json` provide the
-resolver's Kandelo-root identity, but the workspace members, registry, local
-binaries, Cargo output, source-build helper, and mutable checkout remain
-absent.
+the reviewed release `xtask`. Root `Cargo.toml` and `package.json`
+provide the resolver's Kandelo-root identity.
+`host/wasm/program-packages.json` is generated from the exact source
+checkout for only `dash`, `coreutils`, `grep`, `sed`, and `rootfs`: the
+physical package generations transported into this runtime. It carries
+those package projections and every contextual dependency identity they
+name, so a fetched generation remains bound to its package name,
+architecture, manifest, outputs, and cache key. Unrelated repository
+index rows are not copied. The repository-wide index remains an independently
+checked, current source projection; the smaller file is a least-authority
+runtime input, not a substitute for that repository contract. Workspace
+members, the source/build registry, local binaries, unrelated package
+identities, Cargo output, source-build helpers, and the mutable checkout
+remain absent.
 
 The stager snapshots and hashes every selected source before copying, checks
 the source identities again after copying, validates symlinks against the

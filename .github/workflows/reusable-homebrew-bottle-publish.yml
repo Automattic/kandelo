@@ -994,8 +994,8 @@ jobs:
               echo "Formula test checker seal selected another executable" >&2
               exit 2
             }
-            printf "xtask-bin=%s\n" "$xtask" >>"$GITHUB_OUTPUT"
-            for package in dash coreutils grep sed rootfs; do
+            formula_test_packages="dash,coreutils,grep,sed,rootfs"
+            for package in ${formula_test_packages//,/ }; do
               "$xtask" \
                 build-deps --arch wasm32 \
                 --binaries-dir "$PWD/binaries" --fetch-only resolve "$package"
@@ -1007,6 +1007,22 @@ jobs:
             esac
             bash scripts/materialize-resolver-binaries.sh \
               "$PWD/binaries" "$cache_root"
+            # WHY: Formula tests need identity only for the physical
+            # generations staged above. Generate that exact current-source
+            # projection beside the sealed checker so the isolated runtime
+            # does not receive authority over unrelated repository policy.
+            formula_test_index="$PWD/target/$host/release/formula-test-program-packages.json"
+            WASM_POSIX_DEPS_REGISTRY="$PWD/packages/registry" \
+              "$xtask" build-deps program-index-selected \
+                --source-repo-root "$PWD" \
+                "$formula_test_packages" "$formula_test_index"
+            [ -f "$formula_test_index" ] && [ ! -L "$formula_test_index" ] &&
+              [ "$(realpath -- "$formula_test_index")" = \
+                "$formula_test_index" ] || {
+              echo "Formula runtime program projection is not one exact file" >&2
+              exit 2
+            }
+            printf "xtask-bin=%s\n" "$xtask" >>"$GITHUB_OUTPUT"
           '
 
       - name: Install JavaScript dependencies for formula tests
@@ -2626,8 +2642,8 @@ jobs:
               echo "Formula verification checker seal selected another executable" >&2
               exit 2
             }
-            printf "xtask-bin=%s\n" "$xtask" >>"$GITHUB_OUTPUT"
-            for package in dash coreutils grep sed rootfs; do
+            formula_test_packages="dash,coreutils,grep,sed,rootfs"
+            for package in ${formula_test_packages//,/ }; do
               "$xtask" \
                 build-deps --arch wasm32 \
                 --binaries-dir "$PWD/binaries" --fetch-only resolve "$package"
@@ -2642,6 +2658,18 @@ jobs:
             # identity receives one coherent portable generation snapshot.
             bash scripts/materialize-resolver-binaries.sh \
               "$PWD/binaries" "$cache_root"
+            formula_test_index="$PWD/target/$host/release/formula-test-program-packages.json"
+            WASM_POSIX_DEPS_REGISTRY="$PWD/packages/registry" \
+              "$xtask" build-deps program-index-selected \
+                --source-repo-root "$PWD" \
+                "$formula_test_packages" "$formula_test_index"
+            [ -f "$formula_test_index" ] && [ ! -L "$formula_test_index" ] &&
+              [ "$(realpath -- "$formula_test_index")" = \
+                "$formula_test_index" ] || {
+              echo "Formula verification program projection is not one exact file" >&2
+              exit 2
+            }
+            printf "xtask-bin=%s\n" "$xtask" >>"$GITHUB_OUTPUT"
           '
 
       - name: Compose only reconstructed bottle metadata into the fresh tap

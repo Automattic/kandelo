@@ -724,6 +724,7 @@ NATIVE_INTERPRETER_EOF
     for required in \
       Cargo.toml package.json examples/run-example.ts \
       host/src/node-kernel-host.ts host/wasm/kandelo-kernel.wasm \
+      host/wasm/program-packages.json \
       node_modules/tsx/package.json node_modules/esbuild/package.json \
       node_modules/fflate/package.json node_modules/fzstd/package.json \
       .ci-test-binary-cache/programs \
@@ -1882,6 +1883,11 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
     "$isolated_kandelo/examples/"
   cp -- "$REPO_ROOT/package.json" \
     "$isolated_kandelo/host/wasm/kandelo-kernel.wasm"
+  mkdir -p "$isolated_kandelo/packages/registry"
+  printf '{"format":"unrelated-global-poison"}\n' \
+    >"$isolated_kandelo/packages/registry/program-packages.json"
+  cp -- "$REPO_ROOT/packages/registry/program-packages.json" \
+    "$isolated_xtask_dir/formula-test-program-packages.json"
   cp -- "$REPO_ROOT/package.json" \
     "$isolated_kandelo/.ci-test-binary-cache/programs/fixture/fixture.wasm"
   ln -s ../../../.ci-test-binary-cache/programs/fixture/fixture.wasm \
