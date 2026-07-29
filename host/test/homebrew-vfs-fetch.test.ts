@@ -8,34 +8,49 @@ function response(
   body: BodyInit | Record<string, unknown> = "",
   init: ResponseInit = {},
 ): Response {
-  const payload = typeof body === "object" && !(body instanceof Uint8Array)
-    ? JSON.stringify(body)
-    : body;
+  const payload =
+    typeof body === "object" && !(body instanceof Uint8Array)
+      ? JSON.stringify(body)
+      : body;
   return new Response(payload as BodyInit, init);
 }
 
 describe("Homebrew bottle fetch", () => {
   it("retries registry blob fetches with the advertised bearer token", async () => {
     const calls: Array<{ url: string; auth?: string }> = [];
-    const fetchImpl = async (input: string | URL, init?: RequestInit): Promise<Response> => {
+    const fetchImpl = async (
+      input: string | URL,
+      init?: RequestInit,
+    ): Promise<Response> => {
       const url = input.toString();
       calls.push({
         url,
-        auth: init?.headers instanceof Headers
-          ? init.headers.get("authorization") ?? undefined
-          : (init?.headers as Record<string, string> | undefined)?.Authorization,
+        auth:
+          init?.headers instanceof Headers
+            ? (init.headers.get("authorization") ?? undefined)
+            : (init?.headers as Record<string, string> | undefined)
+                ?.Authorization,
       });
 
-      if (url === "https://ghcr.io/v2/org/tap/hello/blobs/sha256:abc" && !calls.at(-1)?.auth) {
-        return response({ errors: [{ code: "UNAUTHORIZED" }] }, {
-          status: 401,
-          headers: {
-            "www-authenticate":
-              'Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:org/tap/hello:pull"',
+      if (
+        url === "https://ghcr.io/v2/org/tap/hello/blobs/sha256:abc" &&
+        !calls.at(-1)?.auth
+      ) {
+        return response(
+          { errors: [{ code: "UNAUTHORIZED" }] },
+          {
+            status: 401,
+            headers: {
+              "www-authenticate":
+                'Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:org/tap/hello:pull"',
+            },
           },
-        });
+        );
       }
-      if (url === "https://ghcr.io/token?service=ghcr.io&scope=repository%3Aorg%2Ftap%2Fhello%3Apull") {
+      if (
+        url ===
+        "https://ghcr.io/token?service=ghcr.io&scope=repository%3Aorg%2Ftap%2Fhello%3Apull"
+      ) {
         return response({ token: "public-token" });
       }
       if (url === "https://ghcr.io/v2/org/tap/hello/blobs/sha256:abc") {
@@ -45,10 +60,12 @@ describe("Homebrew bottle fetch", () => {
       throw new Error(`unexpected fetch ${url}`);
     };
 
-    await expect(fetchHomebrewBottleBytes(
-      "https://ghcr.io/v2/org/tap/hello/blobs/sha256:abc",
-      { fetchImpl },
-    )).resolves.toEqual(new Uint8Array([1, 2, 3]));
+    await expect(
+      fetchHomebrewBottleBytes(
+        "https://ghcr.io/v2/org/tap/hello/blobs/sha256:abc",
+        { fetchImpl },
+      ),
+    ).resolves.toEqual(new Uint8Array([1, 2, 3]));
     expect(calls.map((call) => call.url)).toEqual([
       "https://ghcr.io/v2/org/tap/hello/blobs/sha256:abc",
       "https://ghcr.io/token?service=ghcr.io&scope=repository%3Aorg%2Ftap%2Fhello%3Apull",
@@ -57,15 +74,86 @@ describe("Homebrew bottle fetch", () => {
   });
 
   it("reports non-successful bottle fetches without hiding the HTTP status", async () => {
-    const fetchImpl = async (): Promise<Response> => response("not found", { status: 404 });
+    const fetchImpl = async (): Promise<Response> =>
+      response("not found", { status: 404 });
 
-    await expect(fetchHomebrewBottleBytes(
-      "https://example.invalid/missing.bottle.tar.gz",
-      { fetchImpl },
-    )).rejects.toThrow(HomebrewBottleFetchError);
-    await expect(fetchHomebrewBottleBytes(
-      "https://example.invalid/missing.bottle.tar.gz",
-      { fetchImpl },
-    )).rejects.toThrow("HTTP 404");
+    await expect(
+      fetchHomebrewBottleBytes(
+        "https://example.invalid/missing.bottle.tar.gz",
+        { fetchImpl },
+      ),
+    ).rejects.toThrow(HomebrewBottleFetchError);
+    await expect(
+      fetchHomebrewBottleBytes(
+        "https://example.invalid/missing.bottle.tar.gz",
+        { fetchImpl },
+      ),
+    ).rejects.toThrow("HTTP 404");
+  });
+
+  it("streams an exact declared bottle size into bounded storage", async () => {
+    const fetchImpl = async (): Promise<Response> =>
+      response(new Uint8Array([1, 2, 3]), {
+        headers: { "content-length": "3" },
+      });
+
+    await expect(
+      fetchHomebrewBottleBytes("https://example.invalid/exact.bottle.tar.gz", {
+        fetchImpl,
+        expectedBytes: 3,
+      }),
+    ).resolves.toEqual(new Uint8Array([1, 2, 3]));
+  });
+
+  it("rejects declared, streamed, and truncated size mismatches", async () => {
+    const wrongHeader = async (): Promise<Response> =>
+      response(new Uint8Array([1, 2, 3]), {
+        headers: { "content-length": "4" },
+      });
+    await expect(
+      fetchHomebrewBottleBytes(
+        "https://example.invalid/wrong-header.bottle.tar.gz",
+        { fetchImpl: wrongHeader, expectedBytes: 3 },
+      ),
+    ).rejects.toThrow(/declared 4 bytes, expected 3/);
+
+    const tooLarge = async (): Promise<Response> =>
+      response(new Uint8Array([1, 2, 3, 4]));
+    await expect(
+      fetchHomebrewBottleBytes(
+        "https://example.invalid/too-large.bottle.tar.gz",
+        { fetchImpl: tooLarge, expectedBytes: 3 },
+      ),
+    ).rejects.toThrow(/more than the expected 3 bytes/);
+
+    const truncated = async (): Promise<Response> =>
+      response(new Uint8Array([1, 2]));
+    await expect(
+      fetchHomebrewBottleBytes(
+        "https://example.invalid/truncated.bottle.tar.gz",
+        { fetchImpl: truncated, expectedBytes: 3 },
+      ),
+    ).rejects.toThrow(/returned 2 bytes, expected 3/);
+  });
+
+  it("rejects invalid or oversized byte budgets before fetching", async () => {
+    let fetched = false;
+    const fetchImpl = async (): Promise<Response> => {
+      fetched = true;
+      return response(new Uint8Array([1]));
+    };
+    await expect(
+      fetchHomebrewBottleBytes(
+        "https://example.invalid/invalid-budget.bottle.tar.gz",
+        { fetchImpl, expectedBytes: 0 },
+      ),
+    ).rejects.toThrow(/must be in 1/);
+    await expect(
+      fetchHomebrewBottleBytes(
+        "https://example.invalid/oversized-budget.bottle.tar.gz",
+        { fetchImpl, expectedBytes: 256 * 1024 * 1024 + 1 },
+      ),
+    ).rejects.toThrow(/must be in 1/);
+    expect(fetched).toBe(false);
   });
 });

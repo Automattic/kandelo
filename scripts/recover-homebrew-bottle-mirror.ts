@@ -110,6 +110,7 @@ export async function recoverHomebrewBottleMirror(options: {
         throw new Error("recovery fetch lost its anonymous closed-bundle contract");
       }
       const bytes = await fetchHomebrewBottleBytes(pkg.url, {
+        expectedBytes: pkg.bytes,
         ...(options.fetchImpl === undefined ? {} : { fetchImpl: options.fetchImpl }),
       });
       return new Response(copyArrayBuffer(bytes), {
