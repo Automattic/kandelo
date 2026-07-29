@@ -46,12 +46,18 @@ prefix while pouring official Linux host-tool bottles, but that prefix is not
 a target package dependency, target bottle prefix, or VFS input.
 
 The 2026-07-29 public-bottle audit found 70 Wasm bottle variants across 63
-Formulae. Thirty-two variants contain the retired guest prefix and require
-rebuilding. The other 38 may be reused only through a provenance-preserving
-scan-gated path; rebuilding them is also acceptable when that is faster.
-Bottle admission now scans every regular archive member and rejects the
-retired prefix, because `:any_skip_relocation` metadata alone did not identify
-all path-bearing bottles.
+Formula sidecars, but selected ABI-42 metadata reaches only 58 variants across
+52 Formulae. Eleven orphan Formula sidecars hold 12 ABI-41 variants and must
+not be relabeled as ABI 42. Of the selected ABI-42 set, 34 variants across 30
+Formulae are byte-clean and may be reused only through a
+provenance-preserving, scan-gated admission path. Twenty-four selected
+variants contain the retired prefix and must be rebuilt. The 12 ABI-41
+variants must also be rebuilt, including four whose bytes happen to be clean,
+for 36 required rebuilds in total. Rebuilding the 34 reuse candidates is an
+acceptable fallback when that is faster than finishing truthful reuse
+provenance. Bottle admission scans every regular archive member and rejects
+the retired prefix, because `:any_skip_relocation` metadata alone did not
+identify all path-bearing bottles.
 
 The immediate bootstrap/lifecycle proof may finish on its already-running
 transitional artifact, but no shell cutover or completed migration may retain
@@ -68,6 +74,13 @@ deliberately retired variants, validate the complete candidate tap once, and
 publish that complete set in one finalization. Failed-attempt reporting against
 the still-old tap may be blocked by the same validator and is not evidence that
 an individual replacement bottle is invalid.
+
+Before that finalization, strengthen whole-tap validation to reject Formula,
+link, and live provenance sidecars that are not reachable from selected
+metadata. The current 52-selected/63-present split is evidence that validating
+only reachable records can leave stale ABI and guest-path claims in the live
+tree. Historical failures remain evidence under their explicit failure
+namespace; obsolete root-level live records do not.
 
 1. **Closed Formula execution boundary — Kandelo PR #1123.** The candidate
    gives untrusted tap recipes only their declared source, dependency, tool,
