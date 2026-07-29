@@ -15,6 +15,7 @@ const tsxLoaderPath = fileURLToPath(
 
 type HarnessResult = {
   childMiB: number;
+  pressureBytes: number;
   samples: Array<{
     completedChildren: number;
     rssBytes: number;
@@ -58,6 +59,7 @@ describe("process-memory reclamation under real sequential spawn churn", () => {
       expect(result.stderr).toEqual([]);
       expect(result.diagnostics).toEqual([]);
       expect(result.samples).toHaveLength(7);
+      expect(result.pressureBytes).toBe(32 * MIB);
 
       // A stale listener, Worker, lease, or process-table reference would keep
       // the retired Memory live even when ordinary allocation pressure makes

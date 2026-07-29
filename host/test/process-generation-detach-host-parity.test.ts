@@ -65,6 +65,14 @@ describe("process generation detach host parity", () => {
       const destroy = destroyFunction(source);
       expect(destroy).toContain("processGenerationDetaches.retryPending()");
       expect(destroy).not.toContain("processes.clear()");
+      // The outer kernel Worker can be a safe final containment boundary only
+      // after it has explicitly terminated every process Worker and the
+      // process-owned pthread Workers nested beneath it.
+      expect(destroy).toContain("terminateThreadWorkers(pid)");
+      expect(destroy).toContain("terminateTrackedWorker(info.worker");
+      expect(destroy).toContain(
+        "kernelRealmDestroyResult(gracefulDetachComplete)",
+      );
       // WHY: Worker termination yields. Keep the installed object itself,
       // rather than looking the PID up afterward and accidentally retiring an
       // exec successor that appeared during the await.

@@ -11,8 +11,8 @@ if (typeof gc !== "function") {
 const allocator = new ProcessMemoryAllocator({
   maxMemories: 2,
   maxTotalBytes: 8 * WASM_PAGE_SIZE,
-  maxRetirementBacklogMemories: 2,
-  maxRetirementBacklogBytes: 8 * WASM_PAGE_SIZE,
+  retirementAdmissionMemoryThreshold: 2,
+  retirementAdmissionByteThreshold: 8 * WASM_PAGE_SIZE,
   retirementBackpressureMs: 0,
   maxRetirementTelemetryRecords: 8,
 });

@@ -328,20 +328,22 @@ export interface ProcessMemoryAllocatorOptions {
   /** Maximum number of simultaneously live process address spaces. */
   maxMemories: number;
   /**
-   * Allocation budget for live process address spaces.
-   * Guest memory.grow can cross it while a process runs; the allocator observes
-   * that growth before the next allocation and fails the new allocation.
+   * Sampled admission budget for live process address spaces.
+   *
+   * Guest memory.grow is not mediated by JavaScript and can cross this value
+   * while processes run. The allocator observes current lengths before the
+   * next allocation and rejects that allocation. A hard aggregate growth cap
+   * would require reserving each memory's maximum or instrumenting growth.
    */
   maxTotalBytes: number;
   /**
-   * Short-lived admission bound for address spaces whose host owners were just
-   * detached. This is deliberately separate from the live-memory budget: a
-   * theoretical multi-GiB live growth ceiling must not also authorize a
-   * multi-GiB retirement burst.
+   * Count threshold at which a short-lived retirement backlog pauses later
+   * allocations. This is an admission threshold, not a hard backlog cap:
+   * already-live address spaces must still be retired, and may overshoot it.
    */
-  maxRetirementBacklogMemories?: number;
-  /** Byte peer of `maxRetirementBacklogMemories`. */
-  maxRetirementBacklogBytes?: number;
+  retirementAdmissionMemoryThreshold?: number;
+  /** Byte peer of `retirementAdmissionMemoryThreshold`. */
+  retirementAdmissionByteThreshold?: number;
   /**
    * Minimum time that a detached allocation contributes to temporary
    * retirement backpressure. Capacity returns after this bounded interval
@@ -381,8 +383,8 @@ export interface ProcessMemoryLease {
    *
    * Fresh-only allocation makes this safe: the terminated worker may keep its
    * own Memory alive briefly, but the address space is never handed to another
-   * process. The allocator therefore applies bounded retirement backpressure
-   * without deliberately retaining the Memory.
+   * process. The allocator therefore applies temporary retirement admission
+   * backpressure without deliberately retaining the Memory.
    */
   releaseAfterForcedTermination(): void;
 }
@@ -409,38 +411,42 @@ export interface ProcessMemoryRetirementStats {
   readonly chargedBytes: number;
 }
 
-const PROCESS_MEMORY_RETIREMENT_BACKLOG_MAX_BYTES = 256 * 1024 * 1024;
+const DEFAULT_RETIREMENT_ADMISSION_BYTE_THRESHOLD_CAP =
+  256 * 1024 * 1024;
 
 /**
- * Derive a small retirement burst bound independently from the theoretical
- * live address-space budget.
+ * Derive small retirement admission thresholds independently from the
+ * theoretical live address-space budget.
  *
  * Two retiring generations per configured Worker slot cover ordinary exec
- * and replacement overlap. The fixed caps prevent a high process maximum or a
- * multi-GiB guest growth ceiling from silently authorizing an equally large
- * stale-generation backlog.
+ * and replacement overlap before later allocations pause. The fixed threshold
+ * caps prevent a high process maximum or multi-GiB guest growth ceiling from
+ * silently delaying admission until an equally large stale-generation
+ * backlog. They do not reject or cap retirements already in flight.
  */
-export function deriveProcessMemoryRetirementLimits(
+export function deriveProcessMemoryRetirementAdmissionThresholds(
   maxWorkers: number,
   maxTotalBytes: number,
 ): {
-  maxRetirementBacklogMemories: number;
-  maxRetirementBacklogBytes: number;
+  retirementAdmissionMemoryThreshold: number;
+  retirementAdmissionByteThreshold: number;
 } {
   if (!Number.isSafeInteger(maxWorkers) || maxWorkers <= 0) {
     throw new Error(`invalid process worker limit: ${maxWorkers}`);
   }
   if (!Number.isSafeInteger(maxTotalBytes) || maxTotalBytes <= 0) {
-    throw new Error(`invalid process memory byte budget: ${maxTotalBytes}`);
+    throw new Error(
+      `invalid process memory admission byte budget: ${maxTotalBytes}`,
+    );
   }
   return {
-    maxRetirementBacklogMemories: Math.max(
+    retirementAdmissionMemoryThreshold: Math.max(
       4,
       Math.min(32, maxWorkers * 2),
     ),
-    maxRetirementBacklogBytes: Math.min(
+    retirementAdmissionByteThreshold: Math.min(
       maxTotalBytes,
-      PROCESS_MEMORY_RETIREMENT_BACKLOG_MAX_BYTES,
+      DEFAULT_RETIREMENT_ADMISSION_BYTE_THRESHOLD_CAP,
     ),
   };
 }
@@ -448,10 +454,12 @@ export function deriveProcessMemoryRetirementLimits(
 /**
  * Build a coalesced collection-pressure hook for the persistent kernel realm.
  *
- * The ArrayBuffer is intentionally untouched: allocating it tells the engine
- * about bounded external-memory pressure without faulting 32 MiB of physical
- * pages into RSS. Exactly one buffer remains rooted and is replaced only after
- * a later macrotask, so a burst of exits does not allocate once per process.
+ * Engines decide how ordinary ArrayBuffer storage is committed and when
+ * unreachable shared Wasm backing is collected; neither behavior is portable.
+ * Exactly one bounded pressure buffer remains rooted and is replaced only
+ * after a later macrotask, so a burst of exits does not allocate once per
+ * process. The real churn harness can set the Node-only measurement control
+ * `KANDELO_RECLAIM_PRESSURE_BYTES=0` to retain an explicit negative control.
  */
 export function createProcessMemoryRetirementPressureHook(
   pressureBytes = 32 * 1024 * 1024,
@@ -467,6 +475,9 @@ export function createProcessMemoryRetirementPressureHook(
     if (pressureBytes === 0 || pending) return;
     pending = true;
     setTimeout(() => {
+      // WHY: a bounded ordinary allocation makes native-memory churn visible
+      // to current engines. It is only a reclamation nudge; ownership,
+      // correctness, and admission never depend on collection timing.
       pressure = new ArrayBuffer(pressureBytes);
       // Keep the newest bounded allocation rooted until the next retirement.
       void pressure;
@@ -500,24 +511,26 @@ export class ProcessMemoryRetirementBacklogError extends Error {
   readonly requestedBytes: number;
   readonly pendingRetiredMemories: number;
   readonly pendingRetiredBytes: number;
-  readonly maxRetirementBacklogMemories: number;
-  readonly maxRetirementBacklogBytes: number;
+  readonly retirementAdmissionMemoryThreshold: number;
+  readonly retirementAdmissionByteThreshold: number;
 
   constructor(
     message: string,
     requestedBytes: number,
     pendingRetiredMemories: number,
     pendingRetiredBytes: number,
-    maxRetirementBacklogMemories: number,
-    maxRetirementBacklogBytes: number,
+    retirementAdmissionMemoryThreshold: number,
+    retirementAdmissionByteThreshold: number,
   ) {
     super(message);
     this.name = "ProcessMemoryRetirementBacklogError";
     this.requestedBytes = requestedBytes;
     this.pendingRetiredMemories = pendingRetiredMemories;
     this.pendingRetiredBytes = pendingRetiredBytes;
-    this.maxRetirementBacklogMemories = maxRetirementBacklogMemories;
-    this.maxRetirementBacklogBytes = maxRetirementBacklogBytes;
+    this.retirementAdmissionMemoryThreshold =
+      retirementAdmissionMemoryThreshold;
+    this.retirementAdmissionByteThreshold =
+      retirementAdmissionByteThreshold;
   }
 }
 
@@ -591,23 +604,26 @@ class OwnedProcessMemoryLease implements ProcessMemoryLease {
  * A bounded FinalizationRegistry ledger records observed Memory/buffer/view
  * wrappers without retaining them. It is telemetry, not ownership authority:
  * callbacks may be arbitrarily late or absent, so capacity never depends on
- * finalization. A short independently bounded retirement window instead slows
- * bursts long enough for ordinary engine reclamation without making a delayed
- * callback a permanent process-creation failure.
+ * finalization. A short independently configured retirement threshold instead
+ * slows later allocations after a burst without making a delayed callback a
+ * permanent process-creation failure. It does not cap already-live retirements.
  */
 export class ProcessMemoryAllocator {
   private readonly records = new Map<number, ProcessMemoryRecord>();
   private readonly recordsByMemory =
     new WeakMap<WebAssembly.Memory, ProcessMemoryRecord>();
-  private readonly observedTargets = new WeakMap<object, number>();
+  private readonly observedTargets = new WeakMap<
+    object,
+    { allocationId: number; targetId: number }
+  >();
   private readonly retirementRegistry:
     | FinalizationRegistry<{
         allocationId: number;
         targetId: number;
       }>
     | undefined;
-  private readonly maxRetirementBacklogMemories: number;
-  private readonly maxRetirementBacklogBytes: number;
+  private readonly retirementAdmissionMemoryThreshold: number;
+  private readonly retirementAdmissionByteThreshold: number;
   private readonly retirementBackpressureMs: number;
   private readonly maxRetirementTelemetryRecords: number;
   private readonly retirementTelemetryOrder: number[] = [];
@@ -636,35 +652,37 @@ export class ProcessMemoryAllocator {
       || options.maxTotalBytes <= 0
     ) {
       throw new Error(
-        `invalid process memory byte budget: ${options.maxTotalBytes}`,
+        `invalid process memory admission byte budget: ${options.maxTotalBytes}`,
       );
     }
-    this.maxRetirementBacklogMemories =
-      options.maxRetirementBacklogMemories
+    this.retirementAdmissionMemoryThreshold =
+      options.retirementAdmissionMemoryThreshold
       ?? Math.max(1, Math.min(options.maxMemories, 8));
-    this.maxRetirementBacklogBytes =
-      options.maxRetirementBacklogBytes
+    this.retirementAdmissionByteThreshold =
+      options.retirementAdmissionByteThreshold
       ?? Math.min(
         options.maxTotalBytes,
-        PROCESS_MEMORY_RETIREMENT_BACKLOG_MAX_BYTES,
+        DEFAULT_RETIREMENT_ADMISSION_BYTE_THRESHOLD_CAP,
       );
     this.retirementBackpressureMs = options.retirementBackpressureMs ?? 50;
     this.maxRetirementTelemetryRecords =
       options.maxRetirementTelemetryRecords ?? 256;
     if (
-      !Number.isSafeInteger(this.maxRetirementBacklogMemories)
-      || this.maxRetirementBacklogMemories <= 0
+      !Number.isSafeInteger(this.retirementAdmissionMemoryThreshold)
+      || this.retirementAdmissionMemoryThreshold <= 0
     ) {
       throw new Error(
-        `invalid process memory retirement count bound: ${this.maxRetirementBacklogMemories}`,
+        "invalid process memory retirement count admission threshold: " +
+        this.retirementAdmissionMemoryThreshold,
       );
     }
     if (
-      !Number.isSafeInteger(this.maxRetirementBacklogBytes)
-      || this.maxRetirementBacklogBytes <= 0
+      !Number.isSafeInteger(this.retirementAdmissionByteThreshold)
+      || this.retirementAdmissionByteThreshold <= 0
     ) {
       throw new Error(
-        `invalid process memory retirement byte bound: ${this.maxRetirementBacklogBytes}`,
+        "invalid process memory retirement byte admission threshold: " +
+        this.retirementAdmissionByteThreshold,
       );
     }
     if (
@@ -700,7 +718,7 @@ export class ProcessMemoryAllocator {
   }
 
   /**
-   * Wait through the allocator's short retirement window before allocating.
+   * Wait through the allocator's short retirement admission gate.
    *
    * Healthy sequential churn should not surface the internal retirement
    * throttle as a guest errno. The bounded timeout preserves EAGAIN as a
@@ -733,8 +751,9 @@ export class ProcessMemoryAllocator {
    *
    * WHY: awaiting retirement admission before copying would let a sibling
    * thread mutate the parent address space after fork committed. This narrow
-   * bypass still obeys the hard live count/byte budgets; callers must await
-   * `waitForRetirementBacklogCapacity()` before launching the child Worker.
+   * bypass still obeys the hard live count and sampled byte admission budget;
+   * callers must await `waitForRetirementBacklogCapacity()` before launching
+   * the child Worker.
    */
   acquireForForkSnapshot(
     request: ProcessMemoryAllocationRequest,
@@ -789,7 +808,7 @@ export class ProcessMemoryAllocator {
     const requestedBytes = request.initialPages * WASM_PAGE_SIZE;
     if (requestedBytes > this.options.maxTotalBytes) {
       throw new ProcessMemoryCapacityError(
-        `Process memory request exceeds byte budget ${this.options.maxTotalBytes}`,
+        `Process memory request exceeds admission budget ${this.options.maxTotalBytes}`,
         requestedBytes,
         this.liveBytes,
         this.options.maxTotalBytes,
@@ -976,7 +995,7 @@ export class ProcessMemoryAllocator {
     }
     if (this.liveBytes + requestedBytes > this.options.maxTotalBytes) {
       throw new ProcessMemoryCapacityError(
-        `Live process memory byte budget ${this.options.maxTotalBytes} is exhausted`,
+        `Live process memory admission budget ${this.options.maxTotalBytes} is exhausted`,
         requestedBytes,
         this.liveBytes,
         this.options.maxTotalBytes,
@@ -987,8 +1006,9 @@ export class ProcessMemoryAllocator {
   private retirementBacklogSaturated(): boolean {
     return (
       this.retirementBacklogMemories >=
-        this.maxRetirementBacklogMemories
-      || this.retirementBacklogBytes >= this.maxRetirementBacklogBytes
+        this.retirementAdmissionMemoryThreshold
+      || this.retirementBacklogBytes >=
+        this.retirementAdmissionByteThreshold
     );
   }
 
@@ -1000,8 +1020,8 @@ export class ProcessMemoryAllocator {
       requestedBytes,
       this.retirementBacklogMemories,
       this.retirementBacklogBytes,
-      this.maxRetirementBacklogMemories,
-      this.maxRetirementBacklogBytes,
+      this.retirementAdmissionMemoryThreshold,
+      this.retirementAdmissionByteThreshold,
     );
   }
 
@@ -1074,10 +1094,23 @@ export class ProcessMemoryAllocator {
     target: object,
   ): void {
     if (!this.retirementRegistry) return;
-    if (this.observedTargets.has(target)) return;
+    const observed = this.observedTargets.get(target);
+    if (observed) {
+      if (observed.allocationId === record.allocationId) return;
+      // WHY: one wrapper can retain only the backing it was created from.
+      // Silently treating it as evidence for two generations would make the
+      // second retirement look collectible when the registry only tracks the
+      // first registration.
+      throw new Error(
+        "Process memory observation target belongs to another allocation",
+      );
+    }
     const targetId = this.nextTargetId++;
     const unregisterToken = {};
-    this.observedTargets.set(target, targetId);
+    this.observedTargets.set(target, {
+      allocationId: record.allocationId,
+      targetId,
+    });
     record.pendingTargets.set(targetId, unregisterToken);
     this.retirementRegistry.register(
       target,

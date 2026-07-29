@@ -29,6 +29,9 @@ import {
   snapshotClosedLazyAssets,
   type ClosedLazyAsset,
 } from "./vfs/closed-lazy-assets";
+import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
+
+const DESTROY_REQUEST_TIMEOUT_MS = 2_000;
 
 export interface BrowserKernelOptions {
   /** Maximum concurrent workers (default: 4) */
@@ -37,9 +40,15 @@ export interface BrowserKernelOptions {
    *  guest brk/mmap growth; initial process memory is computed separately. */
   maxMemoryPages?: number;
   /**
-   * Hard session budget for simultaneously live process address spaces.
+   * Allocation-admission budget sampled from simultaneously live process
+   * address spaces before each new allocation.
+   *
+   * A running guest can grow its own memory without a JavaScript callback, so
+   * aggregate growth may cross this value until the next allocation observes
+   * it. `maxMemoryPages` remains the hard per-process growth cap.
+   *
    * Retired generations are never reused and pass through a separate short,
-   * bounded admission window before new churn proceeds.
+   * admission-threshold window before new churn proceeds.
    */
   maxProcessMemoryBytes?: number;
   /** Host default pthread slots when a wasm binary declares -1 (default: 16). */
@@ -1100,15 +1109,30 @@ export class BrowserKernel {
   /** Destroy the kernel and release all resources. */
   async destroy(): Promise<void> {
     if (!this.workerStarted) return;
+    let gracefulDetachFailure: string | undefined;
     if (this.initialized) {
       const requestId = this.nextRequestId++;
-      await this.request(requestId, {
-        type: "destroy",
-        requestId,
-      });
+      gracefulDetachFailure = await awaitGracefulKernelRealmDestroy(
+        () =>
+          this.request(requestId, {
+            type: "destroy",
+            requestId,
+          }),
+        DESTROY_REQUEST_TIMEOUT_MS,
+      );
     }
     this.initialized = false;
-    this.kernelWorkerHandle.terminate();
+    // WHY: process/pthread Workers are owned beneath the kernel worker. After
+    // the worker's bounded graceful attempt, terminating this outer realm is
+    // the final release fence for aliases that could not be detached exactly.
+    let realmTerminationFailure: string | undefined;
+    try {
+      this.kernelWorkerHandle.terminate();
+    } catch (error) {
+      realmTerminationFailure =
+        "kernel-worker realm termination failed: " +
+        (error instanceof Error ? error.message : String(error));
+    }
     this.workerStarted = false;
     this.exitResolvers.clear();
     this.unclaimedExitStatuses.clear();
@@ -1128,6 +1152,30 @@ export class BrowserKernel {
     this.fbGenerationByPid.clear();
     this.framebuffers.clear();
     this.pendingPtyOutput.clear();
+    if (gracefulDetachFailure || realmTerminationFailure) {
+      const diagnostic: HostDiagnostic = {
+        pid: 0,
+        source: "kernel worker destroy",
+        message:
+          `[BrowserKernel] ${
+            [gracefulDetachFailure, realmTerminationFailure]
+              .filter((failure): failure is string => Boolean(failure))
+              .join("; ")
+          }` +
+          (realmTerminationFailure
+            ? ""
+            : "; terminated the worker realm as the final release fallback"),
+      };
+      console.warn(diagnostic.message);
+      try {
+        this.options.onHostDiagnostic?.(diagnostic);
+      } catch (error) {
+        console.error(
+          "[BrowserKernel] onHostDiagnostic callback failed:",
+          error,
+        );
+      }
+    }
   }
 
   // ── Private helpers ──
