@@ -1956,6 +1956,23 @@ fi
 [ -r "$WASM_POSIX_DEP_RECIPE_DIR/recipe.json" ]
 [ -r "$WASM_POSIX_GLUE_DIR/abi_constants.h" ]
 [ -r "$WASM_POSIX_SYSROOT/lib/libc.a" ]
+for native_child_tool in automake bison flex python; do
+  [ "$("$native_child_tool")" = \
+    "closed native child tool: $native_child_tool" ]
+done
+# Exercise the actual split LLVM symlinkJoin in the empty service root. The
+# exact linker path is the SDK contract; allowing Clang to search for `ld`
+# would hide a missing lld closure behind whatever happens to be on PATH.
+printf 'int fixture(void) { return 0; }\n' >"$WASM_POSIX_DEP_WORK_DIR/link.c"
+"$WASM_POSIX_LLVM_DIR/clang" \
+  --target=wasm32-unknown-unknown \
+  -nostdlib \
+  -Wl,--no-entry \
+  -fuse-ld="$WASM_POSIX_LLVM_DIR/wasm-ld" \
+  "$WASM_POSIX_DEP_WORK_DIR/link.c" \
+  -o "$WASM_POSIX_DEP_WORK_DIR/link.wasm"
+[ "$(/usr/bin/od -An -N4 -tx1 "$WASM_POSIX_DEP_WORK_DIR/link.wasm" |
+  /usr/bin/tr -d ' \n')" = "0061736d" ]
 printf 'closed root projection\n' >"$WASM_POSIX_DEP_OUT_DIR/canary.txt"
 EOF
   } >"$isolated_recipe_script"
@@ -2482,12 +2499,66 @@ EOF
   homebrew_patched_launcher_run_native install-native-fixture cmake
   homebrew_patched_launcher_run_native install-native-fixture ninja
   homebrew_patched_launcher_run_native install-native-fixture openssl@3
+  for native_child_tool in automake bison flex python; do
+    homebrew_patched_launcher_run_native \
+      install-native-fixture "$native_child_tool"
+  done
+  homebrew_patched_launcher_run_native install-native-fixture perl
+  native_interpreter_source="$ISOLATION_ROOT/native-interpreter.c"
+  native_interpreter="$isolated_native_prefix/Cellar/perl/1.0/bin/perl"
+  native_loader_alias="$isolated_native_prefix/lib/ld.so"
+  cat >"$native_interpreter_source" <<'EOF'
+#include <stdio.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+  if (argc < 2) {
+    return 64;
+  }
+  argv[0] = "/usr/bin/bash";
+  execv(argv[0], argv);
+  perror("execv");
+  return 127;
+}
+EOF
+  native_system_loader=""
+  for loader_candidate in \
+    /lib64/ld-linux-x86-64.so.2 \
+    /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 \
+    /lib/ld-linux-aarch64.so.1 \
+    /lib/aarch64-linux-gnu/ld-linux-aarch64.so.1; do
+    if [ -f "$loader_candidate" ]; then
+      native_system_loader="$loader_candidate"
+      break
+    fi
+  done
+  [ -n "$native_system_loader" ] ||
+    fail "could not identify the native compiler's ELF interpreter"
+  mkdir -p "${native_loader_alias%/*}"
+  ln -s "$native_system_loader" "$native_loader_alias"
+  "${LLVM_BIN:?}/clang" "$native_interpreter_source" \
+    -Wl,--dynamic-linker="$native_loader_alias" \
+    -o "$native_interpreter"
+  for native_child_tool in automake bison flex python; do
+    native_child_script="$isolated_native_prefix/Cellar/$native_child_tool/1.0/bin/$native_child_tool"
+    {
+      printf '#!%s\n' "$isolated_native_prefix/opt/perl/bin/perl"
+      printf 'echo %q\n' "closed native child tool: $native_child_tool"
+    } >"$native_child_script"
+    chmod 0755 "$native_child_script"
+  done
   # CMake and Ninja are direct tool roots in the static plan. openssl@3 models
-  # a transitive Homebrew dependency that must remain in the sealed execution
-  # closure without becoming a caller-supplied PATH/root authority.
+  # a transitive library. The four child tools and Perl model the recursive
+  # executable closure used by Autotools: the runner, not the request, derives
+  # their PATH roots, while relocated script and ELF interpreter paths require
+  # the exact prefix-level loader alias.
   homebrew_patched_launcher_run_native remove-native-version cmake 0.9
   homebrew_patched_launcher_run_native remove-native-version ninja 0.9
   homebrew_patched_launcher_run_native remove-native-version openssl@3 0.9
+  for native_child_tool in automake bison flex python perl; do
+    homebrew_patched_launcher_run_native \
+      remove-native-version "$native_child_tool" 0.9
+  done
   homebrew_patched_launcher_run_native create-native-relative-link \
     cmake cmake-cross-final cmake-cross
   homebrew_patched_launcher_run_native create-native-relative-link \
@@ -2508,9 +2579,16 @@ EOF
       fail "native executable mode $fixture_mode was not normalized to 0555"
   done
   /usr/bin/sudo -n -- jq -e \
-    --arg cellar "$isolated_native_prefix/Cellar" '
-      .schema == 1 and .cellar == $cellar and
-      [.kegs[].formula] == ["cmake", "ninja", "openssl@3"] and
+    --arg cellar "$isolated_native_prefix/Cellar" \
+    --arg runtime "$isolated_native_prefix/lib" '
+      .schema == 2 and .cellar == $cellar and
+      (.runtime_roots | length) == 1 and
+      .runtime_roots[0].root == $runtime and
+      (.runtime_roots[0].tree_sha256 | test("^[0-9a-f]{64}$")) and
+      [.kegs[].formula] == [
+        "automake", "bison", "cmake", "flex", "ninja", "openssl@3",
+        "perl", "python"
+      ] and
       (.kegs | all(
         .root == ($cellar + "/" + .formula + "/1.0")
       ))

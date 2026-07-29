@@ -1028,17 +1028,32 @@ This preserves executable meaning while ensuring that a bottle's original
 owner-only mode cannot make a root-owned build input unreadable to the recipe
 identity. The same admitted root runner then writes, with exclusive creation,
 a mode-`0400` inventory of every Formula name and exact keg path it found in
-that sealed Cellar. When the recipe request arrives, the supervisor rescans
-every root-owned, read-only keg and requires exact equality with that inventory.
-A late extra rack, removed or replaced keg, mutable tree, duplicate name, or
-missing planned direct tool fails closed.
+that sealed Cellar. It also records the runner-selected prefix `lib` runtime
+root and its type/mode/content manifest digest when present. Relocated native
+executables can name
+`<prefix>/lib/ld.so` directly, so Cellar and `opt` projections alone are not
+an executable closure. The runner admits only that fixed loader/runtime
+directory, not the whole prefix. Runtime links may resolve only within the
+authenticated kegs, that runtime directory, or the fixed system library realms
+already projected into the empty service root. A link into another prefix
+directory or mutable host path fails closed. When the recipe request arrives,
+the supervisor rescans and rehashes every root-owned, read-only tree and
+requires exact equality with that inventory. A late extra rack, removed or
+replaced keg, mutable tree, duplicate name, changed loader alias, changed
+runtime root, or missing planned direct tool fails closed.
 
 The manifest authenticates the complete transitive execution closure, while
-the earlier static plan still decides which direct tools and Requirements may
-contribute executable directories to the recipe environment. Transitive kegs
-are mounted only at their native Cellar and `opt` paths so direct tools can
-follow legitimate cross-keg links; they do not silently become additional
-`PATH` roots or caller-selected dependencies.
+the earlier static plan still decides which tools are direct Formula inputs.
+Those direct tools enter through their target-Cellar proxies. Executable
+precedence is explicit: publisher-only Requirements, direct proxies,
+authenticated transitive helpers, then fixed SDK and system paths. Thus a
+transitive keg cannot shadow a declared direct tool with a same-named command.
+The runner derives child-tool directories from all remaining authenticated
+native kegs without accepting paths from the Formula request.
+This lets a planned tool start its legitimate interpreter or helper, such as
+Automake starting relocated Perl or a build starting Bison, Flex, or Python.
+It does not make those transitive tools target dependencies, copy them into
+the target Cellar, or give the caller authority to select their versions.
 
 The target build can read that sealed prefix, but only each planned direct
 dependency's selected keg is copied into a root-owned, read-only proxy under the

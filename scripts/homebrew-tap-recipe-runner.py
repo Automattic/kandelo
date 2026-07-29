@@ -1269,32 +1269,65 @@ def installed_keg_roots(
     return versioned_keg_roots(cellar, names, label)
 
 
-def native_closure_document(cellar: Path, kegs: dict[str, Path]) -> dict[str, Any]:
-    """Describe one exact, already-sealed native Cellar inventory."""
+def native_prefix_runtime_roots(cellar: Path) -> list[Path]:
+    """Select the fixed prefix-level runtime paths needed to execute kegs."""
+    prefix = canonical_real_directory(
+        cellar.parent,
+        label="sealed native dependency prefix",
+        owner_uid=0,
+        exact_mode=0o555,
+    )
+    runtime = prefix / "lib"
+    if not runtime.exists() and not runtime.is_symlink():
+        return []
+    return [
+        canonical_real_directory(
+            runtime,
+            label="sealed native prefix runtime lib",
+            owner_uid=0,
+            exact_mode=0o555,
+        )
+    ]
+
+
+def native_closure_document(
+    cellar: Path,
+    kegs: dict[str, Path],
+    runtime_roots: dict[Path, str],
+) -> dict[str, Any]:
+    """Describe one exact, already-sealed native execution closure."""
     return {
         "cellar": str(cellar),
         "kegs": [
             {"formula": name, "root": str(root)}
             for name, root in sorted(kegs.items())
         ],
-        "schema": 1,
+        "runtime_roots": [
+            {"root": str(root), "tree_sha256": digest}
+            for root, digest in sorted(
+                runtime_roots.items(), key=lambda item: str(item[0])
+            )
+        ],
+        "schema": 2,
     }
 
 
 def parse_native_closure_manifest(
     data: bytes, cellar: Path, *, label: str
-) -> dict[str, Path]:
+) -> tuple[dict[str, Path], dict[Path, str]]:
     """Parse the root-owned handoff without trusting it to select filesystem paths."""
     document = parse_json_bytes(data, label)
     if (
         type(document) is not dict
-        or set(document) != {"cellar", "kegs", "schema"}
+        or set(document) != {"cellar", "kegs", "runtime_roots", "schema"}
         or not is_exact_integer(document["schema"])
-        or document["schema"] != 1
+        or document["schema"] != 2
         or type(document["cellar"]) is not str
         or document["cellar"] != str(cellar)
         or type(document["kegs"]) is not list
         or len(document["kegs"]) > MAX_DEPENDENCY_KEGS
+        or type(document["runtime_roots"]) is not list
+        or len(document["runtime_roots"]) > 1
         or compact_json(document) != data
     ):
         fail(f"{label} has an unexpected schema")
@@ -1324,14 +1357,39 @@ def parse_native_closure_manifest(
         previous_name = name
         roots.add(root)
         result[name] = root
-    return result
+    # WHY: relocated Linux Homebrew executables can name the prefix loader
+    # directly (for example, Perl uses <prefix>/lib/ld.so). Keg and opt binds
+    # alone therefore are not a complete executable closure. The manifest may
+    # authenticate only this fixed, runner-derived prefix path; it cannot ask
+    # the privileged runner to project an arbitrary prefix directory.
+    runtime_paths = native_prefix_runtime_roots(cellar)
+    if (
+        not all(
+            type(record) is dict
+            and set(record) == {"root", "tree_sha256"}
+            and type(record["root"]) is str
+            and type(record["tree_sha256"]) is str
+            and SHA256_RE.fullmatch(record["tree_sha256"])
+            for record in document["runtime_roots"]
+        )
+        or [record["root"] for record in document["runtime_roots"]]
+        != [str(root) for root in runtime_paths]
+    ):
+        fail(f"{label} changed the native prefix runtime roots")
+    runtime_roots = {
+        root: record["tree_sha256"]
+        for root, record in zip(
+            runtime_paths, document["runtime_roots"], strict=True
+        )
+    }
+    return result, runtime_roots
 
 
-def authenticated_native_keg_roots(
+def authenticated_native_closure(
     cellar: Path,
     manifest_path: Path,
     direct_formulae: list[str],
-) -> dict[str, Path]:
+) -> tuple[dict[str, Path], list[Path]]:
     """Match the live sealed Cellar to the supervisor's post-seal inventory."""
     data, _ = open_regular_file(
         manifest_path,
@@ -1340,7 +1398,7 @@ def authenticated_native_keg_roots(
         max_bytes=MAX_NATIVE_CLOSURE_MANIFEST_BYTES,
         label="native closure manifest",
     )
-    expected = parse_native_closure_manifest(
+    expected, runtime_roots = parse_native_closure_manifest(
         data, cellar, label="native closure manifest"
     )
     actual = installed_keg_roots(cellar, "native dependency")
@@ -1351,7 +1409,29 @@ def authenticated_native_keg_roots(
         fail(f"native Cellar omits declared direct tools: {missing!r}")
     for name, root in sorted(actual.items()):
         validate_sealed_dependency_tree(root, f"native dependency {name}")
-    return actual
+    for root, expected_digest in runtime_roots.items():
+        authenticate_native_runtime_root(
+            root,
+            expected_digest,
+            list(actual.values()),
+        )
+    return actual, list(runtime_roots)
+
+
+def authenticate_native_runtime_root(
+    root: Path,
+    expected_digest: str,
+    closure_roots: list[Path],
+) -> None:
+    """Match a fixed prefix runtime tree to its post-seal fingerprint."""
+    actual_digest = validate_sealed_dependency_tree(
+        root,
+        "native prefix runtime",
+        runtime_closure_roots=closure_roots,
+        hash_contents=True,
+    )
+    if actual_digest != expected_digest:
+        fail("native prefix runtime differs from its authenticated closure")
 
 
 def target_dependency_keg_roots(
@@ -1445,6 +1525,54 @@ def native_execution_roots(
     return proxies, requirements
 
 
+def native_closure_path_roots(
+    native_kegs: dict[str, Path],
+    native_formulae: list[str],
+    native_requirements: list[str],
+) -> tuple[list[Path], list[Path]]:
+    """Order root-authenticated native child-tool roots for recipe execution."""
+    direct = set(native_formulae)
+    requirements = set(native_requirements)
+    requirement_roots = [native_kegs[name] for name in native_requirements]
+    transitive_roots: list[Path] = []
+    for name, root in sorted(native_kegs.items()):
+        if name not in direct and name not in requirements:
+            transitive_roots.append(root)
+    return requirement_roots, transitive_roots
+
+
+def executable_path_entries(roots: list[Path]) -> list[str]:
+    """Return canonical executable directories below selected sealed roots."""
+    entries: list[str] = []
+    for root in roots:
+        for suffix in ("bin", "sbin", "libexec/bin"):
+            candidate = root / suffix
+            if candidate.is_dir() and not candidate.is_symlink():
+                entries.append(str(candidate))
+    return entries
+
+
+def closed_recipe_path(
+    request_path: str,
+    direct_roots: list[Path],
+    requirement_roots: list[Path],
+    transitive_roots: list[Path],
+) -> str:
+    """Apply runner-owned tool precedence without caller-selected helpers."""
+    direct_entries = executable_path_entries(direct_roots)
+    direct_set = set(direct_entries)
+    fixed_entries = [
+        entry for entry in request_path.split(":") if entry not in direct_set
+    ]
+    ordered = [
+        *executable_path_entries(requirement_roots),
+        *direct_entries,
+        *executable_path_entries(transitive_roots),
+        *fixed_entries,
+    ]
+    return ":".join(dict.fromkeys(ordered))
+
+
 def requested_native_proxy_roots(
     supplied: Any,
     proxies: dict[str, Path],
@@ -1466,13 +1594,75 @@ def requested_native_proxy_roots(
     return expected
 
 
-def validate_sealed_dependency_tree(root: Path, label: str) -> None:
-    """Require one dependency keg to be an immutable root-owned tree."""
+def validate_native_runtime_symlink(
+    root: Path,
+    relative: str,
+    target: str,
+    closure_roots: list[Path],
+    label: str,
+) -> None:
+    """Keep prefix-runtime links inside the admitted executable closure."""
+    link = root / relative
+    target_path = Path(target)
+    lexical = (
+        target_path
+        if target_path.is_absolute()
+        else Path(os.path.normpath(str(link.parent / target_path)))
+    )
+    system_runtime_roots = [
+        Path("/lib"),
+        Path("/lib64"),
+        Path("/usr/lib"),
+        Path("/usr/lib64"),
+    ]
+    allowed_roots = [root, *closure_roots]
+
+    def is_allowed(path: Path) -> bool:
+        return any(is_within(path, allowed) for allowed in allowed_roots) or any(
+            is_within(path, allowed) for allowed in system_runtime_roots
+        )
+
+    if not lexical.is_absolute() or not is_allowed(lexical):
+        fail(f"{label} symlink leaves the native execution closure: {relative}")
+    try:
+        resolved = lexical.resolve(strict=True)
+    except OSError as error:
+        fail(f"{label} symlink target is unavailable: {relative}: {error}")
+    if not is_allowed(resolved):
+        fail(
+            f"{label} symlink resolves outside the native execution closure: "
+            f"{relative}"
+        )
+    if any(is_within(resolved, allowed) for allowed in system_runtime_roots):
+        metadata = resolved.lstat()
+        canonical_host_projection_source(
+            resolved,
+            label=f"{label} system symlink target {relative}",
+            directory=stat.S_ISDIR(metadata.st_mode),
+        )
+
+
+def validate_sealed_dependency_tree(
+    root: Path,
+    label: str,
+    *,
+    runtime_closure_roots: list[Path] | None = None,
+    hash_contents: bool = False,
+) -> str | None:
+    """Require a dependency tree to be sealed and optionally fingerprint it."""
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
         directory_flags |= os.O_NOFOLLOW
     root_fd = os.open(root, directory_flags)
     root_stat = os.fstat(root_fd)
+    if (
+        root_stat.st_uid != 0
+        or root_stat.st_gid != 0
+        or stat.S_IMODE(root_stat.st_mode) != 0o555
+    ):
+        os.close(root_fd)
+        fail(f"{label} root has unsafe ownership or mode")
+    manifest: list[list[Any]] = [["d", "", 0o555]]
     pending: list[tuple[int, str, os.stat_result]] = [(root_fd, "", root_stat)]
     entries = 0
     total_bytes = 0
@@ -1501,6 +1691,7 @@ def validate_sealed_dependency_tree(root: Path, label: str) -> None:
                 if stat.S_ISDIR(before.st_mode):
                     if mode != 0o555:
                         fail(f"{label} directory has a noncanonical mode: {relative}")
+                    manifest.append(["d", relative, mode])
                     child_fd = os.open(name, directory_flags, dir_fd=current_fd)
                     if file_identity(os.fstat(child_fd)) != file_identity(before):
                         os.close(child_fd)
@@ -1515,6 +1706,20 @@ def validate_sealed_dependency_tree(root: Path, label: str) -> None:
                         or total_bytes > EXPECTED_LIMITS["max_bytes"]
                     ):
                         fail(f"{label} exceeds its byte limit")
+                    digest = (
+                        hash_regular_at(
+                            current_fd,
+                            name,
+                            before,
+                            max_bytes=EXPECTED_LIMITS["max_file_bytes"],
+                            label=f"{label} file {relative}",
+                        )
+                        if hash_contents
+                        else None
+                    )
+                    manifest.append(
+                        ["f", relative, mode, before.st_size, digest]
+                    )
                 elif stat.S_ISLNK(before.st_mode):
                     target = os.readlink(name, dir_fd=current_fd)
                     if (
@@ -1524,6 +1729,14 @@ def validate_sealed_dependency_tree(root: Path, label: str) -> None:
                         > EXPECTED_LIMITS["max_path_bytes"]
                     ):
                         fail(f"{label} has an unsafe symlink: {relative}")
+                    if runtime_closure_roots is not None:
+                        validate_native_runtime_symlink(
+                            root,
+                            relative,
+                            target,
+                            runtime_closure_roots,
+                            label,
+                        )
                     after = os.stat(
                         name, dir_fd=current_fd, follow_symlinks=False
                     )
@@ -1532,6 +1745,7 @@ def validate_sealed_dependency_tree(root: Path, label: str) -> None:
                         or os.readlink(name, dir_fd=current_fd) != target
                     ):
                         fail(f"{label} symlink changed during inspection: {relative}")
+                    manifest.append(["l", relative, target])
                 else:
                     fail(f"{label} contains an unsupported node: {relative}")
             if file_identity(os.fstat(current_fd)) != file_identity(
@@ -1544,6 +1758,10 @@ def validate_sealed_dependency_tree(root: Path, label: str) -> None:
                 while pending:
                     pending_fd, _, _ = pending.pop()
                     os.close(pending_fd)
+    if not hash_contents:
+        return None
+    manifest.sort(key=lambda record: record[1])
+    return hashlib.sha256(compact_json(manifest)).hexdigest()
 
 
 def validate_environment(
@@ -1839,7 +2057,7 @@ def validate_request(
     direct_native_names = sorted(
         {*config["native_formulae"], *config["native_requirement_formulae"]}
     )
-    all_native_kegs = authenticated_native_keg_roots(
+    all_native_kegs, native_runtime_roots = authenticated_native_closure(
         config["native_cellar"],
         config["native_closure_manifest"],
         direct_native_names,
@@ -1858,7 +2076,7 @@ def validate_request(
         request["native_roots"], native_proxy_kegs
     )
     requirement_roots = list(requirement_kegs.values())
-    # authenticated_native_keg_roots already validates every native tree while
+    # authenticated_native_closure already validates every native tree while
     # matching it to the post-seal handoff. Target kegs follow their separate
     # immutable-bottle plan and are authenticated here from the complete sealed
     # target Cellar while the selected Formula's mutable rack stays excluded.
@@ -1878,6 +2096,17 @@ def validate_request(
         config["native_cellar"],
         all_native_kegs,
     )
+    # The native prefix projection is deliberately narrower than the complete
+    # prefix: only the authenticated loader/runtime directory enters the empty
+    # service root. Homebrew itself, taps, caches, and mutable metadata remain
+    # absent.
+    dependency_binds.extend((root, root) for root in native_runtime_roots)
+    dependency_binds.sort(key=lambda pair: (str(pair[1]), str(pair[0])))
+    native_path_roots = native_closure_path_roots(
+        all_native_kegs,
+        config["native_formulae"],
+        config["native_requirement_formulae"],
+    )
     return (
         request,
         data,
@@ -1885,7 +2114,7 @@ def validate_request(
         resources,
         resource_staging_identity,
         native_roots,
-        requirement_roots,
+        native_path_roots,
         dependency_binds,
     )
 
@@ -3057,7 +3286,18 @@ def stage_native_closure(source_value: str, destination_value: str) -> int:
     kegs = installed_keg_roots(cellar, "native dependency")
     for name, root in sorted(kegs.items()):
         validate_sealed_dependency_tree(root, f"native dependency {name}")
-    data = compact_json(native_closure_document(cellar, kegs))
+    runtime_roots: dict[Path, str] = {}
+    for root in native_prefix_runtime_roots(cellar):
+        digest = validate_sealed_dependency_tree(
+            root,
+            "native prefix runtime",
+            runtime_closure_roots=list(kegs.values()),
+            hash_contents=True,
+        )
+        if digest is None:
+            fail("native prefix runtime did not produce a content digest")
+        runtime_roots[root] = digest
+    data = compact_json(native_closure_document(cellar, kegs, runtime_roots))
     if len(data) > MAX_NATIVE_CLOSURE_MANIFEST_BYTES:
         fail("native closure manifest exceeds its byte limit")
 
@@ -3463,7 +3703,7 @@ def run_recipe(
     resources: dict[str, Path],
     resource_staging_identity: ResourceStagingIdentity | None,
     native_roots: list[Path],
-    requirement_roots: list[Path],
+    native_path_roots: tuple[list[Path], list[Path]],
     dependency_binds: list[tuple[Path, Path]],
     request_sha256: str,
 ) -> tuple[Path, str, int, int]:
@@ -3615,19 +3855,16 @@ def run_recipe(
         child_environment = add_runner_owned_platform_environment(
             request["environment"], request["platform_root"]
         )
-        # WHY: Homebrew Requirements are publisher-only and intentionally
-        # absent from Formula `deps`, so tap support cannot request their
-        # versioned kegs. The root-owned config derives them from the static
-        # host plan and adds only their sealed executable directories.
-        requirement_path_entries: list[str] = []
-        for root in requirement_roots:
-            for suffix in ("bin", "sbin", "libexec/bin"):
-                candidate = root / suffix
-                if candidate.is_dir() and not candidate.is_symlink():
-                    requirement_path_entries.append(str(candidate))
-        existing_path = child_environment["PATH"].split(":")
-        child_environment["PATH"] = ":".join(
-            [*sorted(set(requirement_path_entries)), *existing_path]
+        # WHY: authenticated transitive helpers must not shadow a planned
+        # direct proxy with a same-named command. The privileged runner owns
+        # the category order: publisher Requirements, declared direct proxies,
+        # authenticated transitive helpers, then fixed SDK/system entries.
+        requirement_roots, transitive_roots = native_path_roots
+        child_environment["PATH"] = closed_recipe_path(
+            child_environment["PATH"],
+            native_roots,
+            requirement_roots,
+            transitive_roots,
         )
         command.extend(["--", "/usr/bin/env", "-i"])
         command.extend(
@@ -3747,7 +3984,7 @@ def process_request(
             resources,
             resource_staging_identity,
             native_roots,
-            requirement_roots,
+            native_path_roots,
             dependency_binds,
         ) = validate_request(request_path, response_path, config, parent_fd)
         request_sha256 = hashlib.sha256(request_bytes).hexdigest()
@@ -3758,7 +3995,7 @@ def process_request(
             resources,
             resource_staging_identity,
             native_roots,
-            requirement_roots,
+            native_path_roots,
             dependency_binds,
             request_sha256,
         )

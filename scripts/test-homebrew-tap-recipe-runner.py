@@ -512,7 +512,10 @@ class NixRuntimeProjectionTests(unittest.TestCase):
         if node is None or clang is None:
             self.skipTest("declared Node and LLVM tools are unavailable")
         node_path = Path(node).resolve(strict=True)
-        llvm_bin = Path(clang).resolve(strict=True).parent
+        # Preserve the configured symlinkJoin directory. Resolving `clang`
+        # first would accidentally test the underlying Clang output while
+        # omitting the separately packaged wasm-ld selected by the SDK.
+        llvm_bin = Path(clang).parent.resolve(strict=True)
         store = Path("/nix/store")
         if not runner.is_within(node_path, store) or not runner.is_within(
             llvm_bin, store
@@ -525,6 +528,12 @@ class NixRuntimeProjectionTests(unittest.TestCase):
         self.assertNotIn(store, roots)
         self.assertTrue(any(runner.is_within(node_path, root) for root in roots))
         self.assertTrue(any(runner.is_within(llvm_bin, root) for root in roots))
+        for tool_name in ("clang", "wasm-ld"):
+            tool = (llvm_bin / tool_name).resolve(strict=True)
+            self.assertTrue(
+                any(runner.is_within(tool, root) for root in roots),
+                f"Nix closure omitted resolved {tool_name}",
+            )
         self.assertTrue(
             all(runner.NIX_STORE_ROOT_RE.fullmatch(str(root)) for root in roots)
         )
@@ -1269,7 +1278,9 @@ class NativeClosureAuthenticationTests(unittest.TestCase):
 
     @staticmethod
     def manifest(cellar: Path, kegs: dict[str, Path]) -> bytes:
-        return runner.compact_json(runner.native_closure_document(cellar, kegs))
+        return runner.compact_json(
+            runner.native_closure_document(cellar, kegs, {})
+        )
 
     def authenticate(
         self,
@@ -1285,12 +1296,16 @@ class NativeClosureAuthenticationTests(unittest.TestCase):
             mock.patch.object(
                 runner, "validate_sealed_dependency_tree"
             ) as validate_tree,
+            mock.patch.object(
+                runner, "native_prefix_runtime_roots", return_value=[]
+            ),
         ):
-            result = runner.authenticated_native_keg_roots(
+            result, runtime_roots = runner.authenticated_native_closure(
                 cellar,
                 cellar.parent / "native-closure.json",
                 direct_formulae,
             )
+        self.assertEqual(runtime_roots, [])
         self.validation_calls = validate_tree.call_args_list
         return result
 
@@ -1379,7 +1394,8 @@ class NativeClosureAuthenticationTests(unittest.TestCase):
                     {"formula": "zlib", "root": f"{cellar}/zlib/1.0"},
                     {"formula": "openssl@3", "root": f"{cellar}/openssl@3/1.0"},
                 ],
-                "schema": 1,
+                "runtime_roots": [],
+                "schema": 2,
             },
             "duplicate root": {
                 "cellar": str(cellar),
@@ -1387,16 +1403,61 @@ class NativeClosureAuthenticationTests(unittest.TestCase):
                     {"formula": "first", "root": f"{cellar}/first/1.0"},
                     {"formula": "second", "root": f"{cellar}/first/1.0"},
                 ],
-                "schema": 1,
+                "runtime_roots": [],
+                "schema": 2,
             },
         }
         for label, document in fixtures.items():
-            with self.subTest(label=label), self.assertRaises(runner.RunnerError):
+            with (
+                self.subTest(label=label),
+                mock.patch.object(
+                    runner, "native_prefix_runtime_roots", return_value=[]
+                ),
+                self.assertRaises(runner.RunnerError),
+            ):
                 runner.parse_native_closure_manifest(
                     runner.compact_json(document),
                     cellar,
                     label="native closure manifest",
                 )
+
+    def test_authenticates_only_the_fixed_native_prefix_runtime_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            prefix = Path(temporary).resolve() / "native"
+            cellar = prefix / "Cellar"
+            runtime = prefix / "lib"
+            cellar.mkdir(parents=True)
+            runtime.mkdir()
+            prefix.chmod(0o555)
+            cellar.chmod(0o555)
+            runtime.chmod(0o555)
+            runtime_digest = "a" * 64
+            document = runner.native_closure_document(
+                cellar, {}, {runtime: runtime_digest}
+            )
+
+            with self.translate_fixture_root_ownership():
+                kegs, roots = runner.parse_native_closure_manifest(
+                    runner.compact_json(document),
+                    cellar,
+                    label="native closure manifest",
+                )
+                self.assertEqual(kegs, {})
+                self.assertEqual(roots, {runtime: runtime_digest})
+                document["runtime_roots"] = [
+                    {
+                        "root": str(prefix / "bin"),
+                        "tree_sha256": runtime_digest,
+                    }
+                ]
+                with self.assertRaisesRegex(
+                    runner.RunnerError, "changed the native prefix runtime roots"
+                ):
+                    runner.parse_native_closure_manifest(
+                        runner.compact_json(document),
+                        cellar,
+                        label="native closure manifest",
+                    )
 
     def test_projects_complete_target_and_native_closures_in_distinct_realms(
         self,
@@ -1466,6 +1527,17 @@ class NativeClosureAuthenticationTests(unittest.TestCase):
             },
         )
         self.assertNotIn("openssl@3", requirements)
+        self.assertEqual(
+            runner.native_closure_path_roots(
+                native_kegs,
+                ["gpatch"],
+                ["binaryen", "wabt"],
+            ),
+            (
+                [native_kegs["binaryen"], native_kegs["wabt"]],
+                [native_kegs["openssl@3"]],
+            ),
+        )
         self.assertEqual(
             runner.requested_native_proxy_roots(
                 [str(target_kegs["gpatch"])], proxies
@@ -1541,6 +1613,41 @@ class NativeClosureAuthenticationTests(unittest.TestCase):
                 two_proxies,
             )
 
+    def test_direct_proxy_precedes_a_same_named_transitive_command(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            requirement = root / "requirement"
+            direct = root / "direct"
+            transitive = root / "transitive"
+            fixed = root / "fixed"
+            for tool_root in (requirement, direct, transitive, fixed):
+                (tool_root / "bin").mkdir(parents=True)
+            for tool_root in (direct, transitive):
+                command = tool_root / "bin/shared-tool"
+                command.write_text("#!/bin/sh\nexit 0\n")
+                command.chmod(0o755)
+
+            path = runner.closed_recipe_path(
+                f"{fixed}/bin:{direct}/bin",
+                [direct],
+                [requirement],
+                [transitive],
+            )
+
+            self.assertEqual(
+                path.split(":"),
+                [
+                    str(requirement / "bin"),
+                    str(direct / "bin"),
+                    str(transitive / "bin"),
+                    str(fixed / "bin"),
+                ],
+            )
+            self.assertEqual(
+                shutil.which("shared-tool", path=path),
+                str(direct / "bin/shared-tool"),
+            )
+
 
 class SealedDependencyPathTests(unittest.TestCase):
     @staticmethod
@@ -1590,6 +1697,105 @@ class SealedDependencyPathTests(unittest.TestCase):
             ):
                 runner.validate_sealed_dependency_tree(
                     keg, "native dependency perl"
+                )
+
+    def test_rejects_a_loader_alias_changed_after_the_runtime_manifest(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            prefix = Path(temporary).resolve() / "native"
+            keg = prefix / "Cellar/perl/5.42"
+            runtime = prefix / "lib"
+            interpreter = keg / "bin/perl"
+            replacement = keg / "bin/perl-replacement"
+            interpreter.parent.mkdir(parents=True)
+            runtime.mkdir()
+            interpreter.write_bytes(b"first interpreter\n")
+            replacement.write_bytes(b"second interpreter\n")
+            loader = runtime / "ld.so"
+            loader.symlink_to("../Cellar/perl/5.42/bin/perl")
+            for file in (interpreter, replacement):
+                file.chmod(0o555)
+            for directory in (
+                interpreter.parent,
+                keg,
+                keg.parent,
+                runtime,
+                prefix,
+            ):
+                directory.chmod(0o555)
+
+            real_stat = os.stat
+            real_fstat = os.fstat
+
+            def root_stat(*args, **kwargs):
+                return self.root_owned(real_stat(*args, **kwargs))
+
+            def root_fstat(*args, **kwargs):
+                return self.root_owned(real_fstat(*args, **kwargs))
+
+            with (
+                mock.patch.object(runner.os, "stat", side_effect=root_stat),
+                mock.patch.object(runner.os, "fstat", side_effect=root_fstat),
+            ):
+                digest = runner.validate_sealed_dependency_tree(
+                    runtime,
+                    "native prefix runtime",
+                    runtime_closure_roots=[keg],
+                    hash_contents=True,
+                )
+                self.assertIsNotNone(digest)
+                runtime.chmod(0o755)
+                loader.unlink()
+                loader.symlink_to(
+                    "../Cellar/perl/5.42/bin/perl-replacement"
+                )
+                runtime.chmod(0o555)
+                with self.assertRaisesRegex(
+                    runner.RunnerError, "authenticated closure"
+                ):
+                    runner.authenticate_native_runtime_root(
+                        runtime,
+                        digest,
+                        [keg],
+                    )
+
+    def test_rejects_a_prefix_runtime_link_outside_the_closed_roots(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            prefix = Path(temporary).resolve() / "native"
+            keg = prefix / "Cellar/perl/5.42"
+            runtime = prefix / "lib"
+            outside = Path(temporary).resolve() / "mutable-loader"
+            keg.mkdir(parents=True)
+            runtime.mkdir()
+            outside.write_bytes(b"untrusted\n")
+            (runtime / "ld.so").symlink_to(outside)
+            for directory in (keg, keg.parent, runtime, prefix):
+                directory.chmod(0o555)
+
+            real_stat = os.stat
+            real_fstat = os.fstat
+
+            def root_stat(*args, **kwargs):
+                return self.root_owned(real_stat(*args, **kwargs))
+
+            def root_fstat(*args, **kwargs):
+                return self.root_owned(real_fstat(*args, **kwargs))
+
+            with (
+                mock.patch.object(runner.os, "stat", side_effect=root_stat),
+                mock.patch.object(runner.os, "fstat", side_effect=root_fstat),
+                self.assertRaisesRegex(
+                    runner.RunnerError, "leaves the native execution closure"
+                ),
+            ):
+                runner.validate_sealed_dependency_tree(
+                    runtime,
+                    "native prefix runtime",
+                    runtime_closure_roots=[keg],
+                    hash_contents=True,
                 )
 
 
