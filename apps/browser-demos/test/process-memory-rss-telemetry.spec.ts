@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 
 import {
   exactPlaywrightInstallRoot,
+  linuxBrowserProcessAttributionComplete,
   parseLinuxProcessMemory,
   parseLinuxProcStartTicks,
   parseLinuxSwapDisabled,
@@ -342,10 +343,10 @@ test.describe("engine-local process-memory physical classification", () => {
     expect(verdict.reason).toContain("retirement trial 1");
   });
 
-  test("rejects a slope-only late-trend violation", () => {
+  test("rejects a median-window late-trend violation", () => {
     const verdict = classifyProcessMemoryRss(rssTrials({
       retiredWaveOffsetsMiBBySequence: {
-        0: [0, 0, 0, 0, 0, 8, 16, 24, 32, 40, 48, 31],
+        0: [0, 0, 0, 0, 0, 0, 30, 30, 30, 30, 30, 30],
       },
     }));
     const trial = verdict.trials.find((candidate) => {
@@ -356,18 +357,18 @@ test.describe("engine-local process-memory physical classification", () => {
     expect(verdict.status).toBe("inconclusive");
   });
 
-  test("rejects a growth-only late-trend violation", () => {
+  test("does not mistake one collection-cycle peak for a leak", () => {
     const verdict = classifyProcessMemoryRss(rssTrials({
       retiredWaveOffsetsMiBBySequence: {
-        0: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 33],
+        0: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 300],
       },
     }));
     const trial = verdict.trials.find((candidate) => {
       return candidate.sequenceIndex === 0;
     })!;
     expect(trial.lateSlopeBytesPerChild).toBeLessThanOrEqual(0.5 * MIB);
-    expect(trial.lateGrowthBytes).toBeGreaterThan(32 * MIB);
-    expect(verdict.status).toBe("inconclusive");
+    expect(trial.lateGrowthBytes).toBeLessThanOrEqual(32 * MIB);
+    expect(verdict.status).toBe("pass");
   });
 
   test("does not dilute four retained warm-up children by 100", () => {
@@ -388,7 +389,7 @@ test.describe("engine-local process-memory physical classification", () => {
 
   test("uses the absolute value of a terminal size residual", () => {
     const verdict = classifyProcessMemoryRss(rssTrials({
-      retiredDestroyRate: -0.1,
+      retiredCloseRate: -0.1,
     }));
     expect(verdict.status).toBe("inconclusive");
     expect(verdict.reason).toContain("remained noisy");
@@ -396,10 +397,21 @@ test.describe("engine-local process-memory physical classification", () => {
 
   test("does not trust a live control that survives teardown", () => {
     const verdict = classifyProcessMemoryRss(rssTrials({
-      liveDestroyRate: 1,
+      liveCloseRate: 1,
     }));
     expect(verdict.status).toBe("inconclusive");
     expect(verdict.reason).toContain("live-control replicate");
+  });
+
+  test("records delayed kernel cleanup when context teardown clears it", () => {
+    const verdict = classifyProcessMemoryRss(rssTrials({
+      retiredDestroyRate: 1,
+      liveDestroyRate: 1,
+    }));
+    expect(verdict.status).toBe("pass");
+    expect(verdict.advisories).toContainEqual(
+      expect.stringContaining("kernel destruction"),
+    );
   });
 
   test("rejects backing introduced only during destroy and realm close", () => {
@@ -652,6 +664,62 @@ test.describe("Linux browser-memory process accounting", () => {
       "KANDELO_MEMORY_TELEMETRY_NONCE",
       "other-run",
     )).toBe(false);
+  });
+
+  test("accepts root-tree helpers that sanitize the launch nonce", () => {
+    expect(linuxBrowserProcessAttributionComplete({
+      scanComplete: true,
+      rootIdentityStable: true,
+      rootNonceMatched: true,
+      rootTreeProcessCount: 5,
+      exactInstallProcessCount: 5,
+      unattributedExactBuildProcessCount: 0,
+      reparentedProcesses: [],
+    })).toBe(true);
+  });
+
+  test("requires exact nonce proof for every reparented helper", () => {
+    const base = {
+      scanComplete: true,
+      rootIdentityStable: true,
+      rootNonceMatched: true,
+      rootTreeProcessCount: 5,
+      exactInstallProcessCount: 6,
+      unattributedExactBuildProcessCount: 0,
+    };
+    expect(linuxBrowserProcessAttributionComplete({
+      ...base,
+      reparentedProcesses: [{
+        exactInstallRoot: true,
+        launchNonceMatched: true,
+      }],
+    })).toBe(true);
+    expect(linuxBrowserProcessAttributionComplete({
+      ...base,
+      reparentedProcesses: [{
+        exactInstallRoot: true,
+        launchNonceMatched: false,
+      }],
+    })).toBe(false);
+    expect(linuxBrowserProcessAttributionComplete({
+      ...base,
+      reparentedProcesses: [{
+        exactInstallRoot: false,
+        launchNonceMatched: true,
+      }],
+    })).toBe(false);
+  });
+
+  test("rejects an exact-build process outside both attribution paths", () => {
+    expect(linuxBrowserProcessAttributionComplete({
+      scanComplete: true,
+      rootIdentityStable: true,
+      rootNonceMatched: true,
+      rootTreeProcessCount: 5,
+      exactInstallProcessCount: 5,
+      unattributedExactBuildProcessCount: 1,
+      reparentedProcesses: [],
+    })).toBe(false);
   });
 
   test("parses both RSS and Swap from smaps_rollup", () => {

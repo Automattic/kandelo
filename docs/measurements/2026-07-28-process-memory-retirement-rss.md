@@ -220,17 +220,27 @@ During active churn, each retirement replicate must independently stay at or
 below both 4 MiB per child and 15% of its paired live signal. The first
 four-child warm-up remains an advisory because an engine may not have
 scheduled collection yet; the later 96-child window must show separation.
-Each of the four retirement trials, rather than their median, must also stay
-below a 0.5 MiB-per-child late slope and 32 MiB of late growth. This prevents
-one size-independent leak from being averaged behind three flat or descending
-trials.
+The sustained value is the median of all wave samples divided by the median
+represented child count. This resists a scheduler-selected collection peak or
+descent without averaging one low/high replicate into the other.
 
-Kernel-destroy and context-close contrasts use absolute bytes, without
-dividing by all 100 retirement children. Each replicate must stay below both
-4 MiB and 15% of one paired live child's measured backing. This catches, for
-example, four permanently retained warm-up generations that the old
-per-100-child denominator could hide. The deliberately-live controls must
-lose the same size signal after their kernel and context are destroyed.
+Each of the four retirement trials compares the median of its first six wave
+samples with the median of its last six. That shift must stay below a
+0.5 MiB-per-child slope and 32 MiB of growth. A linear leak remains visible,
+while one engine collection peak cannot make an otherwise bounded sawtooth
+look unbounded.
+
+Context-close contrasts use absolute bytes, without dividing by all 100
+retirement children. Each replicate must stay below both 4 MiB and 15% of one
+paired live child's measured backing. This catches, for example, four
+permanently retained warm-up generations that a per-100-child denominator
+could hide. The deliberately-live controls must lose the same size signal
+after context closure.
+
+The 200 ms kernel-destroy sample remains in the trace. If its signal clears
+after context closure and the cross-context baseline stays bounded, the
+classifier records an advisory rather than inventing a portable collection
+deadline. A signal surviving context closure remains non-green.
 
 A strong size-proportional residual after context closure is a regression when
 both matched replicates agree and their live controls cleared. One leaking
@@ -254,6 +264,42 @@ Each trace carries a key made from the engine version, exact Playwright engine
 revision, Playwright package version, and runner image. Automated rolling
 median and median-absolute-deviation history is deferred; compare only traces
 with the same key, and treat a revision change as a new baseline.
+
+### First exact Linux calibration — 2026-07-29
+
+The first exact-head GitHub-hosted Linux run exposed two assumptions in the
+pre-calibration classifier. The raw traces remain attached to Actions run
+`30437299654`.
+
+Chromium's two 32 MiB retirement trials showed recurring collection
+sawteeth. Both final wave samples happened to be peaks near 990 MiB, although
+each trial had repeatedly descended by hundreds of MiB and returned to the
+same roughly 307 MiB browser baseline after context closure. A last-sample
+contrast therefore reported a regression. The median sustained-wave
+contrasts were instead 3.179 and 3.175 MiB per retired child against live
+signals of 30.968 and 31.433 MiB. First-half versus second-half median slopes
+for all four Chromium retirement trials ranged from -1.353 to +0.442 MiB per
+child. The revised classifier preserves those independent values and still
+fails a linear leak, but one final collection peak no longer decides the run.
+
+Chromium also showed that ordinary descendants can sanitize the launch nonce.
+All five sampled processes remained in the stable tree rooted at the
+nonce-authenticated exact Playwright binary. Requiring the nonce again on each
+descendant made every sample falsely incomplete. Stable root ancestry is now
+the descendant proof; only a reparented process needs its own nonce and exact
+build path.
+
+WebKit's two sustained retirement contrasts were 1.630 and 1.389 MiB per
+child against live signals of 32.329 and 31.415 MiB. Its retirement trials had
+median-window slopes from +0.112 to +0.392 MiB per child. WebKit still showed
+59.5 and 71.7 MiB high-minus-low signals 200 ms after kernel destruction, but
+those fell to 2.715 and 0.004 MiB after context closure and did not accumulate
+across the eight contexts. That is retained as engine-timed collection data,
+not mislabeled as a JavaScript ownership failure or a portable collection
+deadline.
+
+These recalculations use the captured raw samples; a new exact-head Linux
+matrix is still required after the classifier and attribution corrections.
 
 ### Pre-hardening smoke calibration — 2026-07-29
 
@@ -297,17 +343,17 @@ RSS plus full `Swap` is deliberately conservative and can
 double-count shared pages. It is matched trend evidence, not an exact
 physical-memory measurement.
 
-The scheduled Linux runner gives each BrowserServer a random launch
-nonce inherited only by its helpers. It starts with the root process
-tree, then unions in reparented nonce-bearing processes born no
-earlier than that root. At least one nonce-bearing helper must also
-resolve under the selected engine's exact Playwright revision. This
-excludes older, other-engine, other-revision, and concurrent
-same-build launches. Linux process birth reads bracket each
-executable read to reject PID reuse. Failure to complete that scan is
-inconclusive. On macOS, WebKit's launchd-owned XPC helpers remain
-outside this model, so the standalone harness truthfully reports
-incomplete attribution there.
+The scheduled Linux runner gives each BrowserServer root a random launch
+nonce. It starts with the stable root process tree, then unions in reparented
+nonce-bearing processes born no earlier than that root. Chromium may sanitize
+the environment inherited by ordinary descendants, so stable ancestry from
+the nonce-authenticated root is their proof. A reparented process has no such
+proof and must retain the nonce and resolve under the selected engine's exact
+Playwright revision. An exact-build process satisfying neither path makes the
+scan inconclusive rather than being silently omitted. Linux process birth
+reads bracket each executable read to reject PID reuse. On macOS, WebKit's
+launchd-owned XPC helpers remain outside this model, so the standalone harness
+truthfully reports incomplete attribution there.
 
 A completed trace becomes inconclusive when the guest writes stderr,
 the host reports a diagnostic, the page reports a console or runtime

@@ -70,6 +70,8 @@ export interface ProcessMemoryRssMetrics {
   readonly preContextBytes: number;
   readonly initializedBytes: number;
   readonly postWarmupBytes: number;
+  readonly sustainedWaveBytes: number;
+  readonly sustainedWaveChildren: number;
   readonly postWaveBytes: number;
   readonly postKernelDestroyBytes: number;
   readonly postContextCloseBytes: number;
@@ -195,21 +197,25 @@ export function analyzeProcessMemoryRss(
   // classification uses the stabilized +3 s sample rather than relying on
   // one scheduler-dependent instant.
   const postContextClose = closeSamples[closeSamples.length - 1]!;
-  const late = waves.slice(Math.max(1, Math.floor(waves.length / 3)));
-  const xMean = late.reduce(
-    (sum, sample) => sum + sample.completedChildren,
-    0,
-  ) / late.length;
-  const yMean = late.reduce(
-    (sum, sample) => sum + physicalBytes(sample),
-    0,
-  ) / late.length;
-  let covariance = 0;
-  let variance = 0;
-  for (const sample of late) {
-    const dx = sample.completedChildren - xMean;
-    covariance += dx * (physicalBytes(sample) - yMean);
-    variance += dx * dx;
+  const waveMiddle = Math.floor(waves.length / 2);
+  const earlyWaves = waves.slice(0, waveMiddle);
+  const lateWaves = waves.slice(waveMiddle);
+  // WHY: current engines collect native Wasm backing in visible sawtooth
+  // cycles. A final sample or least-squares line can land on the same peak in
+  // two independent trials and call a bounded cycle an unbounded leak. The
+  // two half-window medians retain a linear leak while resisting one
+  // scheduler-selected collection peak or descent.
+  const earlyWaveBytes = median(earlyWaves.map(physicalBytes));
+  const lateWaveBytes = median(lateWaves.map(physicalBytes));
+  const earlyWaveChildren = median(
+    earlyWaves.map((sample) => sample.completedChildren),
+  );
+  const lateWaveChildren = median(
+    lateWaves.map((sample) => sample.completedChildren),
+  );
+  const lateChildSpan = lateWaveChildren - earlyWaveChildren;
+  if (lateChildSpan <= 0) {
+    throw new Error("RSS telemetry wave children must increase");
   }
 
   let peakBytes = 0;
@@ -222,9 +228,8 @@ export function analyzeProcessMemoryRss(
       peakBytes - bytes,
     );
   }
-  const firstLate = late[0]!;
-  const lastLate = late[late.length - 1]!;
   const finalWave = waves[waves.length - 1]!;
+  const lateGrowthBytes = lateWaveBytes - earlyWaveBytes;
 
   return {
     kind: trial.kind,
@@ -235,15 +240,18 @@ export function analyzeProcessMemoryRss(
     waves: trial.waves,
     totalChildren:
       trial.warmupChildren + trial.waveChildren * trial.waves,
-    lateSlopeBytesPerChild:
-      variance === 0 ? 0 : covariance / variance,
-    lateGrowthBytes: physicalBytes(lastLate) - physicalBytes(firstLate),
+    lateSlopeBytesPerChild: lateGrowthBytes / lateChildSpan,
+    lateGrowthBytes,
     peakBytes,
     endBytes: physicalBytes(postContextClose),
     largestDescentBytes,
     preContextBytes: physicalBytes(preContext),
     initializedBytes: physicalBytes(initialized),
     postWarmupBytes: physicalBytes(postWarmup),
+    sustainedWaveBytes: median(waves.map(physicalBytes)),
+    sustainedWaveChildren:
+      trial.warmupChildren
+      + median(waves.map((sample) => sample.completedChildren)),
     postWaveBytes: physicalBytes(finalWave),
     postKernelDestroyBytes: physicalBytes(postKernelDestroy),
     postContextCloseBytes: physicalBytes(postContextClose),
@@ -375,7 +383,7 @@ function sizeContrast(
     phase: keyof Pick<
       ProcessMemoryRssMetrics,
       | "postWarmupBytes"
-      | "postWaveBytes"
+      | "sustainedWaveBytes"
       | "postKernelDestroyBytes"
     >,
   ) => (trial: ProcessMemoryRssMetrics): number => {
@@ -384,8 +392,10 @@ function sizeContrast(
   const closeResidual = (trial: ProcessMemoryRssMetrics): number => {
     return trial.postContextCloseBytes - trial.preContextBytes;
   };
-  const totalChildren = (trial: ProcessMemoryRssMetrics): number => {
-    return trial.totalChildren;
+  const sustainedWaveChildren = (
+    trial: ProcessMemoryRssMetrics,
+  ): number => {
+    return trial.sustainedWaveChildren;
   };
   const warmupChildren = (trial: ProcessMemoryRssMetrics): number => {
     return trial.warmupChildren;
@@ -406,8 +416,8 @@ function sizeContrast(
       ),
       liveWaveBytesPerChild: pairPerChild(
         livePair,
-        initializedDelta("postWaveBytes"),
-        totalChildren,
+        initializedDelta("sustainedWaveBytes"),
+        sustainedWaveChildren,
       ),
       retiredWarmupBytesPerChild: pairPerChild(
         retiredPair,
@@ -416,8 +426,8 @@ function sizeContrast(
       ),
       retiredWaveBytesPerChild: pairPerChild(
         retiredPair,
-        initializedDelta("postWaveBytes"),
-        totalChildren,
+        initializedDelta("sustainedWaveBytes"),
+        sustainedWaveChildren,
       ),
       // WHY: terminal values are deliberately not divided by all 100 retired
       // children. Otherwise four permanently retained warm-up generations
@@ -620,15 +630,9 @@ export function classifyProcessMemoryRss(
     );
   };
   const unclearedLiveTerminal = contrast.replicates.find((replicate) => {
-    return (
-      !terminalBounded(
-        replicate.liveDestroyResidualBytes,
-        replicate.liveWaveBytesPerChild,
-      )
-      || !terminalBounded(
-        replicate.liveCloseResidualBytes,
-        replicate.liveWaveBytesPerChild,
-      )
+    return !terminalBounded(
+      replicate.liveCloseResidualBytes,
+      replicate.liveWaveBytesPerChild,
     );
   });
   if (unclearedLiveTerminal) {
@@ -637,7 +641,7 @@ export function classifyProcessMemoryRss(
       reason:
         `live-control replicate ${
           unclearedLiveTerminal.replicateIndex + 1
-        } retained a size signal after kernel or context teardown`,
+        } retained a size signal after context teardown`,
       trials,
       sizeContrast: contrast,
       advisories,
@@ -646,7 +650,6 @@ export function classifyProcessMemoryRss(
 
   for (
     const [phase, field] of [
-      ["kernel destruction", "retiredDestroyResidualBytes"],
       ["context closure", "retiredCloseResidualBytes"],
     ] as const
   ) {
@@ -684,6 +687,25 @@ export function classifyProcessMemoryRss(
         advisories,
       };
     }
+  }
+
+  const kernelDestroyResidual = contrast.replicates.some((replicate) => {
+    return (
+      !terminalBounded(
+        replicate.retiredDestroyResidualBytes,
+        replicate.liveWaveBytesPerChild,
+      )
+      || !terminalBounded(
+        replicate.liveDestroyResidualBytes,
+        replicate.liveWaveBytesPerChild,
+      )
+    );
+  });
+  if (kernelDestroyResidual) {
+    advisories.push(
+      "a size signal remained 200 ms after kernel destruction but cleared " +
+        "after context closure; preserve it as engine-timed collection data",
+    );
   }
 
   const retiredTrials = trials.filter((trial) => {

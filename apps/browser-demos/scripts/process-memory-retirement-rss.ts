@@ -38,6 +38,7 @@ import {
 import {
   exactPlaywrightInstallRoot,
   exactPlaywrightInstallRoots,
+  linuxBrowserProcessAttributionComplete,
   parseLinuxProcessMemory,
   parseLinuxProcStartTicks,
   parseLinuxSwapDisabled,
@@ -350,6 +351,7 @@ async function processTree(
   let installScanComplete = platform() !== "linux";
   let rootIdentityStable = platform() !== "linux";
   let rootNonceMatched = platform() !== "linux";
+  let unattributedExactBuildProcessCount = 0;
   if (platform() === "linux") {
     installScanComplete =
       context.playwrightInstallation !== null
@@ -386,7 +388,13 @@ async function processTree(
           return;
         }
         identities.set(entry.pid, identity);
-        if (identity.startTicks < browserBirthTicks) return;
+        if (identity.startTicks < browserBirthTicks) {
+          // WHY: a root-tree PID older than the authenticated browser root
+          // can only be a reused or inconsistent snapshot identity. Do not
+          // count it merely because one `ps` parent edge looked plausible.
+          if (rootTree.has(entry.pid)) installScanComplete = false;
+          return;
+        }
         const root = exactPlaywrightInstallRoot(
           context.engine,
           installation,
@@ -407,6 +415,11 @@ async function processTree(
           nonceMatches.add(entry.pid);
           selected.add(entry.pid);
           if (root !== null) installRoots.add(root);
+        } else if (root !== null && !rootTree.has(entry.pid)) {
+          // WHY: this may be a reparented helper that sanitized its
+          // environment or an unrelated same-build launch. Either way, the
+          // sampler cannot safely omit it from an exact-launch total.
+          unattributedExactBuildProcessCount += 1;
         }
       }));
       const rootIdentity = identities.get(context.rootPid);
@@ -416,7 +429,6 @@ async function processTree(
       if (
         !rootIdentityStable
         || !rootNonceMatched
-        || [...rootTree].some((pid) => !nonceMatches.has(pid))
       ) {
         installScanComplete = false;
       }
@@ -516,19 +528,26 @@ async function processTree(
 
   const processAttributionComplete =
     platform() === "linux"
-      ? (
-          installScanComplete
-          && rootIdentityStable
-          && rootNonceMatched
-          && installRoots.size > 0
-          && entries.some(
-            (entry) =>
-              entry.pid !== context.rootPid
-              && entry.exactInstallRoot !== null
-              && entry.launchNonceMatched,
-          )
-          && entries.every((entry) => entry.launchNonceMatched)
-        )
+      ? linuxBrowserProcessAttributionComplete({
+          scanComplete: installScanComplete,
+          rootIdentityStable,
+          rootNonceMatched,
+          rootTreeProcessCount: entries.filter((entry) => {
+            return rootTree.has(entry.pid);
+          }).length,
+          exactInstallProcessCount: entries.filter((entry) => {
+            return entry.exactInstallRoot !== null;
+          }).length,
+          unattributedExactBuildProcessCount,
+          reparentedProcesses: entries
+            .filter((entry) => {
+              return entry.attributionSource === "reparented-launch-nonce";
+            })
+            .map((entry) => ({
+              exactInstallRoot: entry.exactInstallRoot !== null,
+              launchNonceMatched: entry.launchNonceMatched,
+            })),
+        })
       : (
           entries.length >= 2
           && !(platform() === "darwin" && context.engine === "webkit")
@@ -544,8 +563,8 @@ async function processTree(
     attributionReason: processAttributionComplete
       ? (
           platform() === "linux"
-            ? "the stable root tree and every reparented launch-nonce " +
-              "process were attributed to the exact engine revision"
+            ? "the nonce-authenticated stable root tree and every " +
+              "reparented helper were attributed to the exact engine revision"
             : "the active page and browser helpers remained in the server tree"
         )
       : (

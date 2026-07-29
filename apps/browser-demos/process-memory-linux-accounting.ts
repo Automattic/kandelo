@@ -18,6 +18,46 @@ export interface LinuxProcessMemory {
   readonly swapBytes: number;
 }
 
+export interface LinuxBrowserProcessAttribution {
+  readonly scanComplete: boolean;
+  readonly rootIdentityStable: boolean;
+  readonly rootNonceMatched: boolean;
+  readonly rootTreeProcessCount: number;
+  readonly exactInstallProcessCount: number;
+  readonly unattributedExactBuildProcessCount: number;
+  readonly reparentedProcesses: readonly {
+    readonly exactInstallRoot: boolean;
+    readonly launchNonceMatched: boolean;
+  }[];
+}
+
+/**
+ * Decide whether one Linux browser launch has a complete physical-memory set.
+ *
+ * WHY: Chromium can sanitize inherited environment variables in child
+ * processes. Stable ancestry from the nonce-authenticated BrowserServer root
+ * still identifies those descendants; requiring every descendant to retain
+ * the nonce makes a valid Chromium tree permanently inconclusive. A process
+ * outside that tree has no ancestry proof, so it must retain the nonce and
+ * resolve inside the exact Playwright engine revision. An exact-build process
+ * satisfying neither rule is ambiguity, not evidence to omit it.
+ */
+export function linuxBrowserProcessAttributionComplete(
+  attribution: LinuxBrowserProcessAttribution,
+): boolean {
+  return (
+    attribution.scanComplete
+    && attribution.rootIdentityStable
+    && attribution.rootNonceMatched
+    && attribution.rootTreeProcessCount >= 2
+    && attribution.exactInstallProcessCount > 0
+    && attribution.unattributedExactBuildProcessCount === 0
+    && attribution.reparentedProcesses.every((process) => {
+      return process.exactInstallRoot && process.launchNonceMatched;
+    })
+  );
+}
+
 export function exactPlaywrightInstallRoots(
   engine: BrowserEngineName,
   installation: PlaywrightInstallation,

@@ -78,17 +78,22 @@ runner. After one unmeasured warm-up realm, it preserves two independent ABBA
 size contrasts. Each live contrast must expose at least 8 MiB per child. Every
 live replicate must meet that sensitivity floor at warm-up and sustained
 churn. Every retirement contrast must remain below 4 MiB per child and 15% of
-its paired live signal during churn. Every individual retirement trial must
-also remain below the late slope and growth bounds.
+its paired live signal during churn. Churn uses the median of all wave samples
+and the median represented child count, rather than whichever collection peak
+or descent happens to be last. Every individual retirement trial must also
+keep the median shift from the first half of its waves to the second half
+below the late slope and growth bounds.
 
 The workflow samples before a browser context, after kernel initialization,
 after warm-up and workload waves, after kernel destruction, and around 200 ms,
 1 s, and 3 s after context closure. It uses the stabilized final close sample.
-Terminal size contrasts are absolute byte residuals, not values divided by
-all retired children. Across contexts, median and upper-quartile close
-residuals plus Theil-Sen and first/last baseline trends prevent a fixed
-per-realm leak from canceling out of the size contrast. An inconclusive trace
-is evidence to repeat or investigate, not evidence that reclamation passed.
+Context-close size contrasts are absolute byte residuals, not values divided
+by all retired children. A signal at the earlier kernel-destroy sample is
+preserved as engine-timed collection data when it clears at context close.
+Across contexts, median and upper-quartile close residuals plus Theil-Sen and
+first/last baseline trends prevent a fixed per-realm leak from canceling out
+of the size contrast. An inconclusive trace is evidence to repeat or
+investigate, not evidence that reclamation passed.
 
 The workflow starts a cheap scope job on every pull request. Its reviewed path
 matcher covers process-memory owners, retirement fences, browser worker and
