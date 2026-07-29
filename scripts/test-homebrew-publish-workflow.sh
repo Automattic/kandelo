@@ -33,6 +33,7 @@ require "json"
 require "pathname"
 require "shellwords"
 require "tempfile"
+require "tmpdir"
 
 if defined?(KandeloFormulaSupport)
   unless KandeloFormulaSupport::KANDELO_FORMULA_SUPPORT_API_VERSION == 1 &&

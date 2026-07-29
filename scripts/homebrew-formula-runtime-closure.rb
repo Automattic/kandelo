@@ -997,6 +997,7 @@ validate_support = lambda do |context|
     "require \"pathname\"\n",
     "require \"shellwords\"\n",
     "require \"tempfile\"\n",
+    "require \"tmpdir\"\n",
   ]
   support_lines = support_source.lines
   canonical_requires =

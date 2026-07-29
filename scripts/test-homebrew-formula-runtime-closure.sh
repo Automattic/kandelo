@@ -398,6 +398,7 @@ require "json"
 require "pathname"
 require "shellwords"
 require "tempfile"
+require "tmpdir"
 
 if defined?(KandeloFormulaSupport)
   unless KandeloFormulaSupport::KANDELO_FORMULA_SUPPORT_API_VERSION == 1 &&
@@ -775,7 +776,7 @@ jq -e '
   }
 ' <<<"$bridge_plan" >/dev/null
 [ "$(jq -r '.support_runtime_sha256' <<<"$bridge_plan")" = \
-  "911f807effbf89ae142a3f4b42a04265929da83e03fdcee46bfe460b4a1c1794" ]
+  "64f702d8c9646fa309bba0924b0028ef38c5527f239377e62c18925a955b5ba0" ]
 [ "$bridge_plan" = "$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core bridge --tier2-bridge-json)" ]
 rm "$TAP_ROOT/Kandelo/formula_support/a-runtime.txt" \
   "$TAP_ROOT/Kandelo/formula_support/z-runtime.txt"
