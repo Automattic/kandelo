@@ -325,7 +325,9 @@ async function loadBottleBytes(
     );
   }
 
-  const bytes = await fetchHomebrewBottleBytes(pkg.url);
+  const bytes = await fetchHomebrewBottleBytes(pkg.url, {
+    expectedBytes: pkg.bytes,
+  });
   writeFileSync(cachePath, bytes);
   return bytes;
 }

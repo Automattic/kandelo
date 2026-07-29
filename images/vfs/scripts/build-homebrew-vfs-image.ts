@@ -2080,7 +2080,9 @@ async function loadBottleBytes(
     );
   }
 
-  const bytes = await fetchHomebrewBottleBytes(pkg.url);
+  const bytes = await fetchHomebrewBottleBytes(pkg.url, {
+    expectedBytes: pkg.bytes,
+  });
   if (cachePath) {
     mkdirSync(dirname(cachePath), { recursive: true });
     writeFileSync(cachePath, bytes);
