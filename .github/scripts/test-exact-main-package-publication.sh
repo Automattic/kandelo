@@ -159,7 +159,13 @@ do
   [ "$count" -eq "$archive_count" ] ||
     fail "every force-rebuild archive producer must pass $required_arg"
 done
-grep -Fq 'mktemp -d "$RUNNER_TEMP/exact-main-package-cache.XXXXXX"' \
+grep -Fq 'EXACT_MAIN_PACKAGE_CACHE_PARENT="$RUNNER_TEMP/kandelo"' \
+  "$EXACT_REBUILD_ACTION" ||
+  fail "exact-main package cache is outside the SDK target-cache namespace"
+grep -Fq 'mkdir -m 700 "$EXACT_MAIN_PACKAGE_CACHE_PARENT"' \
+  "$EXACT_REBUILD_ACTION" ||
+  fail "exact-main package cache namespace is not privately resolver-owned"
+grep -Fq 'mktemp -d "$EXACT_MAIN_PACKAGE_CACHE_PARENT/exact-main-package-cache.XXXXXX"' \
   "$EXACT_REBUILD_ACTION" ||
   fail "exact-main archive builds may reuse an older cache-equivalent dependency"
 

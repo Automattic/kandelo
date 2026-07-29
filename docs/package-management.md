@@ -804,6 +804,22 @@ that invocation's `ResolveOpts` (including `archive-stage --cache-root`), not
 from ambient child state, so nested Rust, TypeScript, and standalone resolver
 calls share the direct dependencies' cache identity.
 
+The SDK's `pkg-config` wrapper filters inherited host-library search paths so a
+native Nix library cannot satisfy a Wasm configure probe. Today that filter
+recognizes package-cache paths by the `kandelo/` namespace used by the default
+cache roots. An explicit cache root used for source builds must preserve that
+namespace when its declared dependencies provide `.pc` metadata. Exact-main
+publication therefore creates its private, resolver-owned cache below
+`$RUNNER_TEMP/kandelo/`; the resolver still constructs
+`WASM_POSIX_DEP_PKG_CONFIG_PATH` only from the selected dependency graph.
+
+This pathname test is a target-versus-host contamination guard, not package
+authentication. A future SDK change should instead canonicalize each candidate
+path against the resolver-selected `WASM_POSIX_BINARY_CACHE_ROOT` and declared
+`WASM_POSIX_DEP_<UPPER>_DIR` roots. Because `sdk/src` is a global package
+toolchain input, that migration must be coordinated with a full package cache
+identity rotation rather than folded into an isolated publication repair.
+
 This is an identity and pathname contract, not an operating-system lease.
 Normal same-user cache generations are immutable; force-source rebuild or
 stale-cache repair must not remove or replace a generation while a build or

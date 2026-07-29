@@ -184,8 +184,21 @@ runs:
         # produced by an older commit. An empty job-local cache forces every
         # buildable dependency edge through the same-run overlay downloaded
         # above, while the explicit source-build override executes the target.
+        #
+        # WHY: the SDK's pkg-config wrapper rejects inherited host-library
+        # paths and currently recognizes target package caches by their
+        # `kandelo/` namespace. Keep this resolver-owned temporary cache under
+        # that namespace so configure can see the declared same-run dependency
+        # metadata without admitting ambient Nix pkg-config paths.
+        EXACT_MAIN_PACKAGE_CACHE_PARENT="$RUNNER_TEMP/kandelo"
+        if [ -e "$EXACT_MAIN_PACKAGE_CACHE_PARENT" ] \
+          || [ -L "$EXACT_MAIN_PACKAGE_CACHE_PARENT" ]; then
+          echo "::error::exact-main package cache parent already exists"
+          exit 1
+        fi
+        mkdir -m 700 "$EXACT_MAIN_PACKAGE_CACHE_PARENT"
         EXACT_MAIN_PACKAGE_CACHE_ROOT="$(
-          mktemp -d "$RUNNER_TEMP/exact-main-package-cache.XXXXXX"
+          mktemp -d "$EXACT_MAIN_PACKAGE_CACHE_PARENT/exact-main-package-cache.XXXXXX"
         )"
         # WHY: dev-shell.sh drops ambient variables by design. Carry this
         # job-local path as a command argument so an empty value cannot turn
