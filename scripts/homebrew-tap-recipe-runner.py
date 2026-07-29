@@ -3012,6 +3012,14 @@ def copy_input_tree(
                             if stat.S_IMODE(before.st_mode) & 0o111
                             else 0o444,
                         )
+                        # WHY: Release archives use modification-time ordering
+                        # to tell build systems that generated files are newer
+                        # than their inputs. Fresh copy times can spuriously
+                        # invoke unavailable maintainer-only generators.
+                        os.utime(
+                            output_fd,
+                            ns=(before.st_atime_ns, before.st_mtime_ns),
+                        )
                         os.fsync(output_fd)
                     finally:
                         os.close(input_fd)
@@ -3036,6 +3044,14 @@ def copy_input_tree(
                         dir_fd=current_destination_fd,
                         follow_symlinks=False,
                     )
+                    # Preserve link metadata without ever applying an
+                    # archive-controlled timestamp to the link's target.
+                    os.utime(
+                        name,
+                        ns=(before.st_atime_ns, before.st_mtime_ns),
+                        dir_fd=current_destination_fd,
+                        follow_symlinks=False,
+                    )
                     after = os.stat(
                         name, dir_fd=current_source_fd, follow_symlinks=False
                     )
@@ -3050,6 +3066,13 @@ def copy_input_tree(
                 current_destination_fd, destination_uid, destination_gid
             )
             os.fchmod(current_destination_fd, 0o555)
+            os.utime(
+                current_destination_fd,
+                ns=(
+                    expected_directory.st_atime_ns,
+                    expected_directory.st_mtime_ns,
+                ),
+            )
             os.fsync(current_destination_fd)
             if file_identity(os.fstat(current_source_fd)) != file_identity(
                 expected_directory
