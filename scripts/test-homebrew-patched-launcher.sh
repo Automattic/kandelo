@@ -401,9 +401,10 @@ case "${1:-}" in
     ln -s "$2" "$prefix/Cellar/$2/1.0/bin/$2-link"
     ln -s "../Cellar/$2/1.0" "$prefix/opt/$2"
     ;;
-  create-native-link)
+  create-native-runtime-link)
     [ "$#" -eq 3 ]
-    ln -s "$2" "$prefix/$3"
+    mkdir -p "$prefix/lib"
+    ln -s "$2" "$prefix/lib/$3"
     ;;
   create-native-fifo)
     [ "$#" -eq 2 ]
@@ -2512,12 +2513,15 @@ EOF
   [ "$native_pgrep_status" -eq 1 ] ||
     fail "native Formula process check did not prove an empty UID"
 
-  homebrew_patched_launcher_run_native create-native-link \
+  # WHY: only Cellar kegs, exact opt aliases, and prefix/lib enter the closed
+  # recipe root. A prefix-root link is unprojected Homebrew state, so put this
+  # escape canary in prefix/lib where it would become recipe authority.
+  homebrew_patched_launcher_run_native create-native-runtime-link \
     "$isolated_output" unsafe-link
   if homebrew_patched_launcher_seal_native_prefix >/dev/null 2>&1; then
     fail "native Homebrew accepted an escaping symlink"
   fi
-  homebrew_patched_launcher_run_native remove-native-entry unsafe-link
+  homebrew_patched_launcher_run_native remove-native-entry lib/unsafe-link
   homebrew_patched_launcher_run_native create-native-fifo unsafe-fifo
   if homebrew_patched_launcher_seal_native_prefix >/dev/null 2>&1; then
     fail "native Homebrew accepted a special filesystem entry"
