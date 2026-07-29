@@ -193,49 +193,53 @@ checks. They deliberately answer different questions:
    fails deterministically if Kandelo stops releasing exact-generation
    allocation authority. It does not claim that a JavaScript engine collected
    physical backing by a deadline.
-2. A weekly and manually dispatchable workflow runs engine-local
-   physical telemetry. On each browser and runner it records four retirement
-   trials and four deliberately-live controls. Both kinds use 1 MiB and 32 MiB
-   children twice in low/high/high/low order. Their positions are symmetric
-   across the complete eight-trial sequence. The classifier preserves the
-   early low/high and late high/low estimates as two independent ABBA
-   replicates. It does not average one leaking replicate behind a descent in
-   the other.
+2. Every relevant pull request plus weekly and manually dispatched workflows
+   run engine-local physical telemetry. On each browser and runner it records
+   four retirement trials and four deliberately-live controls. Both kinds use
+   1 MiB and 32 MiB children twice in low/high/high/low order. Their positions
+   are symmetric across the complete eight-trial sequence. The classifier
+   preserves the early low/high and late high/low estimates as two independent
+   ABBA replicates. It does not average one leaking replicate behind a descent
+   in the other.
 
-Each retirement trial reaps four warm-up children and then 96 measured
+Each retirement trial reaps four warm-up children and then 256 measured
 children. Each control holds one warm-up child and four measured children
 live. The smaller control is not expected to make an absolute memory level
 portable. Both high-minus-low live-control replicates must independently
 expose at least 8 MiB of physical signal per child at warm-up and sustained
 churn before the run may say anything positive about retirement.
 
-One unmeasured context first initializes the browser realm, module graph,
-Kandelo kernel, and worker machinery. Every measured trial then records
-explicit samples before context creation, after kernel initialization, after
-warm-up, after each workload wave, after kernel destruction, and around
-200 ms, 1 s, and 3 s after context closure. Classification uses the stabilized
-last close sample while retaining all three values in the artifact.
+One unmeasured 32 MiB live-control context first exercises the browser realm,
+module graph, Kandelo kernel, actual guest-process path, worker helpers, and
+teardown. An empty-kernel warm-up is insufficient on WebKit because it defers
+hundreds of MiB of helper and JIT startup until the first real process.
+Every measured trial then records explicit samples before context creation,
+after kernel initialization, after warm-up, after each workload wave, after
+kernel destruction, and around 200 ms, 1 s, and 3 s after context closure.
+Classification uses the stabilized last close sample while retaining all
+three values in the artifact.
 
 During active churn, each retirement replicate must independently stay at or
 below both 4 MiB per child and 15% of its paired live signal. The first
 four-child warm-up remains an advisory because an engine may not have
-scheduled collection yet; the later 96-child window must show separation.
+scheduled collection yet; the later 256-child window must show separation.
 The sustained value is the median of all wave samples divided by the median
 represented child count. This resists a scheduler-selected collection peak or
 descent without averaging one low/high replicate into the other.
 
-Each of the four retirement trials compares the median of its first six wave
-samples with the median of its last six. That shift must stay below a
+Each of the four retirement trials compares the median of its first 16 wave
+samples with the median of its last 16. That shift must stay below a
 0.5 MiB-per-child slope and 32 MiB of growth. A linear leak remains visible,
 while one engine collection peak cannot make an otherwise bounded sawtooth
 look unbounded.
 
-Context-close contrasts use absolute bytes, without dividing by all 100
-retirement children. Each replicate must stay below both 4 MiB and 15% of one
-paired live child's measured backing. This catches, for example, four
-permanently retained warm-up generations that a per-100-child denominator
-could hide. The deliberately-live controls must lose the same size signal
-after context closure.
+Context-close contrasts use absolute bytes, without dividing by all 260
+retirement children. A paired live-control contrast supplies the engine-local
+noise floor. A negative high-minus-low value is collection or noise, not
+high-child retention. A positive retired signal above the control floor is
+retention evidence only when later pre-context baselines also grow. This
+catches four permanently retained warm-up generations without treating one
+bounded engine cache as an ever-growing Kandelo leak.
 
 The 200 ms kernel-destroy sample remains in the trace. If its signal clears
 after context closure and the cross-context baseline stays bounded, the
@@ -243,13 +247,13 @@ classifier records an advisory rather than inventing a portable collection
 deadline. A signal surviving context closure remains non-green.
 
 A strong size-proportional residual after context closure is a regression when
-both matched replicates agree and their live controls cleared. One leaking
-replicate, a signed descent disagreement, an exceeded per-trial trend, or a
-control-retained signal is inconclusive rather than a false pass. A later
-workload-health error cannot erase a physical regression already diagnosed
-from the captured samples; it is appended to that regression instead. The raw
-artifact also stores the pre-health `physicalVerdict` separately from the
-final verdict.
+both matched replicates agree and the browser baseline accumulates. A growing
+baseline with one leaking replicate or a still-size-sensitive live control is
+inconclusive rather than a false pass. A bounded terminal signal without
+later accumulation is an advisory. A later workload-health error cannot erase
+a physical regression already diagnosed from the captured samples; it is
+appended to that regression instead. The raw artifact also stores the
+pre-health `physicalVerdict` separately from the final verdict.
 
 Fixed size-independent cache or just-in-time compiler level changes cannot be
 found through a size contrast alone. Across the eight warmed contexts, the
@@ -258,7 +262,8 @@ smaller of 4 MiB and 15% of one live child's signal, and the upper quartile at
 the smaller of 8 MiB and 30%. It also limits the Theil-Sen pre-context slope
 to 0.5 MiB per context and the difference between the first and last
 two-context means to 32 MiB. A consistent residue plus baseline accumulation
-is a regression; one exceeded or noisy dimension is inconclusive.
+is a regression. Baseline growth alone is inconclusive. Residue without
+growth records a bounded cache or collection delay as an advisory.
 
 Each trace carries a key made from the engine version, exact Playwright engine
 revision, Playwright package version, and runner image. Automated rolling
@@ -300,6 +305,52 @@ deadline.
 
 These recalculations use the captured raw samples; a new exact-head Linux
 matrix is still required after the classifier and attribution corrections.
+
+### Second exact Linux calibration — 2026-07-29
+
+The replacement run on head `136aa5efa801ca63aa201948235ee845ab101392`
+completed all three exact Linux engines. Its raw traces remain attached to
+Actions run `30438449336`. Chromium passed. Firefox and WebKit were
+inconclusive for different, diagnosed reasons; neither reported physical
+retention.
+
+| Engine | Retired active MiB/child | Live MiB/child | Late result |
+|---|---:|---:|---|
+| Chromium | 3.073, 3.784 | 30.767, 30.893 | all four trials within bounds |
+| Firefox | 1.033, 1.473 | 31.275, 31.190 | two 32 MiB trials ended before the next cycle |
+| WebKit | 1.226, 1.079 | 32.430, 31.977 | all four trials within bounds |
+
+Firefox's 1 MiB trials had late slopes of +0.067 and -0.066 MiB per
+child. Its 32 MiB trials collected sharply around child 40, then reached the
+96-child boundary before another collection. Their half-window slopes were
++1.758 and +1.425 MiB per child, so the classifier correctly refused to infer
+bounded late behavior from that short window. Earlier 256-child Firefox data
+already reached a later bounded interval; the persistent sentinel now uses
+the full 256-child window rather than weakening the 0.5 MiB slope and 32 MiB
+growth limits.
+
+Firefox also demonstrated why one post-context number cannot be a leak gate.
+The two retired close contrasts were -1.883 and +6.895 MiB, while paired live
+controls varied by +8.113 and +26.816 MiB. The median close residual was
+-1.834 MiB, its pre-context Theil-Sen slope was negative, and the first/last
+baseline delta was only +5.539 MiB. The terminal variation was bounded
+engine noise, not accumulating process backing.
+
+WebKit's unmeasured realm had initialized an empty kernel but had not launched
+a guest process. Its first measured context therefore created persistent
+browser helpers and JIT state, moving the process-tree baseline by
+510.586 MiB. The remaining measured pre-context baselines were effectively
+flat, and all four late slopes were between +0.011 and +0.298 MiB per child.
+The warm-up now runs the exact 32 MiB live guest-process path through teardown
+before the first sample.
+
+The terminal classifier now requires two independent facts before calling a
+post-context level a leak: a positive retired size signal above its paired
+live-control noise floor, and growth in later pre-context baselines. A bounded
+engine cache is recorded as an advisory. Synthetic tests still make a
+four-warm-generation leak fail by carrying its retained bytes into every
+later context. The longer, fully warmed replacement matrix remains required
+before the pull request is merge-ready.
 
 ### Pre-hardening smoke calibration — 2026-07-29
 

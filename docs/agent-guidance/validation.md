@@ -72,23 +72,27 @@ Physical resident set size (RSS) is not an absolute cross-engine contract.
 For process-memory retirement work, pair the deterministic cross-browser
 ownership test above with the scheduled
 `process-memory-retirement-telemetry.yml` matched-control trace. The scheduled
-workflow compares counterbalanced 1 MiB and 32 MiB retirement trials with
-deliberately live Kandelo processes at both sizes on the same engine and
-runner. After one unmeasured warm-up realm, it preserves two independent ABBA
-size contrasts. Each live contrast must expose at least 8 MiB per child. Every
-live replicate must meet that sensitivity floor at warm-up and sustained
-churn. Every retirement contrast must remain below 4 MiB per child and 15% of
-its paired live signal during churn. Churn uses the median of all wave samples
-and the median represented child count, rather than whichever collection peak
-or descent happens to be last. Every individual retirement trial must also
-keep the median shift from the first half of its waves to the second half
-below the late slope and growth bounds.
+and applicable pull-request workflow compares counterbalanced 1 MiB and
+32 MiB retirement trials with deliberately live Kandelo processes at both
+sizes on the same engine and runner. After one unmeasured live-process realm,
+it preserves two independent ABBA size contrasts. Each live contrast must
+expose at least 8 MiB per child. Every live replicate must meet that
+sensitivity floor at warm-up and sustained churn. Every retirement contrast
+must remain below 4 MiB per child and 15% of its paired live signal during
+256-child churn. Churn uses the median of all wave samples and the median
+represented child count, rather than whichever collection peak or descent
+happens to be last. Every individual retirement trial must also keep the
+median shift from the first half of its waves to the second half below the
+late slope and growth bounds.
 
 The workflow samples before a browser context, after kernel initialization,
 after warm-up and workload waves, after kernel destruction, and around 200 ms,
 1 s, and 3 s after context closure. It uses the stabilized final close sample.
 Context-close size contrasts are absolute byte residuals, not values divided
-by all retired children. A signal at the earlier kernel-destroy sample is
+by all retired children. A paired live-control residual establishes the
+engine-local noise floor. A positive retired terminal signal becomes a
+regression only when later pre-context baselines also accumulate; a bounded
+engine cache is an advisory. A signal at the earlier kernel-destroy sample is
 preserved as engine-timed collection data when it clears at context close.
 Across contexts, median and upper-quartile close residuals plus Theil-Sen and
 first/last baseline trends prevent a fixed per-realm leak from canceling out

@@ -63,7 +63,7 @@ const memoryFsModulePath = resolve(
 const MIB = 1024 * 1024;
 const PRODUCTION_WARMUP_CHILDREN = 4;
 const PRODUCTION_WAVE_CHILDREN = 8;
-const PRODUCTION_WAVES = 12;
+const PRODUCTION_WAVES = 32;
 const CONTROL_WARMUP_CHILDREN = 1;
 const CONTROL_WAVE_CHILDREN = 1;
 const CONTROL_WAVES = 4;
@@ -695,64 +695,29 @@ async function installTsxEvaluationHelper(page: Page): Promise<void> {
 
 async function warmBrowserRealm(
   browser: Browser,
+  samplingContext: ProcessSamplingContext,
   baseUrl: string,
   kernelBase64: string,
+  programBase64: string,
 ): Promise<void> {
-  // WHY: the first browser realm pays engine startup, module compilation,
-  // worker, and Kandelo initialization costs that are unrelated to retained
-  // child address spaces. Exercise those paths once before the eight measured
-  // contexts so the within-run baseline trend starts after that cold start.
-  const context = await browser.newContext();
-  try {
-    const page = await context.newPage();
-    await installTsxEvaluationHelper(page);
-    await page.goto(new URL("/trap-signal-test.html", baseUrl).href);
-    await page.evaluate(
-      async ({
-        browserKernelUrl,
-        memoryFsUrl,
-        kernelBytesBase64,
-      }) => {
-        const { BrowserKernel } = await import(
-          /* @vite-ignore */ browserKernelUrl
-        );
-        const { MemoryFileSystem } = await import(
-          /* @vite-ignore */ memoryFsUrl
-        );
-        const binary = atob(kernelBytesBase64);
-        const kernelBytes = new Uint8Array(binary.length);
-        for (let index = 0; index < binary.length; index += 1) {
-          kernelBytes[index] = binary.charCodeAt(index);
-        }
-        const imageOwner = MemoryFileSystem.create(
-          new SharedArrayBuffer(2 * 1024 * 1024),
-        );
-        const kernel = new BrowserKernel({
-          maxWorkers: 1,
-          maxProcessMemoryBytes: 64 * 1024 * 1024,
-        });
-        try {
-          await kernel.initFromImage({
-            kernelWasm: kernelBytes.buffer,
-            vfsImage: await imageOwner.saveImage(),
-          });
-        } finally {
-          await kernel.destroy();
-        }
-      },
-      {
-        browserKernelUrl: new URL(
-          `/@fs/${browserKernelModulePath}`,
-          baseUrl,
-        ).href,
-        memoryFsUrl: new URL(`/@fs/${memoryFsModulePath}`, baseUrl).href,
-        kernelBytesBase64: kernelBase64,
-      },
-    );
-  } finally {
-    await context.close();
+  // WHY: WebKit does not create every process helper merely by initializing
+  // an empty kernel. If the warm realm skips a real guest process, its first
+  // measured trial absorbs hundreds of MiB of one-time worker/JIT startup and
+  // makes a bounded cold start look like a retained address space. Exercise
+  // the exact live-process path, including context teardown, before recording
+  // any of the eight counterbalanced trials.
+  const warmup = await runLiveControl(
+    browser,
+    samplingContext,
+    baseUrl,
+    kernelBase64,
+    programBase64,
+    HIGH_CHILD_MIB,
+  );
+  const errors = validateControl(warmup, -1);
+  if (errors.length > 0) {
+    throw new Error(`unmeasured process warm-up failed: ${errors.join("; ")}`);
   }
-  await delay(PROCESS_MEMORY_POST_CONTEXT_CLOSE_OFFSETS_MS.at(-1)!);
 }
 
 async function runProductionTrial(
@@ -1503,7 +1468,13 @@ async function main(): Promise<void> {
       readFile(options.kernelPath).then((bytes) => bytes.toString("base64")),
       readFile(options.programPath).then((bytes) => bytes.toString("base64")),
     ]);
-    await warmBrowserRealm(browser, baseUrl, kernelBase64);
+    await warmBrowserRealm(
+      browser,
+      samplingContext,
+      baseUrl,
+      kernelBase64,
+      programBase64,
+    );
     const runs: Array<{
       plan: TrialPlan;
       result: BrowserRunResult;

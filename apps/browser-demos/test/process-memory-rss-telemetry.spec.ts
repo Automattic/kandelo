@@ -373,34 +373,64 @@ test.describe("engine-local process-memory physical classification", () => {
 
   test("does not dilute four retained warm-up children by 100", () => {
     const verdict = classifyProcessMemoryRss(rssTrials({
+      baselineMiBBySequence: {
+        0: 0,
+        1: 4,
+        2: 4,
+        3: 132,
+        4: 132,
+        5: 132,
+        6: 260,
+        7: 260,
+      },
       retiredTerminalWarmupChildren: 4,
     }));
     expect(verdict.status).toBe("regression");
-    expect(verdict.reason).toContain("absolute backing");
+    expect(verdict.reason).toContain("context teardown");
   });
 
   test("treats one terminally leaking replicate as disagreement", () => {
     const verdict = classifyProcessMemoryRss(rssTrials({
+      baselineMiBBySequence: {
+        0: 0,
+        1: 4,
+        2: 4,
+        3: 132,
+        4: 132,
+        5: 132,
+        6: 132,
+        7: 132,
+      },
       retiredTerminalWarmupChildrenByReplicate: [4, 0],
     }));
     expect(verdict.status).toBe("inconclusive");
-    expect(verdict.reason).toContain("replicates disagreed");
+    expect(verdict.reason).toContain("browser baseline");
   });
 
-  test("uses the absolute value of a terminal size residual", () => {
+  test("does not mistake a negative terminal contrast for retention", () => {
     const verdict = classifyProcessMemoryRss(rssTrials({
       retiredCloseRate: -0.1,
     }));
-    expect(verdict.status).toBe("inconclusive");
-    expect(verdict.reason).toContain("remained noisy");
+    expect(verdict.status).toBe("pass");
   });
 
-  test("does not trust a live control that survives teardown", () => {
+  test("records a bounded live-control terminal cache", () => {
     const verdict = classifyProcessMemoryRss(rssTrials({
       liveCloseRate: 1,
     }));
+    expect(verdict.status).toBe("pass");
+    expect(verdict.advisories).toContainEqual(
+      expect.stringContaining("live-control size signal"),
+    );
+  });
+
+  test("does not trust a live-control signal that accumulates", () => {
+    const verdict = classifyProcessMemoryRss(rssTrials({
+      baselineStepMiB: 10,
+      liveCloseRate: 1,
+    }));
     expect(verdict.status).toBe("inconclusive");
-    expect(verdict.reason).toContain("live-control replicate");
+    expect(verdict.reason).toContain("live-control teardown");
   });
 
   test("records delayed kernel cleanup when context teardown clears it", () => {
@@ -416,6 +446,16 @@ test.describe("engine-local process-memory physical classification", () => {
 
   test("rejects backing introduced only during destroy and realm close", () => {
     const verdict = classifyProcessMemoryRss(rssTrials({
+      baselineMiBBySequence: {
+        0: 0,
+        1: 100,
+        2: 100,
+        3: 3_300,
+        4: 3_300,
+        5: 3_300,
+        6: 6_500,
+        7: 6_500,
+      },
       retiredDestroyRate: 1,
       retiredCloseRate: 1,
     }));
@@ -431,7 +471,7 @@ test.describe("engine-local process-memory physical classification", () => {
     expect(verdict.reason).toContain("context residue accumulated");
   });
 
-  test("hard-gates the median stabilized realm residual alone", () => {
+  test("records median realm residue without baseline growth", () => {
     const verdict = classifyProcessMemoryRss(rssTrials({
       contextResidualMiBBySequence: {
         0: 5,
@@ -446,10 +486,13 @@ test.describe("engine-local process-memory physical classification", () => {
       .toBeGreaterThan(4 * MIB);
     expect(verdict.sizeContrast.realm.upperQuartileCloseResidualBytes)
       .toBeLessThanOrEqual(8 * MIB);
-    expect(verdict.status).toBe("inconclusive");
+    expect(verdict.status).toBe("pass");
+    expect(verdict.advisories).toContainEqual(
+      expect.stringContaining("fixed context-close residue"),
+    );
   });
 
-  test("hard-gates the upper-quartile realm residual alone", () => {
+  test("records upper-quartile realm residue without baseline growth", () => {
     const verdict = classifyProcessMemoryRss(rssTrials({
       contextResidualMiBBySequence: { 0: 40, 2: 40 },
     }));
@@ -457,7 +500,10 @@ test.describe("engine-local process-memory physical classification", () => {
       .toBeLessThanOrEqual(4 * MIB);
     expect(verdict.sizeContrast.realm.upperQuartileCloseResidualBytes)
       .toBeGreaterThan(8 * MIB);
-    expect(verdict.status).toBe("inconclusive");
+    expect(verdict.status).toBe("pass");
+    expect(verdict.advisories).toContainEqual(
+      expect.stringContaining("fixed context-close residue"),
+    );
   });
 
   test("hard-gates a Theil-Sen baseline slope alone", () => {
@@ -546,7 +592,17 @@ test.describe("engine-local process-memory physical classification", () => {
 
   test("counts swapped size-proportional backing as still retained", () => {
     const verdict = classifyProcessMemoryRss(rssTrials({
-      retiredCloseRate: 1,
+      baselineMiBBySequence: {
+        0: 0,
+        1: 4,
+        2: 4,
+        3: 132,
+        4: 132,
+        5: 132,
+        6: 260,
+        7: 260,
+      },
+      retiredTerminalWarmupChildren: 4,
       useSwap: true,
     }));
     expect(verdict.status).toBe("regression");

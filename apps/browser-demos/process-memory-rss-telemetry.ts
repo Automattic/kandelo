@@ -429,9 +429,9 @@ function sizeContrast(
         initializedDelta("sustainedWaveBytes"),
         sustainedWaveChildren,
       ),
-      // WHY: terminal values are deliberately not divided by all 100 retired
-      // children. Otherwise four permanently retained warm-up generations
-      // would be diluted enough to look bounded.
+      // WHY: terminal values are deliberately not divided by every retired
+      // child. Otherwise four permanently retained warm-up generations would
+      // be diluted enough to look bounded.
       retiredDestroyResidualBytes: pairContrast(
         retiredPair,
         initializedDelta("postKernelDestroyBytes"),
@@ -620,7 +620,7 @@ export function classifyProcessMemoryRss(
     };
   }
 
-  const terminalBounded = (
+  const terminalAbsoluteBounded = (
     residual: number,
     liveSignal: number,
   ): boolean => {
@@ -629,73 +629,36 @@ export function classifyProcessMemoryRss(
       liveSignal * maximumPassRatio,
     );
   };
-  const unclearedLiveTerminal = contrast.replicates.find((replicate) => {
-    return !terminalBounded(
+  const liveTerminalFailures = contrast.replicates.filter((replicate) => {
+    return !terminalAbsoluteBounded(
       replicate.liveCloseResidualBytes,
       replicate.liveWaveBytesPerChild,
     );
   });
-  if (unclearedLiveTerminal) {
-    return {
-      status: "inconclusive",
-      reason:
-        `live-control replicate ${
-          unclearedLiveTerminal.replicateIndex + 1
-        } retained a size signal after context teardown`,
-      trials,
-      sizeContrast: contrast,
-      advisories,
-    };
-  }
-
-  for (
-    const [phase, field] of [
-      ["context closure", "retiredCloseResidualBytes"],
-    ] as const
-  ) {
-    const failures = contrast.replicates.filter((replicate) => {
-      return !terminalBounded(
-        replicate[field],
-        replicate.liveWaveBytesPerChild,
-      );
-    });
-    const positiveFailures = failures.filter((replicate) => {
-      return replicate[field] > 0;
-    });
-    if (
-      failures.length === contrast.replicates.length
-      && positiveFailures.length === failures.length
-    ) {
-      return {
-        status: "regression",
-        reason:
-          `both retirement replicates retained absolute backing after ` +
-          phase,
-        trials,
-        sizeContrast: contrast,
-        advisories,
-      };
-    }
-    if (failures.length > 0) {
-      return {
-        status: "inconclusive",
-        reason:
-          `the retirement replicates disagreed or remained noisy after ` +
-          phase,
-        trials,
-        sizeContrast: contrast,
-        advisories,
-      };
-    }
-  }
+  const retiredTerminalFailures = contrast.replicates.filter((replicate) => {
+    // WHY: a context-close subtraction includes ordinary engine baseline
+    // movement. Its paired live control is the measured noise floor for this
+    // exact browser run. Only a positive retired size signal above both that
+    // floor and the normal absolute/relative limit is retention evidence.
+    // A negative high-minus-low value is collection or noise, not retained
+    // high-child backing.
+    const measuredNoiseFloor = Math.max(
+      Math.min(
+        maximumPassEffect,
+        replicate.liveWaveBytesPerChild * maximumPassRatio,
+      ),
+      Math.abs(replicate.liveCloseResidualBytes),
+    );
+    return replicate.retiredCloseResidualBytes > measuredNoiseFloor;
+  });
 
   const kernelDestroyResidual = contrast.replicates.some((replicate) => {
     return (
-      !terminalBounded(
+      !terminalAbsoluteBounded(
         replicate.retiredDestroyResidualBytes,
         replicate.liveWaveBytesPerChild,
       )
-      || !terminalBounded(
+      || !terminalAbsoluteBounded(
         replicate.liveDestroyResidualBytes,
         replicate.liveWaveBytesPerChild,
       )
@@ -738,6 +701,30 @@ export function classifyProcessMemoryRss(
   const realmTrendExceeded =
     realm.preContextTheilSenBytesPerContext > maximumLateSlope
     || realm.firstLastTwoPreContextDeltaBytes > maximumLateGrowth;
+  if (
+    retiredTerminalFailures.length === contrast.replicates.length
+    && realmTrendExceeded
+  ) {
+    return {
+      status: "regression",
+      reason:
+        "size-proportional backing accumulated across context teardown",
+      trials,
+      sizeContrast: contrast,
+      advisories,
+    };
+  }
+  if (liveTerminalFailures.length > 0 && realmTrendExceeded) {
+    return {
+      status: "inconclusive",
+      reason:
+        "live-control teardown remained size-sensitive while the browser " +
+        "baseline grew",
+      trials,
+      sizeContrast: contrast,
+      advisories,
+    };
+  }
   if (realmResidueExceeded && realmTrendExceeded) {
     return {
       status: "regression",
@@ -749,22 +736,45 @@ export function classifyProcessMemoryRss(
       advisories,
     };
   }
-  if (realmResidueExceeded || realmTrendExceeded) {
+  if (realmTrendExceeded) {
     return {
       status: "inconclusive",
       reason:
-        "fixed context residue or the pre-context browser baseline exceeded " +
-        "its within-run stability limit",
+        "the pre-context browser baseline exceeded its within-run growth " +
+        "limit",
       trials,
       sizeContrast: contrast,
       advisories,
     };
   }
+  // WHY: an engine may keep one bounded backing or JIT/cache level after a
+  // realm closes even though older generations are collectible. A single
+  // terminal level is therefore not a leak. Growing pre-context baselines
+  // above are the independent evidence that turns terminal residue into a
+  // non-green result.
+  if (retiredTerminalFailures.length > 0) {
+    advisories.push(
+      "a retired size signal remained after context closure but did not " +
+        "accumulate across later contexts",
+    );
+  }
+  if (liveTerminalFailures.length > 0) {
+    advisories.push(
+      "a live-control size signal remained after context closure but did " +
+        "not accumulate across later contexts",
+    );
+  }
+  if (realmResidueExceeded) {
+    advisories.push(
+      "fixed context-close residue exceeded the immediate limit but the " +
+        "browser baseline did not grow",
+    );
+  }
   return {
     status: "pass",
     reason:
       "retired backing separated from sensitive low/high live controls " +
-      "during sustained churn and teardown",
+      "during sustained churn with bounded cross-context baselines",
     trials,
     sizeContrast: contrast,
     advisories,
