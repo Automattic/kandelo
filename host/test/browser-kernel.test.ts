@@ -922,7 +922,7 @@ describe("BrowserKernel", () => {
     });
   });
 
-  it("destroy() terminates the worker", async () => {
+  it("destroy() terminates the worker after graceful generation detach", async () => {
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({ kernelOwnedFs: true });
     const bootPromise = kernel.boot({
@@ -942,9 +942,154 @@ describe("BrowserKernel", () => {
     await new Promise((r) => setTimeout(r, 0));
     const destroyMsg = w.lastMessage("destroy");
     expect(destroyMsg).toBeDefined();
-    w.simulateMessage({ type: "response", requestId: destroyMsg.requestId, result: true });
+    w.simulateMessage({
+      type: "response",
+      requestId: destroyMsg.requestId,
+      result: { gracefulDetachComplete: true },
+    });
     await destroyPromise;
     expect(w.terminated).toBe(true);
+  });
+
+  it("uses worker-realm termination as the final release fallback", async () => {
+    const diagnostics: string[] = [];
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({
+      kernelOwnedFs: true,
+      onHostDiagnostic: (diagnostic) => diagnostics.push(diagnostic.message),
+    });
+    const initPromise = kernel.initFromImage({
+      kernelWasm: new ArrayBuffer(8),
+      vfsImage: new Uint8Array(0),
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    const worker = MockWorker.instances[0]!;
+    worker.simulateMessage({ type: "ready" });
+    await initPromise;
+
+    const memory = new WebAssembly.Memory({
+      initial: 1,
+      maximum: 1,
+      shared: true,
+    });
+    (
+      kernel as unknown as {
+        handleWorkerMessage(message: unknown): void;
+      }
+    ).handleWorkerMessage({
+      type: "fb_bind",
+      pid: 41,
+      generation: 1,
+      addr: 0,
+      len: WASM_PAGE_SIZE,
+      w: 128,
+      h: 128,
+      stride: 512,
+      fmt: "BGRA32",
+      memory,
+    });
+    (
+      kernel as unknown as {
+        pendingPtyOutput: Map<number, Uint8Array[]>;
+      }
+    ).pendingPtyOutput.set(41, [new Uint8Array([1])]);
+
+    const destroyPromise = kernel.destroy();
+    await new Promise((r) => setTimeout(r, 0));
+    const destroyMsg = worker.lastMessage("destroy");
+    worker.simulateMessage({
+      type: "response",
+      requestId: destroyMsg.requestId,
+      result: { gracefulDetachComplete: false },
+    });
+    await destroyPromise;
+
+    expect(worker.terminated).toBe(true);
+    expect(kernel.getProcessMemory(41)).toBeUndefined();
+    expect(kernel.framebuffers.get(41)).toBeUndefined();
+    expect(
+      (
+        kernel as unknown as {
+          pendingPtyOutput: Map<number, Uint8Array[]>;
+        }
+      ).pendingPtyOutput.size,
+    ).toBe(0);
+    expect(diagnostics).toEqual([
+      expect.stringContaining("incomplete graceful generation detach"),
+    ]);
+  });
+
+  it("bounds graceful destroy wait before terminating the worker realm", async () => {
+    vi.useFakeTimers();
+    try {
+      const diagnostics: string[] = [];
+      const BrowserKernel = await loadBrowserKernel();
+      const kernel = new BrowserKernel({
+        kernelOwnedFs: true,
+        onHostDiagnostic: (diagnostic) => diagnostics.push(diagnostic.message),
+      });
+      const testable = kernel as unknown as {
+        workerStarted: boolean;
+        initialized: boolean;
+        kernelWorkerHandle: { terminated: boolean; terminate(): void };
+        pendingRequests: Map<number, unknown>;
+        request(): Promise<never>;
+      };
+      const worker = new MockWorker("mock://kernel");
+      testable.workerStarted = true;
+      testable.initialized = true;
+      testable.kernelWorkerHandle = worker;
+      testable.pendingRequests.set(99, {});
+      testable.request = vi.fn(() => new Promise<never>(() => {}));
+
+      const destroyPromise = kernel.destroy();
+      await vi.advanceTimersByTimeAsync(2_000);
+      await destroyPromise;
+
+      expect(worker.terminated).toBe(true);
+      expect(testable.pendingRequests.size).toBe(0);
+      expect(diagnostics).toEqual([
+        expect.stringContaining("timed out after 2000ms"),
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("clears browser aliases when worker termination itself throws", async () => {
+    const diagnostics: string[] = [];
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({
+      kernelOwnedFs: true,
+      onHostDiagnostic: (diagnostic) => diagnostics.push(diagnostic.message),
+    });
+    const testable = kernel as unknown as {
+      workerStarted: boolean;
+      initialized: boolean;
+      kernelWorkerHandle: MockWorker;
+      pendingRequests: Map<number, unknown>;
+      request(): Promise<{ gracefulDetachComplete: true }>;
+    };
+    const worker = new MockWorker("mock://kernel");
+    worker.terminate = () => {
+      throw new Error("injected terminate failure");
+    };
+    testable.workerStarted = true;
+    testable.initialized = true;
+    testable.kernelWorkerHandle = worker;
+    testable.pendingRequests.set(99, {});
+    testable.request = vi.fn(async () => ({
+      gracefulDetachComplete: true,
+    }));
+
+    await kernel.destroy();
+
+    expect(testable.pendingRequests.size).toBe(0);
+    expect(diagnostics).toEqual([
+      expect.stringContaining(
+        "kernel-worker realm termination failed: injected terminate failure",
+      ),
+    ]);
   });
 
   it("drops framebuffer Memory aliases on clean and trap exits", async () => {

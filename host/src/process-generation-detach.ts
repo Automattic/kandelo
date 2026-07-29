@@ -41,12 +41,19 @@ export type ExactProcessGenerationDetachResult =
   | {
       readonly status: "released";
       readonly removedCurrent: boolean;
+      /**
+       * Edge-triggered authority for PID-wide follow-up such as host reaping.
+       * Local map removal alone is insufficient when kernel detach reported
+       * that this execution generation was already superseded.
+       */
+      readonly mayReapPid: boolean;
       readonly detachDisposition: "removed-or-absent" | "superseded";
       readonly postCommitError?: unknown;
     }
   | {
       readonly status: "retained-error";
       readonly removedCurrent: false;
+      readonly mayReapPid: false;
       readonly error: unknown;
     };
 
@@ -94,10 +101,13 @@ export class ExactProcessGenerationDetachLedger<T extends object> {
   ): Promise<ExactProcessGenerationDetachResult> {
     const completed = this.completed.get(transaction.generation);
     if (completed) {
-      // `removedCurrent` is an edge-triggered authorization for the caller
-      // that actually removed the map entry (for example, to reap a PID).
-      // Replaying it later could act on an exec successor.
-      return { ...completed, removedCurrent: false };
+      // Map removal and PID-wide follow-up are edge-triggered. Replaying either
+      // later could act on an exec successor.
+      return {
+        ...completed,
+        removedCurrent: false,
+        mayReapPid: false,
+      };
     }
     let pending = this.pending.get(transaction.generation);
     if (pending) {
@@ -143,9 +153,8 @@ export class ExactProcessGenerationDetachLedger<T extends object> {
     if (pending.active) {
       const result = await pending.active;
       if (result.status !== "released") return result;
-      // `removedCurrent` authorizes one caller to perform PID-wide follow-up
-      // such as reaping. A concurrent observer must not replay that edge.
-      return { ...result, removedCurrent: false };
+      // A concurrent observer must not replay map-removal or reaping edges.
+      return { ...result, removedCurrent: false, mayReapPid: false };
     }
     const active = this.perform(pending);
     pending.active = active;
@@ -217,6 +226,12 @@ export class ExactProcessGenerationDetachLedger<T extends object> {
       const result = {
         status: "released",
         removedCurrent,
+        // WHY: false detach means the kernel has already assigned this PID to
+        // another generation. We may drop a stale host-map object, but reaping
+        // the numeric PID would then reap its successor.
+        mayReapPid:
+          removedCurrent
+          && pending.detachDisposition === "removed-or-absent",
         detachDisposition: pending.detachDisposition!,
         ...(!pending.postCommitFailed
           ? {}
@@ -234,6 +249,7 @@ export class ExactProcessGenerationDetachLedger<T extends object> {
       return {
         status: "retained-error",
         removedCurrent: false,
+        mayReapPid: false,
         error,
       };
     }

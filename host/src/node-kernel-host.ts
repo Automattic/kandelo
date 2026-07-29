@@ -33,6 +33,7 @@ import {
   type ClosedLazyAsset,
 } from "./vfs/closed-lazy-assets";
 import { DEFAULT_MAX_PAGES, WASM_PAGE_SIZE } from "./constants";
+import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
 
 export type { HttpRequest, HttpResponse };
 
@@ -55,9 +56,15 @@ export interface NodeKernelHostOptions {
    *  memory is smaller and grows on demand up to this cap. */
   maxPages?: number;
   /**
-   * Hard session budget for simultaneously live process address spaces.
+   * Allocation-admission budget sampled from simultaneously live process
+   * address spaces before each new allocation.
+   *
+   * A running guest can grow its own memory without a JavaScript callback, so
+   * aggregate growth may cross this value until the next allocation observes
+   * it. `maxPages` remains the hard per-process growth cap.
+   *
    * Retired generations are never reused and pass through a separate short,
-   * bounded admission window before new churn proceeds.
+   * admission-threshold window before new churn proceeds.
    */
   maxProcessMemoryBytes?: number;
   /** Host default pthread slots when a wasm binary declares -1 (default: 16). */
@@ -628,28 +635,56 @@ export class NodeKernelHost {
   /** Destroy the kernel and release all resources */
   async destroy(): Promise<void> {
     if (!this.workerStarted) return;
+    let gracefulDetachFailure: string | undefined;
     if (this.initialized) {
       const requestId = this._nextRequestId++;
-      let timeoutId: ReturnType<typeof setTimeout> | undefined;
-      try {
-        await Promise.race([
-          this.request(requestId, { type: "destroy", requestId }),
-          new Promise((resolve) => {
-            timeoutId = setTimeout(resolve, DESTROY_REQUEST_TIMEOUT_MS);
-          }),
-        ]);
-      } catch {
-        // Worker may have already exited
-      } finally {
-        if (timeoutId !== undefined) clearTimeout(timeoutId);
-      }
+      gracefulDetachFailure = await awaitGracefulKernelRealmDestroy(
+        () => this.request(requestId, { type: "destroy", requestId }),
+        DESTROY_REQUEST_TIMEOUT_MS,
+      );
     }
-    await this.worker.terminate().catch(() => {});
+    // WHY: the kernel worker owns every nested process/pthread worker. Once
+    // those children have been terminated or contained inside this realm,
+    // terminating the realm is the final release fallback even when its
+    // graceful exact-generation report was false, malformed, or timed out.
+    let realmTerminationFailure: string | undefined;
+    try {
+      await this.worker.terminate();
+    } catch (error) {
+      realmTerminationFailure =
+        "kernel-worker realm termination failed: " +
+        (error instanceof Error ? error.message : String(error));
+    }
     this.workerStarted = false;
     this.initialized = false;
     this.exitResolvers.clear();
+    this.unclaimedExitStatuses.clear();
     this.pendingRequests.clear();
     this.lazyDownloadListeners.clear();
+    if (gracefulDetachFailure || realmTerminationFailure) {
+      const diagnostic: HostDiagnostic = {
+        pid: 0,
+        source: "kernel worker destroy",
+        message:
+          `[NodeKernelHost] ${
+            [gracefulDetachFailure, realmTerminationFailure]
+              .filter((failure): failure is string => Boolean(failure))
+              .join("; ")
+          }` +
+          (realmTerminationFailure
+            ? ""
+            : "; terminated the worker realm as the final release fallback"),
+      };
+      console.warn(diagnostic.message);
+      try {
+        this.options.onHostDiagnostic?.(diagnostic);
+      } catch (error) {
+        console.error(
+          "[NodeKernelHost] onHostDiagnostic callback failed:",
+          error,
+        );
+      }
+    }
   }
 
   // ── Private ──

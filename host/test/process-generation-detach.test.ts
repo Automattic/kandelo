@@ -59,6 +59,7 @@ describe("exact process-generation detach ledger", () => {
     await expect(ledger.detach(exact)).resolves.toEqual({
       status: "released",
       removedCurrent: false,
+      mayReapPid: false,
       detachDisposition: "superseded",
     });
     expect(settle).toHaveBeenCalledWith(7, old.memory);
@@ -88,6 +89,7 @@ describe("exact process-generation detach ledger", () => {
     ).resolves.toEqual({
       status: "retained-error",
       removedCurrent: false,
+      mayReapPid: false,
       error: detachError,
     });
 
@@ -95,6 +97,7 @@ describe("exact process-generation detach ledger", () => {
       {
         status: "released",
         removedCurrent: true,
+        mayReapPid: true,
         detachDisposition: "removed-or-absent",
       },
     ]);
@@ -127,6 +130,7 @@ describe("exact process-generation detach ledger", () => {
     await expect(result).resolves.toEqual({
       status: "released",
       removedCurrent: false,
+      mayReapPid: false,
       detachDisposition: "removed-or-absent",
     });
     expect(removed).toEqual([]);
@@ -154,6 +158,7 @@ describe("exact process-generation detach ledger", () => {
         {
           status: "released",
           removedCurrent: true,
+          mayReapPid: true,
           detachDisposition: "removed-or-absent",
         },
       ]);
@@ -185,11 +190,13 @@ describe("exact process-generation detach ledger", () => {
       {
         status: "released",
         removedCurrent: true,
+        mayReapPid: true,
         detachDisposition: "removed-or-absent",
       },
       {
         status: "released",
         removedCurrent: false,
+        mayReapPid: false,
         detachDisposition: "removed-or-absent",
       },
     ]);
@@ -284,15 +291,36 @@ describe("exact process-generation detach ledger", () => {
     await expect(ledger.detach(exactTransaction)).resolves.toEqual({
       status: "retained-error",
       removedCurrent: false,
+      mayReapPid: false,
       error: beforeCommit,
     });
     await expect(ledger.retryPending()).resolves.toEqual([
       {
         status: "released",
         removedCurrent: true,
+        mayReapPid: true,
         detachDisposition: "removed-or-absent",
       },
     ]);
     expect(retire).toHaveBeenCalledTimes(2);
+  });
+
+  it("never authorizes reaping when kernel detach says the current host object was superseded", async () => {
+    const { current, removed, ledger } = harness();
+    const exact = generation("stale-host-current");
+    current.set(16, exact);
+
+    const result = await ledger.detach(
+      transaction(16, exact, { detach: () => false }),
+    );
+
+    expect(result).toEqual({
+      status: "released",
+      removedCurrent: true,
+      mayReapPid: false,
+      detachDisposition: "superseded",
+    });
+    expect(removed).toEqual(["stale-host-current"]);
+    expect(current.has(16)).toBe(false);
   });
 });

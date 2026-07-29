@@ -71,7 +71,7 @@ import {
   computeProcessMemoryLayout,
   createProcessMemoryRetirementPressureHook,
   DEFAULT_PROCESS_THREAD_SLOTS,
-  deriveProcessMemoryRetirementLimits,
+  deriveProcessMemoryRetirementAdmissionThresholds,
   ProcessMemoryCapacityError,
   ProcessMemoryAllocator,
   ProcessMemoryRetirementBacklogError,
@@ -87,6 +87,7 @@ import type {
   MainToKernelMessage,
   KernelToMainMessage,
 } from "./browser-kernel-protocol";
+import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
 
 const PAGE_SIZE = 65536;
 // State
@@ -846,7 +847,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   defaultThreadSlots = msg.config.defaultThreadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
   defaultEnv = msg.config.env;
   processMemoryAllocator = new ProcessMemoryAllocator({
-    // The byte budget is the concurrency authority. Keep the separate count
+    // The sampled byte budget is the concurrency authority. Keep the count
     // ceiling high enough that small address spaces do not inherit the
     // historically unenforced maxWorkers value as a new process-count limit.
     maxMemories: Math.max(
@@ -854,7 +855,7 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
       Math.floor(msg.config.maxProcessMemoryBytes / PAGE_SIZE),
     ),
     maxTotalBytes: msg.config.maxProcessMemoryBytes,
-    ...deriveProcessMemoryRetirementLimits(
+    ...deriveProcessMemoryRetirementAdmissionThresholds(
       msg.config.maxWorkers,
       msg.config.maxProcessMemoryBytes,
     ),
@@ -1434,7 +1435,7 @@ async function handleFork(
   try {
     await waitForProcessTeardowns();
     // Preserve fork's exact syscall-time snapshot before any await, then hold
-    // only Worker launch until the bounded retirement window admits churn.
+    // only Worker launch until the retirement admission gate reopens.
     await processMemoryAllocator.waitForRetirementBacklogCapacity(
       childMemory.buffer.byteLength,
     );
@@ -1981,7 +1982,7 @@ async function handlePosixSpawn(
     threadAllocator,
   } = fresh;
   // Allocation admission yielded. Do not resurrect a child that exited or was
-  // killed while the short retirement window drained.
+  // killed while the short retirement admission gate drained.
   if (!kernelWorker.shouldLaunchPendingChild(childPid)) {
     memoryLease.release();
     return 0;
@@ -2420,7 +2421,7 @@ async function finishProcessExit(
       return;
     }
 
-    if (!detachResult.removedCurrent) return;
+    if (!detachResult.mayReapPid) return;
     try {
       reapHostOwnedExitedProcess(kernelInstance, pid);
     } catch (error) {
@@ -2853,7 +2854,7 @@ async function handleDestroy(msg: Extract<MainToKernelMessage, { type: "destroy"
   vmInterruptTimers.clearAll();
   // WHY: a spawn or exec continuation can install a generation after the
   // second snapshot. Only its own exact transaction may remove that object.
-  const fullyDetached =
+  const gracefulDetachComplete =
     processGenerationDetaches.pendingCount === 0 && processes.size === 0;
   threadModuleCache.clear();
   threadWorkers.clear();
@@ -2862,7 +2863,17 @@ async function handleDestroy(msg: Extract<MainToKernelMessage, { type: "destroy"
   initReady = false;
   initFailure = "kernel worker destroyed";
   failPendingLazyRegistrations(initFailure);
-  respond(msg.requestId, fullyDetached);
+  if (!gracefulDetachComplete) {
+    console.warn(
+      "[browser-kernel-worker] destroy retained exact process-generation " +
+      "ownership; terminating this kernel Worker realm is the final release " +
+      "fallback",
+    );
+  }
+  respond(
+    msg.requestId,
+    kernelRealmDestroyResult(gracefulDetachComplete),
+  );
 }
 
 // ── PTY ──

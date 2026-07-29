@@ -14,6 +14,13 @@ const warmupChildren = Number(process.env.KANDELO_RECLAIM_WARMUP_CHILDREN ?? 4);
 const waveChildren = Number(process.env.KANDELO_RECLAIM_WAVE_CHILDREN ?? 8);
 const waveCount = Number(process.env.KANDELO_RECLAIM_WAVES ?? 6);
 const childMiB = Number(process.env.KANDELO_RECLAIM_CHILD_MIB ?? 8);
+const pressureBytes = Number(
+  process.env.KANDELO_RECLAIM_PRESSURE_BYTES ?? 32 * MIB,
+);
+
+// Permit the dedicated kernel Worker to consume this test-only measurement
+// control. Ordinary NodeKernelHost callers cannot alter the pressure default.
+process.env.KANDELO_RECLAIM_MEASUREMENT = "1";
 
 type MemorySample = {
   completedChildren: number;
@@ -144,6 +151,7 @@ async function main(): Promise<void> {
     waveChildren,
     waveCount,
     childMiB,
+    pressureBytes,
     samples,
     slopeBytesPerChild,
     slopeMiBPerChild: slopeBytesPerChild / MIB,

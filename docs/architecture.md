@@ -731,11 +731,32 @@ fence.
 Normal exit and exec wait for an exact `memory_quiescent` message from every
 process Worker and pthread Worker before dropping host aliases. Forced
 termination drops the kernel realm's aliases but never makes the backing
-eligible for reuse. The allocator applies hard count/byte limits to live
-address spaces and a separate short, bounded retirement admission window to
-churn. `FinalizationRegistry` and bounded allocation pressure provide telemetry
-and an engine-reclamation nudge only; neither is correctness or capacity
-authority.
+eligible for reuse. Whole-host destroy first terminates every nested process
+and pthread Worker, then terminates the containing kernel Worker even if its
+bounded graceful detach attempt fails or times out. That realm boundary is the
+final release fallback; a false graceful result never asks the main thread to
+keep a partially detached kernel Worker alive.
+
+The allocator applies a hard live-address-space count and samples a live-byte
+admission budget before each new allocation. Uninstrumented
+`WebAssembly.Memory.grow()` does not call JavaScript, so simultaneous live
+memories can grow past the aggregate byte budget until the next allocation
+observes their current lengths; each memory's configured maximum remains its
+hard growth cap. A truly hard aggregate cap would require reserving every
+memory's theoretical maximum or mediating/instrumenting growth.
+
+Recently retired generations contribute to a separate short admission
+threshold. Crossing that count or byte threshold pauses later allocations, but
+does not reject retirement: one already-grown backing or several already-live
+generations exiting together may overshoot it. JavaScript cannot hard-bound
+engine-native backing that an engine has not reclaimed. `FinalizationRegistry`
+and a coalesced 32 MiB ordinary-allocation pressure hook provide telemetry and
+an engine-reclamation nudge only; neither is correctness or capacity
+authority. The pressure hook stays enabled because the controlled Node churn
+negative control has intermittently retained history-proportional resident
+memory when disabled, while enabled runs have reclaimed consistently. Other
+disabled runs collected in a later large step. These observations are
+engine-specific evidence for the default, not a collection guarantee.
 
 Fork children synchronously acquire an exactly sized fresh backing and copy the
 parent's current memory length before the first asynchronous host operation.

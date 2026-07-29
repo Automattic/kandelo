@@ -43,7 +43,10 @@ export interface InitMessage {
   config: {
     maxWorkers: number;
     maxMemoryPages: number;
-    /** Hard session budget for simultaneously live address spaces. */
+    /**
+     * Sampled live-allocation admission budget. Unmediated memory.grow can
+     * cross it until the next allocation observes current byte lengths.
+     */
     maxProcessMemoryBytes: number;
     /** Host default pthread slots for process-wasm declarations of -1. */
     defaultThreadSlots?: number;

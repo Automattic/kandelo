@@ -78,7 +78,7 @@ import {
   computeProcessMemoryLayout,
   createProcessMemoryRetirementPressureHook,
   DEFAULT_PROCESS_THREAD_SLOTS,
-  deriveProcessMemoryRetirementLimits,
+  deriveProcessMemoryRetirementAdmissionThresholds,
   ProcessMemoryCapacityError,
   ProcessMemoryAllocator,
   ProcessMemoryRetirementBacklogError,
@@ -104,6 +104,7 @@ import type {
   TerminateProcessMessage,
   HttpRequestMessage,
 } from "./node-kernel-protocol";
+import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
 
 if (!parentPort) {
   throw new Error("node-kernel-worker-entry must run in a worker_thread");
@@ -118,8 +119,32 @@ let workerAdapter: NodeWorkerAdapter;
 let maxPages: number = DEFAULT_MAX_PAGES;
 let defaultThreadSlots: number = DEFAULT_PROCESS_THREAD_SLOTS;
 let processMemoryAllocator: ProcessMemoryAllocator;
+const reclamationMeasurementPressure = (() => {
+  const configured = process.env.KANDELO_RECLAIM_PRESSURE_BYTES;
+  if (configured === undefined) return undefined;
+  if (process.env.KANDELO_RECLAIM_MEASUREMENT !== "1") {
+    throw new Error(
+      "KANDELO_RECLAIM_PRESSURE_BYTES is restricted to the reclamation " +
+      "measurement harness",
+    );
+  }
+  const bytes = Number(configured);
+  if (!Number.isSafeInteger(bytes) || bytes < 0) {
+    throw new Error(
+      `invalid KANDELO_RECLAIM_PRESSURE_BYTES: ${configured}`,
+    );
+  }
+  return bytes;
+})();
+// WHY: 32 MiB is the measured default. Repeated zero-byte controls on current
+// Node engines sometimes retained history-proportional RSS and sometimes
+// collected it in a later large step; enabled runs reclaimed consistently in
+// the same harness. Keep this internal: it is an engine nudge, not a
+// user-facing memory ownership or collection guarantee.
 const processMemoryRetirementPressureHook =
-  createProcessMemoryRetirementPressureHook();
+  createProcessMemoryRetirementPressureHook(
+    reclamationMeasurementPressure,
+  );
 let execPrograms: Record<string, string> = {};
 let vfsExecIO: PlatformIO | null = null;
 let rootfsMemfs: MemoryFileSystem | null = null;
@@ -820,7 +845,7 @@ async function handleInit(msg: InitMessage) {
       Math.floor(msg.config.maxProcessMemoryBytes / WASM_PAGE_SIZE),
     ),
     maxTotalBytes: msg.config.maxProcessMemoryBytes,
-    ...deriveProcessMemoryRetirementLimits(
+    ...deriveProcessMemoryRetirementAdmissionThresholds(
       msg.config.maxWorkers,
       msg.config.maxProcessMemoryBytes,
     ),
@@ -1599,7 +1624,7 @@ async function handlePosixSpawn(
   }
   const { memory, memoryLease, layout, threadAllocator } = fresh;
   // Allocation admission yielded. Never attach a Worker to a child that
-  // became a zombie while the short retirement window drained.
+  // became a zombie while the short retirement admission gate drained.
   if (!kernelWorker.shouldLaunchPendingChild(childPid)) {
     memoryLease.release();
     return 0;
@@ -1990,7 +2015,7 @@ async function finishProcessExit(
 
     // A superseded old image must not reap the persistent PID that now belongs
     // to its exec successor.
-    if (!detachResult.removedCurrent) return;
+    if (!detachResult.mayReapPid) return;
     try {
       reapHostOwnedExitedProcess(kernelWorker.getKernelInstance(), pid);
     } catch (error) {
@@ -2184,7 +2209,7 @@ async function handleDestroy(msg: { requestId: number }) {
   // WHY: a spawn or exec continuation can install a generation after the
   // second snapshot. Never turn an empty retry ledger into permission for a
   // PID-wide clear; only exact-generation transactions remove map entries.
-  let fullyDetached =
+  let gracefulDetachComplete =
     processGenerationDetaches.pendingCount === 0 && processes.size === 0;
   vmInterruptTimers.clearAll();
   processTeardowns.clear();
@@ -2192,25 +2217,29 @@ async function handleDestroy(msg: { requestId: number }) {
   threadModuleCache.clear();
   threadWorkers.clear();
   ptyByPid.clear();
-  if (fullyDetached) {
+  if (gracefulDetachComplete) {
     try {
       processMemoryAllocator.clear();
     } catch (error) {
-      fullyDetached = false;
+      gracefulDetachComplete = false;
       console.warn(
         "[node-kernel-worker] process memory allocator retained an unsafe " +
         `lease during destroy: ${error}`,
       );
     }
   }
-  if (!fullyDetached) {
+  if (!gracefulDetachComplete) {
     console.warn(
       "[node-kernel-worker] destroy retained exact process-generation " +
-      "ownership; the kernel Worker must remain the final owner",
+      "ownership; terminating this kernel Worker realm is the final release " +
+      "fallback",
     );
   }
   cleanupSessionDir();
-  respond(msg.requestId, fullyDetached);
+  respond(
+    msg.requestId,
+    kernelRealmDestroyResult(gracefulDetachComplete),
+  );
 }
 
 // --- PTY ---

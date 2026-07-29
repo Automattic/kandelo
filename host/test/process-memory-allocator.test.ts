@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { WASM_PAGE_SIZE } from "../src/constants";
 import {
   acquireForkMemoryClone,
   copyArrayBufferInChunks,
-  deriveProcessMemoryRetirementLimits,
+  createProcessMemoryRetirementPressureHook,
+  deriveProcessMemoryRetirementAdmissionThresholds,
   ProcessMemoryAllocator,
   ProcessMemoryCapacityError,
   ProcessMemoryRetirementBacklogError,
@@ -106,8 +107,8 @@ describe("ProcessMemoryAllocator", () => {
     const allocator = new ProcessMemoryAllocator({
       maxMemories: 8,
       maxTotalBytes: 32 * WASM_PAGE_SIZE,
-      maxRetirementBacklogMemories: 2,
-      maxRetirementBacklogBytes: 8 * WASM_PAGE_SIZE,
+      retirementAdmissionMemoryThreshold: 2,
+      retirementAdmissionByteThreshold: 8 * WASM_PAGE_SIZE,
       retirementBackpressureMs: 0,
       maxRetirementTelemetryRecords: 0,
     });
@@ -136,7 +137,7 @@ describe("ProcessMemoryAllocator", () => {
     });
 
     // FinalizationRegistry callbacks are optional and may be arbitrarily late.
-    // Product call sites wait internally for the bounded retirement timer
+    // Product call sites wait internally for the retirement timer
     // instead of exposing this healthy sequential churn as EAGAIN.
     const replacement = await allocator.acquireWhenAvailable(request(1));
     expect(
@@ -154,12 +155,60 @@ describe("ProcessMemoryAllocator", () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
   });
 
+  it("treats retirement byte thresholds as admission gates, not hard backlog caps", () => {
+    const allocator = new ProcessMemoryAllocator({
+      maxMemories: 2,
+      maxTotalBytes: 16 * WASM_PAGE_SIZE,
+      retirementAdmissionMemoryThreshold: 2,
+      retirementAdmissionByteThreshold: 4 * WASM_PAGE_SIZE,
+      retirementBackpressureMs: 1_000,
+    });
+    const grown = allocator.acquire(request(2, 32));
+    grown.memory.grow(8);
+    grown.release();
+
+    expect(allocator.getRetirementStats()).toMatchObject({
+      retirementBacklogMemories: 1,
+      retirementBacklogBytes: 10 * WASM_PAGE_SIZE,
+    });
+    expect(() => allocator.acquire(request(1))).toThrow(
+      ProcessMemoryRetirementBacklogError,
+    );
+    allocator.clear();
+  });
+
+  it("retires every already-live generation even when they overshoot both thresholds", () => {
+    const allocator = new ProcessMemoryAllocator({
+      maxMemories: 3,
+      maxTotalBytes: 12 * WASM_PAGE_SIZE,
+      retirementAdmissionMemoryThreshold: 1,
+      retirementAdmissionByteThreshold: 2 * WASM_PAGE_SIZE,
+      retirementBackpressureMs: 1_000,
+    });
+    const live = [
+      allocator.acquire(request(2)),
+      allocator.acquire(request(2)),
+      allocator.acquire(request(2)),
+    ];
+
+    for (const lease of live) lease.release();
+
+    expect(allocator.getRetirementStats()).toMatchObject({
+      retirementBacklogMemories: 3,
+      retirementBacklogBytes: 6 * WASM_PAGE_SIZE,
+    });
+    expect(() => allocator.acquire(request(1))).toThrow(
+      ProcessMemoryRetirementBacklogError,
+    );
+    allocator.clear();
+  });
+
   it("captures fork synchronously while holding Worker launch for retirement admission", async () => {
     const allocator = new ProcessMemoryAllocator({
       maxMemories: 3,
       maxTotalBytes: 12 * WASM_PAGE_SIZE,
-      maxRetirementBacklogMemories: 1,
-      maxRetirementBacklogBytes: 4 * WASM_PAGE_SIZE,
+      retirementAdmissionMemoryThreshold: 1,
+      retirementAdmissionByteThreshold: 4 * WASM_PAGE_SIZE,
       retirementBackpressureMs: 10,
       maxRetirementTelemetryRecords: 0,
     });
@@ -187,8 +236,8 @@ describe("ProcessMemoryAllocator", () => {
     const allocator = new ProcessMemoryAllocator({
       maxMemories: 2,
       maxTotalBytes: 8 * WASM_PAGE_SIZE,
-      maxRetirementBacklogMemories: 1,
-      maxRetirementBacklogBytes: 4 * WASM_PAGE_SIZE,
+      retirementAdmissionMemoryThreshold: 1,
+      retirementAdmissionByteThreshold: 4 * WASM_PAGE_SIZE,
       retirementBackpressureMs: 1_000,
     });
     allocator.acquire(request(4)).release();
@@ -203,8 +252,8 @@ describe("ProcessMemoryAllocator", () => {
     const allocator = new ProcessMemoryAllocator({
       maxMemories: 4,
       maxTotalBytes: 8 * WASM_PAGE_SIZE,
-      maxRetirementBacklogMemories: 4,
-      maxRetirementBacklogBytes: 8 * WASM_PAGE_SIZE,
+      retirementAdmissionMemoryThreshold: 4,
+      retirementAdmissionByteThreshold: 8 * WASM_PAGE_SIZE,
       retirementBackpressureMs: 0,
       maxRetirementTelemetryRecords: 0,
     });
@@ -238,6 +287,28 @@ describe("ProcessMemoryAllocator", () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
   });
 
+  it("samples unmediated aggregate growth at the next allocation boundary", () => {
+    const allocator = new ProcessMemoryAllocator({
+      maxMemories: 2,
+      maxTotalBytes: 4 * WASM_PAGE_SIZE,
+    });
+    const running = allocator.acquire(request(2, 16));
+
+    // WebAssembly.Memory.grow does not call the allocator. The per-process
+    // maximum remains authoritative, while this aggregate admission budget is
+    // sampled when another address space is requested.
+    running.memory.grow(8);
+    expect(running.memory.buffer.byteLength).toBe(10 * WASM_PAGE_SIZE);
+    expect(() => allocator.acquire(request(1, 16))).toThrow(
+      ProcessMemoryCapacityError,
+    );
+    expect(allocator.getRetirementStats()).toMatchObject({
+      liveMemories: 1,
+      liveBytes: 10 * WASM_PAGE_SIZE,
+    });
+    running.release();
+  });
+
   it("severs consumed lease references and rejects duplicate consumption", () => {
     const allocator = new ProcessMemoryAllocator({
       maxMemories: 1,
@@ -253,13 +324,32 @@ describe("ProcessMemoryAllocator", () => {
     );
   });
 
+  it("rejects one observed wrapper being assigned to two memory generations", () => {
+    const allocator = new ProcessMemoryAllocator({
+      maxMemories: 2,
+      maxTotalBytes: 8 * WASM_PAGE_SIZE,
+    });
+    const first = allocator.acquire(request(2));
+    const second = allocator.acquire(request(2));
+    const wrapper = {};
+
+    allocator.observeTarget(first.memory, wrapper);
+    expect(() => allocator.observeTarget(first.memory, wrapper)).not.toThrow();
+    expect(() => allocator.observeTarget(second.memory, wrapper)).toThrow(
+      "belongs to another allocation",
+    );
+
+    first.release();
+    second.release();
+  });
+
   it("drops the host alias after forced termination and applies only bounded backpressure", async () => {
     const retirements: Array<{ mode: string; targets: number }> = [];
     const allocator = new ProcessMemoryAllocator({
       maxMemories: 1,
       maxTotalBytes: 8 * WASM_PAGE_SIZE,
-      maxRetirementBacklogMemories: 1,
-      maxRetirementBacklogBytes: 4 * WASM_PAGE_SIZE,
+      retirementAdmissionMemoryThreshold: 1,
+      retirementAdmissionByteThreshold: 4 * WASM_PAGE_SIZE,
       retirementBackpressureMs: 0,
       maxRetirementTelemetryRecords: 0,
       retirementPressureHook: (notice) => {
@@ -314,6 +404,36 @@ describe("ProcessMemoryAllocator", () => {
     allocator.clear();
   });
 
+  it("keeps retirement-pressure disablement explicit and coalesces enabled bursts", () => {
+    vi.useFakeTimers();
+    try {
+      const notice = {
+        retirementId: 1,
+        retirementMode: "quiescent" as const,
+        ptrWidth: 4 as const,
+        maximumPages: 16,
+        byteLength: WASM_PAGE_SIZE,
+        trackedTargets: 0,
+      };
+      const disabled = createProcessMemoryRetirementPressureHook(0);
+      disabled(notice);
+      expect(vi.getTimerCount()).toBe(0);
+
+      const enabled = createProcessMemoryRetirementPressureHook(1);
+      enabled(notice);
+      enabled({ ...notice, retirementId: 2 });
+      expect(vi.getTimerCount()).toBe(1);
+      vi.runAllTimers();
+      enabled({ ...notice, retirementId: 3 });
+      expect(vi.getTimerCount()).toBe(1);
+      expect(() =>
+        createProcessMemoryRetirementPressureHook(-1)
+      ).toThrow("invalid process memory retirement pressure");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("requires live leases back before clear and validates configuration", () => {
     expect(
       () =>
@@ -327,7 +447,7 @@ describe("ProcessMemoryAllocator", () => {
         new ProcessMemoryAllocator({
           maxMemories: 1,
           maxTotalBytes: WASM_PAGE_SIZE,
-          maxRetirementBacklogMemories: 0,
+          retirementAdmissionMemoryThreshold: 0,
         }),
     ).toThrow();
     expect(
@@ -335,7 +455,7 @@ describe("ProcessMemoryAllocator", () => {
         new ProcessMemoryAllocator({
           maxMemories: 1,
           maxTotalBytes: WASM_PAGE_SIZE,
-          maxRetirementBacklogBytes: 0,
+          retirementAdmissionByteThreshold: 0,
         }),
     ).toThrow();
     expect(
@@ -360,18 +480,24 @@ describe("ProcessMemoryAllocator", () => {
     expect(() => allocator.acquire(request(4, 0))).toThrow();
   });
 
-  it("derives a retirement bound that does not scale with live maximum bytes", () => {
+  it("derives retirement admission thresholds independently from live maximum bytes", () => {
     expect(
-      deriveProcessMemoryRetirementLimits(4, 4 * 1024 * 1024 * 1024),
+      deriveProcessMemoryRetirementAdmissionThresholds(
+        4,
+        4 * 1024 * 1024 * 1024,
+      ),
     ).toEqual({
-      maxRetirementBacklogMemories: 8,
-      maxRetirementBacklogBytes: 256 * 1024 * 1024,
+      retirementAdmissionMemoryThreshold: 8,
+      retirementAdmissionByteThreshold: 256 * 1024 * 1024,
     });
     expect(
-      deriveProcessMemoryRetirementLimits(100, 64 * 1024 * 1024),
+      deriveProcessMemoryRetirementAdmissionThresholds(
+        100,
+        64 * 1024 * 1024,
+      ),
     ).toEqual({
-      maxRetirementBacklogMemories: 32,
-      maxRetirementBacklogBytes: 64 * 1024 * 1024,
+      retirementAdmissionMemoryThreshold: 32,
+      retirementAdmissionByteThreshold: 64 * 1024 * 1024,
     });
   });
 
