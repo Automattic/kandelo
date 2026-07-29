@@ -410,6 +410,8 @@ homebrew_patched_launcher_formula_test_runtime_manifest() {
     node_modules/esbuild/package.json
     node_modules/fflate/package.json
     node_modules/fzstd/package.json
+    node_modules/vite/bin/vite.js
+    node_modules/vite/package.json
   )
   local -a required_directories=(
     .ci-test-binary-cache/programs
@@ -466,8 +468,9 @@ homebrew_patched_launcher_formula_test_runtime_manifest() {
       return 2
     }
   done
-  for checker in .git Cargo.lock packages local-binaries target/.rustc_info.json \
-    tools/xtask scripts/dev-shell.sh scripts/install-local-binary.sh; do
+  for checker in .git Cargo.lock package-lock.json packages local-binaries \
+    target/.rustc_info.json tools/xtask scripts/dev-shell.sh \
+    scripts/install-local-binary.sh; do
     if [ -e "$root/$checker" ] || [ -L "$root/$checker" ]; then
       echo "homebrew-patched-launcher: Formula test runtime exposes undeclared checkout authority: $checker" >&2
       return 2

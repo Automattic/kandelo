@@ -111,7 +111,10 @@ The semantic validator must still check cross-file and artifact facts:
 - bottle `arch` and `bottle_tag` agree;
 - Formula bottle root, tags, and SHA-256 digests exactly match the tap and the
   successful or last-green fallback bottles in sidecar metadata;
-- browser-compatible entries have browser validation evidence;
+- an empty `runtime_support` array has one successful `support_data_test` and
+  no successful executable-runtime evidence;
+- `node` and `browser` runtime claims have their matching successful smoke
+  evidence, and `browser_compatible` agrees exactly with the `browser` claim;
 - link-manifest paths do not escape the Homebrew prefix;
 - link sources exist inside the verified bottle payload;
 - bottle sha256, cache key, metadata sha, and provenance fields agree;

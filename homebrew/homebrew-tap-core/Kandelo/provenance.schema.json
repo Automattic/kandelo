@@ -178,6 +178,7 @@
             "schema",
             "homebrew_audit",
             "bottle_build",
+            "support_data_test",
             "node_smoke",
             "browser_smoke"
           ]

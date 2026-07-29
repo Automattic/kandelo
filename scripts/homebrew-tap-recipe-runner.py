@@ -12,6 +12,7 @@ root-owned output tree.
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -65,6 +66,8 @@ FORMULA_TEST_RUNTIME_LIMITS = {
     "max_file_bytes": 268_435_456,
     "max_path_bytes": 4_096,
 }
+FORMULA_TEST_PACKAGE_LOCK_MAX_BYTES = 16_777_216
+FORMULA_TEST_NODE_MODULE_MAX_PACKAGES = 512
 # The Formula test root is a runtime closure, not another source checkout.
 # Keep this list closed so installing a new npm dependency or adding checkout
 # state cannot silently grant Formula tests new read authority.
@@ -73,11 +76,13 @@ FORMULA_TEST_RUNTIME_DIRECTORIES = (
     Path("binaries"),
     Path("host/src"),
     Path("host/wasm"),
-    Path("node_modules/@esbuild"),
-    Path("node_modules/esbuild"),
-    Path("node_modules/fflate"),
-    Path("node_modules/fzstd"),
-    Path("node_modules/tsx"),
+)
+FORMULA_TEST_RUNTIME_NODE_MODULE_ROOTS = (
+    "esbuild",
+    "fflate",
+    "fzstd",
+    "tsx",
+    "vite",
 )
 FORMULA_TEST_RUNTIME_FILES = (
     Path("Cargo.toml"),
@@ -93,6 +98,7 @@ FORMULA_TEST_RUNTIME_FILES = (
 FORMULA_TEST_RUNTIME_PROGRAM_INDEX_DESTINATION = Path(
     "host/wasm/program-packages.json"
 )
+FORMULA_TEST_RUNTIME_VITE_CLI = Path("node_modules/vite/bin/vite.js")
 # Linux reserves one trailing NUL in sockaddr_un.sun_path, leaving 107 bytes
 # for a pathname. The protected build identity intentionally retains all 64
 # digest characters, so the control socket uses the shortest meaningful name.
@@ -3633,6 +3639,365 @@ def read_stable_projection_file(
     return b"".join(chunks), before
 
 
+def npm_package_name_parts(value: Any, *, label: str) -> tuple[str, ...]:
+    """Validate one npm package name and return its path components."""
+    if type(value) is not str or not value or len(value.encode()) > 214:
+        fail(f"{label} is not one bounded npm package name")
+    parts = value.split("/")
+    if value.startswith("@"):
+        if (
+            len(parts) != 2
+            or not parts[0].startswith("@")
+            or len(parts[0]) == 1
+        ):
+            fail(f"{label} is not one scoped npm package name")
+        checked = (parts[0], parts[1])
+    else:
+        if len(parts) != 1:
+            fail(f"{label} is not one unscoped npm package name")
+        checked = (parts[0],)
+    component_pattern = re.compile(r"@?[A-Za-z0-9_~.-]+")
+    if any(
+        part in {"", ".", ".."}
+        or not component_pattern.fullmatch(part)
+        for part in checked
+    ):
+        fail(f"{label} contains an unsafe npm package path component")
+    return checked
+
+
+def npm_package_name_from_lock_path(relative: Path) -> str:
+    """Return the final package name from one package-lock `packages` key."""
+    parts = relative.parts
+    position = 0
+    package_name = ""
+    while position < len(parts):
+        if parts[position] != "node_modules":
+            fail("Formula test npm lock contains a non-package path")
+        position += 1
+        if position >= len(parts):
+            fail("Formula test npm lock contains an empty package path")
+        if parts[position].startswith("@"):
+            if position + 1 >= len(parts):
+                fail("Formula test npm lock contains an empty scoped package")
+            package_name = f"{parts[position]}/{parts[position + 1]}"
+            npm_package_name_parts(
+                package_name, label="Formula test npm lock package"
+            )
+            position += 2
+        else:
+            package_name = parts[position]
+            npm_package_name_parts(
+                package_name, label="Formula test npm lock package"
+            )
+            position += 1
+    return package_name
+
+
+def npm_dependency_resolution_candidates(
+    package_relative: Path, dependency: str
+) -> list[Path]:
+    """Model Node's package-root lookup without executing mutable JS."""
+    dependency_parts = npm_package_name_parts(
+        dependency, label="Formula test npm dependency"
+    )
+    candidates = [
+        package_relative.joinpath("node_modules", *dependency_parts)
+    ]
+    parts = package_relative.parts
+    for position in range(len(parts) - 1, -1, -1):
+        if parts[position] == "node_modules":
+            candidates.append(
+                Path(*parts[: position + 1], *dependency_parts)
+            )
+    return list(dict.fromkeys(candidates))
+
+
+def formula_test_lock_dependencies(
+    entry: dict[str, Any], *, package: str, field: str
+) -> tuple[str, ...]:
+    value = entry.get(field, {})
+    if type(value) is not dict or len(value) > FORMULA_TEST_NODE_MODULE_MAX_PACKAGES:
+        fail(f"Formula test npm lock {package} has invalid {field}")
+    dependencies: list[str] = []
+    for dependency, requirement in value.items():
+        npm_package_name_parts(
+            dependency,
+            label=f"Formula test npm lock {package} {field} entry",
+        )
+        if (
+            type(requirement) is not str
+            or not requirement
+            or len(requirement.encode()) > 4_096
+        ):
+            fail(
+                f"Formula test npm lock {package} has an invalid "
+                f"{field} requirement"
+            )
+        dependencies.append(dependency)
+    return tuple(sorted(dependencies))
+
+
+def formula_test_locked_package(
+    source: Path,
+    packages: dict[str, Any],
+    relative: Path,
+    limits: dict[str, int],
+) -> tuple[dict[str, Any], tuple[str, ...], tuple[str, ...]]:
+    rendered = relative.as_posix()
+    npm_name = npm_package_name_from_lock_path(relative)
+    entry = packages.get(rendered)
+    if type(entry) is not dict:
+        fail(f"Formula test npm package {npm_name} is absent from package-lock")
+    version = entry.get("version")
+    integrity = entry.get("integrity")
+    integrity_bytes: bytes | None = None
+    if type(integrity) is str and integrity.startswith("sha512-"):
+        try:
+            integrity_bytes = base64.b64decode(
+                integrity.removeprefix("sha512-"),
+                validate=True,
+            )
+        except ValueError:
+            integrity_bytes = None
+    if (
+        type(version) is not str
+        or not version
+        or len(version.encode()) > 512
+        or type(integrity) is not str
+        or not re.fullmatch(r"sha512-[A-Za-z0-9+/=]+", integrity)
+        or integrity_bytes is None
+        or len(integrity_bytes) != hashlib.sha512().digest_size
+    ):
+        fail(
+            f"Formula test npm package {npm_name} lacks one locked "
+            "version and SHA-512 integrity"
+        )
+    package_root = canonical_real_directory(
+        source / relative,
+        label=f"Formula test npm package {npm_name}",
+    )
+    manifest_data, _ = read_stable_projection_file(
+        package_root / "package.json",
+        limits,
+        f"Formula test npm package manifest {npm_name}",
+    )
+    manifest = parse_json_bytes(
+        manifest_data, f"Formula test npm package manifest {npm_name}"
+    )
+    if (
+        type(manifest) is not dict
+        or manifest.get("name") != npm_name
+        or manifest.get("version") != version
+    ):
+        fail(
+            f"Formula test npm package {npm_name} differs from package-lock"
+        )
+    required = formula_test_lock_dependencies(
+        entry, package=npm_name, field="dependencies"
+    )
+    optional = tuple(
+        dependency
+        for dependency in formula_test_lock_dependencies(
+            entry, package=npm_name, field="optionalDependencies"
+        )
+        if dependency not in required
+    )
+    return entry, required, optional
+
+
+def formula_test_resolve_locked_dependency(
+    source: Path,
+    packages: dict[str, Any],
+    owner: Path,
+    dependency: str,
+    *,
+    optional: bool,
+) -> Path | None:
+    for candidate in npm_dependency_resolution_candidates(owner, dependency):
+        package_path = source / candidate
+        present = os.path.lexists(package_path)
+        locked = candidate.as_posix() in packages
+        if present and not locked:
+            fail(
+                "Formula test npm dependency exists outside package-lock: "
+                f"{candidate.as_posix()}"
+            )
+        if not locked:
+            continue
+        if not present:
+            if optional:
+                continue
+            fail(
+                "Formula test npm dependency is locked but not installed: "
+                f"{candidate.as_posix()}"
+            )
+        canonical_real_directory(
+            package_path,
+            label=f"Formula test npm dependency {dependency}",
+        )
+        return candidate
+    if optional:
+        return None
+    fail(
+        "Formula test npm dependency has no locked installed resolution: "
+        f"{dependency}"
+    )
+
+
+def formula_test_installed_nested_packages(
+    source: Path,
+    package_root: Path,
+) -> set[Path]:
+    """Enumerate nested packages that a projected package tree would expose."""
+    selected: set[Path] = set()
+    pending = [package_root / "node_modules"]
+    while pending:
+        node_modules = pending.pop()
+        if not os.path.lexists(source / node_modules):
+            continue
+        canonical_real_directory(
+            source / node_modules,
+            label="Formula test nested node_modules",
+        )
+        try:
+            entries = sorted(
+                (source / node_modules).iterdir(), key=lambda path: path.name
+            )
+        except OSError as error:
+            fail(f"Formula test nested node_modules is unavailable: {error}")
+        package_paths: list[Path] = []
+        for entry in entries:
+            if entry.name == ".bin":
+                continue
+            if entry.name.startswith("@"):
+                scope = canonical_real_directory(
+                    entry,
+                    label="Formula test nested npm scope",
+                )
+                try:
+                    scope_entries = sorted(
+                        scope.iterdir(), key=lambda path: path.name
+                    )
+                except OSError as error:
+                    fail(f"Formula test nested npm scope is unavailable: {error}")
+                package_paths.extend(
+                    node_modules / entry.name / child.name
+                    for child in scope_entries
+                )
+            else:
+                package_paths.append(node_modules / entry.name)
+        for relative in package_paths:
+            canonical_real_directory(
+                source / relative,
+                label="Formula test nested npm package",
+            )
+            npm_package_name_from_lock_path(relative)
+            selected.add(relative)
+            if len(selected) > FORMULA_TEST_NODE_MODULE_MAX_PACKAGES:
+                fail("Formula test npm closure exceeds the package limit")
+            pending.append(relative / "node_modules")
+    return selected
+
+
+def read_formula_test_package_lock(
+    source: Path,
+    limits: dict[str, int],
+) -> tuple[bytes, os.stat_result]:
+    """Read the selection lock without first admitting a larger allocation."""
+    lock_limits = dict(limits)
+    lock_limits["max_file_bytes"] = min(
+        lock_limits["max_file_bytes"],
+        FORMULA_TEST_PACKAGE_LOCK_MAX_BYTES,
+    )
+    return read_stable_projection_file(
+        source / "package-lock.json",
+        lock_limits,
+        "Formula test package-lock",
+    )
+
+
+def formula_test_node_module_projection(
+    source: Path,
+    limits: dict[str, int] = FORMULA_TEST_RUNTIME_LIMITS,
+) -> tuple[list[Path], bytes, tuple[int, ...]]:
+    """Select the installed, package-lock-owned runtime closure for tests."""
+    lock_data, lock_before = read_formula_test_package_lock(source, limits)
+    lock = parse_json_bytes(lock_data, "Formula test package-lock")
+    if (
+        type(lock) is not dict
+        or lock.get("lockfileVersion") != 3
+        or type(lock.get("packages")) is not dict
+        or len(lock["packages"]) > limits["max_entries"]
+    ):
+        fail("Formula test package-lock is not one bounded v3 package lock")
+    packages = lock["packages"]
+    selected: set[Path] = set()
+    pending = [
+        Path("node_modules", *npm_package_name_parts(
+            name, label="Formula test npm root"
+        ))
+        for name in FORMULA_TEST_RUNTIME_NODE_MODULE_ROOTS
+    ]
+    while pending:
+        relative = pending.pop()
+        if relative in selected:
+            continue
+        if len(selected) >= FORMULA_TEST_NODE_MODULE_MAX_PACKAGES:
+            fail("Formula test npm closure exceeds the package limit")
+        _, required, optional = formula_test_locked_package(
+            source, packages, relative, limits
+        )
+        selected.add(relative)
+        for dependency in required:
+            resolved = formula_test_resolve_locked_dependency(
+                source,
+                packages,
+                relative,
+                dependency,
+                optional=False,
+            )
+            if resolved is None:
+                # Required dependencies must never silently disappear when
+                # Python assertions are disabled for the privileged runner.
+                fail(
+                    "Formula test npm dependency resolution returned no "
+                    f"required package: {dependency}"
+                )
+            pending.append(resolved)
+        for dependency in optional:
+            resolved = formula_test_resolve_locked_dependency(
+                source,
+                packages,
+                relative,
+                dependency,
+                optional=True,
+            )
+            if resolved is not None:
+                pending.append(resolved)
+
+    projected = [
+        relative
+        for relative in sorted(selected, key=lambda path: path.as_posix())
+        if not any(
+            relative != parent and relative.is_relative_to(parent)
+            for parent in selected
+        )
+    ]
+    nested = set()
+    for relative in projected:
+        nested.update(
+            formula_test_installed_nested_packages(source, relative)
+        )
+    undeclared_nested = nested - selected
+    if undeclared_nested:
+        fail(
+            "Formula test npm package contains an undeclared nested package: "
+            f"{min(undeclared_nested, key=lambda path: path.as_posix())}"
+        )
+    return projected, lock_data, file_identity(lock_before)
+
+
 def add_projection_parent_records(
     records: dict[str, TreeNode],
     relative: Path,
@@ -3806,8 +4171,17 @@ def stage_formula_test_runtime_tree(
         sealed_owner=(owner_uid, owner_gid),
         require_single_link_files=True,
     )
+    (
+        node_module_directories,
+        package_lock_data,
+        package_lock_identity,
+    ) = formula_test_node_module_projection(source, limits)
+    runtime_directories = (
+        *FORMULA_TEST_RUNTIME_DIRECTORIES,
+        *node_module_directories,
+    )
     selected_directories: dict[Path, TreeSnapshot] = {}
-    for relative in FORMULA_TEST_RUNTIME_DIRECTORIES:
+    for relative in runtime_directories:
         candidate = canonical_real_directory(
             source / relative,
             label=f"Formula test runtime input {relative.as_posix()}",
@@ -3821,6 +4195,36 @@ def stage_formula_test_runtime_tree(
             validate_symlinks=False,
         )
         selected_directories[relative] = snapshot
+
+    (
+        node_module_directories_after,
+        package_lock_data_after,
+        package_lock_identity_after,
+    ) = formula_test_node_module_projection(source, limits)
+    if (
+        node_module_directories_after != node_module_directories
+        or package_lock_data_after != package_lock_data
+        or package_lock_identity_after != package_lock_identity
+    ):
+        fail("Formula test npm closure changed before staging")
+    vite_data, vite_before = read_stable_projection_file(
+        source / FORMULA_TEST_RUNTIME_VITE_CLI,
+        limits,
+        "Formula test Vite CLI",
+    )
+    vite_root_snapshot = selected_directories.get(Path("node_modules/vite"))
+    vite_record = (
+        None
+        if vite_root_snapshot is None
+        else vite_root_snapshot[1].get("bin/vite.js")
+    )
+    if (
+        vite_record is None
+        or vite_record[0] != "f"
+        or vite_record[1] != file_identity(vite_before)
+        or vite_record[3] != hashlib.sha256(vite_data).hexdigest()
+    ):
+        fail("Formula test Vite CLI is outside its locked package snapshot")
 
     expected_records = dict(platform_before[1])
     for relative, source_snapshot in selected_directories.items():
@@ -3997,6 +4401,14 @@ def stage_formula_test_runtime_tree(
                     "Formula test runtime input changed during staging: "
                     f"{relative.as_posix()}"
                 )
+        package_lock_data_after, package_lock_after = (
+            read_formula_test_package_lock(source, limits)
+        )
+        if (
+            package_lock_data_after != package_lock_data
+            or file_identity(package_lock_after) != package_lock_identity
+        ):
+            fail("Formula test npm closure changed during staging")
         for destination_relative, (
             source_path,
             expected_data,

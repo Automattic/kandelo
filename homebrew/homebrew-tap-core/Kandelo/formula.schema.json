@@ -101,7 +101,6 @@
         "runtime_support": {
           "type": "array",
           "items": { "enum": ["node", "browser"] },
-          "minItems": 1,
           "uniqueItems": true
         },
         "browser_compatible": { "type": "boolean" },
@@ -156,6 +155,20 @@
               "runtime_support": {
                 "contains": { "const": "browser" }
               }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": ["runtime_support"],
+            "properties": {
+              "runtime_support": { "maxItems": 0 }
+            }
+          },
+          "then": {
+            "properties": {
+              "browser_compatible": { "const": false },
+              "fork_instrumentation": { "const": "not-required" }
             }
           }
         }

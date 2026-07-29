@@ -2272,6 +2272,9 @@ EOF
   bottle_sha="$(jq -r '.layout.bottle.sha256' "$handoff/receipt.json")"
   bottle_bytes="$(jq -r '.layout.bottle.bytes' "$handoff/receipt.json")"
   bottle_url="$(jq -r '.layout.bottle.url' "$handoff/receipt.json")"
+  # WHY: `runtime_support` is a semantic claim, not descriptive decoration.
+  # Keep this shared successful-bottle fixture bound to the matching runtime
+  # evidence so publisher tests exercise the same contract as real sidecars.
   jq -nS \
     --arg sha "$bottle_sha" --arg bytes "$bottle_bytes" --arg url "$bottle_url" \
     --arg formula_sha "$formula_sha" --arg archived_formula_sha "$archived_formula_sha" \
@@ -2324,9 +2327,16 @@ EOF
             sdk_fingerprint: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
             sysroot_fingerprint: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
           },
-          validation: {outcome_lists: [{
-            name: "schema", status: "success", passed: ["fixture"], failed: [], skipped: []
-          }]}
+          validation: {outcome_lists: [
+            {
+              name: "schema", status: "success",
+              passed: ["fixture"], failed: [], skipped: []
+            },
+            {
+              name: "node_smoke", status: "success",
+              passed: ["fixture"], failed: [], skipped: []
+            }
+          ]}
         }]
       }]
     }' >"$handoff/composition/sidecars-input.json"
