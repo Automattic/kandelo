@@ -63,6 +63,28 @@ function centralizedInitMessageSource(handler: string): string {
   return handler.slice(start, end);
 }
 
+function spawnCallbackSource(src: string): string {
+  const start = src.indexOf("onResolveSpawn:");
+  const end = src.indexOf("\n      onClone:", start);
+  expect(start, "onResolveSpawn callback must exist").toBeGreaterThanOrEqual(0);
+  expect(end, "onClone callback must follow onSpawn").toBeGreaterThan(start);
+  return src.slice(start, end);
+}
+
+function expectSpawnCallbacks(src: string, entry: string): void {
+  const callbacks = spawnCallbackSource(src);
+  expect(
+    callbacks,
+    `${entry} must wire onResolveSpawn to handlePosixSpawnResolve`,
+  ).toMatch(/onResolveSpawn:\s*handlePosixSpawnResolve/);
+  expect(
+    callbacks,
+    `${entry} must admit onSpawn through the creator gate`,
+  ).toMatch(
+    /onSpawn:.*processMemoryCreators\.run\(.*handlePosixSpawn\(/s,
+  );
+}
+
 function expectDeadStartUsesOrdinaryTeardown(handler: string, entry: string): void {
   expect(
     handler,
@@ -109,12 +131,10 @@ describe("spawn host parity", () => {
     expect(src, `${nodeEntry} must define handlePosixSpawnResolve`).toMatch(
       /\b(?:async\s+)?function\s+handlePosixSpawnResolve\s*\(/,
     );
-    expect(src, `${nodeEntry} must wire onSpawn: handlePosixSpawn`).toMatch(
-      /onSpawn:\s*handlePosixSpawn/,
-    );
-    expect(src, `${nodeEntry} must wire onResolveSpawn: handlePosixSpawnResolve`).toMatch(
-      /onResolveSpawn:\s*handlePosixSpawnResolve/,
-    );
+    // WHY: destroy must close this admission gate before its terminal sweep.
+    // A direct handler reference can create a new process Memory while that
+    // sweep is yielding, making the supposedly retired generation reachable.
+    expectSpawnCallbacks(src, nodeEntry);
     const spawnHandler = posixSpawnHandlerSource(src);
     expect(spawnHandler, `${nodeEntry} must accept posix_spawn parentage`).toMatch(
       /handlePosixSpawn\(\s*parentPid:\s*number,\s*childPid:\s*number,/s,
@@ -138,12 +158,7 @@ describe("spawn host parity", () => {
     expect(src, `${browserEntry} must define handlePosixSpawnResolve`).toMatch(
       /\b(?:async\s+)?function\s+handlePosixSpawnResolve\s*\(/,
     );
-    expect(src, `${browserEntry} must wire onSpawn (calling handlePosixSpawn)`).toMatch(
-      /onSpawn:.*handlePosixSpawn/s,
-    );
-    expect(src, `${browserEntry} must wire onResolveSpawn (calling handlePosixSpawnResolve)`).toMatch(
-      /onResolveSpawn:.*handlePosixSpawnResolve/s,
-    );
+    expectSpawnCallbacks(src, browserEntry);
     const spawnHandler = posixSpawnHandlerSource(src);
     expect(spawnHandler, `${browserEntry} must accept posix_spawn parentage`).toMatch(
       /handlePosixSpawn\(\s*parentPid:\s*number,\s*childPid:\s*number,/s,
