@@ -2543,7 +2543,11 @@ EOF
   target_proxy_rack="$isolated_prefix/Cellar/cmake"
   target_proxy_keg="$target_proxy_rack/1.0"
   target_proxy_opt="$isolated_prefix/opt/cmake"
+  ninja_proxy_rack="$isolated_prefix/Cellar/ninja"
+  ninja_proxy_keg="$ninja_proxy_rack/1.0"
+  ninja_proxy_opt="$isolated_prefix/opt/ninja"
   homebrew_patched_launcher_bridge_native_formula cmake
+  homebrew_patched_launcher_bridge_native_formula ninja
   [ -L "$target_proxy_opt/bin/cmake-cross" ] && \
     [ -L "$target_proxy_opt/bin/cmake-cross-final" ] && \
     [ "$(readlink "$target_proxy_opt/bin/cmake-cross")" = \
@@ -2552,11 +2556,11 @@ EOF
       "$isolated_native_prefix/Cellar/ninja/1.0/bin/ninja" ] && \
     [ "$("$target_proxy_opt/bin/cmake-cross")" = "native fixture" ] ||
     fail "isolated native Formula proxy did not preserve its sealed native closure"
-  [ ! -e "$isolated_prefix/Cellar/ninja" ] && \
-    [ ! -L "$isolated_prefix/Cellar/ninja" ] && \
-    [ ! -e "$isolated_prefix/opt/ninja" ] && \
-    [ ! -L "$isolated_prefix/opt/ninja" ] ||
-    fail "isolated native Formula proxy exposed its transitive closure"
+  [ -d "$ninja_proxy_rack" ] && [ ! -L "$ninja_proxy_rack" ] && \
+    [ -d "$ninja_proxy_keg" ] && [ ! -L "$ninja_proxy_keg" ] && \
+    [ "$(readlink "$ninja_proxy_opt")" = "../Cellar/ninja/1.0" ] && \
+    [ "$("$ninja_proxy_opt/bin/ninja")" = "native fixture" ] ||
+    fail "isolated native Formula proxy omitted a declared direct tool"
   [ ! -e "$isolated_prefix/Cellar/openssl@3" ] && \
     [ ! -L "$isolated_prefix/Cellar/openssl@3" ] && \
     [ ! -e "$isolated_prefix/opt/openssl@3" ] && \
@@ -2602,16 +2606,16 @@ EOF
   mapfile -t recipe_native_formulae < <(
     jq -r '.native_formulae[]' <<<"$recipe_config_json"
   )
-  recipe_native_cellar="$(jq -r '.native_cellar' <<<"$recipe_config_json")"
+  recipe_target_cellar="$isolated_prefix/Cellar"
   recipe_native_roots=()
   for native_formula in "${recipe_native_formulae[@]}"; do
-    # The workflow-side harness reads the root-owned supervisor contract to
-    # construct this direct protocol canary. Formula code discovers these kegs
-    # inside the isolated Brew service; the workflow user intentionally cannot
-    # enumerate the protected native-prefix parent on the host.
+    # WHY: recipe code receives each declared direct native tool through its
+    # canonical target-Cellar proxy. The sealed native prefix is authenticated
+    # closure storage, not caller authority; accepting its paths here would let
+    # the canary miss a direct proxy that production Formula support requires.
     mapfile -t native_versions < <(
       /usr/bin/sudo -n -- \
-        /usr/bin/find "$recipe_native_cellar/$native_formula" \
+        /usr/bin/find "$recipe_target_cellar/$native_formula" \
           -mindepth 1 -maxdepth 1 -type d -print
     )
     [ "${#native_versions[@]}" -eq 1 ] ||
@@ -2836,6 +2840,9 @@ EOF
     fail "isolated cleanup left the native Formula proxy rack"
   [ ! -e "$target_proxy_opt" ] && [ ! -L "$target_proxy_opt" ] ||
     fail "isolated cleanup left the native Formula proxy opt link"
+  [ ! -e "$ninja_proxy_rack" ] && [ ! -L "$ninja_proxy_rack" ] &&
+    [ ! -e "$ninja_proxy_opt" ] && [ ! -L "$ninja_proxy_opt" ] ||
+    fail "isolated cleanup left the second native Formula proxy"
   [ ! -e "$isolated_prefix/.kandelo-publisher-build-dependencies.json" ] ||
     fail "isolated cleanup left the publisher dependency plan"
   [ ! -e "$isolated_prefix/.kandelo-publisher-tier2-attestation.json" ] ||
