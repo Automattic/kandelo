@@ -140,6 +140,10 @@ function signatures(
       parameters: [i32],
       result: i32,
     },
+    kernel_generate_host_signal: {
+      parameters: [i32, i32],
+      result: i32,
+    },
     kernel_has_sa_nocldstop: {
       parameters: [i32],
       result: i32,

@@ -24833,10 +24833,9 @@ export class CentralizedKernelWorker {
   }
 
   /**
-   * Queue a signal on a target process in the kernel by invoking SYS_KILL
-   * through kernel_handle_channel. The signal is queued in the kernel's
-   * ProcessTable and will be delivered via dequeueSignalForDelivery on the
-   * target process's next syscall completion.
+   * Queue a signal on a target process through the host-owned kernel boundary.
+   * The signal is recorded in the kernel's ProcessTable and will be delivered
+   * via dequeueSignalForDelivery on the target's next guest checkpoint.
    */
   private sendSignalToProcess(
     targetPid: number,
@@ -24872,51 +24871,29 @@ export class CentralizedKernelWorker {
     // that expires in that handoff window from being lost.
 
     if (queueSignal) {
-      // Host-originated process signals are shared deliveries. Bind the exact
-      // kernel-owned leader rather than relying on an implicit main-thread
-      // sentinel or state left over from a prior dispatch.
+      const generateHostSignal = this.#kernelInstanceForEntry(entry).exports
+        .kernel_generate_host_signal as
+          ((pid: number, signal: number) => number) | undefined;
+      if (typeof generateHostSignal !== "function") {
+        this.#failBlockingRetryProtocol(
+          "kernel host-signal generation export is unavailable",
+        );
+      }
+      let result: number;
       try {
-        this.#bindKernelTid(targetPid, targetPid, entry);
+        result = generateHostSignal(targetPid, signum);
       } catch (error) {
         this.#rethrowKernelEntryFatal(error);
-        return;
-      }
-      this.currentHandlePid = targetPid;
-      try {
-        this.#requireMainScratchRegion().withLease((lease) => {
-          const kernelView = lease.dataView(0, CH_TOTAL_SIZE);
-          // Write SYS_KILL into scratch: kill(targetPid, signum)
-          kernelView.setUint32(CH_SYSCALL, SYS_KILL, true);
-          kernelView.setBigInt64(CH_ARGS, BigInt(targetPid), true);
-          kernelView.setBigInt64(
-            CH_ARGS + CH_ARG_SIZE,
-            BigInt(signum),
-            true,
-          );
-          for (let i = 2; i < CH_ARGS_COUNT; i++) {
-            kernelView.setBigInt64(CH_ARGS + i * CH_ARG_SIZE, 0n, true);
-          }
-          this.#invokeEntryScratchExport(
-            entry,
-            lease,
-            "kernel_handle_channel",
-            [
-              lease.exportPointer(0, CH_TOTAL_SIZE),
-              CH_TOTAL_SIZE,
-              targetPid,
-              0n,
-            ],
-          );
-        });
-      } catch (err) {
-        this.#rethrowKernelEntryFatal(err);
-        // Non-fatal — signal delivery is best-effort from the host side
-        console.error(
-          `[sendSignalToProcess] kernel threw for pid=${targetPid} sig=${signum}: ${err}`,
+        this.#failBlockingRetryProtocol(
+          `kernel host-signal generation trapped for pid ${targetPid}`,
+          error,
         );
-        return;
-      } finally {
-        this.currentHandlePid = 0;
+      }
+      if (result === -ESRCH) return;
+      if (!Number.isSafeInteger(result) || result !== 0) {
+        this.#failBlockingRetryProtocol(
+          `kernel rejected host signal ${signum} for pid ${targetPid}: ${result}`,
+        );
       }
     }
 
@@ -24927,7 +24904,8 @@ export class CentralizedKernelWorker {
     // query or blocked-syscall retry observes the target.
     this.#drainAndProcessWakeupEventsWithinKernelEntry(entry);
 
-    // Default terminating actions are applied inside kernel_handle_channel.
+    // Default terminating actions are applied inside the kernel generation
+    // boundary.
     // Retire a newly exited worker before considering any blocking-channel
     // wakeup; guest code must not resume after signal death.
     this.reapKilledProcessesAfterSyscall(entry);
@@ -24952,9 +24930,7 @@ export class CentralizedKernelWorker {
     // Ignored and default-ignore signals are consumed inside the kernel. Do
     // not shorten a sleep merely because its mask would have accepted a
     // signal that is no longer pending.
-    if (
-      !this.#kernelThreadHasDeliverable(targetPid, targetTid, entry)
-    ) return;
+    if (!this.#kernelThreadHasDeliverable(targetPid, targetTid, entry)) return;
 
     if (
       this.interruptPendingFutexForCaughtSignal(
@@ -24986,15 +24962,12 @@ export class CentralizedKernelWorker {
 
     // 2. Pending ppoll/poll retry — wake ALL threads for this pid.
     //    Snapshot-and-skip-if-replaced: retrySyscall runs handleSyscall
-    //    synchronously, and a non-interruptible blocking wait (notably
-    //    accept(), which has no EINTR path) re-inserts the SAME
-    //    exact-channel key via pendingPollRetries.set when it re-parks on
-    //    EAGAIN. JS Map iterators are not snapshots — a deleted-then-
-    //    reinserted key reappears at the tail and the raw for..of would
-    //    revisit it forever, livelocking the whole kernel worker thread.
-    //    Mirror wakeBlockedPoll / wakeAllBlockedRetries. (Regression:
-    //    SIGCHLD to a forking daemon's master parked in accept() —
-    //    e.g. msmtpd delivering WordPress mail — wedged the kernel.)
+    //    synchronously, and a wait that remains blocked can reinsert the SAME
+    //    exact-channel key via pendingPollRetries.set. JS Map iterators are not
+    //    snapshots — a deleted-then-reinserted key reappears at the tail and
+    //    the raw for..of would revisit it forever, livelocking the whole
+    //    kernel worker thread. Mirror wakeBlockedPoll /
+    //    wakeAllBlockedRetries.
     const pollMatches = Array.from(this.pendingPollRetries.entries()).filter(
       ([, e]) => e.channel.pid === targetPid,
     );
