@@ -144,6 +144,12 @@ section must explain:
 - who or what is affected; and
 - why the change matters to Kandelo's users, platform contracts, or maintainers.
 
+Wrap ordinary prose in PR descriptions and commit bodies at 72 columns
+or less. This preserves the traditional Git width and prevents merge
+tools from introducing a second, inconsistent wrap. Do not damage
+Markdown tables, code blocks, or an indivisible URL merely to satisfy
+the prose width.
+
 Write for a junior developer who has not followed the incident or earlier PRs.
 Define necessary terms, expand acronyms on first use, and use a concrete example
 when it makes the failure easier to understand. Links may supply evidence or

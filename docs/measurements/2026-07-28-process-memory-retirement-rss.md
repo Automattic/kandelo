@@ -202,12 +202,18 @@ checks. They deliberately answer different questions:
    ABBA replicates. It does not average one leaking replicate behind a descent
    in the other.
 
-Each retirement trial reaps four warm-up children and then 256 measured
-children. Each control holds one warm-up child and four measured children
-live. The smaller control is not expected to make an absolute memory level
-portable. Both high-minus-low live-control replicates must independently
-expose at least 8 MiB of physical signal per child at warm-up and sustained
-churn before the run may say anything positive about retirement.
+Each retirement trial reaps four warm-up children and then at least
+256 measured children. An accumulating 32 MiB trial remains in the same
+kernel and context for a second 256-child window and, if still accumulating,
+a third, for a 768-child maximum. A rising 1 MiB trial remains non-green at
+256 children. Only the high-size probe receives more time to distinguish
+delayed collection from retained address-space backing. Each control holds
+one warm-up child and four
+measured children live. The smaller control is not expected to make an
+absolute memory level portable. Both high-minus-low live-control replicates
+must independently expose at least 8 MiB of physical signal per child at
+warm-up and sustained churn before the run may say anything positive about
+retirement.
 
 One unmeasured 32 MiB live-control context first exercises the browser realm,
 module graph, Kandelo kernel, actual guest-process path, worker helpers, and
@@ -222,16 +228,24 @@ three values in the artifact.
 During active churn, each retirement replicate must independently stay at or
 below both 4 MiB per child and 15% of its paired live signal. The first
 four-child warm-up remains an advisory because an engine may not have
-scheduled collection yet; the later 256-child window must show separation.
+scheduled collection yet; the initial 256-child window must show active
+separation, and an ambiguous floor receives up to two more 256-child windows.
 The sustained value is the median of all wave samples divided by the median
 represented child count. This resists a scheduler-selected collection peak or
 descent without averaging one low/high replicate into the other.
 
-Each of the four retirement trials compares the median of its first 16 wave
-samples with the median of its last 16. That shift must stay below a
-0.5 MiB-per-child slope and 32 MiB of growth. A linear leak remains visible,
-while one engine collection peak cannot make an otherwise bounded sawtooth
-look unbounded.
+Each of the four retirement trials groups four waves, or 32 retired children,
+into one collection epoch. The second-lowest sample in each epoch follows
+the collection floor while requiring two low observations. One transient
+accounting dip therefore cannot set the floor. The classifier records a
+Theil-Sen slope across eight floors and the median level change between
+their first and second halves. At 256 children it uses all eight floors. An
+extended trial uses the trailing eight, preserving the same evidence width.
+A trial is non-green when both its floor slope exceeds 0.5 MiB per child and
+its floor level grows by more than 32 MiB. The raw first-half/second-half
+median shift remains in the artifact as an advisory. A linear leak raises
+the repeated collection floor, while a scheduler-selected peak or one
+bounded cache step does not become a false leak verdict.
 
 Context-close contrasts use absolute bytes, without dividing by all 260
 retirement children. A paired live-control contrast supplies the engine-local
@@ -240,6 +254,14 @@ high-child retention. A positive retired signal above the control floor is
 retention evidence only when later pre-context baselines also grow. This
 catches four permanently retained warm-up generations without treating one
 bounded engine cache as an ever-growing Kandelo leak.
+
+When a 32 MiB trial extends, its terminal sample has more churn exposure than
+the paired 1 MiB trial. The artifact records that relationship as
+`unequal-high-exposure`. It is not an equivalent low/high terminal contrast:
+extra work and time can either trigger collection or raise memory use. The
+classifier therefore uses the fixed first 256 children for the active ABBA
+comparison and the extended trial's own trailing collection floor for later
+retirement evidence.
 
 The 200 ms kernel-destroy sample remains in the trace. If its signal clears
 after context closure and the cross-context baseline stays bounded, the
@@ -351,6 +373,86 @@ engine cache is recorded as an advisory. Synthetic tests still make a
 four-warm-generation leak fail by carrying its retained bytes into every
 later context. The longer, fully warmed replacement matrix remains required
 before the pull request is merge-ready.
+
+### Third exact Linux calibration — 2026-07-29
+
+The fully warmed run on head
+`f84087ff66ecb99f5521f14f3168c6962e53c793` is Actions run
+`30439594267`. Chromium and Firefox completed 256-child trials. WebKit reached
+the old 30-minute job timeout before producing its final JSON trace, so this
+run supplies no WebKit reclamation verdict. The replacement job allows
+45 minutes and writes bounded per-epoch progress so another timeout cannot
+leave an empty diagnostic artifact.
+
+The completed engines exposed collection-cycle aliasing in the raw
+first-half/second-half medians:
+
+| Engine | Retired active MiB/child | Live MiB/child | Second-lowest floor slope/growth |
+|---|---:|---:|---|
+| Chromium | 1.318, 1.570 | 30.38, 30.87 | all slopes at or below 0.361; one bounded +71.9 MiB level shift |
+| Firefox | 0.801, 1.600 | 33.25, 31.32 | one high-size trial at +1.888 MiB/child and +250.3 MiB |
+
+Chromium's raw 32 MiB half-window growth was +43.2 MiB and +56.6 MiB,
+but both traces repeatedly fell by hundreds of MiB. Four-wave second-lowest
+floors had slopes of -0.160 and +0.361 MiB per child. The positive floor
+shift crossed only the 32 MiB level limit, not the slope limit. This is
+bounded cycle or cache evidence, not sustained accumulation.
+
+Firefox's first 32 MiB replicate also had a bounded lower floor:
++0.069 MiB per child with -58.8 MiB of first-half/second-half growth. Its
+second replicate was different: both the lower envelope and its level kept
+rising, by +1.888 MiB per child and +250.3 MiB. That trace remains
+inconclusive. The classifier does not raise a threshold to make it pass.
+Instead, an accumulating high-size trial now continues in the same kernel
+and context to 512 children and, if needed, 768. Each checkpoint and the
+final verdict use the same trailing eight-floor window. Continued
+accumulation at the cap remains non-green.
+
+Only 32 MiB trials may extend. The fixed first 256 children own the active
+ABBA comparison. A longer high-size trial has no equivalent low/high terminal
+contrast, so the final classifier uses its trailing collection floor instead.
+The artifact schema records that mode, the actual and comparison wave counts,
+and the continuation decisions.
+
+### Fourth exact Linux calibration — 2026-07-29
+
+Actions run `30442729677` measured exact head
+`82d9595459bae2335644e6a01096622f50eb6a53` with artifact schema 4. All
+three engine-local jobs and the aggregate gate passed:
+
+| Engine | Retired active MiB/child | Live MiB/child | Retired waves | Result |
+|---|---:|---:|---:|---|
+| Chromium 149.0.7827.55 | 1.301, 1.623 | 31.214, 30.921 | 32, 32, 32, 32 | pass |
+| Firefox 151.0 | 1.802, 0.722 | 30.161, 28.363 | 32, 64, 32, 32 | pass |
+| WebKit 26.5 | 0.565, 0.583 | 31.489, 30.361 | 32, 32, 32, 32 | pass |
+
+Chromium's four retirement floors were bounded at the first checkpoint.
+The two 32 MiB floor slopes were -0.316 and -0.275 MiB per child, with
+-96.7 and -51.8 MiB of level growth.
+
+Firefox's first 32 MiB trial reproduced an accumulating initial floor and
+continued in the same kernel and context from 256 to 512 children. The
+trailing 256-child window then had a +0.004 MiB-per-child slope and a
++45.4 MiB level shift. Because only the level limit remained crossed, the
+repeated floor was bounded. The artifact records
+`accumulating-floor, bounded-floor`; its fixed first 256 children still own
+the active low/high comparison. The second 32 MiB trial was bounded at its
+first checkpoint.
+
+WebKit completed in 4 minutes 57 seconds after the previous run had timed
+out at 30 minutes. Both high-size floor slopes were bounded, at +0.067 and
+-0.076 MiB per child, with +6.2 and -17.5 MiB of level growth. Attribution
+and swap accounting were complete, and the trace contained no health
+errors. This establishes that the old timeout was not the normal cost of
+the hardened workload. The new warm-realm and epoch heartbeats remain
+necessary so a future stall identifies its phase.
+
+The three results prove the intended same-run claims on this exact code:
+each sampler saw at least 28 MiB per deliberately live child, retired active
+effects stayed below their absolute and relative limits, accumulating
+high-size evidence received more observation rather than a weaker threshold,
+and every terminal or realm trend remained bounded. They do not establish a
+portable garbage-collection deadline or a cross-engine absolute RSS ceiling.
 
 ### Pre-hardening smoke calibration — 2026-07-29
 

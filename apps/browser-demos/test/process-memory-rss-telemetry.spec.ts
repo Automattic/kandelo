@@ -12,7 +12,9 @@ import {
 import {
   applyProcessMemoryRssHealthErrors,
   classifyProcessMemoryRss,
+  decideProcessMemoryCollectionFloorContinuation,
   MIB,
+  PROCESS_MEMORY_COLLECTION_FLOOR_EVALUATION_BLOCKS,
   PROCESS_MEMORY_POST_CONTEXT_CLOSE_OFFSETS_MS,
   type ProcessMemoryRssPhase,
   type ProcessMemoryRssSample,
@@ -40,6 +42,9 @@ interface TrialShape {
     readonly [number, number];
   readonly retiredLateLeakMiBPerChild?: number;
   readonly retiredLateLeakMiBBySequence?: Readonly<Record<number, number>>;
+  readonly retiredComparisonWaves?: number;
+  readonly retiredWaves?: number;
+  readonly retiredWavesBySequence?: Readonly<Record<number, number>>;
   readonly retiredWaveOffsetsMiBBySequence?: Readonly<
     Record<number, readonly number[]>
   >;
@@ -86,7 +91,13 @@ function rssTrials(shape: TrialShape = {}): ProcessMemoryRssTrial[] {
     const replicateIndex = sequenceIndex < 4 ? 0 : 1;
     const warmupChildren = retired ? 4 : 1;
     const waveChildren = retired ? 8 : 1;
-    const waves = retired ? 12 : 4;
+    const waves = retired
+      ? (
+          shape.retiredWavesBySequence?.[sequenceIndex]
+          ?? shape.retiredWaves
+          ?? 12
+        )
+      : 4;
     const baseline =
       500
       + (
@@ -218,15 +229,53 @@ function rssTrials(shape: TrialShape = {}): ProcessMemoryRssTrial[] {
       warmupChildren,
       waveChildren,
       waves,
+      comparisonWaves:
+        retired ? shape.retiredComparisonWaves ?? waves : waves,
       samples,
     };
   });
+}
+
+function continuationDecision(
+  trial: ProcessMemoryRssTrial,
+  waves: number,
+  adaptive = true,
+) {
+  return decideProcessMemoryCollectionFloorContinuation(
+    trial.samples.filter((sample) => {
+      return (
+        sample.phase === "post-wave"
+        && sample.completedChildren <= waves * trial.waveChildren
+      );
+    }),
+    {
+      minimumWaves: 32,
+      extensionWaves: 32,
+      maximumWaves: 96,
+      evaluationBlocks: PROCESS_MEMORY_COLLECTION_FLOOR_EVALUATION_BLOCKS,
+      adaptive,
+    },
+  );
 }
 
 test.describe("engine-local process-memory physical classification", () => {
   test("accepts bounded retired trials against sensitive size controls", () => {
     const verdict = classifyProcessMemoryRss(rssTrials());
     expect(verdict.status).toBe("pass");
+  });
+
+  test("keeps one-wave live-control floor diagnostics finite", () => {
+    const verdict = classifyProcessMemoryRss(rssTrials());
+    for (const trial of verdict.trials.filter((candidate) => {
+      return candidate.kind === "live-control";
+    })) {
+      expect(Number.isFinite(trial.collectionFloorSlopeBytesPerChild))
+        .toBe(true);
+      expect(Number.isFinite(trial.collectionFloorGrowthBytes)).toBe(true);
+      expect(trial.collectionFloorSamples.every((sample) => {
+        return Number.isFinite(sample.physicalBytes);
+      })).toBe(true);
+    }
   });
 
   test("rejects a sequence that no longer counterbalances engine drift", () => {
@@ -343,7 +392,7 @@ test.describe("engine-local process-memory physical classification", () => {
     expect(verdict.reason).toContain("retirement trial 1");
   });
 
-  test("rejects a median-window late-trend violation", () => {
+  test("records a bounded median-window step without calling it a leak", () => {
     const verdict = classifyProcessMemoryRss(rssTrials({
       retiredWaveOffsetsMiBBySequence: {
         0: [0, 0, 0, 0, 0, 0, 30, 30, 30, 30, 30, 30],
@@ -354,7 +403,189 @@ test.describe("engine-local process-memory physical classification", () => {
     })!;
     expect(trial.lateSlopeBytesPerChild).toBeGreaterThan(0.5 * MIB);
     expect(trial.lateGrowthBytes).toBeLessThanOrEqual(32 * MIB);
+    expect(trial.collectionFloorSlopeBytesPerChild)
+      .toBeLessThanOrEqual(0.5 * MIB);
+    expect(verdict.status).toBe("pass");
+    expect(verdict.advisories).toContainEqual(
+      expect.stringContaining("individual late-trend statistic"),
+    );
+  });
+
+  test("rejects a collection-floor envelope that keeps rising", () => {
+    const verdict = classifyProcessMemoryRss(rssTrials({
+      retiredWaveOffsetsMiBBySequence: {
+        0: [0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110],
+      },
+    }));
+    const trial = verdict.trials.find((candidate) => {
+      return candidate.sequenceIndex === 0;
+    })!;
+    expect(trial.collectionFloorSlopeBytesPerChild)
+      .toBeGreaterThan(0.5 * MIB);
+    expect(trial.collectionFloorGrowthBytes).toBeGreaterThan(32 * MIB);
     expect(verdict.status).toBe("inconclusive");
+    expect(verdict.reason).toContain("collection-floor");
+  });
+
+  test("does not mistake repeated collection sawteeth for a leak", () => {
+    const verdict = classifyProcessMemoryRss(rssTrials({
+      retiredWaveOffsetsMiBBySequence: {
+        0: [0, 100, 200, 300, 0, 100, 200, 300, 0, 100, 200, 300],
+      },
+    }));
+    const trial = verdict.trials.find((candidate) => {
+      return candidate.sequenceIndex === 0;
+    })!;
+    expect(trial.collectionFloorSlopeBytesPerChild).toBe(0);
+    expect(trial.collectionFloorGrowthBytes).toBe(0);
+    expect(verdict.status).toBe("pass");
+  });
+
+  test("does not let one false low per block hide a rising floor", () => {
+    const verdict = classifyProcessMemoryRss(rssTrials({
+      retiredWaveOffsetsMiBBySequence: {
+        0: [
+          0, 0, 0, 0,
+          0, 25, 25, 25,
+          0, 50, 50, 50,
+        ],
+      },
+    }));
+    const trial = verdict.trials.find((candidate) => {
+      return candidate.sequenceIndex === 0;
+    })!;
+    expect(trial.collectionFloorSlopeBytesPerChild)
+      .toBeGreaterThan(0.5 * MIB);
+    expect(trial.collectionFloorGrowthBytes).toBeGreaterThan(32 * MIB);
+    expect(verdict.status).toBe("inconclusive");
+  });
+
+  test("lets a longer high-size tail prove a later plateau", () => {
+    const verdict = classifyProcessMemoryRss(rssTrials({
+      retiredWaves: 32,
+      retiredWavesBySequence: { 2: 64 },
+      retiredComparisonWaves: 32,
+      retiredWaveOffsetsMiBBySequence: {
+        2: Array.from(
+          { length: 64 },
+          (_unused, index) => Math.min(index, 31) * 8,
+        ),
+      },
+    }));
+    const trial = verdict.trials.find((candidate) => {
+      return candidate.sequenceIndex === 2;
+    })!;
+    expect(trial.waves).toBe(64);
+    expect(trial.comparisonWaves).toBe(32);
+    expect(trial.collectionFloorSlopeBytesPerChild).toBe(0);
+    expect(trial.collectionFloorGrowthBytes).toBe(0);
+    expect(verdict.sizeContrast.replicates[0]!.terminalComparisonMode)
+      .toBe("unequal-high-exposure");
+    expect(verdict.advisories).toContainEqual(
+      expect.stringContaining("no equivalent terminal low/high contrast"),
+    );
+    expect(verdict.status).toBe("pass");
+  });
+
+  test("keeps an extended high-size rising floor non-green", () => {
+    const verdict = classifyProcessMemoryRss(rssTrials({
+      retiredWaves: 32,
+      retiredWavesBySequence: { 2: 64 },
+      retiredComparisonWaves: 32,
+      retiredWaveOffsetsMiBBySequence: {
+        2: Array.from(
+          { length: 64 },
+          (_unused, index) => index * 8,
+        ),
+      },
+    }));
+    const trial = verdict.trials.find((candidate) => {
+      return candidate.sequenceIndex === 2;
+    })!;
+    expect(trial.collectionFloorSlopeBytesPerChild)
+      .toBeGreaterThan(0.5 * MIB);
+    expect(trial.collectionFloorGrowthBytes).toBeGreaterThan(32 * MIB);
+    expect(verdict.status).toBe("inconclusive");
+  });
+
+  test("rejects adaptive low-size exposure beyond its high peer", () => {
+    expect(() => classifyProcessMemoryRss(rssTrials({
+      retiredWaves: 32,
+      retiredWavesBySequence: { 0: 64 },
+      retiredComparisonWaves: 32,
+    }))).toThrow(/low-size terminal trial longer/);
+  });
+
+  test("continues only while the fixed-width floor window accumulates", () => {
+    const trial = rssTrials({
+      retiredWaves: 96,
+      retiredComparisonWaves: 32,
+      retiredWaveOffsetsMiBBySequence: {
+        2: Array.from(
+          { length: 96 },
+          (_unused, index) => Math.min(index, 31) * 8,
+        ),
+      },
+    })[2]!;
+    expect(continuationDecision(trial, 32)).toMatchObject({
+      measuredWaves: 32,
+      shouldContinue: true,
+      reason: "accumulating-floor",
+    });
+    expect(continuationDecision(trial, 64)).toMatchObject({
+      measuredWaves: 64,
+      shouldContinue: false,
+      reason: "bounded-floor",
+    });
+  });
+
+  test("stops a still-rising floor at the hard maximum as non-green", () => {
+    const trial = rssTrials({
+      retiredWaves: 96,
+      retiredComparisonWaves: 32,
+      retiredWaveOffsetsMiBBySequence: {
+        2: Array.from(
+          { length: 96 },
+          (_unused, index) => index * 8,
+        ),
+      },
+    })[2]!;
+    expect(continuationDecision(trial, 32).shouldContinue).toBe(true);
+    expect(continuationDecision(trial, 64).shouldContinue).toBe(true);
+    const maximum = continuationDecision(trial, 96);
+    expect(maximum).toMatchObject({
+      measuredWaves: 96,
+      shouldContinue: false,
+      reason: "maximum-reached",
+    });
+    expect(maximum.trend).not.toBeNull();
+    expect(maximum.trend!.slopeBytesPerChild)
+      .toBeGreaterThan(0.5 * MIB);
+    expect(maximum.trend!.growthBytes).toBeGreaterThan(32 * MIB);
+  });
+
+  test("rejects samples beyond the adaptive hard maximum", () => {
+    const trial = rssTrials({
+      retiredWaves: 128,
+      retiredComparisonWaves: 32,
+    })[2]!;
+    expect(() => continuationDecision(trial, 97))
+      .toThrow(/exceeded its wave maximum/);
+    expect(() => continuationDecision(trial, 128))
+      .toThrow(/exceeded its wave maximum/);
+  });
+
+  test("never extends a low-size retirement checkpoint", () => {
+    const trial = rssTrials({
+      retiredWaves: 32,
+      retiredComparisonWaves: 32,
+      retiredLateLeakMiBBySequence: { 0: 1 },
+    })[0]!;
+    expect(continuationDecision(trial, 32, false)).toMatchObject({
+      measuredWaves: 32,
+      shouldContinue: false,
+      reason: "non-adaptive-trial",
+    });
   });
 
   test("does not mistake one collection-cycle peak for a leak", () => {

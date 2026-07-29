@@ -28,8 +28,12 @@ import { fileURLToPath } from "node:url";
 import {
   applyProcessMemoryRssHealthErrors,
   classifyProcessMemoryRss,
+  decideProcessMemoryCollectionFloorContinuation,
+  PROCESS_MEMORY_COLLECTION_FLOOR_BLOCK_WAVES,
+  PROCESS_MEMORY_COLLECTION_FLOOR_EVALUATION_BLOCKS,
   PROCESS_MEMORY_POST_CONTEXT_CLOSE_OFFSETS_MS,
   type ProcessMemoryRssPhase,
+  type ProcessMemoryCollectionFloorDecision,
   type ProcessMemoryRssSample,
   type ProcessMemoryRssTrial,
   type ProcessMemoryRssTrialKind,
@@ -64,6 +68,8 @@ const MIB = 1024 * 1024;
 const PRODUCTION_WARMUP_CHILDREN = 4;
 const PRODUCTION_WAVE_CHILDREN = 8;
 const PRODUCTION_WAVES = 32;
+const PRODUCTION_EXTENSION_WAVES = 32;
+const PRODUCTION_MAX_WAVES = 96;
 const CONTROL_WARMUP_CHILDREN = 1;
 const CONTROL_WAVE_CHILDREN = 1;
 const CONTROL_WAVES = 4;
@@ -90,6 +96,8 @@ interface CliOptions {
 
 interface BrowserRunResult {
   readonly samples: readonly ProcessMemoryRssSample[];
+  readonly collectionFloorDecisions:
+    readonly ProcessMemoryCollectionFloorDecision[];
   readonly stdout: string;
   readonly stderr: string;
   readonly diagnostics: readonly {
@@ -729,6 +737,7 @@ async function runProductionTrial(
   childMiB: number,
 ): Promise<BrowserRunResult> {
   const samples: ProcessMemoryRssSample[] = [];
+  const collectionFloorDecisions: ProcessMemoryCollectionFloorDecision[] = [];
   const samplingIssues = new Set<string>();
   const startedAt = Date.now();
   await appendProcessMemorySample(
@@ -760,10 +769,53 @@ async function runProductionTrial(
         request.phase,
         request.completedChildren,
       );
+      // WHY: the high-size trial is the sensitive probe for retained process
+      // backing. Extend that same kernel and context when its floor is still
+      // rising, but keep the fixed first 256 children as the only equivalent
+      // low/high comparison. Unequal terminal exposures are recorded and are
+      // not treated as a terminal size contrast.
+      if (request.phase !== "post-wave") return false;
+      const measuredWaves =
+        request.completedChildren / PRODUCTION_WAVE_CHILDREN;
+      if (
+        Number.isSafeInteger(measuredWaves)
+        && measuredWaves
+          % PROCESS_MEMORY_COLLECTION_FLOOR_BLOCK_WAVES === 0
+      ) {
+        // WHY: WebKit's full matrix can approach the job timeout. Emit one
+        // bounded heartbeat per collection epoch so a timed-out artifact
+        // identifies the exact trial progress instead of leaving an empty
+        // log and forcing the whole run to be repeated blindly.
+        process.stdout.write(
+          `[memory-telemetry] child_mib=${childMiB} ` +
+            `waves=${measuredWaves}\n`,
+        );
+      }
+      const decision = decideProcessMemoryCollectionFloorContinuation(
+        samples,
+        {
+          minimumWaves: PRODUCTION_WAVES,
+          extensionWaves: PRODUCTION_EXTENSION_WAVES,
+          maximumWaves: PRODUCTION_MAX_WAVES,
+          evaluationBlocks:
+            PROCESS_MEMORY_COLLECTION_FLOOR_EVALUATION_BLOCKS,
+          adaptive: childMiB === HIGH_CHILD_MIB,
+        },
+      );
+      if (decision.trend !== null) {
+        collectionFloorDecisions.push(decision);
+      }
+      return decision.shouldContinue;
     },
   );
   await page.goto(new URL("/trap-signal-test.html", baseUrl).href);
-  let result: Omit<BrowserRunResult, "samples" | "runtimeErrors" | "samplingIssues">;
+  let result: Omit<
+    BrowserRunResult,
+    | "samples"
+    | "runtimeErrors"
+    | "samplingIssues"
+    | "collectionFloorDecisions"
+  >;
   try {
     result = await page.evaluate(
       async ({
@@ -773,7 +825,9 @@ async function runProductionTrial(
         programBytesBase64,
         warmupChildren,
         waveChildren,
-        waveCount,
+        minimumWaveCount,
+        maximumWaveCount,
+        checkpointWaves,
         childMiB,
         sampleDelayMs,
       }) => {
@@ -889,17 +943,17 @@ async function runProductionTrial(
             | "post-wave"
             | "post-kernel-destroy",
           completedChildren: number,
-        ): Promise<void> => {
+        ): Promise<boolean> => {
           await new Promise<void>((resolveSample) =>
             setTimeout(resolveSample, sampleDelayMs)
           );
-          await (
+          return await (
             globalThis as typeof globalThis & {
               __kandeloRecordProcessMemoryRss:
                 (request: {
                   phase: string;
                   completedChildren: number;
-                }) => Promise<void>;
+                }) => Promise<boolean>;
             }
           ).__kandeloRecordProcessMemoryRss({
             phase,
@@ -907,20 +961,32 @@ async function runProductionTrial(
           });
         };
 
+        let completedWaves = 0;
         try {
           await record("initialized", 0);
           await runWave(warmupChildren);
           await record("post-warmup", 0);
-          for (let wave = 1; wave <= waveCount; wave += 1) {
+          for (let wave = 1; wave <= maximumWaveCount; wave += 1) {
             await runWave(waveChildren);
-            await record("post-wave", wave * waveChildren);
+            const shouldContinue = await record(
+              "post-wave",
+              wave * waveChildren,
+            );
+            completedWaves = wave;
+            if (
+              wave >= minimumWaveCount
+              && wave % checkpointWaves === 0
+              && !shouldContinue
+            ) {
+              break;
+            }
           }
         } finally {
           await kernel.destroy();
         }
         await record(
           "post-kernel-destroy",
-          waveChildren * waveCount,
+          completedWaves * waveChildren,
         );
         return { stdout, stderr, diagnostics };
       },
@@ -934,7 +1000,9 @@ async function runProductionTrial(
         programBytesBase64: programBase64,
         warmupChildren: PRODUCTION_WARMUP_CHILDREN,
         waveChildren: PRODUCTION_WAVE_CHILDREN,
-        waveCount: PRODUCTION_WAVES,
+        minimumWaveCount: PRODUCTION_WAVES,
+        maximumWaveCount: PRODUCTION_MAX_WAVES,
+        checkpointWaves: PRODUCTION_EXTENSION_WAVES,
         childMiB,
         sampleDelayMs: SAMPLE_DELAY_MS,
       },
@@ -942,16 +1010,23 @@ async function runProductionTrial(
   } finally {
     await context.close();
   }
+  const completedChildren = samples
+    .filter((sample) => sample.phase === "post-wave")
+    .at(-1)?.completedChildren;
+  if (completedChildren === undefined) {
+    throw new Error("retirement trial produced no completed wave");
+  }
   await appendPostContextCloseSamples(
     samples,
     samplingIssues,
     samplingContext,
     startedAt,
-    PRODUCTION_WAVE_CHILDREN * PRODUCTION_WAVES,
+    completedChildren,
   );
   return {
     samples,
     ...result,
+    collectionFloorDecisions,
     runtimeErrors,
     samplingIssues: [...samplingIssues],
   };
@@ -1000,7 +1075,13 @@ async function runLiveControl(
     },
   );
   await page.goto(new URL("/trap-signal-test.html", baseUrl).href);
-  let result: Omit<BrowserRunResult, "samples" | "runtimeErrors" | "samplingIssues">;
+  let result: Omit<
+    BrowserRunResult,
+    | "samples"
+    | "runtimeErrors"
+    | "samplingIssues"
+    | "collectionFloorDecisions"
+  >;
   try {
     result = await page.evaluate(
       async ({
@@ -1181,6 +1262,7 @@ async function runLiveControl(
   return {
     samples,
     ...result,
+    collectionFloorDecisions: [],
     runtimeErrors,
     samplingIssues: [...samplingIssues],
   };
@@ -1249,12 +1331,16 @@ function validateProductionTrial(
   childMiB: number,
 ): string[] {
   const label = `retirement trial ${sequenceIndex + 1}`;
+  const measuredWaves = run.samples.filter((sample) => {
+    return sample.phase === "post-wave";
+  }).length;
+  const extensionWaves = measuredWaves - PRODUCTION_WAVES;
   const expectedPhases: ProcessMemoryRssPhase[] = [
     "pre-context",
     "initialized",
     "post-warmup",
     ...Array.from(
-      { length: PRODUCTION_WAVES },
+      { length: measuredWaves },
       () => "post-wave" as const,
     ),
     "post-kernel-destroy",
@@ -1267,12 +1353,12 @@ function validateProductionTrial(
     0,
     0,
     ...Array.from(
-      { length: PRODUCTION_WAVES },
+      { length: measuredWaves },
       (_unused, index) => (index + 1) * PRODUCTION_WAVE_CHILDREN,
     ),
-    PRODUCTION_WAVES * PRODUCTION_WAVE_CHILDREN,
+    measuredWaves * PRODUCTION_WAVE_CHILDREN,
     ...PROCESS_MEMORY_POST_CONTEXT_CLOSE_OFFSETS_MS.map(
-      () => PRODUCTION_WAVES * PRODUCTION_WAVE_CHILDREN,
+      () => measuredWaves * PRODUCTION_WAVE_CHILDREN,
     ),
   ];
   const errors = validateCommonRun(
@@ -1281,11 +1367,89 @@ function validateProductionTrial(
     expectedPhases,
     expectedCompletedChildren,
   );
+  if (
+    measuredWaves < PRODUCTION_WAVES
+    || measuredWaves > PRODUCTION_MAX_WAVES
+    || extensionWaves
+      % PRODUCTION_EXTENSION_WAVES !== 0
+    || (childMiB !== HIGH_CHILD_MIB && extensionWaves !== 0)
+  ) {
+    errors.push(
+      `${label} used invalid adaptive wave count ${measuredWaves}`,
+    );
+  }
+  if (measuredWaves >= PRODUCTION_WAVES) {
+    const prefix = (waveCount: number): ProcessMemoryRssSample[] => {
+      return run.samples.filter((sample) => {
+        return (
+          sample.phase === "post-wave"
+          && sample.completedChildren
+            <= waveCount * PRODUCTION_WAVE_CHILDREN
+        );
+      });
+    };
+    const expectedDecisions = Array.from(
+      { length: Math.floor(measuredWaves / PRODUCTION_EXTENSION_WAVES) },
+      (_unused, index) => {
+        const checkpointWaves =
+          (index + 1) * PRODUCTION_EXTENSION_WAVES;
+        return decideProcessMemoryCollectionFloorContinuation(
+          prefix(checkpointWaves),
+          {
+            minimumWaves: PRODUCTION_WAVES,
+            extensionWaves: PRODUCTION_EXTENSION_WAVES,
+            maximumWaves: PRODUCTION_MAX_WAVES,
+            evaluationBlocks:
+              PROCESS_MEMORY_COLLECTION_FLOOR_EVALUATION_BLOCKS,
+            adaptive: childMiB === HIGH_CHILD_MIB,
+          },
+        );
+      },
+    );
+    if (
+      JSON.stringify(run.collectionFloorDecisions)
+      !== JSON.stringify(expectedDecisions)
+    ) {
+      errors.push(`${label} reported unverified continuation decisions`);
+    }
+    const decisionReasons = expectedDecisions.map((decision) => {
+      return decision.reason;
+    });
+    if (childMiB === HIGH_CHILD_MIB) {
+      const requiredReasons =
+        measuredWaves === PRODUCTION_WAVES
+          ? ["bounded-floor"]
+          : measuredWaves
+              === PRODUCTION_WAVES + PRODUCTION_EXTENSION_WAVES
+            ? ["accumulating-floor", "bounded-floor"]
+            : [
+                "accumulating-floor",
+                "accumulating-floor",
+                "maximum-reached",
+              ];
+      if (
+        JSON.stringify(decisionReasons)
+        !== JSON.stringify(requiredReasons)
+      ) {
+        errors.push(
+          `${label} stopped at ${measuredWaves} waves without the required ` +
+            "collection-floor evidence",
+        );
+      }
+    } else if (
+      JSON.stringify(decisionReasons)
+      !== JSON.stringify(["non-adaptive-trial"])
+    ) {
+      errors.push(
+        `${label} did not stop its low-size trial at the first checkpoint`,
+      );
+    }
+  }
   const expectedLines = [
     `PROCESS_MEMORY_RECLAMATION_PASS ` +
       `count=${PRODUCTION_WARMUP_CHILDREN} child_mib=${childMiB}`,
     ...Array.from(
-      { length: PRODUCTION_WAVES },
+      { length: measuredWaves },
       () => (
         `PROCESS_MEMORY_RECLAMATION_PASS ` +
         `count=${PRODUCTION_WAVE_CHILDREN} child_mib=${childMiB}`
@@ -1468,6 +1632,7 @@ async function main(): Promise<void> {
       readFile(options.kernelPath).then((bytes) => bytes.toString("base64")),
       readFile(options.programPath).then((bytes) => bytes.toString("base64")),
     ]);
+    process.stdout.write("[memory-telemetry] warm-realm start\n");
     await warmBrowserRealm(
       browser,
       samplingContext,
@@ -1475,6 +1640,7 @@ async function main(): Promise<void> {
       kernelBase64,
       programBase64,
     );
+    process.stdout.write("[memory-telemetry] warm-realm complete\n");
     const runs: Array<{
       plan: TrialPlan;
       result: BrowserRunResult;
@@ -1486,6 +1652,11 @@ async function main(): Promise<void> {
       sequenceIndex += 1
     ) {
       const plan = TRIAL_PLAN[sequenceIndex]!;
+      process.stdout.write(
+        `[memory-telemetry] trial=${sequenceIndex + 1}/` +
+          `${TRIAL_PLAN.length} kind=${plan.kind} ` +
+          `child_mib=${plan.childMiB} start\n`,
+      );
       const result = plan.kind === "retired"
         ? await runProductionTrial(
             browser,
@@ -1504,9 +1675,20 @@ async function main(): Promise<void> {
             plan.childMiB,
           );
       runs.push({ plan, result, sequenceIndex });
+      const measuredWaves = result.samples.filter((sample) => {
+        return sample.phase === "post-wave";
+      }).length;
+      process.stdout.write(
+        `[memory-telemetry] trial=${sequenceIndex + 1}/` +
+          `${TRIAL_PLAN.length} kind=${plan.kind} ` +
+          `child_mib=${plan.childMiB} waves=${measuredWaves} complete\n`,
+      );
     }
     const trials: ProcessMemoryRssTrial[] = runs.map((run) => {
       const retired = run.plan.kind === "retired";
+      const measuredWaves = run.result.samples.filter((sample) => {
+        return sample.phase === "post-wave";
+      }).length;
       return {
         kind: run.plan.kind,
         sequenceIndex: run.sequenceIndex,
@@ -1517,7 +1699,9 @@ async function main(): Promise<void> {
             : CONTROL_WARMUP_CHILDREN,
         waveChildren:
           retired ? PRODUCTION_WAVE_CHILDREN : CONTROL_WAVE_CHILDREN,
-        waves: retired ? PRODUCTION_WAVES : CONTROL_WAVES,
+        waves: measuredWaves,
+        comparisonWaves:
+          retired ? PRODUCTION_WAVES : CONTROL_WAVES,
         samples: run.result.samples,
       };
     });
@@ -1632,7 +1816,7 @@ async function main(): Promise<void> {
       ),
     ) as { version: string };
     const output = {
-      schema: 3,
+      schema: 4,
       measuredAt: new Date().toISOString(),
       commit: await gitHead(),
       runner: {
@@ -1677,7 +1861,15 @@ async function main(): Promise<void> {
         trialPlan: TRIAL_PLAN,
         productionWarmupChildren: PRODUCTION_WARMUP_CHILDREN,
         productionWaveChildren: PRODUCTION_WAVE_CHILDREN,
-        productionWaves: PRODUCTION_WAVES,
+        productionMinimumWaves: PRODUCTION_WAVES,
+        productionComparisonWaves: PRODUCTION_WAVES,
+        productionExtensionWaves: PRODUCTION_EXTENSION_WAVES,
+        productionMaximumWaves: PRODUCTION_MAX_WAVES,
+        collectionFloorBlockWaves:
+          PROCESS_MEMORY_COLLECTION_FLOOR_BLOCK_WAVES,
+        collectionFloorEvaluationBlocks:
+          PROCESS_MEMORY_COLLECTION_FLOOR_EVALUATION_BLOCKS,
+        adaptiveRetirementChildMiB: HIGH_CHILD_MIB,
         controlWarmupChildren: CONTROL_WARMUP_CHILDREN,
         controlWaveChildren: CONTROL_WAVE_CHILDREN,
         controlWaves: CONTROL_WAVES,

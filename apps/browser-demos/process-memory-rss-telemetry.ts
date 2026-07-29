@@ -51,6 +51,7 @@ export interface ProcessMemoryRssTrial {
   readonly warmupChildren: number;
   readonly waveChildren: number;
   readonly waves: number;
+  readonly comparisonWaves?: number;
   readonly samples: readonly ProcessMemoryRssSample[];
 }
 
@@ -61,9 +62,16 @@ export interface ProcessMemoryRssMetrics {
   readonly warmupChildren: number;
   readonly waveChildren: number;
   readonly waves: number;
+  readonly comparisonWaves: number;
   readonly totalChildren: number;
   readonly lateSlopeBytesPerChild: number;
   readonly lateGrowthBytes: number;
+  readonly collectionFloorSlopeBytesPerChild: number;
+  readonly collectionFloorGrowthBytes: number;
+  readonly collectionFloorSamples: readonly {
+    readonly completedChildren: number;
+    readonly physicalBytes: number;
+  }[];
   readonly peakBytes: number;
   readonly endBytes: number;
   readonly largestDescentBytes: number;
@@ -82,6 +90,11 @@ export interface ProcessMemoryRssReplicateContrast {
   readonly replicateIndex: number;
   readonly retiredLowSequenceIndex: number;
   readonly retiredHighSequenceIndex: number;
+  readonly retiredLowTotalChildren: number;
+  readonly retiredHighTotalChildren: number;
+  readonly terminalComparisonMode:
+    | "equal-exposure"
+    | "unequal-high-exposure";
   readonly liveLowSequenceIndex: number;
   readonly liveHighSequenceIndex: number;
   readonly liveWarmupBytesPerChild: number;
@@ -183,6 +196,203 @@ function waveSamples(
   return samples;
 }
 
+export const PROCESS_MEMORY_COLLECTION_FLOOR_BLOCK_WAVES = 4;
+export const PROCESS_MEMORY_COLLECTION_FLOOR_EVALUATION_BLOCKS = 8;
+export const PROCESS_MEMORY_COLLECTION_FLOOR_SLOPE_LIMIT_BYTES =
+  512 * 1024;
+export const PROCESS_MEMORY_COLLECTION_FLOOR_GROWTH_LIMIT_BYTES =
+  32 * MIB;
+
+export interface ProcessMemoryCollectionFloorTrend {
+  readonly slopeBytesPerChild: number;
+  readonly growthBytes: number;
+  readonly samples: readonly {
+    readonly completedChildren: number;
+    readonly physicalBytes: number;
+  }[];
+}
+
+export interface ProcessMemoryCollectionFloorDecision {
+  readonly measuredWaves: number;
+  readonly shouldContinue: boolean;
+  readonly reason:
+    | "before-minimum"
+    | "between-checkpoints"
+    | "non-adaptive-trial"
+    | "bounded-floor"
+    | "accumulating-floor"
+    | "maximum-reached";
+  readonly trend: ProcessMemoryCollectionFloorTrend | null;
+}
+
+function collectionFloorSamples(
+  waves: readonly ProcessMemoryRssSample[],
+): readonly {
+  readonly completedChildren: number;
+  readonly physicalBytes: number;
+}[] {
+  // Live controls intentionally use only four waves. Their floor metrics are
+  // diagnostic, while retirement trials use four-wave blocks to span current
+  // engine collection cycles.
+  const blockWaves =
+    waves.length >= PROCESS_MEMORY_COLLECTION_FLOOR_BLOCK_WAVES * 3
+      ? PROCESS_MEMORY_COLLECTION_FLOOR_BLOCK_WAVES
+      : 1;
+  if (waves.length < blockWaves * 3 || waves.length % blockWaves !== 0) {
+    throw new Error(
+      "RSS telemetry needs at least three complete four-wave floor blocks",
+    );
+  }
+  const floors = [];
+  for (let start = 0; start < waves.length; start += blockWaves) {
+    const block = waves.slice(start, start + blockWaves);
+    const orderedPhysicalBytes = block
+      .map(physicalBytes)
+      .sort((left, right) => left - right);
+    floors.push({
+      // WHY: use a fixed block midpoint for the x coordinate. Choosing the
+      // child count of whichever sample happened to be the minimum would let
+      // collection-cycle phase alter both axes of the same trend point.
+      completedChildren: median(
+        block.map((sample) => sample.completedChildren),
+      ),
+      // WHY: the second-lowest sample follows each collection cycle's lower
+      // envelope while requiring two low observations. An interpolated
+      // quartile still retains some influence from one anomalous minimum.
+      // The one-wave live-control blocks are diagnostic only and therefore
+      // use their sole sample.
+      physicalBytes:
+        orderedPhysicalBytes[Math.min(1, orderedPhysicalBytes.length - 1)]!,
+    });
+  }
+  return floors;
+}
+
+export function analyzeProcessMemoryCollectionFloor(
+  input: readonly ProcessMemoryRssSample[],
+  trailingBlocks?: number,
+): ProcessMemoryCollectionFloorTrend {
+  const waves = input.filter((sample) => sample.phase === "post-wave");
+  const allFloors = collectionFloorSamples(waves);
+  if (
+    trailingBlocks !== undefined
+    && (
+      !Number.isSafeInteger(trailingBlocks)
+      || trailingBlocks < 3
+      || trailingBlocks > allFloors.length
+    )
+  ) {
+    throw new Error("invalid trailing collection-floor block count");
+  }
+  const floors = trailingBlocks === undefined
+    ? allFloors
+    : allFloors.slice(-trailingBlocks);
+  const middle = Math.floor(floors.length / 2);
+  return {
+    slopeBytesPerChild: theilSenPointSlope(floors),
+    growthBytes:
+      median(floors.slice(middle).map((sample) => sample.physicalBytes))
+      - median(floors.slice(0, middle).map((sample) => {
+        return sample.physicalBytes;
+      })),
+    samples: floors,
+  };
+}
+
+export function processMemoryCollectionFloorIsAccumulating(
+  trend: ProcessMemoryCollectionFloorTrend,
+): boolean {
+  return (
+    trend.slopeBytesPerChild
+      > PROCESS_MEMORY_COLLECTION_FLOOR_SLOPE_LIMIT_BYTES
+    && trend.growthBytes
+      > PROCESS_MEMORY_COLLECTION_FLOOR_GROWTH_LIMIT_BYTES
+  );
+}
+
+export function decideProcessMemoryCollectionFloorContinuation(
+  input: readonly ProcessMemoryRssSample[],
+  options: {
+    readonly minimumWaves: number;
+    readonly extensionWaves: number;
+    readonly maximumWaves: number;
+    readonly evaluationBlocks: number;
+    readonly adaptive: boolean;
+  },
+): ProcessMemoryCollectionFloorDecision {
+  const {
+    minimumWaves,
+    extensionWaves,
+    maximumWaves,
+    evaluationBlocks,
+    adaptive,
+  } = options;
+  if (
+    !Number.isSafeInteger(minimumWaves)
+    || !Number.isSafeInteger(extensionWaves)
+    || !Number.isSafeInteger(maximumWaves)
+    || !Number.isSafeInteger(evaluationBlocks)
+    || minimumWaves < PROCESS_MEMORY_COLLECTION_FLOOR_BLOCK_WAVES * 3
+    || extensionWaves <= 0
+    || evaluationBlocks < 3
+    || evaluationBlocks
+      > minimumWaves / PROCESS_MEMORY_COLLECTION_FLOOR_BLOCK_WAVES
+    || maximumWaves < minimumWaves
+    || (maximumWaves - minimumWaves) % extensionWaves !== 0
+  ) {
+    throw new Error("invalid adaptive collection-floor wave contract");
+  }
+  const measuredWaves = input.filter((sample) => {
+    return sample.phase === "post-wave";
+  }).length;
+  if (measuredWaves < minimumWaves) {
+    return {
+      measuredWaves,
+      shouldContinue: true,
+      reason: "before-minimum",
+      trend: null,
+    };
+  }
+  if (measuredWaves > maximumWaves) {
+    throw new Error("collection-floor trial exceeded its wave maximum");
+  }
+  if ((measuredWaves - minimumWaves) % extensionWaves !== 0) {
+    return {
+      measuredWaves,
+      shouldContinue: true,
+      reason: "between-checkpoints",
+      trend: null,
+    };
+  }
+  const trend = analyzeProcessMemoryCollectionFloor(
+    input,
+    measuredWaves > minimumWaves ? evaluationBlocks : undefined,
+  );
+  const accumulating = processMemoryCollectionFloorIsAccumulating(trend);
+  if (!adaptive) {
+    return {
+      measuredWaves,
+      shouldContinue: false,
+      reason: "non-adaptive-trial",
+      trend,
+    };
+  }
+  if (measuredWaves === maximumWaves) {
+    return {
+      measuredWaves,
+      shouldContinue: false,
+      reason: "maximum-reached",
+      trend,
+    };
+  }
+  return {
+    measuredWaves,
+    shouldContinue: accumulating,
+    reason: accumulating ? "accumulating-floor" : "bounded-floor",
+    trend,
+  };
+}
+
 export function analyzeProcessMemoryRss(
   trial: ProcessMemoryRssTrial,
 ): ProcessMemoryRssMetrics {
@@ -190,6 +400,15 @@ export function analyzeProcessMemoryRss(
   const initialized = onePhase(trial, "initialized");
   const postWarmup = onePhase(trial, "post-warmup");
   const waves = waveSamples(trial);
+  const comparisonWaves = trial.comparisonWaves ?? trial.waves;
+  if (
+    !Number.isSafeInteger(comparisonWaves)
+    || comparisonWaves < 4
+    || comparisonWaves > waves.length
+  ) {
+    throw new Error("RSS telemetry comparison wave count is invalid");
+  }
+  const comparisonWaveSamples = waves.slice(0, comparisonWaves);
   const postKernelDestroy = onePhase(trial, "post-kernel-destroy");
   const closeSamples = postContextCloseSamples(trial);
   // WHY: collection after realm teardown is asynchronous and differs by
@@ -230,6 +449,17 @@ export function analyzeProcessMemoryRss(
   }
   const finalWave = waves[waves.length - 1]!;
   const lateGrowthBytes = lateWaveBytes - earlyWaveBytes;
+  // WHY: once an ambiguous 256-child trial extends, its trailing eight
+  // complete collection epochs retain the original 32-wave evidence width.
+  // A shorter rescue window would make the answer depend too strongly on one
+  // collection phase. The original 32 waves still own the counterbalanced
+  // size comparison.
+  const floorTrend = analyzeProcessMemoryCollectionFloor(
+    waves,
+    waves.length > comparisonWaves
+      ? PROCESS_MEMORY_COLLECTION_FLOOR_EVALUATION_BLOCKS
+      : undefined,
+  );
 
   return {
     kind: trial.kind,
@@ -238,20 +468,26 @@ export function analyzeProcessMemoryRss(
     warmupChildren: trial.warmupChildren,
     waveChildren: trial.waveChildren,
     waves: trial.waves,
+    comparisonWaves,
     totalChildren:
       trial.warmupChildren + trial.waveChildren * trial.waves,
     lateSlopeBytesPerChild: lateGrowthBytes / lateChildSpan,
     lateGrowthBytes,
+    collectionFloorSlopeBytesPerChild: floorTrend.slopeBytesPerChild,
+    collectionFloorGrowthBytes: floorTrend.growthBytes,
+    collectionFloorSamples: floorTrend.samples,
     peakBytes,
     endBytes: physicalBytes(postContextClose),
     largestDescentBytes,
     preContextBytes: physicalBytes(preContext),
     initializedBytes: physicalBytes(initialized),
     postWarmupBytes: physicalBytes(postWarmup),
-    sustainedWaveBytes: median(waves.map(physicalBytes)),
+    sustainedWaveBytes: median(comparisonWaveSamples.map(physicalBytes)),
     sustainedWaveChildren:
       trial.warmupChildren
-      + median(waves.map((sample) => sample.completedChildren)),
+      + median(
+        comparisonWaveSamples.map((sample) => sample.completedChildren),
+      ),
     postWaveBytes: physicalBytes(finalWave),
     postKernelDestroyBytes: physicalBytes(postKernelDestroy),
     postContextCloseBytes: physicalBytes(postContextClose),
@@ -321,9 +557,11 @@ function balancedTrialSet(
     );
   }
   if (
-    new Set(selected.map((trial) => trial.totalChildren)).size !== 1
+    new Set(selected.map((trial) => trial.sustainedWaveChildren)).size !== 1
   ) {
-    throw new Error(`${kind} trial workloads must use equal child counts`);
+    throw new Error(
+      `${kind} size comparisons must represent equal child counts`,
+    );
   }
   return {
     lowChildMiB,
@@ -403,10 +641,22 @@ function sizeContrast(
 
   const replicates = retired.pairs.map((retiredPair, replicateIndex) => {
     const livePair = live.pairs[replicateIndex]!;
+    if (retiredPair.high.totalChildren < retiredPair.low.totalChildren) {
+      throw new Error(
+        "adaptive retirement exposure may not make the low-size terminal " +
+          "trial longer than its high-size peer",
+      );
+    }
     return {
       replicateIndex,
       retiredLowSequenceIndex: retiredPair.low.sequenceIndex,
       retiredHighSequenceIndex: retiredPair.high.sequenceIndex,
+      retiredLowTotalChildren: retiredPair.low.totalChildren,
+      retiredHighTotalChildren: retiredPair.high.totalChildren,
+      terminalComparisonMode:
+        retiredPair.low.totalChildren === retiredPair.high.totalChildren
+          ? "equal-exposure" as const
+          : "unequal-high-exposure" as const,
       liveLowSequenceIndex: livePair.low.sequenceIndex,
       liveHighSequenceIndex: livePair.high.sequenceIndex,
       liveWarmupBytesPerChild: pairPerChild(
@@ -505,6 +755,35 @@ function theilSenSlope(values: readonly number[]): number {
   return median(slopes);
 }
 
+function theilSenPointSlope(
+  points: readonly {
+    readonly completedChildren: number;
+    readonly physicalBytes: number;
+  }[],
+): number {
+  if (points.length < 2) {
+    throw new Error("point Theil-Sen slope needs at least two values");
+  }
+  const slopes: number[] = [];
+  for (let left = 0; left < points.length - 1; left += 1) {
+    for (let right = left + 1; right < points.length; right += 1) {
+      const childSpan =
+        points[right]!.completedChildren
+        - points[left]!.completedChildren;
+      if (childSpan <= 0) {
+        throw new Error("RSS telemetry floor children must increase");
+      }
+      slopes.push(
+        (
+          points[right]!.physicalBytes
+          - points[left]!.physicalBytes
+        ) / childSpan,
+      );
+    }
+  }
+  return median(slopes);
+}
+
 /**
  * Judge one engine/runtime revision without a cross-engine RSS ceiling.
  *
@@ -535,8 +814,10 @@ export function classifyProcessMemoryRss(
   const minimumLiveSignal = 8 * MIB;
   const maximumPassEffect = 4 * MIB;
   const maximumPassRatio = 0.15;
-  const maximumLateSlope = 512 * 1024;
-  const maximumLateGrowth = 32 * MIB;
+  const maximumLateSlope =
+    PROCESS_MEMORY_COLLECTION_FLOOR_SLOPE_LIMIT_BYTES;
+  const maximumLateGrowth =
+    PROCESS_MEMORY_COLLECTION_FLOOR_GROWTH_LIMIT_BYTES;
 
   const insensitiveLiveReplicate = contrast.replicates.find((replicate) => {
     return (
@@ -636,6 +917,9 @@ export function classifyProcessMemoryRss(
     );
   });
   const retiredTerminalFailures = contrast.replicates.filter((replicate) => {
+    if (replicate.terminalComparisonMode !== "equal-exposure") {
+      return false;
+    }
     // WHY: a context-close subtraction includes ordinary engine baseline
     // movement. Its paired live control is the measured noise floor for this
     // exact browser run. Only a positive retired size signal above both that
@@ -654,9 +938,12 @@ export function classifyProcessMemoryRss(
 
   const kernelDestroyResidual = contrast.replicates.some((replicate) => {
     return (
-      !terminalAbsoluteBounded(
-        replicate.retiredDestroyResidualBytes,
-        replicate.liveWaveBytesPerChild,
+      (
+        replicate.terminalComparisonMode === "equal-exposure"
+        && !terminalAbsoluteBounded(
+          replicate.retiredDestroyResidualBytes,
+          replicate.liveWaveBytesPerChild,
+        )
       )
       || !terminalAbsoluteBounded(
         replicate.liveDestroyResidualBytes,
@@ -670,26 +957,53 @@ export function classifyProcessMemoryRss(
         "after context closure; preserve it as engine-timed collection data",
     );
   }
+  if (contrast.replicates.some((replicate) => {
+    return replicate.terminalComparisonMode !== "equal-exposure";
+  })) {
+    advisories.push(
+      "an extended high-size trial has no equivalent terminal low/high " +
+        "contrast; its trailing collection floor supplies the retirement " +
+        "evidence",
+    );
+  }
 
   const retiredTrials = trials.filter((trial) => {
     return trial.kind === "retired";
   });
   const unboundedLateTrial = retiredTrials.find((trial) => {
-    return (
-      trial.lateSlopeBytesPerChild > maximumLateSlope
-      || trial.lateGrowthBytes > maximumLateGrowth
-    );
+    return processMemoryCollectionFloorIsAccumulating({
+      slopeBytesPerChild: trial.collectionFloorSlopeBytesPerChild,
+      growthBytes: trial.collectionFloorGrowthBytes,
+      samples: trial.collectionFloorSamples,
+    });
   });
   if (unboundedLateTrial) {
     return {
       status: "inconclusive",
       reason:
         `retirement trial ${unboundedLateTrial.sequenceIndex + 1} exceeded ` +
-        "the per-trial late slope or growth limit",
+        "both collection-floor trend limits",
       trials,
       sizeContrast: contrast,
       advisories,
     };
+  }
+  if (retiredTrials.some((trial) => {
+    return (
+      trial.lateSlopeBytesPerChild > maximumLateSlope
+      || trial.lateGrowthBytes > maximumLateGrowth
+      || trial.collectionFloorSlopeBytesPerChild > maximumLateSlope
+      || trial.collectionFloorGrowthBytes > maximumLateGrowth
+    );
+  })) {
+    // WHY: absolute RSS samples can end on different peaks of a bounded
+    // collection sawtooth. A leak raises both the lower-envelope slope and
+    // its later level; one exceeded raw or floor statistic is preserved for
+    // longitudinal review but cannot by itself distinguish cycle phase.
+    advisories.push(
+      "one retirement trace crossed an individual late-trend statistic " +
+        "without sustained collection-floor accumulation",
+    );
   }
 
   const realm = contrast.realm;

@@ -79,11 +79,21 @@ it preserves two independent ABBA size contrasts. Each live contrast must
 expose at least 8 MiB per child. Every live replicate must meet that
 sensitivity floor at warm-up and sustained churn. Every retirement contrast
 must remain below 4 MiB per child and 15% of its paired live signal during
-256-child churn. Churn uses the median of all wave samples and the median
-represented child count, rather than whichever collection peak or descent
-happens to be last. Every individual retirement trial must also keep the
-median shift from the first half of its waves to the second half below the
-late slope and growth bounds.
+the fixed first 256 children. Churn uses the median of those wave samples and
+the median represented child count, rather than whichever collection peak or
+descent
+happens to be last. Every individual retirement trial groups four waves into
+one collection epoch and records its second-lowest physical-memory sample.
+That lower envelope requires two low observations, so one transient
+accounting dip cannot hide a rising floor. The gate checks both its
+Theil-Sen slope and first-half/second-half growth. An accumulating 32 MiB
+trial continues in the same kernel and context to 512 and, if needed,
+768 children. Each decision uses the trailing 256-child floor window. A
+1 MiB trial does not extend: it remains non-green if its first floor rises,
+while only the high-size probe receives more time to distinguish delayed
+collection from retained address-space backing. Raw half-window medians
+remain diagnostic: one crossed raw statistic is not enough to misclassify
+a bounded collection sawtooth as an unbounded leak.
 
 The workflow samples before a browser context, after kernel initialization,
 after warm-up and workload waves, after kernel destruction, and around 200 ms,
