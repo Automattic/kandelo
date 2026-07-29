@@ -9,7 +9,8 @@ require "set"
 
 unless ARGV.length.between?(3, 4)
   abort "usage: homebrew-formula-runtime-closure.rb <tap-root> <owner/tap> <formula> " \
-        "[wasm32|wasm64|--direct|--declarations-json|--host-dependencies-json|--bottle-identity-json|--tier2-bridge-json]"
+        "[wasm32|wasm64|--direct|--declarations-json|--host-dependencies-json|" \
+        "--bottle-identity-json|--bottle-test-contract-json|--tier2-bridge-json]"
 end
 
 MAX_FORMULA_BYTES = 1_048_576
@@ -42,6 +43,7 @@ TIER2_BRIDGE_METHOD = "kandelo_build_package"
 TIER2_BRIDGE_MARKER = "KANDELO_REGISTRY_BRIDGE"
 TAP_RECIPE_METHOD = "kandelo_build_tap_recipe"
 TAP_RECIPE_MARKER = "KANDELO_TAP_RECIPE"
+BOTTLE_TEST_CONTRACT_MARKER = "KANDELO_BOTTLE_TEST_CONTRACT"
 TIER2_RUNTIME_INITIALIZER_METHOD = "kandelo_load_tier2_runtime!"
 TIER2_RUNTIME_CONSTANT = "KANDELO_TIER2_RUNTIME"
 FORMULA_SUPPORT_API_VERSION_CONSTANT = "KANDELO_FORMULA_SUPPORT_API_VERSION"
@@ -111,13 +113,29 @@ NATIVE_REQUIREMENT_TAG_SETS = Set[
 tap_input, requested_tap_name, target, output_mode = ARGV
 abort "invalid tap name: #{requested_tap_name}" unless TAP_NAME.match?(requested_tap_name)
 abort "invalid target Formula: #{target}" unless FORMULA_NAME.match?(target)
-abort "invalid output mode: #{output_mode}" unless output_mode.nil? || %w[wasm32 wasm64 --direct --declarations-json --host-dependencies-json --bottle-identity-json --tier2-bridge-json].include?(output_mode)
+abort "invalid output mode: #{output_mode}" unless output_mode.nil? || %w[
+  wasm32
+  wasm64
+  --direct
+  --declarations-json
+  --host-dependencies-json
+  --bottle-identity-json
+  --bottle-test-contract-json
+  --tier2-bridge-json
+].include?(output_mode)
 direct_only = output_mode == "--direct"
 declarations_only = output_mode == "--declarations-json"
 host_dependencies_only = output_mode == "--host-dependencies-json"
 bottle_identity_only = output_mode == "--bottle-identity-json"
+bottle_test_contract_only = output_mode == "--bottle-test-contract-json"
 tier2_bridge_only = output_mode == "--tier2-bridge-json"
-output_arch = direct_only || declarations_only || host_dependencies_only || bottle_identity_only || tier2_bridge_only ? nil : output_mode
+output_arch =
+  if direct_only || declarations_only || host_dependencies_only ||
+     bottle_identity_only || bottle_test_contract_only || tier2_bridge_only
+    nil
+  else
+    output_mode
+  end
 tap_name = requested_tap_name.downcase
 tap_owner, tap_repository = tap_name.split("/", 2)
 
@@ -1282,6 +1300,7 @@ validate_support = lambda do |context|
 end
 
 formula_bottles = {}
+formula_bottle_test_contracts = {}
 formula_runtime_declarations = {}
 formula_dependency_declarations = {}
 formula_tier2_bridges = {}
@@ -1670,6 +1689,26 @@ parse_formula = lambda do |full_name|
     abort "Formula cannot declare both registry bridge and tap recipe markers: #{path}"
   end
 
+  bottle_test_contract_markers = class_body.select do |statement|
+    left = statement[1] if statement.is_a?(Array) && statement.first == :assign
+    constant = left[1] if left.is_a?(Array) && left.first == :var_field
+    constant.is_a?(Array) && constant.first == :@const &&
+      constant[1] == BOTTLE_TEST_CONTRACT_MARKER
+  end
+  unless bottle_test_contract_markers.empty?
+    marker = bottle_test_contract_markers.first
+    marker_line = marker.dig(1, 1, 2, 0)
+    valid_marker = bottle_test_contract_markers.length == 1 &&
+                   lines.fetch(marker_line - 1, nil) ==
+                     %(  #{BOTTLE_TEST_CONTRACT_MARKER} = "support-data".freeze\n)
+    unless valid_marker
+      abort "Formula bottle test contract must be one canonical support-data " \
+            "constant: #{path}"
+    end
+  end
+  bottle_test_contract =
+    bottle_test_contract_markers.empty? ? "node" : "support-data"
+
   tier2_bridge = nil
   unless bridge_calls.empty?
     unless private_instance_methods.empty?
@@ -1892,7 +1931,7 @@ parse_formula = lambda do |full_name|
         abort "invalid external tap-qualified dependency at #{path}:#{line_number}"
       end
       unless tap_contexts.key?(dependency_tap)
-        if declarations_only || bottle_identity_only
+        if declarations_only || bottle_identity_only || bottle_test_contract_only
           next
         end
         abort "required dependency uses an undeclared tap at #{path}:#{line_number}: #{dependency}"
@@ -1902,6 +1941,10 @@ parse_formula = lambda do |full_name|
     selected << selected_full_name unless selected_full_name.nil?
   end
   formula_bottles[full_name] = bottle
+  formula_bottle_test_contracts[full_name] = {
+    "contract" => bottle_test_contract,
+    "formula_sha256" => Digest::SHA256.hexdigest(source),
+  }
   formula_runtime_declarations[full_name] = runtime_declarations
   formula_dependency_declarations[full_name] = declarations.map do |declaration|
     {
@@ -1972,7 +2015,14 @@ visit_formula = lambda do |full_name|
 end
 
 target_full_name = "#{tap_name}/#{target}"
-visit_formula.call(target_full_name)
+# WHY: this mode describes a property of the selected Formula's own test.
+# Traversing its dependency closure would let an unrelated dependency change
+# prevent the verifier from deciding which evidence that already-run test owes.
+if bottle_test_contract_only
+  parse_formula.call(target_full_name)
+else
+  visit_formula.call(target_full_name)
+end
 support_copies = formula_tier2_bridges.each_with_object({}) do |(full_name, record), copies|
   support_sha256 = record.fetch("support_sha256")
   next if support_sha256.nil?
@@ -2000,7 +2050,8 @@ end
 unless duplicate_short_names.empty?
   abort "tap dependency closure contains duplicate Cellar names: #{duplicate_short_names.sort.inspect}"
 end
-unless declarations_only || host_dependencies_only || bottle_identity_only
+unless declarations_only || host_dependencies_only || bottle_identity_only ||
+       bottle_test_contract_only
   unsupported_external = formula_runtime_declarations.flat_map do |formula, declarations|
     declarations.each_with_object([]) do |declaration, unsupported|
       next if declaration.fetch("same_tap") || declaration.fetch("kind") == "optional" ||
@@ -2054,6 +2105,16 @@ elsif bottle_identity_only
       "root_url" => bottle&.fetch("root_url", nil),
       "rebuild" => bottle.nil? ? 0 : bottle.fetch("rebuild"),
     },
+  })
+elsif bottle_test_contract_only
+  contract = formula_bottle_test_contracts.fetch(target_full_name)
+  puts JSON.generate({
+    "schema" => 1,
+    "tap" => tap_name,
+    "formula" => target,
+    "full_name" => target_full_name,
+    "formula_sha256" => contract.fetch("formula_sha256"),
+    "contract" => contract.fetch("contract"),
   })
 elsif host_dependencies_only
   build = Set.new

@@ -331,6 +331,7 @@ DEPENDENCY_POUR_LIST="$CONTROL_DIR/pour-dependencies.txt"
 ALLOWED_TARGET_TAPS="$CONTROL_DIR/allowed-target-taps.txt"
 STATIC_RUNTIME_DEPENDENCIES="$CONTROL_DIR/static-runtime-dependencies.txt"
 FORMULA_INFO="$CONTROL_DIR/formula-info.json"
+FORMULA_TEST_CONTRACT_FILE="$CONTROL_DIR/formula-test-contract.json"
 VERIFIED_DEPENDENCIES="$CONTROL_DIR/verified-dependency-provenance.json"
 TARGET_CELLAR_BEFORE_TEST="$CONTROL_DIR/target-cellar-before-test.txt"
 TARGET_CELLAR_AFTER_TEST="$CONTROL_DIR/target-cellar-after-test.txt"
@@ -344,13 +345,15 @@ TARGET_CELLAR_AFTER_TEST="$CONTROL_DIR/target-cellar-after-test.txt"
 : >"$DEPENDENCY_POUR_LIST"
 : >"$ALLOWED_TARGET_TAPS"
 : >"$STATIC_RUNTIME_DEPENDENCIES"
+: >"$FORMULA_TEST_CONTRACT_FILE"
 : >"$TARGET_CELLAR_BEFORE_TEST"
 : >"$TARGET_CELLAR_AFTER_TEST"
 chmod 0600 "$INSTALL_LOG" "$NATIVE_INSTALL_LOG" \
   "$HOST_DEPENDENCY_PLAN" "$HOST_DEPENDENCY_LIST" "$DEPENDENCY_LIST" \
   "$TEST_DEPENDENCY_LIST" "$SAME_TAP_TEST_DEPENDENCY_LIST" \
   "$DEPENDENCY_POUR_LIST" "$ALLOWED_TARGET_TAPS" \
-  "$STATIC_RUNTIME_DEPENDENCIES" "$TARGET_CELLAR_BEFORE_TEST" \
+  "$STATIC_RUNTIME_DEPENDENCIES" "$FORMULA_TEST_CONTRACT_FILE" \
+  "$TARGET_CELLAR_BEFORE_TEST" \
   "$TARGET_CELLAR_AFTER_TEST"
 
 validate_dependency_list() {
@@ -683,6 +686,21 @@ EXPECTED_TARGET_PREFIX="$(cd "$EXPECTED_TARGET_PREFIX" && pwd -P)" || {
 }
 TARGET_RECEIPT="$TARGET_PREFIX/INSTALL_RECEIPT.json"
 "$BREW_BIN" info --json=v2 "$FORMULA_REF" >"$FORMULA_INFO"
+# WHY: support-data Formulae prove installed bytes through reviewed Homebrew
+# assertions, while executable Formulae must prove real Node/Kandelo execution.
+# Derive that distinction without evaluating Formula Ruby and keep the control
+# file outside the isolated Formula identity's reach.
+ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+  "$TAP_ROOT" "$TAP_NAME" "$FORMULA" --bottle-test-contract-json \
+  >"$FORMULA_TEST_CONTRACT_FILE"
+FORMULA_TEST_CONTRACT="$(jq -er '.contract' "$FORMULA_TEST_CONTRACT_FILE")"
+case "$FORMULA_TEST_CONTRACT" in
+  node|support-data) ;;
+  *)
+    echo "homebrew-verify-poured-bottle.sh: unsupported static Formula test contract" >&2
+    exit 2
+    ;;
+esac
 homebrew_patched_launcher_snapshot_target_cellar_layout \
   >"$TARGET_CELLAR_BEFORE_TEST"
 run_brew_logged "$BREW_BIN" test "$FORMULA_REF"
@@ -729,11 +747,22 @@ if [ -n "$BUILD_USER" ]; then
   homebrew_patched_launcher_verify_isolation
 fi
 
-[ -f "$HOMEBREW_KANDELO_NODE_RECEIPT_PATH" ] && \
-  [ ! -L "$HOMEBREW_KANDELO_NODE_RECEIPT_PATH" ] || {
-    echo "homebrew-verify-poured-bottle.sh: brew test did not emit Node execution evidence" >&2
-    exit 1
-  }
+case "$FORMULA_TEST_CONTRACT" in
+  node)
+    [ -f "$HOMEBREW_KANDELO_NODE_RECEIPT_PATH" ] && \
+      [ ! -L "$HOMEBREW_KANDELO_NODE_RECEIPT_PATH" ] || {
+      echo "homebrew-verify-poured-bottle.sh: brew test did not emit Node execution evidence" >&2
+      exit 1
+    }
+    ;;
+  support-data)
+    if [ -e "$HOMEBREW_KANDELO_NODE_RECEIPT_PATH" ] || \
+       [ -L "$HOMEBREW_KANDELO_NODE_RECEIPT_PATH" ]; then
+      echo "homebrew-verify-poured-bottle.sh: support-data brew test unexpectedly emitted Node execution evidence" >&2
+      exit 1
+    fi
+    ;;
+esac
 
 python3 "$KANDELO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" capture \
   --formula "$FORMULA" \

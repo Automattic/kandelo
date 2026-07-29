@@ -559,22 +559,47 @@ missing_receipts = [receipt for receipt in receipts if receipt not in all_files]
 if missing_receipts:
     raise SystemExit(f"bottle payload lacks required Homebrew receipts: {missing_receipts}")
 
-node_runtime = runtime_evidence.get("node")
+formula_test_runtime = runtime_evidence.get("test")
+if runtime_evidence.get("schema") == 2 and formula_test_runtime is None:
+    legacy_node = runtime_evidence.get("node")
+    if isinstance(legacy_node, dict):
+        formula_test_runtime = {"contract": "node", **legacy_node}
 selection_runtime = runtime_evidence.get("selection")
 target_runtime = runtime_evidence.get("target")
 if (
-    not isinstance(node_runtime, dict)
-    or node_runtime.get("runtime") != "node"
-    or node_runtime.get("status") != "success"
+    not isinstance(formula_test_runtime, dict)
     or not isinstance(selection_runtime, dict)
     or selection_runtime.get("status") != "success"
     or not isinstance(target_runtime, dict)
 ):
-    raise SystemExit("validated runtime evidence does not prove exact-bottle Node success")
+    raise SystemExit("validated runtime evidence does not prove the exact-bottle Formula test")
+test_contract = formula_test_runtime.get("contract")
+if test_contract == "node":
+    if (
+        formula_test_runtime.get("runtime") != "node"
+        or formula_test_runtime.get("status") != "success"
+    ):
+        raise SystemExit("validated Formula test evidence does not prove Node success")
+elif test_contract == "support-data":
+    if (
+        formula_test_runtime.get("runtime") != "homebrew"
+        or formula_test_runtime.get("launcher") != "brew"
+        or formula_test_runtime.get("status") != "success"
+    ):
+        raise SystemExit(
+            "validated Formula test evidence does not prove support-data assertions"
+        )
+else:
+    raise SystemExit("validated Formula test evidence has an unsupported contract")
 
 browser_evidence_path = os.environ.get("KANDELO_HOMEBREW_BROWSER_EVIDENCE", "")
 browser_evidence = None
 if browser_evidence_path:
+    if test_contract != "node":
+        raise SystemExit(
+            "support-data Formulae require a separate guest lifecycle gate, "
+            "not per-bottle browser compatibility"
+        )
     path = pathlib.Path(browser_evidence_path)
     metadata = path.lstat()
     if path.is_symlink() or not path.is_file() or metadata.st_size > 1024 * 1024:
@@ -602,7 +627,44 @@ if browser_evidence_path:
 browser_compatible = browser_evidence is not None
 if browser_compatible and arch != "wasm32":
     raise SystemExit("browser smoke can only mark wasm32 bottles browser-compatible")
-runtime_support = ["node", "browser"] if browser_compatible else ["node"]
+runtime_support = (
+    ["node", "browser"]
+    if browser_compatible
+    else ["node"]
+    if test_contract == "node"
+    else []
+)
+
+if test_contract == "node":
+    formula_test_outcome = {
+        "name": "node_smoke",
+        "status": "success",
+        "passed": [
+            f"Homebrew force-poured {formula} from "
+            f"{selection_runtime['bottle']['mode']}",
+            "brew test emitted Kandelo Node receipt via "
+            f"{formula_test_runtime['launcher']}",
+            f"exact bottle sha256: "
+            f"{os.environ['KANDELO_HOMEBREW_BOTTLE_SHA256']}",
+        ],
+        "failed": [],
+        "skipped": [],
+    }
+else:
+    formula_test_outcome = {
+        "name": "support_data_test",
+        "status": "success",
+        "passed": [
+            f"Homebrew force-poured {formula} from "
+            f"{selection_runtime['bottle']['mode']}",
+            "brew test completed the statically declared support-data "
+            "byte contract",
+            f"exact bottle sha256: "
+            f"{os.environ['KANDELO_HOMEBREW_BOTTLE_SHA256']}",
+        ],
+        "failed": [],
+        "skipped": [],
+    }
 
 browser_smoke_outcome = {
     "name": "browser_smoke",
@@ -728,17 +790,7 @@ manifest = {
                                 "failed": [],
                                 "skipped": [],
                             },
-                            {
-                                "name": "node_smoke",
-                                "status": "success",
-                                "passed": [
-                                    f"Homebrew force-poured {formula} from {selection_runtime['bottle']['mode']}",
-                                    f"brew test emitted Kandelo Node receipt via {node_runtime['launcher']}",
-                                    f"exact bottle sha256: {os.environ['KANDELO_HOMEBREW_BOTTLE_SHA256']}",
-                                ],
-                                "failed": [],
-                                "skipped": [],
-                            },
+                            formula_test_outcome,
                             browser_smoke_outcome,
                         ],
                     },

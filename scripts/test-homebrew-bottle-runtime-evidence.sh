@@ -67,7 +67,8 @@ bottle_sha="$(sha256sum "$bottle" | awk '{print $1}')"
 bottle_bytes="$(wc -c <"$bottle" | tr -d '[:space:]')"
 bottle_url="$bottle_root/hello/blobs/sha256:$bottle_sha"
 manifest_url="$bottle_root/hello/manifests/1.0"
-sed -i "s/PLACEHOLDER/$bottle_sha/" "$tap/Formula/hello.rb"
+sed -i.bak "s/PLACEHOLDER/$bottle_sha/" "$tap/Formula/hello.rb"
+rm "$tap/Formula/hello.rb.bak"
 git -C "$tap" init -q
 git -C "$tap" config user.name fixture
 git -C "$tap" config user.email fixture@example.invalid
@@ -162,7 +163,7 @@ python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
 
 jq -e --arg sha "$bottle_sha" --arg url "$bottle_url" \
   --arg tap_name "$tap_name" --arg manifest_url "$manifest_url" '
-  .schema == 2 and .tap.name == $tap_name and
+  .schema == 3 and .tap.name == $tap_name and
   .bottle.sha256 == $sha and .bottle.url == $url and
   .selection.bottle.mode == "anonymous-public-readback" and
   .target.receipt.built_as_bottle == true and
@@ -171,9 +172,18 @@ jq -e --arg sha "$bottle_sha" --arg url "$bottle_url" \
   (.target.install_log.fetch | length) == 1 and
   .target.install_log.fetch[0] == ("==> Downloading " + $manifest_url) and
   (.target.install_log.pour | length) == 1 and
-  .node.runtime == "node" and .node.status == "success"
+  .test.contract == "node" and .test.runtime == "node" and
+  .test.status == "success"
 ' "$evidence" >/dev/null ||
   fail "valid evidence omitted an exact-bottle runtime fact"
+
+jq '
+  .schema = 2 |
+  .node = (.test | del(.contract, .formula_sha256)) |
+  del(.test)
+' "$evidence" >"$TMPDIR/legacy-node-runtime-evidence.json"
+python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
+  --input "$TMPDIR/legacy-node-runtime-evidence.json" "${validate_args[@]}"
 
 cp "$install_log" "$install_log.manifest"
 cat >"$install_log" <<EOF
@@ -372,5 +382,96 @@ for invalid_fetch in \
     fail "validator accepted invalid public manifest fetch evidence: $invalid_fetch"
   fi
 done
+
+cat >"$tap/Formula/hello.rb" <<EOF
+class Hello < Formula
+  KANDELO_BOTTLE_TEST_CONTRACT = "support-data".freeze
+
+  desc "fixture"
+  url "https://example.invalid/hello-1.0.tar.gz"
+  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+
+  bottle do
+    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+    sha256 cellar: :any_skip_relocation, wasm32_kandelo: "$bottle_sha"
+  end
+end
+EOF
+git -C "$tap" add Formula/hello.rb
+git -C "$tap" commit -q -m support-data
+support_data_tap_commit="$(git -C "$tap" rev-parse HEAD)"
+support_data_formula_sha="$(sha256sum "$tap/Formula/hello.rb" | awk '{print $1}')"
+
+jq --arg sha "$support_data_formula_sha" \
+  '.formulae[0].ruby_source_checksum.sha256 = $sha' \
+  "$formula_info" >"$formula_info.next"
+mv "$formula_info.next" "$formula_info"
+jq --arg tap_commit "$support_data_tap_commit" \
+  '.source.tap_git_head = $tap_commit' \
+  "$target_receipt" >"$target_receipt.next"
+mv "$target_receipt.next" "$target_receipt"
+jq --arg tap_commit "$support_data_tap_commit" \
+  '.tap_commit = $tap_commit' \
+  "$dependency_provenance" >"$dependency_provenance.next"
+mv "$dependency_provenance.next" "$dependency_provenance"
+capture_args[9]="$support_data_tap_commit"
+validate_args[11]="$support_data_tap_commit"
+
+mv "$node_receipt" "$node_receipt.unexpected"
+support_data_evidence="$TMPDIR/support-data-runtime-evidence.json"
+python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" capture \
+  "${capture_args[@]}" --out "$support_data_evidence"
+python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
+  --input "$support_data_evidence" "${validate_args[@]}"
+jq -e --arg sha "$support_data_formula_sha" --arg full_name "$tap_name/$formula" '
+  .schema == 3 and
+  .test == {
+    argv: ["test", $full_name],
+    contract: "support-data",
+    formula_sha256: $sha,
+    launcher: "brew",
+    runtime: "homebrew",
+    status: "success"
+  }
+' "$support_data_evidence" >/dev/null ||
+  fail "support-data evidence did not preserve its exact static test contract"
+
+mv "$node_receipt.unexpected" "$node_receipt"
+expect_capture_error "support-data test with incidental Node evidence" \
+  "support-data Formula test unexpectedly emitted Node execution evidence"
+mv "$node_receipt" "$node_receipt.unexpected"
+
+jq '.test.formula_sha256 = ("d" * 64)' \
+  "$support_data_evidence" >"$TMPDIR/forged-support-data-evidence.json"
+if python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
+  --input "$TMPDIR/forged-support-data-evidence.json" \
+  "${validate_args[@]}" > /dev/null \
+  2>"$TMPDIR/forged-support-data-evidence.err"; then
+  fail "validator accepted support-data evidence for a different Formula"
+fi
+grep -F 'runtime evidence does not prove the support-data Formula test' \
+  "$TMPDIR/forged-support-data-evidence.err" >/dev/null ||
+  fail "forged support-data evidence did not report its contract failure"
+
+jq '
+  .schema = 2 |
+  .node = {
+    argv: ["/tmp/hello.wasm", "--version"],
+    launcher: "kandelo_run_wasm",
+    receipt_sha256: ("a" * 64),
+    runtime: "node",
+    status: "success"
+  } |
+  del(.test)
+' "$support_data_evidence" >"$TMPDIR/legacy-support-data-evidence.json"
+if python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
+  --input "$TMPDIR/legacy-support-data-evidence.json" \
+  "${validate_args[@]}" > /dev/null \
+  2>"$TMPDIR/legacy-support-data-evidence.err"; then
+  fail "validator accepted legacy Node evidence for a support-data Formula"
+fi
+grep -F 'legacy runtime evidence cannot satisfy a support-data test contract' \
+  "$TMPDIR/legacy-support-data-evidence.err" >/dev/null ||
+  fail "legacy support-data evidence did not report its contract failure"
 
 echo "test-homebrew-bottle-runtime-evidence.sh: ok"

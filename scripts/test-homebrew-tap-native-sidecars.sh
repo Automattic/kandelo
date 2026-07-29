@@ -39,6 +39,7 @@ ABI_VERSION="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
 TAP="$TMPDIR/tap"
 DEP_OUT="$TMPDIR/dep-sidecars"
 DEP64_OUT="$TMPDIR/dep64-sidecars"
+DATA_OUT="$TMPDIR/data-sidecars"
 TOOL_OUT="$TMPDIR/tool-sidecars"
 TOOL64_OUT="$TMPDIR/tool64-sidecars"
 BOTTLE_CACHE="$TMPDIR/bottle-cache"
@@ -75,6 +76,17 @@ class SidecarOptional < Formula
   homepage "https://example.invalid/sidecar-optional"
   url "https://example.invalid/sidecar-optional-3.0.tar.gz"
   sha256 "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+end
+RUBY
+
+cat >"$TAP/Formula/sidecar-data.rb" <<'RUBY'
+class SidecarData < Formula
+  KANDELO_BOTTLE_TEST_CONTRACT = "support-data".freeze
+
+  desc "Tap-native support-data sidecar fixture"
+  homepage "https://example.invalid/sidecar-data"
+  url "https://example.invalid/sidecar-data-1.0.tar.gz"
+  sha256 "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 end
 RUBY
 
@@ -324,6 +336,61 @@ make_dep_wasm64_bottle() {
   printf '%s\n%s\n%s\n%s\n' "$archive" "$bottle_json" "$sha" "$bytes"
 }
 
+make_data_bottle() {
+  local stage="$TMPDIR/data-stage/sidecar-data/1.0"
+  local filename
+  filename="$(fixture_bottle_filename sidecar-data 1.0 wasm32 0)"
+  local archive="$TMPDIR/$filename"
+  local bottle_json="$TMPDIR/sidecar-data--1.0.wasm32_kandelo.bottle.json"
+  mkdir -p "$stage/share/sidecar-data" "$stage/.brew"
+  printf 'support data\n' >"$stage/share/sidecar-data/payload.txt"
+  cp "$TAP/Formula/sidecar-data.rb" "$stage/.brew/sidecar-data.rb"
+  jq -nS '{
+    homebrew_version: "Homebrew fixture",
+    changed_files: [],
+    source_modified_time: 0,
+    compiler: "clang",
+    runtime_dependencies: [],
+    source: {scm_revision: "fixture"},
+    arch: "x86_64",
+    built_on: {os: "Linux", os_version: "fixture"}
+  }' >"$stage/INSTALL_RECEIPT.json"
+  tar -czf "$archive" -C "$TMPDIR/data-stage" sidecar-data
+  local sha bytes
+  sha="$(sha256_file "$archive")"
+  bytes="$(wc -c <"$archive" | tr -d '[:space:]')"
+  jq -n \
+    --arg sha "$sha" \
+    --arg filename "$filename" \
+    --arg tap_commit "$(git -C "$TAP" rev-parse HEAD)" \
+    '{
+      "kandelo-dev/tap-core/sidecar-data": {
+        formula: {
+          name: "sidecar-data",
+          pkg_version: "1.0",
+          path: "Library/Taps/kandelo-dev/homebrew-tap-core/Formula/sidecar-data.rb",
+          tap_git_path: "Formula/sidecar-data.rb",
+          tap_git_revision: $tap_commit
+        },
+        bottle: {
+          root_url: "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core",
+          cellar: "any_skip_relocation",
+          rebuild: 0,
+          tags: {
+            wasm32_kandelo: {
+              local_filename: $filename,
+              sha256: $sha,
+              tab: {runtime_dependencies: "untrusted bottle JSON inventory"},
+              path_exec_files: ["bin/forged"],
+              all_files: ["bin/forged"]
+            }
+          }
+        }
+      }
+    }' >"$bottle_json"
+  printf '%s\n%s\n%s\n%s\n' "$archive" "$bottle_json" "$sha" "$bytes"
+}
+
 make_tool_bottle() {
   local stage="$TMPDIR/tool-stage/sidecar-tool/2.0_3"
   local filename
@@ -457,7 +524,7 @@ generate_sidecars() {
   local canonical_json="${out}-merge-bottle.json"
   local dependency_provenance="${out}-dependency-provenance.json"
   local runtime_evidence="${out}-runtime-evidence.json"
-  local tap_commit provenance_sha runtime_provenance_sha
+  local tap_commit provenance_sha runtime_provenance_sha formula_test_sha
   local runtime_dependency_bottle_sha runtime_dependency_receipt_sha version
   bottle_filename="$(basename "$archive")"
   tap_commit="$(git -C "$TAP" rev-parse HEAD)"
@@ -497,6 +564,7 @@ generate_sidecars() {
     --expected-sha256 "$sha" \
     --expected-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
     --expected-cellar any_skip_relocation >/dev/null
+  formula_test_sha="$(sha256_file "$merged_tap/Formula/$formula.rb")"
   provenance_sha="$(sha256_file "$dependency_provenance")"
   runtime_provenance_sha="${SIDECAR_RUNTIME_PROVENANCE_SHA:-$provenance_sha}"
   runtime_dependency_bottle_sha="${SIDECAR_RUNTIME_DEPENDENCY_BOTTLE_SHA:-}"
@@ -512,11 +580,13 @@ generate_sidecars() {
     --argjson bytes "$bytes" \
     --arg version "$version" \
     --arg bottle_filename "$bottle_filename" \
+    --arg formula_test_contract "${SIDECAR_TEST_CONTRACT:-node}" \
+    --arg formula_test_sha "$formula_test_sha" \
     --arg provenance_sha "$runtime_provenance_sha" \
     --arg runtime_dependency_bottle_sha "$runtime_dependency_bottle_sha" \
     --arg runtime_dependency_receipt_sha "$runtime_dependency_receipt_sha" \
     --slurpfile provenance "$dependency_provenance" '{
-      schema: 2,
+      schema: 3,
       formula: $formula,
       arch: $arch,
       abi: $abi,
@@ -584,13 +654,26 @@ generate_sidecars() {
           source_tap_git_head: $tap_commit
         }
       },
-      node: {
-        argv: ["/tmp/sidecar-fixture.wasm"],
-        launcher: "kandelo_run_wasm",
-        receipt_sha256: "5555555555555555555555555555555555555555555555555555555555555555",
-        runtime: "node",
-        status: "success"
-      }
+      test: (
+        if $formula_test_contract == "node" then {
+          argv: ["/tmp/sidecar-fixture.wasm"],
+          contract: "node",
+          formula_sha256: $formula_test_sha,
+          launcher: "kandelo_run_wasm",
+          receipt_sha256: "5555555555555555555555555555555555555555555555555555555555555555",
+          runtime: "node",
+          status: "success"
+        } elif $formula_test_contract == "support-data" then {
+          argv: ["test", ("kandelo-dev/tap-core/" + $formula)],
+          contract: "support-data",
+          formula_sha256: $formula_test_sha,
+          launcher: "brew",
+          runtime: "homebrew",
+          status: "success"
+        } else
+          error("unsupported fixture Formula test contract")
+        end
+      )
     }' >"$runtime_evidence"
   KANDELO_HOMEBREW_TAP_ROOT="$merged_tap" \
   KANDELO_HOMEBREW_FORMULA_SOURCE_ROOT="$TAP" \
@@ -630,8 +713,28 @@ expect_generate_failure() {
 
 mapfile -t dep_bottle < <(make_dep_bottle)
 mapfile -t dep64_bottle < <(make_dep_wasm64_bottle "${dep_bottle[0]}" "${dep_bottle[1]}")
+mapfile -t data_bottle < <(make_data_bottle)
 generate_sidecars sidecar-dep "${dep_bottle[@]}" "$DEP_OUT"
 SIDECAR_TEST_ARCH=wasm64 generate_sidecars sidecar-dep "${dep64_bottle[@]}" "$DEP64_OUT"
+SIDECAR_TEST_CONTRACT=support-data \
+  generate_sidecars sidecar-data "${data_bottle[@]}" "$DATA_OUT"
+jq -e '
+  .packages[0].bottles[0].runtime_support == [] and
+  .packages[0].bottles[0].browser_compatible == false and
+  (
+    .packages[0].bottles[0].validation.outcome_lists |
+    map(select(.name == "support_data_test" and .status == "success")) |
+    length
+  ) == 1 and
+  (
+    .packages[0].bottles[0].validation.outcome_lists |
+    map(select(.name == "node_smoke")) |
+    length
+  ) == 0
+' "$DATA_OUT/sidecars-input.json" >/dev/null || {
+  echo "support-data sidecar claimed executable runtime compatibility" >&2
+  exit 1
+}
 jq -e \
   --arg wasm32 "$WASM32_SYSROOT_FINGERPRINT" \
   --arg wasm64 "$WASM64_SYSROOT_FINGERPRINT" '

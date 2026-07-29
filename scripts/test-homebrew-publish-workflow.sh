@@ -4507,7 +4507,12 @@ TARGET_GIT
     printf 'test-tags=%s|%s\n' \
       "${HOMEBREW_KANDELO_BOTTLE_TAG:-}" "${KANDELO_HOMEBREW_BOTTLE_TAG:-}" \
       >>"$FAKE_BREW_LOG"
-    printf '{"schema":1}\n' >"$HOMEBREW_KANDELO_NODE_RECEIPT_PATH"
+    if [ "${FAKE_FORCE_NODE_RECEIPT:-}" = 1 ] || \
+       ! grep -Fx \
+         '  KANDELO_BOTTLE_TEST_CONTRACT = "support-data".freeze' \
+         "$FAKE_RECONSTRUCTED_TAP/Formula/hello.rb" >/dev/null; then
+      printf '{"schema":1}\n' >"$HOMEBREW_KANDELO_NODE_RECEIPT_PATH"
+    fi
     ;;
   *) exit 51 ;;
 esac
@@ -4608,6 +4613,7 @@ EOF
       FAKE_PROVENANCE_TAP_ROOT="$provenance_tap" \
       FAKE_PROVENANCE_CAPTURE="$provenance_capture" \
       FAKE_PROVENANCE_LOG_CAPTURE="$provenance_log_capture" \
+      FAKE_FORCE_NODE_RECEIPT="${FAKE_FORCE_NODE_RECEIPT:-}" \
       HOMEBREW_BREW_FILE="$fake_brew" \
       HOMEBREW_CACHE="$cache" \
       HOMEBREW_TEMP="$brew_temp" \
@@ -4780,6 +4786,47 @@ EOF
     fail "bottle verifier did not retain the unchanged reconstructed Formula"
   [ -f "$root/clean-runtime-evidence.json" ] ||
     fail "bottle verifier did not emit runtime evidence for an unchanged Formula"
+
+  {
+    head -n 1 "$tap/Formula/hello.rb"
+    printf '%s\n' \
+      '  KANDELO_BOTTLE_TEST_CONTRACT = "support-data".freeze'
+    tail -n +2 "$tap/Formula/hello.rb"
+  } >"$tap/Formula/hello.rb.next"
+  mv "$tap/Formula/hello.rb.next" "$tap/Formula/hello.rb"
+  git -C "$tap" add Formula/hello.rb
+  git -C "$tap" commit -q -m "declare support-data test contract"
+  tap_commit="$(git -C "$tap" rev-parse HEAD)"
+  rm -rf "$provenance_tap"
+  git clone -q "$tap" "$provenance_tap"
+  printf '\n# reconstructed bottle metadata\n' >>"$tap/Formula/hello.rb"
+
+  rm -rf "$cache" "$state"
+  mkdir -p "$cache" "$state"
+  printf 'stale cache entry\n' >"$cache/stale"
+  : >"$log"
+  : >"$realm_log"
+  : >"$lifecycle_log"
+  run_bottle_verifier_fixture \
+    "$root/support-data-runtime-evidence.json" >/dev/null
+  [ -f "$root/support-data-runtime-evidence.json" ] ||
+    fail "bottle verifier did not emit support-data runtime evidence"
+
+  rm -rf "$cache" "$state"
+  mkdir -p "$cache" "$state"
+  printf 'stale cache entry\n' >"$cache/stale"
+  : >"$log"
+  : >"$realm_log"
+  : >"$lifecycle_log"
+  if FAKE_FORCE_NODE_RECEIPT=1 run_bottle_verifier_fixture \
+      "$root/support-data-with-node-runtime-evidence.json" \
+      > /dev/null 2>"$root/support-data-with-node.err"; then
+    fail "support-data bottle verifier accepted incidental Node evidence"
+  fi
+  grep -F \
+    "support-data brew test unexpectedly emitted Node execution evidence" \
+    "$root/support-data-with-node.err" >/dev/null ||
+    fail "support-data verifier did not explain its Node evidence rejection"
 }
 
 assert_dependency_pour_provenance_is_bounded() {
