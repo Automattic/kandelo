@@ -251,6 +251,7 @@ make_formula_runner_fixture() {
     "$REPO_ROOT/scripts/homebrew-verify-poured-bottle.sh" \
     "$REPO_ROOT/scripts/homebrew-formula-support-inputs.sh" \
     "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+    "$REPO_ROOT/scripts/homebrew-native-install-contract.sh" \
     "$REPO_ROOT/scripts/homebrew-validate-host-dependency-plan.sh" \
     "$REPO_ROOT/scripts/homebrew-tap-identity.sh" \
     "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/"
@@ -7339,6 +7340,7 @@ assert_rollback_preserves_metadata
 assert_rollback_deletion_requires_reason
 bash "$REPO_ROOT/scripts/test-homebrew-sibling-bottle-policy.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-patched-launcher.sh"
+bash "$REPO_ROOT/scripts/test-homebrew-native-api-contract.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-inspect-bottle.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-formula-runtime-closure.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-validate-host-dependency-plan.sh"

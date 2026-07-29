@@ -66,6 +66,8 @@ HOMEBREW_PATCHED_NATIVE_HOME=""
 HOMEBREW_PATCHED_NATIVE_BREW_BIN=""
 HOMEBREW_PATCHED_NATIVE_RUNNER=""
 HOMEBREW_PATCHED_NATIVE_SEALED=0
+HOMEBREW_PATCHED_NATIVE_API_SOURCE=""
+HOMEBREW_PATCHED_NATIVE_CONTRACT_DIR=""
 HOMEBREW_PATCHED_NATIVE_BRIDGE_NAMES=()
 HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP=""
 HOMEBREW_PATCHED_STAGED_INPUT_DIR=""
@@ -2369,6 +2371,8 @@ homebrew_patched_launcher_cleanup() {
   HOMEBREW_PATCHED_NATIVE_BREW_BIN=""
   HOMEBREW_PATCHED_NATIVE_RUNNER=""
   HOMEBREW_PATCHED_NATIVE_SEALED=0
+  HOMEBREW_PATCHED_NATIVE_API_SOURCE=""
+  HOMEBREW_PATCHED_NATIVE_CONTRACT_DIR=""
   HOMEBREW_PATCHED_NATIVE_BRIDGE_NAMES=()
   HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP=""
   HOMEBREW_PATCHED_STAGED_INPUT_DIR=""
@@ -2568,6 +2572,100 @@ homebrew_patched_launcher_prepare_native_prefix() {
     echo "homebrew-patched-launcher: native Homebrew did not use the reviewed overlay" >&2
     return 1
   fi
+}
+
+homebrew_patched_launcher_set_native_api_source() {
+  if [ "$#" -ne 1 ]; then
+    echo "homebrew_patched_launcher_set_native_api_source: expected API-ROOT" >&2
+    return 2
+  fi
+  if [ -z "$HOMEBREW_PATCHED_NATIVE_CACHE" ] || \
+     [ -n "$HOMEBREW_PATCHED_BUILD_USER" ] || \
+     [ -n "$HOMEBREW_PATCHED_NATIVE_API_SOURCE" ]; then
+    echo "homebrew-patched-launcher: native API source must be selected once before isolation" >&2
+    return 2
+  fi
+  local source unsafe
+  source="$(/usr/bin/realpath -- "$1")" || return
+  case "$source" in
+    /*) ;;
+    *)
+      echo "homebrew-patched-launcher: native API source must be absolute" >&2
+      return 2
+      ;;
+  esac
+  [ -d "$source" ] && [ ! -L "$source" ] &&
+    [ "$(/usr/bin/stat -c '%u:%g:%a' "$source")" = "0:0:555" ] || {
+    echo "homebrew-patched-launcher: native API source root is not sealed" >&2
+    return 2
+  }
+  unsafe="$(
+    /usr/bin/find "$source" -xdev -mindepth 1 \
+      ! \( \( -type d -user root -group root -perm 0555 \) -o \
+           \( -type f -user root -group root -perm 0444 \) \) \
+      -print -quit
+  )" || return
+  [ -z "$unsafe" ] || {
+    echo "homebrew-patched-launcher: native API source contains an unsafe entry: $unsafe" >&2
+    return 2
+  }
+  for required in formula.jws.json formula_aliases.txt formula_names.txt \
+    internal/executables.txt internal/packages.x86_64_linux.jws.json; do
+    [ -f "$source/$required" ] && [ ! -L "$source/$required" ] || {
+      echo "homebrew-patched-launcher: native API source lacks $required" >&2
+      return 2
+    }
+  done
+  HOMEBREW_PATCHED_NATIVE_API_SOURCE="$source"
+}
+
+homebrew_patched_launcher_stage_native_contract_file() {
+  if [ "$#" -ne 3 ]; then
+    echo "homebrew_patched_launcher_stage_native_contract_file: expected SOURCE BASENAME MAX-BYTES" >&2
+    return 2
+  fi
+  local source="$1" basename="$2" max_bytes="$3"
+  local destination before after destination_digest bytes
+  if [ -z "$HOMEBREW_PATCHED_NATIVE_CONTRACT_DIR" ] || \
+     [ -z "$HOMEBREW_PATCHED_BUILD_USER" ]; then
+    echo "homebrew-patched-launcher: native contract directory is unavailable" >&2
+    return 2
+  fi
+  [[ "$basename" =~ ^[a-z][a-z0-9._-]*\.(json|rb|txt)$ ]] &&
+    [[ "$max_bytes" =~ ^[1-9][0-9]*$ ]] || {
+    echo "homebrew-patched-launcher: invalid native contract file declaration" >&2
+    return 2
+  }
+  [ -f "$source" ] && [ ! -L "$source" ] || {
+    echo "homebrew-patched-launcher: native contract source is not regular" >&2
+    return 2
+  }
+  bytes="$(/usr/bin/stat -c '%s' "$source")" || return
+  [ "$bytes" -gt 0 ] && [ "$bytes" -le "$max_bytes" ] || {
+    echo "homebrew-patched-launcher: native contract source exceeds its size limit" >&2
+    return 2
+  }
+  before="$(/usr/bin/sha256sum "$source")" || return
+  before="${before%% *}"
+  destination="$HOMEBREW_PATCHED_NATIVE_CONTRACT_DIR/$basename"
+  [ ! -e "$destination" ] && [ ! -L "$destination" ] || {
+    echo "homebrew-patched-launcher: native contract destination already exists" >&2
+    return 2
+  }
+  "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/install \
+    -o root -g root -m 0444 "$source" "$destination" || return
+  after="$(/usr/bin/sha256sum "$source")" || return
+  after="${after%% *}"
+  destination_digest="$(/usr/bin/sha256sum "$destination")" || return
+  destination_digest="${destination_digest%% *}"
+  [ "$before" = "$after" ] &&
+    [ "$(/usr/bin/stat -c '%u:%g:%a:%h:%s' "$destination")" = \
+      "0:0:444:1:$bytes" ] &&
+    [ "$destination_digest" = "$before" ] || {
+    echo "homebrew-patched-launcher: staged native contract file changed" >&2
+    return 1
+  }
+  printf '%s\n' "$destination"
 }
 
 homebrew_patched_launcher_run_native() {
@@ -3187,6 +3285,15 @@ homebrew_patched_launcher_isolate() {
         echo "homebrew-patched-launcher: native Homebrew launcher changed before isolation" >&2
         return 2
       }
+    if [ -n "$HOMEBREW_PATCHED_NATIVE_API_SOURCE" ]; then
+      [ -d "$HOMEBREW_PATCHED_NATIVE_API_SOURCE" ] &&
+        [ ! -L "$HOMEBREW_PATCHED_NATIVE_API_SOURCE" ] &&
+        [ "$(/usr/bin/stat -c '%u:%g:%a' \
+          "$HOMEBREW_PATCHED_NATIVE_API_SOURCE")" = "0:0:555" ] || {
+        echo "homebrew-patched-launcher: native API source changed before isolation" >&2
+        return 2
+      }
+    fi
   elif [ -n "$HOMEBREW_PATCHED_NATIVE_BREW_BIN" ] || \
        [ -n "$HOMEBREW_PATCHED_NATIVE_CACHE" ] || \
        [ -n "$HOMEBREW_PATCHED_NATIVE_TEMP" ] || \
@@ -3246,7 +3353,7 @@ homebrew_patched_launcher_isolate() {
     "$build_user" /usr/bin/realpath /usr/bin/realpath realpath
   homebrew_assert_protected_host_executable \
     "$build_user" /usr/bin/bash /usr/bin/bash bash
-  for protected_bin in chmod chown cmp cp id install ln ls mktemp readlink rm \
+  for protected_bin in chmod chown cmp cp id install ln ls mktemp mv readlink rm \
     od sha256sum stat test tr; do
     homebrew_assert_protected_host_executable \
       "$build_user" "/usr/bin/$protected_bin" "/usr/bin/$protected_bin" "$protected_bin"
@@ -3458,6 +3565,28 @@ homebrew_patched_launcher_isolate() {
         esac
       done
     done
+    if [ -n "$HOMEBREW_PATCHED_NATIVE_API_SOURCE" ]; then
+      for mutable_root in "$HOMEBREW_PATCHED_NATIVE_PREFIX" \
+        "$HOMEBREW_PATCHED_NATIVE_CACHE" "$HOMEBREW_PATCHED_NATIVE_TEMP" \
+        "$HOMEBREW_PATCHED_NATIVE_CONFIG" "$HOMEBREW_PATCHED_NATIVE_HOME"; do
+        case "$HOMEBREW_PATCHED_NATIVE_API_SOURCE/" in
+          "$mutable_root/"*)
+            echo "homebrew-patched-launcher: native API source is inside mutable native state" >&2
+            return 2
+            ;;
+        esac
+        case "$mutable_root/" in
+          "$HOMEBREW_PATCHED_NATIVE_API_SOURCE/"*)
+            echo "homebrew-patched-launcher: mutable native state is inside the API source" >&2
+            return 2
+            ;;
+        esac
+      done
+      homebrew_assert_tree_not_replaceable_by_user \
+        "$build_user" "$HOMEBREW_PATCHED_NATIVE_API_SOURCE" || return
+      homebrew_assert_tree_not_writable_by_user \
+        "$build_user" "$HOMEBREW_PATCHED_NATIVE_API_SOURCE" || return
+    fi
   fi
 
   mutable_roots=(
@@ -3531,6 +3660,36 @@ homebrew_patched_launcher_isolate() {
     "$sudo_bin" /usr/bin/chown -h root:root "$HOMEBREW_PATCHED_NATIVE_BREW_BIN"
     "$sudo_bin" /usr/bin/install -d -o "$build_user" -g "$build_group" -m 0755 \
       "$HOMEBREW_PATCHED_NATIVE_CONFIG/homebrew"
+    if [ -n "$HOMEBREW_PATCHED_NATIVE_API_SOURCE" ]; then
+      if [ -e "$HOMEBREW_PATCHED_NATIVE_CACHE/api" ] || \
+         [ -L "$HOMEBREW_PATCHED_NATIVE_CACHE/api" ]; then
+        [ -d "$HOMEBREW_PATCHED_NATIVE_CACHE/api" ] &&
+          [ ! -L "$HOMEBREW_PATCHED_NATIVE_CACHE/api" ] &&
+          [ -z "$(find "$HOMEBREW_PATCHED_NATIVE_CACHE/api" \
+            -mindepth 1 -print -quit)" ] || {
+          echo "homebrew-patched-launcher: native API mountpoint is not empty" >&2
+          return 2
+        }
+      fi
+      # WHY: the cache remains writable for bottle downloads, but its sticky
+      # root prevents the build identity from replacing this root-owned API
+      # mountpoint between isolated Brew commands.
+      "$sudo_bin" /usr/bin/install -d -o root -g "$build_group" -m 1775 \
+        "$HOMEBREW_PATCHED_NATIVE_CACHE"
+      "$sudo_bin" /usr/bin/install -d -o root -g root -m 0555 \
+        "$HOMEBREW_PATCHED_NATIVE_CACHE/api"
+      [ "$(/usr/bin/stat -c '%u:%g:%a' \
+        "$HOMEBREW_PATCHED_NATIVE_CACHE")" = "0:$build_gid:1775" ] &&
+        [ "$(/usr/bin/stat -c '%u:%g:%a' \
+          "$HOMEBREW_PATCHED_NATIVE_CACHE/api")" = "0:0:555" ] &&
+        ! "$sudo_bin" -n -H -u "$build_user" -- /usr/bin/mv \
+          "$HOMEBREW_PATCHED_NATIVE_CACHE/api" \
+          "$HOMEBREW_PATCHED_NATIVE_CACHE/api.replace-probe" \
+          >/dev/null 2>&1 || {
+        echo "homebrew-patched-launcher: native API mountpoint is replaceable" >&2
+        return 2
+      }
+    fi
   fi
   # WHY: Homebrew derives its target prefix from the path used to invoke
   # bin/brew. Keep that canonical path, but make both its parent and the exact
@@ -3679,6 +3838,11 @@ homebrew_patched_launcher_isolate() {
   HOMEBREW_PATCHED_PROTECTED_DIR_STATE="$(
     /usr/bin/stat -c '%d:%i:%u:%g' "$HOMEBREW_PATCHED_PROTECTED_DIR"
   )" || return
+  if [ -n "$HOMEBREW_PATCHED_NATIVE_API_SOURCE" ]; then
+    HOMEBREW_PATCHED_NATIVE_CONTRACT_DIR="$HOMEBREW_PATCHED_PROTECTED_DIR/native-api"
+    "$sudo_bin" /usr/bin/install -d -o root -g root -m 0555 \
+      "$HOMEBREW_PATCHED_NATIVE_CONTRACT_DIR" || return
+  fi
   # WHY: the wrapper source is frozen before privileged recipe-runner staging.
   # Derive its two fixed paths from the already-selected protected build root
   # instead of serializing lifecycle globals that are intentionally populated
@@ -4069,6 +4233,10 @@ homebrew_patched_launcher_isolate() {
         "--property=InaccessiblePaths=$build_home" \
         "--service-type=exec" \
         "--expand-environment=no"
+      if [ -n "$HOMEBREW_PATCHED_NATIVE_API_SOURCE" ]; then
+        printf ' %q' \
+          "--property=BindReadOnlyPaths=$HOMEBREW_PATCHED_NATIVE_API_SOURCE:$HOMEBREW_PATCHED_NATIVE_CACHE/api"
+      fi
       if [ "$sysroot_build_root" != "$kandelo_root" ] && \
          [ "$sysroot_build_root" != "$tap_root" ] && \
          [ "$sysroot_build_root" != "$output_root" ]; then

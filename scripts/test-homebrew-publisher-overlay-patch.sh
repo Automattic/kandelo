@@ -8,9 +8,11 @@ trap 'rm -rf "$TMPDIR"' EXIT
 
 mkdir -p "$TMPDIR/Library/Homebrew/dev-cmd" \
   "$TMPDIR/Library/Homebrew/extend/os/linux" \
+  "$TMPDIR/Library/Homebrew/extend/os/linux/sandbox" \
   "$TMPDIR/Library/Homebrew/utils/github"
 for fixture in abstract_command.rb global.rb build_options.rb keg.rb extend/ENV.rb \
-  exceptions.rb system_command.rb utils/bottles.rb utils/popen.rb utils/github/actions.rb; do
+  exceptions.rb system_command.rb utils/bottles.rb utils/popen.rb utils/github/actions.rb \
+  extend/os/linux/sandbox/bubblewrap.rb extend/os/linux/sandbox/landlock.rb; do
   : >"$TMPDIR/Library/Homebrew/$fixture"
 done
 cat >"$TMPDIR/Library/Homebrew/abstract_command.rb" <<'RUBY'
@@ -342,30 +344,22 @@ cat >"$TMPDIR/Library/Homebrew/extend/os/linux/sandbox.rb" <<'RUBY'
 # typed: strict
 # frozen_string_literal: true
 
-require "fileutils"
-require "env_config"
-require "system_command"
-require "utils/popen"
-require "utils/github/actions"
+require "extend/os/linux/sandbox/bubblewrap"
+require "extend/os/linux/sandbox/landlock"
 
 module OS
   module Linux
     module Sandbox
       module ClassMethods
-        def ensure_sandbox_installed!(install_from_tests: false)
-          return unless Homebrew::EnvConfig.sandbox_linux?
-          return if ENV["HOMEBREW_TESTS"] && !install_from_tests
-          return if ENV["HOMEBREW_INSTALLING_BUBBLEWRAP"]
-          return if bubblewrap_executable
+        extend T::Helpers
 
-          begin
-            require "exceptions"
-            require "formula"
-            with_env(HOMEBREW_INSTALLING_BUBBLEWRAP: "1") do
-              ::Formula["bubblewrap"].ensure_installed!(reason: "Linux sandboxing")
-            end
-          end
+        requires_ancestor { T.class_of(::Sandbox) }
+
+        sig { params(install_from_tests: T::Boolean).void }
+        def ensure_sandbox_installed!(install_from_tests: false)
+          OS::Linux::Sandbox.sandbox_implementation.ensure_installed!(install_from_tests:)
         end
+
       end
     end
   end
@@ -1347,6 +1341,15 @@ ruby -I"$TMPDIR/Library/Homebrew" - "$TMPDIR" <<'RUBY'
 require "json"
 require "pathname"
 
+module T
+  module Helpers
+    def requires_ancestor(*)
+    end
+  end
+end
+
+def sig(*) = nil
+
 HOMEBREW_PREFIX = Pathname(ARGV.fetch(0))/"sandbox-prefix"
 HOMEBREW_PREFIX.mkpath
 plan_path = HOMEBREW_PREFIX/".kandelo-publisher-build-dependencies.json"
@@ -1370,22 +1373,34 @@ plan_path.chmod(0o444)
 
 require "extend/os/linux/sandbox"
 
-class FixturePublisherSandbox
-  extend OS::Linux::Sandbox::ClassMethods
+class FixtureSandboxImplementation
+  class << self
+    attr_accessor :installations
 
-  def self.bubblewrap_executable = nil
+    def ensure_installed!(install_from_tests:)
+      raise "sandbox test flag changed" if install_from_tests
 
-  def self.with_env(**)
-    yield
+      self.installations = installations.to_i + 1
+    end
   end
 end
 
+OS::Linux::Sandbox.define_singleton_method(:sandbox_implementation) do
+  FixtureSandboxImplementation
+end
+
+class FixturePublisherSandbox
+  extend OS::Linux::Sandbox::ClassMethods
+end
+
 FixturePublisherSandbox.ensure_sandbox_installed!
-raise "protected publisher test loaded native Bubblewrap Formula code" if defined?(::Formula)
+unless FixtureSandboxImplementation.installations.to_i.zero?
+  raise "protected publisher test delegated to the native sandbox installer"
+end
 
 plan_path.delete
 FixturePublisherSandbox.ensure_sandbox_installed!
-unless Formula.installations == 1
+unless FixtureSandboxImplementation.installations == 1
   raise "native Homebrew no longer follows the normal Bubblewrap installation path"
 end
 RUBY

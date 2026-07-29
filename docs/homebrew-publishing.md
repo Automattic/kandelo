@@ -144,6 +144,120 @@ recipe, dependency closure, cache identity, and immutable release archive;
 consumers must resolve the canonical nested member paths together rather than
 recreating `brew.env` or resolving a mutable flat fallback.
 
+## Native Homebrew API Admission
+
+The Linux publisher uses upstream Homebrew to install native build and
+test tools such as Git, Ruby, CMake, and `ca-certificates`. Homebrew
+resolves those tools from two signed API feeds. The public feed supplies
+Formula and bottle metadata; the internal feed supplies the install plan
+that Homebrew executes. Both feeds are rolling inputs even when the
+Homebrew source checkout is pinned.
+
+That distinction caused the failure this contract prevents. The internal
+`ca-certificates` record gained a `run` postinstall step. The older
+pinned Homebrew source did not understand that current install-plan
+shape, so a normal native bottle installation failed before Kandelo
+could build its target bottle. Pinning only the Homebrew Git commit
+therefore did not freeze the executable native-tool input.
+
+Each nonempty publisher realm now freezes its own signed API view before
+any untrusted Formula code runs. Exact pinned Homebrew performs the
+network fetch, verifies both JSON Web Signatures (JWS), and materializes
+the lazy name, alias, and executable indexes. The workflow then makes
+the complete API cache root-owned and read-only. Later, the same exact
+Homebrew resolves aliases, implicit Linux dependencies, variations, and
+bottles inside the isolated realm against that sealed cache. Kandelo
+admits the resulting selected records before installation.
+
+The build realm admits `.build_and_test`; the independently created
+verifier realm admits `.runtime_and_test`. They cannot share mutable
+Homebrew state or assume that two fetches made at different times
+returned identical bytes.
+
+The public and internal feeds in one realm must each identify one exact
+`homebrew/core` Git head and must agree with each other. The head and
+complete frozen-file inventory are recorded as run evidence. They are
+deliberately not committed as a whole-feed compatibility pin: an
+unrelated Formula can change without changing the native tools selected
+by this publisher.
+
+Instead,
+`homebrew/homebrew-native-compatibility-lock.json` records Homebrew's
+exact x86_64 Linux projection for every Formula in the allowed native
+closure. Admission compares only the records Homebrew actually selected
+for the current roots. A change to an unused Formula passes. A change to
+a selected Formula's x86_64 Linux compatibility projection, full
+internal install plan, Linux variation, or bottle fails before
+installation. Prefix-expanded caveat and service presentation fields
+are intentionally excluded.
+
+After every direct root, the publisher audits the native Cellar. Every
+installed keg must remain inside the admitted closure, every requested
+root must exist, and every receipt must identify a poured
+`homebrew/core` bottle loaded from the signed internal API.
+
+A publisher job with no native roots does not fetch the API or create
+an invented empty admission. This keeps zero-root jobs offline and
+prevents a network dependency from appearing where no native Formula
+can execute.
+
+When a selected native Formula legitimately changes, regenerate the
+lock only in a fresh Linux x86_64 publisher-equivalent realm using the
+exact Homebrew commit in
+`homebrew/homebrew-native-compatibility-roots.json`. The updater derives
+the repository from the Brew executable and rejects a wrong commit or
+any staged, unstaged, untracked, or source-affecting Git index/config
+state. Homebrew may create only its checksum-pinned portable Ruby under
+the one ignored vendor directory. The updater inventories that complete
+runtime after bootstrap and requires the tracked checkout and ignored
+runtime to remain byte-for-byte unchanged through lock generation.
+
+```bash
+KANDELO_HOMEBREW_SUDO_BIN=/usr/bin/sudo \
+  scripts/dev-shell.sh bash \
+    scripts/update-homebrew-native-compatibility-lock.sh \
+      /home/linuxbrew/.linuxbrew/bin/brew \
+      homebrew/homebrew-native-compatibility-lock.json
+```
+
+Review the resulting selected-record diff. Confirm that the two signed
+feeds still agree, inspect the upstream `homebrew/core` change, and
+verify every changed Formula, bottle, and install-plan step is expected.
+Then rerun the native `ca-certificates` lifecycle and the complete
+build/verifier publisher test. Do not hand-edit the lock, accept a
+partial API cache, disable signature verification, or refresh the lock
+automatically during publication.
+
+The path-scoped
+`homebrew-native-publisher-compatibility.yml` pull-request workflow owns
+that Linux evidence. It runs the updater with poisoned caller Homebrew,
+Git, Ruby, and Bundler settings, uploads the generated lock even when it
+differs from the reviewed file, and then requires byte-for-byte
+equality.
+It pours Ruby's admitted native closure to exercise the signed
+`ca-certificates` postinstall step, proves OpenSSL's certificate link
+and a verified TLS connection, and retains the resulting evidence. The
+generated lock is uploaded last as diagnostic evidence, including when
+an earlier substantive check fails, so an artifact-service failure
+cannot prevent the lifecycle checks from starting.
+
+After that preflight is green, the same workflow calls the local
+publisher in read-only dry-run mode for one fixed `bzip2`/wasm32 lane.
+GitHub loads the reusable workflow from the pull request's merge
+candidate, while the publisher's Kandelo source input is the exact pull
+request head. The lane runs independently frozen build and verifier
+realms but cannot upload packages, write an index or tap, or publish a
+release.
+
+Those two checks are deliberately compositional. The Ruby lifecycle
+proves the signed install plan and certificate output in the exact,
+bounded cf5 environment. The `bzip2` lane separately proves the real
+systemd-isolated build and verifier realms with their nonempty native
+tool closures. It does not claim that Ruby and `ca-certificates` ran
+inside that systemd lane. A future integrated lane may select a cheap
+Formula whose native closure includes Ruby, but the current retained
+gate keeps the two claims distinct.
+
 ## Repositories And Ownership
 
 | Repository                      | Owns                                                                                                                                   |

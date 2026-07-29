@@ -1,73 +1,78 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Kandelo <noreply@kandelo.invalid>
-Date: Fri, 17 Jul 2026 00:00:00 +0000
+Date: Wed, 29 Jul 2026 00:00:00 +0000
 Subject: [PATCH] Support the isolated Kandelo bottle publisher
 
-Kandelo's bottle publisher gives Formula evaluation root-owned, read-only
-Homebrew source and trust state. Homebrew normally requires its repository to
-be writable and persists a redundant per-item trust entry for every fully
-qualified install, even when the containing tap is already trusted. Both
-behaviors reject the publisher's intentionally immutable state before a
-Formula can run.
+Kandelo's bottle publisher gives Formula evaluation root-owned,
+read-only Homebrew source and trust state. Homebrew normally requires
+its repository to be writable and persists a redundant per-item trust
+entry for every fully qualified install, even when the containing tap is
+already trusted. Both behaviors reject the publisher's intentionally
+immutable state before a Formula can run.
 
-The publisher also preinstalls reviewed dependencies before asking Homebrew to
-build the selected Formula with `--ignore-dependencies`. That flag must prevent
-Homebrew from recursively installing native packages into the target Cellar,
-but the build child currently interprets it by dropping every dependency from
-Superenv. Direct build tools such as WABT and Binaryen then disappear from the
-Formula PATH even though their sealed proxy kegs are installed.
+The publisher also preinstalls reviewed dependencies before asking
+Homebrew to build the selected Formula with `--ignore-dependencies`.
+That flag must prevent Homebrew from recursively installing native
+packages into the target Cellar, but the build child currently
+interprets it by dropping every dependency from Superenv. Direct build
+tools such as WABT and Binaryen then disappear from the Formula PATH
+even though their sealed proxy kegs are installed.
 
-Homebrew on Linux also injects native sandbox dependencies such as Bubblewrap
-into every Formula. Those host dependencies must remain available to native
-Homebrew, but recording them in a Kandelo target bottle would make guest
-Homebrew treat Linux executables as WebAssembly runtime dependencies.
+Homebrew on Linux also injects native sandbox dependencies such as
+Bubblewrap into every Formula. Those host dependencies must remain
+available to native Homebrew, but recording them in a Kandelo target
+bottle would make guest Homebrew treat Linux executables as WebAssembly
+runtime dependencies.
 
-Exclude only the Homebrew repository from the preinstall writability diagnostic
-and skip automatic per-item persistence when the tap already grants the same
-authority. When the isolated publisher supplies its protected static plan,
-populate the build child's environment with only the matching direct native
-build dependencies. Its schema distinguishes literal Formula dependencies from
-statically allowlisted Requirements. Validate each evaluated Requirement's
-class, Formula identity, sentinel executable, and tags against the sealed plan,
-then reconstruct only those matching Formulae as build-only Superenv inputs.
-Do not recursively expand them. Every selected dependency must already be
-present as a proxy keg, so a missing proxy still fails closed.
-For a Requirement also tagged `:test`, validate that its sealed proxy contains
-the planned sentinel and expose only that proxy's standard tool and metadata
-paths to Homebrew's Formula test process.
-Use that same protected plan to suppress Linux global dependencies for the
-identified Kandelo target and every Formula in its exact immutable target taps
-while Homebrew derives the recursive target receipt. Formulae from other taps
-and the separate native Homebrew prefix retain normal Linux dependency
-resolution.
-While that plan is active, also prevent `brew test` from automatically pouring
-Bubblewrap into the target Cellar. A usable host Bubblewrap can still be used,
-but an unavailable sandbox cannot bypass the publisher's reviewed native plan.
-The publisher retains an embedded receipt for Kandelo's static VFS composer,
-so make same-environment retries insensitive to tap-only commits with Homebrew's
-upstream GNU tar flags.
-Remove only the tap Git head from a fresh copy of the temporary archived receipt
-and restore the exact installed receipt after bottling. Normalize the archive
-file time to the stable source time used by Homebrew's tar and gzip paths.
-Every other required Homebrew path remains subject to the normal writability
-check, and explicit `brew trust` operations still use the normal mutation path and fail
-against an immutable publisher store.
+Exclude only the Homebrew repository from the preinstall writability
+diagnostic and skip automatic per-item persistence when the tap already
+grants the same authority. When the isolated publisher supplies its
+protected static plan, populate the build child's environment with only
+the matching direct native build dependencies. Its schema distinguishes
+literal Formula dependencies from statically allowlisted Requirements.
+Validate each evaluated Requirement's class, Formula identity, sentinel
+executable, and tags against the sealed plan, then reconstruct only
+those matching Formulae as build-only Superenv inputs.  Do not
+recursively expand them. Every selected dependency must already be
+present as a proxy keg, so a missing proxy still fails closed.  For a
+Requirement also tagged `:test`, validate that its sealed proxy contains
+the planned sentinel and expose only that proxy's standard tool and
+metadata paths to Homebrew's Formula test process.  Use that same
+protected plan to suppress Linux global dependencies for the identified
+Kandelo target and every Formula in its exact immutable target taps
+while Homebrew derives the recursive target receipt. Formulae from other
+taps and the separate native Homebrew prefix retain normal Linux
+dependency resolution.  While that plan is active, also prevent `brew
+test` from automatically pouring Bubblewrap into the target Cellar. A
+usable host Bubblewrap can still be used, but an unavailable sandbox
+cannot bypass the publisher's reviewed native plan.  The publisher
+retains an embedded receipt for Kandelo's static VFS composer, so make
+same-environment retries insensitive to tap-only commits with Homebrew's
+upstream GNU tar flags.  Remove only the tap Git head from a fresh copy
+of the temporary archived receipt and restore the exact installed
+receipt after bottling. Normalize the archive file time to the stable
+source time used by Homebrew's tar and gzip paths.  Every other required
+Homebrew path remains subject to the normal writability check, and
+explicit `brew trust` operations still use the normal mutation path and
+fail against an immutable publisher store.
 
-This patch is applied only to the publisher's temporary Homebrew overlay. Guest
-Homebrew keeps its normal repository, trust, and dependency behavior.
+This patch is applied only to the publisher's temporary Homebrew
+overlay. Guest Homebrew keeps its normal repository, trust, and
+dependency behavior.
 ---
- Library/Homebrew/build.rb                   | 31 ++++++++++++++++++++++++++++++-
- Library/Homebrew/dev-cmd/bottle.rb          | 12 ++++++++++++
- Library/Homebrew/diagnostic.rb              |  1 +
- Library/Homebrew/extend/os/linux/formula.rb |  4 ++++
- Library/Homebrew/extend/os/linux/sandbox.rb |  4 +++-
- Library/Homebrew/kandelo_publisher.rb       | 225 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
- Library/Homebrew/test.rb                    |  2 ++
- Library/Homebrew/trust.rb                   |  1 +
- 8 files changed, 278 insertions(+), 2 deletions(-)
+ Library/Homebrew/build.rb                   |  31 ++-
+ Library/Homebrew/dev-cmd/bottle.rb          |  12 ++
+ Library/Homebrew/diagnostic.rb              |   1 +
+ Library/Homebrew/extend/os/linux/formula.rb |   4 +
+ Library/Homebrew/extend/os/linux/sandbox.rb |   3 +
+ Library/Homebrew/kandelo_publisher.rb       | 225 ++++++++++++++++++++
+ Library/Homebrew/test.rb                    |   2 +
+ Library/Homebrew/trust.rb                   |   1 +
+ 8 files changed, 278 insertions(+), 1 deletion(-)
+ create mode 100644 Library/Homebrew/kandelo_publisher.rb
 
 diff --git a/Library/Homebrew/build.rb b/Library/Homebrew/build.rb
-index be833176c0..c2c07f5bcf 100644
+index be833176c..c2c07f5bc 100644
 --- a/Library/Homebrew/build.rb
 +++ b/Library/Homebrew/build.rb
 @@ -10,6 +10,7 @@ old_trap = trap("INT") { exit! 130 }
@@ -121,16 +126,19 @@ index be833176c0..c2c07f5bcf 100644
    def effective_build_options_for(dependent)
      args  = dependent.build.used_options
 diff --git a/Library/Homebrew/dev-cmd/bottle.rb b/Library/Homebrew/dev-cmd/bottle.rb
-index dbd420e2c5..82d326397e 100644
+index dbd420ef0..82d326397 100644
 --- a/Library/Homebrew/dev-cmd/bottle.rb
 +++ b/Library/Homebrew/dev-cmd/bottle.rb
-@@ -4,4 +4,5 @@
+@@ -2,6 +2,7 @@
+ # frozen_string_literal: true
+
  require "abstract_command"
 +require "kandelo_publisher"
  require "fileutils"
  require "formula"
  require "utils/bottles"
-@@ -365,5 +366,10 @@ module Homebrew
+@@ -364,6 +365,11 @@ module Homebrew
+
        sig { params(mtime: String, default_tar: T::Boolean).returns([String, T::Array[String]]) }
        def setup_tar_and_args!(mtime, default_tar: false)
 +        publisher_gnu_tar = KandeloPublisher.reproducible_gnu_tar
@@ -141,7 +149,7 @@ index dbd420e2c5..82d326397e 100644
          # Without --only-json-tab bottles are never reproducible
          default_tar_args = ["tar", tar_args].freeze
          return default_tar_args if !args.only_json_tab? || default_tar
-@@ -513,5 +519,10 @@ module Homebrew
+@@ -513,6 +519,11 @@ module Homebrew
                tab.changed_files&.delete(Pathname.new(AbstractTab::FILENAME))
                tab.tabfile&.unlink
              else
@@ -152,18 +160,20 @@ index dbd420e2c5..82d326397e 100644
 +              )
                tab.write
              end
-@@ -543,5 +554,6 @@ module Homebrew
+
+@@ -543,6 +554,7 @@ module Homebrew
                                                  mtime:     tab.source_modified_time,
                                                  orig_name: relocatable_tar_path,
                                                  output:    bottle_path)
 +              FileUtils.touch(bottle_path, mtime: tab_source_modified_time) if KandeloPublisher.active?
                sudo_purge
              end
+
 diff --git a/Library/Homebrew/diagnostic.rb b/Library/Homebrew/diagnostic.rb
-index f493938c3a..66926e07ea 100644
+index 6e5e030c6..9af2b9c10 100644
 --- a/Library/Homebrew/diagnostic.rb
 +++ b/Library/Homebrew/diagnostic.rb
-@@ -408,6 +408,7 @@ module Homebrew
+@@ -449,6 +449,7 @@ module Homebrew
        def check_access_directories
          not_writable_dirs =
            Keg.must_be_writable_directories.select(&:exist?)
@@ -172,7 +182,7 @@ index f493938c3a..66926e07ea 100644
          return if not_writable_dirs.empty?
 
 diff --git a/Library/Homebrew/extend/os/linux/formula.rb b/Library/Homebrew/extend/os/linux/formula.rb
-index dbe848ba51..e0f7374914 100644
+index 63452d2b4..b2186beaa 100644
 --- a/Library/Homebrew/extend/os/linux/formula.rb
 +++ b/Library/Homebrew/extend/os/linux/formula.rb
 @@ -1,6 +1,8 @@
@@ -194,22 +204,29 @@ index dbe848ba51..e0f7374914 100644
          @global_deps ||= begin
            dependency_collector = spec.dependency_collector
 diff --git a/Library/Homebrew/extend/os/linux/sandbox.rb b/Library/Homebrew/extend/os/linux/sandbox.rb
-index ba803bc756..06d1671285 100644
+index 6216a189c..b29e304ca 100644
 --- a/Library/Homebrew/extend/os/linux/sandbox.rb
 +++ b/Library/Homebrew/extend/os/linux/sandbox.rb
-@@ -5,2 +5,3 @@ require "fileutils"
- require "env_config"
+@@ -3,6 +3,7 @@
+
+ require "extend/os/linux/sandbox/bubblewrap"
+ require "extend/os/linux/sandbox/landlock"
 +require "kandelo_publisher"
- require "system_command"
-@@ -170,3 +171,4 @@ module OS
-           return if bubblewrap_executable
--
+
+ module OS
+   module Linux
+@@ -104,6 +105,8 @@ module OS
+
+         sig { params(install_from_tests: T::Boolean).void }
+         def ensure_sandbox_installed!(install_from_tests: false)
 +          return if KandeloPublisher.active?
 +
-           begin
+           OS::Linux::Sandbox.sandbox_implementation.ensure_installed!(install_from_tests:)
+         end
+
 diff --git a/Library/Homebrew/kandelo_publisher.rb b/Library/Homebrew/kandelo_publisher.rb
 new file mode 100644
-index 0000000000..7ee01d23d5
+index 000000000..7ee01d23d
 --- /dev/null
 +++ b/Library/Homebrew/kandelo_publisher.rb
 @@ -0,0 +1,225 @@
@@ -439,19 +456,18 @@ index 0000000000..7ee01d23d5
 +  end
 +end
 diff --git a/Library/Homebrew/test.rb b/Library/Homebrew/test.rb
-index b0c5227092..2d2350a54b 100644
+index b0c522709..2d2350a54 100644
 --- a/Library/Homebrew/test.rb
 +++ b/Library/Homebrew/test.rb
-@@ -8,6 +8,7 @@ old_trap = trap("INT") { exit! 130 }
+@@ -7,6 +7,7 @@ old_trap = trap("INT") { exit! 130 }
+
  require_relative "global"
  require "extend/ENV"
 +require "kandelo_publisher"
  require "timeout"
  require "formula_assertions"
  require "formula_free_port"
- require "fcntl"
-@@ -46,7 +47,8 @@ begin
-   end
+@@ -47,6 +48,7 @@ begin
 
    ENV.extend(Stdenv)
    ENV.setup_build_environment(formula:, testing_formula: true)
@@ -460,11 +476,14 @@ index b0c5227092..2d2350a54b 100644
 
    run_test = proc do |_|
 diff --git a/Library/Homebrew/trust.rb b/Library/Homebrew/trust.rb
-index 07c9edd42b..3de1d9be03 100644
+index 07c9edd42..3de1d9be0 100644
 --- a/Library/Homebrew/trust.rb
 +++ b/Library/Homebrew/trust.rb
-@@ -121,3 +121,4 @@ module Homebrew
+@@ -120,6 +120,7 @@ module Homebrew
+         tap_name = name.split("/").first(2).join("/")
          item_name = ::Utils.name_from_full_name(name)
          tap = Tap.fetch(tap_name)
 +        next if trusted_tap?(tap)
          next if tap.official?
+
+         types = if type == :formula

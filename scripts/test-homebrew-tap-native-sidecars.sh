@@ -98,7 +98,7 @@ git -C "$TAP" commit -q -m "add tap-native fixture formulae"
 TAP_SOURCE_COMMIT="$(git -C "$TAP" rev-parse HEAD)"
 KANDELO_SOURCE_COMMIT="$(git -C "$REPO_ROOT" rev-parse HEAD)"
 
-HOMEBREW_BREW_COMMIT=34c40c18ffa2029b611b61c73273e32c003d0842
+HOMEBREW_BREW_COMMIT=cf5bc21c6b127e168ef7cfa982ba7db62874690e
 export HOMEBREW_BREW_COMMIT
 
 sha256_file() {

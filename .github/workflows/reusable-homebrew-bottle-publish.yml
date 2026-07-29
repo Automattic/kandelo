@@ -45,6 +45,9 @@ on:
       dry-run:
         type: boolean
         default: false
+      native-compatibility-pr:
+        type: boolean
+        default: false
       require-vfs-acceptance:
         type: boolean
         default: false
@@ -74,12 +77,17 @@ jobs:
         shell: bash
         env:
           CALLER_EVENT_NAME: ${{ github.event_name }}
+          CALLER_PR_HEAD: ${{ github.event.pull_request.head.sha }}
           CALLER_REF: ${{ github.ref }}
           CALLER_REPOSITORY: ${{ github.repository }}
           CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
+          ARCHES: ${{ inputs.arches }}
           DRY_RUN: ${{ inputs.dry-run }}
+          FORCE: ${{ inputs.force }}
+          FORMULAE: ${{ inputs.formulae }}
           KANDELO_REPOSITORY: ${{ inputs.kandelo-repository }}
           KANDELO_REF: ${{ inputs.kandelo-ref }}
+          NATIVE_COMPATIBILITY_PR: ${{ inputs.native-compatibility-pr }}
           PACKAGE_GENERATION_WASM32: ${{ inputs.package-generation-wasm32 }}
           PACKAGE_GENERATION_WASM64: ${{ inputs.package-generation-wasm64 }}
           TAP_NAME: ${{ inputs.tap-name }}
@@ -159,15 +167,42 @@ jobs:
           normalized_caller_repository="$(printf '%s' "$CALLER_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           normalized_tap_repository="$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           normalized_tap_name="$(printf '%s' "$TAP_NAME" | tr '[:upper:]' '[:lower:]')"
-          [ "$normalized_caller_repository" = "$normalized_tap_repository" ] || {
-            echo "::error::the caller repository must own the target tap repository"; exit 2;
-          }
-          [ "$CALLER_REF" = "refs/heads/main" ] || {
-            echo "::error::publication requires the tap main branch"; exit 2;
-          }
-          [ "$CALLER_EVENT_NAME" = "repository_dispatch" ] || {
-            echo "::error::publication requires the reviewed repository_dispatch caller"; exit 2;
-          }
+          if [ "$NATIVE_COMPATIBILITY_PR" = "true" ]; then
+            # WHY: the ordinary publisher admits only a tap-main dispatch.
+            # This exception has no secrets or write jobs and exists so the
+            # PR merge-candidate version of this reusable workflow can prove
+            # both isolated native realms before it reaches main.
+            [ "$normalized_caller_repository" = "automattic/kandelo" ] &&
+              [ "$CALLER_EVENT_NAME" = "pull_request" ] &&
+              [[ "$CALLER_REF" =~ ^refs/pull/([1-9][0-9]*)/merge$ ]] &&
+              [ "$CALLER_WORKFLOW_REF" = \
+                "Automattic/kandelo/.github/workflows/homebrew-native-publisher-compatibility.yml@refs/pull/${BASH_REMATCH[1]}/merge" ] &&
+              [[ "$CALLER_PR_HEAD" =~ ^[0-9a-f]{40}$ ]] &&
+              [ "$KANDELO_REF" = "$CALLER_PR_HEAD" ] &&
+              [ "$DRY_RUN" = "true" ] &&
+              [ "$FORCE" = "true" ] &&
+              [ "$FORMULAE" = "bzip2" ] &&
+              [ "$ARCHES" = "wasm32" ] &&
+              [ "$normalized_tap_repository" = \
+                "kandelo-dev/homebrew-tap-core" ] &&
+              [ "$normalized_tap_name" = "kandelo-dev/tap-core" ] &&
+              [ "$TAP_REF" = \
+                "408a1cbf4e30984fbe5a76e54e9d3ac450af05de" ] &&
+              [ -z "$PACKAGE_GENERATION_WASM32" ] &&
+              [ -z "$PACKAGE_GENERATION_WASM64" ] || {
+              echo "::error::native compatibility PR caller is not the fixed read-only proof"; exit 2;
+            }
+          else
+            [ "$normalized_caller_repository" = "$normalized_tap_repository" ] || {
+              echo "::error::the caller repository must own the target tap repository"; exit 2;
+            }
+            [ "$CALLER_REF" = "refs/heads/main" ] || {
+              echo "::error::publication requires the tap main branch"; exit 2;
+            }
+            [ "$CALLER_EVENT_NAME" = "repository_dispatch" ] || {
+              echo "::error::publication requires the reviewed repository_dispatch caller"; exit 2;
+            }
+          fi
           [ -z "$BOTTLE_ROOT_URL" ] || {
             echo "::error::the publisher derives the bottle root from the tap repository"; exit 2;
           }
@@ -183,9 +218,11 @@ jobs:
             echo "::error::tap-name must be owner/name derived from the conventional repository"; exit 2;
           }
           if [ "$DRY_RUN" = "true" ]; then
-            [ "$CALLER_WORKFLOW_REF" = "$CALLER_REPOSITORY/.github/workflows/dry-run-bottles.yml@refs/heads/main" ] || {
-              echo "::error::dry-run publication requires the reviewed tap dry-run workflow"; exit 2;
-            }
+            if [ "$NATIVE_COMPATIBILITY_PR" != "true" ]; then
+              [ "$CALLER_WORKFLOW_REF" = "$CALLER_REPOSITORY/.github/workflows/dry-run-bottles.yml@refs/heads/main" ] || {
+                echo "::error::dry-run publication requires the reviewed tap dry-run workflow"; exit 2;
+              }
+            fi
             validated_kandelo_ref="$(normalize_dry_run_source_ref "Kandelo" "$KANDELO_REF")"
             validated_tap_ref="$(normalize_dry_run_source_ref "tap" "$TAP_REF")"
             validated_generation_wasm32=""
@@ -788,7 +825,7 @@ jobs:
         with:
           persist-credentials: false
           repository: Homebrew/brew
-          ref: 34c40c18ffa2029b611b61c73273e32c003d0842
+          ref: cf5bc21c6b127e168ef7cfa982ba7db62874690e
           path: homebrew-prefix/Homebrew
 
       - name: Activate reviewed Homebrew implementation
@@ -796,7 +833,7 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
           FORMULA: ${{ matrix.formula }}
-          HOMEBREW_BREW_COMMIT: 34c40c18ffa2029b611b61c73273e32c003d0842
+          HOMEBREW_BREW_COMMIT: cf5bc21c6b127e168ef7cfa982ba7db62874690e
         run: |
           set -euo pipefail
           [[ "$HOMEBREW_BREW_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
@@ -1154,6 +1191,59 @@ jobs:
             echo "HOMEBREW_TEMP=$shared_temp/tmp"
           } >> "$GITHUB_ENV"
 
+      - name: Freeze signed native Homebrew API
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          FORMULA: ${{ matrix.formula }}
+          TAP_NAME_INPUT: ${{ inputs.tap-name }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+        run: |
+          set -euo pipefail
+          umask 077
+          cd "$GITHUB_WORKSPACE/kandelo"
+          # WHY: tap Formula Ruby is still untrusted at this point. The static
+          # parser can select reviewed direct host tools without executing it;
+          # exact isolated cf5 will resolve the final implicit closure later.
+          . scripts/homebrew-tap-identity.sh
+          tap_name="$(
+            homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT"
+          )"
+          stem="$RUNNER_TEMP/homebrew-native-api-${FORMULA}-${ARCH}"
+          plan="$stem-plan.json"
+          roots="$stem-roots.txt"
+          api_cache="$stem-cache"
+          state="$stem-state"
+          # WHY: the dev-shell hook writes informational text to its own
+          # stdout. Redirect inside that shell so only the Ruby command can
+          # write the machine-readable plan.
+          bash scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+            ruby scripts/homebrew-formula-runtime-closure.rb \
+              "$1" "$2" "$3" --host-dependencies-json >"$4"
+          ' kandelo-native-plan \
+            "$GITHUB_WORKSPACE/tap" "$tap_name" "$FORMULA" "$plan"
+          bash scripts/homebrew-validate-host-dependency-plan.sh \
+            "$plan" "$tap_name" "$FORMULA" \
+            "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"
+          jq -r '.build_and_test[]' "$plan" >"$roots"
+          KANDELO_HOMEBREW_SUDO_BIN="$KANDELO_HOMEBREW_SUDO_BIN" \
+            bash scripts/homebrew-native-api-preflight.sh prepare \
+              "$HOMEBREW_BREW_FILE" "$api_cache" "$state" \
+              "$PWD/homebrew/homebrew-native-compatibility-roots.json" \
+              tap_formula_host_dependencies "$roots"
+          {
+            echo "KANDELO_HOMEBREW_EARLY_HOST_PLAN=$plan"
+            echo "KANDELO_HOMEBREW_EARLY_HOST_ROOTS=$roots"
+            echo "KANDELO_HOMEBREW_NATIVE_API_CACHE=$api_cache"
+            echo "KANDELO_HOMEBREW_NATIVE_API_STATE=$state"
+            if [ -s "$roots" ]; then
+              echo "KANDELO_HOMEBREW_NATIVE_API_SOURCE=$api_cache/api"
+            else
+              echo "KANDELO_HOMEBREW_NATIVE_API_SOURCE="
+            fi
+          } >>"$GITHUB_ENV"
+
       - name: Provision Formula browser runtime
         shell: bash
         run: |
@@ -1270,6 +1360,11 @@ jobs:
             WASM_POSIX_XTASK_BIN="$WASM_POSIX_XTASK_BIN" \
             KANDELO_HOMEBREW_RECIPE_USER="$KANDELO_HOMEBREW_RECIPE_USER" \
             KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
+            KANDELO_HOMEBREW_EARLY_HOST_PLAN="$KANDELO_HOMEBREW_EARLY_HOST_PLAN" \
+            KANDELO_HOMEBREW_EARLY_HOST_ROOTS="$KANDELO_HOMEBREW_EARLY_HOST_ROOTS" \
+            KANDELO_HOMEBREW_NATIVE_API_CACHE="$KANDELO_HOMEBREW_NATIVE_API_CACHE" \
+            KANDELO_HOMEBREW_NATIVE_API_STATE="$KANDELO_HOMEBREW_NATIVE_API_STATE" \
+            KANDELO_HOMEBREW_NATIVE_API_SOURCE="$KANDELO_HOMEBREW_NATIVE_API_SOURCE" \
             bash scripts/homebrew-bottle-build.sh \
             --tap-root "$GITHUB_WORKSPACE/tap" \
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
@@ -1284,6 +1379,9 @@ jobs:
       - name: Retire isolated Formula execution identity
         if: ${{ always() && steps.formula-identity.outputs.created == 'true' }}
         shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          FORMULA: ${{ matrix.formula }}
         run: |
           set -euo pipefail
           build_user="kandelo-homebrew-build"
@@ -1341,6 +1439,27 @@ jobs:
             status="$?"
             [ "$status" -eq 1 ] || exit "$status"
           fi
+          [[ "$FORMULA" =~ ^[a-z0-9][a-z0-9+@._-]{0,254}$ ]] &&
+            [[ "$ARCH" =~ ^wasm(32|64)$ ]] &&
+            [[ "$RUNNER_TEMP" == /* ]] && [ "$RUNNER_TEMP" != "/" ] || {
+            echo "::error::invalid native API cleanup identity"
+            exit 2
+          }
+          native_api_stem="$RUNNER_TEMP/homebrew-native-api-${FORMULA}-${ARCH}"
+          case "$native_api_stem" in
+            "$RUNNER_TEMP"/homebrew-native-api-*) ;;
+            *)
+              echo "::error::native API cleanup escaped the runner temp root"
+              exit 2
+              ;;
+          esac
+          # WHY: preflight seals the API snapshot as root. Remove its exact,
+          # matrix-owned paths explicitly so a self-hosted runner does not
+          # retain undeletable evidence after the isolated realm is retired.
+          "$sudo_bin" -n -- /usr/bin/rm -rf -- \
+            "$native_api_stem-cache" "$native_api_stem-state"
+          "$sudo_bin" -n -- /usr/bin/rm -f -- \
+            "$native_api_stem-plan.json" "$native_api_stem-roots.txt"
           "$sudo_bin" -n -- "$userdel_bin" "$recipe_user"
           "$sudo_bin" -n -- "$userdel_bin" -r "$build_user"
           for retired_user in "$recipe_user" "$build_user"; do
@@ -1382,7 +1501,7 @@ jobs:
         env:
           CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
           FORMULA: ${{ matrix.formula }}
-          HOMEBREW_BREW_COMMIT: 34c40c18ffa2029b611b61c73273e32c003d0842
+          HOMEBREW_BREW_COMMIT: cf5bc21c6b127e168ef7cfa982ba7db62874690e
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
           TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
@@ -2197,7 +2316,7 @@ jobs:
         with:
           persist-credentials: false
           repository: Homebrew/brew
-          ref: 34c40c18ffa2029b611b61c73273e32c003d0842
+          ref: cf5bc21c6b127e168ef7cfa982ba7db62874690e
           path: homebrew-prefix/Homebrew
 
       - name: Activate reviewed Homebrew implementation for bottle verification
@@ -2205,7 +2324,7 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
           FORMULA: ${{ matrix.formula }}
-          HOMEBREW_BREW_COMMIT: 34c40c18ffa2029b611b61c73273e32c003d0842
+          HOMEBREW_BREW_COMMIT: cf5bc21c6b127e168ef7cfa982ba7db62874690e
         run: |
           set -euo pipefail
           [[ "$HOMEBREW_BREW_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
@@ -2868,6 +2987,58 @@ jobs:
             echo "HOMEBREW_TEMP=$shared_temp/tmp"
           } >> "$GITHUB_ENV"
 
+      - name: Freeze signed native Homebrew API for bottle verification
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          FORMULA: ${{ matrix.formula }}
+          TAP_NAME_INPUT: ${{ inputs.tap-name }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+        run: |
+          set -euo pipefail
+          umask 077
+          cd "$GITHUB_WORKSPACE/kandelo"
+          # WHY: verification executes the Formula's runtime helpers in a
+          # separate identity after the build identity has been retired. Give
+          # that realm its own signed API snapshot and runtime-only admission
+          # plan instead of trusting mutable build-job state.
+          . scripts/homebrew-tap-identity.sh
+          tap_name="$(
+            homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT"
+          )"
+          stem="$RUNNER_TEMP/homebrew-native-api-verify-${FORMULA}-${ARCH}"
+          plan="$stem-plan.json"
+          roots="$stem-roots.txt"
+          api_cache="$stem-cache"
+          state="$stem-state"
+          # WHY: keep dev-shell startup output outside the JSON plan.
+          bash scripts/dev-shell.sh bash -c '
+            set -euo pipefail
+            ruby scripts/homebrew-formula-runtime-closure.rb \
+              "$1" "$2" "$3" --host-dependencies-json >"$4"
+          ' kandelo-native-plan \
+            "$GITHUB_WORKSPACE/tap" "$tap_name" "$FORMULA" "$plan"
+          bash scripts/homebrew-validate-host-dependency-plan.sh \
+            "$plan" "$tap_name" "$FORMULA" \
+            "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"
+          jq -r '.runtime_and_test[]' "$plan" >"$roots"
+          KANDELO_HOMEBREW_SUDO_BIN="$KANDELO_HOMEBREW_SUDO_BIN" \
+            bash scripts/homebrew-native-api-preflight.sh prepare \
+              "$HOMEBREW_BREW_FILE" "$api_cache" "$state" \
+              "$PWD/homebrew/homebrew-native-compatibility-roots.json" \
+              tap_formula_host_dependencies "$roots"
+          {
+            echo "KANDELO_HOMEBREW_EARLY_HOST_PLAN=$plan"
+            echo "KANDELO_HOMEBREW_EARLY_HOST_ROOTS=$roots"
+            echo "KANDELO_HOMEBREW_NATIVE_API_CACHE=$api_cache"
+            echo "KANDELO_HOMEBREW_NATIVE_API_STATE=$state"
+            if [ -s "$roots" ]; then
+              echo "KANDELO_HOMEBREW_NATIVE_API_SOURCE=$api_cache/api"
+            else
+              echo "KANDELO_HOMEBREW_NATIVE_API_SOURCE="
+            fi
+          } >>"$GITHUB_ENV"
+
       - name: Provision Formula browser runtime for bottle verification
         shell: bash
         run: |
@@ -2946,6 +3117,11 @@ jobs:
             WASM_POSIX_XTASK_BIN="$WASM_POSIX_XTASK_BIN" \
             KANDELO_HOMEBREW_RECIPE_USER="$KANDELO_HOMEBREW_RECIPE_USER" \
             KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
+            KANDELO_HOMEBREW_EARLY_HOST_PLAN="$KANDELO_HOMEBREW_EARLY_HOST_PLAN" \
+            KANDELO_HOMEBREW_EARLY_HOST_ROOTS="$KANDELO_HOMEBREW_EARLY_HOST_ROOTS" \
+            KANDELO_HOMEBREW_NATIVE_API_CACHE="$KANDELO_HOMEBREW_NATIVE_API_CACHE" \
+            KANDELO_HOMEBREW_NATIVE_API_STATE="$KANDELO_HOMEBREW_NATIVE_API_STATE" \
+            KANDELO_HOMEBREW_NATIVE_API_SOURCE="$KANDELO_HOMEBREW_NATIVE_API_SOURCE" \
             bash scripts/homebrew-verify-poured-bottle.sh \
             --tap-root "$RUNNER_TEMP/homebrew-merged-tap" \
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
@@ -2970,6 +3146,9 @@ jobs:
       - name: Retire isolated bottle verification identity
         if: ${{ always() && steps.verifier-identity.outputs.created == 'true' }}
         shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          FORMULA: ${{ matrix.formula }}
         run: |
           set -euo pipefail
           build_user="kandelo-homebrew-verify"
@@ -3017,6 +3196,24 @@ jobs:
           else
             status="$?"; [ "$status" -eq 1 ] || exit "$status"
           fi
+          [[ "$FORMULA" =~ ^[a-z0-9][a-z0-9+@._-]{0,254}$ ]] &&
+            [[ "$ARCH" =~ ^wasm(32|64)$ ]] &&
+            [[ "$RUNNER_TEMP" == /* ]] && [ "$RUNNER_TEMP" != "/" ] || {
+            echo "::error::invalid verifier API cleanup identity"
+            exit 2
+          }
+          native_api_stem="$RUNNER_TEMP/homebrew-native-api-verify-${FORMULA}-${ARCH}"
+          case "$native_api_stem" in
+            "$RUNNER_TEMP"/homebrew-native-api-verify-*) ;;
+            *)
+              echo "::error::verifier API cleanup escaped the runner temp root"
+              exit 2
+              ;;
+          esac
+          "$sudo_bin" -n -- /usr/bin/rm -rf -- \
+            "$native_api_stem-cache" "$native_api_stem-state"
+          "$sudo_bin" -n -- /usr/bin/rm -f -- \
+            "$native_api_stem-plan.json" "$native_api_stem-roots.txt"
           "$sudo_bin" -n -- "$userdel_bin" "$recipe_user"
           "$sudo_bin" -n -- "$userdel_bin" -r "$build_user"
           for retired_user in "$recipe_user" "$build_user"; do
@@ -3056,7 +3253,7 @@ jobs:
         shell: bash
         env:
           CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
-          HOMEBREW_BREW_COMMIT: 34c40c18ffa2029b611b61c73273e32c003d0842
+          HOMEBREW_BREW_COMMIT: cf5bc21c6b127e168ef7cfa982ba7db62874690e
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
           TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
@@ -3130,7 +3327,7 @@ jobs:
         shell: bash
         env:
           CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
-          HOMEBREW_BREW_COMMIT: 34c40c18ffa2029b611b61c73273e32c003d0842
+          HOMEBREW_BREW_COMMIT: cf5bc21c6b127e168ef7cfa982ba7db62874690e
         run: |
           set -euo pipefail
           cd kandelo-postverify
@@ -3171,7 +3368,7 @@ jobs:
         if: ${{ matrix.formula == 'file-formula' && matrix.arch == 'wasm32' }}
         shell: bash
         env:
-          HOMEBREW_BREW_COMMIT: 34c40c18ffa2029b611b61c73273e32c003d0842
+          HOMEBREW_BREW_COMMIT: cf5bc21c6b127e168ef7cfa982ba7db62874690e
         run: |
           set -euo pipefail
           cd kandelo
@@ -3640,7 +3837,7 @@ jobs:
         shell: bash
         env:
           CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
-          HOMEBREW_BREW_COMMIT: 34c40c18ffa2029b611b61c73273e32c003d0842
+          HOMEBREW_BREW_COMMIT: cf5bc21c6b127e168ef7cfa982ba7db62874690e
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
           TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
         run: |
