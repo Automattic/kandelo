@@ -89,6 +89,7 @@ import {
   ExactProcessGenerationDetachLedger,
   type ExactProcessGenerationDetachResult,
 } from "./process-generation-detach";
+import { ProcessMemoryCreatorGate } from "./process-memory-creator-gate";
 import type { PlatformIO } from "./types";
 import type {
   CentralizedWorkerInitMessage,
@@ -136,11 +137,12 @@ const reclamationMeasurementPressure = (() => {
   }
   return bytes;
 })();
-// WHY: 32 MiB is the measured default. Repeated zero-byte controls on current
+// WHY: 4 MiB is the measured default. Repeated zero-byte controls on current
 // Node engines sometimes retained history-proportional RSS and sometimes
 // collected it in a later large step; enabled runs reclaimed consistently in
 // the same harness. Keep this internal: it is an engine nudge, not a
-// user-facing memory ownership or collection guarantee.
+// user-facing memory ownership or collection guarantee. See
+// docs/measurements/2026-07-28-process-memory-retirement-rss.md.
 const processMemoryRetirementPressureHook =
   createProcessMemoryRetirementPressureHook(
     reclamationMeasurementPressure,
@@ -191,6 +193,7 @@ const vmInterruptTimers = new VmInterruptTimerManager<ProcessInfo>(
 );
 const reportedExits = new Set<number>();
 const rootfsSnapshotGate = new RootfsSnapshotGate();
+const processMemoryCreators = new ProcessMemoryCreatorGate();
 
 // Workers terminated by the kernel-worker entry itself (handleExit /
 // handleExec / handleTerminate). The crash safety-net listener checks
@@ -881,33 +884,48 @@ async function handleInit(msg: InitMessage) {
         processMemoryAllocator.observeTarget(memory, target);
       },
       onFork: ({ parentPid, childPid, parentMemory, continuation }) => {
-        // Notify the main thread of every kernel-side process event so
-        // Inspector-style UIs (Kandelo) can refresh their process table
-        // event-driven. Mirrors the browser-side worker entry.
-        post({ type: "proc_event", kind: "spawn", pid: childPid, ppid: parentPid });
-        return handleFork(parentPid, childPid, parentMemory, continuation);
+        return processMemoryCreators.run("a fork process Worker", () => {
+          // Notify the main thread of every kernel-side process event so
+          // Inspector-style UIs (Kandelo) can refresh their process table
+          // event-driven. Mirrors the browser-side worker entry.
+          post({
+            type: "proc_event",
+            kind: "spawn",
+            pid: childPid,
+            ppid: parentPid,
+          });
+          return handleFork(parentPid, childPid, parentMemory, continuation);
+        });
       },
-      onExec: async (pid, path, argv, envp, callerTid) => {
-        const previousWorker = processes.get(pid)?.worker;
-        const result = await handleExec(pid, path, argv, envp, callerTid);
-        // Notify after handleExec refreshes kernel-side Process.argv so
-        // process-table consumers don't refetch stale command names. A
-        // post-commit signal death also returns 0 because the old syscall can
-        // no longer return; only emit exec when a replacement was installed.
-        const installedWorker = processes.get(pid)?.worker;
-        if (
-          result === 0
-          && installedWorker
-          && installedWorker !== previousWorker
-          && kernelWorker.isProcessExecutionActive(pid)
-        ) {
-          post({ type: "proc_event", kind: "exec", pid });
-        }
-        return result;
-      },
+      onExec: (pid, path, argv, envp, callerTid) =>
+        processMemoryCreators.run("an exec process Worker", async () => {
+          const previousWorker = processes.get(pid)?.worker;
+          const result = await handleExec(pid, path, argv, envp, callerTid);
+          // Notify after handleExec refreshes kernel-side Process.argv so
+          // process-table consumers don't refetch stale command names. A
+          // post-commit signal death also returns 0 because the old syscall
+          // can no longer return; only emit exec when a replacement exists.
+          const installedWorker = processes.get(pid)?.worker;
+          if (
+            result === 0
+            && installedWorker
+            && installedWorker !== previousWorker
+            && kernelWorker.isProcessExecutionActive(pid)
+          ) {
+            post({ type: "proc_event", kind: "exec", pid });
+          }
+          return result;
+        }),
       onResolveSpawn: handlePosixSpawnResolve,
-      onSpawn: handlePosixSpawn,
-      onClone: handleClone,
+      onSpawn: (parentPid, childPid, program, envp) =>
+        processMemoryCreators.run(
+          "a posix_spawn process Worker",
+          () => handlePosixSpawn(parentPid, childPid, program, envp),
+        ),
+      onClone: (attachment) => processMemoryCreators.run(
+        "a pthread Worker",
+        () => handleClone(attachment),
+      ),
       onThreadExit: (pid, _tid, channelOffset) => handleThreadExit(pid, channelOffset),
       onExit: handleExit,
     },
@@ -2116,7 +2134,7 @@ async function handleTerminate(msg: TerminateProcessMessage) {
 
 // --- Destroy ---
 
-async function handleDestroy(msg: { requestId: number }) {
+async function performDestroy() {
   // [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — WORKAROUND, remove when the engine bug
   // is fixed; see docs/jsc-terminate-atomics-wait-workaround.md.
   //
@@ -2129,7 +2147,7 @@ async function handleDestroy(msg: { requestId: number }) {
   // kernel_exit → wasm trap → the worker idles → terminate() reclaims it). This
   // is harmless on V8, so we do it unconditionally rather than sniff the engine,
   // matching the browser host (which does the same and is likewise a no-op cost
-  // on Chrome/V8). Phases mirror browser-kernel-worker-entry.ts handleDestroy.
+  // on Chrome/V8). Phases mirror browser-kernel-worker-entry.ts performDestroy.
   let woken = new Set<number>();
   try { woken = kernelWorker.killAllBlockedForTeardown(); } catch (e) {
     console.error(`[node-kernel-worker] killAllBlockedForTeardown failed: ${e}`);
@@ -2206,9 +2224,9 @@ async function handleDestroy(msg: { requestId: number }) {
       t.worker.terminate().catch(() => {});
     }
   }
-  // WHY: a spawn or exec continuation can install a generation after the
-  // second snapshot. Never turn an empty retry ledger into permission for a
-  // PID-wide clear; only exact-generation transactions remove map entries.
+  // Only exact-generation transactions may remove map entries. The enclosing
+  // creator gate proves no later spawn/exec/fork/clone continuation can install
+  // another Worker alias after this check.
   let gracefulDetachComplete =
     processGenerationDetaches.pendingCount === 0 && processes.size === 0;
   vmInterruptTimers.clearAll();
@@ -2236,10 +2254,18 @@ async function handleDestroy(msg: { requestId: number }) {
     );
   }
   cleanupSessionDir();
-  respond(
-    msg.requestId,
-    kernelRealmDestroyResult(gracefulDetachComplete),
+  return kernelRealmDestroyResult(gracefulDetachComplete);
+}
+
+async function handleDestroy(msg: { requestId: number }) {
+  // WHY: message and syscall callbacks overlap across awaits. The shared gate
+  // closes admission synchronously, drains every creator that entered first,
+  // and runs this terminal sweep only once. The outer worker-realm termination
+  // remains the bounded fallback if an admitted creator does not finish.
+  const result = await processMemoryCreators.closeAndRunAfterDrain(
+    performDestroy,
   );
+  respond(msg.requestId, result);
 }
 
 // --- PTY ---
@@ -2349,7 +2375,14 @@ port.on("message", (msg: MainToKernelMessage) => {
       });
       break;
     case "spawn":
-      void handleSpawn(msg);
+      void processMemoryCreators
+        .run("a host-spawned process Worker", () => handleSpawn(msg))
+        .catch((error) => {
+          respondError(
+            msg.requestId,
+            error instanceof Error ? error.message : String(error),
+          );
+        });
       break;
     case "append_stdin_data":
       kernelWorker.appendStdinData(msg.pid, msg.data);
