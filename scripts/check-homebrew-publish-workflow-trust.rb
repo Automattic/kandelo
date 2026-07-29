@@ -1245,7 +1245,7 @@ def check_publisher(workflow)
         exact_permissions?(plan["permissions"], { "contents" => "read" }),
         "publisher plan authority changed")
   check(build["runs-on"] == "ubuntu-latest" && build["timeout-minutes"] == 1440 &&
-        exact_permissions?(build["permissions"], { "contents" => "read", "actions" => "read" }),
+        exact_permissions?(build["permissions"], { "contents" => "read" }),
         "publisher build authority changed")
   check(upload["runs-on"] == "ubuntu-latest" && upload["timeout-minutes"] == 60 &&
         exact_permissions?(upload["permissions"], {
@@ -1259,7 +1259,7 @@ def check_publisher(workflow)
           "cancel-in-progress" => false,
         }, "publisher version-index authority or concurrency changed")
   check(verify["runs-on"] == "ubuntu-latest" && verify["timeout-minutes"] == 1440 &&
-        exact_permissions?(verify["permissions"], { "actions" => "read", "contents" => "read" }),
+        exact_permissions?(verify["permissions"], { "contents" => "read" }),
         "publisher verifier authority changed")
   check(finalize["runs-on"] == "ubuntu-latest" && finalize["timeout-minutes"] == 120 &&
         exact_permissions?(finalize["permissions"], { "actions" => "read", "contents" => "write" }),

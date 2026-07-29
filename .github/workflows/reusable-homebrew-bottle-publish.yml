@@ -741,9 +741,11 @@ jobs:
     if: ${{ needs.plan.outputs.matrix != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 1440
+    # WHY: upload-artifact uses the current run's scoped artifact service.
+    # Giving merge-candidate build code actions:read would also expose
+    # unrelated repository run artifacts.
     permissions:
       contents: read
-      actions: read
     strategy:
       fail-fast: false
       matrix:
@@ -2224,8 +2226,9 @@ jobs:
     if: ${{ always() && !cancelled() && needs.plan.result == 'success' && needs.build-and-test.result == 'success' && (inputs.dry-run || (needs.upload-bottle.result == 'success' && needs.publish-bottle-index.result == 'success')) && needs.plan.outputs.matrix != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 1440
+    # WHY: same-run download-artifact uses the scoped artifact service and
+    # does not need repository-wide Actions read authority.
     permissions:
-      actions: read
       contents: read
     strategy:
       fail-fast: false
