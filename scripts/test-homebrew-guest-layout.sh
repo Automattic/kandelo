@@ -199,6 +199,9 @@ for retired_prefix in "${retired_prefixes[@]}"; do
         ;;
       host/test/homebrew-guest-layout.test.ts\|*"retired_prefixes: [\"$retired_prefix\"]"*) ;;
       scripts/test-homebrew-inspect-bottle.sh\|*"$retired_prefix"*) ;;
+      # The campaign's adversarial fixture must contain the exact retired
+      # bytes to prove cross-chunk archives and entrant recipes are rejected.
+      scripts/test-homebrew-prefix-campaign.py\|*"RETIRED_PREFIX = \"$retired_prefix\""*) ;;
       docs/homebrew-publishing.md\|*"guest paths, not Linuxbrew paths"*) ;;
       docs/homebrew-publishing.md\|*"must not create a \`linuxbrew\` user"*) ;;
       docs/homebrew-publishing.md\|*"install below \`/home/linuxbrew\`"*) ;;

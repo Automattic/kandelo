@@ -236,6 +236,56 @@ Actions cache is not publication authority. Cross-run campaign state belongs
 in a content-addressed immutable release or registry object with verified
 digest-bound retrieval.
 
+### Exact Campaign Manifest
+
+`scripts/homebrew-prefix-campaign.py` derives the first atomic campaign
+manifest from four distinct clean Git snapshots:
+
+- the exact Kandelo source, which owns the ABI, guest-layout contract, and
+  reviewed source-only Formula classifications;
+- the exact old selected tap, which owns old metadata, sidecars, Formula
+  receipts, and immutable bottle provenance; and
+- the exact candidate source tap, which owns the Formula and recipe sources
+  from which destination identities and required builds will proceed; and
+- the exact native Homebrew source, which resolves each candidate Formula's
+  `pkg_version` through Homebrew's own JSON metadata implementation.
+
+The split is deliberate. An old bottle's archived Formula receipt is checked
+against the Formula at its exact historical `built_from.tap_commit`. The
+candidate Formula identity is bound separately and is never substituted into
+old provenance. Reuse requires those historical and candidate Formula
+identities to match exactly outside canonical bottle metadata.
+
+The fixed
+`homebrew/guest-prefix-campaign-inputs.json` contract classifies every
+candidate Formula that has no old sidecar. It admits `homebrew-bootstrap` as
+the one reviewed new build and explicitly defers the remaining service
+Formulae. Any unclassified source-only Formula fails derivation.
+
+Run `derive` with all four exact 40-character commits and the reviewed old
+metadata and guest-layout SHA-256 values. The output must not already exist
+and must be outside all four input worktrees. Run `check` with the same
+inputs to repeat anonymous bottle reads, full canonical archive inspection,
+and credential-free destination-absence probes before accepting the
+manifest. Neither command publishes a package or changes a tap.
+
+Both commands read committed Git archives rather than live worktree bytes
+and recheck every input HEAD and cleanliness at completion. The manifest
+also inventories every active candidate source file that still contains a
+retired guest prefix. Every such occurrence must be regenerated or removed
+during composition.
+
+Before final tap publication, run `check-final-prefix` against the exact
+candidate commit. It fails if a retired guest prefix remains in a Formula,
+generated sidecar, example, VFS acceptance file, recipe, or other active
+source. Historical failure/rollback evidence and the explicit negative test
+that asserts the old prefix is absent are the only source exceptions.
+
+Kandelo's guest installation is `/opt/kandelo/homebrew`, its Cellar is
+`/opt/kandelo/homebrew/Cellar`, and its stable command is `/usr/bin/brew`.
+`/home/linuxbrew/.linuxbrew` is historical migration input, not a supported
+guest layout. No final guest path uses the name `linuxbrew`.
+
 ## Completion Evidence
 
 The cutover is complete only when all of the following are true:

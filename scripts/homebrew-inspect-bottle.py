@@ -239,6 +239,7 @@ class BottleInspector:
         wasm_timeout_seconds: int,
         forbidden_roots: tuple[str, ...],
         selected_formula: pathlib.Path | None,
+        reported_roots: tuple[str, ...] = (),
     ) -> None:
         self.archive_path = archive_path
         self.formula = formula
@@ -255,8 +256,16 @@ class BottleInspector:
         self.forbidden_roots = tuple(
             (root, root.encode("utf-8")) for root in forbidden_roots
         )
+        self.reported_roots = tuple(
+            (root, root.encode("utf-8")) for root in reported_roots
+        )
+        self.found_reported_roots: set[str] = set()
         self.forbidden_root_overlap = max(
-            len(encoded) - 1 for _root, encoded in self.forbidden_roots
+            (
+                len(encoded) - 1
+                for _root, encoded in (*self.forbidden_roots, *self.reported_roots)
+            ),
+            default=0,
         )
         self.entries: dict[str, ArchiveEntry] = {}
         self.archive: tarfile.TarFile | None = None
@@ -353,6 +362,9 @@ class BottleInspector:
                         f"regular archive entry {path!r} contains forbidden path "
                         f"{root!r}"
                     )
+            for root, encoded_root in self.reported_roots:
+                if encoded_root in window:
+                    self.found_reported_roots.add(root)
             if self.forbidden_root_overlap:
                 tail = window[-self.forbidden_root_overlap :]
         if bytes_read != expected_size:
@@ -662,7 +674,7 @@ class BottleInspector:
             if result == "required":
                 fork_instrumentation = "required"
 
-        return {
+        result: dict[str, object] = {
             "schema": 1,
             "abi_version": self.expected_abi,
             "arch": self.expected_arch,
@@ -673,6 +685,13 @@ class BottleInspector:
             "formula_sha256": hashlib.sha256(formula_bytes).hexdigest(),
             "fork_instrumentation": fork_instrumentation,
         }
+        if self.reported_roots:
+            # WHY: migration admission must distinguish a structurally valid
+            # old-prefix bottle from a byte-clean reuse candidate. Reporting
+            # only these explicitly requested roots preserves the ordinary
+            # inspector's fail-closed admission behavior.
+            result["reported_forbidden_roots"] = sorted(self.found_reported_roots)
+        return result
 
 
 def parse_args() -> argparse.Namespace:
@@ -703,6 +722,14 @@ def parse_args() -> argparse.Namespace:
         "--wasm-timeout-seconds",
         type=int,
         default=DEFAULT_WASM_TIMEOUT_SECONDS,
+    )
+    parser.add_argument(
+        "--report-retired-roots",
+        action="store_true",
+        help=(
+            "report guest-layout retired roots instead of rejecting them; all "
+            "explicit --forbidden-root values remain fatal"
+        ),
     )
     parser.add_argument("--out", default="-")
     args = parser.parse_args()
@@ -764,12 +791,16 @@ def main() -> int:
     args = parse_args()
     try:
         # WHY: build-root arguments vary by runner, but retired guest prefixes
-        # are a distribution invariant. Loading them here makes every bottle
-        # admission path reject an artifact built for the old platform layout.
-        forbidden_roots = (
-            *args.forbidden_root,
-            *retired_guest_prefixes(),
-        )
+        # are a distribution invariant. Ordinary admission rejects them here;
+        # the explicit migration mode reports them to its stricter campaign
+        # classifier while preserving every other inspector rejection.
+        retired_roots = retired_guest_prefixes()
+        forbidden_roots = args.forbidden_root
+        reported_roots: tuple[str, ...] = ()
+        if args.report_retired_roots:
+            reported_roots = retired_roots
+        else:
+            forbidden_roots = (*forbidden_roots, *retired_roots)
         result = BottleInspector(
             pathlib.Path(args.archive),
             args.formula,
@@ -780,6 +811,7 @@ def main() -> int:
             args.wasm_timeout_seconds,
             forbidden_roots,
             args.selected_formula,
+            reported_roots,
         ).run()
         write_result(result, args.out)
     except InspectionError as error:
