@@ -183,9 +183,12 @@ pipe pair.
 - 640×400 BGRA32 packed-pixel framebuffer; exclusive process owner.
 - The pixel buffer lives in the process's `WebAssembly.Memory` (a `SharedArrayBuffer`); the kernel notifies the host of `(pid, addr, len, w, h, stride, fmt)` on `mmap`, and the host renders via `requestAnimationFrame` + a 2D-canvas `putImageData` per frame.
 - Framebuffer messages are tagged with the process execution generation. Exit
-  and exec wait for the main thread to acknowledge removal of that exact
-  generation's memory and view aliases, so a delayed old-image message cannot
-  disturb a successor with the same PID.
+  and exec wait for `BrowserKernel` to acknowledge removal of its exact-
+  generation memory wrapper and framebuffer-registry views, so a delayed
+  old-image message cannot disturb a successor with the same PID. A caller
+  that retains the wrapper returned by `getProcessMemory()` is outside that
+  acknowledgement; JavaScript cannot prove that arbitrary consumer references
+  have been garbage-collected.
 - `host/src/framebuffer/canvas-renderer.ts::attachCanvas(canvas, registry, pid, opts)` is the consumer-side renderer.
 - Keyboard input: the demo page maps focused browser `KeyboardEvent` values to Linux input keycodes, encodes them as MEDIUMRAW bytes, and feeds them through `appendStdinData(pid, …)`; fbDOOM-style software decodes those bytes from the tty. Ctrl+Shift+Esc is reserved as the host escape from keyboard capture.
 - Limitations: `fork` does not auto-bind the child; multi-buffering / vsync via

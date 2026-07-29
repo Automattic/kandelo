@@ -1218,9 +1218,11 @@ The pixel buffer lives **inside the process's wasm `Memory`** — a `SharedArray
 Cleanup paths (`munmap`, last `close` once unmapped, process exit, `exec`) clear
 the binding and call `unbind_framebuffer(pid)`. In the browser, every
 framebuffer message carries the process execution generation. Exit and exec
-wait for the main thread to acknowledge removal of that generation's
-`WebAssembly.Memory` and typed-array aliases; a delayed message from the old
-image cannot unbind or replace the successor image's surface.
+wait for `BrowserKernel` to acknowledge removal of its generation-specific
+`WebAssembly.Memory` wrapper and framebuffer-registry typed-array views; a
+delayed message from the old image cannot unbind or replace the successor
+image's surface. This acknowledgement does not claim that arbitrary consumers
+have released a wrapper previously returned by `getProcessMemory()`.
 
 This generation fence makes the current process-memory-backed fbdev path safe
 to retire, but it intentionally does not make the process's raw

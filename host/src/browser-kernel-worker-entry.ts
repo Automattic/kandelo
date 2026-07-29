@@ -78,6 +78,10 @@ import {
   type ProcessMemoryLayout,
   type ProcessMemoryLease,
 } from "./process-memory";
+import {
+  ExactProcessGenerationDetachLedger,
+  type ExactProcessGenerationDetachResult,
+} from "./process-generation-detach";
 import type {
   HostDiagnostic,
   MainToKernelMessage,
@@ -116,7 +120,12 @@ interface ForkReplayContext {
   forkBufAddr: number;
 }
 
-interface ProcessInfo {
+interface ProcessGenerationOwnership {
+  memory: WebAssembly.Memory;
+  memoryLease: ProcessMemoryLease;
+}
+
+interface ProcessInfo extends ProcessGenerationOwnership {
   /** Host-only identity for one execution image. A PID persists across exec. */
   generation: number;
   memory: WebAssembly.Memory;
@@ -382,6 +391,90 @@ async function terminateThreadWorkers(
 }
 const ptyByPid = new Map<number, number>();
 
+const processGenerationDetaches =
+  new ExactProcessGenerationDetachLedger<ProcessGenerationOwnership>(
+    (pid) => processes.get(pid),
+    (pid, exactGeneration) => {
+      const current = processes.get(pid);
+      if (current !== exactGeneration) return;
+      vmInterruptTimers.clear(pid, current);
+      processes.delete(pid);
+      threadModuleCache.delete(pid);
+      threadedProcessPids.delete(pid);
+      ptyByPid.delete(pid);
+    },
+  );
+
+async function detachExactProcessGeneration(options: {
+  pid: number;
+  generation: ProcessGenerationOwnership;
+  operation: "deactivate" | "unregister" | "none";
+  retire: (commit: () => void) => void | Promise<void>;
+}): Promise<ExactProcessGenerationDetachResult> {
+  const { pid, generation, operation, retire } = options;
+  const result = await processGenerationDetaches.detach({
+    pid,
+    generation,
+    memory: generation.memory,
+    detach: () => {
+      if (operation === "none") return true;
+      if (operation === "deactivate") {
+        return kernelWorker.deactivateProcess(pid, generation.memory);
+      }
+      return kernelWorker.unregisterProcess(pid, generation.memory);
+    },
+    settle: () => {
+      if (operation === "none") return;
+      return kernelWorker.settleRetiredChannelListeners(
+        pid,
+        generation.memory,
+      );
+    },
+    retire,
+  });
+  if (result.status === "released" && "postCommitError" in result) {
+    try {
+      reportHostDiagnostic({
+        pid,
+        source: "process memory retirement",
+        message:
+          `[browser-kernel-worker] pid ${pid} retired its exact process ` +
+          `memory before a cleanup callback failed: ${
+            formatError(result.postCommitError)
+          }`,
+      });
+    } catch {
+      // Ownership is already committed; a closed diagnostic port cannot turn
+      // this into a retry that would consume the lease twice.
+    }
+  }
+  return result;
+}
+
+function reportRetainedProcessGeneration(
+  pid: number,
+  source: string,
+  result: Extract<
+    ExactProcessGenerationDetachResult,
+    { status: "retained-error" }
+  >,
+  status?: number,
+): void {
+  try {
+    reportHostDiagnostic({
+      pid,
+      source,
+      ...(status === undefined ? {} : { status }),
+      message:
+        `[browser-kernel-worker] retained pid ${pid}'s exact process memory: ` +
+        formatError(result.error),
+    });
+  } catch {
+    // WHY: the transaction remains in the retry ledger. A closed diagnostic
+    // port must not replace the lifecycle error or discard retry authority.
+  }
+}
+
 // Kernel wasm exports cache
 let kernelInstance: WebAssembly.Instance | null = null;
 let kernelMemory: WebAssembly.Memory | null = null;
@@ -405,8 +498,8 @@ function allocateProcessGeneration(): number {
 }
 
 /**
- * Prove that browser main no longer owns this generation's structured-clone
- * Memory wrapper or any typed framebuffer view derived from it.
+ * Prove that BrowserKernel no longer owns this generation's structured-clone
+ * Memory wrapper or framebuffer-registry typed views.
  *
  * WHY: Worker quiescence only fences the process and kernel-worker realms.
  * Browser main is an independent owner after fb_bind posts WebAssembly.Memory,
@@ -434,6 +527,19 @@ function releaseMainFramebufferGeneration(
       pid,
       generation: info.generation,
     });
+  }).then((released) => {
+    if (released) {
+      // WHY: main keeps a terminal tombstone until this ACK-ordered marker.
+      // Quiescence and port ordering mean this or an older generation cannot
+      // bind after the marker, so main can reject a racing bind without
+      // retaining one tombstone per PID until BrowserKernel destruction.
+      post({
+        type: "fb_forget_generation",
+        pid,
+        generation: info.generation,
+      });
+    }
+    return released;
   });
   return info.framebufferRelease;
 }
@@ -1000,6 +1106,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
   let createdMemoryRegistered = false;
   let workerCreationAttempted = false;
   let createdWorker: ProcessInfo["worker"] | undefined;
+  let createdGeneration: ProcessInfo | undefined;
   try {
     releaseMutation = rootfsSnapshotGate.beginMutation("spawn a process");
     await waitForProcessTeardowns();
@@ -1094,7 +1201,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
     workerCreationAttempted = true;
     const worker = workerAdapter.createWorker(initData);
     createdWorker = worker;
-    processes.set(pid, {
+    createdGeneration = {
       generation: allocateProcessGeneration(),
       memory,
       memoryLease,
@@ -1109,7 +1216,8 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       ptrWidth,
       layout,
       threadAllocator,
-    });
+    };
+    processes.set(pid, createdGeneration);
 
     installProcessWorkerListeners(worker, pid);
     createdMemoryLease = undefined;
@@ -1119,45 +1227,47 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
   } catch (e) {
     if (createdPid !== undefined) {
       if (createdWorker) await terminateTrackedWorker(createdWorker);
-      let detached = !createdMemoryRegistered;
-      if (createdMemoryRegistered) {
+      const lease = createdGeneration?.memoryLease ?? createdMemoryLease;
+      if (lease) {
+        const generation = createdGeneration ?? {
+          memory: lease.memory,
+          memoryLease: lease,
+        };
+        const detachResult = await detachExactProcessGeneration({
+          pid: createdPid,
+          generation,
+          operation: createdMemoryRegistered ? "unregister" : "none",
+          retire: async (commit) => {
+            const framebufferReleased = createdGeneration
+              ? await releaseMainFramebufferGeneration(
+                  createdPid!,
+                  createdGeneration,
+                )
+              : true;
+            // Browser Worker termination has no completion event. Once
+            // creation was attempted, retire through the forced path.
+            if (workerCreationAttempted || !framebufferReleased) {
+              lease.releaseAfterForcedTermination();
+            } else {
+              lease.release();
+            }
+            commit();
+          },
+        });
+        if (detachResult.status !== "released") {
+          reportRetainedProcessGeneration(
+            createdPid,
+            "initial spawn rollback",
+            detachResult,
+          );
+        }
+      }
+      if (!createdMemoryRegistered) {
         try {
-          detached = kernelWorker.unregisterProcess(
-            createdPid,
-            createdMemoryLease?.memory,
-          );
+          kernelWorker.removeProcessFromKernelTable(createdPid);
         } catch {
-          // Keep ownership if the kernel can still reach this address space.
+          // Preserve the original spawn failure.
         }
-      }
-      const info = processes.get(createdPid);
-      if (detached) {
-        const lease = info?.memoryLease ?? createdMemoryLease;
-        if (createdMemoryRegistered && lease) {
-          await kernelWorker.settleRetiredChannelListeners(
-            createdPid,
-            lease.memory,
-          );
-        }
-        const framebufferReleased = info
-          ? await releaseMainFramebufferGeneration(createdPid, info)
-          : true;
-        if (info?.worker === createdWorker) processes.delete(createdPid);
-        // Browser Worker termination has no completion event. Once creation
-        // was attempted, retire it through the forced-termination path.
-        if (workerCreationAttempted || !framebufferReleased) {
-          lease?.releaseAfterForcedTermination();
-        }
-        else if (lease) {
-          lease.release();
-        }
-      } else if (info?.worker === createdWorker) {
-        processes.delete(createdPid);
-      }
-      try {
-        kernelWorker.removeProcessFromKernelTable(createdPid);
-      } catch {
-        // Preserve the original spawn failure.
       }
     }
     respondError(msg.requestId, String(e));
@@ -1320,6 +1430,7 @@ async function handleFork(
   let registered = false;
   let workerStartAttempted = false;
   let lifecycleTeardownStarted = false;
+  let childGeneration: ProcessInfo | undefined;
   try {
     await waitForProcessTeardowns();
     // Preserve fork's exact syscall-time snapshot before any await, then hold
@@ -1384,7 +1495,7 @@ async function handleFork(
       () => workerAdapter.createWorker(childInitData),
     );
     const worker = childWorker;
-    processes.set(childPid, {
+    childGeneration = {
       generation: allocateProcessGeneration(),
       memory: childMemory,
       memoryLease: childMemoryLease,
@@ -1401,7 +1512,8 @@ async function handleFork(
       layout: childLayout,
       threadAllocator: threadAllocatorForLayout(childLayout, ptrWidth, childPid),
       forkReplayContext,
-    });
+    };
+    processes.set(childPid, childGeneration);
 
     installProcessWorkerListeners(worker, childPid);
     const startDisposition = kernelWorker.startProcessWorkerWhenRunnable(
@@ -1432,41 +1544,32 @@ async function handleFork(
   } catch (error) {
     if (lifecycleTeardownStarted) throw error;
     if (childWorker) await terminateTrackedWorker(childWorker);
-    let detached = !registered;
-    if (registered) {
-      try {
-        detached = kernelWorker.deactivateProcess(childPid, childMemory);
-      } catch {
-        // Preserve ownership when the kernel can still reach this Memory.
-      }
-    }
-    const childInfo = processes.get(childPid);
-    if (childWorker && childInfo?.worker === childWorker) {
-      vmInterruptTimers.clear(childPid, childInfo);
-      threadModuleCache.delete(childPid);
-      ptyByPid.delete(childPid);
-    }
-    if (detached) {
-      if (registered) {
-        await kernelWorker.settleRetiredChannelListeners(
-          childPid,
-          childMemory,
-        );
-      }
-      const framebufferReleased = childInfo
-        ? await releaseMainFramebufferGeneration(childPid, childInfo)
-        : true;
-      if (childWorker && childInfo?.worker === childWorker) {
-        processes.delete(childPid);
-      }
-      if (workerStartAttempted || !framebufferReleased) {
-        childMemoryLease.releaseAfterForcedTermination();
-      }
-      else {
-        childMemoryLease.release();
-      }
-    } else if (childWorker && childInfo?.worker === childWorker) {
-      processes.delete(childPid);
+    const generation = childGeneration ?? {
+      memory: childMemory,
+      memoryLease: childMemoryLease,
+    };
+    const detachResult = await detachExactProcessGeneration({
+      pid: childPid,
+      generation,
+      operation: registered ? "deactivate" : "none",
+      retire: async (commit) => {
+        const framebufferReleased = childGeneration
+          ? await releaseMainFramebufferGeneration(childPid, childGeneration)
+          : true;
+        if (workerStartAttempted || !framebufferReleased) {
+          childMemoryLease.releaseAfterForcedTermination();
+        } else {
+          childMemoryLease.release();
+        }
+        commit();
+      },
+    });
+    if (detachResult.status !== "released") {
+      reportRetainedProcessGeneration(
+        childPid,
+        "fork rollback",
+        detachResult,
+      );
     }
     throw error;
   }
@@ -1746,30 +1849,32 @@ async function handleExec(
       await terminateTrackedWorker(replacementWorker);
     }
     if (!preparedTransferred && !preparedLeaseConsumed) {
-      let replacementDetached = !replacementRegistered;
-      if (replacementRegistered) {
-        try {
-          replacementDetached = kernelWorker.deactivateProcess(
-            pid,
-            prepared.memoryLease.memory,
-          );
-        } catch {
-          replacementDetached = false;
-        }
-      }
-      if (replacementDetached) {
-        if (replacementRegistered) {
-          await kernelWorker.settleRetiredChannelListeners(
-            pid,
-            prepared.memoryLease.memory,
-          );
-        }
-        if (replacementStartAttempted) {
-          prepared.memoryLease.releaseAfterForcedTermination();
-        } else {
-          prepared.memoryLease.release();
-        }
+      const replacementGeneration = {
+        memory: prepared.memoryLease.memory,
+        memoryLease: prepared.memoryLease,
+      };
+      const detachResult = await detachExactProcessGeneration({
+        pid,
+        generation: replacementGeneration,
+        operation: replacementRegistered ? "deactivate" : "none",
+        retire: (commit) => {
+          if (replacementStartAttempted) {
+            prepared.memoryLease.releaseAfterForcedTermination();
+          } else {
+            prepared.memoryLease.release();
+          }
+          commit();
+        },
+      });
+      if (detachResult.status === "released") {
         preparedLeaseConsumed = true;
+      } else {
+        reportRetainedProcessGeneration(
+          pid,
+          "exec replacement rollback",
+          detachResult,
+          signalExitStatus(SIGSEGV),
+        );
       }
     }
     if (preparedTransferred && !initiatingLeaseConsumed) {
@@ -1793,13 +1898,7 @@ async function handleExec(
       // A closed host port must not prevent kernel-side reap.
     }
     try { kernelWorker.notifyHostProcessCrashed(pid, SIGSEGV); } catch { /* best-effort */ }
-    try {
-      handleExit(pid, signalExitStatus(SIGSEGV), SIGSEGV);
-    } catch {
-      try {
-        kernelWorker.deactivateProcess(pid, initiatingInfo.memory);
-      } catch { /* best-effort */ }
-    }
+    handleExit(pid, signalExitStatus(SIGSEGV), SIGSEGV);
     return 0;
   }
 }
@@ -1892,6 +1991,7 @@ async function handlePosixSpawn(
   let registered = false;
   let workerStartAttempted = false;
   let lifecycleTeardownStarted = false;
+  let childGeneration: ProcessInfo | undefined;
   try {
     // Kernel already created the child via kernel_spawn_process. Treat every
     // subsequent host attachment as one rollback-capable transaction.
@@ -1920,7 +2020,7 @@ async function handlePosixSpawn(
       () => workerAdapter.createWorker(initData),
     );
     const worker = newWorker;
-    processes.set(childPid, {
+    childGeneration = {
       generation: allocateProcessGeneration(),
       memory: newMemory,
       memoryLease,
@@ -1936,7 +2036,8 @@ async function handlePosixSpawn(
       ptrWidth,
       layout: newLayout,
       threadAllocator,
-    });
+    };
+    processes.set(childPid, childGeneration);
 
     installProcessWorkerListeners(worker, childPid);
     const startDisposition = kernelWorker.startProcessWorkerWhenRunnable(
@@ -1967,41 +2068,29 @@ async function handlePosixSpawn(
   } catch (error) {
     if (lifecycleTeardownStarted) throw error;
     if (newWorker) await terminateTrackedWorker(newWorker);
-    let detached = !registered;
-    if (registered) {
-      try {
-        detached = kernelWorker.deactivateProcess(childPid, memory);
-      } catch {
-        // Preserve ownership when the kernel can still reach this Memory.
-      }
-    }
-    const childInfo = processes.get(childPid);
-    if (newWorker && childInfo?.worker === newWorker) {
-      vmInterruptTimers.clear(childPid, childInfo);
-      threadModuleCache.delete(childPid);
-      ptyByPid.delete(childPid);
-    }
-    if (detached) {
-      if (registered) {
-        await kernelWorker.settleRetiredChannelListeners(
-          childPid,
-          newMemory,
-        );
-      }
-      const framebufferReleased = childInfo
-        ? await releaseMainFramebufferGeneration(childPid, childInfo)
-        : true;
-      if (newWorker && childInfo?.worker === newWorker) {
-        processes.delete(childPid);
-      }
-      if (workerStartAttempted || !framebufferReleased) {
-        memoryLease.releaseAfterForcedTermination();
-      }
-      else {
-        memoryLease.release();
-      }
-    } else if (newWorker && childInfo?.worker === newWorker) {
-      processes.delete(childPid);
+    const generation = childGeneration ?? { memory: newMemory, memoryLease };
+    const detachResult = await detachExactProcessGeneration({
+      pid: childPid,
+      generation,
+      operation: registered ? "deactivate" : "none",
+      retire: async (commit) => {
+        const framebufferReleased = childGeneration
+          ? await releaseMainFramebufferGeneration(childPid, childGeneration)
+          : true;
+        if (workerStartAttempted || !framebufferReleased) {
+          memoryLease.releaseAfterForcedTermination();
+        } else {
+          memoryLease.release();
+        }
+        commit();
+      },
+    });
+    if (detachResult.status !== "released") {
+      reportRetainedProcessGeneration(
+        childPid,
+        "posix_spawn rollback",
+        detachResult,
+      );
     }
     throw error;
   }
@@ -2294,53 +2383,44 @@ async function finishProcessExit(
     const threadsQuiescent = await terminateThreadWorkers(pid);
     await terminateTrackedWorker(expectedWorker, settleMs);
 
-    // Exec may have installed a replacement while old worker termination was
-    // settling. Never apply pid-wide cleanup to a different generation.
-    if (processes.get(pid)?.worker !== expectedWorker) return;
-
     // Check if this is a "top-level" process or a fork child. For now,
     // always deactivate after worker termination; the main thread tracks
     // exit promises, and no further guest syscalls can arrive on this
     // channel once the worker is gone.
-    let deactivated = false;
-    try {
-      deactivated = kernelWorker.deactivateProcess(pid, info.memory);
-    } catch (error) {
-      reportHostDiagnostic({
+    const detachResult = await detachExactProcessGeneration({
+      pid,
+      generation: info,
+      operation: "deactivate",
+      retire: async (commit) => {
+        const mainFramebufferReleased =
+          await releaseMainFramebufferGeneration(pid, info);
+        if (
+          workerQuiescent
+          && threadsQuiescent
+          && info.memoryRetirementSafe
+          && mainFramebufferReleased
+        ) {
+          info.memoryLease.release();
+        } else {
+          // Browser Worker.terminate() returns before the underlying Worker
+          // has necessarily stopped. A missing terminal fence uses forced
+          // retirement; the backing is never handed to another process.
+          info.memoryLease.releaseAfterForcedTermination();
+        }
+        commit();
+      },
+    });
+    if (detachResult.status !== "released") {
+      reportRetainedProcessGeneration(
         pid,
-        status: exitStatus,
-        source: "process channel teardown",
-        message:
-          `[browser-kernel-worker] failed to deactivate completed pid ${pid}: ` +
-          formatError(error),
-      });
+        "process channel teardown",
+        detachResult,
+        exitStatus,
+      );
+      return;
     }
 
-    if (!deactivated) return;
-    // Retired waitAsync callbacks are kernel-realm aliases too. Notify and
-    // settle them after Worker termination even on the forced path; the guest
-    // backing is never reused, so a late Worker wake cannot corrupt a peer.
-    await kernelWorker.settleRetiredChannelListeners(pid, info.memory);
-    const mainFramebufferReleased =
-      await releaseMainFramebufferGeneration(pid, info);
-    processes.delete(pid);
-    threadModuleCache.delete(pid);
-    ptyByPid.delete(pid);
-    if (
-      workerQuiescent
-      && threadsQuiescent
-      && info.memoryRetirementSafe
-      && mainFramebufferReleased
-    ) {
-      info.memoryLease.release();
-    } else {
-      // Browser Worker.terminate() returns before the underlying Worker has
-      // necessarily stopped. Chromium and Firefox can still mutate/notify
-      // the Shared Memory after that synthetic boundary, so only an explicit
-      // final worker message permits dropping the host's strong reference.
-      info.memoryLease.releaseAfterForcedTermination();
-    }
-
+    if (!detachResult.removedCurrent) return;
     try {
       reapHostOwnedExitedProcess(kernelInstance, pid);
     } catch (error) {
@@ -2521,24 +2601,42 @@ async function handleTerminateProcess(msg: Extract<MainToKernelMessage, { type: 
     await terminateTrackedWorker(info.worker);
   }
 
-  let unregistered = false;
-  try {
-    unregistered = kernelWorker.unregisterProcess(pid, info?.memory);
-  } catch {}
-
-  if (info && unregistered) {
-    await kernelWorker.settleRetiredChannelListeners(pid, info.memory);
-    await releaseMainFramebufferGeneration(pid, info);
-    processes.delete(pid);
-    threadModuleCache.delete(pid);
-    threadedProcessPids.delete(pid);
-    ptyByPid.delete(pid);
-    // terminate_process has no terminal worker message, so its backing must
-    // stay owned by the terminated Worker until that realm actually stops;
-    // this kernel realm drops its alias because the backing is never reused.
-    info.memoryLease.releaseAfterForcedTermination();
-  } else if (!info) {
-    processes.delete(pid);
+  if (info) {
+    const detachResult = await detachExactProcessGeneration({
+      pid,
+      generation: info,
+      operation: "unregister",
+      retire: async (commit) => {
+        await releaseMainFramebufferGeneration(pid, info);
+        // terminate_process has no terminal worker message, so its backing
+        // uses forced retirement and is never reused.
+        info.memoryLease.releaseAfterForcedTermination();
+        commit();
+      },
+    });
+    if (detachResult.status !== "released") {
+      reportRetainedProcessGeneration(
+        pid,
+        "terminate_process teardown",
+        detachResult,
+        msg.status,
+      );
+      respondError(
+        msg.requestId,
+        `failed to detach exact process generation for pid ${pid}`,
+      );
+      return;
+    }
+  } else {
+    try {
+      kernelWorker.unregisterProcess(pid);
+    } catch (error) {
+      respondError(
+        msg.requestId,
+        `failed to unregister unknown pid ${pid}: ${formatError(error)}`,
+      );
+      return;
+    }
     threadModuleCache.delete(pid);
     threadedProcessPids.delete(pid);
     ptyByPid.delete(pid);
@@ -2705,23 +2803,32 @@ async function handleDestroy(msg: Extract<MainToKernelMessage, { type: "destroy"
   // Mirrors handleDestroy in node-kernel-worker-entry.ts — without the
   // threadWorkers / ptyByPid clears, those maps stay populated across kernel
   // rebuilds (e.g. iframe reload) and leak.
-  for (const [pid, info] of processes) {
-    if (info.worker) {
-      await terminateThreadWorkers(pid);
-      await terminateTrackedWorker(info.worker);
+  const retireCurrentGenerations = async (): Promise<void> => {
+    for (const [pid, info] of [...processes.entries()]) {
+      if (info.worker) {
+        await terminateThreadWorkers(pid);
+        await terminateTrackedWorker(info.worker);
+      }
+      const detachResult = await detachExactProcessGeneration({
+        pid,
+        generation: info,
+        operation: "unregister",
+        retire: async (commit) => {
+          await releaseMainFramebufferGeneration(pid, info);
+          info.memoryLease.releaseAfterForcedTermination();
+          commit();
+        },
+      });
+      if (detachResult.status !== "released") {
+        reportRetainedProcessGeneration(
+          pid,
+          "destroy process teardown",
+          detachResult,
+        );
+      }
     }
-    if (processes.get(pid) !== info) continue;
-    let unregistered = false;
-    try {
-      unregistered = kernelWorker.unregisterProcess(pid, info.memory);
-    } catch {}
-    if (unregistered) {
-      await kernelWorker.settleRetiredChannelListeners(pid, info.memory);
-      await releaseMainFramebufferGeneration(pid, info);
-      processes.delete(pid);
-      info.memoryLease.releaseAfterForcedTermination();
-    }
-  }
+  };
+  await retireCurrentGenerations();
   for (const threads of threadWorkers.values()) {
     for (const t of threads) {
       await (
@@ -2730,17 +2837,32 @@ async function handleDestroy(msg: Extract<MainToKernelMessage, { type: "destroy"
       );
     }
   }
+  await waitForProcessTeardowns();
+  // A process teardown can yield while exec installs a successor. Sweep the
+  // exact current objects and retry only transactions whose phase threw.
+  await retireCurrentGenerations();
+  const retryResults = await processGenerationDetaches.retryPending();
+  for (const result of retryResults) {
+    if (result.status !== "released") {
+      console.warn(
+        "[browser-kernel-worker] destroy retained an exact process generation: " +
+        formatError(result.error),
+      );
+    }
+  }
   vmInterruptTimers.clearAll();
-  processes.clear();
+  // WHY: a spawn or exec continuation can install a generation after the
+  // second snapshot. Only its own exact transaction may remove that object.
+  const fullyDetached =
+    processGenerationDetaches.pendingCount === 0 && processes.size === 0;
   threadModuleCache.clear();
   threadWorkers.clear();
   threadedProcessPids.clear();
   ptyByPid.clear();
-  await waitForProcessTeardowns();
   initReady = false;
   initFailure = "kernel worker destroyed";
   failPendingLazyRegistrations(initFailure);
-  respond(msg.requestId, true);
+  respond(msg.requestId, fullyDetached);
 }
 
 // ── PTY ──
