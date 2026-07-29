@@ -352,8 +352,10 @@ export interface KmsAttachStatsMessage {
 }
 
 /**
- * Confirms that the browser main thread has dropped every framebuffer alias
- * for one exact process execution generation.
+ * Confirms that BrowserKernel dropped its own structured-clone Memory wrapper
+ * and framebuffer-registry views for one exact execution generation. Callers
+ * can retain a wrapper returned by getProcessMemory(), so this is not a
+ * JavaScript-realm-wide garbage-collection claim.
  */
 export interface FbReleaseGenerationAckMessage {
   type: "fb_release_generation_ack";
@@ -523,6 +525,18 @@ export interface FbReleaseGenerationMessage {
 }
 
 /**
+ * Clears the short-lived terminal-generation tombstone after the kernel worker
+ * receives the release ACK. Exact-generation quiescence plus message ordering
+ * guarantee that no bind from this or an older generation can still arrive
+ * after this marker.
+ */
+export interface FbForgetGenerationMessage {
+  type: "fb_forget_generation";
+  pid: number;
+  generation: number;
+}
+
+/**
  * Posted whenever the kernel forks, execs, or spawns. The main thread
  * uses this to refresh Inspector-style views without polling. `kind ===
  * "exit"` is delivered via the existing ExitMessage instead; we don't
@@ -562,6 +576,7 @@ export type KernelToMainMessage =
   | FbRebindMemoryMessage
   | FbWriteMessage
   | FbReleaseGenerationMessage
+  | FbForgetGenerationMessage
   | ProcEventMessage
   | HttpBridgePendingMessage
   | LazyDownloadMessage;

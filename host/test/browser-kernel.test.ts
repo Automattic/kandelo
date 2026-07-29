@@ -1061,5 +1061,64 @@ describe("BrowserKernel", () => {
       type: "fb_release_generation_ack",
       requestId: 74,
     });
+
+    // A bind from the just-released generation can be queued around teardown.
+    // Keep a short terminal tombstone until the worker observes the ACK.
+    bind(2, successorMemory);
+    expect(kernel.getProcessMemory(pid)).toBeUndefined();
+    expect(kernel.framebuffers.get(pid)).toBeUndefined();
+    expect(
+      (
+        kernel as unknown as {
+          fbGenerationByPid: Map<
+            number,
+            { generation: number; released: boolean }
+          >;
+        }
+      ).fbGenerationByPid.get(pid),
+    ).toEqual({ generation: 2, released: true });
+
+    dispatch({ type: "fb_forget_generation", pid, generation: 2 });
+    expect(
+      (
+        kernel as unknown as {
+          fbGenerationByPid: Map<number, unknown>;
+        }
+      ).fbGenerationByPid.has(pid),
+    ).toBe(false);
+  });
+
+  it("allows an ordinary same-generation framebuffer reopen after unbind", async () => {
+    const BrowserKernel = await loadBrowserKernel();
+    const kernel = new BrowserKernel({ kernelOwnedFs: true });
+    const dispatch = (
+      kernel as unknown as {
+        handleWorkerMessage(message: unknown): void;
+      }
+    ).handleWorkerMessage.bind(kernel);
+    const pid = 51;
+    const memory = new WebAssembly.Memory({
+      initial: 1,
+      maximum: 1,
+      shared: true,
+    });
+    const bind = () => dispatch({
+      type: "fb_bind",
+      pid,
+      generation: 3,
+      addr: 64,
+      len: 1024,
+      w: 16,
+      h: 16,
+      stride: 64,
+      fmt: "BGRA32",
+      memory,
+    });
+
+    bind();
+    dispatch({ type: "fb_unbind", pid, generation: 3 });
+    expect(kernel.getProcessMemory(pid)).toBeUndefined();
+    bind();
+    expect(kernel.getProcessMemory(pid)).toBe(memory);
   });
 });
