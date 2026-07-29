@@ -10,7 +10,7 @@ describe("fork process-memory clone", () => {
   it("copies the parent's exact grown size and boundary bytes", async () => {
     const program = join(
       __dirname,
-      "../../examples/fork_memory_clone_test.wasm",
+      "fixtures/fork-memory-clone.wasm",
     );
     const result = await runCentralizedProgram({
       programPath: program,
