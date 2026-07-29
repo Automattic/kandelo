@@ -715,6 +715,8 @@ function selectedDemoInputs(
 }
 
 const disableBrowserTestHmr = process.env.KANDELO_BROWSER_TEST_NO_HMR === "1";
+const disableBrowserTestDependencyDiscovery =
+  process.env.KANDELO_BROWSER_TEST_NO_DEP_SCAN === "1";
 
 export default defineConfig(({ mode }) => {
   // Validate this at configuration time as well as in browser code. A leaked
@@ -727,6 +729,12 @@ export default defineConfig(({ mode }) => {
 
   return {
     base: process.env.VITE_BASE || "/",
+    // WHY: focused harnesses import their exact modules through `/@fs` and
+    // may intentionally omit unrelated product VFS artifacts. Let them opt
+    // out of Vite's eager scan instead of hiding the resulting build error.
+    optimizeDeps: disableBrowserTestDependencyDiscovery
+      ? { noDiscovery: true }
+      : undefined,
     resolve: {
       alias: {
         "@host": path.resolve(repoRoot, "host/src"),

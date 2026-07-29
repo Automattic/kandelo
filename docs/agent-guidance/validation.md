@@ -75,3 +75,17 @@ ownership test above with the scheduled
 workflow compares two production trials with deliberately live Kandelo
 processes on the same engine and runner. An inconclusive trace is evidence to
 repeat or investigate, not evidence that reclamation passed.
+
+Any pull request that changes process-memory ownership, a retirement
+fence, or the collection-pressure policy must manually dispatch that
+telemetry workflow for the pull request's exact head before merge. The
+same rule applies to Playwright or browser-engine dependency bumps
+because an engine policy change can alter collection without changing
+Kandelo source. All three engine jobs must report `pass`, and their
+90-day artifacts must record the exact head commit. If the branch
+moves, rerun the workflow. Ordinary unrelated pull requests run only
+the deterministic three-engine ownership gate; noisy physical
+telemetry is not a universal per-PR gate.
+
+This exact-head dispatch is currently a maintainer policy, not a
+mechanically enforced branch rule.

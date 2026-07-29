@@ -193,30 +193,132 @@ checks. They deliberately answer different questions:
    fails deterministically if Kandelo stops releasing exact-generation
    allocation authority. It does not claim that a JavaScript engine collected
    physical backing by a deadline.
-2. A weekly and manually dispatchable workflow runs engine-local RSS
-   telemetry. On each browser and runner it records two 48-child retirement
-   trials and a matched control containing 16 deliberately live Kandelo
-   processes. Each process touches 8 MiB. The control must first show a strong
-   RSS slope and growth, proving that the sampler can see resident process
-   backing in that run.
+2. A weekly and manually dispatchable workflow runs engine-local
+   physical telemetry. On each browser and runner it records two
+   48-child retirement trials and a matched control containing 16
+   deliberately live Kandelo processes. Each process touches 8 MiB.
+   The control must first show a strong memory slope and growth,
+   proving that the sampler can see process backing in that run.
 
 The scheduled workflow reports a regression only when both production trials
 grow like the sensitive live-process control without a meaningful descent.
-It reports a pass only when both late-window slope and growth stay separated
-from the control in both trials. A descending but newly rising trace, one
-disagreeing trial, or an insensitive control is reported as inconclusive rather
-than converted into a false pass or a flaky failure. Each run retains raw
-per-sample process trees, RSS values, browser and Playwright versions, runner
-metadata, workload parameters, diagnostics, and server logs as a workflow
-artifact.
+It reports a pass only when every trial both separates from the
+control and stays below an absolute 2 MiB-per-child late slope and
+64 MiB late growth. The absolute limits prevent a smaller unbounded
+leak from passing merely because a deliberately live process is
+larger. A descending but newly rising trace, one disagreeing trial,
+an insensitive control, or an exceeded absolute limit is
+inconclusive rather than a false pass.
 
-The trace also records its process-attribution model, the minimum attributed
-process count, and whether all expected browser descendants were attributable.
-The scheduled Linux runner follows the Playwright BrowserServer root and every
-transitive child. A run without an attributable page process is inconclusive.
-On macOS, WebKit's launchd-owned XPC helpers are outside that tree, so this
-standalone harness truthfully reports incomplete attribution there instead of
-using a deceptively small RSS sum.
+On Linux, every sample includes both resident set size (RSS) and the
+`Swap` value from `/proc/<pid>/smaps_rollup`. The classifier uses
+their sum because a still-retained backing can leave RSS through
+swap. If per-process swap cannot be read, the run may pass only when
+validated `/proc/swaps` reads before and after the sample prove that
+the host has no active swap device.
+End-of-run cgroup metadata is diagnostic evidence, not a substitute
+for this per-sample rule.
+
+PSS would apportion resident pages shared across OS processes more
+accurately than summed RSS. It is not the classifier signal because
+the [Linux procfs contract](https://docs.kernel.org/filesystems/proc.html)
+states that `SwapPss` omits swapped pages of underlying shmem objects.
+SharedArrayBuffer backing is the shmem case this test protects.
+RSS plus full `Swap` is deliberately conservative and can
+double-count shared pages. It is matched trend evidence, not an exact
+physical-memory measurement.
+
+The scheduled Linux runner gives each BrowserServer a random launch
+nonce inherited only by its helpers. It starts with the root process
+tree, then unions in reparented nonce-bearing processes born no
+earlier than that root. At least one nonce-bearing helper must also
+resolve under the selected engine's exact Playwright revision. This
+excludes older, other-engine, other-revision, and concurrent
+same-build launches. Linux process birth reads bracket each
+executable read to reject PID reuse. Failure to complete that scan is
+inconclusive. On macOS, WebKit's launchd-owned XPC helpers remain
+outside this model, so the standalone harness truthfully reports
+incomplete attribution there.
+
+A completed trace becomes inconclusive when the guest writes stderr,
+the host reports a diagnostic, the page reports a console or runtime
+error, Vite fails, the browser exits early, the expected sample
+sequence changes, or the workload's completion transcript is not
+exact. A failure before trace completion fails the command and cannot
+report a pass. Those failures must not be hidden by an otherwise
+favorable memory slope. Each engine's 90-day artifact retains raw
+process trees, RSS and swap values, exact install roots, browser and
+Playwright versions, runner metadata, workload parameters,
+diagnostics, and server logs. The reporter also rejects a trace whose
+recorded commit does not equal the workflow's checked-out commit.
+
+Ordinary unrelated pull requests run only the deterministic
+three-engine ownership gate. A pull request that changes
+process-memory ownership, retirement fences, collection-pressure
+policy, Playwright, or browser-engine dependencies must manually
+dispatch the physical workflow for its exact head. All three engine
+traces must pass before merge, and moving the branch invalidates the
+earlier trace. This limits noisy physical runs to changes that can
+affect the contract without leaving those changes to the next weekly
+run. Browser dependency bumps use this explicit gate instead of a
+path-only automatic trigger because the same lockfiles also carry many
+unrelated JavaScript updates, and the evidence must name the PR's exact
+head rather than a synthetic merge commit.
+
+This is currently documented maintainer policy; repository automation
+does not mechanically dispatch or enforce the exact-head run.
+
+### Planned exact-head enforcement
+
+Land the telemetry workflow before enforcing it. GitHub cannot
+`workflow_dispatch` a new workflow until that workflow exists on the
+default branch, so making this first telemetry change require its own
+dispatch would create a bootstrap deadlock.
+
+A focused follow-up should:
+
+1. Add a `physical_memory_telemetry_required` change-scope output for
+   browser/shared process-memory owners, retirement fences,
+   collection pressure, this harness, and actual Playwright engine
+   version changes in `apps/browser-demos/package-lock.json`.
+2. Make `prepare-merge` use trusted base-branch code to select the
+   latest `workflow_dispatch` run for the exact pull-request head.
+   It must reject a missing run or a newer failure rather than letting
+   an older pass hide it.
+3. Require that run to succeed and retain non-expired Chromium,
+   Firefox, and WebKit trace artifacts. The workflow itself already
+   rejects a trace whose commit differs from `GITHUB_SHA`.
+4. Test wrong-head, scheduled-only, active, failed, missing-artifact,
+   expired-artifact, and exact-success cases.
+
+Explicit paths are intentionally preferable to hunk-keyword
+classification: a new closure can retain `WebAssembly.Memory` without
+using an existing keyword. Broad shared host files may cause some
+extra runs. A future new process-memory owner must be added to the
+classifier. Node-only ownership paths should keep their deterministic
+Node tests unless the same change also touches browser/shared
+ownership.
+
+The initial static path set should include
+`host/src/process-memory.ts`,
+`host/src/process-memory-creator-gate.ts`,
+`host/src/process-generation-detach.ts`,
+`host/src/kernel-realm-destroy.ts`,
+`host/src/worker-quiescence.ts`,
+`host/src/deferred-worker-handle.ts`, the shared/browser kernel worker
+entry, protocol, and host files, `host/src/dri/registry.ts`,
+`host/src/webgl/submit-queue.ts`, and this workflow, sampler, and churn
+fixture, including its focused Vite configuration. Playwright
+classification should compare the parsed
+`@playwright/test`, `playwright`, and `playwright-core` lock entries
+between base and head; unrelated lockfile churn should not trigger it.
+
+This follow-up is expected to take roughly half to one working day,
+including its first real three-engine dispatch. Dispatching a pull
+request branch trusts that exact head's workflow definition after
+review, like ordinary pull-request CI. A default-branch dispatcher
+that checks out a `target_sha` and emits a trusted attestation would
+be stronger but is a materially larger follow-up.
 
 A dedicated cgroup-v2 survival sentinel would be stronger on Linux: put the
 whole browser launch in one cgroup, record `memory.current`, `memory.peak`, and
@@ -232,11 +334,14 @@ supervisor to preserve the trace. The current artifact records the runner's
 cgroup-v2 membership and available memory and swap controls so that feasibility
 can be reevaluated without weakening the matched-control test.
 
-This design can detect a future leak of process generations without comparing
-Firefox's absolute RSS with Chromium or WebKit. It still cannot promise a
-collection deadline or prove that every retained byte belongs to one Wasm
-backing. An inconclusive scheduled result requires repetition or investigation;
-it is not positive reclamation evidence.
+This design can detect a future leak of process generations without
+comparing Firefox's absolute RSS with Chromium or WebKit. No finite
+noisy run can rule out an arbitrarily small leak; the absolute limits
+state the smallest persistent late trend this workflow treats as
+acceptable. The workflow still cannot promise a collection deadline
+or prove that every retained byte belongs to one Wasm backing. An
+inconclusive result requires repetition or investigation; it is not
+positive reclamation evidence.
 
 ### What each persistent check proves
 
@@ -259,7 +364,7 @@ The internal ownership edges are covered separately:
 | Kernel device, buffer-object, graphics, and framebuffer view removal | `host/test/process-view-teardown.test.ts` |
 | Browser-main framebuffer wrapper and generation-tombstone removal | `host/test/browser-kernel.test.ts` |
 | Kernel process-table reaping | the three-engine browser churn test and `host/test/host-owned-process-reap.test.ts` |
-| Engine-visible physical-memory separation from retained live processes | the scheduled matched-control RSS telemetry |
+| Engine-visible physical-memory separation from retained live processes | the exact-head or scheduled matched-control RSS-plus-swap telemetry |
 
 No public API exposes the allocator's internal lease, channel-listener,
 pthread-Worker, and framebuffer-owner collections as one aggregate count.

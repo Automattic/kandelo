@@ -49,7 +49,7 @@ jobs:
           retention-days: 7
 
   measure:
-    name: ${{ matrix.engine }} matched RSS trend
+    name: ${{ matrix.engine }} matched physical-memory trend
     needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -113,11 +113,13 @@ jobs:
           name: process-memory-rss-${{ matrix.engine }}
           path: process-memory-telemetry-results
           if-no-files-found: error
-          retention-days: 30
+          retention-days: 90
 
       - name: Report matched-trend verdict
         if: always()
         shell: bash
+        env:
+          MEASURE_OUTCOME: ${{ steps.measure.outcome }}
         run: |
           result="process-memory-telemetry-results/${{ matrix.engine }}.json"
           test -f "$result" || {
@@ -126,15 +128,24 @@ jobs:
           }
           status="$(jq -r '.verdict.status' "$result")"
           reason="$(jq -r '.verdict.reason' "$result")"
+          measured_commit="$(jq -r '.commit' "$result")"
           {
-            echo "### ${{ matrix.engine }} process-memory RSS"
+            echo "### ${{ matrix.engine }} process memory"
             echo
             echo "- Verdict: \`$status\`"
             echo "- Reason: $reason"
             echo "- Raw trace: \`process-memory-rss-${{ matrix.engine }}\`"
           } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$measured_commit" != "$GITHUB_SHA" ]; then
+            echo "::error::trace commit $measured_commit != $GITHUB_SHA"
+            exit 1
+          fi
           case "$status" in
             pass)
+              if [ "$MEASURE_OUTCOME" != "success" ]; then
+                echo "::error::telemetry command outcome was $MEASURE_OUTCOME"
+                exit 1
+              fi
               ;;
             inconclusive)
               echo "::warning::$reason"
