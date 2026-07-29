@@ -297,6 +297,38 @@ Kandelo packages are first-class Homebrew packages:
 - Failed or deferred packages remain discoverable with their real reason; they
   do not disappear from the package index.
 
+### Bottle payload identity and reuse
+
+- A bottle rebuild is controlled by its payload closure, not by every Kandelo
+  commit. That closure includes the Formula and build recipe, source, patches,
+  target architecture, build flags, Software Development Kit (SDK), sysroot,
+  libc, applicable fork instrumentation, structural and semantic Application
+  Binary Interface (ABI) contract, and build-dependency payload identities.
+  Changed roots rebuild with their affected payload dependents; unchanged
+  payloads keep their existing immutable bytes.
+- A kernel- or host-runtime-only change that leaves both the ABI contract and
+  the bottle payload closure unchanged must revalidate the existing bottle.
+  It must not force a rebuild merely to associate the bytes with a newer
+  Kandelo commit. For example, an ABI-neutral kernel scheduling fix requires a
+  new kernel plus current Node.js and browser evidence for Bash, not a
+  byte-identical replacement Bash bottle.
+- Draft ABI work follows the same rule. Bottles may be reused across draft
+  kernel commits while the ABI's structure, semantics, and payload closure
+  remain unchanged. An incompatible structural or semantic change creates a
+  new ABI identity and rebuild set even if the draft version number has not
+  yet changed.
+- Artifact provenance is immutable and truthful. `built_from` records the
+  exact producer that created the bottle and must not be rewritten to look
+  current. Validation against a newer Kandelo commit is separate evidence
+  bound to that commit, the ABI contract, and the bottle digest and size.
+  Publisher trust must bind the accepted producer inputs and immutable bytes;
+  current validation cannot bless unknown bytes or manufacture new
+  provenance.
+- Changes confined to validation, transport, or publication orchestration may
+  require new trust evidence or a new transport envelope. They do not require
+  source recompilation unless they change an input included in the payload
+  closure or alter the resulting bottle bytes.
+
 ### Repository and publication identity
 
 - `Kandelo-dev/homebrew-tap-core` is the canonical first-party repository and
