@@ -2486,6 +2486,7 @@ def check_publisher(workflow)
   [
     "--stage-recipe",
     "--stage-native-closure",
+    "--stage-formula-test-runtime",
     "--audit-native-links",
     "selected-recipe",
     "tap recipe manifest differs from the publisher attestation",
@@ -2550,6 +2551,13 @@ def check_publisher(workflow)
     "requested_native_proxy_roots(",
     "dependency_keg_binds(",
     "recipe output file has unsafe links, mode, or size",
+    "FORMULA_TEST_RUNTIME_DIRECTORIES = (",
+    'Path("node_modules/tsx")',
+    "validate_tree_regular_links_closed(",
+    "regular-file hard links escape the selected closure",
+    "Formula test runtime input changed during staging",
+    "Formula test runtime source root changed during staging",
+    "Formula test runtime differs from its selected source closure",
   ].each do |fragment|
     check(recipe_runner.include?(fragment),
           "tap recipe runner lacks closed-boundary contract #{fragment}")
@@ -3578,7 +3586,7 @@ def check_publisher(workflow)
     'tap recipe retained program-index checker authority',
     'packages/registry local-binaries .ci-test-binary-cache',
     'scripts/install-local-binary.sh',
-    'tap_recipe_inaccessible_paths=("-$xtask_alias" "$protected_xtask")',
+    'tap_recipe_inaccessible_paths=("-$xtask_alias")',
     '"-$source_alias_dir/kandelo/$tap_recipe_relative"',
     'target Brew launcher changed before isolation',
     '"$HOMEBREW_PATCHED_PREFIX/bin"',
@@ -3586,18 +3594,20 @@ def check_publisher(workflow)
     'could not protect the canonical target Brew launcher',
     '/usr/bin/find "$cellar" -xdev -mindepth 1 -type d',
     'homebrew_patched_launcher_prepare_platform_projection',
+    'homebrew_patched_launcher_prepare_formula_test_runtime',
     'scripts/homebrew-tap-recipe-runner.py',
     'tools/bin/wasm-fork-instrument',
     'tools/bin/wasm-local-root-spill',
     'closed platform projection exposes undeclared authority',
     'homebrew_patched_launcher_verify_platform_projection',
+    'homebrew_patched_launcher_verify_formula_test_runtime',
     'homebrew_patched_launcher_seal_target_dependencies',
     '"$jq_bin" -cSjn',
     '"$sudo_bin" -n -- /usr/bin/tee "$config" >/dev/null',
     '"--property=InaccessiblePaths=$tap_recipe_path"',
     "--property=KillMode=control-group", "--property=SendSIGKILL=yes",
     "--property=NoNewPrivileges=yes", "--expand-environment=no",
-    '"--property=BindReadOnlyPaths=$platform_source_root:$source_alias_dir/kandelo"',
+    '"--property=BindReadOnlyPaths=$kandelo_projection:$kandelo_alias"',
     '"--property=BindReadOnlyPaths=$protected_xtask:$xtask_alias"',
     '"--property=BindReadOnlyPaths=$tap_root:$source_alias_dir/tap"',
     '"--property=BindReadOnlyPaths=$sysroot:$source_alias_dir/sysroot"',
@@ -3605,6 +3615,7 @@ def check_publisher(workflow)
     '"--property=InaccessiblePaths=$kandelo_root"',
     '"--property=InaccessiblePaths=$tap_root"',
     '"--property=InaccessiblePaths=$output_root"',
+    '"--property=InaccessiblePaths=$HOMEBREW_PATCHED_FORMULA_TEST_ROOT"',
     '"--property=InaccessiblePaths=$sysroot_build_root"',
     '"--uid=$build_user"', '"--gid=$build_group"',
     'env_bin="$(command -v env)"',
@@ -3618,7 +3629,7 @@ def check_publisher(workflow)
     'WASM_POSIX_SYSROOT=$source_alias_dir/sysroot',
     'HOMEBREW_KANDELO_FORK_INSTRUMENT=$source_alias_dir/kandelo/tools/bin/wasm-fork-instrument',
     'HOMEBREW_KANDELO_LOCAL_ROOT_SPILL=$source_alias_dir/kandelo/tools/bin/wasm-local-root-spill',
-    'printf \' "${bottle_tag_env[@]}" "$command_path" "$@")\\n\'',
+    'printf \' "${bottle_tag_env[@]}" "${formula_test_env[@]}" "$command_path" "$@")\\n\'',
     "__kandelo_verify_source_aliases", "/usr/bin/findmnt",
     'source_audit_failed "$?" "$LINENO" "$BASH_COMMAND"',
     'if [ "$source_audit" = 1 ]; then collect_args=(); fi',
@@ -3837,6 +3848,74 @@ def check_publisher(workflow)
         "recipe supervisor masks its explicitly bound Homebrew roots")
   check(!recipe_runner_prepare_contract.include?("kandelo_root"),
         "privileged recipe-runner staging still accepts a second checkout authority")
+  formula_test_manifest_contract = launcher[
+    /homebrew_patched_launcher_formula_test_runtime_manifest\(\) \{\n(.*?)\n\}\n\nhomebrew_patched_launcher_verify_formula_test_runtime\(\)/m,
+    1
+  ]
+  check(formula_test_manifest_contract,
+        "isolated Brew launcher lost the closed Formula-test runtime manifest")
+  [
+    "Cargo.toml",
+    "package.json",
+    "examples/run-example.ts",
+    "host/src/binary-resolver.ts",
+    "host/src/node-kernel-host.ts",
+    "host/wasm/kandelo-kernel.wasm",
+    "node_modules/tsx/package.json",
+    "node_modules/esbuild/package.json",
+    ".ci-test-binary-cache/programs",
+    "packages local-binaries",
+    "tools/xtask scripts/dev-shell.sh scripts/install-local-binary.sh",
+    '[[ "$HOMEBREW_PATCHED_FORMULA_TEST_XTASK_RELATIVE" =~ ^target/',
+    "homebrew_assert_tree_symlinks_contained",
+    "homebrew_patched_launcher_sysroot_projection_manifest",
+  ].each do |fragment|
+    check(formula_test_manifest_contract.include?(fragment),
+          "Formula-test runtime manifest lacks #{fragment}")
+  end
+  formula_test_prepare_contract = launcher[
+    /homebrew_patched_launcher_prepare_formula_test_runtime\(\) \{\n(.*?)\n\}\n\nhomebrew_patched_launcher_prepare_sysroot_projection\(\)/m,
+    1
+  ]
+  check(formula_test_prepare_contract,
+        "isolated Brew launcher lost privileged Formula-test runtime staging")
+  [
+    'homebrew_patched_launcher_admit_recipe_runner_source "$platform_root"',
+    '"$admitted_runner" "$stager"',
+    '[ "$runner_sha" != "$admitted_sha" ]',
+    '! /usr/bin/cmp -s -- "$admitted_runner" "$stager"',
+    "--stage-formula-test-runtime",
+    '--source "$kandelo_root"',
+    '--platform "$platform_root"',
+    '--checker "$checker"',
+    '--checker-relative "$checker_relative"',
+    '--destination "$destination"',
+    '/usr/bin/rm -f -- "$stager"',
+    "homebrew_patched_launcher_formula_test_runtime_manifest",
+    'HOMEBREW_PATCHED_FORMULA_TEST_ROOT="$destination"',
+    'HOMEBREW_PATCHED_FORMULA_TEST_SHA256="$digest"',
+  ].each do |fragment|
+    check(formula_test_prepare_contract.include?(fragment),
+          "privileged Formula-test runtime staging lacks #{fragment}")
+  end
+  [
+    'kandelo_projection="$platform_projection"',
+    'if [ "$source_audit" = 0 ] && [ "${1:-}" = test ]; then',
+    'kandelo_projection="$formula_test_projection"',
+    "HOMEBREW_KANDELO_XTASK_BIN=$xtask_alias",
+    "WASM_POSIX_XTASK_BIN=$xtask_alias",
+    'if [ "$formula_test" != 1 ]; then',
+    '"--property=BindReadOnlyPaths=$kandelo_projection:$kandelo_alias"',
+    '"--property=InaccessiblePaths=$protected_xtask"',
+    '"--property=InaccessiblePaths=$platform_source_root"',
+    '"--property=InaccessiblePaths=$HOMEBREW_PATCHED_FORMULA_TEST_ROOT"',
+    '"${formula_test_env[@]}"',
+  ].each do |fragment|
+    check(launcher.include?(fragment),
+          "Formula-test command scoping lacks #{fragment}")
+  end
+  check(!launcher.include?("NODE_PATH"),
+        "Formula-test runtime reopens ambient Node module lookup through NODE_PATH")
   native_closure_handoff_contract = launcher[
     /homebrew_patched_launcher_seal_native_prefix\(\) \{\n(.*?)\n\}\n\n# Preserve relative links/m,
     1
@@ -4090,6 +4169,11 @@ def check_publisher(workflow)
     "workflow user retaining accidental write access to Formula-owned state",
     "protected source audit ignored a missing required namespace path",
     "protected source audit hid its systemd namespace diagnostic",
+    "isolated launcher did not stage the closed Formula test runtime",
+    "this is the exact failure boundary from the seven-package canary",
+    "NODE_PATH=caller-poison",
+    "--import tsx/esm",
+    "isolation verification accepted mutable Formula test runtime bytes",
   ].each do |fragment|
     check(launcher_test.include?(fragment),
           "launcher checker regression lacks #{fragment}")

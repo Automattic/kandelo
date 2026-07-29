@@ -571,6 +571,36 @@ omits the checker environment and makes the old `packages/registry`,
 that still calls `build-deps` or `install_local_binary` therefore fails rather
 than silently falling back to the old package system.
 
+Formula execution and Formula validation use different read authorities.
+Builds receive only the schema-3 platform projection described above. For the
+exact top-level `brew test` command, the launcher instead mounts a separate
+root-owned Formula-test runtime at the same `HOMEBREW_KANDELO_ROOT` alias. A
+privileged, admitted copy of the recipe runner constructs that runtime from a
+closed allowlist: the platform projection; `host/src`; the built
+`host/wasm` kernel inputs; the three `examples/run-example*.ts` entry files;
+the exact `tsx`, `esbuild`, platform `@esbuild`, `fflate`, and `fzstd`
+installations; the portable `binaries/` and `.ci-test-binary-cache/` pair; and
+the reviewed release `xtask`. Root `Cargo.toml` and `package.json` provide the
+resolver's Kandelo-root identity, but the workspace members, registry, local
+binaries, Cargo output, source-build helper, and mutable checkout remain
+absent.
+
+The stager snapshots and hashes every selected source before copying, checks
+the source identities again after copying, validates symlinks against the
+combined projection so `binaries/` may reach only its transported sibling
+cache, seals every output node, and atomically publishes the complete tree.
+An npm install may hard-link `esbuild/bin/esbuild` to the selected
+`@esbuild` executable. The stager accepts that layout only when every link to
+the inode is present in the declared projection; it then copies each selected
+path into a separate single-link sealed inode. An undeclared hard-link path
+therefore fails closed instead of retaining mutation authority.
+The launcher independently hashes the full sealed manifest before and after
+Formula execution. Ordinary `brew build`, dependency, bottle, and audit
+commands continue to mount the smaller platform projection; the broader test
+runtime is also hidden at its owner path. The Node loader resolves modules
+through the sealed root's ordinary package lookup. `NODE_PATH`, the workflow's
+ambient `node_modules`, and any Formula-selected module root are not accepted.
+
 The privileged recipe runner also derives
 `WASM_POSIX_SDK_CONFIG_SITE` from the sealed platform projection. A recipe that
 needs package-specific Autoconf cache answers may point `CONFIG_SITE` at its
@@ -1614,27 +1644,23 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    from its frozen Kandelo root and gives every Node or Chromium resolver child
    that exact `WASM_POSIX_BINARY_CACHE_ROOT`; caller-provided cache paths cannot
    replace it. The launcher copies the already-validated `xtask` bytes into
-   one root-owned, single-link, exact-`0555` inode, rechecks the source and
-   copy, bind-mounts that inode over the checkout's release path, and verifies
-   its exact inode and bytes both at each command entry and at final isolation
-   verification. Because Homebrew reconstructs the ordinary
+   one root-owned, single-link, exact-`0555` inode and includes a second exact
+   copy only in the closed Formula-test runtime at
+   `target/<host>/release/xtask`. Because Homebrew reconstructs the ordinary
    environment when it re-enters a Formula test, the launcher carries this
-   exact path across that boundary as `HOMEBREW_KANDELO_XTASK_BIN`. Tap support
-   validates and freezes the value while loading the trusted support module,
-   then translates only that frozen value to `WASM_POSIX_XTASK_BIN` for the
-   Node or Chromium resolver child. The resolver invokes that checker with the
-   authenticated read-only Kandelo alias as the narrowly scoped
-   `build-deps program-index-context-check --source-repo-root` argument. This
-   matters because a relocated executable still contains its compile-time
-   checkout path: the explicit root makes global toolchain files, fork-tool
-   Cargo metadata, and repo-relative package inputs all come from the same
-   protected source projection. The option rejects relative, noncanonical, or
-   incomplete roots and is invalid for every other `build-deps` subcommand.
-   Global and fork-tool digest memoization is keyed by that exact root; the
-   publisher's read-only alias and one-shot checker process keep a selected
-   root immutable for the command.
-   Caller-selected checker paths and ambient repository-root overrides are
-   neither preserved nor trusted.
+   fixed alias across that boundary as `HOMEBREW_KANDELO_XTASK_BIN`. Tap
+   support validates the checker and sibling portable cache while loading its
+   trusted support module, freezes both identities, and translates only those
+   values to the resolver child.
+
+   The Formula-test runtime is intentionally not a complete Kandelo source
+   checkout: it has no `tools/xtask` source, `scripts/dev-shell.sh`, Cargo
+   output, package registry, or local-binary tree. The host resolver therefore
+   consumes the already-generated, cache-keyed package projection without
+   running source-context regeneration. Source builds retain their separate
+   protected checker path and normal freshness contract before isolation.
+   Caller-selected checker paths, ambient repository-root overrides, and
+   ambient Node module lookup are neither preserved nor trusted.
    The workflow also
    materializes the exact `formula_test` and `bottle` groups from pinned
    Homebrew's frozen Gemfile into the temporary overlay, validates their group
