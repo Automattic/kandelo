@@ -472,7 +472,7 @@ An image that contains its own interactive shell can select it with
 ```json
 {
   "version": 1,
-  "path": "/home/linuxbrew/.linuxbrew/bin/dash",
+  "path": "/opt/kandelo/homebrew/bin/dash",
   "argv": ["dash", "-l", "-i"]
 }
 ```
@@ -674,7 +674,7 @@ Boot accepts at most eight package layers and 16 MiB of descriptor bytes in
 aggregate. The shared consumer additionally caps aggregate compressed payload
 bytes, expanded bytes, and entry count. Boot-prefetch downloads use at most two
 workers. Each package's declared keg and `opt` link must match its indexed
-paths. Every schema-5 ancestor at or below `/home/linuxbrew/.linuxbrew` must be
+paths. Every schema-5 ancestor at or below `/opt/kandelo/homebrew` must be
 declared in the aggregate guest projection. Equal-mode `mergeable-directory`
 claims can create an absent directory once or reuse an equal-mode lower-image
 directory; undeclared ancestors, unequal modes, and non-directory collisions
@@ -706,7 +706,7 @@ and the image-owned default-shell contract selects the embedded Bash.
 That direct release proves only its configured acceptance image; it does not
 set generic package browser flags. The separate gallery path first boots a
 package image in the browser UI and runs its smoke command, such as
-`/home/linuxbrew/.linuxbrew/bin/file --version`. Only then may generated
+`/opt/kandelo/homebrew/bin/file --version`. Only then may generated
 Homebrew sidecars and gallery `index.toml` set `browser_compatible = true`.
 Generic gallery archives are currently retained as run diagnostics rather than
 published as durable gallery releases.

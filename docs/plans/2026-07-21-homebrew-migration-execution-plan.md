@@ -33,6 +33,42 @@ milestone and the complete migration remain distinct:
 
 The current landing train is:
 
+### Guest prefix decision — 2026-07-29
+
+Kandelo guests use `/opt/kandelo/homebrew`, its Cellar is
+`/opt/kandelo/homebrew/Cellar`, and `/usr/bin/brew` is the stable command.
+The guest keeps the existing `user` identity at UID/GID 1000 and its Homebrew
+cache and configuration under `/home/user`. It does not create a `linuxbrew`
+user or preserve `/home/linuxbrew/.linuxbrew` through a compatibility symlink.
+
+Native Linux CI remains a separate realm. It may use Linuxbrew's fixed host
+prefix while pouring official Linux host-tool bottles, but that prefix is not
+a target package dependency, target bottle prefix, or VFS input.
+
+The 2026-07-29 public-bottle audit found 70 Wasm bottle variants across 63
+Formulae. Thirty-two variants contain the retired guest prefix and require
+rebuilding. The other 38 may be reused only through a provenance-preserving
+scan-gated path; rebuilding them is also acceptable when that is faster.
+Bottle admission now scans every regular archive member and rejects the
+retired prefix, because `:any_skip_relocation` metadata alone did not identify
+all path-bearing bottles.
+
+The immediate bootstrap/lifecycle proof may finish on its already-running
+transitional artifact, but no shell cutover or completed migration may retain
+the retired path. After the exact lifecycle proof, land the canonical layout,
+rebuild or scan-admit the affected bottles in parallel, republish the bootstrap
+and sidecars, and repeat the exact Node.js/Chromium lifecycle under the
+canonical path before broad Formula rollout.
+
+Treat the tap-side prefix migration as one atomic metadata cutover. The
+whole-tap validator rejects every retained old-prefix bottle record before
+sidecar publication, so a partial Formula-by-Formula finalization cannot land.
+Prepare all rebuilt and scan-admitted sidecars in parallel, remove any
+deliberately retired variants, validate the complete candidate tap once, and
+publish that complete set in one finalization. Failed-attempt reporting against
+the still-old tap may be blocked by the same validator and is not evidence that
+an individual replacement bottle is invalid.
+
 1. **Closed Formula execution boundary — Kandelo PR #1123.** The candidate
    gives untrusted tap recipes only their declared source, dependency, tool,
    and output paths. Its exact lazy-shell, preflight, kernel, fork, and routed
@@ -63,7 +99,9 @@ The current landing train is:
    #129 to package the upstream Homebrew bootstrap as a coherent lazy bottle,
    then exercise tap, install, link, execute, reinstall/upgrade, uninstall, and
    durable guest state for both the first-party core tap and the independent
-   third-party tap on Node.js and Chromium.
+   third-party tap on Node.js and Chromium. Finish the canonical guest-prefix
+   migration recorded above before product cutover and repeat this evidence
+   without a retired-path alias.
 5. **Remaining software migration.** Continue the already prepared direct
    Formula stacks for Python, Ruby, Erlang, MariaDB, PHP, WordPress data,
    SpiderMonkey, Node.js, npm, and the remaining services/support roles.

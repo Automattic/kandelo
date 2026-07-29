@@ -230,7 +230,7 @@ to `HOMEBREW_KANDELO_PRIMARY_TAP_ROOT` before isolation. The launcher then makes
 the whole Homebrew tap store read-only. That store is rooted under the active
 reviewed Homebrew repository worktree, where Homebrew actually clones taps,
 rather than under `HOMEBREW_PREFIX`; the publisher deliberately keeps the
-canonical Linuxbrew prefix while running a separate patched repository
+canonical Kandelo prefix while running a separate patched repository
 worktree. Active
 Tier-2 evaluation therefore resolves and attests the selected Formula under the
 primary tap root regardless of whether Homebrew loaded primary or dependency
@@ -344,9 +344,22 @@ validated, credential-isolated OCI/ORAS transport described below.
 The supported prefix and cellar are:
 
 ```text
-/home/linuxbrew/.linuxbrew
-/home/linuxbrew/.linuxbrew/Cellar
+/opt/kandelo/homebrew
+/opt/kandelo/homebrew/Cellar
 ```
+
+These are guest paths, not Linuxbrew paths. The guest uses the existing
+`/home/user` account for writable cache and configuration state and exposes
+`/usr/bin/brew` as the stable command. It must not create a `linuxbrew` user,
+install below `/home/linuxbrew`, or add a compatibility symlink for the
+retired guest prefix.
+
+The machine-readable contract is
+`homebrew/kandelo-guest-layout.json`. Bottle admission scans every regular
+archive member for the contract's retired prefixes. This byte scan is
+intentional: some bottles marked `:any_skip_relocation` still contain
+functional compiled paths, so Homebrew's relocation metadata cannot by itself
+prove that an old-prefix bottle is safe to reuse.
 
 Trusted CI applies this patch to a temporary Homebrew worktree. A short-lived
 root-owned launcher under the selected Homebrew prefix loads that worktree
@@ -439,8 +452,8 @@ For formulae that build Kandelo Wasm artifacts:
    transitional registry bridge, not the destination architecture.
 2. Install only the produced Wasm artifacts into the Homebrew keg.
 3. Preserve Homebrew's prefix and cellar model:
-   `/home/linuxbrew/.linuxbrew` and
-   `/home/linuxbrew/.linuxbrew/Cellar`.
+   `/opt/kandelo/homebrew` and
+   `/opt/kandelo/homebrew/Cellar`.
 4. Put runtime validation in `test do`, but execute Wasm through Kandelo
    rather than as a host Linux binary.
 5. Update Homebrew `revision` or bottle `rebuild` when bottle bytes should move
@@ -770,7 +783,7 @@ library bottle with a dependency source build.
 A Kandelo target Formula and a package in its native host-tool closure can have
 the same short Homebrew name. For example, the Kandelo `bzip2` build can require
 native WABT, whose host-side dependency closure can itself contain native `bzip2`.
-Putting both packages in `/home/linuxbrew/.linuxbrew/Cellar/bzip2` makes
+Putting both packages in `/opt/kandelo/homebrew/Cellar/bzip2` makes
 Homebrew treat the host package as a recursive dependency of the target
 Formula. Dependency ordering cannot fix that namespace collision.
 
@@ -1600,7 +1613,7 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
 1. `build-and-test` is read-only. It checks out the exact inputs and reviewed
    Homebrew/brew commit, and exposes the patched temporary Homebrew worktree
    through a root-owned launcher under the canonical
-   `/home/linuxbrew/.linuxbrew` target prefix. Native host dependencies use a
+   `/opt/kandelo/homebrew` target prefix. Native host dependencies use a
    separate ephemeral prefix, preventing their Cellar racks from colliding
    with Kandelo target Formulae. Within that read-only build, all
    Formula-evaluating Homebrew commands run as a distinct
@@ -2132,7 +2145,7 @@ selects `wasm32_kandelo` for the current wasm32 bootstrap and sets
 `HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY=1`, so prefix and user configuration cannot
 select a bottle for a different guest architecture. Homebrew's own `bin/brew`
 reads that supported system environment file; `/usr/bin/brew` stays a direct
-symlink to `/home/linuxbrew/.linuxbrew/bin/brew`, with no Kandelo launcher or
+symlink to `/opt/kandelo/homebrew/bin/brew`, with no Kandelo launcher or
 install fallback. The patch recognizes that exact alias/repository pair so
 Homebrew does not derive the forbidden `/usr` prefix from `$0`. The same source
 preparer emits `wasm64_kandelo` when a future bootstrap builder selects wasm64.
@@ -2441,7 +2454,7 @@ For example, a Dash shell image can use:
 ```json
 {
   "version": 1,
-  "path": "/home/linuxbrew/.linuxbrew/bin/dash",
+  "path": "/opt/kandelo/homebrew/bin/dash",
   "argv": ["dash", "-l", "-i"]
 }
 ```
@@ -2812,7 +2825,7 @@ policy, not Kandelo platform policy. A minimal configuration has this shape:
   "schema": 1,
   "formula": "consumer",
   "brewfile": "Kandelo/vfs-acceptance.Brewfile",
-  "executable": "/home/linuxbrew/.linuxbrew/bin/consumer",
+  "executable": "/opt/kandelo/homebrew/bin/consumer",
   "argv": ["consumer", "--version"],
   "expected_stdout": "consumer"
 }
@@ -2826,7 +2839,7 @@ one reviewed `shell_config` path inside the same tap:
   "schema": 2,
   "formula": "consumer",
   "brewfile": "Kandelo/vfs-acceptance.Brewfile",
-  "executable": "/home/linuxbrew/.linuxbrew/bin/consumer",
+  "executable": "/opt/kandelo/homebrew/bin/consumer",
   "argv": ["consumer", "--version"],
   "expected_stdout": "consumer",
   "shell_config": "Kandelo/vfs-acceptance-shell.json"
@@ -2931,7 +2944,7 @@ scripts/dev-shell.sh npx tsx packages/registry/file/test/homebrew-node-smoke.ts 
 ```
 
 It clones or reads the tap, builds a Homebrew VFS from published sidecars, runs
-`/home/linuxbrew/.linuxbrew/bin/file --version` through `NodeKernelHost`, and
+`/opt/kandelo/homebrew/bin/file --version` through `NodeKernelHost`, and
 checks negative ABI-mismatch and missing-bottle cases.
 
 Browser compatibility requires a separate browser smoke. For the current
@@ -2940,7 +2953,7 @@ serves it through the browser demo, runs Chromium Playwright against
 `apps/browser-demos/test/kandelo-homebrew.spec.ts`, and executes:
 
 ```bash
-/home/linuxbrew/.linuxbrew/bin/file --version
+/opt/kandelo/homebrew/bin/file --version
 ```
 
 Only after that smoke passes may sidecars record
@@ -3130,7 +3143,7 @@ Package names, repository identities, paths, and symlink targets have
 independent bounds. Every layer package must own the indexed directory for its
 declared keg and the exact indexed symlink for its declared `opt` link.
 Schema-5 trees explicitly declare every structural ancestor at or below
-`/home/linuxbrew/.linuxbrew` as a directory. Keg and in-keg directories are
+`/opt/kandelo/homebrew` as a directory. Keg and in-keg directories are
 package-owned `layer` entries; cross-package structural ancestors are
 `mergeable-directory` entries. The complete aggregate descriptor may satisfy
 an ancestor through any selected bottle tree. An absent mergeable directory is

@@ -99,15 +99,15 @@ async function writeHomebrewDefaultShellFixture(): Promise<string> {
     "utf8",
   );
   const fs = MemoryFileSystem.fromImage(rootfsBytes);
-  const shellPath = "/home/linuxbrew/.linuxbrew/bin/dash";
-  ensureDirRecursive(fs, "/home/linuxbrew/.linuxbrew/bin");
+  const shellPath = "/opt/kandelo/homebrew/bin/dash";
+  ensureDirRecursive(fs, "/opt/kandelo/homebrew/bin");
   writeVfsBinary(fs, shellPath, dashBytes, 0o755);
   ensureDirRecursive(fs, "/etc/profile.d");
   writeVfsFile(fs, "/etc/profile", profile, 0o644);
   writeVfsFile(
     fs,
     "/etc/profile.d/kandelo-homebrew.sh",
-    'PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"\nexport PATH\n',
+    'PATH="/opt/kandelo/homebrew/bin:$PATH"\nexport PATH\n',
     0o644,
   );
   ensureDirRecursive(fs, "/etc/kandelo");
@@ -186,7 +186,7 @@ test("Homebrew file-formula VFS image boots in browser and runs file --version",
 
   await runTerminalCommand(
     page,
-    "/home/linuxbrew/.linuxbrew/bin/file --version",
+    "/opt/kandelo/homebrew/bin/file --version",
     /^file(?:\.wasm)?-5\.45$/m,
     180_000,
   );
@@ -213,7 +213,7 @@ test("an image-owned Homebrew shell boots without legacy shell downloads", async
       "KANDELO_HOMEBREW_DEFAULT_SHELL_ARGV0 must be configured together",
     );
   }
-  const shellPath = configuredShellPath ?? "/home/linuxbrew/.linuxbrew/bin/dash";
+  const shellPath = configuredShellPath ?? "/opt/kandelo/homebrew/bin/dash";
   const shellArgv0 = configuredShellArgv0 ?? "dash";
   const fixturePath = configuredVfsUrl ? undefined : await writeHomebrewDefaultShellFixture();
   const vfsUrl = configuredVfsUrl ?? new URL(fixturePath!, baseURL).href;
@@ -237,7 +237,7 @@ test("an image-owned Homebrew shell boots without legacy shell downloads", async
   await runParentShellProbe(
     page,
     "printf 'HOMEBREW_DEFAULT_SHELL:%s:%s:%s\\n' \"$0\" \"$(command -v \"$0\")\" \"${PATH%%:*}\"",
-    `HOMEBREW_DEFAULT_SHELL:${shellArgv0}:${shellPath}:/home/linuxbrew/.linuxbrew/bin`,
+    `HOMEBREW_DEFAULT_SHELL:${shellArgv0}:${shellPath}:/opt/kandelo/homebrew/bin`,
     120_000,
   );
 

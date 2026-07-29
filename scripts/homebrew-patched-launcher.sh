@@ -3297,7 +3297,7 @@ homebrew_patched_launcher_isolate() {
   fi
   primary_tap_root="$(cd "$primary_tap_root" && pwd -P)" || return 2
   # Taps belong to HOMEBREW_REPOSITORY, not HOMEBREW_PREFIX. The reviewed
-  # launcher intentionally keeps the canonical Linuxbrew prefix while running
+  # launcher intentionally keeps the canonical Kandelo prefix while running
   # from a patched repository worktree, so only the active repository can own
   # the tapped checkouts that Formula resolution actually loads.
   taps_root="$HOMEBREW_PATCHED_OVERLAY/Library/Taps"

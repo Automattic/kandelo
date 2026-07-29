@@ -19,7 +19,7 @@ abort "invalid sibling bottle policy" unless %w[preserve discard].include?(sibli
 cellar_dsl = case cellar
              when "any" then ":any"
              when "any_skip_relocation" then ":any_skip_relocation"
-             when "/home/linuxbrew/.linuxbrew/Cellar" then '"/home/linuxbrew/.linuxbrew/Cellar"'
+             when "/opt/kandelo/homebrew/Cellar" then '"/opt/kandelo/homebrew/Cellar"'
              else abort "invalid bottle relocation cellar"
              end
 rebuild = Integer(rebuild_text, 10)

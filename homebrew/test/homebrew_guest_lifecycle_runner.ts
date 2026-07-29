@@ -20,7 +20,7 @@ import type {
 } from "./homebrew_guest_lifecycle_runtime_inputs";
 
 export const HOMEBREW_GUEST_LIFECYCLE_ENV = [
-  "PATH=/home/linuxbrew/.linuxbrew/bin:/usr/bin:/bin",
+  "PATH=/opt/kandelo/homebrew/bin:/usr/bin:/bin",
   "HOME=/home/user",
   "USER=user",
   "LOGNAME=user",

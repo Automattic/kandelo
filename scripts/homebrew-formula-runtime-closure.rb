@@ -365,7 +365,7 @@ parse_bottle = lambda do |statement, lines, path|
       tag = Regexp.last_match(2)
       sha256 = Regexp.last_match(3)
       cellar = cellar_literal.start_with?(":") ? cellar_literal.delete_prefix(":") : cellar_literal[1...-1]
-      unless ["any", "any_skip_relocation", "/home/linuxbrew/.linuxbrew/Cellar"].include?(cellar)
+      unless ["any", "any_skip_relocation", "/opt/kandelo/homebrew/Cellar"].include?(cellar)
         abort "Formula bottle block uses an unsupported cellar: #{path}"
       end
       abort "Formula bottle block repeats tag #{tag}: #{path}" if tags.key?(tag)

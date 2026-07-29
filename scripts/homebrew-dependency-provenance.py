@@ -28,7 +28,7 @@ COMMIT = re.compile(r"^[0-9a-f]{40}$")
 TAP_REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SOURCE_BUILD = re.compile(r"\b(?:building|built)\b.*\bfrom source\b", re.IGNORECASE)
-BOTTLE_CELLARS = ("any", "any_skip_relocation", "/home/linuxbrew/.linuxbrew/Cellar")
+BOTTLE_CELLARS = ("any", "any_skip_relocation", "/opt/kandelo/homebrew/Cellar")
 BREW_INFO_SYMBOLIC_CELLARS = {
     ":any": "any",
     ":any_skip_relocation": "any_skip_relocation",
@@ -453,7 +453,7 @@ def exact_tap_dependencies(
         if bottle["cellar"] not in (
             "any",
             "any_skip_relocation",
-            "/home/linuxbrew/.linuxbrew/Cellar",
+            "/opt/kandelo/homebrew/Cellar",
         ):
             fail(f"static dependency {full_name} bottle cellar is invalid")
         if (
@@ -1008,7 +1008,7 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
         dependency_root_url = context["bottle_root_url"]
         if bottle["url"] != f"{dependency_root_url}/{name}/blobs/sha256:{bottle_sha}":
             fail(f"dependencies[{index}] bottle URL is not digest-bound")
-        if bottle["cellar"] not in ("any", "any_skip_relocation", "/home/linuxbrew/.linuxbrew/Cellar"):
+        if bottle["cellar"] not in ("any", "any_skip_relocation", "/opt/kandelo/homebrew/Cellar"):
             fail(f"dependencies[{index}] bottle cellar is invalid")
         if not isinstance(bottle["rebuild"], int) or isinstance(bottle["rebuild"], bool) or bottle["rebuild"] < 0:
             fail(f"dependencies[{index}] bottle rebuild is invalid")

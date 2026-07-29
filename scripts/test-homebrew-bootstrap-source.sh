@@ -25,6 +25,8 @@ for tool in git node unzip; do
     }
 done
 
+bash "$ROOT/scripts/test-homebrew-guest-layout.sh"
+
 RUN_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-homebrew-bootstrap-source.XXXXXX")"
 RUN_ROOT="$(cd "$RUN_ROOT" && pwd -P)"
 cleanup() {
@@ -301,7 +303,7 @@ grep -Fxq 'HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY=1' "$RUN_ROOT/wasm32/brew.env"
 grep -Fxq 'HOMEBREW_NO_INSTALL_FROM_API=1' "$RUN_ROOT/wasm32/brew.env"
 grep -Fxq 'HOMEBREW_AUTOMATICALLY_SET_NO_INSTALL_FROM_API=1' \
     "$RUN_ROOT/wasm32/brew.env"
-grep -Fq '/usr/bin/brew l 0777 0 0 target=/home/linuxbrew/.linuxbrew/bin/brew' \
+grep -Fq '/usr/bin/brew l 0777 0 0 target=/opt/kandelo/homebrew/bin/brew' \
     "$ROOT/scripts/build-homebrew-bootstrap.sh"
 
 EXTRACT_ROOT="$RUN_ROOT/prefix"
@@ -333,7 +335,7 @@ const source = readFileSync(brewPath, "utf8");
 const replacements = [
   ['"/etc/homebrew/brew.env"', JSON.stringify(systemEnvPath), 2, "system brew.env"],
   ['"/usr/bin/brew"', JSON.stringify(aliasPath), 1, "guest brew alias"],
-  ['"/home/linuxbrew/.linuxbrew"', JSON.stringify(prefixPath), 1, "guest Homebrew prefix"],
+  ['"/opt/kandelo/homebrew"', JSON.stringify(prefixPath), 1, "guest Homebrew prefix"],
 ];
 let patched = source;
 for (const [literal, replacement, expected, label] of replacements) {

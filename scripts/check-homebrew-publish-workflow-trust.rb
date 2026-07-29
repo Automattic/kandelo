@@ -1212,7 +1212,7 @@ def check_publisher(workflow)
     'default-shell config resolved outside the exact tap checkout',
     'default-shell config must contain 1 to 65536 bytes',
     'keys == ["argv", "path", "version"]',
-    '/home/linuxbrew/', '(bin|sbin)',
+    '/opt/kandelo/homebrew/', '(bin|sbin)',
     'ruby kandelo/scripts/homebrew-brewfile-selection.rb "$brewfile"',
     'expected_tap="$(printf \'%s\' "$TAP_NAME" | tr \'[:upper:]\' \'[:lower:]\')"',
     '.tap_name == $tap and (.packages | index($formula) != null)',
@@ -7069,7 +7069,7 @@ def self_test(publisher, maintenance, repository_canary)
     },
     "noncanonical Homebrew prefix" => lambda { |w|
       step = mutate_named_step(w, "build-and-test", "Activate reviewed Homebrew implementation")
-      step["run"] = step.fetch("run").sub("/home/linuxbrew/.linuxbrew", "/tmp/homebrew")
+      step["run"] = step.fetch("run").sub("/opt/kandelo/homebrew", "/tmp/homebrew")
     },
     "writable Homebrew prefix on job PATH" => lambda { |w|
       step = mutate_named_step(w, "build-and-test", "Activate reviewed Homebrew implementation")

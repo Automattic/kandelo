@@ -211,7 +211,7 @@ if ! jq -e \
     .bottle.tag == ($arch + "_kandelo") and
     (.bottle.cellar |
       . == "any" or . == "any_skip_relocation" or
-      . == "/home/linuxbrew/.linuxbrew/Cellar") and
+      . == "/opt/kandelo/homebrew/Cellar") and
     (.bottle.sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
     (.bottle.bytes | type == "number" and . >= 0 and floor == .) and
     .bottle.archive == "bottle.tar.gz" and
@@ -239,7 +239,7 @@ OWNER_LOWER="${TAP_NAME%%/*}"
 REPO_LOWER="${TAP_NAME#*/}"
 FORMULA_KEY="${OWNER_LOWER}/${REPO_LOWER}/${FORMULA}"
 FORMULA_PATH="Library/Taps/${OWNER_LOWER}/homebrew-${REPO_LOWER}/Formula/${FORMULA}.rb"
-BOTTLE_INSTALL_CELLAR="/home/linuxbrew/.linuxbrew/Cellar"
+BOTTLE_INSTALL_CELLAR="/opt/kandelo/homebrew/Cellar"
 
 for entry in "${entries[@]}"; do
   case "$(basename "$entry")" in

@@ -503,6 +503,24 @@ impl Validator<'_> {
         top_abi: Option<u64>,
         tap_repository: Option<&str>,
     ) {
+        match crate::homebrew_guest_layout::get() {
+            Ok(layout) => {
+                if string_at(bottle, "/prefix") != Some(layout.prefix.as_str()) {
+                    self.err(format!(
+                        "{label}: prefix does not match the canonical Kandelo guest layout"
+                    ));
+                }
+                if string_at(bottle, "/cellar") != Some(layout.cellar.as_str()) {
+                    self.err(format!(
+                        "{label}: cellar does not match the canonical Kandelo guest layout"
+                    ));
+                }
+            }
+            Err(error) => {
+                self.err(format!("{label}: {error}"));
+                return;
+            }
+        }
         if let (Some(bottle_abi), Some(top_abi)) = (u64_at(bottle, "/kandelo_abi"), top_abi) {
             if bottle_abi != top_abi {
                 self.err(format!(
@@ -1034,6 +1052,10 @@ fn parse_formula_bottle_block(source: &str) -> Result<Option<FormulaBottleBlock>
     let mut rebuild = 0;
     let mut rebuild_seen = false;
     let mut tags = BTreeMap::new();
+    let exact_cellar = format!(
+        "\"{}\"",
+        crate::homebrew_guest_layout::get()?.cellar
+    );
     for line in &lines[(start + 1)..end] {
         if let Some(value) = line
             .strip_prefix("    root_url \"")
@@ -1062,10 +1084,9 @@ fn parse_formula_bottle_block(source: &str) -> Result<Option<FormulaBottleBlock>
             let (cellar, tagged_sha) = value
                 .split_once(", ")
                 .ok_or_else(|| "invalid sha256 line".to_string())?;
-            if !matches!(
-                cellar,
-                ":any" | ":any_skip_relocation" | "\"/home/linuxbrew/.linuxbrew/Cellar\""
-            ) {
+            if !matches!(cellar, ":any" | ":any_skip_relocation")
+                && cellar != exact_cellar
+            {
                 return Err("invalid bottle cellar".to_string());
             }
             let (tag, quoted_sha) = tagged_sha
@@ -1418,6 +1439,25 @@ mod tests {
         assert_eq!(report.bottles, 1);
         assert_eq!(report.link_manifests, 1);
         assert_eq!(report.provenance_reports, 1);
+    }
+
+    #[test]
+    fn rejects_a_noncanonical_guest_prefix_or_cellar() {
+        for field in ["prefix", "cellar"] {
+            let mut fixture = Fixture::new();
+            fixture.metadata["packages"][0]["bottles"][0][field] =
+                json!(format!("/opt/not-kandelo/{field}"));
+            fixture.write();
+
+            let report = fixture.validate();
+            assert!(
+                report.errors.join("\n").contains(&format!(
+                    "{field} does not match the canonical Kandelo guest layout"
+                )),
+                "{:?}",
+                report.errors
+            );
+        }
     }
 
     #[test]

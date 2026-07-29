@@ -445,13 +445,13 @@ require_max_size "link JSON" "$LINK_JSON" "$HOMEBREW_MAX_SIDECAR_JSON_BYTES"
 require_max_size "provenance JSON" "$PROVENANCE_JSON" "$HOMEBREW_MAX_PROVENANCE_BYTES"
 
 FULL_NAME="${TAP_NAME}/${FORMULA}"
-BOTTLE_CELLAR="/home/linuxbrew/.linuxbrew/Cellar"
+BOTTLE_CELLAR="/opt/kandelo/homebrew/Cellar"
 BOTTLE_RELOCATION_CELLAR="$(jq -r '.bottle.cellar' "$BUILD_ROOT/manifest.json")"
 case "$BOTTLE_RELOCATION_CELLAR" in
   any) BOTTLE_RELOCATION_CELLAR_DSL=":any" ;;
   any_skip_relocation) BOTTLE_RELOCATION_CELLAR_DSL=":any_skip_relocation" ;;
-  /home/linuxbrew/.linuxbrew/Cellar)
-    BOTTLE_RELOCATION_CELLAR_DSL="\"/home/linuxbrew/.linuxbrew/Cellar\""
+  /opt/kandelo/homebrew/Cellar)
+    BOTTLE_RELOCATION_CELLAR_DSL="\"/opt/kandelo/homebrew/Cellar\""
     ;;
   *) echo "homebrew-validate-publish-handoff.sh: invalid relocation cellar" >&2; exit 1 ;;
 esac

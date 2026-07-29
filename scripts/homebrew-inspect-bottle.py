@@ -62,6 +62,7 @@ MAX_LINK_DEPTH = 256
 MAX_FORBIDDEN_ROOTS = 32
 MAX_FORBIDDEN_ROOT_BYTES = 4096
 ARCHIVE_SCAN_CHUNK_BYTES = 1024 * 1024
+MAX_GUEST_LAYOUT_BYTES = 64 * 1024
 
 FORMULA_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 PKG_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+,-]{0,255}$")
@@ -177,6 +178,53 @@ def normalize_forbidden_root(value: str) -> str:
     if value.endswith("/") or posixpath.normpath(value) != value:
         fail(f"{label} must be a normalized absolute POSIX path: {value!r}")
     return value
+
+
+def retired_guest_prefixes() -> tuple[str, ...]:
+    """Load prefixes that new Kandelo bottles must never embed."""
+    contract_path = pathlib.Path(__file__).parent.parent / (
+        "homebrew/kandelo-guest-layout.json"
+    )
+    try:
+        payload = contract_path.read_bytes()
+    except OSError as error:
+        fail(f"cannot read Kandelo Homebrew guest layout: {error}")
+    if len(payload) > MAX_GUEST_LAYOUT_BYTES:
+        fail(
+            "Kandelo Homebrew guest layout exceeds "
+            f"{MAX_GUEST_LAYOUT_BYTES} bytes"
+        )
+    try:
+        document = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        fail(f"Kandelo Homebrew guest layout is not valid UTF-8 JSON: {error}")
+    if (
+        not isinstance(document, dict)
+        or document.get("schema") != 1
+        or document.get("kind") != "kandelo-homebrew-guest-layout"
+    ):
+        fail("Kandelo Homebrew guest layout has an unsupported contract")
+
+    prefix = document.get("prefix")
+    retired = document.get("retired_prefixes")
+    if not isinstance(prefix, str):
+        fail("Kandelo Homebrew guest layout prefix must be a string")
+    prefix = normalize_forbidden_root(prefix)
+    if not isinstance(retired, list) or not retired:
+        fail("Kandelo Homebrew guest layout retired_prefixes must be non-empty")
+    if not all(isinstance(value, str) for value in retired):
+        fail("Kandelo Homebrew guest layout retired_prefixes must contain strings")
+    normalized = tuple(normalize_forbidden_root(value) for value in retired)
+    if len(normalized) > MAX_FORBIDDEN_ROOTS:
+        fail(
+            "Kandelo Homebrew guest layout has more than "
+            f"{MAX_FORBIDDEN_ROOTS} retired prefixes"
+        )
+    if len(set(normalized)) != len(normalized):
+        fail("Kandelo Homebrew guest layout repeats a retired prefix")
+    if prefix in normalized:
+        fail("Kandelo Homebrew guest layout retires its canonical prefix")
+    return normalized
 
 
 class BottleInspector:
@@ -302,7 +350,7 @@ class BottleInspector:
             for root, encoded_root in self.forbidden_roots:
                 if encoded_root in window:
                     fail(
-                        f"regular archive entry {path!r} contains forbidden build root "
+                        f"regular archive entry {path!r} contains forbidden path "
                         f"{root!r}"
                     )
             if self.forbidden_root_overlap:
@@ -715,6 +763,13 @@ def write_result(result: dict[str, object], output: str) -> None:
 def main() -> int:
     args = parse_args()
     try:
+        # WHY: build-root arguments vary by runner, but retired guest prefixes
+        # are a distribution invariant. Loading them here makes every bottle
+        # admission path reject an artifact built for the old platform layout.
+        forbidden_roots = (
+            *args.forbidden_root,
+            *retired_guest_prefixes(),
+        )
         result = BottleInspector(
             pathlib.Path(args.archive),
             args.formula,
@@ -723,7 +778,7 @@ def main() -> int:
             args.expected_arch,
             args.wasm_validator,
             args.wasm_timeout_seconds,
-            args.forbidden_root,
+            forbidden_roots,
             args.selected_formula,
         ).run()
         write_result(result, args.out)

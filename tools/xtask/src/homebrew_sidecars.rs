@@ -669,6 +669,21 @@ impl Generator<'_> {
         formula_sidecar_path: &str,
         link_outputs: &mut Vec<(String, Value)>,
     ) -> Result<Value, String> {
+        let guest_layout = crate::homebrew_guest_layout::get()?;
+        if bottle.prefix != guest_layout.prefix {
+            return Err(bottle_error(
+                package,
+                bottle,
+                "prefix does not match the canonical Kandelo guest layout",
+            ));
+        }
+        if bottle.cellar != guest_layout.cellar {
+            return Err(bottle_error(
+                package,
+                bottle,
+                "cellar does not match the canonical Kandelo guest layout",
+            ));
+        }
         let status = bottle_status(bottle);
         let bottle_tag = bottle
             .bottle_tag
@@ -1440,10 +1455,11 @@ mod tests {
     }
 
     fn fixture_input(bottle_file: &str, bottle_sha256: &str, status: &str) -> Value {
+        let guest_layout = crate::homebrew_guest_layout::get().unwrap();
         let mut bottle = json!({
             "arch": "wasm32",
-            "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-            "prefix": "/home/linuxbrew/.linuxbrew",
+            "cellar": guest_layout.cellar,
+            "prefix": guest_layout.prefix,
             "runtime_support": ["node"],
             "browser_compatible": false,
             "fork_instrumentation": "not-required",
@@ -1488,6 +1504,13 @@ mod tests {
                         "name": "schema",
                         "status": "success",
                         "passed": ["metadata.json"],
+                        "failed": [],
+                        "skipped": []
+                    },
+                    {
+                        "name": "node_smoke",
+                        "status": "success",
+                        "passed": ["hello fixture"],
                         "failed": [],
                         "skipped": []
                     }
@@ -1618,6 +1641,31 @@ mod tests {
             fixture.tap_root.to_string_lossy().into_owned(),
         ])
         .unwrap();
+    }
+
+    #[test]
+    fn generation_rejects_a_noncanonical_guest_prefix_or_cellar() {
+        for field in ["prefix", "cellar"] {
+            let fixture = Fixture::new("success");
+            let mut input = load_json(&fixture.input_path).unwrap();
+            input["packages"][0]["bottles"][0][field] =
+                json!(format!("/opt/not-kandelo/{field}"));
+            write_json_value(&fixture.input_path, &input);
+
+            let error = run(vec![
+                "--tap-root".to_string(),
+                fixture.tap_root.to_string_lossy().into_owned(),
+                "--input".to_string(),
+                fixture.input_path.to_string_lossy().into_owned(),
+            ])
+            .unwrap_err();
+            assert!(
+                error.contains(&format!(
+                    "{field} does not match the canonical Kandelo guest layout"
+                )),
+                "{error}"
+            );
+        }
     }
 
     #[test]

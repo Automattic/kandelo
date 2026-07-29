@@ -1195,12 +1195,12 @@ jq -e '
     url: "homebrew-bootstrap.zip",
     mode_policy: "portable-posix-v1"
   } and
-  .mount_prefix == "/home/linuxbrew/.linuxbrew" and
+  .mount_prefix == "/opt/kandelo/homebrew" and
   .owner == { uid: 1000, gid: 1000 } and
   .activation == {
     mode: "first-use",
     capabilities: ["homebrew:bootstrap", "homebrew:runtime"],
-    roots: ["/home/linuxbrew/.linuxbrew/bin/brew"],
+    roots: ["/opt/kandelo/homebrew/bin/brew"],
     atomic_group: "homebrew-runtime-support"
   }
 ' "$PACKAGE_TREE_SPEC" >/dev/null ||

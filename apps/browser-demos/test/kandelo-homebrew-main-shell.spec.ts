@@ -612,7 +612,7 @@ test("a fresh exact shell activates brew support atomically after independent ba
   await runParentShellProbe(
     page,
     'printf \'HOMEBREW_MAIN_SHELL_PATH:%s:%s\\n\' "$0" "${PATH%%:*}"',
-    "HOMEBREW_MAIN_SHELL_PATH:bash:/home/linuxbrew/.linuxbrew/bin",
+    "HOMEBREW_MAIN_SHELL_PATH:bash:/opt/kandelo/homebrew/bin",
   );
   let lazyRows = await readLazyDownloadRows(page);
   expect(lazyRows).toEqual([]);
@@ -758,8 +758,8 @@ printf 'HOMEBREW_ATOMIC_RUNTIME_ACTIVATED\n'
     page,
     `
 set -eu
-test "$(/usr/bin/brew --prefix)" = /home/linuxbrew/.linuxbrew
-probe=/home/linuxbrew/.linuxbrew/Library/Homebrew/cmd/kandelo-env-probe.sh
+test "$(/usr/bin/brew --prefix)" = /opt/kandelo/homebrew
+probe=/opt/kandelo/homebrew/Library/Homebrew/cmd/kandelo-env-probe.sh
 cat > "$probe" <<'KANDELO_BREW_ENV_PROBE'
 homebrew-kandelo-env-probe() {
   printf '%s\n' "$HOMEBREW_KANDELO_BOTTLE_TAG"
@@ -795,7 +795,7 @@ printf 'HOMEBREW_OPERATIONAL_RUNTIME_OK\n'
   const repeatBrewPriorSources = new Set(lazyRows.map(({ source }) => source));
   await runTerminalCommand(
     page,
-    'test "$(/usr/bin/brew --prefix)" = /home/linuxbrew/.linuxbrew && ' +
+    'test "$(/usr/bin/brew --prefix)" = /opt/kandelo/homebrew && ' +
       "printf 'HOMEBREW_RUNTIME_REUSE_OK\\n'",
     "HOMEBREW_RUNTIME_REUSE_OK",
     240_000,

@@ -187,7 +187,7 @@ OWNER_LOWER="${TAP_NAME%%/*}"
 REPO_LOWER="${TAP_NAME#*/}"
 FORMULA_KEY="${OWNER_LOWER}/${REPO_LOWER}/${FORMULA}"
 FORMULA_PATH="Library/Taps/${OWNER_LOWER}/homebrew-${REPO_LOWER}/Formula/${FORMULA}.rb"
-BOTTLE_INSTALL_CELLAR="/home/linuxbrew/.linuxbrew/Cellar"
+BOTTLE_INSTALL_CELLAR="/opt/kandelo/homebrew/Cellar"
 if ! jq -e \
   --arg formula "$FORMULA" \
   --arg formula_key "$FORMULA_KEY" \

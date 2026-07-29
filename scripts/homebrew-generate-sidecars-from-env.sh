@@ -238,7 +238,7 @@ if (
 ):
     raise SystemExit("bottle JSON root URL does not match the selected publication root")
 if bottle.get("cellar") not in {
-    "any", "any_skip_relocation", "/home/linuxbrew/.linuxbrew/Cellar"
+    "any", "any_skip_relocation", "/opt/kandelo/homebrew/Cellar"
 }:
     raise SystemExit("canonical bottle JSON has an invalid relocation cellar")
 rebuild = bottle.get("rebuild")
@@ -731,8 +731,8 @@ manifest = {
                 {
                     "arch": arch,
                     "bottle_tag": tag_name,
-                    "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-                    "prefix": "/home/linuxbrew/.linuxbrew",
+                    "cellar": "/opt/kandelo/homebrew/Cellar",
+                    "prefix": "/opt/kandelo/homebrew",
                     "runtime_support": runtime_support,
                     "browser_compatible": browser_compatible,
                     "fork_instrumentation": fork_instrumentation,

@@ -43,9 +43,13 @@ describe("package build input import closure", () => {
 
     expect(packagesAffectedBy("host/src/vfs/memory-fs.ts")).toEqual(packages);
 
-    expect(
-      packagesAffectedBy("host/src/homebrew-bottle-relocation.ts"),
-    ).toEqual(packages);
+    for (const changedPath of [
+      "host/src/homebrew-bottle-relocation.ts",
+      "host/src/homebrew-guest-layout.ts",
+      "homebrew/kandelo-guest-layout.json",
+    ]) {
+      expect(packagesAffectedBy(changedPath)).toEqual(packages);
+    }
 
     for (const changedPath of [
       "host/src/homebrew-runtime-layer-policy.ts",

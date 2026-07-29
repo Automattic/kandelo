@@ -1045,7 +1045,7 @@ function applyCompatibilityLinks(
   }
   for (const targetDirectory of mirrorTargets) {
     validateCompatibilityAbsolutePath(targetDirectory, "mirror target directory");
-    if (guestPathIsUnder(targetDirectory, plan.packages[0]?.prefix ?? "/home/linuxbrew/.linuxbrew")) {
+    if (guestPathIsUnder(targetDirectory, plan.packages[0]?.prefix ?? "/opt/kandelo/homebrew")) {
       throw new HomebrewVfsBuildError(
         `Homebrew compatibility mirror target ${targetDirectory} must be outside the Homebrew prefix`,
       );

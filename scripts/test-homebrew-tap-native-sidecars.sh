@@ -1059,7 +1059,7 @@ printf '\357\273\277' > "$SHELL_CONFIG"
 cat >> "$SHELL_CONFIG" <<'EOF'
 {
   "version": 1,
-  "path": "/home/linuxbrew/.linuxbrew/bin/sidecar-tool-helper",
+  "path": "/opt/kandelo/homebrew/bin/sidecar-tool-helper",
   "argv": ["sidecar-tool-helper", "--interactive"]
 }
 EOF
@@ -1495,7 +1495,7 @@ jq -e '
   $tree.activation == {
     "mode":"first-use",
     "capabilities":["homebrew-bottle:sidecar-tool"],
-    "roots":["/home/linuxbrew/.linuxbrew/Cellar/sidecar-tool/2.0_3"]
+    "roots":["/opt/kandelo/homebrew/Cellar/sidecar-tool/2.0_3"]
   } and
   $tree.content == {
     "media_type":"application/vnd.oci.image.layer.v1.tar+gzip",
@@ -1715,7 +1715,7 @@ require(
     "regular-inode count does not match guest inventory",
 )
 
-keg = "home/linuxbrew/.linuxbrew/Cellar/sidecar-tool/2.0_3"
+keg = "opt/kandelo/homebrew/Cellar/sidecar-tool/2.0_3"
 executable = guest_by_path[f"{keg}/bin/sidecar-tool"]
 require(
     executable["type"] == "file"
@@ -1734,14 +1734,14 @@ require(
 )
 
 for name in ("sidecar-tool", "sidecar-tool-helper"):
-    linked = guest_by_path[f"home/linuxbrew/.linuxbrew/bin/{name}"]
+    linked = guest_by_path[f"opt/kandelo/homebrew/bin/{name}"]
     require(
         linked["type"] == "symlink"
         and linked["materialization"] == "descriptor"
         and linked["target"] == f"/{keg}/bin/{name}",
         f"prefix link {name} does not point at its bottle-owned executable",
     )
-opt = guest_by_path["home/linuxbrew/.linuxbrew/opt/sidecar-tool"]
+opt = guest_by_path["opt/kandelo/homebrew/opt/sidecar-tool"]
 require(
     opt["type"] == "symlink"
     and opt["materialization"] == "descriptor"
@@ -1774,7 +1774,7 @@ jq -e --slurpfile metadata "$TAP/Kandelo/metadata.json" '
     "bytes":$brewfile_bytes
   } and
   .default_shell == {
-    "path":"/home/linuxbrew/.linuxbrew/bin/sidecar-tool-helper",
+    "path":"/opt/kandelo/homebrew/bin/sidecar-tool-helper",
     "argv":["sidecar-tool-helper","--interactive"],
     "config_sha256":$shell_config_sha,
     "config_bytes":$shell_config_bytes
@@ -1828,13 +1828,13 @@ npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" extract \
   "$TMPDIR/sidecar-tool.vfs.zst" "$TMPDIR/sidecar-tool-root" >/dev/null
 grep -Fx 'base-image-marker' \
   "$TMPDIR/sidecar-tool-root/etc/base-image-marker" >/dev/null
-[ "$(readlink "$TMPDIR/sidecar-tool-root/home/linuxbrew/.linuxbrew/opt/sidecar-dep")" = \
+[ "$(readlink "$TMPDIR/sidecar-tool-root/opt/kandelo/homebrew/opt/sidecar-dep")" = \
   "../Cellar/sidecar-dep/1.0" ]
-[ "$(readlink "$TMPDIR/sidecar-tool-root/home/linuxbrew/.linuxbrew/opt/sidecar-tool")" = \
+[ "$(readlink "$TMPDIR/sidecar-tool-root/opt/kandelo/homebrew/opt/sidecar-tool")" = \
   "../Cellar/sidecar-tool/2.0_3" ]
 cmp \
-  "$TMPDIR/sidecar-tool-root/home/linuxbrew/.linuxbrew/opt/sidecar-tool/bin/sidecar-tool" \
-  "$TMPDIR/sidecar-tool-root/home/linuxbrew/.linuxbrew/Cellar/sidecar-tool/2.0_3/bin/sidecar-tool"
+  "$TMPDIR/sidecar-tool-root/opt/kandelo/homebrew/opt/sidecar-tool/bin/sidecar-tool" \
+  "$TMPDIR/sidecar-tool-root/opt/kandelo/homebrew/Cellar/sidecar-tool/2.0_3/bin/sidecar-tool"
 jq -e '
   .selection.kind == "brewfile" and
   .selection.requested_packages == ["sidecar-tool"] and
@@ -1845,7 +1845,7 @@ jq -e '
   "$TMPDIR/sidecar-tool-root/etc/kandelo/homebrew-vfs.json" >/dev/null
 cmp "$SHELL_CONFIG" "$TMPDIR/sidecar-tool-root/etc/kandelo/shell.json"
 cmp "$DEMO_CONFIG" "$TMPDIR/sidecar-tool-root/etc/kandelo/demo.json"
-grep -F '/home/linuxbrew/.linuxbrew/bin' \
+grep -F '/opt/kandelo/homebrew/bin' \
   "$TMPDIR/sidecar-tool-root/etc/profile.d/kandelo-homebrew.sh" >/dev/null
 npx tsx "$REPO_ROOT/tools/mkrootfs/src/index.ts" inspect \
   "$TMPDIR/sidecar-tool.vfs.zst" --format json --metadata \
@@ -1869,7 +1869,7 @@ jq -e '
     }
   } and
   .metadata.homebrew.defaultShell == {
-    "path":"/home/linuxbrew/.linuxbrew/bin/sidecar-tool-helper",
+    "path":"/opt/kandelo/homebrew/bin/sidecar-tool-helper",
     "argv":["sidecar-tool-helper","--interactive"],
     "configSha256":$shell_config_sha
   } and
@@ -1947,7 +1947,7 @@ EOF
 ACCEPTANCE_EVIDENCE="$TMPDIR/acceptance-evidence.json"
 npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
   "$ACCEPTANCE_TAP/Kandelo/metadata.json" "$ACCEPTANCE_TAP" "$BREWFILE" \
-  sidecar-tool /home/linuxbrew/.linuxbrew/bin/sidecar-tool \
+  sidecar-tool /opt/kandelo/homebrew/bin/sidecar-tool \
   "$ACCEPTANCE_EVIDENCE"
 jq -e --slurpfile metadata "$ACCEPTANCE_TAP/Kandelo/metadata.json" '
   .status == "validated" and
@@ -1979,7 +1979,7 @@ jq -e --slurpfile metadata "$ACCEPTANCE_TAP/Kandelo/metadata.json" '
     "config_artifact":"shell.json",
     "config_sha256":$shell_config_sha,
     "config_bytes":$shell_config_bytes,
-    "path":"/home/linuxbrew/.linuxbrew/bin/sidecar-tool-helper",
+    "path":"/opt/kandelo/homebrew/bin/sidecar-tool-helper",
     "argv":["sidecar-tool-helper","--interactive"],
     "bottle_package":"sidecar-tool"
   } and
@@ -1994,7 +1994,7 @@ jq '(.packages[] | select(.name == "sidecar-dep") |
   "$TMPDIR/sidecar-tool-report.json" >"$TAMPERED_BUILD_SOURCE_REPORT"
 if npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
   "$ACCEPTANCE_TAP/Kandelo/metadata.json" "$ACCEPTANCE_TAP" "$BREWFILE" \
-  sidecar-tool /home/linuxbrew/.linuxbrew/bin/sidecar-tool \
+  sidecar-tool /opt/kandelo/homebrew/bin/sidecar-tool \
   "$TMPDIR/tampered-build-source-evidence.json" "$SHELL_CONFIG" \
   "$TAMPERED_BUILD_SOURCE_REPORT" \
   > /dev/null 2>"$TMPDIR/tampered-build-source.err"; then
@@ -2008,7 +2008,7 @@ MISMATCHED_SHELL_CONFIG="$TMPDIR/mismatched-shell.json"
 jq '.argv[1] = "--different"' "$SHELL_CONFIG" >"$MISMATCHED_SHELL_CONFIG"
 if npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
   "$ACCEPTANCE_TAP/Kandelo/metadata.json" "$ACCEPTANCE_TAP" "$BREWFILE" \
-  sidecar-tool /home/linuxbrew/.linuxbrew/bin/sidecar-tool \
+  sidecar-tool /opt/kandelo/homebrew/bin/sidecar-tool \
   "$TMPDIR/mismatched-shell-evidence.json" "$MISMATCHED_SHELL_CONFIG" \
   > /dev/null 2>"$TMPDIR/mismatched-shell.err"; then
   echo "Homebrew VFS acceptance accepted a shell config different from the composed image" >&2
@@ -2021,7 +2021,7 @@ SYMLINK_SHELL_CONFIG="$TMPDIR/symlink-shell.json"
 ln -s "$SHELL_CONFIG" "$SYMLINK_SHELL_CONFIG"
 if npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
   "$ACCEPTANCE_TAP/Kandelo/metadata.json" "$ACCEPTANCE_TAP" "$BREWFILE" \
-  sidecar-tool /home/linuxbrew/.linuxbrew/bin/sidecar-tool \
+  sidecar-tool /opt/kandelo/homebrew/bin/sidecar-tool \
   "$TMPDIR/symlink-shell-evidence.json" "$SYMLINK_SHELL_CONFIG" \
   > /dev/null 2>"$TMPDIR/symlink-shell.err"; then
   echo "Homebrew VFS acceptance accepted a symlink shell config" >&2
@@ -2038,13 +2038,13 @@ jq '.links |= map(select(.target != "bin/sidecar-tool-helper"))' \
 mv "$NO_SHELL_OWNER_LINK.tmp" "$NO_SHELL_OWNER_LINK"
 if npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
   "$NO_SHELL_OWNER_TAP/Kandelo/metadata.json" "$NO_SHELL_OWNER_TAP" "$BREWFILE" \
-  sidecar-tool /home/linuxbrew/.linuxbrew/bin/sidecar-tool \
+  sidecar-tool /opt/kandelo/homebrew/bin/sidecar-tool \
   "$TMPDIR/no-shell-owner-evidence.json" \
   > /dev/null 2>"$TMPDIR/no-shell-owner.err"; then
   echo "Homebrew VFS acceptance accepted a shell not owned by a selected bottle" >&2
   exit 1
 fi
-grep -F "default shell /home/linuxbrew/.linuxbrew/bin/sidecar-tool-helper must be linked by exactly one selected Homebrew bottle" \
+grep -F "default shell /opt/kandelo/homebrew/bin/sidecar-tool-helper must be linked by exactly one selected Homebrew bottle" \
   "$TMPDIR/no-shell-owner.err" >/dev/null
 
 DEP_ONLY_BREWFILE="$TMPDIR/dependency-only.Brewfile"
@@ -2055,7 +2055,7 @@ EOF
 if npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
   "$ACCEPTANCE_TAP/Kandelo/metadata.json" "$ACCEPTANCE_TAP" \
   "$DEP_ONLY_BREWFILE" sidecar-dep \
-  /home/linuxbrew/.linuxbrew/bin/sidecar-dep "$TMPDIR/no-edge-evidence.json" \
+  /opt/kandelo/homebrew/bin/sidecar-dep "$TMPDIR/no-edge-evidence.json" \
   > /dev/null 2>"$TMPDIR/no-edge.err"; then
   echo "Homebrew VFS acceptance accepted a Brewfile without a dependency edge" >&2
   exit 1
@@ -2072,7 +2072,7 @@ EOF
 if npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
   "$ACCEPTANCE_TAP/Kandelo/metadata.json" "$ACCEPTANCE_TAP" \
   "$UNRELATED_EDGE_BREWFILE" sidecar-dep \
-  /home/linuxbrew/.linuxbrew/bin/sidecar-dep \
+  /opt/kandelo/homebrew/bin/sidecar-dep \
   "$TMPDIR/unrelated-edge-evidence.json" \
   > /dev/null 2>"$TMPDIR/unrelated-edge.err"; then
   echo "Homebrew VFS acceptance credited an unrelated root's dependency edge" >&2
@@ -2082,7 +2082,7 @@ grep -F "selected acceptance formula must resolve at least one real package depe
   "$TMPDIR/unrelated-edge.err" >/dev/null
 if npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
   "$ACCEPTANCE_TAP/Kandelo/metadata.json" "$ACCEPTANCE_TAP" "$BREWFILE" \
-  sidecar-dep /home/linuxbrew/.linuxbrew/bin/sidecar-dep \
+  sidecar-dep /opt/kandelo/homebrew/bin/sidecar-dep \
   "$TMPDIR/non-root-evidence.json" > /dev/null 2>"$TMPDIR/non-root.err"; then
   echo "Homebrew VFS acceptance accepted a transitive package as its selected root" >&2
   exit 1
@@ -2095,7 +2095,7 @@ ln -s "$BREWFILE" "$SYMLINK_BREWFILE"
 if npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
   "$ACCEPTANCE_TAP/Kandelo/metadata.json" "$ACCEPTANCE_TAP" \
   "$SYMLINK_BREWFILE" sidecar-tool \
-  /home/linuxbrew/.linuxbrew/bin/sidecar-tool \
+  /opt/kandelo/homebrew/bin/sidecar-tool \
   "$TMPDIR/symlink-evidence.json" > /dev/null 2>"$TMPDIR/symlink.err"; then
   echo "Homebrew VFS acceptance accepted a symlink Brewfile" >&2
   exit 1
@@ -2123,7 +2123,7 @@ for link in "$NON_GHCR_TAP"/Kandelo/link/*-wasm32.json; do
 done
 if npx tsx "$TMPDIR/validate-homebrew-vfs-acceptance.ts" \
   "$NON_GHCR_TAP/Kandelo/metadata.json" "$NON_GHCR_TAP" "$BREWFILE" \
-  sidecar-tool /home/linuxbrew/.linuxbrew/bin/sidecar-tool \
+  sidecar-tool /opt/kandelo/homebrew/bin/sidecar-tool \
   "$TMPDIR/non-ghcr-evidence.json" > /dev/null 2>"$TMPDIR/non-ghcr.err"; then
   echo "Homebrew VFS acceptance accepted non-GHCR package sources" >&2
   exit 1

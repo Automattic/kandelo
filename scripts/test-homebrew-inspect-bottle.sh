@@ -90,14 +90,14 @@ with tarfile.open(
     add_file(
         archive,
         f"{root}/share/readme.txt",
-        b"fixture\n/home/linuxbrew/.linuxbrew/opt/zlib\n/opt/homebrew/opt/zlib\n",
+        b"fixture\n/opt/kandelo/homebrew/opt/zlib\n",
     )
 
     if kind in {
         "valid", "duplicate", "special", "non-utf8", "forbidden",
         "forbidden-boundary", "side-module", "side-module-late",
         "side-module-unsupported-import", "side-module-uninstrumented-fork",
-        "so-executable",
+        "so-executable", "retired-guest-prefix",
     }:
         add_link(archive, f"{root}/bin/tool", "../libexec/tool")
         add_link(archive, f"{root}/bin/tool-hard", f"{root}/libexec/tool", hard=True)
@@ -138,6 +138,12 @@ with tarfile.open(
             f"{root}/bin/bashbug",
             b"x" * split_at + forbidden_root + b"/source\n",
             0o755,
+        )
+    elif kind == "retired-guest-prefix":
+        add_file(
+            archive,
+            f"{root}/share/legacy-prefix.txt",
+            b"/home/linuxbrew/.linuxbrew/opt/tool\n",
         )
 
     if kind in {
@@ -239,8 +245,10 @@ expect_failure cycle "link cycle"
 expect_failure duplicate "repeats path"
 expect_failure non-utf8 "is not UTF-8"
 expect_failure special "unsupported type"
-expect_failure forbidden "bin/bashbug' contains forbidden build root"
-expect_failure forbidden-boundary "bin/bashbug' contains forbidden build root"
+expect_failure forbidden "bin/bashbug' contains forbidden path"
+expect_failure forbidden-boundary "bin/bashbug' contains forbidden path"
+expect_failure retired-guest-prefix \
+  "contains forbidden path '/home/linuxbrew/.linuxbrew'"
 
 make_wasm() {
   local name="$1"

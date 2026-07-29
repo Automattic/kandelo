@@ -23,8 +23,8 @@
     "bytes": 12345,
     "cache_key_sha": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
     "bottle_tag": "wasm32_kandelo",
-    "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-    "prefix": "/home/linuxbrew/.linuxbrew"
+    "cellar": "/opt/kandelo/homebrew/Cellar",
+    "prefix": "/opt/kandelo/homebrew"
   },
   "build": {
     "github_run": "https://example.invalid/kandelo-dev/homebrew-tap-core/actions/runs/1",

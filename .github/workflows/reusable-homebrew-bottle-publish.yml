@@ -665,7 +665,7 @@ jobs:
               type == "object" and keys == ["argv", "path", "version"] and
               .version == 1 and
               (.path | type == "string" and
-                test("^/home/linuxbrew/\\.linuxbrew/(bin|sbin)/[A-Za-z0-9._@%+=:-]+$") and
+                test("^/opt/kandelo/homebrew/(bin|sbin)/[A-Za-z0-9._@%+=:-]+$") and
                 utf8bytelength <= 4096) and
               (.argv | type == "array" and length > 0 and length <= 64 and
                 all(.[]; type == "string" and length > 0 and
@@ -802,7 +802,7 @@ jobs:
           [[ "$HOMEBREW_BREW_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
             echo "::error::invalid pinned Homebrew commit"; exit 2;
           }
-          brew_prefix="/home/linuxbrew/.linuxbrew"
+          brew_prefix="/opt/kandelo/homebrew"
           brew_repository="$GITHUB_WORKSPACE/homebrew-prefix/Homebrew"
           [ "$(git -C "$brew_repository" rev-parse HEAD)" = "$HOMEBREW_BREW_COMMIT" ] || {
             echo "::error::Homebrew checkout differs from the reviewed commit"; exit 2;
@@ -810,7 +810,12 @@ jobs:
           [ -z "$(git -C "$brew_repository" status --short --untracked-files=no)" ] || {
             echo "::error::reviewed Homebrew checkout has tracked modifications"; exit 2;
           }
-          mkdir -p "$brew_prefix/bin"
+          # WHY: Kandelo's guest prefix is intentionally not the runner's
+          # preinstalled Linuxbrew tree. Provision only its leaf as the
+          # workflow identity before the isolation launcher seals it.
+          sudo install -d -o root -g root -m 0755 /opt/kandelo
+          sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 \
+            "$brew_prefix" "$brew_prefix/bin"
           rm -f "$brew_prefix/bin/brew"
           ln -s "$brew_repository/bin/brew" "$brew_prefix/bin/brew"
           brew_bin="$brew_prefix/bin/brew"
@@ -839,10 +844,10 @@ jobs:
           export HOMEBREW_DEVELOPER=1
           "$brew_bin" --version
           [ "$("$brew_bin" --prefix)" = "$brew_prefix" ] || {
-            echo "::error::Homebrew prefix is not the canonical Linuxbrew prefix"; exit 2;
+            echo "::error::Homebrew prefix is not the canonical Kandelo prefix"; exit 2;
           }
           [ "$("$brew_bin" --cellar)" = "$brew_prefix/Cellar" ] || {
-            echo "::error::Homebrew cellar is not the canonical Linuxbrew cellar"; exit 2;
+            echo "::error::Homebrew cellar is not the canonical Kandelo cellar"; exit 2;
           }
           [ "$(git -C "$brew_repository" rev-parse HEAD)" = "$HOMEBREW_BREW_COMMIT" ] || {
             echo "::error::Homebrew moved during activation"; exit 2;
@@ -2211,7 +2216,7 @@ jobs:
           [[ "$HOMEBREW_BREW_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
             echo "::error::invalid pinned Homebrew commit"; exit 2;
           }
-          brew_prefix="/home/linuxbrew/.linuxbrew"
+          brew_prefix="/opt/kandelo/homebrew"
           brew_repository="$GITHUB_WORKSPACE/homebrew-prefix/Homebrew"
           [ "$(git -C "$brew_repository" rev-parse HEAD)" = "$HOMEBREW_BREW_COMMIT" ] || {
             echo "::error::Homebrew verifier checkout differs from the reviewed commit"; exit 2;
@@ -2219,7 +2224,11 @@ jobs:
           [ -z "$(git -C "$brew_repository" status --short --untracked-files=no)" ] || {
             echo "::error::reviewed Homebrew verifier checkout has tracked modifications"; exit 2;
           }
-          mkdir -p "$brew_prefix/bin"
+          # WHY: verification must reconstruct the same guest prefix without
+          # depending on the runner's unrelated native Linuxbrew installation.
+          sudo install -d -o root -g root -m 0755 /opt/kandelo
+          sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 \
+            "$brew_prefix" "$brew_prefix/bin"
           rm -f "$brew_prefix/bin/brew"
           ln -s "$brew_repository/bin/brew" "$brew_prefix/bin/brew"
           brew_bin="$brew_prefix/bin/brew"
@@ -3264,7 +3273,7 @@ jobs:
               --arg arch "$KANDELO_HOMEBREW_ARCH" \
               --arg bottle_sha256 "$KANDELO_HOMEBREW_BOTTLE_SHA256" \
               --arg bottle_url "$KANDELO_HOMEBREW_BOTTLE_URL" \
-              --arg command "/home/linuxbrew/.linuxbrew/bin/file --version" \
+              --arg command "/opt/kandelo/homebrew/bin/file --version" \
               '{schema: 1, formula: $formula, arch: $arch,
                 bottle_sha256: $bottle_sha256, bottle_url: $bottle_url,
                 runtime: "browser", engine: "chromium", status: "success",
@@ -3421,7 +3430,7 @@ jobs:
               type == "object" and keys == ["argv", "path", "version"] and
               .version == 1 and
               (.path | type == "string" and
-                test("^/home/linuxbrew/\\.linuxbrew/(bin|sbin)/[A-Za-z0-9._@%+=:-]+$") and
+                test("^/opt/kandelo/homebrew/(bin|sbin)/[A-Za-z0-9._@%+=:-]+$") and
                 utf8bytelength <= 4096) and
               (.argv | type == "array" and length > 0 and length <= 64 and
                 all(.[]; type == "string" and length > 0 and
