@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import importlib.util
 import io
@@ -1038,26 +1039,129 @@ class FormulaTestRuntimeProjectionTests(unittest.TestCase):
             "host/src/binary-resolver.ts": b"export const resolver = true;\n",
             "host/src/node-kernel-host.ts": b"export const host = true;\n",
             "host/wasm/kandelo-kernel.wasm": b"kernel\n",
-            "node_modules/@esbuild/linux-x64/bin/esbuild": b"native loader\n",
-            "node_modules/@esbuild/linux-x64/package.json": b'{"version":"1"}\n',
-            "node_modules/esbuild/package.json": b'{"name":"esbuild"}\n',
-            "node_modules/fflate/package.json": b'{"name":"fflate"}\n',
-            "node_modules/fzstd/package.json": b'{"name":"fzstd"}\n',
-            "node_modules/tsx/package.json": b'{"name":"tsx"}\n',
         }
         for relative, data in directory_files.items():
             path = source / relative
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
-            path.chmod(
-                0o755
-                if relative.endswith("/esbuild")
-                else 0o644
+            path.chmod(0o644)
+
+        lock_packages: dict[str, dict[str, object]] = {
+            "": {"name": "fixture", "version": "1.0.0"}
+        }
+
+        def add_node_module(
+            name: str,
+            *,
+            dependencies: dict[str, str] | None = None,
+            optional: dict[str, str] | None = None,
+            files: dict[str, bytes] | None = None,
+        ) -> Path:
+            relative = Path(
+                "node_modules",
+                *runner.npm_package_name_parts(name, label="fixture package"),
             )
+            package_root = source / relative
+            package_root.mkdir(parents=True)
+            manifest = {"name": name, "version": "1.0.0"}
+            (package_root / "package.json").write_text(
+                json.dumps(manifest, sort_keys=True) + "\n"
+            )
+            for file_relative, data in (files or {}).items():
+                path = package_root / file_relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+                path.chmod(0o644)
+            entry: dict[str, object] = {
+                "version": "1.0.0",
+                "resolved": f"https://registry.npmjs.org/{name}/fixture.tgz",
+                "integrity": "sha512-"
+                + base64.b64encode(b"fixture" * 9 + b"x").decode(),
+            }
+            if dependencies:
+                entry["dependencies"] = dependencies
+            if optional:
+                entry["optionalDependencies"] = optional
+            lock_packages[relative.as_posix()] = entry
+            return package_root
+
+        esbuild_platform = add_node_module(
+            "@esbuild/linux-x64",
+            files={"bin/esbuild": b"native loader\n"},
+        )
+        add_node_module(
+            "esbuild",
+            optional={"@esbuild/linux-x64": "1.0.0"},
+        )
+        add_node_module("fflate")
+        add_node_module("fzstd")
+        add_node_module("tsx", dependencies={"esbuild": "1.0.0"})
+        add_node_module("detect-libc")
+        add_node_module("lightningcss-linux-x64-gnu")
+        add_node_module(
+            "lightningcss",
+            dependencies={"detect-libc": "1.0.0"},
+            optional={"lightningcss-linux-x64-gnu": "1.0.0"},
+        )
+        add_node_module("picomatch")
+        add_node_module("nanoid")
+        add_node_module("picocolors")
+        add_node_module("source-map-js")
+        add_node_module(
+            "postcss",
+            dependencies={
+                "nanoid": "1.0.0",
+                "picocolors": "1.0.0",
+                "source-map-js": "1.0.0",
+            },
+        )
+        add_node_module("@oxc-project/types")
+        add_node_module("@rolldown/pluginutils")
+        add_node_module("@rolldown/binding-linux-x64-gnu")
+        add_node_module(
+            "rolldown",
+            dependencies={
+                "@oxc-project/types": "1.0.0",
+                "@rolldown/pluginutils": "1.0.0",
+            },
+            optional={"@rolldown/binding-linux-x64-gnu": "1.0.0"},
+        )
+        add_node_module("fdir")
+        add_node_module(
+            "tinyglobby",
+            dependencies={"fdir": "1.0.0", "picomatch": "1.0.0"},
+        )
+        add_node_module(
+            "vite",
+            dependencies={
+                "lightningcss": "1.0.0",
+                "picomatch": "1.0.0",
+                "postcss": "1.0.0",
+                "rolldown": "1.0.0",
+                "tinyglobby": "1.0.0",
+            },
+            files={"bin/vite.js": b"console.log('fixture vite');\n"},
+        )
+        # A valid lock entry is not itself runtime authority. Only packages
+        # reachable from the five runner-owned roots belong in the projection.
+        add_node_module("ambient-but-locked")
+        (source / "package-lock.json").write_text(
+            json.dumps(
+                {
+                    "name": "fixture",
+                    "lockfileVersion": 3,
+                    "packages": lock_packages,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+
         esbuild_command = source / "node_modules/esbuild/bin/esbuild"
         esbuild_command.parent.mkdir()
         os.link(
-            source / "node_modules/@esbuild/linux-x64/bin/esbuild",
+            esbuild_platform / "bin/esbuild",
             esbuild_command,
         )
         generation = next(
@@ -1198,9 +1302,24 @@ class FormulaTestRuntimeProjectionTests(unittest.TestCase):
             )
             self.assertEqual(projected_esbuild.read_bytes(), b"native loader\n")
             self.assertEqual(projected_esbuild.lstat().st_nlink, 1)
+            self.assertEqual(
+                (
+                    destination / "node_modules/vite/bin/vite.js"
+                ).read_bytes(),
+                b"console.log('fixture vite');\n",
+            )
+            for dependency in (
+                "node_modules/postcss/package.json",
+                "node_modules/@rolldown/pluginutils/package.json",
+                "node_modules/@rolldown/binding-linux-x64-gnu/package.json",
+                "node_modules/lightningcss-linux-x64-gnu/package.json",
+            ):
+                self.assertTrue((destination / dependency).is_file())
             for forbidden in (
+                "package-lock.json",
                 "packages",
                 "local-binaries",
+                "node_modules/ambient-but-locked",
                 "node_modules/undeclared",
                 "target/host",
             ):
@@ -1224,6 +1343,73 @@ class FormulaTestRuntimeProjectionTests(unittest.TestCase):
                     ),
                     digest,
                 )
+
+    def test_rejects_a_missing_locked_vite_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source, platform, checker, protected = self.make_fixture(root)
+            shutil.rmtree(source / "node_modules/postcss")
+
+            with self.assertRaisesRegex(
+                runner.RunnerError, "locked but not installed"
+            ):
+                self.stage(root, source, platform, checker, protected)
+
+            self.assertFalse((protected / "formula-test-runtime").exists())
+
+    def test_rejects_an_installed_package_that_differs_from_the_lock(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source, platform, checker, protected = self.make_fixture(root)
+            (source / "node_modules/vite/package.json").write_text(
+                '{"name":"vite","version":"2.0.0"}\n'
+            )
+
+            with self.assertRaisesRegex(
+                runner.RunnerError, "differs from package-lock"
+            ):
+                self.stage(root, source, platform, checker, protected)
+
+            self.assertFalse((protected / "formula-test-runtime").exists())
+
+    def test_rejects_a_symlinked_vite_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source, platform, checker, protected = self.make_fixture(root)
+            vite_cli = source / "node_modules/vite/bin/vite.js"
+            vite_cli.unlink()
+            vite_cli.symlink_to(source / "package.json")
+
+            with self.assertRaisesRegex(
+                runner.RunnerError, "unsafe symlink|Vite CLI"
+            ):
+                self.stage(root, source, platform, checker, protected)
+
+            self.assertFalse((protected / "formula-test-runtime").exists())
+
+    def test_rejects_an_unlocked_nested_package_in_the_vite_tree(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source, platform, checker, protected = self.make_fixture(root)
+            poison = (
+                source
+                / "node_modules/vite/node_modules/undeclared/package.json"
+            )
+            poison.parent.mkdir(parents=True)
+            poison.write_text(
+                '{"name":"undeclared","version":"1.0.0"}\n'
+            )
+
+            with self.assertRaisesRegex(
+                runner.RunnerError, "undeclared nested package"
+            ):
+                self.stage(root, source, platform, checker, protected)
+
+            self.assertFalse((protected / "formula-test-runtime").exists())
 
     def test_rejects_cross_projection_symlink_escape_before_publish(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1270,7 +1456,6 @@ class FormulaTestRuntimeProjectionTests(unittest.TestCase):
             source, platform, checker, protected = self.make_fixture(root)
             limits = dict(runner.FORMULA_TEST_RUNTIME_LIMITS)
             limits["max_bytes"] = 100
-            limits["max_file_bytes"] = 100
 
             with self.assertRaisesRegex(
                 runner.RunnerError, "source closure exceeds the byte limit"
@@ -1321,6 +1506,48 @@ class FormulaTestRuntimeProjectionTests(unittest.TestCase):
                 ),
                 self.assertRaisesRegex(
                     runner.RunnerError, "changed during staging"
+                ),
+            ):
+                self.stage(root, source, platform, checker, protected)
+
+            self.assertFalse((protected / "formula-test-runtime").exists())
+            self.assertEqual(
+                list(protected.glob(".formula-test-selection-*")), []
+            )
+
+    def test_rejects_late_package_lock_mutation_and_cleans_staging(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source, platform, checker, protected = self.make_fixture(root)
+            original_copy = runner.copy_projection_file
+
+            def copy_then_mutate(
+                source_file: Path,
+                destination_root: Path,
+                relative: Path,
+                limits: dict[str, int],
+                **kwargs: int,
+            ) -> tuple[bytes, os.stat_result]:
+                result = original_copy(
+                    source_file,
+                    destination_root,
+                    relative,
+                    limits,
+                    **kwargs,
+                )
+                if relative.name == "xtask":
+                    with (source / "package-lock.json").open("ab") as lock:
+                        lock.write(b" ")
+                return result
+
+            with (
+                mock.patch.object(
+                    runner, "copy_projection_file", copy_then_mutate
+                ),
+                self.assertRaisesRegex(
+                    runner.RunnerError, "npm closure changed during staging"
                 ),
             ):
                 self.stage(root, source, platform, checker, protected)

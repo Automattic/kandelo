@@ -727,6 +727,7 @@ NATIVE_INTERPRETER_EOF
       host/wasm/program-packages.json \
       node_modules/tsx/package.json node_modules/esbuild/package.json \
       node_modules/fflate/package.json node_modules/fzstd/package.json \
+      node_modules/vite/bin/vite.js node_modules/vite/package.json \
       .ci-test-binary-cache/programs \
       binaries/programs/wasm32/fixture.wasm; do
       [ -r "$runtime_root/$required" ]
@@ -750,6 +751,14 @@ NATIVE_INTERPRETER_EOF
     case "$runtime_output" in
       *"Usage: npx tsx examples/run-example.ts <name>"*) ;;
       *) printf '%s\n' "$runtime_output" >&2; exit 1 ;;
+    esac
+    vite_version="$(
+      cd "$runtime_root" &&
+        "$HOMEBREW_KANDELO_NODE" node_modules/vite/bin/vite.js --version
+    )"
+    case "$vite_version" in
+      vite/*) ;;
+      *) printf '%s\n' "$vite_version" >&2; exit 1 ;;
     esac
     ;;
   assert-primary-tap-root)
@@ -1867,14 +1876,41 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
     "$isolated_kandelo/.ci-test-binary-cache/programs/fixture" \
     "$isolated_kandelo/binaries/programs/wasm32"
   cp -a -- "$REPO_ROOT/host/src" "$isolated_kandelo/host/"
-  cp -a -- \
-    "$REPO_ROOT/node_modules/@esbuild" \
-    "$REPO_ROOT/node_modules/esbuild" \
-    "$REPO_ROOT/node_modules/fflate" \
-    "$REPO_ROOT/node_modules/fzstd" \
-    "$REPO_ROOT/node_modules/tsx" \
-    "$isolated_kandelo/node_modules/"
+  formula_test_node_modules="$(
+    PYTHONDONTWRITEBYTECODE=1 REPO_ROOT="$REPO_ROOT" python3 - <<'PY'
+import importlib.util
+import os
+from pathlib import Path
+
+root = Path(os.environ["REPO_ROOT"]).resolve()
+runner_path = root / "scripts/homebrew-tap-recipe-runner.py"
+spec = importlib.util.spec_from_file_location("recipe_runner", runner_path)
+if spec is None or spec.loader is None:
+    raise RuntimeError("could not load the tap recipe runner")
+runner = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(runner)
+selected, _, _ = runner.formula_test_node_module_projection(root)
+print("\n".join(path.as_posix() for path in selected))
+PY
+  )" || fail "could not select the locked Formula-test npm closure"
+  formula_test_node_module_paths=()
+  while IFS= read -r relative; do
+    [ -n "$relative" ] || continue
+    formula_test_node_module_paths+=("$relative")
+  done <<<"$formula_test_node_modules"
+  [ "${#formula_test_node_module_paths[@]}" -gt 0 ] ||
+    fail "locked Formula-test npm closure is empty"
+  # WHY: npm may hard-link executable shims across selected package roots.
+  # One --parents copy retains those cross-root inode relationships so the
+  # privileged stager's complete-hard-link-closure check sees production
+  # source topology rather than a test fixture that accidentally split it.
+  (
+    cd "$REPO_ROOT"
+    cp -a --parents -- \
+      "${formula_test_node_module_paths[@]}" "$isolated_kandelo"
+  ) || fail "could not copy the locked Formula-test npm closure"
   cp -- "$REPO_ROOT/Cargo.toml" "$REPO_ROOT/package.json" \
+    "$REPO_ROOT/package-lock.json" \
     "$isolated_kandelo/"
   cp -- \
     "$REPO_ROOT/examples/run-example.ts" \
@@ -2470,6 +2506,8 @@ EOF
     [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a' \
       "$protected_formula_test_root")" = "0:0:555" ] &&
     [ -f "$protected_formula_test_root/node_modules/tsx/package.json" ] &&
+    [ -f "$protected_formula_test_root/node_modules/vite/bin/vite.js" ] &&
+    [ ! -e "$protected_formula_test_root/package-lock.json" ] &&
     [ ! -e "$protected_formula_test_root/packages" ] &&
     [ ! -e "$protected_formula_test_root/local-binaries" ] ||
     fail "isolated launcher did not stage the closed Formula test runtime"
