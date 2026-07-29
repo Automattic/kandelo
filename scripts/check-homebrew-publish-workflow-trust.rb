@@ -3293,6 +3293,17 @@ def check_publisher(workflow)
     check(native_api_preflight.include?(fragment),
           "native Homebrew API preflight lacks #{fragment}")
   end
+  native_bounded_environment = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-native-bounded-environment.sh")
+  )
+  [
+    "api-client|api-compatibility-lock|api-oracle",
+    '"HOMEBREW_FORCE_LIBC_FORMULA=1"',
+    '"HOMEBREW_FORCE_COMPILER_FORMULA=1"',
+  ].each do |fragment|
+    check(native_bounded_environment.include?(fragment),
+          "native Homebrew bounded environment lacks #{fragment}")
+  end
   native_lock_updater = File.read(
     File.join(REPO_ROOT, "scripts/update-homebrew-native-compatibility-lock.sh")
   )
@@ -3312,6 +3323,7 @@ def check_publisher(workflow)
     '"$SOURCE_AFTER"',
     'cmp -s "$SOURCE_BEFORE" "$SOURCE_AFTER"',
     "homebrew_native_bounded_run",
+    "api-compatibility-lock",
     "deps --union --include-implicit --full-name --formula",
   ].each do |fragment|
     check(native_lock_updater.include?(fragment),
@@ -3362,6 +3374,7 @@ def check_publisher(workflow)
     "signed source disagreement",
     "API symlink",
     "sealed API mutation",
+    "CI test-owner exception",
     "occupied attestation output",
     "zero-root preflight fetched or invented signed API state",
     "CI fallback without signed API state",
@@ -3381,6 +3394,7 @@ def check_publisher(workflow)
     "unreviewed empty ignored Brew directory",
     "direct Brew prefix lock leakage",
     "isolated Brew prefix",
+    "compatibility lock did not force its conservative host closure",
     "portable Ruby attestation",
     "escaping portable Ruby symlink",
     "wrong Brew commit",
@@ -3411,6 +3425,21 @@ def check_publisher(workflow)
         compatibility_lock["homebrew_commit"] == BREW_COMMIT &&
         compatibility_lock["formulae"].is_a?(Hash),
         "native Homebrew compatibility lock envelope changed")
+  conservative_linux_bootstrap = %w[
+    binutils
+    gcc
+    glibc
+    gmp
+    isl
+    libmpc
+    linux-headers@6.8
+    mpfr
+  ]
+  bootstrap_is_complete = conservative_linux_bootstrap.all? do |name|
+    compatibility_lock["formulae"].key?(name)
+  end
+  check(bootstrap_is_complete,
+        "native Homebrew lock omits the conservative Linux bootstrap")
   [
     "homebrew_native_contract_select_api_source()",
     "homebrew_native_contract_install()",

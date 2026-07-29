@@ -191,6 +191,16 @@ internal install plan, Linux variation, or bottle fails before
 installation. Prefix-expanded caveat and service presentation fields
 are intentionally excluded.
 
+The reviewed lock deliberately uses cf5's forced libc and compiler
+compatibility switches while deriving that closure. Exact cf5 otherwise
+decides whether `glibc` and `gcc` are implicit dependencies by comparing
+the runner's system glibc and libstdc++ with Homebrew's CI versions.
+GitHub can roll `ubuntu-latest` between two such capability states. The
+forced lock therefore contains the conservative GCC/glibc bootstrap tree,
+while each publisher admits and installs only the subset cf5 selects for
+its actual host. This is a compatibility superset, not permission to
+install an undeclared native tool.
+
 After every direct root, the publisher audits the native Cellar. Every
 installed keg must remain inside the admitted closure, every requested
 root must exist, and every receipt must identify a poured

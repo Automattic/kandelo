@@ -24,9 +24,9 @@ homebrew_native_bounded_run() {
     }
   done
   case "$mode" in
-    api-client|api-oracle) ;;
+    api-client|api-compatibility-lock|api-oracle) ;;
     *)
-      echo "homebrew_native_bounded_run: mode must be api-client or api-oracle" >&2
+      echo "homebrew_native_bounded_run: invalid execution mode" >&2
       return 2
       ;;
   esac
@@ -69,6 +69,16 @@ homebrew_native_bounded_run() {
     # resolution and installation deliberately omit this switch so exact cf5
     # continues to use the signed API rather than a Git checkout.
     clean_env+=("HOMEBREW_NO_INSTALL_FROM_API=1")
+  elif [ "$mode" = api-compatibility-lock ]; then
+    # WHY: cf5 derives Linux's implicit GCC/glibc bootstrap closure from the
+    # runner's system glibc and libstdc++. `ubuntu-latest` image rollouts can
+    # therefore make the same reviewed API produce either side of that
+    # threshold. Lock the conservative projection so one reviewed artifact
+    # admits both publisher-equivalent host capability states.
+    clean_env+=(
+      "HOMEBREW_FORCE_LIBC_FORMULA=1"
+      "HOMEBREW_FORCE_COMPILER_FORMULA=1"
+    )
   fi
 
   # WHY: Homebrew behavior can be redirected by dozens of inherited

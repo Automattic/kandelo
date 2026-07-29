@@ -2,6 +2,12 @@
 # Adversarial fixtures for the signed native Homebrew API contract.
 set -euo pipefail
 
+# WHY: this process owns user-written fixture caches, not a production
+# publisher cache. CI's inherited marker must not make ordinary fixtures
+# pretend to be root-owned; the dedicated adversarial case below restores the
+# marker and proves that production cannot use the fixture-owner exception.
+unset GITHUB_ACTIONS
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 ORACLE="$SCRIPT_DIR/homebrew-native-api-contract.rb"
@@ -248,7 +254,10 @@ RUBY
 }
 
 oracle() {
-  env \
+  # The production contract deliberately ignores the fixture-owner exception
+  # in GitHub Actions. This test process is not a publisher realm, so remove
+  # the inherited CI marker explicitly instead of weakening the oracle.
+  env -u GITHUB_ACTIONS \
     HOMEBREW_KANDELO_NATIVE_CONTRACT_TESTING=1 \
     KANDELO_TEST_API_ROOT="$KANDELO_TEST_API_ROOT" \
     KANDELO_TEST_BREW_COMMIT="$COMMIT" \
@@ -288,6 +297,16 @@ create_api \
   "$API_A" "$CORE_HEAD" "$CORE_HEAD" \
   public-stable public-unused-a internal-stable internal-unused-a /prefix/a
 prime_and_seal "$API_A" "$PRIME_A"
+expect_failure "CI test-owner exception" \
+  "sealed API path is not owned by the trusted identity" \
+  env \
+    GITHUB_ACTIONS=true \
+    HOMEBREW_KANDELO_NATIVE_CONTRACT_TESTING=1 \
+    KANDELO_TEST_API_ROOT="$API_A" \
+    KANDELO_TEST_BREW_COMMIT="$COMMIT" \
+    KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
+    KANDELO_TEST_CELLAR="$CELLAR" \
+    ruby -I"$STUB_ROOT" "$ORACLE" recheck "$COMMIT" "$PRIME_A"
 KANDELO_TEST_API_ROOT="$API_A" oracle generate-lock \
   "$COMMIT" "$POLICY" "$ROOTS" "$CLOSURE" "$PRIME_A" "$LOCK_A"
 jq -e '
@@ -563,9 +582,18 @@ shift 2
 case "$expected_api_mode" in
   client)
     [ -z "${HOMEBREW_NO_INSTALL_FROM_API+x}" ] || exit 91
+    [ -z "${HOMEBREW_FORCE_LIBC_FORMULA+x}" ] || exit 89
+    [ -z "${HOMEBREW_FORCE_COMPILER_FORMULA+x}" ] || exit 88
+    ;;
+  compatibility-lock)
+    [ -z "${HOMEBREW_NO_INSTALL_FROM_API+x}" ] || exit 91
+    [ "${HOMEBREW_FORCE_LIBC_FORMULA:-}" = 1 ] || exit 89
+    [ "${HOMEBREW_FORCE_COMPILER_FORMULA:-}" = 1 ] || exit 88
     ;;
   oracle)
     [ "${HOMEBREW_NO_INSTALL_FROM_API:-}" = 1 ] || exit 91
+    [ -z "${HOMEBREW_FORCE_LIBC_FORMULA+x}" ] || exit 89
+    [ -z "${HOMEBREW_FORCE_COMPILER_FORMULA+x}" ] || exit 88
     ;;
   *) exit 90 ;;
 esac
@@ -592,6 +620,8 @@ env \
   HOMEBREW_BOTTLE_DOMAIN=https://bottles.poison.invalid \
   HOMEBREW_CURL_PATH=/bin/false \
   HOMEBREW_GIT_PATH=/bin/false \
+  HOMEBREW_FORCE_LIBC_FORMULA=caller-poison \
+  HOMEBREW_FORCE_COMPILER_FORMULA=caller-poison \
   RUBYOPT=-rdoes-not-exist \
   BUNDLE_GEMFILE=/does/not/exist \
   KANDELO_NATIVE_ENV_POISON=present \
@@ -612,11 +642,27 @@ grep -Fx "home=$BOUNDED_STATE/home" "$BOUNDED_RECORD" >/dev/null &&
   grep -Fx 'args=deps homebrew/core/root' "$BOUNDED_RECORD" >/dev/null ||
   fail "updater did not run Brew through its bounded signed-API environment"
 env \
+  HOMEBREW_FORCE_LIBC_FORMULA=caller-poison \
+  HOMEBREW_FORCE_COMPILER_FORMULA=caller-poison \
+  bash -c '
+    set -euo pipefail
+    . "$1"
+    homebrew_native_bounded_run \
+      "$2" "$3" "$4" api-compatibility-lock \
+      "$5" compatibility-lock deps homebrew/core/root
+  ' bash "$BOUNDED_ENV" "$BOUNDED_BREW" \
+    "$BOUNDED_CACHE" "$BOUNDED_STATE" \
+    "$BOUNDED_RECORD"
+grep -Fx 'args=deps homebrew/core/root' "$BOUNDED_RECORD" >/dev/null ||
+  fail "compatibility lock did not force its conservative host closure"
+env \
   HOMEBREW_NO_INSTALL_FROM_API=caller-poison \
   HOMEBREW_API_DOMAIN=https://poison.invalid \
   HOMEBREW_BOTTLE_DOMAIN=https://bottles.poison.invalid \
   HOMEBREW_CURL_PATH=/bin/false \
   HOMEBREW_GIT_PATH=/bin/false \
+  HOMEBREW_FORCE_LIBC_FORMULA=caller-poison \
+  HOMEBREW_FORCE_COMPILER_FORMULA=caller-poison \
   RUBYOPT=-rdoes-not-exist \
   BUNDLE_GEMFILE=/does/not/exist \
   KANDELO_NATIVE_ENV_POISON=present \

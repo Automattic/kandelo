@@ -105,7 +105,7 @@ while IFS= read -r name; do
   formula_refs+=("homebrew/core/$name")
 done <"$ROOTS"
 homebrew_native_bounded_run \
-  "$NATIVE_BREW" "$CACHE" "$STATE" api-client \
+  "$NATIVE_BREW" "$CACHE" "$STATE" api-compatibility-lock \
   deps --union --include-implicit --full-name --formula \
   "${formula_refs[@]}" >"$RAW"
 LC_ALL=C sort -u "$ROOTS" "$RAW" >"$CLOSURE"

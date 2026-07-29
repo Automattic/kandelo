@@ -12733,7 +12733,8 @@
           "ruby@4.0"
         ],
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "77a98c7e7518d309c5c54d6ee3aa25d94db38f5ce04d4d9a51161a0ce448ea77",
+        "bottle_checksum": "995907c4734f47bfc56336ddcd77927f6ee9a6e960291b06e4e97fdc00c5586b",
+        "bottle_rebuild": 1,
         "caveats": "By default, binaries installed by gem will be placed into:\n  $HOMEBREW_PREFIX/lib/ruby/gems/4.0.0/bin\n\nYou may want to add this to your PATH.\n",
         "desc": "Powerful, clean, object-oriented scripting language",
         "executables": [
@@ -12798,7 +12799,7 @@
             "type": "run"
           }
         ],
-        "ruby_source_checksum": "941deb378e0d604e7526729034f7101fd4daf3ded07387d500c360292e748846",
+        "ruby_source_checksum": "3de1e2ed6391702cdff5eb01b996abb5c4f8370b3361cac8a30cd39a7256a32d",
         "stable_checksum": "837d299e8f7ddf2be31a229a7a7e019d354979825117989acb3b32b1a9be262a",
         "stable_dependencies": [
           "libyaml",
@@ -12836,7 +12837,8 @@
           "ruby@4.0"
         ],
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "77a98c7e7518d309c5c54d6ee3aa25d94db38f5ce04d4d9a51161a0ce448ea77",
+        "bottle_checksum": "995907c4734f47bfc56336ddcd77927f6ee9a6e960291b06e4e97fdc00c5586b",
+        "bottle_rebuild": 1,
         "desc": "Powerful, clean, object-oriented scripting language",
         "executables": [
           "bundle",
@@ -12900,7 +12902,7 @@
             "type": "run"
           }
         ],
-        "ruby_source_checksum": "941deb378e0d604e7526729034f7101fd4daf3ded07387d500c360292e748846",
+        "ruby_source_checksum": "3de1e2ed6391702cdff5eb01b996abb5c4f8370b3361cac8a30cd39a7256a32d",
         "stable_checksum": "837d299e8f7ddf2be31a229a7a7e019d354979825117989acb3b32b1a9be262a",
         "stable_dependencies": [
           "libyaml",
