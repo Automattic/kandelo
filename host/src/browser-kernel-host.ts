@@ -194,8 +194,15 @@ export class BrowserKernel {
     number,
     { generation: number; memory: WebAssembly.Memory }
   >();
-  /** Highest framebuffer execution generation observed for each PID. */
-  private fbGenerationByPid = new Map<number, number>();
+  /**
+   * Highest framebuffer execution generation observed for each PID.
+   * `released` is a short-lived tombstone that rejects a same-generation bind
+   * until the ACK-ordered fb_forget_generation marker arrives.
+   */
+  private fbGenerationByPid = new Map<
+    number,
+    { generation: number; released: boolean }
+  >();
   /** PTY output that arrived before the main thread registered a callback —
    * happens when `boot()` is awaited (process is running) before
    * PtyTerminal calls onPtyOutput. Drained when a callback registers. */
@@ -1277,13 +1284,25 @@ export class BrowserKernel {
         this.options.onListenTcp?.(msg.pid, msg.fd, msg.port);
         break;
       case "fb_bind":
-        if (
-          (this.fbGenerationByPid.get(msg.pid) ?? -1)
-          > msg.generation
-        ) {
-          break;
+        {
+          const observed = this.fbGenerationByPid.get(msg.pid);
+          if (
+            observed
+            && (
+              observed.generation > msg.generation
+              || (
+                observed.generation === msg.generation
+                && observed.released
+              )
+            )
+          ) {
+            break;
+          }
         }
-        this.fbGenerationByPid.set(msg.pid, msg.generation);
+        this.fbGenerationByPid.set(msg.pid, {
+          generation: msg.generation,
+          released: false,
+        });
         this.fbMemoryByPid.set(msg.pid, {
           generation: msg.generation,
           memory: msg.memory,
@@ -1299,7 +1318,7 @@ export class BrowserKernel {
         });
         break;
       case "fb_unbind":
-        this.releaseProcessFramebuffer(msg.pid, msg.generation);
+        this.unbindProcessFramebuffer(msg.pid, msg.generation);
         break;
       case "fb_rebind_memory": {
         const binding = this.fbMemoryByPid.get(msg.pid);
@@ -1329,6 +1348,12 @@ export class BrowserKernel {
           requestId: msg.requestId,
         });
         break;
+      case "fb_forget_generation":
+        this.forgetReleasedFramebufferGeneration(
+          msg.pid,
+          msg.generation,
+        );
+        break;
       case "lazy_download":
         this.emitLazyDownload(msg.event);
         break;
@@ -1349,28 +1374,42 @@ export class BrowserKernel {
   /**
    * Return the wasm `Memory` for the framebuffer-bound process. Used by
    * the canvas renderer to build typed-array views over the bound
-   * region.
+   * region. A caller that retains this wrapper becomes an owner outside
+   * BrowserKernel's release-acknowledgement contract.
    */
   getProcessMemory(pid: number): WebAssembly.Memory | undefined {
     return this.fbMemoryByPid.get(pid)?.memory;
   }
 
-  private releaseProcessFramebuffer(pid: number, generation?: number): void {
+  private unbindProcessFramebuffer(pid: number, generation: number): void {
     const binding = this.fbMemoryByPid.get(pid);
-    if (generation !== undefined) {
-      this.fbGenerationByPid.set(
-        pid,
-        Math.max(generation, this.fbGenerationByPid.get(pid) ?? -1),
-      );
-    }
-    if (
-      binding
-      && generation !== undefined
-      && binding.generation !== generation
-    ) {
-      return;
-    }
+    if (binding && binding.generation !== generation) return;
     this.fbMemoryByPid.delete(pid);
     this.framebuffers.unbind(pid);
+  }
+
+  private releaseProcessFramebuffer(pid: number, generation: number): void {
+    const observed = this.fbGenerationByPid.get(pid);
+    if (!observed || observed.generation <= generation) {
+      this.fbGenerationByPid.set(pid, {
+        generation,
+        released: true,
+      });
+    }
+    this.unbindProcessFramebuffer(pid, generation);
+  }
+
+  private forgetReleasedFramebufferGeneration(
+    pid: number,
+    generation: number,
+  ): void {
+    const observed = this.fbGenerationByPid.get(pid);
+    if (
+      observed?.generation === generation
+      && observed.released
+      && this.fbMemoryByPid.get(pid)?.generation !== generation
+    ) {
+      this.fbGenerationByPid.delete(pid);
+    }
   }
 }
