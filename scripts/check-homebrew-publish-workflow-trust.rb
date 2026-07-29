@@ -2912,6 +2912,33 @@ def check_publisher(workflow)
   )
   check(provenance_capture && clean_provenance_root,
         "reviewed bottle verifier captures provenance from its reconstructed dirty tap")
+  formula_test_contract_index = bottle_verifier.index(
+    "--bottle-test-contract-json"
+  )
+  formula_test_index = bottle_verifier.index(
+    'run_brew_logged "$BREW_BIN" test "$FORMULA_REF"'
+  )
+  formula_test_evidence_index = bottle_verifier.index(
+    'case "$FORMULA_TEST_CONTRACT" in', formula_test_index || 0
+  )
+  runtime_evidence_capture_index = bottle_verifier.index(
+    'homebrew-bottle-runtime-evidence.py" capture'
+  )
+  [
+    "node|support-data",
+    "brew test did not emit Node execution evidence",
+    "support-data brew test unexpectedly emitted Node execution evidence",
+    '[ -L "$HOMEBREW_KANDELO_NODE_RECEIPT_PATH" ]',
+  ].each do |fragment|
+    check(bottle_verifier.include?(fragment),
+          "reviewed bottle verifier weakens typed Formula test evidence: #{fragment}")
+  end
+  check(formula_test_contract_index && formula_test_index &&
+        formula_test_evidence_index && runtime_evidence_capture_index &&
+        formula_test_contract_index < formula_test_index &&
+        formula_test_index < formula_test_evidence_index &&
+        formula_test_evidence_index < runtime_evidence_capture_index,
+        "reviewed bottle verifier derives or checks its static test contract out of order")
   check(!bottle_verifier.include?('SYSROOT_BUILD_ROOT="${KANDELO_ROOT') &&
         !bottle_verifier.include?('SYSROOT_BUILD_ROOT="$KANDELO_ROOT"'),
         "reviewed bottle verifier falls back to the pristine source checkout for its sysroot")
@@ -4577,6 +4604,17 @@ def check_publisher(workflow)
           "publisher runtime evidence drops the clean dependency tap root: #{fragment}")
   end
   [
+    '"--bottle-test-contract-json"',
+    '"contract": "support-data"',
+    '"runtime": "homebrew"',
+    '"schema": 3',
+    "legacy runtime evidence cannot satisfy a support-data test contract",
+    "support-data Formula test unexpectedly emitted Node execution evidence",
+  ].each do |fragment|
+    check(runtime_evidence.include?(fragment),
+          "publisher runtime evidence weakens typed Formula tests: #{fragment}")
+  end
+  [
     "contexts = resolved_tap_contexts(args)",
     "context = contexts.get(dependency_tap)",
     "if context is None:",
@@ -5109,6 +5147,15 @@ def check_publisher(workflow)
   check_sidecar_sysroot_binding(verifier_source, fingerprint_source)
   check(verifier_source.include?('--dependency-tap-root "$FORMULA_SOURCE_ROOT"'),
         "sidecar generator validates dependency provenance from its reconstructed dirty tap")
+  [
+    'test_contract == "support-data"',
+    "support-data Formulae require a separate guest lifecycle gate",
+    '"name": "support_data_test"',
+    "runtime_support =",
+  ].each do |fragment|
+    check(verifier_source.include?(fragment),
+          "sidecar generator weakens support-data runtime claims: #{fragment}")
+  end
   check(verifier_source.include?('KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON') &&
         verifier_source.include?('forbidden_roots = json.loads') &&
         verifier_source.include?('inspection_command.extend(("--forbidden-root", forbidden_root))'),

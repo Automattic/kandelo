@@ -1831,7 +1831,27 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    independent pours to produce byte-identical receipts. The target cache then
    starts empty, source fallback is
    forbidden, and Homebrew itself must fetch, force-pour, inspect, and test the
-   exact public bottle. For a GitHub Container Registry (GHCR) bottle, Homebrew
+   exact public bottle. An executable Formula uses the default bottle-test
+   contract: its `brew test` must emit a receipt proving execution through the
+   Kandelo Node launcher. A Formula whose payload is only support data may
+   instead contain this one exact static declaration:
+
+   ```ruby
+   KANDELO_BOTTLE_TEST_CONTRACT = "support-data".freeze
+   ```
+
+   The verifier reads that declaration without evaluating Formula Ruby. Its
+   `brew test` must complete the reviewed installed-byte assertions and must
+   not emit an incidental Node receipt. Runtime-evidence schema 3 records the
+   selected Formula source digest and the exact typed test contract. The
+   resulting bottle sidecar has no declared Node or browser runtime support;
+   the support-data test cannot be used as executable compatibility evidence.
+   For `homebrew-bootstrap`, real execution with Ruby remains the separate
+   Node and Chromium guest-lifecycle gate before in-guest `brew` is exposed.
+   This narrow declaration describes the bottle test only; it does not weaken
+   that later product acceptance.
+
+   For a GitHub Container Registry (GHCR) bottle, Homebrew
    normally logs the version/rebuild manifest endpoint that it fetches, such as
    `.../zlib/manifests/1.3.1_3`, rather than the selected layer's digest URL.
    Runtime evidence accepts a fetch action for either that exact expected

@@ -53,6 +53,86 @@ jq -e '
   ]
 ' <<<"$declarations" >/dev/null
 
+node_test_contract="$(
+  ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core root \
+    --bottle-test-contract-json
+)"
+root_formula_sha="$(shasum -a 256 "$TAP_ROOT/Formula/root.rb" | awk '{print $1}')"
+jq -e --arg sha "$root_formula_sha" '
+  keys == [
+    "contract", "formula", "formula_sha256", "full_name", "schema", "tap"
+  ] and
+  .schema == 1 and
+  .tap == "kandelo-dev/tap-core" and
+  .formula == "root" and
+  .full_name == "kandelo-dev/tap-core/root" and
+  .formula_sha256 == $sha and
+  .contract == "node"
+' <<<"$node_test_contract" >/dev/null
+
+cat >"$TAP_ROOT/Formula/support-data.rb" <<'RUBY'
+class SupportData < Formula
+  KANDELO_BOTTLE_TEST_CONTRACT = "support-data".freeze
+end
+RUBY
+support_data_test_contract="$(
+  ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core support-data \
+    --bottle-test-contract-json
+)"
+support_data_formula_sha="$(
+  shasum -a 256 "$TAP_ROOT/Formula/support-data.rb" | awk '{print $1}'
+)"
+jq -e --arg sha "$support_data_formula_sha" '
+  .schema == 1 and
+  .formula_sha256 == $sha and
+  .contract == "support-data"
+' <<<"$support_data_test_contract" >/dev/null
+
+for invalid_marker in \
+  '  KANDELO_BOTTLE_TEST_CONTRACT = "support-data"' \
+  '  KANDELO_BOTTLE_TEST_CONTRACT = "node".freeze'; do
+  {
+    printf 'class SupportData < Formula\n'
+    printf '%s\n' "$invalid_marker"
+    printf 'end\n'
+  } >"$TAP_ROOT/Formula/support-data.rb"
+  if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core support-data \
+      --bottle-test-contract-json >"$TMP_ROOT/test-contract.out" \
+      2>"$TMP_ROOT/test-contract.err"; then
+    echo "test-homebrew-formula-runtime-closure.sh: accepted noncanonical bottle test contract" >&2
+    exit 1
+  fi
+  grep -F 'Formula bottle test contract must be one canonical support-data constant' \
+  "$TMP_ROOT/test-contract.err" >/dev/null
+done
+
+cat >"$TAP_ROOT/Formula/support-data.rb" <<'RUBY'
+class SupportData < Formula
+  KANDELO_BOTTLE_TEST_CONTRACT = ENV.fetch("CONTRACT")
+end
+RUBY
+if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core support-data \
+    --bottle-test-contract-json >"$TMP_ROOT/test-contract.out" \
+    2>"$TMP_ROOT/test-contract.err"; then
+  echo "test-homebrew-formula-runtime-closure.sh: accepted dynamic bottle test contract" >&2
+  exit 1
+fi
+
+cat >"$TAP_ROOT/Formula/support-data.rb" <<'RUBY'
+class SupportData < Formula
+  KANDELO_BOTTLE_TEST_CONTRACT = "support-data".freeze
+  KANDELO_BOTTLE_TEST_CONTRACT = "support-data".freeze
+end
+RUBY
+if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core support-data \
+    --bottle-test-contract-json >"$TMP_ROOT/test-contract.out" \
+    2>"$TMP_ROOT/test-contract.err"; then
+  echo "test-homebrew-formula-runtime-closure.sh: accepted duplicate bottle test contract" >&2
+  exit 1
+fi
+grep -F 'Formula bottle test contract must be one canonical support-data constant' \
+  "$TMP_ROOT/test-contract.err" >/dev/null
+
 cat >"$TAP_ROOT/Formula/host-plan.rb" <<'RUBY'
 class HostPlan < Formula
   depends_on "python@3.14" => :build

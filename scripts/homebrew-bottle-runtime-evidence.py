@@ -497,6 +497,96 @@ def node_evidence(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def formula_test_contract(args: argparse.Namespace) -> dict[str, str | int]:
+    formula_path = pathlib.Path(args.tap_root) / "Formula" / f"{args.formula}.rb"
+    regular_file(formula_path, "selected Formula", MAX_JSON_BYTES)
+    parser = pathlib.Path(__file__).with_name(
+        "homebrew-formula-runtime-closure.rb"
+    )
+    try:
+        result = subprocess.run(
+            [
+                "ruby",
+                str(parser),
+                args.tap_root,
+                normalized_tap_name(args),
+                args.formula,
+                "--bottle-test-contract-json",
+            ],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        fail(f"cannot inspect the static Formula test contract: {error}")
+    if len(result.stdout) > MAX_JSON_BYTES or len(result.stderr) > MAX_JSON_BYTES:
+        fail("static Formula test contract output exceeds its byte limit")
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace")[:4_096]
+        fail(f"static Formula test contract inspection failed: {detail}")
+    try:
+        document = json.loads(result.stdout.decode("utf-8", errors="strict"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        fail(f"static Formula test contract is not UTF-8 JSON: {error}")
+    contract = exact_keys(
+        document,
+        {
+            "contract",
+            "formula",
+            "formula_sha256",
+            "full_name",
+            "schema",
+            "tap",
+        },
+        "static Formula test contract",
+    )
+    expected_tap = normalized_tap_name(args)
+    if (
+        contract["schema"] != 1
+        or contract["tap"] != expected_tap
+        or contract["formula"] != args.formula
+        or contract["full_name"] != f"{expected_tap}/{args.formula}"
+    ):
+        fail("static Formula test contract identity does not match")
+    if contract["contract"] not in ("node", "support-data"):
+        fail("static Formula test contract has an unsupported kind")
+    formula_sha256 = require_string(
+        contract["formula_sha256"], "static Formula test contract SHA-256", SHA256
+    )
+    if formula_sha256 != sha256_file(formula_path):
+        fail("static Formula test contract digest differs from the selected Formula")
+    return contract
+
+
+def formula_test_evidence(
+    args: argparse.Namespace, contract: dict[str, str | int]
+) -> dict[str, Any]:
+    kind = contract["contract"]
+    if kind == "node":
+        return {
+            "contract": "node",
+            "formula_sha256": contract["formula_sha256"],
+            **node_evidence(args),
+        }
+
+    node_receipt = pathlib.Path(args.node_receipt)
+    # WHY: support-data tests prove their installed byte contract through the
+    # reviewed Formula assertions. Accepting an incidental Node receipt here
+    # would blur that narrower claim into executable runtime compatibility.
+    if node_receipt.exists() or node_receipt.is_symlink():
+        fail("support-data Formula test unexpectedly emitted Node execution evidence")
+    return {
+        "argv": ["test", f"{normalized_tap_name(args)}/{args.formula}"],
+        "contract": "support-data",
+        "formula_sha256": contract["formula_sha256"],
+        "launcher": "brew",
+        "runtime": "homebrew",
+        "status": "success",
+    }
+
+
 def selection_evidence(args: argparse.Namespace) -> dict[str, Any]:
     receipt = exact_keys(
         load_json(pathlib.Path(args.selection_receipt), "selected bottle receipt"),
@@ -532,6 +622,7 @@ def build_document(args: argparse.Namespace) -> dict[str, Any]:
     validate_formula_info(args, version, tag_name, rebuild)
     dependencies = validate_dependency_provenance(args)
     selection = selection_evidence(args)
+    test_contract = formula_test_contract(args)
     return {
         "abi": args.abi,
         "arch": args.arch,
@@ -544,14 +635,14 @@ def build_document(args: argparse.Namespace) -> dict[str, Any]:
         },
         "dependencies": dependencies,
         "formula": args.formula,
-        "node": node_evidence(args),
-        "schema": 2,
+        "schema": 3,
         "selection": selection,
         "tap": {
             "commit": args.tap_commit,
             "name": normalized_tap_name(args),
             "repository": args.tap_repository,
         },
+        "test": formula_test_evidence(args, test_contract),
         "target": {
             "install_log": target_install_evidence(
                 args, bottle_filename, version, rebuild, selection
@@ -561,14 +652,73 @@ def build_document(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def validate_node_test_evidence(
+    test: dict[str, Any],
+    contract: dict[str, str | int],
+    *,
+    legacy: bool,
+) -> None:
+    if not legacy and (
+        test["contract"] != "node"
+        or test["formula_sha256"] != contract["formula_sha256"]
+    ):
+        fail("runtime Node evidence differs from the static Formula test contract")
+    if test["runtime"] != "node" or test["status"] != "success":
+        fail("runtime evidence does not prove Node success")
+    require_string(test["receipt_sha256"], "runtime Node receipt sha256", SHA256)
+    launcher = require_string(test["launcher"], "runtime Node launcher")
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", launcher):
+        fail("runtime Node launcher is invalid")
+    if not isinstance(test["argv"], list) or not 1 <= len(test["argv"]) <= 256:
+        fail("runtime Node evidence must contain 1-256 argv entries")
+    for index, value in enumerate(test["argv"]):
+        value = require_string(value, f"runtime Node argv[{index}]")
+        if len(value.encode("utf-8")) > 4_096:
+            fail(f"runtime Node argv[{index}] exceeds its byte limit")
+
+
 def validate_document(document: Any, args: argparse.Namespace) -> None:
     validate_arguments(args)
-    root = exact_keys(
-        document,
-        {"abi", "arch", "bottle", "dependencies", "formula", "node", "schema", "selection", "tap", "target"},
-        "runtime evidence",
-    )
-    if root["schema"] != 2 or root["formula"] != args.formula or root["arch"] != args.arch:
+    if not isinstance(document, dict):
+        fail("runtime evidence must be an object")
+    schema = document.get("schema")
+    if schema == 2:
+        root = exact_keys(
+            document,
+            {
+                "abi",
+                "arch",
+                "bottle",
+                "dependencies",
+                "formula",
+                "node",
+                "schema",
+                "selection",
+                "tap",
+                "target",
+            },
+            "runtime evidence",
+        )
+    elif schema == 3:
+        root = exact_keys(
+            document,
+            {
+                "abi",
+                "arch",
+                "bottle",
+                "dependencies",
+                "formula",
+                "schema",
+                "selection",
+                "tap",
+                "target",
+                "test",
+            },
+            "runtime evidence",
+        )
+    else:
+        fail("runtime evidence has an unsupported schema")
+    if root["formula"] != args.formula or root["arch"] != args.arch:
         fail("runtime evidence Formula identity does not match")
     if root["abi"] != args.abi:
         fail("runtime evidence ABI does not match")
@@ -633,21 +783,56 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
             fail("runtime anonymous fetch record lacks the exact URL and digest")
     elif args.bottle_sha256 not in fetch_line:
         fail("runtime dry-run selection record lacks the exact digest")
-    node = exact_keys(
-        root["node"], {"argv", "launcher", "receipt_sha256", "runtime", "status"}, "runtime Node evidence"
-    )
-    if node["runtime"] != "node" or node["status"] != "success":
-        fail("runtime evidence does not prove Node success")
-    require_string(node["receipt_sha256"], "runtime Node receipt sha256", SHA256)
-    launcher = require_string(node["launcher"], "runtime Node launcher")
-    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", launcher):
-        fail("runtime Node launcher is invalid")
-    if not isinstance(node["argv"], list) or not 1 <= len(node["argv"]) <= 256:
-        fail("runtime Node evidence must contain 1-256 argv entries")
-    for index, value in enumerate(node["argv"]):
-        value = require_string(value, f"runtime Node argv[{index}]")
-        if len(value.encode("utf-8")) > 4_096:
-            fail(f"runtime Node argv[{index}] exceeds its byte limit")
+    contract = formula_test_contract(args)
+    if schema == 2:
+        if contract["contract"] != "node":
+            fail("legacy runtime evidence cannot satisfy a support-data test contract")
+        node = exact_keys(
+            root["node"],
+            {"argv", "launcher", "receipt_sha256", "runtime", "status"},
+            "runtime Node evidence",
+        )
+        validate_node_test_evidence(node, contract, legacy=True)
+    else:
+        test = root["test"]
+        if contract["contract"] == "node":
+            test = exact_keys(
+                test,
+                {
+                    "argv",
+                    "contract",
+                    "formula_sha256",
+                    "launcher",
+                    "receipt_sha256",
+                    "runtime",
+                    "status",
+                },
+                "runtime Formula test evidence",
+            )
+            validate_node_test_evidence(test, contract, legacy=False)
+        else:
+            test = exact_keys(
+                test,
+                {
+                    "argv",
+                    "contract",
+                    "formula_sha256",
+                    "launcher",
+                    "runtime",
+                    "status",
+                },
+                "runtime Formula test evidence",
+            )
+            expected_test = {
+                "argv": ["test", f"{normalized_tap_name(args)}/{args.formula}"],
+                "contract": "support-data",
+                "formula_sha256": contract["formula_sha256"],
+                "launcher": "brew",
+                "runtime": "homebrew",
+                "status": "success",
+            }
+            if test != expected_test:
+                fail("runtime evidence does not prove the support-data Formula test")
     target = exact_keys(root["target"], {"install_log", "receipt"}, "runtime target evidence")
     install_log = exact_keys(
         target["install_log"], {"fetch", "pour", "source_build_absent"}, "runtime target install log"
