@@ -191,6 +191,39 @@ class ProtocolTests(unittest.TestCase):
             ):
                 runner.normalize_config_paths(preseeded)
 
+    def test_sdk_config_site_is_derived_from_the_sealed_platform_root(
+        self,
+    ) -> None:
+        environment = {"PATH": "/usr/bin:/bin"}
+        platform_root = Path("/run/kandelo/platform")
+
+        child = runner.add_runner_owned_platform_environment(
+            environment, platform_root
+        )
+
+        self.assertEqual(environment, {"PATH": "/usr/bin:/bin"})
+        self.assertEqual(
+            child[runner.SDK_CONFIG_SITE_ENV_KEY],
+            "/run/kandelo/platform/sdk/config.site",
+        )
+        with self.assertRaisesRegex(
+            runner.RunnerError, "override the SDK config-site input"
+        ):
+            runner.add_runner_owned_platform_environment(
+                {
+                    **environment,
+                    runner.SDK_CONFIG_SITE_ENV_KEY: "/tmp/untrusted",
+                },
+                platform_root,
+            )
+        with self.assertRaisesRegex(
+            runner.RunnerError, "no capacity for runner-owned SDK inputs"
+        ):
+            runner.add_runner_owned_platform_environment(
+                {f"KEY_{index}": "x" for index in range(512)},
+                platform_root,
+            )
+
     def test_sysroot_staging_cli_accepts_only_its_two_paths(self) -> None:
         with mock.patch.object(
             sys,
@@ -1587,6 +1620,7 @@ class LiveSystemdServiceRootTests(unittest.TestCase):
             for directory in (
                 recipe_host,
                 platform_host / "libc/glue",
+                platform_host / "sdk",
                 sysroot_host / "lib",
                 sealed_root,
             ):
@@ -1646,6 +1680,10 @@ class LiveSystemdServiceRootTests(unittest.TestCase):
                 "2>/dev/null; then exit 94; fi\n"
                 '[ -r "$WASM_POSIX_DEP_RECIPE_DIR/build.sh" ]\n'
                 '[ -r "$WASM_POSIX_GLUE_DIR/abi_constants.h" ]\n'
+                '[ "$WASM_POSIX_SDK_CONFIG_SITE" = '
+                f'{str(platform_alias / "sdk/config.site")!r} ]\n'
+                '[ "$(/usr/bin/cat "$WASM_POSIX_SDK_CONFIG_SITE")" = '
+                '"sealed target facts" ]\n'
                 '[ -r "$WASM_POSIX_SYSROOT/lib/libc.a" ]\n'
                 f'[ "$(/usr/bin/cat {str(dependency_opt)!r}/lib/value.txt)" = '
                 '"sealed dependency" ]\n'
@@ -1654,6 +1692,9 @@ class LiveSystemdServiceRootTests(unittest.TestCase):
             )
             script.chmod(0o555)
             (platform_host / "libc/glue/abi_constants.h").write_text("fixture\n")
+            (platform_host / "sdk/config.site").write_text(
+                "sealed target facts\n"
+            )
             (sysroot_host / "lib/libc.a").write_text("fixture\n")
             passwd = protected / "recipe-passwd"
             group = protected / "recipe-group"
@@ -1667,6 +1708,7 @@ class LiveSystemdServiceRootTests(unittest.TestCase):
             )
             for file in (
                 platform_host / "libc/glue/abi_constants.h",
+                platform_host / "sdk/config.site",
                 sysroot_host / "lib/libc.a",
                 passwd,
                 group,
@@ -1676,6 +1718,7 @@ class LiveSystemdServiceRootTests(unittest.TestCase):
                 recipe_host,
                 platform_host / "libc/glue",
                 platform_host / "libc",
+                platform_host / "sdk",
                 platform_host,
                 sysroot_host / "lib",
                 sysroot_host,

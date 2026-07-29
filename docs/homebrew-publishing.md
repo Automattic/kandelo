@@ -571,6 +571,14 @@ omits the checker environment and makes the old `packages/registry`,
 that still calls `build-deps` or `install_local_binary` therefore fails rather
 than silently falling back to the old package system.
 
+The privileged recipe runner also derives
+`WASM_POSIX_SDK_CONFIG_SITE` from the sealed platform projection. A recipe that
+needs package-specific Autoconf cache answers may point `CONFIG_SITE` at its
+own attested recipe file and source this runner-owned path from that file.
+Formula Ruby and recipe requests cannot choose or override the shared path;
+reusable target facts therefore continue to come from the exact
+`sdk/config.site` associated with the publisher's Kandelo revision.
+
 Those legacy paths are intentionally absent from a schema-3 platform
 projection. Their `InaccessiblePaths=` entries therefore use systemd's
 optional `-` prefix: an absent path remains an accepted closed-root state, and

@@ -44,6 +44,9 @@ MAX_RECIPE_LOG_BYTES = 33_554_432
 MAX_RECIPE_FAILURE_DIAGNOSTIC_BYTES = 65_536
 MAX_REPLY_MESSAGE_BYTES = 2_048
 MAX_REPLY_DIAGNOSTIC_BYTES = 4_096
+MAX_RECIPE_ENV_KEYS = 512
+MAX_RECIPE_ENV_VALUE_BYTES = 8_192
+MAX_RECIPE_ENV_BYTES = 262_144
 MAX_RESOURCE_ENTRIES = 65_536
 MAX_RESOURCE_FILE_BYTES = 268_435_456
 MAX_RESOURCE_BYTES = 1_073_741_824
@@ -138,6 +141,8 @@ VERSION_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+,-]{0,254}$")
 RESOURCE_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._+-]{0,127}$")
 PROTECTED_BUILD_RE = re.compile(r"^build-[0-9a-f]{64}$")
 PROTECTED_PUBLISHER_ROOT = Path("/run/kandelo-homebrew-publisher")
+SDK_CONFIG_SITE_ENV_KEY = "WASM_POSIX_SDK_CONFIG_SITE"
+SDK_CONFIG_SITE_RELATIVE = Path("sdk/config.site")
 ResourceStagingIdentity = tuple[
     tuple[int, ...],
     dict[str, tuple[int, ...]],
@@ -1022,6 +1027,18 @@ def validate_config(path: Path) -> dict[str, Any]:
         fail("protected runner ancestry is writable or has unsafe ownership")
     if not is_within(config["platform_host_root"], config["protected_root"]):
         fail("platform projection left the protected runner root")
+    sdk_config_site = canonical_real_file(
+        config["platform_host_root"] / SDK_CONFIG_SITE_RELATIVE,
+        label="projected SDK config site",
+    )
+    sdk_config_site_stat = sdk_config_site.lstat()
+    if (
+        sdk_config_site_stat.st_uid != 0
+        or sdk_config_site_stat.st_gid != 0
+        or sdk_config_site_stat.st_nlink != 1
+        or stat.S_IMODE(sdk_config_site_stat.st_mode) != 0o444
+    ):
+        fail("projected SDK config site is not one sealed mode-0444 file")
     expected_recipe_name = config["formula"].rpartition("/")[2]
     if config["recipe_alias_root"].name != expected_recipe_name:
         fail("recipe alias root differs from the selected Formula")
@@ -1537,7 +1554,7 @@ def validate_environment(
     requirement_roots: list[Path],
 ) -> dict[str, str]:
     environment = request["environment"]
-    if type(environment) is not dict or len(environment) > 512:
+    if type(environment) is not dict or len(environment) > MAX_RECIPE_ENV_KEYS:
         fail("recipe environment is not one bounded object")
     total = 0
     for key, value in environment.items():
@@ -1549,13 +1566,13 @@ def validate_environment(
         ):
             fail("recipe environment contains an invalid key or value")
         encoded = value.encode("utf-8")
-        if len(encoded) > 8_192:
+        if len(encoded) > MAX_RECIPE_ENV_VALUE_BYTES:
             fail(f"recipe environment value is oversized: {key}")
         total += len(key.encode("utf-8")) + len(encoded)
         upper = key.upper()
         if any(marker in upper for marker in FORBIDDEN_ENV_MARKERS):
             fail(f"recipe environment retained forbidden authority: {key}")
-    if total > 262_144:
+    if total > MAX_RECIPE_ENV_BYTES:
         fail("recipe environment exceeds its total byte limit")
 
     dependency_keys = set(dependencies)
@@ -1658,6 +1675,32 @@ def validate_environment(
         if path not in allowed_path_entries:
             fail(f"recipe PATH contains an undeclared tool root: {path}")
     return environment
+
+
+def add_runner_owned_platform_environment(
+    environment: dict[str, str], platform_root: Path
+) -> dict[str, str]:
+    """Add immutable SDK inputs that a tap Formula is not allowed to choose."""
+    if SDK_CONFIG_SITE_ENV_KEY in environment:
+        fail("recipe environment tried to override the SDK config-site input")
+    child_environment = dict(environment)
+    # WHY: package-specific configure caches may layer on Kandelo's shared
+    # target facts, but letting Formula Ruby choose this path would turn a
+    # closed recipe back into repository authority. The privileged runner
+    # derives it from the already sealed, read-only platform projection.
+    child_environment[SDK_CONFIG_SITE_ENV_KEY] = str(
+        platform_root / SDK_CONFIG_SITE_RELATIVE
+    )
+    total_bytes = sum(
+        len(key.encode("utf-8")) + len(value.encode("utf-8"))
+        for key, value in child_environment.items()
+    )
+    if (
+        len(child_environment) > MAX_RECIPE_ENV_KEYS
+        or total_bytes > MAX_RECIPE_ENV_BYTES
+    ):
+        fail("recipe environment has no capacity for runner-owned SDK inputs")
+    return child_environment
 
 
 def validate_request(
@@ -3569,7 +3612,9 @@ def run_recipe(
             f"--property=BindPaths={source}:{destination}"
             for source, destination in readwrite_binds
         )
-        child_environment = dict(request["environment"])
+        child_environment = add_runner_owned_platform_environment(
+            request["environment"], request["platform_root"]
+        )
         # WHY: Homebrew Requirements are publisher-only and intentionally
         # absent from Formula `deps`, so tap support cannot request their
         # versioned kegs. The root-owned config derives them from the static
