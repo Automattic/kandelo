@@ -366,10 +366,11 @@ jobs:
           set -euo pipefail
           root="$RUNNER_TEMP/homebrew-guest-lifecycle-inputs-handoff"
           test ! -e "$root"
-          # WHY: package releases expose shell/bootstrap outputs only as
-          # archive members, while the lazy bootstrap worker needs one direct
-          # ZIP URL. Publish these fixed proof inputs under their own immutable
-          # identity; they do not belong to the bottle-layer mirror.
+          # WHY: the shell package exposes its image only inside an archive,
+          # while the support-data bottle likewise contains the bootstrap ZIP
+          # and environment as members. The browser needs direct immutable
+          # URLs, so publish only these fixed proof inputs under a separate
+          # identity instead of adding them to the bottle-layer mirror.
           bash scripts/dev-shell.sh npx tsx \
             scripts/homebrew-guest-lifecycle-publication.ts create \
               --image "$IMAGE" \

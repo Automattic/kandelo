@@ -91,9 +91,10 @@ export interface HomebrewGuestLifecyclePublicationIdentity {
  * Prepare a credential-free, bounded handoff for the public Chromium proof.
  *
  * The bottle mirror remains a separate release and source of truth. This
- * handoff owns only the fixed shell/bootstrap inputs that otherwise exist
- * solely as members of package archives and therefore are not direct lazy-VFS
- * URLs.
+ * handoff owns only the fixed shell/bootstrap inputs. The shell image is a
+ * package-archive member, while the bootstrap ZIP and environment are
+ * support-data bottle members; none is a direct lazy-VFS URL. The source spec
+ * is bound beside them.
  */
 export function createHomebrewGuestLifecyclePublication(
   options: CreateHomebrewGuestLifecyclePublicationOptions,
