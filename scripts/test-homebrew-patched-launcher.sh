@@ -401,6 +401,57 @@ case "${1:-}" in
     ln -s "$2" "$prefix/Cellar/$2/1.0/bin/$2-link"
     ln -s "../Cellar/$2/1.0" "$prefix/opt/$2"
     ;;
+  install-native-launch-closure-fixture)
+    [ "$#" -eq 2 ]
+    native_compiler="$2"
+    [ -x "$native_compiler" ]
+    native_system_loader=""
+    for loader_candidate in \
+      /lib64/ld-linux-x86-64.so.2 \
+      /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 \
+      /lib/ld-linux-aarch64.so.1 \
+      /lib/aarch64-linux-gnu/ld-linux-aarch64.so.1; do
+      if [ -f "$loader_candidate" ]; then
+        native_system_loader="$loader_candidate"
+        break
+      fi
+    done
+    [ -n "$native_system_loader" ] || {
+      echo "could not identify the native compiler's ELF interpreter" >&2
+      exit 1
+    }
+    native_loader_alias="$prefix/lib/ld.so"
+    native_interpreter_source="${HOMEBREW_TEMP:?}/native-interpreter.c"
+    native_interpreter="$prefix/Cellar/perl/1.0/bin/perl"
+    mkdir -p "${native_loader_alias%/*}"
+    ln -s "$native_system_loader" "$native_loader_alias"
+    cat >"$native_interpreter_source" <<'NATIVE_INTERPRETER_EOF'
+#include <stdio.h>
+#include <unistd.h>
+
+int main(int argc, char **argv) {
+  if (argc < 2) {
+    return 64;
+  }
+  argv[0] = "/usr/bin/bash";
+  execv(argv[0], argv);
+  perror("execv");
+  return 127;
+}
+NATIVE_INTERPRETER_EOF
+    "$native_compiler" "$native_interpreter_source" \
+      -Wl,--dynamic-linker="$native_loader_alias" \
+      -o "$native_interpreter"
+    rm -f "$native_interpreter_source"
+    for native_child_tool in automake bison flex python; do
+      native_child_script="$prefix/Cellar/$native_child_tool/1.0/bin/$native_child_tool"
+      {
+        printf '#!%s\n' "$prefix/opt/perl/bin/perl"
+        printf 'echo %q\n' "closed native child tool: $native_child_tool"
+      } >"$native_child_script"
+      chmod 0755 "$native_child_script"
+    done
+    ;;
   create-native-runtime-link)
     [ "$#" -eq 3 ]
     mkdir -p "$prefix/lib"
@@ -2542,49 +2593,11 @@ EOF
       install-native-fixture "$native_child_tool"
   done
   homebrew_patched_launcher_run_native install-native-fixture perl
-  native_interpreter_source="$ISOLATION_ROOT/native-interpreter.c"
-  native_interpreter="$isolated_native_prefix/Cellar/perl/1.0/bin/perl"
-  native_loader_alias="$isolated_native_prefix/lib/ld.so"
-  cat >"$native_interpreter_source" <<'EOF'
-#include <stdio.h>
-#include <unistd.h>
-
-int main(int argc, char **argv) {
-  if (argc < 2) {
-    return 64;
-  }
-  argv[0] = "/usr/bin/bash";
-  execv(argv[0], argv);
-  perror("execv");
-  return 127;
-}
-EOF
-  native_system_loader=""
-  for loader_candidate in \
-    /lib64/ld-linux-x86-64.so.2 \
-    /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 \
-    /lib/ld-linux-aarch64.so.1 \
-    /lib/aarch64-linux-gnu/ld-linux-aarch64.so.1; do
-    if [ -f "$loader_candidate" ]; then
-      native_system_loader="$loader_candidate"
-      break
-    fi
-  done
-  [ -n "$native_system_loader" ] ||
-    fail "could not identify the native compiler's ELF interpreter"
-  mkdir -p "${native_loader_alias%/*}"
-  ln -s "$native_system_loader" "$native_loader_alias"
-  "${LLVM_BIN:?}/clang" "$native_interpreter_source" \
-    -Wl,--dynamic-linker="$native_loader_alias" \
-    -o "$native_interpreter"
-  for native_child_tool in automake bison flex python; do
-    native_child_script="$isolated_native_prefix/Cellar/$native_child_tool/1.0/bin/$native_child_tool"
-    {
-      printf '#!%s\n' "$isolated_native_prefix/opt/perl/bin/perl"
-      printf 'echo %q\n' "closed native child tool: $native_child_tool"
-    } >"$native_child_script"
-    chmod 0755 "$native_child_script"
-  done
+  # WHY: isolation transfers the native prefix to the build identity before
+  # any native bottle is installed. Model bottle relocation through that same
+  # identity instead of letting the workflow runner mutate private keg state.
+  homebrew_patched_launcher_run_native \
+    install-native-launch-closure-fixture "${LLVM_BIN:?}/clang"
   # CMake and Ninja are direct tool roots in the static plan. openssl@3 models
   # a transitive library. The four child tools and Perl model the recursive
   # executable closure used by Autotools: the runner, not the request, derives
