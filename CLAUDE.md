@@ -292,6 +292,12 @@ plain-language `## Why` section before `## What changed`, implementation
 details, or validation. Explain the current problem, who or what it affects,
 and why fixing it matters before describing the mechanics.
 
+Prefer concise PR titles that remain suitable as merge subjects.
+Manually wrap prose in PR descriptions and commit-message bodies at
+72 columns. Do not reflow Markdown tables, code blocks, generated
+text, or indivisible URLs and identifiers when wrapping would damage
+their semantics.
+
 Write PR descriptions so a junior developer can understand them without prior
 incident history or repository shorthand. Define necessary terms, expand
 acronyms on first use, use concrete examples where they clarify the failure,

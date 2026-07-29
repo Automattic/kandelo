@@ -1,7 +1,7 @@
 # Homebrew Migration Living Execution Plan
 
 - Status: active
-- Last reconciled: 2026-07-26
+- Last reconciled: 2026-07-29
 - Primary repositories: `Automattic/kandelo` and
   `Kandelo-dev/homebrew-tap-core`
 - Purpose: preserve the complete Homebrew migration scope, record what has
@@ -12,6 +12,116 @@ supported. Update the status and evidence here as work lands. Do not delete a
 goal merely because it is not part of the next pull request. A goal leaves this
 plan only when it is completed with evidence or explicitly superseded with the
 replacement decision recorded in the disposition log.
+
+## Current Resume Checkpoint — 2026-07-29
+
+This checkpoint supersedes older sequencing and point-in-time status below
+without deleting their scope, decisions, or evidence. The first usable-product
+milestone and the complete migration remain distinct:
+
+- **Usable-product milestone:** keep the existing mostly-lazy, bottle-composed
+  shell contract; make the normal `/usr/bin/brew` entrypoint materialize the
+  tap-owned upstream Homebrew bootstrap on first use; and prove first-party and
+  independent third-party tap installation in Node.js and Chromium.
+- **Complete migration:** move every conventional software recipe and every
+  remaining build bridge out of `packages/registry`, account for platform and
+  composite-image roles explicitly, finish all declared architecture
+  dispositions, then remove the legacy registry. Erlang, msmtpd, service
+  runtimes, man pages, and bottle-declared composable VFS layers may run behind
+  the first usable-product milestone when they do not belong to its exact
+  closure, but none is removed from the completion definition.
+
+The current landing train is:
+
+1. **Closed Formula execution boundary — Kandelo PR #1123.** The candidate
+   gives untrusted tap recipes only their declared source, dependency, tool,
+   and output paths. Its exact lazy-shell, preflight, kernel, fork, and routed
+   test evidence is green. The ten-Formula tap dry run exposed a diagnostic
+   boundary: seven new closed recipes returned only an exit status because the
+   privileged one-shot supervisor streamed their credential-free output to its
+   own pipe and then discarded the causal suffix before replying to the
+   authenticated client. Amend #1123 once with a bounded same-pipe diagnostic
+   tail, safe-text normalization, strict reply-size/schema validation, and
+   adversarial tests. Do not query supervisor, publisher, or unrelated systemd
+   journals and do not expose their environment.
+2. **Closed shell/demo Formula batch — tap PR #129.** The first concurrent dry
+   run proved Nginx and Redis already succeed. `bc`, `fbdoom`, `lsof`,
+   `modeset`, `netcat`, `nethack`, and `posix-utils-lite` failed inside the
+   newly isolated recipe boundary and currently lack causal output; rerun those
+   seven together only after #1123 returns safe diagnostics, fix their shared
+   causes as one batch, and rerun only the affected subset. `msmtpd` built and
+   passed its initial Node.js, Chromium, and inetd checks, then timed out in its
+   separate standalone network lifecycle; treat that as an independent runtime
+   investigation rather than repeatedly rebuilding the seven closed recipes.
+3. **Publish and activate the batch.** After #1123 is on protected Kandelo
+   `main` and #129 is green, merge #129, rotate publisher trust to the exact
+   protected-main commits, publish the ready dependency levels concurrently,
+   and require immutable public upload, anonymous exact-byte readback,
+   transactional tap finalization, and truthful per-Formula status.
+4. **Dinit and guest Homebrew.** Retarget tap PR #103 after #129 to land the
+   shared fork-import validator and publish Dinit. Retarget tap PR #127 after
+   #129 to package the upstream Homebrew bootstrap as a coherent lazy bottle,
+   then exercise tap, install, link, execute, reinstall/upgrade, uninstall, and
+   durable guest state for both the first-party core tap and the independent
+   third-party tap on Node.js and Chromium.
+5. **Remaining software migration.** Continue the already prepared direct
+   Formula stacks for Python, Ruby, Erlang, MariaDB, PHP, WordPress data,
+   SpiderMonkey, Node.js, npm, and the remaining services/support roles.
+   Erlang's immediate parity work must include the complete runtime, the
+   compiler path, the full checksum/compile regression matrix, and the
+   fail-closed LLVM wasm32 optimization workaround. Formula presence is not
+   completion: each accepted role needs a bottle, sidecar, source-build
+   fallback, exact runtime evidence, and a registry-ownership disposition.
+6. **Cutover and retirement.** Rebuild the exact shell and every shell-derived
+   product from finalized bottles, run the real Node.js/Chromium demo matrix,
+   refresh the machine-readable ownership ledger, remove every superseded
+   registry recipe/build bridge only after replacement evidence exists, and
+   close superseded migration pull requests.
+
+Host-runtime PR #1124 proceeds in parallel and must not serialize the packaging
+train unless an exact acceptance test establishes a dependency. It gives every
+process execution a fresh `WebAssembly.Memory`, never reuses a retired
+high-water allocation, and drops each exact generation only after Worker,
+channel, pthread, and browser-framebuffer ownership fences. Its dated
+cross-engine evidence is
+`docs/measurements/2026-07-28-process-memory-retirement-rss.md`; collection
+pressure remains only a bounded timing hint. This is a host-runtime approval
+boundary, not a Homebrew-only autonomous merge.
+
+Keep process-memory regression coverage in two layers. Relevant pull requests
+must run the deterministic process-lifecycle and ownership budget under
+Chromium, Firefox, and WebKit; that gate must fail when an exited generation
+remains reachable from Kandelo. Scheduled and targeted physical-memory
+sentinels must compare production with a deliberate retained-memory control
+inside the same engine and run. Record allocation-size scaling, batch growth,
+post-pressure descent, browser and operating-system versions, and raw traces.
+Do not compare absolute RSS across engines or promise a deterministic garbage
+collection deadline. A physical sentinel is credible only when its retained
+control proves that the run could have detected proportional backing-store
+retention. Until those sentinels are stable enough for every pull request,
+keep them scheduled and require recent green evidence for changes to process
+memory ownership or worker retirement.
+
+Throughput rules for this checkpoint:
+
+- dispatch independent Formulae concurrently up to the publisher's bounded
+  write limit and refill slots as soon as dependencies finalize;
+- let a batch finish so it can reveal all independent failures, then change one
+  shared layer and rerun only the failed subset whose inputs changed;
+- preserve successful Nginx/Redis evidence instead of rebuilding them merely
+  because unrelated closed recipes failed;
+- batch cohesive runner, validator, or Formula-support corrections once rather
+  than repeating the same edit in every recipe;
+- do not put Erlang, msmtpd, man-page polish, registry cleanup, or later VFS
+  layering on the first usable-product critical path unless the exact shell or
+  guest-Homebrew closure requires it; keep each as explicit parallel or
+  follow-up work in this plan;
+- keep ABI-changing, kernel, and fork-instrumentation work in their designated
+  worktrees and approval paths. Do not bump or reinterpret the ABI merely to
+  make this migration pass; and
+- every canonical artifact still comes from an exact protected default-branch
+  commit. Batching reduces queue and rebuild duplication, not provenance,
+  browser/Node parity, POSIX correctness, or immutable-readback requirements.
 
 ## Superseded Checkpoint: Admit The #1097 Rootfs Closure
 
