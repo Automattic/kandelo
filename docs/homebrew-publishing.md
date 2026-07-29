@@ -130,19 +130,34 @@ See
 [Binary releases: durable package generations](binary-releases.md#durable-package-generations-for-cross-workflow-publication)
 for dispatch, recovery, seal-last publication, and mutation handling.
 
-## Guest Homebrew Bootstrap Package
+## Guest Homebrew Bootstrap Bottle
 
-The patched Homebrew Ruby tree used by a guest is a dedicated Kandelo program
-package named `homebrew-bootstrap`; it is not a Formula bottle. The package
-atomically emits `homebrew-bootstrap.zip` from a sealed exact Homebrew checkout
-and the reviewed guest-platform patch plus `homebrew-brew.env`, which owns the
-matching architecture and system-environment policy. Its source lock at
-`homebrew/homebrew-bootstrap-source-lock.json` binds all source, patch,
-prepared-tree, portable-Ruby, archive-producing Git, and final-archive
-identities. The program-package generation binds both declared members to one
-recipe, dependency closure, cache identity, and immutable release archive;
-consumers must resolve the canonical nested member paths together rather than
-recreating `brew.env` or resolving a mutable flat fallback.
+The patched Homebrew Ruby tree used by a guest is the support-data Formula
+`homebrew-bootstrap`. Its bottle contains two declared `libexec` members:
+`homebrew-bootstrap.zip`, built from one sealed Homebrew checkout and the
+reviewed guest-platform patch, and `homebrew-brew.env`, which owns the matching
+architecture and system-environment policy. The tap-native recipe lock at
+`Kandelo/recipes/homebrew-bootstrap/source-lock.json` binds both outputs by
+path, SHA-256, and byte count.
+
+The product shell fetches that public bottle anonymously. The shared typed
+extractor binds the exact tap checkout, aggregate catalog and Formula sidecar,
+recipe lock, link manifest, bottle digest and size, keg identity, immutable
+build receipt, and both output members. The shell composer reruns the same
+typed verifier against the detached files before embedding its canonical
+report. It does not consult the Kandelo package registry for these bytes.
+
+Three Git coordinates remain intentionally distinct. The checkout commit names
+the exact tap tree being read; the metadata commit names the aggregate catalog
+publication; and `built_from.tap_commit` names the source tree that produced
+the bottle. Likewise, the current tap Formula hash includes its finalized
+`bottle do` block, while Homebrew's `.brew` receipt hash canonically omits that
+block. Consumers record and validate each coordinate through its own authority
+instead of requiring false equality.
+
+The older `homebrew-bootstrap` program package and
+`homebrew/homebrew-bootstrap-source-lock.json` remain only for the transitional
+source-rootfs compatibility lane. They are not product-shell inputs.
 
 ## Repositories And Ownership
 
@@ -848,15 +863,15 @@ commit pinned by the reusable workflow and proves a real install and test
 offline after its disposable Ruby dependencies have been provisioned and
 sealed. Kandelo guests instead receive upstream Homebrew commit
 `4ead8619231cb15cbe15e8e8188081e347d6f7cd` through the dedicated
-`homebrew-bootstrap` program package. Guest acceptance must materialize that
-package through the canonical ABI release index and verify its complete
-two-member generation, package-output receipt, archive identity, cache key,
-and locked inner ZIP before booting it.
-The PR staging release is evidence for the package build, not a durable
-consumer URL. Until the package is activated in the canonical ABI index and
-the tap has adopted these Requirement declarations under a compatible pinned
-publisher, the full guest install lifecycle remains a rollout gate rather than
-a supported user-facing contract.
+`homebrew-bootstrap` support-data bottle. Guest acceptance must anonymously
+fetch that exact public bottle, verify its complete two-member recipe contract
+and immutable bottle provenance, and bind the extracted archive and environment
+to the shell image before booting it.
+The PR staging release is evidence for the recipe build, not a durable consumer
+URL. Until the support-data bottle is published and finalized in the protected
+tap and the tap has adopted these Requirement declarations under a compatible
+pinned publisher, the full guest install lifecycle remains a rollout gate
+rather than a supported user-facing contract.
 
 #### Exact Chromium guest-lifecycle fixture
 
@@ -2599,15 +2614,16 @@ or stale compatibility link fail before browser acceptance.
 
 The shell closure does not by itself claim that `/usr/bin/brew` can run.
 `homebrew/main-shell-homebrew-runtime-support.json` declares a second,
-first-use atomic layer. It binds the lazy `homebrew-bootstrap` source and
-launcher outputs to seven reviewed runtime roots—Ruby, Git, curl, Findutils,
-Gawk, Tar, and `posix-utils-lite`—and to their exact 21-Formula
-dependency-first closure derived from tap metadata. The complete shell already
-supplies 20 of those Formulae, so activation adds only Ruby as an atomic lazy
-bottle tree. The complete declared image inventory is therefore 39 Formulae:
-three embedded base Formulae, 35 deferred base Formulae, and one deferred
-runtime-support Formula. The public bottle mirror transports those 36 deferred
-payloads; the three embedded Formulae already reside in the sealed shell image.
+first-use atomic layer. It binds the lazy `homebrew-bootstrap` bottle's
+extracted source and launcher outputs to seven reviewed runtime roots—Ruby,
+Git, curl, Findutils, Gawk, Tar, and `posix-utils-lite`—and to their exact
+21-Formula dependency-first closure derived from tap metadata. The complete
+shell already supplies 20 of those Formulae, so activation adds only Ruby as an
+atomic lazy bottle tree. The complete declared image inventory is therefore 39
+Formulae: three embedded base Formulae, 35 deferred base Formulae, and one
+deferred runtime-support Formula. The public bottle mirror transports those 36
+deferred payloads; the three embedded Formulae already reside in the sealed
+shell image.
 
 The availability audit covers all 25 Formulae considered during the runtime
 rollout. Every one now has an admitted public wasm32 ABI-42 identity, including

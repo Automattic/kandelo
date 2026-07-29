@@ -310,11 +310,10 @@ grep -Fq 'echo "SOURCE_SHELL_BINARY_INDEX_URL=file://${empty_index}" >> "$GITHUB
     <<<"$generation_block" ||
   fail "source activation must publish one closure-local empty index and cache root"
 
-check_bootstrap_materialization_contract() {
+check_bootstrap_bottle_extraction_contract() {
   local block="$1"
-  local materialize_line
-  local resolve_line
-  local -a resolve_lines
+  local extractor_line
+  local composer_line
 
   grep -Fq \
     "bootstrap_package=\$(jq -er '.package.name' \\" \
@@ -325,67 +324,73 @@ check_bootstrap_materialization_contract() {
     grep -Fq '[ "$bootstrap_package" = "$runtime_bootstrap_package" ]' \
       <<<"$block" ||
     return 1
-  grep -Fq 'bash scripts/dev-shell.sh env \' <<<"$block" &&
-    grep -Fq \
-      '"WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" \' \
+  grep -Fq 'scripts/extract-homebrew-support-data-bottle.ts \' \
+    <<<"$block" &&
+    grep -Fq -- '--tap-root "$tap_root" \' <<<"$block" &&
+    grep -Fq -- '--expected-tap-sha "$tap_sha" \' <<<"$block" &&
+    grep -Fq -- '--tap-repository kandelo-dev/homebrew-tap-core \' \
       <<<"$block" &&
-    grep -Fq \
-      '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
-      <<<"$block" &&
-    grep -Fq \
-      'bash scripts/fetch-binaries.sh --package "$bootstrap_package"' \
-      <<<"$block" ||
+    grep -Fq -- '--tap-name kandelo-dev/tap-core \' <<<"$block" &&
+    grep -Fq -- '--package "$bootstrap_package" \' <<<"$block" &&
+    grep -Fq -- '--arch wasm32 \' <<<"$block" &&
+    grep -Fq -- '--expected-abi "$tap_abi" \' <<<"$block" &&
+    grep -Fq -- '--output-directory "$bootstrap_root"' <<<"$block" &&
+    grep -Fq -- '--homebrew-bootstrap-bottle-report \' <<<"$block" &&
+    grep -Fq '"$bootstrap_bottle_report" \' <<<"$block" ||
     return 1
-  ! grep -Fq -- '--fetch-only' <<<"$block" || return 1
 
-  materialize_line="$(grep -nF \
-    'bash scripts/fetch-binaries.sh --package "$bootstrap_package"' \
-    <<<"$block" | cut -d: -f1)"
-  mapfile -t resolve_lines < <(
-    grep -nF 'bash scripts/resolve-binary.sh \' <<<"$block" |
-      cut -d: -f1
-  )
-  [ -n "$materialize_line" ] && [ "${#resolve_lines[@]}" -eq 2 ] ||
-    return 1
-  for resolve_line in "${resolve_lines[@]}"; do
-    [ "$materialize_line" -lt "$resolve_line" ] || return 1
+  for credential in \
+    GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
+    HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN
+  do
+    grep -Fq -- "-u $credential" <<<"$block" || return 1
   done
+  ! grep -Fq 'scripts/fetch-binaries.sh --package "$bootstrap_package"' \
+    <<<"$block" || return 1
+  ! grep -Fq 'programs/homebrew-bootstrap/' <<<"$block" || return 1
+
+  extractor_line="$(grep -nF \
+    'scripts/extract-homebrew-support-data-bottle.ts \' \
+    <<<"$block" | cut -d: -f1)"
+  composer_line="$(grep -nF \
+    'scripts/build-homebrew-main-shell-closure.sh \' \
+    <<<"$block" | cut -d: -f1)"
+  [ -n "$extractor_line" ] && [ -n "$composer_line" ] &&
+    [ "$extractor_line" -lt "$composer_line" ]
 }
 
 bottle_candidate_workflow_block="$(sed -n \
   '/- name: Build the exact lazy shell from public bottles/,/- name: Select the source shell for dependent browser VFS builds/p' \
   "$WORKFLOW")"
-check_bootstrap_materialization_contract "$bottle_candidate_workflow_block" ||
-  fail "bottle composition must materialize its declared bootstrap package from the selected index/cache before direct resolution"
+check_bootstrap_bottle_extraction_contract "$bottle_candidate_workflow_block" ||
+  fail "bottle composition must extract and bind its declared bootstrap files from the exact public bottle"
 
 # Mutate each critical property independently. These fixtures prove the
-# structural check fails closed instead of passing because another nearby
-# package fetch or environment assignment happens to contain similar text.
-bootstrap_without_index="$(
-  grep -Fv \
-    '"WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" \' \
+# structural check fails closed instead of passing because another nearby tap
+# checkout or package variable happens to contain similar text.
+bootstrap_without_exact_tap="$(
+  grep -Fv -- '--expected-tap-sha "$tap_sha" \' \
     <<<"$bottle_candidate_workflow_block"
 )"
-if check_bootstrap_materialization_contract "$bootstrap_without_index"; then
-  fail "bootstrap materialization contract accepted a missing selected index"
+if check_bootstrap_bottle_extraction_contract "$bootstrap_without_exact_tap"; then
+  fail "bootstrap bottle contract accepted a missing exact tap binding"
 fi
-bootstrap_without_cache="$(
-  grep -Fv \
-    '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
+bootstrap_without_report="$(
+  grep -Fv -- '--homebrew-bootstrap-bottle-report \' \
     <<<"$bottle_candidate_workflow_block"
 )"
-if check_bootstrap_materialization_contract "$bootstrap_without_cache"; then
-  fail "bootstrap materialization contract accepted a missing isolated cache"
+if check_bootstrap_bottle_extraction_contract "$bootstrap_without_report"; then
+  fail "bootstrap bottle contract accepted missing extraction evidence"
 fi
-bootstrap_after_resolution="$(
+bootstrap_after_composition="$(
   grep -Fv \
-    'bash scripts/fetch-binaries.sh --package "$bootstrap_package"' \
+    'scripts/extract-homebrew-support-data-bottle.ts \' \
     <<<"$bottle_candidate_workflow_block"
   printf '%s\n' \
-    '          bash scripts/fetch-binaries.sh --package "$bootstrap_package"'
+    '          scripts/extract-homebrew-support-data-bottle.ts \'
 )"
-if check_bootstrap_materialization_contract "$bootstrap_after_resolution"; then
-  fail "bootstrap materialization contract accepted resolution before fetch"
+if check_bootstrap_bottle_extraction_contract "$bootstrap_after_composition"; then
+  fail "bootstrap bottle contract accepted composition before extraction"
 fi
 
 grep -Fq 'GH_TOKEN:' <<<"$(sed -n \
@@ -491,6 +496,36 @@ grep -Fq -- '--materialize-package-tree \' <<<"$candidate_build_workflow_block" 
 [ "$(grep -Fc -- '--package-tree-archive "$bootstrap"' \
   <<<"$candidate_build_workflow_block")" -eq 1 ] ||
   fail "lazy candidate must use the exact package output bytes exactly once"
+grep -Fq 'scripts/extract-homebrew-support-data-bottle.ts \' \
+  <<<"$candidate_build_workflow_block" ||
+  fail "lazy candidate must extract bootstrap files from its public bottle"
+grep -Fq -- '--homebrew-bootstrap-bottle-report \' \
+  <<<"$candidate_build_workflow_block" ||
+  fail "lazy candidate must bind public-bottle provenance into shell evidence"
+grep -Fq 'scripts/verify-homebrew-support-data-extraction.ts' "$BUILDER" &&
+  grep -Fq -- '--output "archive=$PACKAGE_TREE_ARCHIVE"' "$BUILDER" &&
+  grep -Fq -- '--output "environment=$HOMEBREW_BOOTSTRAP_ENV"' "$BUILDER" &&
+  grep -Fq -- '--verified-report-out "$VERIFIED_BOOTSTRAP_REPORT"' \
+    "$BUILDER" ||
+  fail "shell composer must rebind detached bootstrap outputs through the shared typed verifier"
+grep -Fq 'current_tap_formula_sha256' "$BUILDER" &&
+  fail "shell composer must not duplicate the typed bootstrap report schema"
+grep -Fq 'scripts/fetch-binaries.sh --package "$bootstrap_package"' \
+  <<<"$candidate_build_workflow_block" &&
+  fail "bottled product shell must not fetch bootstrap from the legacy registry"
+grep -Fq 'programs/homebrew-bootstrap/homebrew-bootstrap.zip' \
+  <<<"$candidate_build_workflow_block" &&
+  fail "bottled product shell must not resolve the legacy bootstrap archive"
+grep -Fq 'programs/homebrew-bootstrap/homebrew-brew.env' \
+  <<<"$candidate_build_workflow_block" &&
+  fail "bottled product shell must not resolve the legacy bootstrap environment"
+for credential in \
+  GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
+  HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN
+do
+  grep -Fq -- "-u $credential" <<<"$candidate_build_workflow_block" ||
+    fail "public bootstrap extraction must remove $credential"
+done
 grep -Fq 'package_deferred_trees[0].state' <<<"$candidate_build_workflow_block" &&
   grep -Fq '= deferred' <<<"$candidate_build_workflow_block" ||
   fail "candidate proof must require the complete Homebrew runtime to remain deferred"
@@ -872,6 +907,7 @@ grep -Fq '${{ steps.bottle_candidate.outputs.report }}' "$WORKFLOW" ||
 for evidence in \
   '${{ steps.bottle_candidate.outputs.bootstrap }}' \
   '${{ steps.bottle_candidate.outputs.bootstrap_env }}' \
+  '${{ steps.bottle_candidate.outputs.bootstrap_bottle_report }}' \
   '${{ runner.temp }}/homebrew-guest-lifecycle-browser-fixture.json' \
   '${{ runner.temp }}/homebrew-guest-lifecycle-playwright.json'
 do
