@@ -37,6 +37,7 @@ MAX_RECIPE_MANIFEST_BYTES = 65_536
 MAX_NATIVE_CLOSURE_MANIFEST_BYTES = 262_144
 MAX_RECIPE_FILES = 512
 MAX_DEPENDENCY_KEGS = 512
+NATIVE_PREFIX_RUNTIME_ROOT_NAMES = ("lib", "share")
 MAX_RESOURCES = 32
 MAX_RECIPE_FILE_BYTES = 16_777_216
 MAX_RECIPE_BYTES = 67_108_864
@@ -1279,25 +1280,39 @@ def installed_keg_roots(
     return versioned_keg_roots(cellar, names, label)
 
 
-def native_prefix_runtime_roots(cellar: Path) -> list[Path]:
-    """Select the fixed prefix-level runtime paths needed to execute kegs."""
+def native_prefix_runtime_roots(
+    prefix: Path,
+    *,
+    label: str,
+    owner_uid: int | None = None,
+    exact_mode: int | None = None,
+) -> list[Path]:
+    """Select the ordered fixed prefix roots needed to execute native kegs."""
     prefix = canonical_real_directory(
-        cellar.parent,
-        label="sealed native dependency prefix",
-        owner_uid=0,
-        exact_mode=0o555,
+        prefix,
+        label=label,
+        owner_uid=owner_uid,
+        exact_mode=exact_mode,
     )
-    runtime = prefix / "lib"
-    if not runtime.exists() and not runtime.is_symlink():
-        return []
-    return [
-        canonical_real_directory(
-            runtime,
-            label="sealed native prefix runtime lib",
-            owner_uid=0,
-            exact_mode=0o555,
+    roots: list[Path] = []
+    # WHY: relocated native tools can name both executable support under
+    # <prefix>/lib (for example an ELF loader) and interpreter data under
+    # <prefix>/share (for example Automake Perl modules). Select only these
+    # fixed runner-owned roots, authenticate their complete trees, and keep
+    # mutable Homebrew state and unrelated prefix directories absent.
+    for name in NATIVE_PREFIX_RUNTIME_ROOT_NAMES:
+        runtime = prefix / name
+        if not runtime.exists() and not runtime.is_symlink():
+            continue
+        roots.append(
+            canonical_real_directory(
+                runtime,
+                label=f"{label} runtime {name}",
+                owner_uid=owner_uid,
+                exact_mode=exact_mode,
+            )
         )
-    ]
+    return roots
 
 
 def native_closure_document(
@@ -1306,18 +1321,26 @@ def native_closure_document(
     runtime_roots: dict[Path, str],
 ) -> dict[str, Any]:
     """Describe one exact, already-sealed native execution closure."""
+    runtime_records = [
+        {
+            "root": str(cellar.parent / name),
+            "tree_sha256": runtime_roots[cellar.parent / name],
+        }
+        for name in NATIVE_PREFIX_RUNTIME_ROOT_NAMES
+        if cellar.parent / name in runtime_roots
+    ]
+    if len(runtime_records) != len(runtime_roots):
+        fail("native closure includes an unexpected prefix runtime root")
     return {
         "cellar": str(cellar),
         "kegs": [
             {"formula": name, "root": str(root)}
             for name, root in sorted(kegs.items())
         ],
-        "runtime_roots": [
-            {"root": str(root), "tree_sha256": digest}
-            for root, digest in sorted(
-                runtime_roots.items(), key=lambda item: str(item[0])
-            )
-        ],
+        # WHY: the parser derives the same order from the shared fixed-root
+        # contract. Do not sort paths independently and let those definitions
+        # agree only by accident.
+        "runtime_roots": runtime_records,
         "schema": 2,
     }
 
@@ -1337,7 +1360,8 @@ def parse_native_closure_manifest(
         or type(document["kegs"]) is not list
         or len(document["kegs"]) > MAX_DEPENDENCY_KEGS
         or type(document["runtime_roots"]) is not list
-        or len(document["runtime_roots"]) > 1
+        or len(document["runtime_roots"])
+        > len(NATIVE_PREFIX_RUNTIME_ROOT_NAMES)
         or compact_json(document) != data
     ):
         fail(f"{label} has an unexpected schema")
@@ -1367,12 +1391,18 @@ def parse_native_closure_manifest(
         previous_name = name
         roots.add(root)
         result[name] = root
-    # WHY: relocated Linux Homebrew executables can name the prefix loader
-    # directly (for example, Perl uses <prefix>/lib/ld.so). Keg and opt binds
-    # alone therefore are not a complete executable closure. The manifest may
-    # authenticate only this fixed, runner-derived prefix path; it cannot ask
-    # the privileged runner to project an arbitrary prefix directory.
-    runtime_paths = native_prefix_runtime_roots(cellar)
+    # WHY: relocated Linux Homebrew executables can name prefix runtime data
+    # directly (for example, Perl uses <prefix>/lib/ld.so and Automake uses
+    # <prefix>/share/automake-*). Keg and opt binds alone are therefore not a
+    # complete executable closure. The manifest may authenticate only these
+    # fixed, runner-derived prefix paths; it cannot ask the privileged runner
+    # to project an arbitrary prefix directory.
+    runtime_paths = native_prefix_runtime_roots(
+        cellar.parent,
+        label="sealed native dependency prefix",
+        owner_uid=0,
+        exact_mode=0o555,
+    )
     if (
         not all(
             type(record) is dict
@@ -2065,14 +2095,10 @@ def audit_native_projection_links(
         else:
             fail(f"native dependency Formula {rack.name} has no selected keg")
 
-    runtime_roots: list[Path] = []
-    runtime = prefix / "lib"
-    if runtime.exists() or runtime.is_symlink():
-        runtime_roots.append(
-            canonical_real_directory(
-                runtime, label="native prefix runtime lib"
-            )
-        )
+    runtime_roots = native_prefix_runtime_roots(
+        prefix,
+        label="native dependency prefix",
+    )
     projections = dependency_projection_map(
         [(cellar, selected)], runtime_roots
     )
@@ -2100,10 +2126,10 @@ def audit_native_projection_links(
         projections[opt] = (root, False)
         additional_roots.append(root)
 
-    # WHY: only Cellar kegs, exact opt aliases, and <prefix>/lib are mounted
-    # into the closed recipe root. Prefix bin/share/Homebrew links stay absent,
-    # so auditing them would treat unprojected Homebrew state as authority and
-    # still would not strengthen the execution closure.
+    # WHY: Cellar kegs, exact opt aliases, and the same fixed prefix roots
+    # selected for the later sealed service enter the closed recipe root.
+    # Keeping this selection shared prevents the privileged pre-seal audit
+    # from overlooking a link that the service will actually receive.
     if not only_additional_trees:
         for name, keg in keg_roots:
             audit_projected_tree_symlinks(
@@ -2473,9 +2499,9 @@ def validate_request(
         all_native_kegs,
     )
     # The native prefix projection is deliberately narrower than the complete
-    # prefix: only the authenticated loader/runtime directory enters the empty
-    # service root. Homebrew itself, taps, caches, and mutable metadata remain
-    # absent.
+    # prefix: only authenticated runtime code and support-data directories
+    # enter the empty service root. Homebrew itself, taps, caches, and mutable
+    # metadata remain absent.
     dependency_binds.extend((root, root) for root in native_runtime_roots)
     dependency_binds.sort(key=lambda pair: (str(pair[1]), str(pair[0])))
     native_path_roots = native_closure_path_roots(
@@ -3660,7 +3686,12 @@ def stage_native_closure(source_value: str, destination_value: str) -> int:
         fail("native dependency Cellar overlaps the protected runner root")
 
     kegs = installed_keg_roots(cellar, "native dependency")
-    selected_runtime_roots = native_prefix_runtime_roots(cellar)
+    selected_runtime_roots = native_prefix_runtime_roots(
+        cellar.parent,
+        label="sealed native dependency prefix",
+        owner_uid=0,
+        exact_mode=0o555,
+    )
     projections = dependency_projection_map(
         [(cellar, kegs)], selected_runtime_roots
     )

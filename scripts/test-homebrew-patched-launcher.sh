@@ -443,19 +443,36 @@ NATIVE_INTERPRETER_EOF
       -Wl,--dynamic-linker="$native_loader_alias" \
       -o "$native_interpreter"
     rm -f "$native_interpreter_source"
+    automake_support_keg="$prefix/Cellar/automake/1.0/share/automake-1.18/Automake"
+    automake_support_prefix="$prefix/share/automake-1.18/Automake"
+    mkdir -p "$automake_support_keg" "$automake_support_prefix"
+    printf 'closed native Automake support\n' \
+      >"$automake_support_keg/Config.pm"
+    ln -s \
+      ../../../Cellar/automake/1.0/share/automake-1.18/Automake/Config.pm \
+      "$automake_support_prefix/Config.pm"
     for native_child_tool in automake bison flex python; do
       native_child_script="$prefix/Cellar/$native_child_tool/1.0/bin/$native_child_tool"
       {
         printf '#!%s\n' "$prefix/opt/perl/bin/perl"
+        if [ "$native_child_tool" = "automake" ]; then
+          printf '[ "$(/usr/bin/cat %q)" = %q ]\n' \
+            "$prefix/share/automake-1.18/Automake/Config.pm" \
+            "closed native Automake support"
+        fi
         printf 'echo %q\n' "closed native child tool: $native_child_tool"
       } >"$native_child_script"
       chmod 0755 "$native_child_script"
     done
     ;;
   create-native-runtime-link)
-    [ "$#" -eq 3 ]
-    mkdir -p "$prefix/lib"
-    ln -s "$2" "$prefix/lib/$3"
+    [ "$#" -eq 4 ]
+    case "$2" in
+      lib|share) ;;
+      *) exit 64 ;;
+    esac
+    mkdir -p "$prefix/$2"
+    ln -s "$3" "$prefix/$2/$4"
     ;;
   create-native-fifo)
     [ "$#" -eq 2 ]
@@ -466,11 +483,15 @@ NATIVE_INTERPRETER_EOF
     rm -f "$prefix/$2"
     ;;
   remove-native-runtime-entry)
-    [ "$#" -eq 2 ]
-    rm -f "$prefix/lib/$2"
-    # WHY: this negative canary creates prefix/lib before the real loader
-    # fixture. Remove only an empty directory so it cannot leak test ownership.
-    rmdir "$prefix/lib"
+    [ "$#" -eq 3 ]
+    case "$2" in
+      lib|share) ;;
+      *) exit 64 ;;
+    esac
+    rm -f "$prefix/$2/$3"
+    # WHY: these negative canaries create fixed runtime roots before the real
+    # fixture. Remove only an empty directory so test ownership cannot leak.
+    rmdir "$prefix/$2"
     ;;
   remove-native-version)
     [ "$#" -eq 3 ]
@@ -2586,15 +2607,25 @@ EOF
   [ "$native_pgrep_status" -eq 1 ] ||
     fail "native Formula process check did not prove an empty UID"
 
-  # WHY: only Cellar kegs, exact opt aliases, and prefix/lib enter the closed
-  # recipe root. A prefix-root link is unprojected Homebrew state, so put this
-  # escape canary in prefix/lib where it would become recipe authority.
+  # WHY: only Cellar kegs, exact opt aliases, and fixed prefix runtime roots
+  # enter the closed recipe root. A general prefix-root link is unprojected
+  # Homebrew state, so put this escape canary in prefix/lib where it would
+  # become recipe authority.
   homebrew_patched_launcher_run_native create-native-runtime-link \
-    "$isolated_output" unsafe-link
+    lib "$isolated_output" unsafe-link
   if homebrew_patched_launcher_seal_native_prefix >/dev/null 2>&1; then
     fail "native Homebrew accepted an escaping symlink"
   fi
-  homebrew_patched_launcher_run_native remove-native-runtime-entry unsafe-link
+  homebrew_patched_launcher_run_native \
+    remove-native-runtime-entry lib unsafe-link
+  homebrew_patched_launcher_run_native create-native-runtime-link \
+    share "$isolated_output" unsafe-link
+  if homebrew_patched_launcher_audit_native_projection_links \
+      >/dev/null 2>&1; then
+    fail "native Homebrew pre-seal audit ignored a prefix/share escape"
+  fi
+  homebrew_patched_launcher_run_native \
+    remove-native-runtime-entry share unsafe-link
   homebrew_patched_launcher_run_native create-native-fifo unsafe-fifo
   if homebrew_patched_launcher_seal_native_prefix >/dev/null 2>&1; then
     fail "native Homebrew accepted a special filesystem entry"
@@ -2647,11 +2678,15 @@ EOF
   done
   /usr/bin/sudo -n -- jq -e \
     --arg cellar "$isolated_native_prefix/Cellar" \
-    --arg runtime "$isolated_native_prefix/lib" '
+    --arg runtime_lib "$isolated_native_prefix/lib" \
+    --arg runtime_share "$isolated_native_prefix/share" '
       .schema == 2 and .cellar == $cellar and
-      (.runtime_roots | length) == 1 and
-      .runtime_roots[0].root == $runtime and
-      (.runtime_roots[0].tree_sha256 | test("^[0-9a-f]{64}$")) and
+      (.runtime_roots | length) == 2 and
+      .runtime_roots[0].root == $runtime_lib and
+      .runtime_roots[1].root == $runtime_share and
+      (.runtime_roots | all(
+        .tree_sha256 | test("^[0-9a-f]{64}$")
+      )) and
       [.kegs[].formula] == [
         "automake", "bison", "cmake", "flex", "ninja", "openssl@3",
         "perl", "python"
@@ -3120,12 +3155,12 @@ EOF
       "$schema2_native_auditor" ||
     fail "schema-2 lifecycle did not stage an independent native link auditor"
   homebrew_patched_launcher_run_native create-native-runtime-link \
-    "$schema2_output" unsafe-link
+    lib "$schema2_output" unsafe-link
   if homebrew_patched_launcher_seal_native_prefix >/dev/null 2>&1; then
     fail "schema-2 native audit accepted an escaping link"
   fi
   homebrew_patched_launcher_run_native \
-    remove-native-runtime-entry unsafe-link
+    remove-native-runtime-entry lib unsafe-link
   homebrew_patched_launcher_run_native install-native-fixture cmake
   homebrew_patched_launcher_audit_native_projection_links
   homebrew_patched_launcher_seal_native_prefix

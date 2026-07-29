@@ -1471,19 +1471,28 @@ class NativeClosureAuthenticationTests(unittest.TestCase):
                     label="native closure manifest",
                 )
 
-    def test_authenticates_only_the_fixed_native_prefix_runtime_root(self) -> None:
+    def test_authenticates_only_fixed_native_prefix_runtime_roots(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             prefix = Path(temporary).resolve() / "native"
             cellar = prefix / "Cellar"
-            runtime = prefix / "lib"
+            runtime_lib = prefix / "lib"
+            runtime_share = prefix / "share"
+            excluded_bin = prefix / "bin"
             cellar.mkdir(parents=True)
-            runtime.mkdir()
+            runtime_lib.mkdir()
+            runtime_share.mkdir()
+            excluded_bin.mkdir()
             prefix.chmod(0o555)
             cellar.chmod(0o555)
-            runtime.chmod(0o555)
-            runtime_digest = "a" * 64
+            runtime_lib.chmod(0o555)
+            runtime_share.chmod(0o555)
+            excluded_bin.chmod(0o555)
+            runtime_digests = {
+                runtime_lib: "a" * 64,
+                runtime_share: "b" * 64,
+            }
             document = runner.native_closure_document(
-                cellar, {}, {runtime: runtime_digest}
+                cellar, {}, runtime_digests
             )
 
             with self.translate_fixture_root_ownership():
@@ -1493,12 +1502,16 @@ class NativeClosureAuthenticationTests(unittest.TestCase):
                     label="native closure manifest",
                 )
                 self.assertEqual(kegs, {})
-                self.assertEqual(roots, {runtime: runtime_digest})
+                self.assertEqual(roots, runtime_digests)
                 document["runtime_roots"] = [
                     {
-                        "root": str(prefix / "bin"),
-                        "tree_sha256": runtime_digest,
-                    }
+                        "root": str(excluded_bin),
+                        "tree_sha256": runtime_digests[runtime_lib],
+                    },
+                    {
+                        "root": str(runtime_share),
+                        "tree_sha256": runtime_digests[runtime_share],
+                    },
                 ]
                 with self.assertRaisesRegex(
                     runner.RunnerError, "changed the native prefix runtime roots"
@@ -2036,6 +2049,29 @@ class SealedDependencyPathTests(unittest.TestCase):
                     runner, "host_runtime_directory_projections", return_value=[]
                 ),
                 self.assertRaisesRegex(runner.RunnerError, "opt alias is indirect"),
+            ):
+                runner.audit_native_projection_links(
+                    str(prefix),
+                    [],
+                    only_additional_trees=False,
+                )
+
+    def test_native_link_audit_rejects_escape_from_prefix_share(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            prefix = Path(temporary).resolve() / "native"
+            (prefix / "Cellar").mkdir(parents=True)
+            share = prefix / "share"
+            share.mkdir()
+            (share / "escape").symlink_to(Path("/tmp"))
+
+            with (
+                mock.patch.object(
+                    runner, "host_runtime_directory_projections", return_value=[]
+                ),
+                self.assertRaisesRegex(
+                    runner.RunnerError,
+                    "symlink leaves the native execution closure",
+                ),
             ):
                 runner.audit_native_projection_links(
                     str(prefix),
