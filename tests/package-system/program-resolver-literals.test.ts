@@ -47,6 +47,11 @@ type StalePathOwner = {
   replacement: string;
 };
 
+type StalePathTrieNode = {
+  children: Map<string, StalePathTrieNode>;
+  stalePath?: string;
+};
+
 const sourceRoots = [
   ".cargo",
   ".github",
@@ -192,17 +197,69 @@ function auditedSourceFiles(): string[] {
   ].sort();
 }
 
+function stalePathTrie(
+  candidates: ReadonlyMap<string, StalePathOwner[]>,
+): StalePathTrieNode {
+  const root: StalePathTrieNode = { children: new Map() };
+  for (const stalePath of candidates.keys()) {
+    let node = root;
+    for (const character of stalePath) {
+      let child = node.children.get(character);
+      if (!child) {
+        child = { children: new Map() };
+        node.children.set(character, child);
+      }
+      node = child;
+    }
+    node.stalePath = stalePath;
+  }
+  return root;
+}
+
+function stalePathsInLine(
+  line: string,
+  trie: StalePathTrieNode,
+): Set<string> {
+  const matches = new Set<string>();
+  let searchFrom = 0;
+  while (true) {
+    const start = line.indexOf("programs/", searchFrom);
+    if (start < 0) return matches;
+    let node = trie;
+    for (let offset = start; offset < line.length; offset += 1) {
+      const child = node.children.get(line[offset]);
+      if (!child) break;
+      node = child;
+      if (node.stalePath) matches.add(node.stalePath);
+    }
+    searchFrom = start + 1;
+  }
+}
+
 function staleLiteralFailures(
   candidates: ReadonlyMap<string, StalePathOwner[]>,
 ): string[] {
   const failures: string[] = [];
+  const trie = stalePathTrie(candidates);
   for (const relPath of auditedSourceFiles()) {
     const bytes = readFileSync(join(repoRoot, relPath));
     if (bytes.includes(0)) continue;
     const lines = bytes.toString("utf8").split("\n");
+    const matchingLines = new Map<string, number[]>();
+    lines.forEach((line, index) => {
+      // WHY: the audit grows with both repository size and package count.
+      // Walking every source line once per candidate made its runtime
+      // quadratic and let ordinary CI load cross Vitest's default timeout.
+      // The prefix trie retains exact substring semantics, including nested
+      // candidates, while inspecting each relevant character only once.
+      for (const stalePath of stalePathsInLine(line, trie)) {
+        const indices = matchingLines.get(stalePath) ?? [];
+        indices.push(index);
+        matchingLines.set(stalePath, indices);
+      }
+    });
     for (const [stalePath, owners] of candidates) {
-      lines.forEach((line, index) => {
-        if (!line.includes(stalePath)) return;
+      for (const index of matchingLines.get(stalePath) ?? []) {
         const replacements = [...new Set(owners.map((owner) => owner.replacement))]
           .sort()
           .map((replacement) => JSON.stringify(replacement))
@@ -215,7 +272,7 @@ function staleLiteralFailures(
           `${relPath}:${index + 1}: ${JSON.stringify(stalePath)} is a stale flat `
           + `resolver path owned by package ${packages}; use ${replacements}`,
         );
-      });
+      }
     }
   }
   return failures;
@@ -244,6 +301,21 @@ describe("program resolver source literals", () => {
     const candidates = staleFlatPackagePaths(syntheticIndex, legitimatePaths);
     expect(candidates.has("programs/sh.wasm")).toBe(false);
     expect(candidates.has("programs/wasm32/sh.wasm")).toBe(false);
+  });
+
+  it("finds nested candidates once even when a literal repeats", () => {
+    const candidates = new Map<string, StalePathOwner[]>([
+      ["programs/tool.wasm", []],
+      ["programs/tool.wasm.debug", []],
+    ]);
+    const matches = stalePathsInLine(
+      "programs/tool.wasm.debug programs/tool.wasm programs/tool.wasm",
+      stalePathTrie(candidates),
+    );
+    expect([...matches]).toEqual([
+      "programs/tool.wasm",
+      "programs/tool.wasm.debug",
+    ]);
   });
 
   it("does not name package-directory outputs through obsolete flat paths", () => {
