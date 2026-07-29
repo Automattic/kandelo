@@ -2175,6 +2175,50 @@ pub extern "C" fn kernel_thread_has_deliverable(pid: u32, tid: u32) -> i32 {
     }
 }
 
+/// Generate one process-directed signal from a host-owned asynchronous event.
+///
+/// WHY: alarm expiry and child lifecycle notification occur after the guest
+/// syscall that armed or caused them has returned. Re-entering the target's
+/// syscall channel as a synthetic `kill()` would compete with an exact blocked
+/// retry owned by that task and can truthfully fail with EBUSY. This boundary
+/// names the target explicitly, creates no caller task authority, and retains
+/// the historical self-`kill()` SI_USER metadata until richer event-specific
+/// siginfo is represented by the ABI.
+#[unsafe(no_mangle)]
+pub extern "C" fn kernel_generate_host_signal(pid: u32, signum: u32) -> i32 {
+    use wasm_posix_shared::signal::NSIG;
+
+    if signum >= NSIG && signum != 0 {
+        return -(Errno::EINVAL as i32);
+    }
+
+    let _gkl = GklGuard::acquire();
+    let table = unsafe { &mut *PROCESS_TABLE.0.get() };
+    let Some((proc, advisory_locks)) = table.process_and_advisory_locks(pid)
+    else {
+        return -(Errno::ESRCH as i32);
+    };
+    if !proc.is_live_explicit_tid(proc.pid) {
+        return -(Errno::ESRCH as i32);
+    }
+    if signum == 0 {
+        return 0;
+    }
+
+    let sender_uid = proc.uid;
+    proc.raise_signal_with_metadata(signum, 0, 0, pid, sender_uid);
+    if let Some(target_tid) = proc.pick_thread_for_shared_signal(signum) {
+        let mut host = WasmHostIO;
+        let _ = deliver_pending_signals_for_tid_with_locks(
+            proc,
+            advisory_locks,
+            &mut host,
+            target_tid,
+        );
+    }
+    0
+}
+
 /// Get fork exec path for a specific process.
 /// Writes path to buf, returns bytes written, 0 if no exec path, -ESRCH if not found.
 #[unsafe(no_mangle)]

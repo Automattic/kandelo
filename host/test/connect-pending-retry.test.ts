@@ -6,6 +6,8 @@ import {
   CH_ARGS,
   CH_ERRNO,
   CH_RETURN,
+  CH_SIG_BASE,
+  CH_SIG_SIGNUM,
   CH_STATUS,
   CH_SYSCALL,
 } from "../src/generated/abi";
@@ -17,6 +19,7 @@ import { installKernelWorkerTestScratch } from "./kernel-worker-test-scratch";
 const EINPROGRESS = 115;
 const EALREADY = 114;
 const ECONNREFUSED = 111;
+const EINTR = 4;
 
 type KernelResult = { retVal: number; errVal: number };
 
@@ -26,7 +29,11 @@ function createSharedMemory(pages = 2): WebAssembly.Memory {
 
 function createConnectHarness(
   results: KernelResult[],
-  options: { nonblock?: boolean; family?: number } = {},
+  options: {
+    nonblock?: boolean;
+    family?: number;
+    handlerSignal?: number;
+  } = {},
 ) {
   const kernelMemory = createSharedMemory();
   const processMemory = createSharedMemory();
@@ -58,7 +65,20 @@ function createConnectHarness(
       kernelExports: {
         kernel_blocking_retry_release: () => 0,
         kernel_blocking_retry_token: () => 1n,
-        kernel_dequeue_signal: () => 0,
+        kernel_dequeue_signal: (
+          _pid: number,
+          _tid: number,
+          rawPointer: number | bigint,
+        ) => {
+          const signal = options.handlerSignal ?? 0;
+          if (signal <= 0) return 0;
+          new DataView(kernelMemory.buffer).setUint32(
+            Number(rawPointer) + CH_SIG_SIGNUM - CH_SIG_BASE,
+            signal,
+            true,
+          );
+          return signal;
+        },
         kernel_get_process_exit_signal: () => -1,
         kernel_get_socket_timeout_ms: getSocketTimeout,
         kernel_handle_channel: handleChannel,
@@ -145,6 +165,20 @@ describe("pending AF_INET connect routing", () => {
     expect(harness.worker.pendingPollRetries.size).toBe(0);
     expect(harness.isFdNonblock).toHaveBeenCalledOnce();
     expect(harness.getSocketTimeout).toHaveBeenCalledOnce();
+  });
+
+  it("interrupts a blocking pending connect for a caught signal", () => {
+    const harness = createConnectHarness(
+      [{ retVal: -1, errVal: EINPROGRESS }],
+      { handlerSignal: 10 },
+    );
+
+    harness.worker.handleSyscall(harness.channel);
+
+    expect(harness.completeChannel).toHaveBeenCalledOnce();
+    expect(harness.completeChannel.mock.calls[0].slice(4, 6))
+      .toEqual([-1, EINTR]);
+    expect(harness.worker.pendingPollRetries.size).toBe(0);
   });
 
   it("keeps a blocking EALREADY retry parked and then returns the failure", () => {

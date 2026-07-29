@@ -207,6 +207,7 @@ function createRetryHarness(
     kernel_get_process_exit_signal: () => -1,
     kernel_get_process_state: () => 0,
     kernel_get_socket_timeout_ms: vi.fn(() => 0n),
+    kernel_generate_host_signal: () => 0,
     kernel_handle_channel: () => 0,
     kernel_is_fd_nonblock: () => 0,
     kernel_mq_descriptor_msgsize: () => 4,
@@ -4173,6 +4174,136 @@ describe("remaining pointer-bearing blocking retry snapshots", () => {
       expect(
         harness.worker.blockingRetrySnapshots.has(harness.channel),
       ).toBe(false);
+    },
+  );
+
+  it.each(WIDTHS)(
+    "%s publishes EINTR instead of re-parking a caught signal on accept",
+    (_name, pointerWidth) => {
+      const harness = createRetryHarness(pointerWidth);
+      writeRequest(harness, ABI_SYSCALLS.Accept, [7n, 0n, 0n]);
+      harness.kernelExports.kernel_blocking_retry_token = vi.fn(() => 74n);
+      harness.kernelExports.kernel_handle_channel = vi.fn(
+        (rawPointer: number | bigint) => {
+          publishKernelResult(
+            kernelView(harness, rawPointer),
+            -1,
+            EAGAIN,
+          );
+          return 0;
+        },
+      );
+      harness.kernelExports.kernel_dequeue_signal = vi.fn(
+        (
+          _pid: number,
+          _tid: number,
+          rawPointer: number | bigint,
+        ) => writeKernelCaughtSignal(harness, rawPointer),
+      );
+
+      harness.worker.handleSyscall(harness.channel);
+
+      expect(requestResult(harness)).toEqual({
+        status: CHANNEL_STATUS_COMPLETE,
+        returnValue: -1,
+        errno: EINTR,
+      });
+      const channelView = new DataView(
+        harness.processMemory.buffer,
+        harness.channel.channelOffset,
+      );
+      expect(channelView.getUint32(CH_SIG_SIGNUM, true)).toBe(SIGUSR1);
+      expect(channelView.getUint32(CH_SIG_FLAGS, true)).toBe(SA_RESTART);
+      expect(
+        harness.kernelExports.kernel_blocking_retry_token,
+      ).toHaveBeenCalledWith(
+        harness.channel.pid,
+        harness.channel.pid,
+        ABI_SYSCALLS.Accept,
+      );
+      expect(
+        harness.kernelExports.kernel_handle_channel.mock.calls.map(
+          (call) => call[3],
+        ),
+      ).toEqual([0n]);
+      expect(
+        harness.kernelExports.kernel_blocking_retry_release,
+      ).toHaveBeenCalledWith(
+        harness.channel.pid,
+        harness.channel.pid,
+        74n,
+      );
+      expect(harness.worker.pendingPollRetries.has(harness.channel)).toBe(
+        false,
+      );
+    },
+  );
+
+  it.each(WIDTHS)(
+    "%s preserves public accept EAGAIN while attaching a caught signal",
+    (_name, pointerWidth) => {
+      const harness = createRetryHarness(pointerWidth);
+      writeRequest(harness, ABI_SYSCALLS.Accept, [7n, 0n, 0n]);
+      const isFdNonblock = vi.fn(() => 1);
+      harness.kernelExports.kernel_is_fd_nonblock = isFdNonblock;
+      harness.kernelExports.kernel_blocking_retry_token = vi.fn(() => 75n);
+      harness.kernelExports.kernel_handle_channel = vi.fn(
+        (rawPointer: number | bigint) => {
+          publishKernelResult(
+            kernelView(harness, rawPointer),
+            -1,
+            EAGAIN,
+          );
+          return 0;
+        },
+      );
+      harness.kernelExports.kernel_dequeue_signal = vi.fn(
+        (
+          _pid: number,
+          _tid: number,
+          rawPointer: number | bigint,
+        ) => writeKernelCaughtSignal(harness, rawPointer),
+      );
+
+      harness.worker.handleSyscall(harness.channel);
+
+      expect(requestResult(harness)).toEqual({
+        status: CHANNEL_STATUS_COMPLETE,
+        returnValue: -1,
+        errno: EAGAIN,
+      });
+      expect(isFdNonblock).toHaveBeenCalledWith(
+        harness.channel.pid,
+        7,
+      );
+      const channelView = new DataView(
+        harness.processMemory.buffer,
+        harness.channel.channelOffset,
+      );
+      expect(channelView.getUint32(CH_SIG_SIGNUM, true)).toBe(SIGUSR1);
+      expect(channelView.getUint32(CH_SIG_FLAGS, true)).toBe(SA_RESTART);
+      expect(
+        harness.kernelExports.kernel_blocking_retry_token,
+      ).toHaveBeenCalledWith(
+        harness.channel.pid,
+        harness.channel.pid,
+        ABI_SYSCALLS.Accept,
+      );
+      expect(
+        harness.kernelExports.kernel_handle_channel.mock.calls.map(
+          (call) => call[3],
+        ),
+      ).toEqual([0n]);
+      expect(
+        harness.kernelExports.kernel_blocking_retry_release,
+      ).toHaveBeenCalledWith(
+        harness.channel.pid,
+        harness.channel.pid,
+        75n,
+      );
+      expect(harness.worker.pendingPollRetries.has(harness.channel)).toBe(
+        false,
+      );
     },
   );
 
