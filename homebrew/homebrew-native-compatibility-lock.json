@@ -13573,7 +13573,8 @@
     "texinfo": {
       "internal": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "0dd622bb0151013803cdf5977f76cf78622fcb92478062d6ce2612199f7a049f",
+        "bottle_checksum": "5f143c0103716ee72ddcee40d88784cf6d474ee6f0322ecfa7ad33880e35255a",
+        "bottle_rebuild": 1,
         "desc": "Official documentation format of the GNU project",
         "executables": [
           "info",
@@ -13609,7 +13610,7 @@
             "type": "run"
           }
         ],
-        "ruby_source_checksum": "610dbc5704f1e3a35dd4c155bcdbdbc9e18f73c883892a86d2691df4f62a273b",
+        "ruby_source_checksum": "b2e4dad7f8cfc67a5d674f5fe0910c409547fc35e72234ebf27b2398b9f177ae",
         "stable_checksum": "51f74eb0f51cfa9873b85264dfdd5d46e8957ec95b88f0fb762f63d9e164c72e",
         "stable_dependencies": [
           "libunistring"
@@ -13629,7 +13630,8 @@
       },
       "public": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "0dd622bb0151013803cdf5977f76cf78622fcb92478062d6ce2612199f7a049f",
+        "bottle_checksum": "5f143c0103716ee72ddcee40d88784cf6d474ee6f0322ecfa7ad33880e35255a",
+        "bottle_rebuild": 1,
         "desc": "Official documentation format of the GNU project",
         "executables": [
           "info",
@@ -13665,7 +13667,7 @@
             "type": "run"
           }
         ],
-        "ruby_source_checksum": "610dbc5704f1e3a35dd4c155bcdbdbc9e18f73c883892a86d2691df4f62a273b",
+        "ruby_source_checksum": "b2e4dad7f8cfc67a5d674f5fe0910c409547fc35e72234ebf27b2398b9f177ae",
         "stable_checksum": "51f74eb0f51cfa9873b85264dfdd5d46e8957ec95b88f0fb762f63d9e164c72e",
         "stable_dependencies": [
           "libunistring"
