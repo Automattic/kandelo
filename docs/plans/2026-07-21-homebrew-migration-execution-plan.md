@@ -35,6 +35,10 @@ The current landing train is:
 
 ### Guest prefix decision — 2026-07-29
 
+The detailed atomic inventory, dependency schedule, campaign tooling, and
+completion evidence are in
+[`2026-07-29-homebrew-guest-prefix-cutover.md`](2026-07-29-homebrew-guest-prefix-cutover.md).
+
 Kandelo guests use `/opt/kandelo/homebrew`, its Cellar is
 `/opt/kandelo/homebrew/Cellar`, and `/usr/bin/brew` is the stable command.
 The guest keeps the existing `user` identity at UID/GID 1000 and its Homebrew
