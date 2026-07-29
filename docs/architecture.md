@@ -731,11 +731,13 @@ fence.
 Normal exit and exec wait for an exact `memory_quiescent` message from every
 process Worker and pthread Worker before dropping host aliases. Forced
 termination drops the kernel realm's aliases but never makes the backing
-eligible for reuse. Whole-host destroy first terminates every nested process
-and pthread Worker, then terminates the containing kernel Worker even if its
-bounded graceful detach attempt fails or times out. That realm boundary is the
-final release fallback; a false graceful result never asks the main thread to
-keep a partially detached kernel Worker alive.
+eligible for reuse. Whole-host destroy synchronously closes process/pthread
+Worker creation admission, waits for every already-admitted async creator to
+finish or roll back, then terminates every nested process and pthread Worker.
+It finally terminates the containing kernel Worker even if that bounded
+graceful detach attempt fails or times out. That realm boundary is the final
+release fallback; a false graceful result never asks the main thread to keep a
+partially detached kernel Worker alive.
 
 The allocator applies a hard live-address-space count and samples a live-byte
 admission budget before each new allocation. Uninstrumented
@@ -750,13 +752,16 @@ threshold. Crossing that count or byte threshold pauses later allocations, but
 does not reject retirement: one already-grown backing or several already-live
 generations exiting together may overshoot it. JavaScript cannot hard-bound
 engine-native backing that an engine has not reclaimed. `FinalizationRegistry`
-and a coalesced 32 MiB ordinary-allocation pressure hook provide telemetry and
+and a coalesced 4 MiB ordinary-allocation pressure hook provide telemetry and
 an engine-reclamation nudge only; neither is correctness or capacity
 authority. The pressure hook stays enabled because the controlled Node churn
 negative control has intermittently retained history-proportional resident
 memory when disabled, while enabled runs have reclaimed consistently. Other
 disabled runs collected in a later large step. These observations are
-engine-specific evidence for the default, not a collection guarantee.
+engine-specific evidence for the default, not a collection guarantee. The
+dated Node, Chromium, Firefox, and WebKit measurements and their limitations
+are recorded in
+[`docs/measurements/2026-07-28-process-memory-retirement-rss.md`](measurements/2026-07-28-process-memory-retirement-rss.md).
 
 Fork children synchronously acquire an exactly sized fresh backing and copy the
 parent's current memory length before the first asynchronous host operation.

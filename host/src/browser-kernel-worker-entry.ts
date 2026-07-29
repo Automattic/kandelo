@@ -82,6 +82,7 @@ import {
   ExactProcessGenerationDetachLedger,
   type ExactProcessGenerationDetachResult,
 } from "./process-generation-detach";
+import { ProcessMemoryCreatorGate } from "./process-memory-creator-gate";
 import type {
   HostDiagnostic,
   MainToKernelMessage,
@@ -113,6 +114,7 @@ let initFailure: string | null = null;
 const pendingLazyRegistrationMessages: LazyRegistrationMessage[] = [];
 let lazyRegistrationTail: Promise<void> = Promise.resolve();
 const rootfsSnapshotGate = new RootfsSnapshotGate();
+const processMemoryCreators = new ProcessMemoryCreatorGate();
 
 // Process tracking
 interface ForkReplayContext {
@@ -506,7 +508,9 @@ function allocateProcessGeneration(): number {
  * Browser main is an independent owner after fb_bind posts WebAssembly.Memory,
  * so its exact-generation acknowledgement is part of retirement too. A
  * timeout does not pretend success: callers route the lease through forced
- * retirement, which remains safe because process Memory is never reused.
+ * retirement, which remains safe because process Memory is never reused. The
+ * ownership boundary and RSS evidence are recorded in
+ * docs/measurements/2026-07-28-process-memory-retirement-rss.md.
  */
 function releaseMainFramebufferGeneration(
   pid: number,
@@ -948,32 +952,47 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
         processMemoryAllocator.observeTarget(memory, target);
       },
       onFork: ({ parentPid, childPid, parentMemory, continuation }) => {
-        // Tell the main thread a kernel-side fork happened so Inspector
-        // panes can refresh their process table without polling.
-        post({ type: "proc_event", kind: "spawn", pid: childPid, ppid: parentPid });
-        return handleFork(parentPid, childPid, parentMemory, continuation);
+        return processMemoryCreators.run("a fork process Worker", () => {
+          // Tell the main thread a kernel-side fork happened so Inspector
+          // panes can refresh their process table without polling.
+          post({
+            type: "proc_event",
+            kind: "spawn",
+            pid: childPid,
+            ppid: parentPid,
+          });
+          return handleFork(parentPid, childPid, parentMemory, continuation);
+        });
       },
-      onExec: async (pid, path, argv, envp, callerTid) => {
-        const previousWorker = processes.get(pid)?.worker;
-        const result = await handleExec(pid, path, argv, envp, callerTid);
-        // Fire after handleExec updates the kernel Process.argv. If this is
-        // sent before registerProcess(..., { argv }), Kandelo's Procs tab
-        // refreshes against stale cmdline data and only corrects on remount.
-        // Fatal post-commit handoffs return 0 too, but install no new worker.
-        const installedWorker = processes.get(pid)?.worker;
-        if (
-          result === 0
-          && installedWorker
-          && installedWorker !== previousWorker
-          && kernelWorker.isProcessExecutionActive(pid)
-        ) {
-          post({ type: "proc_event", kind: "exec", pid });
-        }
-        return result;
-      },
+      onExec: (pid, path, argv, envp, callerTid) =>
+        processMemoryCreators.run("an exec process Worker", async () => {
+          const previousWorker = processes.get(pid)?.worker;
+          const result = await handleExec(pid, path, argv, envp, callerTid);
+          // Fire after handleExec updates the kernel Process.argv. If this is
+          // sent before registerProcess(..., { argv }), Kandelo's Procs tab
+          // refreshes against stale cmdline data and only corrects on remount.
+          // Fatal post-commit handoffs return 0 too, but install no new worker.
+          const installedWorker = processes.get(pid)?.worker;
+          if (
+            result === 0
+            && installedWorker
+            && installedWorker !== previousWorker
+            && kernelWorker.isProcessExecutionActive(pid)
+          ) {
+            post({ type: "proc_event", kind: "exec", pid });
+          }
+          return result;
+        }),
       onResolveSpawn: handlePosixSpawnResolve,
-      onSpawn: handlePosixSpawn,
-      onClone: handleClone,
+      onSpawn: (parentPid, childPid, program, envp) =>
+        processMemoryCreators.run(
+          "a posix_spawn process Worker",
+          () => handlePosixSpawn(parentPid, childPid, program, envp),
+        ),
+      onClone: (attachment) => processMemoryCreators.run(
+        "a pthread Worker",
+        () => handleClone(attachment),
+      ),
       onThreadExit: (pid, _tid, channelOffset) => handleThreadExit(pid, channelOffset),
       onExit: (pid, exitStatus) => handleExit(pid, exitStatus),
     },
@@ -1010,10 +1029,10 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   kernelInstance = kw.kernelInstance;
   kernelMemory = kw.kernelMemory;
 
-  // /dev/fb0 forwarding: the registry lives in this worker, but the
-  // canvas lives on the main thread. Translate bind/unbind events into
-  // postMessage so a main-thread renderer can read pixels directly
-  // from the process's wasm Memory SAB.
+  // /dev/fb0 forwarding: the registry lives in this worker, but the canvas
+  // lives on the main thread. WHY: today's zero-copy fbdev contract therefore
+  // exposes raw process Memory and must pair every bind with the exact release
+  // fence above; see docs/measurements/2026-07-28-process-memory-retirement-rss.md.
   kernelWorker.framebuffers.onChange((pid, ev) => {
     const processInfo = processes.get(pid);
     if (!processInfo) return;
@@ -2765,7 +2784,7 @@ function handlePickListenerTarget(msg: Extract<MainToKernelMessage, { type: "pic
   respond(msg.requestId, result);
 }
 
-async function handleDestroy(msg: Extract<MainToKernelMessage, { type: "destroy" }>) {
+async function performDestroy() {
   // Phase 1 — wake every Atomics.wait-blocked worker so it cooperatively exits.
   // [JSC-TERMINATE-ATOMICS-WAIT-LEAK] — WORKAROUND, remove when the engine bug is
   // fixed; see docs/jsc-terminate-atomics-wait-workaround.md.
@@ -2801,7 +2820,7 @@ async function handleDestroy(msg: Extract<MainToKernelMessage, { type: "destroy"
 
   // Phase 3 — terminate any stragglers (non-blocked workers, or any that
   // didn't exit in time) + thread workers, then clear every per-pid map.
-  // Mirrors handleDestroy in node-kernel-worker-entry.ts — without the
+  // Mirrors performDestroy in node-kernel-worker-entry.ts — without the
   // threadWorkers / ptyByPid clears, those maps stay populated across kernel
   // rebuilds (e.g. iframe reload) and leak.
   const retireCurrentGenerations = async (): Promise<void> => {
@@ -2852,9 +2871,9 @@ async function handleDestroy(msg: Extract<MainToKernelMessage, { type: "destroy"
     }
   }
   vmInterruptTimers.clearAll();
-  // WHY: a spawn or exec continuation can install a generation after the
-  // second snapshot. Only its own exact transaction may remove that object.
-  const gracefulDetachComplete =
+  // The enclosing creator gate is closed and drained, so this exact map/ledger
+  // state cannot be invalidated by a later spawn/exec/fork/clone continuation.
+  let gracefulDetachComplete =
     processGenerationDetaches.pendingCount === 0 && processes.size === 0;
   threadModuleCache.clear();
   threadWorkers.clear();
@@ -2863,6 +2882,17 @@ async function handleDestroy(msg: Extract<MainToKernelMessage, { type: "destroy"
   initReady = false;
   initFailure = "kernel worker destroyed";
   failPendingLazyRegistrations(initFailure);
+  if (gracefulDetachComplete) {
+    try {
+      processMemoryAllocator.clear();
+    } catch (error) {
+      gracefulDetachComplete = false;
+      console.warn(
+        "[browser-kernel-worker] process memory allocator retained an unsafe " +
+        `lease during destroy: ${formatError(error)}`,
+      );
+    }
+  }
   if (!gracefulDetachComplete) {
     console.warn(
       "[browser-kernel-worker] destroy retained exact process-generation " +
@@ -2870,10 +2900,20 @@ async function handleDestroy(msg: Extract<MainToKernelMessage, { type: "destroy"
       "fallback",
     );
   }
-  respond(
-    msg.requestId,
-    kernelRealmDestroyResult(gracefulDetachComplete),
+  return kernelRealmDestroyResult(gracefulDetachComplete);
+}
+
+async function handleDestroy(
+  msg: Extract<MainToKernelMessage, { type: "destroy" }>,
+) {
+  // WHY: browser message and syscall callbacks overlap whenever an async
+  // handler yields. The shared gate closes admission synchronously, drains
+  // every creator already in flight, and runs this terminal sweep only once.
+  // Browser main still terminates this whole worker realm on timeout.
+  const result = await processMemoryCreators.closeAndRunAfterDrain(
+    performDestroy,
   );
+  respond(msg.requestId, result);
 }
 
 // ── PTY ──
@@ -3079,7 +3119,11 @@ sw.onmessage = (e: MessageEvent) => {
         post({ type: "init_error", error });
       });
       break;
-    case "spawn": void handleSpawn(msg); break;
+    case "spawn":
+      void processMemoryCreators
+        .run("a host-spawned process Worker", () => handleSpawn(msg))
+        .catch((error) => respondError(msg.requestId, formatError(error)));
+      break;
     case "terminate_process": void handleTerminateProcess(msg); break;
     case "read_vfs_file": void handleReadVfsFile(msg); break;
     case "write_vfs_file": handleWriteVfsFile(msg); break;

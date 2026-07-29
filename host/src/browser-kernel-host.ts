@@ -1390,6 +1390,7 @@ export class BrowserKernel {
         // WHY: the worker's process/threads can be quiescent while this realm
         // still owns a structured-clone Memory wrapper. Delete only the exact
         // generation, then acknowledge that browser-main ownership is gone.
+        // See docs/measurements/2026-07-28-process-memory-retirement-rss.md.
         this.releaseProcessFramebuffer(msg.pid, msg.generation);
         this.sendToKernel({
           type: "fb_release_generation_ack",

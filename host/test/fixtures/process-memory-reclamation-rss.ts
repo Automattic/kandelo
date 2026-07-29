@@ -15,7 +15,7 @@ const waveChildren = Number(process.env.KANDELO_RECLAIM_WAVE_CHILDREN ?? 8);
 const waveCount = Number(process.env.KANDELO_RECLAIM_WAVES ?? 6);
 const childMiB = Number(process.env.KANDELO_RECLAIM_CHILD_MIB ?? 8);
 const pressureBytes = Number(
-  process.env.KANDELO_RECLAIM_PRESSURE_BYTES ?? 32 * MIB,
+  process.env.KANDELO_RECLAIM_PRESSURE_BYTES ?? 4 * MIB,
 );
 
 // Permit the dedicated kernel Worker to consume this test-only measurement
