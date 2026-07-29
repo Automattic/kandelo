@@ -1033,14 +1033,19 @@ root and its type/mode/content manifest digest when present. Relocated native
 executables can name
 `<prefix>/lib/ld.so` directly, so Cellar and `opt` projections alone are not
 an executable closure. The runner admits only that fixed loader/runtime
-directory, not the whole prefix. Runtime links may resolve only within the
-authenticated kegs, that runtime directory, or the fixed system library realms
-already projected into the empty service root. A link into another prefix
-directory or mutable host path fails closed. When the recipe request arrives,
-the supervisor rescans and rehashes every root-owned, read-only tree and
-requires exact equality with that inventory. A late extra rack, removed or
-replaced keg, mutable tree, duplicate name, changed loader alias, changed
-runtime root, or missing planned direct tool fails closed.
+directory, not the whole prefix. Every symlink in every projected keg and
+runtime tree is resolved component by component in the exact mount namespace
+the recipe will receive. `<prefix>/opt/<formula>` is modeled as the exact
+selected-keg bind, and conventional system targets are allowed only when that
+same host runtime root is projected. A chain that visits `/tmp`, another prefix
+directory, an unknown `opt` alias, or any other unmounted host path fails even
+if its host-side final `realpath` re-enters a sealed keg. Runtime fingerprints
+include indirect link hops and the terminal identity, so changing an
+intermediate alias cannot preserve the authenticated digest. When the recipe
+request arrives, the supervisor rescans every root-owned, read-only tree,
+rehashes the runtime tree, and requires exact equality with that inventory. A
+late extra rack, removed or replaced keg, mutable tree, duplicate name, changed
+loader chain, changed runtime root, or missing planned direct tool fails closed.
 
 The manifest authenticates the complete transitive execution closure, while
 the earlier static plan still decides which tools are direct Formula inputs.
@@ -1068,7 +1073,11 @@ colliding proxy before executing recipe code.
 If that direct keg contains a relative link into its recursive native closure,
 the publisher rewrites the copied link to the exact resolved path in the sealed
 native prefix. This preserves host tools whose launchers are supplied by another
-keg without copying or exposing that transitive keg in the target Cellar.
+keg without copying or exposing that transitive keg in the target Cellar. The
+component-safe audit runs before sealing, again before the bridge copy, and on
+the copied proxy before its `opt` alias is exposed; `realpath` is therefore only
+canonicalization of an already-admitted immutable chain, not the confinement
+decision.
 Unselected keg versions and native transitive dependencies stay in the native
 prefix and cannot claim target Cellar names. Native install logs remain
 separate from Kandelo bottle dependency provenance.

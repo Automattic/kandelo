@@ -149,6 +149,7 @@ ResourceStagingIdentity = tuple[
 ]
 TreeNode = tuple[str, tuple[int, ...], str | None, str | None]
 TreeSnapshot = tuple[tuple[int, ...], dict[str, TreeNode]]
+ProjectionMap = dict[Path, tuple[Path, bool]]
 SAFE_FIXED_ENV_KEYS = {
     "ACLOCAL_PATH",
     "AR",
@@ -644,8 +645,8 @@ def nix_store_requisites(config: dict[str, Any]) -> list[Path]:
     return roots
 
 
-def host_tool_projection(config: dict[str, Any]) -> list[tuple[Path, Path]]:
-    """Select the immutable host runtime visible inside a recipe service."""
+def host_runtime_directory_projections() -> list[tuple[Path, Path]]:
+    """Resolve the conventional host directories mounted into every service."""
     projected: dict[str, tuple[Path, Path]] = {}
     # WHY: RootDirectory starts empty. These aliases provide the ordinary
     # Linux executable and loader paths without exposing the host root. Resolve
@@ -659,6 +660,23 @@ def host_tool_projection(config: dict[str, Any]) -> list[tuple[Path, Path]]:
             destination, label=f"host runtime {rendered}", directory=True
         )
         projected[rendered] = (source, destination)
+    alternatives = Path("/etc/alternatives")
+    if alternatives.exists():
+        projected[str(alternatives)] = (
+            canonical_host_projection_source(
+                alternatives, label="host alternatives", directory=True
+            ),
+            alternatives,
+        )
+    return [projected[key] for key in sorted(projected)]
+
+
+def host_tool_projection(config: dict[str, Any]) -> list[tuple[Path, Path]]:
+    """Select the immutable host runtime visible inside a recipe service."""
+    projected = {
+        str(destination): (source, destination)
+        for source, destination in host_runtime_directory_projections()
+    }
 
     runtime_paths = [config["node_bin"], config["llvm_bin"]]
     for root in nix_store_requisites(config):
@@ -673,14 +691,6 @@ def host_tool_projection(config: dict[str, Any]) -> list[tuple[Path, Path]]:
         source = canonical_host_projection_source(path, label=label, directory=True)
         projected[str(path)] = (source, path)
 
-    alternatives = Path("/etc/alternatives")
-    if alternatives.exists():
-        projected[str(alternatives)] = (
-            canonical_host_projection_source(
-                alternatives, label="host alternatives", directory=True
-            ),
-            alternatives,
-        )
     loader_cache = Path("/etc/ld.so.cache")
     if loader_cache.exists():
         projected[str(loader_cache)] = (
@@ -1407,13 +1417,20 @@ def authenticated_native_closure(
     missing = sorted(set(direct_formulae) - set(actual))
     if missing:
         fail(f"native Cellar omits declared direct tools: {missing!r}")
+    projections = dependency_projection_map(
+        [(cellar, actual)], list(runtime_roots)
+    )
     for name, root in sorted(actual.items()):
-        validate_sealed_dependency_tree(root, f"native dependency {name}")
+        validate_sealed_dependency_tree(
+            root,
+            f"native dependency {name}",
+            symlink_projections=projections,
+        )
     for root, expected_digest in runtime_roots.items():
         authenticate_native_runtime_root(
             root,
             expected_digest,
-            list(actual.values()),
+            projections,
         )
     return actual, list(runtime_roots)
 
@@ -1421,13 +1438,14 @@ def authenticated_native_closure(
 def authenticate_native_runtime_root(
     root: Path,
     expected_digest: str,
-    closure_roots: list[Path],
+    projections: ProjectionMap,
 ) -> None:
     """Match a fixed prefix runtime tree to its post-seal fingerprint."""
     actual_digest = validate_sealed_dependency_tree(
         root,
         "native prefix runtime",
-        runtime_closure_roots=closure_roots,
+        symlink_projections=projections,
+        require_symlink_targets=True,
         hash_contents=True,
     )
     if actual_digest != expected_digest:
@@ -1594,59 +1612,205 @@ def requested_native_proxy_roots(
     return expected
 
 
-def validate_native_runtime_symlink(
-    root: Path,
+def dependency_projection_map(
+    closures: list[tuple[Path, dict[str, Path]]],
+    runtime_roots: list[Path],
+) -> ProjectionMap:
+    """Model the exact directory mounts that form the dependency namespace."""
+    projections: ProjectionMap = {}
+
+    def add(destination: Path, source: Path, *, system: bool) -> None:
+        if (
+            not destination.is_absolute()
+            or Path(os.path.normpath(str(destination))) != destination
+            or not source.is_absolute()
+        ):
+            fail("dependency projection contains a noncanonical path")
+        record = (source, system)
+        previous = projections.get(destination)
+        if previous is not None and previous != record:
+            fail(f"dependency projection collides at {destination}")
+        projections[destination] = record
+
+    # WHY: use the same conventional host directory contract as the service
+    # itself. A link may enter /usr, /lib, or /etc/alternatives only because
+    # that exact root will be mounted; the host's other paths are not admitted.
+    for source, destination in host_runtime_directory_projections():
+        add(destination, source, system=True)
+    for cellar, kegs in closures:
+        prefix = cellar.parent
+        for name, keg in sorted(kegs.items()):
+            add(keg, keg, system=False)
+            # WHY: Homebrew's prefix-level loader and GCC runtime links use
+            # <prefix>/opt/<formula>. The service shadows the host opt symlink
+            # with an exact bind of the authenticated keg, so resolution must
+            # model that bind rather than trust the mutable host pathname.
+            add(prefix / "opt" / name, keg, system=False)
+    for root in runtime_roots:
+        add(root, root, system=False)
+    return projections
+
+
+def projection_for_path(
+    path: Path, projections: ProjectionMap
+) -> tuple[Path, Path, bool] | None:
+    """Select the innermost bind that owns one logical service path."""
+    candidate = path
+    while True:
+        record = projections.get(candidate)
+        if record is not None:
+            source, system = record
+            return candidate, source, system
+        if candidate == Path("/"):
+            return None
+        candidate = candidate.parent
+
+
+def is_projected_or_ancestor(path: Path, projections: ProjectionMap) -> bool:
+    """Recognize a bind path or one of its inert service-root ancestors."""
+    return projection_for_path(path, projections) is not None or any(
+        is_within(destination, path) for destination in projections
+    )
+
+
+def projected_symlink_resolution(
+    link: Path,
     relative: str,
     target: str,
-    closure_roots: list[Path],
+    projections: ProjectionMap,
     label: str,
-) -> None:
-    """Keep prefix-runtime links inside the admitted executable closure."""
-    link = root / relative
-    target_path = Path(target)
-    lexical = (
-        target_path
-        if target_path.is_absolute()
-        else Path(os.path.normpath(str(link.parent / target_path)))
-    )
-    system_runtime_roots = [
-        Path("/lib"),
-        Path("/lib64"),
-        Path("/usr/lib"),
-        Path("/usr/lib64"),
-    ]
-    allowed_roots = [root, *closure_roots]
+    *,
+    require_target: bool,
+) -> list[list[Any]]:
+    """Resolve every symlink hop in the service's projected namespace."""
+    if not link.is_absolute() or not is_projected_or_ancestor(link, projections):
+        fail(f"{label} symlink is outside the native execution closure: {relative}")
 
-    def is_allowed(path: Path) -> bool:
-        return any(is_within(path, allowed) for allowed in allowed_roots) or any(
-            is_within(path, allowed) for allowed in system_runtime_roots
-        )
+    def target_state(raw: str, parent: Path) -> tuple[Path, list[str]]:
+        rendered = PurePosixPath(raw)
+        parts = list(rendered.parts)
+        if rendered.is_absolute():
+            return Path("/"), parts[1:]
+        return parent, parts
 
-    if not lexical.is_absolute() or not is_allowed(lexical):
+    current, remaining = target_state(target, link.parent)
+    if not is_projected_or_ancestor(current, projections):
         fail(f"{label} symlink leaves the native execution closure: {relative}")
+    # Include both the raw link text and every indirect hop in the runtime
+    # fingerprint. Checking only the final realpath permits a mutable /tmp hop
+    # to leave the namespace and re-enter the sealed keg without changing the
+    # direct link or its old final result.
+    resolution: list[list[Any]] = [["l", str(link), target]]
+    states: set[tuple[str, tuple[str, ...]]] = set()
+    expansions = 1
+    while remaining:
+        component = remaining.pop(0)
+        if component in ("", "."):
+            continue
+        if component == "..":
+            current = current.parent if current != Path("/") else current
+            if not is_projected_or_ancestor(current, projections):
+                fail(
+                    f"{label} symlink leaves the native execution closure: {relative}"
+                )
+            continue
+
+        candidate = current / component
+        exact_projection = projections.get(candidate)
+        if exact_projection is not None:
+            current = candidate
+            continue
+
+        projection = projection_for_path(current, projections)
+        if projection is None:
+            if is_projected_or_ancestor(candidate, projections):
+                # Mount parents are inert root-owned directories constructed in
+                # the empty service root; no host symlink is consulted here.
+                current = candidate
+                continue
+            fail(f"{label} symlink leaves the native execution closure: {relative}")
+
+        destination, source, system = projection
+        physical = source / current.relative_to(destination) / component
+        try:
+            before = physical.lstat()
+        except FileNotFoundError:
+            if require_target or system:
+                fail(f"{label} symlink target is unavailable: {relative}")
+            # A missing suffix below a sealed read-only bind cannot be created
+            # by the recipe. Retain that exact terminal in a hash record when
+            # callers request one, but do not follow any host pathname.
+            return [*resolution, ["m", str(candidate), str(destination)]]
+        except OSError as error:
+            fail(f"{label} symlink target is unavailable: {relative}: {error}")
+
+        if stat.S_ISLNK(before.st_mode):
+            state = (str(current), tuple([component, *remaining]))
+            if state in states or expansions >= MAX_SYMLINK_EXPANSIONS:
+                fail(f"{label} has a symlink loop: {relative}")
+            states.add(state)
+            try:
+                indirect_target = os.readlink(physical)
+                after = physical.lstat()
+            except OSError as error:
+                fail(f"{label} symlink target is unavailable: {relative}: {error}")
+            if (
+                file_identity(after) != file_identity(before)
+                or not indirect_target
+                or not safe_tree_text(indirect_target)
+                or len(indirect_target.encode("utf-8", "strict"))
+                > EXPECTED_LIMITS["max_path_bytes"]
+            ):
+                fail(f"{label} has an unsafe or changing symlink: {relative}")
+            expansions += 1
+            resolution.append(["l", str(candidate), indirect_target])
+            current, indirect_parts = target_state(indirect_target, candidate.parent)
+            if not is_projected_or_ancestor(current, projections):
+                fail(
+                    f"{label} symlink leaves the native execution closure: {relative}"
+                )
+            remaining = [*indirect_parts, *remaining]
+            continue
+        if remaining and not stat.S_ISDIR(before.st_mode):
+            fail(f"{label} symlink traverses a non-directory: {relative}")
+        current = candidate
+
+    projection = projection_for_path(current, projections)
+    if projection is None:
+        fail(f"{label} symlink leaves the native execution closure: {relative}")
+    destination, source, system = projection
+    physical = source / current.relative_to(destination)
     try:
-        resolved = lexical.resolve(strict=True)
+        terminal = physical.lstat()
     except OSError as error:
         fail(f"{label} symlink target is unavailable: {relative}: {error}")
-    if not is_allowed(resolved):
-        fail(
-            f"{label} symlink resolves outside the native execution closure: "
-            f"{relative}"
-        )
-    if any(is_within(resolved, allowed) for allowed in system_runtime_roots):
-        metadata = resolved.lstat()
+    if stat.S_ISLNK(terminal.st_mode):
+        # An exact projection root is always a canonical real directory, and
+        # every other symlink is expanded above.
+        fail(f"{label} symlink resolution ended at another symlink: {relative}")
+    if system:
         canonical_host_projection_source(
-            resolved,
+            physical,
             label=f"{label} system symlink target {relative}",
-            directory=stat.S_ISDIR(metadata.st_mode),
+            directory=stat.S_ISDIR(terminal.st_mode),
         )
+    return [
+        *resolution,
+        [
+            "t",
+            str(current),
+            str(destination),
+            *file_identity(terminal),
+        ],
+    ]
 
 
 def validate_sealed_dependency_tree(
     root: Path,
     label: str,
     *,
-    runtime_closure_roots: list[Path] | None = None,
+    symlink_projections: ProjectionMap,
+    require_symlink_targets: bool = False,
     hash_contents: bool = False,
 ) -> str | None:
     """Require a dependency tree to be sealed and optionally fingerprint it."""
@@ -1662,7 +1826,7 @@ def validate_sealed_dependency_tree(
     ):
         os.close(root_fd)
         fail(f"{label} root has unsafe ownership or mode")
-    manifest: list[list[Any]] = [["d", "", 0o555]]
+    manifest: list[list[Any]] = [["d", "", 0o555]] if hash_contents else []
     pending: list[tuple[int, str, os.stat_result]] = [(root_fd, "", root_stat)]
     entries = 0
     total_bytes = 0
@@ -1691,7 +1855,8 @@ def validate_sealed_dependency_tree(
                 if stat.S_ISDIR(before.st_mode):
                     if mode != 0o555:
                         fail(f"{label} directory has a noncanonical mode: {relative}")
-                    manifest.append(["d", relative, mode])
+                    if hash_contents:
+                        manifest.append(["d", relative, mode])
                     child_fd = os.open(name, directory_flags, dir_fd=current_fd)
                     if file_identity(os.fstat(child_fd)) != file_identity(before):
                         os.close(child_fd)
@@ -1717,9 +1882,10 @@ def validate_sealed_dependency_tree(
                         if hash_contents
                         else None
                     )
-                    manifest.append(
-                        ["f", relative, mode, before.st_size, digest]
-                    )
+                    if hash_contents:
+                        manifest.append(
+                            ["f", relative, mode, before.st_size, digest]
+                        )
                 elif stat.S_ISLNK(before.st_mode):
                     target = os.readlink(name, dir_fd=current_fd)
                     if (
@@ -1729,14 +1895,14 @@ def validate_sealed_dependency_tree(
                         > EXPECTED_LIMITS["max_path_bytes"]
                     ):
                         fail(f"{label} has an unsafe symlink: {relative}")
-                    if runtime_closure_roots is not None:
-                        validate_native_runtime_symlink(
-                            root,
-                            relative,
-                            target,
-                            runtime_closure_roots,
-                            label,
-                        )
+                    resolution = projected_symlink_resolution(
+                        root / relative,
+                        relative,
+                        target,
+                        symlink_projections,
+                        label,
+                        require_target=require_symlink_targets,
+                    )
                     after = os.stat(
                         name, dir_fd=current_fd, follow_symlinks=False
                     )
@@ -1745,7 +1911,8 @@ def validate_sealed_dependency_tree(
                         or os.readlink(name, dir_fd=current_fd) != target
                     ):
                         fail(f"{label} symlink changed during inspection: {relative}")
-                    manifest.append(["l", relative, target])
+                    if hash_contents:
+                        manifest.append(["l", relative, target, resolution])
                 else:
                     fail(f"{label} contains an unsupported node: {relative}")
             if file_identity(os.fstat(current_fd)) != file_identity(
@@ -1762,6 +1929,204 @@ def validate_sealed_dependency_tree(
         return None
     manifest.sort(key=lambda record: record[1])
     return hashlib.sha256(compact_json(manifest)).hexdigest()
+
+
+def audit_projected_tree_symlinks(
+    root: Path,
+    label: str,
+    projections: ProjectionMap,
+    *,
+    require_targets: bool,
+) -> None:
+    """Audit link chains before a dependency tree has canonical sealed modes."""
+    pending = [root]
+    entries = 0
+    while pending:
+        current = pending.pop()
+        try:
+            with os.scandir(current) as iterator:
+                children = sorted(iterator, key=lambda entry: entry.name)
+        except OSError as error:
+            fail(f"{label} is unavailable during symlink audit: {error}")
+        for child in children:
+            entries += 1
+            if entries > EXPECTED_LIMITS["max_entries"]:
+                fail(f"{label} exceeds the entry limit")
+            path = Path(child.path)
+            relative = str(path.relative_to(root))
+            safe_relative_path(relative, EXPECTED_LIMITS["max_path_bytes"])
+            try:
+                metadata = child.stat(follow_symlinks=False)
+            except OSError as error:
+                fail(f"{label} changed during symlink audit: {relative}: {error}")
+            if stat.S_ISDIR(metadata.st_mode):
+                pending.append(path)
+                continue
+            if not stat.S_ISLNK(metadata.st_mode):
+                continue
+            try:
+                target = os.readlink(path)
+                after = path.lstat()
+            except OSError as error:
+                fail(f"{label} symlink changed during audit: {relative}: {error}")
+            if (
+                file_identity(after) != file_identity(metadata)
+                or not target
+                or not safe_tree_text(target)
+                or len(target.encode("utf-8", "strict"))
+                > EXPECTED_LIMITS["max_path_bytes"]
+            ):
+                fail(f"{label} has an unsafe symlink: {relative}")
+            projected_symlink_resolution(
+                path,
+                relative,
+                target,
+                projections,
+                label,
+                require_target=require_targets,
+            )
+
+
+def audit_native_projection_links(
+    prefix_value: str,
+    additional_tree_values: list[str],
+    *,
+    only_additional_trees: bool,
+) -> int:
+    """Audit every link source that can enter a later recipe service."""
+    if (
+        len(additional_tree_values) > MAX_DEPENDENCY_KEGS
+        or len(additional_tree_values) != len(set(additional_tree_values))
+    ):
+        fail("native link audit has repeated or excessive projected trees")
+    prefix = canonical_real_directory(
+        prefix_value, label="native dependency prefix"
+    )
+    cellar = canonical_real_directory(
+        prefix / "Cellar", label="native dependency Cellar"
+    )
+    selected: dict[str, Path] = {}
+    keg_roots: list[tuple[str, Path]] = []
+    formula_entries = sorted(cellar.iterdir(), key=lambda path: path.name)
+    if len(formula_entries) > MAX_DEPENDENCY_KEGS:
+        fail("native dependency Cellar exceeds the keg limit")
+    for rack in formula_entries:
+        if not FORMULA_RE.fullmatch(rack.name):
+            fail("native dependency Cellar contains an invalid Formula name")
+        canonical_real_directory(
+            rack, label=f"native dependency rack {rack.name}"
+        )
+        versions = sorted(rack.iterdir(), key=lambda path: path.name)
+        if not versions:
+            fail(f"native dependency Formula {rack.name} has no installed keg")
+        for keg in versions:
+            canonical_real_directory(
+                keg, label=f"native dependency keg {rack.name}"
+            )
+            keg_roots.append((rack.name, keg))
+        if len(keg_roots) > MAX_DEPENDENCY_KEGS:
+            fail("native dependency Cellar exceeds the keg limit")
+
+        opt = prefix / "opt" / rack.name
+        if opt.is_symlink():
+            target = os.readlink(opt)
+            if (
+                not target
+                or not safe_tree_text(target)
+                or len(target.encode("utf-8", "strict"))
+                > EXPECTED_LIMITS["max_path_bytes"]
+            ):
+                fail(f"native dependency opt alias is unsafe: {rack.name}")
+            rendered = PurePosixPath(target)
+            if rendered.is_absolute():
+                lexical = Path(target)
+                canonical_target = (
+                    ".." not in rendered.parts
+                    and "." not in rendered.parts
+                    and str(rendered) == target
+                )
+            else:
+                parts = rendered.parts
+                canonical_target = (
+                    len(parts) == 4
+                    and parts[:3] == ("..", "Cellar", rack.name)
+                )
+            if not canonical_target:
+                fail(f"native dependency opt alias is indirect: {rack.name}")
+            if not rendered.is_absolute():
+                lexical = prefix / "Cellar" / rack.name / rendered.parts[-1]
+            if lexical not in versions:
+                fail(f"native dependency opt alias leaves its rack: {rack.name}")
+            selected[rack.name] = lexical
+        elif opt.exists():
+            fail(f"native dependency opt alias is not a symlink: {rack.name}")
+        elif len(versions) == 1:
+            selected[rack.name] = versions[0]
+        else:
+            fail(f"native dependency Formula {rack.name} has no selected keg")
+
+    runtime_roots: list[Path] = []
+    runtime = prefix / "lib"
+    if runtime.exists() or runtime.is_symlink():
+        runtime_roots.append(
+            canonical_real_directory(
+                runtime, label="native prefix runtime lib"
+            )
+        )
+    projections = dependency_projection_map(
+        [(cellar, selected)], runtime_roots
+    )
+    for _, keg in keg_roots:
+        projections[keg] = (keg, False)
+
+    additional_roots: list[Path] = []
+    for value in additional_tree_values:
+        root = canonical_real_directory(
+            value, label="additional projected dependency tree"
+        )
+        if (
+            root.parent.parent.name != "Cellar"
+            or not FORMULA_RE.fullmatch(root.parent.name)
+        ):
+            fail("additional projected dependency tree left a Cellar rack")
+        previous = projections.get(root)
+        if previous is not None and previous != (root, False):
+            fail(f"dependency projection collides at {root}")
+        projections[root] = (root, False)
+        opt = root.parent.parent.parent / "opt" / root.parent.name
+        previous = projections.get(opt)
+        if previous is not None and previous != (root, False):
+            fail(f"dependency projection collides at {opt}")
+        projections[opt] = (root, False)
+        additional_roots.append(root)
+
+    # WHY: only Cellar kegs, exact opt aliases, and <prefix>/lib are mounted
+    # into the closed recipe root. Prefix bin/share/Homebrew links stay absent,
+    # so auditing them would treat unprojected Homebrew state as authority and
+    # still would not strengthen the execution closure.
+    if not only_additional_trees:
+        for name, keg in keg_roots:
+            audit_projected_tree_symlinks(
+                keg,
+                f"native dependency {name}",
+                projections,
+                require_targets=False,
+            )
+        for root in runtime_roots:
+            audit_projected_tree_symlinks(
+                root,
+                "native prefix runtime",
+                projections,
+                require_targets=True,
+            )
+    for root in additional_roots:
+        audit_projected_tree_symlinks(
+            root,
+            f"direct native proxy {root.parent.name}",
+            projections,
+            require_targets=False,
+        )
+    return 0
 
 
 def validate_environment(
@@ -2080,8 +2445,19 @@ def validate_request(
     # matching it to the post-seal handoff. Target kegs follow their separate
     # immutable-bottle plan and are authenticated here from the complete sealed
     # target Cellar while the selected Formula's mutable rack stays excluded.
+    projected_dependencies = dependency_projection_map(
+        [
+            (config["target_cellar"], all_target_kegs),
+            (config["native_cellar"], all_native_kegs),
+        ],
+        native_runtime_roots,
+    )
     for name, root in sorted(all_target_kegs.items()):
-        validate_sealed_dependency_tree(root, f"target dependency {name}")
+        validate_sealed_dependency_tree(
+            root,
+            f"target dependency {name}",
+            symlink_projections=projected_dependencies,
+        )
     validate_environment(
         request, config, dependencies, native_roots, requirement_roots
     )
@@ -3284,14 +3660,23 @@ def stage_native_closure(source_value: str, destination_value: str) -> int:
         fail("native dependency Cellar overlaps the protected runner root")
 
     kegs = installed_keg_roots(cellar, "native dependency")
+    selected_runtime_roots = native_prefix_runtime_roots(cellar)
+    projections = dependency_projection_map(
+        [(cellar, kegs)], selected_runtime_roots
+    )
     for name, root in sorted(kegs.items()):
-        validate_sealed_dependency_tree(root, f"native dependency {name}")
+        validate_sealed_dependency_tree(
+            root,
+            f"native dependency {name}",
+            symlink_projections=projections,
+        )
     runtime_roots: dict[Path, str] = {}
-    for root in native_prefix_runtime_roots(cellar):
+    for root in selected_runtime_roots:
         digest = validate_sealed_dependency_tree(
             root,
             "native prefix runtime",
-            runtime_closure_roots=list(kegs.values()),
+            symlink_projections=projections,
+            require_symlink_targets=True,
             hash_contents=True,
         )
         if digest is None:
@@ -4239,9 +4624,11 @@ def supervisor() -> int:
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--audit-native-links", action="store_true")
     parser.add_argument("--destination")
     parser.add_argument("--formula")
     parser.add_argument("--manifest-sha256")
+    parser.add_argument("--only-additional-trees", action="store_true")
     parser.add_argument("--request")
     parser.add_argument("--response")
     parser.add_argument("--source")
@@ -4249,9 +4636,11 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--stage-recipe", action="store_true")
     parser.add_argument("--stage-sysroot", action="store_true")
     parser.add_argument("--supervisor", action="store_true")
+    parser.add_argument("--tree", action="append", default=[])
     arguments = parser.parse_args()
     selected_modes = (
-        int(arguments.supervisor)
+        int(arguments.audit_native_links)
+        + int(arguments.supervisor)
         + int(arguments.stage_native_closure)
         + int(arguments.stage_recipe)
         + int(arguments.stage_sysroot)
@@ -4266,10 +4655,22 @@ def parse_arguments() -> argparse.Namespace:
         arguments.formula,
         arguments.manifest_sha256,
     )
-    if arguments.supervisor:
+    if arguments.audit_native_links:
+        if (
+            arguments.source is None
+            or arguments.destination is not None
+            or arguments.request is not None
+            or arguments.response is not None
+            or any(value is not None for value in recipe_identity_values)
+            or (arguments.only_additional_trees and not arguments.tree)
+        ):
+            fail("native link audit requires only --source and optional --tree")
+    elif arguments.supervisor:
         if (
             arguments.request is not None
             or arguments.response is not None
+            or arguments.only_additional_trees
+            or arguments.tree
             or any(
                 value is not None
                 for value in (*projection_values, *recipe_identity_values)
@@ -4280,6 +4681,8 @@ def parse_arguments() -> argparse.Namespace:
         if (
             arguments.request is not None
             or arguments.response is not None
+            or arguments.only_additional_trees
+            or arguments.tree
             or any(
                 value is None
                 for value in (*projection_values, *recipe_identity_values)
@@ -4290,6 +4693,8 @@ def parse_arguments() -> argparse.Namespace:
         if (
             arguments.request is not None
             or arguments.response is not None
+            or arguments.only_additional_trees
+            or arguments.tree
             or any(value is None for value in projection_values)
             or any(value is not None for value in recipe_identity_values)
         ):
@@ -4298,6 +4703,8 @@ def parse_arguments() -> argparse.Namespace:
         if (
             arguments.request is not None
             or arguments.response is not None
+            or arguments.only_additional_trees
+            or arguments.tree
             or any(value is None for value in projection_values)
             or any(value is not None for value in recipe_identity_values)
         ):
@@ -4305,6 +4712,8 @@ def parse_arguments() -> argparse.Namespace:
     elif (
         arguments.request is None
         or arguments.response is None
+        or arguments.only_additional_trees
+        or arguments.tree
         or any(
             value is not None
             for value in (*projection_values, *recipe_identity_values)
@@ -4317,6 +4726,12 @@ def parse_arguments() -> argparse.Namespace:
 def main() -> int:
     try:
         arguments = parse_arguments()
+        if arguments.audit_native_links:
+            return audit_native_projection_links(
+                arguments.source,
+                arguments.tree,
+                only_additional_trees=arguments.only_additional_trees,
+            )
         if arguments.supervisor:
             return supervisor()
         if arguments.stage_recipe:

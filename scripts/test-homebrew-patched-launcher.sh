@@ -421,6 +421,10 @@ case "${1:-}" in
     [ "$#" -eq 4 ]
     ln -s "$3" "$prefix/Cellar/$2/1.0/bin/$4"
     ;;
+  remove-native-relative-link)
+    [ "$#" -eq 3 ]
+    rm -f "$prefix/Cellar/$2/1.0/bin/$3"
+    ;;
   assert-native-target-boundary)
     [ "$#" -eq 12 ]
     native_prefix="$2"
@@ -1151,22 +1155,45 @@ GITHUB_ACTIONS=false homebrew_patched_launcher_run_native create-native-relative
   abslink /tmp/untrusted-native-tool absolute-escape
 [ -d "$native_prefix/Cellar/cmake/1.0" ] || fail "native Formula was not installed"
 [ ! -e "$prefix/Cellar/cmake" ] || fail "native Formula polluted the target Cellar"
+if homebrew_patched_launcher_seal_native_prefix >/dev/null 2>&1; then
+  fail "native projection audit accepted escaping keg links"
+fi
+GITHUB_ACTIONS=false homebrew_patched_launcher_run_native \
+  remove-native-relative-link badlink relative-escape
+GITHUB_ACTIONS=false homebrew_patched_launcher_run_native \
+  remove-native-relative-link abslink absolute-escape
 homebrew_patched_launcher_seal_native_prefix
 if GITHUB_ACTIONS=false homebrew_patched_launcher_run_native --prefix >/dev/null 2>&1; then
   fail "sealed native Homebrew unexpectedly accepted another command"
 fi
 
+# The non-privileged developer fixture remains caller-owned after the launcher
+# seal flag, which lets this test simulate post-seal tampering. The bridge must
+# re-audit the source component-by-component: a /tmp hop that currently resolves
+# back into Ninja is not authority the copied proxy may retain.
+native_mutable_hop="$TMPDIR/native-mutable-hop"
+ln -s "$native_prefix/Cellar/ninja/1.0/bin/ninja" "$native_mutable_hop"
+ln -s "$native_mutable_hop" \
+  "$native_prefix/Cellar/badlink/1.0/bin/relative-escape"
+[ "$(readlink -f "$native_prefix/Cellar/badlink/1.0/bin/relative-escape")" = \
+  "$native_prefix/Cellar/ninja/1.0/bin/ninja" ] ||
+  fail "native mutable-hop fixture did not re-enter the sealed keg"
 if homebrew_patched_launcher_bridge_native_formula badlink >/dev/null 2>&1; then
-  fail "native Formula proxy accepted a relative symlink outside the native prefix"
+  fail "native Formula proxy accepted a mutable link hop that re-entered its closure"
 fi
+rm -f "$native_prefix/Cellar/badlink/1.0/bin/relative-escape" \
+  "$native_mutable_hop"
 [ ! -e "$prefix/Cellar/badlink" ] && [ ! -L "$prefix/Cellar/badlink" ] && \
   [ ! -e "$prefix/opt/badlink" ] && [ ! -L "$prefix/opt/badlink" ] ||
   fail "rejected native Formula proxy changed target state"
 [ "${#HOMEBREW_PATCHED_NATIVE_BRIDGE_NAMES[@]}" -eq 0 ] ||
   fail "rejected native Formula proxy left lifecycle state"
+ln -s /tmp/untrusted-native-tool \
+  "$native_prefix/Cellar/abslink/1.0/bin/absolute-escape"
 if homebrew_patched_launcher_bridge_native_formula abslink >/dev/null 2>&1; then
   fail "native Formula proxy accepted an unsafe absolute symlink"
 fi
+rm -f "$native_prefix/Cellar/abslink/1.0/bin/absolute-escape"
 [ ! -e "$prefix/Cellar/abslink" ] && [ ! -L "$prefix/Cellar/abslink" ] && \
   [ ! -e "$prefix/opt/abslink" ] && [ ! -L "$prefix/opt/abslink" ] ||
   fail "rejected absolute native Formula link changed target state"

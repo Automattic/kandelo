@@ -586,9 +586,11 @@ the root-owned runner configuration, or receive an unsealed output tree.
 The sealed native execution closure includes runner-derived child-tool
 directories and, when present, only the prefix `lib` runtime directory needed
 by relocated ELF interpreters. The runtime tree is content-fingerprinted, and
-its links must remain inside the authenticated closure or fixed projected
-system library realms. Neither path set is caller-selected, and the rest of
-the native Homebrew prefix remains absent.
+every link hop in it, in the native kegs, and in copied direct proxies must
+remain inside the exact Cellar/`opt`/runtime/system directory projections.
+Intermediate mutable-host hops are rejected even when their current final
+target re-enters the closure. Neither path set is caller-selected, and the rest
+of the native Homebrew prefix remains absent.
 
 Bottle-backed lazy VFS composition keeps the same archive as its transport
 unit. The descriptor exposes bounded metadata for `stat` and `readdir`, but the
