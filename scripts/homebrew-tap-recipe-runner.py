@@ -86,6 +86,13 @@ FORMULA_TEST_RUNTIME_FILES = (
     Path("examples/run-example.ts"),
     Path("package.json"),
 )
+# WHY: Formula tests need package identity for only the physical generations
+# transported into their runtime. The trusted workflow generates that bounded
+# projection beside its sealed xtask; the privileged stager places it at the
+# installed-host location without exposing source recipes or the global index.
+FORMULA_TEST_RUNTIME_PROGRAM_INDEX_DESTINATION = Path(
+    "host/wasm/program-packages.json"
+)
 # Linux reserves one trailing NUL in sockaddr_un.sun_path, leaving 107 bytes
 # for a pathname. The protected build identity intentionally retains all 64
 # digest characters, so the control socket uses the shortest meaningful name.
@@ -3717,6 +3724,7 @@ def stage_formula_test_runtime_tree(
     platform: Path,
     checker: Path,
     checker_relative: str,
+    program_index: Path,
     destination: Path,
     *,
     owner_uid: int,
@@ -3752,6 +3760,20 @@ def stage_formula_test_runtime_tree(
         fail(
             "Formula test program-index checker must use "
             "target/<host>/release/xtask"
+        )
+    program_index = canonical_real_file(
+        program_index,
+        label="Formula test selected program-package projection",
+    )
+    expected_program_index = (
+        source
+        / checker_path.parent
+        / "formula-test-program-packages.json"
+    )
+    if program_index != expected_program_index:
+        fail(
+            "Formula test selected program-package projection must be "
+            "generated beside its checker"
         )
     checker_stat = checker.lstat()
     if (
@@ -3811,27 +3833,42 @@ def stage_formula_test_runtime_tree(
             if kind == "f"
         )
 
-    selected_files: dict[Path, tuple[bytes, tuple[int, ...]]] = {}
-    for relative in FORMULA_TEST_RUNTIME_FILES:
+    selected_files: dict[
+        Path, tuple[Path, bytes, tuple[int, ...]]
+    ] = {}
+    projected_files = (
+        *((source / relative, relative) for relative in FORMULA_TEST_RUNTIME_FILES),
+        (
+            program_index,
+            FORMULA_TEST_RUNTIME_PROGRAM_INDEX_DESTINATION,
+        ),
+    )
+    for source_path, destination_relative in projected_files:
         data, before = read_stable_projection_file(
-            source / relative,
+            source_path,
             limits,
-            f"Formula test runtime input {relative.as_posix()}",
+            f"Formula test runtime input {source_path}",
         )
         identity = file_identity(before)
-        add_projection_parent_records(expected_records, relative, identity)
-        if relative.as_posix() in expected_records:
+        add_projection_parent_records(
+            expected_records, destination_relative, identity
+        )
+        if destination_relative.as_posix() in expected_records:
             fail(
                 "Formula test runtime projection repeats "
-                f"{relative.as_posix()}"
+                f"{destination_relative.as_posix()}"
             )
-        expected_records[relative.as_posix()] = (
+        expected_records[destination_relative.as_posix()] = (
             "f",
             identity,
             None,
             hashlib.sha256(data).hexdigest(),
         )
-        selected_files[relative] = (data, identity)
+        selected_files[destination_relative] = (
+            source_path,
+            data,
+            identity,
+        )
         selected_bytes += len(data)
 
     checker_data, checker_before = read_stable_projection_file(
@@ -3881,6 +3918,9 @@ def stage_formula_test_runtime_tree(
             destination_precreated=True,
             seal_root=False,
         )
+        overlay_parents = {
+            FORMULA_TEST_RUNTIME_PROGRAM_INDEX_DESTINATION.parent
+        }
         for relative, source_snapshot in selected_directories.items():
             destination_parent_path = ensure_projection_parent(
                 selection,
@@ -3897,13 +3937,22 @@ def stage_formula_test_runtime_tree(
                 destination_gid=owner_gid,
                 require_single_link_files=False,
                 projection_prefix=relative.as_posix(),
+                # WHY: mapped identity files are copied only after their
+                # independent stable-read check. Keep just their immediate
+                # destination directory private and writable until that copy;
+                # the final pass seals every directory before publication.
+                seal_root=relative not in overlay_parents,
             )
 
-        for relative, (expected_data, expected_identity) in selected_files.items():
+        for destination_relative, (
+            source_path,
+            expected_data,
+            expected_identity,
+        ) in selected_files.items():
             copy_projection_file(
-                source / relative,
+                source_path,
                 selection,
-                relative,
+                destination_relative,
                 limits,
                 owner_uid=owner_uid,
                 owner_gid=owner_gid,
@@ -3948,11 +3997,15 @@ def stage_formula_test_runtime_tree(
                     "Formula test runtime input changed during staging: "
                     f"{relative.as_posix()}"
                 )
-        for relative, (expected_data, expected_identity) in selected_files.items():
+        for destination_relative, (
+            source_path,
+            expected_data,
+            expected_identity,
+        ) in selected_files.items():
             actual_data, actual = read_stable_projection_file(
-                source / relative,
+                source_path,
                 limits,
-                f"Formula test runtime input {relative.as_posix()}",
+                f"Formula test runtime input {source_path}",
             )
             if (
                 file_identity(actual) != expected_identity
@@ -3960,7 +4013,7 @@ def stage_formula_test_runtime_tree(
             ):
                 fail(
                     "Formula test runtime input changed during staging: "
-                    f"{relative.as_posix()}"
+                    f"{destination_relative.as_posix()}"
                 )
         checker_data_after, checker_after = read_stable_projection_file(
             checker, limits, "Formula test program-index checker"
@@ -4339,6 +4392,7 @@ def stage_formula_test_runtime(
     platform_value: str,
     checker_value: str,
     checker_relative: str,
+    program_index_value: str,
     destination_value: str,
 ) -> int:
     """Root-only CLI boundary for the exact Formula test runtime closure."""
@@ -4392,6 +4446,10 @@ def stage_formula_test_runtime(
         label="Formula test program-index checker",
         executable=True,
     )
+    program_index = canonical_real_file(
+        program_index_value,
+        label="Formula test selected program-package projection",
+    )
     if is_within(source, runner.parent) or is_within(runner.parent, source):
         fail("Formula test runtime source overlaps the protected runner root")
     if platform.parent != runner.parent:
@@ -4403,6 +4461,7 @@ def stage_formula_test_runtime(
         platform,
         checker,
         checker_relative,
+        program_index,
         destination,
         owner_uid=0,
         owner_gid=0,
@@ -5437,6 +5496,7 @@ def parse_arguments() -> argparse.Namespace:
     parser.add_argument("--manifest-sha256")
     parser.add_argument("--only-additional-trees", action="store_true")
     parser.add_argument("--platform")
+    parser.add_argument("--program-index")
     parser.add_argument("--request")
     parser.add_argument("--response")
     parser.add_argument("--source")
@@ -5469,6 +5529,7 @@ def parse_arguments() -> argparse.Namespace:
         arguments.platform,
         arguments.checker,
         arguments.checker_relative,
+        arguments.program_index,
     )
     if arguments.audit_native_links:
         if (
@@ -5530,7 +5591,8 @@ def parse_arguments() -> argparse.Namespace:
         ):
             fail(
                 "Formula test runtime staging requires only its source, "
-                "platform, checker, checker-relative path, and destination"
+                "platform, checker, checker-relative path, selected program "
+                "index, and destination"
             )
     elif arguments.stage_sysroot:
         if (
@@ -5584,6 +5646,7 @@ def main() -> int:
                 arguments.platform,
                 arguments.checker,
                 arguments.checker_relative,
+                arguments.program_index,
                 arguments.destination,
             )
         if arguments.stage_sysroot:

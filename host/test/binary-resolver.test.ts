@@ -28,6 +28,7 @@ import {
   resetBinaryResolverManifestCacheForTests,
   resolveBinary,
   resolveDirectProgramPackageArtifact,
+  setBundledProgramPackageIndexPathForTests,
   setProgramIndexContextCheckerForTests,
   tryResolveBinary,
   tryResolveBinaries,
@@ -86,6 +87,7 @@ beforeEach(() => {
   fixtureRegistryPackages = {};
   writeFixtureRegistryIndex();
   process.env.WASM_POSIX_DEPS_REGISTRY = fixtureRegistryRoot;
+  setBundledProgramPackageIndexPathForTests(null);
   setProgramIndexContextCheckerForTests(() => {});
   resetBinaryResolverManifestCacheForTests();
 });
@@ -103,6 +105,7 @@ afterEach(() => {
   }
   cleanupDirs.clear();
   cleanupEmptyDirs.clear();
+  setBundledProgramPackageIndexPathForTests(null);
   setProgramIndexContextCheckerForTests(null);
   resetBinaryResolverManifestCacheForTests();
   if (savedXdgCacheHome === undefined) {
@@ -2370,6 +2373,88 @@ guest_path = '/usr/share/runtime.dat'
     expect(tryResolveBinarySet(
       fixture.members.map((member) => member.relPath),
     )).toEqual(targets);
+  });
+
+  it("uses bundled package policy for a sealed runtime without source recipes", () => {
+    const relocatedRepo = mkdtempSync(
+      join(tmpdir(), "kandelo-sealed-formula-runtime-"),
+    );
+    cleanupDirs.add(relocatedRepo);
+    writeFileSync(
+      join(relocatedRepo, "Cargo.toml"),
+      "[workspace]\nmembers = []\n",
+    );
+    writeFileSync(
+      join(relocatedRepo, "package.json"),
+      '{"name":"kandelo","private":true}\n',
+    );
+    const fixture = createScalarOutputFixture();
+    setBundledProgramPackageIndexPathForTests(
+      join(fixtureRegistryRoot, "program-packages.json"),
+    );
+
+    process.env.WASM_POSIX_BINARY_RESOLVER_REPO_ROOT = relocatedRepo;
+    process.env.WASM_POSIX_BINARY_CACHE_ROOT = ".ci-test-binary-cache";
+    const canonicalRoot = fixtureCanonicalRoot(fixture.name);
+    const mirror = linkClosureMember(
+      binariesDir(),
+      fixture,
+      canonicalRoot,
+      executableWasmWithAbi(ABI_VERSION),
+    );
+
+    process.env.WASM_POSIX_DEPS_REGISTRY = join(
+      relocatedRepo,
+      "explicit-missing-registry",
+    );
+    expect(() => resolveBinary(fixture.relPath)).toThrow(
+      /not selected|no matching selected package projection/,
+    );
+
+    delete process.env.WASM_POSIX_DEPS_REGISTRY;
+    writeFileSync(join(relocatedRepo, "packages"), "not a directory\n");
+    expect(() => resolveBinary(fixture.relPath)).toThrow();
+    rmSync(join(relocatedRepo, "packages"));
+
+    // WHY: only an omitted default source registry may fall back to bundled
+    // installed policy. An explicit registry remains authoritative even when
+    // it is empty or missing, so caller selection cannot be silently widened.
+    expect(resolveBinary(fixture.relPath)).toBe(realpathSync(mirror));
+
+    const unrelated = createScalarOutputFixture();
+    const unrelatedStaleKey = "e".repeat(64);
+    (
+      fixtureRegistryIdentities[unrelated.name] as {
+        cacheKeys: Record<string, string>;
+      }
+    ).cacheKeys.wasm32 = unrelatedStaleKey;
+    (
+      fixtureRegistryPackages[unrelated.name] as {
+        cacheKeys: Record<string, string>;
+      }
+    ).cacheKeys.wasm32 = unrelatedStaleKey;
+    writeFixtureRegistryIndex();
+    expect(resolveBinary(fixture.relPath)).toBe(realpathSync(mirror));
+
+    // WHY: bundled policy is inert identity, but it is still authoritative
+    // for every physical generation the sealed runtime carries. A valid yet
+    // stale selected row must not relabel current cache bytes; the generation
+    // basename binds the expected package name, architecture, and cache key.
+    const selectedStaleKey = "f".repeat(64);
+    (
+      fixtureRegistryIdentities[fixture.name] as {
+        cacheKeys: Record<string, string>;
+      }
+    ).cacheKeys.wasm32 = selectedStaleKey;
+    (
+      fixtureRegistryPackages[fixture.name] as {
+        cacheKeys: Record<string, string>;
+      }
+    ).cacheKeys.wasm32 = selectedStaleKey;
+    writeFixtureRegistryIndex();
+    expect(() => resolveBinary(fixture.relPath)).toThrow(
+      /fetched mirror targets are not one canonical program-cache generation/,
+    );
   });
 
   it("resolves one complete package after its prepared workspace archive is relocated", () => {

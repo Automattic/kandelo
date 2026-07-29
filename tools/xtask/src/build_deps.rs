@@ -1471,6 +1471,130 @@ fn check_program_package_indexes_in_context(
     Ok(())
 }
 
+fn parse_selected_program_package_names(value: &str) -> Result<Vec<String>, String> {
+    if value.is_empty() {
+        return Err("selected program package list may not be empty".to_string());
+    }
+    let mut selected = Vec::new();
+    let mut seen = BTreeSet::new();
+    for name in value.split(',') {
+        let mut bytes = name.bytes();
+        let valid = bytes
+            .next()
+            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+            && bytes.all(|byte| {
+                byte.is_ascii_lowercase()
+                    || byte.is_ascii_digit()
+                    || matches!(byte, b'.' | b'_' | b'-')
+            });
+        if !valid {
+            return Err(format!(
+                "selected program package list contains an invalid package name: {name:?}"
+            ));
+        }
+        if !seen.insert(name.to_string()) {
+            return Err(format!(
+                "selected program package list repeats package {name:?}"
+            ));
+        }
+        selected.push(name.to_string());
+    }
+    Ok(selected)
+}
+
+/// Project only the program-package closure a sealed consumer will materialize.
+///
+/// The checked-in index is the repository-wide policy and must remain fresh,
+/// but the isolated Formula-test runtime does not need authority over all of
+/// it. A Formula test must bind every package it fetches, and every identity
+/// named by those packages' dependency closures, to the exact current source
+/// checkout. Emitting this bounded projection preserves that fail-closed
+/// boundary while giving the sealed runtime only the policy it consumes.
+fn selected_program_package_index_for_root(
+    root: &Path,
+    registry: &Registry,
+    selected: &[String],
+) -> Result<ProgramPackageIndex, String> {
+    let complete = program_package_index_for_root(root, registry)?;
+    let mut packages = BTreeMap::new();
+    let mut required_identities = BTreeSet::new();
+    for package_name in selected {
+        let projection = complete.packages.get(package_name).ok_or_else(|| {
+            format!(
+                "selected Formula-test package {package_name:?} is not a projected program package"
+            )
+        })?;
+        packages.insert(package_name.clone(), projection.clone());
+        required_identities.insert(package_name.clone());
+        for closure in projection.dependency_closures.values() {
+            required_identities
+                .extend(closure.iter().map(|identity| identity.package_name.clone()));
+        }
+    }
+    let mut identities = BTreeMap::new();
+    for package_name in required_identities {
+        let identity = complete.identities.get(&package_name).ok_or_else(|| {
+            format!("selected Formula-test closure lacks contextual identity {package_name:?}")
+        })?;
+        identities.insert(package_name, identity.clone());
+    }
+    Ok(ProgramPackageIndex {
+        format: PROGRAM_PACKAGE_INDEX_FORMAT,
+        identities,
+        packages,
+    })
+}
+
+fn serialize_selected_program_package_index(
+    root: &Path,
+    registry: &Registry,
+    selected: &[String],
+) -> Result<String, String> {
+    let mut json = serde_json::to_string_pretty(&selected_program_package_index_for_root(
+        root, registry, selected,
+    )?)
+    .map_err(|error| format!("serialize selected program package index: {error}"))?;
+    json.push('\n');
+    Ok(json)
+}
+
+fn cmd_selected_program_package_index(
+    output: &Path,
+    registry: &Registry,
+    selected: &[String],
+) -> Result<(), String> {
+    let root = registry
+        .roots
+        .iter()
+        .find_map(|root| match std::fs::metadata(root) {
+            Ok(metadata) => Some(Ok((root, metadata))),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => Some(Err(format!(
+                "inspect configured package registry root {}: {error}",
+                root.display()
+            ))),
+        })
+        .transpose()?
+        .ok_or_else(|| "no configured program registry root exists".to_string())?;
+    if !root.1.is_dir() {
+        return Err(format!(
+            "configured program registry root is not a directory: {}",
+            root.0.display()
+        ));
+    }
+    let json = serialize_selected_program_package_index(root.0, registry, selected)?;
+    let mut refresh_source = || {
+        serialize_selected_program_package_index(root.0, registry, selected).map(String::into_bytes)
+    };
+    let mut replace = |from: &Path, to: &Path| std::fs::rename(from, to);
+    write_program_package_index_atomically_with_source(
+        output,
+        json.as_bytes(),
+        &mut refresh_source,
+        &mut replace,
+    )
+}
+
 /// Subset of [`Registry::walk_all`] containing only `kind = "program"`
 /// manifests. Used by `bundle-program` and `archive-stage` to look
 /// up source + license decoration for release artifacts.
@@ -6033,10 +6157,15 @@ fn validate_source_repo_root_scope(
     source_repo_root: Option<&Path>,
     subcommand: &str,
 ) -> Result<(), String> {
-    if source_repo_root.is_some() && subcommand != "program-index-context-check" {
+    if source_repo_root.is_some()
+        && !matches!(
+            subcommand,
+            "program-index-context-check" | "program-index-selected"
+        )
+    {
         return Err(format!(
             "build-deps {subcommand}: --source-repo-root is only valid for \
-             `program-index-context-check`"
+             program-index source-context commands"
         ));
     }
     Ok(())
@@ -6110,7 +6239,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
     let sub = it.next().ok_or(
         "usage: xtask build-deps [--arch=wasm32|wasm64] [--binaries-dir <path>] [--fetch-only] [--force-source-build] \
          [--source-repo-root <absolute-canonical-path>] \
-         <parse|sha|path|resolve|check|cache-root|program-index|program-index-check|program-index-context-check|install-local-artifact|output-metadata|output-path|runtime-file-path|runtime-file-metadata|output-fork-instrumentation|output-fork-instrumentation-for-rel> \
+         <parse|sha|path|resolve|check|cache-root|program-index|program-index-check|program-index-context-check|program-index-selected|install-local-artifact|output-metadata|output-path|runtime-file-path|runtime-file-metadata|output-fork-instrumentation|output-fork-instrumentation-for-rel> \
          [<name|path> [<wasm-basename>]]",
     )?;
     let target = it.next();
@@ -6182,6 +6311,16 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
                 return Err("build-deps program-index-context-check: takes no arguments".into());
             }
             check_program_package_indexes_in_context(&registry, true)
+        }
+        "program-index-selected" => {
+            let selected = target.ok_or_else(|| {
+                "build-deps program-index-selected: missing <package,...>".to_string()
+            })?;
+            let output = extra.ok_or_else(|| {
+                "build-deps program-index-selected: missing <index-path>".to_string()
+            })?;
+            let selected = parse_selected_program_package_names(&selected)?;
+            cmd_selected_program_package_index(Path::new(&output), &registry, &selected)
         }
         "output-fork-instrumentation-for-rel" => {
             let rel = target.ok_or_else(|| {
@@ -10646,6 +10785,84 @@ spdx = "MIT"
         refresh();
         fs::write(root.join("dependency/recipe.txt"), "dependency-two\n").unwrap();
         assert_stale("transitive dependency declared build input mutation");
+    }
+
+    #[test]
+    fn selected_program_index_omits_unrelated_rows_and_tracks_its_dependency_closure() {
+        let root = tempdir("program-index-selected-closure");
+        write(&root, "dependency", "1.0.0", &[]);
+        write_build_with_input(&root, "dependency", 1, "recipe.txt", "dependency-one\n");
+        write_program(
+            &root,
+            "selected-command",
+            "1.0.0",
+            &["dependency@1.0.0"],
+            ":",
+            &[("selected-command", "selected-command.wasm")],
+        );
+        write_build_with_input(&root, "selected-command", 1, "recipe.txt", "selected-one\n");
+        write_program(
+            &root,
+            "unrelated-command",
+            "1.0.0",
+            &[],
+            ":",
+            &[("unrelated-command", "unrelated-command.wasm")],
+        );
+        write_build_with_input(
+            &root,
+            "unrelated-command",
+            1,
+            "recipe.txt",
+            "unrelated-one\n",
+        );
+        let registry = Registry {
+            roots: vec![root.clone()],
+        };
+        let selected = vec!["selected-command".to_string()];
+        let before = selected_program_package_index_for_root(&root, &registry, &selected).unwrap();
+
+        assert_eq!(
+            before.packages.keys().cloned().collect::<Vec<_>>(),
+            ["selected-command"]
+        );
+        assert_eq!(
+            before.identities.keys().cloned().collect::<Vec<_>>(),
+            ["dependency", "selected-command"]
+        );
+        assert!(!before.identities.contains_key("unrelated-command"));
+
+        fs::write(root.join("unrelated-command/recipe.txt"), "unrelated-two\n").unwrap();
+        let after_unrelated =
+            selected_program_package_index_for_root(&root, &registry, &selected).unwrap();
+        assert_eq!(
+            serde_json::to_value(&before).unwrap(),
+            serde_json::to_value(&after_unrelated).unwrap(),
+            "an unrelated valid package row must not couple the selected projection",
+        );
+
+        fs::write(root.join("dependency/recipe.txt"), "dependency-two\n").unwrap();
+        let after_dependency =
+            selected_program_package_index_for_root(&root, &registry, &selected).unwrap();
+        assert_ne!(
+            serde_json::to_value(&before).unwrap(),
+            serde_json::to_value(&after_dependency).unwrap(),
+            "a selected package's dependency identity must remain source-current",
+        );
+    }
+
+    #[test]
+    fn selected_program_package_list_is_bounded_and_unique() {
+        assert_eq!(
+            parse_selected_program_package_names("dash,coreutils,rootfs").unwrap(),
+            ["dash", "coreutils", "rootfs"]
+        );
+        for invalid in ["", "dash,", "dash/coreutils", "Dash", "dash,dash"] {
+            assert!(
+                parse_selected_program_package_names(invalid).is_err(),
+                "accepted invalid selected package list {invalid:?}",
+            );
+        }
     }
 
     #[test]
@@ -19724,17 +19941,19 @@ libs = ["lib/libF3b.a"]
 
     #[test]
     fn source_repo_root_override_is_bounded_to_context_check() {
-        validate_source_repo_root_scope(
-            Some(Path::new("/reviewed/kandelo")),
-            "program-index-context-check",
-        )
-        .unwrap();
+        for allowed in ["program-index-context-check", "program-index-selected"] {
+            validate_source_repo_root_scope(
+                Some(Path::new("/reviewed/kandelo")),
+                allowed,
+            )
+            .unwrap();
+        }
         for other in ["check", "resolve", "program-index-check", "cache-root"] {
             let error =
                 validate_source_repo_root_scope(Some(Path::new("/reviewed/kandelo")), other)
                     .unwrap_err();
             assert!(
-                error.contains("only valid for `program-index-context-check`"),
+                error.contains("only valid for program-index source-context commands"),
                 "unexpected scope error for {other}: {error}"
             );
         }

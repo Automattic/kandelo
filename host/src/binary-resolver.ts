@@ -459,6 +459,7 @@ type ProgramIndexContextChecker = (
 ) => void;
 
 let programIndexContextCheckerForTests: ProgramIndexContextChecker | null = null;
+let bundledProgramPackageIndexPathForTests: string | null = null;
 let preparedProgramIndexChecker:
   | { sourceRepoRoot: string; xtaskPath: string }
   | null = null;
@@ -490,6 +491,18 @@ export function setProgramIndexContextCheckerForTests(
   programIndexContextCheckerForTests = checker;
 }
 
+/** @internal Test-only path substitution for installed package policy. */
+export function setBundledProgramPackageIndexPathForTests(
+  path: string | null,
+): void {
+  bundledProgramPackageIndexPathForTests = path;
+}
+
+function bundledProgramPackageIndexPath(): string {
+  return bundledProgramPackageIndexPathForTests
+    ?? join(packageRoot(), "wasm", PROGRAM_PACKAGE_INDEX_FILE);
+}
+
 function configuredProgramRegistryRoots(): string[] | null {
   if (Object.prototype.hasOwnProperty.call(
     process.env,
@@ -508,11 +521,26 @@ function configuredProgramRegistryRoots(): string[] | null {
         return resolve(sourceRepoRoot, entry);
       });
   }
+  let registryRoot: string;
   try {
-    return [join(resolverRepoRoot(), "packages", "registry")];
+    registryRoot = join(resolverRepoRoot(), "packages", "registry");
   } catch {
     return null;
   }
+  if (
+    !pathEntryExists(registryRoot)
+    && completeSourceCheckoutRoot() === null
+    && pathEntryExists(bundledProgramPackageIndexPath())
+  ) {
+    // WHY: a sealed Formula-test runtime carries fetched program generations
+    // and the same bundled policy as the installed host package, but it
+    // deliberately omits the source/build registry. Treat that incomplete
+    // runtime as an installed-policy consumer; returning an absent source
+    // registry would discard package identity and make safe cache symlinks
+    // look like anonymous scalar files.
+    return null;
+  }
+  return [registryRoot];
 }
 
 function completeSourceCheckoutRoot(): string | null {
@@ -1095,7 +1123,7 @@ function programPackageProjectionIdentity(
 }
 
 function bundledProgramPackageProjection(): LoadedProgramPackageProjection | null {
-  const indexPath = join(packageRoot(), "wasm", PROGRAM_PACKAGE_INDEX_FILE);
+  const indexPath = bundledProgramPackageIndexPath();
   return pathEntryExists(indexPath)
     ? readProgramPackageProjection(indexPath)
     : null;
@@ -1156,7 +1184,7 @@ function selectedProgramPackageState(): SelectedProgramPackageState {
   const physicalProgramClaims: PhysicalProgramProjectionClaim[] = [];
 
   if (roots === null) {
-    const indexPath = join(packageRoot(), "wasm", PROGRAM_PACKAGE_INDEX_FILE);
+    const indexPath = bundledProgramPackageIndexPath();
     if (!pathEntryExists(indexPath)) {
       return {
         identities,

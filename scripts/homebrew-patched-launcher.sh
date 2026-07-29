@@ -405,6 +405,7 @@ homebrew_patched_launcher_formula_test_runtime_manifest() {
     host/src/binary-resolver.ts
     host/src/node-kernel-host.ts
     host/wasm/kandelo-kernel.wasm
+    host/wasm/program-packages.json
     node_modules/tsx/package.json
     node_modules/esbuild/package.json
     node_modules/fflate/package.json
@@ -1098,12 +1099,12 @@ homebrew_patched_launcher_prepare_platform_projection() {
 }
 
 homebrew_patched_launcher_prepare_formula_test_runtime() {
-  if [ "$#" -ne 6 ]; then
-    echo "homebrew_patched_launcher_prepare_formula_test_runtime: expected KANDELO-ROOT DESTINATION PLATFORM CHECKER CHECKER-RELATIVE SUDO" >&2
+  if [ "$#" -ne 7 ]; then
+    echo "homebrew_patched_launcher_prepare_formula_test_runtime: expected KANDELO-ROOT DESTINATION PLATFORM CHECKER CHECKER-RELATIVE PROGRAM-INDEX SUDO" >&2
     return 2
   fi
   local kandelo_root="$1" destination="$2" platform_root="$3" checker="$4"
-  local checker_relative="$5" sudo_bin="$6"
+  local checker_relative="$5" program_index="$6" sudo_bin="$7"
   local admitted_runner stager runner_sha admitted_sha digest status=0
 
   [ -z "$HOMEBREW_PATCHED_FORMULA_TEST_ROOT" ] &&
@@ -1122,6 +1123,13 @@ homebrew_patched_launcher_prepare_formula_test_runtime() {
   }
   [[ "$checker_relative" =~ ^target/[A-Za-z0-9_.+-]+/release/xtask$ ]] || {
     echo "homebrew-patched-launcher: Formula test checker path is invalid" >&2
+    return 2
+  }
+  [ "$program_index" = \
+      "$kandelo_root/${checker_relative%/xtask}/formula-test-program-packages.json" ] &&
+    [ -f "$program_index" ] && [ ! -L "$program_index" ] &&
+    [ "$(/usr/bin/realpath -- "$program_index")" = "$program_index" ] || {
+    echo "homebrew-patched-launcher: Formula test program projection is invalid" >&2
     return 2
   }
   [ ! -e "$destination" ] && [ ! -L "$destination" ] || {
@@ -1154,14 +1162,18 @@ homebrew_patched_launcher_prepare_formula_test_runtime() {
   # different boundary: tests need the reviewed host source, loader packages,
   # exact kernel, checker, and portable package generations. The privileged
   # stager selects only that fixed closure, authenticates stable pre/post
-  # source identities, and publishes it atomically without exposing the
-  # registry or the workflow-owned checkout.
+  # source identities, and publishes it atomically without exposing source
+  # recipes, build scripts, or the workflow-owned checkout. The host's bundled
+  # program index is generated from only the physical package generations
+  # staged for this runtime; it is inert identity, not registry execution
+  # authority.
   if "$sudo_bin" -n -- /usr/bin/env -i /usr/bin/python3 -I "$stager" \
       --stage-formula-test-runtime \
       --source "$kandelo_root" \
       --platform "$platform_root" \
       --checker "$checker" \
       --checker-relative "$checker_relative" \
+      --program-index "$program_index" \
       --destination "$destination"; then
     :
   else
@@ -3140,6 +3152,7 @@ homebrew_patched_launcher_isolate() {
   local recipe_user recipe_uid jq_bin node_bin protected_anchor protected_nonce
   local recipe_runner_path recipe_sealed_root
   local xtask_bin xtask_relative xtask_alias xtask_mode xtask_links
+  local formula_test_program_index
   local xtask_uid xtask_state xtask_sha256 xtask_state_after xtask_sha256_after
   local xtask_alias_state xtask_alias_sha256 tap_recipe_isolation tier2_schema
   local tap_recipe_path tap_recipe_relative
@@ -3704,11 +3717,16 @@ homebrew_patched_launcher_isolate() {
       "$kandelo_root" "$HOMEBREW_PATCHED_PROTECTED_DIR/platform" \
       "$sudo_bin" || return
     platform_source_root="$HOMEBREW_PATCHED_PLATFORM_ROOT"
+    formula_test_program_index="$(
+      /usr/bin/realpath -- \
+        "${xtask_bin%/*}/formula-test-program-packages.json" 2>/dev/null ||
+        true
+    )"
     homebrew_patched_launcher_prepare_formula_test_runtime \
       "$kandelo_root" \
       "$HOMEBREW_PATCHED_PROTECTED_DIR/formula-test-runtime" \
       "$platform_source_root" "$protected_xtask" "$xtask_relative" \
-      "$sudo_bin" || return
+      "$formula_test_program_index" "$sudo_bin" || return
   fi
   source_alias_dir="$work_dir/source-aliases"
   "$sudo_bin" install -d -o root -g root -m 0555 \

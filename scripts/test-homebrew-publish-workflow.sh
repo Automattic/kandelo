@@ -7251,9 +7251,40 @@ assert_exact_source_program_projection_is_fresh() {
     fail "Formula checker handoff made the exact-source program projection stale"
 }
 
+assert_formula_test_program_projection_is_current_and_bounded() {
+  local host_target xtask_bin projection selected
+  host_target="$(rustc -vV | sed -n 's/^host: //p')"
+  xtask_bin="$REPO_ROOT/target/$host_target/release/xtask"
+  [ -n "$host_target" ] && [ -f "$xtask_bin" ] && [ ! -L "$xtask_bin" ] &&
+    [ -x "$xtask_bin" ] ||
+    fail "exact-source projection regression lacks the prebuilt host xtask"
+
+  selected="dash,coreutils,grep,sed,rootfs"
+  projection="$TMPDIR/formula-test-program-packages.json"
+  # WHY: Formula tests transport only these fetched package generations. Give
+  # the sealed runtime current identity for that bounded set instead of
+  # granting it authority over unrelated repository package policy.
+  WASM_POSIX_DEPS_REGISTRY="$REPO_ROOT/packages/registry" \
+    "$xtask_bin" build-deps program-index-selected \
+      --source-repo-root "$REPO_ROOT" \
+      "$selected" "$projection" ||
+    fail "Formula checker could not generate its selected source projection"
+  ruby -rjson -e '
+    document = JSON.parse(File.read(ARGV.fetch(0)))
+    expected = ARGV.fetch(1).split(",").sort
+    abort "selected Formula packages differ" unless
+      document.fetch("packages").keys.sort == expected
+    identities = document.fetch("identities")
+    abort "selected Formula identity missing" unless
+      expected.all? { |name| identities.key?(name) }
+  ' "$projection" "$selected" ||
+    fail "Formula checker projection is not the exact selected package set"
+}
+
 assert_canonical_formula_support_is_load_order_independent
 make_formula_runner_fixture
 assert_exact_source_program_projection_is_fresh
+assert_formula_test_program_projection_is_current_and_bounded
 assert_formula_support_test_pruning_is_bounded
 assert_local_root_spill_uses_caller_work_root
 assert_ghcr_auth_env_does_not_cross_dev_shell
