@@ -67,11 +67,12 @@
       },
       {
         "name": "node_smoke",
-        "status": "skipped",
-        "passed": [],
+        "status": "success",
+        "passed": [
+          "example executable completed under the Kandelo Node runtime"
+        ],
         "failed": [],
-        "skipped": ["fixture does not boot a VFS image"],
-        "skip_reason": "Runtime validation uses published tap artifacts, not schema fixtures."
+        "skipped": []
       },
       {
         "name": "browser_smoke",

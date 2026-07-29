@@ -631,6 +631,7 @@ impl Validator<'_> {
         self.report.provenance_reports += 1;
         let schema_errors = collect_schema_errors(&self.schemas.provenance, &provenance);
         self.add_schema_errors(label, schema_errors);
+        self.validate_runtime_evidence(label, bottle, &provenance);
 
         for (provenance_ptr, package_ptr) in [
             ("/subject/package", "/name"),
@@ -701,6 +702,89 @@ impl Validator<'_> {
             ("/metadata/provenance_json", path),
         ] {
             self.validate_metadata_hash(label, &provenance, metadata_ptr, &rel);
+        }
+    }
+
+    fn validate_runtime_evidence(&mut self, label: &str, bottle: &Value, provenance: &Value) {
+        let Some(runtime_support) = bottle.get("runtime_support").and_then(Value::as_array) else {
+            return;
+        };
+        let Some(outcomes) = provenance
+            .pointer("/validation/outcome_lists")
+            .and_then(Value::as_array)
+        else {
+            return;
+        };
+
+        let mut outcome_statuses: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        for outcome in outcomes {
+            let (Some(name), Some(status)) =
+                (string_at(outcome, "/name"), string_at(outcome, "/status"))
+            else {
+                continue;
+            };
+            outcome_statuses.entry(name).or_default().push(status);
+        }
+        for (name, statuses) in &outcome_statuses {
+            if statuses.len() > 1 {
+                self.err(format!(
+                    "{label}: provenance repeats validation outcome {name:?}"
+                ));
+            }
+        }
+
+        let successful = |name: &str| {
+            outcome_statuses
+                .get(name)
+                .is_some_and(|statuses| statuses.as_slice() == ["success"])
+        };
+        let supports_node = runtime_support
+            .iter()
+            .any(|runtime| runtime.as_str() == Some("node"));
+        let supports_browser = runtime_support
+            .iter()
+            .any(|runtime| runtime.as_str() == Some("browser"));
+        let support_data = runtime_support.is_empty();
+        let browser_compatible = bottle
+            .get("browser_compatible")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+
+        // WHY: runtime_support is a claim about executable guest behavior,
+        // while support_data_test proves only installed bytes. Keep those
+        // evidence classes mutually exclusive so one cannot impersonate the
+        // other during sidecar composition.
+        if support_data {
+            if !successful("support_data_test") {
+                self.err(format!(
+                    "{label}: runtime_support=[] requires exactly one successful support_data_test provenance outcome"
+                ));
+            }
+            if successful("node_smoke") || successful("browser_smoke") {
+                self.err(format!(
+                    "{label}: support-data bottles cannot claim successful executable runtime evidence"
+                ));
+            }
+        } else if successful("support_data_test") {
+            self.err(format!(
+                "{label}: support_data_test cannot substantiate non-empty runtime_support"
+            ));
+        }
+
+        if supports_node != successful("node_smoke") {
+            self.err(format!(
+                "{label}: runtime_support node claim must exactly match one successful node_smoke provenance outcome"
+            ));
+        }
+        if supports_browser != browser_compatible {
+            self.err(format!(
+                "{label}: runtime_support browser claim must exactly match browser_compatible=true"
+            ));
+        }
+        if supports_browser != successful("browser_smoke") {
+            self.err(format!(
+                "{label}: runtime_support browser claim must exactly match one successful browser_smoke provenance outcome"
+            ));
         }
     }
 
@@ -1263,6 +1347,68 @@ mod tests {
         load_json(&repo_root().join(rel)).unwrap()
     }
 
+    fn set_runtime_contract(
+        fixture: &mut Fixture,
+        runtime_support: Value,
+        browser_compatible: bool,
+        fork_instrumentation: &str,
+    ) {
+        for bottle in [
+            &mut fixture.metadata["packages"][0]["bottles"][0],
+            &mut fixture.formula["bottles"][0],
+        ] {
+            bottle["runtime_support"] = runtime_support.clone();
+            bottle["browser_compatible"] = json!(browser_compatible);
+            bottle["fork_instrumentation"] = json!(fork_instrumentation);
+        }
+    }
+
+    fn remove_outcome(fixture: &mut Fixture, name: &str) {
+        fixture.provenance["validation"]["outcome_lists"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|outcome| string_at(outcome, "/name") != Some(name));
+    }
+
+    fn set_outcome(fixture: &mut Fixture, name: &str, status: &str) {
+        remove_outcome(fixture, name);
+        let (passed, failed, skipped, skip_reason) = match status {
+            "success" => (
+                json!([format!("{name} fixture passed")]),
+                json!([]),
+                json!([]),
+                None,
+            ),
+            "failed" => (
+                json!([]),
+                json!([format!("{name} fixture failed")]),
+                json!([]),
+                None,
+            ),
+            "skipped" => (
+                json!([]),
+                json!([]),
+                json!([format!("{name} fixture skipped")]),
+                Some(format!("{name} is intentionally absent from this fixture.")),
+            ),
+            other => panic!("unsupported fixture outcome status {other}"),
+        };
+        let mut outcome = json!({
+            "name": name,
+            "status": status,
+            "passed": passed,
+            "failed": failed,
+            "skipped": skipped,
+        });
+        if let Some(reason) = skip_reason {
+            outcome["skip_reason"] = json!(reason);
+        }
+        fixture.provenance["validation"]["outcome_lists"]
+            .as_array_mut()
+            .unwrap()
+            .push(outcome);
+    }
+
     #[test]
     fn validates_live_tap_fixture() {
         let fixture = Fixture::new();
@@ -1272,6 +1418,218 @@ mod tests {
         assert_eq!(report.bottles, 1);
         assert_eq!(report.link_manifests, 1);
         assert_eq!(report.provenance_reports, 1);
+    }
+
+    #[test]
+    fn accepts_support_data_without_executable_runtime_claims() {
+        let mut fixture = Fixture::new();
+        set_runtime_contract(&mut fixture, json!([]), false, "not-required");
+        remove_outcome(&mut fixture, "node_smoke");
+        set_outcome(&mut fixture, "support_data_test", "success");
+        fixture.write();
+
+        let report = fixture.validate();
+        assert_eq!(report.errors, Vec::<String>::new());
+    }
+
+    #[test]
+    fn rejects_support_data_without_successful_support_data_evidence() {
+        for status in [None, Some("failed"), Some("skipped")] {
+            let mut fixture = Fixture::new();
+            set_runtime_contract(&mut fixture, json!([]), false, "not-required");
+            remove_outcome(&mut fixture, "node_smoke");
+            remove_outcome(&mut fixture, "support_data_test");
+            if let Some(status) = status {
+                set_outcome(&mut fixture, "support_data_test", status);
+            }
+            fixture.write();
+
+            let report = fixture.validate();
+            assert!(
+                report.errors.join("\n").contains(
+                    "runtime_support=[] requires exactly one successful support_data_test"
+                ),
+                "status {status:?} produced unexpected validation errors: {:#?}",
+                report.errors,
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_executable_runtime_claim_backed_by_support_data_evidence() {
+        let mut fixture = Fixture::new();
+        set_outcome(&mut fixture, "support_data_test", "success");
+        fixture.write();
+
+        let report = fixture.validate();
+        assert!(
+            report
+                .errors
+                .join("\n")
+                .contains("support_data_test cannot substantiate non-empty runtime_support"),
+            "unexpected validation errors: {:#?}",
+            report.errors,
+        );
+    }
+
+    #[test]
+    fn rejects_support_data_with_successful_executable_runtime_evidence() {
+        let mut fixture = Fixture::new();
+        set_runtime_contract(&mut fixture, json!([]), false, "not-required");
+        set_outcome(&mut fixture, "support_data_test", "success");
+        fixture.write();
+
+        let report = fixture.validate();
+        assert!(
+            report.errors.join("\n").contains(
+                "support-data bottles cannot claim successful executable runtime evidence"
+            ),
+            "unexpected validation errors: {:#?}",
+            report.errors,
+        );
+    }
+
+    #[test]
+    fn rejects_node_claim_without_successful_node_evidence() {
+        for status in [None, Some("failed"), Some("skipped")] {
+            let mut fixture = Fixture::new();
+            remove_outcome(&mut fixture, "node_smoke");
+            if let Some(status) = status {
+                set_outcome(&mut fixture, "node_smoke", status);
+            }
+            fixture.write();
+
+            let report = fixture.validate();
+            assert!(
+                report
+                    .errors
+                    .join("\n")
+                    .contains("runtime_support node claim must exactly match"),
+                "status {status:?} produced unexpected validation errors: {:#?}",
+                report.errors,
+            );
+        }
+    }
+
+    #[test]
+    fn accepts_browser_claim_with_matching_runtime_evidence() {
+        let mut fixture = Fixture::new();
+        set_runtime_contract(
+            &mut fixture,
+            json!(["node", "browser"]),
+            true,
+            "not-required",
+        );
+        set_outcome(&mut fixture, "browser_smoke", "success");
+        fixture.write();
+
+        let report = fixture.validate();
+        assert_eq!(report.errors, Vec::<String>::new());
+    }
+
+    #[test]
+    fn rejects_browser_claim_without_successful_browser_evidence() {
+        for status in [None, Some("failed"), Some("skipped")] {
+            let mut fixture = Fixture::new();
+            set_runtime_contract(
+                &mut fixture,
+                json!(["node", "browser"]),
+                true,
+                "not-required",
+            );
+            remove_outcome(&mut fixture, "browser_smoke");
+            if let Some(status) = status {
+                set_outcome(&mut fixture, "browser_smoke", status);
+            }
+            fixture.write();
+
+            let report = fixture.validate();
+            assert!(
+                report
+                    .errors
+                    .join("\n")
+                    .contains("runtime_support browser claim must exactly match one successful"),
+                "status {status:?} produced unexpected validation errors: {:#?}",
+                report.errors,
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_browser_claim_and_compatibility_disagreement() {
+        for (runtime_support, browser_compatible) in
+            [(json!(["node"]), true), (json!(["node", "browser"]), false)]
+        {
+            let mut fixture = Fixture::new();
+            set_runtime_contract(
+                &mut fixture,
+                runtime_support,
+                browser_compatible,
+                "not-required",
+            );
+            set_outcome(&mut fixture, "browser_smoke", "success");
+            fixture.write();
+
+            let report = fixture.validate();
+            assert!(
+                report.errors.join("\n").contains(
+                    "runtime_support browser claim must exactly match browser_compatible"
+                ),
+                "runtime/compatibility disagreement produced unexpected errors: {:#?}",
+                report.errors,
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_runtime_evidence_names() {
+        let mut fixture = Fixture::new();
+        fixture.provenance["validation"]["outcome_lists"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "name": "node_smoke",
+                "status": "success",
+                "passed": ["a second, distinct Node outcome"],
+                "failed": [],
+                "skipped": [],
+            }));
+        fixture.write();
+
+        let report = fixture.validate();
+        assert!(
+            report
+                .errors
+                .join("\n")
+                .contains("provenance repeats validation outcome \"node_smoke\""),
+            "unexpected validation errors: {:#?}",
+            report.errors,
+        );
+    }
+
+    #[test]
+    fn rejects_support_data_with_executable_only_bottle_flags() {
+        for (browser_compatible, fork_instrumentation) in
+            [(true, "not-required"), (false, "required")]
+        {
+            let mut fixture = Fixture::new();
+            set_runtime_contract(
+                &mut fixture,
+                json!([]),
+                browser_compatible,
+                fork_instrumentation,
+            );
+            remove_outcome(&mut fixture, "node_smoke");
+            set_outcome(&mut fixture, "support_data_test", "success");
+            fixture.write();
+
+            let report = fixture.validate();
+            assert!(
+                report.errors.iter().any(|error| error.contains("schema:")),
+                "flags {browser_compatible}/{fork_instrumentation} unexpectedly passed: {:#?}",
+                report.errors,
+            );
+        }
     }
 
     #[test]
