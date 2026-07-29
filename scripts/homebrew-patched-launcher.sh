@@ -2230,6 +2230,19 @@ homebrew_patched_launcher_audit_native_projection_links() {
   if [ -n "$HOMEBREW_PATCHED_BUILD_USER" ]; then
     runner="$HOMEBREW_PATCHED_RECIPE_RUNNER"
     python=/usr/bin/python3
+    if [ -z "$runner" ]; then
+      # WHY: a Formula can need native build tools without using Kandelo's
+      # tap-recipe bridge. The native closure still needs the same component
+      # audit, so use the authenticated platform projection rather than making
+      # auditor availability depend on an unrelated recipe boundary.
+      runner="$(
+        homebrew_patched_launcher_admit_recipe_runner_source \
+          "$HOMEBREW_PATCHED_PLATFORM_ROOT"
+      )" || {
+        echo "homebrew-patched-launcher: native link-chain auditor is unavailable" >&2
+        return 2
+      }
+    fi
     [ -n "$runner" ] || {
       echo "homebrew-patched-launcher: native link-chain auditor is unavailable" >&2
       return 2

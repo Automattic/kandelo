@@ -2614,6 +2614,12 @@ EOF
     cmake cmake-cross-final cmake-cross
   homebrew_patched_launcher_run_native create-native-relative-link \
     cmake ../../../ninja/1.0/bin/ninja cmake-cross-final
+  # A native-tool-only Formula has no tap recipe runner. Exercise that exact
+  # lifecycle shape so the closure audit cannot accidentally depend on one.
+  saved_recipe_runner="$HOMEBREW_PATCHED_RECIPE_RUNNER"
+  HOMEBREW_PATCHED_RECIPE_RUNNER=""
+  homebrew_patched_launcher_audit_native_projection_links
+  HOMEBREW_PATCHED_RECIPE_RUNNER="$saved_recipe_runner"
   homebrew_patched_launcher_seal_native_prefix
   [ "$(stat -c '%u:%g:%a' "$isolated_native_prefix")" = "0:0:555" ] ||
     fail "sealed native prefix ownership or mode is unsafe"
