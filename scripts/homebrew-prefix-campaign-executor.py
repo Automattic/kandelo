@@ -47,6 +47,10 @@ MAX_FORMULAE = 256
 MAX_DEPENDENCIES = 256
 MAX_RELEASE_ASSETS = 32
 HTTP_TIMEOUT = 300
+CAMPAIGN_COMMIT_TIMESTAMP = 946684800
+CAMPAIGN_COMMIT_TIMEZONE = "+0000"
+CAMPAIGN_COMMIT_NAME = "Kandelo Homebrew Campaign"
+CAMPAIGN_COMMIT_EMAIL = "campaign@kandelo.invalid"
 PUBLICATION_FILES = (
     "build/bottle.json",
     "build/bottle.tar.gz",
@@ -272,6 +276,37 @@ def git_object_id(kind: str, payload: bytes) -> str:
     return hashlib.sha1(header + payload).hexdigest()
 
 
+def deterministic_campaign_commit_oid(
+    *,
+    parent: str,
+    tree: str,
+    label: str,
+) -> str:
+    parent = require_string(parent, "campaign commit parent", COMMIT)
+    tree = require_string(tree, "campaign commit tree", COMMIT)
+    label = require_string(label, "campaign commit label")
+    if "\n" in label or "\r" in label:
+        fail("campaign commit label must fit on one line")
+    identity = (
+        f"{CAMPAIGN_COMMIT_NAME} <{CAMPAIGN_COMMIT_EMAIL}> "
+        f"{CAMPAIGN_COMMIT_TIMESTAMP} {CAMPAIGN_COMMIT_TIMEZONE}"
+    )
+    message = (
+        "Kandelo Homebrew campaign publisher snapshot\n\n"
+        f"Purpose: {label}\n"
+        f"Protected source: {parent}\n"
+    )
+    payload = (
+        f"tree {tree}\n"
+        f"parent {parent}\n"
+        f"author {identity}\n"
+        f"committer {identity}\n"
+        "\n"
+        f"{message}"
+    ).encode("utf-8")
+    return git_object_id("commit", payload)
+
+
 def filesystem_git_tree_oid(root: pathlib.Path, label: str) -> str:
     root = real_directory(root, label)
 
@@ -314,6 +349,34 @@ def filesystem_git_tree_oid(root: pathlib.Path, label: str) -> str:
         return b"".join(entry for _key, entry in entries)
 
     return git_object_id("tree", visit(root))
+
+
+def filesystem_git_leaf_inventory(
+    root: pathlib.Path,
+    label: str,
+) -> dict[str, tuple[str, str]]:
+    root = real_directory(root, label)
+    result: dict[str, tuple[str, str]] = {}
+    for child in root.rglob("*"):
+        relative = child.relative_to(root).as_posix()
+        metadata = child.lstat()
+        if stat.S_ISDIR(metadata.st_mode) and not child.is_symlink():
+            continue
+        if stat.S_ISREG(metadata.st_mode) and not child.is_symlink():
+            payload = child.read_bytes()
+            mode = (
+                "100755"
+                if metadata.st_mode
+                & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                else "100644"
+            )
+        elif stat.S_ISLNK(metadata.st_mode):
+            payload = os.readlink(child).encode("utf-8")
+            mode = "120000"
+        else:
+            fail(f"{label} contains a special file")
+        result[relative] = (mode, git_object_id("blob", payload))
+    return result
 
 
 def source_tree_identity(authority: dict[str, Any]) -> str:
@@ -548,6 +611,192 @@ def copy_verified(
     return copied, actual
 
 
+def handoff_publication(
+    handoff: dict[str, Any],
+    arch: str,
+    label: str,
+) -> dict[str, Any]:
+    publication = next(
+        (
+            value
+            for value in handoff["publications"]
+            if value["arch"] == arch
+        ),
+        None,
+    )
+    if publication is None:
+        fail(f"{label} has no {arch} campaign publication")
+    return publication
+
+
+def handoff_publication_file(
+    publication: dict[str, Any],
+    path: str,
+    label: str,
+) -> dict[str, Any]:
+    record = next(
+        (
+            value
+            for value in publication["files"]
+            if value["path"] == path
+        ),
+        None,
+    )
+    if record is None:
+        fail(f"{label} lacks {path}")
+    return record
+
+
+def validate_dependency_bottle_input(
+    *,
+    bottle_json: pathlib.Path,
+    handoff: dict[str, Any],
+    arch: str,
+    archive_record: dict[str, Any],
+    campaign: dict[str, Any],
+) -> tuple[dict[str, Any], str, str, str]:
+    name = handoff["formula"]["name"]
+    value, _payload = load_json_bytes(
+        bottle_json,
+        f"{name}/{arch} dependency bottle JSON",
+        canonical=False,
+    )
+    authority = campaign["authority"]
+    tap_name = authority["tap_name"]
+    formula_key = f"{tap_name}/{name}"
+    if (
+        not isinstance(value, dict)
+        or set(value) != {formula_key}
+        or not isinstance(value[formula_key], dict)
+    ):
+        fail(f"{name}/{arch} bottle JSON has the wrong Formula identity")
+    formula_record = value[formula_key].get("formula")
+    bottle = value[formula_key].get("bottle")
+    if not isinstance(formula_record, dict) or not isinstance(bottle, dict):
+        fail(f"{name}/{arch} bottle JSON lacks bottle metadata")
+    expected_path = (
+        f"Library/Taps/{tap_name.split('/', 1)[0]}/"
+        f"homebrew-{tap_name.split('/', 1)[1]}/Formula/{name}.rb"
+    )
+    rebuild = bottle.get("rebuild")
+    if (
+        formula_record.get("name") != name
+        or formula_record.get("path") != expected_path
+        or formula_record.get("pkg_version")
+        != handoff["formula"]["version"]
+        or not isinstance(rebuild, int)
+        or isinstance(rebuild, bool)
+        or rebuild != handoff["formula"]["bottle_rebuild"]
+    ):
+        fail(f"{name}/{arch} bottle identity differs from its handoff")
+    tag = f"{arch}_kandelo"
+    tags = bottle.get("tags")
+    if (
+        not isinstance(tags, dict)
+        or set(tags) != {tag}
+        or not isinstance(tags[tag], dict)
+        or "sha256" not in tags[tag]
+    ):
+        fail(f"{name}/{arch} bottle JSON has the wrong architecture")
+    digest = require_string(
+        tags[tag]["sha256"],
+        f"{name}/{arch} bottle digest",
+        SHA256,
+    )
+    if digest != archive_record["sha256"]:
+        fail(f"{name}/{arch} bottle JSON digest differs from its archive")
+    root_url = require_string(
+        bottle.get("root_url"),
+        f"{name}/{arch} bottle root URL",
+    )
+    expected_root = (
+        "https://ghcr.io/v2/"
+        f"{authority['tap_repository'].lower()}"
+    )
+    if root_url != expected_root:
+        fail(f"{name}/{arch} bottle root URL is not the campaign registry")
+    cellar = require_string(
+        bottle.get("cellar"),
+        f"{name}/{arch} bottle cellar",
+    )
+    if cellar != "/opt/kandelo/homebrew/Cellar":
+        fail(f"{name}/{arch} bottle cellar is not the Kandelo prefix")
+    canonical = {
+        name: {
+            "bottle": {
+                "cellar": cellar,
+                "rebuild": rebuild,
+                "root_url": root_url,
+                "tags": {tag: {"sha256": digest}},
+            },
+            "formula": {
+                "name": name,
+                "path": expected_path,
+                "pkg_version": formula_record["pkg_version"],
+            },
+        }
+    }
+    return canonical, digest, root_url, cellar
+
+
+def default_dependency_bottle_merger(
+    *,
+    tap_root: pathlib.Path,
+    campaign: dict[str, Any],
+    formula: str,
+    arch: str,
+    bottle_json: pathlib.Path,
+    sha256: str,
+    root_url: str,
+    cellar: str,
+) -> None:
+    authority = campaign["authority"]
+    command = [
+        "bash",
+        str(ROOT / "scripts/homebrew-merge-bottle-json.sh"),
+        "--tap-root",
+        str(tap_root),
+        "--tap-repository",
+        authority["tap_repository"],
+        "--tap-name",
+        authority["tap_name"],
+        "--formula",
+        formula,
+        "--arch",
+        arch,
+        "--release-tag",
+        f"bottles-abi-v{authority['current_kandelo_abi']}",
+        "--bottle-json",
+        str(bottle_json),
+        "--expected-sha256",
+        sha256,
+        "--expected-root-url",
+        root_url,
+        "--expected-cellar",
+        cellar,
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            cwd=ROOT,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=300,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        fail(f"cannot compose dependency bottle for {formula}/{arch}: {error}")
+    if result.returncode != 0:
+        detail = result.stderr.decode(
+            "utf-8", errors="replace"
+        )[-16_384:]
+        fail(
+            f"cannot compose dependency bottle for "
+            f"{formula}/{arch}: {detail}"
+        )
+
+
 def campaign_formula_evidence(
     campaign: dict[str, Any],
     formula: dict[str, Any],
@@ -601,9 +850,29 @@ def default_publication_validator(
     formula: dict[str, Any],
     arch: str,
     publication: pathlib.Path,
-    source_root: pathlib.Path,
+    prepared_root: pathlib.Path,
+    checkout_commit: str,
 ) -> None:
     authority = campaign["authority"]
+    checkout_commit = require_string(
+        checkout_commit,
+        "prepared tap checkout commit",
+        COMMIT,
+    )
+    build_manifest, _payload = load_json_bytes(
+        publication / "build/manifest.json",
+        f"{formula['name']}/{arch} build manifest",
+        canonical=False,
+    )
+    if (
+        not isinstance(build_manifest, dict)
+        or build_manifest.get("schema") != 4
+        or build_manifest.get("tap_checkout_commit") != checkout_commit
+    ):
+        fail(
+            f"{formula['name']}/{arch} build manifest names a different "
+            "prepared checkout"
+        )
     command = [
         "bash",
         str(ROOT / "scripts/homebrew-validate-publish-handoff.sh"),
@@ -621,16 +890,18 @@ def default_publication_validator(
         authority["tap_name"],
         "--tap-commit",
         authority["source_tap_commit"],
+        "--tap-checkout-commit",
+        checkout_commit,
         "--kandelo-commit",
         authority["kandelo_commit"],
         "--bottle-root-url",
         f"https://ghcr.io/v2/{authority['tap_repository'].lower()}",
         "--tap-root",
-        str(source_root),
+        str(prepared_root),
         "--forbidden-root",
         str(publication.parent),
         "--forbidden-root",
-        str(source_root.parent),
+        str(prepared_root.parent),
         "--defer-whole-tap-validation",
         "--prefix-campaign-layout-sha256",
         authority["guest_layout"]["sha256"],
@@ -950,20 +1221,32 @@ def load_handoff(
     return value, payload
 
 
-def validate_dependency_handoffs(
+LoadedDependencyHandoffs = dict[
+    str,
+    tuple[pathlib.Path, dict[str, Any], bytes],
+]
+
+
+def load_dependency_handoff_set(
     roots: Iterable[pathlib.Path],
     campaign: dict[str, Any],
     campaign_payload: bytes,
     index: dict[str, dict[str, Any]],
     formula_name: str,
-) -> tuple[list[dict[str, Any]], dict[str, tuple[str, str]]]:
+) -> tuple[
+    list[dict[str, Any]],
+    dict[str, tuple[str, str]],
+    LoadedDependencyHandoffs,
+]:
     expected_names = dependency_closure(
         campaign, index, formula_name
     )
     loaded: dict[str, tuple[str, str]] = {}
     loaded_values: dict[str, dict[str, Any]] = {}
+    loaded_handoffs: LoadedDependencyHandoffs = {}
     records: list[dict[str, Any]] = []
     for root in roots:
+        root = real_directory(root, "dependency handoff root")
         value, payload = load_handoff(
             root, campaign, campaign_payload
         )
@@ -984,6 +1267,7 @@ def validate_dependency_handoffs(
         tag = handoff_tag(payload)
         loaded[name] = (tag, digest)
         loaded_values[name] = value
+        loaded_handoffs[name] = (root, value, payload)
         records.append(
             {
                 "formula": name,
@@ -1004,11 +1288,132 @@ def validate_dependency_handoffs(
             value["dependency_handoffs"], nested_expected
         )
     records.sort(key=lambda item: item["formula"])
+    return records, loaded, loaded_handoffs
+
+
+def validate_dependency_handoffs(
+    roots: Iterable[pathlib.Path],
+    campaign: dict[str, Any],
+    campaign_payload: bytes,
+    index: dict[str, dict[str, Any]],
+    formula_name: str,
+) -> tuple[list[dict[str, Any]], dict[str, tuple[str, str]]]:
+    records, loaded, _loaded_handoffs = load_dependency_handoff_set(
+        roots,
+        campaign,
+        campaign_payload,
+        index,
+        formula_name,
+    )
     return records, loaded
 
 
+DependencyBottleMerger = Callable[..., None]
+
+
+def stage_dependency_bottle_inputs(
+    *,
+    loaded_handoffs: LoadedDependencyHandoffs,
+    campaign: dict[str, Any],
+    index: dict[str, dict[str, Any]],
+    formula_name: str,
+    arch: str,
+    output: pathlib.Path,
+) -> list[dict[str, Any]]:
+    output.mkdir(parents=True)
+    staged: dict[str, dict[str, Any]] = {}
+    expected_names = dependency_closure(
+        campaign,
+        index,
+        formula_name,
+    )
+    if tuple(sorted(loaded_handoffs)) != expected_names:
+        fail("loaded dependency handoffs differ from the campaign closure")
+    for name in expected_names:
+        root, handoff, _payload = loaded_handoffs[name]
+        expected_formula = campaign_formula_evidence(
+            campaign, index[name]
+        )
+        if handoff["formula"] != expected_formula:
+            fail(f"dependency handoff {name} differs from the campaign")
+        publication = handoff_publication(
+            handoff,
+            arch,
+            f"dependency {name}",
+        )
+        bottle_path = f"payload/{arch}/build/bottle.json"
+        archive_path = f"payload/{arch}/build/bottle.tar.gz"
+        bottle_record = handoff_publication_file(
+            publication,
+            bottle_path,
+            f"dependency {name}/{arch}",
+        )
+        archive_record = handoff_publication_file(
+            publication,
+            archive_path,
+            f"dependency {name}/{arch}",
+        )
+        # WHY: the Formula merge needs only bottle metadata. Copying every
+        # dependency archive would add gigabytes of I/O without strengthening
+        # the manifest SHA-256 binding already checked by load_handoff().
+        raw_destination = private_destination(
+            output,
+            f"{name}/raw-bottle.json",
+            f"{name}/{arch} staged bottle JSON",
+        )
+        copied, digest = copy_verified(
+            root / bottle_path,
+            raw_destination,
+            expected_bytes=bottle_record["bytes"],
+            expected_sha256=bottle_record["sha256"],
+        )
+        if (
+            copied != bottle_record["bytes"]
+            or digest != bottle_record["sha256"]
+        ):
+            fail(f"dependency {name}/{arch} changed while copied")
+        canonical, bottle_digest, root_url, cellar = (
+            validate_dependency_bottle_input(
+                bottle_json=raw_destination,
+                handoff=handoff,
+                arch=arch,
+                archive_record=archive_record,
+                campaign=campaign,
+            )
+        )
+        destination = private_destination(
+            output,
+            f"{name}/bottle.json",
+            f"{name}/{arch} canonical bottle JSON",
+        )
+        # WHY: Homebrew's raw receipt keeps provenance-rich tag fields and a
+        # tap-qualified key, while the static Formula merger deliberately
+        # accepts only this minimal short-name document.
+        with destination.open("xb") as canonical_output:
+            canonical_output.write(pretty_json(canonical))
+        staged[name] = {
+            "bottle_json": destination,
+            "cellar": cellar,
+            "root_url": root_url,
+            "sha256": bottle_digest,
+        }
+    if tuple(sorted(staged)) != expected_names:
+        fail("staged dependency bottles differ from the campaign closure")
+    return [
+        {"formula": name, **staged[name]}
+        for name in expected_names
+    ]
+
+
 PublicationValidator = Callable[
-    [dict[str, Any], dict[str, Any], str, pathlib.Path, pathlib.Path],
+    [
+        dict[str, Any],
+        dict[str, Any],
+        str,
+        pathlib.Path,
+        pathlib.Path,
+        str,
+    ],
     None,
 ]
 
@@ -1027,6 +1432,92 @@ def snapshot_source_root(
     # permit different bytes to be sealed. The private copy is authoritative
     # only after its complete Git tree and selected Formula match the campaign.
     return validate_source_root(destination, campaign, formula)
+
+
+def prepare_arch_checkout(
+    *,
+    source: pathlib.Path,
+    destination: pathlib.Path,
+    dependency_input_root: pathlib.Path,
+    loaded_handoffs: LoadedDependencyHandoffs,
+    campaign: dict[str, Any],
+    index: dict[str, dict[str, Any]],
+    formula: dict[str, Any],
+    arch: str,
+    dependency_merger: DependencyBottleMerger,
+) -> tuple[pathlib.Path, str, str]:
+    root = snapshot_source_root(
+        source,
+        destination,
+        campaign,
+        formula,
+    )
+    before = filesystem_git_leaf_inventory(
+        root,
+        f"{formula['name']}/{arch} source checkout",
+    )
+    staged = stage_dependency_bottle_inputs(
+        loaded_handoffs=loaded_handoffs,
+        campaign=campaign,
+        index=index,
+        formula_name=formula["name"],
+        arch=arch,
+        output=dependency_input_root,
+    )
+    for dependency in staged:
+        dependency_merger(
+            tap_root=root,
+            campaign=campaign,
+            formula=dependency["formula"],
+            arch=arch,
+            bottle_json=dependency["bottle_json"],
+            sha256=dependency["sha256"],
+            root_url=dependency["root_url"],
+            cellar=dependency["cellar"],
+        )
+    after = filesystem_git_leaf_inventory(
+        root,
+        f"{formula['name']}/{arch} prepared checkout",
+    )
+    changed = tuple(
+        sorted(
+            path
+            for path in set(before) | set(after)
+            if before.get(path) != after.get(path)
+        )
+    )
+    expected_changed = tuple(
+        f"Formula/{name}.rb"
+        for name in dependency_closure(
+            campaign,
+            index,
+            formula["name"],
+        )
+    )
+    if changed != expected_changed:
+        fail(
+            "dependency bottle composition changed files outside "
+            "its exact Formula closure"
+        )
+    target_tree = source_tree_identity(campaign["authority"])
+    target_commit = deterministic_campaign_commit_oid(
+        parent=campaign["authority"]["source_tap_commit"],
+        tree=target_tree,
+        label="sealed target source",
+    )
+    prepared_tree = filesystem_git_tree_oid(
+        root,
+        f"{formula['name']}/{arch} prepared checkout",
+    )
+    # WHY: build jobs create this synthetic commit locally and cannot publish
+    # it. Recomputing its Git object ID from sealed inputs lets the trusted
+    # executor bind the handoff without trusting a job-supplied receipt.
+    prepared_commit = deterministic_campaign_commit_oid(
+        parent=target_commit,
+        tree=prepared_tree,
+        label=f"{formula['name']}/{arch} dependency bottles",
+    )
+    return root, prepared_tree, prepared_commit
 
 
 def snapshot_publication(
@@ -1060,6 +1551,9 @@ def derive_build(
     dependency_roots: list[pathlib.Path],
     output: pathlib.Path,
     validator: PublicationValidator = default_publication_validator,
+    dependency_merger: DependencyBottleMerger = (
+        default_dependency_bottle_merger
+    ),
 ) -> None:
     campaign, campaign_payload, index = load_campaign(campaign_path)
     formula_name = require_string(formula_name, "Formula name", FORMULA)
@@ -1105,14 +1599,16 @@ def derive_build(
             *dependency_roots,
         ),
     )
-    dependency_records, dependency_identities = (
-        validate_dependency_handoffs(
-            dependency_roots,
-            campaign,
-            campaign_payload,
-            index,
-            formula_name,
-        )
+    (
+        dependency_records,
+        dependency_identities,
+        loaded_dependency_handoffs,
+    ) = load_dependency_handoff_set(
+        dependency_roots,
+        campaign,
+        campaign_payload,
+        index,
+        formula_name,
     )
     temporary = pathlib.Path(
         tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent)
@@ -1120,12 +1616,6 @@ def derive_build(
     try:
         result = temporary / "handoff"
         result.mkdir()
-        private_source = snapshot_source_root(
-            source_tap_root,
-            temporary / "source",
-            campaign,
-            formula,
-        )
         publication_records: list[dict[str, Any]] = []
         for arch, publication in publications:
             private_publication, bound_records = snapshot_publication(
@@ -1134,14 +1624,40 @@ def derive_build(
                 formula,
                 arch,
             )
+            private_source, prepared_tree, prepared_commit = (
+                prepare_arch_checkout(
+                    source=source_tap_root,
+                    destination=temporary / "sources" / arch,
+                    dependency_input_root=(
+                        temporary / "dependency-inputs" / arch
+                    ),
+                    loaded_handoffs=loaded_dependency_handoffs,
+                    campaign=campaign,
+                    index=index,
+                    formula=formula,
+                    arch=arch,
+                    dependency_merger=dependency_merger,
+                )
+            )
             validator(
                 campaign,
                 formula,
                 arch,
                 private_publication,
                 private_source,
+                prepared_commit,
             )
-            validate_source_root(private_source, campaign, formula)
+            if (
+                filesystem_git_tree_oid(
+                    private_source,
+                    f"{formula_name}/{arch} prepared checkout",
+                )
+                != prepared_tree
+            ):
+                fail(
+                    f"{formula_name}/{arch} prepared checkout changed "
+                    "after validation"
+                )
             validate_publication_shape(
                 private_publication, formula, arch
             )
