@@ -1,9 +1,10 @@
 name: Homebrew main shell
 
 on:
-  # WHY: source-rootfs is a transitive package closure with shared tool
-  # inputs. Until the bottle cutover retires this temporary lane, a path
-  # allowlist could silently bypass the exact Node/Chromium product gate.
+  # WHY: a top-level path filter cannot distinguish product inputs from
+  # publisher-only controls. Trigger for every PR, then use the fail-closed
+  # effect classifier below so unknown and mixed changes still run the exact
+  # Node/Chromium product gate.
   pull_request:
     # WHY: marking a draft ready gives maintainers a non-destructive way to
     # rerun this long exact-product gate after a base-side CI correction.
@@ -42,8 +43,35 @@ permissions:
   contents: read
 
 jobs:
+  homebrew-main-shell-scope:
+    name: classify exact Homebrew shell effect
+    runs-on: ubuntu-latest
+    outputs:
+      required: ${{ steps.scope.outputs.required }}
+      reason: ${{ steps.scope.outputs.reason }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify the exact shell effect
+        id: scope
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/homebrew-main-shell-change-scope.sh \
+            --event "$GITHUB_EVENT_NAME" \
+            --base "$BASE_SHA" \
+            --head "$HEAD_SHA" \
+            --output "$GITHUB_OUTPUT"
+
   exact-public-bottle-closure:
-    name: exact current lazy shell (Node + Chromium)
+    name: run exact current lazy shell (Node + Chromium)
+    needs: homebrew-main-shell-scope
+    if: needs.homebrew-main-shell-scope.outputs.required == 'true'
     runs-on: ubuntu-latest
     # WHY: this exact gate may need to source-build the complete current shell
     # closure on a fresh runner before its Node and Chromium checks can begin.
@@ -1017,3 +1045,43 @@ jobs:
             apps/browser-demos/test-results
           retention-days: 7
           if-no-files-found: warn
+
+  exact-public-bottle-closure-gate:
+    name: exact current lazy shell (Node + Chromium)
+    needs:
+      - homebrew-main-shell-scope
+      - exact-public-bottle-closure
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the selected exact-shell result
+        env:
+          SCOPE_RESULT: ${{ needs.homebrew-main-shell-scope.result }}
+          EXACT_RESULT: ${{ needs.exact-public-bottle-closure.result }}
+          EXACT_REQUIRED: ${{ needs.homebrew-main-shell-scope.outputs.required }}
+          SCOPE_REASON: ${{ needs.homebrew-main-shell-scope.outputs.reason }}
+        run: |
+          set -euo pipefail
+          [ "$SCOPE_RESULT" = success ] || {
+            echo "::error::exact-shell effect classification failed"
+            exit 1
+          }
+          case "$EXACT_REQUIRED" in
+            true)
+              [ "$EXACT_RESULT" = success ] || {
+                echo "::error::required exact-shell proof ended as $EXACT_RESULT"
+                exit 1
+              }
+              ;;
+            false)
+              [ "$EXACT_RESULT" = skipped ] || {
+                echo "::error::publisher-only exact-shell job ended as $EXACT_RESULT"
+                exit 1
+              }
+              ;;
+            *)
+              echo "::error::invalid exact-shell requirement: $EXACT_REQUIRED"
+              exit 1
+              ;;
+          esac
+          echo "$SCOPE_REASON"

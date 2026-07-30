@@ -30,6 +30,10 @@ description: |
       runner, or conformance inputs changed. Gates fresh kernel/runtime
       validation against existing package archives.
 
+    homebrew_publisher_only_changed — every changed path belongs to the
+      audited bottle-publisher surface. Staging still runs the complete
+      publisher preflight, but may omit unrelated runtime workspace tests.
+
     package_staging_required — compatibility alias for
       package_archive_changed. Ordinary kernel/runtime changes do not
       set it unless a package declares the changed path as a build
@@ -82,6 +86,11 @@ outputs:
     description: |
       'true' when non-package-matrix validation is required.
     value: ${{ steps.scope.outputs.test_gate_required }}
+  homebrew_publisher_only_changed:
+    description: |
+      'true' only when every changed path belongs to the audited Homebrew
+      bottle-publisher surface and cannot affect an already-published shell.
+    value: ${{ steps.scope.outputs.homebrew_publisher_only_changed }}
   kernel:
     description: |
       Compatibility output for test-suite filtering: 'true' when the
@@ -173,6 +182,31 @@ runs:
         kernel_runtime_files=$(printf '%s\n' "$files" | kernel_runtime_changed_files)
         ci_control_files=$(printf '%s\n' "$files" | ci_control_changed_files)
 
+        publisher_scope_output=$(mktemp)
+        publisher_scope_base=$(git rev-parse "${BASE_REF}^{commit}")
+        publisher_scope_head=$(git rev-parse "HEAD^{commit}")
+        repository_root=$(git rev-parse --show-toplevel)
+        # WHY: staging and the exact shell gate must agree on the narrow
+        # publisher-only exception. Reuse the same rename-aware, fail-closed
+        # classifier rather than maintaining a second path allowlist here.
+        bash "$repository_root/.github/scripts/homebrew-main-shell-change-scope.sh" \
+          --event pull_request \
+          --base "$publisher_scope_base" \
+          --head "$publisher_scope_head" \
+          --output "$publisher_scope_output"
+        publisher_product_required=$(
+          sed -n 's/^required=//p' "$publisher_scope_output"
+        )
+        rm -f "$publisher_scope_output"
+        case "$publisher_product_required" in
+          false) homebrew_publisher_only_changed=true ;;
+          true) homebrew_publisher_only_changed=false ;;
+          *)
+            echo "::error::Homebrew publisher-only scope returned invalid state"
+            exit 1
+            ;;
+        esac
+
         # Tier A — docs-only filter. Implemented as inverse: any file
         # outside the docs allowlist forces docs_only=false. Empty diff
         # is treated as docs_only=false (defensive — a real PR will
@@ -251,6 +285,8 @@ runs:
         emit_bool binary_materialization_changed "$binary_materialization_changed"
         emit_bool kernel_runtime_changed "$kernel_runtime_changed"
         emit_bool test_gate_required "$test_gate_required"
+        emit_bool homebrew_publisher_only_changed \
+          "$homebrew_publisher_only_changed"
         emit_bool kernel "$kernel_changed"
         emit_bool package_staging_required "$package_archive_changed"
         echo "package_staging_reason=$package_staging_reason" >> "$GITHUB_OUTPUT"
@@ -269,5 +305,5 @@ runs:
         ci_state="$(summarize_matches 'CI scope control' "$ci_control_files")"
         uncategorized_state="$(summarize_matches 'uncategorized non-docs' "$uncategorized_non_docs_files")"
 
-        echo "::notice::package staging: $package_staging_state | test gate: $test_gate_required | vitest: $vitest_state | cargo+libc-test+POSIX+sortix: $kernel_state"
+        echo "::notice::package staging: $package_staging_state | test gate: $test_gate_required | Homebrew publisher only: $homebrew_publisher_only_changed | vitest: $vitest_state | cargo+libc-test+POSIX+sortix: $kernel_state"
         echo "::notice::$package_staging_reason | $publish_state | $materialization_state | $runtime_state | $ci_state | $uncategorized_state"

@@ -207,6 +207,9 @@ command -v jq >/dev/null 2>&1 || fail "jq is required"
 command -v node >/dev/null 2>&1 || fail "node is required"
 command -v python3 >/dev/null 2>&1 || fail "python3 is required"
 
+bash "$REPO_ROOT/.github/scripts/test-homebrew-main-shell-change-scope.sh" ||
+  fail "main-shell change-scope contract tests failed"
+
 python3 "$FINALIZER_TEST" ||
   fail "main-shell release finalizer contract tests failed"
 
