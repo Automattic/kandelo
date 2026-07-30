@@ -12,7 +12,7 @@ WORKFLOW = ARGV.empty? ?
 PUBLISH_JOB_DIGEST =
   "64bd13ea5a8d00953acfec3e02607f7ae70837706c868827bed5259c6043aeb2"
 WORKFLOW_DIGEST =
-  "d146961cbdd36b3ef2fbf59a17cb5e17e8bc37eee517b35dc26e1c4478708514"
+  "6e67a4a5c85e42f42c86a0a1a5002fe20dc8c161e07d14b687195bbcc944e4ab"
 DOWNLOAD_ACTION =
   "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 UPLOAD_ACTION =
@@ -421,6 +421,21 @@ check(chromium_run.include?(
 ) && chromium_run.include?(
   'test -z "${KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT:-}"'
 ), "Chromium proof does not reject closed acceptance inputs")
+
+chromium_build = named_step(
+  chromium_proof_job,
+  "Build exact public browser product",
+)
+chromium_build_run = chromium_build.fetch("run")
+check(
+  chromium_build.fetch("env").fetch("KANDELO_BROWSER_DEMO_INPUTS") ==
+    "main,homebrew-vfs-test" &&
+    chromium_build_run.scan(
+      '"KANDELO_BROWSER_DEMO_INPUTS=$KANDELO_BROWSER_DEMO_INPUTS"'
+    ).length == 1,
+  "Chromium proof does not forward selected Vite inputs " \
+    "through dev-shell",
+)
 
 node_resolution = named_step(
   node_proof_job,

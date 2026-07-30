@@ -939,7 +939,10 @@ jobs:
           WASM_POSIX_BINARY_CACHE_ROOT: ${{ runner.temp }}/main-shell-public-chromium-proof-cache
         run: |
           set -euo pipefail
+          # WHY: dev-shell intentionally drops ambient variables. Forward the
+          # selector or Vite builds its default pages and omits the proof page.
           bash ../../scripts/dev-shell.sh env \
+            "KANDELO_BROWSER_DEMO_INPUTS=$KANDELO_BROWSER_DEMO_INPUTS" \
             "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
             npm run build
           test -f dist/index.html
