@@ -12,7 +12,7 @@ WORKFLOW = ARGV.empty? ?
 PUBLISH_JOB_DIGEST =
   "64bd13ea5a8d00953acfec3e02607f7ae70837706c868827bed5259c6043aeb2"
 WORKFLOW_DIGEST =
-  "6e67a4a5c85e42f42c86a0a1a5002fe20dc8c161e07d14b687195bbcc944e4ab"
+  "fac33038f59317e26ad0a8c580073450317a468d45533dc560f11378022e1e80"
 DOWNLOAD_ACTION =
   "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 UPLOAD_ACTION =
@@ -374,15 +374,33 @@ check(node_proof_source.include?('--core-revision "$TAP_CATALOG_REF"') &&
       "guest lifecycles are not pinned to the sealed tap catalog")
 node_lifecycle = named_step(
   node_proof_job,
-  "Prove full public guest lifecycle in Node",
+  "Prove bounded public bottle installs in fresh Node processes",
 ).fetch("run")
+node_lifecycle_lines =
+  node_lifecycle.lines.map(&:strip).reject(&:empty?)
+core_scope_index =
+  node_lifecycle_lines.index("run_shipping_scope shipping-core")
+canary_scope_index =
+  node_lifecycle_lines.index("run_shipping_scope shipping-canary")
 check(
   node_lifecycle.include?(
     "homebrew/test/homebrew_guest_lifecycle_node.ts"
   ) &&
+    node_lifecycle.scan('--proof-mode "$scope"').length == 1 &&
+    node_lifecycle.scan(/^\s*run_shipping_scope shipping-core\s*$/).
+      length == 1 &&
+    node_lifecycle.scan(/^\s*run_shipping_scope shipping-canary\s*$/).
+      length == 1 &&
+    core_scope_index &&
+    canary_scope_index &&
+    node_lifecycle_lines[core_scope_index + 1] == "sample_resources" &&
+    node_lifecycle_lines[canary_scope_index + 1] == "sample_resources" &&
+    core_scope_index < canary_scope_index &&
+    node_lifecycle.scan('--image "$IMAGE"').length == 1 &&
+    !node_lifecycle.include?("--proof-mode comprehensive") &&
     node_lifecycle.include?("--timeout-ms 900000") &&
     node_lifecycle.include?('--canary-revision "$CANARY_REF"'),
-  "full Node guest lifecycle proof is missing",
+  "fresh-process Node bottle-installation scopes differ",
 )
 check(node_lifecycle.include?("memory.current") &&
       node_lifecycle.include?("memory.peak") &&

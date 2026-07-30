@@ -1052,28 +1052,38 @@ a supported user-facing contract.
 
 #### Exact Chromium guest-lifecycle fixture
 
-The Node.js and Chromium lifecycle runners use the same generated guest
-scripts and host-neutral phase runner. They tap exact first- and third-party
-revisions, prove each tap remains discoverable as untrusted, and retain only
-the Formula-level trust that stock Homebrew creates for fully qualified
-operations or grants through `brew trust --formula`. The reviewed shell image
-is composed directly from bottle projections rather than poured by in-guest
-Homebrew: its Bzip2, first-party M4, and Dash receipts must remain
-`built_as_bottle: true` and
-`poured_from_bottle: false`. The lifecycle explicitly trusts the already-pinned
-first-party Dash dependency without trusting its tap, then installs and
-reinstalls first-party Bzip2 and independent canary M4 through stock Homebrew.
-Both M4 receipts must bind Dash while Dash retains its truthful precomposed
-receipt.
+The Node.js and Chromium runners share one generated guest contract. Both tap
+exact first- and third-party revisions, prove each tap remains discoverable as
+untrusted, and retain only Formula-level trust. Stock Homebrew creates that
+trust for fully qualified operations or receives it through
+`brew trust --formula`.
 
-After exporting and rebooting the rootfs, both hosts recheck that narrow trust
-before any Formula-evaluating operation can recreate it. They execute the
-persisted packages, prove that `brew upgrade` is a same-version no-op for the
-already-pinned revisions, uninstall, revoke the selected item trust, untap, and
-verify no selected-tap authority remains. This checks the no-op upgrade path;
-it is not evidence for upgrading from an older bottle. A browser fixture only
-supplies host transport identities; it cannot replace or weaken those guest
-assertions.
+The required Node release gate uses two bounded shipping scopes. Each starts
+in a fresh operating-system Node process from the same exact original image.
+The core scope removes the direct-composed Bzip2 receipt, pours first-party
+Bzip2 through stock Homebrew, executes it, and exits. The canary scope taps
+both repositories, removes the direct-composed M4 receipt, pours and executes
+independent-canary M4, verifies its first-party Dash dependency, and exits.
+Reinstall, upgrade, cleanup, export, and reboot do not change whether a user
+can perform those first installs.
+
+The comprehensive lifecycle retains the additional maintenance and durability
+assertions. It reinstalls both bottles, exports and reboots the rootfs, checks
+that narrow trust survived, executes the persisted packages, proves that
+`brew upgrade` is a same-version no-op, uninstalls, revokes selected item
+trust, untaps, and verifies no selected-tap authority remains. This checks the
+no-op upgrade path; it is not evidence for upgrading from an older bottle. A
+browser fixture supplies host transport identities only. It cannot replace or
+weaken the guest assertions.
+
+The comprehensive Node lifecycle is not a required release gate yet. A single
+long-lived Node.js process can retain collectible WebAssembly memory long
+enough for the repeated Homebrew fork and exec workload to exhaust a standard
+hosted runner. Restoring it as a required gate needs fresh operating-system
+Node processes with digest-bound rootfs handoffs: first-party installation,
+third-party installation, and maintenance plus cleanup must run in separate
+processes. Splitting only at the existing reboot is insufficient because the
+memory peak begins during the first phase.
 
 The live Playwright proof is disabled unless
 `KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE=1` and
@@ -1199,12 +1209,13 @@ identity for the payload set, not a second catalog lock.
 
 A dependent read-only job resolves the public package generation again and
 anonymously re-reads all four fixed lifecycle assets. Node uses those verified
-local bytes while every tap and bottle request uses public transport. Chromium
-loads the same four fixed inputs anonymously and also uses public transport for
-all tap and bottle traffic. Both hosts install from exact product catalog
-`TF`, require `TA1` to remain public tap main, and run the same stock
-first-party and independent third-party tap lifecycle. Both closed-acceptance
-filesystem roots must be absent.
+local bytes while every tap and bottle request uses public transport. Its two
+fresh-process scopes pour and execute one first-party and one independent
+third-party bottle, including the cross-tap dependency. Chromium loads the
+same four fixed inputs anonymously and uses public transport for the complete
+two-phase lifecycle. Both hosts install from exact product catalog `TF`,
+require `TA1` to remain public tap main, and forbid closed-acceptance
+filesystem roots.
 
 The schema-1 mirror tag is content-addressed from bottle payloads, while its
 immutable release records the `TA0` that created it. A later `TA1` therefore
@@ -1250,9 +1261,12 @@ source-rootfs bridge remains separate internal comparison plumbing and cannot
 satisfy this cutover gate. Before either host creates live lifecycle evidence,
 the candidate's bootstrap recipe and composition report must bind the exact
 atomic runtime-support cohort; the shell bottle closure alone is not accepted
-as a `brew` runtime. A manual closed dispatch additionally invokes the Node
-lifecycle runner and creates the Chromium fixture from the same candidate
-image, bootstrap spec/archive/environment, and recovered bottle mirror.
+as a `brew` runtime. A manual closed dispatch additionally invokes the
+comprehensive Node lifecycle and creates the Chromium fixture from the same
+candidate image, bootstrap spec/archive/environment, and recovered bottle
+mirror. That manual Node result is diagnostic evidence until the phases use
+fresh process boundaries; it does not block the public first-install shipping
+claim.
 
 Dispatch the live lane only after recording the three observed live commits:
 

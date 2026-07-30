@@ -2,6 +2,10 @@ export const HOMEBREW_GUEST_LIFECYCLE_PHASE_ONE_MARKER =
   "KANDELO_HOMEBREW_GUEST_LIFECYCLE_PHASE_ONE_OK";
 export const HOMEBREW_GUEST_LIFECYCLE_PHASE_TWO_MARKER =
   "KANDELO_HOMEBREW_GUEST_LIFECYCLE_PHASE_TWO_OK";
+export const HOMEBREW_GUEST_CORE_SHIPPING_PROOF_MARKER =
+  "KANDELO_HOMEBREW_GUEST_CORE_SHIPPING_PROOF_OK";
+export const HOMEBREW_GUEST_CANARY_SHIPPING_PROOF_MARKER =
+  "KANDELO_HOMEBREW_GUEST_CANARY_SHIPPING_PROOF_OK";
 
 export const HOMEBREW_GUEST_LIFECYCLE_CORE_TAP = "kandelo-dev/tap-core";
 export const HOMEBREW_GUEST_LIFECYCLE_CORE_REPOSITORY =
@@ -21,6 +25,8 @@ export interface HomebrewGuestLifecycleRevisions {
   coreRevision: string;
   canaryRevision: string;
 }
+
+export type HomebrewGuestShippingProofScope = "core" | "canary";
 
 export function assertHomebrewGuestLifecycleRevisions(
   revisions: HomebrewGuestLifecycleRevisions,
@@ -50,7 +56,172 @@ export function assertHomebrewGuestLifecycleRevisions(
 export function createHomebrewGuestLifecyclePhaseOneScript(
   revisions: HomebrewGuestLifecycleRevisions,
 ): string {
+  return createHomebrewGuestInstallScript(revisions, "comprehensive");
+}
+
+/**
+ * Prove that users can install and execute public first- and third-party
+ * bottles through stock Homebrew.
+ *
+ * Each bounded scope starts from the exact original image and stops after one
+ * first install. Reinstall, upgrade, cleanup, export, and reboot test
+ * maintenance and durability rather than the user-facing install capability.
+ * The workflow runs the scopes in fresh Node processes, while the
+ * comprehensive lifecycle retains the additional assertions separately.
+ */
+export function createHomebrewGuestShippingProofScript(
+  revisions: HomebrewGuestLifecycleRevisions,
+  scope: HomebrewGuestShippingProofScope,
+): string {
+  return createHomebrewGuestInstallScript(
+    revisions,
+    scope === "core" ? "shipping-core" : "shipping-canary",
+  );
+}
+
+function createHomebrewGuestInstallScript(
+  revisions: HomebrewGuestLifecycleRevisions,
+  mode: "shipping-core" | "shipping-canary" | "comprehensive",
+): string {
   assertHomebrewGuestLifecycleRevisions(revisions);
+  // WHY: a hosted Node process may retain collectible Wasm backing stores
+  // longer than this fork-heavy workload can tolerate. Keep the release gate
+  // focused on first installation; the comprehensive contract still owns
+  // reinstall and durable-state assertions.
+  const coreReinstall = mode === "comprehensive"
+    ? String.raw`
+progress "reinstalling and executing the first-party Bzip2 bottle"
+/usr/bin/brew reinstall --force-bottle ${CORE_TAP}/bzip2
+reinstalled_bzip2_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/bzip2)"
+[ "$reinstalled_bzip2_prefix" = "$bzip2_prefix" ] ||
+  fail "Bzip2 reinstall changed its versioned prefix"
+assert_poured "$reinstalled_bzip2_prefix"
+assert_bzip2_roundtrip "$reinstalled_bzip2_prefix"
+`
+    : "";
+  const canaryReinstall = mode === "comprehensive"
+    ? String.raw`
+progress "reinstalling independent M4 with the same first-party dependency"
+/usr/bin/brew reinstall --force-bottle ${CANARY_TAP}/m4
+reinstalled_m4_prefix="$(/usr/bin/brew --prefix ${CANARY_TAP}/m4)"
+[ "$reinstalled_m4_prefix" = "$m4_prefix" ] ||
+  fail "M4 reinstall changed its versioned prefix"
+assert_poured "$reinstalled_m4_prefix"
+assert_precomposed_bottle "$dash_prefix"
+assert_runtime_dependency "$reinstalled_m4_prefix" ${CORE_TAP}/dash
+assert_m4_execution "$reinstalled_m4_prefix" cross-tap-reinstall-ok
+`
+    : "";
+  const coreInstall = mode === "shipping-canary"
+    ? ""
+    : String.raw`
+# WHY: the base shell is already composed from this bottle closure. Remove the
+# existing receipt through stock Homebrew so the following command proves a
+# genuine install rather than accepting Homebrew's "already installed" path.
+composed_bzip2_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/bzip2)"
+# WHY: the VFS composer placed exact bottle bytes directly; it did not execute
+# Homebrew's pour operation. Preserve that distinction in the receipt contract.
+assert_precomposed_bottle "$composed_bzip2_prefix"
+/usr/bin/brew uninstall --ignore-dependencies ${CORE_TAP}/bzip2
+[ ! -e "$composed_bzip2_prefix" ] ||
+  fail "direct-composed Bzip2 prefix remains after transition uninstall"
+
+progress "installing and executing the first-party Bzip2 bottle"
+/usr/bin/brew install --no-ask --force-bottle ${CORE_TAP}/bzip2
+bzip2_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/bzip2)"
+assert_poured "$bzip2_prefix"
+assert_bzip2_roundtrip "$bzip2_prefix"
+
+${coreReinstall}
+snapshot_trust "$core_trust_after"
+assert_formula_trust "$core_trust_after" ${CORE_TAP} ${CORE_BZIP2} present
+/usr/bin/brew untrust --tap >"$core_untrusted"
+assert_untrusted_tap_discovery ${CORE_TAP} "$core_untrusted"
+`;
+  const expectedBzip2Trust = mode === "comprehensive" ? "present" : "absent";
+  const canaryInstall = mode === "shipping-core"
+    ? ""
+    : String.raw`
+progress "tapping the exact independent third-party repository"
+/usr/bin/brew tap ${CANARY_TAP} ${CANARY_ORIGIN}
+canary_tap="$(/usr/bin/brew --repository ${CANARY_TAP})"
+/usr/bin/git -C "$canary_tap" fetch --no-tags origin ${revisions.canaryRevision}
+/usr/bin/git -C "$canary_tap" checkout --detach ${revisions.canaryRevision}
+assert_clean_tap "$canary_tap" ${CANARY_ORIGIN} ${revisions.canaryRevision}
+[ ! -e "$core_repository" ] || fail "third-party tap created homebrew/core"
+
+# WHY: keep third-party authority at Formula granularity. The fully qualified
+# M4 install below may create item trust, but tapping alone must remain
+# discoverable as untrusted and must not create either tap or Formula trust.
+/usr/bin/brew untrust --tap >"$canary_untrusted"
+assert_untrusted_tap_discovery ${CANARY_TAP} "$canary_untrusted"
+snapshot_trust "$canary_trust_before"
+assert_formula_trust "$canary_trust_before" ${CANARY_TAP} ${CANARY_M4} absent
+
+# WHY: core M4 and canary M4 have the same conventional Cellar identity. Use
+# stock uninstall to create one truthful target before the independent tap
+# pours its own bottle; do not rewrite either Formula to avoid the collision.
+composed_m4_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/m4)"
+assert_precomposed_bottle "$composed_m4_prefix"
+/usr/bin/brew uninstall --ignore-dependencies ${CORE_TAP}/m4
+[ ! -e "$composed_m4_prefix" ] ||
+  fail "direct-composed M4 prefix remains after transition uninstall"
+
+dash_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/dash)"
+assert_precomposed_bottle "$dash_prefix"
+# WHY: the fully qualified canary argument grants authority only to M4.
+# Homebrew independently evaluates its fully qualified Dash dependency, so
+# grant that one already-pinned first-party Formula without trusting the tap.
+/usr/bin/brew trust --formula ${CORE_DASH}
+snapshot_trust "$core_dependency_trust"
+assert_formula_trust "$core_dependency_trust" ${CORE_TAP} ${CORE_BZIP2} ${expectedBzip2Trust}
+assert_formula_trust "$core_dependency_trust" ${CORE_TAP} ${CORE_DASH} present
+/usr/bin/brew untrust --tap >"$core_untrusted"
+assert_untrusted_tap_discovery ${CORE_TAP} "$core_untrusted"
+progress "installing independent M4 with its first-party Dash dependency"
+/usr/bin/brew install --no-ask --force-bottle ${CANARY_TAP}/m4
+m4_prefix="$(/usr/bin/brew --prefix ${CANARY_TAP}/m4)"
+assert_poured "$m4_prefix"
+assert_precomposed_bottle "$dash_prefix"
+assert_runtime_dependency "$m4_prefix" ${CORE_TAP}/dash
+"$m4_prefix/bin/m4" --version >/dev/null
+assert_m4_execution "$m4_prefix" cross-tap-ok
+
+${canaryReinstall}
+snapshot_trust "$canary_trust_after"
+assert_formula_trust "$canary_trust_after" ${CANARY_TAP} ${CANARY_M4} present
+/usr/bin/brew untrust --tap >"$canary_untrusted"
+assert_untrusted_tap_discovery ${CANARY_TAP} "$canary_untrusted"
+`;
+  const canaryFinalAssertion = mode === "shipping-core"
+    ? ""
+    : String.raw`
+assert_clean_tap "$canary_tap" ${CANARY_ORIGIN} ${revisions.canaryRevision}
+`;
+  const durableState = mode === "comprehensive"
+    ? String.raw`
+state="$repository/var/homebrew/kandelo-guest-lifecycle-state"
+{
+  /usr/bin/printf '%s\n' ${revisions.coreRevision}
+  /usr/bin/printf '%s\n' ${revisions.canaryRevision}
+} >"$state"
+`
+    : "";
+  const startMessage = mode === "comprehensive"
+    ? "starting comprehensive install and durability phase"
+    : mode === "shipping-core"
+    ? "starting bounded core bottle shipping proof"
+    : "starting bounded independent-canary bottle shipping proof";
+  const completionMessage = mode === "comprehensive"
+    ? "phase one is durable and ready for rootfs export"
+    : mode === "shipping-core"
+    ? "first-party Bzip2 bottle installation is ready to ship"
+    : "independent-canary M4 bottle installation is ready to ship";
+  const completionMarker = mode === "comprehensive"
+    ? HOMEBREW_GUEST_LIFECYCLE_PHASE_ONE_MARKER
+    : mode === "shipping-core"
+    ? HOMEBREW_GUEST_CORE_SHIPPING_PROOF_MARKER
+    : HOMEBREW_GUEST_CANARY_SHIPPING_PROOF_MARKER;
   return String.raw`
 set -euo pipefail
 fail() { printf 'homebrew-guest-lifecycle: %s\n' "$*" >&2; exit 1; }
@@ -146,6 +317,7 @@ export HOMEBREW_AUTOMATICALLY_SET_NO_INSTALL_FROM_API=1
 export HOMEBREW_REQUIRE_TAP_TRUST=1
 export GIT_TERMINAL_PROMPT=0
 
+progress "${startMessage}"
 repository="$(/usr/bin/brew --repository)"
 core_repository="$repository/Library/Taps/homebrew/homebrew-core"
 [ ! -e "$core_repository" ] || fail "homebrew/core existed before the lifecycle proof"
@@ -163,121 +335,29 @@ assert_clean_tap "$core_tap" ${CORE_ORIGIN} ${revisions.coreRevision}
 # fully qualified package operation creates narrower item trust.
 core_untrusted=/tmp/kandelo-homebrew-core.untrusted
 core_trust_before=/tmp/kandelo-homebrew-core.trust-before.json
+core_trust_after=/tmp/kandelo-homebrew-core.trust-after.json
+core_dependency_trust=/tmp/kandelo-homebrew-core.dependency-trust.json
+canary_untrusted=/tmp/kandelo-homebrew-canary.untrusted
+canary_trust_before=/tmp/kandelo-homebrew-canary.trust-before.json
+canary_trust_after=/tmp/kandelo-homebrew-canary.trust-after.json
 /usr/bin/brew untrust --tap >"$core_untrusted"
 assert_untrusted_tap_discovery ${CORE_TAP} "$core_untrusted"
 snapshot_trust "$core_trust_before"
 assert_formula_trust "$core_trust_before" ${CORE_TAP} ${CORE_BZIP2} absent
 assert_formula_trust "$core_trust_before" ${CORE_TAP} ${CORE_DASH} absent
 
-# WHY: the base shell is already composed from this bottle closure. Remove the
-# existing receipt through stock Homebrew so the following command proves a
-# genuine install rather than accepting Homebrew's "already installed" path.
-composed_bzip2_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/bzip2)"
-# WHY: the VFS composer placed exact bottle bytes directly; it did not execute
-# Homebrew's pour operation. Preserve that distinction in the receipt contract.
-assert_precomposed_bottle "$composed_bzip2_prefix"
-/usr/bin/brew uninstall --ignore-dependencies ${CORE_TAP}/bzip2
-[ ! -e "$composed_bzip2_prefix" ] ||
-  fail "direct-composed Bzip2 prefix remains after transition uninstall"
-
-progress "installing and executing the first-party Bzip2 bottle"
-/usr/bin/brew install --no-ask --force-bottle ${CORE_TAP}/bzip2
-bzip2_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/bzip2)"
-assert_poured "$bzip2_prefix"
-assert_bzip2_roundtrip "$bzip2_prefix"
-
-progress "reinstalling and executing the first-party Bzip2 bottle"
-/usr/bin/brew reinstall --force-bottle ${CORE_TAP}/bzip2
-reinstalled_bzip2_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/bzip2)"
-[ "$reinstalled_bzip2_prefix" = "$bzip2_prefix" ] ||
-  fail "Bzip2 reinstall changed its versioned prefix"
-assert_poured "$reinstalled_bzip2_prefix"
-assert_bzip2_roundtrip "$reinstalled_bzip2_prefix"
-core_trust_after=/tmp/kandelo-homebrew-core.trust-after.json
-snapshot_trust "$core_trust_after"
-assert_formula_trust "$core_trust_after" ${CORE_TAP} ${CORE_BZIP2} present
-/usr/bin/brew untrust --tap >"$core_untrusted"
-assert_untrusted_tap_discovery ${CORE_TAP} "$core_untrusted"
-
-progress "tapping the exact independent third-party repository"
-/usr/bin/brew tap ${CANARY_TAP} ${CANARY_ORIGIN}
-canary_tap="$(/usr/bin/brew --repository ${CANARY_TAP})"
-/usr/bin/git -C "$canary_tap" fetch --no-tags origin ${revisions.canaryRevision}
-/usr/bin/git -C "$canary_tap" checkout --detach ${revisions.canaryRevision}
-assert_clean_tap "$canary_tap" ${CANARY_ORIGIN} ${revisions.canaryRevision}
-[ ! -e "$core_repository" ] || fail "third-party tap created homebrew/core"
-
-# WHY: keep third-party authority at Formula granularity. The fully qualified
-# M4 install below may create item trust, but tapping alone must remain
-# discoverable as untrusted and must not create either tap or Formula trust.
-canary_untrusted=/tmp/kandelo-homebrew-canary.untrusted
-canary_trust_before=/tmp/kandelo-homebrew-canary.trust-before.json
-/usr/bin/brew untrust --tap >"$canary_untrusted"
-assert_untrusted_tap_discovery ${CANARY_TAP} "$canary_untrusted"
-snapshot_trust "$canary_trust_before"
-assert_formula_trust "$canary_trust_before" ${CANARY_TAP} ${CANARY_M4} absent
-
-# WHY: core M4 and canary M4 have the same conventional Cellar identity. Use
-# stock uninstall to create one truthful target before the independent tap
-# pours its own bottle; do not rewrite either Formula to avoid the collision.
-composed_m4_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/m4)"
-assert_precomposed_bottle "$composed_m4_prefix"
-/usr/bin/brew uninstall --ignore-dependencies ${CORE_TAP}/m4
-[ ! -e "$composed_m4_prefix" ] ||
-  fail "direct-composed M4 prefix remains after transition uninstall"
-
-dash_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/dash)"
-assert_precomposed_bottle "$dash_prefix"
-# WHY: the fully qualified canary argument grants authority only to M4.
-# Homebrew independently evaluates its fully qualified Dash dependency, so
-# grant that one already-pinned first-party Formula without trusting the tap.
-/usr/bin/brew trust --formula ${CORE_DASH}
-core_dependency_trust=/tmp/kandelo-homebrew-core.dependency-trust.json
-snapshot_trust "$core_dependency_trust"
-assert_formula_trust "$core_dependency_trust" ${CORE_TAP} ${CORE_BZIP2} present
-assert_formula_trust "$core_dependency_trust" ${CORE_TAP} ${CORE_DASH} present
-/usr/bin/brew untrust --tap >"$core_untrusted"
-assert_untrusted_tap_discovery ${CORE_TAP} "$core_untrusted"
-progress "installing independent M4 with its first-party Dash dependency"
-/usr/bin/brew install --no-ask --force-bottle ${CANARY_TAP}/m4
-m4_prefix="$(/usr/bin/brew --prefix ${CANARY_TAP}/m4)"
-assert_poured "$m4_prefix"
-assert_precomposed_bottle "$dash_prefix"
-assert_runtime_dependency "$m4_prefix" ${CORE_TAP}/dash
-"$m4_prefix/bin/m4" --version >/dev/null
-assert_m4_execution "$m4_prefix" cross-tap-ok
-
-progress "reinstalling independent M4 with the same first-party dependency"
-/usr/bin/brew reinstall --force-bottle ${CANARY_TAP}/m4
-reinstalled_m4_prefix="$(/usr/bin/brew --prefix ${CANARY_TAP}/m4)"
-[ "$reinstalled_m4_prefix" = "$m4_prefix" ] ||
-  fail "M4 reinstall changed its versioned prefix"
-assert_poured "$reinstalled_m4_prefix"
-assert_precomposed_bottle "$dash_prefix"
-assert_runtime_dependency "$reinstalled_m4_prefix" ${CORE_TAP}/dash
-assert_m4_execution "$reinstalled_m4_prefix" cross-tap-reinstall-ok
-
-canary_trust_after=/tmp/kandelo-homebrew-canary.trust-after.json
-snapshot_trust "$canary_trust_after"
-assert_formula_trust "$canary_trust_after" ${CANARY_TAP} ${CANARY_M4} present
-/usr/bin/brew untrust --tap >"$canary_untrusted"
-assert_untrusted_tap_discovery ${CANARY_TAP} "$canary_untrusted"
-
-state="$repository/var/homebrew/kandelo-guest-lifecycle-state"
-{
-  /usr/bin/printf '%s\n' ${revisions.coreRevision}
-  /usr/bin/printf '%s\n' ${revisions.canaryRevision}
-} >"$state"
-
+${coreInstall}
+${canaryInstall}
+${durableState}
 assert_clean_tap "$core_tap" ${CORE_ORIGIN} ${revisions.coreRevision}
-assert_clean_tap "$canary_tap" ${CANARY_ORIGIN} ${revisions.canaryRevision}
+${canaryFinalAssertion}
 [ ! -e "$core_repository" ] || fail "lifecycle install created homebrew/core"
 /usr/bin/rm -f \
   "$core_untrusted" "$core_trust_before" "$core_trust_after" \
   "$core_dependency_trust" \
   "$canary_untrusted" "$canary_trust_before" "$canary_trust_after"
-progress "phase one is durable and ready for rootfs export"
-/usr/bin/printf '%s\n' ${HOMEBREW_GUEST_LIFECYCLE_PHASE_ONE_MARKER}
+progress "${completionMessage}"
+/usr/bin/printf '%s\n' ${completionMarker}
 `.trim();
 }
 
