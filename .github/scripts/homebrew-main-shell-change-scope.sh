@@ -74,7 +74,9 @@ is_audited_publisher_only_path() {
       scripts/homebrew-merge-bottle-json.sh | \
       scripts/homebrew-native-api-preflight.sh | \
       scripts/homebrew-oci-layout.py | \
+      scripts/homebrew-patched-launcher.sh | \
       scripts/homebrew-publish-sidecars.sh | \
+      scripts/homebrew-tap-recipe-runner.py | \
       scripts/homebrew-validate-build-handoff.sh | \
       scripts/homebrew-validate-formula-source-closure.sh | \
       scripts/homebrew-validate-publish-handoff.sh | \
@@ -83,11 +85,13 @@ is_audited_publisher_only_path() {
       scripts/test-homebrew-native-api-contract.sh | \
       scripts/test-homebrew-native-ca-lifecycle.sh | \
       scripts/test-homebrew-oci-layout.sh | \
+      scripts/test-homebrew-patched-launcher.sh | \
       scripts/test-homebrew-prefix-campaign-layout.sh | \
       scripts/test-homebrew-publish-workflow.sh | \
       scripts/test-homebrew-sibling-bottle-policy.sh | \
       scripts/test-homebrew-tap-identity.sh | \
       scripts/test-homebrew-tap-native-sidecars.sh | \
+      scripts/test-homebrew-tap-recipe-runner.py | \
       tools/xtask/src/homebrew_guest_layout.rs | \
       tools/xtask/src/homebrew_sidecars.rs | \
       tools/xtask/src/homebrew_validate.rs)

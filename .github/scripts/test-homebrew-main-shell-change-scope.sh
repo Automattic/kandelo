@@ -7,6 +7,7 @@ WORKFLOW="$REPO_ROOT/.github/workflows/homebrew-main-shell-ci.yml"
 STAGING_WORKFLOW="$REPO_ROOT/.github/workflows/staging-build.yml"
 SCOPE_ACTION="$REPO_ROOT/.github/actions/detect-change-scope/action.yml"
 PUBLISHER_TEST="$REPO_ROOT/scripts/test-homebrew-publish-workflow.sh"
+PATCHED_LAUNCHER_TEST="$REPO_ROOT/scripts/test-homebrew-patched-launcher.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
@@ -29,6 +30,7 @@ fixture_paths=(
   homebrew/main-shell-migration-lock.json
   homebrew/patches/0001-add-kandelo-wasm-bottle-tags-prefix-campaign.patch
   packages/registry/bash/build.toml
+  scripts/check-homebrew-publish-workflow-trust.rb
   scripts/homebrew-compose-formula-bottle.rb
   scripts/homebrew-create-build-handoff.sh
   scripts/homebrew-generate-sidecars-from-env.sh
@@ -36,14 +38,18 @@ fixture_paths=(
   scripts/homebrew-native-api-preflight.sh
   scripts/homebrew-merge-bottle-json.sh
   scripts/homebrew-oci-layout.py
+  scripts/homebrew-patched-launcher.sh
+  scripts/homebrew-tap-recipe-runner.py
   scripts/homebrew-validate-publish-handoff.sh
   scripts/homebrew-validate-upload-receipt.sh
   scripts/test-homebrew-native-api-contract.sh
   scripts/homebrew-inspect-bottle.py
   scripts/homebrew-validate-build-handoff.sh
   scripts/test-homebrew-inspect-bottle.sh
+  scripts/test-homebrew-patched-launcher.sh
   scripts/test-homebrew-prefix-campaign-layout.sh
   scripts/test-homebrew-publish-workflow.sh
+  scripts/test-homebrew-tap-recipe-runner.py
   tools/xtask/src/homebrew_guest_layout.rs
   tools/xtask/src/homebrew_sidecars.rs
   tools/xtask/src/homebrew_validate.rs
@@ -101,6 +107,48 @@ assert_scope() {
 reset_fixture
 commit_change scripts/homebrew-native-api-preflight.sh
 commit_change scripts/test-homebrew-native-api-contract.sh
+HEAD="$(finish_change)"
+assert_scope false pull_request "$BASE" "$HEAD" \
+  "diff is limited to audited publisher-only"
+
+# These four files implement and test the privileged Formula boundary. They
+# are not consumed while composing or booting an already-published image, but
+# every path must remain fail-closed when one product path joins the diff.
+publisher_boundary_paths=(
+  scripts/homebrew-patched-launcher.sh
+  scripts/homebrew-tap-recipe-runner.py
+  scripts/test-homebrew-patched-launcher.sh
+  scripts/test-homebrew-tap-recipe-runner.py
+)
+for path in "${publisher_boundary_paths[@]}"; do
+  reset_fixture
+  commit_change "$path"
+  HEAD="$(finish_change)"
+  assert_scope false pull_request "$BASE" "$HEAD" \
+    "diff is limited to audited publisher-only"
+
+  reset_fixture
+  commit_change "$path"
+  commit_change host/src/kernel-worker.ts
+  HEAD="$(finish_change)"
+  assert_scope true pull_request "$BASE" "$HEAD" \
+    "host/src/kernel-worker.ts"
+done
+
+# Exercise the exact combined diagnostic and private-ancestor repair shape.
+# Its tests and static trust checker remain part of the mandatory publisher
+# preflight pinned below.
+reset_fixture
+for path in \
+  scripts/check-homebrew-publish-workflow-trust.rb \
+  scripts/homebrew-native-api-preflight.sh \
+  scripts/homebrew-patched-launcher.sh \
+  scripts/homebrew-tap-recipe-runner.py \
+  scripts/test-homebrew-patched-launcher.sh \
+  scripts/test-homebrew-tap-recipe-runner.py
+do
+  commit_change "$path"
+done
 HEAD="$(finish_change)"
 assert_scope false pull_request "$BASE" "$HEAD" \
   "diff is limited to audited publisher-only"
@@ -257,10 +305,29 @@ grep -Fq \
   "needs.change-scope.outputs.homebrew_publisher_only_changed == 'true'" \
   <<<"$staging_preflight_condition" ||
   fail "publisher-only staging no longer runs the complete publisher preflight"
+staging_preflight="$(
+  sed -n '/^  preflight:/,/^  package-staging-not-required:/p' \
+    "$STAGING_WORKFLOW"
+)"
+grep -Fq 'bash scripts/test-homebrew-publish-workflow.sh' \
+  <<<"$staging_preflight" ||
+  fail "publisher-only staging lost the complete publisher contract"
 grep -Fq \
   'bash "$REPO_ROOT/scripts/test-homebrew-prefix-campaign-layout.sh"' \
   "$PUBLISHER_TEST" ||
   fail "publisher-only staging lost its guest-layout contract evidence"
+grep -Fq \
+  'bash "$REPO_ROOT/scripts/test-homebrew-patched-launcher.sh"' \
+  "$PUBLISHER_TEST" ||
+  fail "publisher-only staging lost its launcher isolation evidence"
+grep -Fq \
+  'ruby "$REPO_ROOT/scripts/check-homebrew-publish-workflow-trust.rb"' \
+  "$PUBLISHER_TEST" ||
+  fail "publisher-only staging lost its static trust evidence"
+grep -Fq \
+  'python3 "$REPO_ROOT/scripts/test-homebrew-tap-recipe-runner.py"' \
+  "$PATCHED_LAUNCHER_TEST" ||
+  fail "publisher-only staging lost its recipe supervisor evidence"
 
 staging_noop_condition="$(
   sed -n \
