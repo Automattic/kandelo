@@ -255,7 +255,18 @@ make_formula_runner_fixture() {
     "$REPO_ROOT/scripts/homebrew-validate-host-dependency-plan.sh" \
     "$REPO_ROOT/scripts/homebrew-tap-identity.sh" \
     "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/"
+  cat >"$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-guest-layout.sh" <<'EOF'
+homebrew_select_guest_layout() {
+  # This fixture isolates Formula-runner behavior. Layout selection itself has
+  # dedicated production-helper tests elsewhere in this suite.
+  HOMEBREW_GUEST_LAYOUT_MODE="current"
+  HOMEBREW_GUEST_PREFIX="${FAKE_BREW_PREFIX:?}"
+  HOMEBREW_GUEST_CELLAR="$HOMEBREW_GUEST_PREFIX/Cellar"
+  HOMEBREW_GUEST_LAYOUT_SHA256=""
+}
+EOF
   : >"$FORMULA_RUNNER_FIXTURE_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
+  : >"$FORMULA_RUNNER_FIXTURE_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags-prefix-campaign.patch"
   : >"$FORMULA_RUNNER_FIXTURE_ROOT/homebrew/patches/0002-support-isolated-publisher.patch"
   host_target="$(rustc -vV | sed -n 's/^host: //p')"
   cargo build --quiet --release -p xtask --target "$host_target"
@@ -1108,6 +1119,7 @@ make_build_handoff() {
   local tap_repository="${BUILD_HANDOFF_TAP_REPOSITORY:-kandelo-dev/homebrew-tap-core}"
   local tap_name="${BUILD_HANDOFF_TAP_NAME:-kandelo-dev/tap-core}"
   local tap_commit="${BUILD_HANDOFF_TAP_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
+  local tap_checkout_commit="${BUILD_HANDOFF_TAP_CHECKOUT_COMMIT:-$tap_commit}"
   local kandelo_commit="${BUILD_HANDOFF_KANDELO_COMMIT:-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}"
   local bottle_root="https://ghcr.io/v2/$(printf '%s' "$tap_repository" | tr '[:upper:]' '[:lower:]')"
   local formula_key="${tap_name}/$formula"
@@ -1185,14 +1197,17 @@ EOF
     cp "$dependency_provenance_source" "$dependency_provenance"
   else
     jq -nS --arg tap_repository "$tap_repository" --arg tap_name "$tap_name" \
-      --arg tap_commit "$tap_commit" --arg bottle_root "$bottle_root" \
+      --arg tap_commit "$tap_commit" \
+      --arg tap_checkout_commit "$tap_checkout_commit" \
+      --arg bottle_root "$bottle_root" \
       --arg formula "$formula" '{
-      schema: 2,
+      schema: 4,
       formula: $formula,
       arch: "wasm32",
       tap_repository: $tap_repository,
       tap_name: $tap_name,
       tap_commit: $tap_commit,
+      tap_checkout_commit: $tap_checkout_commit,
       bottle_root_url: $bottle_root,
       bottle_tag: "wasm32_kandelo",
       dependencies: []
@@ -1206,6 +1221,7 @@ EOF
     --tap-repository "$tap_repository" \
     --tap-name "$tap_name" \
     --tap-commit "$tap_commit" \
+    --tap-checkout-commit "$tap_checkout_commit" \
     --kandelo-commit "$kandelo_commit" \
     --bottle-root-url "$bottle_root" \
     --bottle "$bottle" \
@@ -1223,7 +1239,7 @@ assert_generic_tap_build_handoff_identity() {
     BUILD_HANDOFF_TAP_NAME=acme/tools \
     make_build_handoff "$handoff"
   jq -e '
-    .schema == 3 and
+    .schema == 4 and
     .tap_repository == "Acme/homebrew-tools" and
     .tap_name == "acme/tools"
   ' "$handoff/manifest.json" >/dev/null ||
@@ -1291,6 +1307,7 @@ refresh_build_handoff_bottle_identity() {
 
 validate_build_handoff() {
   local handoff="$1"
+  local tap_checkout_commit="${VALIDATE_BUILD_HANDOFF_TAP_CHECKOUT_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
   shift
   bash "$REPO_ROOT/scripts/homebrew-validate-build-handoff.sh" \
     --handoff "$handoff" \
@@ -1299,6 +1316,7 @@ validate_build_handoff() {
     --release-tag bottles-abi-v18 \
     --tap-repository kandelo-dev/homebrew-tap-core \
     --tap-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    --tap-checkout-commit "$tap_checkout_commit" \
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
     --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
     --forbidden-root "$TEST_FORBIDDEN_ROOT" \
@@ -1930,12 +1948,13 @@ EOF
     --arg primary_commit "$primary_commit" \
     --arg dependency_commit "$dependency_commit" \
     --arg formula_sha "$formula_sha" '{
-      schema: 3,
+      schema: 5,
       formula: "hello",
       arch: "wasm32",
       tap_repository: "example/homebrew-tools",
       tap_name: "example/tools",
       tap_commit: $primary_commit,
+      tap_checkout_commit: $primary_commit,
       bottle_root_url: "https://ghcr.io/v2/example/homebrew-tools",
       bottle_tag: "wasm32_kandelo",
       dependencies: [{
@@ -1971,6 +1990,7 @@ EOF
         },
         origin: {
           bottle_root_url: "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core",
+          checkout_commit: $dependency_commit,
           tap_commit: $dependency_commit,
           tap_name: "kandelo-dev/tap-core",
           tap_repository: "kandelo-dev/homebrew-tap-core"
@@ -2009,6 +2029,7 @@ EOF
         --tap-repository example/homebrew-tools \
         --tap-name example/tools \
         --tap-commit "$primary_commit" \
+        --tap-checkout-commit "$primary_commit" \
         --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
         --bottle-root-url https://ghcr.io/v2/example/homebrew-tools \
         --forbidden-root "$TEST_FORBIDDEN_ROOT" \
@@ -2029,12 +2050,13 @@ make_publish_dependency_provenance() {
   jq -nS \
     --arg xz_formula_sha "$xz_formula_sha" --arg zlib_formula_sha "$zlib_formula_sha" \
     --argjson xz_direct "$xz_direct" --argjson zlib_direct "$zlib_direct" '{
-      schema: 2,
+      schema: 4,
       formula: "hello",
       arch: "wasm32",
       tap_repository: "kandelo-dev/homebrew-tap-core",
       tap_name: "kandelo-dev/tap-core",
       tap_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      tap_checkout_commit: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       bottle_root_url: "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core",
       bottle_tag: "wasm32_kandelo",
       dependencies: [
@@ -2238,6 +2260,7 @@ make_publish_handoff() {
   local build_stage="${handoff}.build"
   local extra_link_count="${PUBLISH_HANDOFF_EXTRA_LINK_COUNT:-0}"
   local dependency_mode="${PUBLISH_HANDOFF_DEPENDENCY_MODE:-none}"
+  local tap_checkout_commit="${PUBLISH_HANDOFF_TAP_CHECKOUT_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
   local seed_dependency_sidecars="${PUBLISH_HANDOFF_SEED_DEPENDENCY_SIDECARS:-0}"
   local selected_formula_source="${PUBLISH_HANDOFF_FORMULA_SOURCE:-}"
   local archived_formula_source="${PUBLISH_HANDOFF_ARCHIVED_FORMULA_SOURCE:-}"
@@ -2296,15 +2319,19 @@ EOF
     if [ -n "$archived_formula_source" ]; then
       BUILD_HANDOFF_FORMULA="$formula" \
       BUILD_HANDOFF_FORMULA_SOURCE="$archived_formula_source" \
+      BUILD_HANDOFF_TAP_CHECKOUT_COMMIT="$tap_checkout_commit" \
         make_build_handoff "$build_stage"
       archived_formula_sha="$(sha256sum "$archived_formula_source" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$archived_formula_source" | awk '{print $1}')"
     else
-      BUILD_HANDOFF_FORMULA="$formula" make_build_handoff "$build_stage"
+      BUILD_HANDOFF_FORMULA="$formula" \
+      BUILD_HANDOFF_TAP_CHECKOUT_COMMIT="$tap_checkout_commit" \
+        make_build_handoff "$build_stage"
       archived_formula_sha="$formula_sha"
     fi
   else
     BUILD_HANDOFF_FORMULA="$formula" \
     BUILD_HANDOFF_DEPENDENCY_PROVENANCE_SOURCE="$dependency_provenance_source" \
+    BUILD_HANDOFF_TAP_CHECKOUT_COMMIT="$tap_checkout_commit" \
       BUILD_HANDOFF_FORMULA_SOURCE="$tap_root/Formula/$formula.rb" \
       make_build_handoff "$build_stage"
     archived_formula_sha="$formula_sha"
@@ -2402,6 +2429,7 @@ validate_publish_handoff() {
   local handoff="$1" tap_root="$2"
   local formula="${PUBLISH_HANDOFF_FORMULA:-hello}"
   local tap_commit="${PUBLISH_HANDOFF_TAP_COMMIT:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
+  local tap_checkout_commit="${PUBLISH_HANDOFF_TAP_CHECKOUT_COMMIT:-$tap_commit}"
   shift 2
   bash "$REPO_ROOT/scripts/homebrew-validate-publish-handoff.sh" \
     --handoff "$handoff" \
@@ -2410,11 +2438,110 @@ validate_publish_handoff() {
     --release-tag bottles-abi-v18 \
     --tap-repository kandelo-dev/homebrew-tap-core \
     --tap-commit "$tap_commit" \
+    --tap-checkout-commit "$tap_checkout_commit" \
     --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
     --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
     --forbidden-root "$TEST_FORBIDDEN_ROOT" \
     --tap-root "$tap_root" \
     "$@"
+}
+
+assert_distinct_tap_source_and_checkout_are_bound() {
+  local source_commit="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  local checkout_commit="cccccccccccccccccccccccccccccccccccccccc"
+  local wrong_checkout="dddddddddddddddddddddddddddddddddddddddd"
+  local handoff="$TMPDIR/distinct-tap-build-handoff"
+  local receipt="$TMPDIR/distinct-tap-upload-receipt.json"
+  local out_env="$TMPDIR/distinct-tap-build.env"
+  local legacy="$TMPDIR/distinct-tap-legacy-handoff"
+  local publish_handoff="$TMPDIR/distinct-tap-publish-handoff"
+  local publish_tap="$TMPDIR/distinct-tap-publish-root"
+  local tmp dependency_sha dependency_bytes
+
+  BUILD_HANDOFF_TAP_CHECKOUT_COMMIT="$checkout_commit" \
+    make_build_handoff "$handoff"
+  VALIDATE_BUILD_HANDOFF_TAP_CHECKOUT_COMMIT="$checkout_commit" \
+    validate_build_handoff "$handoff" --out-env "$out_env" >/dev/null
+  (
+    # shellcheck disable=SC1090
+    . "$out_env"
+    [ "$TAP_COMMIT" = "$source_commit" ] ||
+      fail "validated handoff lost the public tap source commit"
+    [ "$TAP_CHECKOUT_COMMIT" = "$checkout_commit" ] ||
+      fail "validated handoff lost the prepared tap checkout commit"
+  )
+  if validate_build_handoff "$handoff" >/dev/null 2>&1; then
+    fail "build validator accepted an omitted distinct checkout identity"
+  fi
+  if VALIDATE_BUILD_HANDOFF_TAP_CHECKOUT_COMMIT="$wrong_checkout" \
+    validate_build_handoff "$handoff" >/dev/null 2>&1; then
+    fail "build validator accepted the wrong prepared checkout identity"
+  fi
+
+  cp -a "$handoff" "$legacy"
+  tmp="$legacy/dependency-provenance.updated.json"
+  jq 'del(.tap_checkout_commit) | .schema = 2' \
+    "$legacy/dependency-provenance.json" >"$tmp"
+  mv "$tmp" "$legacy/dependency-provenance.json"
+  dependency_sha="$(
+    sha256sum "$legacy/dependency-provenance.json" 2>/dev/null |
+      awk '{print $1}' ||
+      shasum -a 256 "$legacy/dependency-provenance.json" |
+        awk '{print $1}'
+  )"
+  dependency_bytes="$(
+    wc -c <"$legacy/dependency-provenance.json" | tr -d '[:space:]'
+  )"
+  tmp="$legacy/manifest.updated.json"
+  jq --arg sha "$dependency_sha" --argjson bytes "$dependency_bytes" \
+    '.dependency_provenance.sha256 = $sha |
+      .dependency_provenance.bytes = $bytes' \
+    "$legacy/manifest.json" >"$tmp"
+  mv "$tmp" "$legacy/manifest.json"
+  if VALIDATE_BUILD_HANDOFF_TAP_CHECKOUT_COMMIT="$checkout_commit" \
+    validate_build_handoff "$legacy" >/dev/null 2>&1; then
+    fail "legacy provenance represented a distinct prepared checkout"
+  fi
+
+  make_dry_upload_receipt "$handoff" "$receipt"
+  bash "$REPO_ROOT/scripts/homebrew-validate-upload-receipt.sh" \
+    --receipt "$receipt" \
+    --handoff "$handoff" \
+    --formula hello \
+    --arch wasm32 \
+    --release-tag bottles-abi-v18 \
+    --tap-repository kandelo-dev/homebrew-tap-core \
+    --tap-commit "$source_commit" \
+    --tap-checkout-commit "$checkout_commit" \
+    --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    --bottle-root-url \
+      https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --forbidden-root "$TEST_FORBIDDEN_ROOT" \
+    --allow-dry-run >/dev/null
+  if bash "$REPO_ROOT/scripts/homebrew-validate-upload-receipt.sh" \
+    --receipt "$receipt" \
+    --handoff "$handoff" \
+    --formula hello \
+    --arch wasm32 \
+    --release-tag bottles-abi-v18 \
+    --tap-repository kandelo-dev/homebrew-tap-core \
+    --tap-commit "$source_commit" \
+    --kandelo-commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+    --bottle-root-url \
+      https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --forbidden-root "$TEST_FORBIDDEN_ROOT" \
+    --allow-dry-run >/dev/null 2>&1; then
+    fail "upload validator accepted an omitted distinct checkout identity"
+  fi
+
+  PUBLISH_HANDOFF_TAP_CHECKOUT_COMMIT="$checkout_commit" \
+    make_publish_handoff "$publish_handoff" "$publish_tap"
+  PUBLISH_HANDOFF_TAP_CHECKOUT_COMMIT="$checkout_commit" \
+    validate_publish_handoff "$publish_handoff" "$publish_tap" >/dev/null
+  if validate_publish_handoff \
+    "$publish_handoff" "$publish_tap" >/dev/null 2>&1; then
+    fail "publish validator accepted an omitted distinct checkout identity"
+  fi
 }
 
 rebind_publish_handoff_tap_commit() {
@@ -3238,6 +3365,9 @@ case "${1:-}" in
   --prefix)
     printf '%s\n' "$FAKE_BREW_PREFIX"
     ;;
+  --cellar)
+    printf '%s\n' "$FAKE_BREW_PREFIX/Cellar"
+    ;;
   --repository)
     if [ "$#" -eq 1 ]; then
       printf '%s\n' "$FAKE_BREW_REPOSITORY"
@@ -3340,6 +3470,7 @@ EOF
   grep -F "scoped program-index checker differs from the exact host xtask" \
     "$checker_err" >/dev/null ||
     fail "isolated bottle build did not explain the mismatched checker authority"
+  : >"$log"
 
   prepare_formula_runner_tapped_clone \
     "$tap" "$tapped" "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"
@@ -3461,6 +3592,7 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_BREW_LOG"
 case "${1:-}" in
   --prefix) printf '%s\n' "$FAKE_BREW_PREFIX" ;;
+  --cellar) printf '%s\n' "$FAKE_BREW_PREFIX/Cellar" ;;
   --repository)
     if [ "$#" -eq 1 ]; then
       printf '%s\n' "$FAKE_BREW_REPOSITORY"
@@ -3641,6 +3773,9 @@ case "${1:-}" in
     else
       printf '%s\n' "$FAKE_BREW_PREFIX"
     fi
+    ;;
+  --cellar)
+    printf '%s\n' "$FAKE_BREW_PREFIX/Cellar"
     ;;
   --repository)
     if [ "$#" -eq 1 ]; then
@@ -4445,6 +4580,9 @@ case "${1:-}" in
     else
       printf '%s\n' "$FAKE_TARGET_OPT_PREFIX"
     fi
+    ;;
+  --cellar)
+    printf '%s\n' "$FAKE_BREW_PREFIX/Cellar"
     ;;
   --repository)
     if [ "$#" -eq 1 ]; then
@@ -5412,13 +5550,14 @@ EOF
       --arch wasm32 \
       --bottle-root-url https://ghcr.io/v2/example/homebrew-tools
   jq -e --arg core_commit "$cross_core_commit" '
-    .schema == 3 and
+    .schema == 5 and
     .tap_name == "example/tools" and
     .dependencies == [
       (.dependencies[0] | select(
         .full_name == "kandelo-dev/tap-core/zlib" and
         .origin.tap_name == "kandelo-dev/tap-core" and
-        .origin.tap_commit == $core_commit
+        .origin.tap_commit == $core_commit and
+        .origin.checkout_commit == $core_commit
       ))
     ]
   ' "$cross_output" >/dev/null ||
@@ -7373,6 +7512,7 @@ assert_build_handoff_is_minimal_and_validated
 assert_build_handoff_rejects_untrusted_content
 assert_upload_receipt_is_bound_to_build_handoff
 assert_cross_tap_upload_receipt_survives_dev_shell
+assert_distinct_tap_source_and_checkout_are_bound
 assert_publish_handoff_is_exact_inert_data
 assert_stale_bottle_rebuild_cannot_rewind_publication
 assert_atomic_publication_batch_closes_formula_metadata_wave
@@ -7393,6 +7533,8 @@ PYTHONDONTWRITEBYTECODE=1 \
   python3 "$REPO_ROOT/scripts/test-homebrew-prefix-campaign.py"
 PYTHONDONTWRITEBYTECODE=1 \
   python3 "$REPO_ROOT/scripts/test-homebrew-prefix-campaign-executor.py"
+PYTHONDONTWRITEBYTECODE=1 \
+  python3 "$REPO_ROOT/scripts/test-homebrew-prefix-campaign-publisher.py"
 bash "$REPO_ROOT/scripts/test-homebrew-inspect-bottle.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-formula-runtime-closure.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-validate-host-dependency-plan.sh"
@@ -7402,6 +7544,7 @@ bash "$REPO_ROOT/scripts/test-homebrew-main-shell-mirror-workflow.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-main-shell-mirror-handoff.sh"
 bash "$REPO_ROOT/scripts/test-verify-existing-immutable-github-release.sh"
 bash "$REPO_ROOT/.github/scripts/test-require-exact-repository-main.sh"
+bash "$REPO_ROOT/.github/scripts/test-require-repository-main-contains.sh"
 bash "$REPO_ROOT/.github/scripts/test-validate-staging-release.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-vfs-release.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-main-shell-closure.sh"

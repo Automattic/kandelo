@@ -171,6 +171,9 @@ test.describe("software gallery fixtures", () => {
 
 test("Homebrew file-formula VFS image boots in browser and runs file --version", async ({ page }) => {
   const vfsUrl = process.env.KANDELO_BROWSER_FILE_FORMULA_VFS_URL;
+  const fileCommand =
+    process.env.KANDELO_HOMEBREW_FILE_FORMULA_COMMAND ??
+    "/home/linuxbrew/.linuxbrew/bin/file --version";
   if (!vfsUrl && process.env.KANDELO_HOMEBREW_STRICT_PUBLISHER_SMOKE === "1") {
     throw new Error("KANDELO_BROWSER_FILE_FORMULA_VFS_URL is required for the strict publisher smoke");
   }
@@ -186,7 +189,7 @@ test("Homebrew file-formula VFS image boots in browser and runs file --version",
 
   await runTerminalCommand(
     page,
-    "/home/linuxbrew/.linuxbrew/bin/file --version",
+    fileCommand,
     /^file(?:\.wasm)?-5\.45$/m,
     180_000,
   );
