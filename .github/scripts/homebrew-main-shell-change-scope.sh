@@ -68,37 +68,60 @@ is_audited_publisher_only_path() {
   fi
 
   case "$1" in
-    .github/workflows/homebrew-native-publisher-compatibility.yml | \
+    .github/scripts/require-repository-main-contains.sh | \
+      .github/scripts/test-require-repository-main-contains.sh | \
+      .github/workflows/homebrew-native-publisher-compatibility.yml | \
       .github/workflows/reusable-homebrew-bottle-maintenance.yml | \
       .github/workflows/reusable-homebrew-bottle-publish.yml | \
       .github/workflows/reusable-homebrew-repository-namespace-canary.yml | \
+      docs/binary-releases.md | \
+      docs/homebrew-publishing.md | \
+      docs/plans/2026-07-29-homebrew-guest-prefix-cutover.md | \
       scripts/check-homebrew-publish-workflow-trust.rb | \
+      scripts/homebrew-bottle-build.sh | \
+      scripts/homebrew-bottle-runtime-evidence.py | \
       scripts/homebrew-compose-formula-bottle.rb | \
       scripts/homebrew-create-build-handoff.sh | \
+      scripts/homebrew-dependency-provenance.py | \
+      scripts/homebrew-dependency-taps.py | \
+      scripts/homebrew-formula-runtime-closure.rb | \
       scripts/homebrew-generate-sidecars-from-env.sh | \
       scripts/homebrew-guest-layout.sh | \
+      scripts/homebrew-ghcr-upload.sh | \
       scripts/homebrew-inspect-bottle.py | \
       scripts/homebrew-merge-bottle-json.sh | \
       scripts/homebrew-native-api-preflight.sh | \
       scripts/homebrew-oci-layout.py | \
       scripts/homebrew-patched-launcher.sh | \
+      scripts/homebrew-prefix-campaign-executor.py | \
+      scripts/homebrew-prefix-campaign-publisher.py | \
+      scripts/homebrew-prefix-campaign.py | \
       scripts/homebrew-publish-sidecars.sh | \
       scripts/homebrew-tap-recipe-runner.py | \
       scripts/homebrew-validate-build-handoff.sh | \
       scripts/homebrew-validate-formula-source-closure.sh | \
       scripts/homebrew-validate-publish-handoff.sh | \
       scripts/homebrew-validate-upload-receipt.sh | \
+      scripts/homebrew-verify-poured-bottle.sh | \
+      scripts/publish-immutable-github-release.sh | \
+      scripts/test-homebrew-bottle-runtime-evidence.sh | \
+      scripts/test-homebrew-formula-runtime-closure.sh | \
       scripts/test-homebrew-inspect-bottle.sh | \
       scripts/test-homebrew-native-api-contract.sh | \
       scripts/test-homebrew-native-ca-lifecycle.sh | \
       scripts/test-homebrew-oci-layout.sh | \
       scripts/test-homebrew-patched-launcher.sh | \
       scripts/test-homebrew-prefix-campaign-layout.sh | \
+      scripts/test-homebrew-prefix-campaign-executor.py | \
+      scripts/test-homebrew-prefix-campaign-publisher.py | \
+      scripts/test-homebrew-prefix-campaign.py | \
       scripts/test-homebrew-publish-workflow.sh | \
       scripts/test-homebrew-sibling-bottle-policy.sh | \
       scripts/test-homebrew-tap-identity.sh | \
       scripts/test-homebrew-tap-native-sidecars.sh | \
       scripts/test-homebrew-tap-recipe-runner.py | \
+      scripts/test-homebrew-vfs-release.sh | \
+      scripts/test-publish-immutable-github-release.sh | \
       tools/xtask/src/homebrew_guest_layout.rs | \
       tools/xtask/src/homebrew_sidecars.rs | \
       tools/xtask/src/homebrew_validate.rs)
