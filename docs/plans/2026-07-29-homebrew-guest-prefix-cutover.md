@@ -402,6 +402,55 @@ finished:
   downstream publisher consumes that receipt, so this is not a current
   mutation boundary.
 
+### Execution Checkpoint: 2026-07-30
+
+The browser lazy-download proxy in Kandelo PR #1159 has exact Node.js,
+Chromium, and repository CI evidence. Keep its reviewed head unchanged.
+Its Prepare merge candidate will validate that head against the current
+`main` immediately before merge.
+
+PR #1156 contains the campaign derivation. PR #1160 contains the
+execution and publication bridge and is stacked on #1156. Merge #1156
+separately after its exact shell proof succeeds. It already has complete
+repository CI and a successful merge gate, and its focused squash commit
+keeps the campaign derivation reviewable.
+
+After #1156 merges, progress #1159 through Prepare merge against that
+new `main`. Do not merge anything else while the Prepare merge candidate
+is running. After #1159 lands, transplant only #1160's bridge commits
+onto the actual merged `main`, retarget #1160 to `main`, and run fresh
+exact CI. Do not carry #1156's pre-squash commits into the restack.
+
+The first public campaign canary is `what` for `wasm32`. Run it only
+after the combined campaign series is on protected Kandelo `main`,
+fresh exact-main package generations exist, and the campaign manifest
+and tap activation record are immutable. Do not weaken the
+protected-main authority to run a canary from an unmerged PR head.
+
+Before that canary, update the tap controller to read the campaign
+executor's `handoff.json` contract. The older controller expects the
+ordinary publisher's `manifest.json` and would reject a valid campaign
+after publication. The campaign canary must leave Formula metadata,
+sidecars, and tap `main` unchanged; only immutable bottle and handoff
+evidence may be published.
+
+The native publisher currently verifies Homebrew's rolling signed API
+feeds against a committed compatibility lock. Keep that exact check on
+the cutover path: the 2026-07-30 drift changed executable post-install
+contracts, not only timestamps. After cutover, replace the mutable
+per-PR feed with an immutable, JWS-verified feed snapshot and run a
+daily read-only drift canary. That preserves Homebrew authenticity while
+preventing unrelated packaging PRs from failing when the live feed
+changes.
+
+After #1159 lands, rotate the three tap trust pins and run the existing
+public Node.js and Chromium lifecycle proof. Then reparent the five
+validated Pages deployment commits from #1147 onto the actual merged
+`main`. Refresh #1147's proof references, run fresh exact-head CI, and
+restore its `ready-to-ship` label only after those checks pass. Prefer
+landing that user-visible deployment before #1160; rebase #1160 over
+the deployment before its final CI.
+
 ## Completion Evidence
 
 The cutover is complete only when all of the following are true:
