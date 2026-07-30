@@ -718,6 +718,40 @@ if jq -e --arg digest "$old_wasm64_digest" \
   exit 1
 fi
 
+# Campaign composition uses a deterministic local checkout whose first parent
+# is the public tap source. Recovery accepts that honest split only when the
+# exact clean checkout descends from the child receipt's public source commit.
+git -C "$recovery_tap" commit --allow-empty -qm \
+  "materialize campaign checkout"
+campaign_recovery_checkout="$(git -C "$recovery_tap" rev-parse HEAD)"
+python3 "$TOOL" merge-index \
+  --existing-layout "$TMP_ROOT/combined/layout" \
+  --child-layout "$TMP_ROOT/changed32/layout" \
+  --child-receipt "$recovery_receipt" \
+  --recover-unfinalized-tap-root "$recovery_tap" \
+  --recover-unfinalized-tap-checkout-commit "$campaign_recovery_checkout" \
+  --out-layout "$TMP_ROOT/recovered-campaign/layout" \
+  --out-receipt "$TMP_ROOT/recovered-campaign/receipt.json"
+expect_failure recovery-checkout-mismatch "tap HEAD does not match" \
+  python3 "$TOOL" merge-index \
+    --existing-layout "$TMP_ROOT/combined/layout" \
+    --child-layout "$TMP_ROOT/changed32/layout" \
+    --child-receipt "$recovery_receipt" \
+    --recover-unfinalized-tap-root "$recovery_tap" \
+    --recover-unfinalized-tap-checkout-commit \
+      "0000000000000000000000000000000000000000" \
+    --out-layout "$TMP_ROOT/recovery-checkout-mismatch/layout" \
+    --out-receipt "$TMP_ROOT/recovery-checkout-mismatch/receipt.json"
+expect_failure recovery-checkout-without-root \
+  "recovery tap checkout commit requires" \
+  python3 "$TOOL" merge-index \
+    --existing-layout "$TMP_ROOT/combined/layout" \
+    --child-layout "$TMP_ROOT/changed32/layout" \
+    --child-receipt "$recovery_receipt" \
+    --recover-unfinalized-tap-checkout-commit "$campaign_recovery_checkout" \
+    --out-layout "$TMP_ROOT/recovery-checkout-without-root/layout" \
+    --out-receipt "$TMP_ROOT/recovery-checkout-without-root/receipt.json"
+
 # Transition evidence is canonical receipt data, not an unvalidated status
 # string. Unknown reasons and a transition without the replaced digest fail.
 cp "$TMP_ROOT/recovered/receipt.json" \
@@ -1395,15 +1429,46 @@ chmod +x "$MOCK_BIN/oras"
 cat >"$MOCK_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-if [ "$#" -ne 4 ] || [ "$1" != api ] ||
-   [ "$2" != /repos/Automattic/kandelo/git/ref/heads/main ] ||
-   [ "$3" != --jq ] || [ "$4" != .object.sha ]; then
+[ -z "${MOCK_GH_LOG:-}" ] || printf '%s\n' "$*" >>"$MOCK_GH_LOG"
+if [ "$#" -eq 4 ] && [ "$1" = api ] &&
+   [ "$2" = /repos/Automattic/kandelo/git/ref/heads/main ] &&
+   [ "$3" = --jq ] && [ "$4" = .object.sha ]; then
+  printf '%s\n' \
+    "${MOCK_KANDELO_MAIN_SHA:-2222222222222222222222222222222222222222}"
+elif [ "$#" -eq 4 ] && [ "$1" = api ] &&
+     [ "$2" = \
+"/repos/Automattic/kandelo/compare/${MOCK_CONTAINED_SHA:?}...${MOCK_KANDELO_MAIN_SHA:?}" ] &&
+     [ "$3" = --jq ] &&
+     [ "$4" = \
+'[.status, .base_commit.sha, .merge_base_commit.sha] | @tsv' ]; then
+  printf 'ahead\t%s\t%s\n' "$MOCK_CONTAINED_SHA" "$MOCK_CONTAINED_SHA"
+else
   exit 2
 fi
-[ -z "${MOCK_GH_LOG:-}" ] || printf '%s\n' "$*" >>"$MOCK_GH_LOG"
-printf '%s\n' "${MOCK_KANDELO_MAIN_SHA:-2222222222222222222222222222222222222222}"
 EOF
 chmod +x "$MOCK_BIN/gh"
+cat >"$MOCK_BIN/git" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$#" -eq 7 ] &&
+   [ "$1" = -c ] && [ "$2" = credential.helper= ] &&
+   [ "$3" = -c ] &&
+   [ "$4" = http.https://github.com/.extraheader= ] &&
+   [ "$5" = ls-remote ] &&
+   [ "$6" = https://github.com/Automattic/kandelo.git ] &&
+   [ "$7" = refs/heads/main ]; then
+  [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ] || {
+    echo "credential reached anonymous git" >&2
+    exit 2
+  }
+  [ -z "${MOCK_GIT_LOG:-}" ] || printf '%s\n' "$6" >>"$MOCK_GIT_LOG"
+  printf '%s\trefs/heads/main\n' "${MOCK_KANDELO_MAIN_SHA:?}"
+  exit 0
+fi
+# Preserve the real Git client for unrelated fixture operations.
+PATH="${PATH#*:}" exec git "$@"
+EOF
+chmod +x "$MOCK_BIN/git"
 
 assert_logged_auth_configs_retired() {
   local config
@@ -1578,6 +1643,82 @@ auth_config="$(awk '
 }
 ! grep -F 'test-token' "$ORAS_LOG" >/dev/null || {
   echo "registry credential appeared in ORAS arguments or logs" >&2
+  exit 1
+}
+
+# A reviewed campaign source remains authorized when protected main advances,
+# provided the source is still an ancestor. This exercises the ancestry
+# authority at the exact credentialed OCI-copy boundary.
+contains_gh_log="$TMP_ROOT/contains-main-gh.log"
+contains_git_log="$TMP_ROOT/contains-main-git.log"
+: >"$ORAS_LOG"
+: >"$contains_gh_log"
+: >"$contains_git_log"
+ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-missing-present \
+  ORAS_STATE="$TMP_ROOT/contains-main-upload-oras-state" \
+  ORAS_DESCRIPTOR="$TMP_ROOT/present-descriptor.json" \
+  KANDELO_GHCR_PUBLIC_READ_ATTEMPTS=2 \
+  KANDELO_GHCR_PUBLIC_READ_DELAY_SECONDS=0 \
+  MOCK_GH_LOG="$contains_gh_log" MOCK_GIT_LOG="$contains_git_log" \
+  MOCK_CONTAINED_SHA="$KANDELO_COMMIT" \
+  MOCK_KANDELO_MAIN_SHA=3333333333333333333333333333333333333333 \
+  PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+  bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+    --layout "$TMP_ROOT/child32/layout" \
+    --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+    --tap-repository kandelo-dev/homebrew-tap-core \
+    --formula hello \
+    --kandelo-main-contains-sha "$KANDELO_COMMIT" \
+    --auth-mode pat \
+    --require-pat true \
+    --registry-user package-bot \
+    --out-json "$TMP_ROOT/child32/contains-main-upload.json" >/dev/null
+jq -e '
+  .publication.status == "uploaded" and
+  .publication.remote == "ghcr.io/kandelo-dev/homebrew-tap-core/hello" and
+  .publication.public_readback_digest == .publication.digest
+' "$TMP_ROOT/child32/contains-main-upload.json" >/dev/null
+grep -F \
+  "api /repos/Automattic/kandelo/compare/${KANDELO_COMMIT}...3333333333333333333333333333333333333333" \
+  "$contains_gh_log" >/dev/null || {
+  echo "GHCR transport did not prove the contained source against main" >&2
+  exit 1
+}
+[ "$(cat "$contains_git_log")" = \
+  "https://github.com/Automattic/kandelo.git" ] || {
+  echo "GHCR contains authority did not read public protected main" >&2
+  exit 1
+}
+grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
+  echo "contained-main authority did not reach the credentialed OCI copy" >&2
+  exit 1
+}
+assert_logged_auth_configs_retired
+
+duplicate_authority_gh_log="$TMP_ROOT/duplicate-authority-gh.log"
+: >"$ORAS_LOG"
+: >"$duplicate_authority_gh_log"
+expect_failure transport-duplicate-main-authority \
+  "exact-main and main-contains authority are mutually exclusive" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-missing-present \
+    ORAS_STATE="$TMP_ROOT/duplicate-main-authority-state" \
+    ORAS_DESCRIPTOR="$TMP_ROOT/present-descriptor.json" \
+    MOCK_GH_LOG="$duplicate_authority_gh_log" \
+    PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --formula hello \
+      --exact-kandelo-main-sha "$KANDELO_COMMIT" \
+      --kandelo-main-contains-sha "$KANDELO_COMMIT" \
+      --out-json "$TMP_ROOT/child32/duplicate-main-authority.json"
+[ ! -s "$duplicate_authority_gh_log" ] || {
+  echo "duplicate GHCR authority reached the GitHub API client" >&2
+  exit 1
+}
+[ ! -s "$ORAS_LOG" ] || {
+  echo "duplicate GHCR authority reached the registry transport" >&2
   exit 1
 }
 
@@ -2018,7 +2159,7 @@ assert_logged_auth_configs_retired
 
 : >"$ORAS_LOG"
 expect_failure transport-missing-main-authority \
-  "exact-kandelo-main-sha is required before a GHCR mutation" \
+  "exact-main or explicit main-contains authority is required" \
   env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-missing-present \
     ORAS_STATE="$TMP_ROOT/missing-main-authority-state" \
     ORAS_DESCRIPTOR="$TMP_ROOT/present-descriptor.json" \
