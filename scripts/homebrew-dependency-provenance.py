@@ -28,7 +28,11 @@ COMMIT = re.compile(r"^[0-9a-f]{40}$")
 TAP_REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SOURCE_BUILD = re.compile(r"\b(?:building|built)\b.*\bfrom source\b", re.IGNORECASE)
-BOTTLE_CELLARS = ("any", "any_skip_relocation", "/home/linuxbrew/.linuxbrew/Cellar")
+CURRENT_BOTTLE_CELLAR = "/home/linuxbrew/.linuxbrew/Cellar"
+CAMPAIGN_BOTTLE_CELLAR = "/opt/kandelo/homebrew/Cellar"
+GUEST_LAYOUT_PATH = pathlib.Path(__file__).parent.parent / (
+    "homebrew/kandelo-guest-layout.json"
+)
 BREW_INFO_SYMBOLIC_CELLARS = {
     ":any": "any",
     ":any_skip_relocation": "any_skip_relocation",
@@ -83,6 +87,46 @@ def sha256_file(path: pathlib.Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def selected_bottle_cellars(args: argparse.Namespace) -> tuple[str, ...]:
+    digest = getattr(args, "prefix_campaign_layout_sha256", None)
+    if digest is None:
+        return ("any", "any_skip_relocation", CURRENT_BOTTLE_CELLAR)
+    require_string(
+        digest,
+        "prefix-campaign guest layout SHA-256",
+        SHA256,
+    )
+    contract = load_json(GUEST_LAYOUT_PATH, "Kandelo guest layout")
+    if sha256_file(GUEST_LAYOUT_PATH) != digest:
+        fail("Kandelo guest layout differs from campaign authority")
+    contract = exact_keys(
+        contract,
+        {
+            "cellar",
+            "kind",
+            "prefix",
+            "repository",
+            "retired_prefixes",
+            "schema",
+            "stable_entrypoint",
+        },
+        "Kandelo guest layout",
+    )
+    if (
+        contract["schema"] != 1
+        or contract["kind"] != "kandelo-homebrew-guest-layout"
+        or contract["prefix"] != "/opt/kandelo/homebrew"
+        or contract["repository"] != "/opt/kandelo/homebrew"
+        or contract["cellar"] != CAMPAIGN_BOTTLE_CELLAR
+        or contract["stable_entrypoint"] != "/usr/bin/brew"
+        or not isinstance(contract["retired_prefixes"], list)
+        or "/home/linuxbrew/.linuxbrew"
+        not in contract["retired_prefixes"]
+    ):
+        fail("Kandelo guest layout is not the reviewed prefix contract")
+    return ("any", "any_skip_relocation", CAMPAIGN_BOTTLE_CELLAR)
 
 
 def exact_git_head(root: pathlib.Path, label: str) -> str:
@@ -244,11 +288,14 @@ def resolved_tap_contexts(args: argparse.Namespace) -> dict[str, dict[str, Any]]
     ):
         fail("primary tap override must be a real directory")
     primary_root = primary_root_path.resolve() if primary_root_path is not None else None
+    requested_checkout = getattr(args, "tap_checkout_commit", None)
+    selected_checkout = requested_checkout or args.tap_commit
     contexts: dict[str, dict[str, Any]] = {
         primary_name: {
             "tap_name": primary_name,
             "tap_repository": primary_repository,
             "tap_commit": args.tap_commit,
+            "checkout_commit": selected_checkout,
             "root": primary_root,
             "bottle_root_url": f"https://ghcr.io/v2/{primary_repository}",
         }
@@ -270,14 +317,26 @@ def resolved_tap_contexts(args: argparse.Namespace) -> dict[str, dict[str, Any]]
         {"schema", "primary", "dependencies"},
         "resolved dependency tap map",
     )
-    if root["schema"] != 1 or not isinstance(root["dependencies"], list) or len(root["dependencies"]) > 8:
+    if (
+        root["schema"] not in (1, 2)
+        or not isinstance(root["dependencies"], list)
+        or len(root["dependencies"]) > 8
+    ):
         fail("resolved dependency tap map has an unexpected schema")
     records = [root["primary"], *root["dependencies"]]
     parsed: dict[str, dict[str, Any]] = {}
     for index, raw in enumerate(records):
+        record_keys = {
+            "tap_name",
+            "tap_repository",
+            "tap_commit",
+            "root",
+        }
+        if root["schema"] == 2:
+            record_keys.add("checkout_commit")
         record = exact_keys(
             raw,
-            {"tap_name", "tap_repository", "tap_commit", "root"},
+            record_keys,
             f"resolved dependency tap map context {index}",
         )
         tap_name = normalized_tap_name(record["tap_name"])
@@ -290,6 +349,18 @@ def resolved_tap_contexts(args: argparse.Namespace) -> dict[str, dict[str, Any]]
         commit = require_string(
             record["tap_commit"],
             f"resolved dependency tap map context {index} commit",
+            COMMIT,
+        )
+        checkout_commit = require_string(
+            (
+                record["checkout_commit"]
+                if root["schema"] == 2
+                else commit
+            ),
+            (
+                "resolved dependency tap map context "
+                f"{index} checkout commit"
+            ),
             COMMIT,
         )
         root_path = pathlib.Path(require_string(record["root"], f"resolved dependency tap map context {index} root"))
@@ -315,8 +386,17 @@ def resolved_tap_contexts(args: argparse.Namespace) -> dict[str, dict[str, Any]]
             )
         except (FileNotFoundError, subprocess.TimeoutExpired) as error:
             fail(f"could not inspect resolved tap {tap_name}: {error}")
-        if head.returncode != 0 or head.stdout.decode("ascii", errors="replace").strip() != commit:
-            fail(f"resolved tap {tap_name} HEAD differs from {commit}")
+        if (
+            head.returncode != 0
+            or head.stdout.decode(
+                "ascii", errors="replace"
+            ).strip()
+            != checkout_commit
+        ):
+            fail(
+                f"resolved tap {tap_name} HEAD differs from "
+                f"{checkout_commit}"
+            )
         if status.returncode != 0 or (index != 0 and status.stdout):
             fail(f"resolved tap {tap_name} has working-tree changes")
         # The resolved map remains the immutable identity proof for every tap.
@@ -338,6 +418,7 @@ def resolved_tap_contexts(args: argparse.Namespace) -> dict[str, dict[str, Any]]
             "tap_name": tap_name,
             "tap_repository": repository,
             "tap_commit": commit,
+            "checkout_commit": checkout_commit,
             "root": context_root,
             "bottle_root_url": f"https://ghcr.io/v2/{repository}",
         }
@@ -347,6 +428,8 @@ def resolved_tap_contexts(args: argparse.Namespace) -> dict[str, dict[str, Any]]
     if (
         primary["tap_repository"] != primary_repository
         or primary["tap_commit"] != args.tap_commit
+        or primary["checkout_commit"]
+        != selected_checkout
     ):
         fail("resolved dependency tap map primary identity differs from the build")
     return parsed
@@ -399,6 +482,7 @@ def exact_tap_dependencies(
     formula: str,
     arch: str,
     contexts: dict[str, dict[str, Any]],
+    bottle_cellars: tuple[str, ...],
 ) -> dict[str, dict[str, Any]]:
     resolver = pathlib.Path(__file__).with_name("homebrew-formula-runtime-closure.rb")
     regular_file(resolver, "static Formula dependency resolver", MAX_JSON_BYTES)
@@ -450,11 +534,7 @@ def exact_tap_dependencies(
         )
         if bottle["url"] != expected_url:
             fail(f"static dependency {full_name} bottle URL does not match its source repository")
-        if bottle["cellar"] not in (
-            "any",
-            "any_skip_relocation",
-            "/home/linuxbrew/.linuxbrew/Cellar",
-        ):
+        if bottle["cellar"] not in bottle_cellars:
             fail(f"static dependency {full_name} bottle cellar is invalid")
         if (
             not isinstance(bottle["rebuild"], int)
@@ -613,10 +693,14 @@ def target_receipt_bottle_rebuild(
     return rebuild
 
 
-def normalized_brew_info_cellar(value: Any, full_name: str) -> str:
+def normalized_brew_info_cellar(
+    value: Any,
+    full_name: str,
+    bottle_cellars: tuple[str, ...],
+) -> str:
     cellar = require_string(value, f"dependency {full_name} bottle cellar")
     cellar = BREW_INFO_SYMBOLIC_CELLARS.get(cellar, cellar)
-    if cellar not in BOTTLE_CELLARS:
+    if cellar not in bottle_cellars:
         fail(f"dependency {full_name} has unsupported bottle cellar {cellar}")
     return cellar
 
@@ -627,6 +711,11 @@ def capture(args: argparse.Namespace) -> None:
     normalized_repository = normalized_tap_name(repository)
     normalized_tap = selected_tap_name(args)
     require_string(args.tap_commit, "tap commit", COMMIT)
+    require_string(
+        args.tap_checkout_commit or args.tap_commit,
+        "tap checkout commit",
+        COMMIT,
+    )
     require_string(args.formula, "formula", FORMULA_NAME)
     if args.arch not in ("wasm32", "wasm64"):
         fail(f"unsupported architecture: {args.arch}")
@@ -656,6 +745,7 @@ def capture(args: argparse.Namespace) -> None:
     log_lines = read_log_lines(pathlib.Path(args.install_log))
     bottle_tag = f"{args.arch}_kandelo"
     contexts = resolved_tap_contexts(args)
+    bottle_cellars = selected_bottle_cellars(args)
     expected = expected_dependencies(pathlib.Path(args.expected_dependencies), contexts)
 
     selected: dict[str, dict[str, Any]] = {}
@@ -700,10 +790,10 @@ def capture(args: argparse.Namespace) -> None:
             fail(f"dependency {full_name} receipt source must be an object")
         if str(source.get("tap", "")).lower() != dependency_tap:
             fail(f"dependency {full_name} receipt came from a different tap")
-        if source.get("tap_git_head") != context["tap_commit"]:
+        if source.get("tap_git_head") != context["checkout_commit"]:
             fail(
-                f"dependency {full_name} receipt is not bound to tap commit "
-                f"{context['tap_commit']}"
+                f"dependency {full_name} receipt is not bound to tap checkout "
+                f"{context['checkout_commit']}"
             )
         homebrew_version = require_string(
             receipt.get("homebrew_version"), f"dependency {full_name} Homebrew version"
@@ -734,7 +824,11 @@ def capture(args: argparse.Namespace) -> None:
         expected_url = f"{dependency_root_url}/{name}/blobs/sha256:{bottle_sha}"
         if bottle_url != expected_url:
             fail(f"dependency {full_name} bottle URL does not match {expected_url}")
-        bottle_cellar = normalized_brew_info_cellar(tag.get("cellar"), full_name)
+        bottle_cellar = normalized_brew_info_cellar(
+            tag.get("cellar"),
+            full_name,
+            bottle_cellars,
+        )
         rebuild = stable.get("rebuild")
         if not isinstance(rebuild, int) or isinstance(rebuild, bool) or rebuild < 0:
             fail(f"dependency {full_name} bottle rebuild must be a non-negative integer")
@@ -786,13 +880,14 @@ def capture(args: argparse.Namespace) -> None:
                 "poured_from_bottle": True,
                 "sha256": sha256_file(receipt_path),
                 "source_tap": dependency_tap,
-                "source_tap_git_head": context["tap_commit"],
+                "source_tap_git_head": context["checkout_commit"],
             },
             "version": version,
         }
 
         selected[full_name]["origin"] = {
             "bottle_root_url": dependency_root_url,
+            "checkout_commit": context["checkout_commit"],
             "tap_commit": context["tap_commit"],
             "tap_name": dependency_tap,
             "tap_repository": context["tap_repository"],
@@ -818,8 +913,9 @@ def capture(args: argparse.Namespace) -> None:
         "bottle_tag": bottle_tag,
         "dependencies": [selected[name] for name in sorted(selected)],
         "formula": args.formula,
-        "schema": 3 if cross_tap else 2,
+        "schema": 5 if cross_tap else 4,
         "tap_commit": args.tap_commit,
+        "tap_checkout_commit": contexts[normalized_tap]["checkout_commit"],
         "tap_name": normalized_tap,
         "tap_repository": repository,
     }
@@ -869,28 +965,44 @@ def validate_pour_evidence(lines: Any, label: str, bottle_filename: str) -> None
 
 
 def validate_document(document: Any, args: argparse.Namespace) -> None:
+    if not isinstance(document, dict):
+        fail("dependency provenance must be an object")
+    schema = document.get("schema")
+    if schema not in (2, 3, 4, 5):
+        fail("dependency provenance schema must be 2, 3, 4, or 5")
+    expected_root_keys = {
+        "arch",
+        "bottle_root_url",
+        "bottle_tag",
+        "dependencies",
+        "formula",
+        "schema",
+        "tap_commit",
+        "tap_name",
+        "tap_repository",
+    }
+    if schema in (4, 5):
+        expected_root_keys.add("tap_checkout_commit")
     root = exact_keys(
         document,
-        {
-            "arch",
-            "bottle_root_url",
-            "bottle_tag",
-            "dependencies",
-            "formula",
-            "schema",
-            "tap_commit",
-            "tap_name",
-            "tap_repository",
-        },
+        expected_root_keys,
         "dependency provenance",
     )
-    if root["schema"] not in (2, 3):
-        fail("dependency provenance schema must be 2 or 3")
     if root["formula"] != args.formula or root["arch"] != args.arch:
         fail("dependency provenance formula or architecture does not match the build")
     normalized_repository = normalized_tap_name(args.tap_repository)
     normalized_tap = selected_tap_name(args)
     contexts = resolved_tap_contexts(args)
+    expected_checkout_commit = contexts[normalized_tap]["checkout_commit"]
+    if schema in (2, 3):
+        if expected_checkout_commit != args.tap_commit:
+            fail(
+                "legacy dependency provenance cannot represent a distinct "
+                "tap checkout commit"
+            )
+    elif root["tap_checkout_commit"] != expected_checkout_commit:
+        fail("dependency provenance tap checkout identity does not match")
+    bottle_cellars = selected_bottle_cellars(args)
     expected_root = f"https://ghcr.io/v2/{normalized_repository}"
     if args.bottle_root_url != expected_root:
         fail(f"bottle root URL must be {expected_root}")
@@ -922,6 +1034,7 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
             args.formula,
             args.arch,
             contexts,
+            bottle_cellars,
         )
         static_direct_dependencies = exact_direct_dependencies(
             pathlib.Path(validation_tap_root),
@@ -933,8 +1046,12 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
         if not validation_tap_root:
             fail("planned tap root requires a current tap root")
         planned_root = pathlib.Path(planned_tap_root)
-        if exact_git_head(planned_root, "planned tap root") != args.tap_commit:
-            fail("planned tap root does not match the provenance tap commit")
+        planned_head = exact_git_head(planned_root, "planned tap root")
+        if planned_head != contexts[normalized_tap]["checkout_commit"]:
+            fail(
+                "planned tap root does not match the resolved checkout "
+                "commit"
+            )
     for index, dependency in enumerate(dependencies):
         expected_dependency_keys = {
             "bottle",
@@ -946,7 +1063,7 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
             "receipt",
             "version",
         }
-        if root["schema"] == 3:
+        if root["schema"] in (3, 5):
             expected_dependency_keys.add("origin")
         dependency = exact_keys(
             dependency,
@@ -963,12 +1080,23 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
         context = contexts.get(dependency_tap)
         if context is None:
             fail(f"dependencies[{index}] is not from an immutable resolved tap")
-        if root["schema"] == 2 and dependency_tap != normalized_tap:
-            fail(f"dependencies[{index}] schema 2 dependency is not from the selected tap")
-        if root["schema"] == 3:
+        if root["schema"] in (2, 4) and dependency_tap != normalized_tap:
+            fail(
+                f"dependencies[{index}] same-tap provenance contains "
+                "a cross-tap dependency"
+            )
+        if root["schema"] in (3, 5):
+            origin_keys = {
+                "bottle_root_url",
+                "tap_commit",
+                "tap_name",
+                "tap_repository",
+            }
+            if root["schema"] == 5:
+                origin_keys.add("checkout_commit")
             origin = exact_keys(
                 dependency["origin"],
-                {"bottle_root_url", "tap_commit", "tap_name", "tap_repository"},
+                origin_keys,
                 f"dependencies[{index}].origin",
             )
             expected_origin = {
@@ -977,6 +1105,15 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
                 "tap_name": dependency_tap,
                 "tap_repository": context["tap_repository"],
             }
+            if root["schema"] == 5:
+                expected_origin["checkout_commit"] = context[
+                    "checkout_commit"
+                ]
+            elif context["checkout_commit"] != context["tap_commit"]:
+                fail(
+                    f"dependencies[{index}] legacy origin cannot represent "
+                    "a distinct checkout commit"
+                )
             if origin != expected_origin:
                 fail(f"dependencies[{index}] origin differs from the immutable tap map")
         if full_name in seen or full_name <= prior_full_name:
@@ -1008,7 +1145,7 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
         dependency_root_url = context["bottle_root_url"]
         if bottle["url"] != f"{dependency_root_url}/{name}/blobs/sha256:{bottle_sha}":
             fail(f"dependencies[{index}] bottle URL is not digest-bound")
-        if bottle["cellar"] not in ("any", "any_skip_relocation", "/home/linuxbrew/.linuxbrew/Cellar"):
+        if bottle["cellar"] not in bottle_cellars:
             fail(f"dependencies[{index}] bottle cellar is invalid")
         if not isinstance(bottle["rebuild"], int) or isinstance(bottle["rebuild"], bool) or bottle["rebuild"] < 0:
             fail(f"dependencies[{index}] bottle rebuild is invalid")
@@ -1041,9 +1178,12 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
         require_string(receipt["homebrew_version"], f"dependencies[{index}].receipt.homebrew_version")
         if (
             receipt["source_tap"] != dependency_tap
-            or receipt["source_tap_git_head"] != context["tap_commit"]
+            or receipt["source_tap_git_head"] != context["checkout_commit"]
         ):
-            fail(f"dependencies[{index}] receipt source is not the exact immutable tap")
+            fail(
+                f"dependencies[{index}] receipt source is not the exact "
+                "reviewed tap checkout"
+            )
         install_log = exact_keys(
             dependency["install_log"],
             {"fetch", "pour", "source_build_absent"},
@@ -1099,6 +1239,11 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
 
 def validate(args: argparse.Namespace) -> None:
     require_string(args.tap_commit, "tap commit", COMMIT)
+    require_string(
+        args.tap_checkout_commit or args.tap_commit,
+        "tap checkout commit",
+        COMMIT,
+    )
     require_string(args.formula, "formula", FORMULA_NAME)
     document = load_json(pathlib.Path(args.input), "dependency provenance")
     validate_document(document, args)
@@ -1113,7 +1258,9 @@ def parser() -> argparse.ArgumentParser:
     common.add_argument("--tap-repository", required=True)
     common.add_argument("--tap-name")
     common.add_argument("--tap-commit", required=True)
+    common.add_argument("--tap-checkout-commit")
     common.add_argument("--bottle-root-url", required=True)
+    common.add_argument("--prefix-campaign-layout-sha256")
 
     capture_parser = subparsers.add_parser("capture", parents=[common])
     capture_parser.add_argument("--brew-bin", required=True)

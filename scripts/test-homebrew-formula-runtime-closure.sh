@@ -181,6 +181,23 @@ jq -e '
 [ "$host_plan" = "$(KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$PRIMARY_RESOLVED_TAPS" \
   ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core host-plan --host-dependencies-json)" ]
 
+CAMPAIGN_RESOLVED_TAPS="$TMP_ROOT/campaign-resolved-taps.json"
+jq '
+  .schema = 2 |
+  .primary.checkout_commit =
+    "2222222222222222222222222222222222222222"
+' "$PRIMARY_RESOLVED_TAPS" >"$CAMPAIGN_RESOLVED_TAPS"
+chmod 0444 "$CAMPAIGN_RESOLVED_TAPS"
+campaign_host_plan="$(
+  KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$CAMPAIGN_RESOLVED_TAPS" \
+    ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core host-plan \
+      --host-dependencies-json
+)"
+[ "$campaign_host_plan" = "$host_plan" ] || {
+  echo "test-homebrew-formula-runtime-closure.sh: campaign checkout changed public dependency provenance" >&2
+  exit 1
+}
+
 cat >"$TAP_ROOT/Formula/third-party-plan.rb" <<'RUBY'
 class ThirdPartyPlan < Formula
   depends_on "acme/tools/required"
@@ -1626,5 +1643,52 @@ if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core escaped-symbol-dispatch \
 fi
 grep -F 'forbidden tap-local source operation "to_proc"' \
   "$TMP_ROOT/escaped-symbol-dispatch.err" >/dev/null
+
+layout_sha="$(
+  sha256sum "$REPO_ROOT/homebrew/kandelo-guest-layout.json" | awk '{print $1}'
+)"
+cat >"$TAP_ROOT/Formula/campaign-bottle.rb" <<'RUBY'
+class CampaignBottle < Formula
+  bottle do
+    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
+    sha256 cellar: "/opt/kandelo/homebrew/Cellar", wasm32_kandelo: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  end
+end
+RUBY
+KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256="$layout_sha" \
+  ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core campaign-bottle \
+    --bottle-identity-json >/dev/null
+if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core campaign-bottle \
+    --bottle-identity-json >"$TMP_ROOT/current-layout.out" \
+    2>"$TMP_ROOT/current-layout.err"; then
+  echo "test-homebrew-formula-runtime-closure.sh: accepted campaign Cellar without layout authority" >&2
+  exit 1
+fi
+grep -F 'Formula bottle block uses an unsupported cellar' \
+  "$TMP_ROOT/current-layout.err" >/dev/null
+if KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256="$(
+    printf '0%.0s' {1..64}
+  )" ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core campaign-bottle \
+    --bottle-identity-json >"$TMP_ROOT/wrong-layout.out" \
+    2>"$TMP_ROOT/wrong-layout.err"; then
+  echo "test-homebrew-formula-runtime-closure.sh: accepted an unbound campaign layout" >&2
+  exit 1
+fi
+grep -F 'prefix-campaign guest layout differs from campaign authority' \
+  "$TMP_ROOT/wrong-layout.err" >/dev/null
+sed \
+  -e 's/CampaignBottle/RetiredBottle/' \
+  -e 's#/opt/kandelo/homebrew/Cellar#/home/linuxbrew/.linuxbrew/Cellar#' \
+  "$TAP_ROOT/Formula/campaign-bottle.rb" \
+  >"$TAP_ROOT/Formula/retired-bottle.rb"
+if KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256="$layout_sha" \
+  ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core retired-bottle \
+    --bottle-identity-json >"$TMP_ROOT/retired-layout.out" \
+    2>"$TMP_ROOT/retired-layout.err"; then
+  echo "test-homebrew-formula-runtime-closure.sh: accepted the retired Cellar in campaign mode" >&2
+  exit 1
+fi
+grep -F 'Formula bottle block uses an unsupported cellar' \
+  "$TMP_ROOT/retired-layout.err" >/dev/null
 
 echo "test-homebrew-formula-runtime-closure.sh: passed"

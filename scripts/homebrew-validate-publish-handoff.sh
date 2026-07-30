@@ -10,6 +10,7 @@ RELEASE_TAG=""
 TAP_REPOSITORY=""
 TAP_NAME_INPUT=""
 TAP_COMMIT=""
+TAP_CHECKOUT_COMMIT=""
 KANDELO_COMMIT=""
 BOTTLE_ROOT_URL=""
 TAP_ROOT=""
@@ -20,7 +21,7 @@ FORBIDDEN_ROOTS=()
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-validate-publish-handoff.sh --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --tap-root <dir> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--allow-dry-run] [--defer-whole-tap-validation] [--prefix-campaign-layout-sha256 <sha256>]
+usage: scripts/homebrew-validate-publish-handoff.sh --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> [--tap-checkout-commit <sha>] --kandelo-commit <sha> --bottle-root-url <url> --tap-root <dir> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--allow-dry-run] [--defer-whole-tap-validation] [--prefix-campaign-layout-sha256 <sha256>]
 
 Checks the exact build/receipt/composition artifact grammar and cross-validates
 all package-scoped publication data without loading Formula Ruby or executing
@@ -38,6 +39,7 @@ while [ "$#" -gt 0 ]; do
     --tap-repository) TAP_REPOSITORY="${2:-}"; shift 2 ;;
     --tap-name) TAP_NAME_INPUT="${2:-}"; shift 2 ;;
     --tap-commit) TAP_COMMIT="${2:-}"; shift 2 ;;
+    --tap-checkout-commit) TAP_CHECKOUT_COMMIT="${2:-}"; shift 2 ;;
     --kandelo-commit) KANDELO_COMMIT="${2:-}"; shift 2 ;;
     --bottle-root-url) BOTTLE_ROOT_URL="${2:-}"; shift 2 ;;
     --tap-root) TAP_ROOT="${2:-}"; shift 2 ;;
@@ -112,6 +114,11 @@ if ! [[ "$TAP_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
 fi
 if ! [[ "$TAP_COMMIT" =~ ^[0-9a-f]{40}$ ]] || ! [[ "$KANDELO_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
   echo "homebrew-validate-publish-handoff.sh: invalid source commit" >&2
+  exit 2
+fi
+TAP_CHECKOUT_COMMIT="${TAP_CHECKOUT_COMMIT:-$TAP_COMMIT}"
+if ! [[ "$TAP_CHECKOUT_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "homebrew-validate-publish-handoff.sh: invalid tap checkout commit" >&2
   exit 2
 fi
 if ! [[ "$BOTTLE_ROOT_URL" =~ ^https://[^[:space:]]+$ ]] || [[ "$BOTTLE_ROOT_URL" == */ ]]; then
@@ -230,6 +237,7 @@ bash "$SCRIPT_ROOT/homebrew-validate-upload-receipt.sh" \
   --tap-repository "$TAP_REPOSITORY" \
   --tap-name "$TAP_NAME" \
   --tap-commit "$TAP_COMMIT" \
+  --tap-checkout-commit "$TAP_CHECKOUT_COMMIT" \
   --kandelo-commit "$KANDELO_COMMIT" \
   --bottle-root-url "$BOTTLE_ROOT_URL" \
   "${receipt_validation_args[@]}" >/dev/null
@@ -242,6 +250,7 @@ dependency_validation_args=(
   --tap-repository "$TAP_REPOSITORY" \
   --tap-name "$TAP_NAME" \
   --tap-commit "$TAP_COMMIT" \
+  --tap-checkout-commit "$TAP_CHECKOUT_COMMIT" \
   --bottle-root-url "$BOTTLE_ROOT_URL" \
   --tap-root "$TAP_ROOT"
 )

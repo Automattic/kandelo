@@ -19,6 +19,9 @@ MAX_TIER2_CONTROL_BYTES = 65_536
 MAX_SUPPORT_RUNTIME_FILES = 128
 MAX_SUPPORT_RUNTIME_BYTES = 16_777_216
 MAX_TAP_RECIPE_RESOURCES = 32
+CURRENT_BOTTLE_CELLAR = "/home/linuxbrew/.linuxbrew/Cellar"
+PREFIX_CAMPAIGN_LAYOUT_SHA256 =
+  ENV.fetch("KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256", "")
 FORMULA_NAME = /\A[a-z0-9][a-z0-9._-]*\z/
 HOST_FORMULA_NAME = /\A[a-z0-9][a-z0-9@+_.-]*\z/
 TAP_NAME = /\A[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\z/
@@ -85,6 +88,40 @@ FORBIDDEN_SUPPORT_IDENTIFIERS = (
       "undef_method", "using",
     ]
 ).freeze
+
+allowed_bottle_cellar = CURRENT_BOTTLE_CELLAR
+unless PREFIX_CAMPAIGN_LAYOUT_SHA256.empty?
+  unless PREFIX_CAMPAIGN_LAYOUT_SHA256.match?(/\A[0-9a-f]{64}\z/)
+    abort "invalid prefix-campaign guest layout SHA-256"
+  end
+  layout_path = Pathname.new(__dir__).parent / "homebrew/kandelo-guest-layout.json"
+  unless layout_path.file? && !layout_path.symlink? && layout_path.size <= 65_536
+    abort "prefix-campaign guest layout must be a bounded regular file"
+  end
+  unless Digest::SHA256.file(layout_path).hexdigest == PREFIX_CAMPAIGN_LAYOUT_SHA256
+    abort "prefix-campaign guest layout differs from campaign authority"
+  end
+  begin
+    layout = JSON.parse(layout_path.read)
+  rescue JSON::ParserError => error
+    abort "prefix-campaign guest layout is invalid JSON: #{error.message}"
+  end
+  expected_layout = {
+    "schema" => 1,
+    "kind" => "kandelo-homebrew-guest-layout",
+    "prefix" => "/opt/kandelo/homebrew",
+    "cellar" => "/opt/kandelo/homebrew/Cellar",
+    "repository" => "/opt/kandelo/homebrew",
+    "stable_entrypoint" => "/usr/bin/brew",
+    "retired_prefixes" => ["/home/linuxbrew/.linuxbrew"],
+  }
+  unless layout == expected_layout
+    abort "prefix-campaign guest layout violates the Kandelo path contract"
+  end
+  allowed_bottle_cellar = layout.fetch("cellar")
+end
+ALLOWED_BOTTLE_CELLARS =
+  Set["any", "any_skip_relocation", allowed_bottle_cellar].freeze
 EXCLUDED_TAG_SETS = Set[
   Set[:build],
   Set[:test],
@@ -173,22 +210,31 @@ unless resolved_taps_path.nil? || resolved_taps_path.empty?
     abort "resolved tap map is not valid JSON: #{e.message}"
   end
   unless resolved_document.is_a?(Hash) && resolved_document.keys.sort == %w[dependencies primary schema] &&
-         resolved_document["schema"] == 1 && resolved_document["dependencies"].is_a?(Array) &&
+         [1, 2].include?(resolved_document["schema"]) &&
+         resolved_document["dependencies"].is_a?(Array) &&
          resolved_document["dependencies"].length <= 8
     abort "resolved tap map has an unexpected schema"
   end
+  resolved_schema = resolved_document.fetch("schema")
   contexts = [resolved_document["primary"], *resolved_document["dependencies"]]
   contexts.each_with_index do |context, index|
-    unless context.is_a?(Hash) && context.keys.sort == %w[root tap_commit tap_name tap_repository]
+    expected_context_keys = %w[root tap_commit tap_name tap_repository]
+    expected_context_keys << "checkout_commit" if resolved_schema == 2
+    unless context.is_a?(Hash) &&
+           context.keys.sort == expected_context_keys.sort
       abort "resolved tap map context #{index} has an unexpected schema"
     end
     context_name = context["tap_name"]
     context_repository = context["tap_repository"]
     context_commit = context["tap_commit"]
+    checkout_commit =
+      resolved_schema == 2 ? context["checkout_commit"] : context_commit
     unless context_name.is_a?(String) && context_name == context_name.downcase &&
            TAP_NAME.match?(context_name) &&
            context_repository == repository_for_tap.call(context_name) &&
-           context_commit.is_a?(String) && context_commit.match?(/\A[0-9a-f]{40}\z/)
+           context_commit.is_a?(String) && context_commit.match?(/\A[0-9a-f]{40}\z/) &&
+           checkout_commit.is_a?(String) &&
+           checkout_commit.match?(/\A[0-9a-f]{40}\z/)
       abort "resolved tap map context #{index} has an invalid immutable identity"
     end
     unless context["root"].is_a?(String) && Pathname.new(context["root"]).absolute?
@@ -210,6 +256,7 @@ unless resolved_taps_path.nil? || resolved_taps_path.empty?
       "tap_name" => context_name,
       "tap_repository" => context_repository,
       "tap_commit" => context_commit,
+      "checkout_commit" => checkout_commit,
       "root" => context_root,
     }
   end
@@ -365,7 +412,7 @@ parse_bottle = lambda do |statement, lines, path|
       tag = Regexp.last_match(2)
       sha256 = Regexp.last_match(3)
       cellar = cellar_literal.start_with?(":") ? cellar_literal.delete_prefix(":") : cellar_literal[1...-1]
-      unless ["any", "any_skip_relocation", "/home/linuxbrew/.linuxbrew/Cellar"].include?(cellar)
+      unless ALLOWED_BOTTLE_CELLARS.include?(cellar)
         abort "Formula bottle block uses an unsupported cellar: #{path}"
       end
       abort "Formula bottle block repeats tag #{tag}: #{path}" if tags.key?(tag)

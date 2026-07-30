@@ -10,6 +10,7 @@ RELEASE_TAG=""
 TAP_REPOSITORY=""
 TAP_NAME_INPUT=""
 TAP_COMMIT=""
+TAP_CHECKOUT_COMMIT=""
 KANDELO_COMMIT=""
 BOTTLE_ROOT_URL=""
 OUT_ENV=""
@@ -20,7 +21,7 @@ FORBIDDEN_ROOTS=()
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-validate-upload-receipt.sh --receipt <json> --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--out-env <path>] [--out-bottle-json <path>] [--allow-dry-run] [--prefix-campaign-layout-sha256 <sha256>]
+usage: scripts/homebrew-validate-upload-receipt.sh --receipt <json> --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> [--tap-checkout-commit <sha>] --kandelo-commit <sha> --bottle-root-url <url> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--out-env <path>] [--out-bottle-json <path>] [--allow-dry-run] [--prefix-campaign-layout-sha256 <sha256>]
 
 Revalidates the build handoff, then checks the strict upload receipt against
 the plan identity and the handoff's recomputed bottle digest and byte count.
@@ -37,6 +38,7 @@ while [ "$#" -gt 0 ]; do
     --tap-repository) TAP_REPOSITORY="${2:-}"; shift 2 ;;
     --tap-name) TAP_NAME_INPUT="${2:-}"; shift 2 ;;
     --tap-commit) TAP_COMMIT="${2:-}"; shift 2 ;;
+    --tap-checkout-commit) TAP_CHECKOUT_COMMIT="${2:-}"; shift 2 ;;
     --kandelo-commit) KANDELO_COMMIT="${2:-}"; shift 2 ;;
     --bottle-root-url) BOTTLE_ROOT_URL="${2:-}"; shift 2 ;;
     --out-env) OUT_ENV="${2:-}"; shift 2 ;;
@@ -89,6 +91,12 @@ for requirement in \
   require "${requirement%%:*}" "${requirement#*:}"
 done
 
+TAP_CHECKOUT_COMMIT="${TAP_CHECKOUT_COMMIT:-$TAP_COMMIT}"
+if ! [[ "$TAP_CHECKOUT_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "homebrew-validate-upload-receipt.sh: invalid tap checkout commit" >&2
+  exit 2
+fi
+
 if [ ! -f "$RECEIPT" ] || [ -L "$RECEIPT" ]; then
   echo "homebrew-validate-upload-receipt.sh: receipt must be a regular non-symlink file: $RECEIPT" >&2
   exit 1
@@ -114,6 +122,7 @@ build_validation_args=(
   --tap-repository "$TAP_REPOSITORY"
   --tap-name "$TAP_NAME"
   --tap-commit "$TAP_COMMIT"
+  --tap-checkout-commit "$TAP_CHECKOUT_COMMIT"
   --kandelo-commit "$KANDELO_COMMIT"
   --bottle-root-url "$BOTTLE_ROOT_URL"
   --out-env "$build_env"
