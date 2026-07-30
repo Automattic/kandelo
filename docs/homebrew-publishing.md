@@ -2853,7 +2853,8 @@ archives, a missing public mirror, or any shell/bootstrap/plan identity drift
 stops deployment. The source-rootfs bridge cannot stand in for that product
 artifact and can be deleted in a later cleanup. This cutover may merge only
 after the descendant `TA1` publication run has anonymously verified the
-`TA0`-owned mirror and passed its public Node.js and Chromium lifecycle.
+`TA0`-owned mirror, passed both fresh-process public Node.js first-install
+proofs, and passed the complete public Chromium lifecycle.
 
 ### Strict Main-Shell Bottle Closure
 

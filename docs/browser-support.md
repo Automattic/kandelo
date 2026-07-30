@@ -771,8 +771,9 @@ Homebrew operations.
 That closed proof does not authorize deployment by itself. The protected tap
 must first publish the immutable bottle mirror from `TA0`, then publish the
 separate transitional lifecycle inputs from descendant `TA1` and pass the
-anonymous public Node.js and Chromium lifecycle. Only that complete public
-proof admits the Pages cutover below.
+anonymous public first-install proofs in two fresh Node.js processes plus the
+complete Chromium lifecycle. Only that complete public proof admits the Pages
+cutover below.
 
 GitHub Pages is a public product consumer, not a package producer. Its sole
 publisher starts with a fresh resolver cache and runs
