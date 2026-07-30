@@ -224,6 +224,7 @@ jobs:
             apps/browser-demos/test/support/terminal-command.test.ts \
             homebrew/test/homebrew_guest_lifecycle_browser_fixture.test.ts \
             homebrew/test/homebrew_guest_lifecycle_contract.test.ts \
+            homebrew/test/homebrew_guest_lifecycle_progress.test.ts \
             homebrew/test/homebrew_guest_lifecycle_runner.test.ts \
             homebrew/test/homebrew_guest_lifecycle_runtime_contract.test.ts \
             homebrew/test/homebrew_guest_lifecycle_runtime_inputs.test.ts \
@@ -911,6 +912,7 @@ jobs:
               --homebrew-bootstrap-env "${{ steps.bottle_candidate.outputs.bootstrap_env }}" \
               --transport-mode closed \
               --bottle-mirror-plan "${{ steps.mirror.outputs.plan }}" \
+              --proof-mode comprehensive \
               --core-revision "${{ steps.live-inputs.outputs.tf }}" \
               --canary-revision "${{ steps.live-inputs.outputs.c }}" \
               --timeout-ms 900000

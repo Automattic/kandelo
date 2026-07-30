@@ -104,8 +104,19 @@ sed 's/memory.current/memory.stat/' \
 expect_rejected "$TMP_ROOT/no-node-current-memory-telemetry.yml"
 sed \
   's#homebrew/test/homebrew_guest_lifecycle_node.ts#scripts/homebrew-main-shell-node-smoke.ts#' \
-  "$WORKFLOW" >"$TMP_ROOT/no-full-node-lifecycle.yml"
-expect_rejected "$TMP_ROOT/no-full-node-lifecycle.yml"
+  "$WORKFLOW" >"$TMP_ROOT/no-node-shipping-proof.yml"
+expect_rejected "$TMP_ROOT/no-node-shipping-proof.yml"
+sed '/--proof-mode "$scope"/d' \
+  "$WORKFLOW" >"$TMP_ROOT/no-node-shipping-selection.yml"
+expect_rejected "$TMP_ROOT/no-node-shipping-selection.yml"
+for scope in shipping-core shipping-canary; do
+  sed "/run_shipping_scope $scope/d" \
+    "$WORKFLOW" >"$TMP_ROOT/omitted-$scope.yml"
+  expect_rejected "$TMP_ROOT/omitted-$scope.yml"
+  sed "/run_shipping_scope $scope/p" \
+    "$WORKFLOW" >"$TMP_ROOT/duplicated-$scope.yml"
+  expect_rejected "$TMP_ROOT/duplicated-$scope.yml"
+done
 sed \
   '/"KANDELO_BROWSER_DEMO_INPUTS=\$KANDELO_BROWSER_DEMO_INPUTS"/d' \
   "$WORKFLOW" >"$TMP_ROOT/dropped-chromium-input-selection.yml"

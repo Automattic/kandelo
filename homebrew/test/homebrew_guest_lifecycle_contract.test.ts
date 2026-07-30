@@ -6,6 +6,9 @@ import {
   assertHomebrewGuestLifecycleRevisions,
   createHomebrewGuestLifecyclePhaseOneScript,
   createHomebrewGuestLifecyclePhaseTwoScript,
+  createHomebrewGuestShippingProofScript,
+  HOMEBREW_GUEST_CANARY_SHIPPING_PROOF_MARKER,
+  HOMEBREW_GUEST_CORE_SHIPPING_PROOF_MARKER,
   HOMEBREW_GUEST_LIFECYCLE_PHASE_ONE_MARKER,
   HOMEBREW_GUEST_LIFECYCLE_PHASE_TWO_MARKER,
 } from "./homebrew_guest_lifecycle_contract";
@@ -33,6 +36,101 @@ test("requires immutable lower-case tap revisions", () => {
     );
   }
 });
+
+test("core shipping scope pours and runs only the first-party bottle", () => {
+  const script = createHomebrewGuestShippingProofScript(revisions, "core");
+  assertBoundedShippingScript(script, "core shipping proof");
+  for (const expected of [
+    "starting bounded core bottle shipping proof",
+    "brew tap kandelo-dev/tap-core https://github.com/Kandelo-dev/homebrew-tap-core.git",
+    `checkout --detach ${revisions.coreRevision}`,
+    "brew install --no-ask --force-bottle kandelo-dev/tap-core/bzip2",
+    "assert_bzip2_roundtrip \"$bzip2_prefix\"",
+    "first-party Bzip2 bottle installation is ready to ship",
+    HOMEBREW_GUEST_CORE_SHIPPING_PROOF_MARKER,
+  ]) {
+    assert.ok(script.includes(expected), `missing core contract: ${expected}`);
+  }
+  for (const forbidden of [
+    "brew tap brandonpayton/kandelo-canary https://github.com/brandonpayton/homebrew-kandelo-canary.git",
+    "brandonpayton/kandelo-canary/m4",
+    "brew trust --formula kandelo-dev/tap-core/dash",
+    HOMEBREW_GUEST_CANARY_SHIPPING_PROOF_MARKER,
+  ]) {
+    assert.ok(!script.includes(forbidden), `core scope includes: ${forbidden}`);
+  }
+  assert.equal(
+    script.match(/brew install --no-ask --force-bottle/g)?.length,
+    1,
+  );
+  assert.equal(
+    script.match(/brew uninstall --ignore-dependencies/g)?.length,
+    1,
+  );
+  assert.equal(script.match(/^assert_poured /gm)?.length, 1);
+  assert.equal(script.match(/^assert_runtime_dependency /gm)?.length ?? 0, 0);
+});
+
+test("canary shipping scope proves M4's exact first-party dependency", () => {
+  const script = createHomebrewGuestShippingProofScript(revisions, "canary");
+  assertBoundedShippingScript(script, "canary shipping proof");
+  for (const expected of [
+    "starting bounded independent-canary bottle shipping proof",
+    "brew tap kandelo-dev/tap-core https://github.com/Kandelo-dev/homebrew-tap-core.git",
+    `checkout --detach ${revisions.coreRevision}`,
+    "brew tap brandonpayton/kandelo-canary https://github.com/brandonpayton/homebrew-kandelo-canary.git",
+    `checkout --detach ${revisions.canaryRevision}`,
+    "brew trust --formula kandelo-dev/tap-core/dash",
+    "brew install --no-ask --force-bottle brandonpayton/kandelo-canary/m4",
+    'assert_runtime_dependency "$m4_prefix" kandelo-dev/tap-core/dash',
+    'assert_precomposed_bottle "$dash_prefix"',
+    "assert_m4_execution \"$m4_prefix\" cross-tap-ok",
+    "assert_formula_trust \"$core_dependency_trust\" kandelo-dev/tap-core kandelo-dev/tap-core/bzip2 absent",
+    "assert_formula_trust \"$core_dependency_trust\" kandelo-dev/tap-core kandelo-dev/tap-core/dash present",
+    "independent-canary M4 bottle installation is ready to ship",
+    HOMEBREW_GUEST_CANARY_SHIPPING_PROOF_MARKER,
+  ]) {
+    assert.ok(script.includes(expected), `missing canary contract: ${expected}`);
+  }
+  for (const forbidden of [
+    "brew install --no-ask --force-bottle kandelo-dev/tap-core/bzip2",
+    "assert_bzip2_roundtrip \"$bzip2_prefix\"",
+    HOMEBREW_GUEST_CORE_SHIPPING_PROOF_MARKER,
+  ]) {
+    assert.ok(!script.includes(forbidden), `canary scope includes: ${forbidden}`);
+  }
+  assert.equal(
+    script.match(/brew install --no-ask --force-bottle/g)?.length,
+    1,
+  );
+  assert.equal(
+    script.match(/brew uninstall --ignore-dependencies/g)?.length,
+    1,
+  );
+  assert.equal(script.match(/^assert_poured /gm)?.length, 1);
+  assert.equal(script.match(/^assert_runtime_dependency /gm)?.length, 1);
+});
+
+function assertBoundedShippingScript(script: string, label: string): void {
+  assertShellSyntax(script);
+  assertPairedNoApiEnvironment(script, label);
+  assertRequiresTapTrust(script, label);
+  for (const forbidden of [
+    "brew reinstall",
+    "brew upgrade",
+    "brew untap",
+    "kandelo-guest-lifecycle-state",
+    HOMEBREW_GUEST_LIFECYCLE_PHASE_ONE_MARKER,
+    HOMEBREW_GUEST_LIFECYCLE_PHASE_TWO_MARKER,
+    "File.binwrite",
+    "sed -i",
+  ]) {
+    assert.ok(
+      !script.includes(forbidden),
+      `shipping proof includes non-shipping work: ${forbidden}`,
+    );
+  }
+}
 
 test("phase one uses only stock Homebrew against clean canonical tap checkouts", () => {
   const script = createHomebrewGuestLifecyclePhaseOneScript(revisions);

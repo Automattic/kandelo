@@ -857,6 +857,7 @@ for node_binding in \
   '--homebrew-bootstrap-env "${{ steps.bottle_candidate.outputs.bootstrap_env }}"' \
   '--transport-mode closed' \
   '--bottle-mirror-plan "${{ steps.mirror.outputs.plan }}"' \
+  '--proof-mode comprehensive' \
   '--core-revision "${{ steps.live-inputs.outputs.tf }}"' \
   '--canary-revision "${{ steps.live-inputs.outputs.c }}"'
 do
