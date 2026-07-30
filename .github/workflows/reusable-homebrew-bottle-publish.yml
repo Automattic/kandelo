@@ -1179,10 +1179,12 @@ jobs:
           roots="$stem-roots.txt"
           api_cache="$stem-cache"
           state="$stem-state"
-          # WHY: the dev-shell hook writes informational text to its own
-          # stdout. Redirect inside that shell so only the Ruby command can
-          # write the machine-readable plan.
-          bash scripts/dev-shell.sh bash -c '
+          # WHY: dev-shell intentionally ignores ambient run-scoped state so
+          # it cannot perturb package cache keys. Carry the immutable tap map
+          # explicitly while keeping its startup text out of the JSON plan.
+          bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
+            bash -c '
             set -euo pipefail
             ruby scripts/homebrew-formula-runtime-closure.rb \
               "$1" "$2" "$3" --host-dependencies-json >"$4"
@@ -2977,8 +2979,12 @@ jobs:
           roots="$stem-roots.txt"
           api_cache="$stem-cache"
           state="$stem-state"
-          # WHY: keep dev-shell startup output outside the JSON plan.
-          bash scripts/dev-shell.sh bash -c '
+          # WHY: dev-shell intentionally ignores ambient run-scoped state so
+          # it cannot perturb package cache keys. Carry the immutable tap map
+          # explicitly while keeping its startup text out of the JSON plan.
+          bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
+            bash -c '
             set -euo pipefail
             ruby scripts/homebrew-formula-runtime-closure.rb \
               "$1" "$2" "$3" --host-dependencies-json >"$4"

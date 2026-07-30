@@ -44,10 +44,10 @@ NATIVE_CA_PROOF_RUN_SHA256 =
 NATIVE_CA_VALIDATION_RUN_SHA256 =
   "03a44f5ed33df47783fe971de60d0b2fe08b73ef642af12298a863642bd598aa"
 PUBLISHER_PLAN_DIGEST = "59a72fdf1dbe3b115208e760d9b28869dcf98e293b4a8b555d4a8b557c58d1c4"
-PUBLISHER_BUILD_DIGEST = "9c46f62b918968696fcab222dd2735e85af894e13beacdd6d27a3a0d6b3ef7aa"
+PUBLISHER_BUILD_DIGEST = "ee65f4dcaf4aeed75847b5cce36d345508c11855b8816fc8412f5e8430f58fcf"
 PUBLISHER_UPLOAD_DIGEST = "a44f8b7b2eb1d4b9436496cc9a099b80fb70be52143820e77fb7196e807d302f"
 PUBLISHER_INDEX_DIGEST = "7b05a7e4b076628ab999f9edb2e39a6641c4bb9a2563afcf19be15a119566bbe"
-PUBLISHER_VERIFY_DIGEST = "c90d12751436fe0507f7d36c849b79408c50612d2a7670ba6a3d88c4215d8e4a"
+PUBLISHER_VERIFY_DIGEST = "c7c42b46bcbdd3b5b69a6027ed08e7d45e3d8776eace5c1258ef4d612ec7990a"
 PUBLISHER_FINALIZE_DIGEST = "b17e7bf5d0a5ef512e49f74c224a94958642dfdd80a27439f2a0335816a0886b"
 PUBLISHER_VFS_RELEASE_DIGEST = "2db9ec075edf382e326066d5f49a32947f5a584fce26a966fb9fff23bbbe3c26"
 MAINTENANCE_VALIDATE_DIGEST = "30ebccd5d44e004e37f168e81284d7ceb18accfa067c05248c1cc19398a7515f"
@@ -2661,7 +2661,9 @@ def check_publisher(workflow)
       ". scripts/homebrew-tap-identity.sh",
       'homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT"',
       'stem="$RUNNER_TEMP/' + stem + '-${FORMULA}-${ARCH}"',
-      "bash scripts/dev-shell.sh bash -c '",
+      "bash scripts/dev-shell.sh env \\",
+      'KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \\',
+      "bash -c '",
       "scripts/homebrew-formula-runtime-closure.rb",
       '"$1" "$2" "$3" --host-dependencies-json >"$4"',
       "kandelo-native-plan",
@@ -2713,7 +2715,7 @@ def check_publisher(workflow)
         "dev shell globally preserves Homebrew resolved-tap state and invalidates package caches")
   resolved_taps_forwarding =
     'KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \\'
-  check(values_for_key(workflow, "run").join("\n").scan(resolved_taps_forwarding).length == 14,
+  check(values_for_key(workflow, "run").join("\n").scan(resolved_taps_forwarding).length == 16,
         "publisher does not explicitly carry immutable resolved taps across every consuming dev-shell boundary")
   native_api_variables = %w[
     KANDELO_HOMEBREW_EARLY_HOST_PLAN
@@ -7414,6 +7416,15 @@ def self_test(publisher, native_compatibility, maintenance,
       step["run"] = step.fetch("run").sub(
         '"$1" "$2" "$3" --host-dependencies-json >"$4"',
         '"$1" "$2" "$3" --host-dependencies-json >"$plan"'
+      )
+    },
+    "native API resolved tap map forwarding bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "build-and-test", "Freeze signed native Homebrew API"
+      )
+      step["run"] = step.fetch("run").sub(
+        'KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \\',
+        "KANDELO_HOMEBREW_RESOLVED_TAPS_FILE= \\"
       )
     },
     "native API compatibility policy substitution" => lambda { |w|
