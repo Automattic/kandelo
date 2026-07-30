@@ -857,6 +857,7 @@ for node_binding in \
   '--homebrew-bootstrap-env "${{ steps.bottle_candidate.outputs.bootstrap_env }}"' \
   '--transport-mode closed' \
   '--bottle-mirror-plan "${{ steps.mirror.outputs.plan }}"' \
+  '--proof-mode comprehensive' \
   '--core-revision "${{ steps.live-inputs.outputs.tf }}"' \
   '--canary-revision "${{ steps.live-inputs.outputs.c }}"'
 do
@@ -1034,6 +1035,12 @@ grep -Fq 'bash ../../scripts/dev-shell.sh env \' <<<"$browser_build_block" &&
   grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
     <<<"$browser_build_block" ||
   fail "sealed Vite build must retain the approved cache root inside dev-shell"
+grep -Fq 'bash ../../scripts/verify-browser-shell-vfs-asset.sh \' \
+  <<<"$browser_build_block" &&
+  grep -Fq 'dist "${{ steps.image.outputs.path }}"' \
+    <<<"$browser_build_block" &&
+  ! grep -Fq 'dist/shell.vfs.zst' <<<"$browser_build_block" ||
+  fail "sealed Vite build must verify its exact hashed shell asset"
 
 for package_workflow in \
   "$STAGING_WORKFLOW" \

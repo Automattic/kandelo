@@ -3,6 +3,8 @@ import test from "node:test";
 
 import type { LazyDownloadEvent } from "../../host/src/vfs/memory-fs";
 import {
+  HOMEBREW_GUEST_CANARY_SHIPPING_PROOF_MARKER,
+  HOMEBREW_GUEST_CORE_SHIPPING_PROOF_MARKER,
   HOMEBREW_GUEST_LIFECYCLE_PHASE_ONE_MARKER,
   HOMEBREW_GUEST_LIFECYCLE_PHASE_TWO_MARKER,
 } from "./homebrew_guest_lifecycle_contract";
@@ -12,6 +14,7 @@ import {
   type HomebrewGuestLifecycleMachine,
   runHomebrewGuestLifecycle,
   runHomebrewGuestLifecycleProcess,
+  runHomebrewGuestShippingProof,
 } from "./homebrew_guest_lifecycle_runner";
 import type {
   HomebrewGuestLifecycleRuntimeInputs,
@@ -96,6 +99,82 @@ test("reports bounded live machine output when the total deadline wins", async (
       }),
     /image-owned shell preflight exceeded.*git clone homebrew\/core.*index-pack/,
   );
+});
+
+test("runs the bounded shipping contract without export or reboot work", async () => {
+  const bootstrapUrl = "https://example.test/homebrew-bootstrap.zip";
+  const runtimeSupportUrl = "https://example.test/ruby-tree.bin";
+  for (const scope of ["core", "canary"] as const) {
+    const events: LazyDownloadEvent[] = [];
+    const scripts: Array<{ marker: string; script: string }> = [];
+    let started = false;
+    let destroyed = false;
+    const marker = scope === "core"
+      ? HOMEBREW_GUEST_CORE_SHIPPING_PROOF_MARKER
+      : HOMEBREW_GUEST_CANARY_SHIPPING_PROOF_MARKER;
+
+    const result = await runHomebrewGuestShippingProof({
+      runtime: {
+        imageBytes: new Uint8Array([1]),
+        shellPath: "/bin/bash",
+        shellArgv0: "bash",
+        lazyUrlBase: "https://example.test/",
+        bootstrapTransportUrl: bootstrapUrl,
+        bootstrapBytes: 7,
+        runtimeSupportTrees: [{ url: runtimeSupportUrl, bytes: 11 }],
+      },
+      revisions: {
+        coreRevision: "1".repeat(40),
+        canaryRevision: "2".repeat(40),
+      },
+      scope,
+      deadlineMs: Date.now() + 1_000,
+      createMachine: () => ({
+        lazyDownloads: events,
+        diagnostics: [],
+        start: async () => {
+          started = true;
+        },
+        readFile: async () => {
+          throw new Error("shipping proof must not read reboot state");
+        },
+        runShellScript: async ({ marker: actualMarker, script }) => {
+          scripts.push({ marker: actualMarker, script });
+          if (actualMarker === marker) {
+            events.push(
+              event(bootstrapUrl, "started", 0),
+              event(bootstrapUrl, "complete", 7),
+              event(runtimeSupportUrl, "started", 0),
+              event(runtimeSupportUrl, "complete", 11),
+            );
+          }
+        },
+        exportRootfsImage: async () => {
+          throw new Error("shipping proof must not export the rootfs");
+        },
+        destroy: async () => {
+          destroyed = true;
+        },
+      }),
+    });
+
+    assert.equal(result.scope, scope);
+    assert.equal(started, true);
+    assert.equal(destroyed, true);
+    assert.deepEqual([...result.completedUrls], [
+      bootstrapUrl,
+      runtimeSupportUrl,
+    ]);
+    assert.deepEqual(result.lazyDownloads, events);
+    assert.deepEqual(
+      scripts.map(({ marker }) => marker),
+      ["homebrew-shipping-proof-offline-ok", marker],
+    );
+    assert.match(scripts[1]!.script, /brew install --no-ask --force-bottle/);
+    assert.doesNotMatch(scripts[1]!.script, /brew reinstall/);
+    assert.doesNotMatch(scripts[1]!.script, /brew upgrade/);
+    assert.doesNotMatch(scripts[1]!.script, /brew untap/);
+  }
 });
 
 test("runs one shared lifecycle contract across export and reboot", async () => {

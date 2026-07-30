@@ -545,7 +545,7 @@ jobs:
           if-no-files-found: error
 
   public-node-proof:
-    name: Prove public guest lifecycle in Node
+    name: Prove public bottle installation in Node
     needs: [prepare, publish]
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -687,7 +687,7 @@ jobs:
             echo "bootstrap-env=$lifecycle/homebrew-brew.env"
           } >>"$GITHUB_OUTPUT"
 
-      - name: Prove full public guest lifecycle in Node
+      - name: Prove bounded public bottle installs in fresh Node processes
         shell: bash
         env:
           IMAGE: ${{ steps.public.outputs.image }}
@@ -747,17 +747,35 @@ jobs:
             sample_resources
           }
           trap stop_telemetry EXIT
-          bash scripts/dev-shell.sh npx tsx \
-            homebrew/test/homebrew_guest_lifecycle_node.ts \
-              --image "$IMAGE" \
-              --homebrew-bootstrap-spec \
-                homebrew/main-shell-brew-package-tree.json \
-              --homebrew-bootstrap-archive "$BOOTSTRAP" \
-              --homebrew-bootstrap-env "$BOOTSTRAP_ENV" \
-              --transport-mode public \
-              --core-revision "$TAP_CATALOG_REF" \
-              --canary-revision "$CANARY_REF" \
-              --timeout-ms 900000
+          # WHY: the release claim is that stock Brew can install and execute
+          # first- and third-party bottles. Reinstall, cleanup, export, and
+          # reboot remain in the separate comprehensive lifecycle; adding
+          # them here can exhaust a hosted Node runner after the release
+          # capability has already been proved.
+          run_shipping_scope() {
+            local scope="$1"
+            bash scripts/dev-shell.sh npx tsx \
+              homebrew/test/homebrew_guest_lifecycle_node.ts \
+                --image "$IMAGE" \
+                --homebrew-bootstrap-spec \
+                  homebrew/main-shell-brew-package-tree.json \
+                --homebrew-bootstrap-archive "$BOOTSTRAP" \
+                --homebrew-bootstrap-env "$BOOTSTRAP_ENV" \
+                --transport-mode public \
+                --proof-mode "$scope" \
+                --core-revision "$TAP_CATALOG_REF" \
+                --canary-revision "$CANARY_REF" \
+                --timeout-ms 900000
+          }
+          # WHY: process exit is the deterministic point at which Node/V8 no
+          # longer owns a scope's collectible Wasm memories. Both scopes start
+          # from the same original image instead of carrying mutable guest or
+          # in-memory state across that boundary. The resource samples record
+          # that boundary for diagnosis; they do not decide proof success.
+          run_shipping_scope shipping-core
+          sample_resources
+          run_shipping_scope shipping-canary
+          sample_resources
           trap - EXIT
           stop_telemetry
 
@@ -947,8 +965,8 @@ jobs:
             npm run build
           test -f dist/index.html
           test -f dist/pages/homebrew-vfs-test/index.html
-          test -f dist/shell.vfs.zst
-          cmp dist/shell.vfs.zst "${{ steps.public.outputs.image }}"
+          bash ../../scripts/verify-browser-shell-vfs-asset.sh \
+            dist "${{ steps.public.outputs.image }}"
 
       - name: Create exact all-public Chromium lifecycle fixture
         id: public-fixture

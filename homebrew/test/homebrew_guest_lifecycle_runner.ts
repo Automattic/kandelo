@@ -4,9 +4,13 @@ import { KANDELO_SHELL_CONFIG_PATH } from
 import {
   createHomebrewGuestLifecyclePhaseOneScript,
   createHomebrewGuestLifecyclePhaseTwoScript,
+  createHomebrewGuestShippingProofScript,
+  HOMEBREW_GUEST_CANARY_SHIPPING_PROOF_MARKER,
+  HOMEBREW_GUEST_CORE_SHIPPING_PROOF_MARKER,
   HOMEBREW_GUEST_LIFECYCLE_PHASE_ONE_MARKER,
   HOMEBREW_GUEST_LIFECYCLE_PHASE_TWO_MARKER,
   type HomebrewGuestLifecycleRevisions,
+  type HomebrewGuestShippingProofScope,
 } from "./homebrew_guest_lifecycle_contract";
 import {
   assertNoRepeatedLazyDownloads,
@@ -65,6 +69,12 @@ export interface HomebrewGuestLifecycleRunResult {
   phaseTwoLazyDownloads: readonly LazyDownloadEvent[];
 }
 
+export interface HomebrewGuestShippingProofRunResult {
+  scope: HomebrewGuestShippingProofScope;
+  completedUrls: ReadonlySet<string>;
+  lazyDownloads: readonly LazyDownloadEvent[];
+}
+
 export async function runHomebrewGuestLifecycleProcess(options: {
   label: string;
   timeoutMs: number;
@@ -118,6 +128,101 @@ export function formatHomebrewGuestLifecycleFailureContext(options: {
     `diagnostics tail=${
       boundedSerializedTail(options.diagnostics.slice(-20), 2 * 1024)
     }`;
+}
+
+/**
+ * Prove the release-critical install path without running maintenance or
+ * reboot operations that do not change whether users can install software.
+ */
+export async function runHomebrewGuestShippingProof(options: {
+  runtime: HomebrewGuestLifecycleRuntimeInputs;
+  revisions: HomebrewGuestLifecycleRevisions;
+  scope: HomebrewGuestShippingProofScope;
+  deadlineMs: number;
+  createMachine: (
+    runtime: HomebrewGuestLifecycleRuntimeInputs,
+  ) => HomebrewGuestLifecycleMachine;
+}): Promise<HomebrewGuestShippingProofRunResult> {
+  assertUsableDeadline(options.deadlineMs);
+  const marker = options.scope === "core"
+    ? HOMEBREW_GUEST_CORE_SHIPPING_PROOF_MARKER
+    : HOMEBREW_GUEST_CANARY_SHIPPING_PROOF_MARKER;
+  const label = options.scope === "core"
+    ? "core"
+    : "independent-canary";
+  const machine = options.createMachine(options.runtime);
+  let lazyDownloads: readonly LazyDownloadEvent[] | undefined;
+  let completedUrls: ReadonlySet<string> | undefined;
+  let succeeded = false;
+  try {
+    await beforeDeadline(
+      options.deadlineMs,
+      "Homebrew shipping proof machine start",
+      () => machine.start(),
+    );
+    const preflightStart = machine.lazyDownloads.length;
+    await runScriptBeforeDeadline(
+      machine,
+      options.deadlineMs,
+      {
+        shellPath: options.runtime.shellPath,
+        shellArgv0: options.runtime.shellArgv0,
+        script: createImageOwnedShellPreflight(
+          options.runtime.shellPath,
+          "homebrew-shipping-proof-offline-ok",
+        ),
+        marker: "homebrew-shipping-proof-offline-ok",
+        label: "Homebrew shipping proof image-owned shell preflight",
+      },
+    );
+    assertNoLazyDownload(
+      machine.lazyDownloads.slice(preflightStart),
+      "shipping-proof image-owned shell preflight",
+    );
+    await runScriptBeforeDeadline(
+      machine,
+      options.deadlineMs,
+      {
+        shellPath: options.runtime.shellPath,
+        shellArgv0: options.runtime.shellArgv0,
+        script: createHomebrewGuestShippingProofScript(
+          options.revisions,
+          options.scope,
+        ),
+        marker,
+        label: `bounded stock Homebrew ${label} shipping proof`,
+      },
+    );
+    assertSingleCompletedLazyDownload(
+      machine.lazyDownloads,
+      options.runtime.bootstrapTransportUrl,
+      options.runtime.bootstrapBytes,
+      "shipping-proof Homebrew bootstrap",
+    );
+    for (const tree of options.runtime.runtimeSupportTrees ?? []) {
+      assertSingleCompletedLazyDownload(
+        machine.lazyDownloads,
+        tree.url,
+        tree.bytes,
+        "shipping-proof atomic Homebrew runtime support",
+      );
+    }
+    lazyDownloads = [...machine.lazyDownloads];
+    completedUrls = completedLazyDownloadUrls(lazyDownloads);
+    succeeded = true;
+  } finally {
+    const destroy = destroyBeforeDeadline(machine, options.deadlineMs);
+    if (succeeded) await destroy;
+    else await destroy.catch(() => {});
+    assertNoUnexpectedHostDiagnostics(
+      machine.diagnostics,
+      `bounded stock Homebrew ${label} shipping proof host`,
+    );
+  }
+  if (lazyDownloads === undefined || completedUrls === undefined) {
+    throw new Error("bounded Homebrew guest shipping proof did not complete");
+  }
+  return { scope: options.scope, completedUrls, lazyDownloads };
 }
 
 export async function runHomebrewGuestLifecycle(options: {

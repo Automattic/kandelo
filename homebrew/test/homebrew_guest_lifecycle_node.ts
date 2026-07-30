@@ -23,11 +23,15 @@ import {
   assertNoUnexpectedHostDiagnostics,
 } from "./homebrew_guest_lifecycle_runtime_contract";
 import {
+  BoundedHomebrewGuestProgress,
+} from "./homebrew_guest_lifecycle_progress";
+import {
   formatHomebrewGuestLifecycleFailureContext,
   HOMEBREW_GUEST_LIFECYCLE_ENV,
   type HomebrewGuestLifecycleMachine,
   runHomebrewGuestLifecycle,
   runHomebrewGuestLifecycleProcess,
+  runHomebrewGuestShippingProof,
 } from "./homebrew_guest_lifecycle_runner";
 import {
   HOMEBREW_GUEST_LIFECYCLE_HOST_LIMITS,
@@ -44,6 +48,7 @@ interface Options extends HomebrewGuestLifecycleRevisions {
   bootstrapEnvironmentPath: string;
   transportMode: "closed" | "public";
   bottleMirrorPlanPath?: string;
+  proofMode: "shipping-core" | "shipping-canary" | "comprehensive";
   timeoutMs: number;
   traceProcessesFromPid?: number;
 }
@@ -71,19 +76,42 @@ async function main(): Promise<void> {
     canaryRevision: options.canaryRevision,
   };
 
-  await runHomebrewGuestLifecycle({
-    runtime,
-    revisions,
-    deadlineMs,
-    createMachine: (machineRuntime) =>
-      createNodeLifecycleMachine(machineRuntime, options),
-  });
-
-  process.stdout.write(
-    "homebrew_guest_lifecycle_node: stock install, reinstall, cross-tap " +
-      "dependency, durable reboot, pinned upgrade state, uninstall, and " +
-      "untap proof passed\n",
-  );
+  if (options.proofMode !== "comprehensive") {
+    const scope = options.proofMode === "shipping-core" ? "core" : "canary";
+    const label = scope === "core" ? "core" : "independent-canary";
+    process.stdout.write(
+      `homebrew_guest_lifecycle_node: starting bounded ${label} ` +
+        "shipping proof from the original exact image\n",
+    );
+    await runHomebrewGuestShippingProof({
+      runtime,
+      revisions,
+      scope,
+      deadlineMs,
+      createMachine: (machineRuntime) =>
+        createNodeLifecycleMachine(machineRuntime, options),
+    });
+    process.stdout.write(
+      `homebrew_guest_lifecycle_node: bounded ${label} bottle install ` +
+        "passed\n",
+    );
+  } else {
+    process.stdout.write(
+      "homebrew_guest_lifecycle_node: starting comprehensive lifecycle\n",
+    );
+    await runHomebrewGuestLifecycle({
+      runtime,
+      revisions,
+      deadlineMs,
+      createMachine: (machineRuntime) =>
+        createNodeLifecycleMachine(machineRuntime, options),
+    });
+    process.stdout.write(
+      "homebrew_guest_lifecycle_node: stock install, reinstall, cross-tap " +
+        "dependency, durable reboot, pinned upgrade state, uninstall, and " +
+        "untap proof passed\n",
+    );
+  }
 }
 
 async function loadRootfsRuntimeInputs(
@@ -162,9 +190,16 @@ function createCapturedHost(
   let outputBytes = 0;
   const stdoutDecoder = new TextDecoder();
   const stderrDecoder = new TextDecoder();
+  const progress = new BoundedHomebrewGuestProgress(
+    (text) => process.stdout.write(text),
+  );
   const tracedProcesses = new Set<number>();
   let host: NodeKernelHost;
   const capture = (bytes: Uint8Array, stream: "stdout" | "stderr") => {
+    // WHY: keep package output bounded for failure context, but forward the
+    // generated progress protocol immediately. A hosted-runner shutdown cannot
+    // execute finally blocks or upload the buffered output.
+    if (stream === "stdout") progress.push(bytes);
     outputBytes += bytes.byteLength;
     if (outputBytes > MAX_CAPTURED_OUTPUT_BYTES) {
       output.limitExceeded = true;
@@ -359,6 +394,7 @@ function parseOptions(args: string[]): Options {
     "--homebrew-bootstrap-env",
     "--transport-mode",
     "--bottle-mirror-plan",
+    "--proof-mode",
     "--core-revision",
     "--canary-revision",
     "--timeout-ms",
@@ -383,6 +419,7 @@ function parseOptions(args: string[]): Options {
   const bootstrapEnvironment = values.get("--homebrew-bootstrap-env");
   const transportMode = values.get("--transport-mode");
   const bottleMirrorPlan = values.get("--bottle-mirror-plan");
+  const proofMode = values.get("--proof-mode") ?? "comprehensive";
   const coreRevision = values.get("--core-revision");
   const canaryRevision = values.get("--canary-revision");
   const timeoutMs = Number(values.get("--timeout-ms") ?? "900000");
@@ -396,6 +433,11 @@ function parseOptions(args: string[]): Options {
     !bootstrapEnvironment ||
     !coreRevision ||
     !canaryRevision ||
+    (
+      proofMode !== "shipping-core" &&
+      proofMode !== "shipping-canary" &&
+      proofMode !== "comprehensive"
+    ) ||
     (transportMode !== "closed" && transportMode !== "public") ||
     (transportMode === "closed" && bottleMirrorPlan === undefined) ||
     (transportMode === "public" && bottleMirrorPlan !== undefined) ||
@@ -416,6 +458,7 @@ function parseOptions(args: string[]): Options {
     bootstrapArchivePath: resolve(bootstrapArchive),
     bootstrapEnvironmentPath: resolve(bootstrapEnvironment),
     transportMode,
+    proofMode,
     ...(bottleMirrorPlan === undefined
       ? {}
       : { bottleMirrorPlanPath: resolve(bottleMirrorPlan) }),
@@ -437,6 +480,7 @@ function usage(): never {
       "--homebrew-bootstrap-env <homebrew-brew.env> " +
       "--transport-mode <closed|public> " +
       "[--bottle-mirror-plan <kandelo-homebrew-bottle-mirror-plan.json>] " +
+      "[--proof-mode <shipping-core|shipping-canary|comprehensive>] " +
       "--core-revision <40-character SHA> " +
       "--canary-revision <40-character SHA> [--timeout-ms <N>] " +
       "[--trace-processes-from-pid <N>]",
