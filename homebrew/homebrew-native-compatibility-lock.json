@@ -1028,8 +1028,8 @@
     },
     "ca-certificates": {
       "internal": {
-        "bottle_checksum": "58cc540c61d6f1b86944d79b7d47476bb29cb1276997a4aad866bfd7574d680a",
-        "bottle_rebuild": 1,
+        "bottle_checksum": "0f62fd67d5a0cc3109ce51568cd7e1603049fb627a0626a0ad5a15d357a2c834",
+        "bottle_rebuild": 2,
         "bottle_tag": ":all",
         "caveats": "CA certificates have been bootstrapped from both the Mozilla CA store and the system CA store at\none of the following locations, depending on your distro:\n\n  /etc/ssl/certs/ca-certificates.crt                 # Debian/Ubuntu, Alpine Linux, Arch Linux\n  /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem  # RHEL/CentOS/Fedora, Amazon Linux\n  /etc/ssl/ca-bundle.pem                             # SUSE/openSUSE\n\n",
         "desc": "Mozilla CA certificate store",
@@ -1039,19 +1039,17 @@
         "post_install_steps": [
           {
             "args": [
-              "ruby",
-              "--",
-              "{{libexec}}/post-install.rb",
               "{{pkgshare}}/cacert.pem",
               "{{pkgetc}}/cert.pem"
             ],
             "command": {
-              "path": "{{HOMEBREW_BREW_FILE}}"
+              "base": "libexec",
+              "path": "post-install"
             },
             "type": "run"
           }
         ],
-        "ruby_source_checksum": "3578bdbd7b0cda695cb9b2fef4f6e1e26ee154f2ca26bebb36e6b8b64aa4c4dc",
+        "ruby_source_checksum": "37b918f3e75c74d798bfddd77c6f62be7d1927569f0502bc30c5a43e5f1b8e46",
         "stable_checksum": "3ff344e30b9b1ed2971044eabb438a08f2e2245ddb5f8ab1a3ad8b63ab4eaf91",
         "stable_url_args": [
           "https://curl.se/ca/cacert-2026-07-16.pem"
@@ -1059,8 +1057,8 @@
         "stable_version": "2026-07-16"
       },
       "public": {
-        "bottle_checksum": "58cc540c61d6f1b86944d79b7d47476bb29cb1276997a4aad866bfd7574d680a",
-        "bottle_rebuild": 1,
+        "bottle_checksum": "0f62fd67d5a0cc3109ce51568cd7e1603049fb627a0626a0ad5a15d357a2c834",
+        "bottle_rebuild": 2,
         "bottle_tag": ":all",
         "desc": "Mozilla CA certificate store",
         "homepage": "https://curl.se/docs/caextract.html",
@@ -1069,19 +1067,17 @@
         "post_install_steps": [
           {
             "args": [
-              "ruby",
-              "--",
-              "{{libexec}}/post-install.rb",
               "{{pkgshare}}/cacert.pem",
               "{{pkgetc}}/cert.pem"
             ],
             "command": {
-              "path": "{{HOMEBREW_BREW_FILE}}"
+              "base": "libexec",
+              "path": "post-install"
             },
             "type": "run"
           }
         ],
-        "ruby_source_checksum": "3578bdbd7b0cda695cb9b2fef4f6e1e26ee154f2ca26bebb36e6b8b64aa4c4dc",
+        "ruby_source_checksum": "37b918f3e75c74d798bfddd77c6f62be7d1927569f0502bc30c5a43e5f1b8e46",
         "stable_checksum": "3ff344e30b9b1ed2971044eabb438a08f2e2245ddb5f8ab1a3ad8b63ab4eaf91",
         "stable_url_args": [
           "https://curl.se/ca/cacert-2026-07-16.pem"
@@ -12733,8 +12729,8 @@
           "ruby@4.0"
         ],
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "995907c4734f47bfc56336ddcd77927f6ee9a6e960291b06e4e97fdc00c5586b",
-        "bottle_rebuild": 1,
+        "bottle_checksum": "bd1d4780456440fddc41d84202061f435751038599b7151189f273affbe4d43e",
+        "bottle_rebuild": 2,
         "caveats": "By default, binaries installed by gem will be placed into:\n  $HOMEBREW_PREFIX/lib/ruby/gems/4.0.0/bin\n\nYou may want to add this to your PATH.\n",
         "desc": "Powerful, clean, object-oriented scripting language",
         "executables": [
@@ -12788,6 +12784,24 @@
         "name": "ruby",
         "post_install_steps": [
           {
+            "paths": [
+              {
+                "base": "homebrew_prefix",
+                "path": "bin/bundle"
+              },
+              {
+                "base": "homebrew_prefix",
+                "path": "bin/bundler"
+              },
+              {
+                "base": "homebrew_prefix",
+                "path": "lib/ruby/gems/{{version.major_minor}}.0/gems/bundler-*"
+              }
+            ],
+            "recursive": true,
+            "type": "remove"
+          },
+          {
             "args": [
               "ruby",
               "--",
@@ -12796,10 +12810,20 @@
             "command": {
               "path": "{{HOMEBREW_BREW_FILE}}"
             },
+            "env": {
+              "HOMEBREW_DEVELOPER": "1"
+            },
+            "guards": [
+              {
+                "condition": "on",
+                "id": "1",
+                "value": "macos"
+              }
+            ],
             "type": "run"
           }
         ],
-        "ruby_source_checksum": "3de1e2ed6391702cdff5eb01b996abb5c4f8370b3361cac8a30cd39a7256a32d",
+        "ruby_source_checksum": "249eaaadf23299ac44693281898a0cda438d16b91e62287f2db9485716edbd1b",
         "stable_checksum": "837d299e8f7ddf2be31a229a7a7e019d354979825117989acb3b32b1a9be262a",
         "stable_dependencies": [
           "libyaml",
@@ -12837,8 +12861,8 @@
           "ruby@4.0"
         ],
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "995907c4734f47bfc56336ddcd77927f6ee9a6e960291b06e4e97fdc00c5586b",
-        "bottle_rebuild": 1,
+        "bottle_checksum": "bd1d4780456440fddc41d84202061f435751038599b7151189f273affbe4d43e",
+        "bottle_rebuild": 2,
         "desc": "Powerful, clean, object-oriented scripting language",
         "executables": [
           "bundle",
@@ -12891,6 +12915,24 @@
         "name": "ruby",
         "post_install_steps": [
           {
+            "paths": [
+              {
+                "base": "homebrew_prefix",
+                "path": "bin/bundle"
+              },
+              {
+                "base": "homebrew_prefix",
+                "path": "bin/bundler"
+              },
+              {
+                "base": "homebrew_prefix",
+                "path": "lib/ruby/gems/{{version.major_minor}}.0/gems/bundler-*"
+              }
+            ],
+            "recursive": true,
+            "type": "remove"
+          },
+          {
             "args": [
               "ruby",
               "--",
@@ -12899,10 +12941,20 @@
             "command": {
               "path": "{{HOMEBREW_BREW_FILE}}"
             },
+            "env": {
+              "HOMEBREW_DEVELOPER": "1"
+            },
+            "guards": [
+              {
+                "condition": "on",
+                "id": "1",
+                "value": "macos"
+              }
+            ],
             "type": "run"
           }
         ],
-        "ruby_source_checksum": "3de1e2ed6391702cdff5eb01b996abb5c4f8370b3361cac8a30cd39a7256a32d",
+        "ruby_source_checksum": "249eaaadf23299ac44693281898a0cda438d16b91e62287f2db9485716edbd1b",
         "stable_checksum": "837d299e8f7ddf2be31a229a7a7e019d354979825117989acb3b32b1a9be262a",
         "stable_dependencies": [
           "libyaml",
