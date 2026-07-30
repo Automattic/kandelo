@@ -15,11 +15,12 @@ BOTTLE_ROOT_URL=""
 OUT_ENV=""
 OUT_BOTTLE_JSON=""
 ALLOW_DRY_RUN=0
+PREFIX_CAMPAIGN_LAYOUT_SHA256=""
 FORBIDDEN_ROOTS=()
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-validate-upload-receipt.sh --receipt <json> --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--out-env <path>] [--out-bottle-json <path>] [--allow-dry-run]
+usage: scripts/homebrew-validate-upload-receipt.sh --receipt <json> --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--out-env <path>] [--out-bottle-json <path>] [--allow-dry-run] [--prefix-campaign-layout-sha256 <sha256>]
 
 Revalidates the build handoff, then checks the strict upload receipt against
 the plan identity and the handoff's recomputed bottle digest and byte count.
@@ -41,6 +42,14 @@ while [ "$#" -gt 0 ]; do
     --out-env) OUT_ENV="${2:-}"; shift 2 ;;
     --out-bottle-json) OUT_BOTTLE_JSON="${2:-}"; shift 2 ;;
     --allow-dry-run) ALLOW_DRY_RUN=1; shift ;;
+    --prefix-campaign-layout-sha256)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || {
+        echo "homebrew-validate-upload-receipt.sh: --prefix-campaign-layout-sha256 requires a value" >&2
+        exit 2
+      }
+      PREFIX_CAMPAIGN_LAYOUT_SHA256="$2"
+      shift 2
+      ;;
     --forbidden-root)
       [ "$#" -ge 2 ] && [ -n "$2" ] || {
         echo "homebrew-validate-upload-receipt.sh: --forbidden-root requires a value" >&2
@@ -109,6 +118,11 @@ build_validation_args=(
   --bottle-root-url "$BOTTLE_ROOT_URL"
   --out-env "$build_env"
 )
+if [ -n "$PREFIX_CAMPAIGN_LAYOUT_SHA256" ]; then
+  build_validation_args+=(
+    --prefix-campaign-layout-sha256 "$PREFIX_CAMPAIGN_LAYOUT_SHA256"
+  )
+fi
 for forbidden_root in "${FORBIDDEN_ROOTS[@]}"; do
   build_validation_args+=(--forbidden-root "$forbidden_root")
 done

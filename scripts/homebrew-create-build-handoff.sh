@@ -18,11 +18,12 @@ BOTTLE=""
 BOTTLE_JSON=""
 DEPENDENCY_PROVENANCE=""
 OUT_DIR=""
+PREFIX_CAMPAIGN_LAYOUT_SHA256=""
 FORBIDDEN_ROOTS=()
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-create-build-handoff.sh --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --bottle <path> --bottle-json <path> --dependency-provenance <path> --out <dir> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...]
+usage: scripts/homebrew-create-build-handoff.sh --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --bottle <path> --bottle-json <path> --dependency-provenance <path> --out <dir> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--prefix-campaign-layout-sha256 <sha256>]
 
 Creates a handoff containing only manifest.json, bottle.json, one bottle
 archive, and bounded dependency-pour provenance. Formula sources, environment
@@ -44,6 +45,14 @@ while [ "$#" -gt 0 ]; do
     --bottle-json) BOTTLE_JSON="${2:-}"; shift 2 ;;
     --dependency-provenance) DEPENDENCY_PROVENANCE="${2:-}"; shift 2 ;;
     --out) OUT_DIR="${2:-}"; shift 2 ;;
+    --prefix-campaign-layout-sha256)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || {
+        echo "homebrew-create-build-handoff.sh: --prefix-campaign-layout-sha256 requires a value" >&2
+        exit 2
+      }
+      PREFIX_CAMPAIGN_LAYOUT_SHA256="$2"
+      shift 2
+      ;;
     --forbidden-root)
       [ "$#" -ge 2 ] && [ -n "$2" ] || {
         echo "homebrew-create-build-handoff.sh: --forbidden-root requires a value" >&2
@@ -56,6 +65,10 @@ while [ "$#" -gt 0 ]; do
     *) echo "homebrew-create-build-handoff.sh: unknown flag $1" >&2; usage; exit 2 ;;
   esac
 done
+
+# shellcheck source=/dev/null
+. "$SCRIPT_ROOT/homebrew-guest-layout.sh"
+homebrew_select_guest_layout "$PREFIX_CAMPAIGN_LAYOUT_SHA256"
 
 if [ "${#FORBIDDEN_ROOTS[@]}" -eq 0 ]; then
   echo "homebrew-create-build-handoff.sh: at least one --forbidden-root is required" >&2
@@ -151,7 +164,8 @@ require_max_size "bottle JSON" "$BOTTLE_JSON" "$HOMEBREW_MAX_BOTTLE_JSON_BYTES"
 require_max_size "dependency provenance" "$DEPENDENCY_PROVENANCE" "$HOMEBREW_MAX_DEPENDENCY_PROVENANCE_BYTES"
 require_max_size "compressed bottle" "$BOTTLE" "$HOMEBREW_MAX_BOTTLE_BYTES"
 
-python3 "$SCRIPT_ROOT/homebrew-dependency-provenance.py" validate \
+dependency_provenance_args=(
+  validate
   --input "$DEPENDENCY_PROVENANCE" \
   --formula "$FORMULA" \
   --arch "$ARCH" \
@@ -159,6 +173,14 @@ python3 "$SCRIPT_ROOT/homebrew-dependency-provenance.py" validate \
   --tap-name "$TAP_NAME" \
   --tap-commit "$TAP_COMMIT" \
   --bottle-root-url "$BOTTLE_ROOT_URL"
+)
+if [ -n "$PREFIX_CAMPAIGN_LAYOUT_SHA256" ]; then
+  dependency_provenance_args+=(
+    --prefix-campaign-layout-sha256 "$PREFIX_CAMPAIGN_LAYOUT_SHA256"
+  )
+fi
+python3 "$SCRIPT_ROOT/homebrew-dependency-provenance.py" \
+  "${dependency_provenance_args[@]}"
 
 case "$(basename "$BOTTLE")" in
   *.tar.gz) ARCHIVE_NAME="bottle.tar.gz" ;;
@@ -187,7 +209,7 @@ OWNER_LOWER="${TAP_NAME%%/*}"
 REPO_LOWER="${TAP_NAME#*/}"
 FORMULA_KEY="${OWNER_LOWER}/${REPO_LOWER}/${FORMULA}"
 FORMULA_PATH="Library/Taps/${OWNER_LOWER}/homebrew-${REPO_LOWER}/Formula/${FORMULA}.rb"
-BOTTLE_INSTALL_CELLAR="/home/linuxbrew/.linuxbrew/Cellar"
+BOTTLE_INSTALL_CELLAR="$HOMEBREW_GUEST_CELLAR"
 if ! jq -e \
   --arg formula "$FORMULA" \
   --arg formula_key "$FORMULA_KEY" \
@@ -300,6 +322,11 @@ jq -nS \
   ' >"$OUT_DIR/manifest.json"
 
 validation_args=()
+if [ -n "$PREFIX_CAMPAIGN_LAYOUT_SHA256" ]; then
+  validation_args+=(
+    --prefix-campaign-layout-sha256 "$PREFIX_CAMPAIGN_LAYOUT_SHA256"
+  )
+fi
 for forbidden_root in "${FORBIDDEN_ROOTS[@]}"; do
   validation_args+=(--forbidden-root "$forbidden_root")
 done

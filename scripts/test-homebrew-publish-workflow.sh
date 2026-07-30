@@ -1629,7 +1629,7 @@ assert_build_handoff_rejects_untrusted_content() {
   if validate_build_handoff "$handoff" --out-env "$out_env" >/dev/null 2>"$err"; then
     fail "build handoff validator accepted an installed build-root leak"
   fi
-  grep -F "bin/hello' contains forbidden build root '$TEST_FORBIDDEN_ROOT'" "$err" >/dev/null ||
+  grep -F "bin/hello' contains forbidden path '$TEST_FORBIDDEN_ROOT'" "$err" >/dev/null ||
     fail "build handoff validator did not explain the installed build-root leak"
   [ ! -e "$out_env" ] ||
     fail "build handoff validator produced uploader data for a build-root leak"

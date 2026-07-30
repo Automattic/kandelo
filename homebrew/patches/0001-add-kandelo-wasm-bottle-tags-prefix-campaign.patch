@@ -1,0 +1,139 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Kandelo <noreply@kandelo.invalid>
+Date: Thu, 25 Jun 2026 00:00:00 +0000
+Subject: [PATCH] Homebrew: support Kandelo Wasm bottles
+
+Homebrew does not recognize Kandelo's Wasm bottle tags, and invoking the
+Kandelo guest installation through /usr/bin/brew makes Homebrew derive
+the forbidden /usr prefix even after it resolves the real repository.
+
+Teach the bottle tag parser about wasm32 and wasm64, select trusted
+Kandelo bottle tags through HOMEBREW_KANDELO_BOTTLE_TAG, give the
+Kandelo pseudo-system its own /opt/kandelo/homebrew layout, and keep the
+prefix bound to the resolved repository for the exact guest alias.
+Preserve an explicitly supplied GitHub Packages repository path instead
+of stripping its conventional homebrew- prefix; the exact source
+repository namespace is what lets GitHub create Kandelo bottles with
+inherited public access. Formula bottle metadata can then round-trip
+tags such as :wasm32_kandelo and repository-rooted URLs, and both
+supported brew entry points use the same prefix without a wrapper.
+---
+ Library/Homebrew/extend/os/mac/utils/bottles.rb | 4 ++++
+ Library/Homebrew/github_packages.rb             | 4 +++-
+ Library/Homebrew/hardware.rb                    | 4 ++++
+ Library/Homebrew/utils/bottles.rb               | 28 ++++++++++++++++++------
+ bin/brew                                         | 8 ++++++++
+ 5 files changed, 40 insertions(+), 8 deletions(-)
+
+diff --git a/Library/Homebrew/extend/os/mac/utils/bottles.rb b/Library/Homebrew/extend/os/mac/utils/bottles.rb
+index 0000000000..0000000000 100644
+--- a/Library/Homebrew/extend/os/mac/utils/bottles.rb
++++ b/Library/Homebrew/extend/os/mac/utils/bottles.rb
+@@ -7,6 +7,10 @@ module OS
+         sig { params(tag: T.nilable(T.any(Symbol, Utils::Bottles::Tag))).returns(Utils::Bottles::Tag) }
+         def tag(tag = nil)
+           if tag.nil?
++            if (kandelo_tag = ENV["HOMEBREW_KANDELO_BOTTLE_TAG"] || ENV["KANDELO_HOMEBREW_BOTTLE_TAG"]) &&
++               !kandelo_tag.empty?
++              return Utils::Bottles::Tag.from_symbol(kandelo_tag.to_sym)
++            end
+             Utils::Bottles::Tag.new(system: MacOS.version.to_sym, arch: ::Hardware::CPU.arch)
+           else
+             super
+diff --git a/Library/Homebrew/github_packages.rb b/Library/Homebrew/github_packages.rb
+index 0000000000..0000000000 100644
+--- a/Library/Homebrew/github_packages.rb
++++ b/Library/Homebrew/github_packages.rb
+@@ -120,7 +120,9 @@ class GitHubPackages
+     _, org, repo, = *url.to_s.match(URL_REGEX)
+     return if org.blank? || repo.blank?
+
+-    root_url(org, repo)
++    # An explicit repository-rooted package path is not a generated tap name.
++    # Retain its `homebrew-` prefix so repository access inheritance can apply.
++    "#{URL_PREFIX}#{org.downcase}/#{repo}"
+   end
+
+   sig { params(formula_name: String).returns(String) }
+diff --git a/Library/Homebrew/hardware.rb b/Library/Homebrew/hardware.rb
+index 0000000000..0000000000 100644
+--- a/Library/Homebrew/hardware.rb
++++ b/Library/Homebrew/hardware.rb
+@@ -12,8 +12,12 @@ module Hardware
+     PPC_ARCHS         = T.let((PPC_32BIT_ARCHS + PPC_64BIT_ARCHS).freeze, T::Array[Symbol])
+     ARM_64BIT_ARCHS   = [:arm64, :aarch64].freeze
+     ARM_ARCHS         = ARM_64BIT_ARCHS
++    WASM_32BIT_ARCHS  = [:wasm32].freeze
++    WASM_64BIT_ARCHS  = [:wasm64].freeze
++    WASM_ARCHS        = T.let((WASM_32BIT_ARCHS + WASM_64BIT_ARCHS).freeze, T::Array[Symbol])
+     ALL_ARCHS = T.let([
+       *INTEL_ARCHS,
+       *PPC_ARCHS,
+       *ARM_ARCHS,
++      *WASM_ARCHS,
+     ].freeze, T::Array[Symbol])
+diff --git a/Library/Homebrew/utils/bottles.rb b/Library/Homebrew/utils/bottles.rb
+index 0000000000..0000000000 100644
+--- a/Library/Homebrew/utils/bottles.rb
++++ b/Library/Homebrew/utils/bottles.rb
+@@ -20,9 +20,14 @@
+         when Tag
+           tag
+         else
+-          @tag ||= T.let(Tag.new(
+-                           system: HOMEBREW_SYSTEM.downcase.to_sym,
+-                           arch:   HOMEBREW_PROCESSOR.downcase.to_sym,
+-                         ), T.nilable(Tag))
++          if (kandelo_tag = ENV["HOMEBREW_KANDELO_BOTTLE_TAG"] || ENV["KANDELO_HOMEBREW_BOTTLE_TAG"]) &&
++             !kandelo_tag.empty?
++            Tag.from_symbol(kandelo_tag.to_sym)
++          else
++            @tag ||= T.let(Tag.new(
++                             system: HOMEBREW_SYSTEM.downcase.to_sym,
++                             arch:   HOMEBREW_PROCESSOR.downcase.to_sym,
++                           ), T.nilable(Tag))
++          end
+         end
+       end
+@@ -257,7 +262,12 @@ module Utils
+       sig { returns(T::Boolean) }
+       def macos?
+         MacOSVersion::SYMBOLS.key?(system)
+       end
+-
++
++      sig { returns(T::Boolean) }
++      def kandelo?
++        system == :kandelo
++      end
++
+       sig { returns(T::Boolean) }
+       def valid_combination?
+@@ -273,2 +279,4 @@ module Utils
+-        if linux?
++        if kandelo?
++          "/opt/kandelo/homebrew"
++        elsif linux?
+           T.must(HOMEBREW_LINUX_DEFAULT_PREFIX)
+@@ -284,2 +292,4 @@ module Utils
+-        if linux?
++        if kandelo?
++          "/opt/kandelo/homebrew/Cellar"
++        elsif linux?
+           Homebrew::DEFAULT_LINUX_CELLAR
+diff --git a/bin/brew b/bin/brew
+index 0000000000..0000000000 100755
+--- a/bin/brew
++++ b/bin/brew
+@@ -92,3 +92,11 @@
++# Kandelo exposes its package store through the stable /usr/bin/brew command.
++# Keep the prefix bound to the resolved repository for that exact alias.
++if [[ "${HOMEBREW_BREW_FILE}" = "/usr/bin/brew" &&
++      "${HOMEBREW_REPOSITORY}" = "/opt/kandelo/homebrew" ]]
++then
++  HOMEBREW_PREFIX="${HOMEBREW_REPOSITORY}"
++fi
++
+ # Try to find a /usr/local HOMEBREW_PREFIX where possible (for macOS x86_64 bottles)
+ if [[ -L "/usr/local/bin/brew" && ! -L "${HOMEBREW_PREFIX}/Cellar" ]]
+ then

@@ -44,12 +44,14 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
 struct Options {
     tap_root: PathBuf,
     metadata_path: PathBuf,
+    prefix_campaign_layout_sha256: Option<String>,
 }
 
 impl Options {
     fn parse(args: Vec<String>) -> Result<Self, String> {
         let mut tap_root: Option<PathBuf> = None;
         let mut metadata: Option<PathBuf> = None;
+        let mut prefix_campaign_layout_sha256: Option<String> = None;
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
             match arg.as_str() {
@@ -64,6 +66,12 @@ impl Options {
                         "homebrew-validate: --metadata requires a path".to_string()
                     })?;
                     metadata = Some(PathBuf::from(value));
+                }
+                "--prefix-campaign-layout-sha256" => {
+                    prefix_campaign_layout_sha256 = Some(it.next().ok_or_else(|| {
+                        "homebrew-validate: --prefix-campaign-layout-sha256 requires a digest"
+                            .to_string()
+                    })?);
                 }
                 "-h" | "--help" => return Err(usage()),
                 other => {
@@ -85,12 +93,13 @@ impl Options {
         Ok(Self {
             tap_root,
             metadata_path,
+            prefix_campaign_layout_sha256,
         })
     }
 }
 
 fn usage() -> String {
-    "usage: xtask homebrew-validate --tap-root <tap-root> [--metadata <path>]".to_string()
+    "usage: xtask homebrew-validate --tap-root <tap-root> [--metadata <path>] [--prefix-campaign-layout-sha256 <sha256>]".to_string()
 }
 
 #[derive(Default, Debug)]
@@ -130,9 +139,12 @@ fn compile_schema(name: &str) -> Result<JSONSchema, String> {
 
 fn validate(options: &Options) -> Result<ValidationReport, String> {
     let schemas = Schemas::load()?;
+    let guest_layout =
+        crate::homebrew_guest_layout::get(options.prefix_campaign_layout_sha256.as_deref())?;
     let mut validator = Validator {
         options,
         schemas,
+        guest_layout,
         report: ValidationReport::default(),
     };
     validator.validate_metadata()?;
@@ -142,6 +154,7 @@ fn validate(options: &Options) -> Result<ValidationReport, String> {
 struct Validator<'a> {
     options: &'a Options,
     schemas: Schemas,
+    guest_layout: crate::homebrew_guest_layout::GuestLayout,
     report: ValidationReport,
 }
 
@@ -386,7 +399,7 @@ impl Validator<'_> {
                 return;
             }
         };
-        let bottle_block = match parse_formula_bottle_block(&source) {
+        let bottle_block = match parse_formula_bottle_block(&source, &self.guest_layout.cellar) {
             Ok(block) => block,
             Err(error) => {
                 self.err(format!(
@@ -503,6 +516,18 @@ impl Validator<'_> {
         top_abi: Option<u64>,
         tap_repository: Option<&str>,
     ) {
+        if self.options.prefix_campaign_layout_sha256.is_some() {
+            if string_at(bottle, "/prefix") != Some(self.guest_layout.prefix.as_str()) {
+                self.err(format!(
+                    "{label}: prefix does not match the selected prefix-campaign guest layout"
+                ));
+            }
+            if string_at(bottle, "/cellar") != Some(self.guest_layout.cellar.as_str()) {
+                self.err(format!(
+                    "{label}: cellar does not match the selected prefix-campaign guest layout"
+                ));
+            }
+        }
         if let (Some(bottle_abi), Some(top_abi)) = (u64_at(bottle, "/kandelo_abi"), top_abi) {
             if bottle_abi != top_abi {
                 self.err(format!(
@@ -1010,7 +1035,10 @@ fn validate_formula_structure_with_ripper(path: &Path) -> Result<(), String> {
     }
 }
 
-fn parse_formula_bottle_block(source: &str) -> Result<Option<FormulaBottleBlock>, String> {
+fn parse_formula_bottle_block(
+    source: &str,
+    exact_guest_cellar: &str,
+) -> Result<Option<FormulaBottleBlock>, String> {
     if !source.ends_with('\n') || source.contains('\r') {
         return Err("Formula must use LF lines and end with a newline".to_string());
     }
@@ -1062,10 +1090,8 @@ fn parse_formula_bottle_block(source: &str) -> Result<Option<FormulaBottleBlock>
             let (cellar, tagged_sha) = value
                 .split_once(", ")
                 .ok_or_else(|| "invalid sha256 line".to_string())?;
-            if !matches!(
-                cellar,
-                ":any" | ":any_skip_relocation" | "\"/home/linuxbrew/.linuxbrew/Cellar\""
-            ) {
+            let exact_cellar = format!("\"{exact_guest_cellar}\"");
+            if !matches!(cellar, ":any" | ":any_skip_relocation") && cellar != exact_cellar {
                 return Err("invalid bottle cellar".to_string());
             }
             let (tag, quoted_sha) = tagged_sha
@@ -1335,9 +1361,17 @@ mod tests {
         }
 
         fn validate(&self) -> ValidationReport {
+            self.validate_with_campaign_layout(None)
+        }
+
+        fn validate_with_campaign_layout(
+            &self,
+            prefix_campaign_layout_sha256: Option<String>,
+        ) -> ValidationReport {
             validate(&Options {
                 tap_root: self.tap_root.clone(),
                 metadata_path: self.tap_root.join(DEFAULT_METADATA_REL),
+                prefix_campaign_layout_sha256,
             })
             .unwrap()
         }
@@ -1368,6 +1402,21 @@ mod tests {
             .as_array_mut()
             .unwrap()
             .retain(|outcome| string_at(outcome, "/name") != Some(name));
+    }
+
+    fn set_guest_layout(fixture: &mut Fixture, prefix: &str, cellar: &str) {
+        for bottle in [
+            &mut fixture.metadata["packages"][0]["bottles"][0],
+            &mut fixture.formula["bottles"][0],
+        ] {
+            bottle["prefix"] = json!(prefix);
+            bottle["cellar"] = json!(cellar);
+        }
+        fixture.link["prefix"] = json!(prefix);
+        fixture.link["cellar"] = json!(cellar);
+        fixture.link["keg"] = json!(format!("{cellar}/what/15.0.0"));
+        fixture.provenance["bottle"]["prefix"] = json!(prefix);
+        fixture.provenance["bottle"]["cellar"] = json!(cellar);
     }
 
     fn set_outcome(fixture: &mut Fixture, name: &str, status: &str) {
@@ -1418,6 +1467,45 @@ mod tests {
         assert_eq!(report.bottles, 1);
         assert_eq!(report.link_manifests, 1);
         assert_eq!(report.provenance_reports, 1);
+    }
+
+    #[test]
+    fn validates_the_digest_bound_prefix_campaign_layout() {
+        let mut hasher = Sha256::new();
+        hasher.update(include_str!("../../../homebrew/kandelo-guest-layout.json").as_bytes());
+        let digest = format!("{:x}", hasher.finalize());
+        let mut fixture = Fixture::new();
+        let layout = crate::homebrew_guest_layout::get(Some(&digest)).unwrap();
+        set_guest_layout(&mut fixture, &layout.prefix, &layout.cellar);
+        fixture.write();
+        let report = fixture.validate_with_campaign_layout(Some(digest));
+        assert_eq!(report.errors, Vec::<String>::new());
+    }
+
+    #[test]
+    fn prefix_campaign_rejects_a_noncanonical_guest_prefix_or_cellar() {
+        let mut hasher = Sha256::new();
+        hasher.update(include_str!("../../../homebrew/kandelo-guest-layout.json").as_bytes());
+        let digest = format!("{:x}", hasher.finalize());
+        let layout = crate::homebrew_guest_layout::get(Some(&digest)).unwrap();
+        for field in ["prefix", "cellar"] {
+            let mut fixture = Fixture::new();
+            set_guest_layout(&mut fixture, &layout.prefix, &layout.cellar);
+            fixture.metadata["packages"][0]["bottles"][0][field] =
+                json!(format!("/opt/not-kandelo/{field}"));
+            fixture.formula["bottles"][0][field] =
+                fixture.metadata["packages"][0]["bottles"][0][field].clone();
+            fixture.write();
+
+            let report = fixture.validate_with_campaign_layout(Some(digest.clone()));
+            assert!(
+                report.errors.join("\n").contains(&format!(
+                    "{field} does not match the selected prefix-campaign guest layout"
+                )),
+                "{:?}",
+                report.errors
+            );
+        }
     }
 
     #[test]
