@@ -197,25 +197,38 @@ their bottle block and sibling policy stay coherent.
 3. Generate one campaign manifest binding Kandelo SHA, tap source SHA, old
    metadata digest, layout digest, every old record, each disposition, and
    destination-absence evidence.
-4. Produce the 34 scan-admission handoffs, or rebuild those variants.
-5. Build the 36 required variants with a dependency-ready queue. Feed
+4. For each Formula, run the restricted publisher with tap finalization
+   deferred. It may publish and anonymously verify the Formula's
+   reserved GHCR bottle index, but it must not change tap Git state or
+   publish a VFS release.
+5. Seal each verified Formula result as an immutable, content-addressed
+   handoff. Produce the 34 scan-admission handoffs, or rebuild those
+   variants.
+6. Build the 36 required variants with a dependency-ready queue. Feed
    downstream jobs only verified same-campaign dependency handoffs.
-6. Build and bottle the patched Homebrew bootstrap after Git and Ruby.
-7. Compose all 71 handoffs into one inert tap candidate.
-8. Remove orphan Formula sidecars and unreferenced root-level live link and
-   provenance records. Keep historical failure evidence under its explicit
-   failure namespace.
-9. Validate the complete candidate tap once.
-10. Under one tap state lock, create and push one final tap commit.
-11. Regenerate shell migration, runtime, artifact, and mirror locks from that
-    exact tap commit.
-12. Rebuild the mostly-lazy shell and every shell-derived image.
-13. Prove the first-party and independent third-party `brew` lifecycle in
-    Node.js and Chromium before rotating product indexes.
+7. Build and bottle the patched Homebrew bootstrap after Git and Ruby.
+8. Compose all 71 handoffs into one inert tap candidate.
+9. Remove orphan Formula sidecars and unreferenced root-level live link
+   and provenance records. Keep historical failure evidence under its
+   explicit failure namespace.
+10. Validate the complete candidate tap once.
+11. Under one tap state lock, create and push one final tap commit.
+12. Regenerate shell migration, runtime, artifact, and mirror locks from
+    that exact tap commit.
+13. Rebuild the mostly-lazy shell and every shell-derived image.
+14. Prove the first-party and independent third-party `brew` lifecycle
+    in Node.js and Chromium before rotating product indexes.
 
 Public immutable child blobs may be uploaded before finalization because the
 old tap does not select their reserved identities. Selected metadata must not
 expose a mixture of old- and new-prefix records.
+
+The `defer-tap-finalization` publisher input is not a general operator
+shortcut. Only the reviewed `prefix-campaign-bottles.yml` caller may use
+it, for one Formula at a time, in write and forced-rebuild mode, with
+ordinary VFS acceptance disabled. The build, upload, index readback, and
+bottle verification still run. The `finalize-tap` and
+`publish-vfs-release` jobs do not.
 
 If tap main advances before final commit, discard the candidate composition,
 rebind the exact new source SHA, and rerun validation. Do not three-way merge
@@ -291,10 +304,112 @@ Kandelo's guest installation is `/opt/kandelo/homebrew`, its Cellar is
 `/home/linuxbrew/.linuxbrew` is historical migration input, not a supported
 guest layout. No final guest path uses the name `linuxbrew`.
 
+### Campaign Source And Checkout Identity
+
+The campaign uses two tap commit identities for different claims:
+
+- `source_tap_commit`, exposed as `tap_commit` in public bottle
+  provenance, is the reviewed commit from the public tap's protected
+  history.
+- `tap_checkout_commit` is a deterministic, local-only Git commit for
+  one build or verification job. Its tree contains the sealed target
+  source and the exact dependency bottle blocks admitted by earlier
+  campaign handoffs.
+
+The prepared checkout commit is a descendant of the public source
+commit. Both the executor and publisher derive its tree and commit
+identity independently. The build must run from that exact clean
+checkout, and handoff, dependency, and runtime evidence record both
+identities. A job-supplied checkout SHA, dirty checkout, changed tree,
+or raw/prepared identity swap fails validation.
+
+The prepared commit is never pushed, tagged, or used as public package
+provenance. Immutable campaign and Formula-handoff releases target the
+public source commit. This keeps the reviewed public SHA truthful while
+still giving each dependency wave one complete Formula checkout.
+
+The campaign authority also binds this exact contract:
+
+```text
+homebrew/kandelo-guest-layout.json
+```
+
+It records the path and SHA-256 of the contract. The publisher verifies
+those bytes in the admitted Kandelo checkout before selecting the target
+layout, and the digest is carried through build, dependency-provenance,
+handoff, and runtime validation. In campaign mode, only that digest
+selects `/opt/kandelo/homebrew` and
+`/opt/kandelo/homebrew/Cellar`. An absent digest selects the
+still-active layout only for an ordinary publication; a campaign with a
+missing, wrong, or changed digest fails.
+
+### Deferred Formula Handoffs
+
+Each Formula call may publish immutable bottle children and its reserved
+GHCR version index because the old tap does not select the new rebuild
+identity. After anonymous readback and runtime verification, the
+executor seals the result under:
+
+```text
+homebrew-prefix-handoff-sha256-<handoff-sha256>
+```
+
+The handoff binds the campaign digest, Formula identity, architectures,
+publications, dependency handoffs, public tap source, target source
+tree, and guest-layout authority. A downstream Formula reconstructs its
+dependency bottle blocks only from verified handoffs in its exact
+campaign closure.
+
+No per-Formula run updates Formula bottle blocks, sidecars, aggregate
+metadata, or tap `main`. After every handoff exists, the campaign
+composes and validates one complete candidate and performs one atomic
+final tap update.
+
+### Campaign Mutation Authority
+
+Ordinary bottle and immutable-release publication still requires the
+exact commit currently named by `Automattic/kandelo`
+`refs/heads/main`. The prefix campaign is a narrow exception for a
+long-running, already sealed campaign. Its reviewed Kandelo source may
+authorize a mutation only while that source remains an ancestor of
+current protected `main`.
+
+The campaign path selects this rule explicitly; ordinary callers cannot
+select it. Immediately before every GHCR or immutable-release mutation,
+the mutation primitive fetches protected `main` and proves the sealed
+source is still in that history. A detached, descendant, diverged, or
+force-pushed-away source fails closed. Immutable handoff release tags
+apply the same rule to the target tap repository and continue to point
+at the public tap source commit.
+
+Current protected `main` therefore remains the live mutation authority.
+The ancestor rule lets it approve the already reviewed campaign source
+without pretending that a synthetic prepared checkout is public source.
+
+### Bridge Follow-Ups Before Cutover
+
+The campaign bridge is sufficient to publish and seal Formula handoffs,
+but two checks must be completed before the worktree is considered
+finished:
+
+- derive the browser shell test's first expected `PATH` entry from the
+  configured shell path or guest-layout contract instead of retaining a
+  `/home/linuxbrew/.linuxbrew/bin` assertion; and
+- strengthen the standalone campaign publisher `verify` command so it
+  cross-binds Formula and dependency arrays, campaign tag and digest,
+  guest-layout bytes, and prepared-checkout ancestry. Today `prepare`
+  constructs and immediately verifies its own receipt, and no
+  downstream publisher consumes that receipt, so this is not a current
+  mutation boundary.
+
 ## Completion Evidence
 
 The cutover is complete only when all of the following are true:
 
+- every Formula result is an immutable handoff bound to the exact
+  campaign and guest-layout digests;
+- public bottle provenance names the raw tap source, while build and
+  runtime evidence also bind the deterministic prepared checkout;
 - no selected or live tap record names the retired prefix;
 - no guest Formula source hardcodes a Linuxbrew or duplicate Kandelo path;
 - no selected bottle contains the retired prefix;
@@ -305,5 +420,7 @@ The cutover is complete only when all of the following are true:
 - first-party install, execute, upgrade/reinstall, and uninstall pass;
 - an independent third-party tap install and execution pass;
 - no `/home/linuxbrew` directory or alias is created;
+- one validated, complete handoff set produces one atomic final tap
+  commit;
 - the mostly-lazy shell and shell-derived products use the final tap; and
 - exact Node.js and Chromium product evidence is green.

@@ -74,11 +74,45 @@ artifacts appears in the main repository's `binaries-abi-v<N>` `index.toml`
 ledger. See [docs/homebrew-publishing.md](homebrew-publishing.md) for formula
 authoring, the immutable VFS descriptor contract, and operations.
 
-Current `Automattic/kandelo` `refs/heads/main` is the sole mutation authority
-for Homebrew/durable-package generation and the resulting bottles. Recheck its
-exact commit immediately before every publication mutation. The ordinary path
-builds archives after their source changes land and records
+The guest-prefix campaign uses two additional immutable release kinds.
+One content-addressed campaign release seals the complete campaign
+authority. Each Formula result then publishes as a
+`homebrew-prefix-handoff-sha256-<handoff-sha256>` release after its
+reserved GHCR bottle index passes anonymous readback and runtime
+verification.
+These releases are inert campaign inputs; they do not select a Formula
+or update tap Git state. Only the final complete handoff set may produce
+the atomic tap commit.
+
+The campaign release binds the path and SHA-256 of
+`homebrew/kandelo-guest-layout.json`. That digest selects
+`/opt/kandelo/homebrew` and its Cellar throughout bottle build,
+provenance, handoff, and runtime validation. A missing or different
+digest cannot silently fall back to the still-active guest layout.
+
+Current `Automattic/kandelo` `refs/heads/main` is the sole live mutation
+authority for Homebrew and durable-package generation. The ordinary
+path requires the explicit source to equal current `main` immediately
+before every mutation. It builds archives after their source changes
+land and records
 `https://github.com/Automattic/kandelo` plus that exact main SHA.
+
+The prefix campaign has one narrower rule for its already sealed source.
+Campaign mutations may continue only while current protected `main`
+contains that exact source commit. The publisher repeats the ancestry
+proof immediately before each GHCR or immutable-release mutation.
+Exact-main and main-contains authority are mutually exclusive, and only
+the reviewed campaign caller may select the latter. A detached,
+diverged, descendant, or force-pushed-away source fails closed.
+
+This rule does not make a campaign-local tap checkout public source.
+Bottle provenance retains the raw protected-history `tap_commit`. Build,
+dependency, handoff, and runtime evidence additionally bind the
+deterministic local `tap_checkout_commit`, whose tree contains the
+sealed target source and exact dependency bottle blocks. That prepared
+commit is never pushed or tagged. Campaign handoff releases target the
+raw tap source and require that source to remain in the target
+repository's protected history.
 
 The versioned `kandelo-package-generation-v2` compatibility path can instead
 preserve archives from one immutable producer commit `S` when trusted current
@@ -907,6 +941,22 @@ descriptor, report, and Node/browser evidence; public releases are never
 clobbered. Homebrew state remains separate from package archive releases
 because bottle selection is governed by Formula metadata and Homebrew bottle
 tags, not by Kandelo's package resolver.
+
+The atomic guest-prefix migration uses two other content-addressed
+namespaces:
+
+```text
+homebrew-prefix-campaign-sha256-<campaign-sha256>
+homebrew-prefix-handoff-sha256-<handoff-sha256>
+```
+
+The first seals the complete campaign graph and authority. The second
+contains one Formula's verified publication data and exact
+dependency-handoff identities. Their releases are immutable by
+application contract, must pass authenticated and anonymous
+digest-and-size readback, and directly tag the raw public tap source
+commit. A deterministic local `tap_checkout_commit` may be recorded
+inside the evidence, but it never becomes a release target.
 
 The ABI version appears in the namespace because its metadata is tied to a
 specific kernel ABI. Programs from `binaries-abi-v10` cannot run
