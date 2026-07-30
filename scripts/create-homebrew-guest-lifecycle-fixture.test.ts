@@ -99,6 +99,60 @@ test("creates one exact closed-browser lifecycle fixture", () => {
   }
 });
 
+test("creates one exact public-browser fixture without local bottle payloads", () => {
+  const root = mkdtempSync(
+    join(tmpdir(), "homebrew-public-lifecycle-fixture-"),
+  );
+  try {
+    const image = write(root, "main-shell.vfs.zst", new Uint8Array([1]));
+    const spec = write(root, "tree.json", new Uint8Array([2]));
+    const archive = write(root, "homebrew-bootstrap.zip", new Uint8Array([3]));
+    const environment = write(root, "homebrew-brew.env", new Uint8Array([4]));
+    const mirror = join(root, "mirror");
+    mkdirSync(mirror);
+    const payloadBytes = new Uint8Array([5, 6]);
+    const plan = mirrorPlan(payloadBytes);
+    writeFileSync(
+      join(mirror, HOMEBREW_BOTTLE_MIRROR_PLAN_ASSET),
+      encodeHomebrewBottleMirrorPlan(plan),
+    );
+    writeFileSync(join(mirror, plan.assets[0]!.asset), payloadBytes);
+    const out = join(root, "fixture.json");
+
+    createHomebrewGuestLifecycleFixture({
+      transportMode: "public",
+      image,
+      bootstrapSpec: spec,
+      bootstrapArchive: archive,
+      bootstrapEnvironment: environment,
+      bottleMirror: mirror,
+      fixedAssetUrlRoot:
+        "https://github.com/example/project/releases/download/exact-inputs/",
+      coreRevision: "1".repeat(40),
+      canaryRevision: "2".repeat(40),
+      timeoutMs: 900_000,
+      out,
+    });
+
+    const fixture = projectHomebrewGuestLifecycleBrowserFixture(
+      JSON.parse(readFileSync(out, "utf8")),
+    );
+    assert.equal(fixture.transportMode, "public");
+    assert.equal(
+      fixture.image.url,
+      "https://github.com/example/project/releases/download/exact-inputs/" +
+        "main-shell.vfs.zst",
+    );
+    assert.equal(
+      fixture.bottleMirror.plan.url,
+      `${plan.release_root}/${plan.manifest_asset}`,
+    );
+    assert.equal(fixture.bottleMirror.payloads, undefined);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 function mirrorPlan(payload: Uint8Array): HomebrewBottleMirrorPlan {
   const repository = "example/project";
   const identity = {

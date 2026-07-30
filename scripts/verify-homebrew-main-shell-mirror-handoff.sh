@@ -4,7 +4,8 @@ set -euo pipefail
 ROOT=""
 EXPECTED_KANDELO=""
 EXPECTED_TAP_CATALOG=""
-EXPECTED_TAP_AUTHORITY=""
+EXPECTED_TAP_MIRROR_AUTHORITY=""
+EXPECTED_TAP_CALLER_AUTHORITY=""
 EXPECTED_CANARY=""
 MAX_MIRROR_BYTES="$((512 * 1024 * 1024))"
 MAX_HANDOFF_BYTES="$((1024 * 1024 * 1024))"
@@ -15,7 +16,10 @@ while [ "$#" -gt 0 ]; do
     --root) ROOT="$2"; shift 2 ;;
     --kandelo-ref) EXPECTED_KANDELO="$2"; shift 2 ;;
     --tap-catalog-ref) EXPECTED_TAP_CATALOG="$2"; shift 2 ;;
-    --tap-authority-ref) EXPECTED_TAP_AUTHORITY="$2"; shift 2 ;;
+    --tap-mirror-authority-ref)
+      EXPECTED_TAP_MIRROR_AUTHORITY="$2"; shift 2 ;;
+    --tap-caller-authority-ref)
+      EXPECTED_TAP_CALLER_AUTHORITY="$2"; shift 2 ;;
     --canary-ref) EXPECTED_CANARY="$2"; shift 2 ;;
     *) echo "verify-homebrew-main-shell-mirror-handoff: unknown flag $1" >&2; exit 2 ;;
   esac
@@ -23,13 +27,18 @@ done
 
 for value in \
   "$EXPECTED_KANDELO" "$EXPECTED_TAP_CATALOG" \
-  "$EXPECTED_TAP_AUTHORITY" "$EXPECTED_CANARY"
+  "$EXPECTED_TAP_MIRROR_AUTHORITY" "$EXPECTED_TAP_CALLER_AUTHORITY" \
+  "$EXPECTED_CANARY"
 do
   [[ "$value" =~ ^[0-9a-f]{40}$ ]] || {
-    echo "verify-homebrew-main-shell-mirror-handoff: exact M/TF/TA/C refs are required" >&2
+    echo "verify-homebrew-main-shell-mirror-handoff: exact M/TF/TA0/TA1/C refs are required" >&2
     exit 2
   }
 done
+[ "$EXPECTED_TAP_MIRROR_AUTHORITY" != "$EXPECTED_TAP_CALLER_AUTHORITY" ] || {
+  echo "verify-homebrew-main-shell-mirror-handoff: mirror and caller authorities must differ" >&2
+  exit 2
+}
 if [ -z "$ROOT" ] || [ ! -d "$ROOT" ] || [ -L "$ROOT" ]; then
   echo "verify-homebrew-main-shell-mirror-handoff: --root must be a regular directory" >&2
   exit 2
@@ -96,17 +105,20 @@ handoff_bytes="$(
 jq -e \
   --arg kandelo "$EXPECTED_KANDELO" \
   --arg tap_catalog "$EXPECTED_TAP_CATALOG" \
-  --arg tap_authority "$EXPECTED_TAP_AUTHORITY" \
+  --arg tap_mirror_authority "$EXPECTED_TAP_MIRROR_AUTHORITY" \
+  --arg tap_caller_authority "$EXPECTED_TAP_CALLER_AUTHORITY" \
   --arg canary "$EXPECTED_CANARY" '
   (keys | sort) == [
     "canary_ref", "files", "kandelo_ref", "kind", "mirror",
-    "schema", "tap_authority_ref", "tap_catalog_ref"
+    "schema", "tap_caller_authority_ref", "tap_catalog_ref",
+    "tap_mirror_authority_ref"
   ] and
   .schema == 1 and
   .kind == "kandelo-homebrew-main-shell-mirror-handoff" and
   .kandelo_ref == $kandelo and
   .tap_catalog_ref == $tap_catalog and
-  .tap_authority_ref == $tap_authority and
+  .tap_mirror_authority_ref == $tap_mirror_authority and
+  .tap_caller_authority_ref == $tap_caller_authority and
   .canary_ref == $canary and
   (.files | keys | sort) == [
     "homebrew-bootstrap.zip", "homebrew-brew.env",
@@ -241,7 +253,7 @@ mirror_bytes="$(
   }
 
 jq -e \
-  --arg tap "$EXPECTED_TAP_AUTHORITY" \
+  --arg tap "$EXPECTED_TAP_MIRROR_AUTHORITY" \
   --arg plan_sha "$(file_sha "$PLAN")" \
   --argjson plan_bytes "$(file_bytes "$PLAN")" \
   --slurpfile plan "$PLAN" '

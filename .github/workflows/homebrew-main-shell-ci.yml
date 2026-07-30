@@ -228,8 +228,10 @@ jobs:
             homebrew/test/homebrew_guest_lifecycle_runtime_contract.test.ts \
             homebrew/test/homebrew_guest_lifecycle_runtime_inputs.test.ts \
             scripts/create-homebrew-guest-lifecycle-fixture.test.ts \
+            scripts/homebrew-guest-lifecycle-publication.test.ts \
             scripts/homebrew-main-shell-image-contract.test.ts \
             scripts/homebrew-closed-lazy-assets.test.ts
+          bash scripts/test-verify-existing-immutable-github-release.sh
           npx esbuild homebrew/test/homebrew_guest_lifecycle_node.ts \
             --bundle \
             --platform=node \

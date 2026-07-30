@@ -23,6 +23,7 @@ import {
 } from "../homebrew/test/homebrew_guest_lifecycle_browser_fixture";
 
 export interface CreateHomebrewGuestLifecycleFixtureOptions {
+  transportMode?: "closed" | "public";
   image: string;
   bootstrapSpec: string;
   bootstrapArchive: string;
@@ -137,7 +138,7 @@ export function createHomebrewGuestLifecycleFixture(
   const fixture: HomebrewGuestLifecycleBrowserFixture = {
     schema: 1,
     allowLiveNetwork: true,
-    transportMode: "closed",
+    transportMode: options.transportMode ?? "closed",
     image,
     bootstrap: {
       spec: bootstrapSpec,
@@ -146,7 +147,7 @@ export function createHomebrewGuestLifecycleFixture(
     },
     bottleMirror: {
       plan: planAsset,
-      payloads,
+      ...((options.transportMode ?? "closed") === "closed" ? { payloads } : {}),
     },
     revisions: {
       coreRevision: options.coreRevision,
@@ -162,6 +163,7 @@ function parseOptions(
   args: readonly string[],
 ): CreateHomebrewGuestLifecycleFixtureOptions {
   const allowed = new Set([
+    "--transport-mode",
     "--image",
     "--homebrew-bootstrap-spec",
     "--homebrew-bootstrap-archive",
@@ -188,7 +190,12 @@ function parseOptions(
     }
     values.set(option, value);
   }
-  if (values.size !== allowed.size) usage();
+  if (values.size !== allowed.size - 1 && values.size !== allowed.size) {
+    usage();
+  }
+
+  const transportMode = values.get("--transport-mode") ?? "closed";
+  if (transportMode !== "closed" && transportMode !== "public") usage();
 
   const coreRevision = values.get("--core-revision")!;
   const canaryRevision = values.get("--canary-revision")!;
@@ -217,6 +224,7 @@ function parseOptions(
   }
   regularDirectory(dirname(out), "fixture output directory");
   return {
+    transportMode,
     image: resolve(values.get("--image")!),
     bootstrapSpec: resolve(values.get("--homebrew-bootstrap-spec")!),
     bootstrapArchive: resolve(
@@ -348,6 +356,7 @@ function pathExists(path: string): boolean {
 function usage(): never {
   throw new Error(
     "usage: create-homebrew-guest-lifecycle-fixture.ts " +
+      "[--transport-mode <closed|public>] " +
       "--image <main-shell.vfs.zst> " +
       "--homebrew-bootstrap-spec <tree.json> " +
       "--homebrew-bootstrap-archive <homebrew-bootstrap.zip> " +
