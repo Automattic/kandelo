@@ -6,6 +6,7 @@ CLASSIFIER="$REPO_ROOT/.github/scripts/homebrew-main-shell-change-scope.sh"
 WORKFLOW="$REPO_ROOT/.github/workflows/homebrew-main-shell-ci.yml"
 STAGING_WORKFLOW="$REPO_ROOT/.github/workflows/staging-build.yml"
 SCOPE_ACTION="$REPO_ROOT/.github/actions/detect-change-scope/action.yml"
+PUBLISHER_TEST="$REPO_ROOT/scripts/test-homebrew-publish-workflow.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
@@ -256,6 +257,10 @@ grep -Fq \
   "needs.change-scope.outputs.homebrew_publisher_only_changed == 'true'" \
   <<<"$staging_preflight_condition" ||
   fail "publisher-only staging no longer runs the complete publisher preflight"
+grep -Fq \
+  'bash "$REPO_ROOT/scripts/test-homebrew-prefix-campaign-layout.sh"' \
+  "$PUBLISHER_TEST" ||
+  fail "publisher-only staging lost its guest-layout contract evidence"
 
 staging_noop_condition="$(
   sed -n \
