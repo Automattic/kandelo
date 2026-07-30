@@ -235,6 +235,40 @@ if args == [
         print("f" * 40)
     else:
         print(os.environ["FAKE_KANDELO_MAIN_SHA"])
+elif (
+    len(args) == 4
+    and args[0] == "api"
+    and args[1].startswith("/repos/")
+    and "/compare/" in args[1]
+    and args[2:] == [
+        "--jq",
+        "[.status, .base_commit.sha, .merge_base_commit.sha] | @tsv",
+    ]
+):
+    repository, comparison = args[1][len("/repos/"):].split("/compare/", 1)
+    source, main = comparison.split("...", 1)
+    if repository.lower() == "automattic/kandelo":
+        expected_source = os.environ["FAKE_KANDELO_CONTAINED_SHA"]
+        expected_main = os.environ["FAKE_KANDELO_MAIN_SHA"]
+    elif repository.lower() == "kandelo-dev/homebrew-tap-core":
+        expected_source = os.environ["FAKE_TARGET_CONTAINED_SHA"]
+        expected_main = os.environ["FAKE_TARGET_MAIN_SHA"]
+    else:
+        print("unsupported compare repository", file=sys.stderr)
+        sys.exit(2)
+    if source != expected_source or main != expected_main:
+        print("compare endpoint used an unexpected source or main", file=sys.stderr)
+        sys.exit(2)
+    state = load()
+    if (
+        repository.lower() == "automattic/kandelo"
+        and os.environ.get("FAKE_CONTAINS_DIVERGE_AFTER_TAG")
+        and state["tags"]
+    ):
+        print("\t".join(["diverged", source, "0" * 40]))
+    else:
+        status = "identical" if source == main else "ahead"
+        print("\t".join([status, source, source]))
 elif args[:2] == ["api", "--include"]:
     if "Cache-Control: no-cache" not in args:
         print("authoritative GET did not bypass cached state", file=sys.stderr)
@@ -397,6 +431,47 @@ else:
 PY
 chmod +x "$fake_bin/gh"
 
+cat >"$fake_bin/git" <<'PY'
+#!/usr/bin/env python3
+import os
+import pathlib
+import sys
+
+args = sys.argv[1:]
+prefix = [
+    "-c",
+    "credential.helper=",
+    "-c",
+    "http.https://github.com/.extraheader=",
+    "ls-remote",
+]
+if len(args) == 7 and args[:5] == prefix and args[6] == "refs/heads/main":
+    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
+        print("credential reached anonymous git", file=sys.stderr)
+        sys.exit(2)
+    repository_url = args[5]
+    if repository_url.lower() == "https://github.com/automattic/kandelo.git":
+        main = os.environ["FAKE_KANDELO_MAIN_SHA"]
+    elif repository_url.lower() == (
+        "https://github.com/kandelo-dev/homebrew-tap-core.git"
+    ):
+        main = os.environ["FAKE_TARGET_MAIN_SHA"]
+    else:
+        print("unsupported anonymous repository", file=sys.stderr)
+        sys.exit(2)
+    root = pathlib.Path(os.environ["FAKE_GITHUB_STATE"])
+    with (root / "git.log").open("a") as log:
+        log.write(repository_url + "\n")
+    print(f"{main}\trefs/heads/main")
+    sys.exit(0)
+
+# Preserve the real Git client for any unrelated fixture operation.
+path = os.environ["PATH"].split(os.pathsep)
+os.environ["PATH"] = os.pathsep.join(path[1:])
+os.execvp("git", ["git", *args])
+PY
+chmod +x "$fake_bin/git"
+
 cat >"$fake_bin/curl" <<'PY'
 #!/usr/bin/env python3
 import json
@@ -443,16 +518,19 @@ ACTIVE_STATE=""
 ACTIVE_RECEIPT=""
 ACTIVE_MANIFEST=""
 EXACT_MAIN_SHA="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+CONTAINS_KANDELO_MAIN_SHA="cccccccccccccccccccccccccccccccccccccccc"
+CONTAINS_TARGET_MAIN_SHA="dddddddddddddddddddddddddddddddddddddddd"
 new_state() {
   ACTIVE_STATE="$TMP_ROOT/state-$1"
   ACTIVE_RECEIPT="$TMP_ROOT/receipt-$1.json"
   ACTIVE_MANIFEST="$manifest"
   mkdir "$ACTIVE_STATE"
   : >"$ACTIVE_STATE/gh.log"
+  : >"$ACTIVE_STATE/git.log"
   : >"$ACTIVE_STATE/lock.log"
 }
 
-run_publisher() {
+run_publisher_with_authority() {
   PATH="$fake_bin:$PATH" \
   FAKE_GITHUB_STATE="$ACTIVE_STATE" \
   FAKE_EXPECTED_LOCK_ROOT="$lock_root" \
@@ -460,20 +538,42 @@ run_publisher() {
   IMMUTABLE_RELEASE_RETRY_DELAY_SECONDS=0 \
   GITHUB_API_RETRY_DELAY_SECONDS=0 \
   GITHUB_REPOSITORY=Kandelo-dev/homebrew-tap-core \
-  FAKE_KANDELO_MAIN_SHA="$EXACT_MAIN_SHA" \
+  FAKE_KANDELO_MAIN_SHA="${FAKE_KANDELO_MAIN_SHA:-$EXACT_MAIN_SHA}" \
+  FAKE_TARGET_MAIN_SHA="${FAKE_TARGET_MAIN_SHA:-$target}" \
+  FAKE_KANDELO_CONTAINED_SHA="$EXACT_MAIN_SHA" \
+  FAKE_TARGET_CONTAINED_SHA="$target" \
   FAKE_MAIN_ADVANCE_AFTER_TAG="${FAKE_MAIN_ADVANCE_AFTER_TAG:-}" \
+  FAKE_CONTAINS_DIVERGE_AFTER_TAG="${FAKE_CONTAINS_DIVERGE_AFTER_TAG:-}" \
   GH_TOKEN=fake-token \
     bash "$REPO_ROOT/scripts/publish-immutable-github-release.sh" \
       --manifest "$ACTIVE_MANIFEST" \
       --asset-root "$asset_root" \
       --lock-root "$lock_root" \
-      --exact-kandelo-main-sha "$EXACT_MAIN_SHA" \
+      "$@" \
       --receipt "$ACTIVE_RECEIPT"
 }
 
 first_asset="$(jq -r '.preferred_asset_names | sort | .[0]' "$manifest")"
 tag="$(jq -r '.tag' "$manifest")"
 target="$(jq -r '.target_commitish' "$manifest")"
+
+run_publisher() {
+  run_publisher_with_authority \
+    --exact-kandelo-main-sha "$EXACT_MAIN_SHA"
+}
+
+run_publisher_contains() {
+  FAKE_KANDELO_MAIN_SHA="$CONTAINS_KANDELO_MAIN_SHA" \
+  FAKE_TARGET_MAIN_SHA="$CONTAINS_TARGET_MAIN_SHA" \
+    run_publisher_with_authority \
+      --kandelo-main-contains-sha "$EXACT_MAIN_SHA" \
+      --target-main-contains-sha "$target"
+}
+
+contains_manifest="$TMP_ROOT/contains-manifest.json"
+jq '.assets = [.assets[0]] |
+    .preferred_asset_names = [.assets[0].name] |
+    .accepted_existing_asset_sets = []' "$manifest" >"$contains_manifest"
 
 new_state wrong-target-main
 expect_failure_containing \
@@ -495,6 +595,135 @@ expect_failure_containing \
       --receipt "$ACTIVE_RECEIPT"
 [ ! -s "$ACTIVE_STATE/gh.log" ] ||
   fail "target-main rejection reached a GitHub API client"
+
+new_state duplicate-kandelo-authority
+ACTIVE_MANIFEST="$contains_manifest"
+expect_failure_containing \
+  "publisher accepted exact and contained Kandelo main authorities" \
+  "exactly one Kandelo main authority is required" \
+  run_publisher_with_authority \
+    --exact-kandelo-main-sha "$EXACT_MAIN_SHA" \
+    --kandelo-main-contains-sha "$EXACT_MAIN_SHA"
+[ ! -s "$ACTIVE_STATE/gh.log" ] ||
+  fail "duplicate Kandelo main authority reached a GitHub API client"
+
+new_state duplicate-target-authority
+ACTIVE_MANIFEST="$contains_manifest"
+expect_failure_containing \
+  "publisher accepted exact and contained target main authorities" \
+  "target exact-main and main-contains authority are mutually exclusive" \
+  run_publisher_with_authority \
+    --exact-kandelo-main-sha "$EXACT_MAIN_SHA" \
+    --exact-target-main-sha "$target" \
+    --target-main-contains-sha "$target"
+[ ! -s "$ACTIVE_STATE/gh.log" ] ||
+  fail "duplicate target main authority reached a GitHub API client"
+
+new_state wrong-contained-target
+ACTIVE_MANIFEST="$contains_manifest"
+expect_failure_containing \
+  "publisher accepted a manifest for a different contained target source" \
+  "manifest target differs from the contained target main source" \
+  run_publisher_with_authority \
+    --kandelo-main-contains-sha "$EXACT_MAIN_SHA" \
+    --target-main-contains-sha 9999999999999999999999999999999999999999
+[ ! -s "$ACTIVE_STATE/gh.log" ] ||
+  fail "contained target mismatch reached a GitHub API client"
+
+# A reviewed source may remain authorized after both protected main branches
+# advance. The publisher must re-prove both ancestry relationships immediately
+# before every release mutation rather than inheriting one campaign-wide check.
+new_state contained-main
+ACTIVE_MANIFEST="$contains_manifest"
+run_publisher_contains >/dev/null
+jq -e --arg tag "$tag" --arg target "$target" '
+  .schema == 1 and .status == "success" and .immutable == true and
+  .tag == $tag and .target_commitish == $target and
+  (.assets | length) == 1
+' "$ACTIVE_RECEIPT" >/dev/null ||
+  fail "contained-main publication receipt is incomplete"
+jq -e --arg tag "$tag" --arg target "$target" '
+  (.releases | length) == 1 and .releases[0].draft == false and
+  (.releases[0].assets | length) == 1 and
+  .tags[$tag] == {"type": "commit", "sha": $target}
+' "$ACTIVE_STATE/state.json" >/dev/null ||
+  fail "contained-main run did not publish one exact immutable release"
+PYTHONDONTWRITEBYTECODE=1 python3 - \
+  "$ACTIVE_STATE/gh.log" "$EXACT_MAIN_SHA" "$CONTAINS_KANDELO_MAIN_SHA" \
+  "$target" "$CONTAINS_TARGET_MAIN_SHA" <<'PY'
+import json
+import pathlib
+import sys
+
+log_path = pathlib.Path(sys.argv[1])
+kandelo_source, kandelo_main, target_source, target_main = sys.argv[2:]
+calls = [json.loads(line) for line in log_path.read_text().splitlines()]
+jq_filter = "[.status, .base_commit.sha, .merge_base_commit.sha] | @tsv"
+kandelo_compare = [
+    "api",
+    f"/repos/Automattic/kandelo/compare/{kandelo_source}...{kandelo_main}",
+    "--jq",
+    jq_filter,
+]
+target_compare = [
+    "api",
+    (
+        "/repos/kandelo-dev/homebrew-tap-core/compare/"
+        f"{target_source}...{target_main}"
+    ),
+    "--jq",
+    jq_filter,
+]
+
+
+def is_mutation(call):
+    return (
+        call[:3] in (["api", "--method", "POST"], ["api", "--method", "PATCH"])
+        or call[:2] == ["release", "upload"]
+    )
+
+
+mutations = [index for index, call in enumerate(calls) if is_mutation(call)]
+if len(mutations) != 4:
+    raise SystemExit(f"expected four release mutations, found {len(mutations)}")
+for index in mutations:
+    if index < 2 or calls[index - 2:index] != [kandelo_compare, target_compare]:
+        raise SystemExit(
+            "release mutation was not immediately preceded by both contains checks"
+        )
+PY
+PYTHONDONTWRITEBYTECODE=1 python3 - "$ACTIVE_STATE/git.log" <<'PY'
+import pathlib
+import sys
+
+calls = pathlib.Path(sys.argv[1]).read_text().splitlines()
+expected = [
+    "https://github.com/Automattic/kandelo.git",
+    "https://github.com/kandelo-dev/homebrew-tap-core.git",
+] * 4
+if calls != expected:
+    raise SystemExit("anonymous protected-main reads did not precede every mutation")
+PY
+
+# If ancestry changes after the complete draft and exact tag exist, the next
+# mutation check must stop before PATCH and leave the recoverable draft intact.
+new_state contained-main-diverged-before-publish
+ACTIVE_MANIFEST="$contains_manifest"
+FAKE_CONTAINS_DIVERGE_AFTER_TAG=1 expect_failure_containing \
+  "publisher made a release public after contained history diverged" \
+  "source SHA is not contained in the current refs/heads/main history" \
+  run_publisher_contains
+jq -e '
+  (.releases | length) == 1 and .releases[0].draft == true and
+  (.releases[0].assets | length) == 1 and (.tags | length) == 1
+' "$ACTIVE_STATE/state.json" >/dev/null ||
+  fail "contained-main race did not stop at the complete tagged draft"
+[ ! -e "$ACTIVE_RECEIPT" ] ||
+  fail "contained-main race emitted a success receipt"
+if jq -s -e 'any(.[]; .[0:3] == ["api", "--method", "PATCH"])' \
+  "$ACTIVE_STATE/gh.log" >/dev/null; then
+  fail "diverged contained history reached the public release PATCH"
+fi
 
 # One run loses the create, one upload, and publish responses after GitHub has
 # committed each operation. Reconciliation must observe state instead of
