@@ -242,9 +242,29 @@ grep -Fq 'VITE_BASE: /kandelo/' <<<"$sealed_boot_block" &&
     <<<"$sealed_boot_block" &&
   grep -Fq \
     'cmp dist/shell.vfs.zst "${{ steps.shell_product.outputs.image }}"' \
-    <<<"$sealed_boot_block" &&
-  grep -Fq 'bash ../../scripts/dev-shell.sh env \' <<<"$sealed_boot_block" &&
+    <<<"$sealed_boot_block" ||
+  fail "the Pages preview must prove the public bottled shell at the published base"
+grep -Fq 'bash ../../scripts/dev-shell.sh env \' <<<"$sealed_boot_block" &&
   grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
+    <<<"$sealed_boot_block" ||
+  fail "the Pages preview must cross the clean development-shell boundary"
+for variable in \
+  VITE_BASE \
+  KANDELO_BROWSER_DEMO_INPUTS \
+  KANDELO_HOMEBREW_MAIN_SHELL_STRICT \
+  KANDELO_HOMEBREW_MAIN_SHELL_SHA256 \
+  KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256 \
+  KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES \
+  KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE \
+  KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL \
+  KANDELO_PLAYWRIGHT_SERVE_DIST \
+  KANDELO_TEST_BASE_URL
+do
+  grep -Fq "\"$variable=\$$variable\" \\" <<<"$sealed_boot_block" ||
+    fail "the Pages preview must pass $variable through the clean dev shell"
+done
+grep -Fq \
+    '"KANDELO_TEST_BASE_URL=$KANDELO_TEST_BASE_URL" \' \
     <<<"$sealed_boot_block" &&
   grep -Fq 'test/kandelo-homebrew-main-shell.spec.ts' \
     <<<"$sealed_boot_block" ||

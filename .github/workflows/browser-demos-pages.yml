@@ -184,8 +184,21 @@ jobs:
         run: |
           set -euo pipefail
           cmp dist/shell.vfs.zst "${{ steps.shell_product.outputs.image }}"
+          # WHY: dev-shell.sh deliberately discards ambient step variables.
+          # Thread every selected product identity through its explicit
+          # boundary so the browser cannot silently test default inputs.
           bash ../../scripts/dev-shell.sh env \
             "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
+            "VITE_BASE=$VITE_BASE" \
+            "KANDELO_BROWSER_DEMO_INPUTS=$KANDELO_BROWSER_DEMO_INPUTS" \
+            "KANDELO_HOMEBREW_MAIN_SHELL_STRICT=$KANDELO_HOMEBREW_MAIN_SHELL_STRICT" \
+            "KANDELO_HOMEBREW_MAIN_SHELL_SHA256=$KANDELO_HOMEBREW_MAIN_SHELL_SHA256" \
+            "KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256=$KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256" \
+            "KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES=$KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES" \
+            "KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE=$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" \
+            "KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL=$KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL" \
+            "KANDELO_PLAYWRIGHT_SERVE_DIST=$KANDELO_PLAYWRIGHT_SERVE_DIST" \
+            "KANDELO_TEST_BASE_URL=$KANDELO_TEST_BASE_URL" \
             npx playwright test \
             test/kandelo-homebrew-main-shell.spec.ts \
             --project=chromium

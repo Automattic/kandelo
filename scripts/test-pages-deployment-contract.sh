@@ -172,8 +172,13 @@ expect_mutation_rejected \
 
 expect_mutation_rejected \
   "bottled preview loses package cache root" \
-  "must prove the public bottled shell at the published base" \
+  "must cross the clean development-shell boundary" \
   's/(      - name: Boot the canonical bottled Pages shell in Chromium[\s\S]*?)^            "WASM_POSIX_BINARY_CACHE_ROOT=\$WASM_POSIX_BINARY_CACHE_ROOT" \\\n/$1/m'
+
+expect_mutation_rejected \
+  "bottled preview loses its demo selector inside dev-shell" \
+  "must pass KANDELO_BROWSER_DEMO_INPUTS through the clean dev shell" \
+  's/^            "KANDELO_BROWSER_DEMO_INPUTS=\$KANDELO_BROWSER_DEMO_INPUTS" \\\n//m'
 
 expect_mutation_rejected \
   "bottled preview uses the retired source test" \
