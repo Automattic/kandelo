@@ -853,7 +853,13 @@ The workflow trust checker discovers jobs from their privileged recipe
 entry-point calls. It currently requires this preparation before both the
 reusable publisher's `build-and-test` and `verify-bottle` jobs, and before
 staging-build's publisher preflight. Adding another job that enters any recipe
-boundary without the same preparation fails the central contract check.
+boundary without the same unconditional, failure-enforcing preparation fails
+the central contract check. Both `.yml` and `.yaml` workflow files are scanned.
+The checker intentionally names the current outer build, verification, and
+test entry points rather than inferring arbitrary shell call graphs. A new
+wrapper around the privileged launcher must extend that marker set in the same
+change; deriving indirect wrappers automatically remains a bounded hardening
+follow-up.
 
 The supervisor implementation is admitted only from the exact root-owned,
 manifest-sealed Kandelo tooling projection. The launcher records that source's

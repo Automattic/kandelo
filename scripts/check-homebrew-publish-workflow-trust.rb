@@ -152,7 +152,7 @@ def named_step(steps, name)
 end
 
 def load_all_workflows
-  Dir.glob(File.join(WORKFLOW_ROOT, "*.yml")).sort.to_h do |path|
+  Dir.glob(File.join(WORKFLOW_ROOT, "*.{yml,yaml}")).sort.to_h do |path|
     relative = path.delete_prefix("#{REPO_ROOT}/")
     [relative, load_workflow(path)]
   end
@@ -187,7 +187,9 @@ def check_privileged_recipe_host_runtime(workflows)
     preparation_indices = steps.each_index.select do |index|
       step = steps.fetch(index)
       step["name"] == HOST_RUNTIME_PREPARATION_STEP &&
-        step["run"] == expected_command
+        step["run"] == expected_command &&
+        !step.key?("if") &&
+        !step.key?("continue-on-error")
     end
     check(
       preparation_indices.length == 1,
@@ -7014,6 +7016,28 @@ def self_test_privileged_recipe_host_runtime(workflows)
       HOST_RUNTIME_PREPARATION_STEP
     )
     step["run"] = "#{step.fetch('run')} --root /tmp/usr"
+    check_privileged_recipe_host_runtime(mutated)
+  end
+
+  expect_rejection("conditional host-runtime preparation") do
+    mutated = deep_copy(workflows)
+    step = mutate_named_step(
+      mutated.fetch(".github/workflows/staging-build.yml"),
+      "preflight",
+      HOST_RUNTIME_PREPARATION_STEP
+    )
+    step["if"] = "${{ false }}"
+    check_privileged_recipe_host_runtime(mutated)
+  end
+
+  expect_rejection("ignored host-runtime preparation failure") do
+    mutated = deep_copy(workflows)
+    step = mutate_named_step(
+      mutated.fetch(".github/workflows/staging-build.yml"),
+      "preflight",
+      HOST_RUNTIME_PREPARATION_STEP
+    )
+    step["continue-on-error"] = true
     check_privileged_recipe_host_runtime(mutated)
   end
 
