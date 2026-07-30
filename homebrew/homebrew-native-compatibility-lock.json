@@ -9333,7 +9333,7 @@
     "llhttp": {
       "internal": {
         "bottle_cellar": ":any",
-        "bottle_checksum": "ee8bd70c57f0fde4aa367f16d91ee109849a3da003e0b1e262c754986d01a06c",
+        "bottle_checksum": "064d963ed771884697010f5bee50c78a8f82289cc5b0ff5793c001e5cd7acd27",
         "desc": "Port of http_parser to llparse",
         "head_dependencies": [
           {
@@ -9343,21 +9343,21 @@
         "homepage": "https://llhttp.org/",
         "license": "MIT",
         "name": "llhttp",
-        "ruby_source_checksum": "1ec195d3912e0f435ff7eab7fb9c487d1b2e1f3030e4b579f6cb3810bcf07acc",
-        "stable_checksum": "ba717a2f99f340a0ee9796aaf2b1acca057e1e37682ffd2bc4def4d3b6bc4005",
+        "ruby_source_checksum": "b8757b852c7ea711433612cf1bdcd035c63fe17a623c1e8410b2f2584ce14f5f",
+        "stable_checksum": "1eb813c7437b31a87496a1cd3ed79f00746720f5e7e29c79b42c02cb69f36c39",
         "stable_dependencies": [
           {
             "cmake": ":build"
           }
         ],
         "stable_url_args": [
-          "https://github.com/nodejs/llhttp/archive/refs/tags/release/v9.4.2.tar.gz"
+          "https://github.com/nodejs/llhttp/archive/refs/tags/release/v9.4.3.tar.gz"
         ],
-        "stable_version": "9.4.2"
+        "stable_version": "9.4.3"
       },
       "public": {
         "bottle_cellar": ":any",
-        "bottle_checksum": "ee8bd70c57f0fde4aa367f16d91ee109849a3da003e0b1e262c754986d01a06c",
+        "bottle_checksum": "064d963ed771884697010f5bee50c78a8f82289cc5b0ff5793c001e5cd7acd27",
         "desc": "Port of http_parser to llparse",
         "head_dependencies": [
           {
@@ -9367,17 +9367,17 @@
         "homepage": "https://llhttp.org/",
         "license": "MIT",
         "name": "llhttp",
-        "ruby_source_checksum": "1ec195d3912e0f435ff7eab7fb9c487d1b2e1f3030e4b579f6cb3810bcf07acc",
-        "stable_checksum": "ba717a2f99f340a0ee9796aaf2b1acca057e1e37682ffd2bc4def4d3b6bc4005",
+        "ruby_source_checksum": "b8757b852c7ea711433612cf1bdcd035c63fe17a623c1e8410b2f2584ce14f5f",
+        "stable_checksum": "1eb813c7437b31a87496a1cd3ed79f00746720f5e7e29c79b42c02cb69f36c39",
         "stable_dependencies": [
           {
             "cmake": ":build"
           }
         ],
         "stable_url_args": [
-          "https://github.com/nodejs/llhttp/archive/refs/tags/release/v9.4.2.tar.gz"
+          "https://github.com/nodejs/llhttp/archive/refs/tags/release/v9.4.3.tar.gz"
         ],
-        "stable_version": "9.4.2"
+        "stable_version": "9.4.3"
       }
     },
     "llvm": {
