@@ -197,7 +197,8 @@ def check_privileged_recipe_host_runtime(workflows)
     )
     check(
       preparation_indices.first < privileged_indices.min,
-      "#{label} enters privileged recipe execution before sealing /usr"
+      "#{label} enters privileged recipe execution before sealing host " \
+        "projection ancestry"
     )
   end
 end
@@ -1189,14 +1190,18 @@ def check_publisher(workflow)
   )
   host_runtime_preparer = File.read(HOST_RUNTIME_PREPARER_PATH)
   [
-    'RUNTIME_ROOT = Path("/usr")',
+    'HOST_PROJECTION_ANCESTORS = (Path("/usr"), Path("/etc"))',
+    "expected_path not in HOST_PROJECTION_ANCESTORS",
     "identity.mode != 0o755",
     "identity.uid == 0 and identity.gid == 0",
     "identity.uid == runner_uid",
     "identity.gid == runner_gid",
+    "path_identity(root) for root in HOST_PROJECTION_ANCESTORS",
+    "if not candidates or candidates != expected_candidates:",
     '"--no-dereference"',
     'f"--from={runner_uid}:{runner_gid}"',
-    "if (after.device, after.inode) != (before.device, before.inode):",
+    "*(str(candidate) for candidate in candidates)",
+    "if (new.device, new.inode) != (old.device, old.inode):",
     "recursive chown",
     "host-runtime preparation accepts no arguments",
   ].each do |fragment|

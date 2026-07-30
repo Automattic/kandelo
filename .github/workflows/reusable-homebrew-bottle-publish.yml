@@ -761,9 +761,10 @@ jobs:
             echo "::error::tap build checkout differs from the validated plan"; exit 2;
           }
 
-      # WHY: Some GitHub-hosted images make /usr runner-owned even though its
-      # contents remain root-owned. Seal that one directory inode before any
-      # admitted Formula can enter the privileged recipe boundary.
+      # WHY: Some GitHub-hosted images make fixed /usr or /etc projection
+      # ancestors runner-owned even though selected children remain root-owned.
+      # Seal those directory inodes before any admitted Formula can enter the
+      # privileged recipe boundary.
       - name: Seal conventional host runtime ownership
         shell: bash
         run: >-
@@ -2265,8 +2266,8 @@ jobs:
           }
 
       # WHY: Verification can execute the same privileged tap-recipe
-      # supervisor as the build. Seal the evidenced /usr directory inode
-      # before an admitted Formula can reach that boundary.
+      # supervisor as the build. Seal the evidenced /usr and /etc projection
+      # ancestor inodes before an admitted Formula can reach that boundary.
       - name: Seal conventional host runtime ownership
         shell: bash
         run: >-
