@@ -58,9 +58,18 @@ validate_roots() {
 }
 
 check_api_seal() {
-  local api_root="$1"
+  local api_root="$1" cache_root cache_state expected_cache_state
   [ -d "$api_root" ] && [ ! -L "$api_root" ] ||
     die "sealed Homebrew API cache is missing"
+  cache_root="$(dirname "$api_root")"
+  [ -d "$cache_root" ] && [ ! -L "$cache_root" ] ||
+    die "sealed Homebrew API cache parent is missing"
+  cache_state="$(stat -c '%u:%a' "$cache_root")" ||
+    die "cannot inspect the sealed Homebrew API cache parent"
+  expected_cache_state="$(id -u):755"
+  [ "$cache_state" = "$expected_cache_state" ] ||
+    die "sealed Homebrew API cache parent has state $cache_state," \
+      "expected $expected_cache_state"
   if find "$api_root" -perm -0022 -print -quit | grep -q .; then
     die "sealed Homebrew API cache is group- or world-writable"
   fi
@@ -113,6 +122,13 @@ prepare() {
     find "$api_root" -type d -exec chmod 0555 {} +
     find "$api_root" -type f -exec chmod 0444 {} +
   fi
+  # WHY: the root-owned API subtree is the protected source, but the isolated
+  # identity cannot inspect or bind-mount it unless every ancestor is
+  # traversable. Keep the cache parent owned and writable only by this trusted
+  # coordinator because Homebrew still needs it for later download-cache
+  # entries; mode 0755 gives the separate Formula identity traversal without
+  # permission to replace the sealed API subtree.
+  chmod 0755 "$cache_root"
   check_api_seal "$api_root"
   run_oracle "$brew_bin" "$cache_root" "$state_root" \
     recheck "$commit" "$state_root/prime.json"

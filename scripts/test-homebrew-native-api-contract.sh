@@ -519,6 +519,35 @@ bash "$PREFLIGHT" prepare \
   [ ! -e "$EMPTY_CACHE/api" ] ||
   fail "zero-root preflight fetched or invented signed API state"
 
+POPULATED_CACHE="$TMP_ROOT/populated-cache"
+POPULATED_STATE="$TMP_ROOT/populated-state"
+POPULATED_ROOTS="$TMP_ROOT/populated-roots.txt"
+POPULATED_BREW="$TMP_ROOT/populated-brew"
+jq -er '.roots.tap_formula_host_dependencies[0]' \
+  "$REPO_ROOT/homebrew/homebrew-native-compatibility-roots.json" \
+  >"$POPULATED_ROOTS"
+cat >"$POPULATED_BREW" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "$1" = ruby ] && [ "$3" = prime ] || {
+  [ "$1" = ruby ] && [ "$3" = recheck ]
+  exit
+}
+mkdir -p "$HOMEBREW_CACHE/api/internal"
+printf '{}\n' >"$HOMEBREW_CACHE/api/formula.jws.json"
+printf '{}\n' >"$5"
+EOF
+chmod 0755 "$POPULATED_BREW"
+bash "$PREFLIGHT" prepare \
+  "$POPULATED_BREW" "$POPULATED_CACHE" "$POPULATED_STATE" \
+  "$REPO_ROOT/homebrew/homebrew-native-compatibility-roots.json" \
+  tap_formula_host_dependencies "$POPULATED_ROOTS"
+[ "$(cat "$POPULATED_STATE/mode")" = "populated" ] &&
+  [ "$(stat -c '%u:%a' "$POPULATED_CACHE")" = "$(id -u):755" ] &&
+  [ -x "$POPULATED_CACHE" ] &&
+  [ -w "$POPULATED_CACHE" ] ||
+  fail "populated preflight did not preserve its trusted cache coordinator"
+
 for occupied_kind in directory symlink dangling-symlink; do
   occupied_cache="$TMP_ROOT/occupied-cache-$occupied_kind"
   case "$occupied_kind" in
