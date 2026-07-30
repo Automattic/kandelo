@@ -106,6 +106,10 @@ sed \
   's#homebrew/test/homebrew_guest_lifecycle_node.ts#scripts/homebrew-main-shell-node-smoke.ts#' \
   "$WORKFLOW" >"$TMP_ROOT/no-full-node-lifecycle.yml"
 expect_rejected "$TMP_ROOT/no-full-node-lifecycle.yml"
+sed \
+  '/"KANDELO_BROWSER_DEMO_INPUTS=\$KANDELO_BROWSER_DEMO_INPUTS"/d' \
+  "$WORKFLOW" >"$TMP_ROOT/dropped-chromium-input-selection.yml"
+expect_rejected "$TMP_ROOT/dropped-chromium-input-selection.yml"
 sed '/      - name: Upload mirror verification and lifecycle publication receipts/i\
       - name: Injected write-capable command\
         shell: bash\
