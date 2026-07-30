@@ -6340,6 +6340,7 @@ assert_publisher_trust_contract() {
   bash "$REPO_ROOT/.github/scripts/test-require-exact-kandelo-main.sh"
   bash "$REPO_ROOT/.github/scripts/test-prepare-homebrew-package-materializer.sh"
   bash "$REPO_ROOT/.github/scripts/test-materialize-exact-package-generations.sh"
+  python3 "$REPO_ROOT/scripts/test-prepare-homebrew-recipe-host-runtime.py"
   ruby "$REPO_ROOT/scripts/check-homebrew-publish-workflow-trust.rb"
 }
 

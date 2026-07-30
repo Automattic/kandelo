@@ -828,6 +828,30 @@ directories, and private work/output roots are mounted into it. The Nix
 closure is queried before service entry and projected as individual
 content-addressed store roots; the whole Nix store is not exposed.
 
+Before any privileged recipe entry point runs, its workflow job seals the
+host `/usr` directory. GitHub-hosted Ubuntu images historically supplied that
+directory as `root:root` mode `0755`; the 2026-07-26 Ubuntu 22.04 and 24.04
+images instead supplied the `/usr` inode as the current workflow identity
+(UID 1001 and GID 1001 in the observed jobs) while its selected children
+remained root-owned. That owner could replace a projected child between
+validation and privileged service use.
+
+The preparer accepts only the historical sealed state or an exact mode-`0755`
+directory owned by the current non-root workflow UID and GID. In the latter
+case it changes only the `/usr` inode to `root:root`, verifies that its device
+and inode did not change, and rechecks the complete final state. It never
+changes descendants recursively because conventional host tools can have
+intentional ownership and mode differences. Every other owner, group, mode,
+type, path resolution, tool state, or post-change identity fails closed. The
+recipe supervisor retains its independent requirement that every projected
+host source and safe ancestor be root-owned and not replaceable.
+
+The workflow trust checker discovers jobs from their privileged recipe
+entry-point calls. It currently requires this preparation before both the
+reusable publisher's `build-and-test` and `verify-bottle` jobs, and before
+staging-build's publisher preflight. Adding another job that enters any recipe
+boundary without the same preparation fails the central contract check.
+
 The supervisor implementation is admitted only from the exact root-owned,
 manifest-sealed Kandelo tooling projection. The launcher records that source's
 state and digest, copies it into a separate root-owned executable inode,
