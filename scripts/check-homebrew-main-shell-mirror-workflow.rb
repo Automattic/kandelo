@@ -12,7 +12,7 @@ WORKFLOW = ARGV.empty? ?
 PUBLISH_JOB_DIGEST =
   "81d6ac11e753e8ff24b124dfb00e9e390f898b28a30953538fafa90a7cc8be64"
 WORKFLOW_DIGEST =
-  "f30d64bf371a45b02c11290a10744a2ab31ef616dabf52a101480b928a0f05be"
+  "cfc1f128b229c50a6528b74225d5257f4f9ccb71a0844ae359ecc6f72ea5fdd4"
 
 def check(condition, message)
   raise message unless condition
@@ -110,6 +110,27 @@ prepare_source = YAML.dump(jobs.fetch("prepare"))
 publish_source = YAML.dump(jobs.fetch("publish"))
 proof_source = YAML.dump(jobs.fetch("public-proof"))
 whole_source = File.read(WORKFLOW)
+shell_step = jobs.fetch("prepare").fetch("steps").find do |step|
+  step["name"] == "Resolve the public revision-22 shell generation"
+end
+check(shell_step, "shell generation resolver step is missing")
+shell_run = shell_step.fetch("run")
+normalized_shell_run = shell_run.gsub(/\\\s+/, " ").gsub(/\s+/, " ")
+selected_roots = normalized_shell_run.scan(
+  /--package(?:=|\s+)([a-z0-9][a-z0-9._+-]*)/,
+).flatten.uniq
+check(selected_roots.include?("shell"),
+      "shell generation does not fetch the shell root")
+direct_product_roots = normalized_shell_run.scan(
+  %r{resolve-binary\.sh programs/([a-z0-9][a-z0-9._+-]*)/},
+).flatten.uniq
+missing_product_roots = direct_product_roots - selected_roots
+# WHY: resolving a published root materializes that root's product, not every
+# separately published dependency product. A workflow that directly consumes
+# another product must select its package root instead of relying on closure
+# metadata that intentionally preserves lazy dependencies.
+check(missing_product_roots.empty?,
+      "direct artifact roots were not fetched: #{missing_product_roots.join(", ")}")
 
 check(prepare_source.include?("persist-credentials: false"),
       "preparation checkouts must not retain credentials")

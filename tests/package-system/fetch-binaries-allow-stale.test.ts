@@ -713,6 +713,13 @@ exit 0
     expect(r.stdout).toMatch(/per-package/);
     expect(r.stdout).toMatch(/build-deps resolve/);
     expect(r.stdout).toMatch(/--package <name>/);
-    expect(r.stdout).toMatch(/declared dependency closure/);
+    const normalizedHelp = r.stdout
+      .replace(/^#\s?/gm, "")
+      .replace(/\s+/g, " ");
+    expect(normalizedHelp).toContain(
+      "A self-contained published program can satisfy resolution before " +
+        "its separately published dependencies are materialized. " +
+        "Consumers that need those products must select those roots too.",
+    );
   });
 });

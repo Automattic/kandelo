@@ -39,6 +39,9 @@ expect_rejected "$TMP_ROOT/authority-as-catalog.yml"
 sed '/check-homebrew-main-shell-release-locks.py/d' \
   "$WORKFLOW" >"$TMP_ROOT/no-structured-lock-check.yml"
 expect_rejected "$TMP_ROOT/no-structured-lock-check.yml"
+sed '/--package homebrew-bootstrap/d' \
+  "$WORKFLOW" >"$TMP_ROOT/unfetched-direct-product.yml"
+expect_rejected "$TMP_ROOT/unfetched-direct-product.yml"
 sed '/      - name: Upload immutable publication receipt/i\
       - name: Injected write-capable command\
         shell: bash\
