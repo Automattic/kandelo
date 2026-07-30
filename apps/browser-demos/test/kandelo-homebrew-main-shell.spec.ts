@@ -3,7 +3,9 @@ import { readFileSync } from "node:fs";
 import { expect, test, type Page } from "@playwright/test";
 import { parseHomebrewRuntimeSupportContract } from "../../../host/src/homebrew-runtime-support";
 import { parseHomebrewVfsMaterializationPolicy } from "../../../host/src/homebrew-vfs-materialization-policy";
+import { corsProxyTargetUrl } from "../../../host/src/networking/cors-proxy-url";
 import { assertMainShellOperationalRuntimeFetches } from "../../../scripts/homebrew-main-shell-image-contract";
+import { DEFAULT_BROWSER_CORS_PROXY_URL } from "../lib/browser-cors-proxy";
 import {
   isShellVfsImageUrl,
   isVfsImageUrl,
@@ -87,6 +89,13 @@ interface ExactShellPage {
   legacyArtifactDownloads: string[];
   bootstrapPayloadRequests: string[];
   bootstrapPayloadResponses: Array<Promise<BootstrapPayloadResponse>>;
+  artifactTransportRequests: ArtifactTransportRequest[];
+}
+
+interface ArtifactTransportRequest {
+  requestUrl: string;
+  targetUrl: string;
+  proxied: boolean;
 }
 
 const BASE_EXPECTED_PACKAGES = [
@@ -112,6 +121,39 @@ function isHomebrewBootstrapUrl(url: string): boolean {
 
 function isHomebrewBootstrapRow(row: LazyDownloadRow): boolean {
   return row.source !== null && isHomebrewBootstrapUrl(row.source);
+}
+
+function browserProxyTargetUrl(
+  requestUrl: string,
+  pageUrl: string,
+): string | undefined {
+  const configuredProxyUrl =
+    process.env.VITE_CORS_PROXY_URL?.trim() ||
+    DEFAULT_BROWSER_CORS_PROXY_URL;
+  const configuredTarget = corsProxyTargetUrl(
+    configuredProxyUrl,
+    requestUrl,
+    pageUrl,
+  );
+  if (configuredTarget !== undefined) return configuredTarget;
+
+  // Vite development uses a same-origin proxy even when the production build
+  // would use the public default. Recognize that route without accepting an
+  // arbitrary query parameter as transport evidence.
+  try {
+    const request = new URL(requestUrl);
+    if (!request.pathname.endsWith("/__kandelo_cors_proxy")) {
+      return undefined;
+    }
+    const rawTarget = request.searchParams.get("url");
+    if (rawTarget === null) return undefined;
+    const target = new URL(rawTarget);
+    return target.protocol === "http:" || target.protocol === "https:"
+      ? target.href
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function bottleRows(rows: readonly LazyDownloadRow[]): LazyDownloadRow[] {
@@ -353,6 +395,7 @@ async function bootExactShellPage(page: Page): Promise<ExactShellPage> {
   const bootstrapPayloadRequests: string[] = [];
   const bootstrapPayloadResponses: Array<Promise<BootstrapPayloadResponse>> =
     [];
+  const artifactTransportRequests: ArtifactTransportRequest[] = [];
   const closedPayloadResponses: Array<{ url: string; status: number }> = [];
   await page.addInitScript((shellVfsImagePathPatternSource) => {
     const evidence = {
@@ -397,28 +440,36 @@ async function bootExactShellPage(page: Page): Promise<ExactShellPage> {
     };
   }, SHELL_VFS_IMAGE_PATH_PATTERN_SOURCE);
   page.on("request", (request) => {
-    const url = request.url();
-    if (request.resourceType() === "fetch" && isHomebrewBootstrapUrl(url)) {
-      bootstrapPayloadRequests.push(url);
+    if (request.resourceType() !== "fetch") return;
+    const requestUrl = request.url();
+    const proxyTarget = browserProxyTargetUrl(requestUrl, page.url());
+    const targetUrl = proxyTarget ?? requestUrl;
+    artifactTransportRequests.push({
+      requestUrl,
+      targetUrl,
+      proxied: proxyTarget !== undefined,
+    });
+    if (isHomebrewBootstrapUrl(targetUrl)) {
+      bootstrapPayloadRequests.push(targetUrl);
       return;
     }
     if (
-      request.resourceType() === "fetch" &&
-      ((/\.(?:wasm|zip)(?:\?|$)/.test(url) &&
-        !/kernel[^/]*\.wasm(?:\?|$)/.test(url)) ||
-        (isVfsImageUrl(url) && !isShellVfsImageUrl(url)))
+      ((/\.(?:wasm|zip)(?:\?|$)/.test(targetUrl) &&
+        !/kernel[^/]*\.wasm(?:\?|$)/.test(targetUrl)) ||
+        (isVfsImageUrl(targetUrl) && !isShellVfsImageUrl(targetUrl)))
     ) {
-      legacyArtifactDownloads.push(url);
+      legacyArtifactDownloads.push(targetUrl);
     }
   });
   page.on("response", (response) => {
-    if (
-      response.request().resourceType() === "fetch" &&
-      isHomebrewBootstrapUrl(response.url())
-    ) {
+    if (response.request().resourceType() !== "fetch") return;
+    const responseUrl = response.url();
+    const targetUrl =
+      browserProxyTargetUrl(responseUrl, page.url()) ?? responseUrl;
+    if (isHomebrewBootstrapUrl(targetUrl)) {
       bootstrapPayloadResponses.push(
         response.body().then((bytes) => ({
-          url: response.url(),
+          url: targetUrl,
           status: response.status(),
           sha256: createHash("sha256").update(bytes).digest("hex"),
           bytes: bytes.byteLength,
@@ -520,6 +571,7 @@ async function bootExactShellPage(page: Page): Promise<ExactShellPage> {
     legacyArtifactDownloads,
     bootstrapPayloadRequests,
     bootstrapPayloadResponses,
+    artifactTransportRequests,
   };
 }
 
@@ -593,6 +645,28 @@ function assertBottleLedger(
     expect(row.loadedBytes).toBe(String(asset!.bytes));
     expect(row.totalBytes).toBe(String(asset!.bytes));
     expect(Number(row.eventCount)).toBeGreaterThanOrEqual(3);
+  }
+}
+
+function assertPublicLazyTransport(
+  shell: ExactShellPage,
+  rows: readonly LazyDownloadRow[],
+): void {
+  if (shell.config.transportMode !== "public") return;
+  for (const row of rows) {
+    expect(row.source, `lazy row ${row.asset} has no source URL`).not.toBeNull();
+    const sourceUrl = new URL(row.source!).href;
+    const matches = shell.artifactTransportRequests.filter(
+      ({ targetUrl }) => targetUrl === sourceUrl,
+    );
+    expect(
+      matches.some(({ proxied }) => proxied),
+      `lazy source bypassed the browser proxy: ${String(row.source)}`,
+    ).toBe(true);
+    expect(
+      matches.filter(({ proxied }) => !proxied),
+      `lazy source was also fetched directly: ${String(row.source)}`,
+    ).toEqual([]);
   }
 }
 
@@ -824,5 +898,6 @@ printf 'HOMEBREW_OPERATIONAL_RUNTIME_OK\n'
   ).toBeGreaterThan(0);
   expect(lazyRows.filter(isHomebrewBootstrapRow)).toHaveLength(1);
   assertBottleLedger(lazyRows, shell.mirrorPlan);
+  assertPublicLazyTransport(shell, lazyRows);
   expect(shell.legacyArtifactDownloads).toEqual([]);
 });

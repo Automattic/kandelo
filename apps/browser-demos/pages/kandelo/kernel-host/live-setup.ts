@@ -36,6 +36,9 @@ import {
   homebrewClosedAcceptanceAssetRoot,
 } from "../../../lib/homebrew-closed-acceptance";
 import {
+  resolveBrowserCorsProxyUrl,
+} from "../../../lib/browser-cors-proxy";
+import {
   finalizeKernelOwnedImage,
   settleWebKitReclaim,
   trackTransientImageBuffer,
@@ -484,6 +487,12 @@ const APP_PATH = import.meta.env.BASE_URL + "app";
 const PROTO = window.location.protocol === "https:" ? "https" : "http";
 const SW_URL = import.meta.env.BASE_URL + "service-worker.js";
 const DEV_CORS_PROXY_PATH = import.meta.env.BASE_URL + "__kandelo_cors_proxy";
+const BROWSER_CORS_PROXY_URL = resolveBrowserCorsProxyUrl({
+  configuredUrl: import.meta.env.VITE_CORS_PROXY_URL,
+  development: import.meta.env.DEV,
+  baseUrl: import.meta.env.BASE_URL,
+  pageUrl: window.location.href,
+});
 const COI_RELOAD_SESSION_KEY = "kandelo:coi-reload-attempted";
 const PHP_FPM_WORKERS = 6;
 const PATCHED_PHP_FPM_CONF = `[global]
@@ -1396,6 +1405,10 @@ async function bootProfile(
   try {
     kernel = new BrowserKernel({
       kernelOwnedFs: true,
+      // WHY: the service worker, guest sockets, and lazy VFS are separate
+      // transports. The live shell must explicitly give its kernel the same
+      // deployment proxy or release-hosted lazy bottles bypass it under COEP.
+      corsProxyUrl: BROWSER_CORS_PROXY_URL,
       maxWorkers: profile.init?.maxWorkers ?? 4,
       maxMemoryPages:
         profile.init?.maxMemoryPages ?? profile.maxMemoryPages,

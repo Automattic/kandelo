@@ -359,8 +359,8 @@ test("browser workers proxy external lazy archives under cross-origin isolation"
       response.writeHead(404).end();
       return;
     }
-    // Deliberately omit CORS and CORP headers. A cross-origin-isolated worker
-    // cannot consume this response directly; the same-origin proxy must.
+    // Deliberately omit CORS. Lazy VFS must read the response bytes, and even
+    // a CORP header would not make an opaque no-CORS body readable to JS.
     response.writeHead(200, {
       "content-length": String(archive.byteLength),
       "content-type": "application/zip",

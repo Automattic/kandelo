@@ -14,8 +14,9 @@ type LazyFetch = (
  * Build the browser transport for lazy VFS files and archives.
  *
  * Same-origin assets keep the ordinary browser path. External HTTP(S) assets
- * use the configured proxy because a cross-origin-isolated worker cannot
- * consume a release asset unless its response opts into CORS or CORP.
+ * use the configured proxy because lazy materialization must read the response
+ * bytes. That requires CORS; CORP can permit embedding under COEP, but it does
+ * not make an opaque no-CORS response body readable to JavaScript.
  */
 export function createBrowserLazyFetcher(
   corsProxyUrl: string,

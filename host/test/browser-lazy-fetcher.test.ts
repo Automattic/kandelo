@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
+import {
+  corsProxyFetchUrl,
+  corsProxyTargetUrl,
+} from "../src/networking/cors-proxy-url";
 import { createBrowserLazyFetcher } from "../src/vfs/browser-lazy-fetcher";
 
 const RUNTIME_URL = "https://demo.kandelo.test/assets/kernel-worker.js";
@@ -64,5 +68,50 @@ describe("browser lazy VFS fetch transport", () => {
     expect(() =>
       createBrowserLazyFetcher("  ", { runtimeUrl: RUNTIME_URL })
     ).toThrow("must not be empty");
+  });
+
+  it("recovers encoded and bare-query proxy targets for diagnostics", () => {
+    const target =
+      "https://github.com/example/project/releases/download/v1/runtime.zip";
+    for (const proxy of [
+      "https://demo.kandelo.test/__proxy?url=",
+      "https://proxy.kandelo.test/?",
+    ]) {
+      expect(corsProxyTargetUrl(
+        proxy,
+        corsProxyFetchUrl(proxy, target),
+      )).toBe(target);
+    }
+  });
+
+  it("resolves a relative diagnostic proxy like the browser runtime", () => {
+    const pageUrl = "https://demo.kandelo.test/kandelo/?demo=shell";
+    const relativeProxy = "artifact-proxy?url=";
+    const absoluteProxy = new URL(relativeProxy, pageUrl).href;
+    const target =
+      "https://github.com/example/project/releases/download/v1/runtime.zip";
+
+    expect(corsProxyTargetUrl(
+      relativeProxy,
+      corsProxyFetchUrl(absoluteProxy, target),
+      pageUrl,
+    )).toBe(target);
+  });
+
+  it("does not decode unrelated, malformed, or non-HTTP proxy URLs", () => {
+    const proxy = "https://demo.kandelo.test/__proxy?url=";
+    expect(corsProxyTargetUrl(proxy, "https://elsewhere.test/file")).toBe(
+      undefined,
+    );
+    expect(corsProxyTargetUrl(proxy, `${proxy}%zz`)).toBe(undefined);
+    expect(corsProxyTargetUrl(
+      "  ",
+      "https://demo.kandelo.test/runtime.zip",
+      RUNTIME_URL,
+    )).toBe(undefined);
+    expect(corsProxyTargetUrl(
+      proxy,
+      `${proxy}${encodeURIComponent("file:///tmp/private")}`,
+    )).toBe(undefined);
   });
 });

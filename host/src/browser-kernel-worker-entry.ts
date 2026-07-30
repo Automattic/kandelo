@@ -898,8 +898,8 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
     memfs.setLazyFetcher(createClosedLazyAssetFetcherFromOwnedAssets(msg.closedLazyAssets));
   } else if (msg.config.corsProxyUrl?.trim()) {
     // WHY: guest networking and lazy VFS downloads are separate fetch paths.
-    // A cross-origin-isolated worker cannot read GitHub release assets unless
-    // lazy files and archives use the same explicit browser proxy as sockets.
+    // Lazy VFS must read and verify release-asset bytes, which requires CORS.
+    // CORP alone cannot make an opaque response body readable to JavaScript.
     memfs.setLazyFetcher(createBrowserLazyFetcher(msg.config.corsProxyUrl));
   }
   const mounts: MountConfig[] = [

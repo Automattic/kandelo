@@ -31,6 +31,9 @@ import {
   homebrewClosedAcceptanceAssetRoot,
   homebrewClosedAcceptanceInputNames,
 } from "./lib/homebrew-closed-acceptance";
+import {
+  DEFAULT_BROWSER_CORS_PROXY_URL,
+} from "./lib/browser-cors-proxy";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
@@ -54,7 +57,6 @@ const browserProgramCacheRoot = canonicalizeFromExistingAncestor(
 const caseInsensitivePaths = fs.existsSync(
   path.join(__dirname, "VITE.CONFIG.TS"),
 );
-const DEFAULT_CORS_PROXY_URL = "https://wordpress-playground-cors-proxy.net/?";
 const preferredLocalPort = 5401;
 
 function pathIsWithin(root: string, file: string): boolean {
@@ -128,7 +130,7 @@ function configuredCorsProxyUrl(): string | undefined {
 }
 
 function buildCorsProxyUrl(): string {
-  return configuredCorsProxyUrl() || DEFAULT_CORS_PROXY_URL;
+  return configuredCorsProxyUrl() || DEFAULT_BROWSER_CORS_PROXY_URL;
 }
 
 function serviceWorkerPathForBase(base: string): string {
