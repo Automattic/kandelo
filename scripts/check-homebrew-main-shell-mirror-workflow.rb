@@ -12,7 +12,7 @@ WORKFLOW = ARGV.empty? ?
 PUBLISH_JOB_DIGEST =
   "64bd13ea5a8d00953acfec3e02607f7ae70837706c868827bed5259c6043aeb2"
 WORKFLOW_DIGEST =
-  "73ab04589abdc54c321ac527f54477e8b5f139ee460e90f0d2ffded80af07bf0"
+  "d146961cbdd36b3ef2fbf59a17cb5e17e8bc37eee517b35dc26e1c4478708514"
 DOWNLOAD_ACTION =
   "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 UPLOAD_ACTION =
@@ -81,11 +81,18 @@ inputs.each do |name, spec|
 end
 
 jobs = workflow.fetch("jobs")
-check(jobs.keys.sort == %w[prepare public-proof publish], "job set differs")
+check(jobs.keys.sort == %w[
+        prepare public-chromium-proof public-node-proof publish
+      ],
+      "job set differs")
 expected_permissions = {
   "prepare" => { "contents" => "read" },
   "publish" => { "actions" => "read", "contents" => "write" },
-  "public-proof" => { "actions" => "read", "contents" => "read" },
+  "public-node-proof" => { "actions" => "read", "contents" => "read" },
+  "public-chromium-proof" => {
+    "actions" => "read",
+    "contents" => "read",
+  },
 }
 expected_permissions.each do |name, permissions|
   check(jobs.fetch(name).fetch("permissions") == permissions,
@@ -93,8 +100,10 @@ expected_permissions.each do |name, permissions|
 end
 check(!jobs.fetch("prepare").key?("needs"), "prepare must be the source job")
 check(jobs.fetch("publish")["needs"] == "prepare", "publish dependency differs")
-check(jobs.fetch("public-proof")["needs"] == %w[prepare publish],
-      "public proof dependency differs")
+%w[public-node-proof public-chromium-proof].each do |name|
+  check(jobs.fetch(name)["needs"] == %w[prepare publish],
+        "#{name} dependency differs")
+end
 # WHY: this is the only job with the tap's write token. Freezing its complete
 # declarative contract prevents an apparently harmless extra step, job-level
 # environment, action, or checkout option from gaining publication authority.
@@ -135,7 +144,17 @@ jobs.each do |job_name, job|
         "path" => "${{ runner.temp }}/homebrew-guest-lifecycle-inputs-handoff",
       },
     ],
-    "public-proof" => [
+    "public-node-proof" => [
+      {
+        "name" => MIRROR_HANDOFF,
+        "path" => "${{ runner.temp }}/main-shell-mirror-handoff",
+      },
+      {
+        "name" => LIFECYCLE_HANDOFF,
+        "path" => "${{ runner.temp }}/homebrew-guest-lifecycle-inputs-handoff",
+      },
+    ],
+    "public-chromium-proof" => [
       {
         "name" => MIRROR_HANDOFF,
         "path" => "${{ runner.temp }}/main-shell-mirror-handoff",
@@ -153,10 +172,13 @@ end
 
 prepare_job = jobs.fetch("prepare")
 publish_job = jobs.fetch("publish")
-proof_job = jobs.fetch("public-proof")
+node_proof_job = jobs.fetch("public-node-proof")
+chromium_proof_job = jobs.fetch("public-chromium-proof")
 prepare_source = YAML.dump(jobs.fetch("prepare"))
 publish_source = YAML.dump(jobs.fetch("publish"))
-proof_source = YAML.dump(jobs.fetch("public-proof"))
+node_proof_source = YAML.dump(node_proof_job)
+chromium_proof_source = YAML.dump(chromium_proof_job)
+proof_source = node_proof_source + chromium_proof_source
 whole_source = File.read(WORKFLOW)
 shell_step = jobs.fetch("prepare").fetch("steps").find do |step|
   step["name"] == "Resolve the public revision-22 shell generation"
@@ -301,13 +323,16 @@ check(receipt_paths == [
 check(publish_source.scan(
   "verify-homebrew-guest-lifecycle-publication.sh"
 ).length == 1 &&
-      proof_source.scan(
+      node_proof_source.scan(
+        "verify-homebrew-guest-lifecycle-publication.sh"
+      ).length == 1 &&
+      chromium_proof_source.scan(
         "verify-homebrew-guest-lifecycle-publication.sh"
       ).length == 1,
-      "lifecycle-input handoff must be revalidated before and after publication")
+      "each consumer must revalidate the lifecycle-input handoff")
 
 public_fixture = named_step(
-  proof_job,
+  chromium_proof_job,
   "Create exact all-public Chromium lifecycle fixture",
 )
 public_fixture_run = public_fixture.fetch("run")
@@ -321,26 +346,53 @@ check(public_fixture_run.include?(
       public_fixture_run.scan("--transport-mode public").length == 1 &&
       !public_fixture_run.include?("--transport-mode closed"),
       "Chromium lifecycle fixture is not all-public")
-proof_steps = proof_job.fetch("steps")
-proof_checkout_index = proof_steps.index do |step|
+chromium_proof_steps = chromium_proof_job.fetch("steps")
+proof_checkout_index = chromium_proof_steps.index do |step|
   step["name"] == "Check out exact Kandelo consumer"
 end
-musl_fetch_index = proof_steps.index do |step|
+musl_fetch_index = chromium_proof_steps.index do |step|
   step["name"] == "Fetch musl submodule for browser source-build fallback"
 end
 check(proof_checkout_index && musl_fetch_index == proof_checkout_index + 1,
-      "public proof must fetch musl immediately after its exact checkout")
-musl_fetch = proof_steps.fetch(musl_fetch_index)
+      "Chromium proof must fetch musl immediately after its exact checkout")
+musl_fetch = chromium_proof_steps.fetch(musl_fetch_index)
 check(musl_fetch["uses"] == "./.github/actions/fetch-submodules" &&
       musl_fetch["with"] == { "submodules" => "libc/musl" },
-      "public proof musl fetch contract differs")
-check(proof_source.scan("--transport-mode public").length == 3 &&
+      "Chromium proof musl fetch contract differs")
+check(!node_proof_source.include?("./.github/actions/fetch-submodules") &&
+      !node_proof_source.include?("apps/browser-demos") &&
+      !node_proof_source.include?("playwright"),
+      "Node proof includes browser-only dependencies")
+check(node_proof_source.scan("--transport-mode public").length == 1 &&
+      chromium_proof_source.scan("--transport-mode public").length == 1 &&
       !proof_source.include?("--transport-mode closed"),
       "Node and Chromium public transport coverage differs")
-check(proof_source.include?('--core-revision "$TAP_CATALOG_REF"'),
-      "guest lifecycle is not pinned to the sealed tap catalog")
+check(node_proof_source.include?('--core-revision "$TAP_CATALOG_REF"') &&
+      chromium_proof_source.include?(
+        '--core-revision "$TAP_CATALOG_REF"'
+      ),
+      "guest lifecycles are not pinned to the sealed tap catalog")
+node_lifecycle = named_step(
+  node_proof_job,
+  "Prove full public guest lifecycle in Node",
+).fetch("run")
+check(
+  node_lifecycle.include?(
+    "homebrew/test/homebrew_guest_lifecycle_node.ts"
+  ) &&
+    node_lifecycle.include?("--timeout-ms 900000") &&
+    node_lifecycle.include?('--canary-revision "$CANARY_REF"'),
+  "full Node guest lifecycle proof is missing",
+)
+check(node_lifecycle.include?("memory.current") &&
+      node_lifecycle.include?("memory.peak") &&
+      node_lifecycle.include?("memory.events") &&
+      node_lifecycle.include?("aggregate_rss_kib") &&
+      node_lifecycle.include?("sample < 64") &&
+      node_lifecycle.include?("sleep 15"),
+      "bounded Node lifecycle resource telemetry differs")
 chromium_step = named_step(
-  proof_job,
+  chromium_proof_job,
   "Prove public shell and live tap lifecycle in Chromium",
 )
 chromium_run = chromium_step.fetch("run")
@@ -354,7 +406,11 @@ check(chromium_run.include?("--project=chromium") &&
         "${{ steps.public-fixture.outputs.fixture }}"
       ),
       "Chromium public transport proof is missing")
-proof_env_keys = ([proof_job] + proof_job.fetch("steps")).flat_map do |entry|
+proof_entries = [
+  node_proof_job,
+  chromium_proof_job,
+] + node_proof_job.fetch("steps") + chromium_proof_job.fetch("steps")
+proof_env_keys = proof_entries.flat_map do |entry|
   env = entry["env"]
   env.is_a?(Hash) ? env.keys : []
 end
@@ -366,24 +422,49 @@ check(chromium_run.include?(
   'test -z "${KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT:-}"'
 ), "Chromium proof does not reject closed acceptance inputs")
 
-public_resolution = named_step(
-  proof_job,
+node_resolution = named_step(
+  node_proof_job,
+  "Resolve exact public Node proof inputs",
+).fetch("run")
+normalized_node_resolution =
+  node_resolution.gsub(/\\\s+/, " ").gsub(/\s+/, " ")
+node_selected_roots = normalized_node_resolution.scan(
+  /--package(?:=|\s+)([a-z0-9][a-z0-9._+-]*)/,
+).flatten
+check(node_selected_roots == ["kernel"],
+      "Node proof must fetch only the kernel package root")
+check(node_resolution.include?(
+  'bash scripts/resolve-binary.sh kernel.wasm >/dev/null'
+) &&
+      node_resolution.include?(
+        'echo "image=$lifecycle/main-shell.vfs.zst"'
+      ) &&
+      !node_resolution.include?("prepare-browser") &&
+      !node_resolution.include?("--package shell") &&
+      !node_resolution.include?("--package homebrew-bootstrap"),
+      "Node proof does not consume only handoff products and the kernel")
+
+chromium_resolution = named_step(
+  chromium_proof_job,
   "Resolve the exact public browser generation",
 ).fetch("run")
-check(public_resolution.include?(
-  'lifecycle_root="$(jq -er \'.release.root\' "$lifecycle/handoff.json")"'
-) &&
-      public_resolution.include?(
-        'env -u GH_TOKEN -u GITHUB_TOKEN \\'
-      ) &&
-      public_resolution.include?('"${lifecycle_root}${name}"') &&
-      public_resolution.include?(
-        'cmp "$lifecycle/$name" "$RUNNER_TEMP/public-$name"'
-      ),
-      "anonymous lifecycle-input release readback differs")
-LIFECYCLE_ASSETS.each do |asset|
-  check(public_resolution.include?(asset),
-        "public lifecycle-input readback omits #{asset}")
+[
+  ["Node", node_resolution, "$RUNNER_TEMP/public-node-$name"],
+  ["Chromium", chromium_resolution, "$RUNNER_TEMP/public-$name"],
+].each do |label, resolution, output|
+  check(resolution.include?(
+    'lifecycle_root="$(jq -er \'.release.root\' "$lifecycle/handoff.json")"'
+  ) &&
+        resolution.include?('env -u GH_TOKEN -u GITHUB_TOKEN \\') &&
+        resolution.include?('"${lifecycle_root}${name}"') &&
+        resolution.include?(
+          'cmp "$lifecycle/$name" "' + output + '"'
+        ),
+        "#{label} anonymous lifecycle-input release readback differs")
+  LIFECYCLE_ASSETS.each do |asset|
+    check(resolution.include?(asset),
+          "#{label} public lifecycle-input readback omits #{asset}")
+  end
 end
 
 forbidden = [
@@ -415,8 +496,9 @@ check(whole_source.scan(
 check(!whole_source.include?("inputs.tap-authority-ref"),
       "event data may not select the live tap caller authority")
 # WHY: preparation supplies the exact bytes later accepted by the token-bearing
-# job, and public-proof supplies the release claim. Freezing only the write job
-# would still permit either side of that authority/evidence chain to change.
+# job, while the two fresh proof jobs independently supply the Node and browser
+# release claims. Freezing only the write job would still permit either side of
+# that authority/evidence chain to change.
 check(contract_digest(workflow) == WORKFLOW_DIGEST,
       "complete mirror workflow contract differs")
 
