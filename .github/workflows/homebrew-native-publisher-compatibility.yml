@@ -1,0 +1,180 @@
+name: Homebrew native publisher compatibility
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/homebrew-native-publisher-compatibility.yml
+      - .github/workflows/reusable-homebrew-bottle-publish.yml
+      - flake.lock
+      - flake.nix
+      - homebrew/**
+      - scripts/build-fork-instrument-tool.sh
+      - scripts/build-musl.sh
+      - scripts/check-homebrew-publish-workflow-trust.rb
+      - scripts/dev-shell.sh
+      - scripts/homebrew-*
+      - scripts/materialize-exact-package-generations.sh
+      - scripts/materialize-resolver-binaries.sh
+      - scripts/prepare-homebrew-package-materializer.sh
+      - scripts/require-exact-kandelo-main.sh
+      - scripts/resolve-binary.sh
+      - scripts/seal-homebrew-formula-checker.sh
+      - scripts/test-homebrew-*
+      - scripts/validate-software-gallery.mjs
+
+permissions:
+  contents: read
+
+concurrency:
+  group: homebrew-native-publisher-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  exact-linux-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact PR head
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+          submodules: false
+
+      - name: Checkout exact reviewed Homebrew source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          repository: Homebrew/brew
+          ref: cf5bc21c6b127e168ef7cfa982ba7db62874690e
+          path: brew-source
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Generate exact Linux compatibility lock
+        shell: bash
+        env:
+          GENERATED_LOCK: ${{ runner.temp }}/homebrew-native-proof/compatibility-lock.json
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$GENERATED_LOCK")"
+          # WHY: these values historically redirected Homebrew away from the
+          # signed API. The full updater must remain deterministic even when
+          # every caller-controlled transport/runtime setting is poisoned.
+          bash scripts/dev-shell.sh env \
+            HOMEBREW_NO_INSTALL_FROM_API=1 \
+            HOMEBREW_API_DOMAIN=https://api.poison.invalid \
+            HOMEBREW_BOTTLE_DOMAIN=https://bottles.poison.invalid \
+            HOMEBREW_CURL_PATH=/bin/false \
+            HOMEBREW_GIT_PATH=/bin/false \
+            HOMEBREW_CORE_GIT_REMOTE=https://git.poison.invalid/core \
+            RUBYOPT=-rdoes-not-exist \
+            BUNDLE_GEMFILE=/does/not/exist \
+            bash -c '
+              set -euo pipefail
+              [ "$HOMEBREW_NO_INSTALL_FROM_API" = 1 ]
+              [ "$HOMEBREW_API_DOMAIN" = https://api.poison.invalid ]
+              [ "$HOMEBREW_BOTTLE_DOMAIN" = \
+                https://bottles.poison.invalid ]
+              [ "$HOMEBREW_CURL_PATH" = /bin/false ]
+              [ "$HOMEBREW_GIT_PATH" = /bin/false ]
+              [ "$HOMEBREW_CORE_GIT_REMOTE" = \
+                https://git.poison.invalid/core ]
+              [ "$RUBYOPT" = -rdoes-not-exist ]
+              [ "$BUNDLE_GEMFILE" = /does/not/exist ]
+              exec bash \
+                scripts/update-homebrew-native-compatibility-lock.sh \
+                "$1" "$2"
+            ' kandelo-native-poison \
+              "$GITHUB_WORKSPACE/brew-source/bin/brew" \
+              "$GENERATED_LOCK"
+
+      - name: Require reviewed lock equality
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmp \
+            homebrew/homebrew-native-compatibility-lock.json \
+            "$RUNNER_TEMP/homebrew-native-proof/compatibility-lock.json"
+
+      - name: Prove CA postinstall, OpenSSL link, and verified TLS
+        id: ca-proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_SUDO_BIN=/usr/bin/sudo \
+            bash scripts/test-homebrew-native-ca-lifecycle.sh \
+              "$GITHUB_WORKSPACE/brew-source/bin/brew" \
+              "$RUNNER_TEMP/homebrew-native-proof/ca-lifecycle.json"
+
+      - name: Validate native CA lifecycle evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          evidence="$RUNNER_TEMP/homebrew-native-proof/ca-lifecycle.json"
+          [ -f "$evidence" ] && [ ! -L "$evidence" ]
+          [ "$(stat -c '%s' "$evidence")" -le 16777216 ]
+          jq -e \
+            --arg commit cf5bc21c6b127e168ef7cfa982ba7db62874690e \
+            '
+              keys == [
+                "admission",
+                "ca_certificates",
+                "cellar",
+                "homebrew_commit",
+                "kind",
+                "openssl",
+                "root",
+                "schema"
+              ] and
+              .schema == 1 and
+              .kind == "kandelo-homebrew-native-ca-lifecycle" and
+              .homebrew_commit == $commit and
+              .root == "ruby" and
+              .admission.kind ==
+                "kandelo-homebrew-native-api-attestation" and
+              .admission.homebrew_commit == $commit and
+              .admission.purpose == "tap_formula_host_dependencies" and
+              .admission.roots == ["ruby"] and
+              .cellar.kind ==
+                "kandelo-homebrew-native-cellar-attestation" and
+              .cellar.homebrew_commit == $commit and
+              .cellar.required_formulae == ["ruby"] and
+              any(.cellar.kegs[]; .name == "ca-certificates") and
+              any(.cellar.kegs[]; .name == "openssl@3") and
+              any(.cellar.kegs[]; .name == "ruby") and
+              .ca_certificates.openssl_cert_link == true and
+              (
+                .ca_certificates.cert_pem_sha256 |
+                test("^[0-9a-f]{64}$")
+              ) and
+              (
+                .openssl.version |
+                type == "string" and startswith("OpenSSL 3.")
+              ) and
+              .openssl.verified_tls_host == "github.com"
+            ' "$evidence" >/dev/null
+
+      - name: Retain native CA lifecycle evidence
+        if: ${{ always() && steps.ca-proof.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: homebrew-native-ca-lifecycle
+          path: ${{ runner.temp }}/homebrew-native-proof/ca-lifecycle.json
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Retain exact generated Linux lock
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: homebrew-native-linux-lock
+          path: ${{ runner.temp }}/homebrew-native-proof/compatibility-lock.json
+          if-no-files-found: ignore
+          retention-days: 14

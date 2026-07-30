@@ -10,6 +10,9 @@ require "yaml"
 
 REPO_ROOT = File.expand_path("..", __dir__)
 PUBLISHER_PATH = File.join(REPO_ROOT, ".github/workflows/reusable-homebrew-bottle-publish.yml")
+NATIVE_COMPATIBILITY_PATH = File.join(
+  REPO_ROOT, ".github/workflows/homebrew-native-publisher-compatibility.yml"
+)
 MAINTENANCE_PATH = File.join(REPO_ROOT, ".github/workflows/reusable-homebrew-bottle-maintenance.yml")
 REPOSITORY_CANARY_PATH = File.join(
   REPO_ROOT, ".github/workflows/reusable-homebrew-repository-namespace-canary.yml"
@@ -21,16 +24,30 @@ ROOTFS_PUBLICATION_SELECTION_SHA256 =
   "4f64ae46fb71e0ebc4eac6cec8f288583b1ec922844d6a555632867b4efcbcda"
 TAP_CALLER_ROOT = File.join(REPO_ROOT, "homebrew/homebrew-tap-core/.github/workflows")
 CHECKOUT_ACTION = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
+# WHY: the reusable publishers freeze v6 in their reviewed step digests. This
+# read-only PR workflow follows the repository-wide v7 pin independently.
+NATIVE_COMPATIBILITY_CHECKOUT_ACTION =
+  "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
 NIX_ACTION = "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25"
 MAGIC_NIX_ACTION = "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d"
 UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 DOWNLOAD_ACTION = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
-BREW_COMMIT = "34c40c18ffa2029b611b61c73273e32c003d0842"
+BREW_COMMIT = "cf5bc21c6b127e168ef7cfa982ba7db62874690e"
+NATIVE_CA_PROOF_SHA256 =
+  "5c88adf6e56116ff072023d726d6fa1e3fc86ee33d029c64265b315ba509468a"
+NATIVE_LOCK_GENERATION_RUN_SHA256 =
+  "749cb36f59e2ee42cc6a43903ad7c29ec6a5ba93fea16c3b4f59dde6110093a1"
+NATIVE_LOCK_EQUALITY_RUN_SHA256 =
+  "5b9e2687a6f2a431ca8f79e5b888d9ecc7ace116f8e7b18a9237dad2083156a6"
+NATIVE_CA_PROOF_RUN_SHA256 =
+  "c8192c2521864005b34e9eaa39d44d11d580997db39d6e64f2afe30fe447eb91"
+NATIVE_CA_VALIDATION_RUN_SHA256 =
+  "03a44f5ed33df47783fe971de60d0b2fe08b73ef642af12298a863642bd598aa"
 PUBLISHER_PLAN_DIGEST = "59a72fdf1dbe3b115208e760d9b28869dcf98e293b4a8b555d4a8b557c58d1c4"
-PUBLISHER_BUILD_DIGEST = "15cc8579e57374818daf304a1746f55e3211a8b57d7e70b1f5bd294f7374495a"
+PUBLISHER_BUILD_DIGEST = "9c46f62b918968696fcab222dd2735e85af894e13beacdd6d27a3a0d6b3ef7aa"
 PUBLISHER_UPLOAD_DIGEST = "a44f8b7b2eb1d4b9436496cc9a099b80fb70be52143820e77fb7196e807d302f"
 PUBLISHER_INDEX_DIGEST = "7b05a7e4b076628ab999f9edb2e39a6641c4bb9a2563afcf19be15a119566bbe"
-PUBLISHER_VERIFY_DIGEST = "7c6489e473ccd2c235682c436fc805139178f9c5993096e905a8d231d98aaea2"
+PUBLISHER_VERIFY_DIGEST = "c90d12751436fe0507f7d36c849b79408c50612d2a7670ba6a3d88c4215d8e4a"
 PUBLISHER_FINALIZE_DIGEST = "b17e7bf5d0a5ef512e49f74c224a94958642dfdd80a27439f2a0335816a0886b"
 PUBLISHER_VFS_RELEASE_DIGEST = "2db9ec075edf382e326066d5f49a32947f5a584fce26a966fb9fff23bbbe3c26"
 MAINTENANCE_VALIDATE_DIGEST = "30ebccd5d44e004e37f168e81284d7ceb18accfa067c05248c1cc19398a7515f"
@@ -452,6 +469,7 @@ def check_caller_validation_behavior(workflow)
             "write publication requires an exact reviewed lowercase 40-character tap commit SHA"
           ), "publisher write path accepts #{label} as its tap source")
   end
+
 end
 
 def check_kandelo_main_admission_behavior(workflow)
@@ -728,6 +746,194 @@ def check_tap_callers
   )
 end
 
+def check_native_compatibility_workflow(workflow)
+  ca_proof_path = File.join(
+    REPO_ROOT, "scripts/test-homebrew-native-ca-lifecycle.sh"
+  )
+  check(File.file?(ca_proof_path) && !File.symlink?(ca_proof_path) &&
+        (File.stat(ca_proof_path).mode & 0o111).positive? &&
+        Digest::SHA256.file(ca_proof_path).hexdigest ==
+          NATIVE_CA_PROOF_SHA256,
+        "native CA lifecycle proof bytes or executable mode changed")
+  top_keys = workflow.keys.map { |key| key == true ? "on" : key.to_s }.sort
+  check(top_keys == %w[concurrency jobs name on permissions],
+        "native compatibility workflow has unexpected top-level configuration")
+  check(workflow["name"] == "Homebrew native publisher compatibility",
+        "native compatibility workflow name changed")
+  check(workflow_events(workflow) == {
+    "pull_request" => {
+      "paths" => [
+        ".github/workflows/homebrew-native-publisher-compatibility.yml",
+        ".github/workflows/reusable-homebrew-bottle-publish.yml",
+        "flake.lock",
+        "flake.nix",
+        "homebrew/**",
+        "scripts/build-fork-instrument-tool.sh",
+        "scripts/build-musl.sh",
+        "scripts/check-homebrew-publish-workflow-trust.rb",
+        "scripts/dev-shell.sh",
+        "scripts/homebrew-*",
+        "scripts/materialize-exact-package-generations.sh",
+        "scripts/materialize-resolver-binaries.sh",
+        "scripts/prepare-homebrew-package-materializer.sh",
+        "scripts/require-exact-kandelo-main.sh",
+        "scripts/resolve-binary.sh",
+        "scripts/seal-homebrew-formula-checker.sh",
+        "scripts/test-homebrew-*",
+        "scripts/validate-software-gallery.mjs",
+      ],
+    },
+  }, "native compatibility workflow trigger surface changed")
+  check(exact_permissions?(workflow["permissions"], { "contents" => "read" }),
+        "native compatibility workflow permission ceiling changed")
+  check(workflow["concurrency"] == {
+    "group" =>
+      "homebrew-native-publisher-${{ github.event.pull_request.number }}",
+    "cancel-in-progress" => true,
+  }, "native compatibility workflow concurrency changed")
+  check_common(workflow, "native compatibility workflow")
+
+  jobs = workflow_jobs(workflow)
+  check(jobs.keys == %w[exact-linux-contract],
+        "native compatibility workflow job set changed")
+  linux = jobs.fetch("exact-linux-contract")
+  check(linux.keys.sort == %w[permissions runs-on steps timeout-minutes] &&
+        linux["runs-on"] == "ubuntu-latest" &&
+        linux["timeout-minutes"] == 60 &&
+        exact_permissions?(linux["permissions"], { "contents" => "read" }),
+        "native compatibility Linux job authority changed")
+  steps = job_steps(linux, "native compatibility Linux proof")
+  check(steps.map { |step| step["name"] } == [
+    "Checkout exact PR head",
+    "Checkout exact reviewed Homebrew source",
+    "Install Nix",
+    "Generate exact Linux compatibility lock",
+    "Require reviewed lock equality",
+    "Prove CA postinstall, OpenSSL link, and verified TLS",
+    "Validate native CA lifecycle evidence",
+    "Retain native CA lifecycle evidence",
+    "Retain exact generated Linux lock",
+  ], "native compatibility Linux proof order changed")
+  checkout = named_step(steps, "Checkout exact PR head")
+  check(checkout["uses"] == NATIVE_COMPATIBILITY_CHECKOUT_ACTION &&
+        checkout["with"] == {
+          "persist-credentials" => false,
+          "ref" => "${{ github.event.pull_request.head.sha }}",
+          "submodules" => false,
+        }, "native compatibility source checkout changed")
+  brew_checkout = named_step(steps, "Checkout exact reviewed Homebrew source")
+  check(brew_checkout["uses"] == NATIVE_COMPATIBILITY_CHECKOUT_ACTION &&
+        brew_checkout["with"] == {
+          "persist-credentials" => false,
+          "repository" => "Homebrew/brew",
+          "ref" => BREW_COMMIT,
+          "path" => "brew-source",
+        }, "native compatibility Homebrew checkout changed")
+  nix = named_step(steps, "Install Nix")
+  check(nix["uses"] == NIX_ACTION &&
+        nix["with"] == { "github-token" => "" },
+        "native compatibility Nix bootstrap changed")
+
+  generation = named_step(steps, "Generate exact Linux compatibility lock")
+  check(generation.keys.sort == %w[env name run shell] &&
+        generation["shell"] == "bash" &&
+        Digest::SHA256.hexdigest(generation.fetch("run")) ==
+          NATIVE_LOCK_GENERATION_RUN_SHA256 &&
+        generation["env"] == {
+          "GENERATED_LOCK" =>
+            "${{ runner.temp }}/homebrew-native-proof/compatibility-lock.json",
+        }, "native compatibility lock generation mapping changed")
+  [
+    "HOMEBREW_NO_INSTALL_FROM_API=1",
+    "HOMEBREW_API_DOMAIN=https://api.poison.invalid",
+    "HOMEBREW_BOTTLE_DOMAIN=https://bottles.poison.invalid",
+    "HOMEBREW_CURL_PATH=/bin/false",
+    "HOMEBREW_GIT_PATH=/bin/false",
+    "HOMEBREW_CORE_GIT_REMOTE=https://git.poison.invalid/core",
+    "RUBYOPT=-rdoes-not-exist",
+    "BUNDLE_GEMFILE=/does/not/exist",
+    "scripts/update-homebrew-native-compatibility-lock.sh",
+    '"$GITHUB_WORKSPACE/brew-source/bin/brew"',
+    '"$GENERATED_LOCK"',
+  ].each do |fragment|
+    check(generation.fetch("run").include?(fragment),
+          "native compatibility lock generation lacks #{fragment}")
+  end
+  retained_lock = named_step(steps, "Retain exact generated Linux lock")
+  check(retained_lock["if"] == "${{ always() }}" &&
+        retained_lock["uses"] == UPLOAD_ACTION &&
+        retained_lock["with"] == {
+          "name" => "homebrew-native-linux-lock",
+          "path" =>
+            "${{ runner.temp }}/homebrew-native-proof/compatibility-lock.json",
+          "if-no-files-found" => "ignore",
+          "retention-days" => 14,
+        }, "native compatibility generated-lock evidence changed")
+  equality = named_step(steps, "Require reviewed lock equality")
+  check(equality.keys.sort == %w[name run shell] &&
+        equality["shell"] == "bash" &&
+        Digest::SHA256.hexdigest(equality.fetch("run")) ==
+          NATIVE_LOCK_EQUALITY_RUN_SHA256 &&
+        equality.fetch("run").include?(
+          "homebrew/homebrew-native-compatibility-lock.json"
+        ) && equality.fetch("run").include?(
+          '"$RUNNER_TEMP/homebrew-native-proof/compatibility-lock.json"'
+        ), "native compatibility workflow does not require exact lock equality")
+  ca_proof = named_step(
+    steps, "Prove CA postinstall, OpenSSL link, and verified TLS"
+  )
+  check(ca_proof.keys.sort == %w[id name run shell] &&
+        ca_proof["id"] == "ca-proof" &&
+        ca_proof["shell"] == "bash",
+        "native compatibility CA proof invocation changed")
+  check(Digest::SHA256.hexdigest(ca_proof.fetch("run")) ==
+        NATIVE_CA_PROOF_RUN_SHA256,
+        "native compatibility CA proof command changed")
+  [
+    "scripts/test-homebrew-native-ca-lifecycle.sh",
+    '"$GITHUB_WORKSPACE/brew-source/bin/brew"',
+    '"$RUNNER_TEMP/homebrew-native-proof/ca-lifecycle.json"',
+  ].each do |fragment|
+    check(ca_proof.fetch("run").include?(fragment),
+          "native compatibility CA proof lacks #{fragment}")
+  end
+  ca_validation = named_step(steps, "Validate native CA lifecycle evidence")
+  check(ca_validation.keys.sort == %w[name run shell] &&
+        ca_validation["shell"] == "bash" &&
+        Digest::SHA256.hexdigest(ca_validation.fetch("run")) ==
+          NATIVE_CA_VALIDATION_RUN_SHA256,
+        "native compatibility CA evidence validator changed")
+  [
+    '[ -f "$evidence" ] && [ ! -L "$evidence" ]',
+    '"kandelo-homebrew-native-ca-lifecycle"',
+    '"kandelo-homebrew-native-api-attestation"',
+    '"kandelo-homebrew-native-cellar-attestation"',
+    '.admission.roots == ["ruby"]',
+    '.cellar.required_formulae == ["ruby"]',
+    'any(.cellar.kegs[]; .name == "ca-certificates")',
+    'any(.cellar.kegs[]; .name == "openssl@3")',
+    'any(.cellar.kegs[]; .name == "ruby")',
+    '.ca_certificates.openssl_cert_link == true',
+    'test("^[0-9a-f]{64}$")',
+    'startswith("OpenSSL 3.")',
+    '.openssl.verified_tls_host == "github.com"',
+  ].each do |fragment|
+    check(ca_validation.fetch("run").include?(fragment),
+          "native compatibility CA evidence validation lacks #{fragment}")
+  end
+  retained_ca = named_step(steps, "Retain native CA lifecycle evidence")
+  check(retained_ca["if"] ==
+          "${{ always() && steps.ca-proof.outcome == 'success' }}" &&
+        retained_ca["uses"] == UPLOAD_ACTION &&
+        retained_ca["with"] == {
+          "name" => "homebrew-native-ca-lifecycle",
+          "path" =>
+            "${{ runner.temp }}/homebrew-native-proof/ca-lifecycle.json",
+          "if-no-files-found" => "error",
+          "retention-days" => 14,
+        }, "native compatibility CA evidence changed")
+end
+
 def check_repository_canary(workflow)
   top_keys = workflow.keys.map { |key| key == true ? "on" : key.to_s }.sort
   check(top_keys == %w[jobs name on],
@@ -969,7 +1175,7 @@ def check_publisher(workflow)
         exact_permissions?(plan["permissions"], { "contents" => "read" }),
         "publisher plan authority changed")
   check(build["runs-on"] == "ubuntu-latest" && build["timeout-minutes"] == 1440 &&
-        exact_permissions?(build["permissions"], { "contents" => "read", "actions" => "read" }),
+        exact_permissions?(build["permissions"], { "contents" => "read" }),
         "publisher build authority changed")
   check(upload["runs-on"] == "ubuntu-latest" && upload["timeout-minutes"] == 60 &&
         exact_permissions?(upload["permissions"], {
@@ -983,7 +1189,7 @@ def check_publisher(workflow)
           "cancel-in-progress" => false,
         }, "publisher version-index authority or concurrency changed")
   check(verify["runs-on"] == "ubuntu-latest" && verify["timeout-minutes"] == 1440 &&
-        exact_permissions?(verify["permissions"], { "actions" => "read", "contents" => "read" }),
+        exact_permissions?(verify["permissions"], { "contents" => "read" }),
         "publisher verifier authority changed")
   check(finalize["runs-on"] == "ubuntu-latest" && finalize["timeout-minutes"] == 120 &&
         exact_permissions?(finalize["permissions"], { "actions" => "read", "contents" => "write" }),
@@ -2436,6 +2642,53 @@ def check_publisher(workflow)
   check(identity_run.index(recipe_identity_create) <
         identity_run.index('echo "created=true" >> "$GITHUB_OUTPUT"'),
         "publisher marks a partial Formula identity transaction as created")
+  check_native_api_freeze = lambda do |steps, name, roots_projection, stem,
+                                      label|
+    step = named_step(steps, name)
+    check(step.keys.sort == %w[env name run shell] &&
+          step["shell"] == "bash" &&
+          step["env"] == {
+            "ARCH" => "${{ matrix.arch }}",
+            "FORMULA" => "${{ matrix.formula }}",
+            "TAP_NAME_INPUT" => "${{ inputs.tap-name }}",
+            "TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
+          }, "#{label} signed native API freeze mapping changed")
+    run = step.fetch("run")
+    [
+      "set -euo pipefail",
+      "umask 077",
+      'cd "$GITHUB_WORKSPACE/kandelo"',
+      ". scripts/homebrew-tap-identity.sh",
+      'homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT"',
+      'stem="$RUNNER_TEMP/' + stem + '-${FORMULA}-${ARCH}"',
+      "bash scripts/dev-shell.sh bash -c '",
+      "scripts/homebrew-formula-runtime-closure.rb",
+      '"$1" "$2" "$3" --host-dependencies-json >"$4"',
+      "kandelo-native-plan",
+      "scripts/homebrew-validate-host-dependency-plan.sh",
+      "jq -r '.#{roots_projection}[]' \"$plan\" >\"$roots\"",
+      'KANDELO_HOMEBREW_SUDO_BIN="$KANDELO_HOMEBREW_SUDO_BIN"',
+      "scripts/homebrew-native-api-preflight.sh prepare",
+      '"$HOMEBREW_BREW_FILE" "$api_cache" "$state"',
+      '"$PWD/homebrew/homebrew-native-compatibility-roots.json"',
+      'tap_formula_host_dependencies "$roots"',
+      "KANDELO_HOMEBREW_EARLY_HOST_PLAN=$plan",
+      "KANDELO_HOMEBREW_EARLY_HOST_ROOTS=$roots",
+      "KANDELO_HOMEBREW_NATIVE_API_CACHE=$api_cache",
+      "KANDELO_HOMEBREW_NATIVE_API_STATE=$state",
+      "KANDELO_HOMEBREW_NATIVE_API_SOURCE=$api_cache/api",
+      'echo "KANDELO_HOMEBREW_NATIVE_API_SOURCE="',
+    ].each do |fragment|
+      check(run.include?(fragment), "#{label} signed native API freeze lacks #{fragment}")
+    end
+    check(!run.include?('--host-dependencies-json >"$plan"'),
+          "#{label} captures dev-shell startup output in the native plan")
+    step
+  end
+  build_native_api_step = check_native_api_freeze.call(
+    build_steps, "Freeze signed native Homebrew API", "build_and_test",
+    "homebrew-native-api", "publisher build"
+  )
   dev_shell = File.read(File.join(REPO_ROOT, "scripts/dev-shell.sh"))
   check(%w[
     KANDELO_HOMEBREW_BUILD_USER KANDELO_HOMEBREW_SHARED_TEMP
@@ -2462,6 +2715,21 @@ def check_publisher(workflow)
     'KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \\'
   check(values_for_key(workflow, "run").join("\n").scan(resolved_taps_forwarding).length == 14,
         "publisher does not explicitly carry immutable resolved taps across every consuming dev-shell boundary")
+  native_api_variables = %w[
+    KANDELO_HOMEBREW_EARLY_HOST_PLAN
+    KANDELO_HOMEBREW_EARLY_HOST_ROOTS
+    KANDELO_HOMEBREW_NATIVE_API_CACHE
+    KANDELO_HOMEBREW_NATIVE_API_STATE
+    KANDELO_HOMEBREW_NATIVE_API_SOURCE
+  ]
+  check(native_api_variables.none? { |name| dev_shell.include?("--keep #{name}") },
+        "dev shell globally preserves run-scoped native API state")
+  all_workflow_runs = values_for_key(workflow, "run").join("\n")
+  native_api_variables.each do |name|
+    forwarding = "#{name}=\"$#{name}\" \\"
+    check(all_workflow_runs.scan(forwarding).length == 2,
+          "publisher does not scope #{name} to build and verification")
+  end
   check(!dev_shell.include?("--keep KANDELO_HOMEBREW_TAP_NAME"),
         "dev shell globally preserves caller-selected Homebrew tap identity")
   flake = File.binread(File.join(REPO_ROOT, "flake.nix"))
@@ -2826,7 +3094,7 @@ def check_publisher(workflow)
         "reviewed bottle builder no longer retains its embedded installation receipt")
   host_plan_index = bottle_builder.index("--host-dependencies-json")
   native_install_index = bottle_builder.index(
-    "run_native_brew_logged install --as-dependency --formula"
+    "homebrew_native_contract_install"
   )
   native_info_index = bottle_builder.index(
     "homebrew_patched_launcher_run_native info --json=v2"
@@ -2960,9 +3228,243 @@ def check_publisher(workflow)
   publisher_isolation_patch_path =
     "homebrew/patches/0002-support-isolated-publisher.patch"
   publisher_isolation_patch = File.read(File.join(REPO_ROOT, publisher_isolation_patch_path))
+  publisher_isolation_patch_header =
+    publisher_isolation_patch.split(/^---$/, 2).first.gsub(/\s+/, " ")
   platform_patch = File.read(
     File.join(REPO_ROOT, "homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch")
   )
+  native_install_contract = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-native-install-contract.sh")
+  )
+  native_contract_paths = %w[
+    scripts/homebrew-native-api-contract.rb
+    scripts/homebrew-native-api-preflight.sh
+    scripts/homebrew-native-bounded-environment.sh
+    scripts/homebrew-native-check-brew-source.sh
+    scripts/homebrew-native-install-contract.sh
+    scripts/update-homebrew-native-compatibility-lock.sh
+    homebrew/homebrew-native-compatibility-roots.json
+    homebrew/homebrew-native-compatibility-lock.json
+  ]
+  native_contract_paths.each do |relative|
+    path = File.join(REPO_ROOT, relative)
+    check(File.file?(path) && !File.symlink?(path),
+          "native Homebrew contract input is not a regular file: #{relative}")
+  end
+  %w[
+    scripts/homebrew-native-api-preflight.sh
+    scripts/homebrew-native-check-brew-source.sh
+    scripts/update-homebrew-native-compatibility-lock.sh
+  ].each do |relative|
+    check((File.stat(File.join(REPO_ROOT, relative)).mode & 0o111).positive?,
+          "native Homebrew contract entry point is not executable: #{relative}")
+  end
+  native_api_oracle = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-native-api-contract.rb")
+  )
+  [
+    "Homebrew::API.fetch_api_files!",
+    "Homebrew::API::Formula.all_formulae",
+    "Homebrew::API::Internal.formula_hashes",
+    "Homebrew::API::Internal.write_formula_names_and_aliases",
+    "signed Homebrew API sources disagree on the core revision",
+    "signed API changed selected Formula",
+    "compatibility lock has unexpected fields",
+    "kandelo-homebrew-native-source-attestation",
+    "ignored portable Ruby changed during attestation",
+    "native Cellar escaped the admitted closure",
+    'receipt["loaded_from_internal_api"] == true',
+    'receipt["poured_from_bottle"] == true',
+    'receipt.dig("source", "tap") == "homebrew/core"',
+  ].each do |fragment|
+    check(native_api_oracle.include?(fragment),
+          "native Homebrew API oracle lacks #{fragment}")
+  end
+  native_api_preflight = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-native-api-preflight.sh")
+  )
+  [
+    '. "$SCRIPT_DIR/homebrew-native-bounded-environment.sh"',
+    'jq -e --arg purpose "$purpose" --rawfile text "$roots"',
+    "Homebrew API cache is group- or world-writable",
+    "cache directory must not already exist",
+    "state directory must not already exist",
+    "Prime does the only network fetch",
+    '"$sudo_bin" -n chown -R root:root "$api_root"',
+    "recheck",
+    'printf \'%s\\n\' empty >"$state_root/mode"',
+  ].each do |fragment|
+    check(native_api_preflight.include?(fragment),
+          "native Homebrew API preflight lacks #{fragment}")
+  end
+  native_bounded_environment = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-native-bounded-environment.sh")
+  )
+  [
+    "api-client|api-compatibility-lock|api-oracle",
+    '"HOMEBREW_FORCE_LIBC_FORMULA=1"',
+    '"HOMEBREW_FORCE_COMPILER_FORMULA=1"',
+    '"HOMEBREW_RELOCATE_BUILD_PREFIX=1"',
+  ].each do |fragment|
+    check(native_bounded_environment.include?(fragment),
+          "native Homebrew bounded environment lacks #{fragment}")
+  end
+  native_lock_updater = File.read(
+    File.join(REPO_ROOT, "scripts/update-homebrew-native-compatibility-lock.sh")
+  )
+  [
+    '[ "$(uname -s)" = "Linux" ]',
+    '[ "$(uname -m)" = "x86_64" ]',
+    'SOURCE_CHECK="$SCRIPT_DIR/homebrew-native-check-brew-source.sh"',
+    '. "$SCRIPT_DIR/homebrew-native-bounded-environment.sh"',
+    'SOURCE_PRISTINE="$WORK/source-pristine.json"',
+    ".ignored_runtime.present == false",
+    'NATIVE_PREFIX="$WORK/native-prefix"',
+    'NATIVE_BREW="$NATIVE_PREFIX/bin/brew"',
+    'ln -s "$BREW_REPOSITORY/bin/brew" "$NATIVE_BREW"',
+    '"$NATIVE_BREW" "$CACHE" "$STATE"',
+    ".ignored_runtime.present == true",
+    '"$SOURCE_BEFORE"',
+    '"$SOURCE_AFTER"',
+    'cmp -s "$SOURCE_BEFORE" "$SOURCE_AFTER"',
+    "homebrew_native_bounded_run",
+    "api-compatibility-lock",
+    "deps --union --include-implicit --full-name --formula",
+  ].each do |fragment|
+    check(native_lock_updater.include?(fragment),
+          "native Homebrew compatibility-lock updater lacks #{fragment}")
+  end
+  native_source_check = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-native-check-brew-source.sh")
+  )
+  [
+    "clean_git()",
+    "/usr/bin/env -i",
+    "GIT_NO_REPLACE_OBJECTS=1",
+    'RESOLVED_BREW="$(readlink -f -- "$BREW_BIN")"',
+    'BREW_REPOSITORY="${RESOLVED_BREW%/bin/brew}"',
+    'clean_git -C "$BREW_REPOSITORY" rev-parse --show-toplevel',
+    'clean_git -C "$BREW_REPOSITORY" rev-parse HEAD',
+    'readlink -f -- "$BREW_BIN"',
+    "brew executable is outside the reviewed checkout",
+    "brew checkout index has nonordinary entries",
+    "brew checkout has source-affecting local Git configuration",
+    "brew checkout has Git replacement refs",
+    "brew checkout has legacy Git grafts",
+    "brew checkout has unreviewed ignored state",
+    "tracked_tree_manifest",
+    "ls-tree -r -t -z --full-tree",
+    "attest-source",
+    "status --porcelain=v1",
+    "brew checkout is not clean",
+  ].each do |fragment|
+    check(native_source_check.include?(fragment),
+          "native Homebrew source checker lacks #{fragment}")
+  end
+  native_contract_test = File.read(
+    File.join(REPO_ROOT, "scripts/test-homebrew-native-api-contract.sh")
+  )
+  publisher_contract_test = File.read(
+    File.join(REPO_ROOT, "scripts/test-homebrew-publish-workflow.sh")
+  )
+  check(publisher_contract_test.include?(
+          'bash "$REPO_ROOT/scripts/test-homebrew-native-api-contract.sh"'
+        ), "publisher regression suite omits the native API contract")
+  [
+    "public-only unused drift",
+    "internal-only unused drift",
+    "same-head unrelated drift",
+    "public-only selected Formula drift",
+    "internal-only selected Formula drift",
+    "signed source disagreement",
+    "API symlink",
+    "sealed API mutation",
+    "CI test-owner exception",
+    "occupied attestation output",
+    "zero-root preflight fetched or invented signed API state",
+    "CI fallback without signed API state",
+    "dirty Brew worktree",
+    "staged Brew worktree",
+    "untracked Brew worktree",
+    "assume-unchanged Brew index",
+    "skip-worktree Brew index",
+    "source-affecting local Git config",
+    "Git replacement refs",
+    "legacy Git grafts",
+    "checkout-transforming Git config",
+    "raw tracked source transformation",
+    "raw tracked symlink target",
+    "raw tracked executable mode",
+    "unreviewed ignored Brew state",
+    "unreviewed empty ignored Brew directory",
+    "direct Brew prefix lock leakage",
+    "isolated Brew prefix",
+    "compatibility lock did not force its conservative host closure",
+    "portable Ruby attestation",
+    "escaping portable Ruby symlink",
+    "wrong Brew commit",
+    "wrapped Brew executable",
+  ].each do |fragment|
+    check(native_contract_test.include?(fragment),
+          "native Homebrew adversarial fixture lacks #{fragment}")
+  end
+  roots_policy = JSON.parse(File.read(
+    File.join(REPO_ROOT, "homebrew/homebrew-native-compatibility-roots.json")
+  ))
+  check(roots_policy.keys.sort ==
+          %w[architecture homebrew_commit kind roots schema] &&
+        roots_policy["schema"] == 1 &&
+        roots_policy["kind"] == "kandelo-homebrew-native-roots" &&
+        roots_policy["architecture"] == "x86_64_linux" &&
+        roots_policy["homebrew_commit"] == BREW_COMMIT,
+        "native Homebrew root policy envelope changed")
+  compatibility_lock = JSON.parse(File.read(
+    File.join(REPO_ROOT, "homebrew/homebrew-native-compatibility-lock.json")
+  ))
+  check(compatibility_lock.keys.sort ==
+          %w[architecture formulae homebrew_commit kind schema] &&
+        compatibility_lock["schema"] == 1 &&
+        compatibility_lock["kind"] ==
+          "kandelo-homebrew-native-compatibility-lock" &&
+        compatibility_lock["architecture"] == "x86_64_linux" &&
+        compatibility_lock["homebrew_commit"] == BREW_COMMIT &&
+        compatibility_lock["formulae"].is_a?(Hash),
+        "native Homebrew compatibility lock envelope changed")
+  conservative_linux_bootstrap = %w[
+    binutils
+    gcc
+    glibc
+    gmp
+    isl
+    libmpc
+    linux-headers@6.8
+    mpfr
+  ]
+  bootstrap_is_complete = conservative_linux_bootstrap.all? do |name|
+    compatibility_lock["formulae"].key?(name)
+  end
+  check(bootstrap_is_complete,
+        "native Homebrew lock omits the conservative Linux bootstrap")
+  [
+    "homebrew_native_contract_select_api_source()",
+    "homebrew_native_contract_install()",
+    'GITHUB_ACTIONS:-}" != "true"',
+    "GitHub Actions can never take this development-only compatibility path",
+    "native host plan changed after signed-API preflight",
+    "signed native API preflight is unavailable",
+    "zero-root job received populated native API state",
+    "deps --union --include-implicit",
+    'admit "$brew_commit" "$policy" "$purpose"',
+    "run_native_brew_logged install --as-dependency --formula",
+    "audit-cellar",
+  ].each do |fragment|
+    check(native_install_contract.include?(fragment),
+          "shared native Homebrew admission contract lacks #{fragment}")
+  end
+  check(native_install_contract.scan(
+          "run_native_brew_logged install --as-dependency --formula"
+        ).length == 1,
+        "shared native Homebrew contract has more than one install authority")
   [bottle_builder, bottle_verifier].each do |formula_runner|
     check(formula_runner.include?(
       '. "$KANDELO_ROOT/scripts/homebrew-formula-support-inputs.sh"'
@@ -3024,8 +3526,10 @@ def check_publisher(workflow)
       '"$TAP_ROOT" "$TAP_NAME" "$FORMULA" --host-dependencies-json',
       'immutable resolved tap map is required',
       'bash "$KANDELO_ROOT/scripts/homebrew-validate-host-dependency-plan.sh"',
+      '. "$KANDELO_ROOT/scripts/homebrew-native-install-contract.sh"',
+      "homebrew_native_contract_select_api_source",
+      "homebrew_native_contract_install",
       '"homebrew/core/$dependency"',
-      "run_native_brew_logged install --as-dependency --formula",
       'homebrew_patched_launcher_run_native info --json=v2',
       '.formulae[0].name == $name',
       '.formulae[0].full_name == $name',
@@ -3048,15 +3552,12 @@ def check_publisher(workflow)
       check(formula_runner.include?(fragment),
             "Formula runner native/target realm contract lacks #{fragment}")
     end
-    sequential_native_install = <<~'SHELL'.chomp
-      for dependency in "${native_dependencies[@]}"; do
-        run_native_brew_logged install --as-dependency --formula \
-          "homebrew/core/$dependency"
-      done
-    SHELL
-    check(formula_runner.include?(sequential_native_install) &&
+    check(formula_runner.scan("homebrew_native_contract_install").length == 1 &&
+          !formula_runner.include?(
+            "run_native_brew_logged install --as-dependency --formula"
+          ) &&
           !formula_runner.include?("native_formula_refs"),
-          "Formula runner combines native tools under conflicting top-level locks")
+          "Formula runner bypasses the shared sequential native install contract")
     check(formula_runner.scan(/>\s*"\$HOST_DEPENDENCY_LIST"/).length == 2,
           "Formula runner has more than one authority for its native dependency plan")
     check(!formula_runner.include?(
@@ -3327,11 +3828,13 @@ def check_publisher(workflow)
     "diff --git a/Library/Homebrew/trust.rb b/Library/Homebrew/trust.rb",
     "next if trusted_tap?(tap)",
     "explicit `brew trust` operations still use the normal mutation path",
-    "applied only to the publisher's temporary Homebrew overlay",
   ].each do |fragment|
     check(publisher_isolation_patch.include?(fragment),
           "publisher-only isolation patch lacks #{fragment}")
   end
+  check(publisher_isolation_patch_header.include?(
+          "applied only to the publisher's temporary Homebrew overlay"
+        ), "publisher-only isolation patch lacks publisher-only scope")
   check(!publisher_isolation_patch.include?('+    source.delete("tap_git_head")'),
         "publisher patch mutates the shallow-copied installed receipt source")
   publisher_patch_test = File.read(
@@ -3370,7 +3873,7 @@ def check_publisher(workflow)
     File.join(REPO_ROOT, "scripts/test-homebrew-publisher-real-lifecycle.sh")
   )
   [
-    'BREW_COMMIT="34c40c18ffa2029b611b61c73273e32c003d0842"',
+    'BREW_COMMIT="cf5bc21c6b127e168ef7cfa982ba7db62874690e"',
     'EXPECTED_BUILD_BLOB="be833176c02f78cd5b3502aac968b5a733cb7af8"',
     'worktree add --detach "$BREW_ROOT" "$BREW_COMMIT"',
     '0001-add-kandelo-wasm-bottle-tags.patch',
@@ -3459,7 +3962,7 @@ def check_publisher(workflow)
     'homebrew_patched_launcher_stage_dependency_plan "$HOST_DEPENDENCY_PLAN"'
   )
   verifier_native_install_index = bottle_verifier.index(
-    "run_native_brew_logged install --as-dependency --formula"
+    "homebrew_native_contract_install"
   )
   verifier_native_info_index = bottle_verifier.index(
     "homebrew_patched_launcher_run_native info --json=v2"
@@ -3697,6 +4200,21 @@ def check_publisher(workflow)
     "native prefix base leaves no room for an exact Linuxbrew relocation path",
     "homebrew_patched_launcher_prepare_native_prefix",
     "expected PREFIX CACHE TEMP CONFIG HOME",
+    "homebrew_patched_launcher_set_native_api_source",
+    "native API source must be selected once before isolation",
+    "native API source root is not sealed",
+    "native API source contains an unsafe entry",
+    "native API source changed before isolation",
+    "native API source is inside mutable native state",
+    "mutable native state is inside the API source",
+    "native API mountpoint is not empty",
+    "native API mountpoint is replaceable",
+    "homebrew_patched_launcher_stage_native_contract_file",
+    "native contract source exceeds its size limit",
+    "native contract destination already exists",
+    "staged native contract file changed",
+    'HOMEBREW_PATCHED_NATIVE_CONTRACT_DIR="$HOMEBREW_PATCHED_PROTECTED_DIR/native-api"',
+    '"--property=BindReadOnlyPaths=$HOMEBREW_PATCHED_NATIVE_API_SOURCE:$HOMEBREW_PATCHED_NATIVE_CACHE/api"',
     'native_inputs=("$native_prefix" "$native_cache" "$native_temp" "$native_config" "$native_home")',
     'chmod 0700 "$path"',
     'HOME="$HOMEBREW_PATCHED_NATIVE_HOME"',
@@ -3734,7 +4252,7 @@ def check_publisher(workflow)
     'native Formula bridge rollback failed; preserving launcher state for retry',
     'Formula process teardown failed; preserving launcher state for retry',
     'return "$teardown_status"',
-    'for protected_bin in chmod chown cmp cp id install ln ls mktemp readlink rm \\',
+    'for protected_bin in chmod chown cmp cp id install ln ls mktemp mv readlink rm \\',
     'od sha256sum stat test tr; do',
     '"$sudo_bin" /usr/bin/install -d -o root -g "$build_group" -m 1775',
     '"$(/usr/bin/stat -c \'%u:%g:%a\' "$target_state_root")" = "0:$build_gid:1775"',
@@ -3791,7 +4309,7 @@ def check_publisher(workflow)
           "protected version-selector contract lacks #{fragment}")
   end
   strict_host_tool_loop = launcher[
-    /for protected_bin in chmod chown cmp cp id install ln ls mktemp readlink rm \\\n    od sha256sum stat test tr; do.*?\n  done/m
+    /for protected_bin in chmod chown cmp cp id install ln ls mktemp mv readlink rm \\\n    od sha256sum stat test tr; do.*?\n  done/m
   ]
   check(strict_host_tool_loop && !strict_host_tool_loop.include?("python3"),
         "Python remains routed through the regular-only protected host tool loop")
@@ -4180,6 +4698,14 @@ def check_publisher(workflow)
     "protected source audit ignored a missing required namespace path",
     "protected source audit hid its systemd namespace diagnostic",
     "isolated launcher did not stage the closed Formula test runtime",
+    "native API admission accepted a symlinked cache entry",
+    "native API source could be selected more than once",
+    "Formula isolation accepted a changed native API source",
+    "isolated launcher did not create the protected native contract root",
+    "native contract staging accepted a symlinked source",
+    "native contract staging replaced an occupied destination",
+    "sealed native API prevented ordinary bottle-cache writes",
+    "launcher cleanup changed the workflow-owned native API source",
     "this is the exact failure boundary from the seven-package canary",
     "NODE_PATH=caller-poison",
     "--import tsx/esm",
@@ -4502,6 +5028,12 @@ def check_publisher(workflow)
   check(verifier_identity_run.index(recipe_identity_create) <
         verifier_identity_run.index('echo "created=true" >> "$GITHUB_OUTPUT"'),
         "publisher marks a partial verifier identity transaction as created")
+  verifier_native_api_step = check_native_api_freeze.call(
+    verify_steps,
+    "Freeze signed native Homebrew API for bottle verification",
+    "runtime_and_test", "homebrew-native-api-verify",
+    "publisher verifier"
+  )
   force_pour_step = named_step(
     verify_steps, "Force-pour and test the exact selected bottle without credentials"
   )
@@ -4517,17 +5049,47 @@ def check_publisher(workflow)
   verifier_retirement_step = named_step(
     verify_steps, "Retire isolated bottle verification identity"
   )
-  check(verify_steps.index(verifier_identity_step) < verify_steps.index(verify_browser_step) &&
+  check(verifier_retirement_step.keys.sort == %w[env if name run shell] &&
+        verifier_retirement_step["if"] ==
+          "${{ always() && steps.verifier-identity.outputs.created == 'true' }}" &&
+        verifier_retirement_step["shell"] == "bash" &&
+        verifier_retirement_step["env"] == {
+          "ARCH" => "${{ matrix.arch }}",
+          "FORMULA" => "${{ matrix.formula }}",
+        }, "publisher verifier identity retirement mapping changed")
+  verifier_retirement_run = verifier_retirement_step.fetch("run")
+  [
+    '[[ "$FORMULA" =~ ^[a-z0-9][a-z0-9+@._-]{0,254}$ ]]',
+    '[[ "$ARCH" =~ ^wasm(32|64)$ ]]',
+    '[[ "$RUNNER_TEMP" == /* ]]',
+    'native_api_stem="$RUNNER_TEMP/homebrew-native-api-verify-${FORMULA}-${ARCH}"',
+    '"$RUNNER_TEMP"/homebrew-native-api-verify-*',
+    '"$sudo_bin" -n -- /usr/bin/rm -rf --',
+    '"$native_api_stem-cache" "$native_api_stem-state"',
+    '"$sudo_bin" -n -- /usr/bin/rm -f --',
+    '"$native_api_stem-plan.json" "$native_api_stem-roots.txt"',
+  ].each do |fragment|
+    check(verifier_retirement_run.include?(fragment),
+          "publisher verifier native API retirement lacks #{fragment}")
+  end
+  check(verify_steps.index(verifier_identity_step) <
+          verify_steps.index(verifier_native_api_step) &&
+        verify_steps.index(verifier_native_api_step) <
+          verify_steps.index(verify_browser_step) &&
         verify_steps.index(verify_browser_step) < verify_steps.index(force_pour_step) &&
         verify_steps.index(force_pour_step) < verify_steps.index(verifier_retirement_step),
         "publisher provisions or uses the verifier browser outside the isolated test phase")
   build_formula_step = named_step(build_steps,
                                   "Build and test Homebrew bottle without publisher credentials")
   retire_identity_step = named_step(build_steps, "Retire isolated Formula execution identity")
-  check(retire_identity_step.keys.sort == %w[if name run shell] &&
+  check(retire_identity_step.keys.sort == %w[env if name run shell] &&
         retire_identity_step["if"] ==
           "${{ always() && steps.formula-identity.outputs.created == 'true' }}" &&
-        retire_identity_step["shell"] == "bash",
+        retire_identity_step["shell"] == "bash" &&
+        retire_identity_step["env"] == {
+          "ARCH" => "${{ matrix.arch }}",
+          "FORMULA" => "${{ matrix.formula }}",
+        },
         "publisher Formula execution identity retirement mapping changed")
   retire_identity_run = retire_identity_step.fetch("run")
   [
@@ -4539,6 +5101,15 @@ def check_publisher(workflow)
     "could not inspect isolated Homebrew processes",
     "isolated Homebrew identities still own live processes",
     "Homebrew identity still exists after retirement",
+    '[[ "$FORMULA" =~ ^[a-z0-9][a-z0-9+@._-]{0,254}$ ]]',
+    '[[ "$ARCH" =~ ^wasm(32|64)$ ]]',
+    '[[ "$RUNNER_TEMP" == /* ]]',
+    'native_api_stem="$RUNNER_TEMP/homebrew-native-api-${FORMULA}-${ARCH}"',
+    '"$RUNNER_TEMP"/homebrew-native-api-*',
+    '"$sudo_bin" -n -- /usr/bin/rm -rf --',
+    '"$native_api_stem-cache" "$native_api_stem-state"',
+    '"$sudo_bin" -n -- /usr/bin/rm -f --',
+    '"$native_api_stem-plan.json" "$native_api_stem-roots.txt"',
   ].each do |fragment|
     check(retire_identity_run.include?(fragment),
           "publisher Formula execution identity retirement lacks #{fragment}")
@@ -4567,6 +5138,8 @@ def check_publisher(workflow)
         build_steps.index(fork_instrument_step) < build_steps.index(runtime_step) &&
         build_steps.index(runtime_step) < build_steps.index(javascript_step) &&
         build_steps.index(javascript_step) < build_steps.index(identity_step) &&
+        build_steps.index(identity_step) < build_steps.index(build_native_api_step) &&
+        build_steps.index(build_native_api_step) < build_steps.index(browser_step) &&
         build_steps.index(identity_step) < build_steps.index(browser_step) &&
         build_steps.index(browser_step) < build_steps.index(build_formula_step) &&
         build_steps.index(runtime_step) < build_steps.index(build_formula_step) &&
@@ -6304,7 +6877,8 @@ def mutate_named_step(workflow, job_name, step_name)
   step
 end
 
-def self_test(publisher, maintenance, repository_canary)
+def self_test(publisher, native_compatibility, maintenance,
+              repository_canary)
   fixture = YAML.safe_load(<<~YAML, aliases: false)
     on:
       workflow_dispatch: {}
@@ -6344,6 +6918,33 @@ def self_test(publisher, maintenance, repository_canary)
       mutated = deep_copy(repository_canary)
       mutation.call(mutated)
       check_repository_canary(mutated)
+    end
+  end
+
+  {
+    "native lock equality continue-on-error" => lambda { |w|
+      mutate_named_step(
+        w, "exact-linux-contract", "Require reviewed lock equality"
+      )["continue-on-error"] = true
+    },
+    "native CA validator early success" => lambda { |w|
+      step = mutate_named_step(
+        w, "exact-linux-contract", "Validate native CA lifecycle evidence"
+      )
+      step["run"] = "exit 0\n#{step.fetch('run')}"
+    },
+    "native diagnostic upload before substantive checks" => lambda { |w|
+      steps = w.fetch("jobs").fetch("exact-linux-contract").fetch("steps")
+      index = steps.index do |step|
+        step["name"] == "Retain exact generated Linux lock"
+      end
+      steps.unshift(steps.delete_at(index))
+    },
+  }.each do |label, mutation|
+    expect_rejection(label) do
+      mutated = deep_copy(native_compatibility)
+      mutation.call(mutated)
+      check_native_compatibility_workflow(mutated)
     end
   end
 
@@ -6788,6 +7389,60 @@ def self_test(publisher, maintenance, repository_canary)
       step = mutate_named_step(w, "build-and-test",
                                "Build and test Homebrew bottle without publisher credentials")
       step["env"]["GH_TOKEN"] = "${{ github.token }}"
+    },
+    "native build API uses verifier roots" => lambda { |w|
+      step = mutate_named_step(
+        w, "build-and-test", "Freeze signed native Homebrew API"
+      )
+      step["run"] = step.fetch("run").sub(
+        ".build_and_test[]", ".runtime_and_test[]"
+      )
+    },
+    "native verifier API uses build roots" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle",
+        "Freeze signed native Homebrew API for bottle verification"
+      )
+      step["run"] = step.fetch("run").sub(
+        ".runtime_and_test[]", ".build_and_test[]"
+      )
+    },
+    "native API plan capture boundary bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "build-and-test", "Freeze signed native Homebrew API"
+      )
+      step["run"] = step.fetch("run").sub(
+        '"$1" "$2" "$3" --host-dependencies-json >"$4"',
+        '"$1" "$2" "$3" --host-dependencies-json >"$plan"'
+      )
+    },
+    "native API compatibility policy substitution" => lambda { |w|
+      step = mutate_named_step(
+        w, "build-and-test", "Freeze signed native Homebrew API"
+      )
+      step["run"] = step.fetch("run").sub(
+        "homebrew-native-compatibility-roots.json",
+        "homebrew-native-compatibility-lock.json"
+      )
+    },
+    "native API state forwarding bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "build-and-test",
+        "Build and test Homebrew bottle without publisher credentials"
+      )
+      step["run"] = step.fetch("run").sub(
+        'KANDELO_HOMEBREW_NATIVE_API_STATE="$KANDELO_HOMEBREW_NATIVE_API_STATE" \\',
+        "KANDELO_HOMEBREW_NATIVE_API_STATE= \\"
+      )
+    },
+    "native API cleanup broadens to runner temp" => lambda { |w|
+      step = mutate_named_step(
+        w, "build-and-test", "Retire isolated Formula execution identity"
+      )
+      step["run"] = step.fetch("run").sub(
+        '"$native_api_stem-cache" "$native_api_stem-state"',
+        '"$RUNNER_TEMP"'
+      )
     },
     "Formula test runtime source fallback" => lambda { |w|
       step = mutate_named_step(w, "build-and-test",
@@ -7476,10 +8131,14 @@ end
 
 begin
   publisher = load_workflow(PUBLISHER_PATH)
+  native_compatibility = load_workflow(NATIVE_COMPATIBILITY_PATH)
   maintenance = load_workflow(MAINTENANCE_PATH)
   repository_canary = load_workflow(REPOSITORY_CANARY_PATH)
-  self_test(publisher, maintenance, repository_canary)
+  self_test(
+    publisher, native_compatibility, maintenance, repository_canary
+  )
   check_publisher(publisher)
+  check_native_compatibility_workflow(native_compatibility)
   check_caller_validation_behavior(publisher)
   check_kandelo_main_admission_behavior(publisher)
   check_tap_source_binding_behavior(publisher)

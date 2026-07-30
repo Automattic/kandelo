@@ -242,6 +242,29 @@ case "${1:-}" in
       *) exit 2 ;;
     esac
     ;;
+  assert-native-api)
+    [ "$#" -eq 4 ]
+    api_root="$2"
+    contract_file="$3"
+    expected_contract="$4"
+    [ "$(/usr/bin/cat "$api_root/formula.jws.json")" = \
+      "signed public fixture" ]
+    [ "$(/usr/bin/stat -c '%u:%g:%a' "$api_root")" = "0:0:555" ]
+    [ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$contract_file")" = \
+      "0:0:444:1" ]
+    [ "$(/usr/bin/cat "$contract_file")" = "$expected_contract" ]
+    mount_options="$(
+      /usr/bin/findmnt --noheadings --output VFS-OPTIONS --target "$api_root"
+    )"
+    case ",${mount_options// /}," in *,ro,*) ;; *) exit 1 ;; esac
+    if (: >"$api_root/write-probe") 2>/dev/null; then exit 1; fi
+    if /usr/bin/rm -f "$api_root/formula.jws.json" 2>/dev/null; then exit 1; fi
+    if /usr/bin/mv "$api_root" "$api_root.replace-probe" \
+        >/dev/null 2>&1; then
+      exit 1
+    fi
+    printf 'cache remains writable\n' >"${api_root%/*}/bottle-cache-write"
+    ;;
   assert-native-isolation-runtime)
     [ "$#" -eq 21 ]
     shift
@@ -1833,6 +1856,9 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   isolated_native_temp="$isolated_native_base/t"
   isolated_native_config="$isolated_native_base/g"
   isolated_native_home="$isolated_native_base/h"
+  isolated_native_api_source="$ISOLATION_ROOT/native-api-source"
+  unsafe_native_api_source="$ISOLATION_ROOT/unsafe-native-api-source"
+  native_contract_source="$ISOLATION_ROOT/native-contract-source.json"
   isolated_source_parent="$ISOLATION_ROOT/private-runner-home"
   isolated_private_bottle_dir="$ISOLATION_ROOT/private-runner-cache"
   isolated_shared_temp="$ISOLATION_ROOT/shared-temp"
@@ -1857,12 +1883,31 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   mkdir -p "$isolated_repo/bin" "$isolated_prefix/bin" "$isolated_work" \
     "$isolated_cache" "$isolated_temp" "$isolated_kandelo" "$isolated_tap" \
     "$isolated_dependency_tap" "$isolated_output" "$isolated_native_base" \
+    "$isolated_native_api_source/internal" \
+    "$unsafe_native_api_source/internal" \
     "$external_cellar" "$external_opt" \
     "$isolated_private_bottle_dir" "$isolated_shared_temp" "$isolated_sysroot/lib" \
     "$isolated_xtask_dir"
   chmod 0711 "$isolated_native_base"
   chmod 0700 "$isolated_private_bottle_dir"
   chmod 0700 "$isolated_sysroot_private_parent"
+  for api_source in \
+    "$isolated_native_api_source" "$unsafe_native_api_source"; do
+    printf 'signed public fixture\n' >"$api_source/formula.jws.json"
+    : >"$api_source/formula_aliases.txt"
+    printf 'fixture\n' >"$api_source/formula_names.txt"
+    : >"$api_source/internal/executables.txt"
+    printf 'signed internal fixture\n' \
+      >"$api_source/internal/packages.x86_64_linux.jws.json"
+    /usr/bin/sudo -n -- /usr/bin/chown -hR root:root "$api_source"
+    /usr/bin/sudo -n -- /usr/bin/find "$api_source" -type d \
+      -exec /usr/bin/chmod 0555 {} +
+    /usr/bin/sudo -n -- /usr/bin/find "$api_source" -type f \
+      -exec /usr/bin/chmod 0444 {} +
+  done
+  /usr/bin/sudo -n -- /usr/bin/ln -s formula_names.txt \
+    "$unsafe_native_api_source/unsafe-link"
+  printf 'reviewed native contract\n' >"$native_contract_source"
   /usr/bin/sudo -n -- chown root:root "$isolated_shared_temp"
   /usr/bin/sudo -n -- chmod 1777 "$isolated_shared_temp"
   protected_bottle_basename="hello--1.0.wasm32_kandelo.bottle.tar.gz"
@@ -2275,6 +2320,21 @@ EOF
   homebrew_patched_launcher_prepare_native_prefix \
     "$isolated_native_prefix" "$isolated_native_cache" "$isolated_native_temp" \
     "$isolated_native_config" "$isolated_native_home"
+  if homebrew_patched_launcher_set_native_api_source \
+      "$unsafe_native_api_source" >/dev/null 2>&1; then
+    fail "native API admission accepted a symlinked cache entry"
+  fi
+  [ -z "$HOMEBREW_PATCHED_NATIVE_API_SOURCE" ] ||
+    fail "rejected native API source changed launcher state"
+  homebrew_patched_launcher_set_native_api_source \
+    "$isolated_native_api_source"
+  [ "$HOMEBREW_PATCHED_NATIVE_API_SOURCE" = \
+      "$isolated_native_api_source" ] ||
+    fail "native API source was not canonicalized exactly"
+  if homebrew_patched_launcher_set_native_api_source \
+      "$isolated_native_api_source" >/dev/null 2>&1; then
+    fail "native API source could be selected more than once"
+  fi
   homebrew_patched_launcher_stage_dependency_plan "$isolated_dependency_plan"
   homebrew_patched_launcher_stage_tier2_attestation "$isolated_tier2_attestation"
   isolated_dependency_keg="$isolated_prefix/Cellar/dependency/1.0"
@@ -2305,6 +2365,17 @@ EOF
     fail "Formula isolation accepted an invalid target architecture"
   fi
   export KANDELO_HOMEBREW_ARCH=wasm32
+  /usr/bin/sudo -n -- /usr/bin/chmod 0755 "$isolated_native_api_source"
+  if homebrew_patched_launcher_isolate \
+      "$ISOLATION_BUILD_USER" "$isolated_work" "$isolated_kandelo" \
+      "$isolated_tap" "$isolated_output" "$isolated_sysroot_owner" \
+      >/dev/null 2>"$ISOLATION_ROOT/changed-native-api.err"; then
+    fail "Formula isolation accepted a changed native API source"
+  fi
+  grep -F "native API source changed before isolation" \
+    "$ISOLATION_ROOT/changed-native-api.err" >/dev/null ||
+    fail "Formula isolation did not explain changed native API source"
+  /usr/bin/sudo -n -- /usr/bin/chmod 0555 "$isolated_native_api_source"
 
   assert_xtask_rejected() {
     local candidate="$1" expected_error="$2" label="$3"
@@ -2478,6 +2549,39 @@ EOF
   homebrew_patched_launcher_isolate \
     "$ISOLATION_BUILD_USER" "$isolated_work" "$isolated_kandelo" "$isolated_tap" \
     "$isolated_output" "$isolated_sysroot_owner" "$isolated_dependency_tap"
+  [ "$HOMEBREW_PATCHED_NATIVE_CONTRACT_DIR" = \
+      "$HOMEBREW_PATCHED_PROTECTED_DIR/native-api" ] &&
+    [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a' \
+      "$HOMEBREW_PATCHED_NATIVE_CONTRACT_DIR")" = "0:0:555" ] ||
+    fail "isolated launcher did not create the protected native contract root"
+  native_contract_link="$ISOLATION_ROOT/native-contract-link.json"
+  ln -s "$native_contract_source" "$native_contract_link"
+  if homebrew_patched_launcher_stage_native_contract_file \
+      "$native_contract_link" linked.json 1024 >/dev/null 2>&1; then
+    fail "native contract staging accepted a symlinked source"
+  fi
+  rm "$native_contract_link"
+  protected_native_contract="$(
+    homebrew_patched_launcher_stage_native_contract_file \
+      "$native_contract_source" fixture.json 1024
+  )"
+  [ "$protected_native_contract" = \
+      "$HOMEBREW_PATCHED_NATIVE_CONTRACT_DIR/fixture.json" ] &&
+    [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a:%h' \
+      "$protected_native_contract")" = "0:0:444:1" ] &&
+    /usr/bin/sudo -n -- /usr/bin/cmp -s \
+      "$native_contract_source" "$protected_native_contract" ||
+    fail "native contract staging did not preserve one sealed exact copy"
+  if homebrew_patched_launcher_stage_native_contract_file \
+      "$native_contract_source" fixture.json 1024 >/dev/null 2>&1; then
+    fail "native contract staging replaced an occupied destination"
+  fi
+  homebrew_patched_launcher_run_native assert-native-api \
+    "$isolated_native_cache/api" "$protected_native_contract" \
+    "reviewed native contract"
+  [ "$(<"$isolated_native_cache/bottle-cache-write")" = \
+      "cache remains writable" ] ||
+    fail "sealed native API prevented ordinary bottle-cache writes"
   protected_dir="$HOMEBREW_PATCHED_PROTECTED_DIR"
   source_alias_dir="$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR"
   protected_platform_root="$HOMEBREW_PATCHED_PLATFORM_ROOT"
@@ -3199,8 +3303,14 @@ EOF
     [ -z "$HOMEBREW_PATCHED_FORMULA_TEST_SHA256" ] && \
     [ -z "$HOMEBREW_PATCHED_FORMULA_TEST_XTASK_RELATIVE" ] && \
     [ -z "$HOMEBREW_PATCHED_SYSROOT_ROOT" ] && \
-    [ -z "$HOMEBREW_PATCHED_SYSROOT_SHA256" ] ||
+    [ -z "$HOMEBREW_PATCHED_SYSROOT_SHA256" ] && \
+    [ -z "$HOMEBREW_PATCHED_NATIVE_API_SOURCE" ] && \
+    [ -z "$HOMEBREW_PATCHED_NATIVE_CONTRACT_DIR" ] ||
     fail "isolated cleanup left the protected checker or source aliases"
+  [ -f "$isolated_native_api_source/formula.jws.json" ] &&
+    [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a' \
+      "$isolated_native_api_source")" = "0:0:555" ] ||
+    fail "launcher cleanup changed the workflow-owned native API source"
   [ ! -e "$protected_bottle" ] && [ ! -e "$protected_bottle_dir" ] && \
     [ -z "$(find "$isolated_shared_temp" -mindepth 1 -print -quit)" ] && \
     [ -z "$HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP" ] && \

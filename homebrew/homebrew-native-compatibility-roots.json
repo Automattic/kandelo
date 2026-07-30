@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "kind": "kandelo-homebrew-native-roots",
+  "architecture": "x86_64_linux",
+  "homebrew_commit": "cf5bc21c6b127e168ef7cfa982ba7db62874690e",
+  "roots": {
+    "tap_formula_host_dependencies": [
+      "autoconf",
+      "automake",
+      "binaryen",
+      "bison",
+      "cmake",
+      "docutils",
+      "erlang@28",
+      "flex",
+      "git",
+      "gnu-sed",
+      "gnu-tar",
+      "gpatch",
+      "libtool",
+      "lzip",
+      "m4",
+      "ninja",
+      "pkgconf",
+      "python@3.13",
+      "ruby",
+      "rust",
+      "texinfo",
+      "unzip",
+      "wabt",
+      "zip",
+      "zstd"
+    ]
+  }
+}

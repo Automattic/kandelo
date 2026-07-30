@@ -123,6 +123,8 @@ fi
 PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
 PUBLISHER_ISOLATION_PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0002-support-isolated-publisher.patch"
 . "$KANDELO_ROOT/scripts/homebrew-patched-launcher.sh"
+# shellcheck source=/dev/null
+. "$KANDELO_ROOT/scripts/homebrew-native-install-contract.sh"
 homebrew_patched_launcher_select_host_git
 mkdir -p "$OUT_DIR/bottles"
 if [ -n "$BUILD_USER" ]; then
@@ -442,6 +444,9 @@ bash "$KANDELO_ROOT/scripts/homebrew-validate-host-dependency-plan.sh" \
 jq -r '.build_and_test[]' "$HOST_DEPENDENCY_PLAN" >"$HOST_DEPENDENCY_LIST"
 validate_dependency_list "$HOST_DEPENDENCY_LIST" "host dependency list"
 homebrew_patched_launcher_stage_dependency_plan "$HOST_DEPENDENCY_PLAN"
+homebrew_native_contract_select_api_source \
+  homebrew-bottle-build.sh "$BUILD_USER" \
+  "$HOST_DEPENDENCY_PLAN" "$HOST_DEPENDENCY_LIST"
 
 TAP_COMMIT="$(git -C "$TAP_ROOT" rev-parse HEAD)"
 "$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"
@@ -570,11 +575,11 @@ run_native_brew_logged() {
 # is taken.
 # Only the reviewed direct names are exposed to target Homebrew after the native
 # tree has been sealed read-only.
+homebrew_native_contract_install \
+  "$HOST_DEPENDENCY_LIST" "$CONTROL_DIR" "$NATIVE_INSTALL_LOG" \
+  "$NATIVE_TEMP" "${HOMEBREW_BREW_COMMIT:-}" "$KANDELO_ROOT" \
+  tap_formula_host_dependencies
 mapfile -t native_dependencies <"$HOST_DEPENDENCY_LIST"
-for dependency in "${native_dependencies[@]}"; do
-  run_native_brew_logged install --as-dependency --formula \
-    "homebrew/core/$dependency"
-done
 for dependency in "${native_dependencies[@]}"; do
   native_info="$CONTROL_DIR/native-info-$dependency.json"
   : >"$native_info"

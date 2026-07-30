@@ -1190,6 +1190,29 @@ Acceptance:
   artifact and browser evidence, last-green selection, and visible launch
   failures after CI artifacts expire.
 
+Implementation checkpoint (2026-07-29; in progress):
+
+- The native publisher is advancing to exact upstream Homebrew commit
+  `cf5bc21c6b127e168ef7cfa982ba7db62874690e`, whose native package
+  installer supports the constrained post-install steps now present in
+  Homebrew's signed package API. The guest bootstrap remains pinned to its
+  existing source until its source lock, package and build identity, program
+  index, shell lock, and guest documentation can advance together in the
+  atomic guest cutover.
+- The publisher must admit each job's native host-tool closure against a
+  reviewed compatibility lock before untrusted Formula execution. Exact
+  pinned Homebrew, rather than Kandelo code, owns alias, dependency,
+  platform variation, bottle, and install-step interpretation.
+- A retained, path-scoped pull-request gate must regenerate that lock on exact
+  Linux x86_64 and prove the `ca-certificates`/OpenSSL lifecycle without write
+  authority. A changed generated lock remains a reviewable artifact rather
+  than becoming authority automatically.
+- GitHub statically validates dormant write-capable jobs in a called reusable
+  workflow, so merge-candidate code must not invoke the complete publisher or
+  receive its write ceiling. Immediately after merge, rotate the trusted
+  tap-main workflow pin and run the fixed `bzip2`/wasm32 dry-run to exercise
+  the real isolated build and verifier realms before publication.
+
 ## Inventory Preservation Ledger
 
 The historical inventory comprised 73 package manifests plus the

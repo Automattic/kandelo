@@ -197,6 +197,8 @@ PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.pat
 PUBLISHER_ISOLATION_PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0002-support-isolated-publisher.patch"
 # shellcheck source=/dev/null
 . "$KANDELO_ROOT/scripts/homebrew-patched-launcher.sh"
+# shellcheck source=/dev/null
+. "$KANDELO_ROOT/scripts/homebrew-native-install-contract.sh"
 homebrew_patched_launcher_select_host_git
 if [ -n "$BUILD_USER" ]; then
   HOST_TARGET="$(rustc -vV | sed -n 's/^host: //p')"
@@ -401,6 +403,9 @@ bash "$KANDELO_ROOT/scripts/homebrew-validate-host-dependency-plan.sh" \
 jq -r '.runtime_and_test[]' "$HOST_DEPENDENCY_PLAN" >"$HOST_DEPENDENCY_LIST"
 validate_dependency_list "$HOST_DEPENDENCY_LIST" "host dependency list"
 homebrew_patched_launcher_stage_dependency_plan "$HOST_DEPENDENCY_PLAN"
+homebrew_native_contract_select_api_source \
+  homebrew-verify-poured-bottle.sh "$BUILD_USER" \
+  "$HOST_DEPENDENCY_PLAN" "$HOST_DEPENDENCY_LIST"
 
 "$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"
 printf '%s\n' "$TAP_NAME" >"$ALLOWED_TARGET_TAPS"
@@ -529,11 +534,11 @@ run_native_brew_logged() {
 # transaction. This avoids Homebrew resolving a dependency whose top-level lock
 # is already held by the same combined install command. Expose
 # only the reviewed direct tools to target Homebrew after sealing the tree.
+homebrew_native_contract_install \
+  "$HOST_DEPENDENCY_LIST" "$CONTROL_DIR" "$NATIVE_INSTALL_LOG" \
+  "$NATIVE_TEMP" "${HOMEBREW_BREW_COMMIT:-}" "$KANDELO_ROOT" \
+  tap_formula_host_dependencies
 mapfile -t native_dependencies <"$HOST_DEPENDENCY_LIST"
-for dependency in "${native_dependencies[@]}"; do
-  run_native_brew_logged install --as-dependency --formula \
-    "homebrew/core/$dependency"
-done
 for dependency in "${native_dependencies[@]}"; do
   native_info="$CONTROL_DIR/native-info-$dependency.json"
   : >"$native_info"
