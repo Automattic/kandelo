@@ -25,6 +25,8 @@ git -C "$FIXTURE" config user.name "Homebrew shell scope test"
 
 fixture_paths=(
   .github/scripts/homebrew-main-shell-change-scope.sh
+  .github/scripts/require-repository-main-contains.sh
+  .github/scripts/test-require-repository-main-contains.sh
   .github/workflows/homebrew-main-shell-ci.yml
   .github/workflows/homebrew-native-publisher-compatibility.yml
   .github/workflows/reusable-homebrew-main-shell-mirror-publish.yml
@@ -32,27 +34,48 @@ fixture_paths=(
   homebrew/homebrew-native-compatibility-lock.json
   homebrew/main-shell-migration-lock.json
   homebrew/patches/0001-add-kandelo-wasm-bottle-tags-prefix-campaign.patch
+  docs/binary-releases.md
+  docs/homebrew-publishing.md
+  docs/plans/2026-07-29-homebrew-guest-prefix-cutover.md
   packages/registry/bash/build.toml
   scripts/check-homebrew-publish-workflow-trust.rb
+  scripts/homebrew-bottle-build.sh
+  scripts/homebrew-bottle-runtime-evidence.py
   scripts/homebrew-compose-formula-bottle.rb
   scripts/homebrew-create-build-handoff.sh
+  scripts/homebrew-dependency-provenance.py
+  scripts/homebrew-dependency-taps.py
+  scripts/homebrew-formula-runtime-closure.rb
   scripts/homebrew-generate-sidecars-from-env.sh
   scripts/homebrew-guest-layout.sh
+  scripts/homebrew-ghcr-upload.sh
   scripts/homebrew-native-api-preflight.sh
   scripts/homebrew-merge-bottle-json.sh
   scripts/homebrew-oci-layout.py
   scripts/homebrew-patched-launcher.sh
+  scripts/homebrew-prefix-campaign-executor.py
+  scripts/homebrew-prefix-campaign-publisher.py
+  scripts/homebrew-prefix-campaign.py
   scripts/homebrew-tap-recipe-runner.py
   scripts/homebrew-validate-publish-handoff.sh
   scripts/homebrew-validate-upload-receipt.sh
+  scripts/homebrew-verify-poured-bottle.sh
+  scripts/publish-immutable-github-release.sh
+  scripts/test-homebrew-bottle-runtime-evidence.sh
+  scripts/test-homebrew-formula-runtime-closure.sh
   scripts/test-homebrew-native-api-contract.sh
   scripts/homebrew-inspect-bottle.py
   scripts/homebrew-validate-build-handoff.sh
   scripts/test-homebrew-inspect-bottle.sh
   scripts/test-homebrew-patched-launcher.sh
   scripts/test-homebrew-prefix-campaign-layout.sh
+  scripts/test-homebrew-prefix-campaign-executor.py
+  scripts/test-homebrew-prefix-campaign-publisher.py
+  scripts/test-homebrew-prefix-campaign.py
   scripts/test-homebrew-publish-workflow.sh
   scripts/test-homebrew-tap-recipe-runner.py
+  scripts/test-homebrew-vfs-release.sh
+  scripts/test-publish-immutable-github-release.sh
   tools/xtask/src/homebrew_guest_layout.rs
   tools/xtask/src/homebrew_sidecars.rs
   tools/xtask/src/homebrew_validate.rs
@@ -171,6 +194,61 @@ done
 HEAD="$(finish_change)"
 assert_scope false pull_request "$BASE" "$HEAD" \
   "diff is limited to audited publisher-only"
+
+# The campaign bridge is one publisher contract even though it spans
+# reconstruction, provenance, transport, immutable-release, and documentation
+# helpers. Keep that complete reviewed set cheap to validate, while proving
+# that one product-runtime path still restores the exact-shell gate.
+campaign_publisher_paths=(
+  .github/scripts/require-repository-main-contains.sh
+  .github/scripts/test-require-repository-main-contains.sh
+  .github/workflows/reusable-homebrew-bottle-publish.yml
+  docs/binary-releases.md
+  docs/homebrew-publishing.md
+  docs/plans/2026-07-29-homebrew-guest-prefix-cutover.md
+  scripts/check-homebrew-publish-workflow-trust.rb
+  scripts/homebrew-bottle-build.sh
+  scripts/homebrew-bottle-runtime-evidence.py
+  scripts/homebrew-create-build-handoff.sh
+  scripts/homebrew-dependency-provenance.py
+  scripts/homebrew-dependency-taps.py
+  scripts/homebrew-formula-runtime-closure.rb
+  scripts/homebrew-generate-sidecars-from-env.sh
+  scripts/homebrew-ghcr-upload.sh
+  scripts/homebrew-oci-layout.py
+  scripts/homebrew-prefix-campaign-executor.py
+  scripts/homebrew-prefix-campaign-publisher.py
+  scripts/homebrew-prefix-campaign.py
+  scripts/homebrew-validate-build-handoff.sh
+  scripts/homebrew-validate-publish-handoff.sh
+  scripts/homebrew-validate-upload-receipt.sh
+  scripts/homebrew-verify-poured-bottle.sh
+  scripts/publish-immutable-github-release.sh
+  scripts/test-homebrew-bottle-runtime-evidence.sh
+  scripts/test-homebrew-formula-runtime-closure.sh
+  scripts/test-homebrew-oci-layout.sh
+  scripts/test-homebrew-prefix-campaign-executor.py
+  scripts/test-homebrew-prefix-campaign-publisher.py
+  scripts/test-homebrew-prefix-campaign.py
+  scripts/test-homebrew-publish-workflow.sh
+  scripts/test-homebrew-vfs-release.sh
+  scripts/test-publish-immutable-github-release.sh
+)
+reset_fixture
+for path in "${campaign_publisher_paths[@]}"; do
+  commit_change "$path"
+done
+HEAD="$(finish_change)"
+assert_scope false pull_request "$BASE" "$HEAD" \
+  "diff is limited to audited publisher-only"
+
+reset_fixture
+for path in "${campaign_publisher_paths[@]}"; do
+  commit_change "$path"
+done
+commit_change host/src/kernel-worker.ts
+HEAD="$(finish_change)"
+assert_scope true pull_request "$BASE" "$HEAD" "host/src/kernel-worker.ts"
 
 # The publisher-only part of PR #1144 is also safe independently.
 reset_fixture
