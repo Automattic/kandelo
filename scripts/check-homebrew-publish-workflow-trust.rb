@@ -1193,6 +1193,7 @@ def check_publisher(workflow)
     "identity.uid == runner_uid",
     "identity.gid == runner_gid",
     '"--no-dereference"',
+    'f"--from={runner_uid}:{runner_gid}"',
     "if (after.device, after.inode) != (before.device, before.inode):",
     "recursive chown",
     "host-runtime preparation accepts no arguments",

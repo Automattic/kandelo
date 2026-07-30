@@ -839,12 +839,15 @@ validation and privileged service use.
 The preparer accepts only the historical sealed state or an exact mode-`0755`
 directory owned by the current non-root workflow UID and GID. In the latter
 case it changes only the `/usr` inode to `root:root`, verifies that its device
-and inode did not change, and rechecks the complete final state. It never
-changes descendants recursively because conventional host tools can have
-intentional ownership and mode differences. Every other owner, group, mode,
-type, path resolution, tool state, or post-change identity fails closed. The
-recipe supervisor retains its independent requirement that every projected
-host source and safe ancestor be root-owned and not replaceable.
+and inode did not change, and rechecks the complete final state. The ownership
+operation is conditional on the inode still having the authenticated workflow
+UID and GID; an ownership race therefore changes nothing and the post-check
+fails closed. The preparer never changes descendants recursively because
+conventional host tools can have intentional ownership and mode differences.
+Every other owner, group, mode, type, path resolution, tool state, or
+post-change identity fails closed. The recipe supervisor retains its
+independent requirement that every projected host source and safe ancestor be
+root-owned and not replaceable.
 
 The workflow trust checker discovers jobs from their privileged recipe
 entry-point calls. It currently requires this preparation before both the

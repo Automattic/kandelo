@@ -113,8 +113,12 @@ def validate_root_tool(path: Path) -> None:
         )
 
 
-def reclaim_runtime_root() -> None:
+def reclaim_runtime_root(runner_uid: int, runner_gid: int) -> None:
     """Change only the evidenced directory inode, never its descendants."""
+    if runner_uid <= 0 or runner_gid <= 0:
+        raise PreparationError(
+            "host-runtime reclamation requires a non-root runner identity"
+        )
     for tool in (SUDO_BIN, CHOWN_BIN):
         validate_root_tool(tool)
     try:
@@ -125,6 +129,7 @@ def reclaim_runtime_root() -> None:
                 "--",
                 str(CHOWN_BIN),
                 "--no-dereference",
+                f"--from={runner_uid}:{runner_gid}",
                 "0:0",
                 "--",
                 str(RUNTIME_ROOT),
@@ -157,7 +162,7 @@ def prepare_host_runtime() -> None:
     # root-owned children while a privileged recipe service is running. Reclaim
     # this one evidenced inode before Formula code executes; recursive chown
     # would instead corrupt intentional ownership inside the system runtime.
-    reclaim_runtime_root()
+    reclaim_runtime_root(runner_uid, runner_gid)
     after = path_identity(RUNTIME_ROOT)
     after_state = classify_runtime_root(after, runner_uid, runner_gid)
     if after_state != "sealed":

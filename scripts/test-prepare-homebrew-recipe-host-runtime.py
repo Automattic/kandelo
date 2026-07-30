@@ -138,7 +138,7 @@ class HostRuntimePreparationTests(unittest.TestCase):
             identity(),
         )
         preparer.prepare_host_runtime()
-        reclaim.assert_called_once_with()
+        reclaim.assert_called_once_with(1001, 1001)
         self.assertEqual(inspect.call_count, 2)
 
     @mock.patch.object(preparer, "path_identity")
@@ -197,12 +197,32 @@ class HostRuntimePreparationTests(unittest.TestCase):
         ):
             preparer.prepare_host_runtime()
 
+    @mock.patch.object(preparer, "path_identity")
+    @mock.patch.object(preparer, "reclaim_runtime_root")
+    @mock.patch.object(preparer.os, "getgid", return_value=1001)
+    @mock.patch.object(preparer.os, "getuid", return_value=1001)
+    def test_ownership_change_during_reclaim_is_rejected(
+        self,
+        _getuid,
+        _getgid,
+        _reclaim,
+        inspect,
+    ) -> None:
+        inspect.side_effect = (
+            identity(uid=1001, gid=1001),
+            identity(uid=1002, gid=1002),
+        )
+        with self.assertRaisesRegex(
+            preparer.PreparationError, "unexpected ownership"
+        ):
+            preparer.prepare_host_runtime()
+
     @mock.patch.object(preparer.subprocess, "run")
     @mock.patch.object(preparer, "validate_root_tool")
     def test_reclaim_command_is_fixed_and_nonrecursive(
         self, validate_tool, run
     ) -> None:
-        preparer.reclaim_runtime_root()
+        preparer.reclaim_runtime_root(1001, 1001)
         self.assertEqual(
             validate_tool.call_args_list,
             [mock.call(preparer.SUDO_BIN), mock.call(preparer.CHOWN_BIN)],
@@ -214,6 +234,7 @@ class HostRuntimePreparationTests(unittest.TestCase):
                 "--",
                 "/usr/bin/chown",
                 "--no-dereference",
+                "--from=1001:1001",
                 "0:0",
                 "--",
                 "/usr",
@@ -233,7 +254,19 @@ class HostRuntimePreparationTests(unittest.TestCase):
         with self.assertRaisesRegex(
             preparer.PreparationError, "could not reclaim /usr"
         ):
-            preparer.reclaim_runtime_root()
+            preparer.reclaim_runtime_root(1001, 1001)
+
+    @mock.patch.object(preparer.subprocess, "run")
+    @mock.patch.object(preparer, "validate_root_tool")
+    def test_reclaim_rejects_a_root_caller_identity(
+        self, validate_tool, run
+    ) -> None:
+        with self.assertRaisesRegex(
+            preparer.PreparationError, "requires a non-root runner"
+        ):
+            preparer.reclaim_runtime_root(0, 0)
+        validate_tool.assert_not_called()
+        run.assert_not_called()
 
     def test_command_line_accepts_no_override(self) -> None:
         with self.assertRaisesRegex(
