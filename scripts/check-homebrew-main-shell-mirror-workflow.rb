@@ -12,7 +12,7 @@ WORKFLOW = ARGV.empty? ?
 PUBLISH_JOB_DIGEST =
   "64bd13ea5a8d00953acfec3e02607f7ae70837706c868827bed5259c6043aeb2"
 WORKFLOW_DIGEST =
-  "fac33038f59317e26ad0a8c580073450317a468d45533dc560f11378022e1e80"
+  "561c59bf648cec2a5a3c62a19216bcb6ac2c325c820f7de47c5ad836375b0793"
 DOWNLOAD_ACTION =
   "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 UPLOAD_ACTION =
@@ -453,6 +453,16 @@ check(
     ).length == 1,
   "Chromium proof does not forward selected Vite inputs " \
     "through dev-shell",
+)
+browser_shell_verifier =
+  "bash ../../scripts/verify-browser-shell-vfs-asset.sh"
+check(
+  chromium_build_run.scan(browser_shell_verifier).length == 1 &&
+    chromium_build_run.include?(
+      'dist "${{ steps.public.outputs.image }}"'
+    ) &&
+    !chromium_build_run.include?("dist/shell.vfs.zst"),
+  "Chromium proof does not verify its exact hashed shell asset",
 )
 
 node_resolution = named_step(

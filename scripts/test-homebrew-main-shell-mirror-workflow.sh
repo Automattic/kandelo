@@ -9,6 +9,7 @@ trap 'rm -rf "$TMP_ROOT"' EXIT
 ruby "$REPO_ROOT/scripts/check-homebrew-main-shell-mirror-workflow.rb"
 python3 \
   "$REPO_ROOT/.github/scripts/test-check-homebrew-main-shell-release-locks.py"
+bash "$REPO_ROOT/scripts/test-verify-browser-shell-vfs-asset.sh"
 
 expect_rejected() {
   local fixture="$1"
@@ -121,6 +122,12 @@ sed \
   '/"KANDELO_BROWSER_DEMO_INPUTS=\$KANDELO_BROWSER_DEMO_INPUTS"/d' \
   "$WORKFLOW" >"$TMP_ROOT/dropped-chromium-input-selection.yml"
 expect_rejected "$TMP_ROOT/dropped-chromium-input-selection.yml"
+sed '/verify-browser-shell-vfs-asset.sh/d' \
+  "$WORKFLOW" >"$TMP_ROOT/no-browser-shell-asset-verifier.yml"
+expect_rejected "$TMP_ROOT/no-browser-shell-asset-verifier.yml"
+sed '/verify-browser-shell-vfs-asset.sh/p' \
+  "$WORKFLOW" >"$TMP_ROOT/duplicated-browser-shell-asset-verifier.yml"
+expect_rejected "$TMP_ROOT/duplicated-browser-shell-asset-verifier.yml"
 sed '/      - name: Upload mirror verification and lifecycle publication receipts/i\
       - name: Injected write-capable command\
         shell: bash\

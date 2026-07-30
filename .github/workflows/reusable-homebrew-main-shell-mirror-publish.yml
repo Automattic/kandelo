@@ -965,8 +965,8 @@ jobs:
             npm run build
           test -f dist/index.html
           test -f dist/pages/homebrew-vfs-test/index.html
-          test -f dist/shell.vfs.zst
-          cmp dist/shell.vfs.zst "${{ steps.public.outputs.image }}"
+          bash ../../scripts/verify-browser-shell-vfs-asset.sh \
+            dist "${{ steps.public.outputs.image }}"
 
       - name: Create exact all-public Chromium lifecycle fixture
         id: public-fixture

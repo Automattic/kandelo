@@ -850,7 +850,8 @@ jobs:
             "${build_env[@]}" \
             npm run build "${build_args[@]}"
           test -f dist/index.html
-          test -f dist/shell.vfs.zst
+          bash ../../scripts/verify-browser-shell-vfs-asset.sh \
+            dist "${{ steps.image.outputs.path }}"
 
       - name: Boot the exact installed bytes in Node
         run: |
