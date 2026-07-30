@@ -829,25 +829,29 @@ closure is queried before service entry and projected as individual
 content-addressed store roots; the whole Nix store is not exposed.
 
 Before any privileged recipe entry point runs, its workflow job seals the
-host `/usr` directory. GitHub-hosted Ubuntu images historically supplied that
-directory as `root:root` mode `0755`; the 2026-07-26 Ubuntu 22.04 and 24.04
-images instead supplied the `/usr` inode as the current workflow identity
-(UID 1001 and GID 1001 in the observed jobs) while its selected children
-remained root-owned. That owner could replace a projected child between
+fixed host `/usr` and `/etc` projection ancestors. GitHub-hosted Ubuntu images
+historically supplied both directories as `root:root` mode `0755`; the
+2026-07-26 Ubuntu 22.04 and 24.04 images instead supplied their inodes as the
+current workflow identity (UID 1001 and GID 1001 in the observed jobs) while
+selected children remained root-owned. The recipe boundary projects ordinary
+tools below `/usr` and the exact alternatives and loader-cache sources below
+`/etc`. An owner of either ancestor could replace a projected child between
 validation and privileged service use.
 
-The preparer accepts only the historical sealed state or an exact mode-`0755`
-directory owned by the current non-root workflow UID and GID. In the latter
-case it changes only the `/usr` inode to `root:root`, verifies that its device
-and inode did not change, and rechecks the complete final state. The ownership
-operation is conditional on the inode still having the authenticated workflow
-UID and GID; an ownership race therefore changes nothing and the post-check
-fails closed. The preparer never changes descendants recursively because
-conventional host tools can have intentional ownership and mode differences.
-Every other owner, group, mode, type, path resolution, tool state, or
-post-change identity fails closed. The recipe supervisor retains its
-independent requirement that every projected host source and safe ancestor be
-root-owned and not replaceable.
+The preparer first requires both fixed ancestors to be either in the
+historical sealed state or exact mode-`0755` directories owned by the current
+non-root workflow UID and GID. It makes no change unless the complete set
+passes. It then changes only the evidenced runner-owned ancestor inodes to
+`root:root`, verifies that each device and inode stayed the same, and rechecks
+both complete final states. The ownership operation is conditional on each
+inode still having the authenticated workflow UID and GID; an ownership race
+therefore changes nothing and the post-check fails closed. The fixed path set
+is not caller-selectable, and the preparer never changes descendants
+recursively because conventional host tools can have intentional ownership
+and mode differences. Every other owner, group, mode, type, path resolution,
+tool state, or post-change identity fails closed. The recipe supervisor
+retains its independent requirement that every projected host source and safe
+ancestor be root-owned and not replaceable.
 
 The workflow trust checker discovers jobs from their privileged recipe
 entry-point calls. It currently requires this preparation before both the

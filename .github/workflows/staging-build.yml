@@ -166,9 +166,10 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
-      # WHY: Some GitHub-hosted images make /usr runner-owned even though its
-      # contents remain root-owned. Seal that one directory inode before this
-      # job exercises the same privileged recipe boundary as publication.
+      # WHY: Some GitHub-hosted images make fixed /usr or /etc projection
+      # ancestors runner-owned even though selected children remain root-owned.
+      # Seal those directory inodes before this job exercises the same
+      # privileged recipe boundary as publication.
       - name: Seal conventional host runtime ownership
         run: >-
           /usr/bin/python3

@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import NamedTuple
 
 
-RUNTIME_ROOT = Path("/usr")
+# WHY: These are the complete mutable ancestors of the conventional host
+# sources projected by homebrew-tap-recipe-runner.py on GitHub's Ubuntu
+# runners. Keep this list fixed: accepting a caller-selected path would turn
+# the preparer into a privileged ownership-changing interface.
+HOST_PROJECTION_ANCESTORS = (Path("/usr"), Path("/etc"))
 SUDO_BIN = Path("/usr/bin/sudo")
 CHOWN_BIN = Path("/usr/bin/chown")
 
@@ -65,19 +69,24 @@ def rendered(identity: PathIdentity) -> str:
     )
 
 
-def classify_runtime_root(
-    identity: PathIdentity, runner_uid: int, runner_gid: int
+def classify_projection_ancestor(
+    identity: PathIdentity,
+    expected_path: Path,
+    runner_uid: int,
+    runner_gid: int,
 ) -> str:
     """Accept only the sealed state or the exact hosted-runner regression."""
     if (
-        identity.path != RUNTIME_ROOT
-        or identity.resolved != RUNTIME_ROOT
+        expected_path not in HOST_PROJECTION_ANCESTORS
+        or identity.path != expected_path
+        or identity.resolved != expected_path
         or identity.file_type != stat.S_IFDIR
         or identity.mode != 0o755
     ):
         raise PreparationError(
-            "host runtime root has an unexpected path, type, or mode "
-            f"({rendered(identity)}; expected=/usr-real-directory-mode-0755)"
+            "host projection ancestor has an unexpected path, type, or mode "
+            f"({rendered(identity)}; expected_path={expected_path} "
+            "expected_type=directory expected_mode=0755)"
         )
     if identity.uid == 0 and identity.gid == 0:
         return "sealed"
@@ -89,9 +98,9 @@ def classify_runtime_root(
     ):
         return "runner-owned"
     raise PreparationError(
-        "host runtime root has unexpected ownership "
-        f"({rendered(identity)}; expected=root:root-or-current-runner:"
-        "current-runner)"
+        "host projection ancestor has unexpected ownership "
+        f"({rendered(identity)}; expected_owner=root:root-or-"
+        f"{runner_uid}:{runner_gid})"
     )
 
 
@@ -113,11 +122,21 @@ def validate_root_tool(path: Path) -> None:
         )
 
 
-def reclaim_runtime_root(runner_uid: int, runner_gid: int) -> None:
-    """Change only the evidenced directory inode, never its descendants."""
+def reclaim_projection_ancestors(
+    candidates: tuple[Path, ...], runner_uid: int, runner_gid: int
+) -> None:
+    """Change only the evidenced directory inodes, never their descendants."""
     if runner_uid <= 0 or runner_gid <= 0:
         raise PreparationError(
-            "host-runtime reclamation requires a non-root runner identity"
+            "host-projection reclamation requires a non-root runner identity"
+        )
+    expected_candidates = tuple(
+        root for root in HOST_PROJECTION_ANCESTORS if root in candidates
+    )
+    if not candidates or candidates != expected_candidates:
+        raise PreparationError(
+            "host-projection reclamation received an unknown, repeated, or "
+            "out-of-order path"
         )
     for tool in (SUDO_BIN, CHOWN_BIN):
         validate_root_tool(tool)
@@ -132,7 +151,7 @@ def reclaim_runtime_root(runner_uid: int, runner_gid: int) -> None:
                 f"--from={runner_uid}:{runner_gid}",
                 "0:0",
                 "--",
-                str(RUNTIME_ROOT),
+                *(str(candidate) for candidate in candidates),
             ],
             check=True,
             env={
@@ -143,40 +162,63 @@ def reclaim_runtime_root(runner_uid: int, runner_gid: int) -> None:
         )
     except (OSError, subprocess.CalledProcessError) as error:
         raise PreparationError(
-            f"could not reclaim {RUNTIME_ROOT} for privileged Formula execution"
+            "could not reclaim the host projection ancestors for privileged "
+            "Formula execution"
         ) from error
 
 
 def prepare_host_runtime() -> None:
-    """Seal `/usr` while rejecting every unrecognized runner-image state."""
+    """Seal fixed host ancestors and reject unrecognized runner-image state."""
     runner_uid = os.getuid()
     runner_gid = os.getgid()
-    before = path_identity(RUNTIME_ROOT)
-    state = classify_runtime_root(before, runner_uid, runner_gid)
-    if state == "sealed":
-        print(f"Homebrew host runtime already sealed: {rendered(before)}")
+    before = tuple(
+        path_identity(root) for root in HOST_PROJECTION_ANCESTORS
+    )
+    states = tuple(
+        classify_projection_ancestor(
+            identity, root, runner_uid, runner_gid
+        )
+        for root, identity in zip(HOST_PROJECTION_ANCESTORS, before, strict=True)
+    )
+    candidates = tuple(
+        root
+        for root, state in zip(HOST_PROJECTION_ANCESTORS, states, strict=True)
+        if state == "runner-owned"
+    )
+    if not candidates:
+        print(
+            "Homebrew host projection ancestors already sealed: "
+            + "; ".join(rendered(identity) for identity in before)
+        )
         return
 
-    # WHY: Recent GitHub-hosted images changed only the /usr directory inode
-    # from root:root to the workflow identity. That owner could replace
-    # root-owned children while a privileged recipe service is running. Reclaim
-    # this one evidenced inode before Formula code executes; recursive chown
-    # would instead corrupt intentional ownership inside the system runtime.
-    reclaim_runtime_root(runner_uid, runner_gid)
-    after = path_identity(RUNTIME_ROOT)
-    after_state = classify_runtime_root(after, runner_uid, runner_gid)
-    if after_state != "sealed":
-        raise PreparationError(
-            f"host runtime root was not sealed ({rendered(after)})"
+    # WHY: GitHub-hosted images have supplied /usr and /etc directory inodes as
+    # the workflow identity while leaving selected children root-owned. That
+    # owner could replace a projected child while a privileged recipe service
+    # is running. Reclaim only the fixed, evidenced inodes before Formula code
+    # executes; recursive chown would corrupt intentional child ownership.
+    reclaim_projection_ancestors(candidates, runner_uid, runner_gid)
+    after = tuple(
+        path_identity(root) for root in HOST_PROJECTION_ANCESTORS
+    )
+    for root, old, new in zip(
+        HOST_PROJECTION_ANCESTORS, before, after, strict=True
+    ):
+        after_state = classify_projection_ancestor(
+            new, root, runner_uid, runner_gid
         )
-    if (after.device, after.inode) != (before.device, before.inode):
-        raise PreparationError(
-            "host runtime root changed identity while ownership was reclaimed "
-            f"(before={rendered(before)}; after={rendered(after)})"
-        )
+        if after_state != "sealed":
+            raise PreparationError(
+                f"host projection ancestor was not sealed ({rendered(new)})"
+            )
+        if (new.device, new.inode) != (old.device, old.inode):
+            raise PreparationError(
+                "host projection ancestor changed identity while ownership "
+                f"was reclaimed (before={rendered(old)}; after={rendered(new)})"
+            )
     print(
-        "Homebrew host runtime sealed from the current runner identity: "
-        f"{rendered(after)}"
+        "Homebrew host projection ancestors sealed from the current runner "
+        "identity: " + "; ".join(rendered(identity) for identity in after)
     )
 
 
