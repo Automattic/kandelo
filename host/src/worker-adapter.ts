@@ -101,6 +101,7 @@ import { Worker, type WorkerOptions } from "node:worker_threads";
 import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
+import { NODE_WORKER_INIT_BY_MESSAGE } from "./node-worker-initialization";
 
 // Wasm guest stacks consume the embedding worker's native stack when engines
 // recurse through Wasm frames. Keep the default high enough for stack-heavy
@@ -140,11 +141,49 @@ export function nodeWorkerOptions(
   };
 }
 
+/** @internal Exported so the process-memory ownership policy stays testable. */
+export function nodeWorkerInitialization(
+  init: unknown,
+  initializeByMessage: boolean,
+):
+  | {
+    transport: "worker-data";
+    workerDataValue: unknown;
+  }
+  | {
+    transport: "message";
+    workerDataValue: typeof NODE_WORKER_INIT_BY_MESSAGE;
+    initialMessage: unknown;
+  } {
+  if (!initializeByMessage) {
+    return {
+      transport: "worker-data",
+      workerDataValue: init,
+    };
+  }
+  // WHY: built-in process init carries Shared WebAssembly.Memory. Node exposes
+  // the structured clone as the worker module's workerData value. The matched
+  // lifecycle reached lower peak RSS when Kandelo avoided that startup route.
+  // A one-shot message keeps the same structured-clone semantics while letting
+  // its listener and message be released after delivery.
+  return {
+    transport: "message",
+    workerDataValue: NODE_WORKER_INIT_BY_MESSAGE,
+    initialMessage: init,
+  };
+}
+
 export class NodeWorkerAdapter implements WorkerAdapter {
   private entryUrl: URL;
   private _compiledEntry: URL | false | undefined;
+  private readonly initializeByMessage: boolean;
 
   constructor(entryUrl?: URL) {
+    // WHY: arbitrary custom entries may read workerData directly and do not
+    // understand Kandelo's marker/message protocol. Only the built-in entry can
+    // safely select the new transport without changing the public custom-entry
+    // contract.
+    this.initializeByMessage = entryUrl === undefined;
     this.entryUrl =
       entryUrl ?? new URL("./worker-entry.ts", currentModuleUrl());
   }
@@ -181,13 +220,37 @@ export class NodeWorkerAdapter implements WorkerAdapter {
     return null;
   }
 
+  private initializeWorker(
+    worker: Worker,
+    initialization: ReturnType<typeof nodeWorkerInitialization>,
+  ): WorkerHandle {
+    if (initialization.transport === "message") {
+      try {
+        worker.postMessage(initialization.initialMessage);
+      } catch (error) {
+        // The Worker exists by this point. Do not leave a realm waiting
+        // forever for an init value that structured clone rejected.
+        void worker.terminate();
+        throw error;
+      }
+    }
+    return new NodeWorkerHandle(worker);
+  }
+
   createWorker(workerData: unknown): WorkerHandle {
+    const initialization = nodeWorkerInitialization(
+      workerData,
+      this.initializeByMessage,
+    );
     // Try the compiled JS entry first (much faster startup — avoids tsx
     // bootstrap which takes >500ms with 10+ concurrent workers).
     const compiledEntry = this.resolveCompiledEntry();
     if (compiledEntry) {
-      const worker = new Worker(compiledEntry, nodeWorkerOptions(workerData));
-      return new NodeWorkerHandle(worker);
+      const worker = new Worker(
+        compiledEntry,
+        nodeWorkerOptions(initialization.workerDataValue),
+      );
+      return this.initializeWorker(worker, initialization);
     }
 
     // Fallback: tsx eval bootstrap for running from TypeScript source.
@@ -202,10 +265,11 @@ export class NodeWorkerAdapter implements WorkerAdapter {
       `await import('${entryUrl}');`,
     ].join("\n");
 
-    const worker = new Worker(bootstrap, nodeWorkerOptions(workerData, {
-      eval: true,
-    }));
-    return new NodeWorkerHandle(worker);
+    const worker = new Worker(
+      bootstrap,
+      nodeWorkerOptions(initialization.workerDataValue, { eval: true }),
+    );
+    return this.initializeWorker(worker, initialization);
   }
 }
 

@@ -1,11 +1,47 @@
+import { EventEmitter } from "node:events";
 import { fileURLToPath } from "node:url";
 import { describe, it, expect } from "vitest";
 import {
   MockWorkerAdapter,
   NodeWorkerAdapter,
+  nodeWorkerInitialization,
   nodeWorkerOptions,
   nodeWorkerStackSizeMb,
 } from "../src/worker-adapter";
+import { receiveNodeWorkerInit } from "../src/worker-entry";
+import { NODE_WORKER_INIT_BY_MESSAGE } from "../src/node-worker-initialization";
+
+async function expectUnsupportedWorkerInit(
+  adapter: NodeWorkerAdapter,
+): Promise<void> {
+  const worker = adapter.createWorker({
+    type: "unsupported_worker_init_for_transport_test",
+  });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error("worker did not receive its initialization")),
+        5_000,
+      );
+      worker.on("error", (error) => {
+        clearTimeout(timeout);
+        try {
+          expect(error.message).toContain("Unknown worker init type");
+          resolve();
+        } catch (assertionError) {
+          reject(assertionError);
+        }
+      });
+      worker.on("exit", (code) => {
+        if (code !== 0) return;
+        clearTimeout(timeout);
+        reject(new Error("worker exited without rejecting unsupported init"));
+      });
+    });
+  } finally {
+    await worker.terminate();
+  }
+}
 
 describe("MockWorkerAdapter", () => {
   it("should create a worker handle and capture workerData", () => {
@@ -74,6 +110,60 @@ describe("NodeWorkerAdapter stack policy", () => {
         stackSizeMb: 32,
       },
     });
+  });
+
+  it("keeps built-in process memory out of the workerData startup path", () => {
+    const memory = new WebAssembly.Memory({
+      initial: 1,
+      maximum: 1,
+      shared: true,
+    });
+    const init = { type: "centralized_init", memory };
+
+    expect(nodeWorkerInitialization(init, true)).toEqual({
+      transport: "message",
+      workerDataValue: NODE_WORKER_INIT_BY_MESSAGE,
+      initialMessage: init,
+    });
+    expect(nodeWorkerInitialization(init, false)).toEqual({
+      transport: "worker-data",
+      workerDataValue: init,
+    });
+  });
+
+  it("detaches the one-shot process-init listener after delivery", async () => {
+    const port = new EventEmitter();
+    const init = { type: "centralized_init", pid: 101 };
+    const received = receiveNodeWorkerInit(
+      port,
+      NODE_WORKER_INIT_BY_MESSAGE,
+    );
+
+    expect(port.listenerCount("message")).toBe(1);
+    port.emit("message", init);
+    await expect(received).resolves.toBe(init);
+    expect(port.listenerCount("message")).toBe(0);
+  });
+
+  it("rejects missing initialization instead of waiting forever", async () => {
+    const port = new EventEmitter();
+
+    await expect(receiveNodeWorkerInit(port, undefined)).rejects.toThrow(
+      "Node worker initialization is missing",
+    );
+    expect(port.listenerCount("message")).toBe(0);
+  });
+
+  it("runs the built-in worker through one-shot message initialization", async () => {
+    await expectUnsupportedWorkerInit(new NodeWorkerAdapter());
+  });
+
+  it("preserves workerData for the public worker entry", async () => {
+    await expectUnsupportedWorkerInit(
+      new NodeWorkerAdapter(
+        new URL("../src/worker-entry.ts", import.meta.url),
+      ),
+    );
   });
 
   it("runs a deeply recursive Wasm workload inside the configured worker stack", async () => {
