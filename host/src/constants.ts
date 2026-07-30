@@ -22,6 +22,9 @@ export { CH_DATA_SIZE, CH_HEADER_SIZE, CH_TOTAL_SIZE } from "./generated/abi";
 /** Default max pages for WebAssembly.Memory */
 export const DEFAULT_MAX_PAGES = PROCESS_MEMORY_DEFAULT_MAX_PAGES;
 
+/** Default process-worker admission input shared by Node and browser hosts. */
+export const DEFAULT_MAX_WORKERS = 4;
+
 /**
  * Pages allocated per pthread slot: TLS/control, fork-save/scratch,
  * syscall channel primary, and syscall channel spill.

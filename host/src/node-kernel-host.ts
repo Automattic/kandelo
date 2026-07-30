@@ -32,7 +32,11 @@ import {
   snapshotClosedLazyAssets,
   type ClosedLazyAsset,
 } from "./vfs/closed-lazy-assets";
-import { DEFAULT_MAX_PAGES, WASM_PAGE_SIZE } from "./constants";
+import {
+  DEFAULT_MAX_PAGES,
+  DEFAULT_MAX_WORKERS,
+  WASM_PAGE_SIZE,
+} from "./constants";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
 
 export type { HttpRequest, HttpResponse };
@@ -255,7 +259,7 @@ export class NodeKernelHost {
         this.worker.once("error", errorHandler);
         this.worker.once("exit", exitHandler);
 
-        const maxWorkers = this.options.maxWorkers ?? 4;
+        const maxWorkers = this.options.maxWorkers ?? DEFAULT_MAX_WORKERS;
         const maxPages = this.options.maxPages ?? DEFAULT_MAX_PAGES;
         const maxProcessMemoryBytes =
           this.options.maxProcessMemoryBytes

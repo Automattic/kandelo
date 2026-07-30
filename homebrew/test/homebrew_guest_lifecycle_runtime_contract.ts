@@ -1,4 +1,5 @@
 import type { ClosedLazyAsset } from "../../host/src/vfs/closed-lazy-assets";
+import { DEFAULT_MAX_WORKERS } from "../../host/src/constants";
 import {
   MemoryFileSystem,
   type LazyDownloadEvent,
@@ -18,6 +19,17 @@ export interface HomebrewGuestLifecycleShell {
   path: string;
   argv0: string;
 }
+
+/**
+ * Keep both lifecycle adapters on the product host default.
+ *
+ * WHY: `maxWorkers` now also derives the default byte-admission budget for
+ * process address spaces. The former lifecycle-only value of eight silently
+ * doubled that budget even though the product default remained four.
+ */
+export const HOMEBREW_GUEST_LIFECYCLE_HOST_LIMITS = {
+  maxWorkers: DEFAULT_MAX_WORKERS,
+} as const;
 
 export function parseHomebrewGuestLifecycleShellConfig(
   bytes: Uint8Array,

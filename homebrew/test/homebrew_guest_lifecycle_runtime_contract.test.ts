@@ -3,6 +3,11 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
+  DEFAULT_MAX_PAGES,
+  DEFAULT_MAX_WORKERS,
+  WASM_PAGE_SIZE,
+} from "../../host/src/constants";
+import {
   snapshotClosedLazyAssets,
   type ClosedLazyAsset,
 } from "../../host/src/vfs/closed-lazy-assets";
@@ -16,11 +21,23 @@ import {
   assertNoRepeatedLazyDownloads,
   assertNoUnexpectedHostDiagnostics,
   completedLazyDownloadUrls,
+  HOMEBREW_GUEST_LIFECYCLE_HOST_LIMITS,
   omitCompletedClosedLazyAssets,
   resolveHomebrewGuestLifecycleShell,
 } from "./homebrew_guest_lifecycle_runtime_contract";
 
 const textEncoder = new TextEncoder();
+
+test("uses the product worker default for lifecycle memory admission", () => {
+  assert.deepEqual(HOMEBREW_GUEST_LIFECYCLE_HOST_LIMITS, {
+    maxWorkers: DEFAULT_MAX_WORKERS,
+  });
+  assert.equal(DEFAULT_MAX_WORKERS, 4);
+  assert.equal(
+    DEFAULT_MAX_WORKERS * DEFAULT_MAX_PAGES * WASM_PAGE_SIZE,
+    4 * 1024 * 1024 * 1024,
+  );
+});
 
 test("binds the lifecycle revision to the exact embedded core catalog", () => {
   const revision = "1".repeat(40);
