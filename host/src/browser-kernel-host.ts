@@ -24,7 +24,11 @@ import type { HttpRequest, HttpResponse } from "./networking/in-kernel-http";
 export type { HttpRequest, HttpResponse };
 import workerEntryUrl from "./worker-entry-browser.ts?worker&url";
 import kernelWorkerEntryUrl from "./browser-kernel-worker-entry.ts?worker&url";
-import { DEFAULT_MAX_PAGES, WASM_PAGE_SIZE } from "./constants";
+import {
+  DEFAULT_MAX_PAGES,
+  DEFAULT_MAX_WORKERS,
+  WASM_PAGE_SIZE,
+} from "./constants";
 import {
   snapshotClosedLazyAssets,
   type ClosedLazyAsset,
@@ -221,7 +225,7 @@ export class BrowserKernel {
   constructor(options: BrowserKernelOptions = {}) {
     this.maxPages = options.maxMemoryPages ?? DEFAULT_MAX_PAGES;
     this.options = {
-      maxWorkers: 4,
+      maxWorkers: DEFAULT_MAX_WORKERS,
       env: [
         "HOME=/root",
         "TMPDIR=/tmp",

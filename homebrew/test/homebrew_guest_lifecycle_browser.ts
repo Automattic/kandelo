@@ -23,6 +23,7 @@ import {
 } from "./homebrew_guest_lifecycle_runtime_inputs";
 import {
   assertNoUnexpectedHostDiagnostics,
+  HOMEBREW_GUEST_LIFECYCLE_HOST_LIMITS,
 } from "./homebrew_guest_lifecycle_runtime_contract";
 
 export interface HomebrewGuestLifecycleBrowserResult {
@@ -191,8 +192,8 @@ function createBrowserLifecycleMachine(options: {
     }
   };
   const kernel = new BrowserKernel({
+    ...HOMEBREW_GUEST_LIFECYCLE_HOST_LIMITS,
     kernelOwnedFs: true,
-    maxWorkers: 8,
     corsProxyUrl: options.corsProxyUrl,
     onStdout: (bytes) => capture(bytes, "stdout"),
     onStderr: (bytes) => capture(bytes, "stderr"),

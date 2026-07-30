@@ -30,6 +30,9 @@ import {
   runHomebrewGuestLifecycleProcess,
 } from "./homebrew_guest_lifecycle_runner";
 import {
+  HOMEBREW_GUEST_LIFECYCLE_HOST_LIMITS,
+} from "./homebrew_guest_lifecycle_runtime_contract";
+import {
   deriveHomebrewGuestLifecycleRuntimeInputs,
   type HomebrewGuestLifecycleRuntimeInputs,
 } from "./homebrew_guest_lifecycle_runtime_inputs";
@@ -198,7 +201,7 @@ function createCapturedHost(
     }
   };
   host = new NodeKernelHost({
-    maxWorkers: 8,
+    ...HOMEBREW_GUEST_LIFECYCLE_HOST_LIMITS,
     rootfsImage: runtime.imageBytes,
     rootfsLazyUrlBase: runtime.lazyUrlBase,
     ...(runtime.lazyAssets === undefined
