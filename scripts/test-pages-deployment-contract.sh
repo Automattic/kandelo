@@ -171,6 +171,16 @@ expect_mutation_rejected \
   's/(      - name: Boot the canonical bottled Pages shell in Chromium\n        working-directory: apps\/browser-demos\n        env:\n)          VITE_BASE: \/kandelo\/\n/$1/'
 
 expect_mutation_rejected \
+  "bottled preview bypasses the hashed shell verifier" \
+  "must prove the public bottled shell at the published base" \
+  's#bash ../../scripts/verify-browser-shell-vfs-asset\.sh#bash ../../scripts/skipped-browser-shell-vfs-asset.sh#'
+
+expect_mutation_rejected \
+  "bottled preview trusts the un-hashed shell copy" \
+  "must not trust the un-hashed shell copy" \
+  's#(            dist "\$\{\{ steps\.shell_product\.outputs\.image \}\}"\n)#$1          cmp dist/shell.vfs.zst /tmp/expected-shell.vfs.zst\n#'
+
+expect_mutation_rejected \
   "bottled preview loses package cache root" \
   "must cross the clean development-shell boundary" \
   's/(      - name: Boot the canonical bottled Pages shell in Chromium[\s\S]*?)^            "WASM_POSIX_BINARY_CACHE_ROOT=\$WASM_POSIX_BINARY_CACHE_ROOT" \\\n/$1/m'

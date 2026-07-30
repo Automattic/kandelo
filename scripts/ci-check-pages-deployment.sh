@@ -218,6 +218,17 @@ fi
 sealed_boot_block="$(
   step_block "$PAGES_WORKFLOW" "Boot the canonical bottled Pages shell in Chromium"
 )"
+hashed_asset_verifier_count="$(
+  awk '
+    $0 == "          bash ../../scripts/verify-browser-shell-vfs-asset.sh \\" {
+      if ((getline next_line) > 0 &&
+          next_line == "            dist \"${{ steps.shell_product.outputs.image }}\"") {
+        count += 1
+      }
+    }
+    END { print count + 0 }
+  ' <<<"$sealed_boot_block"
+)"
 grep -Fq 'VITE_BASE: /kandelo/' <<<"$sealed_boot_block" &&
   grep -Fq 'KANDELO_BROWSER_DEMO_INPUTS: main' \
     <<<"$sealed_boot_block" &&
@@ -240,10 +251,14 @@ grep -Fq 'VITE_BASE: /kandelo/' <<<"$sealed_boot_block" &&
   grep -Fq 'KANDELO_PLAYWRIGHT_SERVE_DIST: "1"' <<<"$sealed_boot_block" &&
   grep -Fq 'KANDELO_TEST_BASE_URL: http://127.0.0.1:5401/kandelo/' \
     <<<"$sealed_boot_block" &&
-  grep -Fq \
-    'cmp dist/shell.vfs.zst "${{ steps.shell_product.outputs.image }}"' \
-    <<<"$sealed_boot_block" ||
+  [ "$hashed_asset_verifier_count" -eq 1 ] ||
   fail "the Pages preview must prove the public bottled shell at the published base"
+# WHY: Vite loads the hashed asset under dist/assets. The un-hashed root copy
+# can be stale, so even an additional comparison against it is not acceptable
+# evidence for the browser bytes.
+if grep -Fq 'cmp dist/shell.vfs.zst' <<<"$sealed_boot_block"; then
+  fail "the Pages preview must not trust the un-hashed shell copy"
+fi
 grep -Fq 'bash ../../scripts/dev-shell.sh env \' <<<"$sealed_boot_block" &&
   grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
     <<<"$sealed_boot_block" ||

@@ -183,7 +183,11 @@ jobs:
           KANDELO_TEST_BASE_URL: http://127.0.0.1:5401/kandelo/
         run: |
           set -euo pipefail
-          cmp dist/shell.vfs.zst "${{ steps.shell_product.outputs.image }}"
+          # WHY: Vite imports the content-addressed asset under dist/assets.
+          # The un-hashed public copy can be stale without changing the bytes
+          # Chromium loads.
+          bash ../../scripts/verify-browser-shell-vfs-asset.sh \
+            dist "${{ steps.shell_product.outputs.image }}"
           # WHY: dev-shell.sh deliberately discards ambient step variables.
           # Thread every selected product identity through its explicit
           # boundary so the browser cannot silently test default inputs.

@@ -791,12 +791,15 @@ exact bytes still contain:
 
 The inspector reads the small plan from the image; it does not eagerly download
 the mirror payloads. After Vite assembles the complete `/kandelo/` tree, the
-Pages workflow compares its shell copy with the resolver-selected image and
-runs the public-transport Chromium shell acceptance. That acceptance downloads
-only the bottle groups it exercises, keeps untouched tools lazy, activates the
-deferred Homebrew runtime through `/usr/bin/brew`, and verifies every fetched
-digest and byte count against the embedded plan. Publication, documentation,
-size, freshness, and single-writer checks run only after that proof succeeds.
+Pages workflow requires exactly one content-addressed
+`dist/assets/shell.vfs-*.zst` asset and compares its bytes with the
+resolver-selected image. That is the asset Chromium imports; the un-hashed
+root copy is not browser-product evidence because it can be stale. The
+public-transport Chromium shell acceptance then downloads only the bottle
+groups it exercises, keeps untouched tools lazy, activates the deferred
+Homebrew runtime through `/usr/bin/brew`, and verifies every fetched digest
+and byte count against the embedded plan. Publication, documentation, size,
+freshness, and single-writer checks run only after that proof succeeds.
 
 Every push to `main` still starts the Pages workflow. The browser product is a
 transitive package projection whose ownership and shared inputs can grow; a
