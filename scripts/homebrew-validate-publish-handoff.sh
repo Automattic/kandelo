@@ -2,6 +2,7 @@
 # Validate the final Homebrew publication payload as inert data.
 set -euo pipefail
 
+SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
 HANDOFF=""
 FORMULA=""
 ARCH=""
@@ -14,11 +15,12 @@ BOTTLE_ROOT_URL=""
 TAP_ROOT=""
 ALLOW_DRY_RUN=0
 DEFER_WHOLE_TAP_VALIDATION=0
+PREFIX_CAMPAIGN_LAYOUT_SHA256=""
 FORBIDDEN_ROOTS=()
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-validate-publish-handoff.sh --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --tap-root <dir> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--allow-dry-run] [--defer-whole-tap-validation]
+usage: scripts/homebrew-validate-publish-handoff.sh --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --tap-root <dir> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--allow-dry-run] [--defer-whole-tap-validation] [--prefix-campaign-layout-sha256 <sha256>]
 
 Checks the exact build/receipt/composition artifact grammar and cross-validates
 all package-scoped publication data without loading Formula Ruby or executing
@@ -41,6 +43,14 @@ while [ "$#" -gt 0 ]; do
     --tap-root) TAP_ROOT="${2:-}"; shift 2 ;;
     --allow-dry-run) ALLOW_DRY_RUN=1; shift ;;
     --defer-whole-tap-validation) DEFER_WHOLE_TAP_VALIDATION=1; shift ;;
+    --prefix-campaign-layout-sha256)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || {
+        echo "homebrew-validate-publish-handoff.sh: --prefix-campaign-layout-sha256 requires a value" >&2
+        exit 2
+      }
+      PREFIX_CAMPAIGN_LAYOUT_SHA256="$2"
+      shift 2
+      ;;
     --forbidden-root)
       [ "$#" -ge 2 ] && [ -n "$2" ] || {
         echo "homebrew-validate-publish-handoff.sh: --forbidden-root requires a value" >&2
@@ -53,6 +63,10 @@ while [ "$#" -gt 0 ]; do
     *) echo "homebrew-validate-publish-handoff.sh: unknown flag $1" >&2; usage; exit 2 ;;
   esac
 done
+
+# shellcheck source=/dev/null
+. "$SCRIPT_ROOT/homebrew-guest-layout.sh"
+homebrew_select_guest_layout "$PREFIX_CAMPAIGN_LAYOUT_SHA256"
 
 if [ "${#FORBIDDEN_ROOTS[@]}" -eq 0 ]; then
   echo "homebrew-validate-publish-handoff.sh: at least one --forbidden-root is required" >&2
@@ -183,7 +197,6 @@ while IFS= read -r -d '' entry; do
   fi
 done < <(find "$HANDOFF" -mindepth 1 -print0)
 
-SCRIPT_ROOT="$(cd "$(dirname "$0")" && pwd -P)"
 # shellcheck source=/dev/null
 . "$SCRIPT_ROOT/homebrew-tap-identity.sh"
 TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
@@ -197,6 +210,11 @@ fi
 # shellcheck source=/dev/null
 . "$SCRIPT_ROOT/homebrew-publication-limits.sh"
 receipt_validation_args=()
+if [ -n "$PREFIX_CAMPAIGN_LAYOUT_SHA256" ]; then
+  receipt_validation_args+=(
+    --prefix-campaign-layout-sha256 "$PREFIX_CAMPAIGN_LAYOUT_SHA256"
+  )
+fi
 for forbidden_root in "${FORBIDDEN_ROOTS[@]}"; do
   receipt_validation_args+=(--forbidden-root "$forbidden_root")
 done
@@ -216,7 +234,8 @@ bash "$SCRIPT_ROOT/homebrew-validate-upload-receipt.sh" \
   --bottle-root-url "$BOTTLE_ROOT_URL" \
   "${receipt_validation_args[@]}" >/dev/null
 
-python3 "$SCRIPT_ROOT/homebrew-dependency-provenance.py" validate \
+dependency_validation_args=(
+  validate
   --input "$BUILD_ROOT/dependency-provenance.json" \
   --formula "$FORMULA" \
   --arch "$ARCH" \
@@ -225,6 +244,14 @@ python3 "$SCRIPT_ROOT/homebrew-dependency-provenance.py" validate \
   --tap-commit "$TAP_COMMIT" \
   --bottle-root-url "$BOTTLE_ROOT_URL" \
   --tap-root "$TAP_ROOT"
+)
+if [ -n "$PREFIX_CAMPAIGN_LAYOUT_SHA256" ]; then
+  dependency_validation_args+=(
+    --prefix-campaign-layout-sha256 "$PREFIX_CAMPAIGN_LAYOUT_SHA256"
+  )
+fi
+python3 "$SCRIPT_ROOT/homebrew-dependency-provenance.py" \
+  "${dependency_validation_args[@]}"
 
 if [ ! -f "$COMPOSITION_INPUT" ] || [ -L "$COMPOSITION_INPUT" ]; then
   echo "homebrew-validate-publish-handoff.sh: composition must contain one regular sidecars-input.json" >&2
@@ -328,6 +355,11 @@ cleanup() { rm -rf "$VALIDATION_TMP"; }
 trap cleanup EXIT
 INSPECTION_JSON="$VALIDATION_TMP/bottle-inspection.json"
 inspection_args=()
+if [ -n "$PREFIX_CAMPAIGN_LAYOUT_SHA256" ]; then
+  inspection_args+=(
+    --reject-retired-roots-layout-sha256 "$PREFIX_CAMPAIGN_LAYOUT_SHA256"
+  )
+fi
 for forbidden_root in "${FORBIDDEN_ROOTS[@]}"; do
   inspection_args+=(--forbidden-root "$forbidden_root")
 done
@@ -377,11 +409,22 @@ sidecar_args=(
 if [ -f "$VALIDATION_TAP/Kandelo/metadata.json" ]; then
   sidecar_args+=(--previous-metadata "$VALIDATION_TAP/Kandelo/metadata.json")
 fi
+if [ -n "$PREFIX_CAMPAIGN_LAYOUT_SHA256" ]; then
+  sidecar_args+=(
+    --prefix-campaign-layout-sha256 "$PREFIX_CAMPAIGN_LAYOUT_SHA256"
+  )
+fi
 (cd "$KANDELO_ROOT" && "${sidecar_args[@]}")
 assert_static_tap_tree "$VALIDATION_TAP" "composed validation tap"
 if [ "$DEFER_WHOLE_TAP_VALIDATION" -eq 0 ]; then
-  (cd "$KANDELO_ROOT" && cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
-    homebrew-validate --tap-root "$VALIDATION_TAP")
+  validation_args=(homebrew-validate --tap-root "$VALIDATION_TAP")
+  if [ -n "$PREFIX_CAMPAIGN_LAYOUT_SHA256" ]; then
+    validation_args+=(
+      --prefix-campaign-layout-sha256 "$PREFIX_CAMPAIGN_LAYOUT_SHA256"
+    )
+  fi
+  (cd "$KANDELO_ROOT" && cargo run --release -p xtask \
+    --target "$HOST_TARGET" --quiet -- "${validation_args[@]}")
 fi
 
 EXPECTED_STEM="${FORMULA}-${VERSION}-rebuild${BOTTLE_REBUILD}-${ARCH}"
@@ -445,15 +488,19 @@ require_max_size "link JSON" "$LINK_JSON" "$HOMEBREW_MAX_SIDECAR_JSON_BYTES"
 require_max_size "provenance JSON" "$PROVENANCE_JSON" "$HOMEBREW_MAX_PROVENANCE_BYTES"
 
 FULL_NAME="${TAP_NAME}/${FORMULA}"
-BOTTLE_CELLAR="/home/linuxbrew/.linuxbrew/Cellar"
+BOTTLE_CELLAR="$HOMEBREW_GUEST_CELLAR"
 BOTTLE_RELOCATION_CELLAR="$(jq -r '.bottle.cellar' "$BUILD_ROOT/manifest.json")"
 case "$BOTTLE_RELOCATION_CELLAR" in
   any) BOTTLE_RELOCATION_CELLAR_DSL=":any" ;;
   any_skip_relocation) BOTTLE_RELOCATION_CELLAR_DSL=":any_skip_relocation" ;;
-  /home/linuxbrew/.linuxbrew/Cellar)
-    BOTTLE_RELOCATION_CELLAR_DSL="\"/home/linuxbrew/.linuxbrew/Cellar\""
+  *)
+    if [ "$BOTTLE_RELOCATION_CELLAR" = "$HOMEBREW_GUEST_CELLAR" ]; then
+      BOTTLE_RELOCATION_CELLAR_DSL="\"$HOMEBREW_GUEST_CELLAR\""
+    else
+      echo "homebrew-validate-publish-handoff.sh: invalid relocation cellar" >&2
+      exit 1
+    fi
     ;;
-  *) echo "homebrew-validate-publish-handoff.sh: invalid relocation cellar" >&2; exit 1 ;;
 esac
 
 if ! jq -e \

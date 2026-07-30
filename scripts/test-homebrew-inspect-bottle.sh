@@ -174,6 +174,10 @@ make_archive() {
 
 VALID_ARCHIVE="$TMP_ROOT/valid.tar.gz"
 VALID_JSON="$TMP_ROOT/valid.json"
+GUEST_LAYOUT_SHA256="$(
+  sha256sum "$REPO_ROOT/homebrew/kandelo-guest-layout.json" |
+    awk '{print $1}'
+)"
 make_archive valid "$VALID_ARCHIVE"
 python3 "$INSPECTOR" \
   --archive "$VALID_ARCHIVE" \
@@ -213,6 +217,36 @@ jq -e --arg formula_sha "$formula_sha" '
   ]
 ' --argjson abi "$ABI_VERSION" "$VALID_JSON" >/dev/null
 
+if python3 "$INSPECTOR" \
+  --archive "$VALID_ARCHIVE" \
+  --formula tool \
+  --version 1.0 \
+  --expected-abi "$ABI_VERSION" \
+  --expected-arch wasm32 \
+  --selected-formula "$FORMULA_SOURCE" \
+  --forbidden-root "$FORBIDDEN_ROOT" \
+  --reject-retired-roots-layout-sha256 "$GUEST_LAYOUT_SHA256" \
+  >"$TMP_ROOT/retired-reject.out" 2>"$TMP_ROOT/retired-reject.err"; then
+  echo "test-homebrew-inspect-bottle.sh: campaign accepted retired prefix bytes" >&2
+  exit 1
+fi
+grep -F "contains forbidden path '/home/linuxbrew/.linuxbrew'" \
+  "$TMP_ROOT/retired-reject.err" >/dev/null
+
+python3 "$INSPECTOR" \
+  --archive "$VALID_ARCHIVE" \
+  --formula tool \
+  --version 1.0 \
+  --expected-abi "$ABI_VERSION" \
+  --expected-arch wasm32 \
+  --selected-formula "$FORMULA_SOURCE" \
+  --forbidden-root "$FORBIDDEN_ROOT" \
+  --report-retired-roots-layout-sha256 "$GUEST_LAYOUT_SHA256" \
+  --out "$TMP_ROOT/retired-report.json"
+jq -e '
+  .reported_forbidden_roots == ["/home/linuxbrew/.linuxbrew"]
+' "$TMP_ROOT/retired-report.json" >/dev/null
+
 expect_failure() {
   local kind="$1" pattern="$2"
   local archive="$TMP_ROOT/$kind.tar.gz" stderr="$TMP_ROOT/$kind.err"
@@ -239,8 +273,8 @@ expect_failure cycle "link cycle"
 expect_failure duplicate "repeats path"
 expect_failure non-utf8 "is not UTF-8"
 expect_failure special "unsupported type"
-expect_failure forbidden "bin/bashbug' contains forbidden build root"
-expect_failure forbidden-boundary "bin/bashbug' contains forbidden build root"
+expect_failure forbidden "bin/bashbug' contains forbidden path"
+expect_failure forbidden-boundary "bin/bashbug' contains forbidden path"
 
 make_wasm() {
   local name="$1"
@@ -583,5 +617,10 @@ expect_argument_failure normalized-forbidden-root \
 expect_argument_failure duplicate-forbidden-root \
   "--forbidden-root values must be unique" \
   --forbidden-root "$FORBIDDEN_ROOT" --forbidden-root "$FORBIDDEN_ROOT"
+expect_argument_failure wrong-prefix-campaign-layout \
+  "guest layout differs from campaign authority" \
+  --forbidden-root "$FORBIDDEN_ROOT" \
+  --reject-retired-roots-layout-sha256 \
+  0000000000000000000000000000000000000000000000000000000000000000
 
 echo "test-homebrew-inspect-bottle.sh: passed"

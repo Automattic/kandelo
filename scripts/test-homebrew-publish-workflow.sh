@@ -1629,7 +1629,7 @@ assert_build_handoff_rejects_untrusted_content() {
   if validate_build_handoff "$handoff" --out-env "$out_env" >/dev/null 2>"$err"; then
     fail "build handoff validator accepted an installed build-root leak"
   fi
-  grep -F "bin/hello' contains forbidden build root '$TEST_FORBIDDEN_ROOT'" "$err" >/dev/null ||
+  grep -F "bin/hello' contains forbidden path '$TEST_FORBIDDEN_ROOT'" "$err" >/dev/null ||
     fail "build handoff validator did not explain the installed build-root leak"
   [ ! -e "$out_env" ] ||
     fail "build handoff validator produced uploader data for a build-root leak"
@@ -7342,6 +7342,7 @@ assert_rollback_deletion_requires_reason
 bash "$REPO_ROOT/scripts/test-homebrew-sibling-bottle-policy.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-patched-launcher.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-native-api-contract.sh"
+bash "$REPO_ROOT/scripts/test-homebrew-prefix-campaign-layout.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-inspect-bottle.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-formula-runtime-closure.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-validate-host-dependency-plan.sh"

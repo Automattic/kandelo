@@ -70,6 +70,7 @@ mod build_deps;
 mod build_index;
 mod bundle_program;
 mod dump_abi;
+mod homebrew_guest_layout;
 #[cfg(test)]
 mod homebrew_schema;
 mod homebrew_sidecars;

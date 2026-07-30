@@ -62,6 +62,7 @@ MAX_LINK_DEPTH = 256
 MAX_FORBIDDEN_ROOTS = 32
 MAX_FORBIDDEN_ROOT_BYTES = 4096
 ARCHIVE_SCAN_CHUNK_BYTES = 1024 * 1024
+MAX_GUEST_LAYOUT_BYTES = 64 * 1024
 
 FORMULA_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 PKG_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+,-]{0,255}$")
@@ -179,6 +180,91 @@ def normalize_forbidden_root(value: str) -> str:
     return value
 
 
+def retired_guest_prefixes(expected_sha256: str) -> tuple[str, ...]:
+    """Load retired prefixes only for an explicitly selected campaign layout."""
+    if re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None:
+        fail("prefix-campaign guest layout SHA-256 is invalid")
+    contract_path = pathlib.Path(__file__).parent.parent / (
+        "homebrew/kandelo-guest-layout.json"
+    )
+    if contract_path.is_symlink() or not contract_path.is_file():
+        fail("Kandelo Homebrew guest layout must be a regular non-symlink file")
+    try:
+        payload = contract_path.read_bytes()
+    except OSError as error:
+        fail(f"cannot read Kandelo Homebrew guest layout: {error}")
+    if len(payload) > MAX_GUEST_LAYOUT_BYTES:
+        fail(
+            "Kandelo Homebrew guest layout exceeds "
+            f"{MAX_GUEST_LAYOUT_BYTES} bytes"
+        )
+    if hashlib.sha256(payload).hexdigest() != expected_sha256:
+        fail("Kandelo Homebrew guest layout differs from campaign authority")
+    try:
+        document = json.loads(payload.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        fail(f"Kandelo Homebrew guest layout is not valid UTF-8 JSON: {error}")
+    if (
+        not isinstance(document, dict)
+        or set(document)
+        != {
+            "cellar",
+            "kind",
+            "prefix",
+            "repository",
+            "retired_prefixes",
+            "schema",
+            "stable_entrypoint",
+        }
+        or document.get("schema") != 1
+        or document.get("kind") != "kandelo-homebrew-guest-layout"
+    ):
+        fail("Kandelo Homebrew guest layout has an unsupported contract")
+
+    prefix = document.get("prefix")
+    cellar = document.get("cellar")
+    repository = document.get("repository")
+    stable_entrypoint = document.get("stable_entrypoint")
+    retired = document.get("retired_prefixes")
+    if not all(
+        isinstance(value, str)
+        for value in (prefix, cellar, repository, stable_entrypoint)
+    ):
+        fail("Kandelo Homebrew guest layout paths must be strings")
+    assert isinstance(prefix, str)
+    assert isinstance(cellar, str)
+    assert isinstance(repository, str)
+    assert isinstance(stable_entrypoint, str)
+    prefix = normalize_forbidden_root(prefix)
+    cellar = normalize_forbidden_root(cellar)
+    repository = normalize_forbidden_root(repository)
+    stable_entrypoint = normalize_forbidden_root(stable_entrypoint)
+    if (
+        cellar != f"{prefix}/Cellar"
+        or repository != prefix
+        or stable_entrypoint != "/usr/bin/brew"
+        or prefix == "/home/linuxbrew/.linuxbrew"
+    ):
+        fail("Kandelo Homebrew guest layout paths are inconsistent")
+    if not isinstance(retired, list) or not retired:
+        fail("Kandelo Homebrew guest layout retired_prefixes must be non-empty")
+    if not all(isinstance(value, str) for value in retired):
+        fail("Kandelo Homebrew guest layout retired_prefixes must contain strings")
+    normalized = tuple(normalize_forbidden_root(value) for value in retired)
+    if len(normalized) > MAX_FORBIDDEN_ROOTS:
+        fail(
+            "Kandelo Homebrew guest layout has more than "
+            f"{MAX_FORBIDDEN_ROOTS} retired prefixes"
+        )
+    if len(set(normalized)) != len(normalized):
+        fail("Kandelo Homebrew guest layout repeats a retired prefix")
+    if prefix in normalized:
+        fail("Kandelo Homebrew guest layout retires its campaign prefix")
+    if "/home/linuxbrew/.linuxbrew" not in normalized:
+        fail("Kandelo Homebrew guest layout does not retire the active prefix")
+    return normalized
+
+
 class BottleInspector:
     def __init__(
         self,
@@ -191,6 +277,7 @@ class BottleInspector:
         wasm_timeout_seconds: int,
         forbidden_roots: tuple[str, ...],
         selected_formula: pathlib.Path | None,
+        reported_roots: tuple[str, ...] = (),
     ) -> None:
         self.archive_path = archive_path
         self.formula = formula
@@ -207,8 +294,16 @@ class BottleInspector:
         self.forbidden_roots = tuple(
             (root, root.encode("utf-8")) for root in forbidden_roots
         )
+        self.reported_roots = tuple(
+            (root, root.encode("utf-8")) for root in reported_roots
+        )
+        self.found_reported_roots: set[str] = set()
         self.forbidden_root_overlap = max(
-            len(encoded) - 1 for _root, encoded in self.forbidden_roots
+            (
+                len(encoded) - 1
+                for _root, encoded in (*self.forbidden_roots, *self.reported_roots)
+            ),
+            default=0,
         )
         self.entries: dict[str, ArchiveEntry] = {}
         self.archive: tarfile.TarFile | None = None
@@ -302,9 +397,12 @@ class BottleInspector:
             for root, encoded_root in self.forbidden_roots:
                 if encoded_root in window:
                     fail(
-                        f"regular archive entry {path!r} contains forbidden build root "
+                        f"regular archive entry {path!r} contains forbidden path "
                         f"{root!r}"
                     )
+            for root, encoded_root in self.reported_roots:
+                if encoded_root in window:
+                    self.found_reported_roots.add(root)
             if self.forbidden_root_overlap:
                 tail = window[-self.forbidden_root_overlap :]
         if bytes_read != expected_size:
@@ -614,7 +712,7 @@ class BottleInspector:
             if result == "required":
                 fork_instrumentation = "required"
 
-        return {
+        result: dict[str, object] = {
             "schema": 1,
             "abi_version": self.expected_abi,
             "arch": self.expected_arch,
@@ -625,6 +723,9 @@ class BottleInspector:
             "formula_sha256": hashlib.sha256(formula_bytes).hexdigest(),
             "fork_instrumentation": fork_instrumentation,
         }
+        if self.reported_roots:
+            result["reported_forbidden_roots"] = sorted(self.found_reported_roots)
+        return result
 
 
 def parse_args() -> argparse.Namespace:
@@ -655,6 +756,21 @@ def parse_args() -> argparse.Namespace:
         "--wasm-timeout-seconds",
         type=int,
         default=DEFAULT_WASM_TIMEOUT_SECONDS,
+    )
+    layout_group = parser.add_mutually_exclusive_group()
+    layout_group.add_argument(
+        "--reject-retired-roots-layout-sha256",
+        help=(
+            "reject retired roots from the exact digest-bound prefix-campaign "
+            "guest layout"
+        ),
+    )
+    layout_group.add_argument(
+        "--report-retired-roots-layout-sha256",
+        help=(
+            "report retired roots from the exact digest-bound prefix-campaign "
+            "guest layout without rejecting them"
+        ),
     )
     parser.add_argument("--out", default="-")
     args = parser.parse_args()
@@ -715,6 +831,24 @@ def write_result(result: dict[str, object], output: str) -> None:
 def main() -> int:
     args = parse_args()
     try:
+        forbidden_roots = args.forbidden_root
+        reported_roots: tuple[str, ...] = ()
+        if args.reject_retired_roots_layout_sha256 is not None:
+            retired_roots = retired_guest_prefixes(
+                args.reject_retired_roots_layout_sha256
+            )
+            forbidden_roots = (*forbidden_roots, *retired_roots)
+        elif args.report_retired_roots_layout_sha256 is not None:
+            reported_roots = retired_guest_prefixes(
+                args.report_retired_roots_layout_sha256
+            )
+        if len(forbidden_roots) > MAX_FORBIDDEN_ROOTS:
+            fail(
+                "explicit and campaign-layout forbidden roots exceed "
+                f"{MAX_FORBIDDEN_ROOTS}"
+            )
+        if len(set(forbidden_roots)) != len(forbidden_roots):
+            fail("explicit and campaign-layout forbidden roots overlap")
         result = BottleInspector(
             pathlib.Path(args.archive),
             args.formula,
@@ -723,8 +857,9 @@ def main() -> int:
             args.expected_arch,
             args.wasm_validator,
             args.wasm_timeout_seconds,
-            args.forbidden_root,
+            forbidden_roots,
             args.selected_formula,
+            reported_roots,
         ).run()
         write_result(result, args.out)
     except InspectionError as error:

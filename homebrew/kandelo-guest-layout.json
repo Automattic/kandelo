@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "kind": "kandelo-homebrew-guest-layout",
+  "prefix": "/opt/kandelo/homebrew",
+  "cellar": "/opt/kandelo/homebrew/Cellar",
+  "repository": "/opt/kandelo/homebrew",
+  "stable_entrypoint": "/usr/bin/brew",
+  "retired_prefixes": [
+    "/home/linuxbrew/.linuxbrew"
+  ]
+}

@@ -89,6 +89,7 @@ struct Options {
     tap_root: PathBuf,
     input_path: PathBuf,
     previous_metadata_path: Option<PathBuf>,
+    prefix_campaign_layout_sha256: Option<String>,
 }
 
 impl Options {
@@ -96,6 +97,7 @@ impl Options {
         let mut tap_root: Option<PathBuf> = None;
         let mut input_path: Option<PathBuf> = None;
         let mut previous_metadata_path: Option<PathBuf> = None;
+        let mut prefix_campaign_layout_sha256: Option<String> = None;
         let mut it = args.into_iter();
         while let Some(arg) = it.next() {
             match arg.as_str() {
@@ -114,6 +116,12 @@ impl Options {
                         "homebrew-sidecars: --previous-metadata requires a path".to_string()
                     })?));
                 }
+                "--prefix-campaign-layout-sha256" => {
+                    prefix_campaign_layout_sha256 = Some(it.next().ok_or_else(|| {
+                        "homebrew-sidecars: --prefix-campaign-layout-sha256 requires a digest"
+                            .to_string()
+                    })?);
+                }
                 "-h" | "--help" => return Err(usage()),
                 other => {
                     return Err(format!(
@@ -128,12 +136,13 @@ impl Options {
             tap_root: tap_root.ok_or_else(usage)?,
             input_path: input_path.ok_or_else(usage)?,
             previous_metadata_path,
+            prefix_campaign_layout_sha256,
         })
     }
 }
 
 fn usage() -> String {
-    "usage: xtask homebrew-sidecars --tap-root <tap-root> --input <sidecars-input.json> [--previous-metadata <metadata.json>]".to_string()
+    "usage: xtask homebrew-sidecars --tap-root <tap-root> --input <sidecars-input.json> [--previous-metadata <metadata.json>] [--prefix-campaign-layout-sha256 <sha256>]".to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -669,6 +678,23 @@ impl Generator<'_> {
         formula_sidecar_path: &str,
         link_outputs: &mut Vec<(String, Value)>,
     ) -> Result<Value, String> {
+        if let Some(expected_sha256) = self.options.prefix_campaign_layout_sha256.as_deref() {
+            let guest_layout = crate::homebrew_guest_layout::get(Some(expected_sha256))?;
+            if bottle.prefix != guest_layout.prefix {
+                return Err(bottle_error(
+                    package,
+                    bottle,
+                    "prefix does not match the selected prefix-campaign guest layout",
+                ));
+            }
+            if bottle.cellar != guest_layout.cellar {
+                return Err(bottle_error(
+                    package,
+                    bottle,
+                    "cellar does not match the selected prefix-campaign guest layout",
+                ));
+            }
+        }
         let status = bottle_status(bottle);
         let bottle_tag = bottle
             .bottle_tag
@@ -1618,6 +1644,36 @@ mod tests {
             fixture.tap_root.to_string_lossy().into_owned(),
         ])
         .unwrap();
+    }
+
+    #[test]
+    fn prefix_campaign_generation_requires_the_digest_bound_target_layout() {
+        let fixture = Fixture::new("success");
+        let digest =
+            sha256_bytes(include_str!("../../../homebrew/kandelo-guest-layout.json").as_bytes());
+        let campaign_args = || {
+            vec![
+                "--tap-root".to_string(),
+                fixture.tap_root.to_string_lossy().into_owned(),
+                "--input".to_string(),
+                fixture.input_path.to_string_lossy().into_owned(),
+                "--prefix-campaign-layout-sha256".to_string(),
+                digest.clone(),
+            ]
+        };
+
+        let error = run(campaign_args()).unwrap_err();
+        assert!(
+            error.contains("prefix does not match the selected prefix-campaign guest layout"),
+            "{error}"
+        );
+
+        let layout = crate::homebrew_guest_layout::get(Some(&digest)).unwrap();
+        let mut input = load_json(&fixture.input_path).unwrap();
+        input["packages"][0]["bottles"][0]["prefix"] = json!(layout.prefix);
+        input["packages"][0]["bottles"][0]["cellar"] = json!(layout.cellar);
+        write_json_value(&fixture.input_path, &input);
+        run(campaign_args()).unwrap();
     }
 
     #[test]

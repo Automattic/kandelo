@@ -310,6 +310,7 @@ def canonical_bottle(args: argparse.Namespace) -> dict[str, Any]:
         "any",
         "any_skip_relocation",
         "/home/linuxbrew/.linuxbrew/Cellar",
+        "/opt/kandelo/homebrew/Cellar",
     ):
         fail("canonical bottle cellar is invalid")
     rebuild = require_int(bottle["rebuild"], "bottle rebuild")

@@ -62,6 +62,9 @@ case "$EXPECTED_CELLAR" in
   /home/linuxbrew/.linuxbrew/Cellar)
     EXPECTED_CELLAR_DSL="\"/home/linuxbrew/.linuxbrew/Cellar\""
     ;;
+  /opt/kandelo/homebrew/Cellar)
+    EXPECTED_CELLAR_DSL="\"/opt/kandelo/homebrew/Cellar\""
+    ;;
   *) echo "homebrew-merge-bottle-json.sh: invalid expected relocation cellar" >&2; exit 2 ;;
 esac
 if ! [[ "$FORMULA" =~ ^[a-z0-9][a-z0-9._-]*$ ]]; then

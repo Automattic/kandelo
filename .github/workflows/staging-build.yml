@@ -76,7 +76,8 @@ jobs:
       package_publish_flow_changed: ${{ steps.scope.outputs.package_publish_flow_changed }}
       binary_materialization_changed: ${{ steps.scope.outputs.binary_materialization_changed }}
       kernel_runtime_changed: ${{ steps.scope.outputs.kernel_runtime_changed }}
-      test_gate_required: ${{ steps.scope.outputs.test_gate_required }}
+      test_gate_required: ${{ steps.route.outputs.test_gate_required }}
+      homebrew_publisher_only_changed: ${{ steps.scope.outputs.homebrew_publisher_only_changed }}
       docs_only: ${{ steps.scope.outputs.docs_only }}
       package_staging_required: ${{ steps.scope.outputs.package_staging_required }}
       package_staging_reason: ${{ steps.scope.outputs.package_staging_reason }}
@@ -103,6 +104,38 @@ jobs:
         with:
           base-ref: origin/${{ github.event.pull_request.base.ref }}
 
+      - name: Route publisher-only validation
+        id: route
+        env:
+          PACKAGE_STAGING_REQUIRED: ${{ steps.scope.outputs.package_staging_required }}
+          RAW_TEST_GATE_REQUIRED: ${{ steps.scope.outputs.test_gate_required }}
+          HOMEBREW_PUBLISHER_ONLY: ${{ steps.scope.outputs.homebrew_publisher_only_changed }}
+        run: |
+          set -euo pipefail
+          for state in \
+            "$PACKAGE_STAGING_REQUIRED" \
+            "$RAW_TEST_GATE_REQUIRED" \
+            "$HOMEBREW_PUBLISHER_ONLY"
+          do
+            case "$state" in
+              true | false) ;;
+              *)
+                echo "::error::invalid staging scope state: $state"
+                exit 1
+                ;;
+            esac
+          done
+          if [ "$HOMEBREW_PUBLISHER_ONLY" = true ]; then
+            # WHY: preflight already runs the complete bottle-publisher
+            # contract. Building a kernel/rootfs workspace and running Vitest
+            # cannot add evidence for a diff that the shared fail-closed
+            # classifier proves is wholly outside shell consumption/runtime.
+            [ "$PACKAGE_STAGING_REQUIRED" = false ]
+            echo "test_gate_required=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "test_gate_required=$RAW_TEST_GATE_REQUIRED" >> "$GITHUB_OUTPUT"
+          fi
+
   preflight:
     # Fork-PR support is deferred (design doc §9.1). The gate below
     # keeps fork PRs from hitting a no-token `gh release view` failure
@@ -112,7 +145,8 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       (
         needs.change-scope.outputs.package_staging_required == 'true' ||
-        needs.change-scope.outputs.test_gate_required == 'true'
+        needs.change-scope.outputs.test_gate_required == 'true' ||
+        needs.change-scope.outputs.homebrew_publisher_only_changed == 'true'
       )
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -414,6 +448,7 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository &&
       needs.change-scope.outputs.package_staging_required == 'false' &&
       needs.change-scope.outputs.test_gate_required == 'false' &&
+      needs.change-scope.outputs.homebrew_publisher_only_changed != 'true' &&
       needs.change-scope.outputs.skip_staging_tests != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10

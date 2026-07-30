@@ -18,11 +18,12 @@ BOTTLE_ROOT_URL=""
 OUT_ENV=""
 OUT_BOTTLE_JSON=""
 TAP_ROOT=""
+PREFIX_CAMPAIGN_LAYOUT_SHA256=""
 FORBIDDEN_ROOTS=()
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-validate-build-handoff.sh --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--tap-root <dir>] [--out-env <path>] [--out-bottle-json <path>]
+usage: scripts/homebrew-validate-build-handoff.sh --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--tap-root <dir>] [--out-env <path>] [--out-bottle-json <path>] [--prefix-campaign-layout-sha256 <sha256>]
 
 Validates an untrusted build handoff against values from the publisher plan.
 The handoff must contain exactly manifest.json, bottle.json,
@@ -57,10 +58,22 @@ while [ "$#" -gt 0 ]; do
     --tap-root) TAP_ROOT="${2:-}"; shift 2 ;;
     --out-env) OUT_ENV="${2:-}"; shift 2 ;;
     --out-bottle-json) OUT_BOTTLE_JSON="${2:-}"; shift 2 ;;
+    --prefix-campaign-layout-sha256)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || {
+        echo "homebrew-validate-build-handoff.sh: --prefix-campaign-layout-sha256 requires a value" >&2
+        exit 2
+      }
+      PREFIX_CAMPAIGN_LAYOUT_SHA256="$2"
+      shift 2
+      ;;
     -h|--help) usage; exit 0 ;;
     *) echo "homebrew-validate-build-handoff.sh: unknown flag $1" >&2; usage; exit 2 ;;
   esac
 done
+
+# shellcheck source=/dev/null
+. "$SCRIPT_ROOT/homebrew-guest-layout.sh"
+homebrew_select_guest_layout "$PREFIX_CAMPAIGN_LAYOUT_SHA256"
 
 if [ "${#FORBIDDEN_ROOTS[@]}" -eq 0 ]; then
   echo "homebrew-validate-build-handoff.sh: at least one --forbidden-root is required" >&2
@@ -190,6 +203,7 @@ if ! jq -e \
   --arg tap_name "$TAP_NAME" \
   --arg tap_commit "$TAP_COMMIT" \
   --arg kandelo_commit "$KANDELO_COMMIT" \
+  --arg guest_cellar "$HOMEBREW_GUEST_CELLAR" \
   --arg bottle_root_url "$BOTTLE_ROOT_URL" '
     def exact_keys($expected):
       type == "object" and keys == ($expected | sort);
@@ -211,7 +225,7 @@ if ! jq -e \
     .bottle.tag == ($arch + "_kandelo") and
     (.bottle.cellar |
       . == "any" or . == "any_skip_relocation" or
-      . == "/home/linuxbrew/.linuxbrew/Cellar") and
+      . == $guest_cellar) and
     (.bottle.sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
     (.bottle.bytes | type == "number" and . >= 0 and floor == .) and
     .bottle.archive == "bottle.tar.gz" and
@@ -239,7 +253,7 @@ OWNER_LOWER="${TAP_NAME%%/*}"
 REPO_LOWER="${TAP_NAME#*/}"
 FORMULA_KEY="${OWNER_LOWER}/${REPO_LOWER}/${FORMULA}"
 FORMULA_PATH="Library/Taps/${OWNER_LOWER}/homebrew-${REPO_LOWER}/Formula/${FORMULA}.rb"
-BOTTLE_INSTALL_CELLAR="/home/linuxbrew/.linuxbrew/Cellar"
+BOTTLE_INSTALL_CELLAR="$HOMEBREW_GUEST_CELLAR"
 
 for entry in "${entries[@]}"; do
   case "$(basename "$entry")" in
@@ -298,6 +312,11 @@ dependency_validation_args=(
 if [ -n "$TAP_ROOT" ]; then
   dependency_validation_args+=(--tap-root "$TAP_ROOT")
 fi
+if [ -n "$PREFIX_CAMPAIGN_LAYOUT_SHA256" ]; then
+  dependency_validation_args+=(
+    --prefix-campaign-layout-sha256 "$PREFIX_CAMPAIGN_LAYOUT_SHA256"
+  )
+fi
 python3 "$SCRIPT_ROOT/homebrew-dependency-provenance.py" "${dependency_validation_args[@]}"
 
 if ! jq -e \
@@ -348,6 +367,11 @@ if [ "$BOTTLE_LOCAL_FILENAME" != "$BOTTLE_FILENAME" ]; then
 fi
 EXPECTED_ABI="${RELEASE_TAG#bottles-abi-v}"
 inspection_args=()
+if [ -n "$PREFIX_CAMPAIGN_LAYOUT_SHA256" ]; then
+  inspection_args+=(
+    --reject-retired-roots-layout-sha256 "$PREFIX_CAMPAIGN_LAYOUT_SHA256"
+  )
+fi
 for forbidden_root in "${FORBIDDEN_ROOTS[@]}"; do
   inspection_args+=(--forbidden-root "$forbidden_root")
 done

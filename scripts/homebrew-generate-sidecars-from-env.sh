@@ -6,6 +6,11 @@ set -euo pipefail
 KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # shellcheck source=/dev/null
 . "$KANDELO_ROOT/scripts/homebrew-publication-limits.sh"
+# shellcheck source=/dev/null
+. "$KANDELO_ROOT/scripts/homebrew-guest-layout.sh"
+homebrew_select_guest_layout \
+  "${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}"
+export HOMEBREW_GUEST_PREFIX HOMEBREW_GUEST_CELLAR
 
 require_env() {
   local name="$1"
@@ -131,7 +136,8 @@ for commit in "$TAP_COMMIT" "$KANDELO_COMMIT"; do
     exit 2
   fi
 done
-python3 "$KANDELO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
+dependency_validation_args=(
+  validate
   --input "$KANDELO_HOMEBREW_DEPENDENCY_PROVENANCE" \
   --formula "$KANDELO_HOMEBREW_FORMULA" \
   --arch "$KANDELO_HOMEBREW_ARCH" \
@@ -140,6 +146,15 @@ python3 "$KANDELO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
   --tap-commit "$TAP_COMMIT" \
   --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL" \
   --tap-root "$FORMULA_SOURCE_ROOT"
+)
+if [ -n "${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}" ]; then
+  dependency_validation_args+=(
+    --prefix-campaign-layout-sha256 \
+    "$KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256"
+  )
+fi
+python3 "$KANDELO_ROOT/scripts/homebrew-dependency-provenance.py" \
+  "${dependency_validation_args[@]}"
 python3 "$KANDELO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
   --input "$KANDELO_HOMEBREW_RUNTIME_EVIDENCE" \
   --formula "$KANDELO_HOMEBREW_FORMULA" \
@@ -238,7 +253,7 @@ if (
 ):
     raise SystemExit("bottle JSON root URL does not match the selected publication root")
 if bottle.get("cellar") not in {
-    "any", "any_skip_relocation", "/home/linuxbrew/.linuxbrew/Cellar"
+    "any", "any_skip_relocation", os.environ["HOMEBREW_GUEST_CELLAR"]
 }:
     raise SystemExit("canonical bottle JSON has an invalid relocation cellar")
 rebuild = bottle.get("rebuild")
@@ -332,6 +347,16 @@ inspection_command = [
 ]
 for forbidden_root in forbidden_roots:
     inspection_command.extend(("--forbidden-root", forbidden_root))
+campaign_layout_sha256 = os.environ.get(
+    "KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256"
+)
+if campaign_layout_sha256:
+    inspection_command.extend(
+        (
+            "--reject-retired-roots-layout-sha256",
+            campaign_layout_sha256,
+        )
+    )
 inspection = run_json_command(
     inspection_command,
     "bounded bottle inspection",
@@ -731,8 +756,8 @@ manifest = {
                 {
                     "arch": arch,
                     "bottle_tag": tag_name,
-                    "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-                    "prefix": "/home/linuxbrew/.linuxbrew",
+                    "cellar": os.environ["HOMEBREW_GUEST_CELLAR"],
+                    "prefix": os.environ["HOMEBREW_GUEST_PREFIX"],
                     "runtime_support": runtime_support,
                     "browser_compatible": browser_compatible,
                     "fork_instrumentation": fork_instrumentation,
@@ -815,6 +840,12 @@ cp "$MERGED_FORMULA_PATH" \
   )
   if [ -f "$FORMULA_SOURCE_ROOT/Kandelo/metadata.json" ]; then
     sidecar_args+=(--previous-metadata "$FORMULA_SOURCE_ROOT/Kandelo/metadata.json")
+  fi
+  if [ -n "${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}" ]; then
+    sidecar_args+=(
+      --prefix-campaign-layout-sha256
+      "$KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256"
+    )
   fi
   cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
     "${sidecar_args[@]}"
