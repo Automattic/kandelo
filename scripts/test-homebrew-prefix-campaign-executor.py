@@ -95,7 +95,7 @@ def make_formula(
 
 
 class Fixture:
-    def __init__(self) -> None:
+    def __init__(self, *, multi_arch: bool = False) -> None:
         self.temporary = tempfile.TemporaryDirectory(
             prefix="homebrew-prefix-executor-test-"
         )
@@ -109,13 +109,14 @@ class Fixture:
         self.source_tree = EXECUTOR.filesystem_git_tree_oid(
             self.source, "fixture target source"
         )
+        arches = ["wasm32", "wasm64"] if multi_arch else ["wasm32"]
         self.formulae = [
-            make_formula("alpha", "1.0", [], ["wasm32"]),
+            make_formula("alpha", "1.0", [], arches),
             make_formula(
                 "beta",
                 "2.0",
                 [("alpha", "1.0")],
-                ["wasm32", "wasm64"],
+                arches,
             ),
         ]
         self.campaign = {
@@ -155,6 +156,10 @@ class Fixture:
         package = next(
             item for item in self.formulae if item["name"] == formula
         )
+        archive_payload = (
+            f"{formula}/{arch} bottle bytes\n".encode()
+        )
+        archive_sha256 = sha256(archive_payload)
         for relative in EXECUTOR.PUBLICATION_FILES:
             path = output / relative
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -186,13 +191,86 @@ class Fixture:
                         ]
                     },
                 )
+            elif relative == "build/bottle.json":
+                formula_key = f"{TAP_NAME}/{formula}"
+                owner, tap = TAP_NAME.split("/", 1)
+                write_json(
+                    path,
+                    {
+                        formula_key: {
+                            "bottle": {
+                                "cellar": (
+                                    "/opt/kandelo/homebrew/Cellar"
+                                ),
+                                "rebuild": package["destination"][
+                                    "bottle_rebuild"
+                                ],
+                                "root_url": (
+                                    "https://ghcr.io/v2/"
+                                    f"{TAP_REPOSITORY}"
+                                ),
+                                "tags": {
+                                    f"{arch}_kandelo": {
+                                        "all_files": [
+                                            f"bin/{formula}",
+                                        ],
+                                        "local_filename": (
+                                            f"{formula}--"
+                                            f"{package['version']}."
+                                            f"{arch}_kandelo."
+                                            "bottle.tar.gz"
+                                        ),
+                                        "path_exec_files": [
+                                            f"bin/{formula}",
+                                        ],
+                                        "sha256": archive_sha256,
+                                        "tab": {
+                                            "runtime_dependencies": [],
+                                        },
+                                    }
+                                },
+                            },
+                            "formula": {
+                                "name": formula,
+                                "path": (
+                                    f"Library/Taps/{owner}/"
+                                    f"homebrew-{tap}/Formula/"
+                                    f"{formula}.rb"
+                                ),
+                                "pkg_version": package["version"],
+                            },
+                        }
+                    },
+                )
+            elif relative == "build/bottle.tar.gz":
+                path.write_bytes(archive_payload)
             elif relative.endswith(".json"):
                 write_json(path, {"fixture": relative})
             else:
-                path.write_bytes(
-                    f"{formula}/{arch} bottle bytes\n".encode()
-                )
+                path.write_bytes(archive_payload)
         return output
+
+    @staticmethod
+    def merge_dependency(
+        *,
+        tap_root: pathlib.Path,
+        campaign: dict[str, Any],
+        formula: str,
+        arch: str,
+        bottle_json: pathlib.Path,
+        sha256: str,
+        root_url: str,
+        cellar: str,
+    ) -> None:
+        del campaign, root_url, cellar
+        value = json.loads(bottle_json.read_text())
+        if set(value) != {formula}:
+            raise AssertionError("merge input was not canonicalized")
+        formula_path = tap_root / f"Formula/{formula}.rb"
+        with formula_path.open("ab") as output:
+            output.write(
+                f"# {arch} bottle {sha256}\n".encode()
+            )
 
     def derive(
         self,
@@ -209,6 +287,7 @@ class Fixture:
             dependency_roots=dependencies,
             output=output,
             validator=lambda *_arguments: None,
+            dependency_merger=self.merge_dependency,
         )
 
 
@@ -319,7 +398,7 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
     def test_four_commands_round_trip_dependency_ordered_handoffs(
         self,
     ) -> None:
-        fixture = Fixture()
+        fixture = Fixture(multi_arch=True)
         self.addCleanup(fixture.close)
 
         campaign_tag = (
@@ -372,7 +451,10 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
         alpha = fixture.root / "alpha-handoff"
         fixture.derive(
             "alpha",
-            [("wasm32", fixture.publication("alpha", "wasm32"))],
+            [
+                ("wasm32", fixture.publication("alpha", "wasm32")),
+                ("wasm64", fixture.publication("alpha", "wasm64")),
+            ],
             [],
             alpha,
         )
@@ -487,16 +569,7 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
         ):
             fixture.derive(
                 "beta",
-                [
-                    (
-                        "wasm32",
-                        fixture.publication("beta", "wasm32"),
-                    ),
-                    (
-                        "wasm64",
-                        fixture.publication("beta", "wasm64"),
-                    ),
-                ],
+                [("wasm32", fixture.publication("beta", "wasm32"))],
                 [],
                 fixture.root / "missing-dependency",
             )
@@ -682,6 +755,323 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
         ):
             EXECUTOR.load_campaign(fixture.campaign_path)
 
+    def test_deterministic_checkout_identity_matches_git(self) -> None:
+        fixture = Fixture()
+        self.addCleanup(fixture.close)
+        repository = fixture.root / "git-identity"
+        repository.mkdir()
+        subprocess.run(
+            ["git", "init", "--quiet", str(repository)],
+            check=True,
+        )
+        (repository / "source").write_text("sealed source\n")
+        subprocess.run(
+            ["git", "-C", str(repository), "add", "source"],
+            check=True,
+        )
+        tree = subprocess.check_output(
+            ["git", "-C", str(repository), "write-tree"],
+            text=True,
+        ).strip()
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "GIT_AUTHOR_DATE": "2000-01-01T00:00:00Z",
+                "GIT_AUTHOR_EMAIL": EXECUTOR.CAMPAIGN_COMMIT_EMAIL,
+                "GIT_AUTHOR_NAME": EXECUTOR.CAMPAIGN_COMMIT_NAME,
+                "GIT_COMMITTER_DATE": "2000-01-01T00:00:00Z",
+                "GIT_COMMITTER_EMAIL": EXECUTOR.CAMPAIGN_COMMIT_EMAIL,
+                "GIT_COMMITTER_NAME": EXECUTOR.CAMPAIGN_COMMIT_NAME,
+            }
+        )
+        parent = subprocess.check_output(
+            ["git", "-C", str(repository), "commit-tree", tree],
+            input=b"fixture parent\n",
+            env=environment,
+        ).decode().strip()
+        label = "alpha/wasm32 dependency bottles"
+        message = (
+            "Kandelo Homebrew campaign publisher snapshot\n\n"
+            f"Purpose: {label}\n"
+            f"Protected source: {parent}\n"
+        ).encode()
+        actual = subprocess.check_output(
+            [
+                "git",
+                "-C",
+                str(repository),
+                "commit-tree",
+                tree,
+                "-p",
+                parent,
+            ],
+            input=message,
+            env=environment,
+        ).decode().strip()
+        self.assertEqual(
+            EXECUTOR.deterministic_campaign_commit_oid(
+                parent=parent,
+                tree=tree,
+                label=label,
+            ),
+            actual,
+        )
+
+    def test_leaf_checkout_uses_exact_arch_commit_identity(self) -> None:
+        fixture = Fixture()
+        self.addCleanup(fixture.close)
+        observed: dict[str, Any] = {}
+
+        def capture(
+            _campaign: dict[str, Any],
+            _formula: dict[str, Any],
+            arch: str,
+            _publication: pathlib.Path,
+            prepared_root: pathlib.Path,
+            checkout_commit: str,
+        ) -> None:
+            observed["arch"] = arch
+            observed["checkout_commit"] = checkout_commit
+            observed["tree"] = EXECUTOR.filesystem_git_tree_oid(
+                prepared_root,
+                "leaf prepared checkout",
+            )
+            observed["formula"] = (
+                prepared_root / "Formula/alpha.rb"
+            ).read_bytes()
+
+        EXECUTOR.derive_build(
+            campaign_path=fixture.campaign_path,
+            source_tap_root=fixture.source,
+            formula_name="alpha",
+            publications=[
+                ("wasm32", fixture.publication("alpha", "wasm32"))
+            ],
+            dependency_roots=[],
+            output=fixture.root / "leaf-checkout",
+            validator=capture,
+            dependency_merger=fixture.merge_dependency,
+        )
+        target_commit = EXECUTOR.deterministic_campaign_commit_oid(
+            parent=SOURCE_TAP_COMMIT,
+            tree=fixture.source_tree,
+            label="sealed target source",
+        )
+        expected = EXECUTOR.deterministic_campaign_commit_oid(
+            parent=target_commit,
+            tree=fixture.source_tree,
+            label="alpha/wasm32 dependency bottles",
+        )
+        self.assertEqual(observed["arch"], "wasm32")
+        self.assertEqual(observed["tree"], fixture.source_tree)
+        self.assertEqual(observed["checkout_commit"], expected)
+        self.assertNotEqual(observed["checkout_commit"], target_commit)
+        self.assertEqual(
+            observed["formula"],
+            formula_source("alpha"),
+        )
+
+    def test_each_arch_derives_its_own_dependency_checkout(self) -> None:
+        fixture = Fixture(multi_arch=True)
+        self.addCleanup(fixture.close)
+        alpha = fixture.root / "multi-arch-alpha"
+        fixture.derive(
+            "alpha",
+            [
+                ("wasm32", fixture.publication("alpha", "wasm32")),
+                ("wasm64", fixture.publication("alpha", "wasm64")),
+            ],
+            [],
+            alpha,
+        )
+        observed: dict[str, dict[str, Any]] = {}
+
+        def capture(
+            _campaign: dict[str, Any],
+            _formula: dict[str, Any],
+            arch: str,
+            _publication: pathlib.Path,
+            prepared_root: pathlib.Path,
+            checkout_commit: str,
+        ) -> None:
+            observed[arch] = {
+                "checkout_commit": checkout_commit,
+                "dependency_formula": (
+                    prepared_root / "Formula/alpha.rb"
+                ).read_text(),
+                "tree": EXECUTOR.filesystem_git_tree_oid(
+                    prepared_root,
+                    f"{arch} prepared checkout",
+                ),
+            }
+
+        EXECUTOR.derive_build(
+            campaign_path=fixture.campaign_path,
+            source_tap_root=fixture.source,
+            formula_name="beta",
+            publications=[
+                ("wasm32", fixture.publication("beta", "wasm32")),
+                ("wasm64", fixture.publication("beta", "wasm64")),
+            ],
+            dependency_roots=[alpha],
+            output=fixture.root / "multi-arch-beta",
+            validator=capture,
+            dependency_merger=fixture.merge_dependency,
+        )
+        target_commit = EXECUTOR.deterministic_campaign_commit_oid(
+            parent=SOURCE_TAP_COMMIT,
+            tree=fixture.source_tree,
+            label="sealed target source",
+        )
+        self.assertEqual(set(observed), {"wasm32", "wasm64"})
+        for arch in ("wasm32", "wasm64"):
+            expected = EXECUTOR.deterministic_campaign_commit_oid(
+                parent=target_commit,
+                tree=observed[arch]["tree"],
+                label=f"beta/{arch} dependency bottles",
+            )
+            self.assertEqual(
+                observed[arch]["checkout_commit"],
+                expected,
+            )
+            self.assertIn(
+                sha256(f"alpha/{arch} bottle bytes\n".encode()),
+                observed[arch]["dependency_formula"],
+            )
+        self.assertNotEqual(
+            observed["wasm32"]["tree"],
+            observed["wasm64"]["tree"],
+        )
+        self.assertNotEqual(
+            observed["wasm32"]["checkout_commit"],
+            observed["wasm64"]["checkout_commit"],
+        )
+
+    def test_dependency_json_is_snapshotted_without_its_archive(
+        self,
+    ) -> None:
+        fixture = Fixture()
+        self.addCleanup(fixture.close)
+        alpha = fixture.root / "snapshot-alpha"
+        fixture.derive(
+            "alpha",
+            [("wasm32", fixture.publication("alpha", "wasm32"))],
+            [],
+            alpha,
+        )
+        live_bottle_json = (
+            alpha / "payload/wasm32/build/bottle.json"
+        )
+        original_handoff = (alpha / "handoff.json").read_bytes()
+        staged_files: list[str] = []
+
+        def mutate_after_snapshot(**arguments: Any) -> None:
+            bottle_json = pathlib.Path(arguments["bottle_json"])
+            staged_files.extend(
+                sorted(
+                    path.name
+                    for path in bottle_json.parent.iterdir()
+                )
+            )
+            live_bottle_json.write_bytes(b'{"mutated":true}\n')
+            fixture.merge_dependency(**arguments)
+
+        beta = fixture.root / "snapshot-beta"
+        EXECUTOR.derive_build(
+            campaign_path=fixture.campaign_path,
+            source_tap_root=fixture.source,
+            formula_name="beta",
+            publications=[
+                ("wasm32", fixture.publication("beta", "wasm32"))
+            ],
+            dependency_roots=[alpha],
+            output=beta,
+            validator=lambda *_arguments: None,
+            dependency_merger=mutate_after_snapshot,
+        )
+        self.assertEqual(
+            staged_files,
+            ["bottle.json", "raw-bottle.json"],
+        )
+        self.assertEqual(
+            json.loads((beta / "handoff.json").read_text())[
+                "dependency_handoffs"
+            ][0]["tag"],
+            EXECUTOR.handoff_tag(original_handoff),
+        )
+
+    def test_default_validator_rejects_forged_checkout_identity(
+        self,
+    ) -> None:
+        fixture = Fixture()
+        self.addCleanup(fixture.close)
+        publication = fixture.publication("alpha", "wasm32")
+        manifest = publication / "build/manifest.json"
+        forged = "f" * 40
+        derived = "d" * 40
+        write_json(
+            manifest,
+            {
+                "schema": 4,
+                "tap_checkout_commit": forged,
+            },
+        )
+        with mock.patch.object(
+            EXECUTOR.subprocess,
+            "run",
+        ) as runner:
+            with self.assertRaisesRegex(
+                EXECUTOR.ExecutorError,
+                "names a different prepared checkout",
+            ):
+                EXECUTOR.default_publication_validator(
+                    fixture.campaign,
+                    fixture.formulae[0],
+                    "wasm32",
+                    publication,
+                    fixture.source,
+                    derived,
+                )
+            runner.assert_not_called()
+        write_json(
+            manifest,
+            {
+                "schema": 4,
+                "tap_checkout_commit": derived,
+            },
+        )
+        completed = subprocess.CompletedProcess(
+            [],
+            0,
+            stdout=b"",
+            stderr=b"",
+        )
+        with mock.patch.object(
+            EXECUTOR.subprocess,
+            "run",
+            return_value=completed,
+        ) as runner:
+            EXECUTOR.default_publication_validator(
+                fixture.campaign,
+                fixture.formulae[0],
+                "wasm32",
+                publication,
+                fixture.source,
+                derived,
+            )
+        commands = runner.call_args.args[0]
+        self.assertEqual(
+            commands[commands.index("--tap-commit") + 1],
+            SOURCE_TAP_COMMIT,
+        )
+        self.assertEqual(
+            commands[
+                commands.index("--tap-checkout-commit") + 1
+            ],
+            derived,
+        )
+        self.assertNotEqual(derived, forged)
+
     def test_derivation_uses_private_stable_input_snapshots(
         self,
     ) -> None:
@@ -697,6 +1087,7 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             _arch: str,
             private_publication: pathlib.Path,
             private_source: pathlib.Path,
+            _checkout_commit: str,
         ) -> None:
             self.assertNotEqual(
                 private_publication.resolve(),
@@ -742,6 +1133,7 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             _arch: str,
             private_publication: pathlib.Path,
             _private_source: pathlib.Path,
+            _checkout_commit: str,
         ) -> None:
             (private_publication / "receipt.json").write_bytes(
                 b"validator changed private bytes\n"
@@ -779,6 +1171,7 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             _arch: str,
             _private_publication: pathlib.Path,
             private_source: pathlib.Path,
+            _checkout_commit: str,
         ) -> None:
             (private_source / "Formula/alpha.rb").write_bytes(
                 b"validator changed private source\n"
@@ -786,7 +1179,7 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
 
         with self.assertRaisesRegex(
             EXECUTOR.ExecutorError,
-            "sealed Git tree",
+            "prepared checkout changed after validation",
         ):
             EXECUTOR.derive_build(
                 campaign_path=hostile_source.campaign_path,
