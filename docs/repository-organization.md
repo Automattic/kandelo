@@ -110,16 +110,14 @@ file content, including 2,502 files and 11,104,024,279 bytes under `assets/`.
 That measurement was taken on 2026-07-23; it records the accumulated-tree
 problem rather than promising that branch size is static.
 
-Newer Pages runs cancel work for superseded commits. Because GitHub does not
-guarantee concurrency-group ordering, cancellation is not the publication
-authority. An unrelated `main` commit may not trigger the Pages workflow, so
-comparing the build commit with the tip of `main` would incorrectly discard a
-still-current site build. Instead, immediately before the sole deployment
-step, the workflow queries GitHub Actions and publishes only when its run
-number is the newest run triggered for this workflow on `main`. A delayed older
-run therefore cannot become the final writer. Missing, empty, malformed, or
-failed API responses stop publication rather than guessing that a run is
-current.
+Every push to `main` triggers a Pages run; the workflow has no path filter.
+Newer runs normally cancel work for superseded commits, but GitHub does not
+guarantee concurrency-group ordering, so cancellation alone is not publication
+authority. Immediately before the sole deployment step, the workflow queries
+GitHub Actions and publishes only when its run number is the newest run
+triggered for this workflow on `main`. A delayed older run therefore cannot
+become the final writer. Missing, empty, malformed, or failed API responses
+stop publication rather than guessing that a run is current.
 
 GitHub's current Pages limits are documented at
 <https://docs.github.com/en/pages/getting-started-with-github-pages/github-pages-limits>.
