@@ -38,6 +38,9 @@ MAX_JOBS = 8
 METADATA_PATH = "Kandelo/metadata.json"
 LAYOUT_PATH = "homebrew/kandelo-guest-layout.json"
 INPUTS_PATH = "homebrew/guest-prefix-campaign-inputs.json"
+SOURCE_AUTHORITY_PATH = "Kandelo/prefix-campaign-authority.json"
+SOURCE_MANIFEST_PATH = "Kandelo/campaigns/prefix-v1/manifest.json"
+SOURCE_MATERIALIZER_PATH = "scripts/prefix-campaign-source.py"
 INSPECTOR_PATH = "scripts/homebrew-inspect-bottle.py"
 CAMPAIGN_TOOL_PATH = "scripts/homebrew-prefix-campaign.py"
 READBACK_PATH = "scripts/homebrew-verify-public-bottle.ts"
@@ -255,6 +258,55 @@ def sha256_file(path: pathlib.Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def git_object_id(kind: str, payload: bytes) -> str:
+    header = f"{kind} {len(payload)}\0".encode("ascii")
+    return hashlib.sha1(header + payload).hexdigest()
+
+
+def filesystem_git_tree_oid(root: pathlib.Path, label: str) -> str:
+    root = real_directory(root, label)
+
+    def visit(directory: pathlib.Path) -> bytes:
+        entries: list[tuple[bytes, bytes]] = []
+        for child in directory.iterdir():
+            name = child.name.encode("utf-8")
+            if b"\0" in name or b"/" in name:
+                fail(f"{label} contains an unsafe entry name")
+            metadata = child.lstat()
+            if stat.S_ISDIR(metadata.st_mode) and not child.is_symlink():
+                payload = visit(child)
+                mode = b"40000"
+                object_id = git_object_id("tree", payload)
+                sort_key = name + b"/"
+            elif stat.S_ISREG(metadata.st_mode) and not child.is_symlink():
+                payload = child.read_bytes()
+                mode = (
+                    b"100755"
+                    if metadata.st_mode
+                    & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                    else b"100644"
+                )
+                object_id = git_object_id("blob", payload)
+                sort_key = name
+            elif stat.S_ISLNK(metadata.st_mode):
+                payload = os.readlink(child).encode("utf-8")
+                mode = b"120000"
+                object_id = git_object_id("blob", payload)
+                sort_key = name
+            else:
+                fail(f"{label} contains a special file")
+            entries.append(
+                (
+                    sort_key,
+                    mode + b" " + name + b"\0" + bytes.fromhex(object_id),
+                )
+            )
+        entries.sort(key=lambda item: item[0])
+        return b"".join(entry for _key, entry in entries)
+
+    return git_object_id("tree", visit(root))
 
 
 def duplicate_rejecting_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -559,6 +611,300 @@ def git_snapshot(
     finally:
         archive_path.unlink(missing_ok=True)
     return real_directory(destination, f"{label} snapshot")
+
+
+def validate_overlay_file_record(value: Any, label: str) -> dict[str, Any]:
+    record = exact_keys(
+        value,
+        {"blob_git_oid", "bytes", "mode", "sha256"},
+        label,
+    )
+    require_commit(record["blob_git_oid"], f"{label} Git blob")
+    require_sha256(record["sha256"], f"{label} SHA-256")
+    require_int(record["bytes"], f"{label} bytes")
+    if record["mode"] not in ("100644", "100755"):
+        fail(f"{label} has an unsupported file mode")
+    return record
+
+
+def validate_overlay_file(
+    path: pathlib.Path,
+    record: dict[str, Any],
+    label: str,
+) -> None:
+    path = regular_file(path, label, MAX_JSON_BYTES)
+    payload = path.read_bytes()
+    mode = (
+        "100755"
+        if path.stat().st_mode
+        & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        else "100644"
+    )
+    if (
+        len(payload) != record["bytes"]
+        or sha256_bytes(payload) != record["sha256"]
+        or git_object_id("blob", payload) != record["blob_git_oid"]
+        or mode != record["mode"]
+    ):
+        fail(f"{label} differs from its sealed identity")
+
+
+def candidate_source_snapshot(
+    root: pathlib.Path,
+    commit: str,
+    destination: pathlib.Path,
+) -> tuple[pathlib.Path, dict[str, Any]]:
+    if destination.exists() or destination.is_symlink():
+        fail("candidate source snapshot output already exists")
+    parent = real_directory(destination.parent, "candidate output parent")
+    with tempfile.TemporaryDirectory(
+        prefix=".candidate-source-commit-", dir=parent
+    ) as temporary_name:
+        committed_root = git_snapshot(
+            root,
+            commit,
+            pathlib.Path(temporary_name) / "source",
+            "candidate source tap input",
+        )
+        authority_path = committed_root / SOURCE_AUTHORITY_PATH
+        manifest_path = committed_root / SOURCE_MANIFEST_PATH
+        materializer_path = committed_root / SOURCE_MATERIALIZER_PATH
+        protected_paths = (
+            authority_path,
+            manifest_path,
+            materializer_path,
+        )
+        present = [
+            path.exists() or path.is_symlink() for path in protected_paths
+        ]
+        if any(present) and not all(present):
+            fail(
+                "candidate tap contains an incomplete protected source overlay"
+            )
+        if not any(present):
+            tree = run_command(
+                ["git", "rev-parse", f"{commit}^{{tree}}"],
+                cwd=root,
+                label="candidate source tap tree",
+                timeout=30,
+            ).decode("ascii", errors="strict").strip()
+            require_commit(tree, "candidate source tap tree")
+            if (
+                filesystem_git_tree_oid(
+                    committed_root, "candidate source tap snapshot"
+                )
+                != tree
+            ):
+                fail("candidate source snapshot differs from its Git tree")
+            os.rename(committed_root, destination)
+            return destination, {
+                "kind": "exact-git-tree-v1",
+                "tree_git_oid": tree,
+            }
+
+        authority, authority_bytes = load_json_with_bytes(
+            authority_path, "candidate source overlay authority"
+        )
+        if authority_bytes != pretty_json(authority):
+            fail("candidate source overlay authority is not canonical JSON")
+        if not isinstance(authority, dict):
+            fail("candidate source overlay authority must be an object")
+        target = exact_keys(
+            authority.get("target_source"),
+            {
+                "manifest_path",
+                "manifest_sha256",
+                "source_root",
+                "source_tree_git_oid",
+                "target_tree_git_oid",
+            },
+            "candidate source overlay target",
+        )
+        if (
+            target["manifest_path"] != SOURCE_MANIFEST_PATH
+            or target["source_root"]
+            != "Kandelo/campaigns/prefix-v1/source"
+        ):
+            fail("candidate source overlay uses unexpected protected paths")
+        manifest_sha = require_sha256(
+            target["manifest_sha256"],
+            "candidate source overlay manifest SHA-256",
+        )
+        source_tree = require_commit(
+            target["source_tree_git_oid"],
+            "candidate source overlay source tree",
+        )
+        target_tree = require_commit(
+            target["target_tree_git_oid"],
+            "candidate source overlay target tree",
+        )
+        manifest, manifest_bytes = load_json_with_bytes(
+            manifest_path, "candidate source overlay manifest"
+        )
+        if manifest_bytes != pretty_json(manifest):
+            fail("candidate source overlay manifest is not canonical JSON")
+        manifest = exact_keys(
+            manifest,
+            {
+                "base",
+                "campaign",
+                "files",
+                "kind",
+                "schema",
+                "source_root",
+                "target_tree_git_oid",
+            },
+            "candidate source overlay manifest",
+        )
+        base = exact_keys(
+            manifest["base"],
+            {"commit", "tree_git_oid"},
+            "candidate source overlay base",
+        )
+        base_commit = require_commit(
+            base["commit"], "candidate source overlay base commit"
+        )
+        base_tree = require_commit(
+            base["tree_git_oid"], "candidate source overlay base tree"
+        )
+        if (
+            sha256_bytes(manifest_bytes) != manifest_sha
+            or manifest["schema"] != 1
+            or manifest["kind"]
+            != "kandelo-homebrew-prefix-campaign-source-overlay"
+            or manifest["campaign"] != "prefix-v1"
+            or manifest["source_root"] != target["source_root"]
+            or manifest["target_tree_git_oid"] != target_tree
+        ):
+            fail(
+                "candidate source overlay manifest differs from its authority"
+            )
+        source_root = committed_root / target["source_root"]
+        if (
+            filesystem_git_tree_oid(
+                source_root, "candidate source overlay payload"
+            )
+            != source_tree
+        ):
+            fail(
+                "candidate source overlay payload differs from its authority"
+            )
+        regular_file(
+            materializer_path,
+            "candidate source overlay materializer",
+            1024 * 1024,
+        )
+        actual_base_tree = run_command(
+            ["git", "rev-parse", f"{base_commit}^{{tree}}"],
+            cwd=root,
+            label="candidate source overlay base tree",
+            timeout=30,
+        ).decode("ascii", errors="strict").strip()
+        if actual_base_tree != base_tree:
+            fail("candidate source overlay base differs from its sealed tree")
+        files = manifest["files"]
+        if not isinstance(files, list) or not files:
+            fail(
+                "candidate source overlay must contain a non-empty file list"
+            )
+        expected_sources: set[pathlib.Path] = set()
+        prior = ""
+        records: list[tuple[str, dict[str, Any]]] = []
+        for index, value in enumerate(files):
+            value = exact_keys(
+                value,
+                {"base", "path", "target"},
+                f"candidate source overlay file #{index}",
+            )
+            relative = require_tap_path(
+                value["path"],
+                f"candidate source overlay file #{index} path",
+            )
+            if relative <= prior:
+                fail(
+                    "candidate source overlay files must be unique and sorted"
+                )
+            prior = relative
+            target_record = validate_overlay_file_record(
+                value["target"],
+                f"candidate source overlay file #{index} target",
+            )
+            source = source_root / relative
+            expected_sources.add(source)
+            validate_overlay_file(
+                source,
+                target_record,
+                f"candidate source overlay payload {relative}",
+            )
+            live = committed_root / relative
+            if value["base"] is None:
+                if live.exists() or live.is_symlink():
+                    fail(
+                        "candidate-only source path is already live: "
+                        f"{relative}"
+                    )
+            else:
+                base_record = validate_overlay_file_record(
+                    value["base"],
+                    f"candidate source overlay file #{index} base",
+                )
+                validate_overlay_file(
+                    live,
+                    base_record,
+                    f"candidate source overlay live base {relative}",
+                )
+            records.append((relative, target_record))
+        actual_sources = {
+            path
+            for path in source_root.rglob("*")
+            if path.is_file() or path.is_symlink()
+        }
+        if actual_sources != expected_sources:
+            fail("candidate source overlay contains unsealed files")
+        # WHY: the source commit stores both the last live tap and a sealed
+        # all-at-once target. Read both authorities from that immutable commit;
+        # a mutable checkout is only an object database, never source bytes.
+        snapshot = git_snapshot(
+            root,
+            base_commit,
+            destination,
+            "candidate source overlay base",
+        )
+        for relative, record in records:
+            source = source_root / relative
+            output = snapshot / relative
+            output.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, output, follow_symlinks=False)
+            output.chmod(
+                0o755 if record["mode"] == "100755" else 0o644
+            )
+        if (
+            filesystem_git_tree_oid(
+                snapshot, "materialized candidate source tap snapshot"
+            )
+            != target_tree
+        ):
+            fail(
+                "materialized candidate source tree differs from its authority"
+            )
+        return snapshot, {
+            "authority": {
+                "path": SOURCE_AUTHORITY_PATH,
+                "sha256": sha256_bytes(authority_bytes),
+            },
+            "kind": "sealed-target-overlay-v1",
+            "manifest": {
+                "path": SOURCE_MANIFEST_PATH,
+                "sha256": manifest_sha,
+            },
+            "materializer": {
+                "path": SOURCE_MATERIALIZER_PATH,
+                "sha256": sha256_file(materializer_path),
+            },
+            "source_root": target["source_root"],
+            "source_tree_git_oid": source_tree,
+            "target_tree_git_oid": target_tree,
+        }
 
 
 def path_is_within(path: pathlib.Path, root: pathlib.Path) -> bool:
@@ -1323,12 +1669,12 @@ def default_probe_destination(
     return result
 
 
-def default_resolve_formula_versions(
+def default_resolve_formula_metadata(
     native_brew_root: pathlib.Path,
     source_tap_root: pathlib.Path,
     tap_name: str,
     formulae: list[str],
-) -> dict[str, str]:
+) -> dict[str, dict[str, Any]]:
     if not formulae or formulae != sorted(set(formulae)):
         fail("native Homebrew version query must be a non-empty canonical set")
     owner, tap = tap_name.split("/", 1)
@@ -1400,7 +1746,8 @@ def default_resolve_formula_versions(
         or not isinstance(document["formulae"], list)
     ):
         fail("native Homebrew Formula metadata has an unexpected root contract")
-    versions: dict[str, str] = {}
+    metadata: dict[str, dict[str, Any]] = {}
+    formula_set = set(formulae)
     for index, formula in enumerate(document["formulae"]):
         if not isinstance(formula, dict):
             fail(f"native Homebrew Formula metadata #{index} must be an object")
@@ -1425,21 +1772,52 @@ def default_resolve_formula_versions(
         )
         pkg_version = f"{stable}_{revision}" if revision else stable
         require_string(pkg_version, f"{name} resolved pkg_version", VERSION)
-        if name in versions:
+        dependency_names: set[str] = set()
+        for field in (
+            "dependencies",
+            "build_dependencies",
+            "test_dependencies",
+            "recommended_dependencies",
+        ):
+            values = formula.get(field)
+            if not isinstance(values, list) or any(
+                not isinstance(value, str) or not value
+                for value in values
+            ):
+                fail(
+                    f"native Homebrew metadata for {name} has invalid {field}"
+                )
+            for value in values:
+                prefix = f"{tap_name}/"
+                candidate = (
+                    value.removeprefix(prefix)
+                    if value.startswith(prefix)
+                    else value
+                )
+                # Native build tools remain supplied by the pinned package
+                # generation. Only Formulae in this campaign can be ordered
+                # and handed from one bottle task to another.
+                if candidate in formula_set:
+                    dependency_names.add(candidate)
+        if name in metadata:
             fail(f"native Homebrew metadata repeats Formula {name}")
-        versions[name] = pkg_version
-    if set(versions) != set(formulae):
+        metadata[name] = {
+            "dependencies": sorted(dependency_names),
+            "version": pkg_version,
+        }
+    if set(metadata) != formula_set:
         fail(
             "native Homebrew Formula inventory differs from candidate Formulae: "
-            f"expected={formulae}, actual={sorted(versions)}"
+            f"expected={formulae}, actual={sorted(metadata)}"
         )
-    return versions
+    return metadata
 
 
 FetchBottle = Callable[[str, str, int, pathlib.Path, pathlib.Path], None]
 ProbeDestination = Callable[[str, str, pathlib.Path], dict[str, Any]]
-ResolveFormulaVersions = Callable[
-    [pathlib.Path, pathlib.Path, str, list[str]], dict[str, str]
+ResolveFormulaMetadata = Callable[
+    [pathlib.Path, pathlib.Path, str, list[str]],
+    dict[str, dict[str, Any]],
 ]
 LoadHistoricalFormula = Callable[
     [pathlib.Path, str, str, str], bytes
@@ -1450,8 +1828,8 @@ LoadHistoricalFormula = Callable[
 class CampaignDependencies:
     fetch_bottle: FetchBottle = default_fetch_bottle
     probe_destination: ProbeDestination = default_probe_destination
-    resolve_formula_versions: ResolveFormulaVersions = (
-        default_resolve_formula_versions
+    resolve_formula_metadata: ResolveFormulaMetadata = (
+        default_resolve_formula_metadata
     )
     load_historical_formula: LoadHistoricalFormula | None = None
 
@@ -1469,6 +1847,7 @@ class CampaignOptions:
     metadata_sha256: str
     guest_layout_sha256: str
     jobs: int = MAX_JOBS
+    source_materialization: dict[str, Any] | None = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -2248,16 +2627,92 @@ def _derive_campaign_from_snapshots(
             f"contract: actual={sorted(source_only_actual)}, "
             f"contract={sorted(source_only_contract)}"
         )
-    resolved_versions = dependencies.resolve_formula_versions(
+    resolved_metadata = dependencies.resolve_formula_metadata(
         native_brew_root,
         source_tap_root,
         tap_name,
         sorted(source_formula_files),
     )
-    if set(resolved_versions) != set(source_formula_files):
-        fail("exact native Homebrew version resolution returned an incomplete set")
-    for name, version in resolved_versions.items():
-        require_string(version, f"{name} resolved pkg_version", VERSION)
+    if set(resolved_metadata) != set(source_formula_files):
+        fail("exact native Homebrew metadata resolution returned an incomplete set")
+    resolved_versions: dict[str, str] = {}
+    for name, raw_metadata in resolved_metadata.items():
+        formula_metadata = exact_keys(
+            raw_metadata,
+            {"dependencies", "version"},
+            f"{name} resolved Formula metadata",
+        )
+        resolved_versions[name] = require_string(
+            formula_metadata["version"],
+            f"{name} resolved pkg_version",
+            VERSION,
+        )
+    resolved_dependencies: dict[str, list[dict[str, str]]] = {}
+    for name, raw_metadata in resolved_metadata.items():
+        formula_metadata = exact_keys(
+            raw_metadata,
+            {"dependencies", "version"},
+            f"{name} resolved Formula metadata",
+        )
+        dependency_names = formula_metadata["dependencies"]
+        if (
+            not isinstance(dependency_names, list)
+            or dependency_names != sorted(set(dependency_names))
+            or any(
+                not isinstance(value, str)
+                or FORMULA_NAME.fullmatch(value) is None
+                for value in dependency_names
+            )
+        ):
+            fail(f"{name} resolved dependencies are not a canonical name set")
+        if name in dependency_names:
+            fail(f"{name} resolved dependencies include itself")
+        resolved_dependencies[name] = [
+            {
+                "full_name": f"{tap_name}/{dependency_name}",
+                "version": require_string(
+                    resolved_versions.get(dependency_name),
+                    f"{name} dependency {dependency_name} resolved version",
+                    VERSION,
+                ),
+            }
+            for dependency_name in dependency_names
+        ]
+    scheduled_formulae = set(sidecars_by_name) | {
+        name
+        for name, entry in source_only_contract.items()
+        if entry["disposition"] == "required-build"
+    }
+    for name in sorted(scheduled_formulae):
+        unavailable = [
+            dependency["full_name"].removeprefix(f"{tap_name}/")
+            for dependency in resolved_dependencies[name]
+            if dependency["full_name"].removeprefix(f"{tap_name}/")
+            not in scheduled_formulae
+        ]
+        if unavailable:
+            fail(
+                f"{name} depends on deferred campaign Formulae "
+                f"{sorted(unavailable)}"
+            )
+    reached: set[str] = set()
+    visiting: set[str] = set()
+
+    def visit_formula(name: str) -> None:
+        if name in visiting:
+            fail(f"candidate Formula dependency graph cycles at {name}")
+        if name in reached:
+            return
+        visiting.add(name)
+        for dependency in resolved_dependencies[name]:
+            visit_formula(
+                dependency["full_name"].removeprefix(f"{tap_name}/")
+            )
+        visiting.remove(name)
+        reached.add(name)
+
+    for name in sorted(scheduled_formulae):
+        visit_formula(name)
     if dependencies.load_historical_formula is None:
         fail("exact historical Formula loader is unavailable")
 
@@ -2492,6 +2947,7 @@ def _derive_campaign_from_snapshots(
             top_reference, version, next_rebuild, name
         )
         formula_context[name] = {
+            "dependencies": resolved_dependencies[name],
             "destination": {
                 "bottle_rebuild": next_rebuild,
                 "reference": reference,
@@ -2583,6 +3039,7 @@ def _derive_campaign_from_snapshots(
             )
         reference = canonical_top_reference(top_reference, version, 0, name)
         formula_context[name] = {
+            "dependencies": resolved_dependencies[name],
             "destination": {
                 "bottle_rebuild": 0,
                 "reference": reference,
@@ -2729,6 +3186,11 @@ def _derive_campaign_from_snapshots(
                 "sha256": metadata_sha256,
             },
             "old_tap_commit": options.old_tap_commit,
+            "source_materialization": (
+                options.source_materialization
+                if options.source_materialization is not None
+                else {"kind": "unrecorded-snapshot"}
+            ),
             "source_tap_commit": options.source_tap_commit,
             "tap_name": tap_name,
             "tap_repository": tap_repository,
@@ -2839,23 +3301,38 @@ def derive_campaign(
             prefix=".kandelo-prefix-campaign-", dir=pathlib.Path.home()
         ) as temporary_name:
             temporary = pathlib.Path(temporary_name)
-            snapshots = tuple(
-                git_snapshot(
-                    root,
-                    commit,
-                    temporary / f"input-{index}",
-                    label,
+            kandelo_snapshot = git_snapshot(
+                exact_roots[0],
+                options.kandelo_commit,
+                temporary / "input-0",
+                "Kandelo input",
+            )
+            old_tap_snapshot = git_snapshot(
+                exact_roots[1],
+                options.old_tap_commit,
+                temporary / "input-1",
+                "old selected tap input",
+            )
+            source_snapshot, source_materialization = (
+                candidate_source_snapshot(
+                    exact_roots[2],
+                    options.source_tap_commit,
+                    temporary / "input-2",
                 )
-                for index, ((_, commit, label), root) in enumerate(
-                    zip(authorities, exact_roots, strict=True)
-                )
+            )
+            native_brew_snapshot = git_snapshot(
+                exact_roots[3],
+                options.native_brew_commit,
+                temporary / "input-3",
+                "native Homebrew input",
             )
             snapshot_options = dataclasses.replace(
                 options,
-                kandelo_root=snapshots[0],
-                old_tap_root=snapshots[1],
-                source_tap_root=snapshots[2],
-                native_brew_root=snapshots[3],
+                kandelo_root=kandelo_snapshot,
+                old_tap_root=old_tap_snapshot,
+                source_tap_root=source_snapshot,
+                native_brew_root=native_brew_snapshot,
+                source_materialization=source_materialization,
             )
             result = _derive_campaign_from_snapshots(
                 snapshot_options, dependencies, metadata_hashes
