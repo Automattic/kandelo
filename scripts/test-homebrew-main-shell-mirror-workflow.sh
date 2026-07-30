@@ -93,8 +93,19 @@ sed '/--package homebrew-bootstrap/d' \
 expect_rejected "$TMP_ROOT/unfetched-direct-product.yml"
 sed \
   '/      - name: Fetch musl submodule for browser source-build fallback/,/          submodules: libc\/musl/d' \
-  "$WORKFLOW" >"$TMP_ROOT/no-public-proof-musl.yml"
-expect_rejected "$TMP_ROOT/no-public-proof-musl.yml"
+  "$WORKFLOW" >"$TMP_ROOT/no-public-chromium-proof-musl.yml"
+expect_rejected "$TMP_ROOT/no-public-chromium-proof-musl.yml"
+sed \
+  's/--fetch-only --package kernel/--fetch-only --package kernel --package shell/' \
+  "$WORKFLOW" >"$TMP_ROOT/node-fetches-shell.yml"
+expect_rejected "$TMP_ROOT/node-fetches-shell.yml"
+sed 's/memory.current/memory.stat/' \
+  "$WORKFLOW" >"$TMP_ROOT/no-node-current-memory-telemetry.yml"
+expect_rejected "$TMP_ROOT/no-node-current-memory-telemetry.yml"
+sed \
+  's#homebrew/test/homebrew_guest_lifecycle_node.ts#scripts/homebrew-main-shell-node-smoke.ts#' \
+  "$WORKFLOW" >"$TMP_ROOT/no-full-node-lifecycle.yml"
+expect_rejected "$TMP_ROOT/no-full-node-lifecycle.yml"
 sed '/      - name: Upload mirror verification and lifecycle publication receipts/i\
       - name: Injected write-capable command\
         shell: bash\
