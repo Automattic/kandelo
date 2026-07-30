@@ -122,6 +122,31 @@ sed \
   '/"KANDELO_BROWSER_DEMO_INPUTS=\$KANDELO_BROWSER_DEMO_INPUTS"/d' \
   "$WORKFLOW" >"$TMP_ROOT/dropped-chromium-input-selection.yml"
 expect_rejected "$TMP_ROOT/dropped-chromium-input-selection.yml"
+for forwarded in \
+  KANDELO_BROWSER_DEMO_INPUTS \
+  KANDELO_PLAYWRIGHT_SERVE_DIST \
+  WASM_POSIX_BINARY_CACHE_ROOT \
+  KANDELO_HOMEBREW_MAIN_SHELL_STRICT \
+  KANDELO_HOMEBREW_MAIN_SHELL_SHA256 \
+  KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256 \
+  KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES \
+  KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE \
+  KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL
+do
+  needle="\"${forwarded}=\$${forwarded}\""
+  awk -v needle="$needle" \
+    'index($0, needle) == 0 { print }' \
+    "$WORKFLOW" >"$TMP_ROOT/omitted-$forwarded.yml"
+  expect_rejected "$TMP_ROOT/omitted-$forwarded.yml"
+  awk -v needle="$needle" \
+    '{ print; if (index($0, needle) != 0) print }' \
+    "$WORKFLOW" >"$TMP_ROOT/duplicated-$forwarded.yml"
+  expect_rejected "$TMP_ROOT/duplicated-$forwarded.yml"
+done
+sed \
+  's/run_public_playwright npx playwright test/npx playwright test/' \
+  "$WORKFLOW" >"$TMP_ROOT/bypassed-public-playwright-helper.yml"
+expect_rejected "$TMP_ROOT/bypassed-public-playwright-helper.yml"
 sed '/verify-browser-shell-vfs-asset.sh/d' \
   "$WORKFLOW" >"$TMP_ROOT/no-browser-shell-asset-verifier.yml"
 expect_rejected "$TMP_ROOT/no-browser-shell-asset-verifier.yml"

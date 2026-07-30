@@ -12,7 +12,7 @@ WORKFLOW = ARGV.empty? ?
 PUBLISH_JOB_DIGEST =
   "64bd13ea5a8d00953acfec3e02607f7ae70837706c868827bed5259c6043aeb2"
 WORKFLOW_DIGEST =
-  "561c59bf648cec2a5a3c62a19216bcb6ac2c325c820f7de47c5ad836375b0793"
+  "2f81cbd8d4c48713cf242eecde5eb362cc3e8b61472762d3a82eaac45190f846"
 DOWNLOAD_ACTION =
   "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 UPLOAD_ACTION =
@@ -25,6 +25,22 @@ LIFECYCLE_ASSETS = %w[
   homebrew-bootstrap.zip
   homebrew-brew.env
 ].freeze
+PUBLIC_CHROMIUM_PLAYWRIGHT_ENV = {
+  "KANDELO_BROWSER_DEMO_INPUTS" => "main",
+  "KANDELO_PLAYWRIGHT_SERVE_DIST" => "1",
+  "WASM_POSIX_BINARY_CACHE_ROOT" =>
+    "${{ runner.temp }}/main-shell-public-chromium-proof-cache",
+  "KANDELO_HOMEBREW_MAIN_SHELL_STRICT" => "1",
+  "KANDELO_HOMEBREW_MAIN_SHELL_SHA256" =>
+    "${{ steps.public.outputs.image-sha }}",
+  "KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256" =>
+    "${{ steps.public.outputs.bootstrap-sha }}",
+  "KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES" =>
+    "${{ steps.public.outputs.bootstrap-bytes }}",
+  "KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" => "public",
+  "KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL" =>
+    "${{ steps.public.outputs.plan-url }}",
+}.freeze
 
 def check(condition, message)
   raise message unless condition
@@ -414,6 +430,35 @@ chromium_step = named_step(
   "Prove public shell and live tap lifecycle in Chromium",
 )
 chromium_run = chromium_step.fetch("run")
+check(
+  chromium_step.fetch("env") == PUBLIC_CHROMIUM_PLAYWRIGHT_ENV,
+  "Chromium public Playwright environment differs",
+)
+PUBLIC_CHROMIUM_PLAYWRIGHT_ENV.each_key do |name|
+  forwarding = "\"#{name}=$#{name}\""
+  check(
+    chromium_run.scan(forwarding).length == 1,
+    "Chromium public Playwright does not forward #{name} exactly once",
+  )
+end
+public_playwright_calls = chromium_run.lines.map(&:strip).select do |line|
+  line.start_with?("run_public_playwright ")
+end
+check(
+  chromium_run.scan(
+    /^\s*run_public_playwright\(\) \{$/
+  ).length == 1 &&
+    chromium_run.scan(
+      "bash ../../scripts/dev-shell.sh env"
+    ).length == 1 &&
+    public_playwright_calls.length == 2 &&
+    public_playwright_calls.include?(
+      "run_public_playwright npx playwright test \\"
+    ) &&
+    public_playwright_calls.include?("run_public_playwright \\") &&
+    !chromium_run.include?("run_public_playwright env"),
+  "Chromium public Playwright does not use one sealed env helper",
+)
 check(chromium_run.include?("--project=chromium") &&
       chromium_run.include?("test/homebrew-guest-lifecycle.spec.ts") &&
       chromium_run.include?(

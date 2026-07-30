@@ -1003,6 +1003,7 @@ jobs:
         env:
           KANDELO_BROWSER_DEMO_INPUTS: main
           KANDELO_PLAYWRIGHT_SERVE_DIST: "1"
+          WASM_POSIX_BINARY_CACHE_ROOT: ${{ runner.temp }}/main-shell-public-chromium-proof-cache
           KANDELO_HOMEBREW_MAIN_SHELL_STRICT: "1"
           KANDELO_HOMEBREW_MAIN_SHELL_SHA256: ${{ steps.public.outputs.image-sha }}
           KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256: ${{ steps.public.outputs.bootstrap-sha }}
@@ -1013,11 +1014,28 @@ jobs:
           set -euo pipefail
           test -z "${VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT:-}"
           test -z "${KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT:-}"
-          bash ../../scripts/dev-shell.sh npx playwright test \
+          run_public_playwright() {
+            # WHY: dev-shell deliberately drops ambient variables. Keep the
+            # exact built product, resolver cache, and public-input contract
+            # together so neither Playwright invocation silently serves
+            # source mode or resolves a different kernel.
+            bash ../../scripts/dev-shell.sh env \
+              "KANDELO_BROWSER_DEMO_INPUTS=$KANDELO_BROWSER_DEMO_INPUTS" \
+              "KANDELO_PLAYWRIGHT_SERVE_DIST=$KANDELO_PLAYWRIGHT_SERVE_DIST" \
+              "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
+              "KANDELO_HOMEBREW_MAIN_SHELL_STRICT=$KANDELO_HOMEBREW_MAIN_SHELL_STRICT" \
+              "KANDELO_HOMEBREW_MAIN_SHELL_SHA256=$KANDELO_HOMEBREW_MAIN_SHELL_SHA256" \
+              "KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256=$KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256" \
+              "KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES=$KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES" \
+              "KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE=$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" \
+              "KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL=$KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL" \
+              "$@"
+          }
+          run_public_playwright npx playwright test \
             test/kandelo-homebrew-main-shell.spec.ts \
             --project=chromium
           lifecycle_report="$RUNNER_TEMP/homebrew-guest-lifecycle-public-playwright.json"
-          bash ../../scripts/dev-shell.sh env \
+          run_public_playwright \
             "PLAYWRIGHT_JSON_OUTPUT_FILE=$lifecycle_report" \
             "KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE=1" \
             "KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_FIXTURE_PATH=${{ steps.public-fixture.outputs.fixture }}" \
