@@ -99,9 +99,9 @@ jq -e \
   --arg plan_sha "$plan_sha" \
   --argjson plan_bytes "$plan_bytes" '
   (keys | sort) == [
-    "bottle_mirror", "canary_ref", "files", "kandelo_ref", "kind",
-    "release", "schema", "tap_caller_authority_ref", "tap_catalog_ref",
-    "tap_mirror_authority_ref"
+    "bootstrap", "bottle_mirror", "canary_ref", "files", "kandelo_ref",
+    "kind", "release", "schema", "tap_caller_authority_ref",
+    "tap_catalog_ref", "tap_mirror_authority_ref"
   ] and
   .schema == 1 and
   .kind == "kandelo-homebrew-guest-lifecycle-inputs-handoff" and
@@ -110,6 +110,13 @@ jq -e \
   .tap_mirror_authority_ref == $tap_mirror_authority and
   .tap_caller_authority_ref == $tap_caller_authority and
   .canary_ref == $canary and
+  .bootstrap == {
+    state: "transitional",
+    source_kind: "kandelo-package-registry",
+    package: "homebrew-bootstrap",
+    guest_prefix: "/home/linuxbrew/.linuxbrew",
+    stable_entrypoint: "/usr/bin/brew"
+  } and
   .bottle_mirror == {
     url: $plan_url, sha256: $plan_sha, bytes: $plan_bytes
   } and

@@ -23,6 +23,13 @@ const TITLE = "Kandelo Homebrew guest lifecycle inputs";
 const MAX_HANDOFF_BYTES = 512 * 1024 * 1024;
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const GIT_SHA_RE = /^[0-9a-f]{40}$/;
+const TRANSITIONAL_BOOTSTRAP = {
+  state: "transitional",
+  source_kind: "kandelo-package-registry",
+  package: "homebrew-bootstrap",
+  guest_prefix: "/home/linuxbrew/.linuxbrew",
+  stable_entrypoint: "/usr/bin/brew",
+} as const;
 
 const ASSETS = [
   {
@@ -91,9 +98,10 @@ export interface HomebrewGuestLifecyclePublicationIdentity {
  * Prepare a credential-free, bounded handoff for the public Chromium proof.
  *
  * The bottle mirror remains a separate release and source of truth. This
- * handoff owns only the fixed shell/bootstrap inputs that otherwise exist
- * solely as members of package archives and therefore are not direct lazy-VFS
- * URLs.
+ * handoff owns only the fixed shell/bootstrap inputs. The shell image is a
+ * package-archive member. The bootstrap ZIP and environment still come from
+ * the transitional Kandelo registry package; none is a direct lazy-VFS URL.
+ * The source spec and transitional ownership are bound beside them.
  */
 export function createHomebrewGuestLifecyclePublication(
   options: CreateHomebrewGuestLifecyclePublicationOptions,
@@ -179,6 +187,7 @@ export function createHomebrewGuestLifecyclePublication(
       tap_mirror_authority_ref: options.tapMirrorAuthorityRef,
       tap_caller_authority_ref: options.tapCallerAuthorityRef,
       canary_ref: options.canaryRef,
+      bootstrap: TRANSITIONAL_BOOTSTRAP,
       bottle_mirror: planIdentity,
       release: {
         repository: REPOSITORY,
@@ -280,6 +289,7 @@ export function verifyHomebrewGuestLifecyclePublication(
     tap_mirror_authority_ref: options.tapMirrorAuthorityRef,
     tap_caller_authority_ref: options.tapCallerAuthorityRef,
     canary_ref: options.canaryRef,
+    bootstrap: TRANSITIONAL_BOOTSTRAP,
     bottle_mirror: planIdentity,
     release: {
       repository: REPOSITORY,
@@ -337,7 +347,10 @@ function publicationManifest(
     body:
       "Immutable direct inputs for Kandelo's public Chromium stock-Homebrew " +
       `lifecycle proof. Collection SHA-256: ${identity.collectionSha256}. ` +
-      `Bottle mirror plan: ${plan.sha256}.`,
+      `Bottle mirror plan: ${plan.sha256}. The Homebrew bootstrap remains ` +
+      "the transitional Kandelo registry package at " +
+      `${TRANSITIONAL_BOOTSTRAP.guest_prefix}; ` +
+      `${TRANSITIONAL_BOOTSTRAP.stable_entrypoint} remains stable.`,
     assets,
     preferred_asset_names: assets.map((asset) => asset.name),
     accepted_existing_asset_sets: [],
@@ -358,6 +371,7 @@ function deriveIdentity(
     tap_mirror_authority_ref: refs.tapMirrorAuthorityRef,
     tap_caller_authority_ref: refs.tapCallerAuthorityRef,
     canary_ref: refs.canaryRef,
+    bootstrap: TRANSITIONAL_BOOTSTRAP,
     bottle_mirror: plan,
     assets,
   });

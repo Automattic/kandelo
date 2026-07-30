@@ -66,6 +66,20 @@ test("creates and revalidates one separate immutable lifecycle-input handoff", (
     );
     assert.equal(manifest.repository, "kandelo-dev/homebrew-tap-core");
     assert.equal(manifest.target_commitish, refs.tapCallerAuthorityRef);
+    assert.match(
+      manifest.body,
+      /transitional Kandelo registry package at \/home\/linuxbrew\/\.linuxbrew/,
+    );
+    const handoff = JSON.parse(
+      readFileSync(join(out, "handoff.json"), "utf8"),
+    );
+    assert.deepEqual(handoff.bootstrap, {
+      state: "transitional",
+      source_kind: "kandelo-package-registry",
+      package: "homebrew-bootstrap",
+      guest_prefix: "/home/linuxbrew/.linuxbrew",
+      stable_entrypoint: "/usr/bin/brew",
+    });
     assert.deepEqual(
       manifest.assets.map((asset: { name: string }) => asset.name),
       [
