@@ -191,8 +191,259 @@ impl Validator<'_> {
             self.validate_dependency_closure(package, &package_index, metadata_tap_name);
             self.validate_package(package, &metadata);
         }
+        self.validate_live_sidecar_closure(&metadata);
 
         Ok(())
+    }
+
+    fn validate_live_sidecar_closure(&mut self, metadata: &Value) {
+        let mut formula_sidecars = BTreeMap::new();
+        let mut link_manifests = BTreeMap::new();
+        let mut provenance_reports = BTreeMap::new();
+        let mut optional_provenance_reports = BTreeSet::new();
+
+        if let Some(packages) = metadata.get("packages").and_then(Value::as_array) {
+            for (package_index, package) in packages.iter().enumerate() {
+                let package_name = string_at(package, "/name").unwrap_or("<unknown>");
+                let package_owner = format!("metadata package #{package_index} {package_name:?}");
+                if let Some(path) = string_at(package, "/formula_metadata") {
+                    let expected = format!("Kandelo/formula/{package_name}.json");
+                    self.record_live_sidecar(
+                        "formula sidecar",
+                        path,
+                        &expected,
+                        &package_owner,
+                        &mut formula_sidecars,
+                    );
+                }
+
+                let Some(bottles) = package.get("bottles").and_then(Value::as_array) else {
+                    continue;
+                };
+                for (bottle_index, bottle) in bottles.iter().enumerate() {
+                    let arch = string_at(bottle, "/arch").unwrap_or("<unknown>");
+                    let bottle_owner = format!("{package_owner} bottle #{bottle_index} {arch:?}");
+                    let link_path = if string_at(bottle, "/status") == Some("success") {
+                        string_at(bottle, "/link_manifest")
+                    } else {
+                        string_at(bottle, "/fallback_link_manifest")
+                    };
+                    if let Some(path) = link_path {
+                        let expected = if string_at(bottle, "/status") == Some("success") {
+                            match (
+                                string_at(package, "/version"),
+                                u64_at(package, "/bottle_rebuild"),
+                            ) {
+                                (Some(version), Some(rebuild)) => format!(
+                                    "Kandelo/link/{package_name}-{version}-rebuild{rebuild}-{arch}.json"
+                                ),
+                                _ => path.to_string(),
+                            }
+                        } else {
+                            // A failed attempt can select the prior last-green
+                            // link, whose version or rebuild need not equal the
+                            // attempted Formula identity.
+                            path.to_string()
+                        };
+                        self.record_live_sidecar(
+                            "link manifest",
+                            path,
+                            &expected,
+                            &bottle_owner,
+                            &mut link_manifests,
+                        );
+                    }
+
+                    if string_at(bottle, "/status") == Some("success") {
+                        if let Some(path) = provenance_report_path(package, bottle) {
+                            self.record_live_sidecar(
+                                "provenance report",
+                                &path,
+                                &path,
+                                &bottle_owner,
+                                &mut provenance_reports,
+                            );
+                        }
+                    } else if let Some(path) =
+                        link_path.and_then(fallback_provenance_report_path)
+                    {
+                        self.record_live_sidecar(
+                            "fallback provenance report",
+                            &path,
+                            &path,
+                            &bottle_owner,
+                            &mut provenance_reports,
+                        );
+                        optional_provenance_reports.insert(path);
+                    }
+                }
+            }
+        }
+
+        // WHY: these three directories are the live ABI catalog. Files that
+        // are not selected by metadata can otherwise retain stale bottle or
+        // guest-layout claims after a package rebuild. Attempt and rollback
+        // reports have explicit nested namespaces and remain append-only
+        // historical evidence rather than live bottle claims.
+        self.compare_live_sidecar_directory(
+            "formula sidecar",
+            "Kandelo/formula",
+            ".json",
+            &[],
+            &BTreeSet::new(),
+            &formula_sidecars,
+        );
+        self.compare_live_sidecar_directory(
+            "link manifest",
+            "Kandelo/link",
+            ".json",
+            &[],
+            &BTreeSet::new(),
+            &link_manifests,
+        );
+        self.compare_live_sidecar_directory(
+            "provenance report",
+            "Kandelo/reports",
+            ".provenance.json",
+            &["failures", "rollbacks"],
+            &optional_provenance_reports,
+            &provenance_reports,
+        );
+    }
+
+    fn record_live_sidecar(
+        &mut self,
+        kind: &str,
+        path: &str,
+        expected_path: &str,
+        owner: &str,
+        selected: &mut BTreeMap<String, String>,
+    ) {
+        if path != expected_path {
+            self.err(format!(
+                "{owner}: {kind} path {path:?} is not its canonical identity {expected_path:?}"
+            ));
+        }
+        if let Some(previous_owner) = selected.insert(path.to_string(), owner.to_string()) {
+            self.err(format!(
+                "{kind} {path:?} is selected more than once by {previous_owner} and {owner}"
+            ));
+        }
+    }
+
+    fn compare_live_sidecar_directory(
+        &mut self,
+        kind: &str,
+        directory_rel: &str,
+        suffix: &str,
+        allowed_historical_directories: &[&str],
+        optional_selected: &BTreeSet<String>,
+        selected: &BTreeMap<String, String>,
+    ) {
+        let directory = self.options.tap_root.join(directory_rel);
+        match fs::symlink_metadata(&directory) {
+            Ok(metadata) if metadata.file_type().is_dir() => {}
+            Ok(_) => {
+                self.err(format!(
+                    "live {kind} directory {} must be a real directory",
+                    directory.display()
+                ));
+                return;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                for (path, owner) in selected {
+                    if !optional_selected.contains(path) {
+                        self.err(format!(
+                            "{owner}: selected {kind} {path:?} is missing from the tap"
+                        ));
+                    }
+                }
+                return;
+            }
+            Err(error) => {
+                self.err(format!(
+                    "cannot inspect live {kind} directory {}: {error}",
+                    directory.display()
+                ));
+                return;
+            }
+        }
+        let entries = match fs::read_dir(&directory) {
+            Ok(entries) => entries,
+            Err(error) => {
+                self.err(format!(
+                    "cannot enumerate live {kind} directory {}: {error}",
+                    directory.display()
+                ));
+                return;
+            }
+        };
+
+        let mut present = BTreeSet::new();
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    self.err(format!(
+                        "cannot enumerate an entry in live {kind} directory {}: {error}",
+                        directory.display()
+                    ));
+                    continue;
+                }
+            };
+            let Some(file_name) = entry.file_name().to_str().map(str::to_string) else {
+                self.err(format!(
+                    "live {kind} directory {} contains a non-UTF-8 name",
+                    directory.display()
+                ));
+                continue;
+            };
+            let file_type = match entry.file_type() {
+                Ok(file_type) => file_type,
+                Err(error) => {
+                    self.err(format!(
+                        "cannot inspect live {kind} entry {directory_rel}/{file_name}: {error}"
+                    ));
+                    continue;
+                }
+            };
+            if allowed_historical_directories.contains(&file_name.as_str()) {
+                if !file_type.is_dir() {
+                    self.err(format!(
+                        "historical {kind} namespace {directory_rel}/{file_name} must be a real directory"
+                    ));
+                }
+                continue;
+            }
+            if !file_name.ends_with(suffix) {
+                self.err(format!(
+                    "live {kind} directory {directory_rel:?} contains unexpected entry {file_name:?}"
+                ));
+                continue;
+            }
+            let rel = format!("{directory_rel}/{file_name}");
+            present.insert(rel.clone());
+
+            match file_type {
+                file_type if file_type.is_file() => {}
+                _ => self.err(format!(
+                    "live {kind} {rel:?} must be a regular non-symlink file"
+                )),
+            }
+            if !selected.contains_key(&rel) {
+                self.err(format!(
+                    "live {kind} {rel:?} is not selected by {DEFAULT_METADATA_REL}"
+                ));
+            }
+        }
+
+        for (path, owner) in selected {
+            if !present.contains(path) && !optional_selected.contains(path) {
+                self.err(format!(
+                    "{owner}: selected {kind} {path:?} is missing from the tap"
+                ));
+            }
+        }
     }
 
     fn validate_tap_identity(&mut self, metadata: &Value) {
@@ -497,7 +748,7 @@ impl Validator<'_> {
                 self.validate_success_link_manifest(&bottle_label, package, bottle);
                 self.validate_success_provenance_report(&bottle_label, package, bottle, metadata);
             } else {
-                self.validate_fallback_link_manifest(&bottle_label, bottle);
+                self.validate_fallback_link_manifest(&bottle_label, package, bottle);
             }
         }
 
@@ -593,9 +844,33 @@ impl Validator<'_> {
     }
 
     fn validate_success_link_manifest(&mut self, label: &str, package: &Value, bottle: &Value) {
-        let link = match self.load_tap_json(label, string_at(bottle, "/link_manifest")) {
+        self.validate_selected_link_manifest(
+            label,
+            package,
+            bottle,
+            string_at(bottle, "/link_manifest"),
+            true,
+            [
+                ("/bottle/url", "/url"),
+                ("/bottle/sha256", "/sha256"),
+                ("/bottle/bytes", "/bytes"),
+                ("/bottle/cache_key_sha", "/cache_key_sha"),
+            ],
+        );
+    }
+
+    fn validate_selected_link_manifest(
+        &mut self,
+        label: &str,
+        package: &Value,
+        bottle: &Value,
+        path: Option<&str>,
+        require_current_formula_identity: bool,
+        bottle_fields: [(&str, &str); 4],
+    ) -> Option<Value> {
+        let link = match self.load_tap_json(label, path) {
             Some(value) => value,
-            None => return,
+            None => return None,
         };
         self.report.link_manifests += 1;
         let schema_errors = collect_schema_errors(&self.schemas.link_manifest, &link);
@@ -603,7 +878,6 @@ impl Validator<'_> {
 
         for (link_ptr, bottle_ptr) in [
             ("/package", "/name"),
-            ("/version", "/version"),
             ("/arch", "/arch"),
             ("/kandelo_abi", "/kandelo_abi"),
             ("/prefix", "/prefix"),
@@ -620,13 +894,29 @@ impl Validator<'_> {
                 ));
             }
         }
+        if require_current_formula_identity
+            && link.pointer("/version") != package.pointer("/version")
+        {
+            self.err(format!(
+                "{label}: link manifest /version does not match metadata /version"
+            ));
+        }
+        if let Some(path) = path {
+            match parse_link_manifest_rebuild(path, &link) {
+                Ok(rebuild)
+                    if require_current_formula_identity
+                        && Some(rebuild) != u64_at(package, "/bottle_rebuild") =>
+                {
+                    self.err(format!(
+                        "{label}: link manifest path rebuild {rebuild} does not match metadata bottle_rebuild"
+                    ));
+                }
+                Ok(_) => {}
+                Err(error) => self.err(format!("{label}: {error}")),
+            }
+        }
 
-        for (link_ptr, bottle_ptr) in [
-            ("/bottle/url", "/url"),
-            ("/bottle/sha256", "/sha256"),
-            ("/bottle/bytes", "/bytes"),
-            ("/bottle/cache_key_sha", "/cache_key_sha"),
-        ] {
+        for (link_ptr, bottle_ptr) in bottle_fields {
             if link.pointer(link_ptr) != bottle.pointer(bottle_ptr) {
                 self.err(format!(
                     "{label}: link manifest {link_ptr} does not match metadata {bottle_ptr}"
@@ -637,6 +927,7 @@ impl Validator<'_> {
         self.validate_guest_paths(label, &link);
         self.validate_links(label, &link);
         self.validate_receipts(label, &link);
+        Some(link)
     }
 
     fn validate_success_provenance_report(
@@ -728,6 +1019,114 @@ impl Validator<'_> {
         ] {
             self.validate_metadata_hash(label, &provenance, metadata_ptr, &rel);
         }
+    }
+
+    fn validate_fallback_provenance_report(
+        &mut self,
+        label: &str,
+        package: &Value,
+        bottle: &Value,
+        link: &Value,
+        path: &str,
+    ) {
+        let Some(resolved) = self.resolve_tap_path(label, path) else {
+            return;
+        };
+        match fs::symlink_metadata(&resolved) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+            Err(error) => {
+                self.err(format!(
+                    "{label}: cannot inspect fallback provenance report {path:?}: {error}"
+                ));
+                return;
+            }
+            Ok(_) => {}
+        }
+        let Some(provenance) = self.load_tap_json(label, Some(path)) else {
+            return;
+        };
+        self.report.provenance_reports += 1;
+        let schema_errors = collect_schema_errors(&self.schemas.provenance, &provenance);
+        self.add_schema_errors(label, schema_errors);
+        self.validate_runtime_evidence(label, bottle, &provenance);
+
+        let fallback_link_path = string_at(bottle, "/fallback_link_manifest").unwrap_or("");
+        let rebuild = parse_link_manifest_rebuild(fallback_link_path, link).ok();
+        for (provenance_ptr, link_ptr) in [
+            ("/subject/package", "/package"),
+            ("/subject/version", "/version"),
+            ("/subject/arch", "/arch"),
+            ("/subject/kandelo_abi", "/kandelo_abi"),
+            ("/bottle/cellar", "/cellar"),
+            ("/bottle/prefix", "/prefix"),
+        ] {
+            if provenance.pointer(provenance_ptr) != link.pointer(link_ptr) {
+                self.err(format!(
+                    "{label}: fallback provenance {provenance_ptr} does not match link manifest {link_ptr}"
+                ));
+            }
+        }
+        if provenance
+            .pointer("/subject/bottle_rebuild")
+            .and_then(Value::as_u64)
+            != rebuild
+        {
+            self.err(format!(
+                "{label}: fallback provenance /subject/bottle_rebuild does not match its link manifest path"
+            ));
+        }
+        for (provenance_ptr, bottle_ptr) in [
+            ("/bottle/url", "/fallback_url"),
+            ("/bottle/sha256", "/fallback_sha256"),
+            ("/bottle/bytes", "/fallback_bytes"),
+            ("/bottle/cache_key_sha", "/fallback_cache_key_sha"),
+            ("/bottle/bottle_tag", "/bottle_tag"),
+        ] {
+            if provenance.pointer(provenance_ptr) != bottle.pointer(bottle_ptr) {
+                self.err(format!(
+                    "{label}: fallback provenance {provenance_ptr} does not match metadata {bottle_ptr}"
+                ));
+            }
+        }
+        if provenance.pointer("/formula/path") != package.pointer("/formula_path") {
+            self.err(format!(
+                "{label}: fallback provenance /formula/path does not match package /formula_path"
+            ));
+        }
+        for (provenance_ptr, bottle_ptr) in [
+            (
+                "/repositories/kandelo_repository",
+                "/built_from/kandelo_repository",
+            ),
+            (
+                "/repositories/tap_repository",
+                "/built_from/tap_repository",
+            ),
+        ] {
+            if provenance.pointer(provenance_ptr) != bottle.pointer(bottle_ptr) {
+                self.err(format!(
+                    "{label}: fallback provenance {provenance_ptr} does not match metadata {bottle_ptr}"
+                ));
+            }
+        }
+        // WHY: this report describes the prior live tap snapshot. Its
+        // metadata/formula hashes must not equal files rewritten by the
+        // failed attempt, and rewriting them would destroy historical
+        // evidence. Bind the retained report to its own normalized hash, its
+        // unchanged link bytes, and every fallback bottle identity that
+        // current metadata still carries.
+        self.validate_metadata_hash(
+            label,
+            &provenance,
+            "/metadata/link_manifest_json",
+            fallback_link_path,
+        );
+        self.validate_metadata_hash(
+            label,
+            &provenance,
+            "/metadata/provenance_json",
+            path,
+        );
     }
 
     fn validate_runtime_evidence(&mut self, label: &str, bottle: &Value, provenance: &Value) {
@@ -847,17 +1246,31 @@ impl Validator<'_> {
         }
     }
 
-    fn validate_fallback_link_manifest(&mut self, label: &str, bottle: &Value) {
-        let Some(rel) = string_at(bottle, "/fallback_link_manifest") else {
+    fn validate_fallback_link_manifest(&mut self, label: &str, package: &Value, bottle: &Value) {
+        let path = string_at(bottle, "/fallback_link_manifest");
+        let Some(link) = self.validate_selected_link_manifest(
+            label,
+            package,
+            bottle,
+            path,
+            false,
+            [
+                ("/bottle/url", "/fallback_url"),
+                ("/bottle/sha256", "/fallback_sha256"),
+                ("/bottle/bytes", "/fallback_bytes"),
+                ("/bottle/cache_key_sha", "/fallback_cache_key_sha"),
+            ],
+        ) else {
             return;
         };
-        let Some(path) = self.resolve_tap_path(label, rel) else {
-            return;
-        };
-        if !path.is_file() {
-            self.err(format!(
-                "{label}: fallback_link_manifest {rel:?} does not exist"
-            ));
+        if let Some(provenance_path) = path.and_then(fallback_provenance_report_path) {
+            self.validate_fallback_provenance_report(
+                label,
+                package,
+                bottle,
+                &link,
+                &provenance_path,
+            );
         }
     }
 
@@ -1145,6 +1558,41 @@ fn provenance_report_path(package: &Value, bottle: &Value) -> Option<String> {
         u64_at(package, "/bottle_rebuild")?,
         string_at(bottle, "/arch")?
     ))
+}
+
+fn fallback_provenance_report_path(link_manifest: &str) -> Option<String> {
+    let stem = link_manifest
+        .strip_prefix("Kandelo/link/")?
+        .strip_suffix(".json")?;
+    Some(format!("Kandelo/reports/{stem}.provenance.json"))
+}
+
+fn parse_link_manifest_rebuild(path: &str, link: &Value) -> Result<u64, String> {
+    let package = string_at(link, "/package")
+        .ok_or_else(|| "link manifest has no package identity".to_string())?;
+    let version = string_at(link, "/version")
+        .ok_or_else(|| "link manifest has no version identity".to_string())?;
+    let arch = string_at(link, "/arch")
+        .ok_or_else(|| "link manifest has no architecture identity".to_string())?;
+    let prefix = format!("Kandelo/link/{package}-{version}-rebuild");
+    let suffix = format!("-{arch}.json");
+    let rebuild_text = path
+        .strip_prefix(&prefix)
+        .and_then(|value| value.strip_suffix(&suffix))
+        .ok_or_else(|| {
+            format!(
+                "link manifest path {path:?} does not match its package, version, and architecture"
+            )
+        })?;
+    let rebuild = rebuild_text
+        .parse::<u64>()
+        .map_err(|_| format!("link manifest path {path:?} has an invalid rebuild"))?;
+    if rebuild.to_string() != rebuild_text {
+        return Err(format!(
+            "link manifest path {path:?} has a noncanonical rebuild"
+        ));
+    }
+    Ok(rebuild)
 }
 
 fn parse_release_abi(tag: Option<&str>) -> Option<u64> {
@@ -1458,6 +1906,40 @@ mod tests {
             .push(outcome);
     }
 
+    fn fixture_provenance_path(fixture: &Fixture) -> PathBuf {
+        fixture
+            .tap_root
+            .join("Kandelo/reports/what-15.0.0-rebuild0-wasm32.provenance.json")
+    }
+
+    fn make_failed_with_fallback(fixture: &mut Fixture) {
+        let success = fixture.metadata["packages"][0]["bottles"][0].clone();
+        let fallback = json!({
+            "arch": success["arch"].clone(),
+            "bottle_tag": success["bottle_tag"].clone(),
+            "kandelo_abi": success["kandelo_abi"].clone(),
+            "cellar": success["cellar"].clone(),
+            "prefix": success["prefix"].clone(),
+            "runtime_support": success["runtime_support"].clone(),
+            "browser_compatible": success["browser_compatible"].clone(),
+            "fork_instrumentation": success["fork_instrumentation"].clone(),
+            "status": "failed",
+            "built_by": success["built_by"].clone(),
+            "built_from": success["built_from"].clone(),
+            "error": "build failed",
+            "last_attempt": "2026-06-28T00:00:00Z",
+            "last_attempt_by": "https://example.invalid/actions/runs/43",
+            "fallback_url": success["url"].clone(),
+            "fallback_sha256": success["sha256"].clone(),
+            "fallback_bytes": success["bytes"].clone(),
+            "fallback_cache_key_sha": success["cache_key_sha"].clone(),
+            "fallback_link_manifest": success["link_manifest"].clone(),
+            "fallback_built_at": "2026-06-27T00:00:00Z",
+        });
+        fixture.metadata["packages"][0]["bottles"][0] = fallback.clone();
+        fixture.formula["bottles"][0] = fallback;
+    }
+
     #[test]
     fn validates_live_tap_fixture() {
         let fixture = Fixture::new();
@@ -1480,6 +1962,323 @@ mod tests {
         fixture.write();
         let report = fixture.validate_with_campaign_layout(Some(digest));
         assert_eq!(report.errors, Vec::<String>::new());
+    }
+
+    #[test]
+    fn rejects_every_unselected_live_sidecar_kind() {
+        for (kind, rel) in [
+            ("formula sidecar", "Kandelo/formula/orphan.json"),
+            (
+                "link manifest",
+                "Kandelo/link/orphan-1.0-rebuild0-wasm32.json",
+            ),
+            (
+                "provenance report",
+                "Kandelo/reports/orphan-1.0-rebuild0-wasm32.provenance.json",
+            ),
+        ] {
+            let fixture = Fixture::new();
+            write_json(&fixture.tap_root.join(rel), &json!({ "orphan": true }));
+
+            let report = fixture.validate();
+            assert!(
+                report
+                    .errors
+                    .join("\n")
+                    .contains(&format!("live {kind} {rel:?} is not selected")),
+                "{kind} produced unexpected validation errors: {:#?}",
+                report.errors,
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_wrong_extension_files_and_unexpected_directories_in_live_catalogs() {
+        for (kind, rel) in [
+            ("formula sidecar", "Kandelo/formula/README.md"),
+            ("link manifest", "Kandelo/link/stale.txt"),
+            ("provenance report", "Kandelo/reports/stale.json"),
+            ("formula sidecar", "Kandelo/formula/archive"),
+            ("link manifest", "Kandelo/link/archive"),
+            ("provenance report", "Kandelo/reports/archive"),
+        ] {
+            let fixture = Fixture::new();
+            let path = fixture.tap_root.join(rel);
+            if rel.ends_with("archive") {
+                fs::create_dir(&path).unwrap();
+            } else {
+                write_text(&path, "not a live sidecar\n");
+            }
+
+            let report = fixture.validate();
+            assert!(
+                report
+                    .errors
+                    .join("\n")
+                    .contains(&format!("live {kind} directory")),
+                "{rel} produced unexpected validation errors: {:#?}",
+                report.errors,
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_a_sidecar_symlink_even_when_its_target_is_regular() {
+        use std::os::unix::fs::symlink;
+
+        let fixture = Fixture::new();
+        let target = fixture.tap_root.join("orphan-target.json");
+        write_json(&target, &json!({ "orphan": true }));
+        symlink(
+            &target,
+            fixture.tap_root.join("Kandelo/formula/symlink.json"),
+        )
+        .unwrap();
+
+        let report = fixture.validate();
+        assert!(
+            report
+                .errors
+                .join("\n")
+                .contains("must be a regular non-symlink file"),
+            "unexpected validation errors: {:#?}",
+            report.errors,
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_symlinked_live_and_historical_directory_roots() {
+        use std::os::unix::fs::symlink;
+
+        let formula_fixture = Fixture::new();
+        let formula_directory = formula_fixture.tap_root.join("Kandelo/formula");
+        let moved_formula_directory = formula_fixture.tap_root.join("moved-formula");
+        fs::rename(&formula_directory, &moved_formula_directory).unwrap();
+        symlink(&moved_formula_directory, &formula_directory).unwrap();
+        let formula_errors = formula_fixture.validate().errors.join("\n");
+        assert!(
+            formula_errors.contains("live formula sidecar directory")
+                && formula_errors.contains("must be a real directory"),
+            "{formula_errors}"
+        );
+
+        let historical_fixture = Fixture::new();
+        let historical_target = historical_fixture.tap_root.join("historical-target");
+        fs::create_dir(&historical_target).unwrap();
+        symlink(
+            &historical_target,
+            historical_fixture
+                .tap_root
+                .join("Kandelo/reports/failures"),
+        )
+        .unwrap();
+        let historical_errors = historical_fixture.validate().errors.join("\n");
+        assert!(
+            historical_errors.contains(
+                "historical provenance report namespace Kandelo/reports/failures must be a real directory"
+            ),
+            "{historical_errors}"
+        );
+    }
+
+    #[test]
+    fn rejects_every_missing_selected_live_sidecar_kind() {
+        for (kind, rel) in [
+            ("formula sidecar", "Kandelo/formula/what.json"),
+            (
+                "link manifest",
+                "Kandelo/link/what-15.0.0-rebuild0-wasm32.json",
+            ),
+            (
+                "provenance report",
+                "Kandelo/reports/what-15.0.0-rebuild0-wasm32.provenance.json",
+            ),
+        ] {
+            let fixture = Fixture::new();
+            fs::remove_file(fixture.tap_root.join(rel)).unwrap();
+
+            let report = fixture.validate();
+            assert!(
+                report
+                    .errors
+                    .join("\n")
+                    .contains(&format!("selected {kind} {rel:?} is missing")),
+                "{kind} produced unexpected validation errors: {:#?}",
+                report.errors,
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_noncanonical_formula_and_link_sidecar_identities() {
+        for (kind, pointer, replacement) in [
+            (
+                "formula sidecar",
+                "/packages/0/formula_metadata",
+                "Kandelo/formula/other.json",
+            ),
+            (
+                "link manifest",
+                "/packages/0/bottles/0/link_manifest",
+                "Kandelo/link/other.json",
+            ),
+        ] {
+            let mut fixture = Fixture::new();
+            set(&mut fixture.metadata, pointer, json!(replacement));
+            if kind == "formula sidecar" {
+                write_json(&fixture.tap_root.join(replacement), &fixture.formula);
+            } else {
+                set(
+                    &mut fixture.formula,
+                    "/bottles/0/link_manifest",
+                    json!(replacement),
+                );
+                write_json(&fixture.tap_root.join(replacement), &fixture.link);
+            }
+            fixture.write();
+
+            let report = fixture.validate();
+            assert!(
+                report.errors.join("\n").contains(&format!(
+                    "{kind} path {replacement:?} is not its canonical identity"
+                )),
+                "{kind} produced unexpected validation errors: {:#?}",
+                report.errors,
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_formula_link_and_provenance_ownership() {
+        let mut formula_fixture = Fixture::new();
+        let mut second_package = formula_fixture.metadata["packages"][0].clone();
+        second_package["name"] = json!("other");
+        second_package["full_name"] = json!("kandelo-dev/tap-core/other");
+        formula_fixture.metadata["packages"]
+            .as_array_mut()
+            .unwrap()
+            .push(second_package);
+        formula_fixture.write();
+        let formula_errors = formula_fixture.validate().errors.join("\n");
+        assert!(
+            formula_errors.contains(
+                "formula sidecar \"Kandelo/formula/what.json\" is selected more than once"
+            ),
+            "{formula_errors}"
+        );
+
+        let mut link_fixture = Fixture::new();
+        let mut second_bottle = link_fixture.metadata["packages"][0]["bottles"][0].clone();
+        second_bottle["arch"] = json!("wasm64");
+        second_bottle["bottle_tag"] = json!("wasm64_kandelo");
+        link_fixture.metadata["packages"][0]["bottles"]
+            .as_array_mut()
+            .unwrap()
+            .push(second_bottle.clone());
+        link_fixture.formula["bottles"]
+            .as_array_mut()
+            .unwrap()
+            .push(second_bottle);
+        link_fixture.write();
+        let link_errors = link_fixture.validate().errors.join("\n");
+        assert!(
+            link_errors.contains(
+                "link manifest \"Kandelo/link/what-15.0.0-rebuild0-wasm32.json\" is selected more than once"
+            ),
+            "{link_errors}"
+        );
+
+        let mut provenance_fixture = Fixture::new();
+        let duplicate = provenance_fixture.metadata["packages"][0]["bottles"][0].clone();
+        provenance_fixture.metadata["packages"][0]["bottles"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate.clone());
+        provenance_fixture.formula["bottles"]
+            .as_array_mut()
+            .unwrap()
+            .push(duplicate);
+        provenance_fixture.write();
+        let provenance_errors = provenance_fixture.validate().errors.join("\n");
+        assert!(
+            provenance_errors.contains(
+                "provenance report \"Kandelo/reports/what-15.0.0-rebuild0-wasm32.provenance.json\" is selected more than once"
+            ),
+            "{provenance_errors}"
+        );
+    }
+
+    #[test]
+    fn permits_explicit_historical_reports_outside_the_live_catalog() {
+        for namespace in ["failures", "rollbacks"] {
+            let fixture = Fixture::new();
+            write_json(
+                &fixture
+                    .tap_root
+                    .join(format!("Kandelo/reports/{namespace}/old-prefix.json")),
+                &json!({
+                    "status": namespace,
+                    "historical_prefix": "/opt/retired/homebrew",
+                }),
+            );
+
+            let report = fixture.validate();
+            assert_eq!(
+                report.errors,
+                Vec::<String>::new(),
+                "historical namespace {namespace} was rejected"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_stale_guest_paths_in_a_selected_fallback_manifest() {
+        let mut fixture = Fixture::new();
+        make_failed_with_fallback(&mut fixture);
+        fixture.link["prefix"] = json!("/opt/other-system/homebrew");
+        fixture.link["cellar"] = json!("/opt/other-system/homebrew/Cellar");
+        fixture.link["keg"] = json!("/opt/other-system/homebrew/Cellar/what/15.0.0");
+        fixture.write();
+
+        let report = fixture.validate();
+        let errors = report.errors.join("\n");
+        assert!(
+            errors.contains("link manifest /prefix does not match metadata /prefix"),
+            "{errors}"
+        );
+        assert!(
+            errors.contains("link manifest /cellar does not match metadata /cellar"),
+            "{errors}"
+        );
+    }
+
+    #[test]
+    fn accepts_a_prior_rebuild_fallback_and_its_root_provenance() {
+        let mut fixture = Fixture::new();
+        let prior_provenance = fs::read(fixture_provenance_path(&fixture)).unwrap();
+        make_failed_with_fallback(&mut fixture);
+        fixture.metadata["packages"][0]["bottle_rebuild"] = json!(1);
+        fixture.formula["bottle_rebuild"] = json!(1);
+
+        let formula_path = fixture.tap_root.join("Formula/what.rb");
+        let formula_source = fs::read_to_string(&formula_path).unwrap().replace(
+            "    sha256 cellar:",
+            "    rebuild 1\n    sha256 cellar:",
+        );
+        write_text(&formula_path, &formula_source);
+        let formula_sha = sha256_file(&formula_path).unwrap();
+        fixture.metadata["packages"][0]["bottles"][0]["built_from"]["formula_sha256"] =
+            json!(formula_sha.clone());
+        fixture.formula["bottles"][0]["built_from"]["formula_sha256"] = json!(formula_sha);
+        fixture.write();
+        fs::write(fixture_provenance_path(&fixture), prior_provenance).unwrap();
+
+        let report = fixture.validate();
+        assert_eq!(report.errors, Vec::<String>::new());
+        assert_eq!(report.link_manifests, 1);
+        assert_eq!(report.provenance_reports, 1);
     }
 
     #[test]

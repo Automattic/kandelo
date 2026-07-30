@@ -2100,14 +2100,56 @@ make_publish_dependency_provenance() {
     }' >"$output"
 }
 
+write_publish_dependency_link_manifest() {
+  local output="$1" name="$2" version="$3" arch="$4" sha256="$5"
+  # WHY: failed publications retain the prior successful link manifest as
+  # live package authority. A placeholder file would make the dependency
+  # fixture claim a usable fallback while omitting the pour contract that
+  # actually makes that fallback usable.
+  jq -nS \
+    --arg name "$name" \
+    --arg version "$version" \
+    --arg arch "$arch" \
+    --arg sha256 "$sha256" \
+    '{
+      schema: 1,
+      package: $name,
+      version: $version,
+      arch: $arch,
+      kandelo_abi: 18,
+      prefix: "/home/linuxbrew/.linuxbrew",
+      cellar: "/home/linuxbrew/.linuxbrew/Cellar",
+      keg: ("/home/linuxbrew/.linuxbrew/Cellar/" + $name + "/" + $version),
+      bottle: {
+        url: (
+          "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/" +
+          $name + "/blobs/sha256:" + $sha256
+        ),
+        sha256: $sha256,
+        bytes: 123,
+        cache_key_sha: $sha256,
+        payload_root: ($name + "/" + $version)
+      },
+      links: [],
+      receipts: [(".brew/" + $name + ".rb"), "INSTALL_RECEIPT.json"],
+      env: {PATH_prepend: ["bin"]}
+    }' >"$output"
+}
+
 seed_publish_dependency_sidecars() {
   local tap_root="$1" metadata="$tap_root/Kandelo/metadata.json"
   local xz_formula_sha zlib_formula_sha
   xz_formula_sha="$(sha256sum "$tap_root/Formula/xz.rb" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$tap_root/Formula/xz.rb" | awk '{print $1}')"
   zlib_formula_sha="$(sha256sum "$tap_root/Formula/zlib.rb" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$tap_root/Formula/zlib.rb" | awk '{print $1}')"
   mkdir -p "$tap_root/Kandelo/formula" "$tap_root/Kandelo/link"
-  printf '{}\n' >"$tap_root/Kandelo/link/xz-5.6.2-rebuild0-wasm32.json"
-  printf '{}\n' >"$tap_root/Kandelo/link/zlib-1.3.1-rebuild0-wasm32.json"
+  write_publish_dependency_link_manifest \
+    "$tap_root/Kandelo/link/xz-5.6.2-rebuild0-wasm32.json" \
+    xz 5.6.2 wasm32 \
+    2222222222222222222222222222222222222222222222222222222222222222
+  write_publish_dependency_link_manifest \
+    "$tap_root/Kandelo/link/zlib-1.3.1-rebuild0-wasm32.json" \
+    zlib 1.3.1 wasm32 \
+    1111111111111111111111111111111111111111111111111111111111111111
   jq -nS \
     --arg xz_formula_sha "$xz_formula_sha" --arg zlib_formula_sha "$zlib_formula_sha" '
       def bottle($name; $sha; $formula_sha; $link): {
@@ -2426,7 +2468,10 @@ add_publish_dependency_sibling_bottle() {
     preserve \
     "$updated"
   mv "$updated" "$formula"
-  printf '{}\n' >"$tap_root/Kandelo/link/zlib-1.3.1-rebuild0-wasm64.json"
+  write_publish_dependency_link_manifest \
+    "$tap_root/Kandelo/link/zlib-1.3.1-rebuild0-wasm64.json" \
+    zlib 1.3.1 wasm64 \
+    3333333333333333333333333333333333333333333333333333333333333333
   jq -S '
     (.packages[] | select(.name == "zlib").bottles) += [
       (.packages[] | select(.name == "zlib").bottles[0] |
