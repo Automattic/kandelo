@@ -560,6 +560,50 @@ def canonical_real_file(
     return path
 
 
+def host_projection_metadata(
+    path: Path, metadata: os.stat_result
+) -> str:
+    """Render bounded host metadata needed to diagnose a rejected projection."""
+    file_type = stat.S_IFMT(metadata.st_mode)
+    type_name = {
+        stat.S_IFBLK: "block-device",
+        stat.S_IFCHR: "character-device",
+        stat.S_IFDIR: "directory",
+        stat.S_IFIFO: "fifo",
+        stat.S_IFLNK: "symlink",
+        stat.S_IFREG: "regular-file",
+        stat.S_IFSOCK: "socket",
+    }.get(file_type, "unknown")
+    return (
+        f"path={path} uid={metadata.st_uid} gid={metadata.st_gid} "
+        f"mode={stat.S_IMODE(metadata.st_mode):04o} type={type_name}"
+    )
+
+
+def validate_host_projection_metadata(
+    path: Path,
+    metadata: os.stat_result,
+    *,
+    label: str,
+    directory: bool,
+) -> None:
+    """Require one root-owned, non-writable conventional host projection."""
+    expected_type = stat.S_ISDIR if directory else stat.S_ISREG
+    if (
+        not path.is_absolute()
+        or not expected_type(metadata.st_mode)
+        or metadata.st_uid != 0
+        or metadata.st_gid != 0
+        or stat.S_IMODE(metadata.st_mode) & 0o022
+    ):
+        expected_name = "directory" if directory else "regular-file"
+        fail(
+            f"{label} has unsafe ownership, mode, or type "
+            f"({host_projection_metadata(path, metadata)}; "
+            f"expected=absolute-root:root-{expected_name}-not-group/other-writable)"
+        )
+
+
 def canonical_host_projection_source(
     value: Path, *, label: str, directory: bool
 ) -> Path:
@@ -569,15 +613,9 @@ def canonical_host_projection_source(
         metadata = resolved.lstat()
     except OSError as error:
         fail(f"{label} is unavailable: {error}")
-    expected_type = stat.S_ISDIR if directory else stat.S_ISREG
-    if (
-        not resolved.is_absolute()
-        or not expected_type(metadata.st_mode)
-        or metadata.st_uid != 0
-        or metadata.st_gid != 0
-        or stat.S_IMODE(metadata.st_mode) & 0o022
-    ):
-        fail(f"{label} has unsafe ownership, mode, or type")
+    validate_host_projection_metadata(
+        resolved, metadata, label=label, directory=directory
+    )
     for ancestor in resolved.parents:
         ancestor_metadata = ancestor.lstat()
         ancestor_mode = stat.S_IMODE(ancestor_metadata.st_mode)
@@ -592,7 +630,10 @@ def canonical_host_projection_source(
             or ancestor_metadata.st_gid != 0
             or (ancestor_mode & 0o022 and not sticky_root)
         ):
-            fail(f"{label} has replaceable host ancestry")
+            fail(
+                f"{label} has replaceable host ancestry "
+                f"({host_projection_metadata(ancestor, ancestor_metadata)})"
+            )
     return resolved
 
 

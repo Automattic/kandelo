@@ -192,6 +192,33 @@ class ProtocolTests(unittest.TestCase):
             ):
                 runner.normalize_config_paths(preseeded)
 
+    def test_host_projection_rejection_reports_exact_metadata(self) -> None:
+        safe = os.stat_result(
+            (stat.S_IFDIR | 0o755, 1, 1, 1, 0, 0, 0, 0, 0, 0)
+        )
+        runner.validate_host_projection_metadata(
+            Path("/usr"), safe, label="host runtime /usr", directory=True
+        )
+
+        unsafe = os.stat_result(
+            (stat.S_IFDIR | 0o775, 1, 1, 1, 0, 1001, 0, 0, 0, 0)
+        )
+        with self.assertRaisesRegex(
+            runner.RunnerError,
+            (
+                r"host runtime /usr has unsafe ownership, mode, or type "
+                r"\(path=/usr uid=0 gid=1001 mode=0775 type=directory; "
+                r"expected=absolute-root:root-directory-"
+                r"not-group/other-writable\)"
+            ),
+        ):
+            runner.validate_host_projection_metadata(
+                Path("/usr"),
+                unsafe,
+                label="host runtime /usr",
+                directory=True,
+            )
+
     def test_sdk_config_site_is_derived_from_the_sealed_platform_root(
         self,
     ) -> None:

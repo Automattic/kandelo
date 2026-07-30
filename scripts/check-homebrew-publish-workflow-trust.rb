@@ -17,6 +17,26 @@ MAINTENANCE_PATH = File.join(REPO_ROOT, ".github/workflows/reusable-homebrew-bot
 REPOSITORY_CANARY_PATH = File.join(
   REPO_ROOT, ".github/workflows/reusable-homebrew-repository-namespace-canary.yml"
 )
+WORKFLOW_ROOT = File.join(REPO_ROOT, ".github/workflows")
+HOST_RUNTIME_PREPARER_PATH = File.join(
+  REPO_ROOT, "scripts/prepare-homebrew-recipe-host-runtime.py"
+)
+HOST_RUNTIME_PREPARATION_STEP = "Seal conventional host runtime ownership"
+PRIVILEGED_RECIPE_ENTRYPOINTS = %w[
+  scripts/homebrew-bottle-build.sh
+  scripts/homebrew-verify-poured-bottle.sh
+  scripts/test-homebrew-publish-workflow.sh
+].freeze
+PRIVILEGED_RECIPE_JOBS = {
+  ".github/workflows/reusable-homebrew-bottle-publish.yml:build-and-test" =>
+    "/usr/bin/python3 kandelo/scripts/" \
+      "prepare-homebrew-recipe-host-runtime.py",
+  ".github/workflows/reusable-homebrew-bottle-publish.yml:verify-bottle" =>
+    "/usr/bin/python3 kandelo/scripts/" \
+      "prepare-homebrew-recipe-host-runtime.py",
+  ".github/workflows/staging-build.yml:preflight" =>
+    "/usr/bin/python3 scripts/prepare-homebrew-recipe-host-runtime.py",
+}.freeze
 ROOTFS_PUBLICATION_SELECTION_PATH = File.join(
   REPO_ROOT, "scripts/homebrew-rootfs-publication-selection.sh"
 )
@@ -44,10 +64,10 @@ NATIVE_CA_PROOF_RUN_SHA256 =
 NATIVE_CA_VALIDATION_RUN_SHA256 =
   "03a44f5ed33df47783fe971de60d0b2fe08b73ef642af12298a863642bd598aa"
 PUBLISHER_PLAN_DIGEST = "59a72fdf1dbe3b115208e760d9b28869dcf98e293b4a8b555d4a8b557c58d1c4"
-PUBLISHER_BUILD_DIGEST = "ee65f4dcaf4aeed75847b5cce36d345508c11855b8816fc8412f5e8430f58fcf"
+PUBLISHER_BUILD_DIGEST = "8bf93b5fe4504755b8272e0264c9fbbc5d958941a803521e02fe41224a6595dc"
 PUBLISHER_UPLOAD_DIGEST = "a44f8b7b2eb1d4b9436496cc9a099b80fb70be52143820e77fb7196e807d302f"
 PUBLISHER_INDEX_DIGEST = "7b05a7e4b076628ab999f9edb2e39a6641c4bb9a2563afcf19be15a119566bbe"
-PUBLISHER_VERIFY_DIGEST = "c7c42b46bcbdd3b5b69a6027ed08e7d45e3d8776eace5c1258ef4d612ec7990a"
+PUBLISHER_VERIFY_DIGEST = "46842c0bcd3f76ede5a7cbf8cd6e2c5d1679432e0a60e9483426da18f02f3b05"
 PUBLISHER_FINALIZE_DIGEST = "b17e7bf5d0a5ef512e49f74c224a94958642dfdd80a27439f2a0335816a0886b"
 PUBLISHER_VFS_RELEASE_DIGEST = "2db9ec075edf382e326066d5f49a32947f5a584fce26a966fb9fff23bbbe3c26"
 MAINTENANCE_VALIDATE_DIGEST = "30ebccd5d44e004e37f168e81284d7ceb18accfa067c05248c1cc19398a7515f"
@@ -129,6 +149,57 @@ def named_step(steps, name)
   matches = steps.select { |step| step["name"] == name }
   check(matches.length == 1, "expected exactly one #{name.inspect} step")
   matches.first
+end
+
+def load_all_workflows
+  Dir.glob(File.join(WORKFLOW_ROOT, "*.{yml,yaml}")).sort.to_h do |path|
+    relative = path.delete_prefix("#{REPO_ROOT}/")
+    [relative, load_workflow(path)]
+  end
+end
+
+def check_privileged_recipe_host_runtime(workflows)
+  actual = {}
+  workflows.each do |path, workflow|
+    workflow_jobs(workflow).each do |job_name, job|
+      next unless job.is_a?(Hash) && job["steps"].is_a?(Array)
+
+      steps = job_steps(job, "#{path}:#{job_name}")
+      privileged_indices = steps.each_index.select do |index|
+        source = steps.fetch(index).fetch("run", "")
+        PRIVILEGED_RECIPE_ENTRYPOINTS.any? do |entrypoint|
+          source.include?(entrypoint)
+        end
+      end
+      next if privileged_indices.empty?
+
+      actual["#{path}:#{job_name}"] = [steps, privileged_indices]
+    end
+  end
+
+  check(
+    actual.keys.sort == PRIVILEGED_RECIPE_JOBS.keys.sort,
+    "privileged recipe job set changed: expected " \
+      "#{PRIVILEGED_RECIPE_JOBS.keys.sort.inspect}, got #{actual.keys.sort.inspect}"
+  )
+  actual.each do |label, (steps, privileged_indices)|
+    expected_command = PRIVILEGED_RECIPE_JOBS.fetch(label)
+    preparation_indices = steps.each_index.select do |index|
+      step = steps.fetch(index)
+      step["name"] == HOST_RUNTIME_PREPARATION_STEP &&
+        step["run"] == expected_command &&
+        !step.key?("if") &&
+        !step.key?("continue-on-error")
+    end
+    check(
+      preparation_indices.length == 1,
+      "#{label} must run the exact host-runtime preparation once"
+    )
+    check(
+      preparation_indices.first < privileged_indices.min,
+      "#{label} enters privileged recipe execution before sealing /usr"
+    )
+  end
 end
 
 def caller_validation_result(source, overrides = {})
@@ -1109,6 +1180,35 @@ def check_publisher(workflow)
   check(
     (File.stat(ROOTFS_PUBLICATION_SELECTION_PATH).mode & 0o111).positive?,
     "rootfs publication selection is not executable"
+  )
+  check(
+    File.file?(HOST_RUNTIME_PREPARER_PATH) &&
+      !File.symlink?(HOST_RUNTIME_PREPARER_PATH) &&
+      (File.stat(HOST_RUNTIME_PREPARER_PATH).mode & 0o111).positive?,
+    "host-runtime preparer must be one executable regular file"
+  )
+  host_runtime_preparer = File.read(HOST_RUNTIME_PREPARER_PATH)
+  [
+    'RUNTIME_ROOT = Path("/usr")',
+    "identity.mode != 0o755",
+    "identity.uid == 0 and identity.gid == 0",
+    "identity.uid == runner_uid",
+    "identity.gid == runner_gid",
+    '"--no-dereference"',
+    'f"--from={runner_uid}:{runner_gid}"',
+    "if (after.device, after.inode) != (before.device, before.inode):",
+    "recursive chown",
+    "host-runtime preparation accepts no arguments",
+  ].each do |fragment|
+    check(
+      host_runtime_preparer.include?(fragment),
+      "host-runtime preparer lacks #{fragment}"
+    )
+  end
+  check(
+    !host_runtime_preparer.include?("--recursive") &&
+      !host_runtime_preparer.include?('"-R"'),
+    "host-runtime preparer recursively changes conventional host files"
   )
   check_rootfs_publication_selection(
     File.binread(ROOTFS_PUBLICATION_SELECTION_PATH)
@@ -2779,6 +2879,9 @@ def check_publisher(workflow)
     "for root in nix_store_requisites(config)",
     '"--requisites"',
     "NIX_STORE_ROOT_RE",
+    "host_projection_metadata(",
+    "path={path} uid={metadata.st_uid} gid={metadata.st_gid}",
+    "expected=absolute-root:root-{expected_name}-not-group/other-writable",
     "prepare_service_root(service_root, readonly_binds, readwrite_binds)",
     "add_runner_owned_platform_environment(",
     'SDK_CONFIG_SITE_ENV_KEY = "WASM_POSIX_SDK_CONFIG_SITE"',
@@ -6576,6 +6679,7 @@ def check_publisher(workflow)
     'bash "$REPO_ROOT/scripts/test-install-local-binary-sealed.sh"',
     'bash "$REPO_ROOT/scripts/test-homebrew-publisher-real-lifecycle.sh"',
     'bash "$REPO_ROOT/scripts/test-homebrew-validate-host-dependency-plan.sh"',
+    'python3 "$REPO_ROOT/scripts/test-prepare-homebrew-recipe-host-runtime.py"',
     'assert_atomic_publication_batch_closes_formula_metadata_wave',
     'KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$(make_primary_resolved_tap_map "$tap_root")"',
     'export KANDELO_HOMEBREW_RESOLVED_TAPS_FILE',
@@ -6877,6 +6981,76 @@ def mutate_named_step(workflow, job_name, step_name)
   step = steps.find { |candidate| candidate["name"] == step_name }
   raise "self-test could not find #{step_name}" unless step
   step
+end
+
+def self_test_privileged_recipe_host_runtime(workflows)
+  expect_rejection("missing host-runtime preparation") do
+    mutated = deep_copy(workflows)
+    steps = mutated.fetch(".github/workflows/staging-build.yml")
+      .fetch("jobs").fetch("preflight").fetch("steps")
+    steps.reject! { |step| step["name"] == HOST_RUNTIME_PREPARATION_STEP }
+    check_privileged_recipe_host_runtime(mutated)
+  end
+
+  expect_rejection("late host-runtime preparation") do
+    mutated = deep_copy(workflows)
+    steps = mutated.fetch(
+      ".github/workflows/reusable-homebrew-bottle-publish.yml"
+    ).fetch("jobs").fetch("build-and-test").fetch("steps")
+    preparation_index = steps.index do |step|
+      step["name"] == HOST_RUNTIME_PREPARATION_STEP
+    end
+    preparation = steps.delete_at(preparation_index)
+    privileged_index = steps.index do |step|
+      step.fetch("run", "").include?("scripts/homebrew-bottle-build.sh")
+    end
+    steps.insert(privileged_index + 1, preparation)
+    check_privileged_recipe_host_runtime(mutated)
+  end
+
+  expect_rejection("caller-selected host-runtime preparation") do
+    mutated = deep_copy(workflows)
+    step = mutate_named_step(
+      mutated.fetch(".github/workflows/staging-build.yml"),
+      "preflight",
+      HOST_RUNTIME_PREPARATION_STEP
+    )
+    step["run"] = "#{step.fetch('run')} --root /tmp/usr"
+    check_privileged_recipe_host_runtime(mutated)
+  end
+
+  expect_rejection("conditional host-runtime preparation") do
+    mutated = deep_copy(workflows)
+    step = mutate_named_step(
+      mutated.fetch(".github/workflows/staging-build.yml"),
+      "preflight",
+      HOST_RUNTIME_PREPARATION_STEP
+    )
+    step["if"] = "${{ false }}"
+    check_privileged_recipe_host_runtime(mutated)
+  end
+
+  expect_rejection("ignored host-runtime preparation failure") do
+    mutated = deep_copy(workflows)
+    step = mutate_named_step(
+      mutated.fetch(".github/workflows/staging-build.yml"),
+      "preflight",
+      HOST_RUNTIME_PREPARATION_STEP
+    )
+    step["continue-on-error"] = true
+    check_privileged_recipe_host_runtime(mutated)
+  end
+
+  expect_rejection("undiscovered privileged recipe job") do
+    mutated = deep_copy(workflows)
+    mutated.fetch(".github/workflows/staging-build.yml")
+      .fetch("jobs")["unsealed-recipe"] = {
+        "steps" => [
+          { "run" => "bash scripts/homebrew-bottle-build.sh" },
+        ],
+      }
+    check_privileged_recipe_host_runtime(mutated)
+  end
 end
 
 def self_test(publisher, native_compatibility, maintenance,
@@ -8141,13 +8315,16 @@ def self_test(publisher, native_compatibility, maintenance,
 end
 
 begin
+  all_workflows = load_all_workflows
   publisher = load_workflow(PUBLISHER_PATH)
   native_compatibility = load_workflow(NATIVE_COMPATIBILITY_PATH)
   maintenance = load_workflow(MAINTENANCE_PATH)
   repository_canary = load_workflow(REPOSITORY_CANARY_PATH)
+  self_test_privileged_recipe_host_runtime(all_workflows)
   self_test(
     publisher, native_compatibility, maintenance, repository_canary
   )
+  check_privileged_recipe_host_runtime(all_workflows)
   check_publisher(publisher)
   check_native_compatibility_workflow(native_compatibility)
   check_caller_validation_behavior(publisher)

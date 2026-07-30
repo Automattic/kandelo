@@ -761,6 +761,15 @@ jobs:
             echo "::error::tap build checkout differs from the validated plan"; exit 2;
           }
 
+      # WHY: Some GitHub-hosted images make /usr runner-owned even though its
+      # contents remain root-owned. Seal that one directory inode before any
+      # admitted Formula can enter the privileged recipe boundary.
+      - name: Seal conventional host runtime ownership
+        shell: bash
+        run: >-
+          /usr/bin/python3
+          kandelo/scripts/prepare-homebrew-recipe-host-runtime.py
+
       - name: Materialize immutable dependency tap map for build
         shell: bash
         env:
@@ -2254,6 +2263,15 @@ jobs:
           [ "$(git -C tap rev-parse HEAD)" = "$TAP_SHA" ] || {
             echo "::error::tap verifier source differs from the plan"; exit 2;
           }
+
+      # WHY: Verification can execute the same privileged tap-recipe
+      # supervisor as the build. Seal the evidenced /usr directory inode
+      # before an admitted Formula can reach that boundary.
+      - name: Seal conventional host runtime ownership
+        shell: bash
+        run: >-
+          /usr/bin/python3
+          kandelo/scripts/prepare-homebrew-recipe-host-runtime.py
 
       - name: Materialize immutable dependency tap map for verification
         shell: bash

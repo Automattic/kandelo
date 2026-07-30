@@ -166,6 +166,14 @@ jobs:
         with:
           ref: ${{ github.event.pull_request.head.sha }}
 
+      # WHY: Some GitHub-hosted images make /usr runner-owned even though its
+      # contents remain root-owned. Seal that one directory inode before this
+      # job exercises the same privileged recipe boundary as publication.
+      - name: Seal conventional host runtime ownership
+        run: >-
+          /usr/bin/python3
+          scripts/prepare-homebrew-recipe-host-runtime.py
+
       # WHY: the real publisher lifecycle creates a detached worktree from
       # reviewed Homebrew source. Give it an immutable source explicitly so
       # runner-image Homebrew state cannot decide what the test executes.
