@@ -58,9 +58,8 @@ export interface InitMessage {
     syscallLogPtrWidth?: 4 | 8;
     /** Forwarded to TlsNetworkBackendOptions.dnsAliases. */
     dnsAliases?: Record<string, string>;
-    /** Forwarded to TlsNetworkBackendOptions.corsProxyUrl for browser fetch
-     *  backends that need a same-origin proxy to reach external HTTP(S)
-     *  hosts. */
+    /** Routes guest HTTP(S) and external lazy VFS downloads through a browser
+     *  proxy when the page is not controlled by Kandelo's service worker. */
     corsProxyUrl?: string;
   };
 }

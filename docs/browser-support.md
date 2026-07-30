@@ -285,6 +285,16 @@ VITE_CORS_PROXY_URL='https://your-proxy.example/?' npm run dev
 Proxy prefixes ending in a bare `?` receive raw target URLs; `?url=`-style
 prefixes receive percent-encoded targets.
 
+`BrowserKernel({ corsProxyUrl })` applies the same proxy to two independent
+browser transports: guest HTTP(S) requests and external lazy VFS files or
+archives. Same-origin lazy assets still use direct `fetch()`. This distinction
+matters under `Cross-Origin-Embedder-Policy: require-corp`: public release
+assets do not necessarily opt into CORS or CORP, so a kernel worker may be
+unable to read them directly even though an ordinary command-line client can.
+An explicit `closedLazyAssets` set remains exhaustive and takes precedence
+over the network proxy. The Node.js host is unaffected and continues to fetch
+its lazy URLs directly.
+
 ### Blob-URL iframes (service-worker boundary)
 
 The service worker can only bridge requests from documents it **controls**. A

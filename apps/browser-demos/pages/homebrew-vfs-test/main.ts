@@ -58,6 +58,7 @@ interface LazyVfsAcceptanceRequest {
   executable?: string;
   argv?: string[];
   env?: string[];
+  corsProxyExternalLazyUrls?: boolean;
   retryReadAfterFailure?: boolean;
   timeoutMs: number;
 }
@@ -377,6 +378,7 @@ async function init(): Promise<void> {
     let stderr = "";
     const kernel = new BrowserKernel({
       kernelOwnedFs: true,
+      ...(request.corsProxyExternalLazyUrls ? { corsProxyUrl } : {}),
       onStdout: (bytes) => { stdout = appendOutput(stdout, bytes, "stdout"); },
       onStderr: (bytes) => { stderr = appendOutput(stderr, bytes, "stderr"); },
     });

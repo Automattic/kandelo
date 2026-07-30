@@ -19,6 +19,7 @@ import {
   parseNumericIpv4Hostname,
   validateSyntheticDnsHostname,
 } from "./hostname";
+import { corsProxyFetchUrl } from "./cors-proxy-url";
 import { TLS_1_2_Connection } from "../../../packages/registry/openssl/src/tls/1_2/connection";
 import {
   generateCertificate,
@@ -144,16 +145,6 @@ function formatHttpResponse(
   result.set(headerBytes);
   result.set(bodyBytes, headerBytes.length);
   return result;
-}
-
-function corsProxyFetchUrl(corsProxyUrl: string, targetUrl: string): string {
-  if (targetUrl.startsWith(corsProxyUrl)) {
-    return targetUrl;
-  }
-  const proxiedTarget = corsProxyUrl.endsWith("?")
-    ? targetUrl
-    : encodeURIComponent(targetUrl);
-  return `${corsProxyUrl}${proxiedTarget}`;
 }
 
 // ------------------------------------------------------------------ backend

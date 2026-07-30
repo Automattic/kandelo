@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -36,6 +38,7 @@ declare global {
       executable?: string;
       argv?: string[];
       env?: string[];
+      corsProxyExternalLazyUrls?: boolean;
       retryReadAfterFailure?: boolean;
       timeoutMs: number;
     }) => Promise<LazyAcceptanceResult>;
@@ -339,6 +342,74 @@ test("Chromium retries a transient lazy-tree response before surfacing EIO", asy
   expect(result.firstReadError).toBeUndefined();
   expect(result.readText).toBe("verified-after-transient-502");
   expect(fetches).toBe(2);
+});
+
+test("browser workers proxy external lazy archives under cross-origin isolation", async ({
+  page,
+  baseURL,
+}) => {
+  if (!baseURL) throw new Error("Playwright baseURL is required");
+  const archive = zipSync({
+    "etc/proxied-data": new TextEncoder().encode("proxied-lazy-archive"),
+  });
+  let upstreamFetches = 0;
+  const server = createServer((request, response) => {
+    upstreamFetches++;
+    if (request.url !== "/external.zip") {
+      response.writeHead(404).end();
+      return;
+    }
+    // Deliberately omit CORS and CORP headers. A cross-origin-isolated worker
+    // cannot consume this response directly; the same-origin proxy must.
+    response.writeHead(200, {
+      "content-length": String(archive.byteLength),
+      "content-type": "application/zip",
+    });
+    response.end(archive);
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address() as AddressInfo;
+  const archiveUrl =
+    `http://127.0.0.1:${address.port}/external.zip`;
+  const imageUrl =
+    "https://fixtures.kandelo.invalid/proxied-lazy.vfs";
+  const image = await lazyImage([{ url: archiveUrl, archive }]);
+  const browserRequests: string[] = [];
+  page.on("request", (request) => browserRequests.push(request.url()));
+
+  try {
+    await routeBytes(page, imageUrl, image, "application/octet-stream");
+    await page.goto(new URL("/pages/homebrew-vfs-test/", baseURL).href);
+    await expect.poll(
+      () => page.evaluate(() => window.__homebrewVfsTestReady),
+      { timeout: 120_000 },
+    ).toBe(true);
+    const result = await page.evaluate(
+      ({ vfsUrl }) => window.__runLazyVfsAcceptance({
+        vfsUrl,
+        readPath: "/etc/proxied-data",
+        corsProxyExternalLazyUrls: true,
+        timeoutMs: 30_000,
+      }),
+      { vfsUrl: imageUrl },
+    );
+
+    expect(result.readText).toBe("proxied-lazy-archive");
+    expect(upstreamFetches).toBe(1);
+    expect(browserRequests).not.toContain(archiveUrl);
+    expect(browserRequests.some((requestUrl) => {
+      const url = new URL(requestUrl);
+      return url.pathname.endsWith("/__kandelo_cors_proxy") &&
+        url.searchParams.get("url") === archiveUrl;
+    })).toBe(true);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve());
+    });
+  }
 });
 
 test("Chromium reports digest failure without mutation and retries cleanly", async ({
