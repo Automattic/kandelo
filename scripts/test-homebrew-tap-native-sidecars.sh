@@ -126,18 +126,19 @@ if [ "$WASM32_SYSROOT_FINGERPRINT" = "$WASM64_SYSROOT_FINGERPRINT" ]; then
 fi
 
 write_dependency_provenance() {
-  local formula="$1" arch="$2" tap_commit="$3" out="$4"
+  local formula="$1" arch="$2" tap_commit="$3" tap_checkout_commit="$4"
+  local tap_root="$5" out="$6"
   local dependencies dependency_formula_sha dependency_sha
   dependencies='[]'
   if [ "$formula" = "sidecar-tool" ]; then
-    dependency_formula_sha="$(sha256_file "$TAP/Formula/sidecar-dep.rb")"
+    dependency_formula_sha="$(sha256_file "$tap_root/Formula/sidecar-dep.rb")"
     case "$arch" in
       wasm32) dependency_sha="${dep_bottle[2]}" ;;
       wasm64) dependency_sha="${dep64_bottle[2]}" ;;
       *) echo "unsupported fixture architecture: $arch" >&2; exit 2 ;;
     esac
     dependencies="$(jq -nS \
-      --arg arch "$arch" --arg tap_commit "$tap_commit" \
+      --arg arch "$arch" --arg tap_checkout_commit "$tap_checkout_commit" \
       --arg formula_sha "$dependency_formula_sha" --arg bottle_sha "$dependency_sha" '[{
         bottle: {
           cellar: "any_skip_relocation",
@@ -163,20 +164,22 @@ write_dependency_provenance() {
           poured_from_bottle: true,
           sha256: "3333333333333333333333333333333333333333333333333333333333333333",
           source_tap: "kandelo-dev/tap-core",
-          source_tap_git_head: $tap_commit
+          source_tap_git_head: $tap_checkout_commit
         },
         version: "1.0"
       }]')"
   fi
   jq -nS \
     --arg formula "$formula" --arg arch "$arch" --arg tap_commit "$tap_commit" \
+    --arg tap_checkout_commit "$tap_checkout_commit" \
     --arg bottle_tag "${arch}_kandelo" --argjson dependencies "$dependencies" '{
-      schema: 2,
+      schema: 4,
       formula: $formula,
       arch: $arch,
       tap_repository: "kandelo-dev/homebrew-tap-core",
       tap_name: "kandelo-dev/tap-core",
       tap_commit: $tap_commit,
+      tap_checkout_commit: $tap_checkout_commit,
       bottle_root_url: "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core",
       bottle_tag: $bottle_tag,
       dependencies: $dependencies
@@ -188,7 +191,9 @@ make_publication_handoff() {
   local tap_commit dependency_provenance oci_root
   tap_commit="$(jq -er '.tap_commit' "$sidecars/sidecars-input.json")"
   dependency_provenance="$TMPDIR/${formula}-${arch}-dependency-provenance.json"
-  write_dependency_provenance "$formula" "$arch" "$tap_commit" "$dependency_provenance"
+  write_dependency_provenance \
+    "$formula" "$arch" "$tap_commit" "$tap_commit" "$TAP" \
+    "$dependency_provenance"
   rm -rf "$out"
   mkdir -p "$out/composition"
   bash "$REPO_ROOT/scripts/homebrew-create-build-handoff.sh" \
@@ -524,12 +529,22 @@ generate_sidecars() {
   local canonical_json="${out}-merge-bottle.json"
   local dependency_provenance="${out}-dependency-provenance.json"
   local runtime_evidence="${out}-runtime-evidence.json"
-  local tap_commit provenance_sha runtime_provenance_sha formula_test_sha
+  local formula_source_root tap_commit tap_checkout_commit
+  local provenance_sha runtime_provenance_sha formula_test_sha
   local runtime_dependency_bottle_sha runtime_dependency_receipt_sha version
+  local -a campaign_environment=()
   bottle_filename="$(basename "$archive")"
-  tap_commit="$(git -C "$TAP" rev-parse HEAD)"
+  formula_source_root="${SIDECAR_FORMULA_SOURCE_ROOT:-$TAP}"
+  tap_checkout_commit="$(git -C "$formula_source_root" rev-parse HEAD)"
+  tap_commit="${SIDECAR_TAP_SOURCE_COMMIT:-$tap_checkout_commit}"
+  if [ "$tap_checkout_commit" != "$tap_commit" ]; then
+    campaign_environment=(
+      "KANDELO_HOMEBREW_TAP_SOURCE_COMMIT=$tap_commit"
+      "KANDELO_HOMEBREW_PREPARED_TAP_COMMIT=$tap_checkout_commit"
+    )
+  fi
   rm -rf "$merged_tap" "$out"
-  cp -a "$TAP" "$merged_tap"
+  cp -a "$formula_source_root" "$merged_tap"
   mkdir -p "$out"
   jq -e --arg formula "$formula" --arg tag "${arch}_kandelo" '
     if type != "object" or length != 1 then
@@ -553,7 +568,8 @@ generate_sidecars() {
   ' \
     "$bottle_json" >"$canonical_json"
   write_dependency_provenance \
-    "$formula" "$arch" "$tap_commit" "$dependency_provenance"
+    "$formula" "$arch" "$tap_commit" "$tap_checkout_commit" \
+    "$formula_source_root" "$dependency_provenance"
   bash "$REPO_ROOT/scripts/homebrew-merge-bottle-json.sh" \
     --tap-root "$merged_tap" \
     --tap-repository kandelo-dev/homebrew-tap-core \
@@ -576,6 +592,7 @@ generate_sidecars() {
     --arg arch "$arch" \
     --argjson abi "$ABI_VERSION" \
     --arg tap_commit "$tap_commit" \
+    --arg tap_checkout_commit "$tap_checkout_commit" \
     --arg sha "$sha" \
     --argjson bytes "$bytes" \
     --arg version "$version" \
@@ -586,14 +603,15 @@ generate_sidecars() {
     --arg runtime_dependency_bottle_sha "$runtime_dependency_bottle_sha" \
     --arg runtime_dependency_receipt_sha "$runtime_dependency_receipt_sha" \
     --slurpfile provenance "$dependency_provenance" '{
-      schema: 3,
+      schema: 4,
       formula: $formula,
       arch: $arch,
       abi: $abi,
       tap: {
         repository: "kandelo-dev/homebrew-tap-core",
         name: "kandelo-dev/tap-core",
-        commit: $tap_commit
+        commit: $tap_commit,
+        checkout_commit: $tap_checkout_commit
       },
       bottle: {
         bytes: $bytes,
@@ -651,7 +669,7 @@ generate_sidecars() {
           poured_from_bottle: true,
           sha256: "4444444444444444444444444444444444444444444444444444444444444444",
           source_tap: "kandelo-dev/tap-core",
-          source_tap_git_head: $tap_commit
+          source_tap_git_head: $tap_checkout_commit
         }
       },
       test: (
@@ -675,8 +693,11 @@ generate_sidecars() {
         end
       )
     }' >"$runtime_evidence"
+  env "${campaign_environment[@]}" \
+  KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="${SIDECAR_RESOLVED_TAPS_FILE:-}" \
+  KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256="${SIDECAR_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}" \
   KANDELO_HOMEBREW_TAP_ROOT="$merged_tap" \
-  KANDELO_HOMEBREW_FORMULA_SOURCE_ROOT="$TAP" \
+  KANDELO_HOMEBREW_FORMULA_SOURCE_ROOT="$formula_source_root" \
   KANDELO_HOMEBREW_SIDECAR_ROOT="$out" \
   KANDELO_HOMEBREW_FORMULA="$formula" \
   KANDELO_HOMEBREW_ARCH="$arch" \
@@ -715,6 +736,78 @@ mapfile -t dep_bottle < <(make_dep_bottle)
 mapfile -t dep64_bottle < <(make_dep_wasm64_bottle "${dep_bottle[0]}" "${dep_bottle[1]}")
 mapfile -t data_bottle < <(make_data_bottle)
 generate_sidecars sidecar-dep "${dep_bottle[@]}" "$DEP_OUT"
+
+# The public tap commit and the deterministic campaign checkout are separate
+# identities. Exercise the real validators and generator with A != B so a
+# missing checkout binding cannot silently reinterpret public provenance.
+CAMPAIGN_TAP="$TMPDIR/campaign-tap"
+CAMPAIGN_OUT="$TMPDIR/campaign-sidecars"
+CAMPAIGN_RESOLVED_TAPS="$TMPDIR/campaign-resolved-taps.json"
+git clone -q "$TAP" "$CAMPAIGN_TAP"
+git -C "$CAMPAIGN_TAP" config user.name "Kandelo Test"
+git -C "$CAMPAIGN_TAP" config user.email "kandelo-test@example.invalid"
+git -C "$CAMPAIGN_TAP" commit -q --allow-empty \
+  -m "prepare deterministic campaign checkout"
+CAMPAIGN_CHECKOUT_COMMIT="$(git -C "$CAMPAIGN_TAP" rev-parse HEAD)"
+[ "$CAMPAIGN_CHECKOUT_COMMIT" != "$TAP_SOURCE_COMMIT" ] || {
+  echo "campaign sidecar fixture did not create a distinct checkout" >&2
+  exit 1
+}
+python3 "$REPO_ROOT/scripts/homebrew-dependency-taps.py" resolve \
+  --tap-root "$CAMPAIGN_TAP" \
+  --tap-name kandelo-dev/tap-core \
+  --tap-repository kandelo-dev/homebrew-tap-core \
+  --tap-commit "$TAP_SOURCE_COMMIT" \
+  --checkout-commit "$CAMPAIGN_CHECKOUT_COMMIT" \
+  --out "$CAMPAIGN_RESOLVED_TAPS"
+jq -e \
+  --arg tap_commit "$TAP_SOURCE_COMMIT" \
+  --arg checkout_commit "$CAMPAIGN_CHECKOUT_COMMIT" '
+    .schema == 2 and
+    .primary.tap_commit == $tap_commit and
+    .primary.checkout_commit == $checkout_commit
+  ' "$CAMPAIGN_RESOLVED_TAPS" >/dev/null || {
+    echo "campaign resolved-tap fixture lost its two commit identities" >&2
+    exit 1
+  }
+CAMPAIGN_LAYOUT_SHA="$(sha256_file \
+  "$REPO_ROOT/homebrew/kandelo-guest-layout.json")"
+SIDECAR_FORMULA_SOURCE_ROOT="$CAMPAIGN_TAP" \
+SIDECAR_TAP_SOURCE_COMMIT="$TAP_SOURCE_COMMIT" \
+SIDECAR_RESOLVED_TAPS_FILE="$CAMPAIGN_RESOLVED_TAPS" \
+SIDECAR_PREFIX_CAMPAIGN_LAYOUT_SHA256="$CAMPAIGN_LAYOUT_SHA" \
+  generate_sidecars sidecar-dep "${dep_bottle[@]}" "$CAMPAIGN_OUT"
+jq -e \
+  --arg tap_commit "$TAP_SOURCE_COMMIT" \
+  --arg formula_sha "$(sha256_file \
+    "$CAMPAIGN_TAP/Formula/sidecar-dep.rb")" \
+  --arg prefix /opt/kandelo/homebrew \
+  --arg cellar /opt/kandelo/homebrew/Cellar '
+    .tap_commit == $tap_commit and
+    .packages[0].formula_source_sha256 == $formula_sha and
+    .packages[0].bottles[0].prefix == $prefix and
+    .packages[0].bottles[0].cellar == $cellar
+  ' "$CAMPAIGN_OUT/sidecars-input.json" >/dev/null || {
+    echo "campaign sidecars lost public source or target layout identity" >&2
+    exit 1
+  }
+jq -e --arg tap_commit "$TAP_SOURCE_COMMIT" \
+  '.tap_commit == $tap_commit' \
+  "$CAMPAIGN_OUT/Kandelo/metadata.json" >/dev/null || {
+    echo "campaign metadata replaced public provenance with checkout identity" >&2
+    exit 1
+  }
+cmp "$CAMPAIGN_OUT-merged-tap/Formula/sidecar-dep.rb" \
+  "$CAMPAIGN_OUT/Formula/sidecar-dep.rb" >/dev/null || {
+    echo "campaign sidecars did not preserve the verified merged Formula" >&2
+    exit 1
+  }
+[ -f "$CAMPAIGN_OUT/Kandelo/formula/sidecar-dep.json" ] &&
+  [ -f "$CAMPAIGN_OUT/Kandelo/link/sidecar-dep-1.0-rebuild0-wasm32.json" ] || {
+  echo "campaign sidecars did not produce Formula and link metadata" >&2
+  exit 1
+}
+
 SIDECAR_TEST_ARCH=wasm64 generate_sidecars sidecar-dep "${dep64_bottle[@]}" "$DEP64_OUT"
 SIDECAR_TEST_CONTRACT=support-data \
   generate_sidecars sidecar-data "${data_bottle[@]}" "$DATA_OUT"
