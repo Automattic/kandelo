@@ -3,8 +3,10 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 CLASSIFIER="$REPO_ROOT/.github/scripts/homebrew-main-shell-change-scope.sh"
-WORKFLOW="$REPO_ROOT/.github/workflows/homebrew-main-shell-ci.yml"
-STAGING_WORKFLOW="$REPO_ROOT/.github/workflows/staging-build.yml"
+WORKFLOW_DIR="$REPO_ROOT/.github/workflows"
+WORKFLOW="$WORKFLOW_DIR/homebrew-main-shell-ci.yml"
+NATIVE_WORKFLOW="$WORKFLOW_DIR/homebrew-native-publisher-compatibility.yml"
+STAGING_WORKFLOW="$WORKFLOW_DIR/staging-build.yml"
 SCOPE_ACTION="$REPO_ROOT/.github/actions/detect-change-scope/action.yml"
 PUBLISHER_TEST="$REPO_ROOT/scripts/test-homebrew-publish-workflow.sh"
 PATCHED_LAUNCHER_TEST="$REPO_ROOT/scripts/test-homebrew-patched-launcher.sh"
@@ -27,6 +29,7 @@ fixture_paths=(
   .github/workflows/homebrew-native-publisher-compatibility.yml
   .github/workflows/reusable-homebrew-main-shell-mirror-publish.yml
   homebrew/kandelo-guest-layout.json
+  homebrew/homebrew-native-compatibility-lock.json
   homebrew/main-shell-migration-lock.json
   homebrew/patches/0001-add-kandelo-wasm-bottle-tags-prefix-campaign.patch
   packages/registry/bash/build.toml
@@ -110,6 +113,22 @@ commit_change scripts/test-homebrew-native-api-contract.sh
 HEAD="$(finish_change)"
 assert_scope false pull_request "$BASE" "$HEAD" \
   "diff is limited to audited publisher-only"
+
+# The compatibility lock records signed-API input for native publication.
+# It is not read while composing or booting already-published shell bytes.
+reset_fixture
+commit_change homebrew/homebrew-native-compatibility-lock.json
+HEAD="$(finish_change)"
+assert_scope false pull_request "$BASE" "$HEAD" \
+  "diff is limited to audited publisher-only"
+
+# A lock refresh must not hide a product change in the same diff.
+reset_fixture
+commit_change homebrew/homebrew-native-compatibility-lock.json
+commit_change host/src/kernel-worker.ts
+HEAD="$(finish_change)"
+assert_scope true pull_request "$BASE" "$HEAD" \
+  "host/src/kernel-worker.ts"
 
 # These four files implement and test the privileged Formula boundary. They
 # are not consumed while composing or booting an already-published image, but
@@ -278,6 +297,12 @@ grep -Fq 'if: always()' "$WORKFLOW" ||
   fail "the stable exact-shell gate is not always present"
 grep -Fq 'needs.exact-public-bottle-closure.result' "$WORKFLOW" ||
   fail "the stable exact-shell gate does not propagate implementation failure"
+
+grep -Fq '      - homebrew/**' "$NATIVE_WORKFLOW" ||
+  fail "native compatibility workflow does not own lock refreshes"
+grep -Fq 'homebrew/homebrew-native-compatibility-lock.json' \
+  "$NATIVE_WORKFLOW" ||
+  fail "native compatibility workflow does not verify the reviewed lock"
 
 grep -Fq 'homebrew_publisher_only_changed:' "$SCOPE_ACTION" ||
   fail "staging scope does not expose its publisher-only result"

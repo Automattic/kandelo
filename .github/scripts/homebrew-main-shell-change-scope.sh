@@ -60,6 +60,13 @@ emit_result() {
 }
 
 is_audited_publisher_only_path() {
+  # WHY: this reviewed lock is consumed only while the native publisher
+  # admits signed Homebrew API results. Exact shell composition and guest
+  # boot consume already-published Kandelo bottles, so neither reads it.
+  if [ "$1" = homebrew/homebrew-native-compatibility-lock.json ]; then
+    return 0
+  fi
+
   case "$1" in
     .github/workflows/homebrew-native-publisher-compatibility.yml | \
       .github/workflows/reusable-homebrew-bottle-maintenance.yml | \
