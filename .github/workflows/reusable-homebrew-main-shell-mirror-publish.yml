@@ -168,9 +168,15 @@ jobs:
         run: |
           set -euo pipefail
           test ! -e "$WASM_POSIX_BINARY_CACHE_ROOT"
+          # WHY: A fetched shell archive does not materialize separate
+          # dependency products into binaries/. That keeps bootstrap lazy for
+          # shell consumers. This publisher consumes both products, so it must
+          # select both roots explicitly.
           bash scripts/dev-shell.sh env \
             "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
-            bash scripts/fetch-binaries.sh --fetch-only --package shell
+            bash scripts/fetch-binaries.sh --fetch-only \
+              --package shell \
+              --package homebrew-bootstrap
           image="$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)"
           bootstrap="$(bash scripts/resolve-binary.sh \
             programs/homebrew-bootstrap/homebrew-bootstrap.zip)"

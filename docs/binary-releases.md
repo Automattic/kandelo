@@ -1219,9 +1219,14 @@ bash scripts/fetch-binaries.sh --fetch-only \
 ```
 
 Selection is positive: only the named roots run, duplicates are removed while
-preserving first-requested order, and `xtask build-deps resolve` remains
-responsible for their transitive dependency closures. A selected package must
-exist, have `build.toml`, and not be hidden by
+preserving first-requested order. `xtask build-deps resolve` owns dependency
+traversal, but a self-contained published program archive can satisfy
+binary-materialization or fetch-only resolution before its separate dependency
+archives are fetched. A consumer that directly needs one of those products
+must select that package as another root even when the first package declares
+it as a build dependency. This preserves lazy dependencies for consumers that
+need only the self-contained program. A selected package must exist, have
+`build.toml`, and not be hidden by
 `WASM_POSIX_FETCH_SKIP_PKGS`; otherwise the command fails with exit code 2.
 This lets focused CI consumers declare what they actually materialize without
 accepting stale unrelated artifacts or maintaining an ever-growing negative
@@ -1235,9 +1240,10 @@ bash scripts/fetch-binaries.sh --fetch-only \
 ```
 
 Each unique `(package, arch)` entry is handed to the resolver exactly once.
-The resolver still owns its declared dependency closure. The fetcher does not
-expand a ledger entry to the package's other declared architectures, does not
-fall back to a raw registry walk, and rejects duplicate, unsupported, or
+The same self-contained program fast path applies, so every independently
+consumed dependency product must also appear as a ledger root. The fetcher does
+not expand a ledger entry to the package's other declared architectures, does
+not fall back to a raw registry walk, and rejects duplicate, unsupported, or
 manifest-undeclared entries before resolving anything. This form is for
 consumers that already have a Rust-generated publication projection; it does
 not infer whether a narrower projection contains every artifact a test suite

@@ -36,16 +36,19 @@
 # Flags:
 #   --package <name>
 #                  Materialize only this package root. Repeat the flag to
-#                  select more than one root. The resolver still materializes
-#                  each selected root's declared dependency closure. Repeated
+#                  select more than one root. A self-contained published
+#                  program can satisfy resolution before its separately
+#                  published dependencies are materialized. Consumers that
+#                  need those products must select those roots too. Repeated
 #                  names are de-duplicated in first-requested order. With no
 #                  --package flags, the existing full-registry walk is used.
 #   --expected-ledger <path>
 #                  Invoke the resolver exactly once for each unique
 #                  package/arch entry in a Rust-generated staging expected
 #                  ledger, optionally narrowed by
-#                  WASM_POSIX_FETCH_SKIP_PKGS. The resolver still owns each
-#                  entry's dependency closure. This is mutually exclusive with
+#                  WASM_POSIX_FETCH_SKIP_PKGS. The same program fast path
+#                  applies, so independently consumed dependency products must
+#                  also be ledger roots. This is mutually exclusive with
 #                  --package and never falls back to a registry walk or expands
 #                  one selected package to its other arches.
 #   --offline      Set `WASM_POSIX_OFFLINE=1` so the resolver refuses
@@ -450,8 +453,8 @@ resolve_package_arch() {
 }
 
 # Walk every immediate child directory by default, or the exact selected roots
-# in first-requested order. `xtask build-deps resolve` owns dependency closure
-# traversal; this wrapper must not duplicate or second-guess that graph.
+# in first-requested order. `xtask build-deps resolve` owns dependency traversal
+# and may intentionally stop after fetching a self-contained program root.
 if [ "$EXPECTED_LEDGER_SET" -eq 1 ]; then
     for entry in "${EXPECTED_ENTRIES[@]}"; do
         resolve_package_arch "${entry%%|*}" "${entry#*|}"

@@ -1636,18 +1636,24 @@ bash scripts/fetch-binaries.sh --fetch-only \
 
 With any `--package` flags, only those package roots are handed to the
 resolver, in first-requested order; duplicate flags are ignored. The resolver
-still traverses each root's declared dependency closure. Unknown packages,
-packages without a publishable `build.toml`, unsafe names, and a package that
-is simultaneously selected and listed in `WASM_POSIX_FETCH_SKIP_PKGS` fail
-before materialization. Omitting `--package` preserves the full-registry walk.
+owns dependency traversal, but its binary-materialization fast path can satisfy
+a self-contained published program root before fetching its separately
+published dependency archives. Consumers that directly need those products
+must select each package as a root even when the first package declares it as a
+build dependency. This keeps lazy dependencies lazy for consumers that need
+only the program root. Unknown packages, packages without a publishable
+`build.toml`, unsafe names, and a package that is simultaneously selected and
+listed in `WASM_POSIX_FETCH_SKIP_PKGS` fail before materialization. Omitting
+`--package` preserves the full-registry walk.
 
 Consumers with a Rust-generated staging expected ledger can instead pass
 `--expected-ledger <path>`. That mode hands only the ledger's exact unique
 `(package, arch)` entries to the resolver; the resolver still traverses each
-entry's declared dependency closure. It rejects duplicate or undeclared
-architectures before the first resolver call and never falls back to a
-registry walk. `WASM_POSIX_FETCH_SKIP_PKGS` may subtract packages from the
-ledger but cannot add roots. Pair it with `--fetch-only` at CI publication
+entry according to those same semantics. Independently consumed dependency
+products must therefore be explicit ledger roots. It rejects duplicate or
+undeclared architectures before the first resolver call and never falls back
+to a registry walk. `WASM_POSIX_FETCH_SKIP_PKGS` may subtract packages from
+the ledger but cannot add roots. Pair it with `--fetch-only` at CI publication
 boundaries so a stale or missing archive fails instead of becoming an
 undeclared source build.
 
