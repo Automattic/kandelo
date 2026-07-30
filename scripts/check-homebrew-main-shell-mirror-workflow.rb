@@ -12,7 +12,7 @@ WORKFLOW = ARGV.empty? ?
 PUBLISH_JOB_DIGEST =
   "64bd13ea5a8d00953acfec3e02607f7ae70837706c868827bed5259c6043aeb2"
 WORKFLOW_DIGEST =
-  "cb59e7444b741fb169b459002cd346d63639e4a380ee85ee931645393c0bf12c"
+  "73ab04589abdc54c321ac527f54477e8b5f139ee460e90f0d2ffded80af07bf0"
 DOWNLOAD_ACTION =
   "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 UPLOAD_ACTION =
@@ -104,6 +104,7 @@ check(contract_digest(jobs.fetch("publish")) == PUBLISH_JOB_DIGEST,
 allowed_actions = [
   "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0",
   "actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
+  "./.github/actions/fetch-submodules",
   UPLOAD_ACTION,
   DOWNLOAD_ACTION,
   "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25",
@@ -320,6 +321,19 @@ check(public_fixture_run.include?(
       public_fixture_run.scan("--transport-mode public").length == 1 &&
       !public_fixture_run.include?("--transport-mode closed"),
       "Chromium lifecycle fixture is not all-public")
+proof_steps = proof_job.fetch("steps")
+proof_checkout_index = proof_steps.index do |step|
+  step["name"] == "Check out exact Kandelo consumer"
+end
+musl_fetch_index = proof_steps.index do |step|
+  step["name"] == "Fetch musl submodule for browser source-build fallback"
+end
+check(proof_checkout_index && musl_fetch_index == proof_checkout_index + 1,
+      "public proof must fetch musl immediately after its exact checkout")
+musl_fetch = proof_steps.fetch(musl_fetch_index)
+check(musl_fetch["uses"] == "./.github/actions/fetch-submodules" &&
+      musl_fetch["with"] == { "submodules" => "libc/musl" },
+      "public proof musl fetch contract differs")
 check(proof_source.scan("--transport-mode public").length == 3 &&
       !proof_source.include?("--transport-mode closed"),
       "Node and Chromium public transport coverage differs")

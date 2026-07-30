@@ -91,6 +91,10 @@ expect_rejected "$TMP_ROOT/no-structured-lock-check.yml"
 sed '/--package homebrew-bootstrap/d' \
   "$WORKFLOW" >"$TMP_ROOT/unfetched-direct-product.yml"
 expect_rejected "$TMP_ROOT/unfetched-direct-product.yml"
+sed \
+  '/      - name: Fetch musl submodule for browser source-build fallback/,/          submodules: libc\/musl/d' \
+  "$WORKFLOW" >"$TMP_ROOT/no-public-proof-musl.yml"
+expect_rejected "$TMP_ROOT/no-public-proof-musl.yml"
 sed '/      - name: Upload mirror verification and lifecycle publication receipts/i\
       - name: Injected write-capable command\
         shell: bash\

@@ -560,6 +560,14 @@ jobs:
           ref: ${{ inputs.kandelo-ref }}
           persist-credentials: false
 
+      - name: Fetch musl submodule for browser source-build fallback
+        # WHY: `prepare-browser --fetch-only` may still rebuild the exact
+        # sysroot while resolving its published browser generation. Fetch only
+        # the pinned musl gitlink needed by that normal fallback path.
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: libc/musl
+
       - name: Download same-run exact product handoff
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
