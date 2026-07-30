@@ -1701,8 +1701,10 @@ cannot invoke the trusted publisher.
 
 Every call is fixed to a reviewed `repository_dispatch` workflow on the target
 tap repository's `main` branch, and the caller repository must exactly equal
-the target tap repository. Non-dry calls may come from `publish-bottles.yml` or
-`maintain-bottles.yml`; dry calls must come from `dry-run-bottles.yml`. The
+the target tap repository. Ordinary non-dry calls may come from
+`publish-bottles.yml` or `maintain-bottles.yml`; dry calls must come
+from `dry-run-bottles.yml`. The guest-prefix campaign has one additional
+reviewed caller, `prefix-campaign-bottles.yml`, described below. The
 first-party normal caller is displayed as
 **Publish Kandelo bottles**; do not restore the narrower retired single-Formula
 workflow name. The three dispatch events are `publish-kandelo-bottles`,
@@ -1715,14 +1717,16 @@ fallbacks. A missing value, mutable ref, abbreviated SHA, or uppercase SHA is
 rejected before checkout. The tap checkout must equal the requested tap SHA,
 which must remain the current protected tap `main` commit or its ancestor.
 
-Kandelo has a stricter source rule: `kandelo_sha` must equal the commit named by
-`Automattic/kandelo`'s live `refs/heads/main`, not merely an ancestor, an
-equal-tree commit, a tag target, or a pull-request head. The planner queries
-that ref before checkout and verifies the resulting checkout. Every
-credentialed bottle, version-index, tap-state, failure-report, and immutable
-VFS mutation queries the ref again immediately before writing. If `main`
-advances during a run, the next mutation fails closed; run-scoped build
-handoffs do not authorize publication from the now-stale source.
+Ordinary Kandelo publication has a stricter source rule:
+`kandelo_sha` must equal the commit named by `Automattic/kandelo`'s
+live `refs/heads/main`, not merely an ancestor, an equal-tree commit, a
+tag target, or a pull-request head. The planner queries that ref before
+checkout and verifies the resulting checkout. Every credentialed
+bottle, version-index, tap-state, failure-report, and immutable VFS
+mutation queries the ref again immediately before writing. If `main`
+advances during an ordinary run, the next mutation fails closed;
+run-scoped build handoffs do not authorize publication from the
+now-stale source.
 
 The payload SHA is intentionally distinct from `github.sha`.
 `repository_dispatch` may be admitted while protected `main` is at one commit
@@ -1732,6 +1736,85 @@ authorizing a detached or force-pushed source. Maintenance rebuild dispatches
 use the same exact source contract. Rollback does not consume `tap_sha`; it
 refreshes and mutates the current protected branch under the tap-wide state
 lock.
+
+### Prefix Campaign Publisher Mode
+
+The guest-prefix campaign is a narrow mode of the same reusable
+publisher. It exists so a long-running, sealed campaign can finish
+without exposing a tap whose Formulae use two guest prefixes. Only the
+exact `prefix-campaign-bottles.yml` caller on the target repository's
+protected `main` branch may select it. Each call must:
+
+- publish exactly one Formula;
+- use write mode and a forced rebuild;
+- set `defer-tap-finalization: true`;
+- disable ordinary VFS acceptance; and
+- provide one content-addressed campaign tag plus the exact, canonical
+  dependency-handoff request.
+
+Ordinary, maintenance, dry-run, and third-party workflow names cannot
+pass campaign authority or defer tap finalization.
+
+The campaign keeps public source identity separate from local execution
+identity:
+
+- `tap_commit` is the raw, reviewed commit in the public tap's protected
+  history. Public bottle provenance and immutable release targets
+  continue to name this SHA.
+- `tap_checkout_commit` is a deterministic local commit whose tree
+  contains the sealed target Formula source and, for an architecture
+  build, the exact dependency bottle blocks fetched from earlier
+  campaign handoffs.
+
+The publisher begins with a clean checkout of `tap_commit`. It verifies
+the campaign's sealed target-source tree, creates a deterministic local
+descendant, and then creates an architecture-specific descendant when
+dependency bottle blocks are needed. Plan, build, upload,
+version-index, and verification jobs derive and verify the same
+identities independently. Build, dependency, handoff, and runtime
+evidence bind both SHAs. The prepared commit is never pushed, tagged,
+or substituted for public tap provenance.
+
+The campaign also binds the path and SHA-256 of
+`homebrew/kandelo-guest-layout.json`. The publisher first verifies those
+exact bytes in its Kandelo checkout. It then carries the digest through
+Formula closure, bottle build, dependency provenance, build and upload
+handoffs, bottle verification, sidecar preparation, and final handoff
+validation. Only this campaign digest selects
+`/opt/kandelo/homebrew` and `/opt/kandelo/homebrew/Cellar`. No digest
+selects the still-active layout for an ordinary publication; a campaign
+with a missing or different digest fails.
+
+Current protected `main` remains the live mutation authority. An
+ordinary publication requires exact equality. The campaign instead may
+use its sealed Kandelo source only while that SHA remains an ancestor of
+current protected `main`. This is an explicit, mutually exclusive
+authority mode, not a fallback from an exact-main failure. Immediately
+before each GHCR or immutable-release mutation, the mutation primitive
+fetches protected `main` and repeats the ancestry proof. A detached,
+descendant, diverged, or force-pushed-away source fails closed.
+
+An immutable campaign or Formula-handoff release applies the same rule
+to its target repository. Its direct tag points to the raw public tap
+source commit, not to a prepared checkout. The two repositories
+therefore retain truthful review and release history even though
+package jobs execute a complete campaign-local Formula tree.
+
+The campaign still runs bottle build, upload, anonymous index readback,
+and runtime verification for every Formula. It does not schedule
+`finalize-tap` or `publish-vfs-release`. The campaign executor seals
+each verified result as
+`homebrew-prefix-handoff-sha256-<handoff-sha256>`. Only after all
+handoffs are present does the campaign compose and validate the complete
+tap, then update tap `main` once under the tap-wide state lock.
+
+Ordinary dependency-bearing VFS selection and its Node-and-Chromium
+runtime are also skipped during each campaign Formula call. Their tap
+configuration truthfully describes the still-live old prefix until the
+atomic cutover, so interpreting it under the target layout would be a
+false mixed-prefix test. The independent `file-formula` browser smoke
+continues to run with the campaign layout and remains the per-bottle
+Chromium proof.
 
 An ABI transition lands its coherent source and package changes through the
 ordinary Kandelo merge process first. The normal path then rebuilds final
@@ -2060,9 +2143,12 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    produce a false positive. The uploader copies only the validated child
    layout to its content-derived tag. Immediately before that credentialed
    `oras cp`, the transport itself re-reads `Automattic/kandelo`'s protected
-   `main` ref and requires it to equal the explicit publication SHA; an earlier
-   workflow check cannot authorize a copy after `main` advances. The uploader
-   retires the isolated ORAS authentication state and requires an anonymous
+   `main` ref. An ordinary call requires equality with the explicit
+   publication SHA. A prefix-campaign call requires that its explicit
+   sealed source remain an ancestor. The two authority inputs are
+   mutually exclusive, and an earlier workflow check cannot authorize a
+   copy after the protected history changes. The uploader retires the
+   isolated ORAS authentication state and requires an anonymous
    exact-digest readback. Its only output is a
    strict data receipt binding the canonical layout receipt to that public
    readback.
@@ -2107,12 +2193,16 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    repository-rooted namespace inherit public access. Automation never changes
    package visibility, and a package that is not anonymously readable fails
    before tap finalization.
-4. `verify-bottle` is read-only and starts from fresh exact source checkouts. It
-   revalidates the build handoff and receipt, fetches only the declared Kandelo
-   platform runtime for Formula tests, builds the VFS image, and runs the
-   runtime and browser gates. The `file-formula` browser-gallery smoke separately
-   prepares the supported interactive-demo graph. That graph contains owned
-   wasm32 and wasm64 process fixtures, so the verifier builds both sysroots in
+4. `verify-bottle` is read-only and starts from fresh exact source
+   checkouts. In campaign mode it deterministically reconstructs the
+   prepared checkout and requires its separately recorded raw source and
+   local checkout identities. It revalidates the build handoff and
+   receipt, fetches only the declared Kandelo platform runtime for
+   Formula tests, builds the VFS image, and runs the runtime and browser
+   gates. The `file-formula` browser-gallery smoke separately prepares
+   the supported interactive-demo graph. That graph contains owned
+   wasm32 and wasm64 process fixtures, so the verifier builds both
+   sysroots in
    its isolated sysroot checkout and copies both exact outputs into the fresh
    browser checkout before running the supported preparation command. Packages
    supplied by the external software gallery are not verifier prerequisites.
@@ -2205,12 +2295,15 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    the same coordinated rollout may already describe its new bottle while
    aggregate metadata still describes the previous bottle. Downstream jobs
    never execute artifact-provided scripts, Formulae, or environment files.
-5. `finalize-tap` runs only for a write publication and receives only
-   `contents: write`. On another fresh runner it downloads exactly one handoff
-   for every planned Formula/architecture pair. The pinned artifact downloader
-   may flatten one matched handoff directly into the requested directory or
-   retain artifact-name directories, so the finalizer normalizes either exact
-   topology into one NUL-delimited plan-ordered path manifest. Correctly named
+5. `finalize-tap` runs only for a write publication that did not request
+   deferred finalization, and receives only `contents: write`. A
+   prefix-campaign Formula call therefore cannot mutate tap Git state.
+   On another fresh runner for an ordinary publication, the job
+   downloads exactly one handoff for every planned Formula/architecture
+   pair. The pinned artifact downloader may flatten one matched handoff
+   directly into the requested directory or retain artifact-name
+   directories, so the finalizer normalizes either exact topology into
+   one NUL-delimited plan-ordered path manifest. Correctly named
    nested single- and multi-handoff layouts are also accepted for compatibility
    with downloader topology changes. Mixed layouts, missing or extra entries,
    duplicate identities, symlinks, and special files fail closed. Each
@@ -2250,11 +2343,13 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    race after the workflow's earlier check and after potentially long
    composition. It does not load Formula Ruby or run Homebrew in the
    credentialed role.
-6. `publish-vfs-release` runs only when `require-vfs-acceptance: true`, every
-   verifier matrix entry succeeded, and the atomic tap finalizer succeeded. The
-   verifier exports only the selected wasm32 image, its deterministic lazy
-   shell ZIP, both descriptors, its VFS report, and the exact Node and Chromium
-   evidence. A fresh job
+6. `publish-vfs-release` runs only when finalization was not deferred,
+   `require-vfs-acceptance: true`, every verifier matrix entry
+   succeeded, and the atomic tap finalizer succeeded. A prefix-campaign
+   Formula call cannot publish this release. For an ordinary accepted
+   publication, the verifier exports only the selected wasm32 image, its
+   deterministic lazy shell ZIP, both descriptors, its VFS report, and
+   the exact Node and Chromium evidence. A fresh job
    checks out the exact planned Kandelo and tap commits, revalidates that inert
    bundle without a token in its environment, compares its ABI and bottle
    release tag to the trusted plan outputs, and only then exposes the scoped
@@ -2272,12 +2367,15 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    records to set `immutable: true` before emitting success. A public release
    retry is read-only and idempotent.
 
-Tap writes use a tap-wide state lock, an attached `main` checkout, an explicit
-remote-main refresh, and an explicit `HEAD:refs/heads/main` push. The workflow
-uses a separate clean checkout for failure reports so a partially generated or
-locally committed success attempt cannot enter a last-green failure commit.
-Maintenance rollback resolves its freshly checked-out Kandelo `main` commit and
+Ordinary tap writes use a tap-wide state lock, an attached `main`
+checkout, an explicit remote-main refresh, and an explicit
+`HEAD:refs/heads/main` push. The workflow uses a separate clean checkout
+for failure reports so a partially generated or locally committed
+success attempt cannot enter a last-green failure commit. Maintenance
+rollback resolves its freshly checked-out Kandelo `main` commit and
 passes that same identity as both report provenance and push authority.
+Prefix-campaign Formula calls make no tap write; the later complete
+campaign transaction owns its single final push.
 
 Use `dry-run: true` for local or CI validation that must not push GHCR blobs or
 tap commits. Dry runs still build bottles and validate the generated metadata
@@ -3495,12 +3593,19 @@ checks a credential. The publisher then holds the tag state lock while it
 reconciles create, upload, and publish responses, authentically downloads every
 complete draft asset immediately before publication, and verifies the
 immutable release, direct tag, and every anonymous download afterward. A
-caller must pass the exact Kandelo `main` SHA. The credentialed primitive
-re-reads protected `main` immediately before each release creation, individual
-asset upload, direct-tag creation, and draft-to-public transition. If `main`
-advances during reconciliation, the next mutation fails closed; a complete
-draft may remain for a later exact-main run to inspect, but it is not made
-public under stale authority. A
+caller must pass exactly one Kandelo authority: the exact current
+`main` SHA for an ordinary release, or the explicitly contained sealed
+source SHA for the prefix campaign. Passing both or neither fails. A
+campaign handoff also passes its raw tap source as contained
+target-repository authority; the manifest target must equal that source.
+Exact and contained target authority are also mutually exclusive.
+
+The credentialed primitive re-reads protected `main` immediately before
+each release creation, individual asset upload, direct-tag creation,
+and draft-to-public transition. Exact mode fails if `main` advances.
+Contained mode fails if the source leaves protected history. In either
+case a complete draft may remain for a later authorized run to inspect,
+but it is not made public under stale authority. A
 failed attempt leaves any older receipt untouched. Success atomically replaces
 the receipt with the release ID and every asset's ID, URL, digest, and size.
 This same bounded 256-asset contract can carry the production shell mirror's
@@ -3705,6 +3810,14 @@ build, upload, and verifier matrix instance as well as each Formula-level index
 job and the single atomic finalizer. A finalizer that
 successfully writes a failure report still concludes as a failed job and does
 not satisfy this gate.
+
+This checklist does not apply independently to each prefix-campaign
+Formula. Those calls deliberately omit `finalize-tap` and
+`publish-vfs-release`. Each must instead finish build, upload, anonymous
+index readback, and verification, then produce one immutable
+`homebrew-prefix-handoff-sha256-<handoff-sha256>` release. The campaign
+acceptance gate requires the complete handoff set, one fully validated
+tap candidate, and one atomic final tap update.
 
 The workflow pins Kandelo source at planning time, while browser-graph package
 resolution reads the canonical ABI package index later in the run. If another
