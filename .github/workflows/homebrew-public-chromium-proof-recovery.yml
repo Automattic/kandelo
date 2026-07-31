@@ -231,6 +231,22 @@ jobs:
             echo "plan-url=$plan_url"
           } >>"$GITHUB_OUTPUT"
 
+      - name: Resolve only the current packaged kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          kernel_cache="$RUNNER_TEMP/homebrew-public-chromium-kernel-cache"
+          test ! -e "$kernel_cache"
+          echo "WASM_POSIX_BINARY_CACHE_ROOT=$kernel_cache" >>"$GITHUB_ENV"
+          # WHY: the focused Vite build still imports the kernel. Fetch only
+          # that package instead of rebuilding unrelated generated demos.
+          bash scripts/dev-shell.sh env \
+            "WASM_POSIX_BINARY_CACHE_ROOT=$kernel_cache" \
+            bash scripts/fetch-binaries.sh --fetch-only --package kernel
+          bash scripts/dev-shell.sh env \
+            "WASM_POSIX_BINARY_CACHE_ROOT=$kernel_cache" \
+            bash scripts/resolve-binary.sh kernel.wasm >/dev/null
+
       - name: Build the focused diagnostic browser
         working-directory: apps/browser-demos
         shell: bash
@@ -243,6 +259,7 @@ jobs:
           # host-input identities also changed. Final #1147 still builds and
           # proves the complete main product after those images are regenerated.
           bash ../../scripts/dev-shell.sh env \
+            "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
             "KANDELO_BROWSER_DEMO_INPUTS=$KANDELO_BROWSER_DEMO_INPUTS" \
             npm run build
           test -f dist/pages/homebrew-vfs-test/index.html

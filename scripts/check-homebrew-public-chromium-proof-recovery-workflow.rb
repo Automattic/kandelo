@@ -35,7 +35,7 @@ MIRROR_TAG =
   "fd15162a8c9c06e6d7936af470cd16ba916528708356750751b55bac567a0ce2"
 RUNTIME_HANDOFF = "homebrew-public-browser-runtime-handoff"
 WORKFLOW_DIGEST =
-  "1d3aed0678df72dac2345b2b3a1dd86fac00cb80b946512c8255e5f66ce2342f"
+  "8842dbce28f6f29667a9eddfcf1ec68b757a11d9ef219582d2394d603eb576cb"
 RUNNER_DIGEST =
   "10e69e20c7e5b9a02eec910b0c3edce3baadd6f349bf80bdb4bfc20c86897128"
 DOWNLOAD_ACTION =
@@ -152,7 +152,10 @@ begin
     prepare_source.include?("npm --prefix host ci") &&
       prepare_source.include?("npm --prefix apps/browser-demos ci") &&
       prepare_source.include?("scripts/dev-shell.sh") &&
-      prepare_source.include?("./run.sh --fetch-only prepare-browser") &&
+      prepare_source.include?(
+        "scripts/fetch-binaries.sh --fetch-only --package kernel"
+      ) &&
+      prepare_source.include?("scripts/resolve-binary.sh kernel.wasm") &&
       prepare_source.include?("npm run build") &&
       prepare_source.include?(
         "scripts/create-homebrew-guest-lifecycle-fixture.ts"
@@ -161,6 +164,45 @@ begin
         "scripts/create-homebrew-browser-proof-runtime-handoff.sh"
       ),
     "Chromium producer does not own every build-time dependency",
+  )
+  kernel_resolution = named_step(
+    prepare,
+    "Resolve only the current packaged kernel",
+  ).fetch("run")
+  check(
+    kernel_resolution.include?(
+      'kernel_cache="$RUNNER_TEMP/homebrew-public-chromium-kernel-cache"'
+    ) &&
+      kernel_resolution.include?(
+        'echo "WASM_POSIX_BINARY_CACHE_ROOT=$kernel_cache" >>"$GITHUB_ENV"'
+      ) &&
+      kernel_resolution.scan(
+        '"WASM_POSIX_BINARY_CACHE_ROOT=$kernel_cache"'
+      ).length == 3 &&
+      kernel_resolution.include?(
+        "scripts/fetch-binaries.sh --fetch-only --package kernel"
+      ) &&
+      kernel_resolution.include?(
+        "scripts/resolve-binary.sh kernel.wasm"
+      ),
+    "focused Chromium build does not resolve only its packaged kernel",
+  )
+  focused_build = named_step(
+    prepare,
+    "Build the focused diagnostic browser",
+  )
+  check(
+    focused_build.fetch("working-directory") == "apps/browser-demos" &&
+      focused_build.fetch("env") == {
+        "KANDELO_BROWSER_DEMO_INPUTS" => "homebrew-vfs-test",
+      } &&
+      focused_build.fetch("run").include?(
+        '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT"'
+      ) &&
+      focused_build.fetch("run").include?(
+        '"KANDELO_BROWSER_DEMO_INPUTS=$KANDELO_BROWSER_DEMO_INPUTS"'
+      ),
+    "focused Chromium build does not bind its exact inputs",
   )
   handoff_build = named_step(
     prepare,

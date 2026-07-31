@@ -76,6 +76,10 @@ sed '/          include-hidden-files: true/d' \
   "$WORKFLOW" >"$TMP_ROOT/hidden-handoff-member.yml"
 expect_workflow_rejected "$TMP_ROOT/hidden-handoff-member.yml"
 
+sed 's/--fetch-only --package kernel/--fetch-only --package shell/' \
+  "$WORKFLOW" >"$TMP_ROOT/wrong-focused-package.yml"
+expect_workflow_rejected "$TMP_ROOT/wrong-focused-package.yml"
+
 sed '/env -u GH_TOKEN -u GITHUB_TOKEN/d' \
   "$WORKFLOW" >"$TMP_ROOT/credentialed-readback.yml"
 expect_workflow_rejected "$TMP_ROOT/credentialed-readback.yml"
