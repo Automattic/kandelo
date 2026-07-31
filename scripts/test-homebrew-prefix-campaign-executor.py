@@ -330,6 +330,383 @@ class Fixture:
         )
 
 
+class ReuseFixture(Fixture):
+    def __init__(self) -> None:
+        super().__init__()
+        self.old_tap = self.root / "old-tap"
+        (self.old_tap / "Formula").mkdir(parents=True)
+        subprocess.run(
+            ["git", "init", "-q"], cwd=self.old_tap, check=True
+        )
+        (self.old_tap / "Formula/alpha.rb").write_bytes(
+            formula_source("alpha")
+        )
+        self.historical_formula_commit = self.commit_old_tap(
+            "historical Formula"
+        )
+
+        layout = json.loads(
+            (ROOT / "homebrew/kandelo-guest-layout.json").read_text()
+        )
+        archive = b"alpha/wasm32 historical bottle bytes\n"
+        self.archive = archive
+        digest = sha256(archive)
+        source_formula_digest = sha256(formula_source("alpha"))
+        # Homebrew archives the Formula receipt that produced a bottle. Its
+        # digest is independent from the current tap source identity, which
+        # excludes mutable bottle blocks when deciding whether bytes can be
+        # reused. Keep the fixture values distinct so admission cannot
+        # accidentally substitute one provenance identity for the other.
+        archived_formula_digest = sha256(
+            b"historical Formula receipt embedded in the bottle\n"
+        )
+        link_path = "Kandelo/link/alpha-1.0-rebuild0-wasm32.json"
+        provenance_path = (
+            "Kandelo/reports/"
+            "alpha-1.0-rebuild0-wasm32.provenance.json"
+        )
+        self.old_record = {
+            "arch": "wasm32",
+            "bottle_tag": "wasm32_kandelo",
+            "browser_compatible": True,
+            "built_at": "2026-07-20T00:00:00Z",
+            "built_by": "https://github.com/example/actions/runs/7",
+            "built_from": {
+                "formula_sha256": archived_formula_digest,
+                "kandelo_commit": "d" * 40,
+                "kandelo_repository": "Automattic/kandelo",
+                "tap_commit": self.historical_formula_commit,
+                "tap_repository": TAP_REPOSITORY,
+            },
+            "bytes": len(archive),
+            "cache_key_sha": digest,
+            "cellar": f"{layout['retired_prefixes'][0]}/Cellar",
+            "fork_instrumentation": "not-required",
+            "kandelo_abi": 42,
+            "link_manifest": link_path,
+            "prefix": layout["retired_prefixes"][0],
+            "runtime_support": ["browser", "node"],
+            "sha256": digest,
+            "status": "success",
+            "url": (
+                "https://ghcr.io/v2/"
+                f"{TAP_REPOSITORY}/alpha/blobs/sha256:{digest}"
+            ),
+        }
+        metadata = {
+            "generated_at": "2026-07-20T00:00:00Z",
+            "generator": "reuse fixture",
+            "kandelo_abi": 42,
+            "kandelo_commit": "d" * 40,
+            "kandelo_repository": "Automattic/kandelo",
+            "packages": [],
+            "release_tag": "bottles-abi-v42",
+            "schema": 1,
+            "tap_commit": "e" * 40,
+            "tap_name": TAP_NAME,
+            "tap_repository": TAP_REPOSITORY,
+        }
+        metadata_path = self.old_tap / "Kandelo/metadata.json"
+        write_json(metadata_path, metadata)
+        metadata_record = {
+            "path": "Kandelo/metadata.json",
+            "sha256": sha256(metadata_path.read_bytes()),
+        }
+        formula_sidecar = {
+            "bottle_rebuild": 0,
+            "bottles": [self.old_record],
+            "dependencies": [],
+            "formula_path": "Formula/alpha.rb",
+            "formula_revision": 0,
+            "full_name": f"{TAP_NAME}/alpha",
+            "kandelo_abi": 42,
+            "name": "alpha",
+            "schema": 1,
+            "source_metadata": "Kandelo/metadata.json",
+            "tap_commit": "e" * 40,
+            "tap_name": TAP_NAME,
+            "tap_repository": TAP_REPOSITORY,
+            "version": "1.0",
+        }
+        formula_sidecar_path = self.old_tap / "Kandelo/formula/alpha.json"
+        write_json(formula_sidecar_path, formula_sidecar)
+        formula_record = {
+            "path": "Kandelo/formula/alpha.json",
+            "sha256": sha256(formula_sidecar_path.read_bytes()),
+        }
+        link = {
+            "arch": "wasm32",
+            "bottle": {
+                "bytes": len(archive),
+                "cache_key_sha": digest,
+                "payload_root": "alpha/1.0",
+                "sha256": digest,
+                "url": self.old_record["url"],
+            },
+            "cellar": self.old_record["cellar"],
+            "env": {"PATH_prepend": ["bin"]},
+            "kandelo_abi": 42,
+            "keg": f"{self.old_record['cellar']}/alpha/1.0",
+            "links": [
+                {
+                    "source": "bin/alpha",
+                    "target": "bin/alpha",
+                    "type": "file",
+                }
+            ],
+            "package": "alpha",
+            "prefix": self.old_record["prefix"],
+            "receipts": [".brew/alpha.rb", "INSTALL_RECEIPT.json"],
+            "schema": 1,
+            "version": "1.0",
+        }
+        link_file = self.old_tap / link_path
+        write_json(link_file, link)
+        link_record = {
+            "path": link_path,
+            "sha256": sha256(link_file.read_bytes()),
+        }
+        build = {
+            "brew_version": "Homebrew fixture",
+            "dev_shell": "scripts/dev-shell.sh",
+            "github_run": "https://github.com/example/actions/runs/7",
+            "job": "verify-bottle",
+            "runner_os": "Linux",
+            "sdk_fingerprint": "1" * 64,
+            "sysroot_fingerprint": "2" * 64,
+        }
+        validation = {
+            "outcome_lists": [
+                {
+                    "failed": [],
+                    "name": "schema",
+                    "passed": ["fixture"],
+                    "skipped": [],
+                    "status": "success",
+                },
+                {
+                    "failed": [],
+                    "name": "node_smoke",
+                    "passed": ["fixture"],
+                    "skipped": [],
+                    "status": "success",
+                },
+                {
+                    "failed": [],
+                    "name": "browser_smoke",
+                    "passed": ["fixture"],
+                    "skipped": [],
+                    "status": "success",
+                },
+            ]
+        }
+        provenance = {
+            "bottle": {
+                key: self.old_record[key]
+                for key in (
+                    "bottle_tag",
+                    "bytes",
+                    "cache_key_sha",
+                    "cellar",
+                    "prefix",
+                    "sha256",
+                    "url",
+                )
+            },
+            "build": build,
+            "formula": {
+                "path": "Formula/alpha.rb",
+                "sha256": archived_formula_digest,
+            },
+            "metadata": {
+                "formula_json": formula_record,
+                "link_manifest_json": link_record,
+                "metadata_json": metadata_record,
+                "provenance_json": {
+                    "path": provenance_path,
+                    "sha256": "0" * 64,
+                },
+            },
+            "repositories": {
+                key: self.old_record["built_from"][key]
+                for key in (
+                    "kandelo_repository",
+                    "kandelo_commit",
+                    "tap_repository",
+                    "tap_commit",
+                )
+            },
+            "schema": 1,
+            "subject": {
+                "arch": "wasm32",
+                "bottle_rebuild": 0,
+                "kandelo_abi": 42,
+                "package": "alpha",
+                "version": "1.0",
+            },
+            "validation": validation,
+        }
+        provenance["metadata"]["provenance_json"]["sha256"] = (
+            EXECUTOR.normalized_provenance_sha256(provenance)
+        )
+        provenance_file = self.old_tap / provenance_path
+        write_json(provenance_file, provenance)
+        provenance_record = {
+            "path": provenance_path,
+            "sha256": sha256(provenance_file.read_bytes()),
+        }
+        self.old_tap_commit = self.commit_old_tap("historical evidence")
+
+        self.campaign["authority"].update(
+            {
+                "guest_layout": {
+                    "path": "homebrew/kandelo-guest-layout.json",
+                    "sha256": sha256(
+                        (
+                            ROOT / "homebrew/kandelo-guest-layout.json"
+                        ).read_bytes()
+                    ),
+                },
+                "old_metadata": metadata_record,
+                "old_tap_commit": self.old_tap_commit,
+            }
+        )
+        alpha = self.formulae[0]
+        alpha["variants"] = [
+            {
+                "anonymous_readback": {
+                    "bytes": len(archive),
+                    "sha256": digest,
+                    "url": self.old_record["url"],
+                },
+                "arch": "wasm32",
+                "disposition": {
+                    "kind": "byte-clean-reuse-candidate",
+                    "reasons": [],
+                },
+                "inspection": {
+                    "file_count": 3,
+                    "fork_instrumentation": "not-required",
+                    "formula_sha256": archived_formula_digest,
+                    "result_sha256": "3" * 64,
+                    "retired_prefixes": [],
+                    "scan": "all-regular-members",
+                },
+                "old_formula_source": {
+                    "commit": self.historical_formula_commit,
+                    "identity_excluding_bottle_sha256": (
+                        source_formula_digest
+                    ),
+                    "path": "Formula/alpha.rb",
+                    "sha256": source_formula_digest,
+                },
+                "old_record": self.old_record,
+                "old_record_sha256": sha256(
+                    EXECUTOR.canonical_json(self.old_record)
+                ),
+                "provenance": provenance_record,
+                "selected_by": "metadata-selected",
+                "sidecars": {
+                    "formula": formula_record,
+                    "link": link_record,
+                },
+            }
+        ]
+        write_json(self.campaign_path, self.campaign)
+        self.fetches: list[str] = []
+
+    def commit_old_tap(self, message: str) -> str:
+        subprocess.run(
+            ["git", "add", "."], cwd=self.old_tap, check=True
+        )
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Campaign fixture",
+                "-c",
+                "user.email=campaign@example.invalid",
+                "commit",
+                "-q",
+                "-m",
+                message,
+            ],
+            cwd=self.old_tap,
+            check=True,
+        )
+        return subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.old_tap,
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout.strip()
+
+    def fetch_bottle(
+        self,
+        url: str,
+        output: pathlib.Path,
+        expected_bytes: int,
+        expected_sha256: str,
+    ) -> None:
+        self.fetches.append(url)
+        self.assert_public_read(url)
+        if (
+            len(self.archive) != expected_bytes
+            or sha256(self.archive) != expected_sha256
+        ):
+            raise AssertionError("reuse fixture bottle identity changed")
+        output.write_bytes(self.archive)
+
+    def assert_public_read(self, url: str) -> None:
+        if url != self.old_record["url"]:
+            raise AssertionError("reuse did not fetch the public digest URL")
+
+    def derive_reuse(self, output: pathlib.Path) -> None:
+        EXECUTOR.derive_reuse(
+            campaign_path=self.campaign_path,
+            source_tap_root=self.source,
+            old_tap_root=self.old_tap,
+            formula_name="alpha",
+            arch="wasm32",
+            dependency_roots=[],
+            output=output,
+            asset_fetcher=self.fetch_bottle,
+        )
+
+    def generate_sidecars(
+        self,
+        *,
+        tap_root: pathlib.Path,
+        input_path: pathlib.Path,
+        prefix_campaign_layout_sha256: str,
+    ) -> None:
+        if prefix_campaign_layout_sha256 != self.campaign["authority"][
+            "guest_layout"
+        ]["sha256"]:
+            raise AssertionError("selection used the wrong guest layout")
+        package = json.loads(input_path.read_text())["packages"][0]
+        metadata_path = tap_root / "Kandelo/metadata.json"
+        packages: list[dict[str, str]] = []
+        if metadata_path.is_file():
+            packages = json.loads(metadata_path.read_text())["packages"]
+        packages.append({"name": package["name"]})
+        write_json(metadata_path, {"packages": packages, "schema": 1})
+
+    def validate_tap(
+        self,
+        *,
+        tap_root: pathlib.Path,
+        prefix_campaign_layout_sha256: str,
+    ) -> None:
+        if prefix_campaign_layout_sha256 != self.campaign["authority"][
+            "guest_layout"
+        ]["sha256"]:
+            raise AssertionError("selection used the wrong guest layout")
+        if not (tap_root / "Kandelo/metadata.json").is_file():
+            raise AssertionError("selection validation lacked metadata")
+
+
 def release_fetchers(
     prepared: pathlib.Path,
 ) -> tuple[Any, Any, dict[str, Any]]:
@@ -434,6 +811,354 @@ def rewrite_handoff_release(
 
 
 class PrefixCampaignExecutorTests(unittest.TestCase):
+    def test_historical_bottle_readback_is_credential_free(
+        self,
+    ) -> None:
+        root = pathlib.Path(tempfile.mkdtemp(prefix="reuse-readback."))
+        self.addCleanup(shutil.rmtree, root)
+        output = root / "bottle.tar.gz"
+        archive = b"public historical bottle\n"
+        digest = sha256(archive)
+        captured: dict[str, Any] = {}
+
+        def run(command: list[str], **options: Any) -> Any:
+            captured["command"] = command
+            captured["options"] = options
+            output.write_bytes(archive)
+            return type("Result", (), {"returncode": 0})()
+
+        credentials = {
+            name: "must-not-reach-readback"
+            for name in (
+                "GH_TOKEN",
+                "GITHUB_TOKEN",
+                "HOMEBREW_GITHUB_API_TOKEN",
+                "HOMEBREW_GITHUB_PACKAGES_TOKEN",
+                "HOMEBREW_DOCKER_REGISTRY_TOKEN",
+            )
+        }
+        with mock.patch.dict(
+            EXECUTOR.os.environ, credentials
+        ), mock.patch.object(
+            EXECUTOR.subprocess,
+            "run",
+            side_effect=run,
+        ):
+            EXECUTOR.anonymous_bottle_readback(
+                "https://ghcr.io/v2/kandelo-dev/"
+                f"homebrew-tap-core/alpha/blobs/sha256:{digest}",
+                output,
+                len(archive),
+                digest,
+            )
+
+        environment = captured["options"]["env"]
+        self.assertTrue(credentials.keys().isdisjoint(environment))
+        self.assertEqual(
+            captured["command"][0:3], ["npx", "--no-install", "tsx"]
+        )
+        self.assertIn(
+            "scripts/homebrew-verify-public-bottle.ts",
+            captured["command"][3],
+        )
+
+    def test_reuse_handoff_preserves_provenance_and_round_trips(
+        self,
+    ) -> None:
+        fixture = ReuseFixture()
+        self.addCleanup(fixture.close)
+        handoff = fixture.root / "reuse-handoff"
+        fixture.derive_reuse(handoff)
+
+        self.assertEqual(fixture.fetches, [fixture.old_record["url"]])
+        manifest = json.loads((handoff / "handoff.json").read_text())
+        self.assertEqual(manifest["schema"], EXECUTOR.HANDOFF_SCHEMA)
+        self.assertEqual(
+            manifest["publications"],
+            [
+                {
+                    "arch": "wasm32",
+                    "files": manifest["publications"][0]["files"],
+                    "kind": "reuse",
+                }
+            ],
+        )
+        self.assertEqual(
+            [
+                value["path"]
+                for value in manifest["publications"][0]["files"]
+            ],
+            [
+                f"payload/wasm32/{relative}"
+                for relative in EXECUTOR.REUSE_PUBLICATION_FILES
+            ],
+        )
+        composition = json.loads(
+            (
+                handoff
+                / "payload/wasm32/composition/sidecars-input.json"
+            ).read_text()
+        )
+        bottle = composition["packages"][0]["bottles"][0]
+        self.assertEqual(
+            bottle["built_from"], fixture.old_record["built_from"]
+        )
+        self.assertNotEqual(
+            bottle["built_from"]["formula_sha256"],
+            fixture.formulae[0]["variants"][0]["old_formula_source"][
+                "identity_excluding_bottle_sha256"
+            ],
+        )
+        self.assertEqual(
+            composition["kandelo_commit"], KANDELO_COMMIT
+        )
+        self.assertNotEqual(
+            bottle["built_from"]["kandelo_commit"],
+            composition["kandelo_commit"],
+        )
+
+        prepared = fixture.root / "reuse-release"
+        EXECUTOR.prepare_release(
+            campaign_path=fixture.campaign_path,
+            handoff_root=handoff,
+            dependency_roots=[],
+            output=prepared,
+        )
+        release = json.loads(
+            (prepared / "release-manifest.json").read_text()
+        )
+        self.assertEqual(
+            [value["name"] for value in release["assets"]],
+            sorted(
+                [
+                    "handoff.json",
+                    *[
+                        EXECUTOR.publication_asset_name(
+                            "wasm32", relative
+                        )
+                        for relative in EXECUTOR.REUSE_PUBLICATION_FILES
+                    ],
+                ]
+            ),
+        )
+        fetch_json, fetch_asset, _release = release_fetchers(prepared)
+        readback = fixture.root / "reuse-readback"
+        EXECUTOR.fetch_release(
+            campaign_path=fixture.campaign_path,
+            tag=release["tag"],
+            output=readback,
+            receipt_output=fixture.root / "reuse-receipt.json",
+            dependency_roots=[],
+            json_fetcher=fetch_json,
+            asset_fetcher=fetch_asset,
+        )
+        self.assertEqual(
+            (
+                readback / "payload/wasm32/reuse/bottle.tar.gz"
+            ).read_bytes(),
+            fixture.archive,
+        )
+
+        selection = fixture.root / "reuse-selection"
+        EXECUTOR.prepare_selection(
+            campaign_path=fixture.campaign_path,
+            source_tap_root=fixture.source,
+            roots=["alpha"],
+            arch="wasm32",
+            handoff_roots=[readback],
+            output=selection,
+            bottle_merger=fixture.merge_dependency,
+            sidecar_generator=fixture.generate_sidecars,
+            tap_validator=fixture.validate_tap,
+        )
+        self.assertIn(
+            fixture.old_record["sha256"],
+            (selection / "tap/Formula/alpha.rb").read_text(),
+        )
+
+    def test_reuse_admission_rejects_untrusted_or_ambiguous_inputs(
+        self,
+    ) -> None:
+        def required_rebuild(fixture: ReuseFixture) -> None:
+            variant = fixture.formulae[0]["variants"][0]
+            variant["disposition"] = {
+                "kind": "required-rebuild",
+                "reasons": ["fixture"],
+            }
+            write_json(fixture.campaign_path, fixture.campaign)
+
+        def private_url(fixture: ReuseFixture) -> None:
+            variant = fixture.formulae[0]["variants"][0]
+            private = "https://example.invalid/private/bottle"
+            variant["old_record"]["url"] = private
+            variant["anonymous_readback"]["url"] = private
+            variant["old_record_sha256"] = sha256(
+                EXECUTOR.canonical_json(variant["old_record"])
+            )
+            write_json(fixture.campaign_path, fixture.campaign)
+
+        def retired_bytes(fixture: ReuseFixture) -> None:
+            fixture.formulae[0]["variants"][0]["inspection"][
+                "retired_prefixes"
+            ] = ["/home/linuxbrew/.linuxbrew"]
+            write_json(fixture.campaign_path, fixture.campaign)
+
+        def substituted_producer(fixture: ReuseFixture) -> None:
+            variant = fixture.formulae[0]["variants"][0]
+            variant["old_record"]["built_from"]["tap_commit"] = "f" * 40
+            variant["old_record_sha256"] = sha256(
+                EXECUTOR.canonical_json(variant["old_record"])
+            )
+            write_json(fixture.campaign_path, fixture.campaign)
+
+        def ambiguous_record(fixture: ReuseFixture) -> None:
+            variant = fixture.formulae[0]["variants"][0]
+            variant["old_record"]["unreviewed"] = True
+            variant["old_record_sha256"] = sha256(
+                EXECUTOR.canonical_json(variant["old_record"])
+            )
+            write_json(fixture.campaign_path, fixture.campaign)
+
+        def stale_destination(fixture: ReuseFixture) -> None:
+            fixture.formulae[0]["destination"]["bottle_rebuild"] = 0
+            write_json(fixture.campaign_path, fixture.campaign)
+
+        cases = (
+            ("required rebuild", required_rebuild, "not admitted"),
+            ("private URL", private_url, "bottle identity is invalid"),
+            (
+                "retired bytes",
+                retired_bytes,
+                "does not admit byte-clean reuse",
+            ),
+            (
+                "substituted producer",
+                substituted_producer,
+                "old Formula source is substituted",
+            ),
+            (
+                "ambiguous old record",
+                ambiguous_record,
+                "old bottle record is ambiguous",
+            ),
+            (
+                "non-advancing destination",
+                stale_destination,
+                "reuse destination does not advance rebuild",
+            ),
+        )
+        for label, mutate, message in cases:
+            with self.subTest(label=label):
+                fixture = ReuseFixture()
+                try:
+                    mutate(fixture)
+                    output = fixture.root / "rejected-reuse"
+                    with self.assertRaisesRegex(
+                        EXECUTOR.ExecutorError, message
+                    ):
+                        fixture.derive_reuse(output)
+                    self.assertFalse(output.exists())
+                    self.assertEqual(fixture.fetches, [])
+                finally:
+                    fixture.close()
+
+    def test_reuse_rejects_mutable_evidence_and_wrong_public_bytes(
+        self,
+    ) -> None:
+        dirty = ReuseFixture()
+        self.addCleanup(dirty.close)
+        (
+            dirty.old_tap
+            / "Kandelo/reports/alpha-1.0-rebuild0-wasm32.provenance.json"
+        ).write_text("{}\n")
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError, "historical tap input worktree is dirty"
+        ):
+            dirty.derive_reuse(dirty.root / "dirty-output")
+
+        substituted = ReuseFixture()
+        self.addCleanup(substituted.close)
+        provenance = (
+            substituted.old_tap
+            / "Kandelo/reports/alpha-1.0-rebuild0-wasm32.provenance.json"
+        )
+        value = json.loads(provenance.read_text())
+        value["build"]["job"] = "substituted"
+        write_json(provenance, value)
+        substituted.campaign["authority"]["old_tap_commit"] = (
+            substituted.commit_old_tap("substitute provenance")
+        )
+        write_json(substituted.campaign_path, substituted.campaign)
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError, "differs from its campaign digest"
+        ):
+            substituted.derive_reuse(
+                substituted.root / "substituted-output"
+            )
+
+        wrong = ReuseFixture()
+        self.addCleanup(wrong.close)
+
+        def wrong_fetch(
+            _url: str,
+            output: pathlib.Path,
+            _expected_bytes: int,
+            _expected_sha256: str,
+        ) -> None:
+            output.write_bytes(b"wrong public bytes")
+
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "anonymous bottle bytes changed|byte count differs",
+        ):
+            EXECUTOR.derive_reuse(
+                campaign_path=wrong.campaign_path,
+                source_tap_root=wrong.source,
+                old_tap_root=wrong.old_tap,
+                formula_name="alpha",
+                arch="wasm32",
+                dependency_roots=[],
+                output=wrong.root / "wrong-output",
+                asset_fetcher=wrong_fetch,
+            )
+
+    def test_reuse_readback_rejects_rewritten_composition(
+        self,
+    ) -> None:
+        fixture = ReuseFixture()
+        self.addCleanup(fixture.close)
+        handoff = fixture.root / "tampered-reuse"
+        fixture.derive_reuse(handoff)
+        composition_path = (
+            handoff / "payload/wasm32/composition/sidecars-input.json"
+        )
+        composition = json.loads(composition_path.read_text())
+        composition["packages"][0]["bottles"][0]["built_from"][
+            "kandelo_commit"
+        ] = KANDELO_COMMIT
+        write_json(composition_path, composition)
+        manifest_path = handoff / "handoff.json"
+        manifest = json.loads(manifest_path.read_text())
+        record = next(
+            value
+            for value in manifest["publications"][0]["files"]
+            if value["path"].endswith(
+                "composition/sidecars-input.json"
+            )
+        )
+        record["bytes"] = composition_path.stat().st_size
+        record["sha256"] = sha256(composition_path.read_bytes())
+        write_json(manifest_path, manifest)
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "reuse sidecars input is substituted",
+        ):
+            EXECUTOR.load_handoff(
+                handoff,
+                fixture.campaign,
+                fixture.campaign_path.read_bytes(),
+            )
+
     def test_closed_selection_ignores_unrelated_missing_formula(
         self,
     ) -> None:

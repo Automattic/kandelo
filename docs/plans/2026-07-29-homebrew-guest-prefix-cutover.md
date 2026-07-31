@@ -101,10 +101,11 @@ zlib/wasm64
 zstd/wasm32
 ```
 
-Reuse must retain the exact archive digest, byte count, URL, build time,
-builder, and original source provenance. Separate admission evidence must
-bind the old selected record, anonymous readback, inspector revision, guest
-layout digest, scan result, canonical-prefix pour, and runtime result.
+Reuse retains the exact archive digest, byte count, URL, build time, builder,
+and original source provenance. `derive-reuse` binds the old selected record,
+anonymous readback, inspection result, guest-layout digest, historical
+Formula source, Formula/link sidecars, and provenance report. It produces a
+content-addressed Formula/architecture handoff without changing `built_from`.
 
 If that truthful handoff takes longer to finish than rebuilding the 34
 variants, rebuilding is the approved fallback. The reusable set totals only
@@ -253,7 +254,8 @@ The ordinary publisher already provides secure build, upload, readback, and
 multi-Formula finalization. The prefix campaign additionally requires:
 
 - an exact manifest/checker deriving reuse, rebuild, and retirement;
-- a reuse handoff that preserves original build provenance;
+- the Kandelo-owned `derive-reuse` handoff, which preserves original build
+  provenance and rejects private or changed historical bytes;
 - an inert, no-push candidate overlay for dependency waves;
 - a sparse dependency-ready scheduler with a global eight-job bound;
 - immutable, digest-bound handoff storage when work spans workflow runs;

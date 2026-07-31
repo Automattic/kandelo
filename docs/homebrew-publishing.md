@@ -1922,11 +1922,52 @@ in the separate digest-bound package-generation input receipt and must not
 replace `built_from`.
 
 A matching cache key, ABI, release tag, and bottle URL are still not enough to
-reuse an older bottle. Historical reuse needs its own content-bound
-`validated_against_main` evidence proving that historical build producer
-remains admissible for current `M`; top-level metadata from a newer run cannot
-make an older architecture current. That broader historical-reuse receipt is a
-follow-up and does not change the actual producer of a newly compiled bottle.
+reuse an older bottle. The prefix campaign admits historical bytes only when
+its sealed manifest classifies that exact Formula/architecture as
+`byte-clean-reuse-candidate`. The classification binds the old selected
+record, full archive inspection, historical Formula source, Formula/link
+sidecars, provenance report, candidate Formula identity, current ABI, and
+guest-layout digest.
+
+`homebrew-prefix-campaign-executor.py derive-reuse` consumes that authority.
+It requires the sealed candidate source tree and a clean old-tap checkout at
+the campaign's exact `old_tap_commit`. It rechecks every referenced sidecar
+and historical Formula blob, then uses the existing bearer-aware public-bottle
+reader with every package credential removed. The reader and executor verify
+the content-addressed GHCR blob's byte count and SHA-256 again. A private
+bottle, mutable checkout, changed evidence file, ambiguous record, non-empty
+retired-prefix scan, or substituted producer fails before a handoff appears.
+
+```sh
+bash scripts/dev-shell.sh python3 \
+  scripts/homebrew-prefix-campaign-executor.py derive-reuse \
+  --campaign campaign.json \
+  --source-tap-root target-tap \
+  --old-tap-root old-tap \
+  --formula zlib \
+  --arch wasm32 \
+  --out handoffs/zlib-wasm32
+```
+
+Repeat `--dependency-handoff <dir>` for the exact same-architecture
+dependency closure. Extra, missing, or wrong-architecture handoffs fail.
+
+Formula handoff schema 2 discriminates `build` and `reuse` publications. A
+reuse publication contains only canonical bottle JSON, the unchanged bottle
+archive, a sidecar-composition input, and a reuse evidence receipt. The normal
+release, readback, dependency staging, and closed-selection commands consume
+either kind. The tap controller invokes this Kandelo-owned command; it must
+not implement a second reuse-admission authority.
+
+The sidecar composition input names current campaign and tap state at its top
+level, but carries the historical bottle's exact `built_from` record. The
+sidecar generator verifies that the archived Formula receipt matches that
+historical record and preserves the same repository and commit identities in
+the generated bottle sidecar and provenance report. The old sidecar and
+provenance retain their historical rebuild number; the new Formula uses the
+campaign's strictly newer, collision-free destination rebuild. Current
+metadata can make the already-admitted bytes selectable; it cannot make them
+appear newly built.
 
 A dry run keeps those repository identities fixed, but may select a reviewed,
 valid Git branch name or an exact lowercase 40-character commit SHA from each

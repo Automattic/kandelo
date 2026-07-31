@@ -367,8 +367,10 @@ class Fixture:
                 self.campaign, self.formulae[0]
             ),
             "kind": "kandelo-homebrew-prefix-formula-handoff",
-            "publications": [{"arch": "wasm32", "files": files}],
-            "schema": 1,
+            "publications": [
+                {"arch": "wasm32", "files": files, "kind": "build"}
+            ],
+            "schema": EXECUTOR.HANDOFF_SCHEMA,
             "source": {
                 "kandelo_commit": KANDELO_COMMIT,
                 "source_tap_commit": self.source_commit,

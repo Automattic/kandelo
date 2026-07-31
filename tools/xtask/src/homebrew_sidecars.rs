@@ -199,6 +199,8 @@ struct BottleInput {
     browser_compatible: bool,
     fork_instrumentation: String,
     #[serde(default)]
+    built_from: Option<BuiltFromInput>,
+    #[serde(default)]
     status: Option<String>,
     #[serde(default)]
     built_by: Option<String>,
@@ -234,6 +236,16 @@ struct BottleInput {
     last_attempt_by: Option<String>,
     #[serde(default)]
     queued_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BuiltFromInput {
+    kandelo_repository: String,
+    kandelo_commit: String,
+    tap_repository: String,
+    tap_commit: String,
+    formula_sha256: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -700,13 +712,44 @@ impl Generator<'_> {
             .bottle_tag
             .clone()
             .unwrap_or_else(|| default_bottle_tag(&bottle.arch).to_string());
-        let built_from = json!({
-            "kandelo_repository": self.input.kandelo_repository,
-            "kandelo_commit": self.input.kandelo_commit,
-            "tap_repository": self.input.tap_repository,
-            "tap_commit": self.input.tap_commit,
-            "formula_sha256": package.formula_source_sha256,
-        });
+        let built_from = if let Some(historical) = &bottle.built_from {
+            validate_built_from(historical)?;
+            if status != "success" {
+                return Err(bottle_error(
+                    package,
+                    bottle,
+                    "historical built_from is valid only for a successful reused bottle",
+                ));
+            }
+            if !historical
+                .kandelo_repository
+                .eq_ignore_ascii_case(&self.input.kandelo_repository)
+                || !historical
+                    .tap_repository
+                    .eq_ignore_ascii_case(&self.input.tap_repository)
+            {
+                return Err(bottle_error(
+                    package,
+                    bottle,
+                    "historical built_from repository differs from the current publication authority",
+                ));
+            }
+            json!({
+                "kandelo_repository": historical.kandelo_repository,
+                "kandelo_commit": historical.kandelo_commit,
+                "tap_repository": historical.tap_repository,
+                "tap_commit": historical.tap_commit,
+                "formula_sha256": historical.formula_sha256,
+            })
+        } else {
+            json!({
+                "kandelo_repository": self.input.kandelo_repository,
+                "kandelo_commit": self.input.kandelo_commit,
+                "tap_repository": self.input.tap_repository,
+                "tap_commit": self.input.tap_commit,
+                "formula_sha256": package.formula_source_sha256,
+            })
+        };
         let mut output = json!({
             "arch": bottle.arch,
             "bottle_tag": bottle_tag,
@@ -795,7 +838,20 @@ impl Generator<'_> {
                 ),
             ));
         }
-        output["built_from"]["formula_sha256"] = json!(archived_formula_sha);
+        if let Some(historical) = &bottle.built_from {
+            // WHY: a reused bottle was compiled by the historical producer.
+            // Replacing any part of built_from with the campaign's current
+            // checkout would make unchanged bytes appear freshly built.
+            if historical.formula_sha256 != archived_formula_sha {
+                return Err(bottle_error(
+                    package,
+                    bottle,
+                    "historical built_from Formula digest differs from the bottle receipt",
+                ));
+            }
+        } else {
+            output["built_from"]["formula_sha256"] = json!(archived_formula_sha);
+        }
         let (bottle_sha, bottle_bytes) = sha256_file_and_len(&bottle_path)?;
         let expected_url =
             repository_bottle_url(&self.input.tap_repository, &package.name, &bottle_sha);
@@ -855,10 +911,10 @@ impl Generator<'_> {
                 "kandelo_abi": self.input.kandelo_abi,
             },
             "repositories": {
-                "kandelo_repository": self.input.kandelo_repository,
-                "kandelo_commit": self.input.kandelo_commit,
-                "tap_repository": self.input.tap_repository,
-                "tap_commit": self.input.tap_commit,
+                "kandelo_repository": output["built_from"]["kandelo_repository"],
+                "kandelo_commit": output["built_from"]["kandelo_commit"],
+                "tap_repository": output["built_from"]["tap_repository"],
+                "tap_commit": output["built_from"]["tap_commit"],
             },
             "formula": {
                 "path": package.formula_path,
@@ -1194,6 +1250,50 @@ fn require_sha256(value: &str, label: &str) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn validate_built_from(value: &BuiltFromInput) -> Result<(), String> {
+    for (label, repository) in [
+        ("built_from.kandelo_repository", &value.kandelo_repository),
+        ("built_from.tap_repository", &value.tap_repository),
+    ] {
+        let mut parts = repository.split('/');
+        let valid_part = |part: &str| {
+            !part.is_empty()
+                && part.len() <= 100
+                && part.as_bytes()[0].is_ascii_alphanumeric()
+                && part
+                    .bytes()
+                    .all(|byte| {
+                        byte.is_ascii_alphanumeric()
+                            || matches!(byte, b'.' | b'_' | b'-')
+                    })
+        };
+        if !parts.next().is_some_and(valid_part)
+            || !parts.next().is_some_and(valid_part)
+            || parts.next().is_some()
+        {
+            return Err(format!("{label} must be an owner/repository identity"));
+        }
+    }
+    for (label, commit) in [
+        ("built_from.kandelo_commit", &value.kandelo_commit),
+        ("built_from.tap_commit", &value.tap_commit),
+    ] {
+        if commit.len() != 40
+            || !commit
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(format!(
+                "{label} must be a 40-character lowercase hexadecimal commit"
+            ));
+        }
+    }
+    require_sha256(
+        &value.formula_sha256,
+        "built_from.formula_sha256",
+    )
 }
 
 fn verify_bottle_payload(
@@ -1644,6 +1744,114 @@ mod tests {
             fixture.tap_root.to_string_lossy().into_owned(),
         ])
         .unwrap();
+    }
+
+    #[test]
+    fn reused_bottle_preserves_its_historical_producer() {
+        let fixture = Fixture::new("success");
+        let mut input = load_json(&fixture.input_path).unwrap();
+        let historical = json!({
+            "kandelo_repository": "Automattic/kandelo",
+            "kandelo_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "tap_repository": "Kandelo-dev/homebrew-tap-core",
+            "tap_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "formula_sha256": sha256_bytes(FORMULA_TEXT.as_bytes()),
+        });
+        input["packages"][0]["bottles"][0]["built_from"] =
+            historical.clone();
+        input["packages"][0]["bottles"][0]["validation"]["outcome_lists"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "name": "node_smoke",
+                "status": "success",
+                "passed": ["fixture"],
+                "failed": [],
+                "skipped": [],
+            }));
+        write_json_value(&fixture.input_path, &input);
+
+        fixture.run(None);
+
+        let metadata = load_json(
+            &fixture.tap_root.join("Kandelo/metadata.json"),
+        )
+        .unwrap();
+        assert_eq!(
+            metadata["packages"][0]["bottles"][0]["built_from"],
+            historical,
+        );
+        let provenance = load_json(
+            &fixture.tap_root.join(
+                "Kandelo/reports/hello-2.12.1-rebuild0-wasm32.provenance.json",
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            provenance["repositories"],
+            json!({
+                "kandelo_repository": "Automattic/kandelo",
+                "kandelo_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "tap_repository": "Kandelo-dev/homebrew-tap-core",
+                "tap_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            }),
+        );
+        write_formula_from_metadata(&fixture.tap_root, FORMULA_TEXT, &metadata);
+        crate::homebrew_validate::run(vec![
+            "--tap-root".to_string(),
+            fixture.tap_root.to_string_lossy().into_owned(),
+        ])
+        .unwrap();
+
+        let invalid = Fixture::new("success");
+        let mut invalid_input = load_json(&invalid.input_path).unwrap();
+        invalid_input["packages"][0]["bottles"][0]["built_from"] =
+            json!({
+                "kandelo_repository": "Automattic/kandelo",
+                "kandelo_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "tap_repository": "Kandelo-dev/homebrew-tap-core",
+                "tap_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "formula_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            });
+        write_json_value(&invalid.input_path, &invalid_input);
+        let error = run(vec![
+            "--tap-root".to_string(),
+            invalid.tap_root.to_string_lossy().into_owned(),
+            "--input".to_string(),
+            invalid.input_path.to_string_lossy().into_owned(),
+        ])
+        .unwrap_err();
+        assert!(
+            error.contains(
+                "historical built_from Formula digest differs from the bottle receipt"
+            ),
+            "{error}",
+        );
+
+        let substituted = Fixture::new("success");
+        let mut substituted_input = load_json(&substituted.input_path).unwrap();
+        substituted_input["packages"][0]["bottles"][0]["built_from"] =
+            json!({
+                "kandelo_repository": "Automattic/kandelo",
+                "kandelo_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "tap_repository": "attacker/homebrew-substitute",
+                "tap_commit": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "formula_sha256": sha256_bytes(FORMULA_TEXT.as_bytes()),
+            });
+        write_json_value(&substituted.input_path, &substituted_input);
+        let error = run(vec![
+            "--tap-root".to_string(),
+            substituted.tap_root.to_string_lossy().into_owned(),
+            "--input".to_string(),
+            substituted.input_path.to_string_lossy().into_owned(),
+        ])
+        .unwrap_err();
+        assert!(
+            error.contains(
+                "historical built_from repository differs from the current publication authority"
+            ),
+            "{error}",
+        );
     }
 
     #[test]
