@@ -62,6 +62,12 @@ def require_catalog(value: Any, expected: str, label: str) -> None:
         raise ContractError(f"{label} does not pin the exact tap catalog")
 
 
+def positive_revision(value: Any, label: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ContractError(f"{label} must be a positive integer")
+    return value
+
+
 def check(source_root: pathlib.Path, tap_catalog: str, canary: str) -> None:
     try:
         root_metadata = source_root.lstat()
@@ -90,10 +96,14 @@ def check(source_root: pathlib.Path, tap_catalog: str, canary: str) -> None:
             "commit": tap_catalog,
         }
     ]
+    # WHY: kandelo-ref already binds this file to one reviewed source commit,
+    # while the sealed artifact lock binds the bytes fetched for its package
+    # identity. Validate the revision's package-schema shape here rather than
+    # duplicating today's number and rejecting the next reviewed generation.
+    positive_revision(build.get("revision"), "shell build.toml revision")
     if (
         build.get("repo_url") != "https://github.com/Automattic/kandelo.git"
         or build.get("commit") != "UNPUBLISHED"
-        or build.get("revision") != 22
         or build.get("publication_state") != "ready"
         or build.get("git_inputs") != expected_git_inputs
     ):

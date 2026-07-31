@@ -82,6 +82,12 @@ def sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def positive_revision(value: Any, label: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise FinalizeError(f"{label} must be a positive integer")
+    return value
+
+
 def sha256_file(path: pathlib.Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -293,6 +299,13 @@ def update_build_toml(value: bytes, old_tap: str, new_tap: str, sealed: bool) ->
         text = value.decode()
     except UnicodeDecodeError as error:
         raise FinalizeError(f"{BUILD_PATH} is not UTF-8") from error
+    try:
+        original_build = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        raise FinalizeError(f"{BUILD_PATH} is not valid TOML") from error
+    original_revision = positive_revision(
+        original_build.get("revision"), f"{BUILD_PATH} revision"
+    )
     block = re.compile(
         r'(\[\[git_inputs\]\]\n'
         r'name = "homebrew_tap_core"\n'
@@ -322,7 +335,12 @@ def update_build_toml(value: bytes, old_tap: str, new_tap: str, sealed: bool) ->
         raise FinalizeError(f"{BUILD_PATH} became invalid TOML") from error
     if (
         build.get("commit") != "UNPUBLISHED"
-        or build.get("revision") != 22
+        # WHY: the reviewed source commit and sealed artifact lock bind the
+        # exact shell generation. The finalizer may change tap authority and
+        # publication state, but it must preserve whichever positive package
+        # revision that reviewed source declares instead of owning a second,
+        # stale copy of the current revision number.
+        or build.get("revision") != original_revision
         or build.get("publication_state") != expected_state
         or build.get("git_inputs")
         != [
