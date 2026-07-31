@@ -3,6 +3,7 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORKFLOW="$REPO_ROOT/.github/workflows/reusable-homebrew-main-shell-mirror-publish.yml"
+NODE_SCOPE_RUNNER="$REPO_ROOT/homebrew/test/run_homebrew_guest_shipping_scope.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
@@ -13,8 +14,9 @@ bash "$REPO_ROOT/scripts/test-verify-browser-shell-vfs-asset.sh"
 
 expect_rejected() {
   local fixture="$1"
+  local node_scope_runner="${2:-$NODE_SCOPE_RUNNER}"
   if ruby "$REPO_ROOT/scripts/check-homebrew-main-shell-mirror-workflow.rb" \
-    "$fixture" >/dev/null 2>&1; then
+    "$fixture" "$node_scope_runner" >/dev/null 2>&1; then
     echo "test-homebrew-main-shell-mirror-workflow: accepted $fixture" >&2
     exit 1
   fi
@@ -104,22 +106,43 @@ sed '/npm --prefix host run build/d' \
   "$WORKFLOW" >"$TMP_ROOT/no-compiled-node-worker.yml"
 expect_rejected "$TMP_ROOT/no-compiled-node-worker.yml"
 sed 's/memory.current/memory.stat/' \
-  "$WORKFLOW" >"$TMP_ROOT/no-node-current-memory-telemetry.yml"
-expect_rejected "$TMP_ROOT/no-node-current-memory-telemetry.yml"
+  "$NODE_SCOPE_RUNNER" >"$TMP_ROOT/no-node-current-memory-telemetry.sh"
+expect_rejected \
+  "$WORKFLOW" "$TMP_ROOT/no-node-current-memory-telemetry.sh"
 sed \
   's#homebrew/test/homebrew_guest_lifecycle_node.ts#scripts/homebrew-main-shell-node-smoke.ts#' \
-  "$WORKFLOW" >"$TMP_ROOT/no-node-shipping-proof.yml"
-expect_rejected "$TMP_ROOT/no-node-shipping-proof.yml"
+  "$NODE_SCOPE_RUNNER" >"$TMP_ROOT/no-node-shipping-proof.sh"
+expect_rejected "$WORKFLOW" "$TMP_ROOT/no-node-shipping-proof.sh"
 sed '/--proof-mode "$scope"/d' \
-  "$WORKFLOW" >"$TMP_ROOT/no-node-shipping-selection.yml"
-expect_rejected "$TMP_ROOT/no-node-shipping-selection.yml"
+  "$NODE_SCOPE_RUNNER" >"$TMP_ROOT/no-node-shipping-selection.sh"
+expect_rejected "$WORKFLOW" "$TMP_ROOT/no-node-shipping-selection.sh"
+awk '
+  !inserted && /^bash scripts\/dev-shell\.sh npx tsx/ {
+    print "exit 0"
+    inserted = 1
+  }
+  { print }
+  END { if (!inserted) exit 2 }
+' "$NODE_SCOPE_RUNNER" >"$TMP_ROOT/early-success-node-scope.sh"
+expect_rejected "$WORKFLOW" "$TMP_ROOT/early-success-node-scope.sh"
 for scope in shipping-core shipping-canary; do
-  sed "/run_shipping_scope $scope/d" \
+  sed "/^[[:space:]]*$scope[[:space:]]*$/d" \
     "$WORKFLOW" >"$TMP_ROOT/omitted-$scope.yml"
   expect_rejected "$TMP_ROOT/omitted-$scope.yml"
-  sed "/run_shipping_scope $scope/p" \
+  sed "/^[[:space:]]*$scope[[:space:]]*$/p" \
     "$WORKFLOW" >"$TMP_ROOT/duplicated-$scope.yml"
   expect_rejected "$TMP_ROOT/duplicated-$scope.yml"
+  awk -v scope="$scope" '
+    index($0, "- name: Prove " scope " public bottle installs in Node") {
+      in_scope = 1
+    }
+    in_scope && /timeout-minutes: 20/ {
+      sub(/timeout-minutes: 20/, "timeout-minutes: 21")
+      in_scope = 0
+    }
+    { print }
+  ' "$WORKFLOW" >"$TMP_ROOT/wrong-$scope-timeout.yml"
+  expect_rejected "$TMP_ROOT/wrong-$scope-timeout.yml"
 done
 sed \
   '/"KANDELO_BROWSER_DEMO_INPUTS=\$KANDELO_BROWSER_DEMO_INPUTS"/d' \

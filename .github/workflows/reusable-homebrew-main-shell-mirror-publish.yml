@@ -699,8 +699,17 @@ jobs:
             echo "bootstrap-env=$lifecycle/homebrew-brew.env"
           } >>"$GITHUB_OUTPUT"
 
-      - name: Prove bounded public bottle installs in fresh Node processes
+      - name: Initialize bounded Node lifecycle telemetry
         shell: bash
+        run: |
+          set -euo pipefail
+          : >"$RUNNER_TEMP/homebrew-node-lifecycle-resources.log"
+
+      # WHY: distinct workflow steps keep the active scope visible in durable
+      # job metadata even when a force cancellation prevents log finalization.
+      - name: Prove shipping-core public bottle installs in Node
+        shell: bash
+        timeout-minutes: 20
         env:
           IMAGE: ${{ steps.public.outputs.image }}
           BOOTSTRAP: ${{ steps.public.outputs.bootstrap }}
@@ -709,87 +718,22 @@ jobs:
           CANARY_REF: ${{ inputs.canary-ref }}
         run: |
           set -euo pipefail
-          telemetry="$RUNNER_TEMP/homebrew-node-lifecycle-resources.log"
-          : >"$telemetry"
-          sample_resources() {
-            local cgroup_path cgroup_root current peak events rss_kib disk_kib
-            cgroup_path="$(
-              awk -F: '$1 == "0" { print $3; exit }' \
-                /proc/self/cgroup 2>/dev/null || true
-            )"
-            cgroup_root="/sys/fs/cgroup${cgroup_path:-/}"
-            current="$(
-              cat "$cgroup_root/memory.current" 2>/dev/null ||
-                printf unavailable
-            )"
-            peak="$(
-              cat "$cgroup_root/memory.peak" 2>/dev/null ||
-                printf unavailable
-            )"
-            events="$(
-              tr '\n' ',' <"$cgroup_root/memory.events" 2>/dev/null ||
-                printf unavailable
-            )"
-            rss_kib="$(ps -e -o rss= | awk '{ sum += $1 } END { print sum + 0 }')"
-            disk_kib="$(
-              df -Pk "$RUNNER_TEMP" |
-                awk 'NR == 2 { print $4; exit }'
-            )"
-            printf \
-              '%s cgroup_current_bytes=%s cgroup_peak_bytes=%s aggregate_rss_kib=%s disk_available_kib=%s memory_events=%s\n' \
-              "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-              "$current" "$peak" "$rss_kib" "$disk_kib" "$events" |
-              tee -a "$telemetry"
-          }
-          sample_resources
-          (
-            # WHY: lifecycle failures previously ended the hosted runner
-            # without a guest assertion. A fixed sample count records whether
-            # memory or disk approached the runner boundary without creating
-            # an unbounded diagnostic stream.
-            for ((sample = 0; sample < 64; sample += 1)); do
-              sleep 15
-              sample_resources
-            done
-          ) &
-          telemetry_pid=$!
-          stop_telemetry() {
-            kill "$telemetry_pid" 2>/dev/null || true
-            wait "$telemetry_pid" 2>/dev/null || true
-            sample_resources
-          }
-          trap stop_telemetry EXIT
-          # WHY: the release claim is that stock Brew can install and execute
-          # first- and third-party bottles. Reinstall, cleanup, export, and
-          # reboot remain in the separate comprehensive lifecycle; adding
-          # them here can exhaust a hosted Node runner after the release
-          # capability has already been proved.
-          run_shipping_scope() {
-            local scope="$1"
-            bash scripts/dev-shell.sh npx tsx \
-              homebrew/test/homebrew_guest_lifecycle_node.ts \
-                --image "$IMAGE" \
-                --homebrew-bootstrap-spec \
-                  homebrew/main-shell-brew-package-tree.json \
-                --homebrew-bootstrap-archive "$BOOTSTRAP" \
-                --homebrew-bootstrap-env "$BOOTSTRAP_ENV" \
-                --transport-mode public \
-                --proof-mode "$scope" \
-                --core-revision "$TAP_CATALOG_REF" \
-                --canary-revision "$CANARY_REF" \
-                --timeout-ms 900000
-          }
-          # WHY: process exit is the deterministic point at which Node/V8 no
-          # longer owns a scope's collectible Wasm memories. Both scopes start
-          # from the same original image instead of carrying mutable guest or
-          # in-memory state across that boundary. The resource samples record
-          # that boundary for diagnosis; they do not decide proof success.
-          run_shipping_scope shipping-core
-          sample_resources
-          run_shipping_scope shipping-canary
-          sample_resources
-          trap - EXIT
-          stop_telemetry
+          bash homebrew/test/run_homebrew_guest_shipping_scope.sh \
+            shipping-core
+
+      - name: Prove shipping-canary public bottle installs in Node
+        shell: bash
+        timeout-minutes: 20
+        env:
+          IMAGE: ${{ steps.public.outputs.image }}
+          BOOTSTRAP: ${{ steps.public.outputs.bootstrap }}
+          BOOTSTRAP_ENV: ${{ steps.public.outputs.bootstrap-env }}
+          TAP_CATALOG_REF: ${{ inputs.tap-catalog-ref }}
+          CANARY_REF: ${{ inputs.canary-ref }}
+        run: |
+          set -euo pipefail
+          bash homebrew/test/run_homebrew_guest_shipping_scope.sh \
+            shipping-canary
 
       - name: Upload bounded Node lifecycle telemetry
         if: always()

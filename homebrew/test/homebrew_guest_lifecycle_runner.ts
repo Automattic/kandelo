@@ -106,7 +106,22 @@ export async function runHomebrewGuestLifecycleProcess(options: {
     return await Promise.race([spawned.exit, timedOut]);
   } catch (error) {
     if (pid !== undefined) {
-      await options.terminate(pid, 124).catch(() => {});
+      const terminationFinished = Promise.resolve()
+        .then(() => options.terminate(pid, 124))
+        .then(
+          () => undefined,
+          () => undefined,
+        );
+      // WHY: terminateProcess depends on the same worker that just stopped
+      // responding. Give cleanup only the unspent process budget so the
+      // machine-level destroy fallback always regains control.
+      await Promise.race([
+        terminationFinished,
+        timedOut.then(
+          () => undefined,
+          () => undefined,
+        ),
+      ]);
     }
     throw error;
   } finally {

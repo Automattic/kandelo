@@ -493,6 +493,168 @@ test("terminates a known process when the shared spawn-and-exit budget expires",
   assert.deepEqual(terminated, [{ pid: 73, exitCode: 124 }]);
 });
 
+test("keeps the process timeout absolute when termination never responds", async () => {
+  let terminateCalls = 0;
+  await assert.rejects(
+    () =>
+      settleWithin(
+        runHomebrewGuestLifecycleProcess({
+          label: "stalled guest and worker",
+          timeoutMs: 10,
+          spawn: async () => ({
+            pid: 74,
+            exit: new Promise<number>(() => {}),
+          }),
+          terminate: () => {
+            terminateCalls += 1;
+            return new Promise<void>(() => {});
+          },
+          failureContext: () => "stdout tail=\"brew install gettext\"",
+        }),
+        250,
+      ),
+    /stalled guest and worker timed out after 10ms.*brew install gettext/,
+  );
+  assert.equal(terminateCalls, 1);
+});
+
+test("preserves the timeout when best-effort termination throws", async () => {
+  await assert.rejects(
+    () =>
+      runHomebrewGuestLifecycleProcess({
+        label: "timed-out guest with broken termination",
+        timeoutMs: 10,
+        spawn: async () => ({
+          pid: 75,
+          exit: new Promise<number>(() => {}),
+        }),
+        terminate: () => {
+          throw new Error("termination threw");
+        },
+        failureContext: () => "stderr tail=\"original timeout context\"",
+      }),
+    (error) =>
+      error instanceof Error &&
+      error.message.includes("timed out after 10ms") &&
+      error.message.includes("original timeout context") &&
+      !error.message.includes("termination threw"),
+  );
+});
+
+test("preserves an early process failure when termination stalls", async () => {
+  const processFailure = new Error("guest exit channel failed");
+  let rejectExit: ((error: Error) => void) | undefined;
+  const exit = new Promise<number>((_resolve, reject) => {
+    rejectExit = reject;
+  });
+  const running = runHomebrewGuestLifecycleProcess({
+    label: "failed guest exit",
+    timeoutMs: 20,
+    spawn: async () => ({ pid: 76, exit }),
+    terminate: () => new Promise<void>(() => {}),
+  });
+  rejectExit!(processFailure);
+  await assert.rejects(
+    () => settleWithin(running, 250),
+    (error) => error === processFailure,
+  );
+});
+
+test("suppresses a late termination rejection after propagating timeout", async () => {
+  let rejectTermination: ((error: Error) => void) | undefined;
+  const termination = new Promise<void>((_resolve, reject) => {
+    rejectTermination = reject;
+  });
+  await assert.rejects(
+    () =>
+      settleWithin(
+        runHomebrewGuestLifecycleProcess({
+          label: "timed-out guest",
+          timeoutMs: 10,
+          spawn: async () => ({
+            pid: 77,
+            exit: new Promise<number>(() => {}),
+          }),
+          terminate: () => termination,
+          failureContext: () => "stderr tail=\"index-pack stalled\"",
+        }),
+        250,
+      ),
+    /timed-out guest timed out after 10ms.*index-pack stalled/,
+  );
+  rejectTermination!(new Error("late terminate rejection"));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+});
+
+test("reaches machine destroy after process termination stops responding", async () => {
+  let workerHandle: { id: number } | undefined = { id: 1 };
+  let destroyCalls = 0;
+  await assert.rejects(
+    () =>
+      settleWithin(
+        runHomebrewGuestShippingProof({
+          runtime: {
+            imageBytes: new Uint8Array([1]),
+            shellPath: "/bin/bash",
+            shellArgv0: "bash",
+            lazyUrlBase: "https://example.test/",
+            bootstrapTransportUrl: "https://example.test/bootstrap.zip",
+            bootstrapBytes: 1,
+          },
+          revisions: {
+            coreRevision: "1".repeat(40),
+            canaryRevision: "2".repeat(40),
+          },
+          scope: "core",
+          deadlineMs: Date.now() + 500,
+          createMachine: () => ({
+            lazyDownloads: [],
+            diagnostics: [],
+            start: async () => {},
+            readFile: async () => shellConfigBytes(),
+            runShellScript: async ({ label, timeoutMs }) => {
+              await runHomebrewGuestLifecycleProcess({
+                label,
+                timeoutMs: Math.min(timeoutMs, 10),
+                spawn: async () => ({
+                  pid: 78,
+                  exit: new Promise<number>(() => {}),
+                }),
+                terminate: () => new Promise<void>(() => {}),
+              });
+            },
+            exportRootfsImage: async () => new Uint8Array(),
+            destroy: async () => {
+              destroyCalls += 1;
+              workerHandle = undefined;
+            },
+          }),
+        }),
+        250,
+      ),
+    /Homebrew shipping proof image-owned shell preflight timed out after 10ms/,
+  );
+  assert.equal(destroyCalls, 1);
+  assert.equal(workerHandle, undefined);
+});
+
+test("clears the process timer after a prompt exit", async () => {
+  let failureContextReads = 0;
+  const exitCode = await runHomebrewGuestLifecycleProcess({
+    label: "prompt guest",
+    timeoutMs: 20,
+    spawn: async () => ({ pid: 79, exit: Promise.resolve(0) }),
+    terminate: async () => {},
+    failureContext: () => {
+      failureContextReads += 1;
+      return "must not be read";
+    },
+  });
+  assert.equal(exitCode, 0);
+  await new Promise<void>((resolve) => setTimeout(resolve, 40));
+  assert.equal(failureContextReads, 0);
+});
+
 test("revalidates the exported shell config inside the rebooted worker", async () => {
   const bootstrapUrl = "https://example.test/bootstrap.zip";
   await assert.rejects(
@@ -560,4 +722,24 @@ function event(
     loadedBytes,
     t: 0,
   };
+}
+
+async function settleWithin<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error(`test guard exceeded ${timeoutMs}ms`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout);
+  }
 }

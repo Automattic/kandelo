@@ -1064,6 +1064,13 @@ trust for fully qualified operations or receives it through
 
 The required Node release gate uses two bounded shipping scopes. Each starts
 in a fresh operating-system Node process from the same exact original image.
+Each scope also owns a distinct workflow step, so cancelled job metadata shows
+whether the core or canary proof had begun even when final logs and telemetry
+cannot be uploaded. Each step has a 20-minute workflow bound around the
+15-minute in-process deadline. The guest-process deadline also bounds
+best-effort process termination. Once that deadline expires, control returns
+to machine teardown, whose worker-termination fallback remains responsible
+for releasing the host.
 The core scope removes the direct-composed Bzip2 receipt, pours first-party
 Bzip2 through stock Homebrew, executes it, and exits. The canary scope taps
 both repositories, removes the direct-composed M4 receipt, pours and executes
