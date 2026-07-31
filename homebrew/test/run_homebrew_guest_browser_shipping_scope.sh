@@ -154,7 +154,11 @@ scope_exit_code=0
 set +e
 (
   cd "$browser_workdir"
-  KANDELO_BROWSER_DEMO_INPUTS=main \
+  # WHY: Playwright starts both Chromium and the sealed web server. Remove
+  # Actions credentials at their common parent so future transport changes
+  # cannot accidentally turn this anonymous proof into an authenticated one.
+  env -u GH_TOKEN -u GITHUB_TOKEN \
+    KANDELO_BROWSER_DEMO_INPUTS=main \
     KANDELO_PLAYWRIGHT_SERVE_DIST=1 \
     KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE=1 \
     KANDELO_HOMEBREW_GUEST_BROWSER_SHIPPING_SCOPE="$scope" \
