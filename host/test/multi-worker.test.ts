@@ -25,6 +25,7 @@ import {
   computeProcessMemoryLayout,
   createProcessMemory as createLayoutMemory,
   FORK_SAVE_BUFFER_SIZE,
+  ProcessMemoryRetirementBacklogError,
   type ProcessMemoryLayout,
 } from "../src/process-memory";
 import { writeForkContinuationAnchor } from "../src/fork-continuation";
@@ -778,6 +779,66 @@ describe("CentralizedKernelWorker Process Management", () => {
       });
       expect(error).toHaveBeenCalledWith(
         "[kernel-worker] fork worker launch failed: Error: launch failed",
+      );
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("reports retired-memory fork admission failure as EAGAIN", async () => {
+    const parentPid = 77;
+    const memory = new WebAssembly.Memory({
+      initial: 4,
+      maximum: 4,
+      shared: true,
+    });
+    const channel = { pid: parentPid, channelOffset: WASM_PAGE_SIZE, memory };
+    publishMainForkContinuation(memory, channel.channelOffset);
+    const completeChannel = vi.fn();
+    const deactivateProcess = vi.fn();
+    const removeProcess = vi.fn(() => 0);
+    const admissionError = new ProcessMemoryRetirementBacklogError(
+      "retired process-memory debt is saturated",
+      4 * WASM_PAGE_SIZE,
+      1,
+      4 * WASM_PAGE_SIZE,
+      1,
+      4 * WASM_PAGE_SIZE,
+    );
+    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
+      callbacks: { onFork: vi.fn(() => Promise.reject(admissionError)) },
+      processes: new Map([[parentPid, { channels: [channel] }]]),
+      channelTids: new Map(),
+      threadForkContexts: new Map(),
+      tcpListenerTargets: new Map([[8080, [{ pid: parentPid, fd: 4 }]]]),
+      epollInterests: new Map(),
+      completeChannel,
+      deactivateProcess,
+      kernelInstance: {
+        exports: {
+          kernel_fork_process: vi.fn(() => 100),
+          kernel_clear_fork_child: vi.fn(() => 0),
+          kernel_remove_process: removeProcess,
+          kernel_get_process_exit_signal: vi.fn(() => -1),
+        },
+      },
+    }) as CentralizedKernelWorker;
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      (kw as any).handleFork(channel, [0]);
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(deactivateProcess).toHaveBeenCalledWith(100);
+      expect(removeProcess).toHaveBeenCalledWith(100);
+      expect(completeChannel).toHaveBeenCalledWith(
+        channel,
+        HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
+        [0],
+        undefined,
+        -1,
+        11,
       );
     } finally {
       error.mockRestore();

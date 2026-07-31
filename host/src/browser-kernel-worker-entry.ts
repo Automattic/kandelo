@@ -1566,8 +1566,8 @@ async function handleFork(
   const ptrWidth = parentInfo.ptrWidth;
   const childLayout = parentInfo.layout;
   // WHY: teardown and compilation below yield. A sibling exec may then retire
-  // the parent's exact generation, so the committed fork must own its clone
-  // before the first await.
+  // the parent's exact generation, so the committed fork must pass
+  // retired-memory admission and own its clone before the first await.
   const childMemoryLease = acquireForkMemoryClone(
     processMemoryAllocator,
     parentMemory,
@@ -1588,12 +1588,6 @@ async function handleFork(
   );
   try {
     await waitForProcessTeardowns();
-    // Preserve fork's exact syscall-time snapshot before any await, then hold
-    // only Worker launch until the retirement admission gate reopens.
-    await processMemoryAllocator.waitForRetirementBacklogCapacity(
-      childMemory.buffer.byteLength,
-    );
-
     // Pre-compile module for TurboFan-optimized code (smaller stack frames).
     if (!parentInfo.programModule) {
       parentInfo.programModule = await WebAssembly.compile(parentInfo.programBytes);
