@@ -231,47 +231,26 @@ jobs:
             echo "plan-url=$plan_url"
           } >>"$GITHUB_OUTPUT"
 
-      - name: Resolve the exact published browser generation
-        id: generation
-        shell: bash
-        env:
-          WASM_POSIX_BINARY_CACHE_ROOT: ${{ runner.temp }}/homebrew-public-chromium-cache
-        run: |
-          set -euo pipefail
-          test ! -e "$WASM_POSIX_BINARY_CACHE_ROOT"
-          bash scripts/dev-shell.sh env \
-            "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
-            ./run.sh --fetch-only prepare-browser
-          image="$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)"
-          bootstrap="$(bash scripts/resolve-binary.sh \
-            programs/homebrew-bootstrap/homebrew-bootstrap.zip)"
-          bootstrap_env="$(bash scripts/resolve-binary.sh \
-            programs/homebrew-bootstrap/homebrew-brew.env)"
-          cmp "$image" "${{ steps.public.outputs.root }}/main-shell.vfs.zst"
-          cmp "$bootstrap" \
-            "${{ steps.public.outputs.root }}/homebrew-bootstrap.zip"
-          cmp "$bootstrap_env" \
-            "${{ steps.public.outputs.root }}/homebrew-brew.env"
-          echo "cache=$WASM_POSIX_BINARY_CACHE_ROOT" >>"$GITHUB_OUTPUT"
-
-      - name: Build the exact sealed browser product
+      - name: Build the focused diagnostic browser
         working-directory: apps/browser-demos
         shell: bash
         env:
-          KANDELO_BROWSER_DEMO_INPUTS: main,homebrew-vfs-test
-          WASM_POSIX_BINARY_CACHE_ROOT: ${{ steps.generation.outputs.cache }}
+          KANDELO_BROWSER_DEMO_INPUTS: homebrew-vfs-test
         run: |
           set -euo pipefail
-          # WHY: compiling once in the producer keeps Nix, Vite, the resolver,
-          # and all source-build fallback state out of each proof cgroup.
+          # WHY: this do-not-merge branch measures the cache under the exact
+          # guest lifecycle without rebuilding unrelated generated demos whose
+          # host-input identities also changed. Final #1147 still builds and
+          # proves the complete main product after those images are regenerated.
           bash ../../scripts/dev-shell.sh env \
             "KANDELO_BROWSER_DEMO_INPUTS=$KANDELO_BROWSER_DEMO_INPUTS" \
-            "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
             npm run build
-          test -f dist/index.html
           test -f dist/pages/homebrew-vfs-test/index.html
-          bash ../../scripts/verify-browser-shell-vfs-asset.sh \
-            dist "${{ steps.public.outputs.root }}/main-shell.vfs.zst"
+          # WHY: the bounded handoff schema requires one root entry point even
+          # though this diagnostic executes only the named fixture page. Keep an
+          # inert copy for handoff shape; do not treat it as a product proof.
+          test ! -e dist/index.html
+          cp dist/pages/homebrew-vfs-test/index.html dist/index.html
 
       - name: Create the exact public browser fixture
         id: fixture
