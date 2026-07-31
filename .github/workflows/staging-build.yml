@@ -1055,7 +1055,7 @@ jobs:
         include:
           # WHY: ordinary files use two deterministic shards. Heavyweight
           # guest-runtime cases get fresh Vitest processes in a third cell so
-          # V8 cannot retain their Wasm/JIT backing across cases.
+          # resident memory from one case cannot carry into the next.
           - suite: vitest
             label: vitest (1/2)
             group: 1/2

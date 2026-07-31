@@ -19,10 +19,19 @@ for number in 1 2 3 4 5 6 7; do
         > "$vitest_fixture/case-$number.test.js"
 done
 resource_fixture="$vitest_fixture/resource-isolated.test.js"
-for number in 1 2 3 4 5; do
-    printf 'test("RESOURCE_CASE_%s", () => {});\n' "$number" \
+resource_names=(
+    "RESOURCE_CASE_ALPHA"
+    "RESOURCE_CASE_BRAVO"
+    "RESOURCE_CASE_CHARLIE"
+    "RESOURCE_CASE_DELTA"
+    "RESOURCE_CASE_ECHO"
+)
+printf 'describe("nested resource suite", () => {\n' > "$resource_fixture"
+for resource_name in "${resource_names[@]}"; do
+    printf '  test("%s", () => {});\n' "$resource_name" \
         >> "$resource_fixture"
 done
+printf '});\n' >> "$resource_fixture"
 find "$vitest_fixture" -name 'case-*.test.js' -print | LC_ALL=C sort \
     > "$vitest_expected"
 find "$vitest_fixture" -name '*.test.js' -print | LC_ALL=C sort \
@@ -59,20 +68,37 @@ cmp "$vitest_all_expected" "$vitest_seen"
 
 resource_expected="$TMP_DIR/vitest-resource-expected"
 resource_seen="$TMP_DIR/vitest-resource-seen"
+resource_list_json="$TMP_DIR/vitest-resource-list.json"
 : > "$resource_expected"
 : > "$resource_seen"
-for number in 1 2 3 4 5; do
-    marker="RESOURCE_CASE_$number"
-    printf '%s\n' "$marker" >> "$resource_expected"
-    report="$TMP_DIR/vitest-resource-$number.json"
+"$REPO_ROOT/host/node_modules/.bin/vitest" list \
+    --root "$vitest_fixture" \
+    --globals \
+    "$resource_fixture" \
+    --json="$resource_list_json" \
+    > "$TMP_DIR/vitest-resource-list.out"
+[ "$(jq 'length' "$resource_list_json")" -eq "${#resource_names[@]}" ]
+resource_number=0
+for marker in "${resource_names[@]}"; do
+    resource_number=$((resource_number + 1))
+    test_pattern="(^|[^A-Z0-9_])${marker}([^A-Z0-9_]|$)"
+    [ "$(jq --arg pattern "$test_pattern" \
+        '[.[] | select(.name | test($pattern))] | length' \
+        "$resource_list_json")" -eq 1 ] || {
+        echo "fixture marker does not identify exactly one nested test: $marker" >&2
+        exit 1
+    }
+    printf 'nested resource suite %s\n' "$marker" \
+        >> "$resource_expected"
+    report="$TMP_DIR/vitest-resource-$resource_number.json"
     "$REPO_ROOT/host/node_modules/.bin/vitest" run \
         --root "$vitest_fixture" \
         --globals \
         "$resource_fixture" \
-        --testNamePattern="$marker" \
+        --testNamePattern="$test_pattern" \
         --reporter=json \
         --outputFile="$report" \
-        > "$TMP_DIR/vitest-resource-$number.out"
+        > "$TMP_DIR/vitest-resource-$resource_number.out"
     jq -r '
       .testResults[].assertionResults[]
       | select(.status == "passed")
@@ -81,7 +107,11 @@ for number in 1 2 3 4 5; do
 done
 LC_ALL=C sort -o "$resource_expected" "$resource_expected"
 LC_ALL=C sort -o "$resource_seen" "$resource_seen"
-cmp "$resource_expected" "$resource_seen"
+cmp "$resource_expected" "$resource_seen" || {
+    echo "resource-isolated selectors did not cover the fixture exactly once" >&2
+    diff -u "$resource_expected" "$resource_seen" >&2 || true
+    exit 1
+}
 (
     cd "$REPO_ROOT/host"
     npx vitest list --filesOnly
@@ -196,6 +226,18 @@ EOF
 
 cat > "$FIXTURE/bin/npx" <<'EOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = "vitest" ] && [ "${2:-}" = "list" ]; then
+    [ -n "${VITEST_LIST_INVENTORY:-}" ] || exit 2
+    output=""
+    for arg in "$@"; do
+        case "$arg" in
+            --json=*) output="${arg#--json=}" ;;
+        esac
+    done
+    [ -n "$output" ] || exit 2
+    cp "$VITEST_LIST_INVENTORY" "$output"
+    exit 0
+fi
 if [ "${1:-}" = "vitest" ] && [ -n "${VITEST_CAPTURE:-}" ]; then
     printf '%s\n' "$*" >> "$VITEST_CAPTURE"
     exit 0
@@ -344,6 +386,7 @@ run_vitest_group() {
     : > "$bun_capture"
     PATH="$FIXTURE/bin:$PATH" \
         VITEST_CAPTURE="$vitest_capture" \
+        VITEST_LIST_INVENTORY="$resource_inventory" \
         BUN_CAPTURE="$bun_capture" \
         bash "$FIXTURE/scripts/ci-run-test-suite.sh" vitest "$group"
     [ "$(cat "$vitest_capture")" = "$expected_vitest" ] || {
@@ -361,10 +404,31 @@ run_vitest_group() {
 
 resource_path=../packages/registry/ruby/test/posix-spawn.test.ts
 resource_exclude="--exclude=$resource_path"
+resource_manifest="$FIXTURE/scripts/ci-vitest-resource-isolated-cases.tsv"
+resource_manifest_valid="$TMP_DIR/vitest-resource-manifest-valid.tsv"
+resource_inventory="$TMP_DIR/vitest-resource-inventory"
+cp "$resource_manifest" "$resource_manifest_valid"
+jq -Rn \
+    --arg file "$FIXTURE/packages/registry/ruby/test/posix-spawn.test.ts" '
+      [
+        inputs
+        | select(length > 0 and (startswith("#") | not))
+        | split("\t")
+        | {
+            name: (
+              "Ruby Process.spawn on Kandelo > " +
+              .[1] +
+              " preserves process semantics"
+            ),
+            file: $file
+          }
+      ]
+    ' < "$resource_manifest" > "$resource_inventory"
 resource_invocations=""
 while IFS=$'\t' read -r test_file test_marker; do
     case "$test_file" in ""|\#*) continue ;; esac
-    invocation="vitest run ../$test_file --testNamePattern=$test_marker"
+    test_pattern="(^|[^A-Z0-9_])${test_marker}([^A-Z0-9_]|$)"
+    invocation="vitest run ../$test_file --testNamePattern=$test_pattern"
     if [ -n "$resource_invocations" ]; then
         resource_invocations="$resource_invocations"$'\n'
     fi
@@ -376,6 +440,93 @@ run_vitest_group all \
 run_vitest_group 1/2 "vitest run --shard=1/2 $resource_exclude" 1
 run_vitest_group 2/2 "vitest run --shard=2/2 $resource_exclude" 0
 run_vitest_group resource-isolated "$resource_invocations" 0
+
+run_invalid_resource_manifest() {
+    local label="$1"
+    local expected="$2"
+    local output="$TMP_DIR/vitest-resource-invalid-$label.out"
+    if PATH="$FIXTURE/bin:$PATH" \
+        VITEST_CAPTURE="$TMP_DIR/vitest-resource-invalid-$label.args" \
+        VITEST_LIST_INVENTORY="$resource_inventory" \
+        BUN_CAPTURE="$TMP_DIR/vitest-resource-invalid-$label.bun" \
+        bash "$FIXTURE/scripts/ci-run-test-suite.sh" \
+            vitest resource-isolated > "$output" 2>&1; then
+        echo "resource-isolated manifest accepted $label" >&2
+        exit 1
+    fi
+    grep -Fq "$expected" "$output" || {
+        echo "resource-isolated manifest reported the wrong $label error" >&2
+        cat "$output" >&2
+        exit 1
+    }
+}
+
+# Every excluded file must be represented by an exact one-to-one case list.
+# Exercise each drift mode so future runner changes cannot silently skip or
+# multiply tests while retaining a superficially green isolated job.
+cp "$resource_manifest_valid" "$resource_manifest"
+printf 'malformed-row-without-a-tab\n' >> "$resource_manifest"
+run_invalid_resource_manifest malformed \
+    "invalid resource-isolated case"
+
+cp "$resource_manifest_valid" "$resource_manifest"
+printf '%s\t\t%s\n' \
+    "packages/registry/ruby/test/posix-spawn.test.ts" \
+    "RUBY_POSIX_SPAWN_DOUBLE_TAB" \
+    >> "$resource_manifest"
+run_invalid_resource_manifest double-tab \
+    "invalid resource-isolated case"
+
+awk -F '\t' 'BEGIN { OFS = "\t" }
+    !changed && !/^#/ && NF {
+        $2 = "UNSAFE.*MARKER"
+        changed = 1
+    }
+    { print }
+' "$resource_manifest_valid" > "$resource_manifest"
+run_invalid_resource_manifest unsafe-marker \
+    "invalid resource-isolated marker"
+
+cp "$resource_manifest_valid" "$resource_manifest"
+awk -F '\t' '!/^#/ && NF { print; exit }' "$resource_manifest_valid" \
+    >> "$resource_manifest"
+run_invalid_resource_manifest duplicate \
+    "duplicate resource-isolated case"
+
+awk -F '\t' 'BEGIN { OFS = "\t" }
+    !changed && !/^#/ && NF {
+        $2 = $2 "_TYPO"
+        changed = 1
+    }
+    { print }
+' "$resource_manifest_valid" > "$resource_manifest"
+run_invalid_resource_manifest typo \
+    "marker must select exactly one test"
+
+awk 'BEGIN { omitted = 0 }
+    !omitted && !/^#/ && NF {
+        omitted = 1
+        next
+    }
+    { print }
+' "$resource_manifest_valid" > "$resource_manifest"
+run_invalid_resource_manifest omission \
+    "manifest does not exactly cover"
+
+cp "$resource_manifest_valid" "$resource_manifest"
+cp "$resource_inventory" "$TMP_DIR/vitest-resource-inventory-valid"
+jq \
+    --arg file "$FIXTURE/packages/registry/ruby/test/posix-spawn.test.ts" '
+      . + [{
+        name: "Ruby Process.spawn on Kandelo > EXTRA_CASE preserves process semantics",
+        file: $file
+      }]
+    ' "$TMP_DIR/vitest-resource-inventory-valid" \
+    > "$resource_inventory"
+run_invalid_resource_manifest extra-case \
+    "manifest does not exactly cover"
+cp "$TMP_DIR/vitest-resource-inventory-valid" "$resource_inventory"
+cp "$resource_manifest_valid" "$resource_manifest"
 
 if PATH="$FIXTURE/bin:$PATH" \
     VITEST_CAPTURE="$TMP_DIR/vitest-invalid.args" \

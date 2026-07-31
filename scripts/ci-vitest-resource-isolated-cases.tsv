@@ -1,10 +1,12 @@
-# Repository-relative test file<TAB>unique Vitest test-name pattern.
+# Repository-relative test file<TAB>unique identifier marker.
+# Markers use [A-Z][A-Z0-9_]* and must occur as a bounded token in one test.
 #
-# WHY: each case below starts multiple heavyweight Ruby Wasm guests. A single
-# Vitest worker retains enough Wasm/JIT backing between otherwise-correct
-# host.destroy() calls to exceed a standard hosted runner's memory. Keeping the
-# cases declarative lets CI exclude their file from its ordinary shards and run
-# every case exactly once behind the stronger OS-process reclamation boundary.
+# WHY: each case below starts multiple heavyweight Ruby Wasm guests. Local
+# measurements found no reachable host/options/program-byte ownership after
+# each case, but RSS remained elevated in a long-lived Vitest process. Keeping
+# the complete case inventory declarative lets CI exclude its file from the
+# ordinary shards and use fresh OS-process exit as the deterministic memory
+# reclamation boundary without dropping test coverage.
 packages/registry/ruby/test/posix-spawn.test.ts	RUBY_POSIX_SPAWN_DIRECT_OK
 packages/registry/ruby/test/posix-spawn.test.ts	RUBY_POSIX_SPAWN_INHERITED_ENV_OK
 packages/registry/ruby/test/posix-spawn.test.ts	RUBY_POSIX_SPAWN_FORK_FALLBACK_OK
