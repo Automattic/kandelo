@@ -1114,6 +1114,30 @@ one unchanged stock guest scope. This preserves the product
 `maxWorkers = 4`; it moves build memory out of the proof cgroup rather than
 weakening the runtime.
 
+The fresh-runner experiment separated preparation from product behavior but
+did not make the Node proof fit a standard hosted runner. On 2026-07-31,
+Kandelo run `30613631109`, core job `91102360985`, began at exactly
+429,780,992 cgroup bytes (about 0.43 GB). After stock `brew tap` began, the
+samples rose first to 2,796,548,096 bytes (about 2.80 GB) and then to
+15,999,287,296 bytes (about 16.0 GB). The Node process was killed before the
+tap completed. The final sample before shutdown still reported `oom=0` and
+`oom_kill=0`, so the evidence does not establish that the cgroup OOM killer
+performed the termination.
+
+The independent canary job `91102360969` reproduced the same shape. It began
+at 500,875,264 bytes, reached 4,252,053,504 bytes and then 15,737,630,720
+bytes while tapping the first-party repository, and was killed before that
+tap completed. Its final telemetry reported a 16,269,901,824-byte cgroup peak
+and `oom_kill=1`. Unlike the core job's last pre-shutdown sample, the canary
+job therefore provides direct cgroup OOM-kill evidence.
+
+This run isolates the remaining problem from Nix, npm, TypeScript, and kernel
+preparation: high-churn stock Brew process generations consume the hosted
+runner's memory headroom even when the proof begins near 0.43 GB. The Node
+`workerData` correction remains useful, but is insufficient for this workload.
+A bounded host-memory follow-up is required; rerunning the same proof on the
+same runner class cannot establish a different result.
+
 The manifest keeps Node files under one exact `node/` subtree. A later schema
 may add an independently enumerated `browser/` subtree to the same preparation
 artifact. It must still bind every file and authority explicitly; the layout

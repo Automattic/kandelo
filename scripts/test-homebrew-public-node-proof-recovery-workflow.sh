@@ -58,6 +58,10 @@ sed '/- name: Verify runtime and fetch immutable public inputs/a\
         run: npm ci' "$WORKFLOW" >"$TMP_ROOT/npm-in-proof.yml"
 expect_workflow_rejected "$TMP_ROOT/npm-in-proof.yml"
 
+sed 's#\./\.github/actions/setup-nix#DeterminateSystems/nix-installer-action@main#' \
+  "$WORKFLOW" >"$TMP_ROOT/direct-nix-action.yml"
+expect_workflow_rejected "$TMP_ROOT/direct-nix-action.yml"
+
 # The mutation must match the literal workflow expression.
 # shellcheck disable=SC2016
 sed '\#cd "$GITHUB_WORKSPACE/product"#d' \

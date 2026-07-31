@@ -28,7 +28,7 @@ RELEASE_TAG =
   "bb5e575fb4d199aa59b764d293aa33501b0e6bfc243868ec5af98d826dafb79f"
 RUNTIME_HANDOFF = "homebrew-public-node-runtime-handoff"
 WORKFLOW_DIGEST =
-  "cb87ad2b0a0a8e71c8c742818af44a3bf3e4dbd23513768421ef95b9bbe6fb23"
+  "26624407ef8fd16811f145fc03bf59646230657e98f9b568bf99942623a64f2c"
 RUNNER_DIGEST =
   "d15e23e5b8512663864e56163033cda32b301c873811fd28d04ca557cb1acc58"
 DOWNLOAD_ACTION =
@@ -123,10 +123,7 @@ begin
     "actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e",
     DOWNLOAD_ACTION,
     UPLOAD_ACTION,
-    "DeterminateSystems/nix-installer-action@" \
-      "ef8a148080ab6020fd15196c2084a2eea5ff2d25",
-    "DeterminateSystems/magic-nix-cache-action@" \
-      "908b263ff629f4cc17666315b7fd3ec127c6244d",
+    "./.github/actions/setup-nix",
   ]
   jobs.each_value do |job|
     job.fetch("steps").filter_map { |step| step["uses"] }.each do |action|
@@ -141,6 +138,9 @@ begin
   prove_source = YAML.dump(prove)
   whole_source = File.read(WORKFLOW)
   check(
+    prepare_source.scan("./.github/actions/setup-nix").length == 1 &&
+      !prepare_source.include?("nix-installer-action") &&
+      !prepare_source.include?("magic-nix-cache-action") &&
       prepare_source.include?("npm ci --no-audit --no-fund") &&
       prepare_source.include?("npm --prefix host ci") &&
       prepare_source.include?("scripts/dev-shell.sh") &&
