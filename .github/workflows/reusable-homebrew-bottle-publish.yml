@@ -93,6 +93,7 @@ jobs:
           DEFER_TAP_FINALIZATION: ${{ inputs.defer-tap-finalization }}
           DRY_RUN: ${{ inputs.dry-run }}
           FORCE_REBUILD: ${{ inputs.force }}
+          ARCHES: ${{ inputs.arches }}
           FORMULAE: ${{ inputs.formulae }}
           KANDELO_REPOSITORY: ${{ inputs.kandelo-repository }}
           KANDELO_REF: ${{ inputs.kandelo-ref }}
@@ -253,6 +254,9 @@ jobs:
               }
             [[ "$FORMULAE" =~ ^[a-z0-9][a-z0-9._-]{0,254}$ ]] || {
               echo "::error::prefix campaign publication requires exactly one Formula"; exit 2;
+            }
+            [[ "$ARCHES" =~ ^wasm(32|64)$ ]] || {
+              echo "::error::prefix campaign publication requires exactly one architecture"; exit 2;
             }
             [[ "$PREFIX_CAMPAIGN_TAG" =~ ^homebrew-prefix-campaign-sha256-[0-9a-f]{64}$ ]] &&
               [[ "${PREFIX_CAMPAIGN_TAG##*-}" =~ [1-9a-f] ]] || {
@@ -2269,7 +2273,11 @@ jobs:
 
   publish-bottle-index:
     needs: [plan, build-and-test, upload-bottle]
-    if: ${{ always() && !cancelled() && !inputs.dry-run && needs.plan.result == 'success' && needs.build-and-test.result == 'success' && needs.upload-bottle.result == 'success' && needs.plan.outputs.matrix != '[]' }}
+    # WHY: matrix job results are aggregate. A failed wasm64 child must not
+    # strand an independently valid wasm32 child from the same Formula.
+    # This job discovers and validates the exact successful child artifacts;
+    # tap and VFS activation remain closed by their downstream gates.
+    if: ${{ always() && !cancelled() && !inputs.dry-run && needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
@@ -2611,7 +2619,10 @@ jobs:
 
   verify-bottle:
     needs: [plan, build-and-test, upload-bottle, publish-bottle-index]
-    if: ${{ always() && !cancelled() && needs.plan.result == 'success' && needs.build-and-test.result == 'success' && (inputs.dry-run || (needs.upload-bottle.result == 'success' && needs.publish-bottle-index.result == 'success')) && needs.plan.outputs.matrix != '[]' }}
+    # WHY: each verifier matrix entry downloads its own exact handoffs and
+    # fails closed when any are absent. Aggregate upstream status would keep a
+    # successful sibling from becoming anonymously verified and reusable.
+    if: ${{ always() && !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 1440
     # WHY: same-run download-artifact uses the scoped artifact service and

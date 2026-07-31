@@ -456,6 +456,40 @@ expect_failure require-relative "not a bounded canonical closure" \
 python3 "$TOOL" validate-child \
   --layout "$TMP_ROOT/child32/layout" --receipt "$TMP_ROOT/child32/receipt.json"
 
+# A successful architecture becomes a valid public index immediately. A later
+# sibling extends that index without changing the already-published child.
+python3 "$TOOL" merge-index \
+  --child-layout "$TMP_ROOT/child32/layout" \
+  --child-receipt "$TMP_ROOT/child32/receipt.json" \
+  --out-layout "$TMP_ROOT/incremental32/layout" \
+  --out-receipt "$TMP_ROOT/incremental32/receipt.json"
+python3 "$TOOL" validate-index \
+  --layout "$TMP_ROOT/incremental32/layout" \
+  --receipt "$TMP_ROOT/incremental32/receipt.json"
+incremental32_digest="$(jq -er '.children[0].manifest_digest' \
+  "$TMP_ROOT/incremental32/receipt.json")"
+incremental32_ref="$(jq -er '.children[0].homebrew_ref' \
+  "$TMP_ROOT/incremental32/receipt.json")"
+jq -e '[.children[].arch] == ["wasm32"]' \
+  "$TMP_ROOT/incremental32/receipt.json" >/dev/null
+python3 "$TOOL" merge-index \
+  --existing-layout "$TMP_ROOT/incremental32/layout" \
+  --child-layout "$TMP_ROOT/child64/layout" \
+  --child-receipt "$TMP_ROOT/child64/receipt.json" \
+  --out-layout "$TMP_ROOT/incremental64/layout" \
+  --out-receipt "$TMP_ROOT/incremental64/receipt.json"
+python3 "$TOOL" validate-index \
+  --layout "$TMP_ROOT/incremental64/layout" \
+  --receipt "$TMP_ROOT/incremental64/receipt.json"
+jq -e \
+  --arg digest "$incremental32_digest" \
+  --arg ref "$incremental32_ref" '
+    [.children[].arch] == ["wasm32", "wasm64"] and
+    ([.children[] | select(.arch == "wasm32")] | length) == 1 and
+    (.children[] | select(.arch == "wasm32") |
+      .manifest_digest == $digest and .homebrew_ref == $ref)
+  ' "$TMP_ROOT/incremental64/receipt.json" >/dev/null
+
 python3 "$TOOL" merge-index \
   --child-layout "$TMP_ROOT/child32/layout" \
   --child-receipt "$TMP_ROOT/child32/receipt.json" \

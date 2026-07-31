@@ -63,7 +63,7 @@ NATIVE_CA_PROOF_RUN_SHA256 =
   "c8192c2521864005b34e9eaa39d44d11d580997db39d6e64f2afe30fe447eb91"
 NATIVE_CA_VALIDATION_RUN_SHA256 =
   "03a44f5ed33df47783fe971de60d0b2fe08b73ef642af12298a863642bd598aa"
-PUBLISHER_PLAN_DIGEST = "f0a87a5d6fc753b5b7b3ad7a8e0588e35612c93a35facee5e7d65339fe520542"
+PUBLISHER_PLAN_DIGEST = "81e92772754f0709fdfa1f7ca1a2bcd4997263ed412c1b4fab509f96c2f7e292"
 PUBLISHER_BUILD_DIGEST = "7225936ec5608afee7c7d6ce6ecadcf281dab793d977c9ef849973b621f8be49"
 PUBLISHER_UPLOAD_DIGEST = "0fab82cbd44486a19a2a1724dc3c4c67625328f3c727623e4f94ac8c9d0649d2"
 PUBLISHER_INDEX_DIGEST = "57fe01191ccf3df30160d86c053e259be6eb589e1c17ae7d4b1f14436ac55750"
@@ -213,6 +213,7 @@ def caller_validation_result(source, overrides = {})
     "DEFER_TAP_FINALIZATION" => "false",
     "DRY_RUN" => "true",
     "FORCE_REBUILD" => "false",
+    "ARCHES" => "wasm32",
     "FORMULAE" => "file-formula",
     "KANDELO_REPOSITORY" => "Automattic/kandelo",
     "KANDELO_REF" => "main",
@@ -494,6 +495,13 @@ def check_caller_validation_behavior(workflow)
         multiple_formulae["stdout"].include?(
           "prefix campaign publication requires exactly one Formula"
         ), "publisher campaign accepts more than one Formula")
+  multiple_arches = caller_validation_result(
+    source, campaign_caller.merge("ARCHES" => "wasm32,wasm64")
+  )
+  check(multiple_arches["status"] == 2 &&
+        multiple_arches["stdout"].include?(
+          "prefix campaign publication requires exactly one architecture"
+        ), "publisher campaign accepts more than one architecture")
   ordinary_with_campaign_authority = caller_validation_result(
     source, write_caller.merge({
       "DEFER_TAP_FINALIZATION" => "true",
@@ -1418,13 +1426,10 @@ def check_publisher(workflow)
         "publisher upload graph or dry-run isolation changed")
   check(index["needs"] == %w[plan build-and-test upload-bottle] &&
         index["if"] == "${{ always() && !cancelled() && !inputs.dry-run && needs.plan.result == 'success' && " \
-                        "needs.build-and-test.result == 'success' && needs.upload-bottle.result == 'success' && " \
                         "needs.plan.outputs.matrix != '[]' }}",
         "publisher version-index graph or dry-run isolation changed")
   check(verify["needs"] == %w[plan build-and-test upload-bottle publish-bottle-index] &&
         verify["if"] == "${{ always() && !cancelled() && needs.plan.result == 'success' && " \
-                         "needs.build-and-test.result == 'success' && (inputs.dry-run || " \
-                         "(needs.upload-bottle.result == 'success' && needs.publish-bottle-index.result == 'success')) && " \
                          "needs.plan.outputs.matrix != '[]' }}",
         "publisher verification graph changed")
   check(finalize["needs"] == %w[plan build-and-test upload-bottle verify-bottle] &&
@@ -1461,6 +1466,7 @@ def check_publisher(workflow)
           "DEFER_TAP_FINALIZATION" => "${{ inputs.defer-tap-finalization }}",
           "DRY_RUN" => "${{ inputs.dry-run }}",
           "FORCE_REBUILD" => "${{ inputs.force }}",
+          "ARCHES" => "${{ inputs.arches }}",
           "FORMULAE" => "${{ inputs.formulae }}",
           "KANDELO_REPOSITORY" => "${{ inputs.kandelo-repository }}",
           "KANDELO_REF" => "${{ inputs.kandelo-ref }}",
@@ -5864,7 +5870,7 @@ def check_publisher(workflow)
     'fail "flattened receipt is not a regular file"',
     'fail "nested artifact directory has an unexpected name"',
     'fail "nested receipt is not a regular file"',
-    'fail "nested artifact download must contain multiple artifacts"',
+    'fail "nested artifact download has an invalid receipt count"',
     'fail "artifact download has an invalid receipt count"',
   ].each do |fragment|
     check(topology_helper.include?(fragment),

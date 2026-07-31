@@ -106,6 +106,12 @@ class Fixture:
             (self.source / f"Formula/{name}.rb").write_bytes(
                 formula_source(name)
             )
+        write_json(
+            self.source
+            / "Kandelo/reports/"
+            "beta-2.0-rebuild1-wasm32.provenance.json",
+            {"stale": True},
+        )
         self.source_tree = EXECUTOR.filesystem_git_tree_oid(
             self.source, "fixture target source"
         )
@@ -272,6 +278,39 @@ class Fixture:
                 f"# {arch} bottle {sha256}\n".encode()
             )
 
+    @staticmethod
+    def generate_sidecars(
+        *,
+        tap_root: pathlib.Path,
+        input_path: pathlib.Path,
+        prefix_campaign_layout_sha256: str,
+    ) -> None:
+        if prefix_campaign_layout_sha256 != "c" * 64:
+            raise AssertionError("selection used the wrong guest layout")
+        package = json.loads(input_path.read_text())["packages"][0]
+        metadata_path = tap_root / "Kandelo/metadata.json"
+        packages: list[dict[str, str]] = []
+        if metadata_path.is_file():
+            packages = json.loads(
+                metadata_path.read_text()
+            )["packages"]
+        packages.append({"name": package["name"]})
+        write_json(
+            metadata_path,
+            {"packages": packages, "schema": 1},
+        )
+
+    @staticmethod
+    def validate_tap(
+        *,
+        tap_root: pathlib.Path,
+        prefix_campaign_layout_sha256: str,
+    ) -> None:
+        if prefix_campaign_layout_sha256 != "c" * 64:
+            raise AssertionError("selection used the wrong guest layout")
+        if not (tap_root / "Kandelo/metadata.json").is_file():
+            raise AssertionError("selection validation lacked metadata")
+
     def derive(
         self,
         formula: str,
@@ -395,6 +434,297 @@ def rewrite_handoff_release(
 
 
 class PrefixCampaignExecutorTests(unittest.TestCase):
+    def test_closed_selection_ignores_unrelated_missing_formula(
+        self,
+    ) -> None:
+        fixture = Fixture(multi_arch=True)
+        self.addCleanup(fixture.close)
+        alpha = fixture.root / "selection-alpha"
+        fixture.derive(
+            "alpha",
+            [("wasm32", fixture.publication("alpha", "wasm32"))],
+            [],
+            alpha,
+        )
+        output = fixture.root / "alpha-selection"
+        EXECUTOR.prepare_selection(
+            campaign_path=fixture.campaign_path,
+            source_tap_root=fixture.source,
+            roots=["alpha"],
+            arch="wasm32",
+            handoff_roots=[alpha],
+            output=output,
+            bottle_merger=fixture.merge_dependency,
+            sidecar_generator=fixture.generate_sidecars,
+            tap_validator=fixture.validate_tap,
+        )
+
+        selection = json.loads(
+            (output / "selection.json").read_text()
+        )
+        self.assertEqual(
+            selection["kind"],
+            "kandelo-homebrew-closed-selection-candidate",
+        )
+        self.assertEqual(selection["roots"], ["alpha"])
+        self.assertEqual(
+            [value["formula"] for value in selection["formulae"]],
+            ["alpha"],
+        )
+        self.assertIn(
+            "wasm32 bottle",
+            (output / "tap/Formula/alpha.rb").read_text(),
+        )
+        self.assertFalse(
+            (output / "tap/Formula/beta.rb").exists()
+        )
+        self.assertFalse(
+            (
+                output
+                / "tap/Kandelo/reports/"
+                "beta-2.0-rebuild1-wasm32.provenance.json"
+            ).exists()
+        )
+        self.assertEqual(
+            json.loads(
+                (output / "tap/Kandelo/metadata.json").read_text()
+            )["packages"],
+            [{"name": "alpha"}],
+        )
+
+    def test_incomplete_named_closure_produces_no_candidate(
+        self,
+    ) -> None:
+        fixture = Fixture(multi_arch=True)
+        self.addCleanup(fixture.close)
+        alpha = fixture.root / "lock-alpha"
+        fixture.derive(
+            "alpha",
+            [("wasm32", fixture.publication("alpha", "wasm32"))],
+            [],
+            alpha,
+        )
+        beta = fixture.root / "lock-beta"
+        fixture.derive(
+            "beta",
+            [("wasm32", fixture.publication("beta", "wasm32"))],
+            [alpha],
+            beta,
+        )
+        output = fixture.root / "incomplete-selection"
+
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "selected dependency closure lacks handoffs.*alpha",
+        ):
+            EXECUTOR.prepare_selection(
+                campaign_path=fixture.campaign_path,
+                source_tap_root=fixture.source,
+                roots=["beta"],
+                arch="wasm32",
+                handoff_roots=[beta],
+                output=output,
+                bottle_merger=fixture.merge_dependency,
+                sidecar_generator=fixture.generate_sidecars,
+                tap_validator=fixture.validate_tap,
+            )
+        self.assertFalse(output.exists())
+
+        EXECUTOR.prepare_selection(
+            campaign_path=fixture.campaign_path,
+            source_tap_root=fixture.source,
+            roots=["beta"],
+            arch="wasm32",
+            handoff_roots=[beta, alpha],
+            output=output,
+            bottle_merger=fixture.merge_dependency,
+            sidecar_generator=fixture.generate_sidecars,
+            tap_validator=fixture.validate_tap,
+        )
+        selection = json.loads(
+            (output / "selection.json").read_text()
+        )
+        self.assertEqual(
+            [value["formula"] for value in selection["formulae"]],
+            ["alpha", "beta"],
+        )
+
+    def test_closed_selection_uses_private_handoff_snapshots(
+        self,
+    ) -> None:
+        fixture = Fixture(multi_arch=True)
+        self.addCleanup(fixture.close)
+        alpha = fixture.root / "stable-selection-alpha"
+        fixture.derive(
+            "alpha",
+            [("wasm32", fixture.publication("alpha", "wasm32"))],
+            [],
+            alpha,
+        )
+        live_input = (
+            alpha
+            / "payload/wasm32/composition/sidecars-input.json"
+        )
+
+        def mutate_live_then_generate(**arguments: Any) -> None:
+            private_input = pathlib.Path(arguments["input_path"])
+            self.assertNotEqual(
+                private_input.resolve(),
+                live_input.resolve(),
+            )
+            live_input.write_bytes(b'{"mutated":true}\n')
+            fixture.generate_sidecars(**arguments)
+
+        output = fixture.root / "stable-selection"
+        EXECUTOR.prepare_selection(
+            campaign_path=fixture.campaign_path,
+            source_tap_root=fixture.source,
+            roots=["alpha"],
+            arch="wasm32",
+            handoff_roots=[alpha],
+            output=output,
+            bottle_merger=fixture.merge_dependency,
+            sidecar_generator=mutate_live_then_generate,
+            tap_validator=fixture.validate_tap,
+        )
+        self.assertTrue((output / "selection.json").is_file())
+        self.assertEqual(
+            json.loads(
+                (output / "tap/Kandelo/metadata.json").read_text()
+            )["packages"],
+            [{"name": "alpha"}],
+        )
+
+    def test_selection_validator_failure_exposes_no_candidate(
+        self,
+    ) -> None:
+        fixture = Fixture(multi_arch=True)
+        self.addCleanup(fixture.close)
+        alpha = fixture.root / "invalid-selection-alpha"
+        fixture.derive(
+            "alpha",
+            [("wasm32", fixture.publication("alpha", "wasm32"))],
+            [],
+            alpha,
+        )
+        output = fixture.root / "invalid-selection"
+
+        def reject_tap(**_arguments: Any) -> None:
+            raise EXECUTOR.ExecutorError("whole-tap validation failed")
+
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "whole-tap validation failed",
+        ):
+            EXECUTOR.prepare_selection(
+                campaign_path=fixture.campaign_path,
+                source_tap_root=fixture.source,
+                roots=["alpha"],
+                arch="wasm32",
+                handoff_roots=[alpha],
+                output=output,
+                bottle_merger=fixture.merge_dependency,
+                sidecar_generator=fixture.generate_sidecars,
+                tap_validator=reject_tap,
+            )
+        self.assertFalse(output.exists())
+
+    def test_successful_arch_is_handed_off_without_its_sibling(
+        self,
+    ) -> None:
+        fixture = Fixture(multi_arch=True)
+        self.addCleanup(fixture.close)
+
+        handoff = fixture.root / "alpha-wasm32-handoff"
+        fixture.derive(
+            "alpha",
+            [("wasm32", fixture.publication("alpha", "wasm32"))],
+            [],
+            handoff,
+        )
+        value, _payload = EXECUTOR.load_handoff(
+            handoff,
+            fixture.campaign,
+            fixture.campaign_path.read_bytes(),
+        )
+        self.assertEqual(
+            [publication["arch"] for publication in value["publications"]],
+            ["wasm32"],
+        )
+
+        prepared = fixture.root / "alpha-wasm32-release"
+        EXECUTOR.prepare_release(
+            campaign_path=fixture.campaign_path,
+            handoff_root=handoff,
+            dependency_roots=[],
+            output=prepared,
+        )
+        self.assertTrue(
+            (prepared / "assets/wasm32.build.bottle.tar.gz").is_file()
+        )
+        self.assertFalse(
+            (prepared / "assets/wasm64.build.bottle.tar.gz").exists()
+        )
+        manifest = json.loads(
+            (prepared / "release-manifest.json").read_text()
+        )
+        fetch_json, fetch_asset, _release = release_fetchers(prepared)
+        readback = fixture.root / "alpha-wasm32-readback"
+        EXECUTOR.fetch_release(
+            campaign_path=fixture.campaign_path,
+            tag=manifest["tag"],
+            output=readback,
+            receipt_output=fixture.root / "alpha-wasm32-receipt.json",
+            dependency_roots=[],
+            json_fetcher=fetch_json,
+            asset_fetcher=fetch_asset,
+        )
+        readback_value, _payload = EXECUTOR.load_handoff(
+            readback,
+            fixture.campaign,
+            fixture.campaign_path.read_bytes(),
+        )
+        self.assertEqual(
+            [
+                publication["arch"]
+                for publication in readback_value["publications"]
+            ],
+            ["wasm32"],
+        )
+
+    def test_consumer_requires_same_arch_dependency_handoff(
+        self,
+    ) -> None:
+        fixture = Fixture(multi_arch=True)
+        self.addCleanup(fixture.close)
+        alpha_wasm32 = fixture.root / "alpha-wasm32"
+        fixture.derive(
+            "alpha",
+            [("wasm32", fixture.publication("alpha", "wasm32"))],
+            [],
+            alpha_wasm32,
+        )
+
+        beta_wasm32 = fixture.root / "beta-wasm32"
+        fixture.derive(
+            "beta",
+            [("wasm32", fixture.publication("beta", "wasm32"))],
+            [alpha_wasm32],
+            beta_wasm32,
+        )
+        self.assertTrue((beta_wasm32 / "handoff.json").is_file())
+
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "dependency alpha has no wasm64 campaign publication",
+        ):
+            fixture.derive(
+                "beta",
+                [("wasm64", fixture.publication("beta", "wasm64"))],
+                [alpha_wasm32],
+                fixture.root / "beta-wasm64",
+            )
+
     def test_four_commands_round_trip_dependency_ordered_handoffs(
         self,
     ) -> None:

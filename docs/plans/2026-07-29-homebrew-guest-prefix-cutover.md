@@ -186,10 +186,12 @@ Prioritize Ncurses, OpenSSL, libmagic, libiconv, and libpng because they
 unlock the most work. Tex Live has no downstream consumer in this graph and
 must not block the smaller critical path.
 
-Dual-architecture siblings remain one Formula-scoped publication task so
-their bottle block and sibling policy stay coherent.
+Each publication task selects exactly one Formula and one architecture.
+The serialized Formula index writer merges that successful child with a
+compatible public sibling, so wasm32 can become usable before wasm64
+without losing either architecture when wasm64 later succeeds.
 
-## Atomic Campaign
+## Independent Bottles And Atomic Activation
 
 1. Land the final publisher compatibility work.
 2. Rebase the Kandelo layout and tap source-authority changes onto their
@@ -197,11 +199,12 @@ their bottle block and sibling policy stay coherent.
 3. Generate one campaign manifest binding Kandelo SHA, tap source SHA, old
    metadata digest, layout digest, every old record, each disposition, and
    destination-absence evidence.
-4. For each Formula, run the restricted publisher with tap finalization
-   deferred. It may publish and anonymously verify the Formula's
-   reserved GHCR bottle index, but it must not change tap Git state or
-   publish a VFS release.
-5. Seal each verified Formula result as an immutable, content-addressed
+4. For each Formula/architecture, run the restricted publisher with tap
+   finalization deferred. Each successful variant publishes and
+   anonymously verifies its reserved GHCR child and version index
+   independently, but it must not change tap Git state or activate a
+   product VFS release.
+5. Seal each verified variant result as an immutable, content-addressed
    handoff. Produce the 34 scan-admission handoffs, or rebuild those
    variants.
 6. Build the 36 required variants with a dependency-ready queue. Feed
@@ -223,11 +226,21 @@ Public immutable child blobs may be uploaded before finalization because the
 old tap does not select their reserved identities. Selected metadata must not
 expose a mixture of old- and new-prefix records.
 
+Plan correction, 2026-07-30: publication availability and product
+activation are different transactions. A successful bottle variant is
+indexable and reusable immediately. A Brew/VFS candidate can be composed
+when that root's exact same-architecture dependency closure is complete.
+Only the live tap prefix switch and each named product activation remain
+atomic; an unrelated Formula failure must not strand a successful
+bottle. Named activation still needs an immutable candidate locator,
+resolver/VFS readback, and compare-and-swap pointer transaction.
+
 The `defer-tap-finalization` publisher input is not a general operator
 shortcut. Only the reviewed `prefix-campaign-bottles.yml` caller may use
-it, for one Formula at a time, in write and forced-rebuild mode, with
-ordinary VFS acceptance disabled. The build, upload, index readback, and
-bottle verification still run. The `finalize-tap` and
+it, for one Formula and one architecture at a time, in write and
+forced-rebuild mode, with ordinary VFS acceptance disabled. The build,
+upload, index readback, and bottle verification still run. The
+`finalize-tap` and
 `publish-vfs-release` jobs do not.
 
 If tap main advances before final commit, discard the candidate composition,
@@ -345,25 +358,30 @@ missing, wrong, or changed digest fails.
 
 ### Deferred Formula Handoffs
 
-Each Formula call may publish immutable bottle children and its reserved
-GHCR version index because the old tap does not select the new rebuild
-identity. After anonymous readback and runtime verification, the
-executor seals the result under:
+Each Formula/architecture call may publish its immutable bottle child
+and reserved GHCR version index because the old tap does not select the
+new rebuild identity. After anonymous readback and runtime
+verification, the executor seals the result under:
 
 ```text
 homebrew-prefix-handoff-sha256-<handoff-sha256>
 ```
 
-The handoff binds the campaign digest, Formula identity, architectures,
+The handoff binds the campaign digest, Formula identity, architecture,
 publications, dependency handoffs, public tap source, target source
 tree, and guest-layout authority. A downstream Formula reconstructs its
 dependency bottle blocks only from verified handoffs in its exact
-campaign closure.
+same-architecture campaign closure.
 
 No per-Formula run updates Formula bottle blocks, sidecars, aggregate
-metadata, or tap `main`. After every handoff exists, the campaign
-composes and validates one complete candidate and performs one atomic
-final tap update.
+metadata, or tap `main`. A closed selection may nevertheless compose
+those inert files in a digest-bound local candidate for Brew and
+VFS consumers. That command validates the candidate but does not publish
+or activate it. Named product activation must publish the exact bytes at
+an immutable locator, verify consumer readback, and then update its
+pointer atomically. After every migration handoff exists, the campaign
+separately composes and validates one complete candidate and performs one
+atomic final live-tap update.
 
 ### Campaign Mutation Authority
 
@@ -455,7 +473,7 @@ the deployment before its final CI.
 
 The cutover is complete only when all of the following are true:
 
-- every Formula result is an immutable handoff bound to the exact
+- every Formula/architecture result is an immutable handoff bound to the exact
   campaign and guest-layout digests;
 - public bottle provenance names the raw tap source, while build and
   runtime evidence also bind the deterministic prepared checkout;

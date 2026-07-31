@@ -6562,6 +6562,7 @@ assert_index_artifact_download_topologies() {
   local flat_publication="$TMPDIR/index-artifacts-flat-publication"
   local nested_child="$TMPDIR/index-artifacts-nested-child"
   local nested_publication="$TMPDIR/index-artifacts-nested-publication"
+  local nested_single_child="$TMPDIR/index-artifacts-nested-single-child"
   local nested_single="$TMPDIR/index-artifacts-nested-single"
   local ambiguous="$TMPDIR/index-artifacts-ambiguous"
   local symlinked="$TMPDIR/index-artifacts-symlinked"
@@ -6633,10 +6634,24 @@ assert_index_artifact_download_topologies() {
   mkdir -p "$nested_single/homebrew-upload-receipt-zlib-wasm32-attempt-1"
   printf '{}\n' \
     >"$nested_single/homebrew-upload-receipt-zlib-wasm32-attempt-1/receipt.json"
-  if bash "$helper" --root "$nested_single" --kind publication --formula zlib \
-    --run-attempt 1 --out "$TMPDIR/index-artifacts-nested-single.paths" >/dev/null 2>&1; then
-    fail "index artifact collector accepted an impossible nested single-artifact layout"
-  fi
+  out="$TMPDIR/index-artifacts-nested-single.paths"
+  bash "$helper" --root "$nested_single" --kind publication --formula zlib \
+    --run-attempt 1 --out "$out"
+  mapfile -d '' -t paths <"$out"
+  [ "${#paths[@]}" -eq 1 ] &&
+    [ "${paths[0]}" = "$nested_single/homebrew-upload-receipt-zlib-wasm32-attempt-1/receipt.json" ] ||
+    fail "single successful architecture was not independently consumable"
+
+  child_dir="$nested_single_child/homebrew-oci-child-zlib-wasm32-attempt-1"
+  mkdir -p "$child_dir/layout"
+  printf '{}\n' >"$child_dir/receipt.json"
+  out="$TMPDIR/index-artifacts-nested-single-child.paths"
+  bash "$helper" --root "$nested_single_child" --kind child --formula zlib \
+    --run-attempt 1 --out "$out"
+  mapfile -d '' -t paths <"$out"
+  [ "${#paths[@]}" -eq 1 ] &&
+    [ "${paths[0]}" = "$child_dir/receipt.json" ] ||
+    fail "single successful child layout was not independently consumable"
 }
 
 assert_publish_handoff_download_topologies() {
