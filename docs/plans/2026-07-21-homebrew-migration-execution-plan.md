@@ -595,6 +595,15 @@ merge-approval boundary.
 These defects affect iteration speed or diagnostic quality but do not weaken
 the exact artifact accepted by the current gates:
 
+- Add general content-addressed reuse across protected-main commits for
+  unchanged package archives. Current protected main `M` must remain the
+  authority for publication and every mutation. A reused archive must
+  retain its truthful producer commit `S`. Admission must bind its
+  immutable bytes to the canonical per-package build-input receipt and
+  the direct-dependency receipts. Then only changed nodes and their
+  dependents rebuild. This is a deferred throughput improvement, not
+  part of the immediate cutover path. It must not weaken exact-main
+  admission or the checks immediately before a mutation.
 - Make every completed PR staging release a self-contained snapshot. A run
   that cannot reuse a partial target currently rebuilds against the canonical
   ABI release, while each matrix writer adds only its own result to the target
