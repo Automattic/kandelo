@@ -37,7 +37,7 @@ RUNTIME_HANDOFF = "homebrew-public-browser-runtime-handoff"
 WORKFLOW_DIGEST =
   "265f342bebcef286b910927f4c999b2f15ff4a1e4fccd0adde29e2c1dcc09ef1"
 RUNNER_DIGEST =
-  "10e69e20c7e5b9a02eec910b0c3edce3baadd6f349bf80bdb4bfc20c86897128"
+  "357e1fa5c28c13f736fb8027cbb726dc60076de7fa32cccd61ceb08a4c5d1689"
 DOWNLOAD_ACTION =
   "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 UPLOAD_ACTION =

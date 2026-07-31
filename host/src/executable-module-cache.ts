@@ -52,6 +52,12 @@ export class ExecutableModuleCache<T = WebAssembly.Module> {
   private readonly digest: DigestBytes;
   private readonly entries = new Map<string, CacheEntry<T>>();
   private cachedSourceBytes = 0;
+  private diagnosticRequests = 0;
+  private diagnosticHits = 0;
+  private diagnosticMisses = 0;
+  private diagnosticBypasses = 0;
+  private diagnosticEvictions = 0;
+  private diagnosticNextReport = 32;
 
   constructor(options: ExecutableModuleCacheOptions<T> = {}) {
     this.maxEntries = requireCacheLimit(
@@ -77,14 +83,18 @@ export class ExecutableModuleCache<T = WebAssembly.Module> {
   }
 
   clear(): void {
+    this.reportDiagnostic(true);
     this.entries.clear();
     this.cachedSourceBytes = 0;
   }
 
   async getOrCompile(bytes: ArrayBuffer): Promise<T> {
+    this.diagnosticRequests += 1;
     // Skip both hashing and retention when caching is disabled or when one
     // large executable would exceed the cache's declared weight by itself.
     if (this.maxEntries === 0 || bytes.byteLength > this.maxSourceBytes) {
+      this.diagnosticBypasses += 1;
+      this.reportDiagnostic();
       return await this.compile(bytes);
     }
 
@@ -96,9 +106,12 @@ export class ExecutableModuleCache<T = WebAssembly.Module> {
     const key = `${bytes.byteLength}:${digest}`;
     const cached = this.entries.get(key);
     if (cached) {
+      this.diagnosticHits += 1;
       this.touch(key, cached);
+      this.reportDiagnostic();
       return await cached.module;
     }
+    this.diagnosticMisses += 1;
 
     // Install the promise before compilation starts. Two spawn/exec requests
     // that resolve the same bytes concurrently then await one compiler job.
@@ -109,6 +122,7 @@ export class ExecutableModuleCache<T = WebAssembly.Module> {
     this.entries.set(key, entry);
     this.cachedSourceBytes += entry.sourceBytes;
     this.evictToBounds();
+    this.reportDiagnostic();
 
     try {
       return await entry.module;
@@ -143,7 +157,32 @@ export class ExecutableModuleCache<T = WebAssembly.Module> {
       const oldest = this.entries.entries().next().value as
         [string, CacheEntry<T>] | undefined;
       if (!oldest) break;
+      this.diagnosticEvictions += 1;
       this.remove(oldest[0], oldest[1]);
     }
+  }
+
+  private reportDiagnostic(force = false): void {
+    if (this.diagnosticRequests === 0) {
+      return;
+    }
+    if (!force && this.diagnosticRequests < this.diagnosticNextReport) return;
+    while (this.diagnosticNextReport <= this.diagnosticRequests) {
+      this.diagnosticNextReport += 32;
+    }
+    // This branch is a throwaway Chromium diagnostic. Keep the prefix aligned
+    // with the lifecycle reporter so CI preserves the counters before a
+    // renderer crash; do not copy this noisy logging into the product change.
+    console.info(
+      "homebrew_guest_lifecycle_browser: progress: " +
+        "executable-module-cache diagnostic " +
+        `requests=${this.diagnosticRequests} ` +
+        `hits=${this.diagnosticHits} ` +
+        `misses=${this.diagnosticMisses} ` +
+        `bypasses=${this.diagnosticBypasses} ` +
+        `evictions=${this.diagnosticEvictions} ` +
+        `entries=${this.entries.size} ` +
+        `source_bytes=${this.cachedSourceBytes}`,
+    );
   }
 }

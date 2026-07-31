@@ -158,6 +158,7 @@ set +e
   # Actions credentials at their common parent so future transport changes
   # cannot accidentally turn this anonymous proof into an authenticated one.
   env -u GH_TOKEN -u GITHUB_TOKEN \
+    DEBUG=pw:browser \
     KANDELO_BROWSER_DEMO_INPUTS=main \
     KANDELO_PLAYWRIGHT_SERVE_DIST=1 \
     KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE=1 \
