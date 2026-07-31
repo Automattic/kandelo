@@ -1813,6 +1813,115 @@ describe("dylink symbol interposition", () => {
 });
 
 describe("dylink replay layout and rollback", () => {
+  it("rebuilds borrowed instances without running start or data relocations", () => {
+    const wasmBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "env" "__memory_base" (global $memory_base i32))
+        (func $write (param $value i32)
+          global.get $memory_base
+          local.get $value
+          i32.store)
+        (func $start (export "__wasm_init_memory")
+          i32.const 91
+          call $write)
+        (start $start)
+        (func (export "__wasm_apply_data_relocs")
+          i32.const 92
+          call $write)
+        (func (export "read_value") (result i32)
+          global.get $memory_base
+          i32.load))
+    `, "borrowed-no-loader-writes", undefined, 0, 4);
+    const options = createSideForkLoadOptions();
+    const memoryBase = 4_096;
+    new DataView(options.memory.buffer).setInt32(memoryBase, 77, true);
+
+    const library = loadSharedLibrarySync(
+      "libborrowed-no-loader-writes.so",
+      wasmBytes,
+      options,
+      {
+        memoryBase,
+        tableBase: options.table.length,
+        memoryOwnership: "borrowed",
+      },
+    );
+
+    expect((library.exports.read_value as () => number)()).toBe(77);
+    expect(new DataView(options.memory.buffer).getInt32(memoryBase, true))
+      .toBe(77);
+  });
+
+  it("rejects active data before borrowed instantiation can write", () => {
+    const wasmBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (data (i32.const 4096) "\\01\\00\\00\\00"))
+    `, "borrowed-active-data", undefined, 0, 4);
+    const options = createSideForkLoadOptions();
+    const memoryBase = 4_096;
+    new DataView(options.memory.buffer).setInt32(memoryBase, 77, true);
+
+    expect(() => loadSharedLibrarySync(
+      "libborrowed-active-data.so",
+      wasmBytes,
+      options,
+      {
+        memoryBase,
+        tableBase: options.table.length,
+        memoryOwnership: "borrowed",
+      },
+    )).toThrow(/borrowed replay requires passive data segments/);
+    expect(new DataView(options.memory.buffer).getInt32(memoryBase, true))
+      .toBe(77);
+  });
+
+  it("rejects an unrecognized start instead of silently skipping it", () => {
+    const wasmBytes = buildDylinkWat(`
+      (module
+        (import "env" "memory" (memory 1 100 shared))
+        (import "env" "__memory_base" (global $memory_base i32))
+        (func $start
+          global.get $memory_base
+          i32.const 93
+          i32.store)
+        (start $start))
+    `, "borrowed-unknown-start", undefined, 0, 4);
+    const options = createSideForkLoadOptions();
+    const memoryBase = 4_096;
+    new DataView(options.memory.buffer).setInt32(memoryBase, 77, true);
+
+    expect(() => loadSharedLibrarySync(
+      "libborrowed-unknown-start.so",
+      wasmBytes,
+      options,
+      {
+        memoryBase,
+        tableBase: options.table.length,
+        memoryOwnership: "borrowed",
+      },
+    )).toThrow(/cannot suppress unrecognized start function/);
+    expect(new DataView(options.memory.buffer).getInt32(memoryBase, true))
+      .toBe(77);
+  });
+
+  it("rejects in-flight loader transactions at the borrowed boundary", () => {
+    const linker = new DynamicLinker(createSideForkLoadOptions());
+    expect(() => linker.reconcileForkModules({
+      nextHandle: 2,
+      libraries: [],
+      transactions: [{
+        token: 1,
+        name: "libpending.so",
+        moduleBytes: new Uint8Array(),
+        globalVisibility: false,
+      }],
+    }, {
+      memoryOwnership: "borrowed",
+    })).toThrow(/cannot restore an in-flight dlopen transaction/);
+  });
+
   it("does not apply data relocations twice to copied child memory", () => {
     const wasmBytes = buildDylinkWat(`
       (module
@@ -2097,6 +2206,55 @@ describe("dylink replay layout and rollback", () => {
     });
     expect(replayed.tableBase).toBe(3);
     expect(child.table.length).toBe(options.table.length);
+  });
+});
+
+describe.skipIf(!hasCompiler())("borrowed wasm-ld replay", () => {
+  it("reconstructs passive-data state in shared Memory without writes", () => {
+    const wasmBytes = buildSharedLib(
+      `
+      static int counter = 41;
+      int get_counter(void) { return counter; }
+      void inc_counter(void) { counter++; }
+      `,
+      "borrowed-standard-side",
+    );
+    const parentOptions = createSideForkLoadOptions();
+    const parent = new DynamicLinker(parentOptions);
+    expect(parent.dlopenSync("libborrowed-standard-side.so", wasmBytes)).toBe(2);
+    const parentLibrary = parentOptions.loadedLibraries.get(
+      "libborrowed-standard-side.so",
+    )!;
+    (parentLibrary.exports.inc_counter as () => void)();
+    expect((parentLibrary.exports.get_counter as () => number)()).toBe(42);
+    const archived = parent.forkState();
+    const savedData = new Uint8Array(
+      parentOptions.memory.buffer,
+      parentLibrary.memoryBase,
+      parentLibrary.metadata.memorySize,
+    ).slice();
+
+    const childOptions = createSideForkLoadOptions();
+    childOptions.memory = parentOptions.memory;
+    childOptions.allocateMemory = () => {
+      throw new Error("borrowed side replay must not allocate process memory");
+    };
+    childOptions.deallocateMemory = () => {
+      throw new Error("borrowed side replay must not release process memory");
+    };
+    const child = new DynamicLinker(childOptions);
+    child.reconcileForkModules(archived, { memoryOwnership: "borrowed" });
+    const childLibrary = childOptions.loadedLibraries.get(
+      "libborrowed-standard-side.so",
+    )!;
+
+    expect((childLibrary.exports.get_counter as () => number)()).toBe(42);
+    expect(new Uint8Array(
+      parentOptions.memory.buffer,
+      parentLibrary.memoryBase,
+      parentLibrary.metadata.memorySize,
+    )).toEqual(savedData);
+    expect((parentLibrary.exports.get_counter as () => number)()).toBe(42);
   });
 });
 

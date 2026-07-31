@@ -154,6 +154,7 @@ function makeCoordinator(
 ): {
   coordinator: ForkProcessContinuationCoordinator;
   arena: ForkModuleStateArena;
+  continuations: Map<number, LinkedForkContinuation>;
 } {
   const registry = new ForkActivationRegistry(memory, externrefs(), `${label}: registry`);
   const coordinator = new ForkProcessContinuationCoordinator(
@@ -161,6 +162,7 @@ function makeCoordinator(
     registry,
     label,
   );
+  const continuations = new Map<number, LinkedForkContinuation>();
   for (const activationId of [0, 4, 9]) {
     const continuation = new LinkedForkContinuation(
       memory,
@@ -169,6 +171,7 @@ function makeCoordinator(
       owner.deallocate,
       `${label}: activation ${activationId}`,
     );
+    continuations.set(activationId, continuation);
     coordinator.prepareActivation({
       activationId,
       continuation,
@@ -189,6 +192,7 @@ function makeCoordinator(
   }
   return {
     coordinator,
+    continuations,
     arena: new ForkModuleStateArena(
       memory,
       4,
@@ -208,6 +212,195 @@ function writeOrdinal(
 }
 
 describe("ForkProcessContinuationCoordinator", () => {
+  it("borrows every active activation without consuming parent state", () => {
+    const memory = new WebAssembly.Memory({
+      initial: 16,
+      maximum: 16,
+      shared: true,
+    });
+    const parentOwner = allocationOwner(memory);
+    const launchRoots = new Map<number, number>();
+    const parent = makeCoordinator(
+      memory,
+      parentOwner,
+      [],
+      launchRoots,
+      "borrowed parent",
+    );
+    const arenaRoot = parent.arena.begin();
+    parent.coordinator.beginCapture(parent.arena);
+
+    const sideImports = parent.coordinator.continuationImports(4);
+    const sidePayload = (
+      sideImports.__wpk_fork_frame_reserve as (size: number) => number
+    )(16);
+    writeOrdinal(memory, sidePayload, 8);
+    (
+      sideImports.__wpk_fork_frame_commit as (payload: number) => void
+    )(sidePayload);
+    const mainImports = parent.coordinator.continuationImports(0);
+    const mainPayload = (
+      mainImports.__wpk_fork_frame_reserve as (size: number) => number
+    )(16);
+    writeOrdinal(memory, mainPayload, 11);
+    (
+      mainImports.__wpk_fork_frame_commit as (payload: number) => void
+    )(mainPayload);
+    parent.coordinator.sealCapture();
+
+    const borrowedRanges = [arenaRoot, ...[0, 4].map((activationId) =>
+      parent.coordinator.rootFor(activationId) - linkedFormat().chunkHeaderSize
+    )].map((address) => ({
+      address,
+      bytes: new Uint8Array(memory.buffer, address, PAGE_SIZE).slice(),
+    }));
+    const privatePrefixes = new Map([
+      [0, 14 * PAGE_SIZE],
+      [4, 15 * PAGE_SIZE],
+    ]);
+    const childReleases: Array<{ address: number; size: number }> = [];
+    const childOwner: AllocationOwner = {
+      allocate() {
+        throw new Error("borrowed child must not allocate continuation state");
+      },
+      deallocate(address, size) {
+        childReleases.push({ address, size });
+      },
+    };
+    const child = makeCoordinator(
+      memory,
+      childOwner,
+      [],
+      launchRoots,
+      "borrowed child",
+    );
+    child.arena.attachBorrowed(arenaRoot);
+    const prefixRequests: number[] = [];
+    child.coordinator.attachBorrowedChild(child.arena, (request) => {
+      prefixRequests.push(request.activationId);
+      expect(request).toMatchObject({ byteLength: 64, alignment: 16 });
+      return privatePrefixes.get(request.activationId)!;
+    });
+
+    expect(prefixRequests).toEqual([0, 4]);
+    for (const activationId of prefixRequests) {
+      const source = parent.coordinator.rootFor(activationId);
+      const target = privatePrefixes.get(activationId)!;
+      expect(new Uint8Array(memory.buffer, target, 64)).toEqual(
+        new Uint8Array(memory.buffer, source, 64),
+      );
+    }
+    // Process replay is global and therefore consumes the reverse commit order.
+    (
+      child.coordinator.continuationImports(0)
+        .__wpk_fork_frame_next as (size: number) => number
+    )(16);
+    (
+      child.coordinator.continuationImports(4)
+        .__wpk_fork_frame_next as (size: number) => number
+    )(16);
+    child.coordinator.finishReplay();
+
+    expect(child.coordinator.phaseName()).toBe("idle");
+    expect(child.arena.hasActiveArena()).toBe(false);
+    expect(childReleases).toEqual([]);
+    expect(launchRoots.get(0)).toBe(parent.coordinator.rootFor(0));
+    for (const range of borrowedRanges) {
+      expect(new Uint8Array(
+        memory.buffer,
+        range.address,
+        range.bytes.length,
+      )).toEqual(range.bytes);
+    }
+
+    parent.coordinator.beginParentReplay();
+    (
+      parent.coordinator.continuationImports(0)
+        .__wpk_fork_frame_next as (size: number) => number
+    )(16);
+    (
+      parent.coordinator.continuationImports(4)
+        .__wpk_fork_frame_next as (size: number) => number
+    )(16);
+    parent.coordinator.finishReplay();
+    expect(launchRoots.get(0)).toBe(0);
+  });
+
+  it("rolls back a partial borrowed attach without wedging the parent", () => {
+    const memory = new WebAssembly.Memory({
+      initial: 16,
+      maximum: 16,
+      shared: true,
+    });
+    const parentOwner = allocationOwner(memory);
+    const launchRoots = new Map<number, number>();
+    const parent = makeCoordinator(
+      memory,
+      parentOwner,
+      [],
+      launchRoots,
+      "rollback parent",
+    );
+    const arenaRoot = parent.arena.begin();
+    parent.coordinator.beginCapture(parent.arena);
+    for (const [activationId, ordinal] of [[4, 8], [0, 11]] as const) {
+      const imports = parent.coordinator.continuationImports(activationId);
+      const payload = (
+        imports.__wpk_fork_frame_reserve as (size: number) => number
+      )(16);
+      writeOrdinal(memory, payload, ordinal);
+      (
+        imports.__wpk_fork_frame_commit as (address: number) => void
+      )(payload);
+    }
+    parent.coordinator.sealCapture();
+    const parentLaunchRoot = launchRoots.get(0);
+
+    const child = makeCoordinator(
+      memory,
+      {
+        allocate() {
+          throw new Error("borrowed rollback child must not allocate");
+        },
+        deallocate() {
+          throw new Error("borrowed rollback child must not deallocate");
+        },
+      },
+      [],
+      launchRoots,
+      "rollback child",
+    );
+    child.arena.attachBorrowed(arenaRoot);
+    expect(() => child.coordinator.attachBorrowedChild(
+      child.arena,
+      ({ activationId }) => {
+        if (activationId === 4) throw new Error("private prefix exhausted");
+        return 15 * PAGE_SIZE;
+      },
+    )).toThrow("private prefix exhausted");
+
+    expect(child.coordinator.phaseName()).toBe("idle");
+    expect(child.arena.hasActiveArena()).toBe(false);
+    expect(
+      [...child.continuations.values()].every(
+        (continuation) => !continuation.hasActiveContinuation(),
+      ),
+    ).toBe(true);
+    expect(launchRoots.get(0)).toBe(parentLaunchRoot);
+
+    parent.coordinator.beginParentReplay();
+    (
+      parent.coordinator.continuationImports(0)
+        .__wpk_fork_frame_next as (size: number) => number
+    )(16);
+    (
+      parent.coordinator.continuationImports(4)
+        .__wpk_fork_frame_next as (size: number) => number
+    )(16);
+    parent.coordinator.finishReplay();
+    expect(parent.coordinator.phaseName()).toBe("idle");
+  });
+
   it("reconstructs cross-activation frame order in a fresh child", () => {
     const parentMemory = new WebAssembly.Memory({ initial: 16 });
     const parentOwner = allocationOwner(parentMemory);
