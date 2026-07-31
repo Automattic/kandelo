@@ -21,9 +21,14 @@ import type {
 } from "../../../../web-libs/kandelo-session/src/kernel-host";
 import {
   runHomebrewGuestLifecycleInBrowser,
+  runHomebrewGuestShippingProofInBrowser,
   type HomebrewGuestLifecycleBrowserFixture,
   type HomebrewGuestLifecycleBrowserResult,
+  type HomebrewGuestShippingProofBrowserResult,
 } from "../../../../homebrew/test/homebrew_guest_lifecycle_browser";
+import type {
+  HomebrewGuestShippingProofScope,
+} from "../../../../homebrew/test/homebrew_guest_lifecycle_contract";
 import kernelWasmUrl from "@kernel-wasm?url";
 
 const MAX_OUTPUT_BYTES = 1024 * 1024;
@@ -161,6 +166,10 @@ declare global {
     __runHomebrewGuestLifecycleAcceptance: (
       fixture: HomebrewGuestLifecycleBrowserFixture,
     ) => Promise<HomebrewGuestLifecycleBrowserResult>;
+    __runHomebrewGuestShippingProofAcceptance: (
+      fixture: HomebrewGuestLifecycleBrowserFixture,
+      scope: HomebrewGuestShippingProofScope,
+    ) => Promise<HomebrewGuestShippingProofBrowserResult>;
   }
 }
 
@@ -292,6 +301,12 @@ function vfsPathExists(fs: MemoryFileSystem, path: string): boolean {
 async function init(): Promise<void> {
   const kernelBytes = await fetchBytes(kernelWasmUrl, "kernel.wasm");
   const kernelSha256 = await sha256(kernelBytes);
+  // WHY: the adapter forwards only its bounded generated progress protocol.
+  // Console delivery lets Playwright preserve the last completed stock Brew
+  // operation even if Chromium discards the renderer before a promise rejects.
+  const reportHomebrewProgress = (text: string): void => {
+    console.info(text.trimEnd());
+  };
 
   window.__runHomebrewGuestLifecycleAcceptance = (fixture) =>
     runHomebrewGuestLifecycleInBrowser({
@@ -302,6 +317,20 @@ async function init(): Promise<void> {
         ? {}
         : { closedAssetRootUrl: closedLifecycleAssetRoot }),
       afterMachineDestroy: settleWebKitReclaim,
+      onProgress: reportHomebrewProgress,
+    });
+
+  window.__runHomebrewGuestShippingProofAcceptance = (fixture, scope) =>
+    runHomebrewGuestShippingProofInBrowser({
+      fixture,
+      scope,
+      kernelWasm: kernelBytes,
+      corsProxyUrl,
+      ...(closedLifecycleAssetRoot === undefined
+        ? {}
+        : { closedAssetRootUrl: closedLifecycleAssetRoot }),
+      afterMachineDestroy: settleWebKitReclaim,
+      onProgress: reportHomebrewProgress,
     });
 
   window.__runHomebrewVfsAcceptance = async (request) => {
