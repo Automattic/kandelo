@@ -3,6 +3,7 @@ import {
   parseNumericIpv4Hostname,
   validateSyntheticDnsHostname,
 } from "./hostname";
+import { corsProxyFetchUrl } from "./cors-proxy-url";
 
 /** Error with errno property for EAGAIN propagation to the kernel host imports. */
 export class EagainError extends Error {
@@ -30,17 +31,6 @@ interface ConnectionState {
 export interface FetchBackendOptions {
   corsProxyUrl?: string;
   hostAliases?: Record<string, string>;
-}
-
-function corsProxyFetchUrl(corsProxyUrl: string, targetUrl: string): string {
-  const trimmedProxyUrl = corsProxyUrl.trim();
-  if (targetUrl.startsWith(trimmedProxyUrl)) {
-    return targetUrl;
-  }
-  const proxiedTarget = trimmedProxyUrl.endsWith("?")
-    ? targetUrl
-    : encodeURIComponent(targetUrl);
-  return `${trimmedProxyUrl}${proxiedTarget}`;
 }
 
 export class FetchNetworkBackend implements NetworkIO {

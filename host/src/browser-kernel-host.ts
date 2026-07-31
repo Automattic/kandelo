@@ -100,9 +100,9 @@ export interface BrowserKernelOptions {
   syscallLogPtrWidth?: 4 | 8;
   /** Forwarded to TlsNetworkBackendOptions.dnsAliases. */
   dnsAliases?: Record<string, string>;
-  /** Forwarded to TlsNetworkBackendOptions.corsProxyUrl. Browser pages that
-   *  are not controlled by Kandelo's service worker can use this to route
-   *  guest outbound HTTP(S) through a same-origin proxy. */
+  /** Browser pages that are not controlled by Kandelo's service worker can
+   *  use this to route guest HTTP(S) and external lazy VFS downloads through
+   *  a CORS-capable proxy. Same-origin lazy assets remain direct. */
   corsProxyUrl?: string;
 }
 

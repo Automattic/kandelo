@@ -628,7 +628,8 @@ if (typeof window !== "undefined") {
 
   /**
    * Fetch a cross-origin URL, routing through the CORS proxy if configured.
-   * Returns a Response with CORP headers added so COEP: require-corp is satisfied.
+   * The body must first be readable through CORS. The synthetic response then
+   * carries the policy headers needed by the cross-origin-isolated page.
    */
   function corsSafeResponseHeaders(response) {
     var headers = new Headers();
@@ -704,7 +705,8 @@ if (typeof window !== "undefined") {
       });
     }
 
-    // No CORS proxy — try direct fetch and add CORP headers
+    // No proxy: try a normal CORS fetch. Policy headers are useful only after
+    // CORS has made the response body readable; they cannot un-opaque a body.
     return fetch(request).then(function (response) {
       if (response.type === "opaque" || response.type === "opaqueredirect") {
         return response;

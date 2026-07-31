@@ -31,6 +31,7 @@ import {
 } from "./vfs/vfs";
 import { MemoryFileSystem } from "./vfs/memory-fs";
 import { createClosedLazyAssetFetcherFromOwnedAssets } from "./vfs/closed-lazy-assets";
+import { createBrowserLazyFetcher } from "./vfs/browser-lazy-fetcher";
 import { resolveLazyUrl } from "./vfs/lazy-url";
 import { DeviceFileSystem } from "./vfs/device-fs";
 import { BrowserTimeProvider } from "./vfs/time";
@@ -895,6 +896,11 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   }
   if (msg.closedLazyAssets !== undefined) {
     memfs.setLazyFetcher(createClosedLazyAssetFetcherFromOwnedAssets(msg.closedLazyAssets));
+  } else if (msg.config.corsProxyUrl?.trim()) {
+    // WHY: guest networking and lazy VFS downloads are separate fetch paths.
+    // Lazy VFS must read and verify release-asset bytes, which requires CORS.
+    // CORP alone cannot make an opaque response body readable to JavaScript.
+    memfs.setLazyFetcher(createBrowserLazyFetcher(msg.config.corsProxyUrl));
   }
   const mounts: MountConfig[] = [
     { mountPoint: "/dev/shm", backend: shmfs },
