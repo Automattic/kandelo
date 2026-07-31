@@ -388,6 +388,37 @@ main nodes may occupy several mappings and may contain a frame larger than one
 WebAssembly page. The coordinator completes and validates both continuations
 before it sends `SYS_FORK`.
 
+### Borrowed replay foundation (not guest-visible vfork)
+
+A genuine vfork child cannot run ordinary copied activation or side-module
+replay over the parent's live `Shared WebAssembly.Memory`. The ABI 43 host now
+has an unwired foundation for that future launch mode. A fresh child Worker
+validates the parent's process-wide module-state arena as borrowed, rebuilds
+the complete activation registry, and gives every active main or side
+activation its own child-private fixed prefix. Replay reads the parent's
+committed frame nodes and recipe records but never marks nodes consumed,
+releases mappings, clears the process launch anchor, or deallocates the
+module-state arena. Failure midway through attachment detaches every child
+controller so the suspended parent can still replay the original transaction.
+
+Dynamic-linker reconstruction has a matching fail-closed mode. It accepts
+only shared Memory, passive data segments, and a complete loader transaction.
+For ordinary wasm-ld modules it suppresses only a start function exported as
+`__wasm_init_memory`; an arbitrary start or active data segment is rejected
+before instantiation. Complete replay does not invoke relocations or
+constructors because the borrowed address space already contains the parent's
+live initialized bytes. ABI 43 instrumented side modules already lower their
+start and active segments into the explicit staged bootstrap described above.
+An in-flight bootstrap, relocation, or constructor is rejected because guest
+code at that boundary may write arbitrary shared process memory.
+
+The ordinary no-option path remains copied fork replay and retains independent
+address-space ownership. These primitives do not make guest-visible vfork
+functional: Kandelo's libc `vfork()` is still an alias for `fork()`, and no
+kernel fork mode, child launch protocol, or parent suspension path calls the
+borrowed APIs. That remaining semantic/protocol work must be explicit in the
+ABI 43 batch and snapshot rather than hidden under the existing fork contract.
+
 ## Save buffer format
 
 All values are little-endian and all records are eight-byte aligned. `P` is
@@ -428,7 +459,7 @@ callbacks pointed at the borrowed nodes. Making only the host replay cursor
 read-only is insufficient: passing the owner's prefix would overwrite the
 owner's active-frame word. Borrowed replay must leave node states and mappings
 untouched so the owner can later replay and release them. This is an internal
-host invariant; it does not make ABI 42 `vfork()` functional.
+host invariant; it does not make ABI 43 `vfork()` functional.
 
 This does not introduce a new linked-frame encoding. `fixed_prefix_size` has
 always been a module-specific value in the version-1 descriptor, and each node
