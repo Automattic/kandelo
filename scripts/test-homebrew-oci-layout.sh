@@ -458,7 +458,14 @@ python3 "$TOOL" validate-child \
 
 # A successful architecture becomes a valid public index immediately. A later
 # sibling extends that index without changing the already-published child.
+expect_failure index-authority-required "required: --tap-commit" \
+  python3 "$TOOL" merge-index \
+    --child-layout "$TMP_ROOT/child32/layout" \
+    --child-receipt "$TMP_ROOT/child32/receipt.json" \
+    --out-layout "$TMP_ROOT/missing-index-authority/layout" \
+    --out-receipt "$TMP_ROOT/missing-index-authority/receipt.json"
 python3 "$TOOL" merge-index \
+  --tap-commit "$TAP_COMMIT" \
   --child-layout "$TMP_ROOT/child32/layout" \
   --child-receipt "$TMP_ROOT/child32/receipt.json" \
   --out-layout "$TMP_ROOT/incremental32/layout" \
@@ -473,6 +480,7 @@ incremental32_ref="$(jq -er '.children[0].homebrew_ref' \
 jq -e '[.children[].arch] == ["wasm32"]' \
   "$TMP_ROOT/incremental32/receipt.json" >/dev/null
 python3 "$TOOL" merge-index \
+  --tap-commit "$TAP_COMMIT" \
   --existing-layout "$TMP_ROOT/incremental32/layout" \
   --child-layout "$TMP_ROOT/child64/layout" \
   --child-receipt "$TMP_ROOT/child64/receipt.json" \
@@ -491,6 +499,7 @@ jq -e \
   ' "$TMP_ROOT/incremental64/receipt.json" >/dev/null
 
 python3 "$TOOL" merge-index \
+  --tap-commit "$TAP_COMMIT" \
   --child-layout "$TMP_ROOT/child32/layout" \
   --child-receipt "$TMP_ROOT/child32/receipt.json" \
   --child-layout "$TMP_ROOT/child64/layout" \
@@ -500,9 +509,35 @@ python3 "$TOOL" merge-index \
 python3 "$TOOL" validate-index \
   --layout "$TMP_ROOT/combined/layout" --receipt "$TMP_ROOT/combined/receipt.json"
 jq -e '
+  .schema == 3 and
+  .authority == {
+    tap_commit: "1111111111111111111111111111111111111111",
+    tap_repository: "kandelo-dev/homebrew-tap-core"
+  } and
   [.children[].arch] == ["wasm32", "wasm64"] and
   (.children | map(.homebrew_ref)) == ["1.0.wasm32_kandelo", "1.0.wasm64_kandelo"]
 ' "$TMP_ROOT/combined/receipt.json" >/dev/null
+
+# The aggregate index authority is separate from historical child provenance.
+# Missing, malformed, or cross-repository authority cannot authorize a write.
+jq 'del(.authority)' "$TMP_ROOT/combined/receipt.json" \
+  >"$TMP_ROOT/combined/missing-authority.json"
+expect_failure index-missing-authority "must contain exactly" \
+  python3 "$TOOL" validate-index-receipt \
+    --receipt "$TMP_ROOT/combined/missing-authority.json"
+jq '.authority.tap_commit = "main"' "$TMP_ROOT/combined/receipt.json" \
+  >"$TMP_ROOT/combined/mutable-authority.json"
+expect_failure index-mutable-authority \
+  "OCI index authority tap commit has an invalid value" \
+  python3 "$TOOL" validate-index-receipt \
+    --receipt "$TMP_ROOT/combined/mutable-authority.json"
+jq '.authority.tap_repository = "other/homebrew-tap"' \
+  "$TMP_ROOT/combined/receipt.json" \
+  >"$TMP_ROOT/combined/wrong-authority-repository.json"
+expect_failure index-wrong-authority-repository \
+  "authority repository does not match" \
+  python3 "$TOOL" validate-index-receipt \
+    --receipt "$TMP_ROOT/combined/wrong-authority-repository.json"
 
 # ORAS materializes a copied index and its children as OCI layout entry points.
 # Accept that exact expanded root set while rejecting partial or foreign roots.
@@ -562,6 +597,7 @@ expect_failure oras-retagged-child "untagged Homebrew child set" \
 
 # Re-merging one identical child preserves the compatible sibling and is idempotent.
 python3 "$TOOL" merge-index \
+  --tap-commit "$TAP_COMMIT" \
   --existing-layout "$TMP_ROOT/combined/layout" \
   --child-layout "$TMP_ROOT/child32/layout" \
   --child-receipt "$TMP_ROOT/child32/receipt.json" \
@@ -667,6 +703,7 @@ expect_failure extra-top-annotation "top index semantic identity does not match"
 
 expect_failure duplicate-ref "duplicate Homebrew refs" \
   python3 "$TOOL" merge-index \
+    --tap-commit "$TAP_COMMIT" \
     --child-layout "$TMP_ROOT/child32/layout" --child-receipt "$TMP_ROOT/child32/receipt.json" \
     --child-layout "$TMP_ROOT/child32/layout" --child-receipt "$TMP_ROOT/child32/receipt.json" \
     --out-layout "$TMP_ROOT/duplicate/layout" --out-receipt "$TMP_ROOT/duplicate/receipt.json"
@@ -675,6 +712,7 @@ expect_failure duplicate-ref "duplicate Homebrew refs" \
 build_child changed32 wasm32 "changed fixture"
 expect_failure conflicting-ref "already names different bytes" \
   python3 "$TOOL" merge-index \
+    --tap-commit "$TAP_COMMIT" \
     --existing-layout "$TMP_ROOT/combined/layout" \
     --child-layout "$TMP_ROOT/changed32/layout" --child-receipt "$TMP_ROOT/changed32/receipt.json" \
     --out-layout "$TMP_ROOT/conflict/layout" --out-receipt "$TMP_ROOT/conflict/receipt.json"
@@ -690,6 +728,7 @@ path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n")
 PY
 expect_failure stale-transition "semantic annotation" \
   python3 "$TOOL" merge-index \
+    --tap-commit "$TAP_COMMIT" \
     --existing-layout "$TMP_ROOT/combined/layout" \
     --child-layout "$TMP_ROOT/stale32/layout" --child-receipt "$TMP_ROOT/stale32/receipt.json" \
     --out-layout "$TMP_ROOT/stale/layout" --out-receipt "$TMP_ROOT/stale/receipt.json"
@@ -698,6 +737,7 @@ expect_failure stale-transition "semantic annotation" \
 build_child changed-support32 wasm32 "hello fixture" "fixture support v2"
 expect_failure changed-support "stale Formula identity" \
   python3 "$TOOL" merge-index \
+    --tap-commit "$TAP_COMMIT" \
     --existing-layout "$TMP_ROOT/combined/layout" \
     --child-layout "$TMP_ROOT/changed-support32/layout" \
     --child-receipt "$TMP_ROOT/changed-support32/receipt.json" \
@@ -722,6 +762,7 @@ recovery_receipt="$TMP_ROOT/recovery-child-receipt.json"
 jq --arg head "$recovery_head" '.tap_commit = $head' \
   "$TMP_ROOT/changed32/receipt.json" >"$recovery_receipt"
 python3 "$TOOL" merge-index \
+  --tap-commit "$TAP_COMMIT" \
   --existing-layout "$TMP_ROOT/combined/layout" \
   --child-layout "$TMP_ROOT/changed32/layout" \
   --child-receipt "$recovery_receipt" \
@@ -759,6 +800,7 @@ git -C "$recovery_tap" commit --allow-empty -qm \
   "materialize campaign checkout"
 campaign_recovery_checkout="$(git -C "$recovery_tap" rev-parse HEAD)"
 python3 "$TOOL" merge-index \
+  --tap-commit "$TAP_COMMIT" \
   --existing-layout "$TMP_ROOT/combined/layout" \
   --child-layout "$TMP_ROOT/changed32/layout" \
   --child-receipt "$recovery_receipt" \
@@ -768,6 +810,7 @@ python3 "$TOOL" merge-index \
   --out-receipt "$TMP_ROOT/recovered-campaign/receipt.json"
 expect_failure recovery-checkout-mismatch "tap HEAD does not match" \
   python3 "$TOOL" merge-index \
+    --tap-commit "$TAP_COMMIT" \
     --existing-layout "$TMP_ROOT/combined/layout" \
     --child-layout "$TMP_ROOT/changed32/layout" \
     --child-receipt "$recovery_receipt" \
@@ -779,6 +822,7 @@ expect_failure recovery-checkout-mismatch "tap HEAD does not match" \
 expect_failure recovery-checkout-without-root \
   "recovery tap checkout commit requires" \
   python3 "$TOOL" merge-index \
+    --tap-commit "$TAP_COMMIT" \
     --existing-layout "$TMP_ROOT/combined/layout" \
     --child-layout "$TMP_ROOT/changed32/layout" \
     --child-receipt "$recovery_receipt" \
@@ -836,6 +880,7 @@ root_path.write_text(json.dumps(root, sort_keys=True, separators=(",", ":")))
 PY
 expect_failure recovery-malformed-old "child manifest blob does not exist" \
   python3 "$TOOL" merge-index \
+    --tap-commit "$TAP_COMMIT" \
     --existing-layout "$TMP_ROOT/recovery-malformed-old/layout" \
     --child-layout "$TMP_ROOT/changed32/layout" \
     --child-receipt "$recovery_receipt" \
@@ -846,12 +891,14 @@ expect_failure recovery-malformed-old "child manifest blob does not exist" \
 # A valid old index with a different fixed repository identity is never
 # recoverable, even when both repositories use the same Homebrew top ref.
 python3 "$TOOL" merge-index \
+  --tap-commit "$TAP_COMMIT" \
   --child-layout "$TMP_ROOT/generic32/layout" \
   --child-receipt "$TMP_ROOT/generic32/receipt.json" \
   --out-layout "$TMP_ROOT/generic-index/layout" \
   --out-receipt "$TMP_ROOT/generic-index/receipt.json"
 expect_failure recovery-fixed-identity "cannot change the fixed Formula/version/repository identity" \
   python3 "$TOOL" merge-index \
+    --tap-commit "$TAP_COMMIT" \
     --existing-layout "$TMP_ROOT/generic-index/layout" \
     --child-layout "$TMP_ROOT/changed32/layout" \
     --child-receipt "$recovery_receipt" \
@@ -869,6 +916,7 @@ jq --arg head "$sidecar_head" '.tap_commit = $head' \
   >"$TMP_ROOT/recovery-sidecar-receipt.json"
 expect_failure recovery-formula-sidecar "tap has a Formula sidecar" \
   python3 "$TOOL" merge-index \
+    --tap-commit "$TAP_COMMIT" \
     --existing-layout "$TMP_ROOT/combined/layout" \
     --child-layout "$TMP_ROOT/changed32/layout" \
     --child-receipt "$TMP_ROOT/recovery-sidecar-receipt.json" \
@@ -888,6 +936,7 @@ jq --arg head "$aggregate_head" '.tap_commit = $head' \
   >"$TMP_ROOT/recovery-aggregate-receipt.json"
 expect_failure recovery-aggregate-sidecar "aggregate metadata contains hello" \
   python3 "$TOOL" merge-index \
+    --tap-commit "$TAP_COMMIT" \
     --existing-layout "$TMP_ROOT/combined/layout" \
     --child-layout "$TMP_ROOT/changed32/layout" \
     --child-receipt "$TMP_ROOT/recovery-aggregate-receipt.json" \
@@ -907,6 +956,7 @@ jq --arg head "$aggregate_head" '.tap_commit = $head' \
   >"$TMP_ROOT/recovery-wrong-head-receipt.json"
 expect_failure recovery-wrong-head "tap HEAD does not match" \
   python3 "$TOOL" merge-index \
+    --tap-commit "$TAP_COMMIT" \
     --existing-layout "$TMP_ROOT/combined/layout" \
     --child-layout "$TMP_ROOT/changed32/layout" \
     --child-receipt "$TMP_ROOT/recovery-wrong-head-receipt.json" \
@@ -919,6 +969,7 @@ jq --arg head "$clean_head" '.tap_commit = $head' \
 printf 'untracked\n' >"$recovery_tap/untracked"
 expect_failure recovery-dirty-tap "has working-tree changes" \
   python3 "$TOOL" merge-index \
+    --tap-commit "$TAP_COMMIT" \
     --existing-layout "$TMP_ROOT/combined/layout" \
     --child-layout "$TMP_ROOT/changed32/layout" \
     --child-receipt "$TMP_ROOT/recovery-dirty-receipt.json" \
@@ -944,6 +995,7 @@ stale_recovery_receipt="$TMP_ROOT/stale-recovery-child-receipt.json"
 jq --arg head "$stale_recovery_head" '.tap_commit = $head' \
   "$TMP_ROOT/changed-support32/receipt.json" >"$stale_recovery_receipt"
 python3 "$TOOL" merge-index \
+  --tap-commit "$TAP_COMMIT" \
   --existing-layout "$TMP_ROOT/combined/layout" \
   --child-layout "$TMP_ROOT/changed-support32/layout" \
   --child-receipt "$stale_recovery_receipt" \
@@ -1464,21 +1516,28 @@ cat >"$MOCK_BIN/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 [ -z "${MOCK_GH_LOG:-}" ] || printf '%s\n' "$*" >>"$MOCK_GH_LOG"
-if [ "$#" -eq 4 ] && [ "$1" = api ] &&
-   [ "$2" = /repos/Automattic/kandelo/git/ref/heads/main ] &&
-   [ "$3" = --jq ] && [ "$4" = .object.sha ]; then
-  printf '%s\n' \
-    "${MOCK_KANDELO_MAIN_SHA:-2222222222222222222222222222222222222222}"
-elif [ "$#" -eq 4 ] && [ "$1" = api ] &&
-     [ "$2" = \
-"/repos/Automattic/kandelo/compare/${MOCK_CONTAINED_SHA:?}...${MOCK_KANDELO_MAIN_SHA:?}" ] &&
-     [ "$3" = --jq ] &&
-     [ "$4" = \
-'[.status, .base_commit.sha, .merge_base_commit.sha] | @tsv' ]; then
-  printf 'ahead\t%s\t%s\n' "$MOCK_CONTAINED_SHA" "$MOCK_CONTAINED_SHA"
-else
-  exit 2
-fi
+kandelo_main="${MOCK_KANDELO_MAIN_SHA:-2222222222222222222222222222222222222222}"
+kandelo_source="${MOCK_KANDELO_CONTAINED_SHA:-${MOCK_CONTAINED_SHA:-2222222222222222222222222222222222222222}}"
+tap_main="${MOCK_TAP_MAIN_SHA:-1111111111111111111111111111111111111111}"
+tap_source="${MOCK_TAP_CONTAINED_SHA:-1111111111111111111111111111111111111111}"
+query="${4:-}"
+compare_query='[.status, .base_commit.sha, .merge_base_commit.sha] | @tsv'
+case "${1:-}:${2:-}:${3:-}:$query" in
+  api:/repos/Automattic/kandelo/git/ref/heads/main:--jq:.object.sha)
+    printf '%s\n' "$kandelo_main"
+    ;;
+  api:/repos/Automattic/kandelo/compare/"$kandelo_source"..."$kandelo_main":--jq:"$compare_query")
+    printf 'ahead\t%s\t%s\n' "$kandelo_source" "$kandelo_source"
+    ;;
+  api:/repos/kandelo-dev/homebrew-tap-core/compare/"$tap_source"..."$tap_main":--jq:"$compare_query"|api:/repos/Kandelo-dev/homebrew-tap-core/compare/"$tap_source"..."$tap_main":--jq:"$compare_query")
+    if [ "${MOCK_TAP_DIVERGED:-0}" = 1 ]; then
+      printf 'diverged\t%s\t%s\n' "$tap_source" "$tap_main"
+    else
+      printf 'ahead\t%s\t%s\n' "$tap_source" "$tap_source"
+    fi
+    ;;
+  *) exit 2 ;;
+esac
 EOF
 chmod +x "$MOCK_BIN/gh"
 cat >"$MOCK_BIN/git" <<'EOF'
@@ -1489,14 +1548,25 @@ if [ "$#" -eq 7 ] &&
    [ "$3" = -c ] &&
    [ "$4" = http.https://github.com/.extraheader= ] &&
    [ "$5" = ls-remote ] &&
-   [ "$6" = https://github.com/Automattic/kandelo.git ] &&
+   { [ "$6" = https://github.com/Automattic/kandelo.git ] ||
+     [ "$6" = https://github.com/kandelo-dev/homebrew-tap-core.git ] ||
+     [ "$6" = https://github.com/Kandelo-dev/homebrew-tap-core.git ]; } &&
    [ "$7" = refs/heads/main ]; then
   [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ] || {
     echo "credential reached anonymous git" >&2
     exit 2
   }
   [ -z "${MOCK_GIT_LOG:-}" ] || printf '%s\n' "$6" >>"$MOCK_GIT_LOG"
-  printf '%s\trefs/heads/main\n' "${MOCK_KANDELO_MAIN_SHA:?}"
+  case "$6" in
+    https://github.com/Automattic/kandelo.git)
+      printf '%s\trefs/heads/main\n' \
+        "${MOCK_KANDELO_MAIN_SHA:-2222222222222222222222222222222222222222}"
+      ;;
+    *)
+      printf '%s\trefs/heads/main\n' \
+        "${MOCK_TAP_MAIN_SHA:-1111111111111111111111111111111111111111}"
+      ;;
+  esac
   exit 0
 fi
 # Preserve the real Git client for unrelated fixture operations.
@@ -1618,6 +1688,7 @@ ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-missing-present \
     --tap-repository kandelo-dev/homebrew-tap-core \
     --formula hello \
     --exact-kandelo-main-sha "$KANDELO_COMMIT" \
+    --target-main-contains-sha "$TAP_COMMIT" \
     --auth-mode pat \
     --require-pat true \
     --registry-user package-bot \
@@ -1703,6 +1774,7 @@ ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-missing-present \
     --tap-repository kandelo-dev/homebrew-tap-core \
     --formula hello \
     --kandelo-main-contains-sha "$KANDELO_COMMIT" \
+    --target-main-contains-sha "$TAP_COMMIT" \
     --auth-mode pat \
     --require-pat true \
     --registry-user package-bot \
@@ -1718,11 +1790,16 @@ grep -F \
   echo "GHCR transport did not prove the contained source against main" >&2
   exit 1
 }
-[ "$(cat "$contains_git_log")" = \
-  "https://github.com/Automattic/kandelo.git" ] || {
-  echo "GHCR contains authority did not read public protected main" >&2
-  exit 1
-}
+grep -Fx "https://github.com/Automattic/kandelo.git" \
+  "$contains_git_log" >/dev/null || {
+    echo "GHCR authority did not read public Kandelo main" >&2
+    exit 1
+  }
+grep -Fx "https://github.com/kandelo-dev/homebrew-tap-core.git" \
+  "$contains_git_log" >/dev/null || {
+    echo "GHCR authority did not read public tap main" >&2
+    exit 1
+  }
 grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
   echo "contained-main authority did not reach the credentialed OCI copy" >&2
   exit 1
@@ -1745,6 +1822,7 @@ expect_failure transport-duplicate-main-authority \
       --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello \
       --exact-kandelo-main-sha "$KANDELO_COMMIT" \
+      --target-main-contains-sha "$TAP_COMMIT" \
       --kandelo-main-contains-sha "$KANDELO_COMMIT" \
       --out-json "$TMP_ROOT/child32/duplicate-main-authority.json"
 [ ! -s "$duplicate_authority_gh_log" ] || {
@@ -1768,6 +1846,7 @@ ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-missing-present \
     --tap-repository kandelo-dev/homebrew-tap-core \
     --formula hello \
     --exact-kandelo-main-sha "$KANDELO_COMMIT" \
+    --target-main-contains-sha "$TAP_COMMIT" \
     --auth-mode github-token \
     --require-pat false \
     --registry-user package-bot \
@@ -1798,6 +1877,7 @@ ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-canary-missing-present \
     --tap-repository kandelo-dev/homebrew-tap-core \
     --formula hello \
     --exact-kandelo-main-sha "$KANDELO_COMMIT" \
+    --target-main-contains-sha "$TAP_COMMIT" \
     --auth-mode github-token \
     --require-pat false \
     --destination-mode repository-canary \
@@ -1869,6 +1949,7 @@ expect_failure repository-canary-existing \
       --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello \
       --exact-kandelo-main-sha "$KANDELO_COMMIT" \
+      --target-main-contains-sha "$TAP_COMMIT" \
       --auth-mode github-token --require-pat false \
       --destination-mode repository-canary \
       --out-json "$TMP_ROOT/repository-canary-existing.json"
@@ -1891,6 +1972,7 @@ expect_failure repository-canary-private \
       --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello \
       --exact-kandelo-main-sha "$KANDELO_COMMIT" \
+      --target-main-contains-sha "$TAP_COMMIT" \
       --auth-mode github-token --require-pat false \
       --destination-mode repository-canary \
       --out-json "$TMP_ROOT/repository-canary-private.json"
@@ -2208,6 +2290,43 @@ expect_failure transport-missing-main-authority \
   exit 1
 }
 
+: >"$ORAS_LOG"
+expect_failure transport-missing-target-authority \
+  "target main containment authority is required" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-missing-present \
+    ORAS_STATE="$TMP_ROOT/missing-target-authority-state" \
+    ORAS_DESCRIPTOR="$TMP_ROOT/present-descriptor.json" \
+    PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --formula hello --exact-kandelo-main-sha "$KANDELO_COMMIT" \
+      --out-json "$TMP_ROOT/missing-target-authority.json"
+! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
+  echo "missing target authority reached the OCI copy" >&2
+  exit 1
+}
+assert_logged_auth_configs_retired
+
+: >"$ORAS_LOG"
+expect_failure transport-mismatched-target-authority \
+  "target main authority does not match the validated layout receipt" \
+  env ORAS_LOG="$ORAS_LOG" PATH="$MOCK_BIN:$PATH" \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --formula hello \
+      --target-main-contains-sha \
+        3333333333333333333333333333333333333333 \
+      --out-json "$TMP_ROOT/mismatched-target-authority.json" \
+      --dry-run
+[ ! -s "$ORAS_LOG" ] || {
+  echo "mismatched target authority reached registry preflight" >&2
+  exit 1
+}
+
 gh_race_log="$TMP_ROOT/exact-main-race-gh.log"
 : >"$ORAS_LOG"
 : >"$gh_race_log"
@@ -2224,6 +2343,7 @@ expect_failure transport-main-advanced \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
       --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello --exact-kandelo-main-sha "$KANDELO_COMMIT" \
+      --target-main-contains-sha "$TAP_COMMIT" \
       --out-json "$TMP_ROOT/main-advanced.json"
 grep -F "api /repos/Automattic/kandelo/git/ref/heads/main --jq .object.sha" \
   "$gh_race_log" >/dev/null || {
@@ -2236,6 +2356,56 @@ grep -F "api /repos/Automattic/kandelo/git/ref/heads/main --jq .object.sha" \
 }
 assert_logged_auth_configs_retired
 
+# Both child and aggregate-index writes re-read the receipt-bound tap main at
+# the final mutation boundary. A force-push that removes the authority commit
+# must stop either write after preflight but before ORAS receives bytes.
+for race_kind in child index; do
+  race_gh_log="$TMP_ROOT/tap-${race_kind}-race-gh.log"
+  race_git_log="$TMP_ROOT/tap-${race_kind}-race-git.log"
+  : >"$ORAS_LOG"
+  : >"$race_gh_log"
+  : >"$race_git_log"
+  if [ "$race_kind" = child ]; then
+    race_layout="$TMP_ROOT/child32/layout"
+    race_receipt="$TMP_ROOT/child32/receipt.json"
+  else
+    race_layout="$TMP_ROOT/combined/layout"
+    race_receipt="$TMP_ROOT/combined/receipt.json"
+  fi
+  expect_failure "transport-tap-diverged-$race_kind" \
+    "source SHA is not contained in the current refs/heads/main history" \
+    env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=missing-present \
+      ORAS_STATE="$TMP_ROOT/tap-${race_kind}-race-state" \
+      MOCK_GH_LOG="$race_gh_log" MOCK_GIT_LOG="$race_git_log" \
+      MOCK_TAP_DIVERGED=1 \
+      MOCK_TAP_MAIN_SHA=3333333333333333333333333333333333333333 \
+      PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+      bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+        --layout "$race_layout" \
+        --layout-receipt "$race_receipt" \
+        --tap-repository kandelo-dev/homebrew-tap-core \
+        --formula hello \
+        --exact-kandelo-main-sha "$KANDELO_COMMIT" \
+        --target-main-contains-sha "$TAP_COMMIT" \
+        --out-json "$TMP_ROOT/tap-${race_kind}-race.json"
+  grep -F \
+    "api /repos/kandelo-dev/homebrew-tap-core/compare/${TAP_COMMIT}...3333333333333333333333333333333333333333" \
+    "$race_gh_log" >/dev/null || {
+    echo "$race_kind write did not compare receipt authority with tap main" >&2
+    exit 1
+  }
+  grep -Fx "https://github.com/kandelo-dev/homebrew-tap-core.git" \
+    "$race_git_log" >/dev/null || {
+    echo "$race_kind write did not read public tap main" >&2
+    exit 1
+  }
+  ! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
+    echo "diverged tap main reached the $race_kind OCI copy" >&2
+    exit 1
+  }
+  assert_logged_auth_configs_retired
+done
+
 expect_failure transport-race "different digest after upload" \
   env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=missing-present \
     ORAS_STATE="$TMP_ROOT/race-oras-state" \
@@ -2247,6 +2417,7 @@ expect_failure transport-race "different digest after upload" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
       --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello --exact-kandelo-main-sha "$KANDELO_COMMIT" \
+      --target-main-contains-sha "$TAP_COMMIT" \
       --out-json "$TMP_ROOT/race-upload.json"
 : >"$ORAS_LOG"
 expect_failure transport-private-after-upload "authorized owner must make the GHCR package public" \
@@ -2259,6 +2430,7 @@ expect_failure transport-private-after-upload "authorized owner must make the GH
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
       --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello --exact-kandelo-main-sha "$KANDELO_COMMIT" \
+      --target-main-contains-sha "$TAP_COMMIT" \
       --out-json "$TMP_ROOT/private-upload.json"
 grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
   echo "first private GHCR package did not upload before the visibility boundary" >&2
@@ -2275,6 +2447,7 @@ expect_failure transport-not-public "did not become anonymously readable" \
       --layout-receipt "$TMP_ROOT/child32/receipt.json" \
       --tap-repository kandelo-dev/homebrew-tap-core \
       --formula hello --exact-kandelo-main-sha "$KANDELO_COMMIT" \
+      --target-main-contains-sha "$TAP_COMMIT" \
       --out-json "$TMP_ROOT/not-public-upload.json"
 
 echo "test-homebrew-oci-layout.sh: ok"
