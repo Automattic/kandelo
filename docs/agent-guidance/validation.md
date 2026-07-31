@@ -38,9 +38,15 @@ bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh <cargo-kernel|fork-i
 ```
 
 The optional group reproduces CI's deterministic suite partitions. Vitest
-accepts `1/2` or `2/2`; libc accepts `functional-regression` or `math`; and
-Sortix accepts `include`, `basic`, or `runtime`. Omitting the group runs the
-complete suite, including Vitest's full file inventory and `--all` for Sortix.
+accepts `1/2`, `2/2`, or `resource-isolated`; libc accepts
+`functional-regression` or `math`; and Sortix accepts `include`, `basic`, or
+`runtime`. Omitting the group runs the complete suite, including Vitest's full
+test inventory and `--all` for Sortix. Vitest's complete run excludes each
+file declared in `scripts/ci-vitest-resource-isolated-cases.tsv` from its main
+worker and then runs every declared case in a fresh worker process. Each row
+names a regex-safe identifier that occurs in exactly one test. Before excluding
+a file, the runner requires those identifiers to map one-to-one onto its full
+machine-readable `vitest list --json` inventory.
 
 For direct Cargo commands, compute `<host-target>` with:
 

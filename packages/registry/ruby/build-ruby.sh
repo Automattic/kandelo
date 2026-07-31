@@ -481,6 +481,11 @@ if ! grep -q 'kandelo_require_libraries_state' "$SRC_DIR/ruby.c"; then
     patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/kandelo-require-libraries-roots.patch"
 fi
 
+if ! grep -q 'kandelo_execarg_can_posix_spawn' "$SRC_DIR/process.c"; then
+    echo "==> Patching process.c: using non-forking spawn when options are representable..."
+    patch -d "$SRC_DIR" -p1 < "$SCRIPT_DIR/patches/kandelo-posix-spawn.patch"
+fi
+
 reject_asyncify_coroutine() {
     if [ -f Makefile ] && grep -Eq '^(COROUTINE_TYPE = asyncify|COROUTINE_H = coroutine/asyncify/Context\.h)$|wasm/(setjmp|fiber|runtime|machine)|--asyncify|asyncify_' Makefile; then
         cat >&2 <<'EOF'

@@ -441,6 +441,25 @@ Fork uses the in-tree `wasm-fork-instrument` tool to snapshot the Wasm call stac
 8. Each instrumented function's preamble requests and validates the next committed frame, then re-enters the call site where the parent was interrupted. Eventually it reaches the `kernel_fork` call site in the leaf function, which returns 0. Libc then refreshes the copied pthread TID from the kernel through `set_tid_address` before returning to user code.
 9. `wpk_fork_rewind_end` resets state; parent and child independently unmap their continuation chunks; fork returns 0 in child and the child PID in the parent.
 
+Step 6 is materially different from native virtual-memory fork. Native
+kernels normally map the parent's pages into the child with copy-on-write
+ownership, so unchanged pages are not copied. Browser WebAssembly exposes no
+equivalent operation for cloning a `WebAssembly.Memory`. Kandelo must allocate
+a fresh memory and copy the parent's complete current address space before the
+child runs. A child that immediately calls `exec()` therefore pays for both
+the discarded fork copy and the replacement program memory. Kandelo's
+non-forking `posix_spawn()` path avoids that copy when the caller can describe
+the requested child entirely with spawn actions and attributes.
+
+Kandelo releases its references to an exited or replaced process generation
+only after the exact Worker, channel, thread, and framebuffer ownership fences
+complete. JavaScript engines still decide when the unreachable shared backing
+returns physical memory to the host. A burst of large fork/exec children can
+therefore allocate faster than a browser reclaims retired generations even
+when ownership teardown is correct. Temporary package compatibility
+exceptions and their removal criteria belong in the active migration plan;
+they do not redefine ordinary `fork()` semantics.
+
 If the root continuation mapping cannot be allocated, `kernel_fork` returns the
 negative mmap errno before unwind starts. If a later node allocation fails,
 the owning module enters `ABORT_UNWINDING`: the live failing activation

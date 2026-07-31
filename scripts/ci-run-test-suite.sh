@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # CI-shaped suite runner. The optional group selects deterministic shards:
-#   vitest: 1/2 | 2/2
+#   vitest: 1/2 | 2/2 | resource-isolated
 #   libc:   functional-regression | math
 #   sortix: include | basic | runtime
 # Omitting the group preserves the complete local suite behavior.
@@ -152,17 +152,175 @@ case "$suite" in
         cargo test -p fork-instrument --target "$HOST_TARGET"
         ;;
     vitest)
+        resource_cases="$REPO_ROOT/scripts/ci-vitest-resource-isolated-cases.tsv"
+        resource_files=()
+        resource_markers=()
+        resource_excludes=()
+        seen_resource_files="|"
+        line_number=0
+        while IFS= read -r resource_line || [ -n "${resource_line:-}" ]; do
+            line_number=$((line_number + 1))
+            case "${resource_line:-}" in
+                ""|\#*) continue ;;
+            esac
+            case "$resource_line" in
+                *$'\t'*) ;;
+                *)
+                    echo "ci-run-test-suite: invalid resource-isolated case at $resource_cases:$line_number" >&2
+                    exit 2
+                    ;;
+            esac
+            test_file="${resource_line%%$'\t'*}"
+            test_marker="${resource_line#*$'\t'}"
+            if [ -z "$test_file" ] || [ -z "$test_marker" ] || \
+                [[ "$test_marker" == *$'\t'* ]] || \
+                [ ! -f "$REPO_ROOT/$test_file" ]; then
+                echo "ci-run-test-suite: invalid resource-isolated case at $resource_cases:$line_number" >&2
+                exit 2
+            fi
+            case "$test_marker" in
+                [A-Z]*) ;;
+                *)
+                    echo "ci-run-test-suite: invalid resource-isolated marker at $resource_cases:$line_number" >&2
+                    exit 2
+                    ;;
+            esac
+            case "$test_marker" in
+                *[!A-Z0-9_]*)
+                    echo "ci-run-test-suite: invalid resource-isolated marker at $resource_cases:$line_number" >&2
+                    exit 2
+                    ;;
+            esac
+            for index in "${!resource_files[@]}"; do
+                if [ "${resource_files[$index]}" = "$test_file" ] && \
+                    [ "${resource_markers[$index]}" = "$test_marker" ]; then
+                    echo "ci-run-test-suite: duplicate resource-isolated case at $resource_cases:$line_number" >&2
+                    exit 2
+                fi
+            done
+            resource_files+=("$test_file")
+            resource_markers+=("$test_marker")
+            case "$seen_resource_files" in
+                *"|$test_file|"*) ;;
+                *)
+                    resource_excludes+=("--exclude=../$test_file")
+                    seen_resource_files="${seen_resource_files}${test_file}|"
+                    ;;
+            esac
+        done < "$resource_cases"
+        if [ "${#resource_files[@]}" -eq 0 ]; then
+            echo "ci-run-test-suite: resource-isolated case manifest is empty" >&2
+            exit 2
+        fi
+
         case "$group" in
             all) vitest_args=() ;;
             1/2|2/2) vitest_args=("--shard=$group") ;;
+            resource-isolated) vitest_args=() ;;
             *) invalid_group ;;
         esac
         install_node_deps
+
+        # The ordinary shards exclude each whole declared file. Prove that the
+        # manifest is a bijection with the file's live Vitest inventory before
+        # doing so: a new, removed, misspelled, or duplicate case must fail
+        # loudly rather than silently losing or multiplying coverage.
+        vitest_resource_inventory_dir="$(
+            mktemp -d \
+                "${RUNNER_TEMP:-/tmp}/kandelo-vitest-resource.XXXXXX"
+        )"
+        cleanup_vitest_resource_inventory() {
+            rm -rf -- "$vitest_resource_inventory_dir"
+        }
+        trap cleanup_vitest_resource_inventory EXIT
+        resource_file_number=0
+        for excluded_arg in "${resource_excludes[@]}"; do
+            resource_file_number=$((resource_file_number + 1))
+            test_file="${excluded_arg#--exclude=../}"
+            inventory_json="$vitest_resource_inventory_dir/inventory-$resource_file_number.json"
+            mapped_names="$vitest_resource_inventory_dir/mapped-$resource_file_number"
+            listed_names="$vitest_resource_inventory_dir/listed-$resource_file_number"
+            if ! (
+                cd host
+                npx vitest list \
+                    "../$test_file" \
+                    --json="$inventory_json"
+            ); then
+                echo "ci-run-test-suite: could not enumerate resource-isolated file: $test_file" >&2
+                exit 2
+            fi
+            if ! jq -e \
+                --arg expected_file "$REPO_ROOT/$test_file" '
+                  type == "array" and
+                  length > 0 and
+                  all(.[];
+                    type == "object" and
+                    .file == $expected_file and
+                    (.name | type) == "string" and
+                    (.name | length) > 0
+                  )
+                ' "$inventory_json" >/dev/null; then
+                echo "ci-run-test-suite: invalid resource-isolated inventory for $test_file" >&2
+                exit 2
+            fi
+            : > "$mapped_names"
+            for index in "${!resource_files[@]}"; do
+                [ "${resource_files[$index]}" = "$test_file" ] || continue
+                test_marker="${resource_markers[$index]}"
+                test_pattern="(^|[^A-Z0-9_])${test_marker}([^A-Z0-9_]|$)"
+                matches="$(jq \
+                    --arg pattern "$test_pattern" \
+                    '[.[] | select(.name | test($pattern))] | length' \
+                    "$inventory_json")"
+                if [ "$matches" -ne 1 ]; then
+                    echo "ci-run-test-suite: resource-isolated marker must select exactly one test in $test_file: $test_marker" >&2
+                    exit 2
+                fi
+                jq -r \
+                    --arg pattern "$test_pattern" \
+                    '.[] | select(.name | test($pattern)) | .name' \
+                    "$inventory_json" >> "$mapped_names"
+            done
+            jq -r '.[].name' "$inventory_json" | LC_ALL=C sort \
+                > "$listed_names"
+            LC_ALL=C sort -o "$mapped_names" "$mapped_names"
+            if [ "$(LC_ALL=C uniq -d "$mapped_names" | wc -l | tr -d '[:space:]')" -ne 0 ] || \
+                ! cmp -s "$listed_names" "$mapped_names"; then
+                echo "ci-run-test-suite: resource-isolated manifest does not exactly cover $test_file" >&2
+                exit 2
+            fi
+        done
+
         npx --prefix host playwright install chromium
-        # WHY: Vitest owns the hash-based file partition. Passing its shard
-        # selector keeps both CI jobs disjoint while their union remains the
-        # same complete test-file inventory as the unsharded local command.
-        (cd host && npx vitest run "${vitest_args[@]}")
+        if [ "$group" != "resource-isolated" ]; then
+            # WHY: Vitest owns the hash-based ordinary-file partition. The
+            # declarative heavyweight files are excluded from both shards and
+            # restored below, one case per fresh process, so the combined jobs
+            # retain exact coverage without carrying their observed resident
+            # memory from one case into the next.
+            (
+                cd host
+                npx vitest run \
+                    "${vitest_args[@]}" \
+                    "${resource_excludes[@]}"
+            )
+        fi
+        if [ "$group" = "all" ] || [ "$group" = "resource-isolated" ]; then
+            for index in "${!resource_files[@]}"; do
+                # WHY: host/options/program-byte WeakRefs cleared after each
+                # measured case, but RSS stayed elevated in a long-lived
+                # Vitest process. Fresh OS-process exit is the deterministic
+                # reclamation boundary.
+                test_marker="${resource_markers[$index]}"
+                test_pattern="(^|[^A-Z0-9_])${test_marker}([^A-Z0-9_]|$)"
+                (
+                    cd host
+                    npx vitest run \
+                        "../${resource_files[$index]}" \
+                        --testNamePattern="$test_pattern"
+                )
+            done
+        fi
         # [JSC-TERMINATE-ATOMICS-WAIT-LEAK] Re-run the teardown-reclamation tests
         # on JSC (Bun) as well as V8, since the workaround exists for JSC (Safari
         # and Bun) and is a no-op on V8. `bun` comes from the flake dev shell.

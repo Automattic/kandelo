@@ -391,6 +391,7 @@ grep -F 'WASM_POSIX_INSTALL_FORK_INSTRUMENTATION=auto' \
 # while giving configure stable command names and sysroot-independent flags.
 ruby_script="$REPO_ROOT/packages/registry/ruby/build-ruby.sh"
 ruby_cc_wrapper="$REPO_ROOT/packages/registry/ruby/kandelo-ruby-cc"
+ruby_spawn_patch="$REPO_ROOT/packages/registry/ruby/patches/kandelo-posix-spawn.patch"
 bash -n "$ruby_cc_wrapper" || fail "Ruby compiler prefix wrapper has invalid shell syntax"
 ruby_wrapper_err="$TMP_ROOT/ruby-wrapper-missing-work-root.err"
 if env -u KANDELO_RUBY_WORK_DIR bash "$ruby_cc_wrapper" --version \
@@ -439,6 +440,38 @@ grep -F 'libdir="$GUEST_PREFIX/lib"' "$ruby_script" >/dev/null ||
     fail "Ruby static extension link does not honor the caller-selected guest prefix"
 grep -F 'RUBY_INSTALL_ROOT="$INSTALL_DIR$GUEST_PREFIX"' "$ruby_script" >/dev/null ||
     fail "Ruby runtime installation does not honor the caller-selected guest prefix"
+
+# Ruby must select the non-forking backend before it starts a child. Every
+# unsupported option shape remains on Ruby's established fork path rather than
+# being silently weakened to fit posix_spawn.
+grep -F 'patches/kandelo-posix-spawn.patch' "$ruby_script" >/dev/null ||
+    fail "Ruby build does not apply its Kandelo posix_spawn backend patch"
+for required_spawn_contract in \
+    'kandelo_execarg_can_posix_spawn' \
+    'kandelo_execarg_has_independent_redirects' \
+    'kandelo_execarg_clear_nonblock_stdio' \
+    'kandelo_execarg_restore_fd_flags' \
+    'eargp->use_shell || NIL_P(eargp->invoke.cmd.command_abspath)' \
+    'eargp->umask_given || eargp->uid_given || eargp->gid_given' \
+    'eargp->rlimit_limits != Qfalse || eargp->fd_dup2_child != Qfalse' \
+    'eargp->fd_close != Qfalse' \
+    '!rb_is_absolute_path(RSTRING_PTR(eargp->invoke.cmd.command_abspath))' \
+    'eargp->close_others_do' \
+    'eargp->pgroup_given && eargp->pgroup_pgid > 0' \
+    'posix_spawn_file_actions_adddup2' \
+    'posix_spawn_file_actions_addchdir' \
+    'POSIX_SPAWN_SETSIGMASK' \
+    'POSIX_SPAWN_SETSIGDEF' \
+    'POSIX_SPAWN_SETPGROUP' \
+    'ARGVSTR2ARGV(eargp->invoke.cmd.argv_str)' \
+    'RB_IMEMO_TMPBUF_PTR(eargp->envp_str) : environ' \
+    'handle_fork_error(' \
+    'pid = kandelo_posix_spawn_process(eargp)' \
+    'pid >= 0 || errno != ENOEXEC'
+do
+    grep -F "$required_spawn_contract" "$ruby_spawn_patch" >/dev/null ||
+        fail "Ruby posix_spawn patch is missing contract: $required_spawn_contract"
+done
 
 # Ruby concatenates this prefix with DESTDIR, embeds it into rbconfig, and uses
 # it for its built-in load path. Reject malformed caller input before reaching

@@ -1680,8 +1680,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # WHY: the suite starts many Wasm guests. Two deterministic Vitest
-          # file shards bound each runner while preserving exact-once coverage.
+          # WHY: ordinary files use two deterministic shards. Heavyweight
+          # guest-runtime cases get fresh Vitest processes in a third cell so
+          # resident memory from one case cannot carry into the next.
           - suite: vitest
             label: vitest (1/2)
             group: 1/2
@@ -1692,6 +1693,13 @@ jobs:
           - suite: vitest
             label: vitest (2/2)
             group: 2/2
+            kernel_only: false
+            submodules: ''
+            needs_toolchain: true
+            needs_workspace: true
+          - suite: vitest
+            label: vitest (resource-isolated)
+            group: resource-isolated
             kernel_only: false
             submodules: ''
             needs_toolchain: true
