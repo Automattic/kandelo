@@ -738,10 +738,23 @@ def make_fixture(
             },
             {
                 "arches": ["wasm32"],
+                "build_input": {
+                    "kind": "homebrew-bootstrap-recipe-lock",
+                    "path": (
+                        "Kandelo/recipes/homebrew-bootstrap/"
+                        "source-lock.json"
+                    ),
+                },
                 "disposition": "required-build",
                 "formula_path": "Formula/homebrew-bootstrap.rb",
                 "name": "homebrew-bootstrap",
-                "recipe_lock": "Kandelo/recipes/homebrew-bootstrap/source-lock.json",
+            },
+            {
+                "arches": ["wasm32"],
+                "build_input": {"kind": "formula-source"},
+                "disposition": "required-build",
+                "formula_path": "Formula/libyaml.rb",
+                "name": "libyaml",
             },
         ],
     }
@@ -786,6 +799,7 @@ def make_fixture(
         write_live_link(tap, name, version, rebuild, bottle)
 
     bootstrap_version = write_bootstrap_recipe(tap)
+    (tap / "Formula/libyaml.rb").write_bytes(source_only_formula("libyaml"))
     (tap / "Formula/later.rb").write_bytes(source_only_formula("later"))
     metadata = {
         "generated_at": "2026-07-29T00:00:00Z",
@@ -847,6 +861,7 @@ def make_fixture(
             "alpha": "1.0",
             "beta": "2.0",
             "homebrew-bootstrap": bootstrap_version,
+            "libyaml": "0.2.5",
             "later": "1.0",
         },
         kandelo_commit=kandelo_commit,
@@ -859,6 +874,39 @@ def make_fixture(
 
 
 class PrefixCampaignTests(unittest.TestCase):
+    def test_repository_inputs_classify_new_formulae_by_build_source(
+        self,
+    ) -> None:
+        inputs = json.loads(
+            (
+                ROOT / "homebrew/guest-prefix-campaign-inputs.json"
+            ).read_text()
+        )
+        by_name = {
+            entry["name"]: entry
+            for entry in inputs["source_only_formulae"]
+        }
+        self.assertEqual(
+            by_name["homebrew-bootstrap"]["build_input"],
+            {
+                "kind": "homebrew-bootstrap-recipe-lock",
+                "path": (
+                    "Kandelo/recipes/homebrew-bootstrap/"
+                    "source-lock.json"
+                ),
+            },
+        )
+        self.assertEqual(
+            by_name["libyaml"],
+            {
+                "arches": ["wasm32"],
+                "build_input": {"kind": "formula-source"},
+                "disposition": "required-build",
+                "formula_path": "Formula/libyaml.rb",
+                "name": "libyaml",
+            },
+        )
+
     def test_derives_every_class_and_deterministic_order(self) -> None:
         fixture = make_fixture()
         self.addCleanup(fixture.close)
@@ -871,7 +919,7 @@ class PrefixCampaignTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(
             [value["name"] for value in first["formulae"]],
-            ["alpha", "beta", "homebrew-bootstrap"],
+            ["alpha", "beta", "homebrew-bootstrap", "libyaml"],
         )
         by_name = {value["name"]: value for value in first["formulae"]}
         self.assertNotEqual(
@@ -906,6 +954,25 @@ class PrefixCampaignTests(unittest.TestCase):
             {"kind": "required-build", "reasons": ["new-campaign-entrant"]},
         )
         self.assertEqual(
+            by_name["homebrew-bootstrap"]["variants"][0]["build_input"][
+                "kind"
+            ],
+            "homebrew-bootstrap-recipe-lock",
+        )
+        self.assertEqual(
+            by_name["libyaml"]["variants"][0],
+            {
+                "arch": "wasm32",
+                "build_input": {"kind": "formula-source"},
+                "disposition": {
+                    "kind": "required-build",
+                    "reasons": ["new-campaign-entrant"],
+                },
+                "selected_by": "reviewed-campaign-input",
+            },
+        )
+        self.assertNotIn("recipe_lock", by_name["libyaml"])
+        self.assertEqual(
             by_name["alpha"]["dependencies"],
             [{"full_name": f"{TAP_NAME}/beta", "version": "2.0"}],
         )
@@ -923,10 +990,10 @@ class PrefixCampaignTests(unittest.TestCase):
         self.assertEqual(
             first["deferred_source_formulae"][0]["name"], "later"
         )
-        self.assertEqual(first["summary"]["formulae"], 3)
-        self.assertEqual(first["summary"]["variants"], 3)
+        self.assertEqual(first["summary"]["formulae"], 4)
+        self.assertEqual(first["summary"]["variants"], 4)
         self.assertEqual(first["summary"]["byte_clean_reuse_candidates"], 0)
-        self.assertEqual(first["summary"]["required_builds"], 3)
+        self.assertEqual(first["summary"]["required_builds"], 4)
         self.assertEqual(
             [value["path"] for value in first["retirements"]],
             [
@@ -1069,7 +1136,7 @@ class PrefixCampaignTests(unittest.TestCase):
                 ),
             )
 
-    def test_native_metadata_emits_only_required_campaign_dependencies(
+    def test_native_metadata_emits_only_exact_tap_qualified_dependencies(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory(
@@ -1141,7 +1208,7 @@ class PrefixCampaignTests(unittest.TestCase):
                 resolved,
                 {
                     "alpha": {
-                        "dependencies": ["beta"],
+                        "dependencies": [],
                         "version": "1.0",
                     },
                     "beta": {
@@ -1149,7 +1216,7 @@ class PrefixCampaignTests(unittest.TestCase):
                         "version": "2.0_1",
                     },
                     "bootstrap": {
-                        "dependencies": ["alpha", "beta"],
+                        "dependencies": ["beta"],
                         "version": "3.0",
                     },
                 },
@@ -1539,13 +1606,62 @@ class PrefixCampaignTests(unittest.TestCase):
             for value in inputs["source_only_formulae"]
             if value["name"] == "homebrew-bootstrap"
         )
-        bootstrap["recipe_lock"] = (
+        bootstrap["build_input"]["path"] = (
             "Kandelo/recipes/homebrew-bootstrap/../"
             "homebrew-bootstrap/source-lock.json"
         )
         write_json(inputs_path, inputs)
         kandelo_head = commit(fixture.kandelo, "add recipe path traversal")
         with self.assertRaisesRegex(CAMPAIGN.CampaignError, "dot path segments"):
+            CAMPAIGN.derive_campaign(
+                fixture.options(kandelo_commit=kandelo_head),
+                fixture.dependencies(),
+            )
+
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        inputs_path = (
+            fixture.kandelo / "homebrew/guest-prefix-campaign-inputs.json"
+        )
+        inputs = json.loads(inputs_path.read_text())
+        bootstrap = next(
+            value
+            for value in inputs["source_only_formulae"]
+            if value["name"] == "homebrew-bootstrap"
+        )
+        bootstrap["build_input"] = {"kind": "formula-source"}
+        write_json(inputs_path, inputs)
+        kandelo_head = commit(fixture.kandelo, "bypass bootstrap recipe lock")
+        with self.assertRaisesRegex(
+            CAMPAIGN.CampaignError,
+            "homebrew-bootstrap must use it",
+        ):
+            CAMPAIGN.derive_campaign(
+                fixture.options(kandelo_commit=kandelo_head),
+                fixture.dependencies(),
+            )
+
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        inputs_path = (
+            fixture.kandelo / "homebrew/guest-prefix-campaign-inputs.json"
+        )
+        inputs = json.loads(inputs_path.read_text())
+        libyaml = next(
+            value
+            for value in inputs["source_only_formulae"]
+            if value["name"] == "libyaml"
+        )
+        libyaml["build_input"] = {
+            "kind": "homebrew-bootstrap-recipe-lock",
+            "path": "Kandelo/recipes/homebrew-bootstrap/source-lock.json",
+        }
+        write_json(inputs_path, inputs)
+        kandelo_head = commit(fixture.kandelo, "misclassify libyaml build input")
+        with self.assertRaisesRegex(
+            CAMPAIGN.CampaignError,
+            "may be used only by homebrew-bootstrap",
+        ):
             CAMPAIGN.derive_campaign(
                 fixture.options(kandelo_commit=kandelo_head),
                 fixture.dependencies(),
