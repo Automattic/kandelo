@@ -13,9 +13,9 @@ NODE_SCOPE_RUNNER = ARGV.length < 2 ?
   File.join(ROOT, "homebrew/test/run_homebrew_guest_shipping_scope.sh") :
   File.expand_path(ARGV.fetch(1))
 PUBLISH_JOB_DIGEST =
-  "64bd13ea5a8d00953acfec3e02607f7ae70837706c868827bed5259c6043aeb2"
+  "5f38b593eeffd4cacf3d728baa64695e88fe2f0723757628dbc936b6b679c54b"
 WORKFLOW_DIGEST =
-  "bd5336ab31d28412fde2445aa98afba0e88be3f776b03ecd7692a2b94f139410"
+  "bdbc4123b1c445f33355fbe170f154bf1edbf68b0c5f682bef4c431255a39bc7"
 NODE_SCOPE_RUNNER_DIGEST =
   "a351c57bba3b4ad05d58a346ccf2ffa22d6de194d1839c24a78d2b9bc07f1bf8"
 DOWNLOAD_ACTION =
@@ -93,13 +93,22 @@ call = events.fetch("workflow_call")
 check(call.keys.sort == ["inputs"], "workflow_call may expose only inputs")
 inputs = call.fetch("inputs")
 check(inputs.keys.sort == %w[
-        canary-ref kandelo-ref mirror-authority-ref tap-catalog-ref
+        canary-ref kandelo-ref mirror-authority-ref publication-mode
+        tap-catalog-ref
       ],
       "workflow input identity set differs")
-inputs.each do |name, spec|
+%w[canary-ref kandelo-ref publication-mode tap-catalog-ref].each do |name|
+  spec = inputs.fetch(name)
   check(spec["required"] == true && spec["type"] == "string",
         "#{name} must be a required string")
 end
+check(inputs.fetch("mirror-authority-ref") == {
+  "description" =>
+    "Exact earlier TA0; empty when this caller creates the mirror",
+  "type" => "string",
+  "required" => false,
+  "default" => "",
+}, "mirror authority input must be absent for TA0 and explicit for TA1")
 
 jobs = workflow.fetch("jobs")
 check(jobs.keys.sort == %w[
@@ -124,6 +133,9 @@ check(jobs.fetch("publish")["needs"] == "prepare", "publish dependency differs")
 %w[public-node-proof public-chromium-proof].each do |name|
   check(jobs.fetch(name)["needs"] == %w[prepare publish],
         "#{name} dependency differs")
+  check(jobs.fetch(name)["if"] ==
+          "inputs.publication-mode == 'publish-lifecycle'",
+        "#{name} must run only after lifecycle publication")
 end
 # WHY: this is the only job with the tap's write token. Freezing its complete
 # declarative contract prevents an apparently harmless extra step, job-level
@@ -195,6 +207,14 @@ prepare_job = jobs.fetch("prepare")
 publish_job = jobs.fetch("publish")
 node_proof_job = jobs.fetch("public-node-proof")
 chromium_proof_job = jobs.fetch("public-chromium-proof")
+check(named_step(prepare_job,
+                 "Prepare separate public lifecycle-input handoff")["if"] ==
+        "inputs.publication-mode == 'publish-lifecycle'",
+      "TA0 must not prepare lifecycle inputs")
+check(named_step(publish_job,
+                 "Download only the same-run lifecycle-input handoff")["if"] ==
+        "inputs.publication-mode == 'publish-lifecycle'",
+      "TA0 must not download lifecycle inputs into the write-capable job")
 prepare_source = YAML.dump(jobs.fetch("prepare"))
 publish_source = YAML.dump(jobs.fetch("publish"))
 node_proof_source = YAML.dump(node_proof_job)
@@ -235,12 +255,14 @@ end
 actual_prepare_handoff_uploads = prepare_handoff_uploads.map do |step|
   {
     "id" => step["id"],
+    "if" => step["if"],
     "with" => step["with"],
   }
 end
 check(actual_prepare_handoff_uploads == [
   {
     "id" => "handoff",
+    "if" => nil,
     "with" => {
       "name" => MIRROR_HANDOFF,
       "path" => "${{ steps.bounded.outputs.root }}",
@@ -250,6 +272,7 @@ check(actual_prepare_handoff_uploads == [
   },
   {
     "id" => "lifecycle-handoff",
+    "if" => "inputs.publication-mode == 'publish-lifecycle'",
     "with" => {
       "name" => LIFECYCLE_HANDOFF,
       "path" => "${{ steps.lifecycle.outputs.root }}",
@@ -271,26 +294,31 @@ check(jobs.fetch("prepare").fetch("outputs") == {
   "artifact-digest" => "${{ steps.handoff.outputs.artifact-digest }}",
   "lifecycle-artifact-digest" =>
     "${{ steps.lifecycle-handoff.outputs.artifact-digest }}",
+  "mirror-authority-ref" =>
+    "${{ steps.authority.outputs.mirror-authority-ref }}",
 }, "handoff digest output differs")
-check(publish_source.scan("${{ github.token }}").length == 2,
-      "tap token must have exactly the authority check and release operation uses")
+check(publish_source.scan("${{ github.token }}").length == 3,
+      "tap token must have exactly one authority check and two exclusive release uses")
 check(!prepare_source.include?("${{ github.token }}") &&
       !proof_source.include?("${{ github.token }}"),
       "tap token escaped the publication job")
-check(publish_source.include?(
+check(publish_source.scan(
   "--exact-target-main-sha \"$TAP_CALLER_AUTHORITY_REF\""
-), "lifecycle-input publisher is not bound to exact live tap main")
+).length == 2, "both publishers must bind their release to exact live tap main")
 check(
   prepare_source.scan(
     "git -C tap-authority merge-base --is-ancestor"
-  ).length == 2 &&
+  ).length == 3 &&
+    prepare_source.include?(
+      '"$TAP_CATALOG_REF" "$TAP_CALLER_AUTHORITY_REF"'
+    ) &&
     prepare_source.include?(
       '"$TAP_CATALOG_REF" "$TAP_MIRROR_AUTHORITY_REF"'
     ) &&
     prepare_source.include?(
       '"$TAP_MIRROR_AUTHORITY_REF" "$TAP_CALLER_AUTHORITY_REF"'
     ),
-  "TF -> mirror authority -> caller authority ancestry is not enforced",
+  "TA0 and TA1 ancestry contracts are not both enforced",
 )
 check(prepare_source.include?(
   ".github/scripts/check-homebrew-main-shell-release-locks.py"
@@ -298,15 +326,44 @@ check(prepare_source.include?(
 check(prepare_source.include?(
   '--target-commitish "$TAP_MIRROR_AUTHORITY_REF"'
 ), "mirror manifest does not retain its original tap authority")
-check(publish_source.include?("publish-immutable-github-release.sh"),
-      "immutable publisher is missing")
+mirror_creation_step = named_step(
+  publish_job,
+  "Create and anonymously re-read the immutable mirror",
+)
+mirror_creation_run = mirror_creation_step.fetch("run")
+check(mirror_creation_step["id"] == "mirror-release" &&
+      mirror_creation_step["if"] ==
+        "inputs.publication-mode == 'create-mirror'",
+      "TA0 mirror publication identity differs")
+check(mirror_creation_run.scan(
+  "publish-immutable-github-release.sh"
+).length == 1 &&
+      !mirror_creation_run.include?(
+        "verify-existing-immutable-github-release.sh"
+      ) &&
+      mirror_creation_run.include?(
+        '[ "$TAP_MIRROR_AUTHORITY_REF" = "$TAP_CALLER_AUTHORITY_REF" ]'
+      ) &&
+      mirror_creation_run.include?('--manifest "$handoff/publish.json"') &&
+      mirror_creation_run.include?('--asset-root "$handoff/mirror"') &&
+      mirror_creation_run.include?(
+        '--exact-target-main-sha "$TAP_CALLER_AUTHORITY_REF"'
+      ) &&
+      mirror_creation_run.include?(
+        '.visibility == "public-anonymous-readback"'
+      ) &&
+      mirror_creation_run.include?('"receipt=$receipt"'),
+      "TA0 must publish and anonymously verify only its exact mirror")
+
 publication_step = named_step(
   publish_job,
   "Verify the existing mirror and publish only lifecycle inputs",
 )
 publication_run = publication_step.fetch("run")
-check(publication_step["id"] == "release",
-      "immutable publication output identity differs")
+check(publication_step["id"] == "lifecycle-release" &&
+      publication_step["if"] ==
+        "inputs.publication-mode == 'publish-lifecycle'",
+      "TA1 lifecycle publication identity differs")
 check(publication_run.scan(
   "verify-existing-immutable-github-release.sh"
 ).length == 1 &&
@@ -341,12 +398,27 @@ receipt_upload = named_step(
   publish_job,
   "Upload mirror verification and lifecycle publication receipts",
 )
+check(receipt_upload["if"] ==
+        "inputs.publication-mode == 'publish-lifecycle'",
+      "TA1 receipts must not be uploaded by TA0")
 receipt_paths = receipt_upload.fetch("with").fetch("path").
   lines.map(&:strip).reject(&:empty?)
 check(receipt_paths == [
-  "${{ steps.release.outputs.mirror-receipt }}",
-  "${{ steps.release.outputs.lifecycle-receipt }}",
+  "${{ steps.lifecycle-release.outputs.mirror-receipt }}",
+  "${{ steps.lifecycle-release.outputs.lifecycle-receipt }}",
 ], "mirror verification and lifecycle publication receipt set differs")
+mirror_receipt_upload = named_step(
+  publish_job,
+  "Upload immutable mirror publication receipt",
+)
+check(mirror_receipt_upload["if"] ==
+        "inputs.publication-mode == 'create-mirror'" &&
+      mirror_receipt_upload.fetch("with") == {
+        "name" => "homebrew-main-shell-mirror-publication",
+        "path" => "${{ steps.mirror-release.outputs.receipt }}",
+        "retention-days" => 7,
+        "if-no-files-found" => "error",
+      }, "TA0 mirror publication receipt differs")
 check(publish_source.scan(
   "verify-homebrew-guest-lifecycle-publication.sh"
 ).length == 1 &&
@@ -645,9 +717,23 @@ check(whole_source.scan(
 ).length >= 4,
       "jobs do not derive caller authority from the protected tap SHA")
 check(whole_source.scan(
-  'TAP_MIRROR_AUTHORITY_REF: ${{ inputs.mirror-authority-ref }}'
+  'REQUESTED_MIRROR_AUTHORITY_REF: ${{ inputs.mirror-authority-ref }}'
+).length == 1 &&
+      !whole_source.include?(
+        'TAP_MIRROR_AUTHORITY_REF: ${{ inputs.mirror-authority-ref }}'
+      ), "raw mirror authority must be admitted only by the mode gate")
+check(whole_source.scan(
+  'TAP_MIRROR_AUTHORITY_REF: ${{ steps.authority.outputs.mirror-authority-ref }}'
+).length >= 3 && whole_source.scan(
+  'TAP_MIRROR_AUTHORITY_REF: ${{ needs.prepare.outputs.mirror-authority-ref }}'
 ).length >= 4,
-      "jobs do not bind the admitted immutable mirror authority")
+      "jobs do not bind the admitted effective mirror authority")
+check(whole_source.include?(
+  '--publication-mode "$PUBLICATION_MODE"'
+) && whole_source.scan(
+  "--publication-mode publish-lifecycle"
+).length == 2,
+      "mirror handoff consumers do not preserve the authority mode")
 check(!whole_source.include?("inputs.tap-authority-ref"),
       "event data may not select the live tap caller authority")
 # WHY: preparation supplies the exact bytes later accepted by the token-bearing

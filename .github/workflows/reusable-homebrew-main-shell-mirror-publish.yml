@@ -11,10 +11,15 @@ on:
         description: Exact final bottle-catalog commit TF
         type: string
         required: true
-      mirror-authority-ref:
-        description: Exact earlier tap commit TA0 that owns the immutable mirror
+      publication-mode:
+        description: Exact operation, create-mirror or publish-lifecycle
         type: string
         required: true
+      mirror-authority-ref:
+        description: Exact earlier TA0; empty when this caller creates the mirror
+        type: string
+        required: false
+        default: ""
       canary-ref:
         description: Exact live independent-canary main commit C
         type: string
@@ -34,13 +39,16 @@ jobs:
     outputs:
       artifact-digest: ${{ steps.handoff.outputs.artifact-digest }}
       lifecycle-artifact-digest: ${{ steps.lifecycle-handoff.outputs.artifact-digest }}
+      mirror-authority-ref: ${{ steps.authority.outputs.mirror-authority-ref }}
     steps:
       - name: Validate tap-owned caller and exact live inputs
+        id: authority
         shell: bash
         env:
           KANDELO_REF: ${{ inputs.kandelo-ref }}
           TAP_CATALOG_REF: ${{ inputs.tap-catalog-ref }}
-          TAP_MIRROR_AUTHORITY_REF: ${{ inputs.mirror-authority-ref }}
+          PUBLICATION_MODE: ${{ inputs.publication-mode }}
+          REQUESTED_MIRROR_AUTHORITY_REF: ${{ inputs.mirror-authority-ref }}
           CANARY_REF: ${{ inputs.canary-ref }}
           CALLER_EVENT: ${{ github.event_name }}
           CALLER_BRANCH_REF: ${{ github.ref }}
@@ -54,17 +62,36 @@ jobs:
           [ "${CALLER_REPOSITORY,,}" = kandelo-dev/homebrew-tap-core ]
           [ "$CALLER_WORKFLOW_REF" = \
             "$CALLER_REPOSITORY/.github/workflows/publish-main-shell-mirror.yml@refs/heads/main" ]
+          case "$PUBLICATION_MODE" in
+            create-mirror)
+              # WHY: the protected caller that performs the write is the only
+              # truthful authority for a newly created immutable release.
+              # Accepting a caller-supplied TA0 here could relabel new bytes as
+              # if an older commit had published them.
+              [ -z "$REQUESTED_MIRROR_AUTHORITY_REF" ]
+              tap_mirror_authority_ref="$TAP_CALLER_AUTHORITY_REF"
+              ;;
+            publish-lifecycle)
+              # WHY: TA1 consumes an already immutable release. Requiring an
+              # explicit, different TA0 preserves who actually created it.
+              [[ "$REQUESTED_MIRROR_AUTHORITY_REF" =~ ^[0-9a-f]{40}$ ]]
+              [ "$REQUESTED_MIRROR_AUTHORITY_REF" != \
+                "$TAP_CALLER_AUTHORITY_REF" ]
+              tap_mirror_authority_ref="$REQUESTED_MIRROR_AUTHORITY_REF"
+              ;;
+            *)
+              echo "unsupported publication mode: $PUBLICATION_MODE" >&2
+              exit 2
+              ;;
+          esac
           for ref in \
             "$KANDELO_REF" "$TAP_CATALOG_REF" \
-            "$TAP_MIRROR_AUTHORITY_REF" "$TAP_CALLER_AUTHORITY_REF" \
+            "$tap_mirror_authority_ref" "$TAP_CALLER_AUTHORITY_REF" \
             "$CANARY_REF"
           do
             [[ "$ref" =~ ^[0-9a-f]{40}$ ]]
           done
-          # WHY: consume-only proof must preserve who created the immutable
-          # mirror instead of relabeling it as a release from this later
-          # lifecycle-input caller.
-          [ "$TAP_MIRROR_AUTHORITY_REF" != "$TAP_CALLER_AUTHORITY_REF" ]
+          echo "mirror-authority-ref=$tap_mirror_authority_ref" >>"$GITHUB_OUTPUT"
 
       - name: Check out exact Kandelo authority
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -96,7 +123,8 @@ jobs:
         env:
           KANDELO_REF: ${{ inputs.kandelo-ref }}
           TAP_CATALOG_REF: ${{ inputs.tap-catalog-ref }}
-          TAP_MIRROR_AUTHORITY_REF: ${{ inputs.mirror-authority-ref }}
+          PUBLICATION_MODE: ${{ inputs.publication-mode }}
+          TAP_MIRROR_AUTHORITY_REF: ${{ steps.authority.outputs.mirror-authority-ref }}
           TAP_CALLER_AUTHORITY_REF: ${{ github.sha }}
           CANARY_REF: ${{ inputs.canary-ref }}
         run: |
@@ -123,14 +151,23 @@ jobs:
             "$TAP_CATALOG_REF" ]
           [ "$(jq -er '.lifecycle_installs[0].revision' \
             kandelo/homebrew/main-shell-homebrew-runtime-support.json)" = "$CANARY_REF" ]
-          # WHY: TF owns the bottle recipes, TA0 owns the already-immutable
-          # mirror, and TA1 owns only this later lifecycle-input release.
-          # Requiring the complete chain prevents a stale or unrelated public
-          # release from being adopted just because its bytes happen to match.
-          git -C tap-authority merge-base --is-ancestor \
-            "$TAP_CATALOG_REF" "$TAP_MIRROR_AUTHORITY_REF"
-          git -C tap-authority merge-base --is-ancestor \
-            "$TAP_MIRROR_AUTHORITY_REF" "$TAP_CALLER_AUTHORITY_REF"
+          case "$PUBLICATION_MODE" in
+            create-mirror)
+              [ "$TAP_MIRROR_AUTHORITY_REF" = "$TAP_CALLER_AUTHORITY_REF" ]
+              git -C tap-authority merge-base --is-ancestor \
+                "$TAP_CATALOG_REF" "$TAP_CALLER_AUTHORITY_REF"
+              ;;
+            publish-lifecycle)
+              # WHY: TF owns the bottle recipes, TA0 owns the existing mirror,
+              # and TA1 owns only the later lifecycle-input release. The full
+              # ancestry chain prevents adopting a stale or unrelated mirror.
+              [ "$TAP_MIRROR_AUTHORITY_REF" != "$TAP_CALLER_AUTHORITY_REF" ]
+              git -C tap-authority merge-base --is-ancestor \
+                "$TAP_CATALOG_REF" "$TAP_MIRROR_AUTHORITY_REF"
+              git -C tap-authority merge-base --is-ancestor \
+                "$TAP_MIRROR_AUTHORITY_REF" "$TAP_CALLER_AUTHORITY_REF"
+              ;;
+          esac
           jq -e '.state == "sealed" and .image.sha256 != null and .image.bytes > 0' \
             kandelo/homebrew/main-shell-lazy-artifact-lock.json >/dev/null
 
@@ -220,7 +257,7 @@ jobs:
         env:
           IMAGE: ${{ steps.shell.outputs.image }}
           TAP_CATALOG_REF: ${{ inputs.tap-catalog-ref }}
-          TAP_MIRROR_AUTHORITY_REF: ${{ inputs.mirror-authority-ref }}
+          TAP_MIRROR_AUTHORITY_REF: ${{ steps.authority.outputs.mirror-authority-ref }}
         run: |
           set -euo pipefail
           mirror="$RUNNER_TEMP/main-shell-mirror"
@@ -266,7 +303,8 @@ jobs:
           PUBLISH: ${{ steps.mirror.outputs.publish }}
           KANDELO_REF: ${{ inputs.kandelo-ref }}
           TAP_CATALOG_REF: ${{ inputs.tap-catalog-ref }}
-          TAP_MIRROR_AUTHORITY_REF: ${{ inputs.mirror-authority-ref }}
+          PUBLICATION_MODE: ${{ inputs.publication-mode }}
+          TAP_MIRROR_AUTHORITY_REF: ${{ steps.authority.outputs.mirror-authority-ref }}
           TAP_CALLER_AUTHORITY_REF: ${{ github.sha }}
           CANARY_REF: ${{ inputs.canary-ref }}
         run: |
@@ -338,6 +376,7 @@ jobs:
           ' >"$handoff/handoff.json"
           bash scripts/verify-homebrew-main-shell-mirror-handoff.sh \
             --root "$handoff" \
+            --publication-mode "$PUBLICATION_MODE" \
             --kandelo-ref "$KANDELO_REF" \
             --tap-catalog-ref "$TAP_CATALOG_REF" \
             --tap-mirror-authority-ref "$TAP_MIRROR_AUTHORITY_REF" \
@@ -356,6 +395,7 @@ jobs:
 
       - name: Prepare separate public lifecycle-input handoff
         id: lifecycle
+        if: inputs.publication-mode == 'publish-lifecycle'
         working-directory: kandelo
         shell: bash
         env:
@@ -365,7 +405,7 @@ jobs:
           MIRROR_PLAN: ${{ steps.mirror.outputs.root }}/kandelo-homebrew-bottle-mirror-plan.json
           KANDELO_REF: ${{ inputs.kandelo-ref }}
           TAP_CATALOG_REF: ${{ inputs.tap-catalog-ref }}
-          TAP_MIRROR_AUTHORITY_REF: ${{ inputs.mirror-authority-ref }}
+          TAP_MIRROR_AUTHORITY_REF: ${{ steps.authority.outputs.mirror-authority-ref }}
           TAP_CALLER_AUTHORITY_REF: ${{ github.sha }}
           CANARY_REF: ${{ inputs.canary-ref }}
         run: |
@@ -396,6 +436,7 @@ jobs:
 
       - name: Upload same-run lifecycle-input handoff
         id: lifecycle-handoff
+        if: inputs.publication-mode == 'publish-lifecycle'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: homebrew-guest-lifecycle-inputs-handoff
@@ -434,6 +475,7 @@ jobs:
           path: ${{ runner.temp }}/main-shell-mirror-handoff
 
       - name: Download only the same-run lifecycle-input handoff
+        if: inputs.publication-mode == 'publish-lifecycle'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: homebrew-guest-lifecycle-inputs-handoff
@@ -444,7 +486,8 @@ jobs:
         env:
           KANDELO_REF: ${{ inputs.kandelo-ref }}
           TAP_CATALOG_REF: ${{ inputs.tap-catalog-ref }}
-          TAP_MIRROR_AUTHORITY_REF: ${{ inputs.mirror-authority-ref }}
+          PUBLICATION_MODE: ${{ inputs.publication-mode }}
+          TAP_MIRROR_AUTHORITY_REF: ${{ needs.prepare.outputs.mirror-authority-ref }}
           TAP_CALLER_AUTHORITY_REF: ${{ github.sha }}
           CANARY_REF: ${{ inputs.canary-ref }}
         run: |
@@ -456,23 +499,37 @@ jobs:
           test -z "$(git status --porcelain=v1 --untracked-files=no)"
           test -z "$(git -C kandelo status --porcelain=v1 --untracked-files=all)"
           [ "${{ needs.prepare.outputs.artifact-digest }}" != "" ]
-          [ "${{ needs.prepare.outputs.lifecycle-artifact-digest }}" != "" ]
           bash kandelo/scripts/verify-homebrew-main-shell-mirror-handoff.sh \
             --root "$RUNNER_TEMP/main-shell-mirror-handoff" \
+            --publication-mode "$PUBLICATION_MODE" \
             --kandelo-ref "$KANDELO_REF" \
             --tap-catalog-ref "$TAP_CATALOG_REF" \
             --tap-mirror-authority-ref "$TAP_MIRROR_AUTHORITY_REF" \
             --tap-caller-authority-ref "$TAP_CALLER_AUTHORITY_REF" \
             --canary-ref "$CANARY_REF"
-          bash kandelo/scripts/verify-homebrew-guest-lifecycle-publication.sh \
-            --root "$RUNNER_TEMP/homebrew-guest-lifecycle-inputs-handoff" \
-            --bottle-mirror-plan \
-              "$RUNNER_TEMP/main-shell-mirror-handoff/mirror/kandelo-homebrew-bottle-mirror-plan.json" \
-            --kandelo-ref "$KANDELO_REF" \
-            --tap-catalog-ref "$TAP_CATALOG_REF" \
-            --tap-mirror-authority-ref "$TAP_MIRROR_AUTHORITY_REF" \
-            --tap-caller-authority-ref "$TAP_CALLER_AUTHORITY_REF" \
-            --canary-ref "$CANARY_REF"
+          case "$PUBLICATION_MODE" in
+            create-mirror)
+              # WHY: TA0 must not receive a lifecycle publication manifest.
+              # The mirror handoff includes source-verification bytes, but
+              # without the separate lifecycle handoff this job has no
+              # manifest that can authorize a lifecycle release.
+              [ "${{ needs.prepare.outputs.lifecycle-artifact-digest }}" = "" ]
+              test ! -e \
+                "$RUNNER_TEMP/homebrew-guest-lifecycle-inputs-handoff"
+              ;;
+            publish-lifecycle)
+              [ "${{ needs.prepare.outputs.lifecycle-artifact-digest }}" != "" ]
+              bash kandelo/scripts/verify-homebrew-guest-lifecycle-publication.sh \
+                --root "$RUNNER_TEMP/homebrew-guest-lifecycle-inputs-handoff" \
+                --bottle-mirror-plan \
+                  "$RUNNER_TEMP/main-shell-mirror-handoff/mirror/kandelo-homebrew-bottle-mirror-plan.json" \
+                --kandelo-ref "$KANDELO_REF" \
+                --tap-catalog-ref "$TAP_CATALOG_REF" \
+                --tap-mirror-authority-ref "$TAP_MIRROR_AUTHORITY_REF" \
+                --tap-caller-authority-ref "$TAP_CALLER_AUTHORITY_REF" \
+                --canary-ref "$CANARY_REF"
+              ;;
+          esac
           GH_TOKEN="${{ github.token }}" \
             bash kandelo/.github/scripts/require-exact-kandelo-main.sh \
               --repository Automattic/kandelo --source-sha "$KANDELO_REF"
@@ -480,14 +537,50 @@ jobs:
             --repository Kandelo-dev/homebrew-tap-core \
             --source-sha "$TAP_CALLER_AUTHORITY_REF"
 
+      - name: Create and anonymously re-read the immutable mirror
+        id: mirror-release
+        if: inputs.publication-mode == 'create-mirror'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KANDELO_REF: ${{ inputs.kandelo-ref }}
+          TAP_MIRROR_AUTHORITY_REF: ${{ needs.prepare.outputs.mirror-authority-ref }}
+          TAP_CALLER_AUTHORITY_REF: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [ "$TAP_MIRROR_AUTHORITY_REF" = "$TAP_CALLER_AUTHORITY_REF" ]
+          handoff="$RUNNER_TEMP/main-shell-mirror-handoff"
+          receipt="$RUNNER_TEMP/main-shell-mirror-release-receipt.json"
+          # WHY: only TA0 creates the mirror. The publisher also performs an
+          # anonymous byte-for-byte readback, so completion means later TA1
+          # consumers can actually retrieve this exact public collection.
+          bash kandelo/scripts/publish-immutable-github-release.sh \
+            --manifest "$handoff/publish.json" \
+            --asset-root "$handoff/mirror" \
+            --lock-root "$GITHUB_WORKSPACE" \
+            --receipt "$receipt" \
+            --exact-kandelo-main-sha "$KANDELO_REF" \
+            --exact-target-main-sha "$TAP_CALLER_AUTHORITY_REF"
+          jq -e \
+            --arg tap "$TAP_CALLER_AUTHORITY_REF" '
+            .status == "success" and
+            .visibility == "public-anonymous-readback" and
+            .repository == "kandelo-dev/homebrew-tap-core" and
+            .target_commitish == $tap and
+            .immutable == true and
+            (.assets | length) > 1
+          ' "$receipt" >/dev/null
+          echo "receipt=$receipt" >>"$GITHUB_OUTPUT"
+
       - name: Verify the existing mirror and publish only lifecycle inputs
-        id: release
+        id: lifecycle-release
+        if: inputs.publication-mode == 'publish-lifecycle'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           KANDELO_REF: ${{ inputs.kandelo-ref }}
           TAP_CATALOG_REF: ${{ inputs.tap-catalog-ref }}
-          TAP_MIRROR_AUTHORITY_REF: ${{ inputs.mirror-authority-ref }}
+          TAP_MIRROR_AUTHORITY_REF: ${{ needs.prepare.outputs.mirror-authority-ref }}
           TAP_CALLER_AUTHORITY_REF: ${{ github.sha }}
         run: |
           set -euo pipefail
@@ -534,19 +627,30 @@ jobs:
             echo "lifecycle-receipt=$lifecycle_receipt"
           } >>"$GITHUB_OUTPUT"
 
+      - name: Upload immutable mirror publication receipt
+        if: inputs.publication-mode == 'create-mirror'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: homebrew-main-shell-mirror-publication
+          path: ${{ steps.mirror-release.outputs.receipt }}
+          retention-days: 7
+          if-no-files-found: error
+
       - name: Upload mirror verification and lifecycle publication receipts
+        if: inputs.publication-mode == 'publish-lifecycle'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: homebrew-main-shell-mirror-publication
           path: |
-            ${{ steps.release.outputs.mirror-receipt }}
-            ${{ steps.release.outputs.lifecycle-receipt }}
+            ${{ steps.lifecycle-release.outputs.mirror-receipt }}
+            ${{ steps.lifecycle-release.outputs.lifecycle-receipt }}
           retention-days: 7
           if-no-files-found: error
 
   public-node-proof:
     name: Prove public bottle installation in Node
     needs: [prepare, publish]
+    if: inputs.publication-mode == 'publish-lifecycle'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
@@ -617,7 +721,7 @@ jobs:
         env:
           KANDELO_REF: ${{ inputs.kandelo-ref }}
           TAP_CATALOG_REF: ${{ inputs.tap-catalog-ref }}
-          TAP_MIRROR_AUTHORITY_REF: ${{ inputs.mirror-authority-ref }}
+          TAP_MIRROR_AUTHORITY_REF: ${{ needs.prepare.outputs.mirror-authority-ref }}
           TAP_CALLER_AUTHORITY_REF: ${{ github.sha }}
           CANARY_REF: ${{ inputs.canary-ref }}
         run: |
@@ -625,6 +729,7 @@ jobs:
           [ "$(git rev-parse HEAD)" = "$KANDELO_REF" ]
           bash scripts/verify-homebrew-main-shell-mirror-handoff.sh \
             --root "$RUNNER_TEMP/main-shell-mirror-handoff" \
+            --publication-mode publish-lifecycle \
             --kandelo-ref "$KANDELO_REF" \
             --tap-catalog-ref "$TAP_CATALOG_REF" \
             --tap-mirror-authority-ref "$TAP_MIRROR_AUTHORITY_REF" \
@@ -747,6 +852,7 @@ jobs:
   public-chromium-proof:
     name: Prove public guest lifecycle in Chromium
     needs: [prepare, publish]
+    if: inputs.publication-mode == 'publish-lifecycle'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     permissions:
@@ -819,7 +925,7 @@ jobs:
         env:
           KANDELO_REF: ${{ inputs.kandelo-ref }}
           TAP_CATALOG_REF: ${{ inputs.tap-catalog-ref }}
-          TAP_MIRROR_AUTHORITY_REF: ${{ inputs.mirror-authority-ref }}
+          TAP_MIRROR_AUTHORITY_REF: ${{ needs.prepare.outputs.mirror-authority-ref }}
           TAP_CALLER_AUTHORITY_REF: ${{ github.sha }}
           CANARY_REF: ${{ inputs.canary-ref }}
         run: |
@@ -827,6 +933,7 @@ jobs:
           [ "$(git rev-parse HEAD)" = "$KANDELO_REF" ]
           bash scripts/verify-homebrew-main-shell-mirror-handoff.sh \
             --root "$RUNNER_TEMP/main-shell-mirror-handoff" \
+            --publication-mode publish-lifecycle \
             --kandelo-ref "$KANDELO_REF" \
             --tap-catalog-ref "$TAP_CATALOG_REF" \
             --tap-mirror-authority-ref "$TAP_MIRROR_AUTHORITY_REF" \

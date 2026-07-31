@@ -73,9 +73,29 @@ expect_rejected "$TMP_ROOT/catalog-as-authority.yml"
 sed 's/--core-revision "$TAP_CATALOG_REF"/--core-revision "$TAP_CALLER_AUTHORITY_REF"/' \
   "$WORKFLOW" >"$TMP_ROOT/authority-as-catalog.yml"
 expect_rejected "$TMP_ROOT/authority-as-catalog.yml"
-sed '/      mirror-authority-ref:/,/        required: true/d' \
+sed '/      mirror-authority-ref:/,/        default: ""/d' \
   "$WORKFLOW" >"$TMP_ROOT/no-mirror-authority-input.yml"
 expect_rejected "$TMP_ROOT/no-mirror-authority-input.yml"
+sed '/      publication-mode:/,/        required: true/d' \
+  "$WORKFLOW" >"$TMP_ROOT/no-publication-mode.yml"
+expect_rejected "$TMP_ROOT/no-publication-mode.yml"
+sed 's/\[ -z "$REQUESTED_MIRROR_AUTHORITY_REF" \]/true/' \
+  "$WORKFLOW" >"$TMP_ROOT/ta0-accepts-requested-authority.yml"
+expect_rejected "$TMP_ROOT/ta0-accepts-requested-authority.yml"
+sed "s/if: inputs.publication-mode == 'create-mirror'/if: inputs.publication-mode == 'publish-lifecycle'/" \
+  "$WORKFLOW" >"$TMP_ROOT/ta0-publisher-runs-as-ta1.yml"
+expect_rejected "$TMP_ROOT/ta0-publisher-runs-as-ta1.yml"
+sed "s/if: inputs.publication-mode == 'publish-lifecycle'/if: inputs.publication-mode == 'create-mirror'/" \
+  "$WORKFLOW" >"$TMP_ROOT/ta0-receives-lifecycle-inputs.yml"
+expect_rejected "$TMP_ROOT/ta0-receives-lifecycle-inputs.yml"
+sed '/      - name: Create and anonymously re-read the immutable mirror/,/      - name: Verify the existing mirror and publish only lifecycle inputs/{
+  s/publish-immutable-github-release.sh/verify-existing-immutable-github-release.sh/
+}' "$WORKFLOW" >"$TMP_ROOT/ta0-does-not-create-mirror.yml"
+expect_rejected "$TMP_ROOT/ta0-does-not-create-mirror.yml"
+sed '/      - name: Verify the existing mirror and publish only lifecycle inputs/,/      - name: Upload immutable mirror publication receipt/{
+  s/verify-existing-immutable-github-release.sh/publish-immutable-github-release.sh/
+}' "$WORKFLOW" >"$TMP_ROOT/ta1-republishes-mirror.yml"
+expect_rejected "$TMP_ROOT/ta1-republishes-mirror.yml"
 awk '
   /git -C tap-authority merge-base --is-ancestor/ {
     ancestry += 1
