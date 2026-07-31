@@ -1,16 +1,6 @@
 name: Homebrew public Node proof recovery
 
 on:
-  pull_request:
-    paths:
-      - .github/workflows/homebrew-public-node-proof-recovery.yml
-      - homebrew/public-proof-recovery-lock.json
-      - homebrew/test/run_homebrew_guest_shipping_scope.sh
-      - scripts/create-homebrew-node-proof-runtime-handoff.sh
-      - scripts/verify-homebrew-node-proof-runtime-handoff.sh
-      - scripts/check-homebrew-public-node-proof-recovery-workflow.rb
-      - scripts/test-homebrew-public-node-proof-recovery-workflow.sh
-      - scripts/test-homebrew-node-proof-runtime-handoff.sh
   workflow_dispatch:
 
 permissions:

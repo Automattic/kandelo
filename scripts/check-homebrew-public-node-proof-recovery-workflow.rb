@@ -28,7 +28,7 @@ RELEASE_TAG =
   "bb5e575fb4d199aa59b764d293aa33501b0e6bfc243868ec5af98d826dafb79f"
 RUNTIME_HANDOFF = "homebrew-public-node-runtime-handoff"
 WORKFLOW_DIGEST =
-  "26624407ef8fd16811f145fc03bf59646230657e98f9b568bf99942623a64f2c"
+  "ac2eabb8f6cb81b658912f83201be76b5794d070d9f95f138f7fd737801abd39"
 RUNNER_DIGEST =
   "d15e23e5b8512663864e56163033cda32b301c873811fd28d04ca557cb1acc58"
 DOWNLOAD_ACTION =
@@ -79,7 +79,7 @@ begin
   )
   events = workflow.key?("on") ? workflow["on"] : workflow[true]
   check(
-    events.keys.sort == %w[pull_request workflow_dispatch],
+    events.keys == %w[workflow_dispatch],
     "recovery trigger set differs",
   )
   check(
@@ -302,6 +302,7 @@ begin
     "contents: write",
     "packages: write",
     "secrets:",
+    "pull_request:",
     "pull_request_target",
     "run-id:",
     "github.event.workflow_run",

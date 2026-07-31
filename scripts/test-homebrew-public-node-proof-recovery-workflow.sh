@@ -27,6 +27,10 @@ expect_lock_rejected() {
   fi
 }
 
+sed '/  workflow_dispatch:/i\
+  pull_request:' "$WORKFLOW" >"$TMP_ROOT/automatic-pr-proof.yml"
+expect_workflow_rejected "$TMP_ROOT/automatic-pr-proof.yml"
+
 sed 's/contents: read/contents: write/' \
   "$WORKFLOW" >"$TMP_ROOT/write-permission.yml"
 expect_workflow_rejected "$TMP_ROOT/write-permission.yml"

@@ -1138,6 +1138,29 @@ runner's memory headroom even when the proof begins near 0.43 GB. The Node
 A bounded host-memory follow-up is required; rerunning the same proof on the
 same runner class cannot establish a different result.
 
+The diagnostic workflow is therefore manual-only. Do not dispatch
+`homebrew-public-node-proof-recovery.yml` again until a bounded host-memory
+candidate makes the run materially different. It is retained because its
+separate preparation and per-scope runners provide a controlled revalidation
+surface after that change; it is not a passing shipping gate today.
+
+The first bounded experiment should test ownership before redesigning syscall
+transport. Today the persistent kernel Worker creates each shared process
+memory. A focused Node candidate should instead have the short-lived process
+Worker create its memory, send the shared memory to the kernel for normal
+initialization and access, and terminate the creator with the process. A
+Brew-shaped churn harness must compare this with current kernel-realm creation.
+This experiment changes no guest worker limit, POSIX behavior, or ABI.
+
+Do not treat wrapper finalization as proof of backing release. Earlier
+instrumentation observed finalization for 499 of 500 retired kernel-side
+wrappers while RSS remained about 12.2 GB. If creator-realm containment does
+not bound RSS, the next design boundary is a per-process syscall coordinator:
+only the coordinator and process realms receive raw process memory, while the
+central kernel receives a bounded syscall channel. That alternative is more
+complex and may add syscall latency, so measure the smaller ownership change
+first.
+
 The manifest keeps Node files under one exact `node/` subtree. A later schema
 may add an independently enumerated `browser/` subtree to the same preparation
 artifact. It must still bind every file and authority explicitly; the layout
