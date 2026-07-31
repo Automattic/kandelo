@@ -410,6 +410,55 @@ class Fixture:
             handoff_path.read_bytes()
         )
 
+    def alpha_bottle_input(
+        self,
+        kind: str,
+    ) -> tuple[pathlib.Path, dict[str, Any], dict[str, Any]]:
+        root = self.root / f"alpha-{kind}-bottle-input"
+        bottle_json_relative = {
+            "build": "build/bottle.json",
+            "reuse": "reuse/bottle.json",
+        }[kind]
+        bottle_archive_relative = {
+            "build": "build/bottle.tar.gz",
+            "reuse": "reuse/bottle.tar.gz",
+        }[kind]
+        source = self.alpha_handoff / "payload/wasm32/build"
+        bottle_json = root / f"payload/wasm32/{bottle_json_relative}"
+        bottle_archive = (
+            root / f"payload/wasm32/{bottle_archive_relative}"
+        )
+        bottle_json.parent.mkdir(parents=True)
+        shutil.copy2(source / "bottle.json", bottle_json)
+        shutil.copy2(source / "bottle.tar.gz", bottle_archive)
+        publication = {
+            "arch": "wasm32",
+            "files": [
+                EXECUTOR.file_record(
+                    bottle_json,
+                    f"payload/wasm32/{bottle_json_relative}",
+                    EXECUTOR.publication_asset_name(
+                        "wasm32", bottle_json_relative
+                    ),
+                ),
+                EXECUTOR.file_record(
+                    bottle_archive,
+                    f"payload/wasm32/{bottle_archive_relative}",
+                    EXECUTOR.publication_asset_name(
+                        "wasm32", bottle_archive_relative
+                    ),
+                ),
+            ],
+            "kind": kind,
+        }
+        handoff = {
+            "formula": EXECUTOR.campaign_formula_evidence(
+                self.campaign, self.formulae[0]
+            ),
+            "publications": [publication],
+        }
+        return root, handoff, publication
+
     def fetch_campaign(
         self,
         repository: str,
@@ -507,6 +556,90 @@ class Fixture:
 
 
 class PrefixCampaignPublisherTests(unittest.TestCase):
+    def test_dependency_input_accepts_build_and_reuse_handoffs(
+        self,
+    ) -> None:
+        fixture = Fixture()
+        self.addCleanup(fixture.close)
+        results = []
+        for kind in ("build", "reuse"):
+            with self.subTest(kind=kind):
+                root, handoff, _publication = (
+                    fixture.alpha_bottle_input(kind)
+                )
+                canonical_root = fixture.root / f"canonical-{kind}"
+                canonical_root.mkdir()
+                results.append(
+                    PUBLISHER.bottle_input(
+                        root,
+                        handoff,
+                        "wasm32",
+                        fixture.campaign,
+                        canonical_root,
+                    )[1:]
+                )
+        self.assertEqual(results[0], results[1])
+
+    def test_dependency_input_rejects_mutation_kind_and_path_substitution(
+        self,
+    ) -> None:
+        fixture = Fixture()
+        self.addCleanup(fixture.close)
+
+        root, handoff, _publication = fixture.alpha_bottle_input("reuse")
+        bottle_json = root / "payload/wasm32/reuse/bottle.json"
+        bottle = json.loads(bottle_json.read_text())
+        bottle[ALPHA_FORMULA_KEY]["bottle"]["root_url"] = (
+            "https://ghcr.io/v2/example/wrong"
+        )
+        write_json(bottle_json, bottle)
+        with self.assertRaisesRegex(
+            PUBLISHER.PublisherCampaignError,
+            "is not the campaign registry",
+        ):
+            PUBLISHER.bottle_input(
+                root,
+                handoff,
+                "wasm32",
+                fixture.campaign,
+                fixture.root / "canonical-mutated",
+            )
+
+        fixture = Fixture()
+        self.addCleanup(fixture.close)
+        root, handoff, publication = fixture.alpha_bottle_input("reuse")
+        publication["kind"] = "unknown"
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "kind is unsupported",
+        ):
+            PUBLISHER.bottle_input(
+                root,
+                handoff,
+                "wasm32",
+                fixture.campaign,
+                fixture.root / "canonical-unknown",
+            )
+
+        root, handoff, publication = fixture.alpha_bottle_input("build")
+        archive = next(
+            record
+            for record in publication["files"]
+            if record["path"].endswith("bottle.tar.gz")
+        )
+        archive["path"] = "payload/wasm32/reuse/bottle.tar.gz"
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "lacks payload/wasm32/build/bottle.tar.gz",
+        ):
+            PUBLISHER.bottle_input(
+                root,
+                handoff,
+                "wasm32",
+                fixture.campaign,
+                fixture.root / "canonical-substituted",
+            )
+
     def test_dependency_provenance_selects_only_the_campaign_cellar(
         self,
     ) -> None:
