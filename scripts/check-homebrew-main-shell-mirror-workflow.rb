@@ -9,10 +9,15 @@ ROOT = File.expand_path("..", __dir__)
 WORKFLOW = ARGV.empty? ?
   File.join(ROOT, ".github/workflows/reusable-homebrew-main-shell-mirror-publish.yml") :
   File.expand_path(ARGV.fetch(0))
+NODE_SCOPE_RUNNER = ARGV.length < 2 ?
+  File.join(ROOT, "homebrew/test/run_homebrew_guest_shipping_scope.sh") :
+  File.expand_path(ARGV.fetch(1))
 PUBLISH_JOB_DIGEST =
   "64bd13ea5a8d00953acfec3e02607f7ae70837706c868827bed5259c6043aeb2"
 WORKFLOW_DIGEST =
-  "c5c6b9a3e7e31aa559c3523725c1e57f635909b280d43ce3b0f746c4f0ebcd82"
+  "bd5336ab31d28412fde2445aa98afba0e88be3f776b03ecd7692a2b94f139410"
+NODE_SCOPE_RUNNER_DIGEST =
+  "a351c57bba3b4ad05d58a346ccf2ffa22d6de194d1839c24a78d2b9bc07f1bf8"
 DOWNLOAD_ACTION =
   "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 UPLOAD_ACTION =
@@ -194,7 +199,13 @@ prepare_source = YAML.dump(jobs.fetch("prepare"))
 publish_source = YAML.dump(jobs.fetch("publish"))
 node_proof_source = YAML.dump(node_proof_job)
 chromium_proof_source = YAML.dump(chromium_proof_job)
-proof_source = node_proof_source + chromium_proof_source
+node_scope_runner = File.read(NODE_SCOPE_RUNNER)
+check(
+  Digest::SHA256.hexdigest(node_scope_runner) == NODE_SCOPE_RUNNER_DIGEST,
+  "Node shipping-scope runner contract differs",
+)
+node_execution_source = node_proof_source + node_scope_runner
+proof_source = node_execution_source + chromium_proof_source
 whole_source = File.read(WORKFLOW)
 shell_step = jobs.fetch("prepare").fetch("steps").find do |step|
   step["name"] == "Resolve the public revision-22 shell generation"
@@ -401,51 +412,85 @@ check(
     node_build.scan("test -s host/dist/worker-entry.js").length == 1,
   "Node proof must build and require its production process worker",
 )
-check(node_proof_source.scan("--transport-mode public").length == 1 &&
+check(node_execution_source.scan("--transport-mode public").length == 1 &&
       chromium_proof_source.scan("--transport-mode public").length == 1 &&
       !proof_source.include?("--transport-mode closed"),
       "Node and Chromium public transport coverage differs")
-check(node_proof_source.include?('--core-revision "$TAP_CATALOG_REF"') &&
+check(node_execution_source.include?('--core-revision "$TAP_CATALOG_REF"') &&
       chromium_proof_source.include?(
         '--core-revision "$TAP_CATALOG_REF"'
       ),
       "guest lifecycles are not pinned to the sealed tap catalog")
-node_lifecycle = named_step(
+node_telemetry_init = named_step(
   node_proof_job,
-  "Prove bounded public bottle installs in fresh Node processes",
-).fetch("run")
-node_lifecycle_lines =
-  node_lifecycle.lines.map(&:strip).reject(&:empty?)
-core_scope_index =
-  node_lifecycle_lines.index("run_shipping_scope shipping-core")
-canary_scope_index =
-  node_lifecycle_lines.index("run_shipping_scope shipping-canary")
+  "Initialize bounded Node lifecycle telemetry",
+)
+node_core_scope = named_step(
+  node_proof_job,
+  "Prove shipping-core public bottle installs in Node",
+)
+node_canary_scope = named_step(
+  node_proof_job,
+  "Prove shipping-canary public bottle installs in Node",
+)
+node_telemetry_upload = named_step(
+  node_proof_job,
+  "Upload bounded Node lifecycle telemetry",
+)
+node_telemetry_init_index = node_proof_steps.index(node_telemetry_init)
+node_core_scope_index = node_proof_steps.index(node_core_scope)
+node_canary_scope_index = node_proof_steps.index(node_canary_scope)
+node_telemetry_upload_index = node_proof_steps.index(node_telemetry_upload)
+node_scope_env = {
+  "IMAGE" => "${{ steps.public.outputs.image }}",
+  "BOOTSTRAP" => "${{ steps.public.outputs.bootstrap }}",
+  "BOOTSTRAP_ENV" => "${{ steps.public.outputs.bootstrap-env }}",
+  "TAP_CATALOG_REF" => "${{ inputs.tap-catalog-ref }}",
+  "CANARY_REF" => "${{ inputs.canary-ref }}",
+}
 check(
-  node_lifecycle.include?(
-    "homebrew/test/homebrew_guest_lifecycle_node.ts"
+  node_telemetry_init.fetch("run").include?(
+    ': >"$RUNNER_TEMP/homebrew-node-lifecycle-resources.log"'
   ) &&
-    node_lifecycle.scan('--proof-mode "$scope"').length == 1 &&
-    node_lifecycle.scan(/^\s*run_shipping_scope shipping-core\s*$/).
-      length == 1 &&
-    node_lifecycle.scan(/^\s*run_shipping_scope shipping-canary\s*$/).
-      length == 1 &&
-    core_scope_index &&
-    canary_scope_index &&
-    node_lifecycle_lines[core_scope_index + 1] == "sample_resources" &&
-    node_lifecycle_lines[canary_scope_index + 1] == "sample_resources" &&
-    core_scope_index < canary_scope_index &&
-    node_lifecycle.scan('--image "$IMAGE"').length == 1 &&
-    !node_lifecycle.include?("--proof-mode comprehensive") &&
-    node_lifecycle.include?("--timeout-ms 900000") &&
-    node_lifecycle.include?('--canary-revision "$CANARY_REF"'),
+    node_telemetry_init_index &&
+    node_core_scope_index == node_telemetry_init_index + 1 &&
+    node_canary_scope_index == node_core_scope_index + 1 &&
+    node_telemetry_upload_index == node_canary_scope_index + 1 &&
+    node_core_scope.fetch("env") == node_scope_env &&
+    node_canary_scope.fetch("env") == node_scope_env &&
+    node_core_scope.fetch("timeout-minutes") == 20 &&
+    node_canary_scope.fetch("timeout-minutes") == 20 &&
+    node_core_scope.fetch("run").scan(
+      "homebrew/test/run_homebrew_guest_shipping_scope.sh"
+    ).length == 1 &&
+    node_core_scope.fetch("run").scan(/^\s*shipping-core\s*$/).length == 1 &&
+    node_canary_scope.fetch("run").scan(
+      "homebrew/test/run_homebrew_guest_shipping_scope.sh"
+    ).length == 1 &&
+    node_canary_scope.fetch("run").scan(
+      /^\s*shipping-canary\s*$/
+    ).length == 1 &&
+    node_scope_runner.include?(
+      "homebrew/test/homebrew_guest_lifecycle_node.ts"
+    ) &&
+    node_scope_runner.scan('--proof-mode "$scope"').length == 1 &&
+    node_scope_runner.scan(
+      /^\s*shipping-core\|shipping-canary\) ;;\s*$/
+    ).length == 1 &&
+    node_scope_runner.scan('--image "$IMAGE"').length == 1 &&
+    !node_scope_runner.include?("--proof-mode comprehensive") &&
+    node_scope_runner.include?("--timeout-ms 900000") &&
+    node_scope_runner.include?('--canary-revision "$CANARY_REF"'),
   "fresh-process Node bottle-installation scopes differ",
 )
-check(node_lifecycle.include?("memory.current") &&
-      node_lifecycle.include?("memory.peak") &&
-      node_lifecycle.include?("memory.events") &&
-      node_lifecycle.include?("aggregate_rss_kib") &&
-      node_lifecycle.include?("sample < 64") &&
-      node_lifecycle.include?("sleep 15"),
+check(node_scope_runner.include?("memory.current") &&
+      node_scope_runner.include?("memory.peak") &&
+      node_scope_runner.include?("memory.events") &&
+      node_scope_runner.include?("aggregate_rss_kib") &&
+      node_scope_runner.include?("record_scope_state started") &&
+      node_scope_runner.include?("record_scope_state finished") &&
+      node_scope_runner.include?("sample < 64") &&
+      node_scope_runner.include?("sleep 15"),
       "bounded Node lifecycle resource telemetry differs")
 chromium_step = named_step(
   chromium_proof_job,
