@@ -57,6 +57,83 @@ describe("ProcessMemoryAllocator", () => {
     wasm64.release();
   });
 
+  it("counts retained aliases once and retires only after the final release", () => {
+    const allocator = new ProcessMemoryAllocator({
+      maxMemories: 1,
+      maxTotalBytes: 4 * WASM_PAGE_SIZE,
+      retirementBackpressureMs: 1_000,
+    });
+    const owner = allocator.acquire(request(4));
+    const alias = owner.retainAlias();
+
+    expect(alias.memory).toBe(owner.memory);
+    expect(allocator.getRetirementStats()).toMatchObject({
+      liveMemories: 1,
+      liveAliases: 2,
+      liveBytes: 4 * WASM_PAGE_SIZE,
+      pendingRetirements: 0,
+      retirementBacklogMemories: 0,
+    });
+    expect(() => allocator.acquire(request(1))).toThrow(
+      ProcessMemoryCapacityError,
+    );
+
+    owner.release();
+    expect(() => owner.memory).toThrow("already consumed");
+    new Uint8Array(alias.memory.buffer)[17] = 0x5a;
+    expect(allocator.getRetirementStats()).toMatchObject({
+      liveMemories: 1,
+      liveAliases: 1,
+      liveBytes: 4 * WASM_PAGE_SIZE,
+      pendingRetirements: 0,
+    });
+
+    alias.release();
+    expect(allocator.getRetirementStats()).toMatchObject({
+      liveMemories: 0,
+      liveAliases: 0,
+      liveBytes: 0,
+      pendingRetirements: 1,
+      retirementBacklogMemories: 1,
+      retirementBacklogBytes: 4 * WASM_PAGE_SIZE,
+    });
+    allocator.clear();
+  });
+
+  it("taints all aliases after forced termination until final retirement", async () => {
+    const retirements: string[] = [];
+    const allocator = new ProcessMemoryAllocator({
+      maxMemories: 1,
+      maxTotalBytes: 4 * WASM_PAGE_SIZE,
+      retirementBackpressureMs: 1_000,
+      retirementPressureHook: ({ retirementMode }) => {
+        retirements.push(retirementMode);
+      },
+    });
+    const owner = allocator.acquire(request(4));
+    const alias = owner.retainAlias();
+
+    alias.releaseAfterForcedTermination();
+    expect(allocator.getRetirementStats()).toMatchObject({
+      liveMemories: 1,
+      liveAliases: 1,
+      pendingRetirements: 0,
+    });
+    expect(() => owner.retainAlias()).toThrow(
+      "Cannot retain process memory after forced termination",
+    );
+
+    owner.release();
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(retirements).toEqual(["forced"]);
+    expect(allocator.getRetirementStats()).toMatchObject({
+      liveMemories: 0,
+      liveAliases: 0,
+      pendingRetirements: 1,
+    });
+    allocator.clear();
+  });
+
   it("owns a fork snapshot before an async parent retirement", async () => {
     const allocator = new ProcessMemoryAllocator({
       maxMemories: 3,
@@ -331,6 +408,7 @@ describe("ProcessMemoryAllocator", () => {
     expect(() => lease.releaseAfterForcedTermination()).toThrow(
       "already consumed",
     );
+    expect(() => lease.retainAlias()).toThrow("already consumed");
   });
 
   it("rejects one observed wrapper being assigned to two memory generations", () => {
