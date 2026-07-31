@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { tryResolveBinary } from "../src/binary-resolver";
+import type { HostDiagnostic } from "../src/host-diagnostic";
 import { NodeKernelHost } from "../src/node-kernel-host";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 
@@ -146,6 +147,40 @@ describe("NodeKernelHost rootfs export contract", () => {
         await expect(host.exportRootfsImage()).rejects.toThrow(
           "rootfs export requires a VFS-backed kernel",
         );
+      } finally {
+        await host.destroy();
+      }
+    },
+  );
+
+  it.skipIf(!haveKernel)(
+    "keeps malformed initial Wasm on the process-worker loader path",
+    async () => {
+      // Valid magic/version followed by a truncated type section. The kernel
+      // Worker may precompile valid initial programs, but this CompileError
+      // must still reach the process Worker and preserve its loader diagnostic.
+      const malformed = Uint8Array.from([
+        0x00, 0x61, 0x73, 0x6d,
+        0x01, 0x00, 0x00, 0x00,
+        0x01, 0x01, 0xff,
+      ]);
+      const diagnostics: HostDiagnostic[] = [];
+      const host = new NodeKernelHost({
+        onHostDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+      });
+      try {
+        const kernel = new Uint8Array(readFileSync(kernelPath!));
+        await host.init(asArrayBuffer(kernel));
+
+        await expect(
+          host.spawn(asArrayBuffer(malformed), ["malformed"]),
+        ).resolves.toBe(-1);
+        expect(diagnostics).toHaveLength(1);
+        expect(diagnostics[0]).toMatchObject({
+          source: "worker-main error message",
+          status: -1,
+        });
+        expect(diagnostics[0].message).toContain("WebAssembly.compile");
       } finally {
         await host.destroy();
       }
