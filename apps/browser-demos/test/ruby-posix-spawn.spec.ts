@@ -1,4 +1,6 @@
 import { expect, test } from "@playwright/test";
+import { randomUUID } from "node:crypto";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -24,10 +26,31 @@ const imageHelpersModulePath = resolve(
   repoRoot,
   "host/src/vfs/image-helpers.ts",
 );
-const rubyBinaryFixturePath = resolve(
-  __dirname,
-  "fixtures/ruby-posix-spawn-binary.ts",
+const rubyBinaryFixtureDirectory = resolve(
+  repoRoot,
+  "target/browser-test-runs",
+  `ruby-posix-spawn-${randomUUID()}`,
 );
+const rubyBinaryFixturePath = resolve(rubyBinaryFixtureDirectory, "ruby.ts");
+
+test.beforeAll(() => {
+  mkdirSync(rubyBinaryFixtureDirectory, { recursive: true });
+  // WHY: Keep this test-only import outside the authored browser tree. The
+  // product scanner must not mistake a regression fixture for a direct shell
+  // input, while Vite must still approve Ruby through the normal resolver.
+  writeFileSync(
+    rubyBinaryFixturePath,
+    [
+      'import rubyWasmUrl from "@binaries/programs/wasm32/ruby/ruby.wasm?url";',
+      "export default rubyWasmUrl;",
+      "",
+    ].join("\n"),
+  );
+});
+
+test.afterAll(() => {
+  rmSync(rubyBinaryFixtureDirectory, { recursive: true, force: true });
+});
 
 test("Ruby uses direct posix_spawn in Chromium and preserves fork fallback", async ({
   page,
