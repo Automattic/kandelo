@@ -2009,40 +2009,72 @@ Formula, dirty or different tap checkout, fixed-identity mismatch, malformed
 old index, or ordinary non-forced run still fails; a finalized bottle with
 changed bytes requires a new Formula bottle `rebuild`.
 
-The repository-namespace visibility canary was a separate, one-shot transport
-path used to select the production bottle-root contract. Its exact reviewed caller
-on `Kandelo-dev/homebrew-tap-core@main` receives only the caller repository's
-`github.token` and passes no package PAT secret. The canary downloads the
+The original repository-namespace visibility canary was a separate, one-shot
+transport path used to select the production bottle-root contract. Its exact
+reviewed caller on `Kandelo-dev/homebrew-tap-core@main` received only the caller
+repository's `github.token` and passed no package PAT secret. It downloaded the
 immutable zlib OCI child produced by Actions run `29628202419`, artifact
-`homebrew-oci-child-zlib-wasm32-attempt-1`, and revalidates its pinned source,
-bottle, and manifest digests. That layout retains the canonical Homebrew tap
-identity and the original control bytes; only its registry transport
-destination changed from `ghcr.io/kandelo-dev/tap-core/zlib` to
-`ghcr.io/kandelo-dev/homebrew-tap-core/zlib`. The uploader derives that
-alternate destination from the already validated tap repository rather than
-accepting a URL.
+`homebrew-oci-child-zlib-wasm32-attempt-1`, and revalidated its pinned source,
+bottle, and manifest digests. Run `29652866481` created
+`homebrew-tap-core/zlib` as a public package linked to the public source
+repository, and its credential-free readback matched the pinned manifest
+digest. Earlier `GITHUB_TOKEN` and PAT uploads under `tap-core/*` both created
+private packages. Normal publication therefore uses the exact
+repository-rooted namespace and the scoped `github.token`; no visibility
+mutation or PAT is part of the production path.
 
-To prove first-package creation rather than reuse of existing public state, the
-canary authenticates only long enough to require that the destination package
-repository itself is absent before copying the child. It then retires the
-credential state and requires an anonymous readback of the exact manifest
-digest. PAT or automatic auth, dry-run or index uploads, third-party tap
-repositories, pre-existing destination packages, and non-public readback all
-fail closed. The canary stops after the immutable child upload: it does not
-publish the mutable version index, verify a release, edit Formulae, generate
-sidecars, or record a tap failure report. Run `29652866481` created
-`homebrew-tap-core/zlib` as a public package linked to the public
-`kandelo-dev/homebrew-tap-core` source repository, and its credential-free
-readback matched the pinned manifest digest. Earlier `GITHUB_TOKEN` and PAT
-uploads under `tap-core/*` both created private packages. Normal publication
-therefore uses the exact repository-rooted namespace and the scoped
-`github.token`; no visibility mutation or PAT is part of the production path.
+The same reusable workflow now exposes a bounded first-child publication API
+for a real Formula whose repository-rooted package does not yet exist. This is
+not a marker upload and is not a weaker mode of campaign admission. The
+protected tap caller fixes the Formula and architecture, then passes one exact
+successful dry-run run ID and attempt, the immutable Actions artifact digest of
+`homebrew-oci-child-<formula>-<arch>-attempt-<N>`, and its expected child
+manifest digest. It also binds the exact caller tap commit and the immutable
+Kandelo workflow commit.
+
+Before reading child bytes, the reusable workflow re-reads both protected
+`main` refs, requires the dry-run workflow path, repository-dispatch event,
+`main` head, exact head SHA and attempt, completed-success result, and exactly
+one unexpired artifact with the admitted archive digest. Without registry
+credentials it then validates the complete OCI child layout and requires the
+Formula, architecture, ABI, tap commit, Kandelo commit, and content-derived
+manifest reference to equal that evidence. The credentialed uploader rechecks
+tap `main`, rechecks Kandelo `main` at the final transport boundary, and uses
+repository-canary mode: both the exact descriptor and the package repository
+must be authentically absent before it copies the child. It retires its ORAS
+credential state and requires anonymous readback of the exact manifest digest.
+An expired or ambiguous artifact, a failed or different run, an advanced
+source ref, a pre-existing public or private package, PAT authentication, or a
+non-public readback fails before acceptance.
+
+GitHub concurrency groups are repository-scoped. The first-child workflow
+holds `kandelo-homebrew-ghcr-<formula>` from admission through public readback;
+ordinary child and version-index jobs use that exact group for their mutation,
+including rebuilds delegated by the maintenance workflow. Maintenance rollback
+has only package-read authority and does not write GHCR. This keeps the absence
+probe stable against every supported writer in the protected tap repository.
+It cannot lock an administrator's registry client, a workflow in another
+repository, or any future writer that bypasses the reviewed group. GHCR has no
+atomic create-if-absent operation, so those uncontrolled writers are outside
+the first-publication proof and must be excluded operationally; anonymous
+exact-digest readback still proves the child bytes that became public, not
+exclusive authorship against an external race.
+
+First-child publication deliberately stops after that immutable child upload.
+It does not publish the mutable version index, edit Formulae, generate
+sidecars, finalize tap state, or constitute post-publication acceptance. Once
+the package exists, replay of this path must fail; the normal publisher must
+later publish and verify the complete index and finalize the Formula. Keeping
+this as a separately dispatched protected caller lets an absent namespace be
+created from actual dry-run bottle bytes without changing any anonymous-only
+campaign selection or reuse rule.
 
 After a read-only planning job resolves the immutable Kandelo commit, tap
 commit, ABI namespace, derived bottle root, and formula matrix, each
 `(formula, arch)` entry crosses five separate runner roles. OCI child uploads
-remain architecture-parallel. The mutable Homebrew version index is serialized
-only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
+for different Formulae remain parallel. Every supported GHCR mutation for one
+Formula is serialized by one repository-wide lock, while architecture builds
+and all unrelated Formulae retain parallel throughput:
 
 1. `build-and-test` is read-only. It checks out the exact inputs and reviewed
    Homebrew/brew commit, and exposes the patched temporary Homebrew worktree
@@ -2218,7 +2250,9 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    directory, mode, and byte digest.
 
 2. `upload-bottle` runs only for a write publication and receives only
-   `packages: write`. On a fresh runner it validates the strict build handoff
+   `packages: write`. It holds the same repository-scoped, Formula-keyed GHCR
+   writer lock as first publication and version-index publication. On a fresh
+   runner it validates the strict build handoff
    and deterministic OCI child against the plan before exposing the caller
    repository's scoped `github.token` to an isolated ORAS transport. This
    includes bounded tar
@@ -2240,8 +2274,8 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    existing descriptor, an unclassified response, or an authorization failure
    stops before transport. A directly anonymous missing response is already
    public evidence that the destination tag is absent and does not need that
-   private-state disambiguation during ordinary publication. The one-shot
-   repository-namespace canary is stricter: it always requires an authenticated
+   private-state disambiguation during ordinary publication. The bounded
+   first-child publication path is stricter: it always requires an authenticated
    missing-repository result so an existing public package with a new tag cannot
    produce a false positive. The uploader copies only the validated child
    layout to its content-derived tag. Immediately before that credentialed
@@ -2256,8 +2290,9 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    strict data receipt binding the canonical layout receipt to that public
    readback.
 3. `publish-bottle-index` receives `packages: write` once per Formula. The
-   official caller-repository workflow uses a formula-scoped concurrency lock to
-   serialize supported writers. Under that lock it validates every requested
+   official caller-repository workflow uses the exact same formula-scoped
+   concurrency lock as child and first publication. Under that lock it
+   validates every requested
    child layout and public child receipt, anonymously imports the current
    Homebrew top reference, and preserves a compatible sibling architecture. The
    pinned artifact downloader extracts a single pattern match directly into the
