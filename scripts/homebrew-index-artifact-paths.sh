@@ -116,8 +116,11 @@ else
     fi
     receipts+=("$entry/receipt.json")
   done
-  [ "${#receipts[@]}" -eq 2 ] || \
-    fail "nested artifact download must contain multiple artifacts"
+  # WHY: download-artifact may retain the artifact-name directory even when
+  # only one architecture succeeded. That one immutable child is valid input;
+  # requiring two here would recreate an all-architectures publication gate.
+  [ "${#receipts[@]}" -ge 1 ] && [ "${#receipts[@]}" -le 2 ] || \
+    fail "nested artifact download has an invalid receipt count"
 fi
 
 [ "${#receipts[@]}" -gt 0 ] && [ "${#receipts[@]}" -le 2 ] || \

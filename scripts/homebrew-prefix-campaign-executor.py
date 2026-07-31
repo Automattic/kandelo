@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Seal and read one Formula handoff in the Homebrew prefix campaign."""
+"""Seal, read, and select Homebrew prefix-campaign Formula handoffs."""
 
 from __future__ import annotations
 
@@ -494,6 +494,27 @@ def load_campaign(
             fail("campaign Formulae must be unique and sorted")
         prior = name
         dependency_names(formula, tap_name)
+        variants = formula.get("variants")
+        variant_arches = (
+            [
+                variant.get("arch")
+                for variant in variants
+                if isinstance(variant, dict)
+            ]
+            if isinstance(variants, list)
+            else []
+        )
+        if (
+            not variants
+            or len(variant_arches) != len(variants)
+            or any(not isinstance(arch, str) for arch in variant_arches)
+            or variant_arches != sorted(set(variant_arches))
+            or any(
+                arch not in ("wasm32", "wasm64")
+                for arch in variant_arches
+            )
+        ):
+            fail(f"campaign Formula {name} variants are invalid")
         index[name] = formula
     for name, formula in index.items():
         dependencies = dependency_names(formula, tap_name)
@@ -827,18 +848,31 @@ def validate_handoff_arches(
     variants = formula.get("variants")
     if not isinstance(variants, list) or not variants:
         fail(f"{formula.get('name')} campaign variants are invalid")
-    expected = [
+    declared = [
         require_string(
             variant.get("arch") if isinstance(variant, dict) else None,
             f"{formula.get('name')} campaign variant architecture",
         )
         for variant in variants
     ]
+    if (
+        declared != sorted(set(declared))
+        or any(arch not in ("wasm32", "wasm64") for arch in declared)
+    ):
+        fail(f"{formula.get('name')} campaign variants are invalid")
     actual = [
         publication["arch"] for publication in handoff["publications"]
     ]
-    if actual != expected:
-        fail("Formula handoff architectures differ from the campaign")
+    # WHY: a handoff is the independently usable result of one successful
+    # Formula/architecture build. Requiring every declared sibling here would
+    # strand a valid wasm32 bottle merely because the wasm64 build failed.
+    # Consumers still validate their own complete dependency closure below.
+    if (
+        actual != sorted(set(actual))
+        or not actual
+        or any(arch not in declared for arch in actual)
+    ):
+        fail("Formula handoff architectures are outside the campaign")
 
 
 def publication_asset_name(arch: str, relative: str) -> str:
@@ -1233,6 +1267,7 @@ def load_dependency_handoff_set(
     campaign_payload: bytes,
     index: dict[str, dict[str, Any]],
     formula_name: str,
+    required_arches: Iterable[str],
 ) -> tuple[
     list[dict[str, Any]],
     dict[str, tuple[str, str]],
@@ -1241,6 +1276,21 @@ def load_dependency_handoff_set(
     expected_names = dependency_closure(
         campaign, index, formula_name
     )
+    required_arches = tuple(
+        sorted(
+            {
+                require_string(
+                    arch, "required dependency architecture"
+                )
+                for arch in required_arches
+            }
+        )
+    )
+    if (
+        not required_arches
+        or any(arch not in ("wasm32", "wasm64") for arch in required_arches)
+    ):
+        fail("required dependency architectures are invalid")
     loaded: dict[str, tuple[str, str]] = {}
     loaded_values: dict[str, dict[str, Any]] = {}
     loaded_handoffs: LoadedDependencyHandoffs = {}
@@ -1263,6 +1313,13 @@ def load_dependency_handoff_set(
         )
         if formula != expected_formula:
             fail(f"dependency handoff {name} differs from the campaign")
+        validate_handoff_arches(value, index[name])
+        for arch in required_arches:
+            # WHY: dependency records bind a content-addressed handoff, but
+            # one handoff may intentionally carry only one architecture.
+            # A wasm64 consumer must never mistake a wasm32-only dependency
+            # handoff for a complete same-architecture closure.
+            handoff_publication(value, arch, f"dependency {name}")
         digest = sha256_bytes(payload)
         tag = handoff_tag(payload)
         loaded[name] = (tag, digest)
@@ -1297,6 +1354,7 @@ def validate_dependency_handoffs(
     campaign_payload: bytes,
     index: dict[str, dict[str, Any]],
     formula_name: str,
+    required_arches: Iterable[str],
 ) -> tuple[list[dict[str, Any]], dict[str, tuple[str, str]]]:
     records, loaded, _loaded_handoffs = load_dependency_handoff_set(
         roots,
@@ -1304,11 +1362,469 @@ def validate_dependency_handoffs(
         campaign_payload,
         index,
         formula_name,
+        required_arches,
     )
     return records, loaded
 
 
 DependencyBottleMerger = Callable[..., None]
+SidecarGenerator = Callable[..., None]
+TapValidator = Callable[..., None]
+
+
+def selected_formula_order(
+    campaign: dict[str, Any],
+    index: dict[str, dict[str, Any]],
+    roots: Iterable[str],
+) -> tuple[str, ...]:
+    roots = tuple(
+        sorted(
+            {
+                require_string(root, "selection root Formula", FORMULA)
+                for root in roots
+            }
+        )
+    )
+    if not roots:
+        fail("selection needs at least one root Formula")
+    tap_name = campaign["authority"]["tap_name"]
+    visiting: set[str] = set()
+    visited: set[str] = set()
+    ordered: list[str] = []
+
+    def visit(name: str) -> None:
+        if name in visiting:
+            fail(f"campaign dependency graph cycles at {name}")
+        if name in visited:
+            return
+        if name not in index:
+            fail(f"selection Formula {name} is outside the campaign")
+        visiting.add(name)
+        for dependency in dependency_names(index[name], tap_name):
+            visit(dependency)
+        visiting.remove(name)
+        visited.add(name)
+        ordered.append(name)
+
+    for root in roots:
+        visit(root)
+    return tuple(ordered)
+
+
+def clear_generated_sidecars(tap_root: pathlib.Path) -> None:
+    generated = (
+        "Kandelo/metadata.json",
+        "Kandelo/formula",
+        "Kandelo/link",
+        "Kandelo/reports",
+    )
+    for relative in generated:
+        path = tap_root / relative
+        if path.is_symlink():
+            fail(f"candidate tap generated path {relative} is a symlink")
+        if path.is_dir():
+            shutil.rmtree(path)
+        elif path.exists():
+            if not path.is_file():
+                fail(
+                    f"candidate tap generated path {relative} "
+                    "is a special file"
+                )
+            path.unlink()
+
+
+def restrict_formulae(
+    tap_root: pathlib.Path,
+    selected_names: set[str],
+) -> None:
+    formula_root = real_directory(
+        tap_root / "Formula", "candidate tap Formula directory"
+    )
+    selected_paths = {
+        f"{name}.rb"
+        for name in selected_names
+    }
+    for path in formula_root.glob("*.rb"):
+        if path.name in selected_paths:
+            continue
+        if path.is_symlink() or not path.is_file():
+            fail("candidate tap contains an unsafe Formula entry")
+        path.unlink()
+
+
+def default_sidecar_generator(
+    *,
+    tap_root: pathlib.Path,
+    input_path: pathlib.Path,
+    prefix_campaign_layout_sha256: str,
+) -> None:
+    command = [
+        "bash",
+        str(ROOT / "scripts/dev-shell.sh"),
+        "cargo",
+        "run",
+        "--release",
+        "-p",
+        "xtask",
+        "--quiet",
+        "--",
+        "homebrew-sidecars",
+        "--tap-root",
+        str(tap_root),
+        "--input",
+        str(input_path),
+        "--prefix-campaign-layout-sha256",
+        require_string(
+            prefix_campaign_layout_sha256,
+            "prefix campaign layout SHA-256",
+            SHA256,
+        ),
+    ]
+    previous = tap_root / "Kandelo/metadata.json"
+    if previous.is_symlink() or (
+        previous.exists() and not previous.is_file()
+    ):
+        fail("selected tap metadata is not a regular file")
+    if previous.is_file():
+        command.extend(("--previous-metadata", str(previous)))
+    try:
+        result = subprocess.run(
+            command,
+            cwd=ROOT,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=1800,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        fail(f"cannot generate selected Homebrew sidecars: {error}")
+    if result.returncode != 0:
+        detail = result.stderr.decode(
+            "utf-8", errors="replace"
+        )[-16_384:]
+        fail(f"cannot generate selected Homebrew sidecars: {detail}")
+
+
+def default_tap_validator(
+    *,
+    tap_root: pathlib.Path,
+    prefix_campaign_layout_sha256: str,
+) -> None:
+    command = [
+        "bash",
+        str(ROOT / "scripts/dev-shell.sh"),
+        "cargo",
+        "run",
+        "--release",
+        "-p",
+        "xtask",
+        "--quiet",
+        "--",
+        "homebrew-validate",
+        "--tap-root",
+        str(tap_root),
+        "--prefix-campaign-layout-sha256",
+        require_string(
+            prefix_campaign_layout_sha256,
+            "prefix campaign layout SHA-256",
+            SHA256,
+        ),
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            cwd=ROOT,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=1800,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        fail(f"cannot validate selected Homebrew tap: {error}")
+    if result.returncode != 0:
+        detail = result.stderr.decode(
+            "utf-8", errors="replace"
+        )[-16_384:]
+        fail(f"cannot validate selected Homebrew tap: {detail}")
+
+
+def prepare_selection(
+    *,
+    campaign_path: pathlib.Path,
+    source_tap_root: pathlib.Path,
+    roots: list[str],
+    arch: str,
+    handoff_roots: list[pathlib.Path],
+    output: pathlib.Path,
+    bottle_merger: DependencyBottleMerger = (
+        default_dependency_bottle_merger
+    ),
+    sidecar_generator: SidecarGenerator = default_sidecar_generator,
+    tap_validator: TapValidator = default_tap_validator,
+) -> None:
+    campaign, campaign_payload, index = load_campaign(campaign_path)
+    if arch not in ("wasm32", "wasm64"):
+        fail("selection architecture is invalid")
+    guest_layout = exact_keys(
+        campaign["authority"].get("guest_layout"),
+        {"path", "sha256"},
+        "campaign guest layout",
+    )
+    layout_sha256 = require_string(
+        guest_layout["sha256"],
+        "campaign guest layout SHA-256",
+        SHA256,
+    )
+    kandelo_abi = require_int(
+        campaign["authority"].get("current_kandelo_abi"),
+        "campaign Kandelo ABI",
+        1,
+        2**32 - 1,
+    )
+    ordered = selected_formula_order(campaign, index, roots)
+    selected_names = set(ordered)
+    source_tap_root = real_directory(
+        source_tap_root, "campaign target source"
+    )
+    handoff_roots = [
+        real_directory(root, "selection handoff root")
+        for root in handoff_roots
+    ]
+    output = validate_new_output(
+        output,
+        "closed selection output",
+        (campaign_path, source_tap_root, *handoff_roots),
+    )
+
+    input_snapshot = pathlib.Path(
+        tempfile.mkdtemp(
+            prefix=f".{output.name}.inputs.",
+            dir=output.parent,
+        )
+    )
+    try:
+        # WHY: handoff paths are local directories even when their contents
+        # came from immutable releases. The sidecar generator opens each
+        # archive later, so validate and consume one private snapshot instead
+        # of allowing an edit/restore race between those two operations.
+        stable_handoff_roots: list[pathlib.Path] = []
+        for position, handoff_root in enumerate(handoff_roots):
+            stable = input_snapshot / f"handoff-{position}"
+            shutil.copytree(handoff_root, stable, symlinks=True)
+            stable_handoff_roots.append(stable)
+
+        loaded: dict[
+            str, tuple[pathlib.Path, dict[str, Any], bytes]
+        ] = {}
+        identities: dict[str, tuple[str, str]] = {}
+        for handoff_root in stable_handoff_roots:
+            handoff, payload = load_handoff(
+                handoff_root, campaign, campaign_payload
+            )
+            name = require_string(
+                handoff["formula"].get("name"),
+                "selection handoff Formula",
+                FORMULA,
+            )
+            if name in loaded:
+                fail(f"selection handoff {name} is duplicated")
+            if name not in selected_names:
+                fail(
+                    f"selection handoff {name} is outside "
+                    "the selected closure"
+                )
+            if handoff["formula"] != campaign_formula_evidence(
+                campaign, index[name]
+            ):
+                fail(
+                    f"selection handoff {name} differs from the campaign"
+                )
+            validate_handoff_arches(handoff, index[name])
+            handoff_publication(
+                handoff, arch, f"selection handoff {name}"
+            )
+            loaded[name] = (handoff_root, handoff, payload)
+            digest = sha256_bytes(payload)
+            identities[name] = (handoff_tag(payload), digest)
+        if set(loaded) != selected_names:
+            missing = sorted(selected_names - set(loaded))
+            fail(f"selected dependency closure lacks handoffs {missing}")
+        for name in ordered:
+            handoff = loaded[name][1]
+            expected_dependencies = {
+                dependency: identities[dependency]
+                for dependency in dependency_closure(
+                    campaign, index, name
+                )
+            }
+            validate_dependency_records(
+                handoff["dependency_handoffs"],
+                expected_dependencies,
+            )
+        temporary = pathlib.Path(
+            tempfile.mkdtemp(
+                prefix=f".{output.name}.",
+                dir=output.parent,
+            )
+        )
+    except BaseException:
+        shutil.rmtree(input_snapshot, ignore_errors=True)
+        raise
+    try:
+        result = temporary / "selection"
+        tap_root = result / "tap"
+        shutil.copytree(source_tap_root, tap_root, symlinks=True)
+        for name in ordered:
+            validate_source_root(tap_root, campaign, index[name])
+        clear_generated_sidecars(tap_root)
+        # WHY: the candidate is a closed consumer input, not a preview of the
+        # whole campaign. Omitting unselected Formulae prevents Brew from
+        # discovering a sibling whose bottle or dependency closure is absent.
+        restrict_formulae(tap_root, selected_names)
+        canonical_root = temporary / "bottle-inputs"
+        canonical_root.mkdir()
+        selection_formulae: list[dict[str, Any]] = []
+        for name in ordered:
+            handoff_root, handoff, payload = loaded[name]
+            publication = handoff_publication(
+                handoff, arch, f"selection handoff {name}"
+            )
+            publication_root = handoff_root / f"payload/{arch}"
+            validate_publication_shape(
+                publication_root, index[name], arch
+            )
+            archive_record = handoff_publication_file(
+                publication,
+                f"payload/{arch}/build/bottle.tar.gz",
+                f"selection handoff {name}/{arch}",
+            )
+            canonical, bottle_digest, root_url, cellar = (
+                validate_dependency_bottle_input(
+                    bottle_json=(
+                        publication_root / "build/bottle.json"
+                    ),
+                    handoff=handoff,
+                    arch=arch,
+                    archive_record=archive_record,
+                    campaign=campaign,
+                )
+            )
+            canonical_path = private_destination(
+                canonical_root,
+                f"{name}.json",
+                f"{name}/{arch} selection bottle JSON",
+            )
+            canonical_path.write_bytes(pretty_json(canonical))
+            bottle_merger(
+                tap_root=tap_root,
+                campaign=campaign,
+                formula=name,
+                arch=arch,
+                bottle_json=canonical_path,
+                sha256=bottle_digest,
+                root_url=root_url,
+                cellar=cellar,
+            )
+            sidecar_generator(
+                tap_root=tap_root,
+                input_path=(
+                    publication_root
+                    / "composition/sidecars-input.json"
+                ),
+                prefix_campaign_layout_sha256=layout_sha256,
+            )
+            selection_formulae.append(
+                {
+                    "archive": {
+                        "bytes": archive_record["bytes"],
+                        "sha256": archive_record["sha256"],
+                    },
+                    "formula": name,
+                    "handoff": {
+                        "manifest_sha256": sha256_bytes(payload),
+                        "tag": handoff_tag(payload),
+                    },
+                    "version": handoff["formula"]["version"],
+                }
+            )
+        metadata, _metadata_payload = load_json_bytes(
+            tap_root / "Kandelo/metadata.json",
+            "selected tap metadata",
+            canonical=False,
+        )
+        packages = (
+            metadata.get("packages")
+            if isinstance(metadata, dict)
+            else None
+        )
+        if not isinstance(packages, list):
+            fail("selected tap metadata has no package inventory")
+        metadata_names = sorted(
+            require_string(
+                package.get("name")
+                if isinstance(package, dict)
+                else None,
+                "selected tap metadata package",
+                FORMULA,
+            )
+            for package in packages
+        )
+        if metadata_names != sorted(selected_names):
+            fail(
+                "selected tap metadata differs from the exact "
+                "dependency closure"
+            )
+        # WHY: matching package names do not prove that Formula bottle blocks,
+        # link manifests, provenance reports, and archive-derived inventories
+        # agree. The normal whole-tap validator must accept those cross-file
+        # contracts before Brew or the unchanged VFS builder uses this tap.
+        tap_validator(
+            tap_root=tap_root,
+            prefix_campaign_layout_sha256=layout_sha256,
+        )
+        selection = {
+            "arch": arch,
+            "campaign": {
+                "guest_layout_sha256": layout_sha256,
+                "sha256": sha256_bytes(campaign_payload),
+                "tag": (
+                    "homebrew-prefix-campaign-sha256-"
+                    f"{sha256_bytes(campaign_payload)}"
+                ),
+            },
+            "formulae": selection_formulae,
+            "kandelo_abi": kandelo_abi,
+            "kind": "kandelo-homebrew-closed-selection-candidate",
+            "roots": sorted(set(roots)),
+            "schema": 1,
+            "tap": {
+                "name": campaign["authority"]["tap_name"],
+                "path": "tap",
+                "prepared_tree_git_oid": filesystem_git_tree_oid(
+                    tap_root, "selected tap"
+                ),
+                "repository": campaign["authority"]["tap_repository"],
+                "source_commit": campaign["authority"][
+                    "source_tap_commit"
+                ],
+                "source_tree_git_oid": source_tree_identity(
+                    campaign["authority"]
+                ),
+            },
+        }
+        selection_payload = pretty_json(selection)
+        result.mkdir(exist_ok=True)
+        (result / "selection.json").write_bytes(selection_payload)
+        # WHY: this command prepares a locally consumable candidate only. A
+        # deployment must first publish these exact bytes at an immutable
+        # locator, prove resolver/VFS readback, and then move its named product
+        # pointer through that system's own compare-and-swap transaction.
+        os.rename(result, output)
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+        shutil.rmtree(input_snapshot, ignore_errors=True)
 
 
 def stage_dependency_bottle_inputs(
@@ -1565,7 +2081,7 @@ def derive_build(
     )
     if not publications:
         fail("Formula handoff needs at least one publication")
-    expected_arches = [
+    declared_arches = [
         variant.get("arch")
         for variant in formula.get("variants", [])
         if isinstance(variant, dict)
@@ -1573,9 +2089,10 @@ def derive_build(
     actual_arches = [arch for arch, _path in publications]
     if (
         actual_arches != sorted(set(actual_arches))
-        or actual_arches != expected_arches
+        or not actual_arches
+        or any(arch not in declared_arches for arch in actual_arches)
     ):
-        fail("publication architectures differ from the campaign")
+        fail("publication architectures are outside the campaign")
     publications = [
         (
             arch,
@@ -1609,6 +2126,7 @@ def derive_build(
         campaign_payload,
         index,
         formula_name,
+        actual_arches,
     )
     temporary = pathlib.Path(
         tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent)
@@ -1748,6 +2266,10 @@ def prepare_release(
         campaign_payload,
         index,
         name,
+        (
+            publication["arch"]
+            for publication in handoff["publications"]
+        ),
     )
     if handoff["dependency_handoffs"] != records:
         fail("Formula handoff dependency evidence changed before release")
@@ -2216,6 +2738,10 @@ def fetch_release(
             campaign_payload,
             index,
             name,
+            (
+                publication["arch"]
+                for publication in handoff["publications"]
+            ),
         )
         if handoff["dependency_handoffs"] != records:
             fail("downloaded Formula handoff dependency evidence is invalid")
@@ -2310,6 +2836,20 @@ def parse_args() -> argparse.Namespace:
     )
     prepare.add_argument("--out", required=True)
 
+    selection = commands.add_parser("prepare-selection")
+    selection.add_argument("--campaign", required=True)
+    selection.add_argument("--source-tap-root", required=True)
+    selection.add_argument(
+        "--root-formula", action="append", default=[], required=True
+    )
+    selection.add_argument(
+        "--arch", choices=("wasm32", "wasm64"), required=True
+    )
+    selection.add_argument(
+        "--handoff", action="append", default=[], required=True
+    )
+    selection.add_argument("--out", required=True)
+
     fetch = commands.add_parser("fetch-release")
     fetch.add_argument("--campaign", required=True)
     fetch.add_argument("--tag", required=True)
@@ -2353,6 +2893,20 @@ def main() -> int:
                 dependency_roots=[
                     pathlib.Path(value)
                     for value in arguments.dependency_handoff
+                ],
+                output=pathlib.Path(arguments.out),
+            )
+        elif arguments.command == "prepare-selection":
+            prepare_selection(
+                campaign_path=pathlib.Path(arguments.campaign),
+                source_tap_root=pathlib.Path(
+                    arguments.source_tap_root
+                ),
+                roots=arguments.root_formula,
+                arch=arguments.arch,
+                handoff_roots=[
+                    pathlib.Path(value)
+                    for value in arguments.handoff
                 ],
                 output=pathlib.Path(arguments.out),
             )

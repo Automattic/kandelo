@@ -1746,6 +1746,7 @@ exact `prefix-campaign-bottles.yml` caller on the target repository's
 protected `main` branch may select it. Each call must:
 
 - publish exactly one Formula;
+- publish exactly one architecture;
 - use write mode and a forced rebuild;
 - set `defer-tap-finalization: true`;
 - disable ordinary VFS acceptance; and
@@ -1801,20 +1802,59 @@ therefore retain truthful review and release history even though
 package jobs execute a complete campaign-local Formula tree.
 
 The campaign still runs bottle build, upload, anonymous index readback,
-and runtime verification for every Formula. It does not schedule
-`finalize-tap` or `publish-vfs-release`. The campaign executor seals
-each verified result as
-`homebrew-prefix-handoff-sha256-<handoff-sha256>`. Only after all
-handoffs are present does the campaign compose and validate the complete
-tap, then update tap `main` once under the tap-wide state lock.
+and runtime verification for every selected Formula/architecture. A
+failed sibling invocation does not prevent a successful variant from
+extending the public version index or completing verification. It does
+not schedule `finalize-tap` or `publish-vfs-release`. The campaign
+executor seals each verified result as
+`homebrew-prefix-handoff-sha256-<handoff-sha256>`.
 
-Ordinary dependency-bearing VFS selection and its Node-and-Chromium
-runtime are also skipped during each campaign Formula call. Their tap
-configuration truthfully describes the still-live old prefix until the
-atomic cutover, so interpreting it under the target layout would be a
-false mixed-prefix test. The independent `file-formula` browser smoke
-continues to run with the campaign layout and remains the per-bottle
-Chromium proof.
+Full live-tap and named-product activation remain atomic, but bottle
+availability does not. `homebrew-prefix-campaign-executor.py
+prepare-selection` can materialize an ordinary tap-shaped candidate
+intended for Brew and the VFS builder as soon as one root's exact
+same-architecture dependency closure has verified handoffs. Its
+content-bound manifest records every handoff and bottle digest.
+Failures outside the selected closure are irrelevant; a missing
+dependency produces no candidate.
+
+For example, this prepares the prospective consumer input at `out/tap`:
+
+```sh
+bash scripts/dev-shell.sh python3 \
+  scripts/homebrew-prefix-campaign-executor.py prepare-selection \
+  --campaign campaign.json \
+  --source-tap-root target-tap \
+  --root-formula zlib \
+  --arch wasm32 \
+  --handoff handoffs/zlib \
+  --out out
+```
+
+The caller supplies exactly the selected transitive closure. Extra
+handoffs are rejected rather than silently widening the product, and
+unselected Formulae are omitted from the prepared tap. The generated
+`selection.json` binds the campaign, prepared tap tree, handoff
+manifests, and bottle archives. The normal whole-tap validator must also
+accept the generated Formula blocks and sidecars. `out/tap` is a local
+candidate; this command does not publish it or move a product pointer.
+
+Product activation requires a separate transaction that publishes the
+exact candidate at an immutable locator, proves that the resolver and
+VFS builder can read that locator, and then compare-and-swap updates the
+named product pointer. Until that transaction exists, the local
+candidate must not be described as an activated or durable product.
+
+The ordinary dependency-bearing VFS acceptance attached to an
+individual campaign publisher call is still skipped. That call has only
+one Formula/architecture and cannot claim a product closure. Product
+Node-and-Chromium acceptance must consume an immutable readback of the
+closed selection before activation. The
+independent `file-formula` browser smoke continues to run with the
+campaign layout and remains the per-bottle Chromium proof. After all
+migration handoffs are present, the campaign separately composes and
+validates the complete live tap, then updates `main` once under the
+tap-wide state lock.
 
 An ABI transition lands its coherent source and package changes through the
 ordinary Kandelo merge process first. The normal path then rebuilds final
@@ -2374,8 +2414,8 @@ for failure reports so a partially generated or locally committed
 success attempt cannot enter a last-green failure commit. Maintenance
 rollback resolves its freshly checked-out Kandelo `main` commit and
 passes that same identity as both report provenance and push authority.
-Prefix-campaign Formula calls make no tap write; the later complete
-campaign transaction owns its single final push.
+Prefix-campaign Formula/architecture calls make no tap write; the later
+complete campaign transaction owns its single final push.
 
 Use `dry-run: true` for local or CI validation that must not push GHCR blobs or
 tap commits. Dry runs still build bottles and validate the generated metadata
