@@ -1,0 +1,357 @@
+name: Homebrew public Chromium proof recovery
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/homebrew-public-chromium-proof-recovery.yml
+      - apps/browser-demos/pages/homebrew-vfs-test/main.ts
+      - apps/browser-demos/test/homebrew-guest-lifecycle.spec.ts
+      - homebrew/public-proof-recovery-lock.json
+      - homebrew/test/homebrew_guest_lifecycle_browser.ts
+      - homebrew/test/homebrew_guest_lifecycle_progress.ts
+      - homebrew/test/run_homebrew_guest_browser_shipping_scope.sh
+      - scripts/create-homebrew-browser-proof-runtime-handoff.sh
+      - scripts/create-homebrew-guest-lifecycle-fixture.ts
+      - scripts/verify-homebrew-browser-proof-runtime-handoff.sh
+      - scripts/check-homebrew-public-chromium-proof-recovery-workflow.rb
+      - scripts/test-homebrew-browser-proof-runtime-handoff.sh
+      - scripts/test-homebrew-public-chromium-proof-recovery-workflow.sh
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Prepare exact public Chromium runtime
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    outputs:
+      artifact-digest: ${{ steps.handoff.outputs.artifact-digest }}
+    steps:
+      - name: Check out exact recovery workflow authority
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Fetch the pinned musl source only for resolver fallback
+        uses: ./.github/actions/fetch-submodules
+        with:
+          submodules: libc/musl
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            host/package-lock.json
+            apps/browser-demos/package-lock.json
+
+      - name: Set up the repository Nix contract
+        uses: ./.github/actions/setup-nix
+
+      - name: Install exact browser build tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+            npm --prefix host ci --no-audit --no-fund
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+            npm --prefix apps/browser-demos ci --no-audit --no-fund
+          bash scripts/dev-shell.sh true
+
+      - name: Fetch and verify immutable public product inputs
+        id: public
+        shell: bash
+        run: |
+          set -euo pipefail
+          lock="$GITHUB_WORKSPACE/homebrew/public-proof-recovery-lock.json"
+          root="$RUNNER_TEMP/homebrew-public-chromium-inputs"
+          test ! -e "$root"
+          mkdir "$root" "$root/mirror"
+
+          release_repository="$(jq -er '.release.repository' "$lock")"
+          release_tag="$(jq -er '.release.tag' "$lock")"
+          release_target="$(jq -er '.release.target_commitish' "$lock")"
+          release_api="https://api.github.com/repos/${release_repository}/releases/tags/${release_tag}"
+          release_json="$RUNNER_TEMP/homebrew-public-chromium-release.json"
+          env -u GH_TOKEN -u GITHUB_TOKEN \
+            curl --disable --fail --location --silent --show-error \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$release_api" --output "$release_json"
+          jq -e \
+            --arg tag "$release_tag" \
+            --arg target "$release_target" '
+            .tag_name == $tag and
+            .target_commitish == $target and
+            .immutable == true and
+            .draft == false and
+            .prerelease == false and
+            ([.assets[].name] | sort) == [
+              "homebrew-bootstrap.zip",
+              "homebrew-brew.env",
+              "main-shell-brew-package-tree.json",
+              "main-shell.vfs.zst"
+            ]
+          ' "$release_json" >/dev/null
+
+          for name in \
+            homebrew-bootstrap.zip \
+            homebrew-brew.env \
+            main-shell-brew-package-tree.json \
+            main-shell.vfs.zst
+          do
+            url="$(jq -er --arg name "$name" \
+              '.assets[] | select(.name == $name) | .browser_download_url' \
+              "$release_json")"
+            env -u GH_TOKEN -u GITHUB_TOKEN \
+              curl --disable --fail --location --silent --show-error \
+                "$url" --output "$root/$name"
+            expected_sha="$(jq -er --arg name "$name" \
+              '.release.assets[$name].sha256' "$lock")"
+            expected_bytes="$(jq -er --arg name "$name" \
+              '.release.assets[$name].bytes' "$lock")"
+            actual_sha="$(sha256sum "$root/$name" | awk '{print $1}')"
+            actual_bytes="$(wc -c <"$root/$name" | tr -d '[:space:]')"
+            [ "$actual_sha" = "$expected_sha" ]
+            [ "$actual_bytes" = "$expected_bytes" ]
+          done
+
+          mirror_repository="$(jq -er '.mirror.repository' "$lock")"
+          mirror_tag="$(jq -er '.mirror.tag' "$lock")"
+          mirror_target="$(jq -er '.mirror.target_commitish' "$lock")"
+          mirror_count="$(jq -er '.mirror.asset_count' "$lock")"
+          plan_name="$(jq -er '.mirror.plan.name' "$lock")"
+          mirror_api="https://api.github.com/repos/${mirror_repository}/releases/tags/${mirror_tag}"
+          mirror_json="$RUNNER_TEMP/homebrew-public-mirror-release.json"
+          env -u GH_TOKEN -u GITHUB_TOKEN \
+            curl --disable --fail --location --silent --show-error \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "$mirror_api" --output "$mirror_json"
+          jq -e \
+            --arg tag "$mirror_tag" \
+            --arg target "$mirror_target" \
+            --arg plan "$plan_name" \
+            --argjson count "$mirror_count" '
+            .tag_name == $tag and
+            .target_commitish == $target and
+            .immutable == true and
+            .draft == false and
+            .prerelease == false and
+            (.assets | length) == $count and
+            ([.assets[].name] | length) ==
+              ([.assets[].name] | unique | length) and
+            ([.assets[].name] | index($plan)) != null
+          ' "$mirror_json" >/dev/null
+          plan_url="$(jq -er --arg name "$plan_name" \
+            '.assets[] | select(.name == $name) | .browser_download_url' \
+            "$mirror_json")"
+          env -u GH_TOKEN -u GITHUB_TOKEN \
+            curl --disable --fail --location --silent --show-error \
+              "$plan_url" --output "$root/mirror/$plan_name"
+          expected_plan_sha="$(jq -er '.mirror.plan.sha256' "$lock")"
+          expected_plan_bytes="$(jq -er '.mirror.plan.bytes' "$lock")"
+          actual_plan_sha="$(
+            sha256sum "$root/mirror/$plan_name" | awk '{print $1}'
+          )"
+          actual_plan_bytes="$(
+            wc -c <"$root/mirror/$plan_name" | tr -d '[:space:]'
+          )"
+          [ "$actual_plan_sha" = "$expected_plan_sha" ]
+          [ "$actual_plan_bytes" = "$expected_plan_bytes" ]
+
+          release_root="https://github.com/${release_repository}/releases/download/${release_tag}/"
+          {
+            echo "root=$root"
+            echo "release-root=$release_root"
+            echo "plan-url=$plan_url"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Resolve the exact published browser generation
+        id: generation
+        shell: bash
+        env:
+          WASM_POSIX_BINARY_CACHE_ROOT: ${{ runner.temp }}/homebrew-public-chromium-cache
+        run: |
+          set -euo pipefail
+          test ! -e "$WASM_POSIX_BINARY_CACHE_ROOT"
+          bash scripts/dev-shell.sh env \
+            "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
+            ./run.sh --fetch-only prepare-browser
+          image="$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)"
+          bootstrap="$(bash scripts/resolve-binary.sh \
+            programs/homebrew-bootstrap/homebrew-bootstrap.zip)"
+          bootstrap_env="$(bash scripts/resolve-binary.sh \
+            programs/homebrew-bootstrap/homebrew-brew.env)"
+          cmp "$image" "${{ steps.public.outputs.root }}/main-shell.vfs.zst"
+          cmp "$bootstrap" \
+            "${{ steps.public.outputs.root }}/homebrew-bootstrap.zip"
+          cmp "$bootstrap_env" \
+            "${{ steps.public.outputs.root }}/homebrew-brew.env"
+          echo "cache=$WASM_POSIX_BINARY_CACHE_ROOT" >>"$GITHUB_OUTPUT"
+
+      - name: Build the exact sealed browser product
+        working-directory: apps/browser-demos
+        shell: bash
+        env:
+          KANDELO_BROWSER_DEMO_INPUTS: main,homebrew-vfs-test
+          WASM_POSIX_BINARY_CACHE_ROOT: ${{ steps.generation.outputs.cache }}
+        run: |
+          set -euo pipefail
+          # WHY: compiling once in the producer keeps Nix, Vite, the resolver,
+          # and all source-build fallback state out of each proof cgroup.
+          bash ../../scripts/dev-shell.sh env \
+            "KANDELO_BROWSER_DEMO_INPUTS=$KANDELO_BROWSER_DEMO_INPUTS" \
+            "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
+            npm run build
+          test -f dist/index.html
+          test -f dist/pages/homebrew-vfs-test/index.html
+          bash ../../scripts/verify-browser-shell-vfs-asset.sh \
+            dist "${{ steps.public.outputs.root }}/main-shell.vfs.zst"
+
+      - name: Create the exact public browser fixture
+        id: fixture
+        shell: bash
+        env:
+          TAP_CATALOG_REF: 6ad0e3dbc60e5572c4288c86919238f71c1bc110
+          CANARY_REF: d8bdda662f6d80cf3dcdbe8451edb12bb33bbafc
+        run: |
+          set -euo pipefail
+          root="${{ steps.public.outputs.root }}"
+          fixture="$RUNNER_TEMP/homebrew-public-chromium-fixture.json"
+          bash scripts/dev-shell.sh npx tsx \
+            scripts/create-homebrew-guest-lifecycle-fixture.ts \
+              --transport-mode public \
+              --image "$root/main-shell.vfs.zst" \
+              --homebrew-bootstrap-spec \
+                "$root/main-shell-brew-package-tree.json" \
+              --homebrew-bootstrap-archive \
+                "$root/homebrew-bootstrap.zip" \
+              --homebrew-bootstrap-env "$root/homebrew-brew.env" \
+              --bottle-mirror "$root/mirror" \
+              --fixed-asset-url-root \
+                "${{ steps.public.outputs.release-root }}" \
+              --core-revision "$TAP_CATALOG_REF" \
+              --canary-revision "$CANARY_REF" \
+              --timeout-ms 900000 \
+              --out "$fixture"
+          echo "path=$fixture" >>"$GITHUB_OUTPUT"
+
+      - name: Build and verify the bounded browser handoff
+        id: runtime
+        shell: bash
+        env:
+          PRODUCT_KANDELO_REF: 0b0945f5f78b5e7577d08fafffc540408a501cb1
+          RUNTIME_SOURCE_REF: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/homebrew-public-browser-runtime-handoff"
+          test ! -e "$root"
+          bash scripts/create-homebrew-browser-proof-runtime-handoff.sh \
+            --source-root "$GITHUB_WORKSPACE" \
+            --dist "$GITHUB_WORKSPACE/apps/browser-demos/dist" \
+            --fixture "${{ steps.fixture.outputs.path }}" \
+            --product-kandelo-ref "$PRODUCT_KANDELO_REF" \
+            --runtime-source-ref "$RUNTIME_SOURCE_REF" \
+            --out "$root"
+          echo "root=$root" >>"$GITHUB_OUTPUT"
+
+      - name: Upload the same-run bounded browser handoff
+        id: handoff
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: homebrew-public-browser-runtime-handoff
+          path: ${{ steps.runtime.outputs.root }}
+          retention-days: 1
+          if-no-files-found: error
+
+  prove:
+    name: Prove ${{ matrix.scope }} on a fresh Chromium runner
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        scope:
+          - core
+          - canary
+    steps:
+      - name: Check out exact recovery workflow authority
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Download only the same-run browser handoff
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: homebrew-public-browser-runtime-handoff
+          path: ${{ runner.temp }}/homebrew-public-browser-runtime-handoff
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: "24"
+
+      - name: Verify the exact browser handoff
+        id: runtime
+        shell: bash
+        env:
+          PRODUCT_KANDELO_REF: 0b0945f5f78b5e7577d08fafffc540408a501cb1
+          RUNTIME_SOURCE_REF: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [ "${{ needs.prepare.outputs.artifact-digest }}" != "" ]
+          runtime="$RUNNER_TEMP/homebrew-public-browser-runtime-handoff"
+          bash scripts/verify-homebrew-browser-proof-runtime-handoff.sh \
+            --root "$runtime" \
+            --product-kandelo-ref "$PRODUCT_KANDELO_REF" \
+            --runtime-source-ref "$RUNTIME_SOURCE_REF"
+          {
+            echo "root=$runtime"
+            echo "browser-root=$runtime/browser"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Install only the Chromium proof dependencies
+        shell: bash
+        env:
+          BROWSER_ROOT: ${{ steps.runtime.outputs.browser-root }}
+        run: |
+          set -euo pipefail
+          cd "$BROWSER_ROOT"
+          # WHY: lifecycle scripts in dependency packages are outside the
+          # sealed proof contract. This minimal lock needs no install scripts.
+          npm ci --ignore-scripts --no-audit --no-fund
+          npx playwright install --with-deps chromium
+
+      # WHY: one matrix value means one VM, cgroup, and Chromium process tree.
+      # Neither public tap proof inherits retired guest process memories from
+      # the other, and neither consumer runs Nix, Vite, or package resolution.
+      - name: Prove the selected stock guest bottle install
+        shell: bash
+        timeout-minutes: 25
+        env:
+          KANDELO_HOMEBREW_BROWSER_RUNTIME_ROOT: ${{ steps.runtime.outputs.root }}
+          KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_FIXTURE_PATH: ${{ steps.runtime.outputs.browser-root }}/fixture/homebrew-guest-lifecycle.json
+        run: |
+          set -euo pipefail
+          bash homebrew/test/run_homebrew_guest_browser_shipping_scope.sh \
+            "${{ matrix.scope }}"
+
+      - name: Upload bounded Chromium lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: homebrew-public-chromium-recovery-${{ matrix.scope }}
+          path: |
+            ${{ runner.temp }}/homebrew-chromium-lifecycle-resources.log
+            ${{ runner.temp }}/homebrew-chromium-playwright.log
+            ${{ runner.temp }}/homebrew-chromium-playwright.json
+            ${{ steps.runtime.outputs.browser-root }}/test-results
+          retention-days: 7
+          if-no-files-found: warn

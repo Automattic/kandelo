@@ -1096,6 +1096,53 @@ third-party installation, and maintenance plus cleanup must run in separate
 processes. Splitting only at the existing reboot is insufficient because the
 memory peak begins during the first phase.
 
+Chromium uses a producer/fresh-consumer boundary with a dedicated browser
+handoff. The producer resolves the exact public shell generation,
+builds the sealed browser once, and records every runtime file by relative
+path, mode, byte length, and SHA-256. It also records two different
+authorities explicitly:
+
+- `product_kandelo_ref` owns the already-published shell and Homebrew
+  bootstrap product; and
+- `runtime_source_ref` owns the browser host, resolved kernel, scoped
+  acceptance code, and recovery workflow being executed.
+
+Those values must not be collapsed. A later test-only recovery commit can
+exercise an older immutable product without pretending that it published
+those product bytes. The proof deliberately runs that product with the
+runtime source's kernel and rejects it at the image ABI boundary if they are
+not compatible.
+
+Each Chromium scope downloads only that same-run handoff, installs a minimal
+pinned Playwright client, and runs from the sealed handoff tree. Core and
+canary receive separate hosted runners, cgroups, and Chromium process trees.
+They do not run Nix, Vite, package resolution, kernel fetching, or browser
+product compilation. The runner records bounded cgroup, aggregate-process,
+and per-Chromium resident set size (RSS) telemetry. RSS estimates the physical
+memory pages currently resident for a process; it is useful here as a trend,
+not as unique ownership of shared pages. The proof fails if either the cgroup
+`oom` counter (an allocation reached the cgroup memory limit) or `oom_kill`
+counter (the kernel killed a process for that limit) increases during the
+scope.
+
+The split also preserves earlier failures instead of waiting on a dead
+renderer. In public run `30610157031`, every one of 218 recorded HTTP requests
+returned 200 and the exact shell acceptance passed. The complete lifecycle
+then loaded 196 process or thread workers, lost its page about 181 seconds
+after evaluation began, and never requested Bzip2's target layer. The old
+Playwright call waited until its 18-minute timeout and the artifact contained
+no cgroup counters, so that evidence did not prove an OOM. The scoped runner
+now races the guest operation against page crash, page close, and browser
+disconnect, while preserving the last bounded guest progress record and the
+nearby memory samples.
+
+Public fixture creation also transfers only the exact immutable mirror plan.
+It does not download every bottle payload into the producer merely to discard
+those local copies. The browser still fetches each selected public layer from
+the plan-owned URL and checks its exact size and SHA-256 before use. Closed
+transport remains different: because local files are its network boundary, it
+still requires the complete exact payload set.
+
 The live Playwright proof is disabled unless
 `KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE=1` and
 `KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_FIXTURE_PATH` are both set. The JSON

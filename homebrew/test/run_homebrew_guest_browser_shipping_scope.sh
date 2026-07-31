@@ -19,6 +19,28 @@ esac
 : "${RUNNER_TEMP:?missing runner temporary directory}"
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
+browser_runtime_root="${KANDELO_HOMEBREW_BROWSER_RUNTIME_ROOT:-}"
+if [[ -n "$browser_runtime_root" ]]; then
+  browser_workdir="$browser_runtime_root/browser"
+  if [[ ! -d "$browser_workdir" || -L "$browser_workdir" ]]; then
+    echo "invalid Homebrew browser runtime root: $browser_runtime_root" >&2
+    exit 1
+  fi
+  playwright_args=(
+    --config playwright.config.ts
+    --project=chromium
+    --grep "selected stock Homebrew shipping scope"
+    --reporter=json
+  )
+else
+  browser_workdir="$repo_root/apps/browser-demos"
+  playwright_args=(
+    test/homebrew-guest-lifecycle.spec.ts
+    --project=chromium
+    --grep "selected stock Homebrew shipping scope"
+    --reporter=json
+  )
+fi
 telemetry="$RUNNER_TEMP/homebrew-chromium-lifecycle-resources.log"
 playwright_log="$RUNNER_TEMP/homebrew-chromium-playwright.log"
 playwright_log_raw="$RUNNER_TEMP/homebrew-chromium-playwright.raw.log"
@@ -131,16 +153,13 @@ trap stop_telemetry EXIT
 scope_exit_code=0
 set +e
 (
-  cd "$repo_root/apps/browser-demos"
+  cd "$browser_workdir"
   KANDELO_BROWSER_DEMO_INPUTS=main \
     KANDELO_PLAYWRIGHT_SERVE_DIST=1 \
     KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE=1 \
     KANDELO_HOMEBREW_GUEST_BROWSER_SHIPPING_SCOPE="$scope" \
     PLAYWRIGHT_JSON_OUTPUT_FILE="$playwright_report" \
-    npx playwright test test/homebrew-guest-lifecycle.spec.ts \
-      --project=chromium \
-      --grep "selected stock Homebrew shipping scope" \
-      --reporter=json
+    npx playwright test "${playwright_args[@]}"
 ) 2>&1 | tee "$playwright_log_raw"
 scope_exit_code="${PIPESTATUS[0]}"
 set -e
