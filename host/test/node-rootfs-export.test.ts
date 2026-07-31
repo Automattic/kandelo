@@ -1,4 +1,11 @@
-import { existsSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -16,12 +23,39 @@ const wasiHelloPath = join(here, "fixtures/wasi-hello.wasm");
 const haveKernel = kernelPath !== null;
 const haveBlockForever = existsSync(blockForeverPath);
 const haveWasiHello = existsSync(wasiHelloPath);
+const wasiHelloText = new TextEncoder().encode("Hello from WASI\n");
+const wasiReplacementText = new TextEncoder().encode("Fresh bytes OK!\n");
 
 function asArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(
     bytes.byteOffset,
     bytes.byteOffset + bytes.byteLength,
   ) as ArrayBuffer;
+}
+
+function replaceWasiHelloText(program: Uint8Array): Uint8Array {
+  const replacement = program.slice();
+  let match = -1;
+  for (
+    let offset = 0;
+    offset <= replacement.length - wasiHelloText.length;
+    offset += 1
+  ) {
+    if (
+      wasiHelloText.every(
+        (byte, index) => replacement[offset + index] === byte,
+      )
+    ) {
+      if (match !== -1) throw new Error("WASI greeting appears more than once");
+      match = offset;
+    }
+  }
+  if (match === -1) throw new Error("WASI greeting was not found");
+  if (wasiReplacementText.byteLength !== wasiHelloText.byteLength) {
+    throw new Error("WASI replacement must preserve executable byte length");
+  }
+  replacement.set(wasiReplacementText, match);
+  return replacement;
 }
 
 function writeFile(
@@ -251,6 +285,52 @@ describe("NodeKernelHost rootfs export contract", () => {
         expect(ambientResolveRequests).toBe(0);
       } finally {
         await host.destroy();
+      }
+    },
+  );
+
+  it.skipIf(!haveKernel || !haveWasiHello)(
+    "executes replacement bytes when a mounted path keeps the same length",
+    async () => {
+      const mountDir = mkdtempSync(join(tmpdir(), "kandelo-module-cache-"));
+      const executablePath = join(mountDir, "wasi-tool");
+      const original = new Uint8Array(readFileSync(wasiHelloPath));
+      const replacement = replaceWasiHelloText(original);
+      expect(replacement.byteLength).toBe(original.byteLength);
+      writeFileSync(executablePath, original, { mode: 0o755 });
+
+      let stdout = "";
+      const host = new NodeKernelHost({
+        rootfsImage: await createRootfs(),
+        extraMounts: [{ mountPoint: "/tools", hostPath: mountDir }],
+        onStdout: (_pid, data) => {
+          stdout += new TextDecoder().decode(data);
+        },
+      });
+      try {
+        const kernel = new Uint8Array(readFileSync(kernelPath!));
+        await host.init(asArrayBuffer(kernel));
+
+        const first = await host.spawnFromVfs(
+          "/tools/wasi-tool",
+          ["wasi-tool"],
+        );
+        await expect(first.exit).resolves.toBe(0);
+        expect(stdout).toBe("Hello from WASI\n");
+
+        stdout = "";
+        // Keep the inode, path, and length while changing executable content.
+        // The next launch must not reuse the module compiled from old bytes.
+        writeFileSync(executablePath, replacement, { mode: 0o755 });
+        const second = await host.spawnFromVfs(
+          "/tools/wasi-tool",
+          ["wasi-tool"],
+        );
+        await expect(second.exit).resolves.toBe(0);
+        expect(stdout).toBe("Fresh bytes OK!\n");
+      } finally {
+        await host.destroy();
+        rmSync(mountDir, { recursive: true, force: true });
       }
     },
   );
