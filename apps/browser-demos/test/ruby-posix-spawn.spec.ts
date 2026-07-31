@@ -10,7 +10,8 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../..");
-const rubyBinary = tryResolveBinary("programs/ruby/ruby.wasm");
+const rubyBinaryAvailable =
+  tryResolveBinary("programs/ruby/ruby.wasm") !== null;
 const browserKernelModulePath = resolve(
   repoRoot,
   "host/src/browser-kernel-host.ts",
@@ -23,6 +24,10 @@ const imageHelpersModulePath = resolve(
   repoRoot,
   "host/src/vfs/image-helpers.ts",
 );
+const rubyBinaryFixturePath = resolve(
+  __dirname,
+  "fixtures/ruby-posix-spawn-binary.ts",
+);
 
 test("Ruby uses direct posix_spawn in Chromium and preserves fork fallback", async ({
   page,
@@ -34,7 +39,7 @@ test("Ruby uses direct posix_spawn in Chromium and preserves fork fallback", asy
     "Chromium is the aggregate browser runtime gate",
   );
   test.skip(
-    !rubyBinary,
+    !rubyBinaryAvailable,
     "The Ruby package artifact is not available",
   );
   test.setTimeout(600_000);
@@ -57,7 +62,7 @@ test("Ruby uses direct posix_spawn in Chromium and preserves fork fallback", asy
       browserKernelUrl,
       memoryFsUrl,
       imageHelpersUrl,
-      rubyUrl,
+      rubyBinaryFixtureUrl,
       executable,
       cases,
     }) => {
@@ -69,6 +74,11 @@ test("Ruby uses direct posix_spawn in Chromium and preserves fork fallback", asy
       );
       const { ensureDirRecursive, writeVfsBinary } = await import(
         /* @vite-ignore */ imageHelpersUrl
+      );
+      // The fixture's @binaries import crosses the resolver's exact-file
+      // capability boundary before exposing a URL to browser code.
+      const { default: rubyUrl } = await import(
+        /* @vite-ignore */ rubyBinaryFixtureUrl
       );
       const rubyResponse = await fetch(rubyUrl);
       if (!rubyResponse.ok) {
@@ -190,7 +200,10 @@ test("Ruby uses direct posix_spawn in Chromium and preserves fork fallback", asy
         baseURL,
       ).href,
       imageHelpersUrl: new URL(`/@fs/${imageHelpersModulePath}`, baseURL).href,
-      rubyUrl: new URL(`/@fs/${rubyBinary!}`, baseURL).href,
+      rubyBinaryFixtureUrl: new URL(
+        `/@fs/${rubyBinaryFixturePath}`,
+        baseURL,
+      ).href,
       executable: RUBY_POSIX_SPAWN_EXECUTABLE,
       cases: RUBY_POSIX_SPAWN_CASES.map((spawnCase) => ({
         marker: spawnCase.marker,
