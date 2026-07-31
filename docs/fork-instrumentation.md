@@ -419,6 +419,17 @@ pointer word, saved scalar globals, and a 16-byte abort selector.
 fixed-prefix size is `frames_start_offset + 16`. Frame nodes and
 tagged-catch activation state are not stored in that prefix.
 
+The prefix is mutable during rewind. Each generated function preamble stores
+the payload returned by `__wpk_fork_frame_next` in its active-frame word at
+offset zero. A host controller that borrows another instance's frame chain
+must therefore copy all `fixed_prefix_size` bytes to separately reserved
+scratch, pass the scratch address to `wpk_fork_rewind_begin`, and keep frame
+callbacks pointed at the borrowed nodes. Making only the host replay cursor
+read-only is insufficient: passing the owner's prefix would overwrite the
+owner's active-frame word. Borrowed replay must leave node states and mappings
+untouched so the owner can later replay and release them. This is an internal
+host invariant; it does not make ABI 42 `vfork()` functional.
+
 This does not introduce a new linked-frame encoding. `fixed_prefix_size` has
 always been a module-specific value in the version-1 descriptor, and each node
 already declares its function-specific payload size. Existing artifacts retain
