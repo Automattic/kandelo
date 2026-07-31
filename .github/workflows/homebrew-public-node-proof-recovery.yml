@@ -101,15 +101,24 @@ jobs:
           # WHY: the exact product source still needs Nix, npm, TypeScript,
           # worker compilation, and kernel resolution. Finishing all of that
           # here gives each bottle proof a new runner and empty cgroup.
-          bash scripts/create-homebrew-node-proof-runtime-handoff.sh \
-            --source-root "$GITHUB_WORKSPACE/product" \
-            --kernel "$KERNEL" \
-            --kandelo-ref "$KANDELO_REF" \
-            --workflow-ref "$WORKFLOW_REF" \
-            --tap-catalog-ref "$TAP_CATALOG_REF" \
-            --tap-authority-ref "$TAP_AUTHORITY_REF" \
-            --canary-ref "$CANARY_REF" \
-            --out "$root"
+          # WHY: the Nix setup actions may put another Node.js ahead of the
+          # setup-node toolcache on PATH. The product dev shell is the build
+          # contract and pins Node.js 24, so enter it instead of weakening the
+          # runtime handoff's version check.
+          (
+            cd "$GITHUB_WORKSPACE/product"
+            bash scripts/dev-shell.sh \
+              bash \
+                "$GITHUB_WORKSPACE/scripts/create-homebrew-node-proof-runtime-handoff.sh" \
+                --source-root "$GITHUB_WORKSPACE/product" \
+                --kernel "$KERNEL" \
+                --kandelo-ref "$KANDELO_REF" \
+                --workflow-ref "$WORKFLOW_REF" \
+                --tap-catalog-ref "$TAP_CATALOG_REF" \
+                --tap-authority-ref "$TAP_AUTHORITY_REF" \
+                --canary-ref "$CANARY_REF" \
+                --out "$root"
+          )
           echo "root=$root" >>"$GITHUB_OUTPUT"
 
       - name: Upload same-run bounded runtime handoff

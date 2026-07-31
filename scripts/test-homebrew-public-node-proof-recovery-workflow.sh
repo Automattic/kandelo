@@ -58,6 +58,12 @@ sed '/- name: Verify runtime and fetch immutable public inputs/a\
         run: npm ci' "$WORKFLOW" >"$TMP_ROOT/npm-in-proof.yml"
 expect_workflow_rejected "$TMP_ROOT/npm-in-proof.yml"
 
+# The mutation must match the literal workflow expression.
+# shellcheck disable=SC2016
+sed '\#cd "$GITHUB_WORKSPACE/product"#d' \
+  "$WORKFLOW" >"$TMP_ROOT/unpinned-builder-node.yml"
+expect_workflow_rejected "$TMP_ROOT/unpinned-builder-node.yml"
+
 sed '/env -u GH_TOKEN -u GITHUB_TOKEN/d' \
   "$WORKFLOW" >"$TMP_ROOT/credentialed-readback.yml"
 expect_workflow_rejected "$TMP_ROOT/credentialed-readback.yml"

@@ -28,7 +28,7 @@ RELEASE_TAG =
   "bb5e575fb4d199aa59b764d293aa33501b0e6bfc243868ec5af98d826dafb79f"
 RUNTIME_HANDOFF = "homebrew-public-node-runtime-handoff"
 WORKFLOW_DIGEST =
-  "09281438168173b875ca140e47f433c9ae1c013bf045de7878ab0aad10a57800"
+  "cb87ad2b0a0a8e71c8c742818af44a3bf3e4dbd23513768421ef95b9bbe6fb23"
 RUNNER_DIGEST =
   "d15e23e5b8512663864e56163033cda32b301c873811fd28d04ca557cb1acc58"
 DOWNLOAD_ACTION =
@@ -141,9 +141,14 @@ begin
   prove_source = YAML.dump(prove)
   whole_source = File.read(WORKFLOW)
   check(
-    prepare_source.include?("npm ci --no-audit --no-fund") &&
+      prepare_source.include?("npm ci --no-audit --no-fund") &&
       prepare_source.include?("npm --prefix host ci") &&
       prepare_source.include?("scripts/dev-shell.sh") &&
+      prepare_source.include?('cd "$GITHUB_WORKSPACE/product"') &&
+      prepare_source.include?(
+        '"$GITHUB_WORKSPACE/scripts/' \
+          'create-homebrew-node-proof-runtime-handoff.sh"'
+      ) &&
       prepare_source.include?("--fetch-only --package kernel") &&
       prepare_source.include?(
         "scripts/create-homebrew-node-proof-runtime-handoff.sh"
