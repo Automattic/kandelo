@@ -1,0 +1,12 @@
+# Repository-relative test file<TAB>unique Vitest test-name pattern.
+#
+# WHY: each case below starts multiple heavyweight Ruby Wasm guests. A single
+# Vitest worker retains enough Wasm/JIT backing between otherwise-correct
+# host.destroy() calls to exceed a standard hosted runner's memory. Keeping the
+# cases declarative lets CI exclude their file from its ordinary shards and run
+# every case exactly once behind the stronger OS-process reclamation boundary.
+packages/registry/ruby/test/posix-spawn.test.ts	RUBY_POSIX_SPAWN_DIRECT_OK
+packages/registry/ruby/test/posix-spawn.test.ts	RUBY_POSIX_SPAWN_INHERITED_ENV_OK
+packages/registry/ruby/test/posix-spawn.test.ts	RUBY_POSIX_SPAWN_FORK_FALLBACK_OK
+packages/registry/ruby/test/posix-spawn.test.ts	RUBY_POSIX_SPAWN_EXPLICIT_CLOSE_FALLBACK_OK
+packages/registry/ruby/test/posix-spawn.test.ts	RUBY_POSIX_SPAWN_RELATIVE_CHDIR_FALLBACK_OK

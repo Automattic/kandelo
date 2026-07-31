@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # CI-shaped suite runner. The optional group selects deterministic shards:
-#   vitest: 1/2 | 2/2
+#   vitest: 1/2 | 2/2 | resource-isolated
 #   libc:   functional-regression | math
 #   sortix: include | basic | runtime
 # Omitting the group preserves the complete local suite behavior.
@@ -152,17 +152,72 @@ case "$suite" in
         cargo test -p fork-instrument --target "$HOST_TARGET"
         ;;
     vitest)
+        resource_cases="$REPO_ROOT/scripts/ci-vitest-resource-isolated-cases.tsv"
+        resource_files=()
+        resource_markers=()
+        resource_excludes=()
+        seen_resource_files="|"
+        line_number=0
+        while IFS=$'\t' read -r test_file test_marker extra || \
+            [ -n "${test_file:-}${test_marker:-}${extra:-}" ]; do
+            line_number=$((line_number + 1))
+            case "${test_file:-}" in
+                ""|\#*) continue ;;
+            esac
+            if [ -z "${test_marker:-}" ] || [ -n "${extra:-}" ] || \
+                [ ! -f "$REPO_ROOT/$test_file" ]; then
+                echo "ci-run-test-suite: invalid resource-isolated case at $resource_cases:$line_number" >&2
+                exit 2
+            fi
+            resource_files+=("$test_file")
+            resource_markers+=("$test_marker")
+            case "$seen_resource_files" in
+                *"|$test_file|"*) ;;
+                *)
+                    resource_excludes+=("--exclude=../$test_file")
+                    seen_resource_files="${seen_resource_files}${test_file}|"
+                    ;;
+            esac
+        done < "$resource_cases"
+        if [ "${#resource_files[@]}" -eq 0 ]; then
+            echo "ci-run-test-suite: resource-isolated case manifest is empty" >&2
+            exit 2
+        fi
+
         case "$group" in
             all) vitest_args=() ;;
             1/2|2/2) vitest_args=("--shard=$group") ;;
+            resource-isolated) vitest_args=() ;;
             *) invalid_group ;;
         esac
         install_node_deps
         npx --prefix host playwright install chromium
-        # WHY: Vitest owns the hash-based file partition. Passing its shard
-        # selector keeps both CI jobs disjoint while their union remains the
-        # same complete test-file inventory as the unsharded local command.
-        (cd host && npx vitest run "${vitest_args[@]}")
+        if [ "$group" != "resource-isolated" ]; then
+            # WHY: Vitest owns the hash-based ordinary-file partition. The
+            # declarative heavyweight files are excluded from both shards and
+            # restored below, one case per fresh process, so the combined jobs
+            # retain exact coverage without accumulating their Wasm/JIT state.
+            (
+                cd host
+                npx vitest run \
+                    "${vitest_args[@]}" \
+                    "${resource_excludes[@]}"
+            )
+        fi
+        if [ "$group" = "all" ] || [ "$group" = "resource-isolated" ]; then
+            for index in "${!resource_files[@]}"; do
+                # WHY: host.destroy() correctly ends each Kandelo machine, but
+                # V8 may retain Wasm/JIT backing until its Vitest worker exits.
+                # A fresh worker per declared case is the deterministic memory
+                # boundary; this is CI process isolation, not a product leak.
+                (
+                    cd host
+                    npx vitest run \
+                        "../${resource_files[$index]}" \
+                        --testNamePattern="${resource_markers[$index]}"
+                )
+            done
+        fi
         # [JSC-TERMINATE-ATOMICS-WAIT-LEAK] Re-run the teardown-reclamation tests
         # on JSC (Bun) as well as V8, since the workaround exists for JSC (Safari
         # and Bun) and is a no-op on V8. `bun` comes from the flake dev shell.

@@ -5,21 +5,29 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
-# WHY: the workflow delegates file partitioning to Vitest. Exercise the real
-# CLI against a small complete inventory so an upgrade cannot make the two
-# selectors overlap or omit files. The matrix assertions below then ensure CI
-# invokes that tested 1/2 + 2/2 pair for the repository's nonempty inventory.
+# WHY: ordinary files stay in Vitest's deterministic two-way partition while
+# declared heavyweight cases run separately. Exercise the real CLI so an
+# upgrade cannot make the shards overlap, omit the isolated file, or execute
+# more than the one selected case in each fresh process.
 vitest_fixture="$TMP_DIR/vitest-shard-fixture"
-vitest_expected="$TMP_DIR/vitest-expected"
-vitest_one="$TMP_DIR/vitest-1-of-2"
-vitest_two="$TMP_DIR/vitest-2-of-2"
+vitest_expected="$TMP_DIR/vitest-regular-expected"
+vitest_all_expected="$TMP_DIR/vitest-all-expected"
+vitest_seen="$TMP_DIR/vitest-seen"
 mkdir -p "$vitest_fixture"
 for number in 1 2 3 4 5 6 7; do
     printf 'test("case %s", () => {});\n' "$number" \
         > "$vitest_fixture/case-$number.test.js"
 done
-find "$vitest_fixture" -name '*.test.js' -print | LC_ALL=C sort \
+resource_fixture="$vitest_fixture/resource-isolated.test.js"
+for number in 1 2 3 4 5; do
+    printf 'test("RESOURCE_CASE_%s", () => {});\n' "$number" \
+        >> "$resource_fixture"
+done
+find "$vitest_fixture" -name 'case-*.test.js' -print | LC_ALL=C sort \
     > "$vitest_expected"
+find "$vitest_fixture" -name '*.test.js' -print | LC_ALL=C sort \
+    > "$vitest_all_expected"
+: > "$vitest_seen"
 for shard in 1 2; do
     report="$TMP_DIR/vitest-$shard-of-2.json"
     paths="$TMP_DIR/vitest-$shard-of-2"
@@ -27,18 +35,53 @@ for shard in 1 2; do
         --root "$vitest_fixture" \
         --globals \
         --shard="$shard/2" \
+        --exclude="$resource_fixture" \
         --reporter=json \
         --outputFile="$report" \
         > "$TMP_DIR/vitest-$shard-of-2.out"
     jq -r '.testResults[].name' "$report" | LC_ALL=C sort > "$paths"
+    if comm -12 "$vitest_seen" "$paths" | grep -q .; then
+        echo "Vitest shard $shard/2 overlaps an earlier shard" >&2
+        exit 1
+    fi
+    LC_ALL=C sort -m "$vitest_seen" "$paths" \
+        > "$TMP_DIR/vitest-union"
+    mv "$TMP_DIR/vitest-union" "$vitest_seen"
 done
-if comm -12 "$vitest_one" "$vitest_two" | grep -q .; then
-    echo "Vitest shards overlap" >&2
+cmp "$vitest_expected" "$vitest_seen"
+if grep -Fxq "$resource_fixture" "$vitest_seen"; then
+    echo "ordinary Vitest shards included the resource-isolated file" >&2
     exit 1
 fi
-cat "$vitest_one" "$vitest_two" | LC_ALL=C sort \
-    > "$TMP_DIR/vitest-union"
-cmp "$vitest_expected" "$TMP_DIR/vitest-union"
+printf '%s\n' "$resource_fixture" >> "$vitest_seen"
+LC_ALL=C sort -o "$vitest_seen" "$vitest_seen"
+cmp "$vitest_all_expected" "$vitest_seen"
+
+resource_expected="$TMP_DIR/vitest-resource-expected"
+resource_seen="$TMP_DIR/vitest-resource-seen"
+: > "$resource_expected"
+: > "$resource_seen"
+for number in 1 2 3 4 5; do
+    marker="RESOURCE_CASE_$number"
+    printf '%s\n' "$marker" >> "$resource_expected"
+    report="$TMP_DIR/vitest-resource-$number.json"
+    "$REPO_ROOT/host/node_modules/.bin/vitest" run \
+        --root "$vitest_fixture" \
+        --globals \
+        "$resource_fixture" \
+        --testNamePattern="$marker" \
+        --reporter=json \
+        --outputFile="$report" \
+        > "$TMP_DIR/vitest-resource-$number.out"
+    jq -r '
+      .testResults[].assertionResults[]
+      | select(.status == "passed")
+      | .fullName
+    ' "$report" >> "$resource_seen"
+done
+LC_ALL=C sort -o "$resource_expected" "$resource_expected"
+LC_ALL=C sort -o "$resource_seen" "$resource_seen"
+cmp "$resource_expected" "$resource_seen"
 (
     cd "$REPO_ROOT/host"
     npx vitest list --filesOnly
@@ -59,10 +102,13 @@ mkdir -p \
 cp \
     "$REPO_ROOT/scripts/ci-homebrew-browser-mirror-state.sh" \
     "$REPO_ROOT/scripts/ci-run-test-suite.sh" \
+    "$REPO_ROOT/scripts/ci-vitest-resource-isolated-cases.tsv" \
     "$REPO_ROOT/scripts/pack-ci-test-workspace.sh" \
     "$REPO_ROOT/scripts/stage-portable-resolver-binaries.sh" \
     "$REPO_ROOT/scripts/validate-publication-blocker-report.sh" \
     "$FIXTURE/scripts/"
+mkdir -p "$FIXTURE/packages/registry/ruby/test"
+: > "$FIXTURE/packages/registry/ruby/test/posix-spawn.test.ts"
 
 sha256_file() {
     if command -v sha256sum >/dev/null 2>&1; then
@@ -300,8 +346,10 @@ run_vitest_group() {
         VITEST_CAPTURE="$vitest_capture" \
         BUN_CAPTURE="$bun_capture" \
         bash "$FIXTURE/scripts/ci-run-test-suite.sh" vitest "$group"
-    grep -Fxq -- "$expected_vitest" "$vitest_capture" || {
+    [ "$(cat "$vitest_capture")" = "$expected_vitest" ] || {
         echo "vitest/$group did not select its expected file shard" >&2
+        printf 'actual:\n%s\nexpected:\n%s\n' \
+            "$(cat "$vitest_capture")" "$expected_vitest" >&2
         exit 1
     }
     [ "$(wc -l < "$bun_capture" | tr -d '[:space:]')" \
@@ -311,9 +359,23 @@ run_vitest_group() {
     }
 }
 
-run_vitest_group all "vitest run" 1
-run_vitest_group 1/2 "vitest run --shard=1/2" 1
-run_vitest_group 2/2 "vitest run --shard=2/2" 0
+resource_path=../packages/registry/ruby/test/posix-spawn.test.ts
+resource_exclude="--exclude=$resource_path"
+resource_invocations=""
+while IFS=$'\t' read -r test_file test_marker; do
+    case "$test_file" in ""|\#*) continue ;; esac
+    invocation="vitest run ../$test_file --testNamePattern=$test_marker"
+    if [ -n "$resource_invocations" ]; then
+        resource_invocations="$resource_invocations"$'\n'
+    fi
+    resource_invocations="$resource_invocations$invocation"
+done < "$REPO_ROOT/scripts/ci-vitest-resource-isolated-cases.tsv"
+
+run_vitest_group all \
+    "vitest run $resource_exclude"$'\n'"$resource_invocations" 1
+run_vitest_group 1/2 "vitest run --shard=1/2 $resource_exclude" 1
+run_vitest_group 2/2 "vitest run --shard=2/2 $resource_exclude" 0
+run_vitest_group resource-isolated "$resource_invocations" 0
 
 if PATH="$FIXTURE/bin:$PATH" \
     VITEST_CAPTURE="$TMP_DIR/vitest-invalid.args" \
@@ -514,7 +576,7 @@ for workflow in \
             print suite ":" group
         }
     ')
-    expected_rows=$'vitest:1/2\nvitest:2/2\nbrowser:all\nlibc:functional-regression\nlibc:math\nposix:all\nsortix:include\nsortix:basic\nsortix:runtime'
+    expected_rows=$'vitest:1/2\nvitest:2/2\nvitest:resource-isolated\nbrowser:all\nlibc:functional-regression\nlibc:math\nposix:all\nsortix:include\nsortix:basic\nsortix:runtime'
     if [ "$matrix_rows" != "$expected_rows" ]; then
         echo "$(basename "$workflow"): unexpected test-suite matrix:" >&2
         printf '%s\n' "$matrix_rows" >&2
@@ -552,7 +614,7 @@ force_rebuild_rows=$(sed -n \
         print suite ":" group
     }
 ')
-expected_force_rebuild_rows=$'cargo-kernel:all\nfork-instrument:all\nvitest:1/2\nvitest:2/2\nlibc:functional-regression\nlibc:math\nposix:all\nsortix:include\nsortix:basic\nsortix:runtime'
+expected_force_rebuild_rows=$'cargo-kernel:all\nfork-instrument:all\nvitest:1/2\nvitest:2/2\nvitest:resource-isolated\nlibc:functional-regression\nlibc:math\nposix:all\nsortix:include\nsortix:basic\nsortix:runtime'
 if [ "$force_rebuild_rows" != "$expected_force_rebuild_rows" ]; then
     echo "force-rebuild.yml: unexpected test-suite matrix:" >&2
     printf '%s\n' "$force_rebuild_rows" >&2
