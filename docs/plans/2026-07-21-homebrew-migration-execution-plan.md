@@ -1,7 +1,7 @@
 # Homebrew Migration Living Execution Plan
 
 - Status: active
-- Last reconciled: 2026-07-29
+- Last reconciled: 2026-07-31
 - Primary repositories: `Automattic/kandelo` and
   `Kandelo-dev/homebrew-tap-core`
 - Purpose: preserve the complete Homebrew migration scope, record what has
@@ -101,6 +101,44 @@ control proves that the run could have detected proportional backing-store
 retention. Until those sentinels are stable enough for every pull request,
 keep them scheduled and require recent green evidence for changes to process
 memory ownership or worker retirement.
+
+### Temporary Ruby process-spawn exception — 2026-07-31
+
+PR #1166 may ship as a temporary Kandelo-only patch to upstream CRuby so the
+in-guest Homebrew proof can continue while the platform-owned process-memory
+work proceeds separately. This is an explicit migration exception, not a
+claim that Ruby is responsible for Kandelo's fork cost.
+
+Kandelo currently allocates and copies Ruby's complete
+`WebAssembly.Memory` for every `fork()`. Native kernels normally avoid that
+copy with virtual-memory copy-on-write behavior. Homebrew starts hundreds of
+short-lived helpers from one long-lived Ruby process, and most immediately
+replace the copied image with `exec()`. Chromium can receive those new shared
+memory backings faster than it reclaims the retired ones.
+
+The temporary patch routes only command shapes that Kandelo's non-forking
+`posix_spawn()` contract can reproduce exactly. Unsupported shells, resource
+limits, identity changes, descriptor graphs, close sweeps, process groups, and
+other unrepresentable requests retain CRuby's established fork path. Tests
+must continue to cover both the direct path and those semantic fallbacks.
+
+Remove the exception only when all of the following are true:
+
+- pristine upstream CRuby uses a Kandelo-owned path that avoids the eager
+  full-address-space copy for the relevant fork/exec workload;
+- the Ruby package no longer applies `kandelo-posix-spawn.patch`;
+- existing direct-spawn and fork-fallback behavior remains green in Node.js
+  and the required browser product gates;
+- the real `brew tap` and `brew install` lifecycle completes in Chromium
+  without renderer loss or renewed process-memory growth;
+- genuine `fork()` behavior remains independent and POSIX-correct; and
+- Ruby is rebuilt, published, and anonymously verified without the patch.
+
+The dedicated platform investigation must consider genuine `vfork()`
+semantics, pre-copy fork admission and retirement debt, sparse exact cloning,
+worker/module churn, and any upstream-supported `posix_spawn()` integration.
+Any kernel, ABI, or `wasm-fork-instrument` change remains in its normal review
+and approval path and must preserve Node.js/browser parity.
 
 Throughput rules for this checkpoint:
 
