@@ -12,7 +12,7 @@ WORKFLOW = ARGV.empty? ?
 PUBLISH_JOB_DIGEST =
   "64bd13ea5a8d00953acfec3e02607f7ae70837706c868827bed5259c6043aeb2"
 WORKFLOW_DIGEST =
-  "2f81cbd8d4c48713cf242eecde5eb362cc3e8b61472762d3a82eaac45190f846"
+  "c5c6b9a3e7e31aa559c3523725c1e57f635909b280d43ce3b0f746c4f0ebcd82"
 DOWNLOAD_ACTION =
   "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 UPLOAD_ACTION =
@@ -379,6 +379,28 @@ check(!node_proof_source.include?("./.github/actions/fetch-submodules") &&
       !node_proof_source.include?("apps/browser-demos") &&
       !node_proof_source.include?("playwright"),
       "Node proof includes browser-only dependencies")
+node_proof_steps = node_proof_job.fetch("steps")
+node_install_index = node_proof_steps.index do |step|
+  step["name"] == "Install public Node proof dependencies"
+end
+node_build_index = node_proof_steps.index do |step|
+  step["name"] == "Build the production Node process worker"
+end
+node_revalidate_index = node_proof_steps.index do |step|
+  step["name"] == "Revalidate exact Node handoff and live refs"
+end
+node_build = named_step(
+  node_proof_job,
+  "Build the production Node process worker",
+).fetch("run")
+check(
+  node_install_index &&
+    node_build_index == node_install_index + 1 &&
+    node_revalidate_index == node_build_index + 1 &&
+    node_build.scan("npm --prefix host run build").length == 1 &&
+    node_build.scan("test -s host/dist/worker-entry.js").length == 1,
+  "Node proof must build and require its production process worker",
+)
 check(node_proof_source.scan("--transport-mode public").length == 1 &&
       chromium_proof_source.scan("--transport-mode public").length == 1 &&
       !proof_source.include?("--transport-mode closed"),

@@ -600,6 +600,18 @@ jobs:
             npm --prefix host ci --no-audit --no-fund
           bash scripts/dev-shell.sh true
 
+      - name: Build the production Node process worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          # WHY: stock Brew creates hundreds of short-lived guest
+          # processes. Without this artifact, each process starts a new
+          # tsx compiler in its Node Worker and can exhaust a hosted
+          # runner before `brew tap` completes. The shipped host uses
+          # this compiled worker path.
+          npm --prefix host run build
+          test -s host/dist/worker-entry.js
+
       - name: Revalidate exact Node handoff and live refs
         shell: bash
         env:

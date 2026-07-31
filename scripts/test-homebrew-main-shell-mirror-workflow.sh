@@ -100,6 +100,9 @@ sed \
   's/--fetch-only --package kernel/--fetch-only --package kernel --package shell/' \
   "$WORKFLOW" >"$TMP_ROOT/node-fetches-shell.yml"
 expect_rejected "$TMP_ROOT/node-fetches-shell.yml"
+sed '/npm --prefix host run build/d' \
+  "$WORKFLOW" >"$TMP_ROOT/no-compiled-node-worker.yml"
+expect_rejected "$TMP_ROOT/no-compiled-node-worker.yml"
 sed 's/memory.current/memory.stat/' \
   "$WORKFLOW" >"$TMP_ROOT/no-node-current-memory-telemetry.yml"
 expect_rejected "$TMP_ROOT/no-node-current-memory-telemetry.yml"

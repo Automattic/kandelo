@@ -84,6 +84,7 @@ interface BootstrapPayloadResponse {
 }
 
 interface ExactShellPage {
+  pageUrl: string;
   config: ExactAcceptanceConfig;
   mirrorPlan: { assets: MirrorAsset[] };
   legacyArtifactDownloads: string[];
@@ -159,6 +160,51 @@ function browserProxyTargetUrl(
 function bottleRows(rows: readonly LazyDownloadRow[]): LazyDownloadRow[] {
   return rows.filter((row) => !isHomebrewBootstrapRow(row));
 }
+
+function browserResolvedLazySourceUrl(
+  source: string,
+  pageUrl: string,
+): string {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(source)) {
+    return new URL(source).href;
+  }
+  if (!source.startsWith("/")) {
+    throw new Error(
+      `lazy source must be absolute or root-relative: ${source}`,
+    );
+  }
+  return new URL(source, pageUrl).href;
+}
+
+function expectedBrowserLazyTransport(
+  sourceUrl: string,
+  pageUrl: string,
+): "direct" | "proxy" {
+  return new URL(sourceUrl).origin === new URL(pageUrl).origin
+    ? "direct"
+    : "proxy";
+}
+
+test("classifies browser lazy transport after URL normalization", () => {
+  const pageUrl = "https://demo.kandelo.test/kandelo/?demo=shell";
+  const sameOrigin = browserResolvedLazySourceUrl(
+    "/assets/root.zip",
+    pageUrl,
+  );
+  const external = browserResolvedLazySourceUrl(
+    "https://packages.example/runtime.zip",
+    pageUrl,
+  );
+  expect(sameOrigin).toBe("https://demo.kandelo.test/assets/root.zip");
+  expect(expectedBrowserLazyTransport(sameOrigin, pageUrl)).toBe("direct");
+  expect(external).toBe("https://packages.example/runtime.zip");
+  expect(expectedBrowserLazyTransport(external, pageUrl)).toBe("proxy");
+  expect(() =>
+    browserResolvedLazySourceUrl("assets/ambiguous.zip", pageUrl)
+  ).toThrow(
+    "lazy source must be absolute or root-relative",
+  );
+});
 
 async function terminalText(page: Page): Promise<string> {
   return page
@@ -566,6 +612,7 @@ async function bootExactShellPage(page: Page): Promise<ExactShellPage> {
   });
 
   return {
+    pageUrl: page.url(),
     config,
     mirrorPlan,
     legacyArtifactDownloads,
@@ -655,18 +702,37 @@ function assertPublicLazyTransport(
   if (shell.config.transportMode !== "public") return;
   for (const row of rows) {
     expect(row.source, `lazy row ${row.asset} has no source URL`).not.toBeNull();
-    const sourceUrl = new URL(row.source!).href;
+    // WHY: Vite emits the same-origin bootstrap as a root-relative asset,
+    // while the request observer sees an absolute URL. Canonicalize only that
+    // unambiguous form; bare-relative worker URLs need their worker base.
+    const sourceUrl = browserResolvedLazySourceUrl(
+      row.source!,
+      shell.pageUrl,
+    );
     const matches = shell.artifactTransportRequests.filter(
       ({ targetUrl }) => targetUrl === sourceUrl,
     );
-    expect(
-      matches.some(({ proxied }) => proxied),
-      `lazy source bypassed the browser proxy: ${String(row.source)}`,
-    ).toBe(true);
-    expect(
-      matches.filter(({ proxied }) => !proxied),
-      `lazy source was also fetched directly: ${String(row.source)}`,
-    ).toEqual([]);
+    if (
+      expectedBrowserLazyTransport(sourceUrl, shell.pageUrl) === "direct"
+    ) {
+      expect(
+        matches.some(({ proxied }) => !proxied),
+        `same-origin lazy source was not fetched: ${String(row.source)}`,
+      ).toBe(true);
+      expect(
+        matches.filter(({ proxied }) => proxied),
+        `same-origin lazy source used the proxy: ${String(row.source)}`,
+      ).toEqual([]);
+    } else {
+      expect(
+        matches.some(({ proxied }) => proxied),
+        `external lazy source bypassed the proxy: ${String(row.source)}`,
+      ).toBe(true);
+      expect(
+        matches.filter(({ proxied }) => !proxied),
+        `external lazy source was also direct: ${String(row.source)}`,
+      ).toEqual([]);
+    }
   }
 }
 
