@@ -6,6 +6,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import http.client
+import http.server
 import json
 from pathlib import Path
 import shutil
@@ -14,8 +15,10 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from typing import Any, Callable
+import urllib.parse
 
 import homebrew_browser_proof_runtime_handoff as handoff
 
@@ -245,7 +248,238 @@ def tree_identity(root: Path) -> list[tuple[str, int, str]]:
     return result
 
 
+def http_request(
+    port: int,
+    method: str,
+    path: str,
+    *,
+    headers: dict[str, str] | None = None,
+    body: bytes | None = None,
+) -> tuple[int, dict[str, str], bytes]:
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=2)
+    try:
+        connection.request(
+            method,
+            path,
+            body=body,
+            headers=headers or {},
+        )
+        response = connection.getresponse()
+        return (
+            response.status,
+            {name.lower(): value for name, value in response.getheaders()},
+            response.read(),
+        )
+    finally:
+        connection.close()
+
+
+def proxy_path(target: str) -> str:
+    return "/__kandelo_cors_proxy?" + urllib.parse.urlencode({"url": target})
+
+
 def test_static_server(root: Path) -> None:
+    upstream_requests: list[
+        tuple[str, str, dict[str, str], bytes]
+    ] = []
+    cross_origin_port = 0
+
+    class UpstreamHandler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def do_GET(self) -> None:
+            self.serve_request(include_body=True)
+
+        def do_HEAD(self) -> None:
+            self.serve_request(include_body=False)
+
+        def do_POST(self) -> None:
+            self.serve_request(include_body=True)
+
+        def end_headers(self) -> None:
+            self.send_header("Connection", "close")
+            super().end_headers()
+
+        def serve_request(self, *, include_body: bool) -> None:
+            headers = {
+                name.lower(): value for name, value in self.headers.items()
+            }
+            request_bytes = b""
+            if self.command == "POST":
+                request_bytes = self.rfile.read(
+                    int(headers.get("content-length", "0"))
+                )
+            upstream_requests.append(
+                (self.command, self.path, headers, request_bytes)
+            )
+            if self.path == "/ok":
+                body = b"public bottle bytes"
+                self.send_response(200)
+                self.send_header("Cache-Control", "public, max-age=60")
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("ETag", '"proof"')
+                self.send_header("Set-Cookie", "upstream=secret")
+                self.send_header("X-Upstream-Secret", "do-not-forward")
+                self.end_headers()
+                if include_body:
+                    midpoint = len(body) // 2
+                    self.wfile.write(body[:midpoint])
+                    self.wfile.flush()
+                    time.sleep(0.01)
+                    self.wfile.write(body[midpoint:])
+                return
+            if self.path == "/git-upload-pack":
+                body = b"001eapplication/x-git-result"
+                self.send_response(200)
+                self.send_header(
+                    "Content-Type",
+                    "application/x-git-upload-pack-result",
+                )
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                if include_body:
+                    self.wfile.write(body)
+                return
+            if self.path == "/ghcr":
+                body = b"oci manifest"
+                self.send_response(200)
+                self.send_header(
+                    "Content-Type",
+                    "application/vnd.oci.image.manifest.v1+json",
+                )
+                self.send_header(
+                    "Docker-Content-Digest",
+                    f"sha256:{'1' * 64}",
+                )
+                self.send_header(
+                    "WWW-Authenticate",
+                    'Bearer realm="https://ghcr.io/token"',
+                )
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                if include_body:
+                    self.wfile.write(body)
+                return
+            if self.path == "/not-modified":
+                self.send_response(304)
+                # A 304 may describe the selected representation's length
+                # even though the response itself never carries that body.
+                self.send_header("Content-Length", "123")
+                self.send_header("ETag", '"still-current"')
+                self.end_headers()
+                return
+            if self.path == "/no-content":
+                self.send_response(204)
+                self.send_header("ETag", '"empty"')
+                self.end_headers()
+                return
+            if self.path == "/redirect":
+                self.send_response(302)
+                self.send_header("Content-Length", "0")
+                self.send_header("Location", "/ok")
+                self.end_headers()
+                return
+            if self.path == "/post-redirect-307":
+                self.send_response(307)
+                self.send_header("Content-Length", "0")
+                self.send_header("Location", "/git-upload-pack")
+                self.end_headers()
+                return
+            if self.path == "/post-redirect-303":
+                self.send_response(303)
+                self.send_header("Content-Length", "0")
+                self.send_header("Location", "/ok")
+                self.end_headers()
+                return
+            if self.path == "/cross-origin-redirect":
+                self.send_response(307)
+                self.send_header("Content-Length", "0")
+                self.send_header(
+                    "Location",
+                    f"http://127.0.0.1:{cross_origin_port}/auth-check",
+                )
+                self.end_headers()
+                return
+            if self.path == "/auth-check":
+                body = b"cross-origin"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                if include_body:
+                    self.wfile.write(body)
+                return
+            if self.path.startswith("/redirect-loop/"):
+                redirect = int(self.path.rsplit("/", 1)[1]) + 1
+                self.send_response(302)
+                self.send_header("Content-Length", "0")
+                self.send_header("Location", f"/redirect-loop/{redirect}")
+                self.end_headers()
+                return
+            if self.path == "/oversize-declared":
+                self.send_response(200)
+                self.send_header("Content-Length", "65")
+                self.end_headers()
+                return
+            if self.path == "/oversize-stream":
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.end_headers()
+                self.close_connection = True
+                if include_body:
+                    self.wfile.write(b"x" * 65)
+                return
+            if self.path == "/slow":
+                time.sleep(0.25)
+                body = b"too late"
+                try:
+                    self.send_response(200)
+                    self.send_header("Content-Length", str(len(body)))
+                    self.end_headers()
+                    if include_body:
+                        self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+                return
+            if self.path == "/error":
+                self.close_connection = True
+                self.connection.close()
+                return
+            body = b"upstream missing"
+            self.send_response(404)
+            self.send_header("Content-Type", "text/plain")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if include_body:
+                self.wfile.write(body)
+
+        def log_message(self, _format: str, *args: object) -> None:
+            del args
+
+    cross_origin = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0),
+        UpstreamHandler,
+    )
+    cross_origin.daemon_threads = True
+    cross_origin_port = cross_origin.server_address[1]
+    cross_origin_thread = threading.Thread(
+        target=cross_origin.serve_forever,
+        daemon=True,
+    )
+    cross_origin_thread.start()
+
+    upstream = http.server.ThreadingHTTPServer(
+        ("127.0.0.1", 0),
+        UpstreamHandler,
+    )
+    upstream.daemon_threads = True
+    upstream_thread = threading.Thread(
+        target=upstream.serve_forever,
+        daemon=True,
+    )
+    upstream_thread.start()
+    upstream_port = upstream.server_address[1]
+
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
@@ -257,11 +491,19 @@ def test_static_server(root: Path) -> None:
             str(root / "browser/apps/browser-demos/dist"),
             "--port",
             str(port),
+            "--allow-test-loopback-proxy",
+            "--proxy-max-request-bytes",
+            "32",
+            "--proxy-max-response-bytes",
+            "64",
+            "--proxy-timeout-ms",
+            "100",
         ],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
+    production_process: subprocess.Popen[str] | None = None
     try:
         deadline = time.monotonic() + 5
         while True:
@@ -300,27 +542,387 @@ def test_static_server(root: Path) -> None:
             == "same-origin"
         )
         assert response.getheader("Service-Worker-Allowed") == "/"
+        assert response.getheader("Access-Control-Allow-Origin") == "*"
 
-        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
-        connection.request("GET", "/%2e%2e/package.json")
-        response = connection.getresponse()
-        response.read()
-        connection.close()
-        assert response.status == 400
+        status, _headers, _body = http_request(
+            port,
+            "GET",
+            "/%2e%2e/package.json",
+        )
+        assert status == 400
+        status, headers, _body = http_request(port, "POST", "/")
+        assert status == 405
+        assert headers["allow"] == "GET, HEAD"
 
-        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=1)
-        connection.request("POST", "/")
-        response = connection.getresponse()
-        response.read()
-        connection.close()
-        assert response.status == 405
+        target = f"http://127.0.0.1:{upstream_port}/ok"
+        status, headers, body = http_request(
+            port,
+            "GET",
+            proxy_path(target),
+            headers={
+                "Accept": "application/octet-stream",
+                "Authorization": "Bearer QQ==",
+                "Cookie": "session=secret",
+                "Proxy-Authorization": "Basic secret",
+                "Referer": "https://secret.example/",
+                "X-GitHub-Token": "github-secret",
+                "X-Test-Secret": "do-not-forward",
+            },
+        )
+        assert status == 200
+        assert body == b"public bottle bytes"
+        assert headers["cache-control"] == "public, max-age=60"
+        assert headers["content-type"] == "application/octet-stream"
+        assert headers["etag"] == '"proof"'
+        assert headers["access-control-allow-origin"] == "*"
+        assert headers["cross-origin-embedder-policy"] == "require-corp"
+        assert headers["cross-origin-opener-policy"] == "same-origin"
+        assert headers["cross-origin-resource-policy"] == "same-origin"
+        assert "set-cookie" not in headers
+        assert "x-upstream-secret" not in headers
+        forwarded = upstream_requests[-1][2]
+        assert forwarded["accept"] == "application/octet-stream"
+        assert forwarded["authorization"] == "Bearer QQ=="
+        for forbidden in (
+            "cookie",
+            "proxy-authorization",
+            "referer",
+            "x-github-token",
+            "x-test-secret",
+        ):
+            assert forbidden not in forwarded
+
+        status, headers, body = http_request(
+            port,
+            "HEAD",
+            proxy_path(target),
+        )
+        assert status == 200
+        assert body == b""
+        assert headers["content-length"] == str(len(b"public bottle bytes"))
+        assert upstream_requests[-1][0] == "HEAD"
+
+        status, headers, body = http_request(
+            port,
+            "HEAD",
+            proxy_path(
+                f"http://127.0.0.1:{upstream_port}/oversize-declared"
+            ),
+        )
+        assert status == 200
+        assert body == b""
+        assert headers["content-length"] == "65"
+
+        git_body = b"\x1f\x8bencoded-git-request"
+        git_headers = {
+            "Accept": "application/x-git-upload-pack-result",
+            "Authorization": "Bearer QQ==",
+            "Content-Encoding": "gzip",
+            "Content-Type": "application/x-git-upload-pack-request",
+            "Cookie": "session=secret",
+            "Git-Protocol": "version=2",
+            "Proxy-Authorization": "Basic secret",
+            "Referer": "https://secret.example/",
+            "User-Agent": "git/2.test",
+            "X-GitHub-Token": "github-secret",
+        }
+        status, headers, body = http_request(
+            port,
+            "POST",
+            proxy_path(
+                f"http://127.0.0.1:{upstream_port}/git-upload-pack"
+            ),
+            headers=git_headers,
+            body=git_body,
+        )
+        assert status == 200
+        assert body == b"001eapplication/x-git-result"
+        assert (
+            headers["content-type"]
+            == "application/x-git-upload-pack-result"
+        )
+        method, _path, forwarded, forwarded_body = upstream_requests[-1]
+        assert method == "POST"
+        assert forwarded_body == git_body
+        assert forwarded["accept"] == git_headers["Accept"]
+        assert forwarded["authorization"] == "Bearer QQ=="
+        assert forwarded["content-encoding"] == "gzip"
+        assert forwarded["content-length"] == str(len(git_body))
+        assert forwarded["content-type"] == git_headers["Content-Type"]
+        assert forwarded["git-protocol"] == "version=2"
+        assert forwarded["user-agent"] == "git/2.test"
+        for forbidden in (
+            "cookie",
+            "proxy-authorization",
+            "referer",
+            "x-github-token",
+        ):
+            assert forbidden not in forwarded
+
+        oci_accept = "application/vnd.oci.image.manifest.v1+json"
+        status, headers, body = http_request(
+            port,
+            "GET",
+            proxy_path(f"http://127.0.0.1:{upstream_port}/ghcr"),
+            headers={
+                "Accept": oci_accept,
+                "Authorization": "Bearer QQ==",
+                "Cookie": "session=secret",
+            },
+        )
+        assert status == 200
+        assert body == b"oci manifest"
+        assert headers["content-type"] == oci_accept
+        assert headers["docker-content-digest"] == f"sha256:{'1' * 64}"
+        assert headers["www-authenticate"].startswith("Bearer realm=")
+        forwarded = upstream_requests[-1][2]
+        assert forwarded["accept"] == oci_accept
+        assert forwarded["authorization"] == "Bearer QQ=="
+        assert "cookie" not in forwarded
+
+        status, _headers, body = http_request(
+            port,
+            "GET",
+            proxy_path(f"http://127.0.0.1:{upstream_port}/redirect"),
+            headers={"Authorization": "Bearer QQ=="},
+        )
+        assert status == 200
+        assert body == b"public bottle bytes"
+        assert "authorization" not in upstream_requests[-1][2]
+
+        status, _headers, body = http_request(
+            port,
+            "POST",
+            proxy_path(
+                f"http://127.0.0.1:{upstream_port}/post-redirect-307"
+            ),
+            headers=git_headers,
+            body=git_body,
+        )
+        assert status == 200
+        assert body == b"001eapplication/x-git-result"
+        method, path, forwarded, forwarded_body = upstream_requests[-1]
+        assert (method, path, forwarded_body) == (
+            "POST",
+            "/git-upload-pack",
+            git_body,
+        )
+        assert "authorization" not in forwarded
+        assert forwarded["content-encoding"] == "gzip"
+        assert forwarded["content-type"] == git_headers["Content-Type"]
+        assert forwarded["git-protocol"] == "version=2"
+
+        status, _headers, body = http_request(
+            port,
+            "POST",
+            proxy_path(
+                f"http://127.0.0.1:{upstream_port}/post-redirect-303"
+            ),
+            headers=git_headers,
+            body=git_body,
+        )
+        assert status == 200
+        assert body == b"public bottle bytes"
+        method, path, forwarded, forwarded_body = upstream_requests[-1]
+        assert (method, path, forwarded_body) == ("GET", "/ok", b"")
+        assert "authorization" not in forwarded
+        assert "content-encoding" not in forwarded
+        assert "content-length" not in forwarded
+        assert "content-type" not in forwarded
+
+        status, _headers, body = http_request(
+            port,
+            "GET",
+            proxy_path(
+                f"http://127.0.0.1:{upstream_port}/"
+                "cross-origin-redirect"
+            ),
+            headers={
+                "Accept": "application/octet-stream",
+                "Authorization": "Bearer QQ==",
+                "Cache-Control": "no-cache",
+                "Git-Protocol": "version=2",
+                "If-None-Match": '"part"',
+                "Range": "bytes=1024-",
+                "User-Agent": "Homebrew test",
+            },
+        )
+        assert status == 200
+        assert body == b"cross-origin"
+        method, path, forwarded, _forwarded_body = upstream_requests[-1]
+        assert (method, path) == ("GET", "/auth-check")
+        assert forwarded["accept"] == "application/octet-stream"
+        assert forwarded["cache-control"] == "no-cache"
+        assert forwarded["if-none-match"] == '"part"'
+        assert forwarded["range"] == "bytes=1024-"
+        assert forwarded["user-agent"] == "Homebrew test"
+        assert "authorization" not in forwarded
+        assert "git-protocol" not in forwarded
+
+        for endpoint, expected_status, expected_length in (
+            ("not-modified", 304, "123"),
+            ("no-content", 204, None),
+        ):
+            status, headers, body = http_request(
+                port,
+                "GET",
+                proxy_path(
+                    f"http://127.0.0.1:{upstream_port}/{endpoint}"
+                ),
+            )
+            assert status == expected_status, (
+                endpoint,
+                status,
+                headers,
+                body,
+            )
+            assert body == b""
+            if expected_length is not None:
+                assert headers["content-length"] == expected_length
+
+        bad_paths = [
+            "/__kandelo_cors_proxy",
+            (
+                "/__kandelo_cors_proxy?"
+                f"url={urllib.parse.quote(target)}&"
+                f"url={urllib.parse.quote(target)}"
+            ),
+            proxy_path(
+                f"http://user:password@127.0.0.1:{upstream_port}/ok"
+            ),
+            proxy_path("file:///tmp/not-public"),
+            "/__kandelo_cors_proxy?url=%",
+            proxy_path(f"{target}#fragment"),
+            proxy_path(f"http://127.0.0.1:{upstream_port}"),
+            proxy_path(target) + "&extra=1",
+        ]
+        for path in bad_paths:
+            status, _headers, _body = http_request(port, "GET", path)
+            assert status == 400, path
+
+        status, headers, _body = http_request(
+            port,
+            "PUT",
+            proxy_path(target),
+        )
+        assert status == 405
+        assert headers["allow"] == "GET, HEAD, POST"
+
+        request_count = len(upstream_requests)
+        status, _headers, _body = http_request(
+            port,
+            "POST",
+            proxy_path(
+                f"http://127.0.0.1:{upstream_port}/git-upload-pack"
+            ),
+            body=b"x" * 33,
+        )
+        assert status == 413
+        assert len(upstream_requests) == request_count
+
+        status, _headers, _body = http_request(
+            port,
+            "GET",
+            proxy_path(
+                f"http://127.0.0.1:{upstream_port}/redirect-loop/0"
+            ),
+        )
+        assert status == 502
+
+        for endpoint in ("oversize-declared", "oversize-stream"):
+            status, _headers, _body = http_request(
+                port,
+                "GET",
+                proxy_path(f"http://127.0.0.1:{upstream_port}/{endpoint}"),
+            )
+            assert status == 413, endpoint
+
+        status, _headers, _body = http_request(
+            port,
+            "GET",
+            proxy_path(f"http://127.0.0.1:{upstream_port}/slow"),
+        )
+        assert status == 504
+
+        status, _headers, _body = http_request(
+            port,
+            "GET",
+            proxy_path(f"http://127.0.0.1:{upstream_port}/error"),
+        )
+        assert status == 502
+
+        status, headers, body = http_request(
+            port,
+            "GET",
+            proxy_path(f"http://127.0.0.1:{upstream_port}/missing"),
+        )
+        assert status == 404
+        assert headers["content-type"] == "text/plain"
+        assert body == b"upstream missing"
+
+        with socket.socket() as reservation:
+            reservation.bind(("127.0.0.1", 0))
+            production_port = reservation.getsockname()[1]
+        production_process = subprocess.Popen(
+            [
+                "node",
+                str(root / "browser/serve-sealed-dist.mjs"),
+                "--root",
+                str(root / "browser/apps/browser-demos/dist"),
+                "--port",
+                str(production_port),
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        deadline = time.monotonic() + 5
+        while True:
+            if production_process.poll() is not None:
+                _stdout, stderr = production_process.communicate()
+                raise AssertionError(
+                    f"production sealed-dist server exited: {stderr}"
+                )
+            try:
+                status, _headers, _body = http_request(
+                    production_port,
+                    "GET",
+                    "/",
+                )
+                if status == 200:
+                    break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise AssertionError(
+                        "production sealed-dist server did not start"
+                    )
+                time.sleep(0.05)
+        status, _headers, _body = http_request(
+            production_port,
+            "GET",
+            proxy_path(target),
+        )
+        assert status == 400
     finally:
+        if production_process is not None:
+            production_process.terminate()
+            try:
+                production_process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                production_process.kill()
+                production_process.wait(timeout=5)
         process.terminate()
         try:
             process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait(timeout=5)
+        upstream.shutdown()
+        upstream.server_close()
+        upstream_thread.join(timeout=5)
+        cross_origin.shutdown()
+        cross_origin.server_close()
+        cross_origin_thread.join(timeout=5)
 
 
 def main() -> int:

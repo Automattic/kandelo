@@ -1207,6 +1207,25 @@ contains no local bottle payloads. The browser therefore fetches the
 published image and lazy bottle layers anonymously instead of consuming
 product bytes hidden in the test-runtime handoff.
 
+The sealed proof server temporarily implements the same-origin
+`/__kandelo_cors_proxy?url=...` route used by the current browser build. This
+keeps the consume-only runtime compatible with today's product bytes; it is
+not a kernel networking contract or the intended long-term architecture.
+Service-worker-owned CORS proxying is a required follow-up.
+
+Production proof traffic is limited to canonical HTTPS URLs on `github.com`,
+`ghcr.io`, and `*.githubusercontent.com`, with public-address DNS checks and
+per-request address pinning. A test-only flag permits literal loopback
+targets, and the Playwright configuration does not set it. The route accepts
+bounded `GET`, `HEAD`, and `POST` requests, follows at most five redirects,
+and bounds both response bytes and elapsed time. It forwards only named Git,
+OCI, range, cache, and representation headers. In particular, the guest may
+supply Homebrew's public GHCR `Authorization: Bearer QQ==` header to the
+original target. The server never injects ambient host credentials, drops
+cookies and proxy credentials, and removes `Authorization` after every
+redirect. Safe range and conditional selectors remain available when a
+GitHub release redirects to its content-delivery host.
+
 The product workflow's live lane is a manual, closed-transport cutover proof.
 It requires three exact lowercase 40-character inputs: Kandelo's live
 default-branch commit `M`, the final first-party tap commit `TF`, and the
