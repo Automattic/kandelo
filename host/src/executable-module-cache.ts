@@ -62,8 +62,9 @@ export class ExecutableModuleCache<T = WebAssembly.Module> {
       options.maxSourceBytes ?? DEFAULT_EXECUTABLE_MODULE_CACHE_SOURCE_BYTES,
       "Executable module cache source-byte limit",
     );
-    this.compile = options.compile ?? (async (bytes) =>
-      await WebAssembly.compile(bytes) as T);
+    this.compile =
+      options.compile ??
+      (async (bytes) => (await WebAssembly.compile(bytes)) as T);
     this.digest = options.digest ?? sha256Hex;
   }
 

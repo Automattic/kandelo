@@ -152,11 +152,11 @@ describe("ExecutableModuleCache", () => {
   });
 
   it("rejects invalid cache bounds", () => {
-    expect(
-      () => new ExecutableModuleCache({ maxEntries: -1 }),
-    ).toThrow("entry limit");
-    expect(
-      () => new ExecutableModuleCache({ maxSourceBytes: 1.5 }),
-    ).toThrow("source-byte limit");
+    expect(() => new ExecutableModuleCache({ maxEntries: -1 })).toThrow(
+      "entry limit",
+    );
+    expect(() => new ExecutableModuleCache({ maxSourceBytes: 1.5 })).toThrow(
+      "source-byte limit",
+    );
   });
 });
