@@ -1214,6 +1214,16 @@ Browsers cannot create external raw TCP or UDP sockets. Local loopback and `Loca
 
 2. **TlsNetworkBackend**: Terminates the guest's TLS connection with a generated, in-VFS CA and sends the decoded HTTP request through browser `fetch()`. Service-worker-controlled apps may proxy cross-origin fetches transparently. Other embedders set `BrowserKernelOptions.corsProxyUrl`; the option crosses the main-thread/worker protocol and routes backend fetches through the application's CORS proxy.
 
+   The browser bridge deliberately declines TLS 1.2 session resumption.
+   TLS 1.3-capable clients can send a nonempty legacy session ID even without
+   an existing Kandelo session. Echoing it after selecting TLS 1.2 would
+   falsely claim that the bridge found and resumed a cached session. The
+   bridge retains no such master secrets or bounded session cache, so every
+   guest connection completes a fresh local handshake. That handshake adds
+   no network round trip. Browser `fetch()` owns the separate upstream TLS
+   connection and may reuse it independently. Node's direct TCP backend is
+   unaffected.
+
 3. **Service Worker HTTP Bridge**: For server demos (nginx, WordPress), a service worker intercepts browser `fetch()` requests to a configurable URL prefix (e.g., `/app/`) and forwards them to the kernel via a MessagePort connection pump. The kernel injects the request as a TCP connection to nginx's listening socket, and nginx's response flows back through the pipe to the service worker.
 
 `TcpNetworkBackend`, `FetchNetworkBackend`, `TlsNetworkBackend`, and `LocalVirtualNetwork` share one numeric-address and hostname validator. It accepts decimal one-, two-, three-, and four-component IPv4 forms within their component widths, rejects malformed or overflowing numeric forms, enforces ASCII host-label syntax and DNS length limits, and preserves one trailing root dot. The Node TCP backend resolves validated names through the host resolver. The browser HTTP fetch/TLS bridges synthesize IPv4 mappings for syntactically acceptable DNS names; `LocalVirtualNetwork` resolves only aliases registered by attached machines. None of the browser paths adds browser DNS resolution or AF_INET6 transport.

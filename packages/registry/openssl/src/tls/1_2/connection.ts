@@ -1262,8 +1262,12 @@ class MessageEncoder {
 
 			...serverRandom,
 
-			clientHello.session_id.length,
-			...clientHello.session_id,
+			// TLS 1.3-capable clients can send a legacy ID even on their first
+			// connection. Once we select TLS 1.2, echoing that ID would instead
+			// claim a successful session-cache lookup and make the client expect
+			// an abbreviated handshake. We have no such cache, so an empty ID is
+			// the only truthful response before our full handshake.
+			0,
 
 			...as2Bytes(CipherSuites.TLS1_CK_ECDHE_RSA_WITH_AES_128_GCM_SHA256),
 
