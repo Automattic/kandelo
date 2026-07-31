@@ -116,7 +116,6 @@ test("creates one exact public-browser fixture without local bottle payloads", (
       join(mirror, HOMEBREW_BOTTLE_MIRROR_PLAN_ASSET),
       encodeHomebrewBottleMirrorPlan(plan),
     );
-    writeFileSync(join(mirror, plan.assets[0]!.asset), payloadBytes);
     const out = join(root, "fixture.json");
 
     createHomebrewGuestLifecycleFixture({
@@ -148,6 +147,27 @@ test("creates one exact public-browser fixture without local bottle payloads", (
       `${plan.release_root}/${plan.manifest_asset}`,
     );
     assert.equal(fixture.bottleMirror.payloads, undefined);
+
+    writeFileSync(join(mirror, plan.assets[0]!.asset), payloadBytes);
+    assert.throws(
+      () =>
+        createHomebrewGuestLifecycleFixture({
+          transportMode: "public",
+          image,
+          bootstrapSpec: spec,
+          bootstrapArchive: archive,
+          bootstrapEnvironment: environment,
+          bottleMirror: mirror,
+          fixedAssetUrlRoot:
+            "https://github.com/example/project/releases/download/" +
+            "exact-inputs/",
+          coreRevision: "1".repeat(40),
+          canaryRevision: "2".repeat(40),
+          timeoutMs: 900_000,
+          out: join(root, "unexpected-payload.json"),
+        }),
+      /files differ from its exact plan/,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
