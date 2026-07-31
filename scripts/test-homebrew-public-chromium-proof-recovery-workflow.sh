@@ -69,6 +69,10 @@ jq '.mirror.asset_count -= 1' \
   "$LOCK" >"$TMP_ROOT/wrong-mirror-count.json"
 expect_lock_rejected "$TMP_ROOT/wrong-mirror-count.json"
 
+jq '.release.assets["main-shell.vfs.zst"].bytes += 1' \
+  "$LOCK" >"$TMP_ROOT/wrong-image-size.json"
+expect_lock_rejected "$TMP_ROOT/wrong-image-size.json"
+
 sed '/baseline_oom=/d' \
   "$RUNNER" >"$TMP_ROOT/no-oom-baseline.sh"
 expect_runner_rejected "$TMP_ROOT/no-oom-baseline.sh"

@@ -301,21 +301,34 @@ begin
   )
   release = lock.fetch("release")
   check(
-    release.fetch("repository") == "Kandelo-dev/homebrew-tap-core" &&
-      release.fetch("tag") == RELEASE_TAG &&
-      release.fetch("target_commitish") == TAP_AUTHORITY_REF &&
-      release.fetch("immutable") == true &&
-      release.fetch("assets").keys.sort == [
-        "homebrew-bootstrap.zip",
-        "homebrew-brew.env",
-        "main-shell-brew-package-tree.json",
-        "main-shell.vfs.zst",
-      ] &&
-      release.fetch("assets").values.all? do |asset|
-        asset.keys.sort == %w[bytes sha256] &&
-          asset.fetch("bytes").positive? &&
-          asset.fetch("sha256").match?(/\A[0-9a-f]{64}\z/)
-      end,
+    release == {
+      "repository" => "Kandelo-dev/homebrew-tap-core",
+      "tag" => RELEASE_TAG,
+      "target_commitish" => TAP_AUTHORITY_REF,
+      "immutable" => true,
+      "assets" => {
+        "homebrew-bootstrap.zip" => {
+          "bytes" => 5_081_250,
+          "sha256" =>
+            "6b94235c4463a7ae03104decb20910fb660af4d2313fc0c87a84ef02acde440c",
+        },
+        "homebrew-brew.env" => {
+          "bytes" => 210,
+          "sha256" =>
+            "2eb3f05703b6a6f23feabda24f622bacd068115c7f74a0eac51bb4085e9eec5a",
+        },
+        "main-shell-brew-package-tree.json" => {
+          "bytes" => 641,
+          "sha256" =>
+            "b1f4b479a8364282700bdada99257160f66a3b314cc6a237d1d52c868a4a9b62",
+        },
+        "main-shell.vfs.zst" => {
+          "bytes" => 5_752_199,
+          "sha256" =>
+            "d82a397d9b441269b6ea8a0fe1a37d82983a52bd6ed40b8d7387a16c3037218c",
+        },
+      },
+    },
     "public Chromium lifecycle release lock differs",
   )
   mirror = lock.fetch("mirror")
