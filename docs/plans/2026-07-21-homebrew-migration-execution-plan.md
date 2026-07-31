@@ -13,7 +13,89 @@ goal merely because it is not part of the next pull request. A goal leaves this
 plan only when it is completed with evidence or explicitly superseded with the
 replacement decision recorded in the disposition log.
 
-## Current Resume Checkpoint — 2026-07-29
+## Current Resume Checkpoint — 2026-07-31
+
+This checkpoint changes delivery order, not completion scope. The
+public, immutable 38-Formula shell is the green product base. It has
+already proved the three-Formula embedded Bash closure and 35
+independent lazy bottle trees in Node.js and Chromium. Do not rebuild
+that closure merely because the wider guest-prefix campaign is
+unfinished.
+
+The shortest honest path to a usable in-guest `brew` is now:
+
+1. Land the publisher and Formula-support authority needed by the live
+   tap. Then read the resulting protected `Automattic/kandelo` `main`
+   SHA.
+2. Publish the new Libyaml wasm32 bottle, followed by the Ruby wasm32
+   bottle that depends on it. Reuse every other immutable bottle
+   selected by the green 38-Formula shell and runtime-support closure.
+3. Regenerate the Homebrew runtime-support descriptor from those exact
+   bottle identities. Regenerate the shell package generation and lock.
+   Publish a public bottle mirror that preserves each reused layer byte
+   for byte, and close the immutable lifecycle release around the
+   resulting shell bytes.
+4. Run PR #1147's public Chromium lifecycle against those exact bytes.
+   The core-tap proof installs, links, executes, and removes Bzip2. The
+   independent tap proof installs M4 and verifies that its core-tap Dash
+   dependency resolves and executes normally. Keep the exact Node.js
+   lifecycle evidence as the peer host claim. This proof does not
+   justify rebuilding unchanged bottles.
+5. Switch the product shell only after the descriptor, shell generation,
+   mirror, lifecycle release, and exact Node.js/Chromium evidence all
+   bind the same immutable inputs.
+
+Libyaml's first package publication has a stricter write boundary than a
+new version. Its first-publication shared writer lock must cover package
+namespace creation, child upload, and the version-index write. The lock
+is repository-scoped and Formula-keyed. A second Libyaml writer must not
+race package creation or infer absence from GitHub Container Registry's
+ambiguous anonymous response. Other Formulae remain independently
+schedulable.
+
+Exact-main pinning has one direction. First merge the Kandelo publisher
+authority. Then read its exact protected-main SHA and rotate the tap
+caller's reusable-workflow pin and `kandelo-ref` together to that SHA.
+Merge and read the exact tap-main source only after those pins are
+reviewable. The ordinary publisher must recheck the same Kandelo SHA
+immediately before each mutation. Do not dispatch from a branch name,
+placeholder, ancestor, or tap commit that predates the pin rotation. If
+protected main moves before mutation, stop and rebind instead of
+accepting the newer source.
+
+The following work remains in the plan after that usable cutover and may
+proceed in parallel when its inputs are independent:
+
+- complete the 64-Formula, 71-variant guest-prefix campaign, preserving
+  each independently successful bottle and using dependency-ready
+  scheduling;
+- remove every remaining `packages/registry` recipe and transitional
+  build bridge only after its Formula, bottle, tests, source fallback,
+  and ownership disposition are complete;
+- migrate Dinit, MariaDB, msmtpd, Nginx, PHP, Redis, SpiderMonkey/Node,
+  and the remaining service and product-image roles;
+- expand the independent-tap proof into the complete third-party tap
+  lifecycle, including durable state, upgrades, failures, and later
+  guest source builds;
+- add a real `man` command and retain each Formula's normal manual pages
+  in its owning bottle;
+- optimize bundles such as `posix-utils-lite` so independent programs
+  may use per-program lazy references when one file is the truthful unit
+  of use. Keep packages such as Vim at package-level granularity because
+  their executables need supporting runtime data;
+- make VFS layers declare Homebrew dependencies and publish as bottles
+  for reviewed mix-and-match composition; and
+- remove the temporary Ruby `posix_spawn` patch after the separate
+  Kandelo vfork/process-memory work supplies the general platform fix.
+  Rebuild and prove pristine upstream Ruby at that point rather than
+  retaining a package workaround as the endpoint.
+
+These deferred items are part of completion. Accelerating the first
+usable shell does not remove language runtimes, service images,
+architecture dispositions, operator status, source builds, or cleanup
+from the later campaign.
+
+## Superseded Resume Checkpoint — 2026-07-29
 
 This checkpoint supersedes older sequencing and point-in-time status below
 without deleting their scope, decisions, or evidence. The first usable-product
@@ -458,6 +540,12 @@ complete here only when its exact accepted artifact has been verified.
 | Bottle-declared, mix-and-match VFS packages | Future retained scope | The current composer produces precomposed images. VFS Formulae/bottles and user-selectable composition remain a later product iteration. |
 
 ## Execution Order
+
+The 2026-07-31 checkpoint at the top of this document is the live
+delivery order. The phases below preserve the complete design,
+historical evidence, and acceptance criteria. Where an older tranche
+conflicts with that checkpoint, use the checkpoint and retain the
+tranche as an audit record.
 
 Work in different repositories may proceed concurrently when immutable inputs
 make the results independent. Do not serialize unrelated Formula rollouts, but
@@ -1315,6 +1403,7 @@ goal from an earlier section.
 | One default VFS per language | Rejected, except for the retained Node.js demo. Languages belong in the main shell as lazy bottle groups. |
 | Bottle dependencies and one bottle per VFS | Retained as Phase 7 rather than required for the first lazy-shell cutover. |
 | Treat the direct composer as sufficient retirement evidence for the historical build-time `brew` pour plus `saveImage()` proof | Unresolved. Phase 5 must run the exact reviewed closure through stock upstream `brew`, save the image, compare ownership, links, receipts, and provenance, and then record an evidence-backed disposition. The current direct composer does not silently retire this proof. |
+| Require the complete 64-Formula, 71-variant prefix campaign before the first usable in-guest `brew` | Superseded as delivery order by the 2026-07-31 checkpoint. Reuse the green immutable 38-Formula base, publish only Libyaml and the new Ruby bottle, regenerate the shell contracts, and run the exact lifecycle proof first. The complete campaign remains required for final guest-prefix and registry-migration completion. |
 
 ## Completion Definition
 
