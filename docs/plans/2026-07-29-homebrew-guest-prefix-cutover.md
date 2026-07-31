@@ -1,6 +1,7 @@
 # Homebrew Guest-Prefix Cutover
 
 Date: 2026-07-29
+Last reconciled: 2026-07-31
 
 This plan moves Kandelo guest packages from the retired
 `/home/linuxbrew/.linuxbrew` layout to a Kandelo-owned layout without
@@ -10,6 +11,71 @@ Implementation update, 2026-07-30: #1144 landed the inactive target-layout
 contract and made bottle inspection bind to its exact SHA-256. Campaign
 derivation can therefore land while the retired prefix remains active.
 Activating the target layout remains a later atomic cutover step.
+
+## Accelerated Usable Cutover Checkpoint: 2026-07-31
+
+This checkpoint separates the first usable in-guest Homebrew delivery
+from the complete prefix and catalog migration. It changes ordering
+only. The 64-Formula, 71-variant campaign below remains required for
+the final `/opt/kandelo/homebrew` catalog and removal of every
+retired-prefix path.
+
+The immutable main-shell release is a green 38-Formula base. Its three
+embedded Formulae and 35 independent lazy bottle trees have passed exact
+Node.js and Chromium product validation. The usable cutover must reuse
+those layers. An unfinished sibling Formula or the later full campaign
+is not a reason to rebuild them.
+
+The bottle delta for the first usable proof is Libyaml and Ruby:
+
+1. Land the publisher authority on protected Kandelo `main`, read its
+   exact SHA, and rotate the tap's reusable-workflow pin and
+   `kandelo-ref` together to that SHA.
+2. Publish Libyaml as a new public package namespace. Hold package
+   creation, child upload, and version-index mutation under the same
+   first-publication shared writer lock. The lock is repository-scoped
+   and Formula-keyed. Do not let parallel first-publication and index
+   jobs race one another.
+3. Publish Ruby only after the exact Libyaml bottle is publicly readable
+   and admitted as its dependency. Every other runtime-support input
+   reuses its immutable bottle digest and truthful producer provenance.
+4. Regenerate the runtime-support descriptor and shell package
+   generation. Publish a bottle mirror that preserves every reused
+   layer byte for byte, and close one immutable lifecycle release. The
+   generated contracts must name the new Libyaml/Ruby identities and
+   the reused 38-Formula base. They must not relabel old bytes as newly
+   built.
+5. Run PR #1147's Chromium product lifecycle. Install, link, execute,
+   and remove core Bzip2. Then install independent-tap M4 and verify
+   that its core-tap Dash dependency resolves and runs through normal
+   Homebrew behavior. Preserve the peer exact-byte Node.js evidence as
+   well.
+6. Switch the shell only after the regenerated descriptor, generation,
+   mirror, lifecycle release, and both host claims agree on the same
+   bytes.
+
+The pin order is part of the authority contract. A tap caller cannot
+predict the final Kandelo merge SHA. Merge Kandelo first, read
+protected `main`, rotate both exact tap pins, then merge and read the
+resulting tap source before dispatch. The ordinary publisher rereads
+protected Kandelo `main` immediately before every write and requires
+exact equality. If it moved, stop and rebind; do not substitute ancestry
+or a branch name.
+
+This usable proof is not the end of the guest-prefix migration. The
+complete campaign below must still publish or truthfully reuse all 71
+variants, switch the guest to `/opt/kandelo/homebrew`, remove
+retired-prefix source and bottle state, and finalize the complete tap.
+It also does not retire the registry, finish service runtimes, complete
+third-party tap operations, add manual-page support, or produce
+bottle-declared VFS layers.
+
+The temporary Ruby `posix_spawn` patch is explicitly transitional. A
+separate Kandelo worktree owns the general vfork and process-memory
+solution. Once that platform behavior is available, remove the patch,
+rebuild pristine upstream Ruby, and rerun this lifecycle. Do not let
+the accelerated proof turn the package workaround into the permanent
+runtime contract.
 
 The canonical guest contract is:
 
@@ -193,6 +259,10 @@ compatible public sibling, so wasm32 can become usable before wasm64
 without losing either architecture when wasm64 later succeeds.
 
 ## Independent Bottles And Atomic Activation
+
+This is the complete `/opt/kandelo/homebrew` prefix-migration sequence.
+The 2026-07-31 usable cutover above may ship first, but none of these
+completion steps is removed.
 
 1. Land the final publisher compatibility work.
 2. Rebase the Kandelo layout and tap source-authority changes onto their
@@ -425,7 +495,7 @@ finished:
   downstream publisher consumes that receipt, so this is not a current
   mutation boundary.
 
-### Execution Checkpoint: 2026-07-30
+### Superseded Execution Checkpoint: 2026-07-30
 
 The browser lazy-download proxy in Kandelo PR #1159 has exact Node.js,
 Chromium, and repository CI evidence. Keep its reviewed head unchanged.
