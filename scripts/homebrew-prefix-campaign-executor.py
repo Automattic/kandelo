@@ -51,7 +51,7 @@ CAMPAIGN_COMMIT_TIMESTAMP = 946684800
 CAMPAIGN_COMMIT_TIMEZONE = "+0000"
 CAMPAIGN_COMMIT_NAME = "Kandelo Homebrew Campaign"
 CAMPAIGN_COMMIT_EMAIL = "campaign@kandelo.invalid"
-PUBLICATION_FILES = (
+BUILD_PUBLICATION_FILES = (
     "build/bottle.json",
     "build/bottle.tar.gz",
     "build/dependency-provenance.json",
@@ -59,6 +59,16 @@ PUBLICATION_FILES = (
     "composition/sidecars-input.json",
     "receipt.json",
 )
+REUSE_PUBLICATION_FILES = (
+    "composition/sidecars-input.json",
+    "reuse/bottle.json",
+    "reuse/bottle.tar.gz",
+    "reuse/evidence.json",
+)
+# Existing build fixtures import this name. Keep it as the build publication
+# inventory while the handoff manifest discriminates build from reuse.
+PUBLICATION_FILES = BUILD_PUBLICATION_FILES
+HANDOFF_SCHEMA = 2
 
 
 class ExecutorError(RuntimeError):
@@ -83,6 +93,15 @@ def duplicate_rejecting_object(
 def pretty_json(value: Any) -> bytes:
     return (
         json.dumps(value, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+
+
+def canonical_json(value: Any) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
     ).encode("utf-8")
 
 
@@ -168,6 +187,118 @@ def real_directory(path: pathlib.Path, label: str) -> pathlib.Path:
     return path.resolve()
 
 
+def run_git(
+    root: pathlib.Path,
+    arguments: list[str],
+    label: str,
+    *,
+    maximum: int = MAX_JSON_BYTES,
+) -> bytes:
+    try:
+        result = subprocess.run(
+            ["git", *arguments],
+            cwd=root,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        fail(f"cannot read {label}: {error}")
+    if result.returncode != 0:
+        detail = result.stderr.decode(
+            "utf-8", errors="replace"
+        )[-16_384:]
+        fail(f"cannot read {label}: {detail}")
+    if len(result.stdout) > maximum:
+        fail(f"{label} exceeds its size bound")
+    return result.stdout
+
+
+def exact_git_checkout(
+    root: pathlib.Path,
+    commit: str,
+    label: str,
+) -> pathlib.Path:
+    root = real_directory(root, label)
+    commit = require_string(commit, f"{label} commit", COMMIT)
+    top = run_git(root, ["rev-parse", "--show-toplevel"], label)
+    try:
+        top_path = pathlib.Path(top.decode("utf-8").strip()).resolve()
+    except UnicodeDecodeError as error:
+        fail(f"{label} Git root is not UTF-8: {error}")
+    if top_path != root:
+        fail(f"{label} is not the exact Git worktree root")
+    head = run_git(root, ["rev-parse", "HEAD"], f"{label} HEAD")
+    if head.decode("ascii", errors="strict").strip() != commit:
+        fail(f"{label} does not name the campaign's exact commit")
+    dirty = run_git(
+        root,
+        ["status", "--porcelain=v1", "--untracked-files=all"],
+        f"{label} cleanliness",
+    )
+    if dirty:
+        fail(f"{label} worktree is dirty")
+    return root
+
+
+def anonymous_environment() -> dict[str, str]:
+    environment = dict(os.environ)
+    # WHY: a successful maintainer-authenticated read says nothing about
+    # whether a Kandelo guest can consume the historical bottle. Keep every
+    # supported GitHub/Homebrew credential out of the independent readback.
+    for name in (
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "HOMEBREW_GITHUB_API_TOKEN",
+        "HOMEBREW_GITHUB_PACKAGES_TOKEN",
+        "HOMEBREW_DOCKER_REGISTRY_TOKEN",
+    ):
+        environment.pop(name, None)
+    return environment
+
+
+def anonymous_bottle_readback(
+    url: str,
+    output: pathlib.Path,
+    expected_bytes: int,
+    expected_sha256: str,
+) -> None:
+    command = [
+        "npx",
+        "--no-install",
+        "tsx",
+        str(ROOT / "scripts/homebrew-verify-public-bottle.ts"),
+        "--url",
+        url,
+        "--sha256",
+        expected_sha256,
+        "--bytes",
+        str(expected_bytes),
+        "--out",
+        str(output),
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            cwd=ROOT,
+            check=False,
+            env=anonymous_environment(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=600,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        fail(f"cannot read historical bottle anonymously: {error}")
+    if result.returncode != 0:
+        detail = result.stderr.decode(
+            "utf-8", errors="replace"
+        )[-16_384:]
+        fail(f"cannot read historical bottle anonymously: {detail}")
+
+
 def load_json_bytes(
     path: pathlib.Path,
     label: str,
@@ -197,6 +328,31 @@ def safe_relative(value: Any, label: str) -> str:
         or any(part in (".", "..") for part in path.split("/"))
     ):
         fail(f"{label} is not a safe repository-relative path")
+    return path
+
+
+def regular_file_within(
+    root: pathlib.Path,
+    relative: Any,
+    label: str,
+    maximum: int = MAX_JSON_BYTES,
+) -> pathlib.Path:
+    root = real_directory(root, f"{label} root")
+    relative = safe_relative(relative, f"{label} path")
+    current = root
+    for part in relative.split("/")[:-1]:
+        current = current / part
+        try:
+            metadata = current.lstat()
+        except OSError as error:
+            fail(f"{label} parent is unavailable: {error}")
+        if not stat.S_ISDIR(metadata.st_mode) or current.is_symlink():
+            fail(f"{label} crosses an indirect parent")
+    path = regular_file(root / relative, label, maximum)
+    try:
+        path.resolve().relative_to(root)
+    except ValueError:
+        fail(f"{label} escapes its authority root")
     return path
 
 
@@ -650,6 +806,44 @@ def handoff_publication(
     return publication
 
 
+def publication_kind(publication: dict[str, Any], label: str) -> str:
+    kind = require_string(publication.get("kind"), f"{label} kind")
+    if kind not in ("build", "reuse"):
+        fail(f"{label} kind is unsupported")
+    return kind
+
+
+def publication_files(kind: str) -> tuple[str, ...]:
+    if kind == "build":
+        return BUILD_PUBLICATION_FILES
+    if kind == "reuse":
+        return REUSE_PUBLICATION_FILES
+    fail("publication kind is unsupported")
+
+
+def publication_semantic_path(
+    publication: dict[str, Any],
+    semantic: str,
+    label: str,
+) -> str:
+    paths = {
+        "build": {
+            "bottle_json": "build/bottle.json",
+            "bottle_archive": "build/bottle.tar.gz",
+            "sidecars_input": "composition/sidecars-input.json",
+        },
+        "reuse": {
+            "bottle_json": "reuse/bottle.json",
+            "bottle_archive": "reuse/bottle.tar.gz",
+            "sidecars_input": "composition/sidecars-input.json",
+        },
+    }
+    kind = publication_kind(publication, label)
+    if semantic not in paths[kind]:
+        fail(f"{label} lacks semantic file {semantic}")
+    return paths[kind][semantic]
+
+
 def handoff_publication_file(
     publication: dict[str, Any],
     path: str,
@@ -841,6 +1035,664 @@ def campaign_formula_evidence(
     }
 
 
+def campaign_variant(
+    formula: dict[str, Any],
+    arch: str,
+) -> dict[str, Any]:
+    matches = [
+        value
+        for value in formula.get("variants", [])
+        if isinstance(value, dict) and value.get("arch") == arch
+    ]
+    if len(matches) != 1:
+        fail(f"{formula.get('name')}/{arch} is not one campaign variant")
+    return matches[0]
+
+
+def campaign_guest_layout(campaign: dict[str, Any]) -> dict[str, Any]:
+    authority = campaign["authority"]
+    record = exact_keys(
+        authority.get("guest_layout"),
+        {"path", "sha256"},
+        "campaign guest layout",
+    )
+    relative = safe_relative(record["path"], "campaign guest layout path")
+    if relative != "homebrew/kandelo-guest-layout.json":
+        fail("campaign guest layout path is not canonical")
+    path = regular_file_within(
+        ROOT,
+        relative,
+        "campaign guest layout",
+    )
+    digest = require_string(
+        record["sha256"], "campaign guest layout SHA-256", SHA256
+    )
+    if sha256_file(path) != digest:
+        fail("campaign guest layout differs from the executor checkout")
+    layout, _payload = load_json_bytes(
+        path, "campaign guest layout", canonical=False
+    )
+    layout = exact_keys(
+        layout,
+        {
+            "cellar",
+            "kind",
+            "prefix",
+            "repository",
+            "retired_prefixes",
+            "schema",
+            "stable_entrypoint",
+        },
+        "campaign guest layout",
+    )
+    if (
+        layout["schema"] != 1
+        or layout["kind"] != "kandelo-homebrew-guest-layout"
+    ):
+        fail("campaign guest layout has an unsupported contract")
+    for key in ("cellar", "prefix", "repository", "stable_entrypoint"):
+        value = require_string(layout[key], f"guest layout {key}")
+        if not value.startswith("/") or "\0" in value:
+            fail(f"guest layout {key} is not an absolute guest path")
+    if layout["cellar"] != f"{layout['prefix']}/Cellar":
+        fail("campaign guest layout cellar is not under its prefix")
+    retired = layout["retired_prefixes"]
+    if (
+        not isinstance(retired, list)
+        or not retired
+        or retired != sorted(set(retired))
+        or any(
+            not isinstance(value, str)
+            or not value.startswith("/")
+            or value == layout["prefix"]
+            for value in retired
+        )
+    ):
+        fail("campaign guest layout retired prefixes are invalid")
+    return layout
+
+
+def validate_built_from_record(
+    value: Any,
+    label: str,
+) -> dict[str, Any]:
+    value = exact_keys(
+        value,
+        {
+            "formula_sha256",
+            "kandelo_commit",
+            "kandelo_repository",
+            "tap_commit",
+            "tap_repository",
+        },
+        label,
+    )
+    require_string(value["formula_sha256"], f"{label} Formula SHA-256", SHA256)
+    for key in ("kandelo_commit", "tap_commit"):
+        require_string(value[key], f"{label} {key}", COMMIT)
+    for key in ("kandelo_repository", "tap_repository"):
+        require_string(value[key], f"{label} {key}", REPOSITORY)
+    return value
+
+
+def validate_reuse_variant(
+    campaign: dict[str, Any],
+    formula: dict[str, Any],
+    arch: str,
+) -> dict[str, Any]:
+    name = formula["name"]
+    variant = exact_keys(
+        campaign_variant(formula, arch),
+        {
+            "anonymous_readback",
+            "arch",
+            "disposition",
+            "inspection",
+            "old_formula_source",
+            "old_record",
+            "old_record_sha256",
+            "provenance",
+            "selected_by",
+            "sidecars",
+        },
+        f"{name}/{arch} reuse variant",
+    )
+    disposition = exact_keys(
+        variant["disposition"],
+        {"kind", "reasons"},
+        f"{name}/{arch} disposition",
+    )
+    if (
+        disposition["kind"] != "byte-clean-reuse-candidate"
+        or disposition["reasons"] != []
+    ):
+        fail(f"{name}/{arch} is not admitted for byte-clean reuse")
+    if variant["arch"] != arch:
+        fail(f"{name}/{arch} reuse variant has another architecture")
+
+    old_record = variant["old_record"]
+    required = {
+        "arch",
+        "bottle_tag",
+        "browser_compatible",
+        "built_at",
+        "built_by",
+        "built_from",
+        "bytes",
+        "cache_key_sha",
+        "cellar",
+        "fork_instrumentation",
+        "kandelo_abi",
+        "link_manifest",
+        "prefix",
+        "runtime_support",
+        "sha256",
+        "status",
+        "url",
+    }
+    if (
+        not isinstance(old_record, dict)
+        or not required <= set(old_record)
+        or not set(old_record) <= required | {"queued_at"}
+    ):
+        fail(f"{name}/{arch} old bottle record is ambiguous")
+    digest = require_string(
+        old_record["sha256"], f"{name}/{arch} bottle SHA-256", SHA256
+    )
+    byte_count = require_int(
+        old_record["bytes"],
+        f"{name}/{arch} bottle bytes",
+        1,
+        MAX_ASSET_BYTES,
+    )
+    authority = campaign["authority"]
+    expected_url = (
+        "https://ghcr.io/v2/"
+        f"{authority['tap_repository'].lower()}/{name}/"
+        f"blobs/sha256:{digest}"
+    )
+    if (
+        old_record["status"] != "success"
+        or old_record["arch"] != arch
+        or old_record["bottle_tag"] != f"{arch}_kandelo"
+        or old_record["kandelo_abi"]
+        != authority["current_kandelo_abi"]
+        or old_record["cache_key_sha"] != digest
+        or old_record["url"] != expected_url
+        or not isinstance(old_record["browser_compatible"], bool)
+        or not isinstance(old_record["runtime_support"], list)
+    ):
+        fail(f"{name}/{arch} old bottle identity is invalid")
+    if old_record["fork_instrumentation"] not in (
+        "disabled",
+        "not-required",
+        "required",
+        "unknown",
+    ):
+        fail(f"{name}/{arch} fork instrumentation is invalid")
+    require_string(old_record["built_at"], f"{name}/{arch} built_at")
+    built_by = require_string(
+        old_record["built_by"], f"{name}/{arch} built_by"
+    )
+    if not built_by.startswith("https://"):
+        fail(f"{name}/{arch} built_by is not an HTTPS identity")
+    built_from = validate_built_from_record(
+        old_record["built_from"], f"{name}/{arch} built_from"
+    )
+    if built_from["tap_repository"].lower() != authority[
+        "tap_repository"
+    ].lower():
+        fail(f"{name}/{arch} historical tap repository is substituted")
+    layout = campaign_guest_layout(campaign)
+    if (
+        old_record["prefix"] == layout["prefix"]
+        or old_record["prefix"] not in layout["retired_prefixes"]
+        or old_record["cellar"] != f"{old_record['prefix']}/Cellar"
+    ):
+        fail(f"{name}/{arch} old bottle has no retired layout identity")
+    if sha256_bytes(canonical_json(old_record)) != require_string(
+        variant["old_record_sha256"],
+        f"{name}/{arch} old record SHA-256",
+        SHA256,
+    ):
+        fail(f"{name}/{arch} old record differs from its campaign digest")
+
+    anonymous = exact_keys(
+        variant["anonymous_readback"],
+        {"bytes", "sha256", "url"},
+        f"{name}/{arch} anonymous readback",
+    )
+    if anonymous != {
+        "bytes": byte_count,
+        "sha256": digest,
+        "url": expected_url,
+    }:
+        fail(f"{name}/{arch} anonymous readback differs from the bottle")
+    inspection = exact_keys(
+        variant["inspection"],
+        {
+            "file_count",
+            "fork_instrumentation",
+            "formula_sha256",
+            "result_sha256",
+            "retired_prefixes",
+            "scan",
+        },
+        f"{name}/{arch} inspection",
+    )
+    require_string(
+        inspection["result_sha256"],
+        f"{name}/{arch} inspection SHA-256",
+        SHA256,
+    )
+    if (
+        require_int(
+            inspection["file_count"],
+            f"{name}/{arch} inspected file count",
+            1,
+        )
+        < 1
+        or inspection["fork_instrumentation"]
+        != old_record["fork_instrumentation"]
+        or inspection["formula_sha256"]
+        != built_from["formula_sha256"]
+        or inspection["retired_prefixes"] != []
+        or inspection["scan"] != "all-regular-members"
+    ):
+        fail(f"{name}/{arch} inspection does not admit byte-clean reuse")
+    old_source = exact_keys(
+        variant["old_formula_source"],
+        {"commit", "identity_excluding_bottle_sha256", "path", "sha256"},
+        f"{name}/{arch} old Formula source",
+    )
+    if (
+        old_source["path"] != f"Formula/{name}.rb"
+        or old_source["commit"] != built_from["tap_commit"]
+        or old_source["identity_excluding_bottle_sha256"]
+        != formula["formula_source"]["identity_excluding_bottle_sha256"]
+    ):
+        fail(f"{name}/{arch} old Formula source is substituted")
+    require_string(
+        old_source["sha256"],
+        f"{name}/{arch} old Formula SHA-256",
+        SHA256,
+    )
+    sidecars = exact_keys(
+        variant["sidecars"],
+        {"formula", "link"},
+        f"{name}/{arch} sidecars",
+    )
+    for label, value in (
+        ("provenance", variant["provenance"]),
+        ("Formula sidecar", sidecars["formula"]),
+        ("link sidecar", sidecars["link"]),
+    ):
+        record = exact_keys(
+            value,
+            {"path", "sha256"},
+            f"{name}/{arch} {label}",
+        )
+        safe_relative(record["path"], f"{name}/{arch} {label} path")
+        require_string(
+            record["sha256"],
+            f"{name}/{arch} {label} SHA-256",
+            SHA256,
+        )
+    return variant
+
+
+def load_digest_bound_json(
+    root: pathlib.Path,
+    record: dict[str, Any],
+    label: str,
+) -> tuple[dict[str, Any], bytes]:
+    path = regular_file_within(root, record["path"], label)
+    payload = path.read_bytes()
+    if sha256_bytes(payload) != record["sha256"]:
+        fail(f"{label} differs from its campaign digest")
+    value, loaded_payload = load_json_bytes(path, label, canonical=False)
+    if not isinstance(value, dict) or loaded_payload != payload:
+        fail(f"{label} is not a JSON object")
+    return value, payload
+
+
+def normalized_provenance_sha256(value: dict[str, Any]) -> str:
+    normalized = json.loads(canonical_json(value))
+    metadata = normalized.get("metadata")
+    if not isinstance(metadata, dict):
+        fail("historical provenance lacks metadata")
+    record = metadata.get("provenance_json")
+    if not isinstance(record, dict) or "sha256" not in record:
+        fail("historical provenance lacks its self-hash")
+    record["sha256"] = "0" * 64
+    return sha256_bytes(pretty_json(normalized))
+
+
+def historical_reuse_inputs(
+    *,
+    campaign: dict[str, Any],
+    formula: dict[str, Any],
+    variant: dict[str, Any],
+    arch: str,
+    old_tap_root: pathlib.Path,
+) -> dict[str, Any]:
+    name = formula["name"]
+    old_record = variant["old_record"]
+    sidecars = variant["sidecars"]
+    formula_sidecar, _formula_payload = load_digest_bound_json(
+        old_tap_root,
+        sidecars["formula"],
+        f"{name}/{arch} historical Formula sidecar",
+    )
+    formula_sidecar = exact_keys(
+        formula_sidecar,
+        {
+            "bottle_rebuild",
+            "bottles",
+            "dependencies",
+            "formula_path",
+            "formula_revision",
+            "full_name",
+            "kandelo_abi",
+            "name",
+            "schema",
+            "source_metadata",
+            "tap_commit",
+            "tap_name",
+            "tap_repository",
+            "version",
+        },
+        f"{name}/{arch} historical Formula sidecar",
+    )
+    expected_dependencies = formula["dependencies"]
+    sidecar_dependencies: list[dict[str, str]] = []
+    raw_dependencies = formula_sidecar["dependencies"]
+    if not isinstance(raw_dependencies, list):
+        fail(f"{name}/{arch} historical dependencies are invalid")
+    for index, value in enumerate(raw_dependencies):
+        value = exact_keys(
+            value,
+            {"full_name", "name", "version"},
+            f"{name}/{arch} historical dependency #{index}",
+        )
+        if value["full_name"] != (
+            f"{campaign['authority']['tap_name']}/{value['name']}"
+        ):
+            fail(f"{name}/{arch} historical dependency is ambiguous")
+        sidecar_dependencies.append(
+            {"full_name": value["full_name"], "version": value["version"]}
+        )
+    bottles = formula_sidecar["bottles"]
+    if not isinstance(bottles, list):
+        fail(f"{name}/{arch} historical bottle inventory is invalid")
+    matching = [
+        value
+        for value in bottles
+        if isinstance(value, dict) and value.get("arch") == arch
+    ]
+    if (
+        formula_sidecar["schema"] != 1
+        or formula_sidecar["name"] != name
+        or formula_sidecar["full_name"]
+        != f"{campaign['authority']['tap_name']}/{name}"
+        or formula_sidecar["version"] != formula["version"]
+        or formula_sidecar["formula_path"] != f"Formula/{name}.rb"
+        or formula_sidecar["kandelo_abi"]
+        != campaign["authority"]["current_kandelo_abi"]
+        or formula_sidecar["tap_name"]
+        != campaign["authority"]["tap_name"]
+        or formula_sidecar["tap_repository"].lower()
+        != campaign["authority"]["tap_repository"].lower()
+        or formula_sidecar["source_metadata"] != "Kandelo/metadata.json"
+        or sidecar_dependencies != expected_dependencies
+        or len(matching) != 1
+        or matching[0] != old_record
+    ):
+        fail(f"{name}/{arch} historical Formula sidecar is substituted")
+    historical_rebuild = require_int(
+        formula_sidecar["bottle_rebuild"],
+        f"{name}/{arch} historical bottle rebuild",
+    )
+    if (
+        require_int(
+            formula["destination"]["bottle_rebuild"],
+            f"{name}/{arch} destination bottle rebuild",
+        )
+        <= historical_rebuild
+    ):
+        fail(f"{name}/{arch} reuse destination does not advance rebuild")
+    formula_revision = require_int(
+        formula_sidecar["formula_revision"],
+        f"{name}/{arch} Formula revision",
+    )
+    require_string(
+        formula_sidecar["tap_commit"],
+        f"{name}/{arch} Formula sidecar tap commit",
+        COMMIT,
+    )
+
+    link, _link_payload = load_digest_bound_json(
+        old_tap_root,
+        sidecars["link"],
+        f"{name}/{arch} historical link sidecar",
+    )
+    link = exact_keys(
+        link,
+        {
+            "arch",
+            "bottle",
+            "cellar",
+            "env",
+            "kandelo_abi",
+            "keg",
+            "links",
+            "package",
+            "prefix",
+            "receipts",
+            "schema",
+            "version",
+        },
+        f"{name}/{arch} historical link sidecar",
+    )
+    link_bottle = exact_keys(
+        link["bottle"],
+        {"bytes", "cache_key_sha", "payload_root", "sha256", "url"},
+        f"{name}/{arch} historical link bottle",
+    )
+    if (
+        link["schema"] != 1
+        or link["package"] != name
+        or link["version"] != formula["version"]
+        or link["arch"] != arch
+        or link["kandelo_abi"] != old_record["kandelo_abi"]
+        or link["prefix"] != old_record["prefix"]
+        or link["cellar"] != old_record["cellar"]
+        or link_bottle
+        != {
+            "bytes": old_record["bytes"],
+            "cache_key_sha": old_record["cache_key_sha"],
+            "payload_root": f"{name}/{formula['version']}",
+            "sha256": old_record["sha256"],
+            "url": old_record["url"],
+        }
+        or old_record["link_manifest"]
+        != (
+            f"Kandelo/link/{name}-{formula['version']}-"
+            f"rebuild{historical_rebuild}-{arch}.json"
+        )
+        or old_record["link_manifest"] != sidecars["link"]["path"]
+    ):
+        fail(f"{name}/{arch} historical link sidecar is substituted")
+    if not isinstance(link["links"], list) or not isinstance(
+        link["receipts"], list
+    ):
+        fail(f"{name}/{arch} historical link inventory is invalid")
+
+    provenance, _provenance_payload = load_digest_bound_json(
+        old_tap_root,
+        variant["provenance"],
+        f"{name}/{arch} historical provenance",
+    )
+    provenance = exact_keys(
+        provenance,
+        {
+            "bottle",
+            "build",
+            "formula",
+            "metadata",
+            "repositories",
+            "schema",
+            "subject",
+            "validation",
+        },
+        f"{name}/{arch} historical provenance",
+    )
+    subject = exact_keys(
+        provenance["subject"],
+        {"arch", "bottle_rebuild", "kandelo_abi", "package", "version"},
+        f"{name}/{arch} historical provenance subject",
+    )
+    provenance_formula = exact_keys(
+        provenance["formula"],
+        {"path", "sha256"},
+        f"{name}/{arch} historical provenance Formula",
+    )
+    provenance_bottle = exact_keys(
+        provenance["bottle"],
+        {
+            "bottle_tag",
+            "bytes",
+            "cache_key_sha",
+            "cellar",
+            "prefix",
+            "sha256",
+            "url",
+        },
+        f"{name}/{arch} historical provenance bottle",
+    )
+    expected_provenance_bottle = {
+        key: old_record[key]
+        for key in (
+            "bottle_tag",
+            "bytes",
+            "cache_key_sha",
+            "cellar",
+            "prefix",
+            "sha256",
+            "url",
+        )
+    }
+    expected_repositories = {
+        key: old_record["built_from"][key]
+        for key in (
+            "kandelo_repository",
+            "kandelo_commit",
+            "tap_repository",
+            "tap_commit",
+        )
+    }
+    if (
+        provenance["schema"] != 1
+        or subject
+        != {
+            "arch": arch,
+            "bottle_rebuild": historical_rebuild,
+            "kandelo_abi": old_record["kandelo_abi"],
+            "package": name,
+            "version": formula["version"],
+        }
+        or provenance["repositories"] != expected_repositories
+        or provenance_formula
+        != {
+            "path": f"Formula/{name}.rb",
+            "sha256": old_record["built_from"]["formula_sha256"],
+        }
+        or provenance_bottle != expected_provenance_bottle
+        or variant["provenance"]["path"]
+        != (
+            f"Kandelo/reports/{name}-{formula['version']}-"
+            f"rebuild{historical_rebuild}-{arch}.provenance.json"
+        )
+    ):
+        fail(f"{name}/{arch} historical provenance is substituted")
+    build = exact_keys(
+        provenance["build"],
+        {
+            "brew_version",
+            "dev_shell",
+            "github_run",
+            "job",
+            "runner_os",
+            "sdk_fingerprint",
+            "sysroot_fingerprint",
+        },
+        f"{name}/{arch} historical build evidence",
+    )
+    for key in ("brew_version", "dev_shell", "github_run", "job", "runner_os"):
+        require_string(build[key], f"{name}/{arch} build {key}")
+    for key in ("sdk_fingerprint", "sysroot_fingerprint"):
+        require_string(build[key], f"{name}/{arch} build {key}", SHA256)
+    metadata = exact_keys(
+        provenance["metadata"],
+        {
+            "formula_json",
+            "link_manifest_json",
+            "metadata_json",
+            "provenance_json",
+        },
+        f"{name}/{arch} historical provenance metadata",
+    )
+    historical_metadata = exact_keys(
+        metadata["metadata_json"],
+        {"path", "sha256"},
+        f"{name}/{arch} historical metadata receipt",
+    )
+    if historical_metadata["path"] != campaign["authority"][
+        "old_metadata"
+    ]["path"]:
+        fail(f"{name}/{arch} historical metadata path is substituted")
+    require_string(
+        historical_metadata["sha256"],
+        f"{name}/{arch} historical metadata SHA-256",
+        SHA256,
+    )
+    expected_metadata = {
+        "formula_json": sidecars["formula"],
+        "link_manifest_json": sidecars["link"],
+        # A provenance report can legitimately name an older metadata
+        # generation that the campaign already proved reachable from the
+        # exact old-tap history. Requiring the latest selected file here would
+        # rewrite history by rejecting otherwise valid older bottles.
+        "metadata_json": historical_metadata,
+        "provenance_json": {
+            "path": variant["provenance"]["path"],
+            "sha256": normalized_provenance_sha256(provenance),
+        },
+    }
+    if metadata != expected_metadata:
+        fail(f"{name}/{arch} historical provenance metadata is substituted")
+
+    old_source = variant["old_formula_source"]
+    historical_formula = run_git(
+        old_tap_root,
+        ["show", f"{old_source['commit']}:{old_source['path']}"],
+        f"{name}/{arch} historical Formula source",
+        maximum=1024 * 1024,
+    )
+    if sha256_bytes(historical_formula) != old_source["sha256"]:
+        fail(f"{name}/{arch} historical Formula source is substituted")
+    return {
+        "build": build,
+        "env": link["env"],
+        "formula_revision": formula_revision,
+        "keg": link["keg"],
+        "links": link["links"],
+        "payload_root": link_bottle["payload_root"],
+        "receipts": link["receipts"],
+        "validation": provenance["validation"],
+    }
+
+
 def validate_handoff_arches(
     handoff: dict[str, Any],
     formula: dict[str, Any],
@@ -962,6 +1814,266 @@ def default_publication_validator(
         )
 
 
+def reuse_bottle_json(
+    campaign: dict[str, Any],
+    formula: dict[str, Any],
+    arch: str,
+    digest: str,
+    layout: dict[str, Any],
+) -> dict[str, Any]:
+    authority = campaign["authority"]
+    name = formula["name"]
+    tap_name = authority["tap_name"]
+    owner, tap = tap_name.split("/", 1)
+    return {
+        f"{tap_name}/{name}": {
+            "bottle": {
+                "cellar": layout["cellar"],
+                "rebuild": formula["destination"]["bottle_rebuild"],
+                "root_url": (
+                    "https://ghcr.io/v2/"
+                    f"{authority['tap_repository'].lower()}"
+                ),
+                "tags": {f"{arch}_kandelo": {"sha256": digest}},
+            },
+            "formula": {
+                "name": name,
+                "path": (
+                    f"Library/Taps/{owner}/homebrew-{tap}/"
+                    f"Formula/{name}.rb"
+                ),
+                "pkg_version": formula["version"],
+            },
+        }
+    }
+
+
+def reuse_sidecars_input(
+    campaign: dict[str, Any],
+    formula: dict[str, Any],
+    variant: dict[str, Any],
+    arch: str,
+    extracted: dict[str, Any],
+    layout: dict[str, Any],
+) -> dict[str, Any]:
+    authority = campaign["authority"]
+    old_record = variant["old_record"]
+    name = formula["name"]
+    dependencies = [
+        {
+            "full_name": value["full_name"],
+            "name": value["full_name"].rsplit("/", 1)[1],
+            "version": value["version"],
+        }
+        for value in formula["dependencies"]
+    ]
+    return {
+        "generated_at": old_record["built_at"],
+        "generator": "Kandelo Homebrew prefix campaign reuse",
+        "kandelo_abi": authority["current_kandelo_abi"],
+        "kandelo_commit": authority["kandelo_commit"],
+        "kandelo_repository": "Automattic/kandelo",
+        "packages": [
+            {
+                "bottle_rebuild": formula["destination"][
+                    "bottle_rebuild"
+                ],
+                "bottles": [
+                    {
+                        "arch": arch,
+                        "archived_formula_sha256": old_record[
+                            "built_from"
+                        ]["formula_sha256"],
+                        "bottle_file": "../reuse/bottle.tar.gz",
+                        "bottle_tag": f"{arch}_kandelo",
+                        "browser_compatible": old_record[
+                            "browser_compatible"
+                        ],
+                        "build": extracted["build"],
+                        "built_at": old_record["built_at"],
+                        "built_by": old_record["built_by"],
+                        "built_from": old_record["built_from"],
+                        "cache_key_sha": old_record["cache_key_sha"],
+                        "cellar": layout["cellar"],
+                        "env": extracted["env"],
+                        "fork_instrumentation": old_record[
+                            "fork_instrumentation"
+                        ],
+                        "keg": (
+                            f"{layout['cellar']}/{name}/"
+                            f"{formula['version']}"
+                        ),
+                        "links": extracted["links"],
+                        "payload_root": extracted["payload_root"],
+                        "prefix": layout["prefix"],
+                        "receipts": extracted["receipts"],
+                        "runtime_support": old_record["runtime_support"],
+                        "status": "success",
+                        "url": old_record["url"],
+                        "validation": extracted["validation"],
+                    }
+                ],
+                "dependencies": dependencies,
+                "formula_path": f"Formula/{name}.rb",
+                "formula_revision": extracted["formula_revision"],
+                "formula_source_sha256": formula["formula_source"][
+                    "sha256"
+                ],
+                "full_name": f"{authority['tap_name']}/{name}",
+                "name": name,
+                "version": formula["version"],
+            }
+        ],
+        "release_tag": (
+            f"bottles-abi-v{authority['current_kandelo_abi']}"
+        ),
+        "schema": 1,
+        "tap_commit": authority["source_tap_commit"],
+        "tap_name": authority["tap_name"],
+        "tap_repository": authority["tap_repository"],
+    }
+
+
+def reuse_evidence_document(
+    campaign_payload: bytes,
+    formula: dict[str, Any],
+    variant: dict[str, Any],
+    arch: str,
+    extracted: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "anonymous_readback": variant["anonymous_readback"],
+        "arch": arch,
+        "built_from": variant["old_record"]["built_from"],
+        "campaign_sha256": sha256_bytes(campaign_payload),
+        "extracted": extracted,
+        "formula": formula["name"],
+        "inspection": variant["inspection"],
+        "kind": "kandelo-homebrew-prefix-reuse-publication",
+        "old_formula_source": variant["old_formula_source"],
+        "old_record_sha256": variant["old_record_sha256"],
+        "provenance": variant["provenance"],
+        "schema": 1,
+        "sidecars": variant["sidecars"],
+        "variant_sha256": sha256_bytes(canonical_json(variant)),
+    }
+
+
+def validate_reuse_publication_shape(
+    publication: pathlib.Path,
+    campaign: dict[str, Any],
+    formula: dict[str, Any],
+    arch: str,
+) -> None:
+    name = formula["name"]
+    actual = walk_regular_files(
+        publication, f"{name}/{arch} reuse publication"
+    )
+    if actual != list(REUSE_PUBLICATION_FILES):
+        fail(
+            f"{name}/{arch} reuse publication file set differs "
+            "from the reuse contract"
+        )
+    variant = validate_reuse_variant(campaign, formula, arch)
+    evidence, _payload = load_json_bytes(
+        publication / "reuse/evidence.json",
+        f"{name}/{arch} reuse evidence",
+    )
+    evidence = exact_keys(
+        evidence,
+        {
+            "anonymous_readback",
+            "arch",
+            "built_from",
+            "campaign_sha256",
+            "extracted",
+            "formula",
+            "inspection",
+            "kind",
+            "old_formula_source",
+            "old_record_sha256",
+            "provenance",
+            "schema",
+            "sidecars",
+            "variant_sha256",
+        },
+        f"{name}/{arch} reuse evidence",
+    )
+    campaign_payload = pretty_json(campaign)
+    if evidence != reuse_evidence_document(
+        campaign_payload,
+        formula,
+        variant,
+        arch,
+        evidence["extracted"],
+    ):
+        fail(f"{name}/{arch} reuse evidence differs from the campaign")
+    extracted = exact_keys(
+        evidence["extracted"],
+        {
+            "build",
+            "env",
+            "formula_revision",
+            "keg",
+            "links",
+            "payload_root",
+            "receipts",
+            "validation",
+        },
+        f"{name}/{arch} extracted historical evidence",
+    )
+    archive = regular_file(
+        publication / "reuse/bottle.tar.gz",
+        f"{name}/{arch} reused bottle",
+        MAX_ASSET_BYTES,
+    )
+    if (
+        archive.stat().st_size != variant["old_record"]["bytes"]
+        or sha256_file(archive) != variant["old_record"]["sha256"]
+    ):
+        fail(f"{name}/{arch} reused bottle differs from historical bytes")
+    layout = campaign_guest_layout(campaign)
+    sidecars, _sidecars_payload = load_json_bytes(
+        publication / "composition/sidecars-input.json",
+        f"{name}/{arch} reuse sidecars input",
+    )
+    if sidecars != reuse_sidecars_input(
+        campaign, formula, variant, arch, extracted, layout
+    ):
+        fail(f"{name}/{arch} reuse sidecars input is substituted")
+    expected_bottle = reuse_bottle_json(
+        campaign,
+        formula,
+        arch,
+        variant["old_record"]["sha256"],
+        layout,
+    )
+    bottle_json, _bottle_payload = load_json_bytes(
+        publication / "reuse/bottle.json",
+        f"{name}/{arch} reuse bottle JSON",
+    )
+    if bottle_json != expected_bottle:
+        fail(f"{name}/{arch} reuse bottle JSON is substituted")
+
+
+def validate_handoff_publication_shape(
+    publication_root: pathlib.Path,
+    publication: dict[str, Any],
+    campaign: dict[str, Any],
+    formula: dict[str, Any],
+    arch: str,
+) -> None:
+    kind = publication_kind(
+        publication, f"{formula['name']}/{arch} publication"
+    )
+    if kind == "build":
+        validate_publication_shape(publication_root, formula, arch)
+    else:
+        validate_reuse_publication_shape(
+            publication_root, campaign, formula, arch
+        )
+
+
 def validate_publication_shape(
     publication: pathlib.Path,
     formula: dict[str, Any],
@@ -1069,7 +2181,7 @@ def validate_handoff_manifest(
         "Formula handoff",
     )
     if (
-        value["schema"] != 1
+        value["schema"] != HANDOFF_SCHEMA
         or value["kind"]
         != "kandelo-homebrew-prefix-formula-handoff"
     ):
@@ -1120,20 +2232,22 @@ def validate_handoff_inventory(
     prior_arch = ""
     for publication in publications:
         publication = exact_keys(
-            publication, {"arch", "files"}, "handoff publication"
+            publication,
+            {"arch", "files", "kind"},
+            "handoff publication",
         )
         arch = publication["arch"]
         if arch not in ("wasm32", "wasm64") or arch <= prior_arch:
             fail("handoff publication architectures are invalid")
         prior_arch = arch
+        kind = publication_kind(publication, f"handoff {arch} publication")
+        expected_files = publication_files(kind)
         files = publication["files"]
-        if not isinstance(files, list) or len(files) != len(
-            PUBLICATION_FILES
-        ):
+        if not isinstance(files, list) or len(files) != len(expected_files):
             fail(f"handoff {arch} file inventory is invalid")
         expected_paths = [
             f"payload/{arch}/{relative}"
-            for relative in PUBLICATION_FILES
+            for relative in expected_files
         ]
         actual_paths: list[str] = []
         for index, record in enumerate(files):
@@ -1150,7 +2264,7 @@ def validate_handoff_inventory(
                 fail("Formula handoff repeats a payload path")
             paths.add(relative)
             expected_asset = publication_asset_name(
-                arch, PUBLICATION_FILES[index]
+                arch, expected_files[index]
             )
             asset_name = require_string(
                 record["asset_name"],
@@ -1252,6 +2366,36 @@ def load_handoff(
         expected_files.add(relative)
     if actual_files != sorted(expected_files):
         fail("Formula handoff contains unmanifested files")
+    formula_name = require_string(
+        value["formula"].get("name")
+        if isinstance(value["formula"], dict)
+        else None,
+        "Formula handoff name",
+        FORMULA,
+    )
+    formula_matches = [
+        formula
+        for formula in campaign["formulae"]
+        if formula.get("name") == formula_name
+    ]
+    if len(formula_matches) != 1 or value["formula"] != (
+        campaign_formula_evidence(campaign, formula_matches[0])
+    ):
+        fail("Formula handoff differs from the campaign Formula")
+    for publication in value["publications"]:
+        arch = publication["arch"]
+        # Build publications already pass the full publisher validator before
+        # derive-build seals them. Reuse has no build job, so its compact
+        # evidence contract must be revalidated on every immutable readback.
+        if publication_kind(
+            publication, f"{formula_name}/{arch} publication"
+        ) == "reuse":
+            validate_reuse_publication_shape(
+                root / f"payload/{arch}",
+                campaign,
+                formula_matches[0],
+                arch,
+            )
     return value, payload
 
 
@@ -1692,18 +2836,37 @@ def prepare_selection(
                 handoff, arch, f"selection handoff {name}"
             )
             publication_root = handoff_root / f"payload/{arch}"
-            validate_publication_shape(
-                publication_root, index[name], arch
+            validate_handoff_publication_shape(
+                publication_root,
+                publication,
+                campaign,
+                index[name],
+                arch,
+            )
+            archive_relative = publication_semantic_path(
+                publication,
+                "bottle_archive",
+                f"selection handoff {name}/{arch}",
+            )
+            bottle_json_relative = publication_semantic_path(
+                publication,
+                "bottle_json",
+                f"selection handoff {name}/{arch}",
+            )
+            sidecars_relative = publication_semantic_path(
+                publication,
+                "sidecars_input",
+                f"selection handoff {name}/{arch}",
             )
             archive_record = handoff_publication_file(
                 publication,
-                f"payload/{arch}/build/bottle.tar.gz",
+                f"payload/{arch}/{archive_relative}",
                 f"selection handoff {name}/{arch}",
             )
             canonical, bottle_digest, root_url, cellar = (
                 validate_dependency_bottle_input(
                     bottle_json=(
-                        publication_root / "build/bottle.json"
+                        publication_root / bottle_json_relative
                     ),
                     handoff=handoff,
                     arch=arch,
@@ -1730,8 +2893,7 @@ def prepare_selection(
             sidecar_generator(
                 tap_root=tap_root,
                 input_path=(
-                    publication_root
-                    / "composition/sidecars-input.json"
+                    publication_root / sidecars_relative
                 ),
                 prefix_campaign_layout_sha256=layout_sha256,
             )
@@ -1857,8 +3019,22 @@ def stage_dependency_bottle_inputs(
             arch,
             f"dependency {name}",
         )
-        bottle_path = f"payload/{arch}/build/bottle.json"
-        archive_path = f"payload/{arch}/build/bottle.tar.gz"
+        bottle_path = (
+            f"payload/{arch}/"
+            + publication_semantic_path(
+                publication,
+                "bottle_json",
+                f"dependency {name}/{arch}",
+            )
+        )
+        archive_path = (
+            f"payload/{arch}/"
+            + publication_semantic_path(
+                publication,
+                "bottle_archive",
+                f"dependency {name}/{arch}",
+            )
+        )
         bottle_record = handoff_publication_file(
             publication,
             bottle_path,
@@ -2058,6 +3234,195 @@ def snapshot_publication(
     return destination, records
 
 
+def derive_reuse(
+    *,
+    campaign_path: pathlib.Path,
+    source_tap_root: pathlib.Path,
+    old_tap_root: pathlib.Path,
+    formula_name: str,
+    arch: str,
+    dependency_roots: list[pathlib.Path],
+    output: pathlib.Path,
+    asset_fetcher: Callable[
+        [str, pathlib.Path, int, str], None
+    ] | None = None,
+) -> None:
+    if asset_fetcher is None:
+        asset_fetcher = anonymous_bottle_readback
+    campaign, campaign_payload, index = load_campaign(campaign_path)
+    formula_name = require_string(formula_name, "Formula name", FORMULA)
+    if formula_name not in index:
+        fail(f"Formula {formula_name} is outside the campaign")
+    if arch not in ("wasm32", "wasm64"):
+        fail("reuse architecture is invalid")
+    formula = index[formula_name]
+    variant = validate_reuse_variant(campaign, formula, arch)
+    source_tap_root = validate_source_root(
+        source_tap_root, campaign, formula
+    )
+    old_tap_commit = require_string(
+        campaign["authority"].get("old_tap_commit"),
+        "campaign old tap commit",
+        COMMIT,
+    )
+    old_tap_root = exact_git_checkout(
+        old_tap_root, old_tap_commit, "historical tap input"
+    )
+    dependency_roots = [
+        real_directory(root, "dependency handoff root")
+        for root in dependency_roots
+    ]
+    output = validate_new_output(
+        output,
+        "reuse Formula handoff output",
+        (
+            campaign_path,
+            source_tap_root,
+            old_tap_root,
+            *dependency_roots,
+        ),
+    )
+    (
+        dependency_records,
+        dependency_identities,
+        _loaded_dependency_handoffs,
+    ) = load_dependency_handoff_set(
+        dependency_roots,
+        campaign,
+        campaign_payload,
+        index,
+        formula_name,
+        (arch,),
+    )
+    extracted = historical_reuse_inputs(
+        campaign=campaign,
+        formula=formula,
+        variant=variant,
+        arch=arch,
+        old_tap_root=old_tap_root,
+    )
+    layout = campaign_guest_layout(campaign)
+    old_record = variant["old_record"]
+    if old_record["built_from"]["kandelo_repository"].lower() != (
+        "automattic/kandelo"
+    ):
+        fail(f"{formula_name}/{arch} historical Kandelo source is substituted")
+    temporary = pathlib.Path(
+        tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent)
+    )
+    try:
+        publication = temporary / "publication"
+        (publication / "composition").mkdir(parents=True)
+        (publication / "reuse").mkdir()
+        archive = publication / "reuse/bottle.tar.gz"
+        # WHY: campaign inspection is durable evidence about a prior read,
+        # not permission to trust local runner state. Re-fetching the public
+        # content-addressed blob proves both that it remains anonymously
+        # consumable and that the handoff carries the exact historical bytes.
+        asset_fetcher(
+            old_record["url"],
+            archive,
+            old_record["bytes"],
+            old_record["sha256"],
+        )
+        if (
+            regular_file(
+                archive,
+                f"{formula_name}/{arch} anonymous bottle readback",
+                MAX_ASSET_BYTES,
+            ).stat().st_size
+            != old_record["bytes"]
+            or sha256_file(archive) != old_record["sha256"]
+        ):
+            fail(
+                f"{formula_name}/{arch} anonymous bottle bytes changed"
+            )
+        (publication / "reuse/bottle.json").write_bytes(
+            pretty_json(
+                reuse_bottle_json(
+                    campaign,
+                    formula,
+                    arch,
+                    old_record["sha256"],
+                    layout,
+                )
+            )
+        )
+        (publication / "composition/sidecars-input.json").write_bytes(
+            pretty_json(
+                reuse_sidecars_input(
+                    campaign,
+                    formula,
+                    variant,
+                    arch,
+                    extracted,
+                    layout,
+                )
+            )
+        )
+        (publication / "reuse/evidence.json").write_bytes(
+            pretty_json(
+                reuse_evidence_document(
+                    campaign_payload,
+                    formula,
+                    variant,
+                    arch,
+                    extracted,
+                )
+            )
+        )
+        validate_reuse_publication_shape(
+            publication, campaign, formula, arch
+        )
+
+        result = temporary / "handoff"
+        result.mkdir()
+        records: list[dict[str, Any]] = []
+        for relative in REUSE_PUBLICATION_FILES:
+            destination = result / f"payload/{arch}/{relative}"
+            copy_verified(publication / relative, destination)
+            records.append(
+                file_record(
+                    destination,
+                    f"payload/{arch}/{relative}",
+                    publication_asset_name(arch, relative),
+                )
+            )
+        manifest = {
+            "campaign": {"sha256": sha256_bytes(campaign_payload)},
+            "dependency_handoffs": dependency_records,
+            "formula": campaign_formula_evidence(campaign, formula),
+            "kind": "kandelo-homebrew-prefix-formula-handoff",
+            "publications": [
+                {"arch": arch, "files": records, "kind": "reuse"}
+            ],
+            "schema": HANDOFF_SCHEMA,
+            "source": {
+                "kandelo_commit": campaign["authority"][
+                    "kandelo_commit"
+                ],
+                "source_tap_commit": campaign["authority"][
+                    "source_tap_commit"
+                ],
+                "target_tree_git_oid": source_tree_identity(
+                    campaign["authority"]
+                ),
+                "tap_name": campaign["authority"]["tap_name"],
+                "tap_repository": campaign["authority"][
+                    "tap_repository"
+                ],
+            },
+        }
+        validate_dependency_records(
+            manifest["dependency_handoffs"], dependency_identities
+        )
+        (result / "handoff.json").write_bytes(pretty_json(manifest))
+        load_handoff(result, campaign, campaign_payload)
+        os.rename(result, output)
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+
+
 def derive_build(
     *,
     campaign_path: pathlib.Path,
@@ -2198,7 +3563,7 @@ def derive_build(
                     )
                 records.append(record)
             publication_records.append(
-                {"arch": arch, "files": records}
+                {"arch": arch, "files": records, "kind": "build"}
             )
         manifest = {
             "campaign": {"sha256": sha256_bytes(campaign_payload)},
@@ -2206,7 +3571,7 @@ def derive_build(
             "formula": campaign_formula_evidence(campaign, formula),
             "kind": "kandelo-homebrew-prefix-formula-handoff",
             "publications": publication_records,
-            "schema": 1,
+            "schema": HANDOFF_SCHEMA,
             "source": {
                 "kandelo_commit": campaign["authority"][
                     "kandelo_commit"
@@ -2828,6 +4193,19 @@ def parse_args() -> argparse.Namespace:
     )
     derive.add_argument("--out", required=True)
 
+    reuse = commands.add_parser("derive-reuse")
+    reuse.add_argument("--campaign", required=True)
+    reuse.add_argument("--source-tap-root", required=True)
+    reuse.add_argument("--old-tap-root", required=True)
+    reuse.add_argument("--formula", required=True)
+    reuse.add_argument(
+        "--arch", choices=("wasm32", "wasm64"), required=True
+    )
+    reuse.add_argument(
+        "--dependency-handoff", action="append", default=[]
+    )
+    reuse.add_argument("--out", required=True)
+
     prepare = commands.add_parser("prepare-release")
     prepare.add_argument("--campaign", required=True)
     prepare.add_argument("--handoff", required=True)
@@ -2880,6 +4258,21 @@ def main() -> int:
                     parse_publication(value)
                     for value in arguments.publication
                 ],
+                dependency_roots=[
+                    pathlib.Path(value)
+                    for value in arguments.dependency_handoff
+                ],
+                output=pathlib.Path(arguments.out),
+            )
+        elif arguments.command == "derive-reuse":
+            derive_reuse(
+                campaign_path=pathlib.Path(arguments.campaign),
+                source_tap_root=pathlib.Path(
+                    arguments.source_tap_root
+                ),
+                old_tap_root=pathlib.Path(arguments.old_tap_root),
+                formula_name=arguments.formula,
+                arch=arguments.arch,
                 dependency_roots=[
                     pathlib.Path(value)
                     for value in arguments.dependency_handoff
