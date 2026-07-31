@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  BROWSER_PROGRESS_PREFIX,
   BoundedHomebrewGuestProgress,
 } from "./homebrew_guest_lifecycle_progress";
 
@@ -48,6 +49,23 @@ test("bounds progress line length and emitted line count", () => {
   ]);
 });
 
+test("labels browser progress without changing the guest protocol", () => {
+  const output: string[] = [];
+  const progress = new BoundedHomebrewGuestProgress(
+    (text) => output.push(text),
+    { outputPrefix: BROWSER_PROGRESS_PREFIX },
+  );
+
+  progress.push(
+    encoder.encode("homebrew-guest-lifecycle: tapping core\n"),
+  );
+
+  assert.deepEqual(output, [
+    BROWSER_PROGRESS_PREFIX +
+      "homebrew-guest-lifecycle: tapping core\n",
+  ]);
+});
+
 test("rejects invalid progress bounds", () => {
   assert.throws(
     () => new BoundedHomebrewGuestProgress(() => {}, { maximumLines: 0 }),
@@ -60,5 +78,13 @@ test("rejects invalid progress bounds", () => {
         { maximumLineCharacters: 1.5 },
       ),
     /positive integers/,
+  );
+  assert.throws(
+    () =>
+      new BoundedHomebrewGuestProgress(
+        () => {},
+        { outputPrefix: "" },
+      ),
+    /output prefix/,
   );
 });

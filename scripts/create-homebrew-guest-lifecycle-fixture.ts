@@ -43,6 +43,7 @@ const GIT_SHA_RE = /^[0-9a-f]{40}$/;
 export function createHomebrewGuestLifecycleFixture(
   options: CreateHomebrewGuestLifecycleFixtureOptions,
 ): void {
+  const transportMode = options.transportMode ?? "closed";
   if (
     !GIT_SHA_RE.test(options.coreRevision) ||
     !GIT_SHA_RE.test(options.canaryRevision) ||
@@ -95,10 +96,16 @@ export function createHomebrewGuestLifecycleFixture(
     "Homebrew bottle mirror plan",
   );
   assertHomebrewBottleMirrorPlan(plan);
-  const expectedFiles = [
-    MIRROR_PLAN_ASSET,
-    ...plan.assets.map((asset) => asset.asset),
-  ].sort();
+  // WHY: public transport consumes payloads from the immutable release URLs
+  // bound by the plan. Requiring the producer to download every bottle only
+  // to discard those local bytes makes a consume-only proof inherit the
+  // publisher's full transfer and memory footprint. Closed transport still
+  // needs every payload because those local bytes are its network boundary.
+  const expectedFiles = (
+    transportMode === "closed"
+      ? [MIRROR_PLAN_ASSET, ...plan.assets.map((asset) => asset.asset)]
+      : [MIRROR_PLAN_ASSET]
+  ).sort();
   const actualFiles = readdirSync(mirrorDirectory, {
     withFileTypes: true,
   }).map((entry) => {
@@ -115,30 +122,32 @@ export function createHomebrewGuestLifecycleFixture(
     );
   }
 
-  const payloads = plan.assets.map((asset) => {
-    const payloadPath = resolve(mirrorDirectory, asset.asset);
-    const payload = exactLocalAsset(
-      payloadPath,
-      asset.url,
-      `Homebrew bottle mirror payload ${asset.asset}`,
-    );
-    if (
-      payload.sha256 !== asset.sha256 ||
-      payload.bytes !== asset.bytes
-    ) {
-      throw new Error(
-        `Homebrew bottle mirror payload ${asset.asset} changed identity`,
-      );
-    }
-    return { asset: asset.asset, ...payload };
-  });
+  const payloads = transportMode === "closed"
+    ? plan.assets.map((asset) => {
+        const payloadPath = resolve(mirrorDirectory, asset.asset);
+        const payload = exactLocalAsset(
+          payloadPath,
+          asset.url,
+          `Homebrew bottle mirror payload ${asset.asset}`,
+        );
+        if (
+          payload.sha256 !== asset.sha256 ||
+          payload.bytes !== asset.bytes
+        ) {
+          throw new Error(
+            `Homebrew bottle mirror payload ${asset.asset} changed identity`,
+          );
+        }
+        return { asset: asset.asset, ...payload };
+      })
+    : undefined;
   const planUrl = `${plan.release_root}/${plan.manifest_asset}`;
   const planAsset = exactBytesAsset(planBytes, planUrl);
 
   const fixture: HomebrewGuestLifecycleBrowserFixture = {
     schema: 1,
     allowLiveNetwork: true,
-    transportMode: options.transportMode ?? "closed",
+    transportMode,
     image,
     bootstrap: {
       spec: bootstrapSpec,
@@ -147,7 +156,7 @@ export function createHomebrewGuestLifecycleFixture(
     },
     bottleMirror: {
       plan: planAsset,
-      ...((options.transportMode ?? "closed") === "closed" ? { payloads } : {}),
+      ...(payloads === undefined ? {} : { payloads }),
     },
     revisions: {
       coreRevision: options.coreRevision,

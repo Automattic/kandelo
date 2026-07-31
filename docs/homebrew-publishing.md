@@ -1096,6 +1096,53 @@ third-party installation, and maintenance plus cleanup must run in separate
 processes. Splitting only at the existing reboot is insufficient because the
 memory peak begins during the first phase.
 
+Chromium uses a producer/fresh-consumer boundary with a dedicated browser
+handoff. The producer resolves the exact public shell generation,
+builds the sealed browser once, and records every runtime file by relative
+path, mode, byte length, and SHA-256. It also records two different
+authorities explicitly:
+
+- `product_kandelo_ref` owns the already-published shell and Homebrew
+  bootstrap product; and
+- `runtime_source_ref` owns the browser host, resolved kernel, scoped
+  acceptance code, and recovery workflow being executed.
+
+Those values must not be collapsed. A later test-only recovery commit can
+exercise an older immutable product without pretending that it published
+those product bytes. The proof deliberately runs that product with the
+runtime source's kernel and rejects it at the image ABI boundary if they are
+not compatible.
+
+Each Chromium scope downloads only that same-run handoff, installs a minimal
+pinned Playwright client, and runs from the sealed handoff tree. Core and
+canary receive separate hosted runners, cgroups, and Chromium process trees.
+They do not run Nix, Vite, package resolution, kernel fetching, or browser
+product compilation. The runner records bounded cgroup, aggregate-process,
+and per-Chromium resident set size (RSS) telemetry. RSS estimates the physical
+memory pages currently resident for a process; it is useful here as a trend,
+not as unique ownership of shared pages. The proof fails if either the cgroup
+`oom` counter (an allocation reached the cgroup memory limit) or `oom_kill`
+counter (the kernel killed a process for that limit) increases during the
+scope.
+
+The split also preserves earlier failures instead of waiting on a dead
+renderer. In public run `30610157031`, every one of 218 recorded HTTP requests
+returned 200 and the exact shell acceptance passed. The complete lifecycle
+then loaded 196 process or thread workers, lost its page about 181 seconds
+after evaluation began, and never requested Bzip2's target layer. The old
+Playwright call waited until its 18-minute timeout and the artifact contained
+no cgroup counters, so that evidence did not prove an OOM. The scoped runner
+now races the guest operation against page crash, page close, and browser
+disconnect, while preserving the last bounded guest progress record and the
+nearby memory samples.
+
+Public fixture creation also transfers only the exact immutable mirror plan.
+It does not download every bottle payload into the producer merely to discard
+those local copies. The browser still fetches each selected public layer from
+the plan-owned URL and checks its exact size and SHA-256 before use. Closed
+transport remains different: because local files are its network boundary, it
+still requires the complete exact payload set.
+
 The live Playwright proof is disabled unless
 `KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE=1` and
 `KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_FIXTURE_PATH` are both set. The JSON
@@ -1135,6 +1182,49 @@ content-addressed bottle-mirror release does not exist yet; canonical package
 identity therefore does not authorize ambient public mirror requests in those
 suites. The dedicated mirror-publication proof owns anonymous public transport
 validation after publication.
+
+The consume-only browser proof separates product authority from test-runtime
+authority. Its runtime handoff records `product_kandelo_ref`, the Kandelo
+commit named by the immutable publication lock, and `runtime_source_ref`, the
+workflow commit that built the browser application and proof code. The first
+value says which published product is under test. The second says which test
+runtime produced the sealed browser files. Neither value may stand in for the
+other.
+
+`scripts/create-homebrew-browser-proof-runtime-handoff.sh` copies the already
+built `apps/browser-demos/dist`, the exact public lifecycle fixture, and only
+the source and configuration needed to run the Playwright proof. It also
+provides a minimal npm package pinned to Playwright. The consumer installs
+that package and Chromium, but does not run Vite's build, Nix, a kernel fetch,
+or a product publisher.
+
+The schema-1 handoff enumerates every file by relative path, byte count,
+SHA-256, and mode. It permits at most 4,096 files, 256 MiB per file, and
+512 MiB total. Verification rejects a symlink or special file anywhere in
+the tree, an extra or missing file or directory, path traversal, changed
+authority, and any relaxed bound. The fixture must use public transport and
+contains no local bottle payloads. The browser therefore fetches the
+published image and lazy bottle layers anonymously instead of consuming
+product bytes hidden in the test-runtime handoff.
+
+The sealed proof server temporarily implements the same-origin
+`/__kandelo_cors_proxy?url=...` route used by the current browser build. This
+keeps the consume-only runtime compatible with today's product bytes; it is
+not a kernel networking contract or the intended long-term architecture.
+Service-worker-owned CORS proxying is a required follow-up.
+
+Production proof traffic is limited to canonical HTTPS URLs on `github.com`,
+`ghcr.io`, and `*.githubusercontent.com`, with public-address DNS checks and
+per-request address pinning. A test-only flag permits literal loopback
+targets, and the Playwright configuration does not set it. The route accepts
+bounded `GET`, `HEAD`, and `POST` requests, follows at most five redirects,
+and bounds both response bytes and elapsed time. It forwards only named Git,
+OCI, range, cache, and representation headers. In particular, the guest may
+supply Homebrew's public GHCR `Authorization: Bearer QQ==` header to the
+original target. The server never injects ambient host credentials, drops
+cookies and proxy credentials, and removes `Authorization` after every
+redirect. Safe range and conditional selectors remain available when a
+GitHub release redirects to its content-delivery host.
 
 The product workflow's live lane is a manual, closed-transport cutover proof.
 It requires three exact lowercase 40-character inputs: Kandelo's live

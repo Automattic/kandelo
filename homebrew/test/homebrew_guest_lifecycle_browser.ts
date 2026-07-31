@@ -16,7 +16,11 @@ import {
   type HomebrewGuestLifecycleMachine,
   runHomebrewGuestLifecycle,
   runHomebrewGuestLifecycleProcess,
+  runHomebrewGuestShippingProof,
 } from "./homebrew_guest_lifecycle_runner";
+import type {
+  HomebrewGuestShippingProofScope,
+} from "./homebrew_guest_lifecycle_contract";
 import {
   deriveHomebrewGuestLifecycleRuntimeInputs,
   type HomebrewGuestLifecycleRuntimeInputs,
@@ -25,6 +29,10 @@ import {
   assertNoUnexpectedHostDiagnostics,
   HOMEBREW_GUEST_LIFECYCLE_HOST_LIMITS,
 } from "./homebrew_guest_lifecycle_runtime_contract";
+import {
+  BROWSER_PROGRESS_PREFIX,
+  BoundedHomebrewGuestProgress,
+} from "./homebrew_guest_lifecycle_progress";
 
 export interface HomebrewGuestLifecycleBrowserResult {
   exportedImageSha256: string;
@@ -36,10 +44,35 @@ export interface HomebrewGuestLifecycleBrowserResult {
   phaseTwoLazyDownloads: readonly LazyDownloadEvent[];
 }
 
+export interface HomebrewGuestShippingProofBrowserResult {
+  scope: HomebrewGuestShippingProofScope;
+  coreRevision: string;
+  canaryRevision: string;
+  completedUrls: string[];
+  lazyDownloads: readonly LazyDownloadEvent[];
+}
+
 type FetchLike = (
   input: string | URL,
   init?: RequestInit,
 ) => Promise<Response>;
+
+interface HomebrewGuestLifecycleBrowserOptions {
+  fixture: unknown;
+  kernelWasm: ArrayBuffer;
+  corsProxyUrl: string;
+  /** Same-origin directory containing the exact closed-transport fixtures. */
+  closedAssetRootUrl?: string;
+  fetchImpl?: FetchLike;
+  afterMachineDestroy?: () => Promise<void>;
+  onProgress?: (text: string) => void;
+}
+
+interface PreparedBrowserLifecycle {
+  fixture: HomebrewGuestLifecycleBrowserFixture;
+  runtime: HomebrewGuestLifecycleRuntimeInputs;
+  deadlineMs: number;
+}
 
 const MAX_CAPTURED_OUTPUT_BYTES = 8 * 1024 * 1024;
 const MAX_CAPTURED_DIAGNOSTICS = 1_000;
@@ -50,15 +83,89 @@ const MAX_CAPTURED_DIAGNOSTICS = 1_000;
  * the guest scripts, reboot boundary, and assertions live in the shared
  * host-neutral runner.
  */
-export async function runHomebrewGuestLifecycleInBrowser(options: {
-  fixture: unknown;
-  kernelWasm: ArrayBuffer;
-  corsProxyUrl: string;
-  /** Same-origin directory containing the exact closed-transport fixtures. */
-  closedAssetRootUrl?: string;
-  fetchImpl?: FetchLike;
-  afterMachineDestroy?: () => Promise<void>;
-}): Promise<HomebrewGuestLifecycleBrowserResult> {
+export async function runHomebrewGuestLifecycleInBrowser(
+  options: HomebrewGuestLifecycleBrowserOptions,
+): Promise<HomebrewGuestLifecycleBrowserResult> {
+  return withPreparedBrowserLifecycle(options, async ({
+    fixture,
+    runtime,
+    deadlineMs,
+  }) => {
+    const result = await runHomebrewGuestLifecycle({
+      runtime,
+      revisions: fixture.revisions,
+      deadlineMs,
+      hashExportedImage: sha256,
+      createMachine: (machineRuntime) =>
+        createBrowserLifecycleMachine({
+          runtime: machineRuntime,
+          kernelWasm: options.kernelWasm,
+          corsProxyUrl: options.corsProxyUrl,
+          afterDestroy: options.afterMachineDestroy,
+          onProgress: options.onProgress,
+        }),
+    });
+    if (result.exportedImageSha256 === undefined) {
+      throw new Error("browser lifecycle omitted its pre-handoff image digest");
+    }
+    return {
+      exportedImageSha256: result.exportedImageSha256,
+      exportedImageBytes: result.exportedImageBytes,
+      coreRevision: fixture.revisions.coreRevision,
+      canaryRevision: fixture.revisions.canaryRevision,
+      phaseOneCompletedUrls: [...result.phaseOneCompletedUrls].sort(),
+      phaseOneLazyDownloads: result.phaseOneLazyDownloads,
+      phaseTwoLazyDownloads: result.phaseTwoLazyDownloads,
+    };
+  });
+}
+
+/**
+ * Prove one user-facing stock Homebrew install in a fresh browser machine.
+ *
+ * The comprehensive lifecycle separately owns reinstall, export, and reboot
+ * durability. Keeping each shipping scope independent means a first-party
+ * failure cannot hide whether the third-party tap path is usable, and neither
+ * scope inherits retired process memories from the other.
+ */
+export async function runHomebrewGuestShippingProofInBrowser(
+  options: HomebrewGuestLifecycleBrowserOptions & {
+    scope: HomebrewGuestShippingProofScope;
+  },
+): Promise<HomebrewGuestShippingProofBrowserResult> {
+  return withPreparedBrowserLifecycle(options, async ({
+    fixture,
+    runtime,
+    deadlineMs,
+  }) => {
+    const result = await runHomebrewGuestShippingProof({
+      runtime,
+      revisions: fixture.revisions,
+      scope: options.scope,
+      deadlineMs,
+      createMachine: (machineRuntime) =>
+        createBrowserLifecycleMachine({
+          runtime: machineRuntime,
+          kernelWasm: options.kernelWasm,
+          corsProxyUrl: options.corsProxyUrl,
+          afterDestroy: options.afterMachineDestroy,
+          onProgress: options.onProgress,
+        }),
+    });
+    return {
+      scope: result.scope,
+      coreRevision: fixture.revisions.coreRevision,
+      canaryRevision: fixture.revisions.canaryRevision,
+      completedUrls: [...result.completedUrls].sort(),
+      lazyDownloads: result.lazyDownloads,
+    };
+  });
+}
+
+async function withPreparedBrowserLifecycle<T>(
+  options: HomebrewGuestLifecycleBrowserOptions,
+  operation: (prepared: PreparedBrowserLifecycle) => Promise<T>,
+): Promise<T> {
   const fixture = projectHomebrewGuestLifecycleBrowserFixture(options.fixture);
   const deadlineMs = Date.now() + fixture.timeoutMs;
   const deadlineController = new AbortController();
@@ -115,31 +222,7 @@ export async function runHomebrewGuestLifecycleInBrowser(options: {
           }),
     });
 
-    const result = await runHomebrewGuestLifecycle({
-      runtime,
-      revisions: fixture.revisions,
-      deadlineMs,
-      hashExportedImage: sha256,
-      createMachine: (machineRuntime) =>
-        createBrowserLifecycleMachine({
-          runtime: machineRuntime,
-          kernelWasm: options.kernelWasm,
-          corsProxyUrl: options.corsProxyUrl,
-          afterDestroy: options.afterMachineDestroy,
-        }),
-    });
-    if (result.exportedImageSha256 === undefined) {
-      throw new Error("browser lifecycle omitted its pre-handoff image digest");
-    }
-    return {
-      exportedImageSha256: result.exportedImageSha256,
-      exportedImageBytes: result.exportedImageBytes,
-      coreRevision: fixture.revisions.coreRevision,
-      canaryRevision: fixture.revisions.canaryRevision,
-      phaseOneCompletedUrls: [...result.phaseOneCompletedUrls].sort(),
-      phaseOneLazyDownloads: result.phaseOneLazyDownloads,
-      phaseTwoLazyDownloads: result.phaseTwoLazyDownloads,
-    };
+    return await operation({ fixture, runtime, deadlineMs });
   } finally {
     clearTimeout(deadlineTimer);
   }
@@ -170,6 +253,7 @@ function createBrowserLifecycleMachine(options: {
   kernelWasm: ArrayBuffer;
   corsProxyUrl: string;
   afterDestroy?: () => Promise<void>;
+  onProgress?: (text: string) => void;
 }): HomebrewGuestLifecycleMachine {
   const lazyDownloads: LazyDownloadEvent[] = [];
   const diagnostics: string[] = [];
@@ -179,7 +263,14 @@ function createBrowserLifecycleMachine(options: {
   let outputLimitExceeded = false;
   const stdoutDecoder = new TextDecoder();
   const stderrDecoder = new TextDecoder();
+  const progress = options.onProgress === undefined
+    ? undefined
+    : new BoundedHomebrewGuestProgress(
+      options.onProgress,
+      { outputPrefix: BROWSER_PROGRESS_PREFIX },
+    );
   const capture = (bytes: Uint8Array, stream: "stdout" | "stderr"): void => {
+    if (stream === "stdout") progress?.push(bytes);
     outputBytes += bytes.byteLength;
     if (outputBytes > MAX_CAPTURED_OUTPUT_BYTES) {
       outputLimitExceeded = true;

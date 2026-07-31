@@ -1,7 +1,9 @@
 const DEFAULT_MAX_PROGRESS_LINES = 64;
 const DEFAULT_MAX_PROGRESS_LINE_CHARACTERS = 512;
-const NODE_PROGRESS_PREFIX =
+export const NODE_PROGRESS_PREFIX =
   "homebrew_guest_lifecycle_node: progress: ";
+export const BROWSER_PROGRESS_PREFIX =
+  "homebrew_guest_lifecycle_browser: progress: ";
 
 /**
  * Forward only the generated lifecycle's bounded progress protocol.
@@ -14,6 +16,7 @@ export class BoundedHomebrewGuestProgress {
   readonly #write: (text: string) => void;
   readonly #maximumLines: number;
   readonly #maximumLineCharacters: number;
+  readonly #outputPrefix: string;
   readonly #decoder = new TextDecoder();
   #pending = "";
   #discardingLongLine = false;
@@ -25,6 +28,7 @@ export class BoundedHomebrewGuestProgress {
     options: {
       maximumLines?: number;
       maximumLineCharacters?: number;
+      outputPrefix?: string;
     } = {},
   ) {
     this.#write = write;
@@ -33,13 +37,18 @@ export class BoundedHomebrewGuestProgress {
     this.#maximumLineCharacters =
       options.maximumLineCharacters ??
         DEFAULT_MAX_PROGRESS_LINE_CHARACTERS;
+    this.#outputPrefix = options.outputPrefix ?? NODE_PROGRESS_PREFIX;
     if (
       !Number.isSafeInteger(this.#maximumLines) ||
       this.#maximumLines < 1 ||
       !Number.isSafeInteger(this.#maximumLineCharacters) ||
-      this.#maximumLineCharacters < 1
+      this.#maximumLineCharacters < 1 ||
+      this.#outputPrefix.length < 1
     ) {
-      throw new Error("Homebrew progress bounds must be positive integers");
+      throw new Error(
+        "Homebrew progress bounds must be positive integers and output " +
+          "prefix must be non-empty",
+      );
     }
   }
 
@@ -82,13 +91,13 @@ export class BoundedHomebrewGuestProgress {
       if (!this.#reportedLimit) {
         this.#reportedLimit = true;
         this.#write(
-          `${NODE_PROGRESS_PREFIX}output limit reached\n`,
+          `${this.#outputPrefix}output limit reached\n`,
         );
       }
       return;
     }
     this.#emittedLines += 1;
-    this.#write(`${NODE_PROGRESS_PREFIX}${line}\n`);
+    this.#write(`${this.#outputPrefix}${line}\n`);
   }
 }
 
