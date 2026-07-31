@@ -37,10 +37,10 @@ For CI-shaped local runs, prefer:
 bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh <cargo-kernel|fork-instrument|vitest|browser|libc|posix|sortix> [group]
 ```
 
-The optional group reproduces the natural CI shards for the longest
-conformance suites. libc accepts `functional-regression` or `math`; Sortix
-accepts `include`, `basic`, or `runtime`. Omitting the group runs the complete
-suite, including `--all` for Sortix.
+The optional group reproduces CI's deterministic suite partitions. Vitest
+accepts `1/2` or `2/2`; libc accepts `functional-regression` or `math`; and
+Sortix accepts `include`, `basic`, or `runtime`. Omitting the group runs the
+complete suite, including Vitest's full file inventory and `--all` for Sortix.
 
 For direct Cargo commands, compute `<host-target>` with:
 

@@ -5,6 +5,46 @@ REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
+# WHY: the workflow delegates file partitioning to Vitest. Exercise the real
+# CLI against a small complete inventory so an upgrade cannot make the two
+# selectors overlap or omit files. The matrix assertions below then ensure CI
+# invokes that tested 1/2 + 2/2 pair for the repository's nonempty inventory.
+vitest_fixture="$TMP_DIR/vitest-shard-fixture"
+vitest_expected="$TMP_DIR/vitest-expected"
+vitest_one="$TMP_DIR/vitest-1-of-2"
+vitest_two="$TMP_DIR/vitest-2-of-2"
+mkdir -p "$vitest_fixture"
+for number in 1 2 3 4 5 6 7; do
+    printf 'test("case %s", () => {});\n' "$number" \
+        > "$vitest_fixture/case-$number.test.js"
+done
+find "$vitest_fixture" -name '*.test.js' -print | LC_ALL=C sort \
+    > "$vitest_expected"
+for shard in 1 2; do
+    report="$TMP_DIR/vitest-$shard-of-2.json"
+    paths="$TMP_DIR/vitest-$shard-of-2"
+    "$REPO_ROOT/host/node_modules/.bin/vitest" run \
+        --root "$vitest_fixture" \
+        --globals \
+        --shard="$shard/2" \
+        --reporter=json \
+        --outputFile="$report" \
+        > "$TMP_DIR/vitest-$shard-of-2.out"
+    jq -r '.testResults[].name' "$report" | LC_ALL=C sort > "$paths"
+done
+if comm -12 "$vitest_one" "$vitest_two" | grep -q .; then
+    echo "Vitest shards overlap" >&2
+    exit 1
+fi
+cat "$vitest_one" "$vitest_two" | LC_ALL=C sort \
+    > "$TMP_DIR/vitest-union"
+cmp "$vitest_expected" "$TMP_DIR/vitest-union"
+(
+    cd "$REPO_ROOT/host"
+    npx vitest list --filesOnly
+) > "$TMP_DIR/vitest-repository-inventory"
+[ -s "$TMP_DIR/vitest-repository-inventory" ]
+
 FIXTURE="$TMP_DIR/repo"
 mkdir -p \
     "$FIXTURE/scripts" \
@@ -110,6 +150,10 @@ EOF
 
 cat > "$FIXTURE/bin/npx" <<'EOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = "vitest" ] && [ -n "${VITEST_CAPTURE:-}" ]; then
+    printf '%s\n' "$*" >> "$VITEST_CAPTURE"
+    exit 0
+fi
 if [ "${1:-}" = "tsx" ] &&
     [ "${2:-}" = "scripts/recover-homebrew-bottle-mirror.ts" ]; then
     printf '%s\n' "$*" > "$RECOVERY_CAPTURE"
@@ -139,6 +183,16 @@ if [ "${1:-}" = "playwright" ] && [ "${2:-}" = "test" ] &&
         >> "$CLOSED_MODE_CAPTURE"
 fi
 exit 0
+EOF
+
+cat > "$FIXTURE/bin/bun" <<'EOF'
+#!/usr/bin/env bash
+if [ "${1:-}" = "x" ] && [ "${2:-}" = "vitest" ] &&
+    [ -n "${BUN_CAPTURE:-}" ]; then
+    printf '%s\n' "$*" >> "$BUN_CAPTURE"
+    exit 0
+fi
+exit 2
 EOF
 
 cat > "$FIXTURE/bin/uname" <<'EOF'
@@ -196,6 +250,7 @@ EOF
     chmod +x "$FIXTURE/scripts/$runner"
 done
 chmod +x \
+    "$FIXTURE/bin/bun" \
     "$FIXTURE/bin/npm" \
     "$FIXTURE/bin/npx" \
     "$FIXTURE/bin/rustc" \
@@ -231,6 +286,45 @@ run_group sortix include "include"
 run_group sortix basic "basic"
 run_group sortix runtime "limits malloc stdio io signal process paths udp"
 run_group sortix all "--all"
+
+run_vitest_group() {
+    local group="$1"
+    local expected_vitest="$2"
+    local expected_bun_count="$3"
+    local safe_group="${group//\//-}"
+    local vitest_capture="$TMP_DIR/vitest-$safe_group.args"
+    local bun_capture="$TMP_DIR/bun-$safe_group.args"
+    : > "$vitest_capture"
+    : > "$bun_capture"
+    PATH="$FIXTURE/bin:$PATH" \
+        VITEST_CAPTURE="$vitest_capture" \
+        BUN_CAPTURE="$bun_capture" \
+        bash "$FIXTURE/scripts/ci-run-test-suite.sh" vitest "$group"
+    grep -Fxq -- "$expected_vitest" "$vitest_capture" || {
+        echo "vitest/$group did not select its expected file shard" >&2
+        exit 1
+    }
+    [ "$(wc -l < "$bun_capture" | tr -d '[:space:]')" \
+        -eq "$expected_bun_count" ] || {
+        echo "vitest/$group ran the Bun teardown check unexpectedly" >&2
+        exit 1
+    }
+}
+
+run_vitest_group all "vitest run" 1
+run_vitest_group 1/2 "vitest run --shard=1/2" 1
+run_vitest_group 2/2 "vitest run --shard=2/2" 0
+
+if PATH="$FIXTURE/bin:$PATH" \
+    VITEST_CAPTURE="$TMP_DIR/vitest-invalid.args" \
+    BUN_CAPTURE="$TMP_DIR/bun-invalid.args" \
+    bash "$FIXTURE/scripts/ci-run-test-suite.sh" vitest 3/2 \
+        > "$TMP_DIR/vitest-invalid.out" 2>&1; then
+    echo "invalid Vitest shard unexpectedly succeeded" >&2
+    exit 1
+fi
+grep -Fq "unknown vitest test group: 3/2" \
+    "$TMP_DIR/vitest-invalid.out"
 
 capture="$TMP_DIR/env-group.args"
 PATH="$FIXTURE/bin:$PATH" TEST_CAPTURE="$capture" TEST_GROUP=math \
@@ -420,7 +514,7 @@ for workflow in \
             print suite ":" group
         }
     ')
-    expected_rows=$'vitest:all\nbrowser:all\nlibc:functional-regression\nlibc:math\nposix:all\nsortix:include\nsortix:basic\nsortix:runtime'
+    expected_rows=$'vitest:1/2\nvitest:2/2\nbrowser:all\nlibc:functional-regression\nlibc:math\nposix:all\nsortix:include\nsortix:basic\nsortix:runtime'
     if [ "$matrix_rows" != "$expected_rows" ]; then
         echo "$(basename "$workflow"): unexpected test-suite matrix:" >&2
         printf '%s\n' "$matrix_rows" >&2
@@ -458,7 +552,7 @@ force_rebuild_rows=$(sed -n \
         print suite ":" group
     }
 ')
-expected_force_rebuild_rows=$'cargo-kernel:all\nfork-instrument:all\nvitest:all\nlibc:functional-regression\nlibc:math\nposix:all\nsortix:include\nsortix:basic\nsortix:runtime'
+expected_force_rebuild_rows=$'cargo-kernel:all\nfork-instrument:all\nvitest:1/2\nvitest:2/2\nlibc:functional-regression\nlibc:math\nposix:all\nsortix:include\nsortix:basic\nsortix:runtime'
 if [ "$force_rebuild_rows" != "$expected_force_rebuild_rows" ]; then
     echo "force-rebuild.yml: unexpected test-suite matrix:" >&2
     printf '%s\n' "$force_rebuild_rows" >&2
