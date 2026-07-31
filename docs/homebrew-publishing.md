@@ -2524,8 +2524,13 @@ for failure reports so a partially generated or locally committed
 success attempt cannot enter a last-green failure commit. Maintenance
 rollback resolves its freshly checked-out Kandelo `main` commit and
 passes that same identity as both report provenance and push authority.
-Prefix-campaign Formula/architecture calls make no tap write; the later
-complete campaign transaction owns its single final push.
+Prefix-campaign Formula/architecture calls do not write Git tap state.
+Each successful bottle upload and Formula index update is nevertheless
+independently public and usable after anonymous verification. A consumer
+selects one exact same-architecture dependency closure, so that selected
+closure is the atomic unit for composition. Only the named full-tap or
+prefix activation waits for the complete candidate and its final pointer
+update.
 
 Use `dry-run: true` for local or CI validation that must not push GHCR blobs or
 tap commits. Dry runs still build bottles and validate the generated metadata
@@ -3961,13 +3966,19 @@ job and the single atomic finalizer. A finalizer that
 successfully writes a failure report still concludes as a failed job and does
 not satisfy this gate.
 
-This checklist does not apply independently to each prefix-campaign
-Formula. Those calls deliberately omit `finalize-tap` and
-`publish-vfs-release`. Each must instead finish build, upload, anonymous
-index readback, and verification, then produce one immutable
-`homebrew-prefix-handoff-sha256-<handoff-sha256>` release. The campaign
-acceptance gate requires the complete handoff set, one fully validated
-tap candidate, and one atomic final tap update.
+Use two acceptance levels for a prefix campaign. Each Formula and
+architecture deliberately omits `finalize-tap` and
+`publish-vfs-release`. Its bottle becomes independently usable after
+build, upload, anonymous index readback, and verification all succeed.
+The immutable `homebrew-prefix-handoff-sha256-<handoff-sha256>` release
+must also exist. A failed sibling does not invalidate that successful
+bottle.
+
+A consumer must still select one complete same-architecture dependency
+closure. That selected closure is the atomic composition unit: a missing
+dependency makes the selection fail without hiding unrelated successful
+bottles. The separate named full-tap or prefix activation waits for the
+complete campaign candidate and one atomic final pointer update.
 
 The workflow pins Kandelo source at planning time, while browser-graph package
 resolution reads the canonical ABI package index later in the run. If another
