@@ -2192,6 +2192,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
           KANDELO_HOMEBREW_KANDELO_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
+          KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
           KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
           PREFIX_CAMPAIGN_MODE: ${{ needs.plan.outputs.prefix-campaign-mode }}
@@ -2204,6 +2205,7 @@ jobs:
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
             --formula "$KANDELO_HOMEBREW_FORMULA"
+            --target-main-contains-sha "$KANDELO_HOMEBREW_TAP_COMMIT"
             --auth-mode github-token
             --require-pat false
             --destination-mode repository
@@ -2548,6 +2550,7 @@ jobs:
         env:
           KANDELO_HOMEBREW_EXISTING_INDEX: ${{ steps.existing-index.outputs.layout }}
           KANDELO_HOMEBREW_FORCE: ${{ inputs.force }}
+          KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
         run: |
           set -euo pipefail
           for secret_name in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
@@ -2573,6 +2576,7 @@ jobs:
           fi
           bash scripts/dev-shell.sh python3 scripts/homebrew-oci-layout.py merge-index \
             "${args[@]}" \
+            --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT" \
             --out-layout "$RUNNER_TEMP/homebrew-complete-index/layout" \
             --out-receipt "$RUNNER_TEMP/homebrew-complete-index/layout-receipt.json"
 
@@ -2582,6 +2586,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
           KANDELO_HOMEBREW_KANDELO_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
+          KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
           KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
           PREFIX_CAMPAIGN_MODE: ${{ needs.plan.outputs.prefix-campaign-mode }}
@@ -2608,6 +2613,7 @@ jobs:
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME" \
             --formula "$KANDELO_HOMEBREW_FORMULA" \
+            --target-main-contains-sha "$KANDELO_HOMEBREW_TAP_COMMIT" \
             "${authority_args[@]}" \
             --auth-mode github-token \
             --require-pat false \

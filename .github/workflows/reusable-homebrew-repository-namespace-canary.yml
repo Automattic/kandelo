@@ -358,6 +358,7 @@ jobs:
             --tap-name kandelo-dev/tap-core \
             --formula "$FORMULA" \
             --exact-kandelo-main-sha "$KANDELO_REF" \
+            --target-main-contains-sha "$TAP_REF" \
             --auth-mode github-token \
             --require-pat false \
             --destination-mode repository-canary \

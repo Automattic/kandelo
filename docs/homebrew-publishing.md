@@ -1740,6 +1740,14 @@ advances during an ordinary run, the next mutation fails closed;
 run-scoped build handoffs do not authorize publication from the
 now-stale source.
 
+GHCR child and version-index writes also re-read the target tap's
+public protected `main` immediately before `oras cp`. The exact target
+repository and authority commit come from the already validated OCI
+layout receipt. The uploader requires its independently supplied
+target-authority SHA to equal that receipt value. A force-push that
+removes the authorized tap commit therefore stops the write even when
+the job passed its earlier planning check.
+
 The payload SHA is intentionally distinct from `github.sha`.
 `repository_dispatch` may be admitted while protected `main` is at one commit
 but instantiated after another publication advances it. Recording the source
@@ -2291,12 +2299,14 @@ and all unrelated Formulae retain parallel throughput:
    missing-repository result so an existing public package with a new tag cannot
    produce a false positive. The uploader copies only the validated child
    layout to its content-derived tag. Immediately before that credentialed
-   `oras cp`, the transport itself re-reads `Automattic/kandelo`'s protected
-   `main` ref. An ordinary call requires equality with the explicit
+   `oras cp`, the transport itself re-reads both `Automattic/kandelo`'s
+   protected `main` and the receipt-bound target tap's public protected
+   `main`. An ordinary Kandelo call requires equality with the explicit
    publication SHA. A prefix-campaign call requires that its explicit
-   sealed source remain an ancestor. The two authority inputs are
-   mutually exclusive, and an earlier workflow check cannot authorize a
-   copy after the protected history changes. The uploader retires the
+   sealed source remain an ancestor. The receipt's tap authority must
+   remain an ancestor of target `main`. These checks prevent an earlier
+   workflow check from authorizing a copy after either protected history
+   diverges. The uploader retires the
    isolated ORAS authentication state and requires an anonymous
    exact-digest readback. Its only output is a
    strict data receipt binding the canonical layout receipt to that public
@@ -2333,9 +2343,14 @@ and all unrelated Formulae retain parallel throughput:
    old children. This applies both to stale source identity and to different
    child bytes under the same semantic identity. It never carries a sibling
    architecture across either transition.
-   The top
-   index receipt records the previous digest, transport rechecks that digest
-   immediately before its copy, and an anonymous readback verifies the result.
+   A schema-3 top-index receipt keeps mutation authority separate from
+   child provenance. Its `authority` object records the current target
+   tap repository and commit that may publish the aggregate. This field
+   does not rewrite the producer provenance carried by historical child
+   handoffs and sidecars. The receipt also records the previous digest.
+   The transport rechecks that digest and both protected-main
+   authorities immediately before its copy, and an anonymous readback
+   verifies the result.
    GitHub Container Registry (GHCR) does not provide this path with a documented
    conditional tag update, so an authorized writer outside the official workflow
    lock must not publish the same Formula concurrently. New packages created by

@@ -10,6 +10,7 @@ FORMULA=""
 OUT_JSON=""
 EXACT_KANDELO_MAIN_SHA=""
 KANDELO_MAIN_CONTAINS_SHA=""
+TARGET_MAIN_CONTAINS_SHA=""
 DRY_RUN=0
 AUTH_DIR=""
 AUTH_CONFIG=""
@@ -28,7 +29,7 @@ trap cleanup EXIT
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-ghcr-upload.sh --layout <oci-layout> --layout-receipt <json> --tap-repository <owner/repo> [--tap-name <owner/name>] --formula <name> --out-json <json> [--exact-kandelo-main-sha <sha> | --kandelo-main-contains-sha <sha>] [--auth-mode <automatic|github-token|pat>] [--require-pat <true|false>] [--registry-user <login>] [--destination-mode <repository|repository-canary>] [--dry-run]
+usage: scripts/homebrew-ghcr-upload.sh --layout <oci-layout> --layout-receipt <json> --tap-repository <owner/repo> [--tap-name <owner/name>] --formula <name> --out-json <json> [--exact-kandelo-main-sha <sha> | --kandelo-main-contains-sha <sha>] [--target-main-contains-sha <sha>] [--auth-mode <automatic|github-token|pat>] [--require-pat <true|false>] [--registry-user <login>] [--destination-mode <repository|repository-canary>] [--dry-run]
 
 Validates an explicit local OCI layout, preflights the destination reference,
 and uses ORAS only to copy that immutable layout to the exact tap-repository
@@ -57,6 +58,10 @@ while [ "$#" -gt 0 ]; do
     --exact-kandelo-main-sha) EXACT_KANDELO_MAIN_SHA="${2:-}"; shift 2 ;;
     --kandelo-main-contains-sha)
       KANDELO_MAIN_CONTAINS_SHA="${2:-}"
+      shift 2
+      ;;
+    --target-main-contains-sha)
+      TARGET_MAIN_CONTAINS_SHA="${2:-}"
       shift 2
       ;;
     --auth-mode) AUTH_MODE="${2:-}"; shift 2 ;;
@@ -97,6 +102,11 @@ if [ -n "$KANDELO_MAIN_CONTAINS_SHA" ] &&
   echo "homebrew-ghcr-upload.sh: --kandelo-main-contains-sha must be an exact lowercase 40-character SHA" >&2
   exit 2
 fi
+if [ -n "$TARGET_MAIN_CONTAINS_SHA" ] &&
+   ! [[ "$TARGET_MAIN_CONTAINS_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "homebrew-ghcr-upload.sh: --target-main-contains-sha must be an exact lowercase 40-character SHA" >&2
+  exit 2
+fi
 if [ -n "$EXACT_KANDELO_MAIN_SHA" ] &&
    [ -n "$KANDELO_MAIN_CONTAINS_SHA" ]; then
   echo "homebrew-ghcr-upload.sh: exact-main and main-contains authority are mutually exclusive" >&2
@@ -133,6 +143,8 @@ case "$KIND" in
     DESTINATION_REF="$SOURCE_REF"
     EXPECTED_DIGEST="$(jq -er '.oci.manifest.digest' "$LAYOUT_RECEIPT")"
     EXPECTED_PREVIOUS=null
+    RECEIPT_TAP_REPOSITORY="$(jq -er '.tap_repository' "$LAYOUT_RECEIPT")"
+    RECEIPT_TAP_COMMIT="$(jq -er '.tap_commit' "$LAYOUT_RECEIPT")"
     ;;
   index)
     python3 "$SCRIPT_ROOT/homebrew-oci-layout.py" validate-index \
@@ -141,6 +153,9 @@ case "$KIND" in
     DESTINATION_REF="$SOURCE_REF"
     EXPECTED_DIGEST="$(jq -er '.top.digest' "$LAYOUT_RECEIPT")"
     EXPECTED_PREVIOUS="$(jq -r '.top.previous_digest // "null"' "$LAYOUT_RECEIPT")"
+    RECEIPT_TAP_REPOSITORY="$(jq -er '.authority.tap_repository' \
+      "$LAYOUT_RECEIPT")"
+    RECEIPT_TAP_COMMIT="$(jq -er '.authority.tap_commit' "$LAYOUT_RECEIPT")"
     ;;
   *) echo "homebrew-ghcr-upload.sh: unsupported layout receipt kind: $KIND" >&2; exit 2 ;;
 esac
@@ -149,6 +164,11 @@ if [ "$(jq -er '.formula' "$LAYOUT_RECEIPT")" != "$FORMULA" ] ||
      "$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')" ] ||
    [ "$(jq -er '.tap_name | ascii_downcase' "$LAYOUT_RECEIPT")" != "$TAP_NAME" ]; then
   echo "homebrew-ghcr-upload.sh: layout receipt publication identity mismatch" >&2
+  exit 2
+fi
+if [ -n "$TARGET_MAIN_CONTAINS_SHA" ] &&
+   [ "$TARGET_MAIN_CONTAINS_SHA" != "$RECEIPT_TAP_COMMIT" ]; then
+  echo "homebrew-ghcr-upload.sh: target main authority does not match the validated layout receipt" >&2
   exit 2
 fi
 if ! [[ "$EXPECTED_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] ||
@@ -395,6 +415,10 @@ if [ "$REMOTE_DIGEST" != "$EXPECTED_DIGEST" ]; then
       echo "homebrew-ghcr-upload.sh: exact-main or explicit main-contains authority is required before a GHCR mutation" >&2
       exit 2
     fi
+    if [ -z "$TARGET_MAIN_CONTAINS_SHA" ]; then
+      echo "homebrew-ghcr-upload.sh: target main containment authority is required before a GHCR mutation" >&2
+      exit 2
+    fi
     ensure_authenticated_config
     # WHY: registry preflight and authentication may outlive the main commit
     # that authorized this run. Re-read protected main at the final write
@@ -409,6 +433,12 @@ if [ "$REMOTE_DIGEST" != "$EXPECTED_DIGEST" ]; then
         --repository Automattic/kandelo \
         --source-sha "$KANDELO_MAIN_CONTAINS_SHA" >/dev/null
     fi
+    # WHY: a tap can be force-pushed after the layout was validated. Bind the
+    # final write to the repository and authority commit inside that receipt,
+    # not merely to mutable workflow inputs checked earlier in the job.
+    bash "$SCRIPT_ROOT/../.github/scripts/require-repository-main-contains.sh" \
+      --repository "$RECEIPT_TAP_REPOSITORY" \
+      --source-sha "$RECEIPT_TAP_COMMIT" >/dev/null
     env -u GH_TOKEN -u GITHUB_TOKEN -u HOMEBREW_GITHUB_API_TOKEN \
       -u HOMEBREW_GITHUB_PACKAGES_TOKEN -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
       oras cp --from-oci-layout --to-registry-config "$AUTH_CONFIG" \

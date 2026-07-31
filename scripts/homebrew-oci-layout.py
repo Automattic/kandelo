@@ -1733,6 +1733,9 @@ def merge_index(args: argparse.Namespace) -> None:
         receipt = load_receipt(pathlib.Path(receipt_name))
         selected.append((layout, receipt, validate_child_layout(layout, receipt)))
     first = selected[0][1]
+    authority_tap_commit = require_string(
+        args.tap_commit, "OCI index authority tap commit", COMMIT
+    )
     semantics = expected_semantics(first)
     for _layout, receipt, _child in selected[1:]:
         if expected_semantics(receipt) != semantics:
@@ -1861,6 +1864,13 @@ def merge_index(args: argparse.Namespace) -> None:
     )
     receipt = {
         "abi": first["abi"],
+        # WHY: the children may have been produced by different historical
+        # tap commits. This separate authority identifies the current tap
+        # commit that is allowed to mutate the aggregate index.
+        "authority": {
+            "tap_commit": authority_tap_commit,
+            "tap_repository": first["tap_repository"],
+        },
         "children": [
             {
                 "arch": descriptor["platform"]["variant"],
@@ -1877,7 +1887,7 @@ def merge_index(args: argparse.Namespace) -> None:
         "kind": "index",
         "pkg_version": first["pkg_version"],
         "bottle_rebuild": first["bottle_rebuild"],
-        "schema": 2,
+        "schema": 3,
         "tap_name": first["tap_name"],
         "tap_repository": first["tap_repository"],
         "top": {
@@ -1896,13 +1906,14 @@ def validate_index_receipt(receipt: Any) -> dict[str, Any]:
     root = exact_keys(
         receipt,
         {
-            "abi", "bottle_rebuild", "children", "formula", "formula_revision",
+            "abi", "authority", "bottle_rebuild", "children", "formula",
+            "formula_revision",
             "formula_source_identity_sha256", "kind", "pkg_version", "schema",
             "source_closure_sha256", "tap_name", "tap_repository", "top",
         },
         "OCI index receipt",
     )
-    if root["schema"] != 2 or root["kind"] != "index":
+    if root["schema"] != 3 or root["kind"] != "index":
         fail("OCI index receipt has an invalid schema")
     require_int(root["abi"], "OCI index receipt ABI", 1)
     formula = require_string(root["formula"], "OCI index receipt formula", FORMULA_NAME)
@@ -1926,6 +1937,22 @@ def validate_index_receipt(receipt: Any) -> dict[str, Any]:
     )
     if normalized_identity(receipt_tap_name) != tap_name_for_repository(receipt_repository):
         fail("OCI index receipt tap name does not match its repository")
+    authority = exact_keys(
+        root["authority"], {"tap_commit", "tap_repository"},
+        "OCI index authority",
+    )
+    authority_repository = require_string(
+        authority["tap_repository"],
+        "OCI index authority tap repository",
+        TAP_REPOSITORY,
+    )
+    if normalized_identity(authority_repository) != normalized_identity(
+        receipt_repository
+    ):
+        fail("OCI index authority repository does not match its tap repository")
+    require_string(
+        authority["tap_commit"], "OCI index authority tap commit", COMMIT
+    )
     children = root["children"]
     if not isinstance(children, list) or not 1 <= len(children) <= 2:
         fail("OCI index receipt must contain one or two children")
@@ -2734,6 +2761,7 @@ def parser() -> argparse.ArgumentParser:
     merge.add_argument("--child-layout", action="append", default=[])
     merge.add_argument("--child-receipt", action="append", default=[])
     merge.add_argument("--existing-layout")
+    merge.add_argument("--tap-commit", required=True)
     merge.add_argument("--recover-unfinalized-tap-root")
     merge.add_argument("--recover-unfinalized-tap-checkout-commit")
     merge.add_argument("--out-layout", required=True)

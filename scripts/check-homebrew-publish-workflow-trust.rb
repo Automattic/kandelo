@@ -65,14 +65,14 @@ NATIVE_CA_VALIDATION_RUN_SHA256 =
   "03a44f5ed33df47783fe971de60d0b2fe08b73ef642af12298a863642bd598aa"
 PUBLISHER_PLAN_DIGEST = "81e92772754f0709fdfa1f7ca1a2bcd4997263ed412c1b4fab509f96c2f7e292"
 PUBLISHER_BUILD_DIGEST = "81864d395015a52ac0d63574fdc517a0fd5af88c801ebab1150f6317cf8a7cc6"
-PUBLISHER_UPLOAD_DIGEST = "0fab82cbd44486a19a2a1724dc3c4c67625328f3c727623e4f94ac8c9d0649d2"
-PUBLISHER_INDEX_DIGEST = "57fe01191ccf3df30160d86c053e259be6eb589e1c17ae7d4b1f14436ac55750"
+PUBLISHER_UPLOAD_DIGEST = "9bee3ed4b13a03426ce96166978bf6e8840f5248aebe38f571a6a9e8cbba233a"
+PUBLISHER_INDEX_DIGEST = "08a8c2360535d9e3dea92af39c4039d2966434049f9a2333d3d118fc6c4a1936"
 PUBLISHER_VERIFY_DIGEST = "092c83017ca5bcbcf03585b1fb59f81cbf37077ffc1d29a364a0d2ab716c8204"
 PUBLISHER_FINALIZE_DIGEST = "b17e7bf5d0a5ef512e49f74c224a94958642dfdd80a27439f2a0335816a0886b"
 PUBLISHER_VFS_RELEASE_DIGEST = "2db9ec075edf382e326066d5f49a32947f5a584fce26a966fb9fff23bbbe3c26"
 MAINTENANCE_VALIDATE_DIGEST = "30ebccd5d44e004e37f168e81284d7ceb18accfa067c05248c1cc19398a7515f"
 MAINTENANCE_ROLLBACK_DIGEST = "f82d9f351202c3a20824e4525eb88ce7f75879740014d3232e69f3d585ed5781"
-FIRST_PUBLICATION_STEPS_DIGEST = "669513579d6a318b2e45882590f24c761c3389869b503e270e9139a61f3b5b7b"
+FIRST_PUBLICATION_STEPS_DIGEST = "cf1c41bbfb91a1e5de6e7e0bfe7c16406dd3d022ad66dec7188cb31240168c7e"
 SELF_TEST_TAP_SHA = "e" * 40
 SELF_TEST_KANDELO_MAIN_SHA = "a351fc9b18da032c09160c95f1da672374ade700"
 SELF_TEST_PACKAGE_GENERATION_WASM32 =
@@ -1286,6 +1286,7 @@ def check_first_publication(workflow)
     "--tap-name kandelo-dev/tap-core",
     '--formula "$FORMULA"',
     '--exact-kandelo-main-sha "$KANDELO_REF"',
+    '--target-main-contains-sha "$TAP_REF"',
     "--auth-mode github-token",
     "--require-pat false",
     "--destination-mode repository-canary",
@@ -2705,6 +2706,8 @@ def check_publisher(workflow)
           "KANDELO_HOMEBREW_FORMULA" => "${{ matrix.formula }}",
           "KANDELO_HOMEBREW_KANDELO_COMMIT" =>
             "${{ needs.plan.outputs.kandelo-sha }}",
+          "KANDELO_HOMEBREW_TAP_COMMIT" =>
+            "${{ needs.plan.outputs.tap-sha }}",
           "KANDELO_HOMEBREW_TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
           "KANDELO_HOMEBREW_TAP_NAME" => "${{ inputs.tap-name }}",
           "PREFIX_CAMPAIGN_MODE" =>
@@ -2721,6 +2724,8 @@ def check_publisher(workflow)
           "KANDELO_HOMEBREW_FORMULA" => "${{ matrix.formula }}",
           "KANDELO_HOMEBREW_KANDELO_COMMIT" =>
             "${{ needs.plan.outputs.kandelo-sha }}",
+          "KANDELO_HOMEBREW_TAP_COMMIT" =>
+            "${{ needs.plan.outputs.tap-sha }}",
           "KANDELO_HOMEBREW_TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
           "KANDELO_HOMEBREW_TAP_NAME" => "${{ inputs.tap-name }}",
           "PREFIX_CAMPAIGN_MODE" =>
@@ -5768,6 +5773,9 @@ def check_publisher(workflow)
           'upload_args+=(--kandelo-main-contains-sha \\'
         ) &&
         upload_attempt.fetch("run").include?(
+          '--target-main-contains-sha "$KANDELO_HOMEBREW_TAP_COMMIT"'
+        ) &&
+        upload_attempt.fetch("run").include?(
           "require-exact-kandelo-main.sh"
         ) &&
         upload_attempt.fetch("run").include?(
@@ -5786,12 +5794,21 @@ def check_publisher(workflow)
     'repository) REMOTE="ghcr.io/${NORMALIZED_TAP_REPOSITORY}/${FORMULA}" ;;',
     "--exact-kandelo-main-sha) EXACT_KANDELO_MAIN_SHA=",
     "--kandelo-main-contains-sha)",
+    "--target-main-contains-sha)",
     "exact-main and main-contains authority are mutually exclusive",
     "exact-main or explicit main-contains authority is required before a GHCR mutation",
+    "target main containment authority is required before a GHCR mutation",
+    "target main authority does not match the validated layout receipt",
+    'RECEIPT_TAP_REPOSITORY="$(jq -er \'.tap_repository\'',
+    'RECEIPT_TAP_COMMIT="$(jq -er \'.tap_commit\'',
+    'RECEIPT_TAP_REPOSITORY="$(jq -er \'.authority.tap_repository\'',
+    'RECEIPT_TAP_COMMIT="$(jq -er \'.authority.tap_commit\'',
     'bash "$SCRIPT_ROOT/../.github/scripts/require-exact-kandelo-main.sh"',
     '--source-sha "$EXACT_KANDELO_MAIN_SHA"',
     '"$SCRIPT_ROOT/../.github/scripts/require-repository-main-contains.sh"',
     '--source-sha "$KANDELO_MAIN_CONTAINS_SHA"',
+    '--repository "$RECEIPT_TAP_REPOSITORY"',
+    '--source-sha "$RECEIPT_TAP_COMMIT"',
   ].each do |fragment|
     check(ghcr_uploader_source.include?(fragment),
           "publisher GHCR transport lacks #{fragment}")
@@ -6107,6 +6124,8 @@ def check_publisher(workflow)
           "KANDELO_HOMEBREW_EXISTING_INDEX" =>
             "${{ steps.existing-index.outputs.layout }}",
           "KANDELO_HOMEBREW_FORCE" => "${{ inputs.force }}",
+          "KANDELO_HOMEBREW_TAP_COMMIT" =>
+            "${{ needs.plan.outputs.tap-sha }}",
         }, "publisher unfinalized index recovery is not bound to force")
   [
     "credential-free index composer received $secret_name",
@@ -6117,6 +6136,7 @@ def check_publisher(workflow)
     "args+=(--recover-unfinalized-tap-checkout-commit \\",
     '"$KANDELO_HOMEBREW_PREPARED_TAP_COMMIT")',
     "scripts/homebrew-oci-layout.py merge-index",
+    '--tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"',
     '--out-layout "$RUNNER_TEMP/homebrew-complete-index/layout"',
     '--out-receipt "$RUNNER_TEMP/homebrew-complete-index/layout-receipt.json"',
   ].each do |fragment|
@@ -6131,6 +6151,7 @@ def check_publisher(workflow)
     "--auth-mode github-token",
     "--require-pat false",
     "--destination-mode repository",
+    '--target-main-contains-sha "$KANDELO_HOMEBREW_TAP_COMMIT"',
     "authority_args+=(--exact-kandelo-main-sha \\",
     "authority_args+=(--kandelo-main-contains-sha \\",
     "require-exact-kandelo-main.sh",
