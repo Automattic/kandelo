@@ -723,7 +723,7 @@ export class ProcessMemoryAllocator {
   }
 
   acquire(request: ProcessMemoryAllocationRequest): ProcessMemoryLease {
-    return this.acquireInternal(request, false);
+    return this.acquireInternal(request);
   }
 
   /**
@@ -753,21 +753,6 @@ export class ProcessMemoryAllocator {
         );
       }
     }
-  }
-
-  /**
-   * Acquire the child's exact syscall-time fork snapshot synchronously.
-   *
-   * WHY: awaiting retirement admission before copying would let a sibling
-   * thread mutate the parent address space after fork committed. This narrow
-   * bypass still obeys the hard live count and sampled byte admission budget;
-   * callers must await `waitForRetirementBacklogCapacity()` before launching
-   * the child Worker.
-   */
-  acquireForForkSnapshot(
-    request: ProcessMemoryAllocationRequest,
-  ): ProcessMemoryLease {
-    return this.acquireInternal(request, true);
   }
 
   async waitForRetirementBacklogCapacity(
@@ -810,7 +795,6 @@ export class ProcessMemoryAllocator {
 
   private acquireInternal(
     request: ProcessMemoryAllocationRequest,
-    bypassRetirementBacklog: boolean,
   ): ProcessMemoryLease {
     this.validateRequest(request);
     this.refreshOwnedBytes();
@@ -823,10 +807,7 @@ export class ProcessMemoryAllocator {
         this.options.maxTotalBytes,
       );
     }
-    this.requireAllocationCapacity(
-      requestedBytes,
-      bypassRetirementBacklog,
-    );
+    this.requireAllocationCapacity(requestedBytes);
     const memory = this.createMemory(request);
     const record: ProcessMemoryRecord = {
       allocationId: this.nextAllocationId++,
@@ -989,9 +970,8 @@ export class ProcessMemoryAllocator {
 
   private requireAllocationCapacity(
     requestedBytes: number,
-    bypassRetirementBacklog = false,
   ): void {
-    if (!bypassRetirementBacklog && this.retirementBacklogSaturated()) {
+    if (this.retirementBacklogSaturated()) {
       throw this.createRetirementBacklogError(requestedBytes);
     }
     if (this.liveMemories >= this.options.maxMemories) {
@@ -1242,7 +1222,11 @@ export function acquireForkMemoryClone(
   if (parentBytes % WASM_PAGE_SIZE !== 0) {
     throw new Error(`fork parent memory is not page-aligned: ${parentBytes}`);
   }
-  const lease = allocator.acquireForForkSnapshot({
+  // WHY: this synchronous admission check is part of the fork snapshot
+  // transaction. It cannot await, because another parent thread could mutate
+  // Memory during a yield, but it must reject saturated retired-memory debt
+  // before constructing and copying another complete address space.
+  const lease = allocator.acquire({
     ptrWidth,
     initialPages: parentBytes / WASM_PAGE_SIZE,
     maximumPages,

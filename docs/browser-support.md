@@ -944,7 +944,12 @@ later process. `maxMemoryPages` still caps each backing's guest brk/mmap growth
 and should be tuned for workloads that need large address spaces. Fork
 synchronously copies the parent's exact current byte length into another fresh
 backing so its observable `memory.size()` and accessible address-space boundary
-match the parent before any asynchronous Worker launch work can yield.
+match the parent before any asynchronous Worker launch work can yield. Before
+constructing that backing, fork synchronously checks both live capacity and
+the retired-generation count and byte thresholds. Saturated retirement debt
+returns `EAGAIN` without allocating or copying another full address space; an
+asynchronous pre-copy wait would let another parent thread invalidate the
+fork-time snapshot.
 
 Browser `Worker.terminate()` is not treated as proof that a Worker stopped
 touching shared memory. Cooperative exit and exec publish an exact terminal
