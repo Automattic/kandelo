@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Derive or recheck the atomic Kandelo Homebrew guest-prefix campaign."""
+"""Derive or recheck the Kandelo Homebrew guest-prefix campaign."""
 
 from __future__ import annotations
 
