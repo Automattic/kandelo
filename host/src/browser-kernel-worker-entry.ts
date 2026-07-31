@@ -90,6 +90,7 @@ import type {
   KernelToMainMessage,
 } from "./browser-kernel-protocol";
 import { kernelRealmDestroyResult } from "./kernel-realm-destroy";
+import { ExecutableModuleCache } from "./executable-module-cache";
 
 const PAGE_SIZE = 65536;
 // State
@@ -116,6 +117,7 @@ const pendingLazyRegistrationMessages: LazyRegistrationMessage[] = [];
 let lazyRegistrationTail: Promise<void> = Promise.resolve();
 const rootfsSnapshotGate = new RootfsSnapshotGate();
 const processMemoryCreators = new ProcessMemoryCreatorGate();
+const executableModuleCache = new ExecutableModuleCache();
 
 // Process tracking
 interface ForkReplayContext {
@@ -216,7 +218,7 @@ async function resolveExecutableForLaunch(
     if (!isWasmModuleBytes(bytes)) return { errno: ENOEXEC };
     let programModule: WebAssembly.Module;
     try {
-      programModule = await WebAssembly.compile(bytes);
+      programModule = await executableModuleCache.getOrCompile(bytes);
     } catch (error) {
       if (error instanceof WebAssembly.CompileError) return { errno: ENOEXEC };
       throw error;
@@ -235,6 +237,20 @@ async function resolveExecutableForLaunch(
     ...argv.slice(1),
   ];
   return resolveExecutableForLaunch(shebang.interpreter, scriptArgv, depth + 1);
+}
+
+async function compileInitialExecutableModule(
+  bytes: ArrayBuffer,
+): Promise<WebAssembly.Module | undefined> {
+  try {
+    return await executableModuleCache.getOrCompile(bytes);
+  } catch (error) {
+    // Keep malformed initial images on the established process-worker loader
+    // path so browser and Node hosts report the same trap. Exec and spawn
+    // preflight still translate this CompileError to ENOEXEC.
+    if (error instanceof WebAssembly.CompileError) return undefined;
+    throw error;
+  }
 }
 
 // Per-PID thread module cache: lazily compiled on first clone(), shared across
@@ -847,6 +863,7 @@ async function createFreshProcessMemory(
 
 async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   initReady = false;
+  executableModuleCache.clear();
   initFailure = null;
   maxPages = msg.config.maxMemoryPages;
   defaultThreadSlots = msg.config.defaultThreadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
@@ -1157,6 +1174,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       respondError(msg.requestId, "ENOEXEC: program is not a WebAssembly module");
       return;
     }
+    const programModule = await compileInitialExecutableModule(programBytes);
 
     const pid = kernelWorker.createProcess(
       msg.pty ? TERMINAL_STDIO : CAPTURED_STDIO,
@@ -1215,6 +1233,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       type: "centralized_init",
       pid,
       programBytes,
+      programModule,
       memory,
       channelOffset,
       env: launchEnv,
@@ -1236,6 +1255,7 @@ async function handleSpawn(msg: Extract<MainToKernelMessage, { type: "spawn" }>)
       memoryRetirementSafe: true,
       framebufferExposed: false,
       programBytes,
+      programModule,
       worker,
       argv: msg.argv,
       channelOffset,
@@ -2882,6 +2902,7 @@ async function performDestroy() {
   let gracefulDetachComplete =
     processGenerationDetaches.pendingCount === 0 && processes.size === 0;
   threadModuleCache.clear();
+  executableModuleCache.clear();
   threadWorkers.clear();
   threadedProcessPids.clear();
   ptyByPid.clear();
