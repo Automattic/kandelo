@@ -15,15 +15,16 @@ NODE_SCOPE_RUNNER = ARGV.length < 2 ?
 PUBLISH_JOB_DIGEST =
   "64bd13ea5a8d00953acfec3e02607f7ae70837706c868827bed5259c6043aeb2"
 WORKFLOW_DIGEST =
-  "bd5336ab31d28412fde2445aa98afba0e88be3f776b03ecd7692a2b94f139410"
+  "2bbdbb37719844e68fea4f7ece1014e742d643ab3d1c6baafa986ba16559f796"
 NODE_SCOPE_RUNNER_DIGEST =
-  "a351c57bba3b4ad05d58a346ccf2ffa22d6de194d1839c24a78d2b9bc07f1bf8"
+  "d15e23e5b8512663864e56163033cda32b301c873811fd28d04ca557cb1acc58"
 DOWNLOAD_ACTION =
   "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 UPLOAD_ACTION =
   "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 MIRROR_HANDOFF = "homebrew-main-shell-mirror-handoff"
 LIFECYCLE_HANDOFF = "homebrew-guest-lifecycle-inputs-handoff"
+NODE_RUNTIME_HANDOFF = "homebrew-public-node-runtime-handoff"
 LIFECYCLE_ASSETS = %w[
   main-shell.vfs.zst
   main-shell-brew-package-tree.json
@@ -174,6 +175,10 @@ jobs.each do |job_name, job|
         "name" => LIFECYCLE_HANDOFF,
         "path" => "${{ runner.temp }}/homebrew-guest-lifecycle-inputs-handoff",
       },
+      {
+        "name" => NODE_RUNTIME_HANDOFF,
+        "path" => "${{ runner.temp }}/homebrew-public-node-runtime-handoff",
+      },
     ],
     "public-chromium-proof" => [
       {
@@ -257,6 +262,15 @@ check(actual_prepare_handoff_uploads == [
       "if-no-files-found" => "error",
     },
   },
+  {
+    "id" => "node-runtime-handoff",
+    "with" => {
+      "name" => NODE_RUNTIME_HANDOFF,
+      "path" => "${{ steps.node-runtime.outputs.root }}",
+      "retention-days" => 1,
+      "if-no-files-found" => "error",
+    },
+  },
 ], "prepared same-run handoff uploads differ")
 check(prepare_source.include?("persist-credentials: false"),
       "preparation checkouts must not retain credentials")
@@ -271,6 +285,8 @@ check(jobs.fetch("prepare").fetch("outputs") == {
   "artifact-digest" => "${{ steps.handoff.outputs.artifact-digest }}",
   "lifecycle-artifact-digest" =>
     "${{ steps.lifecycle-handoff.outputs.artifact-digest }}",
+  "node-runtime-artifact-digest" =>
+    "${{ steps.node-runtime-handoff.outputs.artifact-digest }}",
 }, "handoff digest output differs")
 check(publish_source.scan("${{ github.token }}").length == 2,
       "tap token must have exactly the authority check and release operation uses")
@@ -391,26 +407,59 @@ check(!node_proof_source.include?("./.github/actions/fetch-submodules") &&
       !node_proof_source.include?("playwright"),
       "Node proof includes browser-only dependencies")
 node_proof_steps = node_proof_job.fetch("steps")
-node_install_index = node_proof_steps.index do |step|
-  step["name"] == "Install public Node proof dependencies"
-end
-node_build_index = node_proof_steps.index do |step|
-  step["name"] == "Build the production Node process worker"
-end
-node_revalidate_index = node_proof_steps.index do |step|
-  step["name"] == "Revalidate exact Node handoff and live refs"
-end
-node_build = named_step(
-  node_proof_job,
-  "Build the production Node process worker",
-).fetch("run")
+node_runtime_prepare = named_step(
+  prepare_job,
+  "Prepare exact public Node runtime handoff",
+)
+node_runtime_prepare_run = node_runtime_prepare.fetch("run")
 check(
-  node_install_index &&
-    node_build_index == node_install_index + 1 &&
-    node_revalidate_index == node_build_index + 1 &&
-    node_build.scan("npm --prefix host run build").length == 1 &&
-    node_build.scan("test -s host/dist/worker-entry.js").length == 1,
-  "Node proof must build and require its production process worker",
+  node_runtime_prepare.fetch("env") == {
+    "KANDELO_REF" => "${{ inputs.kandelo-ref }}",
+    "KERNEL" => "${{ steps.shell.outputs.kernel }}",
+    "TAP_CATALOG_REF" => "${{ inputs.tap-catalog-ref }}",
+    "TAP_CALLER_AUTHORITY_REF" => "${{ github.sha }}",
+    "CANARY_REF" => "${{ inputs.canary-ref }}",
+  } &&
+    node_runtime_prepare_run.scan(
+      "scripts/create-homebrew-node-proof-runtime-handoff.sh"
+    ).length == 1 &&
+    node_runtime_prepare_run.include?('--kernel "$KERNEL"') &&
+    node_runtime_prepare_run.include?(
+      '--kandelo-ref "$KANDELO_REF"'
+    ) &&
+    node_runtime_prepare_run.include?(
+      '--workflow-ref "$KANDELO_REF"'
+    ) &&
+    node_runtime_prepare_run.include?(
+      '--tap-catalog-ref "$TAP_CATALOG_REF"'
+    ) &&
+    node_runtime_prepare_run.include?(
+      '--tap-authority-ref "$TAP_CALLER_AUTHORITY_REF"'
+    ) &&
+    node_runtime_prepare_run.include?(
+      '--canary-ref "$CANARY_REF"'
+    ) &&
+    node_runtime_prepare_run.include?('--out "$root"'),
+  "preparation must build the exact public Node runtime handoff",
+)
+check(
+  node_proof_job.fetch("strategy") == {
+    "fail-fast" => false,
+    "matrix" => {
+      "scope" => %w[shipping-core shipping-canary],
+    },
+  },
+  "Node proof scopes must use separate fresh matrix runners",
+)
+check(
+  !node_proof_source.match?(/\bnix\b/i) &&
+    !node_proof_source.match?(/\bnpm\b/) &&
+    !node_proof_source.match?(/\bnpx\b/) &&
+    !node_proof_source.include?("tsx") &&
+    !node_proof_source.include?("fetch-binaries.sh") &&
+    !node_proof_source.include?("resolve-binary.sh") &&
+    !node_proof_source.include?("WASM_POSIX_BINARY_CACHE_ROOT"),
+  "Node proof must not repeat build or kernel preparation",
 )
 check(node_execution_source.scan("--transport-mode public").length == 1 &&
       chromium_proof_source.scan("--transport-mode public").length == 1 &&
@@ -425,59 +474,56 @@ node_telemetry_init = named_step(
   node_proof_job,
   "Initialize bounded Node lifecycle telemetry",
 )
-node_core_scope = named_step(
+node_selected_scope = named_step(
   node_proof_job,
-  "Prove shipping-core public bottle installs in Node",
-)
-node_canary_scope = named_step(
-  node_proof_job,
-  "Prove shipping-canary public bottle installs in Node",
+  "Prove selected public bottle install in Node",
 )
 node_telemetry_upload = named_step(
   node_proof_job,
   "Upload bounded Node lifecycle telemetry",
 )
 node_telemetry_init_index = node_proof_steps.index(node_telemetry_init)
-node_core_scope_index = node_proof_steps.index(node_core_scope)
-node_canary_scope_index = node_proof_steps.index(node_canary_scope)
+node_selected_scope_index = node_proof_steps.index(node_selected_scope)
 node_telemetry_upload_index = node_proof_steps.index(node_telemetry_upload)
 node_scope_env = {
   "IMAGE" => "${{ steps.public.outputs.image }}",
+  "BOOTSTRAP_SPEC" =>
+    "${{ runner.temp }}/homebrew-guest-lifecycle-inputs-handoff/" \
+    "main-shell-brew-package-tree.json",
   "BOOTSTRAP" => "${{ steps.public.outputs.bootstrap }}",
   "BOOTSTRAP_ENV" => "${{ steps.public.outputs.bootstrap-env }}",
   "TAP_CATALOG_REF" => "${{ inputs.tap-catalog-ref }}",
   "CANARY_REF" => "${{ inputs.canary-ref }}",
+  "KANDELO_HOMEBREW_NODE_PROOF_RUNTIME" =>
+    "${{ runner.temp }}/homebrew-public-node-runtime-handoff",
 }
 check(
   node_telemetry_init.fetch("run").include?(
     ': >"$RUNNER_TEMP/homebrew-node-lifecycle-resources.log"'
   ) &&
     node_telemetry_init_index &&
-    node_core_scope_index == node_telemetry_init_index + 1 &&
-    node_canary_scope_index == node_core_scope_index + 1 &&
-    node_telemetry_upload_index == node_canary_scope_index + 1 &&
-    node_core_scope.fetch("env") == node_scope_env &&
-    node_canary_scope.fetch("env") == node_scope_env &&
-    node_core_scope.fetch("timeout-minutes") == 20 &&
-    node_canary_scope.fetch("timeout-minutes") == 20 &&
-    node_core_scope.fetch("run").scan(
+    node_selected_scope_index == node_telemetry_init_index + 1 &&
+    node_telemetry_upload_index == node_selected_scope_index + 1 &&
+    node_selected_scope.fetch("env") == node_scope_env &&
+    node_selected_scope.fetch("timeout-minutes") == 20 &&
+    node_selected_scope.fetch("run").scan(
       "homebrew/test/run_homebrew_guest_shipping_scope.sh"
     ).length == 1 &&
-    node_core_scope.fetch("run").scan(/^\s*shipping-core\s*$/).length == 1 &&
-    node_canary_scope.fetch("run").scan(
-      "homebrew/test/run_homebrew_guest_shipping_scope.sh"
-    ).length == 1 &&
-    node_canary_scope.fetch("run").scan(
-      /^\s*shipping-canary\s*$/
-    ).length == 1 &&
-    node_scope_runner.include?(
-      "homebrew/test/homebrew_guest_lifecycle_node.ts"
+    node_selected_scope.fetch("run").include?(
+      '"${{ matrix.scope }}"'
     ) &&
+    node_scope_runner.include?(
+      "dist/homebrew-guest-lifecycle-node.js"
+    ) &&
+    node_scope_runner.scan('node "$node_entry"').length == 1 &&
     node_scope_runner.scan('--proof-mode "$scope"').length == 1 &&
     node_scope_runner.scan(
       /^\s*shipping-core\|shipping-canary\) ;;\s*$/
     ).length == 1 &&
     node_scope_runner.scan('--image "$IMAGE"').length == 1 &&
+    node_scope_runner.scan(
+      '--homebrew-bootstrap-spec "$BOOTSTRAP_SPEC"'
+    ).length == 1 &&
     !node_scope_runner.include?("--proof-mode comprehensive") &&
     node_scope_runner.include?("--timeout-ms 900000") &&
     node_scope_runner.include?('--canary-revision "$CANARY_REF"'),
@@ -586,18 +632,15 @@ normalized_node_resolution =
 node_selected_roots = normalized_node_resolution.scan(
   /--package(?:=|\s+)([a-z0-9][a-z0-9._+-]*)/,
 ).flatten
-check(node_selected_roots == ["kernel"],
-      "Node proof must fetch only the kernel package root")
+check(node_selected_roots.empty?,
+      "Node proof must not fetch package roots")
 check(node_resolution.include?(
-  'bash scripts/resolve-binary.sh kernel.wasm >/dev/null'
-) &&
-      node_resolution.include?(
         'echo "image=$lifecycle/main-shell.vfs.zst"'
       ) &&
       !node_resolution.include?("prepare-browser") &&
       !node_resolution.include?("--package shell") &&
       !node_resolution.include?("--package homebrew-bootstrap"),
-      "Node proof does not consume only handoff products and the kernel")
+      "Node proof does not consume only prepared handoff products")
 
 chromium_resolution = named_step(
   chromium_proof_job,

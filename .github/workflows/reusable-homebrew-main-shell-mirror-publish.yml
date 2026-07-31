@@ -34,6 +34,7 @@ jobs:
     outputs:
       artifact-digest: ${{ steps.handoff.outputs.artifact-digest }}
       lifecycle-artifact-digest: ${{ steps.lifecycle-handoff.outputs.artifact-digest }}
+      node-runtime-artifact-digest: ${{ steps.node-runtime-handoff.outputs.artifact-digest }}
     steps:
       - name: Validate tap-owned caller and exact live inputs
         shell: bash
@@ -159,6 +160,8 @@ jobs:
         run: |
           set -euo pipefail
           npm ci --no-audit --no-fund
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+            npm --prefix host ci --no-audit --no-fund
           npm --prefix tools/mkrootfs ci --no-audit --no-fund
           bash scripts/dev-shell.sh true
 
@@ -193,13 +196,15 @@ jobs:
             "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
             bash scripts/fetch-binaries.sh --fetch-only \
               --package shell \
-              --package homebrew-bootstrap
+              --package homebrew-bootstrap \
+              --package kernel
           image="$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)"
           bootstrap="$(bash scripts/resolve-binary.sh \
             programs/homebrew-bootstrap/homebrew-bootstrap.zip)"
           bootstrap_env="$(bash scripts/resolve-binary.sh \
             programs/homebrew-bootstrap/homebrew-brew.env)"
-          for path in "$image" "$bootstrap" "$bootstrap_env"; do
+          kernel="$(bash scripts/resolve-binary.sh kernel.wasm)"
+          for path in "$image" "$bootstrap" "$bootstrap_env" "$kernel"; do
             test -f "$path"
             test ! -L "$path"
           done
@@ -211,6 +216,7 @@ jobs:
             echo "image=$image"
             echo "bootstrap=$bootstrap"
             echo "bootstrap-env=$bootstrap_env"
+            echo "kernel=$kernel"
           } >>"$GITHUB_OUTPUT"
 
       - name: Recover exact public-source bottle payloads
@@ -403,6 +409,44 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+      - name: Prepare exact public Node runtime handoff
+        id: node-runtime
+        working-directory: kandelo
+        shell: bash
+        env:
+          KANDELO_REF: ${{ inputs.kandelo-ref }}
+          KERNEL: ${{ steps.shell.outputs.kernel }}
+          TAP_CATALOG_REF: ${{ inputs.tap-catalog-ref }}
+          TAP_CALLER_AUTHORITY_REF: ${{ github.sha }}
+          CANARY_REF: ${{ inputs.canary-ref }}
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/homebrew-public-node-runtime-handoff"
+          test ! -e "$root"
+          # WHY: Nix, npm, TypeScript compilation, worker compilation, and
+          # kernel resolution can leave a hosted runner near its memory
+          # ceiling before Brew starts. Prepare those immutable inputs in
+          # this earlier job so each proof gets a fresh runner and cgroup.
+          bash scripts/dev-shell.sh \
+            bash scripts/create-homebrew-node-proof-runtime-handoff.sh \
+              --kernel "$KERNEL" \
+              --kandelo-ref "$KANDELO_REF" \
+              --workflow-ref "$KANDELO_REF" \
+              --tap-catalog-ref "$TAP_CATALOG_REF" \
+              --tap-authority-ref "$TAP_CALLER_AUTHORITY_REF" \
+              --canary-ref "$CANARY_REF" \
+              --out "$root"
+          echo "root=$root" >>"$GITHUB_OUTPUT"
+
+      - name: Upload same-run public Node runtime handoff
+        id: node-runtime-handoff
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: homebrew-public-node-runtime-handoff
+          path: ${{ steps.node-runtime.outputs.root }}
+          retention-days: 1
+          if-no-files-found: error
+
   publish:
     name: Publish with tap-owned token
     needs: prepare
@@ -545,10 +589,16 @@ jobs:
           if-no-files-found: error
 
   public-node-proof:
-    name: Prove public bottle installation in Node
+    name: Prove ${{ matrix.scope }} public bottle installation in Node
     needs: [prepare, publish]
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        scope:
+          - shipping-core
+          - shipping-canary
     permissions:
       actions: read
       contents: read
@@ -572,47 +622,17 @@ jobs:
           name: homebrew-guest-lifecycle-inputs-handoff
           path: ${{ runner.temp }}/homebrew-guest-lifecycle-inputs-handoff
 
+      - name: Download same-run public Node runtime handoff
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: homebrew-public-node-runtime-handoff
+          path: ${{ runner.temp }}/homebrew-public-node-runtime-handoff
+
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: "24"
-          cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            host/package-lock.json
 
-      - name: Install Nix
-        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-        with:
-          github-token: ""
-
-      - name: Cache Nix store and flake evaluation
-        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
-        with:
-          use-gha-cache: false
-          use-flakehub: false
-
-      - name: Install public Node proof dependencies
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm ci --no-audit --no-fund
-          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
-            npm --prefix host ci --no-audit --no-fund
-          bash scripts/dev-shell.sh true
-
-      - name: Build the production Node process worker
-        shell: bash
-        run: |
-          set -euo pipefail
-          # WHY: stock Brew creates hundreds of short-lived guest
-          # processes. Without this artifact, each process starts a new
-          # tsx compiler in its Node Worker and can exhaust a hosted
-          # runner before `brew tap` completes. The shipped host uses
-          # this compiled worker path.
-          npm --prefix host run build
-          test -s host/dist/worker-entry.js
-
-      - name: Revalidate exact Node handoff and live refs
+      - name: Revalidate exact Node handoffs and live refs
         shell: bash
         env:
           KANDELO_REF: ${{ inputs.kandelo-ref }}
@@ -623,6 +643,9 @@ jobs:
         run: |
           set -euo pipefail
           [ "$(git rev-parse HEAD)" = "$KANDELO_REF" ]
+          [ "${{ needs.prepare.outputs.artifact-digest }}" != "" ]
+          [ "${{ needs.prepare.outputs.lifecycle-artifact-digest }}" != "" ]
+          [ "${{ needs.prepare.outputs.node-runtime-artifact-digest }}" != "" ]
           bash scripts/verify-homebrew-main-shell-mirror-handoff.sh \
             --root "$RUNNER_TEMP/main-shell-mirror-handoff" \
             --kandelo-ref "$KANDELO_REF" \
@@ -639,6 +662,13 @@ jobs:
             --tap-mirror-authority-ref "$TAP_MIRROR_AUTHORITY_REF" \
             --tap-caller-authority-ref "$TAP_CALLER_AUTHORITY_REF" \
             --canary-ref "$CANARY_REF"
+          bash scripts/verify-homebrew-node-proof-runtime-handoff.sh \
+            --root "$RUNNER_TEMP/homebrew-public-node-runtime-handoff" \
+            --kandelo-ref "$KANDELO_REF" \
+            --workflow-ref "$KANDELO_REF" \
+            --tap-catalog-ref "$TAP_CATALOG_REF" \
+            --tap-authority-ref "$TAP_CALLER_AUTHORITY_REF" \
+            --canary-ref "$CANARY_REF"
           bash .github/scripts/require-exact-repository-main.sh \
             --repository Automattic/kandelo --source-sha "$KANDELO_REF"
           bash .github/scripts/require-exact-repository-main.sh \
@@ -651,19 +681,8 @@ jobs:
       - name: Resolve exact public Node proof inputs
         id: public
         shell: bash
-        env:
-          WASM_POSIX_BINARY_CACHE_ROOT: ${{ runner.temp }}/main-shell-public-node-proof-cache
         run: |
           set -euo pipefail
-          test ! -e "$WASM_POSIX_BINARY_CACHE_ROOT"
-          # WHY: the signed handoff already owns the exact shell and Homebrew
-          # inputs. The Node host resolves only the kernel outside that
-          # handoff, so fetching the browser closure here wastes disk and
-          # memory before the lifecycle proof it is meant to isolate.
-          bash scripts/dev-shell.sh env \
-            "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
-            bash scripts/fetch-binaries.sh --fetch-only --package kernel
-          bash scripts/resolve-binary.sh kernel.wasm >/dev/null
           handoff="$RUNNER_TEMP/main-shell-mirror-handoff"
           lifecycle="$RUNNER_TEMP/homebrew-guest-lifecycle-inputs-handoff"
           plan="$handoff/mirror/kandelo-homebrew-bottle-mirror-plan.json"
@@ -705,41 +724,30 @@ jobs:
           set -euo pipefail
           : >"$RUNNER_TEMP/homebrew-node-lifecycle-resources.log"
 
-      # WHY: distinct workflow steps keep the active scope visible in durable
-      # job metadata even when a force cancellation prevents log finalization.
-      - name: Prove shipping-core public bottle installs in Node
+      # WHY: each matrix scope receives a new hosted runner and cgroup. A
+      # retired process generation from one proof therefore cannot consume
+      # the memory headroom needed by the other proof.
+      - name: Prove selected public bottle install in Node
         shell: bash
         timeout-minutes: 20
         env:
           IMAGE: ${{ steps.public.outputs.image }}
+          BOOTSTRAP_SPEC: ${{ runner.temp }}/homebrew-guest-lifecycle-inputs-handoff/main-shell-brew-package-tree.json
           BOOTSTRAP: ${{ steps.public.outputs.bootstrap }}
           BOOTSTRAP_ENV: ${{ steps.public.outputs.bootstrap-env }}
           TAP_CATALOG_REF: ${{ inputs.tap-catalog-ref }}
           CANARY_REF: ${{ inputs.canary-ref }}
+          KANDELO_HOMEBREW_NODE_PROOF_RUNTIME: ${{ runner.temp }}/homebrew-public-node-runtime-handoff
         run: |
           set -euo pipefail
           bash homebrew/test/run_homebrew_guest_shipping_scope.sh \
-            shipping-core
-
-      - name: Prove shipping-canary public bottle installs in Node
-        shell: bash
-        timeout-minutes: 20
-        env:
-          IMAGE: ${{ steps.public.outputs.image }}
-          BOOTSTRAP: ${{ steps.public.outputs.bootstrap }}
-          BOOTSTRAP_ENV: ${{ steps.public.outputs.bootstrap-env }}
-          TAP_CATALOG_REF: ${{ inputs.tap-catalog-ref }}
-          CANARY_REF: ${{ inputs.canary-ref }}
-        run: |
-          set -euo pipefail
-          bash homebrew/test/run_homebrew_guest_shipping_scope.sh \
-            shipping-canary
+            "${{ matrix.scope }}"
 
       - name: Upload bounded Node lifecycle telemetry
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: homebrew-public-node-lifecycle-telemetry
+          name: homebrew-public-node-lifecycle-telemetry-${{ matrix.scope }}
           path: ${{ runner.temp }}/homebrew-node-lifecycle-resources.log
           retention-days: 7
           if-no-files-found: warn

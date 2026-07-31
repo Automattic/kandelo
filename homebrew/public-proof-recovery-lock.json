@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "kind": "kandelo-homebrew-public-proof-recovery",
+  "kandelo_ref": "0b0945f5f78b5e7577d08fafffc540408a501cb1",
+  "tap_catalog_ref": "6ad0e3dbc60e5572c4288c86919238f71c1bc110",
+  "tap_authority_ref": "84fcb7b104af0d9440690fd519d5a5a44fda5b80",
+  "canary_ref": "d8bdda662f6d80cf3dcdbe8451edb12bb33bbafc",
+  "release": {
+    "repository": "Kandelo-dev/homebrew-tap-core",
+    "tag": "homebrew-guest-lifecycle-inputs-sha256-bb5e575fb4d199aa59b764d293aa33501b0e6bfc243868ec5af98d826dafb79f",
+    "target_commitish": "84fcb7b104af0d9440690fd519d5a5a44fda5b80",
+    "immutable": true,
+    "assets": {
+      "homebrew-bootstrap.zip": {
+        "bytes": 5081250,
+        "sha256": "6b94235c4463a7ae03104decb20910fb660af4d2313fc0c87a84ef02acde440c"
+      },
+      "homebrew-brew.env": {
+        "bytes": 210,
+        "sha256": "2eb3f05703b6a6f23feabda24f622bacd068115c7f74a0eac51bb4085e9eec5a"
+      },
+      "main-shell-brew-package-tree.json": {
+        "bytes": 641,
+        "sha256": "b1f4b479a8364282700bdada99257160f66a3b314cc6a237d1d52c868a4a9b62"
+      },
+      "main-shell.vfs.zst": {
+        "bytes": 5752199,
+        "sha256": "d82a397d9b441269b6ea8a0fe1a37d82983a52bd6ed40b8d7387a16c3037218c"
+      }
+    }
+  }
+}

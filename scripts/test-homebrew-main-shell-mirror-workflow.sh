@@ -11,6 +11,7 @@ ruby "$REPO_ROOT/scripts/check-homebrew-main-shell-mirror-workflow.rb"
 python3 \
   "$REPO_ROOT/.github/scripts/test-check-homebrew-main-shell-release-locks.py"
 bash "$REPO_ROOT/scripts/test-verify-browser-shell-vfs-asset.sh"
+bash "$REPO_ROOT/scripts/test-homebrew-node-proof-runtime-handoff.sh"
 
 expect_rejected() {
   local fixture="$1"
@@ -30,9 +31,15 @@ expect_rejected "$TMP_ROOT/long-handoff.yml"
 sed '/lifecycle-artifact-digest:/d' \
   "$WORKFLOW" >"$TMP_ROOT/no-lifecycle-digest.yml"
 expect_rejected "$TMP_ROOT/no-lifecycle-digest.yml"
+sed '/node-runtime-artifact-digest:/d' \
+  "$WORKFLOW" >"$TMP_ROOT/no-node-runtime-digest.yml"
+expect_rejected "$TMP_ROOT/no-node-runtime-digest.yml"
 sed 's/homebrew-guest-lifecycle-inputs-handoff/homebrew-guest-lifecycle-inputs-cache/g' \
   "$WORKFLOW" >"$TMP_ROOT/renamed-lifecycle-handoff.yml"
 expect_rejected "$TMP_ROOT/renamed-lifecycle-handoff.yml"
+sed 's/homebrew-public-node-runtime-handoff/homebrew-public-node-runtime-cache/g' \
+  "$WORKFLOW" >"$TMP_ROOT/renamed-node-runtime-handoff.yml"
+expect_rejected "$TMP_ROOT/renamed-node-runtime-handoff.yml"
 sed '/name: homebrew-main-shell-mirror-handoff/a\
           run-id: 123' "$WORKFLOW" >"$TMP_ROOT/cross-run.yml"
 expect_rejected "$TMP_ROOT/cross-run.yml"
@@ -98,26 +105,28 @@ sed \
   '/      - name: Fetch musl submodule for browser source-build fallback/,/          submodules: libc\/musl/d' \
   "$WORKFLOW" >"$TMP_ROOT/no-public-chromium-proof-musl.yml"
 expect_rejected "$TMP_ROOT/no-public-chromium-proof-musl.yml"
-sed \
-  's/--fetch-only --package kernel/--fetch-only --package kernel --package shell/' \
-  "$WORKFLOW" >"$TMP_ROOT/node-fetches-shell.yml"
-expect_rejected "$TMP_ROOT/node-fetches-shell.yml"
-sed '/npm --prefix host run build/d' \
-  "$WORKFLOW" >"$TMP_ROOT/no-compiled-node-worker.yml"
-expect_rejected "$TMP_ROOT/no-compiled-node-worker.yml"
+sed '/--package kernel/d' \
+  "$WORKFLOW" >"$TMP_ROOT/no-prepared-node-kernel.yml"
+expect_rejected "$TMP_ROOT/no-prepared-node-kernel.yml"
+sed '/scripts\/create-homebrew-node-proof-runtime-handoff.sh/d' \
+  "$WORKFLOW" >"$TMP_ROOT/no-prepared-node-runtime.yml"
+expect_rejected "$TMP_ROOT/no-prepared-node-runtime.yml"
+sed '/scripts\/verify-homebrew-node-proof-runtime-handoff.sh/d' \
+  "$WORKFLOW" >"$TMP_ROOT/no-node-runtime-verifier.yml"
+expect_rejected "$TMP_ROOT/no-node-runtime-verifier.yml"
 sed 's/memory.current/memory.stat/' \
   "$NODE_SCOPE_RUNNER" >"$TMP_ROOT/no-node-current-memory-telemetry.sh"
 expect_rejected \
   "$WORKFLOW" "$TMP_ROOT/no-node-current-memory-telemetry.sh"
 sed \
-  's#homebrew/test/homebrew_guest_lifecycle_node.ts#scripts/homebrew-main-shell-node-smoke.ts#' \
+  's#dist/homebrew-guest-lifecycle-node.js#dist/unreviewed-node-smoke.js#' \
   "$NODE_SCOPE_RUNNER" >"$TMP_ROOT/no-node-shipping-proof.sh"
 expect_rejected "$WORKFLOW" "$TMP_ROOT/no-node-shipping-proof.sh"
 sed '/--proof-mode "$scope"/d' \
   "$NODE_SCOPE_RUNNER" >"$TMP_ROOT/no-node-shipping-selection.sh"
 expect_rejected "$WORKFLOW" "$TMP_ROOT/no-node-shipping-selection.sh"
 awk '
-  !inserted && /^bash scripts\/dev-shell\.sh npx tsx/ {
+  !inserted && /^node "\$node_entry"/ {
     print "exit 0"
     inserted = 1
   }
@@ -126,24 +135,29 @@ awk '
 ' "$NODE_SCOPE_RUNNER" >"$TMP_ROOT/early-success-node-scope.sh"
 expect_rejected "$WORKFLOW" "$TMP_ROOT/early-success-node-scope.sh"
 for scope in shipping-core shipping-canary; do
-  sed "/^[[:space:]]*$scope[[:space:]]*$/d" \
+  sed "/^[[:space:]]*- $scope[[:space:]]*$/d" \
     "$WORKFLOW" >"$TMP_ROOT/omitted-$scope.yml"
   expect_rejected "$TMP_ROOT/omitted-$scope.yml"
-  sed "/^[[:space:]]*$scope[[:space:]]*$/p" \
+  sed "/^[[:space:]]*- $scope[[:space:]]*$/p" \
     "$WORKFLOW" >"$TMP_ROOT/duplicated-$scope.yml"
   expect_rejected "$TMP_ROOT/duplicated-$scope.yml"
-  awk -v scope="$scope" '
-    index($0, "- name: Prove " scope " public bottle installs in Node") {
-      in_scope = 1
-    }
-    in_scope && /timeout-minutes: 20/ {
-      sub(/timeout-minutes: 20/, "timeout-minutes: 21")
-      in_scope = 0
-    }
-    { print }
-  ' "$WORKFLOW" >"$TMP_ROOT/wrong-$scope-timeout.yml"
-  expect_rejected "$TMP_ROOT/wrong-$scope-timeout.yml"
 done
+awk '
+  /- name: Prove selected public bottle install in Node/ {
+    in_scope = 1
+  }
+  in_scope && /timeout-minutes: 20/ {
+    sub(/timeout-minutes: 20/, "timeout-minutes: 21")
+    in_scope = 0
+  }
+  { print }
+' "$WORKFLOW" >"$TMP_ROOT/wrong-node-scope-timeout.yml"
+expect_rejected "$TMP_ROOT/wrong-node-scope-timeout.yml"
+sed '/- name: Revalidate exact Node handoffs and live refs/a\
+      - name: Install Nix inside the proof cgroup\
+        run: nix develop' \
+  "$WORKFLOW" >"$TMP_ROOT/node-repeats-nix-preparation.yml"
+expect_rejected "$TMP_ROOT/node-repeats-nix-preparation.yml"
 sed \
   '/"KANDELO_BROWSER_DEMO_INPUTS=\$KANDELO_BROWSER_DEMO_INPUTS"/d' \
   "$WORKFLOW" >"$TMP_ROOT/dropped-chromium-input-selection.yml"

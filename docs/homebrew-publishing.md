@@ -1063,14 +1063,13 @@ trust for fully qualified operations or receives it through
 `brew trust --formula`.
 
 The required Node release gate uses two bounded shipping scopes. Each starts
-in a fresh operating-system Node process from the same exact original image.
-Each scope also owns a distinct workflow step, so cancelled job metadata shows
-whether the core or canary proof had begun even when final logs and telemetry
-cannot be uploaded. Each step has a 20-minute workflow bound around the
-15-minute in-process deadline. The guest-process deadline also bounds
-best-effort process termination. Once that deadline expires, control returns
-to machine teardown, whose worker-termination fallback remains responsible
-for releasing the host.
+on a separate fresh hosted runner and cgroup from the same exact original
+image. The matrix scope remains visible in durable job metadata even when
+force cancellation prevents final logs and telemetry from being uploaded.
+Each scope has a 20-minute workflow bound around the 15-minute in-process
+deadline. The guest-process deadline also bounds best-effort process
+termination. Once that deadline expires, control returns to machine teardown,
+whose worker-termination fallback remains responsible for releasing the host.
 The core scope removes the direct-composed Bzip2 receipt, pours first-party
 Bzip2 through stock Homebrew, executes it, and exits. The canary scope taps
 both repositories, removes the direct-composed M4 receipt, pours and executes
@@ -1095,6 +1094,31 @@ Node processes with digest-bound rootfs handoffs: first-party installation,
 third-party installation, and maintenance plus cleanup must run in separate
 processes. Splitting only at the existing reboot is insufficient because the
 memory peak begins during the first phase.
+
+The public shipping proof also keeps build preparation in a different hosted
+job from execution. On 2026-07-31, public run `30610157031` began its Node
+lifecycle with 2,139,570,176 cgroup bytes already in use. Stock `brew tap`
+then reached a 16,248,524,800-byte cgroup peak and recorded one OOM kill.
+The retained trace contained about 2,475 retired process generations. Most
+helpers occupied about 10--11 MiB, while recurring Ruby/Homebrew generations
+occupied about 310--356 MiB. Reducing a memory-pressure hint and forcing
+garbage collection did not reduce that peak.
+
+The preparation job therefore installs Nix and npm dependencies, compiles the
+TypeScript lifecycle and production worker entries, and resolves the exact
+kernel. It uploads those files as a one-day same-run runtime handoff. The
+manifest binds the exact Kandelo commit, Node major, product worker limit,
+finite file inventory, byte lengths, and SHA-256 values. Each core or canary
+matrix job then starts with only Node.js, verifies that handoff, and runs its
+one unchanged stock guest scope. This preserves the product
+`maxWorkers = 4`; it moves build memory out of the proof cgroup rather than
+weakening the runtime.
+
+The manifest keeps Node files under one exact `node/` subtree. A later schema
+may add an independently enumerated `browser/` subtree to the same preparation
+artifact. It must still bind every file and authority explicitly; the layout
+does not authorize unlisted files or let one host consume the other host's
+runtime.
 
 The live Playwright proof is disabled unless
 `KANDELO_HOMEBREW_GUEST_BROWSER_LIFECYCLE_LIVE=1` and
@@ -1170,15 +1194,17 @@ lock to agree with `TF` before preparing any bytes.
 
 Preparation resolves the public shell generation into a fresh cache, verifies
 the main-shell artifact lock, and anonymously recovers the exact bottle set
-declared by the embedded mirror plan. The only inter-job transfer is a
-pair of one-day, same-run artifacts with exact manifests and bounded
-inventories. One re-derives the bottle-mirror plan and payloads from `TF` and
-builds the exact release manifest that the already-public `TA0` release must
-match. It is verification evidence, not publication input. The other owns only
-the fixed lifecycle inputs: the exact shell image, bootstrap tree
-specification, bootstrap ZIP, and bootstrap environment. No personal access
-token (PAT), GitHub App token, cross-repository workflow artifact, run ID, or
-caller-selected artifact repository participates in either handoff.
+declared by the embedded mirror plan. The only inter-job transfer is three
+one-day, same-run artifacts with exact manifests and bounded inventories. One
+re-derives the bottle-mirror plan and payloads from `TF` and builds the exact
+release manifest that the already-public `TA0` release must match. It is
+verification evidence, not publication input. The second owns only the fixed
+lifecycle inputs: the exact shell image, bootstrap tree specification,
+bootstrap ZIP, and bootstrap environment. The third owns only the compiled
+Node lifecycle, production worker entries, and exact kernel needed by the
+read-only Node proof. No personal access token (PAT), GitHub App token,
+cross-repository workflow artifact, run ID, or caller-selected artifact
+repository participates in any handoff.
 
 The fixed lifecycle inputs use a separate content-addressed immutable release
 in the first-party tap. The shell image is a member of its package archive,
@@ -1218,14 +1244,14 @@ catalog that owns every recovered payload; the mirror release retains `TA0` as
 its truthful write authority. The embedded mirror plan remains a content
 identity for the payload set, not a second catalog lock.
 
-A dependent read-only job resolves the public package generation again and
-anonymously re-reads all four fixed lifecycle assets. Node uses those verified
-local bytes while every tap and bottle request uses public transport. Its two
-fresh-process scopes pour and execute one first-party and one independent
-third-party bottle, including the cross-tap dependency. Chromium loads the
-same four fixed inputs anonymously and uses public transport for the complete
-two-phase lifecycle. Both hosts install from exact product catalog `TF`,
-require `TA1` to remain public tap main, and forbid closed-acceptance
+Dependent read-only Node matrix jobs anonymously re-read all four fixed
+lifecycle assets and verify the separate same-run runtime handoff. Node uses
+those verified local inputs while every tap and bottle request uses public
+transport. Its fresh-runner scopes pour and execute one first-party and one
+independent third-party bottle, including the cross-tap dependency. Chromium
+loads the same four fixed inputs anonymously and uses public transport for the
+complete two-phase lifecycle. Both hosts install from exact product catalog
+`TF`, require `TA1` to remain public tap main, and forbid closed-acceptance
 filesystem roots.
 
 The schema-1 mirror tag is content-addressed from bottle payloads, while its

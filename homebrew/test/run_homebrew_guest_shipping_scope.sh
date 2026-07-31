@@ -16,11 +16,19 @@ case "$scope" in
 esac
 
 : "${IMAGE:?missing public Homebrew image}"
+: "${BOOTSTRAP_SPEC:?missing public Homebrew bootstrap specification}"
 : "${BOOTSTRAP:?missing public Homebrew bootstrap archive}"
 : "${BOOTSTRAP_ENV:?missing public Homebrew bootstrap environment}"
 : "${TAP_CATALOG_REF:?missing sealed tap catalog revision}"
 : "${CANARY_REF:?missing canary revision}"
 : "${RUNNER_TEMP:?missing runner temporary directory}"
+: "${KANDELO_HOMEBREW_NODE_PROOF_RUNTIME:?missing prepared Node runtime}"
+
+node_entry="$KANDELO_HOMEBREW_NODE_PROOF_RUNTIME/node/dist/homebrew-guest-lifecycle-node.js"
+if [[ ! -f "$node_entry" || -L "$node_entry" ]]; then
+  echo "prepared Node lifecycle entry is not a regular file: $node_entry" >&2
+  exit 1
+fi
 
 telemetry="$RUNNER_TEMP/homebrew-node-lifecycle-resources.log"
 touch "$telemetry"
@@ -83,16 +91,15 @@ stop_telemetry() {
 }
 trap stop_telemetry EXIT
 
-# WHY: each invocation owns one workflow step and one Node process. A cancelled
-# run therefore retains which fresh-image scope had begun in workflow metadata.
-# The shipping proof limits work to first- and third-party bottle execution;
+# WHY: the runtime handoff was compiled and hash-bound before this fresh
+# hosted runner began. Running it directly keeps Nix, npm, TypeScript, and
+# worker compilation out of the cgroup whose headroom the guest must prove.
+# The shipping proof still executes stock first- and third-party bottle paths;
 # comprehensive reinstall, cleanup, export, and reboot have a separate gate.
 scope_exit_code=0
-bash scripts/dev-shell.sh npx tsx \
-  homebrew/test/homebrew_guest_lifecycle_node.ts \
+node "$node_entry" \
     --image "$IMAGE" \
-    --homebrew-bootstrap-spec \
-      homebrew/main-shell-brew-package-tree.json \
+    --homebrew-bootstrap-spec "$BOOTSTRAP_SPEC" \
     --homebrew-bootstrap-archive "$BOOTSTRAP" \
     --homebrew-bootstrap-env "$BOOTSTRAP_ENV" \
     --transport-mode public \
