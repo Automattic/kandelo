@@ -604,6 +604,16 @@ the exact artifact accepted by the current gates:
   dependents rebuild. This is a deferred throughput improvement, not
   part of the immediate cutover path. It must not weaken exact-main
   admission or the checks immediately before a mutation.
+- Add a targeted pre-merge package-producer lane for artifact-bearing
+  PRs. Update the PR head `S` onto the exact current base, force-build
+  the requested closure from that remotely addressable head, and prove
+  its tree equals the prepared merge tree. An exact-parent merge commit
+  may then keep `S` reachable while final main `M` retains the same
+  tree. Promote the generation against `M` before releasing the main
+  lock. Do not generalize this to every PR or treat ancestry as package
+  compatibility. Squash and rebase merges do not reliably preserve the
+  producer commit, and an older generation whose tree differs from `M`
+  remains inadmissible.
 - Make every completed PR staging release a self-contained snapshot. A run
   that cannot reuse a partial target currently rebuilds against the canonical
   ABI release, while each matrix writer adds only its own result to the target
