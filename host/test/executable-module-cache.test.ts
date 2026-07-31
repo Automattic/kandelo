@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { ExecutableModuleCache } from "../src/executable-module-cache";
+import {
+  DEFAULT_EXECUTABLE_MODULE_CACHE_ENTRIES,
+  DEFAULT_EXECUTABLE_MODULE_CACHE_SOURCE_BYTES,
+  ExecutableModuleCache,
+} from "../src/executable-module-cache";
 
 interface TestModule {
   id: number;
@@ -24,6 +28,17 @@ function compiler() {
 }
 
 describe("ExecutableModuleCache", () => {
+  it("uses the bounded shared-runtime working-set defaults", () => {
+    const cache = new ExecutableModuleCache();
+
+    expect(DEFAULT_EXECUTABLE_MODULE_CACHE_ENTRIES).toBe(8);
+    expect(DEFAULT_EXECUTABLE_MODULE_CACHE_SOURCE_BYTES).toBe(64 * 1024 * 1024);
+    expect(cache.maxEntries).toBe(DEFAULT_EXECUTABLE_MODULE_CACHE_ENTRIES);
+    expect(cache.maxSourceBytes).toBe(
+      DEFAULT_EXECUTABLE_MODULE_CACHE_SOURCE_BYTES,
+    );
+  });
+
   it("reuses one module for aliases with identical executable bytes", async () => {
     const compiled = compiler();
     const cache = new ExecutableModuleCache<TestModule>({

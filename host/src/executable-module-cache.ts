@@ -1,3 +1,9 @@
+// WHY: a package-manager launch burst commonly cycles through one
+// interpreter, VCS transport, shell, utility, and install target set. The
+// measured Kandelo/Homebrew set occupies about 54.4 MiB across eight Wasm
+// modules, so these defaults retain that working set with bounded headroom.
+// Source size is only the portable proxy available across engines; it does
+// not claim to measure or cap engine-native compiled code.
 export const DEFAULT_EXECUTABLE_MODULE_CACHE_ENTRIES = 8;
 export const DEFAULT_EXECUTABLE_MODULE_CACHE_SOURCE_BYTES = 64 * 1024 * 1024;
 
