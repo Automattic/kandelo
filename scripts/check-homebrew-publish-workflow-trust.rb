@@ -64,10 +64,10 @@ NATIVE_CA_PROOF_RUN_SHA256 =
 NATIVE_CA_VALIDATION_RUN_SHA256 =
   "03a44f5ed33df47783fe971de60d0b2fe08b73ef642af12298a863642bd598aa"
 PUBLISHER_PLAN_DIGEST = "59a72fdf1dbe3b115208e760d9b28869dcf98e293b4a8b555d4a8b557c58d1c4"
-PUBLISHER_BUILD_DIGEST = "8bf93b5fe4504755b8272e0264c9fbbc5d958941a803521e02fe41224a6595dc"
+PUBLISHER_BUILD_DIGEST = "c155f2cad874db1f8928ddcd87f66adb43ac0d941b67ee35f9a3a5846a90716e"
 PUBLISHER_UPLOAD_DIGEST = "a44f8b7b2eb1d4b9436496cc9a099b80fb70be52143820e77fb7196e807d302f"
 PUBLISHER_INDEX_DIGEST = "7b05a7e4b076628ab999f9edb2e39a6641c4bb9a2563afcf19be15a119566bbe"
-PUBLISHER_VERIFY_DIGEST = "46842c0bcd3f76ede5a7cbf8cd6e2c5d1679432e0a60e9483426da18f02f3b05"
+PUBLISHER_VERIFY_DIGEST = "3a7a169db2670ecbc8cfd3afe1a308e426160c1b9d50fbe038ee0f874938a11b"
 PUBLISHER_FINALIZE_DIGEST = "b17e7bf5d0a5ef512e49f74c224a94958642dfdd80a27439f2a0335816a0886b"
 PUBLISHER_VFS_RELEASE_DIGEST = "2db9ec075edf382e326066d5f49a32947f5a584fce26a966fb9fff23bbbe3c26"
 MAINTENANCE_VALIDATE_DIGEST = "30ebccd5d44e004e37f168e81284d7ceb18accfa067c05248c1cc19398a7515f"
@@ -2722,7 +2722,14 @@ def check_publisher(workflow)
     '"$sudo_bin" -n -- "$useradd_bin" --system --user-group --no-create-home',
     '"$sudo_bin" -n -- "$userdel_bin" -r "$build_user"',
     "could not roll back partial Homebrew identity creation",
-    'echo "created=true" >> "$GITHUB_OUTPUT"',
+    'shared_temp=""',
+    "rollback_identity_setup() {",
+    "trap rollback_identity_setup EXIT",
+    '[[ "$shared_temp" == /tmp/kandelo-homebrew.?????? ]]',
+    '"$sudo_bin" -n -- /usr/bin/rm -rf -- "$shared_temp"',
+    "could not roll back partial Homebrew temporary root",
+    "could not roll back partial Homebrew recipe identity",
+    "could not roll back partial Homebrew build identity",
     '[ "$(id -u "$build_user")" != "$(id -u)" ]',
     '"$sudo_bin" -n -u "$build_user" -- "$sudo_bin" -n true',
     'shared_temp="$(mktemp -d /tmp/kandelo-homebrew.XXXXXX)"',
@@ -2738,15 +2745,29 @@ def check_publisher(workflow)
     "--expand-environment=",
     'echo "HOMEBREW_CACHE=$shared_temp/cache"',
     'echo "HOMEBREW_TEMP=$shared_temp/tmp"',
+    'echo "created=true" >> "$GITHUB_OUTPUT"',
+    "trap - EXIT",
   ].each do |fragment|
     check(identity_run.include?(fragment),
           "publisher Formula execution identity lacks #{fragment}")
   end
   recipe_identity_create =
     '"$sudo_bin" -n -- "$useradd_bin" --system --user-group --no-create-home'
-  check(identity_run.index(recipe_identity_create) <
-        identity_run.index('echo "created=true" >> "$GITHUB_OUTPUT"'),
-        "publisher marks a partial Formula identity transaction as created")
+  formula_rollback_index = identity_run.index("trap rollback_identity_setup EXIT")
+  formula_temp_index = identity_run.index(
+    'shared_temp="$(mktemp -d /tmp/kandelo-homebrew.XXXXXX)"'
+  )
+  formula_env_index = identity_run.index('} >> "$GITHUB_ENV"')
+  formula_created_index = identity_run.index(
+    'echo "created=true" >> "$GITHUB_OUTPUT"'
+  )
+  formula_commit_index = identity_run.rindex("trap - EXIT")
+  check(identity_run.index(recipe_identity_create) < formula_rollback_index &&
+        formula_rollback_index < formula_temp_index &&
+        formula_temp_index < formula_env_index &&
+        formula_env_index < formula_created_index &&
+        formula_created_index < formula_commit_index,
+        "publisher commits Formula identity before its shared realm")
   check_native_api_freeze = lambda do |steps, name, roots_projection, stem,
                                       label|
     step = named_step(steps, name)
@@ -2765,7 +2786,7 @@ def check_publisher(workflow)
       'cd "$GITHUB_WORKSPACE/kandelo"',
       ". scripts/homebrew-tap-identity.sh",
       'homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT"',
-      'stem="$RUNNER_TEMP/' + stem + '-${FORMULA}-${ARCH}"',
+      'stem="$KANDELO_HOMEBREW_SHARED_TEMP/' + stem + '-${FORMULA}-${ARCH}"',
       "bash scripts/dev-shell.sh env \\",
       'KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \\',
       "bash -c '",
@@ -3209,7 +3230,9 @@ def check_publisher(workflow)
   native_info_index = bottle_builder.index(
     "homebrew_patched_launcher_run_native info --json=v2"
   )
-  native_missing_index = bottle_builder.index("run_native_brew_logged missing")
+  native_missing_index = bottle_builder.index(
+    "homebrew_native_contract_verify_no_missing_dependencies"
+  )
   runtime_dependency_index = bottle_builder.index(
     'deps --topological --full-name --formula "$FORMULA_REF"'
   )
@@ -3645,7 +3668,7 @@ def check_publisher(workflow)
       '.formulae[0].full_name == $name',
       '.formulae[0].tap == "homebrew/core"',
       '(.formulae[0].installed | type == "array" and length > 0)',
-      "run_native_brew_logged missing",
+      "homebrew_native_contract_verify_no_missing_dependencies",
       "homebrew_patched_launcher_seal_native_prefix",
       'homebrew_patched_launcher_bridge_native_formula "$dependency"',
       '"$BREW_BIN" list --formula "$dependency" >/dev/null',
@@ -4077,7 +4100,9 @@ def check_publisher(workflow)
   verifier_native_info_index = bottle_verifier.index(
     "homebrew_patched_launcher_run_native info --json=v2"
   )
-  verifier_native_missing_index = bottle_verifier.index("run_native_brew_logged missing")
+  verifier_native_missing_index = bottle_verifier.index(
+    "homebrew_native_contract_verify_no_missing_dependencies"
+  )
   verifier_native_seal_index = bottle_verifier.index(
     "homebrew_patched_launcher_seal_native_prefix"
   )
@@ -5131,13 +5156,38 @@ def check_publisher(workflow)
     '"$sudo_bin" -n -- "$useradd_bin" --system --user-group --no-create-home',
     '"$sudo_bin" -n -- "$userdel_bin" -r "$build_user"',
     "could not roll back partial verifier identity creation",
+    'shared_temp=""',
+    "rollback_identity_setup() {",
+    "trap rollback_identity_setup EXIT",
+    '[[ "$shared_temp" == /tmp/kandelo-homebrew-verify.?????? ]]',
+    '"$sudo_bin" -n -- /usr/bin/rm -rf -- "$shared_temp"',
+    "could not roll back partial verifier temporary root",
+    "could not roll back partial verifier recipe identity",
+    "could not roll back partial verifier build identity",
+    'echo "created=true" >> "$GITHUB_OUTPUT"',
+    "trap - EXIT",
   ].each do |fragment|
     check(verifier_identity_run.include?(fragment),
           "publisher verifier identity transaction lacks #{fragment}")
   end
+  verifier_rollback_index = verifier_identity_run.index(
+    "trap rollback_identity_setup EXIT"
+  )
+  verifier_temp_index = verifier_identity_run.index(
+    'shared_temp="$(mktemp -d /tmp/kandelo-homebrew-verify.XXXXXX)"'
+  )
+  verifier_env_index = verifier_identity_run.index('} >> "$GITHUB_ENV"')
+  verifier_created_index = verifier_identity_run.index(
+    'echo "created=true" >> "$GITHUB_OUTPUT"'
+  )
+  verifier_commit_index = verifier_identity_run.rindex("trap - EXIT")
   check(verifier_identity_run.index(recipe_identity_create) <
-        verifier_identity_run.index('echo "created=true" >> "$GITHUB_OUTPUT"'),
-        "publisher marks a partial verifier identity transaction as created")
+          verifier_rollback_index &&
+        verifier_rollback_index < verifier_temp_index &&
+        verifier_temp_index < verifier_env_index &&
+        verifier_env_index < verifier_created_index &&
+        verifier_created_index < verifier_commit_index,
+        "publisher commits verifier identity before its shared realm")
   verifier_native_api_step = check_native_api_freeze.call(
     verify_steps,
     "Freeze signed native Homebrew API for bottle verification",
@@ -5171,9 +5221,12 @@ def check_publisher(workflow)
   [
     '[[ "$FORMULA" =~ ^[a-z0-9][a-z0-9+@._-]{0,254}$ ]]',
     '[[ "$ARCH" =~ ^wasm(32|64)$ ]]',
-    '[[ "$RUNNER_TEMP" == /* ]]',
-    'native_api_stem="$RUNNER_TEMP/homebrew-native-api-verify-${FORMULA}-${ARCH}"',
-    '"$RUNNER_TEMP"/homebrew-native-api-verify-*',
+    '[[ "$KANDELO_HOMEBREW_SHARED_TEMP" ==',
+    '/tmp/kandelo-homebrew-verify.*',
+    'stat -c \'%u:%g:%a\' "$KANDELO_HOMEBREW_SHARED_TEMP"',
+    '"0:0:1777"',
+    'native_api_stem="$KANDELO_HOMEBREW_SHARED_TEMP/homebrew-native-api-verify-${FORMULA}-${ARCH}"',
+    '"$KANDELO_HOMEBREW_SHARED_TEMP"/homebrew-native-api-verify-*',
     '"$sudo_bin" -n -- /usr/bin/rm -rf --',
     '"$native_api_stem-cache" "$native_api_stem-state"',
     '"$sudo_bin" -n -- /usr/bin/rm -f --',
@@ -5213,9 +5266,11 @@ def check_publisher(workflow)
     "Homebrew identity still exists after retirement",
     '[[ "$FORMULA" =~ ^[a-z0-9][a-z0-9+@._-]{0,254}$ ]]',
     '[[ "$ARCH" =~ ^wasm(32|64)$ ]]',
-    '[[ "$RUNNER_TEMP" == /* ]]',
-    'native_api_stem="$RUNNER_TEMP/homebrew-native-api-${FORMULA}-${ARCH}"',
-    '"$RUNNER_TEMP"/homebrew-native-api-*',
+    '[[ "$KANDELO_HOMEBREW_SHARED_TEMP" == /tmp/kandelo-homebrew.* ]]',
+    'stat -c \'%u:%g:%a\' "$KANDELO_HOMEBREW_SHARED_TEMP"',
+    '"0:0:1777"',
+    'native_api_stem="$KANDELO_HOMEBREW_SHARED_TEMP/homebrew-native-api-${FORMULA}-${ARCH}"',
+    '"$KANDELO_HOMEBREW_SHARED_TEMP"/homebrew-native-api-*',
     '"$sudo_bin" -n -- /usr/bin/rm -rf --',
     '"$native_api_stem-cache" "$native_api_stem-state"',
     '"$sudo_bin" -n -- /usr/bin/rm -f --',
@@ -7632,6 +7687,22 @@ def self_test(publisher, native_compatibility, maintenance,
       step["run"] = step.fetch("run").sub(
         '"$native_api_stem-cache" "$native_api_stem-state"',
         '"$RUNNER_TEMP"'
+      )
+    },
+    "Formula identity partial-setup rollback bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "build-and-test", "Create isolated Formula execution identity"
+      )
+      step["run"] = step.fetch("run").sub(
+        "trap rollback_identity_setup EXIT", "true"
+      )
+    },
+    "verifier identity partial-setup rollback bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Create isolated bottle verification identity"
+      )
+      step["run"] = step.fetch("run").sub(
+        "trap rollback_identity_setup EXIT", "true"
       )
     },
     "Formula test runtime source fallback" => lambda { |w|

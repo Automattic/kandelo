@@ -204,3 +204,29 @@ homebrew_native_contract_install() {
       "$native_temp/native-cellar-${install_index}.json" >>"$log" 2>&1
   done
 }
+
+homebrew_native_contract_verify_no_missing_dependencies() {
+  if [ "$#" -ne 1 ]; then
+    homebrew_native_contract_fail \
+      "verify_no_missing_dependencies expects ROOTS"
+    return
+  fi
+  local roots="$1"
+  [ -f "$roots" ] && [ ! -L "$roots" ] || {
+    homebrew_native_contract_fail \
+      "native dependency roots are unavailable"
+    return
+  }
+
+  # WHY: `brew missing` exits unsuccessfully when its isolated prefix has no
+  # Formulae at all. An empty reviewed root set is already a complete native
+  # closure, so invoking Brew here would turn that valid state into a false
+  # build failure. Non-empty closures still receive Brew's normal audit.
+  [ -s "$roots" ] || return 0
+  if run_native_brew_logged missing; then
+    return 0
+  fi
+  echo "${HOMEBREW_NATIVE_CONTRACT_COMPONENT:-homebrew-native-contract}:" \
+    "native Homebrew reports missing dependencies" >&2
+  return 1
+}
