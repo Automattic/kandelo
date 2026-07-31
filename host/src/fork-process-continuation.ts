@@ -50,6 +50,18 @@ type ProcessContinuationPhase =
   | "child-replay"
   | "abort-replay";
 
+type ProcessReplayOwnership = "owned" | "borrowed";
+
+export interface ForkBorrowedReplayPrefixRequest {
+  readonly activationId: number;
+  readonly byteLength: number;
+  readonly alignment: number;
+}
+
+export type ForkBorrowedReplayPrefixAllocator = (
+  request: ForkBorrowedReplayPrefixRequest,
+) => WasmGuestPointer;
+
 export interface ForkProcessActivationBinding {
   readonly activationId: number;
   readonly continuation: LinkedForkContinuation;
@@ -67,7 +79,10 @@ export interface ForkProcessActivationBinding {
 
 interface CompleteForkProcessActivation extends ForkProcessActivationBinding {
   readonly registration: ForkActivationRegistration;
+  /** Parent-owned linked continuation prefix. */
   root: number;
+  /** Prefix passed to this Worker's replay entry point. */
+  replayRoot: number;
 }
 
 function assertActivationId(value: number): void {
@@ -110,6 +125,7 @@ export class ForkProcessContinuationCoordinator {
   private readonly events = new ForkReplayEventJournal();
   private phase: ProcessContinuationPhase = "idle";
   private arena: ForkModuleStateArena | null = null;
+  private replayOwnership: ProcessReplayOwnership | null = null;
 
   constructor(
     private readonly memory: WebAssembly.Memory,
@@ -180,6 +196,7 @@ export class ForkProcessContinuationCoordinator {
       ...binding,
       registration,
       root: 0,
+      replayRoot: 0,
     });
   }
 
@@ -284,6 +301,11 @@ export class ForkProcessContinuationCoordinator {
    */
   beginCapture(arena: ForkModuleStateArena): void {
     this.requirePhase("idle", "begin process continuation capture");
+    if (arena.ownershipMode() !== "owned" || arena.isSealed()) {
+      throw new Error(
+        `${this.label}: capture requires a writable owned module-state arena`,
+      );
+    }
     if (this.prepared.size !== 0) {
       throw new Error(
         `${this.label}: cannot fork with ${this.prepared.size} incomplete activation(s)`,
@@ -291,6 +313,7 @@ export class ForkProcessContinuationCoordinator {
     }
     this.events.beginCapture();
     this.arena = arena;
+    this.replayOwnership = "owned";
     try {
       this.publishProcessLaunchRoot(0);
       this.registry.beginCapture(arena);
@@ -298,6 +321,7 @@ export class ForkProcessContinuationCoordinator {
       for (const activation of this.orderedActivations()) {
         const root = Number(activation.continuation.beginUnwind());
         activation.root = root;
+        activation.replayRoot = root;
         // WHY: the main Wasm activation need not be on a side-module fork
         // stack. Every activation prefix therefore carries the process arena
         // root, allowing the deterministic launch root chosen after unwind
@@ -339,6 +363,7 @@ export class ForkProcessContinuationCoordinator {
         } else {
           activation.continuation.cancelUnwindAndRelease();
           activation.root = 0;
+          activation.replayRoot = 0;
         }
       }
       if (active.size === 0) {
@@ -392,7 +417,13 @@ export class ForkProcessContinuationCoordinator {
         `${this.label}: child has ${this.prepared.size} incomplete activation(s)`,
       );
     }
+    if (arena.ownershipMode() !== "owned") {
+      throw new Error(
+        `${this.label}: copied child replay requires an owned module-state arena`,
+      );
+    }
     this.arena = arena;
+    this.replayOwnership = "owned";
     try {
       this.registry.attachChild(arena, decodedReferences);
       // Imported immutable references may have forced a strict prefix of the
@@ -427,6 +458,7 @@ export class ForkProcessContinuationCoordinator {
         const root = roots.get(activation.activationId) ?? 0;
         if (root === 0) {
           activation.root = 0;
+          activation.replayRoot = 0;
           continue;
         }
         if (!Number.isSafeInteger(root) || root <= 0) {
@@ -436,9 +468,101 @@ export class ForkProcessContinuationCoordinator {
           );
         }
         activation.root = root;
+        activation.replayRoot = root;
         activation.continuation.attachForReplay(
           activation.continuation.format.ptrWidth === 8 ? BigInt(root) : root,
         );
+      }
+      this.beginActivationReplay(WPK_FORK_REWINDING, false);
+    } catch (error) {
+      this.abort();
+      throw error;
+    }
+  }
+
+  /**
+   * Attach a fresh vfork child to parent-owned continuation and module state.
+   *
+   * Every active activation gets a child-owned mutable prefix. Linked frames,
+   * replay events, reference recipes, and module-state records remain borrowed
+   * from the suspended parent and are detached rather than consumed or freed.
+   */
+  attachBorrowedChild(
+    arena: ForkModuleStateArena,
+    reservePrefix: ForkBorrowedReplayPrefixAllocator,
+    adoptPreinstantiatedReferences?: () => void,
+    decodedReferences?: DecodedSegmentedForkReferenceTransaction,
+  ): void {
+    this.requirePhase("idle", "attach borrowed child process replay");
+    if (this.prepared.size !== 0) {
+      throw new Error(
+        `${this.label}: borrowed child has ${this.prepared.size} incomplete activation(s)`,
+      );
+    }
+    if (arena.ownershipMode() !== "borrowed") {
+      throw new Error(
+        `${this.label}: borrowed child replay requires a borrowed module-state arena`,
+      );
+    }
+    this.arena = arena;
+    this.replayOwnership = "borrowed";
+    try {
+      this.registry.attachChild(arena, decodedReferences);
+      adoptPreinstantiatedReferences?.();
+      const records = arena.recordViews();
+      this.events.attachChild(replayEventsForChild(records));
+      const continuations = activationContinuationsForChild(
+        records,
+        arena.ptrWidth,
+      );
+      const parentLaunchRoot = this.readProcessLaunchRoot();
+      const expectedLaunchRoot = this.selectProcessLaunchRoot(continuations);
+      if (parentLaunchRoot !== expectedLaunchRoot) {
+        throw new Error(
+          `${this.label}: borrowed process launch root ${parentLaunchRoot} `
+          + `does not match manifest root ${expectedLaunchRoot}`,
+        );
+      }
+      this.phase = "child-replay";
+      this.registry.restoreModuleState();
+      const roots = new Map(
+        continuations.map(({ activationId, root }) => [
+          activationId,
+          Number(root),
+        ]),
+      );
+      for (const activation of this.orderedActivations()) {
+        const root = roots.get(activation.activationId) ?? 0;
+        if (root === 0) {
+          activation.root = 0;
+          activation.replayRoot = 0;
+          continue;
+        }
+        if (!Number.isSafeInteger(root) || root <= 0) {
+          throw new Error(
+            `${this.label}: active borrowed activation ${activation.activationId} `
+            + "has no parent continuation root",
+          );
+        }
+        const privatePrefix = reservePrefix({
+          activationId: activation.activationId,
+          byteLength: activation.continuation.format.fixedPrefixSize,
+          alignment: activation.continuation.format.alignment,
+        });
+        const replayRoot = Number(
+          activation.continuation.attachForBorrowedReplay(
+            activation.continuation.format.ptrWidth === 8 ? BigInt(root) : root,
+            privatePrefix,
+          ),
+        );
+        if (!Number.isSafeInteger(replayRoot) || replayRoot <= 0) {
+          throw new Error(
+            `${this.label}: borrowed activation ${activation.activationId} `
+            + "received an invalid private replay prefix",
+          );
+        }
+        activation.root = root;
+        activation.replayRoot = replayRoot;
       }
       this.beginActivationReplay(WPK_FORK_REWINDING, false);
     } catch (error) {
@@ -553,19 +677,24 @@ export class ForkProcessContinuationCoordinator {
 
   abort(): void {
     let failure: unknown;
+    const borrowed = this.replayOwnership === "borrowed";
     for (const activation of this.orderedActivations()) {
       if (!activation.continuation.hasActiveContinuation()) continue;
       try {
-        activation.continuation.cancelUnwindAndRelease();
+        if (borrowed) activation.continuation.cancelBorrowedReplay();
+        else activation.continuation.cancelUnwindAndRelease();
       } catch (error) {
         failure ??= error;
       }
       activation.root = 0;
+      activation.replayRoot = 0;
     }
-    try {
-      this.publishProcessLaunchRoot(0, false);
-    } catch (error) {
-      failure ??= error;
+    if (!borrowed) {
+      try {
+        this.publishProcessLaunchRoot(0, false);
+      } catch (error) {
+        failure ??= error;
+      }
     }
     try {
       this.events.abort();
@@ -582,6 +711,7 @@ export class ForkProcessContinuationCoordinator {
     } catch (error) {
       failure ??= error;
     }
+    this.replayOwnership = null;
     this.phase = "idle";
     if (failure !== undefined) throw failure;
   }
@@ -602,7 +732,7 @@ export class ForkProcessContinuationCoordinator {
       if (beginContinuation) activation.continuation.beginReplay();
       invokeForkContinuationBegin(
         requireExportFunction(activation, "wpk_fork_rewind_begin"),
-        activation.root,
+        activation.replayRoot,
         activation.continuation.format.ptrWidth,
         `${this.label}: activation ${activation.activationId} replay`,
       );
@@ -612,6 +742,10 @@ export class ForkProcessContinuationCoordinator {
 
   private finishTransaction(abortReplay: boolean): void {
     let failure: unknown;
+    const borrowed = this.replayOwnership === "borrowed";
+    if (borrowed && abortReplay) {
+      throw new Error(`${this.label}: borrowed child cannot own abort replay`);
+    }
     for (const activation of this.activeActivations()) {
       try {
         requireExportFunction(
@@ -640,22 +774,34 @@ export class ForkProcessContinuationCoordinator {
     for (const activation of this.activeActivations()) {
       try {
         if (abortReplay) activation.continuation.finishAbortReplayAndRelease();
+        else if (borrowed) activation.continuation.finishBorrowedReplay();
         else activation.continuation.finishReplayAndRelease();
       } catch (error) {
         failure ??= error;
+        if (borrowed && activation.continuation.hasActiveContinuation()) {
+          try {
+            activation.continuation.cancelBorrowedReplay();
+          } catch (cleanupError) {
+            failure ??= cleanupError;
+          }
+        }
       }
       activation.root = 0;
+      activation.replayRoot = 0;
     }
-    try {
-      this.publishProcessLaunchRoot(0);
-    } catch (error) {
-      failure ??= error;
+    if (!borrowed) {
+      try {
+        this.publishProcessLaunchRoot(0);
+      } catch (error) {
+        failure ??= error;
+      }
     }
     try {
       this.releaseArena();
     } catch (error) {
       failure ??= error;
     }
+    this.replayOwnership = null;
     this.phase = "idle";
     if (failure !== undefined) throw failure;
   }
@@ -677,6 +823,7 @@ export class ForkProcessContinuationCoordinator {
         failure ??= error;
       }
       activation.root = 0;
+      activation.replayRoot = 0;
     }
     try {
       this.publishProcessLaunchRoot(0);
@@ -698,6 +845,7 @@ export class ForkProcessContinuationCoordinator {
     } catch (error) {
       failure ??= error;
     }
+    this.replayOwnership = null;
     this.phase = "idle";
     if (failure !== undefined) throw failure;
   }
@@ -776,7 +924,8 @@ export class ForkProcessContinuationCoordinator {
     // Clear ownership first so a failing deallocator cannot make stale KFMS
     // bytes look reusable by a later fork transaction.
     this.arena = null;
-    arena.release();
+    if (arena.ownershipMode() === "borrowed") arena.detachBorrowed();
+    else arena.release();
   }
 
   private activeActivations(): CompleteForkProcessActivation[] {

@@ -148,6 +148,110 @@ function readString(data: Uint8Array, offset: { value: number }): string {
 }
 
 /**
+ * Reject automatic linear-memory writes before instantiating over a borrow.
+ *
+ * wasm-ld side modules use passive data plus a guarded start function. An
+ * arbitrary active data segment would instead write imported Memory inside
+ * WebAssembly.Instance(), before JavaScript can recover from the mutation.
+ * The source module has already passed engine validation, so this parser only
+ * distinguishes the standardized data-segment encodings.
+ */
+function requirePassiveDataSegmentsForBorrowedReplay(
+  wasmBytes: Uint8Array,
+  name: string,
+): void {
+  const offset = { value: 8 };
+  while (offset.value < wasmBytes.length) {
+    const sectionId = wasmBytes[offset.value++]!;
+    const sectionSize = readVarUint(wasmBytes, offset);
+    const sectionEnd = offset.value + sectionSize;
+    if (sectionId !== 11) {
+      offset.value = sectionEnd;
+      continue;
+    }
+    const count = readVarUint(wasmBytes, offset);
+    for (let index = 0; index < count; index++) {
+      const flags = readVarUint(wasmBytes, offset);
+      if (flags !== 1) {
+        throw new Error(
+          `${name}: borrowed replay requires passive data segments; `
+          + `segment ${index} has flags ${flags}`,
+        );
+      }
+      const length = readVarUint(wasmBytes, offset);
+      offset.value += length;
+    }
+    if (offset.value !== sectionEnd) {
+      throw new Error(`${name}: malformed data section during borrowed replay`);
+    }
+    return;
+  }
+}
+
+/**
+ * Remove only wasm-ld's recognized memory-initialization start section.
+ *
+ * WHY: start executes during WebAssembly.Instance() and can write the
+ * suspended parent's live Memory. Complete fork replay reconstructs fresh
+ * instance globals from ABI 43 state and already owns the parent's initialized
+ * bytes, so wasm-ld's exported `__wasm_init_memory` start is unnecessary. An
+ * arbitrary start is rejected rather than silently changing its semantics.
+ */
+function withoutBorrowedReplayStart(
+  wasmBytes: Uint8Array,
+  name: string,
+): Uint8Array {
+  const retained: Uint8Array[] = [wasmBytes.subarray(0, 8)];
+  const offset = { value: 8 };
+  let retainedLength = 8;
+  let startFunctionIndex: number | undefined;
+  let wasmLdInitFunctionIndex: number | undefined;
+  while (offset.value < wasmBytes.length) {
+    const sectionStart = offset.value;
+    const sectionId = wasmBytes[offset.value++]!;
+    const sectionSize = readVarUint(wasmBytes, offset);
+    const sectionEnd = offset.value + sectionSize;
+    if (sectionId === 8) {
+      startFunctionIndex = readVarUint(wasmBytes, offset);
+      if (offset.value !== sectionEnd) {
+        throw new Error(`${name}: malformed start section during borrowed replay`);
+      }
+    } else {
+      const section = wasmBytes.subarray(sectionStart, sectionEnd);
+      retained.push(section);
+      retainedLength += section.length;
+      if (sectionId === 7) {
+        const exportOffset = { value: offset.value };
+        const exportCount = readVarUint(wasmBytes, exportOffset);
+        for (let index = 0; index < exportCount; index++) {
+          const exportName = readString(wasmBytes, exportOffset);
+          const kind = wasmBytes[exportOffset.value++]!;
+          const exportIndex = readVarUint(wasmBytes, exportOffset);
+          if (exportName === "__wasm_init_memory" && kind === 0) {
+            wasmLdInitFunctionIndex = exportIndex;
+          }
+        }
+      }
+    }
+    offset.value = sectionEnd;
+  }
+  if (startFunctionIndex === undefined) return wasmBytes;
+  if (startFunctionIndex !== wasmLdInitFunctionIndex) {
+    throw new Error(
+      `${name}: borrowed replay cannot suppress unrecognized start function `
+      + `${startFunctionIndex}; expected exported __wasm_init_memory`,
+    );
+  }
+  const result = new Uint8Array(retainedLength);
+  let writeOffset = 0;
+  for (const section of retained) {
+    result.set(section, writeOffset);
+    writeOffset += section.length;
+  }
+  return result;
+}
+
+/**
  * Parse the dylink.0 custom section from a Wasm binary.
  * Returns null if the section is not found.
  */
@@ -637,6 +741,15 @@ export interface DylinkReplayOptions {
   providerDependencies?: readonly string[];
   /** Exact live mapping ownership copied from the parent process. */
   allocations?: readonly DylinkForkMemoryAllocation[];
+  /**
+   * A borrowed vfork replay shares the suspended parent's linear Memory.
+   * Loader-controlled instantiation must therefore be provably read-only.
+   */
+  memoryOwnership?: "copied" | "borrowed";
+}
+
+export interface DylinkForkReconcileOptions {
+  readonly memoryOwnership?: "copied" | "borrowed";
 }
 
 /**
@@ -1032,7 +1145,29 @@ function* instantiateSharedLibrarySteps(
   validateLongjmpConfiguration(options);
   const ptrWidth = options.ptrWidth ?? 4;
   const pointerGlobalType = ptrWidth === 8 ? "i64" : "i32";
-  const module = new WebAssembly.Module(wasmBytes as unknown as BufferSource);
+  // Compile the exact archive bytes first. Besides producing clearer engine
+  // diagnostics, this makes the narrow section parser below operate only on a
+  // structurally valid module.
+  const sourceModule = new WebAssembly.Module(
+    wasmBytes as unknown as BufferSource,
+  );
+  const borrowsMemory = replay?.memoryOwnership === "borrowed";
+  if (borrowsMemory) {
+    if (!(options.memory.buffer instanceof SharedArrayBuffer)) {
+      throw new Error(`${name}: borrowed replay requires Shared Memory`);
+    }
+    if (replay?.initializationStage !== undefined) {
+      throw new Error(
+        `${name}: borrowed replay cannot resume an in-flight dlopen initializer`,
+      );
+    }
+    requirePassiveDataSegmentsForBorrowedReplay(wasmBytes, name);
+  }
+  const module = borrowsMemory
+    ? new WebAssembly.Module(
+        withoutBorrowedReplayStart(wasmBytes, name) as unknown as BufferSource,
+      )
+    : sourceModule;
   const moduleImports = WebAssembly.Module.imports(module);
   const moduleExports = WebAssembly.Module.exports(module);
   const moduleExportKinds = new Map(
@@ -2496,7 +2631,25 @@ export class DynamicLinker {
    * verified rather than re-instantiated, so a generation check makes the
    * steady-state path O(1).
    */
-  reconcileForkModules(state: DylinkForkState): void {
+  reconcileForkModules(
+    state: DylinkForkState,
+    options: DylinkForkReconcileOptions = {},
+  ): void {
+    const memoryOwnership = options.memoryOwnership ?? "copied";
+    if (
+      memoryOwnership === "borrowed"
+      && (
+        (state.transactions?.length ?? 0) !== 0
+        || state.libraries.some((library) => library.initialization !== undefined)
+      )
+    ) {
+      // An issued bootstrap/relocation/constructor entry is guest code that
+      // may mutate arbitrary process memory. A later vfork design can resume
+      // it only with a stronger write-isolation contract.
+      throw new Error(
+        "borrowed dynamic-linker replay cannot restore an in-flight dlopen transaction",
+      );
+    }
     const archivedNames = new Set<string>();
     let visibilityChanged = false;
     let dependencyStateChanged = false;
@@ -2582,6 +2735,7 @@ export class DynamicLinker {
           committedGlobalRoot: archived.committedGlobalRoot,
           providerDependencies: archived.providerDependencies,
           allocations: archived.allocations,
+          memoryOwnership,
         },
         archived.globalVisibility,
         false,
