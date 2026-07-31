@@ -2789,6 +2789,7 @@ export class ForkModuleStateArena {
   private tail = 0;
   private chunks: ArenaChunk[] = [];
   private sealed = false;
+  private ownership: "owned" | "borrowed" | null = null;
   private pending: PendingRecord | null = null;
   private readonly payloadIndex = new Map<string, number[]>();
 
@@ -2811,10 +2812,29 @@ export class ForkModuleStateArena {
     const root = this.allocateChunk(WASM_PAGE_SIZE, 0, true);
     this.root = root;
     this.tail = root;
+    this.ownership = "owned";
     return root;
   }
 
   attach(root: number | bigint): void {
+    this.attachWithOwnership(root, "owned");
+  }
+
+  /**
+   * Validate a sealed arena while retaining ownership in another process.
+   *
+   * A vfork child reads the parent's module recipes from shared Memory. It
+   * must detach its JavaScript indexes after replay, never munmap the parent's
+   * arena mappings.
+   */
+  attachBorrowed(root: number | bigint): void {
+    this.attachWithOwnership(root, "borrowed");
+  }
+
+  private attachWithOwnership(
+    root: number | bigint,
+    ownership: "owned" | "borrowed",
+  ): void {
     if (this.root !== 0) {
       throw new Error(`${this.label}: module-state arena is already active`);
     }
@@ -2842,6 +2862,7 @@ export class ForkModuleStateArena {
       this.payloadIndex.set(key, addresses);
     }
     this.sealed = true;
+    this.ownership = ownership;
   }
 
   /**
@@ -3343,16 +3364,19 @@ export class ForkModuleStateArena {
     return this.sealed;
   }
 
+  ownershipMode(): "owned" | "borrowed" | null {
+    return this.ownership;
+  }
+
   release(): void {
     if (this.root === 0) {
       throw new Error(`${this.label}: no active module-state arena to release`);
     }
+    if (this.ownership !== "owned") {
+      throw new Error(`${this.label}: borrowed module-state arena cannot be released`);
+    }
     const chunks = this.chunks.splice(0).reverse();
-    this.pending = null;
-    this.payloadIndex.clear();
-    this.root = 0;
-    this.tail = 0;
-    this.sealed = false;
+    this.clearControllerState();
     let firstError: unknown;
     for (const chunk of chunks) {
       try {
@@ -3362,6 +3386,24 @@ export class ForkModuleStateArena {
       }
     }
     if (firstError !== undefined) throw firstError;
+  }
+
+  /** Drop borrowed indexes without deallocating their parent's mappings. */
+  detachBorrowed(): void {
+    if (this.root === 0 || this.ownership !== "borrowed") {
+      throw new Error(`${this.label}: no borrowed module-state arena to detach`);
+    }
+    this.chunks = [];
+    this.clearControllerState();
+  }
+
+  private clearControllerState(): void {
+    this.pending = null;
+    this.payloadIndex.clear();
+    this.root = 0;
+    this.tail = 0;
+    this.sealed = false;
+    this.ownership = null;
   }
 
   private requireWritable(): void {

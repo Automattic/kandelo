@@ -238,6 +238,8 @@ interface ValidatedReplayNode {
   };
 }
 
+type ReplayOwnership = "owned" | "borrowed";
+
 /**
  * Host-side owner and validator for one module instance's linked fork frames.
  * Allocations are ordinary anonymous process mappings, so kernel brk/mmap
@@ -256,6 +258,7 @@ export class LinkedForkContinuation {
   private committedFrames = 0n;
   private committedBytes = 0n;
   private abortFailure: AbortFailure | null = null;
+  private replayOwnership: ReplayOwnership | null = null;
 
   constructor(
     private readonly memory: WebAssembly.Memory,
@@ -277,6 +280,7 @@ export class LinkedForkContinuation {
     this.committedFrames = 0n;
     this.committedBytes = 0n;
     this.abortFailure = null;
+    this.replayOwnership = "owned";
     let root: number;
     try {
       root = this.allocateChunk(capacity, 0, 0);
@@ -295,6 +299,71 @@ export class LinkedForkContinuation {
   }
 
   attachForReplay(moduleBuffer: number | bigint): void {
+    this.attachForReplayWithOwnership(moduleBuffer, "owned");
+  }
+
+  /**
+   * Attach a read-only replay cursor to continuation storage owned elsewhere
+   * and copy its mutable module prefix into caller-owned scratch memory.
+   *
+   * WHY: a vfork child shares the parent's Memory and may reconstruct its
+   * Wasm stack from the saved frames, but consuming nodes or unmapping chunks
+   * would destroy the only continuation from which the parent can resume.
+   * Generated replay code also writes the active-frame pointer at offset zero
+   * of the module prefix, so passing the parent's prefix to rewind would still
+   * corrupt the parent even with a read-only JavaScript cursor. The returned
+   * address is the private prefix that must be passed to
+   * `wpk_fork_rewind_begin`; frame imports continue reading the borrowed
+   * linked nodes. The caller must retain both the Memory backing and the
+   * scratch reservation independently for the complete borrow.
+   */
+  attachForBorrowedReplay(
+    moduleBuffer: number | bigint,
+    privateModuleBuffer: number | bigint,
+  ): number | bigint {
+    this.attachForReplayWithOwnership(moduleBuffer, "borrowed");
+    try {
+      const source = this.fromGuestPtr(moduleBuffer);
+      const target = this.fromGuestPtr(privateModuleBuffer);
+      const targetEnd = checkedEnd(target, this.format.fixedPrefixSize);
+      if (
+        target <= 0
+        || target % this.format.alignment !== 0
+        || targetEnd > this.memory.buffer.byteLength
+      ) {
+        throw new Error(`${this.label}: invalid borrowed replay prefix range`);
+      }
+      for (const chunk of this.chunks) {
+        if (target < chunk.addr + chunk.size && targetEnd > chunk.addr) {
+          throw new Error(`${this.label}: borrowed replay prefix overlaps continuation storage`);
+        }
+      }
+
+      // Slice first so an accidental future relaxation of the overlap guard
+      // cannot turn this into a partially self-overwriting copy.
+      const prefix = new Uint8Array(
+        this.memory.buffer,
+        source,
+        this.format.fixedPrefixSize,
+      ).slice();
+      new Uint8Array(
+        this.memory.buffer,
+        target,
+        this.format.fixedPrefixSize,
+      ).set(prefix);
+      return this.asGuestPtr(target);
+    } catch (error) {
+      // Attachment is transactional. The scratch reservation still belongs to
+      // the caller, but no failed validation may leave this controller active.
+      this.clearControllerState();
+      throw error;
+    }
+  }
+
+  private attachForReplayWithOwnership(
+    moduleBuffer: number | bigint,
+    ownership: ReplayOwnership,
+  ): void {
     if (this.root !== 0) {
       throw new Error(`${this.label}: linked continuation already active`);
     }
@@ -360,11 +429,17 @@ export class LinkedForkContinuation {
     this.root = root;
     this.chunks = chunks;
     this.activeChunk = chunks[chunks.length - 1]!.addr;
+    this.replayOwnership = ownership;
     this.setReplayCursor(replayNode);
   }
 
   beginReplay(): void {
-    if (this.root === 0 || this.pending || this.abortFailure) {
+    if (
+      this.root === 0
+      || this.pending
+      || this.abortFailure
+      || this.replayOwnership !== "owned"
+    ) {
       throw new Error(`${this.label}: cannot begin replay from incomplete continuation`);
     }
     this.resetReplay(this.readPtr(this.root + 8 + 5 * this.format.ptrWidth));
@@ -372,7 +447,11 @@ export class LinkedForkContinuation {
 
   reserveFrame(payloadSize: number | bigint): number | bigint {
     const size = this.fromGuestPtr(payloadSize);
-    if (this.root === 0 || this.activeChunk === 0) {
+    if (
+      this.root === 0
+      || this.activeChunk === 0
+      || this.replayOwnership !== "owned"
+    ) {
       throw new Error(`${this.label}: frame reservation outside unwind`);
     }
     if (this.pending) {
@@ -430,6 +509,9 @@ export class LinkedForkContinuation {
   }
 
   commitFrame(payload: number | bigint): void {
+    if (this.replayOwnership !== "owned") {
+      throw new Error(`${this.label}: frame commit outside owned unwind`);
+    }
     if (this.abortFailure) {
       throw new Error(`${this.label}: frame commit after abort began`);
     }
@@ -474,13 +556,15 @@ export class LinkedForkContinuation {
     this.replayNode = previous;
     this.replayChunkIndex = nextReplay.chunkIndex;
     this.replayExpectedEnd = nextReplay.expectedEnd;
-    this.view().setUint16(node + 6, NODE_CONSUMED, true);
+    if (this.replayOwnership === "owned") {
+      this.view().setUint16(node + 6, NODE_CONSUMED, true);
+    }
     return this.asGuestPtr(payload);
   }
 
   private validateNextFrame(expected: number): ValidatedReplayNode {
     const node = this.replayNode;
-    if (this.root === 0 || node === 0) {
+    if (this.root === 0 || node === 0 || this.replayOwnership === null) {
       throw new Error(`${this.label}: linked continuation replay exhausted early`);
     }
     const chunk = this.replayChunk(node);
@@ -520,12 +604,15 @@ export class LinkedForkContinuation {
     if (this.pending) {
       throw new Error(`${this.label}: unwind ended with an uncommitted frame`);
     }
-    if (this.root === 0) {
+    if (this.root === 0 || this.replayOwnership !== "owned") {
       throw new Error(`${this.label}: unwind ended without a continuation`);
     }
   }
 
   finishReplayAndRelease(): void {
+    if (this.replayOwnership !== "owned") {
+      throw new Error(`${this.label}: borrowed replay cannot release continuation storage`);
+    }
     if (this.abortFailure) {
       throw new Error(`${this.label}: normal replay ended during abort recovery`);
     }
@@ -533,6 +620,36 @@ export class LinkedForkContinuation {
       throw new Error(`${this.label}: rewind ended before all linked frames were consumed`);
     }
     this.release();
+  }
+
+  /** Finish a complete borrowed replay without writing or releasing storage. */
+  finishBorrowedReplay(): void {
+    if (this.replayOwnership !== "borrowed") {
+      throw new Error(`${this.label}: no borrowed continuation replay is active`);
+    }
+    if (this.abortFailure) {
+      throw new Error(`${this.label}: borrowed replay cannot own abort recovery`);
+    }
+    if (this.replayNode !== 0) {
+      throw new Error(`${this.label}: rewind ended before all linked frames were read`);
+    }
+    this.clearControllerState();
+  }
+
+  /**
+   * Drop a failed borrowed cursor without touching its owner's bytes.
+   *
+   * WHY: fresh-child activation or module reconstruction can trap after one
+   * continuation has attached but before replay starts. The parent still owns
+   * every linked node, so rollback may clear only this Worker's controller
+   * state; consuming or releasing the chain would make the suspended parent
+   * impossible to resume.
+   */
+  cancelBorrowedReplay(): void {
+    if (this.replayOwnership !== "borrowed") {
+      throw new Error(`${this.label}: no borrowed continuation replay is active`);
+    }
+    this.clearControllerState();
   }
 
   beginAbortReplay(
@@ -543,7 +660,11 @@ export class LinkedForkContinuation {
     if (!Number.isInteger(errno) || errno <= 0) {
       throw new Error(`${this.label}: invalid abort errno ${errno}`);
     }
-    if (this.root === 0 || this.pending) {
+    if (
+      this.root === 0
+      || this.pending
+      || this.replayOwnership !== "owned"
+    ) {
       throw new Error(`${this.label}: cannot abort-replay an incomplete continuation`);
     }
     if (this.abortFailure && this.abortFailure.errno !== errno) {
@@ -561,6 +682,9 @@ export class LinkedForkContinuation {
   }
 
   finishAbortReplayAndRelease(): void {
+    if (this.replayOwnership !== "owned") {
+      throw new Error(`${this.label}: borrowed replay cannot release abort storage`);
+    }
     if (!this.abortFailure) {
       throw new Error(`${this.label}: abort replay ended without an allocation failure`);
     }
@@ -574,13 +698,16 @@ export class LinkedForkContinuation {
     if (this.pending) {
       throw new Error(`${this.label}: cannot cancel an unwind with a pending frame`);
     }
-    if (this.root === 0) {
+    if (this.root === 0 || this.replayOwnership !== "owned") {
       throw new Error(`${this.label}: cannot cancel an inactive unwind`);
     }
     this.release();
   }
 
   abortAndRelease(requestedNextFrame?: number, cause?: unknown): never {
+    if (this.replayOwnership !== "owned") {
+      throw new Error(`${this.label}: borrowed replay cannot abort owned storage`);
+    }
     const details = `committed_frames=${this.committedFrames} committed_bytes=${this.committedBytes}`
       + (requestedNextFrame === undefined ? "" : ` requested_next_frame=${requestedNextFrame}`)
       + (cause === undefined
@@ -837,14 +964,10 @@ export class LinkedForkContinuation {
   }
 
   private release(): void {
-    const chunks = this.chunks.splice(0).reverse();
-    this.pending = null;
-    this.root = 0;
-    this.activeChunk = 0;
-    this.replayNode = 0;
-    this.replayChunkIndex = -1;
-    this.replayExpectedEnd = 0;
-    this.abortFailure = null;
+    if (this.replayOwnership === "borrowed") {
+      throw new Error(`${this.label}: borrowed replay cannot release continuation storage`);
+    }
+    const chunks = this.clearControllerState().reverse();
     let firstError: unknown;
     for (const chunk of chunks) {
       try {
@@ -854,6 +977,19 @@ export class LinkedForkContinuation {
       }
     }
     if (firstError !== undefined) throw firstError;
+  }
+
+  private clearControllerState(): ContinuationChunk[] {
+    const chunks = this.chunks.splice(0);
+    this.pending = null;
+    this.root = 0;
+    this.activeChunk = 0;
+    this.replayNode = 0;
+    this.replayChunkIndex = -1;
+    this.replayExpectedEnd = 0;
+    this.abortFailure = null;
+    this.replayOwnership = null;
+    return chunks;
   }
 
   private releaseAfterFailure(error: unknown): never {

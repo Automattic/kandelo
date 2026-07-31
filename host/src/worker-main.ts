@@ -561,8 +561,11 @@ export interface DlopenSupport {
   /** Validate and return the compact copied live-module closure. */
   readForkState: () => DylinkForkState;
   /** Recreate the parent's live module and handle state from linear memory. */
-  replayDlopens: (validatedState?: DylinkForkState) => void;
-  /** Clear a fork parent's copied archive lock in the child's private memory. */
+  replayDlopens: (
+    validatedState?: DylinkForkState,
+    options?: { readonly memoryOwnership?: "copied" | "borrowed" },
+  ) => void;
+  /** Clear a fork parent's copied archive lock in ordinary child memory. */
   resetForkChildLock: () => void;
   readonly archive: DylinkForkArchive;
   /** Acquire one reentrant process-archive writer depth, blocking if needed. */
@@ -1791,7 +1794,10 @@ export function buildDlopenImports(
 
   const readForkState = (): DylinkForkState => forkArchive.read();
 
-  const replayDlopens = (validatedState?: DylinkForkState): void => {
+  const replayDlopens = (
+    validatedState?: DylinkForkState,
+    options: { readonly memoryOwnership?: "copied" | "borrowed" } = {},
+  ): void => {
     const state = validatedState ?? readForkState();
     if (
       state.nextHandle === 2 &&
@@ -1804,7 +1810,7 @@ export function buildDlopenImports(
     // view. Pthread Workers can call this for every process generation.
     const lk = getLinker();
     try {
-      lk.reconcileForkModules(state);
+      lk.reconcileForkModules(state, options);
       lk.reconcileForkHandleState(state);
     } catch (error) {
       abortLinkerOperation();
