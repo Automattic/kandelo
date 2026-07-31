@@ -810,10 +810,10 @@ jobs:
       contents: read
     strategy:
       fail-fast: false
-      # WHY: libc's two groups and Sortix's three groups are exact partitions
-      # of their former `all` invocations. Keeping them as separate matrix
-      # cells removes serial work from the final gate's critical path while
-      # `test-gate` still aggregates every cell through this matrix job.
+      # WHY: Vitest's two file shards, libc's two groups, and Sortix's three
+      # groups partition their complete suites exactly once. Separate matrix
+      # cells bound runner memory and remove serial work from the final gate
+      # while `test-gate` still aggregates every cell.
       matrix:
         include:
           - suite: cargo-kernel
@@ -829,8 +829,14 @@ jobs:
             needs_toolchain: false
             needs_workspace: false
           - suite: vitest
-            label: vitest
-            group: all
+            label: vitest (1/2)
+            group: 1/2
+            needs_submodules: false
+            needs_toolchain: true
+            needs_workspace: true
+          - suite: vitest
+            label: vitest (2/2)
+            group: 2/2
             needs_submodules: false
             needs_toolchain: true
             needs_workspace: true
