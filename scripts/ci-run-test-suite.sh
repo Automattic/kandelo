@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# CI-shaped suite runner. The optional group selects deterministic natural
-# shards for the two longest conformance suites:
+# CI-shaped suite runner. The optional group selects deterministic shards:
+#   vitest: 1/2 | 2/2
 #   libc:   functional-regression | math
 #   sortix: include | basic | runtime
 # Omitting the group preserves the complete local suite behavior.
@@ -152,14 +152,31 @@ case "$suite" in
         cargo test -p fork-instrument --target "$HOST_TARGET"
         ;;
     vitest)
+        case "$group" in
+            all) vitest_args=() ;;
+            1/2|2/2) vitest_args=("--shard=$group") ;;
+            *) invalid_group ;;
+        esac
         install_node_deps
         npx --prefix host playwright install chromium
-        (cd host && npx vitest run)
+        # WHY: Vitest owns the hash-based file partition. Passing its shard
+        # selector keeps both CI jobs disjoint while their union remains the
+        # same complete test-file inventory as the unsharded local command.
+        (cd host && npx vitest run "${vitest_args[@]}")
         # [JSC-TERMINATE-ATOMICS-WAIT-LEAK] Re-run the teardown-reclamation tests
         # on JSC (Bun) as well as V8, since the workaround exists for JSC (Safari
         # and Bun) and is a no-op on V8. `bun` comes from the flake dev shell.
         # See docs/jsc-terminate-atomics-wait-workaround.md.
-        (cd host && bun x vitest run test/teardown-reclaim.test.ts test/pthread.test.ts)
+        # WHY: this is a separate cross-runtime check, not part of Vitest's V8
+        # partition. Run it on one shard so CI retains the check exactly once.
+        if [ "$group" = "all" ] || [ "$group" = "1/2" ]; then
+            (
+                cd host
+                bun x vitest run \
+                    test/teardown-reclaim.test.ts \
+                    test/pthread.test.ts
+            )
+        fi
         ;;
     browser)
         install_node_deps
