@@ -53,6 +53,10 @@ sed '/- name: Verify the exact browser handoff/a\
   "$WORKFLOW" >"$TMP_ROOT/rebuild-in-proof.yml"
 expect_workflow_rejected "$TMP_ROOT/rebuild-in-proof.yml"
 
+sed 's#bash scripts/dev-shell.sh bash#bash scripts/ambient-shell.sh bash#' \
+  "$WORKFLOW" >"$TMP_ROOT/ambient-handoff-tools.yml"
+expect_workflow_rejected "$TMP_ROOT/ambient-handoff-tools.yml"
+
 sed '/env -u GH_TOKEN -u GITHUB_TOKEN/d' \
   "$WORKFLOW" >"$TMP_ROOT/credentialed-readback.yml"
 expect_workflow_rejected "$TMP_ROOT/credentialed-readback.yml"

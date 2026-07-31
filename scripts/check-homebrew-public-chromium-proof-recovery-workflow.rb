@@ -35,7 +35,7 @@ MIRROR_TAG =
   "fd15162a8c9c06e6d7936af470cd16ba916528708356750751b55bac567a0ce2"
 RUNTIME_HANDOFF = "homebrew-public-browser-runtime-handoff"
 WORKFLOW_DIGEST =
-  "fe1b60beacf653831ce02bc74693291a5bb41d9f8d284d2ec7a3bf05a3ba9658"
+  "8c3d4dbc8633645a9074e5b3a4b403486bade96479a4643dae946d544e2f63bf"
 RUNNER_DIGEST =
   "10e69e20c7e5b9a02eec910b0c3edce3baadd6f349bf80bdb4bfc20c86897128"
 DOWNLOAD_ACTION =
@@ -161,6 +161,17 @@ begin
         "scripts/create-homebrew-browser-proof-runtime-handoff.sh"
       ),
     "Chromium producer does not own every build-time dependency",
+  )
+  handoff_build = named_step(
+    prepare,
+    "Build and verify the bounded browser handoff",
+  ).fetch("run")
+  check(
+    handoff_build.include?("bash scripts/dev-shell.sh bash \\\n") &&
+      handoff_build.include?(
+        "scripts/create-homebrew-browser-proof-runtime-handoff.sh"
+      ),
+    "Chromium handoff build does not use the declared tool environment",
   )
   %w[
     nix

@@ -398,9 +398,12 @@ def _require_node_major() -> None:
         )
     except (OSError, subprocess.CalledProcessError) as error:
         raise HandoffError(f"cannot inspect the Node.js runtime: {error}") from error
-    if result.stdout.strip() != str(NODE_MAJOR):
+    actual_major = result.stdout.strip()
+    if actual_major != str(NODE_MAJOR):
+        reported_major = actual_major[:32] or "<empty>"
         raise HandoffError(
-            f"browser proof runtime requires Node.js {NODE_MAJOR}"
+            "browser proof runtime requires "
+            f"Node.js {NODE_MAJOR}; found {reported_major}"
         )
 
 

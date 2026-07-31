@@ -262,7 +262,11 @@ jobs:
           set -euo pipefail
           root="$RUNNER_TEMP/homebrew-public-browser-runtime-handoff"
           test ! -e "$root"
-          bash scripts/create-homebrew-browser-proof-runtime-handoff.sh \
+          # WHY: the handoff verifier executes Node to enforce its runtime
+          # contract. Run it in the repository's declared tool environment
+          # instead of relying on the runner's mutable ambient PATH.
+          bash scripts/dev-shell.sh bash \
+            scripts/create-homebrew-browser-proof-runtime-handoff.sh \
             --source-root "$GITHUB_WORKSPACE" \
             --dist "$GITHUB_WORKSPACE/apps/browser-demos/dist" \
             --fixture "${{ steps.fixture.outputs.path }}" \
