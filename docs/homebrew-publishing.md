@@ -1157,28 +1157,35 @@ first-party tap owns a separate public-mirror publication lane. Its
 `reusable-homebrew-main-shell-mirror-publish.yml` only from the tap's live
 `main`. The initial caller pins one reviewed Kandelo `Mpre` SHA in both `uses:`
 and the `kandelo-ref` input and supplies exact final bottle-catalog `TF` and
-canary `C` identities. Its own `${{ github.sha }}` becomes `TA0`, the commit
-that owns the immutable bottle mirror. A later caller for the complete public
-browser proof pins the exact `TA0` as `mirror-authority-ref`; its own
-`${{ github.sha }}` becomes `TA1`, the live commit that may publish only the
-direct lifecycle inputs. Event data cannot select either authority. The
-consume-only reusable workflow anonymously rechecks Kandelo `Mpre`, tap `TA1`,
-and canary `C` as the three public main heads, proves the complete
-`TF -> TA0 -> TA1` ancestry chain, and requires the shell revision, structured
-package Git input, catalog locks, runtime-support cohort, and sealed artifact
-lock to agree with `TF` before preparing any bytes.
+canary `C` identities. It selects `publication-mode: create-mirror` and leaves
+`mirror-authority-ref` empty. The reusable workflow derives its own
+`${{ github.sha }}` as `TA0`, requires `TF -> TA0`, publishes the newly
+recovered immutable bottle mirror, and anonymously re-reads every release
+asset. It does not prepare or publish lifecycle inputs in this mode.
 
-Preparation resolves the public shell generation into a fresh cache, verifies
-the main-shell artifact lock, and anonymously recovers the exact bottle set
-declared by the embedded mirror plan. The only inter-job transfer is a
-pair of one-day, same-run artifacts with exact manifests and bounded
-inventories. One re-derives the bottle-mirror plan and payloads from `TF` and
-builds the exact release manifest that the already-public `TA0` release must
-match. It is verification evidence, not publication input. The other owns only
-the fixed lifecycle inputs: the exact shell image, bootstrap tree
-specification, bootstrap ZIP, and bootstrap environment. No personal access
-token (PAT), GitHub App token, cross-repository workflow artifact, run ID, or
-caller-selected artifact repository participates in either handoff.
+A later caller selects `publication-mode: publish-lifecycle`, pins the exact
+`TA0` as `mirror-authority-ref`, and derives its own `${{ github.sha }}` as
+`TA1`. This mode re-derives and verifies the existing mirror, then publishes
+only the direct lifecycle inputs and runs the complete public Node and browser
+proofs. Event data cannot select either authority. The workflow anonymously
+rechecks Kandelo `Mpre`, tap `TA1`, and canary `C` as the three public main
+heads, proves the complete `TF -> TA0 -> TA1` ancestry chain, and requires the
+shell revision, structured package Git input, catalog locks, runtime-support
+cohort, and sealed artifact lock to agree with `TF` before preparing any
+bytes.
+
+Both modes resolve the public shell generation into a fresh cache, verify
+the main-shell artifact lock, and anonymously recover the exact bottle set
+declared by the embedded mirror plan. The mirror is derived from that plan, so
+the publication code has no Formula-specific or Ruby-specific digest. Its
+one-day, same-run handoff has an exact manifest and bounded inventory. In
+`create-mirror` mode it is the only handoff and supplies the new TA0 release.
+In `publish-lifecycle` mode it is verification evidence for the already-public
+TA0 release, and a separate bounded handoff owns only the fixed lifecycle
+inputs: the exact shell image, bootstrap tree specification, bootstrap ZIP,
+and bootstrap environment. No personal access token (PAT), GitHub App token,
+cross-repository workflow artifact, run ID, or caller-selected artifact
+repository participates in either handoff.
 
 The fixed lifecycle inputs use a separate content-addressed immutable release
 in the first-party tap. The shell image is a member of its package archive,
@@ -1200,14 +1207,19 @@ handoff expires after one day; its immutable release is durable
 content-addressed evidence and is not a temporary release to delete after the
 run.
 
-Only the publication job receives `contents: write`. It uses the tap caller's
-own `GITHUB_TOKEN`, but the existing mirror path calls the separate
-`verify-existing-immutable-github-release.sh` verifier. That verifier exposes
-no write mode: it performs GET-only metadata reads, requires the release and
-its direct lightweight tag to target `TA0`, requires GitHub release
-immutability and the exact asset inventory, and anonymously rehashes every
-re-derived payload. It emits a receipt whose operation is
-`verified-existing`; it never calls the release publisher.
+Only the publication job receives `contents: write`. Both of its write paths
+are guarded by the admitted publication mode. `create-mirror` calls
+`publish-immutable-github-release.sh` once for the mirror manifest targeting
+the live TA0 caller; the publisher then anonymously re-reads and rehashes the
+public release. It has no lifecycle handoff to publish.
+
+`publish-lifecycle` uses the tap caller's own `GITHUB_TOKEN`, but the existing
+mirror path calls the separate `verify-existing-immutable-github-release.sh`
+verifier. That verifier exposes no write mode: it performs GET-only metadata
+reads, requires the release and its direct lightweight tag to target `TA0`,
+requires GitHub release immutability and the exact asset inventory, and
+anonymously rehashes every re-derived payload. It emits a receipt whose
+operation is `verified-existing`; it never calls the release publisher.
 
 The same job rechecks live Kandelo and `TA1` immediately before using
 `publish-immutable-github-release.sh` to write only four lifecycle assets:
