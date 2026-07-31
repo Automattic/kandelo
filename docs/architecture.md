@@ -1436,10 +1436,17 @@ dated Node, Chromium, Firefox, and WebKit measurements and their limitations
 are recorded in
 [`docs/measurements/2026-07-28-process-memory-retirement-rss.md`](measurements/2026-07-28-process-memory-retirement-rss.md).
 
-Fork children synchronously acquire an exactly sized fresh backing and copy the
-parent's current memory length before the first asynchronous host operation.
-This preserves the syscall-time snapshot even if a sibling thread execs while
-Worker launch waits for retirement admission. The child copies the current
+Fork first checks live-memory capacity and the retired-generation count and
+byte thresholds synchronously. If retired debt is already saturated, fork
+returns `EAGAIN` before constructing or copying another address space. It
+cannot wait asynchronously at that point: a sibling thread could mutate the
+parent memory while the caller yielded, changing the purported syscall-time
+snapshot.
+
+Once admitted, the host synchronously acquires an exactly sized fresh backing
+and copies the parent's current memory length before the first asynchronous
+host operation. This preserves the syscall-time snapshot even if a sibling
+thread execs while the child Worker is prepared. The child copies the current
 length, not the configured maximum, because `memory.size()` and the accessible
 address-space boundary are part of the state fork duplicates. Pthread workers
 share the owning process memory plus that process's thread allocator. A fork
