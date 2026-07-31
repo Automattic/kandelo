@@ -72,6 +72,10 @@ sed \
   "$WORKFLOW" >"$TMP_ROOT/copied-musl-source.yml"
 expect_workflow_rejected "$TMP_ROOT/copied-musl-source.yml"
 
+sed '/          include-hidden-files: true/d' \
+  "$WORKFLOW" >"$TMP_ROOT/hidden-handoff-member.yml"
+expect_workflow_rejected "$TMP_ROOT/hidden-handoff-member.yml"
+
 sed '/env -u GH_TOKEN -u GITHUB_TOKEN/d' \
   "$WORKFLOW" >"$TMP_ROOT/credentialed-readback.yml"
 expect_workflow_rejected "$TMP_ROOT/credentialed-readback.yml"

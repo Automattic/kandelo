@@ -332,6 +332,9 @@ jobs:
           path: ${{ steps.runtime.outputs.root }}
           retention-days: 1
           if-no-files-found: error
+          # WHY: The signed inventory includes dotfiles from the sealed Vite
+          # output. Omitting one changes the handoff that consumers verify.
+          include-hidden-files: true
 
   prove:
     name: Prove ${{ matrix.scope }} on a fresh Chromium runner

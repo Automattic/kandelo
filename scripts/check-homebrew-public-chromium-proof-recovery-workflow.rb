@@ -35,7 +35,7 @@ MIRROR_TAG =
   "fd15162a8c9c06e6d7936af470cd16ba916528708356750751b55bac567a0ce2"
 RUNTIME_HANDOFF = "homebrew-public-browser-runtime-handoff"
 WORKFLOW_DIGEST =
-  "c00d24cac06547bdc17f2a41d35ad1501d634ecdcbf16c3005975e9b8717414f"
+  "1d3aed0678df72dac2345b2b3a1dd86fac00cb80b946512c8255e5f66ce2342f"
 RUNNER_DIGEST =
   "10e69e20c7e5b9a02eec910b0c3edce3baadd6f349bf80bdb4bfc20c86897128"
 DOWNLOAD_ACTION =
@@ -254,6 +254,7 @@ begin
         "path" => "${{ steps.runtime.outputs.root }}",
         "retention-days" => 1,
         "if-no-files-found" => "error",
+        "include-hidden-files" => true,
       },
     ],
     "Chromium preparation handoff differs",
