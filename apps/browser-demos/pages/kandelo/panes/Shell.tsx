@@ -11,6 +11,7 @@ import "@xterm/xterm/css/xterm.css";
 
 import { useKernelHost, useStatus } from "../kernel-host/react";
 import type { PtyHandle } from "../../../../../web-libs/kandelo-session/src/kernel-host";
+import { requestTerminalAutoFocus } from "./terminal-focus";
 
 export interface ShellProps {
   dragProps?: import("./PaneHead").PaneHeadDragProps;
@@ -155,9 +156,13 @@ const ShellTerminalHost: React.FC<{
       focusTerminal();
     };
     const focusTerm = () => {
-      if (!autoFocus) return;
-      window.requestAnimationFrame(() => {
-        if (!disposed) term.focus();
+      const container = containerRef.current;
+      if (!container) return;
+      requestTerminalAutoFocus({
+        autoFocus,
+        container,
+        focusTerminal: () => term.focus(),
+        isDisposed: () => disposed,
       });
     };
     focusTerm();
