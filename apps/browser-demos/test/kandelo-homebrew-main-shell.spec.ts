@@ -12,6 +12,10 @@ import {
   SHELL_VFS_IMAGE_PATH_PATTERN_SOURCE,
 } from "../lib/shell-vfs-image-url";
 import {
+  browserResolvedLazySourceUrl,
+  expectedBrowserLazyTransport,
+} from "./support/homebrew-lazy-transport";
+import {
   runParentShellProbe,
   runTerminalCommand,
 } from "./support/terminal-command";
@@ -84,6 +88,7 @@ interface BootstrapPayloadResponse {
 }
 
 interface ExactShellPage {
+  pageUrl: string;
   config: ExactAcceptanceConfig;
   mirrorPlan: { assets: MirrorAsset[] };
   legacyArtifactDownloads: string[];
@@ -566,6 +571,7 @@ async function bootExactShellPage(page: Page): Promise<ExactShellPage> {
   });
 
   return {
+    pageUrl: page.url(),
     config,
     mirrorPlan,
     legacyArtifactDownloads,
@@ -655,18 +661,37 @@ function assertPublicLazyTransport(
   if (shell.config.transportMode !== "public") return;
   for (const row of rows) {
     expect(row.source, `lazy row ${row.asset} has no source URL`).not.toBeNull();
-    const sourceUrl = new URL(row.source!).href;
+    // WHY: Vite emits the same-origin bootstrap as a root-relative asset,
+    // while the request observer sees an absolute URL. Canonicalize only that
+    // unambiguous form; bare-relative worker URLs need their worker base.
+    const sourceUrl = browserResolvedLazySourceUrl(
+      row.source!,
+      shell.pageUrl,
+    );
     const matches = shell.artifactTransportRequests.filter(
       ({ targetUrl }) => targetUrl === sourceUrl,
     );
-    expect(
-      matches.some(({ proxied }) => proxied),
-      `lazy source bypassed the browser proxy: ${String(row.source)}`,
-    ).toBe(true);
-    expect(
-      matches.filter(({ proxied }) => !proxied),
-      `lazy source was also fetched directly: ${String(row.source)}`,
-    ).toEqual([]);
+    if (
+      expectedBrowserLazyTransport(sourceUrl, shell.pageUrl) === "direct"
+    ) {
+      expect(
+        matches.some(({ proxied }) => !proxied),
+        `same-origin lazy source was not fetched: ${String(row.source)}`,
+      ).toBe(true);
+      expect(
+        matches.filter(({ proxied }) => proxied),
+        `same-origin lazy source used the proxy: ${String(row.source)}`,
+      ).toEqual([]);
+    } else {
+      expect(
+        matches.some(({ proxied }) => proxied),
+        `external lazy source bypassed the proxy: ${String(row.source)}`,
+      ).toBe(true);
+      expect(
+        matches.filter(({ proxied }) => !proxied),
+        `external lazy source was also direct: ${String(row.source)}`,
+      ).toEqual([]);
+    }
   }
 }
 
