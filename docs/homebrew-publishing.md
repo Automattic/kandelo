@@ -1183,6 +1183,30 @@ identity therefore does not authorize ambient public mirror requests in those
 suites. The dedicated mirror-publication proof owns anonymous public transport
 validation after publication.
 
+The consume-only browser proof separates product authority from test-runtime
+authority. Its runtime handoff records `product_kandelo_ref`, the Kandelo
+commit named by the immutable publication lock, and `runtime_source_ref`, the
+workflow commit that built the browser application and proof code. The first
+value says which published product is under test. The second says which test
+runtime produced the sealed browser files. Neither value may stand in for the
+other.
+
+`scripts/create-homebrew-browser-proof-runtime-handoff.sh` copies the already
+built `apps/browser-demos/dist`, the exact public lifecycle fixture, and only
+the source and configuration needed to run the Playwright proof. It also
+provides a minimal npm package pinned to Playwright. The consumer installs
+that package and Chromium, but does not run Vite's build, Nix, a kernel fetch,
+or a product publisher.
+
+The schema-1 handoff enumerates every file by relative path, byte count,
+SHA-256, and mode. It permits at most 4,096 files, 256 MiB per file, and
+512 MiB total. Verification rejects a symlink or special file anywhere in
+the tree, an extra or missing file or directory, path traversal, changed
+authority, and any relaxed bound. The fixture must use public transport and
+contains no local bottle payloads. The browser therefore fetches the
+published image and lazy bottle layers anonymously instead of consuming
+product bytes hidden in the test-runtime handoff.
+
 The product workflow's live lane is a manual, closed-transport cutover proof.
 It requires three exact lowercase 40-character inputs: Kandelo's live
 default-branch commit `M`, the final first-party tap commit `TF`, and the
