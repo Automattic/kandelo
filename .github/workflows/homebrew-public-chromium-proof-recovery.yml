@@ -7,11 +7,21 @@ on:
       - apps/browser-demos/pages/homebrew-vfs-test/main.ts
       - apps/browser-demos/test/homebrew-guest-lifecycle.spec.ts
       - homebrew/public-proof-recovery-lock.json
+      - homebrew/test/browser-proof-runtime/**
       - homebrew/test/homebrew_guest_lifecycle_browser.ts
+      - homebrew/test/homebrew_guest_lifecycle_browser_fixture.ts
+      - homebrew/test/homebrew_guest_lifecycle_contract.ts
       - homebrew/test/homebrew_guest_lifecycle_progress.ts
       - homebrew/test/run_homebrew_guest_browser_shipping_scope.sh
+      - host/src/homebrew-bottle-mirror-plan.ts
+      - host/src/homebrew-runtime-layer-limits.ts
+      - host/src/vfs/closed-lazy-assets.ts
+      - host/src/vfs/deferred-tree-limits.ts
       - scripts/create-homebrew-browser-proof-runtime-handoff.sh
       - scripts/create-homebrew-guest-lifecycle-fixture.ts
+      - scripts/homebrew-closed-lazy-assets-contract.ts
+      - scripts/homebrew_browser_proof_runtime_handoff.py
+      - scripts/test_homebrew_browser_proof_runtime_handoff.py
       - scripts/verify-homebrew-browser-proof-runtime-handoff.sh
       - scripts/check-homebrew-public-chromium-proof-recovery-workflow.rb
       - scripts/test-homebrew-browser-proof-runtime-handoff.sh
