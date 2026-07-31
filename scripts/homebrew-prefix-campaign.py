@@ -1789,14 +1789,15 @@ def default_resolve_formula_metadata(
                 )
             for value in values:
                 prefix = f"{tap_name}/"
-                candidate = (
-                    value.removeprefix(prefix)
-                    if value.startswith(prefix)
-                    else value
-                )
-                # Native build tools remain supplied by the pinned package
-                # generation. Only Formulae in this campaign can be ordered
-                # and handed from one bottle task to another.
+                # WHY: Homebrew reports native build tools and tap Formulae in
+                # the same arrays. Only an exact, fully qualified dependency
+                # declaration opts into the Kandelo guest graph. Treating an
+                # unqualified tool as a guest edge merely because this tap has
+                # a Formula with the same name can create false cycles and
+                # make unrelated native tooling block a usable bottle.
+                if not value.startswith(prefix):
+                    continue
+                candidate = value.removeprefix(prefix)
                 if candidate in formula_set:
                     dependency_names.add(candidate)
         if name in metadata:
@@ -2599,7 +2600,7 @@ def _derive_campaign_from_snapshots(
             fail(f"campaign source-only entry #{index} must be an object")
         disposition = entry.get("disposition")
         expected_keys = (
-            {"arches", "disposition", "formula_path", "name", "recipe_lock"}
+            {"arches", "build_input", "disposition", "formula_path", "name"}
             if disposition == "required-build"
             else {"disposition", "formula_path", "name", "reason"}
         )
@@ -2617,6 +2618,37 @@ def _derive_campaign_from_snapshots(
             fail(f"campaign source-only Formula {name} has a noncanonical path")
         if disposition not in ("required-build", "deferred"):
             fail(f"campaign source-only Formula {name} has an invalid disposition")
+        if disposition == "required-build":
+            build_input = entry["build_input"]
+            if not isinstance(build_input, dict):
+                fail(f"{name} entrant build input must be an object")
+            build_kind = build_input.get("kind")
+            build_input_keys = (
+                {"kind"}
+                if build_kind == "formula-source"
+                else {"kind", "path"}
+                if build_kind == "homebrew-bootstrap-recipe-lock"
+                else set()
+            )
+            if not build_input_keys:
+                fail(f"{name} entrant build input kind is unsupported")
+            exact_keys(
+                build_input,
+                build_input_keys,
+                f"{name} entrant build input",
+            )
+            # WHY: the bootstrap Formula has a larger source contract than an
+            # ordinary Homebrew Formula. It must never downgrade to the plain
+            # Formula-only shape and thereby bypass its archive, patch,
+            # prepared-tree, license, and output validation.
+            if (name == "homebrew-bootstrap") != (
+                build_kind == "homebrew-bootstrap-recipe-lock"
+            ):
+                fail(
+                    "the homebrew-bootstrap recipe-lock build input may be "
+                    "used only by homebrew-bootstrap, and homebrew-bootstrap "
+                    "must use it"
+                )
         source_only_contract[name] = entry
     # WHY: a source-only Formula has no old sidecar from which disposition can
     # be derived. Exact closure forces every new or deferred Formula through a
@@ -3013,30 +3045,60 @@ def _derive_campaign_from_snapshots(
             or any(arch not in ("wasm32", "wasm64") for arch in arches)
         ):
             fail(f"{name} entrant arches are invalid or noncanonical")
-        recipe_rel = require_tap_path(entry["recipe_lock"], f"{name} recipe lock")
-        recipe, recipe_bytes, recipe_evidence = validate_required_entrant_recipe(
-            source_tap_root,
-            name=name,
-            recipe_rel=recipe_rel,
-            formula_path=source_formula_files[name],
-            retired_prefixes=layout["retired_prefixes"],
-        )
-        package = recipe["package"]
-        if arches != [package["arch"]]:
-            fail(
-                f"{name} entrant arches must exactly equal its recipe-lock arch"
+        build_input = entry["build_input"]
+        build_kind = build_input["kind"]
+        version = resolved_versions[name]
+        campaign_build_input: dict[str, Any]
+        recipe_context: dict[str, Any] = {}
+        if build_kind == "formula-source":
+            # Formula source, exact Homebrew metadata, target architecture,
+            # dependency edges, and destination absence are already sealed by
+            # the ordinary campaign record. No synthetic recipe lock exists
+            # for a conventional Formula such as libyaml.
+            campaign_build_input = {"kind": "formula-source"}
+        else:
+            recipe_rel = require_tap_path(
+                build_input["path"], f"{name} recipe lock"
             )
-        version = require_string(
-            package["version"],
-            f"{name} recipe version",
-            VERSION,
-        )
-        if resolved_versions[name] != version:
-            fail(
-                f"{name} native Homebrew pkg_version "
-                f"{resolved_versions[name]} differs from its exact recipe lock "
-                f"{version}"
+            recipe, recipe_bytes, recipe_evidence = (
+                validate_required_entrant_recipe(
+                    source_tap_root,
+                    name=name,
+                    recipe_rel=recipe_rel,
+                    formula_path=source_formula_files[name],
+                    retired_prefixes=layout["retired_prefixes"],
+                )
             )
+            package = recipe["package"]
+            if arches != [package["arch"]]:
+                fail(
+                    f"{name} entrant arches must exactly equal its "
+                    "recipe-lock arch"
+                )
+            recipe_version = require_string(
+                package["version"],
+                f"{name} recipe version",
+                VERSION,
+            )
+            if version != recipe_version:
+                fail(
+                    f"{name} native Homebrew pkg_version {version} differs "
+                    f"from its exact recipe lock {recipe_version}"
+                )
+            recipe_lock = {
+                "path": recipe_rel,
+                "sha256": sha256_bytes(recipe_bytes),
+            }
+            campaign_build_input = {
+                "kind": "homebrew-bootstrap-recipe-lock",
+                "recipe_lock": recipe_lock,
+            }
+            recipe_context = {
+                "recipe_lock": {
+                    **recipe_lock,
+                    **recipe_evidence,
+                }
+            }
         reference = canonical_top_reference(top_reference, version, 0, name)
         formula_context[name] = {
             "dependencies": resolved_dependencies[name],
@@ -3051,23 +3113,14 @@ def _derive_campaign_from_snapshots(
                 "sha256": source_sha,
             },
             "name": name,
-            "recipe_lock": {
-                "path": recipe_rel,
-                "sha256": sha256_bytes(recipe_bytes),
-                **recipe_evidence,
-            },
+            **recipe_context,
             "source_kind": "reviewed-new-entrant",
             "version": version,
         }
         entrant_variants[name] = [
             {
                 "arch": arch,
-                "build_input": {
-                    "recipe_lock": {
-                        "path": recipe_rel,
-                        "sha256": sha256_bytes(recipe_bytes),
-                    }
-                },
+                "build_input": campaign_build_input,
                 "disposition": {
                     "kind": "required-build",
                     "reasons": ["new-campaign-entrant"],

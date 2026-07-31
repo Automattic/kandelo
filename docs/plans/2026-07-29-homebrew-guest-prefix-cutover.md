@@ -289,9 +289,12 @@ identities to match exactly outside canonical bottle metadata.
 
 The fixed
 `homebrew/guest-prefix-campaign-inputs.json` contract classifies every
-candidate Formula that has no old sidecar. It admits `homebrew-bootstrap` as
-the one reviewed new build and explicitly defers the remaining service
-Formulae. Any unclassified source-only Formula fails derivation.
+candidate Formula that has no old sidecar. It admits ordinary `libyaml` from
+its exact Formula source and `homebrew-bootstrap` from its stronger recipe-lock
+contract, and explicitly defers the remaining service Formulae. The build-input
+discriminator prevents bootstrap from bypassing its extra source validation or
+an ordinary Formula from needing a fabricated bootstrap lock. Any unclassified
+source-only Formula fails derivation.
 
 Run `derive` with all four exact 40-character commits and the reviewed old
 metadata and guest-layout SHA-256 values. The output must not already exist

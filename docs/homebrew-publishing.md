@@ -1786,6 +1786,26 @@ validation. Only this campaign digest selects
 selects the still-active layout for an ordinary publication; a campaign
 with a missing or different digest fails.
 
+`homebrew/guest-prefix-campaign-inputs.json` classifies each Formula that
+exists in the candidate source but has no selected sidecar yet. A required
+build has one exact, discriminated `build_input` shape:
+
+- `formula-source` means the conventional Formula source is the complete
+  package-owned build entry point. The campaign still binds its raw Formula
+  digest, exact native Homebrew `pkg_version`, architecture, qualified guest
+  dependencies, and absent destination. It does not fabricate a recipe lock.
+- `homebrew-bootstrap-recipe-lock` is reserved for
+  `homebrew-bootstrap`. In addition to the Formula source, derivation validates
+  its exact recipe manifest, source archive, patch, prepared tree, license
+  evidence, and declared outputs. The bootstrap Formula cannot select the
+  simpler `formula-source` shape.
+
+Only a dependency named exactly
+`kandelo-dev/tap-core/<formula>` enters the guest campaign graph. Unqualified
+Homebrew dependencies remain native build or test tools even when the tap has
+a Formula with the same short name. This keeps host tooling out of bottle
+handoffs while retaining fail-closed same-tap ordering.
+
 Current protected `main` remains the live mutation authority. An
 ordinary publication requires exact equality. The campaign instead may
 use its sealed Kandelo source only while that SHA remains an ancestor of
