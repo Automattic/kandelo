@@ -35,7 +35,7 @@ MIRROR_TAG =
   "fd15162a8c9c06e6d7936af470cd16ba916528708356750751b55bac567a0ce2"
 RUNTIME_HANDOFF = "homebrew-public-browser-runtime-handoff"
 WORKFLOW_DIGEST =
-  "8842dbce28f6f29667a9eddfcf1ec68b757a11d9ef219582d2394d603eb576cb"
+  "265f342bebcef286b910927f4c999b2f15ff4a1e4fccd0adde29e2c1dcc09ef1"
 RUNNER_DIGEST =
   "10e69e20c7e5b9a02eec910b0c3edce3baadd6f349bf80bdb4bfc20c86897128"
 DOWNLOAD_ACTION =
@@ -153,9 +153,14 @@ begin
       prepare_source.include?("npm --prefix apps/browser-demos ci") &&
       prepare_source.include?("scripts/dev-shell.sh") &&
       prepare_source.include?(
-        "scripts/fetch-binaries.sh --fetch-only --package kernel"
+        "scripts/fetch-binaries.sh --fetch-only"
       ) &&
+      prepare_source.include?("--package kernel") &&
+      prepare_source.include?("--package rootfs") &&
       prepare_source.include?("scripts/resolve-binary.sh kernel.wasm") &&
+      prepare_source.include?(
+        "scripts/resolve-binary.sh programs/rootfs.vfs"
+      ) &&
       prepare_source.include?("npm run build") &&
       prepare_source.include?(
         "scripts/create-homebrew-guest-lifecycle-fixture.ts"
@@ -165,27 +170,32 @@ begin
       ),
     "Chromium producer does not own every build-time dependency",
   )
-  kernel_resolution = named_step(
+  runtime_resolution = named_step(
     prepare,
-    "Resolve only the current packaged kernel",
+    "Resolve only the current packaged runtime inputs",
   ).fetch("run")
   check(
-    kernel_resolution.include?(
-      'kernel_cache="$RUNNER_TEMP/homebrew-public-chromium-kernel-cache"'
+    runtime_resolution.include?(
+      'runtime_cache="$RUNNER_TEMP/homebrew-public-chromium-runtime-cache"'
     ) &&
-      kernel_resolution.include?(
-        'echo "WASM_POSIX_BINARY_CACHE_ROOT=$kernel_cache" >>"$GITHUB_ENV"'
+      runtime_resolution.include?(
+        'echo "WASM_POSIX_BINARY_CACHE_ROOT=$runtime_cache" >>"$GITHUB_ENV"'
       ) &&
-      kernel_resolution.scan(
-        '"WASM_POSIX_BINARY_CACHE_ROOT=$kernel_cache"'
-      ).length == 3 &&
-      kernel_resolution.include?(
-        "scripts/fetch-binaries.sh --fetch-only --package kernel"
+      runtime_resolution.scan(
+        '"WASM_POSIX_BINARY_CACHE_ROOT=$runtime_cache"'
+      ).length == 4 &&
+      runtime_resolution.include?(
+        "scripts/fetch-binaries.sh --fetch-only"
       ) &&
-      kernel_resolution.include?(
+      runtime_resolution.include?("--package kernel") &&
+      runtime_resolution.include?("--package rootfs") &&
+      runtime_resolution.include?(
         "scripts/resolve-binary.sh kernel.wasm"
+      ) &&
+      runtime_resolution.include?(
+        "scripts/resolve-binary.sh programs/rootfs.vfs"
       ),
-    "focused Chromium build does not resolve only its packaged kernel",
+    "focused Chromium build does not resolve only its runtime inputs",
   )
   focused_build = named_step(
     prepare,

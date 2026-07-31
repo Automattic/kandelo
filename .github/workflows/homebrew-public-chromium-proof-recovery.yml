@@ -231,21 +231,27 @@ jobs:
             echo "plan-url=$plan_url"
           } >>"$GITHUB_OUTPUT"
 
-      - name: Resolve only the current packaged kernel
+      - name: Resolve only the current packaged runtime inputs
         shell: bash
         run: |
           set -euo pipefail
-          kernel_cache="$RUNNER_TEMP/homebrew-public-chromium-kernel-cache"
-          test ! -e "$kernel_cache"
-          echo "WASM_POSIX_BINARY_CACHE_ROOT=$kernel_cache" >>"$GITHUB_ENV"
-          # WHY: the focused Vite build still imports the kernel. Fetch only
-          # that package instead of rebuilding unrelated generated demos.
+          runtime_cache="$RUNNER_TEMP/homebrew-public-chromium-runtime-cache"
+          test ! -e "$runtime_cache"
+          echo "WASM_POSIX_BINARY_CACHE_ROOT=$runtime_cache" >>"$GITHUB_ENV"
+          # WHY: even the focused Vite graph imports the kernel and generic
+          # rootfs. Fetch only those runtime packages instead of rebuilding
+          # unrelated generated demos.
           bash scripts/dev-shell.sh env \
-            "WASM_POSIX_BINARY_CACHE_ROOT=$kernel_cache" \
-            bash scripts/fetch-binaries.sh --fetch-only --package kernel
+            "WASM_POSIX_BINARY_CACHE_ROOT=$runtime_cache" \
+            bash scripts/fetch-binaries.sh --fetch-only \
+              --package kernel \
+              --package rootfs
           bash scripts/dev-shell.sh env \
-            "WASM_POSIX_BINARY_CACHE_ROOT=$kernel_cache" \
+            "WASM_POSIX_BINARY_CACHE_ROOT=$runtime_cache" \
             bash scripts/resolve-binary.sh kernel.wasm >/dev/null
+          bash scripts/dev-shell.sh env \
+            "WASM_POSIX_BINARY_CACHE_ROOT=$runtime_cache" \
+            bash scripts/resolve-binary.sh programs/rootfs.vfs >/dev/null
 
       - name: Build the focused diagnostic browser
         working-directory: apps/browser-demos
