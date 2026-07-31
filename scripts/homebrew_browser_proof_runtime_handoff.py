@@ -425,13 +425,19 @@ def create_handoff(
         raise HandoffError(
             "browser runtime checkout does not match --runtime-source-ref"
         )
-    if _git_output(
+    dirty_source = _git_output(
         source_root,
         "status",
         "--porcelain=v1",
         "--untracked-files=all",
-    ):
-        raise HandoffError("browser runtime source checkout is not clean")
+    )
+    if dirty_source:
+        # Porcelain v1 quotes unusual path bytes, so this bounded preview is
+        # useful in CI without allowing an arbitrary filename to flood logs.
+        preview = "; ".join(dirty_source.splitlines()[:8])[:512]
+        raise HandoffError(
+            f"browser runtime source checkout is not clean: {preview}"
+        )
     if output.exists() or output.is_symlink():
         raise HandoffError(f"browser runtime output already exists: {output}")
 

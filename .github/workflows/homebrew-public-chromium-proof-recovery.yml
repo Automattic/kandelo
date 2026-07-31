@@ -62,6 +62,55 @@ jobs:
       - name: Set up the repository Nix contract
         uses: ./.github/actions/setup-nix
 
+      - name: Prepare isolated source for the browser sysroots
+        id: sysroot-source
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_root="$RUNNER_TEMP/homebrew-browser-sysroot-source"
+          test ! -e "$source_root"
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          expected_musl="$(git rev-parse "$GITHUB_SHA:libc/musl")"
+          actual_musl="$(git -C libc/musl rev-parse HEAD)"
+          [ "$actual_musl" = "$expected_musl" ]
+          test -z "$(
+            git -C libc/musl status \
+              --porcelain=v1 --untracked-files=all
+          )"
+          mkdir -p "$source_root"
+          # WHY: build-musl applies Kandelo's overlays inside the musl
+          # checkout. Archive the exact superproject and gitlink commits
+          # outside the checkout so ignored files and Git metadata cannot
+          # enter the proof, and sealing can still prove exact source bytes.
+          git archive "$GITHUB_SHA" | tar -x -C "$source_root"
+          mkdir -p "$source_root/libc/musl"
+          git -C libc/musl archive "$expected_musl" |
+            tar -x -C "$source_root/libc/musl"
+          test ! -e "$source_root/.git"
+          test ! -e "$source_root/libc/musl/.git"
+          echo "path=$source_root" >>"$GITHUB_OUTPUT"
+
+      - name: Build browser sysroots without changing the checkout
+        working-directory: ${{ steps.sysroot-source.outputs.path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/dev-shell.sh bash scripts/build-musl.sh
+          bash scripts/dev-shell.sh \
+            bash scripts/build-musl.sh --arch wasm64posix
+          test -f sysroot/lib/libc.a
+          test -f sysroot64/lib/libc.a
+          for sysroot_name in sysroot sysroot64; do
+            test ! -e "$GITHUB_WORKSPACE/$sysroot_name"
+            cp -R "$sysroot_name" "$GITHUB_WORKSPACE/$sysroot_name"
+          done
+          test -f "$GITHUB_WORKSPACE/sysroot/lib/libc.a"
+          test -f "$GITHUB_WORKSPACE/sysroot64/lib/libc.a"
+          test -z "$(
+            git -C "$GITHUB_WORKSPACE/libc/musl" status \
+              --porcelain=v1 --untracked-files=all
+          )"
+
       - name: Install exact browser build tools
         shell: bash
         run: |

@@ -210,6 +210,7 @@ def expect_create_rejected(
     runtime_ref: str,
     output: Path,
     label: str,
+    message_contains: str | None = None,
 ) -> None:
     try:
         handoff.create_handoff(
@@ -220,7 +221,9 @@ def expect_create_rejected(
             runtime_source_ref=runtime_ref,
             output=output,
         )
-    except handoff.HandoffError:
+    except handoff.HandoffError as error:
+        if message_contains is not None:
+            assert message_contains in str(error)
         return
     raise AssertionError(f"builder accepted invalid input: {label}")
 
@@ -1192,6 +1195,7 @@ def main() -> int:
             runtime_ref=runtime_ref,
             output=temporary / "dirty-output",
             label="dirty source",
+            message_contains="?? dirty.txt",
         )
         dirty_marker.unlink()
 

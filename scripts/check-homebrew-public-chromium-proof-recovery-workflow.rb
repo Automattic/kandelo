@@ -35,7 +35,7 @@ MIRROR_TAG =
   "fd15162a8c9c06e6d7936af470cd16ba916528708356750751b55bac567a0ce2"
 RUNTIME_HANDOFF = "homebrew-public-browser-runtime-handoff"
 WORKFLOW_DIGEST =
-  "8c3d4dbc8633645a9074e5b3a4b403486bade96479a4643dae946d544e2f63bf"
+  "c00d24cac06547bdc17f2a41d35ad1501d634ecdcbf16c3005975e9b8717414f"
 RUNNER_DIGEST =
   "10e69e20c7e5b9a02eec910b0c3edce3baadd6f349bf80bdb4bfc20c86897128"
 DOWNLOAD_ACTION =
@@ -172,6 +172,45 @@ begin
         "scripts/create-homebrew-browser-proof-runtime-handoff.sh"
       ),
     "Chromium handoff build does not use the declared tool environment",
+  )
+  sysroot_source = named_step(
+    prepare,
+    "Prepare isolated source for the browser sysroots",
+  ).fetch("run")
+  check(
+    sysroot_source.include?(
+      'source_root="$RUNNER_TEMP/homebrew-browser-sysroot-source"'
+    ) &&
+      sysroot_source.include?('git archive "$GITHUB_SHA"') &&
+      sysroot_source.include?(
+        'expected_musl="$(git rev-parse "$GITHUB_SHA:libc/musl")"'
+      ) &&
+      sysroot_source.include?(
+        'git -C libc/musl archive "$expected_musl"'
+      ) &&
+      sysroot_source.include?('test ! -e "$source_root/.git"') &&
+      sysroot_source.include?(
+        'test ! -e "$source_root/libc/musl/.git"'
+      ),
+    "Chromium sysroot source is not isolated from the exact checkout",
+  )
+  sysroot_build = named_step(
+    prepare,
+    "Build browser sysroots without changing the checkout",
+  )
+  check(
+    sysroot_build.fetch("working-directory") ==
+      "${{ steps.sysroot-source.outputs.path }}" &&
+      sysroot_build.fetch("run").include?(
+        "bash scripts/build-musl.sh --arch wasm64posix"
+      ) &&
+      sysroot_build.fetch("run").include?(
+        'cp -R "$sysroot_name" "$GITHUB_WORKSPACE/$sysroot_name"'
+      ) &&
+      sysroot_build.fetch("run").include?(
+        'git -C "$GITHUB_WORKSPACE/libc/musl" status'
+      ),
+    "Chromium sysroots may mutate the exact source checkout",
   )
   %w[
     nix

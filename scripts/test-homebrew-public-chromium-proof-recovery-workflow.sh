@@ -57,6 +57,21 @@ sed 's#bash scripts/dev-shell.sh bash#bash scripts/ambient-shell.sh bash#' \
   "$WORKFLOW" >"$TMP_ROOT/ambient-handoff-tools.yml"
 expect_workflow_rejected "$TMP_ROOT/ambient-handoff-tools.yml"
 
+# This mutation must match the workflow's literal variable references.
+# shellcheck disable=SC2016
+sed \
+  's#source_root="$RUNNER_TEMP/homebrew-browser-sysroot-source"#source_root="$GITHUB_WORKSPACE/browser-sysroot-source"#' \
+  "$WORKFLOW" >"$TMP_ROOT/in-tree-sysroot-source.yml"
+expect_workflow_rejected "$TMP_ROOT/in-tree-sysroot-source.yml"
+
+# A directory copy can silently include ignored files and nested Git
+# metadata, so the exact musl gitlink archive is part of source authority.
+# shellcheck disable=SC2016
+sed \
+  's#git -C libc/musl archive "$expected_musl"#tar -cf - -C libc/musl .#' \
+  "$WORKFLOW" >"$TMP_ROOT/copied-musl-source.yml"
+expect_workflow_rejected "$TMP_ROOT/copied-musl-source.yml"
+
 sed '/env -u GH_TOKEN -u GITHUB_TOKEN/d' \
   "$WORKFLOW" >"$TMP_ROOT/credentialed-readback.yml"
 expect_workflow_rejected "$TMP_ROOT/credentialed-readback.yml"
