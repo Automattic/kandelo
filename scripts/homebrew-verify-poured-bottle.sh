@@ -556,7 +556,8 @@ for dependency in "${native_dependencies[@]}"; do
     exit 1
   }
 done
-run_native_brew_logged missing
+homebrew_native_contract_verify_no_missing_dependencies \
+  "$HOST_DEPENDENCY_LIST"
 
 # Finish native Homebrew before evaluating target Formula Ruby. The target
 # dependency query receives only read-only access to the native prefix and no

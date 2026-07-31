@@ -519,6 +519,32 @@ bash "$PREFLIGHT" prepare \
   [ ! -e "$EMPTY_CACHE/api" ] ||
   fail "zero-root preflight fetched or invented signed API state"
 
+NATIVE_MISSING_CALLS="$TMP_ROOT/native-missing-calls.txt"
+: >"$NATIVE_MISSING_CALLS"
+run_native_brew_logged() {
+  printf '%s\n' "$*" >>"$NATIVE_MISSING_CALLS"
+  [ "${KANDELO_TEST_NATIVE_MISSING_STATUS:-0}" -eq 0 ]
+}
+. "$SCRIPT_DIR/homebrew-native-install-contract.sh"
+homebrew_native_contract_verify_no_missing_dependencies "$EMPTY_ROOTS"
+[ ! -s "$NATIVE_MISSING_CALLS" ] ||
+  fail "zero-root native closure invoked brew missing"
+printf 'git\n' >"$TMP_ROOT/nonempty-native-roots.txt"
+homebrew_native_contract_verify_no_missing_dependencies \
+  "$TMP_ROOT/nonempty-native-roots.txt"
+[ "$(cat "$NATIVE_MISSING_CALLS")" = "missing" ] ||
+  fail "non-empty native closure skipped brew missing"
+KANDELO_TEST_NATIVE_MISSING_STATUS=1
+expect_failure "incomplete native closure" \
+  "native Homebrew reports missing dependencies" \
+  homebrew_native_contract_verify_no_missing_dependencies \
+    "$TMP_ROOT/nonempty-native-roots.txt"
+unset KANDELO_TEST_NATIVE_MISSING_STATUS
+expect_failure "missing native roots file" \
+  "native dependency roots are unavailable" \
+  homebrew_native_contract_verify_no_missing_dependencies \
+    "$TMP_ROOT/absent-native-roots.txt"
+
 POPULATED_CACHE="$TMP_ROOT/populated-cache"
 POPULATED_STATE="$TMP_ROOT/populated-state"
 POPULATED_ROOTS="$TMP_ROOT/populated-roots.txt"

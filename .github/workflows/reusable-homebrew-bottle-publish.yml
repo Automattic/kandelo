@@ -1134,7 +1134,30 @@ jobs:
             }
             exit 1
           fi
-          echo "created=true" >> "$GITHUB_OUTPUT"
+          shared_temp=""
+          rollback_identity_setup() {
+            local status="$?"
+            trap - EXIT
+            # WHY: the downstream retirement step is selected only after the
+            # complete realm is published. Roll back both users and any
+            # partially initialized temporary root when an earlier operation
+            # fails, so setup cannot leave privileged runner state behind.
+            if [ -n "$shared_temp" ]; then
+              if [[ "$shared_temp" == /tmp/kandelo-homebrew.?????? ]] &&
+                 [ -d "$shared_temp" ] && [ ! -L "$shared_temp" ]; then
+                "$sudo_bin" -n -- /usr/bin/rm -rf -- "$shared_temp" ||
+                  echo "::error::could not roll back partial Homebrew temporary root"
+              else
+                echo "::error::refusing unsafe partial Homebrew temporary-root cleanup"
+              fi
+            fi
+            "$sudo_bin" -n -- "$userdel_bin" "$recipe_user" ||
+              echo "::error::could not roll back partial Homebrew recipe identity"
+            "$sudo_bin" -n -- "$userdel_bin" -r "$build_user" ||
+              echo "::error::could not roll back partial Homebrew build identity"
+            exit "$status"
+          }
+          trap rollback_identity_setup EXIT
           [ "$(id -u "$build_user")" != "$(id -u)" ] || {
             echo "::error::Formula build identity is not isolated"; exit 2;
           }
@@ -1165,6 +1188,8 @@ jobs:
             echo "HOMEBREW_CACHE=$shared_temp/cache"
             echo "HOMEBREW_TEMP=$shared_temp/tmp"
           } >> "$GITHUB_ENV"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+          trap - EXIT
 
       - name: Freeze signed native Homebrew API
         shell: bash
@@ -1184,7 +1209,11 @@ jobs:
           tap_name="$(
             homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT"
           )"
-          stem="$RUNNER_TEMP/homebrew-native-api-${FORMULA}-${ARCH}"
+          # WHY: RUNNER_TEMP is private to the runner account. The isolated
+          # Formula account cannot traverse that ancestor to audit the sealed
+          # API tree. The root-owned sticky shared realm is traversable while
+          # still preventing the Formula account from replacing the API root.
+          stem="$KANDELO_HOMEBREW_SHARED_TEMP/homebrew-native-api-${FORMULA}-${ARCH}"
           plan="$stem-plan.json"
           roots="$stem-roots.txt"
           api_cache="$stem-cache"
@@ -1418,15 +1447,19 @@ jobs:
           fi
           [[ "$FORMULA" =~ ^[a-z0-9][a-z0-9+@._-]{0,254}$ ]] &&
             [[ "$ARCH" =~ ^wasm(32|64)$ ]] &&
-            [[ "$RUNNER_TEMP" == /* ]] && [ "$RUNNER_TEMP" != "/" ] || {
+            [[ "$KANDELO_HOMEBREW_SHARED_TEMP" == /tmp/kandelo-homebrew.* ]] &&
+            [ -d "$KANDELO_HOMEBREW_SHARED_TEMP" ] &&
+            [ ! -L "$KANDELO_HOMEBREW_SHARED_TEMP" ] &&
+            [ "$(stat -c '%u:%g:%a' "$KANDELO_HOMEBREW_SHARED_TEMP")" = \
+              "0:0:1777" ] || {
             echo "::error::invalid native API cleanup identity"
             exit 2
           }
-          native_api_stem="$RUNNER_TEMP/homebrew-native-api-${FORMULA}-${ARCH}"
+          native_api_stem="$KANDELO_HOMEBREW_SHARED_TEMP/homebrew-native-api-${FORMULA}-${ARCH}"
           case "$native_api_stem" in
-            "$RUNNER_TEMP"/homebrew-native-api-*) ;;
+            "$KANDELO_HOMEBREW_SHARED_TEMP"/homebrew-native-api-*) ;;
             *)
-              echo "::error::native API cleanup escaped the runner temp root"
+              echo "::error::native API cleanup escaped the shared temp root"
               exit 2
               ;;
           esac
@@ -2942,7 +2975,30 @@ jobs:
             }
             exit 1
           fi
-          echo "created=true" >> "$GITHUB_OUTPUT"
+          shared_temp=""
+          rollback_identity_setup() {
+            local status="$?"
+            trap - EXIT
+            # WHY: the downstream retirement step is selected only after the
+            # complete realm is published. Roll back both users and any
+            # partially initialized temporary root when an earlier operation
+            # fails, so setup cannot leave privileged runner state behind.
+            if [ -n "$shared_temp" ]; then
+              if [[ "$shared_temp" == /tmp/kandelo-homebrew-verify.?????? ]] &&
+                 [ -d "$shared_temp" ] && [ ! -L "$shared_temp" ]; then
+                "$sudo_bin" -n -- /usr/bin/rm -rf -- "$shared_temp" ||
+                  echo "::error::could not roll back partial verifier temporary root"
+              else
+                echo "::error::refusing unsafe partial verifier temporary-root cleanup"
+              fi
+            fi
+            "$sudo_bin" -n -- "$userdel_bin" "$recipe_user" ||
+              echo "::error::could not roll back partial verifier recipe identity"
+            "$sudo_bin" -n -- "$userdel_bin" -r "$build_user" ||
+              echo "::error::could not roll back partial verifier build identity"
+            exit "$status"
+          }
+          trap rollback_identity_setup EXIT
           [ "$(id -u "$build_user")" != "$(id -u)" ] || {
             echo "::error::bottle verifier identity is not isolated"; exit 2;
           }
@@ -2973,6 +3029,8 @@ jobs:
             echo "HOMEBREW_CACHE=$shared_temp/cache"
             echo "HOMEBREW_TEMP=$shared_temp/tmp"
           } >> "$GITHUB_ENV"
+          echo "created=true" >> "$GITHUB_OUTPUT"
+          trap - EXIT
 
       - name: Freeze signed native Homebrew API for bottle verification
         shell: bash
@@ -2993,7 +3051,11 @@ jobs:
           tap_name="$(
             homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT"
           )"
-          stem="$RUNNER_TEMP/homebrew-native-api-verify-${FORMULA}-${ARCH}"
+          # WHY: RUNNER_TEMP is private to the runner account. The isolated
+          # verifier cannot traverse that ancestor to audit the sealed API
+          # tree. The root-owned sticky shared realm is traversable while still
+          # preventing the verifier from replacing the API root.
+          stem="$KANDELO_HOMEBREW_SHARED_TEMP/homebrew-native-api-verify-${FORMULA}-${ARCH}"
           plan="$stem-plan.json"
           roots="$stem-roots.txt"
           api_cache="$stem-cache"
@@ -3189,15 +3251,20 @@ jobs:
           fi
           [[ "$FORMULA" =~ ^[a-z0-9][a-z0-9+@._-]{0,254}$ ]] &&
             [[ "$ARCH" =~ ^wasm(32|64)$ ]] &&
-            [[ "$RUNNER_TEMP" == /* ]] && [ "$RUNNER_TEMP" != "/" ] || {
+            [[ "$KANDELO_HOMEBREW_SHARED_TEMP" == \
+              /tmp/kandelo-homebrew-verify.* ]] &&
+            [ -d "$KANDELO_HOMEBREW_SHARED_TEMP" ] &&
+            [ ! -L "$KANDELO_HOMEBREW_SHARED_TEMP" ] &&
+            [ "$(stat -c '%u:%g:%a' "$KANDELO_HOMEBREW_SHARED_TEMP")" = \
+              "0:0:1777" ] || {
             echo "::error::invalid verifier API cleanup identity"
             exit 2
           }
-          native_api_stem="$RUNNER_TEMP/homebrew-native-api-verify-${FORMULA}-${ARCH}"
+          native_api_stem="$KANDELO_HOMEBREW_SHARED_TEMP/homebrew-native-api-verify-${FORMULA}-${ARCH}"
           case "$native_api_stem" in
-            "$RUNNER_TEMP"/homebrew-native-api-verify-*) ;;
+            "$KANDELO_HOMEBREW_SHARED_TEMP"/homebrew-native-api-verify-*) ;;
             *)
-              echo "::error::verifier API cleanup escaped the runner temp root"
+              echo "::error::verifier API cleanup escaped the shared temp root"
               exit 2
               ;;
           esac
