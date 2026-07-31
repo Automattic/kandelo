@@ -12,6 +12,10 @@ import {
   SHELL_VFS_IMAGE_PATH_PATTERN_SOURCE,
 } from "../lib/shell-vfs-image-url";
 import {
+  browserResolvedLazySourceUrl,
+  expectedBrowserLazyTransport,
+} from "./support/homebrew-lazy-transport";
+import {
   runParentShellProbe,
   runTerminalCommand,
 } from "./support/terminal-command";
@@ -160,51 +164,6 @@ function browserProxyTargetUrl(
 function bottleRows(rows: readonly LazyDownloadRow[]): LazyDownloadRow[] {
   return rows.filter((row) => !isHomebrewBootstrapRow(row));
 }
-
-function browserResolvedLazySourceUrl(
-  source: string,
-  pageUrl: string,
-): string {
-  if (/^[a-z][a-z0-9+.-]*:/i.test(source)) {
-    return new URL(source).href;
-  }
-  if (!source.startsWith("/")) {
-    throw new Error(
-      `lazy source must be absolute or root-relative: ${source}`,
-    );
-  }
-  return new URL(source, pageUrl).href;
-}
-
-function expectedBrowserLazyTransport(
-  sourceUrl: string,
-  pageUrl: string,
-): "direct" | "proxy" {
-  return new URL(sourceUrl).origin === new URL(pageUrl).origin
-    ? "direct"
-    : "proxy";
-}
-
-test("classifies browser lazy transport after URL normalization", () => {
-  const pageUrl = "https://demo.kandelo.test/kandelo/?demo=shell";
-  const sameOrigin = browserResolvedLazySourceUrl(
-    "/assets/root.zip",
-    pageUrl,
-  );
-  const external = browserResolvedLazySourceUrl(
-    "https://packages.example/runtime.zip",
-    pageUrl,
-  );
-  expect(sameOrigin).toBe("https://demo.kandelo.test/assets/root.zip");
-  expect(expectedBrowserLazyTransport(sameOrigin, pageUrl)).toBe("direct");
-  expect(external).toBe("https://packages.example/runtime.zip");
-  expect(expectedBrowserLazyTransport(external, pageUrl)).toBe("proxy");
-  expect(() =>
-    browserResolvedLazySourceUrl("assets/ambiguous.zip", pageUrl)
-  ).toThrow(
-    "lazy source must be absolute or root-relative",
-  );
-});
 
 async function terminalText(page: Page): Promise<string> {
   return page
