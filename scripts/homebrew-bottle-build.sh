@@ -597,7 +597,8 @@ for dependency in "${native_dependencies[@]}"; do
     exit 1
   }
 done
-run_native_brew_logged missing
+homebrew_native_contract_verify_no_missing_dependencies \
+  "$HOST_DEPENDENCY_LIST"
 
 # Finish every native Homebrew command before target Formula Ruby is evaluated.
 # The later dependency query sees the native tree read-only and cannot plant
