@@ -1326,8 +1326,8 @@ async function handleFork(
   const ptrWidth = parentInfo.ptrWidth;
   const childLayout = parentInfo.layout;
   // WHY: compilation below yields. A sibling exec may then retire the parent's
-  // exact generation, so the committed fork must own its clone before the
-  // first await.
+  // exact generation, so the committed fork must pass retired-memory
+  // admission and own its clone before the first await.
   const childMemoryLease = acquireForkMemoryClone(
     processMemoryAllocator,
     parentMemory,
@@ -1347,11 +1347,6 @@ async function handleFork(
     `fork child pid=${childPid}`,
   );
   try {
-    // The committed child already owns its exact syscall-time snapshot.
-    // Delay only Worker launch while a short retirement burst drains.
-    await processMemoryAllocator.waitForRetirementBacklogCapacity(
-      childMemory.buffer.byteLength,
-    );
     if (!parentInfo.programModule) {
       parentInfo.programModule = await WebAssembly.compile(parentProgram);
     }

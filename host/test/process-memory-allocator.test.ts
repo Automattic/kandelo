@@ -203,13 +203,13 @@ describe("ProcessMemoryAllocator", () => {
     allocator.clear();
   });
 
-  it("captures fork synchronously while holding Worker launch for retirement admission", async () => {
+  it("rejects fork before allocating or copying when retirement debt is saturated", () => {
     const allocator = new ProcessMemoryAllocator({
       maxMemories: 3,
       maxTotalBytes: 12 * WASM_PAGE_SIZE,
       retirementAdmissionMemoryThreshold: 1,
       retirementAdmissionByteThreshold: 4 * WASM_PAGE_SIZE,
-      retirementBackpressureMs: 10,
+      retirementBackpressureMs: 1_000,
       maxRetirementTelemetryRecords: 0,
     });
     const parent = allocator.acquire(request(4));
@@ -217,19 +217,28 @@ describe("ProcessMemoryAllocator", () => {
     retiring.release();
 
     new Uint8Array(parent.memory.buffer).fill(0x5a);
-    const child = acquireForkMemoryClone(
-      allocator,
-      parent.memory,
-      4,
-      32,
-    );
-    expect(new Uint8Array(child.memory.buffer)[17]).toBe(0x5a);
+    const memoryConstructor = vi.spyOn(WebAssembly, "Memory");
+    try {
+      expect(() => acquireForkMemoryClone(
+        allocator,
+        parent.memory,
+        4,
+        32,
+      )).toThrow(ProcessMemoryRetirementBacklogError);
+      expect(memoryConstructor).not.toHaveBeenCalled();
+    } finally {
+      memoryConstructor.mockRestore();
+    }
+    expect(allocator.getRetirementStats()).toMatchObject({
+      liveMemories: 1,
+      liveBytes: 4 * WASM_PAGE_SIZE,
+      retirementBacklogMemories: 1,
+      retirementBacklogBytes: 4 * WASM_PAGE_SIZE,
+    });
+    expect(new Uint8Array(parent.memory.buffer)[17]).toBe(0x5a);
 
-    await allocator.waitForRetirementBacklogCapacity(
-      child.memory.buffer.byteLength,
-    );
     parent.release();
-    child.release();
+    allocator.clear();
   });
 
   it("keeps EAGAIN as a bounded admission fallback", async () => {
