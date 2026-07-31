@@ -213,7 +213,7 @@ jobs:
               --tap-catalog-ref "$TAP_CATALOG_REF" \
               --canary-ref "$CANARY_REF"
 
-      - name: Resolve the public revision-22 shell generation
+      - name: Resolve the exact public shell generation
         id: shell
         working-directory: kandelo
         shell: bash

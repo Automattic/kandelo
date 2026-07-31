@@ -15,7 +15,7 @@ NODE_SCOPE_RUNNER = ARGV.length < 2 ?
 PUBLISH_JOB_DIGEST =
   "5f38b593eeffd4cacf3d728baa64695e88fe2f0723757628dbc936b6b679c54b"
 WORKFLOW_DIGEST =
-  "bdbc4123b1c445f33355fbe170f154bf1edbf68b0c5f682bef4c431255a39bc7"
+  "b4ea52ea9da6a1d178ecd8dcc42fdc848e6116d85642b21a0f14b17ac674b154"
 NODE_SCOPE_RUNNER_DIGEST =
   "a351c57bba3b4ad05d58a346ccf2ffa22d6de194d1839c24a78d2b9bc07f1bf8"
 DOWNLOAD_ACTION =
@@ -228,7 +228,7 @@ node_execution_source = node_proof_source + node_scope_runner
 proof_source = node_execution_source + chromium_proof_source
 whole_source = File.read(WORKFLOW)
 shell_step = jobs.fetch("prepare").fetch("steps").find do |step|
-  step["name"] == "Resolve the public revision-22 shell generation"
+  step["name"] == "Resolve the exact public shell generation"
 end
 check(shell_step, "shell generation resolver step is missing")
 shell_run = shell_step.fetch("run")

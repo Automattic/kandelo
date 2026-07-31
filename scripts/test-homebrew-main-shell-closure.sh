@@ -1134,8 +1134,12 @@ grep -Fq 'repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"' \
 locked_tap_sha="$(jq -er '.catalog.tap_commit' "$SOURCE_LOCK")"
 grep -Fq "commit = \"$locked_tap_sha\"" "$SHELL_BUILD_TOML" ||
   fail "shell Git input commit must equal the reviewed migration lock"
-grep -Eq '^revision[[:space:]]*=[[:space:]]*22$' "$SHELL_BUILD_TOML" ||
-  fail "reduced lazy shell must reserve the next canonical shell revision 22"
+shell_revision="$(sed -nE \
+  's/^revision[[:space:]]*=[[:space:]]*([1-9][0-9]*)$/\1/p' \
+  "$SHELL_BUILD_TOML")"
+[ -n "$shell_revision" ] &&
+  [ "$(grep -Ec '^revision[[:space:]]*=' "$SHELL_BUILD_TOML")" -eq 1 ] ||
+  fail "reduced lazy shell must declare one positive package revision"
 grep -Eq '^publication_state[[:space:]]*=[[:space:]]*"ready"$' \
   "$SHELL_BUILD_TOML" ||
   fail "final-TF shell publication must be ready"

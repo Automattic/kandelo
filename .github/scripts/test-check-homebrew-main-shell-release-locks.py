@@ -128,8 +128,17 @@ with tempfile.TemporaryDirectory() as temporary:
     rejected(root)
     build_path.write_text(build)
 
+    # A reviewed next-generation source commit may advance the package
+    # revision without changing this reusable workflow implementation.
     build_path.write_text(build.replace("revision = 22", "revision = 23"))
-    rejected(root)
+    MODULE.check(root, TF, C)
+    build_path.write_text(build)
+
+    for invalid_revision in ["0", "true", '"22"', "22.5"]:
+        build_path.write_text(
+            build.replace("revision = 22", f"revision = {invalid_revision}")
+        )
+        rejected(root)
     build_path.write_text(build)
 
     build_path.write_text(
