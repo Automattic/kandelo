@@ -1789,17 +1789,29 @@ def default_resolve_formula_metadata(
                 )
             for value in values:
                 prefix = f"{tap_name}/"
-                # WHY: Homebrew reports native build tools and tap Formulae in
-                # the same arrays. Only an exact, fully qualified dependency
-                # declaration opts into the Kandelo guest graph. Treating an
-                # unqualified tool as a guest edge merely because this tap has
-                # a Formula with the same name can create false cycles and
-                # make unrelated native tooling block a usable bottle.
+                # WHY: Build and test tools share these arrays with guest
+                # dependencies. A build/test-only name is native unless it is
+                # fully qualified, but silently treating an unqualified
+                # runtime dependency as native would publish an incomplete
+                # guest closure.
                 if not value.startswith(prefix):
+                    if field in (
+                        "dependencies",
+                        "recommended_dependencies",
+                    ):
+                        fail(
+                            f"native Homebrew metadata for {name} {field} "
+                            f"entry {value} must use exact {tap_name}/<formula> "
+                            "guest identity"
+                        )
                     continue
                 candidate = value.removeprefix(prefix)
-                if candidate in formula_set:
-                    dependency_names.add(candidate)
+                if candidate not in formula_set:
+                    fail(
+                        f"native Homebrew metadata for {name} {field} "
+                        f"names absent candidate Formula {value}"
+                    )
+                dependency_names.add(candidate)
         if name in metadata:
             fail(f"native Homebrew metadata repeats Formula {name}")
         metadata[name] = {

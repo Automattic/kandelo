@@ -1802,9 +1802,11 @@ build has one exact, discriminated `build_input` shape:
 
 Only a dependency named exactly
 `kandelo-dev/tap-core/<formula>` enters the guest campaign graph. Unqualified
-Homebrew dependencies remain native build or test tools even when the tap has
-a Formula with the same short name. This keeps host tooling out of bottle
-handoffs while retaining fail-closed same-tap ordering.
+build and test dependencies remain native tools even when the tap has a Formula
+with the same short name. Required and recommended guest dependencies must use
+the exact tap-qualified identity and name a Formula in the campaign inventory.
+This keeps host tooling out of bottle handoffs while preventing an incomplete
+guest closure from appearing usable.
 
 Current protected `main` remains the live mutation authority. An
 ordinary publication requires exact equality. The campaign instead may
