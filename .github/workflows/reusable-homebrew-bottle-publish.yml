@@ -1975,6 +1975,14 @@ jobs:
     if: ${{ always() && !cancelled() && !inputs.dry-run && needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # WHY: GitHub scopes concurrency groups to the caller repository, so the
+    # Formula suffix completes the (tap repository, Formula) package identity.
+    # GHCR has no atomic create-if-absent operation; every supported child,
+    # index, first-publication, and maintenance-rebuild writer must share this
+    # exact group across workflows.
+    concurrency:
+      group: kandelo-homebrew-ghcr-${{ matrix.formula }}
+      cancel-in-progress: false
     permissions:
       actions: read
       contents: read
@@ -2281,7 +2289,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
-      group: kandelo-homebrew-bottle-index-${{ inputs.tap-repository }}-${{ matrix.formula }}
+      group: kandelo-homebrew-ghcr-${{ matrix.formula }}
       cancel-in-progress: false
     permissions:
       actions: read
