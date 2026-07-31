@@ -424,21 +424,42 @@ def bottle_input(
     canonical_root: pathlib.Path,
 ) -> tuple[pathlib.Path, str, str, str]:
     name = handoff["formula"]["name"]
+    label = f"dependency {name}/{arch}"
     publication = EXECUTOR.handoff_publication(
         handoff,
         arch,
         f"dependency {name}",
     )
-    bottle_json = handoff_root / f"payload/{arch}/build/bottle.json"
+    # WHY: build and byte-reuse handoffs preserve different evidence trees,
+    # but both expose the same bottle semantics. Resolve those paths through
+    # the schema discriminator so a rebuilt dependent can consume either kind
+    # without pretending historical bytes came from a new build.
+    bottle_json_relative = EXECUTOR.publication_semantic_path(
+        publication,
+        "bottle_json",
+        label,
+    )
+    archive_relative = EXECUTOR.publication_semantic_path(
+        publication,
+        "bottle_archive",
+        label,
+    )
+    bottle_json_path = f"payload/{arch}/{bottle_json_relative}"
+    archive_path = f"payload/{arch}/{archive_relative}"
+    EXECUTOR.handoff_publication_file(
+        publication,
+        bottle_json_path,
+        label,
+    )
     archive_record = EXECUTOR.handoff_publication_file(
         publication,
-        f"payload/{arch}/build/bottle.tar.gz",
-        f"dependency {name}/{arch}",
+        archive_path,
+        label,
     )
     try:
         canonical, digest, root_url, cellar = (
             EXECUTOR.validate_dependency_bottle_input(
-                bottle_json=bottle_json,
+                bottle_json=handoff_root / bottle_json_path,
                 handoff=handoff,
                 arch=arch,
                 archive_record=archive_record,
