@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib.util
 import io
@@ -1190,20 +1191,32 @@ class PrefixCampaignTests(unittest.TestCase):
                     },
                 ],
             }
-            payload = json.dumps(document, separators=(",", ":"))
-            (native / "bin/brew").write_text(
-                "#!/bin/sh\n"
-                "printf '%s' "
-                + json.dumps(payload)
-                + "\n"
-            )
-            (native / "bin/brew").chmod(0o755)
-            resolved = CAMPAIGN.default_resolve_formula_metadata(
-                native,
-                source,
-                TAP_NAME,
-                ["alpha", "beta", "bootstrap"],
-            )
+
+            def resolve(
+                metadata: dict[str, Any],
+            ) -> dict[str, dict[str, Any]]:
+                copied_tap = (
+                    native
+                    / "Library/Taps/kandelo-dev/homebrew-tap-core"
+                )
+                if copied_tap.exists():
+                    shutil.rmtree(copied_tap)
+                payload = json.dumps(metadata, separators=(",", ":"))
+                (native / "bin/brew").write_text(
+                    "#!/bin/sh\n"
+                    "printf '%s' "
+                    + json.dumps(payload)
+                    + "\n"
+                )
+                (native / "bin/brew").chmod(0o755)
+                return CAMPAIGN.default_resolve_formula_metadata(
+                    native,
+                    source,
+                    TAP_NAME,
+                    ["alpha", "beta", "bootstrap"],
+                )
+
+            resolved = resolve(document)
             self.assertEqual(
                 resolved,
                 {
@@ -1221,6 +1234,29 @@ class PrefixCampaignTests(unittest.TestCase):
                     },
                 },
             )
+
+            missing = copy.deepcopy(document)
+            missing["formulae"][0]["dependencies"] = [
+                f"{TAP_NAME}/missing"
+            ]
+            with self.assertRaisesRegex(
+                CAMPAIGN.CampaignError,
+                "names absent candidate Formula .*missing",
+            ):
+                resolve(missing)
+
+            for field in (
+                "dependencies",
+                "recommended_dependencies",
+            ):
+                with self.subTest(field=field):
+                    unqualified = copy.deepcopy(document)
+                    unqualified["formulae"][0][field] = ["beta"]
+                    with self.assertRaisesRegex(
+                        CAMPAIGN.CampaignError,
+                        "must use exact .* guest identity",
+                    ):
+                        resolve(unqualified)
 
     def test_dependency_graph_rejects_cycles_and_deferred_edges(self) -> None:
         fixture = make_fixture()
