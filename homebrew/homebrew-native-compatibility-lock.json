@@ -13336,7 +13336,8 @@
     },
     "spirv-llvm-translator": {
       "internal": {
-        "bottle_checksum": "93733fcfe6dedf795666e92e9099277ad4b5dfe815788517feac3a3e7923152b",
+        "bottle_cellar": ":any",
+        "bottle_checksum": "b09d08c8484b090ca04b45d6544f0b36fb135ab96a5bb1fb27ad1b6b5925d7ae",
         "desc": "Tool and a library for bi-directional translation between SPIR-V and LLVM IR",
         "executables": [
           "llvm-spirv"
@@ -13360,8 +13361,8 @@
           }
         },
         "name": "spirv-llvm-translator",
-        "ruby_source_checksum": "b78b4d92391e98265a6a7439df7ca40aff823562178f9757cfadcee7b8e6f127",
-        "stable_checksum": "b37196b1a1a60282a24cf937ab7d6807d7d54dc718f2a37a78e211be26df57ac",
+        "ruby_source_checksum": "eccb7685a0016e9f8f32d7c758c1d94c9aa90abb3830334a77eaf3b67906211d",
+        "stable_checksum": "3c6dffb4b8d67f5c544370e0c869ec7d22c013d4bb798f24655ec903f26cc5d5",
         "stable_dependencies": [
           "llvm",
           {
@@ -13375,12 +13376,13 @@
           }
         ],
         "stable_url_args": [
-          "https://github.com/KhronosGroup/SPIRV-LLVM-Translator/archive/refs/tags/v22.1.2.tar.gz"
+          "https://github.com/KhronosGroup/SPIRV-LLVM-Translator/archive/refs/tags/v22.1.5.tar.gz"
         ],
-        "stable_version": "22.1.2"
+        "stable_version": "22.1.5"
       },
       "public": {
-        "bottle_checksum": "93733fcfe6dedf795666e92e9099277ad4b5dfe815788517feac3a3e7923152b",
+        "bottle_cellar": ":any",
+        "bottle_checksum": "b09d08c8484b090ca04b45d6544f0b36fb135ab96a5bb1fb27ad1b6b5925d7ae",
         "desc": "Tool and a library for bi-directional translation between SPIR-V and LLVM IR",
         "executables": [
           "llvm-spirv"
@@ -13404,8 +13406,8 @@
           }
         },
         "name": "spirv-llvm-translator",
-        "ruby_source_checksum": "b78b4d92391e98265a6a7439df7ca40aff823562178f9757cfadcee7b8e6f127",
-        "stable_checksum": "b37196b1a1a60282a24cf937ab7d6807d7d54dc718f2a37a78e211be26df57ac",
+        "ruby_source_checksum": "eccb7685a0016e9f8f32d7c758c1d94c9aa90abb3830334a77eaf3b67906211d",
+        "stable_checksum": "3c6dffb4b8d67f5c544370e0c869ec7d22c013d4bb798f24655ec903f26cc5d5",
         "stable_dependencies": [
           "llvm",
           {
@@ -13419,9 +13421,9 @@
           }
         ],
         "stable_url_args": [
-          "https://github.com/KhronosGroup/SPIRV-LLVM-Translator/archive/refs/tags/v22.1.2.tar.gz"
+          "https://github.com/KhronosGroup/SPIRV-LLVM-Translator/archive/refs/tags/v22.1.5.tar.gz"
         ],
-        "stable_version": "22.1.2"
+        "stable_version": "22.1.5"
       }
     },
     "spirv-tools": {
