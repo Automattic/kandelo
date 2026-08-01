@@ -1925,6 +1925,65 @@ grep -Fq \
     exit 1
 }
 
+authenticated_canonical="$TMP_DIR/authenticated-canonical-index.toml"
+printf '%s\n' \
+    'abi_version = 42' \
+    'generated_at = "trusted"' \
+    'generator = "trusted predecessor"' > "$authenticated_canonical"
+authenticated_out="$TMP_DIR/materialized-authenticated-index.toml"
+STATE_MODE=uncertain \
+CANONICAL_INDEX_STATE_SCRIPT="$canonical_state_stub" \
+WASM_POSIX_XTASK_BIN="$canonical_parser_stub" \
+PARSER_CAPTURE="$parser_capture" \
+GITHUB_REPOSITORY=Automattic/kandelo \
+    bash "$REPO_ROOT/scripts/materialize-ci-canonical-package-index.sh" \
+        binaries-abi-v42 42 "$authenticated_out" \
+        --authenticated-snapshot "$authenticated_canonical"
+cmp "$authenticated_canonical" "$authenticated_out" || {
+    echo "canonical index materializer changed authenticated snapshot bytes" >&2
+    exit 1
+}
+
+ln -s "$authenticated_canonical" \
+    "$TMP_DIR/symlinked-authenticated-canonical-index.toml"
+if WASM_POSIX_XTASK_BIN="$canonical_parser_stub" \
+    PARSER_CAPTURE="$parser_capture" \
+    GITHUB_REPOSITORY=Automattic/kandelo \
+    bash "$REPO_ROOT/scripts/materialize-ci-canonical-package-index.sh" \
+        binaries-abi-v42 42 \
+        "$TMP_DIR/rejected-symlinked-authenticated-index.toml" \
+        --authenticated-snapshot \
+        "$TMP_DIR/symlinked-authenticated-canonical-index.toml" \
+        >"$TMP_DIR/rejected-symlinked-authenticated.out" 2>&1; then
+    echo "canonical index materializer accepted a symlinked snapshot" >&2
+    exit 1
+fi
+
+printf '%s\n' \
+    'abi_version = 43' \
+    'generated_at = "wrong ABI"' \
+    'generator = "trusted predecessor"' \
+    > "$TMP_DIR/wrong-abi-authenticated-index.toml"
+printf 'preserve-on-parser-failure\n' \
+    > "$TMP_DIR/rejected-wrong-abi-authenticated-index.toml"
+if WASM_POSIX_XTASK_BIN="$canonical_parser_stub" \
+    PARSER_CAPTURE="$parser_capture" \
+    GITHUB_REPOSITORY=Automattic/kandelo \
+    bash "$REPO_ROOT/scripts/materialize-ci-canonical-package-index.sh" \
+        binaries-abi-v42 42 \
+        "$TMP_DIR/rejected-wrong-abi-authenticated-index.toml" \
+        --authenticated-snapshot \
+        "$TMP_DIR/wrong-abi-authenticated-index.toml" \
+        >"$TMP_DIR/rejected-wrong-abi-authenticated.out" 2>&1; then
+    echo "canonical index materializer accepted a wrong-ABI snapshot" >&2
+    exit 1
+fi
+grep -Fqx 'preserve-on-parser-failure' \
+    "$TMP_DIR/rejected-wrong-abi-authenticated-index.toml" || {
+    echo "canonical index parser failure replaced the prior output" >&2
+    exit 1
+}
+
 STATE_MODE=absent \
 CANONICAL_INDEX_STATE_SCRIPT="$canonical_state_stub" \
 WASM_POSIX_XTASK_BIN="$canonical_parser_stub" \

@@ -1,7 +1,7 @@
 # Homebrew Guest-Prefix Cutover
 
 Date: 2026-07-29
-Last reconciled: 2026-07-31
+Last reconciled: 2026-08-01
 
 This plan moves Kandelo guest packages from the retired
 `/home/linuxbrew/.linuxbrew` layout to a Kandelo-owned layout without
@@ -23,6 +23,26 @@ replaced that check with the exact hashed Vite asset. Production run
 corrected workflow and deployed the exact bottle-backed shell
 successfully. These landed changes are the base for the remaining work,
 not future landing instructions.
+
+Prepare-merge update, 2026-08-01: run `30694961061` proved the exact-ID
+candidate snapshot against draft release `363492043`. The snapshot
+captured and verified every asset, and the credential-free resolver then
+materialized all 68 expected packages. The later browser-mirror setup
+failed because it tried to run a GitHub CLI release read after the
+synthetic pull-request checkout, where no token is intentionally
+present.
+
+The corrected boundary captures canonical bytes before synthetic code is
+checked out. A package-changing run reuses the candidate's exact
+`base-index.toml`, which is bound by `candidate.json` and release-asset
+SHA-256 metadata. A non-package run uses the trusted base checkout and
+a step-scoped read token to snapshot canonical index state. Both paths
+carry the captured digest as an immutable step output, recheck it after
+candidate code runs, and feed the credential-free, schema-normalized
+snapshot to browser-mirror state. Non-package resolution uses that same
+snapshot. Package-changing resolution instead uses the candidate index,
+whose unchanged entries were derived from the captured base. Do not
+restore a GitHub token to synthetic materialization.
 
 ## Accelerated Usable Cutover Checkpoint: 2026-07-31
 

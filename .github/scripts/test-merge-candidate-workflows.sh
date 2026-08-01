@@ -437,6 +437,10 @@ grep -Fq '/releases/assets/${asset_id}' <<<"$candidate_snapshot_step" || \
 grep -Fq 'candidate release changed while it was snapshotted' \
   <<<"$candidate_snapshot_step" || \
   fail "test preparation must reject a candidate that changes during capture"
+grep -Fq '.base_index_sha256' <<<"$candidate_snapshot_step" || \
+  fail "candidate snapshot must bind its canonical base index"
+grep -Fq 'metadata_base_sha=' <<<"$candidate_snapshot_step" || \
+  fail "candidate snapshot must bind its base index to release metadata"
 if grep -Fq 'gh release download "$PACKAGE_TARGET_TAG"' \
     <<<"$materialize_candidate_step"; then
   fail "test preparation must not resolve a draft through its hidden tag"
@@ -449,6 +453,44 @@ grep -Fq 'sha256sum "$index_dir/source-index.toml"' <<<"$materialize_candidate_s
 grep -Fq 'cp -R "$RUNNER_TEMP/candidate-release/." "$index_dir/"' \
   <<<"$materialize_candidate_step" || \
   fail "test preparation must keep draft archives beside the frozen index"
+bind_canonical_step=$(step_run_block "$PREPARE" "Bind candidate canonical base index")
+grep -Fq '.base_index_sha256' <<<"$bind_canonical_step" || \
+  fail "candidate base index must remain bound to candidate identity"
+grep -Fq 'sha256sum "$base_index"' <<<"$bind_canonical_step" || \
+  fail "candidate base index must be verified before synthetic checkout"
+grep -Fq 'echo "sha256=$actual_sha"' <<<"$bind_canonical_step" || \
+  fail "candidate base index must export its closed handoff digest"
+snapshot_canonical_block=$(step_block "$PREPARE" "Snapshot canonical index with trusted base")
+snapshot_canonical_step=$(step_run_block "$PREPARE" "Snapshot canonical index with trusted base")
+grep -Fq 'GH_TOKEN: ${{ github.token }}' <<<"$snapshot_canonical_block" || \
+  fail "trusted canonical snapshot must receive the read token explicitly"
+grep -Fq 'scripts/release-index-state.sh snapshot' <<<"$snapshot_canonical_step" || \
+  fail "non-package tests must snapshot canonical state before synthetic checkout"
+grep -Fq 'echo "sha256=$canonical_sha"' <<<"$snapshot_canonical_step" || \
+  fail "public canonical snapshot must export its closed handoff digest"
+grep -Fq -- '--authenticated-snapshot' <<<"$materialize_candidate_step" || \
+  fail "synthetic tests must consume the credential-free canonical snapshot"
+grep -Fq 'verify_canonical_source' <<<"$materialize_candidate_step" || \
+  fail "synthetic tests must recheck canonical bytes after candidate code runs"
+grep -Fq 'AUTHENTICATED_CANONICAL_INDEX_SHA256:' \
+  <<<"$(step_block "$PREPARE" "Materialize binaries")" || \
+  fail "synthetic tests must receive the trusted step-output digest"
+if grep -Fq 'GH_TOKEN:' <<<"$(step_block "$PREPARE" "Materialize binaries")"; then
+  fail "synthetic materialization must not receive a GitHub token"
+fi
+test_gate_checkout_line=$(grep -nF -- '- name: Checkout synthesized PR merge' \
+  <<<"$test_gate_prepare_job" | cut -d: -f1)
+bind_canonical_line=$(grep -nF -- '- name: Bind candidate canonical base index' \
+  <<<"$test_gate_prepare_job" | cut -d: -f1)
+snapshot_canonical_line=$(grep -nF -- '- name: Snapshot canonical index with trusted base' \
+  <<<"$test_gate_prepare_job" | cut -d: -f1)
+if [ "$bind_canonical_line" -ge "$test_gate_checkout_line" ] ||
+   [ "$snapshot_canonical_line" -ge "$test_gate_checkout_line" ]; then
+  fail "canonical bytes must be captured before synthetic code is checked out"
+fi
+grep -Fq 'WASM_POSIX_BINARY_INDEX_URL="file://$CANONICAL_INDEX"' \
+  <<<"$materialize_candidate_step" || \
+  fail "non-package resolution must reuse the trusted canonical snapshot"
 grep -Fq 'WASM_POSIX_BINARY_INDEX_URL="file://$index_dir/source-index.toml"' \
   <<<"$materialize_candidate_step" || \
   fail "test preparation must resolve every package from the frozen local index"

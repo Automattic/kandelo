@@ -1463,6 +1463,7 @@ jobs:
           CANDIDATE_RELEASE_ID: ${{ needs.preflight.outputs.candidate_release_id }}
           CANDIDATE_TAG: ${{ needs.preflight.outputs.target_tag }}
           CANDIDATE_HEAD_SHA: ${{ needs.synthesize-merge.outputs.head_sha }}
+          CANDIDATE_ABI: ${{ needs.preflight.outputs.abi }}
         run: |
           set -euo pipefail
           if ! [[ "$CANDIDATE_RELEASE_ID" =~ ^[1-9][0-9]*$ ]]; then
@@ -1517,6 +1518,40 @@ jobs:
             fi
             mv "$tmp" "$snapshot/$name"
           done <"$snapshot/assets.tsv"
+          candidate_json="$snapshot/candidate.json"
+          base_index="$snapshot/base-index.toml"
+          expected_base_sha="$(
+            jq -er \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg tag "$CANDIDATE_TAG" \
+              --arg head "$CANDIDATE_HEAD_SHA" \
+              --arg canonical_tag "binaries-abi-v${CANDIDATE_ABI}" \
+              --argjson abi "$CANDIDATE_ABI" '
+                select(.repository == $repository and
+                  .candidate_tag == $tag and .head_sha == $head and
+                  .abi_version == $abi and
+                  .canonical_tag == $canonical_tag and
+                  (.canonical_base_state == "present" or
+                    .canonical_base_state == "absent")) |
+                .base_index_sha256 |
+                select(type == "string" and test("^[0-9a-f]{64}$"))
+              ' "$candidate_json"
+          )"
+          metadata_base_sha="$(
+            jq -er '
+              map(select(.name == "base-index.toml")) |
+              select(length == 1) | .[0].digest |
+              select(type == "string" and
+                test("^sha256:[0-9a-f]{64}$")) |
+              sub("^sha256:"; "")
+            ' "$assets_before"
+          )"
+          actual_base_sha=$(sha256sum "$base_index" | awk '{print $1}')
+          if [ "$actual_base_sha" != "$expected_base_sha" ] ||
+             [ "$actual_base_sha" != "$metadata_base_sha" ]; then
+            echo "::error::candidate base index differs from bound identity"
+            exit 1
+          fi
           release_after="$snapshot/release-after.json"
           gh api \
             "/repos/${GITHUB_REPOSITORY}/releases/${CANDIDATE_RELEASE_ID}" \
@@ -1597,6 +1632,96 @@ jobs:
           name: merge-candidate-${{ needs.preflight.outputs.candidate_release_id }}
           path: ${{ runner.temp }}/candidate-release
 
+      - name: Bind candidate canonical base index
+        id: candidate_canonical_index
+        if: env.PACKAGE_STAGING_REQUIRED == 'true'
+        env:
+          CANDIDATE_TAG: ${{ needs.preflight.outputs.target_tag }}
+          CANDIDATE_HEAD_SHA: ${{ needs.synthesize-merge.outputs.head_sha }}
+          CANDIDATE_ABI: ${{ needs.preflight.outputs.abi }}
+        run: |
+          set -euo pipefail
+          candidate_root="$RUNNER_TEMP/candidate-release"
+          candidate_json="$candidate_root/candidate.json"
+          base_index="$candidate_root/base-index.toml"
+          if [ ! -f "$candidate_json" ] || [ -L "$candidate_json" ] ||
+             [ ! -f "$base_index" ] || [ -L "$base_index" ]; then
+            echo "::error::candidate snapshot lacks regular identity or base-index bytes"
+            exit 1
+          fi
+          expected_sha="$(
+            jq -er \
+              --arg repository "$GITHUB_REPOSITORY" \
+              --arg tag "$CANDIDATE_TAG" \
+              --arg head "$CANDIDATE_HEAD_SHA" \
+              --arg canonical_tag "binaries-abi-v${CANDIDATE_ABI}" \
+              --argjson abi "$CANDIDATE_ABI" '
+                select(.repository == $repository and
+                  .candidate_tag == $tag and .head_sha == $head and
+                  .abi_version == $abi and
+                  .canonical_tag == $canonical_tag and
+                  (.canonical_base_state == "present" or
+                    .canonical_base_state == "absent")) |
+                .base_index_sha256 |
+                select(type == "string" and test("^[0-9a-f]{64}$"))
+              ' "$candidate_json"
+          )"
+          actual_sha=$(sha256sum "$base_index" | awk '{print $1}')
+          if [ "$actual_sha" != "$expected_sha" ]; then
+            echo "::error::candidate base index differs from its bound digest"
+            exit 1
+          fi
+          capture_dir="$RUNNER_TEMP/trusted-canonical-index"
+          mkdir -p "$capture_dir"
+          cp -p "$base_index" "$capture_dir/source-index.toml"
+          echo "sha256=$actual_sha" >> "$GITHUB_OUTPUT"
+
+      - name: Snapshot canonical index with trusted base
+        id: public_canonical_index
+        if: env.PACKAGE_STAGING_REQUIRED != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_ABI: ${{ needs.preflight.outputs.abi }}
+          CANONICAL_TAG: ${{ needs.preflight.outputs.canonical_tag }}
+        run: |
+          set -euo pipefail
+          capture_dir="$RUNNER_TEMP/trusted-canonical-index"
+          mkdir -p "$capture_dir"
+          source_index="$capture_dir/source-index.toml"
+          head_file="$capture_dir/head"
+          set +e
+          bash scripts/release-index-state.sh snapshot \
+            --target-tag "$CANONICAL_TAG" \
+            --expected-abi "$EXPECTED_ABI" \
+            --output "$source_index" \
+            --head-file "$head_file"
+          status=$?
+          set -e
+          case "$status" in
+            0)
+              if [ ! -f "$source_index" ] || [ -L "$source_index" ] ||
+                 [ ! -f "$head_file" ] || [ -L "$head_file" ]; then
+                echo "::error::canonical snapshot output is incomplete"
+                exit 1
+              fi
+              ;;
+            44)
+              # WHY: only the trusted base helper may distinguish a confirmed
+              # missing new-ABI release from an uncertain GitHub read.
+              cat > "$source_index" <<EOF
+          abi_version = $EXPECTED_ABI
+          generated_at = "1970-01-01T00:00:00Z"
+          generator = "confirmed-absent canonical CI snapshot"
+          EOF
+              ;;
+            *)
+              echo "::error::canonical release state is uncertain"
+              exit "$status"
+              ;;
+          esac
+          canonical_sha=$(sha256sum "$source_index" | awk '{print $1}')
+          echo "sha256=$canonical_sha" >> "$GITHUB_OUTPUT"
+
       - name: Checkout synthesized PR merge
         env:
           BASE_SHA: ${{ needs.synthesize-merge.outputs.base_sha }}
@@ -1659,12 +1784,28 @@ jobs:
       - name: Materialize binaries
         id: candidate_index
         env:
+          AUTHENTICATED_CANONICAL_INDEX_SHA256: ${{ steps.candidate_canonical_index.outputs.sha256 || steps.public_canonical_index.outputs.sha256 }}
           WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis texlive
         # Package-changing PRs resolve the isolated candidate index. Its
         # unchanged entries carry absolute canonical URLs; changed entries
         # resolve from candidate assets or local build overlays.
         run: |
           set -euo pipefail
+          canonical_source="$RUNNER_TEMP/trusted-canonical-index/source-index.toml"
+          verify_canonical_source() {
+            local actual
+            if ! [[ "$AUTHENTICATED_CANONICAL_INDEX_SHA256" =~ ^[0-9a-f]{64}$ ]] ||
+               [ ! -f "$canonical_source" ] || [ -L "$canonical_source" ]; then
+              echo "::error::trusted canonical snapshot handoff is invalid"
+              exit 1
+            fi
+            actual=$(sha256sum "$canonical_source" | awk '{print $1}')
+            if [ "$actual" != "$AUTHENTICATED_CANONICAL_INDEX_SHA256" ]; then
+              echo "::error::trusted canonical snapshot changed after capture"
+              exit 1
+            fi
+          }
+          verify_canonical_source
           ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk '{print $4}')
           EXPECTED="$RUNNER_TEMP/prepare-expected.json"
           BLOCKED="$RUNNER_TEMP/prepare-publication-blockers.json"
@@ -1684,6 +1825,13 @@ jobs:
                   --output "$EXPECTED" \
                   --blocked-output "$BLOCKED"
             '
+          verify_canonical_source
+          CANONICAL_INDEX="$RUNNER_TEMP/canonical-browser-shell-index/index.toml"
+          bash scripts/dev-shell.sh \
+            bash scripts/materialize-ci-canonical-package-index.sh \
+              "binaries-abi-v${ABI}" "$ABI" "$CANONICAL_INDEX" \
+              --authenticated-snapshot \
+              "$canonical_source"
           if [ "$PACKAGE_STAGING_REQUIRED" = "true" ]; then
             index_dir="$RUNNER_TEMP/tested-candidate-index"
             rm -rf "$index_dir"
@@ -1695,16 +1843,15 @@ jobs:
             echo "sha256=$sha" >> "$GITHUB_OUTPUT"
             echo "Captured source candidate index sha256:$sha before materialization"
           else
-            export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/binaries-abi-v${ABI}/index.toml"
+            # WHY: resolver and browser-state checks must share one snapshot.
+            # Re-reading the mutable public tag here could race the trusted
+            # base capture even though both reads were individually valid.
+            export WASM_POSIX_BINARY_INDEX_URL="file://$CANONICAL_INDEX"
           fi
           echo "WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" >> "$GITHUB_ENV"
           bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh \
             --fetch-only \
             --expected-ledger "$EXPECTED"
-          CANONICAL_INDEX="$RUNNER_TEMP/canonical-browser-shell-index/index.toml"
-          bash scripts/dev-shell.sh \
-            bash scripts/materialize-ci-canonical-package-index.sh \
-              "binaries-abi-v${ABI}" "$ABI" "$CANONICAL_INDEX"
           SHELL_IMAGE="$(
             bash scripts/resolve-binary.sh programs/shell.vfs.zst \
               2>/dev/null || true
