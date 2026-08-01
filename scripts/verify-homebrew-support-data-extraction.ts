@@ -15,7 +15,7 @@ import {
   loadTapFile,
   parseJson,
   requireAbsent,
-  requireExactTapCheckout,
+  requireTapInput,
 } from "./extract-homebrew-support-data-bottle";
 
 const GIT_SHA_RE = /^[0-9a-f]{40}$/;
@@ -33,15 +33,17 @@ interface CliOptions {
   report: string;
   outputs: Map<string, string>;
   verifiedReportOut: string;
+  selectionVerificationReport?: string;
 }
 
 export async function runHomebrewSupportDataExtractionVerifier(
   args: string[],
 ): Promise<void> {
   const options = parseArgs(args);
-  const tapRoot = requireExactTapCheckout(
+  const tapRoot = requireTapInput(
     options.tapRoot,
     options.expectedTapSha,
+    options.selectionVerificationReport,
   );
   const report = parseJson(
     readRegularFile(options.report, "extraction report", MAX_REPORT_BYTES),
@@ -179,6 +181,7 @@ function parseArgs(args: string[]): CliOptions {
     "--expected-abi",
     "--report",
     "--verified-report-out",
+    "--selection-verification-report",
   ]);
   for (const name of values.keys()) {
     if (!allowed.has(name)) usage(`unknown option ${name}`);
@@ -220,6 +223,7 @@ function parseArgs(args: string[]): CliOptions {
     report: required("--report"),
     outputs,
     verifiedReportOut: required("--verified-report-out"),
+    selectionVerificationReport: values.get("--selection-verification-report"),
   };
 }
 
@@ -231,7 +235,8 @@ function usage(message: string): never {
       "--tap-repository <owner/repository> --tap-name <owner/tap> " +
       "--package <name> --arch <wasm32|wasm64> --expected-abi <n> " +
       "--report <report.json> --output <name>=<path> [...] " +
-      "--verified-report-out <new-report.json>",
+      "--verified-report-out <new-report.json> " +
+      "[--selection-verification-report <verified-report.json>]",
   );
   process.exit(2);
 }

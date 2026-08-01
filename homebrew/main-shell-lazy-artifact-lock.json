@@ -10,7 +10,9 @@
     "demo_config_sha256": "6a09a53f0b169400948aa4f5c9c7a4b904ed7007ad0912d9cd73a66f7b57e455",
     "materialization_policy_sha256": "fb170c25f71e6e7fdd3470901b3ab3a42e7765648d55f62fad38230e30461fe0",
     "migration_lock_sha256": "9b19540a88790fa5d7a03b3aa2270365c25e0f24a528bdaf9e7bf6a0b71ed738",
-    "runtime_support_sha256": "d14cd4ebbe184c3179a1a033263b35c8b35a7ec44a691bd8bcfd6acbde386a18"
+    "runtime_support_sha256": "d14cd4ebbe184c3179a1a033263b35c8b35a7ec44a691bd8bcfd6acbde386a18",
+    "selection_lock_sha256": "5abb232aa9bd5198e49b4bdb6d96dc60cf56c1c9cf18aa8f568811b5f37e8541",
+    "shell_config_sha256": "3477d3a836d59f8f12c734f46df9047550d0845d71aae4d8938318446c021c57"
   },
   "image": null
 }

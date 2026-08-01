@@ -19,11 +19,13 @@ CHECKER = REPO / "scripts/check-homebrew-main-shell-brewfile.mjs"
 COPIED = [
     "homebrew/main-shell-migration-lock.json",
     "homebrew/main-shell-homebrew-runtime-support.json",
+    "homebrew/main-shell-selection-lock.json",
     "homebrew/main-shell-lazy-artifact-lock.json",
     "homebrew/main-shell-materialization-policy.json",
     "homebrew/homebrew-bootstrap-source-lock.json",
     "homebrew/main-shell-brew-package-tree.json",
     "homebrew/main-shell.Brewfile",
+    "homebrew/main-shell-default.json",
     "homebrew/main-shell-demo.json",
     "packages/registry/shell/build.toml",
     "docs/homebrew-publishing.md",
