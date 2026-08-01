@@ -32,6 +32,7 @@ import {
 import {
   describeWasmArtifactPolicyFailures,
   extractAbiVersion,
+  readWasmImportDescriptors,
   WASM_PAGE_SIZE,
 } from "./constants";
 import {
@@ -141,6 +142,11 @@ import {
 // everything compiled by wasm32-posix) never trigger.
 import { isWasiModule, wasiModuleDefinesMemory } from "./wasi-detect";
 import { synchronizeReceivedSharedWasmMemory } from "./shared-wasm-memory-growth";
+import {
+  registerWasmModuleReflection,
+  wasmModuleExports,
+  wasmModuleImports,
+} from "./wasm-module-reflection";
 export interface MessagePort {
   postMessage(msg: unknown, transferList?: unknown[]): void;
   on(event: string, handler: (...args: unknown[]) => void): void;
@@ -2216,7 +2222,7 @@ export function assertSupportedKernelFunctionImports(
   module: WebAssembly.Module,
   kernelImports: Record<string, WebAssembly.ExportValue>,
 ): void {
-  for (const imp of WebAssembly.Module.imports(module)) {
+  for (const imp of wasmModuleImports(module)) {
     if (
       imp.kind === "function"
       && imp.module === "kernel"
@@ -2267,7 +2273,7 @@ function buildImportObject(
   // Provide __channel_base as a mutable wasm global if the module imports it.
   // Each instance gets its own global, immune to cross-thread shared memory corruption.
   // On wasm64, __channel_base is i64 (BigInt); on wasm32 it's i32 (number).
-  const moduleImports = WebAssembly.Module.imports(module);
+  const moduleImports = wasmModuleImports(module);
   const importsFunction = (name: string): boolean =>
     moduleImports.some(
       (i) => i.module === "env" && i.name === name && i.kind === "function",
@@ -2625,7 +2631,7 @@ function buildImportObject(
 
   // Environment integrations fail at the point of use when the host does not
   // implement them. Kernel imports were validated above and are never faked.
-  for (const imp of WebAssembly.Module.imports(module)) {
+  for (const imp of wasmModuleImports(module)) {
     if (imp.kind !== "function") continue;
     if (imp.module === "env") {
       if (!Object.hasOwn(envImports, imp.name)) {
@@ -2964,7 +2970,7 @@ function hasCompleteForkInstrumentation(
   module: WebAssembly.Module,
   pid: number,
 ): boolean {
-  const moduleExports = WebAssembly.Module.exports(module);
+  const moduleExports = wasmModuleExports(module);
   const exportNames = new Set(moduleExports.map((e) => e.name));
   const legacyAsyncifyExports = [...exportNames].filter((name) =>
     name.startsWith("asyncify_"),
@@ -3087,6 +3093,7 @@ export async function centralizedWorkerMain(
     const module = initData.programModule
       ? initData.programModule
       : await WebAssembly.compile(programBytes);
+    registerWasmModuleReflection(module, programBytes);
     // --- WASI module detection and handling ---
     if (isWasiModule(module)) {
       if (wasiModuleDefinesMemory(module)) {
@@ -3119,7 +3126,7 @@ export async function centralizedWorkerMain(
       };
 
       // Stub any additional env imports the module needs
-      const moduleImports = WebAssembly.Module.imports(module);
+      const moduleImports = wasmModuleImports(module);
       for (const imp of moduleImports) {
         if (imp.module === "env" && imp.name !== "memory") {
           if (!(importObject.env as Record<string, unknown>)[imp.name]) {
@@ -3658,12 +3665,14 @@ export async function centralizedWorkerMain(
                 "is duplicated or aliases the main activation",
             );
           }
-          modules.set(
-            library.activationId,
-            new WebAssembly.Module(
-              library.moduleBytes as unknown as BufferSource,
-            ),
+          const activationModule = new WebAssembly.Module(
+            library.moduleBytes as unknown as BufferSource,
           );
+          registerWasmModuleReflection(
+            activationModule,
+            library.moduleBytes,
+          );
+          modules.set(library.activationId, activationModule);
         }
         const declarations = [...modules]
           .sort(([left], [right]) => left - right)
@@ -4431,7 +4440,7 @@ function setupChannelBase(
 ): void {
   // If the module imports env.__channel_base as a global, the channel offset was
   // already set at instantiation via WebAssembly.Global in buildImportObject.
-  const moduleImports = WebAssembly.Module.imports(module);
+  const moduleImports = wasmModuleImports(module);
   if (
     moduleImports.some(
       (i) =>
@@ -4580,13 +4589,11 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
   if (!hasStartSection) return bytes;
 
   // WHY: import descriptors can contain recursive GC types, multi-byte
-  // concrete references, table64 limits, tags, and future standardized
-  // imports. The engine has already validated and decoded that grammar; using
-  // its reflection avoids a second partial parser shifting every function
-  // index when a non-function import is not one byte wide.
-  numFuncImports = WebAssembly.Module.imports(
-    new WebAssembly.Module(bytes),
-  ).filter((entry) => entry.kind === "function").length;
+  // concrete references, table64 limits, and tags. Use the same exact binary
+  // parser as ABI admission: WebKit can compile these modules while refusing
+  // to expose their import descriptors through engine reflection.
+  numFuncImports = readWasmImportDescriptors(bytes)
+    .filter((entry) => entry.kind === "function").length;
 
   // Find the constructor function by looking at the exported helper wrappers.
   // Plain lld output puts `call $__wasm_call_ctors` first. After
@@ -5032,6 +5039,10 @@ export async function centralizedThreadWorkerMain(
     const module = initData.programModule
       ? initData.programModule
       : new WebAssembly.Module(programBytes!);
+    registerWasmModuleReflection(
+      module,
+      programBytes ?? initData.programBytes,
+    );
 
     const hasForkInstrumentation = hasCompleteForkInstrumentation(module, pid);
     if (hasForkInstrumentation) {
