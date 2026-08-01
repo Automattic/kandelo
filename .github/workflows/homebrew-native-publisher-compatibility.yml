@@ -4,7 +4,9 @@ on:
   pull_request:
     paths:
       - .github/workflows/homebrew-native-publisher-compatibility.yml
+      - .github/workflows/reusable-homebrew-bottle-candidate-materialize.yml
       - .github/workflows/reusable-homebrew-bottle-publish.yml
+      - .github/workflows/reusable-homebrew-candidate-campaign.yml
       - .github/workflows/reusable-homebrew-prefix-first-child-publish.yml
       - flake.lock
       - flake.nix

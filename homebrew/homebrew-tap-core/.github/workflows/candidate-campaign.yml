@@ -1,0 +1,19 @@
+name: Prepare Kandelo candidate bottle campaign
+
+on:
+  repository_dispatch:
+    types: [prepare-kandelo-candidate-campaign]
+
+jobs:
+  campaign:
+    permissions:
+      actions: read
+      contents: write
+    uses: Automattic/kandelo/.github/workflows/reusable-homebrew-candidate-campaign.yml@__KANDELO_CANDIDATE_BASE_SHA__
+    with:
+      kandelo-repository: Automattic/kandelo
+      producer-sha: ${{ github.event.client_payload.kandelo_ref }}
+      pr-number: ${{ github.event.client_payload.pr_number }}
+      tap-repository: kandelo-dev/homebrew-tap-core
+      tap-name: kandelo-dev/tap-core
+      tap-sha: ${{ github.event.client_payload.tap_ref }}

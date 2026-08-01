@@ -23,10 +23,15 @@ from typing import Any, NoReturn
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 CAMPAIGN_TOOL = ROOT / "scripts/homebrew-prefix-campaign.py"
 EXECUTOR_TOOL = ROOT / "scripts/homebrew-prefix-campaign-executor.py"
+CANDIDATE_CAMPAIGN_TOOL = ROOT / "scripts/homebrew-candidate-campaign.py"
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 FORMULA = re.compile(r"^[a-z0-9][a-z0-9._-]{0,254}$")
 CAMPAIGN_TAG = re.compile(
     r"^homebrew-prefix-campaign-sha256-([0-9a-f]{64})$"
+)
+CANDIDATE_CAMPAIGN_TAG = re.compile(
+    r"^homebrew-prefix-campaign-candidate-pr-[1-9][0-9]*-run-"
+    r"[1-9][0-9]*-attempt-[1-9][0-9]*-sha256-([0-9a-f]{64})$"
 )
 HANDOFF_TAG = re.compile(
     r"^homebrew-prefix-handoff-sha256-([0-9a-f]{64})$"
@@ -57,6 +62,10 @@ def load_tool(name: str, path: pathlib.Path) -> Any:
 
 CAMPAIGN = load_tool("homebrew_prefix_campaign_publisher_campaign", CAMPAIGN_TOOL)
 EXECUTOR = load_tool("homebrew_prefix_campaign_publisher_executor", EXECUTOR_TOOL)
+CANDIDATE_CAMPAIGN = load_tool(
+    "homebrew_prefix_campaign_publisher_candidate",
+    CANDIDATE_CAMPAIGN_TOOL,
+)
 
 
 def pretty_json(value: Any) -> bytes:
@@ -143,6 +152,32 @@ def real_git_checkout(
         fail("tap checkout HEAD differs from the admitted source commit")
     if run_git(root, "status", "--short", "--untracked-files=all"):
         fail("tap checkout must be clean before campaign materialization")
+    return root
+
+
+def exact_kandelo_data_root(
+    value: pathlib.Path,
+    expected_commit: str,
+) -> pathlib.Path:
+    # WHY: a promoted producer checkout is inert data read by code from
+    # protected main. Resolving a symlink first would erase the evidence that
+    # the caller redirected that data boundary.
+    lexical_root = pathlib.Path(os.path.abspath(value))
+    if lexical_root.is_symlink() or not lexical_root.is_dir():
+        fail("Kandelo data source must be one real directory")
+    root = lexical_root.resolve()
+    if root != lexical_root:
+        fail("Kandelo data source must not traverse symlink ancestors")
+    if pathlib.Path(run_git(root, "rev-parse", "--show-toplevel")) != root:
+        fail("Kandelo data source must be the exact Git worktree root")
+    git_directory = root / ".git"
+    if git_directory.is_symlink() or not git_directory.is_dir():
+        fail("Kandelo data source must own one real .git directory")
+    if (
+        run_git(root, "rev-parse", "HEAD") != expected_commit
+        or run_git(root, "status", "--short", "--untracked-files=all")
+    ):
+        fail("Kandelo data source must be the exact clean candidate commit")
     return root
 
 
@@ -268,7 +303,9 @@ def validate_campaign_authority(
         )
 
 
-def campaign_guest_layout(campaign: dict[str, Any]) -> dict[str, str]:
+def campaign_guest_layout(
+    campaign: dict[str, Any], kandelo_root: pathlib.Path = ROOT
+) -> dict[str, str]:
     guest_layout = EXECUTOR.exact_keys(
         campaign["authority"].get("guest_layout"),
         {"path", "sha256"},
@@ -281,11 +318,16 @@ def campaign_guest_layout(campaign: dict[str, Any]) -> dict[str, str]:
         "campaign guest layout SHA-256",
         EXECUTOR.SHA256,
     )
+    layout_parent = kandelo_root / pathlib.Path(GUEST_LAYOUT_PATH).parent
+    if layout_parent.is_symlink() or not layout_parent.is_dir():
+        fail("Kandelo guest layout parent must be one real directory")
     contract = EXECUTOR.regular_file(
-        ROOT / GUEST_LAYOUT_PATH,
+        layout_parent / pathlib.Path(GUEST_LAYOUT_PATH).name,
         "Kandelo guest layout contract",
         EXECUTOR.MAX_JSON_BYTES,
     )
+    if contract.resolve().parent != layout_parent.resolve():
+        fail("Kandelo guest layout escaped its exact data source")
     if EXECUTOR.sha256_file(contract) != digest:
         fail("Kandelo guest layout differs from campaign authority")
     return {"path": GUEST_LAYOUT_PATH, "sha256": digest}
@@ -392,12 +434,27 @@ def default_fetch_campaign(
     output: pathlib.Path,
     receipt: pathlib.Path,
 ) -> None:
-    EXECUTOR.fetch_campaign_release(
-        repository=repository,
-        tag=tag,
-        output=output,
-        receipt_output=receipt,
-    )
+    if CANDIDATE_CAMPAIGN_TAG.fullmatch(tag) is not None:
+        candidate_output = output.with_name(
+            f".{output.name}.candidate-campaign.json"
+        )
+        CANDIDATE_CAMPAIGN.fetch_release(
+            argparse.Namespace(
+                repository=repository,
+                tag=tag,
+                out=str(output),
+                candidate_out=str(candidate_output),
+                receipt_out=str(receipt),
+            )
+        )
+        candidate_output.unlink()
+    else:
+        EXECUTOR.fetch_campaign_release(
+            repository=repository,
+            tag=tag,
+            output=output,
+            receipt_output=receipt,
+        )
 
 
 def default_fetch_handoff(
@@ -573,6 +630,7 @@ def prepare(
     receipt_output: pathlib.Path,
     github_env: pathlib.Path | None = None,
     github_output: pathlib.Path | None = None,
+    kandelo_root: pathlib.Path | None = None,
     dependencies: PreparationDependencies = PreparationDependencies(),
 ) -> dict[str, Any]:
     for value, label in (
@@ -581,9 +639,24 @@ def prepare(
     ):
         if COMMIT.fullmatch(value) is None:
             fail(f"{label} is invalid")
+    if kandelo_root is None:
+        layout_root = ROOT
+    else:
+        layout_root = exact_kandelo_data_root(
+            pathlib.Path(kandelo_root), kandelo_commit
+        )
     formula = EXECUTOR.require_string(formula, "campaign Formula", FORMULA)
     campaign_match = CAMPAIGN_TAG.fullmatch(campaign_tag)
-    if campaign_match is None or set(campaign_match.group(1)) == {"0"}:
+    candidate_campaign_match = CANDIDATE_CAMPAIGN_TAG.fullmatch(
+        campaign_tag
+    )
+    if (
+        campaign_match is None
+        and candidate_campaign_match is None
+    ) or (
+        campaign_match is not None
+        and set(campaign_match.group(1)) == {"0"}
+    ):
         fail("campaign tag is invalid or inert")
     if arch not in (None, "wasm32", "wasm64"):
         fail("campaign publisher architecture is invalid")
@@ -631,9 +704,42 @@ def prepare(
         campaign, campaign_payload, index = EXECUTOR.load_campaign(
             campaign_path
         )
-        guest_layout = campaign_guest_layout(campaign)
-        if sha256_bytes(campaign_payload) != campaign_match.group(1):
-            fail("campaign tag differs from the fetched campaign")
+        guest_layout = campaign_guest_layout(campaign, layout_root)
+        campaign_sha256 = sha256_bytes(campaign_payload)
+        if campaign_match is not None:
+            if campaign_sha256 != campaign_match.group(1):
+                fail("campaign tag differs from the fetched campaign")
+        else:
+            receipt, _receipt_payload = EXECUTOR.load_json_bytes(
+                campaign_receipt, "candidate campaign readback receipt"
+            )
+            receipt = EXECUTOR.exact_keys(
+                receipt,
+                {
+                    "campaign_sha256",
+                    "candidate_sha256",
+                    "kind",
+                    "release_id",
+                    "repository",
+                    "schema",
+                    "tag",
+                    "target_commitish",
+                },
+                "candidate campaign readback receipt",
+            )
+            assert candidate_campaign_match is not None
+            if (
+                receipt["schema"] != 1
+                or receipt["kind"]
+                != "kandelo-homebrew-prefix-campaign-candidate-readback"
+                or receipt["tag"] != campaign_tag
+                or receipt["campaign_sha256"] != campaign_sha256
+                or receipt["candidate_sha256"]
+                != candidate_campaign_match.group(1)
+                or str(receipt["repository"]).lower()
+                != tap_repository.lower()
+            ):
+                fail("candidate campaign readback receipt is not exact")
         if formula not in index:
             fail(f"Formula {formula} is outside the campaign")
         admission_kind = index[formula]["destination"]["admission"][
@@ -826,6 +932,14 @@ def prepare(
                     "prefix-campaign-layout-sha256="
                     f"{guest_layout['sha256']}\n"
                 )
+                output.write(
+                    "prefix-campaign-prepared-tap-commit="
+                    f"{prepared_commit}\n"
+                )
+                output.write(
+                    "prefix-campaign-prepared-tap-tree="
+                    f"{prepared_tree}\n"
+                )
         return receipt
     finally:
         if transaction.exists():
@@ -868,11 +982,18 @@ def verify(*, tap_root: pathlib.Path, receipt_path: pathlib.Path) -> None:
         "campaign publisher campaign SHA-256",
         EXECUTOR.SHA256,
     )
-    EXECUTOR.require_string(
-        campaign["tag"],
-        "campaign publisher campaign tag",
-        CAMPAIGN_TAG,
+    campaign_tag = EXECUTOR.require_string(
+        campaign["tag"], "campaign publisher campaign tag"
     )
+    canonical_match = CAMPAIGN_TAG.fullmatch(campaign_tag)
+    candidate_match = CANDIDATE_CAMPAIGN_TAG.fullmatch(campaign_tag)
+    if canonical_match is None and candidate_match is None:
+        fail("campaign publisher campaign tag is invalid")
+    if (
+        canonical_match is not None
+        and canonical_match.group(1) != campaign["sha256"]
+    ):
+        fail("campaign publisher canonical tag differs from its campaign")
     guest_layout = EXECUTOR.exact_keys(
         campaign["guest_layout"],
         {"path", "sha256"},
@@ -937,6 +1058,7 @@ def parse_args() -> argparse.Namespace:
     prepare_parser.add_argument("--receipt-out", required=True)
     prepare_parser.add_argument("--github-env")
     prepare_parser.add_argument("--github-output")
+    prepare_parser.add_argument("--kandelo-root")
     verify_parser = commands.add_parser("verify")
     verify_parser.add_argument("--tap-root", required=True)
     verify_parser.add_argument("--receipt", required=True)
@@ -967,6 +1089,11 @@ def main() -> int:
                 github_output=(
                     pathlib.Path(arguments.github_output)
                     if arguments.github_output
+                    else None
+                ),
+                kandelo_root=(
+                    pathlib.Path(arguments.kandelo_root)
+                    if arguments.kandelo_root
                     else None
                 ),
             )

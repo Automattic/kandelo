@@ -44,6 +44,39 @@ snapshot. Package-changing resolution instead uses the candidate index,
 whose unchanged entries were derived from the captured base. Do not
 restore a GitHub token to synthetic materialization.
 
+Candidate-bottle update, 2026-08-01: the transitional version-1 lane
+may build one dependency-free `wasm32` Formula from a pull-request head
+before merge. Protected tap code seals the result in an immutable,
+noncanonical release without a package token. After an exact merge
+commit, current-main code can prove exact parents and complete tree
+equality, regenerate the package ledger, and promote those same bytes.
+Bottle provenance remains attached to the pull-request producer; the
+merge commit is separate admission evidence.
+
+The lane first seals a separate candidate campaign from exact `B`, `S`,
+tap caller and source, native Homebrew source, package catalog, ABI
+snapshot, guest layout, workflow run, and artifact identities. A
+catalog from an older ABI may plan the newer candidate, but every
+ABI-mismatched variant must rebuild. A future-ABI catalog is invalid.
+The candidate campaign and bottle releases remain noncanonical until
+protected code at the exact merge commit revalidates and promotes one
+bottle at a time.
+
+Promotion uses the small protected sealer receipts retained for 90
+days, not the bulky two-day derivation and build artifacts. It proves
+the exact completed run attempt, validates the complete immutable
+release inventory, and anonymously rehashes every release asset. A new
+attempt requires a full workflow rerun. Candidate tap callers are
+rendered from placeholders to literal base and merge SHAs; mutable
+`@main` reusable-workflow references are not accepted.
+
+This lane is intended for early ABI-candidate testing. It does not turn
+candidate releases into public Formula state and does not yet handle
+dependency waves or `wasm64`. Kandelo pull-request staging supplies its
+package input only as a migration bridge. Before this plan is complete,
+replace that bridge with tap-owned Formula and bottle inputs so the tap
+owns build, seal, and artifacts end to end.
+
 ## Accelerated Usable Cutover Checkpoint: 2026-07-31
 
 This checkpoint separates the first usable in-guest Homebrew delivery

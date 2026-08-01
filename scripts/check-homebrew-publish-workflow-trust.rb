@@ -21,6 +21,14 @@ PREFIX_FIRST_CHILD_PATH = File.join(
   REPO_ROOT,
   ".github/workflows/reusable-homebrew-prefix-first-child-publish.yml"
 )
+CANDIDATE_MATERIALIZER_PATH = File.join(
+  REPO_ROOT,
+  ".github/workflows/reusable-homebrew-bottle-candidate-materialize.yml"
+)
+CANDIDATE_CAMPAIGN_PATH = File.join(
+  REPO_ROOT,
+  ".github/workflows/reusable-homebrew-candidate-campaign.yml"
+)
 WORKFLOW_ROOT = File.join(REPO_ROOT, ".github/workflows")
 HOST_RUNTIME_PREPARER_PATH = File.join(
   REPO_ROOT, "scripts/prepare-homebrew-recipe-host-runtime.py"
@@ -52,6 +60,7 @@ CHECKOUT_ACTION = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
 # read-only PR workflow follows the repository-wide v7 pin independently.
 NATIVE_COMPATIBILITY_CHECKOUT_ACTION =
   "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
+STANDARD_CHECKOUT_ACTION = NATIVE_COMPATIBILITY_CHECKOUT_ACTION
 NIX_ACTION = "DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25"
 MAGIC_NIX_ACTION = "DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d"
 UPLOAD_ACTION = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
@@ -67,13 +76,21 @@ NATIVE_CA_PROOF_RUN_SHA256 =
   "c8192c2521864005b34e9eaa39d44d11d580997db39d6e64f2afe30fe447eb91"
 NATIVE_CA_VALIDATION_RUN_SHA256 =
   "7cb1417ec6df08daefa71c2ee6a364be76737b9d7f7ed4aa4022d3d7ca90a8b9"
-PUBLISHER_PLAN_DIGEST = "4064b0f7ae61f01fbe0db68c2ce02cae25b57ae6d3ca55bd15178a609775e48f"
-PUBLISHER_BUILD_DIGEST = "b50114b394faf7efb56818fd421ff15acb9630ad838ab10b2da6c4d259075cb0"
-PUBLISHER_UPLOAD_DIGEST = "ec78200c83223dec9e8d85d1b25e19e7e748ac7a7c5a2e0ce1f9cafc2ebadcbb"
-PUBLISHER_INDEX_DIGEST = "08a8c2360535d9e3dea92af39c4039d2966434049f9a2333d3d118fc6c4a1936"
-PUBLISHER_VERIFY_DIGEST = "7755e34bfdb25bd775eb321f3b5588467f8a599440d324710fd9b984cb43a7ef"
+PUBLISHER_PLAN_DIGEST = "9fc98b365a0ac90fab0a7eeccbaa029b3e76721b746d2a3229f6c9c888bfc349"
+PUBLISHER_BUILD_DIGEST = "8c6e0417ac49ff62ef2bdb2e249ba37706b1a19ea20034b2d81dd5fcea40d5c7"
+PUBLISHER_UPLOAD_DIGEST = "5d8592f405480e268ef718160056e2bd423b0d18d46a8c20b5103ea3c0289d90"
+PUBLISHER_INDEX_DIGEST = "665ca4762b97ec79d65c12d4854e92e7df95a8abca486774592be35f20f785b2"
+PUBLISHER_VERIFY_DIGEST = "e89c081fadbc82b9cf029c4c873d5b10bcadeef35cea90ae4c4562584194eb87"
 PUBLISHER_FINALIZE_DIGEST = "b17e7bf5d0a5ef512e49f74c224a94958642dfdd80a27439f2a0335816a0886b"
 PUBLISHER_VFS_RELEASE_DIGEST = "2db9ec075edf382e326066d5f49a32947f5a584fce26a966fb9fff23bbbe3c26"
+PUBLISHER_CANDIDATE_DIGEST =
+  "ca086782ffd59b45f891767fb50d69e46f91f94055de7b86f4b0393d8814ebb3"
+CANDIDATE_MATERIALIZER_STEPS_DIGEST =
+  "976d6c9d1c7b605527d2746e5e6311d7c20ea3937142872cf7c0e7a1ded11aa5"
+CANDIDATE_CAMPAIGN_DIGEST =
+  "c208050bb3c7b2a113e22c7640a59374e127cfefabf8ad45d91ae77852f430d0"
+TAP_CANDIDATE_PROMOTION_DIGEST =
+  "61775eabc3c015231811e5eef2a48d4731b1e834e59c0c5272a4697e2266ed91"
 MAINTENANCE_VALIDATE_DIGEST = "30ebccd5d44e004e37f168e81284d7ceb18accfa067c05248c1cc19398a7515f"
 MAINTENANCE_ROLLBACK_DIGEST = "f82d9f351202c3a20824e4525eb88ce7f75879740014d3232e69f3d585ed5781"
 FIRST_PUBLICATION_STEPS_DIGEST = "cf1c41bbfb91a1e5de6e7e0bfe7c16406dd3d022ad66dec7188cb31240168c7e"
@@ -213,6 +230,7 @@ def caller_validation_result(source, overrides = {})
     "CALLER_EVENT_NAME" => "repository_dispatch",
     "CALLER_REF" => "refs/heads/main",
     "CALLER_REPOSITORY" => "kandelo-dev/homebrew-tap-core",
+    "CALLER_SHA" => "d" * 40,
     "CALLER_WORKFLOW_REF" =>
       "kandelo-dev/homebrew-tap-core/.github/workflows/dry-run-bottles.yml@refs/heads/main",
     "DEFER_TAP_FINALIZATION" => "false",
@@ -231,6 +249,10 @@ def caller_validation_result(source, overrides = {})
     "TAP_REPOSITORY" => "kandelo-dev/homebrew-tap-core",
     "TAP_REF" => "main",
     "BOTTLE_ROOT_URL" => "",
+    "CANDIDATE_PACKAGE_STAGING_TAG" => "",
+    "CANDIDATE_PR_NUMBER" => "",
+    "CANDIDATE_PROMOTION_TAG" => "",
+    "CANDIDATE_PRODUCER_SHA" => "",
   }.merge(overrides)
 
   Tempfile.create("kandelo-homebrew-trust-output") do |output|
@@ -334,7 +356,9 @@ end
 
 def expected_caller_outputs(
   kandelo_ref, tap_ref, wasm32: "", wasm64: "", kind: "none",
-  campaign_mode: "false", campaign_tag: "", campaign_dependencies: ""
+  campaign_mode: "false", campaign_tag: "", campaign_dependencies: "",
+  candidate_mode: "false", candidate_pr: "", candidate_staging: "",
+  candidate_tap_authority: "", candidate_promotion_mode: "false"
 )
   "kandelo-ref=#{kandelo_ref}\n" \
     "tap-ref=#{tap_ref}\n" \
@@ -343,7 +367,12 @@ def expected_caller_outputs(
     "package-generation-kind=#{kind}\n" \
     "prefix-campaign-mode=#{campaign_mode}\n" \
     "prefix-campaign-tag=#{campaign_tag}\n" \
-    "prefix-campaign-dependencies=#{campaign_dependencies}\n"
+    "prefix-campaign-dependencies=#{campaign_dependencies}\n" \
+    "candidate-mode=#{candidate_mode}\n" \
+    "candidate-pr-number=#{candidate_pr}\n" \
+    "candidate-package-staging-tag=#{candidate_staging}\n" \
+    "candidate-tap-workflow-authority-sha=#{candidate_tap_authority}\n" \
+    "candidate-promotion-mode=#{candidate_promotion_mode}\n"
 end
 
 def check_caller_validation_behavior(workflow)
@@ -378,6 +407,157 @@ def check_caller_validation_behavior(workflow)
   check(exact["status"] == 0 && exact["outputs"] ==
         expected_caller_outputs(kandelo_sha, tap_sha),
         "publisher dry-run does not accept exact source commits")
+
+  candidate_tag = "pr-77-staging-run-900-attempt-2"
+  candidate_campaign_tag =
+    "homebrew-prefix-campaign-candidate-pr-77-run-899-attempt-2-" \
+    "sha256-#{"1" * 64}"
+  candidate_campaign_dependencies = '{"dependencies":[],"schema":1}'
+  candidate_tap_authority = "d" * 40
+  candidate = caller_validation_result(source, {
+    "CALLER_WORKFLOW_REF" =>
+      "kandelo-dev/homebrew-tap-core/.github/workflows/candidate-bottles.yml@refs/heads/main",
+    "FORCE_REBUILD" => "true",
+    "KANDELO_REF" => kandelo_sha,
+    "TAP_REF" => tap_sha,
+    "CANDIDATE_PR_NUMBER" => "77",
+    "CANDIDATE_PACKAGE_STAGING_TAG" => candidate_tag,
+    "CALLER_SHA" => candidate_tap_authority,
+    "PREFIX_CAMPAIGN_TAG" => candidate_campaign_tag,
+    "PREFIX_CAMPAIGN_DEPENDENCIES" => candidate_campaign_dependencies,
+  })
+  check(candidate["status"] == 0 && candidate["outputs"] ==
+        expected_caller_outputs(
+          kandelo_sha,
+          tap_sha,
+          candidate_mode: "true",
+          candidate_pr: "77",
+          candidate_staging: candidate_tag,
+          candidate_tap_authority: candidate_tap_authority,
+          campaign_mode: "true",
+          campaign_tag: candidate_campaign_tag,
+          campaign_dependencies: candidate_campaign_dependencies
+        ), "publisher candidate caller does not bind exact authority")
+  candidate_with_branch = caller_validation_result(source, {
+    "CALLER_WORKFLOW_REF" =>
+      "kandelo-dev/homebrew-tap-core/.github/workflows/candidate-bottles.yml@refs/heads/main",
+    "FORCE_REBUILD" => "true",
+    "KANDELO_REF" => "candidate-branch",
+    "TAP_REF" => tap_sha,
+    "CANDIDATE_PR_NUMBER" => "77",
+    "CANDIDATE_PACKAGE_STAGING_TAG" => candidate_tag,
+    "CALLER_SHA" => candidate_tap_authority,
+    "PREFIX_CAMPAIGN_TAG" => candidate_campaign_tag,
+    "PREFIX_CAMPAIGN_DEPENDENCIES" => candidate_campaign_dependencies,
+  })
+  check(candidate_with_branch["status"] == 2,
+        "publisher candidate caller accepts a mutable source ref")
+  {
+    "write mode" => { "DRY_RUN" => "false" },
+    "unforced build" => { "FORCE_REBUILD" => "false" },
+    "deferred finalization" => { "DEFER_TAP_FINALIZATION" => "true" },
+    "VFS acceptance" => { "REQUIRE_VFS_ACCEPTANCE" => "true" },
+    "canonical package generation" => {
+      "PACKAGE_GENERATION_WASM32" => SELF_TEST_PACKAGE_GENERATION_ROOTFS,
+    },
+    "wasm64 target" => { "ARCHES" => "wasm64" },
+    "promotion authority" => {
+      "CANDIDATE_PROMOTION_TAG" =>
+        "homebrew-bottle-candidate-pr-77-run-900-attempt-2-sha256-#{"2" * 64}",
+      "CANDIDATE_PRODUCER_SHA" => kandelo_sha,
+    },
+    "dependency-bearing campaign" => {
+      "PREFIX_CAMPAIGN_DEPENDENCIES" =>
+        '{"dependencies":[{"formula":"zlib","tag":"homebrew-prefix-handoff-sha256-' \
+        "#{"3" * 64}" + '"}],"schema":1}',
+    },
+    "canonical campaign namespace" => {
+      "PREFIX_CAMPAIGN_TAG" =>
+        "homebrew-prefix-campaign-sha256-#{"1" * 64}",
+    },
+  }.each do |label, overrides|
+    rejected = caller_validation_result(source, {
+      "CALLER_WORKFLOW_REF" =>
+        "kandelo-dev/homebrew-tap-core/.github/workflows/candidate-bottles.yml@refs/heads/main",
+      "FORCE_REBUILD" => "true",
+      "KANDELO_REF" => kandelo_sha,
+      "TAP_REF" => tap_sha,
+      "CANDIDATE_PR_NUMBER" => "77",
+      "CANDIDATE_PACKAGE_STAGING_TAG" => candidate_tag,
+      "CALLER_SHA" => candidate_tap_authority,
+      "PREFIX_CAMPAIGN_TAG" => candidate_campaign_tag,
+      "PREFIX_CAMPAIGN_DEPENDENCIES" => candidate_campaign_dependencies,
+    }.merge(overrides))
+    check(rejected["status"] == 2,
+          "publisher candidate caller accepts #{label}")
+  end
+
+  promotion_tag =
+    "homebrew-bottle-candidate-pr-77-run-900-attempt-2-sha256-#{"2" * 64}"
+  promotion = {
+    "CALLER_WORKFLOW_REF" =>
+      "kandelo-dev/homebrew-tap-core/.github/workflows/" \
+      "promote-candidate-bottle.yml@refs/heads/main",
+    "DEFER_TAP_FINALIZATION" => "true",
+    "DRY_RUN" => "false",
+    "FORCE_REBUILD" => "true",
+    "KANDELO_REF" => kandelo_sha,
+    "TAP_REF" => tap_sha,
+    "CANDIDATE_PROMOTION_TAG" => promotion_tag,
+    "CANDIDATE_PRODUCER_SHA" => "c" * 40,
+    "PACKAGE_GENERATION_WASM32" => SELF_TEST_PACKAGE_GENERATION_ROOTFS,
+    "PREFIX_CAMPAIGN_TAG" => candidate_campaign_tag,
+    "PREFIX_CAMPAIGN_DEPENDENCIES" => candidate_campaign_dependencies,
+  }.freeze
+  promoted = caller_validation_result(source, promotion)
+  check(promoted["status"] == 0 && promoted["outputs"] ==
+        expected_caller_outputs(
+          kandelo_sha,
+          tap_sha,
+          wasm32: SELF_TEST_PACKAGE_GENERATION_ROOTFS,
+          kind: "rootfs-wasm32",
+          campaign_mode: "true",
+          campaign_tag: candidate_campaign_tag,
+          campaign_dependencies: candidate_campaign_dependencies,
+          candidate_promotion_mode: "true"
+        ), "publisher promotion caller does not bind its exact merged candidate")
+  {
+    "candidate caller path" => {
+      "CALLER_WORKFLOW_REF" =>
+        "kandelo-dev/homebrew-tap-core/.github/workflows/candidate-bottles.yml@refs/heads/main",
+    },
+    "dry-run mode" => { "DRY_RUN" => "true" },
+    "unforced publication" => { "FORCE_REBUILD" => "false" },
+    "immediate tap finalization" => { "DEFER_TAP_FINALIZATION" => "false" },
+    "VFS acceptance" => { "REQUIRE_VFS_ACCEPTANCE" => "true" },
+    "mutable merge ref" => { "KANDELO_REF" => "main" },
+    "mutable tap ref" => { "TAP_REF" => "main" },
+    "mutable producer" => { "CANDIDATE_PRODUCER_SHA" => "main" },
+    "wasm64 target" => { "ARCHES" => "wasm64" },
+    "browser package generation" => {
+      "PACKAGE_GENERATION_WASM32" => SELF_TEST_PACKAGE_GENERATION_WASM32,
+    },
+    "wasm64 package generation" => {
+      "PACKAGE_GENERATION_WASM64" => SELF_TEST_PACKAGE_GENERATION_WASM64,
+    },
+    "candidate staging identity" => {
+      "CANDIDATE_PR_NUMBER" => "77",
+      "CANDIDATE_PACKAGE_STAGING_TAG" => candidate_tag,
+    },
+    "dependency-bearing campaign" => {
+      "PREFIX_CAMPAIGN_DEPENDENCIES" =>
+        '{"dependencies":[{"formula":"zlib","tag":"homebrew-prefix-handoff-sha256-' \
+        "#{"3" * 64}" + '"}],"schema":1}',
+    },
+    "canonical campaign namespace" => {
+      "PREFIX_CAMPAIGN_TAG" =>
+        "homebrew-prefix-campaign-sha256-#{"1" * 64}",
+    },
+  }.each do |label, overrides|
+    rejected = caller_validation_result(source, promotion.merge(overrides))
+    check(rejected["status"] == 2,
+          "publisher promotion caller accepts #{label}")
+  end
 
   data_only = caller_validation_result(source, {
     "KANDELO_REF" => "review/homebrew;still-data",
@@ -480,6 +660,14 @@ def check_caller_validation_behavior(workflow)
           campaign_dependencies: campaign_dependencies
         ),
         "publisher rejects the exact reviewed prefix-campaign contract")
+  candidate_namespace_campaign = caller_validation_result(
+    source,
+    campaign_caller.merge("PREFIX_CAMPAIGN_TAG" =>
+      "homebrew-prefix-campaign-candidate-pr-77-run-899-attempt-2-" \
+      "sha256-#{"1" * 64}")
+  )
+  check(candidate_namespace_campaign["status"] == 2,
+        "canonical campaign caller accepts the candidate namespace")
 
   campaign_dry_run = caller_validation_result(
     source,
@@ -831,7 +1019,12 @@ def check_common(workflow, label, allowed_secret_nodes: [])
         "#{label} secret contract changed")
 end
 
-def check_tap_caller(path, expected_name:, event_type:, job_name:, reusable:, inputs:, secrets: {})
+def check_tap_caller(
+  path, expected_name:, event_type:, job_name:, reusable:, inputs:,
+  secrets: {}, permissions: {
+    "actions" => "read", "contents" => "write", "packages" => "write",
+  }
+)
   workflow = load_workflow(path)
   top_keys = workflow.keys.map { |key| key == true ? "on" : key.to_s }.sort
   check(top_keys == %w[jobs name on], "#{File.basename(path)} has unexpected top-level configuration")
@@ -846,9 +1039,8 @@ def check_tap_caller(path, expected_name:, event_type:, job_name:, reusable:, in
   expected_job_keys << "secrets" unless secrets.empty?
   check(job.keys.sort == expected_job_keys.sort,
         "#{File.basename(path)} caller job changed")
-  check(exact_permissions?(job["permissions"], {
-    "actions" => "read", "contents" => "write", "packages" => "write",
-  }), "#{File.basename(path)} permission ceiling changed")
+  check(exact_permissions?(job["permissions"], permissions),
+        "#{File.basename(path)} permission ceiling changed")
   check(job["uses"] == reusable, "#{File.basename(path)} reusable workflow target changed")
   check(job["with"] == inputs, "#{File.basename(path)} caller inputs changed")
   check(job.fetch("secrets", {}) == secrets, "#{File.basename(path)} caller secrets changed")
@@ -857,6 +1049,1003 @@ def check_tap_caller(path, expected_name:, event_type:, job_name:, reusable:, in
   expected_secret_nodes = secrets.empty? ? [] : [secrets]
   check(values_for_key(workflow, "secrets") == expected_secret_nodes,
         "#{File.basename(path)} may pass only its reviewed named secrets")
+end
+
+def normalized_expression(value)
+  value.to_s.split.join(" ")
+end
+
+def check_candidate_campaign(workflow)
+  top_keys = workflow.keys.map { |key| key == true ? "on" : key.to_s }.sort
+  check(top_keys == %w[jobs name on],
+        "candidate campaign has unexpected top-level configuration")
+  check(workflow["name"] ==
+        "Seal an unmerged Homebrew campaign candidate",
+        "candidate campaign name changed")
+  check(workflow_events(workflow) == {
+    "workflow_call" => {
+      "inputs" => {
+        "kandelo-repository" => {
+          "type" => "string", "required" => true,
+        },
+        "producer-sha" => { "type" => "string", "required" => true },
+        "pr-number" => { "type" => "number", "required" => true },
+        "tap-repository" => { "type" => "string", "required" => true },
+        "tap-name" => { "type" => "string", "required" => true },
+        "tap-sha" => { "type" => "string", "required" => true },
+      },
+      "outputs" => {
+        "candidate-tag" => {
+          "value" => "${{ jobs.seal.outputs.candidate-tag }}",
+        },
+      },
+    },
+  }, "candidate campaign call contract changed")
+  check(!workflow.key?("permissions"),
+        "candidate campaign requests workflow-wide authority")
+  check_common(workflow, "candidate campaign")
+
+  jobs = workflow_jobs(workflow)
+  check(jobs.keys == %w[admit derive seal],
+        "candidate campaign job graph changed")
+  admit = jobs.fetch("admit")
+  derive = jobs.fetch("derive")
+  seal = jobs.fetch("seal")
+  check(admit.keys.sort ==
+        %w[outputs permissions runs-on steps timeout-minutes] &&
+        admit["runs-on"] == "ubuntu-latest" &&
+        admit["timeout-minutes"] == 10 &&
+        exact_permissions?(admit["permissions"], { "contents" => "read" }) &&
+        admit["outputs"] == {
+          "base-sha" => "${{ steps.admit.outputs.base-sha }}",
+          "caller-sha" => "${{ steps.admit.outputs.caller-sha }}",
+        }, "candidate campaign admission authority changed")
+  admit_steps = job_steps(admit, "candidate campaign admission")
+  check(admit_steps.filter_map { |step| step["uses"] } == [
+    STANDARD_CHECKOUT_ACTION, STANDARD_CHECKOUT_ACTION,
+  ], "candidate campaign admission action set or pin changed")
+  admission = named_step(
+    admit_steps, "Bind the request to current protected branches"
+  )
+  check(admission.keys.sort == %w[env id name run shell] &&
+        admission["id"] == "admit" && admission["shell"] == "bash" &&
+        admission["env"] == {
+          "CALLER_REF" => "${{ github.ref }}",
+          "CALLER_REPOSITORY" => "${{ github.repository }}",
+          "CALLER_SHA" => "${{ github.sha }}",
+          "CALLER_WORKFLOW_REF" => "${{ github.workflow_ref }}",
+          "GH_TOKEN" => "${{ github.token }}",
+          "KANDELO_REPOSITORY" => "${{ inputs.kandelo-repository }}",
+          "PR_NUMBER" => "${{ inputs.pr-number }}",
+          "PRODUCER_SHA" => "${{ inputs.producer-sha }}",
+          "TAP_NAME" => "${{ inputs.tap-name }}",
+          "TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
+          "TAP_SHA" => "${{ inputs.tap-sha }}",
+        }, "candidate campaign admission mapping changed")
+  admission_run = admission.fetch("run")
+  [
+    'candidate-campaign.yml@refs/heads/main',
+    '"kandelo-dev/homebrew-tap-core"',
+    '[ "$CALLER_REF" = refs/heads/main ]',
+    '[ "$CALLER_WORKFLOW_REF" = "$expected_caller" ]',
+    '[ "${KANDELO_REPOSITORY,,}" = automattic/kandelo ]',
+    '[ "${TAP_NAME,,}" = kandelo-dev/tap-core ]',
+    '[[ "$PRODUCER_SHA" =~ ^[0-9a-f]{40}$ ]]',
+    '[[ "$TAP_SHA" =~ ^[0-9a-f]{40}$ ]]',
+    '"/repos/$TAP_REPOSITORY/git/ref/heads/main"',
+    '[ "$CALLER_SHA" = "$tap_main" ]',
+    '"/repos/$TAP_REPOSITORY/compare/$TAP_SHA...$tap_main"',
+    'gh api "/repos/$KANDELO_REPOSITORY/pulls/$PR_NUMBER"',
+    '.state == "open" and .base.ref == "main"',
+    '.base.sha == $base and .head.sha == $head',
+  ].each do |fragment|
+    check(admission_run.include?(fragment),
+          "candidate campaign admission lacks #{fragment}")
+  end
+  admit_checkouts = admit_steps.select do |step|
+    step["uses"] == STANDARD_CHECKOUT_ACTION
+  end.to_h { |step| [step.fetch("name"), step.fetch("with")] }
+  check(admit_checkouts == {
+    "Checkout protected campaign caller validator" => {
+      "persist-credentials" => false,
+      "repository" => "${{ inputs.kandelo-repository }}",
+      "ref" => "${{ steps.admit.outputs.base-sha }}",
+      "path" => "caller-validator", "submodules" => false,
+    },
+    "Checkout exact campaign caller as inert data" => {
+      "persist-credentials" => false,
+      "repository" => "${{ inputs.tap-repository }}",
+      "ref" => "${{ steps.admit.outputs.caller-sha }}",
+      "path" => "caller-data", "submodules" => false,
+    },
+  }, "candidate campaign caller evidence checkout changed")
+  caller_pin = named_step(
+    admit_steps, "Require the campaign caller to pin its exact base"
+  )
+  check(caller_pin.fetch("env") == {
+    "BASE_SHA" => "${{ steps.admit.outputs.base-sha }}",
+  } && caller_pin.fetch("run").include?(
+    "homebrew-candidate-caller-pins.py"
+  ) && caller_pin.fetch("run").include?(
+    '--mode campaign --kandelo-sha "$BASE_SHA"'
+  ), "candidate campaign caller does not prove its immutable base pin")
+
+  check(derive.keys.sort ==
+        %w[needs permissions runs-on steps timeout-minutes] &&
+        derive["needs"] == ["admit"] &&
+        derive["runs-on"] == "ubuntu-latest" &&
+        derive["timeout-minutes"] == 180 &&
+        exact_permissions?(derive["permissions"], { "contents" => "read" }),
+        "candidate campaign derivation authority changed")
+  derive_steps = job_steps(derive, "candidate campaign derivation")
+  check(derive_steps.filter_map { |step| step["uses"] }.sort == [
+    *Array.new(4, STANDARD_CHECKOUT_ACTION),
+    NIX_ACTION, MAGIC_NIX_ACTION, UPLOAD_ACTION,
+  ].sort, "candidate campaign derivation action set or pin changed")
+  derive_checkouts = derive_steps.select do |step|
+    step["uses"] == STANDARD_CHECKOUT_ACTION
+  end.to_h { |step| [step.fetch("name"), step.fetch("with")] }
+  check(derive_checkouts == {
+    "Checkout protected campaign wrapper authority" => {
+      "persist-credentials" => false,
+      "repository" => "${{ inputs.kandelo-repository }}",
+      "ref" => "${{ needs.admit.outputs.base-sha }}",
+      "path" => "authority", "submodules" => false,
+    },
+    "Checkout exact candidate as untrusted source" => {
+      "persist-credentials" => false,
+      "repository" => "${{ inputs.kandelo-repository }}",
+      "ref" => "${{ inputs.producer-sha }}",
+      "path" => "producer", "submodules" => false,
+    },
+    "Checkout exact tap campaign source" => {
+      "persist-credentials" => false,
+      "repository" => "${{ inputs.tap-repository }}",
+      "ref" => "${{ inputs.tap-sha }}",
+      "path" => "tap", "fetch-depth" => 0,
+    },
+    "Checkout reviewed native Homebrew implementation" => {
+      "persist-credentials" => false,
+      "repository" => "Homebrew/brew",
+      "ref" => "${{ steps.source.outputs.native-commit }}",
+      "path" => "native-homebrew",
+    },
+  }, "candidate campaign derivation checkout authority changed")
+  credential_names = %w[
+    GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN
+    HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN
+  ]
+  check(derive_steps.none? do |step|
+    !(step.fetch("env", {}).keys & credential_names).empty?
+  end, "candidate code receives a GitHub or Homebrew credential")
+  source = named_step(
+    derive_steps, "Describe exact candidate inputs with protected code"
+  )
+  source_run = source.fetch("run")
+  [
+    'for secret_name in GH_TOKEN GITHUB_TOKEN \\',
+    'python3 authority/scripts/homebrew-candidate-campaign.py \\',
+    'describe-source', '--kandelo-root "$GITHUB_WORKSPACE/producer"',
+    '--base-commit "$BASE_SHA"', '--producer-commit "$PRODUCER_SHA"',
+    '--workflow-authority-commit "$BASE_SHA"',
+    '--source-tap-commit "$TAP_SHA"',
+    '--tap-workflow-authority-commit "$CALLER_SHA"',
+  ].each do |fragment|
+    check(source_run.include?(fragment),
+          "candidate campaign source description lacks #{fragment}")
+  end
+  derivation = named_step(
+    derive_steps, "Derive the candidate campaign without credentials"
+  )
+  derivation_run = derivation.fetch("run")
+  [
+    'for secret_name in GH_TOKEN GITHUB_TOKEN \\',
+    'env -u GH_TOKEN -u GITHUB_TOKEN \\',
+    '-u HOMEBREW_GITHUB_PACKAGES_TOKEN \\',
+    'bash producer/scripts/dev-shell.sh \\',
+    'python3 producer/scripts/homebrew-prefix-campaign.py derive \\',
+    '--kandelo-root "$GITHUB_WORKSPACE/producer"',
+    '--old-tap-root "$GITHUB_WORKSPACE/tap"',
+    '--native-brew-root "$GITHUB_WORKSPACE/native-homebrew"',
+    '--metadata-sha256 "$metadata_sha"',
+    '--guest-layout-sha256 "$layout_sha"',
+  ].each do |fragment|
+    check(derivation_run.include?(fragment),
+          "candidate campaign credential-free derivation lacks #{fragment}")
+  end
+  check(values_for_key(workflow, "run").count do |run|
+    run.include?("producer/scripts/")
+  end == 1, "candidate source code executes outside its read-only derivation")
+  derivation_upload = named_step(
+    derive_steps, "Retain one exact credential-free derivation"
+  )
+  check(derivation_upload["uses"] == UPLOAD_ACTION &&
+        derivation_upload["with"] == {
+          "name" =>
+            "homebrew-candidate-campaign-derivation-attempt-" \
+            "${{ github.run_attempt }}",
+          "path" =>
+            "${{ runner.temp }}/candidate-campaign-source.json\n" \
+            "${{ runner.temp }}/campaign.json\n",
+          "compression-level" => 0,
+          "if-no-files-found" => "error", "retention-days" => 2,
+        }, "candidate campaign derivation artifact changed")
+
+  check(seal.keys.sort ==
+        %w[needs outputs permissions runs-on steps timeout-minutes] &&
+        seal["needs"] == %w[admit derive] &&
+        seal["runs-on"] == "ubuntu-latest" &&
+        seal["timeout-minutes"] == 90 &&
+        exact_permissions?(seal["permissions"], {
+          "actions" => "read", "contents" => "write",
+        }) && seal["outputs"] == {
+          "candidate-tag" => "${{ steps.publish.outputs.candidate-tag }}",
+        }, "candidate campaign sealer authority changed")
+  seal_steps = job_steps(seal, "candidate campaign sealer")
+  check(seal_steps.filter_map { |step| step["uses"] }.sort == [
+    *Array.new(4, STANDARD_CHECKOUT_ACTION), DOWNLOAD_ACTION, UPLOAD_ACTION,
+  ].sort, "candidate campaign sealer action set or pin changed")
+  seal_checkouts = seal_steps.select do |step|
+    step["uses"] == STANDARD_CHECKOUT_ACTION
+  end.to_h { |step| [step.fetch("name"), step.fetch("with")] }
+  check(seal_checkouts == {
+    "Checkout protected Kandelo sealer authority" => {
+      "persist-credentials" => false,
+      "repository" => "${{ inputs.kandelo-repository }}",
+      "ref" => "${{ needs.admit.outputs.base-sha }}",
+      "path" => "authority", "submodules" => false,
+    },
+    "Checkout protected tap release authority" => {
+      "persist-credentials" => false,
+      "ref" => "${{ needs.admit.outputs.caller-sha }}",
+      "fetch-depth" => 0, "path" => "tap-authority",
+    },
+    "Checkout candidate only as inert source data" => {
+      "persist-credentials" => false,
+      "repository" => "${{ inputs.kandelo-repository }}",
+      "ref" => "${{ inputs.producer-sha }}",
+      "path" => "producer-data", "submodules" => false,
+    },
+    "Checkout exact tap only as inert source data" => {
+      "persist-credentials" => false,
+      "repository" => "${{ inputs.tap-repository }}",
+      "ref" => "${{ inputs.tap-sha }}",
+      "path" => "tap-data", "fetch-depth" => 0,
+    },
+  }, "candidate campaign sealer checkout authority changed")
+  check(values_for_key(seal, "run").none? do |run|
+    run.include?("producer/scripts/")
+  end, "candidate code executes in the credentialed campaign sealer")
+  sealer_credentials = seal_steps.select do |step|
+    !(step.fetch("env", {}).keys & credential_names).empty?
+  end
+  check(sealer_credentials.map { |step| step["name"] } == [
+    "Revalidate run, source, and branch authority",
+    "Publish immutable candidate campaign",
+  ] && sealer_credentials.all? do |step|
+    step.fetch("env").slice(*credential_names) == {
+      "GH_TOKEN" => "${{ github.token }}",
+    }
+  end, "candidate campaign sealer credential boundary changed")
+  revalidate = named_step(
+    seal_steps, "Revalidate run, source, and branch authority"
+  )
+  [
+    '[ "$kandelo_main" = "$BASE_SHA" ]',
+    'compare/$CALLER_SHA...$tap_main',
+    'case "$caller_status" in',
+    'ahead|identical)',
+    'candidate caller left protected tap main',
+    '.state == "open" and .base.ref == "main"',
+    '.base.sha == $base and .head.sha == $head',
+    '.base_commit == $base', '.producer_commit == $producer',
+    '.tap_workflow_authority_commit == $caller',
+    'env -u GH_TOKEN -u GITHUB_TOKEN \\',
+    'python3 authority/scripts/homebrew-candidate-campaign.py \\',
+    'describe-source',
+    '--kandelo-root "$GITHUB_WORKSPACE/producer-data"',
+    '--tap-root "$GITHUB_WORKSPACE/tap-data"',
+    'cmp -s "$source" \\',
+    'candidate execution changed protected source evidence',
+    'actions/runs/$GITHUB_RUN_ID',
+    'actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100',
+    '.id == $run_id and .run_attempt == $attempt',
+    '.head_sha == $caller',
+    '.path == ".github/workflows/candidate-campaign.yml"',
+    '(.repository.full_name | ascii_downcase)',
+    '.event == "repository_dispatch"',
+    '($selected | length) == 1',
+    'test("^sha256:[0-9a-f]{64}$")',
+    'workflow_path:".github/workflows/candidate-campaign.yml"',
+  ].each do |fragment|
+    check(revalidate.fetch("run").include?(fragment),
+          "candidate campaign sealer revalidation lacks #{fragment}")
+  end
+  preparation = named_step(
+    seal_steps, "Prepare inert noncanonical campaign release"
+  )
+  check((preparation.fetch("env", {}).keys & credential_names).empty? &&
+        preparation.fetch("run").include?(
+          '[ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ]'
+        ) && preparation.fetch("run").include?(
+          "python3 authority/scripts/homebrew-candidate-campaign.py prepare"
+        ), "candidate campaign preparation is not inert protected code")
+  publish = named_step(seal_steps, "Publish immutable candidate campaign")
+  [
+    'bash authority/scripts/publish-immutable-github-release.sh \\',
+    '--lock-root "$GITHUB_WORKSPACE/tap-authority"',
+    '--exact-kandelo-main-sha "$BASE_SHA"',
+    '--target-main-contains-sha "$CALLER_SHA"',
+    'This release cannot publish canonical bottles before merge.',
+  ].each do |fragment|
+    check(publish.fetch("run").include?(fragment),
+          "candidate campaign publication lacks #{fragment}")
+  end
+  download = named_step(
+    seal_steps, "Download exact credential-free derivation"
+  )
+  check(download["uses"] == DOWNLOAD_ACTION && download["with"] == {
+    "name" =>
+      "homebrew-candidate-campaign-derivation-attempt-" \
+      "${{ github.run_attempt }}",
+    "path" => "${{ runner.temp }}/candidate-campaign-derivation",
+  }, "candidate campaign derivation download changed")
+  retained = named_step(
+    seal_steps, "Retain candidate campaign publication evidence"
+  )
+  check(retained["uses"] == UPLOAD_ACTION && retained["with"] == {
+    "name" =>
+      "homebrew-candidate-campaign-release-attempt-" \
+      "${{ github.run_attempt }}",
+    "path" => "${{ runner.temp }}/candidate-campaign-release.json",
+    "if-no-files-found" => "error", "retention-days" => 90,
+  }, "candidate campaign publication evidence changed")
+
+  tool = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-candidate-campaign.py")
+  )
+  [
+    'homebrew-prefix-campaign-candidate-pr-',
+    'if parents != f"{source[\'base_commit\']} {source[\'producer_commit\']}":',
+    'if producer_tree != source["producer_tree"] or merge_tree != producer_tree:',
+    'recorded_probe_dependencies(campaign_module, campaign)',
+    'regenerated = campaign_module.derive_campaign(',
+    'if campaign_module.pretty_json(regenerated) != campaign_payload:',
+    'fail("protected main regenerated a different candidate campaign")',
+    'def validate_admission(arguments: argparse.Namespace) -> None:',
+  ].each do |fragment|
+    check(tool.include?(fragment),
+          "candidate campaign trusted tool lacks #{fragment}")
+  end
+  check(contract_digest(workflow) == CANDIDATE_CAMPAIGN_DIGEST,
+        "candidate campaign workflow contract changed")
+end
+
+def check_candidate_materializer(workflow)
+  top_keys = workflow.keys.map { |key| key == true ? "on" : key.to_s }.sort
+  check(top_keys == %w[jobs name on],
+        "candidate materializer has unexpected top-level configuration")
+  check(workflow["name"] ==
+        "Re-materialize an exact merged Homebrew bottle candidate",
+        "candidate materializer name changed")
+  events = workflow_events(workflow)
+  check(events == {
+    "workflow_call" => {
+      "inputs" => {
+        "candidate-tag" => { "type" => "string", "required" => true },
+        "formula" => { "type" => "string", "required" => true },
+        "producer-sha" => { "type" => "string", "required" => true },
+        "merge-commit" => { "type" => "string", "required" => true },
+      },
+      "outputs" => {
+        "abi" => { "value" => "${{ jobs.materialize.outputs.abi }}" },
+        "campaign-tag" => {
+          "value" => "${{ jobs.materialize.outputs.campaign-tag }}",
+        },
+        "formula" => {
+          "value" => "${{ jobs.materialize.outputs.formula }}",
+        },
+        "release-tag" => {
+          "value" => "${{ jobs.materialize.outputs.release-tag }}",
+        },
+        "source-tap-commit" => {
+          "value" => "${{ jobs.materialize.outputs.source-tap-commit }}",
+        },
+      },
+    },
+  }, "candidate materializer call contract changed")
+  check(!workflow.key?("permissions"),
+        "candidate materializer requests workflow-wide permissions")
+  check_common(workflow, "candidate materializer")
+
+  jobs = workflow_jobs(workflow)
+  check(jobs.keys == ["materialize"],
+        "candidate materializer has an unexpected job set")
+  job = jobs.fetch("materialize")
+  check(job.keys.sort ==
+        %w[outputs permissions runs-on steps timeout-minutes],
+        "candidate materializer job contract changed")
+  check(job["runs-on"] == "ubuntu-latest" &&
+        job["timeout-minutes"] == 120 &&
+        exact_permissions?(job["permissions"], {
+          "actions" => "read", "contents" => "read",
+        }), "candidate materializer authority changed")
+  check(job["outputs"] == {
+    "abi" => "${{ steps.candidate.outputs.abi }}",
+    "campaign-tag" => "${{ steps.candidate.outputs.campaign-tag }}",
+    "formula" => "${{ steps.candidate.outputs.formula }}",
+    "release-tag" => "${{ steps.candidate.outputs.release-tag }}",
+    "source-tap-commit" =>
+      "${{ steps.candidate.outputs.source-tap-commit }}",
+  }, "candidate materializer output authority changed")
+
+  steps = job_steps(job, "candidate materializer")
+  expected_uses = [
+    *Array.new(5, STANDARD_CHECKOUT_ACTION),
+    NIX_ACTION, MAGIC_NIX_ACTION,
+    *Array.new(2, DOWNLOAD_ACTION),
+    *Array.new(3, UPLOAD_ACTION),
+  ].sort
+  check(steps.filter_map { |step| step["uses"] }.sort == expected_uses,
+        "candidate materializer action set or pin changed")
+  checkout_views = steps.select do |step|
+    step["uses"] == STANDARD_CHECKOUT_ACTION
+  end.to_h { |step| [step.fetch("name"), step.fetch("with")] }
+  check(checkout_views == {
+    "Checkout exact merged Kandelo authority" => {
+      "persist-credentials" => false,
+      "repository" => "Automattic/kandelo",
+      "ref" => "${{ inputs.merge-commit }}",
+      "path" => "kandelo-main", "fetch-depth" => 0,
+      "submodules" => false,
+    },
+    "Checkout exact bottle producer as inert data" => {
+      "persist-credentials" => false,
+      "repository" => "Automattic/kandelo",
+      "ref" => "${{ inputs.producer-sha }}",
+      "path" => "producer", "fetch-depth" => 0,
+      "submodules" => false,
+    },
+    "Checkout protected tap authority" => {
+      "persist-credentials" => false,
+      "ref" => "${{ github.sha }}",
+      "fetch-depth" => 0, "path" => "tap-authority",
+    },
+    "Checkout exact candidate tap source" => {
+      "persist-credentials" => false,
+      "repository" => "${{ github.repository }}",
+      "ref" => "${{ steps.candidate.outputs.source-tap-commit }}",
+      "path" => "tap-source", "fetch-depth" => 0,
+    },
+    "Checkout exact native Homebrew campaign input" => {
+      "persist-credentials" => false,
+      "repository" => "Homebrew/brew",
+      "ref" => "${{ steps.candidate.outputs.native-homebrew-commit }}",
+      "path" => "native-homebrew",
+    },
+  }, "candidate materializer checkout authority changed")
+
+  admit = named_step(steps, "Admit the protected tap promotion caller")
+  check(steps.first.equal?(admit) && admit.keys.sort == %w[env name run shell] &&
+        admit["shell"] == "bash" && admit["env"] == {
+          "CANDIDATE_TAG" => "${{ inputs.candidate-tag }}",
+          "CALLER_REF" => "${{ github.ref }}",
+          "CALLER_REPOSITORY" => "${{ github.repository }}",
+          "CALLER_WORKFLOW_REF" => "${{ github.workflow_ref }}",
+          "FORMULA" => "${{ inputs.formula }}",
+          "MERGE_COMMIT" => "${{ inputs.merge-commit }}",
+          "PRODUCER_SHA" => "${{ inputs.producer-sha }}",
+        }, "candidate materializer caller admission mapping changed")
+  [
+    'promote-candidate-bottle.yml@refs/heads/main',
+    '[ "$CALLER_REPOSITORY" = \\',
+    'kandelo-dev/homebrew-tap-core',
+    '[ "$CALLER_REF" = refs/heads/main ]',
+    '[ "$CALLER_WORKFLOW_REF" = "$expected_caller" ]',
+    '[[ "$FORMULA" =~ ^[a-z0-9][a-z0-9._-]{0,254}$ ]]',
+    '[[ "$PRODUCER_SHA" =~ ^[0-9a-f]{40}$ ]]',
+    '[[ "$MERGE_COMMIT" =~ ^[0-9a-f]{40}$ ]]',
+    '^homebrew-bottle-candidate-pr-[1-9][0-9]*-run-',
+  ].each do |fragment|
+    check(admit.fetch("run").include?(fragment),
+          "candidate materializer caller admission lacks #{fragment}")
+  end
+
+  credential_names = %w[
+    GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN
+    HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN
+  ]
+  credential_steps = steps.select do |step|
+    !(step.fetch("env", {}).keys & credential_names).empty?
+  end
+  check(credential_steps.map { |step| step["name"] } == [
+    "Authenticate candidate runs and locate sealer receipts",
+    "Regenerate and admit exact package input on the merge tree",
+    "Admit the exact merge with protected-main code",
+  ] && credential_steps.all? do |step|
+    step.fetch("env").slice(*credential_names) == {
+      "GH_TOKEN" => "${{ github.token }}",
+    }
+  end, "candidate materializer read token escapes reviewed admission steps")
+
+  describe = named_step(
+    steps, "Authenticate candidate runs and locate sealer receipts"
+  )
+  check(describe["id"] == "candidate" && describe["env"] == {
+    "CANDIDATE_TAG" => "${{ inputs.candidate-tag }}",
+    "EXPECTED_FORMULA" => "${{ inputs.formula }}",
+    "EXPECTED_PRODUCER" => "${{ inputs.producer-sha }}",
+    "GH_TOKEN" => "${{ github.token }}",
+    "TAP_REPOSITORY" => "${{ github.repository }}",
+  }, "candidate materializer immutable release mapping changed")
+  describe_run = describe.fetch("run")
+  [
+    'releases/tags/$CANDIDATE_TAG',
+    '.draft == false', '.prerelease == false', '.immutable == true',
+    '.name == "candidate.json"',
+    'curl --disable --fail --location --silent --show-error',
+    'env -u GH_TOKEN -u GITHUB_TOKEN \\',
+    '-u ACTIONS_ID_TOKEN_REQUEST_TOKEN',
+    '-u ACTIONS_RUNTIME_TOKEN',
+    'python3 kandelo-main/scripts/homebrew-bottle-candidate.py \\',
+    'describe-release', '.manifest.formula.arch == "wasm32"',
+    '.manifest.dependencies == []',
+    '.manifest.source.producer_commit == $producer',
+    '.manifest.run.caller_commit ==',
+    'homebrew-candidate-campaign.py',
+    'fetch-release',
+    'candidate-prefix-campaign.json',
+    'candidate-campaign-manifest.json',
+    '.source.producer_commit ==',
+    '.source.pr_number ==',
+    '.source.source_tap_commit ==',
+    '.source.abi ==',
+    '.source.guest_layout.sha256 ==',
+    'native-homebrew-commit=',
+    'select(.path == "package-input.json")',
+    'actions/runs/$run_id/attempts/$attempt"',
+    'actions/runs/$run_id/attempts/$attempt/jobs?per_page=100',
+    '.status == "completed" and .conclusion == "success"',
+    'homebrew-candidate-release-receipt-',
+    'homebrew-candidate-campaign-release-',
+    'workflow_run.id == $run_id',
+    'workflow_run.head_sha == $caller',
+  ].each do |fragment|
+    check(describe_run.include?(fragment),
+          "candidate materializer immutable release admission lacks #{fragment}")
+  end
+  check(describe_run.scan("<= 16777216").length == 2,
+        "candidate materializer no longer bounds manifest or receipt bytes")
+
+  promotion_pin = named_step(
+    steps, "Require the promotion caller to pin the exact merge"
+  )
+  check(promotion_pin.keys.sort == %w[env name run shell] &&
+        promotion_pin["env"] == {
+          "MERGE_COMMIT" => "${{ inputs.merge-commit }}",
+        } && promotion_pin.fetch("run").include?(
+          "homebrew-candidate-caller-pins.py"
+        ) && promotion_pin.fetch("run").include?(
+          '--mode promotion --kandelo-sha "$MERGE_COMMIT"'
+        ), "candidate materializer does not prove its immutable merge pin")
+
+  {
+    "Download exact bottle sealer receipt" => {
+      "artifact-ids" =>
+        "${{ steps.candidate.outputs.bottle-receipt-artifact-id }}",
+      "github-token" => "${{ github.token }}",
+      "repository" => "${{ github.repository }}",
+      "run-id" => "${{ steps.candidate.outputs.bottle-run-id }}",
+      "path" => "${{ runner.temp }}/bottle-sealer-receipt",
+    },
+    "Download exact campaign sealer receipt" => {
+      "artifact-ids" =>
+        "${{ steps.candidate.outputs.campaign-receipt-artifact-id }}",
+      "github-token" => "${{ github.token }}",
+      "repository" => "${{ github.repository }}",
+      "run-id" => "${{ steps.candidate.outputs.campaign-run-id }}",
+      "path" => "${{ runner.temp }}/campaign-sealer-receipt",
+    },
+  }.each do |name, with|
+    download = named_step(steps, name)
+    check(download["uses"] == DOWNLOAD_ACTION && download["with"] == with,
+          "candidate materializer #{name} contract changed")
+  end
+
+  bind_receipts = named_step(
+    steps, "Bind public candidate bytes to protected sealer receipts"
+  )
+  check((bind_receipts.fetch("env", {}).keys & credential_names).empty?,
+        "candidate receipt validation received a credential")
+  [
+    'homebrew-candidate-release-receipt.py \\', 'plan \\',
+    'candidate-release-receipt.json', 'candidate-campaign-release.json',
+    '--release-assets "$RUNNER_TEMP/candidate-release-assets.json"',
+    '--release-assets \\', '--target-commit "$bottle_target"',
+    '--target-commit "$campaign_target"',
+    'curl --disable --fail --location --silent --show-error',
+    'verify-readback \\',
+    '--asset-root "$RUNNER_TEMP/homebrew-candidate-release"',
+    '--asset-root "$RUNNER_TEMP/homebrew-candidate-campaign-release"',
+  ].each do |fragment|
+    check(bind_receipts.fetch("run").include?(fragment),
+          "candidate receipt validation lacks #{fragment}")
+  end
+
+  package = named_step(
+    steps, "Regenerate and admit exact package input on the merge tree"
+  )
+  package_run = package.fetch("run")
+  [
+    'cd kandelo-main',
+    'materialize-homebrew-candidate-package-input.sh',
+    '--producer-sha "$PRODUCER_SHA"',
+    '--expected-abi "$EXPECTED_ABI"',
+    '--consumer-sha "$MERGE_COMMIT"',
+    'env -u GH_TOKEN -u GITHUB_TOKEN \\',
+    'python3 scripts/homebrew-bottle-candidate.py \\',
+    'admit-package-input',
+    '--validated-main "$MERGE_COMMIT"',
+  ].each do |fragment|
+    check(package_run.include?(fragment),
+          "candidate package re-materialization lacks #{fragment}")
+  end
+
+  live = named_step(steps, "Admit the exact merge with protected-main code")
+  check(live["env"] == {
+    "CANDIDATE_TAG" => "${{ inputs.candidate-tag }}",
+    "GH_TOKEN" => "${{ github.token }}",
+    "MERGE_COMMIT" => "${{ inputs.merge-commit }}",
+    "TAP_REPOSITORY" => "${{ github.repository }}",
+  }, "candidate live promotion evidence mapping changed")
+  live_run = live.fetch("run")
+  [
+    'completed-candidate-campaign-run.json',
+    '/repos/Automattic/kandelo/compare/$MERGE_COMMIT...$current_kandelo_main',
+    'ahead|identical)',
+    'env -u GH_TOKEN -u GITHUB_TOKEN \\',
+    'homebrew-candidate-campaign.py \\',
+    'admit \\',
+    '--candidate "$campaign_manifest"',
+    '--campaign "$RUNNER_TEMP/candidate-prefix-campaign.json"',
+    '--completed-run-evidence \\',
+    'completed-candidate-campaign-run.json',
+    '--native-brew-root "$GITHUB_WORKSPACE/native-homebrew"',
+    '--out "$RUNNER_TEMP/candidate-campaign-admission.json"',
+    'python3 kandelo-main/scripts/homebrew-bottle-candidate.py \\',
+    'materialize', '--candidate-tag "$CANDIDATE_TAG"',
+    '--merge-commit "$MERGE_COMMIT"',
+    '--current-kandelo-main "$current_kandelo_main"',
+    '--current-tap-main "$current_tap_main"',
+    '--out-package-input \\',
+    '--out-receipt "$RUNNER_TEMP/candidate-promotion.json"',
+  ].each do |fragment|
+    check(live_run.include?(fragment),
+          "candidate live promotion evidence lacks #{fragment}")
+  end
+  campaign_admission = live_run.index("homebrew-candidate-campaign.py")
+  bottle_materialization = live_run.index(
+    'python3 kandelo-main/scripts/homebrew-bottle-candidate.py'
+  )
+  check(campaign_admission && bottle_materialization &&
+        campaign_admission < bottle_materialization,
+        "candidate bottle materialization precedes campaign admission")
+
+  candidate_tool = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-bottle-candidate.py")
+  )
+  [
+    'value["workflow_authority_commit"] != value["base_commit"]',
+    '(package_input_path, "package-input.json", "package-input.json")',
+    '"package_input_sha256": package_record["sha256"]',
+    'value["package_input_sha256"] != sha256_bytes(package_payload)',
+    '"package-input.json": package_path',
+    'if set(current_files) != set(by_path):',
+  ].each do |fragment|
+    check(candidate_tool.include?(fragment),
+          "candidate materializer trusted tool lacks #{fragment}")
+  end
+  check(!candidate_tool.include?("headRefOid") &&
+        !candidate_tool.include?("--pr-json"),
+        "candidate materializer depends on mutable pull-request state")
+
+  receipt_tool = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-candidate-release-receipt.py")
+  )
+  [
+    '"assets",', '"immutable",', '"release_id",', '"target_commitish",',
+    'value["visibility"] != "public-anonymous-readback"',
+    'if set(by_name) != set(receipt_by_name):',
+    'live["digest"] != f"sha256:{recorded[\'sha256\']}"',
+    'if actual != expected:',
+    'sha256_file(path) != asset["sha256"]',
+  ].each do |fragment|
+    check(receipt_tool.include?(fragment),
+          "candidate release receipt validator lacks #{fragment}")
+  end
+
+  caller_pin_tool = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-candidate-caller-pins.py")
+  )
+  [
+    'BASE_TOKEN = "__KANDELO_CANDIDATE_BASE_SHA__"',
+    'MERGE_TOKEN = "__KANDELO_CANDIDATE_MERGE_SHA__"',
+    'if found != wanted:',
+    'if "@main" in text or BASE_TOKEN in text or MERGE_TOKEN in text:',
+  ].each do |fragment|
+    check(caller_pin_tool.include?(fragment),
+          "candidate caller pin validator lacks #{fragment}")
+  end
+
+  probe = named_step(steps, "Re-probe the collision-sensitive child reference")
+  check((probe.fetch("env").keys & credential_names).empty? &&
+        probe.fetch("run").include?(
+          'env -u GH_TOKEN -u GITHUB_TOKEN \\'
+        ) &&
+        probe.fetch("run").include?(
+          '(.status == "missing" and .digest == null) or'
+        ) &&
+        probe.fetch("run").include?(
+          '(.status == "present" and .digest == $digest)'
+        ), "candidate destination re-probe is not anonymous and immutable")
+
+  expected_artifacts = {
+    "Upload exact build handoff for the publisher" => {
+      "name" =>
+        "homebrew-build-handoff-${{ steps.candidate.outputs.formula }}-" \
+        "wasm32-attempt-${{ github.run_attempt }}",
+      "path" => "${{ runner.temp }}/homebrew-build-handoff",
+      "compression-level" => 0,
+      "if-no-files-found" => "error", "retention-days" => 2,
+    },
+    "Upload exact OCI child for the publisher" => {
+      "name" =>
+        "homebrew-oci-child-${{ steps.candidate.outputs.formula }}-" \
+        "wasm32-attempt-${{ github.run_attempt }}",
+      "path" => "${{ runner.temp }}/homebrew-oci-child",
+      "compression-level" => 0,
+      "if-no-files-found" => "error", "retention-days" => 2,
+    },
+    "Retain bounded promotion evidence" => {
+      "name" =>
+        "homebrew-candidate-promotion-${{ steps.candidate.outputs.formula }}-" \
+        "wasm32-attempt-${{ github.run_attempt }}",
+      "path" => "${{ runner.temp }}/candidate-promotion.json\n" \
+        "${{ runner.temp }}/candidate-campaign-admission.json\n" \
+        "${{ runner.temp }}/candidate-package-input.json\n" \
+        "${{ runner.temp }}/live-child-probe.json\n",
+      "compression-level" => 0,
+      "if-no-files-found" => "error", "retention-days" => 90,
+    },
+  }
+  expected_artifacts.each do |name, with|
+    step = named_step(steps, name)
+    check(step["uses"] == UPLOAD_ACTION && step["with"] == with,
+          "candidate materializer #{name} artifact contract changed")
+  end
+  check(contract_digest(steps) == CANDIDATE_MATERIALIZER_STEPS_DIGEST,
+        "candidate materializer step contract changed")
+end
+
+def check_candidate_promotion_caller(path)
+  workflow = load_workflow(path)
+  top_keys = workflow.keys.map { |key| key == true ? "on" : key.to_s }.sort
+  check(top_keys == %w[jobs name on],
+        "candidate promotion caller has unexpected top-level configuration")
+  check(workflow["name"] == "Promote exact merged Kandelo bottle candidate",
+        "candidate promotion caller name changed")
+  check(workflow_events(workflow) == {
+    "repository_dispatch" => {
+      "types" => ["promote-kandelo-bottle-candidate"],
+    },
+  }, "candidate promotion caller event changed")
+  check(!workflow.key?("permissions") &&
+        values_for_key(workflow, "secrets").empty?,
+        "candidate promotion caller has workflow-wide authority or secrets")
+
+  jobs = workflow_jobs(workflow)
+  check(jobs.keys == %w[admit materialize publish seal-formula-handoff],
+        "candidate promotion caller job set changed")
+  admit = jobs.fetch("admit")
+  materialize = jobs.fetch("materialize")
+  publish = jobs.fetch("publish")
+  seal = jobs.fetch("seal-formula-handoff")
+  check(admit.keys.sort ==
+        %w[outputs permissions runs-on steps timeout-minutes] &&
+        admit["runs-on"] == "ubuntu-latest" &&
+        admit["timeout-minutes"] == 10 &&
+        exact_permissions?(admit["permissions"], { "contents" => "read" }),
+        "candidate promotion admission authority changed")
+  check(admit["outputs"] == {
+    "candidate-tag" => "${{ steps.admit.outputs.candidate-tag }}",
+    "formula" => "${{ steps.admit.outputs.formula }}",
+    "merge-commit" => "${{ steps.admit.outputs.merge-commit }}",
+    "producer-sha" => "${{ steps.admit.outputs.producer-sha }}",
+    "rootfs-generation" =>
+      "${{ steps.admit.outputs.rootfs-generation }}",
+  }, "candidate promotion admission outputs changed")
+  admit_steps = job_steps(admit, "candidate promotion admission")
+  check(admit_steps.length == 1,
+        "candidate promotion admission executes extra steps")
+  admission = named_step(admit_steps, "Admit one exact promotion request")
+  check(admission.keys.sort == %w[env id name run shell] &&
+        admission["id"] == "admit" && admission["shell"] == "bash" &&
+        admission["env"] == {
+          "GH_TOKEN" => "${{ github.token }}",
+          "TAP_REPOSITORY" => "${{ github.repository }}",
+          "TAP_SHA" => "${{ github.sha }}",
+        }, "candidate promotion dispatch admission mapping changed")
+  admission_run = admission.fetch("run")
+  [
+    'keys == [', '"candidate_tag"', '"formula"', '"merge_commit"',
+    '"producer_sha"', '"rootfs_generation"',
+    '^homebrew-bottle-candidate-pr-[1-9][0-9]*-run-',
+    'test("^[0-9a-f]{40}$")',
+    '^package-generation-rootfs-wasm32-abi-v[1-9][0-9]*-sha256-',
+    '"/repos/$TAP_REPOSITORY/git/ref/heads/main"',
+    '[ "$TAP_SHA" = "$current_main" ]',
+  ].each do |fragment|
+    check(admission_run.include?(fragment),
+          "candidate promotion dispatch admission lacks #{fragment}")
+  end
+
+  check(materialize.keys.sort == %w[needs permissions uses with] &&
+        materialize["needs"] == ["admit"] &&
+        exact_permissions?(materialize["permissions"], {
+          "actions" => "read", "contents" => "read",
+        }) &&
+        materialize["uses"] ==
+          "Automattic/kandelo/.github/workflows/" \
+          "reusable-homebrew-bottle-candidate-materialize.yml@" \
+          "__KANDELO_CANDIDATE_MERGE_SHA__" &&
+        materialize["with"] == {
+          "candidate-tag" => "${{ needs.admit.outputs.candidate-tag }}",
+          "formula" => "${{ needs.admit.outputs.formula }}",
+          "producer-sha" => "${{ needs.admit.outputs.producer-sha }}",
+          "merge-commit" => "${{ needs.admit.outputs.merge-commit }}",
+        }, "candidate promotion materializer call changed")
+  check(publish.keys.sort == %w[needs permissions uses with] &&
+        publish["needs"] == %w[admit materialize] &&
+        exact_permissions?(publish["permissions"], {
+          "actions" => "read", "contents" => "read", "packages" => "write",
+        }) &&
+        publish["uses"] ==
+          "Automattic/kandelo/.github/workflows/" \
+          "reusable-homebrew-bottle-publish.yml@" \
+          "__KANDELO_CANDIDATE_MERGE_SHA__" &&
+        publish["with"] == {
+          "kandelo-repository" => "Automattic/kandelo",
+          "kandelo-ref" => "${{ needs.admit.outputs.merge-commit }}",
+          "tap-repository" => "kandelo-dev/homebrew-tap-core",
+          "tap-name" => "kandelo-dev/tap-core",
+          "tap-ref" =>
+            "${{ needs.materialize.outputs.source-tap-commit }}",
+          "formulae" => "${{ needs.admit.outputs.formula }}",
+          "arches" => "wasm32",
+          "release-tag" => "${{ needs.materialize.outputs.release-tag }}",
+          "expected-cache-keys" => "",
+          "package-generation-wasm32" =>
+            "${{ needs.admit.outputs.rootfs-generation }}",
+          "force" => true, "dry-run" => false,
+          "require-vfs-acceptance" => false,
+          "defer-tap-finalization" => true,
+          "prefix-campaign-tag" =>
+            "${{ needs.materialize.outputs.campaign-tag }}",
+          "prefix-campaign-dependencies" =>
+            '{"dependencies":[],"schema":1}',
+          "candidate-promotion-tag" =>
+            "${{ needs.admit.outputs.candidate-tag }}",
+          "candidate-producer-sha" =>
+            "${{ needs.admit.outputs.producer-sha }}",
+        }, "candidate promotion publisher call changed")
+
+  check(seal.keys.sort ==
+        %w[needs permissions runs-on steps timeout-minutes] &&
+        seal["needs"] == %w[admit materialize publish] &&
+        seal["runs-on"] == "ubuntu-latest" &&
+        seal["timeout-minutes"] == 90 &&
+        exact_permissions?(seal["permissions"], {
+          "actions" => "read", "contents" => "write",
+        }), "candidate promotion Formula handoff authority changed")
+  seal_steps = job_steps(seal, "candidate promotion Formula handoff")
+  expected_actions = [
+    *Array.new(4, STANDARD_CHECKOUT_ACTION),
+    *Array.new(2, DOWNLOAD_ACTION),
+    NIX_ACTION, MAGIC_NIX_ACTION, UPLOAD_ACTION,
+  ].sort
+  check(seal_steps.filter_map { |step| step["uses"] }.sort ==
+        expected_actions,
+        "candidate promotion Formula handoff action set or pin changed")
+  check(seal_steps.select do |step|
+    step["uses"] == STANDARD_CHECKOUT_ACTION
+  end.all? { |step| step.dig("with", "persist-credentials") == false },
+        "candidate promotion Formula handoff persists checkout credentials")
+  check(values_for_key(seal, "run").none? do |source|
+    source.is_a?(String) && source.include?("${{")
+  end, "candidate promotion Formula handoff interpolates expressions into shell")
+
+  handoff_download = named_step(
+    seal_steps, "Download the exact validated publication handoff"
+  )
+  check(handoff_download["uses"] == DOWNLOAD_ACTION &&
+        handoff_download["with"] == {
+          "name" =>
+            "homebrew-publish-handoff-" \
+            "${{ needs.admit.outputs.formula }}-wasm32-attempt-" \
+            "${{ github.run_attempt }}",
+          "path" => "${{ runner.temp }}/candidate-publication",
+        }, "candidate promotion publication handoff download changed")
+  campaign_admission_download = named_step(
+    seal_steps, "Download exact candidate campaign admission"
+  )
+  check(campaign_admission_download["uses"] == DOWNLOAD_ACTION &&
+        campaign_admission_download["with"] == {
+          "name" =>
+            "homebrew-candidate-promotion-" \
+            "${{ needs.admit.outputs.formula }}-wasm32-attempt-" \
+            "${{ github.run_attempt }}",
+          "path" => "${{ runner.temp }}/candidate-promotion",
+        }, "candidate promotion campaign admission download changed")
+  derive = named_step(
+    seal_steps, "Derive the immutable campaign Formula handoff"
+  )
+  check(derive.fetch("env") == {
+    "ABI" => "${{ needs.materialize.outputs.abi }}",
+    "CAMPAIGN_TAG" => "${{ needs.materialize.outputs.campaign-tag }}",
+    "FORMULA" => "${{ needs.admit.outputs.formula }}",
+    "MERGE_COMMIT" => "${{ needs.admit.outputs.merge-commit }}",
+    "PRODUCER_SHA" => "${{ needs.admit.outputs.producer-sha }}",
+    "TAP_SHA" => "${{ needs.materialize.outputs.source-tap-commit }}",
+  } && (derive.fetch("env").keys & %w[GH_TOKEN GITHUB_TOKEN]).empty?,
+        "candidate promotion handoff derivation received credentials")
+  [
+    'python3 kandelo/scripts/homebrew-candidate-campaign.py \\',
+    'fetch-release',
+    'validate-admission',
+    'candidate-campaign-admission.json',
+    '--merge-commit "$MERGE_COMMIT"',
+    '--abi "$ABI"',
+    'python3 kandelo/scripts/homebrew-prefix-campaign-publisher.py \\',
+    '--kandelo-root "$GITHUB_WORKSPACE/producer"',
+    '--kandelo-commit "$PRODUCER_SHA"',
+    '--dependencies \'{"dependencies":[],"schema":1}\'',
+    'derive-build --campaign "$campaign"',
+    '"wasm32=$RUNNER_TEMP/candidate-publication"',
+    'prepare-release --campaign "$campaign"',
+  ].each do |fragment|
+    check(derive.fetch("run").include?(fragment),
+          "candidate promotion Formula handoff derivation lacks #{fragment}")
+  end
+  admission_validation = derive.fetch("run").index("validate-admission")
+  formula_derivation = derive.fetch("run").index("derive-build")
+  check(admission_validation && formula_derivation &&
+        admission_validation < formula_derivation,
+        "candidate Formula derivation precedes campaign admission")
+  write = named_step(
+    seal_steps, "Publish the now-main-reachable Formula handoff"
+  )
+  check(write.fetch("env").slice("GH_TOKEN") == {
+    "GH_TOKEN" => "${{ github.token }}",
+  }, "candidate promotion Formula handoff credential changed")
+  [
+    'bash kandelo/scripts/publish-immutable-github-release.sh \\',
+    '--lock-root "$GITHUB_WORKSPACE/tap-authority"',
+    '--kandelo-main-contains-sha "$PRODUCER_SHA"',
+    '--target-main-contains-sha "$SOURCE_TAP_SHA"',
+  ].each do |fragment|
+    check(write.fetch("run").include?(fragment),
+          "candidate promotion Formula handoff write lacks #{fragment}")
+  end
+  retained = named_step(seal_steps, "Retain handoff publication evidence")
+  check(retained["uses"] == UPLOAD_ACTION && retained["with"] == {
+    "name" =>
+      "promoted-formula-handoff-${{ needs.admit.outputs.formula }}-" \
+      "wasm32-attempt-${{ github.run_attempt }}",
+    "path" => "${{ runner.temp }}/formula-handoff-release.json",
+    "if-no-files-found" => "error", "retention-days" => 90,
+  }, "candidate promotion Formula handoff evidence changed")
+  check(contract_digest(workflow) == TAP_CANDIDATE_PROMOTION_DIGEST,
+        "candidate promotion caller contract changed")
 end
 
 def check_tap_callers
@@ -888,8 +2077,57 @@ def check_tap_callers
     expected_name: "Publish Kandelo bottles",
     event_type: "publish-kandelo-bottles",
     job_name: "publish",
-    reusable: "Automattic/kandelo/.github/workflows/reusable-homebrew-bottle-publish.yml@main",
+    reusable: "Automattic/kandelo/.github/workflows/" \
+      "reusable-homebrew-bottle-publish.yml@main",
     inputs: write_publish_inputs,
+  )
+
+  check_tap_caller(
+    File.join(TAP_CALLER_ROOT, "candidate-bottles.yml"),
+    expected_name: "Build Kandelo bottle candidate",
+    event_type: "build-kandelo-bottle-candidate",
+    job_name: "candidate",
+    reusable: "Automattic/kandelo/.github/workflows/" \
+      "reusable-homebrew-bottle-publish.yml@" \
+      "__KANDELO_CANDIDATE_BASE_SHA__",
+    permissions: { "actions" => "read", "contents" => "write" },
+    inputs: {
+      "kandelo-repository" => "Automattic/kandelo",
+      "kandelo-ref" => "${{ github.event.client_payload.kandelo_ref }}",
+      "tap-repository" => "kandelo-dev/homebrew-tap-core",
+      "tap-name" => "kandelo-dev/tap-core",
+      "tap-ref" => "${{ github.event.client_payload.tap_ref }}",
+      "formulae" => "${{ github.event.client_payload.formula }}",
+      "arches" => "${{ github.event.client_payload.arch }}",
+      "force" => true,
+      "dry-run" => true,
+      "candidate-pr-number" => "${{ github.event.client_payload.pr_number }}",
+      "candidate-package-staging-tag" =>
+        "${{ github.event.client_payload.package_staging_tag }}",
+      "prefix-campaign-tag" =>
+        "${{ github.event.client_payload.prefix_campaign_tag }}",
+      "prefix-campaign-dependencies" =>
+        "${{ github.event.client_payload.prefix_campaign_dependencies }}",
+    },
+  )
+
+  check_tap_caller(
+    File.join(TAP_CALLER_ROOT, "candidate-campaign.yml"),
+    expected_name: "Prepare Kandelo candidate bottle campaign",
+    event_type: "prepare-kandelo-candidate-campaign",
+    job_name: "campaign",
+    reusable: "Automattic/kandelo/.github/workflows/" \
+      "reusable-homebrew-candidate-campaign.yml@" \
+      "__KANDELO_CANDIDATE_BASE_SHA__",
+    permissions: { "actions" => "read", "contents" => "write" },
+    inputs: {
+      "kandelo-repository" => "Automattic/kandelo",
+      "producer-sha" => "${{ github.event.client_payload.kandelo_ref }}",
+      "pr-number" => "${{ github.event.client_payload.pr_number }}",
+      "tap-repository" => "kandelo-dev/homebrew-tap-core",
+      "tap-name" => "kandelo-dev/tap-core",
+      "tap-sha" => "${{ github.event.client_payload.tap_ref }}",
+    },
   )
 
   check_tap_caller(
@@ -937,6 +2175,10 @@ def check_tap_callers
       "deletion-reason" => "${{ github.event.client_payload.deletion_reason || '' }}",
     },
   )
+
+  check_candidate_promotion_caller(
+    File.join(TAP_CALLER_ROOT, "promote-candidate-bottle.yml")
+  )
 end
 
 def check_native_compatibility_workflow(workflow)
@@ -957,7 +2199,9 @@ def check_native_compatibility_workflow(workflow)
     "pull_request" => {
       "paths" => [
         ".github/workflows/homebrew-native-publisher-compatibility.yml",
+        ".github/workflows/reusable-homebrew-bottle-candidate-materialize.yml",
         ".github/workflows/reusable-homebrew-bottle-publish.yml",
+        ".github/workflows/reusable-homebrew-candidate-campaign.yml",
         ".github/workflows/reusable-homebrew-prefix-first-child-publish.yml",
         "flake.lock",
         "flake.nix",
@@ -1738,6 +2982,10 @@ def check_publisher(workflow)
     "defer-tap-finalization" => { "type" => "boolean", "default" => false },
     "prefix-campaign-tag" => { "type" => "string", "default" => "" },
     "prefix-campaign-dependencies" => { "type" => "string", "default" => "" },
+    "candidate-pr-number" => { "type" => "string", "default" => "" },
+    "candidate-package-staging-tag" => { "type" => "string", "default" => "" },
+    "candidate-promotion-tag" => { "type" => "string", "default" => "" },
+    "candidate-producer-sha" => { "type" => "string", "default" => "" },
   }, "publisher inputs changed")
   check(!workflow.key?("permissions"), "publisher requests workflow-wide permissions")
   check_common(workflow, "reusable publisher")
@@ -1746,7 +2994,7 @@ def check_publisher(workflow)
         "publisher still accepts a caller secret")
 
   jobs = workflow_jobs(workflow)
-  check(jobs.keys.sort == %w[build-and-test finalize-tap plan publish-bottle-index publish-vfs-release upload-bottle verify-bottle],
+  check(jobs.keys.sort == %w[build-and-test finalize-tap plan publish-bottle-index publish-vfs-release seal-bottle-candidate upload-bottle verify-bottle],
         "publisher has an unexpected job set")
   plan = jobs.fetch("plan")
   build = jobs.fetch("build-and-test")
@@ -1755,6 +3003,7 @@ def check_publisher(workflow)
   verify = jobs.fetch("verify-bottle")
   finalize = jobs.fetch("finalize-tap")
   vfs_release = jobs.fetch("publish-vfs-release")
+  candidate = jobs.fetch("seal-bottle-candidate")
 
   check(plan.keys.sort == %w[outputs permissions runs-on steps],
         "publisher plan contract changed")
@@ -1772,6 +3021,13 @@ def check_publisher(workflow)
         "publisher version-index job contract changed")
   check(vfs_release.keys.sort == %w[if needs permissions runs-on steps timeout-minutes],
         "publisher VFS release job contract changed")
+  check(candidate.keys.sort == %w[if needs permissions runs-on steps timeout-minutes],
+        "publisher candidate sealer job contract changed")
+  check(candidate["runs-on"] == "ubuntu-latest" &&
+        candidate["timeout-minutes"] == 90 &&
+        exact_permissions?(candidate["permissions"], {
+          "actions" => "read", "contents" => "write",
+        }), "publisher candidate sealer authority changed")
   check(plan["runs-on"] == "ubuntu-latest" &&
         exact_permissions?(plan["permissions"], { "contents" => "read" }),
         "publisher plan authority changed")
@@ -1819,7 +3075,8 @@ def check_publisher(workflow)
     "matrix" => { "include" => "${{ fromJson(needs.plan.outputs.formula-matrix) }}" },
   }, "publisher version-index job bypasses the validated Formula matrix")
   check(build["needs"] == ["plan"] &&
-        build["if"] == "${{ needs.plan.outputs.matrix != '[]' }}",
+        build["if"] == "${{ needs.plan.outputs.matrix != '[]' && " \
+                       "needs.plan.outputs.candidate-promotion-mode != 'true' }}",
         "publisher build graph changed")
   check(upload["needs"] == %w[plan build-and-test] &&
         upload["if"] == "${{ always() && !cancelled() && !inputs.dry-run && " \
@@ -1846,6 +3103,13 @@ def check_publisher(workflow)
                                "needs.finalize-tap.result == 'success' && " \
                                "needs.plan.outputs.vfs-acceptance-formula != '' }}",
         "publisher VFS release graph or evidence gate changed")
+  check(candidate["needs"] == %w[plan build-and-test verify-bottle] &&
+        candidate["if"] == "${{ always() && !cancelled() && " \
+          "needs.plan.result == 'success' && " \
+          "needs.plan.outputs.candidate-mode == 'true' && " \
+          "needs.build-and-test.result == 'success' && " \
+          "needs.verify-bottle.result == 'success' }}",
+        "publisher candidate sealer graph or read-only evidence gate changed")
 
   plan_steps = job_steps(plan, "publisher plan")
   build_steps = job_steps(build, "publisher build")
@@ -1854,6 +3118,7 @@ def check_publisher(workflow)
   verify_steps = job_steps(verify, "publisher verification")
   finalize_steps = job_steps(finalize, "publisher finalization")
   vfs_release_steps = job_steps(vfs_release, "publisher VFS release")
+  candidate_steps = job_steps(candidate, "publisher candidate sealer")
 
   validation = named_step(plan_steps, "Validate caller trust boundary")
   check(plan_steps.first.equal?(validation), "publisher trust validation must be first")
@@ -1863,6 +3128,7 @@ def check_publisher(workflow)
           "CALLER_EVENT_NAME" => "${{ github.event_name }}",
           "CALLER_REF" => "${{ github.ref }}",
           "CALLER_REPOSITORY" => "${{ github.repository }}",
+          "CALLER_SHA" => "${{ github.sha }}",
           "CALLER_WORKFLOW_REF" => "${{ github.workflow_ref }}",
           "DEFER_TAP_FINALIZATION" => "${{ inputs.defer-tap-finalization }}",
           "DRY_RUN" => "${{ inputs.dry-run }}",
@@ -1882,6 +3148,13 @@ def check_publisher(workflow)
           "TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
           "TAP_REF" => "${{ inputs.tap-ref }}",
           "BOTTLE_ROOT_URL" => "${{ inputs.bottle-root-url }}",
+          "CANDIDATE_PACKAGE_STAGING_TAG" =>
+            "${{ inputs.candidate-package-staging-tag }}",
+          "CANDIDATE_PR_NUMBER" => "${{ inputs.candidate-pr-number }}",
+          "CANDIDATE_PROMOTION_TAG" =>
+            "${{ inputs.candidate-promotion-tag }}",
+          "CANDIDATE_PRODUCER_SHA" =>
+            "${{ inputs.candidate-producer-sha }}",
         }, "publisher caller validation mapping changed")
   validation_run = validation.fetch("run")
   [
@@ -1892,6 +3165,7 @@ def check_publisher(workflow)
     '[ "$CALLER_REF" = "refs/heads/main" ]',
     '[ "$CALLER_EVENT_NAME" = "repository_dispatch" ]',
     '"$CALLER_REPOSITORY/.github/workflows/dry-run-bottles.yml@refs/heads/main"',
+    '"$CALLER_REPOSITORY/.github/workflows/candidate-bottles.yml@refs/heads/main"',
     '"$CALLER_REPOSITORY/.github/workflows/publish-bottles.yml@refs/heads/main"',
     '"$CALLER_REPOSITORY/.github/workflows/maintain-bottles.yml@refs/heads/main"',
     '[ "$KANDELO_REPOSITORY" = "Automattic/kandelo" ]',
@@ -1960,11 +3234,9 @@ def check_publisher(workflow)
         caller_index < dry_index && kandelo_index < dry_index && tap_name_index < dry_index,
         "publisher dry-run can bypass caller authority validation")
   check(dry_kandelo_ref_index && write_kandelo_ref_index && write_tap_ref_index &&
-        dry_index < dry_kandelo_ref_index && dry_kandelo_ref_index < write_kandelo_ref_index &&
-        dry_kandelo_ref_index < write_tap_ref_index,
+        dry_index < dry_kandelo_ref_index,
         "publisher does not separate selectable dry-run refs from reviewed write refs")
   check(write_generation_wasm32_index && write_generation_wasm64_index &&
-        write_tap_ref_index < write_generation_wasm32_index &&
         write_generation_wasm32_index < write_generation_wasm64_index,
         "publisher does not require both exact package generations on its write path")
 
@@ -2272,8 +3544,24 @@ def check_publisher(workflow)
       "${{ steps.trust.outputs.prefix-campaign-dependencies }}",
     "prefix-campaign-layout-sha256" =>
       "${{ steps.campaign-source.outputs.prefix-campaign-layout-sha256 }}",
+    "prefix-campaign-prepared-tap-commit" =>
+      "${{ steps.campaign-source.outputs.prefix-campaign-prepared-tap-commit }}",
+    "prefix-campaign-prepared-tap-tree" =>
+      "${{ steps.campaign-source.outputs.prefix-campaign-prepared-tap-tree }}",
     "artifact-name-prefix" =>
       "${{ steps.artifact-scope.outputs.prefix }}",
+    "candidate-mode" => "${{ steps.trust.outputs.candidate-mode }}",
+    "candidate-pr-number" =>
+      "${{ steps.trust.outputs.candidate-pr-number }}",
+    "candidate-package-staging-tag" =>
+      "${{ steps.trust.outputs.candidate-package-staging-tag }}",
+    "candidate-workflow-authority-sha" =>
+      "${{ steps.candidate-authority.outputs.kandelo-sha }}",
+    "candidate-tap-workflow-authority-sha" =>
+      "${{ steps.trust.outputs.candidate-tap-workflow-authority-sha }}",
+    "candidate-promotion-mode" =>
+      "${{ steps.trust.outputs.candidate-promotion-mode }}",
+    "bottle-producer-sha" => "${{ steps.bottle-producer.outputs.sha }}",
   }, "publisher plan outputs changed")
 
   campaign_materializations = [
@@ -2372,6 +3660,8 @@ def check_publisher(workflow)
         "ADMISSION_KIND" =>
           "${{ steps.campaign-source.outputs." \
           "prefix-campaign-destination-admission-kind }}",
+        "CANDIDATE_MODE" =>
+          "${{ steps.trust.outputs.candidate-mode }}",
         "DRY_RUN" => "${{ inputs.dry-run }}",
         "PREFIX_CAMPAIGN_MODE" =>
           "${{ steps.trust.outputs.prefix-campaign-mode }}",
@@ -2381,6 +3671,7 @@ def check_publisher(workflow)
   [
     '[ "$PREFIX_CAMPAIGN_MODE" = "true" ]',
     '[ "$DRY_RUN" = "true" ]',
+    '[ "$CANDIDATE_MODE" != "true" ]',
     'first-package-namespace-bootstrap-required',
     'prefix="prefix-campaign-bootstrap-dry-run-"',
     'echo "prefix=$prefix" >>"$GITHUB_OUTPUT"',
@@ -2439,14 +3730,17 @@ def check_publisher(workflow)
         source_commits["env"] == {
           "PREFIX_CAMPAIGN_MODE" =>
             "${{ steps.trust.outputs.prefix-campaign-mode }}",
+          "CANDIDATE_MODE" =>
+            "${{ steps.trust.outputs.candidate-mode }}",
           "DRY_RUN" => "${{ inputs.dry-run }}",
           "REQUESTED_KANDELO_SHA" => "${{ inputs.kandelo-ref }}",
         }, "publisher source-commit resolution mapping changed")
   [
     '[ "$DRY_RUN" = "false" ]',
+    '[ "$CANDIDATE_MODE" = "true" ]',
     '[ "$PREFIX_CAMPAIGN_MODE" = "true" ]',
     '[ "$kandelo_sha" != "$REQUESTED_KANDELO_SHA" ]',
-    "Kandelo checkout differs from the exact admitted main commit",
+    "Kandelo checkout differs from the exact requested source",
   ].each do |fragment|
     check(source_commits.fetch("run").include?(fragment),
           "publisher source checkout binding lacks #{fragment}")
@@ -2457,7 +3751,8 @@ def check_publisher(workflow)
   check(tap_source_binding.keys.sort == %w[env if name run shell] &&
         tap_source_binding["if"] ==
           "${{ !inputs.dry-run || " \
-          "steps.trust.outputs.prefix-campaign-mode == 'true' }}" &&
+          "steps.trust.outputs.prefix-campaign-mode == 'true' || " \
+          "steps.trust.outputs.candidate-mode == 'true' }}" &&
         tap_source_binding["shell"] == "bash" &&
         tap_source_binding["env"] == {
           "GH_TOKEN" => "${{ github.token }}",
@@ -2486,11 +3781,11 @@ def check_publisher(workflow)
         "publisher resolves immutable sources outside the planning boundary")
 
   expected_uses = [
-    *Array.new(23, CHECKOUT_ACTION),
-    *Array.new(6, NIX_ACTION),
-    *Array.new(3, MAGIC_NIX_ACTION),
-    *Array.new(9, UPLOAD_ACTION),
-    *Array.new(10, DOWNLOAD_ACTION),
+    *Array.new(35, CHECKOUT_ACTION),
+    *Array.new(7, NIX_ACTION),
+    *Array.new(4, MAGIC_NIX_ACTION),
+    *Array.new(11, UPLOAD_ACTION),
+    *Array.new(15, DOWNLOAD_ACTION),
   ].sort
   check(values_for_key(workflow, "uses").sort == expected_uses,
         "publisher action set or pin changed")
@@ -2528,6 +3823,39 @@ def check_publisher(workflow)
       },
     },
     {
+      "name" => "Checkout protected candidate validator authority",
+      "if" => "${{ steps.trust.outputs.candidate-mode == 'true' }}",
+      "with" => {
+        "persist-credentials" => false,
+        "repository" => "${{ inputs.kandelo-repository }}",
+        "ref" => "${{ steps.candidate-authority.outputs.kandelo-sha }}",
+        "path" => "candidate-authority", "submodules" => false,
+      },
+    },
+    {
+      "name" => "Checkout exact candidate caller as inert data",
+      "if" =>
+        "${{ steps.trust.outputs.candidate-mode == 'true' || " \
+        "steps.trust.outputs.candidate-promotion-mode == 'true' }}",
+      "with" => {
+        "persist-credentials" => false,
+        "repository" => "${{ inputs.tap-repository }}",
+        "ref" => "${{ github.sha }}",
+        "path" => "candidate-caller-data", "submodules" => false,
+      },
+    },
+    {
+      "name" => "Checkout promoted bottle producer",
+      "if" => "${{ steps.trust.outputs.candidate-promotion-mode == 'true' }}",
+      "with" => {
+        "persist-credentials" => false,
+        "repository" => "${{ inputs.kandelo-repository }}",
+        "ref" => "${{ inputs.candidate-producer-sha }}",
+        "path" => "bottle-producer", "fetch-depth" => 0,
+        "submodules" => false,
+      },
+    },
+    {
       "name" => "Checkout tap", "if" => nil,
       "with" => {
         "persist-credentials" => false,
@@ -2537,6 +3865,29 @@ def check_publisher(workflow)
       },
     },
   ], "publisher plan checkout wiring changed")
+  caller_pin = named_step(
+    plan_steps, "Require the candidate caller to pin exact Kandelo authority"
+  )
+  check(caller_pin.keys.sort == %w[env if name run shell] &&
+        normalized_expression(caller_pin["if"]) ==
+          "${{ steps.trust.outputs.candidate-mode == 'true' || " \
+          "steps.trust.outputs.candidate-promotion-mode == 'true' }}" &&
+        caller_pin["env"] == {
+          "CANDIDATE_MODE" =>
+            "${{ steps.trust.outputs.candidate-mode }}",
+          "CANDIDATE_SHA" =>
+            "${{ steps.candidate-authority.outputs.kandelo-sha }}",
+          "MERGE_SHA" => "${{ steps.trust.outputs.kandelo-ref }}",
+        }, "publisher candidate caller pin mapping changed")
+  [
+    'authority_root=candidate-authority', 'mode=bottle',
+    'authority_root=kandelo', 'mode=promotion',
+    'homebrew-candidate-caller-pins.py',
+    '--mode "$mode" --kandelo-sha "$expected_sha"',
+  ].each do |fragment|
+    check(caller_pin.fetch("run").include?(fragment),
+          "publisher candidate caller pin proof lacks #{fragment}")
+  end
   check(checkout_view.call(build_steps) == [
     {
       "name" => "Checkout Kandelo workflow source", "if" => nil,
@@ -2545,6 +3896,17 @@ def check_publisher(workflow)
         "repository" => "${{ inputs.kandelo-repository }}",
         "ref" => "${{ needs.plan.outputs.kandelo-sha }}",
         "path" => "kandelo", "submodules" => false,
+      },
+    },
+    {
+      "name" => "Checkout protected candidate package-reader authority",
+      "if" => "${{ needs.plan.outputs.candidate-mode == 'true' }}",
+      "with" => {
+        "persist-credentials" => false,
+        "repository" => "${{ inputs.kandelo-repository }}",
+        "ref" =>
+          "${{ needs.plan.outputs.candidate-workflow-authority-sha }}",
+        "path" => "candidate-authority", "submodules" => false,
       },
     },
     {
@@ -2593,6 +3955,16 @@ def check_publisher(workflow)
       },
     },
     {
+      "name" => "Checkout promoted bottle producer for upload",
+      "if" => "${{ needs.plan.outputs.candidate-promotion-mode == 'true' }}",
+      "with" => {
+        "persist-credentials" => false,
+        "repository" => "${{ inputs.kandelo-repository }}",
+        "ref" => "${{ needs.plan.outputs.bottle-producer-sha }}",
+        "path" => "bottle-producer", "submodules" => false,
+      },
+    },
+    {
       "name" => "Checkout exact tap source for upload validation", "if" => nil,
       "with" => {
         "persist-credentials" => false,
@@ -2610,6 +3982,16 @@ def check_publisher(workflow)
         "repository" => "${{ inputs.kandelo-repository }}",
         "ref" => "${{ needs.plan.outputs.kandelo-sha }}",
         "path" => "kandelo", "submodules" => false,
+      },
+    },
+    {
+      "name" => "Checkout promoted bottle producer for index publication",
+      "if" => "${{ needs.plan.outputs.candidate-promotion-mode == 'true' }}",
+      "with" => {
+        "persist-credentials" => false,
+        "repository" => "${{ inputs.kandelo-repository }}",
+        "ref" => "${{ needs.plan.outputs.bottle-producer-sha }}",
+        "path" => "bottle-producer", "submodules" => false,
       },
     },
     {
@@ -2633,12 +4015,34 @@ def check_publisher(workflow)
       },
     },
     {
+      "name" => "Checkout promoted bottle producer for verification",
+      "if" => "${{ needs.plan.outputs.candidate-promotion-mode == 'true' }}",
+      "with" => {
+        "persist-credentials" => false,
+        "repository" => "${{ inputs.kandelo-repository }}",
+        "ref" => "${{ needs.plan.outputs.bottle-producer-sha }}",
+        "path" => "bottle-producer", "submodules" => false,
+      },
+    },
+    {
       "name" => "Checkout exact Kandelo sysroot build source", "if" => nil,
       "with" => {
         "persist-credentials" => false,
         "repository" => "${{ inputs.kandelo-repository }}",
         "ref" => "${{ needs.plan.outputs.kandelo-sha }}",
         "path" => "kandelo-sysroot-build", "submodules" => false,
+      },
+    },
+    {
+      "name" =>
+        "Checkout protected candidate verifier package-reader authority",
+      "if" => "${{ needs.plan.outputs.candidate-mode == 'true' }}",
+      "with" => {
+        "persist-credentials" => false,
+        "repository" => "${{ inputs.kandelo-repository }}",
+        "ref" =>
+          "${{ needs.plan.outputs.candidate-workflow-authority-sha }}",
+        "path" => "candidate-authority", "submodules" => false,
       },
     },
     {
@@ -2995,6 +4399,8 @@ def check_publisher(workflow)
   check(plan_credential_steps.map { |step| step["name"] } == [
     "Admit exact Kandelo main source",
     "Admit prefix-campaign Kandelo main history",
+    "Bind candidate validator to the exact merge base",
+    "Admit promoted producer on exact-main tree",
     "Bind write tap source to protected main history",
   ] && plan_credential_steps.all? do |step|
     step.fetch("env").slice(*credential_names) == {
@@ -3002,16 +4408,24 @@ def check_publisher(workflow)
     }
   end, "publisher plan credential escapes source validation")
   {
-    build_steps => build_generation,
-    verify_steps => verify_generations,
-  }.each do |steps, generation_step|
+    build_steps => [
+      build_generation,
+      named_step(build_steps, "Materialize immutable candidate Formula runtime packages"),
+    ],
+    verify_steps => [
+      verify_generations,
+      named_step(verify_steps, "Re-materialize immutable candidate verification packages"),
+    ],
+  }.each do |steps, generation_steps|
     credential_steps = steps.select do |step|
       !(step.fetch("env", {}).keys & credential_names).empty?
     end
-    check(credential_steps == [generation_step] &&
-          generation_step.fetch("env").slice(*credential_names) == {
-            "GH_TOKEN" => "${{ github.token }}",
-          },
+    check(credential_steps == generation_steps &&
+          generation_steps.all? do |generation_step|
+            generation_step.fetch("env").slice(*credential_names) == {
+              "GH_TOKEN" => "${{ github.token }}",
+            }
+          end,
           "publisher read credential escapes exact public-generation metadata fetch")
     check(steps.select { |step| step["uses"] == CHECKOUT_ACTION }.all? do |step|
       step.dig("with", "persist-credentials") == false
@@ -3074,6 +4488,130 @@ def check_publisher(workflow)
   check(vfs_release_checkout_steps.all? do |step|
     step.dig("with", "persist-credentials") == false
   end, "publisher VFS release persists checkout credentials")
+
+  candidate_credential_steps = candidate_steps.select do |step|
+    !(step.fetch("env", {}).keys & credential_names).empty?
+  end
+  check(candidate_credential_steps.map { |step| step["name"] } == [
+    "Capture immutable candidate evidence",
+    "Publish and anonymously read back candidate release",
+  ] && candidate_credential_steps.all? do |step|
+    step.fetch("env").slice(*credential_names) == {
+      "GH_TOKEN" => "${{ github.token }}",
+    }
+  end, "publisher candidate sealer credentials escape reviewed evidence steps")
+  candidate_checkout_views = candidate_steps.select do |step|
+    step["uses"] == CHECKOUT_ACTION
+  end.to_h { |step| [step.fetch("name"), step.fetch("with")] }
+  check(candidate_checkout_views == {
+    "Checkout protected candidate validator authority" => {
+      "persist-credentials" => false,
+      "repository" => "${{ inputs.kandelo-repository }}",
+      "ref" =>
+        "${{ needs.plan.outputs.candidate-workflow-authority-sha }}",
+      "path" => "authority", "submodules" => false,
+    },
+    "Checkout inert candidate producer" => {
+      "persist-credentials" => false,
+      "repository" => "${{ inputs.kandelo-repository }}",
+      "ref" => "${{ needs.plan.outputs.kandelo-sha }}",
+      "path" => "producer", "fetch-depth" => 0, "submodules" => false,
+    },
+    "Checkout exact candidate tap source" => {
+      "persist-credentials" => false,
+      "repository" => "${{ inputs.tap-repository }}",
+      "ref" => "${{ needs.plan.outputs.tap-sha }}",
+      "path" => "tap-source", "fetch-depth" => 0,
+    },
+    "Checkout tap workflow authority" => {
+      "persist-credentials" => false,
+      "repository" => "${{ inputs.tap-repository }}",
+      "ref" =>
+        "${{ needs.plan.outputs.candidate-tap-workflow-authority-sha }}",
+      "path" => "tap-authority", "fetch-depth" => 0,
+    },
+  }, "publisher candidate sealer checkout authority changed")
+  candidate_validation = named_step(
+    candidate_steps, "Validate candidate handoffs with reviewed code"
+  )
+  candidate_validation_run = candidate_validation.fetch("run")
+  [
+    'for secret_name in GH_TOKEN GITHUB_TOKEN \\',
+    'candidate data validator received $secret_name',
+    'python3 authority/scripts/homebrew-oci-layout.py validate-child',
+    'python3 authority/scripts/homebrew-dependency-taps.py resolve',
+    'bash authority/scripts/homebrew-validate-build-handoff.sh \\',
+    '--tap-checkout-commit \\',
+    '"$KANDELO_HOMEBREW_PREPARED_TAP_COMMIT"',
+    'jq -e \'.dependencies == []\'',
+  ].each do |fragment|
+    check(candidate_validation_run.include?(fragment),
+          "publisher candidate sealer validation lacks #{fragment}")
+  end
+  check_forbidden_root_args(
+    candidate_validation_run,
+    "publisher candidate sealer handoff validation",
+    [
+      '--forbidden-root "$GITHUB_WORKSPACE"',
+      '--forbidden-root "$(dirname "$GITHUB_WORKSPACE")"',
+      '--forbidden-root "$RUNNER_TEMP"',
+    ]
+  )
+  candidate_capture = named_step(
+    candidate_steps, "Capture immutable candidate evidence"
+  )
+  [
+    '[ "$(jq -er \'.head.sha\' "$pr")" = "$KANDELO_SHA" ]',
+    '[ "$(jq -er \'.state\' "$pr")" = open ]',
+    '[ "$base_sha" = "$current_main" ]',
+    'authority_status="$(gh api',
+    'tap_source_status="$(gh api',
+    'tap_authority_status="$(gh api',
+    '(.digest | type == "string" and',
+    'workflow_path:".github/workflows/candidate-bottles.yml"',
+    'env -u GH_TOKEN -u GITHUB_TOKEN \\',
+    'python3 authority/scripts/homebrew-bottle-candidate.py \\',
+    'merge_method:"merge"',
+    'prefix_campaign_layout_sha256:$campaign_layout',
+  ].each do |fragment|
+    check(candidate_capture.fetch("run").include?(fragment),
+          "publisher candidate evidence capture lacks #{fragment}")
+  end
+  candidate_probe = named_step(
+    candidate_steps, "Prove candidate refs are collision-free"
+  )
+  candidate_prepare = named_step(
+    candidate_steps, "Prepare inert immutable candidate release"
+  )
+  [candidate_probe, candidate_prepare].each do |step|
+    check((step.fetch("env", {}).keys & credential_names).empty? &&
+          step.fetch("run").include?(
+            '[ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ]'
+          ), "publisher #{step.fetch('name')} receives candidate credentials")
+  end
+  check(candidate_probe.fetch("run").include?(
+          'python3 authority/scripts/homebrew-oci-layout.py merge-index \\'
+        ) && candidate_probe.fetch("run").include?(
+          'homebrew_ref_status:"available"'
+        ), "publisher candidate collision proof no longer checks Homebrew selection")
+  check(candidate_prepare.fetch("run").include?(
+          'python3 authority/scripts/homebrew-bottle-candidate.py prepare \\'
+        ) && candidate_prepare.fetch("run").include?(
+          '--package-input \\'
+        ), "publisher candidate release preparation changed")
+  candidate_write = named_step(
+    candidate_steps, "Publish and anonymously read back candidate release"
+  )
+  [
+    'bash authority/scripts/publish-immutable-github-release.sh \\',
+    '--lock-root "$GITHUB_WORKSPACE/tap-authority"',
+    '--kandelo-main-contains-sha "$AUTHORITY_SHA"',
+    '--target-main-contains-sha "$TAP_AUTHORITY_SHA"',
+    'This release is noncanonical until exact-head promotion.',
+  ].each do |fragment|
+    check(candidate_write.fetch("run").include?(fragment),
+          "publisher candidate release write lacks #{fragment}")
+  end
 
   exact_main_helper_path = File.join(
     REPO_ROOT, ".github/scripts/require-exact-kandelo-main.sh"
@@ -3161,6 +4699,9 @@ def check_publisher(workflow)
     "${{ needs.plan.outputs.artifact-name-prefix }}" \
     "homebrew-oci-child-${{ matrix.formula }}-${{ matrix.arch }}-" \
     "attempt-${{ github.run_attempt }}"
+  promotion_receipt_name =
+    "homebrew-candidate-promotion-${{ matrix.formula }}-${{ matrix.arch }}-" \
+    "attempt-${{ github.run_attempt }}"
   index_publication_name =
     "homebrew-index-publication-${{ matrix.formula }}-attempt-${{ github.run_attempt }}"
   vfs_release_handoff_name =
@@ -3181,6 +4722,21 @@ def check_publisher(workflow)
     "compression-level" => 0,
     "if-no-files-found" => "error", "retention-days" => 2,
   }, "publisher OCI child artifact contract changed")
+  candidate_package_upload = named_step(
+    build_steps, "Upload candidate package-input identity"
+  )
+  check(candidate_package_upload["uses"] == UPLOAD_ACTION &&
+        candidate_package_upload["if"] ==
+          "${{ needs.plan.outputs.candidate-mode == 'true' }}" &&
+        candidate_package_upload["with"] == {
+          "name" =>
+            "homebrew-candidate-package-input-${{ matrix.formula }}-" \
+            "${{ matrix.arch }}-attempt-${{ github.run_attempt }}",
+          "path" =>
+            "${{ runner.temp }}/homebrew-candidate-packages/package-input.json",
+          "compression-level" => 0,
+          "if-no-files-found" => "error", "retention-days" => 2,
+        }, "publisher candidate package-input artifact contract changed")
   build_diagnostics = named_step(
     build_steps, "Upload unprivileged build diagnostics"
   )
@@ -3211,6 +4767,106 @@ def check_publisher(workflow)
             "path" => "${{ runner.temp }}/homebrew-oci-child",
           }, "publisher OCI child download contract changed")
   end
+  promotion_download = named_step(
+    upload_steps, "Download exact candidate promotion admission"
+  )
+  check(promotion_download["uses"] == DOWNLOAD_ACTION &&
+        promotion_download["id"] == "candidate-promotion" &&
+        promotion_download["if"] ==
+          "${{ needs.plan.outputs.candidate-promotion-mode == 'true' }}" &&
+        promotion_download["continue-on-error"] == true &&
+        promotion_download["with"] == {
+          "name" => promotion_receipt_name,
+          "path" => "${{ runner.temp }}/homebrew-candidate-promotion",
+        }, "publisher candidate promotion receipt download changed")
+  promotion_validation = named_step(
+    upload_steps, "Bind promotion artifacts to the exact merged candidate"
+  )
+  check(promotion_validation["id"] == "validate-candidate-promotion" &&
+        normalized_expression(promotion_validation["if"]) ==
+          "${{ needs.plan.outputs.candidate-promotion-mode == 'true' && " \
+          "steps.build-handoff.outcome == 'success' && " \
+          "steps.oci-child.outcome == 'success' && " \
+          "steps.candidate-promotion.outcome == 'success' }}" &&
+        promotion_validation["env"] == {
+          "ABI" => "${{ needs.plan.outputs.abi }}",
+          "ARCH" => "${{ matrix.arch }}",
+          "CAMPAIGN_LAYOUT" =>
+            "${{ needs.plan.outputs.prefix-campaign-layout-sha256 }}",
+          "CAMPAIGN_TAG" =>
+            "${{ needs.plan.outputs.prefix-campaign-tag }}",
+          "CANDIDATE_TAG" => "${{ inputs.candidate-promotion-tag }}",
+          "FORMULA" => "${{ matrix.formula }}",
+          "MERGE_COMMIT" => "${{ needs.plan.outputs.kandelo-sha }}",
+          "PRODUCER_COMMIT" =>
+            "${{ needs.plan.outputs.bottle-producer-sha }}",
+          "TAP_CHECKOUT_COMMIT" =>
+            "${{ needs.plan.outputs.prefix-campaign-prepared-tap-commit }}",
+          "TAP_COMMIT" => "${{ needs.plan.outputs.tap-sha }}",
+        }, "publisher candidate promotion validation mapping changed")
+  promotion_validation_run = promotion_validation.fetch("run")
+  [
+    '[ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ]',
+    'python3 kandelo/scripts/homebrew-candidate-campaign.py \\',
+    'validate-admission',
+    'candidate-campaign-admission.json',
+    '--candidate-tag "$CAMPAIGN_TAG"',
+    '--producer-commit "$PRODUCER_COMMIT"',
+    '--merge-commit "$MERGE_COMMIT"',
+    '--source-tap-commit "$TAP_COMMIT"',
+    '--abi "$ABI"',
+    '--guest-layout-sha256 "$CAMPAIGN_LAYOUT"',
+    'python3 kandelo/scripts/homebrew-bottle-candidate.py \\',
+    'validate-promotion',
+    '--receipt \\',
+    'candidate-promotion.json',
+    '--candidate-tag "$CANDIDATE_TAG"',
+    '--producer-commit "$PRODUCER_COMMIT"',
+    '--merge-commit "$MERGE_COMMIT"',
+    '--tap-commit "$TAP_COMMIT"',
+    '--tap-checkout-commit "$TAP_CHECKOUT_COMMIT"',
+    '--campaign-tag "$CAMPAIGN_TAG"',
+    '--campaign-layout-sha256 "$CAMPAIGN_LAYOUT"',
+    '--formula "$FORMULA" --arch "$ARCH"',
+    '--build-handoff "$RUNNER_TEMP/homebrew-build-handoff"',
+    '--oci-child "$RUNNER_TEMP/homebrew-oci-child"',
+    '--package-input \\',
+    'candidate-package-input.json',
+  ].each do |fragment|
+    check(promotion_validation_run.include?(fragment),
+          "publisher candidate promotion validation lacks #{fragment}")
+  end
+  campaign_admission_index = promotion_validation_run.index(
+    "python3 kandelo/scripts/homebrew-candidate-campaign.py"
+  )
+  bottle_admission_index = promotion_validation_run.index(
+    "python3 kandelo/scripts/homebrew-bottle-candidate.py"
+  )
+  check(campaign_admission_index && bottle_admission_index &&
+        campaign_admission_index < bottle_admission_index,
+        "publisher validates bottle promotion before its campaign admission")
+  promotion_build_validation = named_step(
+    upload_steps, "Validate build data before exposing upload credentials"
+  )
+  check(normalized_expression(promotion_build_validation["if"]) ==
+        "${{ steps.build-handoff.outcome == 'success' && " \
+        "steps.oci-child.outcome == 'success' && ( " \
+        "needs.plan.outputs.candidate-promotion-mode != 'true' || " \
+        "steps.validate-candidate-promotion.outcome == 'success' ) }}" &&
+        upload_steps.index(promotion_download) <
+          upload_steps.index(promotion_validation) &&
+        upload_steps.index(promotion_validation) <
+          upload_steps.index(promotion_build_validation),
+        "publisher exposes promotion bytes before exact receipt admission")
+  missing_promotion = named_step(
+    upload_steps, "Fail when the matching immutable handoff is absent"
+  )
+  check(normalized_expression(missing_promotion["if"]) ==
+        "${{ always() && ( steps.build-handoff.outcome != 'success' || " \
+        "steps.oci-child.outcome != 'success' || ( " \
+        "needs.plan.outputs.candidate-promotion-mode == 'true' && " \
+        "steps.validate-candidate-promotion.outcome != 'success' ) ) }}",
+        "publisher does not fail closed on missing promotion admission")
   receipt_upload = named_step(upload_steps, "Upload strict upload receipt")
   check(receipt_upload["uses"] == UPLOAD_ACTION && receipt_upload["with"] == {
     "name" => upload_receipt_name,
@@ -3224,6 +4880,50 @@ def check_publisher(workflow)
           "name" => upload_receipt_name,
           "path" => "${{ runner.temp }}/homebrew-upload-receipt",
   }, "publisher receipt download contract changed")
+  index_campaign_download = named_step(
+    index_steps, "Download exact candidate campaign admission for index"
+  )
+  check(index_campaign_download["uses"] == DOWNLOAD_ACTION &&
+        index_campaign_download["if"] ==
+          "${{ needs.plan.outputs.candidate-promotion-mode == 'true' }}" &&
+        index_campaign_download["with"] == {
+          "name" =>
+            "homebrew-candidate-promotion-${{ matrix.formula }}-" \
+            "wasm32-attempt-${{ github.run_attempt }}",
+          "path" =>
+            "${{ runner.temp }}/homebrew-candidate-index-admission",
+        }, "publisher candidate index admission download changed")
+  index_campaign_validation = named_step(
+    index_steps, "Bind index write to the admitted candidate campaign"
+  )
+  check(index_campaign_validation["if"] ==
+          "${{ needs.plan.outputs.candidate-promotion-mode == 'true' }}" &&
+        index_campaign_validation["env"] == {
+          "ABI" => "${{ needs.plan.outputs.abi }}",
+          "CAMPAIGN_LAYOUT" =>
+            "${{ needs.plan.outputs.prefix-campaign-layout-sha256 }}",
+          "CAMPAIGN_TAG" =>
+            "${{ needs.plan.outputs.prefix-campaign-tag }}",
+          "MERGE_COMMIT" => "${{ needs.plan.outputs.kandelo-sha }}",
+          "PRODUCER_COMMIT" =>
+            "${{ needs.plan.outputs.bottle-producer-sha }}",
+          "TAP_COMMIT" => "${{ needs.plan.outputs.tap-sha }}",
+        }, "publisher candidate index admission mapping changed")
+  index_campaign_run = index_campaign_validation.fetch("run")
+  [
+    '[ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ]',
+    'python3 kandelo/scripts/homebrew-candidate-campaign.py \\',
+    'validate-admission', 'candidate-campaign-admission.json',
+    '--candidate-tag "$CAMPAIGN_TAG"',
+    '--producer-commit "$PRODUCER_COMMIT"',
+    '--merge-commit "$MERGE_COMMIT"',
+    '--source-tap-commit "$TAP_COMMIT"',
+    '--abi "$ABI"',
+    '--guest-layout-sha256 "$CAMPAIGN_LAYOUT"',
+  ].each do |fragment|
+    check(index_campaign_run.include?(fragment),
+          "publisher candidate index admission lacks #{fragment}")
+  end
   index_child_download = named_step(index_steps, "Download immutable OCI child layouts")
   check(index_child_download["uses"] == DOWNLOAD_ACTION && index_child_download["with"] == {
     "pattern" => "homebrew-oci-child-${{ matrix.formula }}-*-attempt-${{ github.run_attempt }}",
@@ -3247,6 +4947,17 @@ def check_publisher(workflow)
           "compression-level" => 0,
           "if-no-files-found" => "error", "retention-days" => 2,
         }, "publisher version-index publication artifact contract changed")
+  index_write = named_step(
+    index_steps,
+    "Publish the complete Homebrew version index in isolated ORAS auth state"
+  )
+  check(index_steps.index(index_campaign_download) <
+          index_steps.index(index_campaign_validation) &&
+        index_steps.index(index_campaign_validation) <
+          index_steps.index(index_child_download) &&
+        index_steps.index(index_campaign_validation) <
+          index_steps.index(index_write),
+        "publisher can write a promoted index before campaign admission")
   index_publication_download = named_step(
     verify_steps, "Download public Homebrew version-index evidence"
   )
@@ -3306,6 +5017,42 @@ def check_publisher(workflow)
     "path" => "${{ runner.temp }}/homebrew-vfs-release-receipt.json",
     "if-no-files-found" => "error", "retention-days" => 14,
   }, "publisher VFS release receipt artifact contract changed")
+  candidate_artifact_downloads = {
+    "Download candidate build handoff" => {
+      "name" =>
+        "homebrew-build-handoff-${{ inputs.formulae }}-" \
+        "${{ inputs.arches }}-attempt-${{ github.run_attempt }}",
+      "path" => "${{ runner.temp }}/candidate-build",
+    },
+    "Download candidate OCI child" => {
+      "name" =>
+        "homebrew-oci-child-${{ inputs.formulae }}-" \
+        "${{ inputs.arches }}-attempt-${{ github.run_attempt }}",
+      "path" => "${{ runner.temp }}/candidate-oci",
+    },
+    "Download candidate package-input identity" => {
+      "name" =>
+        "homebrew-candidate-package-input-${{ inputs.formulae }}-" \
+        "${{ inputs.arches }}-attempt-${{ github.run_attempt }}",
+      "path" => "${{ runner.temp }}/candidate-packages",
+    },
+  }
+  candidate_artifact_downloads.each do |name, with|
+    step = named_step(candidate_steps, name)
+    check(step["uses"] == DOWNLOAD_ACTION && step["with"] == with,
+          "publisher #{name} artifact contract changed")
+  end
+  candidate_receipt = named_step(
+    candidate_steps, "Retain candidate publication receipt"
+  )
+  check(candidate_receipt["uses"] == UPLOAD_ACTION &&
+        candidate_receipt["with"] == {
+          "name" =>
+            "homebrew-candidate-release-receipt-${{ inputs.formulae }}-" \
+            "${{ inputs.arches }}-attempt-${{ github.run_attempt }}",
+          "path" => "${{ runner.temp }}/candidate-release-receipt.json",
+          "if-no-files-found" => "error", "retention-days" => 90,
+        }, "publisher candidate release receipt artifact contract changed")
 
   build_formula_step = named_step(
     build_steps, "Build and test Homebrew bottle without publisher credentials"
@@ -7458,7 +9205,7 @@ def check_publisher(workflow)
       stripped if stripped.start_with?("--forbidden-root ")
     end
   end
-  check(forbidden_root_lines.length == 35,
+  check(forbidden_root_lines.length == 38,
         "publisher does not pass the exact trusted forbidden-root set at every archive boundary")
   check(forbidden_root_lines.none? { |line| line.include?("linuxbrew") || line.include?("/opt/") },
         "publisher forbids canonical Homebrew prefix or opt metadata")
@@ -7599,6 +9346,10 @@ def check_publisher(workflow)
     'bash "$REPO_ROOT/scripts/test-homebrew-publisher-real-lifecycle.sh"',
     'bash "$REPO_ROOT/scripts/test-homebrew-validate-host-dependency-plan.sh"',
     'python3 "$REPO_ROOT/scripts/test-prepare-homebrew-recipe-host-runtime.py"',
+    'python3 "$REPO_ROOT/scripts/test-homebrew-candidate-campaign.py"',
+    'python3 "$REPO_ROOT/scripts/test-homebrew-bottle-candidate.py"',
+    'python3 "$REPO_ROOT/scripts/test-homebrew-candidate-release-receipt.py"',
+    'python3 "$REPO_ROOT/scripts/test-homebrew-candidate-caller-pins.py"',
     'assert_atomic_publication_batch_closes_formula_metadata_wave',
     'KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$(make_primary_resolved_tap_map "$tap_root")"',
     'export KANDELO_HOMEBREW_RESOLVED_TAPS_FILE',
@@ -7661,7 +9412,8 @@ def check_publisher(workflow)
 
   check(!values_for_key(workflow, "run").join("\n").include?("GITHUB_SHA"),
         "publisher reads an ambient workflow execution SHA")
-  check(!JSON.generate(plan).include?("${{ github.sha }}") &&
+  check(JSON.generate(plan).scan("${{ github.sha }}").length == 2 &&
+        values_for_key(plan, "CALLER_SHA") == ["${{ github.sha }}"] &&
         values_for_key(plan, "REQUESTED_TAP_SHA") == ["${{ inputs.tap-ref }}"],
         "publisher substitutes workflow execution head for the requested tap source")
   check(contract_digest(plan_steps) == PUBLISHER_PLAN_DIGEST,
@@ -7678,6 +9430,8 @@ def check_publisher(workflow)
         "publisher finalization step contract changed")
   check(contract_digest(vfs_release_steps) == PUBLISHER_VFS_RELEASE_DIGEST,
         "publisher VFS release step contract changed")
+  check(contract_digest(candidate_steps) == PUBLISHER_CANDIDATE_DIGEST,
+        "publisher candidate sealer step contract changed")
 end
 
 def check_maintenance(workflow)
@@ -9406,6 +11160,8 @@ begin
   maintenance = load_workflow(MAINTENANCE_PATH)
   first_publication = load_workflow(FIRST_PUBLICATION_PATH)
   prefix_first_child = load_workflow(PREFIX_FIRST_CHILD_PATH)
+  candidate_materializer = load_workflow(CANDIDATE_MATERIALIZER_PATH)
+  candidate_campaign = load_workflow(CANDIDATE_CAMPAIGN_PATH)
   self_test_privileged_recipe_host_runtime(all_workflows)
   self_test(
     publisher, native_compatibility, maintenance, first_publication,
@@ -9420,6 +11176,8 @@ begin
   check_maintenance(maintenance)
   check_first_publication(first_publication)
   check_prefix_first_child(prefix_first_child)
+  check_candidate_materializer(candidate_materializer)
+  check_candidate_campaign(candidate_campaign)
   check_tap_callers
   puts "check-homebrew-publish-workflow-trust.rb: ok"
 rescue KeyError, Psych::Exception, RuntimeError => e

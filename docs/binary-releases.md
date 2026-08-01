@@ -84,6 +84,47 @@ These releases are inert campaign inputs; they do not select a Formula
 or update tap Git state. Only the final complete handoff set may produce
 the atomic tap commit.
 
+One transitional release kind seals an unmerged campaign under the
+`homebrew-prefix-campaign-candidate-pr-...-sha256-...` namespace.
+It contains exactly `campaign.json` and
+`candidate-campaign.json`. Those assets bind the protected base,
+pull-request producer, protected tap caller and source, native Homebrew
+source, package catalog, ABI snapshot, guest layout, exact workflow
+run, and derivation artifact. It is noncanonical and does not select a
+Formula or write a package.
+
+A second transitional release stages one unmerged leaf bottle under
+`homebrew-bottle-candidate-pr-<N>-run-<R>-attempt-<A>-sha256-<digest>`.
+It binds the candidate campaign, exact pull-request producer, protected
+validator and tap caller, package ledger, prepared tap, build handoff,
+OCI child, and run artifacts. It is immutable and publicly readable,
+but it is deliberately noncanonical: it does not update GHCR, a Formula
+bottle block, or tap state.
+
+Each candidate sealer retains a small protected-code release receipt
+for 90 days. The receipt binds the release identity, target commit,
+immutability, and complete public asset inventory. The bulky build and
+derivation artifacts may expire after two days; promotion reconstructs
+their exact bytes from the immutable public releases. Promotion is
+therefore available while both 90-day receipt artifacts remain live.
+
+After an exact merge, current-main code may reconstruct those same
+bytes and publish them through the normal GHCR path. The merge commit
+must have the recorded base and producer as its two exact parents, and
+its complete tree must equal the producer tree. Provenance keeps the
+pull-request head as `built_from` and records the merge commit as
+`validated_against_main`. Squash, rebase, conflict resolution, or any
+input change invalidates the candidate. See [candidate promotion] for
+the operational protocol and version-1 limits.
+
+Candidate caller templates use exact Kandelo SHA placeholders rather
+than `@main`. Before a build they are rendered with the protected base
+SHA. After merge the promotion caller is rendered again with the exact
+merge SHA. Protected reusable workflows inspect the exact tap caller
+commit and reject mutable, unresolved, or different authority refs.
+
+[candidate promotion]: homebrew-publishing.md#candidate-promotion
+
 The campaign release binds the path and SHA-256 of
 `homebrew/kandelo-guest-layout.json`. That digest selects
 `/opt/kandelo/homebrew` and its Cellar throughout bottle build,

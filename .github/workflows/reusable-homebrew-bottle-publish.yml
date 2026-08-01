@@ -57,6 +57,18 @@ on:
       prefix-campaign-dependencies:
         type: string
         default: ""
+      candidate-pr-number:
+        type: string
+        default: ""
+      candidate-package-staging-tag:
+        type: string
+        default: ""
+      candidate-promotion-tag:
+        type: string
+        default: ""
+      candidate-producer-sha:
+        type: string
+        default: ""
 
 jobs:
   plan:
@@ -81,7 +93,16 @@ jobs:
       prefix-campaign-tag: ${{ steps.trust.outputs.prefix-campaign-tag }}
       prefix-campaign-dependencies: ${{ steps.trust.outputs.prefix-campaign-dependencies }}
       prefix-campaign-layout-sha256: ${{ steps.campaign-source.outputs.prefix-campaign-layout-sha256 }}
+      prefix-campaign-prepared-tap-commit: ${{ steps.campaign-source.outputs.prefix-campaign-prepared-tap-commit }}
+      prefix-campaign-prepared-tap-tree: ${{ steps.campaign-source.outputs.prefix-campaign-prepared-tap-tree }}
       artifact-name-prefix: ${{ steps.artifact-scope.outputs.prefix }}
+      candidate-mode: ${{ steps.trust.outputs.candidate-mode }}
+      candidate-pr-number: ${{ steps.trust.outputs.candidate-pr-number }}
+      candidate-package-staging-tag: ${{ steps.trust.outputs.candidate-package-staging-tag }}
+      candidate-workflow-authority-sha: ${{ steps.candidate-authority.outputs.kandelo-sha }}
+      candidate-tap-workflow-authority-sha: ${{ steps.trust.outputs.candidate-tap-workflow-authority-sha }}
+      candidate-promotion-mode: ${{ steps.trust.outputs.candidate-promotion-mode }}
+      bottle-producer-sha: ${{ steps.bottle-producer.outputs.sha }}
     steps:
       - name: Validate caller trust boundary
         id: trust
@@ -90,6 +111,7 @@ jobs:
           CALLER_EVENT_NAME: ${{ github.event_name }}
           CALLER_REF: ${{ github.ref }}
           CALLER_REPOSITORY: ${{ github.repository }}
+          CALLER_SHA: ${{ github.sha }}
           CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
           DEFER_TAP_FINALIZATION: ${{ inputs.defer-tap-finalization }}
           DRY_RUN: ${{ inputs.dry-run }}
@@ -107,6 +129,10 @@ jobs:
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
           TAP_REF: ${{ inputs.tap-ref }}
           BOTTLE_ROOT_URL: ${{ inputs.bottle-root-url }}
+          CANDIDATE_PACKAGE_STAGING_TAG: ${{ inputs.candidate-package-staging-tag }}
+          CANDIDATE_PR_NUMBER: ${{ inputs.candidate-pr-number }}
+          CANDIDATE_PROMOTION_TAG: ${{ inputs.candidate-promotion-tag }}
+          CANDIDATE_PRODUCER_SHA: ${{ inputs.candidate-producer-sha }}
         run: |
           set -euo pipefail
           normalize_dry_run_source_ref() {
@@ -246,6 +272,8 @@ jobs:
           validated_campaign_tag=""
           validated_campaign_dependencies=""
           campaign_caller="$CALLER_REPOSITORY/.github/workflows/prefix-campaign-bottles.yml@refs/heads/main"
+          candidate_caller="$CALLER_REPOSITORY/.github/workflows/candidate-bottles.yml@refs/heads/main"
+          promotion_caller="$CALLER_REPOSITORY/.github/workflows/promote-candidate-bottle.yml@refs/heads/main"
           if [ "$CALLER_WORKFLOW_REF" = "$campaign_caller" ]; then
             [ "$DEFER_TAP_FINALIZATION" = "true" ] &&
               [ "$FORCE_REBUILD" = "true" ] &&
@@ -265,17 +293,133 @@ jobs:
             validated_campaign_dependencies="$(
               normalize_campaign_dependencies "$PREFIX_CAMPAIGN_DEPENDENCIES"
             )"
+            [ -z "$CANDIDATE_PR_NUMBER" ] &&
+              [ -z "$CANDIDATE_PACKAGE_STAGING_TAG" ] &&
+              [ -z "$CANDIDATE_PROMOTION_TAG" ] &&
+              [ -z "$CANDIDATE_PRODUCER_SHA" ] || {
+                echo "::error::prefix campaigns cannot carry candidate authority"
+                exit 2
+              }
             validated_campaign_mode=true
             validated_campaign_tag="$PREFIX_CAMPAIGN_TAG"
-          else
+          elif [ "$CALLER_WORKFLOW_REF" != "$candidate_caller" ] &&
+               [ "$CALLER_WORKFLOW_REF" != "$promotion_caller" ]; then
             [ "$DEFER_TAP_FINALIZATION" = "false" ] &&
               [ -z "$PREFIX_CAMPAIGN_TAG" ] &&
               [ -z "$PREFIX_CAMPAIGN_DEPENDENCIES" ] || {
                 echo "::error::only the reviewed prefix campaign caller may defer tap finalization or pass campaign authority"; exit 2;
               }
           fi
-          if [ "$DRY_RUN" = "true" ] &&
+          validated_candidate_mode=false
+          validated_candidate_pr_number=""
+          validated_candidate_staging_tag=""
+          validated_candidate_tap_authority=""
+          validated_candidate_promotion_mode=false
+          if [ "$CALLER_WORKFLOW_REF" = "$candidate_caller" ]; then
+            [ "$DRY_RUN" = "true" ] &&
+              [ "$FORCE_REBUILD" = "true" ] &&
+              [ "$DEFER_TAP_FINALIZATION" = "false" ] &&
+              [ "$REQUIRE_VFS_ACCEPTANCE" = "false" ] &&
+              [ -z "$PACKAGE_GENERATION_WASM32" ] &&
+              [ -z "$PACKAGE_GENERATION_WASM64" ] || {
+                echo "::error::candidate bottles require an isolated forced no-write invocation"; exit 2;
+              }
+            [[ "$FORMULAE" =~ ^[a-z0-9][a-z0-9._-]{0,254}$ ]] &&
+              [ "$ARCHES" = wasm32 ] || {
+                echo "::error::candidate bottle v1 requires one wasm32 Formula"
+                exit 2
+              }
+            [[ "$CANDIDATE_PR_NUMBER" =~ ^[1-9][0-9]*$ ]] &&
+              [[ "$CALLER_SHA" =~ ^[0-9a-f]{40}$ ]] &&
+              [[ "$KANDELO_REF" =~ ^[0-9a-f]{40}$ ]] &&
+              [[ "$TAP_REF" =~ ^[0-9a-f]{40}$ ]] || {
+                echo "::error::candidate bottles require exact PR and source authority"; exit 2;
+              }
+            staging_pattern="^pr-${CANDIDATE_PR_NUMBER}-staging-run-[1-9][0-9]*-attempt-[1-9][0-9]*$"
+            [[ "$CANDIDATE_PACKAGE_STAGING_TAG" =~ $staging_pattern ]] || {
+              echo "::error::candidate package staging tag differs from its PR"; exit 2;
+            }
+            [ -z "$CANDIDATE_PROMOTION_TAG" ] &&
+              [ -z "$CANDIDATE_PRODUCER_SHA" ] || {
+                echo "::error::candidate builds cannot carry promotion authority"
+                exit 2
+            }
+            validated_candidate_mode=true
+            candidate_campaign_pattern="^homebrew-prefix-campaign-candidate-pr-${CANDIDATE_PR_NUMBER}-run-[1-9][0-9]*-attempt-[1-9][0-9]*-sha256-[0-9a-f]{64}$"
+            [[ "$PREFIX_CAMPAIGN_TAG" =~ $candidate_campaign_pattern ]] || {
+                echo "::error::candidate bottle needs an immutable candidate campaign"; exit 2;
+              }
+            validated_campaign_dependencies="$(
+              normalize_campaign_dependencies "$PREFIX_CAMPAIGN_DEPENDENCIES"
+            )"
+            [ "$validated_campaign_dependencies" = \
+              '{"dependencies":[],"schema":1}' ] || {
+                echo "::error::candidate bottle v1 supports only leaf Formulae"
+                exit 2
+              }
+            validated_campaign_mode=true
+            validated_campaign_tag="$PREFIX_CAMPAIGN_TAG"
+            validated_candidate_pr_number="$CANDIDATE_PR_NUMBER"
+            validated_candidate_staging_tag="$CANDIDATE_PACKAGE_STAGING_TAG"
+            validated_candidate_tap_authority="$CALLER_SHA"
+            validated_kandelo_ref="$KANDELO_REF"
+            validated_tap_ref="$TAP_REF"
+            validated_generation_wasm32=""
+            validated_generation_wasm64=""
+            validated_generation_kind="none"
+          elif [ "$CALLER_WORKFLOW_REF" = "$promotion_caller" ]; then
+            [ "$DRY_RUN" = "false" ] &&
+              [ "$FORCE_REBUILD" = "true" ] &&
+              [ "$DEFER_TAP_FINALIZATION" = "true" ] &&
+              [ "$REQUIRE_VFS_ACCEPTANCE" = "false" ] || {
+                echo "::error::candidate promotion requires the deferred write lane"; exit 2;
+              }
+            [[ "$FORMULAE" =~ ^[a-z0-9][a-z0-9._-]{0,254}$ ]] &&
+              [ "$ARCHES" = wasm32 ] &&
+              [[ "$KANDELO_REF" =~ ^[0-9a-f]{40}$ ]] &&
+              [[ "$TAP_REF" =~ ^[0-9a-f]{40}$ ]] &&
+              [[ "$CANDIDATE_PRODUCER_SHA" =~ ^[0-9a-f]{40}$ ]] &&
+              [[ "$CANDIDATE_PROMOTION_TAG" =~ ^homebrew-bottle-candidate-pr-[1-9][0-9]*-run-[1-9][0-9]*-attempt-[1-9][0-9]*-sha256-[0-9a-f]{64}$ ]] || {
+                echo "::error::candidate promotion v1 requires one wasm32 leaf and exact identities"; exit 2;
+              }
+            [ -z "$CANDIDATE_PR_NUMBER" ] &&
+              [ -z "$CANDIDATE_PACKAGE_STAGING_TAG" ] || {
+                echo "::error::candidate promotion derives PR staging identity from its immutable candidate"; exit 2;
+              }
+            validated_campaign_dependencies="$(
+              normalize_campaign_dependencies "$PREFIX_CAMPAIGN_DEPENDENCIES"
+            )"
+            [ "$validated_campaign_dependencies" = \
+              '{"dependencies":[],"schema":1}' ] &&
+              [[ "$PREFIX_CAMPAIGN_TAG" =~ ^homebrew-prefix-campaign-candidate-pr-[1-9][0-9]*-run-[1-9][0-9]*-attempt-[1-9][0-9]*-sha256-[0-9a-f]{64}$ ]] || {
+                echo "::error::candidate promotion requires its immutable candidate campaign"; exit 2;
+              }
+            validated_campaign_mode=true
+            validated_campaign_tag="$PREFIX_CAMPAIGN_TAG"
+            validated_candidate_promotion_mode=true
+            validated_kandelo_ref="$(normalize_write_kandelo_ref "$KANDELO_REF")"
+            validated_tap_ref="$(normalize_write_tap_ref "$TAP_REF")"
+            validated_generation_wasm32="$(
+              normalize_package_generation wasm32 "$PACKAGE_GENERATION_WASM32"
+            )"
+            case "$validated_generation_wasm32" in
+              package-generation-rootfs-wasm32-*)
+                [ -z "$PACKAGE_GENERATION_WASM64" ] || {
+                  echo "::error::candidate promotion rootfs input forbids wasm64"; exit 2;
+                }
+                validated_generation_wasm64=""
+                validated_generation_kind="rootfs-wasm32"
+                ;;
+              *) echo "::error::candidate promotion v1 requires exact rootfs-wasm32 input"; exit 2 ;;
+            esac
+          elif [ "$DRY_RUN" = "true" ] &&
              [ "$validated_campaign_mode" != "true" ]; then
+            [ -z "$CANDIDATE_PR_NUMBER" ] &&
+              [ -z "$CANDIDATE_PACKAGE_STAGING_TAG" ] &&
+              [ -z "$CANDIDATE_PROMOTION_TAG" ] &&
+              [ -z "$CANDIDATE_PRODUCER_SHA" ] || {
+                echo "::error::only the reviewed candidate caller may pass candidate authority"; exit 2;
+              }
             [ "$CALLER_WORKFLOW_REF" = "$CALLER_REPOSITORY/.github/workflows/dry-run-bottles.yml@refs/heads/main" ] || {
               echo "::error::dry-run publication requires the reviewed tap dry-run workflow"; exit 2;
             }
@@ -308,6 +452,12 @@ jobs:
               validated_generation_kind="browser-inputs"
             fi
           else
+            [ -z "$CANDIDATE_PR_NUMBER" ] &&
+              [ -z "$CANDIDATE_PACKAGE_STAGING_TAG" ] &&
+              [ -z "$CANDIDATE_PROMOTION_TAG" ] &&
+              [ -z "$CANDIDATE_PRODUCER_SHA" ] || {
+                echo "::error::only the reviewed candidate caller may pass candidate authority"; exit 2;
+              }
             if [ "$validated_campaign_mode" != "true" ]; then
               case "$CALLER_WORKFLOW_REF" in
                 "$CALLER_REPOSITORY/.github/workflows/publish-bottles.yml@refs/heads/main"|\
@@ -355,6 +505,11 @@ jobs:
             echo "prefix-campaign-mode=$validated_campaign_mode"
             echo "prefix-campaign-tag=$validated_campaign_tag"
             echo "prefix-campaign-dependencies=$validated_campaign_dependencies"
+            echo "candidate-mode=$validated_candidate_mode"
+            echo "candidate-pr-number=$validated_candidate_pr_number"
+            echo "candidate-package-staging-tag=$validated_candidate_staging_tag"
+            echo "candidate-tap-workflow-authority-sha=$validated_candidate_tap_authority"
+            echo "candidate-promotion-mode=$validated_candidate_promotion_mode"
           } >> "$GITHUB_OUTPUT"
 
       - name: Admit exact Kandelo main source
@@ -386,7 +541,7 @@ jobs:
           }
 
       - name: Admit prefix-campaign Kandelo main history
-        if: ${{ steps.trust.outputs.prefix-campaign-mode == 'true' }}
+        if: ${{ steps.trust.outputs.prefix-campaign-mode == 'true' && steps.trust.outputs.candidate-mode != 'true' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -416,6 +571,115 @@ jobs:
           path: kandelo
           submodules: false
 
+      - name: Bind candidate validator to the exact merge base
+        id: candidate-authority
+        if: ${{ steps.trust.outputs.candidate-mode == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KANDELO_REPOSITORY: ${{ inputs.kandelo-repository }}
+          PR_NUMBER: ${{ steps.trust.outputs.candidate-pr-number }}
+        run: |
+          set -euo pipefail
+          main_sha="$(gh api "/repos/$KANDELO_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
+          base_sha="$(gh api "/repos/$KANDELO_REPOSITORY/pulls/$PR_NUMBER" --jq .base.sha)"
+          [[ "$main_sha" =~ ^[0-9a-f]{40}$ ]] &&
+            [ "$base_sha" = "$main_sha" ] || {
+              echo "::error::candidate PR base must equal current protected main"
+              exit 1
+            }
+          # WHY: candidate code must never choose an older trusted validator.
+          # The exact PR base both produced this workflow and will become the
+          # first parent of the only admitted merge commit.
+          echo "kandelo-sha=$main_sha" >>"$GITHUB_OUTPUT"
+
+      - name: Checkout protected candidate validator authority
+        if: ${{ steps.trust.outputs.candidate-mode == 'true' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.kandelo-repository }}
+          ref: ${{ steps.candidate-authority.outputs.kandelo-sha }}
+          path: candidate-authority
+          submodules: false
+
+      - name: Checkout exact candidate caller as inert data
+        if: ${{ steps.trust.outputs.candidate-mode == 'true' || steps.trust.outputs.candidate-promotion-mode == 'true' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.tap-repository }}
+          ref: ${{ github.sha }}
+          path: candidate-caller-data
+          submodules: false
+
+      - name: Require the candidate caller to pin exact Kandelo authority
+        if: ${{ steps.trust.outputs.candidate-mode == 'true' || steps.trust.outputs.candidate-promotion-mode == 'true' }}
+        shell: bash
+        env:
+          CANDIDATE_MODE: ${{ steps.trust.outputs.candidate-mode }}
+          CANDIDATE_SHA: ${{ steps.candidate-authority.outputs.kandelo-sha }}
+          MERGE_SHA: ${{ steps.trust.outputs.kandelo-ref }}
+        run: |
+          set -euo pipefail
+          if [ "$CANDIDATE_MODE" = true ]; then
+            authority_root=candidate-authority
+            expected_sha="$CANDIDATE_SHA"
+            mode=bottle
+          else
+            authority_root=kandelo
+            expected_sha="$MERGE_SHA"
+            mode=promotion
+          fi
+          # WHY: repository_dispatch identifies caller commit C, but only C's
+          # literal reusable-workflow SHA proves which Kandelo code GitHub ran.
+          python3 "$authority_root/scripts/homebrew-candidate-caller-pins.py" \
+            validate --tap-root "$GITHUB_WORKSPACE/candidate-caller-data" \
+            --mode "$mode" --kandelo-sha "$expected_sha"
+
+      - name: Checkout promoted bottle producer
+        if: ${{ steps.trust.outputs.candidate-promotion-mode == 'true' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.kandelo-repository }}
+          ref: ${{ inputs.candidate-producer-sha }}
+          path: bottle-producer
+          fetch-depth: 0
+          submodules: false
+
+      - name: Admit promoted producer on exact-main tree
+        if: ${{ steps.trust.outputs.candidate-promotion-mode == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KANDELO_REPOSITORY: ${{ inputs.kandelo-repository }}
+          MAIN_SHA: ${{ steps.trust.outputs.kandelo-ref }}
+          PRODUCER_SHA: ${{ inputs.candidate-producer-sha }}
+        run: |
+          set -euo pipefail
+          [ "$(git -C kandelo rev-parse 'HEAD^{tree}')" = \
+            "$(git -C bottle-producer rev-parse 'HEAD^{tree}')" ] || {
+              echo "::error::promoted producer tree differs from main"
+              exit 1
+            }
+          status="$(gh api \
+            "/repos/$KANDELO_REPOSITORY/compare/$PRODUCER_SHA...main" \
+            --jq .status)"
+          case "$status" in
+            ahead|identical) ;;
+            *)
+              echo "::error::promoted producer is not on protected main"
+              exit 1
+              ;;
+          esac
+          [ "$(git -C kandelo rev-parse HEAD)" = "$MAIN_SHA" ] &&
+            [ "$(git -C bottle-producer rev-parse HEAD)" = \
+              "$PRODUCER_SHA" ] || {
+                echo "::error::promotion source checkout changed"
+                exit 1
+              }
+
       - name: Checkout tap
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -430,6 +694,7 @@ jobs:
         shell: bash
         env:
           PREFIX_CAMPAIGN_MODE: ${{ steps.trust.outputs.prefix-campaign-mode }}
+          CANDIDATE_MODE: ${{ steps.trust.outputs.candidate-mode }}
           DRY_RUN: ${{ inputs.dry-run }}
           REQUESTED_KANDELO_SHA: ${{ inputs.kandelo-ref }}
         run: |
@@ -443,9 +708,10 @@ jobs:
             echo "::error::tap checkout did not resolve to a commit SHA"; exit 2;
           }
           if { [ "$DRY_RUN" = "false" ] ||
+               [ "$CANDIDATE_MODE" = "true" ] ||
                [ "$PREFIX_CAMPAIGN_MODE" = "true" ]; } &&
              [ "$kandelo_sha" != "$REQUESTED_KANDELO_SHA" ]; then
-            echo "::error::Kandelo checkout differs from the exact admitted main commit"
+            echo "::error::Kandelo checkout differs from the exact requested source"
             exit 2
           fi
           {
@@ -453,8 +719,28 @@ jobs:
             echo "tap-sha=$tap_sha"
           } >> "$GITHUB_OUTPUT"
 
+      - name: Select immutable bottle producer
+        id: bottle-producer
+        shell: bash
+        env:
+          CANDIDATE_PROMOTION_MODE: >-
+            ${{ steps.trust.outputs.candidate-promotion-mode }}
+          PROMOTION_PRODUCER: ${{ inputs.candidate-producer-sha }}
+          SOURCE_COMMIT: ${{ steps.source-commits.outputs.kandelo-sha }}
+        run: |
+          set -euo pipefail
+          producer="$SOURCE_COMMIT"
+          if [ "$CANDIDATE_PROMOTION_MODE" = true ]; then
+            producer="$PROMOTION_PRODUCER"
+          fi
+          [[ "$producer" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::bottle producer is not an exact commit"
+            exit 2
+          }
+          echo "sha=$producer" >>"$GITHUB_OUTPUT"
+
       - name: Bind write tap source to protected main history
-        if: ${{ !inputs.dry-run || steps.trust.outputs.prefix-campaign-mode == 'true' }}
+        if: ${{ !inputs.dry-run || steps.trust.outputs.prefix-campaign-mode == 'true' || steps.trust.outputs.candidate-mode == 'true' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -492,12 +778,28 @@ jobs:
           TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
           TAP_SHA: ${{ steps.source-commits.outputs.tap-sha }}
+          CANDIDATE_MODE: ${{ steps.trust.outputs.candidate-mode }}
+          CANDIDATE_PROMOTION_MODE: >-
+            ${{ steps.trust.outputs.candidate-promotion-mode }}
+          BOTTLE_PRODUCER_SHA: ${{ steps.bottle-producer.outputs.sha }}
         run: |
           set -euo pipefail
-          python3 kandelo/scripts/homebrew-prefix-campaign-publisher.py \
+          authority_root=kandelo
+          producer_args=()
+          campaign_commit="$KANDELO_SHA"
+          if [ "$CANDIDATE_MODE" = true ]; then
+            authority_root=candidate-authority
+            producer_args+=(--kandelo-root "$GITHUB_WORKSPACE/kandelo")
+          elif [ "$CANDIDATE_PROMOTION_MODE" = true ]; then
+            producer_args+=(--kandelo-root \
+              "$GITHUB_WORKSPACE/bottle-producer")
+            campaign_commit="$BOTTLE_PRODUCER_SHA"
+          fi
+          python3 "$authority_root/scripts/homebrew-prefix-campaign-publisher.py" \
             prepare \
             --tap-root "$GITHUB_WORKSPACE/tap" \
-            --kandelo-commit "$KANDELO_SHA" \
+            "${producer_args[@]}" \
+            --kandelo-commit "$campaign_commit" \
             --tap-repository "$TAP_REPOSITORY" \
             --tap-name "$TAP_NAME" \
             --source-tap-commit "$TAP_SHA" \
@@ -515,6 +817,8 @@ jobs:
         env:
           ADMISSION_KIND: >-
             ${{ steps.campaign-source.outputs.prefix-campaign-destination-admission-kind }}
+          CANDIDATE_MODE: >-
+            ${{ steps.trust.outputs.candidate-mode }}
           DRY_RUN: ${{ inputs.dry-run }}
           PREFIX_CAMPAIGN_MODE: >-
             ${{ steps.trust.outputs.prefix-campaign-mode }}
@@ -522,7 +826,8 @@ jobs:
           set -euo pipefail
           prefix=""
           if [ "$PREFIX_CAMPAIGN_MODE" = "true" ] &&
-             [ "$DRY_RUN" = "true" ]; then
+             [ "$DRY_RUN" = "true" ] &&
+             [ "$CANDIDATE_MODE" != "true" ]; then
             # WHY: the ordinary publisher runs later in this same workflow
             # run. A fixed bootstrap-only prefix prevents Actions artifact
             # names from colliding without letting the caller choose a name.
@@ -904,7 +1209,7 @@ jobs:
 
   build-and-test:
     needs: [plan]
-    if: ${{ needs.plan.outputs.matrix != '[]' }}
+    if: ${{ needs.plan.outputs.matrix != '[]' && needs.plan.outputs.candidate-promotion-mode != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 1440
     # WHY: upload-artifact uses the current run's scoped artifact service.
@@ -924,6 +1229,16 @@ jobs:
           repository: ${{ inputs.kandelo-repository }}
           ref: ${{ needs.plan.outputs.kandelo-sha }}
           path: kandelo
+          submodules: false
+
+      - name: Checkout protected candidate package-reader authority
+        if: ${{ needs.plan.outputs.candidate-mode == 'true' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.kandelo-repository }}
+          ref: ${{ needs.plan.outputs.candidate-workflow-authority-sha }}
+          path: candidate-authority
           submodules: false
 
       - name: Checkout tap
@@ -997,7 +1312,8 @@ jobs:
         run: |
           set -euo pipefail
           cd kandelo
-          host="$(bash scripts/dev-shell.sh rustc -vV | sed -n 's/^host: //p')"
+          host="$(env -u GH_TOKEN -u GITHUB_TOKEN \
+            bash scripts/dev-shell.sh rustc -vV | sed -n 's/^host: //p')"
           [ -n "$host" ] || {
             echo "::error::unable to resolve the Rust host target"; exit 2;
           }
@@ -1027,6 +1343,66 @@ jobs:
           }
           echo "WASM_POSIX_BINARY_INDEX_URL=$index_url" >> "$GITHUB_ENV"
 
+      - name: Materialize immutable candidate Formula runtime packages
+        if: ${{ needs.plan.outputs.candidate-mode == 'true' }}
+        shell: bash
+        env:
+          CANDIDATE_PR_NUMBER: ${{ needs.plan.outputs.candidate-pr-number }}
+          CANDIDATE_STAGING_TAG: ${{ needs.plan.outputs.candidate-package-staging-tag }}
+          KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          EXPECTED_ABI: ${{ needs.plan.outputs.abi }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd candidate-authority
+          [[ "$CANDIDATE_STAGING_TAG" =~ ^pr-[1-9][0-9]*-staging-run-([1-9][0-9]*)-attempt-([1-9][0-9]*)$ ]]
+          staging_run="${BASH_REMATCH[1]}"
+          staging_attempt="${BASH_REMATCH[2]}"
+          host="$(env -u GH_TOKEN -u GITHUB_TOKEN \
+            bash scripts/dev-shell.sh rustc -vV | sed -n 's/^host: //p')"
+          [ -n "$host" ] || {
+            echo "::error::unable to resolve the Rust host target"; exit 2;
+          }
+          env -u GH_TOKEN -u GITHUB_TOKEN \
+            bash scripts/dev-shell.sh bash \
+            .github/scripts/prepare-homebrew-package-materializer.sh \
+            --host-target "$host"
+          authority_xtask="$PWD/target/$host/release/xtask"
+          cd ../kandelo
+          output="$RUNNER_TEMP/homebrew-candidate-packages"
+          # The wrapper and xtask both come from protected main. They read the
+          # candidate registry as inert data while the read token is present;
+          # no executable from the candidate receives that token.
+          bash ../candidate-authority/.github/scripts/materialize-homebrew-candidate-package-input.sh \
+              --tag "$CANDIDATE_STAGING_TAG" \
+              --pr-number "$CANDIDATE_PR_NUMBER" \
+              --run-id "$staging_run" \
+              --run-attempt "$staging_attempt" \
+              --producer-sha "$KANDELO_SHA" \
+              --expected-abi "$EXPECTED_ABI" \
+              --exclude erlang-vfs,perl,perl-vfs,python-vfs,redis,texlive \
+              --consumer-root "$PWD" \
+              --consumer-sha "$KANDELO_SHA" \
+              --xtask "$authority_xtask" \
+              --output-dir "$output"
+          index_url="$(cat "$output/resolver/index-url.txt")"
+          [ "$index_url" = \
+            "file://$output/resolver/archives/index.toml" ] || {
+              echo "::error::candidate package resolver is not the frozen local index"
+              exit 2
+            }
+          echo "WASM_POSIX_BINARY_INDEX_URL=$index_url" >>"$GITHUB_ENV"
+
+      - name: Upload candidate package-input identity
+        if: ${{ needs.plan.outputs.candidate-mode == 'true' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: homebrew-candidate-package-input-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/homebrew-candidate-packages/package-input.json
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 2
+
       - name: Prepare sealed campaign Formula dependencies
         if: ${{ needs.plan.outputs.prefix-campaign-mode == 'true' }}
         shell: bash
@@ -1036,6 +1412,9 @@ jobs:
           CAMPAIGN_TAG: ${{ needs.plan.outputs.prefix-campaign-tag }}
           FORMULA: ${{ matrix.formula }}
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          BOTTLE_PRODUCER_SHA: ${{ needs.plan.outputs.bottle-producer-sha }}
+          CANDIDATE_PROMOTION_MODE: >-
+            ${{ needs.plan.outputs.candidate-promotion-mode }}
           TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
           TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
@@ -1762,6 +2141,9 @@ jobs:
           CAMPAIGN_TAG: ${{ needs.plan.outputs.prefix-campaign-tag }}
           FORMULA: ${{ matrix.formula }}
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          BOTTLE_PRODUCER_SHA: ${{ needs.plan.outputs.bottle-producer-sha }}
+          CANDIDATE_PROMOTION_MODE: >-
+            ${{ needs.plan.outputs.candidate-promotion-mode }}
           TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
           TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
@@ -2035,6 +2417,16 @@ jobs:
           path: kandelo
           submodules: false
 
+      - name: Checkout promoted bottle producer for upload
+        if: ${{ needs.plan.outputs.candidate-promotion-mode == 'true' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.kandelo-repository }}
+          ref: ${{ needs.plan.outputs.bottle-producer-sha }}
+          path: bottle-producer
+          submodules: false
+
       - name: Checkout exact tap source for upload validation
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -2058,6 +2450,9 @@ jobs:
         shell: bash
         env:
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          BOTTLE_PRODUCER_SHA: ${{ needs.plan.outputs.bottle-producer-sha }}
+          CANDIDATE_PROMOTION_MODE: >-
+            ${{ needs.plan.outputs.candidate-promotion-mode }}
         run: |
           set -euo pipefail
           [[ "$KANDELO_SHA" =~ ^[0-9a-f]{40}$ ]] || {
@@ -2076,15 +2471,26 @@ jobs:
           CAMPAIGN_TAG: ${{ needs.plan.outputs.prefix-campaign-tag }}
           FORMULA: ${{ matrix.formula }}
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          BOTTLE_PRODUCER_SHA: ${{ needs.plan.outputs.bottle-producer-sha }}
+          CANDIDATE_PROMOTION_MODE: >-
+            ${{ needs.plan.outputs.candidate-promotion-mode }}
           TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
           TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
         run: |
           set -euo pipefail
+          producer_args=()
+          campaign_commit="$KANDELO_SHA"
+          if [ "$CANDIDATE_PROMOTION_MODE" = true ]; then
+            producer_args+=(--kandelo-root \
+              "$GITHUB_WORKSPACE/bottle-producer")
+            campaign_commit="$BOTTLE_PRODUCER_SHA"
+          fi
           python3 kandelo/scripts/homebrew-prefix-campaign-publisher.py \
             prepare \
             --tap-root "$GITHUB_WORKSPACE/tap" \
-            --kandelo-commit "$KANDELO_SHA" \
+            "${producer_args[@]}" \
+            --kandelo-commit "$campaign_commit" \
             --tap-repository "$TAP_REPOSITORY" \
             --tap-name "$TAP_NAME" \
             --source-tap-commit "$TAP_SHA" \
@@ -2153,15 +2559,90 @@ jobs:
           name: ${{ needs.plan.outputs.artifact-name-prefix }}homebrew-oci-child-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/homebrew-oci-child
 
+      - name: Download exact candidate promotion admission
+        id: candidate-promotion
+        if: ${{ needs.plan.outputs.candidate-promotion-mode == 'true' }}
+        continue-on-error: true
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: >-
+            homebrew-candidate-promotion-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/homebrew-candidate-promotion
+
+      - name: Bind promotion artifacts to the exact merged candidate
+        id: validate-candidate-promotion
+        if: >-
+          ${{
+            needs.plan.outputs.candidate-promotion-mode == 'true' &&
+            steps.build-handoff.outcome == 'success' &&
+            steps.oci-child.outcome == 'success' &&
+            steps.candidate-promotion.outcome == 'success'
+          }}
+        shell: bash
+        env:
+          ABI: ${{ needs.plan.outputs.abi }}
+          ARCH: ${{ matrix.arch }}
+          CAMPAIGN_LAYOUT: >-
+            ${{ needs.plan.outputs.prefix-campaign-layout-sha256 }}
+          CAMPAIGN_TAG: ${{ needs.plan.outputs.prefix-campaign-tag }}
+          CANDIDATE_TAG: ${{ inputs.candidate-promotion-tag }}
+          FORMULA: ${{ matrix.formula }}
+          MERGE_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
+          PRODUCER_COMMIT: ${{ needs.plan.outputs.bottle-producer-sha }}
+          TAP_CHECKOUT_COMMIT: >-
+            ${{ needs.plan.outputs.prefix-campaign-prepared-tap-commit }}
+          TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ] || {
+            echo "::error::promotion admission received credentials"
+            exit 2
+          }
+          python3 kandelo/scripts/homebrew-candidate-campaign.py \
+            validate-admission \
+            --receipt \
+              "$RUNNER_TEMP/homebrew-candidate-promotion/candidate-campaign-admission.json" \
+            --candidate-tag "$CAMPAIGN_TAG" \
+            --producer-commit "$PRODUCER_COMMIT" \
+            --merge-commit "$MERGE_COMMIT" \
+            --source-tap-commit "$TAP_COMMIT" \
+            --abi "$ABI" \
+            --guest-layout-sha256 "$CAMPAIGN_LAYOUT"
+          python3 kandelo/scripts/homebrew-bottle-candidate.py \
+            validate-promotion \
+            --receipt \
+              "$RUNNER_TEMP/homebrew-candidate-promotion/candidate-promotion.json" \
+            --candidate-tag "$CANDIDATE_TAG" \
+            --producer-commit "$PRODUCER_COMMIT" \
+            --merge-commit "$MERGE_COMMIT" \
+            --tap-commit "$TAP_COMMIT" \
+            --tap-checkout-commit "$TAP_CHECKOUT_COMMIT" \
+            --campaign-tag "$CAMPAIGN_TAG" \
+            --campaign-layout-sha256 "$CAMPAIGN_LAYOUT" \
+            --formula "$FORMULA" --arch "$ARCH" \
+            --build-handoff "$RUNNER_TEMP/homebrew-build-handoff" \
+            --oci-child "$RUNNER_TEMP/homebrew-oci-child" \
+            --package-input \
+              "$RUNNER_TEMP/homebrew-candidate-promotion/candidate-package-input.json"
+
       - name: Validate build data before exposing upload credentials
         id: validate-build
-        if: ${{ steps.build-handoff.outcome == 'success' && steps.oci-child.outcome == 'success' }}
+        if: >-
+          ${{
+            steps.build-handoff.outcome == 'success' &&
+            steps.oci-child.outcome == 'success' &&
+            (
+              needs.plan.outputs.candidate-promotion-mode != 'true' ||
+              steps.validate-candidate-promotion.outcome == 'success'
+            )
+          }}
         shell: bash
         env:
           KANDELO_HOMEBREW_ARCH: ${{ matrix.arch }}
           KANDELO_HOMEBREW_BOTTLE_ROOT_URL: ${{ needs.plan.outputs.bottle-root-prefix }}
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
-          KANDELO_HOMEBREW_KANDELO_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
+          KANDELO_HOMEBREW_KANDELO_COMMIT: >-
+            ${{ needs.plan.outputs.bottle-producer-sha }}
           KANDELO_HOMEBREW_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
           KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
@@ -2266,7 +2747,8 @@ jobs:
           KANDELO_HOMEBREW_ARCH: ${{ matrix.arch }}
           KANDELO_HOMEBREW_BOTTLE_ROOT_URL: ${{ needs.plan.outputs.bottle-root-prefix }}
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
-          KANDELO_HOMEBREW_KANDELO_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
+          KANDELO_HOMEBREW_KANDELO_COMMIT: >-
+            ${{ needs.plan.outputs.bottle-producer-sha }}
           KANDELO_HOMEBREW_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
           KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
@@ -2309,7 +2791,18 @@ jobs:
           retention-days: 2
 
       - name: Fail when the matching immutable handoff is absent
-        if: ${{ always() && (steps.build-handoff.outcome != 'success' || steps.oci-child.outcome != 'success') }}
+        if: >-
+          ${{
+            always() &&
+            (
+              steps.build-handoff.outcome != 'success' ||
+              steps.oci-child.outcome != 'success' ||
+              (
+                needs.plan.outputs.candidate-promotion-mode == 'true' &&
+                steps.validate-candidate-promotion.outcome != 'success'
+              )
+            )
+          }}
         shell: bash
         run: |
           echo "::error::the matching build or OCI child handoff was not produced"
@@ -2345,6 +2838,16 @@ jobs:
           path: kandelo
           submodules: false
 
+      - name: Checkout promoted bottle producer for index publication
+        if: ${{ needs.plan.outputs.candidate-promotion-mode == 'true' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.kandelo-repository }}
+          ref: ${{ needs.plan.outputs.bottle-producer-sha }}
+          path: bottle-producer
+          submodules: false
+
       - name: Checkout exact tap source for index validation
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -2372,15 +2875,26 @@ jobs:
           CAMPAIGN_TAG: ${{ needs.plan.outputs.prefix-campaign-tag }}
           FORMULA: ${{ matrix.formula }}
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          BOTTLE_PRODUCER_SHA: ${{ needs.plan.outputs.bottle-producer-sha }}
+          CANDIDATE_PROMOTION_MODE: >-
+            ${{ needs.plan.outputs.candidate-promotion-mode }}
           TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
           TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
         run: |
           set -euo pipefail
+          producer_args=()
+          campaign_commit="$KANDELO_SHA"
+          if [ "$CANDIDATE_PROMOTION_MODE" = true ]; then
+            producer_args+=(--kandelo-root \
+              "$GITHUB_WORKSPACE/bottle-producer")
+            campaign_commit="$BOTTLE_PRODUCER_SHA"
+          fi
           python3 kandelo/scripts/homebrew-prefix-campaign-publisher.py \
             prepare \
             --tap-root "$GITHUB_WORKSPACE/tap" \
-            --kandelo-commit "$KANDELO_SHA" \
+            "${producer_args[@]}" \
+            --kandelo-commit "$campaign_commit" \
             --tap-repository "$TAP_REPOSITORY" \
             --tap-name "$TAP_NAME" \
             --source-tap-commit "$TAP_SHA" \
@@ -2431,6 +2945,42 @@ jobs:
         run: |
           cd kandelo
           bash scripts/dev-shell.sh true
+
+      - name: Download exact candidate campaign admission for index
+        if: ${{ needs.plan.outputs.candidate-promotion-mode == 'true' }}
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: >-
+            homebrew-candidate-promotion-${{ matrix.formula }}-wasm32-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/homebrew-candidate-index-admission
+
+      - name: Bind index write to the admitted candidate campaign
+        if: ${{ needs.plan.outputs.candidate-promotion-mode == 'true' }}
+        shell: bash
+        env:
+          ABI: ${{ needs.plan.outputs.abi }}
+          CAMPAIGN_LAYOUT: >-
+            ${{ needs.plan.outputs.prefix-campaign-layout-sha256 }}
+          CAMPAIGN_TAG: ${{ needs.plan.outputs.prefix-campaign-tag }}
+          MERGE_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
+          PRODUCER_COMMIT: ${{ needs.plan.outputs.bottle-producer-sha }}
+          TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ] || {
+            echo "::error::candidate index admission received credentials"
+            exit 2
+          }
+          python3 kandelo/scripts/homebrew-candidate-campaign.py \
+            validate-admission \
+            --receipt \
+              "$RUNNER_TEMP/homebrew-candidate-index-admission/candidate-campaign-admission.json" \
+            --candidate-tag "$CAMPAIGN_TAG" \
+            --producer-commit "$PRODUCER_COMMIT" \
+            --merge-commit "$MERGE_COMMIT" \
+            --source-tap-commit "$TAP_COMMIT" \
+            --abi "$ABI" \
+            --guest-layout-sha256 "$CAMPAIGN_LAYOUT"
 
       - name: Download immutable OCI child layouts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -2691,6 +3241,16 @@ jobs:
           path: kandelo
           submodules: false
 
+      - name: Checkout promoted bottle producer for verification
+        if: ${{ needs.plan.outputs.candidate-promotion-mode == 'true' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.kandelo-repository }}
+          ref: ${{ needs.plan.outputs.bottle-producer-sha }}
+          path: bottle-producer
+          submodules: false
+
       - name: Checkout exact Kandelo sysroot build source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -2698,6 +3258,16 @@ jobs:
           repository: ${{ inputs.kandelo-repository }}
           ref: ${{ needs.plan.outputs.kandelo-sha }}
           path: kandelo-sysroot-build
+          submodules: false
+
+      - name: Checkout protected candidate verifier package-reader authority
+        if: ${{ needs.plan.outputs.candidate-mode == 'true' }}
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.kandelo-repository }}
+          ref: ${{ needs.plan.outputs.candidate-workflow-authority-sha }}
+          path: candidate-authority
           submodules: false
 
       - name: Checkout exact tap source
@@ -2723,6 +3293,9 @@ jobs:
         shell: bash
         env:
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          BOTTLE_PRODUCER_SHA: ${{ needs.plan.outputs.bottle-producer-sha }}
+          CANDIDATE_PROMOTION_MODE: >-
+            ${{ needs.plan.outputs.candidate-promotion-mode }}
           TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
         run: |
           set -euo pipefail
@@ -2767,7 +3340,11 @@ jobs:
         run: |
           set -euo pipefail
           cd kandelo
-          host="$(bash scripts/dev-shell.sh rustc -vV | sed -n 's/^host: //p')"
+          host="$(env -u GH_TOKEN -u GITHUB_TOKEN \
+            -u HOMEBREW_GITHUB_API_TOKEN \
+            -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+            -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+            bash scripts/dev-shell.sh rustc -vV | sed -n 's/^host: //p')"
           [ -n "$host" ] || {
             echo "::error::unable to resolve the Rust host target"; exit 2;
           }
@@ -2795,6 +3372,54 @@ jobs:
           }
           echo "WASM_POSIX_BINARY_INDEX_URL=$index_url" >> "$GITHUB_ENV"
 
+      - name: Re-materialize immutable candidate verification packages
+        if: ${{ needs.plan.outputs.candidate-mode == 'true' }}
+        shell: bash
+        env:
+          CANDIDATE_PR_NUMBER: ${{ needs.plan.outputs.candidate-pr-number }}
+          CANDIDATE_STAGING_TAG: ${{ needs.plan.outputs.candidate-package-staging-tag }}
+          KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          EXPECTED_ABI: ${{ needs.plan.outputs.abi }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd candidate-authority
+          [[ "$CANDIDATE_STAGING_TAG" =~ ^pr-[1-9][0-9]*-staging-run-([1-9][0-9]*)-attempt-([1-9][0-9]*)$ ]]
+          staging_run="${BASH_REMATCH[1]}"
+          staging_attempt="${BASH_REMATCH[2]}"
+          host="$(env -u GH_TOKEN -u GITHUB_TOKEN \
+            bash scripts/dev-shell.sh rustc -vV | sed -n 's/^host: //p')"
+          [ -n "$host" ] || {
+            echo "::error::unable to resolve the Rust host target"; exit 2;
+          }
+          env -u GH_TOKEN -u GITHUB_TOKEN \
+            bash scripts/dev-shell.sh bash \
+            .github/scripts/prepare-homebrew-package-materializer.sh \
+            --host-target "$host"
+          authority_xtask="$PWD/target/$host/release/xtask"
+          cd ../kandelo
+          output="$RUNNER_TEMP/homebrew-candidate-verifier-packages"
+          # The protected wrapper and xtask treat this checkout only as data.
+          bash ../candidate-authority/.github/scripts/materialize-homebrew-candidate-package-input.sh \
+              --tag "$CANDIDATE_STAGING_TAG" \
+              --pr-number "$CANDIDATE_PR_NUMBER" \
+              --run-id "$staging_run" \
+              --run-attempt "$staging_attempt" \
+              --producer-sha "$KANDELO_SHA" \
+              --expected-abi "$EXPECTED_ABI" \
+              --exclude erlang-vfs,perl,perl-vfs,python-vfs,redis,texlive \
+              --consumer-root "$PWD" \
+              --consumer-sha "$KANDELO_SHA" \
+              --xtask "$authority_xtask" \
+              --output-dir "$output"
+          index_url="$(cat "$output/resolver/index-url.txt")"
+          [ "$index_url" = \
+            "file://$output/resolver/archives/index.toml" ] || {
+              echo "::error::candidate verifier resolver is not frozen"
+              exit 2
+            }
+          echo "WASM_POSIX_BINARY_INDEX_URL=$index_url" >>"$GITHUB_ENV"
+
       - name: Prepare sealed campaign dependencies for verification
         if: ${{ needs.plan.outputs.prefix-campaign-mode == 'true' }}
         shell: bash
@@ -2804,16 +3429,27 @@ jobs:
           CAMPAIGN_TAG: ${{ needs.plan.outputs.prefix-campaign-tag }}
           FORMULA: ${{ matrix.formula }}
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          BOTTLE_PRODUCER_SHA: ${{ needs.plan.outputs.bottle-producer-sha }}
+          CANDIDATE_PROMOTION_MODE: >-
+            ${{ needs.plan.outputs.candidate-promotion-mode }}
           TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
           TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
         run: |
           set -euo pipefail
+          producer_args=()
+          campaign_commit="$KANDELO_SHA"
+          if [ "$CANDIDATE_PROMOTION_MODE" = true ]; then
+            producer_args+=(--kandelo-root \
+              "$GITHUB_WORKSPACE/bottle-producer")
+            campaign_commit="$BOTTLE_PRODUCER_SHA"
+          fi
           bash kandelo/scripts/dev-shell.sh \
             python3 kandelo/scripts/homebrew-prefix-campaign-publisher.py \
               prepare \
               --tap-root "$GITHUB_WORKSPACE/tap" \
-              --kandelo-commit "$KANDELO_SHA" \
+              "${producer_args[@]}" \
+              --kandelo-commit "$campaign_commit" \
               --tap-repository "$TAP_REPOSITORY" \
               --tap-name "$TAP_NAME" \
               --source-tap-commit "$TAP_SHA" \
@@ -2976,7 +3612,8 @@ jobs:
           KANDELO_HOMEBREW_ARCH: ${{ matrix.arch }}
           KANDELO_HOMEBREW_BOTTLE_ROOT_URL: ${{ needs.plan.outputs.bottle-root-prefix }}
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
-          KANDELO_HOMEBREW_KANDELO_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
+          KANDELO_HOMEBREW_KANDELO_COMMIT: >-
+            ${{ needs.plan.outputs.bottle-producer-sha }}
           KANDELO_HOMEBREW_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
           KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
@@ -3045,7 +3682,8 @@ jobs:
           KANDELO_HOMEBREW_DRY_RUN: ${{ inputs.dry-run }}
           KANDELO_HOMEBREW_BOTTLE_ROOT_URL: ${{ needs.plan.outputs.bottle-root-prefix }}
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
-          KANDELO_HOMEBREW_KANDELO_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
+          KANDELO_HOMEBREW_KANDELO_COMMIT: >-
+            ${{ needs.plan.outputs.bottle-producer-sha }}
           KANDELO_HOMEBREW_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
           KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
@@ -3810,17 +4448,28 @@ jobs:
           CAMPAIGN_TAG: ${{ needs.plan.outputs.prefix-campaign-tag }}
           FORMULA: ${{ matrix.formula }}
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          BOTTLE_PRODUCER_SHA: ${{ needs.plan.outputs.bottle-producer-sha }}
+          CANDIDATE_PROMOTION_MODE: >-
+            ${{ needs.plan.outputs.candidate-promotion-mode }}
           TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
           TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
         run: |
           set -euo pipefail
+          producer_args=()
+          campaign_commit="$KANDELO_SHA"
+          if [ "$CANDIDATE_PROMOTION_MODE" = true ]; then
+            producer_args+=(--kandelo-root \
+              "$GITHUB_WORKSPACE/bottle-producer")
+            campaign_commit="$BOTTLE_PRODUCER_SHA"
+          fi
           bash kandelo-postverify/scripts/dev-shell.sh \
             python3 \
               kandelo-postverify/scripts/homebrew-prefix-campaign-publisher.py \
               prepare \
               --tap-root "$GITHUB_WORKSPACE/tap-postverify" \
-              --kandelo-commit "$KANDELO_SHA" \
+              "${producer_args[@]}" \
+              --kandelo-commit "$campaign_commit" \
               --tap-repository "$TAP_REPOSITORY" \
               --tap-name "$TAP_NAME" \
               --source-tap-commit "$TAP_SHA" \
@@ -4586,7 +5235,8 @@ jobs:
           KANDELO_HOMEBREW_BOTTLE_ROOT_URL: ${{ needs.plan.outputs.bottle-root-prefix }}
           KANDELO_HOMEBREW_DRY_RUN: ${{ inputs.dry-run }}
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
-          KANDELO_HOMEBREW_KANDELO_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
+          KANDELO_HOMEBREW_KANDELO_COMMIT: >-
+            ${{ needs.plan.outputs.bottle-producer-sha }}
           KANDELO_HOMEBREW_RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
           KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
@@ -4966,6 +5616,502 @@ jobs:
         if: ${{ always() && (steps.publish-handoffs.outcome != 'success' || steps.validate-payload.outcome != 'success' || steps.publish.outcome != 'success') }}
         shell: bash
         run: exit 1
+
+  seal-bottle-candidate:
+    needs: [plan, build-and-test, verify-bottle]
+    if: ${{ always() && !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.candidate-mode == 'true' && needs.build-and-test.result == 'success' && needs.verify-bottle.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    # Candidate Formula code has already stopped running. This job checks out
+    # reviewed authority separately and treats all downloaded files as data.
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Checkout protected candidate validator authority
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.kandelo-repository }}
+          ref: ${{ needs.plan.outputs.candidate-workflow-authority-sha }}
+          path: authority
+          submodules: false
+
+      - name: Checkout inert candidate producer
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.kandelo-repository }}
+          ref: ${{ needs.plan.outputs.kandelo-sha }}
+          path: producer
+          fetch-depth: 0
+          submodules: false
+
+      - name: Checkout exact candidate tap source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.tap-repository }}
+          ref: ${{ needs.plan.outputs.tap-sha }}
+          path: tap-source
+          fetch-depth: 0
+
+      - name: Checkout tap workflow authority
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.tap-repository }}
+          ref: ${{ needs.plan.outputs.candidate-tap-workflow-authority-sha }}
+          path: tap-authority
+          fetch-depth: 0
+
+      - name: Download candidate build handoff
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: homebrew-build-handoff-${{ inputs.formulae }}-${{ inputs.arches }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate-build
+
+      - name: Download candidate OCI child
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: homebrew-oci-child-${{ inputs.formulae }}-${{ inputs.arches }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate-oci
+
+      - name: Download candidate package-input identity
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: homebrew-candidate-package-input-${{ inputs.formulae }}-${{ inputs.arches }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate-packages
+
+      - name: Install Nix for reviewed data validation
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Cache Nix store + flake eval
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
+        with:
+          use-gha-cache: false
+          use-flakehub: false
+
+      - name: Recreate collision-planned candidate tap source
+        shell: bash
+        env:
+          ARCH: ${{ inputs.arches }}
+          CAMPAIGN_DEPENDENCIES: ${{ needs.plan.outputs.prefix-campaign-dependencies }}
+          CAMPAIGN_TAG: ${{ needs.plan.outputs.prefix-campaign-tag }}
+          FORMULA: ${{ inputs.formulae }}
+          KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          TAP_NAME: ${{ inputs.tap-name }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          [ "$CAMPAIGN_DEPENDENCIES" = \
+            '{"dependencies":[],"schema":1}' ] || {
+              echo "::error::candidate bottle v1 is restricted to leaf Formulae"
+              exit 2
+            }
+          python3 authority/scripts/homebrew-prefix-campaign-publisher.py \
+            prepare \
+            --tap-root "$GITHUB_WORKSPACE/tap-source" \
+            --kandelo-root "$GITHUB_WORKSPACE/producer" \
+            --kandelo-commit "$KANDELO_SHA" \
+            --tap-repository "$TAP_REPOSITORY" \
+            --tap-name "$TAP_NAME" \
+            --source-tap-commit "$TAP_SHA" \
+            --campaign-tag "$CAMPAIGN_TAG" \
+            --dependencies "$CAMPAIGN_DEPENDENCIES" \
+            --formula "$FORMULA" \
+            --arch "$ARCH" \
+            --work-root "$RUNNER_TEMP/candidate-campaign" \
+            --receipt-out "$RUNNER_TEMP/candidate-campaign.json" \
+            --github-env "$GITHUB_ENV"
+
+      - name: Capture immutable candidate evidence
+        id: evidence
+        shell: bash
+        env:
+          ABI: ${{ needs.plan.outputs.abi }}
+          ARCH: ${{ inputs.arches }}
+          AUTHORITY_SHA: ${{ needs.plan.outputs.candidate-workflow-authority-sha }}
+          BOTTLE_ROOT_URL: ${{ needs.plan.outputs.bottle-root-prefix }}
+          CAMPAIGN_LAYOUT_SHA256: ${{ needs.plan.outputs.prefix-campaign-layout-sha256 }}
+          CAMPAIGN_TAG: ${{ needs.plan.outputs.prefix-campaign-tag }}
+          FORMULA: ${{ inputs.formulae }}
+          GH_TOKEN: ${{ github.token }}
+          KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          PR_NUMBER: ${{ needs.plan.outputs.candidate-pr-number }}
+          RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
+          TAP_NAME: ${{ inputs.tap-name }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
+          TAP_AUTHORITY_SHA: ${{ needs.plan.outputs.candidate-tap-workflow-authority-sha }}
+        run: |
+          set -euo pipefail
+          for pair in \
+            "authority:$AUTHORITY_SHA" \
+            "producer:$KANDELO_SHA" \
+            "tap-source:$KANDELO_HOMEBREW_PREPARED_TAP_COMMIT" \
+            "tap-authority:$TAP_AUTHORITY_SHA"; do
+            root="${pair%%:*}"
+            sha="${pair#*:}"
+            if [ "$(git -C "$root" rev-parse HEAD)" != "$sha" ] ||
+               [ -n "$(git -C "$root" status \
+                 --porcelain=v1 --untracked-files=all)" ]; then
+              echo "::error::$root is not its exact clean source"
+              exit 2
+            fi
+          done
+          if [ "$(git -C tap-source rev-parse 'HEAD^{tree}')" != \
+               "$KANDELO_HOMEBREW_PREPARED_TAP_TREE" ] ||
+             ! git -C tap-source merge-base --is-ancestor \
+               "$TAP_SHA" "$KANDELO_HOMEBREW_PREPARED_TAP_COMMIT"; then
+            echo "::error::candidate prepared tap is not derived from the admitted source"
+            exit 2
+          fi
+
+          pr="$RUNNER_TEMP/candidate-pr-rest.json"
+          gh api "/repos/Automattic/kandelo/pulls/$PR_NUMBER" >"$pr"
+          base_sha="$(jq -er '.base.sha' "$pr")"
+          [ "$(jq -er '.base.ref' "$pr")" = main ] &&
+            [ "$(jq -er '.head.sha' "$pr")" = "$KANDELO_SHA" ] &&
+            [ "$(jq -er '.state' "$pr")" = open ] || {
+              echo "::error::candidate PR no longer names the exact open head"; exit 1;
+            }
+          current_main="$(gh api /repos/Automattic/kandelo/git/ref/heads/main --jq .object.sha)"
+          [ "$base_sha" = "$current_main" ] || {
+            echo "::error::candidate PR base moved; rebuild from the current base"; exit 1;
+          }
+          authority_status="$(gh api "/repos/Automattic/kandelo/compare/$AUTHORITY_SHA...main" --jq .status)"
+          case "$authority_status" in ahead|identical) ;; *) exit 1 ;; esac
+          tap_source_status="$(gh api "/repos/$TAP_REPOSITORY/compare/$TAP_SHA...$TAP_AUTHORITY_SHA" --jq .status)"
+          case "$tap_source_status" in ahead|identical) ;; *) exit 1 ;; esac
+          tap_authority_status="$(gh api "/repos/$TAP_REPOSITORY/compare/$TAP_AUTHORITY_SHA...main" --jq .status)"
+          case "$tap_authority_status" in ahead|identical) ;; *) exit 1 ;; esac
+
+          run_json="$RUNNER_TEMP/candidate-run-live.json"
+          artifacts_pages="$RUNNER_TEMP/candidate-artifact-pages.json"
+          artifacts_json="$RUNNER_TEMP/candidate-artifacts.json"
+          gh api "/repos/$TAP_REPOSITORY/actions/runs/$GITHUB_RUN_ID" >"$run_json"
+          gh api --paginate --slurp \
+            "/repos/$TAP_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
+            >"$artifacts_pages"
+          jq -e '[.[].artifacts[]]' "$artifacts_pages" >"$artifacts_json"
+          expected_names="$(jq -nc \
+            --arg build "homebrew-build-handoff-$FORMULA-$ARCH-attempt-$GITHUB_RUN_ATTEMPT" \
+            --arg oci "homebrew-oci-child-$FORMULA-$ARCH-attempt-$GITHUB_RUN_ATTEMPT" \
+            --arg packages "homebrew-candidate-package-input-$FORMULA-$ARCH-attempt-$GITHUB_RUN_ATTEMPT" \
+            '[$build,$oci,$packages] | sort')"
+          jq -e --argjson names "$expected_names" '
+            map(select(.name as $name | $names | index($name))) as $selected |
+            ($selected | length) == 3 and
+            ([$selected[].name] | sort) == $names and
+            ([$selected[].id] | length == (unique | length)) and
+            all($selected[];
+              .expired == false and
+              (.id | type == "number" and . > 0) and
+              (.size_in_bytes | type == "number" and . > 0) and
+              (.digest | type == "string" and
+                test("^sha256:[0-9a-f]{64}$")))
+          ' "$artifacts_json" >/dev/null || {
+            echo "::error::candidate run lacks one exact retained artifact set"
+            exit 1
+          }
+          jq -nS \
+            --arg repository "$TAP_REPOSITORY" \
+            --arg caller "$TAP_AUTHORITY_SHA" \
+            --argjson run_id "$GITHUB_RUN_ID" \
+            --argjson attempt "$GITHUB_RUN_ATTEMPT" \
+            --slurpfile run "$run_json" \
+            --slurpfile artifacts "$artifacts_json" \
+            --argjson names "$expected_names" '
+              {
+                schema:1,
+                repository:$repository,
+                workflow_path:".github/workflows/candidate-bottles.yml",
+                caller_commit:$caller,
+                event:"repository_dispatch",
+                run_id:$run_id,
+                run_attempt:$attempt,
+                status:$run[0].status,
+                conclusion:$run[0].conclusion,
+                artifacts:($artifacts[0] |
+                  map(select(.name as $name | $names | index($name))) |
+                  map({
+                    id,
+                    name,
+                    bytes:.size_in_bytes,
+                    digest,
+                    run_id:$run_id,
+                    run_attempt:$attempt
+                  }) | sort_by(.name))
+              }
+            ' >"$RUNNER_TEMP/candidate-run.json"
+
+          env -u GH_TOKEN -u GITHUB_TOKEN \
+            python3 authority/scripts/homebrew-bottle-candidate.py \
+              describe-source --root "$GITHUB_WORKSPACE/producer" \
+              --producer-commit "$KANDELO_SHA" \
+              --out "$RUNNER_TEMP/candidate-source-description.json"
+          producer_tree="$(jq -er '.producer_tree' \
+            "$RUNNER_TEMP/candidate-source-description.json")"
+          snapshot_sha="$(jq -er '.abi_snapshot_sha256' \
+            "$RUNNER_TEMP/candidate-source-description.json")"
+          layout_sha="$(jq -er '.guest_layout_sha256' \
+            "$RUNNER_TEMP/candidate-source-description.json")"
+          jq -nS \
+            --arg base "$base_sha" \
+            --arg producer "$KANDELO_SHA" \
+            --arg producer_tree "$producer_tree" \
+            --arg authority "$AUTHORITY_SHA" \
+            --arg snapshot "$snapshot_sha" \
+            --arg layout "$layout_sha" \
+            --arg release "$RELEASE_TAG" \
+            --arg tap_repository "$TAP_REPOSITORY" \
+            --arg tap_name "$TAP_NAME" \
+            --arg tap "$TAP_SHA" \
+            --arg tap_checkout "$KANDELO_HOMEBREW_PREPARED_TAP_COMMIT" \
+            --arg tap_checkout_tree "$KANDELO_HOMEBREW_PREPARED_TAP_TREE" \
+            --arg campaign "$CAMPAIGN_TAG" \
+            --arg campaign_layout "$CAMPAIGN_LAYOUT_SHA256" \
+            --argjson pr "$PR_NUMBER" \
+            --argjson abi "$ABI" '
+              {
+                kandelo_repository:"Automattic/kandelo",
+                workflow_authority_commit:$authority,
+                base_commit:$base,
+                producer_commit:$producer,
+                producer_tree:$producer_tree,
+                merge_method:"merge",
+                pr_number:$pr,
+                abi:$abi,
+                abi_snapshot_sha256:$snapshot,
+                guest_layout:{
+                  path:"homebrew/kandelo-guest-layout.json",
+                  sha256:$layout
+                },
+                release_tag:$release,
+                tap_repository:$tap_repository,
+                tap_name:$tap_name,
+                tap_commit:$tap,
+                tap_checkout_commit:$tap_checkout,
+                tap_checkout_tree:$tap_checkout_tree,
+                prefix_campaign_tag:$campaign,
+                prefix_campaign_layout_sha256:$campaign_layout
+              }
+            ' >"$RUNNER_TEMP/candidate-source.json"
+          printf '[]\n' >"$RUNNER_TEMP/candidate-dependencies.json"
+          echo "base-sha=$base_sha" >>"$GITHUB_OUTPUT"
+
+      - name: Validate candidate handoffs with reviewed code
+        shell: bash
+        env:
+          ARCH: ${{ inputs.arches }}
+          BOTTLE_ROOT_URL: ${{ needs.plan.outputs.bottle-root-prefix }}
+          FORMULA: ${{ inputs.formulae }}
+          KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          RELEASE_TAG: ${{ needs.plan.outputs.release-tag }}
+          TAP_NAME: ${{ inputs.tap-name }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          for secret_name in GH_TOKEN GITHUB_TOKEN \
+            HOMEBREW_GITHUB_API_TOKEN HOMEBREW_GITHUB_PACKAGES_TOKEN \
+            HOMEBREW_DOCKER_REGISTRY_TOKEN; do
+            [ -z "${!secret_name:-}" ] || {
+              echo "::error::candidate data validator received $secret_name"
+              exit 2
+            }
+          done
+          python3 authority/scripts/homebrew-oci-layout.py validate-child \
+            --layout "$RUNNER_TEMP/candidate-oci/layout" \
+            --receipt "$RUNNER_TEMP/candidate-oci/receipt.json"
+          resolved="$RUNNER_TEMP/candidate-resolved-taps.json"
+          python3 authority/scripts/homebrew-dependency-taps.py resolve \
+            --tap-root "$GITHUB_WORKSPACE/tap-source" \
+            --tap-name "$TAP_NAME" \
+            --tap-repository "$TAP_REPOSITORY" \
+            --tap-commit "$TAP_SHA" \
+            --checkout-commit "$KANDELO_HOMEBREW_PREPARED_TAP_COMMIT" \
+            --out "$resolved"
+          mkdir "$RUNNER_TEMP/candidate-validated"
+          bash authority/scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$resolved" \
+            bash authority/scripts/homebrew-validate-build-handoff.sh \
+              --handoff "$RUNNER_TEMP/candidate-build" \
+              --formula "$FORMULA" \
+              --arch "$ARCH" \
+              --release-tag "$RELEASE_TAG" \
+              --tap-repository "$TAP_REPOSITORY" \
+              --tap-name "$TAP_NAME" \
+              --tap-commit "$TAP_SHA" \
+              --tap-checkout-commit \
+                "$KANDELO_HOMEBREW_PREPARED_TAP_COMMIT" \
+              --kandelo-commit "$KANDELO_SHA" \
+              --bottle-root-url "$BOTTLE_ROOT_URL" \
+              --tap-root "$GITHUB_WORKSPACE/tap-source" \
+              --forbidden-root "$GITHUB_WORKSPACE" \
+              --forbidden-root "$(dirname "$GITHUB_WORKSPACE")" \
+              --forbidden-root "$RUNNER_TEMP" \
+              --out-env "$RUNNER_TEMP/candidate-validated/build.env" \
+              --out-bottle-json \
+                "$RUNNER_TEMP/candidate-validated/bottle.json"
+          # WHY: v1 deliberately stages only leaf Formulae. The build's
+          # independently captured pour receipt is the authority for leafness;
+          # an empty caller-supplied dependency list is not evidence.
+          jq -e '.dependencies == []' \
+            "$RUNNER_TEMP/candidate-build/dependency-provenance.json" \
+            >/dev/null || {
+              echo "::error::candidate bottle v1 rejected a dependency-bearing Formula"
+              exit 2
+            }
+
+      - name: Prove candidate refs are collision-free
+        shell: bash
+        env:
+          FORMULA: ${{ inputs.formulae }}
+          TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+        run: |
+          set -euo pipefail
+          [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ] || {
+            echo "::error::candidate destination probe received credentials"
+            exit 2
+          }
+          receipt="$RUNNER_TEMP/candidate-oci/receipt.json"
+          remote="ghcr.io/$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')/$FORMULA"
+          child="$(jq -er '.oci.transport_tag' "$receipt")"
+          homebrew_ref="$(jq -er '.oci.homebrew_ref' "$receipt")"
+          expected_child_digest="$(jq -er '.oci.manifest.digest' "$receipt")"
+          top="$(jq -er '.top_ref' "$receipt")"
+          config="$RUNNER_TEMP/candidate-anonymous-oras.json"
+          printf '{"auths":{}}\n' >"$config"
+          child_result="$RUNNER_TEMP/candidate-child-probe.json"
+          bash authority/scripts/dev-shell.sh env -u GH_TOKEN -u GITHUB_TOKEN \
+            python3 authority/scripts/homebrew-oci-layout.py probe-registry \
+              --kind manifest --remote "$remote" --reference "$child" \
+              --registry-config "$config" --out-result "$child_result"
+          jq -e --arg digest "$expected_child_digest" '
+            (.status == "missing" and .digest == null) or
+            (.status == "present" and .digest == $digest)
+          ' "$child_result" >/dev/null || {
+            echo "::error::candidate transport ref contains different bytes"
+            exit 1
+          }
+
+          existing="$RUNNER_TEMP/candidate-existing-index"
+          top_result="$RUNNER_TEMP/candidate-top-probe.json"
+          bash authority/scripts/dev-shell.sh env -u GH_TOKEN -u GITHUB_TOKEN \
+            python3 authority/scripts/homebrew-oci-layout.py \
+              import-public-index --remote "$remote" --reference "$top" \
+              --registry-config "$config" --out-layout "$existing" \
+              --out-result "$top_result"
+          merge_args=(
+            --child-layout "$RUNNER_TEMP/candidate-oci/layout"
+            --child-receipt "$receipt"
+          )
+          case "$(jq -er .status "$top_result")" in
+            present) merge_args+=(--existing-layout "$existing") ;;
+            missing) ;;
+            *) echo "::error::candidate top index is ambiguous"; exit 1 ;;
+          esac
+          # WHY: the immutable child uses a content-addressed transport tag,
+          # but Homebrew selects through homebrew_ref in this top index. This
+          # dry merge rejects an older ABI at the same version/rebuild ref.
+          bash authority/scripts/dev-shell.sh env -u GH_TOKEN -u GITHUB_TOKEN \
+            python3 authority/scripts/homebrew-oci-layout.py merge-index \
+              "${merge_args[@]}" --tap-commit "$TAP_SHA" \
+              --out-layout "$RUNNER_TEMP/candidate-merged-index" \
+              --out-receipt "$RUNNER_TEMP/candidate-merged-index.json"
+
+          child_status="$(jq -r .status "$child_result")"
+          child_digest="$(jq -c '.digest' "$child_result")"
+          top_status="$(jq -r .status "$top_result")"
+          top_digest="$(jq -c '.digest // null' "$top_result")"
+          jq -nS \
+            --arg formula "$FORMULA" \
+            --arg remote "$remote" \
+            --arg child "$child" \
+            --arg child_status "$child_status" \
+            --argjson child_digest "$child_digest" \
+            --arg homebrew_ref "$homebrew_ref" \
+            --arg top "$top" \
+            --arg top_status "$top_status" \
+            --argjson top_digest "$top_digest" \
+            --arg observed "$(date -u +%Y-%m-%dT%H:%M:%SZ)" '
+              {
+                formula:$formula,
+                remote:$remote,
+                child_ref:$child,
+                child_status:$child_status,
+                child_digest:$child_digest,
+                homebrew_ref:$homebrew_ref,
+                homebrew_ref_status:"available",
+                top_ref:$top,
+                top_status:$top_status,
+                top_digest:$top_digest,
+                observed_at:$observed
+              }
+            ' >"$RUNNER_TEMP/candidate-destination.json"
+
+      - name: Prepare inert immutable candidate release
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ] || {
+            echo "::error::candidate release preparation received credentials"
+            exit 2
+          }
+          python3 authority/scripts/homebrew-bottle-candidate.py prepare \
+            --source "$RUNNER_TEMP/candidate-source.json" \
+            --run-evidence "$RUNNER_TEMP/candidate-run.json" \
+            --destination "$RUNNER_TEMP/candidate-destination.json" \
+            --dependencies "$RUNNER_TEMP/candidate-dependencies.json" \
+            --package-input \
+              "$RUNNER_TEMP/candidate-packages/package-input.json" \
+            --build-handoff "$RUNNER_TEMP/candidate-build" \
+            --oci-child "$RUNNER_TEMP/candidate-oci" \
+            --out "$RUNNER_TEMP/prepared-candidate"
+
+      - name: Publish and anonymously read back candidate release
+        shell: bash
+        env:
+          AUTHORITY_SHA: ${{ needs.plan.outputs.candidate-workflow-authority-sha }}
+          GH_TOKEN: ${{ github.token }}
+          PRODUCER_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          STATE_LOCK_OWNER_DETAIL: immutable Homebrew bottle candidate
+          TAP_AUTHORITY_SHA: ${{ needs.plan.outputs.candidate-tap-workflow-authority-sha }}
+        run: |
+          set -euo pipefail
+          bash authority/scripts/publish-immutable-github-release.sh \
+            --manifest \
+              "$RUNNER_TEMP/prepared-candidate/release-manifest.json" \
+            --asset-root "$RUNNER_TEMP/prepared-candidate/assets" \
+            --lock-root "$GITHUB_WORKSPACE/tap-authority" \
+            --receipt "$RUNNER_TEMP/candidate-release-receipt.json" \
+            --kandelo-main-contains-sha "$AUTHORITY_SHA" \
+            --target-main-contains-sha "$TAP_AUTHORITY_SHA"
+          tag="$(cat "$RUNNER_TEMP/prepared-candidate/tag.txt")"
+          echo "candidate-tag=$tag" >>"$GITHUB_OUTPUT"
+          {
+            echo "### Immutable Homebrew bottle candidate"
+            echo
+            echo "Candidate: \`$tag\`"
+            echo
+            echo "Producer: \`$PRODUCER_SHA\`"
+            echo
+            echo "This release is noncanonical until exact-head promotion."
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Retain candidate publication receipt
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: homebrew-candidate-release-receipt-${{ inputs.formulae }}-${{ inputs.arches }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate-release-receipt.json
+          if-no-files-found: error
+          retention-days: 90
 
   publish-vfs-release:
     needs: [plan, verify-bottle, finalize-tap]

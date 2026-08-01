@@ -568,6 +568,116 @@ class Fixture:
 
 
 class PrefixCampaignPublisherTests(unittest.TestCase):
+    def test_candidate_campaign_requires_exact_readback_receipt(self) -> None:
+        fixture = Fixture()
+        self.addCleanup(fixture.close)
+        candidate_digest = "d" * 64
+        candidate_tag = (
+            "homebrew-prefix-campaign-candidate-pr-77-run-900-"
+            f"attempt-2-sha256-{candidate_digest}"
+        )
+
+        def fetch_candidate(
+            repository: str,
+            tag: str,
+            output: pathlib.Path,
+            receipt: pathlib.Path,
+        ) -> None:
+            self.assertEqual(repository, TAP_REPOSITORY)
+            self.assertEqual(tag, candidate_tag)
+            shutil.copy2(fixture.campaign_path, output)
+            write_json(
+                receipt,
+                {
+                    "campaign_sha256": sha256(
+                        fixture.campaign_path.read_bytes()
+                    ),
+                    "candidate_sha256": candidate_digest,
+                    "kind": (
+                        "kandelo-homebrew-prefix-campaign-"
+                        "candidate-readback"
+                    ),
+                    "release_id": 123,
+                    "repository": TAP_REPOSITORY,
+                    "schema": 1,
+                    "tag": candidate_tag,
+                    "target_commitish": "f" * 40,
+                },
+            )
+
+        dependencies = PUBLISHER.PreparationDependencies(
+            fetch_campaign=fetch_candidate,
+            fetch_handoff=fixture.fetch_handoff,
+            merge_dependency=fixture.merge_dependency,
+        )
+        receipt = PUBLISHER.prepare(
+            tap_root=fixture.tap,
+            kandelo_commit=KANDELO_COMMIT,
+            tap_repository=TAP_REPOSITORY,
+            tap_name=TAP_NAME,
+            source_tap_commit=fixture.source_commit,
+            campaign_tag=candidate_tag,
+            dependency_request='{"dependencies":[],"schema":1}',
+            formula="alpha",
+            arch="wasm32",
+            work_root=fixture.root / "candidate-publisher-work",
+            receipt_output=fixture.root / "candidate-publisher-receipt.json",
+            dependencies=dependencies,
+        )
+        self.assertEqual(receipt["campaign"]["tag"], candidate_tag)
+
+        fixture = Fixture()
+        self.addCleanup(fixture.close)
+
+        def fetch_bad_candidate(
+            _repository: str,
+            _tag: str,
+            output: pathlib.Path,
+            receipt: pathlib.Path,
+        ) -> None:
+            shutil.copy2(fixture.campaign_path, output)
+            write_json(
+                receipt,
+                {
+                    "campaign_sha256": "0" * 64,
+                    "candidate_sha256": candidate_digest,
+                    "kind": (
+                        "kandelo-homebrew-prefix-campaign-"
+                        "candidate-readback"
+                    ),
+                    "release_id": 123,
+                    "repository": TAP_REPOSITORY,
+                    "schema": 1,
+                    "tag": candidate_tag,
+                    "target_commitish": "f" * 40,
+                },
+            )
+
+        with self.assertRaisesRegex(
+            PUBLISHER.PublisherCampaignError,
+            "candidate campaign readback receipt is not exact",
+        ):
+            PUBLISHER.prepare(
+                tap_root=fixture.tap,
+                kandelo_commit=KANDELO_COMMIT,
+                tap_repository=TAP_REPOSITORY,
+                tap_name=TAP_NAME,
+                source_tap_commit=fixture.source_commit,
+                campaign_tag=candidate_tag,
+                dependency_request='{"dependencies":[],"schema":1}',
+                formula="alpha",
+                arch="wasm32",
+                work_root=fixture.root / "bad-candidate-publisher-work",
+                receipt_output=(
+                    fixture.root / "bad-candidate-publisher-receipt.json"
+                ),
+                dependencies=PUBLISHER.PreparationDependencies(
+                    fetch_campaign=fetch_bad_candidate,
+                    fetch_handoff=fixture.fetch_handoff,
+                    merge_dependency=fixture.merge_dependency,
+                ),
+            )
+
     def test_dependency_input_accepts_build_and_reuse_handoffs(
         self,
     ) -> None:
@@ -722,7 +832,11 @@ class PrefixCampaignPublisherTests(unittest.TestCase):
             "prefix-campaign-destination-admission-kind="
             "anonymous-absence\n"
             "prefix-campaign-layout-sha256="
-            f"{GUEST_LAYOUT_SHA256}\n",
+            f"{GUEST_LAYOUT_SHA256}\n"
+            "prefix-campaign-prepared-tap-commit="
+            f"{receipt['preparation']['commit']}\n"
+            "prefix-campaign-prepared-tap-tree="
+            f"{receipt['preparation']['tree_git_oid']}\n",
         )
         self.assertEqual(
             run(
