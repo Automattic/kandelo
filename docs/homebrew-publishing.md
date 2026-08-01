@@ -2030,6 +2030,14 @@ the next unpublished Formula, while an extra stale sidecar may predate the
 selected catalog. Using any of those as the old bottle-block authority would
 mix package generations or reuse a reserved rebuild number.
 
+An older-ABI bottle is never passed through the current ABI's executable
+validator. It is already an unconditional rebuild, and obsolete fork
+instrumentation must continue to fail current-ABI admission. The campaign
+still verifies its anonymous bytes, safe bounded TAR structure, complete path
+scan, retired prefixes, archived Formula receipt, and declared dependency
+closure. Its inspection records `not-inspected-incompatible-abi`, making clear
+that archive evidence is not an executable compatibility claim.
+
 A candidate Formula may advance its Homebrew `pkg_version` during the
 campaign. The manifest keeps the old version on the historical bottle,
 requires a bottleless candidate Formula, and reserves rebuild zero in the new

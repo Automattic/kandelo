@@ -1923,34 +1923,40 @@ def inspect_variant(
                 f"{variant.formula}/{bottle['arch']} anonymous SHA-256 "
                 f"{actual_sha256} differs from {digest}"
             )
+        inspection_command = [
+            "python3",
+            str(kandelo_root / INSPECTOR_PATH),
+            "--archive",
+            str(archive),
+            "--formula",
+            variant.formula,
+            "--version",
+            variant.version,
+            "--expected-abi",
+            str(bottle["kandelo_abi"]),
+            "--expected-arch",
+            bottle["arch"],
+            "--selected-formula",
+            str(variant.formula_path),
+            "--forbidden-root",
+            EXPLICIT_BUILD_ROOT,
+            # WHY: retired-prefix reporting must use the same reviewed layout
+            # bytes that bind the campaign. Passing their digest prevents a
+            # concurrent or accidental layout change from silently changing
+            # which bottle bytes are eligible for reuse.
+            "--report-retired-roots-layout-sha256",
+            layout_sha256,
+            "--out",
+            str(result_path),
+        ]
+        if bottle["kandelo_abi"] != layout["_current_abi"]:
+            # WHY: the current validator must reject a stale fork ABI. This
+            # bottle is already an unconditional rebuild, so inspect its TAR,
+            # receipt, dependencies, and retired paths without representing
+            # those bytes as executable or compatible with the current ABI.
+            inspection_command.append("--historical-incompatible-abi")
         run_command(
-            [
-                "python3",
-                str(kandelo_root / INSPECTOR_PATH),
-                "--archive",
-                str(archive),
-                "--formula",
-                variant.formula,
-                "--version",
-                variant.version,
-                "--expected-abi",
-                str(bottle["kandelo_abi"]),
-                "--expected-arch",
-                bottle["arch"],
-                "--selected-formula",
-                str(variant.formula_path),
-                "--forbidden-root",
-                EXPLICIT_BUILD_ROOT,
-                # WHY: retired-prefix reporting must use the same reviewed
-                # layout bytes that bind the campaign. Passing their digest
-                # prevents a concurrent or accidental layout change from
-                # silently changing which bottle bytes are eligible for
-                # reuse.
-                "--report-retired-roots-layout-sha256",
-                layout_sha256,
-                "--out",
-                str(result_path),
-            ],
+            inspection_command,
             cwd=kandelo_root,
             label=f"{variant.formula}/{bottle['arch']} canonical bottle inspection",
             timeout=300,
@@ -1980,7 +1986,17 @@ def inspect_variant(
         != bottle["built_from"]["formula_sha256"]
     ):
         fail(f"{variant.formula}/{bottle['arch']} inspection identity is inconsistent")
-    if inspection["fork_instrumentation"] != bottle["fork_instrumentation"]:
+    incompatible_abi = bottle["kandelo_abi"] != layout["_current_abi"]
+    if incompatible_abi:
+        if (
+            inspection["fork_instrumentation"]
+            != "not-inspected-incompatible-abi"
+        ):
+            fail(
+                f"{variant.formula}/{bottle['arch']} historical ABI was "
+                "incorrectly admitted as executable"
+            )
+    elif inspection["fork_instrumentation"] != bottle["fork_instrumentation"]:
         fail(
             f"{variant.formula}/{bottle['arch']} inspected fork instrumentation "
             "differs from its selected record"

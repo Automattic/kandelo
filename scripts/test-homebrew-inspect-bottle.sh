@@ -217,6 +217,35 @@ jq -e --arg formula_sha "$formula_sha" '
   ]
 ' --argjson abi "$ABI_VERSION" "$VALID_JSON" >/dev/null
 
+# An obsolete ABI must still receive full archive/receipt inspection, but the
+# current validator cannot truthfully admit its old fork contract. Prove this
+# explicit mode never invokes the executable validator and labels the gap.
+HISTORICAL_JSON="$TMP_ROOT/historical-incompatible.json"
+HISTORICAL_VALIDATOR="$TMP_ROOT/must-not-run-validator.sh"
+cat >"$HISTORICAL_VALIDATOR" <<'SH'
+#!/usr/bin/env bash
+echo "historical inspection invoked the current ABI validator" >&2
+exit 97
+SH
+chmod +x "$HISTORICAL_VALIDATOR"
+python3 "$INSPECTOR" \
+  --archive "$VALID_ARCHIVE" \
+  --formula tool \
+  --version 1.0 \
+  --expected-abi 1 \
+  --expected-arch wasm32 \
+  --historical-incompatible-abi \
+  --selected-formula "$FORMULA_SOURCE" \
+  --forbidden-root "$FORBIDDEN_ROOT" \
+  --wasm-validator "$HISTORICAL_VALIDATOR" \
+  --out "$HISTORICAL_JSON"
+jq -e '
+  .abi_version == 1 and
+  .fork_instrumentation == "not-inspected-incompatible-abi" and
+  (.all_files | index("bin/tool") != null) and
+  (.runtime_dependencies | length == 2)
+' "$HISTORICAL_JSON" >/dev/null
+
 if python3 "$INSPECTOR" \
   --archive "$VALID_ARCHIVE" \
   --formula tool \

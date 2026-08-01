@@ -1013,6 +1013,12 @@ class PrefixCampaignTests(unittest.TestCase):
             {"kind": "required-rebuild", "reasons": ["abi-mismatch"]},
         )
         self.assertEqual(
+            by_name["beta"]["variants"][0]["inspection"][
+                "fork_instrumentation"
+            ],
+            "not-inspected-incompatible-abi",
+        )
+        self.assertEqual(
             by_name["homebrew-bootstrap"]["variants"][0]["disposition"],
             {"kind": "required-build", "reasons": ["new-campaign-entrant"]},
         )
@@ -2048,19 +2054,40 @@ class PrefixCampaignTests(unittest.TestCase):
     ) -> None:
         fixture = make_fixture()
         self.addCleanup(fixture.close)
-        sidecar_path = fixture.old_tap / "Kandelo/formula/beta.json"
+        sidecar_path = fixture.old_tap / "Kandelo/formula/alpha.json"
         sidecar_value = json.loads(sidecar_path.read_text())
         sidecar_value["bottles"][0]["fork_instrumentation"] = "required"
         write_json(sidecar_path, sidecar_value)
+        metadata_path = fixture.old_tap / "Kandelo/metadata.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata["packages"] = [package_from_sidecar(sidecar_value)]
+        write_json(metadata_path, metadata)
+        metadata_sha = sha256(metadata_path.read_bytes())
         refresh_provenance_hashes(
-            fixture.old_tap, "beta", "2.0", 0, "wasm32"
+            fixture.old_tap,
+            "alpha",
+            "1.0",
+            1,
+            "wasm32",
+            metadata_sha256=metadata_sha,
+        )
+        refresh_provenance_hashes(
+            fixture.old_tap,
+            "beta",
+            "2.0",
+            0,
+            "wasm32",
+            metadata_sha256=metadata_sha,
         )
         old_head = commit(fixture.old_tap, "mismatch fork evidence")
         with self.assertRaisesRegex(
             CAMPAIGN.CampaignError, "fork instrumentation"
         ):
             CAMPAIGN.derive_campaign(
-                fixture.options(old_tap_commit=old_head),
+                fixture.options(
+                    old_tap_commit=old_head,
+                    metadata_sha256=metadata_sha,
+                ),
                 fixture.dependencies(),
             )
 
