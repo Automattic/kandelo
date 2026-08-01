@@ -206,6 +206,12 @@ assert_matches package_publish_flow_changed_files \
   ".github/scripts/cleanup-merge-candidates.sh" \
   ".github/scripts/cleanup-merge-candidates.sh"
 assert_matches package_publish_flow_changed_files \
+  ".github/scripts/delete-writable-release.sh" \
+  ".github/scripts/delete-writable-release.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/test-delete-writable-release.sh" \
+  ".github/scripts/test-delete-writable-release.sh"
+assert_matches package_publish_flow_changed_files \
   ".github/scripts/require-exact-head-approval.sh" \
   ".github/scripts/require-exact-head-approval.sh"
 assert_matches package_publish_flow_changed_files \
@@ -440,6 +446,12 @@ assert_matches ci_control_changed_files \
 assert_matches ci_control_changed_files \
   ".github/scripts/cleanup-merge-candidates.sh" \
   ".github/scripts/cleanup-merge-candidates.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/delete-writable-release.sh" \
+  ".github/scripts/delete-writable-release.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/test-delete-writable-release.sh" \
+  ".github/scripts/test-delete-writable-release.sh"
 assert_matches ci_control_changed_files \
   ".github/scripts/require-exact-head-approval.sh" \
   ".github/scripts/require-exact-head-approval.sh"

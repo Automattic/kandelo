@@ -12,6 +12,7 @@ ACTIVATE_SCRIPT="$SCRIPT_DIR/activate-merge-candidate.sh"
 REJECTED_RECOVERY_SCRIPT="$SCRIPT_DIR/clone-rejected-merge-candidate.sh"
 RECONCILE_SCRIPT="$SCRIPT_DIR/reconcile-merge-candidates.sh"
 CLEANUP_SCRIPT="$SCRIPT_DIR/cleanup-merge-candidates.sh"
+DELETE_RELEASE_SCRIPT="$SCRIPT_DIR/delete-writable-release.sh"
 APPROVAL_SCRIPT="$SCRIPT_DIR/require-exact-head-approval.sh"
 MARK_READY_SCRIPT="$SCRIPT_DIR/mark-merge-candidate-ready.sh"
 VERIFY_SCRIPT="$SCRIPT_DIR/verify-merge-candidate.sh"
@@ -843,11 +844,42 @@ done
 grep -Fq 'cleanup-merge-candidates.sh' "$CLEANUP_WORKFLOW" || \
   fail "staging cleanup must delegate candidate lifecycle to the tested helper"
 cleanup_sweep=$(job_block "$CLEANUP_WORKFLOW" sweep)
-for helper in classify-pr-staging.sh cleanup-merge-candidates.sh github-api-get.sh latest-merge-gate-status.sh state-lock.sh; do
+for helper in classify-pr-staging.sh cleanup-merge-candidates.sh \
+  delete-writable-release.sh github-api-get.sh latest-merge-gate-status.sh \
+  state-lock.sh; do
   grep -Fq ".github/scripts/$helper" <<<"$cleanup_sweep" || \
     fail "staging cleanup sparse checkout lacks $helper"
 done
 cleanup_on_close=$(job_block "$CLEANUP_WORKFLOW" cleanup-on-close)
+grep -Fq 'actions: read' <<<"$cleanup_on_close" || \
+  fail "PR-close cleanup lock recovery cannot inspect workflow state"
+grep -Fq '.github/scripts/state-lock.sh' <<<"$cleanup_on_close" || \
+  fail "PR-close cleanup sparse checkout lacks the publisher state lock"
+grep -Fq '.github/scripts/delete-writable-release.sh' \
+  <<<"$cleanup_on_close" || \
+  fail "PR-close cleanup must use idempotent release/tag deletion"
+grep -Fq -- '--release-id "$RELEASE_ID"' <<<"$cleanup_on_close" || \
+  fail "PR-close cleanup must preserve the discovered release ID"
+grep -Fq -- '--tag "$TAG"' <<<"$cleanup_on_close" || \
+  fail "PR-close cleanup must preserve the discovered release tag"
+if grep -Fq 'gh release delete' <<<"$cleanup_on_close"; then
+  fail "PR-close cleanup must not couple release and tag deletion"
+fi
+if grep -Fq 'gh release delete' "$CLEANUP_WORKFLOW"; then
+  fail "staging cleanup must not couple release and tag deletion"
+fi
+close_release_cleanup=$(
+  step_run_block "$CLEANUP_WORKFLOW" \
+    "Delete writable PR staging releases"
+)
+grep -Fq 'set -euo pipefail' <<<"$close_release_cleanup" || \
+  fail "PR-close release discovery can hide a failed API pipeline"
+orphan_release_cleanup=$(
+  step_run_block "$CLEANUP_WORKFLOW" \
+    "Sweep orphan writable PR staging tags"
+)
+grep -Fq 'set -euo pipefail' <<<"$orphan_release_cleanup" || \
+  fail "scheduled release discovery can hide a failed API pipeline"
 grep -Fq "contains(github.event.pull_request.labels.*.name, 'retain-package-staging')" \
   <<<"$cleanup_on_close" || \
   fail "PR-close cleanup does not recognize explicit package-staging retention"
@@ -882,5 +914,14 @@ grep -Fq 'acquire "merge-authority-pr-${pr}"' "$CLEANUP_SCRIPT" || \
   fail "cleanup must hold PR authority while reclassifying candidates"
 grep -Fq 'acquire "$tag"' "$CLEANUP_SCRIPT" || \
   fail "cleanup must hold the candidate lock before deletion"
+grep -Fq 'bash "$DELETE_RELEASE_SCRIPT"' "$CLEANUP_SCRIPT" || \
+  fail "candidate cleanup must use idempotent release/tag deletion"
+grep -Fq -- '--release-id "$release_id"' "$CLEANUP_SCRIPT" || \
+  fail "candidate cleanup must preserve the discovered release ID"
+grep -Fq -- '--lock-held' "$CLEANUP_SCRIPT" || \
+  fail "candidate cleanup must reuse its held per-tag state lock"
+grep -Fq 'before deciding whether the operation needs another attempt.' \
+  "$DELETE_RELEASE_SCRIPT" || \
+  fail "release cleanup lacks the idempotence rationale"
 
 echo "merge candidate workflow contract tests passed"

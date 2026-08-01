@@ -35,10 +35,12 @@ make_release() {
   local id="$2"
   local assets="$3"
   local immutable="${4:-false}"
+  local draft=true
+  [ "$immutable" = false ] || draft=false
   jq -n --arg tag "$tag" --argjson id "$id" \
-    --argjson immutable "$immutable" \
+    --argjson immutable "$immutable" --argjson draft "$draft" \
     '{id: $id, tag_name: $tag, prerelease: true,
-      immutable: $immutable}' > "$DATA/release-$id.json"
+      draft: $draft, immutable: $immutable}' > "$DATA/release-$id.json"
   jq '.[0:2]' <<<"$assets" > "$DATA/assets-$id-page-1.json"
   jq '.[2:4]' <<<"$assets" > "$DATA/assets-$id-page-2.json"
   jq '.[4:6]' <<<"$assets" > "$DATA/assets-$id-page-3.json"
@@ -118,11 +120,35 @@ printf '%s\n' "$*" >> "$GH_STUB_API_LOG"
 if [ "${1:-}" = api ]; then
   shift
   include=false
+  method=GET
   endpoint=""
   while [ "$#" -gt 0 ]; do
-    case "$1" in --include) include=true; shift ;; /repos/*) endpoint="$1"; shift ;; *) shift ;; esac
+    case "$1" in
+      --include) include=true; shift ;;
+      --method) method="$2"; shift 2 ;;
+      -H) shift 2 ;;
+      /repos/*) endpoint="$1"; shift ;;
+      *) shift ;;
+    esac
   done
   [ -n "$endpoint" ] || exit 99
+  if [ "$method" = DELETE ]; then
+    case "$endpoint" in
+      /repos/example/repo/releases/*)
+        id="${endpoint##*/}"
+        file="$GH_STUB_DATA/release-$id.json"
+        [ -f "$file" ] || exit 99
+        jq -r .tag_name "$file" >> "$GH_STUB_DELETE_LOG"
+        [ "$include" = false ] || printf 'HTTP/2.0 204 No Content\n\n'
+        exit 0
+        ;;
+      /repos/example/repo/git/refs/tags/*)
+        [ "$include" = false ] || printf 'HTTP/2.0 204 No Content\n\n'
+        exit 0
+        ;;
+      *) exit 99 ;;
+    esac
+  fi
   case "$endpoint" in
     /repos/example/repo/releases\?per_page=3\&page=*)
       page="${endpoint##*=}"
@@ -133,6 +159,16 @@ if [ "${1:-}" = api ]; then
       id="${id%%/*}"
       page="${endpoint##*=}"
       cat "$GH_STUB_DATA/assets-$id-page-$page.json"
+      ;;
+    /repos/example/repo/releases/[0-9]*)
+      id="${endpoint##*/}"
+      file="$GH_STUB_DATA/release-$id.json"
+      if [ "${GH_STUB_MISSING_TAG:-}" = "$(jq -r .tag_name "$file")" ]; then
+        [ "$include" = false ] || printf 'HTTP/2.0 404 Not Found\n\n{}\n'
+        exit 1
+      fi
+      [ "$include" = false ] || printf 'HTTP/2.0 200 OK\n\n'
+      cat "$file"
       ;;
     /repos/example/repo/pulls/*)
       pr="${endpoint##*/}"
@@ -149,8 +185,19 @@ if [ "${1:-}" = api ]; then
         if [ "$(jq -r .tag_name "$candidate")" = "$tag" ]; then file="$candidate"; break; fi
       done
       [ -n "$file" ] || exit 1
+      if [ "$(jq -r .draft "$file")" = true ]; then
+        # GitHub's get-by-tag endpoint deliberately omits draft releases.
+        [ "$include" = false ] || printf 'HTTP/2.0 404 Not Found\n\n{}\n'
+        exit 1
+      fi
       [ "$include" = false ] || printf 'HTTP/2.0 200 OK\n\n'
       cat "$file"
+      ;;
+    /repos/example/repo/git/ref/tags/*)
+      # Draft merge candidates do not have Git refs. This is the production
+      # shape that the ID-based cleanup contract must handle.
+      [ "$include" = false ] || printf 'HTTP/2.0 404 Not Found\n\n{}\n'
+      exit 1
       ;;
     *) exit 99 ;;
   esac
@@ -262,7 +309,7 @@ fi
 # Classification and deletion occur only after authority then candidate lock.
 authority_line=$(grep -n "lock acquire merge-authority-pr-3" "$API_LOG" | head -1 | cut -d: -f1)
 candidate_line=$(grep -n "lock acquire $TAG_SUPERSEDED" "$API_LOG" | head -1 | cut -d: -f1)
-release_line=$(grep -n "/releases/tags/$TAG_SUPERSEDED" "$API_LOG" | head -1 | cut -d: -f1)
+release_line=$(grep -n "/releases/105" "$API_LOG" | head -1 | cut -d: -f1)
 [ "$authority_line" -lt "$candidate_line" ] && [ "$candidate_line" -lt "$release_line" ]
 
 # A release-page bound is checked before any candidate is deleted.
