@@ -4,8 +4,8 @@ set -euo pipefail
 usage() {
     cat >&2 <<'EOF'
 usage:
-  ci-homebrew-browser-mirror-state.sh create <expected-ledger.json> <publication-blockers.json> <canonical-index.toml> <canonical-index-url> <shell.vfs.zst|-> <out.json>
-  ci-homebrew-browser-mirror-state.sh validate <producer|consumer> <state.json> <publication-blockers.json> <shell.vfs.zst|->
+  ci-homebrew-browser-mirror-state.sh create <expected-ledger.json> <publication-blockers.json> <canonical-index.toml> <canonical-index-url> <shell.vfs.zst|-> <out.json> [staging-receipt.json]
+  ci-homebrew-browser-mirror-state.sh validate <producer|consumer> <state.json> <publication-blockers.json> <shell.vfs.zst|-> [staging-receipt.json]
 EOF
     exit 2
 }
@@ -45,6 +45,7 @@ validate_state() {
     local state="$2"
     local blockers="$3"
     local image="$4"
+    local receipt="${5:-}"
     local abi
     local expected_commit
     local actual_commit
@@ -58,6 +59,12 @@ validate_state() {
     local report_chain
     local state_chain
     local selected
+    local expected_receipt_sha
+    local expected_receipt_bytes
+    local actual_receipt_sha
+    local actual_receipt_bytes
+    local receipt_candidate
+    local state_candidate
 
     case "$phase" in
         producer|consumer) ;;
@@ -159,6 +166,137 @@ validate_state() {
                 exit 1
             fi
             ;;
+        publication-blocked-candidate)
+            jq -e '
+              type == "object" and
+              (keys | sort) == ([
+                "abi_version", "arch", "blocker_chain", "candidate",
+                "image", "mirror_required", "mode", "package",
+                "publication_blockers_sha256", "schema", "source_commit"
+              ] | sort) and
+              .schema == 3 and
+              .mode == "publication-blocked-candidate" and
+              (.abi_version | type == "number" and . >= 0 and floor == .) and
+              .package == "shell" and
+              .arch == "wasm32" and
+              (.source_commit | type == "string" and test("^[0-9a-f]{40}$")) and
+              (.publication_blockers_sha256 |
+                type == "string" and test("^[0-9a-f]{64}$")) and
+              (.blocker_chain | type == "array" and length > 0) and
+              all(.blocker_chain[];
+                type == "string" and test("^[a-z0-9][a-z0-9+._-]*$")
+              ) and
+              .mirror_required == true and
+              (.image | type == "object") and
+              (.image | keys | sort) == ["bytes", "sha256"] and
+              (.image.sha256 |
+                type == "string" and test("^[0-9a-f]{64}$")) and
+              (.image.bytes | type == "number" and . > 0 and floor == .) and
+              (.candidate | type == "object") and
+              (.candidate | keys | sort) == ([
+                "artifact_archive_sha256", "artifact_id",
+                "producer_head_sha", "producer_tree_sha", "receipt_bytes",
+                "receipt_sha256", "run_id", "validation_base_sha",
+                "validation_pull_request_number"
+              ] | sort) and
+              (.candidate.validation_pull_request_number |
+                type == "number" and . >= 1 and floor == .) and
+              (.candidate.run_id |
+                type == "number" and . >= 1 and floor == .) and
+              (.candidate.artifact_id |
+                type == "number" and . >= 1 and floor == .) and
+              (.candidate.validation_base_sha |
+                type == "string" and test("^[0-9a-f]{40}$")) and
+              (.candidate.producer_head_sha |
+                type == "string" and test("^[0-9a-f]{40}$")) and
+              (.candidate.producer_tree_sha |
+                type == "string" and test("^[0-9a-f]{40}$")) and
+              (.candidate.artifact_archive_sha256 |
+                type == "string" and test("^[0-9a-f]{64}$")) and
+              (.candidate.receipt_sha256 |
+                type == "string" and test("^[0-9a-f]{64}$")) and
+              (.candidate.receipt_bytes |
+                type == "number" and . > 0 and floor == .)
+            ' "$state" >/dev/null || {
+                echo "ci-homebrew-browser-mirror-state: invalid candidate state contract: $state" >&2
+                exit 1
+            }
+            report_chain="$(
+                jq -ce '
+                  [.entries[] | select(.package == "shell")] |
+                  if length == 1 then
+                    .[0].blocker_chain
+                  else
+                    error("expected exactly one shell blocker")
+                  end
+                ' "$blockers"
+            )" || {
+                echo "ci-homebrew-browser-mirror-state: candidate state lacks one shell blocker" >&2
+                exit 1
+            }
+            state_chain="$(jq -ce '.blocker_chain' "$state")"
+            if [ "$state_chain" != "$report_chain" ]; then
+                echo "ci-homebrew-browser-mirror-state: candidate blocker chain does not match state" >&2
+                exit 1
+            fi
+            require_regular_file "candidate shell image" "$image"
+            require_regular_file "candidate shell receipt" "$receipt"
+            expected_sha="$(jq -er '.image.sha256' "$state")"
+            expected_bytes="$(jq -er '.image.bytes' "$state")"
+            actual_sha="$(sha256_file "$image")"
+            actual_bytes="$(wc -c < "$image" | tr -d '[:space:]')"
+            if [ "$actual_sha" != "$expected_sha" ] ||
+               [ "$actual_bytes" != "$expected_bytes" ]; then
+                echo "ci-homebrew-browser-mirror-state: candidate shell bytes do not match state" >&2
+                exit 1
+            fi
+            expected_receipt_sha="$(jq -er '.candidate.receipt_sha256' "$state")"
+            expected_receipt_bytes="$(jq -er '.candidate.receipt_bytes' "$state")"
+            actual_receipt_sha="$(sha256_file "$receipt")"
+            actual_receipt_bytes="$(wc -c < "$receipt" | tr -d '[:space:]')"
+            if [ "$actual_receipt_sha" != "$expected_receipt_sha" ] ||
+               [ "$actual_receipt_bytes" != "$expected_receipt_bytes" ]; then
+                echo "ci-homebrew-browser-mirror-state: staging receipt does not match state" >&2
+                exit 1
+            fi
+            receipt_candidate="$(jq -Sce '
+              {
+                validation_pull_request_number,
+                validation_base_sha,
+                producer_head_sha,
+                producer_tree_sha,
+                run_id,
+                artifact_id: .artifact.id,
+                artifact_archive_sha256: .artifact.archive_sha256
+              }
+            ' "$receipt")" || {
+                echo "ci-homebrew-browser-mirror-state: invalid staging receipt identity" >&2
+                exit 1
+            }
+            state_candidate="$(jq -Sce '
+              .candidate | del(.receipt_sha256, .receipt_bytes)
+            ' "$state")"
+            if [ "$receipt_candidate" != "$state_candidate" ]; then
+                echo "ci-homebrew-browser-mirror-state: staging receipt identity does not match state" >&2
+                exit 1
+            fi
+            if [ "$phase" = consumer ]; then
+                selected="$(
+                    bash "$(dirname "$0")/resolve-binary.sh" \
+                        programs/shell.vfs.zst
+                )" || {
+                    echo "ci-homebrew-browser-mirror-state: candidate shell is not resolver-selected" >&2
+                    exit 1
+                }
+                require_regular_file \
+                    "resolver-selected candidate shell" "$selected"
+                if [ "$(realpath "$selected")" != \
+                     "$(realpath "$image")" ]; then
+                    echo "ci-homebrew-browser-mirror-state: candidate shell is not the selected local generation" >&2
+                    exit 1
+                fi
+            fi
+            ;;
         publication-blocked)
             jq -e '
               type == "object" and
@@ -238,13 +376,14 @@ validate_state() {
 command="${1:-}"
 case "$command" in
     create)
-        [ "$#" -eq 7 ] || usage
+        { [ "$#" -eq 7 ] || [ "$#" -eq 8 ]; } || usage
         expected="$2"
         blockers="$3"
         canonical_index="$4"
         canonical_index_url="$5"
         image="$6"
         out="$7"
+        receipt="${8:-}"
         require_regular_file "expected package ledger" "$expected"
         require_regular_file "publication blocker report" "$blockers"
         require_regular_file "canonical package index" "$canonical_index"
@@ -279,8 +418,20 @@ case "$command" in
                 "$blockers"
         )"
         case "$expected_shell_count:$blocked_shell_count" in
-            1:0) mode=resolved ;;
-            0:1) mode=publication-blocked ;;
+            1:0)
+                [ -z "$receipt" ] || {
+                    echo "ci-homebrew-browser-mirror-state: resolved shell cannot carry a staging receipt" >&2
+                    exit 1
+                }
+                mode=resolved
+                ;;
+            0:1)
+                if [ -n "$receipt" ]; then
+                    mode=publication-blocked-candidate
+                else
+                    mode=publication-blocked
+                fi
+                ;;
             *)
                 echo "ci-homebrew-browser-mirror-state: shell must be exactly resolved or publication-blocked" >&2
                 exit 1
@@ -408,6 +559,62 @@ case "$command" in
                     mirror_required: $mirror_required
                   }
                 ' > "$staged_out"
+        elif [ "$mode" = publication-blocked-candidate ]; then
+            require_regular_file "candidate shell image" "$image"
+            require_regular_file "candidate shell receipt" "$receipt"
+            blocker_chain="$(
+                jq -ce '
+                  [.entries[] | select(.package == "shell")][0].blocker_chain
+                ' "$blockers"
+            )"
+            image_sha="$(sha256_file "$image")"
+            image_bytes="$(wc -c < "$image" | tr -d '[:space:]')"
+            receipt_sha="$(sha256_file "$receipt")"
+            receipt_bytes="$(wc -c < "$receipt" | tr -d '[:space:]')"
+            candidate="$(jq -ce '
+              {
+                validation_pull_request_number,
+                validation_base_sha,
+                producer_head_sha,
+                producer_tree_sha,
+                run_id,
+                artifact_id: .artifact.id,
+                artifact_archive_sha256: .artifact.archive_sha256
+              }
+            ' "$receipt")" || {
+                echo "ci-homebrew-browser-mirror-state: candidate receipt lacks its exact identity" >&2
+                exit 1
+            }
+            jq -n \
+                --argjson abi_version "$abi" \
+                --arg source_commit "$source_commit" \
+                --arg blocker_report_sha "$blocker_report_sha" \
+                --argjson blocker_chain "$blocker_chain" \
+                --arg image_sha "$image_sha" \
+                --argjson image_bytes "$image_bytes" \
+                --argjson candidate "$candidate" \
+                --arg receipt_sha "$receipt_sha" \
+                --argjson receipt_bytes "$receipt_bytes" '
+                  {
+                    schema: 3,
+                    mode: "publication-blocked-candidate",
+                    abi_version: $abi_version,
+                    package: "shell",
+                    arch: "wasm32",
+                    source_commit: $source_commit,
+                    publication_blockers_sha256: $blocker_report_sha,
+                    blocker_chain: $blocker_chain,
+                    image: {
+                      sha256: $image_sha,
+                      bytes: $image_bytes
+                    },
+                    candidate: ($candidate + {
+                      receipt_sha256: $receipt_sha,
+                      receipt_bytes: $receipt_bytes
+                    }),
+                    mirror_required: true
+                  }
+                ' > "$staged_out"
         else
             [ "$image" = "-" ] || {
                 echo "ci-homebrew-browser-mirror-state: publication-blocked shell must not supply producer bytes" >&2
@@ -436,13 +643,13 @@ case "$command" in
                   }
                 ' > "$staged_out"
         fi
-        validate_state producer "$staged_out" "$blockers" "$image"
+        validate_state producer "$staged_out" "$blockers" "$image" "$receipt"
         mv "$staged_out" "$out"
         trap - EXIT
         ;;
     validate)
-        [ "$#" -eq 5 ] || usage
-        validate_state "$2" "$3" "$4" "$5"
+        { [ "$#" -eq 5 ] || [ "$#" -eq 6 ]; } || usage
+        validate_state "$2" "$3" "$4" "$5" "${6:-}"
         ;;
     *)
         usage

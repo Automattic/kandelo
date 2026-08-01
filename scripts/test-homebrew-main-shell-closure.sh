@@ -38,6 +38,9 @@ RUN_SH="$REPO_ROOT/run.sh"
 LOCAL_SHELL_INSTALLER="$REPO_ROOT/scripts/install-local-shell-artifact.sh"
 LOCAL_SHELL_OVERRIDE="$REPO_ROOT/scripts/activate-local-shell-build-override.sh"
 CI_BLOCKER_MATERIALIZER="$REPO_ROOT/scripts/materialize-ci-publication-blockers.sh"
+CI_STAGING_SHELL_VERIFIER="$REPO_ROOT/scripts/verify-ci-staging-shell-handoff.sh"
+CI_BROWSER_MIRROR_STATE="$REPO_ROOT/scripts/ci-homebrew-browser-mirror-state.sh"
+CI_WORKSPACE_PACKER="$REPO_ROOT/scripts/pack-ci-test-workspace.sh"
 BUILD_PROGRAMS="$REPO_ROOT/scripts/build-programs.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
@@ -834,6 +837,17 @@ grep -Fq 'local_libs="$REPO_ROOT/local-libs"' "$LOCAL_SHELL_OVERRIDE" &&
   fail "source shell dependency override must use and verify build-deps' supported local-libs tier"
 grep -Fq -- '--force-source-build \' "$CI_BLOCKER_MATERIALIZER" ||
   fail "publication blockers must rebuild their exact PR recipes rather than accept cached canonical bytes"
+grep -Fq 'mirror_mode="$(jq -er '\''.mode'\'' "$mirror_state")"' \
+  "$CI_BLOCKER_MATERIALIZER" &&
+  grep -Fq '[ "$mirror_mode" = publication-blocked-candidate ]' \
+    "$CI_BLOCKER_MATERIALIZER" &&
+  grep -Fq 'scripts/verify-ci-staging-shell-handoff.sh \' \
+    "$CI_BLOCKER_MATERIALIZER" &&
+  grep -Fq 'reuse exact staged bottle shell' \
+    "$CI_BLOCKER_MATERIALIZER" &&
+  grep -Fq 'plain blocked state cannot carry candidate authority' \
+    "$CI_BLOCKER_MATERIALIZER" ||
+  fail "publication blockers must distinguish a receipt-bound bottle shell from the source bridge"
 grep -Fq 'exact_override_is_active' "$LOCAL_SHELL_OVERRIDE" &&
   [ "$(grep -Fc 'scripts/activate-local-shell-build-override.sh' "$WORKFLOW")" -eq 2 ] ||
   fail "source shell override must be idempotently verified before and after derived VFS resolution"
@@ -857,6 +871,201 @@ materializer_resolve_line="$(grep -nF 'for package in "${blocked_packages[@]}"; 
   grep -Fq '[ "$package" != "shell" ] || continue' \
     "$CI_BLOCKER_MATERIALIZER" ||
   fail "CI blocker materialization must activate the bridge before resolving shell dependents"
+
+staging_snapshot_block="$(sed -n \
+  '/^  staging-shell-snapshot:/,/^  # ---------------------------------------------------------------------/p' \
+  "$PREPARE_MERGE_WORKFLOW")"
+for staging_binding in \
+  'staging_run_id: ${{ steps.staging.outputs.run_id }}' \
+  'ref: ${{ needs.synthesize-merge.outputs.base_sha }}' \
+  'artifact-ids: ${{ steps.locate.outputs.artifact_id }}' \
+  'run-id: ${{ env.STAGING_RUN_ID }}' \
+  'github-token: ${{ github.token }}' \
+  '.head_sha == $head' \
+  'EXPECTED_TREE_SHA: ${{ needs.synthesize-merge.outputs.tree_sha }}' \
+  'if [ "$producer_tree" != "$EXPECTED_TREE_SHA" ]; then' \
+  'producer_tree="$(jq -er '\''.head_commit.tree_id'\'' "$run_json")"' \
+  'nested pull_requests object is a live PR projection' \
+  'archive_sha256=${archive_digest#sha256:}' \
+  'staging shell artifact exceeds the 128 MiB handoff limit'
+do
+  grep -Fq "$staging_binding" "$PREPARE_MERGE_WORKFLOW" ||
+    fail "prepare merge does not bind the exact staging shell: $staging_binding"
+done
+if grep -Eq 'uses: \./|bash scripts/|node scripts/' \
+    <<<"$staging_snapshot_block"; then
+  fail "write-capable staging snapshot must not execute pull-request repository code"
+fi
+grep -Fq 'EXPECTED_TREE_SHA: ${{ needs.synthesize-merge.outputs.tree_sha }}' \
+    <<<"$staging_snapshot_block" &&
+  grep -Fq 'if [ "$producer_tree" != "$EXPECTED_TREE_SHA" ]; then' \
+    <<<"$staging_snapshot_block" ||
+  fail "trusted staging snapshot does not bind producer bytes to the synthetic merge tree"
+no_artifact_line="$(grep -nF 'if [ "$count" -eq 0 ]; then' \
+  <<<"$staging_snapshot_block" | cut -d: -f1)"
+producer_tree_line="$(grep -nF \
+  'if [ "$producer_tree" != "$EXPECTED_TREE_SHA" ]; then' \
+  <<<"$staging_snapshot_block" | cut -d: -f1)"
+[ "$no_artifact_line" -lt "$producer_tree_line" ] &&
+  grep -Fq 'staging shell producer tree differs from the synthetic merge; use the source fallback' \
+    <<<"$staging_snapshot_block" ||
+  fail "a divergent producer without a usable shell artifact must preserve the synthetic-merge fallback"
+for blocker_selected_binding in \
+  'use_staging_shell_handoff=false' \
+  'any(.entries[]; .package == "shell")' \
+  '[ "$STAGING_SHELL_AVAILABLE" = true ]' \
+  'if [ "$use_staging_shell_handoff" = true ]; then' \
+  'if [ "$USE_STAGING_SHELL_HANDOFF" = true ]; then'
+do
+  grep -Fq "$blocker_selected_binding" "$PREPARE_MERGE_WORKFLOW" ||
+    fail "staging handoff is not conditional on the current shell blocker: $blocker_selected_binding"
+done
+prepare_handoff_download_line="$(grep -nF \
+  -- '- name: Download the trusted staging shell handoff' \
+  "$PREPARE_MERGE_WORKFLOW" | cut -d: -f1)"
+prepare_synthetic_checkout_line="$(grep -nF \
+  -- '- name: Checkout synthesized PR merge' \
+  "$PREPARE_MERGE_WORKFLOW" | tail -n 1 | cut -d: -f1)"
+[ "$prepare_handoff_download_line" -lt "$prepare_synthetic_checkout_line" ] ||
+  fail "trusted shell bytes must arrive before synthetic pull-request code runs"
+for candidate_transport_binding in \
+  'publication-blocked-candidate' \
+  '--staging-shell-handoff' \
+  '.ci-staging-shell-receipt.json' \
+  '.ci-staging-shell-report.json'
+do
+  grep -Fq -- "$candidate_transport_binding" "$CI_BROWSER_MIRROR_STATE" \
+    "$CI_WORKSPACE_PACKER" "$CI_BLOCKER_MATERIALIZER" ||
+    fail "candidate shell transport lacks: $candidate_transport_binding"
+done
+
+handoff_probe="$TMP_ROOT/staging-shell-handoff"
+mkdir -p "$handoff_probe"
+handoff_image="$handoff_probe/main-shell.vfs.zst"
+handoff_report="$handoff_probe/main-shell-report.json"
+handoff_receipt="$handoff_probe/receipt.json"
+printf 'exact bottle-composed shell bytes\n' > "$handoff_image"
+abi="$(grep -oE 'ABI_VERSION: u32 = [0-9]+' \
+  "$REPO_ROOT/crates/shared/src/lib.rs" | awk '{print $4}')"
+jq -n \
+  --arg repository Automattic/kandelo \
+  --argjson abi "$abi" '
+    {
+      schema: 1,
+      image: "main-shell.vfs.zst",
+      metadata: {
+        kandelo_repository: $repository,
+        kandelo_abi: $abi
+      },
+      package_deferred_trees: [{
+        state: "deferred",
+        package: {name: "homebrew-bootstrap"}
+      }],
+      bottle_mirror: {assets: [{name: "bash"}]}
+    }
+  ' > "$handoff_report"
+handoff_image_sha="$(sha256sum "$handoff_image" | awk '{print $1}')"
+handoff_image_bytes="$(wc -c < "$handoff_image" | tr -d '[:space:]')"
+handoff_report_sha="$(sha256sum "$handoff_report" | awk '{print $1}')"
+handoff_report_bytes="$(wc -c < "$handoff_report" | tr -d '[:space:]')"
+handoff_base="$(printf 'a%.0s' {1..40})"
+handoff_head="$(printf 'b%.0s' {1..40})"
+handoff_tree="$(printf 'c%.0s' {1..40})"
+handoff_archive_sha="$(printf 'd%.0s' {1..64})"
+jq -n \
+  --arg base "$handoff_base" \
+  --arg head "$handoff_head" \
+  --arg tree "$handoff_tree" \
+  --arg archive_sha "$handoff_archive_sha" \
+  --arg image_sha "$handoff_image_sha" \
+  --argjson image_bytes "$handoff_image_bytes" \
+  --arg report_sha "$handoff_report_sha" \
+  --argjson report_bytes "$handoff_report_bytes" '
+    {
+      schema: 1,
+      kind: "kandelo-ci-staging-shell-handoff",
+      repository: "Automattic/kandelo",
+      workflow: ".github/workflows/staging-build.yml",
+      validation_pull_request_number: 1160,
+      validation_base_sha: $base,
+      producer_head_sha: $head,
+      producer_tree_sha: $tree,
+      run_id: 30695913285,
+      artifact: {
+        id: 8817612908,
+        name: "homebrew-main-shell-closure",
+        archive_sha256: $archive_sha,
+        bytes: 58453095
+      },
+      image: {sha256: $image_sha, bytes: $image_bytes},
+      report: {sha256: $report_sha, bytes: $report_bytes}
+    }
+  ' > "$handoff_receipt"
+bash "$CI_STAGING_SHELL_VERIFIER" \
+  "$handoff_receipt" "$handoff_image" "$handoff_report" \
+  "$handoff_base" "$handoff_head" "$handoff_tree" 30695913285
+expect_failure "receipt does not match the expected staging run" \
+  bash "$CI_STAGING_SHELL_VERIFIER" \
+    "$handoff_receipt" "$handoff_image" "$handoff_report" \
+    "$handoff_base" "$handoff_head" "$handoff_tree" 30695913286
+expect_failure "receipt does not match the expected staging run" \
+  bash "$CI_STAGING_SHELL_VERIFIER" \
+    "$handoff_receipt" "$handoff_image" "$handoff_report" \
+    "$handoff_base" "$handoff_head" \
+    "$(printf 'e%.0s' {1..40})" 30695913285
+tampered_image="$handoff_probe/tampered.vfs.zst"
+cp "$handoff_image" "$tampered_image"
+printf 'substitution\n' >> "$tampered_image"
+expect_failure "shell image differs from its receipt" \
+  bash "$CI_STAGING_SHELL_VERIFIER" \
+    "$handoff_receipt" "$tampered_image" "$handoff_report" \
+    "$handoff_base" "$handoff_head" "$handoff_tree" 30695913285
+tampered_report="$handoff_probe/tampered-report.json"
+jq '.bottle_mirror.assets = []' "$handoff_report" > "$tampered_report"
+expect_failure "report is not a bottle-composed shell contract" \
+  bash "$CI_STAGING_SHELL_VERIFIER" \
+    "$handoff_receipt" "$handoff_image" "$tampered_report" \
+    "$handoff_base" "$handoff_head" "$handoff_tree" 30695913285
+symlink_image="$handoff_probe/symlink.vfs.zst"
+ln -s "$handoff_image" "$symlink_image"
+expect_failure "shell image must be a regular non-symlink file" \
+  bash "$CI_STAGING_SHELL_VERIFIER" \
+    "$handoff_receipt" "$symlink_image" "$handoff_report" \
+    "$handoff_base" "$handoff_head" "$handoff_tree" 30695913285
+
+handoff_expected="$handoff_probe/expected.json"
+handoff_blockers="$handoff_probe/blockers.json"
+handoff_index="$handoff_probe/index.toml"
+handoff_state="$handoff_probe/state.json"
+jq -n --argjson abi "$abi" '{abi_version: $abi, entries: []}' \
+  > "$handoff_expected"
+jq -n --argjson abi "$abi" '
+  {
+    abi_version: $abi,
+    entries: [{package: "shell", blocker_chain: ["shell"]}]
+  }
+' > "$handoff_blockers"
+printf 'abi_version = %s\n' "$abi" > "$handoff_index"
+bash "$CI_BROWSER_MIRROR_STATE" create \
+  "$handoff_expected" "$handoff_blockers" \
+  "$handoff_index" https://invalid.example/index.toml \
+  "$handoff_image" "$handoff_state" "$handoff_receipt"
+[ "$(jq -r '.mode' "$handoff_state")" = \
+    publication-blocked-candidate ] &&
+  [ "$(jq -r '.schema' "$handoff_state")" = 3 ] ||
+  fail "candidate shell state did not preserve its distinct authority"
+bash "$CI_BROWSER_MIRROR_STATE" validate producer \
+  "$handoff_state" "$handoff_blockers" \
+  "$handoff_image" "$handoff_receipt"
+tampered_receipt="$handoff_probe/tampered-receipt.json"
+jq '.run_id += 1' "$handoff_receipt" > "$tampered_receipt"
+expect_failure "staging receipt does not match state" \
+  bash "$CI_BROWSER_MIRROR_STATE" validate producer \
+    "$handoff_state" "$handoff_blockers" \
+    "$handoff_image" "$tampered_receipt"
+expect_failure "candidate shell receipt must be one regular file" \
+  bash "$CI_BROWSER_MIRROR_STATE" validate producer \
+    "$handoff_state" "$handoff_blockers" "$handoff_image" -
 
 override_probe="$TMP_ROOT/local-shell-override"
 override_generation="$override_probe/generation"

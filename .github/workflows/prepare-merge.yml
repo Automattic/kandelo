@@ -283,6 +283,8 @@ jobs:
       contents: read         # gh pr view/checks repository metadata
       pull-requests: write     # drop label / comment on failure
       statuses: read
+    outputs:
+      staging_run_id: ${{ steps.staging.outputs.run_id }}
     env:
       PR_NUMBER: ${{ github.event.pull_request.number }}
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -382,11 +384,15 @@ jobs:
           needs.change-scope.outputs.test_gate_required == 'true'
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          ref: ${{ github.sha }}
+          # WHY: this selector runs beside a write-capable token. The pull
+          # request may change its future behavior, but it cannot replace the
+          # verifier deciding which prior run is trusted in this execution.
+          ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           sparse-checkout: |
             .github/scripts
 
       - name: Inspect staging-build on PR HEAD
+        id: staging
         if: |
           needs.change-scope.outputs.package_staging_required == 'true' ||
           needs.change-scope.outputs.test_gate_required == 'true'
@@ -482,14 +488,17 @@ jobs:
 
           case "$STATE" in
             no_runs)
+              echo "run_id=" >> "$GITHUB_OUTPUT"
               echo "::notice::No staging-build run is registered for HEAD $PR_HEAD_SHA after the retry window; prepare-merge will run synthetic-merge package validation itself."
               exit 0
               ;;
             only_skipped)
+              echo "run_id=" >> "$GITHUB_OUTPUT"
               echo "::notice::Only skipped staging-build run(s) found for HEAD $PR_HEAD_SHA (${SKIPPED_IDS:-none}). These are expected for non-skip-staging-tests label events such as ready-to-ship; prepare-merge will run synthetic-merge package validation itself."
               exit 0
               ;;
             real_success)
+              echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
               echo "Latest real staging-build run $RUN_ID for $PR_HEAD_SHA succeeded; continuing."
               exit 0
               ;;
@@ -518,6 +527,7 @@ jobs:
             gh_retry gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "Cannot prepare merge: real non-skipped \`staging-build\` for HEAD \`$PR_HEAD_SHA\` did not succeed (run ${{ github.server_url }}/${{ github.repository }}/actions/runs/$RUN_ID). Skipped label-event staging runs are ignored and do not count as validation. Re-apply \`ready-to-ship\` once staging-build is green." || true
             exit 1
           fi
+          echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
 
       - name: Drop label + comment on gate failure
         if: failure()
@@ -567,6 +577,213 @@ jobs:
 
           gh_retry gh pr edit "$PR_NUMBER" --repo ${{ github.repository }} --remove-label ready-to-ship || true
           gh_retry gh pr comment "$PR_NUMBER" --repo ${{ github.repository }} --body "prepare-merge gate failed. Check the workflow run log: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. Re-apply the ready-to-ship label after fixing." || true
+
+  # Copy only the exact shell and report from the successful staging run into
+  # this prepare run. The token stays in this base-controlled job; synthetic
+  # pull-request code later receives only digest-bound files and a receipt.
+  staging-shell-snapshot:
+    needs: [synthesize-merge, change-scope, gate]
+    if: |
+      needs.change-scope.outputs.package_staging_required == 'true' &&
+      needs.gate.outputs.staging_run_id != ''
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      available: ${{ steps.locate.outputs.available }}
+      artifact_name: ${{ steps.locate.outputs.handoff_artifact_name }}
+      run_id: ${{ steps.locate.outputs.run_id }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      STAGING_RUN_ID: ${{ needs.gate.outputs.staging_run_id }}
+      EXPECTED_BASE_SHA: ${{ needs.synthesize-merge.outputs.base_sha }}
+      EXPECTED_HEAD_SHA: ${{ needs.synthesize-merge.outputs.head_sha }}
+      EXPECTED_TREE_SHA: ${{ needs.synthesize-merge.outputs.tree_sha }}
+      EXPECTED_PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      - name: Bind the successful staging run and closure artifact
+        id: locate
+        run: |
+          set -euo pipefail
+          run_json="$RUNNER_TEMP/staging-run.json"
+          gh api \
+            "/repos/${GITHUB_REPOSITORY}/actions/runs/${STAGING_RUN_ID}" \
+            > "$run_json"
+          # WHY: workflow-run head_sha and head_commit are immutable producer
+          # evidence. The nested pull_requests object is a live PR projection;
+          # GitHub rewrites its base/head SHAs after later pushes and merges,
+          # so it may identify the PR but must not assert historical source.
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg head "$EXPECTED_HEAD_SHA" \
+            --argjson pr "$EXPECTED_PR_NUMBER" \
+            --argjson run_id "$STAGING_RUN_ID" '
+              .id == $run_id and
+              .head_sha == $head and
+              .head_repository.full_name == $repository and
+              .path == ".github/workflows/staging-build.yml" and
+              .event == "pull_request" and
+              .status == "completed" and
+              .conclusion == "success" and
+              (.head_commit.tree_id |
+                type == "string" and test("^[0-9a-f]{40}$")) and
+              (.pull_requests | type == "array" and length == 1) and
+              .pull_requests[0].number == $pr and
+              .pull_requests[0].base.repo.id == .repository.id and
+              .pull_requests[0].head.repo.id == .repository.id
+            ' "$run_json" >/dev/null || {
+              echo "::error::selected staging run is not the successful exact-head producer"
+              exit 1
+            }
+
+          artifacts="$RUNNER_TEMP/staging-artifacts.json"
+          gh api --paginate \
+            "/repos/${GITHUB_REPOSITORY}/actions/runs/${STAGING_RUN_ID}/artifacts?per_page=100" \
+            | jq -s '{artifacts: (map(.artifacts) | add)}' > "$artifacts"
+          count="$(jq '[.artifacts[] | select(
+            .name == "homebrew-main-shell-closure" and .expired == false
+          )] | length' "$artifacts")"
+          if [ "$count" -eq 0 ]; then
+            echo "::notice::successful staging run did not publish an exact shell closure"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$count" -ne 1 ]; then
+            echo "::error::successful staging run has $count live shell closure artifacts"
+            exit 1
+          fi
+          producer_tree="$(jq -er '.head_commit.tree_id' "$run_json")"
+          # WHY: a successful staging run without a shell artifact may use the
+          # ordinary synthetic-merge fallback. Once these producer bytes will
+          # cross the handoff, however, their immutable head tree must exactly
+          # equal the synthetic merge that prepare-merge will test.
+          if [ "$producer_tree" != "$EXPECTED_TREE_SHA" ]; then
+            echo "::notice::staging shell producer tree differs from the synthetic merge; use the source fallback"
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          artifact="$(jq -c '[.artifacts[] | select(
+            .name == "homebrew-main-shell-closure" and .expired == false
+          )][0]' "$artifacts")"
+          artifact_id="$(jq -er '.id' <<<"$artifact")"
+          artifact_bytes="$(jq -er '.size_in_bytes' <<<"$artifact")"
+          archive_digest="$(jq -er '.digest' <<<"$artifact")"
+          if ! [[ "$artifact_id" =~ ^[1-9][0-9]*$ ]] ||
+             ! [[ "$artifact_bytes" =~ ^[1-9][0-9]*$ ]] ||
+             ! [[ "$archive_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "::error::staging shell artifact lacks a complete GitHub identity"
+            exit 1
+          fi
+          if [ "$artifact_bytes" -gt 134217728 ]; then
+            echo "::error::staging shell artifact exceeds the 128 MiB handoff limit"
+            exit 1
+          fi
+          {
+            echo "available=true"
+            echo "run_id=$STAGING_RUN_ID"
+            echo "artifact_id=$artifact_id"
+            echo "artifact_bytes=$artifact_bytes"
+            echo "archive_sha256=${archive_digest#sha256:}"
+            echo "producer_tree=$producer_tree"
+            echo "handoff_artifact_name=trusted-staging-shell-${STAGING_RUN_ID}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Download the exact staging closure
+        if: steps.locate.outputs.available == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          artifact-ids: ${{ steps.locate.outputs.artifact_id }}
+          path: ${{ runner.temp }}/staging-shell-source
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.STAGING_RUN_ID }}
+          merge-multiple: true
+
+      - name: Create the exact staging shell receipt
+        if: steps.locate.outputs.available == 'true'
+        run: |
+          set -euo pipefail
+          source_root="$RUNNER_TEMP/staging-shell-source"
+          if find "$source_root" -type l \
+              \( -name main-shell.vfs.zst -o \
+                 -name main-shell-report.json \) | grep -q .; then
+            echo "::error::staging shell artifact contains a symlinked input"
+            exit 1
+          fi
+          mapfile -t images < <(
+            find "$source_root" -type f -name main-shell.vfs.zst -print
+          )
+          mapfile -t reports < <(
+            find "$source_root" -type f -name main-shell-report.json -print
+          )
+          if [ "${#images[@]}" -ne 1 ] || [ "${#reports[@]}" -ne 1 ]; then
+            echo "::error::staging closure must contain exactly one shell and one report"
+            exit 1
+          fi
+          image="${images[0]}"
+          report="${reports[0]}"
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" '
+              .schema == 1 and
+              .image == "main-shell.vfs.zst" and
+              .metadata.kandelo_repository == $repository and
+              (.package_deferred_trees | type == "array" and length > 0) and
+              (.bottle_mirror.assets | type == "array" and length > 0)
+            ' "$report" >/dev/null || {
+              echo "::error::staging report is not a bottle-composed shell"
+              exit 1
+            }
+          handoff="$RUNNER_TEMP/trusted-staging-shell"
+          mkdir "$handoff"
+          cp -p -- "$image" "$handoff/main-shell.vfs.zst"
+          cp -p -- "$report" "$handoff/main-shell-report.json"
+          image_sha="$(sha256sum "$image" | awk '{print $1}')"
+          image_bytes="$(wc -c < "$image" | tr -d '[:space:]')"
+          report_sha="$(sha256sum "$report" | awk '{print $1}')"
+          report_bytes="$(wc -c < "$report" | tr -d '[:space:]')"
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg validation_base "$EXPECTED_BASE_SHA" \
+            --arg producer_head "$EXPECTED_HEAD_SHA" \
+            --arg producer_tree "${{ steps.locate.outputs.producer_tree }}" \
+            --argjson pr "$EXPECTED_PR_NUMBER" \
+            --argjson run_id "$STAGING_RUN_ID" \
+            --argjson artifact_id "${{ steps.locate.outputs.artifact_id }}" \
+            --argjson artifact_bytes "${{ steps.locate.outputs.artifact_bytes }}" \
+            --arg archive_sha256 "${{ steps.locate.outputs.archive_sha256 }}" \
+            --arg image_sha256 "$image_sha" \
+            --argjson image_bytes "$image_bytes" \
+            --arg report_sha256 "$report_sha" \
+            --argjson report_bytes "$report_bytes" '
+              {
+                schema: 1,
+                kind: "kandelo-ci-staging-shell-handoff",
+                repository: $repository,
+                workflow: ".github/workflows/staging-build.yml",
+                validation_pull_request_number: $pr,
+                validation_base_sha: $validation_base,
+                producer_head_sha: $producer_head,
+                producer_tree_sha: $producer_tree,
+                run_id: $run_id,
+                artifact: {
+                  id: $artifact_id,
+                  name: "homebrew-main-shell-closure",
+                  archive_sha256: $archive_sha256,
+                  bytes: $artifact_bytes
+                },
+                image: {sha256: $image_sha256, bytes: $image_bytes},
+                report: {sha256: $report_sha256, bytes: $report_bytes}
+              }
+            ' > "$handoff/receipt.json"
+
+      - name: Upload the trusted staging shell handoff
+        if: steps.locate.outputs.available == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: trusted-staging-shell-${{ env.STAGING_RUN_ID }}
+          path: ${{ runner.temp }}/trusted-staging-shell
+          retention-days: 1
+          if-no-files-found: error
 
   # ---------------------------------------------------------------------
   # Per-package matrix flow.
@@ -1593,7 +1810,7 @@ jobs:
           retention-days: 1
 
   test-gate-prepare:
-    needs: [synthesize-merge, change-scope, preflight, toolchain-cache, promote-staging, lib-matrix-build, matrix-build, candidate-snapshot]
+    needs: [synthesize-merge, change-scope, preflight, toolchain-cache, promote-staging, lib-matrix-build, matrix-build, candidate-snapshot, staging-shell-snapshot]
     if: |
       !cancelled() &&
       needs.toolchain-cache.result == 'success' &&
@@ -1601,7 +1818,8 @@ jobs:
       (needs.candidate-snapshot.result == 'success' || needs.candidate-snapshot.result == 'skipped') &&
       (needs.promote-staging.result == 'success' || needs.promote-staging.result == 'skipped') &&
       (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
-      (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped')
+      (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped') &&
+      (needs.staging-shell-snapshot.result == 'success' || needs.staging-shell-snapshot.result == 'skipped')
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -1611,6 +1829,9 @@ jobs:
       candidate_index_sha256: ${{ steps.candidate_index.outputs.sha256 }}
     env:
       PACKAGE_STAGING_REQUIRED: ${{ needs.change-scope.outputs.package_staging_required }}
+      STAGING_SHELL_AVAILABLE: ${{ needs.staging-shell-snapshot.outputs.available || 'false' }}
+      STAGING_SHELL_RUN_ID: ${{ needs.staging-shell-snapshot.outputs.run_id }}
+      USE_STAGING_SHELL_HANDOFF: 'false'
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -1631,6 +1852,13 @@ jobs:
         with:
           name: merge-candidate-${{ needs.preflight.outputs.candidate_release_id }}
           path: ${{ runner.temp }}/candidate-release
+
+      - name: Download the trusted staging shell handoff
+        if: env.STAGING_SHELL_AVAILABLE == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.staging-shell-snapshot.outputs.artifact_name }}
+          path: ${{ runner.temp }}/trusted-staging-shell
 
       - name: Bind candidate canonical base index
         id: candidate_canonical_index
@@ -1849,27 +2077,80 @@ jobs:
             export WASM_POSIX_BINARY_INDEX_URL="file://$CANONICAL_INDEX"
           fi
           echo "WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" >> "$GITHUB_ENV"
+          use_staging_shell_handoff=false
+          if jq -e 'any(.entries[]; .package == "shell")' \
+              "$BLOCKED" >/dev/null && \
+             [ "$STAGING_SHELL_AVAILABLE" = true ]; then
+            handoff="$RUNNER_TEMP/trusted-staging-shell"
+            parents="$(git show --no-patch --format=%P HEAD)"
+            expected_base="$(printf '%s\n' "$parents" | awk '{print $1}')"
+            expected_head="$(printf '%s\n' "$parents" | awk '{print $2}')"
+            unexpected_parent="$(printf '%s\n' "$parents" | awk '{print $3}')"
+            if ! [[ "$expected_base" =~ ^[0-9a-f]{40}$ ]] ||
+               ! [[ "$expected_head" =~ ^[0-9a-f]{40}$ ]] ||
+               [ -n "$unexpected_parent" ]; then
+              echo "::error::staged shell requires the exact synthetic merge"
+              exit 1
+            fi
+            expected_tree="$(git rev-parse 'HEAD^{tree}')"
+            bash scripts/dev-shell.sh bash \
+              scripts/verify-ci-staging-shell-handoff.sh \
+                "$handoff/receipt.json" \
+                "$handoff/main-shell.vfs.zst" \
+                "$handoff/main-shell-report.json" \
+                "$expected_base" \
+                "$expected_head" \
+                "$expected_tree" \
+                "$STAGING_SHELL_RUN_ID"
+            bash scripts/dev-shell.sh bash \
+              scripts/install-local-shell-artifact.sh \
+                "$handoff/main-shell.vfs.zst" \
+                "prepare-staging-shell-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            use_staging_shell_handoff=true
+            echo "USE_STAGING_SHELL_HANDOFF=true" >> "$GITHUB_ENV"
+          fi
           bash scripts/dev-shell.sh bash scripts/fetch-binaries.sh \
             --fetch-only \
             --expected-ledger "$EXPECTED"
-          SHELL_IMAGE="$(
-            bash scripts/resolve-binary.sh programs/shell.vfs.zst \
-              2>/dev/null || true
-          )"
-          [ -n "$SHELL_IMAGE" ] || SHELL_IMAGE="-"
+          state_receipt=""
+          if jq -e 'any(.entries[]; .package == "shell")' \
+              "$BLOCKED" >/dev/null; then
+            if [ "$use_staging_shell_handoff" = true ]; then
+              selected_shell="$(
+                bash scripts/resolve-binary.sh programs/shell.vfs.zst
+              )"
+              SHELL_IMAGE="$(realpath "$selected_shell")"
+              state_receipt="$RUNNER_TEMP/trusted-staging-shell/receipt.json"
+            else
+              SHELL_IMAGE="-"
+            fi
+          else
+            SHELL_IMAGE="$(
+              bash scripts/resolve-binary.sh programs/shell.vfs.zst \
+                2>/dev/null || true
+            )"
+            [ -n "$SHELL_IMAGE" ] || SHELL_IMAGE="-"
+          fi
           # WHY: package-index publication and immutable bottle-mirror
           # publication are independent. Preserve exact package-identity
           # validation here, while the state contract keeps generic browser
           # staging on authenticated recovered bytes even when the unchanged
           # shell is already canonical.
-          bash scripts/dev-shell.sh \
-            bash scripts/ci-homebrew-browser-mirror-state.sh create \
-            "$EXPECTED" \
-            "$BLOCKED" \
-            "$CANONICAL_INDEX" \
-            "https://github.com/${GITHUB_REPOSITORY}/releases/download/binaries-abi-v${ABI}/index.toml" \
-            "$SHELL_IMAGE" \
+          state_args=(
+            create
+            "$EXPECTED"
+            "$BLOCKED"
+            "$CANONICAL_INDEX"
+            "https://github.com/${GITHUB_REPOSITORY}/releases/download/binaries-abi-v${ABI}/index.toml"
+            "$SHELL_IMAGE"
             "$RUNNER_TEMP/homebrew-browser-mirror-state.json"
+          )
+          if [ -n "$state_receipt" ]; then
+            state_args+=("$state_receipt")
+          fi
+          bash scripts/dev-shell.sh bash \
+            scripts/ci-homebrew-browser-mirror-state.sh \
+              "${state_args[@]}"
 
       - name: Build kernel + test programs + rootfs
         # Browser downloads and suite-specific Node dependencies are installed
@@ -1896,10 +2177,21 @@ jobs:
 
       - name: Pack prepared test workspace
         run: |
-          bash scripts/dev-shell.sh bash scripts/pack-ci-test-workspace.sh \
-            --publication-blockers "$RUNNER_TEMP/prepare-publication-blockers.json" \
-            --homebrew-browser-mirror-state "$RUNNER_TEMP/homebrew-browser-mirror-state.json" \
-            "$RUNNER_TEMP/test-workspace.tar.zst"
+          set -euo pipefail
+          pack_args=(
+            --publication-blockers "$RUNNER_TEMP/prepare-publication-blockers.json"
+            --homebrew-browser-mirror-state "$RUNNER_TEMP/homebrew-browser-mirror-state.json"
+          )
+          if [ "$USE_STAGING_SHELL_HANDOFF" = true ]; then
+            pack_args+=(
+              --staging-shell-handoff
+              "$RUNNER_TEMP/trusted-staging-shell"
+            )
+          fi
+          bash scripts/dev-shell.sh bash \
+            scripts/pack-ci-test-workspace.sh \
+              "${pack_args[@]}" \
+              "$RUNNER_TEMP/test-workspace.tar.zst"
 
       - name: Upload prepared test workspace
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

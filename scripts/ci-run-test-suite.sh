@@ -99,6 +99,8 @@ prepare_ci_homebrew_browser_mirror() {
     local image
     local report
     local publication_blockers="$REPO_ROOT/.ci-test-publication-blockers.json"
+    local receipt="$REPO_ROOT/.ci-staging-shell-receipt.json"
+    local state_mode
 
     if [ ! -f "$state" ]; then
         echo "ci-run-test-suite: prepared browser workspace lacks Homebrew mirror state: $state" >&2
@@ -109,8 +111,15 @@ prepare_ci_homebrew_browser_mirror() {
         return 1
     fi
     image="$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)"
-    bash scripts/ci-homebrew-browser-mirror-state.sh \
-        validate consumer "$state" "$publication_blockers" "$image"
+    state_mode="$(jq -er '.mode' "$state")" || {
+        echo "ci-homebrew-browser-mirror-state: invalid state: $state" >&2
+        return 1
+    }
+    state_args=(validate consumer "$state" "$publication_blockers" "$image")
+    if [ "$state_mode" = publication-blocked-candidate ]; then
+        state_args+=("$receipt")
+    fi
+    bash scripts/ci-homebrew-browser-mirror-state.sh "${state_args[@]}"
     mirror_required="$(jq -r '.mirror_required' "$state")"
     [ "$mirror_required" = "true" ] || return 0
     if [ -e "$mirror" ] || [ -L "$mirror" ]; then

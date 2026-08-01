@@ -496,6 +496,10 @@ describe("declared shell lazy-archive inputs", () => {
       join(repoRoot, "packages/registry/shell/package.toml"),
       "utf8",
     );
+    const bootstrapPackageToml = readFileSync(
+      join(repoRoot, "packages/registry/homebrew-bootstrap/package.toml"),
+      "utf8",
+    );
     const buildToml = readFileSync(
       join(repoRoot, "packages/registry/shell/build.toml"),
       "utf8",
@@ -574,8 +578,12 @@ describe("declared shell lazy-archive inputs", () => {
     // package needed to register `brew` lazily. Formula-owned bottle trees now
     // carry the complete current shell surface independently of that source
     // package.
-    expect(packageToml).toMatch(
-      /^depends_on\s*=\s*\["homebrew-bootstrap@6\.0\.3-4-g4ead861"\]$/m,
+    const bootstrapVersion = bootstrapPackageToml.match(
+      /^version\s*=\s*"([^"]+)"$/m,
+    )?.[1];
+    expect(bootstrapVersion).toBeTruthy();
+    expect(packageToml.match(/^depends_on\s*=\s*\["([^"]+)"\]$/m)?.[1]).toBe(
+      `homebrew-bootstrap@${bootstrapVersion}`,
     );
     expect(packageToml).not.toContain("vim-browser-bundle@");
     expect(packageToml).not.toContain("nethack-browser-bundle@");

@@ -128,6 +128,7 @@ mkdir -p \
     "$FIXTURE/benchmarks/wasm" \
     "$FIXTURE/apps/browser-demos" \
     "$FIXTURE/apps/browser-demos/public" \
+    "$FIXTURE/crates/shared/src" \
     "$FIXTURE/bin"
 cp \
     "$REPO_ROOT/scripts/ci-homebrew-browser-mirror-state.sh" \
@@ -136,7 +137,10 @@ cp \
     "$REPO_ROOT/scripts/pack-ci-test-workspace.sh" \
     "$REPO_ROOT/scripts/stage-portable-resolver-binaries.sh" \
     "$REPO_ROOT/scripts/validate-publication-blocker-report.sh" \
+    "$REPO_ROOT/scripts/verify-ci-staging-shell-handoff.sh" \
     "$FIXTURE/scripts/"
+printf '%s\n' 'pub const ABI_VERSION: u32 = 42;' \
+    > "$FIXTURE/crates/shared/src/lib.rs"
 mkdir -p "$FIXTURE/packages/registry/ruby/test"
 : > "$FIXTURE/packages/registry/ruby/test/posix-spawn.test.ts"
 
@@ -384,6 +388,12 @@ git -C "$FIXTURE" config user.name "Kandelo CI fixture"
 git -C "$FIXTURE" config user.email "ci-fixture@invalid.example"
 git -C "$FIXTURE" add .
 git -C "$FIXTURE" commit -qm "fixture source identity"
+fixture_base_branch="$(git -C "$FIXTURE" branch --show-current)"
+git -C "$FIXTURE" switch -qc fixture-pr-head
+git -C "$FIXTURE" commit --allow-empty -qm "fixture PR head"
+git -C "$FIXTURE" switch -q "$fixture_base_branch"
+git -C "$FIXTURE" merge --no-ff -qm "fixture synthetic merge" \
+    fixture-pr-head
 
 check_premerge_browser_production_contract() {
     local runner="$1"
@@ -964,7 +974,7 @@ if [ "${1:-}" = "build-deps" ]; then
         sha)
             [ "$arch" = wasm32 ] || exit 2
             case "${2:-}" in
-                kernel|local-fixture|local-one)
+                kernel|local-fixture|local-one|shell)
                     printf 'a%.0s' {1..64}
                     printf '\n'
                     exit 0
@@ -986,6 +996,11 @@ if [ "${1:-}" = "build-deps" ]; then
                 local-one:bin/local-one.wasm)
                     printf '%s\n' \
                         '{"source_artifact":"bin/local-one.wasm","mirror_path":"local-one.wasm"}'
+                    exit 0
+                    ;;
+                shell:shell.vfs.zst)
+                    printf '%s\n' \
+                        '{"source_artifact":"shell.vfs.zst","mirror_path":"shell.vfs.zst"}'
                     exit 0
                     ;;
             esac
@@ -1384,6 +1399,183 @@ cmp \
     "$FIXTURE/binaries/programs/wasm32/shell.vfs.zst" \
     "$resolved_pack_extract/binaries/programs/wasm32/shell.vfs.zst"
 
+# A publication-blocked candidate is neither a public shell nor the legacy
+# source bridge. Its receipt, mirror state, local generation, and frozen
+# workspace must all name the same bytes and synthetic-merge tree.
+candidate_handoff="$TMP_DIR/candidate-shell-handoff"
+candidate_image="$candidate_handoff/main-shell.vfs.zst"
+candidate_report="$candidate_handoff/main-shell-report.json"
+candidate_receipt="$candidate_handoff/receipt.json"
+mkdir -p "$candidate_handoff"
+cp "$FIXTURE/binaries/programs/wasm32/shell.vfs.zst" "$candidate_image"
+jq -n '
+  {
+    schema: 1,
+    image: "main-shell.vfs.zst",
+    metadata: {
+      kandelo_repository: "Automattic/kandelo",
+      kandelo_abi: 42
+    },
+    package_deferred_trees: [{
+      state: "deferred",
+      package: {name: "homebrew-bootstrap"}
+    }],
+    bottle_mirror: {assets: [{name: "bash"}]}
+  }
+' > "$candidate_report"
+candidate_base="$(git -C "$FIXTURE" show -s --format=%P HEAD | awk '{print $1}')"
+candidate_head="$(git -C "$FIXTURE" show -s --format=%P HEAD | awk '{print $2}')"
+candidate_tree="$(git -C "$FIXTURE" rev-parse 'HEAD^{tree}')"
+candidate_image_sha="$(sha256_file "$candidate_image")"
+candidate_image_bytes="$(wc -c < "$candidate_image" | tr -d '[:space:]')"
+candidate_report_sha="$(sha256_file "$candidate_report")"
+candidate_report_bytes="$(wc -c < "$candidate_report" | tr -d '[:space:]')"
+jq -n \
+    --arg base "$candidate_base" \
+    --arg head "$candidate_head" \
+    --arg tree "$candidate_tree" \
+    --arg image_sha "$candidate_image_sha" \
+    --argjson image_bytes "$candidate_image_bytes" \
+    --arg report_sha "$candidate_report_sha" \
+    --argjson report_bytes "$candidate_report_bytes" '
+      {
+        schema: 1,
+        kind: "kandelo-ci-staging-shell-handoff",
+        repository: "Automattic/kandelo",
+        workflow: ".github/workflows/staging-build.yml",
+        validation_pull_request_number: 1160,
+        validation_base_sha: $base,
+        producer_head_sha: $head,
+        producer_tree_sha: $tree,
+        run_id: 30695913285,
+        artifact: {
+          id: 8817612908,
+          name: "homebrew-main-shell-closure",
+          archive_sha256:
+            "9b44b0137cf63345f128bd5ffa2307d47c637166fc6244d8823d533faf38e523",
+          bytes: 58453095
+        },
+        image: {sha256: $image_sha, bytes: $image_bytes},
+        report: {sha256: $report_sha, bytes: $report_bytes}
+      }
+    ' > "$candidate_receipt"
+candidate_identity="$FIXTURE/local-binaries/.kandelo-local-generations/wasm32/shell/$cache_key"
+candidate_member="$candidate_identity/staging/shell.vfs.zst"
+candidate_mirror="$FIXTURE/local-binaries/programs/wasm32/shell.vfs.zst"
+mkdir -p "$(dirname "$candidate_member")" "$(dirname "$candidate_mirror")"
+cp "$candidate_image" "$candidate_member"
+: > "$candidate_identity/.staging.publication-claimed"
+ln -s "$candidate_member" "$candidate_mirror"
+
+candidate_expected="$TMP_DIR/candidate-expected.json"
+candidate_blockers="$TMP_DIR/candidate-blockers.json"
+candidate_index="$TMP_DIR/candidate-index.toml"
+candidate_state="$TMP_DIR/candidate-mirror-state.json"
+jq -n '{abi_version: 42, entries: []}' > "$candidate_expected"
+jq -n '{
+  abi_version: 42,
+  entries: [{package: "shell", blocker_chain: ["shell"]}]
+}' > "$candidate_blockers"
+printf '%s\n' 'abi_version = 42' > "$candidate_index"
+(
+    cd "$FIXTURE"
+    FIXTURE_SHELL_IMAGE="$candidate_member" \
+        bash scripts/ci-homebrew-browser-mirror-state.sh create \
+            "$candidate_expected" "$candidate_blockers" \
+            "$candidate_index" https://invalid.example/index.toml \
+            "$candidate_member" "$candidate_state" "$candidate_receipt"
+    FIXTURE_SHELL_IMAGE="$candidate_member" \
+        bash scripts/ci-homebrew-browser-mirror-state.sh validate consumer \
+            "$candidate_state" "$candidate_blockers" \
+            "$candidate_member" "$candidate_receipt"
+)
+candidate_archive="$TMP_DIR/candidate-workspace.tar.zst"
+(
+    cd "$FIXTURE"
+    PATH="$FIXTURE/bin:$PATH" \
+    WASM_POSIX_BINARY_CACHE_ROOT="$source_cache" \
+        bash scripts/pack-ci-test-workspace.sh \
+            --publication-blockers "$candidate_blockers" \
+            --homebrew-browser-mirror-state "$candidate_state" \
+            --staging-shell-handoff "$candidate_handoff" \
+            "$candidate_archive"
+)
+candidate_extract="$TMP_DIR/candidate-workspace"
+mkdir -p "$candidate_extract"
+tar --zstd -xf "$candidate_archive" -C "$candidate_extract"
+for authority in \
+    .ci-homebrew-browser-mirror-state.json \
+    .ci-staging-shell-receipt.json \
+    .ci-staging-shell-report.json; do
+    [ -f "$candidate_extract/$authority" ] &&
+        [ ! -L "$candidate_extract/$authority" ] || {
+        echo "candidate workspace omitted regular authority $authority" >&2
+        exit 1
+    }
+done
+cmp "$candidate_receipt" \
+    "$candidate_extract/.ci-staging-shell-receipt.json"
+cmp "$candidate_report" \
+    "$candidate_extract/.ci-staging-shell-report.json"
+cmp "$candidate_image" \
+    "$candidate_extract/local-binaries/programs/wasm32/shell.vfs.zst"
+
+candidate_plain_state="$TMP_DIR/candidate-plain-state.json"
+(
+    cd "$FIXTURE"
+    bash scripts/ci-homebrew-browser-mirror-state.sh create \
+        "$candidate_expected" "$candidate_blockers" \
+        "$candidate_index" https://invalid.example/index.toml \
+        - "$candidate_plain_state"
+)
+if (
+    cd "$FIXTURE"
+    PATH="$FIXTURE/bin:$PATH" \
+    WASM_POSIX_BINARY_CACHE_ROOT="$source_cache" \
+        bash scripts/pack-ci-test-workspace.sh \
+            --publication-blockers "$candidate_blockers" \
+            --homebrew-browser-mirror-state "$candidate_plain_state" \
+            --staging-shell-handoff "$candidate_handoff" \
+            "$TMP_DIR/rejected-downgraded-candidate.tar.zst"
+) > "$TMP_DIR/rejected-downgraded-candidate.out" 2>&1; then
+    echo "candidate workspace accepted a downgrade to the source bridge" >&2
+    exit 1
+fi
+grep -Fq 'staging handoff requires candidate mirror state' \
+    "$TMP_DIR/rejected-downgraded-candidate.out"
+if (
+    cd "$FIXTURE"
+    PATH="$FIXTURE/bin:$PATH" \
+    WASM_POSIX_BINARY_CACHE_ROOT="$source_cache" \
+        bash scripts/pack-ci-test-workspace.sh \
+            --publication-blockers "$candidate_blockers" \
+            --homebrew-browser-mirror-state "$candidate_state" \
+            "$TMP_DIR/rejected-missing-candidate.tar.zst"
+) > "$TMP_DIR/rejected-missing-candidate.out" 2>&1; then
+    echo "candidate workspace accepted missing handoff authority" >&2
+    exit 1
+fi
+grep -Fq 'candidate mirror state lacks its staging handoff' \
+    "$TMP_DIR/rejected-missing-candidate.out"
+printf 'substituted local shell\n' > "$candidate_member"
+if (
+    cd "$FIXTURE"
+    PATH="$FIXTURE/bin:$PATH" \
+    WASM_POSIX_BINARY_CACHE_ROOT="$source_cache" \
+        bash scripts/pack-ci-test-workspace.sh \
+            --publication-blockers "$candidate_blockers" \
+            --homebrew-browser-mirror-state "$candidate_state" \
+            --staging-shell-handoff "$candidate_handoff" \
+            "$TMP_DIR/rejected-substituted-candidate.tar.zst"
+) > "$TMP_DIR/rejected-substituted-candidate.out" 2>&1; then
+    echo "candidate workspace accepted substituted local shell bytes" >&2
+    exit 1
+fi
+grep -Fq 'candidate shell bytes do not match state' \
+    "$TMP_DIR/rejected-substituted-candidate.out"
+rm -rf "$candidate_identity"
+rm -f "$candidate_mirror"
+
 if [ ! -x "$pack_extract/target/fixture-host/release/xtask" ]; then
     echo "pack-ci-test-workspace.sh: package resolver lost its executable mode" >&2
     exit 1
@@ -1666,15 +1858,31 @@ for workflow in \
         echo "$(basename "$workflow"): prepared workspace omits the publication blocker report" >&2
         exit 1
     }
-    grep -Fq 'scripts/ci-homebrew-browser-mirror-state.sh create \' "$workflow" || {
-        echo "$(basename "$workflow"): candidate shell lacks canonical publication comparison" >&2
-        exit 1
-    }
-    if ! grep -F -A1 'bash scripts/dev-shell.sh \' "$workflow" |
-        grep -Fq 'bash scripts/ci-homebrew-browser-mirror-state.sh create \'; then
-        echo "$(basename "$workflow"): browser mirror authority uses ambient runner tools" >&2
-        exit 1
-    fi
+    case "$(basename "$workflow")" in
+        prepare-merge.yml)
+            grep -Fq 'state_args=(' "$workflow" &&
+                grep -Fq 'scripts/ci-homebrew-browser-mirror-state.sh \' \
+                    "$workflow" &&
+                grep -Fq 'bash scripts/dev-shell.sh bash \' "$workflow" || {
+                echo "$(basename "$workflow"): candidate shell lacks canonical publication comparison" >&2
+                exit 1
+            }
+            ;;
+        *)
+            grep -Fq \
+                'scripts/ci-homebrew-browser-mirror-state.sh create \' \
+                "$workflow" || {
+                echo "$(basename "$workflow"): candidate shell lacks canonical publication comparison" >&2
+                exit 1
+            }
+            if ! grep -F -A1 'bash scripts/dev-shell.sh \' "$workflow" |
+                grep -Fq \
+                    'bash scripts/ci-homebrew-browser-mirror-state.sh create \'; then
+                echo "$(basename "$workflow"): browser mirror authority uses ambient runner tools" >&2
+                exit 1
+            fi
+            ;;
+    esac
     grep -Fq 'scripts/materialize-ci-canonical-package-index.sh \' "$workflow" || {
         echo "$(basename "$workflow"): candidate shell bypasses authenticated canonical index materialization" >&2
         exit 1
