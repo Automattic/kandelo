@@ -79,7 +79,19 @@ done
 if [ "$method" = GET ]; then
   case "$endpoint" in
     */releases\?per_page=100\&page=1)
-      if [ -f "$store/release.json" ]; then
+      if [ -f "$store/release-on-second-page" ]; then
+        jq -n '[range(0; 100) as $n | {tag_name:("other-" + ($n | tostring))}]'
+      elif [ -f "$store/release.json" ] &&
+           [ -f "$store/duplicate-release" ]; then
+        release_json | jq -s '.[0] as $release | [$release, $release]'
+      elif [ -f "$store/release.json" ]; then
+        release_json | jq -s .
+      else
+        printf '[]\n'
+      fi
+      ;;
+    */releases\?per_page=100\&page=2)
+      if [ -f "$store/release-on-second-page" ]; then
         release_json | jq -s .
       else
         printf '[]\n'
@@ -191,6 +203,7 @@ run_lifecycle() {
   GH_STATE="$store" \
     GITHUB_REPOSITORY="${TEST_REPOSITORY:-example/repo}" \
     PACKAGE_RELEASE_RETRY_DELAY_SECONDS=0 \
+    PACKAGE_RELEASE_MAX_RELEASE_PAGES="${TEST_MAX_RELEASE_PAGES:-50}" \
     PATH="$TMP_ROOT/bin:$PATH" \
     bash "$LIFECYCLE" "$@" \
       --tag test-release \
@@ -220,9 +233,17 @@ sha_file() {
 }
 
 reset_store create
-[ "$(run_lifecycle ensure-draft)" = draft ]
+release_id_file="$store/release-id"
+[ "$(run_lifecycle ensure-draft \
+  --release-id-file "$release_id_file")" = draft ]
+[ "$(cat "$release_id_file")" = 7 ]
 jq -e '.draft == true and .immutable == false' "$store/release.json" >/dev/null
 grep -Fxq create "$store/writes.log"
+
+existing_id_file="$store/existing-release-id"
+[ "$(run_lifecycle state \
+  --release-id-file "$existing_id_file")" = draft ]
+[ "$(cat "$existing_id_file")" = 7 ]
 
 reset_store lost-create
 touch "$store/fail-create-response-once"
@@ -243,7 +264,10 @@ grep -Fq 'draft creation remained uncertain' "$store/hard-create.err"
 reset_store publish
 run_lifecycle ensure-draft >/dev/null
 add_payload index.toml 'index bytes'
-[ "$(run_lifecycle seal-publish)" = immutable ]
+published_id_file="$store/published-release-id"
+[ "$(run_lifecycle seal-publish \
+  --release-id-file "$published_id_file")" = immutable ]
+[ "$(cat "$published_id_file")" = 7 ]
 jq -e '.draft == false and .immutable == true' "$store/release.json" >/dev/null
 grep -Fxq 'upload kandelo-package-release-seal-v1.json' "$store/writes.log"
 grep -Fxq tag "$store/writes.log"
@@ -291,6 +315,35 @@ if run_lifecycle ensure-draft >/dev/null 2>"$store/mismatch.err"; then
   exit 1
 fi
 grep -Fq 'release identity is malformed or differs' "$store/mismatch.err"
+
+reset_store duplicate
+run_lifecycle ensure-draft >/dev/null
+touch "$store/duplicate-release"
+duplicate_id_file="$store/duplicate-id"
+if run_lifecycle state --release-id-file "$duplicate_id_file" \
+    >/dev/null 2>"$store/duplicate.err"
+then
+  echo "test-package-release-lifecycle: duplicate release was accepted" >&2
+  exit 1
+fi
+grep -Fq 'multiple releases claim tag' "$store/duplicate.err"
+[ ! -e "$duplicate_id_file" ]
+
+reset_store paginated
+run_lifecycle ensure-draft >/dev/null
+touch "$store/release-on-second-page"
+if TEST_MAX_RELEASE_PAGES=1 run_lifecycle state \
+    >/dev/null 2>"$store/pagination-bound.err"
+then
+  echo "test-package-release-lifecycle: pagination bound was ignored" >&2
+  exit 1
+fi
+grep -Fq 'release discovery reached its safety bound' \
+  "$store/pagination-bound.err"
+paginated_id_file="$store/paginated-id"
+[ "$(TEST_MAX_RELEASE_PAGES=2 run_lifecycle state \
+  --release-id-file "$paginated_id_file")" = draft ]
+[ "$(cat "$paginated_id_file")" = 7 ]
 
 reset_store mutable
 run_lifecycle ensure-draft >/dev/null

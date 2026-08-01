@@ -12,6 +12,7 @@ BODY_FILE=""
 PRERELEASE=""
 CANONICAL_SOURCE_SHA=""
 ALLOW_GRANDFATHERED_ABI42=false
+RELEASE_ID_FILE=""
 RETRY_DELAY_SECONDS="${PACKAGE_RELEASE_RETRY_DELAY_SECONDS:-2}"
 MAX_RELEASE_PAGES="${PACKAGE_RELEASE_MAX_RELEASE_PAGES:-50}"
 MAX_ASSET_PAGES="${PACKAGE_RELEASE_MAX_ASSET_PAGES:-100}"
@@ -25,6 +26,7 @@ while [ "$#" -gt 0 ]; do
     --body-file) BODY_FILE="$2"; shift 2 ;;
     --prerelease) PRERELEASE="$2"; shift 2 ;;
     --canonical-source-sha) CANONICAL_SOURCE_SHA="$2"; shift 2 ;;
+    --release-id-file) RELEASE_ID_FILE="$2"; shift 2 ;;
     --allow-grandfathered-abi42)
       ALLOW_GRANDFATHERED_ABI42=true
       shift
@@ -55,6 +57,14 @@ for value in RETRY_DELAY_SECONDS MAX_RELEASE_PAGES MAX_ASSET_PAGES; do
 done
 if [ "$MAX_RELEASE_PAGES" = 0 ] || [ "$MAX_ASSET_PAGES" = 0 ]; then
   echo "package-release-lifecycle: pagination bounds must be positive" >&2
+  exit 2
+fi
+if [ -n "$RELEASE_ID_FILE" ] && {
+     [ -L "$RELEASE_ID_FILE" ] ||
+     { [ -e "$RELEASE_ID_FILE" ] && [ ! -f "$RELEASE_ID_FILE" ]; } ||
+     [ ! -d "$(dirname "$RELEASE_ID_FILE")" ];
+   }; then
+  echo "package-release-lifecycle: release ID output must be a regular file path" >&2
   exit 2
 fi
 
@@ -209,6 +219,20 @@ release_state() {
   return 1
 }
 
+write_release_id() {
+  local id output_dir temporary
+  [ -n "$RELEASE_ID_FILE" ] || return 0
+  id="$(jq -er '.id | select(type == "number" and . > 0)' \
+    "$RELEASE_JSON")"
+  output_dir="$(dirname "$RELEASE_ID_FILE")"
+  temporary="$(mktemp "$output_dir/.package-release-id.XXXXXX")"
+  printf '%s\n' "$id" >"$temporary"
+  # WHY: GitHub's get-by-tag endpoint omits draft releases. Callers need
+  # the exact ID chosen by bounded discovery that rejects duplicate tags.
+  # That keeps later asset checks pinned to one release.
+  mv -f "$temporary" "$RELEASE_ID_FILE"
+}
+
 create_or_discover_draft() {
   local attempt=1 create_json="$TMP_ROOT/create.json" rc id
   while [ "$attempt" -le 4 ]; do
@@ -248,6 +272,21 @@ ensure_release() {
     return 1
   fi
   release_state
+}
+
+ensure_release_command() {
+  local state
+  state="$(ensure_release)" || return
+  write_release_id
+  printf '%s\n' "$state"
+}
+
+release_state_command() {
+  local state
+  discover_release
+  state="$(release_state)" || return
+  write_release_id
+  printf '%s\n' "$state"
 }
 
 refresh_assets() {
@@ -436,9 +475,10 @@ publish_and_reconcile() {
 
 seal_publish() {
   local state
-  state="$(ensure_release)"
+  state="$(ensure_release)" || return
   if [ "$state" = grandfathered-mutable ]; then
     echo "package-release-lifecycle: retaining grandfathered mutable $TAG" >&2
+    write_release_id
     printf '%s\n' "$state"
     return 0
   fi
@@ -456,14 +496,12 @@ seal_publish() {
   fi
   verify_or_upload_seal
   validate_direct_tag
+  write_release_id
   printf 'immutable\n'
 }
 
 case "$COMMAND" in
-  ensure-draft) ensure_release ;;
-  state)
-    discover_release
-    release_state
-    ;;
+  ensure-draft) ensure_release_command ;;
+  state) release_state_command ;;
   seal-publish) seal_publish ;;
 esac

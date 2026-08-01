@@ -57,6 +57,8 @@ CACHE_KEY_SHA=""
 ERROR=""
 REPAIR_ONLY=0
 CANONICAL_SOURCE_SHA=""
+RELEASE_ID=""
+MAX_RELEASE_ASSET_PAGES="${INDEX_UPDATE_MAX_RELEASE_ASSET_PAGES:-100}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -195,20 +197,63 @@ gh_retry() {
 
 release_asset_info() {
   local asset_name="$1"
-  local info
+  local page page_json count matches match_count reached_end=false
+  local match_file
 
-  info="$(gh_retry gh api "/repos/${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}/releases/tags/${TARGET_TAG}" \
-    --jq ".assets[] | select(.name == \"$asset_name\") | [.id, .size, (.digest // \"\")] | @tsv"
-  )"
-
-  [ -n "$info" ] || return 0
-
-  if ! [[ "$info" =~ ^[0-9]+[[:space:]][0-9]+([[:space:]][^[:space:]]+)?$ ]]; then
-    echo "index-update.sh: invalid release asset metadata for $asset_name: $info" >&2
+  if ! [[ "$RELEASE_ID" =~ ^[1-9][0-9]*$ ]]; then
+    echo "index-update.sh: exact release ID is unavailable" >&2
     return 1
   fi
 
-  printf '%s\n' "$info"
+  match_file="$(mktemp)"
+  for ((page = 1; page <= MAX_RELEASE_ASSET_PAGES; page++)); do
+    page_json="$(gh_retry gh api \
+      "/repos/${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}/releases/${RELEASE_ID}/assets?per_page=100&page=${page}")"
+    if ! jq -e '
+      type == "array" and all(.[];
+        (.id | type == "number" and . > 0 and floor == .) and
+        (.name | type == "string" and length > 0) and
+        (.size | type == "number" and . >= 0 and floor == .) and
+        (.digest == null or
+          (.digest | type == "string" and length > 0)))
+    ' <<<"$page_json" >/dev/null; then
+      echo "index-update.sh: malformed release asset page $page" >&2
+      rm -f "$match_file"
+      return 1
+    fi
+    jq -r --arg name "$asset_name" '
+      .[] | select(.name == $name) |
+      [.id, .size, (.digest // "")] | @tsv
+    ' <<<"$page_json" >>"$match_file"
+    count="$(jq 'length' <<<"$page_json")"
+    if [ "$count" -lt 100 ]; then
+      reached_end=true
+      break
+    fi
+  done
+  if [ "$reached_end" != true ]; then
+    echo "index-update.sh: asset discovery reached its safety bound" >&2
+    rm -f "$match_file"
+    return 1
+  fi
+
+  match_count="$(wc -l <"$match_file" | tr -d '[:space:]')"
+  if [ "$match_count" -gt 1 ]; then
+    echo "index-update.sh: release has duplicate asset $asset_name" >&2
+    rm -f "$match_file"
+    return 1
+  fi
+  if [ "$match_count" = 0 ]; then
+    rm -f "$match_file"
+    return 0
+  fi
+  matches="$(cat "$match_file")"
+  rm -f "$match_file"
+  if ! [[ "$matches" =~ ^[0-9]+[[:space:]][0-9]+([[:space:]][^[:space:]]+)?$ ]]; then
+    echo "index-update.sh: invalid release asset metadata for $asset_name: $matches" >&2
+    return 1
+  fi
+  printf '%s\n' "$matches"
 }
 
 sha256_file() {
@@ -236,16 +281,14 @@ release_asset_sha_matches() {
   local tmp_dir asset_path actual_sha
 
   tmp_dir="$(mktemp -d)"
-  if ! gh_retry gh release download "$TARGET_TAG" \
-      --repo "$GITHUB_REPOSITORY" \
-      --pattern "$asset_name" \
-      --dir "$tmp_dir" \
-      --clobber >/dev/null; then
+  asset_path="$tmp_dir/$asset_name"
+  if ! gh_retry gh api -H 'Accept: application/octet-stream' \
+      "/repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
+      >"$asset_path"; then
     rm -rf "$tmp_dir"
     return 1
   fi
 
-  asset_path="$tmp_dir/$asset_name"
   if [ ! -f "$asset_path" ]; then
     echo "index-update.sh: downloaded asset $asset_name not found at $asset_path" >&2
     rm -rf "$tmp_dir"
@@ -260,8 +303,9 @@ release_asset_sha_matches() {
 ensure_release_exists() {
   local empty_sentinel body_file release_target prerelease=false
   local candidate_dir candidate_json candidate_pr candidate_head
-  local canonical_release_target=""
+  local canonical_release_target="" release_id_file
   body_file="$(mktemp)"
+  release_id_file="$(mktemp)"
   release_target="${GITHUB_SHA:?GITHUB_SHA required}"
   case "$TARGET_TAG" in
     pr-*-staging)
@@ -359,7 +403,13 @@ Binaries for ABI v${ABI}" >"$body_file"
       --title "$TARGET_TAG" \
       --body-file "$body_file" \
       --prerelease "$prerelease" \
+      --release-id-file "$release_id_file" \
       "${lifecycle_args[@]}")"
+  RELEASE_ID="$(cat "$release_id_file")"
+  if ! [[ "$RELEASE_ID" =~ ^[1-9][0-9]*$ ]]; then
+    echo "index-update.sh: release lifecycle returned an invalid release ID" >&2
+    return 1
+  fi
   if [ "$RELEASE_LIFECYCLE_STATE" = immutable ]; then
     echo "index-update.sh: $TARGET_TAG is immutable; publish a new run or generation instead of mutating it" >&2
     return 1
@@ -449,7 +499,67 @@ upload_archive_asset() {
   done
 }
 
+upload_isolated_asset_by_tag() {
+  local path="$1"
+  gh release upload "$TARGET_TAG" \
+    --repo "$GITHUB_REPOSITORY" \
+    "$path"
+}
+
+upload_isolated_index() {
+  local expected_size expected_sha info asset_id
+  local attempt=1 max_attempts=4 delay=2
+  expected_size="$(file_size "$INDEX_PATH")"
+  expected_sha="$(sha256_file "$INDEX_PATH")"
+
+  info="$(release_asset_info index.toml)"
+  if [ -n "$info" ]; then
+    if archive_asset_matches index.toml "$expected_size" "$expected_sha"; then
+      return 0
+    fi
+    read -r asset_id _ _ <<<"$info"
+    gh_retry gh api -X DELETE \
+      "/repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
+      >/dev/null
+  fi
+
+  while true; do
+    # WHY: `gh release upload` can find a draft that GitHub's tag REST
+    # endpoint hides. Accept success only after the asset appears on the
+    # exact release ID. An ambiguous tag cannot redirect the ledger.
+    if upload_isolated_asset_by_tag "$INDEX_PATH"; then
+      if archive_asset_matches index.toml "$expected_size" "$expected_sha"; then
+        return 0
+      fi
+      echo "index-update.sh: index upload reported success, but exact release verification failed" >&2
+    elif archive_asset_matches index.toml "$expected_size" "$expected_sha"; then
+      echo "index-update.sh: index upload response failed after the exact release received matching bytes"
+      return 0
+    fi
+
+    info="$(release_asset_info index.toml)"
+    if [ -n "$info" ]; then
+      read -r asset_id _ _ <<<"$info"
+      gh_retry gh api -X DELETE \
+        "/repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
+        >/dev/null
+    fi
+    if [ "$attempt" -ge "$max_attempts" ]; then
+      return 1
+    fi
+    echo "index-update.sh: index upload failed (attempt ${attempt}/${max_attempts}); retrying in ${delay}s" >&2
+    sleep "$delay"
+    attempt=$((attempt + 1))
+    delay=$((delay * 2))
+  done
+}
+
 require target-tag    "$TARGET_TAG"
+
+if ! [[ "$MAX_RELEASE_ASSET_PAGES" =~ ^[1-9][0-9]*$ ]]; then
+  echo "index-update.sh: INDEX_UPDATE_MAX_RELEASE_ASSET_PAGES must be positive" >&2
+  exit 2
+fi
 
 if [ "$REPAIR_ONLY" = "1" ]; then
   STATUS="repair"
@@ -564,11 +674,12 @@ if [ "$IS_CANONICAL" = 1 ]; then
 else
   index_info="$(release_asset_info 'index.toml')"
   if [ -n "$index_info" ]; then
-    gh_retry gh release download "$TARGET_TAG" \
-      --repo "$GITHUB_REPOSITORY" \
-      --pattern index.toml \
-      --dir "$INDEX_DIR" \
-      --clobber
+    read -r index_asset_id _ _ <<<"$index_info"
+    # WHY: GitHub's get-by-tag API returns 404 for drafts. Read the asset
+    # through the exact release identity selected by the lifecycle helper.
+    gh_retry gh api -H 'Accept: application/octet-stream' \
+      "/repos/${GITHUB_REPOSITORY}/releases/assets/${index_asset_id}" \
+      >"$INDEX_PATH"
   else
     cat > "$INDEX_PATH" <<EOF
 abi_version = $EXPECTED_ABI
@@ -613,10 +724,7 @@ if [ "$IS_CANONICAL" = 1 ]; then
     --expected-head "$(cat "$INDEX_HEAD_FILE")" \
     "${index_state_authority_args[@]}"
 else
-  gh_retry gh release upload "$TARGET_TAG" \
-    --repo "$GITHUB_REPOSITORY" \
-    --clobber \
-    "$INDEX_PATH"
+  upload_isolated_index
 fi
 
 if [ "$STATUS" = "repair" ]; then
