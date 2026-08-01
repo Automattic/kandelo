@@ -707,6 +707,262 @@ class ReuseFixture(Fixture):
             raise AssertionError("selection validation lacked metadata")
 
 
+class FinalTapFixture(Fixture):
+    def __init__(self, *, active_retired_prefix: bool = False) -> None:
+        super().__init__(multi_arch=True)
+        layout_path = ROOT / "homebrew/kandelo-guest-layout.json"
+        layout = json.loads(layout_path.read_text())
+        self.retired_prefix = layout["retired_prefixes"][0]
+        self.campaign["authority"]["guest_layout"]["sha256"] = sha256(
+            layout_path.read_bytes()
+        )
+
+        gamma = self.source / "Formula/gamma.rb"
+        gamma_payload = formula_source("gamma")
+        if active_retired_prefix:
+            gamma_payload += (
+                f'# active path: {self.retired_prefix}\n'.encode()
+            )
+        gamma.write_bytes(gamma_payload)
+        write_json(
+            self.source / "Kandelo/prefix-campaign-authority.json",
+            {"fixture": "retired after composition"},
+        )
+        manifest_path = (
+            self.source / "Kandelo/campaigns/prefix-v1/manifest.json"
+        )
+        write_json(manifest_path, {"fixture": "sealed target source"})
+        overlay_source = (
+            self.source / "Kandelo/campaigns/prefix-v1/source"
+        )
+        (overlay_source / "Formula").mkdir(parents=True)
+        (overlay_source / "Formula/alpha.rb").write_bytes(
+            formula_source("alpha")
+        )
+        (self.source / "Kandelo/campaigns/prefix-v1/README.md").write_text(
+            "Campaign completion evidence is retained here.\n"
+        )
+        (self.source / "Kandelo/campaigns/prefix-v1/verify.py").write_text(
+            "# generic completion verifier fixture\n"
+        )
+        retained_test = (
+            self.source
+            / "Kandelo/formula_support/test/"
+            "kandelo_formula_support_test.rb"
+        )
+        retained_test.parent.mkdir(parents=True)
+        retained_test.write_text(
+            f'# negative test rejects "{self.retired_prefix}"\n'
+        )
+        self.failure_evidence = (
+            "historical failed publication at "
+            f"{self.retired_prefix}\n"
+        ).encode()
+        self.rollback_evidence = (
+            "historical rollback publication from "
+            f"{self.retired_prefix}\n"
+        ).encode()
+        failure = (
+            self.source / "Kandelo/reports/failures/alpha.json"
+        )
+        failure.parent.mkdir(parents=True)
+        failure.write_bytes(self.failure_evidence)
+        rollback = (
+            self.source / "Kandelo/reports/rollbacks/beta.json"
+        )
+        rollback.parent.mkdir(parents=True)
+        rollback.write_bytes(self.rollback_evidence)
+        workflow = (
+            self.source
+            / ".github/workflows/prefix-campaign-bottles.yml"
+        )
+        workflow.parent.mkdir(parents=True)
+        workflow.write_text("name: retired campaign publisher\n")
+        materializer = self.source / "scripts/prefix-campaign-source.py"
+        materializer.parent.mkdir(parents=True)
+        materializer.write_text("# retained generic materializer fixture\n")
+
+        self.source_tree = EXECUTOR.filesystem_git_tree_oid(
+            self.source,
+            "final tap fixture target source",
+        )
+        self.source_provenance = {
+            "manifest_sha256": sha256(manifest_path.read_bytes()),
+            "source_tree_git_oid": EXECUTOR.filesystem_git_tree_oid(
+                overlay_source,
+                "final tap fixture overlay source",
+            ),
+            "target_tree_git_oid": self.source_tree,
+        }
+        self.campaign["authority"]["source_materialization"] = {
+            "authority": {
+                "path": "Kandelo/prefix-campaign-authority.json",
+                "sha256": sha256(
+                    (
+                        self.source
+                        / "Kandelo/prefix-campaign-authority.json"
+                    ).read_bytes()
+                ),
+            },
+            "kind": "sealed-target-overlay-v1",
+            "manifest": {
+                "path": "Kandelo/campaigns/prefix-v1/manifest.json",
+                "sha256": self.source_provenance[
+                    "manifest_sha256"
+                ],
+            },
+            "materializer": {
+                "path": "scripts/prefix-campaign-source.py",
+                "sha256": sha256(materializer.read_bytes()),
+            },
+            "source_root": "Kandelo/campaigns/prefix-v1/source",
+            "source_tree_git_oid": self.source_provenance[
+                "source_tree_git_oid"
+            ],
+            "target_tree_git_oid": self.source_tree,
+        }
+        write_json(self.campaign_path, self.campaign)
+
+        self.live = self.root / "live-tap"
+        self.live.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=self.live, check=True)
+        (self.live / "README.md").write_text("live tap parent\n")
+        subprocess.run(["git", "add", "."], cwd=self.live, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Final tap fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "commit",
+                "-q",
+                "-m",
+                "live parent",
+            ],
+            cwd=self.live,
+            check=True,
+        )
+        self.live_commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.live,
+            text=True,
+        ).strip()
+        self.live_tree = subprocess.check_output(
+            ["git", "rev-parse", "HEAD^{tree}"],
+            cwd=self.live,
+            text=True,
+        ).strip()
+        self.pre_retirement_validated = False
+
+    def complete_handoffs(
+        self,
+    ) -> tuple[pathlib.Path, pathlib.Path]:
+        alpha = self.root / "final-alpha"
+        self.derive(
+            "alpha",
+            [
+                ("wasm32", self.publication("alpha", "wasm32")),
+                ("wasm64", self.publication("alpha", "wasm64")),
+            ],
+            [],
+            alpha,
+        )
+        beta = self.root / "final-beta"
+        self.derive(
+            "beta",
+            [
+                ("wasm32", self.publication("beta", "wasm32")),
+                ("wasm64", self.publication("beta", "wasm64")),
+            ],
+            [alpha],
+            beta,
+        )
+        return alpha, beta
+
+    def generate_final_sidecars(
+        self,
+        *,
+        tap_root: pathlib.Path,
+        input_path: pathlib.Path,
+        prefix_campaign_layout_sha256: str,
+    ) -> None:
+        if prefix_campaign_layout_sha256 != self.campaign["authority"][
+            "guest_layout"
+        ]["sha256"]:
+            raise AssertionError("final tap used the wrong guest layout")
+        name = json.loads(input_path.read_text())["packages"][0]["name"]
+        metadata_path = tap_root / "Kandelo/metadata.json"
+        names: set[str] = set()
+        if metadata_path.is_file():
+            names.update(
+                value["name"]
+                for value in json.loads(metadata_path.read_text())[
+                    "packages"
+                ]
+            )
+        names.add(name)
+        write_json(
+            metadata_path,
+            {
+                "packages": [
+                    {"name": value} for value in sorted(names)
+                ],
+                "schema": 1,
+            },
+        )
+
+    def validate_final_tap(
+        self,
+        *,
+        tap_root: pathlib.Path,
+        prefix_campaign_layout_sha256: str,
+    ) -> None:
+        if prefix_campaign_layout_sha256 != self.campaign["authority"][
+            "guest_layout"
+        ]["sha256"]:
+            raise AssertionError("final tap used the wrong guest layout")
+        if not (
+            tap_root / "Kandelo/prefix-campaign-authority.json"
+        ).is_file():
+            raise AssertionError("whole-tap validation ran after retirement")
+        if (
+            tap_root / EXECUTOR.CAMPAIGN_COMPLETION_PATH
+        ).exists():
+            raise AssertionError("completion preceded whole-tap validation")
+        for name in ("alpha", "beta"):
+            formula = (tap_root / f"Formula/{name}.rb").read_text()
+            for arch in ("wasm32", "wasm64"):
+                if f"# {arch} bottle" not in formula:
+                    raise AssertionError(
+                        f"final tap lacks {name}/{arch} bottle"
+                    )
+        self.pre_retirement_validated = True
+
+    def prepare_final(
+        self,
+        handoffs: list[pathlib.Path],
+        output: pathlib.Path,
+        finalization: pathlib.Path,
+        **overrides: Any,
+    ) -> None:
+        arguments: dict[str, Any] = {
+            "campaign_path": self.campaign_path,
+            "source_tap_root": self.source,
+            "live_tap_root": self.live,
+            "handoff_roots": handoffs,
+            "expected_live_commit": self.live_commit,
+            "expected_live_tree_git_oid": self.live_tree,
+            "output": output,
+            "finalization_output": finalization,
+            "bottle_merger": self.merge_dependency,
+            "sidecar_generator": self.generate_final_sidecars,
+            "tap_validator": self.validate_final_tap,
+        }
+        arguments.update(overrides)
+        EXECUTOR.prepare_final_tap(**arguments)
+
+
 def release_fetchers(
     prepared: pathlib.Path,
 ) -> tuple[Any, Any, dict[str, Any]]:
@@ -1158,6 +1414,725 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
                 fixture.campaign,
                 fixture.campaign_path.read_bytes(),
             )
+
+    def test_final_tap_composes_complete_campaign_and_canonical_receipt(
+        self,
+    ) -> None:
+        fixture = FinalTapFixture()
+        self.addCleanup(fixture.close)
+        alpha, beta = fixture.complete_handoffs()
+        output = fixture.root / "final-candidate"
+        finalization_path = fixture.root / "finalization.json"
+        merge_order: list[tuple[str, str]] = []
+
+        def record_merge(**arguments: Any) -> None:
+            merge_order.append(
+                (arguments["formula"], arguments["arch"])
+            )
+            fixture.merge_dependency(**arguments)
+
+        fixture.prepare_final(
+            [beta, alpha],
+            output,
+            finalization_path,
+            bottle_merger=record_merge,
+        )
+
+        self.assertEqual(
+            merge_order,
+            [
+                ("alpha", "wasm32"),
+                ("alpha", "wasm64"),
+                ("beta", "wasm32"),
+                ("beta", "wasm64"),
+            ],
+        )
+        self.assertTrue(fixture.pre_retirement_validated)
+        self.assertTrue((output / "Formula/gamma.rb").is_file())
+        for relative in EXECUTOR.CAMPAIGN_RETIREMENT_PATHS:
+            self.assertFalse((output / relative).exists())
+        for relative in (
+            "Kandelo/campaigns/prefix-v1/README.md",
+            "Kandelo/campaigns/prefix-v1/verify.py",
+            "Kandelo/formula_support/test/"
+            "kandelo_formula_support_test.rb",
+            "scripts/prefix-campaign-source.py",
+        ):
+            self.assertTrue((output / relative).is_file(), relative)
+        self.assertEqual(
+            (
+                output / "Kandelo/reports/failures/alpha.json"
+            ).read_bytes(),
+            fixture.failure_evidence,
+        )
+        self.assertEqual(
+            (
+                output / "Kandelo/reports/rollbacks/beta.json"
+            ).read_bytes(),
+            fixture.rollback_evidence,
+        )
+
+        completion_path = output / EXECUTOR.CAMPAIGN_COMPLETION_PATH
+        completion = json.loads(completion_path.read_text())
+        self.assertEqual(
+            set(completion),
+            {
+                "campaign",
+                "campaign_release",
+                "catalog_cohort_sha256",
+                "expected_parent_commit",
+                "guest_layout_sha256",
+                "handoffs_sha256",
+                "kind",
+                "schema",
+                "source",
+            },
+        )
+        self.assertEqual(completion["campaign"], "prefix-v1")
+        self.assertEqual(
+            completion["expected_parent_commit"],
+            fixture.live_commit,
+        )
+        self.assertEqual(completion["source"], fixture.source_provenance)
+        self.assertEqual(
+            completion_path.read_bytes(),
+            EXECUTOR.pretty_json(completion),
+        )
+
+        finalization = json.loads(finalization_path.read_text())
+        self.assertEqual(
+            set(finalization),
+            {
+                "campaign_release",
+                "candidate",
+                "catalog_cohort_sha256",
+                "completion",
+                "expected_live",
+                "guest_layout_sha256",
+                "handoffs",
+                "handoffs_sha256",
+                "kind",
+                "schema",
+            },
+        )
+        self.assertEqual(
+            finalization_path.read_bytes(),
+            EXECUTOR.pretty_json(finalization),
+        )
+        self.assertEqual(
+            [value["formula"] for value in finalization["handoffs"]],
+            ["alpha", "beta"],
+        )
+        self.assertEqual(
+            [value["arches"] for value in finalization["handoffs"]],
+            [["wasm32", "wasm64"], ["wasm32", "wasm64"]],
+        )
+        self.assertEqual(
+            finalization["handoffs_sha256"],
+            sha256(EXECUTOR.canonical_json(finalization["handoffs"])),
+        )
+        self.assertEqual(
+            finalization["catalog_cohort_sha256"],
+            sha256(
+                EXECUTOR.canonical_json(
+                    {
+                        "campaign_sha256": sha256(
+                            fixture.campaign_path.read_bytes()
+                        ),
+                        "guest_layout_sha256": fixture.campaign[
+                            "authority"
+                        ]["guest_layout"]["sha256"],
+                        "handoffs": finalization["handoffs"],
+                    }
+                )
+            ),
+        )
+        self.assertEqual(
+            finalization["candidate"]["tree_git_oid"],
+            EXECUTOR.filesystem_git_tree_oid(
+                output,
+                "completed final tap fixture",
+            ),
+        )
+        self.assertEqual(
+            finalization["completion"],
+            {
+                "path": EXECUTOR.CAMPAIGN_COMPLETION_PATH,
+                "sha256": sha256(completion_path.read_bytes()),
+            },
+        )
+        self.assertEqual(
+            finalization["expected_live"],
+            {
+                "commit": fixture.live_commit,
+                "tree_git_oid": fixture.live_tree,
+            },
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "status", "--porcelain=v1"],
+                cwd=fixture.live,
+            ),
+            b"",
+        )
+        self.assertFalse((output / ".git").exists())
+
+    def test_final_tap_requires_one_complete_handoff_per_formula(
+        self,
+    ) -> None:
+        fixture = FinalTapFixture()
+        self.addCleanup(fixture.close)
+        alpha, beta = fixture.complete_handoffs()
+        partial_alpha = fixture.root / "partial-final-alpha"
+        fixture.derive(
+            "alpha",
+            [("wasm32", fixture.publication("alpha", "wasm32"))],
+            [],
+            partial_alpha,
+        )
+        cases = (
+            (
+                "missing",
+                [alpha],
+                "handoffs differ from the campaign Formulae",
+            ),
+            (
+                "duplicate",
+                [alpha, alpha, beta],
+                "handoff alpha is duplicated",
+            ),
+            (
+                "partial",
+                [partial_alpha, beta],
+                "does not cover every declared architecture",
+            ),
+        )
+        for label, handoffs, message in cases:
+            with self.subTest(label=label):
+                output = fixture.root / f"rejected-{label}"
+                receipt = fixture.root / f"rejected-{label}.json"
+                with self.assertRaisesRegex(
+                    EXECUTOR.ExecutorError,
+                    message,
+                ):
+                    fixture.prepare_final(
+                        handoffs,
+                        output,
+                        receipt,
+                    )
+                self.assertFalse(output.exists())
+                self.assertFalse(receipt.exists())
+
+    def test_final_tap_rejects_wrong_dependency_or_live_authority(
+        self,
+    ) -> None:
+        fixture = FinalTapFixture()
+        self.addCleanup(fixture.close)
+        alpha, beta = fixture.complete_handoffs()
+        substituted_beta = fixture.root / "substituted-beta"
+        shutil.copytree(beta, substituted_beta)
+        manifest_path = substituted_beta / "handoff.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["dependency_handoffs"][0].update(
+            {
+                "manifest_sha256": "f" * 64,
+                "tag": f"homebrew-prefix-handoff-sha256-{'f' * 64}",
+            }
+        )
+        write_json(manifest_path, manifest)
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "dependencies differ from the exact campaign closure",
+        ):
+            fixture.prepare_final(
+                [alpha, substituted_beta],
+                fixture.root / "wrong-dependency",
+                fixture.root / "wrong-dependency.json",
+            )
+
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "wrong Git tree",
+        ):
+            fixture.prepare_final(
+                [alpha, beta],
+                fixture.root / "wrong-live-tree",
+                fixture.root / "wrong-live-tree.json",
+                expected_live_tree_git_oid="f" * 40,
+            )
+        (fixture.live / "dirty").write_text("uncommitted\n")
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "worktree is dirty",
+        ):
+            fixture.prepare_final(
+                [alpha, beta],
+                fixture.root / "dirty-live",
+                fixture.root / "dirty-live.json",
+            )
+
+    def test_final_tap_rebinds_sealed_source_and_live_parent(
+        self,
+    ) -> None:
+        changed_source = FinalTapFixture()
+        self.addCleanup(changed_source.close)
+        alpha, beta = changed_source.complete_handoffs()
+        (changed_source.source / "Formula/gamma.rb").write_text(
+            "changed after campaign sealing\n"
+        )
+        source_output = changed_source.root / "changed-source-candidate"
+        source_receipt = changed_source.root / "changed-source.json"
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "differs from its sealed Git tree",
+        ):
+            changed_source.prepare_final(
+                [alpha, beta],
+                source_output,
+                source_receipt,
+            )
+        self.assertFalse(source_output.exists())
+        self.assertFalse(source_receipt.exists())
+
+        changed_live = FinalTapFixture()
+        self.addCleanup(changed_live.close)
+        alpha, beta = changed_live.complete_handoffs()
+
+        def change_live_during_validation(**arguments: Any) -> None:
+            changed_live.validate_final_tap(**arguments)
+            (changed_live.live / "concurrent-change").write_text(
+                "changed while preparing\n"
+            )
+
+        live_output = changed_live.root / "changed-live-candidate"
+        live_receipt = changed_live.root / "changed-live.json"
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "worktree is dirty",
+        ):
+            changed_live.prepare_final(
+                [alpha, beta],
+                live_output,
+                live_receipt,
+                tap_validator=change_live_during_validation,
+            )
+        self.assertFalse(live_output.exists())
+        self.assertFalse(live_receipt.exists())
+
+    def test_final_tap_rejects_active_retired_prefix_bytes(
+        self,
+    ) -> None:
+        fixture = FinalTapFixture(active_retired_prefix=True)
+        self.addCleanup(fixture.close)
+        alpha, beta = fixture.complete_handoffs()
+        output = fixture.root / "retired-prefix-candidate"
+        receipt = fixture.root / "retired-prefix-finalization.json"
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "still contains retired guest prefixes.*Formula/gamma.rb",
+        ):
+            fixture.prepare_final([alpha, beta], output, receipt)
+        self.assertFalse(output.exists())
+        self.assertFalse(receipt.exists())
+
+    def test_final_tap_preserves_historical_report_evidence(
+        self,
+    ) -> None:
+        fixture = FinalTapFixture()
+        self.addCleanup(fixture.close)
+        alpha, beta = fixture.complete_handoffs()
+
+        def mutate_history(**arguments: Any) -> None:
+            fixture.generate_final_sidecars(**arguments)
+            (
+                pathlib.Path(arguments["tap_root"])
+                / "Kandelo/reports/failures/alpha.json"
+            ).write_text("rewritten history\n")
+
+        output = fixture.root / "rewritten-history-candidate"
+        receipt = fixture.root / "rewritten-history-finalization.json"
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "changed historical report evidence",
+        ):
+            fixture.prepare_final(
+                [alpha, beta],
+                output,
+                receipt,
+                sidecar_generator=mutate_history,
+            )
+        self.assertFalse(output.exists())
+        self.assertFalse(receipt.exists())
+
+    def test_prepare_final_tap_cli_exposes_local_only_authorities(
+        self,
+    ) -> None:
+        arguments = [
+            str(TOOL),
+            "prepare-final-tap",
+            "--campaign",
+            "campaign.json",
+            "--source-tap-root",
+            "source",
+            "--live-tap-root",
+            "live",
+            "--handoff",
+            "alpha",
+            "--expected-live-commit",
+            "a" * 40,
+            "--expected-live-tree-git-oid",
+            "b" * 40,
+            "--out",
+            "candidate",
+            "--finalization-out",
+            "finalization.json",
+        ]
+        with mock.patch.object(sys, "argv", arguments):
+            parsed = EXECUTOR.parse_args()
+        self.assertEqual(parsed.command, "prepare-final-tap")
+        self.assertEqual(parsed.handoff, ["alpha"])
+        self.assertEqual(parsed.finalization_out, "finalization.json")
+
+        commit_arguments = [
+            str(TOOL),
+            "create-final-tap-commit",
+            "--candidate-tap-root",
+            "candidate",
+            "--finalization",
+            "finalization.json",
+            "--live-tap-root",
+            "live",
+            "--output-ref",
+            "refs/heads/final-prefix",
+            "--commit-receipt-out",
+            "commit.json",
+        ]
+        with mock.patch.object(sys, "argv", commit_arguments):
+            parsed_commit = EXECUTOR.parse_args()
+        self.assertEqual(
+            parsed_commit.command,
+            "create-final-tap-commit",
+        )
+        self.assertEqual(
+            parsed_commit.output_ref,
+            "refs/heads/final-prefix",
+        )
+
+    def test_final_tap_requires_every_retirement_path(
+        self,
+    ) -> None:
+        fixture = FinalTapFixture()
+        self.addCleanup(fixture.close)
+        (
+            fixture.source
+            / ".github/workflows/prefix-campaign-bottles.yml"
+        ).unlink()
+        fixture.source_tree = EXECUTOR.filesystem_git_tree_oid(
+            fixture.source,
+            "missing retirement path target",
+        )
+        fixture.campaign["authority"]["source_materialization"][
+            "target_tree_git_oid"
+        ] = fixture.source_tree
+        write_json(fixture.campaign_path, fixture.campaign)
+        alpha, beta = fixture.complete_handoffs()
+        output = fixture.root / "missing-retirement-candidate"
+        receipt = fixture.root / "missing-retirement-finalization.json"
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "campaign retirement path.*prefix-campaign-bottles.*"
+            "unavailable",
+        ):
+            fixture.prepare_final([alpha, beta], output, receipt)
+        self.assertFalse(output.exists())
+        self.assertFalse(receipt.exists())
+
+    def test_create_final_tap_commit_uses_one_new_local_ref(
+        self,
+    ) -> None:
+        fixture = FinalTapFixture()
+        self.addCleanup(fixture.close)
+        alpha, beta = fixture.complete_handoffs()
+        candidate = fixture.root / "commit-candidate"
+        finalization = fixture.root / "commit-finalization.json"
+        fixture.prepare_final([alpha, beta], candidate, finalization)
+        before_refs = subprocess.check_output(
+            ["git", "for-each-ref", "--format=%(refname)"],
+            cwd=fixture.live,
+            text=True,
+        ).splitlines()
+        output_ref = "refs/heads/final-prefix-fixture"
+        receipt_path = fixture.root / "commit-receipt.json"
+
+        EXECUTOR.create_final_tap_commit(
+            candidate_tap_root=candidate,
+            finalization_path=finalization,
+            live_tap_root=fixture.live,
+            output_ref=output_ref,
+            commit_receipt_output=receipt_path,
+        )
+
+        after_refs = subprocess.check_output(
+            ["git", "for-each-ref", "--format=%(refname)"],
+            cwd=fixture.live,
+            text=True,
+        ).splitlines()
+        self.assertEqual(
+            sorted(set(after_refs) - set(before_refs)),
+            [output_ref],
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "rev-parse", "HEAD"],
+                cwd=fixture.live,
+                text=True,
+            ).strip(),
+            fixture.live_commit,
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "status", "--porcelain=v1"],
+                cwd=fixture.live,
+            ),
+            b"",
+        )
+        commit_oid = subprocess.check_output(
+            ["git", "rev-parse", output_ref],
+            cwd=fixture.live,
+            text=True,
+        ).strip()
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "rev-parse", f"{commit_oid}^"],
+                cwd=fixture.live,
+                text=True,
+            ).strip(),
+            fixture.live_commit,
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "rev-parse", f"{commit_oid}^{{tree}}"],
+                cwd=fixture.live,
+                text=True,
+            ).strip(),
+            EXECUTOR.filesystem_git_tree_oid(candidate, "commit candidate"),
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "show", "-s", "--format=%at", commit_oid],
+                cwd=fixture.live,
+                text=True,
+            ).strip(),
+            str(EXECUTOR.CAMPAIGN_COMMIT_TIMESTAMP),
+        )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "show", "-s", "--format=%B", commit_oid],
+                cwd=fixture.live,
+                text=True,
+            ).rstrip("\n"),
+            EXECUTOR.FINAL_TAP_COMMIT_MESSAGE.rstrip("\n"),
+        )
+        receipt = json.loads(receipt_path.read_text())
+        self.assertEqual(
+            receipt_path.read_bytes(),
+            EXECUTOR.pretty_json(receipt),
+        )
+        self.assertEqual(
+            set(receipt),
+            {
+                "candidate",
+                "commit",
+                "finalization",
+                "kind",
+                "output_ref",
+                "schema",
+            },
+        )
+        self.assertEqual(set(receipt["candidate"]), {"tree_git_oid"})
+        self.assertEqual(
+            set(receipt["commit"]),
+            {"oid", "parent", "tree_git_oid"},
+        )
+        self.assertEqual(
+            set(receipt["finalization"]),
+            {"path", "sha256"},
+        )
+        self.assertEqual(
+            receipt["finalization"]["path"],
+            "finalization.json",
+        )
+        self.assertEqual(receipt["output_ref"], output_ref)
+        self.assertEqual(receipt["commit"]["oid"], commit_oid)
+        self.assertEqual(receipt["commit"]["parent"], fixture.live_commit)
+        self.assertEqual(
+            receipt["finalization"]["sha256"],
+            sha256(finalization.read_bytes()),
+        )
+
+        subprocess.run(
+            ["git", "update-ref", "-d", output_ref, commit_oid],
+            cwd=fixture.live,
+            check=True,
+        )
+        retry_receipt = fixture.root / "retry-commit-receipt.json"
+        EXECUTOR.create_final_tap_commit(
+            candidate_tap_root=candidate,
+            finalization_path=finalization,
+            live_tap_root=fixture.live,
+            output_ref=output_ref,
+            commit_receipt_output=retry_receipt,
+        )
+        retried = json.loads(retry_receipt.read_text())
+        self.assertEqual(retried["commit"]["oid"], commit_oid)
+        self.assertEqual(retried, receipt)
+
+    def test_create_final_tap_commit_rejects_substitution_and_refs(
+        self,
+    ) -> None:
+        fixture = FinalTapFixture()
+        self.addCleanup(fixture.close)
+        alpha, beta = fixture.complete_handoffs()
+        candidate = fixture.root / "adversarial-commit-candidate"
+        finalization = fixture.root / "adversarial-finalization.json"
+        fixture.prepare_final([alpha, beta], candidate, finalization)
+        existing_ref = subprocess.check_output(
+            ["git", "symbolic-ref", "HEAD"],
+            cwd=fixture.live,
+            text=True,
+        ).strip()
+
+        for label, output_ref, message in (
+            ("unsafe", "refs/tags/not-a-branch", "refs/heads"),
+            ("existing", existing_ref, "already exists"),
+        ):
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(
+                    EXECUTOR.ExecutorError,
+                    message,
+                ):
+                    EXECUTOR.create_final_tap_commit(
+                        candidate_tap_root=candidate,
+                        finalization_path=finalization,
+                        live_tap_root=fixture.live,
+                        output_ref=output_ref,
+                        commit_receipt_output=(
+                            fixture.root / f"{label}-commit.json"
+                        ),
+                    )
+
+        substituted_finalization = fixture.root / "extra-finalization.json"
+        finalization_value = json.loads(finalization.read_text())
+        finalization_value["unreviewed"] = True
+        write_json(substituted_finalization, finalization_value)
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "must contain exactly",
+        ):
+            EXECUTOR.create_final_tap_commit(
+                candidate_tap_root=candidate,
+                finalization_path=substituted_finalization,
+                live_tap_root=fixture.live,
+                output_ref="refs/heads/substituted-finalization",
+                commit_receipt_output=(
+                    fixture.root / "substituted-finalization-commit.json"
+                ),
+            )
+
+        (candidate / "substituted").write_text("not in receipt\n")
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "candidate tree differs from finalization",
+        ):
+            EXECUTOR.create_final_tap_commit(
+                candidate_tap_root=candidate,
+                finalization_path=finalization,
+                live_tap_root=fixture.live,
+                output_ref="refs/heads/substituted-candidate",
+                commit_receipt_output=(
+                    fixture.root / "substituted-commit.json"
+                ),
+            )
+
+    def test_create_final_tap_commit_ref_race_and_receipt_failure(
+        self,
+    ) -> None:
+        fixture = FinalTapFixture()
+        self.addCleanup(fixture.close)
+        alpha, beta = fixture.complete_handoffs()
+        candidate = fixture.root / "race-commit-candidate"
+        finalization = fixture.root / "race-finalization.json"
+        fixture.prepare_final([alpha, beta], candidate, finalization)
+        output_ref = "refs/heads/raced-final-prefix"
+        original_run_git = EXECUTOR.run_git
+        injected = False
+
+        def race_ref(
+            root: pathlib.Path,
+            arguments: list[str],
+            label: str,
+            **keywords: Any,
+        ) -> bytes:
+            nonlocal injected
+            if label == "new final tap output ref" and not injected:
+                injected = True
+                subprocess.run(
+                    [
+                        "git",
+                        "update-ref",
+                        output_ref,
+                        fixture.live_commit,
+                        "0" * 40,
+                    ],
+                    cwd=fixture.live,
+                    check=True,
+                )
+            return original_run_git(root, arguments, label, **keywords)
+
+        with mock.patch.object(EXECUTOR, "run_git", side_effect=race_ref):
+            with self.assertRaisesRegex(
+                EXECUTOR.ExecutorError,
+                "cannot read new final tap output ref",
+            ):
+                EXECUTOR.create_final_tap_commit(
+                    candidate_tap_root=candidate,
+                    finalization_path=finalization,
+                    live_tap_root=fixture.live,
+                    output_ref=output_ref,
+                    commit_receipt_output=fixture.root / "race-receipt.json",
+                )
+        self.assertEqual(
+            subprocess.check_output(
+                ["git", "rev-parse", output_ref],
+                cwd=fixture.live,
+                text=True,
+            ).strip(),
+            fixture.live_commit,
+        )
+
+        rollback_ref = "refs/heads/rollback-final-prefix"
+        rollback_receipt = fixture.root / "rollback-commit-receipt.json"
+        with mock.patch.object(
+            EXECUTOR.os,
+            "link",
+            side_effect=OSError("injected receipt failure"),
+        ):
+            with self.assertRaisesRegex(OSError, "receipt failure"):
+                EXECUTOR.create_final_tap_commit(
+                    candidate_tap_root=candidate,
+                    finalization_path=finalization,
+                    live_tap_root=fixture.live,
+                    output_ref=rollback_ref,
+                    commit_receipt_output=rollback_receipt,
+                )
+        self.assertNotEqual(
+            subprocess.run(
+                ["git", "show-ref", "--verify", "--quiet", rollback_ref],
+                cwd=fixture.live,
+            ).returncode,
+            0,
+        )
+        self.assertFalse(rollback_receipt.exists())
 
     def test_closed_selection_ignores_unrelated_missing_formula(
         self,
