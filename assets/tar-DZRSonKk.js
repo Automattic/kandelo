@@ -1,0 +1,242 @@
+import { t as e } from "./browser-D__Im-ft.js";
+const t = 512, n = new TextDecoder("utf-8", {
+	fatal: !0,
+	ignoreBOM: !0
+}), r = new TextEncoder(), o = function() {
+	const e = new Uint32Array(256);
+	for (let t = 0; t < e.length; t += 1) {
+		let n = t;
+		for (let e = 0; e < 8; e += 1) n = n >>> 1 ^ (1 & n ? 3988292384 : 0);
+		e[t] = n >>> 0;
+	}
+	return e;
+}(), i = Object.freeze({
+	maxCompressedBytes: 268435456,
+	maxUncompressedBytes: 536870912,
+	maxEntries: 1e5,
+	maxPathBytes: 4096,
+	maxLinkBytes: 65536
+});
+var s = class extends Error {
+	constructor(e) {
+		super(e), this.name = "TarParseError";
+	}
+};
+function a(n, r = {}) {
+	const a = r.label ?? "TAR gzip archive", p = function(e, t) {
+		const n = {
+			...i,
+			...e
+		};
+		for (const [r, o] of Object.entries(n)) if (!Number.isSafeInteger(o) || o <= 0) throw new s(`${t}: ${r} must be a positive safe integer`);
+		return n;
+	}(r.limits, a);
+	if (0 === n.byteLength || n.byteLength > p.maxCompressedBytes) throw new s(`${a}: compressed byte count ${n.byteLength} is outside 1..${p.maxCompressedBytes}`);
+	const x = function(e, t) {
+		if (e.byteLength < 18 || 31 !== e[0] || 139 !== e[1] || 8 !== e[2]) throw new s(`${t}: invalid gzip header`);
+		return new DataView(e.buffer, e.byteOffset, e.byteLength).getUint32(e.byteLength - 4, !0);
+	}(n, a);
+	if (0 === x || x > p.maxUncompressedBytes) throw new s(`${a}: declared uncompressed byte count ${x} is outside 1..${p.maxUncompressedBytes}`);
+	const A = function(t, n, r) {
+		const o = new Uint8Array(r);
+		let i = 0, a = !1;
+		const c = new e((e) => {
+			if (e.byteLength > r - i) throw new s(`${n}: gzip expansion exceeds its declared ${r} bytes`);
+			o.set(e, i), i += e.byteLength;
+		});
+		c.onmember = () => {
+			throw a = !0, new s(`${n}: concatenated gzip members are unsupported`);
+		};
+		try {
+			c.push(t, !0);
+		} catch (h) {
+			if (h instanceof s) throw h;
+			throw new s(`${n}: cannot gunzip archive: ${function(e) {
+				return e instanceof Error ? e.message : String(e);
+			}(h)}`);
+		}
+		if (a) throw new s(`${n}: concatenated gzip members are unsupported`);
+		return o.subarray(0, i);
+	}(n, a, x);
+	if (A.byteLength !== x) throw new s(`${a}: gzip expanded to ${A.byteLength} bytes, expected ${x}`);
+	const L = new DataView(n.buffer, n.byteOffset, n.byteLength).getUint32(n.byteLength - 8, !0);
+	if (function(e) {
+		let t = 4294967295;
+		for (const n of e) t = o[255 & (t ^ n)] ^ t >>> 8;
+		return (4294967295 ^ t) >>> 0;
+	}(A) !== L) throw new s(`${a}: gzip CRC32 mismatch`);
+	return function(e, n, r) {
+		if (e.byteLength % t !== 0) throw new s(`${n}: TAR byte count is not block-aligned`);
+		const o = [];
+		let i = 0, a = 0, p = 0, x = null, A = {}, L = !1;
+		for (; i + t <= e.byteLength;) {
+			const k = e.subarray(i, i + t);
+			if (i += t, g(k)) {
+				if (i + t > e.byteLength) throw new s(`${n}: TAR end marker is truncated`);
+				if (!g(e.subarray(i, i + t))) throw new s(`${n}: TAR has only one zero end block`);
+				if (i += t, !g(e.subarray(i))) throw new s(`${n}: TAR has nonzero data after its end marker`);
+				L = !0;
+				break;
+			}
+			w(k, n);
+			const T = l(k, 156, 1, n) || "0", R = $(k, 124, 12, `${n}: TAR entry size`), v = 4095 & $(k, 100, 8, `${n}: TAR entry mode`), z = d(k, n, r.maxPathBytes), P = l(k, 157, 100, n);
+			if ("x" === T || "g" === T) {
+				if (p += 1, p > r.maxEntries + 1) throw new s(`${n}: TAR extension header count exceeds ${r.maxEntries + 1}`);
+				const t = c(e, i, R, n);
+				i = h(i, R, e.byteLength, n);
+				const o = f(t, n, r);
+				"x" === T ? x = o : A = {
+					...A,
+					...o
+				};
+				continue;
+			}
+			if (a += 1, a > r.maxEntries) throw new s(`${n}: TAR entry count exceeds ${r.maxEntries}`);
+			const B = {
+				...A,
+				...x ?? {}
+			};
+			x = null;
+			const N = void 0 === B.size ? R : u(B.size, `${n}: PAX entry size`), X = c(e, i, N, n);
+			i = h(i, N, e.byteLength, n);
+			const O = y(B.path ?? z, n, r.maxPathBytes), S = B.linkpath ?? P;
+			switch (T) {
+				case "0":
+				case "\0":
+					o.push({
+						path: O,
+						type: "file",
+						mode: v,
+						data: X
+					});
+					break;
+				case "5":
+					b(N, n, "directory", O), o.push({
+						path: O,
+						type: "directory",
+						mode: v
+					});
+					break;
+				case "2":
+					b(N, n, "symlink", O), m(S, n, O, r.maxLinkBytes, !1), o.push({
+						path: O,
+						type: "symlink",
+						mode: v,
+						linkName: S
+					});
+					break;
+				case "1":
+					b(N, n, "hardlink", O), m(S, n, O, r.maxLinkBytes, !0), o.push({
+						path: O,
+						type: "hardlink",
+						mode: v,
+						linkName: y(S, `${n}: hardlink target`, r.maxPathBytes)
+					});
+					break;
+				case "3":
+				case "4":
+				case "6": throw new s(`${n}: unsupported TAR device/FIFO entry ${O}`);
+				default: throw new s(`${n}: unsupported TAR entry type ${JSON.stringify(T)} for ${O}`);
+			}
+		}
+		if (!L) throw new s(`${n}: TAR is missing its two-block end marker`);
+		if (null !== x) throw new s(`${n}: local PAX header has no following entry`);
+		return o;
+	}(A, a, p);
+}
+function c(e, t, n, r) {
+	if (n > e.byteLength - t) throw new s(`${r}: TAR entry is truncated`);
+	return e.subarray(t, t + n);
+}
+function h(e, n, r, o) {
+	const i = Math.ceil(n / t) * t;
+	if (!Number.isSafeInteger(i) || i > r - e) throw new s(`${o}: TAR entry padding is truncated`);
+	return e + i;
+}
+function f(e, t, n) {
+	const r = {};
+	let o = 0;
+	for (; o < e.byteLength;) {
+		let i = o;
+		for (; i < e.byteLength && 32 !== e[i];) i += 1;
+		if (i === o || i === e.byteLength) throw new s(`${t}: invalid PAX record length`);
+		let a = 0;
+		for (let n = o; n < i; n += 1) {
+			const r = e[n] - 48;
+			if (r < 0 || r > 9) throw new s(`${t}: invalid PAX record length`);
+			if (a = 10 * a + r, !Number.isSafeInteger(a)) throw new s(`${t}: invalid PAX record length`);
+		}
+		const c = o + a;
+		if (a <= i - o + 2 || c > e.byteLength || 10 !== e[c - 1]) throw new s(`${t}: truncated PAX record`);
+		let h = i + 1;
+		for (; h < c - 1 && 61 !== e[h];) h += 1;
+		if (h === i + 1 || h >= c - 1) throw new s(`${t}: invalid PAX record`);
+		const f = e.subarray(i + 1, h);
+		if (f.byteLength > 256) throw new s(`${t}: PAX record key is too long`);
+		const u = p(f, `${t}: PAX record key`), w = e.subarray(h + 1, c - 1), d = "path" === u ? n.maxPathBytes : "linkpath" === u ? n.maxLinkBytes : "size" === u ? 32 : 0;
+		if (0 !== d) {
+			if (w.byteLength > d) throw new s(`${t}: PAX ${u} value is too long`);
+			r[u] = p(w, `${t}: PAX record value`), o = c;
+		} else o = c;
+	}
+	return r;
+}
+function u(e, t) {
+	if (!/^(0|[1-9][0-9]*)$/.test(e)) throw new s(`${t} is invalid`);
+	const n = Number(e);
+	if (!Number.isSafeInteger(n) || n < 0) throw new s(`${t} is invalid`);
+	return n;
+}
+function w(e, t) {
+	const n = $(e, 148, 8, `${t}: TAR checksum`);
+	let r = 0;
+	for (let o = 0; o < e.byteLength; o += 1) r += o >= 148 && o < 156 ? 32 : e[o];
+	if (n !== r) throw new s(`${t}: TAR checksum mismatch`);
+}
+function d(e, t, n) {
+	const r = l(e, 0, 100, t), o = l(e, 345, 155, t);
+	return y(o ? `${o}/${r}` : r, t, n);
+}
+function y(e, t, n) {
+	let o = e;
+	for (; o.startsWith("./");) o = o.slice(2);
+	return o = o.replace(/\/+$/g, ""), function(e, t, n) {
+		if (0 === e.length || e.startsWith("/") || e.includes("\0") || e.includes("\\") || r.encode(e).byteLength > n) throw new s(`${t} ${JSON.stringify(e)} must be a bounded relative POSIX path`);
+		for (const r of e.split("/")) if (0 === r.length || "." === r || ".." === r) throw new s(`${t} ${JSON.stringify(e)} contains an unsafe path segment`);
+	}(o, `${t}: TAR path`, n), o;
+}
+function l(e, t, n, r) {
+	let o = t;
+	const i = t + n;
+	for (; o < i && 0 !== e[o];) o += 1;
+	return o === t ? "" : p(e.subarray(t, o), `${r}: TAR string field`);
+}
+function $(e, t, n, r) {
+	if (128 & e[t]) throw new s(`${r}: base-256 TAR numbers are not supported`);
+	const o = l(e, t, n, r).trim();
+	if (0 === o.length) return 0;
+	if (!/^[0-7]+$/.test(o)) throw new s(`${r}: invalid octal number`);
+	const i = Number.parseInt(o, 8);
+	if (!Number.isSafeInteger(i) || i < 0) throw new s(`${r}: invalid TAR number`);
+	return i;
+}
+function b(e, t, n, r) {
+	if (0 !== e) throw new s(`${t}: ${n} ${r} has nonzero payload size ${e}`);
+}
+function m(e, t, n, o, i) {
+	const a = r.encode(e).byteLength;
+	if (0 === a || a > o || e.includes("\0")) throw new s(`${t}: link target for ${n} is invalid`);
+	if (i && e.includes("\\")) throw new s(`${t}: hardlink target for ${n} is invalid`);
+}
+function g(e) {
+	for (const t of e) if (0 !== t) return !1;
+	return !0;
+}
+function p(e, t) {
+	try {
+		return n.decode(e);
+	} catch {
+		throw new s(`${t} contains non-UTF-8 text`);
+	}
+}
+export { a as parseTarGzip };

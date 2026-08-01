@@ -1,0 +1,1 @@
+import{n as r,t as e}from"./kandelo-kernel-BFegwexW.js";var o={kernelWasm:e,rootfsVfs:r};export{o as browserKernelDefaultArtifactUrls};
