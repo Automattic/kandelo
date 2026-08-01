@@ -29,7 +29,7 @@ trap cleanup EXIT
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-ghcr-upload.sh --layout <oci-layout> --layout-receipt <json> --tap-repository <owner/repo> [--tap-name <owner/name>] --formula <name> --out-json <json> [--exact-kandelo-main-sha <sha> | --kandelo-main-contains-sha <sha>] [--target-main-contains-sha <sha>] [--auth-mode <automatic|github-token|pat>] [--require-pat <true|false>] [--registry-user <login>] [--destination-mode <repository|repository-canary>] [--dry-run]
+usage: scripts/homebrew-ghcr-upload.sh --layout <oci-layout> --layout-receipt <json> --tap-repository <owner/repo> [--tap-name <owner/name>] --formula <name> --out-json <json> [--exact-kandelo-main-sha <sha> | --kandelo-main-contains-sha <sha>] [--target-main-contains-sha <sha>] [--auth-mode <automatic|github-token|pat>] [--require-pat <true|false>] [--registry-user <login>] [--destination-mode <repository|repository-canary|repository-bootstrap>] [--dry-run]
 
 Validates an explicit local OCI layout, preflights the destination reference,
 and uses ORAS only to copy that immutable layout to the exact tap-repository
@@ -44,6 +44,11 @@ while credentials are present.
 It keeps the canonical Homebrew identity in the immutable layout but transports
 one child to the exact tap-repository namespace. The mode requires GITHUB_TOKEN
 authentication, an absent destination package, and anonymous digest readback.
+
+--destination-mode repository-bootstrap applies the same strict first-package
+absence test to a reviewed prefix campaign. An exact child that is already
+public resumes without credentials; every other existing or ambiguous
+destination fails closed.
 EOF
 }
 
@@ -204,6 +209,20 @@ validate_auth_contract() {
         exit 2
       fi
       ;;
+    repository-bootstrap)
+      if [ "$AUTH_MODE" != github-token ] || [ "$REQUIRE_PAT" != false ]; then
+        echo "homebrew-ghcr-upload.sh: repository bootstrap requires GitHub-token authentication" >&2
+        exit 2
+      fi
+      if [ "$DRY_RUN" = 1 ] || [ "$KIND" != child ]; then
+        echo "homebrew-ghcr-upload.sh: repository bootstrap requires a write-mode child upload" >&2
+        exit 2
+      fi
+      if [ "$NORMALIZED_TAP_REPOSITORY" != kandelo-dev/homebrew-tap-core ]; then
+        echo "homebrew-ghcr-upload.sh: repository bootstrap is restricted to the protected Kandelo tap" >&2
+        exit 2
+      fi
+      ;;
     *)
       echo "homebrew-ghcr-upload.sh: GHCR destination mode is invalid" >&2
       exit 2
@@ -249,7 +268,9 @@ validate_auth_contract
 
 case "$DESTINATION_MODE" in
   repository) REMOTE="ghcr.io/${NORMALIZED_TAP_REPOSITORY}/${FORMULA}" ;;
-  repository-canary) REMOTE="ghcr.io/${NORMALIZED_TAP_REPOSITORY}/${FORMULA}" ;;
+  repository-canary|repository-bootstrap)
+    REMOTE="ghcr.io/${NORMALIZED_TAP_REPOSITORY}/${FORMULA}"
+    ;;
 esac
 
 WORK_DIR="$(mktemp -d "$auth_parent/kandelo-homebrew-preflight.XXXXXX")"
@@ -369,6 +390,31 @@ if [ "$DESTINATION_MODE" = repository-canary ]; then
   # anonymous result so the ordinary immutable child upload path runs once.
   remote_status=missing
   REMOTE_DIGEST=null
+elif [ "$DESTINATION_MODE" = repository-bootstrap ]; then
+  if [ "$remote_status" = present ]; then
+    [ "$REMOTE_DIGEST" = "$EXPECTED_DIGEST" ] || {
+      echo "homebrew-ghcr-upload.sh: repository bootstrap found a different public child digest" >&2
+      exit 1
+    }
+    # WHY: a completed prior attempt needs no package credentials or write.
+    # The anonymous exact-digest proof is the entire resumption authority.
+  else
+    ensure_authenticated_config
+    authenticated_fetch bootstrap-preflight
+    [ "$remote_status" = missing ] || {
+      echo "homebrew-ghcr-upload.sh: repository bootstrap found an existing private reference" >&2
+      exit 1
+    }
+    authenticated_repository_fetch bootstrap-preflight
+    [ "$repository_status" = missing ] || {
+      echo "homebrew-ghcr-upload.sh: repository bootstrap requires an absent destination package" >&2
+      exit 1
+    }
+    # A missing package necessarily has no destination tag. Normalize the
+    # anonymous challenge or missing result so exactly one child can be sent.
+    remote_status=missing
+    REMOTE_DIGEST=null
+  fi
 elif [ "$remote_status" = auth-required ] && [ "$DRY_RUN" != 1 ]; then
   authenticated_fetch preflight
   if [ "$remote_status" = present ]; then
@@ -481,6 +527,11 @@ fi
 
 if [ "$DESTINATION_MODE" = repository-canary ] && [ "$status" != uploaded ]; then
   echo "homebrew-ghcr-upload.sh: repository canary did not create a new package" >&2
+  exit 1
+fi
+if [ "$DESTINATION_MODE" = repository-bootstrap ] &&
+   [ "$status" != uploaded ] && [ "$status" != already-present ]; then
+  echo "homebrew-ghcr-upload.sh: repository bootstrap did not prove one public child" >&2
   exit 1
 fi
 

@@ -636,6 +636,9 @@ def prepare(
             fail("campaign tag differs from the fetched campaign")
         if formula not in index:
             fail(f"Formula {formula} is outside the campaign")
+        admission_kind = index[formula]["destination"]["admission"][
+            "kind"
+        ]
         materialized, source_materialization = (
             CAMPAIGN.candidate_source_snapshot(
                 CAMPAIGN.git_authority(
@@ -815,6 +818,10 @@ def prepare(
                 )
         if github_output is not None:
             with github_output.open("a", encoding="utf-8") as output:
+                output.write(
+                    "prefix-campaign-destination-admission-kind="
+                    f"{admission_kind}\n"
+                )
                 output.write(
                     "prefix-campaign-layout-sha256="
                     f"{guest_layout['sha256']}\n"

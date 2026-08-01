@@ -5,6 +5,7 @@ on:
     paths:
       - .github/workflows/homebrew-native-publisher-compatibility.yml
       - .github/workflows/reusable-homebrew-bottle-publish.yml
+      - .github/workflows/reusable-homebrew-prefix-first-child-publish.yml
       - flake.lock
       - flake.nix
       - homebrew/**

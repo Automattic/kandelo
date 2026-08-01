@@ -97,10 +97,11 @@ architecture-bound content tag.
 The preserved schema-1 `rootfs-wasm32` generation is a narrower migration
 bridge. It supplies the fixed wasm32 Formula build/test runtime packages; the
 workflow builds the current-main sysroot and SDK separately, and the generation
-does not contain the target Formula's output bottle. This lane accepts only
-write publication, exactly `wasm32`, and no dependency-bearing VFS acceptance.
-Dry runs are rejected until the exact public generation can be materialized
-without exposing a repository token to branch-selected source.
+does not contain the target Formula's output bottle. This lane accepts exactly
+`wasm32` and no dependency-bearing VFS acceptance. Ordinary dry runs are
+rejected. The one exception is the prefix campaign's first-package bootstrap
+phase: it uses exact protected-history commits, an exact public generation,
+and sealed campaign authority rather than branch-selected source.
 
 After cache-key planning removes already-current bottles, the publisher parses
 only the Formulae that will actually build. The static parser runs with the
@@ -1797,7 +1798,7 @@ protected `main` branch may select it. Each call must:
 
 - publish exactly one Formula;
 - publish exactly one architecture;
-- use write mode and a forced rebuild;
+- use a forced rebuild;
 - set `defer-tap-finalization: true`;
 - disable ordinary VFS acceptance; and
 - provide one content-addressed campaign tag plus the exact, canonical
@@ -1805,6 +1806,55 @@ protected `main` branch may select it. Each call must:
 
 Ordinary, maintenance, dry-run, and third-party workflow names cannot
 pass campaign authority or defer tap finalization.
+
+Most campaign calls use write mode. A Formula whose destination was
+anonymously proven absent follows that ordinary path. A newly reviewed
+Formula may instead carry the exact destination admission
+`first-package-namespace-bootstrap-required`. That admission is valid only
+when the anonymous probe returned `auth-required` and every variant is a
+reviewed new entrant requiring a build. An existing, reused, or ordinary
+Formula cannot opt into this lane.
+
+The bootstrap lane has four phases:
+
+1. The ordinary reusable publisher runs once in dry-run mode. It builds and
+   validates the exact bottle but performs no package write.
+2. The first-child reusable validates the campaign admission, strict build
+   handoff, and deterministic OCI child. It may publish only that child.
+3. The ordinary publisher runs again in write mode. It creates or verifies
+   the normal version index, runs the normal runtime checks, and emits the
+   normal publication handoff.
+4. The tap controller seals only the ordinary handoff. The bootstrap-only
+   evidence never substitutes for Formula finalization.
+
+All Actions artifacts produced by phase 1 use the fixed prefix
+`prefix-campaign-bootstrap-dry-run-`. The caller cannot choose this prefix.
+The later write run uses the original artifact names in the same workflow
+run, so the two invocations cannot collide or cause the tap controller to
+download bootstrap evidence as a normal handoff.
+
+The first-child reusable is:
+
+```text
+.github/workflows/reusable-homebrew-prefix-first-child-publish.yml
+```
+
+It uses the same Formula-scoped GHCR concurrency group as normal child,
+index, canary, and maintenance writers. Before credentials can reach ORAS,
+it binds both prefixed artifacts to the current workflow run, re-materializes
+the sealed campaign source, and validates the build handoff and OCI child
+against the exact Kandelo commit, tap commit, Formula, architecture, ABI,
+bottle bytes, and campaign guest-layout digest.
+
+The destination preflight has only two successful outcomes. If the exact
+child digest is already anonymously public, the workflow resumes read-only:
+it does not log in or copy bytes. Otherwise, authenticated inspection must
+prove both the selected child reference and the whole package repository are
+absent immediately before the single child upload. A different public digest,
+an existing private reference or package, an ambiguous transport response,
+or a private post-upload result fails closed. This reusable never publishes
+an index, edits a Formula, generates sidecars, emits the normal publication
+handoff, or finalizes the tap.
 
 The campaign keeps public source identity separate from local execution
 identity:
@@ -2163,7 +2213,9 @@ Formula, dirty or different tap checkout, fixed-identity mismatch, malformed
 old index, or ordinary non-forced run still fails; a finalized bottle with
 changed bytes requires a new Formula bottle `rebuild`.
 
-The original repository-namespace visibility canary was a separate, one-shot
+#### Legacy one-shot visibility canary
+
+The original repository-namespace visibility canary is a separate, one-shot
 transport path used to select the production bottle-root contract. Its exact
 reviewed caller on `Kandelo-dev/homebrew-tap-core@main` received only the caller
 repository's `github.token` and passed no package PAT secret. It downloaded the
@@ -2177,7 +2229,7 @@ private packages. Normal publication therefore uses the exact
 repository-rooted namespace and the scoped `github.token`; no visibility
 mutation or PAT is part of the production path.
 
-The same reusable workflow now exposes a bounded first-child publication API
+That legacy reusable workflow exposes a bounded first-child publication API
 for a real Formula whose repository-rooted package does not yet exist. This is
 not a marker upload and is not a weaker mode of campaign admission. The
 protected tap caller fixes the Formula and architecture, then passes one exact
@@ -2214,7 +2266,7 @@ the first-publication proof and must be excluded operationally; anonymous
 exact-digest readback still proves the child bytes that became public, not
 exclusive authorship against an external race.
 
-First-child publication deliberately stops after that immutable child upload.
+Legacy canary publication deliberately stops after that immutable child upload.
 It does not publish the mutable version index, edit Formulae, generate
 sidecars, finalize tap state, or constitute post-publication acceptance. Once
 the package exists, replay of this path must fail; the normal publisher must
