@@ -673,6 +673,30 @@ preflight → toolchain-cache → matrix-build → test-gate → merge-gate
   remaining-runtime shards. Browser-local assets are generated in the browser
   consumer from the already-materialized package tree, without fetching the
   index a second time.
+
+After `test-gate` seals a PR release, the exact Homebrew shell consumer
+uses a different, lazy composition contract. A PR release is expected to
+contain only the package rows selected by that attempt; it does not copy
+every unchanged canonical archive. The caller passes that exact selected
+matrix to the consumer. The consumer re-derives the complete expected
+ledger from the reviewed checkout, rejects duplicate, unknown, or
+identity-mismatched matrix rows, and partitions the ledger into two
+disjoint authorities:
+
+- selected rows must exist in the exact immutable PR release and are
+  fully downloaded and manifest-validated before use;
+- every unchanged row must be an exact current success in the canonical
+  ABI release.
+
+The typed composer binds both validation snapshots and release tags. It
+rejects fallback or failure state on successful rows, prunes packages
+and architectures outside the expected ledger, and writes one local
+index.
+Each archive URL still names its independently verified source release.
+This keeps archive retrieval lazy: the shell proof downloads only the
+packages it actually resolves, while a missing selected PR row fails
+instead of silently using an older canonical archive.
+
 - **merge-gate** posts `merge-gate=success` on the PR's HEAD SHA
   once test-gate passes. No bot-PR amend step exists anymore — the
   ledger on the release IS the consumer-visible state, so there's

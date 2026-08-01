@@ -219,6 +219,11 @@ check_ordered_staging_shell_contract() {
     "$workflow")"
 
   grep -Fq 'ready_for_review' "$workflow" &&
+    grep -Fq \
+      'staged_matrix: ${{ steps.compute.outputs.staged_matrix }}' \
+      "$workflow" &&
+    grep -Fq 'echo "staged_matrix=$staged_matrix" >> "$GITHUB_OUTPUT"' \
+      "$workflow" &&
     grep -Fq 'package-release-lifecycle.sh seal-publish' \
       <<<"$test_gate" &&
     grep -Fq -- \
@@ -244,6 +249,7 @@ check_ordered_staging_shell_contract() {
       "staging_required: \${{ needs.change-scope.outputs.package_staging_required == 'true' }}" \
       <<<"$proof" &&
     grep -Fq 'needs.preflight.outputs.target_tag' <<<"$proof" &&
+    grep -Fq 'needs.preflight.outputs.staged_matrix' <<<"$proof" &&
     grep -Fq 'name: exact current lazy shell (Node + Chromium)' \
       <<<"$gate" &&
     grep -Fq 'if: |' <<<"$gate" &&
@@ -277,6 +283,31 @@ check_required_staging_verifier_contract() {
     grep -Fq -- '--title "$target_tag" \' <<<"$generation" &&
     grep -Fq -- '--body-file "$release_body" \' <<<"$generation" &&
     grep -Fq -- '--prerelease true' <<<"$generation" &&
+    grep -Fq "printf '%s\\n' \"\$STAGED_MATRIX\"" <<<"$generation" &&
+    grep -Fq 'split-staging-package-ledger.sh \' <<<"$generation" &&
+    grep -Fq -- '--selected-matrix "$SELECTED_MATRIX" \' \
+      <<<"$generation" &&
+    grep -Fq -- '--selected-output "$TARGET_EXPECTED" \' \
+      <<<"$generation" &&
+    grep -Fq -- '--complement-output "$CANONICAL_EXPECTED"' \
+      <<<"$generation" &&
+    grep -Fq -- '--expected-ledger "$TARGET_EXPECTED" \' \
+      <<<"$generation" &&
+    grep -Fq -- '--materialize \' <<<"$generation" &&
+    [ "$(grep -Fc -- '--materialize \' <<<"$generation")" -eq 1 ] &&
+    grep -Fq -- '--expected-ledger "$CANONICAL_EXPECTED" \' \
+      <<<"$generation" &&
+    grep -Fq '"$xtask" staging-reuse compose \' <<<"$generation" &&
+    grep -Fq -- '--base-snapshot "$base_snapshot" \' \
+      <<<"$generation" &&
+    grep -Fq -- '--overlay-snapshot "$TARGET_SNAPSHOT/snapshot.json" \' \
+      <<<"$generation" &&
+    grep -Fq -- '--complete-expected-ledger "$EXPECTED" \' \
+      <<<"$generation" &&
+    grep -Fq -- '-u HOMEBREW_DOCKER_REGISTRY_TOKEN \' \
+      <<<"$generation" &&
+    grep -Fq -- '-u ACTIONS_RUNTIME_TOKEN \' <<<"$generation" &&
+    grep -Fq 'selected_url="file://${frozen_index}"' <<<"$generation" &&
     grep -Fq 'case "$STAGING_REQUIRED" in' <<<"$generation" &&
     grep -Fq \
       'echo "::error::non-staging call supplied release authority"' \
@@ -299,6 +330,9 @@ command -v python3 >/dev/null 2>&1 || fail "python3 is required"
 
 bash "$REPO_ROOT/.github/scripts/test-homebrew-main-shell-change-scope.sh" ||
   fail "main-shell change-scope contract tests failed"
+
+bash "$REPO_ROOT/.github/scripts/test-split-staging-package-ledger.sh" ||
+  fail "staging package-ledger partition tests failed"
 
 python3 "$FINALIZER_TEST" ||
   fail "main-shell release finalizer contract tests failed"
@@ -344,7 +378,8 @@ for workflow_input in \
   pull_request_base_sha \
   pull_request_head_sha \
   staging_required \
-  staging_tag
+  staging_tag \
+  staged_matrix
 do
   grep -Fq "      $workflow_input:" <<<"$main_shell_trigger_block" ||
     fail "main-shell workflow_call omits $workflow_input"
@@ -372,6 +407,10 @@ sed '/pull_request_head_sha:/d' "$STAGING_WORKFLOW" \
   >"$TMP_ROOT/staging-shell-no-explicit-head.yml"
 expect_ordered_staging_shell_contract_rejected \
   "$TMP_ROOT/staging-shell-no-explicit-head.yml"
+sed '/staged_matrix:/d' "$STAGING_WORKFLOW" \
+  >"$TMP_ROOT/staging-shell-no-exact-matrix.yml"
+expect_ordered_staging_shell_contract_rejected \
+  "$TMP_ROOT/staging-shell-no-exact-matrix.yml"
 sed '/\[ "$PROOF_RESULT" = success \]/d' "$STAGING_WORKFLOW" \
   >"$TMP_ROOT/staging-shell-aggregate-drops-proof.yml"
 expect_ordered_staging_shell_contract_rejected \
@@ -383,6 +422,22 @@ sed '/verify-immutable \\/d' "$WORKFLOW" \
   >"$TMP_ROOT/main-shell-no-immutable-verifier.yml"
 expect_required_staging_verifier_contract_rejected \
   "$TMP_ROOT/main-shell-no-immutable-verifier.yml"
+sed '/split-staging-package-ledger.sh \\/d' "$WORKFLOW" \
+  >"$TMP_ROOT/main-shell-no-ledger-partition.yml"
+expect_required_staging_verifier_contract_rejected \
+  "$TMP_ROOT/main-shell-no-ledger-partition.yml"
+sed '/--materialize \\/d' "$WORKFLOW" \
+  >"$TMP_ROOT/main-shell-no-selected-archive-proof.yml"
+expect_required_staging_verifier_contract_rejected \
+  "$TMP_ROOT/main-shell-no-selected-archive-proof.yml"
+sed '/"$xtask" staging-reuse compose \\/d' "$WORKFLOW" \
+  >"$TMP_ROOT/main-shell-no-exact-union.yml"
+expect_required_staging_verifier_contract_rejected \
+  "$TMP_ROOT/main-shell-no-exact-union.yml"
+sed '/-u ACTIONS_RUNTIME_TOKEN \\/d' "$WORKFLOW" \
+  >"$TMP_ROOT/main-shell-compose-keeps-runtime-token.yml"
+expect_required_staging_verifier_contract_rejected \
+  "$TMP_ROOT/main-shell-compose-keeps-runtime-token.yml"
 
 setup_node_line="$(grep -n 'uses: actions/setup-node@' "$WORKFLOW" | cut -d: -f1 | head -1)"
 checker_line="$(grep -n 'node scripts/check-homebrew-main-shell-brewfile.mjs' "$WORKFLOW" | cut -d: -f1 | head -1)"
@@ -436,16 +491,24 @@ generation_block="$(sed -n \
 grep -Fq 'GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}' <<<"$generation_block" ||
   fail "package-generation validation needs only the workflow's read token"
 grep -Fq 'staging-reuse expected \' <<<"$generation_block" &&
+  grep -Fq 'split-staging-package-ledger.sh \' <<<"$generation_block" &&
   grep -Fq 'validate-staging-release.sh \' <<<"$generation_block" &&
-  grep -Fq -- '--mode current \' <<<"$generation_block" ||
-  fail "main-shell CI must accept only a complete current PR package generation"
-grep -Fq 'index-candidate seed \' <<<"$generation_block" &&
+  grep -Fq -- '--mode current \' <<<"$generation_block" &&
+  grep -Fq 'staging-reuse compose \' <<<"$generation_block" ||
+  fail "main-shell CI must compose exact staged rows with the canonical complement"
+grep -Fq -- '--complete-expected-ledger "$EXPECTED" \' \
+    <<<"$generation_block" &&
   grep -Fq 'selected_url="file://${frozen_index}"' <<<"$generation_block" ||
-  fail "main-shell CI must freeze the validated staging index locally"
+  fail "main-shell CI must freeze the exact disjoint release union locally"
 check_required_staging_verifier_contract "$WORKFLOW" ||
   fail "main-shell CI must require its exact sealed staging attempt"
 grep -Fq 'env -u GH_TOKEN -u GITHUB_TOKEN \' <<<"$generation_block" &&
-  grep -Fq -- '-u HOMEBREW_GITHUB_PACKAGES_TOKEN \' <<<"$generation_block" ||
+  grep -Fq -- '-u HOMEBREW_GITHUB_PACKAGES_TOKEN \' <<<"$generation_block" &&
+  grep -Fq -- '-u HOMEBREW_DOCKER_REGISTRY_TOKEN \' \
+    <<<"$generation_block" &&
+  grep -Fq -- '-u ACTIONS_ID_TOKEN_REQUEST_TOKEN \' \
+    <<<"$generation_block" &&
+  grep -Fq -- '-u ACTIONS_RUNTIME_TOKEN \' <<<"$generation_block" ||
   fail "local index freezing must run without GitHub credentials"
 grep -Fq 'selected_url="$canonical_url"' <<<"$generation_block" &&
   grep -Fq '[ "$STAGING_TAG" = not-required ]' \

@@ -242,6 +242,12 @@ assert_matches package_publish_flow_changed_files \
   ".github/scripts/compose-staging-release-snapshots.sh" \
   ".github/scripts/compose-staging-release-snapshots.sh"
 assert_matches package_publish_flow_changed_files \
+  ".github/scripts/split-staging-package-ledger.sh" \
+  ".github/scripts/split-staging-package-ledger.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/test-split-staging-package-ledger.sh" \
+  ".github/scripts/test-split-staging-package-ledger.sh"
+assert_matches package_publish_flow_changed_files \
   ".github/scripts/test-validate-staging-release.sh" \
   ".github/scripts/test-validate-staging-release.sh"
 assert_matches package_publish_flow_changed_files \
@@ -470,6 +476,12 @@ assert_matches ci_control_changed_files \
 assert_matches ci_control_changed_files \
   ".github/scripts/compose-staging-release-snapshots.sh" \
   ".github/scripts/compose-staging-release-snapshots.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/split-staging-package-ledger.sh" \
+  ".github/scripts/split-staging-package-ledger.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/test-split-staging-package-ledger.sh" \
+  ".github/scripts/test-split-staging-package-ledger.sh"
 assert_matches ci_control_changed_files \
   ".github/scripts/test-validate-staging-release.sh" \
   ".github/scripts/test-validate-staging-release.sh"

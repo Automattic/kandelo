@@ -157,6 +157,7 @@ jobs:
     outputs:
       library_matrix: ${{ steps.compute.outputs.library_matrix }}
       program_matrix: ${{ steps.compute.outputs.program_matrix }}
+      staged_matrix: ${{ steps.compute.outputs.staged_matrix }}
       repair_index: ${{ steps.compute.outputs.repair_index }}
       abi: ${{ steps.compute.outputs.abi }}
       target_tag: ${{ steps.compute.outputs.target_tag }}
@@ -257,6 +258,7 @@ jobs:
               echo "reuse_staging=false" >> "$GITHUB_OUTPUT"
               echo "library_matrix=[]" >> "$GITHUB_OUTPUT"
               echo "program_matrix=[]" >> "$GITHUB_OUTPUT"
+              echo "staged_matrix=[]" >> "$GITHUB_OUTPUT"
               echo "repair_index=false" >> "$GITHUB_OUTPUT"
               echo "preflight: package staging not required; skipping package drift matrix"
               exit 0
@@ -414,12 +416,64 @@ jobs:
               echo "preflight: package update jobs will repair $TARGET_TAG/index.toml metadata"
             fi
 
+            # WHY: build matrices say what this attempt must compile. The
+            # consumer needs the subtly different authority set: every row
+            # whose bytes must come from the exact sealed PR release. Reused
+            # releases can own rows without scheduling a new build.
+            case "$reuse_staging" in
+              false)
+                staged_matrix=$(jq -cn \
+                  --argjson libraries "$library_matrix" \
+                  --argjson programs "$program_matrix" \
+                  "\$libraries + \$programs")
+                ;;
+              target)
+                staged_matrix=$(jq -c "
+                  [.entries[] | {
+                    package,
+                    arch,
+                    sha: .cache_key_sha,
+                    version,
+                    revision
+                  }]
+                " "$expected_ledger")
+                ;;
+              union)
+                staged_matrix=$(jq -c --slurpfile snapshot \
+                  "$reuse_dir/snapshot.json" "
+                  [.entries[] as \$expected |
+                    select(any(\$snapshot[0].entries[];
+                      .package == \$expected.package and
+                      .arch == \$expected.arch and
+                      .current == true)) |
+                    \$expected | {
+                      package,
+                      arch,
+                      sha: .cache_key_sha,
+                      version,
+                      revision
+                    }]
+                " "$expected_ledger")
+                ;;
+              *)
+                echo "preflight: invalid staging reuse authority: $reuse_staging" >&2
+                exit 1
+                ;;
+            esac
+            staged_count=$(echo "$staged_matrix" | jq length)
+            if [ "$staged_count" -eq 0 ]; then
+              echo "preflight: staging requires at least one exact target-owned row" >&2
+              exit 1
+            fi
+
             echo "library_matrix=$library_matrix" >> "$GITHUB_OUTPUT"
             echo "program_matrix=$program_matrix" >> "$GITHUB_OUTPUT"
+            echo "staged_matrix=$staged_matrix" >> "$GITHUB_OUTPUT"
             echo "repair_index=$repair_index_output" >> "$GITHUB_OUTPUT"
-            echo "preflight: library=$library_count program=$program_count repair-index=$repair_index_output"
+            echo "preflight: library=$library_count program=$program_count staged=$staged_count repair-index=$repair_index_output"
             echo "library_matrix:"; echo "$library_matrix" | jq .
             echo "program_matrix:"; echo "$program_matrix" | jq .
+            echo "staged_matrix:"; echo "$staged_matrix" | jq .
           '
 
       - name: Post pending merge-gate status (instructs reviewer)
@@ -1396,6 +1450,7 @@ jobs:
       pull_request_head_sha: ${{ github.event.pull_request.head.sha }}
       staging_required: ${{ needs.change-scope.outputs.package_staging_required == 'true' }}
       staging_tag: ${{ needs.change-scope.outputs.package_staging_required == 'true' && needs.preflight.outputs.target_tag || 'not-required' }}
+      staged_matrix: ${{ needs.change-scope.outputs.package_staging_required == 'true' && needs.preflight.outputs.staged_matrix || '[]' }}
 
   homebrew-main-shell-gate:
     # Keep the historical required-check name on one aggregate. The reusable
