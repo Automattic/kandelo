@@ -2726,9 +2726,16 @@ image metadata. This is an exact-byte copy: callers that need a canonical
 configuration should track one JSON source rather than regenerate equivalent
 JSON in each image builder.
 
-### Temporary Exact-Main Source Bridge
+### Dormant Exact-Main Source Bridge
 
-During the ABI 42 activation window, required CI must not consume bottles built
+The source bridge described below was activation scaffolding. The canonical
+Homebrew shell CI now selects the bottled product, and the Pages publisher
+fetches only admitted canonical archives. The implementation remains
+temporarily for diagnosis and historical comparison, but no production
+workflow invokes it and it cannot satisfy the artifact-lock or public-mirror
+gates.
+
+During the ABI 42 activation window, required CI could not consume bottles built
 from a pull-request checkout and then call them main-built merely because that
 checkout later became an ancestor of `main`. Reachability is useful review
 evidence, but it is not producer provenance.
@@ -2783,8 +2790,9 @@ those new identities. The pull-request/rehearsal bottles remain test evidence
 only. The canonical shell stays on the strict bottle closure throughout; only
 the provisional CI lane uses the source bridge.
 
-The required `.github/workflows/homebrew-main-shell-ci.yml` gate follows the
-same activation boundary. While `SHELL_ACTIVATION_MODE` is `source-rootfs`, it
+The `.github/workflows/homebrew-main-shell-ci.yml` gate retains the historical
+branch needed to inspect this implementation. When
+`SHELL_ACTIVATION_MODE` is `source-rootfs`, it
 explicitly stages `homebrew/source-rootfs-shell-package`, uses an empty index
 and fresh cache, and force-source-builds every buildable node in the exact
 current shell closure. It inspects the resulting archive for the distinct
@@ -2797,12 +2805,12 @@ still use the separately verified package generation, but a before/after
 regular-file-and-symlink manifest proves they did not replace any exact-source
 shell closure bytes. The sealed Chromium
 proof executes eager Bash, rootfs-owned lazy `grep`, extended lazy `less`, and
-integrity-bound Vim and NetHack lazy archives. The Pages publisher builds the
-current sysroot and invokes the internal
-`./run.sh prepare-browser --source-rootfs-shell` lane with the exact event
+integrity-bound Vim and NetHack lazy archives. The former Pages publisher also
+built the current sysroot and invoked the internal
+`./run.sh prepare-browser --source-rootfs-shell` lane with an exact event
 repository and SHA, `pages-exact-main-v1` isolation attestation, exact empty
 current-ABI file index, fresh cache, and unmaterialized resolver workspace.
-This is workflow plumbing, not a supported direct developer mode.
+The current Pages workflow deliberately no longer provides that environment.
 
 The lane stages and inspects only the distinct bridge recipe before beginning
 canonical installation. Before any mutation it verifies the exact GitHub
@@ -2829,17 +2837,26 @@ runner loss can prevent cleanup, but cannot let later deployment steps consume
 that partial runner. Ordinary `prepare-browser` remains the independent
 bottle-backed path.
 
-Until the source bridge is retired, Pages intentionally runs for every `main`
-push without a path filter. Its transitive package closure and shared tool
-inputs can grow; filtering by a maintained list would allow a new build input
-to change without superseding the deployed product. The temporary Homebrew
-main-shell workflow also runs for every pull request and `main` push so its
-exact Node/Chromium source-product gate cannot be bypassed by the same
-allowlist drift.
+Pages intentionally continues to run for every `main` push without a path
+filter. The canonical browser package projection and shared inputs can grow;
+filtering by a maintained list would allow a new input to change without
+superseding the deployed product. The Homebrew main-shell workflow also runs
+for every pull request and `main` push so its exact closed-transport
+Node.js/Chromium product gate cannot be bypassed by the same allowlist drift.
 
-Pages then assembles the actual product tree and boots that sealed `/kandelo/`
-tree before deployment. The strict exact-main gate must remain on `bottles`;
-the source-rootfs bridge cannot stand in for the product artifact.
+Pages uses a fresh resolver cache and
+`./run.sh --fetch-only prepare-browser`. It verifies the selected shell against
+the sealed artifact lock, reads the embedded immutable mirror plan without
+eagerly downloading its payloads, and boots the assembled `/kandelo/` tree
+through the existing public-transport Chromium acceptance. Missing canonical
+archives, a missing public mirror, or any shell/bootstrap/plan identity drift
+stops deployment. The source-rootfs bridge cannot stand in for that product
+artifact and can be deleted in a later cleanup. The first cutover deliberately
+does not wait for the complete public lifecycle. Its Pages job is the
+publication gate: it must anonymously recover the canonical product, boot the
+exact assembled site in Chromium, keep `brew` deferred until first use, and run
+a real in-guest `brew` command. Tap/install/upgrade/remove/reboot and memory-soak
+coverage remain independent follow-up work.
 
 ### Strict Main-Shell Bottle Closure
 

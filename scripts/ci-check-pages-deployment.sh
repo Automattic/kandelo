@@ -28,7 +28,7 @@ grep -Fxq '  push:' <<<"$trigger_block" &&
   grep -Fxq '    branches: [main]' <<<"$trigger_block" ||
   fail "the complete Pages publisher must run for every main push"
 if grep -Eq '^[[:space:]]+(paths|paths-ignore):' <<<"$trigger_block"; then
-  fail "the source-building Pages publisher must not filter main pushes by path"
+  fail "the complete Pages publisher must not filter main pushes by path"
 fi
 
 step_block() {
@@ -104,7 +104,7 @@ checkout_block="$(step_block "$PAGES_WORKFLOW" "Check out the source commit")"
 grep -Eq 'uses: actions/checkout@[0-9a-f]{40}' <<<"$checkout_block" ||
   fail "the complete publisher must check out one pinned source commit"
 grep -Fq 'persist-credentials: false' <<<"$checkout_block" ||
-  fail "the source-building Pages checkout must not persist write credentials"
+  fail "the product-building Pages checkout must not persist write credentials"
 if grep -Eq '^[[:space:]]+ref:' <<<"$checkout_block"; then
   fail "the Pages checkout must use the workflow event source SHA"
 fi
@@ -116,21 +116,32 @@ checkout_count="$(
   fail "all Pages outputs must be built from one checkout"
 
 projection_line="$(step_line "Verify browser package projection is current")"
-sysroot_line="$(step_line "Build current wasm32 sysroot for source-built browser packages")"
+musl_line="$(
+  step_line "Fetch musl for repository-owned browser support programs"
+)"
+isolation_line="$(step_line "Isolate the canonical bottled browser product")"
 prepare_browser_line="$(step_line "Prepare browser demo assets")"
+shell_product_line="$(step_line "Bind the canonical bottled shell product")"
+browser_build_line="$(step_line "Build browser demos for GitHub Pages")"
 guide_build_line="$(step_line "Build user guide for the complete Pages tree")"
 api_build_line="$(step_line "Build API docs for the complete Pages tree")"
 assembly_line="$(step_line "Add documentation to the complete Pages tree")"
-sealed_boot_line="$(step_line "Boot the sealed Pages shell product in Chromium")"
+sealed_boot_line="$(step_line "Boot the canonical bottled Pages shell in Chromium")"
 size_line="$(step_line "Enforce the GitHub Pages published-site size limit")"
 freshness_line="$(step_line "Confirm this is the newest Pages run")"
 deploy_line="$(step_line "Deploy to gh-pages")"
 
-[ -n "$projection_line" ] && [ -n "$sysroot_line" ] &&
-  [ -n "$prepare_browser_line" ] &&
+[ -n "$musl_line" ] && [ -n "$projection_line" ] &&
+  [ -n "$isolation_line" ] &&
+  [ -n "$prepare_browser_line" ] && [ -n "$shell_product_line" ] &&
+  [ "$musl_line" -lt "$prepare_browser_line" ] &&
   [ "$projection_line" -lt "$prepare_browser_line" ] &&
-  [ "$projection_line" -lt "$sysroot_line" ] &&
-  [ "$sysroot_line" -lt "$prepare_browser_line" ] &&
+  [ "$projection_line" -lt "$isolation_line" ] &&
+  [ "$isolation_line" -lt "$prepare_browser_line" ] &&
+  [ "$prepare_browser_line" -lt "$shell_product_line" ] &&
+  [ -n "$browser_build_line" ] &&
+  [ "$shell_product_line" -lt "$browser_build_line" ] &&
+  [ "$browser_build_line" -lt "$guide_build_line" ] &&
   [ -n "$guide_build_line" ] && [ -n "$api_build_line" ] &&
   [ -n "$assembly_line" ] && [ -n "$sealed_boot_line" ] &&
   [ -n "$size_line" ] &&
@@ -143,6 +154,16 @@ deploy_line="$(step_line "Deploy to gh-pages")"
   [ "$freshness_line" -lt "$deploy_line" ] ||
   fail "one job must assemble and size-check the complete tree before its freshness check and deployment"
 
+musl_block="$(
+  step_block \
+    "$PAGES_WORKFLOW" \
+    "Fetch musl for repository-owned browser support programs"
+)"
+grep -Fxq '        uses: ./.github/actions/fetch-submodules' \
+  <<<"$musl_block" &&
+  grep -Fxq '          submodules: libc/musl' <<<"$musl_block" ||
+  fail "Pages must fetch musl for its repository-owned support programs"
+
 projection_block="$(
   step_block "$PAGES_WORKFLOW" "Verify browser package projection is current"
 )"
@@ -151,19 +172,16 @@ grep -Fq 'build-deps program-index-check' <<<"$projection_block" &&
     <<<"$projection_block" ||
   fail "the Pages publisher must verify the generated package projection before preparing assets"
 
-sysroot_block="$(
-  step_block "$PAGES_WORKFLOW" "Build current wasm32 sysroot for source-built browser packages"
-)"
-grep -Fq 'bash scripts/dev-shell.sh bash scripts/build-musl.sh' <<<"$sysroot_block" &&
-  grep -Fq 'test -f sysroot/lib/libc.a' <<<"$sysroot_block" ||
-  fail "the Pages publisher must build and verify the current source-fallback sysroot"
-
 isolation_block="$(
-  step_block "$PAGES_WORKFLOW" "Isolate the exact-main source package closure"
+  step_block "$PAGES_WORKFLOW" "Isolate the canonical bottled browser product"
 )"
-grep -Fq 'echo "WASM_POSIX_BINARY_CACHE_ROOT=$source_cache" >> "$GITHUB_ENV"' \
-  <<<"$isolation_block" ||
-  fail "the Pages publisher must establish one exact-main package-cache root"
+grep -Fq 'product_cache="$RUNNER_TEMP/pages-canonical-bottle-cache"' \
+  <<<"$isolation_block" &&
+  grep -Fq 'test ! -e "$product_cache"' <<<"$isolation_block" &&
+  grep -Fq \
+    'echo "WASM_POSIX_BINARY_CACHE_ROOT=$product_cache" >> "$GITHUB_ENV"' \
+    <<<"$isolation_block" ||
+  fail "the Pages publisher must establish one fresh canonical package cache"
 
 prepare_browser_block="$(
   step_block "$PAGES_WORKFLOW" "Prepare browser demo assets"
@@ -171,40 +189,85 @@ prepare_browser_block="$(
 grep -Fq 'bash scripts/dev-shell.sh env \' <<<"$prepare_browser_block" &&
   grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
     <<<"$prepare_browser_block" ||
-  fail "browser preparation must retain the exact-main cache root inside dev-shell"
-grep -Fq \
-  '"WASM_POSIX_SOURCE_ROOTFS_SHELL_ISOLATION=pages-exact-main-v1" \' \
-  <<<"$prepare_browser_block" &&
-  grep -Fq \
-  '"WASM_POSIX_SOURCE_ROOTFS_SHELL_RUNNER_ENVIRONMENT=${{ runner.environment }}" \' \
-  <<<"$prepare_browser_block" &&
-  grep -Fq \
-  '"WASM_POSIX_SOURCE_ROOTFS_SHELL_REPOSITORY=https://github.com/$GITHUB_REPOSITORY" \' \
-  <<<"$prepare_browser_block" &&
-  grep -Fq '"WASM_POSIX_SOURCE_ROOTFS_SHELL_COMMIT=$GITHUB_SHA" \' \
-    <<<"$prepare_browser_block" &&
-  grep -Fxq \
-    '            ./run.sh prepare-browser --source-rootfs-shell --allow-stale' \
-    <<<"$prepare_browser_block" ||
-  fail "browser preparation must select the source-rootfs recipe with exact event provenance"
+  fail "browser preparation must retain the canonical cache inside dev-shell"
+grep -Fxq '            ./run.sh --fetch-only prepare-browser' \
+  <<<"$prepare_browser_block" ||
+  fail "browser preparation must refuse source fallback"
 prepare_browser_last="$(
   awk 'NF { line = $0 } END { print line }' <<<"$prepare_browser_block"
 )"
 [ "$prepare_browser_last" = \
-    '            ./run.sh prepare-browser --source-rootfs-shell --allow-stale' ] ||
-  fail "source-rootfs preparation must be the final failure-propagating command in its step"
+    '            ./run.sh --fetch-only prepare-browser' ] ||
+  fail "canonical browser preparation must be the final failure-propagating command"
+if grep -Fq -- '--source-rootfs-shell' "$PAGES_WORKFLOW" ||
+   grep -Fq 'WASM_POSIX_SOURCE_ROOTFS_SHELL_' "$PAGES_WORKFLOW" ||
+   grep -Fq -- '--allow-stale' "$PAGES_WORKFLOW"; then
+  fail "the canonical Pages product must not activate the source bridge"
+fi
+
+shell_product_block="$(
+  step_block "$PAGES_WORKFLOW" "Bind the canonical bottled shell product"
+)"
+grep -Fq 'id: shell_product' <<<"$shell_product_block" &&
+  grep -Fq \
+    'image=$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)' \
+    <<<"$shell_product_block" &&
+  grep -Fq 'programs/homebrew-bootstrap/homebrew-bootstrap.zip)' \
+    <<<"$shell_product_block" &&
+  grep -Fq 'cmp "$image" apps/browser-demos/public/shell.vfs.zst' \
+    <<<"$shell_product_block" &&
+  grep -Fq 'scripts/verify-homebrew-main-shell-artifact-lock.sh' \
+    <<<"$shell_product_block" &&
+  grep -Fq 'scripts/inspect-homebrew-main-shell-public-product.ts' \
+    <<<"$shell_product_block" &&
+  grep -Fq 'homebrew/main-shell-brew-package-tree.json' \
+    <<<"$shell_product_block" &&
+  grep -Fq 'homebrew/main-shell-homebrew-runtime-support.json' \
+    <<<"$shell_product_block" &&
+  grep -Fq 'mirror_plan_url=$(jq -er' <<<"$shell_product_block" ||
+  fail "Pages must bind the canonical shell, bootstrap, and embedded mirror plan"
+grep -Fq 'npx tsx --test \' <<<"$shell_product_block" &&
+  grep -Fq 'scripts/inspect-homebrew-main-shell-public-product.test.ts' \
+    <<<"$shell_product_block" ||
+  fail "Pages must run the public-product inspector rejection tests"
+if grep -Fq 'recover-homebrew-bottle-mirror' <<<"$shell_product_block"; then
+  fail "Pages inspection must not eagerly download the complete bottle mirror"
+fi
 
 sealed_boot_block="$(
-  step_block "$PAGES_WORKFLOW" "Boot the sealed Pages shell product in Chromium"
+  step_block "$PAGES_WORKFLOW" "Boot the canonical bottled Pages shell in Chromium"
 )"
 grep -Fq 'VITE_BASE: /kandelo/' <<<"$sealed_boot_block" &&
+  grep -Fq 'KANDELO_BROWSER_DEMO_INPUTS: main' \
+    <<<"$sealed_boot_block" &&
+  grep -Fq 'KANDELO_HOMEBREW_MAIN_SHELL_STRICT: "1"' \
+    <<<"$sealed_boot_block" &&
+  grep -Fq \
+    'KANDELO_HOMEBREW_MAIN_SHELL_SHA256: ${{ steps.shell_product.outputs.image_sha256 }}' \
+    <<<"$sealed_boot_block" &&
+  grep -Fq \
+    'KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256: ${{ steps.shell_product.outputs.bootstrap_sha256 }}' \
+    <<<"$sealed_boot_block" &&
+  grep -Fq \
+    'KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES: ${{ steps.shell_product.outputs.bootstrap_bytes }}' \
+    <<<"$sealed_boot_block" &&
+  grep -Fq 'KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE: public' \
+    <<<"$sealed_boot_block" &&
+  grep -Fq \
+    'KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL: ${{ steps.shell_product.outputs.mirror_plan_url }}' \
+    <<<"$sealed_boot_block" &&
   grep -Fq 'KANDELO_PLAYWRIGHT_SERVE_DIST: "1"' <<<"$sealed_boot_block" &&
   grep -Fq 'KANDELO_TEST_BASE_URL: http://127.0.0.1:5401/kandelo/' \
     <<<"$sealed_boot_block" &&
+  grep -Fq \
+    'cmp dist/shell.vfs.zst "${{ steps.shell_product.outputs.image }}"' \
+    <<<"$sealed_boot_block" &&
   grep -Fq 'bash ../../scripts/dev-shell.sh env \' <<<"$sealed_boot_block" &&
   grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
+    <<<"$sealed_boot_block" &&
+  grep -Fq 'test/kandelo-homebrew-main-shell.spec.ts' \
     <<<"$sealed_boot_block" ||
-  fail "the sealed Pages preview must boot with the same /kandelo/ base as the published build"
+  fail "the Pages preview must prove the public bottled shell at the published base"
 
 between_freshness_and_deploy="$(
   sed -n "${freshness_line},${deploy_line}p" "$PAGES_WORKFLOW" |

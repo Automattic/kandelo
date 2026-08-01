@@ -3,10 +3,10 @@ name: Deploy GitHub Pages
 on:
   push:
     branches: [main]
-    # WHY: the temporary source-shell lane composes a transitive package
-    # closure whose declared and shared tool inputs can grow. Every main push
-    # must supersede the deployed product; a maintained path allowlist could
-    # silently leave Pages on an older source closure.
+    # WHY: the canonical browser product resolves a transitive package
+    # closure whose declared and shared inputs can grow. Every main push must
+    # supersede the deployed product; a maintained path allowlist could leave
+    # Pages on an older admitted generation.
   workflow_dispatch:
 
 concurrency:
@@ -30,7 +30,8 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      - name: Fetch musl submodule
+
+      - name: Fetch musl for repository-owned browser support programs
         uses: ./.github/actions/fetch-submodules
         with:
           submodules: libc/musl
@@ -73,49 +74,81 @@ jobs:
               packages/registry packages/registry/program-packages.json
           '
 
-      - name: Build current wasm32 sysroot for source-built browser packages
+      - name: Isolate the canonical bottled browser product
         run: |
           set -euo pipefail
-          # WHY: the temporary shell activation recipe is deliberately newer
-          # than every canonical package archive. Pages must be able to follow
-          # the normal source fallback instead of deploying an old-ABI shell.
-          bash scripts/dev-shell.sh bash scripts/build-musl.sh
-          test -f sysroot/lib/libc.a
-
-      - name: Isolate the exact-main source package closure
-        run: |
-          set -euo pipefail
-          abi=$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
-            crates/shared/src/lib.rs)
-          [[ "$abi" =~ ^[0-9]+$ ]]
-          empty_index="$RUNNER_TEMP/pages-source-empty-index.toml"
-          source_cache="$RUNNER_TEMP/pages-source-exact-cache"
-          test ! -e "$empty_index"
-          test ! -e "$source_cache"
-          cat >"$empty_index" <<EOF
-          abi_version = $abi
-          generated_at = "1970-01-01T00:00:00Z"
-          generator = "exact-main Pages source closure"
-          EOF
-          # WHY: Pages is the first consumer after main lands. It must not turn
-          # a pre-main rehearsal package into deployed product bytes merely
-          # because that package happens to have the right numeric ABI.
-          echo "WASM_POSIX_BINARY_INDEX_URL=file://${empty_index}" >> "$GITHUB_ENV"
-          echo "WASM_POSIX_BINARY_CACHE_ROOT=$source_cache" >> "$GITHUB_ENV"
+          product_cache="$RUNNER_TEMP/pages-canonical-bottle-cache"
+          test ! -e "$product_cache"
+          # WHY: an empty runner-local cache proves this deployment can recover
+          # the complete canonical package generation. Reusing another job's
+          # cache could hide an unavailable or stale public product archive.
+          echo "WASM_POSIX_BINARY_CACHE_ROOT=$product_cache" >> "$GITHUB_ENV"
 
       - name: Prepare browser demo assets
         run: |
-          # WHY: Pages publishes the first product bytes from this exact main
-          # checkout. Select the distinct source bridge explicitly and bind
-          # archive provenance to the event checkout; an empty index alone
-          # must never fall back to the canonical bottle-backed shell recipe.
+          set -euo pipefail
+          # WHY: --fetch-only prevents a missing package archive from being
+          # replaced by a source build. The current gallery still compiles its
+          # repository-owned support-program bundle and derives VFS images;
+          # neither path can replace the canonical shell bound below.
           bash scripts/dev-shell.sh env \
             "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
-            "WASM_POSIX_SOURCE_ROOTFS_SHELL_ISOLATION=pages-exact-main-v1" \
-            "WASM_POSIX_SOURCE_ROOTFS_SHELL_RUNNER_ENVIRONMENT=${{ runner.environment }}" \
-            "WASM_POSIX_SOURCE_ROOTFS_SHELL_REPOSITORY=https://github.com/$GITHUB_REPOSITORY" \
-            "WASM_POSIX_SOURCE_ROOTFS_SHELL_COMMIT=$GITHUB_SHA" \
-            ./run.sh prepare-browser --source-rootfs-shell --allow-stale
+            ./run.sh --fetch-only prepare-browser
+
+      - name: Bind the canonical bottled shell product
+        id: shell_product
+        run: |
+          set -euo pipefail
+          image=$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)
+          bootstrap=$(bash scripts/resolve-binary.sh \
+            programs/homebrew-bootstrap/homebrew-bootstrap.zip)
+          report="$RUNNER_TEMP/homebrew-main-shell-public-product.json"
+          for path in "$image" "$bootstrap"; do
+            test -f "$path"
+            test ! -L "$path"
+          done
+          cmp "$image" apps/browser-demos/public/shell.vfs.zst
+          bash scripts/verify-homebrew-main-shell-artifact-lock.sh \
+            --lock homebrew/main-shell-lazy-artifact-lock.json \
+            --expected-source-date-epoch 0 \
+            --artifact "$image"
+          test ! -e "$report"
+          # WHY: keep the inspector's rejection cases beside the only
+          # production workflow that relies on its admission decision.
+          bash scripts/dev-shell.sh npx tsx --test \
+            scripts/inspect-homebrew-main-shell-public-product.test.ts
+          bash scripts/dev-shell.sh npx tsx \
+            scripts/inspect-homebrew-main-shell-public-product.ts \
+              --image "$image" \
+              --homebrew-bootstrap-archive "$bootstrap" \
+              --homebrew-bootstrap-spec \
+                homebrew/main-shell-brew-package-tree.json \
+              --homebrew-runtime-support \
+                homebrew/main-shell-homebrew-runtime-support.json \
+              --out "$report"
+          jq -e '
+            .schema == 1 and
+            .kind == "kandelo-homebrew-main-shell-public-product" and
+            (.image.sha256 | test("^[0-9a-f]{64}$")) and
+            (.image.bytes > 0) and
+            (.homebrew_bootstrap.sha256 | test("^[0-9a-f]{64}$")) and
+            (.homebrew_bootstrap.bytes > 0) and
+            .homebrew_bootstrap.activation_root == "/usr/bin/brew" and
+            (.bottle_mirror.plan_url |
+              startswith("https://github.com/") and
+              endswith("/kandelo-homebrew-bottle-mirror-plan.json")) and
+            (.bottle_mirror.asset_count > 0)
+          ' "$report" >/dev/null
+          {
+            echo "image=$image"
+            echo "image_sha256=$(jq -er '.image.sha256' "$report")"
+            echo "bootstrap_sha256=$(jq -er \
+              '.homebrew_bootstrap.sha256' "$report")"
+            echo "bootstrap_bytes=$(jq -er \
+              '.homebrew_bootstrap.bytes' "$report")"
+            echo "mirror_plan_url=$(jq -er \
+              '.bottle_mirror.plan_url' "$report")"
+          } >>"$GITHUB_OUTPUT"
 
       - name: Build browser demos for GitHub Pages
         working-directory: apps/browser-demos
@@ -145,23 +178,27 @@ jobs:
           cp -R docs-site/.vitepress/dist apps/browser-demos/dist/guide
           cp -R host/docs apps/browser-demos/dist/api
 
-      - name: Boot the sealed Pages shell product in Chromium
+      - name: Boot the canonical bottled Pages shell in Chromium
         working-directory: apps/browser-demos
         env:
           VITE_BASE: /kandelo/
-          KANDELO_SOURCE_ROOTFS_SHELL_STRICT: "1"
+          KANDELO_BROWSER_DEMO_INPUTS: main
+          KANDELO_HOMEBREW_MAIN_SHELL_STRICT: "1"
+          KANDELO_HOMEBREW_MAIN_SHELL_SHA256: ${{ steps.shell_product.outputs.image_sha256 }}
+          KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256: ${{ steps.shell_product.outputs.bootstrap_sha256 }}
+          KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES: ${{ steps.shell_product.outputs.bootstrap_bytes }}
+          KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE: public
+          KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL: ${{ steps.shell_product.outputs.mirror_plan_url }}
           KANDELO_PLAYWRIGHT_SERVE_DIST: "1"
           KANDELO_TEST_BASE_URL: http://127.0.0.1:5401/kandelo/
         run: |
           set -euo pipefail
-          shell_sha=$(sha256sum dist/shell.vfs.zst | awk '{print $1}')
-          [[ "$shell_sha" =~ ^[0-9a-f]{64}$ ]]
-          KANDELO_MAIN_SHELL_SHA256="$shell_sha" \
-            bash ../../scripts/dev-shell.sh env \
-              "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
-              npx playwright test \
-              test/kandelo-source-rootfs-shell.spec.ts \
-              --project=chromium
+          cmp dist/shell.vfs.zst "${{ steps.shell_product.outputs.image }}"
+          bash ../../scripts/dev-shell.sh env \
+            "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
+            npx playwright test \
+            test/kandelo-homebrew-main-shell.spec.ts \
+            --project=chromium
 
       - name: Enforce the GitHub Pages published-site size limit
         run: node scripts/check-pages-publish-size.mjs apps/browser-demos/dist 1000000000

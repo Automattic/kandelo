@@ -116,64 +116,79 @@ expect_mutation_rejected \
   's/build-deps program-index-check/build-deps parse/'
 
 expect_mutation_rejected \
-  "bypassed source-fallback sysroot build" \
-  "must build and verify the current source-fallback sysroot" \
-  's/bash scripts\/dev-shell\.sh bash scripts\/build-musl\.sh/echo skipped-source-sysroot/'
+  "missing musl input for repository-owned support programs" \
+  "must fetch musl for its repository-owned support programs" \
+  's/submodules: libc\/musl/submodules: libc\/missing/'
 
 expect_mutation_rejected \
-  "missing exact-main cache root" \
-  "must establish one exact-main package-cache root" \
-  's/^          echo "WASM_POSIX_BINARY_CACHE_ROOT=\$source_cache" >> "\$GITHUB_ENV"\n//m'
+  "missing canonical package cache root" \
+  "must establish one fresh canonical package cache" \
+  's/^          echo "WASM_POSIX_BINARY_CACHE_ROOT=\$product_cache" >> "\$GITHUB_ENV"\n//m'
 
 expect_mutation_rejected \
   "cache root lost inside dev-shell" \
-  "browser preparation must retain the exact-main cache root inside dev-shell" \
+  "browser preparation must retain the canonical cache inside dev-shell" \
   's/^            "WASM_POSIX_BINARY_CACHE_ROOT=\$WASM_POSIX_BINARY_CACHE_ROOT" \\\n//m'
 
 expect_mutation_rejected \
-  "canonical shell preparation fallback" \
-  "must select the source-rootfs recipe with exact event provenance" \
-  's/prepare-browser --source-rootfs-shell --allow-stale/prepare-browser --allow-stale/'
+  "source-fallback browser preparation" \
+  "browser preparation must refuse source fallback" \
+  's/\.\x2frun\.sh --fetch-only prepare-browser/.\/run.sh --allow-stale prepare-browser/'
 
 expect_mutation_rejected \
-  "missing source-shell isolation attestation" \
-  "must select the source-rootfs recipe with exact event provenance" \
-  's/^            "WASM_POSIX_SOURCE_ROOTFS_SHELL_ISOLATION=pages-exact-main-v1" \\\n//m'
+  "swallowed canonical preparation failure" \
+  "browser preparation must refuse source fallback" \
+  's#(\./run\.sh --fetch-only prepare-browser)#$1 || true#'
 
 expect_mutation_rejected \
-  "missing hosted-runner attestation" \
-  "must select the source-rootfs recipe with exact event provenance" \
-  's/^            "WASM_POSIX_SOURCE_ROOTFS_SHELL_RUNNER_ENVIRONMENT=\$\{\{ runner\.environment \}\}" \\\n//m'
-
-expect_mutation_rejected \
-  "swallowed source-shell preparation failure" \
-  "must select the source-rootfs recipe with exact event provenance" \
-  's#(\./run\.sh prepare-browser --source-rootfs-shell --allow-stale)#$1 || true#'
-
-expect_mutation_rejected \
-  "work after source-shell preparation command" \
+  "work after canonical preparation command" \
   "must be the final failure-propagating command" \
-  's#(\./run\.sh prepare-browser --source-rootfs-shell --allow-stale\n)#$1          echo continued\n#'
+  's#(\./run\.sh --fetch-only prepare-browser\n)#$1          echo continued\n#'
 
 expect_mutation_rejected \
-  "source-shell repository not bound to event repository" \
-  "must select the source-rootfs recipe with exact event provenance" \
-  's#https://github\.com/\$GITHUB_REPOSITORY#https://github.com/stale/repository#'
+  "missing sealed shell artifact check" \
+  "must bind the canonical shell, bootstrap, and embedded mirror plan" \
+  's/scripts\/verify-homebrew-main-shell-artifact-lock\.sh/scripts\/skipped-artifact-lock.sh/'
 
 expect_mutation_rejected \
-  "source-shell commit not bound to event SHA" \
-  "must select the source-rootfs recipe with exact event provenance" \
-  's/WASM_POSIX_SOURCE_ROOTFS_SHELL_COMMIT=\$GITHUB_SHA/WASM_POSIX_SOURCE_ROOTFS_SHELL_COMMIT=0000000000000000000000000000000000000000/'
+  "missing public product inspector" \
+  "must bind the canonical shell, bootstrap, and embedded mirror plan" \
+  's/scripts\/inspect-homebrew-main-shell-public-product\.ts/scripts\/skipped-public-product.ts/'
 
 expect_mutation_rejected \
-  "sealed preview without Pages base" \
-  "sealed Pages preview must boot with the same /kandelo/ base" \
-  's/(      - name: Boot the sealed Pages shell product in Chromium\n        working-directory: apps\/browser-demos\n        env:\n)          VITE_BASE: \/kandelo\/\n/$1/'
+  "missing public product inspector rejection tests" \
+  "must run the public-product inspector rejection tests" \
+  's/scripts\/inspect-homebrew-main-shell-public-product\.test\.ts/scripts\/skipped-public-product.test.ts/'
 
 expect_mutation_rejected \
-  "sealed preview loses package cache root" \
-  "sealed Pages preview must boot with the same /kandelo/ base" \
-  's/(      - name: Boot the sealed Pages shell product in Chromium[\s\S]*?)^              "WASM_POSIX_BINARY_CACHE_ROOT=\$WASM_POSIX_BINARY_CACHE_ROOT" \\\n/$1/m'
+  "eager mirror recovery during inspection" \
+  "must not eagerly download the complete bottle mirror" \
+  's#(          test ! -e "\$report"\n)#$1          npx tsx scripts/recover-homebrew-bottle-mirror.ts\n#'
+
+expect_mutation_rejected \
+  "closed bottle transport in Pages" \
+  "must prove the public bottled shell at the published base" \
+  's/KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE: public/KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE: closed/'
+
+expect_mutation_rejected \
+  "bottled preview broadens its demo inputs" \
+  "must prove the public bottled shell at the published base" \
+  's/KANDELO_BROWSER_DEMO_INPUTS: main/KANDELO_BROWSER_DEMO_INPUTS: all/'
+
+expect_mutation_rejected \
+  "bottled preview without Pages base" \
+  "must prove the public bottled shell at the published base" \
+  's/(      - name: Boot the canonical bottled Pages shell in Chromium\n        working-directory: apps\/browser-demos\n        env:\n)          VITE_BASE: \/kandelo\/\n/$1/'
+
+expect_mutation_rejected \
+  "bottled preview loses package cache root" \
+  "must prove the public bottled shell at the published base" \
+  's/(      - name: Boot the canonical bottled Pages shell in Chromium[\s\S]*?)^            "WASM_POSIX_BINARY_CACHE_ROOT=\$WASM_POSIX_BINARY_CACHE_ROOT" \\\n/$1/m'
+
+expect_mutation_rejected \
+  "bottled preview uses the retired source test" \
+  "must prove the public bottled shell at the published base" \
+  's/test\/kandelo-homebrew-main-shell\.spec\.ts/test\/kandelo-source-rootfs-shell.spec.ts/'
 
 expect_mutation_rejected \
   "checkout of a different ref" \
@@ -182,7 +197,7 @@ expect_mutation_rejected \
 
 expect_mutation_rejected \
   "checkout with persisted write credentials" \
-  "source-building Pages checkout must not persist write credentials" \
+  "product-building Pages checkout must not persist write credentials" \
   's/^          persist-credentials: false\n//m'
 
 expect_mutation_rejected \
