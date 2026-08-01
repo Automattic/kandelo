@@ -116,6 +116,9 @@ checkout_count="$(
   fail "all Pages outputs must be built from one checkout"
 
 projection_line="$(step_line "Verify browser package projection is current")"
+musl_line="$(
+  step_line "Fetch musl for repository-owned browser support programs"
+)"
 isolation_line="$(step_line "Isolate the canonical bottled browser product")"
 prepare_browser_line="$(step_line "Prepare browser demo assets")"
 shell_product_line="$(step_line "Bind the canonical bottled shell product")"
@@ -128,8 +131,10 @@ size_line="$(step_line "Enforce the GitHub Pages published-site size limit")"
 freshness_line="$(step_line "Confirm this is the newest Pages run")"
 deploy_line="$(step_line "Deploy to gh-pages")"
 
-[ -n "$projection_line" ] && [ -n "$isolation_line" ] &&
+[ -n "$musl_line" ] && [ -n "$projection_line" ] &&
+  [ -n "$isolation_line" ] &&
   [ -n "$prepare_browser_line" ] && [ -n "$shell_product_line" ] &&
+  [ "$musl_line" -lt "$prepare_browser_line" ] &&
   [ "$projection_line" -lt "$prepare_browser_line" ] &&
   [ "$projection_line" -lt "$isolation_line" ] &&
   [ "$isolation_line" -lt "$prepare_browser_line" ] &&
@@ -148,6 +153,16 @@ deploy_line="$(step_line "Deploy to gh-pages")"
   [ "$size_line" -lt "$freshness_line" ] &&
   [ "$freshness_line" -lt "$deploy_line" ] ||
   fail "one job must assemble and size-check the complete tree before its freshness check and deployment"
+
+musl_block="$(
+  step_block \
+    "$PAGES_WORKFLOW" \
+    "Fetch musl for repository-owned browser support programs"
+)"
+grep -Fxq '        uses: ./.github/actions/fetch-submodules' \
+  <<<"$musl_block" &&
+  grep -Fxq '          submodules: libc/musl' <<<"$musl_block" ||
+  fail "Pages must fetch musl for its repository-owned support programs"
 
 projection_block="$(
   step_block "$PAGES_WORKFLOW" "Verify browser package projection is current"

@@ -116,6 +116,11 @@ expect_mutation_rejected \
   's/build-deps program-index-check/build-deps parse/'
 
 expect_mutation_rejected \
+  "missing musl input for repository-owned support programs" \
+  "must fetch musl for its repository-owned support programs" \
+  's/submodules: libc\/musl/submodules: libc\/missing/'
+
+expect_mutation_rejected \
   "missing canonical package cache root" \
   "must establish one fresh canonical package cache" \
   's/^          echo "WASM_POSIX_BINARY_CACHE_ROOT=\$product_cache" >> "\$GITHUB_ENV"\n//m'
