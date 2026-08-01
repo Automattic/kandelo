@@ -25,6 +25,7 @@ from typing import Any, NoReturn
 
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+OCI_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 FORMULA_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+,-]{0,255}$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -1585,9 +1586,10 @@ def inspect_sidecar_directory(
 
 def anonymous_environment() -> dict[str, str]:
     environment = dict(os.environ)
-    # WHY: destination absence and old-bottle availability must be public
-    # facts. Removing every supported package credential prevents ambient
-    # maintainer access from turning private visibility into campaign proof.
+    # WHY: destination admission and old-bottle availability begin with a
+    # credential-free observation. Removing every supported package credential
+    # prevents ambient maintainer access from turning private visibility into
+    # campaign proof.
     for name in (
         "GH_TOKEN",
         "GITHUB_TOKEN",
@@ -1659,19 +1661,87 @@ def default_probe_destination(
             timeout=240,
             environment=anonymous_environment(),
         )
-        result = exact_keys(
-            load_json(result_path, "anonymous destination probe result"),
-            {"digest", "kind", "schema", "status"},
-            "anonymous destination probe result",
+        result = load_json(
+            result_path, "anonymous destination probe result"
         )
-    if (
-        result["schema"] != 1
-        or result["kind"] != "manifest"
-        or result["status"] != "missing"
-        or result["digest"] is not None
-    ):
-        fail(f"destination is not anonymously proven absent: {remote}:{reference}")
-    return result
+    return validate_destination_probe(
+        result,
+        f"anonymous destination probe {remote}:{reference}",
+    )
+
+
+def validate_destination_probe(
+    value: Any,
+    label: str,
+) -> dict[str, Any]:
+    value = exact_keys(
+        value,
+        {"digest", "kind", "schema", "status"},
+        label,
+    )
+    status = value["status"]
+    digest = value["digest"]
+    if value["schema"] != 1 or value["kind"] != "manifest":
+        fail(f"{label} has an unsupported contract")
+    if status == "present":
+        if not isinstance(digest, str) or OCI_DIGEST.fullmatch(digest) is None:
+            fail(f"{label} present result has an invalid digest")
+    elif status in ("missing", "auth-required"):
+        if digest is not None:
+            fail(f"{label} {status} result unexpectedly has a digest")
+    else:
+        fail(f"{label} status is invalid")
+    return value
+
+
+def destination_admission(
+    probe: Any,
+    *,
+    formula_name: str,
+    source_kind: str,
+    variants: list[dict[str, Any]],
+) -> dict[str, Any]:
+    probe = validate_destination_probe(
+        probe, f"{formula_name} destination probe"
+    )
+    status = probe["status"]
+    if status == "present":
+        fail(f"{formula_name} destination manifest is already present")
+    if status == "missing":
+        kind = "anonymous-absence"
+    else:
+        # WHY: GHCR deliberately gives the same anonymous response for a new
+        # namespace and a private package. Only a reviewed new entrant may
+        # defer that ambiguity to the authenticated first-package publisher;
+        # existing or reusable packages must remain public facts here.
+        eligible = (
+            source_kind == "reviewed-new-entrant"
+            and bool(variants)
+            and all(
+                variant.get("selected_by")
+                == "reviewed-campaign-input"
+                and isinstance(variant.get("build_input"), dict)
+                and isinstance(variant.get("disposition"), dict)
+                and variant["disposition"].get("kind")
+                == "required-build"
+                and variant["disposition"].get("reasons")
+                == ["new-campaign-entrant"]
+                and "old_record" not in variant
+                for variant in variants
+            )
+        )
+        if not eligible:
+            fail(
+                f"{formula_name} destination requires authentication but "
+                "is not a reviewed source-only required-build entrant"
+            )
+        kind = "first-package-namespace-bootstrap-required"
+    return {
+        "kind": kind,
+        "method": "anonymous-oras-manifest-probe",
+        "probe": probe,
+        "schema": 1,
+    }
 
 
 def default_resolve_formula_metadata(
@@ -3144,8 +3214,8 @@ def _derive_campaign_from_snapshots(
         recipe_context: dict[str, Any] = {}
         if build_kind == "formula-source":
             # Formula source, exact Homebrew metadata, target architecture,
-            # dependency edges, and destination absence are already sealed by
-            # the ordinary campaign record. No synthetic recipe lock exists
+            # dependency edges, and destination admission are already sealed
+            # by the ordinary campaign record. No synthetic recipe lock exists
             # for a conventional Formula such as libyaml.
             campaign_build_input = {"kind": "formula-source"}
         else:
@@ -3253,19 +3323,10 @@ def _derive_campaign_from_snapshots(
                 variant_results[key] = future.result()
             else:
                 name = probe_futures[future]
-                probe = exact_keys(
+                probe_results[name] = validate_destination_probe(
                     future.result(),
-                    {"digest", "kind", "schema", "status"},
                     f"{name} destination probe",
                 )
-                if (
-                    probe["schema"] != 1
-                    or probe["kind"] != "manifest"
-                    or probe["status"] != "missing"
-                    or probe["digest"] is not None
-                ):
-                    fail(f"{name} destination is not anonymously proven absent")
-                probe_results[name] = probe
 
     variants_by_formula: dict[str, list[dict[str, Any]]] = {}
     for key, result in variant_results.items():
@@ -3273,12 +3334,14 @@ def _derive_campaign_from_snapshots(
     for name in sorted(formula_context):
         context = formula_context[name]
         destination = dict(context["destination"])
-        destination["absence"] = {
-            **probe_results[name],
-            "method": "anonymous-oras-manifest-probe",
-        }
-        record = {**context, "destination": destination}
         variants = entrant_variants.get(name, variants_by_formula.get(name, []))
+        destination["admission"] = destination_admission(
+            probe_results[name],
+            formula_name=name,
+            source_kind=context["source_kind"],
+            variants=variants,
+        )
+        record = {**context, "destination": destination}
         record["variants"] = sorted(variants, key=lambda value: value["arch"])
         formula_records.append(record)
 
@@ -3360,7 +3423,7 @@ def _derive_campaign_from_snapshots(
         "kind": "kandelo-homebrew-guest-prefix-campaign",
         "retirements": retirements,
         "permitted_retired_prefix_evidence": permitted_retired_prefix_evidence,
-        "schema": 1,
+        "schema": 2,
         "summary": {
             "byte_clean_reuse_candidates": reuse,
             "deferred_source_formulae": len(deferred_formulae),
@@ -3674,7 +3737,7 @@ def main() -> int:
             if recorded != derived:
                 fail(
                     "campaign manifest differs from fresh exact-source, public-readback, "
-                    "inspection, or destination-absence derivation"
+                    "inspection, or destination-admission derivation"
                 )
             print("Verified exact guest-prefix campaign manifest")
     except (CampaignError, OSError, UnicodeError) as error:

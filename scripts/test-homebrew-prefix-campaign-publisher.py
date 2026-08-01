@@ -239,7 +239,7 @@ class Fixture:
             },
             "formulae": self.formulae,
             "kind": "kandelo-homebrew-guest-prefix-campaign",
-            "schema": 1,
+            "schema": 2,
         }
         self.campaign_path = self.root / "campaign.json"
         write_json(self.campaign_path, self.campaign)
@@ -271,6 +271,17 @@ class Fixture:
                 for dependency, dependency_version in dependencies
             ],
             "destination": {
+                "admission": {
+                    "kind": "anonymous-absence",
+                    "method": "anonymous-oras-manifest-probe",
+                    "probe": {
+                        "digest": None,
+                        "kind": "manifest",
+                        "schema": 1,
+                        "status": "missing",
+                    },
+                    "schema": 1,
+                },
                 "bottle_rebuild": 0,
                 "reference": version,
                 "remote": f"ghcr.io/{TAP_REPOSITORY}/{name}",

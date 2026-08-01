@@ -2046,6 +2046,27 @@ require a build in this case; the campaign never relabels them as the new
 version. An unchanged `pkg_version` continues to reserve a rebuild above the
 selected bottle block instead.
 
+Campaign manifest schema 2 gives every Formula a versioned
+`destination.admission` record. Admission schema 1 contains exactly the
+anonymous manifest probe, its method, and one of two states:
+
+- `anonymous-absence` means the credential-free probe returned `missing`.
+  This is the ordinary build or reuse-publication path.
+- `first-package-namespace-bootstrap-required` means the credential-free
+  probe returned `auth-required`. GHCR uses that response both for a new
+  package namespace and for an existing private package, so it is not proof
+  of absence. This state only permits a Formula classified by the reviewed
+  campaign inputs as a source-only `required-build` entrant. The protected
+  first-package publisher must later authenticate, prove that the repository
+  namespace is missing, create the first public child, and complete anonymous
+  readback.
+
+A sidecar-backed Formula, a reuse candidate, or any Formula whose manifest is
+already present cannot use the bootstrap state. Those cases fail during
+campaign derivation. The executor repeats the same eligibility checks so a
+rewritten campaign manifest cannot route an existing or reused package through
+first-package publication.
+
 Candidate dependency versions come from the same exact Homebrew metadata
 resolution. When that closure differs from the historical Formula sidecar,
 the dependent bottle also requires a build. This prevents a campaign from

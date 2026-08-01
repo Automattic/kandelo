@@ -937,6 +937,38 @@ class PrefixCampaignTests(unittest.TestCase):
         self.assertNotIn("npx", command)
         self.assertNotIn("tsx", command)
 
+    def test_default_destination_probe_preserves_auth_required(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="campaign-destination-probe-test-"
+        ) as temporary_name:
+            root = pathlib.Path(temporary_name)
+
+            def run_probe(command: list[str], **_options: Any) -> None:
+                result_path = pathlib.Path(
+                    command[command.index("--out-result") + 1]
+                )
+                write_json(
+                    result_path,
+                    {
+                        "digest": None,
+                        "kind": "manifest",
+                        "schema": 1,
+                        "status": "auth-required",
+                    },
+                )
+
+            with mock.patch.object(
+                CAMPAIGN, "run_command", side_effect=run_probe
+            ):
+                result = CAMPAIGN.default_probe_destination(
+                    "ghcr.io/kandelo-dev/tap-core/libyaml",
+                    "0.2.5",
+                    root,
+                )
+
+        self.assertEqual(result["status"], "auth-required")
+        self.assertIsNone(result["digest"])
+
     def test_repository_inputs_classify_new_formulae_by_build_source(
         self,
     ) -> None:
@@ -980,6 +1012,7 @@ class PrefixCampaignTests(unittest.TestCase):
             fixture.options(), fixture.dependencies()
         )
         self.assertEqual(first, second)
+        self.assertEqual(first["schema"], 2)
         self.assertEqual(
             [value["name"] for value in first["formulae"]],
             ["alpha", "beta", "homebrew-bootstrap", "libyaml"],
@@ -1228,12 +1261,16 @@ class PrefixCampaignTests(unittest.TestCase):
         self.assertEqual(
             alpha["destination"],
             {
-                "absence": {
-                    "digest": None,
-                    "kind": "manifest",
+                "admission": {
+                    "kind": "anonymous-absence",
                     "method": "anonymous-oras-manifest-probe",
+                    "probe": {
+                        "digest": None,
+                        "kind": "manifest",
+                        "schema": 1,
+                        "status": "missing",
+                    },
                     "schema": 1,
-                    "status": "missing",
                 },
                 "bottle_rebuild": 0,
                 "reference": "1.0_1",
@@ -2328,7 +2365,7 @@ class PrefixCampaignTests(unittest.TestCase):
                 fixture.dependencies(),
             )
 
-    def test_destination_must_be_anonymously_absent(self) -> None:
+    def test_present_destination_manifest_is_rejected(self) -> None:
         fixture = make_fixture()
         self.addCleanup(fixture.close)
 
@@ -2352,7 +2389,7 @@ class PrefixCampaignTests(unittest.TestCase):
             }
 
         with self.assertRaisesRegex(
-            CAMPAIGN.CampaignError, "not anonymously proven absent"
+            CAMPAIGN.CampaignError, "destination manifest is already present"
         ):
             fixture_dependencies = fixture.dependencies()
             CAMPAIGN.derive_campaign(
@@ -2366,6 +2403,140 @@ class PrefixCampaignTests(unittest.TestCase):
                     load_historical_formula=(
                         fixture_dependencies.load_historical_formula
                     ),
+                ),
+            )
+
+    def test_auth_required_sidecar_build_and_reuse_are_rejected(
+        self,
+    ) -> None:
+        for source_changed in (True, False):
+            with self.subTest(source_changed=source_changed):
+                fixture = make_fixture(
+                    alpha_source_changed=source_changed
+                )
+                self.addCleanup(fixture.close)
+                base = fixture.dependencies()
+
+                def probe(
+                    remote: str,
+                    _reference: str,
+                    _kandelo_root: pathlib.Path,
+                ) -> dict[str, Any]:
+                    return {
+                        "digest": None,
+                        "kind": "manifest",
+                        "schema": 1,
+                        "status": (
+                            "auth-required"
+                            if remote.endswith("/alpha")
+                            else "missing"
+                        ),
+                    }
+
+                with self.assertRaisesRegex(
+                    CAMPAIGN.CampaignError,
+                    "alpha destination requires authentication.*"
+                    "not a reviewed source-only required-build entrant",
+                ):
+                    CAMPAIGN.derive_campaign(
+                        fixture.options(),
+                        CAMPAIGN.CampaignDependencies(
+                            fetch_bottle=base.fetch_bottle,
+                            probe_destination=probe,
+                            resolve_formula_metadata=(
+                                base.resolve_formula_metadata
+                            ),
+                            load_historical_formula=(
+                                base.load_historical_formula
+                            ),
+                        ),
+                    )
+
+    def test_auth_required_reviewed_entrant_requires_bootstrap(self) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        base = fixture.dependencies()
+
+        def probe(
+            remote: str,
+            _reference: str,
+            _kandelo_root: pathlib.Path,
+        ) -> dict[str, Any]:
+            return {
+                "digest": None,
+                "kind": "manifest",
+                "schema": 1,
+                "status": (
+                    "auth-required"
+                    if remote.endswith("/libyaml")
+                    else "missing"
+                ),
+            }
+
+        result = CAMPAIGN.derive_campaign(
+            fixture.options(),
+            CAMPAIGN.CampaignDependencies(
+                fetch_bottle=base.fetch_bottle,
+                probe_destination=probe,
+                resolve_formula_metadata=base.resolve_formula_metadata,
+                load_historical_formula=base.load_historical_formula,
+            ),
+        )
+        by_name = {value["name"]: value for value in result["formulae"]}
+        self.assertEqual(
+            by_name["libyaml"]["destination"]["admission"],
+            {
+                "kind": "first-package-namespace-bootstrap-required",
+                "method": "anonymous-oras-manifest-probe",
+                "probe": {
+                    "digest": None,
+                    "kind": "manifest",
+                    "schema": 1,
+                    "status": "auth-required",
+                },
+                "schema": 1,
+            },
+        )
+        self.assertEqual(
+            by_name["libyaml"]["variants"][0]["disposition"],
+            {
+                "kind": "required-build",
+                "reasons": ["new-campaign-entrant"],
+            },
+        )
+        self.assertEqual(
+            by_name["alpha"]["destination"]["admission"]["kind"],
+            "anonymous-absence",
+        )
+
+    def test_destination_probe_status_and_digest_must_agree(self) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        base = fixture.dependencies()
+
+        def malformed_probe(
+            _remote: str,
+            _reference: str,
+            _kandelo_root: pathlib.Path,
+        ) -> dict[str, Any]:
+            return {
+                "digest": "sha256:" + "f" * 64,
+                "kind": "manifest",
+                "schema": 1,
+                "status": "auth-required",
+            }
+
+        with self.assertRaisesRegex(
+            CAMPAIGN.CampaignError,
+            "auth-required result unexpectedly has a digest",
+        ):
+            CAMPAIGN.derive_campaign(
+                fixture.options(),
+                CAMPAIGN.CampaignDependencies(
+                    fetch_bottle=base.fetch_bottle,
+                    probe_destination=malformed_probe,
+                    resolve_formula_metadata=base.resolve_formula_metadata,
+                    load_historical_formula=base.load_historical_formula,
                 ),
             )
 

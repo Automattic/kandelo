@@ -613,13 +613,88 @@ def dependency_names(
     return tuple(result)
 
 
+def validate_destination_admission(formula: dict[str, Any]) -> None:
+    name = formula.get("name")
+    destination = exact_keys(
+        formula.get("destination"),
+        {"admission", "bottle_rebuild", "reference", "remote"},
+        f"campaign Formula {name} destination",
+    )
+    require_int(
+        destination["bottle_rebuild"],
+        f"campaign Formula {name} destination rebuild",
+    )
+    require_string(
+        destination["reference"],
+        f"campaign Formula {name} destination reference",
+    )
+    require_string(
+        destination["remote"],
+        f"campaign Formula {name} destination remote",
+    )
+    admission = exact_keys(
+        destination["admission"],
+        {"kind", "method", "probe", "schema"},
+        f"campaign Formula {name} destination admission",
+    )
+    if (
+        admission["schema"] != 1
+        or admission["method"] != "anonymous-oras-manifest-probe"
+    ):
+        fail(f"campaign Formula {name} destination admission is invalid")
+    probe = exact_keys(
+        admission["probe"],
+        {"digest", "kind", "schema", "status"},
+        f"campaign Formula {name} destination probe",
+    )
+    if probe["schema"] != 1 or probe["kind"] != "manifest":
+        fail(f"campaign Formula {name} destination probe is invalid")
+    kind = admission["kind"]
+    if kind == "anonymous-absence":
+        if probe["status"] != "missing" or probe["digest"] is not None:
+            fail(
+                f"campaign Formula {name} anonymous absence is invalid"
+            )
+        return
+    if kind != "first-package-namespace-bootstrap-required":
+        fail(f"campaign Formula {name} destination admission is invalid")
+    if probe["status"] != "auth-required" or probe["digest"] is not None:
+        fail(f"campaign Formula {name} namespace bootstrap probe is invalid")
+
+    variants = formula.get("variants")
+    # WHY: an anonymous authentication challenge is ambiguous between a new
+    # namespace and a private existing package. Only source reviewed as a new
+    # required-build entrant may reach the later authenticated bootstrap gate.
+    eligible = (
+        formula.get("source_kind") == "reviewed-new-entrant"
+        and isinstance(variants, list)
+        and bool(variants)
+        and all(
+            isinstance(variant, dict)
+            and variant.get("selected_by") == "reviewed-campaign-input"
+            and isinstance(variant.get("build_input"), dict)
+            and isinstance(variant.get("disposition"), dict)
+            and variant["disposition"].get("kind") == "required-build"
+            and variant["disposition"].get("reasons")
+            == ["new-campaign-entrant"]
+            and "old_record" not in variant
+            for variant in variants
+        )
+    )
+    if not eligible:
+        fail(
+            f"campaign Formula {name} is not eligible for first-package "
+            "namespace bootstrap"
+        )
+
+
 def load_campaign(
     path: pathlib.Path,
 ) -> tuple[dict[str, Any], bytes, dict[str, dict[str, Any]]]:
     value, payload = load_json_bytes(path, "campaign manifest")
     if (
         not isinstance(value, dict)
-        or value.get("schema") != 1
+        or value.get("schema") != 2
         or value.get("kind")
         != "kandelo-homebrew-guest-prefix-campaign"
     ):
@@ -695,6 +770,7 @@ def load_campaign(
             )
         ):
             fail(f"campaign Formula {name} variants are invalid")
+        validate_destination_admission(formula)
         index[name] = formula
     for name, formula in index.items():
         dependencies = dependency_names(formula, tap_name)

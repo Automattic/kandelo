@@ -68,6 +68,17 @@ def make_formula(
             for dependency, dependency_version in dependencies
         ],
         "destination": {
+            "admission": {
+                "kind": "anonymous-absence",
+                "method": "anonymous-oras-manifest-probe",
+                "probe": {
+                    "digest": None,
+                    "kind": "manifest",
+                    "schema": 1,
+                    "status": "missing",
+                },
+                "schema": 1,
+            },
             "bottle_rebuild": 1,
             "reference": f"{version}_1",
             "remote": f"ghcr.io/{TAP_REPOSITORY}/{name}",
@@ -143,7 +154,7 @@ class Fixture:
             },
             "formulae": self.formulae,
             "kind": "kandelo-homebrew-guest-prefix-campaign",
-            "schema": 1,
+            "schema": 2,
         }
         self.campaign_path = self.root / "campaign.json"
         write_json(self.campaign_path, self.campaign)
@@ -1090,6 +1101,130 @@ def rewrite_handoff_release(
 
 
 class PrefixCampaignExecutorTests(unittest.TestCase):
+    def test_destination_admission_requires_campaign_schema_two(
+        self,
+    ) -> None:
+        fixture = Fixture()
+        self.addCleanup(fixture.close)
+        fixture.campaign["schema"] = 1
+        write_json(fixture.campaign_path, fixture.campaign)
+
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "campaign manifest has an unsupported contract",
+        ):
+            EXECUTOR.load_campaign(fixture.campaign_path)
+
+    def test_reviewed_required_build_accepts_namespace_bootstrap(
+        self,
+    ) -> None:
+        fixture = Fixture()
+        self.addCleanup(fixture.close)
+        alpha = fixture.campaign["formulae"][0]
+        alpha["source_kind"] = "reviewed-new-entrant"
+        alpha["variants"][0].update(
+            {
+                "build_input": {"kind": "formula-source"},
+                "disposition": {
+                    "kind": "required-build",
+                    "reasons": ["new-campaign-entrant"],
+                },
+                "selected_by": "reviewed-campaign-input",
+            }
+        )
+        alpha["destination"]["admission"] = {
+            "kind": "first-package-namespace-bootstrap-required",
+            "method": "anonymous-oras-manifest-probe",
+            "probe": {
+                "digest": None,
+                "kind": "manifest",
+                "schema": 1,
+                "status": "auth-required",
+            },
+            "schema": 1,
+        }
+        write_json(fixture.campaign_path, fixture.campaign)
+
+        _campaign, _payload, index = EXECUTOR.load_campaign(
+            fixture.campaign_path
+        )
+
+        self.assertEqual(index["alpha"]["destination"], alpha["destination"])
+
+    def test_namespace_bootstrap_rejects_existing_or_reused_formula(
+        self,
+    ) -> None:
+        cases = (
+            ("sidecar-backed", "fixture", "required-rebuild", "fixture"),
+            (
+                "reuse",
+                "reviewed-new-entrant",
+                "byte-clean-reuse-candidate",
+                "reviewed-campaign-input",
+            ),
+        )
+        for label, source_kind, disposition, selected_by in cases:
+            with self.subTest(label=label):
+                fixture = Fixture()
+                self.addCleanup(fixture.close)
+                alpha = fixture.campaign["formulae"][0]
+                alpha["source_kind"] = source_kind
+                alpha["variants"][0].update(
+                    {
+                        "build_input": {"kind": "formula-source"},
+                        "disposition": {
+                            "kind": disposition,
+                            "reasons": (
+                                []
+                                if disposition
+                                == "byte-clean-reuse-candidate"
+                                else ["fixture"]
+                            ),
+                        },
+                        "selected_by": selected_by,
+                    }
+                )
+                alpha["destination"]["admission"] = {
+                    "kind": (
+                        "first-package-namespace-bootstrap-required"
+                    ),
+                    "method": "anonymous-oras-manifest-probe",
+                    "probe": {
+                        "digest": None,
+                        "kind": "manifest",
+                        "schema": 1,
+                        "status": "auth-required",
+                    },
+                    "schema": 1,
+                }
+                write_json(fixture.campaign_path, fixture.campaign)
+
+                with self.assertRaisesRegex(
+                    EXECUTOR.ExecutorError,
+                    "not eligible for first-package namespace bootstrap",
+                ):
+                    EXECUTOR.load_campaign(fixture.campaign_path)
+
+    def test_destination_admission_rejects_substituted_probe_state(
+        self,
+    ) -> None:
+        fixture = Fixture()
+        self.addCleanup(fixture.close)
+        alpha = fixture.campaign["formulae"][0]
+        alpha["destination"]["admission"]["probe"] = {
+            "digest": "sha256:" + "f" * 64,
+            "kind": "manifest",
+            "schema": 1,
+            "status": "present",
+        }
+        write_json(fixture.campaign_path, fixture.campaign)
+
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "anonymous absence is invalid",
+        ):
+            EXECUTOR.load_campaign(fixture.campaign_path)
+
     def test_historical_bottle_readback_is_credential_free(
         self,
     ) -> None:
