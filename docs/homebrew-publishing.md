@@ -2015,6 +2015,14 @@ the candidate through a private Git index, reproduces one deterministic
 single-parent commit, and atomically creates a previously absent local
 `refs/heads/...` ref. It does not change the live checkout, move `main`,
 push, or call GitHub. If receipt creation fails, it removes the new ref.
+The candidate and receipt are paired local outputs of
+`prepare-final-tap`. They are not downloadable or independently
+delegated authority. The commit step rechecks the exact live parent,
+source and base trees, ancestry, allowed live drift, and candidate tree
+from local Git. It does not rerun campaign composition without the
+campaign and handoff inputs. Both commands therefore run in the same
+trusted controller workspace; crossing a trust boundary requires
+running `prepare-final-tap` again.
 The tap controller must still hold the tap-wide state lock, recheck the
 same live parent, push the prepared commit with compare-and-swap
 semantics, and publish the commit receipt.

@@ -2224,6 +2224,86 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
                 self.assertFalse(output.exists())
                 self.assertFalse(receipt.exists())
 
+    def test_final_tap_rejects_wrong_base_tree_and_ancestry(self) -> None:
+        def rebind_source_base(
+            fixture: FinalTapFixture,
+            *,
+            commit: str,
+            tree: str,
+            message: str,
+        ) -> None:
+            manifest_path = fixture.live / EXECUTOR.SOURCE_MANIFEST_PATH
+            manifest = json.loads(manifest_path.read_text())
+            manifest["base"] = {"commit": commit, "tree_git_oid": tree}
+            write_json(manifest_path, manifest)
+            authority_path = fixture.live / EXECUTOR.SOURCE_AUTHORITY_PATH
+            authority = json.loads(authority_path.read_text())
+            authority["target_source"]["manifest_sha256"] = sha256(
+                manifest_path.read_bytes()
+            )
+            write_json(authority_path, authority)
+            fixture.refresh_live(message)
+            materialization = fixture.campaign["authority"][
+                "source_materialization"
+            ]
+            materialization["authority"]["sha256"] = sha256(
+                authority_path.read_bytes()
+            )
+            materialization["manifest"]["sha256"] = sha256(
+                manifest_path.read_bytes()
+            )
+            fixture.campaign["authority"]["source_tap_commit"] = (
+                fixture.live_commit
+            )
+            write_json(fixture.campaign_path, fixture.campaign)
+
+        for label in ("wrong-tree", "unrelated-commit"):
+            with self.subTest(label=label):
+                fixture = FinalTapFixture()
+                self.addCleanup(fixture.close)
+                if label == "wrong-tree":
+                    base_commit = fixture.base_commit
+                    base_tree = fixture.live_tree
+                    expected = "sealed base commit has the wrong tree"
+                else:
+                    base_commit = subprocess.check_output(
+                        [
+                            "git",
+                            "-c",
+                            "user.name=Campaign fixture",
+                            "-c",
+                            "user.email=campaign@example.invalid",
+                            "commit-tree",
+                            fixture.base_tree,
+                            "-m",
+                            "unrelated sealed base",
+                        ],
+                        cwd=fixture.live,
+                        text=True,
+                    ).strip()
+                    base_tree = fixture.base_tree
+                    expected = "sealed base is not an ancestor"
+                rebind_source_base(
+                    fixture,
+                    commit=base_commit,
+                    tree=base_tree,
+                    message=f"bind {label} base",
+                )
+                snapshots = fixture.root / f"{label}-snapshots"
+                snapshots.mkdir()
+                with self.assertRaisesRegex(
+                    EXECUTOR.ExecutorError,
+                    expected,
+                ):
+                    EXECUTOR.prepare_live_source_replay(
+                        campaign=fixture.campaign,
+                        source_root=fixture.source,
+                        live_tap_root=fixture.live,
+                        expected_live_commit=fixture.live_commit,
+                        expected_live_tree_git_oid=fixture.live_tree,
+                        snapshot_root=snapshots,
+                    )
+
     def test_final_tap_rejects_non_descendant_live_parent(self) -> None:
         fixture = FinalTapFixture()
         self.addCleanup(fixture.close)
@@ -2358,7 +2438,7 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             "refs/heads/final-prefix",
         )
 
-    def test_sealed_overlay_replay_accepts_exact_target_preimage(
+    def test_sealed_overlay_replay_accepts_absent_and_target_preimages(
         self,
     ) -> None:
         fixture = FinalTapFixture()
@@ -2373,6 +2453,7 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             source_commit,
             fixture.campaign,
         )
+        self.assertTrue(any(base is None for _path, base, _target in records))
         candidate = EXECUTOR.git_snapshot(
             fixture.live,
             fixture.base_commit,
@@ -2613,6 +2694,41 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
                 output_ref="refs/heads/substituted-finalization",
                 commit_receipt_output=(
                     fixture.root / "substituted-finalization-commit.json"
+                ),
+            )
+
+        source_candidate = fixture.root / "substituted-source-candidate"
+        shutil.copytree(candidate, source_candidate)
+        completion_path = (
+            source_candidate / EXECUTOR.CAMPAIGN_COMPLETION_PATH
+        )
+        completion = json.loads(completion_path.read_text())
+        completion["source"]["source_tap_tree_git_oid"] = "f" * 40
+        write_json(completion_path, completion)
+        source_finalization = fixture.root / "substituted-source.json"
+        source_value = json.loads(finalization.read_text())
+        source_value["source"] = completion["source"]
+        source_value["completion"]["sha256"] = sha256(
+            completion_path.read_bytes()
+        )
+        source_value["candidate"]["tree_git_oid"] = (
+            EXECUTOR.filesystem_git_tree_oid(
+                source_candidate,
+                "substituted source candidate",
+            )
+        )
+        write_json(source_finalization, source_value)
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "live history differs from its source replay",
+        ):
+            EXECUTOR.create_final_tap_commit(
+                candidate_tap_root=source_candidate,
+                finalization_path=source_finalization,
+                live_tap_root=fixture.live,
+                output_ref="refs/heads/substituted-source",
+                commit_receipt_output=(
+                    fixture.root / "substituted-source-commit.json"
                 ),
             )
 

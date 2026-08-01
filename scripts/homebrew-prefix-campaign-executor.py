@@ -4243,6 +4243,10 @@ def create_final_tap_commit(
         pass
     else:
         fail("finalization receipt must be outside the candidate tap")
+    # WHY: the candidate and receipt are paired local outputs from
+    # prepare_final_tap, not independently delegated or downloaded authority.
+    # Recheck every fact available from the live Git object database here;
+    # campaign composition itself remains inside that earlier trusted step.
     finalization, finalization_payload = validate_finalization_candidate(
         candidate_tap_root=candidate_tap_root,
         finalization_path=finalization_path,
