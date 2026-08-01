@@ -87,7 +87,14 @@ The browser demo, user guide, and generated host API documentation share one
 write that branch.
 
 The workflow checks out one source commit and builds all three trees in one
-job. It then publishes that complete tree as a fresh orphan commit. Replacing
+job. Browser preparation uses a fresh package cache and fetch-only resolution;
+Pages cannot source-build a missing canonical archive. Before building the
+site, the workflow binds the selected shell to its sealed artifact lock,
+deferred `/usr/bin/brew` source archive, and content-derived immutable bottle
+mirror plan. Chromium then boots the assembled public-transport shell and
+activates the lazy Homebrew runtime before deployment.
+
+The workflow publishes that complete tree as a fresh orphan commit. Replacing
 the branch is intentional: Vite gives browser assets content-addressed names,
 so retaining files from earlier builds would preserve obsolete names and grow
 the published site without bound. Before publication, the workflow sums the

@@ -760,74 +760,57 @@ directly. That package is the strict bottle-backed product recipe: its tap
 commit, Formula closure, bottle identities, and lazy-artifact lock fail closed.
 `./run.sh --fetch-only build shell-vfs` therefore refuses source fallback.
 
-Required pull-request and default-branch CI also need to validate the exact
-checkout before its final bottles exist. That provisional lane explicitly
-stages the separate, non-published
-`homebrew/source-rootfs-shell-package` recipe. This is an internal Pages lane,
-not a supported developer build mode. The workflow selects it with
-`./run.sh prepare-browser --source-rootfs-shell`, supplies the exact event
-repository and commit through
-`WASM_POSIX_SOURCE_ROOTFS_SHELL_REPOSITORY` and
-`WASM_POSIX_SOURCE_ROOTFS_SHELL_COMMIT`, and attests
-`WASM_POSIX_SOURCE_ROOTFS_SHELL_ISOLATION=pages-exact-main-v1`. The command
-also verifies the actual GitHub Actions workflow, job, main-branch checkout,
-repository, commit, workspace, run identity, and the workflow's
-`${{ runner.environment }}` attestation before mutation. It accepts only the
-reviewed GitHub-hosted Linux job. That job requires the workflow-created exact
-empty current-ABI file index, a nonexistent sibling cache path under
-`RUNNER_TEMP`, and an otherwise unmaterialized
-`local-binaries`/`binaries`/`local-libs` workspace.
+Pull-request and default-branch Homebrew shell CI select that canonical bottled
+product too. Pre-publication checks recover its exact mirror into a closed,
+same-run transport, so they can prove Node.js and Chromium behavior without
+claiming that an immutable public release already exists. The manual cutover
+lane additionally binds the exact live Kandelo, first-party tap, and
+independent canary revisions and exercises first- and third-party guest
+Homebrew operations.
 
-The bridge closure is first staged and inspected entirely under the disposable
-runner's temporary directory. Only then is the exact artifact installed
-through canonical package ownership. A temporary `local-libs` resolver
-override feeds that pinned generation to transitive image recipes without
-invoking the canonical shell recipe. The stable `/shell.vfs.zst` copy is
-verified in a same-directory temporary file and published by atomic rename.
-After the final browser closure check, the transient resolver link and override
-are removed and the remaining canonical and public bytes are rechecked.
-Failure or cancellation stops the job before its later build, browser seal,
-freshness, and deployment steps; any partial canonical state remains only on
-that disposable failed runner. The workflow contract rejects
-`continue-on-error` and failure-status overrides on those steps. An
-untrappable `SIGKILL` or runner loss can skip link/temp cleanup, but cannot
-publish that runner's partial tree. Ordinary `prepare-browser` never
-interprets or cleans up this internal lane.
+That closed proof does not authorize deployment by itself. The protected tap
+must first publish the immutable bottle mirror from `TA0`, then publish the
+separate transitional lifecycle inputs from descendant `TA1` and pass the
+anonymous public Node.js and Chromium lifecycle. Only that complete public
+proof admits the Pages cutover below.
 
-While this temporary source lane is active, every push to `main` starts the
-Pages workflow. The source-shell closure includes transitive package recipes,
-shared build scripts, package actions, SDK/sysroot inputs, and fork
-instrumentation; a hand-maintained path filter could otherwise leave the
-published product on an older closure when a newly shared input changes. The
-temporary Homebrew main-shell gate likewise runs for every pull request and
-`main` push so the exact Node/Chromium validation cannot be skipped by the
-same kind of allowlist drift.
+GitHub Pages is a public product consumer, not a package producer. Its sole
+publisher starts with a fresh resolver cache and runs
+`./run.sh --fetch-only prepare-browser`; any missing or stale canonical archive
+therefore stops deployment instead of falling back to a source build. It
+requires the resolved shell bytes to match both the browser's public copy and
+the sealed lazy-artifact lock. A read-only inspector then verifies that those
+exact bytes still contain:
 
-Its complete direct dependency contract is declared once in
-`homebrew/source-rootfs-shell-dependencies.json`; the workflow uses an empty
-binary index and a fresh cache so every buildable dependency is produced from
-its checksum-pinned source. The composer consumes only resolver-owned outputs
-and has no tap, bottle-registry, binary-mirror, or ambient network fallback.
-Bash is materialized into its existing `/bin/bash` and `/usr/bin/bash` hardlink
-identity because every shell boot needs it; rootfs utilities and the extended
-shell tools remain lazy. Vim and NetHack retain package-owned,
-integrity-bound lazy archive trees.
+- one deferred Homebrew bootstrap ZIP selected by `/usr/bin/brew`;
+- the complete deferred bottle-tree inventory;
+- the canonical embedded bottle-mirror plan and its content-derived immutable
+  release URL; and
+- the same first-party catalog named by the runtime-support contract.
 
-The bottle shell's base demo metadata describes only the shell it actually
-owns. The temporary source bridge composes
-`homebrew/source-rootfs-shell-demo-profiles.json` because that bridge also
-installs fbDOOM and modeset eagerly. Its composer binds each added profile's
-`autoCommand` to the corresponding executable in the image. This keeps
-optional-demo promises with the image layer that supplies their bytes; future
-bottle layers for those programs should carry the same profile ownership when
-the temporary bridge is retired.
+The inspector reads the small plan from the image; it does not eagerly download
+the mirror payloads. After Vite assembles the complete `/kandelo/` tree, the
+Pages workflow compares its shell copy with the resolver-selected image and
+runs the public-transport Chromium shell acceptance. That acceptance downloads
+only the bottle groups it exercises, keeps untouched tools lazy, activates the
+deferred Homebrew runtime through `/usr/bin/brew`, and verifies every fetched
+digest and byte count against the embedded plan. Publication, documentation,
+size, freshness, and single-writer checks run only after that proof succeeds.
 
-The main-shell gate installs that provisional output and verifies the same
-bytes in Node and Chromium. Its sealed browser proof runs eager Bash, a
-rootfs-owned lazy `grep`, extended lazy `less`, and integrity-bound Vim and
-NetHack archive entries. The final bottle lane remains separate and keeps the
-canonical shell's artifact lock enabled; an explicit closed lifecycle dispatch
-must prove the exact default-branch producer and tap revisions before cutover.
+Every push to `main` still starts the Pages workflow. The browser product is a
+transitive package projection whose ownership and shared inputs can grow; a
+hand-maintained path filter could otherwise leave Pages on an older admitted
+generation. The Homebrew main-shell gate likewise runs for every pull request
+and `main` push so its closed Node.js/Chromium proof cannot be skipped by
+allowlist drift.
+
+The earlier `homebrew/source-rootfs-shell-package` implementation remains in
+the tree temporarily as inactive migration and diagnostic plumbing. Direct
+`--source-rootfs-shell` use is still restricted to its original attested Pages
+environment, but the canonical Pages workflow no longer supplies that
+environment or calls the mode. It cannot satisfy the public product,
+artifact-lock, or immutable-mirror gates. Deleting that dormant bridge is a
+separate cleanup and does not block the bottled-shell cutover.
 
 ### Adding a new VFS image
 
