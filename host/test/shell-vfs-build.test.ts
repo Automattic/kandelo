@@ -15,6 +15,7 @@ import {
   loadShellBaseFileSystemFromImage,
   populateShellEnvironment,
   saveShellDerivedVfsImage,
+  SOURCE_ROOTFS_SHELL_COMPOSITION,
 } from "../../images/vfs/scripts/shell-vfs-build";
 import { restoreTrustedShellRootfs } from "../../images/vfs/scripts/shell-rootfs-restore";
 import {
@@ -108,6 +109,23 @@ function shellImageMetadata(maxByteLength: number): VfsImageMetadata {
       },
     },
     sourceAttestation: { mustNotBeRelabeledAsDerived: true },
+  };
+}
+
+function sourceShellImageMetadata(
+  maxByteLength: number,
+): VfsImageMetadata {
+  return {
+    version: 1,
+    kernelAbi: ABI_VERSION,
+    createdBy: "build-source-rootfs-shell-image",
+    capacity: { maxByteLength },
+    baseImage: {
+      sha256: "c".repeat(64),
+      bytes: 234_567,
+      kernelAbi: ABI_VERSION,
+    },
+    shellComposition: SOURCE_ROOTFS_SHELL_COMPOSITION,
   };
 }
 
@@ -396,6 +414,127 @@ describe("shell VFS base composition", () => {
       saveShellDerivedVfsImage(fs, "/tmp/not-written.vfs.zst")
     ).toThrow(/omits inherited shell image metadata/);
   });
+
+  it("preserves source composition without inventing Homebrew authority", async () => {
+    const sourceFs = MemoryFileSystem.create(
+      new SharedArrayBuffer(4 * MiB, { maxByteLength: 256 * MiB }),
+      256 * MiB,
+    );
+    sourceFs.setImageMetadata({
+      version: 1,
+      kernelAbi: ABI_VERSION,
+      createdBy: "build-source-rootfs-shell-image",
+      capacity: { maxByteLength: 256 * MiB },
+      shellComposition: SOURCE_ROOTFS_SHELL_COMPOSITION,
+    });
+    sourceFs.mkdir("/etc", 0o755);
+    sourceFs.mkdir("/etc/kandelo", 0o755);
+    writeFile(sourceFs, DEMO_CONFIG_PATH, SOURCE_DEMO_CONFIG);
+    const sourceImage = await sourceFs.saveImage();
+    const fs = await loadShellBaseFileSystemFromImage(
+      sourceImage,
+      SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+    );
+    writeFile(fs, "/product.txt", "source-derived product");
+    const dir = mkdtempSync(join(tmpdir(), "shell-derived-source-"));
+    try {
+      const image = await saveShellDerivedVfsImage(
+        fs,
+        join(dir, "product.vfs.zst"),
+      );
+
+      expect(MemoryFileSystem.readImageMetadata(image)).toEqual({
+        version: 1,
+        kernelAbi: ABI_VERSION,
+        createdBy: "images/vfs/scripts/saveShellDerivedVfsImage",
+        capacity: {
+          maxByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+        },
+        baseImage: {
+          sha256: sha256Hex(sourceImage),
+          bytes: sourceImage.byteLength,
+          kernelAbi: ABI_VERSION,
+        },
+        shellComposition: SOURCE_ROOTFS_SHELL_COMPOSITION,
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an unclassified or malformed source shell composition", () => {
+    const fs = MemoryFileSystem.create(
+      new SharedArrayBuffer(16 * MiB, {
+        maxByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+      }),
+      SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+    );
+    const metadata = sourceShellImageMetadata(256 * MiB);
+    delete metadata.shellComposition;
+    fs.setImageMetadata(metadata);
+
+    expect(() =>
+      saveShellDerivedVfsImage(fs, "/tmp/not-written.vfs.zst")
+    ).toThrow(/omits a supported shell composition binding/);
+
+    fs.setImageMetadata({
+      ...metadata,
+      shellComposition: { schema: 2, kind: "source-rootfs" },
+    });
+    expect(() =>
+      saveShellDerivedVfsImage(fs, "/tmp/not-written.vfs.zst")
+    ).toThrow(/invalid source shell composition binding/);
+  });
+
+  it.each([
+    ["package tree", { packageDeferredTrees: [] }],
+    ["bootstrap", { homebrewBootstrap: {} }],
+    ["composition", { homebrew: {} }],
+  ] as const)(
+    "rejects a source shell that smuggles a Homebrew %s claim",
+    (_label, claim) => {
+      const fs = MemoryFileSystem.create(
+        new SharedArrayBuffer(16 * MiB, {
+          maxByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+        }),
+        SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+      );
+      fs.setImageMetadata({
+        ...sourceShellImageMetadata(256 * MiB),
+        ...claim,
+      });
+
+      expect(() =>
+        saveShellDerivedVfsImage(fs, "/tmp/not-written.vfs.zst")
+      ).toThrow(/mixes source and Homebrew composition bindings/);
+    },
+  );
+
+  it.each([
+    ["packageDeferredTrees", /omits inherited package tree bindings/],
+    ["homebrewBootstrap", /omits valid Homebrew bootstrap ownership/],
+    ["homebrew", /omits valid Homebrew composition metadata/],
+  ] as const)(
+    "rejects a Homebrew shell missing its %s binding",
+    (field, error) => {
+      const fs = MemoryFileSystem.create(
+        new SharedArrayBuffer(16 * MiB, {
+          maxByteLength: SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+        }),
+        SHELL_DERIVED_VFS_PROFILE_MAX_BYTES,
+      );
+      const metadata = shellImageMetadata(512 * MiB);
+      delete metadata[field];
+      fs.setImageMetadata(metadata);
+      fs.mkdir("/etc", 0o755);
+      fs.mkdir("/etc/kandelo", 0o755);
+      writeFile(fs, DEMO_CONFIG_PATH, SOURCE_DEMO_CONFIG);
+
+      expect(() =>
+        saveShellDerivedVfsImage(fs, "/tmp/not-written.vfs.zst")
+      ).toThrow(error);
+    },
+  );
 
   it("serializes equivalent derived products reproducibly across wall clocks", async () => {
     const sourceDateEpochSeconds = 946_684_800;

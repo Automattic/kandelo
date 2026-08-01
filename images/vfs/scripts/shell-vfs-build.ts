@@ -58,6 +58,11 @@ import {
 const SHELL_DERIVED_CREATED_BY =
   "images/vfs/scripts/saveShellDerivedVfsImage";
 
+export const SOURCE_ROOTFS_SHELL_COMPOSITION = {
+  schema: 1,
+  kind: "source-rootfs",
+} as const;
+
 function depEnvKey(name: string): string {
   return name.replaceAll("-", "_").toUpperCase();
 }
@@ -263,6 +268,50 @@ function shellDerivedImageMetadata(
   ) {
     throw new Error("shell-derived VFS has an invalid direct shell base binding");
   }
+
+  const sourceComposition = inherited.shellComposition;
+  const homebrewClaims = [
+    inherited.packageDeferredTrees,
+    inherited.homebrewBootstrap,
+    inherited.homebrew,
+  ];
+  if (sourceComposition !== undefined) {
+    if (
+      !isExactSourceRootfsShellComposition(sourceComposition)
+    ) {
+      throw new Error(
+        "shell-derived VFS has an invalid source shell composition binding",
+      );
+    }
+    if (homebrewClaims.some((claim) => claim !== undefined)) {
+      throw new Error(
+        "shell-derived VFS mixes source and Homebrew composition bindings",
+      );
+    }
+    // WHY: the internal source shell carries ordinary lazy URLs, not the
+    // package and closed-mirror authority owned by a bottled Homebrew shell.
+    // Preserve its explicit source identity without inventing Homebrew claims.
+    // Its demo file remains in the VFS, but `homebrew.demoConfig` is itself a
+    // Homebrew composition claim and therefore cannot truthfully be copied.
+    return {
+      version: 1,
+      kernelAbi,
+      createdBy: SHELL_DERIVED_CREATED_BY,
+      capacity: { maxByteLength },
+      baseImage: {
+        sha256: baseSha256,
+        bytes: baseBytes,
+        kernelAbi,
+      },
+      shellComposition: SOURCE_ROOTFS_SHELL_COMPOSITION,
+    };
+  }
+
+  if (homebrewClaims.every((claim) => claim === undefined)) {
+    throw new Error(
+      "shell-derived VFS omits a supported shell composition binding",
+    );
+  }
   if (!Array.isArray(inherited.packageDeferredTrees)) {
     throw new Error("shell-derived VFS omits inherited package tree bindings");
   }
@@ -302,6 +351,18 @@ function shellDerivedImageMetadata(
       },
     },
   };
+}
+
+function isExactSourceRootfsShellComposition(value: unknown): boolean {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    record.schema === SOURCE_ROOTFS_SHELL_COMPOSITION.schema &&
+    record.kind === SOURCE_ROOTFS_SHELL_COMPOSITION.kind &&
+    Object.keys(record).sort().join("\0") === "kind\0schema"
+  );
 }
 
 function requiredRecord(

@@ -1,5 +1,10 @@
 # Homebrew Publishing
 
+For a plain-language map of the complete system, including ABI-bump
+operations, lazy VFS images, guest `brew`, and third-party taps, start with
+[Kandelo Homebrew Packaging](homebrew-packaging-system.md). This document is
+the detailed publication and validation reference.
+
 Kandelo's Homebrew publishing path is a bottle publication and validation
 pipeline shared by the first-party tap and conventional third-party taps. The
 implementation lives in the main `Automattic/kandelo` repository; the
@@ -97,10 +102,11 @@ architecture-bound content tag.
 The preserved schema-1 `rootfs-wasm32` generation is a narrower migration
 bridge. It supplies the fixed wasm32 Formula build/test runtime packages; the
 workflow builds the current-main sysroot and SDK separately, and the generation
-does not contain the target Formula's output bottle. This lane accepts only
-write publication, exactly `wasm32`, and no dependency-bearing VFS acceptance.
-Dry runs are rejected until the exact public generation can be materialized
-without exposing a repository token to branch-selected source.
+does not contain the target Formula's output bottle. This lane accepts exactly
+`wasm32` and no dependency-bearing VFS acceptance. Ordinary dry runs are
+rejected. The one exception is the prefix campaign's first-package bootstrap
+phase: it uses exact protected-history commits, an exact public generation,
+and sealed campaign authority rather than branch-selected source.
 
 After cache-key planning removes already-current bottles, the publisher parses
 only the Formulae that will actually build. The static parser runs with the
@@ -389,7 +395,7 @@ to `HOMEBREW_KANDELO_PRIMARY_TAP_ROOT` before isolation. The launcher then makes
 the whole Homebrew tap store read-only. That store is rooted under the active
 reviewed Homebrew repository worktree, where Homebrew actually clones taps,
 rather than under `HOMEBREW_PREFIX`; the publisher deliberately keeps the
-canonical Linuxbrew prefix while running a separate patched repository
+canonical Kandelo prefix while running a separate patched repository
 worktree. Active
 Tier-2 evaluation therefore resolves and attests the selected Formula under the
 primary tap root regardless of whether Homebrew loaded primary or dependency
@@ -500,12 +506,32 @@ short-name helper. This patch protects bottle metadata creation and guest
 loading; production publication continues to use Kandelo's independently
 validated, credential-isolated OCI/ORAS transport described below.
 
-The supported prefix and cellar are:
+The guest-prefix campaign targets:
 
 ```text
-/home/linuxbrew/.linuxbrew
-/home/linuxbrew/.linuxbrew/Cellar
+/opt/kandelo/homebrew
+/opt/kandelo/homebrew/Cellar
 ```
+
+These are Kandelo guest paths, not Linuxbrew paths. They become the
+supported product layout only when the atomic guest-prefix campaign and
+shell cutover land. The currently deployed bottle-backed shell and the
+diagnostic bootstrap still use the transitional
+`/home/linuxbrew/.linuxbrew` prefix. Do not describe that transitional
+layout as the campaign endpoint.
+
+The target guest uses the existing `/home/user` account for writable
+cache and configuration state and exposes `/usr/bin/brew` as the stable
+command. After cutover, new images must not create a `linuxbrew` user,
+install below `/home/linuxbrew`, or add a compatibility symlink for the
+retired guest prefix.
+
+The machine-readable contract is
+`homebrew/kandelo-guest-layout.json`. Bottle admission scans every regular
+archive member for the contract's retired prefixes. This byte scan is
+intentional: some bottles marked `:any_skip_relocation` still contain
+functional compiled paths, so Homebrew's relocation metadata cannot by itself
+prove that an old-prefix bottle is safe to reuse.
 
 Trusted CI applies this patch to a temporary Homebrew worktree. A short-lived
 root-owned launcher under the selected Homebrew prefix loads that worktree
@@ -598,8 +624,8 @@ For formulae that build Kandelo Wasm artifacts:
    transitional registry bridge, not the destination architecture.
 2. Install only the produced Wasm artifacts into the Homebrew keg.
 3. Preserve Homebrew's prefix and cellar model:
-   `/home/linuxbrew/.linuxbrew` and
-   `/home/linuxbrew/.linuxbrew/Cellar`.
+   `/opt/kandelo/homebrew` and
+   `/opt/kandelo/homebrew/Cellar`.
 4. Put runtime validation in `test do`, but execute Wasm through Kandelo
    rather than as a host Linux binary.
 5. Update Homebrew `revision` or bottle `rebuild` when bottle bytes should move
@@ -966,7 +992,7 @@ library bottle with a dependency source build.
 A Kandelo target Formula and a package in its native host-tool closure can have
 the same short Homebrew name. For example, the Kandelo `bzip2` build can require
 native WABT, whose host-side dependency closure can itself contain native `bzip2`.
-Putting both packages in `/home/linuxbrew/.linuxbrew/Cellar/bzip2` makes
+Putting both packages in `/opt/kandelo/homebrew/Cellar/bzip2` makes
 Homebrew treat the host package as a recursive dependency of the target
 Formula. Dependency ordering cannot fix that namespace collision.
 
@@ -1187,12 +1213,15 @@ and bootstrap environment. No personal access token (PAT), GitHub App token,
 cross-repository workflow artifact, run ID, or caller-selected artifact
 repository participates in either handoff.
 
-The fixed lifecycle inputs use a separate content-addressed immutable release
-in the first-party tap. The shell image is a member of its package archive,
+The fixed lifecycle inputs use a separate content-addressed immutable
+release in the first-party tap. The shell image is a member of its package
+archive,
 while the bootstrap ZIP and environment still come from the transitional
-Kandelo registry package named `homebrew-bootstrap`. This proof retains
-`/home/linuxbrew/.linuxbrew` temporarily and keeps `/usr/bin/brew` as the
-stable guest entry point. It does not claim those bootstrap bytes are
+Kandelo registry package named `homebrew-bootstrap`. The deployed lifecycle
+still uses `/home/linuxbrew/.linuxbrew` and keeps `/usr/bin/brew` as the
+stable entry point. The guest-prefix campaign replaces that layout with
+`/opt/kandelo/homebrew`; it has not done so merely because the target
+contract exists. The lifecycle does not claim those bootstrap bytes are
 Formula-owned.
 
 The browser's lazy Homebrew bootstrap requires direct asset URLs, and the
@@ -1774,7 +1803,7 @@ protected `main` branch may select it. Each call must:
 
 - publish exactly one Formula;
 - publish exactly one architecture;
-- use write mode and a forced rebuild;
+- use a forced rebuild;
 - set `defer-tap-finalization: true`;
 - disable ordinary VFS acceptance; and
 - provide one content-addressed campaign tag plus the exact, canonical
@@ -1782,6 +1811,55 @@ protected `main` branch may select it. Each call must:
 
 Ordinary, maintenance, dry-run, and third-party workflow names cannot
 pass campaign authority or defer tap finalization.
+
+Most campaign calls use write mode. A Formula whose destination was
+anonymously proven absent follows that ordinary path. A newly reviewed
+Formula may instead carry the exact destination admission
+`first-package-namespace-bootstrap-required`. That admission is valid only
+when the anonymous probe returned `auth-required` and every variant is a
+reviewed new entrant requiring a build. An existing, reused, or ordinary
+Formula cannot opt into this lane.
+
+The bootstrap lane has four phases:
+
+1. The ordinary reusable publisher runs once in dry-run mode. It builds and
+   validates the exact bottle but performs no package write.
+2. The first-child reusable validates the campaign admission, strict build
+   handoff, and deterministic OCI child. It may publish only that child.
+3. The ordinary publisher runs again in write mode. It creates or verifies
+   the normal version index, runs the normal runtime checks, and emits the
+   normal publication handoff.
+4. The tap controller seals only the ordinary handoff. The bootstrap-only
+   evidence never substitutes for Formula finalization.
+
+All Actions artifacts produced by phase 1 use the fixed prefix
+`prefix-campaign-bootstrap-dry-run-`. The caller cannot choose this prefix.
+The later write run uses the original artifact names in the same workflow
+run, so the two invocations cannot collide or cause the tap controller to
+download bootstrap evidence as a normal handoff.
+
+The first-child reusable is:
+
+```text
+.github/workflows/reusable-homebrew-prefix-first-child-publish.yml
+```
+
+It uses the same Formula-scoped GHCR concurrency group as normal child,
+index, canary, and maintenance writers. Before credentials can reach ORAS,
+it binds both prefixed artifacts to the current workflow run, re-materializes
+the sealed campaign source, and validates the build handoff and OCI child
+against the exact Kandelo commit, tap commit, Formula, architecture, ABI,
+bottle bytes, and campaign guest-layout digest.
+
+The destination preflight has only two successful outcomes. If the exact
+child digest is already anonymously public, the workflow resumes read-only:
+it does not log in or copy bytes. Otherwise, authenticated inspection must
+prove both the selected child reference and the whole package repository are
+absent immediately before the single child upload. A different public digest,
+an existing private reference or package, an ambiguous transport response,
+or a private post-upload result fails closed. This reusable never publishes
+an index, edits a Formula, generates sidecars, emits the normal publication
+handoff, or finalizes the tap.
 
 The campaign keeps public source identity separate from local execution
 identity:
@@ -1808,10 +1886,11 @@ The campaign also binds the path and SHA-256 of
 exact bytes in its Kandelo checkout. It then carries the digest through
 Formula closure, bottle build, dependency provenance, build and upload
 handoffs, bottle verification, sidecar preparation, and final handoff
-validation. Only this campaign digest selects
-`/opt/kandelo/homebrew` and `/opt/kandelo/homebrew/Cellar`. No digest
-selects the still-active layout for an ordinary publication; a campaign
-with a missing or different digest fails.
+validation. Both ordinary publication and campaign publication use the
+canonical `/opt/kandelo/homebrew` prefix and its `Cellar`. Supplying the
+campaign digest does not select different paths; it proves that an
+already-sealed campaign still names the exact committed layout bytes. A
+campaign with a missing or different required digest fails.
 
 `homebrew/guest-prefix-campaign-inputs.json` classifies each Formula that
 exists in the candidate source but has no selected sidecar yet. A required
@@ -1905,6 +1984,80 @@ migration handoffs are present, the campaign separately composes and
 validates the complete live tap, then updates `main` once under the
 tap-wide state lock.
 
+`prepare-final-tap` performs the composition without changing Git state.
+It requires the sealed campaign source, one complete handoff for every
+Formula and architecture, and an exact clean live-tap parent commit and
+tree. The live parent must contain the campaign's exact source commit
+and tree. Changes after that source commit are limited to the explicit
+campaign controller, trust-test, workflow, and campaign-documentation
+paths reviewed for activation. A changed or newly added Formula,
+recipe, Formula helper, or any other path fails closed even when
+today's complete-tap validator would not discover it.
+
+Composition starts from an immutable snapshot of the exact live tree.
+The finalizer verifies that every overlay path still has its sealed
+preimage (or is still absent), then replays only the listed target
+files. This preserves the reviewed activation changes instead of
+replacing the live tree with the overlay's older base. It regenerates
+bottle blocks and current sidecars, preserves historical failure and
+rollback evidence, validates the complete tap, and only then removes
+the four paths listed in
+`CAMPAIGN_RETIREMENT_PATHS`. The schema-2 completion and finalization
+receipts bind the base, complete source commit and tree, overlay
+payload, historical sealed target, replayed source tree, replayed live
+tree, exact live parent, and final candidate tree. The candidate
+records completion at
+`Kandelo/campaigns/prefix-v1/completion.json`; a separate canonical
+finalization receipt binds its tree to the expected live parent.
+
+`create-final-tap-commit` consumes that candidate and receipt. It stages
+the candidate through a private Git index, reproduces one deterministic
+single-parent commit, and atomically creates a previously absent local
+`refs/heads/...` ref. It does not change the live checkout, move `main`,
+push, or call GitHub. If receipt creation fails, it removes the new ref.
+The candidate and receipt are paired local outputs of
+`prepare-final-tap`. They are not downloadable or independently
+delegated authority. The commit step rechecks the exact live parent,
+source and base trees, ancestry, allowed live drift, and candidate tree
+from local Git. It does not rerun campaign composition without the
+campaign and handoff inputs. Both commands therefore run in the same
+trusted controller workspace; crossing a trust boundary requires
+running `prepare-final-tap` again.
+The tap controller must still hold the tap-wide state lock, recheck the
+same live parent, push the prepared commit with compare-and-swap
+semantics, and publish the commit receipt.
+
+```sh
+bash scripts/dev-shell.sh python3 \
+  scripts/homebrew-prefix-campaign-executor.py prepare-final-tap \
+  --campaign campaign.json \
+  --source-tap-root target-tap \
+  --live-tap-root live-tap \
+  --handoff handoffs/zlib \
+  --expected-live-commit "$LIVE_COMMIT" \
+  --expected-live-tree-git-oid "$LIVE_TREE" \
+  --out final-tap \
+  --finalization-out finalization.json
+
+bash scripts/dev-shell.sh python3 \
+  scripts/homebrew-prefix-campaign-executor.py create-final-tap-commit \
+  --candidate-tap-root final-tap \
+  --finalization finalization.json \
+  --live-tap-root live-tap \
+  --output-ref refs/heads/prefix-v1-final \
+  --commit-receipt-out final-commit.json
+```
+
+Repeat `--handoff` for every campaign Formula/architecture variant. The
+finalizer expands every input handoff into a variant-keyed inventory, so
+separate `wasm32` and `wasm64` handoffs for the same Formula are expected.
+A handoff may contain more than one architecture only when its dependency
+evidence is valid for every included architecture. Missing, extra,
+duplicated, wrong-architecture, or dependency-inconsistent variants fail
+before either output appears. Each dependency must resolve to the handoff
+for the same architecture; a valid `wasm32` dependency cannot authorize a
+`wasm64` consumer.
+
 An ABI transition lands its coherent source and package changes through the
 ordinary Kandelo merge process first. The normal path then rebuilds final
 package archives and canonical bottles from exact resulting `main`. When an
@@ -1955,6 +2108,59 @@ its sealed manifest classifies that exact Formula/architecture as
 record, full archive inspection, historical Formula source, Formula/link
 sidecars, provenance report, candidate Formula identity, current ABI, and
 guest-layout digest.
+
+The old tap checkout is an object database as well as the current catalog.
+The campaign finds the newest reachable commit that wrote the exact selected
+`Kandelo/metadata.json` bytes and reads old bottle blocks from that commit. It
+records this as `old_catalog_commit`. A bottle's `built_from.tap_commit` and
+the metadata's `tap_commit` instead identify earlier publisher inputs; they
+cannot identify the commit that embeds the final metadata because a Git commit
+cannot contain its own eventual SHA. Current tap source may already contain
+the next unpublished Formula, while an extra stale sidecar may predate the
+selected catalog. Using any of those as the old bottle-block authority would
+mix package generations or reuse a reserved rebuild number.
+
+An older-ABI bottle is never passed through the current ABI's executable
+validator. It is already an unconditional rebuild, and obsolete fork
+instrumentation must continue to fail current-ABI admission. The campaign
+still verifies its anonymous bytes, safe bounded TAR structure, complete path
+scan, retired prefixes, archived Formula receipt, and declared dependency
+closure. Its inspection records `not-inspected-incompatible-abi`, making clear
+that archive evidence is not an executable compatibility claim.
+
+A candidate Formula may advance its Homebrew `pkg_version` during the
+campaign. The manifest keeps the old version on the historical bottle,
+requires a bottleless candidate Formula, and reserves rebuild zero in the new
+version's independently probed registry namespace. The old bytes always
+require a build in this case; the campaign never relabels them as the new
+version. An unchanged `pkg_version` continues to reserve a rebuild above the
+selected bottle block instead.
+
+Campaign manifest schema 2 gives every Formula a versioned
+`destination.admission` record. Admission schema 1 contains exactly the
+anonymous manifest probe, its method, and one of two states:
+
+- `anonymous-absence` means the credential-free probe returned `missing`.
+  This is the ordinary build or reuse-publication path.
+- `first-package-namespace-bootstrap-required` means the credential-free
+  probe returned `auth-required`. GHCR uses that response both for a new
+  package namespace and for an existing private package, so it is not proof
+  of absence. This state only permits a Formula classified by the reviewed
+  campaign inputs as a source-only `required-build` entrant. The protected
+  first-package publisher must later authenticate, prove that the repository
+  namespace is missing, create the first public child, and complete anonymous
+  readback.
+
+A sidecar-backed Formula, a reuse candidate, or any Formula whose manifest is
+already present cannot use the bootstrap state. Those cases fail during
+campaign derivation. The executor repeats the same eligibility checks so a
+rewritten campaign manifest cannot route an existing or reused package through
+first-package publication.
+
+Candidate dependency versions come from the same exact Homebrew metadata
+resolution. When that closure differs from the historical Formula sidecar,
+the dependent bottle also requires a build. This prevents a campaign from
+publishing new dependency metadata beside bytes built for the old closure.
 
 `homebrew-prefix-campaign-executor.py derive-reuse` consumes that authority.
 It requires the sealed candidate source tree and a clean old-tap checkout at
@@ -2036,7 +2242,9 @@ Formula, dirty or different tap checkout, fixed-identity mismatch, malformed
 old index, or ordinary non-forced run still fails; a finalized bottle with
 changed bytes requires a new Formula bottle `rebuild`.
 
-The original repository-namespace visibility canary was a separate, one-shot
+#### Legacy one-shot visibility canary
+
+The original repository-namespace visibility canary is a separate, one-shot
 transport path used to select the production bottle-root contract. Its exact
 reviewed caller on `Kandelo-dev/homebrew-tap-core@main` received only the caller
 repository's `github.token` and passed no package PAT secret. It downloaded the
@@ -2050,7 +2258,7 @@ private packages. Normal publication therefore uses the exact
 repository-rooted namespace and the scoped `github.token`; no visibility
 mutation or PAT is part of the production path.
 
-The same reusable workflow now exposes a bounded first-child publication API
+That legacy reusable workflow exposes a bounded first-child publication API
 for a real Formula whose repository-rooted package does not yet exist. This is
 not a marker upload and is not a weaker mode of campaign admission. The
 protected tap caller fixes the Formula and architecture, then passes one exact
@@ -2087,7 +2295,7 @@ the first-publication proof and must be excluded operationally; anonymous
 exact-digest readback still proves the child bytes that became public, not
 exclusive authorship against an external race.
 
-First-child publication deliberately stops after that immutable child upload.
+Legacy canary publication deliberately stops after that immutable child upload.
 It does not publish the mutable version index, edit Formulae, generate
 sidecars, finalize tap state, or constitute post-publication acceptance. Once
 the package exists, replay of this path must fail; the normal publisher must
@@ -2106,7 +2314,7 @@ and all unrelated Formulae retain parallel throughput:
 1. `build-and-test` is read-only. It checks out the exact inputs and reviewed
    Homebrew/brew commit, and exposes the patched temporary Homebrew worktree
    through a root-owned launcher under the canonical
-   `/home/linuxbrew/.linuxbrew` target prefix. Native host dependencies use a
+   `/opt/kandelo/homebrew` target prefix. Native host dependencies use a
    separate ephemeral prefix, preventing their Cellar racks from colliding
    with Kandelo target Formulae. Within that read-only build, all
    Formula-evaluating Homebrew commands run as a distinct
@@ -2384,7 +2592,19 @@ and all unrelated Formulae retain parallel throughput:
    It uses the locally built bottle in dry-run mode. In write mode it discards
    that bottle as runtime evidence, anonymously imports and validates the exact
    public top-index-to-child-to-layer graph, and rechecks the selected layer's
-   SHA-256 and byte count. ORAS may expose the copied top index and its child
+   SHA-256 and byte count. The preliminary layer readback uses the same GHCR
+   bearer-authentication path as runtime fetching, but it does not collect the
+   response in memory. It streams into a newly created output file while
+   incrementally counting and hashing bytes. The verifier loads the 2 GiB
+   compressed-bottle bound from `scripts/homebrew-publication-limits.sh`,
+   rejects the first byte beyond either the declared size or that bound, and
+   removes its partial file before a retry. Exclusive creation prevents a
+   retry or concurrent process from replacing a file already at the output
+   path. This keeps a valid 816,992,281-byte TeX Live bottle under the archive
+   policy instead of incorrectly applying the unrelated 64 MiB JSON limit.
+   Runtime callers retain the existing in-memory byte API; only publication
+   readback selects the response-stream API.
+   ORAS may expose the copied top index and its child
    manifests as separate local OCI layout entry points. The verifier selects
    exactly one receipt-matched top entry and accepts additional entries only
    when they are the complete, exact descriptor set declared by that top index;
@@ -2651,14 +2871,18 @@ The script writes `target/homebrew-bootstrap/homebrew-bootstrap.vfs`. It derives
 the ABI from `crates/shared`, resolves the Node kernel, canonical rootfs package
 set, and Homebrew bootstrap programs through `xtask build-deps`, and calls
 `scripts/prepare-homebrew-bootstrap-source.sh` to prepare Homebrew. The current
-`homebrew-bootstrap` registry package uses that same preparer and records the
-source ZIP and `homebrew-brew.env` as one transitional package generation. The
-product shell resolves both members from that exact package generation, embeds
-the small environment policy, and registers the source ZIP as a lazy tree
-behind `/usr/bin/brew`. Its `/home/linuxbrew/.linuxbrew` prefix is explicitly
-transitional; the stable `/usr/bin/brew` entry point lets a later Formula-owned
-bootstrap replace it without changing the guest command. The separate
-diagnostic bootstrap image above remains an eager integration artifact. Source
+`homebrew-bootstrap` registry package uses that same preparer and records
+the source ZIP and `homebrew-brew.env` as one transitional package
+generation. The product shell resolves both members from that exact
+package generation, embeds the small environment policy, and registers
+the source ZIP as a lazy tree
+behind `/usr/bin/brew`. Today that tree is mounted at the transitional
+`/home/linuxbrew/.linuxbrew` prefix. The atomic campaign changes both the
+Formula-owned software and bootstrap to `/opt/kandelo/homebrew`; the
+stable `/usr/bin/brew` entry point lets that cutover and a later
+Formula-owned bootstrap happen without changing the guest command. The
+separate diagnostic bootstrap image above remains an eager integration
+artifact. Source
 preparation verifies the reviewed patch SHA-256, refuses an upstream revision
 where the patch does not apply, limits the patch to its declared Homebrew
 files, and archives the patched Git tree with a fixed timestamp and UTC
@@ -2671,8 +2895,11 @@ selects `wasm32_kandelo` for the current wasm32 bootstrap and sets
 `HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY=1`, so prefix and user configuration cannot
 select a bottle for a different guest architecture. Homebrew's own `bin/brew`
 reads that supported system environment file; `/usr/bin/brew` stays a direct
-symlink to `/home/linuxbrew/.linuxbrew/bin/brew`, with no Kandelo launcher or
-install fallback. The patch recognizes that exact alias/repository pair so
+symlink to the selected bootstrap prefix's `bin/brew`, with no Kandelo
+launcher or install fallback. The target campaign resolves it to
+`/opt/kandelo/homebrew/bin/brew`; the current transitional image resolves it
+under `/home/linuxbrew/.linuxbrew`. The patch recognizes that exact
+alias/repository pair so
 Homebrew does not derive the forbidden `/usr` prefix from `$0`. The same source
 preparer emits `wasm64_kandelo` when a future bootstrap builder selects wasm64.
 The system environment also selects Homebrew's paired no-API mode:
@@ -2980,7 +3207,7 @@ For example, a Dash shell image can use:
 ```json
 {
   "version": 1,
-  "path": "/home/linuxbrew/.linuxbrew/bin/dash",
+  "path": "/opt/kandelo/homebrew/bin/dash",
   "argv": ["dash", "-l", "-i"]
 }
 ```
@@ -3394,7 +3621,7 @@ policy, not Kandelo platform policy. A minimal configuration has this shape:
   "schema": 1,
   "formula": "consumer",
   "brewfile": "Kandelo/vfs-acceptance.Brewfile",
-  "executable": "/home/linuxbrew/.linuxbrew/bin/consumer",
+  "executable": "/opt/kandelo/homebrew/bin/consumer",
   "argv": ["consumer", "--version"],
   "expected_stdout": "consumer"
 }
@@ -3408,7 +3635,7 @@ one reviewed `shell_config` path inside the same tap:
   "schema": 2,
   "formula": "consumer",
   "brewfile": "Kandelo/vfs-acceptance.Brewfile",
-  "executable": "/home/linuxbrew/.linuxbrew/bin/consumer",
+  "executable": "/opt/kandelo/homebrew/bin/consumer",
   "argv": ["consumer", "--version"],
   "expected_stdout": "consumer",
   "shell_config": "Kandelo/vfs-acceptance-shell.json"
@@ -3513,7 +3740,7 @@ scripts/dev-shell.sh npx tsx packages/registry/file/test/homebrew-node-smoke.ts 
 ```
 
 It clones or reads the tap, builds a Homebrew VFS from published sidecars, runs
-`/home/linuxbrew/.linuxbrew/bin/file --version` through `NodeKernelHost`, and
+`/opt/kandelo/homebrew/bin/file --version` through `NodeKernelHost`, and
 checks negative ABI-mismatch and missing-bottle cases.
 
 Browser compatibility requires a separate browser smoke. For the current
@@ -3522,7 +3749,7 @@ serves it through the browser demo, runs Chromium Playwright against
 `apps/browser-demos/test/kandelo-homebrew.spec.ts`, and executes:
 
 ```bash
-/home/linuxbrew/.linuxbrew/bin/file --version
+/opt/kandelo/homebrew/bin/file --version
 ```
 
 Only after that smoke passes may sidecars record
@@ -3712,7 +3939,7 @@ Package names, repository identities, paths, and symlink targets have
 independent bounds. Every layer package must own the indexed directory for its
 declared keg and the exact indexed symlink for its declared `opt` link.
 Schema-5 trees explicitly declare every structural ancestor at or below
-`/home/linuxbrew/.linuxbrew` as a directory. Keg and in-keg directories are
+`/opt/kandelo/homebrew` as a directory. Keg and in-keg directories are
 package-owned `layer` entries; cross-package structural ancestors are
 `mergeable-directory` entries. The complete aggregate descriptor may satisfy
 an ancestor through any selected bottle tree. An absent mergeable directory is

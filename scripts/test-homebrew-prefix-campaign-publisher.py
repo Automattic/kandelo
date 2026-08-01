@@ -239,7 +239,7 @@ class Fixture:
             },
             "formulae": self.formulae,
             "kind": "kandelo-homebrew-guest-prefix-campaign",
-            "schema": 1,
+            "schema": 2,
         }
         self.campaign_path = self.root / "campaign.json"
         write_json(self.campaign_path, self.campaign)
@@ -271,6 +271,17 @@ class Fixture:
                 for dependency, dependency_version in dependencies
             ],
             "destination": {
+                "admission": {
+                    "kind": "anonymous-absence",
+                    "method": "anonymous-oras-manifest-probe",
+                    "probe": {
+                        "digest": None,
+                        "kind": "manifest",
+                        "schema": 1,
+                        "status": "missing",
+                    },
+                    "schema": 1,
+                },
                 "bottle_rebuild": 0,
                 "reference": version,
                 "remote": f"ghcr.io/{TAP_REPOSITORY}/{name}",
@@ -531,6 +542,7 @@ class Fixture:
         self,
         *,
         dependency_request: str | None = None,
+        formula_name: str = "beta",
         arch: str | None = "wasm32",
     ) -> dict[str, Any]:
         return PUBLISHER.prepare(
@@ -545,7 +557,7 @@ class Fixture:
                 if dependency_request is not None
                 else self.dependency_json()
             ),
-            formula="beta",
+            formula=formula_name,
             arch=arch,
             work_root=self.root / "publisher-work",
             receipt_output=self.root / "publisher-receipt.json",
@@ -707,6 +719,8 @@ class PrefixCampaignPublisherTests(unittest.TestCase):
         )
         self.assertEqual(
             (fixture.root / "github.output").read_text(),
+            "prefix-campaign-destination-admission-kind="
+            "anonymous-absence\n"
             "prefix-campaign-layout-sha256="
             f"{GUEST_LAYOUT_SHA256}\n",
         )
@@ -786,6 +800,51 @@ class PrefixCampaignPublisherTests(unittest.TestCase):
         self.assertEqual(
             contexts[TAP_NAME]["checkout_commit"],
             receipt["preparation"]["commit"],
+        )
+
+    def test_prepare_outputs_reviewed_namespace_bootstrap_admission(
+        self,
+    ) -> None:
+        fixture = Fixture()
+        self.addCleanup(fixture.close)
+        alpha = fixture.campaign["formulae"][0]
+        alpha["source_kind"] = "reviewed-new-entrant"
+        alpha["variants"][0].update(
+            {
+                "build_input": {"kind": "formula-source"},
+                "disposition": {
+                    "kind": "required-build",
+                    "reasons": ["new-campaign-entrant"],
+                },
+                "selected_by": "reviewed-campaign-input",
+            }
+        )
+        alpha["destination"]["admission"] = {
+            "kind": "first-package-namespace-bootstrap-required",
+            "method": "anonymous-oras-manifest-probe",
+            "probe": {
+                "digest": None,
+                "kind": "manifest",
+                "schema": 1,
+                "status": "auth-required",
+            },
+            "schema": 1,
+        }
+        write_json(fixture.campaign_path, fixture.campaign)
+        fixture.campaign_tag = (
+            "homebrew-prefix-campaign-sha256-"
+            + sha256(fixture.campaign_path.read_bytes())
+        )
+
+        fixture.prepare(
+            dependency_request='{"dependencies":[],"schema":1}',
+            formula_name="alpha",
+        )
+
+        self.assertIn(
+            "prefix-campaign-destination-admission-kind="
+            "first-package-namespace-bootstrap-required\n",
+            (fixture.root / "github.output").read_text(),
         )
 
     def test_source_only_preparation_still_validates_exact_closure(

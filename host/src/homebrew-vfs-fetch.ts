@@ -17,12 +17,29 @@ export async function fetchHomebrewBottleBytes(
   url: string,
   options: { fetchImpl?: FetchLike } = {},
 ): Promise<Uint8Array> {
+  const response = await fetchHomebrewBottleResponse(url, options);
+  return new Uint8Array(await response.arrayBuffer());
+}
+
+// WHY: publication verification must hash large bottles as their response
+// streams to disk, while runtime callers still need the convenient in-memory
+// byte API above. Keep registry authentication in one implementation so the
+// two consumers cannot drift on GHCR bearer challenges.
+export async function fetchHomebrewBottleResponse(
+  url: string,
+  options: { fetchImpl?: FetchLike } = {},
+): Promise<Response> {
   const fetchImpl = options.fetchImpl ?? fetch;
   let response = await fetchImpl(url);
 
   if (response.status === 401) {
     const challenge = parseBearerChallenge(response.headers.get("www-authenticate"));
     if (challenge) {
+      // WHY: Node may keep the unauthenticated response's connection and body
+      // resources live until the body is consumed or cancelled. Publication
+      // retries large blobs, so release that first response before requesting
+      // a token and opening the authenticated body.
+      await response.body?.cancel().catch(() => undefined);
       const token = await fetchBearerToken(challenge, fetchImpl);
       response = await fetchImpl(url, {
         headers: { Authorization: `Bearer ${token}` },
@@ -34,7 +51,7 @@ export async function fetchHomebrewBottleBytes(
     throw new HomebrewBottleFetchError(`fetch ${url} failed: HTTP ${response.status}`);
   }
 
-  return new Uint8Array(await response.arrayBuffer());
+  return response;
 }
 
 function parseBearerChallenge(header: string | null): BearerChallenge | null {

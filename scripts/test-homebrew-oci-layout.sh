@@ -1452,6 +1452,10 @@ case "${1:-}" in
         ghcr-canary-missing-private:manifest:authenticated:2) mode=missing ;;
         ghcr-canary-missing-private:repo:authenticated:3) mode=repository-missing ;;
         ghcr-canary-missing-private:manifest:anonymous:4) mode=private ;;
+        ghcr-bootstrap-missing-present:manifest:anonymous:1) mode=missing ;;
+        ghcr-bootstrap-missing-present:manifest:authenticated:2) mode=missing ;;
+        ghcr-bootstrap-missing-present:repo:authenticated:3) mode=repository-missing ;;
+        ghcr-bootstrap-missing-present:manifest:anonymous:4) mode=present ;;
         *) exit 2 ;;
       esac
     elif [[ "$mode" == *-* ]]; then
@@ -1980,6 +1984,204 @@ grep -F 'ghcr.io/kandelo-dev/homebrew-tap-core/hello:sha256-' "$ORAS_LOG" >/dev/
   echo "private repository canary did not upload before the visibility boundary" >&2
   exit 1
 }
+assert_logged_auth_configs_retired
+
+# Prefix-campaign bootstrap keeps the canary's strict absence rule, while an
+# exact public child from a completed attempt is a credential-free no-op.
+: >"$ORAS_LOG"
+expect_failure repository-bootstrap-pat \
+  "repository bootstrap requires GitHub-token authentication" \
+  env ORAS_LOG="$ORAS_LOG" PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token \
+    GITHUB_ACTOR=tester \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --formula hello \
+      --auth-mode pat --require-pat true --registry-user package-bot \
+      --destination-mode repository-bootstrap \
+      --out-json "$TMP_ROOT/repository-bootstrap-pat.json"
+[ ! -s "$ORAS_LOG" ] || {
+  echo "PAT-backed repository bootstrap reached ORAS" >&2
+  exit 1
+}
+
+: >"$ORAS_LOG"
+expect_failure repository-bootstrap-third-party \
+  "repository bootstrap is restricted to the protected Kandelo tap" \
+  env ORAS_LOG="$ORAS_LOG" PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token \
+    GITHUB_ACTOR=tester \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/generic32/layout" \
+      --layout-receipt "$TMP_ROOT/generic32/receipt.json" \
+      --tap-repository Acme/homebrew-tools --tap-name Acme/tools \
+      --formula hello \
+      --auth-mode github-token --require-pat false \
+      --destination-mode repository-bootstrap \
+      --out-json "$TMP_ROOT/repository-bootstrap-third-party.json"
+[ ! -s "$ORAS_LOG" ] || {
+  echo "third-party repository bootstrap reached ORAS" >&2
+  exit 1
+}
+
+: >"$ORAS_LOG"
+ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-canary-missing-present \
+  ORAS_STATE="$TMP_ROOT/repository-bootstrap-oras-state" \
+  ORAS_DESCRIPTOR="$TMP_ROOT/present-descriptor.json" \
+  KANDELO_GHCR_PUBLIC_READ_ATTEMPTS=2 \
+  KANDELO_GHCR_PUBLIC_READ_DELAY_SECONDS=0 \
+  PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+  bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+    --layout "$TMP_ROOT/child32/layout" \
+    --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+    --tap-repository kandelo-dev/homebrew-tap-core \
+    --formula hello \
+    --exact-kandelo-main-sha "$KANDELO_COMMIT" \
+    --target-main-contains-sha "$TAP_COMMIT" \
+    --auth-mode github-token \
+    --require-pat false \
+    --destination-mode repository-bootstrap \
+    --out-json "$TMP_ROOT/child32/repository-bootstrap-upload.json" >/dev/null
+jq -e '
+  .publication.status == "uploaded" and
+  .publication.public_readback_digest == .publication.digest
+' "$TMP_ROOT/child32/repository-bootstrap-upload.json" >/dev/null
+grep -E '^login ghcr.io .* -u tester --password-stdin$' \
+  "$ORAS_LOG" >/dev/null || {
+  echo "repository bootstrap did not use the Actions actor" >&2
+  exit 1
+}
+grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
+  echo "repository bootstrap did not publish its admitted child" >&2
+  exit 1
+}
+assert_logged_auth_configs_retired
+
+: >"$ORAS_LOG"
+ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=present \
+  ORAS_DESCRIPTOR="$TMP_ROOT/present-descriptor.json" \
+  PATH="$MOCK_BIN:$PATH" GITHUB_ACTOR=tester \
+  bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+    --layout "$TMP_ROOT/child32/layout" \
+    --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+    --tap-repository kandelo-dev/homebrew-tap-core \
+    --formula hello \
+    --auth-mode github-token \
+    --require-pat false \
+    --destination-mode repository-bootstrap \
+    --out-json "$TMP_ROOT/child32/repository-bootstrap-resume.json" >/dev/null
+jq -e '
+  .publication.status == "already-present" and
+  .publication.public_readback_digest == .publication.digest
+' "$TMP_ROOT/child32/repository-bootstrap-resume.json" >/dev/null
+! grep -E '^(login|cp) ' "$ORAS_LOG" >/dev/null || {
+  echo "exact repository-bootstrap resume used credentials or wrote" >&2
+  exit 1
+}
+
+: >"$ORAS_LOG"
+jq -nS '{
+  mediaType: "application/vnd.oci.image.manifest.v1+json",
+  digest: ("sha256:" + "9" * 64),
+  size: 1
+}' >"$TMP_ROOT/bootstrap-conflicting-descriptor.json"
+expect_failure repository-bootstrap-conflict \
+  "repository bootstrap found a different public child digest" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=present \
+    ORAS_DESCRIPTOR="$TMP_ROOT/bootstrap-conflicting-descriptor.json" \
+    PATH="$MOCK_BIN:$PATH" GITHUB_ACTOR=tester \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --formula hello \
+      --auth-mode github-token --require-pat false \
+      --destination-mode repository-bootstrap \
+      --out-json "$TMP_ROOT/repository-bootstrap-conflict.json"
+! grep -E '^(login|cp) ' "$ORAS_LOG" >/dev/null || {
+  echo "conflicting repository bootstrap used credentials or wrote" >&2
+  exit 1
+}
+
+: >"$ORAS_LOG"
+expect_failure repository-bootstrap-private-reference \
+  "repository bootstrap found an existing private reference" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-private-present \
+    ORAS_STATE="$TMP_ROOT/repository-bootstrap-private-reference-state" \
+    ORAS_DESCRIPTOR="$TMP_ROOT/present-descriptor.json" \
+    PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --formula hello \
+      --auth-mode github-token --require-pat false \
+      --destination-mode repository-bootstrap \
+      --out-json "$TMP_ROOT/repository-bootstrap-private-reference.json"
+! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
+  echo "private repository-bootstrap reference reached OCI transport" >&2
+  exit 1
+}
+assert_logged_auth_configs_retired
+
+: >"$ORAS_LOG"
+expect_failure repository-bootstrap-private-package \
+  "repository bootstrap requires an absent destination package" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-private-missing \
+    ORAS_STATE="$TMP_ROOT/repository-bootstrap-private-package-state" \
+    PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --formula hello \
+      --auth-mode github-token --require-pat false \
+      --destination-mode repository-bootstrap \
+      --out-json "$TMP_ROOT/repository-bootstrap-private-package.json"
+! grep -E '^cp ' "$ORAS_LOG" >/dev/null || {
+  echo "private repository-bootstrap package reached OCI transport" >&2
+  exit 1
+}
+assert_logged_auth_configs_retired
+
+: >"$ORAS_LOG"
+expect_failure repository-bootstrap-ambiguous \
+  "could not classify manifest registry probe" \
+  env ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=broken \
+    PATH="$MOCK_BIN:$PATH" GITHUB_ACTOR=tester \
+    bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+      --layout "$TMP_ROOT/child32/layout" \
+      --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --formula hello \
+      --auth-mode github-token --require-pat false \
+      --destination-mode repository-bootstrap \
+      --out-json "$TMP_ROOT/repository-bootstrap-ambiguous.json"
+! grep -E '^(login|cp) ' "$ORAS_LOG" >/dev/null || {
+  echo "ambiguous repository bootstrap used credentials or wrote" >&2
+  exit 1
+}
+
+: >"$ORAS_LOG"
+ORAS_LOG="$ORAS_LOG" ORAS_PREFLIGHT=ghcr-bootstrap-missing-present \
+  ORAS_STATE="$TMP_ROOT/repository-bootstrap-public-missing-state" \
+  ORAS_DESCRIPTOR="$TMP_ROOT/present-descriptor.json" \
+  KANDELO_GHCR_PUBLIC_READ_ATTEMPTS=2 \
+  KANDELO_GHCR_PUBLIC_READ_DELAY_SECONDS=0 \
+  PATH="$MOCK_BIN:$PATH" GH_TOKEN=test-token GITHUB_ACTOR=tester \
+  bash "$REPO_ROOT/scripts/homebrew-ghcr-upload.sh" \
+    --layout "$TMP_ROOT/child32/layout" \
+    --layout-receipt "$TMP_ROOT/child32/receipt.json" \
+    --tap-repository kandelo-dev/homebrew-tap-core \
+    --formula hello \
+    --exact-kandelo-main-sha "$KANDELO_COMMIT" \
+    --target-main-contains-sha "$TAP_COMMIT" \
+    --auth-mode github-token --require-pat false \
+    --destination-mode repository-bootstrap \
+    --out-json \
+      "$TMP_ROOT/child32/repository-bootstrap-public-missing.json" >/dev/null
+jq -e '.publication.status == "uploaded"' \
+  "$TMP_ROOT/child32/repository-bootstrap-public-missing.json" >/dev/null
 assert_logged_auth_configs_retired
 
 ORAS_LOG="$ORAS_LOG" PATH="$MOCK_BIN:$PATH" \

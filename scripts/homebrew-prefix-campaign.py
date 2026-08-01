@@ -25,6 +25,7 @@ from typing import Any, NoReturn
 
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+OCI_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 FORMULA_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+,-]{0,255}$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -44,9 +45,11 @@ SOURCE_MATERIALIZER_PATH = "scripts/prefix-campaign-source.py"
 INSPECTOR_PATH = "scripts/homebrew-inspect-bottle.py"
 CAMPAIGN_TOOL_PATH = "scripts/homebrew-prefix-campaign.py"
 READBACK_PATH = "scripts/homebrew-verify-public-bottle.ts"
+READBACK_FETCH_PATH = "host/src/homebrew-vfs-fetch.ts"
 OCI_TOOL_PATH = "scripts/homebrew-oci-layout.py"
 FORMULA_DIGEST_PATH = "scripts/homebrew-formula-source-digest.rb"
 WASM_VALIDATOR_PATH = "scripts/homebrew-validate-wasm-artifact.sh"
+PUBLICATION_LIMITS_PATH = "scripts/homebrew-publication-limits.sh"
 ABI_PATH = "crates/shared/src/lib.rs"
 ABI_SNAPSHOT_PATH = "abi/snapshot.json"
 EXPLICIT_BUILD_ROOT = "/__kandelo_prefix_campaign_build_root__"
@@ -58,6 +61,43 @@ RETIRED_PREFIX_HISTORICAL_DIRECTORIES = (
     "Kandelo/reports/failures/",
     "Kandelo/reports/rollbacks/",
 )
+
+
+# WHY: campaign JSON is capped separately at 64 MiB, but a valid compressed
+# bottle may be much larger. Load the publisher's single archive policy instead
+# of letting an unrelated document limit reject packages such as TeX Live.
+def load_compressed_bottle_limit() -> int:
+    script = pathlib.Path(__file__).with_name("homebrew-publication-limits.sh")
+    command = (
+        'set -euo pipefail; source "$1"; '
+        'printf "%s\\n" "$HOMEBREW_MAX_BOTTLE_BYTES"'
+    )
+    try:
+        result = subprocess.run(
+            ["bash", "-c", command, "homebrew-publication-limit", str(script)],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(
+            f"cannot load compressed Homebrew bottle limit: {error}"
+        ) from error
+    value = result.stdout.decode("ascii", errors="strict").strip()
+    if (
+        result.returncode != 0
+        or re.fullmatch(r"[1-9][0-9]*", value) is None
+    ):
+        detail = result.stderr.decode("utf-8", errors="replace")[:4096]
+        raise RuntimeError(
+            f"cannot load compressed Homebrew bottle limit: {detail}"
+        )
+    return int(value, 10)
+
+
+MAX_COMPRESSED_BOTTLE_BYTES = load_compressed_bottle_limit()
 
 METADATA_KEYS = {
     "generated_at",
@@ -534,9 +574,9 @@ def git_blob(root: pathlib.Path, commit: str, relative: str, label: str) -> byte
     return result.stdout
 
 
-def historical_metadata_hashes(
+def historical_metadata_history(
     root: pathlib.Path, commit: str
-) -> set[str]:
+) -> list[tuple[str, str]]:
     output = run_command(
         [
             "git",
@@ -554,20 +594,23 @@ def historical_metadata_hashes(
     commits = output.splitlines()
     if not commits or len(commits) > 4096:
         fail("old tap metadata history is empty or unreasonably large")
-    hashes: set[str] = set()
+    history: list[tuple[str, str]] = []
     for index, revision in enumerate(commits):
         revision = require_commit(revision, f"old metadata revision #{index}")
-        hashes.add(
-            sha256_bytes(
-                git_blob(
-                    root,
-                    revision,
-                    METADATA_PATH,
-                    f"old metadata revision {revision}",
-                )
+        history.append(
+            (
+                revision,
+                sha256_bytes(
+                    git_blob(
+                        root,
+                        revision,
+                        METADATA_PATH,
+                        f"old metadata revision {revision}",
+                    )
+                ),
             )
         )
-    return hashes
+    return history
 
 
 def git_snapshot(
@@ -1104,7 +1147,12 @@ def validate_bottle(
     if arch not in ("wasm32", "wasm64") or bottle["bottle_tag"] != f"{arch}_kandelo":
         fail(f"{label} has an invalid architecture/tag pair")
     require_int(bottle["kandelo_abi"], f"{label} ABI", 1)
-    require_int(bottle["bytes"], f"{label} byte count", 1)
+    bottle_bytes = require_int(bottle["bytes"], f"{label} byte count", 1)
+    if bottle_bytes > MAX_COMPRESSED_BOTTLE_BYTES:
+        fail(
+            f"{label} byte count exceeds compressed bottle limit "
+            f"{MAX_COMPRESSED_BOTTLE_BYTES}"
+        )
     prefix = require_guest_absolute(bottle["prefix"], f"{label} prefix")
     cellar = require_guest_absolute(bottle["cellar"], f"{label} cellar")
     # WHY: this is a one-time migration of the explicitly retired guest
@@ -1582,9 +1630,10 @@ def inspect_sidecar_directory(
 
 def anonymous_environment() -> dict[str, str]:
     environment = dict(os.environ)
-    # WHY: destination absence and old-bottle availability must be public
-    # facts. Removing every supported package credential prevents ambient
-    # maintainer access from turning private visibility into campaign proof.
+    # WHY: destination admission and old-bottle availability begin with a
+    # credential-free observation. Removing every supported package credential
+    # prevents ambient maintainer access from turning private visibility into
+    # campaign proof.
     for name in (
         "GH_TOKEN",
         "GITHUB_TOKEN",
@@ -1605,9 +1654,11 @@ def default_fetch_bottle(
 ) -> None:
     run_command(
         [
-            "npx",
-            "--no-install",
-            "tsx",
+            # WHY: exact campaign snapshots intentionally contain no
+            # node_modules. Node 24 strips this verifier's erasable types
+            # itself, so publication never downloads or discovers a runner.
+            "node",
+            "--experimental-strip-types",
             str(kandelo_root / READBACK_PATH),
             "--url",
             url,
@@ -1654,19 +1705,87 @@ def default_probe_destination(
             timeout=240,
             environment=anonymous_environment(),
         )
-        result = exact_keys(
-            load_json(result_path, "anonymous destination probe result"),
-            {"digest", "kind", "schema", "status"},
-            "anonymous destination probe result",
+        result = load_json(
+            result_path, "anonymous destination probe result"
         )
-    if (
-        result["schema"] != 1
-        or result["kind"] != "manifest"
-        or result["status"] != "missing"
-        or result["digest"] is not None
-    ):
-        fail(f"destination is not anonymously proven absent: {remote}:{reference}")
-    return result
+    return validate_destination_probe(
+        result,
+        f"anonymous destination probe {remote}:{reference}",
+    )
+
+
+def validate_destination_probe(
+    value: Any,
+    label: str,
+) -> dict[str, Any]:
+    value = exact_keys(
+        value,
+        {"digest", "kind", "schema", "status"},
+        label,
+    )
+    status = value["status"]
+    digest = value["digest"]
+    if value["schema"] != 1 or value["kind"] != "manifest":
+        fail(f"{label} has an unsupported contract")
+    if status == "present":
+        if not isinstance(digest, str) or OCI_DIGEST.fullmatch(digest) is None:
+            fail(f"{label} present result has an invalid digest")
+    elif status in ("missing", "auth-required"):
+        if digest is not None:
+            fail(f"{label} {status} result unexpectedly has a digest")
+    else:
+        fail(f"{label} status is invalid")
+    return value
+
+
+def destination_admission(
+    probe: Any,
+    *,
+    formula_name: str,
+    source_kind: str,
+    variants: list[dict[str, Any]],
+) -> dict[str, Any]:
+    probe = validate_destination_probe(
+        probe, f"{formula_name} destination probe"
+    )
+    status = probe["status"]
+    if status == "present":
+        fail(f"{formula_name} destination manifest is already present")
+    if status == "missing":
+        kind = "anonymous-absence"
+    else:
+        # WHY: GHCR deliberately gives the same anonymous response for a new
+        # namespace and a private package. Only a reviewed new entrant may
+        # defer that ambiguity to the authenticated first-package publisher;
+        # existing or reusable packages must remain public facts here.
+        eligible = (
+            source_kind == "reviewed-new-entrant"
+            and bool(variants)
+            and all(
+                variant.get("selected_by")
+                == "reviewed-campaign-input"
+                and isinstance(variant.get("build_input"), dict)
+                and isinstance(variant.get("disposition"), dict)
+                and variant["disposition"].get("kind")
+                == "required-build"
+                and variant["disposition"].get("reasons")
+                == ["new-campaign-entrant"]
+                and "old_record" not in variant
+                for variant in variants
+            )
+        )
+        if not eligible:
+            fail(
+                f"{formula_name} destination requires authentication but "
+                "is not a reviewed source-only required-build entrant"
+            )
+        kind = "first-package-namespace-bootstrap-required"
+    return {
+        "kind": kind,
+        "method": "anonymous-oras-manifest-probe",
+        "probe": probe,
+        "schema": 1,
+    }
 
 
 def default_resolve_formula_metadata(
@@ -1859,6 +1978,7 @@ class CampaignOptions:
     native_brew_commit: str
     metadata_sha256: str
     guest_layout_sha256: str
+    old_catalog_commit: str | None = None
     jobs: int = MAX_JOBS
     source_materialization: dict[str, Any] | None = None
 
@@ -1867,6 +1987,7 @@ class CampaignOptions:
 class VariantInput:
     formula: str
     version: str
+    candidate_version: str
     rebuild: int
     source_kind: str
     bottle: dict[str, Any]
@@ -1876,6 +1997,7 @@ class VariantInput:
     historical_formula_commit: str
     historical_formula_sha256: str
     dependencies: list[dict[str, Any]]
+    candidate_dependencies: list[dict[str, Any]]
     formula_sidecar_path: str
     formula_sidecar_sha256: str
     link_path: str
@@ -1902,7 +2024,11 @@ def inspect_variant(
         dependencies.fetch_bottle(
             bottle["url"], digest, byte_count, archive, kandelo_root
         )
-        regular_file(archive, f"{variant.formula}/{bottle['arch']} anonymous readback")
+        regular_file(
+            archive,
+            f"{variant.formula}/{bottle['arch']} anonymous readback",
+            MAX_COMPRESSED_BOTTLE_BYTES,
+        )
         actual_bytes = archive.stat().st_size
         actual_sha256 = sha256_file(archive)
         if actual_bytes != byte_count:
@@ -1915,34 +2041,40 @@ def inspect_variant(
                 f"{variant.formula}/{bottle['arch']} anonymous SHA-256 "
                 f"{actual_sha256} differs from {digest}"
             )
+        inspection_command = [
+            "python3",
+            str(kandelo_root / INSPECTOR_PATH),
+            "--archive",
+            str(archive),
+            "--formula",
+            variant.formula,
+            "--version",
+            variant.version,
+            "--expected-abi",
+            str(bottle["kandelo_abi"]),
+            "--expected-arch",
+            bottle["arch"],
+            "--selected-formula",
+            str(variant.formula_path),
+            "--forbidden-root",
+            EXPLICIT_BUILD_ROOT,
+            # WHY: retired-prefix reporting must use the same reviewed layout
+            # bytes that bind the campaign. Passing their digest prevents a
+            # concurrent or accidental layout change from silently changing
+            # which bottle bytes are eligible for reuse.
+            "--report-retired-roots-layout-sha256",
+            layout_sha256,
+            "--out",
+            str(result_path),
+        ]
+        if bottle["kandelo_abi"] != layout["_current_abi"]:
+            # WHY: the current validator must reject a stale fork ABI. This
+            # bottle is already an unconditional rebuild, so inspect its TAR,
+            # receipt, dependencies, and retired paths without representing
+            # those bytes as executable or compatible with the current ABI.
+            inspection_command.append("--historical-incompatible-abi")
         run_command(
-            [
-                "python3",
-                str(kandelo_root / INSPECTOR_PATH),
-                "--archive",
-                str(archive),
-                "--formula",
-                variant.formula,
-                "--version",
-                variant.version,
-                "--expected-abi",
-                str(bottle["kandelo_abi"]),
-                "--expected-arch",
-                bottle["arch"],
-                "--selected-formula",
-                str(variant.formula_path),
-                "--forbidden-root",
-                EXPLICIT_BUILD_ROOT,
-                # WHY: retired-prefix reporting must use the same reviewed
-                # layout bytes that bind the campaign. Passing their digest
-                # prevents a concurrent or accidental layout change from
-                # silently changing which bottle bytes are eligible for
-                # reuse.
-                "--report-retired-roots-layout-sha256",
-                layout_sha256,
-                "--out",
-                str(result_path),
-            ],
+            inspection_command,
             cwd=kandelo_root,
             label=f"{variant.formula}/{bottle['arch']} canonical bottle inspection",
             timeout=300,
@@ -1972,7 +2104,17 @@ def inspect_variant(
         != bottle["built_from"]["formula_sha256"]
     ):
         fail(f"{variant.formula}/{bottle['arch']} inspection identity is inconsistent")
-    if inspection["fork_instrumentation"] != bottle["fork_instrumentation"]:
+    incompatible_abi = bottle["kandelo_abi"] != layout["_current_abi"]
+    if incompatible_abi:
+        if (
+            inspection["fork_instrumentation"]
+            != "not-inspected-incompatible-abi"
+        ):
+            fail(
+                f"{variant.formula}/{bottle['arch']} historical ABI was "
+                "incorrectly admitted as executable"
+            )
+    elif inspection["fork_instrumentation"] != bottle["fork_instrumentation"]:
         fail(
             f"{variant.formula}/{bottle['arch']} inspected fork instrumentation "
             "differs from its selected record"
@@ -2008,6 +2150,17 @@ def inspect_variant(
         reasons.append("abi-mismatch")
     if retired:
         reasons.append("retired-prefix")
+    # WHY: an old bottle keeps the package version recorded in its archive and
+    # sidecars. A newer candidate Formula version is a new Homebrew identity,
+    # so those bytes must never be relabeled as a reuse candidate even if an
+    # adversarial metadata resolver reports an otherwise identical Formula.
+    if variant.version != variant.candidate_version:
+        reasons.append("pkg-version-changed")
+    # WHY: even unchanged Formula text can resolve a different dependency
+    # version after a sibling Formula advances. Reusing that bottle would keep
+    # the old runtime closure while publishing candidate dependency metadata.
+    if variant.dependencies != variant.candidate_dependencies:
+        reasons.append("dependency-closure-changed")
     if (
         variant.formula_identity_sha256
         != variant.candidate_formula_identity_sha256
@@ -2427,6 +2580,7 @@ def _derive_campaign_from_snapshots(
     options: CampaignOptions,
     dependencies: CampaignDependencies,
     metadata_hashes: set[str],
+    historical_formula_root: pathlib.Path,
 ) -> dict[str, Any]:
     if not 1 <= options.jobs <= MAX_JOBS:
         fail(f"jobs must be between 1 and {MAX_JOBS}")
@@ -2437,6 +2591,10 @@ def _derive_campaign_from_snapshots(
     )
     native_brew_root = real_directory(
         options.native_brew_root, "native Homebrew snapshot"
+    )
+    historical_formula_root = real_directory(
+        historical_formula_root,
+        "private historical Formula staging root",
     )
     current_abi = derive_current_abi(kandelo_root)
     _abi_snapshot, abi_snapshot_sha256 = validate_abi_snapshot(
@@ -2484,8 +2642,15 @@ def _derive_campaign_from_snapshots(
         fail("old tap metadata ABI differs from the exact current Kandelo ABI")
     if metadata["release_tag"] != f"bottles-abi-v{metadata_abi}":
         fail("old tap metadata release tag does not match its ABI")
-    for key in ("kandelo_commit", "tap_commit"):
-        require_commit(metadata[key], f"old tap metadata {key}")
+    require_commit(
+        metadata["kandelo_commit"], "old tap metadata kandelo_commit"
+    )
+    metadata_tap_commit = require_commit(
+        metadata["tap_commit"], "old tap metadata tap_commit"
+    )
+    old_catalog_commit = require_commit(
+        options.old_catalog_commit, "old selected catalog commit"
+    )
     require_string(
         metadata["kandelo_repository"],
         "old tap Kandelo repository",
@@ -2767,6 +2932,42 @@ def _derive_campaign_from_snapshots(
     active_provenance: set[str] = set()
     formula_context: dict[str, dict[str, Any]] = {}
 
+    def stage_historical_formula(
+        name: str, commit: str, label: str
+    ) -> pathlib.Path:
+        payload = dependencies.load_historical_formula(
+            old_tap_root,
+            name,
+            commit,
+            f"Formula/{name}.rb",
+        )
+        if (
+            not isinstance(payload, bytes)
+            or not payload
+            or len(payload) > 1024 * 1024
+        ):
+            fail(f"{name} {label} Formula source is invalid")
+        digest = sha256_bytes(payload)
+        # WHY: the tap snapshot is repository-controlled input. Staging under
+        # it would let a tracked directory or leaf symlink redirect generated
+        # writes into repository-selected paths. This root is created by the
+        # tool beside its private input snapshots, so repository contents
+        # cannot choose the destination.
+        path = historical_formula_root / f"{digest}.rb"
+        if path.exists():
+            if (
+                regular_file(
+                    path,
+                    f"{name} historical Formula staging",
+                    1024 * 1024,
+                ).read_bytes()
+                != payload
+            ):
+                fail(f"{name} historical Formula staging collided")
+        else:
+            write_new_file(path, payload)
+        return path
+
     for name in sorted(sidecars_by_name):
         sidecar_path, sidecar, sidecar_bytes = sidecars_by_name[name]
         sidecar_name = require_string(
@@ -2791,12 +2992,10 @@ def _derive_campaign_from_snapshots(
             or sidecar["formula_path"] != f"Formula/{name}.rb"
         ):
             fail(f"{name} Formula sidecar has inconsistent top-level identity")
-        version = require_string(sidecar["version"], f"{name} version", VERSION)
-        if resolved_versions[name] != version:
-            fail(
-                f"{name} candidate pkg_version {resolved_versions[name]} "
-                f"differs from old selected pkg_version {version}"
-            )
+        old_version = require_string(
+            sidecar["version"], f"{name} old selected version", VERSION
+        )
+        candidate_version = resolved_versions[name]
         rebuild = require_int(sidecar["bottle_rebuild"], f"{name} bottle rebuild")
         require_int(sidecar["formula_revision"], f"{name} Formula revision")
         if sidecar["full_name"] != f"{tap_name}/{name}":
@@ -2812,7 +3011,7 @@ def _derive_campaign_from_snapshots(
         )
         if name in selected_by_name and (
             sidecar_abi != metadata_abi
-            or sidecar_tap_commit != metadata["tap_commit"]
+            or sidecar_tap_commit != metadata_tap_commit
         ):
             fail(
                 f"metadata-selected Formula {name} sidecar ABI/tap_commit "
@@ -2821,7 +3020,13 @@ def _derive_campaign_from_snapshots(
         # WHY: the old archive was built from the old Formula. Candidate
         # new-prefix source is a separate authority and must never be
         # substituted into immutable built_from provenance.
-        old_formula_path = old_formula_files[name]
+        # WHY: built_from and metadata.tap_commit own publisher inputs. The
+        # later commit containing this exact metadata blob owns the finalized
+        # bottle block. Live source may already be ahead, while a stale extra
+        # sidecar can predate it. Neither is the collision/rebuild authority.
+        old_formula_path = stage_historical_formula(
+            name, old_catalog_commit, "old catalog"
+        )
         selected_old_source_sha, selected_old_source_identity, old_bottle_block = formula_identity(
             kandelo_root, old_formula_path
         )
@@ -2831,24 +3036,46 @@ def _derive_campaign_from_snapshots(
         )
         if old_bottle_block is None:
             fail(f"{name} has bottle sidecars but no old Formula bottle block")
-        if source_bottle_block is None:
-            fail(f"{name} has bottle sidecars but no candidate Formula bottle block")
         expected_root = f"https://ghcr.io/v2/{tap_repository}"
-        for snapshot, bottle_block in (
-            ("old", old_bottle_block),
-            ("candidate", source_bottle_block),
+        if old_bottle_block["root_url"] != expected_root:
+            fail(f"{name} old Formula bottle identity differs from its sidecar")
+        if (
+            sidecar_abi == current_abi
+            and old_bottle_block["rebuild"] != rebuild
         ):
-            if bottle_block["root_url"] != expected_root:
+            fail(
+                f"{name} current-ABI old Formula rebuild differs from its "
+                "sidecar"
+            )
+        # WHY: a new pkg_version has its own Homebrew bottle namespace and
+        # starts at rebuild zero. Its sealed candidate Formula must therefore
+        # be bottleless. For an unchanged pkg_version, the selected block is
+        # still the collision authority and must match the old sidecars.
+        version_changed = candidate_version != old_version
+        if version_changed:
+            if source_bottle_block is not None:
                 fail(
-                    f"{name} {snapshot} Formula bottle identity differs "
-                    "from its sidecar"
+                    f"{name} candidate pkg_version changed from {old_version} "
+                    f"to {candidate_version}, but its Formula still has a "
+                    "bottle block"
+                )
+        elif source_bottle_block is None:
+            fail(
+                f"{name} has bottle sidecars but no candidate Formula bottle "
+                "block for the unchanged pkg_version"
+            )
+        else:
+            if source_bottle_block["root_url"] != expected_root:
+                fail(
+                    f"{name} candidate Formula bottle identity differs from "
+                    "its sidecar"
                 )
             if (
                 sidecar_abi == current_abi
-                and bottle_block["rebuild"] != rebuild
+                and source_bottle_block["rebuild"] != rebuild
             ):
                 fail(
-                    f"{name} current-ABI {snapshot} Formula rebuild differs "
+                    f"{name} current-ABI candidate Formula rebuild differs "
                     "from its sidecar"
                 )
         bottles = sidecar["bottles"]
@@ -2869,29 +3096,9 @@ def _derive_campaign_from_snapshots(
                 raw_bottle["built_from"].get("tap_commit"),
                 f"{name} bottle #{index} built_from.tap_commit",
             )
-            historical_bytes = dependencies.load_historical_formula(
-                old_tap_root,
-                name,
-                built_from_tap_commit,
-                f"Formula/{name}.rb",
+            historical_formula_path = stage_historical_formula(
+                name, built_from_tap_commit, "built-from"
             )
-            if (
-                not isinstance(historical_bytes, bytes)
-                or not historical_bytes
-                or len(historical_bytes) > 1024 * 1024
-            ):
-                fail(f"{name} historical Formula source is invalid")
-            historical_digest = sha256_bytes(historical_bytes)
-            historical_directory = old_tap_root / ".campaign-historical-formula"
-            historical_directory.mkdir(exist_ok=True)
-            historical_formula_path = (
-                historical_directory / f"{historical_digest}.rb"
-            )
-            if historical_formula_path.exists():
-                if historical_formula_path.read_bytes() != historical_bytes:
-                    fail(f"{name} historical Formula staging collided")
-            else:
-                historical_formula_path.write_bytes(historical_bytes)
             (
                 historical_source_sha,
                 historical_source_identity,
@@ -2927,7 +3134,7 @@ def _derive_campaign_from_snapshots(
             ) = validate_link_and_provenance(
                 old_tap_root,
                 formula=name,
-                version=version,
+                version=old_version,
                 rebuild=rebuild,
                 bottle=bottle,
                 formula_identity_sha256=claimed_formula_sha256,
@@ -2944,7 +3151,8 @@ def _derive_campaign_from_snapshots(
             variant_inputs.append(
                 VariantInput(
                     formula=name,
-                    version=version,
+                    version=old_version,
+                    candidate_version=candidate_version,
                     rebuild=rebuild,
                     source_kind=source_kind,
                     bottle=bottle,
@@ -2954,6 +3162,7 @@ def _derive_campaign_from_snapshots(
                     historical_formula_commit=built_from_tap_commit,
                     historical_formula_sha256=historical_source_sha,
                     dependencies=normalized_dependencies,
+                    candidate_dependencies=resolved_dependencies[name],
                     formula_sidecar_path=sidecar_path.relative_to(old_tap_root).as_posix(),
                     formula_sidecar_sha256=sha256_bytes(sidecar_bytes),
                     link_path=link_rel,
@@ -2968,7 +3177,9 @@ def _derive_campaign_from_snapshots(
         ):
             fail(f"{name} old Formula bottle tags differ from its sidecar bottles")
         if (
-            sidecar_abi == current_abi
+            not version_changed
+            and sidecar_abi == current_abi
+            and source_bottle_block is not None
             and source_bottle_block["tags"] != expected_tags
         ):
             fail(
@@ -2977,10 +3188,12 @@ def _derive_campaign_from_snapshots(
             )
         # Historical extra sidecars can predate the Formula's currently
         # selected rebuild even when they preserve useful immutable evidence.
-        # Reserve above every selected identity so a required ABI rebuild
-        # cannot collide with either the old record or current Formula block.
+        # An unchanged version reserves above all of them. A changed version
+        # owns a separate namespace and truthfully begins at rebuild zero.
         next_rebuild = (
-            max(
+            0
+            if version_changed
+            else max(
                 rebuild,
                 old_bottle_block["rebuild"],
                 source_bottle_block["rebuild"],
@@ -2988,7 +3201,7 @@ def _derive_campaign_from_snapshots(
             + 1
         )
         reference = canonical_top_reference(
-            top_reference, version, next_rebuild, name
+            top_reference, candidate_version, next_rebuild, name
         )
         formula_context[name] = {
             "dependencies": resolved_dependencies[name],
@@ -3022,7 +3235,7 @@ def _derive_campaign_from_snapshots(
             },
             "name": name,
             "source_kind": source_kind,
-            "version": version,
+            "version": candidate_version,
         }
 
     deferred_formulae: list[dict[str, Any]] = []
@@ -3064,8 +3277,8 @@ def _derive_campaign_from_snapshots(
         recipe_context: dict[str, Any] = {}
         if build_kind == "formula-source":
             # Formula source, exact Homebrew metadata, target architecture,
-            # dependency edges, and destination absence are already sealed by
-            # the ordinary campaign record. No synthetic recipe lock exists
+            # dependency edges, and destination admission are already sealed
+            # by the ordinary campaign record. No synthetic recipe lock exists
             # for a conventional Formula such as libyaml.
             campaign_build_input = {"kind": "formula-source"}
         else:
@@ -3173,19 +3386,10 @@ def _derive_campaign_from_snapshots(
                 variant_results[key] = future.result()
             else:
                 name = probe_futures[future]
-                probe = exact_keys(
+                probe_results[name] = validate_destination_probe(
                     future.result(),
-                    {"digest", "kind", "schema", "status"},
                     f"{name} destination probe",
                 )
-                if (
-                    probe["schema"] != 1
-                    or probe["kind"] != "manifest"
-                    or probe["status"] != "missing"
-                    or probe["digest"] is not None
-                ):
-                    fail(f"{name} destination is not anonymously proven absent")
-                probe_results[name] = probe
 
     variants_by_formula: dict[str, list[dict[str, Any]]] = {}
     for key, result in variant_results.items():
@@ -3193,12 +3397,14 @@ def _derive_campaign_from_snapshots(
     for name in sorted(formula_context):
         context = formula_context[name]
         destination = dict(context["destination"])
-        destination["absence"] = {
-            **probe_results[name],
-            "method": "anonymous-oras-manifest-probe",
-        }
-        record = {**context, "destination": destination}
         variants = entrant_variants.get(name, variants_by_formula.get(name, []))
+        destination["admission"] = destination_admission(
+            probe_results[name],
+            formula_name=name,
+            source_kind=context["source_kind"],
+            variants=variants,
+        )
+        record = {**context, "destination": destination}
         record["variants"] = sorted(variants, key=lambda value: value["arch"])
         formula_records.append(record)
 
@@ -3250,6 +3456,7 @@ def _derive_campaign_from_snapshots(
                 "path": METADATA_PATH,
                 "sha256": metadata_sha256,
             },
+            "old_catalog_commit": old_catalog_commit,
             "old_tap_commit": options.old_tap_commit,
             "source_materialization": (
                 options.source_materialization
@@ -3266,7 +3473,9 @@ def _derive_campaign_from_snapshots(
                     FORMULA_DIGEST_PATH,
                     INSPECTOR_PATH,
                     OCI_TOOL_PATH,
+                    PUBLICATION_LIMITS_PATH,
                     READBACK_PATH,
+                    READBACK_FETCH_PATH,
                     WASM_VALIDATOR_PATH,
                 )
             },
@@ -3279,7 +3488,7 @@ def _derive_campaign_from_snapshots(
         "kind": "kandelo-homebrew-guest-prefix-campaign",
         "retirements": retirements,
         "permitted_retired_prefix_evidence": permitted_retired_prefix_evidence,
-        "schema": 1,
+        "schema": 2,
         "summary": {
             "byte_clean_reuse_candidates": reuse,
             "deferred_source_formulae": len(deferred_formulae),
@@ -3332,9 +3541,24 @@ def derive_campaign(
         git_authority(root, commit, label)
         for root, commit, label in authorities
     )
-    metadata_hashes = historical_metadata_hashes(
+    metadata_history = historical_metadata_history(
         exact_roots[1], options.old_tap_commit
     )
+    metadata_hashes = {digest for _revision, digest in metadata_history}
+    selected_catalog_commits = [
+        revision
+        for revision, digest in metadata_history
+        if digest == options.metadata_sha256
+    ]
+    if not selected_catalog_commits:
+        fail(
+            "exact old metadata SHA-256 is not reachable from the old tap "
+            "history"
+        )
+    # WHY: source and Formula files can advance without regenerating the
+    # catalog. The newest commit that wrote these exact metadata bytes is the
+    # immutable tree containing the bottle blocks selected by that catalog.
+    old_catalog_commit = selected_catalog_commits[0]
     if dependencies.load_historical_formula is None:
         def load_historical_formula(
             _snapshot_root: pathlib.Path,
@@ -3391,16 +3615,22 @@ def derive_campaign(
                 temporary / "input-3",
                 "native Homebrew input",
             )
+            historical_formula_root = temporary / "historical-formula"
+            historical_formula_root.mkdir(mode=0o700)
             snapshot_options = dataclasses.replace(
                 options,
                 kandelo_root=kandelo_snapshot,
                 old_tap_root=old_tap_snapshot,
                 source_tap_root=source_snapshot,
                 native_brew_root=native_brew_snapshot,
+                old_catalog_commit=old_catalog_commit,
                 source_materialization=source_materialization,
             )
             result = _derive_campaign_from_snapshots(
-                snapshot_options, dependencies, metadata_hashes
+                snapshot_options,
+                dependencies,
+                metadata_hashes,
+                historical_formula_root,
             )
     except BaseException as primary:
         try:
@@ -3577,7 +3807,7 @@ def main() -> int:
             if recorded != derived:
                 fail(
                     "campaign manifest differs from fresh exact-source, public-readback, "
-                    "inspection, or destination-absence derivation"
+                    "inspection, or destination-admission derivation"
                 )
             print("Verified exact guest-prefix campaign manifest")
     except (CampaignError, OSError, UnicodeError) as error:

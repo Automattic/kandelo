@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Seal, read, and select Homebrew prefix-campaign Formula handoffs."""
+"""Seal, read, select, and compose prefix-campaign Formula handoffs."""
 
 from __future__ import annotations
 
@@ -9,10 +9,12 @@ import json
 import os
 import pathlib
 import re
+import runpy
 import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import urllib.error
 import urllib.parse
@@ -44,6 +46,7 @@ MAX_JSON_BYTES = 64 * 1024 * 1024
 MAX_ASSET_BYTES = 2 * 1024 * 1024 * 1024
 MAX_TOTAL_BYTES = 8 * 1024 * 1024 * 1024
 MAX_FORMULAE = 256
+MAX_VARIANTS = MAX_FORMULAE * 2
 MAX_DEPENDENCIES = 256
 MAX_RELEASE_ASSETS = 32
 HTTP_TIMEOUT = 300
@@ -69,6 +72,38 @@ REUSE_PUBLICATION_FILES = (
 # inventory while the handoff manifest discriminates build from reuse.
 PUBLICATION_FILES = BUILD_PUBLICATION_FILES
 HANDOFF_SCHEMA = 2
+CAMPAIGN_COMPLETION_PATH = (
+    "Kandelo/campaigns/prefix-v1/completion.json"
+)
+CAMPAIGN_RETIREMENT_PATHS = (
+    ".github/workflows/prefix-campaign-bottles.yml",
+    "Kandelo/prefix-campaign-authority.json",
+    "Kandelo/campaigns/prefix-v1/manifest.json",
+    "Kandelo/campaigns/prefix-v1/source",
+)
+# Only these reviewed campaign-control files may advance between the sealed
+# source commit and final activation. Any other path could change a Formula,
+# recipe, helper, dependency decision, or future package input that today's
+# catalog validator does not yet know to inspect.
+FINAL_TAP_ALLOWED_CONTROL_DRIFT_PATHS = frozenset(
+    {
+        ".github/workflows/prefix-campaign-bottles.yml",
+        "Kandelo/README.md",
+        "Kandelo/campaigns/prefix-v1/README.md",
+        "Kandelo/prefix-campaign-authority.json",
+        "Kandelo/test-workflow-trust.rb",
+        "scripts/prefix-campaign-controller.py",
+        "scripts/test_prefix_campaign_controller.py",
+    }
+)
+SOURCE_AUTHORITY_PATH = "Kandelo/prefix-campaign-authority.json"
+SOURCE_MANIFEST_PATH = "Kandelo/campaigns/prefix-v1/manifest.json"
+SOURCE_MATERIALIZER_PATH = "scripts/prefix-campaign-source.py"
+FINAL_TAP_COMMIT_MESSAGE = (
+    "[Homebrew/Paths] Finalize the Kandelo guest prefix campaign\n\n"
+    "Activate the complete /opt/kandelo/homebrew catalog atomically.\n"
+    "Retire the one-shot campaign authority after validation.\n"
+)
 
 
 class ExecutorError(RuntimeError):
@@ -193,12 +228,14 @@ def run_git(
     label: str,
     *,
     maximum: int = MAX_JSON_BYTES,
+    environment: dict[str, str] | None = None,
 ) -> bytes:
     try:
         result = subprocess.run(
             ["git", *arguments],
             cwd=root,
             check=False,
+            env=environment,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -266,9 +303,11 @@ def anonymous_bottle_readback(
     expected_sha256: str,
 ) -> None:
     command = [
-        "npx",
-        "--no-install",
-        "tsx",
+        # WHY: the publisher consumes an exact source snapshot without
+        # node_modules. Node 24 can run this erasable-TypeScript verifier
+        # directly, avoiding an ambient or downloaded execution dependency.
+        "node",
+        "--experimental-strip-types",
         str(ROOT / "scripts/homebrew-verify-public-bottle.ts"),
         "--url",
         url,
@@ -475,6 +514,10 @@ def filesystem_git_tree_oid(root: pathlib.Path, label: str) -> str:
             metadata = child.lstat()
             if stat.S_ISDIR(metadata.st_mode) and not child.is_symlink():
                 payload = visit(child)
+                # Git has no object for an empty directory. Omitting it here
+                # keeps the filesystem-derived identity equal to write-tree.
+                if not payload:
+                    continue
                 mode = b"40000"
                 object_id = git_object_id("tree", payload)
                 sort_key = name + b"/"
@@ -555,6 +598,232 @@ def source_tree_identity(authority: dict[str, Any]) -> str:
     fail("campaign source materialization kind is unsupported")
 
 
+def git_snapshot(
+    root: pathlib.Path,
+    commit: str,
+    destination: pathlib.Path,
+    label: str,
+) -> pathlib.Path:
+    commit = require_string(commit, f"{label} commit", COMMIT)
+    if destination.exists() or destination.is_symlink():
+        fail(f"{label} snapshot output already exists")
+    destination.mkdir(mode=0o700)
+    archive_path = destination.with_suffix(".tar")
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "archive",
+                "--format=tar",
+                f"--output={archive_path}",
+                commit,
+            ],
+            cwd=root,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=300,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        fail(f"cannot snapshot {label}: {error}")
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace")[-16_384:]
+        fail(f"cannot snapshot {label}: {detail}")
+    try:
+        with tarfile.open(archive_path, mode="r:") as archive:
+            archive.extractall(destination, filter="data")
+    except (OSError, tarfile.TarError) as error:
+        fail(f"cannot extract exact {label} snapshot: {error}")
+    finally:
+        archive_path.unlink(missing_ok=True)
+    destination = real_directory(destination, f"{label} snapshot")
+    expected_tree = run_git(
+        root,
+        ["rev-parse", f"{commit}^{{tree}}"],
+        f"{label} Git tree",
+    ).decode("ascii", errors="strict").strip()
+    if filesystem_git_tree_oid(destination, label) != expected_tree:
+        fail(f"{label} snapshot differs from its Git tree")
+    return destination
+
+
+def git_is_ancestor(
+    root: pathlib.Path,
+    ancestor: str,
+    descendant: str,
+    label: str,
+) -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", ancestor, descendant],
+            cwd=root,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        fail(f"cannot inspect {label}: {error}")
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    detail = result.stderr.decode("utf-8", errors="replace")[-16_384:]
+    fail(f"cannot inspect {label}: {detail}")
+
+
+def git_changed_paths(
+    root: pathlib.Path,
+    older: str,
+    newer: str,
+    label: str,
+) -> tuple[str, ...]:
+    payload = run_git(
+        root,
+        ["diff", "--name-only", "--no-renames", "-z", older, newer, "--"],
+        label,
+    )
+    try:
+        values = payload.decode("utf-8", errors="strict").split("\0")
+    except UnicodeDecodeError as error:
+        fail(f"{label} contains a non-UTF-8 path: {error}")
+    if values[-1:] != [""]:
+        fail(f"{label} is not NUL terminated")
+    return tuple(
+        safe_relative(value, f"{label} path") for value in values[:-1]
+    )
+
+
+def validate_overlay_file_record(value: Any, label: str) -> dict[str, Any]:
+    record = exact_keys(
+        value,
+        {"blob_git_oid", "bytes", "mode", "sha256"},
+        label,
+    )
+    require_string(record["blob_git_oid"], f"{label} Git blob", COMMIT)
+    require_int(record["bytes"], f"{label} bytes")
+    require_string(record["sha256"], f"{label} SHA-256", SHA256)
+    if record["mode"] not in ("100644", "100755"):
+        fail(f"{label} has an unsupported file mode")
+    return record
+
+
+def validate_overlay_file(
+    root: pathlib.Path,
+    relative: str,
+    record: dict[str, Any],
+    label: str,
+) -> pathlib.Path:
+    path = regular_file_within(root, relative, label)
+    payload = path.read_bytes()
+    mode = (
+        "100755"
+        if path.stat().st_mode
+        & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        else "100644"
+    )
+    if (
+        len(payload) != record["bytes"]
+        or sha256_bytes(payload) != record["sha256"]
+        or git_object_id("blob", payload) != record["blob_git_oid"]
+        or mode != record["mode"]
+    ):
+        fail(f"{label} differs from its sealed identity")
+    return path
+
+
+def overlay_file_matches(
+    root: pathlib.Path,
+    relative: str,
+    record: dict[str, Any],
+    label: str,
+) -> bool:
+    path = regular_file_within(root, relative, label)
+    payload = path.read_bytes()
+    mode = (
+        "100755"
+        if path.stat().st_mode
+        & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        else "100644"
+    )
+    return (
+        len(payload) == record["bytes"]
+        and sha256_bytes(payload) == record["sha256"]
+        and git_object_id("blob", payload) == record["blob_git_oid"]
+        and mode == record["mode"]
+    )
+
+
+def replay_overlay_files(
+    *,
+    tap_root: pathlib.Path,
+    source_root: pathlib.Path,
+    records: list[tuple[str, dict[str, Any] | None, dict[str, Any]]],
+    label: str,
+) -> None:
+    tap_root = real_directory(tap_root, label)
+    source_root = real_directory(source_root, f"{label} source")
+    for relative, base_record, target_record in records:
+        destination = tap_root / relative
+        present = destination.exists() or destination.is_symlink()
+        if not present:
+            if base_record is not None:
+                fail(f"{label} lacks a sealed preimage at {relative}")
+        elif base_record is None:
+            if not overlay_file_matches(
+                tap_root,
+                relative,
+                target_record,
+                f"{label} preimage {relative}",
+            ):
+                fail(
+                    f"{label} expected an absent or target preimage "
+                    f"at {relative}"
+                )
+        elif not overlay_file_matches(
+            tap_root,
+            relative,
+            base_record,
+            f"{label} preimage {relative}",
+        ) and not overlay_file_matches(
+            tap_root,
+            relative,
+            target_record,
+            f"{label} preimage {relative}",
+        ):
+            fail(
+                f"{label} expected a sealed base or target preimage "
+                f"at {relative}"
+            )
+        source = validate_overlay_file(
+            source_root,
+            relative,
+            target_record,
+            f"{label} target {relative}",
+        )
+        parent = tap_root
+        for part in relative.split("/")[:-1]:
+            parent = parent / part
+            if parent.exists() or parent.is_symlink():
+                real_directory(parent, f"{label} parent {relative}")
+            else:
+                parent.mkdir()
+        if destination.parent.resolve() != parent.resolve():
+            fail(f"{label} destination crosses an indirect parent")
+        shutil.copyfile(source, destination, follow_symlinks=False)
+        destination.chmod(
+            0o755 if target_record["mode"] == "100755" else 0o644
+        )
+        validate_overlay_file(
+            tap_root,
+            relative,
+            target_record,
+            f"{label} replayed target {relative}",
+        )
+
+
 def dependency_names(
     formula: dict[str, Any],
     tap_name: str,
@@ -589,13 +858,88 @@ def dependency_names(
     return tuple(result)
 
 
+def validate_destination_admission(formula: dict[str, Any]) -> None:
+    name = formula.get("name")
+    destination = exact_keys(
+        formula.get("destination"),
+        {"admission", "bottle_rebuild", "reference", "remote"},
+        f"campaign Formula {name} destination",
+    )
+    require_int(
+        destination["bottle_rebuild"],
+        f"campaign Formula {name} destination rebuild",
+    )
+    require_string(
+        destination["reference"],
+        f"campaign Formula {name} destination reference",
+    )
+    require_string(
+        destination["remote"],
+        f"campaign Formula {name} destination remote",
+    )
+    admission = exact_keys(
+        destination["admission"],
+        {"kind", "method", "probe", "schema"},
+        f"campaign Formula {name} destination admission",
+    )
+    if (
+        admission["schema"] != 1
+        or admission["method"] != "anonymous-oras-manifest-probe"
+    ):
+        fail(f"campaign Formula {name} destination admission is invalid")
+    probe = exact_keys(
+        admission["probe"],
+        {"digest", "kind", "schema", "status"},
+        f"campaign Formula {name} destination probe",
+    )
+    if probe["schema"] != 1 or probe["kind"] != "manifest":
+        fail(f"campaign Formula {name} destination probe is invalid")
+    kind = admission["kind"]
+    if kind == "anonymous-absence":
+        if probe["status"] != "missing" or probe["digest"] is not None:
+            fail(
+                f"campaign Formula {name} anonymous absence is invalid"
+            )
+        return
+    if kind != "first-package-namespace-bootstrap-required":
+        fail(f"campaign Formula {name} destination admission is invalid")
+    if probe["status"] != "auth-required" or probe["digest"] is not None:
+        fail(f"campaign Formula {name} namespace bootstrap probe is invalid")
+
+    variants = formula.get("variants")
+    # WHY: an anonymous authentication challenge is ambiguous between a new
+    # namespace and a private existing package. Only source reviewed as a new
+    # required-build entrant may reach the later authenticated bootstrap gate.
+    eligible = (
+        formula.get("source_kind") == "reviewed-new-entrant"
+        and isinstance(variants, list)
+        and bool(variants)
+        and all(
+            isinstance(variant, dict)
+            and variant.get("selected_by") == "reviewed-campaign-input"
+            and isinstance(variant.get("build_input"), dict)
+            and isinstance(variant.get("disposition"), dict)
+            and variant["disposition"].get("kind") == "required-build"
+            and variant["disposition"].get("reasons")
+            == ["new-campaign-entrant"]
+            and "old_record" not in variant
+            for variant in variants
+        )
+    )
+    if not eligible:
+        fail(
+            f"campaign Formula {name} is not eligible for first-package "
+            "namespace bootstrap"
+        )
+
+
 def load_campaign(
     path: pathlib.Path,
 ) -> tuple[dict[str, Any], bytes, dict[str, dict[str, Any]]]:
     value, payload = load_json_bytes(path, "campaign manifest")
     if (
         not isinstance(value, dict)
-        or value.get("schema") != 1
+        or value.get("schema") != 2
         or value.get("kind")
         != "kandelo-homebrew-guest-prefix-campaign"
     ):
@@ -671,6 +1015,7 @@ def load_campaign(
             )
         ):
             fail(f"campaign Formula {name} variants are invalid")
+        validate_destination_admission(formula)
         index[name] = formula
     for name, formula in index.items():
         dependencies = dependency_names(formula, tap_name)
@@ -727,6 +1072,14 @@ def validate_source_root(
         != expected_tree
     ):
         fail("campaign target source differs from its sealed Git tree")
+    validate_source_formula(root, formula)
+    return root
+
+
+def validate_source_formula(
+    root: pathlib.Path,
+    formula: dict[str, Any],
+) -> None:
     name = formula["name"]
     source = exact_keys(
         formula.get("formula_source"),
@@ -744,7 +1097,6 @@ def validate_source_root(
         source["sha256"], f"{name} Formula SHA-256", SHA256
     ):
         fail(f"{name} target Formula differs from the campaign")
-    return root
 
 
 def walk_regular_files(root: pathlib.Path, label: str) -> list[str]:
@@ -2694,6 +3046,1447 @@ def default_tap_validator(
         fail(f"cannot validate selected Homebrew tap: {detail}")
 
 
+FinalPrefixValidator = Callable[..., None]
+
+
+def campaign_source_provenance(
+    campaign: dict[str, Any],
+) -> dict[str, Any]:
+    source = exact_keys(
+        campaign["authority"].get("source_materialization"),
+        {
+            "authority",
+            "kind",
+            "manifest",
+            "materializer",
+            "source_root",
+            "source_tree_git_oid",
+            "target_tree_git_oid",
+        },
+        "campaign sealed target source",
+    )
+    if source["kind"] != "sealed-target-overlay-v1":
+        fail("final tap requires one sealed target-source overlay")
+    authority = exact_keys(
+        source["authority"],
+        {"path", "sha256"},
+        "campaign target-source authority",
+    )
+    manifest = exact_keys(
+        source["manifest"],
+        {"path", "sha256"},
+        "campaign target-source manifest",
+    )
+    materializer = exact_keys(
+        source["materializer"],
+        {"path", "sha256"},
+        "campaign target-source materializer",
+    )
+    if (
+        authority["path"] != SOURCE_AUTHORITY_PATH
+        or manifest["path"] != SOURCE_MANIFEST_PATH
+        or materializer["path"] != SOURCE_MATERIALIZER_PATH
+        or source["source_root"]
+        != "Kandelo/campaigns/prefix-v1/source"
+    ):
+        fail("campaign target source uses unexpected protected paths")
+    require_string(
+        authority["sha256"],
+        "campaign target-source authority SHA-256",
+        SHA256,
+    )
+    require_string(
+        materializer["sha256"],
+        "campaign target-source materializer SHA-256",
+        SHA256,
+    )
+    result = {
+        "manifest_sha256": require_string(
+            manifest["sha256"],
+            "campaign target-source manifest SHA-256",
+            SHA256,
+        ),
+        "overlay_source_tree_git_oid": require_string(
+            source["source_tree_git_oid"],
+            "campaign target-source payload tree",
+            COMMIT,
+        ),
+        "sealed_target_tree_git_oid": require_string(
+            source["target_tree_git_oid"],
+            "campaign sealed historical target tree",
+            COMMIT,
+        ),
+        "source_tap_commit": require_string(
+            campaign["authority"]["source_tap_commit"],
+            "campaign source tap commit",
+            COMMIT,
+        ),
+    }
+    if result["sealed_target_tree_git_oid"] != source_tree_identity(
+        campaign["authority"]
+    ):
+        fail("campaign target-source identities disagree")
+    return result
+
+
+def load_source_overlay_contract(
+    source_commit_root: pathlib.Path,
+    campaign: dict[str, Any],
+) -> tuple[
+    dict[str, Any],
+    list[tuple[str, dict[str, Any] | None, dict[str, Any]]],
+]:
+    provenance = campaign_source_provenance(campaign)
+    materialization = campaign["authority"]["source_materialization"]
+    authority, authority_payload = load_json_bytes(
+        source_commit_root / SOURCE_AUTHORITY_PATH,
+        "campaign source replay authority",
+    )
+    if authority_payload != pretty_json(authority):
+        fail("campaign source replay authority is not canonical JSON")
+    if sha256_bytes(authority_payload) != materialization["authority"][
+        "sha256"
+    ]:
+        fail("campaign source replay authority differs from the campaign")
+    if not isinstance(authority, dict):
+        fail("campaign source replay authority must be an object")
+    target = exact_keys(
+        authority.get("target_source"),
+        {
+            "manifest_path",
+            "manifest_sha256",
+            "source_root",
+            "source_tree_git_oid",
+            "target_tree_git_oid",
+        },
+        "campaign source replay target",
+    )
+    if (
+        target["manifest_path"] != SOURCE_MANIFEST_PATH
+        or target["manifest_sha256"] != provenance["manifest_sha256"]
+        or target["source_root"] != materialization["source_root"]
+        or target["source_tree_git_oid"]
+        != provenance["overlay_source_tree_git_oid"]
+        or target["target_tree_git_oid"]
+        != provenance["sealed_target_tree_git_oid"]
+    ):
+        fail("campaign source replay target differs from the campaign")
+
+    manifest, manifest_payload = load_json_bytes(
+        source_commit_root / SOURCE_MANIFEST_PATH,
+        "campaign source replay manifest",
+    )
+    if manifest_payload != pretty_json(manifest):
+        fail("campaign source replay manifest is not canonical JSON")
+    if sha256_bytes(manifest_payload) != provenance["manifest_sha256"]:
+        fail("campaign source replay manifest differs from the campaign")
+    manifest = exact_keys(
+        manifest,
+        {
+            "base",
+            "campaign",
+            "files",
+            "kind",
+            "schema",
+            "source_root",
+            "target_tree_git_oid",
+        },
+        "campaign source replay manifest",
+    )
+    manifest_base = exact_keys(
+        manifest["base"],
+        {"commit", "tree_git_oid"},
+        "campaign source replay base",
+    )
+    if (
+        manifest["schema"] != 1
+        or manifest["kind"]
+        != "kandelo-homebrew-prefix-campaign-source-overlay"
+        or manifest["campaign"] != "prefix-v1"
+        or manifest["source_root"] != materialization["source_root"]
+        or manifest["target_tree_git_oid"]
+        != provenance["sealed_target_tree_git_oid"]
+    ):
+        fail("campaign source replay manifest is inconsistent")
+    provenance = {
+        **provenance,
+        "base": {
+            "commit": require_string(
+                manifest_base["commit"],
+                "campaign source replay base commit",
+                COMMIT,
+            ),
+            "tree_git_oid": require_string(
+                manifest_base["tree_git_oid"],
+                "campaign source replay base tree",
+                COMMIT,
+            ),
+        },
+    }
+
+    overlay_root = real_directory(
+        source_commit_root / materialization["source_root"],
+        "campaign source replay payload",
+    )
+    if (
+        filesystem_git_tree_oid(
+            overlay_root,
+            "campaign source replay payload",
+        )
+        != provenance["overlay_source_tree_git_oid"]
+    ):
+        fail("campaign source replay payload differs from the campaign")
+    materializer = regular_file_within(
+        source_commit_root,
+        SOURCE_MATERIALIZER_PATH,
+        "campaign source replay materializer",
+        1024 * 1024,
+    )
+    if sha256_file(materializer) != materialization["materializer"][
+        "sha256"
+    ]:
+        fail("campaign source replay materializer differs from the campaign")
+
+    values = manifest["files"]
+    if not isinstance(values, list) or not values:
+        fail("campaign source replay has no sealed files")
+    records: list[
+        tuple[str, dict[str, Any] | None, dict[str, Any]]
+    ] = []
+    expected_payload_paths: set[str] = set()
+    prior = ""
+    for position, value in enumerate(values):
+        value = exact_keys(
+            value,
+            {"base", "path", "target"},
+            f"campaign source replay file #{position}",
+        )
+        relative = safe_relative(
+            value["path"],
+            f"campaign source replay file #{position} path",
+        )
+        if relative <= prior:
+            fail("campaign source replay files must be unique and sorted")
+        prior = relative
+        base_record = (
+            None
+            if value["base"] is None
+            else validate_overlay_file_record(
+                value["base"],
+                f"campaign source replay file #{position} base",
+            )
+        )
+        target_record = validate_overlay_file_record(
+            value["target"],
+            f"campaign source replay file #{position} target",
+        )
+        validate_overlay_file(
+            overlay_root,
+            relative,
+            target_record,
+            f"campaign source replay payload {relative}",
+        )
+        expected_payload_paths.add(relative)
+        records.append((relative, base_record, target_record))
+    if set(
+        filesystem_git_leaf_inventory(
+            overlay_root,
+            "campaign source replay payload",
+        )
+    ) != expected_payload_paths:
+        fail("campaign source replay payload contains unsealed files")
+    return provenance, records
+
+
+def exact_live_tap_checkout(
+    root: pathlib.Path,
+    expected_commit: str,
+    expected_tree_git_oid: str,
+) -> pathlib.Path:
+    root = exact_git_checkout(root, expected_commit, "live tap authority")
+    expected_tree_git_oid = require_string(
+        expected_tree_git_oid,
+        "expected live tap tree",
+        COMMIT,
+    )
+    actual_tree = run_git(
+        root,
+        ["rev-parse", "HEAD^{tree}"],
+        "live tap authority tree",
+    ).decode("ascii", errors="strict").strip()
+    if actual_tree != expected_tree_git_oid:
+        fail("live tap authority has the wrong Git tree")
+    return root
+
+
+def prepare_live_source_replay(
+    *,
+    campaign: dict[str, Any],
+    source_root: pathlib.Path,
+    live_tap_root: pathlib.Path,
+    expected_live_commit: str,
+    expected_live_tree_git_oid: str,
+    snapshot_root: pathlib.Path,
+) -> tuple[pathlib.Path, dict[str, Any]]:
+    provenance = campaign_source_provenance(campaign)
+    source_commit = provenance["source_tap_commit"]
+    actual_source_tree = run_git(
+        live_tap_root,
+        ["rev-parse", f"{source_commit}^{{tree}}"],
+        "campaign source tap tree in live history",
+    ).decode("ascii", errors="strict").strip()
+    if not git_is_ancestor(
+        live_tap_root,
+        source_commit,
+        expected_live_commit,
+        "campaign source ancestry in live tap",
+    ):
+        fail("live tap parent does not contain the campaign source commit")
+
+    changed_paths = git_changed_paths(
+        live_tap_root,
+        source_commit,
+        expected_live_commit,
+        "live tap changes after campaign source",
+    )
+    rejected = sorted(
+        set(changed_paths) - FINAL_TAP_ALLOWED_CONTROL_DRIFT_PATHS
+    )
+    if rejected:
+        fail(
+            "live tap changed outside the reviewed campaign-control paths: "
+            + ", ".join(rejected)
+        )
+
+    # WHY: the v1 materialized source intentionally contains the historical
+    # base plus the sealed Formula overlay, not every file from the commit that
+    # sealed it. Read the manifest and payload from that exact source commit so
+    # final composition can preserve its complete reviewed tree and then layer
+    # the same sealed Formula bytes onto the exact live CAS parent.
+    source_commit_root = git_snapshot(
+        live_tap_root,
+        source_commit,
+        snapshot_root / "source-commit",
+        "campaign complete source commit",
+    )
+    provenance, records = load_source_overlay_contract(
+        source_commit_root,
+        campaign,
+    )
+    provenance = {
+        **provenance,
+        "source_tap_tree_git_oid": actual_source_tree,
+    }
+    base = provenance["base"]
+    actual_base_tree = run_git(
+        live_tap_root,
+        ["rev-parse", f"{base['commit']}^{{tree}}"],
+        "campaign sealed base tree in live history",
+    ).decode("ascii", errors="strict").strip()
+    if actual_base_tree != base["tree_git_oid"]:
+        fail("campaign sealed base commit has the wrong tree")
+    if not git_is_ancestor(
+        live_tap_root,
+        base["commit"],
+        source_commit,
+        "campaign sealed base ancestry",
+    ):
+        fail("campaign sealed base is not an ancestor of the source commit")
+
+    overlay_root = source_commit_root / campaign["authority"][
+        "source_materialization"
+    ]["source_root"]
+    sealed_target = git_snapshot(
+        live_tap_root,
+        base["commit"],
+        snapshot_root / "sealed-target",
+        "campaign sealed historical target",
+    )
+    replay_overlay_files(
+        tap_root=sealed_target,
+        source_root=overlay_root,
+        records=records,
+        label="campaign sealed historical target replay",
+    )
+    if (
+        filesystem_git_tree_oid(
+            sealed_target,
+            "campaign sealed historical target",
+        )
+        != provenance["sealed_target_tree_git_oid"]
+    ):
+        fail("campaign sealed historical target has the wrong tree")
+    if filesystem_git_leaf_inventory(
+        sealed_target,
+        "campaign sealed historical target",
+    ) != filesystem_git_leaf_inventory(
+        source_root,
+        "campaign supplied sealed historical target",
+    ):
+        fail("campaign supplied source is not the sealed historical target")
+
+    replayed_source = source_commit_root
+    replay_overlay_files(
+        tap_root=replayed_source,
+        source_root=overlay_root,
+        records=records,
+        label="campaign complete source replay",
+    )
+    provenance = {
+        **provenance,
+        "replayed_source_tree_git_oid": filesystem_git_tree_oid(
+            replayed_source,
+            "campaign complete replayed source",
+        ),
+    }
+
+    replayed_live = git_snapshot(
+        live_tap_root,
+        expected_live_commit,
+        snapshot_root / "replayed-live",
+        "exact live tap parent",
+    )
+    if (
+        filesystem_git_tree_oid(replayed_live, "exact live tap parent")
+        != expected_live_tree_git_oid
+    ):
+        fail("exact live tap snapshot has the wrong tree")
+    replay_overlay_files(
+        tap_root=replayed_live,
+        source_root=overlay_root,
+        records=records,
+        label="exact live tap overlay replay",
+    )
+    provenance = {
+        **provenance,
+        "replayed_live_tree_git_oid": filesystem_git_tree_oid(
+            replayed_live,
+            "replayed live tap parent",
+        ),
+    }
+    return replayed_live, provenance
+
+
+def default_final_prefix_validator(
+    *,
+    tap_root: pathlib.Path,
+    retired_prefixes: list[str],
+) -> None:
+    # WHY: the authoritative checker deliberately permits retired strings in
+    # its own negative tests and historical failure evidence. Load that exact
+    # implementation instead of copying a policy that could drift looser.
+    contract = runpy.run_path(
+        str(ROOT / "scripts/homebrew-prefix-campaign.py")
+    )
+    try:
+        contract["validate_final_candidate_prefixes"](
+            tap_root,
+            retired_prefixes,
+        )
+    except contract["CampaignError"] as error:
+        fail(str(error))
+
+
+def retire_campaign_authority(tap_root: pathlib.Path) -> None:
+    paths: list[pathlib.Path] = []
+    for relative in CAMPAIGN_RETIREMENT_PATHS:
+        path = tap_root / relative
+        if path.is_symlink():
+            fail(f"campaign retirement path {relative} is a symlink")
+        if relative.endswith("/source"):
+            real_directory(path, f"campaign retirement path {relative}")
+        else:
+            regular_file(
+                path,
+                f"campaign retirement path {relative}",
+            )
+        paths.append(path)
+    # WHY: preflight every required path before deleting the first one. A
+    # partial or already-retired source is not valid completion authority.
+    for path in paths:
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+
+
+def historical_report_inventory(
+    tap_root: pathlib.Path,
+) -> dict[str, tuple[str, str]]:
+    inventory: dict[str, tuple[str, str]] = {}
+    for name in ("failures", "rollbacks"):
+        root = tap_root / f"Kandelo/reports/{name}"
+        if not root.exists() and not root.is_symlink():
+            continue
+        root = real_directory(root, f"historical {name} reports")
+        for relative, identity in filesystem_git_leaf_inventory(
+            root,
+            f"historical {name} reports",
+        ).items():
+            inventory[f"Kandelo/reports/{name}/{relative}"] = identity
+    return inventory
+
+
+def clear_final_generated_sidecars(tap_root: pathlib.Path) -> None:
+    for relative in (
+        "Kandelo/metadata.json",
+        "Kandelo/formula",
+        "Kandelo/link",
+    ):
+        path = tap_root / relative
+        if path.is_symlink():
+            fail(f"candidate tap generated path {relative} is a symlink")
+        if path.is_dir():
+            shutil.rmtree(path)
+        elif path.exists():
+            if not path.is_file():
+                fail(
+                    f"candidate tap generated path {relative} "
+                    "is a special file"
+                )
+            path.unlink()
+
+    reports = tap_root / "Kandelo/reports"
+    if not reports.exists() and not reports.is_symlink():
+        return
+    reports = real_directory(reports, "candidate tap reports")
+    for path in reports.iterdir():
+        if path.name in ("failures", "rollbacks"):
+            real_directory(path, f"historical {path.name} reports")
+            continue
+        if path.is_symlink():
+            path.unlink()
+        elif path.is_dir():
+            shutil.rmtree(path)
+        elif path.is_file():
+            path.unlink()
+        else:
+            fail("candidate tap reports contain a special file")
+
+
+def prepare_final_tap(
+    *,
+    campaign_path: pathlib.Path,
+    source_tap_root: pathlib.Path,
+    live_tap_root: pathlib.Path,
+    handoff_roots: list[pathlib.Path],
+    expected_live_commit: str,
+    expected_live_tree_git_oid: str,
+    output: pathlib.Path,
+    finalization_output: pathlib.Path,
+    bottle_merger: DependencyBottleMerger = (
+        default_dependency_bottle_merger
+    ),
+    sidecar_generator: SidecarGenerator = default_sidecar_generator,
+    tap_validator: TapValidator = default_tap_validator,
+    final_prefix_validator: FinalPrefixValidator = (
+        default_final_prefix_validator
+    ),
+) -> None:
+    campaign, campaign_payload, index = load_campaign(campaign_path)
+    campaign_sha256 = sha256_bytes(campaign_payload)
+    authority = campaign["authority"]
+    if authority["tap_repository"] != "kandelo-dev/homebrew-tap-core":
+        fail("final prefix campaign belongs to the wrong tap repository")
+    layout = campaign_guest_layout(campaign)
+    layout_sha256 = authority["guest_layout"]["sha256"]
+    expected_live_commit = require_string(
+        expected_live_commit,
+        "expected live tap commit",
+        COMMIT,
+    )
+    expected_live_tree_git_oid = require_string(
+        expected_live_tree_git_oid,
+        "expected live tap tree",
+        COMMIT,
+    )
+    source_tap_root = real_directory(
+        source_tap_root,
+        "campaign target source",
+    )
+    live_tap_root = exact_live_tap_checkout(
+        live_tap_root,
+        expected_live_commit,
+        expected_live_tree_git_oid,
+    )
+    handoff_roots = [
+        real_directory(root, "final tap handoff root")
+        for root in handoff_roots
+    ]
+    output, finalization_output = validate_output_pair(
+        output,
+        "final tap candidate",
+        finalization_output,
+        "finalization receipt",
+        (
+            campaign_path,
+            source_tap_root,
+            live_tap_root,
+            *handoff_roots,
+        ),
+    )
+    ordered = selected_formula_order(campaign, index, list(index))
+    campaign_release = {
+        "manifest_sha256": campaign_sha256,
+        "repository": authority["tap_repository"],
+        "tag": f"homebrew-prefix-campaign-sha256-{campaign_sha256}",
+    }
+
+    input_snapshot = pathlib.Path(
+        tempfile.mkdtemp(
+            prefix=f".{output.name}.inputs.",
+            dir=output.parent,
+        )
+    )
+    temporary: pathlib.Path | None = None
+    try:
+        stable_source = input_snapshot / "target-source"
+        shutil.copytree(source_tap_root, stable_source, symlinks=True)
+        # Hash the complete tree once, then validate each Formula against the
+        # same private snapshot. Rehashing a 64-Formula tap 64 times adds no
+        # evidence and materially slows finalization.
+        validate_source_root(stable_source, campaign, index[ordered[0]])
+        for name in ordered[1:]:
+            validate_source_formula(stable_source, index[name])
+        # WHY: a final campaign can run after its activation controller lands.
+        # Start from that exact live parent and replay only the sealed Formula
+        # overlay. Copying the older materialized source wholesale would erase
+        # reviewed control-plane commits while still passing Formula checks.
+        stable_live, source_provenance = prepare_live_source_replay(
+            campaign=campaign,
+            source_root=stable_source,
+            live_tap_root=live_tap_root,
+            expected_live_commit=expected_live_commit,
+            expected_live_tree_git_oid=expected_live_tree_git_oid,
+            snapshot_root=input_snapshot,
+        )
+
+        loaded: dict[
+            tuple[str, str],
+            tuple[pathlib.Path, dict[str, Any], bytes],
+        ] = {}
+        identities: dict[tuple[str, str], tuple[str, str]] = {}
+        handoffs: list[dict[str, Any]] = []
+        for position, handoff_root in enumerate(handoff_roots):
+            stable = input_snapshot / f"handoff-{position}"
+            shutil.copytree(handoff_root, stable, symlinks=True)
+            handoff, payload = load_handoff(
+                stable,
+                campaign,
+                campaign_payload,
+            )
+            name = require_string(
+                handoff["formula"].get("name"),
+                "final tap handoff Formula",
+                FORMULA,
+            )
+            if name not in index:
+                fail(f"final tap handoff {name} is outside the campaign")
+            if handoff["formula"] != campaign_formula_evidence(
+                campaign,
+                index[name],
+            ):
+                fail(f"final tap handoff {name} differs from the campaign")
+            validate_handoff_arches(handoff, index[name])
+            actual_arches = [
+                publication["arch"]
+                for publication in handoff["publications"]
+            ]
+            digest = sha256_bytes(payload)
+            tag = handoff_tag(payload)
+            for arch in actual_arches:
+                key = (name, arch)
+                if key in loaded:
+                    fail(f"final tap handoff {name}/{arch} is duplicated")
+                # WHY: the publisher emits one durable result per variant.
+                # Formula-only ownership would make a failed sibling strand a
+                # successful bottle or let the wrong architecture satisfy it.
+                loaded[key] = (stable, handoff, payload)
+                identities[key] = (tag, digest)
+                handoffs.append(
+                    {
+                        "arch": arch,
+                        "formula": name,
+                        "manifest_sha256": digest,
+                        "tag": tag,
+                    }
+                )
+        expected_variants = {
+            (name, variant["arch"])
+            for name, formula in index.items()
+            for variant in formula["variants"]
+        }
+        if set(loaded) != expected_variants:
+            missing = sorted(expected_variants - set(loaded))
+            extra = sorted(set(loaded) - expected_variants)
+            fail(
+                "final tap handoff variants differ from the campaign "
+                f"(missing={missing}, extra={extra})"
+            )
+        for name in ordered:
+            for variant in index[name]["variants"]:
+                arch = variant["arch"]
+                expected_dependencies = {
+                    dependency: identities[(dependency, arch)]
+                    for dependency in dependency_closure(
+                        campaign,
+                        index,
+                        name,
+                    )
+                }
+                validate_dependency_records(
+                    loaded[(name, arch)][1]["dependency_handoffs"],
+                    expected_dependencies,
+                )
+        handoffs.sort(
+            key=lambda value: (value["formula"], value["arch"])
+        )
+        handoffs_sha256 = sha256_bytes(canonical_json(handoffs))
+        catalog_cohort_sha256 = sha256_bytes(
+            canonical_json(
+                {
+                    "campaign_sha256": campaign_sha256,
+                    "guest_layout_sha256": layout_sha256,
+                    "handoffs": handoffs,
+                }
+            )
+        )
+
+        temporary = pathlib.Path(
+            tempfile.mkdtemp(
+                prefix=f".{output.name}.",
+                dir=output.parent,
+            )
+        )
+        tap_root = temporary / "tap"
+        shutil.copytree(stable_live, tap_root, symlinks=True)
+        historical_reports = historical_report_inventory(tap_root)
+        # WHY: current catalog sidecars are regenerated from the sealed
+        # handoffs, but failure and rollback evidence explains earlier public
+        # outcomes and must survive finalization byte-for-byte.
+        clear_final_generated_sidecars(tap_root)
+        canonical_root = temporary / "bottle-inputs"
+        canonical_root.mkdir()
+        for name in ordered:
+            for variant in index[name]["variants"]:
+                arch = variant["arch"]
+                handoff_root, handoff, _payload = loaded[(name, arch)]
+                label = f"final tap handoff {name}/{arch}"
+                publication = handoff_publication(
+                    handoff,
+                    arch,
+                    f"final tap handoff {name}",
+                )
+                publication_root = handoff_root / f"payload/{arch}"
+                validate_handoff_publication_shape(
+                    publication_root,
+                    publication,
+                    campaign,
+                    index[name],
+                    arch,
+                )
+                archive_relative = publication_semantic_path(
+                    publication,
+                    "bottle_archive",
+                    label,
+                )
+                bottle_json_relative = publication_semantic_path(
+                    publication,
+                    "bottle_json",
+                    label,
+                )
+                sidecars_relative = publication_semantic_path(
+                    publication,
+                    "sidecars_input",
+                    label,
+                )
+                archive_record = handoff_publication_file(
+                    publication,
+                    f"payload/{arch}/{archive_relative}",
+                    label,
+                )
+                canonical, bottle_digest, root_url, cellar = (
+                    validate_dependency_bottle_input(
+                        bottle_json=(
+                            publication_root / bottle_json_relative
+                        ),
+                        handoff=handoff,
+                        arch=arch,
+                        archive_record=archive_record,
+                        campaign=campaign,
+                    )
+                )
+                canonical_path = private_destination(
+                    canonical_root,
+                    f"{name}-{arch}.json",
+                    f"{name}/{arch} final bottle JSON",
+                )
+                canonical_path.write_bytes(pretty_json(canonical))
+                bottle_merger(
+                    tap_root=tap_root,
+                    campaign=campaign,
+                    formula=name,
+                    arch=arch,
+                    bottle_json=canonical_path,
+                    sha256=bottle_digest,
+                    root_url=root_url,
+                    cellar=cellar,
+                )
+                sidecar_generator(
+                    tap_root=tap_root,
+                    input_path=(publication_root / sidecars_relative),
+                    prefix_campaign_layout_sha256=layout_sha256,
+                )
+
+        if historical_report_inventory(tap_root) != historical_reports:
+            fail("final tap composition changed historical report evidence")
+
+        # WHY: bottle blocks and generated catalog sidecars must agree while
+        # the sealed campaign authority is still present for diagnostics. Only
+        # a valid complete catalog may retire that one-shot authority.
+        tap_validator(
+            tap_root=tap_root,
+            prefix_campaign_layout_sha256=layout_sha256,
+        )
+        retire_campaign_authority(tap_root)
+        completion = {
+            "campaign": "prefix-v1",
+            "campaign_release": campaign_release,
+            "catalog_cohort_sha256": catalog_cohort_sha256,
+            "expected_parent_commit": expected_live_commit,
+            "guest_layout_sha256": layout_sha256,
+            "handoffs_sha256": handoffs_sha256,
+            "kind": "kandelo-homebrew-prefix-campaign-completion",
+            "schema": 2,
+            "source": source_provenance,
+        }
+        completion_path = private_destination(
+            tap_root,
+            CAMPAIGN_COMPLETION_PATH,
+            "campaign completion",
+        )
+        completion_payload = pretty_json(completion)
+        completion_path.write_bytes(completion_payload)
+        observed_completion, observed_payload = load_json_bytes(
+            completion_path,
+            "campaign completion",
+        )
+        if (
+            observed_completion != completion
+            or observed_payload != completion_payload
+        ):
+            fail("campaign completion changed after creation")
+        final_prefix_validator(
+            tap_root=tap_root,
+            retired_prefixes=layout["retired_prefixes"],
+        )
+        for relative in CAMPAIGN_RETIREMENT_PATHS:
+            retired = tap_root / relative
+            if retired.exists() or retired.is_symlink():
+                fail(f"campaign retirement path {relative} remains live")
+
+        candidate_tree = filesystem_git_tree_oid(
+            tap_root,
+            "final tap candidate",
+        )
+        finalization = {
+            "campaign_release": campaign_release,
+            "candidate": {"tree_git_oid": candidate_tree},
+            "catalog_cohort_sha256": catalog_cohort_sha256,
+            "completion": {
+                "path": CAMPAIGN_COMPLETION_PATH,
+                "sha256": sha256_bytes(completion_payload),
+            },
+            "expected_live": {
+                "commit": expected_live_commit,
+                "tree_git_oid": expected_live_tree_git_oid,
+            },
+            "guest_layout_sha256": layout_sha256,
+            "handoffs": handoffs,
+            "handoffs_sha256": handoffs_sha256,
+            "kind": "kandelo-homebrew-prefix-campaign-finalization",
+            "schema": 2,
+            "source": source_provenance,
+        }
+        staged_finalization = temporary / "finalization.json"
+        finalization_payload = pretty_json(finalization)
+        staged_finalization.write_bytes(finalization_payload)
+        observed_finalization, observed_finalization_payload = (
+            load_json_bytes(
+                staged_finalization,
+                "finalization receipt",
+            )
+        )
+        if (
+            observed_finalization != finalization
+            or observed_finalization_payload != finalization_payload
+        ):
+            fail("finalization receipt changed after creation")
+
+        # WHY: the receipt is a later compare-and-swap instruction. Rebind its
+        # local parent immediately before exposure so a concurrent checkout
+        # change cannot silently make a stale finalization look current.
+        exact_live_tap_checkout(
+            live_tap_root,
+            expected_live_commit,
+            expected_live_tree_git_oid,
+        )
+        commit_output_pair(
+            tap_root,
+            output,
+            staged_finalization,
+            finalization_output,
+        )
+    finally:
+        if temporary is not None:
+            shutil.rmtree(temporary, ignore_errors=True)
+        shutil.rmtree(input_snapshot, ignore_errors=True)
+
+
+def validate_finalization_candidate(
+    *,
+    candidate_tap_root: pathlib.Path,
+    finalization_path: pathlib.Path,
+) -> tuple[dict[str, Any], bytes]:
+    candidate_tap_root = real_directory(
+        candidate_tap_root,
+        "final tap candidate",
+    )
+    finalization, finalization_payload = load_json_bytes(
+        finalization_path,
+        "finalization receipt",
+    )
+    finalization = exact_keys(
+        finalization,
+        {
+            "campaign_release",
+            "candidate",
+            "catalog_cohort_sha256",
+            "completion",
+            "expected_live",
+            "guest_layout_sha256",
+            "handoffs",
+            "handoffs_sha256",
+            "kind",
+            "schema",
+            "source",
+        },
+        "finalization receipt",
+    )
+    if (
+        finalization["schema"] != 2
+        or finalization["kind"]
+        != "kandelo-homebrew-prefix-campaign-finalization"
+    ):
+        fail("finalization receipt has an unsupported contract")
+    campaign_release = exact_keys(
+        finalization["campaign_release"],
+        {"manifest_sha256", "repository", "tag"},
+        "finalization campaign release",
+    )
+    campaign_sha256 = require_string(
+        campaign_release["manifest_sha256"],
+        "finalization campaign manifest SHA-256",
+        SHA256,
+    )
+    if (
+        campaign_release["repository"]
+        != "kandelo-dev/homebrew-tap-core"
+        or campaign_release["tag"]
+        != f"homebrew-prefix-campaign-sha256-{campaign_sha256}"
+    ):
+        fail("finalization campaign release identity is invalid")
+    candidate = exact_keys(
+        finalization["candidate"],
+        {"tree_git_oid"},
+        "finalization candidate",
+    )
+    candidate_tree = require_string(
+        candidate["tree_git_oid"],
+        "finalization candidate tree",
+        COMMIT,
+    )
+    expected_live = exact_keys(
+        finalization["expected_live"],
+        {"commit", "tree_git_oid"},
+        "finalization expected live tap",
+    )
+    require_string(
+        expected_live["commit"],
+        "finalization expected live commit",
+        COMMIT,
+    )
+    require_string(
+        expected_live["tree_git_oid"],
+        "finalization expected live tree",
+        COMMIT,
+    )
+    layout_sha256 = require_string(
+        finalization["guest_layout_sha256"],
+        "finalization guest layout SHA-256",
+        SHA256,
+    )
+    handoffs = finalization["handoffs"]
+    if (
+        not isinstance(handoffs, list)
+        or not handoffs
+        or len(handoffs) > MAX_VARIANTS
+    ):
+        fail("finalization handoffs are invalid")
+    prior: tuple[str, str] | None = None
+    for position, record in enumerate(handoffs):
+        record = exact_keys(
+            record,
+            {"arch", "formula", "manifest_sha256", "tag"},
+            f"finalization handoff #{position}",
+        )
+        name = require_string(
+            record["formula"],
+            f"finalization handoff #{position} Formula",
+            FORMULA,
+        )
+        arch = require_string(
+            record["arch"],
+            f"finalization handoff {name} architecture",
+        )
+        if arch not in ("wasm32", "wasm64"):
+            fail(f"finalization handoff {name} architecture is invalid")
+        key = (name, arch)
+        if prior is not None and key <= prior:
+            fail(
+                "finalization handoff variants must be unique and sorted"
+            )
+        prior = key
+        digest = require_string(
+            record["manifest_sha256"],
+            f"finalization handoff {name}/{arch} SHA-256",
+            SHA256,
+        )
+        if record["tag"] != f"homebrew-prefix-handoff-sha256-{digest}":
+            fail(f"finalization handoff {name}/{arch} tag is invalid")
+    handoffs_sha256 = require_string(
+        finalization["handoffs_sha256"],
+        "finalization handoffs SHA-256",
+        SHA256,
+    )
+    if handoffs_sha256 != sha256_bytes(canonical_json(handoffs)):
+        fail("finalization handoffs SHA-256 is invalid")
+    cohort_sha256 = require_string(
+        finalization["catalog_cohort_sha256"],
+        "finalization catalog cohort SHA-256",
+        SHA256,
+    )
+    if cohort_sha256 != sha256_bytes(
+        canonical_json(
+            {
+                "campaign_sha256": campaign_sha256,
+                "guest_layout_sha256": layout_sha256,
+                "handoffs": handoffs,
+            }
+        )
+    ):
+        fail("finalization catalog cohort SHA-256 is invalid")
+    completion_record = exact_keys(
+        finalization["completion"],
+        {"path", "sha256"},
+        "finalization completion",
+    )
+    if completion_record["path"] != CAMPAIGN_COMPLETION_PATH:
+        fail("finalization completion path is invalid")
+    completion_sha256 = require_string(
+        completion_record["sha256"],
+        "finalization completion SHA-256",
+        SHA256,
+    )
+    completion, completion_payload = load_json_bytes(
+        candidate_tap_root / CAMPAIGN_COMPLETION_PATH,
+        "candidate campaign completion",
+    )
+    if sha256_bytes(completion_payload) != completion_sha256:
+        fail("candidate campaign completion differs from finalization")
+    completion = exact_keys(
+        completion,
+        {
+            "campaign",
+            "campaign_release",
+            "catalog_cohort_sha256",
+            "expected_parent_commit",
+            "guest_layout_sha256",
+            "handoffs_sha256",
+            "kind",
+            "schema",
+            "source",
+        },
+        "candidate campaign completion",
+    )
+    source = exact_keys(
+        completion["source"],
+        {
+            "base",
+            "manifest_sha256",
+            "overlay_source_tree_git_oid",
+            "replayed_live_tree_git_oid",
+            "replayed_source_tree_git_oid",
+            "sealed_target_tree_git_oid",
+            "source_tap_commit",
+            "source_tap_tree_git_oid",
+        },
+        "candidate campaign completion source",
+    )
+    if finalization["source"] != source:
+        fail("finalization source replay differs from campaign completion")
+    source_base = exact_keys(
+        source["base"],
+        {"commit", "tree_git_oid"},
+        "candidate completion source base",
+    )
+    require_string(
+        source_base["commit"],
+        "candidate completion source base commit",
+        COMMIT,
+    )
+    require_string(
+        source_base["tree_git_oid"],
+        "candidate completion source base tree",
+        COMMIT,
+    )
+    require_string(
+        source["manifest_sha256"],
+        "candidate completion source manifest SHA-256",
+        SHA256,
+    )
+    for key, label in (
+        ("overlay_source_tree_git_oid", "overlay source tree"),
+        ("replayed_live_tree_git_oid", "replayed live tree"),
+        ("replayed_source_tree_git_oid", "replayed source tree"),
+        ("sealed_target_tree_git_oid", "sealed target tree"),
+        ("source_tap_commit", "source tap commit"),
+        ("source_tap_tree_git_oid", "source tap tree"),
+    ):
+        require_string(
+            source[key],
+            f"candidate completion {label}",
+            COMMIT,
+        )
+    if (
+        completion["schema"] != 2
+        or completion["kind"]
+        != "kandelo-homebrew-prefix-campaign-completion"
+        or completion["campaign"] != "prefix-v1"
+        or completion["campaign_release"] != campaign_release
+        or completion["catalog_cohort_sha256"] != cohort_sha256
+        or completion["expected_parent_commit"]
+        != expected_live["commit"]
+        or completion["guest_layout_sha256"] != layout_sha256
+        or completion["handoffs_sha256"] != handoffs_sha256
+    ):
+        fail("candidate campaign completion differs from finalization")
+    for relative in CAMPAIGN_RETIREMENT_PATHS:
+        path = candidate_tap_root / relative
+        if path.exists() or path.is_symlink():
+            fail(f"final tap candidate retains {relative}")
+    if any(
+        path.name == ".git"
+        for path in candidate_tap_root.rglob(".git")
+    ):
+        fail("final tap candidate contains nested Git authority")
+    if filesystem_git_tree_oid(
+        candidate_tap_root,
+        "final tap candidate",
+    ) != candidate_tree:
+        fail("final tap candidate tree differs from finalization")
+    return finalization, finalization_payload
+
+
+def git_ref_exists(root: pathlib.Path, reference: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "show-ref", "--verify", "--quiet", reference],
+            cwd=root,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        fail(f"cannot inspect output ref: {error}")
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    detail = result.stderr.decode("utf-8", errors="replace")[-16_384:]
+    fail(f"cannot inspect output ref: {detail}")
+
+
+def create_final_tap_commit(
+    *,
+    candidate_tap_root: pathlib.Path,
+    finalization_path: pathlib.Path,
+    live_tap_root: pathlib.Path,
+    output_ref: str,
+    commit_receipt_output: pathlib.Path,
+) -> None:
+    candidate_tap_root = real_directory(
+        candidate_tap_root,
+        "final tap candidate",
+    )
+    finalization_path = regular_file(
+        finalization_path,
+        "finalization receipt",
+    )
+    if paths_overlap(candidate_tap_root, live_tap_root.resolve()):
+        fail("final tap candidate overlaps the live tap authority")
+    try:
+        finalization_path.resolve().relative_to(candidate_tap_root)
+    except ValueError:
+        pass
+    else:
+        fail("finalization receipt must be outside the candidate tap")
+    # WHY: the candidate and receipt are paired local outputs from
+    # prepare_final_tap, not independently delegated or downloaded authority.
+    # Recheck every fact available from the live Git object database here;
+    # campaign composition itself remains inside that earlier trusted step.
+    finalization, finalization_payload = validate_finalization_candidate(
+        candidate_tap_root=candidate_tap_root,
+        finalization_path=finalization_path,
+    )
+    expected_live = finalization["expected_live"]
+    live_tap_root = exact_live_tap_checkout(
+        live_tap_root,
+        expected_live["commit"],
+        expected_live["tree_git_oid"],
+    )
+    source = finalization["source"]
+    source_commit = source["source_tap_commit"]
+    actual_source_tree = run_git(
+        live_tap_root,
+        ["rev-parse", f"{source_commit}^{{tree}}"],
+        "final commit source tap tree",
+    ).decode("ascii", errors="strict").strip()
+    actual_base_tree = run_git(
+        live_tap_root,
+        ["rev-parse", f"{source['base']['commit']}^{{tree}}"],
+        "final commit sealed base tree",
+    ).decode("ascii", errors="strict").strip()
+    if (
+        actual_source_tree != source["source_tap_tree_git_oid"]
+        or actual_base_tree != source["base"]["tree_git_oid"]
+        or not git_is_ancestor(
+            live_tap_root,
+            source["base"]["commit"],
+            source_commit,
+            "final commit sealed base ancestry",
+        )
+        or not git_is_ancestor(
+            live_tap_root,
+            source_commit,
+            expected_live["commit"],
+            "final commit source ancestry",
+        )
+    ):
+        fail("final commit live history differs from its source replay")
+    rejected_live_paths = sorted(
+        set(
+            git_changed_paths(
+                live_tap_root,
+                source_commit,
+                expected_live["commit"],
+                "final commit live changes after campaign source",
+            )
+        )
+        - FINAL_TAP_ALLOWED_CONTROL_DRIFT_PATHS
+    )
+    # WHY: the receipt is not permission to choose an arbitrary parent. Repeat
+    # the complete source ancestry and narrow drift proof immediately before
+    # creating the compare-and-swap commit from the live object database.
+    if rejected_live_paths:
+        fail(
+            "final commit live tap changed outside reviewed control paths: "
+            + ", ".join(rejected_live_paths)
+        )
+    output_ref = require_string(output_ref, "output ref")
+    if not output_ref.startswith("refs/heads/"):
+        fail("output ref must be a full refs/heads/... name")
+    run_git(
+        live_tap_root,
+        ["check-ref-format", output_ref],
+        "output ref format",
+    )
+    if git_ref_exists(live_tap_root, output_ref):
+        fail("output ref already exists")
+    commit_receipt_output = validate_new_output(
+        commit_receipt_output,
+        "final commit receipt",
+        (candidate_tap_root, finalization_path, live_tap_root),
+    )
+
+    temporary = pathlib.Path(
+        tempfile.mkdtemp(
+            prefix=f".{commit_receipt_output.name}.",
+            dir=commit_receipt_output.parent,
+        )
+    )
+    created_ref = False
+    commit_oid = ""
+    try:
+        stable_candidate = temporary / "worktree"
+        shutil.copytree(
+            candidate_tap_root,
+            stable_candidate,
+            symlinks=True,
+        )
+        validate_finalization_candidate(
+            candidate_tap_root=stable_candidate,
+            finalization_path=finalization_path,
+        )
+        git_dir = pathlib.Path(
+            run_git(
+                live_tap_root,
+                ["rev-parse", "--absolute-git-dir"],
+                "live tap Git directory",
+            ).decode("utf-8", errors="strict").strip()
+        ).resolve()
+        environment = dict(os.environ)
+        for name in (
+            "GIT_AUTHOR_DATE",
+            "GIT_COMMITTER_DATE",
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_WORK_TREE",
+        ):
+            environment.pop(name, None)
+        # WHY: a failed ref/receipt transaction must be safely retryable.
+        # Fixed identity and time make the same parent, tree, and message
+        # reproduce the same commit object instead of accumulating orphans.
+        environment.update(
+            {
+                "GIT_AUTHOR_EMAIL": CAMPAIGN_COMMIT_EMAIL,
+                "GIT_AUTHOR_NAME": CAMPAIGN_COMMIT_NAME,
+                "GIT_AUTHOR_DATE": (
+                    f"{CAMPAIGN_COMMIT_TIMESTAMP} "
+                    f"{CAMPAIGN_COMMIT_TIMEZONE}"
+                ),
+                "GIT_COMMITTER_EMAIL": CAMPAIGN_COMMIT_EMAIL,
+                "GIT_COMMITTER_NAME": CAMPAIGN_COMMIT_NAME,
+                "GIT_COMMITTER_DATE": (
+                    f"{CAMPAIGN_COMMIT_TIMESTAMP} "
+                    f"{CAMPAIGN_COMMIT_TIMEZONE}"
+                ),
+                "GIT_DIR": str(git_dir),
+                "GIT_INDEX_FILE": str(temporary / "index"),
+                "GIT_WORK_TREE": str(stable_candidate),
+            }
+        )
+        run_git(
+            stable_candidate,
+            ["read-tree", "--empty"],
+            "private final tap index",
+            environment=environment,
+        )
+        run_git(
+            stable_candidate,
+            ["add", "--all", "--force", "--", "."],
+            "private final tap worktree",
+            environment=environment,
+        )
+        staged_tree = run_git(
+            stable_candidate,
+            ["write-tree"],
+            "staged final tap tree",
+            environment=environment,
+        ).decode("ascii", errors="strict").strip()
+        if staged_tree != finalization["candidate"]["tree_git_oid"]:
+            fail("private Git index differs from the candidate tree")
+        commit_oid = run_git(
+            stable_candidate,
+            [
+                "commit-tree",
+                staged_tree,
+                "-p",
+                expected_live["commit"],
+                "-m",
+                FINAL_TAP_COMMIT_MESSAGE.rstrip("\n"),
+            ],
+            "final tap commit",
+            environment=environment,
+        ).decode("ascii", errors="strict").strip()
+        require_string(commit_oid, "final tap commit", COMMIT)
+        parents = run_git(
+            live_tap_root,
+            ["rev-list", "--parents", "-n", "1", commit_oid],
+            "final tap commit parents",
+        ).decode("ascii", errors="strict").strip().split()
+        commit_tree = run_git(
+            live_tap_root,
+            ["rev-parse", f"{commit_oid}^{{tree}}"],
+            "final tap commit tree",
+        ).decode("ascii", errors="strict").strip()
+        commit_message = run_git(
+            live_tap_root,
+            ["show", "-s", "--format=%B", commit_oid],
+            "final tap commit message",
+        ).decode("utf-8", errors="strict")
+        if (
+            parents != [commit_oid, expected_live["commit"]]
+            or commit_tree != staged_tree
+            or commit_message.rstrip("\n")
+            != FINAL_TAP_COMMIT_MESSAGE.rstrip("\n")
+        ):
+            fail("final tap commit has the wrong parent, tree, or message")
+        commit_receipt = {
+            "candidate": {"tree_git_oid": staged_tree},
+            "commit": {
+                "oid": commit_oid,
+                "parent": expected_live["commit"],
+                "tree_git_oid": staged_tree,
+            },
+            "finalization": {
+                "path": "finalization.json",
+                "sha256": sha256_bytes(finalization_payload),
+            },
+            "kind": "kandelo-homebrew-prefix-campaign-final-commit",
+            "output_ref": output_ref,
+            "schema": 1,
+        }
+        staged_receipt = temporary / "commit-receipt.json"
+        staged_receipt.write_bytes(pretty_json(commit_receipt))
+        exact_live_tap_checkout(
+            live_tap_root,
+            expected_live["commit"],
+            expected_live["tree_git_oid"],
+        )
+        run_git(
+            live_tap_root,
+            ["update-ref", output_ref, commit_oid, "0" * 40],
+            "new final tap output ref",
+        )
+        created_ref = True
+        if run_git(
+            live_tap_root,
+            ["rev-parse", output_ref],
+            "new final tap output ref",
+        ).decode("ascii", errors="strict").strip() != commit_oid:
+            fail("new final tap output ref differs from its commit")
+        os.link(staged_receipt, commit_receipt_output)
+    except BaseException as primary:
+        if created_ref:
+            try:
+                run_git(
+                    live_tap_root,
+                    ["update-ref", "-d", output_ref, commit_oid],
+                    "final tap output ref rollback",
+                )
+            except BaseException as rollback:
+                fail(
+                    "final tap commit failed and its ref rollback failed: "
+                    f"{primary}; {rollback}"
+                )
+        raise
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+
+
 def prepare_selection(
     *,
     campaign_path: pathlib.Path,
@@ -4228,6 +6021,27 @@ def parse_args() -> argparse.Namespace:
     )
     selection.add_argument("--out", required=True)
 
+    final_tap = commands.add_parser("prepare-final-tap")
+    final_tap.add_argument("--campaign", required=True)
+    final_tap.add_argument("--source-tap-root", required=True)
+    final_tap.add_argument("--live-tap-root", required=True)
+    final_tap.add_argument(
+        "--handoff", action="append", default=[], required=True
+    )
+    final_tap.add_argument("--expected-live-commit", required=True)
+    final_tap.add_argument(
+        "--expected-live-tree-git-oid", required=True
+    )
+    final_tap.add_argument("--out", required=True)
+    final_tap.add_argument("--finalization-out", required=True)
+
+    final_commit = commands.add_parser("create-final-tap-commit")
+    final_commit.add_argument("--candidate-tap-root", required=True)
+    final_commit.add_argument("--finalization", required=True)
+    final_commit.add_argument("--live-tap-root", required=True)
+    final_commit.add_argument("--output-ref", required=True)
+    final_commit.add_argument("--commit-receipt-out", required=True)
+
     fetch = commands.add_parser("fetch-release")
     fetch.add_argument("--campaign", required=True)
     fetch.add_argument("--tag", required=True)
@@ -4302,6 +6116,37 @@ def main() -> int:
                     for value in arguments.handoff
                 ],
                 output=pathlib.Path(arguments.out),
+            )
+        elif arguments.command == "prepare-final-tap":
+            prepare_final_tap(
+                campaign_path=pathlib.Path(arguments.campaign),
+                source_tap_root=pathlib.Path(
+                    arguments.source_tap_root
+                ),
+                live_tap_root=pathlib.Path(arguments.live_tap_root),
+                handoff_roots=[
+                    pathlib.Path(value) for value in arguments.handoff
+                ],
+                expected_live_commit=arguments.expected_live_commit,
+                expected_live_tree_git_oid=(
+                    arguments.expected_live_tree_git_oid
+                ),
+                output=pathlib.Path(arguments.out),
+                finalization_output=pathlib.Path(
+                    arguments.finalization_out
+                ),
+            )
+        elif arguments.command == "create-final-tap-commit":
+            create_final_tap_commit(
+                candidate_tap_root=pathlib.Path(
+                    arguments.candidate_tap_root
+                ),
+                finalization_path=pathlib.Path(arguments.finalization),
+                live_tap_root=pathlib.Path(arguments.live_tap_root),
+                output_ref=arguments.output_ref,
+                commit_receipt_output=pathlib.Path(
+                    arguments.commit_receipt_out
+                ),
             )
         elif arguments.command == "fetch-release":
             fetch_release(

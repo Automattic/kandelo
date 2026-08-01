@@ -23,10 +23,25 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
+      - name: Check out the release cleanup helper
+        if: |
+          github.event.pull_request.merged != true ||
+          !contains(github.event.pull_request.labels.*.name, 'retain-package-staging')
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts/delete-writable-release.sh
+            .github/scripts/github-api-get.sh
+            .github/scripts/state-lock.sh
+          sparse-checkout-cone-mode: false
+
       - name: Retain package staging for post-merge validation
         if: |
           github.event.pull_request.merged == true &&
@@ -41,6 +56,7 @@ jobs:
           github.event.pull_request.merged != true ||
           !contains(github.event.pull_request.labels.*.name, 'retain-package-staging')
         run: |
+          set -euo pipefail
           prefix="pr-${{ github.event.pull_request.number }}-staging"
           gh api --paginate --slurp \
             "/repos/${{ github.repository }}/releases?per_page=100" \
@@ -49,12 +65,12 @@ jobs:
                 select(.tag_name == $prefix or
                   (.tag_name | startswith($prefix + "-run-"))) |
                 select(.draft == true or .immutable == false) |
-                .tag_name
+                [.id, .tag_name] | @tsv
               ' \
-            | while read -r TAG; do
-                gh release delete "$TAG" --repo ${{ github.repository }} \
-                  --yes --cleanup-tag
-                echo "Deleted writable $TAG"
+            | while IFS=$'\t' read -r RELEASE_ID TAG; do
+                bash .github/scripts/delete-writable-release.sh \
+                  --release-id "$RELEASE_ID" \
+                  --tag "$TAG"
               done
 
       - name: Delete merged ready-to-ship PR branch
@@ -129,6 +145,7 @@ jobs:
           sparse-checkout: |
             .github/scripts/cleanup-merge-candidates.sh
             .github/scripts/classify-pr-staging.sh
+            .github/scripts/delete-writable-release.sh
             .github/scripts/github-api-get.sh
             .github/scripts/latest-merge-gate-status.sh
             .github/scripts/state-lock.sh
@@ -136,6 +153,7 @@ jobs:
 
       - name: Sweep orphan writable PR staging tags
         run: |
+          set -euo pipefail
           # Published run-specific staging releases are immutable evidence and
           # cannot be deleted. Sweep only drafts and grandfathered mutable
           # fixed tags after their PR no longer owns them.
@@ -147,9 +165,9 @@ jobs:
                 select(.tag_name |
                   test("^pr-[1-9][0-9]*-staging(-run-[1-9][0-9]*-attempt-[1-9][0-9]*)?$")) |
                 select(.draft == true or .immutable == false) |
-                .tag_name
+                [.id, .tag_name] | @tsv
               ' \
-            | while read -r TAG; do
+            | while IFS=$'\t' read -r RELEASE_ID TAG; do
                 PR=$(sed -nE 's/^pr-([1-9][0-9]*)-staging.*$/\1/p' <<<"$TAG")
                 if [ -z "$PR" ] || ! [[ "$PR" =~ ^[0-9]+$ ]]; then
                   echo "WARN: cannot parse PR number from $TAG, skipping"
@@ -177,7 +195,9 @@ jobs:
                     ;;
                   delete)
                     echo "Deleting orphan $TAG"
-                    gh release delete "$TAG" --repo ${{ github.repository }} --yes --cleanup-tag
+                    bash .github/scripts/delete-writable-release.sh \
+                      --release-id "$RELEASE_ID" \
+                      --tag "$TAG"
                     ;;
                   *)
                     echo "::warning::Keeping $TAG because cleanup returned an unknown decision"

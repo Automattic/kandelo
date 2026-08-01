@@ -42,6 +42,7 @@ SERVER_URL="${SERVER_URL%/}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STATUS_SCRIPT="${STATUS_SCRIPT:-$SCRIPT_DIR/latest-merge-gate-status.sh}"
 STATE_LOCK_SCRIPT="${STATE_LOCK_SCRIPT:-$SCRIPT_DIR/state-lock.sh}"
+DELETE_RELEASE_SCRIPT="${DELETE_RELEASE_SCRIPT:-$SCRIPT_DIR/delete-writable-release.sh}"
 # shellcheck source=.github/scripts/github-api-get.sh
 source "$SCRIPT_DIR/github-api-get.sh"
 NOW_EPOCH="${CANDIDATE_CLEANUP_NOW_EPOCH:-$(date +%s)}"
@@ -147,18 +148,15 @@ latest_gate_target() {
 }
 
 delete_candidate() {
-  local tag="$1"
-  local reason="$2"
-  local release_json="$TMP_ROOT/delete-release.json" rc=0
+  local release_id="$1"
+  local tag="$2"
+  local reason="$3"
   echo "cleanup-merge-candidates: deleting $tag ($reason)"
-  if gh_retry gh release delete "$tag" --repo "$REPOSITORY" --yes --cleanup-tag; then
-    return 0
-  fi
-  GITHUB_API_CONTEXT=cleanup-merge-candidates \
-    GITHUB_API_RETRY_DELAY_SECONDS="$RETRY_DELAY_SECONDS" \
-    github_api_get_json "/repos/${REPOSITORY}/releases/tags/${tag}" "$release_json" || rc=$?
-  if [ "$rc" -eq 44 ]; then
-    echo "cleanup-merge-candidates: $tag was already deleted"
+  if RELEASE_DELETE_RETRY_DELAY_SECONDS="$RETRY_DELAY_SECONDS" \
+      bash "$DELETE_RELEASE_SCRIPT" \
+        --release-id "$release_id" \
+        --tag "$tag" \
+        --lock-held; then
     return 0
   fi
   echo "cleanup-merge-candidates: deletion of $tag is uncertain" >&2
@@ -166,22 +164,25 @@ delete_candidate() {
 }
 
 classify_candidate_locked() {
-  local tag="$1" pr="$2"
+  local release_id="$1" tag="$2" pr="$3"
   local release_json="$TMP_ROOT/current-release-$pr.json"
-  local release_id immutable pr_json state merged_at assets rejected_at rejected_epoch
+  local immutable pr_json state merged_at assets rejected_at rejected_epoch
   local rejected_age retention_seconds head_sha target_url expected_url rc=0
 
   GITHUB_API_CONTEXT=cleanup-merge-candidates \
     GITHUB_API_RETRY_DELAY_SECONDS="$RETRY_DELAY_SECONDS" \
-    github_api_get_json "/repos/${REPOSITORY}/releases/tags/${tag}" "$release_json" || rc=$?
+    github_api_get_json "/repos/${REPOSITORY}/releases/${release_id}" "$release_json" || rc=$?
   if [ "$rc" -eq 44 ]; then
     echo "cleanup-merge-candidates: $tag was deleted before lock acquisition"
     return 0
   fi
   [ "$rc" -eq 0 ] || return 1
-  if ! jq -e --arg tag "$tag" '
-      .tag_name == $tag and .prerelease == true and
-      (.id | type == "number" and . > 0)
+  if ! jq -e --arg tag "$tag" --argjson id "$release_id" '
+      .id == $id and .tag_name == $tag and
+      (.draft | type == "boolean") and
+      (.immutable | type == "boolean") and
+      ((.draft and .immutable) | not) and
+      .prerelease == true
     ' "$release_json" >/dev/null
   then
     echo "cleanup-merge-candidates: retaining $tag; release state is malformed" >&2
@@ -212,7 +213,8 @@ classify_candidate_locked() {
     return 0
   fi
   if [ -z "$merged_at" ]; then
-    delete_candidate "$tag" "PR #$pr closed without merging"
+    delete_candidate "$release_id" "$tag" \
+      "PR #$pr closed without merging"
     return
   fi
 
@@ -234,7 +236,8 @@ classify_candidate_locked() {
     return 1
   fi
   if grep -q $'^activated.json\t' "$assets"; then
-    delete_candidate "$tag" "canonical activation receipt exists"
+    delete_candidate "$release_id" "$tag" \
+      "canonical activation receipt exists"
     return
   fi
   if grep -q $'^rejected.json\t' "$assets"; then
@@ -249,11 +252,13 @@ classify_candidate_locked() {
       echo "cleanup-merge-candidates: retaining rejected evidence $tag"
       return 0
     fi
-    delete_candidate "$tag" "terminal rejection evidence exceeded retention"
+    delete_candidate "$release_id" "$tag" \
+      "terminal rejection evidence exceeded retention"
     return
   fi
   if ! grep -q $'^ready.json\t' "$assets"; then
-    delete_candidate "$tag" "merged candidate was never sealed ready"
+    delete_candidate "$release_id" "$tag" \
+      "merged candidate was never sealed ready"
     return
   fi
 
@@ -267,11 +272,12 @@ classify_candidate_locked() {
     echo "cleanup-merge-candidates: retaining authoritative recoverable candidate $tag"
     return 0
   fi
-  delete_candidate "$tag" "superseded or non-authoritative merged candidate"
+  delete_candidate "$release_id" "$tag" \
+    "superseded or non-authoritative merged candidate"
 }
 
 process_candidate() {
-  local tag="$1" pr="$2" status=0
+  local release_id="$1" tag="$2" pr="$3" status=0
   export STATE_LOCK_OWNER_DETAIL="candidate cleanup authority, PR ${pr}"
   if ! STATE_LOCK_STATE_FILE="$AUTHORITY_LOCK_STATE" bash "$STATE_LOCK_SCRIPT" acquire "merge-authority-pr-${pr}"; then
     echo "cleanup-merge-candidates: retaining $tag; authority lock is unavailable" >&2
@@ -285,7 +291,7 @@ process_candidate() {
     return 1
   fi
   CANDIDATE_LOCKED=1
-  classify_candidate_locked "$tag" "$pr" || status=$?
+  classify_candidate_locked "$release_id" "$tag" "$pr" || status=$?
   release_candidate_locks
   return "$status"
 }
@@ -332,7 +338,7 @@ while IFS=$'\t' read -r release_id tag; do
     continue
   fi
 
-  if ! process_candidate "$tag" "$pr"; then uncertain=1; fi
+  if ! process_candidate "$release_id" "$tag" "$pr"; then uncertain=1; fi
 done < "$releases_file"
 
 exit "$uncertain"

@@ -18,6 +18,7 @@ import threading
 import unittest
 from dataclasses import dataclass
 from typing import Any
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -252,6 +253,7 @@ def make_archive(
     name: str,
     version: str,
     *,
+    runtime_dependencies: list[dict[str, Any]] | None = None,
     retired_cross_chunk: bool = False,
     unsafe_member: bool = False,
 ) -> bytes:
@@ -266,7 +268,7 @@ def make_archive(
             "homebrew_version": "Homebrew fixture",
             "installed_on_request": True,
             "poured_from_bottle": False,
-            "runtime_dependencies": [],
+            "runtime_dependencies": runtime_dependencies or [],
             "source": {"scm_revision": "fixture"},
             "source_modified_time": 0,
         },
@@ -352,11 +354,12 @@ def sidecar(
     rebuild: int,
     abi: int,
     bottles: list[dict[str, Any]],
+    dependencies: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     return {
         "bottle_rebuild": rebuild,
         "bottles": bottles,
-        "dependencies": [],
+        "dependencies": dependencies or [],
         "formula_path": f"Formula/{name}.rb",
         "formula_revision": 0,
         "full_name": f"{TAP_NAME}/{name}",
@@ -705,6 +708,7 @@ def make_fixture(
         "scripts/homebrew-formula-source-digest.rb",
         "scripts/homebrew-validate-wasm-artifact.sh",
         "scripts/homebrew-oci-layout.py",
+        "host/src/homebrew-vfs-fetch.ts",
     ):
         destination = kandelo / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -780,9 +784,21 @@ def make_fixture(
         ("alpha", "1.0", 1, 42, alpha_cross_chunk, alpha_unsafe),
         ("beta", "2.0", 0, 41, False, False),
     ):
+        direct_dependencies = (
+            [
+                {
+                    "declared_directly": True,
+                    "full_name": f"{TAP_NAME}/beta",
+                    "pkg_version": "2.0",
+                }
+            ]
+            if name == "alpha"
+            else []
+        )
         archive = make_archive(
             name,
             version,
+            runtime_dependencies=direct_dependencies,
             retired_cross_chunk=cross_chunk,
             unsafe_member=unsafe,
         )
@@ -791,7 +807,25 @@ def make_fixture(
         bottle = bottle_record(
             name, "wasm32", abi, digest, len(archive), version, rebuild
         )
-        value = sidecar(name, version, rebuild, abi, [bottle])
+        sidecar_dependencies = (
+            [
+                {
+                    "full_name": f"{TAP_NAME}/beta",
+                    "name": "beta",
+                    "version": "2.0",
+                }
+            ]
+            if name == "alpha"
+            else []
+        )
+        value = sidecar(
+            name,
+            version,
+            rebuild,
+            abi,
+            [bottle],
+            sidecar_dependencies,
+        )
         formula_sidecars[name] = value
         write_json(tap / f"Kandelo/formula/{name}.json", value)
         (tap / f"Formula/{name}.rb").write_bytes(
@@ -875,6 +909,140 @@ def make_fixture(
 
 
 class PrefixCampaignTests(unittest.TestCase):
+    def test_compressed_bottle_limit_comes_from_publication_policy(
+        self,
+    ) -> None:
+        self.assertEqual(
+            CAMPAIGN.MAX_COMPRESSED_BOTTLE_BYTES,
+            2 * 1024 * 1024 * 1024,
+        )
+
+    def test_bottle_metadata_accepts_the_limit_and_rejects_one_more_byte(
+        self,
+    ) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        sidecar = json.loads(
+            (fixture.old_tap / "Kandelo/formula/alpha.json").read_text()
+        )
+        record = sidecar["bottles"][0]
+        record["bytes"] = CAMPAIGN.MAX_COMPRESSED_BOTTLE_BYTES
+        accepted = CAMPAIGN.validate_bottle(
+            record,
+            label="alpha/wasm32",
+            formula="alpha",
+            tap_repository=TAP_REPOSITORY,
+            retired_prefixes=[RETIRED_PREFIX],
+        )
+        self.assertEqual(
+            accepted["bytes"], CAMPAIGN.MAX_COMPRESSED_BOTTLE_BYTES
+        )
+
+        record["bytes"] += 1
+        with self.assertRaisesRegex(
+            RuntimeError, "exceeds compressed bottle limit"
+        ):
+            CAMPAIGN.validate_bottle(
+                record,
+                label="alpha/wasm32",
+                formula="alpha",
+                tap_repository=TAP_REPOSITORY,
+                retired_prefixes=[RETIRED_PREFIX],
+            )
+
+    def test_anonymous_archive_uses_compressed_bottle_limit(
+        self,
+    ) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        observed_limits: list[int] = []
+        regular_file = CAMPAIGN.regular_file
+
+        def inspect_regular_file(
+            path: pathlib.Path,
+            label: str,
+            maximum: int = CAMPAIGN.MAX_JSON_BYTES,
+        ) -> pathlib.Path:
+            if label.endswith("anonymous readback"):
+                observed_limits.append(maximum)
+            return regular_file(path, label, maximum)
+
+        with mock.patch.object(
+            CAMPAIGN, "regular_file", side_effect=inspect_regular_file
+        ):
+            CAMPAIGN.derive_campaign(
+                fixture.options(), fixture.dependencies()
+            )
+
+        self.assertEqual(
+            observed_limits,
+            [
+                CAMPAIGN.MAX_COMPRESSED_BOTTLE_BYTES,
+                CAMPAIGN.MAX_COMPRESSED_BOTTLE_BYTES,
+            ],
+        )
+
+    def test_default_readback_uses_node_without_package_discovery(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="campaign-readback-runner-test-"
+        ) as temporary_name:
+            root = pathlib.Path(temporary_name)
+            output = root / "bottle.tar.gz"
+            with mock.patch.object(CAMPAIGN, "run_command") as run_command:
+                CAMPAIGN.default_fetch_bottle(
+                    "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/"
+                    f"alpha/blobs/sha256:{'a' * 64}",
+                    "a" * 64,
+                    123,
+                    output,
+                    root,
+                )
+
+        command = run_command.call_args.args[0]
+        self.assertEqual(
+            command[:2], ["node", "--experimental-strip-types"]
+        )
+        self.assertEqual(
+            command[2],
+            str(root / "scripts/homebrew-verify-public-bottle.ts"),
+        )
+        self.assertNotIn("npx", command)
+        self.assertNotIn("tsx", command)
+
+    def test_default_destination_probe_preserves_auth_required(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="campaign-destination-probe-test-"
+        ) as temporary_name:
+            root = pathlib.Path(temporary_name)
+
+            def run_probe(command: list[str], **_options: Any) -> None:
+                result_path = pathlib.Path(
+                    command[command.index("--out-result") + 1]
+                )
+                write_json(
+                    result_path,
+                    {
+                        "digest": None,
+                        "kind": "manifest",
+                        "schema": 1,
+                        "status": "auth-required",
+                    },
+                )
+
+            with mock.patch.object(
+                CAMPAIGN, "run_command", side_effect=run_probe
+            ):
+                result = CAMPAIGN.default_probe_destination(
+                    "ghcr.io/kandelo-dev/tap-core/libyaml",
+                    "0.2.5",
+                    root,
+                )
+
+        self.assertEqual(result["status"], "auth-required")
+        self.assertIsNone(result["digest"])
+
     def test_repository_inputs_classify_new_formulae_by_build_source(
         self,
     ) -> None:
@@ -918,6 +1086,7 @@ class PrefixCampaignTests(unittest.TestCase):
             fixture.options(), fixture.dependencies()
         )
         self.assertEqual(first, second)
+        self.assertEqual(first["schema"], 2)
         self.assertEqual(
             [value["name"] for value in first["formulae"]],
             ["alpha", "beta", "homebrew-bootstrap", "libyaml"],
@@ -949,6 +1118,12 @@ class PrefixCampaignTests(unittest.TestCase):
         self.assertEqual(
             by_name["beta"]["variants"][0]["disposition"],
             {"kind": "required-rebuild", "reasons": ["abi-mismatch"]},
+        )
+        self.assertEqual(
+            by_name["beta"]["variants"][0]["inspection"][
+                "fork_instrumentation"
+            ],
+            "not-inspected-incompatible-abi",
         )
         self.assertEqual(
             by_name["homebrew-bootstrap"]["variants"][0]["disposition"],
@@ -988,6 +1163,14 @@ class PrefixCampaignTests(unittest.TestCase):
             first["authority"]["source_materialization"]["kind"],
             "exact-git-tree-v1",
         )
+        self.assertIn(
+            CAMPAIGN.PUBLICATION_LIMITS_PATH,
+            first["authority"]["tools"],
+        )
+        self.assertIn(
+            CAMPAIGN.READBACK_FETCH_PATH,
+            first["authority"]["tools"],
+        )
         self.assertEqual(
             first["deferred_source_formulae"][0]["name"], "later"
         )
@@ -1002,6 +1185,66 @@ class PrefixCampaignTests(unittest.TestCase):
                 "Kandelo/reports/stale-1.0-rebuild0-wasm32.provenance.json",
             ],
         )
+
+    def test_historical_formula_staging_ignores_tap_owned_root_symlink(
+        self,
+    ) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        alpha = (fixture.old_tap / "Formula/alpha.rb").read_bytes()
+        collision = (
+            fixture.old_tap
+            / f"Kandelo/reports/failures/{sha256(alpha)}.rb"
+        )
+        collision.write_text("repository-controlled collision\n")
+        staging = fixture.old_tap / ".campaign-historical-formula"
+        staging.symlink_to(
+            "Kandelo/reports/failures",
+            target_is_directory=True,
+        )
+        old_head = commit(
+            fixture.old_tap,
+            "add adversarial historical Formula root symlink",
+        )
+
+        result = CAMPAIGN.derive_campaign(
+            fixture.options(old_tap_commit=old_head),
+            fixture.dependencies(),
+        )
+
+        self.assertEqual(result["summary"]["formulae"], 4)
+        self.assertEqual(
+            collision.read_text(), "repository-controlled collision\n"
+        )
+        self.assertTrue(staging.is_symlink())
+
+    def test_historical_formula_staging_ignores_tap_owned_leaf_symlink(
+        self,
+    ) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        staging = fixture.old_tap / ".campaign-historical-formula"
+        staging.mkdir()
+        alpha = (fixture.old_tap / "Formula/alpha.rb").read_bytes()
+        collision = fixture.old_tap / "historical-formula-collision.rb"
+        collision.write_text("repository-controlled collision\n")
+        leaf = staging / f"{sha256(alpha)}.rb"
+        leaf.symlink_to("../historical-formula-collision.rb")
+        old_head = commit(
+            fixture.old_tap,
+            "add adversarial historical Formula leaf symlink",
+        )
+
+        result = CAMPAIGN.derive_campaign(
+            fixture.options(old_tap_commit=old_head),
+            fixture.dependencies(),
+        )
+
+        self.assertEqual(result["summary"]["formulae"], 4)
+        self.assertEqual(
+            collision.read_text(), "repository-controlled collision\n"
+        )
+        self.assertTrue(leaf.is_symlink())
 
     def test_unchanged_formula_is_required_for_reuse(self) -> None:
         fixture = make_fixture(alpha_source_changed=False)
@@ -1101,7 +1344,7 @@ class PrefixCampaignTests(unittest.TestCase):
                 fixture.dependencies(),
             )
 
-    def test_candidate_pkg_version_comes_from_exact_native_homebrew(
+    def test_changed_pkg_version_rejects_stale_candidate_bottle_block(
         self,
     ) -> None:
         fixture = make_fixture()
@@ -1125,7 +1368,7 @@ class PrefixCampaignTests(unittest.TestCase):
             return metadata
 
         with self.assertRaisesRegex(
-            CAMPAIGN.CampaignError, "candidate pkg_version 9.9"
+            CAMPAIGN.CampaignError, "pkg_version changed from 1.0 to 9.9"
         ):
             CAMPAIGN.derive_campaign(
                 fixture.options(),
@@ -1136,6 +1379,178 @@ class PrefixCampaignTests(unittest.TestCase):
                     load_historical_formula=base.load_historical_formula,
                 ),
             )
+
+    def test_changed_pkg_version_preserves_old_bottle_identity(self) -> None:
+        fixture = make_fixture(alpha_source_changed=False)
+        self.addCleanup(fixture.close)
+        (fixture.source_tap / "Formula/alpha.rb").write_bytes(
+            stripped_formula("alpha")
+        )
+        source_head = commit(
+            fixture.source_tap,
+            "start the candidate pkg_version without a bottle block",
+        )
+        fixture.versions["alpha"] = "1.0_1"
+
+        result = CAMPAIGN.derive_campaign(
+            fixture.options(source_tap_commit=source_head),
+            fixture.dependencies(),
+        )
+        by_name = {value["name"]: value for value in result["formulae"]}
+        alpha = by_name["alpha"]
+
+        self.assertEqual(alpha["version"], "1.0_1")
+        self.assertEqual(
+            alpha["destination"],
+            {
+                "admission": {
+                    "kind": "anonymous-absence",
+                    "method": "anonymous-oras-manifest-probe",
+                    "probe": {
+                        "digest": None,
+                        "kind": "manifest",
+                        "schema": 1,
+                        "status": "missing",
+                    },
+                    "schema": 1,
+                },
+                "bottle_rebuild": 0,
+                "reference": "1.0_1",
+                "remote": f"ghcr.io/{TAP_REPOSITORY}/alpha",
+            },
+        )
+        self.assertEqual(
+            alpha["variants"][0]["disposition"],
+            {
+                "kind": "required-rebuild",
+                "reasons": ["pkg-version-changed"],
+            },
+        )
+        self.assertEqual(
+            alpha["variants"][0]["old_record"]["link_manifest"],
+            "Kandelo/link/alpha-1.0-rebuild1-wasm32.json",
+        )
+        self.assertEqual(
+            by_name["homebrew-bootstrap"]["dependencies"][0],
+            {"full_name": f"{TAP_NAME}/alpha", "version": "1.0_1"},
+        )
+
+    def test_changed_dependency_version_rebuilds_unchanged_dependents(
+        self,
+    ) -> None:
+        fixture = make_fixture(alpha_source_changed=False)
+        self.addCleanup(fixture.close)
+        (fixture.source_tap / "Formula/beta.rb").write_bytes(
+            stripped_formula("beta")
+        )
+        source_head = commit(
+            fixture.source_tap,
+            "advance a dependency pkg_version without a bottle block",
+        )
+        fixture.versions["beta"] = "2.0_1"
+
+        result = CAMPAIGN.derive_campaign(
+            fixture.options(source_tap_commit=source_head),
+            fixture.dependencies(),
+        )
+        by_name = {value["name"]: value for value in result["formulae"]}
+
+        self.assertEqual(
+            by_name["beta"]["variants"][0]["disposition"],
+            {
+                "kind": "required-rebuild",
+                "reasons": ["abi-mismatch", "pkg-version-changed"],
+            },
+        )
+        self.assertEqual(
+            by_name["alpha"]["dependencies"],
+            [{"full_name": f"{TAP_NAME}/beta", "version": "2.0_1"}],
+        )
+        self.assertEqual(
+            by_name["alpha"]["variants"][0]["disposition"],
+            {
+                "kind": "required-rebuild",
+                "reasons": ["dependency-closure-changed"],
+            },
+        )
+
+    def test_old_bottle_block_comes_from_metadata_catalog_commit(
+        self,
+    ) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        base = fixture.dependencies()
+        selected_beta = (
+            fixture.old_tap / "Formula/beta.rb"
+        ).read_bytes()
+        built_from_commit = "8" * 40
+        stale_sidecar_commit = "9" * 40
+        sidecar_path = fixture.old_tap / "Kandelo/formula/beta.json"
+        sidecar_document = json.loads(sidecar_path.read_text())
+        sidecar_document["tap_commit"] = stale_sidecar_commit
+        sidecar_document["bottles"][0]["built_from"][
+            "tap_commit"
+        ] = built_from_commit
+        write_json(sidecar_path, sidecar_document)
+        provenance_path = refresh_provenance_hashes(
+            fixture.old_tap,
+            "beta",
+            "2.0",
+            0,
+            "wasm32",
+        )
+        provenance = json.loads(provenance_path.read_text())
+        provenance["repositories"]["tap_commit"] = built_from_commit
+        provenance["metadata"]["provenance_json"]["sha256"] = "0" * 64
+        provenance["metadata"]["provenance_json"]["sha256"] = (
+            CAMPAIGN.normalized_provenance_sha256(provenance)
+        )
+        write_json(provenance_path, provenance)
+        (fixture.old_tap / "Formula/beta.rb").write_bytes(
+            stripped_formula("beta")
+        )
+        old_head = commit(
+            fixture.old_tap,
+            "advance live source past a stale extra sidecar",
+        )
+        calls: list[tuple[str, str]] = []
+
+        def load_historical_formula(
+            old_tap_root: pathlib.Path,
+            name: str,
+            source_commit: str,
+            formula_path: str,
+        ) -> bytes:
+            calls.append((name, source_commit))
+            if name == "beta":
+                if source_commit == fixture.old_tap_commit:
+                    return selected_beta
+                if source_commit == built_from_commit:
+                    return stripped_formula("beta")
+                raise AssertionError(
+                    f"unexpected beta source commit {source_commit}"
+                )
+            return (old_tap_root / formula_path).read_bytes()
+
+        result = CAMPAIGN.derive_campaign(
+            fixture.options(old_tap_commit=old_head),
+            CAMPAIGN.CampaignDependencies(
+                fetch_bottle=base.fetch_bottle,
+                probe_destination=base.probe_destination,
+                resolve_formula_metadata=base.resolve_formula_metadata,
+                load_historical_formula=load_historical_formula,
+            ),
+        )
+
+        self.assertEqual(result["formulae"][0]["name"], "alpha")
+        self.assertEqual(
+            result["authority"]["old_catalog_commit"],
+            fixture.old_tap_commit,
+        )
+        self.assertIn(("beta", fixture.old_tap_commit), calls)
+        self.assertIn(("beta", built_from_commit), calls)
+        self.assertNotIn(("beta", stale_sidecar_commit), calls)
+        self.assertNotIn(("beta", HISTORICAL_TAP_COMMIT), calls)
 
     def test_native_metadata_emits_only_exact_tap_qualified_dependencies(
         self,
@@ -1818,19 +2233,40 @@ class PrefixCampaignTests(unittest.TestCase):
     ) -> None:
         fixture = make_fixture()
         self.addCleanup(fixture.close)
-        sidecar_path = fixture.old_tap / "Kandelo/formula/beta.json"
+        sidecar_path = fixture.old_tap / "Kandelo/formula/alpha.json"
         sidecar_value = json.loads(sidecar_path.read_text())
         sidecar_value["bottles"][0]["fork_instrumentation"] = "required"
         write_json(sidecar_path, sidecar_value)
+        metadata_path = fixture.old_tap / "Kandelo/metadata.json"
+        metadata = json.loads(metadata_path.read_text())
+        metadata["packages"] = [package_from_sidecar(sidecar_value)]
+        write_json(metadata_path, metadata)
+        metadata_sha = sha256(metadata_path.read_bytes())
         refresh_provenance_hashes(
-            fixture.old_tap, "beta", "2.0", 0, "wasm32"
+            fixture.old_tap,
+            "alpha",
+            "1.0",
+            1,
+            "wasm32",
+            metadata_sha256=metadata_sha,
+        )
+        refresh_provenance_hashes(
+            fixture.old_tap,
+            "beta",
+            "2.0",
+            0,
+            "wasm32",
+            metadata_sha256=metadata_sha,
         )
         old_head = commit(fixture.old_tap, "mismatch fork evidence")
         with self.assertRaisesRegex(
             CAMPAIGN.CampaignError, "fork instrumentation"
         ):
             CAMPAIGN.derive_campaign(
-                fixture.options(old_tap_commit=old_head),
+                fixture.options(
+                    old_tap_commit=old_head,
+                    metadata_sha256=metadata_sha,
+                ),
                 fixture.dependencies(),
             )
 
@@ -2071,7 +2507,7 @@ class PrefixCampaignTests(unittest.TestCase):
                 fixture.dependencies(),
             )
 
-    def test_destination_must_be_anonymously_absent(self) -> None:
+    def test_present_destination_manifest_is_rejected(self) -> None:
         fixture = make_fixture()
         self.addCleanup(fixture.close)
 
@@ -2095,7 +2531,7 @@ class PrefixCampaignTests(unittest.TestCase):
             }
 
         with self.assertRaisesRegex(
-            CAMPAIGN.CampaignError, "not anonymously proven absent"
+            CAMPAIGN.CampaignError, "destination manifest is already present"
         ):
             fixture_dependencies = fixture.dependencies()
             CAMPAIGN.derive_campaign(
@@ -2109,6 +2545,140 @@ class PrefixCampaignTests(unittest.TestCase):
                     load_historical_formula=(
                         fixture_dependencies.load_historical_formula
                     ),
+                ),
+            )
+
+    def test_auth_required_sidecar_build_and_reuse_are_rejected(
+        self,
+    ) -> None:
+        for source_changed in (True, False):
+            with self.subTest(source_changed=source_changed):
+                fixture = make_fixture(
+                    alpha_source_changed=source_changed
+                )
+                self.addCleanup(fixture.close)
+                base = fixture.dependencies()
+
+                def probe(
+                    remote: str,
+                    _reference: str,
+                    _kandelo_root: pathlib.Path,
+                ) -> dict[str, Any]:
+                    return {
+                        "digest": None,
+                        "kind": "manifest",
+                        "schema": 1,
+                        "status": (
+                            "auth-required"
+                            if remote.endswith("/alpha")
+                            else "missing"
+                        ),
+                    }
+
+                with self.assertRaisesRegex(
+                    CAMPAIGN.CampaignError,
+                    "alpha destination requires authentication.*"
+                    "not a reviewed source-only required-build entrant",
+                ):
+                    CAMPAIGN.derive_campaign(
+                        fixture.options(),
+                        CAMPAIGN.CampaignDependencies(
+                            fetch_bottle=base.fetch_bottle,
+                            probe_destination=probe,
+                            resolve_formula_metadata=(
+                                base.resolve_formula_metadata
+                            ),
+                            load_historical_formula=(
+                                base.load_historical_formula
+                            ),
+                        ),
+                    )
+
+    def test_auth_required_reviewed_entrant_requires_bootstrap(self) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        base = fixture.dependencies()
+
+        def probe(
+            remote: str,
+            _reference: str,
+            _kandelo_root: pathlib.Path,
+        ) -> dict[str, Any]:
+            return {
+                "digest": None,
+                "kind": "manifest",
+                "schema": 1,
+                "status": (
+                    "auth-required"
+                    if remote.endswith("/libyaml")
+                    else "missing"
+                ),
+            }
+
+        result = CAMPAIGN.derive_campaign(
+            fixture.options(),
+            CAMPAIGN.CampaignDependencies(
+                fetch_bottle=base.fetch_bottle,
+                probe_destination=probe,
+                resolve_formula_metadata=base.resolve_formula_metadata,
+                load_historical_formula=base.load_historical_formula,
+            ),
+        )
+        by_name = {value["name"]: value for value in result["formulae"]}
+        self.assertEqual(
+            by_name["libyaml"]["destination"]["admission"],
+            {
+                "kind": "first-package-namespace-bootstrap-required",
+                "method": "anonymous-oras-manifest-probe",
+                "probe": {
+                    "digest": None,
+                    "kind": "manifest",
+                    "schema": 1,
+                    "status": "auth-required",
+                },
+                "schema": 1,
+            },
+        )
+        self.assertEqual(
+            by_name["libyaml"]["variants"][0]["disposition"],
+            {
+                "kind": "required-build",
+                "reasons": ["new-campaign-entrant"],
+            },
+        )
+        self.assertEqual(
+            by_name["alpha"]["destination"]["admission"]["kind"],
+            "anonymous-absence",
+        )
+
+    def test_destination_probe_status_and_digest_must_agree(self) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        base = fixture.dependencies()
+
+        def malformed_probe(
+            _remote: str,
+            _reference: str,
+            _kandelo_root: pathlib.Path,
+        ) -> dict[str, Any]:
+            return {
+                "digest": "sha256:" + "f" * 64,
+                "kind": "manifest",
+                "schema": 1,
+                "status": "auth-required",
+            }
+
+        with self.assertRaisesRegex(
+            CAMPAIGN.CampaignError,
+            "auth-required result unexpectedly has a digest",
+        ):
+            CAMPAIGN.derive_campaign(
+                fixture.options(),
+                CAMPAIGN.CampaignDependencies(
+                    fetch_bottle=base.fetch_bottle,
+                    probe_destination=malformed_probe,
+                    resolve_formula_metadata=base.resolve_formula_metadata,
+                    load_historical_formula=base.load_historical_formula,
                 ),
             )
 

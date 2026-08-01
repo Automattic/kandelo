@@ -935,7 +935,13 @@ whenever a PR, asset, or status lookup is uncertain. It deletes candidates for
 closed-unmerged PRs. After merge it deletes activated, unready, and superseded
 attempts, retaining only the ready candidate selected by the latest successful
 merge gate. Terminal rejection evidence is retained for 14 days before cleanup
-deletes it.
+deletes it. Writable-release cleanup carries the discovered numeric release ID
+because GitHub's get-by-tag API omits drafts. Under the publisher's per-tag
+state lock, it deletes the release object and Git tag as independent resources
+and removes only the exact tag object observed before release deletion through
+a Git force-with-lease. A missing tag or a concurrent cleanup is idempotent,
+while changed ownership, an observable resource, or uncertain API state still
+fails visibly.
 
 ## State-lock serialization
 

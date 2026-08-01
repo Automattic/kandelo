@@ -278,6 +278,7 @@ class BottleInspector:
         forbidden_roots: tuple[str, ...],
         selected_formula: pathlib.Path | None,
         reported_roots: tuple[str, ...] = (),
+        validate_wasm: bool = True,
     ) -> None:
         self.archive_path = archive_path
         self.formula = formula
@@ -287,6 +288,7 @@ class BottleInspector:
         self.expected_arch = expected_arch
         self.wasm_validator = wasm_validator
         self.wasm_timeout_seconds = wasm_timeout_seconds
+        self.validate_wasm = validate_wasm
         self.selected_formula = selected_formula
         self.formula_receipt_validator = pathlib.Path(__file__).with_name(
             "homebrew-formula-source-digest.rb"
@@ -698,19 +700,36 @@ class BottleInspector:
             for entry in self.entries.values()
             if entry.path.startswith(f"{self.payload_root}/") and entry.is_wasm
         }
-        fork_instrumentation = "not-required"
-        for entry in sorted(wasm_entries.values(), key=lambda value: value.path):
-            # WHY: Homebrew exposes executable entrypoints through bin/sbin
-            # links, while Wasm side modules advertise their distinct loading
-            # contract structurally through a leading dylink.0 section. Pass
-            # the PATH role into the validator so a mislabeled side module can
-            # never evade the process ABI contract.
-            declared_role = (
-                "path-executable" if entry.path in resolved_execs else "payload"
-            )
-            result = self._inspect_wasm(entry, declared_role)
-            if result == "required":
-                fork_instrumentation = "required"
+        if self.validate_wasm:
+            fork_instrumentation = "not-required"
+            for entry in sorted(
+                wasm_entries.values(), key=lambda value: value.path
+            ):
+                # WHY: Homebrew exposes executable entrypoints through
+                # bin/sbin links, while Wasm side modules advertise their
+                # distinct loading contract structurally through a leading
+                # dylink.0 section. Pass the PATH role into the validator so a
+                # mislabeled side module cannot evade the process ABI contract.
+                declared_role = (
+                    "path-executable"
+                    if entry.path in resolved_execs
+                    else "payload"
+                )
+                result = self._inspect_wasm(entry, declared_role)
+                if result == "required":
+                    fork_instrumentation = "required"
+        else:
+            # WHY: a current validator cannot admit obsolete fork contracts.
+            # The caller has already made ABI mismatch a mandatory rebuild;
+            # this explicit marker prevents archive safety inspection from
+            # being mistaken for executable validation or compatibility.
+            fork_instrumentation = "not-inspected-incompatible-abi"
+            for entry in wasm_entries.values():
+                if entry.size > MAX_WASM_BYTES:
+                    fail(
+                        f"bottle Wasm module {entry.path!r} exceeds "
+                        f"{MAX_WASM_BYTES} bytes"
+                    )
 
         result: dict[str, object] = {
             "schema": 1,
@@ -735,6 +754,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--version", required=True)
     parser.add_argument("--expected-abi", required=True, type=int)
     parser.add_argument("--expected-arch", required=True, choices=("wasm32", "wasm64"))
+    parser.add_argument(
+        "--historical-incompatible-abi",
+        action="store_true",
+        help=(
+            "inspect archive structure, receipts, dependencies, and paths "
+            "without admitting its obsolete Wasm ABI"
+        ),
+    )
     parser.add_argument(
         "--selected-formula",
         help=(
@@ -860,6 +887,7 @@ def main() -> int:
             forbidden_roots,
             args.selected_formula,
             reported_roots,
+            not args.historical_incompatible_abi,
         ).run()
         write_result(result, args.out)
     except InspectionError as error:

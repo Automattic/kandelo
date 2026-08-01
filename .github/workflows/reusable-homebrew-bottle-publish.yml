@@ -81,6 +81,7 @@ jobs:
       prefix-campaign-tag: ${{ steps.trust.outputs.prefix-campaign-tag }}
       prefix-campaign-dependencies: ${{ steps.trust.outputs.prefix-campaign-dependencies }}
       prefix-campaign-layout-sha256: ${{ steps.campaign-source.outputs.prefix-campaign-layout-sha256 }}
+      artifact-name-prefix: ${{ steps.artifact-scope.outputs.prefix }}
     steps:
       - name: Validate caller trust boundary
         id: trust
@@ -246,11 +247,10 @@ jobs:
           validated_campaign_dependencies=""
           campaign_caller="$CALLER_REPOSITORY/.github/workflows/prefix-campaign-bottles.yml@refs/heads/main"
           if [ "$CALLER_WORKFLOW_REF" = "$campaign_caller" ]; then
-            [ "$DRY_RUN" = "false" ] &&
-              [ "$DEFER_TAP_FINALIZATION" = "true" ] &&
+            [ "$DEFER_TAP_FINALIZATION" = "true" ] &&
               [ "$FORCE_REBUILD" = "true" ] &&
               [ "$REQUIRE_VFS_ACCEPTANCE" = "false" ] || {
-                echo "::error::prefix campaign publication requires write mode, force, deferred finalization, and no VFS acceptance"; exit 2;
+                echo "::error::prefix campaign publication requires force, deferred finalization, and no VFS acceptance"; exit 2;
               }
             [[ "$FORMULAE" =~ ^[a-z0-9][a-z0-9._-]{0,254}$ ]] || {
               echo "::error::prefix campaign publication requires exactly one Formula"; exit 2;
@@ -274,7 +274,8 @@ jobs:
                 echo "::error::only the reviewed prefix campaign caller may defer tap finalization or pass campaign authority"; exit 2;
               }
           fi
-          if [ "$DRY_RUN" = "true" ]; then
+          if [ "$DRY_RUN" = "true" ] &&
+             [ "$validated_campaign_mode" != "true" ]; then
             [ "$CALLER_WORKFLOW_REF" = "$CALLER_REPOSITORY/.github/workflows/dry-run-bottles.yml@refs/heads/main" ] || {
               echo "::error::dry-run publication requires the reviewed tap dry-run workflow"; exit 2;
             }
@@ -340,7 +341,8 @@ jobs:
             esac
           fi
           if [ "$validated_generation_kind" = "rootfs-wasm32" ] &&
-             [ "$DRY_RUN" = "true" ]; then
+             [ "$DRY_RUN" = "true" ] &&
+             [ "$validated_campaign_mode" != "true" ]; then
             echo "::error::the rootfs-wasm32 publication lane requires exact runtime materialization and is unavailable in dry-run"
             exit 2
           fi
@@ -427,6 +429,7 @@ jobs:
         id: source-commits
         shell: bash
         env:
+          PREFIX_CAMPAIGN_MODE: ${{ steps.trust.outputs.prefix-campaign-mode }}
           DRY_RUN: ${{ inputs.dry-run }}
           REQUESTED_KANDELO_SHA: ${{ inputs.kandelo-ref }}
         run: |
@@ -439,7 +442,8 @@ jobs:
           [[ "$tap_sha" =~ ^[0-9a-f]{40}$ ]] || {
             echo "::error::tap checkout did not resolve to a commit SHA"; exit 2;
           }
-          if [ "$DRY_RUN" = "false" ] &&
+          if { [ "$DRY_RUN" = "false" ] ||
+               [ "$PREFIX_CAMPAIGN_MODE" = "true" ]; } &&
              [ "$kandelo_sha" != "$REQUESTED_KANDELO_SHA" ]; then
             echo "::error::Kandelo checkout differs from the exact admitted main commit"
             exit 2
@@ -450,7 +454,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Bind write tap source to protected main history
-        if: ${{ !inputs.dry-run }}
+        if: ${{ !inputs.dry-run || steps.trust.outputs.prefix-campaign-mode == 'true' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -504,6 +508,32 @@ jobs:
             --receipt-out "$RUNNER_TEMP/prefix-campaign-plan.json" \
             --github-env "$GITHUB_ENV" \
             --github-output "$GITHUB_OUTPUT"
+
+      - name: Select collision-free artifact namespace
+        id: artifact-scope
+        shell: bash
+        env:
+          ADMISSION_KIND: >-
+            ${{ steps.campaign-source.outputs.prefix-campaign-destination-admission-kind }}
+          DRY_RUN: ${{ inputs.dry-run }}
+          PREFIX_CAMPAIGN_MODE: >-
+            ${{ steps.trust.outputs.prefix-campaign-mode }}
+        run: |
+          set -euo pipefail
+          prefix=""
+          if [ "$PREFIX_CAMPAIGN_MODE" = "true" ] &&
+             [ "$DRY_RUN" = "true" ]; then
+            # WHY: the ordinary publisher runs later in this same workflow
+            # run. A fixed bootstrap-only prefix prevents Actions artifact
+            # names from colliding without letting the caller choose a name.
+            [ "$ADMISSION_KIND" = \
+              first-package-namespace-bootstrap-required ] || {
+              echo "::error::only a reviewed namespace bootstrap may use the campaign dry-run lane"
+              exit 2
+            }
+            prefix="prefix-campaign-bootstrap-dry-run-"
+          fi
+          echo "prefix=$prefix" >>"$GITHUB_OUTPUT"
 
       - name: Validate committed dependency tap lock
         id: dependency-taps
@@ -634,6 +664,7 @@ jobs:
           FORCE_REBUILD: ${{ inputs.force }}
           FORMULAE: ${{ inputs.formulae }}
           PACKAGE_GENERATION_KIND: ${{ steps.trust.outputs.package-generation-kind }}
+          PREFIX_CAMPAIGN_MODE: ${{ steps.trust.outputs.prefix-campaign-mode }}
           REQUIRE_VFS_ACCEPTANCE: ${{ inputs.require-vfs-acceptance }}
           KANDELO_HOMEBREW_AUTHORITY_RUBY: ${{ steps.authority-tools.outputs.ruby }}
           TAP_NAME: ${{ inputs.tap-name }}
@@ -656,8 +687,10 @@ jobs:
               exit 2
             }
             [ "$DRY_RUN" = "false" ] || {
-              echo "::error::the rootfs-wasm32 publication lane requires exact runtime materialization and is unavailable in dry-run"
-              exit 2
+              [ "$PREFIX_CAMPAIGN_MODE" = "true" ] || {
+                echo "::error::the rootfs-wasm32 publication lane requires exact runtime materialization and is unavailable in dry-run"
+                exit 2
+              }
             }
           fi
           expected_args=()
@@ -1877,7 +1910,7 @@ jobs:
       - name: Upload strict bottle build handoff
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: homebrew-build-handoff-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
+          name: ${{ needs.plan.outputs.artifact-name-prefix }}homebrew-build-handoff-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/homebrew-build-handoff
           compression-level: 0
           if-no-files-found: error
@@ -1956,7 +1989,7 @@ jobs:
       - name: Upload deterministic Homebrew OCI child
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: homebrew-oci-child-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
+          name: ${{ needs.plan.outputs.artifact-name-prefix }}homebrew-oci-child-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/homebrew-oci-child
           compression-level: 0
           if-no-files-found: error
@@ -1966,7 +1999,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: homebrew-build-diagnostics-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
+          name: ${{ needs.plan.outputs.artifact-name-prefix }}homebrew-build-diagnostics-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/homebrew-bottle/bottles/**
           if-no-files-found: ignore
           retention-days: 14
@@ -2109,7 +2142,7 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: homebrew-build-handoff-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
+          name: ${{ needs.plan.outputs.artifact-name-prefix }}homebrew-build-handoff-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/homebrew-build-handoff
 
       - name: Download deterministic Homebrew OCI child
@@ -2117,7 +2150,7 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: homebrew-oci-child-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
+          name: ${{ needs.plan.outputs.artifact-name-prefix }}homebrew-oci-child-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/homebrew-oci-child
 
       - name: Validate build data before exposing upload credentials
@@ -2907,7 +2940,7 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: homebrew-build-handoff-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
+          name: ${{ needs.plan.outputs.artifact-name-prefix }}homebrew-build-handoff-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/homebrew-build-handoff
 
       - name: Download deterministic Homebrew OCI child for dry-run validation
@@ -2915,7 +2948,7 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: homebrew-oci-child-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
+          name: ${{ needs.plan.outputs.artifact-name-prefix }}homebrew-oci-child-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/homebrew-oci-child
 
       - name: Download strict upload receipt
@@ -4614,7 +4647,7 @@ jobs:
       - name: Upload validated publication handoff
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: homebrew-publish-handoff-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
+          name: ${{ needs.plan.outputs.artifact-name-prefix }}homebrew-publish-handoff-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
           path: ${{ runner.temp }}/homebrew-publish-handoff
           compression-level: 0
           if-no-files-found: error
@@ -4624,7 +4657,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: homebrew-verification-diagnostics-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
+          name: ${{ needs.plan.outputs.artifact-name-prefix }}homebrew-verification-diagnostics-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
           path: |
             ${{ runner.temp }}/homebrew-browser-gallery/**
             ${{ runner.temp }}/homebrew-browser-vfs/**
