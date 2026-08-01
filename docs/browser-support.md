@@ -780,9 +780,8 @@ GitHub Pages is a public product consumer, not a package producer. Its sole
 publisher starts with a fresh resolver cache and runs
 `./run.sh --fetch-only prepare-browser`; any missing or stale canonical archive
 therefore stops deployment instead of falling back to a source build. It
-requires the resolved shell bytes to match both the browser's public copy and
-the sealed lazy-artifact lock. A read-only inspector then verifies that those
-exact bytes still contain:
+requires the resolved shell bytes to match the sealed lazy-artifact lock. A
+read-only inspector then verifies that those exact bytes still contain:
 
 - one deferred Homebrew bootstrap ZIP selected by `/usr/bin/brew`;
 - the complete deferred bottle-tree inventory;
@@ -792,12 +791,14 @@ exact bytes still contain:
 
 The inspector reads the small plan from the image; it does not eagerly download
 the mirror payloads. After Vite assembles the complete `/kandelo/` tree, the
-Pages workflow compares its shell copy with the resolver-selected image and
-runs the public-transport Chromium shell acceptance. That acceptance downloads
-only the bottle groups it exercises, keeps untouched tools lazy, activates the
-deferred Homebrew runtime through `/usr/bin/brew`, and verifies every fetched
-digest and byte count against the embedded plan. Publication, documentation,
-size, freshness, and single-writer checks run only after that proof succeeds.
+Pages workflow finds the single content-addressed shell asset that the browser
+actually imports and compares it with the resolver-selected image. It does not
+trust Vite's optional unhashed public-file copy, which can be absent or stale.
+The public-transport Chromium acceptance then downloads only the bottle groups
+it exercises, keeps untouched tools lazy, activates the deferred Homebrew
+runtime through `/usr/bin/brew`, and verifies every fetched digest and byte
+count against the embedded plan. Publication, documentation, size, freshness,
+and single-writer checks run only after that proof succeeds.
 
 Every push to `main` still starts the Pages workflow. The browser product is a
 transitive package projection whose ownership and shared inputs can grow; a

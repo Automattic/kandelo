@@ -52,6 +52,7 @@ expect_mutation_rejected() {
 }
 
 bash "$CHECKER" "$REPO_ROOT"
+bash "$REPO_ROOT/scripts/test-verify-browser-shell-vfs-asset.sh"
 
 fixture="$(new_fixture)"
 cat >"$fixture/.github/workflows/rogue-pages.yml" <<'YAML'
@@ -164,6 +165,26 @@ expect_mutation_rejected \
   "eager mirror recovery during inspection" \
   "must not eagerly download the complete bottle mirror" \
   's#(          test ! -e "\$report"\n)#$1          npx tsx scripts/recover-homebrew-bottle-mirror.ts\n#'
+
+expect_mutation_rejected \
+  "missing hashed shell asset verifier" \
+  "must verify its exact hashed shell asset" \
+  's/scripts\/verify-browser-shell-vfs-asset\.sh/scripts\/skipped-browser-shell-vfs-asset.sh/'
+
+expect_mutation_rejected \
+  "hashed shell verifier bound to another image" \
+  "must verify its exact hashed shell asset" \
+  's/dist "\$\{\{ steps\.shell_product\.outputs\.image \}\}"/dist "unbound.vfs.zst"/'
+
+expect_mutation_rejected \
+  "unhashed public shell comparison" \
+  "must not trust Vite's optional unhashed public shell copy" \
+  's/(          npm run build\n)/$1          cmp dist\/shell.vfs.zst expected.vfs.zst\n/'
+
+expect_mutation_rejected \
+  "unhashed source-tree shell comparison" \
+  "must not trust Vite's optional unhashed public shell copy" \
+  's/(          done\n)/$1          cmp "\$image" apps\/browser-demos\/public\/shell.vfs.zst\n/'
 
 expect_mutation_rejected \
   "closed bottle transport in Pages" \

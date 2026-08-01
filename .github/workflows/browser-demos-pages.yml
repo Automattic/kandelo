@@ -107,7 +107,6 @@ jobs:
             test -f "$path"
             test ! -L "$path"
           done
-          cmp "$image" apps/browser-demos/public/shell.vfs.zst
           bash scripts/verify-homebrew-main-shell-artifact-lock.sh \
             --lock homebrew/main-shell-lazy-artifact-lock.json \
             --expected-source-date-epoch 0 \
@@ -155,7 +154,14 @@ jobs:
         env:
           VITE_BASE: /kandelo/
           VITE_CORS_PROXY_URL: https://wordpress-playground-cors-proxy.net/?
-        run: npm run build
+        run: |
+          set -euo pipefail
+          npm run build
+          # WHY: Vite imports the resolver-selected shell under a hashed asset
+          # name. Verify that exact emitted asset; an unhashed public copy can
+          # be absent or stale without affecting the image the browser boots.
+          bash ../../scripts/verify-browser-shell-vfs-asset.sh \
+            dist "${{ steps.shell_product.outputs.image }}"
 
       # The root publisher replaces the complete branch so content-addressed
       # browser assets cannot accumulate forever. Include the independently
@@ -193,7 +199,6 @@ jobs:
           KANDELO_TEST_BASE_URL: http://127.0.0.1:5401/kandelo/
         run: |
           set -euo pipefail
-          cmp dist/shell.vfs.zst "${{ steps.shell_product.outputs.image }}"
           bash ../../scripts/dev-shell.sh env \
             "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
             npx playwright test \
