@@ -1,5 +1,10 @@
 # Homebrew Publishing
 
+For a plain-language map of the complete system, including ABI-bump
+operations, lazy VFS images, guest `brew`, and third-party taps, start with
+[Kandelo Homebrew Packaging](homebrew-packaging-system.md). This document is
+the detailed publication and validation reference.
+
 Kandelo's Homebrew publishing path is a bottle publication and validation
 pipeline shared by the first-party tap and conventional third-party taps. The
 implementation lives in the main `Automattic/kandelo` repository; the
