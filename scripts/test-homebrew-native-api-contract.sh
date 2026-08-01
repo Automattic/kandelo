@@ -526,6 +526,25 @@ run_native_brew_logged() {
   [ "${KANDELO_TEST_NATIVE_MISSING_STATUS:-0}" -eq 0 ]
 }
 . "$SCRIPT_DIR/homebrew-native-install-contract.sh"
+NATIVE_INSTALL_CALLS="$TMP_ROOT/native-install-calls.txt"
+: >"$NATIVE_INSTALL_CALLS"
+(
+  homebrew_patched_launcher_stage_native_contract_file() {
+    printf 'stage %s\n' "$*" >>"$NATIVE_INSTALL_CALLS"
+    return 99
+  }
+  run_native_brew_logged() {
+    printf 'brew %s\n' "$*" >>"$NATIVE_INSTALL_CALLS"
+    return 99
+  }
+  HOMEBREW_NATIVE_CONTRACT_ENABLED=1
+  homebrew_native_contract_install \
+    "$EMPTY_ROOTS" "$TMP_ROOT" "$TMP_ROOT/native-install.log" \
+    "$TMP_ROOT" 0000000000000000000000000000000000000000 \
+    "$REPO_ROOT" tap_formula_host_dependencies
+)
+[ ! -s "$NATIVE_INSTALL_CALLS" ] ||
+  fail "zero-root native install staged inputs or invoked Brew"
 homebrew_native_contract_verify_no_missing_dependencies "$EMPTY_ROOTS"
 [ ! -s "$NATIVE_MISSING_CALLS" ] ||
   fail "zero-root native closure invoked brew missing"

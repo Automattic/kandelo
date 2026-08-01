@@ -132,7 +132,10 @@ homebrew_native_contract_install() {
       "enabled native contract requires an exact lowercase Homebrew commit"
     return
   }
-  [ -s "$roots" ] || return
+  # WHY: a Formula may need no native host tools. A bare `return` here would
+  # preserve the failed `-s` test's status and silently reject that valid empty
+  # closure before the target Formula can run.
+  [ -s "$roots" ] || return 0
 
   : >"$raw"
   : >"$closure"
