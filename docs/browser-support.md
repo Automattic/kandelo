@@ -768,11 +768,13 @@ lane additionally binds the exact live Kandelo, first-party tap, and
 independent canary revisions and exercises first- and third-party guest
 Homebrew operations.
 
-That closed proof does not authorize deployment by itself. The protected tap
-must first publish the immutable bottle mirror from `TA0`, then publish the
-separate transitional lifecycle inputs from descendant `TA1` and pass the
-anonymous public Node.js and Chromium lifecycle. Only that complete public
-proof admits the Pages cutover below.
+Closed pre-publication evidence is not the deployment authority. The Pages
+workflow below independently gates publication against the already-published
+immutable mirror and the exact public product. The first cutover intentionally
+proves the bounded shell contract—boot, independent lazy commands, deferred
+Homebrew activation, and a real in-guest `brew` command—without waiting for the
+complete tap/install/upgrade/remove/reboot lifecycle. Those broader operations
+remain follow-up validation.
 
 GitHub Pages is a public product consumer, not a package producer. Its sole
 publisher starts with a fresh resolver cache and runs

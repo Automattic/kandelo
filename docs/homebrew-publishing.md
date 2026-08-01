@@ -2851,9 +2851,12 @@ eagerly downloading its payloads, and boots the assembled `/kandelo/` tree
 through the existing public-transport Chromium acceptance. Missing canonical
 archives, a missing public mirror, or any shell/bootstrap/plan identity drift
 stops deployment. The source-rootfs bridge cannot stand in for that product
-artifact and can be deleted in a later cleanup. This cutover may merge only
-after the descendant `TA1` publication run has anonymously verified the
-`TA0`-owned mirror and passed its public Node.js and Chromium lifecycle.
+artifact and can be deleted in a later cleanup. The first cutover deliberately
+does not wait for the complete public lifecycle. Its Pages job is the
+publication gate: it must anonymously recover the canonical product, boot the
+exact assembled site in Chromium, keep `brew` deferred until first use, and run
+a real in-guest `brew` command. Tap/install/upgrade/remove/reboot and memory-soak
+coverage remain independent follow-up work.
 
 ### Strict Main-Shell Bottle Closure
 
