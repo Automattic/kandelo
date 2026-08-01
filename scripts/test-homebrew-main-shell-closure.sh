@@ -1215,9 +1215,16 @@ shell_revision="$(sed -nE \
 [ -n "$shell_revision" ] &&
   [ "$(grep -Ec '^revision[[:space:]]*=' "$SHELL_BUILD_TOML")" -eq 1 ] ||
   fail "reduced lazy shell must declare one positive package revision"
-grep -Eq '^publication_state[[:space:]]*=[[:space:]]*"ready"$' \
+artifact_state="$(jq -er '.state' "$LAZY_ARTIFACT_LOCK")"
+case "$artifact_state" in
+  sealed) expected_publication_state=ready ;;
+  pending) expected_publication_state=pending ;;
+  *) fail "lazy shell artifact lock has an unsupported state" ;;
+esac
+grep -Eq \
+  "^publication_state[[:space:]]*=[[:space:]]*\"$expected_publication_state\"$" \
   "$SHELL_BUILD_TOML" ||
-  fail "final-TF shell publication must be ready"
+  fail "shell publication state must match its artifact lock"
 for shell_input in \
   homebrew/main-shell-demo.json \
   web-libs/kandelo-session/src/demo-config.ts
@@ -1310,7 +1317,7 @@ jq -e '
   }
 ' "$PACKAGE_TREE_SPEC" >/dev/null ||
   fail "Homebrew package-tree spec is not the exact reviewed contract"
-grep -Fq 'depends_on = ["homebrew-bootstrap@6.0.3-4-g4ead861"]' \
+grep -Fq 'depends_on = ["homebrew-bootstrap@6.0.4-3-gd6c1be4"]' \
   "$SHELL_PACKAGE_TOML" ||
   fail "shell package must depend on the exact standalone Homebrew source package"
 [ "$(grep -Fc '[[outputs]]' "$SHELL_PACKAGE_TOML")" -eq 1 ] ||
@@ -2258,11 +2265,23 @@ expect_failure "lock is invalid or uses a different timestamp epoch" \
   "$BUILDER" --lazy-shell --tap-root "$tap_worktree" \
   --work-dir "$TMP_ROOT/work-extra-lazy-lock-field" --migration-lock "$lock" \
   --lazy-artifact-lock "$extra_field_lock"
+sealed_fixture_lock="$TMP_ROOT/main-shell-sealed-artifact-lock.json"
+# WHY: source updates truthfully return the checked-in artifact lock to
+# pending. Build the opposite-state fixture explicitly so this rejection test
+# covers a sealed lock in both release phases instead of assuming repository
+# state happens to be sealed.
+jq '
+  .state = "sealed" |
+  .image = {
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000",
+    bytes: 1
+  }
+' "$LAZY_ARTIFACT_LOCK" >"$sealed_fixture_lock"
 expect_failure "--review-pending-artifact requires a pending artifact lock" \
   "$BUILDER" --lazy-shell --tap-root "$tap_worktree" \
   --work-dir "$TMP_ROOT/work-review-sealed-lazy-lock" \
   --migration-lock "$lock" \
-  --lazy-artifact-lock "$LAZY_ARTIFACT_LOCK" \
+  --lazy-artifact-lock "$sealed_fixture_lock" \
   --review-pending-artifact
 wrong_bootstrap_source_binding="$TMP_ROOT/main-shell-wrong-bootstrap-source-binding.json"
 jq '

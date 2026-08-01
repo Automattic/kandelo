@@ -28,11 +28,17 @@ import {
 import {
   formatHomebrewGuestLifecycleFailureContext,
   HOMEBREW_GUEST_LIFECYCLE_ENV,
+  type HomebrewGuestForkCountSample,
   type HomebrewGuestLifecycleMachine,
+  type HomebrewGuestObservedProcessEvent,
+  type HomebrewGuestObservedScriptResult,
   runHomebrewGuestLifecycle,
   runHomebrewGuestLifecycleProcess,
   runHomebrewGuestShippingProof,
 } from "./homebrew_guest_lifecycle_runner";
+import {
+  runHomebrewSystemCommandSpawnProof,
+} from "./homebrew_system_command_spawn_proof";
 import {
   HOMEBREW_GUEST_LIFECYCLE_HOST_LIMITS,
 } from "./homebrew_guest_lifecycle_runtime_contract";
@@ -62,6 +68,26 @@ interface CapturedHost {
     diagnostics: string[];
     limitExceeded: boolean;
   };
+  beginProcessObservation(): ProcessObservation;
+}
+
+interface ActiveProcessObservation {
+  events: HomebrewGuestObservedProcessEvent[];
+  forkCountSamples: HomebrewGuestForkCountSample[];
+  forkCountSampleFailures: Array<{
+    parentPid: number;
+    childPid: number;
+    message: string;
+  }>;
+  pendingSamples: Promise<void>[];
+}
+
+interface ProcessObservation {
+  finish(): Promise<Omit<
+    HomebrewGuestObservedScriptResult,
+    "stdout" | "stderr"
+  >>;
+  cancel(): void;
 }
 
 const MAX_CAPTURED_OUTPUT_BYTES = 8 * 1024 * 1024;
@@ -75,6 +101,24 @@ async function main(): Promise<void> {
     coreRevision: options.coreRevision,
     canaryRevision: options.canaryRevision,
   };
+
+  if (
+    options.proofMode === "comprehensive" ||
+    options.proofMode === "shipping-core"
+  ) {
+    process.stdout.write(
+      "homebrew_guest_lifecycle_node: proving real SystemCommand spawn " +
+        "and fallback behavior\n",
+    );
+    await runHomebrewSystemCommandSpawnProof({
+      runtime,
+      deadlineMs,
+      machine: createNodeLifecycleMachine(runtime, options),
+    });
+    process.stdout.write(
+      "homebrew_guest_lifecycle_node: real SystemCommand proof passed\n",
+    );
+  }
 
   if (options.proofMode !== "comprehensive") {
     const scope = options.proofMode === "shipping-core" ? "core" : "canary";
@@ -178,7 +222,7 @@ async function loadRootfsRuntimeInputs(
 
 function createCapturedHost(
   runtime: HomebrewGuestLifecycleRuntimeInputs,
-  options: Options,
+  options: { traceProcessesFromPid?: number },
 ): CapturedHost {
   const lazyDownloads: LazyDownloadEvent[] = [];
   const output = {
@@ -194,6 +238,7 @@ function createCapturedHost(
     (text) => process.stdout.write(text),
   );
   const tracedProcesses = new Set<number>();
+  let activeProcessObservation: ActiveProcessObservation | undefined;
   let host: NodeKernelHost;
   const capture = (bytes: Uint8Array, stream: "stdout" | "stderr") => {
     // WHY: keep package output bounded for failure context, but forward the
@@ -262,6 +307,41 @@ function createCapturedHost(
     },
     onLazyDownload: (event) => lazyDownloads.push(event),
     onProcessEvent: (event) => {
+      if (activeProcessObservation !== undefined) {
+        const recorded: HomebrewGuestObservedProcessEvent = {
+          kind: event.kind,
+          pid: event.pid,
+          ...(event.ppid === undefined ? {} : { ppid: event.ppid }),
+          ...(event.exitStatus === undefined
+            ? {}
+            : { exitStatus: event.exitStatus }),
+        };
+        activeProcessObservation.events.push(recorded);
+        if (event.kind === "spawn" && event.ppid !== undefined) {
+          const observation = activeProcessObservation;
+          const parentPid = event.ppid;
+          observation.pendingSamples.push(
+            host.getForkCount(parentPid).then(
+              (count) => {
+                observation.forkCountSamples.push({
+                  parentPid,
+                  childPid: event.pid,
+                  count,
+                });
+              },
+              (error) => {
+                observation.forkCountSampleFailures.push({
+                  parentPid,
+                  childPid: event.pid,
+                  message: error instanceof Error
+                    ? error.message
+                    : String(error),
+                });
+              },
+            ),
+          );
+        }
+      }
       void traceProcess(event).catch((error) => {
         process.stderr.write(
           `homebrew-guest-lifecycle-process: trace failed: ${String(error)}\n`,
@@ -269,12 +349,52 @@ function createCapturedHost(
       });
     },
   });
-  return { host, lazyDownloads, output };
+  return {
+    host,
+    lazyDownloads,
+    output,
+    beginProcessObservation: () => {
+      if (activeProcessObservation !== undefined) {
+        throw new Error("nested Homebrew process observation is not allowed");
+      }
+      const observation: ActiveProcessObservation = {
+        events: [],
+        forkCountSamples: [],
+        forkCountSampleFailures: [],
+        pendingSamples: [],
+      };
+      activeProcessObservation = observation;
+      return {
+        finish: async () => {
+          if (activeProcessObservation !== observation) {
+            throw new Error("Homebrew process observation lost ownership");
+          }
+          activeProcessObservation = undefined;
+          await Promise.all(observation.pendingSamples);
+          return {
+            processEvents: observation.events,
+            forkCountSamples: observation.forkCountSamples,
+            forkCountSampleFailures:
+              observation.forkCountSampleFailures,
+            remainingObservedPids: await remainingObservedPids(
+              host,
+              observation.events,
+            ),
+          };
+        },
+        cancel: () => {
+          if (activeProcessObservation === observation) {
+            activeProcessObservation = undefined;
+          }
+        },
+      };
+    },
+  };
 }
 
-function createNodeLifecycleMachine(
+export function createNodeLifecycleMachine(
   runtime: HomebrewGuestLifecycleRuntimeInputs,
-  options: Options,
+  options: { traceProcessesFromPid?: number } = {},
 ): HomebrewGuestLifecycleMachine {
   const captured = createCapturedHost(runtime, options);
   return {
@@ -285,7 +405,17 @@ function createNodeLifecycleMachine(
     start: () => captured.host.init(),
     readFile: (path) => captured.host.readFileFromVfs(path),
     runShellScript: (scriptOptions) =>
-      runGuestScript({ captured, ...scriptOptions }),
+      runGuestScript({ captured, ...scriptOptions }).then(() => undefined),
+    runObservedShellScript: async (scriptOptions) => {
+      const observation = captured.beginProcessObservation();
+      try {
+        const output = await runGuestScript({ captured, ...scriptOptions });
+        return { ...output, ...(await observation.finish()) };
+      } catch (error) {
+        observation.cancel();
+        throw error;
+      }
+    },
     exportRootfsImage: () => captured.host.exportRootfsImage(),
     destroy: () => captured.host.destroy(),
   };
@@ -299,7 +429,7 @@ async function runGuestScript(options: {
   marker: string;
   label: string;
   timeoutMs: number;
-}): Promise<void> {
+}): Promise<{ stdout: string; stderr: string }> {
   const stdoutStart = options.captured.output.stdout.length;
   const stderrStart = options.captured.output.stderr.length;
   const diagnosticStart = options.captured.output.diagnostics.length;
@@ -361,6 +491,24 @@ async function runGuestScript(options: {
       `${options.label} exceeded the ${MAX_CAPTURED_OUTPUT_BYTES}-byte output limit`,
     );
   }
+  return { stdout, stderr };
+}
+
+async function remainingObservedPids(
+  host: NodeKernelHost,
+  events: readonly HomebrewGuestObservedProcessEvent[],
+): Promise<number[]> {
+  const observedPids = new Set(events.map((event) => event.pid));
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const remaining = (await host.enumProcs())
+      .map((process) => process.pid)
+      .filter((pid) => observedPids.has(pid))
+      .sort((left, right) => left - right);
+    if (remaining.length === 0) return [];
+    if (attempt === 99) return remaining;
+    await delay(10);
+  }
+  throw new Error("unreachable process-retirement loop");
 }
 
 function readRegularFile(path: string, label: string): Uint8Array {
@@ -487,4 +635,11 @@ function usage(): never {
   );
 }
 
-await main();
+if (
+  process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+) {
+  void (async () => {
+    await main();
+  })();
+}

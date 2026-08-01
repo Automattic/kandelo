@@ -9,7 +9,7 @@ kernel_abi = 7
 # and activating its runtime-support layer adds only Ruby, producing a total
 # 39-Formula inventory. Merely booting this image cannot download that optional
 # tree.
-depends_on = ["homebrew-bootstrap@6.0.3-4-g4ead861"]
+depends_on = ["homebrew-bootstrap@6.0.4-3-gd6c1be4"]
 
 # Composite VFS image for the browser shell demo: a platform-only base plus the
 # exact reviewed base bottle closure and shell configuration. A demo variant

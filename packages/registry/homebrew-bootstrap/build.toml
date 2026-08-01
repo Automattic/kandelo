@@ -10,12 +10,12 @@ inputs = [
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 3
+revision = 4
 
 [[git_inputs]]
 name = "homebrew_brew"
 repository = "https://github.com/Homebrew/brew.git"
-commit = "4ead8619231cb15cbe15e8e8188081e347d6f7cd"
+commit = "d6c1be418446eec7de09fc72441ba4462282a142"
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

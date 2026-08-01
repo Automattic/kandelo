@@ -20,10 +20,14 @@ import type {
   BootDescriptor,
 } from "../../../../web-libs/kandelo-session/src/kernel-host";
 import {
+  createBrowserLifecycleMachine,
   runHomebrewGuestLifecycleInBrowser,
   type HomebrewGuestLifecycleBrowserFixture,
   type HomebrewGuestLifecycleBrowserResult,
 } from "../../../../homebrew/test/homebrew_guest_lifecycle_browser";
+import {
+  runHomebrewSystemCommandSpawnProof,
+} from "../../../../homebrew/test/homebrew_system_command_spawn_proof";
 import kernelWasmUrl from "@kernel-wasm?url";
 
 const MAX_OUTPUT_BYTES = 1024 * 1024;
@@ -50,6 +54,31 @@ interface HomebrewVfsAcceptanceResult {
   stderr: string;
   imageSha256: string;
   kernelSha256: string;
+}
+
+interface HomebrewSystemCommandProofRequest {
+  vfsUrl: string;
+  lazyUrlBase: string;
+  bootstrapArchiveUrl: string;
+  bootstrapArchiveBytes: number;
+  timeoutMs: number;
+}
+
+interface HomebrewSystemCommandProofResult {
+  stdout: string;
+  stderr: string;
+  processEvents: Array<{
+    kind: "spawn" | "exec" | "exit";
+    pid: number;
+    ppid?: number;
+    exitStatus?: number;
+  }>;
+  forkCountSamples: Array<{
+    parentPid: number;
+    childPid: number;
+    count: string;
+  }>;
+  remainingObservedPids: number[];
 }
 
 interface LazyVfsAcceptanceRequest {
@@ -161,6 +190,9 @@ declare global {
     __runHomebrewGuestLifecycleAcceptance: (
       fixture: HomebrewGuestLifecycleBrowserFixture,
     ) => Promise<HomebrewGuestLifecycleBrowserResult>;
+    __runHomebrewSystemCommandProof: (
+      request: HomebrewSystemCommandProofRequest,
+    ) => Promise<HomebrewSystemCommandProofResult>;
   }
 }
 
@@ -220,6 +252,19 @@ async function fetchBytes(url: string, label: string): Promise<ArrayBuffer> {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`${label} fetch failed with HTTP ${response.status}`);
   return response.arrayBuffer();
+}
+
+function sameOriginTestUrl(value: string, label: string): URL {
+  const url = new URL(value, window.location.href);
+  if (
+    url.origin !== window.location.origin ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.hash !== ""
+  ) {
+    throw new Error(`Homebrew SystemCommand ${label} URL is invalid`);
+  }
+  return url;
 }
 
 async function rejectionMessage(
@@ -303,6 +348,66 @@ async function init(): Promise<void> {
         : { closedAssetRootUrl: closedLifecycleAssetRoot }),
       afterMachineDestroy: settleWebKitReclaim,
     });
+
+  window.__runHomebrewSystemCommandProof = async (request) => {
+    if (
+      !Number.isSafeInteger(request.bootstrapArchiveBytes) ||
+      request.bootstrapArchiveBytes < 1 ||
+      !Number.isSafeInteger(request.timeoutMs) ||
+      request.timeoutMs < 1_000 ||
+      request.timeoutMs > 5 * 60_000
+    ) {
+      throw new Error("Homebrew SystemCommand proof limits are invalid");
+    }
+    const vfsUrl = sameOriginTestUrl(request.vfsUrl, "VFS image");
+    const lazyUrlBase = sameOriginTestUrl(
+      request.lazyUrlBase,
+      "lazy URL base",
+    );
+    const bootstrapArchiveUrl = sameOriginTestUrl(
+      request.bootstrapArchiveUrl,
+      "bootstrap archive",
+    );
+    if (!lazyUrlBase.pathname.endsWith("/")) {
+      throw new Error("Homebrew SystemCommand lazy URL base is not a directory");
+    }
+    const imageBytes = new Uint8Array(
+      await fetchBytes(vfsUrl.href, "Homebrew SystemCommand VFS image"),
+    );
+    MemoryFileSystem.assertImageKernelAbi(
+      imageBytes,
+      ABI_VERSION,
+      "Homebrew SystemCommand browser image",
+    );
+    const runtime = {
+      imageBytes,
+      shellPath: "/bin/bash",
+      shellArgv0: "bash",
+      lazyUrlBase: lazyUrlBase.href,
+      bootstrapTransportUrl: bootstrapArchiveUrl.href,
+      bootstrapBytes: request.bootstrapArchiveBytes,
+    };
+    const result = await runHomebrewSystemCommandSpawnProof({
+      runtime,
+      deadlineMs: Date.now() + request.timeoutMs,
+      machine: createBrowserLifecycleMachine({
+        runtime,
+        kernelWasm: kernelBytes,
+        corsProxyUrl,
+        afterDestroy: settleWebKitReclaim,
+      }),
+    });
+    return {
+      stdout: result.stdout,
+      stderr: result.stderr,
+      processEvents: [...result.processEvents],
+      forkCountSamples: result.forkCountSamples.map((sample) => ({
+        ...sample,
+        count: sample.count.toString(),
+      })),
+      remainingObservedPids: [...result.remainingObservedPids],
+    };
+  };
 
   window.__runHomebrewVfsAcceptance = async (request) => {
     if (!Array.isArray(request.argv) || request.argv.length === 0) {

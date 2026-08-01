@@ -57,8 +57,46 @@ export interface HomebrewGuestLifecycleMachine {
     label: string;
     timeoutMs: number;
   }): Promise<void>;
+  /**
+   * Run one focused process-contract probe with host-owned lifecycle evidence.
+   * Ordinary lifecycle phases do not need this heavier observation surface.
+   */
+  runObservedShellScript?(options: {
+    shellPath: string;
+    shellArgv0: string;
+    script: string;
+    marker: string;
+    label: string;
+    timeoutMs: number;
+  }): Promise<HomebrewGuestObservedScriptResult>;
   exportRootfsImage(): Promise<Uint8Array>;
   destroy(): Promise<void>;
+}
+
+export interface HomebrewGuestObservedProcessEvent {
+  kind: "spawn" | "exec" | "exit";
+  pid: number;
+  ppid?: number;
+  exitStatus?: number;
+}
+
+export interface HomebrewGuestForkCountSample {
+  parentPid: number;
+  childPid: number;
+  count: bigint;
+}
+
+export interface HomebrewGuestObservedScriptResult {
+  stdout: string;
+  stderr: string;
+  processEvents: readonly HomebrewGuestObservedProcessEvent[];
+  forkCountSamples: readonly HomebrewGuestForkCountSample[];
+  forkCountSampleFailures: readonly {
+    parentPid: number;
+    childPid: number;
+    message: string;
+  }[];
+  remainingObservedPids: readonly number[];
 }
 
 export interface HomebrewGuestLifecycleRunResult {
@@ -106,8 +144,9 @@ export async function runHomebrewGuestLifecycleProcess(options: {
     return await Promise.race([spawned.exit, timedOut]);
   } catch (error) {
     if (pid !== undefined) {
+      const spawnedPid = pid;
       const terminationFinished = Promise.resolve()
-        .then(() => options.terminate(pid, 124))
+        .then(() => options.terminate(spawnedPid, 124))
         .then(
           () => undefined,
           () => undefined,

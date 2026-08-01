@@ -1043,7 +1043,7 @@ artifacts. Trusted Linux publication runs the reviewed publisher-side Homebrew
 commit pinned by the reusable workflow and proves a real install and test
 offline after its disposable Ruby dependencies have been provisioned and
 sealed. Kandelo guests instead receive upstream Homebrew commit
-`4ead8619231cb15cbe15e8e8188081e347d6f7cd` through the dedicated
+`d6c1be418446eec7de09fc72441ba4462282a142` through the dedicated
 `homebrew-bootstrap` program package. Guest acceptance must materialize that
 package through the canonical ABI release index and verify its complete
 two-member generation, package-output receipt, archive identity, cache key,
