@@ -496,6 +496,10 @@ describe("declared shell lazy-archive inputs", () => {
       join(repoRoot, "packages/registry/shell/package.toml"),
       "utf8",
     );
+    const bootstrapPackageToml = readFileSync(
+      join(repoRoot, "packages/registry/homebrew-bootstrap/package.toml"),
+      "utf8",
+    );
     const buildToml = readFileSync(
       join(repoRoot, "packages/registry/shell/build.toml"),
       "utf8",
@@ -574,8 +578,12 @@ describe("declared shell lazy-archive inputs", () => {
     // package needed to register `brew` lazily. Formula-owned bottle trees now
     // carry the complete current shell surface independently of that source
     // package.
-    expect(packageToml).toMatch(
-      /^depends_on\s*=\s*\["homebrew-bootstrap@6\.0\.3-4-g4ead861"\]$/m,
+    const bootstrapVersion = bootstrapPackageToml.match(
+      /^version\s*=\s*"([^"]+)"$/m,
+    )?.[1];
+    expect(bootstrapVersion).toBeTruthy();
+    expect(packageToml.match(/^depends_on\s*=\s*\["([^"]+)"\]$/m)?.[1]).toBe(
+      `homebrew-bootstrap@${bootstrapVersion}`,
     );
     expect(packageToml).not.toContain("vim-browser-bundle@");
     expect(packageToml).not.toContain("nethack-browser-bundle@");
@@ -640,8 +648,8 @@ describe("declared shell lazy-archive inputs", () => {
     expect(selection.packages).toEqual(
       migrationLock.packages.map(({ formula }) => formula.name),
     );
-    expect(selection.packages).toHaveLength(32);
-    expect(migrationLock.formula_closure).toHaveLength(38);
+    expect(selection.packages.length).toBeGreaterThan(0);
+    expect(migrationLock.formula_closure.length).toBeGreaterThan(0);
     expect(migrationLock.formula_closure).toEqual(
       expect.arrayContaining([
         "kandelo-dev/tap-core/bash",
@@ -671,11 +679,21 @@ describe("declared shell lazy-archive inputs", () => {
     expect(runtimeSupport.base_formula_order).toEqual(
       migrationLock.formula_closure,
     );
-    expect(runtimeSupport.formula_order).toHaveLength(21);
-    expect(runtimeSupport.additional_formula_order).toEqual([
+    expect(runtimeSupport.additional_formula_order).toEqual(
+      runtimeSupport.formula_order.filter(
+        (name) => !runtimeSupport.base_formula_order.includes(name),
+      ),
+    );
+    expect(runtimeSupport.additional_formula_order).toContain(
       "kandelo-dev/tap-core/ruby",
-    ]);
-    expect(runtimeSupport.availability.reusable_public_abi42).toHaveLength(25);
+    );
+    const auditedFormulae = [
+      ...runtimeSupport.availability.reusable_public_abi42,
+      ...runtimeSupport.availability.requires_rebuild,
+      ...runtimeSupport.availability.missing_metadata,
+      ...runtimeSupport.availability.can_be_deferred,
+    ];
+    expect(new Set(auditedFormulae).size).toBe(auditedFormulae.length);
     expect(runtimeSupport.availability.requires_rebuild).toEqual([]);
     expect(runtimeSupport.availability.missing_metadata).toEqual([]);
     expect(runtimeSupport.availability.can_be_deferred).toEqual([]);
@@ -699,8 +717,11 @@ describe("declared shell lazy-archive inputs", () => {
         { cwd: repoRoot, encoding: "utf8" },
       ),
     ).toContain(
-      "32 reviewed migration roots and 38 Formulae match the complete shell lock; " +
-        "1 additional Formulae",
+      `${selection.packages.length} reviewed migration roots, ` +
+        `${migrationLock.formula_closure.length} base Formulae, ` +
+        `${runtimeSupport.formula_order.length} runtime Formulae, and ` +
+        `${auditedFormulae.length} audited Formulae; the runtime adds ` +
+        `${runtimeSupport.additional_formula_order.length} beyond the base`,
     );
 
     // The package build consumes only public bottle provenance from the

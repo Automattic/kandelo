@@ -35,7 +35,7 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if ! [[ "$SOURCE_TAG" =~ ^pr-[1-9][0-9]*-staging$ ]] ||
+if ! [[ "$SOURCE_TAG" =~ ^pr-[1-9][0-9]*-staging(-run-[1-9][0-9]*-attempt-[1-9][0-9]*)?$ ]] ||
    ! [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] ||
    ! [[ "$PACKAGE_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] ||
    ! [[ "$AUTHORITY_SHA" =~ ^[0-9a-f]{40}$ ]] ||

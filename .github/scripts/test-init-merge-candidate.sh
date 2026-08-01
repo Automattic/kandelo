@@ -36,11 +36,14 @@ case "${1:-}" in
     while [ "$#" -gt 0 ]; do
       case "$1" in --include) include=true; shift ;; -H) shift 2 ;; /repos/*) endpoint="$1"; shift ;; *) shift ;; esac
     done
-    if [[ "$endpoint" == */releases/tags/* ]]; then
+    if [[ "$endpoint" =~ /releases/[0-9]+$ ]]; then
       [ "$include" = false ] || printf 'HTTP/2.0 200 OK\n\n'
-      printf '{"id":7,"tag_name":"%s","created_at":"2026-07-14T10:00:00Z","assets":' "$GH_INIT_TAG"
+      printf '{"id":7,"tag_name":"%s","target_commitish":"2222222222222222222222222222222222222222","name":"%s","body":"Isolated package candidate for PR #1; not resolver-visible until post-merge activation.","draft":true,"immutable":false,"prerelease":true,"created_at":"2026-07-14T10:00:00Z","assets":' "$GH_INIT_TAG" "$GH_INIT_TAG"
       assets
       printf '}\n'
+    elif [[ "$endpoint" == */releases/tags/* ]]; then
+      echo "draft release was read through the tag endpoint" >&2
+      exit 98
     elif [[ "$endpoint" =~ /releases/assets/([0-9]+)$ ]]; then
       id="${BASH_REMATCH[1]}"
       for marker in "$GH_INIT_STORE"/.id-*; do
@@ -96,6 +99,32 @@ LOCK="$TMP_ROOT/lock.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$LOCK"
 chmod +x "$LOCK"
 
+LIFECYCLE="$TMP_ROOT/lifecycle.sh"
+cat >"$LIFECYCLE" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+release_id_file=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --release-id-file) release_id_file="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[ -n "$release_id_file" ]
+case "${GH_INIT_RELEASE_ID_MODE:-valid}" in
+  valid) printf '7\n' >"$release_id_file" ;;
+  missing) ;;
+  zero) printf '0\n' >"$release_id_file" ;;
+  text) printf 'not-an-id\n' >"$release_id_file" ;;
+  leading-zero) printf '07\n' >"$release_id_file" ;;
+  multiple) printf '7\n8\n' >"$release_id_file" ;;
+  wrong) printf '8\n' >"$release_id_file" ;;
+  *) exit 99 ;;
+esac
+printf 'draft\n'
+EOF
+chmod +x "$LIFECYCLE"
+
 CANONICAL="$TMP_ROOT/canonical.toml"
 printf 'abi_version = 39\n' > "$CANONICAL"
 TAG=merge-candidate-abi-v39-pr-1-run-2-attempt-1
@@ -104,6 +133,7 @@ run_init() {
   GH_INIT_STORE="$store" GH_INIT_TAG="$TAG" GH_INIT_UPLOAD_LOG="$store/uploads.log" \
     GITHUB_API_RETRY_DELAY_SECONDS=0 GITHUB_REPOSITORY=example/repo \
     CANDIDATE_INIT_FAIL_AFTER_ASSET="$fail" STATE_LOCK_SCRIPT="$LOCK" \
+    RELEASE_LIFECYCLE_SCRIPT="$LIFECYCLE" \
     PATH="$BIN:$PATH" bash "$SCRIPT" \
       --canonical-index "$CANONICAL" --canonical-state present \
       --candidate-tag "$TAG" --canonical-tag binaries-abi-v39 --abi 39 \
@@ -112,7 +142,8 @@ run_init() {
       --head-sha 2222222222222222222222222222222222222222 \
       --synthetic-merge-sha 3333333333333333333333333333333333333333 \
       --synthetic-tree-sha 4444444444444444444444444444444444444444 \
-      --merge-method "$merge_method" --pr-commit-count 1 --run-id 2 --run-attempt 1
+      --merge-method "$merge_method" --pr-commit-count 1 --run-id 2 --run-attempt 1 \
+      --release-id-file "$store/final-release-id"
 }
 
 for fail_asset in candidate.json base-index.toml index.toml; do
@@ -125,6 +156,7 @@ for fail_asset in candidate.json base-index.toml index.toml; do
     exit 1
   fi
   run_init "$store" >"$store/retry.out"
+  [ "$(cat "$store/final-release-id")" = 7 ]
   [ -f "$store/candidate.json" ] && [ -f "$store/base-index.toml" ] && [ -f "$store/index.toml" ]
   [ "$(wc -l < "$store/uploads.log" | tr -d '[:space:]')" = 3 ]
   grep -qx 'generated_at = "2026-07-14T10:00:00Z"' "$store/index.toml"
@@ -162,5 +194,29 @@ if run_init "$store" "" octopus >"$store/out" 2>"$store/err"; then
   exit 1
 fi
 grep -q 'must be squash, rebase, or merge' "$store/err"
+
+for id_mode in missing zero text leading-zero multiple; do
+  store="$TMP_ROOT/release-id-$id_mode"
+  mkdir -p "$store"
+  printf '100\n' > "$store/.next-id"
+  : > "$store/uploads.log"
+  if GH_INIT_RELEASE_ID_MODE="$id_mode" \
+      run_init "$store" >"$store/out" 2>"$store/err"; then
+    echo "candidate init accepted $id_mode lifecycle release ID" >&2
+    exit 1
+  fi
+  grep -q 'lifecycle did not return an exact release ID' "$store/err"
+done
+
+store="$TMP_ROOT/release-id-wrong"
+mkdir -p "$store"
+printf '100\n' > "$store/.next-id"
+: > "$store/uploads.log"
+if GH_INIT_RELEASE_ID_MODE=wrong \
+    run_init "$store" >"$store/out" 2>"$store/err"; then
+  echo "candidate init accepted a response for a different release ID" >&2
+  exit 1
+fi
+grep -q 'candidate release response is malformed' "$store/err"
 
 echo "merge candidate initialization tests passed"

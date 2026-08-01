@@ -108,8 +108,9 @@ prepare() {
   [ ! -e "$api_root" ] ||
     die "prepare requires a fresh Homebrew API cache"
 
-  # Prime does the only network fetch. Exact cf5 verifies both JWS signatures
-  # and generates every lazy name/alias/executable helper before the seal.
+  # Prime does the only network fetch. Exact Homebrew verifies both JWS
+  # signatures and generates every lazy name/alias/executable helper before
+  # the seal.
   run_oracle "$brew_bin" "$cache_root" "$state_root" \
     prime "$commit" "$state_root/prime.json"
   sudo_bin="${KANDELO_HOMEBREW_SUDO_BIN:-}"

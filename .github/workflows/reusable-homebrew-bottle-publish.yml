@@ -48,6 +48,15 @@ on:
       require-vfs-acceptance:
         type: boolean
         default: false
+      defer-tap-finalization:
+        type: boolean
+        default: false
+      prefix-campaign-tag:
+        type: string
+        default: ""
+      prefix-campaign-dependencies:
+        type: string
+        default: ""
 
 jobs:
   plan:
@@ -68,6 +77,10 @@ jobs:
       core-dependency-tap-sha: ${{ steps.dependency-taps.outputs.core-tap-sha }}
       rootfs-publication-selection: ${{ steps.matrix.outputs.rootfs-publication-selection }}
       vfs-acceptance-formula: ${{ steps.vfs-acceptance.outputs.formula }}
+      prefix-campaign-mode: ${{ steps.trust.outputs.prefix-campaign-mode }}
+      prefix-campaign-tag: ${{ steps.trust.outputs.prefix-campaign-tag }}
+      prefix-campaign-dependencies: ${{ steps.trust.outputs.prefix-campaign-dependencies }}
+      prefix-campaign-layout-sha256: ${{ steps.campaign-source.outputs.prefix-campaign-layout-sha256 }}
     steps:
       - name: Validate caller trust boundary
         id: trust
@@ -77,11 +90,18 @@ jobs:
           CALLER_REF: ${{ github.ref }}
           CALLER_REPOSITORY: ${{ github.repository }}
           CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
+          DEFER_TAP_FINALIZATION: ${{ inputs.defer-tap-finalization }}
           DRY_RUN: ${{ inputs.dry-run }}
+          FORCE_REBUILD: ${{ inputs.force }}
+          ARCHES: ${{ inputs.arches }}
+          FORMULAE: ${{ inputs.formulae }}
           KANDELO_REPOSITORY: ${{ inputs.kandelo-repository }}
           KANDELO_REF: ${{ inputs.kandelo-ref }}
           PACKAGE_GENERATION_WASM32: ${{ inputs.package-generation-wasm32 }}
           PACKAGE_GENERATION_WASM64: ${{ inputs.package-generation-wasm64 }}
+          PREFIX_CAMPAIGN_DEPENDENCIES: ${{ inputs.prefix-campaign-dependencies }}
+          PREFIX_CAMPAIGN_TAG: ${{ inputs.prefix-campaign-tag }}
+          REQUIRE_VFS_ACCEPTANCE: ${{ inputs.require-vfs-acceptance }}
           TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
           TAP_REF: ${{ inputs.tap-ref }}
@@ -156,6 +176,45 @@ jobs:
             printf '%s\n' "$tag"
           }
 
+          normalize_campaign_dependencies() {
+            local value="$1"
+            local normalized
+            [ "$(printf '%s' "$value" | wc -c)" -le 65536 ] &&
+              [[ "$value" != *$'\n'* ]] &&
+              [[ "$value" != *$'\r'* ]] || {
+                echo "::error::prefix campaign dependencies exceed their bounded single-line contract" >&2
+                return 2
+              }
+            normalized="$(
+              jq -ceS '
+                select(
+                type == "object" and
+                keys == ["dependencies", "schema"] and
+                .schema == 1 and
+                (.dependencies | type == "array" and length <= 256) and
+                (.dependencies == (.dependencies | sort_by(.formula))) and
+                ([.dependencies[].formula] | length == (unique | length)) and
+                all(.dependencies[];
+                  type == "object" and
+                  keys == ["formula", "tag"] and
+                  (.formula | type == "string" and
+                    test("^[a-z0-9][a-z0-9._-]{0,254}$")) and
+                  (.tag | type == "string" and
+                    test("^homebrew-prefix-handoff-sha256-[0-9a-f]{64}$")) and
+                  (.tag | sub("^homebrew-prefix-handoff-sha256-"; "") |
+                    test("[1-9a-f]"))))
+              ' <<<"$value"
+            )" || {
+              echo "::error::prefix campaign dependencies are invalid" >&2
+              return 2
+            }
+            [ "$normalized" = "$value" ] || {
+              echo "::error::prefix campaign dependencies must be canonical compact JSON" >&2
+              return 2
+            }
+            printf '%s\n' "$normalized"
+          }
+
           normalized_caller_repository="$(printf '%s' "$CALLER_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           normalized_tap_repository="$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           normalized_tap_name="$(printf '%s' "$TAP_NAME" | tr '[:upper:]' '[:lower:]')"
@@ -182,6 +241,39 @@ jobs:
           [ "$normalized_tap_name" = "${tap_owner}/${tap_short_name}" ] || {
             echo "::error::tap-name must be owner/name derived from the conventional repository"; exit 2;
           }
+          validated_campaign_mode=false
+          validated_campaign_tag=""
+          validated_campaign_dependencies=""
+          campaign_caller="$CALLER_REPOSITORY/.github/workflows/prefix-campaign-bottles.yml@refs/heads/main"
+          if [ "$CALLER_WORKFLOW_REF" = "$campaign_caller" ]; then
+            [ "$DRY_RUN" = "false" ] &&
+              [ "$DEFER_TAP_FINALIZATION" = "true" ] &&
+              [ "$FORCE_REBUILD" = "true" ] &&
+              [ "$REQUIRE_VFS_ACCEPTANCE" = "false" ] || {
+                echo "::error::prefix campaign publication requires write mode, force, deferred finalization, and no VFS acceptance"; exit 2;
+              }
+            [[ "$FORMULAE" =~ ^[a-z0-9][a-z0-9._-]{0,254}$ ]] || {
+              echo "::error::prefix campaign publication requires exactly one Formula"; exit 2;
+            }
+            [[ "$ARCHES" =~ ^wasm(32|64)$ ]] || {
+              echo "::error::prefix campaign publication requires exactly one architecture"; exit 2;
+            }
+            [[ "$PREFIX_CAMPAIGN_TAG" =~ ^homebrew-prefix-campaign-sha256-[0-9a-f]{64}$ ]] &&
+              [[ "${PREFIX_CAMPAIGN_TAG##*-}" =~ [1-9a-f] ]] || {
+                echo "::error::prefix campaign tag is invalid or inert"; exit 2;
+              }
+            validated_campaign_dependencies="$(
+              normalize_campaign_dependencies "$PREFIX_CAMPAIGN_DEPENDENCIES"
+            )"
+            validated_campaign_mode=true
+            validated_campaign_tag="$PREFIX_CAMPAIGN_TAG"
+          else
+            [ "$DEFER_TAP_FINALIZATION" = "false" ] &&
+              [ -z "$PREFIX_CAMPAIGN_TAG" ] &&
+              [ -z "$PREFIX_CAMPAIGN_DEPENDENCIES" ] || {
+                echo "::error::only the reviewed prefix campaign caller may defer tap finalization or pass campaign authority"; exit 2;
+              }
+          fi
           if [ "$DRY_RUN" = "true" ]; then
             [ "$CALLER_WORKFLOW_REF" = "$CALLER_REPOSITORY/.github/workflows/dry-run-bottles.yml@refs/heads/main" ] || {
               echo "::error::dry-run publication requires the reviewed tap dry-run workflow"; exit 2;
@@ -215,11 +307,13 @@ jobs:
               validated_generation_kind="browser-inputs"
             fi
           else
-            case "$CALLER_WORKFLOW_REF" in
-              "$CALLER_REPOSITORY/.github/workflows/publish-bottles.yml@refs/heads/main"|\
-              "$CALLER_REPOSITORY/.github/workflows/maintain-bottles.yml@refs/heads/main") ;;
-              *) echo "::error::publication requires a reviewed tap write workflow"; exit 2 ;;
-            esac
+            if [ "$validated_campaign_mode" != "true" ]; then
+              case "$CALLER_WORKFLOW_REF" in
+                "$CALLER_REPOSITORY/.github/workflows/publish-bottles.yml@refs/heads/main"|\
+                "$CALLER_REPOSITORY/.github/workflows/maintain-bottles.yml@refs/heads/main") ;;
+                *) echo "::error::publication requires a reviewed tap write workflow"; exit 2 ;;
+              esac
+            fi
             validated_kandelo_ref="$(normalize_write_kandelo_ref "$KANDELO_REF")"
             validated_tap_ref="$(normalize_write_tap_ref "$TAP_REF")"
             # WHY: canonical jobs must not reconstruct a resolver from the
@@ -256,10 +350,13 @@ jobs:
             echo "package-generation-wasm32=$validated_generation_wasm32"
             echo "package-generation-wasm64=$validated_generation_wasm64"
             echo "package-generation-kind=$validated_generation_kind"
+            echo "prefix-campaign-mode=$validated_campaign_mode"
+            echo "prefix-campaign-tag=$validated_campaign_tag"
+            echo "prefix-campaign-dependencies=$validated_campaign_dependencies"
           } >> "$GITHUB_OUTPUT"
 
       - name: Admit exact Kandelo main source
-        if: ${{ !inputs.dry-run }}
+        if: ${{ !inputs.dry-run && steps.trust.outputs.prefix-campaign-mode != 'true' }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -286,6 +383,28 @@ jobs:
             exit 1
           }
 
+      - name: Admit prefix-campaign Kandelo main history
+        if: ${{ steps.trust.outputs.prefix-campaign-mode == 'true' }}
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KANDELO_REPOSITORY: ${{ inputs.kandelo-repository }}
+          KANDELO_SHA: ${{ steps.trust.outputs.kandelo-ref }}
+        run: |
+          set -euo pipefail
+          if ! compare_status="$(
+            gh api \
+              "/repos/$KANDELO_REPOSITORY/compare/$KANDELO_SHA...main" \
+              --jq .status
+          )"; then
+            echo "::error::could not prove that campaign Kandelo source remains on protected main"
+            exit 1
+          fi
+          case "$compare_status" in
+            ahead|identical) ;;
+            *) echo "::error::campaign Kandelo source must remain an ancestor of protected main"; exit 1 ;;
+          esac
+
       - name: Checkout Kandelo workflow source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -302,6 +421,7 @@ jobs:
           repository: ${{ inputs.tap-repository }}
           ref: ${{ steps.trust.outputs.tap-ref }}
           path: tap
+          fetch-depth: 0
 
       - name: Resolve source commits
         id: source-commits
@@ -356,6 +476,35 @@ jobs:
             *) echo "::error::requested tap commit must remain on protected main history"; exit 1 ;;
           esac
 
+      - name: Materialize sealed prefix-campaign tap source
+        id: campaign-source
+        if: ${{ steps.trust.outputs.prefix-campaign-mode == 'true' }}
+        shell: bash
+        env:
+          CAMPAIGN_DEPENDENCIES: ${{ steps.trust.outputs.prefix-campaign-dependencies }}
+          CAMPAIGN_TAG: ${{ steps.trust.outputs.prefix-campaign-tag }}
+          FORMULA: ${{ inputs.formulae }}
+          KANDELO_SHA: ${{ steps.source-commits.outputs.kandelo-sha }}
+          TAP_NAME: ${{ inputs.tap-name }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_SHA: ${{ steps.source-commits.outputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          python3 kandelo/scripts/homebrew-prefix-campaign-publisher.py \
+            prepare \
+            --tap-root "$GITHUB_WORKSPACE/tap" \
+            --kandelo-commit "$KANDELO_SHA" \
+            --tap-repository "$TAP_REPOSITORY" \
+            --tap-name "$TAP_NAME" \
+            --source-tap-commit "$TAP_SHA" \
+            --campaign-tag "$CAMPAIGN_TAG" \
+            --dependencies "$CAMPAIGN_DEPENDENCIES" \
+            --formula "$FORMULA" \
+            --work-root "$RUNNER_TEMP/prefix-campaign-plan" \
+            --receipt-out "$RUNNER_TEMP/prefix-campaign-plan.json" \
+            --github-env "$GITHUB_ENV" \
+            --github-output "$GITHUB_OUTPUT"
+
       - name: Validate committed dependency tap lock
         id: dependency-taps
         shell: bash
@@ -396,6 +545,10 @@ jobs:
         run: |
           set -euo pipefail
           dependency_args=()
+          if [ -n "${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:-}" ]; then
+            dependency_args+=(--checkout-commit \
+              "$KANDELO_HOMEBREW_PREPARED_TAP_COMMIT")
+          fi
           if [ -n "$CORE_TAP_SHA" ]; then
             dependency_args+=(--dependency-root \
               "kandelo-dev/tap-core=$GITHUB_WORKSPACE/dependency-taps/core")
@@ -558,6 +711,7 @@ jobs:
 
       - name: Validate dependency-bearing VFS acceptance selection
         id: vfs-acceptance
+        if: ${{ steps.trust.outputs.prefix-campaign-mode != 'true' }}
         shell: bash
         env:
           DRY_RUN: ${{ inputs.dry-run }}
@@ -644,6 +798,14 @@ jobs:
             *) echo "::error::Brewfile resolved outside the exact tap checkout"; exit 2 ;;
           esac
           if [ "$(jq -r '.schema' "$config")" = "2" ]; then
+            # WHY: the default shell must name an executable from the same
+            # reviewed guest layout as the bottles in this invocation.
+            # Campaign validation must not silently retain the retired
+            # Linuxbrew prefix.
+            # shellcheck disable=SC1091
+            . kandelo/scripts/homebrew-guest-layout.sh
+            homebrew_select_guest_layout \
+              "${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}"
             shell_config_rel="$(jq -er '.shell_config' "$config")"
             case "$shell_config_rel" in
               /*|../*|*/../*|*/..) echo "::error::default-shell config path escapes the tap"; exit 2 ;;
@@ -661,12 +823,20 @@ jobs:
             if [ "$shell_config_bytes" -le 0 ] || [ "$shell_config_bytes" -gt 65536 ]; then
               echo "::error::default-shell config must contain 1 to 65536 bytes"; exit 2
             fi
-            jq -e '
+            jq -e --arg prefix "$HOMEBREW_GUEST_PREFIX" '
+              def executable_under($prefix):
+                . as $path |
+                (($path | startswith($prefix + "/bin/")) or
+                  ($path | startswith($prefix + "/sbin/"))) and
+                (($path | split("/") | length) ==
+                  (($prefix | split("/") | length) + 2)) and
+                ($path | split("/")[-1] |
+                  test("^[A-Za-z0-9._@%+=:-]+$"));
               type == "object" and keys == ["argv", "path", "version"] and
               .version == 1 and
               (.path | type == "string" and
-                test("^/home/linuxbrew/\\.linuxbrew/(bin|sbin)/[A-Za-z0-9._@%+=:-]+$") and
-                utf8bytelength <= 4096) and
+                utf8bytelength <= 4096 and
+                executable_under($prefix)) and
               (.argv | type == "array" and length > 0 and length <= 64 and
                 all(.[]; type == "string" and length > 0 and
                   utf8bytelength <= 4096 and contains("\u0000") == false) and
@@ -730,6 +900,7 @@ jobs:
           repository: ${{ inputs.tap-repository }}
           ref: ${{ needs.plan.outputs.tap-sha }}
           path: tap
+          fetch-depth: 0
 
       - name: Checkout exact public core dependency tap for build
         if: ${{ needs.plan.outputs.core-dependency-tap-sha != '' }}
@@ -759,108 +930,6 @@ jobs:
           }
           [ "$(git -C tap rev-parse HEAD)" = "$TAP_SHA" ] || {
             echo "::error::tap build checkout differs from the validated plan"; exit 2;
-          }
-
-      # WHY: Some GitHub-hosted images make fixed /usr or /etc projection
-      # ancestors runner-owned even though selected children remain root-owned.
-      # Seal those directory inodes before any admitted Formula can enter the
-      # privileged recipe boundary.
-      - name: Seal conventional host runtime ownership
-        shell: bash
-        run: >-
-          /usr/bin/python3
-          kandelo/scripts/prepare-homebrew-recipe-host-runtime.py
-
-      - name: Materialize immutable dependency tap map for build
-        shell: bash
-        env:
-          CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
-          TAP_NAME: ${{ inputs.tap-name }}
-          TAP_REPOSITORY: ${{ inputs.tap-repository }}
-          TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
-        run: |
-          set -euo pipefail
-          resolved="$RUNNER_TEMP/homebrew-resolved-taps.json"
-          dependency_args=()
-          if [ -n "$CORE_TAP_SHA" ]; then
-            dependency_args+=(--dependency-root \
-              "kandelo-dev/tap-core=$GITHUB_WORKSPACE/dependency-taps/core")
-          fi
-          python3 kandelo/scripts/homebrew-dependency-taps.py resolve \
-            --tap-root "$GITHUB_WORKSPACE/tap" \
-            --tap-name "$TAP_NAME" \
-            --tap-repository "$TAP_REPOSITORY" \
-            --tap-commit "$TAP_SHA" \
-            "${dependency_args[@]}" \
-            --out "$resolved"
-          echo "KANDELO_HOMEBREW_RESOLVED_TAPS_FILE=$resolved" >> "$GITHUB_ENV"
-
-      - name: Checkout reviewed Homebrew implementation
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-          repository: Homebrew/brew
-          ref: cf5bc21c6b127e168ef7cfa982ba7db62874690e
-          path: homebrew-prefix/Homebrew
-
-      - name: Activate reviewed Homebrew implementation
-        shell: bash
-        env:
-          ARCH: ${{ matrix.arch }}
-          FORMULA: ${{ matrix.formula }}
-          HOMEBREW_BREW_COMMIT: cf5bc21c6b127e168ef7cfa982ba7db62874690e
-        run: |
-          set -euo pipefail
-          [[ "$HOMEBREW_BREW_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
-            echo "::error::invalid pinned Homebrew commit"; exit 2;
-          }
-          brew_prefix="/home/linuxbrew/.linuxbrew"
-          brew_repository="$GITHUB_WORKSPACE/homebrew-prefix/Homebrew"
-          [ "$(git -C "$brew_repository" rev-parse HEAD)" = "$HOMEBREW_BREW_COMMIT" ] || {
-            echo "::error::Homebrew checkout differs from the reviewed commit"; exit 2;
-          }
-          [ -z "$(git -C "$brew_repository" status --short --untracked-files=no)" ] || {
-            echo "::error::reviewed Homebrew checkout has tracked modifications"; exit 2;
-          }
-          mkdir -p "$brew_prefix/bin"
-          rm -f "$brew_prefix/bin/brew"
-          ln -s "$brew_repository/bin/brew" "$brew_prefix/bin/brew"
-          brew_bin="$brew_prefix/bin/brew"
-          [ "$(readlink -f "$brew_bin")" = "$brew_repository/bin/brew" ] || {
-            echo "::error::Homebrew executable does not resolve into the reviewed checkout"; exit 2;
-          }
-          homebrew_cache="$RUNNER_TEMP/homebrew-cache-${FORMULA}-${ARCH}"
-          homebrew_temp="$RUNNER_TEMP/homebrew-temp-${FORMULA}-${ARCH}"
-          mkdir -p "$homebrew_cache" "$homebrew_temp"
-          {
-            echo "HOMEBREW_BREW_FILE=$brew_bin"
-            echo "HOMEBREW_BREW_COMMIT=$HOMEBREW_BREW_COMMIT"
-            echo "HOMEBREW_CACHE=$homebrew_cache"
-            echo "HOMEBREW_TEMP=$homebrew_temp"
-            echo "HOMEBREW_NO_AUTO_UPDATE=1"
-            echo "HOMEBREW_NO_INSTALL_CLEANUP=1"
-            echo "HOMEBREW_NO_ANALYTICS=1"
-            echo "HOMEBREW_DEVELOPER=1"
-          } >> "$GITHUB_ENV"
-          export HOMEBREW_BREW_FILE="$brew_bin"
-          export HOMEBREW_CACHE="$homebrew_cache"
-          export HOMEBREW_TEMP="$homebrew_temp"
-          export HOMEBREW_NO_AUTO_UPDATE=1
-          export HOMEBREW_NO_INSTALL_CLEANUP=1
-          export HOMEBREW_NO_ANALYTICS=1
-          export HOMEBREW_DEVELOPER=1
-          "$brew_bin" --version
-          [ "$("$brew_bin" --prefix)" = "$brew_prefix" ] || {
-            echo "::error::Homebrew prefix is not the canonical Linuxbrew prefix"; exit 2;
-          }
-          [ "$("$brew_bin" --cellar)" = "$brew_prefix/Cellar" ] || {
-            echo "::error::Homebrew cellar is not the canonical Linuxbrew cellar"; exit 2;
-          }
-          [ "$(git -C "$brew_repository" rev-parse HEAD)" = "$HOMEBREW_BREW_COMMIT" ] || {
-            echo "::error::Homebrew moved during activation"; exit 2;
-          }
-          [ -z "$(git -C "$brew_repository" status --short --untracked-files=no)" ] || {
-            echo "::error::Homebrew activation modified reviewed tracked files"; exit 2;
           }
 
       - name: Install Nix
@@ -924,6 +993,155 @@ jobs:
             exit 2
           }
           echo "WASM_POSIX_BINARY_INDEX_URL=$index_url" >> "$GITHUB_ENV"
+
+      - name: Prepare sealed campaign Formula dependencies
+        if: ${{ needs.plan.outputs.prefix-campaign-mode == 'true' }}
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          CAMPAIGN_DEPENDENCIES: ${{ needs.plan.outputs.prefix-campaign-dependencies }}
+          CAMPAIGN_TAG: ${{ needs.plan.outputs.prefix-campaign-tag }}
+          FORMULA: ${{ matrix.formula }}
+          KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          TAP_NAME: ${{ inputs.tap-name }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          bash kandelo/scripts/dev-shell.sh \
+            python3 kandelo/scripts/homebrew-prefix-campaign-publisher.py \
+              prepare \
+              --tap-root "$GITHUB_WORKSPACE/tap" \
+              --kandelo-commit "$KANDELO_SHA" \
+              --tap-repository "$TAP_REPOSITORY" \
+              --tap-name "$TAP_NAME" \
+              --source-tap-commit "$TAP_SHA" \
+              --campaign-tag "$CAMPAIGN_TAG" \
+              --dependencies "$CAMPAIGN_DEPENDENCIES" \
+              --formula "$FORMULA" \
+              --arch "$ARCH" \
+              --work-root \
+                "$RUNNER_TEMP/prefix-campaign-build-$FORMULA-$ARCH" \
+              --receipt-out \
+                "$RUNNER_TEMP/prefix-campaign-build-$FORMULA-$ARCH.json" \
+              --github-env "$GITHUB_ENV"
+
+      # WHY: Some GitHub-hosted images make fixed /usr or /etc projection
+      # ancestors runner-owned even though selected children remain root-owned.
+      # Seal those directory inodes before any admitted Formula can enter the
+      # privileged recipe boundary.
+      - name: Seal conventional host runtime ownership
+        shell: bash
+        run: >-
+          /usr/bin/python3
+          kandelo/scripts/prepare-homebrew-recipe-host-runtime.py
+
+      - name: Materialize immutable dependency tap map for build
+        shell: bash
+        env:
+          CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
+          TAP_NAME: ${{ inputs.tap-name }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          resolved="$RUNNER_TEMP/homebrew-resolved-taps.json"
+          dependency_args=()
+          if [ -n "${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:-}" ]; then
+            dependency_args+=(--checkout-commit \
+              "$KANDELO_HOMEBREW_PREPARED_TAP_COMMIT")
+          fi
+          if [ -n "$CORE_TAP_SHA" ]; then
+            dependency_args+=(--dependency-root \
+              "kandelo-dev/tap-core=$GITHUB_WORKSPACE/dependency-taps/core")
+          fi
+          python3 kandelo/scripts/homebrew-dependency-taps.py resolve \
+            --tap-root "$GITHUB_WORKSPACE/tap" \
+            --tap-name "$TAP_NAME" \
+            --tap-repository "$TAP_REPOSITORY" \
+            --tap-commit "$TAP_SHA" \
+            "${dependency_args[@]}" \
+            --out "$resolved"
+          echo "KANDELO_HOMEBREW_RESOLVED_TAPS_FILE=$resolved" >> "$GITHUB_ENV"
+
+      - name: Checkout reviewed Homebrew implementation
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: Homebrew/brew
+          ref: a92554a538e81fad0c5074443885dbcc4c36221d
+          path: homebrew-prefix/Homebrew
+
+      - name: Activate reviewed Homebrew implementation
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          FORMULA: ${{ matrix.formula }}
+          HOMEBREW_BREW_COMMIT: a92554a538e81fad0c5074443885dbcc4c36221d
+        run: |
+          set -euo pipefail
+          [[ "$HOMEBREW_BREW_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::invalid pinned Homebrew commit"; exit 2;
+          }
+          # WHY: the campaign digest selects the reviewed Kandelo guest
+          # contract. Never infer a prefix from mutable workflow input.
+          # shellcheck disable=SC1091
+          . kandelo/scripts/homebrew-guest-layout.sh
+          homebrew_select_guest_layout \
+            "${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}"
+          brew_prefix="$HOMEBREW_GUEST_PREFIX"
+          brew_repository="$GITHUB_WORKSPACE/homebrew-prefix/Homebrew"
+          [ "$(git -C "$brew_repository" rev-parse HEAD)" = "$HOMEBREW_BREW_COMMIT" ] || {
+            echo "::error::Homebrew checkout differs from the reviewed commit"; exit 2;
+          }
+          [ -z "$(git -C "$brew_repository" status --short --untracked-files=no)" ] || {
+            echo "::error::reviewed Homebrew checkout has tracked modifications"; exit 2;
+          }
+          if [ "$HOMEBREW_GUEST_LAYOUT_MODE" = prefix-campaign ]; then
+            sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 \
+              "$brew_prefix" "$brew_prefix/bin"
+          else
+            mkdir -p "$brew_prefix/bin"
+          fi
+          rm -f "$brew_prefix/bin/brew"
+          ln -s "$brew_repository/bin/brew" "$brew_prefix/bin/brew"
+          brew_bin="$brew_prefix/bin/brew"
+          [ "$(readlink -f "$brew_bin")" = "$brew_repository/bin/brew" ] || {
+            echo "::error::Homebrew executable does not resolve into the reviewed checkout"; exit 2;
+          }
+          homebrew_cache="$RUNNER_TEMP/homebrew-cache-${FORMULA}-${ARCH}"
+          homebrew_temp="$RUNNER_TEMP/homebrew-temp-${FORMULA}-${ARCH}"
+          mkdir -p "$homebrew_cache" "$homebrew_temp"
+          {
+            echo "HOMEBREW_BREW_FILE=$brew_bin"
+            echo "HOMEBREW_BREW_COMMIT=$HOMEBREW_BREW_COMMIT"
+            echo "HOMEBREW_CACHE=$homebrew_cache"
+            echo "HOMEBREW_TEMP=$homebrew_temp"
+            echo "HOMEBREW_NO_AUTO_UPDATE=1"
+            echo "HOMEBREW_NO_INSTALL_CLEANUP=1"
+            echo "HOMEBREW_NO_ANALYTICS=1"
+            echo "HOMEBREW_DEVELOPER=1"
+          } >> "$GITHUB_ENV"
+          export HOMEBREW_BREW_FILE="$brew_bin"
+          export HOMEBREW_CACHE="$homebrew_cache"
+          export HOMEBREW_TEMP="$homebrew_temp"
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          export HOMEBREW_NO_INSTALL_CLEANUP=1
+          export HOMEBREW_NO_ANALYTICS=1
+          export HOMEBREW_DEVELOPER=1
+          "$brew_bin" --version
+          [ "$("$brew_bin" --prefix)" = "$brew_prefix" ] || {
+            echo "::error::Homebrew prefix differs from the selected guest layout"; exit 2;
+          }
+          [ "$("$brew_bin" --cellar)" = "$HOMEBREW_GUEST_CELLAR" ] || {
+            echo "::error::Homebrew cellar differs from the selected guest layout"; exit 2;
+          }
+          [ "$(git -C "$brew_repository" rev-parse HEAD)" = "$HOMEBREW_BREW_COMMIT" ] || {
+            echo "::error::Homebrew moved during activation"; exit 2;
+          }
+          [ -z "$(git -C "$brew_repository" status --short --untracked-files=no)" ] || {
+            echo "::error::Homebrew activation modified reviewed tracked files"; exit 2;
+          }
 
       - name: Build Kandelo sysroot
         shell: bash
@@ -1204,7 +1422,8 @@ jobs:
           cd "$GITHUB_WORKSPACE/kandelo"
           # WHY: tap Formula Ruby is still untrusted at this point. The static
           # parser can select reviewed direct host tools without executing it;
-          # exact isolated cf5 will resolve the final implicit closure later.
+          # exact isolated Homebrew will resolve the final implicit closure
+          # later.
           . scripts/homebrew-tap-identity.sh
           tap_name="$(
             homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT"
@@ -1286,6 +1505,7 @@ jobs:
           KANDELO_HOMEBREW_BOTTLE_ROOT_URL: ${{ needs.plan.outputs.bottle-root-prefix }}
           KANDELO_HOMEBREW_PACKAGE_GENERATION_KIND: ${{ needs.plan.outputs.package-generation-kind }}
           KANDELO_HOMEBREW_ROOTFS_PUBLICATION_SELECTION: ${{ needs.plan.outputs.rootfs-publication-selection }}
+          KANDELO_HOMEBREW_TAP_SOURCE_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
           KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
           WASM_POSIX_XTASK_BIN: ${{ steps.formula-runtime.outputs.xtask-bin }}
@@ -1364,6 +1584,9 @@ jobs:
           # stay stable.
           bash scripts/dev-shell.sh env \
             WASM_POSIX_XTASK_BIN="$WASM_POSIX_XTASK_BIN" \
+            KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256="${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}" \
+            KANDELO_HOMEBREW_PREPARED_TAP_COMMIT="${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:-}" \
+            KANDELO_HOMEBREW_TAP_SOURCE_COMMIT="$KANDELO_HOMEBREW_TAP_SOURCE_COMMIT" \
             KANDELO_HOMEBREW_RECIPE_USER="$KANDELO_HOMEBREW_RECIPE_USER" \
             KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
             KANDELO_HOMEBREW_EARLY_HOST_PLAN="$KANDELO_HOMEBREW_EARLY_HOST_PLAN" \
@@ -1495,6 +1718,40 @@ jobs:
           repository: ${{ inputs.tap-repository }}
           ref: ${{ needs.plan.outputs.tap-sha }}
           path: tap-reviewed
+          fetch-depth: 0
+
+      - name: Recreate sealed campaign source for post-build review
+        if: ${{ needs.plan.outputs.prefix-campaign-mode == 'true' }}
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          CAMPAIGN_DEPENDENCIES: ${{ needs.plan.outputs.prefix-campaign-dependencies }}
+          CAMPAIGN_TAG: ${{ needs.plan.outputs.prefix-campaign-tag }}
+          FORMULA: ${{ matrix.formula }}
+          KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          TAP_NAME: ${{ inputs.tap-name }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          bash kandelo-postbuild/scripts/dev-shell.sh \
+            python3 \
+              kandelo-postbuild/scripts/homebrew-prefix-campaign-publisher.py \
+              prepare \
+              --tap-root "$GITHUB_WORKSPACE/tap-reviewed" \
+              --kandelo-commit "$KANDELO_SHA" \
+              --tap-repository "$TAP_REPOSITORY" \
+              --tap-name "$TAP_NAME" \
+              --source-tap-commit "$TAP_SHA" \
+              --campaign-tag "$CAMPAIGN_TAG" \
+              --dependencies "$CAMPAIGN_DEPENDENCIES" \
+              --formula "$FORMULA" \
+              --arch "$ARCH" \
+              --work-root \
+                "$RUNNER_TEMP/prefix-campaign-postbuild-$FORMULA-$ARCH" \
+              --receipt-out \
+                "$RUNNER_TEMP/prefix-campaign-postbuild-$FORMULA-$ARCH.json" \
+              --github-env "$GITHUB_ENV"
 
       - name: Checkout exact post-build core dependency tap source
         if: ${{ needs.plan.outputs.core-dependency-tap-sha != '' }}
@@ -1511,7 +1768,7 @@ jobs:
         env:
           CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
           FORMULA: ${{ matrix.formula }}
-          HOMEBREW_BREW_COMMIT: cf5bc21c6b127e168ef7cfa982ba7db62874690e
+          HOMEBREW_BREW_COMMIT: a92554a538e81fad0c5074443885dbcc4c36221d
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
           TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
@@ -1521,10 +1778,15 @@ jobs:
           [ "$(git -C "$GITHUB_WORKSPACE/kandelo-postbuild" rev-parse HEAD)" = "$KANDELO_SHA" ] || {
             echo "::error::post-build Kandelo validator differs from the plan"; exit 2;
           }
-          [ "$(git -C "$GITHUB_WORKSPACE/tap-reviewed" rev-parse HEAD)" = "$TAP_SHA" ] || {
+          expected_tap_head="${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:-$TAP_SHA}"
+          [ "$(git -C "$GITHUB_WORKSPACE/tap-reviewed" rev-parse HEAD)" = "$expected_tap_head" ] || {
             echo "::error::post-build tap source differs from the plan"; exit 2;
           }
           dependency_args=()
+          if [ -n "${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:-}" ]; then
+            dependency_args+=(--checkout-commit \
+              "$KANDELO_HOMEBREW_PREPARED_TAP_COMMIT")
+          fi
           if [ -n "$CORE_TAP_SHA" ]; then
             for root in "$GITHUB_WORKSPACE/dependency-taps/core" \
               "$GITHUB_WORKSPACE/dependency-taps/core-reviewed"; do
@@ -1562,7 +1824,7 @@ jobs:
             --tap-repository "$TAP_REPOSITORY" \
             --tap-name "$TAP_NAME" \
             --formula "$FORMULA" \
-            --base-ref "$TAP_SHA" \
+            --base-ref "$expected_tap_head" \
             --reviewed-tap-root "$GITHUB_WORKSPACE/tap-reviewed"
 
       - name: Create strict bottle data handoff
@@ -1581,6 +1843,11 @@ jobs:
           cd "$GITHUB_WORKSPACE/kandelo-postbuild"
           # shellcheck disable=SC1091
           . "$RUNNER_TEMP/homebrew-bottle/build.env"
+          layout_args=()
+          if [ -n "${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}" ]; then
+            layout_args+=(--prefix-campaign-layout-sha256 \
+              "$KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256")
+          fi
           bash scripts/dev-shell.sh env \
             KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
             bash scripts/homebrew-create-build-handoff.sh \
@@ -1590,6 +1857,8 @@ jobs:
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME" \
             --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT" \
+            --tap-checkout-commit \
+              "${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:-$KANDELO_HOMEBREW_TAP_COMMIT}" \
             --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT" \
             --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL" \
             --bottle "$BOTTLE_ARCHIVE" \
@@ -1602,6 +1871,7 @@ jobs:
             --forbidden-root "$HOMEBREW_TEMP" \
             --forbidden-root "$NATIVE_BUILD_ROOT" \
             --forbidden-root "/home/$KANDELO_HOMEBREW_BUILD_USER" \
+            "${layout_args[@]}" \
             --out "$RUNNER_TEMP/homebrew-build-handoff"
 
       - name: Upload strict bottle build handoff
@@ -1645,6 +1915,8 @@ jobs:
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
             --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
+            --tap-checkout-commit \
+              "${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:-$KANDELO_HOMEBREW_TAP_COMMIT}"
             --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
             --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
             --tap-root "$GITHUB_WORKSPACE/tap-reviewed"
@@ -1655,6 +1927,10 @@ jobs:
             --out-env "$validated/build.env"
             --out-bottle-json "$validated/bottle.json"
           )
+          if [ -n "${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}" ]; then
+            validation_args+=(--prefix-campaign-layout-sha256 \
+              "$KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256")
+          fi
           bash scripts/dev-shell.sh env \
             KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
             bash scripts/homebrew-validate-build-handoff.sh \
@@ -1700,6 +1976,14 @@ jobs:
     if: ${{ always() && !cancelled() && !inputs.dry-run && needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    # WHY: GitHub scopes concurrency groups to the caller repository, so the
+    # Formula suffix completes the (tap repository, Formula) package identity.
+    # GHCR has no atomic create-if-absent operation; every supported child,
+    # index, first-publication, and maintenance-rebuild writer must share this
+    # exact group across workflows.
+    concurrency:
+      group: kandelo-homebrew-ghcr-${{ matrix.formula }}
+      cancel-in-progress: false
     permissions:
       actions: read
       contents: read
@@ -1725,6 +2009,7 @@ jobs:
           repository: ${{ inputs.tap-repository }}
           ref: ${{ needs.plan.outputs.tap-sha }}
           path: tap
+          fetch-depth: 0
 
       - name: Checkout exact public core dependency tap for upload validation
         if: ${{ needs.plan.outputs.core-dependency-tap-sha != '' }}
@@ -1749,6 +2034,37 @@ jobs:
             echo "::error::uploader source differs from the validated plan"; exit 2;
           }
 
+      - name: Materialize sealed campaign source for upload validation
+        if: ${{ needs.plan.outputs.prefix-campaign-mode == 'true' }}
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          CAMPAIGN_DEPENDENCIES: ${{ needs.plan.outputs.prefix-campaign-dependencies }}
+          CAMPAIGN_TAG: ${{ needs.plan.outputs.prefix-campaign-tag }}
+          FORMULA: ${{ matrix.formula }}
+          KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          TAP_NAME: ${{ inputs.tap-name }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          python3 kandelo/scripts/homebrew-prefix-campaign-publisher.py \
+            prepare \
+            --tap-root "$GITHUB_WORKSPACE/tap" \
+            --kandelo-commit "$KANDELO_SHA" \
+            --tap-repository "$TAP_REPOSITORY" \
+            --tap-name "$TAP_NAME" \
+            --source-tap-commit "$TAP_SHA" \
+            --campaign-tag "$CAMPAIGN_TAG" \
+            --dependencies "$CAMPAIGN_DEPENDENCIES" \
+            --formula "$FORMULA" \
+            --arch "$ARCH" \
+            --work-root \
+              "$RUNNER_TEMP/prefix-campaign-upload-$FORMULA-$ARCH" \
+            --receipt-out \
+              "$RUNNER_TEMP/prefix-campaign-upload-$FORMULA-$ARCH.json" \
+            --github-env "$GITHUB_ENV"
+
       - name: Materialize immutable dependency tap map for upload validation
         shell: bash
         env:
@@ -1760,6 +2076,10 @@ jobs:
           set -euo pipefail
           resolved="$RUNNER_TEMP/homebrew-resolved-taps.json"
           dependency_args=()
+          if [ -n "${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:-}" ]; then
+            dependency_args+=(--checkout-commit \
+              "$KANDELO_HOMEBREW_PREPARED_TAP_COMMIT")
+          fi
           if [ -n "$CORE_TAP_SHA" ]; then
             dependency_args+=(--dependency-root \
               "kandelo-dev/tap-core=$GITHUB_WORKSPACE/dependency-taps/core")
@@ -1813,6 +2133,7 @@ jobs:
           KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
           KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
+          PREFIX_CAMPAIGN_MODE: ${{ needs.plan.outputs.prefix-campaign-mode }}
         run: |
           set -euo pipefail
           cd kandelo
@@ -1824,6 +2145,8 @@ jobs:
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
             --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
+            --tap-checkout-commit \
+              "${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:-$KANDELO_HOMEBREW_TAP_COMMIT}"
             --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
             --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
             --forbidden-root "$GITHUB_WORKSPACE"
@@ -1832,6 +2155,10 @@ jobs:
             --forbidden-root "/home/kandelo-homebrew-build"
             --out-env "$RUNNER_TEMP/homebrew-validated-build.env"
           )
+          if [ -n "${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}" ]; then
+            validation_args+=(--prefix-campaign-layout-sha256 \
+              "$KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256")
+          fi
           bash scripts/dev-shell.sh env \
             KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
             bash scripts/homebrew-validate-build-handoff.sh "${validation_args[@]}"
@@ -1866,8 +2193,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
           KANDELO_HOMEBREW_KANDELO_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
+          KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
           KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
+          PREFIX_CAMPAIGN_MODE: ${{ needs.plan.outputs.prefix-campaign-mode }}
         run: |
           set -euo pipefail
           cd kandelo
@@ -1877,15 +2206,25 @@ jobs:
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
             --formula "$KANDELO_HOMEBREW_FORMULA"
-            --exact-kandelo-main-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"
+            --target-main-contains-sha "$KANDELO_HOMEBREW_TAP_COMMIT"
             --auth-mode github-token
             --require-pat false
             --destination-mode repository
             --out-json "$RUNNER_TEMP/homebrew-upload-receipt/receipt.json"
           )
-          bash .github/scripts/require-exact-kandelo-main.sh \
-            --repository Automattic/kandelo \
-            --source-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"
+          if [ "$PREFIX_CAMPAIGN_MODE" = true ]; then
+            upload_args+=(--kandelo-main-contains-sha \
+              "$KANDELO_HOMEBREW_KANDELO_COMMIT")
+            bash .github/scripts/require-repository-main-contains.sh \
+              --repository Automattic/kandelo \
+              --source-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"
+          else
+            upload_args+=(--exact-kandelo-main-sha \
+              "$KANDELO_HOMEBREW_KANDELO_COMMIT")
+            bash .github/scripts/require-exact-kandelo-main.sh \
+              --repository Automattic/kandelo \
+              --source-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"
+          fi
           bash scripts/dev-shell.sh bash scripts/homebrew-ghcr-upload.sh "${upload_args[@]}"
 
       - name: Revalidate upload receipt as data
@@ -1911,6 +2250,8 @@ jobs:
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
             --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
+            --tap-checkout-commit \
+              "${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:-$KANDELO_HOMEBREW_TAP_COMMIT}"
             --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
             --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
             --forbidden-root "$GITHUB_WORKSPACE"
@@ -1918,6 +2259,10 @@ jobs:
             --forbidden-root "$RUNNER_TEMP"
             --forbidden-root "/home/kandelo-homebrew-build"
           )
+          if [ -n "${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}" ]; then
+            receipt_args+=(--prefix-campaign-layout-sha256 \
+              "$KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256")
+          fi
           bash scripts/dev-shell.sh env \
             KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
             bash scripts/homebrew-validate-upload-receipt.sh "${receipt_args[@]}"
@@ -1939,11 +2284,15 @@ jobs:
 
   publish-bottle-index:
     needs: [plan, build-and-test, upload-bottle]
-    if: ${{ always() && !cancelled() && !inputs.dry-run && needs.plan.result == 'success' && needs.build-and-test.result == 'success' && needs.upload-bottle.result == 'success' && needs.plan.outputs.matrix != '[]' }}
+    # WHY: matrix job results are aggregate. A failed wasm64 child must not
+    # strand an independently valid wasm32 child from the same Formula.
+    # This job discovers and validates the exact successful child artifacts;
+    # tap and VFS activation remain closed by their downstream gates.
+    if: ${{ always() && !cancelled() && !inputs.dry-run && needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
-      group: kandelo-homebrew-bottle-index-${{ inputs.tap-repository }}-${{ matrix.formula }}
+      group: kandelo-homebrew-ghcr-${{ matrix.formula }}
       cancel-in-progress: false
     permissions:
       actions: read
@@ -1970,6 +2319,7 @@ jobs:
           repository: ${{ inputs.tap-repository }}
           ref: ${{ needs.plan.outputs.tap-sha }}
           path: tap
+          fetch-depth: 0
 
       - name: Checkout exact public core dependency tap for index validation
         if: ${{ needs.plan.outputs.core-dependency-tap-sha != '' }}
@@ -1980,6 +2330,35 @@ jobs:
           /usr/bin/bash kandelo/scripts/homebrew-checkout-public-tap.sh \
             kandelo-dev/homebrew-tap-core "$CORE_TAP_SHA" \
             "$GITHUB_WORKSPACE/dependency-taps/core"
+
+      - name: Materialize sealed campaign source for index validation
+        if: ${{ needs.plan.outputs.prefix-campaign-mode == 'true' }}
+        shell: bash
+        env:
+          CAMPAIGN_DEPENDENCIES: ${{ needs.plan.outputs.prefix-campaign-dependencies }}
+          CAMPAIGN_TAG: ${{ needs.plan.outputs.prefix-campaign-tag }}
+          FORMULA: ${{ matrix.formula }}
+          KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          TAP_NAME: ${{ inputs.tap-name }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          python3 kandelo/scripts/homebrew-prefix-campaign-publisher.py \
+            prepare \
+            --tap-root "$GITHUB_WORKSPACE/tap" \
+            --kandelo-commit "$KANDELO_SHA" \
+            --tap-repository "$TAP_REPOSITORY" \
+            --tap-name "$TAP_NAME" \
+            --source-tap-commit "$TAP_SHA" \
+            --campaign-tag "$CAMPAIGN_TAG" \
+            --dependencies "$CAMPAIGN_DEPENDENCIES" \
+            --formula "$FORMULA" \
+            --work-root \
+              "$RUNNER_TEMP/prefix-campaign-index-$FORMULA" \
+            --receipt-out \
+              "$RUNNER_TEMP/prefix-campaign-index-$FORMULA.json" \
+            --github-env "$GITHUB_ENV"
 
       - name: Materialize immutable dependency tap map for index validation
         shell: bash
@@ -1992,6 +2371,10 @@ jobs:
           set -euo pipefail
           resolved="$RUNNER_TEMP/homebrew-resolved-taps.json"
           dependency_args=()
+          if [ -n "${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:-}" ]; then
+            dependency_args+=(--checkout-commit \
+              "$KANDELO_HOMEBREW_PREPARED_TAP_COMMIT")
+          fi
           if [ -n "$CORE_TAP_SHA" ]; then
             dependency_args+=(--dependency-root \
               "kandelo-dev/tap-core=$GITHUB_WORKSPACE/dependency-taps/core")
@@ -2168,6 +2551,7 @@ jobs:
         env:
           KANDELO_HOMEBREW_EXISTING_INDEX: ${{ steps.existing-index.outputs.layout }}
           KANDELO_HOMEBREW_FORCE: ${{ inputs.force }}
+          KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
         run: |
           set -euo pipefail
           for secret_name in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
@@ -2186,9 +2570,14 @@ jobs:
           [ -z "$existing" ] || args+=(--existing-layout "$existing")
           if [ "$KANDELO_HOMEBREW_FORCE" = "true" ]; then
             args+=(--recover-unfinalized-tap-root "$GITHUB_WORKSPACE/tap")
+            if [ -n "${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:-}" ]; then
+              args+=(--recover-unfinalized-tap-checkout-commit \
+                "$KANDELO_HOMEBREW_PREPARED_TAP_COMMIT")
+            fi
           fi
           bash scripts/dev-shell.sh python3 scripts/homebrew-oci-layout.py merge-index \
             "${args[@]}" \
+            --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT" \
             --out-layout "$RUNNER_TEMP/homebrew-complete-index/layout" \
             --out-receipt "$RUNNER_TEMP/homebrew-complete-index/layout-receipt.json"
 
@@ -2198,21 +2587,35 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
           KANDELO_HOMEBREW_KANDELO_COMMIT: ${{ needs.plan.outputs.kandelo-sha }}
+          KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
           KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
+          PREFIX_CAMPAIGN_MODE: ${{ needs.plan.outputs.prefix-campaign-mode }}
         run: |
           set -euo pipefail
           cd kandelo
-          bash .github/scripts/require-exact-kandelo-main.sh \
-            --repository Automattic/kandelo \
-            --source-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"
+          authority_args=()
+          if [ "$PREFIX_CAMPAIGN_MODE" = true ]; then
+            authority_args+=(--kandelo-main-contains-sha \
+              "$KANDELO_HOMEBREW_KANDELO_COMMIT")
+            bash .github/scripts/require-repository-main-contains.sh \
+              --repository Automattic/kandelo \
+              --source-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"
+          else
+            authority_args+=(--exact-kandelo-main-sha \
+              "$KANDELO_HOMEBREW_KANDELO_COMMIT")
+            bash .github/scripts/require-exact-kandelo-main.sh \
+              --repository Automattic/kandelo \
+              --source-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT"
+          fi
           bash scripts/dev-shell.sh bash scripts/homebrew-ghcr-upload.sh \
             --layout "$RUNNER_TEMP/homebrew-complete-index/layout" \
             --layout-receipt "$RUNNER_TEMP/homebrew-complete-index/layout-receipt.json" \
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME" \
             --formula "$KANDELO_HOMEBREW_FORMULA" \
-            --exact-kandelo-main-sha "$KANDELO_HOMEBREW_KANDELO_COMMIT" \
+            --target-main-contains-sha "$KANDELO_HOMEBREW_TAP_COMMIT" \
+            "${authority_args[@]}" \
             --auth-mode github-token \
             --require-pat false \
             --destination-mode repository \
@@ -2231,7 +2634,10 @@ jobs:
 
   verify-bottle:
     needs: [plan, build-and-test, upload-bottle, publish-bottle-index]
-    if: ${{ always() && !cancelled() && needs.plan.result == 'success' && needs.build-and-test.result == 'success' && (inputs.dry-run || (needs.upload-bottle.result == 'success' && needs.publish-bottle-index.result == 'success')) && needs.plan.outputs.matrix != '[]' }}
+    # WHY: each verifier matrix entry downloads its own exact handoffs and
+    # fails closed when any are absent. Aggregate upstream status would keep a
+    # successful sibling from becoming anonymously verified and reusable.
+    if: ${{ always() && !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 1440
     # WHY: same-run download-artifact uses the scoped artifact service and
@@ -2268,6 +2674,7 @@ jobs:
           repository: ${{ inputs.tap-repository }}
           ref: ${{ needs.plan.outputs.tap-sha }}
           path: tap
+          fetch-depth: 0
 
       - name: Checkout exact public core dependency tap for verification
         if: ${{ needs.plan.outputs.core-dependency-tap-sha != '' }}
@@ -2296,101 +2703,6 @@ jobs:
           }
           [ "$(git -C tap rev-parse HEAD)" = "$TAP_SHA" ] || {
             echo "::error::tap verifier source differs from the plan"; exit 2;
-          }
-
-      # WHY: Verification can execute the same privileged tap-recipe
-      # supervisor as the build. Seal the evidenced /usr and /etc projection
-      # ancestor inodes before an admitted Formula can reach that boundary.
-      - name: Seal conventional host runtime ownership
-        shell: bash
-        run: >-
-          /usr/bin/python3
-          kandelo/scripts/prepare-homebrew-recipe-host-runtime.py
-
-      - name: Materialize immutable dependency tap map for verification
-        shell: bash
-        env:
-          CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
-          TAP_NAME: ${{ inputs.tap-name }}
-          TAP_REPOSITORY: ${{ inputs.tap-repository }}
-          TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
-        run: |
-          set -euo pipefail
-          resolved="$RUNNER_TEMP/homebrew-resolved-taps.json"
-          dependency_args=()
-          if [ -n "$CORE_TAP_SHA" ]; then
-            dependency_args+=(--dependency-root \
-              "kandelo-dev/tap-core=$GITHUB_WORKSPACE/dependency-taps/core")
-          fi
-          python3 kandelo/scripts/homebrew-dependency-taps.py resolve \
-            --tap-root "$GITHUB_WORKSPACE/tap" \
-            --tap-name "$TAP_NAME" \
-            --tap-repository "$TAP_REPOSITORY" \
-            --tap-commit "$TAP_SHA" \
-            "${dependency_args[@]}" \
-            --out "$resolved"
-          echo "KANDELO_HOMEBREW_RESOLVED_TAPS_FILE=$resolved" >> "$GITHUB_ENV"
-
-      - name: Checkout reviewed Homebrew implementation for bottle verification
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          persist-credentials: false
-          repository: Homebrew/brew
-          ref: cf5bc21c6b127e168ef7cfa982ba7db62874690e
-          path: homebrew-prefix/Homebrew
-
-      - name: Activate reviewed Homebrew implementation for bottle verification
-        shell: bash
-        env:
-          ARCH: ${{ matrix.arch }}
-          FORMULA: ${{ matrix.formula }}
-          HOMEBREW_BREW_COMMIT: cf5bc21c6b127e168ef7cfa982ba7db62874690e
-        run: |
-          set -euo pipefail
-          [[ "$HOMEBREW_BREW_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
-            echo "::error::invalid pinned Homebrew commit"; exit 2;
-          }
-          brew_prefix="/home/linuxbrew/.linuxbrew"
-          brew_repository="$GITHUB_WORKSPACE/homebrew-prefix/Homebrew"
-          [ "$(git -C "$brew_repository" rev-parse HEAD)" = "$HOMEBREW_BREW_COMMIT" ] || {
-            echo "::error::Homebrew verifier checkout differs from the reviewed commit"; exit 2;
-          }
-          [ -z "$(git -C "$brew_repository" status --short --untracked-files=no)" ] || {
-            echo "::error::reviewed Homebrew verifier checkout has tracked modifications"; exit 2;
-          }
-          mkdir -p "$brew_prefix/bin"
-          rm -f "$brew_prefix/bin/brew"
-          ln -s "$brew_repository/bin/brew" "$brew_prefix/bin/brew"
-          brew_bin="$brew_prefix/bin/brew"
-          [ "$(readlink -f "$brew_bin")" = "$brew_repository/bin/brew" ] || {
-            echo "::error::Homebrew verifier executable differs from the reviewed checkout"; exit 2;
-          }
-          homebrew_cache="$RUNNER_TEMP/homebrew-verify-cache-${FORMULA}-${ARCH}"
-          homebrew_temp="$RUNNER_TEMP/homebrew-verify-temp-${FORMULA}-${ARCH}"
-          mkdir -p "$homebrew_cache" "$homebrew_temp"
-          {
-            echo "HOMEBREW_BREW_FILE=$brew_bin"
-            echo "HOMEBREW_BREW_COMMIT=$HOMEBREW_BREW_COMMIT"
-            echo "HOMEBREW_CACHE=$homebrew_cache"
-            echo "HOMEBREW_TEMP=$homebrew_temp"
-            echo "HOMEBREW_NO_AUTO_UPDATE=1"
-            echo "HOMEBREW_NO_INSTALL_CLEANUP=1"
-            echo "HOMEBREW_NO_ANALYTICS=1"
-            echo "HOMEBREW_DEVELOPER=1"
-          } >> "$GITHUB_ENV"
-          export HOMEBREW_BREW_FILE="$brew_bin"
-          export HOMEBREW_CACHE="$homebrew_cache"
-          export HOMEBREW_TEMP="$homebrew_temp"
-          export HOMEBREW_NO_AUTO_UPDATE=1
-          export HOMEBREW_NO_INSTALL_CLEANUP=1
-          export HOMEBREW_NO_ANALYTICS=1
-          export HOMEBREW_DEVELOPER=1
-          "$brew_bin" --version
-          [ "$("$brew_bin" --prefix)" = "$brew_prefix" ] || {
-            echo "::error::Homebrew verifier prefix is not canonical"; exit 2;
-          }
-          [ "$("$brew_bin" --cellar)" = "$brew_prefix/Cellar" ] || {
-            echo "::error::Homebrew verifier cellar is not canonical"; exit 2;
           }
 
       - name: Install Nix
@@ -2450,6 +2762,146 @@ jobs:
           }
           echo "WASM_POSIX_BINARY_INDEX_URL=$index_url" >> "$GITHUB_ENV"
 
+      - name: Prepare sealed campaign dependencies for verification
+        if: ${{ needs.plan.outputs.prefix-campaign-mode == 'true' }}
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          CAMPAIGN_DEPENDENCIES: ${{ needs.plan.outputs.prefix-campaign-dependencies }}
+          CAMPAIGN_TAG: ${{ needs.plan.outputs.prefix-campaign-tag }}
+          FORMULA: ${{ matrix.formula }}
+          KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          TAP_NAME: ${{ inputs.tap-name }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          bash kandelo/scripts/dev-shell.sh \
+            python3 kandelo/scripts/homebrew-prefix-campaign-publisher.py \
+              prepare \
+              --tap-root "$GITHUB_WORKSPACE/tap" \
+              --kandelo-commit "$KANDELO_SHA" \
+              --tap-repository "$TAP_REPOSITORY" \
+              --tap-name "$TAP_NAME" \
+              --source-tap-commit "$TAP_SHA" \
+              --campaign-tag "$CAMPAIGN_TAG" \
+              --dependencies "$CAMPAIGN_DEPENDENCIES" \
+              --formula "$FORMULA" \
+              --arch "$ARCH" \
+              --work-root \
+                "$RUNNER_TEMP/prefix-campaign-verify-$FORMULA-$ARCH" \
+              --receipt-out \
+                "$RUNNER_TEMP/prefix-campaign-verify-$FORMULA-$ARCH.json" \
+              --github-env "$GITHUB_ENV"
+
+      # WHY: Verification can execute the same privileged tap-recipe
+      # supervisor as the build. Seal the evidenced /usr and /etc projection
+      # ancestor inodes before an admitted Formula can reach that boundary.
+      - name: Seal conventional host runtime ownership
+        shell: bash
+        run: >-
+          /usr/bin/python3
+          kandelo/scripts/prepare-homebrew-recipe-host-runtime.py
+
+      - name: Materialize immutable dependency tap map for verification
+        shell: bash
+        env:
+          CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
+          TAP_NAME: ${{ inputs.tap-name }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          resolved="$RUNNER_TEMP/homebrew-resolved-taps.json"
+          dependency_args=()
+          if [ -n "${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:-}" ]; then
+            dependency_args+=(--checkout-commit \
+              "$KANDELO_HOMEBREW_PREPARED_TAP_COMMIT")
+          fi
+          if [ -n "$CORE_TAP_SHA" ]; then
+            dependency_args+=(--dependency-root \
+              "kandelo-dev/tap-core=$GITHUB_WORKSPACE/dependency-taps/core")
+          fi
+          python3 kandelo/scripts/homebrew-dependency-taps.py resolve \
+            --tap-root "$GITHUB_WORKSPACE/tap" \
+            --tap-name "$TAP_NAME" \
+            --tap-repository "$TAP_REPOSITORY" \
+            --tap-commit "$TAP_SHA" \
+            "${dependency_args[@]}" \
+            --out "$resolved"
+          echo "KANDELO_HOMEBREW_RESOLVED_TAPS_FILE=$resolved" >> "$GITHUB_ENV"
+
+      - name: Checkout reviewed Homebrew implementation for bottle verification
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: Homebrew/brew
+          ref: a92554a538e81fad0c5074443885dbcc4c36221d
+          path: homebrew-prefix/Homebrew
+
+      - name: Activate reviewed Homebrew implementation for bottle verification
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          FORMULA: ${{ matrix.formula }}
+          HOMEBREW_BREW_COMMIT: a92554a538e81fad0c5074443885dbcc4c36221d
+        run: |
+          set -euo pipefail
+          [[ "$HOMEBREW_BREW_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::invalid pinned Homebrew commit"; exit 2;
+          }
+          # shellcheck disable=SC1091
+          . kandelo/scripts/homebrew-guest-layout.sh
+          homebrew_select_guest_layout \
+            "${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}"
+          brew_prefix="$HOMEBREW_GUEST_PREFIX"
+          brew_repository="$GITHUB_WORKSPACE/homebrew-prefix/Homebrew"
+          [ "$(git -C "$brew_repository" rev-parse HEAD)" = "$HOMEBREW_BREW_COMMIT" ] || {
+            echo "::error::Homebrew verifier checkout differs from the reviewed commit"; exit 2;
+          }
+          [ -z "$(git -C "$brew_repository" status --short --untracked-files=no)" ] || {
+            echo "::error::reviewed Homebrew verifier checkout has tracked modifications"; exit 2;
+          }
+          if [ "$HOMEBREW_GUEST_LAYOUT_MODE" = prefix-campaign ]; then
+            sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 \
+              "$brew_prefix" "$brew_prefix/bin"
+          else
+            mkdir -p "$brew_prefix/bin"
+          fi
+          rm -f "$brew_prefix/bin/brew"
+          ln -s "$brew_repository/bin/brew" "$brew_prefix/bin/brew"
+          brew_bin="$brew_prefix/bin/brew"
+          [ "$(readlink -f "$brew_bin")" = "$brew_repository/bin/brew" ] || {
+            echo "::error::Homebrew verifier executable differs from the reviewed checkout"; exit 2;
+          }
+          homebrew_cache="$RUNNER_TEMP/homebrew-verify-cache-${FORMULA}-${ARCH}"
+          homebrew_temp="$RUNNER_TEMP/homebrew-verify-temp-${FORMULA}-${ARCH}"
+          mkdir -p "$homebrew_cache" "$homebrew_temp"
+          {
+            echo "HOMEBREW_BREW_FILE=$brew_bin"
+            echo "HOMEBREW_BREW_COMMIT=$HOMEBREW_BREW_COMMIT"
+            echo "HOMEBREW_CACHE=$homebrew_cache"
+            echo "HOMEBREW_TEMP=$homebrew_temp"
+            echo "HOMEBREW_NO_AUTO_UPDATE=1"
+            echo "HOMEBREW_NO_INSTALL_CLEANUP=1"
+            echo "HOMEBREW_NO_ANALYTICS=1"
+            echo "HOMEBREW_DEVELOPER=1"
+          } >> "$GITHUB_ENV"
+          export HOMEBREW_BREW_FILE="$brew_bin"
+          export HOMEBREW_CACHE="$homebrew_cache"
+          export HOMEBREW_TEMP="$homebrew_temp"
+          export HOMEBREW_NO_AUTO_UPDATE=1
+          export HOMEBREW_NO_INSTALL_CLEANUP=1
+          export HOMEBREW_NO_ANALYTICS=1
+          export HOMEBREW_DEVELOPER=1
+          "$brew_bin" --version
+          [ "$("$brew_bin" --prefix)" = "$brew_prefix" ] || {
+            echo "::error::Homebrew verifier prefix is not canonical"; exit 2;
+          }
+          [ "$("$brew_bin" --cellar)" = "$HOMEBREW_GUEST_CELLAR" ] || {
+            echo "::error::Homebrew verifier cellar is not canonical"; exit 2;
+          }
+
       - name: Download strict build handoff
         id: build-handoff
         continue-on-error: true
@@ -2508,6 +2960,8 @@ jobs:
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
             --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
+            --tap-checkout-commit \
+              "${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:-$KANDELO_HOMEBREW_TAP_COMMIT}"
             --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
             --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
             --tap-root "$GITHUB_WORKSPACE/tap"
@@ -2518,6 +2972,10 @@ jobs:
             --out-env "$RUNNER_TEMP/homebrew-verified-input/build.env"
             --out-bottle-json "$RUNNER_TEMP/homebrew-verified-input/bottle.json"
           )
+          if [ -n "${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}" ]; then
+            validation_args+=(--prefix-campaign-layout-sha256 \
+              "$KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256")
+          fi
           bash scripts/dev-shell.sh env \
             KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
             bash scripts/homebrew-validate-build-handoff.sh "${validation_args[@]}"
@@ -2571,6 +3029,8 @@ jobs:
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
             --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
+            --tap-checkout-commit \
+              "${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:-$KANDELO_HOMEBREW_TAP_COMMIT}"
             --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
             --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
             --forbidden-root "$GITHUB_WORKSPACE"
@@ -2582,6 +3042,10 @@ jobs:
           )
           if [ "$KANDELO_HOMEBREW_DRY_RUN" = "true" ]; then
             receipt_args+=(--allow-dry-run)
+          fi
+          if [ -n "${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}" ]; then
+            receipt_args+=(--prefix-campaign-layout-sha256 \
+              "$KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256")
           fi
           bash scripts/dev-shell.sh env \
             KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
@@ -3126,6 +3590,7 @@ jobs:
           KANDELO_HOMEBREW_FORMULA: ${{ matrix.formula }}
           KANDELO_HOMEBREW_RELEASE_ABI: ${{ needs.plan.outputs.abi }}
           KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
+          KANDELO_HOMEBREW_TAP_SOURCE_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
           KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
           WASM_POSIX_XTASK_BIN: ${{ steps.formula-verification-runtime.outputs.xtask-bin }}
@@ -3168,6 +3633,9 @@ jobs:
           # stay stable.
           bash scripts/dev-shell.sh env \
             WASM_POSIX_XTASK_BIN="$WASM_POSIX_XTASK_BIN" \
+            KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256="${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}" \
+            KANDELO_HOMEBREW_PREPARED_TAP_COMMIT="${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:-}" \
+            KANDELO_HOMEBREW_TAP_SOURCE_COMMIT="$KANDELO_HOMEBREW_TAP_SOURCE_COMMIT" \
             KANDELO_HOMEBREW_RECIPE_USER="$KANDELO_HOMEBREW_RECIPE_USER" \
             KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
             KANDELO_HOMEBREW_EARLY_HOST_PLAN="$KANDELO_HOMEBREW_EARLY_HOST_PLAN" \
@@ -3180,6 +3648,8 @@ jobs:
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME" \
             --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT" \
+            --tap-checkout-commit \
+              "${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:-$KANDELO_HOMEBREW_TAP_COMMIT}" \
             --formula "$KANDELO_HOMEBREW_FORMULA" \
             --arch "$KANDELO_HOMEBREW_ARCH" \
             --abi "$KANDELO_HOMEBREW_RELEASE_ABI" \
@@ -3296,6 +3766,40 @@ jobs:
           repository: ${{ inputs.tap-repository }}
           ref: ${{ needs.plan.outputs.tap-sha }}
           path: tap-postverify
+          fetch-depth: 0
+
+      - name: Recreate sealed campaign source for post-verification review
+        if: ${{ needs.plan.outputs.prefix-campaign-mode == 'true' }}
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          CAMPAIGN_DEPENDENCIES: ${{ needs.plan.outputs.prefix-campaign-dependencies }}
+          CAMPAIGN_TAG: ${{ needs.plan.outputs.prefix-campaign-tag }}
+          FORMULA: ${{ matrix.formula }}
+          KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
+          TAP_NAME: ${{ inputs.tap-name }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          bash kandelo-postverify/scripts/dev-shell.sh \
+            python3 \
+              kandelo-postverify/scripts/homebrew-prefix-campaign-publisher.py \
+              prepare \
+              --tap-root "$GITHUB_WORKSPACE/tap-postverify" \
+              --kandelo-commit "$KANDELO_SHA" \
+              --tap-repository "$TAP_REPOSITORY" \
+              --tap-name "$TAP_NAME" \
+              --source-tap-commit "$TAP_SHA" \
+              --campaign-tag "$CAMPAIGN_TAG" \
+              --dependencies "$CAMPAIGN_DEPENDENCIES" \
+              --formula "$FORMULA" \
+              --arch "$ARCH" \
+              --work-root \
+                "$RUNNER_TEMP/prefix-campaign-postverify-$FORMULA-$ARCH" \
+              --receipt-out \
+                "$RUNNER_TEMP/prefix-campaign-postverify-$FORMULA-$ARCH.json" \
+              --github-env "$GITHUB_ENV"
 
       - name: Checkout exact post-verification core dependency tap source
         if: ${{ needs.plan.outputs.core-dependency-tap-sha != '' }}
@@ -3311,7 +3815,8 @@ jobs:
         shell: bash
         env:
           CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
-          HOMEBREW_BREW_COMMIT: cf5bc21c6b127e168ef7cfa982ba7db62874690e
+          HOMEBREW_BREW_COMMIT: a92554a538e81fad0c5074443885dbcc4c36221d
+          KANDELO_HOMEBREW_TAP_SOURCE_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
           TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
@@ -3324,13 +3829,18 @@ jobs:
           [ -z "$(git -C kandelo-postverify status --short)" ] || {
             echo "::error::post-verification Kandelo generator checkout is dirty"; exit 2;
           }
-          [ "$(git -C tap-postverify rev-parse HEAD)" = "$TAP_SHA" ] || {
+          expected_tap_head="${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:-$TAP_SHA}"
+          [ "$(git -C tap-postverify rev-parse HEAD)" = "$expected_tap_head" ] || {
             echo "::error::post-verification tap differs from the plan"; exit 2;
           }
           [ -z "$(git -C tap-postverify status --short)" ] || {
             echo "::error::post-verification tap checkout is dirty"; exit 2;
           }
           dependency_args=()
+          if [ -n "${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:-}" ]; then
+            dependency_args+=(--checkout-commit \
+              "$KANDELO_HOMEBREW_PREPARED_TAP_COMMIT")
+          fi
           if [ -n "$CORE_TAP_SHA" ]; then
             for root in dependency-taps/core dependency-taps/core-postverify; do
               [ "$(git -C "$root" rev-parse HEAD)" = "$CORE_TAP_SHA" ] || {
@@ -3385,7 +3895,8 @@ jobs:
         shell: bash
         env:
           CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
-          HOMEBREW_BREW_COMMIT: cf5bc21c6b127e168ef7cfa982ba7db62874690e
+          HOMEBREW_BREW_COMMIT: a92554a538e81fad0c5074443885dbcc4c36221d
+          KANDELO_HOMEBREW_TAP_SOURCE_COMMIT: ${{ needs.plan.outputs.tap-sha }}
         run: |
           set -euo pipefail
           cd kandelo-postverify
@@ -3417,7 +3928,10 @@ jobs:
             --arg build_home "/home/kandelo-homebrew-build" \
             '[$github_workspace, $runner_workspace, $runner_temp, $build_home]')"
           bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256="${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}" \
+            KANDELO_HOMEBREW_PREPARED_TAP_COMMIT="${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:-}" \
             KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
+            KANDELO_HOMEBREW_TAP_SOURCE_COMMIT="$KANDELO_HOMEBREW_TAP_SOURCE_COMMIT" \
             KANDELO_HOMEBREW_TAP_NAME="$KANDELO_HOMEBREW_TAP_NAME" \
             KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON="$KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON" \
             bash scripts/homebrew-generate-sidecars-from-env.sh
@@ -3426,7 +3940,8 @@ jobs:
         if: ${{ matrix.formula == 'file-formula' && matrix.arch == 'wasm32' }}
         shell: bash
         env:
-          HOMEBREW_BREW_COMMIT: cf5bc21c6b127e168ef7cfa982ba7db62874690e
+          HOMEBREW_BREW_COMMIT: a92554a538e81fad0c5074443885dbcc4c36221d
+          KANDELO_HOMEBREW_TAP_SOURCE_COMMIT: ${{ needs.plan.outputs.tap-sha }}
         run: |
           set -euo pipefail
           cd kandelo
@@ -3462,7 +3977,10 @@ jobs:
             npx playwright install chromium --with-deps
           )
           bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256="${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}" \
+            KANDELO_HOMEBREW_PREPARED_TAP_COMMIT="${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:-}" \
             KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
+            KANDELO_HOMEBREW_TAP_SOURCE_COMMIT="$KANDELO_HOMEBREW_TAP_SOURCE_COMMIT" \
             KANDELO_HOMEBREW_TAP_NAME="$KANDELO_HOMEBREW_TAP_NAME" \
             KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON="$KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON" \
             bash -s <<'KANDELO_HOMEBREW_BROWSER_SMOKE'
@@ -3476,6 +3994,15 @@ jobs:
             playwright_report="$browser_vfs_root/playwright-report.json"
             browser_url="http://127.0.0.1:${browser_port}/__kandelo-smoke/homebrew-file-formula.vfs.zst"
             mkdir -p "$browser_vfs_root" "$browser_gallery_root" "$browser_public_dir"
+
+            # WHY: the smoke command is evidence for the selected guest
+            # layout. A campaign bottle at /opt/kandelo/homebrew must never
+            # be credited with a command from the retired Linuxbrew prefix.
+            # shellcheck disable=SC1091
+            . scripts/homebrew-guest-layout.sh
+            homebrew_select_guest_layout \
+              "${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}"
+            file_command="$HOMEBREW_GUEST_PREFIX/bin/file --version"
 
             vfs_args=(
               --metadata "$KANDELO_HOMEBREW_SIDECAR_ROOT/Kandelo/metadata.json"
@@ -3501,6 +4028,7 @@ jobs:
               )
               export KANDELO_PLAYWRIGHT_PORT="$browser_port"
               export KANDELO_BROWSER_FILE_FORMULA_VFS_URL="$browser_url"
+              export KANDELO_HOMEBREW_FILE_FORMULA_COMMAND="$file_command"
               export KANDELO_HOMEBREW_STRICT_PUBLISHER_SMOKE=1
               npx playwright "${playwright_args[@]}" >"$playwright_report"
             )
@@ -3519,7 +4047,7 @@ jobs:
               --arg arch "$KANDELO_HOMEBREW_ARCH" \
               --arg bottle_sha256 "$KANDELO_HOMEBREW_BOTTLE_SHA256" \
               --arg bottle_url "$KANDELO_HOMEBREW_BOTTLE_URL" \
-              --arg command "/home/linuxbrew/.linuxbrew/bin/file --version" \
+              --arg command "$file_command" \
               '{schema: 1, formula: $formula, arch: $arch,
                 bottle_sha256: $bottle_sha256, bottle_url: $bottle_url,
                 runtime: "browser", engine: "chromium", status: "success",
@@ -3550,7 +4078,7 @@ jobs:
           KANDELO_HOMEBREW_BROWSER_SMOKE
 
       - name: Boot an exact dependency-bearing Brewfile image on Node and Chromium
-        if: ${{ needs.plan.outputs.package-generation-kind != 'rootfs-wasm32' }}
+        if: ${{ needs.plan.outputs.prefix-campaign-mode != 'true' && needs.plan.outputs.package-generation-kind != 'rootfs-wasm32' }}
         shell: bash
         env:
           KANDELO_HOMEBREW_ACCEPTANCE_ARCH: ${{ matrix.arch }}
@@ -3655,6 +4183,12 @@ jobs:
           esac
           shell_config=""
           if [ "$(jq -r '.schema' "$config")" = "2" ]; then
+            # WHY: acceptance validates the image-selected guest layout, not
+            # a historical host-side Homebrew default.
+            # shellcheck disable=SC1091
+            . scripts/homebrew-guest-layout.sh
+            homebrew_select_guest_layout \
+              "${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}"
             shell_config_rel="$(jq -er '.shell_config' "$config")"
             case "$shell_config_rel" in
               /*|../*|*/../*|*/..) echo "::error::default-shell config path escapes the tap"; exit 2 ;;
@@ -3672,12 +4206,20 @@ jobs:
             if [ "$shell_config_bytes" -le 0 ] || [ "$shell_config_bytes" -gt 65536 ]; then
               echo "::error::default-shell config must contain 1 to 65536 bytes"; exit 2
             fi
-            jq -e '
+            jq -e --arg prefix "$HOMEBREW_GUEST_PREFIX" '
+              def executable_under($prefix):
+                . as $path |
+                (($path | startswith($prefix + "/bin/")) or
+                  ($path | startswith($prefix + "/sbin/"))) and
+                (($path | split("/") | length) ==
+                  (($prefix | split("/") | length) + 2)) and
+                ($path | split("/")[-1] |
+                  test("^[A-Za-z0-9._@%+=:-]+$"));
               type == "object" and keys == ["argv", "path", "version"] and
               .version == 1 and
               (.path | type == "string" and
-                test("^/home/linuxbrew/\\.linuxbrew/(bin|sbin)/[A-Za-z0-9._@%+=:-]+$") and
-                utf8bytelength <= 4096) and
+                utf8bytelength <= 4096 and
+                executable_under($prefix)) and
               (.argv | type == "array" and length > 0 and length <= 64 and
                 all(.[]; type == "string" and length > 0 and
                   utf8bytelength <= 4096 and contains("\u0000") == false) and
@@ -3895,7 +4437,7 @@ jobs:
         shell: bash
         env:
           CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
-          HOMEBREW_BREW_COMMIT: cf5bc21c6b127e168ef7cfa982ba7db62874690e
+          HOMEBREW_BREW_COMMIT: a92554a538e81fad0c5074443885dbcc4c36221d
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
           TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
         run: |
@@ -3916,7 +4458,8 @@ jobs:
           [ "$(git -C kandelo-sysroot-build/libc/musl rev-parse HEAD)" = "$expected_musl_sha" ] || {
             echo "::error::Kandelo sysroot build moved the reviewed musl commit"; exit 1;
           }
-          [ "$(git -C tap rev-parse HEAD)" = "$TAP_SHA" ] || {
+          expected_tap_head="${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:-$TAP_SHA}"
+          [ "$(git -C tap rev-parse HEAD)" = "$expected_tap_head" ] || {
             echo "::error::tap verifier source moved during runtime validation"; exit 1;
           }
           [ -z "$(git -C tap status --short --untracked-files=no)" ] || {
@@ -3928,7 +4471,7 @@ jobs:
           [ -z "$(git -C kandelo-postverify status --short --untracked-files=no)" ] || {
             echo "::error::runtime validation modified fresh Kandelo generator files"; exit 1;
           }
-          [ "$(git -C tap-postverify rev-parse HEAD)" = "$TAP_SHA" ] || {
+          [ "$(git -C tap-postverify rev-parse HEAD)" = "$expected_tap_head" ] || {
             echo "::error::fresh tap source moved during runtime validation"; exit 1;
           }
           [ -z "$(git -C tap-postverify status --short --untracked-files=no)" ] || {
@@ -4047,6 +4590,8 @@ jobs:
             --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY"
             --tap-name "$KANDELO_HOMEBREW_TAP_NAME"
             --tap-commit "$KANDELO_HOMEBREW_TAP_COMMIT"
+            --tap-checkout-commit \
+              "${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:-$KANDELO_HOMEBREW_TAP_COMMIT}"
             --kandelo-commit "$KANDELO_HOMEBREW_KANDELO_COMMIT"
             --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL"
             --forbidden-root "$GITHUB_WORKSPACE"
@@ -4057,6 +4602,10 @@ jobs:
           )
           if [ "$KANDELO_HOMEBREW_DRY_RUN" = "true" ]; then
             payload_args+=(--allow-dry-run)
+          fi
+          if [ -n "${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}" ]; then
+            payload_args+=(--prefix-campaign-layout-sha256 \
+              "$KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256")
           fi
           bash scripts/dev-shell.sh env \
             KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
@@ -4086,7 +4635,7 @@ jobs:
 
   finalize-tap:
     needs: [plan, build-and-test, upload-bottle, verify-bottle]
-    if: ${{ always() && !cancelled() && !inputs.dry-run && needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' }}
+    if: ${{ always() && !cancelled() && !inputs.dry-run && !inputs.defer-tap-finalization && needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
@@ -4387,7 +4936,7 @@ jobs:
 
   publish-vfs-release:
     needs: [plan, verify-bottle, finalize-tap]
-    if: ${{ always() && !cancelled() && !inputs.dry-run && inputs.require-vfs-acceptance && needs.plan.result == 'success' && needs.verify-bottle.result == 'success' && needs.finalize-tap.result == 'success' && needs.plan.outputs.vfs-acceptance-formula != '' }}
+    if: ${{ always() && !cancelled() && !inputs.dry-run && !inputs.defer-tap-finalization && inputs.require-vfs-acceptance && needs.plan.result == 'success' && needs.verify-bottle.result == 'success' && needs.finalize-tap.result == 'success' && needs.plan.outputs.vfs-acceptance-formula != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:

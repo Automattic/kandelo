@@ -65,6 +65,7 @@ VERIFY_SCRIPT="${VERIFY_SCRIPT:-$SCRIPT_DIR/verify-merge-candidate.sh}"
 MARK_READY_SCRIPT="${MARK_READY_SCRIPT:-$SCRIPT_DIR/mark-merge-candidate-ready.sh}"
 VALIDATE_RELEASE_SCRIPT="${VALIDATE_RELEASE_SCRIPT:-$SCRIPT_DIR/validate-staging-release.sh}"
 DOWNLOAD_ASSET_SCRIPT="${DOWNLOAD_ASSET_SCRIPT:-$SCRIPT_DIR/download-verified-release-asset.sh}"
+RELEASE_LIFECYCLE_SCRIPT="${RELEASE_LIFECYCLE_SCRIPT:-$SCRIPT_DIR/package-release-lifecycle.sh}"
 TMP_ROOT="$(mktemp -d)"
 AUTHORITY_LOCK_STATE="$TMP_ROOT/authority-lock.env"
 SOURCE_LOCK_STATE="$TMP_ROOT/source-lock.env"
@@ -73,6 +74,7 @@ AUTHORITY_LOCKED=0
 SOURCE_LOCKED=0
 DESTINATION_LOCKED=0
 DESTINATION_CANDIDATE_TAG=""
+DESTINATION_RELEASE_ID=""
 DESTINATION_RUN_ID=""
 DESTINATION_RUN_ATTEMPT=""
 RESUME_EXISTING_CLONE=0
@@ -129,12 +131,30 @@ gh_retry() {
 }
 
 snapshot_release() {
-  local tag="$1" output="$2" release_json
+  local tag="$1" output="$2" expected_release_id="${3:-}" release_json
+  local expected_release_id_json=null
   local release_id page page_json count reached_end=false
-  release_json="$TMP_ROOT/release-${tag}.json"
-  gh_retry gh api "/repos/${REPOSITORY}/releases/tags/${tag}" > "$release_json"
-  if ! jq -e --arg tag "$tag" '
-      .tag_name == $tag and (.id | type == "number" and . > 0)
+  if [ -n "$expected_release_id" ]; then
+    if ! [[ "$expected_release_id" =~ ^[1-9][0-9]*$ ]]; then
+      echo "clone-rejected-merge-candidate: malformed release ID for $tag" >&2
+      return 1
+    fi
+    release_json="$TMP_ROOT/release-${expected_release_id}.json"
+    expected_release_id_json="$expected_release_id"
+    gh_retry gh api \
+      "/repos/${REPOSITORY}/releases/${expected_release_id}" \
+      > "$release_json"
+  else
+    release_json="$TMP_ROOT/release-${tag}.json"
+    gh_retry gh api "/repos/${REPOSITORY}/releases/tags/${tag}" \
+      > "$release_json"
+  fi
+  if ! jq -e \
+      --arg tag "$tag" \
+      --argjson expected_release_id "$expected_release_id_json" '
+      .tag_name == $tag and
+      (.id | type == "number" and . > 0) and
+      ($expected_release_id == null or .id == $expected_release_id)
     ' "$release_json" >/dev/null
   then
     echo "clone-rejected-merge-candidate: malformed release response for $tag" >&2
@@ -482,21 +502,39 @@ export STATE_LOCK_OWNER_DETAIL="candidate recovery destination, PR ${PR_NUMBER}"
 STATE_LOCK_STATE_FILE="$DESTINATION_LOCK_STATE" bash "$STATE_LOCK_SCRIPT" acquire "$DESTINATION_CANDIDATE_TAG"
 DESTINATION_LOCKED=1
 
-destination_release="$TMP_ROOT/destination-release.json"
-if [ "$RESUME_EXISTING_CLONE" = 0 ] &&
-   ! gh api "/repos/${REPOSITORY}/releases/tags/${DESTINATION_CANDIDATE_TAG}" > "$destination_release" 2>/dev/null; then
-  if ! gh_retry gh release create "$DESTINATION_CANDIDATE_TAG" \
-      --repo "$REPOSITORY" \
-      --target "$head_sha" \
-      --title "$DESTINATION_CANDIDATE_TAG" \
-      --prerelease \
-      --notes "Immutable recovery clone of ${SOURCE_CANDIDATE_TAG}; source rejection retained."
-  then
-    : # A lost response is reconciled below.
-  fi
+destination_body="$TMP_ROOT/destination-release-body.txt"
+printf '%s' \
+  "Immutable recovery clone of ${SOURCE_CANDIDATE_TAG}; source rejection retained." \
+  >"$destination_body"
+# WHY: the recovery clone must remain writable through mark-ready and its
+# terminal activation. Publishing at creation would freeze an empty release.
+bash "$RELEASE_LIFECYCLE_SCRIPT" ensure-draft \
+  --tag "$DESTINATION_CANDIDATE_TAG" \
+  --target-commit "$head_sha" \
+  --title "$DESTINATION_CANDIDATE_TAG" \
+  --body-file "$destination_body" \
+  --prerelease true \
+  --release-id-file "$TMP_ROOT/destination-release-id" >/dev/null
+# WHY: GitHub's get-by-tag endpoint omits drafts. Pin every destination
+# inventory read to the one release ID selected by bounded lifecycle
+# discovery so a same-tag race cannot redirect later verification.
+if [ ! -f "$TMP_ROOT/destination-release-id" ] ||
+   [ -L "$TMP_ROOT/destination-release-id" ]; then
+  echo "clone-rejected-merge-candidate: lifecycle did not return one destination release ID" >&2
+  exit 1
 fi
+mapfile -t destination_release_ids < "$TMP_ROOT/destination-release-id"
+if [ "${#destination_release_ids[@]}" -ne 1 ] ||
+   ! [[ "${destination_release_ids[0]}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "clone-rejected-merge-candidate: lifecycle did not return one destination release ID" >&2
+  exit 1
+fi
+DESTINATION_RELEASE_ID="${destination_release_ids[0]}"
 destination_inventory="$TMP_ROOT/destination-assets.json"
-snapshot_release "$DESTINATION_CANDIDATE_TAG" "$destination_inventory"
+snapshot_release \
+  "$DESTINATION_CANDIDATE_TAG" \
+  "$destination_inventory" \
+  "$DESTINATION_RELEASE_ID"
 if [ "$RESUME_EXISTING_CLONE" = 1 ]; then
   cp "$destination_inventory" "$TMP_ROOT/destination-resume-inventory.json"
 fi
@@ -530,9 +568,13 @@ expected_names="$TMP_ROOT/expected-destination-assets"
   cat "$expected_names"
   printf '%s\n' activated.json
 } | sort -u > "$TMP_ROOT/allowed-destination-assets"
+{
+  cat "$TMP_ROOT/allowed-destination-assets"
+  printf '%s\n' kandelo-package-release-seal-v1.json
+} | sort -u >"$TMP_ROOT/allowed-published-destination-assets"
 jq -r '.[].name' "$destination_inventory" | sort > "$TMP_ROOT/destination-existing-names"
 while IFS= read -r name; do
-  if ! grep -Fxq "$name" "$TMP_ROOT/allowed-destination-assets"; then
+  if ! grep -Fxq "$name" "$TMP_ROOT/allowed-published-destination-assets"; then
     echo "clone-rejected-merge-candidate: destination contains unexpected asset $name" >&2
     exit 1
   fi
@@ -543,7 +585,10 @@ ensure_destination_asset() {
   local expected_sha expected_size existing actual_sha actual_size upload_dir
   expected_sha=$(sha256_file "$path")
   expected_size=$(file_size "$path")
-  snapshot_release "$DESTINATION_CANDIDATE_TAG" "$inventory"
+  snapshot_release \
+    "$DESTINATION_CANDIDATE_TAG" \
+    "$inventory" \
+    "$DESTINATION_RELEASE_ID"
   existing=$(jq -c --arg name "$name" '[.[] | select(.name == $name)]' "$inventory")
   if [ "$(jq 'length' <<<"$existing")" = 1 ]; then
     if [ "$(jq -r '.[0].size' <<<"$existing")" != "$expected_size" ] ||
@@ -565,7 +610,10 @@ ensure_destination_asset() {
     echo "clone-rejected-merge-candidate: destination contains duplicate $name" >&2
     return 1
   fi
-  snapshot_release "$DESTINATION_CANDIDATE_TAG" "$inventory"
+  snapshot_release \
+    "$DESTINATION_CANDIDATE_TAG" \
+    "$inventory" \
+    "$DESTINATION_RELEASE_ID"
   existing=$(jq -c --arg name "$name" '[.[] | select(.name == $name)]' "$inventory")
   if [ "$(jq 'length' <<<"$existing")" != 1 ]; then
     echo "clone-rejected-merge-candidate: destination asset $name is not uniquely visible" >&2
@@ -588,12 +636,16 @@ while IFS= read -r name; do
   ensure_destination_asset "$name" "$validated_source/archives/$name"
 done < "$TMP_ROOT/ledger-assets"
 
-snapshot_release "$DESTINATION_CANDIDATE_TAG" "$destination_inventory"
+snapshot_release \
+  "$DESTINATION_CANDIDATE_TAG" \
+  "$destination_inventory" \
+  "$DESTINATION_RELEASE_ID"
 jq -r '.[].name' "$destination_inventory" | sort > "$TMP_ROOT/destination-final-names"
 grep -Fxv ready.json "$expected_names" > "$TMP_ROOT/expected-before-ready"
 if [ "$RESUME_EXISTING_CLONE" = 1 ]; then
   if ! cmp "$expected_names" "$TMP_ROOT/destination-final-names" &&
-     ! cmp "$TMP_ROOT/allowed-destination-assets" "$TMP_ROOT/destination-final-names"; then
+     ! cmp "$TMP_ROOT/allowed-destination-assets" "$TMP_ROOT/destination-final-names" &&
+     ! cmp "$TMP_ROOT/allowed-published-destination-assets" "$TMP_ROOT/destination-final-names"; then
     echo "clone-rejected-merge-candidate: authoritative recovery clone is not complete and exact" >&2
     exit 1
   fi
@@ -668,7 +720,10 @@ if [ "$RESUME_EXISTING_CLONE" = 1 ]; then
     fi
   fi
 
-  snapshot_release "$DESTINATION_CANDIDATE_TAG" "$TMP_ROOT/destination-resume-after.json"
+  snapshot_release \
+    "$DESTINATION_CANDIDATE_TAG" \
+    "$TMP_ROOT/destination-resume-after.json" \
+    "$DESTINATION_RELEASE_ID"
   if ! cmp "$TMP_ROOT/destination-resume-inventory.json" "$TMP_ROOT/destination-resume-after.json"; then
     echo "clone-rejected-merge-candidate: authoritative recovery clone changed during validation" >&2
     exit 1

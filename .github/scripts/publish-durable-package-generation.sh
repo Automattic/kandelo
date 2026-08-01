@@ -75,7 +75,7 @@ else
   exit 2
 fi
 if [ "$preserved_dispatch" = false ] &&
-   { ! [[ "$SOURCE_TAG" =~ ^(binaries-abi-v[1-9][0-9]*|pr-[1-9][0-9]*-staging|preserved-package-generation-[A-Za-z0-9._-]+)$ ]] ||
+   { ! [[ "$SOURCE_TAG" =~ ^(binaries-abi-v[1-9][0-9]*|pr-[1-9][0-9]*-staging(-run-[1-9][0-9]*-attempt-[1-9][0-9]*)?|preserved-package-generation-[A-Za-z0-9._-]+)$ ]] ||
      ! [[ "$EXPECTED_ABI" =~ ^[1-9][0-9]*$ ]] ||
      ! [[ "$ARCH" =~ ^[a-z0-9][a-z0-9._-]*$ ]] ||
      ! [[ "$AUTHORITY_SHA" =~ ^[0-9a-f]{40}$ ]] ||
@@ -545,7 +545,7 @@ jq -e '
 
 require_pr_staging_retention() {
   local pr_number pr_json="$TMP_ROOT/retained-source-pr.json"
-  if [[ "$SOURCE_TAG" =~ ^pr-([1-9][0-9]*)-staging$ ]]; then
+  if [[ "$SOURCE_TAG" =~ ^pr-([1-9][0-9]*)-staging(-run-[1-9][0-9]*-attempt-[1-9][0-9]*)?$ ]]; then
     pr_number="${BASH_REMATCH[1]}"
     gh api "/repos/$REPOSITORY/pulls/$pr_number" >"$pr_json"
     # WHY: this workflow runs after merge, when ordinary close-event cleanup

@@ -24,12 +24,7 @@ SHA = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 FORMULA = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 MAX_INPUT_BYTES = 4 * 1024 * 1024
-EXPECTED_ROOTS = 32
-EXPECTED_BASE_FORMULAE = 38
 EXPECTED_EMBEDDED = 3
-EXPECTED_LAZY = 35
-EXPECTED_RUNTIME_EXTRA = 1
-EXPECTED_TOTAL = 39
 
 MIGRATION_PATH = "homebrew/main-shell-migration-lock.json"
 SUPPORT_PATH = "homebrew/main-shell-homebrew-runtime-support.json"
@@ -85,6 +80,12 @@ def regular_bytes(root: pathlib.Path, relative: str) -> bytes:
 
 def sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def positive_revision(value: Any, label: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise FinalizeError(f"{label} must be a positive integer")
+    return value
 
 
 def sha256_file(path: pathlib.Path) -> str:
@@ -220,6 +221,25 @@ def closure(root_names: list[str], packages: dict[str, dict[str, Any]]) -> list[
     return result
 
 
+def formula_identities(value: Any, label: str) -> list[str]:
+    if not isinstance(value, list):
+        raise FinalizeError(f"{label} must be an array")
+    result: list[str] = []
+    for index, identity in enumerate(value):
+        if (
+            not isinstance(identity, str)
+            or not identity.startswith(f"{TAP_NAME}/")
+            or not FORMULA.fullmatch(identity.removeprefix(f"{TAP_NAME}/"))
+        ):
+            raise FinalizeError(
+                f"{label}[{index}] is not a canonical {TAP_NAME}/<formula> identity"
+            )
+        if identity in result:
+            raise FinalizeError(f"{label} repeats Formula {identity}")
+        result.append(identity)
+    return result
+
+
 def base_version(package: dict[str, Any]) -> str:
     revision = package["formula_revision"]
     version = package["version"]
@@ -279,6 +299,13 @@ def update_build_toml(value: bytes, old_tap: str, new_tap: str, sealed: bool) ->
         text = value.decode()
     except UnicodeDecodeError as error:
         raise FinalizeError(f"{BUILD_PATH} is not UTF-8") from error
+    try:
+        original_build = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as error:
+        raise FinalizeError(f"{BUILD_PATH} is not valid TOML") from error
+    original_revision = positive_revision(
+        original_build.get("revision"), f"{BUILD_PATH} revision"
+    )
     block = re.compile(
         r'(\[\[git_inputs\]\]\n'
         r'name = "homebrew_tap_core"\n'
@@ -308,7 +335,12 @@ def update_build_toml(value: bytes, old_tap: str, new_tap: str, sealed: bool) ->
         raise FinalizeError(f"{BUILD_PATH} became invalid TOML") from error
     if (
         build.get("commit") != "UNPUBLISHED"
-        or build.get("revision") != 22
+        # WHY: the reviewed source commit and sealed artifact lock bind the
+        # exact shell generation. The finalizer may change tap authority and
+        # publication state, but it must preserve whichever positive package
+        # revision that reviewed source declares instead of owning a second,
+        # stale copy of the current revision number.
+        or build.get("revision") != original_revision
         or build.get("publication_state") != expected_state
         or build.get("git_inputs")
         != [
@@ -472,25 +504,44 @@ def prepare(
     final_tap, metadata_bytes, tap = require_tap_checkout(tap_root)
     packages = package_map(tap)
     roots = migration.get("packages")
-    reviewed_closure = migration.get("formula_closure")
+    reviewed_closure = formula_identities(
+        migration.get("formula_closure"), "main-shell reviewed closure"
+    )
     materialization = exact_json(
         regular_bytes(source_root, "homebrew/main-shell-materialization-policy.json"),
         "materialization policy",
     )
-    if (
-        not isinstance(roots, list)
-        or len(roots) != EXPECTED_ROOTS
-        or not isinstance(reviewed_closure, list)
-        or len(reviewed_closure) != EXPECTED_BASE_FORMULAE
-        or not isinstance(materialization, dict)
-        or len(materialization.get("embedded_package_order", [])) != EXPECTED_EMBEDDED
-        or EXPECTED_BASE_FORMULAE - EXPECTED_EMBEDDED != EXPECTED_LAZY
-        or len(support.get("additional_formula_order", [])) != EXPECTED_RUNTIME_EXTRA
-        or EXPECTED_BASE_FORMULAE + EXPECTED_RUNTIME_EXTRA != EXPECTED_TOTAL
-    ):
+    if not isinstance(roots, list) or not roots or not reviewed_closure:
         raise FinalizeError(
-            "main-shell scope drifted from 32 roots / embedded 3 / lazy 35 / "
-            "runtime-extra 1 / total 39"
+            "main-shell migration lock must contain roots and a reviewed closure"
+        )
+    if (
+        not isinstance(materialization, dict)
+        or set(materialization)
+        != {"schema", "kind", "embedded_roots", "embedded_package_order"}
+        or materialization.get("schema") != 1
+        or materialization.get("kind")
+        != "kandelo-homebrew-vfs-materialization-policy"
+    ):
+        raise FinalizeError("main-shell materialization policy is invalid")
+    embedded_roots = formula_identities(
+        materialization.get("embedded_roots"),
+        "main-shell embedded roots",
+    )
+    embedded_formulae = formula_identities(
+        materialization.get("embedded_package_order"),
+        "main-shell embedded Formula order",
+    )
+    if len(embedded_formulae) != EXPECTED_EMBEDDED:
+        raise FinalizeError(
+            "main-shell materialization policy must embed exactly three Formulae; "
+            f"found {len(embedded_formulae)}"
+        )
+    embedded_outside_base = sorted(set(embedded_formulae) - set(reviewed_closure))
+    if embedded_outside_base:
+        raise FinalizeError(
+            "main-shell embedded Formulae are outside the reviewed base closure: "
+            + ", ".join(embedded_outside_base)
         )
 
     root_names: list[str] = []
@@ -513,17 +564,23 @@ def prepare(
         missing = sorted(set(reviewed_closure) - set(resolved))
         extra = sorted(set(resolved) - set(reviewed_closure))
         raise FinalizeError(
-            "final tap dependency closure changes the reviewed 38-Formula scope; "
+            "final tap dependency closure changes the reviewed main-shell scope; "
             f"missing={missing or '(none)'}, extra={extra or '(none)'}"
         )
     for identity in reviewed_closure:
-        if (
-            not isinstance(identity, str)
-            or not identity.startswith(f"{TAP_NAME}/")
-            or identity.split("/")[-1] not in packages
-        ):
+        if identity.split("/")[-1] not in packages:
             raise FinalizeError(f"reviewed closure contains invalid Formula {identity!r}")
         require_bottle(packages[identity.split("/")[-1]])
+
+    resolved_embedded = closure(
+        [identity.removeprefix(f"{TAP_NAME}/") for identity in embedded_roots],
+        packages,
+    )
+    if resolved_embedded != embedded_formulae:
+        raise FinalizeError(
+            "main-shell embedded Formula order is not the exact dependency closure "
+            "of its reviewed roots"
+        )
 
     migration["catalog"]["tap_commit"] = final_tap
     support["catalog"]["tap_commit"] = final_tap
@@ -551,6 +608,39 @@ def prepare(
         migration_bytes,
         support_bytes,
     )
+
+    # WHY: these counts describe the reviewed descriptors that the canonical
+    # checker just proved against tap metadata. Deriving them keeps a new
+    # dependency from requiring an unrelated executable-code cardinality bump.
+    runtime_formulae = formula_identities(
+        support.get("formula_order"), "Homebrew runtime-support Formula order"
+    )
+    additional_formulae = formula_identities(
+        support.get("additional_formula_order"),
+        "Homebrew runtime-support additional Formula order",
+    )
+    availability = support.get("availability")
+    if not isinstance(availability, dict):
+        raise FinalizeError("runtime support lacks its availability partition")
+    audited_formulae: list[str] = []
+    for key in [
+        "reusable_public_abi42",
+        "requires_rebuild",
+        "missing_metadata",
+        "can_be_deferred",
+    ]:
+        audited_formulae.extend(
+            formula_identities(
+                availability.get(key), f"Homebrew runtime-support availability.{key}"
+            )
+        )
+    if len(set(audited_formulae)) != len(audited_formulae):
+        raise FinalizeError(
+            "Homebrew runtime-support availability partition repeats a Formula"
+        )
+    total_formulae = [*reviewed_closure, *additional_formulae]
+    if len(set(total_formulae)) != len(total_formulae):
+        raise FinalizeError("Homebrew shell/runtime Formula union repeats a Formula")
 
     sealed = artifact_file is not None
     build_bytes = update_build_toml(old[BUILD_PATH], old_tap, final_tap, sealed)
@@ -602,12 +692,14 @@ def prepare(
         "metadata_sha256": sha256(metadata_bytes),
         "metadata_tap_commit": tap["tap_commit"],
         "kandelo_commit": tap["kandelo_commit"],
-        "roots": EXPECTED_ROOTS,
-        "base_formulae": EXPECTED_BASE_FORMULAE,
-        "embedded": EXPECTED_EMBEDDED,
-        "lazy": EXPECTED_LAZY,
-        "runtime_extra": EXPECTED_RUNTIME_EXTRA,
-        "total": EXPECTED_TOTAL,
+        "roots": len(root_names),
+        "base_formulae": len(reviewed_closure),
+        "embedded": len(embedded_formulae),
+        "lazy": len(reviewed_closure) - len(embedded_formulae),
+        "runtime_formulae": len(runtime_formulae),
+        "audited_formulae": len(audited_formulae),
+        "runtime_extra": len(additional_formulae),
+        "total": len(total_formulae),
         "artifact_state": artifact_lock["state"],
         "artifact": artifact_lock["image"],
         "checker": checker_output,

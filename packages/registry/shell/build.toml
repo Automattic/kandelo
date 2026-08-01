@@ -67,11 +67,10 @@ inputs = [
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
 revision    = 22
-# WHY: ready admits only the normal exact-main archive-staging path after final
-# tap authority and every deterministic input are bound. `UNPUBLISHED` remains
-# for staging to substitute exact landed Mpre; the artifact lock independently
-# rejects bytes whenever its reviewed input or output identity is stale.
-publication_state = "ready"
+# WHY: advancing the guest Homebrew source changes a shell input, so the old
+# sealed VFS identity is no longer valid. Publication remains blocked until a
+# reproducible image made from this exact input set is reviewed and sealed.
+publication_state = "pending"
 
 [[git_inputs]]
 name = "homebrew_tap_core"

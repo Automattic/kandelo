@@ -128,6 +128,7 @@ mkdir -p \
     "$FIXTURE/benchmarks/wasm" \
     "$FIXTURE/apps/browser-demos" \
     "$FIXTURE/apps/browser-demos/public" \
+    "$FIXTURE/crates/shared/src" \
     "$FIXTURE/bin"
 cp \
     "$REPO_ROOT/scripts/ci-homebrew-browser-mirror-state.sh" \
@@ -136,7 +137,10 @@ cp \
     "$REPO_ROOT/scripts/pack-ci-test-workspace.sh" \
     "$REPO_ROOT/scripts/stage-portable-resolver-binaries.sh" \
     "$REPO_ROOT/scripts/validate-publication-blocker-report.sh" \
+    "$REPO_ROOT/scripts/verify-ci-staging-shell-handoff.sh" \
     "$FIXTURE/scripts/"
+printf '%s\n' 'pub const ABI_VERSION: u32 = 42;' \
+    > "$FIXTURE/crates/shared/src/lib.rs"
 mkdir -p "$FIXTURE/packages/registry/ruby/test"
 : > "$FIXTURE/packages/registry/ruby/test/posix-spawn.test.ts"
 
@@ -221,6 +225,39 @@ write_browser_mirror_state() {
 
 cat > "$FIXTURE/bin/npm" <<'EOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = run ] && [ "${2:-}" = build ]; then
+    if [ -e public/homebrew-main-shell-bottles ] || \
+       [ -L public/homebrew-main-shell-bottles ]; then
+        echo "fixture production build observed the closed mirror" >&2
+        exit 1
+    fi
+    if [ -n "${PRODUCTION_BUILD_CAPTURE:-}" ]; then
+        {
+            printf 'inputs=%s\n' "${KANDELO_BROWSER_DEMO_INPUTS:-<unset>}"
+            printf 'vite_closed=%s\n' \
+                "${VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT:-<unset>}"
+            printf 'playwright_closed=%s\n' \
+                "${KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT:-<unset>}"
+            printf 'vite_mode=%s\n' \
+                "${KANDELO_PLAYWRIGHT_VITE_MODE:-<unset>}"
+            printf 'serve_dist=%s\n' \
+                "${KANDELO_PLAYWRIGHT_SERVE_DIST:-<unset>}"
+            printf 'base=%s\n' "${VITE_BASE:-<unset>}"
+            printf 'cors=%s\n' "${VITE_CORS_PROXY_URL:-<unset>}"
+        } > "$PRODUCTION_BUILD_CAPTURE"
+    fi
+    mkdir -p \
+        dist/pages/kandelo \
+        dist/pages/network
+    : > dist/index.html
+    : > dist/pages/kandelo/index.html
+    : > dist/pages/network/index.html
+    : > dist/service-worker.js
+    if [ "${PRODUCTION_BUILD_EXPOSE_PRIVATE_ENTRY:-0}" = 1 ]; then
+        mkdir -p dist/pages/homebrew-vfs-test
+        : > dist/pages/homebrew-vfs-test/index.html
+    fi
+fi
 exit 0
 EOF
 
@@ -353,6 +390,90 @@ git -C "$FIXTURE" config user.name "Kandelo CI fixture"
 git -C "$FIXTURE" config user.email "ci-fixture@invalid.example"
 git -C "$FIXTURE" add .
 git -C "$FIXTURE" commit -qm "fixture source identity"
+fixture_base_branch="$(git -C "$FIXTURE" branch --show-current)"
+git -C "$FIXTURE" switch -qc fixture-pr-head
+git -C "$FIXTURE" commit --allow-empty -qm "fixture PR head"
+git -C "$FIXTURE" switch -q "$fixture_base_branch"
+git -C "$FIXTURE" merge --no-ff -qm "fixture synthetic merge" \
+    fixture-pr-head
+
+check_premerge_browser_production_contract() {
+    local runner="$1"
+    local function_block
+    local browser_block
+    local materialize_line
+    local fetch_line
+    local production_line
+    local mirror_line
+    function_block="$(sed -n \
+        '/^run_pages_shaped_browser_build() {$/,/^}$/p' "$runner")"
+    browser_block="$(sed -n '/^    browser)$/,/^        ;;/p' "$runner")"
+
+    for binding in \
+        '-u KANDELO_BROWSER_DEMO_INPUTS' \
+        '-u VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT' \
+        '-u KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT' \
+        '-u KANDELO_PLAYWRIGHT_VITE_MODE' \
+        '-u KANDELO_PLAYWRIGHT_SERVE_DIST' \
+        'VITE_BASE=/kandelo/' \
+        'VITE_CORS_PROXY_URL='
+    do
+        grep -Fq -- "$binding" <<<"$function_block" || return 1
+    done
+    for output in \
+        'index.html' \
+        'pages/kandelo/index.html' \
+        'pages/network/index.html' \
+        'service-worker.js'
+    do
+        grep -Fq -- "$output" <<<"$function_block" || return 1
+    done
+    grep -Fq 'ordinary browser build found a closed test mirror' \
+        <<<"$function_block" || return 1
+    grep -Fq 'ordinary browser build exposed the private Homebrew acceptance page' \
+        <<<"$function_block" || return 1
+    [ "$(grep -Fc 'run_pages_shaped_browser_build' <<<"$browser_block")" -eq 1 ] ||
+        return 1
+    materialize_line="$(grep -nF \
+        'bash scripts/materialize-ci-publication-blockers.sh' \
+        <<<"$browser_block" | cut -d: -f1)"
+    fetch_line="$(grep -nF \
+        './run.sh --already-materialized --fetch-only prepare-browser' \
+        <<<"$browser_block" | cut -d: -f1)"
+    production_line="$(grep -nF 'run_pages_shaped_browser_build' \
+        <<<"$browser_block" | cut -d: -f1)"
+    mirror_line="$(grep -nF 'prepare_ci_homebrew_browser_mirror' \
+        <<<"$browser_block" | cut -d: -f1)"
+    [ -n "$materialize_line" ] && [ -n "$fetch_line" ] &&
+        [ -n "$production_line" ] && [ -n "$mirror_line" ] &&
+        [ "$materialize_line" -lt "$fetch_line" ] &&
+        [ "$fetch_line" -lt "$production_line" ] &&
+        [ "$production_line" -lt "$mirror_line" ]
+}
+
+check_premerge_browser_production_contract \
+    "$REPO_ROOT/scripts/ci-run-test-suite.sh" || {
+    echo "prepare-merge browser shard lacks its ordinary production build" >&2
+    exit 1
+}
+sed '/^                run_pages_shaped_browser_build$/d' \
+    "$REPO_ROOT/scripts/ci-run-test-suite.sh" \
+    > "$TMP_DIR/browser-runner-without-production-build.sh"
+if check_premerge_browser_production_contract \
+    "$TMP_DIR/browser-runner-without-production-build.sh"
+then
+    echo "production-build contract accepted a removed invocation" >&2
+    exit 1
+fi
+sed 's/-u KANDELO_BROWSER_DEMO_INPUTS/KANDELO_BROWSER_DEMO_INPUTS=main/' \
+    "$REPO_ROOT/scripts/ci-run-test-suite.sh" \
+    > "$TMP_DIR/browser-runner-with-shell-selector.sh"
+if check_premerge_browser_production_contract \
+    "$TMP_DIR/browser-runner-with-shell-selector.sh"
+then
+    echo "production-build contract accepted a shell-only selector" >&2
+    exit 1
+fi
 
 run_group() {
     local suite="$1"
@@ -558,6 +679,7 @@ recovery_capture="$TMP_DIR/browser-recovery.args"
 closed_root_capture="$TMP_DIR/browser-closed-root"
 closed_vite_root_capture="$TMP_DIR/browser-closed-vite-root"
 closed_mode_capture="$TMP_DIR/browser-closed-mode"
+production_build_capture="$TMP_DIR/browser-production-build"
 fixture_shell_image="$TMP_DIR/shell.vfs.zst"
 runner_temp="$TMP_DIR/runner"
 printf 'shell image\n' > "$fixture_shell_image"
@@ -576,14 +698,34 @@ PATH="$FIXTURE/bin:$PATH" RUN_CAPTURE="$browser_capture" \
     CLOSED_ROOT_CAPTURE="$closed_root_capture" \
     CLOSED_VITE_ROOT_CAPTURE="$closed_vite_root_capture" \
     CLOSED_MODE_CAPTURE="$closed_mode_capture" \
+    PRODUCTION_BUILD_CAPTURE="$production_build_capture" \
     FIXTURE_SHELL_IMAGE="$fixture_shell_image" \
     RUNNER_TEMP="$runner_temp" \
     PREPARE_BROWSER_ASSETS=true \
+    VERIFY_BROWSER_PRODUCTION_BUILD=true \
     bash "$FIXTURE/scripts/ci-run-test-suite.sh" browser
 grep -Fxq materialized "$blocker_capture"
 grep -Fxq -- \
     "--already-materialized --fetch-only prepare-browser" \
     "$browser_capture"
+for production_binding in \
+    'inputs=<unset>' \
+    'vite_closed=<unset>' \
+    'playwright_closed=<unset>' \
+    'vite_mode=<unset>' \
+    'serve_dist=<unset>' \
+    'base=/kandelo/' \
+    'cors=https://wordpress-playground-cors-proxy.net/?'
+do
+    grep -Fxq "$production_binding" "$production_build_capture" || {
+        echo "ordinary production build lacks binding: $production_binding" >&2
+        exit 1
+    }
+done
+[ ! -e "$FIXTURE/apps/browser-demos/dist" ] || {
+    echo "browser suite retained its ordinary production build" >&2
+    exit 1
+}
 grep -Fq -- \
     "tsx scripts/recover-homebrew-bottle-mirror.ts --image $fixture_shell_image --out $FIXTURE/apps/browser-demos/public/homebrew-main-shell-bottles --report " \
     "$recovery_capture"
@@ -606,6 +748,30 @@ grep -Eq -- \
     echo "browser suite left its pre-merge Homebrew mirror behind" >&2
     exit 1
 }
+
+private_entry_error="$TMP_DIR/browser-private-entry.err"
+if PATH="$FIXTURE/bin:$PATH" RUN_CAPTURE="$browser_capture" \
+    BLOCKER_CAPTURE="$blocker_capture" \
+    RECOVERY_CAPTURE="$recovery_capture" \
+    CLOSED_ROOT_CAPTURE="$closed_root_capture" \
+    CLOSED_VITE_ROOT_CAPTURE="$closed_vite_root_capture" \
+    CLOSED_MODE_CAPTURE="$closed_mode_capture" \
+    PRODUCTION_BUILD_CAPTURE="$production_build_capture" \
+    PRODUCTION_BUILD_EXPOSE_PRIVATE_ENTRY=1 \
+    FIXTURE_SHELL_IMAGE="$fixture_shell_image" \
+    RUNNER_TEMP="$runner_temp" \
+    PREPARE_BROWSER_ASSETS=true \
+    VERIFY_BROWSER_PRODUCTION_BUILD=true \
+    bash "$FIXTURE/scripts/ci-run-test-suite.sh" browser \
+    > "$private_entry_error" 2>&1
+then
+    echo "ordinary production build accepted its private Homebrew page" >&2
+    exit 1
+fi
+grep -Fq \
+    'ordinary browser build exposed the private Homebrew acceptance page' \
+    "$private_entry_error"
+rm -rf -- "$FIXTURE/apps/browser-demos/dist"
 
 # Reproduce the cutover incident: the candidate resolved exact shell bytes,
 # but those bytes are not in the immutable canonical release yet. The browser
@@ -630,9 +796,11 @@ PATH="$FIXTURE/bin:$PATH" RUN_CAPTURE="$browser_capture" \
     CLOSED_ROOT_CAPTURE="$closed_root_capture" \
     CLOSED_VITE_ROOT_CAPTURE="$closed_vite_root_capture" \
     CLOSED_MODE_CAPTURE="$closed_mode_capture" \
+    PRODUCTION_BUILD_CAPTURE="$production_build_capture" \
     FIXTURE_SHELL_IMAGE="$fixture_shell_image" \
     RUNNER_TEMP="$runner_temp" \
     PREPARE_BROWSER_ASSETS=true \
+    VERIFY_BROWSER_PRODUCTION_BUILD=true \
     bash "$FIXTURE/scripts/ci-run-test-suite.sh" browser
 grep -Fq -- \
     "tsx scripts/recover-homebrew-bottle-mirror.ts --image $fixture_shell_image --out $FIXTURE/apps/browser-demos/public/homebrew-main-shell-bottles --report " \
@@ -659,6 +827,7 @@ if PATH="$FIXTURE/bin:$PATH" RUN_CAPTURE="$browser_capture" \
     BLOCKER_CAPTURE="$blocker_capture" \
     FIXTURE_SHELL_IMAGE="$fixture_shell_image" \
     PREPARE_BROWSER_ASSETS=true \
+    VERIFY_BROWSER_PRODUCTION_BUILD=true \
     bash "$FIXTURE/scripts/ci-run-test-suite.sh" browser \
         > "$TMP_DIR/browser-invalid-mirror-state.out" 2>&1; then
     echo "browser suite accepted malformed Homebrew mirror state" >&2
@@ -682,6 +851,7 @@ if PATH="$FIXTURE/bin:$PATH" RUN_CAPTURE="$browser_capture" \
     BLOCKER_CAPTURE="$blocker_capture" \
     FIXTURE_SHELL_IMAGE="$fixture_shell_image" \
     PREPARE_BROWSER_ASSETS=true \
+    VERIFY_BROWSER_PRODUCTION_BUILD=true \
     bash "$FIXTURE/scripts/ci-run-test-suite.sh" browser \
         > "$TMP_DIR/browser-open-resolved-mirror-state.out" 2>&1; then
     echo "browser suite accepted open transport for a resolved shell" >&2
@@ -695,6 +865,7 @@ if PATH="$FIXTURE/bin:$PATH" RUN_CAPTURE="$browser_capture" \
     BLOCKER_CAPTURE="$blocker_capture" \
     FIXTURE_SHELL_IMAGE="$fixture_shell_image" \
     PREPARE_BROWSER_ASSETS=true \
+    VERIFY_BROWSER_PRODUCTION_BUILD=true \
     bash "$FIXTURE/scripts/ci-run-test-suite.sh" browser \
         > "$TMP_DIR/browser-missing-mirror-state.out" 2>&1; then
     echo "browser suite accepted a prepared workspace without Homebrew mirror state" >&2
@@ -734,6 +905,22 @@ for workflow in \
         exit 1
     fi
 done
+
+grep -Fq \
+    'VERIFY_BROWSER_PRODUCTION_BUILD: ${{ matrix.suite == '\''browser'\'' }}' \
+    "$REPO_ROOT/.github/workflows/prepare-merge.yml" &&
+    grep -Fq \
+        'VERIFY_BROWSER_PRODUCTION_BUILD="$VERIFY_BROWSER_PRODUCTION_BUILD" \' \
+        "$REPO_ROOT/.github/workflows/prepare-merge.yml" || {
+    echo "prepare-merge does not request the ordinary browser production build" >&2
+    exit 1
+}
+if grep -Fq 'VERIFY_BROWSER_PRODUCTION_BUILD' \
+    "$REPO_ROOT/.github/workflows/staging-build.yml"
+then
+    echo "staging duplicated prepare-merge's ordinary browser production build" >&2
+    exit 1
+fi
 
 force_rebuild_workflow="$REPO_ROOT/.github/workflows/force-rebuild.yml"
 grep -Fq 'name: test-suite (${{ matrix.label }})' \
@@ -814,7 +1001,7 @@ if [ "${1:-}" = "build-deps" ]; then
         sha)
             [ "$arch" = wasm32 ] || exit 2
             case "${2:-}" in
-                kernel|local-fixture|local-one)
+                kernel|local-fixture|local-one|shell)
                     printf 'a%.0s' {1..64}
                     printf '\n'
                     exit 0
@@ -836,6 +1023,11 @@ if [ "${1:-}" = "build-deps" ]; then
                 local-one:bin/local-one.wasm)
                     printf '%s\n' \
                         '{"source_artifact":"bin/local-one.wasm","mirror_path":"local-one.wasm"}'
+                    exit 0
+                    ;;
+                shell:shell.vfs.zst)
+                    printf '%s\n' \
+                        '{"source_artifact":"shell.vfs.zst","mirror_path":"shell.vfs.zst"}'
                     exit 0
                     ;;
             esac
@@ -1234,6 +1426,183 @@ cmp \
     "$FIXTURE/binaries/programs/wasm32/shell.vfs.zst" \
     "$resolved_pack_extract/binaries/programs/wasm32/shell.vfs.zst"
 
+# A publication-blocked candidate is neither a public shell nor the legacy
+# source bridge. Its receipt, mirror state, local generation, and frozen
+# workspace must all name the same bytes and synthetic-merge tree.
+candidate_handoff="$TMP_DIR/candidate-shell-handoff"
+candidate_image="$candidate_handoff/main-shell.vfs.zst"
+candidate_report="$candidate_handoff/main-shell-report.json"
+candidate_receipt="$candidate_handoff/receipt.json"
+mkdir -p "$candidate_handoff"
+cp "$FIXTURE/binaries/programs/wasm32/shell.vfs.zst" "$candidate_image"
+jq -n '
+  {
+    schema: 1,
+    image: "main-shell.vfs.zst",
+    metadata: {
+      kandelo_repository: "Automattic/kandelo",
+      kandelo_abi: 42
+    },
+    package_deferred_trees: [{
+      state: "deferred",
+      package: {name: "homebrew-bootstrap"}
+    }],
+    bottle_mirror: {assets: [{name: "bash"}]}
+  }
+' > "$candidate_report"
+candidate_base="$(git -C "$FIXTURE" show -s --format=%P HEAD | awk '{print $1}')"
+candidate_head="$(git -C "$FIXTURE" show -s --format=%P HEAD | awk '{print $2}')"
+candidate_tree="$(git -C "$FIXTURE" rev-parse 'HEAD^{tree}')"
+candidate_image_sha="$(sha256_file "$candidate_image")"
+candidate_image_bytes="$(wc -c < "$candidate_image" | tr -d '[:space:]')"
+candidate_report_sha="$(sha256_file "$candidate_report")"
+candidate_report_bytes="$(wc -c < "$candidate_report" | tr -d '[:space:]')"
+jq -n \
+    --arg base "$candidate_base" \
+    --arg head "$candidate_head" \
+    --arg tree "$candidate_tree" \
+    --arg image_sha "$candidate_image_sha" \
+    --argjson image_bytes "$candidate_image_bytes" \
+    --arg report_sha "$candidate_report_sha" \
+    --argjson report_bytes "$candidate_report_bytes" '
+      {
+        schema: 1,
+        kind: "kandelo-ci-staging-shell-handoff",
+        repository: "Automattic/kandelo",
+        workflow: ".github/workflows/staging-build.yml",
+        validation_pull_request_number: 1160,
+        validation_base_sha: $base,
+        producer_head_sha: $head,
+        producer_tree_sha: $tree,
+        run_id: 30695913285,
+        artifact: {
+          id: 8817612908,
+          name: "homebrew-main-shell-closure",
+          archive_sha256:
+            "9b44b0137cf63345f128bd5ffa2307d47c637166fc6244d8823d533faf38e523",
+          bytes: 58453095
+        },
+        image: {sha256: $image_sha, bytes: $image_bytes},
+        report: {sha256: $report_sha, bytes: $report_bytes}
+      }
+    ' > "$candidate_receipt"
+candidate_identity="$FIXTURE/local-binaries/.kandelo-local-generations/wasm32/shell/$cache_key"
+candidate_member="$candidate_identity/staging/shell.vfs.zst"
+candidate_mirror="$FIXTURE/local-binaries/programs/wasm32/shell.vfs.zst"
+mkdir -p "$(dirname "$candidate_member")" "$(dirname "$candidate_mirror")"
+cp "$candidate_image" "$candidate_member"
+: > "$candidate_identity/.staging.publication-claimed"
+ln -s "$candidate_member" "$candidate_mirror"
+
+candidate_expected="$TMP_DIR/candidate-expected.json"
+candidate_blockers="$TMP_DIR/candidate-blockers.json"
+candidate_index="$TMP_DIR/candidate-index.toml"
+candidate_state="$TMP_DIR/candidate-mirror-state.json"
+jq -n '{abi_version: 42, entries: []}' > "$candidate_expected"
+jq -n '{
+  abi_version: 42,
+  entries: [{package: "shell", blocker_chain: ["shell"]}]
+}' > "$candidate_blockers"
+printf '%s\n' 'abi_version = 42' > "$candidate_index"
+(
+    cd "$FIXTURE"
+    FIXTURE_SHELL_IMAGE="$candidate_member" \
+        bash scripts/ci-homebrew-browser-mirror-state.sh create \
+            "$candidate_expected" "$candidate_blockers" \
+            "$candidate_index" https://invalid.example/index.toml \
+            "$candidate_member" "$candidate_state" "$candidate_receipt"
+    FIXTURE_SHELL_IMAGE="$candidate_member" \
+        bash scripts/ci-homebrew-browser-mirror-state.sh validate consumer \
+            "$candidate_state" "$candidate_blockers" \
+            "$candidate_member" "$candidate_receipt"
+)
+candidate_archive="$TMP_DIR/candidate-workspace.tar.zst"
+(
+    cd "$FIXTURE"
+    PATH="$FIXTURE/bin:$PATH" \
+    WASM_POSIX_BINARY_CACHE_ROOT="$source_cache" \
+        bash scripts/pack-ci-test-workspace.sh \
+            --publication-blockers "$candidate_blockers" \
+            --homebrew-browser-mirror-state "$candidate_state" \
+            --staging-shell-handoff "$candidate_handoff" \
+            "$candidate_archive"
+)
+candidate_extract="$TMP_DIR/candidate-workspace"
+mkdir -p "$candidate_extract"
+tar --zstd -xf "$candidate_archive" -C "$candidate_extract"
+for authority in \
+    .ci-homebrew-browser-mirror-state.json \
+    .ci-staging-shell-receipt.json \
+    .ci-staging-shell-report.json; do
+    [ -f "$candidate_extract/$authority" ] &&
+        [ ! -L "$candidate_extract/$authority" ] || {
+        echo "candidate workspace omitted regular authority $authority" >&2
+        exit 1
+    }
+done
+cmp "$candidate_receipt" \
+    "$candidate_extract/.ci-staging-shell-receipt.json"
+cmp "$candidate_report" \
+    "$candidate_extract/.ci-staging-shell-report.json"
+cmp "$candidate_image" \
+    "$candidate_extract/local-binaries/programs/wasm32/shell.vfs.zst"
+
+candidate_plain_state="$TMP_DIR/candidate-plain-state.json"
+(
+    cd "$FIXTURE"
+    bash scripts/ci-homebrew-browser-mirror-state.sh create \
+        "$candidate_expected" "$candidate_blockers" \
+        "$candidate_index" https://invalid.example/index.toml \
+        - "$candidate_plain_state"
+)
+if (
+    cd "$FIXTURE"
+    PATH="$FIXTURE/bin:$PATH" \
+    WASM_POSIX_BINARY_CACHE_ROOT="$source_cache" \
+        bash scripts/pack-ci-test-workspace.sh \
+            --publication-blockers "$candidate_blockers" \
+            --homebrew-browser-mirror-state "$candidate_plain_state" \
+            --staging-shell-handoff "$candidate_handoff" \
+            "$TMP_DIR/rejected-downgraded-candidate.tar.zst"
+) > "$TMP_DIR/rejected-downgraded-candidate.out" 2>&1; then
+    echo "candidate workspace accepted a downgrade to the source bridge" >&2
+    exit 1
+fi
+grep -Fq 'staging handoff requires candidate mirror state' \
+    "$TMP_DIR/rejected-downgraded-candidate.out"
+if (
+    cd "$FIXTURE"
+    PATH="$FIXTURE/bin:$PATH" \
+    WASM_POSIX_BINARY_CACHE_ROOT="$source_cache" \
+        bash scripts/pack-ci-test-workspace.sh \
+            --publication-blockers "$candidate_blockers" \
+            --homebrew-browser-mirror-state "$candidate_state" \
+            "$TMP_DIR/rejected-missing-candidate.tar.zst"
+) > "$TMP_DIR/rejected-missing-candidate.out" 2>&1; then
+    echo "candidate workspace accepted missing handoff authority" >&2
+    exit 1
+fi
+grep -Fq 'candidate mirror state lacks its staging handoff' \
+    "$TMP_DIR/rejected-missing-candidate.out"
+printf 'substituted local shell\n' > "$candidate_member"
+if (
+    cd "$FIXTURE"
+    PATH="$FIXTURE/bin:$PATH" \
+    WASM_POSIX_BINARY_CACHE_ROOT="$source_cache" \
+        bash scripts/pack-ci-test-workspace.sh \
+            --publication-blockers "$candidate_blockers" \
+            --homebrew-browser-mirror-state "$candidate_state" \
+            --staging-shell-handoff "$candidate_handoff" \
+            "$TMP_DIR/rejected-substituted-candidate.tar.zst"
+) > "$TMP_DIR/rejected-substituted-candidate.out" 2>&1; then
+    echo "candidate workspace accepted substituted local shell bytes" >&2
+    exit 1
+fi
+grep -Fq 'candidate shell bytes do not match state' \
+    "$TMP_DIR/rejected-substituted-candidate.out"
+rm -rf "$candidate_identity"
+rm -f "$candidate_mirror"
+
 if [ ! -x "$pack_extract/target/fixture-host/release/xtask" ]; then
     echo "pack-ci-test-workspace.sh: package resolver lost its executable mode" >&2
     exit 1
@@ -1435,6 +1804,7 @@ PATH="$FIXTURE/bin:$PATH" \
     FIXTURE_SHELL_IMAGE="$(realpath "$pack_extract/binaries/programs/wasm32/shell.vfs.zst")" \
     RUNNER_TEMP="$relocated_runner_temp" \
     PREPARE_BROWSER_ASSETS=true \
+    VERIFY_BROWSER_PRODUCTION_BUILD=true \
     WASM_POSIX_BINARY_CACHE_ROOT="$TMP_DIR/wrong-relocated-cache" \
     WASM_POSIX_XTASK_BIN="$TMP_DIR/wrong-relocated-xtask" \
     bash "$pack_extract/scripts/ci-run-test-suite.sh" browser
@@ -1515,15 +1885,31 @@ for workflow in \
         echo "$(basename "$workflow"): prepared workspace omits the publication blocker report" >&2
         exit 1
     }
-    grep -Fq 'scripts/ci-homebrew-browser-mirror-state.sh create \' "$workflow" || {
-        echo "$(basename "$workflow"): candidate shell lacks canonical publication comparison" >&2
-        exit 1
-    }
-    if ! grep -F -A1 'bash scripts/dev-shell.sh \' "$workflow" |
-        grep -Fq 'bash scripts/ci-homebrew-browser-mirror-state.sh create \'; then
-        echo "$(basename "$workflow"): browser mirror authority uses ambient runner tools" >&2
-        exit 1
-    fi
+    case "$(basename "$workflow")" in
+        prepare-merge.yml)
+            grep -Fq 'state_args=(' "$workflow" &&
+                grep -Fq 'scripts/ci-homebrew-browser-mirror-state.sh \' \
+                    "$workflow" &&
+                grep -Fq 'bash scripts/dev-shell.sh bash \' "$workflow" || {
+                echo "$(basename "$workflow"): candidate shell lacks canonical publication comparison" >&2
+                exit 1
+            }
+            ;;
+        *)
+            grep -Fq \
+                'scripts/ci-homebrew-browser-mirror-state.sh create \' \
+                "$workflow" || {
+                echo "$(basename "$workflow"): candidate shell lacks canonical publication comparison" >&2
+                exit 1
+            }
+            if ! grep -F -A1 'bash scripts/dev-shell.sh \' "$workflow" |
+                grep -Fq \
+                    'bash scripts/ci-homebrew-browser-mirror-state.sh create \'; then
+                echo "$(basename "$workflow"): browser mirror authority uses ambient runner tools" >&2
+                exit 1
+            fi
+            ;;
+    esac
     grep -Fq 'scripts/materialize-ci-canonical-package-index.sh \' "$workflow" || {
         echo "$(basename "$workflow"): candidate shell bypasses authenticated canonical index materialization" >&2
         exit 1
@@ -1771,6 +2157,65 @@ grep -Fq \
     'https://github.com/Automattic/kandelo/releases/download/binaries-abi-v42/index.toml' \
     "$parser_capture" || {
     echo "canonical index parser did not receive the release-bound URL" >&2
+    exit 1
+}
+
+authenticated_canonical="$TMP_DIR/authenticated-canonical-index.toml"
+printf '%s\n' \
+    'abi_version = 42' \
+    'generated_at = "trusted"' \
+    'generator = "trusted predecessor"' > "$authenticated_canonical"
+authenticated_out="$TMP_DIR/materialized-authenticated-index.toml"
+STATE_MODE=uncertain \
+CANONICAL_INDEX_STATE_SCRIPT="$canonical_state_stub" \
+WASM_POSIX_XTASK_BIN="$canonical_parser_stub" \
+PARSER_CAPTURE="$parser_capture" \
+GITHUB_REPOSITORY=Automattic/kandelo \
+    bash "$REPO_ROOT/scripts/materialize-ci-canonical-package-index.sh" \
+        binaries-abi-v42 42 "$authenticated_out" \
+        --authenticated-snapshot "$authenticated_canonical"
+cmp "$authenticated_canonical" "$authenticated_out" || {
+    echo "canonical index materializer changed authenticated snapshot bytes" >&2
+    exit 1
+}
+
+ln -s "$authenticated_canonical" \
+    "$TMP_DIR/symlinked-authenticated-canonical-index.toml"
+if WASM_POSIX_XTASK_BIN="$canonical_parser_stub" \
+    PARSER_CAPTURE="$parser_capture" \
+    GITHUB_REPOSITORY=Automattic/kandelo \
+    bash "$REPO_ROOT/scripts/materialize-ci-canonical-package-index.sh" \
+        binaries-abi-v42 42 \
+        "$TMP_DIR/rejected-symlinked-authenticated-index.toml" \
+        --authenticated-snapshot \
+        "$TMP_DIR/symlinked-authenticated-canonical-index.toml" \
+        >"$TMP_DIR/rejected-symlinked-authenticated.out" 2>&1; then
+    echo "canonical index materializer accepted a symlinked snapshot" >&2
+    exit 1
+fi
+
+printf '%s\n' \
+    'abi_version = 43' \
+    'generated_at = "wrong ABI"' \
+    'generator = "trusted predecessor"' \
+    > "$TMP_DIR/wrong-abi-authenticated-index.toml"
+printf 'preserve-on-parser-failure\n' \
+    > "$TMP_DIR/rejected-wrong-abi-authenticated-index.toml"
+if WASM_POSIX_XTASK_BIN="$canonical_parser_stub" \
+    PARSER_CAPTURE="$parser_capture" \
+    GITHUB_REPOSITORY=Automattic/kandelo \
+    bash "$REPO_ROOT/scripts/materialize-ci-canonical-package-index.sh" \
+        binaries-abi-v42 42 \
+        "$TMP_DIR/rejected-wrong-abi-authenticated-index.toml" \
+        --authenticated-snapshot \
+        "$TMP_DIR/wrong-abi-authenticated-index.toml" \
+        >"$TMP_DIR/rejected-wrong-abi-authenticated.out" 2>&1; then
+    echo "canonical index materializer accepted a wrong-ABI snapshot" >&2
+    exit 1
+fi
+grep -Fqx 'preserve-on-parser-failure' \
+    "$TMP_DIR/rejected-wrong-abi-authenticated-index.toml" || {
+    echo "canonical index parser failure replaced the prior output" >&2
     exit 1
 }
 

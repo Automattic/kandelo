@@ -38,6 +38,9 @@ RUN_SH="$REPO_ROOT/run.sh"
 LOCAL_SHELL_INSTALLER="$REPO_ROOT/scripts/install-local-shell-artifact.sh"
 LOCAL_SHELL_OVERRIDE="$REPO_ROOT/scripts/activate-local-shell-build-override.sh"
 CI_BLOCKER_MATERIALIZER="$REPO_ROOT/scripts/materialize-ci-publication-blockers.sh"
+CI_STAGING_SHELL_VERIFIER="$REPO_ROOT/scripts/verify-ci-staging-shell-handoff.sh"
+CI_BROWSER_MIRROR_STATE="$REPO_ROOT/scripts/ci-homebrew-browser-mirror-state.sh"
+CI_WORKSPACE_PACKER="$REPO_ROOT/scripts/pack-ci-test-workspace.sh"
 BUILD_PROGRAMS="$REPO_ROOT/scripts/build-programs.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
@@ -202,6 +205,127 @@ expect_closed_browser_acceptance_contract_rejected() {
   fi
 }
 
+check_ordered_staging_shell_contract() {
+  local workflow="$1"
+  local test_gate prerequisites proof gate
+  test_gate="$(sed -n \
+    '/^  test-gate:/,/^  homebrew-main-shell-prerequisites:/p' \
+    "$workflow")"
+  prerequisites="$(sed -n \
+    '/^  homebrew-main-shell-prerequisites:/,/^  homebrew-main-shell-proof:/p' \
+    "$workflow")"
+  proof="$(sed -n \
+    '/^  homebrew-main-shell-proof:/,/^  homebrew-main-shell-gate:/p' \
+    "$workflow")"
+  gate="$(sed -n \
+    '/^  homebrew-main-shell-gate:/,/^  # publish \/ generate-index/p' \
+    "$workflow")"
+
+  grep -Fq 'ready_for_review' "$workflow" &&
+    grep -Fq \
+      'staged_matrix: ${{ steps.compute.outputs.staged_matrix }}' \
+      "$workflow" &&
+    grep -Fq 'echo "staged_matrix=$staged_matrix" >> "$GITHUB_OUTPUT"' \
+      "$workflow" &&
+    grep -Fq 'package-release-lifecycle.sh seal-publish' \
+      <<<"$test_gate" &&
+    grep -Fq -- \
+      '--target-commit '\''${{ github.event.pull_request.head.sha }}'\''' \
+      <<<"$test_gate" &&
+    grep -Fq 'needs: [change-scope, preflight, test-gate]' \
+      <<<"$prerequisites" &&
+    grep -Fq '[ "$TEST_GATE_RESULT" = success ]' \
+      <<<"$prerequisites" &&
+    grep -Fq \
+      'expected_tag="pr-${{ github.event.pull_request.number }}-staging-run-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}"' \
+      <<<"$prerequisites" &&
+    grep -Fq '[ "$TARGET_TAG" = "$expected_tag" ]' \
+      <<<"$prerequisites" &&
+    grep -Fq 'uses: ./.github/workflows/homebrew-main-shell-ci.yml' \
+      <<<"$proof" &&
+    grep -Fq 'always() &&' <<<"$proof" &&
+    grep -Fq 'caller_event_name: pull_request' <<<"$proof" &&
+    grep -Fq \
+      'pull_request_head_sha: ${{ github.event.pull_request.head.sha }}' \
+      <<<"$proof" &&
+    grep -Fq \
+      "staging_required: \${{ needs.change-scope.outputs.package_staging_required == 'true' }}" \
+      <<<"$proof" &&
+    grep -Fq 'needs.preflight.outputs.target_tag' <<<"$proof" &&
+    grep -Fq 'needs.preflight.outputs.staged_matrix' <<<"$proof" &&
+    grep -Fq 'name: exact current lazy shell (Node + Chromium)' \
+      <<<"$gate" &&
+    grep -Fq 'if: |' <<<"$gate" &&
+    grep -Fq 'always() &&' <<<"$gate" &&
+    grep -Fq '[ "$PREREQUISITES_RESULT" = success ]' <<<"$gate" &&
+    grep -Fq '[ "$PROOF_RESULT" = success ]' <<<"$gate"
+}
+
+expect_ordered_staging_shell_contract_rejected() {
+  local workflow="$1"
+  if check_ordered_staging_shell_contract "$workflow"; then
+    fail "ordered staging-shell mutation unexpectedly passed: $workflow"
+  fi
+}
+
+check_required_staging_verifier_contract() {
+  local workflow="$1" generation
+  generation="$(sed -n \
+    '/- name: Select one verified package generation/,/- name: Resolve exact shell browser inputs/p' \
+    "$workflow")"
+
+  grep -Fq \
+      'expected_tag="pr-${pr_number}-staging-run-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}"' \
+      <<<"$generation" &&
+    grep -Fq '[ "$STAGING_TAG" = "$expected_tag" ]' \
+      <<<"$generation" &&
+    grep -Fq 'package-release-lifecycle.sh \' <<<"$generation" &&
+    grep -Fq 'verify-immutable \' <<<"$generation" &&
+    grep -Fq -- '--tag "$target_tag" \' <<<"$generation" &&
+    grep -Fq -- '--target-commit "$pr_head" \' <<<"$generation" &&
+    grep -Fq -- '--title "$target_tag" \' <<<"$generation" &&
+    grep -Fq -- '--body-file "$release_body" \' <<<"$generation" &&
+    grep -Fq -- '--prerelease true' <<<"$generation" &&
+    grep -Fq "printf '%s\\n' \"\$STAGED_MATRIX\"" <<<"$generation" &&
+    grep -Fq 'split-staging-package-ledger.sh \' <<<"$generation" &&
+    grep -Fq -- '--selected-matrix "$SELECTED_MATRIX" \' \
+      <<<"$generation" &&
+    grep -Fq -- '--selected-output "$TARGET_EXPECTED" \' \
+      <<<"$generation" &&
+    grep -Fq -- '--complement-output "$CANONICAL_EXPECTED"' \
+      <<<"$generation" &&
+    grep -Fq -- '--expected-ledger "$TARGET_EXPECTED" \' \
+      <<<"$generation" &&
+    grep -Fq -- '--materialize \' <<<"$generation" &&
+    [ "$(grep -Fc -- '--materialize \' <<<"$generation")" -eq 1 ] &&
+    grep -Fq -- '--expected-ledger "$CANONICAL_EXPECTED" \' \
+      <<<"$generation" &&
+    grep -Fq '"$xtask" staging-reuse compose \' <<<"$generation" &&
+    grep -Fq -- '--base-snapshot "$base_snapshot" \' \
+      <<<"$generation" &&
+    grep -Fq -- '--overlay-snapshot "$TARGET_SNAPSHOT/snapshot.json" \' \
+      <<<"$generation" &&
+    grep -Fq -- '--complete-expected-ledger "$EXPECTED" \' \
+      <<<"$generation" &&
+    grep -Fq -- '-u HOMEBREW_DOCKER_REGISTRY_TOKEN \' \
+      <<<"$generation" &&
+    grep -Fq -- '-u ACTIONS_RUNTIME_TOKEN \' <<<"$generation" &&
+    grep -Fq 'selected_url="file://${frozen_index}"' <<<"$generation" &&
+    grep -Fq 'case "$STAGING_REQUIRED" in' <<<"$generation" &&
+    grep -Fq \
+      'echo "::error::non-staging call supplied release authority"' \
+      <<<"$generation" &&
+    ! grep -Fq '/releases?per_page=100' <<<"$generation" &&
+    ! grep -Fq 'using canonical/source fallback' <<<"$generation"
+}
+
+expect_required_staging_verifier_contract_rejected() {
+  local workflow="$1"
+  if check_required_staging_verifier_contract "$workflow"; then
+    fail "required staging verifier mutation unexpectedly passed: $workflow"
+  fi
+}
+
 command -v git >/dev/null 2>&1 || fail "git is required"
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 command -v node >/dev/null 2>&1 || fail "node is required"
@@ -210,11 +334,30 @@ command -v python3 >/dev/null 2>&1 || fail "python3 is required"
 bash "$REPO_ROOT/.github/scripts/test-homebrew-main-shell-change-scope.sh" ||
   fail "main-shell change-scope contract tests failed"
 
+bash "$REPO_ROOT/.github/scripts/test-split-staging-package-ledger.sh" ||
+  fail "staging package-ledger partition tests failed"
+
 python3 "$FINALIZER_TEST" ||
   fail "main-shell release finalizer contract tests failed"
 
 SOURCE_ROOT_COUNT="$(jq -er '.packages | length' "$SOURCE_LOCK")"
 SOURCE_CLOSURE_COUNT="$(jq -er '.formula_closure | length' "$SOURCE_LOCK")"
+RUNTIME_FORMULA_COUNT="$(jq -er '.formula_order | length' "$RUNTIME_SUPPORT")"
+AUDITED_FORMULA_COUNT="$(jq -er '
+  [.availability.reusable_public_abi42,
+   .availability.requires_rebuild,
+   .availability.missing_metadata,
+   .availability.can_be_deferred] | add | length
+' "$RUNTIME_SUPPORT")"
+ADDITIONAL_FORMULA_COUNT="$(jq -er \
+  '.additional_formula_order | length' "$RUNTIME_SUPPORT")"
+TOTAL_FORMULA_COUNT="$((SOURCE_CLOSURE_COUNT + ADDITIONAL_FORMULA_COUNT))"
+EXPECTED_SHAPE_SUMMARY="$SOURCE_ROOT_COUNT reviewed migration roots, "
+EXPECTED_SHAPE_SUMMARY+="$SOURCE_CLOSURE_COUNT base Formulae, "
+EXPECTED_SHAPE_SUMMARY+="$RUNTIME_FORMULA_COUNT runtime Formulae, and "
+EXPECTED_SHAPE_SUMMARY+="$AUDITED_FORMULA_COUNT audited Formulae; "
+EXPECTED_SHAPE_SUMMARY+="the runtime adds $ADDITIONAL_FORMULA_COUNT beyond "
+EXPECTED_SHAPE_SUMMARY+="the base, yielding $TOTAL_FORMULA_COUNT total Formulae"
 
 main_shell_trigger_block="$(
   awk '
@@ -223,14 +366,81 @@ main_shell_trigger_block="$(
     inside { print }
   ' "$WORKFLOW"
 )"
-grep -Fxq '  pull_request:' <<<"$main_shell_trigger_block" &&
+grep -Fxq '  workflow_call:' <<<"$main_shell_trigger_block" &&
+  ! grep -Fxq '  pull_request:' <<<"$main_shell_trigger_block" &&
   grep -Fxq '  push:' <<<"$main_shell_trigger_block" &&
   grep -Fxq '    branches: [main]' <<<"$main_shell_trigger_block" ||
-  fail "Homebrew main-shell CI must validate pull requests and every main push"
+  fail "Homebrew main-shell CI must be called after PR staging and validate every main push"
 if grep -Eq '^[[:space:]]+(paths|paths-ignore):' \
   <<<"$main_shell_trigger_block"; then
-  fail "temporary source-rootfs CI must not filter pull requests or main pushes by path"
+  fail "Homebrew main-shell CI must not filter reusable calls or main pushes by path"
 fi
+for workflow_input in \
+  caller_event_name \
+  pull_request_number \
+  pull_request_base_sha \
+  pull_request_head_sha \
+  staging_required \
+  staging_tag \
+  staged_matrix
+do
+  grep -Fq "      $workflow_input:" <<<"$main_shell_trigger_block" ||
+    fail "main-shell workflow_call omits $workflow_input"
+done
+
+check_ordered_staging_shell_contract "$STAGING_WORKFLOW" ||
+  fail "staging must seal one exact attempt before its reusable shell proof"
+sed '/ready_for_review/d' "$STAGING_WORKFLOW" \
+  >"$TMP_ROOT/staging-shell-no-ready-rerun.yml"
+expect_ordered_staging_shell_contract_rejected \
+  "$TMP_ROOT/staging-shell-no-ready-rerun.yml"
+sed '/package-release-lifecycle.sh seal-publish/d' "$STAGING_WORKFLOW" \
+  >"$TMP_ROOT/staging-shell-no-seal.yml"
+expect_ordered_staging_shell_contract_rejected \
+  "$TMP_ROOT/staging-shell-no-seal.yml"
+sed 's/\[ "$TEST_GATE_RESULT" = success \]/[ "$TEST_GATE_RESULT" = skipped ]/' \
+  "$STAGING_WORKFLOW" >"$TMP_ROOT/staging-shell-accepts-skipped-producer.yml"
+expect_ordered_staging_shell_contract_rejected \
+  "$TMP_ROOT/staging-shell-accepts-skipped-producer.yml"
+sed '/uses: \.\/\.github\/workflows\/homebrew-main-shell-ci.yml/d' \
+  "$STAGING_WORKFLOW" >"$TMP_ROOT/staging-shell-no-reusable-call.yml"
+expect_ordered_staging_shell_contract_rejected \
+  "$TMP_ROOT/staging-shell-no-reusable-call.yml"
+sed '/pull_request_head_sha:/d' "$STAGING_WORKFLOW" \
+  >"$TMP_ROOT/staging-shell-no-explicit-head.yml"
+expect_ordered_staging_shell_contract_rejected \
+  "$TMP_ROOT/staging-shell-no-explicit-head.yml"
+sed '/staged_matrix:/d' "$STAGING_WORKFLOW" \
+  >"$TMP_ROOT/staging-shell-no-exact-matrix.yml"
+expect_ordered_staging_shell_contract_rejected \
+  "$TMP_ROOT/staging-shell-no-exact-matrix.yml"
+sed '/\[ "$PROOF_RESULT" = success \]/d' "$STAGING_WORKFLOW" \
+  >"$TMP_ROOT/staging-shell-aggregate-drops-proof.yml"
+expect_ordered_staging_shell_contract_rejected \
+  "$TMP_ROOT/staging-shell-aggregate-drops-proof.yml"
+
+check_required_staging_verifier_contract "$WORKFLOW" ||
+  fail "main-shell CI must verify its exact immutable staging authority"
+sed '/verify-immutable \\/d' "$WORKFLOW" \
+  >"$TMP_ROOT/main-shell-no-immutable-verifier.yml"
+expect_required_staging_verifier_contract_rejected \
+  "$TMP_ROOT/main-shell-no-immutable-verifier.yml"
+sed '/split-staging-package-ledger.sh \\/d' "$WORKFLOW" \
+  >"$TMP_ROOT/main-shell-no-ledger-partition.yml"
+expect_required_staging_verifier_contract_rejected \
+  "$TMP_ROOT/main-shell-no-ledger-partition.yml"
+sed '/--materialize \\/d' "$WORKFLOW" \
+  >"$TMP_ROOT/main-shell-no-selected-archive-proof.yml"
+expect_required_staging_verifier_contract_rejected \
+  "$TMP_ROOT/main-shell-no-selected-archive-proof.yml"
+sed '/"$xtask" staging-reuse compose \\/d' "$WORKFLOW" \
+  >"$TMP_ROOT/main-shell-no-exact-union.yml"
+expect_required_staging_verifier_contract_rejected \
+  "$TMP_ROOT/main-shell-no-exact-union.yml"
+sed '/-u ACTIONS_RUNTIME_TOKEN \\/d' "$WORKFLOW" \
+  >"$TMP_ROOT/main-shell-compose-keeps-runtime-token.yml"
+expect_required_staging_verifier_contract_rejected \
+  "$TMP_ROOT/main-shell-compose-keeps-runtime-token.yml"
 
 setup_node_line="$(grep -n 'uses: actions/setup-node@' "$WORKFLOW" | cut -d: -f1 | head -1)"
 checker_line="$(grep -n 'node scripts/check-homebrew-main-shell-brewfile.mjs' "$WORKFLOW" | cut -d: -f1 | head -1)"
@@ -279,22 +489,34 @@ expect_closed_browser_acceptance_contract_rejected \
   "$TMP_ROOT/closed-browser-wrong-build-mode.yml"
 
 generation_block="$(sed -n \
-  '/- name: Select one verified package generation/,/- name: Resolve current direct browser bundling inputs/p' \
+  '/- name: Select one verified package generation/,/- name: Resolve exact shell browser inputs/p' \
   "$WORKFLOW")"
 grep -Fq 'GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}' <<<"$generation_block" ||
   fail "package-generation validation needs only the workflow's read token"
 grep -Fq 'staging-reuse expected \' <<<"$generation_block" &&
+  grep -Fq 'split-staging-package-ledger.sh \' <<<"$generation_block" &&
   grep -Fq 'validate-staging-release.sh \' <<<"$generation_block" &&
-  grep -Fq -- '--mode current \' <<<"$generation_block" ||
-  fail "main-shell CI must accept only a complete current PR package generation"
-grep -Fq 'index-candidate seed \' <<<"$generation_block" &&
+  grep -Fq -- '--mode current \' <<<"$generation_block" &&
+  grep -Fq 'staging-reuse compose \' <<<"$generation_block" ||
+  fail "main-shell CI must compose exact staged rows with the canonical complement"
+grep -Fq -- '--complete-expected-ledger "$EXPECTED" \' \
+    <<<"$generation_block" &&
   grep -Fq 'selected_url="file://${frozen_index}"' <<<"$generation_block" ||
-  fail "main-shell CI must freeze the validated mutable staging index locally"
+  fail "main-shell CI must freeze the exact disjoint release union locally"
+check_required_staging_verifier_contract "$WORKFLOW" ||
+  fail "main-shell CI must require its exact sealed staging attempt"
 grep -Fq 'env -u GH_TOKEN -u GITHUB_TOKEN \' <<<"$generation_block" &&
-  grep -Fq -- '-u HOMEBREW_GITHUB_PACKAGES_TOKEN \' <<<"$generation_block" ||
+  grep -Fq -- '-u HOMEBREW_GITHUB_PACKAGES_TOKEN \' <<<"$generation_block" &&
+  grep -Fq -- '-u HOMEBREW_DOCKER_REGISTRY_TOKEN \' \
+    <<<"$generation_block" &&
+  grep -Fq -- '-u ACTIONS_ID_TOKEN_REQUEST_TOKEN \' \
+    <<<"$generation_block" &&
+  grep -Fq -- '-u ACTIONS_RUNTIME_TOKEN \' <<<"$generation_block" ||
   fail "local index freezing must run without GitHub credentials"
-grep -Fq 'selected_url="$canonical_url"' <<<"$generation_block" ||
-  fail "main-shell CI must retain the canonical/source-build fallback"
+grep -Fq 'selected_url="$canonical_url"' <<<"$generation_block" &&
+  grep -Fq '[ "$STAGING_TAG" = not-required ]' \
+    <<<"$generation_block" ||
+  fail "main-shell CI must retain the canonical package generation"
 grep -Fq 'echo "WASM_POSIX_BINARY_INDEX_URL=$selected_url" >> "$GITHUB_ENV"' \
   <<<"$generation_block" ||
   fail "main-shell CI must pass the selected generation through the resolver contract"
@@ -335,14 +557,14 @@ check_bootstrap_materialization_contract() {
     grep -Fq \
       '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
       <<<"$block" &&
-    grep -Fq \
-      'bash scripts/fetch-binaries.sh --package "$bootstrap_package"' \
-      <<<"$block" ||
+    [ "$(grep -Fc -- \
+      '--fetch-only --package "$bootstrap_package"' \
+      <<<"$block")" -eq 1 ] &&
+    ! grep -Fq -- '--force-source-build' <<<"$block" ||
     return 1
-  ! grep -Fq -- '--fetch-only' <<<"$block" || return 1
 
-  materialize_line="$(grep -nF \
-    'bash scripts/fetch-binaries.sh --package "$bootstrap_package"' \
+  materialize_line="$(grep -nF -- \
+    '--fetch-only --package "$bootstrap_package"' \
     <<<"$block" | cut -d: -f1)"
   mapfile -t resolve_lines < <(
     grep -nF 'bash scripts/resolve-binary.sh \' <<<"$block" |
@@ -355,6 +577,27 @@ check_bootstrap_materialization_contract() {
   done
 }
 
+check_browser_fetch_only_contract() {
+  local workflow="$1"
+  local block
+  local assignment_count
+  block="$(sed -n \
+    '/- name: Resolve exact shell browser inputs/,/- name: Install the candidate/p' \
+    "$workflow")"
+  assignment_count="$(grep -Ec \
+    '^[[:space:]]*fetch_args=\(' <<<"$block")"
+
+  [ "$assignment_count" -eq 1 ] &&
+    [ "$(grep -Fc 'fetch_args=(--fetch-only)' <<<"$block")" -eq 1 ] &&
+    [ "$(grep -Fc \
+      'bash scripts/fetch-binaries.sh "${fetch_args[@]}"' \
+      <<<"$block")" -eq 1 ] &&
+    ! grep -Fq -- '--force-source-build' <<<"$block" &&
+    ! grep -Eq \
+      '(^|[[:space:]])(unset[[:space:]]+fetch_args|fetch_args\[[^]]+\]=)' \
+      <<<"$block"
+}
+
 bottle_candidate_workflow_block="$(sed -n \
   '/- name: Build the exact lazy shell from public bottles/,/- name: Select the source shell for dependent browser VFS builds/p' \
   "$WORKFLOW")"
@@ -365,7 +608,7 @@ check_bootstrap_materialization_contract "$bottle_candidate_workflow_block" ||
 # structural check fails closed instead of passing because another nearby
 # package fetch or environment assignment happens to contain similar text.
 bootstrap_without_index="$(
-  grep -Fv \
+  grep -Fv -- \
     '"WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" \' \
     <<<"$bottle_candidate_workflow_block"
 )"
@@ -381,18 +624,51 @@ if check_bootstrap_materialization_contract "$bootstrap_without_cache"; then
   fail "bootstrap materialization contract accepted a missing isolated cache"
 fi
 bootstrap_after_resolution="$(
-  grep -Fv \
-    'bash scripts/fetch-binaries.sh --package "$bootstrap_package"' \
+  grep -Fv -- \
+    '--fetch-only --package "$bootstrap_package"' \
     <<<"$bottle_candidate_workflow_block"
   printf '%s\n' \
-    '          bash scripts/fetch-binaries.sh --package "$bootstrap_package"'
+    '              --fetch-only --package "$bootstrap_package"'
 )"
 if check_bootstrap_materialization_contract "$bootstrap_after_resolution"; then
   fail "bootstrap materialization contract accepted resolution before fetch"
 fi
 
+check_browser_fetch_only_contract "$WORKFLOW" ||
+  fail "browser support inputs must remain fetch-only"
+sed 's/fetch_args=(--fetch-only)/fetch_args=()/' \
+  "$WORKFLOW" >"$TMP_ROOT/browser-fetch-only-removed.yml"
+if check_browser_fetch_only_contract \
+  "$TMP_ROOT/browser-fetch-only-removed.yml"
+then
+  fail "browser support contract accepted removed fetch-only resolution"
+fi
+sed '/fetch_args=(--fetch-only)/a\          fetch_args=()' \
+  "$WORKFLOW" >"$TMP_ROOT/browser-fetch-only-overridden.yml"
+if check_browser_fetch_only_contract \
+  "$TMP_ROOT/browser-fetch-only-overridden.yml"
+then
+  fail "browser support contract accepted an overridden fetch-only vector"
+fi
+
+browser_support_block="$(sed -n \
+  '/- name: Resolve exact shell browser inputs/,/- name: Install the candidate/p' \
+  "$WORKFLOW")"
+for browser_graph_binding in \
+  '--html-entry index.html' \
+  '--html-entry pages/homebrew-vfs-test/index.html' \
+  '--local-capability kernel-wasm' \
+  '--package-capability rootfs-vfs=rootfs'
+do
+  grep -Fq -- "$browser_graph_binding" <<<"$browser_support_block" ||
+    fail "browser support graph lacks binding: $browser_graph_binding"
+done
+if grep -Fq -- '--include-package rootfs' <<<"$browser_support_block"; then
+  fail "rootfs must be selected through its discovered virtual capability"
+fi
+
 grep -Fq 'GH_TOKEN:' <<<"$(sed -n \
-  '/- name: Resolve current direct browser bundling inputs/,/- name: Build the exact lazy shell/p' \
+  '/- name: Resolve exact shell browser inputs/,/- name: Build the exact lazy shell/p' \
   "$WORKFLOW")" &&
   fail "browser package resolution must not retain the staging-validation token"
 
@@ -464,7 +740,7 @@ grep -Fq 'test -z "$(git -C "$GITHUB_WORKSPACE/libc/musl" status --porcelain=v1 
 grep -Fq 'GH_TOKEN: ${{ github.token }}' "$WORKFLOW" &&
   fail "main-shell proof must not expose the implicit workflow token to package composition"
 candidate_build_workflow_block="$(sed -n \
-  '/- name: Build the exact lazy shell from public bottles/,/- name: Resolve current direct browser bundling inputs/p' \
+  '/- name: Build the exact lazy shell from public bottles/,/- name: Resolve exact shell browser inputs/p' \
   "$WORKFLOW")"
 grep -Fq 'scripts/homebrew-checkout-public-tap.sh' "$WORKFLOW" &&
   fail "candidate proof must use its one explicit exact tap checkout"
@@ -538,13 +814,13 @@ grep -Eq '(^|[[:space:]])(cp|mv|install|ln)[[:space:]].*(local-binaries|\$instal
   fail "candidate proof must not write or copy directly into local-binaries"
 source_alias_line="$(grep -nF -- '- name: Select the source shell for dependent browser VFS builds' \
   "$WORKFLOW" | cut -d: -f1)"
-browser_resolve_line="$(grep -nF -- '- name: Resolve current direct browser bundling inputs' \
+browser_resolve_line="$(grep -nF -- '- name: Resolve exact shell browser inputs' \
   "$WORKFLOW" | cut -d: -f1)"
 [ -n "$source_alias_line" ] && [ -n "$browser_resolve_line" ] &&
   [ "$source_alias_line" -lt "$browser_resolve_line" ] ||
   fail "source shell selection must precede every derived browser VFS resolution"
 source_alias_workflow_block="$(sed -n \
-  '/- name: Select the source shell for dependent browser VFS builds/,/- name: Resolve current direct browser bundling inputs/p' \
+  '/- name: Select the source shell for dependent browser VFS builds/,/- name: Resolve exact shell browser inputs/p' \
   "$WORKFLOW")"
 grep -Fq 'scripts/install-local-shell-artifact.sh \' \
   <<<"$source_alias_workflow_block" &&
@@ -561,6 +837,17 @@ grep -Fq 'local_libs="$REPO_ROOT/local-libs"' "$LOCAL_SHELL_OVERRIDE" &&
   fail "source shell dependency override must use and verify build-deps' supported local-libs tier"
 grep -Fq -- '--force-source-build \' "$CI_BLOCKER_MATERIALIZER" ||
   fail "publication blockers must rebuild their exact PR recipes rather than accept cached canonical bytes"
+grep -Fq 'mirror_mode="$(jq -er '\''.mode'\'' "$mirror_state")"' \
+  "$CI_BLOCKER_MATERIALIZER" &&
+  grep -Fq '[ "$mirror_mode" = publication-blocked-candidate ]' \
+    "$CI_BLOCKER_MATERIALIZER" &&
+  grep -Fq 'scripts/verify-ci-staging-shell-handoff.sh \' \
+    "$CI_BLOCKER_MATERIALIZER" &&
+  grep -Fq 'reuse exact staged bottle shell' \
+    "$CI_BLOCKER_MATERIALIZER" &&
+  grep -Fq 'plain blocked state cannot carry candidate authority' \
+    "$CI_BLOCKER_MATERIALIZER" ||
+  fail "publication blockers must distinguish a receipt-bound bottle shell from the source bridge"
 grep -Fq 'exact_override_is_active' "$LOCAL_SHELL_OVERRIDE" &&
   [ "$(grep -Fc 'scripts/activate-local-shell-build-override.sh' "$WORKFLOW")" -eq 2 ] ||
   fail "source shell override must be idempotently verified before and after derived VFS resolution"
@@ -584,6 +871,201 @@ materializer_resolve_line="$(grep -nF 'for package in "${blocked_packages[@]}"; 
   grep -Fq '[ "$package" != "shell" ] || continue' \
     "$CI_BLOCKER_MATERIALIZER" ||
   fail "CI blocker materialization must activate the bridge before resolving shell dependents"
+
+staging_snapshot_block="$(sed -n \
+  '/^  staging-shell-snapshot:/,/^  # ---------------------------------------------------------------------/p' \
+  "$PREPARE_MERGE_WORKFLOW")"
+for staging_binding in \
+  'staging_run_id: ${{ steps.staging.outputs.run_id }}' \
+  'ref: ${{ needs.synthesize-merge.outputs.base_sha }}' \
+  'artifact-ids: ${{ steps.locate.outputs.artifact_id }}' \
+  'run-id: ${{ env.STAGING_RUN_ID }}' \
+  'github-token: ${{ github.token }}' \
+  '.head_sha == $head' \
+  'EXPECTED_TREE_SHA: ${{ needs.synthesize-merge.outputs.tree_sha }}' \
+  'if [ "$producer_tree" != "$EXPECTED_TREE_SHA" ]; then' \
+  'producer_tree="$(jq -er '\''.head_commit.tree_id'\'' "$run_json")"' \
+  'nested pull_requests object is a live PR projection' \
+  'archive_sha256=${archive_digest#sha256:}' \
+  'staging shell artifact exceeds the 128 MiB handoff limit'
+do
+  grep -Fq "$staging_binding" "$PREPARE_MERGE_WORKFLOW" ||
+    fail "prepare merge does not bind the exact staging shell: $staging_binding"
+done
+if grep -Eq 'uses: \./|bash scripts/|node scripts/' \
+    <<<"$staging_snapshot_block"; then
+  fail "write-capable staging snapshot must not execute pull-request repository code"
+fi
+grep -Fq 'EXPECTED_TREE_SHA: ${{ needs.synthesize-merge.outputs.tree_sha }}' \
+    <<<"$staging_snapshot_block" &&
+  grep -Fq 'if [ "$producer_tree" != "$EXPECTED_TREE_SHA" ]; then' \
+    <<<"$staging_snapshot_block" ||
+  fail "trusted staging snapshot does not bind producer bytes to the synthetic merge tree"
+no_artifact_line="$(grep -nF 'if [ "$count" -eq 0 ]; then' \
+  <<<"$staging_snapshot_block" | cut -d: -f1)"
+producer_tree_line="$(grep -nF \
+  'if [ "$producer_tree" != "$EXPECTED_TREE_SHA" ]; then' \
+  <<<"$staging_snapshot_block" | cut -d: -f1)"
+[ "$no_artifact_line" -lt "$producer_tree_line" ] &&
+  grep -Fq 'staging shell producer tree differs from the synthetic merge; use the source fallback' \
+    <<<"$staging_snapshot_block" ||
+  fail "a divergent producer without a usable shell artifact must preserve the synthetic-merge fallback"
+for blocker_selected_binding in \
+  'use_staging_shell_handoff=false' \
+  'any(.entries[]; .package == "shell")' \
+  '[ "$STAGING_SHELL_AVAILABLE" = true ]' \
+  'if [ "$use_staging_shell_handoff" = true ]; then' \
+  'if [ "$USE_STAGING_SHELL_HANDOFF" = true ]; then'
+do
+  grep -Fq "$blocker_selected_binding" "$PREPARE_MERGE_WORKFLOW" ||
+    fail "staging handoff is not conditional on the current shell blocker: $blocker_selected_binding"
+done
+prepare_handoff_download_line="$(grep -nF \
+  -- '- name: Download the trusted staging shell handoff' \
+  "$PREPARE_MERGE_WORKFLOW" | cut -d: -f1)"
+prepare_synthetic_checkout_line="$(grep -nF \
+  -- '- name: Checkout synthesized PR merge' \
+  "$PREPARE_MERGE_WORKFLOW" | tail -n 1 | cut -d: -f1)"
+[ "$prepare_handoff_download_line" -lt "$prepare_synthetic_checkout_line" ] ||
+  fail "trusted shell bytes must arrive before synthetic pull-request code runs"
+for candidate_transport_binding in \
+  'publication-blocked-candidate' \
+  '--staging-shell-handoff' \
+  '.ci-staging-shell-receipt.json' \
+  '.ci-staging-shell-report.json'
+do
+  grep -Fq -- "$candidate_transport_binding" "$CI_BROWSER_MIRROR_STATE" \
+    "$CI_WORKSPACE_PACKER" "$CI_BLOCKER_MATERIALIZER" ||
+    fail "candidate shell transport lacks: $candidate_transport_binding"
+done
+
+handoff_probe="$TMP_ROOT/staging-shell-handoff"
+mkdir -p "$handoff_probe"
+handoff_image="$handoff_probe/main-shell.vfs.zst"
+handoff_report="$handoff_probe/main-shell-report.json"
+handoff_receipt="$handoff_probe/receipt.json"
+printf 'exact bottle-composed shell bytes\n' > "$handoff_image"
+abi="$(grep -oE 'ABI_VERSION: u32 = [0-9]+' \
+  "$REPO_ROOT/crates/shared/src/lib.rs" | awk '{print $4}')"
+jq -n \
+  --arg repository Automattic/kandelo \
+  --argjson abi "$abi" '
+    {
+      schema: 1,
+      image: "main-shell.vfs.zst",
+      metadata: {
+        kandelo_repository: $repository,
+        kandelo_abi: $abi
+      },
+      package_deferred_trees: [{
+        state: "deferred",
+        package: {name: "homebrew-bootstrap"}
+      }],
+      bottle_mirror: {assets: [{name: "bash"}]}
+    }
+  ' > "$handoff_report"
+handoff_image_sha="$(sha256sum "$handoff_image" | awk '{print $1}')"
+handoff_image_bytes="$(wc -c < "$handoff_image" | tr -d '[:space:]')"
+handoff_report_sha="$(sha256sum "$handoff_report" | awk '{print $1}')"
+handoff_report_bytes="$(wc -c < "$handoff_report" | tr -d '[:space:]')"
+handoff_base="$(printf 'a%.0s' {1..40})"
+handoff_head="$(printf 'b%.0s' {1..40})"
+handoff_tree="$(printf 'c%.0s' {1..40})"
+handoff_archive_sha="$(printf 'd%.0s' {1..64})"
+jq -n \
+  --arg base "$handoff_base" \
+  --arg head "$handoff_head" \
+  --arg tree "$handoff_tree" \
+  --arg archive_sha "$handoff_archive_sha" \
+  --arg image_sha "$handoff_image_sha" \
+  --argjson image_bytes "$handoff_image_bytes" \
+  --arg report_sha "$handoff_report_sha" \
+  --argjson report_bytes "$handoff_report_bytes" '
+    {
+      schema: 1,
+      kind: "kandelo-ci-staging-shell-handoff",
+      repository: "Automattic/kandelo",
+      workflow: ".github/workflows/staging-build.yml",
+      validation_pull_request_number: 1160,
+      validation_base_sha: $base,
+      producer_head_sha: $head,
+      producer_tree_sha: $tree,
+      run_id: 30695913285,
+      artifact: {
+        id: 8817612908,
+        name: "homebrew-main-shell-closure",
+        archive_sha256: $archive_sha,
+        bytes: 58453095
+      },
+      image: {sha256: $image_sha, bytes: $image_bytes},
+      report: {sha256: $report_sha, bytes: $report_bytes}
+    }
+  ' > "$handoff_receipt"
+bash "$CI_STAGING_SHELL_VERIFIER" \
+  "$handoff_receipt" "$handoff_image" "$handoff_report" \
+  "$handoff_base" "$handoff_head" "$handoff_tree" 30695913285
+expect_failure "receipt does not match the expected staging run" \
+  bash "$CI_STAGING_SHELL_VERIFIER" \
+    "$handoff_receipt" "$handoff_image" "$handoff_report" \
+    "$handoff_base" "$handoff_head" "$handoff_tree" 30695913286
+expect_failure "receipt does not match the expected staging run" \
+  bash "$CI_STAGING_SHELL_VERIFIER" \
+    "$handoff_receipt" "$handoff_image" "$handoff_report" \
+    "$handoff_base" "$handoff_head" \
+    "$(printf 'e%.0s' {1..40})" 30695913285
+tampered_image="$handoff_probe/tampered.vfs.zst"
+cp "$handoff_image" "$tampered_image"
+printf 'substitution\n' >> "$tampered_image"
+expect_failure "shell image differs from its receipt" \
+  bash "$CI_STAGING_SHELL_VERIFIER" \
+    "$handoff_receipt" "$tampered_image" "$handoff_report" \
+    "$handoff_base" "$handoff_head" "$handoff_tree" 30695913285
+tampered_report="$handoff_probe/tampered-report.json"
+jq '.bottle_mirror.assets = []' "$handoff_report" > "$tampered_report"
+expect_failure "report is not a bottle-composed shell contract" \
+  bash "$CI_STAGING_SHELL_VERIFIER" \
+    "$handoff_receipt" "$handoff_image" "$tampered_report" \
+    "$handoff_base" "$handoff_head" "$handoff_tree" 30695913285
+symlink_image="$handoff_probe/symlink.vfs.zst"
+ln -s "$handoff_image" "$symlink_image"
+expect_failure "shell image must be a regular non-symlink file" \
+  bash "$CI_STAGING_SHELL_VERIFIER" \
+    "$handoff_receipt" "$symlink_image" "$handoff_report" \
+    "$handoff_base" "$handoff_head" "$handoff_tree" 30695913285
+
+handoff_expected="$handoff_probe/expected.json"
+handoff_blockers="$handoff_probe/blockers.json"
+handoff_index="$handoff_probe/index.toml"
+handoff_state="$handoff_probe/state.json"
+jq -n --argjson abi "$abi" '{abi_version: $abi, entries: []}' \
+  > "$handoff_expected"
+jq -n --argjson abi "$abi" '
+  {
+    abi_version: $abi,
+    entries: [{package: "shell", blocker_chain: ["shell"]}]
+  }
+' > "$handoff_blockers"
+printf 'abi_version = %s\n' "$abi" > "$handoff_index"
+bash "$CI_BROWSER_MIRROR_STATE" create \
+  "$handoff_expected" "$handoff_blockers" \
+  "$handoff_index" https://invalid.example/index.toml \
+  "$handoff_image" "$handoff_state" "$handoff_receipt"
+[ "$(jq -r '.mode' "$handoff_state")" = \
+    publication-blocked-candidate ] &&
+  [ "$(jq -r '.schema' "$handoff_state")" = 3 ] ||
+  fail "candidate shell state did not preserve its distinct authority"
+bash "$CI_BROWSER_MIRROR_STATE" validate producer \
+  "$handoff_state" "$handoff_blockers" \
+  "$handoff_image" "$handoff_receipt"
+tampered_receipt="$handoff_probe/tampered-receipt.json"
+jq '.run_id += 1' "$handoff_receipt" > "$tampered_receipt"
+expect_failure "staging receipt does not match state" \
+  bash "$CI_BROWSER_MIRROR_STATE" validate producer \
+    "$handoff_state" "$handoff_blockers" \
+    "$handoff_image" "$tampered_receipt"
+expect_failure "candidate shell receipt must be one regular file" \
+  bash "$CI_BROWSER_MIRROR_STATE" validate producer \
+    "$handoff_state" "$handoff_blockers" "$handoff_image" -
 
 override_probe="$TMP_ROOT/local-shell-override"
 override_generation="$override_probe/generation"
@@ -700,7 +1182,7 @@ live_input_block="$(sed -n \
   '/- name: Bind exact live lifecycle revisions/,/- name: Fetch musl submodule/p' \
   "$WORKFLOW")"
 for exact_binding in \
-  "github.event_name == 'workflow_dispatch' && inputs.transport_mode == 'closed'" \
+  "(inputs.caller_event_name || github.event_name) == 'workflow_dispatch' && inputs.transport_mode == 'closed'" \
   '[ "$SHELL_ACTIVATION_MODE" = bottles ]' \
   '[[ "$revision" =~ ^[0-9a-f]{40}$ ]]' \
   '[ "$GITHUB_REF" = refs/heads/main ]' \
@@ -811,7 +1293,7 @@ live_fixture_block="$(sed -n \
   '/- name: Create the exact closed Chromium lifecycle fixture/,/- name: Build the sealed browser product tree/p' \
   "$WORKFLOW")"
 for fixture_binding in \
-  "if: github.event_name == 'workflow_dispatch' && inputs.transport_mode == 'closed'" \
+  "if: (inputs.caller_event_name || github.event_name) == 'workflow_dispatch' && inputs.transport_mode == 'closed'" \
   'scripts/create-homebrew-guest-lifecycle-fixture.ts' \
   'env -u GH_TOKEN -u GITHUB_TOKEN git ls-remote' \
   '.activation.atomic_group == $runtime_id' \
@@ -846,7 +1328,7 @@ live_node_block="$(sed -n \
   '/- name: Exercise the live first- and third-party lifecycle in Node/,/- name: Boot the current main-shell path in Chromium/p' \
   "$WORKFLOW")"
 grep -Fq \
-  "if: github.event_name == 'workflow_dispatch' && inputs.transport_mode == 'closed'" \
+  "if: (inputs.caller_event_name || github.event_name) == 'workflow_dispatch' && inputs.transport_mode == 'closed'" \
   <<<"$live_node_block" ||
   fail "the Node live lifecycle must remain manual and closed-transport only"
 for node_binding in \
@@ -990,7 +1472,7 @@ grep -Fq 'fetch_args+=(--package "$package")' "$WORKFLOW" ||
 grep -Fq 'scripts/fetch-binaries.sh "${fetch_args[@]}"' "$WORKFLOW" ||
   fail "binary fetch must materialize only direct browser bundling inputs"
 browser_fetch_block="$(sed -n \
-  "/- name: Resolve current direct browser bundling inputs/,/- name: Install the candidate's exact shell bytes/p" \
+  "/- name: Resolve exact shell browser inputs/,/- name: Install the candidate's exact shell bytes/p" \
   "$WORKFLOW")"
 grep -Fq 'while IFS= read -r -d '"'"''"'"' path &&' \
   <<<"$browser_fetch_block" &&
@@ -1005,24 +1487,35 @@ grep -Fq 'while IFS= read -r -d '"'"''"'"' path; do' \
   ! grep -Fq 'cmp "${{ steps.source_alias.outputs.link_manifest }}"' \
     <<<"$browser_fetch_block" ||
   fail "browser resolution must preserve selected shell links while allowing new mirrors"
-grep -Fq 'fetch_args=()' <<<"$browser_fetch_block" ||
-  fail "browser support inputs must use the normal current-recipe resolver path"
+grep -Fq 'fetch_args=(--fetch-only)' <<<"$browser_fetch_block" ||
+  fail "shell browser inputs must reject unpublished cache keys"
 grep -Fq 'bash scripts/dev-shell.sh env \' <<<"$browser_fetch_block" &&
   grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
     <<<"$browser_fetch_block" ||
   fail "browser package fetch must retain the approved cache root inside dev-shell"
-grep -Fq 'fetch_args=(--fetch-only)' <<<"$browser_fetch_block" &&
-  fail "browser support inputs must source-build when the current recipe is newer than the public archive"
+grep -Fq 'fetch_args=()' <<<"$browser_fetch_block" &&
+  fail "shell browser inputs must not permit source-build fallback"
 grep -Fq 'WASM_POSIX_FETCH_SKIP_PKGS:' "$WORKFLOW" &&
   fail "main-shell proof must not use a negative package skip list"
 grep -Fq 'node scripts/browser-binary-package-roots.mjs \' "$WORKFLOW" ||
   fail "main-shell workflow must derive browser package roots from source imports"
 grep -Fq -- '--arch wasm32 \' "$WORKFLOW" ||
   fail "browser package derivation must select the candidate image architecture"
+grep -Fq -- '--html-entry index.html \' <<<"$browser_fetch_block" &&
+  grep -Fq -- '--html-entry pages/homebrew-vfs-test/index.html \' \
+    <<<"$browser_fetch_block" ||
+  fail "browser package derivation must follow the exact shell proof HTML entries"
+grep -Fq -- '--arch wasm64 \' <<<"$browser_fetch_block" &&
+  fail "wasm32 shell proof must not materialize unrelated wasm64 gallery roots"
 grep -Fq -- '--exclude-package shell \' "$WORKFLOW" ||
   fail "browser package derivation must reserve shell for the exact bottle archive"
-grep -Fq -- '--include-package rootfs' <<<"$browser_fetch_block" ||
-  fail "browser package derivation must include the non-@binaries rootfs alias"
+grep -Fq -- '--local-capability kernel-wasm \' \
+  <<<"$browser_fetch_block" &&
+  grep -Fq -- '--package-capability rootfs-vfs=rootfs \' \
+    <<<"$browser_fetch_block" ||
+  fail "browser package derivation must bind both virtual artifact capabilities"
+grep -Fq -- '--include-package rootfs' <<<"$browser_fetch_block" &&
+  fail "browser package derivation must not hand-maintain the rootfs alias"
 grep -Fq 'mapfile -t browser_input_packages < "$browser_package_file"' "$WORKFLOW" ||
   fail "main-shell workflow must consume the derived browser package roots"
 grep -Fq 'browser_input_packages=(' "$WORKFLOW" &&
@@ -1035,6 +1528,9 @@ grep -Fq 'bash ../../scripts/dev-shell.sh env \' <<<"$browser_build_block" &&
   grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
     <<<"$browser_build_block" ||
   fail "sealed Vite build must retain the approved cache root inside dev-shell"
+grep -Fq 'build_env+=("KANDELO_BROWSER_DEMO_INPUTS=main")' \
+  <<<"$browser_build_block" ||
+  fail "sealed shell proof must build only the real root product entry"
 grep -Fq 'bash ../../scripts/verify-browser-shell-vfs-asset.sh \' \
   <<<"$browser_build_block" &&
   grep -Fq 'dist "${{ steps.image.outputs.path }}"' \
@@ -1118,11 +1614,22 @@ grep -Fq 'repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"' \
 locked_tap_sha="$(jq -er '.catalog.tap_commit' "$SOURCE_LOCK")"
 grep -Fq "commit = \"$locked_tap_sha\"" "$SHELL_BUILD_TOML" ||
   fail "shell Git input commit must equal the reviewed migration lock"
-grep -Eq '^revision[[:space:]]*=[[:space:]]*22$' "$SHELL_BUILD_TOML" ||
-  fail "reduced lazy shell must reserve the next canonical shell revision 22"
-grep -Eq '^publication_state[[:space:]]*=[[:space:]]*"ready"$' \
+shell_revision="$(sed -nE \
+  's/^revision[[:space:]]*=[[:space:]]*([1-9][0-9]*)$/\1/p' \
+  "$SHELL_BUILD_TOML")"
+[ -n "$shell_revision" ] &&
+  [ "$(grep -Ec '^revision[[:space:]]*=' "$SHELL_BUILD_TOML")" -eq 1 ] ||
+  fail "reduced lazy shell must declare one positive package revision"
+artifact_state="$(jq -er '.state' "$LAZY_ARTIFACT_LOCK")"
+case "$artifact_state" in
+  sealed) expected_publication_state=ready ;;
+  pending) expected_publication_state=pending ;;
+  *) fail "lazy shell artifact lock has an unsupported state" ;;
+esac
+grep -Eq \
+  "^publication_state[[:space:]]*=[[:space:]]*\"$expected_publication_state\"$" \
   "$SHELL_BUILD_TOML" ||
-  fail "final-TF shell publication must be ready"
+  fail "shell publication state must match its artifact lock"
 for shell_input in \
   homebrew/main-shell-demo.json \
   web-libs/kandelo-session/src/demo-config.ts
@@ -1215,7 +1722,7 @@ jq -e '
   }
 ' "$PACKAGE_TREE_SPEC" >/dev/null ||
   fail "Homebrew package-tree spec is not the exact reviewed contract"
-grep -Fq 'depends_on = ["homebrew-bootstrap@6.0.3-4-g4ead861"]' \
+grep -Fq 'depends_on = ["homebrew-bootstrap@6.0.4-3-gd6c1be4"]' \
   "$SHELL_PACKAGE_TOML" ||
   fail "shell package must depend on the exact standalone Homebrew source package"
 [ "$(grep -Fc '[[outputs]]' "$SHELL_PACKAGE_TOML")" -eq 1 ] ||
@@ -2163,11 +2670,23 @@ expect_failure "lock is invalid or uses a different timestamp epoch" \
   "$BUILDER" --lazy-shell --tap-root "$tap_worktree" \
   --work-dir "$TMP_ROOT/work-extra-lazy-lock-field" --migration-lock "$lock" \
   --lazy-artifact-lock "$extra_field_lock"
+sealed_fixture_lock="$TMP_ROOT/main-shell-sealed-artifact-lock.json"
+# WHY: source updates truthfully return the checked-in artifact lock to
+# pending. Build the opposite-state fixture explicitly so this rejection test
+# covers a sealed lock in both release phases instead of assuming repository
+# state happens to be sealed.
+jq '
+  .state = "sealed" |
+  .image = {
+    sha256: "0000000000000000000000000000000000000000000000000000000000000000",
+    bytes: 1
+  }
+' "$LAZY_ARTIFACT_LOCK" >"$sealed_fixture_lock"
 expect_failure "--review-pending-artifact requires a pending artifact lock" \
   "$BUILDER" --lazy-shell --tap-root "$tap_worktree" \
   --work-dir "$TMP_ROOT/work-review-sealed-lazy-lock" \
   --migration-lock "$lock" \
-  --lazy-artifact-lock "$LAZY_ARTIFACT_LOCK" \
+  --lazy-artifact-lock "$sealed_fixture_lock" \
   --review-pending-artifact
 wrong_bootstrap_source_binding="$TMP_ROOT/main-shell-wrong-bootstrap-source-binding.json"
 jq '
@@ -2209,8 +2728,67 @@ expect_failure "reviewed artifact identity is still pending" \
 
 grep -Fq -- '--review-pending-artifact' "$SHELL_BUILDER" &&
   fail "the publishable shell package recipe must never bypass the reviewed artifact seal"
-grep -Fq -- '--review-pending-artifact' "$WORKFLOW" &&
-  fail "main-shell CI must never bypass the reviewed artifact seal"
+for shipping_workflow in \
+  "$REPO_ROOT/.github/workflows/browser-demos-pages.yml" \
+  "$REPO_ROOT/.github/workflows/reusable-homebrew-main-shell-mirror-publish.yml"
+do
+  grep -Fq -- '--review-pending-artifact' "$shipping_workflow" &&
+    fail "shipping workflow bypasses the reviewed artifact seal:" \
+      "$shipping_workflow"
+done
+
+check_candidate_artifact_review_contract() {
+  local workflow="$1"
+  local block
+
+  block="$(sed -n \
+    '/- name: Build the exact lazy shell from public bottles/,/- name: Select the source shell for dependent browser VFS builds/p' \
+    "$workflow")"
+  grep -Fq 'case "$CALLER_EVENT_NAME:$artifact_state" in' <<<"$block" &&
+    grep -Fq 'pull_request:pending|push:pending)' <<<"$block" &&
+    grep -Fq 'artifact_review_args=(--review-pending-artifact)' \
+      <<<"$block" &&
+    grep -Fq '*:sealed)' <<<"$block" &&
+    grep -Fq 'artifact_review_args=()' <<<"$block" &&
+    grep -Fq '"${artifact_review_args[@]}"' <<<"$block" &&
+    [ "$(grep -Fc -- '--review-pending-artifact' "$workflow")" -eq 1 ]
+}
+
+# A changed catalog makes the prior image identity stale before the
+# replacement bytes can be known. Exact PR and protected-main CI may
+# exercise that deterministic candidate, but manual shipping must keep
+# failing closed until the artifact digest and byte count are sealed.
+check_candidate_artifact_review_contract "$WORKFLOW" ||
+  fail "candidate CI confuses review bytes with sealed shipping bytes"
+
+sed 's/pull_request:pending|push:pending)/*:pending)/' \
+  "$WORKFLOW" >"$TMP_ROOT/main-shell-manual-pending-review.yml"
+if check_candidate_artifact_review_contract \
+  "$TMP_ROOT/main-shell-manual-pending-review.yml"
+then
+  fail "candidate review contract accepted manual pending shipping"
+fi
+sed '/"${artifact_review_args\[@\]}"/d' \
+  "$WORKFLOW" >"$TMP_ROOT/main-shell-drops-pending-review-argument.yml"
+if check_candidate_artifact_review_contract \
+  "$TMP_ROOT/main-shell-drops-pending-review-argument.yml"
+then
+  fail "candidate review contract accepted a missing composer argument"
+fi
+sed '/\*:sealed)/d' "$WORKFLOW" \
+  >"$TMP_ROOT/main-shell-drops-sealed-review-path.yml"
+if check_candidate_artifact_review_contract \
+  "$TMP_ROOT/main-shell-drops-sealed-review-path.yml"
+then
+  fail "candidate review contract accepted a missing sealed path"
+fi
+sed '1i# --review-pending-artifact' "$WORKFLOW" \
+  >"$TMP_ROOT/main-shell-adds-second-review-bypass.yml"
+if check_candidate_artifact_review_contract \
+  "$TMP_ROOT/main-shell-adds-second-review-bypass.yml"
+then
+  fail "candidate review contract accepted a second review bypass"
+fi
 
 wrong_sha_lock="$TMP_ROOT/lazy-shell-wrong-sha-lock.json"
 jq '.image.sha256 = "0000000000000000000000000000000000000000000000000000000000000000"' \
@@ -2251,9 +2829,9 @@ expect_failure "tap metadata has the wrong repository identity" \
   --migration-lock "$lock"
 
 baseline_output="$(node "$CHECKER")"
-grep -Fq "$SOURCE_ROOT_COUNT reviewed migration roots and $SOURCE_CLOSURE_COUNT Formulae" \
+grep -Fq "$EXPECTED_SHAPE_SUMMARY" \
   <<<"$baseline_output" ||
-  fail "main-shell checker does not report both exact closure counts"
+  fail "main-shell checker does not report its derived Formula counts"
 
 metadata="$TMP_ROOT/main-shell-metadata.json"
 jq --slurpfile support "$RUNTIME_SUPPORT" '
@@ -2376,7 +2954,7 @@ jq -e '
 ' "$metadata" >/dev/null ||
   fail "synthetic runtime catalog does not exercise mixed bottle producers"
 metadata_output="$(checker_with_metadata "$SOURCE_LOCK" "$metadata")"
-grep -Fq "$SOURCE_ROOT_COUNT reviewed migration roots and $SOURCE_CLOSURE_COUNT Formulae" \
+grep -Fq "$EXPECTED_SHAPE_SUMMARY" \
   <<<"$metadata_output" ||
   fail "main-shell checker did not validate the exact synthetic tap closure"
 

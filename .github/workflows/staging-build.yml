@@ -2,9 +2,8 @@ name: Staging build
 
 # Builds per-PR archives whose cache_key_sha differs from each
 # package's durable [binary.<arch>] pin. Uploads them to a
-# pr-<NNN>-staging pre-release for reviewers + CI to consume via the
-# resolver (per-package package.toml + optional package.pr.toml
-# overlay).
+# run-specific PR staging draft. The test gate publishes the completed
+# attempt once for reviewers and CI to consume through the resolver.
 #
 # All build steps run inside `scripts/dev-shell.sh` for a reproducible
 # Rust/LLVM/Node toolchain (see flake.nix). The wrapper enters
@@ -18,7 +17,9 @@ name: Staging build
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    # WHY: Marking a draft ready is the non-destructive rerun control for
+    # the exact product gate. Closing a package PR can invoke cleanup.
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
 
 # Serialize concurrent runs on the same PR so a slow build doesn't
 # step on a fresher push or label state. cancel-in-progress: true means
@@ -156,6 +157,7 @@ jobs:
     outputs:
       library_matrix: ${{ steps.compute.outputs.library_matrix }}
       program_matrix: ${{ steps.compute.outputs.program_matrix }}
+      staged_matrix: ${{ steps.compute.outputs.staged_matrix }}
       repair_index: ${{ steps.compute.outputs.repair_index }}
       abi: ${{ steps.compute.outputs.abi }}
       target_tag: ${{ steps.compute.outputs.target_tag }}
@@ -183,7 +185,7 @@ jobs:
         with:
           persist-credentials: false
           repository: Homebrew/brew
-          ref: cf5bc21c6b127e168ef7cfa982ba7db62874690e
+          ref: a92554a538e81fad0c5074443885dbcc4c36221d
           path: homebrew-lifecycle-source
 
       - name: Fetch musl submodule
@@ -245,7 +247,9 @@ jobs:
             ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk "{print \$4}")
             echo "abi=$ABI" >> "$GITHUB_OUTPUT"
 
-            TARGET_TAG="pr-${{ github.event.pull_request.number }}-staging"
+            # WHY: a published immutable release cannot be reused by a later
+            # push or rerun. Bind staging state to the exact workflow attempt.
+            TARGET_TAG="pr-${{ github.event.pull_request.number }}-staging-run-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}"
             BASELINE_TAG="binaries-abi-v${ABI}"
             echo "target_tag=$TARGET_TAG" >> "$GITHUB_OUTPUT"
 
@@ -254,6 +258,7 @@ jobs:
               echo "reuse_staging=false" >> "$GITHUB_OUTPUT"
               echo "library_matrix=[]" >> "$GITHUB_OUTPUT"
               echo "program_matrix=[]" >> "$GITHUB_OUTPUT"
+              echo "staged_matrix=[]" >> "$GITHUB_OUTPUT"
               echo "repair_index=false" >> "$GITHUB_OUTPUT"
               echo "preflight: package staging not required; skipping package drift matrix"
               exit 0
@@ -411,12 +416,64 @@ jobs:
               echo "preflight: package update jobs will repair $TARGET_TAG/index.toml metadata"
             fi
 
+            # WHY: build matrices say what this attempt must compile. The
+            # consumer needs the subtly different authority set: every row
+            # whose bytes must come from the exact sealed PR release. Reused
+            # releases can own rows without scheduling a new build.
+            case "$reuse_staging" in
+              false)
+                staged_matrix=$(jq -cn \
+                  --argjson libraries "$library_matrix" \
+                  --argjson programs "$program_matrix" \
+                  "\$libraries + \$programs")
+                ;;
+              target)
+                staged_matrix=$(jq -c "
+                  [.entries[] | {
+                    package,
+                    arch,
+                    sha: .cache_key_sha,
+                    version,
+                    revision
+                  }]
+                " "$expected_ledger")
+                ;;
+              union)
+                staged_matrix=$(jq -c --slurpfile snapshot \
+                  "$reuse_dir/snapshot.json" "
+                  [.entries[] as \$expected |
+                    select(any(\$snapshot[0].entries[];
+                      .package == \$expected.package and
+                      .arch == \$expected.arch and
+                      .current == true)) |
+                    \$expected | {
+                      package,
+                      arch,
+                      sha: .cache_key_sha,
+                      version,
+                      revision
+                    }]
+                " "$expected_ledger")
+                ;;
+              *)
+                echo "preflight: invalid staging reuse authority: $reuse_staging" >&2
+                exit 1
+                ;;
+            esac
+            staged_count=$(echo "$staged_matrix" | jq length)
+            if [ "$staged_count" -eq 0 ]; then
+              echo "preflight: staging requires at least one exact target-owned row" >&2
+              exit 1
+            fi
+
             echo "library_matrix=$library_matrix" >> "$GITHUB_OUTPUT"
             echo "program_matrix=$program_matrix" >> "$GITHUB_OUTPUT"
+            echo "staged_matrix=$staged_matrix" >> "$GITHUB_OUTPUT"
             echo "repair_index=$repair_index_output" >> "$GITHUB_OUTPUT"
-            echo "preflight: library=$library_count program=$program_count repair-index=$repair_index_output"
+            echo "preflight: library=$library_count program=$program_count staged=$staged_count repair-index=$repair_index_output"
             echo "library_matrix:"; echo "$library_matrix" | jq .
             echo "program_matrix:"; echo "$program_matrix" | jq .
+            echo "staged_matrix:"; echo "$staged_matrix" | jq .
           '
 
       - name: Post pending merge-gate status (instructs reviewer)
@@ -543,7 +600,7 @@ jobs:
           source-commit: ${{ github.event.pull_request.head.sha }}
           expected-cache-key-sha: ${{ matrix.sha }}
 
-      # Atomic per-matrix-entry publish to the pr-<N>-staging tag.
+      # Atomic per-matrix-entry write to this attempt's staging draft.
       # Different state-lock subjects from durable-release, so PR
       # staging publishes don't block prepare-merge runs.
       - name: Publish archive + index entry
@@ -554,6 +611,7 @@ jobs:
         run: |
           bash scripts/index-update.sh \
             --target-tag "${{ needs.preflight.outputs.target_tag }}" \
+            --release-target-commit "${{ github.event.pull_request.head.sha }}" \
             --package "${{ matrix.package }}" \
             --version "${{ matrix.version }}" \
             --revision "${{ matrix.revision }}" \
@@ -571,6 +629,7 @@ jobs:
         run: |
           bash scripts/index-update.sh \
             --target-tag "${{ needs.preflight.outputs.target_tag }}" \
+            --release-target-commit "${{ github.event.pull_request.head.sha }}" \
             --package "${{ matrix.package }}" \
             --version "${{ matrix.version }}" \
             --revision "${{ matrix.revision }}" \
@@ -626,7 +685,7 @@ jobs:
           github-token: ${{ github.token }}
 
       # Atomic per-matrix-entry publish — same flow as
-      # lib-matrix-build, targeting the pr-<N>-staging tag.
+      # lib-matrix-build, targeting this attempt's staging draft.
       - name: Publish archive + index entry
         if: success()
         env:
@@ -635,6 +694,7 @@ jobs:
         run: |
           bash scripts/index-update.sh \
             --target-tag "${{ needs.preflight.outputs.target_tag }}" \
+            --release-target-commit "${{ github.event.pull_request.head.sha }}" \
             --package "${{ matrix.package }}" \
             --version "${{ matrix.version }}" \
             --revision "${{ matrix.revision }}" \
@@ -652,6 +712,7 @@ jobs:
         run: |
           bash scripts/index-update.sh \
             --target-tag "${{ needs.preflight.outputs.target_tag }}" \
+            --release-target-commit "${{ github.event.pull_request.head.sha }}" \
             --package "${{ matrix.package }}" \
             --version "${{ matrix.version }}" \
             --revision "${{ matrix.revision }}" \
@@ -683,6 +744,7 @@ jobs:
         run: |
           bash scripts/dev-shell.sh bash scripts/index-update.sh \
             --target-tag "${{ needs.preflight.outputs.target_tag }}" \
+            --release-target-commit "${{ github.event.pull_request.head.sha }}" \
             --repair-only
 
   test-gate-validation:
@@ -816,8 +878,8 @@ jobs:
     # cancellation is respected and this long test job doesn't keep an
     # obsolete workflow alive.
     # Run even when preflight produces an empty matrix. A retry push can
-    # legitimately hit all package archives in pr-<N>-staging (because
-    # the previous run published them) while still needing to validate
+    # legitimately hit every selected package in the draft because earlier
+    # jobs in the same attempt uploaded them, while still needing to validate
     # the gate itself, especially after workflow/test-gate fixes.
     needs: [change-scope, preflight, toolchain-cache, lib-matrix-build, matrix-build, repair-staging-index]
     if: |
@@ -1211,7 +1273,7 @@ jobs:
           retention-days: 7
 
   test-gate:
-    needs: [change-scope, test-gate-validation, test-suite-early, test-gate-prepare, test-suite]
+    needs: [change-scope, preflight, test-gate-validation, test-suite-early, test-gate-prepare, test-suite]
     if: |
       always() &&
       !cancelled() &&
@@ -1219,6 +1281,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
+      actions: read
+      contents: write
       statuses: write
     env:
       GH_TOKEN: ${{ github.token }}
@@ -1228,6 +1292,13 @@ jobs:
       TEST_SUITE_RESULT: ${{ needs.test-suite.result }}
       SKIP_STAGING_TESTS: ${{ needs.change-scope.outputs.skip_staging_tests }}
     steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        if: needs.change-scope.outputs.package_staging_required == 'true'
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          sparse-checkout: |
+            .github/scripts
+
       - name: Check validation and split test suites
         run: |
           set -euo pipefail
@@ -1248,6 +1319,32 @@ jobs:
             exit 1
           fi
 
+      - name: Seal and publish exact staging release
+        if: needs.change-scope.outputs.package_staging_required == 'true'
+        env:
+          PACKAGE_TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
+        run: |
+          set -euo pipefail
+          body="$RUNNER_TEMP/staging-release-body.txt"
+          printf 'PR #%s staging build run %s attempt %s' \
+            '${{ github.event.pull_request.number }}' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >"$body"
+          state="$RUNNER_TEMP/staging-release-lock.env"
+          export STATE_LOCK_OWNER_DETAIL="immutable staging finalizer"
+          STATE_LOCK_STATE_FILE="$state" \
+            bash .github/scripts/state-lock.sh acquire "$PACKAGE_TARGET_TAG"
+          release_lock() {
+            STATE_LOCK_STATE_FILE="$state" \
+              bash .github/scripts/state-lock.sh release || true
+          }
+          trap release_lock EXIT
+          bash .github/scripts/package-release-lifecycle.sh seal-publish \
+            --tag "$PACKAGE_TARGET_TAG" \
+            --target-commit '${{ github.event.pull_request.head.sha }}' \
+            --title "$PACKAGE_TARGET_TAG" \
+            --body-file "$body" \
+            --prerelease true
+
       - name: Post merge-gate success for runtime-only staging
         if: |
           env.SKIP_STAGING_TESTS != 'true' &&
@@ -1262,16 +1359,144 @@ jobs:
             -f description="Runtime/materialization tests passed; package staging skipped." \
             -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
+  homebrew-main-shell-prerequisites:
+    name: order exact Homebrew shell after package staging
+    needs: [change-scope, preflight, test-gate]
+    if: |
+      always() &&
+      !cancelled() &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (
+        github.event.action != 'labeled' &&
+        github.event.action != 'unlabeled' ||
+        github.event.label.name == 'skip-staging-tests'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require the expected producer result
+        env:
+          CHANGE_SCOPE_RESULT: ${{ needs.change-scope.result }}
+          PACKAGE_STAGING_REQUIRED: ${{ needs.change-scope.outputs.package_staging_required }}
+          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
+          TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
+          TEST_GATE_REQUIRED: ${{ needs.change-scope.outputs.test_gate_required }}
+          TEST_GATE_RESULT: ${{ needs.test-gate.result }}
+        run: |
+          set -euo pipefail
+          [ "$CHANGE_SCOPE_RESULT" = success ] || {
+            echo "::error::package change classification ended as $CHANGE_SCOPE_RESULT"
+            exit 1
+          }
+          for state in "$PACKAGE_STAGING_REQUIRED" "$TEST_GATE_REQUIRED"; do
+            case "$state" in
+              true | false) ;;
+              *)
+                echo "::error::invalid package staging state: $state"
+                exit 1
+                ;;
+            esac
+          done
+
+          if [ "$PACKAGE_STAGING_REQUIRED" = true ]; then
+            [ "$PREFLIGHT_RESULT" = success ] || {
+              echo "::error::staging preflight ended as $PREFLIGHT_RESULT"
+              exit 1
+            }
+            [ "$TEST_GATE_RESULT" = success ] || {
+              echo "::error::staging release was not sealed: $TEST_GATE_RESULT"
+              exit 1
+            }
+            expected_tag="pr-${{ github.event.pull_request.number }}-staging-run-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}"
+            [ "$TARGET_TAG" = "$expected_tag" ] || {
+              echo "::error::producer selected a different staging attempt"
+              exit 1
+            }
+          elif [ "$TEST_GATE_REQUIRED" = true ]; then
+            [ "$PREFLIGHT_RESULT" = success ] || {
+              echo "::error::runtime preflight ended as $PREFLIGHT_RESULT"
+              exit 1
+            }
+            [ "$TEST_GATE_RESULT" = success ] || {
+              echo "::error::runtime test gate ended as $TEST_GATE_RESULT"
+              exit 1
+            }
+          else
+            # WHY: No-op and publisher-only changes intentionally skip the
+            # generic test gate. Any other result means workflow routing
+            # drifted and must not silently satisfy the product aggregate.
+            [ "$TEST_GATE_RESULT" = skipped ] || {
+              echo "::error::unexpected test-gate result: $TEST_GATE_RESULT"
+              exit 1
+            }
+          fi
+
+  homebrew-main-shell-proof:
+    name: run exact current lazy shell (Node + Chromium)
+    needs:
+      - change-scope
+      - preflight
+      - test-gate
+      - homebrew-main-shell-prerequisites
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.homebrew-main-shell-prerequisites.result == 'success'
+    uses: ./.github/workflows/homebrew-main-shell-ci.yml
+    with:
+      caller_event_name: pull_request
+      pull_request_number: ${{ format('{0}', github.event.pull_request.number) }}
+      pull_request_base_sha: ${{ github.event.pull_request.base.sha }}
+      pull_request_head_sha: ${{ github.event.pull_request.head.sha }}
+      staging_required: ${{ needs.change-scope.outputs.package_staging_required == 'true' }}
+      staging_tag: ${{ needs.change-scope.outputs.package_staging_required == 'true' && needs.preflight.outputs.target_tag || 'not-required' }}
+      staged_matrix: ${{ needs.change-scope.outputs.package_staging_required == 'true' && needs.preflight.outputs.staged_matrix || '[]' }}
+
+  homebrew-main-shell-gate:
+    # Keep the historical required-check name on one aggregate. The reusable
+    # proof may skip when producer ordering failed; this wrapper makes that
+    # skip a visible failure.
+    name: exact current lazy shell (Node + Chromium)
+    needs:
+      - homebrew-main-shell-prerequisites
+      - homebrew-main-shell-proof
+    if: |
+      always() &&
+      !cancelled() &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (
+        github.event.action != 'labeled' &&
+        github.event.action != 'unlabeled' ||
+        github.event.label.name == 'skip-staging-tests'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require ordered exact-shell validation
+        env:
+          PREREQUISITES_RESULT: ${{ needs.homebrew-main-shell-prerequisites.result }}
+          PROOF_RESULT: ${{ needs.homebrew-main-shell-proof.result }}
+        run: |
+          set -euo pipefail
+          [ "$PREREQUISITES_RESULT" = success ] || {
+            echo "::error::exact-shell prerequisites ended as $PREREQUISITES_RESULT"
+            exit 1
+          }
+          [ "$PROOF_RESULT" = success ] || {
+            echo "::error::exact-shell proof ended as $PROOF_RESULT"
+            exit 1
+          }
+
   # publish / generate-index — REMOVED.
   #
   # Per binary-resolution-via-index-ledger, each matrix-build entry
-  # now publishes its archive + mutates pr-<N>-staging/index.toml
+  # now publishes its archive + mutates the attempt-owned draft index.toml
   # atomically via scripts/index-update.sh. No separate publish
   # job; no generate-index aggregation pass.
   #
   # Stale-archive pruning (prune-staging-release.sh) is also gone:
   # the index.toml is authoritative, so orphan archives on the
-  # staging tag are harmless until cleaned by staging-cleanup.yml.
+  # staging draft are harmless until cleaned by staging-cleanup.yml.
 
   f2-status:
     # Phase B-2 Task 1 — F2 sticky PR-comment bot.

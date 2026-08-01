@@ -19,6 +19,11 @@ import {
   browserBinariesImports,
 } from "./browser-binary-imports.mjs";
 import {
+  browserKernelModuleSpecifier,
+  browserRepositoryAliases,
+  browserRootfsModuleSpecifier,
+} from "./browser-module-contract.mjs";
+import {
   createBinaryDevAccess,
   pathIsWithin as pathIsWithinWithCasePolicy,
   type BinaryDevAccess,
@@ -191,8 +196,8 @@ function injectBlobIframeInterceptorPlaceholder(content: string): string {
  * import them get a clear error pointing at the build script.
  */
 function resolveKernelArtifactsAlias(access: BinaryDevAccess): Plugin {
-  const KERNEL = "@kernel-wasm";
-  const ROOTFS = "@rootfs-vfs";
+  const KERNEL = browserKernelModuleSpecifier;
+  const ROOTFS = browserRootfsModuleSpecifier;
   return {
     name: "resolve-kernel-artifacts-alias",
     enforce: "pre",
@@ -692,10 +697,10 @@ function selectedDemoInputs(
 ): typeof demoInputs | Record<string, string> {
   const acceptanceInputs = homebrewClosedAcceptanceInputNames(mode);
   if (acceptanceInputs !== undefined) {
-    // WHY: the sealed closed-transport proof previews one optimized tree.
-    // Keep the real product inputs in that tree while admitting the private
-    // test page; selecting only the fixture page makes other URLs fall back to
-    // index.html and tests the wrong application.
+    // WHY: the sealed closed-transport proof previews the real root product
+    // beside its private test page. Selecting only the fixture would make `/`
+    // fall back to the wrong application; unrelated gallery entries remain in
+    // the separately protected Pages build.
     return Object.fromEntries(
       acceptanceInputs.map((name) => [name, demoInputs[name]]),
     );
@@ -730,9 +735,7 @@ export default defineConfig(({ mode }) => {
   return {
     base: process.env.VITE_BASE || "/",
     resolve: {
-      alias: {
-        "@host": path.resolve(repoRoot, "host/src"),
-      },
+      alias: browserRepositoryAliases(repoRoot),
     },
     plugins: [
       react(),

@@ -1576,13 +1576,18 @@ state is left unchanged for scheduled post-merge recovery.
 **Last-green fallback.** When a per-package rebuild for `(name, version, arch)` fails, its prior successful `archive_url` is preserved in the entry's `fallback_archive_url` field — consumers keep fetching the last working archive while CI iterates on the rebuild. A subsequent success clears the fallback.
 
 **CI flow.** `.github/workflows/staging-build.yml` builds changed packages into
-per-PR staging tags. On `ready-to-ship`, `prepare-merge.yml` snapshots the
+run-specific staging drafts and publishes each successful attempt once. On
+`ready-to-ship`, `prepare-merge.yml` snapshots the
 canonical ledger into a run-specific merge-candidate release, builds or
 promotes packages there, tests that exact synthetic merge, and seals the tested
-candidate without changing canonical state. After a reviewer merges the exact
+candidate without changing canonical state. The candidate remains a draft
+until activation can attach a terminal receipt and publish immutable evidence.
+After a reviewer merges the exact
 prepared tree, `activate-merge-candidate.yml` verifies the merge identity,
 copies and verifies candidate archives, and commits one complete canonical
-ledger through the journaled publisher. Its scheduled/manual path also
+ledger through the journaled publisher. A newly created canonical release is
+sealed and published once; the pre-existing ABI 42 ledger remains the explicit
+grandfathered mutable exception. Its scheduled/manual path also
 recovers interrupted canonical transactions even when there is no candidate to
 activate. `force-rebuild.yml` remains the manual canonical rebuild escape
 hatch.

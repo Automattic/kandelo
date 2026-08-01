@@ -177,8 +177,8 @@ homebrew_native_contract_install() {
       "$closure" native-closure.txt 65536
   )"
 
-  # WHY: this oracle runs through the same systemd-isolated cf5 realm as the
-  # installs. Homebrew therefore owns aliases, implicit host requirements,
+  # WHY: this oracle runs through the same systemd-isolated Homebrew realm as
+  # the installs. Homebrew therefore owns aliases, implicit host requirements,
   # Linux variations, and selected bottle semantics; Kandelo only admits its
   # exact result against reviewed records from the signed API.
   homebrew_patched_launcher_run_native ruby "$oracle" \

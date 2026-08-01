@@ -13,7 +13,102 @@ goal merely because it is not part of the next pull request. A goal leaves this
 plan only when it is completed with evidence or explicitly superseded with the
 replacement decision recorded in the disposition log.
 
-## Current Resume Checkpoint — 2026-07-29
+## Current Resume Checkpoint — 2026-07-31
+
+This checkpoint changes delivery order, not completion scope. The
+public, immutable 38-Formula shell is the green product base. It has
+already proved the three-Formula embedded Bash closure and 35
+independent lazy bottle trees in Node.js and Chromium. Do not rebuild
+that closure merely because the wider guest-prefix campaign is
+unfinished.
+
+Campaign derivation (#1156), the browser lazy-download proxy (#1159),
+the temporary Ruby spawn exception (#1166), and isolated native
+dependency closure admission (#1170) are now on `main`. PR #1171 also
+landed the bottle-backed Pages workflow. Its first main run built the
+canonical shell but stopped before deployment at an optional unhashed
+shell comparison. PR #1172 replaced that comparison with the exact
+hashed Vite asset. Production run `30682936311` at exact protected
+`main` `ce9b36a8` completed the corrected workflow and deployed the
+exact bottle-backed shell successfully. Treat these merged changes as
+the current base, not as work that still needs to land.
+
+The shortest honest path to a usable in-guest `brew` is now:
+
+1. Preserve #1172's successful bottle-backed Pages deployment from run
+   `30682936311` at exact protected `main` `ce9b36a8` as the baseline.
+2. Land #1160's publisher and Formula-support authority. Then read the
+   resulting protected `Automattic/kandelo` `main` SHA and rotate the
+   tap caller's reusable-workflow pin and `kandelo-ref` together.
+3. Publish the new Libyaml wasm32 bottle, followed by the Ruby wasm32
+   bottle that depends on it. Reuse every other immutable bottle
+   selected by the green 38-Formula shell and runtime-support closure.
+4. Regenerate the Homebrew runtime-support descriptor from those exact
+   bottle identities. Regenerate the shell package generation and lock.
+   Publish a public bottle mirror that preserves each reused layer byte
+   for byte, and close the immutable lifecycle release around the
+   resulting shell bytes.
+5. Run the focused public lifecycle retained from #1147 against those
+   exact bytes. The core-tap proof installs, links, executes, and
+   removes Bzip2. The independent tap proof installs M4 and verifies
+   that its core-tap Dash dependency resolves and executes normally.
+   Keep the exact Node.js lifecycle evidence as the peer host claim.
+   This proof does not justify rebuilding unchanged bottles.
+6. Switch the replacement product shell only after the descriptor, shell
+   generation, mirror, lifecycle release, and exact Node.js/Chromium
+   evidence all bind the same immutable inputs.
+
+Libyaml's first package publication has a stricter write boundary than a
+new version. Its first-publication shared writer lock must cover package
+namespace creation, child upload, and the version-index write. The lock
+is repository-scoped and Formula-keyed. A second Libyaml writer must not
+race package creation or infer absence from GitHub Container Registry's
+ambiguous anonymous response. Other Formulae remain independently
+schedulable.
+
+Exact-main pinning has one direction. First merge the Kandelo publisher
+authority. Then read its exact protected-main SHA and rotate the tap
+caller's reusable-workflow pin and `kandelo-ref` together to that SHA.
+Merge and read the exact tap-main source only after those pins are
+reviewable. The ordinary publisher must recheck the same Kandelo SHA
+immediately before each mutation. Do not dispatch from a branch name,
+placeholder, ancestor, or tap commit that predates the pin rotation. If
+protected main moves before mutation, stop and rebind instead of
+accepting the newer source.
+
+The following work remains in the plan after that usable cutover and may
+proceed in parallel when its inputs are independent:
+
+- complete the 64-Formula, 71-variant guest-prefix campaign, preserving
+  each independently successful bottle and using dependency-ready
+  scheduling;
+- remove every remaining `packages/registry` recipe and transitional
+  build bridge only after its Formula, bottle, tests, source fallback,
+  and ownership disposition are complete;
+- migrate Dinit, MariaDB, msmtpd, Nginx, PHP, Redis, SpiderMonkey/Node,
+  and the remaining service and product-image roles;
+- expand the independent-tap proof into the complete third-party tap
+  lifecycle, including durable state, upgrades, failures, and later
+  guest source builds;
+- add a real `man` command and retain each Formula's normal manual pages
+  in its owning bottle;
+- optimize bundles such as `posix-utils-lite` so independent programs
+  may use per-program lazy references when one file is the truthful unit
+  of use. Keep packages such as Vim at package-level granularity because
+  their executables need supporting runtime data;
+- make VFS layers declare Homebrew dependencies and publish as bottles
+  for reviewed mix-and-match composition; and
+- remove the temporary Ruby `posix_spawn` patch after the separate
+  Kandelo vfork/process-memory work supplies the general platform fix.
+  Rebuild and prove pristine upstream Ruby at that point rather than
+  retaining a package workaround as the endpoint.
+
+These deferred items are part of completion. Accelerating the first
+usable shell does not remove language runtimes, service images,
+architecture dispositions, operator status, source builds, or cleanup
+from the later campaign.
+
+## Superseded Resume Checkpoint — 2026-07-29
 
 This checkpoint supersedes older sequencing and point-in-time status below
 without deleting their scope, decisions, or evidence. The first usable-product
@@ -104,10 +199,11 @@ memory ownership or worker retirement.
 
 ### Temporary Ruby process-spawn exception — 2026-07-31
 
-PR #1166 may ship as a temporary Kandelo-only patch to upstream CRuby so the
-in-guest Homebrew proof can continue while the platform-owned process-memory
-work proceeds separately. This is an explicit migration exception, not a
-claim that Ruby is responsible for Kandelo's fork cost.
+PR #1166 shipped the temporary Kandelo-only patch to upstream CRuby so
+the in-guest Homebrew proof can continue while the platform-owned
+process-memory work proceeds separately. Its merge records an explicit
+migration exception, not a claim that Ruby is responsible for Kandelo's
+fork cost. The removal criteria below remain active.
 
 Kandelo currently allocates and copies Ruby's complete
 `WebAssembly.Memory` for every `fork()`. Native kernels normally avoid that
@@ -450,7 +546,7 @@ complete here only when its exact accepted artifact has been verified.
 | Language bottles | Public publication complete; immutable revision-18 candidate and exact Node.js/Chromium language acceptance green | Ruby is public and runtime-verified. Coordinated run `29886510272` built, publicly uploaded, anonymously verified, and atomically finalized Python `3.13.3_1` and Erlang `28.2_1` at tap commit `00ba350ffcee7df02fb9f329bb3c62873ae50831`. Perl is published. The exact 5,885,691-byte revision-18 shell candidate and its 39 deferred bottles are bound to immutable release `homebrew-shell-bottles-sha256-b51c071bc0f5eabf230f10d26f8e6c397999323dfbf18cb6da11cec822f8c21b`. Anonymous public Node.js and Chromium acceptance start Python, Perl, Erlang, and Ruby lazily in isolated first-use steps. PR #1062 landed the bounded per-asset browser evidence ledger at `dc5bb1210f1359be17d1d4078a7d56ec14903e4a`; the remaining activation gate is the shared product-VFS headroom fix and its final exact regression run. |
 | Third-party tap model | Live publisher proof complete; guest use remains | The stricter load-order-independent cross-tap runtime contract landed in Kandelo as PR #1046 at `bd2b090e3e6998350be24ed018bbb76d3eb5b012`, in the core tap as PR #82 at `caad125218a2e3c6f05d290151a32128ec6c54ac`, and in the canary as PR #13 at `25069ad2acb7f86746ec3d119a823e8210a7a1eb`. PR #1049 landed the active-repository tap-store correction at `466a685d9366d3b712c4fe998307e00157bd5d15`; core-tap PR #83 pinned it at `cbb439454adf2718b010d0fe2caffe7158340a0e`, and canary PR #14 pinned it at `ee4464b87b988b163608b6c3520c2260907bda61`. Independent run `29886510154` is completely green: public M4 package and index, anonymous exact-byte pour, dependency-bearing Node.js and Chromium image proof, transactional tap finalization, and immutable five-asset VFS release `homebrew-vfs-sha256-40a44df5c6f139a4e9105b5155040be757bc20596dc5dce2d7a64286447d9f3e`. Conventional third-party `brew tap` and `brew install` inside the guest remain Phase 5 work. |
 | Deferred bottle trees | Generic producer and Phase 3 public proof complete; Phase 4 mirror public and relocation locally validated | PR #1051 landed the generic first-use substrate at `122e62a77ffeb40039bee3f2b29cd5f82ed6b1fe`. PR #1054 landed the exact original-bottle producer at `c16a48c693c8a6dea4ca14e7886b735bf685d51d`: one independently lazy tree per Formula, complete source and guest inventories, exact compressed transport identity, hardlinks, and independent TypeScript/Python validation. PR #1055 composes the exact 38-Formula namespace, PR #1060's exact head proves its immutable public mirror and canonical revision-17 cutover, and PR #1056 landed the aggregate-budget correction. The Phase 4 worktree adds receipt-owned relocation before exposing language runtimes, because exact bottle bytes are transport truth while a correct pour may replace only the placeholders named by that bottle's `INSTALL_RECEIPT.json`; its complete 39-bottle browser mirror is public and immutable. |
-| Browser deployment and exact bottle delivery | Bounded bottled-shell cutover in validation | PR #1064 landed bounded, single-writer Pages publication. PR #1070 landed exact browser bottle-download delivery. The cutover replaces the temporary source-built shell bridge with fresh-cache, fetch-only canonical resolution, binds the sealed shell to its deferred `/usr/bin/brew` archive and embedded immutable mirror plan, and runs the public Chromium shell acceptance before deployment. Pages still builds repository-owned browser support fixtures and derived VFS images; those paths cannot replace a missing canonical package archive or the selected shell. The first deployment is gated by its own exact public-product Chromium proof; the broader first- and third-party lifecycle remains follow-up work rather than a cutover prerequisite. The dormant source bridge can be deleted separately after cutover. |
+| Browser deployment and exact bottle delivery | Exact bottle-backed shell deployed successfully through #1172 | PR #1064 landed bounded, single-writer Pages publication, and PR #1070 landed exact browser bottle-download delivery. PR #1171 then landed fresh-cache, fetch-only canonical resolution, bound the sealed shell to its deferred `/usr/bin/brew` archive and immutable mirror plan, and added public Chromium acceptance before deployment. Its first `main` run resolved and built that canonical shell but stopped before deployment because it compared an optional unhashed copy. PR #1172 replaced that comparison with the exact hashed Vite asset while retaining Pages as the complete-gallery build gate. Production run `30682936311` at exact protected `main` `ce9b36a8` completed the corrected workflow and deployed the exact bottle-backed shell successfully. The broader first- and third-party lifecycle remains follow-up work, and the dormant source bridge can be deleted separately after cutover. |
 | Durable Kandelo package inputs | Single-root recovery is public; fresh exact-main rootfs rebuild pending after #1109 | The existing schema-1 rootfs generation remains available at `package-generation-rootfs-wasm32-abi-v42-sha256-cc8a6460221f68b077a640c39d8e63de32d3847e90e1bdac4065f060e4fb35dc`. The v2 contract separates immutable archive producer `S` from validated current-main publisher `M`, preserves truthful archive provenance, and requires exact release, ABI, projection, expected-ledger, archive, and current-main evidence. The #1097 cache-projection bridge is retired: real current-authority comparison found declared rootfs input drift, its reviewed validator pin is intentionally stale, and the production workflow exposes only `identical-git-tree-v1`. After #1109 lands, rebuild rootfs and its complete closure from the exact live main SHA, promote that exact-tree generation, and require anonymous readback before tap caller rotation or downstream Bash/M4 activation. The additive schema-2 `browser-inputs` mechanism remains the later complete path, with a generation built for each architecture and source-only identities bound without fictional archives. |
 | Atomic package-generation foundation | Ready for PR and landing on the exact fixture-ownership baseline | The packaging/build worktree makes Rust-generated program policy, scalar mirrors, and multi-member mirror directories publish as validated atomic generations. It aligns Rust, TypeScript, shell, Vite, external registries, and the standalone npm package on one complete highest-priority registry projection, with self-contained lower-root fallbacks. Fixture-ownership PR #802 landed as `427185cff21ed213de8b8b6573b4f1a3757aa80d`; this active foundation is rebased on that exact commit, its `program-packages.json` was regenerated there, and a repository source audit now rejects obsolete flat package paths while preserving inventory-owned and direct-source test fixtures. Independent High/Medium review found no remaining blocker. Exact-baseline validation is green across all 507 xtask tests, all 105 package-system tests, host typechecking, Chromium/Firefox/WebKit Vite boundaries, package-root and sealed/local-generation contracts, resolver-bundle freshness, Pages/CI/merge-workflow contracts, and the 17-case Homebrew shell closure. This foundation does not by itself activate the Phase 4 shell candidate, guest `brew`, registry retirement, or bottle-declared VFS packages. |
 | Guest upstream `brew` | Stock tap and bottle-pour proof complete in the opt-in image; product lifecycle incomplete | Draft PR #1059 pins upstream Homebrew, gives its unprivileged guest state the conventional writable layout, and passes exact Node.js/Chromium startup, config, operational doctor, first-party tap, and independent third-party tap discovery. An unmodified stock Bzip2 install pours and runs the public bottle once Homebrew can resolve the exact 19-Formula metadata closure for publisher-only native dependencies. Full `homebrew/core` is infeasible in the guest (about 1.3 GiB, including a 1.22 GiB Git pack); the product fix is a separately reviewed allowlist of custom Homebrew `Requirement` classes, not a partial core tap or unsupported dependency bypass. Main-shell activation, install/reinstall/uninstall, durable reboot state, and cross-tap M4 installation remain. |
@@ -458,6 +554,12 @@ complete here only when its exact accepted artifact has been verified.
 | Bottle-declared, mix-and-match VFS packages | Future retained scope | The current composer produces precomposed images. VFS Formulae/bottles and user-selectable composition remain a later product iteration. |
 
 ## Execution Order
+
+The 2026-07-31 checkpoint at the top of this document is the live
+delivery order. The phases below preserve the complete design,
+historical evidence, and acceptance criteria. Where an older tranche
+conflicts with that checkpoint, use the checkpoint and retain the
+tranche as an audit record.
 
 Work in different repositories may proceed concurrently when immutable inputs
 make the results independent. Do not serialize unrelated Formula rollouts, but
@@ -507,6 +609,25 @@ merge-approval boundary.
 These defects affect iteration speed or diagnostic quality but do not weaken
 the exact artifact accepted by the current gates:
 
+- Add general content-addressed reuse across protected-main commits for
+  unchanged package archives. Current protected main `M` must remain the
+  authority for publication and every mutation. A reused archive must
+  retain its truthful producer commit `S`. Admission must bind its
+  immutable bytes to the canonical per-package build-input receipt and
+  the direct-dependency receipts. Then only changed nodes and their
+  dependents rebuild. This is a deferred throughput improvement, not
+  part of the immediate cutover path. It must not weaken exact-main
+  admission or the checks immediately before a mutation.
+- Add a targeted pre-merge package-producer lane for artifact-bearing
+  PRs. Update the PR head `S` onto the exact current base, force-build
+  the requested closure from that remotely addressable head, and prove
+  its tree equals the prepared merge tree. An exact-parent merge commit
+  may then keep `S` reachable while final main `M` retains the same
+  tree. Promote the generation against `M` before releasing the main
+  lock. Do not generalize this to every PR or treat ancestry as package
+  compatibility. Squash and rebase merges do not reliably preserve the
+  producer commit, and an older generation whose tree differs from `M`
+  remains inadmissible.
 - Make every completed PR staging release a self-contained snapshot. A run
   that cannot reuse a partial target currently rebuilds against the canonical
   ABI release, while each matrix writer adds only its own result to the target
@@ -1242,13 +1363,13 @@ Acceptance:
 
 Implementation checkpoint (2026-07-29; in progress):
 
-- The native publisher is advancing to exact upstream Homebrew commit
-  `cf5bc21c6b127e168ef7cfa982ba7db62874690e`, whose native package
-  installer supports the constrained post-install steps now present in
-  Homebrew's signed package API. The guest bootstrap remains pinned to its
-  existing source until its source lock, package and build identity, program
-  index, shell lock, and guest documentation can advance together in the
-  atomic guest cutover.
+- The native publisher uses exact upstream Homebrew commit
+  `a92554a538e81fad0c5074443885dbcc4c36221d`, whose native package
+  installer supports the constrained, Mach-O, PHP, and Python install steps
+  now present in Homebrew's signed package API. The guest bootstrap remains
+  pinned to its existing source until its source lock, package and build
+  identity, program index, shell lock, and guest documentation can advance
+  together in the atomic guest cutover.
 - The publisher must admit each job's native host-tool closure against a
   reviewed compatibility lock before untrusted Formula execution. Exact
   pinned Homebrew, rather than Kandelo code, owns alias, dependency,
@@ -1315,6 +1436,7 @@ goal from an earlier section.
 | One default VFS per language | Rejected, except for the retained Node.js demo. Languages belong in the main shell as lazy bottle groups. |
 | Bottle dependencies and one bottle per VFS | Retained as Phase 7 rather than required for the first lazy-shell cutover. |
 | Treat the direct composer as sufficient retirement evidence for the historical build-time `brew` pour plus `saveImage()` proof | Unresolved. Phase 5 must run the exact reviewed closure through stock upstream `brew`, save the image, compare ownership, links, receipts, and provenance, and then record an evidence-backed disposition. The current direct composer does not silently retire this proof. |
+| Require the complete 64-Formula, 71-variant prefix campaign before the first usable in-guest `brew` | Superseded as delivery order by the 2026-07-31 checkpoint. Reuse the green immutable 38-Formula base, publish only Libyaml and the new Ruby bottle, regenerate the shell contracts, and run the exact lifecycle proof first. The complete campaign remains required for final guest-prefix and registry-migration completion. |
 
 ## Completion Definition
 

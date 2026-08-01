@@ -27,6 +27,9 @@ trigger_block="$(
 grep -Fxq '  push:' <<<"$trigger_block" &&
   grep -Fxq '    branches: [main]' <<<"$trigger_block" ||
   fail "the complete Pages publisher must run for every main push"
+if grep -Eq '^  (pull_request|pull_request_target):' <<<"$trigger_block"; then
+  fail "the Pages publisher must not deploy pull-request revisions"
+fi
 if grep -Eq '^[[:space:]]+(paths|paths-ignore):' <<<"$trigger_block"; then
   fail "the complete Pages publisher must not filter main pushes by path"
 fi
@@ -232,6 +235,10 @@ if grep -Fq 'recover-homebrew-bottle-mirror' <<<"$shell_product_block"; then
   fail "Pages inspection must not eagerly download the complete bottle mirror"
 fi
 
+# WHY: the Homebrew shell PR gate intentionally builds one product entry.
+# Pages is the compensating full-gallery build gate, so only its focused boot
+# may select the shell entry. Applying that selector to the production build
+# could silently omit valid gallery routes from the deployed tree.
 browser_build_block="$(
   step_block "$PAGES_WORKFLOW" "Build browser demos for GitHub Pages"
 )"
@@ -245,6 +252,9 @@ grep -Fxq '          npm run build' <<<"$browser_build_block" &&
 if grep -Fq 'dist/shell.vfs.zst' "$PAGES_WORKFLOW" ||
    grep -Fq 'apps/browser-demos/public/shell.vfs.zst' "$PAGES_WORKFLOW"; then
   fail "Pages must not trust Vite's optional unhashed public shell copy"
+fi
+if grep -Fq 'KANDELO_BROWSER_DEMO_INPUTS' <<<"$browser_build_block"; then
+  fail "the Pages publisher must build the complete browser entry set"
 fi
 
 sealed_boot_block="$(

@@ -129,6 +129,35 @@ assert_job_needs "$PREPARE" lib-matrix-build preflight
 assert_job_needs "$PREPARE" matrix-build preflight
 assert_job_needs "$PREPARE" merge-gate-post test-gate
 
+# A published fixed PR tag cannot be repaired after repository release
+# immutability is enabled. Every full rerun therefore owns a new tag, while a
+# failed-job retry keeps using the draft selected by its successful preflight.
+grep -Fq \
+  'pr-${{ github.event.pull_request.number }}-staging-run-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}' \
+  "$STAGING_WORKFLOW" || \
+  fail "staging workflow must isolate every full rerun in a new release"
+staging_writer_count="$(
+  grep -Ec 'bash (scripts/dev-shell.sh bash )?scripts/index-update.sh' \
+    "$STAGING_WORKFLOW"
+)"
+staging_target_count="$(
+  grep -Fc -- \
+    '--release-target-commit "${{ github.event.pull_request.head.sha }}"' \
+    "$STAGING_WORKFLOW"
+)"
+[ "$staging_writer_count" -eq "$staging_target_count" ] ||
+  fail "every staging index writer must bind its release to the PR head"
+for selection_contract in \
+  'select(.target_commitish == \$head)' \
+  'select(.draft == false and .immutable == true' \
+  'kandelo-package-release-seal-v1.json' \
+  'sort_by(.created_at) | last | .tag_name // \"\"' \
+  'STAGING_TAG="pr-${{ github.event.pull_request.number }}-staging"'
+do
+  grep -Fq "$selection_contract" "$PREPARE" || \
+    fail "Prepare merge lacks exact-head staging selection: $selection_contract"
+done
+
 synthesize_job=$(job_block "$PREPARE" synthesize-merge)
 synthesize_step=$(step_run_block "$PREPARE" "Capture base and synthesize PR merge")
 preflight_job=$(job_block "$PREPARE" preflight)
@@ -166,6 +195,15 @@ fi
 grep -Fq 'candidate_run_attempt: ${{ steps.compute.outputs.candidate_run_attempt }}' \
   <<<"$preflight_job" || \
   fail "preflight must export the attempt that owns the candidate"
+grep -Fq 'candidate_release_id: ${{ steps.compute.outputs.candidate_release_id }}' \
+  <<<"$preflight_job" || \
+  fail "preflight must export the exact draft release ID"
+grep -Fq -- '--release-id-file "$candidate_release_id_file"' \
+  <<<"$preflight_step" || \
+  fail "candidate initialization must return its exact draft release ID"
+grep -Fq 'echo "candidate_release_id=$candidate_release_id"' \
+  <<<"$preflight_step" || \
+  fail "preflight must publish the exact candidate release ID"
 grep -Fq 'CANDIDATE_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT"' <<<"$preflight_step" || \
   fail "candidate creation must capture the current attempt in preflight"
 grep -Fq 'echo "candidate_run_attempt=$CANDIDATE_RUN_ATTEMPT"' <<<"$preflight_step" || \
@@ -264,6 +302,7 @@ reusable-package-source-publish.yml:publish
 staging-build.yml:lib-matrix-build
 staging-build.yml:matrix-build
 staging-build.yml:repair-staging-index
+staging-build.yml:test-gate
 staging-cleanup.yml:sweep
 EOF
 )
@@ -367,14 +406,92 @@ grep -Fq -- '--candidate-index-sha256 "${{ needs.test-gate.outputs.candidate_ind
 grep -Fq 'candidate index differs from the tested sha256' "$MARK_READY_SCRIPT" || \
   fail "candidate helper must reject a ledger other than the tested digest"
 materialize_candidate_step=$(step_run_block "$PREPARE" "Materialize binaries")
+candidate_snapshot_step=$(step_run_block "$PREPARE" "Snapshot exact candidate draft")
+test_gate_prepare_job=$(job_block "$PREPARE" test-gate-prepare)
+candidate_snapshot_job=$(job_block "$PREPARE" candidate-snapshot)
+assert_effective_job_permission "$PREPARE" candidate-snapshot contents write
+assert_effective_job_permission "$PREPARE" test-gate-prepare contents read
+if grep -Fq 'actions/checkout@' <<<"$candidate_snapshot_job"; then
+  fail "write-authorized candidate snapshot must not check out PR code"
+fi
+grep -Fq 'persist-credentials: false' <<<"$test_gate_prepare_job" || \
+  fail "candidate test job must not persist its checkout credential"
+if grep -Fq 'GH_TOKEN: ${{ github.token }}' \
+    <<<"$materialize_candidate_step"; then
+  fail "synthetic candidate materialization must not receive the draft token"
+fi
+if ! bash -n <<<"$candidate_snapshot_step"; then
+  fail "exact candidate snapshot step is not valid shell syntax"
+fi
+grep -Fq 'name: merge-candidate-${{ needs.preflight.outputs.candidate_release_id }}' \
+  <<<"$candidate_snapshot_job" || \
+  fail "write-authorized candidate snapshot must publish an exact-ID artifact"
+grep -Fq 'name: merge-candidate-${{ needs.preflight.outputs.candidate_release_id }}' \
+  <<<"$test_gate_prepare_job" || \
+  fail "read-only candidate tests must consume the exact-ID artifact"
+grep -Fq '/releases/${CANDIDATE_RELEASE_ID}' \
+  <<<"$candidate_snapshot_step" || \
+  fail "test preparation must read the draft through its exact release ID"
+grep -Fq '/releases/assets/${asset_id}' <<<"$candidate_snapshot_step" || \
+  fail "test preparation must download draft assets through exact asset IDs"
+grep -Fq 'candidate release changed while it was snapshotted' \
+  <<<"$candidate_snapshot_step" || \
+  fail "test preparation must reject a candidate that changes during capture"
+grep -Fq '.base_index_sha256' <<<"$candidate_snapshot_step" || \
+  fail "candidate snapshot must bind its canonical base index"
+grep -Fq 'metadata_base_sha=' <<<"$candidate_snapshot_step" || \
+  fail "candidate snapshot must bind its base index to release metadata"
+if grep -Fq 'gh release download "$PACKAGE_TARGET_TAG"' \
+    <<<"$materialize_candidate_step"; then
+  fail "test preparation must not resolve a draft through its hidden tag"
+fi
 grep -Fq 'mv "$index_dir/index.toml" "$index_dir/source-index.toml"' \
   <<<"$materialize_candidate_step" || \
   fail "test preparation must freeze candidate index bytes before resolution"
 grep -Fq 'sha256sum "$index_dir/source-index.toml"' <<<"$materialize_candidate_step" || \
   fail "test preparation must hash the immutable source candidate index"
-grep -Fq 'index-candidate seed' <<<"$materialize_candidate_step" || \
-  fail "test preparation must derive a resolver view from the frozen source index"
-grep -Fq 'WASM_POSIX_BINARY_INDEX_URL="file://$index_dir/index.toml"' \
+grep -Fq 'cp -R "$RUNNER_TEMP/candidate-release/." "$index_dir/"' \
+  <<<"$materialize_candidate_step" || \
+  fail "test preparation must keep draft archives beside the frozen index"
+bind_canonical_step=$(step_run_block "$PREPARE" "Bind candidate canonical base index")
+grep -Fq '.base_index_sha256' <<<"$bind_canonical_step" || \
+  fail "candidate base index must remain bound to candidate identity"
+grep -Fq 'sha256sum "$base_index"' <<<"$bind_canonical_step" || \
+  fail "candidate base index must be verified before synthetic checkout"
+grep -Fq 'echo "sha256=$actual_sha"' <<<"$bind_canonical_step" || \
+  fail "candidate base index must export its closed handoff digest"
+snapshot_canonical_block=$(step_block "$PREPARE" "Snapshot canonical index with trusted base")
+snapshot_canonical_step=$(step_run_block "$PREPARE" "Snapshot canonical index with trusted base")
+grep -Fq 'GH_TOKEN: ${{ github.token }}' <<<"$snapshot_canonical_block" || \
+  fail "trusted canonical snapshot must receive the read token explicitly"
+grep -Fq 'scripts/release-index-state.sh snapshot' <<<"$snapshot_canonical_step" || \
+  fail "non-package tests must snapshot canonical state before synthetic checkout"
+grep -Fq 'echo "sha256=$canonical_sha"' <<<"$snapshot_canonical_step" || \
+  fail "public canonical snapshot must export its closed handoff digest"
+grep -Fq -- '--authenticated-snapshot' <<<"$materialize_candidate_step" || \
+  fail "synthetic tests must consume the credential-free canonical snapshot"
+grep -Fq 'verify_canonical_source' <<<"$materialize_candidate_step" || \
+  fail "synthetic tests must recheck canonical bytes after candidate code runs"
+grep -Fq 'AUTHENTICATED_CANONICAL_INDEX_SHA256:' \
+  <<<"$(step_block "$PREPARE" "Materialize binaries")" || \
+  fail "synthetic tests must receive the trusted step-output digest"
+if grep -Fq 'GH_TOKEN:' <<<"$(step_block "$PREPARE" "Materialize binaries")"; then
+  fail "synthetic materialization must not receive a GitHub token"
+fi
+test_gate_checkout_line=$(grep -nF -- '- name: Checkout synthesized PR merge' \
+  <<<"$test_gate_prepare_job" | cut -d: -f1)
+bind_canonical_line=$(grep -nF -- '- name: Bind candidate canonical base index' \
+  <<<"$test_gate_prepare_job" | cut -d: -f1)
+snapshot_canonical_line=$(grep -nF -- '- name: Snapshot canonical index with trusted base' \
+  <<<"$test_gate_prepare_job" | cut -d: -f1)
+if [ "$bind_canonical_line" -ge "$test_gate_checkout_line" ] ||
+   [ "$snapshot_canonical_line" -ge "$test_gate_checkout_line" ]; then
+  fail "canonical bytes must be captured before synthetic code is checked out"
+fi
+grep -Fq 'WASM_POSIX_BINARY_INDEX_URL="file://$CANONICAL_INDEX"' \
+  <<<"$materialize_candidate_step" || \
+  fail "non-package resolution must reuse the trusted canonical snapshot"
+grep -Fq 'WASM_POSIX_BINARY_INDEX_URL="file://$index_dir/source-index.toml"' \
   <<<"$materialize_candidate_step" || \
   fail "test preparation must resolve every package from the frozen local index"
 snapshot_line=$(grep -n 'mv "$index_dir/index.toml" "$index_dir/source-index.toml"' \

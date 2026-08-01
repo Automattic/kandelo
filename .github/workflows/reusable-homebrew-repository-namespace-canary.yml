@@ -1,4 +1,4 @@
-name: Reusable Homebrew repository namespace canary
+name: Reusable Homebrew first child publication
 
 on:
   workflow_call:
@@ -6,9 +6,39 @@ on:
       kandelo-ref:
         type: string
         required: true
+      tap-ref:
+        type: string
+        required: true
+      formula:
+        type: string
+        required: true
+      arch:
+        type: string
+        required: true
+      dry-run-run-id:
+        type: string
+        required: true
+      dry-run-run-attempt:
+        type: string
+        required: true
+      dry-run-child-artifact-digest:
+        type: string
+        required: true
+      expected-child-manifest-digest:
+        type: string
+        required: true
+
+# WHY: GitHub scopes this group to the protected tap repository. Use the same
+# Formula-scoped group as ordinary child, index, and maintenance-rebuild
+# writers because GHCR has no atomic create-if-absent operation. The strict
+# absence preflight remains stable against every supported repository writer
+# until the anonymous exact-digest readback completes.
+concurrency:
+  group: kandelo-homebrew-ghcr-${{ inputs.formula }}
+  cancel-in-progress: false
 
 jobs:
-  canary:
+  first-publication:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -16,37 +46,140 @@ jobs:
       contents: read
       packages: write
     steps:
-      - name: Validate exact canary caller
+      - name: Validate exact first-publication caller
         shell: bash
         env:
+          ARCH: ${{ inputs.arch }}
           CALLER_ACTION: ${{ github.event.action }}
           CALLER_EVENT_NAME: ${{ github.event_name }}
           CALLER_REF: ${{ github.ref }}
           CALLER_REPOSITORY: ${{ github.repository }}
+          CALLER_SHA: ${{ github.sha }}
           CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
+          DRY_RUN_CHILD_ARTIFACT_DIGEST: >-
+            ${{ inputs.dry-run-child-artifact-digest }}
+          DRY_RUN_RUN_ATTEMPT: ${{ inputs.dry-run-run-attempt }}
+          DRY_RUN_RUN_ID: ${{ inputs.dry-run-run-id }}
+          EXPECTED_CHILD_MANIFEST_DIGEST: >-
+            ${{ inputs.expected-child-manifest-digest }}
+          FORMULA: ${{ inputs.formula }}
           KANDELO_REF: ${{ inputs.kandelo-ref }}
+          TAP_REF: ${{ inputs.tap-ref }}
         run: |
           set -euo pipefail
           normalized_repository="$(printf '%s' "$CALLER_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           [ "$normalized_repository" = kandelo-dev/homebrew-tap-core ] || {
-            echo "::error::repository namespace canary is restricted to the protected Kandelo tap"; exit 2;
+            echo "::error::first publication is restricted to the protected Kandelo tap"; exit 2;
           }
           [ "$CALLER_REF" = refs/heads/main ] || {
-            echo "::error::repository namespace canary requires tap main"; exit 2;
+            echo "::error::first publication requires tap main"; exit 2;
           }
           [ "$CALLER_EVENT_NAME" = repository_dispatch ] &&
-            [ "$CALLER_ACTION" = test-repository-rooted-ghcr-package ] || {
-            echo "::error::repository namespace canary requires its reviewed dispatch event"; exit 2;
+            [ "$CALLER_ACTION" = publish-first-homebrew-child ] || {
+            echo "::error::first publication requires its reviewed dispatch event"; exit 2;
           }
           [ "$CALLER_WORKFLOW_REF" = \
             "$CALLER_REPOSITORY/.github/workflows/repository-namespace-canary.yml@refs/heads/main" ] || {
-            echo "::error::repository namespace canary requires its reviewed caller workflow"; exit 2;
+            echo "::error::first publication requires its reviewed caller workflow"; exit 2;
+          }
+          # WHY: the child must come from the same protected tap snapshot that
+          # owns this mutation caller. An event-selected ancestor would make a
+          # later main revision authorize bottle bytes it never reviewed.
+          [[ "$CALLER_SHA" =~ ^[0-9a-f]{40}$ ]] &&
+            [ "$TAP_REF" = "$CALLER_SHA" ] || {
+            echo "::error::first publication requires the exact protected caller commit"; exit 2;
           }
           [[ "$KANDELO_REF" =~ ^[0-9a-f]{40}$ ]] || {
-            echo "::error::repository namespace canary requires an exact Kandelo commit"; exit 2;
+            echo "::error::first publication requires an exact Kandelo commit"; exit 2;
+          }
+          [[ "$FORMULA" =~ ^[a-z0-9][a-z0-9._-]{0,63}$ ]] || {
+            echo "::error::first publication formula is invalid"; exit 2;
+          }
+          case "$ARCH" in
+            wasm32|wasm64) ;;
+            *) echo "::error::first publication architecture is invalid"; exit 2 ;;
+          esac
+          [[ "$DRY_RUN_RUN_ID" =~ ^[1-9][0-9]{0,14}$ ]] || {
+            echo "::error::first publication dry-run run ID is invalid"; exit 2;
+          }
+          [[ "$DRY_RUN_RUN_ATTEMPT" =~ ^[1-9][0-9]{0,2}$ ]] || {
+            echo "::error::first publication dry-run attempt is invalid"; exit 2;
+          }
+          [[ "$DRY_RUN_CHILD_ARTIFACT_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "::error::first publication artifact digest is invalid"; exit 2;
+          }
+          [[ "$EXPECTED_CHILD_MANIFEST_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]] || {
+            echo "::error::first publication child manifest digest is invalid"; exit 2;
           }
 
-      - name: Checkout exact Kandelo canary source
+      - name: Admit protected sources and one completed dry-run child
+        shell: bash
+        env:
+          ARCH: ${{ inputs.arch }}
+          CALLER_REPOSITORY: ${{ github.repository }}
+          DRY_RUN_CHILD_ARTIFACT_DIGEST: >-
+            ${{ inputs.dry-run-child-artifact-digest }}
+          DRY_RUN_RUN_ATTEMPT: ${{ inputs.dry-run-run-attempt }}
+          DRY_RUN_RUN_ID: ${{ inputs.dry-run-run-id }}
+          FORMULA: ${{ inputs.formula }}
+          GH_TOKEN: ${{ github.token }}
+          KANDELO_REF: ${{ inputs.kandelo-ref }}
+          TAP_REF: ${{ inputs.tap-ref }}
+        run: |
+          set -euo pipefail
+          tap_main="$(gh api "/repos/$CALLER_REPOSITORY/git/ref/heads/main" --jq .object.sha)"
+          [ "$tap_main" = "$TAP_REF" ] || {
+            echo "::error::first publication caller is no longer exact tap main"; exit 1;
+          }
+          kandelo_main="$(gh api /repos/Automattic/kandelo/git/ref/heads/main --jq .object.sha)"
+          [ "$kandelo_main" = "$KANDELO_REF" ] || {
+            echo "::error::first publication requires the current Kandelo main commit"; exit 1;
+          }
+
+          run_json="$RUNNER_TEMP/homebrew-first-publication-source-run.json"
+          gh api "/repos/$CALLER_REPOSITORY/actions/runs/$DRY_RUN_RUN_ID" >"$run_json"
+          jq -e \
+            --arg repository "$CALLER_REPOSITORY" \
+            --arg tap_ref "$TAP_REF" \
+            --argjson run_id "$DRY_RUN_RUN_ID" \
+            --argjson run_attempt "$DRY_RUN_RUN_ATTEMPT" '
+              .id == $run_id and
+              (.repository.full_name | ascii_downcase) == ($repository | ascii_downcase) and
+              .path == ".github/workflows/dry-run-bottles.yml" and
+              .event == "repository_dispatch" and
+              .head_branch == "main" and .head_sha == $tap_ref and
+              .run_attempt == $run_attempt and
+              .status == "completed" and .conclusion == "success"
+            ' "$run_json" >/dev/null || {
+            echo "::error::first publication source is not one exact successful protected-main dry run"; exit 1;
+          }
+
+          # WHY: Actions artifacts are immutable, but a run ID and computed
+          # name alone do not bind the archive selected by the dispatcher.
+          # Require GitHub's upload digest and exactly one unexpired match
+          # before the artifact download can expose bytes to the validator.
+          artifact_name="homebrew-oci-child-${FORMULA}-${ARCH}-attempt-${DRY_RUN_RUN_ATTEMPT}"
+          artifact_json="$RUNNER_TEMP/homebrew-first-publication-source-artifact.json"
+          gh api --method GET \
+            "/repos/$CALLER_REPOSITORY/actions/runs/$DRY_RUN_RUN_ID/artifacts" \
+            -f name="$artifact_name" -f per_page=100 >"$artifact_json"
+          jq -e \
+            --arg name "$artifact_name" \
+            --arg digest "$DRY_RUN_CHILD_ARTIFACT_DIGEST" \
+            --arg tap_ref "$TAP_REF" \
+            --argjson run_id "$DRY_RUN_RUN_ID" '
+              .total_count == 1 and (.artifacts | length) == 1 and
+              .artifacts[0].name == $name and
+              .artifacts[0].digest == $digest and
+              .artifacts[0].expired == false and
+              .artifacts[0].workflow_run.id == $run_id and
+              .artifacts[0].workflow_run.head_branch == "main" and
+              .artifacts[0].workflow_run.head_sha == $tap_ref
+            ' "$artifact_json" >/dev/null || {
+            echo "::error::first publication dry-run child artifact is absent, expired, ambiguous, or has the wrong digest"; exit 1;
+          }
+
+      - name: Checkout exact Kandelo first-publication source
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
@@ -55,14 +188,40 @@ jobs:
           path: kandelo
           submodules: false
 
-      - name: Verify exact Kandelo canary source
+      - name: Checkout exact dry-run tap source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          repository: Kandelo-dev/homebrew-tap-core
+          ref: ${{ inputs.tap-ref }}
+          path: tap
+          submodules: false
+
+      - name: Verify exact reviewed sources
         shell: bash
         env:
+          FORMULA: ${{ inputs.formula }}
           KANDELO_REF: ${{ inputs.kandelo-ref }}
+          TAP_REF: ${{ inputs.tap-ref }}
         run: |
           set -euo pipefail
           [ "$(git -C kandelo rev-parse HEAD)" = "$KANDELO_REF" ] || {
-            echo "::error::repository namespace canary source differs from its reviewed commit"; exit 2;
+            echo "::error::first-publication source differs from its reviewed Kandelo commit"; exit 2;
+          }
+          [ "$(git -C tap rev-parse HEAD)" = "$TAP_REF" ] || {
+            echo "::error::dry-run tap source differs from its reviewed commit"; exit 2;
+          }
+          [ -z "$(git -C kandelo status --short --untracked-files=all)" ] &&
+            [ -z "$(git -C tap status --short --untracked-files=all)" ] || {
+            echo "::error::first-publication source checkout is dirty"; exit 2;
+          }
+          formula_path="tap/Formula/${FORMULA}.rb"
+          [ -f "$formula_path" ] && [ ! -L "$formula_path" ] || {
+            echo "::error::first-publication Formula is not one reviewed regular file"; exit 2;
+          }
+          [ "$(git -C tap ls-files -s -- "Formula/${FORMULA}.rb" | wc -l | tr -d '[:space:]')" = 1 ] &&
+            [ "$(git -C tap ls-files -s -- "Formula/${FORMULA}.rb" | awk '{print $1}')" = 100644 ] || {
+            echo "::error::first-publication Formula is not one ordinary tracked blob"; exit 2;
           }
 
       - name: Install Nix
@@ -76,87 +235,195 @@ jobs:
           cd kandelo
           bash scripts/dev-shell.sh true
 
-      - name: Download exact GITHUB_TOKEN zlib control artifact
+      - name: Download exact dry-run OCI child handoff
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: homebrew-oci-child-zlib-wasm32-attempt-1
-          path: ${{ runner.temp }}/homebrew-repository-namespace-canary
+          name: >-
+            homebrew-oci-child-${{ inputs.formula }}-${{ inputs.arch }}-attempt-${{ inputs.dry-run-run-attempt }}
+          path: ${{ runner.temp }}/homebrew-first-publication-child
           github-token: ${{ github.token }}
           repository: Kandelo-dev/homebrew-tap-core
-          run-id: 29628202419
+          run-id: ${{ inputs.dry-run-run-id }}
 
-      - name: Validate immutable zlib control artifact without credentials
+      - name: Validate exact dry-run child handoff without credentials
         shell: bash
+        env:
+          ARCH: ${{ inputs.arch }}
+          DRY_RUN_CHILD_ARTIFACT_DIGEST: >-
+            ${{ inputs.dry-run-child-artifact-digest }}
+          DRY_RUN_RUN_ATTEMPT: ${{ inputs.dry-run-run-attempt }}
+          DRY_RUN_RUN_ID: ${{ inputs.dry-run-run-id }}
+          EXPECTED_CHILD_MANIFEST_DIGEST: >-
+            ${{ inputs.expected-child-manifest-digest }}
+          FORMULA: ${{ inputs.formula }}
+          KANDELO_REF: ${{ inputs.kandelo-ref }}
+          TAP_REF: ${{ inputs.tap-ref }}
         run: |
           set -euo pipefail
           for secret_name in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
             HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN; do
             [ -z "${!secret_name:-}" ] || {
-              echo "::error::credential-free canary validator received $secret_name"; exit 2;
+              echo "::error::credential-free first-publication validator received $secret_name"; exit 2;
             }
           done
-          artifact="$RUNNER_TEMP/homebrew-repository-namespace-canary"
+          artifact="$RUNNER_TEMP/homebrew-first-publication-child"
+          [ -d "$artifact/layout" ] && [ ! -L "$artifact/layout" ] &&
+            [ -f "$artifact/receipt.json" ] && [ ! -L "$artifact/receipt.json" ] || {
+            echo "::error::first-publication child handoff layout is incomplete or unsafe"; exit 1;
+          }
+          [ "$(find "$artifact" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d '[:space:]')" = 2 ] || {
+            echo "::error::first-publication child handoff has unexpected top-level entries"; exit 1;
+          }
+          unsafe="$(find "$artifact" -mindepth 1 \( -type l -o \( ! -type f -a ! -type d \) \) -print -quit)"
+          [ -z "$unsafe" ] || {
+            echo "::error::first-publication child handoff contains a symlink or special file"; exit 1;
+          }
           cd kandelo
           bash scripts/dev-shell.sh python3 scripts/homebrew-oci-layout.py validate-child \
             --layout "$artifact/layout" --receipt "$artifact/receipt.json"
-          jq -e '
-            .schema == 2 and .kind == "child" and
-            .formula == "zlib" and .arch == "wasm32" and
-            .tap_repository == "kandelo-dev/homebrew-tap-core" and
-            .tap_name == "kandelo-dev/tap-core" and
-            .tap_commit == "251842db9c780a021d817d337532141b078ebaf4" and
-            .kandelo_commit == "129887dcaafcac304d25f3a89f7afb97b09dcd06" and
-            .bottle.sha256 == "9bf367f25489dd76ece8a29317316149d51a63ce4b6a8c10b591d4ca18b6a1e8" and
-            .oci.manifest.digest == "sha256:7d21ffd3055e1b6ec1187a622a39196e9d585a9de6e87b4ce28fc2e9ee561feb" and
-            .oci.transport_tag == "sha256-7d21ffd3055e1b6ec1187a622a39196e9d585a9de6e87b4ce28fc2e9ee561feb"
-          ' "$artifact/receipt.json" >/dev/null
+          abi="$(sed -nE 's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' crates/shared/src/lib.rs | head -n1)"
+          [[ "$abi" =~ ^[1-9][0-9]*$ ]] || {
+            echo "::error::could not resolve the first-publication Kandelo ABI"; exit 2;
+          }
+          jq -e \
+            --arg formula "$FORMULA" \
+            --arg arch "$ARCH" \
+            --arg abi "$abi" \
+            --arg tap_ref "$TAP_REF" \
+            --arg kandelo_ref "$KANDELO_REF" \
+            --arg manifest_digest "$EXPECTED_CHILD_MANIFEST_DIGEST" '
+              .schema == 2 and .kind == "child" and
+              .formula == $formula and .arch == $arch and .abi == ($abi | tonumber) and
+              (.tap_repository | ascii_downcase) == "kandelo-dev/homebrew-tap-core" and
+              .tap_name == "kandelo-dev/tap-core" and
+              .tap_commit == $tap_ref and .kandelo_commit == $kandelo_ref and
+              .oci.manifest.digest == $manifest_digest and
+              .oci.transport_tag == ("sha256-" + ($manifest_digest | ltrimstr("sha256:")))
+            ' "$artifact/receipt.json" >/dev/null || {
+            echo "::error::first-publication child handoff does not match its exact source and manifest evidence"; exit 1;
+          }
+          result="$RUNNER_TEMP/homebrew-first-publication-result"
+          mkdir -p "$result"
+          jq -nS \
+            --arg formula "$FORMULA" \
+            --arg arch "$ARCH" \
+            --arg tap_ref "$TAP_REF" \
+            --arg kandelo_ref "$KANDELO_REF" \
+            --arg run_id "$DRY_RUN_RUN_ID" \
+            --arg run_attempt "$DRY_RUN_RUN_ATTEMPT" \
+            --arg artifact_digest "$DRY_RUN_CHILD_ARTIFACT_DIGEST" \
+            --arg manifest_digest "$EXPECTED_CHILD_MANIFEST_DIGEST" '{
+              schema: 1,
+              kind: "kandelo-homebrew-first-child-publication-evidence",
+              formula: $formula,
+              arch: $arch,
+              tap_commit: $tap_ref,
+              kandelo_commit: $kandelo_ref,
+              dry_run: {
+                run_id: ($run_id | tonumber),
+                run_attempt: ($run_attempt | tonumber),
+                artifact_digest: $artifact_digest
+              },
+              child_manifest_digest: $manifest_digest
+            }' >"$result/evidence.json"
+          # WHY: no untrusted step follows validation, but sealing the admitted
+          # layout makes the credentialed transport's data-only boundary
+          # explicit and turns accidental rewrites into immediate failures.
+          chmod -R a-w "$artifact"
 
-      - name: Create exact repository-rooted package with GITHUB_TOKEN
+      - name: Publish one absent repository-rooted child with GITHUB_TOKEN
         shell: bash
         env:
+          FORMULA: ${{ inputs.formula }}
           GH_TOKEN: ${{ github.token }}
+          KANDELO_REF: ${{ inputs.kandelo-ref }}
+          TAP_REF: ${{ inputs.tap-ref }}
         run: |
           set -euo pipefail
-          artifact="$RUNNER_TEMP/homebrew-repository-namespace-canary"
-          receipt="$RUNNER_TEMP/homebrew-repository-namespace-canary-result/receipt.json"
+          tap_main="$(gh api /repos/Kandelo-dev/homebrew-tap-core/git/ref/heads/main --jq .object.sha)"
+          [ "$tap_main" = "$TAP_REF" ] || {
+            echo "::error::tap main advanced before the first-publication write"; exit 1;
+          }
+          artifact="$RUNNER_TEMP/homebrew-first-publication-child"
+          receipt="$RUNNER_TEMP/homebrew-first-publication-result/receipt.json"
           cd kandelo
+          # WHY: repository-canary mode is stricter than normal publication.
+          # It requires authenticated package-repository absence, uploads this
+          # actual content-derived child once, and then reads its digest back
+          # anonymously. It never creates a synthetic namespace marker.
           bash scripts/dev-shell.sh bash scripts/homebrew-ghcr-upload.sh \
             --layout "$artifact/layout" \
             --layout-receipt "$artifact/receipt.json" \
             --tap-repository kandelo-dev/homebrew-tap-core \
             --tap-name kandelo-dev/tap-core \
-            --formula zlib \
+            --formula "$FORMULA" \
+            --exact-kandelo-main-sha "$KANDELO_REF" \
+            --target-main-contains-sha "$TAP_REF" \
             --auth-mode github-token \
             --require-pat false \
             --destination-mode repository-canary \
             --out-json "$receipt"
 
-      - name: Validate public canary receipt without credentials
+      - name: Validate anonymous exact-digest publication evidence
         shell: bash
+        env:
+          ARCH: ${{ inputs.arch }}
+          EXPECTED_CHILD_MANIFEST_DIGEST: >-
+            ${{ inputs.expected-child-manifest-digest }}
+          FORMULA: ${{ inputs.formula }}
+          KANDELO_REF: ${{ inputs.kandelo-ref }}
+          TAP_REF: ${{ inputs.tap-ref }}
         run: |
           set -euo pipefail
           for secret_name in GH_TOKEN GITHUB_TOKEN HOMEBREW_GITHUB_API_TOKEN \
             HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN; do
             [ -z "${!secret_name:-}" ] || {
-              echo "::error::credential-free canary receipt validator received $secret_name"; exit 2;
+              echo "::error::credential-free first-publication receipt validator received $secret_name"; exit 2;
             }
           done
-          receipt="$RUNNER_TEMP/homebrew-repository-namespace-canary-result/receipt.json"
-          jq -e '
-            .schema == 3 and .kind == "child" and .formula == "zlib" and
-            .tap_repository == "kandelo-dev/homebrew-tap-core" and
-            .tap_name == "kandelo-dev/tap-core" and
-            .publication.remote == "ghcr.io/kandelo-dev/homebrew-tap-core/zlib" and
-            .publication.reference == "sha256-7d21ffd3055e1b6ec1187a622a39196e9d585a9de6e87b4ce28fc2e9ee561feb" and
-            .publication.digest == "sha256:7d21ffd3055e1b6ec1187a622a39196e9d585a9de6e87b4ce28fc2e9ee561feb" and
-            .publication.status == "uploaded" and
-            .publication.public_readback_digest == .publication.digest
-          ' "$receipt" >/dev/null
+          artifact="$RUNNER_TEMP/homebrew-first-publication-child"
+          result="$RUNNER_TEMP/homebrew-first-publication-result"
+          jq -e \
+            --slurpfile child "$artifact/receipt.json" \
+            --arg formula "$FORMULA" \
+            --arg digest "$EXPECTED_CHILD_MANIFEST_DIGEST" \
+            --arg remote "ghcr.io/kandelo-dev/homebrew-tap-core/${FORMULA}" '
+              keys == ["formula", "kind", "layout", "layout_receipt_sha256", "publication", "schema", "tap_name", "tap_repository"] and
+              .schema == 3 and .kind == "child" and .formula == $formula and
+              .tap_repository == "kandelo-dev/homebrew-tap-core" and
+              .tap_name == "kandelo-dev/tap-core" and
+              .layout == $child[0] and
+              .publication == {
+                remote: $remote,
+                reference: ("sha256-" + ($digest | ltrimstr("sha256:"))),
+                digest: $digest,
+                previous_digest: null,
+                public_readback_digest: $digest,
+                status: "uploaded"
+              }
+            ' "$result/receipt.json" >/dev/null || {
+            echo "::error::first-publication receipt lacks the exact anonymous digest readback"; exit 1;
+          }
+          jq -e \
+            --arg formula "$FORMULA" --arg arch "$ARCH" \
+            --arg tap_ref "$TAP_REF" --arg kandelo_ref "$KANDELO_REF" \
+            --arg digest "$EXPECTED_CHILD_MANIFEST_DIGEST" '
+              keys == ["arch", "child_manifest_digest", "dry_run", "formula", "kandelo_commit", "kind", "schema", "tap_commit"] and
+              .schema == 1 and
+              .kind == "kandelo-homebrew-first-child-publication-evidence" and
+              .formula == $formula and .arch == $arch and
+              .tap_commit == $tap_ref and .kandelo_commit == $kandelo_ref and
+              .child_manifest_digest == $digest
+            ' "$result/evidence.json" >/dev/null || {
+            echo "::error::first-publication source evidence changed after validation"; exit 1;
+          }
 
-      - name: Upload public canary receipt
+      - name: Upload first-publication evidence
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: homebrew-repository-namespace-canary-result
-          path: ${{ runner.temp }}/homebrew-repository-namespace-canary-result/receipt.json
+          name: >-
+            homebrew-first-publication-${{ inputs.formula }}-${{ inputs.arch }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/homebrew-first-publication-result
+          compression-level: 0
           if-no-files-found: error
           retention-days: 14

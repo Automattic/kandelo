@@ -16,6 +16,7 @@ MERGE_METHOD=""
 PR_COMMIT_COUNT=""
 RUN_ID=""
 RUN_ATTEMPT=""
+RELEASE_ID_OUTPUT=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -34,6 +35,7 @@ while [ "$#" -gt 0 ]; do
     --pr-commit-count) PR_COMMIT_COUNT="$2"; shift 2 ;;
     --run-id) RUN_ID="$2"; shift 2 ;;
     --run-attempt) RUN_ATTEMPT="$2"; shift 2 ;;
+    --release-id-file) RELEASE_ID_OUTPUT="$2"; shift 2 ;;
     *) echo "init-merge-candidate: unknown flag $1" >&2; exit 2 ;;
   esac
 done
@@ -75,6 +77,14 @@ if [ "$MERGE_METHOD" != "squash" ] && [ "$MERGE_METHOD" != "rebase" ] &&
   echo "init-merge-candidate: merge method must be squash, rebase, or merge" >&2
   exit 2
 fi
+if [ -n "$RELEASE_ID_OUTPUT" ] && {
+     [ -L "$RELEASE_ID_OUTPUT" ] ||
+     { [ -e "$RELEASE_ID_OUTPUT" ] && [ ! -f "$RELEASE_ID_OUTPUT" ]; } ||
+     [ ! -d "$(dirname "$RELEASE_ID_OUTPUT")" ];
+   }; then
+  echo "init-merge-candidate: release ID output must be a regular file path" >&2
+  exit 2
+fi
 
 REPOSITORY="${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}"
 SERVER_URL="${GITHUB_SERVER_URL:-https://github.com}"
@@ -82,6 +92,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=.github/scripts/github-api-get.sh
 source "$SCRIPT_DIR/github-api-get.sh"
 STATE_LOCK_SCRIPT="${STATE_LOCK_SCRIPT:-.github/scripts/state-lock.sh}"
+RELEASE_LIFECYCLE_SCRIPT="${RELEASE_LIFECYCLE_SCRIPT:-$SCRIPT_DIR/package-release-lifecycle.sh}"
 LOCK_STATE="$(mktemp)"
 TMP_ROOT="$(mktemp -d)"
 
@@ -120,30 +131,43 @@ export STATE_LOCK_OWNER_DETAIL="candidate init, PR ${PR_NUMBER}"
 STATE_LOCK_STATE_FILE="$LOCK_STATE" bash "$STATE_LOCK_SCRIPT" acquire "$CANDIDATE_TAG"
 
 release_json="$TMP_ROOT/release.json"
-release_rc=0
-GITHUB_API_CONTEXT=init-merge-candidate \
-  github_api_get_json "/repos/${REPOSITORY}/releases/tags/${CANDIDATE_TAG}" "$release_json" || release_rc=$?
-if [ "$release_rc" -eq 44 ]; then
-  if ! gh_retry gh release create "$CANDIDATE_TAG" \
-    --repo "$REPOSITORY" \
-    --target "$HEAD_SHA" \
-    --title "$CANDIDATE_TAG" \
-    --prerelease \
-    --notes "Isolated package candidate for PR #${PR_NUMBER}; not resolver-visible until post-merge activation."
-  then
-    # A lost create response is success only if the exact release is visible.
-    :
-  fi
-  release_rc=0
-  GITHUB_API_CONTEXT=init-merge-candidate \
-    github_api_get_json "/repos/${REPOSITORY}/releases/tags/${CANDIDATE_TAG}" "$release_json" || release_rc=$?
+lifecycle_release_id_file="$TMP_ROOT/release-id"
+candidate_body="$TMP_ROOT/candidate-release-body.txt"
+printf '%s' \
+  "Isolated package candidate for PR #${PR_NUMBER}; not resolver-visible until post-merge activation." \
+  >"$candidate_body"
+# WHY: repository release immutability begins at publication. Candidate jobs
+# therefore share a draft while building and seal it only after its terminal
+# activation or rejection receipt has been attached.
+bash "$RELEASE_LIFECYCLE_SCRIPT" ensure-draft \
+  --tag "$CANDIDATE_TAG" \
+  --target-commit "$HEAD_SHA" \
+  --title "$CANDIDATE_TAG" \
+  --body-file "$candidate_body" \
+  --release-id-file "$lifecycle_release_id_file" \
+  --prerelease true >/dev/null
+candidate_release_id="$(cat "$lifecycle_release_id_file" 2>/dev/null || true)"
+if ! [[ "$candidate_release_id" =~ ^[1-9][0-9]*$ ]]; then
+  echo "init-merge-candidate: lifecycle did not return an exact release ID" >&2
+  exit 1
 fi
+release_rc=0
+# WHY: GitHub's release-by-tag endpoint omits drafts. The lifecycle already
+# rejects duplicate tags and returns the one exact release ID it created or
+# reused, so every read during the writable candidate phase must use that ID.
+GITHUB_API_CONTEXT=init-merge-candidate \
+  github_api_get_json "/repos/${REPOSITORY}/releases/${candidate_release_id}" \
+    "$release_json" || release_rc=$?
 if [ "$release_rc" -ne 0 ]; then
   echo "init-merge-candidate: candidate release state is uncertain" >&2
   exit 1
 fi
-if ! jq -e --arg tag "$CANDIDATE_TAG" '
-    .tag_name == $tag and (.id | type == "number" and . > 0) and
+if ! jq -e --arg tag "$CANDIDATE_TAG" \
+    --argjson release_id "$candidate_release_id" '
+    .tag_name == $tag and .id == $release_id and
+    ((.draft == true and .immutable == false) or
+      (.draft == false and .immutable == true)) and
+    .prerelease == true and
     (.created_at | type == "string" and
       test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
     (.assets | type == "array")
@@ -208,7 +232,7 @@ cargo run --release -p xtask --target "$host_target" --quiet -- \
 
 refresh_release() {
   GITHUB_API_CONTEXT=init-merge-candidate \
-    github_api_get_json "/repos/${REPOSITORY}/releases/tags/${CANDIDATE_TAG}" "$release_json"
+    github_api_get_json "/repos/${REPOSITORY}/releases/${candidate_release_id}" "$release_json"
 }
 
 ensure_immutable_asset() {
@@ -261,5 +285,15 @@ ensure_immutable_asset() {
 ensure_immutable_asset candidate.json "$expected_json"
 ensure_immutable_asset base-index.toml "$TMP_ROOT/base-index.toml"
 ensure_immutable_asset index.toml "$candidate_index"
+
+if [ -n "$RELEASE_ID_OUTPUT" ]; then
+  output_dir="$(dirname "$RELEASE_ID_OUTPUT")"
+  output_tmp="$(mktemp "$output_dir/.merge-candidate-release-id.XXXXXX")"
+  printf '%s\n' "$candidate_release_id" >"$output_tmp"
+  # WHY: downstream readers cannot resolve a draft through GitHub's tag
+  # endpoint. Publish the exact ID only after all initial candidate assets
+  # were uploaded and read back successfully.
+  mv -f "$output_tmp" "$RELEASE_ID_OUTPUT"
+fi
 
 echo "init-merge-candidate: initialized isolated candidate $CANDIDATE_TAG"

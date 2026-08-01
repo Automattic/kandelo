@@ -19,16 +19,21 @@ const source = JSON.parse(
 );
 
 describe("Homebrew shell runtime-support contract", () => {
-  it("binds one Ruby runtime delta and admits file/libmagic through the base", () => {
+  it("binds the declared runtime delta and admits file/libmagic through the base", () => {
     const contract = parseHomebrewRuntimeSupportContract(source);
     expect(contract.activation).toEqual({
       capability: "homebrew:runtime",
       root: "/usr/bin/brew",
       atomicGroup: "homebrew-runtime-support",
     });
-    expect(contract.additionalFormulaOrder).toEqual([
+    expect(contract.additionalFormulaOrder).toEqual(
+      contract.formulaOrder.filter(
+        (name) => !contract.baseFormulaOrder.includes(name),
+      ),
+    );
+    expect(contract.additionalFormulaOrder).toContain(
       "kandelo-dev/tap-core/ruby",
-    ]);
+    );
     expect(contract.deferredRelocationFormulae).toEqual([]);
     expect(contract.baseFormulaOrder).toEqual(
       expect.arrayContaining([
@@ -75,7 +80,9 @@ describe("Homebrew shell runtime-support contract", () => {
     expect(delta.packages.map((pkg) => pkg.fullName)).toEqual(
       contract.additionalFormulaOrder,
     );
-    expect(delta.packages).toHaveLength(1);
+    expect(delta.packages).toHaveLength(
+      contract.additionalFormulaOrder.length,
+    );
 
     const reordered = plan([
       contract.formulaOrder[1]!,

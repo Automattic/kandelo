@@ -7,9 +7,12 @@ cd "$REPO_ROOT"
 PORTABLE_CACHE_REL=".ci-test-binary-cache"
 PUBLICATION_BLOCKERS_REL=".ci-test-publication-blockers.json"
 HOMEBREW_BROWSER_MIRROR_STATE_REL=".ci-homebrew-browser-mirror-state.json"
+STAGING_SHELL_RECEIPT_REL=".ci-staging-shell-receipt.json"
+STAGING_SHELL_REPORT_REL=".ci-staging-shell-report.json"
 
 publication_blockers=""
 homebrew_browser_mirror_state=""
+staging_shell_handoff=""
 out=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -29,6 +32,14 @@ while [ "$#" -gt 0 ]; do
             homebrew_browser_mirror_state="$2"
             shift 2
             ;;
+        --staging-shell-handoff)
+            [ "$#" -ge 2 ] || {
+                echo "pack-ci-test-workspace: --staging-shell-handoff requires a directory" >&2
+                exit 2
+            }
+            staging_shell_handoff="$2"
+            shift 2
+            ;;
         -*)
             echo "pack-ci-test-workspace: unknown option: $1" >&2
             exit 2
@@ -44,7 +55,7 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 if [ -z "$out" ]; then
-    echo "usage: $0 [--publication-blockers <report.json>] [--homebrew-browser-mirror-state <state.json>] <out.tar.zst>" >&2
+    echo "usage: $0 [--publication-blockers <report.json>] [--homebrew-browser-mirror-state <state.json>] [--staging-shell-handoff <dir>] <out.tar.zst>" >&2
     exit 2
 fi
 
@@ -437,6 +448,7 @@ if [ -n "$homebrew_browser_mirror_state" ]; then
         echo "pack-ci-test-workspace: Homebrew browser mirror state lacks its mode" >&2
         exit 1
     }
+    state_receipt=""
     case "$mirror_state_mode" in
         resolved)
             staged_shell="$stage/binaries/programs/wasm32/shell.vfs.zst"
@@ -453,6 +465,26 @@ if [ -n "$homebrew_browser_mirror_state" ]; then
                 exit 1
             fi
             ;;
+        publication-blocked-candidate)
+            [ -n "$staging_shell_handoff" ] || {
+                echo "pack-ci-test-workspace: candidate mirror state lacks its staging handoff" >&2
+                exit 1
+            }
+            staged_shell="$stage/local-binaries/programs/wasm32/shell.vfs.zst"
+            shell_image="$(realpath "$staged_shell" 2>/dev/null || true)"
+            case "$shell_image" in
+                "$stage/local-binaries"/*) ;;
+                *)
+                    echo "pack-ci-test-workspace: staged candidate shell image escapes its snapshot" >&2
+                    exit 1
+                    ;;
+            esac
+            if [ ! -f "$shell_image" ] || [ -L "$shell_image" ]; then
+                echo "pack-ci-test-workspace: staged candidate shell image is missing" >&2
+                exit 1
+            fi
+            state_receipt="$staging_shell_handoff/receipt.json"
+            ;;
         publication-blocked)
             # WHY: source-materialized shell bytes do not exist on the producer
             # runner. Transport only checkout+blocker authority; the browser
@@ -465,11 +497,69 @@ if [ -n "$homebrew_browser_mirror_state" ]; then
             exit 1
             ;;
     esac
-    bash scripts/ci-homebrew-browser-mirror-state.sh \
-        validate producer \
-        "$staged_homebrew_browser_mirror_state" \
-        "$staged_publication_blockers" \
+    state_args=(
+        validate producer
+        "$staged_homebrew_browser_mirror_state"
+        "$staged_publication_blockers"
         "$shell_image"
+    )
+    if [ -n "$state_receipt" ]; then
+        state_args+=("$state_receipt")
+    fi
+    bash scripts/ci-homebrew-browser-mirror-state.sh "${state_args[@]}"
+fi
+
+if [ -n "$staging_shell_handoff" ]; then
+    receipt="$staging_shell_handoff/receipt.json"
+    report="$staging_shell_handoff/main-shell-report.json"
+    image="$staging_shell_handoff/main-shell.vfs.zst"
+    if [ -z "$publication_blockers" ] ||
+       ! jq -e 'any(.entries[]; .package == "shell")' \
+           "$publication_blockers" >/dev/null; then
+        echo "pack-ci-test-workspace: staging shell handoff requires one publication-blocked shell" >&2
+        exit 1
+    fi
+    if [ -z "$homebrew_browser_mirror_state" ] ||
+       [ "$(jq -er '.mode' "$homebrew_browser_mirror_state")" != \
+         publication-blocked-candidate ]; then
+        echo "pack-ci-test-workspace: staging handoff requires candidate mirror state" >&2
+        exit 1
+    fi
+    parents="$(git show --no-patch --format=%P HEAD)"
+    expected_base="$(printf '%s\n' "$parents" | awk '{print $1}')"
+    expected_head="$(printf '%s\n' "$parents" | awk '{print $2}')"
+    expected_tree="$(git rev-parse 'HEAD^{tree}')"
+    unexpected_parent="$(printf '%s\n' "$parents" | awk '{print $3}')"
+    if ! [[ "$expected_base" =~ ^[0-9a-f]{40}$ ]] ||
+       ! [[ "$expected_head" =~ ^[0-9a-f]{40}$ ]] ||
+       [ -n "$unexpected_parent" ]; then
+        echo "pack-ci-test-workspace: staging shell handoff requires the exact two-parent synthetic merge" >&2
+        exit 1
+    fi
+    expected_run_id="$(jq -er '.run_id' "$receipt")" || {
+        echo "pack-ci-test-workspace: staging shell receipt lacks its run ID" >&2
+        exit 1
+    }
+    bash scripts/verify-ci-staging-shell-handoff.sh \
+        "$receipt" "$image" "$report" \
+        "$expected_base" "$expected_head" "$expected_tree" \
+        "$expected_run_id"
+    staged_shell_link="$stage/local-binaries/programs/wasm32/shell.vfs.zst"
+    staged_shell="$(realpath "$staged_shell_link" 2>/dev/null || true)"
+    case "$staged_shell" in
+        "$stage/local-binaries"/*) ;;
+        *)
+            echo "pack-ci-test-workspace: staged handoff shell escapes local-binaries" >&2
+            exit 1
+            ;;
+    esac
+    if [ ! -f "$staged_shell" ] || [ -L "$staged_shell" ] ||
+       ! cmp -s "$image" "$staged_shell"; then
+        echo "pack-ci-test-workspace: local shell generation differs from the staging handoff" >&2
+        exit 1
+    fi
+    cp -p -- "$receipt" "$stage/$STAGING_SHELL_RECEIPT_REL"
+    cp -p -- "$report" "$stage/$STAGING_SHELL_REPORT_REL"
 fi
 
 mkdir -p "$(dirname "$out")"
@@ -488,6 +578,13 @@ if [ -f "$stage/$PUBLICATION_BLOCKERS_REL" ]; then
 fi
 if [ -f "$stage/$HOMEBREW_BROWSER_MIRROR_STATE_REL" ]; then
     tar_args+=(-C "$stage" "$HOMEBREW_BROWSER_MIRROR_STATE_REL")
+fi
+if [ -f "$stage/$STAGING_SHELL_RECEIPT_REL" ]; then
+    tar_args+=(
+        -C "$stage"
+        "$STAGING_SHELL_RECEIPT_REL"
+        "$STAGING_SHELL_REPORT_REL"
+    )
 fi
 tar_args+=(-C "$REPO_ROOT" "${items[@]}")
 tar "${tar_args[@]}"

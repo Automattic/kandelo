@@ -12,6 +12,7 @@ RELEASE_TAG=""
 TAP_REPOSITORY=""
 TAP_NAME_INPUT=""
 TAP_COMMIT=""
+TAP_CHECKOUT_COMMIT=""
 KANDELO_COMMIT=""
 BOTTLE_ROOT_URL=""
 BOTTLE=""
@@ -23,7 +24,7 @@ FORBIDDEN_ROOTS=()
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-create-build-handoff.sh --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --bottle <path> --bottle-json <path> --dependency-provenance <path> --out <dir> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--prefix-campaign-layout-sha256 <sha256>]
+usage: scripts/homebrew-create-build-handoff.sh --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> [--tap-checkout-commit <sha>] --kandelo-commit <sha> --bottle-root-url <url> --bottle <path> --bottle-json <path> --dependency-provenance <path> --out <dir> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--prefix-campaign-layout-sha256 <sha256>]
 
 Creates a handoff containing only manifest.json, bottle.json, one bottle
 archive, and bounded dependency-pour provenance. Formula sources, environment
@@ -39,6 +40,7 @@ while [ "$#" -gt 0 ]; do
     --tap-repository) TAP_REPOSITORY="${2:-}"; shift 2 ;;
     --tap-name) TAP_NAME_INPUT="${2:-}"; shift 2 ;;
     --tap-commit) TAP_COMMIT="${2:-}"; shift 2 ;;
+    --tap-checkout-commit) TAP_CHECKOUT_COMMIT="${2:-}"; shift 2 ;;
     --kandelo-commit) KANDELO_COMMIT="${2:-}"; shift 2 ;;
     --bottle-root-url) BOTTLE_ROOT_URL="${2:-}"; shift 2 ;;
     --bottle) BOTTLE="${2:-}"; shift 2 ;;
@@ -126,6 +128,11 @@ if ! [[ "$TAP_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
   echo "homebrew-create-build-handoff.sh: invalid tap commit: $TAP_COMMIT" >&2
   exit 2
 fi
+TAP_CHECKOUT_COMMIT="${TAP_CHECKOUT_COMMIT:-$TAP_COMMIT}"
+if ! [[ "$TAP_CHECKOUT_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "homebrew-create-build-handoff.sh: invalid tap checkout commit: $TAP_CHECKOUT_COMMIT" >&2
+  exit 2
+fi
 if ! [[ "$KANDELO_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
   echo "homebrew-create-build-handoff.sh: invalid Kandelo commit: $KANDELO_COMMIT" >&2
   exit 2
@@ -172,6 +179,7 @@ dependency_provenance_args=(
   --tap-repository "$TAP_REPOSITORY" \
   --tap-name "$TAP_NAME" \
   --tap-commit "$TAP_COMMIT" \
+  --tap-checkout-commit "$TAP_CHECKOUT_COMMIT" \
   --bottle-root-url "$BOTTLE_ROOT_URL"
 )
 if [ -n "$PREFIX_CAMPAIGN_LAYOUT_SHA256" ]; then
@@ -284,6 +292,7 @@ jq -nS \
   --arg tap_repository "$TAP_REPOSITORY" \
   --arg tap_name "$TAP_NAME" \
   --arg tap_commit "$TAP_COMMIT" \
+  --arg tap_checkout_commit "$TAP_CHECKOUT_COMMIT" \
   --arg kandelo_commit "$KANDELO_COMMIT" \
   --arg bottle_root_url "$BOTTLE_ROOT_URL" \
   --arg archive "$ARCHIVE_NAME" \
@@ -296,13 +305,14 @@ jq -nS \
   --arg dependency_sha256 "$DEPENDENCY_PROVENANCE_SHA256" \
   --arg dependency_bytes "$DEPENDENCY_PROVENANCE_BYTES" '
     {
-      schema: 3,
+      schema: 4,
       formula: $formula,
       arch: $arch,
       release_tag: $release_tag,
       tap_repository: $tap_repository,
       tap_name: $tap_name,
       tap_commit: $tap_commit,
+      tap_checkout_commit: $tap_checkout_commit,
       kandelo_commit: $kandelo_commit,
       bottle_root_url: $bottle_root_url,
       bottle: {
@@ -338,6 +348,7 @@ bash "$SCRIPT_ROOT/homebrew-validate-build-handoff.sh" \
   --tap-repository "$TAP_REPOSITORY" \
   --tap-name "$TAP_NAME" \
   --tap-commit "$TAP_COMMIT" \
+  --tap-checkout-commit "$TAP_CHECKOUT_COMMIT" \
   --kandelo-commit "$KANDELO_COMMIT" \
   --bottle-root-url "$BOTTLE_ROOT_URL" \
   "${validation_args[@]}" >/dev/null

@@ -38,6 +38,9 @@ git clone --quiet --branch main "$REMOTE" "$CHECKOUT"
 
 CANDIDATE_TAG="merge-candidate-abi-v39-pr-1-run-2-attempt-1"
 CANONICAL_TAG="binaries-abi-v39"
+export GH_STUB_CANDIDATE_TARGET="$HEAD_SHA"
+export GH_STUB_CANONICAL_TAG="$CANONICAL_TAG"
+export GH_STUB_CANONICAL_TARGET="$MERGE_SHA"
 RELEASES="$TMP_ROOT/releases"
 mkdir -p "$RELEASES/$CANDIDATE_TAG" "$RELEASES/$CANONICAL_TAG"
 
@@ -171,7 +174,11 @@ case "$command_name" in
       exit 1
     fi
     [ "$include" = false ] || printf 'HTTP/2.0 200 OK\n\n'
-    printf '{"id":7,"tag_name":"%s","body":"managed","assets":[' "$tag"
+    target="${GH_STUB_CANDIDATE_TARGET:?}"
+    if [ "$tag" = "${GH_STUB_CANONICAL_TAG:?}" ]; then
+      target="${GH_STUB_CANONICAL_TARGET:?}"
+    fi
+    printf '{"id":7,"tag_name":"%s","target_commitish":"%s","body":"managed","assets":[' "$tag" "$target"
     separator=""
     for path in "$release_dir"/*; do
       [ -f "$path" ] || continue
@@ -375,6 +382,15 @@ esac
 EOF
 chmod +x "$INDEX_STATE_STUB"
 
+RELEASE_LIFECYCLE_STUB="$TMP_ROOT/package-release-lifecycle.sh"
+cat >"$RELEASE_LIFECYCLE_STUB" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = seal-publish ]; then printf 'immutable\n'
+else printf 'draft\n'; fi
+EOF
+chmod +x "$RELEASE_LIFECYCLE_STUB"
+
 UPLOAD_LOG="$TMP_ROOT/uploads.log"
 STATUS_LOG="$TMP_ROOT/status.log"
 touch "$UPLOAD_LOG" "$LOCK_LOG" "$STATUS_LOG"
@@ -466,6 +482,9 @@ grep -q 'current merge-gate authority changed' "$TMP_ROOT/authority-cas.err"
 rm "$RELEASES/$CANDIDATE_TAG/ready.json"
 if (cd "$CHECKOUT" && \
     GH_STUB_RELEASES="$RELEASES" \
+    GH_STUB_CANDIDATE_TARGET="$HEAD_SHA" \
+    GH_STUB_CANONICAL_TAG="$CANONICAL_TAG" \
+    GH_STUB_CANONICAL_TARGET="$MERGE_SHA" \
     GH_STUB_UPLOAD_LOG="$UPLOAD_LOG" \
     GH_STUB_STATUS_LOG="$STATUS_LOG" \
     GH_STUB_READY_UPLOAD_HOOK="$ADVANCE_DEFAULT_HOOK" \
@@ -571,6 +590,7 @@ run_activation() {
     STATE_LOCK_SCRIPT="$STATE_LOCK_STUB" \
     STATUS_SCRIPT="$STATUS_STUB" \
     RELEASE_INDEX_STATE_SCRIPT="$INDEX_STATE_STUB" \
+    RELEASE_LIFECYCLE_SCRIPT="$RELEASE_LIFECYCLE_STUB" \
     VERIFY_SCRIPT="$VERIFY" \
     PATH="${JQ_STUB_PATH:+$JQ_STUB_PATH:}$STUB_BIN:$PATH" \
     "$ACTIVATE" "${activation_args[@]}")

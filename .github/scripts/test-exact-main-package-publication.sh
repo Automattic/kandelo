@@ -9,6 +9,7 @@ EXACT_REBUILD_ACTION="$REPO_ROOT/.github/actions/exact-main-package-rebuild/acti
 DEV_SHELL="$REPO_ROOT/scripts/dev-shell.sh"
 INDEX_UPDATE="$REPO_ROOT/scripts/index-update.sh"
 INDEX_STATE="$REPO_ROOT/scripts/release-index-state.sh"
+RELEASE_LIFECYCLE="$REPO_ROOT/.github/scripts/package-release-lifecycle.sh"
 ARCHIVE_ACTION="$REPO_ROOT/.github/actions/package-archive-build/action.yml"
 STAGING="$REPO_ROOT/.github/workflows/staging-build.yml"
 PREPARE="$REPO_ROOT/.github/workflows/prepare-merge.yml"
@@ -384,8 +385,13 @@ upload_guard_line="$(
 canonical_retry_count="$(
   grep -Fc 'gh_retry --canonical-mutation' "$INDEX_UPDATE"
 )"
-[ "$canonical_retry_count" -eq 3 ] ||
-  fail "release creation and archive deletes must recheck main on every retry"
+[ "$canonical_retry_count" -eq 2 ] ||
+  fail "archive deletes must recheck main on every retry"
+grep -Fq -- '--canonical-source-sha "$CANONICAL_SOURCE_SHA"' \
+  "$INDEX_UPDATE" ||
+  fail "canonical release creation does not pass exact-main authority"
+grep -Fq 'require_write_authority' "$RELEASE_LIFECYCLE" ||
+  fail "draft creation and publication do not recheck exact-main authority"
 retry_guard_line="$(
   grep -n '! require_canonical_source_authority' "$INDEX_UPDATE" |
     head -1 | cut -d: -f1

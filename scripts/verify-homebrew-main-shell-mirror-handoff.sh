@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT=""
+PUBLICATION_MODE=""
 EXPECTED_KANDELO=""
 EXPECTED_TAP_CATALOG=""
 EXPECTED_TAP_MIRROR_AUTHORITY=""
@@ -14,6 +15,7 @@ MAX_MIRROR_ASSETS=256
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --root) ROOT="$2"; shift 2 ;;
+    --publication-mode) PUBLICATION_MODE="$2"; shift 2 ;;
     --kandelo-ref) EXPECTED_KANDELO="$2"; shift 2 ;;
     --tap-catalog-ref) EXPECTED_TAP_CATALOG="$2"; shift 2 ;;
     --tap-mirror-authority-ref)
@@ -25,20 +27,46 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+case "$PUBLICATION_MODE" in
+  create-mirror|publish-lifecycle) ;;
+  *)
+    echo "verify-homebrew-main-shell-mirror-handoff: exact publication mode is required" >&2
+    exit 2
+    ;;
+esac
+
 for value in \
   "$EXPECTED_KANDELO" "$EXPECTED_TAP_CATALOG" \
   "$EXPECTED_TAP_MIRROR_AUTHORITY" "$EXPECTED_TAP_CALLER_AUTHORITY" \
   "$EXPECTED_CANARY"
 do
   [[ "$value" =~ ^[0-9a-f]{40}$ ]] || {
-    echo "verify-homebrew-main-shell-mirror-handoff: exact M/TF/TA0/TA1/C refs are required" >&2
+    echo "verify-homebrew-main-shell-mirror-handoff: exact M/TF/mirror/caller/C refs are required" >&2
     exit 2
   }
 done
-[ "$EXPECTED_TAP_MIRROR_AUTHORITY" != "$EXPECTED_TAP_CALLER_AUTHORITY" ] || {
-  echo "verify-homebrew-main-shell-mirror-handoff: mirror and caller authorities must differ" >&2
-  exit 2
-}
+case "$PUBLICATION_MODE" in
+  create-mirror)
+    # WHY: a new immutable mirror truthfully belongs to the protected commit
+    # that writes it. Allowing two authorities here would let TA0 publish bytes
+    # under an unrelated or earlier commit identity.
+    [ "$EXPECTED_TAP_MIRROR_AUTHORITY" = \
+      "$EXPECTED_TAP_CALLER_AUTHORITY" ] || {
+      echo "verify-homebrew-main-shell-mirror-handoff: mirror creation must use the caller authority" >&2
+      exit 2
+    }
+    ;;
+  publish-lifecycle)
+    # WHY: lifecycle publication is a later consume-only stage. Keeping TA0
+    # distinct from TA1 prevents that stage from claiming it created the
+    # already immutable mirror it only verifies.
+    [ "$EXPECTED_TAP_MIRROR_AUTHORITY" != \
+      "$EXPECTED_TAP_CALLER_AUTHORITY" ] || {
+      echo "verify-homebrew-main-shell-mirror-handoff: lifecycle publication requires distinct authorities" >&2
+      exit 2
+    }
+    ;;
+esac
 if [ -z "$ROOT" ] || [ ! -d "$ROOT" ] || [ -L "$ROOT" ]; then
   echo "verify-homebrew-main-shell-mirror-handoff: --root must be a regular directory" >&2
   exit 2

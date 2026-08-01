@@ -30,7 +30,7 @@ test("Vite builds the private page only beside the real closed product inputs", 
       Object.keys(
         closed.config.build?.rollupOptions?.input as Record<string, string>,
       ).sort(),
-      ["homebrew-vfs-test", "kandelo", "main", "network"],
+      ["homebrew-vfs-test", "main"],
     );
 
     delete process.env.VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT;

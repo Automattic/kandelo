@@ -1,10 +1,12 @@
 //! Strict validation for reusing a mutable PR-staging package release.
 //!
-//! A release is a safe baseline only when its index covers every package/arch
-//! that staging CI manages and every indexed archive is backed by one exact,
-//! uploaded release asset whose size and GitHub-computed digest are usable.
-//! Current package metadata is checked separately so a structurally complete
-//! prior run can be combined only with an exact-current canonical complement.
+//! A release is a safe baseline only when each selected package/arch is backed
+//! by one exact uploaded release asset whose size and GitHub-computed digest
+//! are usable. A complete release may stand alone. A sparse PR release is safe
+//! only when its reviewed matrix forms a disjoint, identity-exact partition
+//! with a separately validated canonical complement. Remote composition binds
+//! both validation snapshots, prunes extras, and preserves each source's exact
+//! release URL so a missing selected row cannot fall back to canonical bytes.
 //! `validate-generation --source-release-tag` binds an independently verified
 //! release locator; archive manifests remain the authority for producer provenance.
 
@@ -19,7 +21,7 @@ use crate::build_deps::{
     Registry, compute_cache_key_sha_for_package, source_build_input_components,
     source_cache_identities,
 };
-use crate::index_toml::{EntryStatus, IndexToml, PackageEntry};
+use crate::index_toml::{BinaryEntry, EntryStatus, IndexToml, PackageEntry};
 use crate::pkg_manifest::{
     BuildToml, DepsManifest, GitBuildInput, ManifestKind, TargetArch, validate_git_build_inputs,
 };
@@ -208,8 +210,16 @@ fn run_compose(args: &[String]) -> Result<(), String> {
     let flags = Flags::parse(args)?;
     flags.reject_unknown(&[
         "--base-index",
+        "--base-expected-ledger",
+        "--base-snapshot",
+        "--base-release-tag",
+        "--base-release-base-url",
         "--overlay-index",
         "--overlay-expected-ledger",
+        "--overlay-snapshot",
+        "--overlay-release-tag",
+        "--overlay-release-base-url",
+        "--complete-expected-ledger",
         "--output",
     ])?;
     let base_path = flags.required_path("--base-index")?;
@@ -218,7 +228,51 @@ fn run_compose(args: &[String]) -> Result<(), String> {
     validate_expected_ledger(&expected)?;
     let base = read_index(base_path)?;
     let overlay = read_index(overlay_path)?;
-    let composed = compose_indexes(&base, &overlay, &expected)?;
+    let remote_flags = [
+        "--base-expected-ledger",
+        "--base-snapshot",
+        "--base-release-tag",
+        "--base-release-base-url",
+        "--overlay-release-tag",
+        "--overlay-release-base-url",
+        "--overlay-snapshot",
+        "--complete-expected-ledger",
+    ];
+    let remote_flag_count = remote_flags
+        .iter()
+        .filter(|flag| flags.values(flag).next().is_some())
+        .count();
+    let composed = if remote_flag_count == 0 {
+        compose_indexes(&base, &overlay, &expected)?
+    } else {
+        if remote_flag_count != remote_flags.len() {
+            return Err(format!(
+                "remote compose requires all of: {}",
+                remote_flags.join(", ")
+            ));
+        }
+        let base_expected: ExpectedLedger =
+            read_json(flags.required_path("--base-expected-ledger")?)?;
+        let complete_expected: ExpectedLedger =
+            read_json(flags.required_path("--complete-expected-ledger")?)?;
+        let base_snapshot: ValidatedSnapshot =
+            read_json(flags.required_path("--base-snapshot")?)?;
+        let overlay_snapshot: ValidatedSnapshot =
+            read_json(flags.required_path("--overlay-snapshot")?)?;
+        compose_release_indexes(
+            &base,
+            &base_expected,
+            &base_snapshot,
+            flags.required("--base-release-tag")?,
+            flags.required("--base-release-base-url")?,
+            &overlay,
+            &expected,
+            &overlay_snapshot,
+            flags.required("--overlay-release-tag")?,
+            flags.required("--overlay-release-base-url")?,
+            &complete_expected,
+        )?
+    };
     std::fs::write(flags.required_path("--output")?, composed.write())
         .map_err(|e| format!("write composed index: {e}"))
 }
@@ -2028,6 +2082,486 @@ fn compose_indexes(
     Ok(composed)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn compose_release_indexes(
+    base: &IndexToml,
+    base_expected: &ExpectedLedger,
+    base_snapshot: &ValidatedSnapshot,
+    base_release_tag: &str,
+    base_release_base_url: &str,
+    overlay: &IndexToml,
+    overlay_expected: &ExpectedLedger,
+    overlay_snapshot: &ValidatedSnapshot,
+    overlay_release_tag: &str,
+    overlay_release_base_url: &str,
+    complete_expected: &ExpectedLedger,
+) -> Result<IndexToml, String> {
+    validate_expected_partition(base_expected, overlay_expected, complete_expected)?;
+
+    if !base_expected.entries.is_empty() {
+        validate_snapshot_binding(
+            base,
+            base_expected,
+            base_snapshot,
+            base_release_tag,
+            "base",
+        )?;
+    }
+    validate_snapshot_binding(
+        overlay,
+        overlay_expected,
+        overlay_snapshot,
+        overlay_release_tag,
+        "overlay",
+    )?;
+
+    let mut base = project_expected_index(base, base_expected, "base")?;
+    let mut overlay = project_expected_index(overlay, overlay_expected, "overlay")?;
+    absolutize_projected_index(&mut base, base_release_tag, base_release_base_url, "base")?;
+    absolutize_projected_index(
+        &mut overlay,
+        overlay_release_tag,
+        overlay_release_base_url,
+        "overlay",
+    )?;
+
+    let overlay_keys = overlay_expected
+        .entries
+        .iter()
+        .map(|entry| (entry.package.as_str(), entry.arch))
+        .collect::<BTreeSet<_>>();
+    let mut composed = IndexToml::empty(
+        complete_expected.abi_version,
+        std::cmp::max(&base.generated_at, &overlay.generated_at).clone(),
+        "xtask staging-reuse compose verified release union".into(),
+    );
+    for wanted in &complete_expected.entries {
+        let source = if overlay_keys.contains(&(wanted.package.as_str(), wanted.arch)) {
+            &overlay
+        } else {
+            &base
+        };
+        let (_, binary) = exact_expected_binary(source, wanted, "partition source")?;
+        if let Some(package) = composed
+            .packages
+            .iter_mut()
+            .find(|package| package.name == wanted.package)
+        {
+            if package.version != wanted.version || package.revision != wanted.revision {
+                return Err(format!(
+                    "complete ledger splits package {} across identities",
+                    wanted.package
+                ));
+            }
+            if package.binary.insert(wanted.arch, binary.clone()).is_some() {
+                return Err(format!(
+                    "complete ledger repeats {} {}",
+                    wanted.package,
+                    wanted.arch.as_str()
+                ));
+            }
+        } else {
+            composed.packages.push(PackageEntry {
+                name: wanted.package.clone(),
+                version: wanted.version.clone(),
+                revision: wanted.revision,
+                binary: BTreeMap::from([(wanted.arch, binary.clone())]),
+            });
+        }
+    }
+    composed
+        .packages
+        .sort_by(|left, right| left.name.cmp(&right.name));
+    validate_exact_composed_index(
+        &composed,
+        base_expected,
+        base_release_base_url,
+        overlay_expected,
+        overlay_release_base_url,
+        complete_expected,
+    )?;
+    Ok(composed)
+}
+
+fn validate_expected_partition(
+    base: &ExpectedLedger,
+    overlay: &ExpectedLedger,
+    complete: &ExpectedLedger,
+) -> Result<(), String> {
+    if base.entries.is_empty() {
+        if base.abi_version != complete.abi_version {
+            return Err("empty base partition has the wrong ABI".into());
+        }
+    } else {
+        validate_expected_ledger(base)?;
+    }
+    validate_expected_ledger(overlay)?;
+    validate_expected_ledger(complete)?;
+    if base.abi_version != complete.abi_version || overlay.abi_version != complete.abi_version {
+        return Err(format!(
+            "release partition ABI mismatch: base={}, overlay={}, complete={}",
+            base.abi_version, overlay.abi_version, complete.abi_version
+        ));
+    }
+
+    let complete_by_key = complete
+        .entries
+        .iter()
+        .map(|entry| ((entry.package.as_str(), entry.arch), entry))
+        .collect::<BTreeMap<_, _>>();
+    let mut found = BTreeMap::new();
+    for (authority, ledger) in [("base", base), ("overlay", overlay)] {
+        for entry in &ledger.entries {
+            let key = (entry.package.as_str(), entry.arch);
+            if found.insert(key, authority).is_some() {
+                return Err(format!(
+                    "release partition assigns {} {} to both authorities",
+                    entry.package,
+                    entry.arch.as_str()
+                ));
+            }
+            if complete_by_key.get(&key).copied() != Some(entry) {
+                return Err(format!(
+                    "release partition {authority} identity differs from complete ledger for {} {}",
+                    entry.package,
+                    entry.arch.as_str()
+                ));
+            }
+        }
+    }
+    if found.len() != complete_by_key.len() {
+        return Err(format!(
+            "release partition covers {} entries, complete ledger requires {}",
+            found.len(),
+            complete_by_key.len()
+        ));
+    }
+    Ok(())
+}
+
+fn project_expected_index(
+    index: &IndexToml,
+    expected: &ExpectedLedger,
+    label: &str,
+) -> Result<IndexToml, String> {
+    if index.abi_version != expected.abi_version {
+        return Err(format!(
+            "{label} index ABI {} does not match expected ABI {}",
+            index.abi_version, expected.abi_version
+        ));
+    }
+    index.validate_archive_abi_versions()?;
+    reject_managed_package_splits(index, expected)?;
+
+    let mut projected = IndexToml::empty(
+        index.abi_version,
+        index.generated_at.clone(),
+        index.generator.clone(),
+    );
+    for wanted in &expected.entries {
+        let (_, binary) = exact_expected_binary(index, wanted, label)?;
+        validate_localized_expected_binary(binary, wanted, index.abi_version, label)?;
+        if let Some(package) = projected
+            .packages
+            .iter_mut()
+            .find(|package| package.name == wanted.package)
+        {
+            if package.version != wanted.version || package.revision != wanted.revision {
+                return Err(format!(
+                    "{label} expected ledger splits package {} across identities",
+                    wanted.package
+                ));
+            }
+            package.binary.insert(wanted.arch, binary.clone());
+        } else {
+            projected.packages.push(PackageEntry {
+                name: wanted.package.clone(),
+                version: wanted.version.clone(),
+                revision: wanted.revision,
+                binary: BTreeMap::from([(wanted.arch, binary.clone())]),
+            });
+        }
+    }
+    ensure_localized_index(&projected, label)?;
+    Ok(projected)
+}
+
+fn validate_snapshot_binding(
+    index: &IndexToml,
+    expected: &ExpectedLedger,
+    snapshot: &ValidatedSnapshot,
+    release_tag: &str,
+    label: &str,
+) -> Result<(), String> {
+    if snapshot.abi_version != expected.abi_version
+        || snapshot.release_tag != release_tag
+        || !snapshot.complete_current
+        || snapshot.entries.len() != expected.entries.len()
+    {
+        return Err(format!(
+            "{label} snapshot does not bind the exact current expected release"
+        ));
+    }
+    let snapshot_by_key = snapshot
+        .entries
+        .iter()
+        .map(|entry| ((entry.package.as_str(), entry.arch), entry))
+        .collect::<BTreeMap<_, _>>();
+    if snapshot_by_key.len() != snapshot.entries.len() {
+        return Err(format!("{label} snapshot repeats a package/architecture"));
+    }
+    for wanted in &expected.entries {
+        let snapshot_entry = snapshot_by_key
+            .get(&(wanted.package.as_str(), wanted.arch))
+            .copied()
+            .ok_or_else(|| {
+                format!(
+                    "{label} snapshot lacks {} {}",
+                    wanted.package,
+                    wanted.arch.as_str()
+                )
+            })?;
+        if !snapshot_entry.current
+            || snapshot_entry.kind != wanted.kind
+            || snapshot_entry.version != wanted.version
+            || snapshot_entry.revision != wanted.revision
+            || snapshot_entry.cache_key_sha != wanted.cache_key_sha
+            || snapshot_entry.size == 0
+        {
+            return Err(format!(
+                "{label} snapshot identity differs for {} {}",
+                wanted.package,
+                wanted.arch.as_str()
+            ));
+        }
+        validate_sha256(&snapshot_entry.archive_sha256, "snapshot archive_sha256")?;
+        let (_, binary) = exact_expected_binary(index, wanted, label)?;
+        validate_localized_expected_binary(binary, wanted, index.abi_version, label)?;
+        if binary.archive_url.as_deref() != Some(snapshot_entry.asset.as_str())
+            || binary.archive_sha256.as_deref()
+                != Some(snapshot_entry.archive_sha256.as_str())
+        {
+            return Err(format!(
+                "{label} localized index and snapshot differ for {} {}",
+                wanted.package,
+                wanted.arch.as_str()
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_localized_expected_binary(
+    binary: &BinaryEntry,
+    wanted: &ExpectedEntry,
+    abi_version: u32,
+    label: &str,
+) -> Result<(), String> {
+    let expected_asset = format!(
+        "{}-{}-rev{}-abi{}-{}-{}.tar.zst",
+        wanted.package,
+        wanted.version,
+        wanted.revision,
+        abi_version,
+        wanted.arch.as_str(),
+        &wanted.cache_key_sha[..8]
+    );
+    if binary.archive_url.as_deref() != Some(expected_asset.as_str()) {
+        return Err(format!(
+            "{label} index {} {} does not name exact asset {expected_asset:?}",
+            wanted.package,
+            wanted.arch.as_str()
+        ));
+    }
+    Ok(())
+}
+
+fn exact_expected_binary<'a>(
+    index: &'a IndexToml,
+    wanted: &ExpectedEntry,
+    label: &str,
+) -> Result<(&'a PackageEntry, &'a BinaryEntry), String> {
+    let package = index
+        .packages
+        .iter()
+        .find(|package| package.name == wanted.package && package.version == wanted.version)
+        .ok_or_else(|| format!("{label} index lacks {}@{}", wanted.package, wanted.version))?;
+    if package.revision != wanted.revision {
+        return Err(format!(
+            "{label} index {} revision {} does not match expected {}",
+            wanted.package, package.revision, wanted.revision
+        ));
+    }
+    let binary = package.binary.get(&wanted.arch).ok_or_else(|| {
+        format!(
+            "{label} index lacks {} {}",
+            wanted.package,
+            wanted.arch.as_str()
+        )
+    })?;
+    if binary.status != EntryStatus::Success
+        || binary.cache_key_sha.as_deref() != Some(wanted.cache_key_sha.as_str())
+    {
+        return Err(format!(
+            "{label} index {} {} is not the exact current success",
+            wanted.package,
+            wanted.arch.as_str()
+        ));
+    }
+    let archive_url = required_entry_field(
+        binary.archive_url.as_deref(),
+        &wanted.package,
+        wanted.arch,
+        "archive_url",
+    )?;
+    if archive_url.is_empty() {
+        return Err(format!(
+            "{label} index {} {} has an empty archive URL",
+            wanted.package,
+            wanted.arch.as_str()
+        ));
+    }
+    let archive_sha = required_entry_field(
+        binary.archive_sha256.as_deref(),
+        &wanted.package,
+        wanted.arch,
+        "archive_sha256",
+    )?;
+    validate_sha256(archive_sha, "archive_sha256")?;
+    for (field, value) in [
+        ("error", binary.error.as_deref()),
+        ("last_attempt", binary.last_attempt.as_deref()),
+        ("last_attempt_by", binary.last_attempt_by.as_deref()),
+        ("fallback_archive_url", binary.fallback_archive_url.as_deref()),
+        (
+            "fallback_archive_sha256",
+            binary.fallback_archive_sha256.as_deref(),
+        ),
+        (
+            "fallback_cache_key_sha",
+            binary.fallback_cache_key_sha.as_deref(),
+        ),
+        ("fallback_built_at", binary.fallback_built_at.as_deref()),
+    ] {
+        if value.is_some() {
+            return Err(format!(
+                "{label} exact success {} {} unexpectedly carries {field}",
+                wanted.package,
+                wanted.arch.as_str()
+            ));
+        }
+    }
+    for (field, value) in [
+        ("built_at", binary.built_at.as_deref()),
+        ("built_by", binary.built_by.as_deref()),
+    ] {
+        if !value.is_some_and(|value| !value.is_empty()) {
+            return Err(format!(
+                "{label} exact success {} {} lacks {field}",
+                wanted.package,
+                wanted.arch.as_str()
+            ));
+        }
+    }
+    Ok((package, binary))
+}
+
+fn absolutize_projected_index(
+    index: &mut IndexToml,
+    release_tag: &str,
+    release_base_url: &str,
+    label: &str,
+) -> Result<(), String> {
+    validate_release_tag(release_tag)?;
+    validate_release_base_url(release_base_url, release_tag)?;
+    ensure_localized_index(index, label)?;
+    for package in &mut index.packages {
+        for binary in package.binary.values_mut() {
+            for value in [&mut binary.archive_url, &mut binary.fallback_archive_url] {
+                if let Some(asset) = value {
+                    *asset = format!("{release_base_url}{asset}");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_exact_composed_index(
+    index: &IndexToml,
+    base_expected: &ExpectedLedger,
+    base_release_base_url: &str,
+    overlay_expected: &ExpectedLedger,
+    overlay_release_base_url: &str,
+    complete_expected: &ExpectedLedger,
+) -> Result<(), String> {
+    if index.abi_version != complete_expected.abi_version {
+        return Err("composed release index changed ABI".into());
+    }
+    index.validate_archive_abi_versions()?;
+    let base_keys = base_expected
+        .entries
+        .iter()
+        .map(|entry| (entry.package.as_str(), entry.arch))
+        .collect::<BTreeSet<_>>();
+    let overlay_keys = overlay_expected
+        .entries
+        .iter()
+        .map(|entry| (entry.package.as_str(), entry.arch))
+        .collect::<BTreeSet<_>>();
+    let actual_count = index
+        .packages
+        .iter()
+        .map(|package| package.binary.len())
+        .sum::<usize>();
+    if actual_count != complete_expected.entries.len() {
+        return Err(format!(
+            "composed release index contains {actual_count} entries, expected {}",
+            complete_expected.entries.len()
+        ));
+    }
+    for wanted in &complete_expected.entries {
+        let (_, binary) = exact_expected_binary(index, wanted, "composed")?;
+        let expected_base = if overlay_keys.contains(&(wanted.package.as_str(), wanted.arch)) {
+            overlay_release_base_url
+        } else if base_keys.contains(&(wanted.package.as_str(), wanted.arch)) {
+            base_release_base_url
+        } else {
+            return Err(format!(
+                "composed authority is missing for {} {}",
+                wanted.package,
+                wanted.arch.as_str()
+            ));
+        };
+        for (field, value) in [
+            ("archive_url", binary.archive_url.as_deref()),
+            (
+                "fallback_archive_url",
+                binary.fallback_archive_url.as_deref(),
+            ),
+        ] {
+            if let Some(value) = value {
+                let asset = value.strip_prefix(expected_base).ok_or_else(|| {
+                    format!(
+                        "composed {} {} {field} uses the wrong release authority: {value:?}",
+                        wanted.package,
+                        wanted.arch.as_str()
+                    )
+                })?;
+                if asset.contains(['/', '\\']) || asset.contains("..") || asset.is_empty() {
+                    return Err(format!(
+                        "composed {} {} {field} has an unsafe asset name",
+                        wanted.package,
+                        wanted.arch.as_str()
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn ensure_localized_index(index: &IndexToml, context: &str) -> Result<(), String> {
     for package in &index.packages {
         for (arch, entry) in &package.binary {
@@ -3740,6 +4274,348 @@ index_url = "https://example.test/binaries-abi-v{abi}/index.toml"
                 "combining architecture generations must not relabel an existing package"
             );
         }
+    }
+
+    fn wasm64_overlay_fixture() -> (ExpectedLedger, IndexToml) {
+        let mut expected = expected();
+        expected.entries[0].arch = TargetArch::Wasm64;
+        let mut overlay = index();
+        let mut binary = overlay.packages[0]
+            .binary
+            .remove(&TargetArch::Wasm32)
+            .unwrap();
+        binary.archive_url =
+            Some("zlib-1.3.1-rev2-abi39-wasm64-aaaaaaaa.tar.zst".into());
+        overlay
+            .packages[0]
+            .binary
+            .insert(TargetArch::Wasm64, binary);
+        (expected, overlay)
+    }
+
+    fn snapshot_for_expected_index(
+        expected: &ExpectedLedger,
+        index: &IndexToml,
+        release_tag: &str,
+    ) -> ValidatedSnapshot {
+        ValidatedSnapshot {
+            abi_version: expected.abi_version,
+            release_tag: release_tag.into(),
+            complete_current: true,
+            entries: expected
+                .entries
+                .iter()
+                .map(|wanted| {
+                    let (_, binary) = exact_expected_binary(index, wanted, "test").unwrap();
+                    ValidatedEntry {
+                        package: wanted.package.clone(),
+                        kind: wanted.kind,
+                        arch: wanted.arch,
+                        version: wanted.version.clone(),
+                        revision: wanted.revision,
+                        cache_key_sha: wanted.cache_key_sha.clone(),
+                        current: true,
+                        asset: binary.archive_url.clone().unwrap(),
+                        archive_sha256: binary.archive_sha256.clone().unwrap(),
+                        size: 123,
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn compose_release_indexes_preserves_disjoint_authorities_and_prunes_extras() {
+        let base_expected = expected();
+        let (overlay_expected, mut overlay) = wasm64_overlay_fixture();
+        let mut complete_expected = base_expected.clone();
+        complete_expected
+            .entries
+            .extend(overlay_expected.entries.clone());
+
+        let mut base = index();
+        let mut unexpected = base.packages[0].clone();
+        unexpected.name = "unexpected".into();
+        base.packages.push(unexpected);
+        overlay.packages[0]
+            .binary
+            .insert(TargetArch::Wasm32, binary());
+        let mut overlay_extra = overlay.packages[0].clone();
+        overlay_extra.name = "overlay-extra".into();
+        overlay.packages.push(overlay_extra);
+
+        let base_url =
+            "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v39/";
+        let overlay_url =
+            "https://github.com/Automattic/kandelo/releases/download/pr-1160-staging/";
+        let base_snapshot =
+            snapshot_for_expected_index(&base_expected, &base, "binaries-abi-v39");
+        let overlay_snapshot =
+            snapshot_for_expected_index(&overlay_expected, &overlay, "pr-1160-staging");
+        let composed = compose_release_indexes(
+            &base,
+            &base_expected,
+            &base_snapshot,
+            "binaries-abi-v39",
+            base_url,
+            &overlay,
+            &overlay_expected,
+            &overlay_snapshot,
+            "pr-1160-staging",
+            overlay_url,
+            &complete_expected,
+        )
+        .unwrap();
+
+        assert_eq!(composed.packages.len(), 1, "unmanaged extras are pruned");
+        let binaries = &composed.packages[0].binary;
+        assert_eq!(binaries.len(), 2);
+        assert_eq!(
+            binaries[&TargetArch::Wasm32].archive_url.as_deref(),
+            Some(
+                "https://github.com/Automattic/kandelo/releases/download/\
+                 binaries-abi-v39/zlib-1.3.1-rev2-abi39-wasm32-aaaaaaaa.tar.zst"
+            )
+        );
+        assert_eq!(
+            binaries[&TargetArch::Wasm64].archive_url.as_deref(),
+            Some(
+                "https://github.com/Automattic/kandelo/releases/download/\
+                 pr-1160-staging/zlib-1.3.1-rev2-abi39-wasm64-aaaaaaaa.tar.zst"
+            )
+        );
+    }
+
+    #[test]
+    fn compose_release_indexes_supports_an_exact_target_only_projection() {
+        let complete_expected = expected();
+        let mut target = index();
+        let mut extra = target.packages[0].clone();
+        extra.name = "not-in-ledger".into();
+        target.packages.push(extra);
+        let target_snapshot = snapshot_for_expected_index(
+            &complete_expected,
+            &target,
+            "pr-1160-staging",
+        );
+        let empty_base = ExpectedLedger {
+            abi_version: ABI,
+            entries: Vec::new(),
+        };
+        let base_snapshot = target_snapshot.clone();
+        let composed = compose_release_indexes(
+            &target,
+            &empty_base,
+            &base_snapshot,
+            "binaries-abi-v39",
+            "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v39/",
+            &target,
+            &complete_expected,
+            &target_snapshot,
+            "pr-1160-staging",
+            "https://github.com/Automattic/kandelo/releases/download/pr-1160-staging/",
+            &complete_expected,
+        )
+        .unwrap();
+        assert_eq!(composed.packages.len(), 1);
+        assert_eq!(composed.packages[0].name, "zlib");
+        assert!(
+            composed.packages[0].binary[&TargetArch::Wasm32]
+                .archive_url
+                .as_deref()
+                .unwrap()
+                .contains("/pr-1160-staging/")
+        );
+    }
+
+    #[test]
+    fn compose_release_indexes_rejects_partition_and_authority_substitution() {
+        let base_expected = expected();
+        let (overlay_expected, mut overlay) = wasm64_overlay_fixture();
+        let mut complete_expected = base_expected.clone();
+        complete_expected
+            .entries
+            .extend(overlay_expected.entries.clone());
+        let base_url =
+            "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v39/";
+        let overlay_url =
+            "https://github.com/Automattic/kandelo/releases/download/pr-1160-staging/";
+        let base_snapshot =
+            snapshot_for_expected_index(&base_expected, &index(), "binaries-abi-v39");
+        let overlay_snapshot =
+            snapshot_for_expected_index(&overlay_expected, &overlay, "pr-1160-staging");
+
+        let mut overlapping = overlay_expected.clone();
+        overlapping.entries.push(base_expected.entries[0].clone());
+        assert!(
+            validate_expected_partition(&base_expected, &overlapping, &complete_expected).is_err()
+        );
+
+        let mut wrong_identity = overlay_expected.clone();
+        wrong_identity.entries[0].cache_key_sha = ARCHIVE_SHA.into();
+        assert!(
+            validate_expected_partition(&base_expected, &wrong_identity, &complete_expected)
+                .is_err()
+        );
+        let empty_base = ExpectedLedger {
+            abi_version: ABI,
+            entries: Vec::new(),
+        };
+        assert!(
+            validate_expected_partition(&empty_base, &overlay_expected, &complete_expected)
+                .unwrap_err()
+                .contains("covers")
+        );
+
+        // WHY: even if canonical happens to contain the selected architecture,
+        // absence from the exact PR release must fail instead of falling back.
+        let selected = overlay.packages[0]
+            .binary
+            .remove(&TargetArch::Wasm64)
+            .unwrap();
+        let mut base_with_selected = index();
+        base_with_selected.packages[0]
+            .binary
+            .insert(TargetArch::Wasm64, selected);
+        assert!(
+            compose_release_indexes(
+                &base_with_selected,
+                &base_expected,
+                &base_snapshot,
+                "binaries-abi-v39",
+                base_url,
+                &overlay,
+                &overlay_expected,
+                &overlay_snapshot,
+                "pr-1160-staging",
+                overlay_url,
+                &complete_expected,
+            )
+            .unwrap_err()
+            .contains("overlay index lacks")
+        );
+
+        let wrong_tag_snapshot =
+            snapshot_for_expected_index(&base_expected, &index(), "wrong-tag");
+        assert!(
+            compose_release_indexes(
+                &index(),
+                &base_expected,
+                &wrong_tag_snapshot,
+                "wrong-tag",
+                base_url,
+                &wasm64_overlay_fixture().1,
+                &overlay_expected,
+                &overlay_snapshot,
+                "pr-1160-staging",
+                overlay_url,
+                &complete_expected,
+            )
+            .unwrap_err()
+            .contains("release base URL")
+        );
+    }
+
+    #[test]
+    fn compose_release_indexes_rejects_snapshot_and_success_shape_drift() {
+        let base_expected = expected();
+        let (overlay_expected, overlay) = wasm64_overlay_fixture();
+        let mut complete_expected = base_expected.clone();
+        complete_expected
+            .entries
+            .extend(overlay_expected.entries.clone());
+        let base = index();
+        let base_snapshot =
+            snapshot_for_expected_index(&base_expected, &base, "binaries-abi-v39");
+        let overlay_snapshot =
+            snapshot_for_expected_index(&overlay_expected, &overlay, "pr-1160-staging");
+        let base_url =
+            "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v39/";
+        let overlay_url =
+            "https://github.com/Automattic/kandelo/releases/download/pr-1160-staging/";
+
+        let invoke = |base: &IndexToml,
+                      base_snapshot: &ValidatedSnapshot,
+                      overlay: &IndexToml,
+                      overlay_snapshot: &ValidatedSnapshot| {
+            compose_release_indexes(
+                base,
+                &base_expected,
+                base_snapshot,
+                "binaries-abi-v39",
+                base_url,
+                overlay,
+                &overlay_expected,
+                overlay_snapshot,
+                "pr-1160-staging",
+                overlay_url,
+                &complete_expected,
+            )
+        };
+
+        for mutation in ["tag", "missing", "extra", "digest", "not-current"] {
+            let mut changed = overlay_snapshot.clone();
+            match mutation {
+                "tag" => changed.release_tag = "another-release".into(),
+                "missing" => changed.entries.clear(),
+                "extra" => changed.entries.push(changed.entries[0].clone()),
+                "digest" => changed.entries[0].archive_sha256 = SHA.into(),
+                "not-current" => changed.entries[0].current = false,
+                _ => unreachable!(),
+            }
+            assert!(
+                invoke(&base, &base_snapshot, &overlay, &changed).is_err(),
+                "accepted {mutation} snapshot mutation"
+            );
+        }
+
+        for field in [
+            "error",
+            "last_attempt",
+            "last_attempt_by",
+            "fallback_archive_url",
+            "fallback_archive_sha256",
+            "fallback_cache_key_sha",
+            "fallback_built_at",
+            "built_at",
+            "built_by",
+        ] {
+            let mut changed = overlay.clone();
+            let binary = changed.packages[0]
+                .binary
+                .get_mut(&TargetArch::Wasm64)
+                .unwrap();
+            match field {
+                "error" => binary.error = Some("unexpected".into()),
+                "last_attempt" => binary.last_attempt = Some("unexpected".into()),
+                "last_attempt_by" => binary.last_attempt_by = Some("unexpected".into()),
+                "fallback_archive_url" => {
+                    binary.fallback_archive_url = Some("old.tar.zst".into())
+                }
+                "fallback_archive_sha256" => {
+                    binary.fallback_archive_sha256 = Some(SHA.into())
+                }
+                "fallback_cache_key_sha" => {
+                    binary.fallback_cache_key_sha = Some(SHA.into())
+                }
+                "fallback_built_at" => binary.fallback_built_at = Some("unexpected".into()),
+                "built_at" => binary.built_at = None,
+                "built_by" => binary.built_by = None,
+                _ => unreachable!(),
+            }
+            assert!(
+                invoke(&base, &base_snapshot, &changed, &overlay_snapshot).is_err(),
+                "accepted exact success carrying invalid {field}"
+            );
+        }
+
+        let mut unsafe_name = overlay.clone();
+        unsafe_name.packages[0]
+            .binary
+            .get_mut(&TargetArch::Wasm64)
+            .unwrap()
+            .archive_url = Some("../selected.tar.zst".into());
+        assert!(invoke(&base, &base_snapshot, &unsafe_name, &overlay_snapshot).is_err());
     }
 
     #[test]

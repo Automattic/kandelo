@@ -13,7 +13,10 @@ import {
 import {
   formatHomebrewGuestLifecycleFailureContext,
   HOMEBREW_GUEST_LIFECYCLE_ENV,
+  type HomebrewGuestForkCountSample,
   type HomebrewGuestLifecycleMachine,
+  type HomebrewGuestObservedProcessEvent,
+  type HomebrewGuestObservedScriptResult,
   runHomebrewGuestLifecycle,
   runHomebrewGuestLifecycleProcess,
 } from "./homebrew_guest_lifecycle_runner";
@@ -25,6 +28,9 @@ import {
   assertNoUnexpectedHostDiagnostics,
   HOMEBREW_GUEST_LIFECYCLE_HOST_LIMITS,
 } from "./homebrew_guest_lifecycle_runtime_contract";
+import {
+  runHomebrewSystemCommandSpawnProof,
+} from "./homebrew_system_command_spawn_proof";
 
 export interface HomebrewGuestLifecycleBrowserResult {
   exportedImageSha256: string;
@@ -112,7 +118,26 @@ export async function runHomebrewGuestLifecycleInBrowser(options: {
           }
         : {
             closedBottleAssets: loaded.closedBottleAssets!,
-          }),
+      }),
+    });
+
+    // WHY: the focused proof must not consume the image buffer that the
+    // durable lifecycle transfers afterward. A separate machine gets an
+    // exact byte-for-byte copy and exercises the same closed/public assets.
+    const proofRuntime: HomebrewGuestLifecycleRuntimeInputs = {
+      ...runtime,
+      imageBytes: runtime.imageBytes.slice(),
+      takeImageOwnership: true,
+    };
+    await runHomebrewSystemCommandSpawnProof({
+      runtime: proofRuntime,
+      deadlineMs,
+      machine: createBrowserLifecycleMachine({
+        runtime: proofRuntime,
+        kernelWasm: options.kernelWasm,
+        corsProxyUrl: options.corsProxyUrl,
+        afterDestroy: options.afterMachineDestroy,
+      }),
     });
 
     const result = await runHomebrewGuestLifecycle({
@@ -165,7 +190,7 @@ export function createCorsProxySourceUrl(
   return proxy.href;
 }
 
-function createBrowserLifecycleMachine(options: {
+export function createBrowserLifecycleMachine(options: {
   runtime: HomebrewGuestLifecycleRuntimeInputs;
   kernelWasm: ArrayBuffer;
   corsProxyUrl: string;
@@ -177,6 +202,16 @@ function createBrowserLifecycleMachine(options: {
   let stderr = "";
   let outputBytes = 0;
   let outputLimitExceeded = false;
+  let activeProcessObservation: {
+    events: HomebrewGuestObservedProcessEvent[];
+    forkCountSamples: HomebrewGuestForkCountSample[];
+    forkCountSampleFailures: Array<{
+      parentPid: number;
+      childPid: number;
+      message: string;
+    }>;
+    pendingSamples: Promise<void>[];
+  } | undefined;
   const stdoutDecoder = new TextDecoder();
   const stderrDecoder = new TextDecoder();
   const capture = (bytes: Uint8Array, stream: "stdout" | "stderr"): void => {
@@ -211,7 +246,111 @@ function createBrowserLifecycleMachine(options: {
       }
     },
     onLazyDownload: (event) => lazyDownloads.push(event),
+    onProcessEvent: (event) => {
+      if (activeProcessObservation === undefined) return;
+      const observation = activeProcessObservation;
+      observation.events.push({
+        kind: event.kind,
+        pid: event.pid,
+        ...(event.ppid === undefined ? {} : { ppid: event.ppid }),
+        ...(event.exitStatus === undefined
+          ? {}
+          : { exitStatus: event.exitStatus }),
+      });
+      if (event.kind !== "spawn" || event.ppid === undefined) return;
+      const parentPid = event.ppid;
+      observation.pendingSamples.push(
+        kernel.getForkCount(parentPid).then(
+          (count) => {
+            observation.forkCountSamples.push({
+              parentPid,
+              childPid: event.pid,
+              count,
+            });
+          },
+          (error) => {
+            observation.forkCountSampleFailures.push({
+              parentPid,
+              childPid: event.pid,
+              message: error instanceof Error
+                ? error.message
+                : String(error),
+            });
+          },
+        ),
+      );
+    },
   });
+
+  const runScript = async (scriptOptions: {
+    shellPath: string;
+    shellArgv0: string;
+    script: string;
+    marker: string;
+    label: string;
+    timeoutMs: number;
+  }): Promise<{ stdout: string; stderr: string }> => {
+    const stdoutStart = stdout.length;
+    const stderrStart = stderr.length;
+    const diagnosticStart = diagnostics.length;
+    const exitCode = await runHomebrewGuestLifecycleProcess({
+      label: scriptOptions.label,
+      timeoutMs: scriptOptions.timeoutMs,
+      failureContext: () =>
+        formatHomebrewGuestLifecycleFailureContext({
+          stdout: stdout.slice(stdoutStart),
+          stderr: stderr.slice(stderrStart),
+          diagnostics: diagnostics.slice(diagnosticStart),
+        }),
+      spawn: () =>
+        kernel.spawnFromVfs(
+          scriptOptions.shellPath,
+          [scriptOptions.shellArgv0, "-c", scriptOptions.script],
+          {
+            env: [...HOMEBREW_GUEST_LIFECYCLE_ENV],
+            cwd: "/home/user",
+            uid: 1000,
+            gid: 1000,
+            stdin: new Uint8Array(),
+          },
+        ),
+      terminate: (pid, exitStatus) =>
+        kernel.terminateProcess(pid, exitStatus),
+    });
+    const scriptStdout = stdout.slice(stdoutStart);
+    const scriptStderr = stderr.slice(stderrStart);
+    if (exitCode !== 0) {
+      throw new Error(
+        `${scriptOptions.label} exited ${exitCode}; ` +
+          formatHomebrewGuestLifecycleFailureContext({
+            stdout: scriptStdout,
+            stderr: scriptStderr,
+            diagnostics: diagnostics.slice(diagnosticStart),
+          }),
+      );
+    }
+    if (!scriptStdout.split(/\r?\n/).includes(scriptOptions.marker)) {
+      throw new Error(
+        `${scriptOptions.label} marker is missing; ` +
+          formatHomebrewGuestLifecycleFailureContext({
+            stdout: scriptStdout,
+            stderr: scriptStderr,
+            diagnostics: diagnostics.slice(diagnosticStart),
+          }),
+      );
+    }
+    assertNoUnexpectedHostDiagnostics(
+      diagnostics.slice(diagnosticStart),
+      scriptOptions.label,
+    );
+    if (outputLimitExceeded) {
+      throw new Error(
+        `${scriptOptions.label} exceeded the ` +
+          `${MAX_CAPTURED_OUTPUT_BYTES}-byte output limit`,
+      );
+    }
+    return { stdout: scriptStdout, stderr: scriptStderr };
+  };
 
   return {
     lazyDownloads,
@@ -249,65 +388,41 @@ function createBrowserLifecycleMachine(options: {
       });
     },
     readFile: (path) => kernel.readFileFromVfs(path),
-    runShellScript: async (scriptOptions) => {
-      const stdoutStart = stdout.length;
-      const stderrStart = stderr.length;
-      const diagnosticStart = diagnostics.length;
-      const exitCode = await runHomebrewGuestLifecycleProcess({
-        label: scriptOptions.label,
-        timeoutMs: scriptOptions.timeoutMs,
-        failureContext: () =>
-          formatHomebrewGuestLifecycleFailureContext({
-            stdout: stdout.slice(stdoutStart),
-            stderr: stderr.slice(stderrStart),
-            diagnostics: diagnostics.slice(diagnosticStart),
-          }),
-        spawn: () =>
-          kernel.spawnFromVfs(
-            scriptOptions.shellPath,
-            [scriptOptions.shellArgv0, "-c", scriptOptions.script],
-            {
-              env: [...HOMEBREW_GUEST_LIFECYCLE_ENV],
-              cwd: "/home/user",
-              uid: 1000,
-              gid: 1000,
-              stdin: new Uint8Array(),
-            },
+    runShellScript: (scriptOptions) =>
+      runScript(scriptOptions).then(() => undefined),
+    runObservedShellScript: async (scriptOptions) => {
+      if (activeProcessObservation !== undefined) {
+        throw new Error("nested Homebrew process observation is not allowed");
+      }
+      const observation = {
+        events: [] as HomebrewGuestObservedProcessEvent[],
+        forkCountSamples: [] as HomebrewGuestForkCountSample[],
+        forkCountSampleFailures: [] as Array<{
+          parentPid: number;
+          childPid: number;
+          message: string;
+        }>,
+        pendingSamples: [] as Promise<void>[],
+      };
+      activeProcessObservation = observation;
+      try {
+        const output = await runScript(scriptOptions);
+        activeProcessObservation = undefined;
+        await Promise.all(observation.pendingSamples);
+        return {
+          ...output,
+          processEvents: observation.events,
+          forkCountSamples: observation.forkCountSamples,
+          forkCountSampleFailures: observation.forkCountSampleFailures,
+          remainingObservedPids: await remainingObservedPids(
+            kernel,
+            observation.events,
           ),
-        terminate: (pid, exitStatus) =>
-          kernel.terminateProcess(pid, exitStatus),
-      });
-      const scriptStdout = stdout.slice(stdoutStart);
-      const scriptStderr = stderr.slice(stderrStart);
-      if (exitCode !== 0) {
-        throw new Error(
-          `${scriptOptions.label} exited ${exitCode}; ` +
-            formatHomebrewGuestLifecycleFailureContext({
-              stdout: scriptStdout,
-              stderr: scriptStderr,
-              diagnostics: diagnostics.slice(diagnosticStart),
-            }),
-        );
-      }
-      if (!scriptStdout.split(/\r?\n/).includes(scriptOptions.marker)) {
-        throw new Error(
-          `${scriptOptions.label} marker is missing; ` +
-            formatHomebrewGuestLifecycleFailureContext({
-              stdout: scriptStdout,
-              stderr: scriptStderr,
-              diagnostics: diagnostics.slice(diagnosticStart),
-            }),
-        );
-      }
-      assertNoUnexpectedHostDiagnostics(
-        diagnostics.slice(diagnosticStart),
-        scriptOptions.label,
-      );
-      if (outputLimitExceeded) {
-        throw new Error(
-          `${scriptOptions.label} exceeded the ` +
-            `${MAX_CAPTURED_OUTPUT_BYTES}-byte output limit`,
-        );
+        } satisfies HomebrewGuestObservedScriptResult;
+      } finally {
+        if (activeProcessObservation === observation) {
+          activeProcessObservation = undefined;
+        }
       }
     },
     exportRootfsImage: () => kernel.exportRootfsImage(),
@@ -319,6 +434,23 @@ function createBrowserLifecycleMachine(options: {
       }
     },
   };
+}
+
+async function remainingObservedPids(
+  kernel: BrowserKernel,
+  events: readonly HomebrewGuestObservedProcessEvent[],
+): Promise<number[]> {
+  const observedPids = new Set(events.map((event) => event.pid));
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const remaining = (await kernel.enumProcs())
+      .map((process) => process.pid)
+      .filter((pid) => observedPids.has(pid))
+      .sort((left, right) => left - right);
+    if (remaining.length === 0) return [];
+    if (attempt === 99) return remaining;
+    await new Promise<void>((resolveDelay) => setTimeout(resolveDelay, 10));
+  }
+  throw new Error("unreachable browser process-retirement loop");
 }
 
 async function sha256(bytes: Uint8Array): Promise<string> {

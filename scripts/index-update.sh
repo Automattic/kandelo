@@ -34,12 +34,17 @@
 # For --status failed, omit --archive-path/--archive-name/--cache-key-sha
 # and pass --error "<text>" instead.
 #
-# Canonical exact-main rebuilds also pass --canonical-source-sha. The helper
-# then rechecks live GitHub main immediately before every archive mutation and
-# before committing the index transaction.
+# Grandfathered ABI 42 exact-main rebuilds also pass
+# --canonical-source-sha. The helper then rechecks live GitHub main beside
+# every archive mutation and before committing the index transaction.
 #
 # To repair only release-level index metadata such as abi_version:
-#   bash scripts/index-update.sh --target-tag pr-595-staging --repair-only
+#   bash scripts/index-update.sh \
+#     --target-tag pr-595-staging \
+#     --release-target-commit <exact-pr-head-sha> \
+#     --repair-only
+# PR staging calls must also pass the exact reviewed head through
+# --release-target-commit; ambient GITHUB_SHA may be a synthetic merge.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -57,6 +62,9 @@ CACHE_KEY_SHA=""
 ERROR=""
 REPAIR_ONLY=0
 CANONICAL_SOURCE_SHA=""
+RELEASE_TARGET_COMMIT=""
+RELEASE_ID=""
+MAX_RELEASE_ASSET_PAGES="${INDEX_UPDATE_MAX_RELEASE_ASSET_PAGES:-100}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -71,6 +79,7 @@ while [[ $# -gt 0 ]]; do
     --cache-key-sha) CACHE_KEY_SHA="$2"; shift 2 ;;
     --error)         ERROR="$2"; shift 2 ;;
     --canonical-source-sha) CANONICAL_SOURCE_SHA="$2"; shift 2 ;;
+    --release-target-commit) RELEASE_TARGET_COMMIT="$2"; shift 2 ;;
     --repair-only)   REPAIR_ONLY=1; shift ;;
     *)
       echo "index-update.sh: unknown flag $1" >&2
@@ -112,7 +121,7 @@ expected_abi_for_target_tag() {
     binaries-abi-v*)
       abi="${TARGET_TAG#binaries-abi-v}"
       ;;
-    pr-*-staging)
+    pr-*-staging|pr-*-staging-run-*-attempt-*)
       abi="$(current_abi_version)"
       ;;
     merge-candidate-abi-v*-pr-*-run-*-attempt-*)
@@ -195,20 +204,63 @@ gh_retry() {
 
 release_asset_info() {
   local asset_name="$1"
-  local info
+  local page page_json count matches match_count reached_end=false
+  local match_file
 
-  info="$(gh_retry gh api "/repos/${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}/releases/tags/${TARGET_TAG}" \
-    --jq ".assets[] | select(.name == \"$asset_name\") | [.id, .size, (.digest // \"\")] | @tsv"
-  )"
-
-  [ -n "$info" ] || return 0
-
-  if ! [[ "$info" =~ ^[0-9]+[[:space:]][0-9]+([[:space:]][^[:space:]]+)?$ ]]; then
-    echo "index-update.sh: invalid release asset metadata for $asset_name: $info" >&2
+  if ! [[ "$RELEASE_ID" =~ ^[1-9][0-9]*$ ]]; then
+    echo "index-update.sh: exact release ID is unavailable" >&2
     return 1
   fi
 
-  printf '%s\n' "$info"
+  match_file="$(mktemp)"
+  for ((page = 1; page <= MAX_RELEASE_ASSET_PAGES; page++)); do
+    page_json="$(gh_retry gh api \
+      "/repos/${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}/releases/${RELEASE_ID}/assets?per_page=100&page=${page}")"
+    if ! jq -e '
+      type == "array" and all(.[];
+        (.id | type == "number" and . > 0 and floor == .) and
+        (.name | type == "string" and length > 0) and
+        (.size | type == "number" and . >= 0 and floor == .) and
+        (.digest == null or
+          (.digest | type == "string" and length > 0)))
+    ' <<<"$page_json" >/dev/null; then
+      echo "index-update.sh: malformed release asset page $page" >&2
+      rm -f "$match_file"
+      return 1
+    fi
+    jq -r --arg name "$asset_name" '
+      .[] | select(.name == $name) |
+      [.id, .size, (.digest // "")] | @tsv
+    ' <<<"$page_json" >>"$match_file"
+    count="$(jq 'length' <<<"$page_json")"
+    if [ "$count" -lt 100 ]; then
+      reached_end=true
+      break
+    fi
+  done
+  if [ "$reached_end" != true ]; then
+    echo "index-update.sh: asset discovery reached its safety bound" >&2
+    rm -f "$match_file"
+    return 1
+  fi
+
+  match_count="$(wc -l <"$match_file" | tr -d '[:space:]')"
+  if [ "$match_count" -gt 1 ]; then
+    echo "index-update.sh: release has duplicate asset $asset_name" >&2
+    rm -f "$match_file"
+    return 1
+  fi
+  if [ "$match_count" = 0 ]; then
+    rm -f "$match_file"
+    return 0
+  fi
+  matches="$(cat "$match_file")"
+  rm -f "$match_file"
+  if ! [[ "$matches" =~ ^[0-9]+[[:space:]][0-9]+([[:space:]][^[:space:]]+)?$ ]]; then
+    echo "index-update.sh: invalid release asset metadata for $asset_name: $matches" >&2
+    return 1
+  fi
+  printf '%s\n' "$matches"
 }
 
 sha256_file() {
@@ -236,16 +288,14 @@ release_asset_sha_matches() {
   local tmp_dir asset_path actual_sha
 
   tmp_dir="$(mktemp -d)"
-  if ! gh_retry gh release download "$TARGET_TAG" \
-      --repo "$GITHUB_REPOSITORY" \
-      --pattern "$asset_name" \
-      --dir "$tmp_dir" \
-      --clobber >/dev/null; then
+  asset_path="$tmp_dir/$asset_name"
+  if ! gh_retry gh api -H 'Accept: application/octet-stream' \
+      "/repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
+      >"$asset_path"; then
     rm -rf "$tmp_dir"
     return 1
   fi
 
-  asset_path="$tmp_dir/$asset_name"
   if [ ! -f "$asset_path" ]; then
     echo "index-update.sh: downloaded asset $asset_name not found at $asset_path" >&2
     rm -rf "$tmp_dir"
@@ -258,79 +308,120 @@ release_asset_sha_matches() {
 }
 
 ensure_release_exists() {
-  local err_file empty_sentinel
-  err_file="$(mktemp)"
-
-  if gh release view "$TARGET_TAG" --repo "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY required}" >/dev/null 2>"$err_file"; then
-    rm -f "$err_file"
-    return 0
-  fi
-
-  if ! grep -qi 'release not found\|not found\|HTTP 404' "$err_file"; then
-    local attempt=1
-    local max_attempts=4
-    local delay=2
-    while [ "$attempt" -lt "$max_attempts" ]; do
-      echo "index-update.sh: release lookup failed (attempt ${attempt}/${max_attempts}); retrying in ${delay}s." >&2
-      cat "$err_file" >&2
-      sleep "$delay"
-      if gh release view "$TARGET_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>"$err_file"; then
-        rm -f "$err_file"
-        return 0
-      fi
-      if grep -qi 'release not found\|not found\|HTTP 404' "$err_file"; then
-        break
-      fi
-      attempt=$((attempt + 1))
-      delay=$((delay * 2))
-    done
-
-    if ! grep -qi 'release not found\|not found\|HTTP 404' "$err_file"; then
-      cat "$err_file" >&2
-      rm -f "$err_file"
-      return 1
-    fi
-  fi
-
-  rm -f "$err_file"
-
-  local release_args=(
-    "$TARGET_TAG"
-    --repo "$GITHUB_REPOSITORY"
-    --target "${GITHUB_SHA:?GITHUB_SHA required}"
-    --title "$TARGET_TAG"
-  )
+  local empty_sentinel body_file release_target prerelease=false
+  local candidate_dir candidate_json candidate_pr candidate_head
+  local canonical_release_target="" release_id_file
+  body_file="$(mktemp)"
+  release_id_file="$(mktemp)"
+  release_target=""
   case "$TARGET_TAG" in
     pr-*-staging)
-      PR_NUMBER="${TARGET_TAG#pr-}"
-      PR_NUMBER="${PR_NUMBER%-staging}"
-      release_args+=(--prerelease --notes "PR #${PR_NUMBER} staging build")
+      if ! [[ "$TARGET_TAG" =~ ^pr-([1-9][0-9]*)-staging$ ]]; then
+        echo "index-update.sh: malformed legacy staging tag $TARGET_TAG" >&2
+        return 1
+      fi
+      prerelease=true
+      release_target="$RELEASE_TARGET_COMMIT"
+      printf 'PR #%s staging build' "${BASH_REMATCH[1]}" >"$body_file"
+      ;;
+    pr-*-staging-run-*-attempt-*)
+      if ! [[ "$TARGET_TAG" =~ ^pr-([1-9][0-9]*)-staging-run-([1-9][0-9]*)-attempt-([1-9][0-9]*)$ ]]; then
+        echo "index-update.sh: malformed run-specific staging tag $TARGET_TAG" >&2
+        return 1
+      fi
+      prerelease=true
+      release_target="$RELEASE_TARGET_COMMIT"
+      printf 'PR #%s staging build run %s attempt %s' \
+        "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" \
+        >"$body_file"
       ;;
     merge-candidate-abi-v*-pr-*-run-*-attempt-*)
-      release_args+=(--prerelease --notes "Isolated prepare-merge package candidate")
+      candidate_dir="$(mktemp -d)"
+      if ! gh_retry gh release download "$TARGET_TAG" \
+          --repo "$GITHUB_REPOSITORY" \
+          --pattern candidate.json \
+          --dir "$candidate_dir" >/dev/null; then
+        echo "index-update.sh: candidate release must be initialized before package writers run" >&2
+        return 1
+      fi
+      candidate_json="$candidate_dir/candidate.json"
+      if ! jq -e --arg tag "$TARGET_TAG" '
+          .candidate_tag == $tag and
+          (.pr_number | type == "number" and . > 0) and
+          (.head_sha | test("^[0-9a-f]{40}$"))
+        ' "$candidate_json" >/dev/null; then
+        echo "index-update.sh: candidate metadata does not match $TARGET_TAG" >&2
+        return 1
+      fi
+      candidate_pr="$(jq -r .pr_number "$candidate_json")"
+      candidate_head="$(jq -r .head_sha "$candidate_json")"
+      release_target="$candidate_head"
+      prerelease=true
+      if jq -e '.recovery != null' "$candidate_json" >/dev/null; then
+        printf 'Immutable recovery clone of %s; source rejection retained.' \
+          "$(jq -r .recovery.source_candidate_tag "$candidate_json")" \
+          >"$body_file"
+      else
+        printf '%s' \
+          "Isolated package candidate for PR #${candidate_pr}; not resolver-visible until post-merge activation." \
+          >"$body_file"
+      fi
       ;;
     binaries-abi-v*)
+      if [ "$TARGET_TAG" != binaries-abi-v42 ]; then
+        # WHY: this per-package writer cannot know that a future immutable
+        # canonical release contains the complete ABI ledger. Only post-merge
+        # candidate activation has that proof and may create the draft.
+        echo "index-update.sh: new immutable canonical ABI releases must be initialized by post-merge candidate activation" >&2
+        return 1
+      fi
       ABI="${TARGET_TAG#binaries-abi-v}"
       empty_sentinel=$(bash "${RELEASE_INDEX_STATE_SCRIPT:-scripts/release-index-state.sh}" sentinel)
-      release_args+=(--notes "${empty_sentinel}
+      printf '%s' "${empty_sentinel}
 
-Binaries for ABI v${ABI}")
+Binaries for ABI v${ABI}" >"$body_file"
+      release_target="${CANONICAL_SOURCE_SHA:-${GITHUB_SHA:?GITHUB_SHA required}}"
+      if [ "$TARGET_TAG" = binaries-abi-v42 ] &&
+         canonical_release_target="$(gh api \
+           "/repos/${GITHUB_REPOSITORY}/releases/tags/${TARGET_TAG}" \
+           --jq .target_commitish 2>/dev/null)" &&
+         [[ "$canonical_release_target" =~ ^[0-9a-f]{40}$ ]]; then
+        # WHY: the grandfathered ledger predates this workflow and correctly
+        # retains its original direct tag target while exact-main authority is
+        # checked independently before every new mutation.
+        release_target="$canonical_release_target"
+      fi
       ;;
     *)
-      release_args+=(--notes "Package binary index for ${TARGET_TAG}")
+      echo "index-update.sh: unsupported package release tag $TARGET_TAG" >&2
+      return 1
       ;;
   esac
-
-  local create_rc=0
-  gh_retry --canonical-mutation gh release create "${release_args[@]}" ||
-    create_rc=$?
-  if [ "$create_rc" -ne 0 ]; then
-    # WHY: authority failure is definitive, not an ambiguous GitHub write that
-    # a read-after-write reconciliation can turn into success.
-    [ "$create_rc" -ne 86 ] || return 1
-    # Another writer may have created the release after our miss. Treat
-    # that race as success only if the release is now visible.
-    gh_retry gh release view "$TARGET_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null
+  lifecycle_args=()
+  if [ "$TARGET_TAG" = binaries-abi-v42 ]; then
+    lifecycle_args+=(--allow-grandfathered-abi42)
+  fi
+  if [ -n "$CANONICAL_SOURCE_SHA" ]; then
+    lifecycle_args+=(--canonical-source-sha "$CANONICAL_SOURCE_SHA")
+  fi
+  RELEASE_LIFECYCLE_STATE="$(bash \
+    "${RELEASE_LIFECYCLE_SCRIPT:-.github/scripts/package-release-lifecycle.sh}" \
+    ensure-draft \
+      --tag "$TARGET_TAG" \
+      --target-commit "$release_target" \
+      --title "$TARGET_TAG" \
+      --body-file "$body_file" \
+      --prerelease "$prerelease" \
+      --release-id-file "$release_id_file" \
+      "${lifecycle_args[@]}")"
+  RELEASE_ID="$(cat "$release_id_file")"
+  if ! [[ "$RELEASE_ID" =~ ^[1-9][0-9]*$ ]]; then
+    echo "index-update.sh: release lifecycle returned an invalid release ID" >&2
+    return 1
+  fi
+  if [ "$RELEASE_LIFECYCLE_STATE" = immutable ]; then
+    echo "index-update.sh: $TARGET_TAG is immutable; publish a new run or generation instead of mutating it" >&2
+    return 1
   fi
 }
 
@@ -417,7 +508,82 @@ upload_archive_asset() {
   done
 }
 
+upload_isolated_asset_by_tag() {
+  local path="$1"
+  gh release upload "$TARGET_TAG" \
+    --repo "$GITHUB_REPOSITORY" \
+    "$path"
+}
+
+upload_isolated_index() {
+  local expected_size expected_sha info asset_id
+  local attempt=1 max_attempts=4 delay=2
+  expected_size="$(file_size "$INDEX_PATH")"
+  expected_sha="$(sha256_file "$INDEX_PATH")"
+
+  info="$(release_asset_info index.toml)"
+  if [ -n "$info" ]; then
+    if archive_asset_matches index.toml "$expected_size" "$expected_sha"; then
+      return 0
+    fi
+    read -r asset_id _ _ <<<"$info"
+    gh_retry gh api -X DELETE \
+      "/repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
+      >/dev/null
+  fi
+
+  while true; do
+    # WHY: `gh release upload` can find a draft that GitHub's tag REST
+    # endpoint hides. Accept success only after the asset appears on the
+    # exact release ID. An ambiguous tag cannot redirect the ledger.
+    if upload_isolated_asset_by_tag "$INDEX_PATH"; then
+      if archive_asset_matches index.toml "$expected_size" "$expected_sha"; then
+        return 0
+      fi
+      echo "index-update.sh: index upload reported success, but exact release verification failed" >&2
+    elif archive_asset_matches index.toml "$expected_size" "$expected_sha"; then
+      echo "index-update.sh: index upload response failed after the exact release received matching bytes"
+      return 0
+    fi
+
+    info="$(release_asset_info index.toml)"
+    if [ -n "$info" ]; then
+      read -r asset_id _ _ <<<"$info"
+      gh_retry gh api -X DELETE \
+        "/repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
+        >/dev/null
+    fi
+    if [ "$attempt" -ge "$max_attempts" ]; then
+      return 1
+    fi
+    echo "index-update.sh: index upload failed (attempt ${attempt}/${max_attempts}); retrying in ${delay}s" >&2
+    sleep "$delay"
+    attempt=$((attempt + 1))
+    delay=$((delay * 2))
+  done
+}
+
 require target-tag    "$TARGET_TAG"
+
+if ! [[ "$MAX_RELEASE_ASSET_PAGES" =~ ^[1-9][0-9]*$ ]]; then
+  echo "index-update.sh: INDEX_UPDATE_MAX_RELEASE_ASSET_PAGES must be positive" >&2
+  exit 2
+fi
+
+case "$TARGET_TAG" in
+  pr-*-staging|pr-*-staging-run-*-attempt-*)
+    if ! [[ "$RELEASE_TARGET_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+      echo "index-update.sh: PR staging requires an exact --release-target-commit" >&2
+      exit 2
+    fi
+    ;;
+  *)
+    if [ -n "$RELEASE_TARGET_COMMIT" ]; then
+      echo "index-update.sh: --release-target-commit is only valid for PR staging" >&2
+      exit 2
+    fi
+    ;;
+esac
 
 if [ "$REPAIR_ONLY" = "1" ]; then
   STATUS="repair"
@@ -463,9 +629,9 @@ RELEASE_INDEX_STATE_SCRIPT="${RELEASE_INDEX_STATE_SCRIPT:-scripts/release-index-
 IS_CANONICAL=0
 case "$TARGET_TAG" in binaries-abi-v*) IS_CANONICAL=1 ;; esac
 NORMALIZED_REPOSITORY="$(printf '%s' "${GITHUB_REPOSITORY:-}" | tr '[:upper:]' '[:lower:]')"
-# WHY: `binaries-abi-v<N>` in Automattic/kandelo is the mutable canonical
-# package ledger. Making its authority flag optional would let a new caller
-# silently bypass the exact-main checks that force-rebuild relies on.
+# WHY: the existing ABI 42 release in Automattic/kandelo is the one mutable
+# canonical ledger. Making its authority flag optional would let a caller
+# bypass the exact-main checks that its grandfathered writer relies on.
 if [ "$IS_CANONICAL" = 1 ] &&
    [ "$NORMALIZED_REPOSITORY" = "automattic/kandelo" ] &&
    [ -z "$CANONICAL_SOURCE_SHA" ]; then
@@ -532,11 +698,12 @@ if [ "$IS_CANONICAL" = 1 ]; then
 else
   index_info="$(release_asset_info 'index.toml')"
   if [ -n "$index_info" ]; then
-    gh_retry gh release download "$TARGET_TAG" \
-      --repo "$GITHUB_REPOSITORY" \
-      --pattern index.toml \
-      --dir "$INDEX_DIR" \
-      --clobber
+    read -r index_asset_id _ _ <<<"$index_info"
+    # WHY: GitHub's get-by-tag API returns 404 for drafts. Read the asset
+    # through the exact release identity selected by the lifecycle helper.
+    gh_retry gh api -H 'Accept: application/octet-stream' \
+      "/repos/${GITHUB_REPOSITORY}/releases/assets/${index_asset_id}" \
+      >"$INDEX_PATH"
   else
     cat > "$INDEX_PATH" <<EOF
 abi_version = $EXPECTED_ABI
@@ -581,10 +748,7 @@ if [ "$IS_CANONICAL" = 1 ]; then
     --expected-head "$(cat "$INDEX_HEAD_FILE")" \
     "${index_state_authority_args[@]}"
 else
-  gh_retry gh release upload "$TARGET_TAG" \
-    --repo "$GITHUB_REPOSITORY" \
-    --clobber \
-    "$INDEX_PATH"
+  upload_isolated_index
 fi
 
 if [ "$STATUS" = "repair" ]; then

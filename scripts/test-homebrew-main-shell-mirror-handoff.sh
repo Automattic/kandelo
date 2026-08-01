@@ -24,7 +24,14 @@ bytes() {
 }
 
 make_fixture() {
-  local root="$1" bottle_sha plan plan_sha mirror_bytes mirror_count collection tag release_root
+  local root="$1"
+  local mode="${2:-publish-lifecycle}"
+  local mirror_authority bottle_sha plan plan_sha mirror_bytes mirror_count collection tag release_root
+  case "$mode" in
+    create-mirror) mirror_authority="$TCALLER" ;;
+    publish-lifecycle) mirror_authority="$TMIRROR" ;;
+    *) echo "test fixture has unknown mode: $mode" >&2; exit 2 ;;
+  esac
   mkdir -p "$root/mirror"
   printf 'shell\n' >"$root/main-shell.vfs.zst"
   printf 'bootstrap\n' >"$root/homebrew-bootstrap.zip"
@@ -61,7 +68,7 @@ make_fixture() {
   ' >"$plan"
   plan_sha="$(sha256_file "$plan")"
   jq -n \
-    --arg tap "$TMIRROR" \
+    --arg tap "$mirror_authority" \
     --arg tag "$tag" \
     --arg plan_sha "$plan_sha" \
     --arg bottle_sha "$bottle_sha" \
@@ -101,7 +108,7 @@ make_fixture() {
   jq -n \
     --arg kandelo "$M" \
     --arg tap_catalog "$TF" \
-    --arg tap_mirror_authority "$TMIRROR" \
+    --arg tap_mirror_authority "$mirror_authority" \
     --arg tap_caller_authority "$TCALLER" \
     --arg canary "$C" \
     --arg image_sha "$(sha256_file "$root/main-shell.vfs.zst")" \
@@ -141,17 +148,39 @@ make_fixture() {
 }
 
 verify() {
+  local root="$1"
+  local mode="${2:-publish-lifecycle}"
+  local mirror_authority
+  case "$mode" in
+    create-mirror) mirror_authority="$TCALLER" ;;
+    publish-lifecycle) mirror_authority="$TMIRROR" ;;
+    *) mirror_authority="$TMIRROR" ;;
+  esac
   bash "$VERIFY" \
-    --root "$1" \
+    --root "$root" \
+    --publication-mode "$mode" \
     --kandelo-ref "$M" \
     --tap-catalog-ref "$TF" \
-    --tap-mirror-authority-ref "$TMIRROR" \
+    --tap-mirror-authority-ref "$mirror_authority" \
     --tap-caller-authority-ref "$TCALLER" \
     --canary-ref "$C"
 }
 
+verify_with_authorities() {
+  bash "$VERIFY" \
+    --root "$1" \
+    --publication-mode "$2" \
+    --kandelo-ref "$M" \
+    --tap-catalog-ref "$TF" \
+    --tap-mirror-authority-ref "$3" \
+    --tap-caller-authority-ref "$4" \
+    --canary-ref "$C"
+}
+
 expect_rejected() {
-  if verify "$1" >/dev/null 2>&1; then
+  local root="$1"
+  local mode="${2:-publish-lifecycle}"
+  if verify "$root" "$mode" >/dev/null 2>&1; then
     echo "test-homebrew-main-shell-mirror-handoff: accepted invalid handoff" >&2
     exit 1
   fi
@@ -159,6 +188,24 @@ expect_rejected() {
 
 make_fixture "$TMP_ROOT/good"
 verify "$TMP_ROOT/good" >/dev/null
+make_fixture "$TMP_ROOT/good-create" create-mirror
+verify "$TMP_ROOT/good-create" create-mirror >/dev/null
+
+expect_rejected "$TMP_ROOT/good" create-mirror
+expect_rejected "$TMP_ROOT/good-create" publish-lifecycle
+expect_rejected "$TMP_ROOT/good" unsupported-mode
+if verify_with_authorities \
+  "$TMP_ROOT/good" create-mirror "$TMIRROR" "$TCALLER" \
+  >/dev/null 2>&1; then
+  echo "test-homebrew-main-shell-mirror-handoff: create accepted split authorities" >&2
+  exit 1
+fi
+if verify_with_authorities \
+  "$TMP_ROOT/good-create" publish-lifecycle "$TCALLER" "$TCALLER" \
+  >/dev/null 2>&1; then
+  echo "test-homebrew-main-shell-mirror-handoff: consume accepted one authority" >&2
+  exit 1
+fi
 
 cp -R "$TMP_ROOT/good" "$TMP_ROOT/changed"
 printf 'changed\n' >>"$TMP_ROOT/changed/main-shell.vfs.zst"

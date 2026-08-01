@@ -9,7 +9,21 @@
       "arches": [
         "wasm32"
       ],
-      "recipe_lock": "Kandelo/recipes/homebrew-bootstrap/source-lock.json"
+      "build_input": {
+        "kind": "homebrew-bootstrap-recipe-lock",
+        "path": "Kandelo/recipes/homebrew-bootstrap/source-lock.json"
+      }
+    },
+    {
+      "name": "libyaml",
+      "formula_path": "Formula/libyaml.rb",
+      "disposition": "required-build",
+      "arches": [
+        "wasm32"
+      ],
+      "build_input": {
+        "kind": "formula-source"
+      }
     },
     {
       "name": "msmtpd",

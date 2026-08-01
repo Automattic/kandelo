@@ -48,6 +48,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 STATUS_SCRIPT="${STATUS_SCRIPT:-$SCRIPT_DIR/latest-merge-gate-status.sh}"
 RELEASE_INDEX_STATE_SCRIPT="${RELEASE_INDEX_STATE_SCRIPT:-$REPO_ROOT/scripts/release-index-state.sh}"
+RELEASE_LIFECYCLE_SCRIPT="${RELEASE_LIFECYCLE_SCRIPT:-$SCRIPT_DIR/package-release-lifecycle.sh}"
 # shellcheck source=.github/scripts/github-api-get.sh
 source "$SCRIPT_DIR/github-api-get.sh"
 TMP_ROOT="$(mktemp -d)"
@@ -180,26 +181,94 @@ release_asset_matches() {
 }
 
 ensure_release() {
-  local tag="$1"
-  local target_sha="$2"
-  local base_state="$3"
-  local release_json="$TMP_ROOT/release-${tag}.json" rc=0 sentinel
+  local tag="$1" target_sha="$2" base_state="$3"
+  local release_json="$TMP_ROOT/release-${tag}.json" rc=0 sentinel body
+  if [ "$base_state" = present ]; then
+    GITHUB_API_CONTEXT=activate-merge-candidate \
+      github_api_get_json "/repos/${REPOSITORY}/releases/tags/${tag}" \
+        "$release_json" || rc=$?
+    if [ "$rc" -eq 44 ]; then
+      echo "activate-merge-candidate: canonical release $tag disappeared after candidate snapshot" >&2
+      return 1
+    fi
+    [ "$rc" -eq 0 ] || return 1
+    target_sha="$(jq -r .target_commitish "$release_json")"
+    if ! [[ "$target_sha" =~ ^[0-9a-f]{40}$ ]]; then
+      echo "activate-merge-candidate: canonical release target is not an exact commit" >&2
+      return 1
+    fi
+  fi
+  sentinel=$(bash "$RELEASE_INDEX_STATE_SCRIPT" sentinel)
+  body="$TMP_ROOT/canonical-release-body.txt"
+  printf '%s' "${sentinel}
+
+Binaries for ABI v${tag#binaries-abi-v}" >"$body"
+  lifecycle_args=()
+  if [ "$tag" = binaries-abi-v42 ]; then
+    lifecycle_args+=(--allow-grandfathered-abi42)
+  fi
+  CANONICAL_RELEASE_STATE="$(bash "$RELEASE_LIFECYCLE_SCRIPT" ensure-draft \
+    --tag "$tag" \
+    --target-commit "$target_sha" \
+    --title "$tag" \
+    --body-file "$body" \
+    --prerelease false \
+    "${lifecycle_args[@]}")"
+}
+
+candidate_release_body() {
+  local output="$1" source_tag
+  if jq -e '.recovery != null' "$candidate_json" >/dev/null; then
+    source_tag="$(jq -r .recovery.source_candidate_tag "$candidate_json")"
+    printf '%s' \
+      "Immutable recovery clone of ${source_tag}; source rejection retained." \
+      >"$output"
+  else
+    printf '%s' \
+      "Isolated package candidate for PR #${PR_NUMBER}; not resolver-visible until post-merge activation." \
+      >"$output"
+  fi
+}
+
+finalize_candidate_release() {
+  local body="$TMP_ROOT/candidate-release-body.txt"
+  candidate_release_body "$body"
+  bash "$RELEASE_LIFECYCLE_SCRIPT" seal-publish \
+    --tag "$CANDIDATE_TAG" \
+    --target-commit "$(jq -r .head_sha "$candidate_json")" \
+    --title "$CANDIDATE_TAG" \
+    --body-file "$body" \
+    --prerelease true >/dev/null
+}
+
+finalize_canonical_release() {
+  local body="$TMP_ROOT/canonical-release-body.txt"
+  local target release_json="$TMP_ROOT/canonical-final-release.json"
+  local rc=0 sentinel
   GITHUB_API_CONTEXT=activate-merge-candidate \
-    github_api_get_json "/repos/${REPOSITORY}/releases/tags/${tag}" "$release_json" || rc=$?
-  if [ "$rc" -eq 0 ]; then return 0; fi
-  if [ "$rc" -ne 44 ]; then return 1; fi
-  if [ "$base_state" != absent ]; then
-    echo "activate-merge-candidate: canonical release $tag disappeared after candidate snapshot" >&2
+    github_api_get_json "/repos/${REPOSITORY}/releases/tags/${CANONICAL_TAG}" \
+      "$release_json" || rc=$?
+  [ "$rc" -eq 0 ] || return 1
+  target="$(jq -r .target_commitish "$release_json")"
+  if ! [[ "$target" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "activate-merge-candidate: canonical release target is not an exact commit" >&2
     return 1
   fi
   sentinel=$(bash "$RELEASE_INDEX_STATE_SCRIPT" sentinel)
-  gh_retry gh release create "$tag" \
-    --repo "$REPOSITORY" \
-    --target "$target_sha" \
-    --title "$tag" \
-    --notes "${sentinel}
+  printf '%s' "${sentinel}
 
-Binaries for ABI v${tag#binaries-abi-v}"
+Binaries for ABI v${ABI}" >"$body"
+  lifecycle_args=()
+  if [ "$CANONICAL_TAG" = binaries-abi-v42 ]; then
+    lifecycle_args+=(--allow-grandfathered-abi42)
+  fi
+  bash "$RELEASE_LIFECYCLE_SCRIPT" seal-publish \
+    --tag "$CANONICAL_TAG" \
+    --target-commit "$target" \
+    --title "$CANONICAL_TAG" \
+    --body-file "$body" \
+    --prerelease false \
+    "${lifecycle_args[@]}" >/dev/null
 }
 
 copy_candidate_asset() {
@@ -297,6 +366,7 @@ publish_rejection() {
   else
     gh_retry gh release upload "$CANDIDATE_TAG" --repo "$REPOSITORY" "$rejected_json"
   fi
+  finalize_candidate_release
   echo "activate-merge-candidate: recorded terminal rejection $reason for $CANDIDATE_TAG" >&2
 }
 
@@ -341,6 +411,7 @@ base_index="$candidate_dir/base-index.toml"
 candidate_index="$candidate_dir/index.toml"
 
 if [ -n "$(release_asset_info "$CANDIDATE_TAG" rejected.json)" ]; then
+  finalize_candidate_release
   echo "activate-merge-candidate: candidate already has a terminal rejection receipt" >&2
   exit 1
 fi
@@ -409,6 +480,7 @@ if [ -n "$(release_asset_info "$CANDIDATE_TAG" activated.json)" ]; then
   existing_dir="$TMP_ROOT/existing-activated"
   download_asset "$CANDIDATE_TAG" activated.json "$existing_dir"
   verify_activation_receipt "$existing_dir/activated.json"
+  finalize_candidate_release
   echo "activate-merge-candidate: $CANDIDATE_TAG was already activated at $merge_commit_sha"
   exit 0
 fi
@@ -536,6 +608,11 @@ else
     --expected-head "$(cat "$current_head_file")"
 fi
 
+# WHY: new canonical ABI releases are assembled completely as drafts. The
+# public transition is irreversible, so it happens only after the journaled
+# index transaction and every selected archive have reached stable state.
+finalize_canonical_release
+
 activated_json="$TMP_ROOT/activated.json"
 jq \
   --arg merge_commit_sha "$merge_commit_sha" \
@@ -556,5 +633,6 @@ if [ -n "$(release_asset_info "$CANDIDATE_TAG" activated.json)" ]; then
 else
   gh_retry gh release upload "$CANDIDATE_TAG" --repo "$REPOSITORY" "$activated_json"
 fi
+finalize_candidate_release
 
 echo "activate-merge-candidate: activated $CANDIDATE_TAG into $CANONICAL_TAG at $merge_commit_sha"

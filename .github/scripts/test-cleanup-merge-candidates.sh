@@ -34,8 +34,11 @@ make_release() {
   local tag="$1"
   local id="$2"
   local assets="$3"
+  local immutable="${4:-false}"
   jq -n --arg tag "$tag" --argjson id "$id" \
-    '{id: $id, tag_name: $tag, prerelease: true}' > "$DATA/release-$id.json"
+    --argjson immutable "$immutable" \
+    '{id: $id, tag_name: $tag, prerelease: true,
+      immutable: $immutable}' > "$DATA/release-$id.json"
   jq '.[0:2]' <<<"$assets" > "$DATA/assets-$id-page-1.json"
   jq '.[2:4]' <<<"$assets" > "$DATA/assets-$id-page-2.json"
   jq '.[4:6]' <<<"$assets" > "$DATA/assets-$id-page-3.json"
@@ -57,7 +60,7 @@ make_release "$TAG_ABANDONED" 103 "[$READY]"
 make_release "$TAG_AUTHORITATIVE" 104 "[$CANDIDATE,$READY]"
 make_release "$TAG_SUPERSEDED" 105 "[$READY]"
 make_release "$TAG_UNREADY" 106 "[$CANDIDATE]"
-make_release "$TAG_ACTIVATED" 107 "[$READY,$ACTIVATED]"
+make_release "$TAG_ACTIVATED" 107 "[$READY,$ACTIVATED]" true
 make_release "$TAG_REJECTED_RECENT" 108 "[$READY,$REJECTED_RECENT]"
 make_release "$TAG_REJECTED_OLD" 109 "[$READY,$REJECTED_OLD]"
 make_release "$TAG_UNCERTAIN" 110 "[$READY]"
@@ -217,7 +220,6 @@ cat > "$TMP_ROOT/expected-deletes" <<EOF
 $TAG_ABANDONED
 $TAG_SUPERSEDED
 $TAG_UNREADY
-$TAG_ACTIVATED
 $TAG_REJECTED_OLD
 EOF
 cmp "$TMP_ROOT/expected-deletes" "$DELETE_LOG"
@@ -225,6 +227,8 @@ grep -q "retaining $TAG_OPEN_READY; PR #1 is open" "$TMP_ROOT/cleanup.out"
 grep -q "retaining $TAG_OPEN_ACTIVATED; PR #1 is open" "$TMP_ROOT/cleanup.out"
 grep -q "retaining authoritative recoverable candidate $TAG_AUTHORITATIVE" "$TMP_ROOT/cleanup.out"
 grep -q "retaining rejected evidence $TAG_REJECTED_RECENT" "$TMP_ROOT/cleanup.out"
+grep -q "retaining immutable terminal evidence $TAG_ACTIVATED" \
+  "$TMP_ROOT/cleanup.out"
 grep -Fq '/repos/example/repo/releases?per_page=3&page=4' "$API_LOG"
 grep -Fq '/repos/example/repo/releases/104/assets?per_page=2&page=2' "$API_LOG"
 

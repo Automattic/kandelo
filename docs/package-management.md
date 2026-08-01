@@ -36,7 +36,7 @@ Most readers want one of these. Detailed sections follow further down.
 | Find where an output lands                    | `cargo xtask build-deps output-path <name> <declared-artifact>` — single source of truth for the layout convention (flat for a one-member output/runtime closure, nested under `<pkg>/` for two or more members). A basename is accepted only when unique.         |
 | Migrate a build script to consume cached deps | [Migrating a consumer to the cache](#migrating-a-consumer-to-the-cache) — the `WASM_POSIX_DEP_*_DIR` contract + CPPFLAGS/LDFLAGS pattern.                                                                                                                          |
 | Override a published archive locally          | Drop the file at `local-binaries/programs/<arch>/<rel>` or `local-libs/<pkg>/build/`. The resolver prefers these.                                                                                                                                                  |
-| Override an archive in a PR for testing       | Per-PR builds publish to `pr-<N>-staging` tags. Locally, run `./run.sh --pr-staging <command>` or set `WASM_POSIX_USE_PR_STAGING=1` so `run.sh` exports the matching staging `WASM_POSIX_BINARY_INDEX_URL`. Manual `WASM_POSIX_BINARY_INDEX_URL` values still win. |
+| Override an archive in a PR for testing       | Each CI attempt publishes an immutable `pr-<N>-staging-run-<RUN>-attempt-<ATTEMPT>` release. Locally, `./run.sh --pr-staging <command>` selects the newest release for the exact PR head. Manual `WASM_POSIX_BINARY_INDEX_URL` values still win. |
 | Republish a stale archive                     | Dispatch `.github/workflows/force-rebuild.yml` with the comma-separated package list (or `all`).                                                                                                                                                                   |
 | Bump a package's revision number              | Edit `revision = N` in its `build.toml` (NOT `package.toml` — revision moved to the project-view file during the binary-resolution-via-index-ledger migration). Invalidates the cache for that package. Only bump when output bytes legitimately change.           |
 | Understand the release flow                   | [docs/binary-releases.md](binary-releases.md).                                                                                                                                                                                                                     |
@@ -1313,7 +1313,8 @@ The wrapper acquires the workflow-level state-lock for the target
 tag, downloads the current `index.toml`, mutates this package's
 entry via `xtask index-update`, uploads the content-addressed archive,
 and publishes the new ledger before releasing the lock. Isolated PR
-staging/candidate tags retain their mutable ledger. A canonical
+staging/candidate drafts retain their mutable ledger until finalization. A
+canonical
 `binaries-abi-v<N>` target delegates ledger publication to
 `scripts/release-index-state.sh`; it never uses an unjournaled
 `--clobber`. Different tags use different lock subjects, so
@@ -1446,14 +1447,14 @@ first run.
 
 The primary remedy is the per-PR staging-tag flow — push your
 branch, let `staging-build.yml` rebuild the touched packages, and
-each matrix entry's `scripts/index-update.sh` invocation publishes
-its archive + index entry to the PR's `pr-<NNN>-staging` release
-atomically. To consume those artifacts locally, run
+each matrix entry's `scripts/index-update.sh` invocation writes its archive and
+index entry to the workflow attempt's draft
+`pr-<NNN>-staging-run-<RUN>-attempt-<ATTEMPT>` release. The test gate seals and
+publishes that exact draft once. To consume those artifacts locally, run
 `./run.sh --pr-staging browser` or set `WASM_POSIX_USE_PR_STAGING=1`.
-`run.sh` detects the PR with `gh`, points
-`WASM_POSIX_BINARY_INDEX_URL` at
-`https://github.com/<owner>/<repo>/releases/download/pr-<NNN>-staging/index.toml`,
-and leaves a manually set `WASM_POSIX_BINARY_INDEX_URL` unchanged.
+`run.sh` detects the PR and exact head with `gh`, selects the newest immutable
+attempt, points `WASM_POSIX_BINARY_INDEX_URL` at its run-specific index, and
+leaves a manually set `WASM_POSIX_BINARY_INDEX_URL` unchanged.
 That works for any `package.toml` or `build.toml` change pushed to a
 PR with CI write access. Prepare merge uses a separate run-specific
 candidate initialized from canonical state; it never promotes the PR staging
@@ -1473,8 +1474,8 @@ Normally, after a package change and its coherent canonical activation have
 landed, dispatch `promote-package-generation.yml` from the same exact
 `refs/heads/main` SHA as described in
 [Binary releases: durable package generations](binary-releases.md#durable-package-generations-for-cross-workflow-publication).
-The normal source tag is `binaries-abi-v<N>`. A retained merged
-`pr-<N>-staging` source is accepted only when the v2 contract proves exact
+The normal source tag is `binaries-abi-v<N>`. A retained merged run-specific
+PR staging source is accepted only when the v2 contract proves exact
 complete-tree equality. The retired PR #1097 cache-projection bridge is not a
 new-publication path. The promoter rebuilds
 a minimal exact index, drops unrelated entries and every fallback, and rewrites
@@ -1658,7 +1659,8 @@ boundaries so a stale or missing archive fails instead of becoming an
 undeclared source build.
 
 The package workflows retain the same per-entry build shape but publish to
-different lifecycle states. `staging-build.yml` writes a per-PR staging tag;
+different lifecycle states. `staging-build.yml` writes a run-specific staging
+draft and publishes it after validation;
 `prepare-merge.yml` writes and tests a run-specific isolated candidate; and
 `force-rebuild.yml` is the maintainer-dispatched exact-main rebuild path. Its
 preflight uploads the full publication-policy expected ledger it already used
@@ -1668,10 +1670,16 @@ package-test dependencies are broader than an arbitrary rebuild selection;
 it does not recompute the ledger or walk raw registry roots.
 That workflow preserves concurrency within each true dependency level while
 strictly sequencing levels; it never relies on GitHub matrix scheduling order.
+While the conventional registry is being retired, force-rebuild updates only
+the grandfathered ABI 42 release. A new immutable ABI release is initialized
+from a complete tested merge candidate, not one partial rebuild request.
 Post-merge
 `activate-merge-candidate.yml` verifies the exact merged tree, copies all
-required archives, then publishes one complete canonical ledger through the
-journaled release-index state machine. There is no bot rewrite of
+required archives, commits one complete canonical ledger through the
+journaled release-index state machine, seals a new canonical draft, and
+publishes it once. The existing ABI 42 release remains explicitly
+grandfathered because GitHub did not apply repository immutability
+retroactively. There is no bot rewrite of
 `package.toml` or `build.toml`.
 
 ## Atomic cache install

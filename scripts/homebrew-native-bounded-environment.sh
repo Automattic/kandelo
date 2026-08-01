@@ -73,12 +73,12 @@ homebrew_native_bounded_run() {
     clean_env+=("HOMEBREW_RELOCATE_BUILD_PREFIX=1")
   elif [ "$mode" = api-oracle ]; then
     # The oracle reads the already verified cache directly. Dependency
-    # resolution and installation deliberately omit this switch so exact cf5
-    # continues to use the signed API rather than a Git checkout.
+    # resolution and installation deliberately omit this switch so exact
+    # Homebrew continues to use the signed API rather than a Git checkout.
     clean_env+=("HOMEBREW_NO_INSTALL_FROM_API=1")
   elif [ "$mode" = api-compatibility-lock ]; then
-    # WHY: cf5 derives Linux's implicit GCC/glibc bootstrap closure from the
-    # runner's system glibc and libstdc++. `ubuntu-latest` image rollouts can
+    # WHY: Homebrew derives Linux's implicit GCC/glibc bootstrap closure from
+    # the runner's system glibc and libstdc++. `ubuntu-latest` image rollouts can
     # therefore make the same reviewed API produce either side of that
     # threshold. Lock the conservative projection so one reviewed artifact
     # admits both publisher-equivalent host capability states.

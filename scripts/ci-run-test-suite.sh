@@ -8,6 +8,8 @@ set -euo pipefail
 # Omitting the group preserves the complete local suite behavior.
 # Set PREPARE_BROWSER_ASSETS=1 when the caller supplied an already-materialized
 # binaries/ artifact but intentionally deferred local browser asset generation.
+# Prepare-merge also sets VERIFY_BROWSER_PRODUCTION_BUILD=1 to compile the
+# ordinary Pages-shaped product before closed test transport is exposed.
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
@@ -97,6 +99,8 @@ prepare_ci_homebrew_browser_mirror() {
     local image
     local report
     local publication_blockers="$REPO_ROOT/.ci-test-publication-blockers.json"
+    local receipt="$REPO_ROOT/.ci-staging-shell-receipt.json"
+    local state_mode
 
     if [ ! -f "$state" ]; then
         echo "ci-run-test-suite: prepared browser workspace lacks Homebrew mirror state: $state" >&2
@@ -107,8 +111,15 @@ prepare_ci_homebrew_browser_mirror() {
         return 1
     fi
     image="$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)"
-    bash scripts/ci-homebrew-browser-mirror-state.sh \
-        validate consumer "$state" "$publication_blockers" "$image"
+    state_mode="$(jq -er '.mode' "$state")" || {
+        echo "ci-homebrew-browser-mirror-state: invalid state: $state" >&2
+        return 1
+    }
+    state_args=(validate consumer "$state" "$publication_blockers" "$image")
+    if [ "$state_mode" = publication-blocked-candidate ]; then
+        state_args+=("$receipt")
+    fi
+    bash scripts/ci-homebrew-browser-mirror-state.sh "${state_args[@]}"
     mirror_required="$(jq -r '.mirror_required' "$state")"
     [ "$mirror_required" = "true" ] || return 0
     if [ -e "$mirror" ] || [ -L "$mirror" ]; then
@@ -140,6 +151,58 @@ prepare_ci_homebrew_browser_mirror() {
     }
     export KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT=/homebrew-main-shell-bottles
     export KANDELO_PLAYWRIGHT_VITE_MODE=homebrew-closed-acceptance
+}
+
+run_pages_shaped_browser_build() {
+    local app="$REPO_ROOT/apps/browser-demos"
+    local dist="$app/dist"
+    local mirror="$app/public/homebrew-main-shell-bottles"
+    local output
+
+    if [ -e "$mirror" ] || [ -L "$mirror" ]; then
+        echo "ci-run-test-suite: ordinary browser build found a closed test mirror: $mirror" >&2
+        return 1
+    fi
+    if [ -e "$dist" ] || [ -L "$dist" ]; then
+        echo "ci-run-test-suite: ordinary browser build found stale output: $dist" >&2
+        return 1
+    fi
+    # WHY: the narrow shell proof selects two Vite entries and later exposes
+    # private mirror bytes. Prepare-merge must first compile the ordinary
+    # Pages-shaped product so neither test-only setting can hide a broken
+    # gallery entry, production base path, or service-worker build.
+    (
+        cd "$app"
+        env \
+            -u KANDELO_BROWSER_DEMO_INPUTS \
+            -u VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT \
+            -u KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT \
+            -u KANDELO_PLAYWRIGHT_VITE_MODE \
+            -u KANDELO_PLAYWRIGHT_SERVE_DIST \
+            VITE_BASE=/kandelo/ \
+            VITE_CORS_PROXY_URL='https://wordpress-playground-cors-proxy.net/?' \
+            npm run build
+        for output in \
+            index.html \
+            pages/kandelo/index.html \
+            pages/network/index.html \
+            service-worker.js
+        do
+            [ -f "$dist/$output" ] || {
+                echo "ci-run-test-suite: ordinary browser build omitted $output" >&2
+                return 1
+            }
+        done
+        # WHY: homebrew-vfs-test is a private closed-mirror acceptance page,
+        # not a Pages product entry. Requiring it here contradicts Vite's
+        # production input set; emitting it would expose test-only UI instead.
+        if [ -e "$dist/pages/homebrew-vfs-test/index.html" ] ||
+           [ -L "$dist/pages/homebrew-vfs-test/index.html" ]; then
+            echo "ci-run-test-suite: ordinary browser build exposed the private Homebrew acceptance page" >&2
+            return 1
+        fi
+    )
+    rm -rf -- "$dist"
 }
 
 case "$suite" in
@@ -338,6 +401,10 @@ case "$suite" in
         ;;
     browser)
         install_node_deps
+        (
+            cd apps/browser-demos
+            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
+        )
         if [ "${PREPARE_BROWSER_ASSETS:-false}" = "true" ] || \
             [ "${PREPARE_BROWSER_ASSETS:-0}" = "1" ]; then
             # Publication-pending packages are deliberately absent from the
@@ -346,12 +413,15 @@ case "$suite" in
             # pass proves that every browser dependency is now resolvable.
             bash scripts/materialize-ci-publication-blockers.sh
             ./run.sh --already-materialized --fetch-only prepare-browser
+            if [ "${VERIFY_BROWSER_PRODUCTION_BUILD:-false}" = "true" ] || \
+                [ "${VERIFY_BROWSER_PRODUCTION_BUILD:-0}" = "1" ]; then
+                run_pages_shaped_browser_build
+            fi
             prepare_ci_homebrew_browser_mirror
         fi
         bash scripts/ci-check-browser-assets.sh
         (
             cd apps/browser-demos
-            PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
             if [ "$(uname -s)" = "Linux" ]; then
                 run_timed 30m "Install Playwright browsers" \
                     env PATH="/usr/bin:/bin:$PATH" \

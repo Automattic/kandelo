@@ -36,7 +36,7 @@ test("closed acceptance selects its exact mirror authority and product inputs", 
     homebrewClosedAcceptanceInputNames(
       HOMEBREW_CLOSED_ACCEPTANCE_VITE_MODE,
     ),
-    ["main", "kandelo", "network", "homebrew-vfs-test"],
+    ["main", "homebrew-vfs-test"],
   );
 });
 

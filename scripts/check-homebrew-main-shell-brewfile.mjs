@@ -22,57 +22,6 @@ const runtimeSupportRootOrder = [
   `${tapName}/tar`,
   `${tapName}/posix-utils-lite`,
 ];
-const runtimeSupportFormulaOrder = [
-  `${tapName}/zlib`,
-  `${tapName}/ruby`,
-  `${tapName}/coreutils`,
-  `${tapName}/dash`,
-  `${tapName}/ed`,
-  `${tapName}/diffutils`,
-  `${tapName}/grep`,
-  `${tapName}/libcxx`,
-  `${tapName}/ncurses`,
-  `${tapName}/less`,
-  `${tapName}/openssl`,
-  `${tapName}/libcurl`,
-  `${tapName}/sed`,
-  `${tapName}/vim`,
-  `${tapName}/git`,
-  `${tapName}/curl`,
-  `${tapName}/findutils`,
-  `${tapName}/gawk`,
-  `${tapName}/gzip`,
-  `${tapName}/tar`,
-  `${tapName}/posix-utils-lite`,
-];
-const availableRuntimeSupportFormulaOrder = [
-  `${tapName}/zlib`,
-  `${tapName}/ruby`,
-  `${tapName}/coreutils`,
-  `${tapName}/dash`,
-  `${tapName}/ed`,
-  `${tapName}/diffutils`,
-  `${tapName}/grep`,
-  `${tapName}/libcxx`,
-  `${tapName}/ncurses`,
-  `${tapName}/less`,
-  `${tapName}/openssl`,
-  `${tapName}/libcurl`,
-  `${tapName}/sed`,
-  `${tapName}/vim`,
-  `${tapName}/git`,
-  `${tapName}/curl`,
-  `${tapName}/bzip2`,
-  `${tapName}/xz`,
-  `${tapName}/findutils`,
-  `${tapName}/gawk`,
-  `${tapName}/gzip`,
-  `${tapName}/tar`,
-  `${tapName}/posix-utils-lite`,
-  `${tapName}/libmagic`,
-  `${tapName}/file-formula`,
-];
-const deferredRuntimeSupportFormulaOrder = [];
 
 if (process.argv[2] === provenanceDigestFlag) {
   if (process.argv.length !== 5) {
@@ -141,11 +90,13 @@ if (metadataPath !== undefined) {
 }
 
 console.log(
-  `Homebrew main-shell contract: ${actualFormulae.length} reviewed migration roots and ` +
-    `${lock.formula_closure.length} Formulae match the complete shell lock; ` +
-    `${runtimeSupport.additionalFormulaOrder.length} additional Formulae are ` +
-    `declared only by the atomic Homebrew runtime-support layer, and ` +
-    `${runtimeSupport.deferredFormulae.length} optional Formulae remain deferred at catalog ` +
+  `Homebrew main-shell contract: ${actualFormulae.length} reviewed migration roots, ` +
+    `${lock.formula_closure.length} base Formulae, ` +
+    `${runtimeSupport.formulaOrder.length} runtime Formulae, and ` +
+    `${runtimeSupport.availability.auditedFormulae.length} audited Formulae; ` +
+    `the runtime adds ${runtimeSupport.additionalFormulaOrder.length} beyond the base, ` +
+    `yielding ${runtimeSupport.compositionFormulaOrder.length} total Formulae, with ` +
+    `${runtimeSupport.deferredFormulae.length} optional Formulae deferred at catalog ` +
     `${lock.catalog.tap_commit}.`,
 );
 
@@ -754,12 +705,9 @@ function readRuntimeSupport(path, lock) {
       readFormulaIdentity(entry, `additional_formula_order[${index}]`),
   );
   assertUnique(formulaOrder, "Homebrew runtime-support formula_order");
-  assertExactSequence(
-    formulaOrder,
-    runtimeSupportFormulaOrder,
-    "Homebrew runtime-support closure differs from the reviewed 21-Formula activation",
-    (entry) => entry,
-  );
+  if (formulaOrder.length === 0) {
+    throw new Error("Homebrew runtime-support formula_order cannot be empty");
+  }
   assertUnique(
     additionalFormulaOrder,
     "Homebrew runtime-support additional_formula_order",
@@ -778,6 +726,17 @@ function readRuntimeSupport(path, lock) {
     ),
     "Homebrew runtime-support additional closure is not its exact base-relative difference",
     (entry) => entry,
+  );
+  // WHY: the reviewed descriptors own the changing Formula inventory. Keep
+  // the invariant here relational so admitting one dependency does not also
+  // require changing a second, hard-coded cardinality in executable code.
+  const compositionFormulaOrder = [
+    ...lock.formula_closure,
+    ...additionalFormulaOrder,
+  ];
+  assertUnique(
+    compositionFormulaOrder,
+    "Homebrew shell/runtime Formula union",
   );
 
   if (!Array.isArray(value.deferred_formulae)) {
@@ -803,17 +762,12 @@ function readRuntimeSupport(path, lock) {
       `deferred_formulae[${index}].package`,
     );
   });
-  assertExactSequence(
-    deferredFormulae,
-    deferredRuntimeSupportFormulaOrder,
-    "Homebrew runtime-support deferred Formulae differ from the reviewed fixed-prefix exception",
-    (entry) => entry,
-  );
   const availability = readRuntimeSupportAvailability(
     value.availability,
     lock,
     formulaOrder,
     deferredFormulae,
+    compositionFormulaOrder,
   );
 
   const activation = value.activation;
@@ -912,6 +866,7 @@ function readRuntimeSupport(path, lock) {
     formulaRoots,
     formulaOrder,
     additionalFormulaOrder,
+    compositionFormulaOrder,
     deferredFormulae,
     availability,
   };
@@ -922,6 +877,7 @@ function readRuntimeSupportAvailability(
   lock,
   formulaOrder,
   deferredFormulae,
+  compositionFormulaOrder,
 ) {
   if (
     !isRecord(value) ||
@@ -977,19 +933,17 @@ function readRuntimeSupportAvailability(
   ];
   assertUnique(
     partition,
-    "Homebrew runtime-support 25-Formula availability partition",
+    "Homebrew runtime-support availability partition",
   );
-  if (partition.length !== 25) {
+  const outsideComposition = partition.filter(
+    (identity) => !compositionFormulaOrder.includes(identity),
+  );
+  if (outsideComposition.length !== 0) {
     throw new Error(
-      `Homebrew runtime-support availability partitions ${partition.length} Formulae, expected 25`,
+      "Homebrew runtime-support availability includes Formulae outside the " +
+        `declared shell/runtime union: ${outsideComposition.join(", ")}`,
     );
   }
-  assertExactSequence(
-    reusablePublicAbi42,
-    availableRuntimeSupportFormulaOrder,
-    "Homebrew runtime-support reusable ABI-42 availability audit changed",
-    (entry) => entry,
-  );
   const unavailableActivation = formulaOrder.filter(
     (identity) => !reusablePublicAbi42.includes(identity),
   );
@@ -1017,7 +971,11 @@ function readRuntimeSupportAvailability(
     "Homebrew runtime-support availability and deferred contracts disagree",
     (entry) => entry,
   );
-  return { auditedCatalog, reusablePublicAbi42 };
+  return {
+    auditedCatalog,
+    reusablePublicAbi42,
+    auditedFormulae: partition,
+  };
 }
 
 function readAdmittedRuntimeSupportBottle(pkg, name, catalog) {

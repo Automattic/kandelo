@@ -1248,7 +1248,7 @@
     "cmake": {
       "internal": {
         "bottle_cellar": ":any",
-        "bottle_checksum": "05339e33d914ede9f128ed9b928ce3331461347628e6daba911be4b921f89804",
+        "bottle_checksum": "52c08b7c0b8448e8534e2f5c3e44b839bda607217f5f0b27e6254d0ad6d31278",
         "caveats": "To install the CMake documentation, run:\n  brew install cmake-docs\n",
         "desc": "Cross-platform make",
         "executables": [
@@ -1274,24 +1274,24 @@
         "homepage": "https://www.cmake.org/",
         "license": "BSD-3-Clause",
         "name": "cmake",
-        "ruby_source_checksum": "13dd67496fd93e938f967e8c192183be447b070040f1dde80fec56470c595221",
-        "stable_checksum": "95d4721f3625fb0d9d6ca480dd59a46c84b4c157f7fadd2e9b179ef9c871174d",
+        "ruby_source_checksum": "daaad375335132d95997ba8aaf18a3ca796cf973ad059716dada6a8c5426a516",
+        "stable_checksum": "1db9e61e60b6e0874c86386340b910382f3c5e75b9fbfb44d122063129a2789d",
         "stable_dependencies": [
           "openssl@3"
         ],
         "stable_url_args": [
-          "https://github.com/Kitware/CMake/releases/download/v4.4.1/cmake-4.4.1.tar.gz"
+          "https://github.com/Kitware/CMake/releases/download/v4.4.2/cmake-4.4.2.tar.gz"
         ],
         "stable_uses_from_macos": [
           [
             "ncurses"
           ]
         ],
-        "stable_version": "4.4.1"
+        "stable_version": "4.4.2"
       },
       "public": {
         "bottle_cellar": ":any",
-        "bottle_checksum": "05339e33d914ede9f128ed9b928ce3331461347628e6daba911be4b921f89804",
+        "bottle_checksum": "52c08b7c0b8448e8534e2f5c3e44b839bda607217f5f0b27e6254d0ad6d31278",
         "desc": "Cross-platform make",
         "executables": [
           "ccmake",
@@ -1316,20 +1316,20 @@
         "homepage": "https://www.cmake.org/",
         "license": "BSD-3-Clause",
         "name": "cmake",
-        "ruby_source_checksum": "13dd67496fd93e938f967e8c192183be447b070040f1dde80fec56470c595221",
-        "stable_checksum": "95d4721f3625fb0d9d6ca480dd59a46c84b4c157f7fadd2e9b179ef9c871174d",
+        "ruby_source_checksum": "daaad375335132d95997ba8aaf18a3ca796cf973ad059716dada6a8c5426a516",
+        "stable_checksum": "1db9e61e60b6e0874c86386340b910382f3c5e75b9fbfb44d122063129a2789d",
         "stable_dependencies": [
           "openssl@3"
         ],
         "stable_url_args": [
-          "https://github.com/Kitware/CMake/releases/download/v4.4.1/cmake-4.4.1.tar.gz"
+          "https://github.com/Kitware/CMake/releases/download/v4.4.2/cmake-4.4.2.tar.gz"
         ],
         "stable_uses_from_macos": [
           [
             "ncurses"
           ]
         ],
-        "stable_version": "4.4.1"
+        "stable_version": "4.4.2"
       }
     },
     "curl": {
@@ -3944,9 +3944,29 @@
           ]
         },
         "name": "glibc",
-        "post_install_defined": true,
+        "post_install_steps": [
+          {
+            "paths": [
+              {
+                "base": "etc",
+                "path": "ld.so.cache"
+              }
+            ],
+            "type": "remove"
+          },
+          {
+            "command": {
+              "base": "sbin",
+              "path": "ldconfig"
+            },
+            "type": "run"
+          },
+          {
+            "type": "configure_glibc_runtime"
+          }
+        ],
         "revision": 1,
-        "ruby_source_checksum": "82eb524ccf12922bcdbbf65f623903c088306771cfe6e92b92ed74165fbc5ef9",
+        "ruby_source_checksum": "af58b96368b2818413257e2f9e5c2c5ce26cbfb0c799a38798d1e618e9c1d381",
         "stable_checksum": "97f84f3b7588cd54093a6f6389b0c1a81e70d99708d74963a2e3eab7c7dc942d",
         "stable_dependencies": [
           "linux-headers@6.8"
@@ -4116,9 +4136,29 @@
           ]
         },
         "name": "glibc",
-        "post_install_defined": true,
+        "post_install_steps": [
+          {
+            "paths": [
+              {
+                "base": "etc",
+                "path": "ld.so.cache"
+              }
+            ],
+            "type": "remove"
+          },
+          {
+            "command": {
+              "base": "sbin",
+              "path": "ldconfig"
+            },
+            "type": "run"
+          },
+          {
+            "type": "configure_glibc_runtime"
+          }
+        ],
         "revision": 1,
-        "ruby_source_checksum": "82eb524ccf12922bcdbbf65f623903c088306771cfe6e92b92ed74165fbc5ef9",
+        "ruby_source_checksum": "af58b96368b2818413257e2f9e5c2c5ce26cbfb0c799a38798d1e618e9c1d381",
         "stable_checksum": "97f84f3b7588cd54093a6f6389b0c1a81e70d99708d74963a2e3eab7c7dc942d",
         "stable_dependencies": [
           "linux-headers@6.8",
@@ -5068,7 +5108,7 @@
     "harfbuzz": {
       "internal": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "58e0e73a9c8a0c5d5225818f7ffb956095f109152c49a34d98e3b4fbf8c8eced",
+        "bottle_checksum": "ddec7f52274aa95bd5ca762c97024de8d4bd10e7a4233511914dfd2696b6182a",
         "desc": "OpenType text shaping engine",
         "executables": [
           "hb-info",
@@ -5117,8 +5157,8 @@
         "homepage": "https://github.com/harfbuzz/harfbuzz",
         "license": "MIT",
         "name": "harfbuzz",
-        "ruby_source_checksum": "fd2b2b8d58aaa6f9c3b68c296b0018952cfb1ead44ece165d258814194f5d1e4",
-        "stable_checksum": "a54a5d8e9380a41fbb762ce367bcbf7704792dfca0d93f1bbca86c5a57902e0e",
+        "ruby_source_checksum": "188aea0a97665d3a2a39ed72b37b249252f25ae92f84e4c9d4054f004b27f936",
+        "stable_checksum": "16070d77cfc4ba1f1e7327e83bf9b3f55898081cabdb94e56a33e04fc8874eae",
         "stable_dependencies": [
           "cairo",
           "freetype",
@@ -5150,13 +5190,13 @@
           }
         ],
         "stable_url_args": [
-          "https://github.com/harfbuzz/harfbuzz/releases/download/14.2.1/harfbuzz-14.2.1.tar.xz"
+          "https://github.com/harfbuzz/harfbuzz/releases/download/14.3.0/harfbuzz-14.3.0.tar.xz"
         ],
-        "stable_version": "14.2.1"
+        "stable_version": "14.3.0"
       },
       "public": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "58e0e73a9c8a0c5d5225818f7ffb956095f109152c49a34d98e3b4fbf8c8eced",
+        "bottle_checksum": "ddec7f52274aa95bd5ca762c97024de8d4bd10e7a4233511914dfd2696b6182a",
         "desc": "OpenType text shaping engine",
         "executables": [
           "hb-info",
@@ -5205,8 +5245,8 @@
         "homepage": "https://github.com/harfbuzz/harfbuzz",
         "license": "MIT",
         "name": "harfbuzz",
-        "ruby_source_checksum": "fd2b2b8d58aaa6f9c3b68c296b0018952cfb1ead44ece165d258814194f5d1e4",
-        "stable_checksum": "a54a5d8e9380a41fbb762ce367bcbf7704792dfca0d93f1bbca86c5a57902e0e",
+        "ruby_source_checksum": "188aea0a97665d3a2a39ed72b37b249252f25ae92f84e4c9d4054f004b27f936",
+        "stable_checksum": "16070d77cfc4ba1f1e7327e83bf9b3f55898081cabdb94e56a33e04fc8874eae",
         "stable_dependencies": [
           "cairo",
           "freetype",
@@ -5238,9 +5278,9 @@
           }
         ],
         "stable_url_args": [
-          "https://github.com/harfbuzz/harfbuzz/releases/download/14.2.1/harfbuzz-14.2.1.tar.xz"
+          "https://github.com/harfbuzz/harfbuzz/releases/download/14.3.0/harfbuzz-14.3.0.tar.xz"
         ],
-        "stable_version": "14.2.1"
+        "stable_version": "14.3.0"
       }
     },
     "hicolor-icon-theme": {
@@ -12729,8 +12769,8 @@
           "ruby@4.0"
         ],
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "bd1d4780456440fddc41d84202061f435751038599b7151189f273affbe4d43e",
-        "bottle_rebuild": 2,
+        "bottle_checksum": "e2917053994c092c539ed7c342e65831e8eb37b8e6afb4abfedad8078e43c736",
+        "bottle_rebuild": 3,
         "caveats": "By default, binaries installed by gem will be placed into:\n  $HOMEBREW_PREFIX/lib/ruby/gems/4.0.0/bin\n\nYou may want to add this to your PATH.\n",
         "desc": "Powerful, clean, object-oriented scripting language",
         "executables": [
@@ -12802,28 +12842,29 @@
             "type": "remove"
           },
           {
-            "args": [
-              "ruby",
-              "--",
-              "{{libexec}}/post-install.rb"
-            ],
-            "command": {
-              "path": "{{HOMEBREW_BREW_FILE}}"
-            },
-            "env": {
-              "HOMEBREW_DEVELOPER": "1"
-            },
             "guards": [
               {
                 "condition": "on",
                 "id": "1",
                 "value": "macos"
+              },
+              {
+                "base": "homebrew_prefix",
+                "condition": "if_exists",
+                "id": "2",
+                "path": "opt/ruby@{{version.major_minor}}/lib/libruby.{{version.major_minor}}.dylib"
               }
             ],
-            "type": "run"
+            "id": "{{HOMEBREW_PREFIX}}/opt/ruby@{{version.major_minor}}/lib/libruby.{{version.major_minor}}.dylib",
+            "resolve_source": true,
+            "source": {
+              "base": "prefix",
+              "path": "lib/libruby.dylib"
+            },
+            "type": "change_dylib_id"
           }
         ],
-        "ruby_source_checksum": "249eaaadf23299ac44693281898a0cda438d16b91e62287f2db9485716edbd1b",
+        "ruby_source_checksum": "d44a38fdbbae1be0b56d7b30ee818a2836d8199b9c8442e159a15e0cfd08ba75",
         "stable_checksum": "837d299e8f7ddf2be31a229a7a7e019d354979825117989acb3b32b1a9be262a",
         "stable_dependencies": [
           "libyaml",
@@ -12861,8 +12902,8 @@
           "ruby@4.0"
         ],
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "bd1d4780456440fddc41d84202061f435751038599b7151189f273affbe4d43e",
-        "bottle_rebuild": 2,
+        "bottle_checksum": "e2917053994c092c539ed7c342e65831e8eb37b8e6afb4abfedad8078e43c736",
+        "bottle_rebuild": 3,
         "desc": "Powerful, clean, object-oriented scripting language",
         "executables": [
           "bundle",
@@ -12933,28 +12974,29 @@
             "type": "remove"
           },
           {
-            "args": [
-              "ruby",
-              "--",
-              "{{libexec}}/post-install.rb"
-            ],
-            "command": {
-              "path": "{{HOMEBREW_BREW_FILE}}"
-            },
-            "env": {
-              "HOMEBREW_DEVELOPER": "1"
-            },
             "guards": [
               {
                 "condition": "on",
                 "id": "1",
                 "value": "macos"
+              },
+              {
+                "base": "homebrew_prefix",
+                "condition": "if_exists",
+                "id": "2",
+                "path": "opt/ruby@{{version.major_minor}}/lib/libruby.{{version.major_minor}}.dylib"
               }
             ],
-            "type": "run"
+            "id": "{{HOMEBREW_PREFIX}}/opt/ruby@{{version.major_minor}}/lib/libruby.{{version.major_minor}}.dylib",
+            "resolve_source": true,
+            "source": {
+              "base": "prefix",
+              "path": "lib/libruby.dylib"
+            },
+            "type": "change_dylib_id"
           }
         ],
-        "ruby_source_checksum": "249eaaadf23299ac44693281898a0cda438d16b91e62287f2db9485716edbd1b",
+        "ruby_source_checksum": "d44a38fdbbae1be0b56d7b30ee818a2836d8199b9c8442e159a15e0cfd08ba75",
         "stable_checksum": "837d299e8f7ddf2be31a229a7a7e019d354979825117989acb3b32b1a9be262a",
         "stable_dependencies": [
           "libyaml",
@@ -13334,7 +13376,8 @@
     },
     "spirv-llvm-translator": {
       "internal": {
-        "bottle_checksum": "93733fcfe6dedf795666e92e9099277ad4b5dfe815788517feac3a3e7923152b",
+        "bottle_cellar": ":any",
+        "bottle_checksum": "b09d08c8484b090ca04b45d6544f0b36fb135ab96a5bb1fb27ad1b6b5925d7ae",
         "desc": "Tool and a library for bi-directional translation between SPIR-V and LLVM IR",
         "executables": [
           "llvm-spirv"
@@ -13358,8 +13401,8 @@
           }
         },
         "name": "spirv-llvm-translator",
-        "ruby_source_checksum": "b78b4d92391e98265a6a7439df7ca40aff823562178f9757cfadcee7b8e6f127",
-        "stable_checksum": "b37196b1a1a60282a24cf937ab7d6807d7d54dc718f2a37a78e211be26df57ac",
+        "ruby_source_checksum": "eccb7685a0016e9f8f32d7c758c1d94c9aa90abb3830334a77eaf3b67906211d",
+        "stable_checksum": "3c6dffb4b8d67f5c544370e0c869ec7d22c013d4bb798f24655ec903f26cc5d5",
         "stable_dependencies": [
           "llvm",
           {
@@ -13373,12 +13416,13 @@
           }
         ],
         "stable_url_args": [
-          "https://github.com/KhronosGroup/SPIRV-LLVM-Translator/archive/refs/tags/v22.1.2.tar.gz"
+          "https://github.com/KhronosGroup/SPIRV-LLVM-Translator/archive/refs/tags/v22.1.5.tar.gz"
         ],
-        "stable_version": "22.1.2"
+        "stable_version": "22.1.5"
       },
       "public": {
-        "bottle_checksum": "93733fcfe6dedf795666e92e9099277ad4b5dfe815788517feac3a3e7923152b",
+        "bottle_cellar": ":any",
+        "bottle_checksum": "b09d08c8484b090ca04b45d6544f0b36fb135ab96a5bb1fb27ad1b6b5925d7ae",
         "desc": "Tool and a library for bi-directional translation between SPIR-V and LLVM IR",
         "executables": [
           "llvm-spirv"
@@ -13402,8 +13446,8 @@
           }
         },
         "name": "spirv-llvm-translator",
-        "ruby_source_checksum": "b78b4d92391e98265a6a7439df7ca40aff823562178f9757cfadcee7b8e6f127",
-        "stable_checksum": "b37196b1a1a60282a24cf937ab7d6807d7d54dc718f2a37a78e211be26df57ac",
+        "ruby_source_checksum": "eccb7685a0016e9f8f32d7c758c1d94c9aa90abb3830334a77eaf3b67906211d",
+        "stable_checksum": "3c6dffb4b8d67f5c544370e0c869ec7d22c013d4bb798f24655ec903f26cc5d5",
         "stable_dependencies": [
           "llvm",
           {
@@ -13417,9 +13461,9 @@
           }
         ],
         "stable_url_args": [
-          "https://github.com/KhronosGroup/SPIRV-LLVM-Translator/archive/refs/tags/v22.1.2.tar.gz"
+          "https://github.com/KhronosGroup/SPIRV-LLVM-Translator/archive/refs/tags/v22.1.5.tar.gz"
         ],
-        "stable_version": "22.1.2"
+        "stable_version": "22.1.5"
       }
     },
     "spirv-tools": {
@@ -15818,7 +15862,7 @@
       }
     }
   },
-  "homebrew_commit": "cf5bc21c6b127e168ef7cfa982ba7db62874690e",
+  "homebrew_commit": "a92554a538e81fad0c5074443885dbcc4c36221d",
   "kind": "kandelo-homebrew-native-compatibility-lock",
   "schema": 1
 }

@@ -1,6 +1,6 @@
 kind = "program"
 name = "homebrew-bootstrap"
-version = "6.0.3-4-g4ead861"
+version = "6.0.4-3-gd6c1be4"
 kernel_abi = 41
 arches = ["wasm32"]
 depends_on = []
@@ -10,8 +10,8 @@ depends_on = []
 # [[git_inputs]] checkout so source preparation never depends on ambient Git
 # state or a second network fetch.
 [source]
-url = "https://github.com/Homebrew/brew/archive/4ead8619231cb15cbe15e8e8188081e347d6f7cd.tar.gz"
-sha256 = "4b9fdfb4872bd2fbff001c69f91ec7b2c2b7a956459132b6c3adba878f551155"
+url = "https://github.com/Homebrew/brew/archive/d6c1be418446eec7de09fc72441ba4462282a142.tar.gz"
+sha256 = "d3a38612b71eba6ab297a67c06b367829b96250fef48bc0a5088e832a659fc5c"
 
 [license]
 spdx = "BSD-2-Clause AND GPL-2.0-or-later"

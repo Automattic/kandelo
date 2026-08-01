@@ -123,19 +123,33 @@ TAP_NAME="$(homebrew_resolve_tap_name \
 SDK_FINGERPRINT="$(shasum -a 256 "$KANDELO_ROOT/sdk/activate.sh" | awk '{print $1}')"
 SYSROOT_FINGERPRINT="$(bash "$KANDELO_ROOT/scripts/homebrew-sysroot-fingerprint.sh" \
   --kandelo-root "$BUILD_ROOT" --arch "$KANDELO_HOMEBREW_ARCH")"
-TAP_COMMIT="$(git -C "$FORMULA_SOURCE_ROOT" rev-parse HEAD)"
+TAP_CHECKOUT_COMMIT="$(git -C "$FORMULA_SOURCE_ROOT" rev-parse HEAD)"
+TAP_COMMIT="${KANDELO_HOMEBREW_TAP_SOURCE_COMMIT:-$TAP_CHECKOUT_COMMIT}"
+EXPECTED_TAP_CHECKOUT_COMMIT="$TAP_COMMIT"
+if [ -n "${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:-}" ]; then
+  [ -n "${KANDELO_HOMEBREW_TAP_SOURCE_COMMIT:-}" ] || {
+    echo "homebrew-generate-sidecars-from-env.sh: campaign checkout requires its public tap source commit" >&2
+    exit 2
+  }
+  EXPECTED_TAP_CHECKOUT_COMMIT="$KANDELO_HOMEBREW_PREPARED_TAP_COMMIT"
+fi
 KANDELO_COMMIT="$(git -C "$KANDELO_ROOT" rev-parse HEAD)"
 BUILD_COMMIT="$(git -C "$BUILD_ROOT" rev-parse HEAD)"
 if [ "$BUILD_COMMIT" != "$KANDELO_COMMIT" ]; then
   echo "homebrew-generate-sidecars-from-env.sh: build evidence root differs from the fresh generator commit" >&2
   exit 2
 fi
-for commit in "$TAP_COMMIT" "$KANDELO_COMMIT"; do
+for commit in "$TAP_COMMIT" "$TAP_CHECKOUT_COMMIT" \
+  "$EXPECTED_TAP_CHECKOUT_COMMIT" "$KANDELO_COMMIT"; do
   if ! [[ "$commit" =~ ^[0-9a-f]{40}$ ]]; then
     echo "homebrew-generate-sidecars-from-env.sh: invalid source commit" >&2
     exit 2
   fi
 done
+[ "$TAP_CHECKOUT_COMMIT" = "$EXPECTED_TAP_CHECKOUT_COMMIT" ] || {
+  echo "homebrew-generate-sidecars-from-env.sh: Formula checkout differs from the reviewed source materialization" >&2
+  exit 2
+}
 dependency_validation_args=(
   validate
   --input "$KANDELO_HOMEBREW_DEPENDENCY_PROVENANCE" \
@@ -144,6 +158,7 @@ dependency_validation_args=(
   --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
   --tap-name "$TAP_NAME" \
   --tap-commit "$TAP_COMMIT" \
+  --tap-checkout-commit "$TAP_CHECKOUT_COMMIT" \
   --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL" \
   --tap-root "$FORMULA_SOURCE_ROOT"
 )
@@ -163,6 +178,9 @@ python3 "$KANDELO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
   --tap-repository "$KANDELO_HOMEBREW_TAP_REPOSITORY" \
   --tap-name "$TAP_NAME" \
   --tap-commit "$TAP_COMMIT" \
+  --tap-checkout-commit "$TAP_CHECKOUT_COMMIT" \
+  --prefix-campaign-layout-sha256 \
+  "${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}" \
   --tap-root "$KANDELO_HOMEBREW_TAP_ROOT" \
   --dependency-tap-root "$FORMULA_SOURCE_ROOT" \
   --bottle-root-url "$KANDELO_HOMEBREW_BOTTLE_ROOT_URL" \
@@ -182,7 +200,8 @@ if [ -d "$FORMULA_SOURCE_ROOT/Kandelo" ]; then
   rsync -a "$FORMULA_SOURCE_ROOT/Kandelo/" "$KANDELO_HOMEBREW_SIDECAR_ROOT/Kandelo/"
 fi
 export ABI_VERSION CACHE_KEY_SHA SDK_FINGERPRINT SYSROOT_FINGERPRINT FORMULA_SHA256 BREW_VERSION
-export TAP_COMMIT KANDELO_COMMIT GENERATED_AT RUN_URL TAP_NAME KANDELO_ROOT FORMULA_SOURCE_ROOT
+export TAP_COMMIT TAP_CHECKOUT_COMMIT KANDELO_COMMIT GENERATED_AT RUN_URL
+export TAP_NAME KANDELO_ROOT FORMULA_SOURCE_ROOT
 export FORMULA_PATH
 
 python3 - "$INPUT_JSON" <<'PY'
