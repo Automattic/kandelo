@@ -2638,8 +2638,15 @@ def _derive_campaign_from_snapshots(
     require_timestamp(metadata["generated_at"], "old tap metadata generated_at")
     require_string(metadata["generator"], "old tap metadata generator")
     metadata_abi = require_int(metadata["kandelo_abi"], "old tap metadata ABI", 1)
-    if metadata_abi != current_abi:
-        fail("old tap metadata ABI differs from the exact current Kandelo ABI")
+    # WHY: an ABI bump starts with a catalog published for the preceding ABI.
+    # That catalog is still the collision and provenance authority for its
+    # immutable bottles.  The variant planner below marks every bottle whose
+    # ABI differs from current_abi as a required rebuild.  Rejecting the old
+    # catalog here would make it impossible to plan the first honest campaign
+    # for a new ABI; accepting a catalog from a newer ABI would instead plan a
+    # downlevel candidate from evidence this kernel cannot consume.
+    if metadata_abi > current_abi:
+        fail("old tap metadata ABI is newer than the exact Kandelo ABI")
     if metadata["release_tag"] != f"bottles-abi-v{metadata_abi}":
         fail("old tap metadata release tag does not match its ABI")
     require_commit(

@@ -1258,19 +1258,54 @@ class PrefixCampaignTests(unittest.TestCase):
             {"kind": "byte-clean-reuse-candidate", "reasons": []},
         )
 
-    def test_metadata_and_selected_sidecar_must_match_current_authority(
+    def test_older_catalog_for_new_abi_forces_every_variant_to_rebuild(
         self,
     ) -> None:
+        fixture = make_fixture(alpha_source_changed=False)
+        self.addCleanup(fixture.close)
+        (fixture.kandelo / "crates/shared/src/lib.rs").write_text(
+            "pub const ABI_VERSION: u32 = 43;\n"
+        )
+        write_json(
+            fixture.kandelo / "abi/snapshot.json", {"abi_version": 43}
+        )
+        kandelo_head = commit(fixture.kandelo, "advance fixture to ABI 43")
+
+        result = CAMPAIGN.derive_campaign(
+            fixture.options(kandelo_commit=kandelo_head),
+            fixture.dependencies(),
+        )
+
+        self.assertEqual(result["authority"]["current_kandelo_abi"], 43)
+        old_variants = [
+            variant
+            for formula in result["formulae"]
+            for variant in formula["variants"]
+            if "old_record" in variant
+        ]
+        self.assertTrue(old_variants)
+        self.assertTrue(
+            all(
+                variant["disposition"]["kind"] == "required-rebuild"
+                and "abi-mismatch" in variant["disposition"]["reasons"]
+                for variant in old_variants
+            )
+        )
+        self.assertEqual(
+            result["summary"]["byte_clean_reuse_candidates"], 0
+        )
+
+    def test_future_catalog_is_rejected_for_downlevel_candidate(self) -> None:
         fixture = make_fixture()
         self.addCleanup(fixture.close)
         metadata_path = fixture.old_tap / "Kandelo/metadata.json"
         metadata = json.loads(metadata_path.read_text())
-        metadata["kandelo_abi"] = 41
-        metadata["release_tag"] = "bottles-abi-v41"
+        metadata["kandelo_abi"] = 43
+        metadata["release_tag"] = "bottles-abi-v43"
         write_json(metadata_path, metadata)
-        metadata_head = commit(fixture.old_tap, "mismatch selected metadata ABI")
+        metadata_head = commit(fixture.old_tap, "future selected metadata ABI")
         with self.assertRaisesRegex(
-            CAMPAIGN.CampaignError, "differs from the exact current Kandelo ABI"
+            CAMPAIGN.CampaignError, "newer than the exact Kandelo ABI"
         ):
             CAMPAIGN.derive_campaign(
                 fixture.options(
@@ -1280,6 +1315,9 @@ class PrefixCampaignTests(unittest.TestCase):
                 fixture.dependencies(),
             )
 
+    def test_metadata_and_selected_sidecar_must_match_current_authority(
+        self,
+    ) -> None:
         fixture = make_fixture()
         self.addCleanup(fixture.close)
         sidecar_path = fixture.old_tap / "Kandelo/formula/alpha.json"
@@ -1323,6 +1361,23 @@ class PrefixCampaignTests(unittest.TestCase):
                     old_tap_commit=old_head,
                     metadata_sha256=sha256(metadata_path.read_bytes()),
                 ),
+                fixture.dependencies(),
+            )
+
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        sidecar_path = fixture.old_tap / "Kandelo/formula/alpha.json"
+        sidecar_value = json.loads(sidecar_path.read_text())
+        sidecar_value["kandelo_abi"] = 41
+        write_json(sidecar_path, sidecar_value)
+        sidecar_head = commit(
+            fixture.old_tap, "mismatch selected sidecar ABI"
+        )
+        with self.assertRaisesRegex(
+            CAMPAIGN.CampaignError, "sidecar ABI/tap_commit"
+        ):
+            CAMPAIGN.derive_campaign(
+                fixture.options(old_tap_commit=sidecar_head),
                 fixture.dependencies(),
             )
 
