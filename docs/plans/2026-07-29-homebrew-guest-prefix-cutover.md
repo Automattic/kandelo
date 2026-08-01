@@ -12,6 +12,18 @@ contract and made bottle inspection bind to its exact SHA-256. Campaign
 derivation can therefore land while the retired prefix remains active.
 Activating the target layout remains a later atomic cutover step.
 
+Landing update, 2026-07-31: #1156 landed campaign derivation, and #1159
+landed the browser lazy-download proxy. #1166 landed the temporary Ruby
+spawn exception, and #1170 landed isolated native dependency closures.
+#1171 then placed the bottle-backed Pages workflow on `main`. Its first
+`main` run resolved and built the canonical shell but stopped before
+deployment because it checked an optional unhashed shell copy. PR #1172
+replaced that check with the exact hashed Vite asset. Production run
+`30682936311` at exact protected `main` `ce9b36a8` completed the
+corrected workflow and deployed the exact bottle-backed shell
+successfully. These landed changes are the base for the remaining work,
+not future landing instructions.
+
 ## Accelerated Usable Cutover Checkpoint: 2026-07-31
 
 This checkpoint separates the first usable in-guest Homebrew delivery
@@ -26,33 +38,36 @@ Node.js and Chromium product validation. The usable cutover must reuse
 those layers. An unfinished sibling Formula or the later full campaign
 is not a reason to rebuild them.
 
-The bottle delta for the first usable proof is Libyaml and Ruby:
+The bottle delta for the first usable proof is Libyaml and Ruby. Resume
+from the landed baseline in this order:
 
-1. Land the publisher authority on protected Kandelo `main`, read its
-   exact SHA, and rotate the tap's reusable-workflow pin and
+1. Preserve #1172's successful bottle-backed Pages deployment from run
+   `30682936311` at exact protected `main` `ce9b36a8` as the baseline.
+2. Land #1160's publisher authority on protected Kandelo `main`, read
+   its exact SHA, and rotate the tap's reusable-workflow pin and
    `kandelo-ref` together to that SHA.
-2. Publish Libyaml as a new public package namespace. Hold package
+3. Publish Libyaml as a new public package namespace. Hold package
    creation, child upload, and version-index mutation under the same
    first-publication shared writer lock. The lock is repository-scoped
    and Formula-keyed. Do not let parallel first-publication and index
    jobs race one another.
-3. Publish Ruby only after the exact Libyaml bottle is publicly readable
+4. Publish Ruby only after the exact Libyaml bottle is publicly readable
    and admitted as its dependency. Every other runtime-support input
    reuses its immutable bottle digest and truthful producer provenance.
-4. Regenerate the runtime-support descriptor and shell package
+5. Regenerate the runtime-support descriptor and shell package
    generation. Publish a bottle mirror that preserves every reused
    layer byte for byte, and close one immutable lifecycle release. The
    generated contracts must name the new Libyaml/Ruby identities and
    the reused 38-Formula base. They must not relabel old bytes as newly
    built.
-5. Run PR #1147's Chromium product lifecycle. Install, link, execute,
-   and remove core Bzip2. Then install independent-tap M4 and verify
-   that its core-tap Dash dependency resolves and runs through normal
-   Homebrew behavior. Preserve the peer exact-byte Node.js evidence as
-   well.
-6. Switch the shell only after the regenerated descriptor, generation,
-   mirror, lifecycle release, and both host claims agree on the same
-   bytes.
+6. Run the focused product lifecycle retained from #1147. Install,
+   link, execute, and remove core Bzip2. Then install independent-tap M4
+   and verify that its core-tap Dash dependency resolves and runs
+   through normal Homebrew behavior. Preserve the peer exact-byte
+   Node.js evidence as well.
+7. Switch the replacement shell only after the regenerated descriptor,
+   generation, mirror, lifecycle release, and both host claims agree on
+   the same bytes.
 
 The pin order is part of the authority contract. A tap caller cannot
 predict the final Kandelo merge SHA. Merge Kandelo first, read
@@ -497,22 +512,18 @@ finished:
 
 ### Superseded Execution Checkpoint: 2026-07-30
 
-The browser lazy-download proxy in Kandelo PR #1159 has exact Node.js,
-Chromium, and repository CI evidence. Keep its reviewed head unchanged.
-Its Prepare merge candidate will validate that head against the current
-`main` immediately before merge.
+This subsection records the superseded 2026-07-30 landing order. PR
+#1156 then contained campaign derivation, #1159 carried the reviewed
+browser lazy-download proxy, and #1160 carried the execution and
+publication bridge. The intended sequence was to merge #1156, prepare
+and merge the unchanged #1159 head, and then transplant only #1160's
+bridge commits onto the resulting `main`. Keeping #1156's pre-squash
+commits out of that transplant preserved the focused derivation history.
 
-PR #1156 contains the campaign derivation. PR #1160 contains the
-execution and publication bridge and is stacked on #1156. Merge #1156
-separately after its exact shell proof succeeds. It already has complete
-repository CI and a successful merge gate, and its focused squash commit
-keeps the campaign derivation reviewable.
-
-After #1156 merges, progress #1159 through Prepare merge against that
-new `main`. Do not merge anything else while the Prepare merge candidate
-is running. After #1159 lands, transplant only #1160's bridge commits
-onto the actual merged `main`, retarget #1160 to `main`, and run fresh
-exact CI. Do not carry #1156's pre-squash commits into the restack.
+That ordering is now historical. PRs #1156 and #1159 landed, followed by
+the native-closure and Ruby prerequisites in #1170 and #1166. PR #1160
+was restacked over those merged results rather than carrying their
+pre-merge commits.
 
 The first public campaign canary is `what` for `wasm32`. Run it only
 after the combined campaign series is on protected Kandelo `main`,
@@ -536,13 +547,15 @@ daily read-only drift canary. That preserves Homebrew authenticity while
 preventing unrelated packaging PRs from failing when the live feed
 changes.
 
-After #1159 lands, rotate the three tap trust pins and run the existing
-public Node.js and Chromium lifecycle proof. Then reparent the five
-validated Pages deployment commits from #1147 onto the actual merged
-`main`. Refresh #1147's proof references, run fresh exact-head CI, and
-restore its `ready-to-ship` label only after those checks pass. Prefer
-landing that user-visible deployment before #1160; rebase #1160 over
-the deployment before its final CI.
+The validated Pages work originally carried by #1147 later landed on
+`main` through #1171 after the prerequisite train. That first main run
+stopped before deployment at its optional unhashed-shell comparison.
+PR #1172 supplied the exact hashed-asset correction. Production run
+`30682936311` at exact protected `main` `ce9b36a8` completed the
+corrected workflow and deployed the exact bottle-backed shell
+successfully. The final #1160 restack therefore uses that deployed state
+as its base, retains Pages as the complete-gallery build gate, and
+requires fresh exact-head CI before merge.
 
 ## Completion Evidence
 
