@@ -815,6 +815,13 @@ environment or calls the mode. It cannot satisfy the public product,
 artifact-lock, or immutable-mirror gates. Deleting that dormant bridge is a
 separate cleanup and does not block the bottled-shell cutover.
 
+The bridge and products derived from it declare an explicit `source-rootfs`
+shell-composition marker. They preserve conventional lazy files and archives,
+but do not claim Homebrew package-tree, bootstrap, or closed-mirror authority.
+Bottle-backed shell products instead retain all three Homebrew bindings. A
+derived image that is unmarked, mixes the two ownership models, or carries an
+incomplete Homebrew binding fails during its build.
+
 ### Adding a new VFS image
 
 1. Create `images/vfs/scripts/build-<name>-vfs-image.ts` — import helpers from `vfs-image-helpers.ts`
