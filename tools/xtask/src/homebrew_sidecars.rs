@@ -690,22 +690,22 @@ impl Generator<'_> {
         formula_sidecar_path: &str,
         link_outputs: &mut Vec<(String, Value)>,
     ) -> Result<Value, String> {
-        if let Some(expected_sha256) = self.options.prefix_campaign_layout_sha256.as_deref() {
-            let guest_layout = crate::homebrew_guest_layout::get(Some(expected_sha256))?;
-            if bottle.prefix != guest_layout.prefix {
-                return Err(bottle_error(
-                    package,
-                    bottle,
-                    "prefix does not match the selected prefix-campaign guest layout",
-                ));
-            }
-            if bottle.cellar != guest_layout.cellar {
-                return Err(bottle_error(
-                    package,
-                    bottle,
-                    "cellar does not match the selected prefix-campaign guest layout",
-                ));
-            }
+        let guest_layout = crate::homebrew_guest_layout::get(
+            self.options.prefix_campaign_layout_sha256.as_deref(),
+        )?;
+        if bottle.prefix != guest_layout.prefix {
+            return Err(bottle_error(
+                package,
+                bottle,
+                "prefix does not match the canonical Kandelo guest layout",
+            ));
+        }
+        if bottle.cellar != guest_layout.cellar {
+            return Err(bottle_error(
+                package,
+                bottle,
+                "cellar does not match the canonical Kandelo guest layout",
+            ));
         }
         let status = bottle_status(bottle);
         let bottle_tag = bottle
@@ -1566,10 +1566,11 @@ mod tests {
     }
 
     fn fixture_input(bottle_file: &str, bottle_sha256: &str, status: &str) -> Value {
+        let guest_layout = crate::homebrew_guest_layout::get(None).unwrap();
         let mut bottle = json!({
             "arch": "wasm32",
-            "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-            "prefix": "/home/linuxbrew/.linuxbrew",
+            "cellar": guest_layout.cellar,
+            "prefix": guest_layout.prefix,
             "runtime_support": ["node"],
             "browser_compatible": false,
             "fork_instrumentation": "not-required",
@@ -1614,6 +1615,13 @@ mod tests {
                         "name": "schema",
                         "status": "success",
                         "passed": ["metadata.json"],
+                        "failed": [],
+                        "skipped": []
+                    },
+                    {
+                        "name": "node_smoke",
+                        "status": "success",
+                        "passed": ["fixture"],
                         "failed": [],
                         "skipped": []
                     }
@@ -1759,16 +1767,6 @@ mod tests {
         });
         input["packages"][0]["bottles"][0]["built_from"] =
             historical.clone();
-        input["packages"][0]["bottles"][0]["validation"]["outcome_lists"]
-            .as_array_mut()
-            .unwrap()
-            .push(json!({
-                "name": "node_smoke",
-                "status": "success",
-                "passed": ["fixture"],
-                "failed": [],
-                "skipped": [],
-            }));
         write_json_value(&fixture.input_path, &input);
 
         fixture.run(None);
@@ -1855,7 +1853,7 @@ mod tests {
     }
 
     #[test]
-    fn prefix_campaign_generation_requires_the_digest_bound_target_layout() {
+    fn prefix_campaign_generation_binds_digest_without_changing_paths() {
         let fixture = Fixture::new("success");
         let digest =
             sha256_bytes(include_str!("../../../homebrew/kandelo-guest-layout.json").as_bytes());
@@ -1870,18 +1868,40 @@ mod tests {
             ]
         };
 
-        let error = run(campaign_args()).unwrap_err();
+        run(campaign_args()).unwrap();
+
+        let mut wrong_digest_args = campaign_args();
+        *wrong_digest_args.last_mut().unwrap() = "0".repeat(64);
+        let error = run(wrong_digest_args).unwrap_err();
         assert!(
-            error.contains("prefix does not match the selected prefix-campaign guest layout"),
+            error.contains("differs from prefix-campaign authority"),
             "{error}"
         );
+    }
 
-        let layout = crate::homebrew_guest_layout::get(Some(&digest)).unwrap();
-        let mut input = load_json(&fixture.input_path).unwrap();
-        input["packages"][0]["bottles"][0]["prefix"] = json!(layout.prefix);
-        input["packages"][0]["bottles"][0]["cellar"] = json!(layout.cellar);
-        write_json_value(&fixture.input_path, &input);
-        run(campaign_args()).unwrap();
+    #[test]
+    fn ordinary_generation_rejects_a_noncanonical_prefix_or_cellar() {
+        for field in ["prefix", "cellar"] {
+            let fixture = Fixture::new("success");
+            let mut input = load_json(&fixture.input_path).unwrap();
+            input["packages"][0]["bottles"][0][field] =
+                json!(format!("/opt/not-kandelo/{field}"));
+            write_json_value(&fixture.input_path, &input);
+
+            let error = run(vec![
+                "--tap-root".to_string(),
+                fixture.tap_root.to_string_lossy().into_owned(),
+                "--input".to_string(),
+                fixture.input_path.to_string_lossy().into_owned(),
+            ])
+            .unwrap_err();
+            assert!(
+                error.contains(&format!(
+                    "{field} does not match the canonical Kandelo guest layout"
+                )),
+                "{error}",
+            );
+        }
     }
 
     #[test]

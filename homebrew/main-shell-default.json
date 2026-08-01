@@ -1,5 +1,5 @@
 {
   "version": 1,
-  "path": "/home/linuxbrew/.linuxbrew/bin/bash",
+  "path": "/opt/kandelo/homebrew/bin/bash",
   "argv": ["bash", "-l", "-i"]
 }

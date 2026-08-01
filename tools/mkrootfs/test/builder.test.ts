@@ -344,10 +344,10 @@ describe("image builder — pass 4: archives", () => {
         ),
         "Library/Homebrew/readme.txt": zipUnixFile("read me\n", 0o600),
       },
-      "base=/home/linuxbrew/.linuxbrew fmode=0644 fmode_policy=preserve-executable dmode=0755 uid=1000 gid=1000",
+      "base=/opt/kandelo/homebrew fmode=0644 fmode_policy=preserve-executable dmode=0755 uid=1000 gid=1000",
     );
     const mfs = MemoryFileSystem.fromImage(image);
-    const prefix = "/home/linuxbrew/.linuxbrew";
+    const prefix = "/opt/kandelo/homebrew";
 
     expect(mfs.stat(`${prefix}/bin/brew`).mode & 0o7777).toBe(0o755);
     expect(
@@ -417,11 +417,11 @@ describe("image builder — pass 4: archives", () => {
         ),
         "Library/Homebrew/shims/linux/super/curl": zipSymlink(targetBytes),
       },
-      "base=/home/linuxbrew/.linuxbrew fmode=0640 dmode=0750 uid=1000 gid=1000",
+      "base=/opt/kandelo/homebrew fmode=0640 dmode=0750 uid=1000 gid=1000",
     );
     const mfs = MemoryFileSystem.fromImage(image);
     const linkPath =
-      "/home/linuxbrew/.linuxbrew/Library/Homebrew/shims/linux/super/curl";
+      "/opt/kandelo/homebrew/Library/Homebrew/shims/linux/super/curl";
 
     const link = mfs.lstat(linkPath);
     expect((link.mode & 0o170000) >>> 0).toBe(0o120000);
@@ -436,13 +436,13 @@ describe("image builder — pass 4: archives", () => {
     // Following the relative target reaches the ordinary archive file.
     expect(readFromImage(mfs, linkPath)).toContain("exec /usr/bin/curl");
     const target = mfs.stat(
-      "/home/linuxbrew/.linuxbrew/Library/Homebrew/shims/shared/curl",
+      "/opt/kandelo/homebrew/Library/Homebrew/shims/shared/curl",
     );
     expect(target.mode & 0o777).toBe(0o640);
     expect(target.uid).toBe(1000);
     expect(target.gid).toBe(1000);
     const parent = mfs.stat(
-      "/home/linuxbrew/.linuxbrew/Library/Homebrew/shims/linux/super",
+      "/opt/kandelo/homebrew/Library/Homebrew/shims/linux/super",
     );
     expect(parent.mode & 0o777).toBe(0o750);
     expect(parent.uid).toBe(1000);

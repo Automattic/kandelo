@@ -4,9 +4,9 @@
   "version": "15.0.0",
   "arch": "wasm32",
   "kandelo_abi": 15,
-  "prefix": "/home/linuxbrew/.linuxbrew",
-  "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-  "keg": "/home/linuxbrew/.linuxbrew/Cellar/what/15.0.0",
+  "prefix": "/opt/kandelo/homebrew",
+  "cellar": "/opt/kandelo/homebrew/Cellar",
+  "keg": "/opt/kandelo/homebrew/Cellar/what/15.0.0",
   "bottle": {
     "url": "https://example.invalid/kandelo-homebrew/what-15.0.0-rebuild0-wasm32_kandelo.bottle.tar.gz",
     "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",

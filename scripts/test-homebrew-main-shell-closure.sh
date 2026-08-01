@@ -1766,12 +1766,12 @@ jq -e '
     url: "homebrew-bootstrap.zip",
     mode_policy: "portable-posix-v1"
   } and
-  .mount_prefix == "/home/linuxbrew/.linuxbrew" and
+  .mount_prefix == "/opt/kandelo/homebrew" and
   .owner == { uid: 1000, gid: 1000 } and
   .activation == {
     mode: "first-use",
     capabilities: ["homebrew:bootstrap", "homebrew:runtime"],
-    roots: ["/home/linuxbrew/.linuxbrew/bin/brew"],
+    roots: ["/opt/kandelo/homebrew/bin/brew"],
     atomic_group: "homebrew-runtime-support"
   }
 ' "$PACKAGE_TREE_SPEC" >/dev/null ||
@@ -2719,6 +2719,11 @@ expect_failure "lock is invalid or uses a different timestamp epoch" \
   "$BUILDER" --lazy-shell --tap-root "$tap_worktree" \
   --work-dir "$TMP_ROOT/work-wrong-lazy-epoch" --migration-lock "$lock" \
   --lazy-artifact-lock "$wrong_epoch_lock"
+old_schema_lock="$TMP_ROOT/main-shell-old-schema-lock.json"
+jq '.schema = 2' "$LAZY_ARTIFACT_LOCK" >"$old_schema_lock"
+expect_failure "lock is invalid or uses a different timestamp epoch" \
+  bash "$LAZY_ARTIFACT_CHECKER" \
+    --lock "$old_schema_lock" --expected-source-date-epoch 0
 extra_field_lock="$TMP_ROOT/main-shell-extra-field-lock.json"
 jq '.unexpected = true' "$LAZY_ARTIFACT_LOCK" >"$extra_field_lock"
 expect_failure "lock is invalid or uses a different timestamp epoch" \

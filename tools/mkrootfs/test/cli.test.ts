@@ -223,7 +223,7 @@ describe("mkrootfs build — happy paths", () => {
       );
       writeFileSync(
         join(tmp, "MANIFEST"),
-        "archive url=homebrew.zip base=/home/linuxbrew/.linuxbrew fmode=0644 fmode_policy=preserve-executable uid=1000 gid=1000\n",
+        "archive url=homebrew.zip base=/opt/kandelo/homebrew fmode=0644 fmode_policy=preserve-executable uid=1000 gid=1000\n",
       );
 
       const build = run(
@@ -247,10 +247,10 @@ describe("mkrootfs build — happy paths", () => {
       }>;
       const link = entries.find(
         (entry) => entry.path ===
-          "/home/linuxbrew/.linuxbrew/Library/Homebrew/shims/linux/super/curl",
+          "/opt/kandelo/homebrew/Library/Homebrew/shims/linux/super/curl",
       );
       expect(link).toEqual({
-        path: "/home/linuxbrew/.linuxbrew/Library/Homebrew/shims/linux/super/curl",
+        path: "/opt/kandelo/homebrew/Library/Homebrew/shims/linux/super/curl",
         type: "l",
         mode: "0777",
         uid: 1000,
@@ -260,21 +260,21 @@ describe("mkrootfs build — happy paths", () => {
       });
 
       expect(entries.find((entry) => entry.path ===
-        "/home/linuxbrew/.linuxbrew/bin/brew")).toMatchObject({
+        "/opt/kandelo/homebrew/bin/brew")).toMatchObject({
         type: "f",
         mode: "0755",
         uid: 1000,
         gid: 1000,
       });
       expect(entries.find((entry) => entry.path ===
-        "/home/linuxbrew/.linuxbrew/Library/Homebrew/shims/shared/curl")).toMatchObject({
+        "/opt/kandelo/homebrew/Library/Homebrew/shims/shared/curl")).toMatchObject({
         type: "f",
         mode: "0755",
         uid: 1000,
         gid: 1000,
       });
       expect(entries.find((entry) => entry.path ===
-        "/home/linuxbrew/.linuxbrew/Library/Homebrew/bin/non-executable")).toMatchObject({
+        "/opt/kandelo/homebrew/Library/Homebrew/bin/non-executable")).toMatchObject({
         type: "f",
         mode: "0644",
         uid: 1000,

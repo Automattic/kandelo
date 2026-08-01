@@ -90,7 +90,7 @@ cat >"$tap/Kandelo/vfs-acceptance.json" <<'EOF'
   "schema": 2,
   "formula": "file-formula",
   "brewfile": "Kandelo/Brewfile.acceptance",
-  "executable": "/home/linuxbrew/.linuxbrew/bin/file",
+  "executable": "/opt/kandelo/homebrew/bin/file",
   "argv": ["file", "--version"],
   "expected_stdout": "file-5.46",
   "shell_config": "Kandelo/shell.json"
@@ -98,15 +98,15 @@ cat >"$tap/Kandelo/vfs-acceptance.json" <<'EOF'
 EOF
 printf 'tap "kandelo-dev/tap-core"\nbrew "file-formula"\nbrew "dash"\n' \
   >"$tap/Kandelo/Brewfile.acceptance"
-printf '{"version":1,"path":"/home/linuxbrew/.linuxbrew/bin/dash","argv":["dash","-l","-i"]}\n' \
+printf '{"version":1,"path":"/opt/kandelo/homebrew/bin/dash","argv":["dash","-l","-i"]}\n' \
   >"$tap/Kandelo/shell.json"
 jq -nS \
   --arg sha "$file_sha" --argjson bytes "$file_bytes" '
   {
     schema: 1, package: "file-formula", version: "5.46", arch: "wasm32",
-    kandelo_abi: 42, prefix: "/home/linuxbrew/.linuxbrew",
-    cellar: "/home/linuxbrew/.linuxbrew/Cellar",
-    keg: "/home/linuxbrew/.linuxbrew/Cellar/file-formula/5.46",
+    kandelo_abi: 42, prefix: "/opt/kandelo/homebrew",
+    cellar: "/opt/kandelo/homebrew/Cellar",
+    keg: "/opt/kandelo/homebrew/Cellar/file-formula/5.46",
     bottle: {
       url: ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/file-formula/blobs/sha256:" + $sha),
       sha256: $sha, bytes: $bytes, cache_key_sha: $sha,
@@ -131,9 +131,9 @@ jq -nS \
   --arg sha "$dash_sha" --argjson bytes "$dash_bytes" '
   {
     schema: 1, package: "dash", version: "0.5.12", arch: "wasm32",
-    kandelo_abi: 42, prefix: "/home/linuxbrew/.linuxbrew",
-    cellar: "/home/linuxbrew/.linuxbrew/Cellar",
-    keg: "/home/linuxbrew/.linuxbrew/Cellar/dash/0.5.12",
+    kandelo_abi: 42, prefix: "/opt/kandelo/homebrew",
+    cellar: "/opt/kandelo/homebrew/Cellar",
+    keg: "/opt/kandelo/homebrew/Cellar/dash/0.5.12",
     bottle: {
       url: ("https://ghcr.io/v2/third-party/homebrew-runtime/dash/blobs/sha256:" + $sha),
       sha256: $sha, bytes: $bytes, cache_key_sha: $sha,
@@ -209,7 +209,7 @@ jq -nS \
       brewfile: {parser: "kandelo-static-brewfile-v1", sha256: $brewfile_sha, bytes: $brewfile_bytes}
     },
     default_shell: {
-      path: "/home/linuxbrew/.linuxbrew/bin/dash",
+      path: "/opt/kandelo/homebrew/bin/dash",
       argv: ["dash", "-l", "-i"],
       config_sha256: $config_sha,
       config_bytes: $config_bytes
@@ -224,8 +224,8 @@ jq -nS \
         url: ("https://ghcr.io/v2/third-party/homebrew-runtime/dash/blobs/sha256:" + $dash_sha),
         sha256: $dash_sha, bytes: $dash_bytes, cache_key_sha: $dash_sha,
         link_manifest: "Kandelo/links/dash.json",
-        prefix: "/home/linuxbrew/.linuxbrew",
-        keg: "/home/linuxbrew/.linuxbrew/Cellar/dash/0.5.12",
+        prefix: "/opt/kandelo/homebrew",
+        keg: "/opt/kandelo/homebrew/Cellar/dash/0.5.12",
         staged_files: 1, staged_directories: 2, staged_symlinks: 1,
         receipts: ["bin/dash"],
         links: ["bin/dash"],
@@ -246,8 +246,8 @@ jq -nS \
         url: ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/file-formula/blobs/sha256:" + $file_sha),
         sha256: $file_sha, bytes: $file_bytes, cache_key_sha: $file_sha,
         link_manifest: "Kandelo/links/file-formula.json",
-        prefix: "/home/linuxbrew/.linuxbrew",
-        keg: "/home/linuxbrew/.linuxbrew/Cellar/file-formula/5.46",
+        prefix: "/opt/kandelo/homebrew",
+        keg: "/opt/kandelo/homebrew/Cellar/file-formula/5.46",
         staged_files: 1, staged_directories: 2, staged_symlinks: 1,
         receipts: ["Cellar/file-formula/5.46/bin/file"],
         links: ["bin/file", "bin/file-default"],
@@ -319,11 +319,11 @@ jq -nS \
     image: {artifact: "homebrew-brewfile.vfs.zst", sha256: $image_sha, bytes: $image_bytes, kernel_abi: 42},
     default_shell: {
       config_artifact: "shell.json", config_sha256: $config_sha, config_bytes: $config_bytes,
-      path: "/home/linuxbrew/.linuxbrew/bin/dash", argv: ["dash", "-l", "-i"],
+      path: "/opt/kandelo/homebrew/bin/dash", argv: ["dash", "-l", "-i"],
       bottle_package: "dash"
     },
     node: {
-      executable: "/home/linuxbrew/.linuxbrew/bin/file", argv: ["file", "--version"],
+      executable: "/opt/kandelo/homebrew/bin/file", argv: ["file", "--version"],
       exit_code: 0, stdout: $stdout, stdout_sha256: $stdout_sha, stderr_sha256: $empty_sha
     }
   }
@@ -333,9 +333,9 @@ jq -nS --arg image_sha "$image_sha" --arg kernel_sha "$kernel_sha" '
   {
     schema: 1, status: "success", runtime: "browser", engine: "chromium",
     image_sha256: $image_sha, kernel_sha256: $kernel_sha,
-    executable: "/home/linuxbrew/.linuxbrew/bin/file", argv: ["file", "--version"],
+    executable: "/opt/kandelo/homebrew/bin/file", argv: ["file", "--version"],
     default_shell: {
-      path: "/home/linuxbrew/.linuxbrew/bin/dash", argv: ["dash", "-l", "-i"],
+      path: "/opt/kandelo/homebrew/bin/dash", argv: ["dash", "-l", "-i"],
       interactive: true, legacy_shell_downloads: 0
     }
   }
@@ -355,46 +355,46 @@ bottle_tap_commit, bottle_kandelo_commit, dependency_tap_commit = sys.argv[10:13
 archive_path = root / "layer.bin"
 entries = [
     {
-        "path": "home/linuxbrew/.linuxbrew", "type": "directory",
+        "path": "opt/kandelo/homebrew", "type": "directory",
         "ownership": "shared-base-directory", "mode": 0o755, "size": 0,
     },
     {
-        "path": "home/linuxbrew/.linuxbrew/Cellar", "type": "directory",
+        "path": "opt/kandelo/homebrew/Cellar", "type": "directory",
         "ownership": "shared-base-directory", "mode": 0o755, "size": 0,
     },
     {
-        "path": "home/linuxbrew/.linuxbrew/Cellar/file-formula",
+        "path": "opt/kandelo/homebrew/Cellar/file-formula",
         "type": "directory", "ownership": "layer", "mode": 0o755, "size": 0,
     },
     {
-        "path": "home/linuxbrew/.linuxbrew/Cellar/file-formula/5.46",
+        "path": "opt/kandelo/homebrew/Cellar/file-formula/5.46",
         "type": "directory", "ownership": "layer", "mode": 0o755, "size": 0,
     },
     {
-        "path": "home/linuxbrew/.linuxbrew/Cellar/file-formula/5.46/bin",
+        "path": "opt/kandelo/homebrew/Cellar/file-formula/5.46/bin",
         "type": "directory", "ownership": "layer", "mode": 0o755, "size": 0,
     },
     {
-        "path": "home/linuxbrew/.linuxbrew/Cellar/file-formula/5.46/bin/file",
+        "path": "opt/kandelo/homebrew/Cellar/file-formula/5.46/bin/file",
         "type": "file", "ownership": "layer", "mode": 0o755,
         "size": len(b"file-5.46\n"),
     },
     {
-        "path": "home/linuxbrew/.linuxbrew/bin", "type": "directory",
+        "path": "opt/kandelo/homebrew/bin", "type": "directory",
         "ownership": "shared-base-directory", "mode": 0o755, "size": 0,
     },
     {
-        "path": "home/linuxbrew/.linuxbrew/bin/file", "type": "symlink",
+        "path": "opt/kandelo/homebrew/bin/file", "type": "symlink",
         "ownership": "layer", "mode": 0o777,
-        "target": "/home/linuxbrew/.linuxbrew/Cellar/file-formula/5.46/bin/file",
-        "size": len(b"/home/linuxbrew/.linuxbrew/Cellar/file-formula/5.46/bin/file"),
+        "target": "/opt/kandelo/homebrew/Cellar/file-formula/5.46/bin/file",
+        "size": len(b"/opt/kandelo/homebrew/Cellar/file-formula/5.46/bin/file"),
     },
     {
-        "path": "home/linuxbrew/.linuxbrew/opt", "type": "directory",
+        "path": "opt/kandelo/homebrew/opt", "type": "directory",
         "ownership": "shared-base-directory", "mode": 0o755, "size": 0,
     },
     {
-        "path": "home/linuxbrew/.linuxbrew/opt/file-formula", "type": "symlink",
+        "path": "opt/kandelo/homebrew/opt/file-formula", "type": "symlink",
         "ownership": "layer", "mode": 0o777,
         "target": "../Cellar/file-formula/5.46",
         "size": len(b"../Cellar/file-formula/5.46"),
@@ -424,7 +424,7 @@ archive_bytes = archive_path.read_bytes()
 
 
 def package_record(name, version, bottle_sha, bottle_bytes):
-    keg = f"/home/linuxbrew/.linuxbrew/Cellar/{name}/{version}"
+    keg = f"/opt/kandelo/homebrew/Cellar/{name}/{version}"
     package_tap_commit = bottle_tap_commit if name == "dash" else tap_commit
     package_kandelo_commit = (
         bottle_kandelo_commit if name == "dash" else kandelo_commit
@@ -449,7 +449,7 @@ def package_record(name, version, bottle_sha, bottle_bytes):
         "sha256": bottle_sha, "bytes": bottle_bytes,
         "cache_key_sha": bottle_sha,
         "link_manifest": f"Kandelo/links/{name}.json",
-        "prefix": "/home/linuxbrew/.linuxbrew", "keg": keg,
+        "prefix": "/opt/kandelo/homebrew", "keg": keg,
         "opt_link": {"path": f"opt/{name}", "target": f"../Cellar/{name}/{version}"},
         "built_from": {
             "tap_repository": package_tap_repository,
@@ -547,7 +547,7 @@ descriptor = {
             "mode": "first-use",
             "capabilities": ["homebrew-runtime:file-formula"],
             "roots": [
-                "/home/linuxbrew/.linuxbrew/Cellar/file-formula/5.46"
+                "/opt/kandelo/homebrew/Cellar/file-formula/5.46"
             ],
         },
         "content": {
@@ -804,7 +804,7 @@ value = json.loads(path.read_text())
 for tree in value["deferred_trees"]:
     for entry in tree["inventory"]["entries"]:
         if entry["path"].endswith("/bin/dash") and entry["materialization"] == "descriptor":
-            entry["target"] = "/home/linuxbrew/.linuxbrew/Cellar/dash/0.5.12/bin/evil"
+            entry["target"] = "/opt/kandelo/homebrew/Cellar/dash/0.5.12/bin/evil"
             entry["size"] = len(entry["target"].encode())
 path.write_text(json.dumps(value, sort_keys=True, indent=2) + "\n")
 PY
@@ -830,7 +830,7 @@ cp -a "$direct_source" "$direct_draft_negative"
 jq --arg id "$dependency_tree_id" '(.deferred_trees[] | select(.id == $id) |
       .inventory.entries[] |
       select(.materialization == "archive" and .type == "file") | .path) =
-      "home/linuxbrew/.linuxbrew/Cellar/file-formula/5.46/bin/dash" |
+      "opt/kandelo/homebrew/Cellar/file-formula/5.46/bin/dash" |
     (.deferred_trees[] | select(.id == $id) | .inventory.entries) |= sort_by(.path)' \
   "$direct_draft_negative/layer.json" >"$direct_draft_negative/layer.tmp"
 mv "$direct_draft_negative/layer.tmp" "$direct_draft_negative/layer.json"
@@ -867,7 +867,7 @@ python3 - "$direct_draft_negative/layer.json" <<'PY'
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1])
 value = json.loads(path.read_text())
-structural_path = "home/linuxbrew/.linuxbrew"
+structural_path = "opt/kandelo/homebrew"
 for tree in value["deferred_trees"]:
     inventory = tree["inventory"]
     retained = [
@@ -918,7 +918,7 @@ expect_direct_prepare_failure \
 direct_draft_negative="$TMP_ROOT/direct-draft-root-count-negative"
 cp -a "$direct_source" "$direct_draft_negative"
 jq '.deferred_trees[0].activation.roots =
-      [range(0; 65) | "/home/linuxbrew/.linuxbrew/Cellar/path-\(.)"]' \
+      [range(0; 65) | "/opt/kandelo/homebrew/Cellar/path-\(.)"]' \
   "$direct_draft_negative/layer.json" >"$direct_draft_negative/layer.tmp"
 mv "$direct_draft_negative/layer.tmp" "$direct_draft_negative/layer.json"
 expect_direct_prepare_failure \
@@ -1309,7 +1309,7 @@ jq -e --arg image_sha "$image_sha" '
   .image.sha256 == $image_sha and
   .release.tag == ("homebrew-vfs-sha256-" + $image_sha) and
   .launch.query_parameter == "vfs" and .launch.value == .image.url and
-  .default_shell.path == "/home/linuxbrew/.linuxbrew/bin/dash"
+  .default_shell.path == "/opt/kandelo/homebrew/bin/dash"
 ' "$handoff/kandelo-homebrew-vfs.json" >/dev/null || fail "descriptor contract changed"
 jq -e --arg image_sha "$image_sha" '
   .release.tag as $runtime_tag |

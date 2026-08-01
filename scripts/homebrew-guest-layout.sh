@@ -1,25 +1,26 @@
 #!/usr/bin/env bash
 
-# Select the still-active guest layout or the reviewed prefix-campaign target.
+# Select the canonical guest layout and, when requested, bind it to the
+# immutable prefix-campaign authority.
 #
-# Callers pass no digest for the active layout. The target layout is available
-# only when the caller supplies the exact SHA-256 recorded by the campaign
-# manifest. This helper selects bytes; workflow authorization remains the
-# responsibility of the protected publisher lane.
+# WHY: the completed cutover makes the committed contract authoritative for
+# ordinary publications, but existing prefix-v1 handoffs still carry its exact
+# digest. Keep validating that digest instead of weakening already-sealed
+# campaign identities after the path becomes the default.
 homebrew_select_guest_layout() {
   local campaign_sha256="${1:-}"
   local helper_root contract actual_sha256 contract_values
 
-  HOMEBREW_GUEST_LAYOUT_MODE="current"
-  HOMEBREW_GUEST_PREFIX="/home/linuxbrew/.linuxbrew"
-  HOMEBREW_GUEST_CELLAR="/home/linuxbrew/.linuxbrew/Cellar"
+  HOMEBREW_GUEST_LAYOUT_MODE="canonical"
+  HOMEBREW_GUEST_PREFIX=""
+  HOMEBREW_GUEST_CELLAR=""
   HOMEBREW_GUEST_LAYOUT_SHA256=""
 
-  [ -n "$campaign_sha256" ] || return 0
-  [[ "$campaign_sha256" =~ ^[0-9a-f]{64}$ ]] || {
+  if [ -n "$campaign_sha256" ] &&
+    ! [[ "$campaign_sha256" =~ ^[0-9a-f]{64}$ ]]; then
     echo "homebrew guest layout: invalid prefix-campaign layout SHA-256" >&2
     return 2
-  }
+  fi
 
   helper_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)" || return 2
   contract="$helper_root/homebrew/kandelo-guest-layout.json"
@@ -32,10 +33,11 @@ homebrew_select_guest_layout() {
     return 2
   }
   actual_sha256="$(sha256sum "$contract" | awk '{print $1}')" || return 2
-  [ "$actual_sha256" = "$campaign_sha256" ] || {
+  if [ -n "$campaign_sha256" ] &&
+    [ "$actual_sha256" != "$campaign_sha256" ]; then
     echo "homebrew guest layout: target contract differs from campaign authority" >&2
     return 2
-  }
+  fi
 
   contract_values="$(
     jq -er '
@@ -62,7 +64,7 @@ homebrew_select_guest_layout() {
         .repository == .prefix and
         .cellar == (.prefix + "/Cellar") and
         .stable_entrypoint == "/usr/bin/brew" and
-        .prefix != "/home/linuxbrew/.linuxbrew" and
+        .prefix == "/opt/kandelo/homebrew" and
         .prefix as $prefix |
         (.retired_prefixes | type == "array" and length > 0 and
           all(.[]; normalized) and
@@ -83,6 +85,8 @@ homebrew_select_guest_layout() {
     echo "homebrew guest layout: target contract has empty paths" >&2
     return 2
   }
-  HOMEBREW_GUEST_LAYOUT_MODE="prefix-campaign"
-  HOMEBREW_GUEST_LAYOUT_SHA256="$campaign_sha256"
+  if [ -n "$campaign_sha256" ]; then
+    HOMEBREW_GUEST_LAYOUT_MODE="prefix-campaign"
+    HOMEBREW_GUEST_LAYOUT_SHA256="$campaign_sha256"
+  fi
 }

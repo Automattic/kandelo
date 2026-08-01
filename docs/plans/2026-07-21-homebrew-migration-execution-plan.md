@@ -137,6 +137,13 @@ successful bottles. It does not mean repeating the entire catalog after
 one sibling fails, withholding successful bottles until a campaign is
 perfect, or weakening immutable public readback.
 
+For a packaging pull request that will enter Prepare Merge immediately,
+apply `skip-staging-tests` as soon as the pull request opens. Staging
+still builds and publishes the exact package artifacts. The broad suite
+runs once against the synthetic merge instead of once on the head and
+again on the synthetic merge. This label changes scheduling only; it
+must never omit the final validation before merge.
+
 ## Superseded Resume Checkpoint — 2026-07-31
 
 This checkpoint changes delivery order, not completion scope. The

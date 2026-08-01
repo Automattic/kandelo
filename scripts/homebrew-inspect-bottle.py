@@ -180,9 +180,14 @@ def normalize_forbidden_root(value: str) -> str:
     return value
 
 
-def retired_guest_prefixes(expected_sha256: str) -> tuple[str, ...]:
-    """Load retired prefixes only for an explicitly selected campaign layout."""
-    if re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None:
+def retired_guest_prefixes(
+    expected_sha256: str | None = None,
+) -> tuple[str, ...]:
+    """Load retired prefixes, optionally binding prefix-v1 authority."""
+    if (
+        expected_sha256 is not None
+        and re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None
+    ):
         fail("prefix-campaign guest layout SHA-256 is invalid")
     contract_path = pathlib.Path(__file__).parent.parent / (
         "homebrew/kandelo-guest-layout.json"
@@ -198,7 +203,10 @@ def retired_guest_prefixes(expected_sha256: str) -> tuple[str, ...]:
             "Kandelo Homebrew guest layout exceeds "
             f"{MAX_GUEST_LAYOUT_BYTES} bytes"
         )
-    if hashlib.sha256(payload).hexdigest() != expected_sha256:
+    if (
+        expected_sha256 is not None
+        and hashlib.sha256(payload).hexdigest() != expected_sha256
+    ):
         fail("Kandelo Homebrew guest layout differs from campaign authority")
     try:
         document = json.loads(payload.decode("utf-8"))
@@ -858,14 +866,23 @@ def write_result(result: dict[str, object], output: str) -> None:
 def main() -> int:
     args = parse_args()
     try:
-        forbidden_roots = args.forbidden_root
+        # WHY: retired guest paths are invalid in every new bottle after the
+        # cutover. Prefix-v1 callers additionally bind the same contract by
+        # digest; the reporting mode remains available only for inspecting
+        # historical bottles while deriving reuse eligibility.
+        forbidden_roots = (
+            *args.forbidden_root,
+            *retired_guest_prefixes(),
+        )
         reported_roots: tuple[str, ...] = ()
         if args.reject_retired_roots_layout_sha256 is not None:
             retired_roots = retired_guest_prefixes(
                 args.reject_retired_roots_layout_sha256
             )
-            forbidden_roots = (*forbidden_roots, *retired_roots)
+            if retired_roots != forbidden_roots[-len(retired_roots) :]:
+                fail("campaign and canonical retired roots differ")
         elif args.report_retired_roots_layout_sha256 is not None:
+            forbidden_roots = args.forbidden_root
             reported_roots = retired_guest_prefixes(
                 args.report_retired_roots_layout_sha256
             )

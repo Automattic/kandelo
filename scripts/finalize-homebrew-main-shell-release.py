@@ -102,6 +102,48 @@ def json_bytes(value: Any) -> bytes:
     return (json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode()
 
 
+def require_artifact_lock(value: Any) -> dict[str, Any]:
+    if (
+        not isinstance(value, dict)
+        or set(value)
+        != {
+            "schema",
+            "kind",
+            "source_date_epoch",
+            "state",
+            "inputs",
+            "image",
+        }
+        or value.get("schema") != 3
+        or value.get("kind") != "kandelo-homebrew-lazy-shell-artifact-lock"
+        or not isinstance(value.get("source_date_epoch"), int)
+        or isinstance(value["source_date_epoch"], bool)
+        or value.get("source_date_epoch") != 0
+        or not isinstance(value.get("inputs"), dict)
+        or set(value["inputs"]) != set(BOUND_INPUTS)
+        or any(
+            not isinstance(digest, str) or not SHA256.fullmatch(digest)
+            for digest in value["inputs"].values()
+        )
+    ):
+        raise FinalizeError("artifact lock is not the exact schema-3 contract")
+    image = value.get("image")
+    if value.get("state") == "pending" and image is None:
+        return value
+    if (
+        value.get("state") == "sealed"
+        and isinstance(image, dict)
+        and set(image) == {"sha256", "bytes"}
+        and isinstance(image.get("sha256"), str)
+        and SHA256.fullmatch(image["sha256"])
+        and isinstance(image.get("bytes"), int)
+        and not isinstance(image["bytes"], bool)
+        and image["bytes"] > 0
+    ):
+        return value
+    raise FinalizeError("artifact lock has an invalid publication state")
+
+
 def run_git(tap_root: pathlib.Path, *arguments: str) -> str:
     try:
         result = subprocess.run(
@@ -489,7 +531,9 @@ def prepare(
     }
     migration = exact_json(old[MIGRATION_PATH], "migration lock")
     support = exact_json(old[SUPPORT_PATH], "runtime support")
-    artifact_lock = exact_json(old[ARTIFACT_PATH], "artifact lock")
+    artifact_lock = require_artifact_lock(
+        exact_json(old[ARTIFACT_PATH], "artifact lock")
+    )
     if not isinstance(migration, dict) or not isinstance(support, dict):
         raise FinalizeError("main-shell migration and runtime-support locks must be objects")
     old_tap = migration.get("catalog", {}).get("tap_commit")
@@ -654,8 +698,6 @@ def prepare(
         DOC_PATH: docs_bytes,
     }
 
-    if not isinstance(artifact_lock, dict):
-        raise FinalizeError("artifact lock must be an object")
     bound_values: dict[str, str] = {}
     for key, relative in BOUND_INPUTS.items():
         if relative == MIGRATION_PATH:

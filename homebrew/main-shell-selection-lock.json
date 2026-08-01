@@ -11,7 +11,7 @@
     },
     "migration_lock": {
       "path": "homebrew/main-shell-migration-lock.json",
-      "sha256": "9b19540a88790fa5d7a03b3aa2270365c25e0f24a528bdaf9e7bf6a0b71ed738"
+      "sha256": "92b6c3946e40e9384de0ed98c13b6f9ec595e487a5112cc8a450bc2ac3ea524e"
     },
     "runtime_support": {
       "path": "homebrew/main-shell-homebrew-runtime-support.json",

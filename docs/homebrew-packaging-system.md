@@ -495,10 +495,10 @@ would not prove guest Homebrew.
 
 The campaign's canonical Kandelo guest prefix is
 `/opt/kandelo/homebrew`. Host Homebrew prefixes are not guest paths. The
-currently deployed bottle-backed shell still uses the transitional
-`/home/linuxbrew/.linuxbrew` layout. The campaign must change the
-Formulae, bootstrap, and shell image together before `/opt` is described
-as deployed behavior.
+currently deployed bottle-backed shell still uses the retired guest
+layout recorded in the machine-readable contract. The campaign must
+change the Formulae, bootstrap, and shell image together before `/opt`
+is described as deployed behavior.
 
 The first supported guest path will install prebuilt bottles. Building a
 Formula entirely inside Kandelo is future work. It will use the same

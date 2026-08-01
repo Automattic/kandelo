@@ -79,7 +79,7 @@ import {
   forgeLazyAtomicSeal,
 } from "./lazy-atomic-seal-fixture";
 
-const PREFIX = "/home/linuxbrew/.linuxbrew";
+const PREFIX = "/opt/kandelo/homebrew";
 const CELLAR = `${PREFIX}/Cellar`;
 const KEG = `${CELLAR}/hello/2.12.1`;
 const TAP_COMMIT = "1111111111111111111111111111111111111111";
@@ -3321,19 +3321,19 @@ describe("Homebrew VFS builder", () => {
       ]),
     });
     expect(inventoryEntries).toContainEqual(expect.objectContaining({
-      path: "home/linuxbrew/.linuxbrew/Cellar/runtime/3.0/bin/runtime",
+      path: "opt/kandelo/homebrew/Cellar/runtime/3.0/bin/runtime",
       source_path: "runtime/3.0/bin/runtime",
       type: "file",
       materialization: "archive",
     }));
     expect(inventoryEntries).toContainEqual(expect.objectContaining({
-      path: "home/linuxbrew/.linuxbrew/bin/runtime",
+      path: "opt/kandelo/homebrew/bin/runtime",
       type: "symlink",
       target: `${fixture.runtimeKeg}/bin/runtime`,
       materialization: "descriptor",
     }));
     expect(inventoryEntries).toContainEqual(expect.objectContaining({
-      path: "home/linuxbrew/.linuxbrew/bin",
+      path: "opt/kandelo/homebrew/bin",
       type: "directory",
       ownership: "mergeable-directory",
     }));
@@ -4626,7 +4626,7 @@ describe("Homebrew VFS builder", () => {
     const result = await reviewed.build();
     const owners = result.descriptor.deferred_trees.filter((tree) =>
       tree.inventory.entries.some((entry) =>
-        entry.path === "home/linuxbrew/.linuxbrew/bin/runtime"
+        entry.path === "opt/kandelo/homebrew/bin/runtime"
       )
     );
     expect(owners.map((tree) => tree.package)).toEqual([

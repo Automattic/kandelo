@@ -451,7 +451,7 @@ async function init(): Promise<void> {
           env: [
             "HOME=/tmp",
             "TMPDIR=/tmp",
-            "PATH=/home/linuxbrew/.linuxbrew/bin:/usr/bin:/bin",
+            "PATH=/opt/kandelo/homebrew/bin:/usr/bin:/bin",
           ],
         }),
         new Promise<never>((_resolve, reject) => {

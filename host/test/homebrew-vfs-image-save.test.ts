@@ -40,12 +40,12 @@ const bootstrapSpec = {
     url: "homebrew-bootstrap.zip",
     mode_policy: "portable-posix-v1",
   },
-  mount_prefix: "/home/linuxbrew/.linuxbrew",
+  mount_prefix: "/opt/kandelo/homebrew",
   owner: { uid: 1000, gid: 1000 },
   activation: {
     mode: "first-use",
     capabilities: ["homebrew:bootstrap"],
-    roots: ["/home/linuxbrew/.linuxbrew/bin/brew"],
+    roots: ["/opt/kandelo/homebrew/bin/brew"],
   },
 } as const satisfies PackageDeferredZipTreeSpec;
 
@@ -79,7 +79,7 @@ describe("Homebrew VFS image publication boundary", () => {
       assertPackageDeferredZipTreeState(restored, derived, state);
       assertHomebrewBootstrapConsumerState(restored, consumer);
       expect(
-        restored.lstat("/home/linuxbrew/.linuxbrew/Cellar/existing/1/bin/tool"),
+        restored.lstat("/opt/kandelo/homebrew/Cellar/existing/1/bin/tool"),
       ).toMatchObject({ uid: 1000, gid: 1000 });
       expect(restored.lstat("/etc/homebrew/brew.env")).toMatchObject({
         mode: expect.any(Number),
@@ -87,7 +87,7 @@ describe("Homebrew VFS image publication boundary", () => {
         gid: 0,
       });
       expect(restored.readlink("/usr/bin/brew")).toBe(
-        "/home/linuxbrew/.linuxbrew/bin/brew",
+        "/opt/kandelo/homebrew/bin/brew",
       );
     },
   );
@@ -136,7 +136,7 @@ describe("Homebrew VFS image publication boundary", () => {
     const danglingFs = bootstrapConsumerFs();
     prepareHomebrewBootstrapConsumerNamespace(danglingFs, valid);
     registerPackageDeferredZipTree(danglingFs, valid);
-    danglingFs.unlink("/home/linuxbrew/.linuxbrew/bin/brew");
+    danglingFs.unlink("/opt/kandelo/homebrew/bin/brew");
     expect(() =>
       installHomebrewBootstrapConsumerState(
         danglingFs,
@@ -239,10 +239,10 @@ describe("Homebrew VFS image publication boundary", () => {
         fs.symlink("/wrong/brew", "/usr/bin/brew");
         break;
       case "target":
-        fs.unlink("/home/linuxbrew/.linuxbrew/bin/brew");
+        fs.unlink("/opt/kandelo/homebrew/bin/brew");
         break;
       case "prefix-owner":
-        fs.chown("/home/linuxbrew/.linuxbrew", 0, 0);
+        fs.chown("/opt/kandelo/homebrew", 0, 0);
         break;
       case "cache-owner":
         fs.chown("/home/user/.cache/Homebrew", 0, 0);
@@ -339,14 +339,15 @@ function bootstrapConsumerFs(): MemoryFileSystem {
     32 * MiB,
   );
   for (const path of [
+    "/opt",
+    "/opt/kandelo",
+    "/opt/kandelo/homebrew",
+    "/opt/kandelo/homebrew/bin",
+    "/opt/kandelo/homebrew/Cellar",
+    "/opt/kandelo/homebrew/Cellar/existing",
+    "/opt/kandelo/homebrew/Cellar/existing/1",
+    "/opt/kandelo/homebrew/Cellar/existing/1/bin",
     "/home",
-    "/home/linuxbrew",
-    "/home/linuxbrew/.linuxbrew",
-    "/home/linuxbrew/.linuxbrew/bin",
-    "/home/linuxbrew/.linuxbrew/Cellar",
-    "/home/linuxbrew/.linuxbrew/Cellar/existing",
-    "/home/linuxbrew/.linuxbrew/Cellar/existing/1",
-    "/home/linuxbrew/.linuxbrew/Cellar/existing/1/bin",
     "/home/user",
     "/usr",
     "/usr/bin",
@@ -356,7 +357,7 @@ function bootstrapConsumerFs(): MemoryFileSystem {
   }
   writeVfsBinary(
     fs,
-    "/home/linuxbrew/.linuxbrew/Cellar/existing/1/bin/tool",
+    "/opt/kandelo/homebrew/Cellar/existing/1/bin/tool",
     encoder.encode("tool\n"),
     0o755,
   );

@@ -13,7 +13,7 @@ Usage: scripts/verify-homebrew-main-shell-artifact-lock.sh \
   --expected-source-date-epoch <seconds> \
   [--artifact <shell.vfs.zst>]
 
-Validate the exact lazy-shell artifact contract. A schema-2 pending lock binds
+Validate the exact lazy-shell artifact contract. A schema-3 pending lock binds
 the reviewed composition inputs but refuses every artifact until publication
 seals its compressed SHA-256 and byte count.
 EOF
@@ -64,7 +64,7 @@ done
 jq -e --argjson source_date_epoch "$EXPECTED_SOURCE_DATE_EPOCH" '
   type == "object" and
   (keys | sort) == ["image", "inputs", "kind", "schema", "source_date_epoch", "state"] and
-  .schema == 2 and
+  .schema == 3 and
   .kind == "kandelo-homebrew-lazy-shell-artifact-lock" and
   .source_date_epoch == $source_date_epoch and
   (.inputs | type == "object") and

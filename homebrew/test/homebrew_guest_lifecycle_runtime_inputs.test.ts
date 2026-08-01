@@ -46,12 +46,12 @@ test("binds verified bootstrap bytes and bottle payloads to one exact image", as
       url: "homebrew-bootstrap.zip",
       mode_policy: "portable-posix-v1",
     },
-    mount_prefix: "/home/linuxbrew/.linuxbrew",
+    mount_prefix: "/opt/kandelo/homebrew",
     owner: { uid: 1000, gid: 1000 },
     activation: {
       mode: "first-use",
       capabilities: ["homebrew:bootstrap", "homebrew:runtime"],
-      roots: ["/home/linuxbrew/.linuxbrew/bin/brew"],
+      roots: ["/opt/kandelo/homebrew/bin/brew"],
       atomic_group: "homebrew-runtime-support",
     },
   } as const;
@@ -75,15 +75,23 @@ test("binds verified bootstrap bytes and bottle payloads to one exact image", as
     "/etc/homebrew",
     "/bin",
     "/home",
-    "/home/linuxbrew",
-    "/home/linuxbrew/.linuxbrew",
+    "/home/user",
+    "/opt",
+    "/opt/kandelo",
+    "/opt/kandelo/homebrew",
     "/bottle",
   ]) {
     fs.mkdir(path, 0o755);
   }
-  fs.chown("/home", 1000, 1000);
-  fs.chown("/home/linuxbrew", 1000, 1000);
-  fs.chown("/home/linuxbrew/.linuxbrew", 1000, 1000);
+  fs.chown("/home/user", 1000, 1000);
+  fs.chown("/opt/kandelo/homebrew", 1000, 1000);
+  assert.deepEqual(
+    ["/home", "/opt", "/opt/kandelo"].map((path) => {
+      const stat = fs.stat(path);
+      return [stat.uid, stat.gid];
+    }),
+    [[0, 0], [0, 0], [0, 0]],
+  );
   writeFile(fs, "/bin/bash", new Uint8Array([0, 97, 115, 109]), 0o755);
   writeFile(
     fs,
