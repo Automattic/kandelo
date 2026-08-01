@@ -6,9 +6,11 @@
  * archive has been verified and decoded.
  */
 
+import { KANDELO_HOMEBREW_GUEST_LAYOUT } from "./homebrew-guest-layout";
+
 const MAX_BOTTLE_CHANGED_FILES = 100_000;
 const MAX_BOTTLE_PATH_BYTES = 4096;
-const HOMEBREW_PREFIX = "/home/linuxbrew/.linuxbrew";
+const HOMEBREW_PREFIX = KANDELO_HOMEBREW_GUEST_LAYOUT.prefix;
 const HOMEBREW_REPLACEMENTS = [
   ["@@HOMEBREW_PREFIX@@", HOMEBREW_PREFIX],
   ["@@HOMEBREW_CELLAR@@", `${HOMEBREW_PREFIX}/Cellar`],

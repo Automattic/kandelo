@@ -27,7 +27,7 @@ function parseOptions(args: string[]): Options {
 
   const image = options.get("image");
   const bash = options.get("bash");
-  const brewScript = options.get("brew-script") ?? "/home/linuxbrew/.linuxbrew/bin/brew";
+  const brewScript = options.get("brew-script") ?? "/opt/kandelo/homebrew/bin/brew";
   const timeoutText = options.get("timeout-ms") ?? "120000";
   const timeoutMs = Number(timeoutText);
   if (!image || !bash || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
@@ -80,17 +80,17 @@ async function main(): Promise<void> {
       ["/bin/bash", "-x", options.brewScript, "--version"],
       {
         env: [
-          "PATH=/home/linuxbrew/.linuxbrew/bin:/usr/bin:/bin",
-          "HOME=/home/linuxbrew",
-          "USER=linuxbrew",
-          "LOGNAME=linuxbrew",
+          "PATH=/opt/kandelo/homebrew/bin:/usr/bin:/bin",
+          "HOME=/home/user",
+          "USER=user",
+          "LOGNAME=user",
           "SHELL=/bin/bash",
           "TERM=dumb",
-          "HOMEBREW_CACHE=/home/linuxbrew/.cache/Homebrew",
-          "HOMEBREW_USER_CONFIG_HOME=/home/linuxbrew/.config/homebrew",
+          "HOMEBREW_CACHE=/home/user/.cache/Homebrew",
+          "HOMEBREW_USER_CONFIG_HOME=/home/user/.config/homebrew",
           "HOMEBREW_TEMP=/tmp",
         ],
-        cwd: "/home/linuxbrew",
+        cwd: "/home/user",
         uid: 1000,
         gid: 1000,
         onStarted: (startedPid) => {
@@ -131,7 +131,7 @@ async function main(): Promise<void> {
       `Homebrew did not load the system bottle tag: stdout=${JSON.stringify(stdout)}; stderr=${JSON.stringify(stderr)}`,
     );
   }
-  const canonicalPrefix = "/home/linuxbrew/.linuxbrew";
+  const canonicalPrefix = "/opt/kandelo/homebrew";
   if (
     !stderr.includes(`HOMEBREW_BREW_FILE=${options.brewScript}`) ||
     !stderr.includes(`HOMEBREW_PREFIX=${canonicalPrefix}`) ||

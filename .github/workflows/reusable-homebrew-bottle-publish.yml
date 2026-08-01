@@ -801,7 +801,7 @@ jobs:
             # WHY: the default shell must name an executable from the same
             # reviewed guest layout as the bottles in this invocation.
             # Campaign validation must not silently retain the retired
-            # Linuxbrew prefix.
+            # retired guest prefix.
             # shellcheck disable=SC1091
             . kandelo/scripts/homebrew-guest-layout.sh
             homebrew_select_guest_layout \
@@ -1097,12 +1097,13 @@ jobs:
           [ -z "$(git -C "$brew_repository" status --short --untracked-files=no)" ] || {
             echo "::error::reviewed Homebrew checkout has tracked modifications"; exit 2;
           }
-          if [ "$HOMEBREW_GUEST_LAYOUT_MODE" = prefix-campaign ]; then
-            sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 \
-              "$brew_prefix" "$brew_prefix/bin"
-          else
-            mkdir -p "$brew_prefix/bin"
-          fi
+          # WHY: /opt is system-owned on the native publisher. Create only
+          # Kandelo's fixed prefix with elevated privileges, then return its
+          # leaf to the isolated build identity. The runner's native Homebrew tree
+          # is a separate host-tool realm and must not supply this directory.
+          sudo install -d -o root -g root -m 0755 /opt/kandelo
+          sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 \
+            "$brew_prefix" "$brew_prefix/bin"
           rm -f "$brew_prefix/bin/brew"
           ln -s "$brew_repository/bin/brew" "$brew_prefix/bin/brew"
           brew_bin="$brew_prefix/bin/brew"
@@ -2862,12 +2863,12 @@ jobs:
           [ -z "$(git -C "$brew_repository" status --short --untracked-files=no)" ] || {
             echo "::error::reviewed Homebrew verifier checkout has tracked modifications"; exit 2;
           }
-          if [ "$HOMEBREW_GUEST_LAYOUT_MODE" = prefix-campaign ]; then
-            sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 \
-              "$brew_prefix" "$brew_prefix/bin"
-          else
-            mkdir -p "$brew_prefix/bin"
-          fi
+          # WHY: verification must reproduce the same system-owned parent and
+          # writable Kandelo leaf without borrowing the runner's native Homebrew
+          # installation or relying on campaign-only setup.
+          sudo install -d -o root -g root -m 0755 /opt/kandelo
+          sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 \
+            "$brew_prefix" "$brew_prefix/bin"
           rm -f "$brew_prefix/bin/brew"
           ln -s "$brew_repository/bin/brew" "$brew_prefix/bin/brew"
           brew_bin="$brew_prefix/bin/brew"
@@ -3997,7 +3998,7 @@ jobs:
 
             # WHY: the smoke command is evidence for the selected guest
             # layout. A campaign bottle at /opt/kandelo/homebrew must never
-            # be credited with a command from the retired Linuxbrew prefix.
+            # be credited with a command from the retired guest prefix.
             # shellcheck disable=SC1091
             . scripts/homebrew-guest-layout.sh
             homebrew_select_guest_layout \

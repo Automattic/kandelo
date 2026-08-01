@@ -1658,14 +1658,11 @@ RUBY
 KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256="$layout_sha" \
   ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core campaign-bottle \
     --bottle-identity-json >/dev/null
-if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core campaign-bottle \
-    --bottle-identity-json >"$TMP_ROOT/current-layout.out" \
-    2>"$TMP_ROOT/current-layout.err"; then
-  echo "test-homebrew-formula-runtime-closure.sh: accepted campaign Cellar without layout authority" >&2
-  exit 1
-fi
-grep -F 'Formula bottle block uses an unsupported cellar' \
-  "$TMP_ROOT/current-layout.err" >/dev/null
+# WHY: campaign mode adds a digest-bound authority, not a second guest layout.
+# After cutover, ordinary and campaign Formula parsing must accept the same
+# canonical Cellar while a wrong campaign digest still fails closed.
+ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core campaign-bottle \
+  --bottle-identity-json >/dev/null
 if KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256="$(
     printf '0%.0s' {1..64}
   )" ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core campaign-bottle \
@@ -1690,5 +1687,13 @@ if KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256="$layout_sha" \
 fi
 grep -F 'Formula bottle block uses an unsupported cellar' \
   "$TMP_ROOT/retired-layout.err" >/dev/null
+if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core retired-bottle \
+    --bottle-identity-json >"$TMP_ROOT/retired-ordinary.out" \
+    2>"$TMP_ROOT/retired-ordinary.err"; then
+  echo "test-homebrew-formula-runtime-closure.sh: accepted the retired Cellar after cutover" >&2
+  exit 1
+fi
+grep -F 'Formula bottle block uses an unsupported cellar' \
+  "$TMP_ROOT/retired-ordinary.err" >/dev/null
 
 echo "test-homebrew-formula-runtime-closure.sh: passed"

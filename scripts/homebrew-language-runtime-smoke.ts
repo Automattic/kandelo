@@ -14,13 +14,15 @@ import { MemoryFileSystem } from "../host/src/vfs/memory-fs";
 import {
   restoreVerifiedVfsImagePreservingCapacity,
 } from "../host/src/vfs/load-image";
+import { KANDELO_HOMEBREW_GUEST_LAYOUT } from
+  "../host/src/homebrew-guest-layout";
 import {
   LANGUAGE_RUNTIME_INVOCATIONS,
   LANGUAGE_RUNTIME_REQUESTED_PACKAGES,
   type LanguageRuntimeInvocation,
 } from "./homebrew-language-runtime-contract";
 
-const HOMEBREW_PREFIX = "/home/linuxbrew/.linuxbrew";
+const HOMEBREW_PREFIX = KANDELO_HOMEBREW_GUEST_LAYOUT.prefix;
 const TAP_REPOSITORY = "kandelo-dev/homebrew-tap-core";
 const TAP_NAME = "kandelo-dev/tap-core";
 const KANDELO_REPOSITORY = "Automattic/kandelo";

@@ -767,17 +767,15 @@ impl Validator<'_> {
         top_abi: Option<u64>,
         tap_repository: Option<&str>,
     ) {
-        if self.options.prefix_campaign_layout_sha256.is_some() {
-            if string_at(bottle, "/prefix") != Some(self.guest_layout.prefix.as_str()) {
-                self.err(format!(
-                    "{label}: prefix does not match the selected prefix-campaign guest layout"
-                ));
-            }
-            if string_at(bottle, "/cellar") != Some(self.guest_layout.cellar.as_str()) {
-                self.err(format!(
-                    "{label}: cellar does not match the selected prefix-campaign guest layout"
-                ));
-            }
+        if string_at(bottle, "/prefix") != Some(self.guest_layout.prefix.as_str()) {
+            self.err(format!(
+                "{label}: prefix does not match the canonical Kandelo guest layout"
+            ));
+        }
+        if string_at(bottle, "/cellar") != Some(self.guest_layout.cellar.as_str()) {
+            self.err(format!(
+                "{label}: cellar does not match the canonical Kandelo guest layout"
+            ));
         }
         if let (Some(bottle_abi), Some(top_abi)) = (u64_at(bottle, "/kandelo_abi"), top_abi) {
             if bottle_abi != top_abi {
@@ -2282,12 +2280,17 @@ mod tests {
     }
 
     #[test]
-    fn prefix_campaign_rejects_a_noncanonical_guest_prefix_or_cellar() {
+    fn canonical_and_campaign_validation_reject_noncanonical_layouts() {
         let mut hasher = Sha256::new();
         hasher.update(include_str!("../../../homebrew/kandelo-guest-layout.json").as_bytes());
         let digest = format!("{:x}", hasher.finalize());
         let layout = crate::homebrew_guest_layout::get(Some(&digest)).unwrap();
-        for field in ["prefix", "cellar"] {
+        for (field, selected_digest) in [
+            ("prefix", None),
+            ("cellar", None),
+            ("prefix", Some(digest.clone())),
+            ("cellar", Some(digest.clone())),
+        ] {
             let mut fixture = Fixture::new();
             set_guest_layout(&mut fixture, &layout.prefix, &layout.cellar);
             fixture.metadata["packages"][0]["bottles"][0][field] =
@@ -2296,10 +2299,10 @@ mod tests {
                 fixture.metadata["packages"][0]["bottles"][0][field].clone();
             fixture.write();
 
-            let report = fixture.validate_with_campaign_layout(Some(digest.clone()));
+            let report = fixture.validate_with_campaign_layout(selected_digest);
             assert!(
                 report.errors.join("\n").contains(&format!(
-                    "{field} does not match the selected prefix-campaign guest layout"
+                    "{field} does not match the canonical Kandelo guest layout"
                 )),
                 "{:?}",
                 report.errors

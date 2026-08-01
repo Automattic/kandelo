@@ -36,6 +36,8 @@ inputs = [
   "host/src/generated/abi.ts",
   "host/src/homebrew-bottle-mirror-plan.ts",
   "host/src/homebrew-bottle-relocation.ts",
+  "host/src/homebrew-guest-layout.ts",
+  "homebrew/kandelo-guest-layout.json",
   "host/src/homebrew-lazy-layer.ts",
   "host/src/homebrew-lazy-layer-descriptor.ts",
   "host/src/homebrew-runtime-layer-consumer.ts",

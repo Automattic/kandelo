@@ -252,7 +252,7 @@ describe("dinit-derived image binary ownership", () => {
       packageDeferredTrees: [],
       homebrewBootstrap: {
         entrypoint: "/usr/bin/brew",
-        prefix: "/home/linuxbrew/.linuxbrew",
+        prefix: "/opt/kandelo/homebrew",
       },
       homebrew: {
         tapRepository: "Kandelo-dev/homebrew-tap-core",

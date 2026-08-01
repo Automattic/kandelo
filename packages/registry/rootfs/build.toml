@@ -14,6 +14,8 @@ inputs = [
   "tools/mkrootfs/src",
   "host/src/generated/abi.ts",
   "host/src/homebrew-bottle-relocation.ts",
+  "host/src/homebrew-guest-layout.ts",
+  "homebrew/kandelo-guest-layout.json",
   "host/src/pathconf.ts",
   "host/src/statfs.ts",
   "host/src/types.ts",

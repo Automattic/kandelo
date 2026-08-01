@@ -15,6 +15,7 @@ inputs = [
   # reaches shared VFS modules transitively. Track both as one source tree so
   # cache identity cannot outlive either contract.
   "host/src",
+  "homebrew/kandelo-guest-layout.json",
   "web-libs/kandelo-session/src/demo-config.ts",
   "web-libs/kandelo-session/src/demo-guides.ts",
   "web-libs/kandelo-session/src/vfs-capacity.ts",

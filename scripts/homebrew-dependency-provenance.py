@@ -28,8 +28,7 @@ COMMIT = re.compile(r"^[0-9a-f]{40}$")
 TAP_REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 SOURCE_BUILD = re.compile(r"\b(?:building|built)\b.*\bfrom source\b", re.IGNORECASE)
-CURRENT_BOTTLE_CELLAR = "/home/linuxbrew/.linuxbrew/Cellar"
-CAMPAIGN_BOTTLE_CELLAR = "/opt/kandelo/homebrew/Cellar"
+KANDELO_BOTTLE_CELLAR = "/opt/kandelo/homebrew/Cellar"
 GUEST_LAYOUT_PATH = pathlib.Path(__file__).parent.parent / (
     "homebrew/kandelo-guest-layout.json"
 )
@@ -92,7 +91,7 @@ def sha256_file(path: pathlib.Path) -> str:
 def selected_bottle_cellars(args: argparse.Namespace) -> tuple[str, ...]:
     digest = getattr(args, "prefix_campaign_layout_sha256", None)
     if digest is None:
-        return ("any", "any_skip_relocation", CURRENT_BOTTLE_CELLAR)
+        return ("any", "any_skip_relocation", KANDELO_BOTTLE_CELLAR)
     require_string(
         digest,
         "prefix-campaign guest layout SHA-256",
@@ -119,14 +118,14 @@ def selected_bottle_cellars(args: argparse.Namespace) -> tuple[str, ...]:
         or contract["kind"] != "kandelo-homebrew-guest-layout"
         or contract["prefix"] != "/opt/kandelo/homebrew"
         or contract["repository"] != "/opt/kandelo/homebrew"
-        or contract["cellar"] != CAMPAIGN_BOTTLE_CELLAR
+        or contract["cellar"] != KANDELO_BOTTLE_CELLAR
         or contract["stable_entrypoint"] != "/usr/bin/brew"
         or not isinstance(contract["retired_prefixes"], list)
         or "/home/linuxbrew/.linuxbrew"
         not in contract["retired_prefixes"]
     ):
         fail("Kandelo guest layout is not the reviewed prefix contract")
-    return ("any", "any_skip_relocation", CAMPAIGN_BOTTLE_CELLAR)
+    return ("any", "any_skip_relocation", KANDELO_BOTTLE_CELLAR)
 
 
 def exact_git_head(root: pathlib.Path, label: str) -> str:

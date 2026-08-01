@@ -407,8 +407,8 @@ function validateCompatibilityPolicy(lock, runtimeSupport) {
       !/^\/(?:[A-Za-z0-9._+-]+\/)*[A-Za-z0-9._+-]+$/.test(entry.path) ||
       entry.path === "/etc/kandelo" ||
       entry.path.startsWith("/etc/kandelo/") ||
-      entry.path === "/home/linuxbrew/.linuxbrew" ||
-      entry.path.startsWith("/home/linuxbrew/.linuxbrew/") ||
+      entry.path === "/opt/kandelo/homebrew" ||
+      entry.path.startsWith("/opt/kandelo/homebrew/") ||
       !["directory", "empty_file", "text_file"].includes(entry.kind) ||
       !Number.isSafeInteger(entry.mode) ||
       entry.mode < 0 ||
