@@ -172,6 +172,10 @@ instead of requiring false equality.
 The older `homebrew-bootstrap` program package and
 `homebrew/homebrew-bootstrap-source-lock.json` remain only for the transitional
 source-rootfs compatibility lane. They are not product-shell inputs.
+That lock binds the ZIP emitted by Git 2.51.2's `git archive`. Do not copy
+the support-data Formula's `kandelo-deterministic-zip-v1` digest into it:
+the two serializers truthfully produce different bytes from the same
+patched Git tree. Delete the older lock with the compatibility lane.
 
 ## Native Homebrew API Admission
 
