@@ -3590,7 +3590,7 @@
     "glib": {
       "internal": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "d2cdcdb7d90398fe287c79211bd83bd6f7fcc23c0c428fdaddad1dec96265720",
+        "bottle_checksum": "abe7175c8efb207633f50e94b56d81ad3ce5750062da0b6fc086a2dfafea4333",
         "desc": "Core application library for C",
         "executables": [
           "gapplication",
@@ -3686,8 +3686,8 @@
             "type": "mkdir_p"
           }
         ],
-        "ruby_source_checksum": "1d7b18216c176695eeeb0cf749bf53309875ea0f20de89717ef6a1873857df98",
-        "stable_checksum": "cf3f215a640c8a4257f14317586b8f1fdd25a10a93cb4bdda147c0f9ad88e74f",
+        "ruby_source_checksum": "18ec76babcd6aebbdfeca6f09f9bfb24b3694d4e432c926c7f9612ee53515742",
+        "stable_checksum": "ab24d24e698dfa1e408b7bcdb508f4aafc906185a8b8ce72fdf79bbbdc9b383b",
         "stable_dependencies": [
           "pcre2",
           "dbus",
@@ -3725,7 +3725,7 @@
           }
         ],
         "stable_url_args": [
-          "https://download.gnome.org/sources/glib/2.88/glib-2.88.2.tar.xz"
+          "https://download.gnome.org/sources/glib/2.88/glib-2.88.3.tar.xz"
         ],
         "stable_uses_from_macos": [
           [
@@ -3740,11 +3740,11 @@
             "python"
           ]
         ],
-        "stable_version": "2.88.2"
+        "stable_version": "2.88.3"
       },
       "public": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "d2cdcdb7d90398fe287c79211bd83bd6f7fcc23c0c428fdaddad1dec96265720",
+        "bottle_checksum": "abe7175c8efb207633f50e94b56d81ad3ce5750062da0b6fc086a2dfafea4333",
         "desc": "Core application library for C",
         "executables": [
           "gapplication",
@@ -3840,8 +3840,8 @@
             "type": "mkdir_p"
           }
         ],
-        "ruby_source_checksum": "1d7b18216c176695eeeb0cf749bf53309875ea0f20de89717ef6a1873857df98",
-        "stable_checksum": "cf3f215a640c8a4257f14317586b8f1fdd25a10a93cb4bdda147c0f9ad88e74f",
+        "ruby_source_checksum": "18ec76babcd6aebbdfeca6f09f9bfb24b3694d4e432c926c7f9612ee53515742",
+        "stable_checksum": "ab24d24e698dfa1e408b7bcdb508f4aafc906185a8b8ce72fdf79bbbdc9b383b",
         "stable_dependencies": [
           "pcre2",
           "dbus",
@@ -3879,7 +3879,7 @@
           }
         ],
         "stable_url_args": [
-          "https://download.gnome.org/sources/glib/2.88/glib-2.88.2.tar.xz"
+          "https://download.gnome.org/sources/glib/2.88/glib-2.88.3.tar.xz"
         ],
         "stable_uses_from_macos": [
           [
@@ -3894,7 +3894,7 @@
             "python"
           ]
         ],
-        "stable_version": "2.88.2"
+        "stable_version": "2.88.3"
       }
     },
     "glibc": {
@@ -6938,7 +6938,8 @@
     },
     "libnghttp2": {
       "internal": {
-        "bottle_checksum": "52363c20b26316b94a5dc7dfc45d238184f284f9c46b2453e49c1d3bec8ada7c",
+        "bottle_cellar": ":any",
+        "bottle_checksum": "d61e952b59bbf3f1662e57005807fb1ad7586c97bc33ec73d883eefe06ba29d3",
         "desc": "HTTP/2 C Library",
         "head_dependencies": [
           {
@@ -6972,20 +6973,21 @@
           "lib/pkgconfig/libnghttp2.pc"
         ],
         "name": "libnghttp2",
-        "ruby_source_checksum": "8bcff8d4606c7d90c62a36925dcd2eda1488a1b6f65e59252010a8aaaccda79c",
-        "stable_checksum": "c866b7477cbb7512ab6863a685027adbb1bb8da8fc3bab7429ed43d3281d5aa9",
+        "ruby_source_checksum": "f5c4f37e3100750979a7c022acd9a4912987402dfbfa2c957803315ad7b38a6f",
+        "stable_checksum": "aa317e2cf9dca6afa0aed68f8fad6ff303ec6982e25a78c75c0b65e2b9b3ded5",
         "stable_dependencies": [
           {
             "pkgconf": ":build"
           }
         ],
         "stable_url_args": [
-          "https://github.com/nghttp2/nghttp2/releases/download/v1.69.0/nghttp2-1.69.0.tar.gz"
+          "https://github.com/nghttp2/nghttp2/releases/download/v1.70.0/nghttp2-1.70.0.tar.gz"
         ],
-        "stable_version": "1.69.0"
+        "stable_version": "1.70.0"
       },
       "public": {
-        "bottle_checksum": "52363c20b26316b94a5dc7dfc45d238184f284f9c46b2453e49c1d3bec8ada7c",
+        "bottle_cellar": ":any",
+        "bottle_checksum": "d61e952b59bbf3f1662e57005807fb1ad7586c97bc33ec73d883eefe06ba29d3",
         "desc": "HTTP/2 C Library",
         "head_dependencies": [
           {
@@ -7019,17 +7021,17 @@
           "lib/pkgconfig/libnghttp2.pc"
         ],
         "name": "libnghttp2",
-        "ruby_source_checksum": "8bcff8d4606c7d90c62a36925dcd2eda1488a1b6f65e59252010a8aaaccda79c",
-        "stable_checksum": "c866b7477cbb7512ab6863a685027adbb1bb8da8fc3bab7429ed43d3281d5aa9",
+        "ruby_source_checksum": "f5c4f37e3100750979a7c022acd9a4912987402dfbfa2c957803315ad7b38a6f",
+        "stable_checksum": "aa317e2cf9dca6afa0aed68f8fad6ff303ec6982e25a78c75c0b65e2b9b3ded5",
         "stable_dependencies": [
           {
             "pkgconf": ":build"
           }
         ],
         "stable_url_args": [
-          "https://github.com/nghttp2/nghttp2/releases/download/v1.69.0/nghttp2-1.69.0.tar.gz"
+          "https://github.com/nghttp2/nghttp2/releases/download/v1.70.0/nghttp2-1.70.0.tar.gz"
         ],
-        "stable_version": "1.69.0"
+        "stable_version": "1.70.0"
       }
     },
     "libnghttp3": {
