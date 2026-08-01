@@ -17,6 +17,7 @@ function response(
 describe("Homebrew bottle fetch", () => {
   it("retries registry blob fetches with the advertised bearer token", async () => {
     const calls: Array<{ url: string; auth?: string }> = [];
+    let unauthorizedBodyCancelled = false;
     const fetchImpl = async (input: string | URL, init?: RequestInit): Promise<Response> => {
       const url = input.toString();
       calls.push({
@@ -27,7 +28,14 @@ describe("Homebrew bottle fetch", () => {
       });
 
       if (url === "https://ghcr.io/v2/org/tap/hello/blobs/sha256:abc" && !calls.at(-1)?.auth) {
-        return response({ errors: [{ code: "UNAUTHORIZED" }] }, {
+        return new Response(new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("unauthorized"));
+          },
+          cancel() {
+            unauthorizedBodyCancelled = true;
+          },
+        }), {
           status: 401,
           headers: {
             "www-authenticate":
@@ -54,6 +62,7 @@ describe("Homebrew bottle fetch", () => {
       "https://ghcr.io/token?service=ghcr.io&scope=repository%3Aorg%2Ftap%2Fhello%3Apull",
       "https://ghcr.io/v2/org/tap/hello/blobs/sha256:abc",
     ]);
+    expect(unauthorizedBodyCancelled).toBe(true);
   });
 
   it("reports non-successful bottle fetches without hiding the HTTP status", async () => {

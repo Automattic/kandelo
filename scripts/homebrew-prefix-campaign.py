@@ -45,9 +45,11 @@ SOURCE_MATERIALIZER_PATH = "scripts/prefix-campaign-source.py"
 INSPECTOR_PATH = "scripts/homebrew-inspect-bottle.py"
 CAMPAIGN_TOOL_PATH = "scripts/homebrew-prefix-campaign.py"
 READBACK_PATH = "scripts/homebrew-verify-public-bottle.ts"
+READBACK_FETCH_PATH = "host/src/homebrew-vfs-fetch.ts"
 OCI_TOOL_PATH = "scripts/homebrew-oci-layout.py"
 FORMULA_DIGEST_PATH = "scripts/homebrew-formula-source-digest.rb"
 WASM_VALIDATOR_PATH = "scripts/homebrew-validate-wasm-artifact.sh"
+PUBLICATION_LIMITS_PATH = "scripts/homebrew-publication-limits.sh"
 ABI_PATH = "crates/shared/src/lib.rs"
 ABI_SNAPSHOT_PATH = "abi/snapshot.json"
 EXPLICIT_BUILD_ROOT = "/__kandelo_prefix_campaign_build_root__"
@@ -59,6 +61,43 @@ RETIRED_PREFIX_HISTORICAL_DIRECTORIES = (
     "Kandelo/reports/failures/",
     "Kandelo/reports/rollbacks/",
 )
+
+
+# WHY: campaign JSON is capped separately at 64 MiB, but a valid compressed
+# bottle may be much larger. Load the publisher's single archive policy instead
+# of letting an unrelated document limit reject packages such as TeX Live.
+def load_compressed_bottle_limit() -> int:
+    script = pathlib.Path(__file__).with_name("homebrew-publication-limits.sh")
+    command = (
+        'set -euo pipefail; source "$1"; '
+        'printf "%s\\n" "$HOMEBREW_MAX_BOTTLE_BYTES"'
+    )
+    try:
+        result = subprocess.run(
+            ["bash", "-c", command, "homebrew-publication-limit", str(script)],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(
+            f"cannot load compressed Homebrew bottle limit: {error}"
+        ) from error
+    value = result.stdout.decode("ascii", errors="strict").strip()
+    if (
+        result.returncode != 0
+        or re.fullmatch(r"[1-9][0-9]*", value) is None
+    ):
+        detail = result.stderr.decode("utf-8", errors="replace")[:4096]
+        raise RuntimeError(
+            f"cannot load compressed Homebrew bottle limit: {detail}"
+        )
+    return int(value, 10)
+
+
+MAX_COMPRESSED_BOTTLE_BYTES = load_compressed_bottle_limit()
 
 METADATA_KEYS = {
     "generated_at",
@@ -1108,7 +1147,12 @@ def validate_bottle(
     if arch not in ("wasm32", "wasm64") or bottle["bottle_tag"] != f"{arch}_kandelo":
         fail(f"{label} has an invalid architecture/tag pair")
     require_int(bottle["kandelo_abi"], f"{label} ABI", 1)
-    require_int(bottle["bytes"], f"{label} byte count", 1)
+    bottle_bytes = require_int(bottle["bytes"], f"{label} byte count", 1)
+    if bottle_bytes > MAX_COMPRESSED_BOTTLE_BYTES:
+        fail(
+            f"{label} byte count exceeds compressed bottle limit "
+            f"{MAX_COMPRESSED_BOTTLE_BYTES}"
+        )
     prefix = require_guest_absolute(bottle["prefix"], f"{label} prefix")
     cellar = require_guest_absolute(bottle["cellar"], f"{label} cellar")
     # WHY: this is a one-time migration of the explicitly retired guest
@@ -1980,7 +2024,11 @@ def inspect_variant(
         dependencies.fetch_bottle(
             bottle["url"], digest, byte_count, archive, kandelo_root
         )
-        regular_file(archive, f"{variant.formula}/{bottle['arch']} anonymous readback")
+        regular_file(
+            archive,
+            f"{variant.formula}/{bottle['arch']} anonymous readback",
+            MAX_COMPRESSED_BOTTLE_BYTES,
+        )
         actual_bytes = archive.stat().st_size
         actual_sha256 = sha256_file(archive)
         if actual_bytes != byte_count:
@@ -3410,7 +3458,9 @@ def _derive_campaign_from_snapshots(
                     FORMULA_DIGEST_PATH,
                     INSPECTOR_PATH,
                     OCI_TOOL_PATH,
+                    PUBLICATION_LIMITS_PATH,
                     READBACK_PATH,
+                    READBACK_FETCH_PATH,
                     WASM_VALIDATOR_PATH,
                 )
             },

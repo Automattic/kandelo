@@ -6132,6 +6132,15 @@ def check_publisher(workflow)
   bottle_inspector = File.read(
     File.join(REPO_ROOT, "scripts/homebrew-inspect-bottle.py")
   )
+  public_bottle_verifier = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-verify-public-bottle.ts")
+  )
+  bottle_fetch = File.read(
+    File.join(REPO_ROOT, "host/src/homebrew-vfs-fetch.ts")
+  )
+  prefix_campaign = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-prefix-campaign.py")
+  )
   check(publication_limits.include?(
           "readonly HOMEBREW_MAX_COMPOSITION_INPUT_BYTES=8388608"
         ) &&
@@ -6156,6 +6165,23 @@ def check_publisher(workflow)
         !bottle_inspector.include?('MAX_COMPRESSED_BYTES = 2 * 1024') &&
         !bottle_inspector.include?('MAX_ARCHIVE_BYTES = 16 * 1024'),
         "trusted publication limits or OCI archive bounds changed")
+  check(public_bottle_verifier.include?(
+          "MAX_COMPRESSED_BOTTLE_BYTES = loadCompressedBottleLimit()"
+        ) &&
+        public_bottle_verifier.include?("homebrew-publication-limits.sh") &&
+        public_bottle_verifier.include?("fetchHomebrewBottleResponse") &&
+        public_bottle_verifier.include?('open(options.out, "wx", 0o644)') &&
+        public_bottle_verifier.include?('createHash("sha256")') &&
+        public_bottle_verifier.include?("await reader.read()") &&
+        public_bottle_verifier.include?("await rm(options.out, { force: true })") &&
+        !public_bottle_verifier.include?("fetchHomebrewBottleBytes") &&
+        !public_bottle_verifier.include?("response.arrayBuffer") &&
+        bottle_fetch.include?("fetchHomebrewBottleResponse") &&
+        bottle_fetch.include?("await response.body?.cancel()") &&
+        prefix_campaign.include?("MAX_COMPRESSED_BOTTLE_BYTES") &&
+        prefix_campaign.include?("PUBLICATION_LIMITS_PATH") &&
+        prefix_campaign.include?("READBACK_FETCH_PATH"),
+        "trusted public bottle streaming or campaign archive bounds changed")
   index_compose_run = index_compose.fetch("run")
   check(index_compose.keys.sort == %w[env name run shell] &&
         index_compose["env"] == {

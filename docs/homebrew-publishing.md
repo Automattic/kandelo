@@ -2500,7 +2500,19 @@ and all unrelated Formulae retain parallel throughput:
    It uses the locally built bottle in dry-run mode. In write mode it discards
    that bottle as runtime evidence, anonymously imports and validates the exact
    public top-index-to-child-to-layer graph, and rechecks the selected layer's
-   SHA-256 and byte count. ORAS may expose the copied top index and its child
+   SHA-256 and byte count. The preliminary layer readback uses the same GHCR
+   bearer-authentication path as runtime fetching, but it does not collect the
+   response in memory. It streams into a newly created output file while
+   incrementally counting and hashing bytes. The verifier loads the 2 GiB
+   compressed-bottle bound from `scripts/homebrew-publication-limits.sh`,
+   rejects the first byte beyond either the declared size or that bound, and
+   removes its partial file before a retry. Exclusive creation prevents a
+   retry or concurrent process from replacing a file already at the output
+   path. This keeps a valid 816,992,281-byte TeX Live bottle under the archive
+   policy instead of incorrectly applying the unrelated 64 MiB JSON limit.
+   Runtime callers retain the existing in-memory byte API; only publication
+   readback selects the response-stream API.
+   ORAS may expose the copied top index and its child
    manifests as separate local OCI layout entry points. The verifier selects
    exactly one receipt-matched top entry and accepts additional entries only
    when they are the complete, exact descriptor set declared by that top index;

@@ -708,6 +708,7 @@ def make_fixture(
         "scripts/homebrew-formula-source-digest.rb",
         "scripts/homebrew-validate-wasm-artifact.sh",
         "scripts/homebrew-oci-layout.py",
+        "host/src/homebrew-vfs-fetch.ts",
     ):
         destination = kandelo / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -908,6 +909,79 @@ def make_fixture(
 
 
 class PrefixCampaignTests(unittest.TestCase):
+    def test_compressed_bottle_limit_comes_from_publication_policy(
+        self,
+    ) -> None:
+        self.assertEqual(
+            CAMPAIGN.MAX_COMPRESSED_BOTTLE_BYTES,
+            2 * 1024 * 1024 * 1024,
+        )
+
+    def test_bottle_metadata_accepts_the_limit_and_rejects_one_more_byte(
+        self,
+    ) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        sidecar = json.loads(
+            (fixture.old_tap / "Kandelo/formula/alpha.json").read_text()
+        )
+        record = sidecar["bottles"][0]
+        record["bytes"] = CAMPAIGN.MAX_COMPRESSED_BOTTLE_BYTES
+        accepted = CAMPAIGN.validate_bottle(
+            record,
+            label="alpha/wasm32",
+            formula="alpha",
+            tap_repository=TAP_REPOSITORY,
+            retired_prefixes=[RETIRED_PREFIX],
+        )
+        self.assertEqual(
+            accepted["bytes"], CAMPAIGN.MAX_COMPRESSED_BOTTLE_BYTES
+        )
+
+        record["bytes"] += 1
+        with self.assertRaisesRegex(
+            RuntimeError, "exceeds compressed bottle limit"
+        ):
+            CAMPAIGN.validate_bottle(
+                record,
+                label="alpha/wasm32",
+                formula="alpha",
+                tap_repository=TAP_REPOSITORY,
+                retired_prefixes=[RETIRED_PREFIX],
+            )
+
+    def test_anonymous_archive_uses_compressed_bottle_limit(
+        self,
+    ) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        observed_limits: list[int] = []
+        regular_file = CAMPAIGN.regular_file
+
+        def inspect_regular_file(
+            path: pathlib.Path,
+            label: str,
+            maximum: int = CAMPAIGN.MAX_JSON_BYTES,
+        ) -> pathlib.Path:
+            if label.endswith("anonymous readback"):
+                observed_limits.append(maximum)
+            return regular_file(path, label, maximum)
+
+        with mock.patch.object(
+            CAMPAIGN, "regular_file", side_effect=inspect_regular_file
+        ):
+            CAMPAIGN.derive_campaign(
+                fixture.options(), fixture.dependencies()
+            )
+
+        self.assertEqual(
+            observed_limits,
+            [
+                CAMPAIGN.MAX_COMPRESSED_BOTTLE_BYTES,
+                CAMPAIGN.MAX_COMPRESSED_BOTTLE_BYTES,
+            ],
+        )
+
     def test_default_readback_uses_node_without_package_discovery(
         self,
     ) -> None:
@@ -1088,6 +1162,14 @@ class PrefixCampaignTests(unittest.TestCase):
         self.assertEqual(
             first["authority"]["source_materialization"]["kind"],
             "exact-git-tree-v1",
+        )
+        self.assertIn(
+            CAMPAIGN.PUBLICATION_LIMITS_PATH,
+            first["authority"]["tools"],
+        )
+        self.assertIn(
+            CAMPAIGN.READBACK_FETCH_PATH,
+            first["authority"]["tools"],
         )
         self.assertEqual(
             first["deferred_source_formulae"][0]["name"], "later"
