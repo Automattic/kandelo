@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -41,6 +42,30 @@ def sha256(value: bytes) -> str:
 def write_json(path: pathlib.Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(EXECUTOR.pretty_json(value))
+
+
+def commit_repo(root: pathlib.Path, message: str) -> str:
+    subprocess.run(["git", "add", "--all"], cwd=root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=Campaign fixture",
+            "-c",
+            "user.email=campaign@example.invalid",
+            "commit",
+            "-q",
+            "-m",
+            message,
+        ],
+        cwd=root,
+        check=True,
+    )
+    return subprocess.check_output(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        text=True,
+    ).strip()
 
 
 def formula_source(name: str) -> bytes:
@@ -727,37 +752,38 @@ class FinalTapFixture(Fixture):
         self.campaign["authority"]["guest_layout"]["sha256"] = sha256(
             layout_path.read_bytes()
         )
-
-        gamma = self.source / "Formula/gamma.rb"
+        target_alpha = formula_source("alpha")
+        base_alpha = target_alpha + b"# sealed overlay preimage\n"
+        target_helper = b"# sealed campaign helper\n"
         gamma_payload = formula_source("gamma")
         if active_retired_prefix:
-            gamma_payload += (
-                f'# active path: {self.retired_prefix}\n'.encode()
-            )
-        gamma.write_bytes(gamma_payload)
-        write_json(
-            self.source / "Kandelo/prefix-campaign-authority.json",
-            {"fixture": "retired after composition"},
+            gamma_payload += f"# active path: {self.retired_prefix}\n".encode()
+
+        template = self.source
+        self.live = self.root / "live-tap"
+        shutil.copytree(template, self.live)
+        shutil.rmtree(template)
+        (
+            self.live
+            / "Kandelo/reports/"
+            "beta-2.0-rebuild1-wasm32.provenance.json"
+        ).unlink()
+        subprocess.run(["git", "init", "-q"], cwd=self.live, check=True)
+        (self.live / "Formula/alpha.rb").write_bytes(base_alpha)
+        (self.live / "Formula/gamma.rb").write_bytes(gamma_payload)
+        (self.live / "Kandelo/README.md").write_text(
+            "base campaign control documentation\n"
         )
-        manifest_path = (
-            self.source / "Kandelo/campaigns/prefix-v1/manifest.json"
+        campaign_docs = self.live / "Kandelo/campaigns/prefix-v1"
+        campaign_docs.mkdir(parents=True, exist_ok=True)
+        (campaign_docs / "README.md").write_text(
+            "base campaign completion documentation\n"
         )
-        write_json(manifest_path, {"fixture": "sealed target source"})
-        overlay_source = (
-            self.source / "Kandelo/campaigns/prefix-v1/source"
-        )
-        (overlay_source / "Formula").mkdir(parents=True)
-        (overlay_source / "Formula/alpha.rb").write_bytes(
-            formula_source("alpha")
-        )
-        (self.source / "Kandelo/campaigns/prefix-v1/README.md").write_text(
-            "Campaign completion evidence is retained here.\n"
-        )
-        (self.source / "Kandelo/campaigns/prefix-v1/verify.py").write_text(
+        (campaign_docs / "verify.py").write_text(
             "# generic completion verifier fixture\n"
         )
         retained_test = (
-            self.source
+            self.live
             / "Kandelo/formula_support/test/"
             "kandelo_formula_support_test.rb"
         )
@@ -773,98 +799,263 @@ class FinalTapFixture(Fixture):
             "historical rollback publication from "
             f"{self.retired_prefix}\n"
         ).encode()
-        failure = (
-            self.source / "Kandelo/reports/failures/alpha.json"
-        )
+        failure = self.live / "Kandelo/reports/failures/alpha.json"
         failure.parent.mkdir(parents=True)
         failure.write_bytes(self.failure_evidence)
-        rollback = (
-            self.source / "Kandelo/reports/rollbacks/beta.json"
-        )
+        rollback = self.live / "Kandelo/reports/rollbacks/beta.json"
         rollback.parent.mkdir(parents=True)
         rollback.write_bytes(self.rollback_evidence)
-        workflow = (
-            self.source
-            / ".github/workflows/prefix-campaign-bottles.yml"
-        )
+        workflow = self.live / ".github/workflows/prefix-campaign-bottles.yml"
         workflow.parent.mkdir(parents=True)
-        workflow.write_text("name: retired campaign publisher\n")
-        materializer = self.source / "scripts/prefix-campaign-source.py"
+        workflow.write_text("name: base campaign publisher\n")
+        materializer = self.live / "scripts/prefix-campaign-source.py"
         materializer.parent.mkdir(parents=True)
         materializer.write_text("# retained generic materializer fixture\n")
-
-        self.source_tree = EXECUTOR.filesystem_git_tree_oid(
-            self.source,
-            "final tap fixture target source",
+        (self.live / "scripts/prefix-campaign-controller.py").write_text(
+            "# base campaign controller\n"
         )
-        self.source_provenance = {
-            "manifest_sha256": sha256(manifest_path.read_bytes()),
-            "source_tree_git_oid": EXECUTOR.filesystem_git_tree_oid(
-                overlay_source,
-                "final tap fixture overlay source",
-            ),
-            "target_tree_git_oid": self.source_tree,
-        }
-        self.campaign["authority"]["source_materialization"] = {
-            "authority": {
-                "path": "Kandelo/prefix-campaign-authority.json",
-                "sha256": sha256(
-                    (
-                        self.source
-                        / "Kandelo/prefix-campaign-authority.json"
-                    ).read_bytes()
-                ),
-            },
-            "kind": "sealed-target-overlay-v1",
-            "manifest": {
-                "path": "Kandelo/campaigns/prefix-v1/manifest.json",
-                "sha256": self.source_provenance[
-                    "manifest_sha256"
-                ],
-            },
-            "materializer": {
-                "path": "scripts/prefix-campaign-source.py",
-                "sha256": sha256(materializer.read_bytes()),
-            },
-            "source_root": "Kandelo/campaigns/prefix-v1/source",
-            "source_tree_git_oid": self.source_provenance[
-                "source_tree_git_oid"
-            ],
-            "target_tree_git_oid": self.source_tree,
-        }
-        write_json(self.campaign_path, self.campaign)
-
-        self.live = self.root / "live-tap"
-        self.live.mkdir()
-        subprocess.run(["git", "init", "-q"], cwd=self.live, check=True)
-        (self.live / "README.md").write_text("live tap parent\n")
-        subprocess.run(["git", "add", "."], cwd=self.live, check=True)
-        subprocess.run(
-            [
-                "git",
-                "-c",
-                "user.name=Final tap fixture",
-                "-c",
-                "user.email=fixture@example.invalid",
-                "commit",
-                "-q",
-                "-m",
-                "live parent",
-            ],
-            cwd=self.live,
-            check=True,
+        (self.live / "scripts/test_prefix_campaign_controller.py").write_text(
+            "# base campaign controller test\n"
         )
-        self.live_commit = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"],
+        write_json(
+            self.live / "Kandelo/prefix-campaign-authority.json",
+            {"fixture": "base campaign authority"},
+        )
+        write_json(
+            self.live / "Kandelo/campaigns/prefix-v1/manifest.json",
+            {"fixture": "base campaign manifest"},
+        )
+        overlay_source = self.live / "Kandelo/campaigns/prefix-v1/source"
+        overlay_source.mkdir(parents=True)
+        (overlay_source / "placeholder").write_text("base payload\n")
+        self.base_commit = commit_repo(self.live, "sealed overlay base")
+        self.base_tree = subprocess.check_output(
+            ["git", "rev-parse", "HEAD^{tree}"],
             cwd=self.live,
             text=True,
         ).strip()
+
+        sealed_target = EXECUTOR.git_snapshot(
+            self.live,
+            self.base_commit,
+            self.root / "sealed-target",
+            "final tap fixture sealed target",
+        )
+        (sealed_target / "Formula/alpha.rb").write_bytes(target_alpha)
+        (sealed_target / "scripts/sealed-campaign-helper.py").write_bytes(
+            target_helper
+        )
+        sealed_target_tree = EXECUTOR.filesystem_git_tree_oid(
+            sealed_target,
+            "final tap fixture sealed target",
+        )
+
+        shutil.rmtree(overlay_source)
+        (overlay_source / "Formula").mkdir(parents=True)
+        (overlay_source / "Formula/alpha.rb").write_bytes(target_alpha)
+        (overlay_source / "scripts").mkdir()
+        (
+            overlay_source / "scripts/sealed-campaign-helper.py"
+        ).write_bytes(target_helper)
+        overlay_tree = EXECUTOR.filesystem_git_tree_oid(
+            overlay_source,
+            "final tap fixture overlay source",
+        )
+
+        def file_record(payload: bytes) -> dict[str, Any]:
+            return {
+                "blob_git_oid": EXECUTOR.git_object_id("blob", payload),
+                "bytes": len(payload),
+                "mode": "100644",
+                "sha256": sha256(payload),
+            }
+
+        manifest = {
+            "base": {
+                "commit": self.base_commit,
+                "tree_git_oid": self.base_tree,
+            },
+            "campaign": "prefix-v1",
+            "files": [
+                {
+                    "base": file_record(base_alpha),
+                    "path": "Formula/alpha.rb",
+                    "target": file_record(target_alpha),
+                },
+                {
+                    "base": None,
+                    "path": "scripts/sealed-campaign-helper.py",
+                    "target": file_record(target_helper),
+                },
+            ],
+            "kind": "kandelo-homebrew-prefix-campaign-source-overlay",
+            "schema": 1,
+            "source_root": "Kandelo/campaigns/prefix-v1/source",
+            "target_tree_git_oid": sealed_target_tree,
+        }
+        manifest_path = self.live / EXECUTOR.SOURCE_MANIFEST_PATH
+        write_json(manifest_path, manifest)
+        authority = {
+            "target_source": {
+                "manifest_path": EXECUTOR.SOURCE_MANIFEST_PATH,
+                "manifest_sha256": sha256(manifest_path.read_bytes()),
+                "source_root": "Kandelo/campaigns/prefix-v1/source",
+                "source_tree_git_oid": overlay_tree,
+                "target_tree_git_oid": sealed_target_tree,
+            }
+        }
+        authority_path = self.live / EXECUTOR.SOURCE_AUTHORITY_PATH
+        write_json(authority_path, authority)
+        # These reviewed source-commit paths did not exist in the old base.
+        # The regression proves full source identity preserves them even though
+        # they are not selected Formulae and not overlay records.
+        source_only_paths = {
+            ".github/workflows/dry-run-bottles.yml": "name: dry run\n",
+            ".github/workflows/repository-namespace-canary.yml": (
+                "name: namespace canary\n"
+            ),
+            "Kandelo/publisher-trust-rotation.md": "source trust notes\n",
+            "scripts/rotate-publisher-trust.py": "# rotate trust\n",
+            "scripts/test_prefix_campaign_source.py": "# source tests\n",
+            "scripts/test_rotate_publisher_trust.py": "# trust tests\n",
+        }
+        for relative, payload in source_only_paths.items():
+            path = self.live / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(payload)
+        self.source_commit = commit_repo(
+            self.live,
+            "bind complete source beside sealed overlay",
+        )
+        source_commit_tree = subprocess.check_output(
+            ["git", "rev-parse", "HEAD^{tree}"],
+            cwd=self.live,
+            text=True,
+        ).strip()
+
+        source_commit_snapshot = EXECUTOR.git_snapshot(
+            self.live,
+            self.source_commit,
+            self.root / "source-commit-preview",
+            "final tap fixture complete source",
+        )
+        self.source = sealed_target
+        self.source_tree = sealed_target_tree
+        records = [
+            (
+                "Formula/alpha.rb",
+                file_record(base_alpha),
+                file_record(target_alpha),
+            ),
+            (
+                "scripts/sealed-campaign-helper.py",
+                None,
+                file_record(target_helper),
+            ),
+        ]
+        EXECUTOR.replay_overlay_files(
+            tap_root=source_commit_snapshot,
+            source_root=(
+                source_commit_snapshot
+                / "Kandelo/campaigns/prefix-v1/source"
+            ),
+            records=records,
+            label="final tap fixture source replay",
+        )
+        replayed_source_tree = EXECUTOR.filesystem_git_tree_oid(
+            source_commit_snapshot,
+            "final tap fixture replayed source",
+        )
+        self.campaign["authority"]["source_tap_commit"] = self.source_commit
+        self.campaign["authority"]["source_materialization"] = {
+            "authority": {
+                "path": EXECUTOR.SOURCE_AUTHORITY_PATH,
+                "sha256": sha256(authority_path.read_bytes()),
+            },
+            "kind": "sealed-target-overlay-v1",
+            "manifest": {
+                "path": EXECUTOR.SOURCE_MANIFEST_PATH,
+                "sha256": sha256(manifest_path.read_bytes()),
+            },
+            "materializer": {
+                "path": EXECUTOR.SOURCE_MATERIALIZER_PATH,
+                "sha256": sha256(materializer.read_bytes()),
+            },
+            "source_root": "Kandelo/campaigns/prefix-v1/source",
+            "source_tree_git_oid": overlay_tree,
+            "target_tree_git_oid": sealed_target_tree,
+        }
+
+        allowed_activation_updates = {
+            ".github/workflows/prefix-campaign-bottles.yml": (
+                "name: activated campaign publisher\n"
+            ),
+            "Kandelo/README.md": "activated campaign control docs\n",
+            "Kandelo/campaigns/prefix-v1/README.md": (
+                "activated campaign completion docs\n"
+            ),
+            "Kandelo/test-workflow-trust.rb": "# activated trust test\n",
+            "scripts/prefix-campaign-controller.py": (
+                "# activated campaign controller\n"
+            ),
+            "scripts/test_prefix_campaign_controller.py": (
+                "# activated campaign controller test\n"
+            ),
+        }
+        for relative, payload in allowed_activation_updates.items():
+            path = self.live / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(payload)
+        live_authority = json.loads(authority_path.read_text())
+        live_authority["activation"] = "reviewed descendant"
+        write_json(authority_path, live_authority)
+        self.refresh_live("activate campaign controller")
+
+        preview = EXECUTOR.git_snapshot(
+            self.live,
+            self.live_commit,
+            self.root / "live-replay-preview",
+            "final tap fixture live replay preview",
+        )
+        EXECUTOR.replay_overlay_files(
+            tap_root=preview,
+            source_root=(
+                source_commit_snapshot
+                / "Kandelo/campaigns/prefix-v1/source"
+            ),
+            records=records,
+            label="final tap fixture live replay preview",
+        )
+        self.source_provenance = {
+            "base": {
+                "commit": self.base_commit,
+                "tree_git_oid": self.base_tree,
+            },
+            "manifest_sha256": sha256(manifest_path.read_bytes()),
+            "overlay_source_tree_git_oid": overlay_tree,
+            "replayed_live_tree_git_oid": (
+                EXECUTOR.filesystem_git_tree_oid(
+                    preview,
+                    "final tap fixture replayed live preview",
+                )
+            ),
+            "replayed_source_tree_git_oid": replayed_source_tree,
+            "sealed_target_tree_git_oid": sealed_target_tree,
+            "source_tap_commit": self.source_commit,
+            "source_tap_tree_git_oid": source_commit_tree,
+        }
+        shutil.rmtree(preview)
+        shutil.rmtree(source_commit_snapshot)
+        write_json(self.campaign_path, self.campaign)
+        self.pre_retirement_validated = False
+
+    def refresh_live(self, message: str) -> None:
+        self.live_commit = commit_repo(self.live, message)
         self.live_tree = subprocess.check_output(
             ["git", "rev-parse", "HEAD^{tree}"],
             cwd=self.live,
             text=True,
         ).strip()
-        self.pre_retirement_validated = False
 
     def complete_handoffs(
         self,
@@ -1618,13 +1809,52 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
         for relative in EXECUTOR.CAMPAIGN_RETIREMENT_PATHS:
             self.assertFalse((output / relative).exists())
         for relative in (
+            ".github/workflows/dry-run-bottles.yml",
+            ".github/workflows/repository-namespace-canary.yml",
+            "Kandelo/README.md",
             "Kandelo/campaigns/prefix-v1/README.md",
             "Kandelo/campaigns/prefix-v1/verify.py",
             "Kandelo/formula_support/test/"
             "kandelo_formula_support_test.rb",
+            "Kandelo/publisher-trust-rotation.md",
+            "Kandelo/test-workflow-trust.rb",
             "scripts/prefix-campaign-source.py",
+            "scripts/prefix-campaign-controller.py",
+            "scripts/rotate-publisher-trust.py",
+            "scripts/test_prefix_campaign_controller.py",
+            "scripts/test_prefix_campaign_source.py",
+            "scripts/test_rotate_publisher_trust.py",
         ):
             self.assertTrue((output / relative).is_file(), relative)
+            self.assertEqual(
+                (output / relative).read_bytes(),
+                (fixture.live / relative).read_bytes(),
+                relative,
+            )
+        live_inventory = {
+            path: identity
+            for path, identity in EXECUTOR.filesystem_git_leaf_inventory(
+                fixture.live,
+                "final tap fixture live inventory",
+            ).items()
+            if path != ".git" and not path.startswith(".git/")
+        }
+        output_inventory = EXECUTOR.filesystem_git_leaf_inventory(
+            output,
+            "final tap fixture output inventory",
+        )
+        expected_deleted = {
+            path
+            for path in live_inventory
+            if any(
+                path == retired or path.startswith(f"{retired}/")
+                for retired in EXECUTOR.CAMPAIGN_RETIREMENT_PATHS
+            )
+        }
+        self.assertEqual(
+            set(live_inventory) - set(output_inventory),
+            expected_deleted,
+        )
         self.assertEqual(
             (
                 output / "Kandelo/reports/failures/alpha.json"
@@ -1679,6 +1909,7 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
                 "handoffs_sha256",
                 "kind",
                 "schema",
+                "source",
             },
         )
         self.assertEqual(
@@ -1734,6 +1965,7 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
                 "tree_git_oid": fixture.live_tree,
             },
         )
+        self.assertEqual(finalization["source"], fixture.source_provenance)
         self.assertEqual(
             subprocess.check_output(
                 ["git", "status", "--porcelain=v1"],
@@ -1955,6 +2187,78 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
         self.assertFalse(live_output.exists())
         self.assertFalse(live_receipt.exists())
 
+    def test_final_tap_rejects_every_non_control_live_change(self) -> None:
+        cases = (
+            ("modified-overlay", "Formula/alpha.rb"),
+            ("changed-formula", "Formula/gamma.rb"),
+            ("added-formula", "Formula/rogue.rb"),
+            ("changed-recipe", "Kandelo/recipes/alpha.json"),
+            (
+                "changed-formula-support",
+                "Kandelo/formula_support/test/"
+                "kandelo_formula_support_test.rb",
+            ),
+        )
+        for label, relative in cases:
+            with self.subTest(label=label):
+                fixture = FinalTapFixture()
+                self.addCleanup(fixture.close)
+                alpha, beta = fixture.complete_handoffs()
+                path = fixture.live / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                prior = path.read_bytes() if path.is_file() else b""
+                path.write_bytes(prior + f"# {label}\n".encode())
+                fixture.refresh_live(label)
+                output = fixture.root / f"{label}-candidate"
+                receipt = fixture.root / f"{label}-finalization.json"
+                with self.assertRaisesRegex(
+                    EXECUTOR.ExecutorError,
+                    "outside the reviewed campaign-control paths.*"
+                    + re.escape(relative),
+                ):
+                    fixture.prepare_final(
+                        [alpha, beta],
+                        output,
+                        receipt,
+                    )
+                self.assertFalse(output.exists())
+                self.assertFalse(receipt.exists())
+
+    def test_final_tap_rejects_non_descendant_live_parent(self) -> None:
+        fixture = FinalTapFixture()
+        self.addCleanup(fixture.close)
+        alpha, beta = fixture.complete_handoffs()
+        orphan = subprocess.check_output(
+            [
+                "git",
+                "-c",
+                "user.name=Campaign fixture",
+                "-c",
+                "user.email=campaign@example.invalid",
+                "commit-tree",
+                fixture.live_tree,
+                "-m",
+                "unrelated live parent",
+            ],
+            cwd=fixture.live,
+            text=True,
+        ).strip()
+        subprocess.run(
+            ["git", "checkout", "--detach", "--quiet", orphan],
+            cwd=fixture.live,
+            check=True,
+        )
+        fixture.live_commit = orphan
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "does not contain the campaign source commit",
+        ):
+            fixture.prepare_final(
+                [alpha, beta],
+                fixture.root / "unrelated-live-candidate",
+                fixture.root / "unrelated-live-finalization.json",
+            )
+
     def test_final_tap_rejects_active_retired_prefix_bytes(
         self,
     ) -> None:
@@ -2054,24 +2358,61 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             "refs/heads/final-prefix",
         )
 
+    def test_sealed_overlay_replay_accepts_exact_target_preimage(
+        self,
+    ) -> None:
+        fixture = FinalTapFixture()
+        self.addCleanup(fixture.close)
+        source_commit = EXECUTOR.git_snapshot(
+            fixture.live,
+            fixture.source_commit,
+            fixture.root / "idempotent-source-commit",
+            "idempotent replay source commit",
+        )
+        _provenance, records = EXECUTOR.load_source_overlay_contract(
+            source_commit,
+            fixture.campaign,
+        )
+        candidate = EXECUTOR.git_snapshot(
+            fixture.live,
+            fixture.base_commit,
+            fixture.root / "idempotent-replay",
+            "idempotent replay base",
+        )
+        overlay = (
+            source_commit
+            / fixture.campaign["authority"]["source_materialization"][
+                "source_root"
+            ]
+        )
+
+        for iteration in ("base", "target"):
+            EXECUTOR.replay_overlay_files(
+                tap_root=candidate,
+                source_root=overlay,
+                records=records,
+                label=f"idempotent {iteration} replay",
+            )
+
+        self.assertEqual(
+            EXECUTOR.filesystem_git_tree_oid(
+                candidate,
+                "idempotent replay candidate",
+            ),
+            fixture.source_tree,
+        )
+
     def test_final_tap_requires_every_retirement_path(
         self,
     ) -> None:
         fixture = FinalTapFixture()
         self.addCleanup(fixture.close)
+        alpha, beta = fixture.complete_handoffs()
         (
-            fixture.source
+            fixture.live
             / ".github/workflows/prefix-campaign-bottles.yml"
         ).unlink()
-        fixture.source_tree = EXECUTOR.filesystem_git_tree_oid(
-            fixture.source,
-            "missing retirement path target",
-        )
-        fixture.campaign["authority"]["source_materialization"][
-            "target_tree_git_oid"
-        ] = fixture.source_tree
-        write_json(fixture.campaign_path, fixture.campaign)
-        alpha, beta = fixture.complete_handoffs()
+        fixture.refresh_live("remove required retirement path")
         output = fixture.root / "missing-retirement-candidate"
         receipt = fixture.root / "missing-retirement-finalization.json"
         with self.assertRaisesRegex(

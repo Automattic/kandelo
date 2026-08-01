@@ -1987,10 +1987,26 @@ tap-wide state lock.
 `prepare-final-tap` performs the composition without changing Git state.
 It requires the sealed campaign source, one complete handoff for every
 Formula and architecture, and an exact clean live-tap parent commit and
-tree. It regenerates the bottle blocks and current sidecars, preserves
-historical failure and rollback evidence, validates the complete tap,
-and only then removes the four one-shot campaign authority paths. The
-candidate records completion at
+tree. The live parent must contain the campaign's exact source commit
+and tree. Changes after that source commit are limited to the explicit
+campaign controller, trust-test, workflow, and campaign-documentation
+paths reviewed for activation. A changed or newly added Formula,
+recipe, Formula helper, or any other path fails closed even when
+today's complete-tap validator would not discover it.
+
+Composition starts from an immutable snapshot of the exact live tree.
+The finalizer verifies that every overlay path still has its sealed
+preimage (or is still absent), then replays only the listed target
+files. This preserves the reviewed activation changes instead of
+replacing the live tree with the overlay's older base. It regenerates
+bottle blocks and current sidecars, preserves historical failure and
+rollback evidence, validates the complete tap, and only then removes
+the four paths listed in
+`CAMPAIGN_RETIREMENT_PATHS`. The schema-2 completion and finalization
+receipts bind the base, complete source commit and tree, overlay
+payload, historical sealed target, replayed source tree, replayed live
+tree, exact live parent, and final candidate tree. The candidate
+records completion at
 `Kandelo/campaigns/prefix-v1/completion.json`; a separate canonical
 finalization receipt binds its tree to the expected live parent.
 
