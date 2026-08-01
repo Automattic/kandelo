@@ -376,14 +376,19 @@ shift || true
 tag=""
 canonical_source_sha=""
 release_id_file=""
+release_target=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --tag) tag="$2"; shift 2 ;;
+    --target-commit) release_target="$2"; shift 2 ;;
     --canonical-source-sha) canonical_source_sha="$2"; shift 2 ;;
     --release-id-file) release_id_file="$2"; shift 2 ;;
     *) shift ;;
   esac
 done
+if [ -n "${GH_STUB_STATE_DIR:-}" ]; then
+  printf '%s\n' "$release_target" >"$GH_STUB_STATE_DIR/release-target"
+fi
 if [ "$command_name" = ensure-draft ] &&
    [ "${GH_STUB_RELEASE_MISSING:-0}" = 1 ] &&
    [ ! -f "${GH_STUB_STATE_DIR:?}/release-created" ]; then
@@ -418,9 +423,10 @@ run_index_update() {
   local main_flip_after="${9:-}"
   local existing_archive="${10:-0}"
   local delete_fail_once="${11:-0}"
+  local release_target="${12:-auto}"
 
   local case_dir archive_path upload_dir state_dir
-  local -a authority_args=()
+  local -a authority_args=() release_target_args=()
   case_dir="$(mktemp -d "$TMP_ROOT/case.XXXXXX")"
   archive_path="$case_dir/foo-1.0-rev1-abi${archive_abi}-wasm32-deadbeef.tar.zst"
   upload_dir="$case_dir/uploads"
@@ -434,6 +440,16 @@ run_index_update() {
   if [ -n "$canonical_source_sha" ]; then
     authority_args+=(--canonical-source-sha "$canonical_source_sha")
   fi
+  case "$target_tag" in
+    pr-*-staging|pr-*-staging-run-*-attempt-*)
+      if [ "$release_target" = auto ]; then
+        release_target="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      fi
+      if [ "$release_target" != omit ]; then
+        release_target_args+=(--release-target-commit "$release_target")
+      fi
+      ;;
+  esac
 
   if ! GH_STUB_HAS_INDEX="$has_index" \
        GH_STUB_INDEX_SOURCE="$seed_index" \
@@ -461,6 +477,7 @@ run_index_update() {
        PATH="$STUB_BIN:$PATH" \
        bash "$REPO_ROOT/scripts/index-update.sh" \
          --target-tag "$target_tag" \
+         "${release_target_args[@]}" \
          --package foo \
          --version 1.0 \
          --revision 1 \
@@ -506,6 +523,7 @@ run_index_repair() {
        PATH="$STUB_BIN:$PATH" \
        bash "$REPO_ROOT/scripts/index-update.sh" \
          --target-tag "$target_tag" \
+         --release-target-commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
          --repair-only \
          >"$case_dir/stdout" \
          2>"$case_dir/stderr"
@@ -552,6 +570,34 @@ staging_tag="pr-595-staging-run-123-attempt-1"
 pr_index="$(GH_STUB_IMMUTABLE_TAG_OVERRIDE="$legacy_staging_tag" \
   run_index_update "$staging_tag" "$CURRENT_ABI" 0)"
 assert_index_abi "$pr_index" "$CURRENT_ABI"
+staging_case_dir="$(dirname "$(dirname "$pr_index")")"
+[ "$(cat "$staging_case_dir/gh-state/release-target")" = \
+  aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ]
+# Pull-request workflows set GITHUB_SHA to a synthetic merge. The explicit
+# reviewed head must remain the draft's target even when those values differ.
+[ "$(cat "$staging_case_dir/gh-state/release-target")" != \
+  0123456789abcdef0123456789abcdef01234567 ]
+
+if run_index_update "$staging_tag" "$CURRENT_ABI" 0 "" 0 \
+    example/repo "" 0 "" 0 0 omit \
+    >/dev/null 2>"$TMP_ROOT/missing-staging-target.err"
+then
+  echo "expected staging publication without an explicit target to fail" >&2
+  exit 1
+fi
+grep -Fq 'PR staging requires an exact --release-target-commit' \
+  "$TMP_ROOT/missing-staging-target.err"
+
+if run_index_update "$staging_tag" "$CURRENT_ABI" 0 "" 0 \
+    example/repo "" 0 "" 0 0 \
+    AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA \
+    >/dev/null 2>"$TMP_ROOT/malformed-staging-target.err"
+then
+  echo "expected malformed staging release target to fail" >&2
+  exit 1
+fi
+grep -Fq 'PR staging requires an exact --release-target-commit' \
+  "$TMP_ROOT/malformed-staging-target.err"
 
 # A large draft can need more than one page for its asset inventory. The
 # writer must finish bounded pagination before deciding an asset is absent.

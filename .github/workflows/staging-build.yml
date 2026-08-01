@@ -555,6 +555,7 @@ jobs:
         run: |
           bash scripts/index-update.sh \
             --target-tag "${{ needs.preflight.outputs.target_tag }}" \
+            --release-target-commit "${{ github.event.pull_request.head.sha }}" \
             --package "${{ matrix.package }}" \
             --version "${{ matrix.version }}" \
             --revision "${{ matrix.revision }}" \
@@ -572,6 +573,7 @@ jobs:
         run: |
           bash scripts/index-update.sh \
             --target-tag "${{ needs.preflight.outputs.target_tag }}" \
+            --release-target-commit "${{ github.event.pull_request.head.sha }}" \
             --package "${{ matrix.package }}" \
             --version "${{ matrix.version }}" \
             --revision "${{ matrix.revision }}" \
@@ -636,6 +638,7 @@ jobs:
         run: |
           bash scripts/index-update.sh \
             --target-tag "${{ needs.preflight.outputs.target_tag }}" \
+            --release-target-commit "${{ github.event.pull_request.head.sha }}" \
             --package "${{ matrix.package }}" \
             --version "${{ matrix.version }}" \
             --revision "${{ matrix.revision }}" \
@@ -653,6 +656,7 @@ jobs:
         run: |
           bash scripts/index-update.sh \
             --target-tag "${{ needs.preflight.outputs.target_tag }}" \
+            --release-target-commit "${{ github.event.pull_request.head.sha }}" \
             --package "${{ matrix.package }}" \
             --version "${{ matrix.version }}" \
             --revision "${{ matrix.revision }}" \
@@ -684,6 +688,7 @@ jobs:
         run: |
           bash scripts/dev-shell.sh bash scripts/index-update.sh \
             --target-tag "${{ needs.preflight.outputs.target_tag }}" \
+            --release-target-commit "${{ github.event.pull_request.head.sha }}" \
             --repair-only
 
   test-gate-validation:

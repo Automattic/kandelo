@@ -617,9 +617,15 @@ preflight → toolchain-cache → matrix-build → test-gate → merge-gate
      The shared archive action first requires a clean workflow-root checkout
      whose repository identity and exact `HEAD` equal those source fields, so
      a caller cannot stamp an archive with a commit it did not build.
-  3. Invoke `scripts/index-update.sh --target-tag <tag> --package
-     <name> --version <v> --revision <r> --arch <a> --status success
-     --archive-path <staged> --archive-name <n> --cache-key-sha <s>`.
+  3. Invoke `scripts/index-update.sh --target-tag <tag>
+     --release-target-commit <head> --package <name> --version <v>
+     --revision <r> --arch <a> --status success --archive-path <staged>
+     --archive-name <n> --cache-key-sha <s>`.
+     Every PR-staging writer, including metadata repair, passes the exact
+     reviewed PR head. It never infers release identity from `GITHUB_SHA`,
+     because GitHub sets that variable to a synthetic merge in
+     `pull_request` workflows. Candidate and canonical writers derive their
+     targets from their separate authority contracts and reject this flag.
      The script acquires the state-lock for `<tag>`, downloads the
      current `index.toml` (or bootstraps an empty one for a fresh
      tag), runs `xtask index-update` to mutate this package's entry,

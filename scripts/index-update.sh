@@ -39,7 +39,12 @@
 # every archive mutation and before committing the index transaction.
 #
 # To repair only release-level index metadata such as abi_version:
-#   bash scripts/index-update.sh --target-tag pr-595-staging --repair-only
+#   bash scripts/index-update.sh \
+#     --target-tag pr-595-staging \
+#     --release-target-commit <exact-pr-head-sha> \
+#     --repair-only
+# PR staging calls must also pass the exact reviewed head through
+# --release-target-commit; ambient GITHUB_SHA may be a synthetic merge.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -57,6 +62,7 @@ CACHE_KEY_SHA=""
 ERROR=""
 REPAIR_ONLY=0
 CANONICAL_SOURCE_SHA=""
+RELEASE_TARGET_COMMIT=""
 RELEASE_ID=""
 MAX_RELEASE_ASSET_PAGES="${INDEX_UPDATE_MAX_RELEASE_ASSET_PAGES:-100}"
 
@@ -73,6 +79,7 @@ while [[ $# -gt 0 ]]; do
     --cache-key-sha) CACHE_KEY_SHA="$2"; shift 2 ;;
     --error)         ERROR="$2"; shift 2 ;;
     --canonical-source-sha) CANONICAL_SOURCE_SHA="$2"; shift 2 ;;
+    --release-target-commit) RELEASE_TARGET_COMMIT="$2"; shift 2 ;;
     --repair-only)   REPAIR_ONLY=1; shift ;;
     *)
       echo "index-update.sh: unknown flag $1" >&2
@@ -306,7 +313,7 @@ ensure_release_exists() {
   local canonical_release_target="" release_id_file
   body_file="$(mktemp)"
   release_id_file="$(mktemp)"
-  release_target="${GITHUB_SHA:?GITHUB_SHA required}"
+  release_target=""
   case "$TARGET_TAG" in
     pr-*-staging)
       if ! [[ "$TARGET_TAG" =~ ^pr-([1-9][0-9]*)-staging$ ]]; then
@@ -314,6 +321,7 @@ ensure_release_exists() {
         return 1
       fi
       prerelease=true
+      release_target="$RELEASE_TARGET_COMMIT"
       printf 'PR #%s staging build' "${BASH_REMATCH[1]}" >"$body_file"
       ;;
     pr-*-staging-run-*-attempt-*)
@@ -322,6 +330,7 @@ ensure_release_exists() {
         return 1
       fi
       prerelease=true
+      release_target="$RELEASE_TARGET_COMMIT"
       printf 'PR #%s staging build run %s attempt %s' \
         "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}" \
         >"$body_file"
@@ -371,7 +380,7 @@ ensure_release_exists() {
       printf '%s' "${empty_sentinel}
 
 Binaries for ABI v${ABI}" >"$body_file"
-      release_target="${CANONICAL_SOURCE_SHA:-$release_target}"
+      release_target="${CANONICAL_SOURCE_SHA:-${GITHUB_SHA:?GITHUB_SHA required}}"
       if [ "$TARGET_TAG" = binaries-abi-v42 ] &&
          canonical_release_target="$(gh api \
            "/repos/${GITHUB_REPOSITORY}/releases/tags/${TARGET_TAG}" \
@@ -560,6 +569,21 @@ if ! [[ "$MAX_RELEASE_ASSET_PAGES" =~ ^[1-9][0-9]*$ ]]; then
   echo "index-update.sh: INDEX_UPDATE_MAX_RELEASE_ASSET_PAGES must be positive" >&2
   exit 2
 fi
+
+case "$TARGET_TAG" in
+  pr-*-staging|pr-*-staging-run-*-attempt-*)
+    if ! [[ "$RELEASE_TARGET_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+      echo "index-update.sh: PR staging requires an exact --release-target-commit" >&2
+      exit 2
+    fi
+    ;;
+  *)
+    if [ -n "$RELEASE_TARGET_COMMIT" ]; then
+      echo "index-update.sh: --release-target-commit is only valid for PR staging" >&2
+      exit 2
+    fi
+    ;;
+esac
 
 if [ "$REPAIR_ONLY" = "1" ]; then
   STATUS="repair"

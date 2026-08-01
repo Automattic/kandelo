@@ -136,6 +136,17 @@ grep -Fq \
   'pr-${{ github.event.pull_request.number }}-staging-run-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}' \
   "$STAGING_WORKFLOW" || \
   fail "staging workflow must isolate every full rerun in a new release"
+staging_writer_count="$(
+  grep -Ec 'bash (scripts/dev-shell.sh bash )?scripts/index-update.sh' \
+    "$STAGING_WORKFLOW"
+)"
+staging_target_count="$(
+  grep -Fc -- \
+    '--release-target-commit "${{ github.event.pull_request.head.sha }}"' \
+    "$STAGING_WORKFLOW"
+)"
+[ "$staging_writer_count" -eq "$staging_target_count" ] ||
+  fail "every staging index writer must bind its release to the PR head"
 for selection_contract in \
   'select(.target_commitish == \$head)' \
   'select(.draft == false and .immutable == true' \
