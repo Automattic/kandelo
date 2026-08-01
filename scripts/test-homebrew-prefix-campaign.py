@@ -252,6 +252,7 @@ def make_archive(
     name: str,
     version: str,
     *,
+    runtime_dependencies: list[dict[str, Any]] | None = None,
     retired_cross_chunk: bool = False,
     unsafe_member: bool = False,
 ) -> bytes:
@@ -266,7 +267,7 @@ def make_archive(
             "homebrew_version": "Homebrew fixture",
             "installed_on_request": True,
             "poured_from_bottle": False,
-            "runtime_dependencies": [],
+            "runtime_dependencies": runtime_dependencies or [],
             "source": {"scm_revision": "fixture"},
             "source_modified_time": 0,
         },
@@ -352,11 +353,12 @@ def sidecar(
     rebuild: int,
     abi: int,
     bottles: list[dict[str, Any]],
+    dependencies: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     return {
         "bottle_rebuild": rebuild,
         "bottles": bottles,
-        "dependencies": [],
+        "dependencies": dependencies or [],
         "formula_path": f"Formula/{name}.rb",
         "formula_revision": 0,
         "full_name": f"{TAP_NAME}/{name}",
@@ -780,9 +782,21 @@ def make_fixture(
         ("alpha", "1.0", 1, 42, alpha_cross_chunk, alpha_unsafe),
         ("beta", "2.0", 0, 41, False, False),
     ):
+        direct_dependencies = (
+            [
+                {
+                    "declared_directly": True,
+                    "full_name": f"{TAP_NAME}/beta",
+                    "pkg_version": "2.0",
+                }
+            ]
+            if name == "alpha"
+            else []
+        )
         archive = make_archive(
             name,
             version,
+            runtime_dependencies=direct_dependencies,
             retired_cross_chunk=cross_chunk,
             unsafe_member=unsafe,
         )
@@ -791,7 +805,25 @@ def make_fixture(
         bottle = bottle_record(
             name, "wasm32", abi, digest, len(archive), version, rebuild
         )
-        value = sidecar(name, version, rebuild, abi, [bottle])
+        sidecar_dependencies = (
+            [
+                {
+                    "full_name": f"{TAP_NAME}/beta",
+                    "name": "beta",
+                    "version": "2.0",
+                }
+            ]
+            if name == "alpha"
+            else []
+        )
+        value = sidecar(
+            name,
+            version,
+            rebuild,
+            abi,
+            [bottle],
+            sidecar_dependencies,
+        )
         formula_sidecars[name] = value
         write_json(tap / f"Kandelo/formula/{name}.json", value)
         (tap / f"Formula/{name}.rb").write_bytes(
@@ -1101,7 +1133,7 @@ class PrefixCampaignTests(unittest.TestCase):
                 fixture.dependencies(),
             )
 
-    def test_candidate_pkg_version_comes_from_exact_native_homebrew(
+    def test_changed_pkg_version_rejects_stale_candidate_bottle_block(
         self,
     ) -> None:
         fixture = make_fixture()
@@ -1125,7 +1157,7 @@ class PrefixCampaignTests(unittest.TestCase):
             return metadata
 
         with self.assertRaisesRegex(
-            CAMPAIGN.CampaignError, "candidate pkg_version 9.9"
+            CAMPAIGN.CampaignError, "pkg_version changed from 1.0 to 9.9"
         ):
             CAMPAIGN.derive_campaign(
                 fixture.options(),
@@ -1136,6 +1168,169 @@ class PrefixCampaignTests(unittest.TestCase):
                     load_historical_formula=base.load_historical_formula,
                 ),
             )
+
+    def test_changed_pkg_version_preserves_old_bottle_identity(self) -> None:
+        fixture = make_fixture(alpha_source_changed=False)
+        self.addCleanup(fixture.close)
+        (fixture.source_tap / "Formula/alpha.rb").write_bytes(
+            stripped_formula("alpha")
+        )
+        source_head = commit(
+            fixture.source_tap,
+            "start the candidate pkg_version without a bottle block",
+        )
+        fixture.versions["alpha"] = "1.0_1"
+
+        result = CAMPAIGN.derive_campaign(
+            fixture.options(source_tap_commit=source_head),
+            fixture.dependencies(),
+        )
+        by_name = {value["name"]: value for value in result["formulae"]}
+        alpha = by_name["alpha"]
+
+        self.assertEqual(alpha["version"], "1.0_1")
+        self.assertEqual(
+            alpha["destination"],
+            {
+                "absence": {
+                    "digest": None,
+                    "kind": "manifest",
+                    "method": "anonymous-oras-manifest-probe",
+                    "schema": 1,
+                    "status": "missing",
+                },
+                "bottle_rebuild": 0,
+                "reference": "1.0_1",
+                "remote": f"ghcr.io/{TAP_REPOSITORY}/alpha",
+            },
+        )
+        self.assertEqual(
+            alpha["variants"][0]["disposition"],
+            {
+                "kind": "required-rebuild",
+                "reasons": ["pkg-version-changed"],
+            },
+        )
+        self.assertEqual(
+            alpha["variants"][0]["old_record"]["link_manifest"],
+            "Kandelo/link/alpha-1.0-rebuild1-wasm32.json",
+        )
+        self.assertEqual(
+            by_name["homebrew-bootstrap"]["dependencies"][0],
+            {"full_name": f"{TAP_NAME}/alpha", "version": "1.0_1"},
+        )
+
+    def test_changed_dependency_version_rebuilds_unchanged_dependents(
+        self,
+    ) -> None:
+        fixture = make_fixture(alpha_source_changed=False)
+        self.addCleanup(fixture.close)
+        (fixture.source_tap / "Formula/beta.rb").write_bytes(
+            stripped_formula("beta")
+        )
+        source_head = commit(
+            fixture.source_tap,
+            "advance a dependency pkg_version without a bottle block",
+        )
+        fixture.versions["beta"] = "2.0_1"
+
+        result = CAMPAIGN.derive_campaign(
+            fixture.options(source_tap_commit=source_head),
+            fixture.dependencies(),
+        )
+        by_name = {value["name"]: value for value in result["formulae"]}
+
+        self.assertEqual(
+            by_name["beta"]["variants"][0]["disposition"],
+            {
+                "kind": "required-rebuild",
+                "reasons": ["abi-mismatch", "pkg-version-changed"],
+            },
+        )
+        self.assertEqual(
+            by_name["alpha"]["dependencies"],
+            [{"full_name": f"{TAP_NAME}/beta", "version": "2.0_1"}],
+        )
+        self.assertEqual(
+            by_name["alpha"]["variants"][0]["disposition"],
+            {
+                "kind": "required-rebuild",
+                "reasons": ["dependency-closure-changed"],
+            },
+        )
+
+    def test_old_bottle_block_comes_from_metadata_catalog_commit(
+        self,
+    ) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        base = fixture.dependencies()
+        selected_beta = (
+            fixture.old_tap / "Formula/beta.rb"
+        ).read_bytes()
+        built_from_commit = "8" * 40
+        stale_sidecar_commit = "9" * 40
+        sidecar_path = fixture.old_tap / "Kandelo/formula/beta.json"
+        sidecar_document = json.loads(sidecar_path.read_text())
+        sidecar_document["tap_commit"] = stale_sidecar_commit
+        sidecar_document["bottles"][0]["built_from"][
+            "tap_commit"
+        ] = built_from_commit
+        write_json(sidecar_path, sidecar_document)
+        provenance_path = refresh_provenance_hashes(
+            fixture.old_tap,
+            "beta",
+            "2.0",
+            0,
+            "wasm32",
+        )
+        provenance = json.loads(provenance_path.read_text())
+        provenance["repositories"]["tap_commit"] = built_from_commit
+        provenance["metadata"]["provenance_json"]["sha256"] = "0" * 64
+        provenance["metadata"]["provenance_json"]["sha256"] = (
+            CAMPAIGN.normalized_provenance_sha256(provenance)
+        )
+        write_json(provenance_path, provenance)
+        (fixture.old_tap / "Formula/beta.rb").write_bytes(
+            stripped_formula("beta")
+        )
+        old_head = commit(
+            fixture.old_tap,
+            "advance live source past a stale extra sidecar",
+        )
+        calls: list[tuple[str, str]] = []
+
+        def load_historical_formula(
+            old_tap_root: pathlib.Path,
+            name: str,
+            source_commit: str,
+            formula_path: str,
+        ) -> bytes:
+            calls.append((name, source_commit))
+            if name == "beta":
+                if source_commit == HISTORICAL_TAP_COMMIT:
+                    return selected_beta
+                if source_commit == built_from_commit:
+                    return stripped_formula("beta")
+                raise AssertionError(
+                    f"unexpected beta source commit {source_commit}"
+                )
+            return (old_tap_root / formula_path).read_bytes()
+
+        result = CAMPAIGN.derive_campaign(
+            fixture.options(old_tap_commit=old_head),
+            CAMPAIGN.CampaignDependencies(
+                fetch_bottle=base.fetch_bottle,
+                probe_destination=base.probe_destination,
+                resolve_formula_metadata=base.resolve_formula_metadata,
+                load_historical_formula=load_historical_formula,
+            ),
+        )
+
+        self.assertEqual(result["formulae"][0]["name"], "alpha")
+        self.assertIn(("beta", HISTORICAL_TAP_COMMIT), calls)
+        self.assertIn(("beta", built_from_commit), calls)
+        self.assertNotIn(("beta", stale_sidecar_commit), calls)
 
     def test_native_metadata_emits_only_exact_tap_qualified_dependencies(
         self,

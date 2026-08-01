@@ -1867,6 +1867,7 @@ class CampaignOptions:
 class VariantInput:
     formula: str
     version: str
+    candidate_version: str
     rebuild: int
     source_kind: str
     bottle: dict[str, Any]
@@ -1876,6 +1877,7 @@ class VariantInput:
     historical_formula_commit: str
     historical_formula_sha256: str
     dependencies: list[dict[str, Any]]
+    candidate_dependencies: list[dict[str, Any]]
     formula_sidecar_path: str
     formula_sidecar_sha256: str
     link_path: str
@@ -2008,6 +2010,17 @@ def inspect_variant(
         reasons.append("abi-mismatch")
     if retired:
         reasons.append("retired-prefix")
+    # WHY: an old bottle keeps the package version recorded in its archive and
+    # sidecars. A newer candidate Formula version is a new Homebrew identity,
+    # so those bytes must never be relabeled as a reuse candidate even if an
+    # adversarial metadata resolver reports an otherwise identical Formula.
+    if variant.version != variant.candidate_version:
+        reasons.append("pkg-version-changed")
+    # WHY: even unchanged Formula text can resolve a different dependency
+    # version after a sibling Formula advances. Reusing that bottle would keep
+    # the old runtime closure while publishing candidate dependency metadata.
+    if variant.dependencies != variant.candidate_dependencies:
+        reasons.append("dependency-closure-changed")
     if (
         variant.formula_identity_sha256
         != variant.candidate_formula_identity_sha256
@@ -2484,8 +2497,12 @@ def _derive_campaign_from_snapshots(
         fail("old tap metadata ABI differs from the exact current Kandelo ABI")
     if metadata["release_tag"] != f"bottles-abi-v{metadata_abi}":
         fail("old tap metadata release tag does not match its ABI")
-    for key in ("kandelo_commit", "tap_commit"):
-        require_commit(metadata[key], f"old tap metadata {key}")
+    require_commit(
+        metadata["kandelo_commit"], "old tap metadata kandelo_commit"
+    )
+    metadata_tap_commit = require_commit(
+        metadata["tap_commit"], "old tap metadata tap_commit"
+    )
     require_string(
         metadata["kandelo_repository"],
         "old tap Kandelo repository",
@@ -2767,6 +2784,32 @@ def _derive_campaign_from_snapshots(
     active_provenance: set[str] = set()
     formula_context: dict[str, dict[str, Any]] = {}
 
+    def stage_historical_formula(
+        name: str, commit: str, label: str
+    ) -> pathlib.Path:
+        payload = dependencies.load_historical_formula(
+            old_tap_root,
+            name,
+            commit,
+            f"Formula/{name}.rb",
+        )
+        if (
+            not isinstance(payload, bytes)
+            or not payload
+            or len(payload) > 1024 * 1024
+        ):
+            fail(f"{name} {label} Formula source is invalid")
+        digest = sha256_bytes(payload)
+        directory = old_tap_root / ".campaign-historical-formula"
+        directory.mkdir(exist_ok=True)
+        path = directory / f"{digest}.rb"
+        if path.exists():
+            if path.read_bytes() != payload:
+                fail(f"{name} historical Formula staging collided")
+        else:
+            path.write_bytes(payload)
+        return path
+
     for name in sorted(sidecars_by_name):
         sidecar_path, sidecar, sidecar_bytes = sidecars_by_name[name]
         sidecar_name = require_string(
@@ -2791,12 +2834,10 @@ def _derive_campaign_from_snapshots(
             or sidecar["formula_path"] != f"Formula/{name}.rb"
         ):
             fail(f"{name} Formula sidecar has inconsistent top-level identity")
-        version = require_string(sidecar["version"], f"{name} version", VERSION)
-        if resolved_versions[name] != version:
-            fail(
-                f"{name} candidate pkg_version {resolved_versions[name]} "
-                f"differs from old selected pkg_version {version}"
-            )
+        old_version = require_string(
+            sidecar["version"], f"{name} old selected version", VERSION
+        )
+        candidate_version = resolved_versions[name]
         rebuild = require_int(sidecar["bottle_rebuild"], f"{name} bottle rebuild")
         require_int(sidecar["formula_revision"], f"{name} Formula revision")
         if sidecar["full_name"] != f"{tap_name}/{name}":
@@ -2821,7 +2862,13 @@ def _derive_campaign_from_snapshots(
         # WHY: the old archive was built from the old Formula. Candidate
         # new-prefix source is a separate authority and must never be
         # substituted into immutable built_from provenance.
-        old_formula_path = old_formula_files[name]
+        # WHY: built_from owns the source that produced the archive, while the
+        # catalog commit owns the bottle block added after publication. Live
+        # source may already be ahead, and a stale extra sidecar can predate
+        # the catalog. Neither is the collision/rebuild authority.
+        old_formula_path = stage_historical_formula(
+            name, metadata_tap_commit, "old catalog"
+        )
         selected_old_source_sha, selected_old_source_identity, old_bottle_block = formula_identity(
             kandelo_root, old_formula_path
         )
@@ -2831,24 +2878,46 @@ def _derive_campaign_from_snapshots(
         )
         if old_bottle_block is None:
             fail(f"{name} has bottle sidecars but no old Formula bottle block")
-        if source_bottle_block is None:
-            fail(f"{name} has bottle sidecars but no candidate Formula bottle block")
         expected_root = f"https://ghcr.io/v2/{tap_repository}"
-        for snapshot, bottle_block in (
-            ("old", old_bottle_block),
-            ("candidate", source_bottle_block),
+        if old_bottle_block["root_url"] != expected_root:
+            fail(f"{name} old Formula bottle identity differs from its sidecar")
+        if (
+            sidecar_abi == current_abi
+            and old_bottle_block["rebuild"] != rebuild
         ):
-            if bottle_block["root_url"] != expected_root:
+            fail(
+                f"{name} current-ABI old Formula rebuild differs from its "
+                "sidecar"
+            )
+        # WHY: a new pkg_version has its own Homebrew bottle namespace and
+        # starts at rebuild zero. Its sealed candidate Formula must therefore
+        # be bottleless. For an unchanged pkg_version, the selected block is
+        # still the collision authority and must match the old sidecars.
+        version_changed = candidate_version != old_version
+        if version_changed:
+            if source_bottle_block is not None:
                 fail(
-                    f"{name} {snapshot} Formula bottle identity differs "
-                    "from its sidecar"
+                    f"{name} candidate pkg_version changed from {old_version} "
+                    f"to {candidate_version}, but its Formula still has a "
+                    "bottle block"
+                )
+        elif source_bottle_block is None:
+            fail(
+                f"{name} has bottle sidecars but no candidate Formula bottle "
+                "block for the unchanged pkg_version"
+            )
+        else:
+            if source_bottle_block["root_url"] != expected_root:
+                fail(
+                    f"{name} candidate Formula bottle identity differs from "
+                    "its sidecar"
                 )
             if (
                 sidecar_abi == current_abi
-                and bottle_block["rebuild"] != rebuild
+                and source_bottle_block["rebuild"] != rebuild
             ):
                 fail(
-                    f"{name} current-ABI {snapshot} Formula rebuild differs "
+                    f"{name} current-ABI candidate Formula rebuild differs "
                     "from its sidecar"
                 )
         bottles = sidecar["bottles"]
@@ -2869,29 +2938,9 @@ def _derive_campaign_from_snapshots(
                 raw_bottle["built_from"].get("tap_commit"),
                 f"{name} bottle #{index} built_from.tap_commit",
             )
-            historical_bytes = dependencies.load_historical_formula(
-                old_tap_root,
-                name,
-                built_from_tap_commit,
-                f"Formula/{name}.rb",
+            historical_formula_path = stage_historical_formula(
+                name, built_from_tap_commit, "built-from"
             )
-            if (
-                not isinstance(historical_bytes, bytes)
-                or not historical_bytes
-                or len(historical_bytes) > 1024 * 1024
-            ):
-                fail(f"{name} historical Formula source is invalid")
-            historical_digest = sha256_bytes(historical_bytes)
-            historical_directory = old_tap_root / ".campaign-historical-formula"
-            historical_directory.mkdir(exist_ok=True)
-            historical_formula_path = (
-                historical_directory / f"{historical_digest}.rb"
-            )
-            if historical_formula_path.exists():
-                if historical_formula_path.read_bytes() != historical_bytes:
-                    fail(f"{name} historical Formula staging collided")
-            else:
-                historical_formula_path.write_bytes(historical_bytes)
             (
                 historical_source_sha,
                 historical_source_identity,
@@ -2927,7 +2976,7 @@ def _derive_campaign_from_snapshots(
             ) = validate_link_and_provenance(
                 old_tap_root,
                 formula=name,
-                version=version,
+                version=old_version,
                 rebuild=rebuild,
                 bottle=bottle,
                 formula_identity_sha256=claimed_formula_sha256,
@@ -2944,7 +2993,8 @@ def _derive_campaign_from_snapshots(
             variant_inputs.append(
                 VariantInput(
                     formula=name,
-                    version=version,
+                    version=old_version,
+                    candidate_version=candidate_version,
                     rebuild=rebuild,
                     source_kind=source_kind,
                     bottle=bottle,
@@ -2954,6 +3004,7 @@ def _derive_campaign_from_snapshots(
                     historical_formula_commit=built_from_tap_commit,
                     historical_formula_sha256=historical_source_sha,
                     dependencies=normalized_dependencies,
+                    candidate_dependencies=resolved_dependencies[name],
                     formula_sidecar_path=sidecar_path.relative_to(old_tap_root).as_posix(),
                     formula_sidecar_sha256=sha256_bytes(sidecar_bytes),
                     link_path=link_rel,
@@ -2968,7 +3019,9 @@ def _derive_campaign_from_snapshots(
         ):
             fail(f"{name} old Formula bottle tags differ from its sidecar bottles")
         if (
-            sidecar_abi == current_abi
+            not version_changed
+            and sidecar_abi == current_abi
+            and source_bottle_block is not None
             and source_bottle_block["tags"] != expected_tags
         ):
             fail(
@@ -2977,10 +3030,12 @@ def _derive_campaign_from_snapshots(
             )
         # Historical extra sidecars can predate the Formula's currently
         # selected rebuild even when they preserve useful immutable evidence.
-        # Reserve above every selected identity so a required ABI rebuild
-        # cannot collide with either the old record or current Formula block.
+        # An unchanged version reserves above all of them. A changed version
+        # owns a separate namespace and truthfully begins at rebuild zero.
         next_rebuild = (
-            max(
+            0
+            if version_changed
+            else max(
                 rebuild,
                 old_bottle_block["rebuild"],
                 source_bottle_block["rebuild"],
@@ -2988,7 +3043,7 @@ def _derive_campaign_from_snapshots(
             + 1
         )
         reference = canonical_top_reference(
-            top_reference, version, next_rebuild, name
+            top_reference, candidate_version, next_rebuild, name
         )
         formula_context[name] = {
             "dependencies": resolved_dependencies[name],
@@ -3022,7 +3077,7 @@ def _derive_campaign_from_snapshots(
             },
             "name": name,
             "source_kind": source_kind,
-            "version": version,
+            "version": candidate_version,
         }
 
     deferred_formulae: list[dict[str, Any]] = []

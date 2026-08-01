@@ -2013,6 +2013,27 @@ record, full archive inspection, historical Formula source, Formula/link
 sidecars, provenance report, candidate Formula identity, current ABI, and
 guest-layout digest.
 
+The old tap checkout is an object database as well as the current catalog.
+The old bottle block is read at the immutable tap commit recorded by the
+catalog metadata. A bottle's `built_from.tap_commit` separately identifies the
+earlier Formula source used to compile its bytes. Current tap source may
+already contain the next unpublished Formula, while an extra stale sidecar may
+predate the selected catalog. Using either as the old bottle-block authority
+would mix package generations or reuse a reserved rebuild number.
+
+A candidate Formula may advance its Homebrew `pkg_version` during the
+campaign. The manifest keeps the old version on the historical bottle,
+requires a bottleless candidate Formula, and reserves rebuild zero in the new
+version's independently probed registry namespace. The old bytes always
+require a build in this case; the campaign never relabels them as the new
+version. An unchanged `pkg_version` continues to reserve a rebuild above the
+selected bottle block instead.
+
+Candidate dependency versions come from the same exact Homebrew metadata
+resolution. When that closure differs from the historical Formula sidecar,
+the dependent bottle also requires a build. This prevents a campaign from
+publishing new dependency metadata beside bytes built for the old closure.
+
 `homebrew-prefix-campaign-executor.py derive-reuse` consumes that authority.
 It requires the sealed candidate source tree and a clean old-tap checkout at
 the campaign's exact `old_tap_commit`. It rechecks every referenced sidecar
