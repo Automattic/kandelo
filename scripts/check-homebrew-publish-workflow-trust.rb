@@ -3251,6 +3251,23 @@ def check_publisher(workflow)
   check(flake.scan("pkgs.gnutar".b).length == 1,
         "dev shell does not declare exactly one GNU tar publisher input")
   bottle_builder = File.read(File.join(REPO_ROOT, "scripts/homebrew-bottle-build.sh"))
+  check(
+    bottle_builder.scan("homebrew_local_tap_clone_url").length == 2 &&
+      bottle_builder.include?(
+        '"$BREW_BIN" tap "$TAP_NAME" "$PRIMARY_TAP_CLONE_URL"'
+      ) &&
+      bottle_builder.include?(
+        '"$BREW_BIN" tap "$dependency_tap" ' \
+        '"$dependency_tap_clone_url"'
+      ) &&
+      !bottle_builder.include?(
+        '"$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"'
+      ) &&
+      !bottle_builder.include?(
+        '"$BREW_BIN" tap "$dependency_tap" "$dependency_root"'
+      ),
+    "publisher local tap clones can still share Git object inodes"
+  )
   [
     "if jq -e '.schema == 3'",
     '(.tap_recipe.resources | type == "array"',
@@ -3576,7 +3593,8 @@ def check_publisher(workflow)
     '--repo-root "$KANDELO_ROOT" --tap-root "$TAPPED_TAP_ROOT" --arch "$ARCH"',
     'DEPENDENCY_TAP_ROOTS=()',
     'export HOMEBREW_KANDELO_PRIMARY_TAP_ROOT="$TAPPED_TAP_ROOT"',
-    '"$BREW_BIN" tap "$dependency_tap" "$dependency_root"',
+    'homebrew_local_tap_clone_url "$dependency_root"',
+    '"$BREW_BIN" tap "$dependency_tap" "$dependency_tap_clone_url"',
     'DEPENDENCY_TAP_ROOTS+=("$dependency_root")',
     '"${DEPENDENCY_TAP_ROOTS[@]}"',
     'filter_target_dependencies()',
@@ -3663,6 +3681,23 @@ def check_publisher(workflow)
         ), "reviewed bottle builder permits target dependency recursion")
   bottle_verifier = File.read(
     File.join(REPO_ROOT, "scripts/homebrew-verify-poured-bottle.sh")
+  )
+  check(
+    bottle_verifier.scan("homebrew_local_tap_clone_url").length == 2 &&
+      bottle_verifier.include?(
+        '"$BREW_BIN" tap "$TAP_NAME" "$PRIMARY_TAP_CLONE_URL"'
+      ) &&
+      bottle_verifier.include?(
+        '"$BREW_BIN" tap "$dependency_tap" ' \
+        '"$dependency_tap_clone_url"'
+      ) &&
+      !bottle_verifier.include?(
+        '"$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"'
+      ) &&
+      !bottle_verifier.include?(
+        '"$BREW_BIN" tap "$dependency_tap" "$dependency_root"'
+      ),
+    "bottle verifier local tap clones can share Git object inodes"
   )
   [
     '--sysroot-build-root) SYSROOT_BUILD_ROOT=',
@@ -4011,7 +4046,8 @@ def check_publisher(workflow)
           "Formula runner does not seed locked Bundler groups before isolation")
     [
       '.dependencies[] | [.tap_name, .root, .tap_commit] | @tsv',
-      '"$BREW_BIN" tap "$dependency_tap" "$dependency_root"',
+      'homebrew_local_tap_clone_url "$dependency_root"',
+      '"$BREW_BIN" tap "$dependency_tap" "$dependency_tap_clone_url"',
       'tapped_dependency_root="$("$BREW_BIN" --repository "$dependency_tap")"',
       'locked_dependency_root="$(cd "$dependency_root" && pwd -P)"',
       '[ "$tapped_dependency_root" != "$locked_dependency_root" ]',
@@ -4098,7 +4134,7 @@ def check_publisher(workflow)
           "Formula runner does not use exactly one bounded native prefix")
   end
   builder_tap_clone_index = bottle_builder.index(
-    '"$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"'
+    '"$BREW_BIN" tap "$TAP_NAME" "$PRIMARY_TAP_CLONE_URL"'
   )
   builder_clean_clone_index = bottle_builder.index(
     'git -C "$TAPPED_TAP_ROOT" rev-parse HEAD'
@@ -4207,7 +4243,7 @@ def check_publisher(workflow)
     'mapfile -t source_tap_changes'
   )
   tap_clone_index = bottle_verifier.index(
-    '"$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"'
+    '"$BREW_BIN" tap "$TAP_NAME" "$PRIMARY_TAP_CLONE_URL"'
   )
   clean_clone_index = bottle_verifier.index(
     'git -C "$TAPPED_TAP_ROOT" rev-parse HEAD'
