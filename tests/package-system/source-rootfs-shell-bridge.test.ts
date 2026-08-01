@@ -51,6 +51,10 @@ import {
   readSourceRootfsShellDependencyContract,
   validateSourceRootfsShellPackageManifest,
 } from "../../scripts/source-rootfs-shell-dependency-contract.mjs";
+import {
+  assertSourceRootfsShellImage,
+  assertSourceRootfsShellMetadata,
+} from "../../scripts/assert-source-rootfs-shell-composition";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..");
 const bridgePackageRoot = join(
@@ -253,6 +257,29 @@ function fixturePaths(root: string) {
 }
 
 describe("source-rootfs shell bridge", () => {
+  it("classifies only the exact source-owned image metadata", () => {
+    const sourceMetadata = {
+      version: 1 as const,
+      kernelAbi: ABI_VERSION,
+      shellComposition: { schema: 1, kind: "source-rootfs" },
+    };
+
+    expect(() => assertSourceRootfsShellMetadata(sourceMetadata)).not.toThrow();
+    for (const invalid of [
+      null,
+      { ...sourceMetadata, shellComposition: { schema: 2, kind: "source-rootfs" } },
+      {
+        ...sourceMetadata,
+        shellComposition: { schema: 1, kind: "source-rootfs", extra: true },
+      },
+      { ...sourceMetadata, packageDeferredTrees: [] },
+      { ...sourceMetadata, homebrewBootstrap: {} },
+      { ...sourceMetadata, homebrew: {} },
+    ]) {
+      expect(() => assertSourceRootfsShellMetadata(invalid)).toThrow();
+    }
+  });
+
   it("owns its browser server for every exact-artifact proof", () => {
     expect(shouldReuseExistingPlaywrightServer({})).toBe(true);
     expect(shouldReuseExistingPlaywrightServer({ CI: "1" })).toBe(false);
@@ -415,6 +442,7 @@ describe("source-rootfs shell bridge", () => {
         kind: "source-rootfs",
       },
     });
+    expect(() => assertSourceRootfsShellImage(firstOut)).not.toThrow();
     expect(MemoryFileSystem.readImageCapacity(first).maxByteLength).toBe(
       source.maxByteLength,
     );

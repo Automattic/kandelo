@@ -310,7 +310,7 @@ validate_state() {
               (.abi_version | type == "number" and . >= 0 and floor == .) and
               .package == "shell" and
               .arch == "wasm32" and
-              .mirror_required == true and
+              .mirror_required == false and
               (.source_commit | type == "string" and test("^[0-9a-f]{40}$")) and
               (.publication_blockers_sha256 |
                 type == "string" and test("^[0-9a-f]{64}$")) and
@@ -364,6 +364,13 @@ validate_state() {
                     echo "ci-homebrew-browser-mirror-state: consumer shell is not the selected local generation" >&2
                     exit 1
                 fi
+                # WHY: only the explicit source bridge may omit the closed
+                # bottle mirror. Prove the selected image owns the exact
+                # source marker and carries no Homebrew composition claims;
+                # blocker state alone cannot describe the image's contents.
+                npx tsx \
+                    "$(dirname "$0")/assert-source-rootfs-shell-composition.ts" \
+                    "$image"
             fi
             ;;
         *)
@@ -625,6 +632,11 @@ case "$command" in
                   [.entries[] | select(.package == "shell")][0].blocker_chain
                 ' "$blockers"
             )"
+            # WHY: without a transported staging receipt, the consumer builds
+            # the explicitly source-owned bridge. That image has ordinary lazy
+            # URLs but deliberately carries no Homebrew package or closed
+            # bottle-mirror authority. Requiring recovery here would ask a
+            # truthful source image for metadata it must not contain.
             jq -n \
                 --argjson abi_version "$abi" \
                 --arg source_commit "$source_commit" \
@@ -639,7 +651,7 @@ case "$command" in
                     source_commit: $source_commit,
                     publication_blockers_sha256: $blocker_report_sha,
                     blocker_chain: $blocker_chain,
-                    mirror_required: true
+                    mirror_required: false
                   }
                 ' > "$staged_out"
         fi

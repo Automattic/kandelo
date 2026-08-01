@@ -9,6 +9,14 @@ type BrowserDiagnostics = {
 
 const diagnosticsByPage = new WeakMap<Page, BrowserDiagnostics>();
 const MAX_LOG_LINES = 160;
+const sourceRootfsExpectation =
+  process.env.KANDELO_PLAYWRIGHT_EXPECT_SOURCE_ROOTFS_SHELL;
+if (sourceRootfsExpectation !== undefined && sourceRootfsExpectation !== "1") {
+  throw new Error(
+    "KANDELO_PLAYWRIGHT_EXPECT_SOURCE_ROOTFS_SHELL must be 1 when set",
+  );
+}
+const expectSourceRootfsShell = sourceRootfsExpectation === "1";
 
 const appUrl = (path: string): string => {
   const baseUrl = process.env.KANDELO_TEST_BASE_URL;
@@ -270,15 +278,24 @@ test("Kandelo shell demo runs bash, vim, and NetHack", async ({ page }) => {
 
 test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page }) => {
   test.setTimeout(240_000);
-  const legacyRuntimeFetches: string[] = [];
+  const standaloneShellRuntimeFetches: Array<{
+    name: "bash" | "dash" | "coreutils";
+    url: string;
+  }> = [];
   page.on("request", (request) => {
     const url = request.url();
+    const match = url.match(
+      /\/(bash|dash|coreutils)(?:-[^/?]+)?\.wasm(?:\?|$)/,
+    );
     if (
       request.resourceType() === "fetch" &&
-      /\/(?:bash|dash|coreutils)(?:-[^/?]+)?\.wasm(?:\?|$)/.test(url) &&
+      match !== null &&
       !url.includes("?import&url")
     ) {
-      legacyRuntimeFetches.push(url);
+      standaloneShellRuntimeFetches.push({
+        name: match[1] as "bash" | "dash" | "coreutils",
+        url,
+      });
     }
   });
 
@@ -310,10 +327,17 @@ test("Kandelo Node.js demo evaluates JavaScript in the terminal", async ({ page 
   expect(nodeContractResult.output).toContain("KANDELO_NODE_OK:42");
   expect(nodeContractResult.output).toContain("KANDELO_NODE_ALIAS_OK");
   expect(nodeContractResult.output).not.toContain("Segmentation fault");
-  // WHY: the node-vfs image owns Bash, Dash, Coreutils, and Node. A browser
-  // boot may bind lazy transport URLs, but must not fetch standalone legacy
-  // shell binaries and overwrite bottle-backed identities.
-  expect(legacyRuntimeFetches).toEqual([]);
+  // WHY: bottle-derived Node images own their complete shell runtime and must
+  // never fall back to standalone binaries. The explicitly source-owned CI
+  // bridge instead carries image-owned Bash plus one lazy Coreutils identity;
+  // running `id` must fetch exactly that file, never Bash or Dash. The suite
+  // runner sets this exception only after validating source composition.
+  expect(
+    standaloneShellRuntimeFetches.filter(({ name }) => name !== "coreutils"),
+  ).toEqual([]);
+  expect(
+    standaloneShellRuntimeFetches.filter(({ name }) => name === "coreutils"),
+  ).toHaveLength(expectSourceRootfsShell ? 1 : 0);
 });
 
 test("Kandelo nginx demo serves its web preview", async ({ page }) => {

@@ -43,7 +43,20 @@ if jq -e 'any(.entries[]; .package == "shell")' "$report" >/dev/null; then
         exit 1
     fi
     mirror_mode="$(jq -er '.mode' "$mirror_state")"
+    # Convert only a JSON Boolean to a string before `jq -e` sees it. This
+    # keeps valid false from becoming a command failure without accepting the
+    # JSON string "false" as equivalent authority.
+    mirror_required="$(jq -er '
+      .mirror_required |
+      if type == "boolean" then tostring
+      else error("mirror_required must be a Boolean")
+      end
+    ' "$mirror_state")"
     if [ "$mirror_mode" = publication-blocked-candidate ]; then
+        [ "$mirror_required" = true ] || {
+            echo "materialize-ci-publication-blockers: candidate shell must require its closed bottle mirror" >&2
+            exit 1
+        }
         if [ ! -f "$receipt" ] || [ -L "$receipt" ] ||
            [ ! -f "$handoff_report" ] || [ -L "$handoff_report" ]; then
             echo "materialize-ci-publication-blockers: staging shell handoff is incomplete" >&2
@@ -77,6 +90,10 @@ if jq -e 'any(.entries[]; .package == "shell")' "$report" >/dev/null; then
         # products such as LAMP impossible to validate truthfully.
         echo "materialize-ci-publication-blockers: reuse exact staged bottle shell"
     elif [ "$mirror_mode" = publication-blocked ]; then
+        [ "$mirror_required" = false ] || {
+            echo "materialize-ci-publication-blockers: source shell must not claim a closed bottle mirror" >&2
+            exit 1
+        }
         if [ -e "$receipt" ] || [ -L "$receipt" ] ||
            [ -e "$handoff_report" ] || [ -L "$handoff_report" ]; then
             echo "materialize-ci-publication-blockers: plain blocked state cannot carry candidate authority" >&2

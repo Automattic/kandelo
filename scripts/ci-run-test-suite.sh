@@ -95,12 +95,29 @@ cleanup_ci_homebrew_browser_mirror() {
 prepare_ci_homebrew_browser_mirror() {
     local state="$REPO_ROOT/.ci-homebrew-browser-mirror-state.json"
     local mirror="$REPO_ROOT/apps/browser-demos/public/homebrew-main-shell-bottles"
+    local authority
     local mirror_required
     local image
     local report
     local publication_blockers="$REPO_ROOT/.ci-test-publication-blockers.json"
     local receipt="$REPO_ROOT/.ci-staging-shell-receipt.json"
     local state_mode
+
+    # WHY: closed-acceptance variables authorize private test transport. Only
+    # this function may create that authority after validating the exact state
+    # and recovering its mirror; inherited values could make a source shell or
+    # a different bottle mirror look like the reviewed candidate.
+    for authority in \
+        VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT \
+        KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT \
+        KANDELO_PLAYWRIGHT_EXPECT_SOURCE_ROOTFS_SHELL \
+        KANDELO_PLAYWRIGHT_VITE_MODE
+    do
+        if [ "${!authority+x}" = x ]; then
+            echo "ci-run-test-suite: ambient closed Homebrew browser authority is forbidden: $authority" >&2
+            return 1
+        fi
+    done
 
     if [ ! -f "$state" ]; then
         echo "ci-run-test-suite: prepared browser workspace lacks Homebrew mirror state: $state" >&2
@@ -121,11 +138,22 @@ prepare_ci_homebrew_browser_mirror() {
     fi
     bash scripts/ci-homebrew-browser-mirror-state.sh "${state_args[@]}"
     mirror_required="$(jq -r '.mirror_required' "$state")"
-    [ "$mirror_required" = "true" ] || return 0
     if [ -e "$mirror" ] || [ -L "$mirror" ]; then
         echo "ci-run-test-suite: closed Homebrew browser mirror already exists: $mirror" >&2
         return 1
     fi
+    # WHY: only the plain publication-blocked lane materializes the explicit
+    # source-rootfs bridge. The validator has inspected the selected image's
+    # exact composition marker and rejected mixed Homebrew claims, so browser
+    # assertions may permit its one intentional standalone Coreutils fetch.
+    if [ "$state_mode" = publication-blocked ]; then
+        export KANDELO_PLAYWRIGHT_EXPECT_SOURCE_ROOTFS_SHELL=1
+        return 0
+    fi
+    [ "$mirror_required" = "true" ] || {
+        echo "ci-run-test-suite: bottle-backed shell omitted its closed mirror" >&2
+        return 1
+    }
 
     CI_HOMEBREW_BROWSER_REPORT_ROOT="$(
         mktemp -d "${RUNNER_TEMP:-/tmp}/kandelo-ci-homebrew-browser.XXXXXX"
@@ -177,6 +205,7 @@ run_pages_shaped_browser_build() {
             -u KANDELO_BROWSER_DEMO_INPUTS \
             -u VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT \
             -u KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT \
+            -u KANDELO_PLAYWRIGHT_EXPECT_SOURCE_ROOTFS_SHELL \
             -u KANDELO_PLAYWRIGHT_VITE_MODE \
             -u KANDELO_PLAYWRIGHT_SERVE_DIST \
             VITE_BASE=/kandelo/ \

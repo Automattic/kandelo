@@ -489,7 +489,8 @@ if [ -n "$homebrew_browser_mirror_state" ]; then
             # WHY: source-materialized shell bytes do not exist on the producer
             # runner. Transport only checkout+blocker authority; the browser
             # consumer must materialize and resolver-select the image before
-            # this state can authorize its closed mirror.
+            # testing it through ordinary lazy transport. This source-owned
+            # bridge intentionally has no closed Homebrew mirror to recover.
             shell_image="-"
             ;;
         *)

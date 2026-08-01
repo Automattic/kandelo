@@ -839,11 +839,19 @@ grep -Fq -- '--force-source-build \' "$CI_BLOCKER_MATERIALIZER" ||
   fail "publication blockers must rebuild their exact PR recipes rather than accept cached canonical bytes"
 grep -Fq 'mirror_mode="$(jq -er '\''.mode'\'' "$mirror_state")"' \
   "$CI_BLOCKER_MATERIALIZER" &&
+  grep -Fq 'mirror_required="$(jq -er '\''' \
+    "$CI_BLOCKER_MATERIALIZER" &&
+  grep -Fq 'if type == "boolean" then tostring' \
+    "$CI_BLOCKER_MATERIALIZER" &&
   grep -Fq '[ "$mirror_mode" = publication-blocked-candidate ]' \
+    "$CI_BLOCKER_MATERIALIZER" &&
+  grep -Fq 'candidate shell must require its closed bottle mirror' \
     "$CI_BLOCKER_MATERIALIZER" &&
   grep -Fq 'scripts/verify-ci-staging-shell-handoff.sh \' \
     "$CI_BLOCKER_MATERIALIZER" &&
   grep -Fq 'reuse exact staged bottle shell' \
+    "$CI_BLOCKER_MATERIALIZER" &&
+  grep -Fq 'source shell must not claim a closed bottle mirror' \
     "$CI_BLOCKER_MATERIALIZER" &&
   grep -Fq 'plain blocked state cannot carry candidate authority' \
     "$CI_BLOCKER_MATERIALIZER" ||
@@ -1052,7 +1060,8 @@ bash "$CI_BROWSER_MIRROR_STATE" create \
   "$handoff_image" "$handoff_state" "$handoff_receipt"
 [ "$(jq -r '.mode' "$handoff_state")" = \
     publication-blocked-candidate ] &&
-  [ "$(jq -r '.schema' "$handoff_state")" = 3 ] ||
+  [ "$(jq -r '.schema' "$handoff_state")" = 3 ] &&
+  [ "$(jq -r '.mirror_required' "$handoff_state")" = true ] ||
   fail "candidate shell state did not preserve its distinct authority"
 bash "$CI_BROWSER_MIRROR_STATE" validate producer \
   "$handoff_state" "$handoff_blockers" \
