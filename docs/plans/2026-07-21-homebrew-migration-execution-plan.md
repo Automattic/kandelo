@@ -1,7 +1,7 @@
 # Homebrew Migration Living Execution Plan
 
 - Status: active
-- Last reconciled: 2026-07-31
+- Last reconciled: 2026-08-01
 - Primary repositories: `Automattic/kandelo` and
   `Kandelo-dev/homebrew-tap-core`
 - Purpose: preserve the complete Homebrew migration scope, record what has
@@ -13,7 +13,107 @@ goal merely because it is not part of the next pull request. A goal leaves this
 plan only when it is completed with evidence or explicitly superseded with the
 replacement decision recorded in the disposition log.
 
-## Current Resume Checkpoint — 2026-07-31
+## Current Resume Checkpoint — 2026-08-01
+
+This checkpoint supersedes the delivery sequence in the 2026-07-31
+checkpoint without removing any of its completion scope.
+
+The deployed bottle-backed shell remains the green product baseline. Do
+not rebuild or replace its known-good bottles merely because a wider
+campaign sibling fails.
+
+The next campaign authority is now concrete:
+
+- protected Kandelo `main` is
+  `8a0ed31a56cd4842f532f90e56aea911fff31da2`;
+- its accepted wasm32 rootfs package generation is the following tag:
+
+  ```text
+  package-generation-rootfs-wasm32-abi-v42-sha256-6fee21781a8c1bf28af8cf4c0593e56780696ff85823d27abe9ae1905d41b153
+  ```
+
+- protected tap `main` is
+  `680fff9f8de5bc137ae14c137a23a1ac9a6d9aa4`; and
+- the tap's `Protect tap main history` ruleset now blocks deletion and
+  non-fast-forward updates to `main`.
+
+That ruleset preserves publication ancestry. It does not yet require a
+pull request for every append because the generated-state finalizer
+still uses the repository `GITHUB_TOKEN` to push a fast-forward commit.
+Finish that protection later with a dedicated app, deploy key, or
+pull-request finalizer. Do not weaken the append-only rule in the
+meantime.
+
+The current Kandelo integration batch is packaging-only. It combines the
+campaign authority and safety work that had been split across draft PRs:
+
+- historical bottle provenance and Formula version transitions;
+- per-architecture variant reuse and finalization;
+- detached local tap clones inside the isolated builder;
+- repeatable staging cleanup and refreshed native Formula locks;
+- explicit first-package namespace admission;
+- bounded streaming readback for bottles larger than the unrelated
+  64 MiB JSON limit;
+- a successful empty native-tool closure; and
+- the end-to-end Homebrew packaging guide.
+
+The first live Libyaml rehearsal proved that the detached clone removed
+the earlier hard-link isolation failure. It then exposed a shell-status
+bug: a valid empty native dependency list returned status 1 and stopped
+the build before Libyaml ran. The integration batch returns success for
+that valid empty closure and adds a regression test.
+
+The complete-catalog derivation also reached the existing 817 MiB TeX
+Live bottle. That bottle is within the publisher's declared 2 GiB
+compressed limit, but the campaign accidentally applied its 64 MiB JSON
+limit to the archive. Stream the anonymous response to an exclusive
+file, hash and count it incrementally, and enforce the shared bottle
+limit. Do not solve this by adding another package-specific size
+exception.
+
+The immediate execution order is:
+
+1. Finish the three focused corrections above, review the complete
+   batch, and run the campaign, executor, publisher, workflow-trust,
+   native contract, and public-readback tests.
+2. Derive the entire 64-Formula campaign once. Let all independent reads
+   finish so one run reveals the complete remaining problem set.
+3. Merge the packaging-only Kandelo batch. Create a fresh exact-main
+   package generation; unchanged archives may be reused only through the
+   generation's normal content and provenance checks.
+4. Rebase and merge the tap campaign controller, first-child bootstrap,
+   handoff, and finalizer. Rotate its Kandelo pins to the exact new
+   protected-main commit.
+5. Run up to eight dependency-ready Formula variants concurrently.
+   Libyaml's first child uses the one-time namespace bootstrap. The
+   normal publisher still owns its version index, public verification,
+   sidecars, and tap finalization. Publish Ruby as soon as Libyaml is
+   ready.
+6. Compose the selected shell closure from immutable bottle identities.
+   Keep the boot shell eager, keep optional software and `/usr/bin/brew`
+   lazy, and deploy only after the same bytes pass the focused Node.js
+   and Chromium lifecycle.
+7. Prove `brew tap` and `brew install` against the independent public
+   tap. A failed unrelated Formula must not hold that proof or an already
+   verified bottle hostage.
+8. Continue the remaining Formula and service migration, then remove
+   each traditional registry owner only after its replacement evidence
+   exists.
+
+No ABI change is part of this sequence. ABI-changing kernel and
+fork-instrumentation work stays in its separate worktree and approval
+path. The packaging guide documents the current post-merge ABI bottle
+sequence and the requirements for a future quarantined candidate-bottle
+lane.
+
+Throughput for this checkpoint means one cohesive integration batch,
+one complete derivation to collect independent failures, and
+dependency-ready publication with immediate slot refill. It does not
+mean repeating the entire catalog after one sibling fails, withholding
+successful bottles until a campaign is perfect, or weakening immutable
+public readback.
+
+## Superseded Resume Checkpoint — 2026-07-31
 
 This checkpoint changes delivery order, not completion scope. The
 public, immutable 38-Formula shell is the green product base. It has
