@@ -211,6 +211,10 @@ grep -Fq 'id: shell_product' <<<"$shell_product_block" &&
     <<<"$shell_product_block" &&
   grep -Fq 'mirror_plan_url=$(jq -er' <<<"$shell_product_block" ||
   fail "Pages must bind the canonical shell, bootstrap, and embedded mirror plan"
+grep -Fq 'npx tsx --test \' <<<"$shell_product_block" &&
+  grep -Fq 'scripts/inspect-homebrew-main-shell-public-product.test.ts' \
+    <<<"$shell_product_block" ||
+  fail "Pages must run the public-product inspector rejection tests"
 if grep -Fq 'recover-homebrew-bottle-mirror' <<<"$shell_product_block"; then
   fail "Pages inspection must not eagerly download the complete bottle mirror"
 fi

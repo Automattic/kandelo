@@ -107,6 +107,10 @@ jobs:
             --expected-source-date-epoch 0 \
             --artifact "$image"
           test ! -e "$report"
+          # WHY: keep the inspector's rejection cases beside the only
+          # production workflow that relies on its admission decision.
+          bash scripts/dev-shell.sh npx tsx --test \
+            scripts/inspect-homebrew-main-shell-public-product.test.ts
           bash scripts/dev-shell.sh npx tsx \
             scripts/inspect-homebrew-main-shell-public-product.ts \
               --image "$image" \

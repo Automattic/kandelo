@@ -13,7 +13,6 @@ FINALIZER_TEST="$REPO_ROOT/scripts/test-finalize-homebrew-main-shell-release.py"
 WORKFLOW="$REPO_ROOT/.github/workflows/homebrew-main-shell-ci.yml"
 IMAGE_CONTRACT="$REPO_ROOT/scripts/homebrew-main-shell-image-contract.ts"
 IMAGE_CONTRACT_TEST="$REPO_ROOT/scripts/homebrew-main-shell-image-contract.test.ts"
-PUBLIC_PRODUCT_INSPECTOR_TEST="$REPO_ROOT/scripts/inspect-homebrew-main-shell-public-product.test.ts"
 NODE_SMOKE="$REPO_ROOT/scripts/homebrew-main-shell-node-smoke.ts"
 GUEST_LIFECYCLE_NODE="$REPO_ROOT/homebrew/test/homebrew_guest_lifecycle_node.ts"
 GUEST_LIFECYCLE_FIXTURE="$REPO_ROOT/scripts/create-homebrew-guest-lifecycle-fixture.ts"
@@ -230,7 +229,7 @@ grep -Fxq '  pull_request:' <<<"$main_shell_trigger_block" &&
   fail "Homebrew main-shell CI must validate pull requests and every main push"
 if grep -Eq '^[[:space:]]+(paths|paths-ignore):' \
   <<<"$main_shell_trigger_block"; then
-  fail "Homebrew main-shell CI must not filter pull requests or main pushes by path"
+  fail "temporary source-rootfs CI must not filter pull requests or main pushes by path"
 fi
 
 setup_node_line="$(grep -n 'uses: actions/setup-node@' "$WORKFLOW" | cut -d: -f1 | head -1)"
@@ -1916,7 +1915,6 @@ done
   npx tsx --test \
     "$CLOSED_ACCEPTANCE_TEST" \
     "$IMAGE_CONTRACT_TEST" \
-    "$PUBLIC_PRODUCT_INSPECTOR_TEST" \
     "$PLAYWRIGHT_ACCEPTANCE_TEST" \
     "$SHELL_VFS_URL_TEST" \
     "$TERMINAL_COMMAND_TEST"

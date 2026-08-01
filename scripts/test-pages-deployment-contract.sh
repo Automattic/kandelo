@@ -151,6 +151,11 @@ expect_mutation_rejected \
   's/scripts\/inspect-homebrew-main-shell-public-product\.ts/scripts\/skipped-public-product.ts/'
 
 expect_mutation_rejected \
+  "missing public product inspector rejection tests" \
+  "must run the public-product inspector rejection tests" \
+  's/scripts\/inspect-homebrew-main-shell-public-product\.test\.ts/scripts\/skipped-public-product.test.ts/'
+
+expect_mutation_rejected \
   "eager mirror recovery during inspection" \
   "must not eagerly download the complete bottle mirror" \
   's#(          test ! -e "\$report"\n)#$1          npx tsx scripts/recover-homebrew-bottle-mirror.ts\n#'
