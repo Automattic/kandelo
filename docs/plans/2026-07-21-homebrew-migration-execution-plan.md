@@ -144,6 +144,15 @@ runs once against the synthetic merge instead of once on the head and
 again on the synthetic merge. This label changes scheduling only; it
 must never omit the final validation before merge.
 
+That scheduling rule is transitional. It applies while a Formula or
+product still needs a Kandelo registry bridge. It is not the Homebrew
+endpoint. Before migration completion, move every Formula source build,
+bottle artifact, candidate release, closed selection, and publication
+write into a tap-owned workflow. Kandelo may continue to supply platform
+source, SDK, ABI, validation, and reusable workflow code, but no Homebrew
+publisher or VFS consumer may depend on a Kandelo PR-staging package
+release or package generation for Formula-owned software.
+
 ## Superseded Resume Checkpoint — 2026-07-31
 
 This checkpoint changes delivery order, not completion scope. The
@@ -1581,6 +1590,9 @@ The migration is complete only when all of the following are true:
 - a normal `man` command resolves the ordinary manual pages shipped by
   applicable embedded and deferred packages;
 - upstream `brew` inside Kandelo installs first-party and third-party bottles;
+- Formula source builds, bottle artifacts, candidate custody, and
+  selections are tap-owned, and no Homebrew build or consumer depends
+  on Kandelo package staging for Formula-owned software;
 - every historical registry and support role has a durable owner and no
   accepted package has duplicate authoritative recipes;
 - every historical and current declared `(Formula, architecture)` pair has

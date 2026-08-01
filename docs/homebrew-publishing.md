@@ -36,6 +36,14 @@ Homebrew's `bottle do` block.
 
 ## Durable Kandelo Package Input
 
+This section documents a migration bridge. It is not the final Homebrew
+build architecture. Once every Formula-owned build and helper has moved
+to the tap, remove `package-generation-wasm32` and
+`package-generation-wasm64` from the Homebrew publisher and its callers.
+Kandelo package generations may continue serving non-Homebrew platform
+consumers, but Homebrew bottle builds and VFS composition must not use
+them for Formula-owned software at migration completion.
+
 The Homebrew publisher may consume Kandelo package archives while validating
 or building bottles, but a PR's run-specific staging release is never a
 durable input. After coherent canonical activation has landed, dispatch
