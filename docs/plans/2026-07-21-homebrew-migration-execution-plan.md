@@ -1349,13 +1349,13 @@ Acceptance:
 
 Implementation checkpoint (2026-07-29; in progress):
 
-- The native publisher is advancing to exact upstream Homebrew commit
-  `cf5bc21c6b127e168ef7cfa982ba7db62874690e`, whose native package
-  installer supports the constrained post-install steps now present in
-  Homebrew's signed package API. The guest bootstrap remains pinned to its
-  existing source until its source lock, package and build identity, program
-  index, shell lock, and guest documentation can advance together in the
-  atomic guest cutover.
+- The native publisher uses exact upstream Homebrew commit
+  `a92554a538e81fad0c5074443885dbcc4c36221d`, whose native package
+  installer supports the constrained, Mach-O, PHP, and Python install steps
+  now present in Homebrew's signed package API. The guest bootstrap remains
+  pinned to its existing source until its source lock, package and build
+  identity, program index, shell lock, and guest documentation can advance
+  together in the atomic guest cutover.
 - The publisher must admit each job's native host-tool closure against a
   reviewed compatibility lock before untrusted Formula execution. Exact
   pinned Homebrew, rather than Kandelo code, owns alias, dependency,

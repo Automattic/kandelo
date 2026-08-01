@@ -15820,7 +15820,7 @@
       }
     }
   },
-  "homebrew_commit": "cf5bc21c6b127e168ef7cfa982ba7db62874690e",
+  "homebrew_commit": "a92554a538e81fad0c5074443885dbcc4c36221d",
   "kind": "kandelo-homebrew-native-compatibility-lock",
   "schema": 1
 }

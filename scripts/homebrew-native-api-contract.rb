@@ -342,7 +342,7 @@ def prime_api
     Homebrew::API::Formula.all_formulae
     Homebrew::API::Formula.write_names_and_aliases(regenerate: true)
     Homebrew::API::Internal.formula_hashes
-    # WHY: cf5 writes these helpers lazily. Generate the final internal-API
+    # WHY: Homebrew writes these helpers lazily. Generate the final internal-API
     # view before the cache becomes read-only so later name resolution has no
     # mutable alias or executable side channel.
     Homebrew::API::Internal.write_formula_names_and_aliases(regenerate: true)
@@ -366,10 +366,11 @@ def selected_records(names)
         public_records.fetch(name),
         bottle_tag: tag
       ).serialize(bottle_tag: tag)
-      # WHY: cf5's own FormulaStruct projection removes global tap motion,
+      # WHY: exact Homebrew's FormulaStruct projection removes global tap
+      # motion,
       # all-platform variations, and unrelated bottle tags while retaining
       # every field this exact Homebrew can consume for x86_64 Linux.
-      # Caveats are presentation text and cf5 expands their prefix/home
+      # Caveats are presentation text and Homebrew expands their prefix/home
       # placeholders to each random native realm. Service presentation fields
       # do the same and are not consumed while pouring a native build tool.
       # The full internal record still binds both signed sources.
@@ -461,10 +462,11 @@ def audit_cellar(allowed_names, required_names)
   fail_contract("native Cellar contains a non-directory rack") unless
     racks.all? { |path| path.directory? && !path.symlink? }
   installed_names = racks.map { |path| path.basename.to_s }
-  # WHY: `brew deps --include-implicit` describes every Formula cf5 may need,
-  # not a promise that each one receives a Cellar rack on this host. Let cf5
-  # decide which satisfied implicit dependencies it actually pours, then
-  # require every resulting keg to stay inside the admitted closure and every
+  # WHY: `brew deps --include-implicit` describes every Formula Homebrew may
+  # need, not a promise that each one receives a Cellar rack on this host.
+  # Let exact Homebrew decide which satisfied implicit dependencies it
+  # actually pours, then require every resulting keg to stay inside the
+  # admitted closure and every
   # requested top-level tool to exist.
   fail_contract("native Cellar escaped the admitted closure") unless
     (installed_names - allowed_names).empty?
