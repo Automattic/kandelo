@@ -11,12 +11,14 @@ import {
 import { allocateKernelScratchRegion } from "../src/kernel-scratch";
 import { CH_TOTAL_SIZE } from "../src/generated/abi";
 import { createKernelScratchTestInstance } from "./support/kernel-scratch-instance";
+import { emptyProcessTimerCleanup } from "./kernel-worker-test-scratch";
 
 const KERNEL_EXPORT_NAMES = [
   "kernel_drain_wakeup_events",
   "kernel_get_memory_pages",
   "kernel_inject_datagram",
   "kernel_remove_process",
+  "kernel_take_process_timer_cleanup",
 ] as const;
 
 function kernelPointer(
@@ -55,6 +57,7 @@ function makeHarness(
     kernel_get_memory_pages: () => 256,
     kernel_inject_datagram: () => 0,
     kernel_remove_process: () => 0,
+    kernel_take_process_timer_cleanup: emptyProcessTimerCleanup(kernelMemory),
     ...options.implementations,
   };
   const gate = options.gate ?? new KernelEntryGate();
@@ -116,7 +119,7 @@ describe("network cleanup entry authority", () => {
       const callbackSnapshots: ReturnType<typeof networkSnapshot>[] = [];
       const reentryErrors: unknown[] = [];
       const order: string[] = [];
-      let queuedSecondUnregister = false;
+      let nestedUnregisterError: unknown;
       let harness!: ReturnType<typeof makeHarness>;
 
       const observe = (label: string): void => {
@@ -146,11 +149,12 @@ describe("network cleanup entry authority", () => {
         getaddrinfo: vi.fn(() => new Uint8Array([127, 0, 0, 1])),
         unbindUdp: vi.fn(() => {
           observe("UDP unbind");
-          if (!queuedSecondUnregister) {
-            queuedSecondUnregister = true;
-            // Void ingress from a detached callback joins the FIFO. It must
-            // not overlap this publication or close the same resources twice.
+          try {
+            // This root returns a synchronous ownership result, so it cannot
+            // truthfully queue behind the detached publication in progress.
             harness.worker.unregisterProcess(41);
+          } catch (error) {
+            nestedUnregisterError = error;
           }
         }),
         closeTcpListener: vi.fn(() => observe("virtual listener close")),
@@ -242,6 +246,10 @@ describe("network cleanup entry authority", () => {
           (error as KernelReentrantEntryError).activeExportName,
         ).toBe("detached host phase");
       }
+      expect(nestedUnregisterError).toBeInstanceOf(
+        KernelReentrantEntryError,
+      );
+      expect(harness.worker.unregisterProcess(41)).toBe(true);
       expect(removeProcess).toHaveBeenCalledExactlyOnceWith(41);
       expect(network.unbindUdp).toHaveBeenCalledExactlyOnceWith("41:7");
       expect(network.closeTcpListener)

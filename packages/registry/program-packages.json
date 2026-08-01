@@ -4,344 +4,344 @@
     "bash": {
       "manifestSha256": "5dc4d97dc4f154f265ff57e9d972e7d5a64a2e15fadedfa246733b830dda3497",
       "cacheKeys": {
-        "wasm32": "3bb0b25c26be9fa2fac163fb9f5853958cb1a67d7a6bc6249b2af9e49ba5a63b",
-        "wasm64": "610dcc2f5af2c23cf666396a85ab4b4a455ab40e73cb38902fe68a3127679e30"
+        "wasm32": "f72620b103f7606cb3c9e2550ea68dc7c35c6bfbc69b217bb10d906901ec1c6c",
+        "wasm64": "ce13dbc6980023cf85367554177f62a4c64ea2d32eb9adafba82e4c630be147f"
       }
     },
     "bc": {
       "manifestSha256": "43b61e92c29098720bc7f4871a3b611cc01ffd124024290d42967cebb6ffd459",
       "cacheKeys": {
-        "wasm32": "b088a88d58385a6cadd463fbbb94944c52790205c08bdf463fbfd5e496fa430e",
-        "wasm64": "05c026b8e9099ba9837228bba138f1638f63f8d893b504ffdd4d3ffc65be3389"
+        "wasm32": "43001c22570d4972d6143a04c7ba9103fc35a735c15070978f331353e1ed0108",
+        "wasm64": "41b9387e2bbcec8772f66f8c8aa6c4afc9e94de856e098392a3a05f7aed6a878"
       }
     },
     "bzip2": {
       "manifestSha256": "59e1e53f5675e7c9148634933ed0f4c7192743727025cae4e843b6924c489abf",
       "cacheKeys": {
-        "wasm32": "9fa1eb2f8edc0ab1f0a983b603cf8c08c03867d429a73bc2994b9bc001646538",
-        "wasm64": "6c023377e8de285cd3879bdfdd95b417b98c690b23cf79a2304692a454f2ee88"
+        "wasm32": "aa390b7415063fe2316048755a2c515c82840564e6c9ef5d0186be27acdec409",
+        "wasm64": "dd2af354cc47621d6f9cacebcd45411aca86c93e162ea7498d8e5507ddacbd2a"
       }
     },
     "coreutils": {
       "manifestSha256": "72fc9c3818fb11cebaa047a623743252395dc729163fa804a7272d59f87fe82d",
       "cacheKeys": {
-        "wasm32": "88e8aec625b11e1cf53112017c6b12206c3fb5d4c495bea02297ae4c3a45db1f",
-        "wasm64": "44ff689fd0db89fcec6c8006e243c7eef825775f93c054b2c116a31f49584088"
+        "wasm32": "4583435763207ddfd63478fc7b3a263fdc6fae110bcd38109e1e1c26e621ad7f",
+        "wasm64": "74f816ee53c308c9e94e737275bdb42a71ffd75b5331422f8c106333b7609dc5"
       }
     },
     "cpython": {
       "manifestSha256": "7dd4f446697a73941ec940c2ccba4d53be73fe6947f1e701031a4d0aa964c4ff",
       "cacheKeys": {
-        "wasm32": "a0ef6affbcfb19fc83326cb35501026e63b93f7849329d6ce190cf197eddce41",
-        "wasm64": "987e3dff9ca4f3dab397214b10ed0436fe07cfddca0696f0ea592e2fef315a6a"
+        "wasm32": "a2e894f110205a0cf42bc02a56a31156a82fad0c291595a508bdb7bd09e7a6c7",
+        "wasm64": "3cf8ae7f6b6393df6e0c3ea8072bc2a6c7581d813d75b6ce48042aa2c1c92f3b"
       }
     },
     "curl": {
       "manifestSha256": "55523d50261f46dc4aaaff458d1cd87c6f96eaecd687a7540ead35c96906366e",
       "cacheKeys": {
-        "wasm32": "3eb3d0113cc00ca53713eab7c2c68646a77484c332eb82ddd6389ac41d1568cd",
-        "wasm64": "c78baea32795627a879263af99ae70df02dd35e52fe46cb043d09ff427eeb2e4"
+        "wasm32": "2e4132091d535e4afe6ef5ca6e0952c3f459330736c0a7eb6125b28bd1f45369",
+        "wasm64": "195e130269e2854a233b5f163f50fbd26aa8bb31341ad3ac3bb342b955c61a9a"
       }
     },
     "dash": {
       "manifestSha256": "10ce1bb611fefd78a6c9ec9038f6113e29a7062b1a73e08eccf9b33004cea9a8",
       "cacheKeys": {
-        "wasm32": "292795420bea85f6f35af3a2399696e790b7ae22af2385c440e79751d5e8e9ad",
-        "wasm64": "9de9e85d91e122625a02db27626c24ce1051077fd908bc6545177814c7a78d0e"
+        "wasm32": "c4b4345aa3f9011d0b214ad6adaa6c7fbe5eb2f6bbd0e5181b8f4be68f437bf3",
+        "wasm64": "f37e09c31002de4be5c25d4f789b81e2ced708016032756a6cafe010a4537811"
       }
     },
     "diffutils": {
       "manifestSha256": "2286203eb762eca487939963e38ea1b901ac2dc9a830d3260c2fb291757df208",
       "cacheKeys": {
-        "wasm32": "0cfbd31c5b125cdc4ed2a0d4116ea69c94cd5eb3dabff3045b7db3b21feaec30",
-        "wasm64": "feca794225fd4c00c2006f2739f396bdbaf96799aa5cc513141c25bd03a4de5c"
+        "wasm32": "d48b0feda4af14e2d08a803611d0b825ac51e9a9379bdb8b49e1170eaf75e5d0",
+        "wasm64": "b574d2b123a1d927e46d99624745567d382dd3b81d99f4cc5beb2bfb7e9fad0b"
       }
     },
     "dinit": {
       "manifestSha256": "44e125e1337503e27f8cff531cdbd79c4f406fd2d282b916a7746cf3a14057bf",
       "cacheKeys": {
-        "wasm32": "afabec4ac51bd35f27451be1ab27dbcd29abe2bdc93ee24d7ba39faf65c583c9",
-        "wasm64": "324b974aed89280168647e7c5cd771468d9ae5cc5878944539eed5af2b7e4a33"
+        "wasm32": "543e082567cc0502609bf0cdef6eb1ba431cef97d798136e739c915f8392615a",
+        "wasm64": "872d4ca7596d100e781612e7e659bc840c74fdab8c0769746c48ff1d5ec478fb"
       }
     },
     "erlang": {
       "manifestSha256": "475d6037e73a0f1e2f4381067194b2422751206979ea17209e10efa5a2a93bbb",
       "cacheKeys": {
-        "wasm32": "2e4bcee403f1127d7a0b8eb59c95458e437acce60cdfdc3d3d44ca8d7c7d4f30",
-        "wasm64": "348df25cdc4695e5a74120f49de746aed4608ff7a1b43eb080f446e27244077c"
+        "wasm32": "9f4b0bfcf465fb5a83d04186672e5ca6b9e40f33db4f526e6438f0939bf9c8d2",
+        "wasm64": "4b36337b67b9911f085169937db021e7ec29b080bb9907ca232e7b96e5590808"
       }
     },
     "erlang-vfs": {
       "manifestSha256": "15efb74f1825e2b85bedfeb8d98c19fa648c4be39cb9defb65330a8f21eb9141",
       "cacheKeys": {
-        "wasm32": "d01d2df6791faa1befb7f407585f436e908f8977b8f1fe24a1221927873d5ce7",
-        "wasm64": "bd35dc636e918356ec55b7d704bd16ce0ce32a26b1d3cf9504b847f75e673ca3"
+        "wasm32": "0b302ed848f5596a2c80569a6ee3b6426ae9778a5f0e15a824ee57c609960311",
+        "wasm64": "cdb9d3661305fa85850b6e4df581166fce5c7978565900f54efcb7c2217fae8b"
       }
     },
     "fbdoom": {
-      "manifestSha256": "a00e0d9c84fcdbb3bd95f296cb3422d60b86dcff4c40734eea1bb0bec4c7d902",
+      "manifestSha256": "7ff2127ca940e41be90ba45204c89089a7a2093567b9bff581a9549b57138626",
       "cacheKeys": {
-        "wasm32": "92097da44dd8a57901cf771311b84d1bb395996c9b9f8abd5c144fc042a4ae40",
-        "wasm64": "7c546ebe90f363e9277188f557abf6080d811fd434b7cb41de929431fb459210"
+        "wasm32": "816074a21b019d5a52c7a676123b93ebbb0e841cab60a3c7553773520284733f",
+        "wasm64": "151fcd4ebdbadf44602ea10f2780fc1dbee281b2427829abe160db720e269028"
       }
     },
     "file": {
       "manifestSha256": "7874c1affcbbf2c8ab8c8d4beb087f275af57b5caae6a8947bf5a63a181552b2",
       "cacheKeys": {
-        "wasm32": "7860fb07d0c2e45be9c06246b3545f408e3f5e18f3f721a052e84ab6fd5aab55",
-        "wasm64": "7127826b50f421c41d3d1090ae55b67873b32feb6a0735eac8c89c056c01fa7b"
+        "wasm32": "55d93c1fd59d890d6f78346197a6d474c654fc2a6687e1ff6e1ffb1ae09ce377",
+        "wasm64": "2ea8d818cf8ec473a4f77d812ea00c43615613a328e06cad6c5f523632a542c7"
       }
     },
     "findutils": {
       "manifestSha256": "a9969cb102403cef105e758ef602692500fddd75ec96e4e3f168c50094b6c931",
       "cacheKeys": {
-        "wasm32": "f8bd60aa473359e98a1138a6329a8113f0d2e867fa427bb81d3cf8089ed1c5d5",
-        "wasm64": "8f5bee39b36df0b510799fc316190c1a9cdc170997b3aa48aa7b42ede9999610"
+        "wasm32": "b866449fe86205186c0537b6992df7747c852f0e07fde1da6f9d0a7b5808b152",
+        "wasm64": "095f02c50a616ef3983049ea209cb9464d85577d5fffd85fa13cb4aff0f78b7d"
       }
     },
     "gawk": {
       "manifestSha256": "b788f3de724cd363ea68d08826586ddf544a75fb5dd9df1369ffafe06d8681b7",
       "cacheKeys": {
-        "wasm32": "e77e891fee5d2107b8326a0dd97f184d3d79faf0d87733c11514bd8889e9d30f",
-        "wasm64": "ffce14a7187436f4a273b99a9bde4988887296b473e52ba9136b11cdc9c5346d"
+        "wasm32": "13a6253127ab0250d8dc39d51979aae88a0004cb5a268493cd332eaf564546d6",
+        "wasm64": "a8cd27b75e88597d5f9fb83a3877f14e8951d3ed2ae543dd4fa44c4f0d073923"
       }
     },
     "git": {
       "manifestSha256": "c2bc79e62c9a4e840ae94a16af0f41070460eaf3976a990dc60d2db977bee952",
       "cacheKeys": {
-        "wasm32": "b42be77b20c056922c3f8af6c8b40d84ec0e3b24eb9165f46dd7280f5e9d6de0",
-        "wasm64": "36568ecaa24dda8a6ea6d8f0707fbc769f4d3ce8fe24f75bb319716258443f0e"
+        "wasm32": "d96bb46b733a7cfb83b17b6d53f36c35b1617a75cb6c5b929237d35bff327b31",
+        "wasm64": "84999c3c616b868f93b1c9318f9d25e9d4d934a0a3142a2e38755cb13c0b15fb"
       }
     },
     "grep": {
       "manifestSha256": "7c61b894807b831c7e8816cb1f39c78e3a69a4ced2fa3d18f0abdf00bf18334b",
       "cacheKeys": {
-        "wasm32": "a4ecf6c6a921fb6a7b6cf2e305637df1d6a23e86a3f05c8badcb26f6a9267a56",
-        "wasm64": "2e1cc9e3a26b9d9251e5ced660de01b17eeea3c0c30c9f71871e0f3e69d56b7d"
+        "wasm32": "e75c15a6f6114b40248b6de7c3057b99b108dde867cda73c111e47c3acbb326f",
+        "wasm64": "c4f3de09c2acc03edcf4e4b217bdae3e65de546e2543b4bf1ba7db89d59d2bb7"
       }
     },
     "gzip": {
       "manifestSha256": "1485add843bbcd744244e707c353208fe11192b7b248feed1550875d3b75a917",
       "cacheKeys": {
-        "wasm32": "0f67d1d73c59bdae42cbbdb487e328a356909b7ff6b1316bb84824c62cce245e",
-        "wasm64": "2d00bc905cc74a21a424f742983c45a8c16c595ec19db9bc898a517b586ccdf1"
+        "wasm32": "0332b476d7ec3d6fcebec49aadf3facae32a69fc004cebfc6e5c7f3a195561b0",
+        "wasm64": "bcd0569a7bb38ead44161bb500fe6fcb60a1cb53982314beb8f34bb91061dbeb"
       }
     },
     "homebrew-bootstrap": {
       "manifestSha256": "c4ed5ba78c33909ac70410c86a80bb877f86fa6ac786c8f11025410a8df1fd24",
       "cacheKeys": {
-        "wasm32": "9893ff14c81802d32de5f313e79c232c45e803f6e1eee3b751fe128b952cfe81",
-        "wasm64": "329410b5e4f92231855de007163870ffca6e42c744ce10cc1352a57ca342006f"
+        "wasm32": "ef0092c0b03589468a00976d8e5167f4a0a18260b8b61b2f7136263d480deaac",
+        "wasm64": "4bdc42eb5dfe7b8d9cb3e4a039a53816842097a538fd522e34f97d3390ea4b04"
       }
     },
     "icu": {
       "manifestSha256": "f5b1f02d169ec1108fc32d9da55be53c3efb96e3a7aeba6a03aec62e0175f0dc",
       "cacheKeys": {
-        "wasm32": "ed82530ca56a059fcb3ded9e7eba665878dd476a4e15fb0c67ec3fbab88ec961",
-        "wasm64": "2e6e5ec90f438b9949d61d5fb5a00110bb8c4a0ea7d8d81d934e6105fe0f7ba1"
+        "wasm32": "81677f4b7e2d40634555388d8d06757a052efcbb915bef1c6e57d444137848cd",
+        "wasm64": "91c5d7b785c8689058944da76ac2987993d90d5663a0003239feb1ec4050d934"
       }
     },
     "kandelo-sdk": {
       "manifestSha256": "c081879f1becd855917cff96f17429bcf2b9fd61bf95211eca9ff8fb625bb2eb",
       "cacheKeys": {
-        "wasm32": "58a80626efbbee0e7271150ac3cd20cb54562bd9f2c96b2e5091e46a25b2306b",
-        "wasm64": "e47d59d838bfd451e68a3c59d78e8769d6bcda8a547586d3f51f6e48d4534616"
+        "wasm32": "ce884b1760130a2cb478fbe03f5ec2f407339e5631bebc516daf97a7d80fe096",
+        "wasm64": "0962794128f6c2b35277c561406bb5885d24618d5821a053fc70e909d89ea909"
       }
     },
     "kernel": {
       "manifestSha256": "db1d66db8575562ac7b3e720dbaa06d7dd5eef577d80220ea4167dc2d69b863b",
       "cacheKeys": {
-        "wasm32": "223146b18c49321399b8008bdac9397c9af91f4bc3f1b60a936a8684bd9f233b",
-        "wasm64": "eb7ba1b16cc6abd55137760cd0a01ea683d97bfb356899324712e5b450b6d234"
+        "wasm32": "1272ecb067f8de873dec513e588c1f1c84186237ecdf69dd93fdb6849d8dea50",
+        "wasm64": "cc9c0326c42db84eef0a82f2202923b1cb7ee7ac24007dbbd684bbf8ab46736f"
       }
     },
     "lamp": {
       "manifestSha256": "250b64635d64f8537178188fb5488dbfd2980d79a1c2ffbf346af67008088ba0",
       "cacheKeys": {
-        "wasm32": "77db0a7aaa0a78130e2689a24ac6250a67d358bc65cd1e2919ce95c5ca2e20ea",
-        "wasm64": "8d4775122fac5b2eb7e50f2debbe21e5c22ed6813e3e8353588b79474390797e"
+        "wasm32": "9eafe9e962c351bcfe4fceaa2fbace1ad8b9c9c4a74b46fa2d6a80e7e4f6c3d9",
+        "wasm64": "7bac32a5ae47d59e5dac0d392032282d6458bb674e09a5e3e4b91c4d216b6a8f"
       }
     },
     "less": {
       "manifestSha256": "996d61545cfe83dcb663a33e8763e0edbd4db4a605fd69a91b243cf79b1f9b17",
       "cacheKeys": {
-        "wasm32": "bbae9262108e82a170c06628207705bb64d55794cdc97969b71e1f23c4c1da98",
-        "wasm64": "3c0ea075f180db83e6f6187c450fecf5ea8ffcda17866b0cd952548fc0ca37b1"
+        "wasm32": "180f11bd766f6c2482eb68dba1803d81bcfedc79ff0ff40a4fba1d11219d6dd9",
+        "wasm64": "9794e1db462de7da1334e3d67b1014c26e81fc1ff1e87cd7c118b0d7cb6b9c21"
       }
     },
     "libcurl": {
       "manifestSha256": "c771e6cdc83b43840db4dd1fdce4b6189ba4f281596f7485bcda9c65e2ecda00",
       "cacheKeys": {
-        "wasm32": "08ad5e096eb7909993a2aa2d75a3fc0282b5112818f9de92d7a21b9db3f7312b",
-        "wasm64": "b0e39ce50de688397c7acf2a5d492f2c737d31fc66d1dde7fe14b1c5863d2848"
+        "wasm32": "6ce2dd7a19b7f5af78edc02fc75d08bbeade7f41e968f8b8a3f6e7e5fe4b26ae",
+        "wasm64": "69dde320d13b2d22f9cc5a7884e9bbc3597ed36f3fa8be00513a3f144c207967"
       }
     },
     "libcxx": {
       "manifestSha256": "6e1ebfa6914043770eae2a6c156b915acf6a56fe763f07d215ffe6f6f2305007",
       "cacheKeys": {
-        "wasm32": "c7c50744bc51231bfc6e1c391755500abb4803062140db70c41a83a7c1df8cc9",
-        "wasm64": "e6304f31d7a30e10501b57a82aae97e1bb5f00a00dd8196e9672ffe5b4704d6b"
+        "wasm32": "8637589d7edff4677a49452a19fcd2881e993a778d27a0dacffc9622f3fb0023",
+        "wasm64": "06a4c50ff62d8d2e638f341cf8ec0b1837b24a3d602a437759f0c2d0a8396821"
       }
     },
     "libiconv": {
       "manifestSha256": "fa60b386f4ba0cd5bbbd595f67477cbfb0cc401a14bbd4769630c502bb3f24b1",
       "cacheKeys": {
-        "wasm32": "8289b6195a813388b7673810c77749e055904b6ce1f80872c87f617e7c9fe26f",
-        "wasm64": "7470a5ec8cccedb719e250211b527040a4dfc3ae7c6e11a4ee18961a1855d955"
+        "wasm32": "8b132a257b9a02a3adccac9d5d6bedc00348a6ac92375401761312d7c46a2ecf",
+        "wasm64": "83ecaeabc5a95f57b5309bf957b3f9b0dde7bd39d8eef5cd978d9a15028ada59"
       }
     },
     "libpng": {
       "manifestSha256": "79ed5c5c072a0267cce5c7a2fe37d8494571b17e44b952f619e04ec1c4a9db10",
       "cacheKeys": {
-        "wasm32": "ca264fd3613420d6d6545ce77fb9f3dd9e70c505bc8752cdfe7ff09cab8df4b8",
-        "wasm64": "831654519ecafb66d72a1638da17c59ef4d92728930dd2b6e19284c43fe055ee"
+        "wasm32": "5862e6edd08188b92bb7f84c064d147326ec65ba5024bb86e93a8efa93ff13d8",
+        "wasm64": "430d5136cd30c07465c73b9994fbfe799357a06edf712eb625a2b8d8274d7374"
       }
     },
     "libxml2": {
       "manifestSha256": "908490efcdc7783c76ce36af31d1db24bfcc7ba5f1e7b9b5298cc81cb110256c",
       "cacheKeys": {
-        "wasm32": "a16f2e59186fef56229883d91bd5b09c9fd24ec96137287ecec4fba963500822",
-        "wasm64": "4af3cc7d9e3fafea01ad834ae7b48c073fbb8277a22c591c724714e3fc166152"
+        "wasm32": "4873ada42645826762560ad1833364a60c630c6411f84a03456b171f279faf2b",
+        "wasm64": "6fe5c3313fb2ae976bc081a78ed82fa93736fa8797191db3f3f01fa2d9f6db46"
       }
     },
     "libzip": {
       "manifestSha256": "83c65d63a6416e79436bf4e792759a4701d568df0e8c010394a9732cf659f0cc",
       "cacheKeys": {
-        "wasm32": "0f052ffc6c568fec083752495f6245511974745f30743d961cbed6296da68f32",
-        "wasm64": "5083a7fa8eb1204bee34fb9453cd411eec449e83acb1aa1faf560495a7e2044c"
+        "wasm32": "32c0e36842b5f47e79c66b925601f3f30c4ac982303cd159ade0b6c5755e5b61",
+        "wasm64": "52b48e294612fb9e5b9c0b83e3ac0007677ed58243d58601a5ae416556ef63f6"
       }
     },
     "lsof": {
       "manifestSha256": "cfd199bbe082435f7a2e703e2738a368af1eeb5b76b6e93c376054f21ce94419",
       "cacheKeys": {
-        "wasm32": "80a6104542b21e23812feb4376257da964060f48f89b33ae23f0f5e4b02ea7de",
-        "wasm64": "de1cd85864201cc5981f0bc836c48083f691fd9f093eda6ee4a82c9d862a009a"
+        "wasm32": "6f7cbc2839c96bdc4569c4845fd0c4671e7596cfd36483deb4e4a05e5d48bccb",
+        "wasm64": "39892c4b2d66a8e2d0108856fbf8dee8857b06d9f4ccc9c01c6a3d39daa78f4b"
       }
     },
     "m4": {
       "manifestSha256": "9b5838bdde8531079f23a89e135aa3832bbbbb7ad6099dd1503db877d52afcad",
       "cacheKeys": {
-        "wasm32": "b1f9a8a551e8240c6ceff2fd93866f1a459f2de4d35f7e2e796fafc1decf414f",
-        "wasm64": "ac3958dfd09aea7b5d1fdb80b5f29e2eacd93ccf5c2c27df28c47a315a4392f8"
+        "wasm32": "8eb7d929c608eecfe55cffe87513a1d8b7b58c3dbe80f350ab9e0eb9ad7416a8",
+        "wasm64": "1cdd52610d82f6c8cd191304fd4213b28caa155948d8464773a854df5c5dd1df"
       }
     },
     "make": {
       "manifestSha256": "62e8b36a6df7e981d191061a5bb7f2db85b2deaf365352a7d590a6c6c06f2b1e",
       "cacheKeys": {
-        "wasm32": "7ffa37065290a8237c7c1aa53d14b19dd993f736628ec2f03372959d57f793e1",
-        "wasm64": "5636f67b39e72b393128bd128c7fcef9419fd38561ed729009bcdaa6a208cedf"
+        "wasm32": "dc7fce3e4dd128bbdd6a89356224db601bebd13df9c63548f5ab969a250dfcc5",
+        "wasm64": "23b0d807988b5c123df13094d172813c4e678017db558a5469e72929dfb9e8ea"
       }
     },
     "mariadb": {
       "manifestSha256": "aeb221be233e4b57bccb4b3375020f94c3ec593dac2734631f00e3b1aec9f48c",
       "cacheKeys": {
-        "wasm32": "a337766281607a68326c2c51b7b54e3a4bd1a71a0a1ea81afa52be09c1e0b2be",
-        "wasm64": "3a4f8b9c13bd52dc2db0f6945ba0ebf78d28806cf9e7b773e8224e2b7c0beb1f"
+        "wasm32": "a6fc124a4bc7562dd038f5e616c914837fc5882cd90f0199d469c0259d0a8b4c",
+        "wasm64": "8dca7f977ae361b01d67d1af6fa7e9847bb9499fd2fa746283dee757caf17837"
       }
     },
     "mariadb-test": {
       "manifestSha256": "d4ccce161d659a5a87c80fa1117054bbccea870e0d4a46bd8a070d3930ad0e3f",
       "cacheKeys": {
-        "wasm32": "e5bffb7916977e035ce9cc59fe417aebe8b17f6df633a4309eb42015d45fac1a",
-        "wasm64": "c77517cb6f6ac94a314f67a79e93ae7b2660aab926762a9e9a49babbc685e229"
+        "wasm32": "1a48ab9b3bb0e378eef2d34d5dcab2084db47cac9da6e63ea77044f8fab184bf",
+        "wasm64": "b5874ac2d9bb3c1db5c6a4277e7efe9b24444eabfab55b61235ec4228ede972e"
       }
     },
     "mariadb-vfs": {
       "manifestSha256": "26e74ac84d89b2a839ed72783437061a23022ef2f88ad0f52b6aacd0442ee1cf",
       "cacheKeys": {
-        "wasm32": "cdef3e378496ba28675f3810196078013dcf9bc50e440cb4aa95695866b5bdec",
-        "wasm64": "c006ddaad6e3eed8106d674e50db8906eb42aa267acaade1b7b07c0fde2c57ae"
+        "wasm32": "5cf6491aead72e3a179b3a052059d91022f88614a297a95cff25373742397bb7",
+        "wasm64": "d3797f03263fe43e7766405c957c37e15c877912546353f3f4d19913db9bc07b"
       }
     },
     "modeset": {
       "manifestSha256": "36a8683c1c7309701d361c5f77e543a6c1531397b26c72dbb864528c59c42954",
       "cacheKeys": {
-        "wasm32": "965d4fca032e68491635b0aebe3498afa07a564d0525877142ac53170adf5193",
-        "wasm64": "3a31c841e8b235ca011c93d94082276ed7efd1b620f218d1be06046973dd3c5d"
+        "wasm32": "1d1f953607dc5796583d5284761f37e241bc860d9d874baa4eeb1493b908df6d",
+        "wasm64": "06f0007dcae2ebbc20b9a5a99235f1bbb7c0d73cac2efe5e39277b12ff5260e0"
       }
     },
     "msmtpd": {
       "manifestSha256": "686ff665b5e7907e67618790b1a3eddce2ff47ed665595d17209bdcda1e0b274",
       "cacheKeys": {
-        "wasm32": "382f58897a42df23508ddc227f96d3229141399a510a350647f0ce7cc14e81ac",
-        "wasm64": "27df17d81b2ac9f200907686194920dfc3ea88c5e0f611bd86df1d45b2c839ba"
+        "wasm32": "554ed9b04dcac3ed56656590be2baadc303cd9494f8742fcd6ab3e9323faf62a",
+        "wasm64": "bb692d67407811d14ab3eab7cdb81c8c71205a24d79da3ed8fdc4ea34906e441"
       }
     },
     "nano": {
       "manifestSha256": "c5a52f0c37e08b475bb815367b1f0d63d0d2b06649d99fe9f461b72d0b9cff51",
       "cacheKeys": {
-        "wasm32": "40f555a2b949327f54a4d779f19a955d7d3c9e7f76c8e21d090720bda5426e9d",
-        "wasm64": "b32e35f051ae1236d7b0bf255bb2a541d6f888ef5db7da7c9ba37a5400d3673b"
+        "wasm32": "25fe208fc4bfc8234d5145b76ddcdded2a1a17f16ff74886582a1c99b36807b2",
+        "wasm64": "8c5f3c178a45853409f1b5bf9794f98e3a99b1ff2af8a0835575ce8de5d9e366"
       }
     },
     "ncurses": {
       "manifestSha256": "0a1c180eeade627e204aa47065dbfebfcdc9359d25e2db436932c7fa3a86fc1e",
       "cacheKeys": {
-        "wasm32": "70871736d22780051a9fcd7aa3b7fb9064f75d524d87d47ed3e1653eba5b2651",
-        "wasm64": "3b03426d42f4d0861c98fcc7fb9f0e6ce6b801c2b5c246210e4d9e72de6c291b"
+        "wasm32": "cf48512ef35d9852f274d38266ba81c4eb39033027e1628712bd4318557a1b79",
+        "wasm64": "edf239ce74a0d847642d957410642beb3536363a22301bd6bea7f470130a39e0"
       }
     },
     "netcat": {
       "manifestSha256": "4cf33cd1ab768b3ad0108da8b68c2ff72e98469cd86a0bf2d0da54a7d4f6fa16",
       "cacheKeys": {
-        "wasm32": "e1d8c6bbe0bcee8911bf65f50ffd3db7b2a2c4cc06b012b688e2a490b717701d",
-        "wasm64": "376e440cd8c4c61178363f34ea157a6ed0ac7e3519ebf99108eb2788b97eb67b"
+        "wasm32": "baea699ba5ffc02066335a2eba35fab1f0208a111c40a67bcbc7841a7a83b543",
+        "wasm64": "358cae24ff7d41509e1e9d5500b5b8e30544e2caf8b90e1c687098c2bb196740"
       }
     },
     "nethack": {
       "manifestSha256": "1a2f12ec2770bd8d40006d6c878a3493b97c71c2bb63ad08c7f6ad99bfd53504",
       "cacheKeys": {
-        "wasm32": "4a3754f3c1f16793ee5887577fd45d23eb9ae77c47bdc1d2f3985ed687003e3a",
-        "wasm64": "5a7c7bfbcbb550c27a400909b3826f7d59c94b0472dce6678b860b80a1ded6fa"
+        "wasm32": "8b16339b4630bf4fabc8507793973453fc8dc0d3e82db9f16f513465c066659b",
+        "wasm64": "65ccd517bed1b4b47cebec0b52f0f684d63ee6e1cd9a753637b2cc8924b32885"
       }
     },
     "nethack-browser-bundle": {
       "manifestSha256": "b8294981da7ce4299dfb271d4aecb90ababa97a4d1acc9b716ae05bbe52beb53",
       "cacheKeys": {
-        "wasm32": "e549fa92d9ebd9c1bc8f42dbb3a7fc8a189142046ae339d17db38eee0f41bb93",
-        "wasm64": "3a6fd4676a0631692d7950b198e3cc6092b31ba49b0ef11832b79afcee363a6e"
+        "wasm32": "59ab4de06527df89271655257375163b3d571099fa077e419c967b4f653d732c",
+        "wasm64": "0f2157c456228c1a0e53098e2e7ca5b0b49e23c47395035b2035cc58aa29cb98"
       }
     },
     "nginx": {
       "manifestSha256": "41b0aaf05fdd0d8da42642703f9e60fd7b9545d8029896918b87c771c359147b",
       "cacheKeys": {
-        "wasm32": "313a503d66a7a8ad435c9aee08a4b44f332d84197caa6bc43e5d84336e3228ec",
-        "wasm64": "1d24f1d2790600c2c23789c6e93e73356e0a8fa7168b75a16a78df579ea6784c"
+        "wasm32": "a477b0911328bdd36d79e2339ccad2b67d23c69589fd622af20d8afa5af77df4",
+        "wasm64": "1ee6b0039a8ccc1ab919dd2d573ef9a5145c565f377d2d6427e9ffb75d208de3"
       }
     },
     "nginx-php-vfs": {
       "manifestSha256": "97976410cb02f8ba710d856b4ac904bcf976d677b50eefdee39fb64176070d4b",
       "cacheKeys": {
-        "wasm32": "86f5a03d7a0e391e5e4b2ca4aef89768a5c5c34c69adb990ee9a9b4e6b70eb03",
-        "wasm64": "d0c6a5a4e1f76d8230ef33df341ccd61918db47ce803b782d2ea21a65e7546f5"
+        "wasm32": "79e5ef3f9123c515d69600d9293dfdba3394b72aabc39cd4a346e5163365f913",
+        "wasm64": "e7736b7d04bfcd4062dd68fd5ea4a495c18dccc37132bff07cccf4b5310b1497"
       }
     },
     "nginx-vfs": {
       "manifestSha256": "46aa2d3250ac5cd0f102a85c3a36a086c7a50ba1f9e05fa1c2aae3d07ad16f10",
       "cacheKeys": {
-        "wasm32": "efa2faa3f5213e40ab5de3d87cd5398cfb8823c6ab8a43e614462360e209a4c5",
-        "wasm64": "a22b9dc96b9f68c0fd0f9a925c404f53ce7fa36e9b8eaae00b3b75965dd05c0b"
+        "wasm32": "ed0e8b6e71d96ca9ddd55e19983691efc56e50ba975e19147b2f4feef8067eee",
+        "wasm64": "3c7dcd2a932e0dbcd93e3d1f6643600ce0347b473fbb9463dc32a2e12892814f"
       }
     },
     "node": {
       "manifestSha256": "2131a24dfda8587860e57fc65b573086477d376b065b3b9ca4e1dfe4d79f5790",
       "cacheKeys": {
-        "wasm32": "2aced04cced76dd3005469ac293751a4994e81de403d3fd06e102f8aa980f35f",
-        "wasm64": "f09b1db3e1e347b4ed10d08f574e7f599feaae43dacccbc32bf3fb86091d8fca"
+        "wasm32": "031b17aaa70fd9ad18f6b3414562564f33e88c53caa6dd71b9e85c2f2d326d4c",
+        "wasm64": "96bd073513e9f553f4736b7eb7919fd3bd67d4eea96d5cf88cebb1cc9f130f93"
       }
     },
     "node-vfs": {
       "manifestSha256": "971eb2e91367c60745a3ed536eb90de1f6fc4d0c82ae6f5fd9d27c535711d5da",
       "cacheKeys": {
-        "wasm32": "b7bf43e041330e9b3759de3a4f3fb8ceb6408afdc19983004a011c320d01161d",
-        "wasm64": "9f6a7fe67d183d1320057d6f3ababacae20b89ee5d429a2505c05a9bc63c9754"
+        "wasm32": "705745bad6d92e50cddfc43b985d1095eee4d9069756ce75f65afdaa12b91e0b",
+        "wasm64": "92fc0ec544efabd9c8c9711e03befed7d283855077ef106eacdcfd1c1a594573"
       }
     },
     "openssl": {
       "manifestSha256": "374f5dce6b2691b630b55cb82955b33d2305384e4bd64746c581621bb0793993",
       "cacheKeys": {
-        "wasm32": "23b54aad82b4105ad8f5ea2b66e5c15f30d69455dc4cd28a92a936e87e60914b",
-        "wasm64": "fb3097dfb43d45ce0c9b184d0701d5f9716a2a5f48ad9641b81d25891a519dba"
+        "wasm32": "005e9cd3956f26bf2c6e97610ed4c0ca4ee21eaa0d4e59a710f861a78bb7020d",
+        "wasm64": "b0f46897a88d766840c6b87c376892370a6b37fc80bc4bd8eaeb6a8f15db5c33"
       }
     },
     "pcre2-source": {
@@ -354,197 +354,225 @@
     "perl": {
       "manifestSha256": "6cdc4dbc54d0e4008cff41f82ec8918c0e44b4aef23903539c1bc0f538fe3ad2",
       "cacheKeys": {
-        "wasm32": "f7862f341b5ccecda88730fc4ee4af950e7e488113b4701be0268c80f67e13a0",
-        "wasm64": "3dfbdf1e0a34a0025571dff4ff54d7bef7032fc4f34b6f00cab06d26675ac9a1"
+        "wasm32": "da7287e1ed6d2f9f39a2cc049a65f5fc76c00959ce7f8b9402f1a22ff8510276",
+        "wasm64": "9998b665864a44669f8710bba56a71d1a278036bad1e94aba6b8f56549b068b5"
       }
     },
     "perl-vfs": {
       "manifestSha256": "1345cc102bc8c24a6bc276410c00b4fcc99ba5f6adc9b031f882aaa35d53c8bc",
       "cacheKeys": {
-        "wasm32": "1ede74eb16abfadc77060fb09c60ba8e84ce2e10bb07e2fcf9531a5b84d77922",
-        "wasm64": "c342faee5c8e5f6050cde9f981c5f5f4a06d39ae65d016eac87c892859a6ab6b"
+        "wasm32": "0a9e90fbfc9c3b971ad2b035752019674b5a15467737871015887a4787384ab8",
+        "wasm64": "3a9616e0830c2ed1cfdb984928cddb7e2a4903cdbcf8c0ad755032703065bb8a"
       }
     },
     "php": {
       "manifestSha256": "fcd9d7915ed8935b05418e148edcb312adf0b1e4e627fe4aab75444b35b33bbc",
       "cacheKeys": {
-        "wasm32": "c069c011716dd51e586649af498a77fe7f9623c3f87d94517d504d65d59fc7ba",
-        "wasm64": "63e43ed24fcd90eeef9e671a8f3ccd912f16c48ab6ed24420975eb8dd8465a2a"
+        "wasm32": "98ecceaf50e4b0dbc10292b49b3c8ee2009e6ba965449123851818c123b9427b",
+        "wasm64": "64e753c28c8a134d66009f41b3e307d3c4342a1e5470ba30be074c50ed382de1"
       }
     },
     "posix-utils-lite": {
       "manifestSha256": "8fd7190b2848ef80143adc7b9268c79e13cd4db3430f7105faf49a4b4407a06f",
       "cacheKeys": {
-        "wasm32": "cdb66e1b49ac036686b638f39724ec85da465e9eb43e2328d4ccc043a76f8d39",
-        "wasm64": "4cc2b148b9ba4335dffb29f0f2b4cc55b118c767cd9fdc224fa534c871a81951"
+        "wasm32": "a195d1db14bc727860c53d0cd87843aa52a3842fad036180c75c6e19173b7624",
+        "wasm64": "5157b1a7623120f3b7ccaa0fd31aa5032daab462a29f0ab3b438d8550aa3db98"
       }
     },
     "python-vfs": {
       "manifestSha256": "d1aa99feae65f06c0ca8cf52c2176534b2723fd4ee6eba6e72c205245e1c9c26",
       "cacheKeys": {
-        "wasm32": "a375f2d91505ab06716eb34d7283c0e7ff89725c46b8e0d2b49aa127c7af45bb",
-        "wasm64": "1d65fa01870c6a2e342053d553b38af72e2dd17c75a88032a1130dfe19d3044d"
+        "wasm32": "a2382e09282fc05f23e94a83fbdcb0595a094ce09d7a93f9fa8e2ae1bb6b006f",
+        "wasm64": "6dc471b14bea588f938b7264e2be5e27ee70bbf0ad0c90ac2016db88b7453093"
       }
     },
     "redis": {
       "manifestSha256": "151fb507de953ba2ba94b8f881bc7d66b4c741c1359a2f590cc07f9a4cd368a3",
       "cacheKeys": {
-        "wasm32": "53d782b84d5df6927c247fd042ab1099c8d70ac38056b6f16d3c81839626c478",
-        "wasm64": "d1fc566b4ce0b8f30440f179b900ef6a88676415b52a34693ab01abc6b3a1760"
+        "wasm32": "fdb4a0416b46db4d5999696fe921a12e434b951312e29530d8b03dda03152eb7",
+        "wasm64": "16a1a5a147f3b315430ec165af110b0a49a0fde68587d901f32645fb0d157188"
       }
     },
     "redis-vfs": {
       "manifestSha256": "234c45c40f94e2a89f98295313b82cb9fce15a412ac829d9e87394e0dc731813",
       "cacheKeys": {
-        "wasm32": "535dc5d20e12a3f58533c644abc83b53a9e9bf4e2daea2a288910a3b24d909e3",
-        "wasm64": "a09d3635abb11f04902744c1ff443638e69bd2a6cdaf52fc34dd09f0aa7484ff"
+        "wasm32": "4b1a029a8da49d4b8ca43d63de06b10331ecdba4cfc1a16ed8a225824b54ce0f",
+        "wasm64": "fa0d8a5aed9ecf602d831fdbedf5c3768a22799eddb718fe2da515515f5bae88"
       }
     },
     "rootfs": {
       "manifestSha256": "0420201025170f48c32949ac62707d4577cdc13a53ad1f01f59d318ec07c8d6e",
       "cacheKeys": {
-        "wasm32": "7f5e181f3f49fd31c5d6d5a51ee6da8b411760ad6d3bceef6388aeb8a0f3fbb6",
-        "wasm64": "eb962c76a8e47611c665b30d0746ba80ff0aaaa6e7fa6599e31e2aeed366ea8b"
+        "wasm32": "639d2ea627f402d23bde67e0c370130ec1dac0ddea55af87b01b540a81072c34",
+        "wasm64": "e0a756b37a30db6245d6abc720c86c992c349918ff6fded752b8406c47063afa"
       }
     },
     "ruby": {
       "manifestSha256": "6ea67a246c29cd927a19decbb36ae4c4d478ff6642d2c77e08a6b2cfeb8251d2",
       "cacheKeys": {
-        "wasm32": "0f83557241b795469469b3b9547fdfd1f2b67b45cd35e3cef4aef5d3a30e8786",
-        "wasm64": "f2895d3b87df6065aa515a8d56f20ad611965bd337f8b0f13c5ca1c49a46c872"
+        "wasm32": "9c89b8e95447c8d17c4ca6c06b712f46b7fa9c4812bbcb637aa44b913092e80d",
+        "wasm64": "fe54cafbe963da1c1f41c6b80b62b3bfe1fca1abb2420f7c54aa115f2c39238b"
+      }
+    },
+    "sdl-dsp-test": {
+      "manifestSha256": "a988bef0b27403846a675965d951a286245fa79e84c209657d70a9a1200e8037",
+      "cacheKeys": {
+        "wasm32": "422c6bfdf0bac96e006cd7d0f130cd1a4857be5b124a64965ede999f611c8542",
+        "wasm64": "5f4a100a587de94bcf503af58b4f4b1db40b6675eaa96eb089b162e26fb9c50a"
+      }
+    },
+    "sdl2": {
+      "manifestSha256": "327ce0acca768f51e36ddab8ab58fd57b24cfd9e40722e818103c439f7263dd7",
+      "cacheKeys": {
+        "wasm32": "9cc6d3328ea4fb6848530e0e9a8cb5c30a8bd03a356fda29d6b46a91e37a58e8",
+        "wasm64": "6145d6354b9f03396cfb821b111c8f84ec4829d79cb5c50687299f7d7bcb3340"
+      }
+    },
+    "sdl2-mixer-playwave": {
+      "manifestSha256": "5ff3863e9f83cb9ad62931e067ee6e417826e06391862d9d0a58d6cc6b4dc570",
+      "cacheKeys": {
+        "wasm32": "d9dbaaebde392a70f307fb54bdf7cbe069c42661f7b04cad8e9c58dfe89cbc1d",
+        "wasm64": "0c941862580abdeed64bb435c5f8c49d0c8d987739b75b1f1c259baa81eb396e"
+      }
+    },
+    "sdl3": {
+      "manifestSha256": "3b7c64605b941e14d336b1a127d8219c50402dece009e8855297a0a0696bd67e",
+      "cacheKeys": {
+        "wasm32": "93bdeb1ecdb6e8d5e9e4bc0d14969ab3b4b6ece04481ef464f9050d08ef4036e",
+        "wasm64": "1afe335682a886843c5c532498ba255953a3beb7e7b69675830872c8275de969"
       }
     },
     "sed": {
       "manifestSha256": "0c0d82d53907c19825941501f833252cf9adf35ebcebf6786baae28e5eb6958b",
       "cacheKeys": {
-        "wasm32": "e3c2e6258fc5d07bb75d188f2efc391db5c1f2c5474e80ff528075cdda67ae85",
-        "wasm64": "d235406b0fb236c7cf940b8486988c5543b23bef3d787566f07c4062e53606f6"
+        "wasm32": "2d8f0e8bafe76521572934b36ab8fc1eb327eac5492c1d96d18fee3b1df926a3",
+        "wasm64": "0ae1c38b1a3ff0877eaf2be24e9141f330acb24c6968bd145a01345221345b17"
       }
     },
     "shell": {
       "manifestSha256": "9f33aafbf2a96a74c41938460bca83189c221fd9721d58d6b9e7e5902d848c65",
       "cacheKeys": {
-        "wasm32": "a017aa5de279b7f77c0f283db5fb4f89e43e495da413b4634776574e4040e71a",
-        "wasm64": "3b2f3ff64c91120325f1488266c32a93dd838e7ba8a9a4798843073494faaf6c"
+        "wasm32": "924040509cd02cedd551f4afa6568090fcd0bed488d44674c0c1802d33b3e6a4",
+        "wasm64": "c06b88d3049b3a6a3e122b191f7c9bb325464591267561e249f89c9526794cae"
       }
     },
     "spidermonkey": {
       "manifestSha256": "c72ef4e43ee2a4fc74390d03a239fce3b545a6d3b64f02ccc4d44972cec626bd",
       "cacheKeys": {
-        "wasm32": "bb965948ea0c564fe96b832a9c819003eb7f0d6c3a9957e9c2e52845c9123f6e",
-        "wasm64": "f47364607db02da84c2be533396eff7b3baaf8e4c83fc2d5b2eac5dae262c7ae"
+        "wasm32": "997c17703209773768eee15f64449151904b0f89824ebec9649db902126a9573",
+        "wasm64": "91aa4f76c95a3bb36883858d68fabd2737589def3de6c1f07749ed0e1288756c"
       }
     },
     "spidermonkey-node": {
       "manifestSha256": "f156c4c5044d2a9447324e7a2a35f8c3e6fa367b3e44f674dcc30ab6b946fae7",
       "cacheKeys": {
-        "wasm32": "137fb610878789d6a3fa9cf4c7dea22fca50171bde6bfcec426a47622e4af83d",
-        "wasm64": "1b451bb5a4e945212e4935e38791600efa97a1a17f12f13d6409415a5d8630e3"
+        "wasm32": "ffc7eecad0fb134fb01e8494621a16206d0b698828afe6c1c67cbdbbcfefbd7a",
+        "wasm64": "ce89980ddb57a50c6bf321341d97ed517472c59424ecbb0920bb5a8ac8221e7d"
       }
     },
     "sqlite": {
       "manifestSha256": "ab9560b4eab53445034e2a87a27ccee9d05ddb0db73fee28f5000325b0b1cba5",
       "cacheKeys": {
-        "wasm32": "5b3fda5e074c97b803e622d48b5ab3e87b43230d3f68d668296fb64a27f1568b",
-        "wasm64": "d4e987f027dcbfdbd590f148d6b55db03bd7f5124c63a5c8d0cf24d2baa109f7"
+        "wasm32": "6e44f4ec127c258c4185142295492ab790cca757db35a284762a95668e0862e9",
+        "wasm64": "a8e0c763bdbedf8783b8c3a82942d73ea1e22234d23c2e95704c36b79862a81d"
       }
     },
     "sqlite-cli": {
       "manifestSha256": "1cebb768f9473dc58fc6e72c9b24565760aedaec4cbdb29ad43b22a0a5fd7030",
       "cacheKeys": {
-        "wasm32": "f5dae689e9c9de8c8ad4fd72f90ee8b4eefd4b10fb2e19478451068b75f565ee",
-        "wasm64": "668a02a3d79ec15d704f00c1a70851b73a7eeee98d024fd28e2040093c04065c"
+        "wasm32": "8203b8f73e96deeefbe72c5eb9342cbd62b03fc31a4f3906cfbd4452b05c4c38",
+        "wasm64": "fa5ed8f2d10305310a4670d06fefcb10a00441379bb4faf016016bf7bdb3fe08"
       }
     },
     "tar": {
       "manifestSha256": "4502355c246362a2035e52aa7b35d274882fad4b4404c03470458baee723ae68",
       "cacheKeys": {
-        "wasm32": "41dbda340b968a687157d02ec36f3a93c04dc62adcf406e5b388465966bcdefa",
-        "wasm64": "6180499ea90dbadd916c97a1d616678c7b4addd9f04d2dfb8877a75bb684765f"
+        "wasm32": "e0e058c4333c4c94b7ed1fb0da398e3e874998c8bf1b3249f84417047a312db7",
+        "wasm64": "efb9b87404f3c7cf720b67f3ef5bd5247abe746584e328cf594135e0869775b8"
       }
     },
     "tcl": {
       "manifestSha256": "b98f237f741b11f5f5da55db75530b421755ba4c8a88d314553106faa1cca1ff",
       "cacheKeys": {
-        "wasm32": "48d99083556ccfb2c63736771c11b92e462a40b12d3850cb3ea26aae33826beb",
-        "wasm64": "ac2c62b8affcfba521f977ba37d466fdf6d0704c32e77f96dc439a7da4822d55"
+        "wasm32": "fe826385f0bd64f30c93c32bb93cbbb8948a74cf83fd137596c1f5df002ece70",
+        "wasm64": "f5a911b2527fb245cdfe5570020f3526e5dedabcced69e0e03ca6a003bfbc2f9"
       }
     },
     "texlive": {
       "manifestSha256": "028ada023f8a8f9966c8a28575242a339aaaf0e8870fe4a221986133b381c3c0",
       "cacheKeys": {
-        "wasm32": "73cea7cd1849aca34f37ae2eb4c6c841328a17ae38e5c1abeeda4a83323a2361",
-        "wasm64": "7714c13b1cf7ad9306f7ac6289626e9d9b4cca3715e44dab3384524a8ecdfd10"
+        "wasm32": "86434df9283dee6425eb388b6229fd19a8f9624bef425d5a9b6e37082636cf2a",
+        "wasm64": "43f26b79acb71939b06a9b48a7cfe5ef3d1c870f84e92e26beeb3dbfa288abb7"
       }
     },
     "unzip": {
       "manifestSha256": "ef4e5e34258827ab3cbc1930da3fd9514f08f2d7d56c7c3e0d5c495a4d3a20e9",
       "cacheKeys": {
-        "wasm32": "73d6a9db88d94927e2d5bc14d7f79c8eae82b902e890a9bee516cf4196b45046",
-        "wasm64": "1c98124ac54e8833e5fd324bda257247c304459b6ff7da28c3583983ec80e9e9"
+        "wasm32": "e6f3c139b81f8398c9083a88c64c541b2d50aa59bdf1eb3795dbc8100c477279",
+        "wasm64": "e995d0c6a7bd88b2eaf564ccdbe1322010e2cb4d2a56df0d31564d2a94787c7f"
       }
     },
     "userspace": {
       "manifestSha256": "221176f2a096dee19bbefd89da5c7f50138ecd92d37ec9d7d6b35dbb25e86924",
       "cacheKeys": {
-        "wasm32": "c5a871390a64931e91a74d28998768a34469670bec9a60563b9eceab70108872",
-        "wasm64": "c78a43c17ffce7d63e756037f1aab417b0c1290a8562c25cf9ee432e7fa737df"
+        "wasm32": "e83868a1ddf56dd5c1a92f8439208407fba632a8738c1fffb73533cd4b6f36d9",
+        "wasm64": "9ea28d54c0efb58e1b60b16daf99176e8f843f651ec7d6bfba0e4b01285ced3b"
       }
     },
     "vim": {
       "manifestSha256": "c211660ef41d01f95f3fbdf675b74891e897e3f304e04f1bf5586f326007382c",
       "cacheKeys": {
-        "wasm32": "f268b7542ce0d20e3e242dfd0bc33206208045fe35a2e9679a92f095afdee7fd",
-        "wasm64": "1281136757d461966e824e51c63a923420df5e64ed0a88d6660e6dcb5afaa9bf"
+        "wasm32": "a2ebb59c3b576c0eae37312c39711e3428cea60156614afbdb6c9de1540166eb",
+        "wasm64": "e922cd27cbd52e3bff06407d1a8c3eda10f439933911d0b5fff58de5bf4a0780"
       }
     },
     "vim-browser-bundle": {
       "manifestSha256": "e31d84057db49c3534381604d0c8f3c7d765e33ede560a7ea7b01a5a8f1aa0d3",
       "cacheKeys": {
-        "wasm32": "5569fee9f1d9e9c5efcd112ee55b32774f208f1e000a68fdada86b0a5246684e",
-        "wasm64": "b4060be2180ae3abecde2eba0e41c229a51800f95edd7aa081a31882e4b750ee"
+        "wasm32": "b4d85b2f95d7c6ec98fa9efe64aafa5238d9fdbce7eede2c93ae16b4c042d1d6",
+        "wasm64": "222251531fb46c29631c5a6e047ef9ac0a584655ff14335a8628de4acba085bd"
       }
     },
     "wget": {
       "manifestSha256": "61420b6cb1be12471f425b0aebf5aec58c49d0b43d939dd54508b305accbf54e",
       "cacheKeys": {
-        "wasm32": "dbf745ec60dc75ca96a470f6b07db9b239b3ae518ca75a897dff3346388d4358",
-        "wasm64": "aa368e415c9fb3c1f53e151c2aa33315c0d8746d047632a705d3bcfce67d8c5b"
+        "wasm32": "b9ca0d845774d9bc9421298065f0a0ac9c42bd5b31b52688d0ab35278c2adc68",
+        "wasm64": "89ecd15c2d8799d0cd695c0aadab8900d4ba90fac9fbe67bd22fbcc23c1d5541"
       }
     },
     "wordpress": {
       "manifestSha256": "36465e0596a06e855a8524eecfd87da98643bc13b37ee12939f5aab44bf33418",
       "cacheKeys": {
-        "wasm32": "bfb506462d4179365315850df70adaaf957016f705b97675354e8ae9620dfaff",
-        "wasm64": "a2bba82adaf6b04c65250b66744339ebec68c190888318b3dd6c0cf6a9cbb452"
+        "wasm32": "4c18d0e78186915f6ea6e22e2ef769af3bb413a4b33220dd064aef10fc5a316a",
+        "wasm64": "5c4f162dbf381cf844642513cf9cbd6b57cbbb360788ff930f7e5aacf9f6ddfc"
       }
     },
     "xz": {
       "manifestSha256": "8707d35b8647b1af8fa165dcb6ce7b2a6a007e19ab2daca2680c39395864a737",
       "cacheKeys": {
-        "wasm32": "2fbd8cf66a89cf6f38fff3f23ac0bcf5bed0358acfaf7440d29f9a5dfc68064d",
-        "wasm64": "ed0acf53fb6bc530d55cdb177432edfa626ac0fb71b12f24df8a16184a978c32"
+        "wasm32": "105b5d372e4e3d6f1cc9bf2871f5a6d082336a0fbfbd044c536d6466b28541f5",
+        "wasm64": "c59b2ba3e89288ee89d6849ee42eed006a26fbe9834ce92851fd85794b9b5b97"
       }
     },
     "zip": {
       "manifestSha256": "9c9cfa8220aaeaea26736b55f7cd0a7517b8853c07f9f0d241ad67dd43592e36",
       "cacheKeys": {
-        "wasm32": "fea91b2310de8577c77761a062d1ba542223df19ca4bbc2ed6df8479a5e7837c",
-        "wasm64": "cf1b53d4fc9500e29db204a4275fd72da2abb7d893d766ea163b253a26007ba7"
+        "wasm32": "de42ac678212b2313fc54c1c583877e1f69573e850f5634fc296e1985375459a",
+        "wasm64": "0abc6bb4d733cb454f14d4723bbea16d54830edf516c861515ff4cfda52765f5"
       }
     },
     "zlib": {
       "manifestSha256": "d4f4701c0c30dc843ebe2111ed3e2284836cdfc4bc05a130c8fab4f31b8e6357",
       "cacheKeys": {
-        "wasm32": "d65b5419d1992beb7637232cd98603a809db9b573085b4aa4980176e5570e2b2",
-        "wasm64": "f13fdf9a989ce6368e3ddef149979bb301f6fd4534db061e880f1091c39e7d94"
+        "wasm32": "024e74a76a23e09d6984f737783eb3f15c4d6b9c05434d0390b2e93fc4daeb5b",
+        "wasm64": "68698763f0a75d77f9a6ed7b910cb84f424009940680e99718c83423c474751e"
       }
     },
     "zstd": {
       "manifestSha256": "89f266938c2c253700a838e6352c9de66c976c84883325aaa979f72b732357e4",
       "cacheKeys": {
-        "wasm32": "a8ccfb874b8b263391a73976b9fa0592c0826a8ee6f0347bcf8ed2cdb9b2e9ed",
-        "wasm64": "ab5d9613da8725d9be28cac5720bd6a01af41d4af929055b8b142f30c8c1914d"
+        "wasm32": "b1f13d42e6ad8b54bb66c31ad8614bfd4f8f7989c4cd840131399dce1a15354f",
+        "wasm64": "28cd00493fe37461154d98877e576caa7d4de021edeba83eca9beafb493b0b86"
       }
     }
   },
@@ -555,14 +583,14 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "3bb0b25c26be9fa2fac163fb9f5853958cb1a67d7a6bc6249b2af9e49ba5a63b"
+        "wasm32": "f72620b103f7606cb3c9e2550ea68dc7c35c6bfbc69b217bb10d906901ec1c6c"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "ncurses",
             "manifestSha256": "0a1c180eeade627e204aa47065dbfebfcdc9359d25e2db436932c7fa3a86fc1e",
-            "cacheKey": "70871736d22780051a9fcd7aa3b7fb9064f75d524d87d47ed3e1653eba5b2651"
+            "cacheKey": "cf48512ef35d9852f274d38266ba81c4eb39033027e1628712bd4318557a1b79"
           }
         ]
       },
@@ -582,7 +610,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "b088a88d58385a6cadd463fbbb94944c52790205c08bdf463fbfd5e496fa430e"
+        "wasm32": "43001c22570d4972d6143a04c7ba9103fc35a735c15070978f331353e1ed0108"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -603,7 +631,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "9fa1eb2f8edc0ab1f0a983b603cf8c08c03867d429a73bc2994b9bc001646538"
+        "wasm32": "aa390b7415063fe2316048755a2c515c82840564e6c9ef5d0186be27acdec409"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -624,7 +652,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "88e8aec625b11e1cf53112017c6b12206c3fb5d4c495bea02297ae4c3a45db1f"
+        "wasm32": "4583435763207ddfd63478fc7b3a263fdc6fae110bcd38109e1e1c26e621ad7f"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -645,14 +673,14 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "a0ef6affbcfb19fc83326cb35501026e63b93f7849329d6ce190cf197eddce41"
+        "wasm32": "a2e894f110205a0cf42bc02a56a31156a82fad0c291595a508bdb7bd09e7a6c7"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "zlib",
             "manifestSha256": "d4f4701c0c30dc843ebe2111ed3e2284836cdfc4bc05a130c8fab4f31b8e6357",
-            "cacheKey": "d65b5419d1992beb7637232cd98603a809db9b573085b4aa4980176e5570e2b2"
+            "cacheKey": "024e74a76a23e09d6984f737783eb3f15c4d6b9c05434d0390b2e93fc4daeb5b"
           }
         ]
       },
@@ -679,19 +707,19 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "3eb3d0113cc00ca53713eab7c2c68646a77484c332eb82ddd6389ac41d1568cd"
+        "wasm32": "2e4132091d535e4afe6ef5ca6e0952c3f459330736c0a7eb6125b28bd1f45369"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "openssl",
             "manifestSha256": "374f5dce6b2691b630b55cb82955b33d2305384e4bd64746c581621bb0793993",
-            "cacheKey": "23b54aad82b4105ad8f5ea2b66e5c15f30d69455dc4cd28a92a936e87e60914b"
+            "cacheKey": "005e9cd3956f26bf2c6e97610ed4c0ca4ee21eaa0d4e59a710f861a78bb7020d"
           },
           {
             "packageName": "zlib",
             "manifestSha256": "d4f4701c0c30dc843ebe2111ed3e2284836cdfc4bc05a130c8fab4f31b8e6357",
-            "cacheKey": "d65b5419d1992beb7637232cd98603a809db9b573085b4aa4980176e5570e2b2"
+            "cacheKey": "024e74a76a23e09d6984f737783eb3f15c4d6b9c05434d0390b2e93fc4daeb5b"
           }
         ]
       },
@@ -711,7 +739,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "292795420bea85f6f35af3a2399696e790b7ae22af2385c440e79751d5e8e9ad"
+        "wasm32": "c4b4345aa3f9011d0b214ad6adaa6c7fbe5eb2f6bbd0e5181b8f4be68f437bf3"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -732,7 +760,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "0cfbd31c5b125cdc4ed2a0d4116ea69c94cd5eb3dabff3045b7db3b21feaec30"
+        "wasm32": "d48b0feda4af14e2d08a803611d0b825ac51e9a9379bdb8b49e1170eaf75e5d0"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -774,14 +802,14 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "afabec4ac51bd35f27451be1ab27dbcd29abe2bdc93ee24d7ba39faf65c583c9"
+        "wasm32": "543e082567cc0502609bf0cdef6eb1ba431cef97d798136e739c915f8392615a"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "libcxx",
             "manifestSha256": "6e1ebfa6914043770eae2a6c156b915acf6a56fe763f07d215ffe6f6f2305007",
-            "cacheKey": "c7c50744bc51231bfc6e1c391755500abb4803062140db70c41a83a7c1df8cc9"
+            "cacheKey": "8637589d7edff4677a49452a19fcd2881e993a778d27a0dacffc9622f3fb0023"
           }
         ]
       },
@@ -815,7 +843,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "2e4bcee403f1127d7a0b8eb59c95458e437acce60cdfdc3d3d44ca8d7c7d4f30"
+        "wasm32": "9f4b0bfcf465fb5a83d04186672e5ca6b9e40f33db4f526e6438f0939bf9c8d2"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -843,14 +871,14 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "d01d2df6791faa1befb7f407585f436e908f8977b8f1fe24a1221927873d5ce7"
+        "wasm32": "0b302ed848f5596a2c80569a6ee3b6426ae9778a5f0e15a824ee57c609960311"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "erlang",
             "manifestSha256": "475d6037e73a0f1e2f4381067194b2422751206979ea17209e10efa5a2a93bbb",
-            "cacheKey": "2e4bcee403f1127d7a0b8eb59c95458e437acce60cdfdc3d3d44ca8d7c7d4f30"
+            "cacheKey": "9f4b0bfcf465fb5a83d04186672e5ca6b9e40f33db4f526e6438f0939bf9c8d2"
           }
         ]
       },
@@ -865,12 +893,12 @@
       ]
     },
     "fbdoom": {
-      "manifestSha256": "a00e0d9c84fcdbb3bd95f296cb3422d60b86dcff4c40734eea1bb0bec4c7d902",
+      "manifestSha256": "7ff2127ca940e41be90ba45204c89089a7a2093567b9bff581a9549b57138626",
       "arches": [
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "92097da44dd8a57901cf771311b84d1bb395996c9b9f8abd5c144fc042a4ae40"
+        "wasm32": "816074a21b019d5a52c7a676123b93ebbb0e841cab60a3c7553773520284733f"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -891,7 +919,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "7860fb07d0c2e45be9c06246b3545f408e3f5e18f3f721a052e84ab6fd5aab55"
+        "wasm32": "55d93c1fd59d890d6f78346197a6d474c654fc2a6687e1ff6e1ffb1ae09ce377"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -919,7 +947,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "f8bd60aa473359e98a1138a6329a8113f0d2e867fa427bb81d3cf8089ed1c5d5"
+        "wasm32": "b866449fe86205186c0537b6992df7747c852f0e07fde1da6f9d0a7b5808b152"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -947,7 +975,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "e77e891fee5d2107b8326a0dd97f184d3d79faf0d87733c11514bd8889e9d30f"
+        "wasm32": "13a6253127ab0250d8dc39d51979aae88a0004cb5a268493cd332eaf564546d6"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -968,7 +996,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "b42be77b20c056922c3f8af6c8b40d84ec0e3b24eb9165f46dd7280f5e9d6de0"
+        "wasm32": "d96bb46b733a7cfb83b17b6d53f36c35b1617a75cb6c5b929237d35bff327b31"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -996,7 +1024,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "a4ecf6c6a921fb6a7b6cf2e305637df1d6a23e86a3f05c8badcb26f6a9267a56"
+        "wasm32": "e75c15a6f6114b40248b6de7c3057b99b108dde867cda73c111e47c3acbb326f"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -1017,7 +1045,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "0f67d1d73c59bdae42cbbdb487e328a356909b7ff6b1316bb84824c62cce245e"
+        "wasm32": "0332b476d7ec3d6fcebec49aadf3facae32a69fc004cebfc6e5c7f3a195561b0"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -1038,7 +1066,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "9893ff14c81802d32de5f313e79c232c45e803f6e1eee3b751fe128b952cfe81"
+        "wasm32": "ef0092c0b03589468a00976d8e5167f4a0a18260b8b61b2f7136263d480deaac"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -1066,14 +1094,14 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "58a80626efbbee0e7271150ac3cd20cb54562bd9f2c96b2e5091e46a25b2306b"
+        "wasm32": "ce884b1760130a2cb478fbe03f5ec2f407339e5631bebc516daf97a7d80fe096"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "libcxx",
             "manifestSha256": "6e1ebfa6914043770eae2a6c156b915acf6a56fe763f07d215ffe6f6f2305007",
-            "cacheKey": "c7c50744bc51231bfc6e1c391755500abb4803062140db70c41a83a7c1df8cc9"
+            "cacheKey": "8637589d7edff4677a49452a19fcd2881e993a778d27a0dacffc9622f3fb0023"
           }
         ]
       },
@@ -1093,14 +1121,14 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "77db0a7aaa0a78130e2689a24ac6250a67d358bc65cd1e2919ce95c5ca2e20ea"
+        "wasm32": "9eafe9e962c351bcfe4fceaa2fbace1ad8b9c9c4a74b46fa2d6a80e7e4f6c3d9"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "dinit",
             "manifestSha256": "44e125e1337503e27f8cff531cdbd79c4f406fd2d282b916a7746cf3a14057bf",
-            "cacheKey": "afabec4ac51bd35f27451be1ab27dbcd29abe2bdc93ee24d7ba39faf65c583c9"
+            "cacheKey": "543e082567cc0502609bf0cdef6eb1ba431cef97d798136e739c915f8392615a"
           },
           {
             "packageName": "homebrew-bootstrap",
@@ -1110,52 +1138,52 @@
           {
             "packageName": "icu",
             "manifestSha256": "f5b1f02d169ec1108fc32d9da55be53c3efb96e3a7aeba6a03aec62e0175f0dc",
-            "cacheKey": "ed82530ca56a059fcb3ded9e7eba665878dd476a4e15fb0c67ec3fbab88ec961"
+            "cacheKey": "81677f4b7e2d40634555388d8d06757a052efcbb915bef1c6e57d444137848cd"
           },
           {
             "packageName": "libcurl",
             "manifestSha256": "c771e6cdc83b43840db4dd1fdce4b6189ba4f281596f7485bcda9c65e2ecda00",
-            "cacheKey": "08ad5e096eb7909993a2aa2d75a3fc0282b5112818f9de92d7a21b9db3f7312b"
+            "cacheKey": "6ce2dd7a19b7f5af78edc02fc75d08bbeade7f41e968f8b8a3f6e7e5fe4b26ae"
           },
           {
             "packageName": "libcxx",
             "manifestSha256": "6e1ebfa6914043770eae2a6c156b915acf6a56fe763f07d215ffe6f6f2305007",
-            "cacheKey": "c7c50744bc51231bfc6e1c391755500abb4803062140db70c41a83a7c1df8cc9"
+            "cacheKey": "8637589d7edff4677a49452a19fcd2881e993a778d27a0dacffc9622f3fb0023"
           },
           {
             "packageName": "libiconv",
             "manifestSha256": "fa60b386f4ba0cd5bbbd595f67477cbfb0cc401a14bbd4769630c502bb3f24b1",
-            "cacheKey": "8289b6195a813388b7673810c77749e055904b6ce1f80872c87f617e7c9fe26f"
+            "cacheKey": "8b132a257b9a02a3adccac9d5d6bedc00348a6ac92375401761312d7c46a2ecf"
           },
           {
             "packageName": "libxml2",
             "manifestSha256": "908490efcdc7783c76ce36af31d1db24bfcc7ba5f1e7b9b5298cc81cb110256c",
-            "cacheKey": "a16f2e59186fef56229883d91bd5b09c9fd24ec96137287ecec4fba963500822"
+            "cacheKey": "4873ada42645826762560ad1833364a60c630c6411f84a03456b171f279faf2b"
           },
           {
             "packageName": "libzip",
             "manifestSha256": "83c65d63a6416e79436bf4e792759a4701d568df0e8c010394a9732cf659f0cc",
-            "cacheKey": "0f052ffc6c568fec083752495f6245511974745f30743d961cbed6296da68f32"
+            "cacheKey": "32c0e36842b5f47e79c66b925601f3f30c4ac982303cd159ade0b6c5755e5b61"
           },
           {
             "packageName": "mariadb",
             "manifestSha256": "aeb221be233e4b57bccb4b3375020f94c3ec593dac2734631f00e3b1aec9f48c",
-            "cacheKey": "a337766281607a68326c2c51b7b54e3a4bd1a71a0a1ea81afa52be09c1e0b2be"
+            "cacheKey": "a6fc124a4bc7562dd038f5e616c914837fc5882cd90f0199d469c0259d0a8b4c"
           },
           {
             "packageName": "msmtpd",
             "manifestSha256": "09de04a422ddf631a29a259d816e081f8d317d1077808ede55d8c500baae748f",
-            "cacheKey": "382f58897a42df23508ddc227f96d3229141399a510a350647f0ce7cc14e81ac"
+            "cacheKey": "554ed9b04dcac3ed56656590be2baadc303cd9494f8742fcd6ab3e9323faf62a"
           },
           {
             "packageName": "nginx",
             "manifestSha256": "41b0aaf05fdd0d8da42642703f9e60fd7b9545d8029896918b87c771c359147b",
-            "cacheKey": "313a503d66a7a8ad435c9aee08a4b44f332d84197caa6bc43e5d84336e3228ec"
+            "cacheKey": "a477b0911328bdd36d79e2339ccad2b67d23c69589fd622af20d8afa5af77df4"
           },
           {
             "packageName": "openssl",
             "manifestSha256": "374f5dce6b2691b630b55cb82955b33d2305384e4bd64746c581621bb0793993",
-            "cacheKey": "23b54aad82b4105ad8f5ea2b66e5c15f30d69455dc4cd28a92a936e87e60914b"
+            "cacheKey": "005e9cd3956f26bf2c6e97610ed4c0ca4ee21eaa0d4e59a710f861a78bb7020d"
           },
           {
             "packageName": "pcre2-source",
@@ -1165,22 +1193,22 @@
           {
             "packageName": "php",
             "manifestSha256": "fcd9d7915ed8935b05418e148edcb312adf0b1e4e627fe4aab75444b35b33bbc",
-            "cacheKey": "c069c011716dd51e586649af498a77fe7f9623c3f87d94517d504d65d59fc7ba"
+            "cacheKey": "98ecceaf50e4b0dbc10292b49b3c8ee2009e6ba965449123851818c123b9427b"
           },
           {
             "packageName": "shell",
             "manifestSha256": "28a871b7fcf72f3e289d5116c2d308e22fd4beffd6c5db4bffa262f9b16c1384",
-            "cacheKey": "a017aa5de279b7f77c0f283db5fb4f89e43e495da413b4634776574e4040e71a"
+            "cacheKey": "924040509cd02cedd551f4afa6568090fcd0bed488d44674c0c1802d33b3e6a4"
           },
           {
             "packageName": "sqlite",
             "manifestSha256": "ab9560b4eab53445034e2a87a27ccee9d05ddb0db73fee28f5000325b0b1cba5",
-            "cacheKey": "5b3fda5e074c97b803e622d48b5ab3e87b43230d3f68d668296fb64a27f1568b"
+            "cacheKey": "6e44f4ec127c258c4185142295492ab790cca757db35a284762a95668e0862e9"
           },
           {
             "packageName": "zlib",
             "manifestSha256": "d4f4701c0c30dc843ebe2111ed3e2284836cdfc4bc05a130c8fab4f31b8e6357",
-            "cacheKey": "d65b5419d1992beb7637232cd98603a809db9b573085b4aa4980176e5570e2b2"
+            "cacheKey": "024e74a76a23e09d6984f737783eb3f15c4d6b9c05434d0390b2e93fc4daeb5b"
           }
         ]
       },
@@ -1200,7 +1228,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "bbae9262108e82a170c06628207705bb64d55794cdc97969b71e1f23c4c1da98"
+        "wasm32": "180f11bd766f6c2482eb68dba1803d81bcfedc79ff0ff40a4fba1d11219d6dd9"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -1221,7 +1249,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "80a6104542b21e23812feb4376257da964060f48f89b33ae23f0f5e4b02ea7de"
+        "wasm32": "6f7cbc2839c96bdc4569c4845fd0c4671e7596cfd36483deb4e4a05e5d48bccb"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -1242,7 +1270,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "b1f9a8a551e8240c6ceff2fd93866f1a459f2de4d35f7e2e796fafc1decf414f"
+        "wasm32": "8eb7d929c608eecfe55cffe87513a1d8b7b58c3dbe80f350ab9e0eb9ad7416a8"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -1263,7 +1291,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "7ffa37065290a8237c7c1aa53d14b19dd993f736628ec2f03372959d57f793e1"
+        "wasm32": "dc7fce3e4dd128bbdd6a89356224db601bebd13df9c63548f5ab969a250dfcc5"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -1285,15 +1313,15 @@
         "wasm64"
       ],
       "cacheKeys": {
-        "wasm32": "a337766281607a68326c2c51b7b54e3a4bd1a71a0a1ea81afa52be09c1e0b2be",
-        "wasm64": "3a4f8b9c13bd52dc2db0f6945ba0ebf78d28806cf9e7b773e8224e2b7c0beb1f"
+        "wasm32": "a6fc124a4bc7562dd038f5e616c914837fc5882cd90f0199d469c0259d0a8b4c",
+        "wasm64": "8dca7f977ae361b01d67d1af6fa7e9847bb9499fd2fa746283dee757caf17837"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "libcxx",
             "manifestSha256": "6e1ebfa6914043770eae2a6c156b915acf6a56fe763f07d215ffe6f6f2305007",
-            "cacheKey": "c7c50744bc51231bfc6e1c391755500abb4803062140db70c41a83a7c1df8cc9"
+            "cacheKey": "8637589d7edff4677a49452a19fcd2881e993a778d27a0dacffc9622f3fb0023"
           },
           {
             "packageName": "pcre2-source",
@@ -1305,7 +1333,7 @@
           {
             "packageName": "libcxx",
             "manifestSha256": "6e1ebfa6914043770eae2a6c156b915acf6a56fe763f07d215ffe6f6f2305007",
-            "cacheKey": "e6304f31d7a30e10501b57a82aae97e1bb5f00a00dd8196e9672ffe5b4704d6b"
+            "cacheKey": "06a4c50ff62d8d2e638f341cf8ec0b1837b24a3d602a437759f0c2d0a8396821"
           },
           {
             "packageName": "pcre2-source",
@@ -1337,34 +1365,34 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "e5bffb7916977e035ce9cc59fe417aebe8b17f6df633a4309eb42015d45fac1a"
+        "wasm32": "1a48ab9b3bb0e378eef2d34d5dcab2084db47cac9da6e63ea77044f8fab184bf"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "coreutils",
             "manifestSha256": "b8baabc9af9283434e0d80f7fdc0aaef242ffa31092ab0fc39a0603a12b3cca7",
-            "cacheKey": "88e8aec625b11e1cf53112017c6b12206c3fb5d4c495bea02297ae4c3a45db1f"
+            "cacheKey": "4583435763207ddfd63478fc7b3a263fdc6fae110bcd38109e1e1c26e621ad7f"
           },
           {
             "packageName": "dash",
             "manifestSha256": "10ce1bb611fefd78a6c9ec9038f6113e29a7062b1a73e08eccf9b33004cea9a8",
-            "cacheKey": "292795420bea85f6f35af3a2399696e790b7ae22af2385c440e79751d5e8e9ad"
+            "cacheKey": "c4b4345aa3f9011d0b214ad6adaa6c7fbe5eb2f6bbd0e5181b8f4be68f437bf3"
           },
           {
             "packageName": "dinit",
             "manifestSha256": "44e125e1337503e27f8cff531cdbd79c4f406fd2d282b916a7746cf3a14057bf",
-            "cacheKey": "afabec4ac51bd35f27451be1ab27dbcd29abe2bdc93ee24d7ba39faf65c583c9"
+            "cacheKey": "543e082567cc0502609bf0cdef6eb1ba431cef97d798136e739c915f8392615a"
           },
           {
             "packageName": "libcxx",
             "manifestSha256": "6e1ebfa6914043770eae2a6c156b915acf6a56fe763f07d215ffe6f6f2305007",
-            "cacheKey": "c7c50744bc51231bfc6e1c391755500abb4803062140db70c41a83a7c1df8cc9"
+            "cacheKey": "8637589d7edff4677a49452a19fcd2881e993a778d27a0dacffc9622f3fb0023"
           },
           {
             "packageName": "mariadb",
             "manifestSha256": "aeb221be233e4b57bccb4b3375020f94c3ec593dac2734631f00e3b1aec9f48c",
-            "cacheKey": "a337766281607a68326c2c51b7b54e3a4bd1a71a0a1ea81afa52be09c1e0b2be"
+            "cacheKey": "a6fc124a4bc7562dd038f5e616c914837fc5882cd90f0199d469c0259d0a8b4c"
           },
           {
             "packageName": "pcre2-source",
@@ -1390,35 +1418,35 @@
         "wasm64"
       ],
       "cacheKeys": {
-        "wasm32": "cdef3e378496ba28675f3810196078013dcf9bc50e440cb4aa95695866b5bdec",
-        "wasm64": "c006ddaad6e3eed8106d674e50db8906eb42aa267acaade1b7b07c0fde2c57ae"
+        "wasm32": "5cf6491aead72e3a179b3a052059d91022f88614a297a95cff25373742397bb7",
+        "wasm64": "d3797f03263fe43e7766405c957c37e15c877912546353f3f4d19913db9bc07b"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "coreutils",
             "manifestSha256": "b8baabc9af9283434e0d80f7fdc0aaef242ffa31092ab0fc39a0603a12b3cca7",
-            "cacheKey": "88e8aec625b11e1cf53112017c6b12206c3fb5d4c495bea02297ae4c3a45db1f"
+            "cacheKey": "4583435763207ddfd63478fc7b3a263fdc6fae110bcd38109e1e1c26e621ad7f"
           },
           {
             "packageName": "dash",
             "manifestSha256": "10ce1bb611fefd78a6c9ec9038f6113e29a7062b1a73e08eccf9b33004cea9a8",
-            "cacheKey": "292795420bea85f6f35af3a2399696e790b7ae22af2385c440e79751d5e8e9ad"
+            "cacheKey": "c4b4345aa3f9011d0b214ad6adaa6c7fbe5eb2f6bbd0e5181b8f4be68f437bf3"
           },
           {
             "packageName": "dinit",
             "manifestSha256": "44e125e1337503e27f8cff531cdbd79c4f406fd2d282b916a7746cf3a14057bf",
-            "cacheKey": "afabec4ac51bd35f27451be1ab27dbcd29abe2bdc93ee24d7ba39faf65c583c9"
+            "cacheKey": "543e082567cc0502609bf0cdef6eb1ba431cef97d798136e739c915f8392615a"
           },
           {
             "packageName": "libcxx",
             "manifestSha256": "6e1ebfa6914043770eae2a6c156b915acf6a56fe763f07d215ffe6f6f2305007",
-            "cacheKey": "c7c50744bc51231bfc6e1c391755500abb4803062140db70c41a83a7c1df8cc9"
+            "cacheKey": "8637589d7edff4677a49452a19fcd2881e993a778d27a0dacffc9622f3fb0023"
           },
           {
             "packageName": "mariadb",
             "manifestSha256": "aeb221be233e4b57bccb4b3375020f94c3ec593dac2734631f00e3b1aec9f48c",
-            "cacheKey": "a337766281607a68326c2c51b7b54e3a4bd1a71a0a1ea81afa52be09c1e0b2be"
+            "cacheKey": "a6fc124a4bc7562dd038f5e616c914837fc5882cd90f0199d469c0259d0a8b4c"
           },
           {
             "packageName": "pcre2-source",
@@ -1430,27 +1458,27 @@
           {
             "packageName": "coreutils",
             "manifestSha256": "b8baabc9af9283434e0d80f7fdc0aaef242ffa31092ab0fc39a0603a12b3cca7",
-            "cacheKey": "44ff689fd0db89fcec6c8006e243c7eef825775f93c054b2c116a31f49584088"
+            "cacheKey": "74f816ee53c308c9e94e737275bdb42a71ffd75b5331422f8c106333b7609dc5"
           },
           {
             "packageName": "dash",
             "manifestSha256": "10ce1bb611fefd78a6c9ec9038f6113e29a7062b1a73e08eccf9b33004cea9a8",
-            "cacheKey": "9de9e85d91e122625a02db27626c24ce1051077fd908bc6545177814c7a78d0e"
+            "cacheKey": "f37e09c31002de4be5c25d4f789b81e2ced708016032756a6cafe010a4537811"
           },
           {
             "packageName": "dinit",
             "manifestSha256": "44e125e1337503e27f8cff531cdbd79c4f406fd2d282b916a7746cf3a14057bf",
-            "cacheKey": "324b974aed89280168647e7c5cd771468d9ae5cc5878944539eed5af2b7e4a33"
+            "cacheKey": "872d4ca7596d100e781612e7e659bc840c74fdab8c0769746c48ff1d5ec478fb"
           },
           {
             "packageName": "libcxx",
             "manifestSha256": "6e1ebfa6914043770eae2a6c156b915acf6a56fe763f07d215ffe6f6f2305007",
-            "cacheKey": "e6304f31d7a30e10501b57a82aae97e1bb5f00a00dd8196e9672ffe5b4704d6b"
+            "cacheKey": "06a4c50ff62d8d2e638f341cf8ec0b1837b24a3d602a437759f0c2d0a8396821"
           },
           {
             "packageName": "mariadb",
             "manifestSha256": "aeb221be233e4b57bccb4b3375020f94c3ec593dac2734631f00e3b1aec9f48c",
-            "cacheKey": "3a4f8b9c13bd52dc2db0f6945ba0ebf78d28806cf9e7b773e8224e2b7c0beb1f"
+            "cacheKey": "8dca7f977ae361b01d67d1af6fa7e9847bb9499fd2fa746283dee757caf17837"
           },
           {
             "packageName": "pcre2-source",
@@ -1475,7 +1503,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "965d4fca032e68491635b0aebe3498afa07a564d0525877142ac53170adf5193"
+        "wasm32": "1d1f953607dc5796583d5284761f37e241bc860d9d874baa4eeb1493b908df6d"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -1496,7 +1524,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "382f58897a42df23508ddc227f96d3229141399a510a350647f0ce7cc14e81ac"
+        "wasm32": "554ed9b04dcac3ed56656590be2baadc303cd9494f8742fcd6ab3e9323faf62a"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -1517,7 +1545,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "40f555a2b949327f54a4d779f19a955d7d3c9e7f76c8e21d090720bda5426e9d"
+        "wasm32": "25fe208fc4bfc8234d5145b76ddcdded2a1a17f16ff74886582a1c99b36807b2"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -1538,7 +1566,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "70871736d22780051a9fcd7aa3b7fb9064f75d524d87d47ed3e1653eba5b2651"
+        "wasm32": "cf48512ef35d9852f274d38266ba81c4eb39033027e1628712bd4318557a1b79"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -1622,7 +1650,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "e1d8c6bbe0bcee8911bf65f50ffd3db7b2a2c4cc06b012b688e2a490b717701d"
+        "wasm32": "baea699ba5ffc02066335a2eba35fab1f0208a111c40a67bcbc7841a7a83b543"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -1643,14 +1671,14 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "4a3754f3c1f16793ee5887577fd45d23eb9ae77c47bdc1d2f3985ed687003e3a"
+        "wasm32": "8b16339b4630bf4fabc8507793973453fc8dc0d3e82db9f16f513465c066659b"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "ncurses",
             "manifestSha256": "0a1c180eeade627e204aa47065dbfebfcdc9359d25e2db436932c7fa3a86fc1e",
-            "cacheKey": "70871736d22780051a9fcd7aa3b7fb9064f75d524d87d47ed3e1653eba5b2651"
+            "cacheKey": "cf48512ef35d9852f274d38266ba81c4eb39033027e1628712bd4318557a1b79"
           }
         ]
       },
@@ -1670,19 +1698,19 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "e549fa92d9ebd9c1bc8f42dbb3a7fc8a189142046ae339d17db38eee0f41bb93"
+        "wasm32": "59ab4de06527df89271655257375163b3d571099fa077e419c967b4f653d732c"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "ncurses",
             "manifestSha256": "0a1c180eeade627e204aa47065dbfebfcdc9359d25e2db436932c7fa3a86fc1e",
-            "cacheKey": "70871736d22780051a9fcd7aa3b7fb9064f75d524d87d47ed3e1653eba5b2651"
+            "cacheKey": "cf48512ef35d9852f274d38266ba81c4eb39033027e1628712bd4318557a1b79"
           },
           {
             "packageName": "nethack",
             "manifestSha256": "1a2f12ec2770bd8d40006d6c878a3493b97c71c2bb63ad08c7f6ad99bfd53504",
-            "cacheKey": "4a3754f3c1f16793ee5887577fd45d23eb9ae77c47bdc1d2f3985ed687003e3a"
+            "cacheKey": "8b16339b4630bf4fabc8507793973453fc8dc0d3e82db9f16f513465c066659b"
           }
         ]
       },
@@ -1702,7 +1730,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "313a503d66a7a8ad435c9aee08a4b44f332d84197caa6bc43e5d84336e3228ec"
+        "wasm32": "a477b0911328bdd36d79e2339ccad2b67d23c69589fd622af20d8afa5af77df4"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -1723,14 +1751,14 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "86f5a03d7a0e391e5e4b2ca4aef89768a5c5c34c69adb990ee9a9b4e6b70eb03"
+        "wasm32": "79e5ef3f9123c515d69600d9293dfdba3394b72aabc39cd4a346e5163365f913"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "dinit",
             "manifestSha256": "44e125e1337503e27f8cff531cdbd79c4f406fd2d282b916a7746cf3a14057bf",
-            "cacheKey": "afabec4ac51bd35f27451be1ab27dbcd29abe2bdc93ee24d7ba39faf65c583c9"
+            "cacheKey": "543e082567cc0502609bf0cdef6eb1ba431cef97d798136e739c915f8392615a"
           },
           {
             "packageName": "homebrew-bootstrap",
@@ -1740,67 +1768,67 @@
           {
             "packageName": "icu",
             "manifestSha256": "f5b1f02d169ec1108fc32d9da55be53c3efb96e3a7aeba6a03aec62e0175f0dc",
-            "cacheKey": "ed82530ca56a059fcb3ded9e7eba665878dd476a4e15fb0c67ec3fbab88ec961"
+            "cacheKey": "81677f4b7e2d40634555388d8d06757a052efcbb915bef1c6e57d444137848cd"
           },
           {
             "packageName": "kernel",
             "manifestSha256": "db1d66db8575562ac7b3e720dbaa06d7dd5eef577d80220ea4167dc2d69b863b",
-            "cacheKey": "223146b18c49321399b8008bdac9397c9af91f4bc3f1b60a936a8684bd9f233b"
+            "cacheKey": "1272ecb067f8de873dec513e588c1f1c84186237ecdf69dd93fdb6849d8dea50"
           },
           {
             "packageName": "libcurl",
             "manifestSha256": "c771e6cdc83b43840db4dd1fdce4b6189ba4f281596f7485bcda9c65e2ecda00",
-            "cacheKey": "08ad5e096eb7909993a2aa2d75a3fc0282b5112818f9de92d7a21b9db3f7312b"
+            "cacheKey": "6ce2dd7a19b7f5af78edc02fc75d08bbeade7f41e968f8b8a3f6e7e5fe4b26ae"
           },
           {
             "packageName": "libcxx",
             "manifestSha256": "6e1ebfa6914043770eae2a6c156b915acf6a56fe763f07d215ffe6f6f2305007",
-            "cacheKey": "c7c50744bc51231bfc6e1c391755500abb4803062140db70c41a83a7c1df8cc9"
+            "cacheKey": "8637589d7edff4677a49452a19fcd2881e993a778d27a0dacffc9622f3fb0023"
           },
           {
             "packageName": "libiconv",
             "manifestSha256": "fa60b386f4ba0cd5bbbd595f67477cbfb0cc401a14bbd4769630c502bb3f24b1",
-            "cacheKey": "8289b6195a813388b7673810c77749e055904b6ce1f80872c87f617e7c9fe26f"
+            "cacheKey": "8b132a257b9a02a3adccac9d5d6bedc00348a6ac92375401761312d7c46a2ecf"
           },
           {
             "packageName": "libxml2",
             "manifestSha256": "908490efcdc7783c76ce36af31d1db24bfcc7ba5f1e7b9b5298cc81cb110256c",
-            "cacheKey": "a16f2e59186fef56229883d91bd5b09c9fd24ec96137287ecec4fba963500822"
+            "cacheKey": "4873ada42645826762560ad1833364a60c630c6411f84a03456b171f279faf2b"
           },
           {
             "packageName": "libzip",
             "manifestSha256": "83c65d63a6416e79436bf4e792759a4701d568df0e8c010394a9732cf659f0cc",
-            "cacheKey": "0f052ffc6c568fec083752495f6245511974745f30743d961cbed6296da68f32"
+            "cacheKey": "32c0e36842b5f47e79c66b925601f3f30c4ac982303cd159ade0b6c5755e5b61"
           },
           {
             "packageName": "nginx",
             "manifestSha256": "41b0aaf05fdd0d8da42642703f9e60fd7b9545d8029896918b87c771c359147b",
-            "cacheKey": "313a503d66a7a8ad435c9aee08a4b44f332d84197caa6bc43e5d84336e3228ec"
+            "cacheKey": "a477b0911328bdd36d79e2339ccad2b67d23c69589fd622af20d8afa5af77df4"
           },
           {
             "packageName": "openssl",
             "manifestSha256": "374f5dce6b2691b630b55cb82955b33d2305384e4bd64746c581621bb0793993",
-            "cacheKey": "23b54aad82b4105ad8f5ea2b66e5c15f30d69455dc4cd28a92a936e87e60914b"
+            "cacheKey": "005e9cd3956f26bf2c6e97610ed4c0ca4ee21eaa0d4e59a710f861a78bb7020d"
           },
           {
             "packageName": "php",
             "manifestSha256": "fcd9d7915ed8935b05418e148edcb312adf0b1e4e627fe4aab75444b35b33bbc",
-            "cacheKey": "c069c011716dd51e586649af498a77fe7f9623c3f87d94517d504d65d59fc7ba"
+            "cacheKey": "98ecceaf50e4b0dbc10292b49b3c8ee2009e6ba965449123851818c123b9427b"
           },
           {
             "packageName": "shell",
             "manifestSha256": "28a871b7fcf72f3e289d5116c2d308e22fd4beffd6c5db4bffa262f9b16c1384",
-            "cacheKey": "a017aa5de279b7f77c0f283db5fb4f89e43e495da413b4634776574e4040e71a"
+            "cacheKey": "924040509cd02cedd551f4afa6568090fcd0bed488d44674c0c1802d33b3e6a4"
           },
           {
             "packageName": "sqlite",
             "manifestSha256": "ab9560b4eab53445034e2a87a27ccee9d05ddb0db73fee28f5000325b0b1cba5",
-            "cacheKey": "5b3fda5e074c97b803e622d48b5ab3e87b43230d3f68d668296fb64a27f1568b"
+            "cacheKey": "6e44f4ec127c258c4185142295492ab790cca757db35a284762a95668e0862e9"
           },
           {
             "packageName": "zlib",
             "manifestSha256": "d4f4701c0c30dc843ebe2111ed3e2284836cdfc4bc05a130c8fab4f31b8e6357",
-            "cacheKey": "d65b5419d1992beb7637232cd98603a809db9b573085b4aa4980176e5570e2b2"
+            "cacheKey": "024e74a76a23e09d6984f737783eb3f15c4d6b9c05434d0390b2e93fc4daeb5b"
           }
         ]
       },
@@ -1820,14 +1848,14 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "efa2faa3f5213e40ab5de3d87cd5398cfb8823c6ab8a43e614462360e209a4c5"
+        "wasm32": "ed0e8b6e71d96ca9ddd55e19983691efc56e50ba975e19147b2f4feef8067eee"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "dinit",
             "manifestSha256": "44e125e1337503e27f8cff531cdbd79c4f406fd2d282b916a7746cf3a14057bf",
-            "cacheKey": "afabec4ac51bd35f27451be1ab27dbcd29abe2bdc93ee24d7ba39faf65c583c9"
+            "cacheKey": "543e082567cc0502609bf0cdef6eb1ba431cef97d798136e739c915f8392615a"
           },
           {
             "packageName": "homebrew-bootstrap",
@@ -1837,17 +1865,17 @@
           {
             "packageName": "libcxx",
             "manifestSha256": "6e1ebfa6914043770eae2a6c156b915acf6a56fe763f07d215ffe6f6f2305007",
-            "cacheKey": "c7c50744bc51231bfc6e1c391755500abb4803062140db70c41a83a7c1df8cc9"
+            "cacheKey": "8637589d7edff4677a49452a19fcd2881e993a778d27a0dacffc9622f3fb0023"
           },
           {
             "packageName": "nginx",
             "manifestSha256": "41b0aaf05fdd0d8da42642703f9e60fd7b9545d8029896918b87c771c359147b",
-            "cacheKey": "313a503d66a7a8ad435c9aee08a4b44f332d84197caa6bc43e5d84336e3228ec"
+            "cacheKey": "a477b0911328bdd36d79e2339ccad2b67d23c69589fd622af20d8afa5af77df4"
           },
           {
             "packageName": "shell",
             "manifestSha256": "28a871b7fcf72f3e289d5116c2d308e22fd4beffd6c5db4bffa262f9b16c1384",
-            "cacheKey": "a017aa5de279b7f77c0f283db5fb4f89e43e495da413b4634776574e4040e71a"
+            "cacheKey": "924040509cd02cedd551f4afa6568090fcd0bed488d44674c0c1802d33b3e6a4"
           }
         ]
       },
@@ -1867,29 +1895,29 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "2aced04cced76dd3005469ac293751a4994e81de403d3fd06e102f8aa980f35f"
+        "wasm32": "031b17aaa70fd9ad18f6b3414562564f33e88c53caa6dd71b9e85c2f2d326d4c"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "libcxx",
             "manifestSha256": "6e1ebfa6914043770eae2a6c156b915acf6a56fe763f07d215ffe6f6f2305007",
-            "cacheKey": "c7c50744bc51231bfc6e1c391755500abb4803062140db70c41a83a7c1df8cc9"
+            "cacheKey": "8637589d7edff4677a49452a19fcd2881e993a778d27a0dacffc9622f3fb0023"
           },
           {
             "packageName": "openssl",
             "manifestSha256": "374f5dce6b2691b630b55cb82955b33d2305384e4bd64746c581621bb0793993",
-            "cacheKey": "23b54aad82b4105ad8f5ea2b66e5c15f30d69455dc4cd28a92a936e87e60914b"
+            "cacheKey": "005e9cd3956f26bf2c6e97610ed4c0ca4ee21eaa0d4e59a710f861a78bb7020d"
           },
           {
             "packageName": "spidermonkey",
             "manifestSha256": "c72ef4e43ee2a4fc74390d03a239fce3b545a6d3b64f02ccc4d44972cec626bd",
-            "cacheKey": "bb965948ea0c564fe96b832a9c819003eb7f0d6c3a9957e9c2e52845c9123f6e"
+            "cacheKey": "997c17703209773768eee15f64449151904b0f89824ebec9649db902126a9573"
           },
           {
             "packageName": "zlib",
             "manifestSha256": "d4f4701c0c30dc843ebe2111ed3e2284836cdfc4bc05a130c8fab4f31b8e6357",
-            "cacheKey": "d65b5419d1992beb7637232cd98603a809db9b573085b4aa4980176e5570e2b2"
+            "cacheKey": "024e74a76a23e09d6984f737783eb3f15c4d6b9c05434d0390b2e93fc4daeb5b"
           }
         ]
       },
@@ -1909,7 +1937,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "b7bf43e041330e9b3759de3a4f3fb8ceb6408afdc19983004a011c320d01161d"
+        "wasm32": "705745bad6d92e50cddfc43b985d1095eee4d9069756ce75f65afdaa12b91e0b"
       },
       "dependencyClosures": {
         "wasm32": [
@@ -1921,32 +1949,32 @@
           {
             "packageName": "libcxx",
             "manifestSha256": "6e1ebfa6914043770eae2a6c156b915acf6a56fe763f07d215ffe6f6f2305007",
-            "cacheKey": "c7c50744bc51231bfc6e1c391755500abb4803062140db70c41a83a7c1df8cc9"
+            "cacheKey": "8637589d7edff4677a49452a19fcd2881e993a778d27a0dacffc9622f3fb0023"
           },
           {
             "packageName": "node",
             "manifestSha256": "2131a24dfda8587860e57fc65b573086477d376b065b3b9ca4e1dfe4d79f5790",
-            "cacheKey": "2aced04cced76dd3005469ac293751a4994e81de403d3fd06e102f8aa980f35f"
+            "cacheKey": "031b17aaa70fd9ad18f6b3414562564f33e88c53caa6dd71b9e85c2f2d326d4c"
           },
           {
             "packageName": "openssl",
             "manifestSha256": "374f5dce6b2691b630b55cb82955b33d2305384e4bd64746c581621bb0793993",
-            "cacheKey": "23b54aad82b4105ad8f5ea2b66e5c15f30d69455dc4cd28a92a936e87e60914b"
+            "cacheKey": "005e9cd3956f26bf2c6e97610ed4c0ca4ee21eaa0d4e59a710f861a78bb7020d"
           },
           {
             "packageName": "shell",
             "manifestSha256": "28a871b7fcf72f3e289d5116c2d308e22fd4beffd6c5db4bffa262f9b16c1384",
-            "cacheKey": "a017aa5de279b7f77c0f283db5fb4f89e43e495da413b4634776574e4040e71a"
+            "cacheKey": "924040509cd02cedd551f4afa6568090fcd0bed488d44674c0c1802d33b3e6a4"
           },
           {
             "packageName": "spidermonkey",
             "manifestSha256": "c72ef4e43ee2a4fc74390d03a239fce3b545a6d3b64f02ccc4d44972cec626bd",
-            "cacheKey": "bb965948ea0c564fe96b832a9c819003eb7f0d6c3a9957e9c2e52845c9123f6e"
+            "cacheKey": "997c17703209773768eee15f64449151904b0f89824ebec9649db902126a9573"
           },
           {
             "packageName": "zlib",
             "manifestSha256": "d4f4701c0c30dc843ebe2111ed3e2284836cdfc4bc05a130c8fab4f31b8e6357",
-            "cacheKey": "d65b5419d1992beb7637232cd98603a809db9b573085b4aa4980176e5570e2b2"
+            "cacheKey": "024e74a76a23e09d6984f737783eb3f15c4d6b9c05434d0390b2e93fc4daeb5b"
           }
         ]
       },
@@ -1966,7 +1994,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "f7862f341b5ccecda88730fc4ee4af950e7e488113b4701be0268c80f67e13a0"
+        "wasm32": "da7287e1ed6d2f9f39a2cc049a65f5fc76c00959ce7f8b9402f1a22ff8510276"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -1987,14 +2015,14 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "1ede74eb16abfadc77060fb09c60ba8e84ce2e10bb07e2fcf9531a5b84d77922"
+        "wasm32": "0a9e90fbfc9c3b971ad2b035752019674b5a15467737871015887a4787384ab8"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "perl",
             "manifestSha256": "6cdc4dbc54d0e4008cff41f82ec8918c0e44b4aef23903539c1bc0f538fe3ad2",
-            "cacheKey": "f7862f341b5ccecda88730fc4ee4af950e7e488113b4701be0268c80f67e13a0"
+            "cacheKey": "da7287e1ed6d2f9f39a2cc049a65f5fc76c00959ce7f8b9402f1a22ff8510276"
           }
         ]
       },
@@ -2014,54 +2042,54 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "c069c011716dd51e586649af498a77fe7f9623c3f87d94517d504d65d59fc7ba"
+        "wasm32": "98ecceaf50e4b0dbc10292b49b3c8ee2009e6ba965449123851818c123b9427b"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "icu",
             "manifestSha256": "f5b1f02d169ec1108fc32d9da55be53c3efb96e3a7aeba6a03aec62e0175f0dc",
-            "cacheKey": "ed82530ca56a059fcb3ded9e7eba665878dd476a4e15fb0c67ec3fbab88ec961"
+            "cacheKey": "81677f4b7e2d40634555388d8d06757a052efcbb915bef1c6e57d444137848cd"
           },
           {
             "packageName": "libcurl",
             "manifestSha256": "c771e6cdc83b43840db4dd1fdce4b6189ba4f281596f7485bcda9c65e2ecda00",
-            "cacheKey": "08ad5e096eb7909993a2aa2d75a3fc0282b5112818f9de92d7a21b9db3f7312b"
+            "cacheKey": "6ce2dd7a19b7f5af78edc02fc75d08bbeade7f41e968f8b8a3f6e7e5fe4b26ae"
           },
           {
             "packageName": "libcxx",
             "manifestSha256": "6e1ebfa6914043770eae2a6c156b915acf6a56fe763f07d215ffe6f6f2305007",
-            "cacheKey": "c7c50744bc51231bfc6e1c391755500abb4803062140db70c41a83a7c1df8cc9"
+            "cacheKey": "8637589d7edff4677a49452a19fcd2881e993a778d27a0dacffc9622f3fb0023"
           },
           {
             "packageName": "libiconv",
             "manifestSha256": "fa60b386f4ba0cd5bbbd595f67477cbfb0cc401a14bbd4769630c502bb3f24b1",
-            "cacheKey": "8289b6195a813388b7673810c77749e055904b6ce1f80872c87f617e7c9fe26f"
+            "cacheKey": "8b132a257b9a02a3adccac9d5d6bedc00348a6ac92375401761312d7c46a2ecf"
           },
           {
             "packageName": "libxml2",
             "manifestSha256": "908490efcdc7783c76ce36af31d1db24bfcc7ba5f1e7b9b5298cc81cb110256c",
-            "cacheKey": "a16f2e59186fef56229883d91bd5b09c9fd24ec96137287ecec4fba963500822"
+            "cacheKey": "4873ada42645826762560ad1833364a60c630c6411f84a03456b171f279faf2b"
           },
           {
             "packageName": "libzip",
             "manifestSha256": "83c65d63a6416e79436bf4e792759a4701d568df0e8c010394a9732cf659f0cc",
-            "cacheKey": "0f052ffc6c568fec083752495f6245511974745f30743d961cbed6296da68f32"
+            "cacheKey": "32c0e36842b5f47e79c66b925601f3f30c4ac982303cd159ade0b6c5755e5b61"
           },
           {
             "packageName": "openssl",
             "manifestSha256": "374f5dce6b2691b630b55cb82955b33d2305384e4bd64746c581621bb0793993",
-            "cacheKey": "23b54aad82b4105ad8f5ea2b66e5c15f30d69455dc4cd28a92a936e87e60914b"
+            "cacheKey": "005e9cd3956f26bf2c6e97610ed4c0ca4ee21eaa0d4e59a710f861a78bb7020d"
           },
           {
             "packageName": "sqlite",
             "manifestSha256": "ab9560b4eab53445034e2a87a27ccee9d05ddb0db73fee28f5000325b0b1cba5",
-            "cacheKey": "5b3fda5e074c97b803e622d48b5ab3e87b43230d3f68d668296fb64a27f1568b"
+            "cacheKey": "6e44f4ec127c258c4185142295492ab790cca757db35a284762a95668e0862e9"
           },
           {
             "packageName": "zlib",
             "manifestSha256": "d4f4701c0c30dc843ebe2111ed3e2284836cdfc4bc05a130c8fab4f31b8e6357",
-            "cacheKey": "d65b5419d1992beb7637232cd98603a809db9b573085b4aa4980176e5570e2b2"
+            "cacheKey": "024e74a76a23e09d6984f737783eb3f15c4d6b9c05434d0390b2e93fc4daeb5b"
           }
         ]
       },
@@ -2137,7 +2165,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "cdb66e1b49ac036686b638f39724ec85da465e9eb43e2328d4ccc043a76f8d39"
+        "wasm32": "a195d1db14bc727860c53d0cd87843aa52a3842fad036180c75c6e19173b7624"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -2410,19 +2438,19 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "a375f2d91505ab06716eb34d7283c0e7ff89725c46b8e0d2b49aa127c7af45bb"
+        "wasm32": "a2382e09282fc05f23e94a83fbdcb0595a094ce09d7a93f9fa8e2ae1bb6b006f"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "cpython",
             "manifestSha256": "7dd4f446697a73941ec940c2ccba4d53be73fe6947f1e701031a4d0aa964c4ff",
-            "cacheKey": "a0ef6affbcfb19fc83326cb35501026e63b93f7849329d6ce190cf197eddce41"
+            "cacheKey": "a2e894f110205a0cf42bc02a56a31156a82fad0c291595a508bdb7bd09e7a6c7"
           },
           {
             "packageName": "zlib",
             "manifestSha256": "d4f4701c0c30dc843ebe2111ed3e2284836cdfc4bc05a130c8fab4f31b8e6357",
-            "cacheKey": "d65b5419d1992beb7637232cd98603a809db9b573085b4aa4980176e5570e2b2"
+            "cacheKey": "024e74a76a23e09d6984f737783eb3f15c4d6b9c05434d0390b2e93fc4daeb5b"
           }
         ]
       },
@@ -2442,7 +2470,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "53d782b84d5df6927c247fd042ab1099c8d70ac38056b6f16d3c81839626c478"
+        "wasm32": "fdb4a0416b46db4d5999696fe921a12e434b951312e29530d8b03dda03152eb7"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -2470,24 +2498,24 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "535dc5d20e12a3f58533c644abc83b53a9e9bf4e2daea2a288910a3b24d909e3"
+        "wasm32": "4b1a029a8da49d4b8ca43d63de06b10331ecdba4cfc1a16ed8a225824b54ce0f"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "dinit",
             "manifestSha256": "44e125e1337503e27f8cff531cdbd79c4f406fd2d282b916a7746cf3a14057bf",
-            "cacheKey": "afabec4ac51bd35f27451be1ab27dbcd29abe2bdc93ee24d7ba39faf65c583c9"
+            "cacheKey": "543e082567cc0502609bf0cdef6eb1ba431cef97d798136e739c915f8392615a"
           },
           {
             "packageName": "libcxx",
             "manifestSha256": "6e1ebfa6914043770eae2a6c156b915acf6a56fe763f07d215ffe6f6f2305007",
-            "cacheKey": "c7c50744bc51231bfc6e1c391755500abb4803062140db70c41a83a7c1df8cc9"
+            "cacheKey": "8637589d7edff4677a49452a19fcd2881e993a778d27a0dacffc9622f3fb0023"
           },
           {
             "packageName": "redis",
             "manifestSha256": "151fb507de953ba2ba94b8f881bc7d66b4c741c1359a2f590cc07f9a4cd368a3",
-            "cacheKey": "53d782b84d5df6927c247fd042ab1099c8d70ac38056b6f16d3c81839626c478"
+            "cacheKey": "fdb4a0416b46db4d5999696fe921a12e434b951312e29530d8b03dda03152eb7"
           }
         ]
       },
@@ -2507,79 +2535,79 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "7f5e181f3f49fd31c5d6d5a51ee6da8b411760ad6d3bceef6388aeb8a0f3fbb6"
+        "wasm32": "639d2ea627f402d23bde67e0c370130ec1dac0ddea55af87b01b540a81072c34"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "bash",
             "manifestSha256": "6478060f28d430d18a6ebe7c603392d35a41d9bcf6bc74322351d1450b9c5335",
-            "cacheKey": "3bb0b25c26be9fa2fac163fb9f5853958cb1a67d7a6bc6249b2af9e49ba5a63b"
+            "cacheKey": "f72620b103f7606cb3c9e2550ea68dc7c35c6bfbc69b217bb10d906901ec1c6c"
           },
           {
             "packageName": "bc",
             "manifestSha256": "a65661463bb7047b91ff00153bd99fd962c96e571934ab4e923f5215fb6ecfbd",
-            "cacheKey": "b088a88d58385a6cadd463fbbb94944c52790205c08bdf463fbfd5e496fa430e"
+            "cacheKey": "43001c22570d4972d6143a04c7ba9103fc35a735c15070978f331353e1ed0108"
           },
           {
             "packageName": "coreutils",
             "manifestSha256": "b8baabc9af9283434e0d80f7fdc0aaef242ffa31092ab0fc39a0603a12b3cca7",
-            "cacheKey": "88e8aec625b11e1cf53112017c6b12206c3fb5d4c495bea02297ae4c3a45db1f"
+            "cacheKey": "4583435763207ddfd63478fc7b3a263fdc6fae110bcd38109e1e1c26e621ad7f"
           },
           {
             "packageName": "dash",
             "manifestSha256": "10ce1bb611fefd78a6c9ec9038f6113e29a7062b1a73e08eccf9b33004cea9a8",
-            "cacheKey": "292795420bea85f6f35af3a2399696e790b7ae22af2385c440e79751d5e8e9ad"
+            "cacheKey": "c4b4345aa3f9011d0b214ad6adaa6c7fbe5eb2f6bbd0e5181b8f4be68f437bf3"
           },
           {
             "packageName": "diffutils",
             "manifestSha256": "3a78f0a46bae43ce5ea235c6638c2cbd1d8559b0b62b1fb42443b35968c1aca3",
-            "cacheKey": "0cfbd31c5b125cdc4ed2a0d4116ea69c94cd5eb3dabff3045b7db3b21feaec30"
+            "cacheKey": "d48b0feda4af14e2d08a803611d0b825ac51e9a9379bdb8b49e1170eaf75e5d0"
           },
           {
             "packageName": "file",
             "manifestSha256": "7874c1affcbbf2c8ab8c8d4beb087f275af57b5caae6a8947bf5a63a181552b2",
-            "cacheKey": "7860fb07d0c2e45be9c06246b3545f408e3f5e18f3f721a052e84ab6fd5aab55"
+            "cacheKey": "55d93c1fd59d890d6f78346197a6d474c654fc2a6687e1ff6e1ffb1ae09ce377"
           },
           {
             "packageName": "findutils",
             "manifestSha256": "cceedf52aea67fbb0da03cfce6f2e9b1a7b5561fa1656c2762b43c651a625d02",
-            "cacheKey": "f8bd60aa473359e98a1138a6329a8113f0d2e867fa427bb81d3cf8089ed1c5d5"
+            "cacheKey": "b866449fe86205186c0537b6992df7747c852f0e07fde1da6f9d0a7b5808b152"
           },
           {
             "packageName": "gawk",
             "manifestSha256": "a2567b8b0778805e385e1d3a41ac8b5d74aaf9d293b222001b17d09b11e5a0ba",
-            "cacheKey": "e77e891fee5d2107b8326a0dd97f184d3d79faf0d87733c11514bd8889e9d30f"
+            "cacheKey": "13a6253127ab0250d8dc39d51979aae88a0004cb5a268493cd332eaf564546d6"
           },
           {
             "packageName": "grep",
             "manifestSha256": "59270d3bfb33167b32d13246bf855b49308f8c9c0a66d9635c804f702421fbc6",
-            "cacheKey": "a4ecf6c6a921fb6a7b6cf2e305637df1d6a23e86a3f05c8badcb26f6a9267a56"
+            "cacheKey": "e75c15a6f6114b40248b6de7c3057b99b108dde867cda73c111e47c3acbb326f"
           },
           {
             "packageName": "m4",
             "manifestSha256": "2c6582d99d6eabfb9da52badf49b899e9fdcba76a728536b25bc3741f3331543",
-            "cacheKey": "b1f9a8a551e8240c6ceff2fd93866f1a459f2de4d35f7e2e796fafc1decf414f"
+            "cacheKey": "8eb7d929c608eecfe55cffe87513a1d8b7b58c3dbe80f350ab9e0eb9ad7416a8"
           },
           {
             "packageName": "make",
             "manifestSha256": "f878d2d730f36a4c6dfe1fff1b4ccc704757ea22d8c4c8ccb95b11cd641e5fed",
-            "cacheKey": "7ffa37065290a8237c7c1aa53d14b19dd993f736628ec2f03372959d57f793e1"
+            "cacheKey": "dc7fce3e4dd128bbdd6a89356224db601bebd13df9c63548f5ab969a250dfcc5"
           },
           {
             "packageName": "ncurses",
             "manifestSha256": "0a1c180eeade627e204aa47065dbfebfcdc9359d25e2db436932c7fa3a86fc1e",
-            "cacheKey": "70871736d22780051a9fcd7aa3b7fb9064f75d524d87d47ed3e1653eba5b2651"
+            "cacheKey": "cf48512ef35d9852f274d38266ba81c4eb39033027e1628712bd4318557a1b79"
           },
           {
             "packageName": "posix-utils-lite",
             "manifestSha256": "8fd7190b2848ef80143adc7b9268c79e13cd4db3430f7105faf49a4b4407a06f",
-            "cacheKey": "cdb66e1b49ac036686b638f39724ec85da465e9eb43e2328d4ccc043a76f8d39"
+            "cacheKey": "a195d1db14bc727860c53d0cd87843aa52a3842fad036180c75c6e19173b7624"
           },
           {
             "packageName": "sed",
             "manifestSha256": "2a08e9c5dacc5facc8983c1ff35ff2a72db328405e9a1f464cc7ad155c4d08af",
-            "cacheKey": "e3c2e6258fc5d07bb75d188f2efc391db5c1f2c5474e80ff528075cdda67ae85"
+            "cacheKey": "2d8f0e8bafe76521572934b36ab8fc1eb327eac5492c1d96d18fee3b1df926a3"
           }
         ]
       },
@@ -2599,14 +2627,14 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "0f83557241b795469469b3b9547fdfd1f2b67b45cd35e3cef4aef5d3a30e8786"
+        "wasm32": "9c89b8e95447c8d17c4ca6c06b712f46b7fa9c4812bbcb637aa44b913092e80d"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "zlib",
             "manifestSha256": "d4f4701c0c30dc843ebe2111ed3e2284836cdfc4bc05a130c8fab4f31b8e6357",
-            "cacheKey": "d65b5419d1992beb7637232cd98603a809db9b573085b4aa4980176e5570e2b2"
+            "cacheKey": "024e74a76a23e09d6984f737783eb3f15c4d6b9c05434d0390b2e93fc4daeb5b"
           }
         ]
       },
@@ -2627,13 +2655,79 @@
         }
       ]
     },
+    "sdl-dsp-test": {
+      "manifestSha256": "a988bef0b27403846a675965d951a286245fa79e84c209657d70a9a1200e8037",
+      "arches": [
+        "wasm32"
+      ],
+      "cacheKeys": {
+        "wasm32": "422c6bfdf0bac96e006cd7d0f130cd1a4857be5b124a64965ede999f611c8542"
+      },
+      "dependencyClosures": {
+        "wasm32": [
+          {
+            "packageName": "sdl2",
+            "manifestSha256": "327ce0acca768f51e36ddab8ab58fd57b24cfd9e40722e818103c439f7263dd7",
+            "cacheKey": "9cc6d3328ea4fb6848530e0e9a8cb5c30a8bd03a356fda29d6b46a91e37a58e8"
+          },
+          {
+            "packageName": "sdl3",
+            "manifestSha256": "3b7c64605b941e14d336b1a127d8219c50402dece009e8855297a0a0696bd67e",
+            "cacheKey": "93bdeb1ecdb6e8d5e9e4bc0d14969ab3b4b6ece04481ef464f9050d08ef4036e"
+          }
+        ]
+      },
+      "members": [
+        {
+          "kind": "output",
+          "sourceArtifact": "sdl2-dsp-test.wasm",
+          "mirrorPath": "sdl-dsp-test/sdl2-dsp-test.wasm",
+          "outputName": "sdl2-dsp-test",
+          "forkInstrumentation": "auto"
+        },
+        {
+          "kind": "output",
+          "sourceArtifact": "sdl3-dsp-test.wasm",
+          "mirrorPath": "sdl-dsp-test/sdl3-dsp-test.wasm",
+          "outputName": "sdl3-dsp-test",
+          "forkInstrumentation": "auto"
+        }
+      ]
+    },
+    "sdl2-mixer-playwave": {
+      "manifestSha256": "5ff3863e9f83cb9ad62931e067ee6e417826e06391862d9d0a58d6cc6b4dc570",
+      "arches": [
+        "wasm32"
+      ],
+      "cacheKeys": {
+        "wasm32": "d9dbaaebde392a70f307fb54bdf7cbe069c42661f7b04cad8e9c58dfe89cbc1d"
+      },
+      "dependencyClosures": {
+        "wasm32": [
+          {
+            "packageName": "sdl2",
+            "manifestSha256": "327ce0acca768f51e36ddab8ab58fd57b24cfd9e40722e818103c439f7263dd7",
+            "cacheKey": "9cc6d3328ea4fb6848530e0e9a8cb5c30a8bd03a356fda29d6b46a91e37a58e8"
+          }
+        ]
+      },
+      "members": [
+        {
+          "kind": "output",
+          "sourceArtifact": "playwave.wasm",
+          "mirrorPath": "playwave.wasm",
+          "outputName": "playwave",
+          "forkInstrumentation": "auto"
+        }
+      ]
+    },
     "sed": {
       "manifestSha256": "0c0d82d53907c19825941501f833252cf9adf35ebcebf6786baae28e5eb6958b",
       "arches": [
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "e3c2e6258fc5d07bb75d188f2efc391db5c1f2c5474e80ff528075cdda67ae85"
+        "wasm32": "2d8f0e8bafe76521572934b36ab8fc1eb327eac5492c1d96d18fee3b1df926a3"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -2654,7 +2748,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "a017aa5de279b7f77c0f283db5fb4f89e43e495da413b4634776574e4040e71a"
+        "wasm32": "924040509cd02cedd551f4afa6568090fcd0bed488d44674c0c1802d33b3e6a4"
       },
       "dependencyClosures": {
         "wasm32": [
@@ -2681,24 +2775,24 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "bb965948ea0c564fe96b832a9c819003eb7f0d6c3a9957e9c2e52845c9123f6e"
+        "wasm32": "997c17703209773768eee15f64449151904b0f89824ebec9649db902126a9573"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "libcxx",
             "manifestSha256": "6e1ebfa6914043770eae2a6c156b915acf6a56fe763f07d215ffe6f6f2305007",
-            "cacheKey": "c7c50744bc51231bfc6e1c391755500abb4803062140db70c41a83a7c1df8cc9"
+            "cacheKey": "8637589d7edff4677a49452a19fcd2881e993a778d27a0dacffc9622f3fb0023"
           },
           {
             "packageName": "openssl",
             "manifestSha256": "374f5dce6b2691b630b55cb82955b33d2305384e4bd64746c581621bb0793993",
-            "cacheKey": "23b54aad82b4105ad8f5ea2b66e5c15f30d69455dc4cd28a92a936e87e60914b"
+            "cacheKey": "005e9cd3956f26bf2c6e97610ed4c0ca4ee21eaa0d4e59a710f861a78bb7020d"
           },
           {
             "packageName": "zlib",
             "manifestSha256": "d4f4701c0c30dc843ebe2111ed3e2284836cdfc4bc05a130c8fab4f31b8e6357",
-            "cacheKey": "d65b5419d1992beb7637232cd98603a809db9b573085b4aa4980176e5570e2b2"
+            "cacheKey": "024e74a76a23e09d6984f737783eb3f15c4d6b9c05434d0390b2e93fc4daeb5b"
           }
         ]
       },
@@ -2718,29 +2812,29 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "137fb610878789d6a3fa9cf4c7dea22fca50171bde6bfcec426a47622e4af83d"
+        "wasm32": "ffc7eecad0fb134fb01e8494621a16206d0b698828afe6c1c67cbdbbcfefbd7a"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "libcxx",
             "manifestSha256": "6e1ebfa6914043770eae2a6c156b915acf6a56fe763f07d215ffe6f6f2305007",
-            "cacheKey": "c7c50744bc51231bfc6e1c391755500abb4803062140db70c41a83a7c1df8cc9"
+            "cacheKey": "8637589d7edff4677a49452a19fcd2881e993a778d27a0dacffc9622f3fb0023"
           },
           {
             "packageName": "openssl",
             "manifestSha256": "374f5dce6b2691b630b55cb82955b33d2305384e4bd64746c581621bb0793993",
-            "cacheKey": "23b54aad82b4105ad8f5ea2b66e5c15f30d69455dc4cd28a92a936e87e60914b"
+            "cacheKey": "005e9cd3956f26bf2c6e97610ed4c0ca4ee21eaa0d4e59a710f861a78bb7020d"
           },
           {
             "packageName": "spidermonkey",
             "manifestSha256": "c72ef4e43ee2a4fc74390d03a239fce3b545a6d3b64f02ccc4d44972cec626bd",
-            "cacheKey": "bb965948ea0c564fe96b832a9c819003eb7f0d6c3a9957e9c2e52845c9123f6e"
+            "cacheKey": "997c17703209773768eee15f64449151904b0f89824ebec9649db902126a9573"
           },
           {
             "packageName": "zlib",
             "manifestSha256": "d4f4701c0c30dc843ebe2111ed3e2284836cdfc4bc05a130c8fab4f31b8e6357",
-            "cacheKey": "d65b5419d1992beb7637232cd98603a809db9b573085b4aa4980176e5570e2b2"
+            "cacheKey": "024e74a76a23e09d6984f737783eb3f15c4d6b9c05434d0390b2e93fc4daeb5b"
           }
         ]
       },
@@ -2760,7 +2854,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "f5dae689e9c9de8c8ad4fd72f90ee8b4eefd4b10fb2e19478451068b75f565ee"
+        "wasm32": "8203b8f73e96deeefbe72c5eb9342cbd62b03fc31a4f3906cfbd4452b05c4c38"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -2781,7 +2875,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "41dbda340b968a687157d02ec36f3a93c04dc62adcf406e5b388465966bcdefa"
+        "wasm32": "e0e058c4333c4c94b7ed1fb0da398e3e874998c8bf1b3249f84417047a312db7"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -2802,7 +2896,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "48d99083556ccfb2c63736771c11b92e462a40b12d3850cb3ea26aae33826beb"
+        "wasm32": "fe826385f0bd64f30c93c32bb93cbbb8948a74cf83fd137596c1f5df002ece70"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -2823,19 +2917,19 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "73cea7cd1849aca34f37ae2eb4c6c841328a17ae38e5c1abeeda4a83323a2361"
+        "wasm32": "86434df9283dee6425eb388b6229fd19a8f9624bef425d5a9b6e37082636cf2a"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "libpng",
             "manifestSha256": "79ed5c5c072a0267cce5c7a2fe37d8494571b17e44b952f619e04ec1c4a9db10",
-            "cacheKey": "ca264fd3613420d6d6545ce77fb9f3dd9e70c505bc8752cdfe7ff09cab8df4b8"
+            "cacheKey": "5862e6edd08188b92bb7f84c064d147326ec65ba5024bb86e93a8efa93ff13d8"
           },
           {
             "packageName": "zlib",
             "manifestSha256": "d4f4701c0c30dc843ebe2111ed3e2284836cdfc4bc05a130c8fab4f31b8e6357",
-            "cacheKey": "d65b5419d1992beb7637232cd98603a809db9b573085b4aa4980176e5570e2b2"
+            "cacheKey": "024e74a76a23e09d6984f737783eb3f15c4d6b9c05434d0390b2e93fc4daeb5b"
           }
         ]
       },
@@ -2862,7 +2956,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "73d6a9db88d94927e2d5bc14d7f79c8eae82b902e890a9bee516cf4196b45046"
+        "wasm32": "e6f3c139b81f8398c9083a88c64c541b2d50aa59bdf1eb3795dbc8100c477279"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -2883,7 +2977,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "f268b7542ce0d20e3e242dfd0bc33206208045fe35a2e9679a92f095afdee7fd"
+        "wasm32": "a2ebb59c3b576c0eae37312c39711e3428cea60156614afbdb6c9de1540166eb"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -2904,14 +2998,14 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "5569fee9f1d9e9c5efcd112ee55b32774f208f1e000a68fdada86b0a5246684e"
+        "wasm32": "b4d85b2f95d7c6ec98fa9efe64aafa5238d9fdbce7eede2c93ae16b4c042d1d6"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "vim",
             "manifestSha256": "c211660ef41d01f95f3fbdf675b74891e897e3f304e04f1bf5586f326007382c",
-            "cacheKey": "f268b7542ce0d20e3e242dfd0bc33206208045fe35a2e9679a92f095afdee7fd"
+            "cacheKey": "a2ebb59c3b576c0eae37312c39711e3428cea60156614afbdb6c9de1540166eb"
           }
         ]
       },
@@ -2931,7 +3025,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "dbf745ec60dc75ca96a470f6b07db9b239b3ae518ca75a897dff3346388d4358"
+        "wasm32": "b9ca0d845774d9bc9421298065f0a0ac9c42bd5b31b52688d0ab35278c2adc68"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -2952,14 +3046,14 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "bfb506462d4179365315850df70adaaf957016f705b97675354e8ae9620dfaff"
+        "wasm32": "4c18d0e78186915f6ea6e22e2ef769af3bb413a4b33220dd064aef10fc5a316a"
       },
       "dependencyClosures": {
         "wasm32": [
           {
             "packageName": "dinit",
             "manifestSha256": "44e125e1337503e27f8cff531cdbd79c4f406fd2d282b916a7746cf3a14057bf",
-            "cacheKey": "afabec4ac51bd35f27451be1ab27dbcd29abe2bdc93ee24d7ba39faf65c583c9"
+            "cacheKey": "543e082567cc0502609bf0cdef6eb1ba431cef97d798136e739c915f8392615a"
           },
           {
             "packageName": "homebrew-bootstrap",
@@ -2969,67 +3063,67 @@
           {
             "packageName": "icu",
             "manifestSha256": "f5b1f02d169ec1108fc32d9da55be53c3efb96e3a7aeba6a03aec62e0175f0dc",
-            "cacheKey": "ed82530ca56a059fcb3ded9e7eba665878dd476a4e15fb0c67ec3fbab88ec961"
+            "cacheKey": "81677f4b7e2d40634555388d8d06757a052efcbb915bef1c6e57d444137848cd"
           },
           {
             "packageName": "libcurl",
             "manifestSha256": "c771e6cdc83b43840db4dd1fdce4b6189ba4f281596f7485bcda9c65e2ecda00",
-            "cacheKey": "08ad5e096eb7909993a2aa2d75a3fc0282b5112818f9de92d7a21b9db3f7312b"
+            "cacheKey": "6ce2dd7a19b7f5af78edc02fc75d08bbeade7f41e968f8b8a3f6e7e5fe4b26ae"
           },
           {
             "packageName": "libcxx",
             "manifestSha256": "6e1ebfa6914043770eae2a6c156b915acf6a56fe763f07d215ffe6f6f2305007",
-            "cacheKey": "c7c50744bc51231bfc6e1c391755500abb4803062140db70c41a83a7c1df8cc9"
+            "cacheKey": "8637589d7edff4677a49452a19fcd2881e993a778d27a0dacffc9622f3fb0023"
           },
           {
             "packageName": "libiconv",
             "manifestSha256": "fa60b386f4ba0cd5bbbd595f67477cbfb0cc401a14bbd4769630c502bb3f24b1",
-            "cacheKey": "8289b6195a813388b7673810c77749e055904b6ce1f80872c87f617e7c9fe26f"
+            "cacheKey": "8b132a257b9a02a3adccac9d5d6bedc00348a6ac92375401761312d7c46a2ecf"
           },
           {
             "packageName": "libxml2",
             "manifestSha256": "908490efcdc7783c76ce36af31d1db24bfcc7ba5f1e7b9b5298cc81cb110256c",
-            "cacheKey": "a16f2e59186fef56229883d91bd5b09c9fd24ec96137287ecec4fba963500822"
+            "cacheKey": "4873ada42645826762560ad1833364a60c630c6411f84a03456b171f279faf2b"
           },
           {
             "packageName": "libzip",
             "manifestSha256": "83c65d63a6416e79436bf4e792759a4701d568df0e8c010394a9732cf659f0cc",
-            "cacheKey": "0f052ffc6c568fec083752495f6245511974745f30743d961cbed6296da68f32"
+            "cacheKey": "32c0e36842b5f47e79c66b925601f3f30c4ac982303cd159ade0b6c5755e5b61"
           },
           {
             "packageName": "msmtpd",
             "manifestSha256": "09de04a422ddf631a29a259d816e081f8d317d1077808ede55d8c500baae748f",
-            "cacheKey": "382f58897a42df23508ddc227f96d3229141399a510a350647f0ce7cc14e81ac"
+            "cacheKey": "554ed9b04dcac3ed56656590be2baadc303cd9494f8742fcd6ab3e9323faf62a"
           },
           {
             "packageName": "nginx",
             "manifestSha256": "41b0aaf05fdd0d8da42642703f9e60fd7b9545d8029896918b87c771c359147b",
-            "cacheKey": "313a503d66a7a8ad435c9aee08a4b44f332d84197caa6bc43e5d84336e3228ec"
+            "cacheKey": "a477b0911328bdd36d79e2339ccad2b67d23c69589fd622af20d8afa5af77df4"
           },
           {
             "packageName": "openssl",
             "manifestSha256": "374f5dce6b2691b630b55cb82955b33d2305384e4bd64746c581621bb0793993",
-            "cacheKey": "23b54aad82b4105ad8f5ea2b66e5c15f30d69455dc4cd28a92a936e87e60914b"
+            "cacheKey": "005e9cd3956f26bf2c6e97610ed4c0ca4ee21eaa0d4e59a710f861a78bb7020d"
           },
           {
             "packageName": "php",
             "manifestSha256": "fcd9d7915ed8935b05418e148edcb312adf0b1e4e627fe4aab75444b35b33bbc",
-            "cacheKey": "c069c011716dd51e586649af498a77fe7f9623c3f87d94517d504d65d59fc7ba"
+            "cacheKey": "98ecceaf50e4b0dbc10292b49b3c8ee2009e6ba965449123851818c123b9427b"
           },
           {
             "packageName": "shell",
             "manifestSha256": "28a871b7fcf72f3e289d5116c2d308e22fd4beffd6c5db4bffa262f9b16c1384",
-            "cacheKey": "a017aa5de279b7f77c0f283db5fb4f89e43e495da413b4634776574e4040e71a"
+            "cacheKey": "924040509cd02cedd551f4afa6568090fcd0bed488d44674c0c1802d33b3e6a4"
           },
           {
             "packageName": "sqlite",
             "manifestSha256": "ab9560b4eab53445034e2a87a27ccee9d05ddb0db73fee28f5000325b0b1cba5",
-            "cacheKey": "5b3fda5e074c97b803e622d48b5ab3e87b43230d3f68d668296fb64a27f1568b"
+            "cacheKey": "6e44f4ec127c258c4185142295492ab790cca757db35a284762a95668e0862e9"
           },
           {
             "packageName": "zlib",
             "manifestSha256": "d4f4701c0c30dc843ebe2111ed3e2284836cdfc4bc05a130c8fab4f31b8e6357",
-            "cacheKey": "d65b5419d1992beb7637232cd98603a809db9b573085b4aa4980176e5570e2b2"
+            "cacheKey": "024e74a76a23e09d6984f737783eb3f15c4d6b9c05434d0390b2e93fc4daeb5b"
           }
         ]
       },
@@ -3049,7 +3143,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "2fbd8cf66a89cf6f38fff3f23ac0bcf5bed0358acfaf7440d29f9a5dfc68064d"
+        "wasm32": "105b5d372e4e3d6f1cc9bf2871f5a6d082336a0fbfbd044c536d6466b28541f5"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -3070,7 +3164,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "fea91b2310de8577c77761a062d1ba542223df19ca4bbc2ed6df8479a5e7837c"
+        "wasm32": "de42ac678212b2313fc54c1c583877e1f69573e850f5634fc296e1985375459a"
       },
       "dependencyClosures": {
         "wasm32": []
@@ -3091,7 +3185,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "a8ccfb874b8b263391a73976b9fa0592c0826a8ee6f0347bcf8ed2cdb9b2e9ed"
+        "wasm32": "b1f13d42e6ad8b54bb66c31ad8614bfd4f8f7989c4cd840131399dce1a15354f"
       },
       "dependencyClosures": {
         "wasm32": []

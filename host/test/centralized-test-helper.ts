@@ -861,18 +861,32 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           }
           resolveExit(exitStatus);
         } else {
-          kernelWorker.deactivateProcess(exitPid);
-          processProgramBytes.delete(exitPid);
-          processLayouts.delete(exitPid);
-          threadAllocators.delete(exitPid);
-          processPtrWidths.delete(exitPid);
-          forkReplayContexts.delete(exitPid);
-          releaseProcessReferenceOwner(exitPid);
-          const w = workers.get(exitPid);
-          if (w) {
-            w.terminate().catch(() => {});
-            workers.delete(exitPid);
-          }
+          // WHY: onExit runs as a protocol-publication effect. Its kernel
+          // capability is revoked, but the entry gate is still draining that
+          // effect batch, so a nested export is correctly rejected as
+          // reentrant. Move child deactivation to the next fresh host turn,
+          // like the production Node and browser teardown paths do after
+          // their worker-quiescence await.
+          queueMicrotask(() => {
+            try {
+              kernelWorker.deactivateProcess(exitPid);
+              processProgramBytes.delete(exitPid);
+              processLayouts.delete(exitPid);
+              threadAllocators.delete(exitPid);
+              processPtrWidths.delete(exitPid);
+              forkReplayContexts.delete(exitPid);
+              releaseProcessReferenceOwner(exitPid);
+              const w = workers.get(exitPid);
+              if (w) {
+                w.terminate().catch(() => {});
+                workers.delete(exitPid);
+              }
+            } catch (error) {
+              rejectExit(
+                error instanceof Error ? error : new Error(String(error)),
+              );
+            }
+          });
         }
       },
     },
