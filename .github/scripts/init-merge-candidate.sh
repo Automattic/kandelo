@@ -121,6 +121,7 @@ export STATE_LOCK_OWNER_DETAIL="candidate init, PR ${PR_NUMBER}"
 STATE_LOCK_STATE_FILE="$LOCK_STATE" bash "$STATE_LOCK_SCRIPT" acquire "$CANDIDATE_TAG"
 
 release_json="$TMP_ROOT/release.json"
+release_id_file="$TMP_ROOT/release-id"
 candidate_body="$TMP_ROOT/candidate-release-body.txt"
 printf '%s' \
   "Isolated package candidate for PR #${PR_NUMBER}; not resolver-visible until post-merge activation." \
@@ -133,17 +134,27 @@ bash "$RELEASE_LIFECYCLE_SCRIPT" ensure-draft \
   --target-commit "$HEAD_SHA" \
   --title "$CANDIDATE_TAG" \
   --body-file "$candidate_body" \
+  --release-id-file "$release_id_file" \
   --prerelease true >/dev/null
+candidate_release_id="$(cat "$release_id_file" 2>/dev/null || true)"
+if ! [[ "$candidate_release_id" =~ ^[1-9][0-9]*$ ]]; then
+  echo "init-merge-candidate: lifecycle did not return an exact release ID" >&2
+  exit 1
+fi
 release_rc=0
+# WHY: GitHub's release-by-tag endpoint omits drafts. The lifecycle already
+# rejects duplicate tags and returns the one exact release ID it created or
+# reused, so every read during the writable candidate phase must use that ID.
 GITHUB_API_CONTEXT=init-merge-candidate \
-  github_api_get_json "/repos/${REPOSITORY}/releases/tags/${CANDIDATE_TAG}" \
+  github_api_get_json "/repos/${REPOSITORY}/releases/${candidate_release_id}" \
     "$release_json" || release_rc=$?
 if [ "$release_rc" -ne 0 ]; then
   echo "init-merge-candidate: candidate release state is uncertain" >&2
   exit 1
 fi
-if ! jq -e --arg tag "$CANDIDATE_TAG" '
-    .tag_name == $tag and (.id | type == "number" and . > 0) and
+if ! jq -e --arg tag "$CANDIDATE_TAG" \
+    --argjson release_id "$candidate_release_id" '
+    .tag_name == $tag and .id == $release_id and
     ((.draft == true and .immutable == false) or
       (.draft == false and .immutable == true)) and
     .prerelease == true and
@@ -211,7 +222,7 @@ cargo run --release -p xtask --target "$host_target" --quiet -- \
 
 refresh_release() {
   GITHUB_API_CONTEXT=init-merge-candidate \
-    github_api_get_json "/repos/${REPOSITORY}/releases/tags/${CANDIDATE_TAG}" "$release_json"
+    github_api_get_json "/repos/${REPOSITORY}/releases/${candidate_release_id}" "$release_json"
 }
 
 ensure_immutable_asset() {
