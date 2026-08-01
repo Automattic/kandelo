@@ -389,7 +389,7 @@ to `HOMEBREW_KANDELO_PRIMARY_TAP_ROOT` before isolation. The launcher then makes
 the whole Homebrew tap store read-only. That store is rooted under the active
 reviewed Homebrew repository worktree, where Homebrew actually clones taps,
 rather than under `HOMEBREW_PREFIX`; the publisher deliberately keeps the
-canonical Linuxbrew prefix while running a separate patched repository
+canonical Kandelo prefix while running a separate patched repository
 worktree. Active
 Tier-2 evaluation therefore resolves and attests the selected Formula under the
 primary tap root regardless of whether Homebrew loaded primary or dependency
@@ -503,9 +503,22 @@ validated, credential-isolated OCI/ORAS transport described below.
 The supported prefix and cellar are:
 
 ```text
-/home/linuxbrew/.linuxbrew
-/home/linuxbrew/.linuxbrew/Cellar
+/opt/kandelo/homebrew
+/opt/kandelo/homebrew/Cellar
 ```
+
+These are guest paths, not Linuxbrew paths. The guest uses the existing
+`/home/user` account for writable cache and configuration state and exposes
+`/usr/bin/brew` as the stable command. It must not create a `linuxbrew` user,
+install below `/home/linuxbrew`, or add a compatibility symlink for the
+retired guest prefix.
+
+The machine-readable contract is
+`homebrew/kandelo-guest-layout.json`. Bottle admission scans every regular
+archive member for the contract's retired prefixes. This byte scan is
+intentional: some bottles marked `:any_skip_relocation` still contain
+functional compiled paths, so Homebrew's relocation metadata cannot by itself
+prove that an old-prefix bottle is safe to reuse.
 
 Trusted CI applies this patch to a temporary Homebrew worktree. A short-lived
 root-owned launcher under the selected Homebrew prefix loads that worktree
@@ -598,8 +611,8 @@ For formulae that build Kandelo Wasm artifacts:
    transitional registry bridge, not the destination architecture.
 2. Install only the produced Wasm artifacts into the Homebrew keg.
 3. Preserve Homebrew's prefix and cellar model:
-   `/home/linuxbrew/.linuxbrew` and
-   `/home/linuxbrew/.linuxbrew/Cellar`.
+   `/opt/kandelo/homebrew` and
+   `/opt/kandelo/homebrew/Cellar`.
 4. Put runtime validation in `test do`, but execute Wasm through Kandelo
    rather than as a host Linux binary.
 5. Update Homebrew `revision` or bottle `rebuild` when bottle bytes should move
@@ -966,7 +979,7 @@ library bottle with a dependency source build.
 A Kandelo target Formula and a package in its native host-tool closure can have
 the same short Homebrew name. For example, the Kandelo `bzip2` build can require
 native WABT, whose host-side dependency closure can itself contain native `bzip2`.
-Putting both packages in `/home/linuxbrew/.linuxbrew/Cellar/bzip2` makes
+Putting both packages in `/opt/kandelo/homebrew/Cellar/bzip2` makes
 Homebrew treat the host package as a recursive dependency of the target
 Formula. Dependency ordering cannot fix that namespace collision.
 
@@ -1190,10 +1203,9 @@ repository participates in either handoff.
 The fixed lifecycle inputs use a separate content-addressed immutable release
 in the first-party tap. The shell image is a member of its package archive,
 while the bootstrap ZIP and environment still come from the transitional
-Kandelo registry package named `homebrew-bootstrap`. This proof retains
-`/home/linuxbrew/.linuxbrew` temporarily and keeps `/usr/bin/brew` as the
-stable guest entry point. It does not claim those bootstrap bytes are
-Formula-owned.
+Kandelo registry package named `homebrew-bootstrap`. The bootstrap uses the
+canonical `/opt/kandelo/homebrew` guest prefix and keeps `/usr/bin/brew` as the
+stable entry point. It does not claim those bootstrap bytes are Formula-owned.
 
 The browser's lazy Homebrew bootstrap requires direct asset URLs, and the
 exact source-tree specification must stay bound to the same proof. Publishing
@@ -1808,10 +1820,11 @@ The campaign also binds the path and SHA-256 of
 exact bytes in its Kandelo checkout. It then carries the digest through
 Formula closure, bottle build, dependency provenance, build and upload
 handoffs, bottle verification, sidecar preparation, and final handoff
-validation. Only this campaign digest selects
-`/opt/kandelo/homebrew` and `/opt/kandelo/homebrew/Cellar`. No digest
-selects the still-active layout for an ordinary publication; a campaign
-with a missing or different digest fails.
+validation. Both ordinary publication and campaign publication use the
+canonical `/opt/kandelo/homebrew` prefix and its `Cellar`. Supplying the
+campaign digest does not select different paths; it proves that an
+already-sealed campaign still names the exact committed layout bytes. A
+campaign with a missing or different required digest fails.
 
 `homebrew/guest-prefix-campaign-inputs.json` classifies each Formula that
 exists in the candidate source but has no selected sidecar yet. A required
@@ -1904,6 +1917,50 @@ campaign layout and remains the per-bottle Chromium proof. After all
 migration handoffs are present, the campaign separately composes and
 validates the complete live tap, then updates `main` once under the
 tap-wide state lock.
+
+`prepare-final-tap` performs the composition without changing Git state.
+It requires the sealed campaign source, one complete handoff for every
+Formula and architecture, and an exact clean live-tap parent commit and
+tree. It regenerates the bottle blocks and current sidecars, preserves
+historical failure and rollback evidence, validates the complete tap,
+and only then removes the four one-shot campaign authority paths. The
+candidate records completion at
+`Kandelo/campaigns/prefix-v1/completion.json`; a separate canonical
+finalization receipt binds its tree to the expected live parent.
+
+`create-final-tap-commit` consumes that candidate and receipt. It stages
+the candidate through a private Git index, reproduces one deterministic
+single-parent commit, and atomically creates a previously absent local
+`refs/heads/...` ref. It does not change the live checkout, move `main`,
+push, or call GitHub. If receipt creation fails, it removes the new ref.
+The tap controller must still hold the tap-wide state lock, recheck the
+same live parent, push the prepared commit with compare-and-swap
+semantics, and publish the commit receipt.
+
+```sh
+bash scripts/dev-shell.sh python3 \
+  scripts/homebrew-prefix-campaign-executor.py prepare-final-tap \
+  --campaign campaign.json \
+  --source-tap-root target-tap \
+  --live-tap-root live-tap \
+  --handoff handoffs/zlib \
+  --expected-live-commit "$LIVE_COMMIT" \
+  --expected-live-tree-git-oid "$LIVE_TREE" \
+  --out final-tap \
+  --finalization-out finalization.json
+
+bash scripts/dev-shell.sh python3 \
+  scripts/homebrew-prefix-campaign-executor.py create-final-tap-commit \
+  --candidate-tap-root final-tap \
+  --finalization finalization.json \
+  --live-tap-root live-tap \
+  --output-ref refs/heads/prefix-v1-final \
+  --commit-receipt-out final-commit.json
+```
+
+Repeat `--handoff` for every campaign Formula. A missing, extra,
+duplicated, wrong-architecture, or dependency-inconsistent handoff fails
+before either output appears.
 
 An ABI transition lands its coherent source and package changes through the
 ordinary Kandelo merge process first. The normal path then rebuilds final
@@ -2106,7 +2163,7 @@ and all unrelated Formulae retain parallel throughput:
 1. `build-and-test` is read-only. It checks out the exact inputs and reviewed
    Homebrew/brew commit, and exposes the patched temporary Homebrew worktree
    through a root-owned launcher under the canonical
-   `/home/linuxbrew/.linuxbrew` target prefix. Native host dependencies use a
+   `/opt/kandelo/homebrew` target prefix. Native host dependencies use a
    separate ephemeral prefix, preventing their Cellar racks from colliding
    with Kandelo target Formulae. Within that read-only build, all
    Formula-evaluating Homebrew commands run as a distinct
@@ -2655,9 +2712,10 @@ set, and Homebrew bootstrap programs through `xtask build-deps`, and calls
 source ZIP and `homebrew-brew.env` as one transitional package generation. The
 product shell resolves both members from that exact package generation, embeds
 the small environment policy, and registers the source ZIP as a lazy tree
-behind `/usr/bin/brew`. Its `/home/linuxbrew/.linuxbrew` prefix is explicitly
-transitional; the stable `/usr/bin/brew` entry point lets a later Formula-owned
-bootstrap replace it without changing the guest command. The separate
+behind `/usr/bin/brew`. Its canonical `/opt/kandelo/homebrew` prefix is shared
+by Formula-owned software; the stable `/usr/bin/brew` entry point lets a later
+Formula-owned bootstrap replace the transitional registry artifact without
+changing the guest command. The separate
 diagnostic bootstrap image above remains an eager integration artifact. Source
 preparation verifies the reviewed patch SHA-256, refuses an upstream revision
 where the patch does not apply, limits the patch to its declared Homebrew
@@ -2671,7 +2729,7 @@ selects `wasm32_kandelo` for the current wasm32 bootstrap and sets
 `HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY=1`, so prefix and user configuration cannot
 select a bottle for a different guest architecture. Homebrew's own `bin/brew`
 reads that supported system environment file; `/usr/bin/brew` stays a direct
-symlink to `/home/linuxbrew/.linuxbrew/bin/brew`, with no Kandelo launcher or
+symlink to `/opt/kandelo/homebrew/bin/brew`, with no Kandelo launcher or
 install fallback. The patch recognizes that exact alias/repository pair so
 Homebrew does not derive the forbidden `/usr` prefix from `$0`. The same source
 preparer emits `wasm64_kandelo` when a future bootstrap builder selects wasm64.
@@ -2980,7 +3038,7 @@ For example, a Dash shell image can use:
 ```json
 {
   "version": 1,
-  "path": "/home/linuxbrew/.linuxbrew/bin/dash",
+  "path": "/opt/kandelo/homebrew/bin/dash",
   "argv": ["dash", "-l", "-i"]
 }
 ```
@@ -3394,7 +3452,7 @@ policy, not Kandelo platform policy. A minimal configuration has this shape:
   "schema": 1,
   "formula": "consumer",
   "brewfile": "Kandelo/vfs-acceptance.Brewfile",
-  "executable": "/home/linuxbrew/.linuxbrew/bin/consumer",
+  "executable": "/opt/kandelo/homebrew/bin/consumer",
   "argv": ["consumer", "--version"],
   "expected_stdout": "consumer"
 }
@@ -3408,7 +3466,7 @@ one reviewed `shell_config` path inside the same tap:
   "schema": 2,
   "formula": "consumer",
   "brewfile": "Kandelo/vfs-acceptance.Brewfile",
-  "executable": "/home/linuxbrew/.linuxbrew/bin/consumer",
+  "executable": "/opt/kandelo/homebrew/bin/consumer",
   "argv": ["consumer", "--version"],
   "expected_stdout": "consumer",
   "shell_config": "Kandelo/vfs-acceptance-shell.json"
@@ -3513,7 +3571,7 @@ scripts/dev-shell.sh npx tsx packages/registry/file/test/homebrew-node-smoke.ts 
 ```
 
 It clones or reads the tap, builds a Homebrew VFS from published sidecars, runs
-`/home/linuxbrew/.linuxbrew/bin/file --version` through `NodeKernelHost`, and
+`/opt/kandelo/homebrew/bin/file --version` through `NodeKernelHost`, and
 checks negative ABI-mismatch and missing-bottle cases.
 
 Browser compatibility requires a separate browser smoke. For the current
@@ -3522,7 +3580,7 @@ serves it through the browser demo, runs Chromium Playwright against
 `apps/browser-demos/test/kandelo-homebrew.spec.ts`, and executes:
 
 ```bash
-/home/linuxbrew/.linuxbrew/bin/file --version
+/opt/kandelo/homebrew/bin/file --version
 ```
 
 Only after that smoke passes may sidecars record
@@ -3712,7 +3770,7 @@ Package names, repository identities, paths, and symlink targets have
 independent bounds. Every layer package must own the indexed directory for its
 declared keg and the exact indexed symlink for its declared `opt` link.
 Schema-5 trees explicitly declare every structural ancestor at or below
-`/home/linuxbrew/.linuxbrew` as a directory. Keg and in-keg directories are
+`/opt/kandelo/homebrew` as a directory. Keg and in-keg directories are
 package-owned `layer` entries; cross-package structural ancestors are
 `mergeable-directory` entries. The complete aggregate descriptor may satisfy
 an ancestor through any selected bottle tree. An absent mergeable directory is
