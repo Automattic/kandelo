@@ -5,6 +5,11 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 BREW_COMMIT="a92554a538e81fad0c5074443885dbcc4c36221d"
 EXPECTED_BUILD_BLOB="be833176c02f78cd5b3502aac968b5a733cb7af8"
 EXPECTED_MAC_SANDBOX_BLOB="b81da0fd8878e6a6de1171e0cb7a08a86b4be561"
+# WHY: Homebrew increments this value when a previously vendored gem
+# becomes ignored (or the inverse). That forces stale Bundler payloads
+# to be repaired. Keep it explicit so moving BREW_COMMIT cannot silently
+# accept a bundle provisioned for a different upstream layout.
+EXPECTED_BUNDLE_VENDOR_VERSION="8"
 BREW_SOURCE=""
 TMP_ROOT=""
 BREW_ROOT=""
@@ -170,7 +175,8 @@ UNSAFE_BUNDLE_ENTRY="$(find "$BUNDLE_RUBY_ROOT" -mindepth 1 \
   -name .homebrew_vendor_version -print | awk 'END { print NR + 0 }')" -eq 1 ] ||
   fail "the provisioned Bundler state has an ambiguous vendor version"
 [ "$(find "$BUNDLE_RUBY_ROOT" -mindepth 2 -maxdepth 2 -type f \
-  -name .homebrew_vendor_version -exec cat {} \;)" = "7" ] ||
+  -name .homebrew_vendor_version -exec cat {} \;)" = \
+  "$EXPECTED_BUNDLE_VENDOR_VERSION" ] ||
   fail "the provisioned Bundler state has the wrong vendor version"
 git -C "$BREW_ROOT" diff --quiet -- Library/Homebrew/vendor/bundle/bundler/setup.rb ||
   fail "Bundler provisioning rewrote the pinned standalone loader"

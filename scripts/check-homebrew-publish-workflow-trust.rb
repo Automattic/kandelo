@@ -4395,6 +4395,8 @@ def check_publisher(workflow)
   [
     'BREW_COMMIT="a92554a538e81fad0c5074443885dbcc4c36221d"',
     'EXPECTED_BUILD_BLOB="be833176c02f78cd5b3502aac968b5a733cb7af8"',
+    'EXPECTED_MAC_SANDBOX_BLOB="b81da0fd8878e6a6de1171e0cb7a08a86b4be561"',
+    'EXPECTED_BUNDLE_VENDOR_VERSION="8"',
     'worktree add --detach "$BREW_ROOT" "$BREW_COMMIT"',
     '0001-add-kandelo-wasm-bottle-tags.patch',
     '0002-support-isolated-publisher.patch',
