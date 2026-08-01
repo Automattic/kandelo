@@ -552,6 +552,7 @@ function wasmValueType(
 
 function completeForkWasm(options: {
   pointerWidth?: 4 | 8;
+  kernelForkParams?: readonly ForkArtifactValueType[];
   memoryPointerWidth?: 4 | 8;
   exportPointerWidth?: 4 | 8;
   capabilityFlags?: number | null;
@@ -597,7 +598,11 @@ function completeForkWasm(options: {
     typeIndices.set(key, index);
     return index;
   };
-  const kernelForkType = internType([], ["i32"], pointerWidth);
+  const kernelForkType = internType(
+    options.kernelForkParams ?? ["i32"],
+    ["i32"],
+    pointerWidth,
+  );
   const emptyType = internType([], [], pointerWidth);
   const funcImports: FuncImport[] = [
     { module: "kernel", name: "kernel_fork", typeIdx: kernelForkType },
@@ -1027,6 +1032,17 @@ describe("wasm artifact policy helpers", () => {
       expect(wasmHasCompleteForkInstrumentation(wasm)).toBe(true);
       expect(describeWasmArtifactPolicyFailures(wasm, { expectedAbi: ABI_VERSION })).toEqual([]);
     }
+  });
+
+  it("rejects the obsolete no-argument process-fork import", () => {
+    const wasm = completeForkWasm({ kernelForkParams: [] });
+    expect(wasmHasCompleteForkInstrumentation(wasm)).toBe(false);
+    expect(describeWasmArtifactPolicyFailures(wasm, {
+      expectedAbi: ABI_VERSION,
+    })).toContain(
+      "ABI 43 process-fork import kernel.kernel_fork has the wrong "
+        + "signature; expected (i32) -> (i32)",
+    );
   });
 
   it("requires the exact private exception transport before accepting ABI 43 safety", () => {

@@ -25,6 +25,7 @@ import {
   TERMINAL_STDIO,
 } from "./kernel-worker";
 import type {
+  ForkBorrowedReplayWorkspace,
   ForkContinuationContext,
   ResolvedSpawnProgram,
   SpawnProgramResolution,
@@ -65,7 +66,12 @@ import {
   isWasmModuleBytes,
 } from "./constants";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
-import { FILE_MODES, OPEN_FLAGS } from "./generated/abi";
+import {
+  FILE_MODES,
+  OPEN_FLAGS,
+  PROCESS_FORK_MODE_VFORK,
+  type ProcessForkMode,
+} from "./generated/abi";
 import {
   classifiedSignalOrFallback,
   classifiedTrapExitStatus,
@@ -100,12 +106,20 @@ import {
   createProcessMemoryRetirementPressureHook,
   DEFAULT_PROCESS_THREAD_SLOTS,
   deriveProcessMemoryRetirementAdmissionThresholds,
+  FORK_SAVE_BUFFER_SIZE,
   ProcessMemoryCapacityError,
   ProcessMemoryAllocator,
   ProcessMemoryRetirementBacklogError,
   type ProcessMemoryLayout,
   type ProcessMemoryLease,
 } from "./process-memory";
+import {
+  VforkAddressSpaceBusyError,
+  VforkLifetimeCoordinator,
+  type VforkExactCompletionReason,
+  type VforkLifetime,
+  type VforkLifetimeDisposition,
+} from "./vfork-lifetime";
 import {
   ExactProcessGenerationDetachLedger,
   type ExactProcessGenerationDetachResult,
@@ -197,6 +211,12 @@ interface ProcessGenerationOwnership {
   memoryLease: ProcessMemoryLease;
 }
 
+interface VforkWorkspaceOwnership {
+  readonly allocator: ThreadPageAllocator;
+  readonly slotStartPage: number;
+  released: boolean;
+}
+
 interface ProcessInfo extends ProcessGenerationOwnership {
   workerQuiescence: WorkerQuiescence;
   execRetirement: WorkerQuiescence;
@@ -211,8 +231,11 @@ interface ProcessInfo extends ProcessGenerationOwnership {
   externrefGeneration: ForkExternrefGeneration;
   /** Non-_start continuation root inherited from a pthread fork until exec. */
   forkReplayContext?: ForkReplayContext;
+  /** Parent-owned control slot borrowed only until exact exec/exit teardown. */
+  vforkWorkspace?: VforkWorkspaceOwnership;
 }
 const processes = new Map<number, ProcessInfo>();
+const vforkLifetimes = new VforkLifetimeCoordinator<ProcessInfo>();
 const externrefProcessOwner = new ForkExternrefProcessOwner();
 const forkHostImportOwnerRuntime =
   new ForkHostImportOwnerRuntime(externrefProcessOwner);
@@ -558,7 +581,7 @@ async function finalizeProcessWorker(
   // WHY: ordinary exits and crashes must share one teardown funnel. Keeping a
   // second cleanup sequence here previously let their Worker/channel ordering
   // drift and made it possible to reap Rust state before all Workers stopped.
-  await finishProcessExit(pid, exitStatus, worker);
+  await finishProcessExit(pid, exitStatus, worker, "trap");
 }
 
 function processWorkerErrorDisposition(reason: string | undefined): {
@@ -1044,8 +1067,15 @@ async function handleInit(msg: InitMessage) {
         processMemoryAllocator.observeTarget(memory, target);
       },
       onKernelFatal: terminatePoisonedKernelWorker,
-      onFork: ({ parentPid, childPid, parentMemory, continuation }) => {
-        return processMemoryCreators.run("a fork process Worker", () => {
+      onFork: ({
+        parentPid,
+        childPid,
+        mode,
+        parentMemory,
+        continuation,
+        borrowedReplay,
+      }) => {
+        const launch = (releaseCreatorAdmission?: () => void) => {
           // Notify the main thread of every kernel-side process event so
           // Inspector-style UIs (Kandelo) can refresh their process table
           // event-driven. Mirrors the browser-side worker entry.
@@ -1055,13 +1085,42 @@ async function handleInit(msg: InitMessage) {
             pid: childPid,
             ppid: parentPid,
           });
-          return handleFork(parentPid, childPid, parentMemory, continuation);
-        });
+          return handleFork(
+            parentPid,
+            childPid,
+            mode,
+            parentMemory,
+            continuation,
+            borrowedReplay,
+            releaseCreatorAdmission,
+          );
+        };
+        return mode === PROCESS_FORK_MODE_VFORK
+          ? processMemoryCreators.runUntilCommitted(
+              "a vfork process Worker",
+              (commit) => launch(commit),
+            )
+          : processMemoryCreators.run(
+              "a fork process Worker",
+              () => launch(),
+            );
       },
       onExec: (pid, path, argv, envp, callerTid) =>
         processMemoryCreators.run("an exec process Worker", async () => {
-          const previousWorker = processes.get(pid)?.worker;
+          const execGeneration = processes.get(pid);
+          const previousWorker = execGeneration?.worker;
           const result = await handleExec(pid, path, argv, envp, callerTid);
+          if (
+            result < 0
+            && execGeneration
+            && processes.get(pid) === execGeneration
+            && vforkLifetimes.isActiveBorrower(execGeneration)
+          ) {
+            // A failed exec returns to the borrowing child. POSIX does not let
+            // that release the parent; only a later successful exec or _exit
+            // ends the shared-address-space lifetime.
+            vforkLifetimes.noteFailedExec(execGeneration, -result);
+          }
           // Notify after handleExec refreshes kernel-side Process.argv so
           // process-table consumers don't refetch stale command names. A
           // post-commit signal death also returns 0 because the old syscall
@@ -1332,6 +1391,503 @@ async function handleSpawn(msg: SpawnMessage) {
 async function handleFork(
   parentPid: number,
   childPid: number,
+  mode: ProcessForkMode,
+  parentMemory: WebAssembly.Memory,
+  continuation: ForkContinuationContext,
+  borrowedReplay?: ForkBorrowedReplayWorkspace,
+  releaseCreatorAdmission?: () => void,
+): Promise<number[]> {
+  if (mode === PROCESS_FORK_MODE_VFORK) {
+    if (!borrowedReplay) {
+      throw new VforkAddressSpaceBusyError(
+        "vfork launch is missing its admitted replay workspace",
+      );
+    }
+    return handleVfork(
+      parentPid,
+      childPid,
+      parentMemory,
+      continuation,
+      borrowedReplay,
+      releaseCreatorAdmission,
+    );
+  }
+  if (releaseCreatorAdmission) {
+    throw new Error("ordinary fork cannot release vfork creator admission");
+  }
+  if (borrowedReplay) {
+    throw new Error("ordinary fork cannot borrow replay workspace");
+  }
+  return handleOrdinaryFork(
+    parentPid,
+    childPid,
+    mode,
+    parentMemory,
+    continuation,
+  );
+}
+
+function releaseVforkWorkspace(info: ProcessInfo): void {
+  const workspace = info.vforkWorkspace;
+  if (!workspace || workspace.released) return;
+  workspace.released = true;
+  workspace.allocator.free(workspace.slotStartPage);
+}
+
+function completeVforkGenerationTeardown(
+  info: ProcessInfo,
+  exact: boolean,
+  reason: VforkExactCompletionReason,
+  cause?: unknown,
+): void {
+  const phase = vforkLifetimes.phaseForChild(info);
+  if (phase === undefined) return;
+  if (!exact) {
+    vforkLifetimes.requireAddressSpaceContainment(
+      info,
+      cause ?? new Error("vfork child teardown lacked an exact quiescence fence"),
+    );
+    return;
+  }
+  releaseVforkWorkspace(info);
+  if (phase === "starting") {
+    vforkLifetimes.completeWithoutBorrow(
+      info,
+      reason === "exit" ? "exit" : "signal",
+    );
+  } else {
+    vforkLifetimes.completeAfterExactTeardown(info, reason);
+  }
+}
+
+async function containVforkAddressSpace(
+  disposition: Extract<
+    VforkLifetimeDisposition<ProcessInfo>,
+    { kind: "contain-address-space" }
+  >,
+  childGeneration: ProcessInfo,
+  parentPid: number,
+): Promise<number[]> {
+  const status = signalExitStatus(SIGSEGV);
+  reportHostDiagnostic({
+    pid: parentPid,
+    status,
+    source: "vfork address-space containment",
+    message:
+      `[vfork] containing shared address space after ambiguous child `
+      + `teardown for pid=${disposition.childPid}: ${
+        disposition.cause instanceof Error
+          ? disposition.cause.message
+          : String(disposition.cause)
+      }`,
+  });
+
+  const childCurrent = processes.get(disposition.childPid);
+  if (childCurrent === childGeneration) {
+    try {
+      kernelWorker.notifyHostProcessCrashed(disposition.childPid, SIGSEGV);
+    } catch {
+      // Continue to the exact-generation teardown funnel.
+    }
+    await finishProcessExit(
+      disposition.childPid,
+      status,
+      childGeneration.worker,
+      "trap",
+    );
+  }
+
+  if (processes.get(parentPid) === disposition.parentGeneration) {
+    try {
+      kernelWorker.notifyHostProcessCrashed(parentPid, SIGSEGV);
+    } catch {
+      // Continue to forced host containment even if Rust already exited it.
+    }
+    await finishProcessExit(
+      parentPid,
+      status,
+      disposition.parentGeneration.worker,
+      "trap",
+    );
+  }
+
+  if (
+    processes.get(disposition.childPid) === childGeneration
+    || processes.get(parentPid) === disposition.parentGeneration
+  ) {
+    const error = new Error(
+      `could not contain ambiguous vfork address space for parent=${parentPid} `
+      + `child=${disposition.childPid}`,
+      { cause: disposition.cause },
+    );
+    terminatePoisonedKernelWorker(error);
+    throw error;
+  }
+
+  // WHY: rejecting onFork here would ask KernelWorker to roll back childPid,
+  // which may already name a successful exec replacement. Resolving is safe
+  // only because the exact parked parent generation is now absent, so the
+  // kernel completion guard cannot publish into its retired channel.
+  return [];
+}
+
+async function finishVforkDisposition(
+  disposition: VforkLifetimeDisposition<ProcessInfo>,
+  childGeneration: ProcessInfo,
+  parentPid: number,
+): Promise<number[]> {
+  if (disposition.kind === "return-error") {
+    throw new VforkAddressSpaceBusyError(
+      `vfork launch returned errno ${disposition.errno}`,
+    );
+  }
+  if (disposition.kind === "contain-address-space") {
+    return containVforkAddressSpace(disposition, childGeneration, parentPid);
+  }
+  // A sibling pthread can exec or exit the parent image while its calling
+  // thread is parked. In that case the original channel no longer exists and
+  // the kernel completion guard must observe no current parent generation.
+  return [childGeneration.channelOffset];
+}
+
+async function handleVfork(
+  parentPid: number,
+  childPid: number,
+  parentMemory: WebAssembly.Memory,
+  continuation: ForkContinuationContext,
+  borrowedReplay: ForkBorrowedReplayWorkspace,
+  releaseCreatorAdmission: (() => void) | undefined,
+): Promise<number[]> {
+  const parentInfo = processes.get(parentPid);
+  const parentProgram = parentInfo?.programBytes;
+  if (!parentProgram || parentInfo.memory !== parentMemory) {
+    throw new Error(`Unknown parent generation for pid ${parentPid}`);
+  }
+  if (vforkLifetimes.hasActiveAddressSpace(parentMemory)) {
+    throw new VforkAddressSpaceBusyError();
+  }
+  if (
+    borrowedReplay.prefixBytes <= 0
+    || borrowedReplay.prefixBytes > FORK_SAVE_BUFFER_SIZE
+    || borrowedReplay.scratchBytes < 0
+    || borrowedReplay.scratchBytes > WASM_PAGE_SIZE
+  ) {
+    throw new VforkAddressSpaceBusyError(
+      "vfork replay workspace exceeds one host control slot",
+    );
+  }
+
+  if (!parentInfo.programModule) {
+    // Stay synchronous until the alias lease, child generation, and lifetime
+    // are all installed. A sibling pthread may otherwise replace the parent
+    // generation in the first yielded turn.
+    parentInfo.programModule = new WebAssembly.Module(parentProgram);
+  }
+
+  const childMemoryLease = parentInfo.memoryLease.retainAlias();
+  let childMemoryLeaseConsumed = false;
+  let workspaceAllocation: ReturnType<ThreadPageAllocator["allocate"]>;
+  try {
+    workspaceAllocation =
+      parentInfo.threadAllocator.allocateHostControl(parentMemory);
+  } catch (error) {
+    childMemoryLease.release();
+    throw new VforkAddressSpaceBusyError(
+      `vfork control workspace is unavailable: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  const workspaceOwnership: VforkWorkspaceOwnership = {
+    allocator: parentInfo.threadAllocator,
+    slotStartPage: workspaceAllocation.slotStartPage,
+    released: false,
+  };
+  const childChannelOffset = workspaceAllocation.channelOffset;
+  const childLayout = parentInfo.layout;
+  const ptrWidth = parentInfo.ptrWidth;
+  let childWorker: DeferredWorkerHandle | undefined;
+  let childGeneration: ProcessInfo | undefined;
+  let childExternrefGeneration: ForkExternrefGeneration | undefined;
+  let childForkHostImports: ForkHostImportOwnerWorker | undefined;
+  let registered = false;
+  let lifetimeStarted = false;
+  let lifetime: VforkLifetime<ProcessInfo> | undefined;
+  const forkReplay = new ForkReplayGateCoordinator(
+    `vfork child pid=${childPid}`,
+  );
+
+  try {
+    const workspaceAddress =
+      workspaceAllocation.slotStartPage * WASM_PAGE_SIZE;
+    kernelWorker.reserveHostRegionAt(
+      childPid,
+      workspaceAddress,
+      PAGES_PER_THREAD * WASM_PAGE_SIZE,
+    );
+    kernelWorker.registerProcess(childPid, parentMemory, [childChannelOffset], {
+      ptrWidth,
+      maxAddr: childLayout.maxAddr,
+      mmapBase: childLayout.mmapBase,
+      borrowedAddressSpace: true,
+    });
+    registered = true;
+    kernelWorker.inheritProcessSharedMappings(parentPid, childPid);
+
+    const forkBufAddr = continuation.forkBufAddr;
+    const forkReplayContext: ForkReplayContext | undefined =
+      continuation.kind === "thread"
+        ? {
+            fnPtr: continuation.fnPtr,
+            argPtr: continuation.argPtr,
+            forkBufAddr,
+          }
+        : parentInfo.forkReplayContext
+          ? { ...parentInfo.forkReplayContext, forkBufAddr }
+          : undefined;
+    const externrefGrant =
+      externrefProcessOwner.forkGenerationFromContinuation(
+        parentInfo.externrefGeneration,
+        childPid,
+        parentMemory,
+        ptrWidth,
+        forkBufAddr,
+      );
+    childExternrefGeneration = externrefGrant.generation;
+    let launchedWorker: DeferredWorkerHandle;
+    const forkHostImports = forkHostImportOwnerRuntime.createWorker({
+      pid: childPid,
+      generationId: externrefGrant.generation.id,
+      authorizeSender: () => {
+        const current = processes.get(childPid);
+        if (
+          !current
+          || current.worker !== launchedWorker
+          || current.externrefGeneration !== externrefGrant.generation
+        ) {
+          throw new Error(
+            `stale fork host-import sender for vfork child pid=${childPid}`,
+          );
+        }
+      },
+    });
+    childForkHostImports = forkHostImports;
+    const childInitData: CentralizedWorkerInitMessage = {
+      type: "centralized_init",
+      pid: childPid,
+      programBytes: parentProgram,
+      programModule: parentInfo.programModule,
+      memory: parentMemory,
+      channelOffset: childChannelOffset,
+      externrefGenerationId: externrefGrant.generation.id,
+      forkHostImports: forkHostImports.init,
+      isForkChild: true,
+      forkMode: PROCESS_FORK_MODE_VFORK,
+      forkMemoryOwnership: "borrowed",
+      forkBufAddr,
+      forkOwnerControlAddr:
+        parentInfo.channelOffset - FORK_SAVE_BUFFER_SIZE,
+      forkPrivatePrefixAddr:
+        childChannelOffset - FORK_SAVE_BUFFER_SIZE,
+      forkPrivatePrefixBytes: borrowedReplay.prefixBytes,
+      forkScratchAddr: workspaceAllocation.tlsOffset,
+      forkScratchBytes: borrowedReplay.scratchBytes,
+      forkReplayGate: forkReplay.gate,
+      forkChildThreadFnPtr: forkReplayContext?.fnPtr,
+      forkChildThreadArgPtr: forkReplayContext?.argPtr,
+      ptrWidth,
+      kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
+    };
+
+    childWorker = new DeferredWorkerHandle(
+      () => workerAdapter.createWorker(childInitData),
+    );
+    launchedWorker = childWorker;
+    bindForkHostImports(childWorker, forkHostImports);
+    childGeneration = {
+      memory: parentMemory,
+      memoryLease: childMemoryLease,
+      workerQuiescence: createWorkerQuiescence(),
+      execRetirement: createWorkerQuiescence(),
+      programBytes: parentProgram,
+      programModule: parentInfo.programModule,
+      worker: childWorker,
+      channelOffset: childChannelOffset,
+      ptrWidth,
+      layout: childLayout,
+      threadAllocator: threadAllocatorForLayout(childLayout, ptrWidth, childPid),
+      forkReplayContext,
+      externrefGeneration: externrefGrant.generation,
+      vforkWorkspace: workspaceOwnership,
+    };
+    lifetime = vforkLifetimes.begin(
+      parentPid,
+      childPid,
+      parentInfo,
+      childGeneration,
+    );
+    lifetimeStarted = true;
+    processes.set(childPid, childGeneration);
+    // The exact generation is now sweepable by terminal host destroy. Keep the
+    // onFork promise pending to park only the calling guest thread.
+    releaseCreatorAdmission?.();
+
+    observeForkReplayWorker(
+      forkReplay,
+      launchedWorker,
+      childPid,
+      () => processes.get(childPid)?.worker === launchedWorker,
+    );
+    installProcessWorkerListeners(childWorker, childPid);
+    let startFailure: unknown;
+    const startDisposition = kernelWorker.startProcessWorkerWhenRunnable(
+      childPid,
+      parentMemory,
+      () => {
+        vforkLifetimes.markChildMayAccessMemory(childGeneration!);
+        try {
+          launchedWorker.start();
+        } catch (error) {
+          // Worker construction can partially publish a realm before throwing.
+          // Once marked borrowing, only whole-address-space containment may
+          // release the parent's parked syscall.
+          startFailure = error;
+          forkReplay.cancel(error);
+          vforkLifetimes.requireAddressSpaceContainment(
+            childGeneration!,
+            error,
+          );
+        }
+      },
+      () => {
+        forkReplay.cancel(
+          new Error(`Vfork child ${childPid} launch was cancelled`),
+        );
+        forkHostImports.close();
+        void launchedWorker.terminate();
+      },
+    );
+    if (startDisposition === "stale") {
+      throw new VforkAddressSpaceBusyError(
+        `Vfork child ${childPid} changed generation before Worker launch`,
+      );
+    }
+    if (startDisposition === "dead") {
+      forkReplay.cancel(
+        new Error(`Vfork child ${childPid} exited before Worker launch`),
+      );
+      forkHostImports.close();
+      await terminateTrackedWorker(childWorker);
+      childGeneration.workerQuiescence.settle();
+      const signal = kernelWorker.finalizePendingChildTermination(childPid);
+      await awaitFinalizedProcessTeardown(
+        childPid,
+        signal > 0 ? signalExitStatus(signal) : 0,
+        childWorker,
+        signal > 0 ? "signal" : "exit",
+      );
+      return finishVforkDisposition(
+        await lifetime.completion,
+        childGeneration,
+        parentPid,
+      );
+    }
+
+    try {
+      await forkReplay.waitUntilReady();
+    } catch (error) {
+      const phase = vforkLifetimes.phaseForChild(childGeneration);
+      if (phase === "starting") {
+        childGeneration.workerQuiescence.settle();
+        const signal = kernelWorker.finalizePendingChildTermination(childPid);
+        await awaitFinalizedProcessTeardown(
+          childPid,
+          signal > 0 ? signalExitStatus(signal) : 0,
+          childWorker,
+          signal > 0 ? "signal" : "exit",
+        );
+      } else if (phase === "borrowing" && startFailure === undefined) {
+        await finalizeProcessWorker(
+          childPid,
+          childWorker,
+          signalExitStatus(SIGSEGV),
+          SIGSEGV,
+        );
+      }
+      return finishVforkDisposition(
+        await lifetime.completion,
+        childGeneration,
+        parentPid,
+      );
+    }
+    if (processes.get(childPid) !== childGeneration) {
+      throw new Error(
+        `Vfork child ${childPid} changed generation before replay commit`,
+      );
+    }
+    if (!kernelWorker.shouldLaunchPendingChild(childPid)) {
+      throw new Error(`Vfork child ${childPid} exited before replay commit`);
+    }
+    forkReplay.commit();
+    return finishVforkDisposition(
+      await lifetime.completion,
+      childGeneration,
+      parentPid,
+    );
+  } catch (error) {
+    if (childGeneration && lifetimeStarted) {
+      const phase = vforkLifetimes.phaseForChild(childGeneration);
+      if (phase === "borrowing") {
+        vforkLifetimes.requireAddressSpaceContainment(childGeneration, error);
+        return finishVforkDisposition(
+          await lifetime!.completion,
+          childGeneration,
+          parentPid,
+        );
+      }
+    }
+
+    forkReplay.cancel(error);
+    childForkHostImports?.close();
+    if (childWorker) await terminateTrackedWorker(childWorker);
+    if (childExternrefGeneration) {
+      externrefProcessOwner.releaseGeneration(childExternrefGeneration);
+    }
+    if (childGeneration && registered) {
+      const detachResult = await detachExactProcessGeneration({
+        pid: childPid,
+        generation: childGeneration,
+        operation: "deactivate",
+        retire: (commit) => {
+          childMemoryLease.release();
+          childMemoryLeaseConsumed = true;
+          commit();
+        },
+      });
+      if (detachResult.status !== "released") {
+        reportRetainedProcessGeneration(
+          childPid,
+          "vfork launch rollback",
+          detachResult,
+        );
+      }
+    }
+    if (!childMemoryLeaseConsumed) childMemoryLease.release();
+    if (!workspaceOwnership.released) {
+      workspaceOwnership.released = true;
+      workspaceOwnership.allocator.free(workspaceOwnership.slotStartPage);
+    }
+    if (childGeneration && lifetimeStarted) {
+      vforkLifetimes.abortBeforeChildStart(childGeneration, 11);
+    }
+    throw error;
+  }
+}
+
+async function handleOrdinaryFork(
+  parentPid: number,
+  childPid: number,
+  mode: ProcessForkMode,
   parentMemory: WebAssembly.Memory,
   continuation: ForkContinuationContext,
 ): Promise<number[]> {
@@ -1433,6 +1989,7 @@ async function handleFork(
       externrefGenerationId: externrefGrant.generation.id,
       forkHostImports: forkHostImports.init,
       isForkChild: true,
+      forkMode: mode,
       forkBufAddr,
       forkReplayGate: forkReplay.gate,
       forkChildThreadFnPtr: forkReplayContext?.fnPtr,
@@ -1569,6 +2126,7 @@ async function handleExec(
 ): Promise<number> {
   const initiatingInfo = processes.get(pid);
   if (!initiatingInfo) return -3; // ESRCH
+  const vforkBorrower = vforkLifetimes.isActiveBorrower(initiatingInfo);
   const resolved = await resolveExecutableForLaunch(path, argv);
   if (!resolved) return -2; // ENOENT
   if ("errno" in resolved) return -resolved.errno;
@@ -1693,6 +2251,7 @@ async function handleExec(
         pid,
         signalExitStatus(handoffExitSignal),
         initiatingInfo.worker,
+        "signal",
       );
       return 0;
     }
@@ -1799,14 +2358,35 @@ async function handleExec(
       await terminateTrackedWorker(replacementWorker);
       kernelWorker.finishProcessExecHandoff(pid);
       const signal = kernelWorker.finalizeExecHandoffTermination(pid);
+      if (vforkBorrower) {
+        completeVforkGenerationTeardown(
+          initiatingInfo,
+          oldMemoryRetirementSafe,
+          "exec",
+          new Error(
+            `vfork child ${pid} exec retired without an exact old-memory fence`,
+          ),
+        );
+      }
       await awaitFinalizedProcessTeardown(
         pid,
         signal > 0 ? signalExitStatus(signal) : 0,
         replacementWorker,
+        signal > 0 ? "signal" : "exit",
       );
       return 0;
     }
     kernelWorker.finishProcessExecHandoff(pid);
+    if (vforkBorrower) {
+      completeVforkGenerationTeardown(
+        initiatingInfo,
+        oldMemoryRetirementSafe,
+        "exec",
+        new Error(
+          `vfork child ${pid} exec retired without an exact old-memory fence`,
+        ),
+      );
+    }
     return 0;
   } catch (err) {
     replacementForkHostImports?.close();
@@ -1863,6 +2443,18 @@ async function handleExec(
       if (oldMemoryRetirementSafe) initiatingInfo.memoryLease.release();
       else initiatingInfo.memoryLease.releaseAfterForcedTermination();
       initiatingLeaseConsumed = true;
+    }
+    if (
+      vforkBorrower
+      && preparedTransferred
+      && vforkLifetimes.phaseForChild(initiatingInfo) !== undefined
+    ) {
+      completeVforkGenerationTeardown(
+        initiatingInfo,
+        oldMemoryRetirementSafe && initiatingLeaseConsumed,
+        "trap",
+        err,
+      );
     }
 
     const message = err instanceof Error ? err.message : String(err);
@@ -2338,16 +2930,25 @@ function handleThreadExit(pid: number, channelOffset: number): boolean {
 }
 
 function handleExit(pid: number, exitStatus: number): void {
-  void finishProcessExit(pid, exitStatus, processes.get(pid)?.worker);
+  const reason: VforkExactCompletionReason =
+    signalFromExitStatus(exitStatus) === null ? "exit" : "signal";
+  void finishProcessExit(
+    pid,
+    exitStatus,
+    processes.get(pid)?.worker,
+    reason,
+  );
 }
 
 async function awaitFinalizedProcessTeardown(
   pid: number,
   exitStatus: number,
   expectedWorker: ProcessInfo["worker"],
+  reason: VforkExactCompletionReason =
+    signalFromExitStatus(exitStatus) === null ? "exit" : "signal",
 ): Promise<void> {
   if (!processTeardowns.has(expectedWorker)) {
-    void finishProcessExit(pid, exitStatus, expectedWorker);
+    void finishProcessExit(pid, exitStatus, expectedWorker, reason);
   }
   await processTeardowns.get(expectedWorker);
 }
@@ -2356,6 +2957,8 @@ async function finishProcessExit(
   pid: number,
   exitStatus: number,
   expectedWorker = processes.get(pid)?.worker,
+  vforkReason: VforkExactCompletionReason =
+    signalFromExitStatus(exitStatus) === null ? "exit" : "signal",
 ): Promise<void> {
   if (!expectedWorker) return;
   const info = processes.get(pid);
@@ -2381,6 +2984,7 @@ async function finishProcessExit(
       ),
       terminateThreadWorkers(pid),
     ]);
+    const exactMemoryTeardown = workerQuiescent && threadsQuiescent;
     await terminateTrackedWorker(expectedWorker);
 
     // Deactivate process (zombie until reaped or destroy) after worker
@@ -2390,7 +2994,7 @@ async function finishProcessExit(
       generation: info,
       operation: "deactivate",
       retire: (commit) => {
-        if (workerQuiescent && threadsQuiescent) {
+        if (exactMemoryTeardown) {
           info.memoryLease.release();
         } else {
           info.memoryLease.releaseAfterForcedTermination();
@@ -2399,6 +3003,12 @@ async function finishProcessExit(
       },
     });
     if (detachResult.status !== "released") {
+      completeVforkGenerationTeardown(
+        info,
+        false,
+        vforkReason,
+        detachResult.error,
+      );
       reportRetainedProcessGeneration(
         pid,
         "process channel teardown",
@@ -2409,6 +3019,14 @@ async function finishProcessExit(
     }
 
     externrefProcessOwner.releaseGeneration(info.externrefGeneration);
+    completeVforkGenerationTeardown(
+      info,
+      exactMemoryTeardown,
+      vforkReason,
+      new Error(
+        `vfork child ${pid} exited without an exact Worker quiescence fence`,
+      ),
+    );
 
     // A superseded old image must not reap the persistent PID that now belongs
     // to its exec successor.

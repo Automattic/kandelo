@@ -21,7 +21,8 @@ fn contract_wat(pointer: &str, memory: &str) -> String {
           (type $cell (struct (field (mut i32))))
           (type $exception (func (param i32)))
           (tag $exception_tag (type $exception))
-          (import "kernel" "kernel_fork" (func $kernel_fork))
+          (import "kernel" "kernel_fork"
+            (func $kernel_fork (param i32) (result i32)))
           (import "env" "__wpk_fork_frame_reserve"
             (func $frame_reserve (param {pointer}) (result {pointer})))
           (import "env" "__wpk_fork_frame_commit"
@@ -58,8 +59,9 @@ fn inventories_gc_and_exception_modules_without_decoding_code_bodies() {
 #[test]
 fn inventories_the_side_module_fork_entry() {
     let bytes = wat::parse_str(contract_wat("i32", "(memory 1)").replace(
-        r#"(import "kernel" "kernel_fork" (func $kernel_fork))"#,
-        r#"(import "env" "fork" (func $kernel_fork))"#,
+        r#"(import "kernel" "kernel_fork"
+            (func $kernel_fork (param i32) (result i32)))"#,
+        r#"(import "env" "fork" (func $kernel_fork (result i32)))"#,
     ))
     .expect("compile side-module contract WAT");
     let inventory = fork_contract_inventory(&bytes).expect("inventory side module");
@@ -373,8 +375,10 @@ fn cli_reserved_import_inventory_emits_typed_rows() {
 fn inventories_the_reentrant_legacy_loader_import() {
     let bytes = wat::parse_str(
         contract_wat("i32", "(memory 1)").replace(
-            r#"(import "kernel" "kernel_fork" (func $kernel_fork))"#,
-            r#"(import "kernel" "kernel_fork" (func $kernel_fork))
+            r#"(import "kernel" "kernel_fork"
+            (func $kernel_fork (param i32) (result i32)))"#,
+            r#"(import "kernel" "kernel_fork"
+                 (func $kernel_fork (param i32) (result i32)))
                (import "env" "__wasm_dlopen"
                  (func (param i32 i32 i32 i32 i32) (result i32)))"#,
         ),

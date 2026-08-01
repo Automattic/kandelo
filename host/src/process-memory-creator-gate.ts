@@ -16,6 +16,27 @@ export class ProcessMemoryCreatorGate {
    * Run one admitted creator and release its admission on every terminal path.
    */
   run<T>(operation: string, creator: () => T | PromiseLike<T>): Promise<T> {
+    return this.runUntilCommitted(operation, () => creator());
+  }
+
+  /**
+   * Admit a creator whose semantic completion can outlive its installation.
+   *
+   * `commit()` releases destroy admission once the exact generation and all
+   * of its ownership handles are published in the host process registry. The
+   * returned operation may remain pending afterward. This is required for
+   * vfork: its onFork promise parks the caller until child exec/_exit, but a
+   * terminal host destroy must be able to sweep that already-visible child
+   * instead of waiting for the parked syscall first.
+   *
+   * If the creator fails or completes before commit, its terminal path releases
+   * admission. Calling commit more than once is harmless so a common finally
+   * path cannot double-release the gate.
+   */
+  runUntilCommitted<T>(
+    operation: string,
+    creator: (commit: () => void) => T | PromiseLike<T>,
+  ): Promise<T> {
     if (!this.open) {
       return Promise.reject(
         new Error(
@@ -24,15 +45,21 @@ export class ProcessMemoryCreatorGate {
       );
     }
     this.activeCreators += 1;
+    let released = false;
+    const commit = () => {
+      if (released) return;
+      released = true;
+      this.releaseCreator();
+    };
     let result: T | PromiseLike<T>;
     try {
-      result = creator();
+      result = creator(commit);
     } catch (error) {
-      this.releaseCreator();
+      commit();
       return Promise.reject(error);
     }
     return Promise.resolve(result).finally(() => {
-      this.releaseCreator();
+      commit();
     });
   }
 

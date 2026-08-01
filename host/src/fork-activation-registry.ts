@@ -1452,6 +1452,14 @@ export class ForkActivationRegistry {
     this.phase = "sealed-parent";
   }
 
+  borrowedReplayScratchCapacity(): number {
+    this.requirePhase(
+      "sealed-parent",
+      "read borrowed replay scratch capacity",
+    );
+    return this.currentReferences().borrowedReplayScratchCapacity();
+  }
+
   beginParentReplay(): void {
     this.requirePhase("sealed-parent", "begin parent activation replay");
     this.currentReferences().beginParentReplay();

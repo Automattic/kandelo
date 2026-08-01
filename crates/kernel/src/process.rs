@@ -783,6 +783,12 @@ pub struct Process {
     pub thread_name: [u8; wasm_posix_shared::kernel_scratch_wire::PRCTL_NAME_BYTES as usize],
     /// True if this process is a fork child that should exec on startup.
     pub fork_child: bool,
+    /// True while this process borrows its vfork parent's address space.
+    ///
+    /// This is kernel-internal lifecycle state, not guest-visible fork replay
+    /// state. It prevents the borrower from creating another address-space or
+    /// pthread owner before successful exec replaces the borrowed image.
+    pub vfork_child: bool,
     /// Saved signal mask during sigsuspend host retry.
     /// Set on first sigsuspend call, restored when a signal is delivered.
     pub sigsuspend_saved_mask: Option<u64>,
@@ -1084,6 +1090,7 @@ impl Process {
             alarm_interval_ns: 0,
             thread_name: [0u8; wasm_posix_shared::kernel_scratch_wire::PRCTL_NAME_BYTES as usize],
             fork_child: false,
+            vfork_child: false,
             sigsuspend_saved_mask: None,
             fork_exec_path: None,
             fork_exec_argv: None,

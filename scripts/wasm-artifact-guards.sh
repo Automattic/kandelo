@@ -1009,7 +1009,12 @@ _wasm_fork_contract_inventory() {
         /^ - func\[.* sig=[0-9]+/ {
             function_signatures[function_index($0)] = function_types[signature_index($0)]
         }
-        /^ - func\[.* <- (kernel\.kernel_fork|env\.fork)$/ { imports_fork = 1 }
+        /^ - func\[.* <- kernel\.kernel_fork$/ {
+            imports_fork = 1
+            kernel_fork++
+            kernel_fork_signatures[kernel_fork] = function_signatures[function_index($0)]
+        }
+        /^ - func\[.* <- env\.fork$/ { imports_fork = 1 }
         /^ - func\[.* <- env\.__wasm_dlopen$/ { legacy_dlopen++ }
         /^ - func\[.* <- env\.__wpk_fork_frame_reserve$/ {
             frame_reserve++
@@ -1063,6 +1068,8 @@ _wasm_fork_contract_inventory() {
             pointer_to_pointer = "(" pointer ") -> " pointer
             pointer_to_nil = "(" pointer ") -> nil"
             nil_to_nil = "() -> nil"
+            for (i = 1; i <= kernel_fork; i++)
+                if (kernel_fork_signatures[i] != "(i32) -> i32") signature_mismatch++
             for (i = 1; i <= frame_reserve; i++)
                 if (frame_reserve_signatures[i] != pointer_to_pointer) signature_mismatch++
             for (i = 1; i <= frame_commit; i++)

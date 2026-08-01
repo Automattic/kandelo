@@ -124,10 +124,16 @@ export interface RunProgramOptions {
   env?: string[];
   /** Program arguments */
   argv?: string[];
+  /** Initial real/effective user ID. */
+  uid?: number;
+  /** Initial real/effective group ID. */
+  gid?: number;
   /** Timeout in ms (default: 30000) */
   timeout?: number;
   /** Process memory ceiling for bounded allocation-failure tests. */
   maxPages?: number;
+  /** Aggregate process-memory admission budget for allocation-path tests. */
+  maxProcessMemoryBytes?: number;
   /** Custom PlatformIO (defaults to NodePlatformIO).
    *  When provided, forces main-thread mode (PlatformIO can't be serialized). */
   io?: PlatformIO;
@@ -253,6 +259,7 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
   const host = new NodeKernelHost({
     maxWorkers: 4,
     maxPages: options.maxPages,
+    maxProcessMemoryBytes: options.maxProcessMemoryBytes,
     execPrograms,
     rootfsImage: options.rootfsImage
       ?? (options.useDefaultRootfs === false ? undefined : "default"),
@@ -301,6 +308,8 @@ async function runInWorkerThread(options: RunProgramOptions): Promise<RunProgram
 
   const exitPromise = host.spawn(programBytes, options.argv ?? [options.programPath], {
     env: options.env,
+    uid: options.uid,
+    gid: options.gid,
     stdin: stdinData,
     programModule: options.programModule,
     onStarted: onStartedWrapper,
@@ -420,6 +429,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
       onFork: async ({
         parentPid,
         childPid,
+        mode,
         parentMemory,
         continuation,
       }) => {
@@ -502,6 +512,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
           memory: childMemory,
           channelOffset: childChannelOffset,
           isForkChild: true,
+          forkMode: mode,
           forkBufAddr,
           forkReplayGate: forkReplay.gate,
           forkChildThreadFnPtr: forkReplayContext?.fnPtr,
@@ -926,6 +937,7 @@ async function runOnMainThread(options: RunProgramOptions): Promise<RunProgramRe
     mmapBase: layout.mmapBase,
     maxAddr: layout.maxAddr,
   });
+  kernelWorker.setCredentials(pid, { uid: options.uid, gid: options.gid });
   processProgramBytes.set(pid, programBytes);
   processLayouts.set(pid, layout);
   threadAllocators.set(pid, threadAllocator);

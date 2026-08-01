@@ -10,6 +10,18 @@ const artifactsAvailable = !!dash && !!pgrep && !!ps && !!coreutils;
 
 describe.skipIf(!artifactsAvailable)("posix-utils-lite process tools", () => {
   it("reports authoritative child and process state", async () => {
+    // WHY: the default rootfs supplies the executable identities needed by
+    // dash's PATH lookup, while this test's resolved fixtures supply their
+    // bytes. Keeping the mappings explicit avoids making a process-semantics
+    // test depend on network-backed lazy rootfs artifacts.
+    const execPrograms = new Map<string, string>([
+      ["/bin/pgrep", pgrep!],
+      ["/usr/bin/pgrep", pgrep!],
+      ["/bin/ps", ps!],
+      ["/usr/bin/ps", ps!],
+      ["/bin/sleep", coreutils!],
+      ["/usr/bin/sleep", coreutils!],
+    ]);
     const result = await runCentralizedProgram({
       programPath: dash!,
       argv: [
@@ -37,6 +49,7 @@ describe.skipIf(!artifactsAvailable)("posix-utils-lite process tools", () => {
         ].join("; "),
       ],
       env: ["PATH=/bin:/usr/bin", "HOME=/tmp"],
+      execPrograms,
       timeout: 30_000,
     });
 
@@ -48,7 +61,9 @@ describe.skipIf(!artifactsAvailable)("posix-utils-lite process tools", () => {
       .filter(Boolean);
     expect(lines[0]).toBe("NO_CHILD_RC=1");
 
-    const child = Number(lines.find((line) => line.startsWith("CHILD="))?.slice(6));
+    const child = Number(
+      lines.find((line) => line.startsWith("CHILD="))?.slice(6),
+    );
     expect(Number.isInteger(child) && child > 0).toBe(true);
     expect(lines).toContain(String(child));
     expect(lines).toContain("MATCH_RC=0");

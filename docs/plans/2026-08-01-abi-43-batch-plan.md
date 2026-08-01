@@ -9,9 +9,12 @@ open pull requests were forward-ported and composed. It does not authorize a
 push, merge, ABI release, package publication, Homebrew cutover, or removal of
 the temporary CRuby patch in pull request (PR) #1166.
 
-The working branch is `integration/abi43-batch-20260731`. Kernel, ABI, libc,
-host-runtime, and fork-instrument changes still require Brandon's explicit
-approval before merge.
+The linear handoff branch is
+`integration/abi43-batch-linear-20260801`, based on `origin/main` at
+`8a0ed31a5`. The pre-linearization recovery branch remains
+`integration/abi43-batch-20260731`. Kernel, ABI, libc, host-runtime, and
+fork-instrument changes still require Brandon's explicit approval before
+merge.
 
 ## History contract
 
@@ -20,19 +23,28 @@ must be rebase-merged and must not be squash-merged. Forward-ported commits
 retain original authorship; integration repairs remain separate commits with
 their own purpose.
 
-The current local range has 145 commits above local `main` at
-`c5a24dc148b2e69c0555d9e7802bee7cd48a18d7`. Its authors are:
+At post-rebase projection checkpoint `554bdf542`, the local range has 171
+commits above `origin/main` at `8a0ed31a5`: 170 selected payload commits and
+one separate generated-projection repair. Its authors are:
 
-- 141 Brandon Payton commits, including 12 whose original GitHub committer is
-  retained in the source history;
+- 167 Brandon Payton commits;
 - three Dependabot-authored dependency commits; and
 - one `mho22`-authored Windows VFS commit.
 
-There is one temporary integration merge, `d850197a8`, used to absorb the
-then-current `origin/main`. Before an umbrella PR, rebase the train once onto
-the selected final mainline and remove that merge topology. Do not squash the
-result. Verify the rewritten mapping with `git range-diff` and
-`git log --format=fuller`.
+The range contains no merge commits. The old integration merge `d850197a8`
+remains only on the recovery branch. `git range-diff` mapped 163 of the 170
+replayed commits unchanged and seven with newer-main context adjustments. The
+two upstream entries omitted by the mapping are `ce9b36a82` and `8a0ed31a5`;
+they are already in the new base rather than duplicated in the payload.
+
+The adjusted commits preserve both sides of each overlap: current CI fixture
+routing, staging-shell handoff metadata, browser memory64 fixtures, and the
+generic shell-release finalizer remain intact while the selected changes are
+applied. The image-ingest commit advances the changed shell inputs to revision
+23 and pending state without restoring stale revision-specific finalizer
+logic. `git log --format=fuller` confirms the three Dependabot authors and
+`mho22` author, with the restacker recorded only as committer. The umbrella PR
+must retain this linear topology and must not squash it.
 
 ## Frozen selected sources
 
@@ -82,8 +94,8 @@ them necessary.
 
 ## Affordable fork work in the batch
 
-The train also carries the Kandelo-owned foundation developed in the dedicated
-fork worktree:
+The train also carries the Kandelo-owned implementation developed in the
+dedicated fork worktree:
 
 - ordinary fork admission rejects retired-memory saturation before allocating
   or copying child memory;
@@ -91,15 +103,27 @@ fork worktree:
 - a child can replay a borrowed parent continuation through private mutable
   prefix storage without consuming the parent's frames;
 - active side-module state can be reconstructed without writing parent memory;
-  and
 - one exact-generation shared-memory lifetime coordinator prevents overlapping
-  borrowers and requires terminal evidence before parent resumption.
+  borrowers and requires terminal evidence before parent resumption;
+- ABI 43 carries an explicit ordinary/vfork mode through libc,
+  fork-instrumentation, the host channel, and the kernel;
+- production Node and browser vfork launch a separate child Worker over an
+  exact alias to the parent's Memory with private channel, replay, loader, and
+  continuation-control state;
+- only the calling parent thread remains parked through failed exec and until
+  successful exec commit or exact `_exit()`/signal/trap teardown; and
+- inherited open file descriptions share mutable offset, status flags, and
+  async owner while descriptor tables and directory host iterators remain
+  process-local.
 
-These foundations remain intentionally disconnected from guest-visible
-`vfork()`. Kandelo's libc still aliases `vfork()` to ordinary `fork()`,
-`kernel_fork` still has no mode parameter, and the host still clones full
-memory for `SYS_VFORK`. Documentation must continue to report that limitation
-until the connected implementation and tests are complete.
+Ordinary fork remains independent and copied. The connected vfork path
+has passed the locally runnable broad conformance gates and component
+resident set size (RSS) measurements. It is not yet a release claim:
+published upstream CRuby artifacts, application RSS, the complete
+application benchmark matrix, and the Homebrew lifecycle remain explicit
+gates. A fatal signal against a compute-running borrower is covered on
+every host: absent an exact Worker fence, Kandelo contains the whole
+shared address space rather than resuming the parent unsafely.
 
 ## Composition repairs completed
 
@@ -124,57 +148,98 @@ or kernel stack loss.
 
 All commands supporting claims below ran through `scripts/dev-shell.sh`.
 
-- ABI snapshot, generated C/TypeScript bindings, and version checks passed.
-- Rust workspace validation recorded 1,519 kernel tests and 48 shared tests
-  passing; xtask recorded 638 unit tests plus its integration test passing.
-- The focused authority and lifecycle cluster passed 13 files and 167 tests.
-- PCM and audio interruption coverage passed seven files and 39 tests.
-- Runtime-file metadata and PHP consumers passed 35 tests with five
-  intentional skips.
-- The exact 4,096-child `posix_spawn`/`waitpid` churn passed alone and in the
-  broad concurrent suite after installed-package build isolation.
-- The latest broad host run recorded 4,027 passed, five failed, and 130
-  skipped tests out of 4,162. All five failures are missing complete ABI 43
-  program-artifact closures in `run-example-credentials` and
-  `run-example-resolver`; no source/runtime failure remains in that run.
+- ABI snapshot, generated C/TypeScript bindings, native and
+  wasm32/wasm64 layouts, and version checks passed.
+- The complete CI-shaped host run passed 339 files and skipped 28. It
+  recorded 4,131 passing tests, two expected failures, and 129 skips;
+  the Bun and JavaScriptCore supplement passed three tests in two files.
+- The exact 4,096-child `posix_spawn`/`waitpid` churn passed alone and
+  in the broad concurrent suite after installed-package build
+  isolation.
+- libc recorded 303 passes and zero failures out of 324; POSIX recorded
+  174 passes and zero failures out of 179; Sortix recorded 5,037 passes
+  and zero failures out of 5,113. Expected failures and documented skips
+  remained classified rather than hidden.
+- The Rust workspace gate completed, including 1,522 kernel tests, four
+  pointer-contract tests, 13 root-spill tests, 48 shared-ABI tests,
+  fork-instrument, and documentation tests.
+- `xtask` passed 639 unit tests and its cache-root integration test.
+- Five production vfork lifecycle cases passed in Node and in Chromium,
+  Firefox, and WebKit, for 15 browser cases. The upstream Ruby browser
+  proof recorded four passes and two intentional cross-engine skips.
+- After the final linear rebase, the ABI snapshot, native and
+  wasm32/wasm64 layouts, generated C and TypeScript bindings, and ABI 42 to
+  43 bump classification passed again. The current-main Homebrew input
+  changes made the program-package projection truthfully stale; it was
+  regenerated in separate commit `554bdf542`, and the freshness check and
+  standalone resolver-bundle check then passed.
+- The post-rebase CI suite-routing contract passed, including exact staging
+  shell handoff and browser-memory64 workspace fixture paths. The complete
+  Homebrew main-shell closure contract also passed, including its 43 embedded
+  Node tests and revision/state/finalizer checks.
 
-The full repository build is not a pass. It reached external Bash source
-fallback and stopped on a GNU mirror HTTP 502. Browser production assembly and
-artifact-dependent runtime suites remain gated by the same missing complete
-ABI 43 program generations. Performance, libc, POSIX, Sortix, and complete
-browser claims must wait for their exact prerequisites and suites.
+At the initial batch checkpoint, the full repository build was not a pass. It
+reached external Bash source fallback and stopped on a GNU mirror HTTP 502.
 
-## Next implementation series
+After connecting vfork and shared OFD state, a later full production
+build passed. ABI 43 had no release index, so the resolver truthfully
+rebuilt its verified-source package closure and produced the
+16,787,687-byte rootfs image.
 
-Keep the connected vfork work as small purpose-scoped commits above this
-reviewed batch:
+The component RSS result remained decisive: a shared 256 MiB Memory
+added about 11.1 MiB for its Worker, while an exact full clone added
+496.344 MiB. Sparse cloning added about 262.65 MiB but took 79 to 95 ms
+versus 35 ms for a full clone. All three self-contained benchmark suites
+passed for three rounds on Node and Chromium.
 
-1. Add the explicit ordinary/vfork mode to the ABI 43 `kernel_fork` import,
-   generated constants, snapshot, and fork-instrument propagation.
-2. Make libc `_Fork()` and `fork()` pass ordinary mode and `vfork()` pass
-   vfork mode without running `pthread_atfork` handlers.
-3. Add authoritative kernel Process state for a vfork child, caller
-   suspension, overlap/nesting rejection, and exact wait/reaping behavior.
-4. Reserve a distinct child channel/control slot before launch and start a
-   separate child Worker that aliases the parent's shared Memory without a
-   `WebAssembly.Memory` construction or byte copy.
-5. Connect borrowed main and active-side replay while keeping every child
-   continuation cursor and mutable prefix private.
-6. Resume only the calling parent thread after successful exec or exact
-   `_exit`/signal/crash teardown. Failed exec must leave the lifetime coherent
-   and the parent blocked.
-7. Prove descriptors/open file descriptions, cwd, credentials, signals,
-   process groups, main and pthread callers, runnable siblings, sequential
-   calls, overlap rejection, traps, and rollback on Node and applicable
-   browsers.
-8. Rebase linearly, rerun attribution and ABI audits, then open an umbrella PR
-   only when Brandon authorizes that external action.
+The comparison also found a broad batch startup regression. A same-day
+pre-batch build was 37 to 50 percent faster across the Node lifecycle
+metrics. Empty-VFS phase measurements place nearly all of that
+regression before the vfork stack: the pre-vfork ABI 43 checkpoint was
+about 39 to 42 percent slower than the pre-batch baseline, while vfork
+added about 2.3 to 2.4 percent. Keep that regression visible and
+bisectable; no broad no-regression claim is made.
+
+The full product browser and application benchmark gates still lack a
+complete ABI 43 package closure. The release index returns HTTP 404, and
+no ABI 42 fallback is valid. Those gates, application RSS, and the
+Homebrew lifecycle remain pending publication.
+
+## Remaining implementation and release series
+
+The mode ABI, libc split, kernel marker, borrowed Worker launch, private replay
+state, caller suspension, exact cooperative/fatal teardown, inherited OFD
+state, and Node/browser lifecycle fixtures are implemented as separate
+purpose-scoped commits. Continue with these remaining gates:
+
+1. Completed locally: run the complete libc, POSIX, Sortix, host, Rust
+   workspace, `xtask`, ABI, and focused cross-engine vfork/Ruby suites.
+2. Completed locally: repeat component RSS, ordinary-fork and
+   sparse-clone comparison, repeated vfork lifetimes, and all
+   self-contained Node and Chromium benchmarks. Preserve the measured
+   broad startup regression as an explicit integration risk.
+3. Completed locally: remove PR #1166, enable upstream CRuby's
+   working-vfork branch, and prove uid 1000 selects vfork while the
+   privileged path retains ordinary fork in Node and Chromium. The
+   uid-1000 failed-exec proof also passes in Firefox and WebKit.
+4. With publication authorization, publish the exact rebuilt ABI 43
+   package closure, then run the full product browser and application
+   benchmark matrices without stale ABI fallback.
+5. Reconstruct the Homebrew image and repeat the real tap/install
+   lifecycle with process-tree RSS evidence, no renderer loss, and no
+   history-proportional memory growth.
+6. Completed locally: rebase linearly onto `origin/main` at `8a0ed31a5`,
+   remove the temporary merge, rerun attribution and ABI audits, and preserve
+   the post-rebase projection repair as its own commit.
+7. Open an umbrella PR only when Brandon authorizes that external action.
+   Preserve every accepted PR and integration repair as an individual commit;
+   do not squash.
 
 ## PR #1166 removal gate
 
-Do not alter or broaden PR #1166 during this series. Remove it only after
-pristine upstream CRuby is rebuilt with working vfork enabled, uid 1000 proves
-the upstream vfork path with no full-memory allocation/copy, privileged Ruby
-proves its intentional ordinary-fork fallback, the exact artifacts are
-published, and the real in-guest Homebrew tap/install lifecycle completes
-without renderer loss or history-proportional memory growth.
+The local recipe deletes PR #1166 without replacing it with another Ruby
+command classifier. Do not merge or publish that removal until the exact
+upstream-process-path artifacts are published and the real in-guest Homebrew
+tap/install lifecycle completes without renderer loss or
+history-proportional memory growth. The local uid-1000 and privileged proofs
+satisfy the selection gate, but not those release gates.

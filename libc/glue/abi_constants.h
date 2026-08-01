@@ -11,6 +11,10 @@
 /* Non-forking spawn syscall number. */
 #define WASM_POSIX_SYS_SPAWN 500u
 
+/* Process-fork import mode selectors. */
+#define WASM_POSIX_FORK_MODE_FORK 0u
+#define WASM_POSIX_FORK_MODE_VFORK 1u
+
 /* Default process-wasm pthread slot declaration. */
 #define WASM_POSIX_THREAD_SLOT_DECL_DEFAULT -1
 

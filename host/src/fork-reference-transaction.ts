@@ -210,6 +210,8 @@ export class ForkReferenceTransaction {
   private exceptionSlots: ForkExceptionSlotProvider | undefined;
   private readonly scratchChunks: ScratchChunk[] = [];
   private readonly scratchReservations: ScratchReservation[] = [];
+  private scratchCapacityBytes = 0;
+  private scratchCapacityHighWaterBytes = 0;
   /** Index zero is the canonical empty-vector sentinel. */
   private readonly referenceVectors =
     new PagedForkReferenceDirectory<CanonicalReferenceVector>();
@@ -544,6 +546,21 @@ export class ForkReferenceTransaction {
     this.phase = "parent-replay";
   }
 
+  /**
+   * Exact page-rounded scratch capacity observed while capturing this graph.
+   *
+   * Encode and replay use the same generated, stack-disciplined codecs. A
+   * vfork host can therefore reserve this capacity before the child may touch
+   * shared memory instead of discovering scratch exhaustion during replay.
+   */
+  borrowedReplayScratchCapacity(): number {
+    this.requirePhase(
+      "sealed-parent",
+      "read borrowed replay scratch capacity",
+    );
+    return this.scratchCapacityHighWaterBytes;
+  }
+
   attachChild(
     source:
       | Parameters<typeof decodeSegmentedForkReferenceTransaction>[0]
@@ -876,6 +893,11 @@ export class ForkReferenceTransaction {
       }
       chunk = { addr, size: chunkSize, used: 0 };
       this.scratchChunks.push(chunk);
+      this.scratchCapacityBytes += chunkSize;
+      this.scratchCapacityHighWaterBytes = Math.max(
+        this.scratchCapacityHighWaterBytes,
+        this.scratchCapacityBytes,
+      );
     }
     const previousUsed = chunk.used;
     const addr = chunk.addr + previousUsed;
@@ -920,6 +942,7 @@ export class ForkReferenceTransaction {
       && this.scratchChunks.length > 1
     ) {
       this.scratchChunks.pop();
+      this.scratchCapacityBytes -= tail.size;
       this.deallocateScratch!(tail.addr, tail.size);
     }
   }
@@ -2016,6 +2039,8 @@ export class ForkReferenceTransaction {
     }
     this.scratchReservations.length = 0;
     const chunks = this.scratchChunks.splice(0).reverse();
+    this.scratchCapacityBytes = 0;
+    this.scratchCapacityHighWaterBytes = 0;
     let firstScratchError: unknown;
     for (const chunk of chunks) {
       try {

@@ -2055,7 +2055,7 @@
     {
       "kind": "func",
       "name": "kernel_fork_process",
-      "signature": "(i32,i32) -> (i32)"
+      "signature": "(i32,i32,i32) -> (i32)"
     },
     {
       "kind": "func",
@@ -6186,6 +6186,21 @@
             "run_header_size": 8
           }
         }
+      },
+      "process_import": {
+        "kind": "func",
+        "module": "kernel",
+        "name": "kernel_fork",
+        "params": [
+          "i32"
+        ],
+        "results": [
+          "i32"
+        ]
+      },
+      "process_modes": {
+        "fork": 0,
+        "vfork": 1
       },
       "required_exports": [
         {

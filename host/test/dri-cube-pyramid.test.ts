@@ -123,6 +123,7 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
           onFork: async ({
             parentPid: parentForkPid,
             childPid,
+            mode,
             parentMemory,
             continuation,
           }) => {
@@ -181,6 +182,7 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
               memory: childMemory,
               channelOffset: childChannelOffset,
               isForkChild: true,
+              forkMode: mode,
               forkBufAddr,
               forkReplayGate: forkReplay.gate,
               ptrWidth,

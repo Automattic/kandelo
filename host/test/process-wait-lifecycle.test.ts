@@ -2238,6 +2238,46 @@ describe("Rust-owned process wait lifecycle", () => {
     expect(onExit).toHaveBeenCalledWith(42, 137);
   });
 
+  it("cooperatively quiesces a signaled vfork borrower at its pending channel", () => {
+    const memory = createSharedMemory();
+    const channel = createChannel(42, memory);
+    const onExit = vi.fn();
+    const worker = createWorkerHarness({
+      kernel_get_process_exit_signal: vi.fn(() => 9),
+    });
+    worker.processes = new Map([[42, {
+      channels: [channel],
+      memory,
+      borrowedAddressSpace: true,
+    }]]);
+    worker.hostReaped = new Set();
+    worker.callbacks = { onExit };
+    markPending(channel);
+    new DataView(memory.buffer, channel.channelOffset).setUint32(
+      CH_SYSCALL,
+      ABI_SYSCALLS.Kill,
+      true,
+    );
+
+    worker.handleProcessTerminated(channel);
+
+    expect(worker.hostReaped.has(42)).toBe(true);
+    expect(readCompletion(channel)).toEqual({
+      retVal: -1,
+      errVal: 4,
+      status: CHANNEL_STATUS_COMPLETE,
+    });
+    expect(
+      new DataView(memory.buffer, channel.channelOffset).getUint32(
+        CH_SIG_SIGNUM,
+        true,
+      ),
+    ).toBe(9);
+    // The guest's kernel_exit import and terminal memory_quiescent message,
+    // rather than forced Worker termination, now own final host teardown.
+    expect(onExit).not.toHaveBeenCalled();
+  });
+
   it("settles only the exit handshake after Rust has reaped a process", () => {
     const memory = createSharedMemory();
     const channel = createChannel(42, memory);

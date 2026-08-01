@@ -8,7 +8,7 @@ use wasm_posix_shared::WasmStat;
 use wasm_posix_shared::Errno;
 
 use crate::lock::{FileId, OfdId};
-use crate::ofd::FileType;
+use crate::ofd::{FileType, SharedOfdState};
 
 /// POSIX default pipe capacity.
 pub const DEFAULT_PIPE_CAPACITY: usize = 65536;
@@ -57,6 +57,10 @@ pub struct InFlightFd {
     pub status_flags: u32,
     pub host_handle: i64,
     pub offset: i64,
+    /// Exact shared OFD state retained while this descriptor is queued.
+    /// Scalar fields above remain validated reconstruction metadata; current
+    /// offset/status/owner values come from this handle at receive time.
+    shared_state: SharedOfdState,
     pub path: Vec<u8>,
     /// For kernel-backed pipe FDs: the exact reference transferred to the
     /// receiver. Non-pipe descriptors leave this as `None`.
@@ -77,6 +81,29 @@ impl InFlightFd {
         offset: i64,
         path: Vec<u8>,
     ) -> Self {
+        let shared_state = SharedOfdState::new(status_flags, offset, 0);
+        Self::new_with_shared_state(
+            ofd_id,
+            file_id,
+            file_type,
+            status_flags,
+            host_handle,
+            offset,
+            path,
+            shared_state,
+        )
+    }
+
+    pub(crate) fn new_with_shared_state(
+        ofd_id: OfdId,
+        file_id: Option<FileId>,
+        file_type: FileType,
+        status_flags: u32,
+        host_handle: i64,
+        offset: i64,
+        path: Vec<u8>,
+        shared_state: SharedOfdState,
+    ) -> Self {
         Self {
             ofd_id,
             file_id,
@@ -84,6 +111,7 @@ impl InFlightFd {
             status_flags,
             host_handle,
             offset,
+            shared_state,
             path,
             pipe_ref_kind: None,
             owns_reference: false,
@@ -154,6 +182,7 @@ impl InFlightFd {
             status_flags: self.status_flags,
             host_handle: self.host_handle,
             offset: self.offset,
+            shared_state: self.shared_state.clone(),
             path,
             pipe_ref_kind: self.pipe_ref_kind,
             owns_reference: false,
@@ -166,6 +195,10 @@ impl InFlightFd {
 
     pub(crate) fn owns_reference(&self) -> bool {
         self.owns_reference
+    }
+
+    pub(crate) fn shared_state(&self) -> SharedOfdState {
+        self.shared_state.clone()
     }
 }
 

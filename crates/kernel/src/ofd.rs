@@ -2,11 +2,12 @@ extern crate alloc;
 
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};
+use alloc::rc::Rc;
 use alloc::vec::Vec;
-use core::cell::UnsafeCell;
+use core::cell::{Cell, UnsafeCell};
 use core::sync::atomic::{AtomicU64, Ordering};
 use wasm_posix_shared::Errno;
-use wasm_posix_shared::flags::{O_APPEND, O_NONBLOCK, O_PATH};
+use wasm_posix_shared::flags::{O_ACCMODE, O_APPEND, O_NONBLOCK, O_PATH};
 
 use crate::fd::FdTable;
 use crate::lock::{FileId, OfdId};
@@ -283,11 +284,16 @@ pub struct OpenFileDesc {
     /// their tagged object identity.
     pub file_id: Option<FileId>,
     pub file_type: FileType,
-    pub status_flags: u32,
+    /// Mutable state shared by every descriptor naming this OFD.
+    ///
+    /// Descriptor tables and host directory handles remain process-owned,
+    /// but `dup`, `fork`, `vfork`, `posix_spawn`, and `SCM_RIGHTS` must all
+    /// observe one offset, one set of file-status flags, and one async owner.
+    /// The Wasm kernel serializes access on its dedicated worker, while Rc
+    /// gives this state exact ownership and retirement without a global map.
+    pub(crate) shared_state: SharedOfdState,
     pub host_handle: i64,
-    pub offset: i64,
     pub ref_count: u32,
-    pub owner_pid: u32,
     pub path: Vec<u8>, // resolved absolute path
     /// Host directory handle for getdents64 iteration (lazily opened).
     /// -1 means not yet opened, -2 means exhausted (EOF).
@@ -296,6 +302,8 @@ pub struct OpenFileDesc {
     pub dir_synth_state: u8,
     /// Cumulative entry count across getdents64 calls — used as d_off cookie for seekdir.
     pub dir_entry_offset: i64,
+    /// Shared-position generation represented by this process-local iterator.
+    pub(crate) dir_position_generation: u64,
     /// Host entry already consumed by `host_readdir` but not yet exposed to
     /// the guest because it did not fit in the caller's getdents64 buffer.
     /// The next getdents64 call must retry this exact entry before advancing
@@ -306,6 +314,62 @@ pub struct OpenFileDesc {
     pub dri_state: Option<Box<DriOfdState>>,
 }
 
+struct SharedOfdStateInner {
+    status_flags: Cell<u32>,
+    offset: Cell<i64>,
+    owner_pid: Cell<u32>,
+    position_generation: Cell<u64>,
+}
+
+/// Exact-ownership handle for the mutable POSIX portion of an OFD.
+///
+/// This is kernel-internal and does not change the guest/host ABI.
+#[derive(Clone)]
+pub(crate) struct SharedOfdState(Rc<SharedOfdStateInner>);
+
+impl SharedOfdState {
+    pub(crate) fn new(status_flags: u32, offset: i64, owner_pid: u32) -> Self {
+        Self(Rc::new(SharedOfdStateInner {
+            status_flags: Cell::new(status_flags),
+            offset: Cell::new(offset),
+            owner_pid: Cell::new(owner_pid),
+            position_generation: Cell::new(0),
+        }))
+    }
+
+    fn status_flags(&self) -> u32 {
+        self.0.status_flags.get()
+    }
+
+    fn set_status_flags(&self, value: u32) {
+        self.0.status_flags.set(value);
+    }
+
+    fn offset(&self) -> i64 {
+        self.0.offset.get()
+    }
+
+    fn set_offset(&self, value: i64) {
+        if self.0.offset.replace(value) != value {
+            self.0
+                .position_generation
+                .set(self.0.position_generation.get().wrapping_add(1));
+        }
+    }
+
+    fn owner_pid(&self) -> u32 {
+        self.0.owner_pid.get()
+    }
+
+    fn set_owner_pid(&self, value: u32) {
+        self.0.owner_pid.set(value);
+    }
+
+    fn position_generation(&self) -> u64 {
+        self.0.position_generation.get()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PendingDirEntry {
     pub ino: u64,
@@ -314,6 +378,46 @@ pub(crate) struct PendingDirEntry {
 }
 
 impl OpenFileDesc {
+    pub fn status_flags(&self) -> u32 {
+        self.shared_state.status_flags()
+    }
+
+    pub(crate) fn set_status_flags_raw(&self, value: u32) {
+        self.shared_state.set_status_flags(value);
+    }
+
+    pub fn offset(&self) -> i64 {
+        self.shared_state.offset()
+    }
+
+    pub(crate) fn set_offset(&self, value: i64) {
+        self.shared_state.set_offset(value);
+    }
+
+    pub(crate) fn owner_pid(&self) -> u32 {
+        self.shared_state.owner_pid()
+    }
+
+    pub(crate) fn set_owner_pid(&self, value: u32) {
+        self.shared_state.set_owner_pid(value);
+    }
+
+    pub(crate) fn shared_state(&self) -> SharedOfdState {
+        self.shared_state.clone()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn shared_state_ref_count(&self) -> usize {
+        Rc::strong_count(&self.shared_state.0)
+    }
+
+    /// Restore object identity after fork deserialization preserved only an
+    /// OfdId and point-in-time scalar values.
+    fn link_shared_state(&mut self, state: SharedOfdState) {
+        self.shared_state = state;
+        self.reset_directory_iterator_for_reopen();
+    }
+
     /// Whether this open description denotes a terminal endpoint.
     ///
     /// Host-backed standard streams predate the dedicated PTY file types, so
@@ -352,8 +456,8 @@ impl OpenFileDesc {
             return;
         }
 
-        debug_assert!(self.offset >= 0, "directory cookies cannot be negative");
-        let cookie = self.offset.max(0);
+        debug_assert!(self.offset() >= 0, "directory cookies cannot be negative");
+        let cookie = self.offset().max(0);
         self.dir_host_handle = if self.host_handle == crate::procfs::PROCFS_DIR_HANDLE
             || self.host_handle == crate::devfs::DEVFS_DIR_HANDLE
         {
@@ -363,14 +467,25 @@ impl OpenFileDesc {
         };
         self.dir_synth_state = cookie.min(2) as u8;
         self.dir_entry_offset = cookie;
+        self.dir_position_generation = self.shared_state.position_generation();
         self.dir_pending_entry = None;
+    }
+
+    pub(crate) fn directory_iterator_is_stale(&self) -> bool {
+        self.file_type == FileType::Directory
+            && self.dir_position_generation != self.shared_state.position_generation()
+    }
+
+    pub(crate) fn set_directory_offset(&mut self, value: i64) {
+        self.set_offset(value);
+        self.dir_position_generation = self.shared_state.position_generation();
     }
 
     /// Whether this OFD is a pathname capability rather than an I/O handle.
     /// Operations that act directly on an fd must reject path-only OFDs unless
     /// their contract explicitly accepts O_PATH/O_SEARCH descriptors.
     pub fn is_path_only(&self) -> bool {
-        self.status_flags & O_PATH != 0
+        self.status_flags() & O_PATH != 0
     }
 
     /// Access the `DriFdState` for renderD128- or card0-backed OFDs.
@@ -448,15 +563,14 @@ impl OfdTable {
             ofd_id: allocate_ofd_id(),
             file_id: None,
             file_type,
-            status_flags,
+            shared_state: SharedOfdState::new(status_flags, 0, 0),
             host_handle,
-            offset: 0,
             ref_count: 1,
-            owner_pid: 0,
             path,
             dir_host_handle: -1,
             dir_synth_state: 0,
             dir_entry_offset: 0,
+            dir_position_generation: 0,
             dir_pending_entry: None,
             dri_state: None,
         };
@@ -474,23 +588,28 @@ impl OfdTable {
         file_type: FileType,
         status_flags: u32,
         host_handle: i64,
-        offset: i64,
+        _offset: i64,
+        shared_state: SharedOfdState,
         path: Vec<u8>,
     ) -> usize {
         observe_ofd_id(ofd_id);
+        debug_assert_eq!(
+            shared_state.status_flags() & O_ACCMODE,
+            status_flags & O_ACCMODE,
+            "SCM_RIGHTS changed an OFD's immutable access mode"
+        );
         let mut ofd = OpenFileDesc {
             ofd_id,
             file_id,
             file_type,
-            status_flags,
+            shared_state,
             host_handle,
-            offset,
             ref_count: 1,
-            owner_pid: 0,
             path,
             dir_host_handle: -1,
             dir_synth_state: 0,
             dir_entry_offset: 0,
+            dir_position_generation: 0,
             dir_pending_entry: None,
             dri_state: None,
         };
@@ -632,11 +751,24 @@ impl OfdTable {
     pub fn set_status_flags(&mut self, idx: usize, new_flags: u32) {
         if let Some(ofd) = self.get_mut(idx) {
             // Preserve everything except the modifiable bits.
-            let preserved = ofd.status_flags & !SETFL_MODIFIABLE;
+            let preserved = ofd.status_flags() & !SETFL_MODIFIABLE;
             // Take only the modifiable bits from new_flags.
             let updated = new_flags & SETFL_MODIFIABLE;
-            ofd.status_flags = preserved | updated;
+            ofd.set_status_flags_raw(preserved | updated);
         }
+    }
+
+    /// Relink fork-deserialized entries to the source process's live shared
+    /// state. Fork preserves table slots; an identity mismatch is corruption.
+    pub(crate) fn link_shared_states_from(&mut self, source: &OfdTable) -> Result<(), Errno> {
+        for (index, ofd) in self.iter_mut() {
+            let source_ofd = source.get(index).ok_or(Errno::EINVAL)?;
+            if source_ofd.ofd_id != ofd.ofd_id {
+                return Err(Errno::EINVAL);
+            }
+            ofd.link_shared_state(source_ofd.shared_state());
+        }
+        Ok(())
     }
 }
 
@@ -653,11 +785,11 @@ mod tests {
 
         let ofd = table.get(idx).expect("OFD should exist at index 0");
         assert_eq!(ofd.file_type, FileType::Regular);
-        assert_eq!(ofd.status_flags, O_RDWR | O_APPEND);
+        assert_eq!(ofd.status_flags(), O_RDWR | O_APPEND);
         assert_eq!(ofd.host_handle, 42);
         assert_ne!(ofd.ofd_id.0, 0);
         assert_eq!(ofd.file_id, None);
-        assert_eq!(ofd.offset, 0);
+        assert_eq!(ofd.offset(), 0);
         assert_eq!(ofd.ref_count, 1);
         assert_eq!(ofd.path, b"/test");
     }
@@ -728,8 +860,8 @@ mod tests {
 
         // Verify initial state: access mode is O_RDWR, O_APPEND is set
         let ofd = table.get(idx).unwrap();
-        assert_eq!(ofd.status_flags & O_ACCMODE, O_RDWR);
-        assert_ne!(ofd.status_flags & O_APPEND, 0);
+        assert_eq!(ofd.status_flags() & O_ACCMODE, O_RDWR);
+        assert_ne!(ofd.status_flags() & O_APPEND, 0);
 
         // set_status_flags with O_NONBLOCK (no O_APPEND, different access mode bits)
         // Per POSIX F_SETFL: access mode must be preserved, only O_APPEND/O_NONBLOCK modifiable
@@ -737,11 +869,11 @@ mod tests {
 
         let ofd = table.get(idx).unwrap();
         // Access mode should still be O_RDWR
-        assert_eq!(ofd.status_flags & O_ACCMODE, O_RDWR);
+        assert_eq!(ofd.status_flags() & O_ACCMODE, O_RDWR);
         // O_APPEND should be removed (caller did not include it)
-        assert_eq!(ofd.status_flags & O_APPEND, 0);
+        assert_eq!(ofd.status_flags() & O_APPEND, 0);
         // O_NONBLOCK should be added
-        assert_ne!(ofd.status_flags & O_NONBLOCK, 0);
+        assert_ne!(ofd.status_flags() & O_NONBLOCK, 0);
     }
 
     #[test]
@@ -820,15 +952,14 @@ mod tests {
                 ofd_id: ofd.ofd_id,
                 file_id: ofd.file_id,
                 file_type: ofd.file_type,
-                status_flags: ofd.status_flags,
+                shared_state: ofd.shared_state(),
                 host_handle: ofd.host_handle,
-                offset: ofd.offset,
                 ref_count: ofd.ref_count,
-                owner_pid: ofd.owner_pid,
                 path: ofd.path.clone(),
                 dir_host_handle: -1,
                 dir_synth_state: 0,
                 dir_entry_offset: 0,
+                dir_position_generation: 0,
                 dir_pending_entry: None,
                 dri_state: None,
             });
@@ -849,7 +980,7 @@ mod tests {
             b"/transferred".to_vec(),
         );
         let source_ofd = source.get_mut(source_idx).unwrap();
-        source_ofd.offset = 7;
+        source_ofd.set_directory_offset(7);
         source_ofd.dir_host_handle = 99;
         source_ofd.dir_synth_state = 2;
         source_ofd.dir_entry_offset = 7;
@@ -865,14 +996,15 @@ mod tests {
             source_snapshot.ofd_id,
             source_snapshot.file_id,
             source_snapshot.file_type,
-            source_snapshot.status_flags,
+            source_snapshot.status_flags(),
             source_snapshot.host_handle,
-            source_snapshot.offset,
+            source_snapshot.offset(),
+            source_snapshot.shared_state(),
             source_snapshot.path.clone(),
         );
         let received = receiver.get(received_idx).unwrap();
         assert_eq!(received.ofd_id, source_snapshot.ofd_id);
-        assert_eq!(received.offset, 7);
+        assert_eq!(received.offset(), 7);
         assert_eq!(received.dir_entry_offset, 7);
         assert_eq!(received.dir_synth_state, 2);
         assert_eq!(received.dir_host_handle, -1);
@@ -907,6 +1039,7 @@ mod tests {
                 O_RDONLY,
                 sentinel,
                 5,
+                SharedOfdState::new(O_RDONLY, 5, 0),
                 b"/virtual".to_vec(),
             );
             let ofd = table.get(idx).unwrap();
@@ -1041,11 +1174,11 @@ mod tests {
 
         let mut visited = Vec::new();
         for (i, ofd) in table.iter_mut() {
-            ofd.offset = (i as i64) * 100;
+            ofd.set_offset((i as i64) * 100);
             visited.push((i, ofd.host_handle));
         }
         assert_eq!(visited, vec![(0, 1), (2, 3)]);
-        assert_eq!(table.get(0).unwrap().offset, 0);
-        assert_eq!(table.get(2).unwrap().offset, 200);
+        assert_eq!(table.get(0).unwrap().offset(), 0);
+        assert_eq!(table.get(2).unwrap().offset(), 200);
     }
 }

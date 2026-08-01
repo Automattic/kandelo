@@ -9,7 +9,8 @@
   (import "env" "memory" (memory 1 16384 shared))
   (import "env" "__channel_base" (global $__channel_base (mut i32)))
   (import "kernel" "kernel_exit" (func $kernel_exit (param i32)))
-  (import "kernel" "kernel_fork" (func $kernel_fork (result i32)))
+  (import "kernel" "kernel_fork"
+    (func $kernel_fork (param i32) (result i32)))
 
   (tag $func_payload (param funcref))
   (tag $extern_payload (param externref))
@@ -156,6 +157,7 @@
     drop
     local.set $caught
 
+    i32.const 0
     call $kernel_fork
     local.set $pid
     local.get $pid
@@ -194,6 +196,7 @@
     drop
     local.set $caught
 
+    i32.const 0
     call $kernel_fork
     local.set $pid
     local.get $pid
