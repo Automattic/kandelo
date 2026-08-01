@@ -14,6 +14,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import warnings
+import zipfile
 from typing import Any
 from unittest import mock
 
@@ -2884,6 +2886,180 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             )["packages"],
             [{"name": "alpha"}],
         )
+
+    def test_closed_selection_release_is_deterministic_and_round_trips(
+        self,
+    ) -> None:
+        fixture = Fixture(multi_arch=True)
+        self.addCleanup(fixture.close)
+        alpha = fixture.root / "selection-release-alpha"
+        fixture.derive(
+            "alpha",
+            [("wasm32", fixture.publication("alpha", "wasm32"))],
+            [],
+            alpha,
+        )
+        selection = fixture.root / "selection-release-candidate"
+        EXECUTOR.prepare_selection(
+            campaign_path=fixture.campaign_path,
+            source_tap_root=fixture.source,
+            roots=["alpha"],
+            arch="wasm32",
+            handoff_roots=[alpha],
+            output=selection,
+            bottle_merger=fixture.merge_dependency,
+            sidecar_generator=fixture.generate_sidecars,
+            tap_validator=fixture.validate_tap,
+        )
+        first = fixture.root / "selection-release-first"
+        second = fixture.root / "selection-release-second"
+        EXECUTOR.prepare_selection_release(
+            selection_root=selection, output=first
+        )
+        EXECUTOR.prepare_selection_release(
+            selection_root=selection, output=second
+        )
+        self.assertEqual(
+            (first / "release-manifest.json").read_bytes(),
+            (second / "release-manifest.json").read_bytes(),
+        )
+        for name in (
+            EXECUTOR.SELECTION_DESCRIPTOR_ASSET,
+            EXECUTOR.SELECTION_ARCHIVE_ASSET,
+        ):
+            self.assertEqual(
+                (first / "assets" / name).read_bytes(),
+                (second / "assets" / name).read_bytes(),
+            )
+        manifest = json.loads(
+            (first / "release-manifest.json").read_text()
+        )
+        self.assertIn(
+            "not the complete tap catalog", manifest["body"]
+        )
+        fetch_json, fetch_asset, _release = release_fetchers(first)
+        output = fixture.root / "selection-release-readback"
+        receipt = fixture.root / "selection-release-receipt.json"
+        EXECUTOR.fetch_selection_release(
+            repository=TAP_REPOSITORY,
+            tag=manifest["tag"],
+            output=output,
+            receipt_output=receipt,
+            json_fetcher=fetch_json,
+            asset_fetcher=fetch_asset,
+        )
+        self.assertEqual(
+            (selection / "selection.json").read_bytes(),
+            (output / "selection.json").read_bytes(),
+        )
+        self.assertEqual(
+            EXECUTOR.filesystem_git_tree_oid(
+                selection / "tap", "source selected tap"
+            ),
+            EXECUTOR.filesystem_git_tree_oid(
+                output / "tap", "downloaded selected tap"
+            ),
+        )
+        receipt_value = json.loads(receipt.read_text())
+        self.assertEqual(
+            receipt_value["visibility"],
+            "public-anonymous-readback",
+        )
+        self.assertEqual(receipt_value["formula_count"], 1)
+
+    def test_closed_selection_release_rejects_unsafe_tree_and_zip(
+        self,
+    ) -> None:
+        fixture = Fixture(multi_arch=True)
+        self.addCleanup(fixture.close)
+        alpha = fixture.root / "unsafe-selection-alpha"
+        fixture.derive(
+            "alpha",
+            [("wasm32", fixture.publication("alpha", "wasm32"))],
+            [],
+            alpha,
+        )
+        selection = fixture.root / "unsafe-selection"
+        EXECUTOR.prepare_selection(
+            campaign_path=fixture.campaign_path,
+            source_tap_root=fixture.source,
+            roots=["alpha"],
+            arch="wasm32",
+            handoff_roots=[alpha],
+            output=selection,
+            bottle_merger=fixture.merge_dependency,
+            sidecar_generator=fixture.generate_sidecars,
+            tap_validator=fixture.validate_tap,
+        )
+
+        os.symlink("Formula/alpha.rb", selection / "tap/unsafe-link")
+        unsafe_output = fixture.root / "unsafe-selection-release"
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "prepared Git tree|symlink or special file",
+        ):
+            EXECUTOR.prepare_selection_release(
+                selection_root=selection, output=unsafe_output
+            )
+        self.assertFalse(unsafe_output.exists())
+        (selection / "tap/unsafe-link").unlink()
+
+        prepared = fixture.root / "duplicate-selection-release"
+        EXECUTOR.prepare_selection_release(
+            selection_root=selection, output=prepared
+        )
+        descriptor_path = (
+            prepared / "assets" / EXECUTOR.SELECTION_DESCRIPTOR_ASSET
+        )
+        archive_path = (
+            prepared / "assets" / EXECUTOR.SELECTION_ARCHIVE_ASSET
+        )
+        descriptor = json.loads(descriptor_path.read_text())
+        first_record = descriptor["tap_archive"]["inventory"][0]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            with zipfile.ZipFile(archive_path, mode="a") as archive:
+                info = zipfile.ZipInfo(
+                    f"tap/{first_record['path']}",
+                    date_time=(2000, 1, 1, 0, 0, 0),
+                )
+                info.create_system = 3
+                info.compress_type = zipfile.ZIP_STORED
+                info.external_attr = int(first_record["mode"], 8) << 16
+                archive.writestr(info, b"duplicate")
+        descriptor["tap_archive"]["bytes"] = archive_path.stat().st_size
+        descriptor["tap_archive"]["sha256"] = sha256(
+            archive_path.read_bytes()
+        )
+        write_json(descriptor_path, descriptor)
+        manifest_path = prepared / "release-manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        descriptor_payload = descriptor_path.read_bytes()
+        descriptor_sha = sha256(descriptor_payload)
+        manifest["tag"] = (
+            f"homebrew-prefix-selection-sha256-{descriptor_sha}"
+        )
+        for record in manifest["assets"]:
+            if record["name"] == EXECUTOR.SELECTION_DESCRIPTOR_ASSET:
+                record["bytes"] = len(descriptor_payload)
+                record["sha256"] = descriptor_sha
+            elif record["name"] == EXECUTOR.SELECTION_ARCHIVE_ASSET:
+                record["bytes"] = archive_path.stat().st_size
+                record["sha256"] = sha256(archive_path.read_bytes())
+        write_json(manifest_path, manifest)
+        fetch_json, fetch_asset, _release = release_fetchers(prepared)
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "inventory is incomplete|repeats a member",
+        ):
+            EXECUTOR.fetch_selection_release(
+                repository=TAP_REPOSITORY,
+                tag=manifest["tag"],
+                output=fixture.root / "duplicate-readback",
+                receipt_output=fixture.root / "duplicate-receipt.json",
+                json_fetcher=fetch_json,
+                asset_fetcher=fetch_asset,
+            )
 
     def test_incomplete_named_closure_produces_no_candidate(
         self,

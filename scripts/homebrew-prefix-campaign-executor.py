@@ -19,6 +19,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from collections.abc import Callable, Iterable
 from typing import Any, NoReturn
 
@@ -38,6 +39,9 @@ CAMPAIGN_TAG = re.compile(
 HANDOFF_TAG = re.compile(
     r"^homebrew-prefix-handoff-sha256-([0-9a-f]{64})$"
 )
+SELECTION_TAG = re.compile(
+    r"^homebrew-prefix-selection-sha256-([0-9a-f]{64})$"
+)
 SAFE_PATH = re.compile(
     r"^[A-Za-z0-9_.+-]+(?:/[A-Za-z0-9_.+-]+)*$"
 )
@@ -49,6 +53,8 @@ MAX_FORMULAE = 256
 MAX_VARIANTS = MAX_FORMULAE * 2
 MAX_DEPENDENCIES = 256
 MAX_RELEASE_ASSETS = 32
+MAX_SELECTION_FILES = 8_192
+MAX_SELECTION_TREE_BYTES = 512 * 1024 * 1024
 HTTP_TIMEOUT = 300
 CAMPAIGN_COMMIT_TIMESTAMP = 946684800
 CAMPAIGN_COMMIT_TIMEZONE = "+0000"
@@ -104,6 +110,8 @@ FINAL_TAP_COMMIT_MESSAGE = (
     "Activate the complete /opt/kandelo/homebrew catalog atomically.\n"
     "Retire the one-shot campaign authority after validation.\n"
 )
+SELECTION_DESCRIPTOR_ASSET = "closed-selection.json"
+SELECTION_ARCHIVE_ASSET = "closed-selection.zip"
 
 
 class ExecutorError(RuntimeError):
@@ -4743,6 +4751,9 @@ def prepare_selection(
             "arch": arch,
             "campaign": {
                 "guest_layout_sha256": layout_sha256,
+                "kandelo_commit": campaign["authority"][
+                    "kandelo_commit"
+                ],
                 "sha256": sha256_bytes(campaign_payload),
                 "tag": (
                     "homebrew-prefix-campaign-sha256-"
@@ -4780,6 +4791,759 @@ def prepare_selection(
     finally:
         shutil.rmtree(temporary, ignore_errors=True)
         shutil.rmtree(input_snapshot, ignore_errors=True)
+
+
+def validate_selection_manifest(
+    value: Any,
+    payload: bytes,
+    tap_root: pathlib.Path,
+) -> dict[str, Any]:
+    value = exact_keys(
+        value,
+        {
+            "arch",
+            "campaign",
+            "formulae",
+            "kandelo_abi",
+            "kind",
+            "roots",
+            "schema",
+            "tap",
+        },
+        "closed selection",
+    )
+    if (
+        value["schema"] != 1
+        or value["kind"]
+        != "kandelo-homebrew-closed-selection-candidate"
+    ):
+        fail("closed selection has an unsupported contract")
+    if value["arch"] not in ("wasm32", "wasm64"):
+        fail("closed selection architecture is invalid")
+    require_int(
+        value["kandelo_abi"],
+        "closed selection Kandelo ABI",
+        1,
+        2**32 - 1,
+    )
+    campaign = exact_keys(
+        value["campaign"],
+        {"guest_layout_sha256", "kandelo_commit", "sha256", "tag"},
+        "closed selection campaign",
+    )
+    campaign_sha256 = require_string(
+        campaign["sha256"],
+        "closed selection campaign SHA-256",
+        SHA256,
+    )
+    require_string(
+        campaign["guest_layout_sha256"],
+        "closed selection guest layout SHA-256",
+        SHA256,
+    )
+    require_string(
+        campaign["kandelo_commit"],
+        "closed selection Kandelo commit",
+        COMMIT,
+    )
+    if campaign["tag"] != (
+        f"homebrew-prefix-campaign-sha256-{campaign_sha256}"
+    ):
+        fail("closed selection campaign tag differs from its digest")
+
+    roots = value["roots"]
+    if (
+        not isinstance(roots, list)
+        or not roots
+        or len(roots) > MAX_FORMULAE
+    ):
+        fail("closed selection roots are invalid")
+    checked_roots = [
+        require_string(root, "closed selection root", FORMULA)
+        for root in roots
+    ]
+    if checked_roots != sorted(set(checked_roots)):
+        fail("closed selection roots must be unique and sorted")
+
+    formulae = value["formulae"]
+    if (
+        not isinstance(formulae, list)
+        or not formulae
+        or len(formulae) > MAX_FORMULAE
+    ):
+        fail("closed selection Formula inventory is invalid")
+    names: list[str] = []
+    for position, raw in enumerate(formulae):
+        formula = exact_keys(
+            raw,
+            {"archive", "formula", "handoff", "version"},
+            f"closed selection Formula #{position}",
+        )
+        name = require_string(
+            formula["formula"],
+            f"closed selection Formula #{position} name",
+            FORMULA,
+        )
+        if name in names:
+            fail(f"closed selection repeats Formula {name}")
+        names.append(name)
+        require_string(
+            formula["version"],
+            f"closed selection Formula {name} version",
+            VERSION,
+        )
+        archive = exact_keys(
+            formula["archive"],
+            {"bytes", "sha256"},
+            f"closed selection Formula {name} archive",
+        )
+        require_int(
+            archive["bytes"],
+            f"closed selection Formula {name} archive bytes",
+            1,
+            MAX_ASSET_BYTES,
+        )
+        require_string(
+            archive["sha256"],
+            f"closed selection Formula {name} archive SHA-256",
+            SHA256,
+        )
+        handoff = exact_keys(
+            formula["handoff"],
+            {"manifest_sha256", "tag"},
+            f"closed selection Formula {name} handoff",
+        )
+        handoff_sha256 = require_string(
+            handoff["manifest_sha256"],
+            f"closed selection Formula {name} handoff SHA-256",
+            SHA256,
+        )
+        if handoff["tag"] != (
+            f"homebrew-prefix-handoff-sha256-{handoff_sha256}"
+        ):
+            fail(
+                f"closed selection Formula {name} handoff tag "
+                "differs from its digest"
+            )
+    if not set(checked_roots).issubset(names):
+        fail("closed selection roots are outside its Formula inventory")
+
+    tap = exact_keys(
+        value["tap"],
+        {
+            "name",
+            "path",
+            "prepared_tree_git_oid",
+            "repository",
+            "source_commit",
+            "source_tree_git_oid",
+        },
+        "closed selection tap",
+    )
+    if tap["path"] != "tap":
+        fail("closed selection tap path is not canonical")
+    require_string(
+        tap["name"], "closed selection tap name", REPOSITORY
+    )
+    require_string(
+        tap["repository"],
+        "closed selection tap repository",
+        REPOSITORY,
+    )
+    require_string(
+        tap["source_commit"],
+        "closed selection tap source commit",
+        COMMIT,
+    )
+    require_string(
+        tap["source_tree_git_oid"],
+        "closed selection tap source tree",
+        COMMIT,
+    )
+    prepared_tree = require_string(
+        tap["prepared_tree_git_oid"],
+        "closed selection prepared tap tree",
+        COMMIT,
+    )
+    if filesystem_git_tree_oid(tap_root, "closed selection tap") != (
+        prepared_tree
+    ):
+        fail("closed selection tap differs from its prepared Git tree")
+    if payload != pretty_json(value):
+        fail("closed selection is not canonical pretty JSON")
+    return value
+
+
+def load_selection_candidate(
+    root: pathlib.Path,
+) -> tuple[dict[str, Any], bytes, pathlib.Path]:
+    root = real_directory(root, "closed selection root")
+    children = sorted(child.name for child in root.iterdir())
+    if children != ["selection.json", "tap"]:
+        fail("closed selection root must contain only selection.json and tap")
+    value, payload = load_json_bytes(
+        root / "selection.json", "closed selection manifest"
+    )
+    tap_root = real_directory(root / "tap", "closed selection tap")
+    return validate_selection_manifest(value, payload, tap_root), payload, tap_root
+
+
+def selection_relative_path(path: pathlib.Path) -> str:
+    value = path.as_posix()
+    if (
+        not value
+        or len(value.encode("utf-8")) > 1024
+        or value.startswith("/")
+        or "\\" in value
+        or any(ord(character) < 0x20 or ord(character) > 0x7E for character in value)
+    ):
+        fail("closed selection tap contains an unsafe path")
+    parts = value.split("/")
+    if any(part in ("", ".", "..", ".git") for part in parts):
+        fail("closed selection tap contains an unsafe path")
+    return value
+
+
+def selection_tree_inventory(
+    tap_root: pathlib.Path,
+) -> list[dict[str, Any]]:
+    tap_root = real_directory(tap_root, "closed selection tap")
+    inventory: list[dict[str, Any]] = []
+    total = 0
+    for child in sorted(
+        tap_root.rglob("*"),
+        key=lambda path: path.relative_to(tap_root).as_posix(),
+    ):
+        relative = selection_relative_path(child.relative_to(tap_root))
+        metadata = child.lstat()
+        if stat.S_ISDIR(metadata.st_mode) and not child.is_symlink():
+            continue
+        if not stat.S_ISREG(metadata.st_mode) or child.is_symlink():
+            fail("closed selection tap contains a symlink or special file")
+        byte_count = require_int(
+            metadata.st_size,
+            f"closed selection tap file {relative} size",
+            0,
+            MAX_ASSET_BYTES,
+        )
+        total += byte_count
+        if total > MAX_SELECTION_TREE_BYTES:
+            fail("closed selection tap exceeds its total byte bound")
+        inventory.append(
+            {
+                "bytes": byte_count,
+                "mode": (
+                    "100755"
+                    if metadata.st_mode
+                    & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+                    else "100644"
+                ),
+                "path": relative,
+                "sha256": sha256_file(child),
+            }
+        )
+        if len(inventory) > MAX_SELECTION_FILES:
+            fail("closed selection tap has too many files")
+    if not inventory:
+        fail("closed selection tap is empty")
+    return inventory
+
+
+def write_selection_archive(
+    tap_root: pathlib.Path,
+    destination: pathlib.Path,
+    inventory: list[dict[str, Any]],
+) -> None:
+    # WHY: the release tag ultimately binds the archive's SHA-256. Stored ZIP
+    # entries avoid host zlib-version differences, so macOS and Linux produce
+    # the same bytes for the same prepared tap tree.
+    with zipfile.ZipFile(
+        destination,
+        mode="x",
+        compression=zipfile.ZIP_STORED,
+        allowZip64=True,
+    ) as archive:
+        for record in inventory:
+            relative = record["path"]
+            source = tap_root / relative
+            info = zipfile.ZipInfo(
+                filename=f"tap/{relative}",
+                date_time=(2000, 1, 1, 0, 0, 0),
+            )
+            info.create_system = 3
+            info.compress_type = zipfile.ZIP_STORED
+            info.external_attr = int(record["mode"], 8) << 16
+            info.flag_bits |= 0x800
+            archive.writestr(info, source.read_bytes())
+
+
+def extract_selection_archive(
+    archive_path: pathlib.Path,
+    output: pathlib.Path,
+    inventory: list[dict[str, Any]],
+) -> pathlib.Path:
+    regular_file(
+        archive_path,
+        "closed selection tap archive",
+        MAX_ASSET_BYTES,
+    )
+    output = validate_new_output(
+        output, "closed selection extracted tap", (archive_path,)
+    )
+    expected = {f"tap/{record['path']}": record for record in inventory}
+    if len(expected) != len(inventory):
+        fail("closed selection tap inventory repeats a path")
+    temporary = pathlib.Path(
+        tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent)
+    )
+    try:
+        result = temporary / "tap"
+        result.mkdir()
+        try:
+            with zipfile.ZipFile(archive_path, mode="r") as archive:
+                members = archive.infolist()
+                if len(members) != len(expected):
+                    fail("closed selection archive inventory is incomplete")
+                seen: set[str] = set()
+                for member in members:
+                    if member.filename in seen:
+                        fail("closed selection archive repeats a member")
+                    seen.add(member.filename)
+                    record = expected.get(member.filename)
+                    if record is None:
+                        fail("closed selection archive contains an unexpected member")
+                    if (
+                        member.is_dir()
+                        or member.flag_bits & 0x1
+                        or member.compress_type != zipfile.ZIP_STORED
+                        or member.file_size != record["bytes"]
+                        or member.compress_size != record["bytes"]
+                        or member.file_size > MAX_ASSET_BYTES
+                        or member.create_system != 3
+                        or ((member.external_attr >> 16) & 0o177777)
+                        != int(record["mode"], 8)
+                    ):
+                        fail("closed selection archive member metadata differs")
+                    relative = member.filename.removeprefix("tap/")
+                    if f"tap/{selection_relative_path(pathlib.Path(relative))}" != (
+                        member.filename
+                    ):
+                        fail("closed selection archive member path is unsafe")
+                    destination = private_destination(
+                        result, relative, "closed selection archive member"
+                    )
+                    digest = hashlib.sha256()
+                    copied = 0
+                    with archive.open(member, mode="r") as source, destination.open(
+                        "xb"
+                    ) as target:
+                        while chunk := source.read(1024 * 1024):
+                            copied += len(chunk)
+                            if copied > record["bytes"]:
+                                fail(
+                                    "closed selection archive member "
+                                    "exceeds its bound"
+                                )
+                            digest.update(chunk)
+                            target.write(chunk)
+                    if (
+                        copied != record["bytes"]
+                        or digest.hexdigest() != record["sha256"]
+                    ):
+                        fail("closed selection archive member bytes differ")
+                    destination.chmod(int(record["mode"], 8) & 0o777)
+        except (OSError, zipfile.BadZipFile, RuntimeError) as error:
+            fail(f"cannot extract closed selection archive: {error}")
+        if seen != set(expected):
+            fail("closed selection archive inventory is incomplete")
+        os.rename(result, output)
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+    return output
+
+
+def validate_selection_descriptor(
+    value: Any,
+    payload: bytes,
+) -> dict[str, Any]:
+    value = exact_keys(
+        value,
+        {"kind", "schema", "selection_manifest", "tap_archive"},
+        "closed selection descriptor",
+    )
+    if (
+        value["schema"] != 1
+        or value["kind"] != "kandelo-homebrew-closed-selection"
+    ):
+        fail("closed selection descriptor has an unsupported contract")
+    selection_record = exact_keys(
+        value["selection_manifest"],
+        {"bytes", "sha256", "value"},
+        "closed selection descriptor manifest",
+    )
+    selection_payload = pretty_json(selection_record["value"])
+    if (
+        require_int(
+            selection_record["bytes"],
+            "closed selection manifest bytes",
+            1,
+            MAX_JSON_BYTES,
+        )
+        != len(selection_payload)
+        or require_string(
+            selection_record["sha256"],
+            "closed selection manifest SHA-256",
+            SHA256,
+        )
+        != sha256_bytes(selection_payload)
+    ):
+        fail("closed selection descriptor manifest evidence differs")
+    archive = exact_keys(
+        value["tap_archive"],
+        {
+            "asset",
+            "bytes",
+            "file_count",
+            "format",
+            "inventory",
+            "sha256",
+            "tree_git_oid",
+            "uncompressed_bytes",
+        },
+        "closed selection descriptor tap archive",
+    )
+    if archive["asset"] != SELECTION_ARCHIVE_ASSET:
+        fail("closed selection archive asset is not canonical")
+    if archive["format"] != "zip-stored-v1":
+        fail("closed selection archive format is unsupported")
+    require_int(
+        archive["bytes"],
+        "closed selection archive bytes",
+        1,
+        MAX_ASSET_BYTES,
+    )
+    require_string(
+        archive["sha256"],
+        "closed selection archive SHA-256",
+        SHA256,
+    )
+    require_string(
+        archive["tree_git_oid"],
+        "closed selection archive Git tree",
+        COMMIT,
+    )
+    inventory = archive["inventory"]
+    if (
+        not isinstance(inventory, list)
+        or not inventory
+        or len(inventory) > MAX_SELECTION_FILES
+    ):
+        fail("closed selection archive inventory is invalid")
+    checked: list[dict[str, Any]] = []
+    prior = ""
+    total = 0
+    for position, raw in enumerate(inventory):
+        record = exact_keys(
+            raw,
+            {"bytes", "mode", "path", "sha256"},
+            f"closed selection archive file #{position}",
+        )
+        relative = selection_relative_path(
+            pathlib.Path(
+                require_string(
+                    record["path"],
+                    f"closed selection archive file #{position} path",
+                )
+            )
+        )
+        if relative <= prior:
+            fail("closed selection archive paths must be unique and sorted")
+        prior = relative
+        mode = require_string(
+            record["mode"],
+            f"closed selection archive file {relative} mode",
+        )
+        if mode not in ("100644", "100755"):
+            fail("closed selection archive file mode is unsupported")
+        byte_count = require_int(
+            record["bytes"],
+            f"closed selection archive file {relative} bytes",
+            0,
+            MAX_ASSET_BYTES,
+        )
+        total += byte_count
+        if total > MAX_SELECTION_TREE_BYTES:
+            fail("closed selection archive inventory exceeds its byte bound")
+        require_string(
+            record["sha256"],
+            f"closed selection archive file {relative} SHA-256",
+            SHA256,
+        )
+        checked.append(record)
+    if (
+        archive["file_count"] != len(checked)
+        or archive["uncompressed_bytes"] != total
+    ):
+        fail("closed selection archive summary differs from its inventory")
+    selection = selection_record["value"]
+    if not isinstance(selection, dict):
+        fail("closed selection descriptor manifest is invalid")
+    tap = selection.get("tap")
+    if (
+        not isinstance(tap, dict)
+        or tap.get("prepared_tree_git_oid") != archive["tree_git_oid"]
+    ):
+        fail("closed selection descriptor tree identities differ")
+    if payload != pretty_json(value):
+        fail("closed selection descriptor is not canonical pretty JSON")
+    return value
+
+
+def prepare_selection_release(
+    *, selection_root: pathlib.Path, output: pathlib.Path
+) -> None:
+    selection_root = real_directory(
+        selection_root, "closed selection root"
+    )
+    output = validate_new_output(
+        output, "prepared closed selection release", (selection_root,)
+    )
+    temporary = pathlib.Path(
+        tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent)
+    )
+    try:
+        # WHY: the candidate may have been prepared by another job. Validate
+        # and archive one private snapshot so an edit/restore race cannot put
+        # bytes in the release that differ from the reviewed selection.
+        snapshot = temporary / "snapshot"
+        shutil.copytree(selection_root, snapshot, symlinks=True)
+        selection, selection_payload, tap_root = load_selection_candidate(
+            snapshot
+        )
+        inventory = selection_tree_inventory(tap_root)
+        assets = temporary / "assets"
+        assets.mkdir()
+        archive_path = assets / SELECTION_ARCHIVE_ASSET
+        write_selection_archive(tap_root, archive_path, inventory)
+        archive_bytes = archive_path.stat().st_size
+        archive_sha256 = sha256_file(archive_path)
+        descriptor = {
+            "kind": "kandelo-homebrew-closed-selection",
+            "schema": 1,
+            "selection_manifest": {
+                "bytes": len(selection_payload),
+                "sha256": sha256_bytes(selection_payload),
+                "value": selection,
+            },
+            "tap_archive": {
+                "asset": SELECTION_ARCHIVE_ASSET,
+                "bytes": archive_bytes,
+                "file_count": len(inventory),
+                "format": "zip-stored-v1",
+                "inventory": inventory,
+                "sha256": archive_sha256,
+                "tree_git_oid": selection["tap"][
+                    "prepared_tree_git_oid"
+                ],
+                "uncompressed_bytes": sum(
+                    record["bytes"] for record in inventory
+                ),
+            },
+        }
+        descriptor_payload = pretty_json(descriptor)
+        descriptor_path = assets / SELECTION_DESCRIPTOR_ASSET
+        descriptor_path.write_bytes(descriptor_payload)
+        validate_selection_descriptor(descriptor, descriptor_payload)
+
+        extracted = temporary / "self-check-tap"
+        extract_selection_archive(archive_path, extracted, inventory)
+        if filesystem_git_tree_oid(extracted, "archived closed selection tap") != (
+            selection["tap"]["prepared_tree_git_oid"]
+        ):
+            fail("prepared selection archive changed its Git tree")
+        shutil.rmtree(extracted)
+
+        descriptor_sha256 = sha256_bytes(descriptor_payload)
+        tag = f"homebrew-prefix-selection-sha256-{descriptor_sha256}"
+        release = {
+            "accepted_existing_asset_sets": [],
+            "assets": [
+                {
+                    "bytes": len(descriptor_payload),
+                    "name": SELECTION_DESCRIPTOR_ASSET,
+                    "sha256": descriptor_sha256,
+                },
+                {
+                    "bytes": archive_bytes,
+                    "name": SELECTION_ARCHIVE_ASSET,
+                    "sha256": archive_sha256,
+                },
+            ],
+            "body": (
+                "Immutable closed Formula selection for one Kandelo consumer. "
+                "This is intentionally not the complete tap catalog."
+            ),
+            "preferred_asset_names": [
+                SELECTION_DESCRIPTOR_ASSET,
+                SELECTION_ARCHIVE_ASSET,
+            ],
+            "repository": selection["tap"]["repository"].lower(),
+            "schema": 1,
+            "tag": tag,
+            "target_commitish": selection["tap"]["source_commit"],
+            "title": "Kandelo Homebrew closed Formula selection",
+        }
+        (temporary / "release-manifest.json").write_bytes(
+            pretty_json(release)
+        )
+        shutil.rmtree(snapshot)
+        os.rename(temporary, output)
+    finally:
+        if temporary.exists():
+            shutil.rmtree(temporary, ignore_errors=True)
+
+
+def fetch_selection_release(
+    *,
+    repository: str,
+    tag: str,
+    output: pathlib.Path,
+    receipt_output: pathlib.Path,
+    json_fetcher: JsonFetcher | None = None,
+    asset_fetcher: AssetFetcher | None = None,
+) -> None:
+    if json_fetcher is None:
+        json_fetcher = http_json
+    if asset_fetcher is None:
+        asset_fetcher = http_asset
+    repository = require_string(
+        repository, "closed selection repository", REPOSITORY
+    ).lower()
+    match = SELECTION_TAG.fullmatch(tag)
+    if match is None:
+        fail("closed selection release tag is invalid")
+    output, receipt_output = validate_output_pair(
+        output,
+        "closed selection output",
+        receipt_output,
+        "closed selection receipt output",
+        (),
+    )
+    assets, release = release_assets(
+        repository, tag, json_fetcher=json_fetcher
+    )
+    if set(assets) != {
+        SELECTION_DESCRIPTOR_ASSET,
+        SELECTION_ARCHIVE_ASSET,
+    }:
+        fail("closed selection release contains unexpected assets")
+    descriptor_record = assets[SELECTION_DESCRIPTOR_ASSET]
+    if (
+        descriptor_record["bytes"] > MAX_JSON_BYTES
+        or descriptor_record["sha256"] != match.group(1)
+    ):
+        fail("closed selection release evidence differs from its tag")
+    temporary = pathlib.Path(
+        tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent)
+    )
+    try:
+        descriptor_path = temporary / SELECTION_DESCRIPTOR_ASSET
+        fetch_one_asset(
+            assets,
+            SELECTION_DESCRIPTOR_ASSET,
+            descriptor_path,
+            asset_fetcher=asset_fetcher,
+        )
+        descriptor, descriptor_payload = load_json_bytes(
+            descriptor_path, "downloaded closed selection descriptor"
+        )
+        descriptor = validate_selection_descriptor(
+            descriptor, descriptor_payload
+        )
+        if sha256_bytes(descriptor_payload) != match.group(1):
+            fail("closed selection tag differs from its descriptor")
+        selection = descriptor["selection_manifest"]["value"]
+        tap = selection["tap"]
+        if tap["repository"].lower() != repository:
+            fail("closed selection release repository differs")
+        if release.get("target_commitish") != tap["source_commit"]:
+            fail("closed selection release targets the wrong source commit")
+        archive_record = descriptor["tap_archive"]
+        released_archive = assets[SELECTION_ARCHIVE_ASSET]
+        if (
+            released_archive["bytes"] != archive_record["bytes"]
+            or released_archive["sha256"] != archive_record["sha256"]
+        ):
+            fail("closed selection release archive evidence differs")
+        archive_path = temporary / SELECTION_ARCHIVE_ASSET
+        fetch_one_asset(
+            assets,
+            SELECTION_ARCHIVE_ASSET,
+            archive_path,
+            asset_fetcher=asset_fetcher,
+        )
+        result = temporary / "selection"
+        result.mkdir()
+        (result / "selection.json").write_bytes(
+            pretty_json(selection)
+        )
+        extract_selection_archive(
+            archive_path,
+            result / "tap",
+            archive_record["inventory"],
+        )
+        observed, selection_payload, _tap_root = load_selection_candidate(
+            result
+        )
+        if (
+            observed != selection
+            or len(selection_payload)
+            != descriptor["selection_manifest"]["bytes"]
+            or sha256_bytes(selection_payload)
+            != descriptor["selection_manifest"]["sha256"]
+        ):
+            fail("downloaded closed selection differs from its descriptor")
+        staged_receipt = temporary / "receipt.json"
+        staged_receipt.write_bytes(
+            pretty_json(
+                {
+                    "arch": selection["arch"],
+                    "assets": {
+                        SELECTION_DESCRIPTOR_ASSET: {
+                            "bytes": descriptor_record["bytes"],
+                            "sha256": descriptor_record["sha256"],
+                        },
+                        SELECTION_ARCHIVE_ASSET: {
+                            "bytes": released_archive["bytes"],
+                            "sha256": released_archive["sha256"],
+                        },
+                    },
+                    "formula_count": len(selection["formulae"]),
+                    "kind": "kandelo-homebrew-closed-selection-readback",
+                    "prepared_tree_git_oid": tap[
+                        "prepared_tree_git_oid"
+                    ],
+                    "release_id": release["id"],
+                    "repository": repository,
+                    "roots": selection["roots"],
+                    "schema": 1,
+                    "selection_manifest_sha256": descriptor[
+                        "selection_manifest"
+                    ]["sha256"],
+                    "tag": tag,
+                    "target_commitish": tap["source_commit"],
+                    "visibility": "public-anonymous-readback",
+                }
+            )
+        )
+        commit_output_pair(
+            result,
+            output,
+            staged_receipt,
+            receipt_output,
+        )
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
 
 
 def stage_dependency_bottle_inputs(
@@ -6021,6 +6785,18 @@ def parse_args() -> argparse.Namespace:
     )
     selection.add_argument("--out", required=True)
 
+    selection_release = commands.add_parser(
+        "prepare-selection-release"
+    )
+    selection_release.add_argument("--selection", required=True)
+    selection_release.add_argument("--out", required=True)
+
+    fetch_selection = commands.add_parser("fetch-selection-release")
+    fetch_selection.add_argument("--repository", required=True)
+    fetch_selection.add_argument("--tag", required=True)
+    fetch_selection.add_argument("--out", required=True)
+    fetch_selection.add_argument("--receipt-out", required=True)
+
     final_tap = commands.add_parser("prepare-final-tap")
     final_tap.add_argument("--campaign", required=True)
     final_tap.add_argument("--source-tap-root", required=True)
@@ -6116,6 +6892,18 @@ def main() -> int:
                     for value in arguments.handoff
                 ],
                 output=pathlib.Path(arguments.out),
+            )
+        elif arguments.command == "prepare-selection-release":
+            prepare_selection_release(
+                selection_root=pathlib.Path(arguments.selection),
+                output=pathlib.Path(arguments.out),
+            )
+        elif arguments.command == "fetch-selection-release":
+            fetch_selection_release(
+                repository=arguments.repository,
+                tag=arguments.tag,
+                output=pathlib.Path(arguments.out),
+                receipt_output=pathlib.Path(arguments.receipt_out),
             )
         elif arguments.command == "prepare-final-tap":
             prepare_final_tap(
