@@ -112,6 +112,11 @@ expect_mutation_rejected \
   's/branches: \[main\]/branches: [release]/'
 
 expect_mutation_rejected \
+  "pull-request Pages deployment" \
+  "must not deploy pull-request revisions" \
+  's/(  workflow_dispatch:\n)/  pull_request:\n$1/'
+
+expect_mutation_rejected \
   "bypassed package projection check" \
   "must verify the generated package projection" \
   's/build-deps program-index-check/build-deps parse/'
@@ -150,6 +155,11 @@ expect_mutation_rejected \
   "missing sealed shell artifact check" \
   "must bind the canonical shell, bootstrap, and embedded mirror plan" \
   's/scripts\/verify-homebrew-main-shell-artifact-lock\.sh/scripts\/skipped-artifact-lock.sh/'
+
+expect_mutation_rejected \
+  "shell-only Pages build" \
+  "must build the complete browser entry set" \
+  's/(      - name: Build browser demos for GitHub Pages\n        working-directory: apps\/browser-demos\n)/$1        env:\n          KANDELO_BROWSER_DEMO_INPUTS: main\n/'
 
 expect_mutation_rejected \
   "missing public product inspector" \

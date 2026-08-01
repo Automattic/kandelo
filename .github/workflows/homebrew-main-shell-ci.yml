@@ -73,10 +73,11 @@ jobs:
     needs: homebrew-main-shell-scope
     if: needs.homebrew-main-shell-scope.outputs.required == 'true'
     runs-on: ubuntu-latest
-    # WHY: this exact gate may need to source-build the complete current shell
-    # closure on a fresh runner before its Node and Chromium checks can begin.
-    # A normal exact-source build can exceed the former 90-minute budget.
-    timeout-minutes: 180
+    # WHY: package publication owns source builds. This consumer gate now
+    # fails quickly when a required Kandelo package archive is absent instead
+    # of compiling an unrelated gallery image for hours and hiding the
+    # publication gap.
+    timeout-minutes: 90
     env:
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
       TRANSPORT_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.transport_mode || 'closed' }}
@@ -149,6 +150,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Fetch musl submodule for source-build fallback
+        if: env.SHELL_ACTIVATION_MODE == 'source-rootfs'
         uses: ./.github/actions/fetch-submodules
         with:
           submodules: libc/musl
@@ -171,6 +173,7 @@ jobs:
       - uses: ./.github/actions/setup-nix
 
       - name: Prepare isolated source tree for the wasm32 sysroot
+        if: env.SHELL_ACTIVATION_MODE == 'source-rootfs'
         id: sysroot-source
         run: |
           set -euo pipefail
@@ -188,6 +191,7 @@ jobs:
           echo "path=$source_root" >> "$GITHUB_OUTPUT"
 
       - name: Build current wasm32 sysroot for source-build fallback
+        if: env.SHELL_ACTIVATION_MODE == 'source-rootfs'
         working-directory: ${{ steps.sysroot-source.outputs.path }}
         run: |
           set -euo pipefail
@@ -542,13 +546,16 @@ jobs:
           # WHY: selecting an index does not download its packages, and
           # resolve-binary intentionally reads only materialized resolver
           # mirrors. Resolve the package declared by the reviewed tree through
-          # the normal package path first, preserving source fallback when a PR
-          # recipe is newer than its public archive. Pass both trust roots
-          # explicitly because the Nix dev shell admits only declared context.
+          # the normal package path first. This product proof consumes package
+          # publication; it must report a missing exact archive instead of
+          # compiling a replacement whose bytes the publisher never admitted.
+          # Pass both trust roots explicitly because the Nix dev shell admits
+          # only declared context.
           bash scripts/dev-shell.sh env \
             "WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" \
             "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
-            bash scripts/fetch-binaries.sh --package "$bootstrap_package"
+            bash scripts/fetch-binaries.sh \
+              --fetch-only --package "$bootstrap_package"
           bootstrap=$(bash scripts/resolve-binary.sh \
             programs/homebrew-bootstrap/homebrew-bootstrap.zip)
           bootstrap_env=$(bash scripts/resolve-binary.sh \
@@ -610,31 +617,33 @@ jobs:
           echo "local_manifest=$source_assets" >> "$GITHUB_OUTPUT"
           echo "link_manifest=$source_links" >> "$GITHUB_OUTPUT"
 
-      - name: Resolve current direct browser bundling inputs
+      - name: Resolve exact shell browser inputs
         run: |
           set -euo pipefail
           test -n "${WASM_POSIX_BINARY_INDEX_URL:-}"
-          # Vite resolves static @binaries imports across the wider demo app.
-          # Derive those registry roots from imports and package manifests so a
-          # new product asset cannot silently be absent from the real shell
-          # acceptance tree. The exact source-built shell closure is already in
-          # local-binaries; unrelated gallery roots may use the independently
-          # verified staging or canonical package generation.
+          # WHY: this is the shell product gate, not a gallery build. Traverse
+          # the real root-page and private lifecycle HTML entry graphs so a
+          # new required binary is included automatically, while optional VFS
+          # import.meta.glob entries remain lazy. Pages separately builds the
+          # complete gallery and boots its shell route on every protected-main
+          # commit.
           browser_package_file="$RUNNER_TEMP/browser-binary-packages.txt"
-          {
-            node scripts/browser-binary-package-roots.mjs \
-              --arch wasm32 \
-              --exclude-package shell \
-              --include-package rootfs
-            node scripts/browser-binary-package-roots.mjs \
-              --arch wasm64 \
-              --exclude-package shell
-          } | sort -u > "$browser_package_file"
+          node scripts/browser-binary-package-roots.mjs \
+            --arch wasm32 \
+            --html-entry index.html \
+            --html-entry pages/homebrew-vfs-test/index.html \
+            --local-capability kernel-wasm \
+            --package-capability rootfs-vfs=rootfs \
+            --exclude-package shell \
+            > "$browser_package_file"
           mapfile -t browser_input_packages < "$browser_package_file"
           [ "${#browser_input_packages[@]}" -gt 0 ]
           [ "$(printf '%s\n' "${browser_input_packages[@]}" | sort -u | wc -l)" \
             -eq "${#browser_input_packages[@]}" ]
-          fetch_args=()
+          # WHY: a successful source fallback would make this gate prove bytes
+          # that are not independently published. Fetch-only turns a stale or
+          # absent cache key into a short, package-named publication failure.
+          fetch_args=(--fetch-only)
           for package in "${browser_input_packages[@]}"; do
             fetch_args+=(--package "$package")
           done
@@ -854,6 +863,10 @@ jobs:
           set -euo pipefail
           build_env=()
           build_args=()
+          # WHY: the root page is the user-visible shell product exercised
+          # below. The complete gallery remains owned by the Pages deployment
+          # gate instead of extending this exact shell proof's critical path.
+          build_env+=("KANDELO_BROWSER_DEMO_INPUTS=main")
           if [ "$SHELL_ACTIVATION_MODE" = bottles ] &&
              [ "$TRANSPORT_MODE" = closed ]; then
             build_env+=(

@@ -11,9 +11,15 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   browserBinariesImports,
+  browserRequiredBinariesImports,
+  browserRequiredInputs,
 } from "../apps/browser-demos/browser-binary-imports.mjs";
 
-export { browserBinariesImports };
+export {
+  browserBinariesImports,
+  browserRequiredBinariesImports,
+  browserRequiredInputs,
+};
 
 const scriptPath = fileURLToPath(import.meta.url);
 const defaultRepoRoot = resolve(dirname(scriptPath), "..");
@@ -528,10 +534,13 @@ export function fetchableRegistryPackageRoots(
 
 export function inspectBrowserBinaryDependencies(
   repoRoot = defaultRepoRoot,
-  { registryPath } = {},
+  { registryPath, entryFiles = [], htmlEntryFiles = [] } = {},
 ) {
   const owners = packageOutputOwners(repoRoot, { registryPath });
-  const imports = browserBinariesImports(repoRoot);
+  const required = entryFiles.length + htmlEntryFiles.length === 0
+    ? { imports: browserBinariesImports(repoRoot), capabilities: [] }
+    : browserRequiredInputs(repoRoot, { entryFiles, htmlEntryFiles });
+  const { imports, capabilities } = required;
   const missingOwners = [];
   const unfetchableOwners = [];
   const packageNames = new Set();
@@ -554,6 +563,7 @@ export function inspectBrowserBinaryDependencies(
 
   return {
     imports,
+    capabilities,
     missingOwners,
     unfetchableOwners,
     packageNames: [...packageNames].sort(),
@@ -571,13 +581,21 @@ export function browserBinaryPackageRoots(
     arch,
     includePackages = [],
     excludePackages = [],
+    entryFiles = [],
+    htmlEntryFiles = [],
+    localCapabilities = [],
+    packageCapabilities = {},
     registryPath,
   } = {},
 ) {
   if (arch !== "wasm32" && arch !== "wasm64") {
     throw new Error(`browser package roots require wasm32 or wasm64, got ${arch}`);
   }
-  const audit = inspectBrowserBinaryDependencies(repoRoot, { registryPath });
+  const audit = inspectBrowserBinaryDependencies(repoRoot, {
+    registryPath,
+    entryFiles,
+    htmlEntryFiles,
+  });
   if (audit.missingOwners.length > 0) {
     throw new Error(
       `browser @binaries imports without registry owners:\n${audit.missingOwners.join("\n")}`,
@@ -601,6 +619,42 @@ export function browserBinaryPackageRoots(
   );
   const includes = new Set(includePackages);
   const excludes = new Set(excludePackages);
+  const localCapabilitySet = new Set(localCapabilities);
+  const packageCapabilityEntries = Object.entries(packageCapabilities);
+  const packageCapabilityNames = new Set(
+    packageCapabilityEntries.map(([capability]) => capability),
+  );
+  if (localCapabilitySet.size !== localCapabilities.length) {
+    throw new Error("browser capability selection contains a duplicate local binding");
+  }
+  for (const [capability, packageName] of packageCapabilityEntries) {
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(capability)) {
+      throw new Error(`invalid browser capability name: ${capability}`);
+    }
+    if (!/^[a-z0-9][a-z0-9+._-]*$/.test(packageName)) {
+      throw new Error(`invalid registry package name: ${packageName}`);
+    }
+    if (localCapabilitySet.has(capability)) {
+      throw new Error(`browser capability has two bindings: ${capability}`);
+    }
+  }
+  const discoveredCapabilities = new Set(audit.capabilities);
+  for (const capability of [
+    ...localCapabilitySet,
+    ...packageCapabilityNames,
+  ]) {
+    if (!discoveredCapabilities.has(capability)) {
+      throw new Error(`browser capability binding is unused: ${capability}`);
+    }
+  }
+  for (const capability of discoveredCapabilities) {
+    if (
+      !localCapabilitySet.has(capability)
+      && !packageCapabilityNames.has(capability)
+    ) {
+      throw new Error(`required browser capability has no binding: ${capability}`);
+    }
+  }
   for (const packageName of [...includes, ...excludes]) {
     if (!/^[a-z0-9][a-z0-9+._-]*$/.test(packageName)) {
       throw new Error(`invalid registry package name: ${packageName}`);
@@ -617,6 +671,16 @@ export function browserBinaryPackageRoots(
       throw new Error(`browser package selection both includes and excludes ${packageName}`);
     }
   }
+  for (const [, packageName] of packageCapabilityEntries) {
+    if (!fetchableForArch.has(packageName)) {
+      throw new Error(`browser capability package is not fetchable: ${packageName}`);
+    }
+    if (excludes.has(packageName)) {
+      throw new Error(
+        `browser capability package cannot be excluded: ${packageName}`,
+      );
+    }
+  }
 
   // WHY: schema-2 generations are architecture-specific. Selecting owners
   // from every browser import without retaining this boundary can turn a
@@ -627,6 +691,7 @@ export function browserBinaryPackageRoots(
       .map((root) => root.package),
   );
   for (const packageName of includes) roots.add(packageName);
+  for (const [, packageName] of packageCapabilityEntries) roots.add(packageName);
   for (const packageName of excludes) roots.delete(packageName);
   return [...roots].sort();
 }
@@ -636,6 +701,10 @@ function parseCliArgs(argv) {
     arch: undefined,
     includePackages: [],
     excludePackages: [],
+    entryFiles: [],
+    htmlEntryFiles: [],
+    localCapabilities: [],
+    packageCapabilities: {},
   };
   let repoRoot = defaultRepoRoot;
   for (let index = 0; index < argv.length; index += 1) {
@@ -644,6 +713,10 @@ function parseCliArgs(argv) {
     if (
       flag !== "--include-package" &&
       flag !== "--exclude-package" &&
+      flag !== "--entry" &&
+      flag !== "--html-entry" &&
+      flag !== "--local-capability" &&
+      flag !== "--package-capability" &&
       flag !== "--arch" &&
       flag !== "--source-root"
     ) {
@@ -655,6 +728,22 @@ function parseCliArgs(argv) {
     index += 1;
     if (flag === "--include-package") options.includePackages.push(value);
     if (flag === "--exclude-package") options.excludePackages.push(value);
+    if (flag === "--entry") options.entryFiles.push(value);
+    if (flag === "--html-entry") options.htmlEntryFiles.push(value);
+    if (flag === "--local-capability") {
+      options.localCapabilities.push(value);
+    }
+    if (flag === "--package-capability") {
+      const separator = value.indexOf("=");
+      if (separator <= 0 || separator === value.length - 1) {
+        throw new Error("--package-capability requires CAPABILITY=PACKAGE");
+      }
+      const capability = value.slice(0, separator);
+      if (Object.hasOwn(options.packageCapabilities, capability)) {
+        throw new Error(`duplicate package capability binding: ${capability}`);
+      }
+      options.packageCapabilities[capability] = value.slice(separator + 1);
+    }
     if (flag === "--arch") {
       if (options.arch !== undefined) {
         throw new Error("--arch may be provided only once");

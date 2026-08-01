@@ -221,6 +221,37 @@ write_browser_mirror_state() {
 
 cat > "$FIXTURE/bin/npm" <<'EOF'
 #!/usr/bin/env bash
+if [ "${1:-}" = run ] && [ "${2:-}" = build ]; then
+    if [ -e public/homebrew-main-shell-bottles ] || \
+       [ -L public/homebrew-main-shell-bottles ]; then
+        echo "fixture production build observed the closed mirror" >&2
+        exit 1
+    fi
+    if [ -n "${PRODUCTION_BUILD_CAPTURE:-}" ]; then
+        {
+            printf 'inputs=%s\n' "${KANDELO_BROWSER_DEMO_INPUTS:-<unset>}"
+            printf 'vite_closed=%s\n' \
+                "${VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT:-<unset>}"
+            printf 'playwright_closed=%s\n' \
+                "${KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT:-<unset>}"
+            printf 'vite_mode=%s\n' \
+                "${KANDELO_PLAYWRIGHT_VITE_MODE:-<unset>}"
+            printf 'serve_dist=%s\n' \
+                "${KANDELO_PLAYWRIGHT_SERVE_DIST:-<unset>}"
+            printf 'base=%s\n' "${VITE_BASE:-<unset>}"
+            printf 'cors=%s\n' "${VITE_CORS_PROXY_URL:-<unset>}"
+        } > "$PRODUCTION_BUILD_CAPTURE"
+    fi
+    mkdir -p \
+        dist/pages/kandelo \
+        dist/pages/network \
+        dist/pages/homebrew-vfs-test
+    : > dist/index.html
+    : > dist/pages/kandelo/index.html
+    : > dist/pages/network/index.html
+    : > dist/pages/homebrew-vfs-test/index.html
+    : > dist/service-worker.js
+fi
 exit 0
 EOF
 
@@ -353,6 +384,83 @@ git -C "$FIXTURE" config user.name "Kandelo CI fixture"
 git -C "$FIXTURE" config user.email "ci-fixture@invalid.example"
 git -C "$FIXTURE" add .
 git -C "$FIXTURE" commit -qm "fixture source identity"
+
+check_premerge_browser_production_contract() {
+    local runner="$1"
+    local function_block
+    local browser_block
+    local materialize_line
+    local fetch_line
+    local production_line
+    local mirror_line
+    function_block="$(sed -n \
+        '/^run_pages_shaped_browser_build() {$/,/^}$/p' "$runner")"
+    browser_block="$(sed -n '/^    browser)$/,/^        ;;/p' "$runner")"
+
+    for binding in \
+        '-u KANDELO_BROWSER_DEMO_INPUTS' \
+        '-u VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT' \
+        '-u KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT' \
+        '-u KANDELO_PLAYWRIGHT_VITE_MODE' \
+        '-u KANDELO_PLAYWRIGHT_SERVE_DIST' \
+        'VITE_BASE=/kandelo/' \
+        'VITE_CORS_PROXY_URL='
+    do
+        grep -Fq -- "$binding" <<<"$function_block" || return 1
+    done
+    for output in \
+        'index.html' \
+        'pages/kandelo/index.html' \
+        'pages/network/index.html' \
+        'pages/homebrew-vfs-test/index.html' \
+        'service-worker.js'
+    do
+        grep -Fq -- "$output" <<<"$function_block" || return 1
+    done
+    grep -Fq 'ordinary browser build found a closed test mirror' \
+        <<<"$function_block" || return 1
+    [ "$(grep -Fc 'run_pages_shaped_browser_build' <<<"$browser_block")" -eq 1 ] ||
+        return 1
+    materialize_line="$(grep -nF \
+        'bash scripts/materialize-ci-publication-blockers.sh' \
+        <<<"$browser_block" | cut -d: -f1)"
+    fetch_line="$(grep -nF \
+        './run.sh --already-materialized --fetch-only prepare-browser' \
+        <<<"$browser_block" | cut -d: -f1)"
+    production_line="$(grep -nF 'run_pages_shaped_browser_build' \
+        <<<"$browser_block" | cut -d: -f1)"
+    mirror_line="$(grep -nF 'prepare_ci_homebrew_browser_mirror' \
+        <<<"$browser_block" | cut -d: -f1)"
+    [ -n "$materialize_line" ] && [ -n "$fetch_line" ] &&
+        [ -n "$production_line" ] && [ -n "$mirror_line" ] &&
+        [ "$materialize_line" -lt "$fetch_line" ] &&
+        [ "$fetch_line" -lt "$production_line" ] &&
+        [ "$production_line" -lt "$mirror_line" ]
+}
+
+check_premerge_browser_production_contract \
+    "$REPO_ROOT/scripts/ci-run-test-suite.sh" || {
+    echo "prepare-merge browser shard lacks its ordinary production build" >&2
+    exit 1
+}
+sed '/^                run_pages_shaped_browser_build$/d' \
+    "$REPO_ROOT/scripts/ci-run-test-suite.sh" \
+    > "$TMP_DIR/browser-runner-without-production-build.sh"
+if check_premerge_browser_production_contract \
+    "$TMP_DIR/browser-runner-without-production-build.sh"
+then
+    echo "production-build contract accepted a removed invocation" >&2
+    exit 1
+fi
+sed 's/-u KANDELO_BROWSER_DEMO_INPUTS/KANDELO_BROWSER_DEMO_INPUTS=main/' \
+    "$REPO_ROOT/scripts/ci-run-test-suite.sh" \
+    > "$TMP_DIR/browser-runner-with-shell-selector.sh"
+if check_premerge_browser_production_contract \
+    "$TMP_DIR/browser-runner-with-shell-selector.sh"
+then
+    echo "production-build contract accepted a shell-only selector" >&2
+    exit 1
+fi
 
 run_group() {
     local suite="$1"
@@ -558,6 +666,7 @@ recovery_capture="$TMP_DIR/browser-recovery.args"
 closed_root_capture="$TMP_DIR/browser-closed-root"
 closed_vite_root_capture="$TMP_DIR/browser-closed-vite-root"
 closed_mode_capture="$TMP_DIR/browser-closed-mode"
+production_build_capture="$TMP_DIR/browser-production-build"
 fixture_shell_image="$TMP_DIR/shell.vfs.zst"
 runner_temp="$TMP_DIR/runner"
 printf 'shell image\n' > "$fixture_shell_image"
@@ -576,14 +685,34 @@ PATH="$FIXTURE/bin:$PATH" RUN_CAPTURE="$browser_capture" \
     CLOSED_ROOT_CAPTURE="$closed_root_capture" \
     CLOSED_VITE_ROOT_CAPTURE="$closed_vite_root_capture" \
     CLOSED_MODE_CAPTURE="$closed_mode_capture" \
+    PRODUCTION_BUILD_CAPTURE="$production_build_capture" \
     FIXTURE_SHELL_IMAGE="$fixture_shell_image" \
     RUNNER_TEMP="$runner_temp" \
     PREPARE_BROWSER_ASSETS=true \
+    VERIFY_BROWSER_PRODUCTION_BUILD=true \
     bash "$FIXTURE/scripts/ci-run-test-suite.sh" browser
 grep -Fxq materialized "$blocker_capture"
 grep -Fxq -- \
     "--already-materialized --fetch-only prepare-browser" \
     "$browser_capture"
+for production_binding in \
+    'inputs=<unset>' \
+    'vite_closed=<unset>' \
+    'playwright_closed=<unset>' \
+    'vite_mode=<unset>' \
+    'serve_dist=<unset>' \
+    'base=/kandelo/' \
+    'cors=https://wordpress-playground-cors-proxy.net/?'
+do
+    grep -Fxq "$production_binding" "$production_build_capture" || {
+        echo "ordinary production build lacks binding: $production_binding" >&2
+        exit 1
+    }
+done
+[ ! -e "$FIXTURE/apps/browser-demos/dist" ] || {
+    echo "browser suite retained its ordinary production build" >&2
+    exit 1
+}
 grep -Fq -- \
     "tsx scripts/recover-homebrew-bottle-mirror.ts --image $fixture_shell_image --out $FIXTURE/apps/browser-demos/public/homebrew-main-shell-bottles --report " \
     "$recovery_capture"
@@ -630,9 +759,11 @@ PATH="$FIXTURE/bin:$PATH" RUN_CAPTURE="$browser_capture" \
     CLOSED_ROOT_CAPTURE="$closed_root_capture" \
     CLOSED_VITE_ROOT_CAPTURE="$closed_vite_root_capture" \
     CLOSED_MODE_CAPTURE="$closed_mode_capture" \
+    PRODUCTION_BUILD_CAPTURE="$production_build_capture" \
     FIXTURE_SHELL_IMAGE="$fixture_shell_image" \
     RUNNER_TEMP="$runner_temp" \
     PREPARE_BROWSER_ASSETS=true \
+    VERIFY_BROWSER_PRODUCTION_BUILD=true \
     bash "$FIXTURE/scripts/ci-run-test-suite.sh" browser
 grep -Fq -- \
     "tsx scripts/recover-homebrew-bottle-mirror.ts --image $fixture_shell_image --out $FIXTURE/apps/browser-demos/public/homebrew-main-shell-bottles --report " \
@@ -659,6 +790,7 @@ if PATH="$FIXTURE/bin:$PATH" RUN_CAPTURE="$browser_capture" \
     BLOCKER_CAPTURE="$blocker_capture" \
     FIXTURE_SHELL_IMAGE="$fixture_shell_image" \
     PREPARE_BROWSER_ASSETS=true \
+    VERIFY_BROWSER_PRODUCTION_BUILD=true \
     bash "$FIXTURE/scripts/ci-run-test-suite.sh" browser \
         > "$TMP_DIR/browser-invalid-mirror-state.out" 2>&1; then
     echo "browser suite accepted malformed Homebrew mirror state" >&2
@@ -682,6 +814,7 @@ if PATH="$FIXTURE/bin:$PATH" RUN_CAPTURE="$browser_capture" \
     BLOCKER_CAPTURE="$blocker_capture" \
     FIXTURE_SHELL_IMAGE="$fixture_shell_image" \
     PREPARE_BROWSER_ASSETS=true \
+    VERIFY_BROWSER_PRODUCTION_BUILD=true \
     bash "$FIXTURE/scripts/ci-run-test-suite.sh" browser \
         > "$TMP_DIR/browser-open-resolved-mirror-state.out" 2>&1; then
     echo "browser suite accepted open transport for a resolved shell" >&2
@@ -695,6 +828,7 @@ if PATH="$FIXTURE/bin:$PATH" RUN_CAPTURE="$browser_capture" \
     BLOCKER_CAPTURE="$blocker_capture" \
     FIXTURE_SHELL_IMAGE="$fixture_shell_image" \
     PREPARE_BROWSER_ASSETS=true \
+    VERIFY_BROWSER_PRODUCTION_BUILD=true \
     bash "$FIXTURE/scripts/ci-run-test-suite.sh" browser \
         > "$TMP_DIR/browser-missing-mirror-state.out" 2>&1; then
     echo "browser suite accepted a prepared workspace without Homebrew mirror state" >&2
@@ -734,6 +868,22 @@ for workflow in \
         exit 1
     fi
 done
+
+grep -Fq \
+    'VERIFY_BROWSER_PRODUCTION_BUILD: ${{ matrix.suite == '\''browser'\'' }}' \
+    "$REPO_ROOT/.github/workflows/prepare-merge.yml" &&
+    grep -Fq \
+        'VERIFY_BROWSER_PRODUCTION_BUILD="$VERIFY_BROWSER_PRODUCTION_BUILD" \' \
+        "$REPO_ROOT/.github/workflows/prepare-merge.yml" || {
+    echo "prepare-merge does not request the ordinary browser production build" >&2
+    exit 1
+}
+if grep -Fq 'VERIFY_BROWSER_PRODUCTION_BUILD' \
+    "$REPO_ROOT/.github/workflows/staging-build.yml"
+then
+    echo "staging duplicated prepare-merge's ordinary browser production build" >&2
+    exit 1
+fi
 
 force_rebuild_workflow="$REPO_ROOT/.github/workflows/force-rebuild.yml"
 grep -Fq 'name: test-suite (${{ matrix.label }})' \
@@ -1435,6 +1585,7 @@ PATH="$FIXTURE/bin:$PATH" \
     FIXTURE_SHELL_IMAGE="$(realpath "$pack_extract/binaries/programs/wasm32/shell.vfs.zst")" \
     RUNNER_TEMP="$relocated_runner_temp" \
     PREPARE_BROWSER_ASSETS=true \
+    VERIFY_BROWSER_PRODUCTION_BUILD=true \
     WASM_POSIX_BINARY_CACHE_ROOT="$TMP_DIR/wrong-relocated-cache" \
     WASM_POSIX_XTASK_BIN="$TMP_DIR/wrong-relocated-xtask" \
     bash "$pack_extract/scripts/ci-run-test-suite.sh" browser

@@ -295,7 +295,7 @@ expect_closed_browser_acceptance_contract_rejected \
   "$TMP_ROOT/closed-browser-wrong-build-mode.yml"
 
 generation_block="$(sed -n \
-  '/- name: Select one verified package generation/,/- name: Resolve current direct browser bundling inputs/p' \
+  '/- name: Select one verified package generation/,/- name: Resolve exact shell browser inputs/p' \
   "$WORKFLOW")"
 grep -Fq 'GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}' <<<"$generation_block" ||
   fail "package-generation validation needs only the workflow's read token"
@@ -317,7 +317,7 @@ grep -Fq 'env -u GH_TOKEN -u GITHUB_TOKEN \' <<<"$generation_block" &&
   grep -Fq -- '-u HOMEBREW_GITHUB_PACKAGES_TOKEN \' <<<"$generation_block" ||
   fail "local index freezing must run without GitHub credentials"
 grep -Fq 'selected_url="$canonical_url"' <<<"$generation_block" ||
-  fail "main-shell CI must retain the canonical/source-build fallback"
+  fail "main-shell CI must retain the canonical package generation"
 grep -Fq 'echo "WASM_POSIX_BINARY_INDEX_URL=$selected_url" >> "$GITHUB_ENV"' \
   <<<"$generation_block" ||
   fail "main-shell CI must pass the selected generation through the resolver contract"
@@ -358,14 +358,14 @@ check_bootstrap_materialization_contract() {
     grep -Fq \
       '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
       <<<"$block" &&
-    grep -Fq \
-      'bash scripts/fetch-binaries.sh --package "$bootstrap_package"' \
-      <<<"$block" ||
+    [ "$(grep -Fc -- \
+      '--fetch-only --package "$bootstrap_package"' \
+      <<<"$block")" -eq 1 ] &&
+    ! grep -Fq -- '--force-source-build' <<<"$block" ||
     return 1
-  ! grep -Fq -- '--fetch-only' <<<"$block" || return 1
 
-  materialize_line="$(grep -nF \
-    'bash scripts/fetch-binaries.sh --package "$bootstrap_package"' \
+  materialize_line="$(grep -nF -- \
+    '--fetch-only --package "$bootstrap_package"' \
     <<<"$block" | cut -d: -f1)"
   mapfile -t resolve_lines < <(
     grep -nF 'bash scripts/resolve-binary.sh \' <<<"$block" |
@@ -378,6 +378,27 @@ check_bootstrap_materialization_contract() {
   done
 }
 
+check_browser_fetch_only_contract() {
+  local workflow="$1"
+  local block
+  local assignment_count
+  block="$(sed -n \
+    '/- name: Resolve exact shell browser inputs/,/- name: Install the candidate/p' \
+    "$workflow")"
+  assignment_count="$(grep -Ec \
+    '^[[:space:]]*fetch_args=\(' <<<"$block")"
+
+  [ "$assignment_count" -eq 1 ] &&
+    [ "$(grep -Fc 'fetch_args=(--fetch-only)' <<<"$block")" -eq 1 ] &&
+    [ "$(grep -Fc \
+      'bash scripts/fetch-binaries.sh "${fetch_args[@]}"' \
+      <<<"$block")" -eq 1 ] &&
+    ! grep -Fq -- '--force-source-build' <<<"$block" &&
+    ! grep -Eq \
+      '(^|[[:space:]])(unset[[:space:]]+fetch_args|fetch_args\[[^]]+\]=)' \
+      <<<"$block"
+}
+
 bottle_candidate_workflow_block="$(sed -n \
   '/- name: Build the exact lazy shell from public bottles/,/- name: Select the source shell for dependent browser VFS builds/p' \
   "$WORKFLOW")"
@@ -388,7 +409,7 @@ check_bootstrap_materialization_contract "$bottle_candidate_workflow_block" ||
 # structural check fails closed instead of passing because another nearby
 # package fetch or environment assignment happens to contain similar text.
 bootstrap_without_index="$(
-  grep -Fv \
+  grep -Fv -- \
     '"WASM_POSIX_BINARY_INDEX_URL=$WASM_POSIX_BINARY_INDEX_URL" \' \
     <<<"$bottle_candidate_workflow_block"
 )"
@@ -404,18 +425,51 @@ if check_bootstrap_materialization_contract "$bootstrap_without_cache"; then
   fail "bootstrap materialization contract accepted a missing isolated cache"
 fi
 bootstrap_after_resolution="$(
-  grep -Fv \
-    'bash scripts/fetch-binaries.sh --package "$bootstrap_package"' \
+  grep -Fv -- \
+    '--fetch-only --package "$bootstrap_package"' \
     <<<"$bottle_candidate_workflow_block"
   printf '%s\n' \
-    '          bash scripts/fetch-binaries.sh --package "$bootstrap_package"'
+    '              --fetch-only --package "$bootstrap_package"'
 )"
 if check_bootstrap_materialization_contract "$bootstrap_after_resolution"; then
   fail "bootstrap materialization contract accepted resolution before fetch"
 fi
 
+check_browser_fetch_only_contract "$WORKFLOW" ||
+  fail "browser support inputs must remain fetch-only"
+sed 's/fetch_args=(--fetch-only)/fetch_args=()/' \
+  "$WORKFLOW" >"$TMP_ROOT/browser-fetch-only-removed.yml"
+if check_browser_fetch_only_contract \
+  "$TMP_ROOT/browser-fetch-only-removed.yml"
+then
+  fail "browser support contract accepted removed fetch-only resolution"
+fi
+sed '/fetch_args=(--fetch-only)/a\          fetch_args=()' \
+  "$WORKFLOW" >"$TMP_ROOT/browser-fetch-only-overridden.yml"
+if check_browser_fetch_only_contract \
+  "$TMP_ROOT/browser-fetch-only-overridden.yml"
+then
+  fail "browser support contract accepted an overridden fetch-only vector"
+fi
+
+browser_support_block="$(sed -n \
+  '/- name: Resolve exact shell browser inputs/,/- name: Install the candidate/p' \
+  "$WORKFLOW")"
+for browser_graph_binding in \
+  '--html-entry index.html' \
+  '--html-entry pages/homebrew-vfs-test/index.html' \
+  '--local-capability kernel-wasm' \
+  '--package-capability rootfs-vfs=rootfs'
+do
+  grep -Fq -- "$browser_graph_binding" <<<"$browser_support_block" ||
+    fail "browser support graph lacks binding: $browser_graph_binding"
+done
+if grep -Fq -- '--include-package rootfs' <<<"$browser_support_block"; then
+  fail "rootfs must be selected through its discovered virtual capability"
+fi
+
 grep -Fq 'GH_TOKEN:' <<<"$(sed -n \
-  '/- name: Resolve current direct browser bundling inputs/,/- name: Build the exact lazy shell/p' \
+  '/- name: Resolve exact shell browser inputs/,/- name: Build the exact lazy shell/p' \
   "$WORKFLOW")" &&
   fail "browser package resolution must not retain the staging-validation token"
 
@@ -487,7 +541,7 @@ grep -Fq 'test -z "$(git -C "$GITHUB_WORKSPACE/libc/musl" status --porcelain=v1 
 grep -Fq 'GH_TOKEN: ${{ github.token }}' "$WORKFLOW" &&
   fail "main-shell proof must not expose the implicit workflow token to package composition"
 candidate_build_workflow_block="$(sed -n \
-  '/- name: Build the exact lazy shell from public bottles/,/- name: Resolve current direct browser bundling inputs/p' \
+  '/- name: Build the exact lazy shell from public bottles/,/- name: Resolve exact shell browser inputs/p' \
   "$WORKFLOW")"
 grep -Fq 'scripts/homebrew-checkout-public-tap.sh' "$WORKFLOW" &&
   fail "candidate proof must use its one explicit exact tap checkout"
@@ -561,13 +615,13 @@ grep -Eq '(^|[[:space:]])(cp|mv|install|ln)[[:space:]].*(local-binaries|\$instal
   fail "candidate proof must not write or copy directly into local-binaries"
 source_alias_line="$(grep -nF -- '- name: Select the source shell for dependent browser VFS builds' \
   "$WORKFLOW" | cut -d: -f1)"
-browser_resolve_line="$(grep -nF -- '- name: Resolve current direct browser bundling inputs' \
+browser_resolve_line="$(grep -nF -- '- name: Resolve exact shell browser inputs' \
   "$WORKFLOW" | cut -d: -f1)"
 [ -n "$source_alias_line" ] && [ -n "$browser_resolve_line" ] &&
   [ "$source_alias_line" -lt "$browser_resolve_line" ] ||
   fail "source shell selection must precede every derived browser VFS resolution"
 source_alias_workflow_block="$(sed -n \
-  '/- name: Select the source shell for dependent browser VFS builds/,/- name: Resolve current direct browser bundling inputs/p' \
+  '/- name: Select the source shell for dependent browser VFS builds/,/- name: Resolve exact shell browser inputs/p' \
   "$WORKFLOW")"
 grep -Fq 'scripts/install-local-shell-artifact.sh \' \
   <<<"$source_alias_workflow_block" &&
@@ -1013,7 +1067,7 @@ grep -Fq 'fetch_args+=(--package "$package")' "$WORKFLOW" ||
 grep -Fq 'scripts/fetch-binaries.sh "${fetch_args[@]}"' "$WORKFLOW" ||
   fail "binary fetch must materialize only direct browser bundling inputs"
 browser_fetch_block="$(sed -n \
-  "/- name: Resolve current direct browser bundling inputs/,/- name: Install the candidate's exact shell bytes/p" \
+  "/- name: Resolve exact shell browser inputs/,/- name: Install the candidate's exact shell bytes/p" \
   "$WORKFLOW")"
 grep -Fq 'while IFS= read -r -d '"'"''"'"' path &&' \
   <<<"$browser_fetch_block" &&
@@ -1028,24 +1082,35 @@ grep -Fq 'while IFS= read -r -d '"'"''"'"' path; do' \
   ! grep -Fq 'cmp "${{ steps.source_alias.outputs.link_manifest }}"' \
     <<<"$browser_fetch_block" ||
   fail "browser resolution must preserve selected shell links while allowing new mirrors"
-grep -Fq 'fetch_args=()' <<<"$browser_fetch_block" ||
-  fail "browser support inputs must use the normal current-recipe resolver path"
+grep -Fq 'fetch_args=(--fetch-only)' <<<"$browser_fetch_block" ||
+  fail "shell browser inputs must reject unpublished cache keys"
 grep -Fq 'bash scripts/dev-shell.sh env \' <<<"$browser_fetch_block" &&
   grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
     <<<"$browser_fetch_block" ||
   fail "browser package fetch must retain the approved cache root inside dev-shell"
-grep -Fq 'fetch_args=(--fetch-only)' <<<"$browser_fetch_block" &&
-  fail "browser support inputs must source-build when the current recipe is newer than the public archive"
+grep -Fq 'fetch_args=()' <<<"$browser_fetch_block" &&
+  fail "shell browser inputs must not permit source-build fallback"
 grep -Fq 'WASM_POSIX_FETCH_SKIP_PKGS:' "$WORKFLOW" &&
   fail "main-shell proof must not use a negative package skip list"
 grep -Fq 'node scripts/browser-binary-package-roots.mjs \' "$WORKFLOW" ||
   fail "main-shell workflow must derive browser package roots from source imports"
 grep -Fq -- '--arch wasm32 \' "$WORKFLOW" ||
   fail "browser package derivation must select the candidate image architecture"
+grep -Fq -- '--html-entry index.html \' <<<"$browser_fetch_block" &&
+  grep -Fq -- '--html-entry pages/homebrew-vfs-test/index.html \' \
+    <<<"$browser_fetch_block" ||
+  fail "browser package derivation must follow the exact shell proof HTML entries"
+grep -Fq -- '--arch wasm64 \' <<<"$browser_fetch_block" &&
+  fail "wasm32 shell proof must not materialize unrelated wasm64 gallery roots"
 grep -Fq -- '--exclude-package shell \' "$WORKFLOW" ||
   fail "browser package derivation must reserve shell for the exact bottle archive"
-grep -Fq -- '--include-package rootfs' <<<"$browser_fetch_block" ||
-  fail "browser package derivation must include the non-@binaries rootfs alias"
+grep -Fq -- '--local-capability kernel-wasm \' \
+  <<<"$browser_fetch_block" &&
+  grep -Fq -- '--package-capability rootfs-vfs=rootfs \' \
+    <<<"$browser_fetch_block" ||
+  fail "browser package derivation must bind both virtual artifact capabilities"
+grep -Fq -- '--include-package rootfs' <<<"$browser_fetch_block" &&
+  fail "browser package derivation must not hand-maintain the rootfs alias"
 grep -Fq 'mapfile -t browser_input_packages < "$browser_package_file"' "$WORKFLOW" ||
   fail "main-shell workflow must consume the derived browser package roots"
 grep -Fq 'browser_input_packages=(' "$WORKFLOW" &&
@@ -1058,6 +1123,9 @@ grep -Fq 'bash ../../scripts/dev-shell.sh env \' <<<"$browser_build_block" &&
   grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
     <<<"$browser_build_block" ||
   fail "sealed Vite build must retain the approved cache root inside dev-shell"
+grep -Fq 'build_env+=("KANDELO_BROWSER_DEMO_INPUTS=main")' \
+  <<<"$browser_build_block" ||
+  fail "sealed shell proof must build only the real root product entry"
 grep -Fq 'bash ../../scripts/verify-browser-shell-vfs-asset.sh \' \
   <<<"$browser_build_block" &&
   grep -Fq 'dist "${{ steps.image.outputs.path }}"' \

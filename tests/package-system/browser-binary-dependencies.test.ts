@@ -17,6 +17,8 @@ import { describe, expect, it } from "vitest";
 import {
   browserBinariesImports,
   browserBinaryPackageRoots,
+  browserRequiredBinariesImports,
+  browserRequiredInputs,
   configuredProgramRegistryRoots,
   firstTomlString,
   inspectBrowserBinaryDependencies,
@@ -218,6 +220,283 @@ describe("browser binary dependencies", () => {
         "programs/wasm32/local.vfs.zst",
         "programs/wasm32/optional.vfs.zst",
       ]);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("derives required binaries from the reachable product graph", () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-browser-required-"));
+    try {
+      const browserRoot = join(fixtureRoot, "apps", "browser-demos");
+      mkdirSync(join(browserRoot, "product"), { recursive: true });
+      mkdirSync(join(fixtureRoot, "binaries", "programs"), {
+        recursive: true,
+      });
+      writeFileSync(
+        join(browserRoot, "entry.ts"),
+        [
+          'import "./product/required";',
+          'void import("./product/dynamic.ts");',
+        ].join("\n"),
+      );
+      writeFileSync(
+        join(browserRoot, "product", "required.ts"),
+        [
+          'import direct from "@binaries/programs/direct.wasm?url";',
+          'import nested from "./nested";',
+          "void direct; void nested;",
+        ].join("\n"),
+      );
+      writeFileSync(
+        join(browserRoot, "product", "nested.ts"),
+        [
+          'import nested from "../../../binaries/programs/nested.wasm?url";',
+          "export default nested;",
+        ].join("\n"),
+      );
+      writeFileSync(
+        join(browserRoot, "product", "dynamic.ts"),
+        [
+          'import dynamic from "@binaries/programs/wasm64/dynamic.wasm?url";',
+          "void dynamic;",
+        ].join("\n"),
+      );
+      writeFileSync(
+        join(browserRoot, "unreachable.ts"),
+        'import unused from "@binaries/programs/unreachable.wasm?url";\nvoid unused;\n',
+      );
+
+      expect(
+        browserRequiredBinariesImports(fixtureRoot, ["entry.ts"]),
+      ).toEqual([
+        "programs/wasm32/direct.wasm",
+        "programs/wasm32/nested.wasm",
+        "programs/wasm64/dynamic.wasm",
+      ]);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("follows the real repository alias and TypeScript .js substitution", () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-browser-alias-"));
+    try {
+      const browserRoot = join(fixtureRoot, "apps", "browser-demos");
+      const hostRoot = join(fixtureRoot, "host", "src");
+      mkdirSync(browserRoot, { recursive: true });
+      mkdirSync(hostRoot, { recursive: true });
+      writeFileSync(
+        join(browserRoot, "package.json"),
+        JSON.stringify({
+          dependencies: {
+            react: "1.0.0",
+            "@scope/external": "1.0.0",
+          },
+        }),
+      );
+      writeFileSync(
+        join(browserRoot, "entry.ts"),
+        [
+          'import React from "react";',
+          'import external from "@scope/external/subpath";',
+          'import feature from "@host/feature.js";',
+          "void React; void external; void feature;",
+        ].join("\n"),
+      );
+      writeFileSync(
+        join(hostRoot, "feature.ts"),
+        [
+          'import feature from "@binaries/programs/feature.wasm?url";',
+          "export default feature;",
+        ].join("\n"),
+      );
+
+      expect(
+        browserRequiredBinariesImports(fixtureRoot, ["entry.ts"]),
+      ).toEqual(["programs/wasm32/feature.wasm"]);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects unknown repository aliases and undeclared packages", () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-browser-unknown-"));
+    try {
+      const browserRoot = join(fixtureRoot, "apps", "browser-demos");
+      mkdirSync(browserRoot, { recursive: true });
+      writeFileSync(
+        join(browserRoot, "package.json"),
+        JSON.stringify({ dependencies: { react: "1.0.0" } }),
+      );
+      writeFileSync(
+        join(browserRoot, "entry.ts"),
+        'import value from "@unknown/internal";\nvoid value;\n',
+      );
+      expect(() =>
+        browserRequiredBinariesImports(fixtureRoot, ["entry.ts"])
+      ).toThrow(/unknown package or repository alias @unknown\/internal/);
+
+      writeFileSync(
+        join(browserRoot, "entry.ts"),
+        'import value from "undeclared-package";\nvoid value;\n',
+      );
+      expect(() =>
+        browserRequiredBinariesImports(fixtureRoot, ["entry.ts"])
+      ).toThrow(/unknown package or repository alias undeclared-package/);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("derives JavaScript entries from the selected HTML files", () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-browser-html-"));
+    try {
+      const browserRoot = join(fixtureRoot, "apps", "browser-demos");
+      mkdirSync(browserRoot, { recursive: true });
+      writeFileSync(
+        join(browserRoot, "entry-a.ts"),
+        'import value from "@binaries/programs/a.wasm?url";\nvoid value;\n',
+      );
+      writeFileSync(
+        join(browserRoot, "entry-b.ts"),
+        'import value from "@binaries/programs/b.wasm?url";\nvoid value;\n',
+      );
+      const html = join(browserRoot, "index.html");
+      writeFileSync(
+        html,
+        '<script type="module" src="./entry-a.ts"></script>\n',
+      );
+      expect(browserRequiredInputs(fixtureRoot, {
+        htmlEntryFiles: ["index.html"],
+      }).imports).toEqual(["programs/wasm32/a.wasm"]);
+
+      // The HTML file, not a duplicated workflow path, owns the Vite entry.
+      writeFileSync(
+        html,
+        '<script type="module" src="./entry-b.ts"></script>\n',
+      );
+      expect(browserRequiredInputs(fixtureRoot, {
+        htmlEntryFiles: ["index.html"],
+      }).imports).toEqual(["programs/wasm32/b.wasm"]);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("reports virtual artifact modules as separately bound capabilities", () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-browser-capability-"));
+    try {
+      const browserRoot = join(fixtureRoot, "apps", "browser-demos");
+      mkdirSync(browserRoot, { recursive: true });
+      writeFileSync(
+        join(browserRoot, "entry.ts"),
+        [
+          'import kernel from "@kernel-wasm?url";',
+          'import rootfs from "@rootfs-vfs?url";',
+          "void kernel; void rootfs;",
+        ].join("\n"),
+      );
+
+      expect(browserRequiredInputs(fixtureRoot, {
+        entryFiles: ["entry.ts"],
+      })).toEqual({
+        imports: [],
+        capabilities: ["kernel-wasm", "rootfs-vfs"],
+      });
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed across entry, alias, HTML, and source symlink escapes", () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-browser-escape-"));
+    try {
+      const browserRoot = join(fixtureRoot, "apps", "browser-demos");
+      const hostRoot = join(fixtureRoot, "host", "src");
+      mkdirSync(browserRoot, { recursive: true });
+      mkdirSync(hostRoot, { recursive: true });
+      writeFileSync(join(fixtureRoot, "outside.ts"), "export default 1;\n");
+      writeFileSync(
+        join(browserRoot, "entry.ts"),
+        'import value from "@host/../../outside.ts";\nvoid value;\n',
+      );
+      expect(() =>
+        browserRequiredBinariesImports(fixtureRoot, ["entry.ts"])
+      ).toThrow(/alias import escapes @host/);
+      expect(() =>
+        browserRequiredBinariesImports(fixtureRoot, ["../../../outside.ts"])
+      ).toThrow(/entry escapes the app/);
+
+      writeFileSync(
+        join(browserRoot, "index.html"),
+        '<script type="module" src="../../../outside.ts"></script>\n',
+      );
+      expect(() => browserRequiredInputs(fixtureRoot, {
+        htmlEntryFiles: ["index.html"],
+      })).toThrow(/HTML module escapes the app/);
+
+      symlinkSync(join(fixtureRoot, "outside.ts"), join(browserRoot, "linked.ts"));
+      expect(() =>
+        browserRequiredBinariesImports(fixtureRoot, ["linked.ts"])
+      ).toThrow(/source module is a symlink/);
+
+      writeFileSync(
+        join(browserRoot, "entry.ts"),
+        'import value from "./linked.ts";\nvoid value;\n',
+      );
+      expect(() =>
+        browserRequiredBinariesImports(fixtureRoot, ["entry.ts"])
+      ).toThrow(/source module is a symlink/);
+
+      symlinkSync(join(browserRoot, "index.html"), join(browserRoot, "linked.html"));
+      expect(() => browserRequiredInputs(fixtureRoot, {
+        htmlEntryFiles: ["linked.html"],
+      })).toThrow(/HTML entry is not a regular file/);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps reachable optional gallery globs out of required materialization", () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-browser-glob-"));
+    try {
+      const browserRoot = join(fixtureRoot, "apps", "browser-demos");
+      mkdirSync(browserRoot, { recursive: true });
+      writeFileSync(
+        join(browserRoot, "entry.ts"),
+        [
+          'import required from "@binaries/programs/required.wasm?url";',
+          'const optional = import.meta.glob("../../binaries/programs/optional.vfs.zst", { query: "?url", import: "default" });',
+          "void required; void optional;",
+        ].join("\n"),
+      );
+      writeFileSync(
+        join(browserRoot, "unreachable.ts"),
+        'import unused from "@binaries/programs/unreachable.wasm?url";\nvoid unused;\n',
+      );
+
+      expect(
+        browserRequiredBinariesImports(fixtureRoot, ["entry.ts"]),
+      ).toEqual(["programs/wasm32/required.wasm"]);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when a reachable source glob cannot be projected", () => {
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "kandelo-browser-source-glob-"));
+    try {
+      const browserRoot = join(fixtureRoot, "apps", "browser-demos");
+      mkdirSync(browserRoot, { recursive: true });
+      writeFileSync(
+        join(browserRoot, "entry.ts"),
+        'const modules = import.meta.glob("./plugins/*.ts");\nvoid modules;\n',
+      );
+
+      expect(() =>
+        browserRequiredBinariesImports(fixtureRoot, ["entry.ts"])
+      ).toThrow(/unsupported source glob/);
     } finally {
       rmSync(fixtureRoot, { recursive: true, force: true });
     }
@@ -1072,6 +1351,53 @@ guest_path = "/usr/share/data"
         .filter((name) => name !== "shell")
         .sort(),
     );
+  });
+
+  it("keeps optional gallery images outside the exact shell proof roots", () => {
+    const roots = browserBinaryPackageRoots(repoRoot, {
+      arch: "wasm32",
+      htmlEntryFiles: [
+        "index.html",
+        "pages/homebrew-vfs-test/index.html",
+      ],
+      localCapabilities: ["kernel-wasm"],
+      packageCapabilities: { "rootfs-vfs": "rootfs" },
+      excludePackages: ["shell"],
+    });
+
+    expect(roots).toContain("bash");
+    expect(roots).toContain("homebrew-bootstrap");
+    expect(roots).toContain("rootfs");
+    expect(roots).not.toContain("shell");
+    expect(roots).not.toContain("node-vfs");
+    expect(roots).not.toContain("wordpress");
+    expect(roots).not.toContain("lamp");
+    expect(roots).not.toContain("nginx-vfs");
+    expect(roots).not.toContain("nginx-php-vfs");
+    expect(roots).not.toContain("erlang-vfs");
+  });
+
+  it("requires each exact-shell virtual artifact to have one binding", () => {
+    const options = {
+      arch: "wasm32" as const,
+      htmlEntryFiles: [
+        "index.html",
+        "pages/homebrew-vfs-test/index.html",
+      ],
+      excludePackages: ["shell"],
+    };
+    expect(() => browserBinaryPackageRoots(repoRoot, options)).toThrow(
+      /required browser capability has no binding: kernel-wasm/,
+    );
+    expect(() => browserBinaryPackageRoots(repoRoot, {
+      ...options,
+      localCapabilities: ["kernel-wasm"],
+    })).toThrow(/required browser capability has no binding: rootfs-vfs/);
+    expect(() => browserBinaryPackageRoots(repoRoot, {
+      ...options,
+      localCapabilities: ["kernel-wasm", "rootfs-vfs"],
+      packageCapabilities: { "rootfs-vfs": "rootfs" },
+    })).toThrow(/browser capability has two bindings: rootfs-vfs/);
   });
 
   it("keeps wasm32 and wasm64 browser roots in separate package generations", () => {

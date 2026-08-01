@@ -10,8 +10,6 @@ const HOMEBREW_BOOTSTRAP_OUTPUT = "homebrew-bootstrap.zip";
 
 const HOMEBREW_CLOSED_ACCEPTANCE_INPUTS = [
   "main",
-  "kandelo",
-  "network",
   "homebrew-vfs-test",
 ] as const;
 
@@ -150,9 +148,12 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Closed acceptance needs the real product pages and the otherwise-private
- * lifecycle fixture page in one optimized tree. Other modes return no
- * override so their ordinary input-selection policy remains authoritative.
+ * Closed acceptance needs the real root shell page and the otherwise-private
+ * lifecycle fixture page in one optimized tree. Full-gallery deployment is a
+ * separate Pages gate; admitting those unrelated entries here would make one
+ * stale optional image block proof of the shell that users actually launch.
+ * Other modes return no override so their ordinary input policy remains
+ * authoritative.
  */
 export function homebrewClosedAcceptanceInputNames(
   mode: string,

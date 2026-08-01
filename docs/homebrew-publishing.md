@@ -3068,17 +3068,34 @@ current shell closure. It inspects the resulting archive for the distinct
 both Node and Chromium. This provisional lane does not relax or skip the
 canonical shell's lazy-artifact lock. The separate `bottles` branch also
 requires an anonymous live tap-main match and therefore cannot turn a reachable
-historical commit into cutover evidence. Unrelated browser-gallery roots can
-still use the separately verified package generation, but a before/after
-regular-file-and-symlink manifest proves they did not replace any exact-source
-shell closure bytes. The sealed Chromium
-proof executes eager Bash, rootfs-owned lazy `grep`, extended lazy `less`, and
-integrity-bound Vim and NetHack lazy archives. The former Pages publisher also
-built the current sysroot and invoked the internal
-`./run.sh prepare-browser --source-rootfs-shell` lane with an exact event
-repository and SHA, `pages-exact-main-v1` isolation attestation, exact empty
-current-ABI file index, fresh cache, and unmaterialized resolver workspace.
-The current Pages workflow deliberately no longer provides that environment.
+historical commit into cutover evidence. Its browser materialization traverses
+the HTML-owned graphs for the real root shell and private lifecycle pages, then
+fetch-only resolves the verified Kandelo package archives those graphs need.
+The graph separately binds the locally built kernel and the package-owned
+rootfs virtual modules, so neither Vite alias can silently escape the package
+projection. Optional `import.meta.glob()` gallery images remain lazy and cannot
+trigger an unrelated source build in the shell proof. A missing or stale
+required package instead fails immediately as a publication gap. Unrelated
+browser-gallery roots can still use the separately verified package generation,
+but a before/after regular-file-and-symlink manifest proves they did not replace
+any exact-source shell closure bytes. The sealed Chromium proof executes eager
+Bash, rootfs-owned lazy `grep`, extended lazy `less`, and integrity-bound Vim
+and NetHack lazy archives. In parallel, the general prepare-merge browser shard
+uses its already materialized package inputs to run an ordinary optimized
+Pages-shaped build before it exposes any closed test mirror. That build keeps
+the complete gallery entry set and the `/kandelo/` production base. It catches
+production bundling failures without putting the gallery on the focused shell
+proof's critical path. This pre-merge shard compiles but never deploys; pull
+requests still cannot invoke the Pages publisher.
+
+The Pages publisher remains the full-gallery build gate, but its browser boot
+checks the shell route rather than booting every gallery entry. It consumes the
+canonical bottled product from a fresh package cache with source fallback
+disabled, binds the exact public shell, bootstrap, and mirror plan, and proves
+first-use `brew` materialization in Chromium before deployment. It deliberately
+does not invoke the internal source bridge or provide that bridge's exact event
+repository and SHA, `pages-exact-main-v1` isolation attestation, empty
+current-ABI file index, or unmaterialized resolver workspace.
 
 The lane stages and inspects only the distinct bridge recipe before beginning
 canonical installation. Before any mutation it verifies the exact GitHub

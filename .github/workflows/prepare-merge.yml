@@ -1779,6 +1779,7 @@ jobs:
       SUITE: ${{ matrix.suite }}
       TEST_GROUP: ${{ matrix.group }}
       PREPARE_BROWSER_ASSETS: ${{ matrix.suite == 'browser' }}
+      VERIFY_BROWSER_PRODUCTION_BUILD: ${{ matrix.suite == 'browser' }}
     steps:
       - name: Decide whether to run suite
         id: suite
@@ -1872,6 +1873,7 @@ jobs:
         run: |
           bash scripts/dev-shell.sh env \
             PREPARE_BROWSER_ASSETS="$PREPARE_BROWSER_ASSETS" \
+            VERIFY_BROWSER_PRODUCTION_BUILD="$VERIFY_BROWSER_PRODUCTION_BUILD" \
             bash scripts/ci-run-test-suite.sh "$SUITE" "$TEST_GROUP"
 
       - name: Upload browser test artifacts
