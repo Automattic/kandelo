@@ -4133,6 +4133,7 @@ def check_publisher(workflow)
     scripts/homebrew-native-api-preflight.sh
     scripts/homebrew-native-bounded-environment.sh
     scripts/homebrew-native-check-brew-source.sh
+    scripts/homebrew-native-command-diagnostic.rb
     scripts/homebrew-native-install-contract.sh
     scripts/update-homebrew-native-compatibility-lock.sh
     homebrew/homebrew-native-compatibility-roots.json
@@ -4256,6 +4257,22 @@ def check_publisher(workflow)
   native_contract_test = File.read(
     File.join(REPO_ROOT, "scripts/test-homebrew-native-api-contract.sh")
   )
+  native_command_diagnostic = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-native-command-diagnostic.rb")
+  )
+  [
+    "MAX_CAPTURE_BYTES = 16 * 1024",
+    "MAX_RENDERED_LINES = 200",
+    "File::NOFOLLOW",
+    "File::CREAT | File::EXCL | File::NOFOLLOW",
+    'fail_diagnostic("capture expects PATH")',
+    "diagnostic log is not a private regular file",
+    "[redacted-github-token]",
+    'puts "| #{line}"',
+  ].each do |fragment|
+    check(native_command_diagnostic.include?(fragment),
+          "native Homebrew command diagnostic lacks #{fragment}")
+  end
   publisher_contract_test = File.read(
     File.join(REPO_ROOT, "scripts/test-homebrew-publish-workflow.sh")
   )
@@ -4296,6 +4313,21 @@ def check_publisher(workflow)
     "escaping portable Ruby symlink",
     "wrong Brew commit",
     "wrapped Brew executable",
+    "exercise_native_install_stage",
+    "deps 51 signed-api-dependency-resolution",
+    "admit 52 signed-api-admission",
+    "audit 53 installed-cellar-audit-1",
+    "large native diagnostic was not bounded around its useful tail",
+    "failed capture appended or rendered stale diagnostic bytes",
+    "missing per-command log did not fail closed",
+    "symlink per-command log was followed",
+    "native command diagnostic was not inert and credential-safe",
+    "exercise_installed_formula_metadata_failure",
+    "installed-formula-metadata failed with status 55",
+    "errexit caller did not exit with the native command status",
+    "successful native diagnostic did not restore caller errexit",
+    "direct publisher boundary suppressed an unguarded inner failure",
+    "publisher boundary discarded stateful function changes",
   ].each do |fragment|
     check(native_contract_test.include?(fragment),
           "native Homebrew adversarial fixture lacks #{fragment}")
@@ -4345,6 +4377,9 @@ def check_publisher(workflow)
     "native host plan changed after signed-API preflight",
     "signed native API preflight is unavailable",
     "zero-root job received populated native API state",
+    "homebrew_native_contract_run_logged()",
+    "homebrew_native_contract_report_command_failure()",
+    "homebrew-native-command-diagnostic.rb",
     "deps --union --include-implicit",
     'admit "$brew_commit" "$policy" "$purpose"',
     "run_native_brew_logged install --as-dependency --formula",
@@ -4424,6 +4459,8 @@ def check_publisher(workflow)
       "homebrew_native_contract_install",
       '"homebrew/core/$dependency"',
       'homebrew_patched_launcher_run_native info --json=v2',
+      'homebrew_native_contract_run_logged',
+      'installed-formula-metadata',
       '.formulae[0].name == $name',
       '.formulae[0].full_name == $name',
       '.formulae[0].tap == "homebrew/core"',
@@ -4433,7 +4470,7 @@ def check_publisher(workflow)
       'homebrew_patched_launcher_bridge_native_formula "$dependency"',
       '"$BREW_BIN" list --formula "$dependency" >/dev/null',
       'homebrew_patched_launcher_run_native "$@" 2>&1 | tee -a "$NATIVE_INSTALL_LOG"',
-      '>"$native_info" 2>>"$NATIVE_INSTALL_LOG"',
+      '"$NATIVE_INSTALL_LOG" "$native_info"',
       '--install-log "$INSTALL_LOG"',
       'cleanup_and_exit() {',
       'trap \'cleanup_and_exit $?\' EXIT',
@@ -4469,6 +4506,35 @@ def check_publisher(workflow)
           "Formula runner exposes its native parent outside isolated CI")
     check(formula_runner.scan('NATIVE_BASE="$(mktemp -d /tmp/k.XXXXXX)"').length == 1,
           "Formula runner does not use exactly one bounded native prefix")
+  end
+  build_stage_marker = native_install_contract[
+    /homebrew_native_contract_stage_marker\(\) \{\n(.*?)\n\}\n/m,
+    1
+  ]
+  check(build_stage_marker &&
+        build_stage_marker.include?('^(starting|completed)$') &&
+        build_stage_marker.include?('printf \'%s: %s %s stage\\n\'') &&
+        !build_stage_marker.include?('"$@"'),
+        "bottle builder stage marker executes the stateful stage")
+  check(!native_install_contract.include?(
+          "homebrew_native_contract_run_stage"
+        ), "native contract retains an errexit-suppressing stage wrapper")
+  %w[
+    tier2-execution-rescan
+    tier2-execution-preflight
+    tier2-attestation-staging
+    formula-realm-isolation
+    signed-native-contract
+  ].each do |stage|
+    runners = [bottle_builder]
+    runners << bottle_verifier if stage == "signed-native-contract"
+    runners.each do |runner|
+      starting = "homebrew_native_contract_stage_marker #{stage} starting"
+      completed = "homebrew_native_contract_stage_marker #{stage} completed"
+      check(runner.include?(starting) && runner.include?(completed) &&
+            runner.index(starting) < runner.index(completed),
+            "Formula runner does not bound the #{stage} stage")
+    end
   end
   builder_tap_clone_index = bottle_builder.index(
     '"$BREW_BIN" tap "$TAP_NAME" "$PRIMARY_TAP_CLONE_URL"'
@@ -5369,6 +5435,13 @@ def check_publisher(workflow)
           "homebrew_patched_launcher_isolate: expected BUILD_USER WORK_DIR " \
           "KANDELO_ROOT TAP_ROOT OUTPUT_ROOT SYSROOT_BUILD_ROOT"
         ), "isolated Brew launcher does not require an explicit sysroot build root")
+  [
+    "isolated native prefix probe failed with status",
+    "isolated native repository probe failed with status",
+  ].each do |fragment|
+    check(launcher.include?(fragment),
+          "isolated Brew launcher lacks #{fragment}")
+  end
   check(launcher.scan('"--property=InaccessiblePaths=$sysroot_build_root"').length == 2,
         "isolated target and native Homebrew do not both hide the sysroot build root")
   [
@@ -5540,6 +5613,9 @@ def check_publisher(workflow)
   launcher_test = File.read(
     File.join(REPO_ROOT, "scripts/test-homebrew-patched-launcher.sh")
   )
+  check(launcher_test.include?(
+          "isolated native identity probes do not label and preserve failures"
+        ), "launcher tests omit native identity probe status preservation")
   [
     "a missing program-index checker",
     "a symlinked program-index checker",

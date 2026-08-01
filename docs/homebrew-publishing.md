@@ -1454,6 +1454,34 @@ Unselected keg versions and native transitive dependencies stay in the native
 prefix and cannot claim target Cellar names. Native install logs remain
 separate from Kandelo bottle dependency provenance.
 
+The publisher stops GitHub Actions workflow-command parsing before any
+unprivileged Formula code runs. Native Homebrew dependency resolution,
+signed API admission, Cellar receipt audit, and installed-Formula
+metadata checks can still fail before a bottle exists. Those commands
+keep a private aggregate log under the build control directory, but
+cleanup deletes that directory and the workflow deliberately uploads
+only bottle outputs. Each otherwise-silent native command therefore
+also captures at most the final 16 KiB of its own output. On failure,
+the builder prints the command stage and original exit status, then
+renders at most 200 prefixed lines. It escapes terminal control bytes
+and redacts recognizable credentials, so upstream text remains inert
+even while workflow commands are disabled. Missing, linked,
+non-private, or replaced log files are never followed; the builder
+reports that the diagnostic is unavailable without replacing the
+native command's exit status.
+
+Before that detailed capture is active, small start/completion markers
+identify the Tier-2 execution rescan, execution preflight, attestation
+staging, and Formula-realm isolation boundaries. They surround direct
+calls rather than executing those stateful functions through a wrapper.
+A starting marker without matching completion therefore identifies the
+failing boundary while normal shell behavior preserves its exit status
+and state. Isolation also names failures of its final native prefix and
+repository probes, so a build that never entered the signed-API contract
+is distinguishable from one rejected by that contract. Markers around
+the whole signed native contract also cover its control-file staging
+before dependency resolution begins.
+
 Pinned Homebrew normally tries to install Bubblewrap into its active prefix
 before `brew test`. The publisher overlay suppresses that automatic install
 while a protected Kandelo target plan is active. A usable Bubblewrap already

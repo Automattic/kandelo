@@ -2705,6 +2705,42 @@ homebrew_patched_launcher_run_native() {
   "$HOMEBREW_PATCHED_SUDO_BIN" -n -- "$HOMEBREW_PATCHED_NATIVE_RUNNER" "$@"
 }
 
+homebrew_patched_launcher_verify_isolated_native_identity() {
+  if [ "$#" -ne 0 ]; then
+    echo "homebrew_patched_launcher_verify_isolated_native_identity: expected no arguments" >&2
+    return 2
+  fi
+  [ -n "$HOMEBREW_PATCHED_NATIVE_PREFIX" ] || return 0
+  local native_reported_prefix native_reported_repo status
+  if native_reported_prefix="$(
+    homebrew_patched_launcher_run_native --prefix
+  )"; then
+    :
+  else
+    status="$?"
+    echo "homebrew-patched-launcher: isolated native prefix probe failed with status $status" >&2
+    return "$status"
+  fi
+  if native_reported_repo="$(
+    homebrew_patched_launcher_run_native --repository
+  )"; then
+    :
+  else
+    status="$?"
+    echo "homebrew-patched-launcher: isolated native repository probe failed with status $status" >&2
+    return "$status"
+  fi
+  [ "$native_reported_prefix" = "$HOMEBREW_PATCHED_NATIVE_PREFIX" ] || {
+    echo "homebrew-patched-launcher: isolated native Homebrew changed its prefix" >&2
+    return 1
+  }
+  [ "$(cd "$native_reported_repo" && pwd -P)" = \
+    "$(cd "$HOMEBREW_PATCHED_OVERLAY" && pwd -P)" ] || {
+    echo "homebrew-patched-launcher: isolated native Homebrew changed its repository" >&2
+    return 1
+  }
+}
+
 homebrew_patched_launcher_audit_native_projection_links() {
   local runner python
   local -a audit_args
@@ -3243,7 +3279,7 @@ homebrew_patched_launcher_isolate() {
   shift 6
   local build_group build_home protected_audit protected_xtask
   local wrapper_source wrapper_path audit_source native_runner_source native_runner_path
-  local mutable_root protected_root target_state_root native_reported_prefix native_reported_repo
+  local mutable_root protected_root target_state_root
   local physical_repo physical_prefix
   local sudo_bin sudo_mode env_bin variable value protected_bin patched_prefix patched_repo
   local systemd_run_bin systemctl_bin getent_bin pgrep_bin pkill_bin
@@ -4323,19 +4359,7 @@ homebrew_patched_launcher_isolate() {
     echo "homebrew-patched-launcher: isolated wrapper changed Homebrew repository" >&2
     return 1
   }
-  if [ -n "$HOMEBREW_PATCHED_NATIVE_PREFIX" ]; then
-    native_reported_prefix="$(homebrew_patched_launcher_run_native --prefix)" || return
-    native_reported_repo="$(homebrew_patched_launcher_run_native --repository)" || return
-    [ "$native_reported_prefix" = "$HOMEBREW_PATCHED_NATIVE_PREFIX" ] || {
-      echo "homebrew-patched-launcher: isolated native Homebrew changed its prefix" >&2
-      return 1
-    }
-    [ "$(cd "$native_reported_repo" && pwd -P)" = \
-      "$(cd "$HOMEBREW_PATCHED_OVERLAY" && pwd -P)" ] || {
-      echo "homebrew-patched-launcher: isolated native Homebrew changed its repository" >&2
-      return 1
-    }
-  fi
+  homebrew_patched_launcher_verify_isolated_native_identity || return
 }
 
 # Remove the one registered protected input without discarding retry state on

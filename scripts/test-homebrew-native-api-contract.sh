@@ -526,6 +526,417 @@ run_native_brew_logged() {
   [ "${KANDELO_TEST_NATIVE_MISSING_STATUS:-0}" -eq 0 ]
 }
 . "$SCRIPT_DIR/homebrew-native-install-contract.sh"
+
+HOMEBREW_NATIVE_CONTRACT_COMPONENT=homebrew-bottle-build.sh
+for stage in \
+  tier2-execution-rescan \
+  tier2-execution-preflight \
+  tier2-attestation-staging \
+  formula-realm-isolation \
+  signed-native-contract; do
+  stage_marker_output="$(
+    {
+      homebrew_native_contract_stage_marker "$stage" starting
+      homebrew_native_contract_stage_marker "$stage" completed
+    } 2>&1
+  )"
+  grep -F "homebrew-bottle-build.sh: starting $stage stage" \
+    <<<"$stage_marker_output" >/dev/null &&
+    grep -F "homebrew-bottle-build.sh: completed $stage stage" \
+      <<<"$stage_marker_output" >/dev/null ||
+    fail "$stage did not expose both publisher boundaries"
+done
+
+publisher_unguarded_stage_failure() {
+  (exit 67)
+  printf 'unguarded stage continued\n' >>"$TMP_ROOT/stage-continued"
+}
+
+exercise_direct_stage_errexit() (
+  set -euo pipefail
+  HOMEBREW_NATIVE_CONTRACT_COMPONENT=homebrew-bottle-build.sh
+  homebrew_native_contract_stage_marker unguarded-stage starting
+  publisher_unguarded_stage_failure
+  homebrew_native_contract_stage_marker unguarded-stage completed
+)
+
+set +e
+exercise_direct_stage_errexit 2>"$TMP_ROOT/stage-errexit.stderr"
+stage_status="$?"
+set -e
+[ "$stage_status" -eq 67 ] &&
+  [ ! -e "$TMP_ROOT/stage-continued" ] &&
+  grep -F 'homebrew-bottle-build.sh: starting unguarded-stage stage' \
+    "$TMP_ROOT/stage-errexit.stderr" >/dev/null &&
+  ! grep -F 'completed unguarded-stage stage' \
+    "$TMP_ROOT/stage-errexit.stderr" >/dev/null ||
+  fail "direct publisher boundary suppressed an unguarded inner failure"
+
+publisher_stage_state=before
+publisher_mutate_stage_state() {
+  publisher_stage_state=after
+}
+homebrew_native_contract_stage_marker stateful-stage starting 2>/dev/null
+publisher_mutate_stage_state
+homebrew_native_contract_stage_marker stateful-stage completed 2>/dev/null
+[ "$publisher_stage_state" = after ] ||
+  fail "publisher boundary discarded stateful function changes"
+unset HOMEBREW_NATIVE_CONTRACT_COMPONENT
+
+prepare_diagnostic_case() {
+  local label="$1"
+  DIAGNOSTIC_CONTROL="$TMP_ROOT/diagnostic-$label"
+  DIAGNOSTIC_AGGREGATE="$DIAGNOSTIC_CONTROL/native-install.log"
+  DIAGNOSTIC_OUTPUT="$DIAGNOSTIC_CONTROL/output"
+  DIAGNOSTIC_STDERR="$DIAGNOSTIC_CONTROL/stderr"
+  mkdir "$DIAGNOSTIC_CONTROL"
+  chmod 0700 "$DIAGNOSTIC_CONTROL"
+  : >"$DIAGNOSTIC_AGGREGATE"
+  : >"$DIAGNOSTIC_OUTPUT"
+  : >"$DIAGNOSTIC_STDERR"
+  chmod 0600 \
+    "$DIAGNOSTIC_AGGREGATE" "$DIAGNOSTIC_OUTPUT" "$DIAGNOSTIC_STDERR"
+  HOMEBREW_NATIVE_DIAGNOSTIC_SEQUENCE=0
+}
+
+diagnostic_success() {
+  printf 'machine-readable output\n'
+  printf 'successful command note\n' >&2
+}
+
+prepare_diagnostic_case success
+homebrew_native_contract_run_logged \
+  successful-probe "$DIAGNOSTIC_CONTROL" "$DIAGNOSTIC_AGGREGATE" \
+  "$DIAGNOSTIC_OUTPUT" diagnostic_success 2>"$DIAGNOSTIC_STDERR"
+[ ! -s "$DIAGNOSTIC_STDERR" ] &&
+  [ "$(cat "$DIAGNOSTIC_OUTPUT")" = "machine-readable output" ] &&
+  grep -Fx 'successful command note' "$DIAGNOSTIC_AGGREGATE" >/dev/null ||
+  fail "successful native command did not preserve output quietly"
+
+exercise_installed_formula_metadata_failure() (
+  local status
+  prepare_diagnostic_case installed-formula-metadata
+  homebrew_patched_launcher_run_native() {
+    [ "$*" = 'info --json=v2 homebrew/core/cmake' ] || return 96
+    printf 'native Formula metadata is unavailable\n' >&2
+    return 55
+  }
+  set +e
+  homebrew_native_contract_run_logged \
+    installed-formula-metadata "$DIAGNOSTIC_CONTROL" \
+    "$DIAGNOSTIC_AGGREGATE" "$DIAGNOSTIC_OUTPUT" \
+    homebrew_patched_launcher_run_native \
+      info --json=v2 homebrew/core/cmake 2>"$DIAGNOSTIC_STDERR"
+  status="$?"
+  set -e
+  [ "$status" -eq 55 ] ||
+    fail "installed Formula metadata failure returned $status, expected 55"
+  grep -F \
+    'native Homebrew installed-formula-metadata failed with status 55' \
+    "$DIAGNOSTIC_STDERR" >/dev/null &&
+    grep -F 'native Formula metadata is unavailable' \
+      "$DIAGNOSTIC_STDERR" >/dev/null ||
+    fail "failing info command lost its stage, status, or diagnostic"
+)
+
+exercise_installed_formula_metadata_failure
+
+diagnostic_errexit_failure() {
+  printf 'errexit native failure\n' >&2
+  return 56
+}
+
+exercise_native_failure_under_errexit() (
+  prepare_diagnostic_case errexit-failure
+  set -euo pipefail
+  homebrew_native_contract_run_logged \
+    errexit-failure "$DIAGNOSTIC_CONTROL" "$DIAGNOSTIC_AGGREGATE" - \
+    diagnostic_errexit_failure 2>"$DIAGNOSTIC_STDERR"
+  printf 'unreachable\n' >"$DIAGNOSTIC_CONTROL/reached"
+)
+
+set +e
+exercise_native_failure_under_errexit
+errexit_status="$?"
+set -e
+[ "$errexit_status" -eq 56 ] &&
+  [ ! -e "$TMP_ROOT/diagnostic-errexit-failure/reached" ] &&
+  grep -F 'native Homebrew errexit-failure failed with status 56' \
+    "$TMP_ROOT/diagnostic-errexit-failure/stderr" >/dev/null ||
+  fail "errexit caller did not exit with the native command status"
+
+exercise_native_success_restores_errexit() (
+  prepare_diagnostic_case errexit-success
+  set -euo pipefail
+  homebrew_native_contract_run_logged \
+    errexit-success "$DIAGNOSTIC_CONTROL" "$DIAGNOSTIC_AGGREGATE" \
+    "$DIAGNOSTIC_OUTPUT" diagnostic_success 2>"$DIAGNOSTIC_STDERR"
+  false
+  printf 'unreachable\n' >"$DIAGNOSTIC_CONTROL/reached"
+)
+
+set +e
+exercise_native_success_restores_errexit
+errexit_status="$?"
+set -e
+[ "$errexit_status" -eq 1 ] &&
+  [ ! -e "$TMP_ROOT/diagnostic-errexit-success/reached" ] ||
+  fail "successful native diagnostic did not restore caller errexit"
+
+# Exercise the real install dispatcher, not only the reporting primitive, so
+# each signed-API boundary is kept on the diagnostic path as the contract grows.
+exercise_native_install_stage() (
+  local selected_stage="$1" expected_status="$2" expected_label="$3"
+  local roots state failure_status
+  prepare_diagnostic_case "contract-$selected_stage"
+  roots="$DIAGNOSTIC_CONTROL/roots.txt"
+  state="$DIAGNOSTIC_CONTROL/state"
+  printf 'root\n' >"$roots"
+  mkdir "$state"
+  printf '{}\n' >"$state/prime.json"
+  chmod 0600 "$roots" "$state/prime.json"
+  KANDELO_HOMEBREW_NATIVE_API_STATE="$state"
+  HOMEBREW_NATIVE_CONTRACT_ENABLED=1
+  KANDELO_TEST_NATIVE_FAILURE_STAGE="$selected_stage"
+
+  homebrew_patched_launcher_stage_native_contract_file() {
+    printf '%s\n' "$1"
+  }
+  run_native_brew_logged() {
+    [ "$KANDELO_TEST_NATIVE_FAILURE_STAGE" != install ] || return 54
+    return 0
+  }
+  homebrew_patched_launcher_run_native() {
+    if [ "$1" = deps ]; then
+      if [ "$KANDELO_TEST_NATIVE_FAILURE_STAGE" = deps ]; then
+        printf 'dependency resolution rejected gettext\n' >&2
+        return 51
+      fi
+      printf 'dep\nroot\n'
+      return 0
+    fi
+    if [ "$1" = ruby ] && [ "$3" = admit ]; then
+      if [ "$KANDELO_TEST_NATIVE_FAILURE_STAGE" = admit ]; then
+        printf 'compatibility lock does not admit gettext\n' >&2
+        return 52
+      fi
+      return 0
+    fi
+    if [ "$1" = ruby ] && [ "$3" = audit-cellar ]; then
+      if [ "$KANDELO_TEST_NATIVE_FAILURE_STAGE" = audit ]; then
+        printf 'installed Cellar receipt is not admitted\n' >&2
+        return 53
+      fi
+      return 0
+    fi
+    return 99
+  }
+
+  set +e
+  homebrew_native_contract_install \
+    "$roots" "$DIAGNOSTIC_CONTROL" "$DIAGNOSTIC_AGGREGATE" \
+    "$DIAGNOSTIC_CONTROL" 0000000000000000000000000000000000000000 \
+    "$REPO_ROOT" tap_formula_host_dependencies \
+    2>"$DIAGNOSTIC_STDERR"
+  failure_status="$?"
+  set -e
+  [ "$failure_status" -eq "$expected_status" ] ||
+    fail "$selected_stage failure returned $failure_status, expected $expected_status"
+  grep -F "native Homebrew $expected_label failed with status $expected_status" \
+    "$DIAGNOSTIC_STDERR" >/dev/null ||
+    fail "$selected_stage failure lost its native command stage"
+)
+
+exercise_native_install_stage \
+  deps 51 signed-api-dependency-resolution
+exercise_native_install_stage \
+  admit 52 signed-api-admission
+exercise_native_install_stage \
+  audit 53 installed-cellar-audit-1
+
+diagnostic_large_failure() {
+  ruby -e '10_000.times { warn "earlier line" }; warn "final root cause"'
+  return 29
+}
+
+prepare_diagnostic_case bounded
+set +e
+homebrew_native_contract_run_logged \
+  bounded-failure "$DIAGNOSTIC_CONTROL" "$DIAGNOSTIC_AGGREGATE" \
+  "$DIAGNOSTIC_OUTPUT" diagnostic_large_failure 2>"$DIAGNOSTIC_STDERR"
+diagnostic_status="$?"
+set -e
+[ "$diagnostic_status" -eq 29 ] &&
+  [ "$(wc -c <"$DIAGNOSTIC_CONTROL/native-command-1.log")" -le 16448 ] &&
+  [ "$(wc -c <"$DIAGNOSTIC_STDERR")" -le 70000 ] &&
+  [ "$(grep -c '^| ' "$DIAGNOSTIC_STDERR")" -eq 200 ] &&
+  grep -F 'earlier diagnostic lines omitted' "$DIAGNOSTIC_STDERR" >/dev/null &&
+  grep -F 'final root cause' "$DIAGNOSTIC_STDERR" >/dev/null ||
+  fail "large native diagnostic was not bounded around its useful tail"
+
+diagnostic_preexisting_capture_failure() {
+  ruby -e '10_000.times { puts "current command output" }'
+  return 74
+}
+
+prepare_diagnostic_case preexisting-capture
+printf 'stale prior command reason\n' \
+  >"$DIAGNOSTIC_CONTROL/native-command-1.log"
+printf 'dash sentinel must not be read\n' >"$DIAGNOSTIC_CONTROL/-"
+chmod 0600 \
+  "$DIAGNOSTIC_CONTROL/native-command-1.log" "$DIAGNOSTIC_CONTROL/-"
+set +e
+(
+  cd "$DIAGNOSTIC_CONTROL"
+  homebrew_native_contract_run_logged \
+    preexisting-capture "$DIAGNOSTIC_CONTROL" "$DIAGNOSTIC_AGGREGATE" - \
+    diagnostic_preexisting_capture_failure
+) 2>"$DIAGNOSTIC_STDERR"
+diagnostic_status="$?"
+set -e
+[ "$diagnostic_status" -eq 74 ] &&
+  [ ! -s "$DIAGNOSTIC_AGGREGATE" ] &&
+  [ "$(cat "$DIAGNOSTIC_CONTROL/native-command-1.log")" = \
+    'stale prior command reason' ] &&
+  grep -F 'diagnostic unavailable: log is not a private regular file' \
+    "$DIAGNOSTIC_STDERR" >/dev/null &&
+  ! grep -E 'stale prior command reason|dash sentinel must not be read' \
+    "$DIAGNOSTIC_STDERR" >/dev/null ||
+  fail "failed capture appended or rendered stale diagnostic bytes"
+
+diagnostic_fixed_failure() {
+  printf '%s\n' "${KANDELO_TEST_DIAGNOSTIC_MESSAGE:-fixed failure}" >&2
+  return "${KANDELO_TEST_DIAGNOSTIC_STATUS:-31}"
+}
+
+prepare_diagnostic_case missing-aggregate
+rm "$DIAGNOSTIC_AGGREGATE"
+KANDELO_TEST_DIAGNOSTIC_MESSAGE='missing aggregate root cause'
+KANDELO_TEST_DIAGNOSTIC_STATUS=31
+set +e
+homebrew_native_contract_run_logged \
+  missing-aggregate "$DIAGNOSTIC_CONTROL" "$DIAGNOSTIC_AGGREGATE" \
+  "$DIAGNOSTIC_OUTPUT" diagnostic_fixed_failure 2>"$DIAGNOSTIC_STDERR"
+diagnostic_status="$?"
+set -e
+[ "$diagnostic_status" -eq 31 ] &&
+  grep -F 'missing aggregate root cause' "$DIAGNOSTIC_STDERR" >/dev/null ||
+  fail "missing aggregate log hid or replaced the command failure"
+
+prepare_diagnostic_case symlink-aggregate
+aggregate_target="$DIAGNOSTIC_CONTROL/aggregate-target"
+printf 'unrelated private data\n' >"$aggregate_target"
+chmod 0600 "$aggregate_target"
+rm "$DIAGNOSTIC_AGGREGATE"
+ln -s "$aggregate_target" "$DIAGNOSTIC_AGGREGATE"
+KANDELO_TEST_DIAGNOSTIC_MESSAGE='symlink aggregate root cause'
+KANDELO_TEST_DIAGNOSTIC_STATUS=32
+set +e
+homebrew_native_contract_run_logged \
+  symlink-aggregate "$DIAGNOSTIC_CONTROL" "$DIAGNOSTIC_AGGREGATE" \
+  "$DIAGNOSTIC_OUTPUT" diagnostic_fixed_failure 2>"$DIAGNOSTIC_STDERR"
+diagnostic_status="$?"
+set -e
+[ "$diagnostic_status" -eq 32 ] &&
+[ "$(cat "$aggregate_target")" = 'unrelated private data' ] &&
+  grep -F 'symlink aggregate root cause' "$DIAGNOSTIC_STDERR" >/dev/null ||
+  fail "symlink aggregate log was followed or replaced the command failure"
+
+wait_for_capture_log() {
+  local log="$DIAGNOSTIC_CONTROL/native-command-1.log" attempt
+  for ((attempt = 0; attempt < 500; attempt++)); do
+    [ ! -f "$log" ] || return 0
+    sleep 0.01
+  done
+  printf 'capture process did not open its diagnostic log\n' >&2
+  return 97
+}
+
+diagnostic_remove_capture() {
+  wait_for_capture_log || return
+  rm -f "$DIAGNOSTIC_CONTROL/native-command-1.log"
+  printf 'unreachable removed-log contents\n' >&2
+  return 41
+}
+
+prepare_diagnostic_case missing-capture
+set +e
+homebrew_native_contract_run_logged \
+  missing-capture "$DIAGNOSTIC_CONTROL" "$DIAGNOSTIC_AGGREGATE" \
+  "$DIAGNOSTIC_OUTPUT" diagnostic_remove_capture 2>"$DIAGNOSTIC_STDERR"
+diagnostic_status="$?"
+set -e
+[ "$diagnostic_status" -eq 41 ] &&
+  grep -F 'diagnostic unavailable: log is not a private regular file' \
+    "$DIAGNOSTIC_STDERR" >/dev/null &&
+  ! grep -F 'unreachable removed-log contents' "$DIAGNOSTIC_STDERR" >/dev/null ||
+  fail "missing per-command log did not fail closed around its original status"
+
+diagnostic_replace_capture() {
+  wait_for_capture_log || return
+  rm -f "$DIAGNOSTIC_CONTROL/native-command-1.log"
+  ln -s "$KANDELO_TEST_DIAGNOSTIC_SECRET" \
+    "$DIAGNOSTIC_CONTROL/native-command-1.log"
+  printf 'unreachable replaced-log contents\n' >&2
+  return 42
+}
+
+prepare_diagnostic_case symlink-capture
+diagnostic_secret="$DIAGNOSTIC_CONTROL/secret"
+printf 'must not be rendered or replaced\n' >"$diagnostic_secret"
+chmod 0600 "$diagnostic_secret"
+KANDELO_TEST_DIAGNOSTIC_SECRET="$diagnostic_secret"
+set +e
+homebrew_native_contract_run_logged \
+  symlink-capture "$DIAGNOSTIC_CONTROL" "$DIAGNOSTIC_AGGREGATE" \
+  "$DIAGNOSTIC_OUTPUT" diagnostic_replace_capture 2>"$DIAGNOSTIC_STDERR"
+diagnostic_status="$?"
+set -e
+[ "$diagnostic_status" -eq 42 ] &&
+  [ "$(cat "$diagnostic_secret")" = 'must not be rendered or replaced' ] &&
+  grep -F 'diagnostic unavailable: log is not a private regular file' \
+    "$DIAGNOSTIC_STDERR" >/dev/null &&
+  ! grep -F 'must not be rendered or replaced' "$DIAGNOSTIC_STDERR" >/dev/null ||
+  fail "symlink per-command log was followed or replaced the command status"
+
+diagnostic_hostile_failure() {
+  printf '::error::must remain inert\n'
+  printf '\033[31mred\033[0m\r\n'
+  printf 'nul\000byte\n'
+  printf 'https://user:password@example.invalid/path\n'
+  printf 'github_pat_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n'
+  printf 'Authorization: Bearer must-not-appear\n'
+  return 43
+}
+
+prepare_diagnostic_case inert
+set +e
+homebrew_native_contract_run_logged \
+  hostile-output "$DIAGNOSTIC_CONTROL" "$DIAGNOSTIC_AGGREGATE" - \
+  diagnostic_hostile_failure 2>"$DIAGNOSTIC_STDERR"
+diagnostic_status="$?"
+set -e
+[ "$diagnostic_status" -eq 43 ] ||
+  fail "hostile diagnostic replaced the command's status"
+ruby - "$DIAGNOSTIC_STDERR" <<'RUBY'
+bytes = File.binread(ARGV.fetch(0))
+raise "terminal control byte escaped" if
+  bytes.each_byte.any? { |byte| byte < 0x20 && byte != 0x0a }
+raise "workflow command stayed active" if
+  bytes.lines.any? { |line| line.start_with?("::") }
+RUBY
+grep -F '| ::error::must remain inert' "$DIAGNOSTIC_STDERR" >/dev/null &&
+  grep -F '\x1B[31mred\x1B[0m\x0D' "$DIAGNOSTIC_STDERR" >/dev/null &&
+  grep -F 'nul\x00byte' "$DIAGNOSTIC_STDERR" >/dev/null &&
+  grep -F 'https://[redacted]@example.invalid/path' \
+    "$DIAGNOSTIC_STDERR" >/dev/null &&
+  grep -F '[redacted-github-token]' "$DIAGNOSTIC_STDERR" >/dev/null &&
+  grep -F 'Authorization: [redacted]' "$DIAGNOSTIC_STDERR" >/dev/null &&
+  ! grep -F 'must-not-appear' "$DIAGNOSTIC_STDERR" >/dev/null ||
+  fail "native command diagnostic was not inert and credential-safe"
+unset KANDELO_TEST_DIAGNOSTIC_MESSAGE KANDELO_TEST_DIAGNOSTIC_STATUS
+unset KANDELO_TEST_DIAGNOSTIC_SECRET KANDELO_TEST_NATIVE_FAILURE_STAGE
+
 NATIVE_INSTALL_CALLS="$TMP_ROOT/native-install-calls.txt"
 : >"$NATIVE_INSTALL_CALLS"
 (

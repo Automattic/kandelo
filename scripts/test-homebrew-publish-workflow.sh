@@ -251,6 +251,7 @@ make_formula_runner_fixture() {
     "$REPO_ROOT/scripts/homebrew-verify-poured-bottle.sh" \
     "$REPO_ROOT/scripts/homebrew-formula-support-inputs.sh" \
     "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
+    "$REPO_ROOT/scripts/homebrew-native-command-diagnostic.rb" \
     "$REPO_ROOT/scripts/homebrew-native-install-contract.sh" \
     "$REPO_ROOT/scripts/homebrew-validate-host-dependency-plan.sh" \
     "$REPO_ROOT/scripts/homebrew-tap-identity.sh" \

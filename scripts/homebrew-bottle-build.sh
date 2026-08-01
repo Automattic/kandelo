@@ -570,31 +570,39 @@ fi
 
 # Re-scan the exact Formula/support bytes Homebrew will load and independently
 # re-read every authoritative registry input. No Formula Ruby has run yet.
+homebrew_native_contract_stage_marker tier2-execution-rescan starting
 ruby "$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
   "$TAPPED_TAP_ROOT" "$TAP_NAME" "$FORMULA" --tier2-bridge-json \
   >"$TIER2_EXECUTION_PLAN"
+homebrew_native_contract_stage_marker tier2-execution-rescan completed
 cmp -s "$TIER2_BRIDGE_PLAN" "$TIER2_EXECUTION_PLAN" || {
   echo "homebrew-bottle-build.sh: tapped Formula/support bridge plan differs from the reviewed source" >&2
   exit 1
 }
+homebrew_native_contract_stage_marker tier2-execution-preflight starting
 "$XTASK_BIN" homebrew-tier2-preflight \
   --repo-root "$KANDELO_ROOT" --tap-root "$TAPPED_TAP_ROOT" --arch "$ARCH" \
   --bridge-plan "$TIER2_EXECUTION_PLAN" >"$TIER2_EXECUTION_ATTESTATION"
+homebrew_native_contract_stage_marker tier2-execution-preflight completed
 cmp -s "$TIER2_ATTESTATION" "$TIER2_EXECUTION_ATTESTATION" || {
   echo "homebrew-bottle-build.sh: Formula/support/registry execution inputs changed before isolation" >&2
   exit 1
 }
+homebrew_native_contract_stage_marker tier2-attestation-staging starting
 homebrew_patched_launcher_stage_tier2_attestation \
   "$TIER2_EXECUTION_ATTESTATION"
+homebrew_native_contract_stage_marker tier2-attestation-staging completed
 
 if [ -n "$BUILD_USER" ]; then
   # Formula helpers deliberately remove stale compiled host output before
   # loading TypeScript sources. Do that while the workflow identity still owns
   # the checkout; the isolated build identity receives no source write access.
   rm -rf "$KANDELO_ROOT/host/dist"
+  homebrew_native_contract_stage_marker formula-realm-isolation starting
   homebrew_patched_launcher_isolate "$BUILD_USER" \
     "$WORK_DIR" "$KANDELO_ROOT" "$TAP_ROOT" "$OUT_DIR" "$KANDELO_ROOT" \
     "${DEPENDENCY_TAP_ROOTS[@]}"
+  homebrew_native_contract_stage_marker formula-realm-isolation completed
   BREW_BIN="$HOMEBREW_PATCHED_BREW_BIN"
 elif [ "${GITHUB_ACTIONS:-}" = "true" ]; then
   echo "homebrew-bottle-build.sh: CI Formula execution requires KANDELO_HOMEBREW_BUILD_USER" >&2
@@ -626,17 +634,22 @@ run_native_brew_logged() {
 # is taken.
 # Only the reviewed direct names are exposed to target Homebrew after the native
 # tree has been sealed read-only.
+homebrew_native_contract_stage_marker signed-native-contract starting
 homebrew_native_contract_install \
   "$HOST_DEPENDENCY_LIST" "$CONTROL_DIR" "$NATIVE_INSTALL_LOG" \
   "$NATIVE_TEMP" "${HOMEBREW_BREW_COMMIT:-}" "$KANDELO_ROOT" \
   tap_formula_host_dependencies
+homebrew_native_contract_stage_marker signed-native-contract completed
 mapfile -t native_dependencies <"$HOST_DEPENDENCY_LIST"
 for dependency in "${native_dependencies[@]}"; do
   native_info="$CONTROL_DIR/native-info-$dependency.json"
   : >"$native_info"
   chmod 0600 "$native_info"
-  homebrew_patched_launcher_run_native info --json=v2 \
-    "homebrew/core/$dependency" >"$native_info" 2>>"$NATIVE_INSTALL_LOG"
+  homebrew_native_contract_run_logged \
+    installed-formula-metadata "$CONTROL_DIR" \
+    "$NATIVE_INSTALL_LOG" "$native_info" \
+    homebrew_patched_launcher_run_native info --json=v2 \
+      "homebrew/core/$dependency"
   jq -e --arg name "$dependency" '
     (.formulae | length) == 1 and
     .formulae[0].name == $name and

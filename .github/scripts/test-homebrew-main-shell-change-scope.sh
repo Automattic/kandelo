@@ -50,6 +50,7 @@ fixture_paths=(
   scripts/homebrew-guest-layout.sh
   scripts/homebrew-ghcr-upload.sh
   scripts/homebrew-native-api-preflight.sh
+  scripts/homebrew-native-command-diagnostic.rb
   scripts/homebrew-merge-bottle-json.sh
   scripts/homebrew-oci-layout.py
   scripts/homebrew-patched-launcher.sh

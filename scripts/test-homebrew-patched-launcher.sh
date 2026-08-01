@@ -932,8 +932,49 @@ printf '%s\n' '{"schema":1}' >"$tap_recipe_attestation"
 if homebrew_patched_launcher_tier2_schema "$tap_recipe_attestation" >/dev/null 2>&1; then
   fail "Tier-2 schema reader accepted a retired control schema"
 fi
+
+exercise_isolated_native_identity_failure() (
+  local failing_probe="$1" expected_status="$2" expected_label="$3"
+  local output status
+  HOMEBREW_PATCHED_NATIVE_PREFIX="$TMPDIR/native-identity-prefix"
+  HOMEBREW_PATCHED_OVERLAY="$TMPDIR/native-identity-repository"
+  mkdir -p "$HOMEBREW_PATCHED_NATIVE_PREFIX" "$HOMEBREW_PATCHED_OVERLAY"
+  homebrew_patched_launcher_run_native() {
+    case "$1" in
+      --prefix)
+        [ "$failing_probe" != prefix ] || return "$expected_status"
+        printf '%s\n' "$HOMEBREW_PATCHED_NATIVE_PREFIX"
+        ;;
+      --repository)
+        [ "$failing_probe" != repository ] || return "$expected_status"
+        printf '%s\n' "$HOMEBREW_PATCHED_OVERLAY"
+        ;;
+      *) return 96 ;;
+    esac
+  }
+  set +e
+  output="$(
+    homebrew_patched_launcher_verify_isolated_native_identity 2>&1
+  )"
+  status="$?"
+  set -e
+  [ "$status" -eq "$expected_status" ] ||
+    fail "isolated $failing_probe probe returned $status, expected $expected_status"
+  grep -F "$expected_label failed with status $expected_status" \
+    <<<"$output" >/dev/null ||
+    fail "isolated $failing_probe probe did not label its exact status"
+)
+
+exercise_isolated_native_identity_failure \
+  prefix 71 'isolated native prefix probe'
+exercise_isolated_native_identity_failure \
+  repository 72 'isolated native repository probe'
+
 xtask_audit_source="$(declare -f homebrew_patched_launcher_emit_xtask_access_audit)"
 isolate_source="$(declare -f homebrew_patched_launcher_isolate)"
+native_identity_source="$(
+  declare -f homebrew_patched_launcher_verify_isolated_native_identity
+)"
 projection_source="$(declare -f homebrew_patched_launcher_prepare_platform_projection)"
 projection_manifest_source="$(
   declare -f homebrew_patched_launcher_platform_projection_manifest
@@ -960,6 +1001,14 @@ grep -Fq 'expected_protected_xtask=%q' <<<"$xtask_audit_source" &&
   grep -Fq 'tools/bin/wasm-fork-instrument' <<<"$projection_source" &&
   grep -Fq 'tools/bin/wasm-local-root-spill' <<<"$projection_source" ||
   fail "schema-3 isolation does not remove both resolver paths from a minimal platform projection"
+grep -Fq 'isolated native prefix probe failed with status $status' \
+  <<<"$native_identity_source" &&
+  grep -Fq 'isolated native repository probe failed with status $status' \
+    <<<"$native_identity_source" &&
+  [ "$(grep -Fc 'return "$status"' <<<"$native_identity_source")" -eq 2 ] &&
+  grep -Fq 'homebrew_patched_launcher_verify_isolated_native_identity || return' \
+    <<<"$isolate_source" ||
+  fail "isolated native identity probes do not label and preserve failures"
 grep -Fq "stat -c '%u:%g:%a'" <<<"$sealed_directory_source" &&
   ! grep -Fq '%h' <<<"$sealed_directory_source" &&
   grep -Fq 'sealed_directory_state "$root"' <<<"$projection_manifest_source" &&
