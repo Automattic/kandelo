@@ -416,7 +416,7 @@ KERNEL_IMPORT(kernel_execve)
 int32_t kernel_execve(const uint8_t *path_ptr, uint32_t path_len);
 
 KERNEL_IMPORT(kernel_fork)
-int32_t kernel_fork(void);
+int32_t kernel_fork(int32_t mode);
 
 KERNEL_IMPORT(kernel_is_fork_child)
 int32_t kernel_is_fork_child(void);

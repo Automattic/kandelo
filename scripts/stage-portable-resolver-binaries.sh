@@ -176,20 +176,19 @@ fi
 unsafe_link="$(
   find "${scan_roots[@]}" -xdev -type l -print0 |
   while IFS= read -r -d '' link; do
-    case "$(readlink "$link")" in
-      /*)
-        printf '%s\n' "$link"
-        break
-        ;;
-    esac
+    # WHY: macOS still ships Bash 3.2, whose runtime parser misreads case
+    # patterns inside this outer command substitution. Use prefix removal so
+    # the prepared-workspace path is portable.
+    link_target="$(readlink "$link")"
+    if [ "${link_target#/}" != "$link_target" ]; then
+      printf '%s\n' "$link"
+      break
+    fi
     resolved="$(realpath "$link" 2>/dev/null || true)"
-    case "$resolved" in
-      "$stage_root"/*) ;;
-      *)
-        printf '%s\n' "$link"
-        break
-        ;;
-    esac
+    if [ "${resolved#"$stage_root"/}" = "$resolved" ]; then
+      printf '%s\n' "$link"
+      break
+    fi
   done
 )"
 if [ -n "$unsafe_link" ]; then

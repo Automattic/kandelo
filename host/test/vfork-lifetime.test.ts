@@ -180,7 +180,9 @@ describe("shared vfork lifetime coordinator", () => {
     const parent = generation("parent", memory);
     const firstChild = generation("first-child", memory);
     const first = coordinator.begin(70, 71, parent, firstChild);
+    expect(coordinator.phaseForChild(firstChild)).toBe("starting");
     coordinator.markChildMayAccessMemory(firstChild);
+    expect(coordinator.phaseForChild(firstChild)).toBe("borrowing");
 
     for (const [parentPid, childPid, initiator] of [
       [70, 72, parent],
@@ -202,6 +204,7 @@ describe("shared vfork lifetime coordinator", () => {
     }
 
     coordinator.completeAfterExactTeardown(firstChild, "exec");
+    expect(coordinator.phaseForChild(firstChild)).toBeUndefined();
     await first.completion;
   });
 

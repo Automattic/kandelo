@@ -16,6 +16,7 @@
 //!     descriptors
 //!   * [`wasm_posix_shared::wakeup_event_wire`] — kernel wakeup-event layout
 //!     and retry/lifecycle reason bits consumed by shared hosts
+//!   * [`wasm_posix_shared::fork_contract`] — process-fork import mode values
 //!   * [`wasm_posix_shared::poll`], [`wasm_posix_shared::epoll`], and
 //!     [`wasm_posix_shared::select`] — I/O multiplexing event metadata
 //!   * [`wasm_posix_shared::flags`], [`wasm_posix_shared::access`],
@@ -619,6 +620,10 @@ fn render_c_header() -> String {
          /* Non-forking spawn syscall number. */\n\
          #define WASM_POSIX_SYS_SPAWN {sys_spawn}u\n\
          \n\
+         /* Process-fork import mode selectors. */\n\
+         #define WASM_POSIX_FORK_MODE_FORK {fork_mode_fork}u\n\
+         #define WASM_POSIX_FORK_MODE_VFORK {fork_mode_vfork}u\n\
+         \n\
          /* Default process-wasm pthread slot declaration. */\n\
          #define WASM_POSIX_THREAD_SLOT_DECL_DEFAULT {thread_slots_default}\n\
          \n\
@@ -630,6 +635,8 @@ fn render_c_header() -> String {
          \n",
         version = shared::ABI_VERSION,
         sys_spawn = shared::abi::host_intercepted::SYS_SPAWN,
+        fork_mode_fork = shared::fork_contract::MODE_FORK,
+        fork_mode_vfork = shared::fork_contract::MODE_VFORK,
         thread_slots_default = shared::process_memory::THREAD_SLOTS_USE_HOST_DEFAULT,
         rusage_wire_size = shared::WASM_RUSAGE_WIRE_SIZE,
         termios_size = shared::ioctl_contract::TERMIOS_SIZE,
@@ -2081,6 +2088,25 @@ fn render_ts_module() -> String {
     ] {
         out.push_str(&format!("export const {name} = {value:?} as const;\n"));
     }
+    out.push_str(&format!(
+        "export const PROCESS_FORK_MODE_FORK = {} as const;\n",
+        shared::fork_contract::MODE_FORK,
+    ));
+    out.push_str(&format!(
+        "export const PROCESS_FORK_MODE_VFORK = {} as const;\n",
+        shared::fork_contract::MODE_VFORK,
+    ));
+    out.push_str(
+        "export type ProcessForkMode =\n  | typeof PROCESS_FORK_MODE_FORK\n  | typeof PROCESS_FORK_MODE_VFORK;\n",
+    );
+    let process_fork_import = shared::abi::WPK_FORK_PROCESS_IMPORT;
+    out.push_str(&format!(
+        "export const WPK_FORK_PROCESS_IMPORT = {{ module: {:?}, name: {:?}, params: {}, results: {} }} as const;\n",
+        process_fork_import.module,
+        process_fork_import.name,
+        render_ts_program_artifact_types(process_fork_import.params),
+        render_ts_program_artifact_types(process_fork_import.results),
+    ));
     out.push_str("export const WPK_FORK_REQUIRED_IMPORTS = [\n");
     for requirement in shared::abi::WPK_FORK_REQUIRED_IMPORTS {
         out.push_str(&format!(
@@ -5720,8 +5746,8 @@ fn program_artifact() -> Value {
         WPK_FORK_REFERENCE_TRANSACTION_FLAG_SEALED, WPK_FORK_REFERENCE_TRANSACTION_KNOWN_FLAGS,
         WPK_FORK_REFERENCE_TRANSACTION_MAGIC, WPK_FORK_REFERENCE_TRANSACTION_MANIFEST_SIZE,
         WPK_FORK_REFERENCE_TRANSACTION_OWNER, WPK_FORK_REFERENCE_TRANSACTION_VERSION,
-        WPK_FORK_REFERENCE_VECTOR_INDEX_SIZE, WPK_FORK_REQUIRED_EXPORTS, WPK_FORK_REQUIRED_IMPORTS,
-        WPK_FORK_REQUIRED_TABLE_IMPORTS, WPK_FORK_STATIC_ROOT_CATALOG_EXPORT,
+        WPK_FORK_REFERENCE_VECTOR_INDEX_SIZE, WPK_FORK_PROCESS_IMPORT, WPK_FORK_REQUIRED_EXPORTS,
+        WPK_FORK_REQUIRED_IMPORTS, WPK_FORK_REQUIRED_TABLE_IMPORTS, WPK_FORK_STATIC_ROOT_CATALOG_EXPORT,
         WPK_FORK_STATIC_ROOT_CATALOG_HEADER_SIZE, WPK_FORK_STATIC_ROOT_CATALOG_MAGIC,
         WPK_FORK_STATIC_ROOT_CATALOG_SECTION, WPK_FORK_STATIC_ROOT_CATALOG_VERSION,
         WPK_FORK_STATIC_ROOT_HARVEST_EXPORT, WPK_FORK_UNWIND_TAG_IMPORT_MODULE,
@@ -5794,6 +5820,19 @@ fn program_artifact() -> Value {
             Value::Object(item.into_iter().collect())
         })
         .collect();
+
+    let mut process_import: JsonMap = BTreeMap::new();
+    process_import.insert("kind".into(), json!("func"));
+    process_import.insert("module".into(), json!(WPK_FORK_PROCESS_IMPORT.module));
+    process_import.insert("name".into(), json!(WPK_FORK_PROCESS_IMPORT.name));
+    process_import.insert(
+        "params".into(),
+        value_types(WPK_FORK_PROCESS_IMPORT.params),
+    );
+    process_import.insert(
+        "results".into(),
+        value_types(WPK_FORK_PROCESS_IMPORT.results),
+    );
 
     let pointer_widths = WPK_FORK_LINKED_FRAME_POINTER_WIDTHS
         .iter()
@@ -6595,6 +6634,17 @@ fn program_artifact() -> Value {
     fork.insert(
         "module_state".into(),
         Value::Object(module_state.into_iter().collect()),
+    );
+    fork.insert(
+        "process_import".into(),
+        Value::Object(process_import.into_iter().collect()),
+    );
+    fork.insert(
+        "process_modes".into(),
+        json!({
+            "fork": shared::fork_contract::MODE_FORK,
+            "vfork": shared::fork_contract::MODE_VFORK,
+        }),
     );
     fork.insert("required_exports".into(), Value::Array(exports));
     fork.insert("required_imports".into(), Value::Array(imports));
@@ -7752,6 +7802,17 @@ mod tests {
     fn program_artifact_snapshot_captures_complete_abi43_fork_contract() {
         let artifact = program_artifact();
         let fork = &artifact["fork_instrumentation"];
+        assert_eq!(
+            fork["process_import"],
+            json!({
+                "kind": "func",
+                "module": "kernel",
+                "name": "kernel_fork",
+                "params": ["i32"],
+                "results": ["i32"]
+            })
+        );
+        assert_eq!(fork["process_modes"], json!({"fork": 0, "vfork": 1}));
         let descriptor = &fork["linked_frame_descriptor"];
         assert_eq!(
             descriptor["section"],

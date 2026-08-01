@@ -583,7 +583,7 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#captureBlockingRetryDisposition::kernel-export-direct-use::isFdNonblock(channel.pid, fd)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.#createTestAuthority::kernel-export-direct-use::forkProcess(parentPid, callerTid)",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#createTestAuthority::kernel-export-direct-use::forkProcess( parentPid, callerTid, PROCESS_FORK_MODE_FORK, )",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.firePosixTimer::kernel-export-direct-use::fire(pid, timerId)",
@@ -756,7 +756,7 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "host/src/kernel-worker.ts::CentralizedKernelWorker.handleFork::kernel-export-direct-use::clearForkChild(childPid)",
   ),
   reviewedScalarKernelExportCall(
-    "host/src/kernel-worker.ts::CentralizedKernelWorker.handleFork::kernel-export-direct-use::kernelForkProcess(parentPid, callerTid)",
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.handleFork::kernel-export-direct-use::kernelForkProcess(parentPid, callerTid, mode)",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.handleIpcShmat::kernel-export-direct-use::kernelShmat( channel.pid, callerTid, shmid, // The kernel owns attachment accounting but not the process mapping // address; this legacy ABI slot is intentionally ignored by Rust. 0, flags, )",

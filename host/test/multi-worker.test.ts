@@ -45,6 +45,7 @@ import {
   HOST_INTERCEPTED_SYSCALLS,
   PROCESS_MEMORY_PAGES_PER_THREAD_SLOT,
   PROCESS_MEMORY_THREAD_SLOT_CHANNEL_PRIMARY_PAGE,
+  PROCESS_FORK_MODE_VFORK,
   PROCESS_STATE_EXITED,
   PROCESS_STATE_RUNNING,
   WPK_FORK_LINKED_FRAME_POINTER_WIDTHS,
@@ -372,10 +373,11 @@ describe("CentralizedKernelWorker Process Management", () => {
     await waitForMailboxCompletion(memory, channelOffset);
 
     expect(kernelForkProcess).toHaveBeenCalledOnce();
-    expect(kernelForkProcess).toHaveBeenCalledWith(parentPid, parentPid);
+    expect(kernelForkProcess).toHaveBeenCalledWith(parentPid, parentPid, 0);
     expect(onFork).toHaveBeenCalledWith({
       parentPid,
       childPid: 101,
+      mode: 0,
       parentMemory: memory,
       continuation: {
         kind: "main",
@@ -385,6 +387,90 @@ describe("CentralizedKernelWorker Process Management", () => {
     expect(readMailboxResult(memory, channelOffset)).toEqual({
       value: 101,
       errno: 0,
+    });
+  });
+
+  it("carries vfork mode through kernel allocation and child launch", async () => {
+    const parentPid = 77;
+    const childPid = 104;
+    const memory = new WebAssembly.Memory({
+      initial: 4,
+      maximum: 4,
+      shared: true,
+    });
+    const channelOffset = WASM_PAGE_SIZE;
+    publishMainForkContinuation(memory, channelOffset);
+    const kernelForkProcess = vi.fn(() => childPid);
+    const onFork = vi.fn(() => Promise.resolve([WASM_PAGE_SIZE]));
+    const harness = createGatedLifecycleHarness({
+      callbacks: { onFork },
+      kernelExports: { kernel_fork_process: kernelForkProcess },
+    });
+    registerLifecycleProcess(harness, parentPid, memory, channelOffset);
+
+    writePendingSyscall(
+      memory,
+      channelOffset,
+      HOST_INTERCEPTED_SYSCALLS.SYS_VFORK,
+      [128, WASM_PAGE_SIZE],
+    );
+    await waitForMailboxCompletion(memory, channelOffset);
+
+    expect(kernelForkProcess).toHaveBeenCalledWith(
+      parentPid,
+      parentPid,
+      PROCESS_FORK_MODE_VFORK,
+    );
+    expect(onFork).toHaveBeenCalledWith({
+      parentPid,
+      childPid,
+      mode: PROCESS_FORK_MODE_VFORK,
+      parentMemory: memory,
+      continuation: {
+        kind: "main",
+        forkBufAddr: TEST_FORK_CONTINUATION,
+      },
+      borrowedReplay: {
+        prefixBytes: 128,
+        scratchBytes: WASM_PAGE_SIZE,
+      },
+    });
+    expect(readMailboxResult(memory, channelOffset)).toEqual({
+      value: childPid,
+      errno: 0,
+    });
+  });
+
+  it("rejects an oversized vfork workspace before allocating a child", async () => {
+    const parentPid = 77;
+    const memory = new WebAssembly.Memory({
+      initial: 4,
+      maximum: 4,
+      shared: true,
+    });
+    const channelOffset = WASM_PAGE_SIZE;
+    publishMainForkContinuation(memory, channelOffset);
+    const kernelForkProcess = vi.fn(() => 105);
+    const onFork = vi.fn(() => Promise.resolve([WASM_PAGE_SIZE]));
+    const harness = createGatedLifecycleHarness({
+      callbacks: { onFork },
+      kernelExports: { kernel_fork_process: kernelForkProcess },
+    });
+    registerLifecycleProcess(harness, parentPid, memory, channelOffset);
+
+    writePendingSyscall(
+      memory,
+      channelOffset,
+      HOST_INTERCEPTED_SYSCALLS.SYS_VFORK,
+      [FORK_SAVE_BUFFER_SIZE + 1, 0],
+    );
+    await waitForMailboxCompletion(memory, channelOffset);
+
+    expect(kernelForkProcess).not.toHaveBeenCalled();
+    expect(onFork).not.toHaveBeenCalled();
+    expect(readMailboxResult(memory, channelOffset)).toEqual({
+      value: -1,
+      errno: 11,
     });
   });
 
@@ -480,6 +566,7 @@ describe("CentralizedKernelWorker Process Management", () => {
     expect(onFork).toHaveBeenCalledWith({
       parentPid,
       childPid,
+      mode: 0,
       parentMemory: memory,
       continuation: {
         kind: "thread",
@@ -546,6 +633,7 @@ describe("CentralizedKernelWorker Process Management", () => {
       expect(onFork).toHaveBeenCalledWith({
         parentPid,
         childPid,
+        mode: 0,
         parentMemory: memory,
         continuation: {
           kind: "main",

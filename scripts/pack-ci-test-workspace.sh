@@ -406,20 +406,19 @@ if [ -e local-binaries ] || [ -L local-binaries ]; then
     unsafe_local_link="$(
         find "$stage/local-binaries" -type l -print0 |
         while IFS= read -r -d '' link; do
-            case "$(readlink "$link")" in
-                /*)
-                    printf '%s\n' "$link"
-                    break
-                    ;;
-            esac
+            # WHY: macOS Bash 3.2 misparses case patterns inside this outer
+            # command substitution. Prefix removal preserves the same
+            # absolute/escape checks in prepared workspaces on every host.
+            link_target="$(readlink "$link")"
+            if [ "${link_target#/}" != "$link_target" ]; then
+                printf '%s\n' "$link"
+                break
+            fi
             resolved="$(realpath "$link" 2>/dev/null || true)"
-            case "$resolved" in
-                "$stage/local-binaries"/*) ;;
-                *)
-                    printf '%s\n' "$link"
-                    break
-                    ;;
-            esac
+            if [ "${resolved#"$stage/local-binaries"/}" = "$resolved" ]; then
+                printf '%s\n' "$link"
+                break
+            fi
         done
     )"
     if [ -n "$unsafe_local_link" ]; then

@@ -388,18 +388,18 @@ main nodes may occupy several mappings and may contain a frame larger than one
 WebAssembly page. The coordinator completes and validates both continuations
 before it sends `SYS_FORK`.
 
-### Borrowed replay foundation (not guest-visible vfork)
+### Borrowed vfork replay
 
 A genuine vfork child cannot run ordinary copied activation or side-module
-replay over the parent's live `Shared WebAssembly.Memory`. The ABI 43 host now
-has an unwired foundation for that future launch mode. A fresh child Worker
-validates the parent's process-wide module-state arena as borrowed, rebuilds
-the complete activation registry, and gives every active main or side
-activation its own child-private fixed prefix. Replay reads the parent's
-committed frame nodes and recipe records but never marks nodes consumed,
-releases mappings, clears the process launch anchor, or deallocates the
-module-state arena. Failure midway through attachment detaches every child
-controller so the suspended parent can still replay the original transaction.
+replay over the parent's live `Shared WebAssembly.Memory`. The ABI 43 vfork
+path launches a fresh child Worker that validates the parent's process-wide
+module-state arena as borrowed, rebuilds the complete activation registry, and
+gives every active main or side activation its own child-private fixed prefix.
+Replay reads the parent's committed frame nodes and recipe records but never
+marks nodes consumed, releases mappings, clears the process launch anchor, or
+deallocates the module-state arena. Failure midway through attachment detaches
+every child controller so the suspended parent can replay the original
+transaction.
 
 Dynamic-linker reconstruction has a matching fail-closed mode. It accepts
 only shared Memory, passive data segments, and a complete loader transaction.
@@ -412,12 +412,25 @@ start and active segments into the explicit staged bootstrap described above.
 An in-flight bootstrap, relocation, or constructor is rejected because guest
 code at that boundary may write arbitrary shared process memory.
 
-The ordinary no-option path remains copied fork replay and retains independent
-address-space ownership. These primitives do not make guest-visible vfork
-functional: Kandelo's libc `vfork()` is still an alias for `fork()`, and no
-kernel fork mode, child launch protocol, or parent suspension path calls the
-borrowed APIs. That remaining semantic/protocol work must be explicit in the
-ABI 43 batch and snapshot rather than hidden under the existing fork contract.
+The ordinary mode remains copied fork replay and retains independent
+address-space ownership. ABI 43 now distinguishes `kernel_fork(FORK)` from
+`kernel_fork(VFORK)`, preserves the mode through unwind and replay, maps it to
+`SYS_FORK` or `SYS_VFORK`, and carries it through the kernel and child-launch
+protocol. Libc `vfork()` therefore no longer aliases the `fork()` wrapper or
+runs `pthread_atfork` handlers.
+
+The vfork mode connects those borrowed APIs to the production Node and browser
+launch paths. It retains the parent's Memory, parks the calling thread, and
+releases that caller only after successful exec commit or exact child
+teardown. The child owns private replay, loader, channel, and continuation
+control state even though its ordinary guest loads and stores address the
+borrowed bytes. Broad conformance, pristine upstream CRuby selection,
+Homebrew lifecycle, and real resident-memory growth remain release gates
+rather than properties inferred from component tests. A sibling-delivered
+fatal signal against a compute-running borrower is tested separately: because
+no browser Worker API provides an exact quiescence fence in that state, every
+host contains the complete shared address space instead of resuming the
+parent unsafely.
 
 ## Save buffer format
 
@@ -459,7 +472,7 @@ callbacks pointed at the borrowed nodes. Making only the host replay cursor
 read-only is insufficient: passing the owner's prefix would overwrite the
 owner's active-frame word. Borrowed replay must leave node states and mappings
 untouched so the owner can later replay and release them. This is an internal
-host invariant; it does not make ABI 43 `vfork()` functional.
+host invariant used by the connected ABI 43 `vfork()` path.
 
 This does not introduce a new linked-frame encoding. `fixed_prefix_size` has
 always been a module-specific value in the version-1 descriptor, and each node
@@ -467,6 +480,17 @@ already declares its function-specific payload size. Existing artifacts retain
 and report their larger historical prefix; newly instrumented artifacts report
 the prefix they actually use. Import/export names, descriptor fields, and host
 parsing semantics are unchanged.
+
+After sealing a vfork capture, the process Worker sums the aligned
+`fixed_prefix_size` values for exactly the active activations. The reference
+transaction separately reports the page-rounded scratch-capacity high-water
+observed while the same generated codecs encoded the graph. Host-intercepted
+`SYS_VFORK` carries those values in arguments 0 and 1. The centralized host
+accepts at most one control slot: 61,440 prefix bytes and one 65,536-byte
+scratch page. It returns `EAGAIN` before `kernel_fork_process` when either does
+not fit. This is host transaction metadata, not a new linked-frame field, and
+the admitted storage remains host-reserved rather than a copied child address
+space.
 
 At the first fork call, the host maps one page-rounded root large enough for
 the chunk header and fixed prefix. Each postamble already knows its own exact

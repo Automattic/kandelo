@@ -562,7 +562,8 @@ cat >"$work/complete-fork.wat" <<'WAT'
   (@custom "kandelo.wpk_fork.linked_frames"
     "KLCF\01\00\18\00\04\08\03\00\20\00\00\00\18\00\00\00\10\00\00\00")
   (@custom "kandelo.wpk_fork.capabilities" "\01\04")
-  (import "kernel" "kernel_fork" (func $kernel_fork))
+  (import "kernel" "kernel_fork"
+    (func $kernel_fork (param i32) (result i32)))
   (import "env" "__wpk_fork_frame_reserve"
     (func $frame_reserve (param i32) (result i32)))
   (import "env" "__wpk_fork_frame_commit"
@@ -579,7 +580,9 @@ cat >"$work/complete-fork.wat" <<'WAT'
   (func (export "wpk_fork_state") (result i32)
     i32.const 0)
   (func (export "_start")
-    call $kernel_fork))
+    i32.const 0
+    call $kernel_fork
+    drop))
 WAT
 wat2wasm --enable-annotations "$work/complete-fork.wat" -o "$work/complete-fork.wasm"
 if ! wasm_has_complete_fork_instrumentation "$work/complete-fork.wasm"; then
@@ -594,7 +597,7 @@ wasm_require_fork_instrumentation_if_needed "$work/complete-fork.wasm"
 
 awk '
     { print }
-    /\(import "kernel" "kernel_fork"/ {
+    /\(func \$kernel_fork/ {
         print "  (import \"env\" \"__wasm_dlopen\""
         print "    (func (param i32 i32 i32 i32 i32) (result i32)))"
     }
@@ -723,7 +726,8 @@ cat >"$work/complete-fork-wasm64.wat" <<'WAT'
   (@custom "kandelo.wpk_fork.linked_frames"
     "KLCF\01\00\18\00\08\08\03\00\38\00\00\00\20\00\00\00\10\00\00\00")
   (@custom "kandelo.wpk_fork.capabilities" "\01\04")
-  (import "kernel" "kernel_fork" (func $kernel_fork))
+  (import "kernel" "kernel_fork"
+    (func $kernel_fork (param i32) (result i32)))
   (import "env" "__wpk_fork_frame_reserve"
     (func $frame_reserve (param i64) (result i64)))
   (import "env" "__wpk_fork_frame_commit"
@@ -740,7 +744,9 @@ cat >"$work/complete-fork-wasm64.wat" <<'WAT'
   (func (export "wpk_fork_state") (result i32)
     i32.const 0)
   (func (export "_start")
-    call $kernel_fork))
+    i32.const 0
+    call $kernel_fork
+    drop))
 WAT
 wat2wasm --enable-annotations --enable-memory64 "$work/complete-fork-wasm64.wat" \
     -o "$work/complete-fork-wasm64.wasm"
@@ -755,7 +761,8 @@ cat >"$work/partial-fork.wat" <<'WAT'
   (@custom "kandelo.wpk_fork.linked_frames"
     "KLCF\01\00\18\00\04\08\03\00\20\00\00\00\18\00\00\00\10\00\00\00")
   (@custom "kandelo.wpk_fork.capabilities" "\01\04")
-  (import "kernel" "kernel_fork" (func $kernel_fork))
+  (import "kernel" "kernel_fork"
+    (func $kernel_fork (param i32) (result i32)))
   (import "env" "__wpk_fork_frame_reserve"
     (func $frame_reserve (param i32) (result i32)))
   (import "env" "__wpk_fork_frame_commit"
@@ -770,7 +777,9 @@ cat >"$work/partial-fork.wat" <<'WAT'
   (func (export "wpk_fork_rewind_begin") (param i32))
   (func (export "wpk_fork_rewind_end"))
   (func (export "_start")
-    call $kernel_fork))
+    i32.const 0
+    call $kernel_fork
+    drop))
 WAT
 wat2wasm --enable-annotations "$work/partial-fork.wat" -o "$work/partial-fork.wasm"
 partial_fork_error="$work/partial-fork.error"
@@ -1037,12 +1046,15 @@ fi
 
 cat >"$work/fake-fork-exports.wat" <<'WAT'
 (module
-  (import "kernel" "kernel_fork" (func $kernel_fork))
+  (import "kernel" "kernel_fork"
+    (func $kernel_fork (param i32) (result i32)))
   (memory 1)
   (data (i32.const 0)
     "wpk_fork_unwind_begin wpk_fork_unwind_end wpk_fork_rewind_begin wpk_fork_rewind_end wpk_fork_state")
   (func (export "_start")
-    call $kernel_fork))
+    i32.const 0
+    call $kernel_fork
+    drop))
 WAT
 wat2wasm "$work/fake-fork-exports.wat" -o "$work/fake-fork-exports.wasm"
 if ! wasm_has_missing_fork_instrumentation "$work/fake-fork-exports.wasm"; then

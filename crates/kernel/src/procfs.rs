@@ -429,11 +429,11 @@ pub fn generate_fdinfo(proc: &Process, fd: i32) -> Option<Vec<u8>> {
     let entry = proc.fd_table.get(fd).ok()?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0)?;
     let offset =
-        crate::descriptor_backing::current_offset(ofd.file_type, ofd.host_handle, ofd.offset)
+        crate::descriptor_backing::current_offset(ofd.file_type, ofd.host_handle, ofd.offset())
             .ok()?;
     let content = format!(
         "pos:\t{}\nflags:\t{:o}\nmnt_id:\t0\n",
-        offset, ofd.status_flags,
+        offset, ofd.status_flags(),
     );
     Some(content.into_bytes())
 }

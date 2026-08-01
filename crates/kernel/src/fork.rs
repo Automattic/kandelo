@@ -28,7 +28,7 @@ use wasm_posix_shared::fd_flags::FD_CLOFORK;
 use crate::fd::{FdEntry, FdTable, OpenFileDescRef};
 use crate::lock::{FileId, KernelFileKind, OfdId};
 use crate::memory::{MappedRegion, MemoryLayoutMetadata, MemoryManager};
-use crate::ofd::{FileType, OfdTable, OpenFileDesc};
+use crate::ofd::{FileType, OfdTable, OpenFileDesc, SharedOfdState};
 use crate::process::{Process, ProcessState};
 use crate::signal::{PerThreadSignalState, RtSigEntry, SignalAction, SignalHandler, SignalState};
 use crate::socket::SocketTable;
@@ -857,9 +857,9 @@ pub fn serialize_fork_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         w.write_u64(ofd.ofd_id.0)?;
         write_file_id(&mut w, ofd.file_id)?;
         w.write_u32(file_type_to_u32(ofd.file_type))?;
-        w.write_u32(ofd.status_flags)?;
+        w.write_u32(ofd.status_flags())?;
         w.write_i64(ofd.host_handle)?;
-        w.write_i64(ofd.offset)?;
+        w.write_i64(ofd.offset())?;
         w.write_u32(inherited_ofd_refs[index])?;
         w.write_u32(ofd.path.len() as u32)?;
         w.write_bytes(&ofd.path)?;
@@ -1205,15 +1205,14 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
             ofd_id,
             file_id,
             file_type,
-            status_flags,
+            shared_state: SharedOfdState::new(status_flags, offset, child_pid),
             host_handle,
-            offset,
             ref_count,
-            owner_pid: child_pid,
             path,
             dir_host_handle: -1,
             dir_synth_state: 0,
             dir_entry_offset: 0,
+            dir_position_generation: 0,
             dir_pending_entry: None,
             dri_state,
         };
@@ -1552,6 +1551,10 @@ fn deserialize_fork_state_into(buf: &[u8], child: &mut Process) -> Result<(), Er
     child.thread_name =
         [0u8; wasm_posix_shared::kernel_scratch_wire::PRCTL_NAME_BYTES as usize];
     child.fork_child = true;
+    // The host selects ordinary versus vfork only after this common POSIX
+    // state snapshot has been installed. Never inherit a parent's transient
+    // borrowing marker through serialized process state.
+    child.vfork_child = false;
     child.sigsuspend_saved_mask = None;
     child.fork_exec_path = fork_exec_path;
     child.fork_exec_argv = fork_exec_argv;
@@ -1683,9 +1686,9 @@ pub fn serialize_exec_state(proc: &Process, buf: &mut [u8]) -> Result<usize, Err
         w.write_u64(ofd.ofd_id.0)?;
         write_file_id(&mut w, ofd.file_id)?;
         w.write_u32(file_type_to_u32(ofd.file_type))?;
-        w.write_u32(ofd.status_flags)?;
+        w.write_u32(ofd.status_flags())?;
         w.write_i64(ofd.host_handle)?;
-        w.write_i64(ofd.offset)?;
+        w.write_i64(ofd.offset())?;
         w.write_u32(surviving_ofd_refs[index])?;
         w.write_u32(ofd.path.len() as u32)?;
         w.write_bytes(&ofd.path)?;
@@ -1877,15 +1880,14 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
             ofd_id,
             file_id,
             file_type,
-            status_flags,
+            shared_state: SharedOfdState::new(status_flags, offset, pid),
             host_handle,
-            offset,
             ref_count,
-            owner_pid: pid,
             path,
             dir_host_handle: -1,
             dir_synth_state: 0,
             dir_entry_offset: 0,
+            dir_position_generation: 0,
             dir_pending_entry: None,
             dri_state,
         };
@@ -2013,6 +2015,7 @@ pub fn deserialize_exec_state(buf: &[u8], pid: u32) -> Result<Process, Errno> {
     process.thread_name =
         [0u8; wasm_posix_shared::kernel_scratch_wire::PRCTL_NAME_BYTES as usize];
     process.fork_child = false;
+    process.vfork_child = false;
     process.sigsuspend_saved_mask = None;
     process.fork_exec_path = None;
     process.fork_exec_argv = None;
@@ -2124,7 +2127,7 @@ mod tests {
         parent.fd_table.alloc(OpenFileDescRef(ofd_idx), 0).unwrap();
         {
             let ofd = parent.ofd_table.get_mut(ofd_idx).unwrap();
-            ofd.offset = 4;
+            ofd.set_directory_offset(4);
             ofd.dir_host_handle = 701;
             ofd.dir_synth_state = 2;
             ofd.dir_entry_offset = 4;
@@ -2140,7 +2143,7 @@ mod tests {
         let child = deserialize_fork_state(&buf[..written], 2).unwrap();
 
         let inherited = child.ofd_table.get(ofd_idx).unwrap();
-        assert_eq!(inherited.offset, 4);
+        assert_eq!(inherited.offset(), 4);
         assert_eq!(inherited.dir_entry_offset, 4);
         assert_eq!(inherited.dir_synth_state, 2);
         assert_eq!(inherited.dir_host_handle, -1);

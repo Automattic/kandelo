@@ -169,6 +169,36 @@ pub mod process_metadata_contract {
     pub const KIND_ENVIRONMENT: u32 = 1;
 }
 
+/// Cross-layer selectors for the process-creation import that begins fork
+/// continuation capture.
+///
+/// The value is carried by the guest `kernel.kernel_fork` import, translated
+/// to the corresponding host-intercepted syscall, and passed to the Rust
+/// process-table export. Keeping it in shared ABI metadata prevents libc,
+/// fork instrumentation, and the Node/browser hosts from assigning different
+/// meanings to the same i32.
+pub mod fork_contract {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    #[repr(u32)]
+    pub enum Mode {
+        Fork = 0,
+        Vfork = 1,
+    }
+
+    impl Mode {
+        pub const fn from_u32(value: u32) -> Option<Self> {
+            match value {
+                value if value == Self::Fork as u32 => Some(Self::Fork),
+                value if value == Self::Vfork as u32 => Some(Self::Vfork),
+                _ => None,
+            }
+        }
+    }
+
+    pub const MODE_FORK: u32 = Mode::Fork as u32;
+    pub const MODE_VFORK: u32 = Mode::Vfork as u32;
+}
+
 /// Packed host/kernel wire layout for one process-table snapshot record.
 ///
 /// This record is not a native Rust or C structure: the `u64` field is
@@ -2351,6 +2381,18 @@ pub mod abi {
 
     use ProgramArtifactValueType::{AnyRef, ExnRef, ExternRef, FuncRef, I32, I64, Pointer};
 
+    /// Exact process-worker import that seeds main-program fork discovery.
+    ///
+    /// Side modules continue to enter through `env.fork`; this requirement is
+    /// therefore validated conditionally only when a program imports
+    /// `kernel.kernel_fork`.
+    pub const WPK_FORK_PROCESS_IMPORT: ProgramArtifactImport = ProgramArtifactImport {
+        module: "kernel",
+        name: "kernel_fork",
+        params: &[I32],
+        results: &[I32],
+    };
+
     pub const WPK_FORK_REQUIRED_IMPORTS: &[ProgramArtifactImport] = &[
         ProgramArtifactImport {
             module: WPK_FORK_FRAME_IMPORT_MODULE,
@@ -3587,7 +3629,7 @@ pub mod abi {
             WPK_FORK_MODULE_STATE_TABLE_BASELINE_FINGERPRINT_SIZE,
             WPK_FORK_MODULE_STATE_TABLE_DESCRIPTOR_PAYLOAD_SIZE,
             WPK_FORK_MODULE_STATE_TABLE_PAGE_SHIFT, WPK_FORK_REQUIRED_EXPORTS,
-            WPK_FORK_REQUIRED_IMPORTS, WPK_FORK_REQUIRED_TABLE_IMPORTS,
+            WPK_FORK_PROCESS_IMPORT, WPK_FORK_REQUIRED_IMPORTS, WPK_FORK_REQUIRED_TABLE_IMPORTS,
             extended_syscalls::SYSCALLS, wpk_fork_linked_chunk_header_size,
             wpk_fork_linked_node_header_size, wpk_fork_module_state_chunk_header_size,
         };
@@ -3701,6 +3743,22 @@ pub mod abi {
 
         #[test]
         fn linked_fork_program_artifact_contract_is_complete_and_sorted() {
+            assert_eq!(crate::fork_contract::MODE_FORK, 0);
+            assert_eq!(crate::fork_contract::MODE_VFORK, 1);
+            assert_eq!(
+                crate::fork_contract::Mode::from_u32(crate::fork_contract::MODE_FORK),
+                Some(crate::fork_contract::Mode::Fork),
+            );
+            assert_eq!(
+                crate::fork_contract::Mode::from_u32(crate::fork_contract::MODE_VFORK),
+                Some(crate::fork_contract::Mode::Vfork),
+            );
+            assert_eq!(crate::fork_contract::Mode::from_u32(2), None);
+            assert_eq!(WPK_FORK_PROCESS_IMPORT.module, "kernel");
+            assert_eq!(WPK_FORK_PROCESS_IMPORT.name, "kernel_fork");
+            assert_eq!(WPK_FORK_PROCESS_IMPORT.params, &[super::ProgramArtifactValueType::I32]);
+            assert_eq!(WPK_FORK_PROCESS_IMPORT.results, &[super::ProgramArtifactValueType::I32]);
+
             assert_eq!(WPK_FORK_LINKED_FRAME_FORMAT_MAGIC, *b"KLCF");
             assert_eq!(WPK_FORK_LINKED_FRAME_DESCRIPTOR_SIZE, 24);
             assert_eq!(WPK_FORK_LINKED_FRAME_REQUIRED_FLAGS, 0b11);
