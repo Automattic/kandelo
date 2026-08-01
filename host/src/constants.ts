@@ -2153,17 +2153,61 @@ export function readWasmFunctionImports(
   );
 }
 
+export type DecodedWasmExternalKind =
+  | "function"
+  | "table"
+  | "memory"
+  | "global"
+  | "tag";
+
+export interface DecodedWasmImportDescriptor {
+  readonly module: string;
+  readonly name: string;
+  readonly kind: DecodedWasmExternalKind;
+}
+
+export interface DecodedWasmExportDescriptor {
+  readonly name: string;
+  readonly kind: DecodedWasmExternalKind;
+}
+
+function decodedExternalKind(
+  kind: number,
+  context: string,
+): DecodedWasmExternalKind {
+  switch (kind) {
+    case 0:
+      return "function";
+    case 1:
+      return "table";
+    case 2:
+      return "memory";
+    case 3:
+      return "global";
+    case 4:
+      return "tag";
+    default:
+      throw new Error(`${context} has unsupported external kind ${kind}`);
+  }
+}
+
 /**
- * Return import names in `module.field` form. This is intentionally a small
- * section parser rather than `new WebAssembly.Module(...)` so release/resolver
- * guards can inspect binaries built with newer wasm features than the current
- * JS engine can instantiate.
+ * Decode every import name and kind in declaration order.
+ *
+ * This is intentionally a binary-section parser rather than
+ * `WebAssembly.Module.imports()`: release/resolver guards can inspect binaries
+ * built with newer Wasm features than the current JS engine can reflect, and
+ * WebKit cannot currently produce descriptors for some valid exception-
+ * reference imports. The same parser already validates the richer ABI 43
+ * function/global/table contract above.
  */
-export function readWasmImportNames(programBytes: ArrayBuffer): string[] {
+export function readWasmImportDescriptors(
+  programBytes: ArrayBuffer,
+): readonly DecodedWasmImportDescriptor[] {
   const src = new Uint8Array(programBytes);
   if (!hasWasmMagic(src)) return [];
 
-  const names: string[] = [];
+  const imports: DecodedWasmImportDescriptor[] = [];
   let offset = 8;
   while (offset < src.length) {
     const sectionId = src[offset];
@@ -2177,10 +2221,14 @@ export function readWasmImportNames(programBytes: ArrayBuffer): string[] {
       for (let i = 0; i < importCount; i++) {
         const [moduleName, afterModule] = readName(src, pos);
         const [fieldName, afterField] = readName(src, afterModule);
-        names.push(`${moduleName}.${fieldName}`);
 
         pos = afterField;
         const kind = src[pos++];
+        imports.push({
+          module: moduleName,
+          name: fieldName,
+          kind: decodedExternalKind(kind, `import ${moduleName}.${fieldName}`),
+        });
         if (kind === 0) {
           const [, n] = readULEB128(src, pos); pos += n;
         } else if (kind === 1) {
@@ -2201,15 +2249,24 @@ export function readWasmImportNames(programBytes: ArrayBuffer): string[] {
 
     offset = contentOffset + sectionSize;
   }
-  return names;
+  return imports;
 }
 
-/** Return all export names from a wasm module. */
-export function readWasmExportNames(programBytes: ArrayBuffer): string[] {
+/** Return import names in `module.field` form. */
+export function readWasmImportNames(programBytes: ArrayBuffer): string[] {
+  return readWasmImportDescriptors(programBytes).map(
+    ({ module, name }) => `${module}.${name}`,
+  );
+}
+
+/** Decode every export name and kind in declaration order. */
+export function readWasmExportDescriptors(
+  programBytes: ArrayBuffer,
+): readonly DecodedWasmExportDescriptor[] {
   const src = new Uint8Array(programBytes);
   if (!hasWasmMagic(src)) return [];
 
-  const names: string[] = [];
+  const exports: DecodedWasmExportDescriptor[] = [];
   let offset = 8;
   while (offset < src.length) {
     const sectionId = src[offset];
@@ -2222,8 +2279,12 @@ export function readWasmExportNames(programBytes: ArrayBuffer): string[] {
       pos += countBytes;
       for (let i = 0; i < exportCount; i++) {
         const [name, afterName] = readName(src, pos);
-        names.push(name);
-        pos = afterName + 1;
+        pos = afterName;
+        const kind = src[pos++];
+        exports.push({
+          name,
+          kind: decodedExternalKind(kind, `export ${name}`),
+        });
         const [, indexBytes] = readULEB128(src, pos);
         pos += indexBytes;
       }
@@ -2232,7 +2293,12 @@ export function readWasmExportNames(programBytes: ArrayBuffer): string[] {
 
     offset = contentOffset + sectionSize;
   }
-  return names;
+  return exports;
+}
+
+/** Return all export names from a wasm module. */
+export function readWasmExportNames(programBytes: ArrayBuffer): string[] {
+  return readWasmExportDescriptors(programBytes).map(({ name }) => name);
 }
 
 /** Return all custom-section names from a wasm module. */
