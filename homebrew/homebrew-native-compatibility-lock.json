@@ -3944,9 +3944,29 @@
           ]
         },
         "name": "glibc",
-        "post_install_defined": true,
+        "post_install_steps": [
+          {
+            "paths": [
+              {
+                "base": "etc",
+                "path": "ld.so.cache"
+              }
+            ],
+            "type": "remove"
+          },
+          {
+            "command": {
+              "base": "sbin",
+              "path": "ldconfig"
+            },
+            "type": "run"
+          },
+          {
+            "type": "configure_glibc_runtime"
+          }
+        ],
         "revision": 1,
-        "ruby_source_checksum": "82eb524ccf12922bcdbbf65f623903c088306771cfe6e92b92ed74165fbc5ef9",
+        "ruby_source_checksum": "af58b96368b2818413257e2f9e5c2c5ce26cbfb0c799a38798d1e618e9c1d381",
         "stable_checksum": "97f84f3b7588cd54093a6f6389b0c1a81e70d99708d74963a2e3eab7c7dc942d",
         "stable_dependencies": [
           "linux-headers@6.8"
@@ -4116,9 +4136,29 @@
           ]
         },
         "name": "glibc",
-        "post_install_defined": true,
+        "post_install_steps": [
+          {
+            "paths": [
+              {
+                "base": "etc",
+                "path": "ld.so.cache"
+              }
+            ],
+            "type": "remove"
+          },
+          {
+            "command": {
+              "base": "sbin",
+              "path": "ldconfig"
+            },
+            "type": "run"
+          },
+          {
+            "type": "configure_glibc_runtime"
+          }
+        ],
         "revision": 1,
-        "ruby_source_checksum": "82eb524ccf12922bcdbbf65f623903c088306771cfe6e92b92ed74165fbc5ef9",
+        "ruby_source_checksum": "af58b96368b2818413257e2f9e5c2c5ce26cbfb0c799a38798d1e618e9c1d381",
         "stable_checksum": "97f84f3b7588cd54093a6f6389b0c1a81e70d99708d74963a2e3eab7c7dc942d",
         "stable_dependencies": [
           "linux-headers@6.8",
