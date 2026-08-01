@@ -40,6 +40,8 @@ BOUND_INPUTS = {
     "materialization_policy_sha256": "homebrew/main-shell-materialization-policy.json",
     "migration_lock_sha256": MIGRATION_PATH,
     "runtime_support_sha256": SUPPORT_PATH,
+    "selection_lock_sha256": "homebrew/main-shell-selection-lock.json",
+    "shell_config_sha256": "homebrew/main-shell-default.json",
 }
 
 

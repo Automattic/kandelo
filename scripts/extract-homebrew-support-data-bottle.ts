@@ -18,6 +18,7 @@ import {
   type HomebrewSupportDataOutput,
 } from "../host/src/homebrew-support-data-bottle";
 import type { HomebrewBottleArch } from "../host/src/homebrew-vfs-planner";
+import { filesystemGitTreeOid } from "./homebrew-selection-tree";
 
 const GIT_SHA_RE = /^[0-9a-f]{40}$/;
 const MAX_TAP_CONTROL_FILE_BYTES = 16 * 1024 * 1024;
@@ -31,15 +32,17 @@ interface CliOptions {
   arch: HomebrewBottleArch;
   expectedAbi: number;
   outputDirectory: string;
+  selectionVerificationReport?: string;
 }
 
 export async function runHomebrewSupportDataBottleExtractor(
   args: string[],
 ): Promise<void> {
   const options = parseArgs(args);
-  const tapRoot = requireExactTapCheckout(
+  const tapRoot = requireTapInput(
     options.tapRoot,
     options.expectedTapSha,
+    options.selectionVerificationReport,
   );
   const outputDirectory = resolve(options.outputDirectory);
   requireAbsent(outputDirectory, "output directory");
@@ -228,6 +231,82 @@ export function requireExactTapCheckout(
   return tapRoot;
 }
 
+export function requireTapInput(
+  path: string,
+  expectedTapSha: string,
+  selectionVerificationReport?: string,
+): string {
+  if (selectionVerificationReport === undefined) {
+    return requireExactTapCheckout(path, expectedTapSha);
+  }
+  const tapRoot = requireRealDirectory(path, "tap root");
+  const reportPath = resolve(selectionVerificationReport);
+  let reportStat;
+  try {
+    reportStat = lstatSync(reportPath);
+  } catch (error) {
+    throw new Error(
+      `selection verification report is unavailable: ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (
+    !reportStat.isFile() ||
+    reportStat.isSymbolicLink() ||
+    reportStat.size <= 0 ||
+    reportStat.size > 1024 * 1024
+  ) {
+    throw new Error(
+      "selection verification report must be one bounded regular file",
+    );
+  }
+  const report = parseJson(
+    new Uint8Array(readFileSync(reportPath)),
+    "selection verification report",
+  );
+  if (typeof report !== "object" || report === null || Array.isArray(report)) {
+    throw new Error("selection verification report must be an object");
+  }
+  const record = report as Record<string, unknown>;
+  const expectedKeys = [
+    "arch",
+    "formula_count",
+    "kind",
+    "prepared_tree_git_oid",
+    "roots",
+    "schema",
+    "selection_manifest_sha256",
+    "source_tap_commit",
+    "state",
+  ];
+  if (
+    Object.keys(record).sort().join("\0") !== expectedKeys.join("\0") ||
+    record.schema !== 1 ||
+    record.kind !== "kandelo-homebrew-main-shell-selection-verification" ||
+    record.arch !== "wasm32" ||
+    (record.state !== "pending" && record.state !== "sealed") ||
+    record.source_tap_commit !== expectedTapSha ||
+    typeof record.prepared_tree_git_oid !== "string" ||
+    !GIT_SHA_RE.test(record.prepared_tree_git_oid) ||
+    typeof record.selection_manifest_sha256 !== "string" ||
+    !/^[0-9a-f]{64}$/.test(record.selection_manifest_sha256) ||
+    !Number.isSafeInteger(record.formula_count) ||
+    (record.formula_count as number) < 1 ||
+    !Array.isArray(record.roots) ||
+    record.roots.length < 1 ||
+    filesystemGitTreeOid(tapRoot) !== record.prepared_tree_git_oid
+  ) {
+    throw new Error(
+      "selection verification report does not authorize this tap input",
+    );
+  }
+  // WHY: a closed selection is an immutable released tree, not a branch
+  // checkout. Its Python verifier has already recomputed the selected Git
+  // tree and bound it to this report, so requiring a fictional HEAD here
+  // would force the partial catalog onto tap main before it can be consumed.
+  return tapRoot;
+}
+
 function parseArgs(args: string[]): CliOptions {
   const values = new Map<string, string>();
   for (let index = 0; index < args.length; index += 2) {
@@ -252,6 +331,7 @@ function parseArgs(args: string[]): CliOptions {
     "--arch",
     "--expected-abi",
     "--output-directory",
+    "--selection-verification-report",
   ]);
   for (const name of values.keys()) {
     if (!allowed.has(name)) usage(`unknown option ${name}`);
@@ -288,6 +368,7 @@ function parseArgs(args: string[]): CliOptions {
     arch,
     expectedAbi,
     outputDirectory: required("--output-directory"),
+    selectionVerificationReport: values.get("--selection-verification-report"),
   };
 }
 
@@ -298,7 +379,8 @@ function usage(message: string): never {
       "--tap-root <exact-checkout> --expected-tap-sha <sha> " +
       "--tap-repository <owner/repository> --tap-name <owner/tap> " +
       "--package <name> --arch <wasm32|wasm64> --expected-abi <n> " +
-      "--output-directory <new-directory>",
+      "--output-directory <new-directory> " +
+      "[--selection-verification-report <verified-report.json>]",
   );
   process.exit(2);
 }

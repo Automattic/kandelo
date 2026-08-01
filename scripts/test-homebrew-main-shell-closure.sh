@@ -7,12 +7,16 @@ CHECKER="$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs"
 BREWFILE="$REPO_ROOT/homebrew/main-shell.Brewfile"
 SOURCE_LOCK="$REPO_ROOT/homebrew/main-shell-migration-lock.json"
 RUNTIME_SUPPORT="$REPO_ROOT/homebrew/main-shell-homebrew-runtime-support.json"
+SELECTION_LOCK="$REPO_ROOT/homebrew/main-shell-selection-lock.json"
+SELECTION_LOCK_TOOL="$REPO_ROOT/scripts/homebrew-main-shell-selection-lock.py"
+SELECTION_PUBLISHER="$REPO_ROOT/scripts/publish-homebrew-closed-selection-release.sh"
 LAZY_ARTIFACT_LOCK="$REPO_ROOT/homebrew/main-shell-lazy-artifact-lock.json"
 LAZY_ARTIFACT_CHECKER="$REPO_ROOT/scripts/verify-homebrew-main-shell-artifact-lock.sh"
 FINALIZER_TEST="$REPO_ROOT/scripts/test-finalize-homebrew-main-shell-release.py"
 WORKFLOW="$REPO_ROOT/.github/workflows/homebrew-main-shell-ci.yml"
 IMAGE_CONTRACT="$REPO_ROOT/scripts/homebrew-main-shell-image-contract.ts"
 IMAGE_CONTRACT_TEST="$REPO_ROOT/scripts/homebrew-main-shell-image-contract.test.ts"
+SUPPORT_DATA_INPUT_TEST="$REPO_ROOT/scripts/extract-homebrew-support-data-bottle.test.ts"
 NODE_SMOKE="$REPO_ROOT/scripts/homebrew-main-shell-node-smoke.ts"
 GUEST_LIFECYCLE_NODE="$REPO_ROOT/homebrew/test/homebrew_guest_lifecycle_node.ts"
 GUEST_LIFECYCLE_FIXTURE="$REPO_ROOT/scripts/create-homebrew-guest-lifecycle-fixture.ts"
@@ -701,6 +705,20 @@ grep -Fq 'assertPackageClosure(' "$IMAGE_CONTRACT" ||
 bash "$LAZY_ARTIFACT_CHECKER" \
   --lock "$LAZY_ARTIFACT_LOCK" --expected-source-date-epoch 0 ||
   fail "lazy shell artifact lock is not an exact digest/size/timestamp contract"
+[ "$(jq -er '.state' "$SELECTION_LOCK")" = pending ] ||
+  fail "new shell selection authority must begin in review-only pending state"
+grep -Fq 'prepare-selection-release' "$SELECTION_PUBLISHER" &&
+  grep -Fq 'publish-immutable-github-release.sh' "$SELECTION_PUBLISHER" &&
+  grep -Fq 'fetch-selection-release' "$SELECTION_PUBLISHER" ||
+  fail "closed-selection publisher must prepare, publish, and read back one immutable selection"
+grep -Fq 'fetch-selection-release' "$WORKFLOW" &&
+  grep -Fq -- '--closed-selection-root "$selection_root"' "$WORKFLOW" &&
+  grep -Fq -- '--closed-selection-receipt "$selection_receipt"' "$WORKFLOW" ||
+  fail "main-shell workflow does not consume its immutable closed selection"
+grep -Fq 'validate_selected_formula_closure' "$SELECTION_LOCK_TOOL" &&
+  grep -Fq 'filesystemGitTreeOid(tapRoot)' \
+    "$REPO_ROOT/scripts/extract-homebrew-support-data-bottle.ts" ||
+  fail "closed-selection consumers do not bind exact closure and tree identity"
 [ "$(grep -Fc 'bash "$LAZY_ARTIFACT_CHECKER"' "$BUILDER")" -eq 2 ] ||
   fail "strict shell composer must validate its lock before and after composition"
 grep -Fq -- '--artifact "$OUT"' "$BUILDER" ||
@@ -2457,6 +2475,7 @@ done
   cd "$REPO_ROOT"
   npx tsx --test \
     "$CLOSED_ACCEPTANCE_TEST" \
+    "$SUPPORT_DATA_INPUT_TEST" \
     "$IMAGE_CONTRACT_TEST" \
     "$PLAYWRIGHT_ACCEPTANCE_TEST" \
     "$SHELL_VFS_URL_TEST" \
@@ -2734,6 +2753,37 @@ expect_failure \
   bash "$LAZY_ARTIFACT_CHECKER" \
     --lock "$wrong_bootstrap_source_binding" \
     --expected-source-date-epoch 0
+
+# Exercise the verifier against an actual changed input rather than only
+# changing the reviewed digest. The copied checker resolves its repository root
+# from this isolated fixture, so this does not mutate the working checkout.
+artifact_checker_root="$TMP_ROOT/artifact-checker-root"
+mkdir -p "$artifact_checker_root/scripts" "$artifact_checker_root/homebrew"
+cp "$LAZY_ARTIFACT_CHECKER" "$artifact_checker_root/scripts/"
+for relative_path in \
+  homebrew/homebrew-bootstrap-source-lock.json \
+  homebrew/main-shell-brew-package-tree.json \
+  homebrew/main-shell.Brewfile \
+  homebrew/main-shell-default.json \
+  homebrew/main-shell-demo.json \
+  homebrew/main-shell-materialization-policy.json \
+  homebrew/main-shell-migration-lock.json \
+  homebrew/main-shell-homebrew-runtime-support.json \
+  homebrew/main-shell-selection-lock.json \
+  homebrew/main-shell-lazy-artifact-lock.json
+do
+  cp "$REPO_ROOT/$relative_path" "$artifact_checker_root/$relative_path"
+done
+fixture_checker="$artifact_checker_root/scripts/verify-homebrew-main-shell-artifact-lock.sh"
+fixture_checked_lock="$artifact_checker_root/homebrew/main-shell-lazy-artifact-lock.json"
+bash "$fixture_checker" \
+  --lock "$fixture_checked_lock" --expected-source-date-epoch 0 ||
+  fail "artifact checker rejected its exact shell-config binding"
+printf '\n' >>"$artifact_checker_root/homebrew/main-shell-default.json"
+expect_failure \
+  "bound input digest changed: homebrew/main-shell-default.json" \
+  bash "$fixture_checker" \
+    --lock "$fixture_checked_lock" --expected-source-date-epoch 0
 
 # Exercise the final compressed-artifact checks without rebuilding the full
 # bottle closure. SHA-256 and byte count are independent promises: matching one

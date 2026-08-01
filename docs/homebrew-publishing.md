@@ -2107,6 +2107,38 @@ before a named shell pointer moves. A published closed selection is
 durable consumer input, but it is not by itself proof that the shell
 product passed those runtime gates.
 
+#### Binding the main shell to a closed selection
+
+The shell has a separate reviewed lock,
+`homebrew/main-shell-selection-lock.json`. Its pending form binds the Brewfile,
+guest layout, migration lock, and in-guest Homebrew runtime-support contract,
+but names no release. After public readback, seal a replacement lock with:
+
+```sh
+bash scripts/dev-shell.sh python3 \
+  scripts/homebrew-main-shell-selection-lock.py seal \
+  --lock homebrew/main-shell-selection-lock.json \
+  --selection fetched-selection \
+  --receipt selection-readback.json \
+  --out main-shell-selection-lock.sealed.json
+```
+
+The verifier derives roots from the Brewfile, runtime-support roots, and
+Homebrew bootstrap package. It does not encode the current Formula count. It
+requires the selected tap to be exactly those roots' dependency closure, so a
+new real dependency is accepted while an unrelated Formula is not. It also
+cross-checks ABI, `/opt/kandelo/homebrew` layout, source commit, bottle digest,
+and public readback evidence.
+
+Once the sealed lock is reviewed, the ordinary main-shell workflow fetches the
+immutable selection anonymously and gives that exact partial tap to the
+unchanged Homebrew resolver and VFS composer. The shell artifact lock binds the
+selection-lock digest. The final shell image and its bottle mirror still move
+through their existing atomic product pointer, so a failed build cannot expose
+a half-updated shell. Node and Chromium validation consume the same selected
+tree and final image; tap `main` remains the independent complete-catalog
+pointer until the full campaign is ready.
+
 The ordinary dependency-bearing VFS acceptance attached to an
 individual campaign publisher call is still skipped. That call has only
 one Formula/architecture and cannot claim a product closure. Product

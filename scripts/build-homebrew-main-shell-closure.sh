@@ -3,6 +3,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TAP_ROOT=""
+CLOSED_SELECTION_ROOT=""
+CLOSED_SELECTION_RECEIPT=""
 EXPECTED_TAP_SHA=""
 WORK_DIR=""
 OUT=""
@@ -20,6 +22,8 @@ DEMO_CONFIG="$REPO_ROOT/homebrew/main-shell-demo.json"
 MIGRATION_LOCK="$REPO_ROOT/homebrew/main-shell-migration-lock.json"
 MATERIALIZATION_POLICY="$REPO_ROOT/homebrew/main-shell-materialization-policy.json"
 RUNTIME_SUPPORT="$REPO_ROOT/homebrew/main-shell-homebrew-runtime-support.json"
+CLOSED_SELECTION_LOCK="$REPO_ROOT/homebrew/main-shell-selection-lock.json"
+CLOSED_SELECTION_CHECKER="$REPO_ROOT/scripts/homebrew-main-shell-selection-lock.py"
 LAZY_ARTIFACT_LOCK="$REPO_ROOT/homebrew/main-shell-lazy-artifact-lock.json"
 LAZY_ARTIFACT_CHECKER="$REPO_ROOT/scripts/verify-homebrew-main-shell-artifact-lock.sh"
 BOTTLE_MIRROR_REPOSITORY="kandelo-dev/homebrew-tap-core"
@@ -39,7 +43,8 @@ export LANG=C
 usage() {
   cat <<'EOF'
 Usage: scripts/build-homebrew-main-shell-closure.sh \
-  --tap-root <exact-homebrew-tap-core-checkout> \
+  (--tap-root <exact-homebrew-tap-core-checkout> | \
+   --closed-selection-root <verified-selection>) \
   --work-dir <new-exclusive-directory> [options]
 
 Materialize today's browser main-shell package closure exclusively from
@@ -47,6 +52,11 @@ successful Homebrew bottle sidecars. The platform-only base contains static
 Kandelo rootfs state but no legacy package-registry program fragment.
 
 Options:
+  --tap-root <dir>         exact complete tap Git checkout
+  --closed-selection-root <dir>
+                            exact partial selection read from its release
+  --closed-selection-receipt <json>
+                            public immutable-release readback evidence
   --expected-tap-sha <sha> exact catalog SHA; must match the migration lock
   --work-dir <new-dir>      exclusive caller-owned composition workspace
   --out <image.vfs.zst>     output image
@@ -77,6 +87,14 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --tap-root)
       TAP_ROOT="${2:-}"
+      shift 2
+      ;;
+    --closed-selection-root)
+      CLOSED_SELECTION_ROOT="${2:-}"
+      shift 2
+      ;;
+    --closed-selection-receipt)
+      CLOSED_SELECTION_RECEIPT="${2:-}"
       shift 2
       ;;
     --expected-tap-sha)
@@ -151,8 +169,9 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if [ -z "$TAP_ROOT" ]; then
-  echo "build-homebrew-main-shell-closure: --tap-root is required" >&2
+if { [ -z "$TAP_ROOT" ] && [ -z "$CLOSED_SELECTION_ROOT" ]; } ||
+   { [ -n "$TAP_ROOT" ] && [ -n "$CLOSED_SELECTION_ROOT" ]; }; then
+  echo "build-homebrew-main-shell-closure: exactly one tap input is required" >&2
   exit 2
 fi
 if [ -z "$WORK_DIR" ] || [ "$WORK_DIR" = / ] || [ -e "$WORK_DIR" ] || [ -L "$WORK_DIR" ]; then
@@ -160,6 +179,18 @@ if [ -z "$WORK_DIR" ] || [ "$WORK_DIR" = / ] || [ -e "$WORK_DIR" ] || [ -L "$WOR
   exit 2
 fi
 mkdir "$WORK_DIR"
+if [ -n "$CLOSED_SELECTION_ROOT" ]; then
+  if [ ! -d "$CLOSED_SELECTION_ROOT" ] ||
+     [ -L "$CLOSED_SELECTION_ROOT" ] ||
+     [ ! -f "$CLOSED_SELECTION_ROOT/selection.json" ] ||
+     [ -L "$CLOSED_SELECTION_ROOT/selection.json" ] ||
+     [ ! -d "$CLOSED_SELECTION_ROOT/tap" ] ||
+     [ -L "$CLOSED_SELECTION_ROOT/tap" ]; then
+    echo "build-homebrew-main-shell-closure: closed selection is not a real selection directory" >&2
+    exit 2
+  fi
+  TAP_ROOT="$CLOSED_SELECTION_ROOT/tap"
+fi
 OUT="${OUT:-$WORK_DIR/main-shell.vfs.zst}"
 REPORT="${REPORT:-$WORK_DIR/main-shell-report.json}"
 BOTTLE_CACHE="${BOTTLE_CACHE:-$WORK_DIR/bottle-cache}"
@@ -221,8 +252,13 @@ if ! [[ "$MAX_BYTES" =~ ^[1-9][0-9]*$ ]] || [ $((MAX_BYTES % 4096)) -ne 0 ]; the
   exit 2
 fi
 if [ ! -f "$TAP_ROOT/Kandelo/metadata.json" ] ||
+   [ -L "$TAP_ROOT/Kandelo/metadata.json" ]; then
+  echo "build-homebrew-main-shell-closure: tap root lacks regular Kandelo metadata" >&2
+  exit 2
+fi
+if [ -z "$CLOSED_SELECTION_ROOT" ] &&
    [ "$(git -C "$TAP_ROOT" rev-parse --is-inside-work-tree 2>/dev/null || true)" != "true" ]; then
-  echo "build-homebrew-main-shell-closure: tap root is not a Git checkout with Kandelo metadata" >&2
+  echo "build-homebrew-main-shell-closure: complete tap root is not a Git checkout" >&2
   exit 2
 fi
 if [ ! -f "$BREWFILE" ] || [ -L "$BREWFILE" ]; then
@@ -271,24 +307,77 @@ if ! [[ "$EXPECTED_TAP_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   exit 2
 fi
 
-ACTUAL_TAP_SHA="$(git -C "$TAP_ROOT" rev-parse HEAD)"
-if [ "$ACTUAL_TAP_SHA" != "$EXPECTED_TAP_SHA" ]; then
-  echo "build-homebrew-main-shell-closure: tap HEAD $ACTUAL_TAP_SHA does not match expected $EXPECTED_TAP_SHA" >&2
-  exit 1
-fi
-TAP_STATUS="$(git -C "$TAP_ROOT" status --porcelain=v1 --untracked-files=all)"
-if [ -n "$TAP_STATUS" ]; then
-  echo "build-homebrew-main-shell-closure: exact tap checkout is dirty" >&2
-  printf '%s\n' "$TAP_STATUS" >&2
-  exit 1
-fi
-
-for tool in git jq node ruby sha256sum wc; do
+for tool in git jq node python3 ruby sha256sum wc; do
   command -v "$tool" >/dev/null 2>&1 || {
     echo "build-homebrew-main-shell-closure: missing $tool; run through scripts/dev-shell.sh" >&2
     exit 2
   }
 done
+
+CLOSED_SELECTION_REPORT=""
+if [ -n "$CLOSED_SELECTION_ROOT" ]; then
+  if [ ! -f "$CLOSED_SELECTION_LOCK" ] ||
+     [ -L "$CLOSED_SELECTION_LOCK" ] ||
+     [ ! -f "$CLOSED_SELECTION_CHECKER" ] ||
+     [ -L "$CLOSED_SELECTION_CHECKER" ]; then
+    echo "build-homebrew-main-shell-closure: closed-selection verifier is unavailable" >&2
+    exit 2
+  fi
+  CLOSED_SELECTION_REPORT="$WORK_DIR/closed-selection-verification.json"
+  selection_state="$(jq -er '.state' "$CLOSED_SELECTION_LOCK")"
+  selection_args=(
+    verify
+    --lock "$CLOSED_SELECTION_LOCK"
+    --selection "$CLOSED_SELECTION_ROOT"
+    --report-out "$CLOSED_SELECTION_REPORT"
+  )
+  case "$selection_state" in
+    sealed)
+      if [ -z "$CLOSED_SELECTION_RECEIPT" ] ||
+         [ ! -f "$CLOSED_SELECTION_RECEIPT" ] ||
+         [ -L "$CLOSED_SELECTION_RECEIPT" ]; then
+        echo "build-homebrew-main-shell-closure: sealed selection requires a regular public readback receipt" >&2
+        exit 2
+      fi
+      selection_args+=(--receipt "$CLOSED_SELECTION_RECEIPT")
+      ;;
+    pending)
+      if [ "$REVIEW_PENDING_ARTIFACT" != true ] ||
+         [ -n "$CLOSED_SELECTION_RECEIPT" ]; then
+        echo "build-homebrew-main-shell-closure: pending selection is review-only" >&2
+        exit 1
+      fi
+      selection_args+=(--allow-pending)
+      ;;
+    *)
+      echo "build-homebrew-main-shell-closure: selection lock state is invalid" >&2
+      exit 2
+      ;;
+  esac
+  PYTHONDONTWRITEBYTECODE=1 python3 "$CLOSED_SELECTION_CHECKER" \
+    "${selection_args[@]}"
+  [ "$(jq -er '.source_tap_commit' "$CLOSED_SELECTION_REPORT")" = \
+    "$EXPECTED_TAP_SHA" ] || {
+    echo "build-homebrew-main-shell-closure: selection report differs from the catalog lock" >&2
+    exit 1
+  }
+else
+  if [ -n "$CLOSED_SELECTION_RECEIPT" ]; then
+    echo "build-homebrew-main-shell-closure: selection receipt requires a closed selection" >&2
+    exit 2
+  fi
+  ACTUAL_TAP_SHA="$(git -C "$TAP_ROOT" rev-parse HEAD)"
+  if [ "$ACTUAL_TAP_SHA" != "$EXPECTED_TAP_SHA" ]; then
+    echo "build-homebrew-main-shell-closure: tap HEAD $ACTUAL_TAP_SHA does not match expected $EXPECTED_TAP_SHA" >&2
+    exit 1
+  fi
+  TAP_STATUS="$(git -C "$TAP_ROOT" status --porcelain=v1 --untracked-files=all)"
+  if [ -n "$TAP_STATUS" ]; then
+    echo "build-homebrew-main-shell-closure: exact tap checkout is dirty" >&2
+    printf '%s\n' "$TAP_STATUS" >&2
+    exit 1
+  fi
+fi
 
 if [ -n "$PACKAGE_TREE_ARCHIVE" ] &&
    [ -z "$HOMEBREW_BOOTSTRAP_BOTTLE_REPORT" ]; then
@@ -332,13 +421,26 @@ fi
 LOCK_SHA="$(sha256sum "$MIGRATION_LOCK")"
 LOCK_SHA="${LOCK_SHA%% *}"
 LOCK_BYTES="$(wc -c <"$MIGRATION_LOCK" | tr -d '[:space:]')"
+CLOSED_SELECTION_LOCK_SHA="$(sha256sum "$CLOSED_SELECTION_LOCK")"
+CLOSED_SELECTION_LOCK_SHA="${CLOSED_SELECTION_LOCK_SHA%% *}"
+CLOSED_SELECTION_LOCK_BYTES="$(wc -c <"$CLOSED_SELECTION_LOCK" | tr -d '[:space:]')"
 DEMO_CONFIG_SHA="$(sha256sum "$DEMO_CONFIG")"
 DEMO_CONFIG_SHA="${DEMO_CONFIG_SHA%% *}"
 DEMO_CONFIG_BYTES="$(wc -c <"$DEMO_CONFIG" | tr -d '[:space:]')"
 
-node "$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs" \
-  "$BREWFILE" "$MIGRATION_LOCK" "$TAP_ROOT/Kandelo/metadata.json" \
-  "$RUNTIME_SUPPORT"
+if [ -n "$CLOSED_SELECTION_REPORT" ]; then
+  # WHY: the canonical checker binds the product-owned Brewfile and lock
+  # contracts, but its metadata mode deliberately requires the complete live
+  # tap byte-for-byte. A closed selection is a smaller, independently sealed
+  # tap tree, so its exact metadata/tree/closure authority is owned by the
+  # selection verifier above and by the normal VFS planner below.
+  node "$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs" \
+    "$BREWFILE" "$MIGRATION_LOCK"
+else
+  node "$REPO_ROOT/scripts/check-homebrew-main-shell-brewfile.mjs" \
+    "$BREWFILE" "$MIGRATION_LOCK" "$TAP_ROOT/Kandelo/metadata.json" \
+    "$RUNTIME_SUPPORT"
+fi
 
 for required in \
   "$REPO_ROOT/node_modules/.bin/tsx" \
@@ -428,6 +530,12 @@ if [ -n "$PACKAGE_TREE_SPEC" ]; then
 
   if [ -n "$HOMEBREW_BOOTSTRAP_BOTTLE_REPORT" ]; then
     VERIFIED_BOOTSTRAP_REPORT="$WORK_DIR/homebrew-bootstrap-bottle-report.json"
+    SUPPORT_SELECTION_ARGS=()
+    if [ -n "$CLOSED_SELECTION_REPORT" ]; then
+      SUPPORT_SELECTION_ARGS=(
+        --selection-verification-report "$CLOSED_SELECTION_REPORT"
+      )
+    fi
     # WHY: the archive and environment are detached from their bottle here.
     # Reuse the same typed parser that performed extraction so the tap schema,
     # Formula sidecar, recipe lock, link manifest, provenance, and output-byte
@@ -444,6 +552,7 @@ if [ -n "$PACKAGE_TREE_SPEC" ]; then
       --report "$HOMEBREW_BOOTSTRAP_BOTTLE_REPORT" \
       --output "archive=$PACKAGE_TREE_ARCHIVE" \
       --output "environment=$HOMEBREW_BOOTSTRAP_ENV" \
+      "${SUPPORT_SELECTION_ARGS[@]}" \
       --verified-report-out "$VERIFIED_BOOTSTRAP_REPORT"
     HOMEBREW_BOOTSTRAP_BOTTLE_JSON="$(
       jq -c . "$VERIFIED_BOOTSTRAP_REPORT"
@@ -500,6 +609,26 @@ if [ "$HOMEBREW_BOOTSTRAP_BOTTLE_JSON" != null ]; then
     "$REPORT" >"$REPORT_WITH_BOOTSTRAP"
   mv "$REPORT_WITH_BOOTSTRAP" "$REPORT"
 fi
+if [ -n "$CLOSED_SELECTION_REPORT" ]; then
+  REPORT_WITH_SELECTION="$WORK_DIR/main-shell-report-with-selection.json"
+  if [ -e "$REPORT_WITH_SELECTION" ] || [ -L "$REPORT_WITH_SELECTION" ]; then
+    echo "build-homebrew-main-shell-closure: private selection report staging path already exists" >&2
+    exit 1
+  fi
+  # WHY: the selected tree can intentionally differ from tap main. Carry its
+  # exact verified identity into the product report so later release and Pages
+  # activation can prove which partial catalog supplied the shell.
+  jq \
+    --slurpfile selection "$CLOSED_SELECTION_REPORT" \
+    --arg lock_sha256 "$CLOSED_SELECTION_LOCK_SHA" \
+    --argjson lock_bytes "$CLOSED_SELECTION_LOCK_BYTES" '
+    . + {
+      closed_selection: ($selection[0] + {
+        lock: {sha256: $lock_sha256, bytes: $lock_bytes}
+      })
+    }' "$REPORT" >"$REPORT_WITH_SELECTION"
+  mv "$REPORT_WITH_SELECTION" "$REPORT"
+fi
 if [ "$LAZY_SHELL" = true ] && [ "$MATERIALIZE_PACKAGE_TREE" = false ]; then
   if [ "$REVIEW_PENDING_ARTIFACT" = true ]; then
     # WHY: the reviewed catalog changes before its deterministic image digest
@@ -536,6 +665,9 @@ jq -e \
   --argjson abi "$ABI_VERSION" \
   --arg catalog "$EXPECTED_TAP_SHA" \
   --arg lock_sha "$LOCK_SHA" \
+  --arg closed_selection_lock_sha "$CLOSED_SELECTION_LOCK_SHA" \
+  --argjson closed_selection_lock_bytes "$CLOSED_SELECTION_LOCK_BYTES" \
+  --argjson uses_closed_selection "$([ -n "$CLOSED_SELECTION_REPORT" ] && printf true || printf false)" \
   --arg mirror_repository "$BOTTLE_MIRROR_REPOSITORY" \
   --argjson lock_bytes "$LOCK_BYTES" \
   --arg demo_config_sha "$DEMO_CONFIG_SHA" \
@@ -578,6 +710,22 @@ jq -e \
   (.catalog.checkout_commit == $lock[0].catalog.tap_commit) and
   (.migration_lock.sha256 == $lock_sha) and
   (.migration_lock.bytes == $lock_bytes) and
+  (if $uses_closed_selection then
+    (.closed_selection.kind ==
+      "kandelo-homebrew-main-shell-selection-verification") and
+    (.closed_selection.source_tap_commit == $catalog) and
+    (.closed_selection.prepared_tree_git_oid |
+      test("^[0-9a-f]{40}$")) and
+    (.closed_selection.selection_manifest_sha256 |
+      test("^[0-9a-f]{64}$")) and
+    (.closed_selection.formula_count > 0) and
+    (.closed_selection.lock == {
+      sha256: $closed_selection_lock_sha,
+      bytes: $closed_selection_lock_bytes
+    })
+  else
+    (.closed_selection == null)
+  end) and
   (if $lazy_shell then
     (.materialization.policy == "kandelo-homebrew-vfs-materialization-policy") and
     (.materialization.embedded_package_order ==
