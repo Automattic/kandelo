@@ -36,9 +36,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$COMMAND" in
-  ensure-draft|seal-publish|state) ;;
+  ensure-draft|seal-publish|state|verify-immutable) ;;
   *)
-    echo "package-release-lifecycle: command must be ensure-draft, seal-publish, or state" >&2
+    echo "package-release-lifecycle: command must be ensure-draft, seal-publish, state, or verify-immutable" >&2
     exit 2
     ;;
 esac
@@ -368,14 +368,49 @@ sha256_file() {
   fi
 }
 
-verify_or_upload_seal() {
-  local expected="$TMP_ROOT/expected-seal.json" existing id actual upload_dir
-  refresh_assets
+require_payload_assets() {
   if [ "$(jq --arg name "$SEAL_NAME" \
       '[.[] | select(.name != $name)] | length' "$ASSETS_JSON")" = 0 ]; then
-    echo "package-release-lifecycle: refusing to publish an empty package release" >&2
+    echo "package-release-lifecycle: package release has no payload assets" >&2
     return 1
   fi
+}
+
+verify_current_seal() {
+  local expected="$TMP_ROOT/expected-seal.json" existing id actual
+  require_payload_assets
+  seal_file "$expected"
+  existing="$(jq -c --arg name "$SEAL_NAME" \
+    '[.[] | select(.name == $name)]' "$ASSETS_JSON")"
+  if [ "$(jq 'length' <<<"$existing")" != 1 ]; then
+    echo "package-release-lifecycle: inventory seal is not uniquely visible" >&2
+    return 1
+  fi
+  id="$(jq -r '.[0].id' <<<"$existing")"
+  actual="$TMP_ROOT/actual-seal.json"
+  download_asset "$id" "$actual"
+  if ! cmp "$expected" "$actual"; then
+    echo "package-release-lifecycle: existing inventory seal differs from current release state" >&2
+    return 1
+  fi
+  if [ "$(jq -r '.[0].size' <<<"$existing")" != \
+       "$(wc -c <"$expected" | tr -d '[:space:]')" ] ||
+     [ "$(jq -r '.[0].digest' <<<"$existing")" != \
+       "sha256:$(sha256_file "$expected")" ]; then
+    echo "package-release-lifecycle: inventory seal metadata differs from its bytes" >&2
+    return 1
+  fi
+}
+
+verify_existing_seal() {
+  refresh_assets
+  verify_current_seal
+}
+
+verify_or_upload_seal() {
+  local expected="$TMP_ROOT/expected-seal.json" existing upload_dir
+  refresh_assets
+  require_payload_assets
   seal_file "$expected"
   existing="$(jq -c --arg name "$SEAL_NAME" \
     '[.[] | select(.name == $name)]' "$ASSETS_JSON")"
@@ -393,25 +428,8 @@ verify_or_upload_seal() {
       echo "package-release-lifecycle: seal upload was ambiguous; reconciling" >&2
     fi
     refresh_assets
-    existing="$(jq -c --arg name "$SEAL_NAME" \
-      '[.[] | select(.name == $name)]' "$ASSETS_JSON")"
   fi
-  if [ "$(jq 'length' <<<"$existing")" != 1 ]; then
-    echo "package-release-lifecycle: inventory seal is not uniquely visible" >&2
-    return 1
-  fi
-  id="$(jq -r '.[0].id' <<<"$existing")"
-  actual="$TMP_ROOT/actual-seal.json"
-  download_asset "$id" "$actual"
-  if ! cmp "$expected" "$actual"; then
-    echo "package-release-lifecycle: existing inventory seal differs from current release state" >&2
-    return 1
-  fi
-  if [ "$(jq -r '.[0].size' <<<"$existing")" != "$(wc -c <"$expected" | tr -d '[:space:]')" ] ||
-     [ "$(jq -r '.[0].digest' <<<"$existing")" != "sha256:$(sha256_file "$expected")" ]; then
-    echo "package-release-lifecycle: inventory seal metadata differs from its bytes" >&2
-    return 1
-  fi
+  verify_current_seal
 }
 
 validate_direct_tag() {
@@ -500,8 +518,26 @@ seal_publish() {
   printf 'immutable\n'
 }
 
+verify_immutable() {
+  local state
+  discover_release
+  state="$(release_state)" || return
+  if [ "$state" != immutable ]; then
+    echo "package-release-lifecycle: release is not immutable" >&2
+    return 1
+  fi
+  # WHY: this command is used by unprivileged consumers. Keep its path
+  # Keep it read-only instead of calling the seal helper whose draft branch
+  # may upload a missing seal.
+  verify_existing_seal
+  validate_direct_tag
+  write_release_id
+  printf 'immutable\n'
+}
+
 case "$COMMAND" in
   ensure-draft) ensure_release_command ;;
   state) release_state_command ;;
   seal-publish) seal_publish ;;
+  verify-immutable) verify_immutable ;;
 esac

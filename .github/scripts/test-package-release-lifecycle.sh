@@ -244,6 +244,15 @@ existing_id_file="$store/existing-release-id"
 [ "$(run_lifecycle state \
   --release-id-file "$existing_id_file")" = draft ]
 [ "$(cat "$existing_id_file")" = 7 ]
+draft_writes="$(wc -l <"$store/writes.log")"
+if run_lifecycle verify-immutable \
+    >/dev/null 2>"$store/verify-draft.err"
+then
+  echo "test-package-release-lifecycle: draft verified as immutable" >&2
+  exit 1
+fi
+grep -Fq 'release is not immutable' "$store/verify-draft.err"
+[ "$(wc -l <"$store/writes.log")" = "$draft_writes" ]
 
 reset_store lost-create
 touch "$store/fail-create-response-once"
@@ -275,17 +284,52 @@ grep -Fxq publish "$store/writes.log"
 writes_before="$(wc -l <"$store/writes.log")"
 [ "$(run_lifecycle seal-publish)" = immutable ]
 [ "$(wc -l <"$store/writes.log")" = "$writes_before" ]
+verified_id_file="$store/verified-release-id"
+[ "$(run_lifecycle verify-immutable \
+  --release-id-file "$verified_id_file")" = immutable ]
+[ "$(cat "$verified_id_file")" = 7 ]
+[ "$(wc -l <"$store/writes.log")" = "$writes_before" ]
 
 seal_id="$(jq -r '.[] | select(.name ==
   "kandelo-package-release-seal-v1.json") | .id' "$store/assets.json")"
 cp "$store/assets/$seal_id" "$store/seal.good"
 printf 'tampered seal\n' >"$store/assets/$seal_id"
+tamper_writes="$(wc -l <"$store/writes.log")"
+if run_lifecycle verify-immutable \
+    >/dev/null 2>"$store/verify-seal-drift.err"
+then
+  echo "test-package-release-lifecycle: verifier accepted seal drift" >&2
+  exit 1
+fi
+grep -Fq 'inventory seal differs' "$store/verify-seal-drift.err"
+[ "$(wc -l <"$store/writes.log")" = "$tamper_writes" ]
 if run_lifecycle seal-publish >/dev/null 2>"$store/seal-drift.err"; then
   echo "test-package-release-lifecycle: immutable seal drift was accepted" >&2
   exit 1
 fi
 grep -Fq 'inventory seal differs' "$store/seal-drift.err"
 mv "$store/seal.good" "$store/assets/$seal_id"
+
+reset_store missing-seal
+run_lifecycle ensure-draft >/dev/null
+add_payload index.toml 'missing seal bytes'
+[ "$(run_lifecycle seal-publish)" = immutable ]
+missing_seal_id="$(jq -r '.[] | select(.name ==
+  "kandelo-package-release-seal-v1.json") | .id' "$store/assets.json")"
+jq 'map(select(.name != "kandelo-package-release-seal-v1.json"))' \
+  "$store/assets.json" >"$store/assets.next"
+mv "$store/assets.next" "$store/assets.json"
+rm "$store/assets/$missing_seal_id"
+missing_seal_writes="$(wc -l <"$store/writes.log")"
+if run_lifecycle verify-immutable \
+    >/dev/null 2>"$store/verify-missing-seal.err"
+then
+  echo "test-package-release-lifecycle: verifier accepted a missing seal" >&2
+  exit 1
+fi
+grep -Fq 'inventory seal is not uniquely visible' \
+  "$store/verify-missing-seal.err"
+[ "$(wc -l <"$store/writes.log")" = "$missing_seal_writes" ]
 
 reset_store lost-publish
 run_lifecycle ensure-draft >/dev/null

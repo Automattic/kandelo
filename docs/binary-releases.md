@@ -364,6 +364,12 @@ release, it verifies the same identity, seal, asset inventory, and direct tag
 without writing. An unexpected mutable public release is rejected unless it
 is the exact Automattic/kandelo ABI 42 exception.
 
+Consumers that must never hold release-write authority use
+`verify-immutable` with the same tag, target commit, title, body, and
+prerelease inputs. That operation performs only release, asset, asset-byte,
+and direct-tag reads. It requires an immutable release and an existing seal;
+it has no branch that creates, uploads, tags, or publishes release state.
+
 #### Preserving a pre-merge closure without admitting it
 
 Sometimes a completed package closure must survive before its producer commit
