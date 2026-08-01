@@ -447,7 +447,8 @@ homebrew_native_contract_select_api_source \
   homebrew-verify-poured-bottle.sh "$BUILD_USER" \
   "$HOST_DEPENDENCY_PLAN" "$HOST_DEPENDENCY_LIST"
 
-"$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"
+PRIMARY_TAP_CLONE_URL="$(homebrew_local_tap_clone_url "$TAP_ROOT")"
+"$BREW_BIN" tap "$TAP_NAME" "$PRIMARY_TAP_CLONE_URL"
 printf '%s\n' "$TAP_NAME" >"$ALLOWED_TARGET_TAPS"
 DEPENDENCY_TAP_ROOTS=()
 if [ -n "${KANDELO_HOMEBREW_RESOLVED_TAPS_FILE:-}" ]; then
@@ -457,7 +458,10 @@ if [ -n "${KANDELO_HOMEBREW_RESOLVED_TAPS_FILE:-}" ]; then
       echo "homebrew-verify-poured-bottle.sh: resolved dependency tap is incomplete" >&2
       exit 2
     }
-    "$BREW_BIN" tap "$dependency_tap" "$dependency_root"
+    dependency_tap_clone_url="$(
+      homebrew_local_tap_clone_url "$dependency_root"
+    )"
+    "$BREW_BIN" tap "$dependency_tap" "$dependency_tap_clone_url"
     tapped_dependency_root="$("$BREW_BIN" --repository "$dependency_tap")"
     tapped_dependency_root="$(cd "$tapped_dependency_root" && pwd -P)"
     locked_dependency_root="$(cd "$dependency_root" && pwd -P)"

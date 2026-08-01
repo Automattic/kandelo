@@ -45,3 +45,41 @@ homebrew_bottle_root_url() {
   normalized_repository="$(printf '%s' "$repository" | tr '[:upper:]' '[:lower:]')"
   printf 'https://ghcr.io/v2/%s\n' "$normalized_repository"
 }
+
+homebrew_local_tap_clone_url() {
+  if [ "$#" -ne 1 ]; then
+    echo "homebrew_local_tap_clone_url: expected CHECKOUT" >&2
+    return 2
+  fi
+  local checkout="$1" physical
+
+  case "$checkout" in
+    /*) ;;
+    *)
+      echo "homebrew-tap-identity.sh: local tap checkout must be absolute" >&2
+      return 2
+      ;;
+  esac
+  if [ ! -d "$checkout" ] || [ -L "$checkout" ]; then
+    echo "homebrew-tap-identity.sh: local tap checkout must be a real directory" >&2
+    return 2
+  fi
+  physical="$(cd -- "$checkout" && pwd -P)" || return
+  if [ "$physical" != "$checkout" ]; then
+    echo "homebrew-tap-identity.sh: local tap checkout must be canonical" >&2
+    return 2
+  fi
+
+  # WHY: `brew tap NAME /local/path` lets Git optimize the clone by hard-
+  # linking object files. The isolated publisher later seals the complete
+  # Homebrew tree and must reject any inode that is also mutable through a
+  # path outside that tree. A file URL uses Git's normal transport instead,
+  # producing independent object files while keeping the exact local checkout
+  # as the only source. Path.as_uri also quotes spaces and URL delimiters.
+  python3 - "$physical" <<'PY'
+import pathlib
+import sys
+
+print(pathlib.Path(sys.argv[1]).as_uri())
+PY
+}
