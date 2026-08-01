@@ -71,32 +71,54 @@ file, hash and count it incrementally, and enforce the shared bottle
 limit. Do not solve this by adding another package-specific size
 exception.
 
+An eight-way derivation on integration commit
+`756edb235d1b9fe058626c7e7b07697e2c644965` completed after those two
+fixes. It found 65 Formulae and 72 architecture variants: 33 variants
+are byte-clean reuse candidates and 39 require builds. This is useful
+pre-merge evidence, not publication authority. Derive again from the
+exact protected `main` commit before any write.
+
+The final review found one shipping-critical activation defect. The
+finalizer copied the complete older sealed target tree and used the
+newer live tap only as its Git parent. That could remove reviewed
+workflows and trust controls added after the source seal. Finalization
+must instead start from the exact live tree, prove the sealed source is
+in its history, replay only sealed package paths, preserve reviewed
+control-plane additions, and delete only explicit campaign retirement
+paths. Do not activate the complete tap until that fix is merged.
+
 The immediate execution order is:
 
-1. Finish the three focused corrections above, review the complete
-   batch, and run the campaign, executor, publisher, workflow-trust,
-   native contract, and public-readback tests.
-2. Derive the entire 64-Formula campaign once. Let all independent reads
-   finish so one run reveals the complete remaining problem set.
-3. Merge the packaging-only Kandelo batch. Create a fresh exact-main
+1. Finish the live-tree replay correction, review the complete batch,
+   and run the campaign, executor, publisher, workflow-trust, native
+   contract, OCI, and public-readback tests.
+2. Merge the packaging-only Kandelo batch. Create a fresh exact-main
    package generation; unchanged archives may be reused only through the
    generation's normal content and provenance checks.
-4. Rebase and merge the tap campaign controller, first-child bootstrap,
-   handoff, and finalizer. Rotate its Kandelo pins to the exact new
-   protected-main commit.
-5. Run up to eight dependency-ready Formula variants concurrently.
-   Libyaml's first child uses the one-time namespace bootstrap. The
-   normal publisher still owns its version index, public verification,
-   sidecars, and tap finalization. Publish Ruby as soon as Libyaml is
-   ready.
-6. Compose the selected shell closure from immutable bottle identities.
-   Keep the boot shell eager, keep optional software and `/usr/bin/brew`
-   lazy, and deploy only after the same bytes pass the focused Node.js
-   and Chromium lifecycle.
-7. Prove `brew tap` and `brew install` against the independent public
-   tap. A failed unrelated Formula must not hold that proof or an already
-   verified bottle hostage.
-8. Continue the remaining Formula and service migration, then remove
+3. Re-derive from exact protected `main`, rebase the tap controller and
+   first-child caller, and rotate their Kandelo pins together.
+4. Publish the closed pure-`/opt` shell selection first. The current
+   Brewfile's 38 Formulae plus Libyaml, Ruby, and
+   `homebrew-bootstrap` produce 41 wasm32 Formulae. The exact campaign
+   derives 21 byte-clean reuse handoffs and 20 builds for this set.
+   Libyaml uses the first-child bootstrap; Ruby follows Libyaml and the
+   reusable Zlib handoff. Unrelated Formulae do not gate this set.
+5. Publish that closed selection at an immutable content-addressed
+   locator and bind the shell input lock to it. Do not describe the
+   incomplete tap catalog as finalized. Keep the boot shell eager and
+   `/usr/bin/brew` lazy. Deploy only after the same bytes pass the
+   focused Node.js and Chromium lifecycle.
+6. Prove `brew tap` and `brew install` against the independent public
+   tap. A failed unrelated Formula must not hold that proof or an
+   already verified bottle hostage.
+7. Continue the 65-Formula, 72-variant campaign with up to eight
+   dependency-ready jobs. After every required handoff exists, replay
+   the complete tap onto the then-current exact live parent and finalize
+   it atomically.
+8. Land crash-convergent staging cleanup as a follow-up. Its current gap
+   can strand an obsolete writable staging tag after a runner crash, but
+   cannot admit a package, alter a bottle, or block the runtime proof.
+9. Continue the remaining Formula and service migration, then remove
    each traditional registry owner only after its replacement evidence
    exists.
 
@@ -107,11 +129,13 @@ sequence and the requirements for a future quarantined candidate-bottle
 lane.
 
 Throughput for this checkpoint means one cohesive integration batch,
-one complete derivation to collect independent failures, and
-dependency-ready publication with immediate slot refill. It does not
-mean repeating the entire catalog after one sibling fails, withholding
-successful bottles until a campaign is perfect, or weakening immutable
-public readback.
+one complete derivation to collect independent failures, and immediate
+use of independently completed handoffs. The first in-guest `brew`
+proof does not wait for complete-catalog activation. This adds one
+earlier shell composition and lifecycle run, but it does not rebuild
+successful bottles. It does not mean repeating the entire catalog after
+one sibling fails, withholding successful bottles until a campaign is
+perfect, or weakening immutable public readback.
 
 ## Superseded Resume Checkpoint — 2026-07-31
 
