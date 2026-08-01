@@ -248,13 +248,15 @@ if [ "${1:-}" = run ] && [ "${2:-}" = build ]; then
     fi
     mkdir -p \
         dist/pages/kandelo \
-        dist/pages/network \
-        dist/pages/homebrew-vfs-test
+        dist/pages/network
     : > dist/index.html
     : > dist/pages/kandelo/index.html
     : > dist/pages/network/index.html
-    : > dist/pages/homebrew-vfs-test/index.html
     : > dist/service-worker.js
+    if [ "${PRODUCTION_BUILD_EXPOSE_PRIVATE_ENTRY:-0}" = 1 ]; then
+        mkdir -p dist/pages/homebrew-vfs-test
+        : > dist/pages/homebrew-vfs-test/index.html
+    fi
 fi
 exit 0
 EOF
@@ -422,12 +424,13 @@ check_premerge_browser_production_contract() {
         'index.html' \
         'pages/kandelo/index.html' \
         'pages/network/index.html' \
-        'pages/homebrew-vfs-test/index.html' \
         'service-worker.js'
     do
         grep -Fq -- "$output" <<<"$function_block" || return 1
     done
     grep -Fq 'ordinary browser build found a closed test mirror' \
+        <<<"$function_block" || return 1
+    grep -Fq 'ordinary browser build exposed the private Homebrew acceptance page' \
         <<<"$function_block" || return 1
     [ "$(grep -Fc 'run_pages_shaped_browser_build' <<<"$browser_block")" -eq 1 ] ||
         return 1
@@ -745,6 +748,30 @@ grep -Eq -- \
     echo "browser suite left its pre-merge Homebrew mirror behind" >&2
     exit 1
 }
+
+private_entry_error="$TMP_DIR/browser-private-entry.err"
+if PATH="$FIXTURE/bin:$PATH" RUN_CAPTURE="$browser_capture" \
+    BLOCKER_CAPTURE="$blocker_capture" \
+    RECOVERY_CAPTURE="$recovery_capture" \
+    CLOSED_ROOT_CAPTURE="$closed_root_capture" \
+    CLOSED_VITE_ROOT_CAPTURE="$closed_vite_root_capture" \
+    CLOSED_MODE_CAPTURE="$closed_mode_capture" \
+    PRODUCTION_BUILD_CAPTURE="$production_build_capture" \
+    PRODUCTION_BUILD_EXPOSE_PRIVATE_ENTRY=1 \
+    FIXTURE_SHELL_IMAGE="$fixture_shell_image" \
+    RUNNER_TEMP="$runner_temp" \
+    PREPARE_BROWSER_ASSETS=true \
+    VERIFY_BROWSER_PRODUCTION_BUILD=true \
+    bash "$FIXTURE/scripts/ci-run-test-suite.sh" browser \
+    > "$private_entry_error" 2>&1
+then
+    echo "ordinary production build accepted its private Homebrew page" >&2
+    exit 1
+fi
+grep -Fq \
+    'ordinary browser build exposed the private Homebrew acceptance page' \
+    "$private_entry_error"
+rm -rf -- "$FIXTURE/apps/browser-demos/dist"
 
 # Reproduce the cutover incident: the candidate resolved exact shell bytes,
 # but those bytes are not in the immutable canonical release yet. The browser

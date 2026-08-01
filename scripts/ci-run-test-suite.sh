@@ -186,7 +186,6 @@ run_pages_shaped_browser_build() {
             index.html \
             pages/kandelo/index.html \
             pages/network/index.html \
-            pages/homebrew-vfs-test/index.html \
             service-worker.js
         do
             [ -f "$dist/$output" ] || {
@@ -194,6 +193,14 @@ run_pages_shaped_browser_build() {
                 return 1
             }
         done
+        # WHY: homebrew-vfs-test is a private closed-mirror acceptance page,
+        # not a Pages product entry. Requiring it here contradicts Vite's
+        # production input set; emitting it would expose test-only UI instead.
+        if [ -e "$dist/pages/homebrew-vfs-test/index.html" ] ||
+           [ -L "$dist/pages/homebrew-vfs-test/index.html" ]; then
+            echo "ci-run-test-suite: ordinary browser build exposed the private Homebrew acceptance page" >&2
+            return 1
+        fi
     )
     rm -rf -- "$dist"
 }
