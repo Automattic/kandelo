@@ -522,15 +522,33 @@ class ASN1Encoder {
 		return result;
 	}
 
-	static integer(number: Uint8Array<ArrayBufferLike>): Uint8Array {
-		// Ensure number is positive and first bit is 0
-		if (number[0] > 0x7f) {
-			const extendedNumber = new Uint8Array(number.length + 1);
-			extendedNumber[0] = 0x00;
-			extendedNumber.set(number, 1);
-			number = extendedNumber;
+	static integer(unsignedMagnitude: Uint8Array<ArrayBufferLike>): Uint8Array {
+		if (unsignedMagnitude.length === 0) {
+			throw new Error('ASN.1 INTEGER magnitude must not be empty');
 		}
-		return ASN1Encoder.ASN1(ASN1Tags.Integer, number);
+
+		// WHY: DER INTEGERs are signed and must use the shortest two's-complement
+		// encoding, while every caller here supplies an unsigned magnitude. Strip
+		// redundant zeroes, retain one only when it protects a high first bit, and
+		// add that sign byte when the caller did not provide it. OpenSSL rejects a
+		// redundant zero as "illegal padding" instead of accepting non-canonical
+		// certificate bytes.
+		let firstByte = 0;
+		while (
+			firstByte < unsignedMagnitude.length - 1 &&
+			unsignedMagnitude[firstByte] === 0x00 &&
+			(unsignedMagnitude[firstByte + 1] & 0x80) === 0
+		) {
+			firstByte += 1;
+		}
+		const magnitude = unsignedMagnitude.subarray(firstByte);
+		if ((magnitude[0] & 0x80) !== 0) {
+			const positive = new Uint8Array(magnitude.length + 1);
+			positive[0] = 0x00;
+			positive.set(magnitude, 1);
+			return ASN1Encoder.ASN1(ASN1Tags.Integer, positive);
+		}
+		return ASN1Encoder.ASN1(ASN1Tags.Integer, magnitude);
 	}
 
 	static bitString(data: Uint8Array): Uint8Array {
