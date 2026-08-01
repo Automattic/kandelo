@@ -2519,8 +2519,67 @@ expect_failure "reviewed artifact identity is still pending" \
 
 grep -Fq -- '--review-pending-artifact' "$SHELL_BUILDER" &&
   fail "the publishable shell package recipe must never bypass the reviewed artifact seal"
-grep -Fq -- '--review-pending-artifact' "$WORKFLOW" &&
-  fail "main-shell CI must never bypass the reviewed artifact seal"
+for shipping_workflow in \
+  "$REPO_ROOT/.github/workflows/browser-demos-pages.yml" \
+  "$REPO_ROOT/.github/workflows/reusable-homebrew-main-shell-mirror-publish.yml"
+do
+  grep -Fq -- '--review-pending-artifact' "$shipping_workflow" &&
+    fail "shipping workflow bypasses the reviewed artifact seal:" \
+      "$shipping_workflow"
+done
+
+check_candidate_artifact_review_contract() {
+  local workflow="$1"
+  local block
+
+  block="$(sed -n \
+    '/- name: Build the exact lazy shell from public bottles/,/- name: Select the source shell for dependent browser VFS builds/p' \
+    "$workflow")"
+  grep -Fq 'case "$CALLER_EVENT_NAME:$artifact_state" in' <<<"$block" &&
+    grep -Fq 'pull_request:pending|push:pending)' <<<"$block" &&
+    grep -Fq 'artifact_review_args=(--review-pending-artifact)' \
+      <<<"$block" &&
+    grep -Fq '*:sealed)' <<<"$block" &&
+    grep -Fq 'artifact_review_args=()' <<<"$block" &&
+    grep -Fq '"${artifact_review_args[@]}"' <<<"$block" &&
+    [ "$(grep -Fc -- '--review-pending-artifact' "$workflow")" -eq 1 ]
+}
+
+# A changed catalog makes the prior image identity stale before the
+# replacement bytes can be known. Exact PR and protected-main CI may
+# exercise that deterministic candidate, but manual shipping must keep
+# failing closed until the artifact digest and byte count are sealed.
+check_candidate_artifact_review_contract "$WORKFLOW" ||
+  fail "candidate CI confuses review bytes with sealed shipping bytes"
+
+sed 's/pull_request:pending|push:pending)/*:pending)/' \
+  "$WORKFLOW" >"$TMP_ROOT/main-shell-manual-pending-review.yml"
+if check_candidate_artifact_review_contract \
+  "$TMP_ROOT/main-shell-manual-pending-review.yml"
+then
+  fail "candidate review contract accepted manual pending shipping"
+fi
+sed '/"${artifact_review_args\[@\]}"/d' \
+  "$WORKFLOW" >"$TMP_ROOT/main-shell-drops-pending-review-argument.yml"
+if check_candidate_artifact_review_contract \
+  "$TMP_ROOT/main-shell-drops-pending-review-argument.yml"
+then
+  fail "candidate review contract accepted a missing composer argument"
+fi
+sed '/\*:sealed)/d' "$WORKFLOW" \
+  >"$TMP_ROOT/main-shell-drops-sealed-review-path.yml"
+if check_candidate_artifact_review_contract \
+  "$TMP_ROOT/main-shell-drops-sealed-review-path.yml"
+then
+  fail "candidate review contract accepted a missing sealed path"
+fi
+sed '1i# --review-pending-artifact' "$WORKFLOW" \
+  >"$TMP_ROOT/main-shell-adds-second-review-bypass.yml"
+if check_candidate_artifact_review_contract \
+  "$TMP_ROOT/main-shell-adds-second-review-bypass.yml"
+then
+  fail "candidate review contract accepted a second review bypass"
+fi
 
 wrong_sha_lock="$TMP_ROOT/lazy-shell-wrong-sha-lock.json"
 jq '.image.sha256 = "0000000000000000000000000000000000000000000000000000000000000000"' \

@@ -1258,15 +1258,19 @@ This public-mirror lane is independent of the existing Bash bottle caller and
 its frozen workflow digest.
 
 Refresh the shell release locks with
-`scripts/finalize-homebrew-main-shell-release.py` from one clean checkout of
-the final live tap commit. Its default preview is read-only. `--apply` without
-an artifact advances the catalog, Formula identities, metadata/provenance
-digests, Git input, and bound artifact inputs together while changing the shell
-to `publication_state = "pending"`. The maintainer-only
-`--review-pending-artifact` composer option can then measure the deterministic
-candidate, but neither the package recipe nor CI uses that option. Rerun the
-finalizer with `--artifact <shell.vfs.zst> --apply`, reproduce the same image
-through the ordinary sealed path, and only then return the recipe to
+`scripts/finalize-homebrew-main-shell-release.py` from one clean
+checkout of the final live tap commit. Its default preview is read-only.
+`--apply` without an artifact advances the catalog, Formula identities,
+metadata/provenance digests, Git input, and bound artifact inputs
+together while changing the shell to `publication_state = "pending"`.
+The review-only `--review-pending-artifact` composer option can then
+measure the deterministic candidate. The exact pull-request and
+protected-main checks may also use that option to run a candidate while
+the lock is pending. Those checks cannot publish it. The package recipe,
+manual lifecycle checks, Pages deployment, and public mirror publisher
+still require a sealed identity. Rerun the finalizer with
+`--artifact <shell.vfs.zst> --apply`, reproduce the same image through
+the ordinary sealed path, and only then return the recipe to
 `publication_state = "ready"`.
 
 The checked-in `6ad0e3dbc60e5572c4288c86919238f71c1bc110` first-party tap value is the final shell
