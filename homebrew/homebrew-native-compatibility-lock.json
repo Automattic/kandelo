@@ -9641,8 +9641,12 @@
           }
         },
         "name": "llvm",
-        "post_install_defined": true,
-        "ruby_source_checksum": "676bf4824c8cf6ed49a3614ef4ec1d5b1c5991ba86a4043eb12d77f50f492830",
+        "post_install_steps": [
+          {
+            "type": "configure_clang_system"
+          }
+        ],
+        "ruby_source_checksum": "061d38ecdbec47ca7c9508263ec06352ac9051e42b383cfac22a1d75fcc886c7",
         "stable_checksum": "922f1817a0df7b1489272d18134ee0087a8b068828f87ac63b9861b1a9965888",
         "stable_dependencies": [
           "python@3.14",
@@ -9920,8 +9924,12 @@
           }
         },
         "name": "llvm",
-        "post_install_defined": true,
-        "ruby_source_checksum": "676bf4824c8cf6ed49a3614ef4ec1d5b1c5991ba86a4043eb12d77f50f492830",
+        "post_install_steps": [
+          {
+            "type": "configure_clang_system"
+          }
+        ],
+        "ruby_source_checksum": "061d38ecdbec47ca7c9508263ec06352ac9051e42b383cfac22a1d75fcc886c7",
         "stable_checksum": "922f1817a0df7b1489272d18134ee0087a8b068828f87ac63b9861b1a9965888",
         "stable_dependencies": [
           "python@3.14",
