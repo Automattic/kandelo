@@ -92,6 +92,17 @@ rebuild pristine upstream Ruby, and rerun this lifecycle. Do not let
 the accelerated proof turn the package workaround into the permanent
 runtime contract.
 
+Before the next ABI creates its first canonical package release, carry
+the exact draft release ID returned by `package-release-lifecycle.sh`
+through `activate-merge-candidate.sh` and
+`scripts/release-index-state.sh`. Every canonical draft read, asset
+operation, index-state recovery, and final seal must bind both that
+numeric ID and the expected tag. ABI 42 already has its canonical
+release, so this is not on the usable cutover path. Do not make an
+absent-release test pass by stubbing around the index state machine;
+cover malformed IDs, wrong response IDs and tags, and a seal-time ID
+switch.
+
 The canonical guest contract is:
 
 - prefix and repository: `/opt/kandelo/homebrew`;
