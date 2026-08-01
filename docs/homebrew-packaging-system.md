@@ -48,12 +48,14 @@ Formula + source + dependencies + Kandelo SDK
              Node and browser execution
 ```
 
-Each bottle that is uploaded, indexed, and anonymously verified stands
-on its own for its Kandelo ABI. If a batch builds ten Formulae and two
-fail, the eight published results remain valid and usable. A named shell
-or prefix release may wait for a complete selected dependency closure.
-That product-level wait does not invalidate a bottle that already passed
-publication and anonymous readback.
+Each bottle that finishes the complete publication path stands on its
+own for its Kandelo ABI. That path builds the bottle, publishes its child
+and version index, reads the exact bytes back anonymously, verifies the
+runtime, and records an immutable Formula handoff. If a batch builds ten
+Formulae and two fail, the eight completed results remain valid and
+usable. A named shell or prefix release may wait for a complete selected
+dependency closure. That product-level wait does not invalidate an
+independently completed bottle.
 
 ## Vocabulary
 
@@ -248,15 +250,17 @@ publisher does not repair visibility after upload.
 A Formula's first bottle is different from later publications because
 its GHCR package repository does not exist yet. The normal publisher can
 create that repository while publishing the bottle. The core tap also
-has a bounded, one-time first-child workflow for operators who need to
-reuse one already-reviewed dry-run artifact before running the complete
-publisher. This helper is not required for every new Formula. It
-publishes actual bottle bytes, not an empty marker package.
+has a bounded, one-time first-child workflow for the prefix campaign. It
+accepts only the dry-build artifacts produced earlier in that same
+protected workflow run and attempt. This helper is not required for
+every new Formula. It publishes actual bottle bytes, not an empty marker
+package.
 
 First run the normal credential-free dry build. The protected tap
 workflow then accepts exactly one successful dry-run child artifact. It
-binds the run, attempt, artifact digest, bottle manifest digest, exact
-tap `main`, and exact Kandelo `main`. It also proves through an
+binds the run, attempt, artifact digest, bottle manifest digest,
+protected caller, and exact admitted tap and Kandelo source commits. It
+also checks the required protected-`main` ancestry and proves through an
 authenticated query that neither a public nor a private package already
 owns the destination.
 
@@ -264,7 +268,9 @@ The workflow uploads only that immutable architecture-specific child
 with the tap repository's `GITHUB_TOKEN`, removes its credentials, and
 reads the exact digest back anonymously. It does not publish the
 Formula's version index, edit the tap, generate sidecars, or claim that
-the Formula is ready. It cannot be replayed after the package exists.
+the Formula is ready. A retry never uploads the child twice. It may
+re-prove the exact already-public child without credentials; a different
+or private existing object fails closed.
 
 After this bootstrap, run the normal publisher. That publisher creates
 the version index, verifies the bottle through Kandelo, and finalizes
