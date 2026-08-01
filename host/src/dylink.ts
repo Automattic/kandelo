@@ -28,6 +28,11 @@ import {
   FORK_UNWIND_TAG_IMPORT_NAME,
   requireForkUnwindTag,
 } from "./fork-unwind-transport";
+import {
+  registerWasmModuleReflection,
+  wasmModuleExports,
+  wasmModuleImports,
+} from "./wasm-module-reflection";
 
 // dylink.0 sub-section types
 const WASM_DYLINK_MEM_INFO = 1;
@@ -1151,6 +1156,7 @@ function* instantiateSharedLibrarySteps(
   const sourceModule = new WebAssembly.Module(
     wasmBytes as unknown as BufferSource,
   );
+  registerWasmModuleReflection(sourceModule, wasmBytes);
   const borrowsMemory = replay?.memoryOwnership === "borrowed";
   if (borrowsMemory) {
     if (!(options.memory.buffer instanceof SharedArrayBuffer)) {
@@ -1163,13 +1169,19 @@ function* instantiateSharedLibrarySteps(
     }
     requirePassiveDataSegmentsForBorrowedReplay(wasmBytes, name);
   }
-  const module = borrowsMemory
+  const borrowedModuleBytes = borrowsMemory
+    ? withoutBorrowedReplayStart(wasmBytes, name)
+    : undefined;
+  const module = borrowedModuleBytes
     ? new WebAssembly.Module(
-        withoutBorrowedReplayStart(wasmBytes, name) as unknown as BufferSource,
+        borrowedModuleBytes as unknown as BufferSource,
       )
     : sourceModule;
-  const moduleImports = WebAssembly.Module.imports(module);
-  const moduleExports = WebAssembly.Module.exports(module);
+  if (borrowedModuleBytes) {
+    registerWasmModuleReflection(module, borrowedModuleBytes);
+  }
+  const moduleImports = wasmModuleImports(module);
+  const moduleExports = wasmModuleExports(module);
   const moduleExportKinds = new Map(
     moduleExports.map((moduleExport) => [
       moduleExport.name,

@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   detectPtrWidth,
   describeWasmArtifactPolicyFailures,
+  readWasmImportDescriptors,
   readWasmImportNames,
   wasmImportsKernelFork,
 } from "../src/constants";
@@ -74,6 +75,12 @@ describe("fork artifact parsing with recursive GC types", () => {
       "env.gc_table",
       "env.gc_global",
       "env.memory",
+    ]);
+    expect(readWasmImportDescriptors(wasm)).toEqual([
+      { module: "kernel", name: "kernel_fork", kind: "function" },
+      { module: "env", name: "gc_table", kind: "table" },
+      { module: "env", name: "gc_global", kind: "global" },
+      { module: "env", name: "memory", kind: "memory" },
     ]);
     expect(wasmImportsKernelFork(wasm)).toBe(true);
     expect(detectPtrWidth(wasm)).toBe(8);

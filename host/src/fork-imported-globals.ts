@@ -23,6 +23,7 @@ import {
   readForkImportedGlobals,
   readForkImportedTables,
 } from "./fork-module-state";
+import { wasmModuleImports } from "./wasm-module-reflection";
 
 export type ForkWasmImports = Readonly<
   Record<string, Readonly<Record<string, unknown>>>
@@ -204,8 +205,8 @@ function validateImportedDescriptors(
   globalDescriptors: readonly ForkImportedGlobalState[],
   tableDescriptors: readonly ForkImportedTableState[],
   context: string,
-): readonly WebAssembly.ModuleImportDescriptor[] {
-  const imports = WebAssembly.Module.imports(module);
+): ReturnType<typeof wasmModuleImports> {
+  const imports = wasmModuleImports(module);
   const ordinals = new Set<number>();
   for (const descriptor of globalDescriptors) {
     const declaration = imports[descriptor.importOrdinal];
