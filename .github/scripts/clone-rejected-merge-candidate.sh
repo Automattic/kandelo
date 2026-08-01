@@ -74,6 +74,7 @@ AUTHORITY_LOCKED=0
 SOURCE_LOCKED=0
 DESTINATION_LOCKED=0
 DESTINATION_CANDIDATE_TAG=""
+DESTINATION_RELEASE_ID=""
 DESTINATION_RUN_ID=""
 DESTINATION_RUN_ATTEMPT=""
 RESUME_EXISTING_CLONE=0
@@ -130,12 +131,30 @@ gh_retry() {
 }
 
 snapshot_release() {
-  local tag="$1" output="$2" release_json
+  local tag="$1" output="$2" expected_release_id="${3:-}" release_json
+  local expected_release_id_json=null
   local release_id page page_json count reached_end=false
-  release_json="$TMP_ROOT/release-${tag}.json"
-  gh_retry gh api "/repos/${REPOSITORY}/releases/tags/${tag}" > "$release_json"
-  if ! jq -e --arg tag "$tag" '
-      .tag_name == $tag and (.id | type == "number" and . > 0)
+  if [ -n "$expected_release_id" ]; then
+    if ! [[ "$expected_release_id" =~ ^[1-9][0-9]*$ ]]; then
+      echo "clone-rejected-merge-candidate: malformed release ID for $tag" >&2
+      return 1
+    fi
+    release_json="$TMP_ROOT/release-${expected_release_id}.json"
+    expected_release_id_json="$expected_release_id"
+    gh_retry gh api \
+      "/repos/${REPOSITORY}/releases/${expected_release_id}" \
+      > "$release_json"
+  else
+    release_json="$TMP_ROOT/release-${tag}.json"
+    gh_retry gh api "/repos/${REPOSITORY}/releases/tags/${tag}" \
+      > "$release_json"
+  fi
+  if ! jq -e \
+      --arg tag "$tag" \
+      --argjson expected_release_id "$expected_release_id_json" '
+      .tag_name == $tag and
+      (.id | type == "number" and . > 0) and
+      ($expected_release_id == null or .id == $expected_release_id)
     ' "$release_json" >/dev/null
   then
     echo "clone-rejected-merge-candidate: malformed release response for $tag" >&2
@@ -494,9 +513,28 @@ bash "$RELEASE_LIFECYCLE_SCRIPT" ensure-draft \
   --target-commit "$head_sha" \
   --title "$DESTINATION_CANDIDATE_TAG" \
   --body-file "$destination_body" \
-  --prerelease true >/dev/null
+  --prerelease true \
+  --release-id-file "$TMP_ROOT/destination-release-id" >/dev/null
+# WHY: GitHub's get-by-tag endpoint omits drafts. Pin every destination
+# inventory read to the one release ID selected by bounded lifecycle
+# discovery so a same-tag race cannot redirect later verification.
+if [ ! -f "$TMP_ROOT/destination-release-id" ] ||
+   [ -L "$TMP_ROOT/destination-release-id" ]; then
+  echo "clone-rejected-merge-candidate: lifecycle did not return one destination release ID" >&2
+  exit 1
+fi
+mapfile -t destination_release_ids < "$TMP_ROOT/destination-release-id"
+if [ "${#destination_release_ids[@]}" -ne 1 ] ||
+   ! [[ "${destination_release_ids[0]}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "clone-rejected-merge-candidate: lifecycle did not return one destination release ID" >&2
+  exit 1
+fi
+DESTINATION_RELEASE_ID="${destination_release_ids[0]}"
 destination_inventory="$TMP_ROOT/destination-assets.json"
-snapshot_release "$DESTINATION_CANDIDATE_TAG" "$destination_inventory"
+snapshot_release \
+  "$DESTINATION_CANDIDATE_TAG" \
+  "$destination_inventory" \
+  "$DESTINATION_RELEASE_ID"
 if [ "$RESUME_EXISTING_CLONE" = 1 ]; then
   cp "$destination_inventory" "$TMP_ROOT/destination-resume-inventory.json"
 fi
@@ -547,7 +585,10 @@ ensure_destination_asset() {
   local expected_sha expected_size existing actual_sha actual_size upload_dir
   expected_sha=$(sha256_file "$path")
   expected_size=$(file_size "$path")
-  snapshot_release "$DESTINATION_CANDIDATE_TAG" "$inventory"
+  snapshot_release \
+    "$DESTINATION_CANDIDATE_TAG" \
+    "$inventory" \
+    "$DESTINATION_RELEASE_ID"
   existing=$(jq -c --arg name "$name" '[.[] | select(.name == $name)]' "$inventory")
   if [ "$(jq 'length' <<<"$existing")" = 1 ]; then
     if [ "$(jq -r '.[0].size' <<<"$existing")" != "$expected_size" ] ||
@@ -569,7 +610,10 @@ ensure_destination_asset() {
     echo "clone-rejected-merge-candidate: destination contains duplicate $name" >&2
     return 1
   fi
-  snapshot_release "$DESTINATION_CANDIDATE_TAG" "$inventory"
+  snapshot_release \
+    "$DESTINATION_CANDIDATE_TAG" \
+    "$inventory" \
+    "$DESTINATION_RELEASE_ID"
   existing=$(jq -c --arg name "$name" '[.[] | select(.name == $name)]' "$inventory")
   if [ "$(jq 'length' <<<"$existing")" != 1 ]; then
     echo "clone-rejected-merge-candidate: destination asset $name is not uniquely visible" >&2
@@ -592,7 +636,10 @@ while IFS= read -r name; do
   ensure_destination_asset "$name" "$validated_source/archives/$name"
 done < "$TMP_ROOT/ledger-assets"
 
-snapshot_release "$DESTINATION_CANDIDATE_TAG" "$destination_inventory"
+snapshot_release \
+  "$DESTINATION_CANDIDATE_TAG" \
+  "$destination_inventory" \
+  "$DESTINATION_RELEASE_ID"
 jq -r '.[].name' "$destination_inventory" | sort > "$TMP_ROOT/destination-final-names"
 grep -Fxv ready.json "$expected_names" > "$TMP_ROOT/expected-before-ready"
 if [ "$RESUME_EXISTING_CLONE" = 1 ]; then
@@ -673,7 +720,10 @@ if [ "$RESUME_EXISTING_CLONE" = 1 ]; then
     fi
   fi
 
-  snapshot_release "$DESTINATION_CANDIDATE_TAG" "$TMP_ROOT/destination-resume-after.json"
+  snapshot_release \
+    "$DESTINATION_CANDIDATE_TAG" \
+    "$TMP_ROOT/destination-resume-after.json" \
+    "$DESTINATION_RELEASE_ID"
   if ! cmp "$TMP_ROOT/destination-resume-inventory.json" "$TMP_ROOT/destination-resume-after.json"; then
     echo "clone-rejected-merge-candidate: authoritative recovery clone changed during validation" >&2
     exit 1

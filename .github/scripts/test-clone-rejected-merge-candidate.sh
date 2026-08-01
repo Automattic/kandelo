@@ -67,10 +67,18 @@ cat >"$CHECKOUT/.github/scripts/package-release-lifecycle.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 tag=""
+release_id_file=""
 while [ "$#" -gt 0 ]; do
-  case "$1" in --tag) tag="$2"; shift 2 ;; *) shift ;; esac
+  case "$1" in
+    --tag) tag="$2"; shift 2 ;;
+    --release-id-file) release_id_file="$2"; shift 2 ;;
+    *) shift ;;
+  esac
 done
+[ "$tag" = "${GH_STUB_DESTINATION_TAG:?}" ]
 mkdir -p "${GH_STUB_RELEASES:?}/$tag"
+[ -n "$release_id_file" ]
+printf '%s\n' "${GH_STUB_LIFECYCLE_RELEASE_ID:-102}" > "$release_id_file"
 printf 'draft\n'
 EOF
 chmod +x "$CHECKOUT/.github/scripts/package-release-lifecycle.sh"
@@ -258,9 +266,25 @@ case "$command_name" in
     fi
     if [[ "$endpoint" =~ /releases/tags/([^?]+)$ ]]; then
       tag="${BASH_REMATCH[1]}"
+      # Draft releases are deliberately invisible through GitHub's by-tag
+      # endpoint. A successful recovery therefore proves destination reads
+      # use the exact ID returned by the lifecycle helper.
+      [ "$tag" != "$GH_STUB_DESTINATION_TAG" ] || exit 1
       [ -d "$GH_STUB_RELEASES/$tag" ] || exit 1
       id=$(release_id "$tag")
       jq -cn --arg tag "$tag" --argjson id "$id" '{id: $id, tag_name: $tag}'
+      exit 0
+    fi
+    if [[ "$endpoint" =~ /releases/([0-9]+)$ ]]; then
+      requested_id="${BASH_REMATCH[1]}"
+      [ "$requested_id" = 102 ] || exit 1
+      tag=$(tag_for_release_id "$requested_id")
+      [ -d "$GH_STUB_RELEASES/$tag" ] || exit 1
+      response_id="${GH_STUB_DESTINATION_RESPONSE_ID:-$requested_id}"
+      jq -cn \
+        --arg tag "$tag" \
+        --argjson id "$response_id" \
+        '{id: $id, tag_name: $tag}'
       exit 0
     fi
     if [[ "$endpoint" =~ /releases/([0-9]+)/assets\? ]]; then
@@ -437,6 +461,8 @@ run_clone() {
     GH_STUB_RELEASES="$RELEASES" \
     GH_STUB_SOURCE_TAG="$SOURCE_TAG" \
     GH_STUB_DESTINATION_TAG="$DESTINATION_TAG" \
+    GH_STUB_LIFECYCLE_RELEASE_ID="${GH_STUB_LIFECYCLE_RELEASE_ID:-102}" \
+    GH_STUB_DESTINATION_RESPONSE_ID="${GH_STUB_DESTINATION_RESPONSE_ID:-102}" \
     GH_STUB_PR_JSON="$PR_JSON" \
     GH_STUB_RUN_JSON="$RUN_JSON" \
     GH_STUB_RUN_CONCLUSION="${GH_STUB_RUN_CONCLUSION:-success}" \
@@ -525,6 +551,28 @@ printf '%s\n' "https://github.com/example/repo/releases/tag/merge-candidate-abi-
   > "$AUTHORITY_FILE"
 assert_failed_before_clone stale-authority
 grep -q 'not this source or its recovery clone' "$TMP_ROOT/stale-authority.err"
+
+assert_failed_after_draft_identity() {
+  local label="$1" expected_error="$2"
+  if run_clone "$TMP_ROOT/$label.outputs" \
+      >"$TMP_ROOT/$label.out" 2>"$TMP_ROOT/$label.err"; then
+    echo "$label unexpectedly recovered the candidate" >&2
+    exit 1
+  fi
+  grep -q "$expected_error" "$TMP_ROOT/$label.err"
+  [ -d "$RELEASES/$DESTINATION_TAG" ]
+  rm -rf "$RELEASES/$DESTINATION_TAG"
+  printf '%s\n' "$SOURCE_AUTHORITY" > "$AUTHORITY_FILE"
+}
+
+GH_STUB_LIFECYCLE_RELEASE_ID=$'102\n103' \
+  assert_failed_after_draft_identity \
+    multiple-destination-release-ids \
+    'lifecycle did not return one destination release ID'
+GH_STUB_DESTINATION_RESPONSE_ID=103 \
+  assert_failed_after_draft_identity \
+    wrong-destination-release-id \
+    'malformed release response'
 
 : > "$LOCK_LOG"
 OUTPUTS="$TMP_ROOT/recovery.outputs"
