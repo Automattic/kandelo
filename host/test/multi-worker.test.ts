@@ -792,10 +792,8 @@ describe("CentralizedKernelWorker Process Management", () => {
       maximum: 4,
       shared: true,
     });
-    const channel = { pid: parentPid, channelOffset: WASM_PAGE_SIZE, memory };
-    publishMainForkContinuation(memory, channel.channelOffset);
-    const completeChannel = vi.fn();
-    const deactivateProcess = vi.fn();
+    const channelOffset = WASM_PAGE_SIZE;
+    publishMainForkContinuation(memory, channelOffset);
     const removeProcess = vi.fn(() => 0);
     const admissionError = new ProcessMemoryRetirementBacklogError(
       "retired process-memory debt is saturated",
@@ -805,41 +803,32 @@ describe("CentralizedKernelWorker Process Management", () => {
       1,
       4 * WASM_PAGE_SIZE,
     );
-    const kw = Object.assign(Object.create(CentralizedKernelWorker.prototype), {
-      callbacks: { onFork: vi.fn(() => Promise.reject(admissionError)) },
-      processes: new Map([[parentPid, { channels: [channel] }]]),
-      channelTids: new Map(),
-      threadForkContexts: new Map(),
-      tcpListenerTargets: new Map([[8080, [{ pid: parentPid, fd: 4 }]]]),
-      epollInterests: new Map(),
-      completeChannel,
-      deactivateProcess,
-      kernelInstance: {
-        exports: {
-          kernel_fork_process: vi.fn(() => 100),
-          kernel_clear_fork_child: vi.fn(() => 0),
-          kernel_remove_process: removeProcess,
-          kernel_get_process_exit_signal: vi.fn(() => -1),
-        },
+    const onFork = vi.fn(() => Promise.reject(admissionError));
+    const harness = createGatedLifecycleHarness({
+      callbacks: { onFork },
+      kernelExports: {
+        kernel_fork_process: vi.fn(() => 100),
+        kernel_remove_process: removeProcess,
       },
-    }) as CentralizedKernelWorker;
+    });
+    registerLifecycleProcess(harness, parentPid, memory, channelOffset);
     const error = vi.spyOn(console, "error").mockImplementation(() => {});
 
     try {
-      (kw as any).handleFork(channel, [0]);
-      await Promise.resolve();
-      await Promise.resolve();
-
-      expect(deactivateProcess).toHaveBeenCalledWith(100);
-      expect(removeProcess).toHaveBeenCalledWith(100);
-      expect(completeChannel).toHaveBeenCalledWith(
-        channel,
+      writePendingSyscall(
+        memory,
+        channelOffset,
         HOST_INTERCEPTED_SYSCALLS.SYS_FORK,
         [0],
-        undefined,
-        -1,
-        11,
       );
+      await waitForMailboxCompletion(memory, channelOffset);
+
+      expect(onFork).toHaveBeenCalledOnce();
+      expect(removeProcess).toHaveBeenCalledWith(100);
+      expect(readMailboxResult(memory, channelOffset)).toEqual({
+        value: -1,
+        errno: 11,
+      });
     } finally {
       error.mockRestore();
     }
