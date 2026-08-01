@@ -191,13 +191,13 @@ internal install plan, Linux variation, or bottle fails before
 installation. Prefix-expanded caveat and service presentation fields
 are intentionally excluded.
 
-The reviewed lock deliberately uses cf5's forced libc and compiler
-compatibility switches while deriving that closure. Exact cf5 otherwise
-decides whether `glibc` and `gcc` are implicit dependencies by comparing
-the runner's system glibc and libstdc++ with Homebrew's CI versions.
+The reviewed lock deliberately uses Homebrew's forced libc and compiler
+compatibility switches while deriving that closure. Exact Homebrew otherwise
+decides whether `glibc` and `gcc` are implicit dependencies by comparing the
+runner's system glibc and libstdc++ with Homebrew's CI versions.
 GitHub can roll `ubuntu-latest` between two such capability states. The
 forced lock therefore contains the conservative GCC/glibc bootstrap tree,
-while each publisher admits and installs only the subset cf5 selects for
+while each publisher admits and installs only the subset Homebrew selects for
 its actual host. This is a compatibility superset, not permission to
 install an undeclared native tool.
 
@@ -296,7 +296,7 @@ tap-main workflow bytes.
 
 Those two checks are deliberately compositional. The pre-merge Ruby
 lifecycle proves the signed install plan and certificate output in the
-exact, bounded cf5 environment. The post-merge `bzip2` dry-run
+exact, bounded Homebrew environment. The post-merge `bzip2` dry-run
 separately proves the real systemd-isolated build and verifier realms
 with their nonempty native tool closures. It does not claim that Ruby
 and `ca-certificates` ran inside that systemd lane. A future integrated

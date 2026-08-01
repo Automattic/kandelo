@@ -1069,7 +1069,7 @@ jobs:
         with:
           persist-credentials: false
           repository: Homebrew/brew
-          ref: cf5bc21c6b127e168ef7cfa982ba7db62874690e
+          ref: a92554a538e81fad0c5074443885dbcc4c36221d
           path: homebrew-prefix/Homebrew
 
       - name: Activate reviewed Homebrew implementation
@@ -1077,7 +1077,7 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
           FORMULA: ${{ matrix.formula }}
-          HOMEBREW_BREW_COMMIT: cf5bc21c6b127e168ef7cfa982ba7db62874690e
+          HOMEBREW_BREW_COMMIT: a92554a538e81fad0c5074443885dbcc4c36221d
         run: |
           set -euo pipefail
           [[ "$HOMEBREW_BREW_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
@@ -1422,7 +1422,8 @@ jobs:
           cd "$GITHUB_WORKSPACE/kandelo"
           # WHY: tap Formula Ruby is still untrusted at this point. The static
           # parser can select reviewed direct host tools without executing it;
-          # exact isolated cf5 will resolve the final implicit closure later.
+          # exact isolated Homebrew will resolve the final implicit closure
+          # later.
           . scripts/homebrew-tap-identity.sh
           tap_name="$(
             homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT"
@@ -1767,7 +1768,7 @@ jobs:
         env:
           CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
           FORMULA: ${{ matrix.formula }}
-          HOMEBREW_BREW_COMMIT: cf5bc21c6b127e168ef7cfa982ba7db62874690e
+          HOMEBREW_BREW_COMMIT: a92554a538e81fad0c5074443885dbcc4c36221d
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
           TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
@@ -2835,7 +2836,7 @@ jobs:
         with:
           persist-credentials: false
           repository: Homebrew/brew
-          ref: cf5bc21c6b127e168ef7cfa982ba7db62874690e
+          ref: a92554a538e81fad0c5074443885dbcc4c36221d
           path: homebrew-prefix/Homebrew
 
       - name: Activate reviewed Homebrew implementation for bottle verification
@@ -2843,7 +2844,7 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
           FORMULA: ${{ matrix.formula }}
-          HOMEBREW_BREW_COMMIT: cf5bc21c6b127e168ef7cfa982ba7db62874690e
+          HOMEBREW_BREW_COMMIT: a92554a538e81fad0c5074443885dbcc4c36221d
         run: |
           set -euo pipefail
           [[ "$HOMEBREW_BREW_COMMIT" =~ ^[0-9a-f]{40}$ ]] || {
@@ -3814,7 +3815,7 @@ jobs:
         shell: bash
         env:
           CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
-          HOMEBREW_BREW_COMMIT: cf5bc21c6b127e168ef7cfa982ba7db62874690e
+          HOMEBREW_BREW_COMMIT: a92554a538e81fad0c5074443885dbcc4c36221d
           KANDELO_HOMEBREW_TAP_SOURCE_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
           TAP_NAME: ${{ inputs.tap-name }}
@@ -3894,7 +3895,7 @@ jobs:
         shell: bash
         env:
           CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
-          HOMEBREW_BREW_COMMIT: cf5bc21c6b127e168ef7cfa982ba7db62874690e
+          HOMEBREW_BREW_COMMIT: a92554a538e81fad0c5074443885dbcc4c36221d
           KANDELO_HOMEBREW_TAP_SOURCE_COMMIT: ${{ needs.plan.outputs.tap-sha }}
         run: |
           set -euo pipefail
@@ -3939,7 +3940,7 @@ jobs:
         if: ${{ matrix.formula == 'file-formula' && matrix.arch == 'wasm32' }}
         shell: bash
         env:
-          HOMEBREW_BREW_COMMIT: cf5bc21c6b127e168ef7cfa982ba7db62874690e
+          HOMEBREW_BREW_COMMIT: a92554a538e81fad0c5074443885dbcc4c36221d
           KANDELO_HOMEBREW_TAP_SOURCE_COMMIT: ${{ needs.plan.outputs.tap-sha }}
         run: |
           set -euo pipefail
@@ -4436,7 +4437,7 @@ jobs:
         shell: bash
         env:
           CORE_TAP_SHA: ${{ needs.plan.outputs.core-dependency-tap-sha }}
-          HOMEBREW_BREW_COMMIT: cf5bc21c6b127e168ef7cfa982ba7db62874690e
+          HOMEBREW_BREW_COMMIT: a92554a538e81fad0c5074443885dbcc4c36221d
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
           TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
         run: |
