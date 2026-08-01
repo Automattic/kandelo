@@ -66,7 +66,7 @@ independently completed bottle.
 | Tap                | A Git repository containing Formulae and their published bottle blocks.                                                                                                                                                                                           |
 | Keg                | The installed directory for one Formula version under the Homebrew Cellar.                                                                                                                                                                                        |
 | Sidecar            | Kandelo metadata beside a Formula. It records ABI, architecture, hashes, provenance, VFS ownership, and validation evidence.                                                                                                                                      |
-| Package generation | An immutable architecture-specific closure of Kandelo program, library, and source-package inputs admitted for one current-main consumer. Formula builds, platform tools, and browser products can use it. It is not a Homebrew bottle release.                   |
+| Package generation | An immutable architecture-specific closure of Kandelo program, library, and source-package inputs admitted for one current-main consumer. During migration, Formula builds, platform tools, and browser products can use it. It is not a Homebrew bottle release. |
 | Bottle mirror      | A content-addressed tap release containing one exact plan and copies of the lazy bottle payloads selected by an image. The plan is the allowlist; the payloads provide one closed transport for Node and browsers. The payloads are not baked into the VFS image. |
 | Runtime layer      | One or more deferred bottle payloads plus a descriptor that says where their files belong.                                                                                                                                                                        |
 
@@ -85,6 +85,7 @@ independently completed bottle.
 
 - `Formula/` source recipes;
 - closed Formula-owned recipe input under `Kandelo/recipes/`;
+- Formula source builds and candidate bottle builds;
 - generated bottle blocks and sidecars;
 - publication and failure records; and
 - immutable VFS, runtime-layer, campaign, and handoff releases.
@@ -96,6 +97,15 @@ own Formulae, packages, and publication authority.
 
 The directory `homebrew/homebrew-tap-core/` in the Kandelo repository is
 a test fixture and template. It is not the live tap.
+
+During migration, a tap build may consume a package archive staged by a
+Kandelo pull request. That is a temporary bridge, not the final package
+authority. The migration is not complete until Formula builds, bottle
+artifacts, candidate custody, and publication all run under tap-owned
+workflows, and no Homebrew consumer gets Formula-owned software from
+Kandelo package staging.
+Kandelo continues to own the platform source, SDK, ABI, validators, and
+reusable workflow implementation.
 
 ### What comes from upstream Homebrew
 
