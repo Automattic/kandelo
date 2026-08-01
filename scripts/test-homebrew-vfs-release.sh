@@ -2,6 +2,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TSX="$REPO_ROOT/node_modules/.bin/tsx"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 
@@ -9,6 +10,9 @@ fail() {
   echo "test-homebrew-vfs-release.sh: $*" >&2
   exit 1
 }
+
+[ -x "$TSX" ] ||
+  fail "root JavaScript dependencies are missing; run scripts/dev-shell.sh npm ci"
 
 expect_failure() {
   local label="$1"
@@ -613,7 +617,7 @@ python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" validate \
 # is discovered from the draft descriptor and copied from the same directory.
 direct_source="$TMP_ROOT/direct-source"
 cp -a "$source_root" "$direct_source"
-npx tsx "$REPO_ROOT/scripts/test-homebrew-vfs-release-fixture.ts" \
+"$TSX" "$REPO_ROOT/scripts/test-homebrew-vfs-release-fixture.ts" \
   "$direct_source" "$tap" "$dependency_tap" "$prebuilt"
 dependency_tree_id="$(jq -er '
   .deferred_trees[] | select(.package == "third-party/runtime/dash") | .id

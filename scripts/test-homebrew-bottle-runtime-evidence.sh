@@ -161,9 +161,38 @@ python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" capture \
 python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
   --input "$evidence" "${validate_args[@]}"
 
+tap_checkout_commit="$(printf 'b%.0s' {1..40})"
+cp "$target_receipt" "$target_receipt.public-source"
+cp "$dependency_provenance" "$dependency_provenance.public-source"
+jq --arg checkout "$tap_checkout_commit" \
+  '.source.tap_git_head = $checkout' "$target_receipt.public-source" \
+  >"$target_receipt"
+jq --arg checkout "$tap_checkout_commit" \
+  '.schema = 4 | .tap_checkout_commit = $checkout' \
+  "$dependency_provenance.public-source" >"$dependency_provenance"
+campaign_evidence="$TMPDIR/runtime-evidence-campaign-checkout.json"
+python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" capture \
+  "${capture_args[@]}" \
+  --tap-checkout-commit "$tap_checkout_commit" \
+  --out "$campaign_evidence"
+python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
+  --input "$campaign_evidence" "${validate_args[@]}" \
+  --tap-checkout-commit "$tap_checkout_commit"
+if python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
+  --input "$campaign_evidence" "${validate_args[@]}" >/dev/null 2>&1; then
+  fail "validator confused the public tap source with the prepared checkout"
+fi
+if python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" capture \
+  "${capture_args[@]}" --out "$TMPDIR/missing-checkout.json" \
+  >/dev/null 2>&1; then
+  fail "capture accepted a prepared-checkout receipt as the public tap source"
+fi
+mv "$target_receipt.public-source" "$target_receipt"
+mv "$dependency_provenance.public-source" "$dependency_provenance"
+
 jq -e --arg sha "$bottle_sha" --arg url "$bottle_url" \
   --arg tap_name "$tap_name" --arg manifest_url "$manifest_url" '
-  .schema == 3 and .tap.name == $tap_name and
+  .schema == 4 and .tap.name == $tap_name and
   .bottle.sha256 == $sha and .bottle.url == $url and
   .selection.bottle.mode == "anonymous-public-readback" and
   .target.receipt.built_as_bottle == true and
@@ -179,6 +208,7 @@ jq -e --arg sha "$bottle_sha" --arg url "$bottle_url" \
 
 jq '
   .schema = 2 |
+  del(.tap.checkout_commit) |
   .node = (.test | del(.contract, .formula_sha256)) |
   del(.test)
 ' "$evidence" >"$TMPDIR/legacy-node-runtime-evidence.json"
@@ -423,8 +453,10 @@ python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" capture \
   "${capture_args[@]}" --out "$support_data_evidence"
 python3 "$REPO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" validate \
   --input "$support_data_evidence" "${validate_args[@]}"
-jq -e --arg sha "$support_data_formula_sha" --arg full_name "$tap_name/$formula" '
-  .schema == 3 and
+jq -e --arg sha "$support_data_formula_sha" \
+  --arg full_name "$tap_name/$formula" \
+  --arg checkout "$support_data_tap_commit" '
+  .schema == 4 and .tap.checkout_commit == $checkout and
   .test == {
     argv: ["test", $full_name],
     contract: "support-data",
@@ -455,6 +487,7 @@ grep -F 'runtime evidence does not prove the support-data Formula test' \
 
 jq '
   .schema = 2 |
+  del(.tap.checkout_commit) |
   .node = {
     argv: ["/tmp/hello.wasm", "--version"],
     launcher: "kandelo_run_wasm",

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import importlib.util
 import io
@@ -641,13 +642,23 @@ class Fixture:
                 "status": "missing",
             }
 
-        def resolve_versions(
+        def resolve_metadata(
             _native_brew_root: pathlib.Path,
             _source_tap_root: pathlib.Path,
             _tap_name: str,
             formulae: list[str],
-        ) -> dict[str, str]:
-            return {name: self.versions[name] for name in formulae}
+        ) -> dict[str, dict[str, Any]]:
+            dependencies = {
+                "alpha": ["beta"],
+                "homebrew-bootstrap": ["alpha", "beta"],
+            }
+            return {
+                name: {
+                    "dependencies": dependencies.get(name, []),
+                    "version": self.versions[name],
+                }
+                for name in formulae
+            }
 
         def load_historical_formula(
             old_tap_root: pathlib.Path,
@@ -660,7 +671,7 @@ class Fixture:
         return CAMPAIGN.CampaignDependencies(
             fetch_bottle=fetch,
             probe_destination=probe,
-            resolve_formula_versions=resolve_versions,
+            resolve_formula_metadata=resolve_metadata,
             load_historical_formula=load_historical_formula,
         )
 
@@ -728,10 +739,23 @@ def make_fixture(
             },
             {
                 "arches": ["wasm32"],
+                "build_input": {
+                    "kind": "homebrew-bootstrap-recipe-lock",
+                    "path": (
+                        "Kandelo/recipes/homebrew-bootstrap/"
+                        "source-lock.json"
+                    ),
+                },
                 "disposition": "required-build",
                 "formula_path": "Formula/homebrew-bootstrap.rb",
                 "name": "homebrew-bootstrap",
-                "recipe_lock": "Kandelo/recipes/homebrew-bootstrap/source-lock.json",
+            },
+            {
+                "arches": ["wasm32"],
+                "build_input": {"kind": "formula-source"},
+                "disposition": "required-build",
+                "formula_path": "Formula/libyaml.rb",
+                "name": "libyaml",
             },
         ],
     }
@@ -776,6 +800,7 @@ def make_fixture(
         write_live_link(tap, name, version, rebuild, bottle)
 
     bootstrap_version = write_bootstrap_recipe(tap)
+    (tap / "Formula/libyaml.rb").write_bytes(source_only_formula("libyaml"))
     (tap / "Formula/later.rb").write_bytes(source_only_formula("later"))
     metadata = {
         "generated_at": "2026-07-29T00:00:00Z",
@@ -837,6 +862,7 @@ def make_fixture(
             "alpha": "1.0",
             "beta": "2.0",
             "homebrew-bootstrap": bootstrap_version,
+            "libyaml": "0.2.5",
             "later": "1.0",
         },
         kandelo_commit=kandelo_commit,
@@ -849,6 +875,39 @@ def make_fixture(
 
 
 class PrefixCampaignTests(unittest.TestCase):
+    def test_repository_inputs_classify_new_formulae_by_build_source(
+        self,
+    ) -> None:
+        inputs = json.loads(
+            (
+                ROOT / "homebrew/guest-prefix-campaign-inputs.json"
+            ).read_text()
+        )
+        by_name = {
+            entry["name"]: entry
+            for entry in inputs["source_only_formulae"]
+        }
+        self.assertEqual(
+            by_name["homebrew-bootstrap"]["build_input"],
+            {
+                "kind": "homebrew-bootstrap-recipe-lock",
+                "path": (
+                    "Kandelo/recipes/homebrew-bootstrap/"
+                    "source-lock.json"
+                ),
+            },
+        )
+        self.assertEqual(
+            by_name["libyaml"],
+            {
+                "arches": ["wasm32"],
+                "build_input": {"kind": "formula-source"},
+                "disposition": "required-build",
+                "formula_path": "Formula/libyaml.rb",
+                "name": "libyaml",
+            },
+        )
+
     def test_derives_every_class_and_deterministic_order(self) -> None:
         fixture = make_fixture()
         self.addCleanup(fixture.close)
@@ -861,7 +920,7 @@ class PrefixCampaignTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(
             [value["name"] for value in first["formulae"]],
-            ["alpha", "beta", "homebrew-bootstrap"],
+            ["alpha", "beta", "homebrew-bootstrap", "libyaml"],
         )
         by_name = {value["name"]: value for value in first["formulae"]}
         self.assertNotEqual(
@@ -896,12 +955,46 @@ class PrefixCampaignTests(unittest.TestCase):
             {"kind": "required-build", "reasons": ["new-campaign-entrant"]},
         )
         self.assertEqual(
+            by_name["homebrew-bootstrap"]["variants"][0]["build_input"][
+                "kind"
+            ],
+            "homebrew-bootstrap-recipe-lock",
+        )
+        self.assertEqual(
+            by_name["libyaml"]["variants"][0],
+            {
+                "arch": "wasm32",
+                "build_input": {"kind": "formula-source"},
+                "disposition": {
+                    "kind": "required-build",
+                    "reasons": ["new-campaign-entrant"],
+                },
+                "selected_by": "reviewed-campaign-input",
+            },
+        )
+        self.assertNotIn("recipe_lock", by_name["libyaml"])
+        self.assertEqual(
+            by_name["alpha"]["dependencies"],
+            [{"full_name": f"{TAP_NAME}/beta", "version": "2.0"}],
+        )
+        self.assertEqual(
+            by_name["homebrew-bootstrap"]["dependencies"],
+            [
+                {"full_name": f"{TAP_NAME}/alpha", "version": "1.0"},
+                {"full_name": f"{TAP_NAME}/beta", "version": "2.0"},
+            ],
+        )
+        self.assertEqual(
+            first["authority"]["source_materialization"]["kind"],
+            "exact-git-tree-v1",
+        )
+        self.assertEqual(
             first["deferred_source_formulae"][0]["name"], "later"
         )
-        self.assertEqual(first["summary"]["formulae"], 3)
-        self.assertEqual(first["summary"]["variants"], 3)
+        self.assertEqual(first["summary"]["formulae"], 4)
+        self.assertEqual(first["summary"]["variants"], 4)
         self.assertEqual(first["summary"]["byte_clean_reuse_candidates"], 0)
-        self.assertEqual(first["summary"]["required_builds"], 3)
+        self.assertEqual(first["summary"]["required_builds"], 4)
         self.assertEqual(
             [value["path"] for value in first["retirements"]],
             [
@@ -1015,15 +1108,21 @@ class PrefixCampaignTests(unittest.TestCase):
         self.addCleanup(fixture.close)
         base = fixture.dependencies()
 
-        def mismatched_versions(
+        def mismatched_metadata(
             _native: pathlib.Path,
             _source: pathlib.Path,
             _tap_name: str,
             formulae: list[str],
-        ) -> dict[str, str]:
-            versions = {name: fixture.versions[name] for name in formulae}
-            versions["alpha"] = "9.9"
-            return versions
+        ) -> dict[str, dict[str, Any]]:
+            metadata = {
+                name: {
+                    "dependencies": [],
+                    "version": fixture.versions[name],
+                }
+                for name in formulae
+            }
+            metadata["alpha"]["version"] = "9.9"
+            return metadata
 
         with self.assertRaisesRegex(
             CAMPAIGN.CampaignError, "candidate pkg_version 9.9"
@@ -1033,10 +1132,379 @@ class PrefixCampaignTests(unittest.TestCase):
                 CAMPAIGN.CampaignDependencies(
                     fetch_bottle=base.fetch_bottle,
                     probe_destination=base.probe_destination,
-                    resolve_formula_versions=mismatched_versions,
+                    resolve_formula_metadata=mismatched_metadata,
                     load_historical_formula=base.load_historical_formula,
                 ),
             )
+
+    def test_native_metadata_emits_only_exact_tap_qualified_dependencies(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="campaign-native-metadata-test-"
+        ) as temporary_name:
+            root = pathlib.Path(temporary_name)
+            native = root / "native"
+            source = root / "source"
+            (native / "bin").mkdir(parents=True)
+            (native / "Library/Homebrew").mkdir(parents=True)
+            (source / "Formula").mkdir(parents=True)
+            for name in ("alpha", "beta", "bootstrap"):
+                (source / f"Formula/{name}.rb").write_text(
+                    f"class {name.title()} < Formula\nend\n"
+                )
+            document = {
+                "casks": [],
+                "formulae": [
+                    {
+                        "build_dependencies": ["beta", "cmake"],
+                        "dependencies": [],
+                        "full_name": f"{TAP_NAME}/alpha",
+                        "name": "alpha",
+                        "optional_dependencies": ["bootstrap"],
+                        "recommended_dependencies": [],
+                        "revision": 0,
+                        "test_dependencies": [],
+                        "versions": {"stable": "1.0"},
+                    },
+                    {
+                        "build_dependencies": [],
+                        "dependencies": [],
+                        "full_name": f"{TAP_NAME}/beta",
+                        "name": "beta",
+                        "optional_dependencies": [],
+                        "recommended_dependencies": [],
+                        "revision": 1,
+                        "test_dependencies": [],
+                        "versions": {"stable": "2.0"},
+                    },
+                    {
+                        "build_dependencies": ["alpha"],
+                        "dependencies": [f"{TAP_NAME}/beta"],
+                        "full_name": f"{TAP_NAME}/bootstrap",
+                        "name": "bootstrap",
+                        "optional_dependencies": [],
+                        "recommended_dependencies": [],
+                        "revision": 0,
+                        "test_dependencies": ["unzip"],
+                        "versions": {"stable": "3.0"},
+                    },
+                ],
+            }
+
+            def resolve(
+                metadata: dict[str, Any],
+            ) -> dict[str, dict[str, Any]]:
+                copied_tap = (
+                    native
+                    / "Library/Taps/kandelo-dev/homebrew-tap-core"
+                )
+                if copied_tap.exists():
+                    shutil.rmtree(copied_tap)
+                payload = json.dumps(metadata, separators=(",", ":"))
+                (native / "bin/brew").write_text(
+                    "#!/bin/sh\n"
+                    "printf '%s' "
+                    + json.dumps(payload)
+                    + "\n"
+                )
+                (native / "bin/brew").chmod(0o755)
+                return CAMPAIGN.default_resolve_formula_metadata(
+                    native,
+                    source,
+                    TAP_NAME,
+                    ["alpha", "beta", "bootstrap"],
+                )
+
+            resolved = resolve(document)
+            self.assertEqual(
+                resolved,
+                {
+                    "alpha": {
+                        "dependencies": [],
+                        "version": "1.0",
+                    },
+                    "beta": {
+                        "dependencies": [],
+                        "version": "2.0_1",
+                    },
+                    "bootstrap": {
+                        "dependencies": ["beta"],
+                        "version": "3.0",
+                    },
+                },
+            )
+
+            missing = copy.deepcopy(document)
+            missing["formulae"][0]["dependencies"] = [
+                f"{TAP_NAME}/missing"
+            ]
+            with self.assertRaisesRegex(
+                CAMPAIGN.CampaignError,
+                "names absent candidate Formula .*missing",
+            ):
+                resolve(missing)
+
+            for field in (
+                "dependencies",
+                "recommended_dependencies",
+            ):
+                with self.subTest(field=field):
+                    unqualified = copy.deepcopy(document)
+                    unqualified["formulae"][0][field] = ["beta"]
+                    with self.assertRaisesRegex(
+                        CAMPAIGN.CampaignError,
+                        "must use exact .* guest identity",
+                    ):
+                        resolve(unqualified)
+
+    def test_dependency_graph_rejects_cycles_and_deferred_edges(self) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        base = fixture.dependencies()
+
+        def metadata_with(
+            dependencies: dict[str, list[str]],
+        ) -> Any:
+            def resolve(
+                _native: pathlib.Path,
+                _source: pathlib.Path,
+                _tap_name: str,
+                formulae: list[str],
+            ) -> dict[str, dict[str, Any]]:
+                return {
+                    name: {
+                        "dependencies": dependencies.get(name, []),
+                        "version": fixture.versions[name],
+                    }
+                    for name in formulae
+                }
+
+            return CAMPAIGN.CampaignDependencies(
+                fetch_bottle=base.fetch_bottle,
+                probe_destination=base.probe_destination,
+                resolve_formula_metadata=resolve,
+                load_historical_formula=base.load_historical_formula,
+            )
+
+        with self.assertRaisesRegex(
+            CAMPAIGN.CampaignError,
+            "dependency graph cycles",
+        ):
+            CAMPAIGN.derive_campaign(
+                fixture.options(),
+                metadata_with({"alpha": ["beta"], "beta": ["alpha"]}),
+            )
+        with self.assertRaisesRegex(
+            CAMPAIGN.CampaignError,
+            "depends on deferred campaign Formulae",
+        ):
+            CAMPAIGN.derive_campaign(
+                fixture.options(),
+                metadata_with({"alpha": ["later"]}),
+            )
+
+    def test_protected_overlay_is_materialized_and_tree_bound(self) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="campaign-overlay-test-"
+        ) as temporary_name:
+            root = pathlib.Path(temporary_name)
+            tap = root / "tap"
+            tap.mkdir()
+            run(["git", "init", "-q"], tap)
+            (tap / "Formula").mkdir()
+            formula = tap / "Formula/example.rb"
+            formula.write_text('class Example < Formula\n  desc "base"\nend\n')
+            base_formula = formula.read_bytes()
+            base = commit(tap, "base tap")
+            base_tree = run(["git", "rev-parse", f"{base}^{{tree}}"], tap)
+            formula.write_text('class Example < Formula\n  desc "target"\nend\n')
+            target = commit(tap, "target tap")
+            target_tree = run(["git", "rev-parse", f"{target}^{{tree}}"], tap)
+            target_formula = formula.read_bytes()
+            run(["git", "checkout", "--detach", base], tap)
+
+            source_root = tap / "Kandelo/campaigns/prefix-v1/source"
+            (source_root / "Formula").mkdir(parents=True)
+            (source_root / "Formula/example.rb").write_bytes(target_formula)
+            manifest = {
+                "base": {
+                    "commit": base,
+                    "tree_git_oid": base_tree,
+                },
+                "campaign": "prefix-v1",
+                "files": [
+                    {
+                        "base": {
+                            "blob_git_oid": CAMPAIGN.git_object_id(
+                                "blob", base_formula
+                            ),
+                            "bytes": len(base_formula),
+                            "mode": "100644",
+                            "sha256": sha256(base_formula),
+                        },
+                        "path": "Formula/example.rb",
+                        "target": {
+                            "blob_git_oid": CAMPAIGN.git_object_id(
+                                "blob", target_formula
+                            ),
+                            "bytes": len(target_formula),
+                            "mode": "100644",
+                            "sha256": sha256(target_formula),
+                        },
+                    }
+                ],
+                "kind": (
+                    "kandelo-homebrew-prefix-campaign-source-overlay"
+                ),
+                "schema": 1,
+                "source_root": "Kandelo/campaigns/prefix-v1/source",
+                "target_tree_git_oid": target_tree,
+            }
+            manifest_path = tap / CAMPAIGN.SOURCE_MANIFEST_PATH
+            write_json(manifest_path, manifest)
+            materializer = tap / CAMPAIGN.SOURCE_MATERIALIZER_PATH
+            materializer.parent.mkdir(parents=True, exist_ok=True)
+            materializer.write_text(
+                "#!/usr/bin/env python3\n"
+                "raise SystemExit('Kandelo must not execute tap code')\n"
+            )
+            materializer.chmod(0o755)
+            authority = {
+                "target_source": {
+                    "manifest_path": CAMPAIGN.SOURCE_MANIFEST_PATH,
+                    "manifest_sha256": sha256(manifest_path.read_bytes()),
+                    "source_root": "Kandelo/campaigns/prefix-v1/source",
+                    "source_tree_git_oid": CAMPAIGN.filesystem_git_tree_oid(
+                        source_root, "test source overlay"
+                    ),
+                    "target_tree_git_oid": target_tree,
+                }
+            }
+            write_json(tap / CAMPAIGN.SOURCE_AUTHORITY_PATH, authority)
+            source_commit = commit(tap, "sealed overlay")
+            output = root / "materialized"
+            materialized, identity = CAMPAIGN.candidate_source_snapshot(
+                CAMPAIGN.git_authority(tap, source_commit, "test tap"),
+                source_commit,
+                output,
+            )
+            self.assertEqual(
+                (materialized / "Formula/example.rb").read_bytes(),
+                target_formula,
+            )
+            self.assertEqual(identity["kind"], "sealed-target-overlay-v1")
+            self.assertEqual(identity["target_tree_git_oid"], target_tree)
+
+            # Bind the exact Git authority, then replace every mutable
+            # overlay identity with a self-consistent transient target. The
+            # materializer must still consume source_commit, not the edited
+            # checkout, even if the writer restores it before final rebind.
+            exact_root = CAMPAIGN.git_authority(
+                tap, source_commit, "overlay race input"
+            )
+            transient_formula = (
+                b'class Example < Formula\n'
+                b'  desc "transient uncommitted target"\n'
+                b"end\n"
+            )
+            saved = {
+                path: path.read_bytes()
+                for path in (
+                    source_root / "Formula/example.rb",
+                    manifest_path,
+                    tap / CAMPAIGN.SOURCE_AUTHORITY_PATH,
+                )
+            }
+            transient_tree_root = root / "transient-target"
+            shutil.copytree(output, transient_tree_root)
+            (
+                transient_tree_root / "Formula/example.rb"
+            ).write_bytes(transient_formula)
+            transient_tree = CAMPAIGN.filesystem_git_tree_oid(
+                transient_tree_root, "transient overlay target"
+            )
+            transient_manifest = json.loads(
+                manifest_path.read_text()
+            )
+            transient_manifest["files"][0]["target"] = {
+                "blob_git_oid": CAMPAIGN.git_object_id(
+                    "blob", transient_formula
+                ),
+                "bytes": len(transient_formula),
+                "mode": "100644",
+                "sha256": sha256(transient_formula),
+            }
+            transient_manifest["target_tree_git_oid"] = transient_tree
+            (
+                source_root / "Formula/example.rb"
+            ).write_bytes(transient_formula)
+            write_json(manifest_path, transient_manifest)
+            transient_authority = json.loads(
+                (
+                    tap / CAMPAIGN.SOURCE_AUTHORITY_PATH
+                ).read_text()
+            )
+            target_authority = transient_authority["target_source"]
+            target_authority["manifest_sha256"] = sha256(
+                manifest_path.read_bytes()
+            )
+            target_authority["source_tree_git_oid"] = (
+                CAMPAIGN.filesystem_git_tree_oid(
+                    source_root, "transient overlay payload"
+                )
+            )
+            target_authority["target_tree_git_oid"] = transient_tree
+            write_json(
+                tap / CAMPAIGN.SOURCE_AUTHORITY_PATH,
+                transient_authority,
+            )
+            try:
+                raced, raced_identity = (
+                    CAMPAIGN.candidate_source_snapshot(
+                        exact_root,
+                        source_commit,
+                        root / "race-materialized",
+                    )
+                )
+            finally:
+                for path, payload in saved.items():
+                    path.write_bytes(payload)
+            self.assertEqual(
+                (raced / "Formula/example.rb").read_bytes(),
+                target_formula,
+            )
+            self.assertEqual(
+                raced_identity["target_tree_git_oid"], target_tree
+            )
+            self.assertEqual(
+                run(
+                    [
+                        "git",
+                        "status",
+                        "--porcelain=v1",
+                        "--untracked-files=all",
+                    ],
+                    tap,
+                ),
+                "",
+            )
+
+            bad_authority = json.loads(
+                (tap / CAMPAIGN.SOURCE_AUTHORITY_PATH).read_text()
+            )
+            bad_authority["target_source"]["target_tree_git_oid"] = "f" * 40
+            write_json(tap / CAMPAIGN.SOURCE_AUTHORITY_PATH, bad_authority)
+            bad_commit = commit(tap, "tamper target tree")
+            with self.assertRaisesRegex(
+                CAMPAIGN.CampaignError,
+                "manifest differs from its authority",
+            ):
+                CAMPAIGN.candidate_source_snapshot(
+                    CAMPAIGN.git_authority(tap, bad_commit, "tampered tap"),
+                    bad_commit,
+                    root / "bad-output",
+                )
 
     def test_required_entrant_recipe_is_exact_and_has_no_retired_prefix(
         self,
@@ -1174,13 +1642,62 @@ class PrefixCampaignTests(unittest.TestCase):
             for value in inputs["source_only_formulae"]
             if value["name"] == "homebrew-bootstrap"
         )
-        bootstrap["recipe_lock"] = (
+        bootstrap["build_input"]["path"] = (
             "Kandelo/recipes/homebrew-bootstrap/../"
             "homebrew-bootstrap/source-lock.json"
         )
         write_json(inputs_path, inputs)
         kandelo_head = commit(fixture.kandelo, "add recipe path traversal")
         with self.assertRaisesRegex(CAMPAIGN.CampaignError, "dot path segments"):
+            CAMPAIGN.derive_campaign(
+                fixture.options(kandelo_commit=kandelo_head),
+                fixture.dependencies(),
+            )
+
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        inputs_path = (
+            fixture.kandelo / "homebrew/guest-prefix-campaign-inputs.json"
+        )
+        inputs = json.loads(inputs_path.read_text())
+        bootstrap = next(
+            value
+            for value in inputs["source_only_formulae"]
+            if value["name"] == "homebrew-bootstrap"
+        )
+        bootstrap["build_input"] = {"kind": "formula-source"}
+        write_json(inputs_path, inputs)
+        kandelo_head = commit(fixture.kandelo, "bypass bootstrap recipe lock")
+        with self.assertRaisesRegex(
+            CAMPAIGN.CampaignError,
+            "homebrew-bootstrap must use it",
+        ):
+            CAMPAIGN.derive_campaign(
+                fixture.options(kandelo_commit=kandelo_head),
+                fixture.dependencies(),
+            )
+
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        inputs_path = (
+            fixture.kandelo / "homebrew/guest-prefix-campaign-inputs.json"
+        )
+        inputs = json.loads(inputs_path.read_text())
+        libyaml = next(
+            value
+            for value in inputs["source_only_formulae"]
+            if value["name"] == "libyaml"
+        )
+        libyaml["build_input"] = {
+            "kind": "homebrew-bootstrap-recipe-lock",
+            "path": "Kandelo/recipes/homebrew-bootstrap/source-lock.json",
+        }
+        write_json(inputs_path, inputs)
+        kandelo_head = commit(fixture.kandelo, "misclassify libyaml build input")
+        with self.assertRaisesRegex(
+            CAMPAIGN.CampaignError,
+            "may be used only by homebrew-bootstrap",
+        ):
             CAMPAIGN.derive_campaign(
                 fixture.options(kandelo_commit=kandelo_head),
                 fixture.dependencies(),
@@ -1388,14 +1905,20 @@ class PrefixCampaignTests(unittest.TestCase):
             _source: pathlib.Path,
             _tap_name: str,
             formulae: list[str],
-        ) -> dict[str, str]:
+        ) -> dict[str, dict[str, Any]]:
             source_path.write_bytes(
                 committed_source.replace(
                     b'desc "candidate fixture"',
                     b'desc "transient uncommitted source"',
                 )
             )
-            return {name: fixture.versions[name] for name in formulae}
+            return {
+                name: {
+                    "dependencies": [],
+                    "version": fixture.versions[name],
+                }
+                for name in formulae
+            }
 
         def restore_then_fetch(
             url: str,
@@ -1418,7 +1941,7 @@ class PrefixCampaignTests(unittest.TestCase):
             CAMPAIGN.CampaignDependencies(
                 fetch_bottle=restore_then_fetch,
                 probe_destination=base.probe_destination,
-                resolve_formula_versions=mutate_then_resolve,
+                resolve_formula_metadata=mutate_then_resolve,
                 load_historical_formula=base.load_historical_formula,
             ),
         )
@@ -1443,9 +1966,15 @@ class PrefixCampaignTests(unittest.TestCase):
             _source: pathlib.Path,
             _tap_name: str,
             formulae: list[str],
-        ) -> dict[str, str]:
+        ) -> dict[str, dict[str, Any]]:
             (fixture.source_tap / "untracked-race").write_text("dirty\n")
-            return {name: fixture.versions[name] for name in formulae}
+            return {
+                name: {
+                    "dependencies": [],
+                    "version": fixture.versions[name],
+                }
+                for name in formulae
+            }
 
         with self.assertRaisesRegex(
             CAMPAIGN.CampaignError, "final rebind worktree is dirty"
@@ -1455,7 +1984,7 @@ class PrefixCampaignTests(unittest.TestCase):
                 CAMPAIGN.CampaignDependencies(
                     fetch_bottle=base.fetch_bottle,
                     probe_destination=base.probe_destination,
-                    resolve_formula_versions=dirty_then_resolve,
+                    resolve_formula_metadata=dirty_then_resolve,
                     load_historical_formula=base.load_historical_formula,
                 ),
             )
@@ -1574,8 +2103,8 @@ class PrefixCampaignTests(unittest.TestCase):
                 CAMPAIGN.CampaignDependencies(
                     fetch_bottle=fetch,
                     probe_destination=present,
-                    resolve_formula_versions=(
-                        fixture_dependencies.resolve_formula_versions
+                    resolve_formula_metadata=(
+                        fixture_dependencies.resolve_formula_metadata
                     ),
                     load_historical_formula=(
                         fixture_dependencies.load_historical_formula

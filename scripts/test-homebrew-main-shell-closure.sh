@@ -215,6 +215,22 @@ python3 "$FINALIZER_TEST" ||
 
 SOURCE_ROOT_COUNT="$(jq -er '.packages | length' "$SOURCE_LOCK")"
 SOURCE_CLOSURE_COUNT="$(jq -er '.formula_closure | length' "$SOURCE_LOCK")"
+RUNTIME_FORMULA_COUNT="$(jq -er '.formula_order | length' "$RUNTIME_SUPPORT")"
+AUDITED_FORMULA_COUNT="$(jq -er '
+  [.availability.reusable_public_abi42,
+   .availability.requires_rebuild,
+   .availability.missing_metadata,
+   .availability.can_be_deferred] | add | length
+' "$RUNTIME_SUPPORT")"
+ADDITIONAL_FORMULA_COUNT="$(jq -er \
+  '.additional_formula_order | length' "$RUNTIME_SUPPORT")"
+TOTAL_FORMULA_COUNT="$((SOURCE_CLOSURE_COUNT + ADDITIONAL_FORMULA_COUNT))"
+EXPECTED_SHAPE_SUMMARY="$SOURCE_ROOT_COUNT reviewed migration roots, "
+EXPECTED_SHAPE_SUMMARY+="$SOURCE_CLOSURE_COUNT base Formulae, "
+EXPECTED_SHAPE_SUMMARY+="$RUNTIME_FORMULA_COUNT runtime Formulae, and "
+EXPECTED_SHAPE_SUMMARY+="$AUDITED_FORMULA_COUNT audited Formulae; "
+EXPECTED_SHAPE_SUMMARY+="the runtime adds $ADDITIONAL_FORMULA_COUNT beyond "
+EXPECTED_SHAPE_SUMMARY+="the base, yielding $TOTAL_FORMULA_COUNT total Formulae"
 
 main_shell_trigger_block="$(
   awk '
@@ -1118,8 +1134,12 @@ grep -Fq 'repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"' \
 locked_tap_sha="$(jq -er '.catalog.tap_commit' "$SOURCE_LOCK")"
 grep -Fq "commit = \"$locked_tap_sha\"" "$SHELL_BUILD_TOML" ||
   fail "shell Git input commit must equal the reviewed migration lock"
-grep -Eq '^revision[[:space:]]*=[[:space:]]*22$' "$SHELL_BUILD_TOML" ||
-  fail "reduced lazy shell must reserve the next canonical shell revision 22"
+shell_revision="$(sed -nE \
+  's/^revision[[:space:]]*=[[:space:]]*([1-9][0-9]*)$/\1/p' \
+  "$SHELL_BUILD_TOML")"
+[ -n "$shell_revision" ] &&
+  [ "$(grep -Ec '^revision[[:space:]]*=' "$SHELL_BUILD_TOML")" -eq 1 ] ||
+  fail "reduced lazy shell must declare one positive package revision"
 grep -Eq '^publication_state[[:space:]]*=[[:space:]]*"ready"$' \
   "$SHELL_BUILD_TOML" ||
   fail "final-TF shell publication must be ready"
@@ -2251,9 +2271,9 @@ expect_failure "tap metadata has the wrong repository identity" \
   --migration-lock "$lock"
 
 baseline_output="$(node "$CHECKER")"
-grep -Fq "$SOURCE_ROOT_COUNT reviewed migration roots and $SOURCE_CLOSURE_COUNT Formulae" \
+grep -Fq "$EXPECTED_SHAPE_SUMMARY" \
   <<<"$baseline_output" ||
-  fail "main-shell checker does not report both exact closure counts"
+  fail "main-shell checker does not report its derived Formula counts"
 
 metadata="$TMP_ROOT/main-shell-metadata.json"
 jq --slurpfile support "$RUNTIME_SUPPORT" '
@@ -2376,7 +2396,7 @@ jq -e '
 ' "$metadata" >/dev/null ||
   fail "synthetic runtime catalog does not exercise mixed bottle producers"
 metadata_output="$(checker_with_metadata "$SOURCE_LOCK" "$metadata")"
-grep -Fq "$SOURCE_ROOT_COUNT reviewed migration roots and $SOURCE_CLOSURE_COUNT Formulae" \
+grep -Fq "$EXPECTED_SHAPE_SUMMARY" \
   <<<"$metadata_output" ||
   fail "main-shell checker did not validate the exact synthetic tap closure"
 

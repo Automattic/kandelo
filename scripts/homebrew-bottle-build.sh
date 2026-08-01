@@ -114,13 +114,28 @@ KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$KANDELO_ROOT/scripts/homebrew-tap-identity.sh"
 # shellcheck source=/dev/null
 . "$KANDELO_ROOT/scripts/homebrew-formula-support-inputs.sh"
+# shellcheck source=/dev/null
+. "$KANDELO_ROOT/scripts/homebrew-guest-layout.sh"
 TAP_NAME="$(homebrew_resolve_tap_name "$TAP_REPOSITORY" "$TAP_NAME_INPUT")"
 EXPECTED_BOTTLE_ROOT_URL="$(homebrew_bottle_root_url "$TAP_REPOSITORY" "$TAP_NAME")"
 if [ "$BOTTLE_ROOT_URL" != "$EXPECTED_BOTTLE_ROOT_URL" ]; then
   echo "homebrew-bottle-build.sh: bottle root URL does not match the tap repository package root" >&2
   exit 2
 fi
-PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
+homebrew_select_guest_layout \
+  "${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}"
+case "$HOMEBREW_GUEST_LAYOUT_MODE" in
+  current)
+    PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
+    ;;
+  prefix-campaign)
+    PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags-prefix-campaign.patch"
+    ;;
+  *)
+    echo "homebrew-bottle-build.sh: unsupported guest layout mode" >&2
+    exit 2
+    ;;
+esac
 PUBLISHER_ISOLATION_PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0002-support-isolated-publisher.patch"
 . "$KANDELO_ROOT/scripts/homebrew-patched-launcher.sh"
 # shellcheck source=/dev/null
@@ -190,6 +205,15 @@ mkdir -p "$XDG_CONFIG_HOME/homebrew"
 chmod 0700 "$XDG_CONFIG_HOME" "$XDG_CONFIG_HOME/homebrew"
 unset HOMEBREW_RELOCATE_BUILD_PREFIX
 unset HOMEBREW_KANDELO_PRIMARY_TAP_ROOT
+
+# WHY: even read-only Homebrew discovery loads user configuration. Establish
+# the private build config first so prefix validation cannot observe or mutate
+# the runner account's Homebrew state.
+if [ "$("$BREW_BIN" --prefix)" != "$HOMEBREW_GUEST_PREFIX" ] ||
+   [ "$("$BREW_BIN" --cellar)" != "$HOMEBREW_GUEST_CELLAR" ]; then
+  echo "homebrew-bottle-build.sh: active Homebrew prefix differs from the selected guest layout" >&2
+  exit 2
+fi
 
 homebrew_patched_launcher_prepare \
   "$BREW_BIN" "$PATCH_FILE" "$WORK_DIR" "$PUBLISHER_ISOLATION_PATCH_FILE"
@@ -448,12 +472,35 @@ homebrew_native_contract_select_api_source \
   homebrew-bottle-build.sh "$BUILD_USER" \
   "$HOST_DEPENDENCY_PLAN" "$HOST_DEPENDENCY_LIST"
 
-TAP_COMMIT="$(git -C "$TAP_ROOT" rev-parse HEAD)"
+TAP_CHECKOUT_COMMIT="$(git -C "$TAP_ROOT" rev-parse HEAD)"
+TAP_COMMIT="${KANDELO_HOMEBREW_TAP_SOURCE_COMMIT:-$TAP_CHECKOUT_COMMIT}"
+EXPECTED_TAP_CHECKOUT_COMMIT="$TAP_COMMIT"
+if [ -n "${KANDELO_HOMEBREW_PREPARED_TAP_COMMIT:-}" ]; then
+  [ -n "${KANDELO_HOMEBREW_TAP_SOURCE_COMMIT:-}" ] || {
+    echo "homebrew-bottle-build.sh: campaign checkout requires its public tap source commit" >&2
+    exit 2
+  }
+  EXPECTED_TAP_CHECKOUT_COMMIT="$KANDELO_HOMEBREW_PREPARED_TAP_COMMIT"
+fi
+for commit in "$TAP_COMMIT" "$EXPECTED_TAP_CHECKOUT_COMMIT" \
+  "$TAP_CHECKOUT_COMMIT"; do
+  [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || {
+    echo "homebrew-bottle-build.sh: invalid tap commit identity" >&2
+    exit 2
+  }
+done
+[ "$TAP_CHECKOUT_COMMIT" = "$EXPECTED_TAP_CHECKOUT_COMMIT" ] || {
+  echo "homebrew-bottle-build.sh: tap checkout differs from the reviewed source materialization" >&2
+  exit 2
+}
+# WHY: a prefix campaign materializes dependency bottle blocks in a local
+# synthetic commit. The public source commit remains publication authority,
+# while Homebrew must truthfully record the synthetic commit it actually runs.
 "$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"
 TAPPED_TAP_ROOT="$("$BREW_BIN" --repository "$TAP_NAME")"
 TAPPED_TAP_ROOT="$(cd "$TAPPED_TAP_ROOT" && pwd -P)"
 [ "$TAPPED_TAP_ROOT" != "$TAP_ROOT" ] && \
-  [ "$(git -C "$TAPPED_TAP_ROOT" rev-parse HEAD)" = "$TAP_COMMIT" ] && \
+  [ "$(git -C "$TAPPED_TAP_ROOT" rev-parse HEAD)" = "$TAP_CHECKOUT_COMMIT" ] && \
   [ -z "$(git -C "$TAPPED_TAP_ROOT" status --short --untracked-files=all)" ] || {
   echo "homebrew-bottle-build.sh: Homebrew did not clone the planned tap commit cleanly" >&2
   exit 1
@@ -732,12 +779,14 @@ brew_install_build_bottle() {
 )
 
 TARGET_PREFIX="$("$BREW_BIN" --prefix "$FORMULA_REF")"
-python3 "$KANDELO_ROOT/scripts/homebrew-dependency-provenance.py" capture \
+dependency_provenance_args=(
+  capture
   --brew-bin "$BREW_BIN" \
   --tap-root "$TAP_ROOT" \
   --tap-repository "$TAP_REPOSITORY" \
   --tap-name "$TAP_NAME" \
   --tap-commit "$TAP_COMMIT" \
+  --tap-checkout-commit "$TAP_CHECKOUT_COMMIT" \
   --formula "$FORMULA" \
   --arch "$ARCH" \
   --bottle-root-url "$BOTTLE_ROOT_URL" \
@@ -745,6 +794,14 @@ python3 "$KANDELO_ROOT/scripts/homebrew-dependency-provenance.py" capture \
   --expected-dependencies "$DEPENDENCY_LIST" \
   --install-log "$INSTALL_LOG" \
   --out "$DEPENDENCY_PROVENANCE"
+)
+if [ -n "$HOMEBREW_GUEST_LAYOUT_SHA256" ]; then
+  dependency_provenance_args+=(
+    --prefix-campaign-layout-sha256 "$HOMEBREW_GUEST_LAYOUT_SHA256"
+  )
+fi
+python3 "$KANDELO_ROOT/scripts/homebrew-dependency-provenance.py" \
+  "${dependency_provenance_args[@]}"
 
 if [ -n "$BUILD_USER" ]; then
   homebrew_patched_launcher_teardown "$BUILD_USER"

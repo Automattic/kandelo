@@ -1400,6 +1400,7 @@ def exact_clean_git_head(root: pathlib.Path, label: str) -> tuple[pathlib.Path, 
 
 def authorize_unfinalized_recovery(
     tap_root_name: str,
+    tap_checkout_commit: str | None,
     receipt: dict[str, Any],
     existing_semantics: dict[str, str],
     selected_semantics: dict[str, str],
@@ -1423,8 +1424,40 @@ def authorize_unfinalized_recovery(
     tap_root, head = exact_clean_git_head(
         pathlib.Path(tap_root_name), "unfinalized recovery tap root"
     )
-    if head != receipt["tap_commit"]:
-        fail("unfinalized recovery tap HEAD does not match the selected child receipt")
+    expected_checkout = tap_checkout_commit or receipt["tap_commit"]
+    require_string(
+        expected_checkout, "unfinalized recovery tap checkout commit", COMMIT
+    )
+    if head != expected_checkout:
+        fail(
+            "unfinalized recovery tap HEAD does not match the selected "
+            "checkout commit"
+        )
+    if expected_checkout != receipt["tap_commit"]:
+        try:
+            ancestor = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(tap_root),
+                    "merge-base",
+                    "--is-ancestor",
+                    receipt["tap_commit"],
+                    expected_checkout,
+                ],
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=30,
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            fail(f"cannot verify recovery checkout ancestry: {error}")
+        if ancestor.returncode != 0:
+            fail(
+                "unfinalized recovery checkout does not descend from the "
+                "public tap source"
+            )
     kandelo_root = real_directory(tap_root / "Kandelo", "tap Kandelo metadata root")
     formula_root = real_directory(
         kandelo_root / "formula", "tap Formula sidecar root"
@@ -1686,12 +1719,23 @@ def validate_child_layout(layout: pathlib.Path, receipt: dict[str, Any]) -> dict
 def merge_index(args: argparse.Namespace) -> None:
     if not args.child_layout or len(args.child_layout) != len(args.child_receipt):
         fail("merge-index requires matching --child-layout and --child-receipt arguments")
+    if (
+        args.recover_unfinalized_tap_checkout_commit
+        and not args.recover_unfinalized_tap_root
+    ):
+        fail(
+            "recovery tap checkout commit requires "
+            "--recover-unfinalized-tap-root"
+        )
     selected: list[tuple[pathlib.Path, dict[str, Any], dict[str, Any]]] = []
     for layout_name, receipt_name in zip(args.child_layout, args.child_receipt, strict=True):
         layout = pathlib.Path(layout_name)
         receipt = load_receipt(pathlib.Path(receipt_name))
         selected.append((layout, receipt, validate_child_layout(layout, receipt)))
     first = selected[0][1]
+    authority_tap_commit = require_string(
+        args.tap_commit, "OCI index authority tap commit", COMMIT
+    )
     semantics = expected_semantics(first)
     for _layout, receipt, _child in selected[1:]:
         if expected_semantics(receipt) != semantics:
@@ -1757,6 +1801,7 @@ def merge_index(args: argparse.Namespace) -> None:
         if identity_changed or conflicting_refs:
             authorize_unfinalized_recovery(
                 args.recover_unfinalized_tap_root,
+                args.recover_unfinalized_tap_checkout_commit,
                 first,
                 existing_semantics,
                 semantics,
@@ -1819,6 +1864,13 @@ def merge_index(args: argparse.Namespace) -> None:
     )
     receipt = {
         "abi": first["abi"],
+        # WHY: the children may have been produced by different historical
+        # tap commits. This separate authority identifies the current tap
+        # commit that is allowed to mutate the aggregate index.
+        "authority": {
+            "tap_commit": authority_tap_commit,
+            "tap_repository": first["tap_repository"],
+        },
         "children": [
             {
                 "arch": descriptor["platform"]["variant"],
@@ -1835,7 +1887,7 @@ def merge_index(args: argparse.Namespace) -> None:
         "kind": "index",
         "pkg_version": first["pkg_version"],
         "bottle_rebuild": first["bottle_rebuild"],
-        "schema": 2,
+        "schema": 3,
         "tap_name": first["tap_name"],
         "tap_repository": first["tap_repository"],
         "top": {
@@ -1854,13 +1906,14 @@ def validate_index_receipt(receipt: Any) -> dict[str, Any]:
     root = exact_keys(
         receipt,
         {
-            "abi", "bottle_rebuild", "children", "formula", "formula_revision",
+            "abi", "authority", "bottle_rebuild", "children", "formula",
+            "formula_revision",
             "formula_source_identity_sha256", "kind", "pkg_version", "schema",
             "source_closure_sha256", "tap_name", "tap_repository", "top",
         },
         "OCI index receipt",
     )
-    if root["schema"] != 2 or root["kind"] != "index":
+    if root["schema"] != 3 or root["kind"] != "index":
         fail("OCI index receipt has an invalid schema")
     require_int(root["abi"], "OCI index receipt ABI", 1)
     formula = require_string(root["formula"], "OCI index receipt formula", FORMULA_NAME)
@@ -1884,6 +1937,22 @@ def validate_index_receipt(receipt: Any) -> dict[str, Any]:
     )
     if normalized_identity(receipt_tap_name) != tap_name_for_repository(receipt_repository):
         fail("OCI index receipt tap name does not match its repository")
+    authority = exact_keys(
+        root["authority"], {"tap_commit", "tap_repository"},
+        "OCI index authority",
+    )
+    authority_repository = require_string(
+        authority["tap_repository"],
+        "OCI index authority tap repository",
+        TAP_REPOSITORY,
+    )
+    if normalized_identity(authority_repository) != normalized_identity(
+        receipt_repository
+    ):
+        fail("OCI index authority repository does not match its tap repository")
+    require_string(
+        authority["tap_commit"], "OCI index authority tap commit", COMMIT
+    )
     children = root["children"]
     if not isinstance(children, list) or not 1 <= len(children) <= 2:
         fail("OCI index receipt must contain one or two children")
@@ -2692,7 +2761,9 @@ def parser() -> argparse.ArgumentParser:
     merge.add_argument("--child-layout", action="append", default=[])
     merge.add_argument("--child-receipt", action="append", default=[])
     merge.add_argument("--existing-layout")
+    merge.add_argument("--tap-commit", required=True)
     merge.add_argument("--recover-unfinalized-tap-root")
+    merge.add_argument("--recover-unfinalized-tap-checkout-commit")
     merge.add_argument("--out-layout", required=True)
     merge.add_argument("--out-receipt", required=True)
     merge.set_defaults(handler=merge_index)

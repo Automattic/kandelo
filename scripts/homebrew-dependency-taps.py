@@ -218,8 +218,15 @@ def resolve_command(args: argparse.Namespace) -> None:
     )
     if COMMIT.fullmatch(args.tap_commit or "") is None:
         fail("primary tap commit must be an exact lowercase SHA")
+    checkout_commit = args.checkout_commit or args.tap_commit
+    if COMMIT.fullmatch(checkout_commit) is None:
+        fail("primary tap checkout commit must be an exact lowercase SHA")
     primary_root = checkout_root(args.tap_root, "primary tap root")
-    verify_checkout(primary_root, args.tap_commit, "primary tap checkout")
+    # WHY: a prefix campaign creates a credential-free local commit whose
+    # tree is the sealed target plus immutable dependency bottle metadata.
+    # Keep the public source commit in resolved provenance while proving the
+    # exact local checkout separately.
+    verify_checkout(primary_root, checkout_commit, "primary tap checkout")
     lock = load_lock(primary_root)
     dependency_roots = parse_roots(args.dependency_root)
     expected_names = {item["tap_name"] for item in lock["taps"]}
@@ -229,19 +236,26 @@ def resolve_command(args: argparse.Namespace) -> None:
             f"(missing={sorted(expected_names - set(dependency_roots))}, "
             f"unexpected={sorted(set(dependency_roots) - expected_names)})"
         )
+    schema = 2 if args.checkout_commit else 1
     resolved_dependencies = []
     for item in lock["taps"]:
         root = dependency_roots[item["tap_name"]]
         verify_checkout(root, item["tap_commit"], f"dependency tap {item['tap_name']}")
-        resolved_dependencies.append({**item, "root": str(root)})
+        record = {**item, "root": str(root)}
+        if schema == 2:
+            record["checkout_commit"] = item["tap_commit"]
+        resolved_dependencies.append(record)
+    primary = {
+        "tap_name": primary_name,
+        "tap_repository": primary_repository,
+        "tap_commit": args.tap_commit,
+        "root": str(primary_root),
+    }
+    if schema == 2:
+        primary["checkout_commit"] = checkout_commit
     resolved = {
-        "schema": 1,
-        "primary": {
-            "tap_name": primary_name,
-            "tap_repository": primary_repository,
-            "tap_commit": args.tap_commit,
-            "root": str(primary_root),
-        },
+        "schema": schema,
+        "primary": primary,
         "dependencies": resolved_dependencies,
     }
     write_json(pathlib.Path(args.out), resolved)
@@ -261,6 +275,7 @@ def parser() -> argparse.ArgumentParser:
 
     resolve_parser = commands.add_parser("resolve", parents=[common])
     resolve_parser.add_argument("--tap-commit", required=True)
+    resolve_parser.add_argument("--checkout-commit")
     resolve_parser.add_argument("--dependency-root", action="append", default=[])
     resolve_parser.add_argument("--out", required=True)
     resolve_parser.set_defaults(handler=resolve_command)

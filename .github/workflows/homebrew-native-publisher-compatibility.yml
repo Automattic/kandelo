@@ -48,7 +48,7 @@ jobs:
         with:
           persist-credentials: false
           repository: Homebrew/brew
-          ref: cf5bc21c6b127e168ef7cfa982ba7db62874690e
+          ref: a92554a538e81fad0c5074443885dbcc4c36221d
           path: brew-source
 
       - name: Install Nix
@@ -121,7 +121,7 @@ jobs:
           [ -f "$evidence" ] && [ ! -L "$evidence" ]
           [ "$(stat -c '%s' "$evidence")" -le 16777216 ]
           jq -e \
-            --arg commit cf5bc21c6b127e168ef7cfa982ba7db62874690e \
+            --arg commit a92554a538e81fad0c5074443885dbcc4c36221d \
             '
               keys == [
                 "admission",

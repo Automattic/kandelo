@@ -13,6 +13,7 @@ RELEASE_TAG=""
 TAP_REPOSITORY=""
 TAP_NAME_INPUT=""
 TAP_COMMIT=""
+TAP_CHECKOUT_COMMIT=""
 KANDELO_COMMIT=""
 BOTTLE_ROOT_URL=""
 OUT_ENV=""
@@ -23,7 +24,7 @@ FORBIDDEN_ROOTS=()
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/homebrew-validate-build-handoff.sh --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> --kandelo-commit <sha> --bottle-root-url <url> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--tap-root <dir>] [--out-env <path>] [--out-bottle-json <path>] [--prefix-campaign-layout-sha256 <sha256>]
+usage: scripts/homebrew-validate-build-handoff.sh --handoff <dir> --formula <name> --arch <wasm32|wasm64> --release-tag <tag> --tap-repository <owner/repo> [--tap-name <owner/name>] --tap-commit <sha> [--tap-checkout-commit <sha>] --kandelo-commit <sha> --bottle-root-url <url> --forbidden-root <absolute-path> [--forbidden-root <absolute-path> ...] [--tap-root <dir>] [--out-env <path>] [--out-bottle-json <path>] [--prefix-campaign-layout-sha256 <sha256>]
 
 Validates an untrusted build handoff against values from the publisher plan.
 The handoff must contain exactly manifest.json, bottle.json,
@@ -45,6 +46,7 @@ while [ "$#" -gt 0 ]; do
     --tap-repository) TAP_REPOSITORY="${2:-}"; shift 2 ;;
     --tap-name) TAP_NAME_INPUT="${2:-}"; shift 2 ;;
     --tap-commit) TAP_COMMIT="${2:-}"; shift 2 ;;
+    --tap-checkout-commit) TAP_CHECKOUT_COMMIT="${2:-}"; shift 2 ;;
     --kandelo-commit) KANDELO_COMMIT="${2:-}"; shift 2 ;;
     --bottle-root-url) BOTTLE_ROOT_URL="${2:-}"; shift 2 ;;
     --forbidden-root)
@@ -128,6 +130,11 @@ if ! [[ "$TAP_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
   echo "homebrew-validate-build-handoff.sh: invalid tap commit: $TAP_COMMIT" >&2
   exit 2
 fi
+TAP_CHECKOUT_COMMIT="${TAP_CHECKOUT_COMMIT:-$TAP_COMMIT}"
+if ! [[ "$TAP_CHECKOUT_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "homebrew-validate-build-handoff.sh: invalid tap checkout commit: $TAP_CHECKOUT_COMMIT" >&2
+  exit 2
+fi
 if ! [[ "$KANDELO_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
   echo "homebrew-validate-build-handoff.sh: invalid Kandelo commit: $KANDELO_COMMIT" >&2
   exit 2
@@ -202,6 +209,7 @@ if ! jq -e \
   --arg tap_repository "$TAP_REPOSITORY" \
   --arg tap_name "$TAP_NAME" \
   --arg tap_commit "$TAP_COMMIT" \
+  --arg tap_checkout_commit "$TAP_CHECKOUT_COMMIT" \
   --arg kandelo_commit "$KANDELO_COMMIT" \
   --arg guest_cellar "$HOMEBREW_GUEST_CELLAR" \
   --arg bottle_root_url "$BOTTLE_ROOT_URL" '
@@ -209,15 +217,17 @@ if ! jq -e \
       type == "object" and keys == ($expected | sort);
     exact_keys([
       "arch", "bottle", "bottle_root_url", "dependency_provenance", "formula",
-      "kandelo_commit", "release_tag", "schema", "tap_commit", "tap_name", "tap_repository"
+      "kandelo_commit", "release_tag", "schema", "tap_checkout_commit",
+      "tap_commit", "tap_name", "tap_repository"
     ]) and
-    .schema == 3 and
+    .schema == 4 and
     .formula == $formula and
     .arch == $arch and
     .release_tag == $release_tag and
     .tap_repository == $tap_repository and
     .tap_name == $tap_name and
     .tap_commit == $tap_commit and
+    .tap_checkout_commit == $tap_checkout_commit and
     .kandelo_commit == $kandelo_commit and
     .bottle_root_url == $bottle_root_url and
     (.bottle | exact_keys(["archive", "bytes", "cellar", "json", "sha256", "tag"])) and
@@ -307,6 +317,7 @@ dependency_validation_args=(
   --tap-repository "$TAP_REPOSITORY"
   --tap-name "$TAP_NAME"
   --tap-commit "$TAP_COMMIT"
+  --tap-checkout-commit "$TAP_CHECKOUT_COMMIT"
   --bottle-root-url "$BOTTLE_ROOT_URL"
 )
 if [ -n "$TAP_ROOT" ]; then
@@ -475,6 +486,7 @@ if [ -n "$OUT_ENV" ]; then
     printf 'TAP_REPOSITORY=%q\n' "$TAP_REPOSITORY"
     printf 'TAP_NAME=%q\n' "$TAP_NAME"
     printf 'TAP_COMMIT=%q\n' "$TAP_COMMIT"
+    printf 'TAP_CHECKOUT_COMMIT=%q\n' "$TAP_CHECKOUT_COMMIT"
     printf 'KANDELO_COMMIT=%q\n' "$KANDELO_COMMIT"
     printf 'BOTTLE_ROOT_URL=%q\n' "$BOTTLE_ROOT_URL"
     printf 'BOTTLE_ARCHIVE=%q\n' "$BOTTLE_ARCHIVE"

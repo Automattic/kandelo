@@ -8,6 +8,8 @@ LOCK_ROOT=""
 RECEIPT=""
 EXACT_KANDELO_MAIN_SHA=""
 EXACT_TARGET_MAIN_SHA=""
+KANDELO_MAIN_CONTAINS_SHA=""
+TARGET_MAIN_CONTAINS_SHA=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -17,6 +19,14 @@ while [ "$#" -gt 0 ]; do
     --receipt) RECEIPT="$2"; shift 2 ;;
     --exact-kandelo-main-sha) EXACT_KANDELO_MAIN_SHA="$2"; shift 2 ;;
     --exact-target-main-sha) EXACT_TARGET_MAIN_SHA="$2"; shift 2 ;;
+    --kandelo-main-contains-sha)
+      KANDELO_MAIN_CONTAINS_SHA="${2:-}"
+      shift 2
+      ;;
+    --target-main-contains-sha)
+      TARGET_MAIN_CONTAINS_SHA="${2:-}"
+      shift 2
+      ;;
     *) echo "publish-immutable-github-release: unknown flag $1" >&2; exit 2 ;;
   esac
 done
@@ -27,13 +37,36 @@ for required in MANIFEST ASSET_ROOT LOCK_ROOT RECEIPT; do
     exit 2
   fi
 done
-if ! [[ "$EXACT_KANDELO_MAIN_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-  echo "publish-immutable-github-release: --exact-kandelo-main-sha is required and must be an exact lowercase 40-character SHA" >&2
+if [ -n "$EXACT_KANDELO_MAIN_SHA" ] &&
+   ! [[ "$EXACT_KANDELO_MAIN_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "publish-immutable-github-release: --exact-kandelo-main-sha must be an exact lowercase 40-character SHA" >&2
+  exit 2
+fi
+if [ -n "$KANDELO_MAIN_CONTAINS_SHA" ] &&
+   ! [[ "$KANDELO_MAIN_CONTAINS_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "publish-immutable-github-release: --kandelo-main-contains-sha must be an exact lowercase 40-character SHA" >&2
+  exit 2
+fi
+if { [ -z "$EXACT_KANDELO_MAIN_SHA" ] &&
+     [ -z "$KANDELO_MAIN_CONTAINS_SHA" ]; } ||
+   { [ -n "$EXACT_KANDELO_MAIN_SHA" ] &&
+     [ -n "$KANDELO_MAIN_CONTAINS_SHA" ]; }; then
+  echo "publish-immutable-github-release: exactly one Kandelo main authority is required" >&2
   exit 2
 fi
 if [ -n "$EXACT_TARGET_MAIN_SHA" ] &&
    ! [[ "$EXACT_TARGET_MAIN_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   echo "publish-immutable-github-release: --exact-target-main-sha must be an exact lowercase 40-character SHA" >&2
+  exit 2
+fi
+if [ -n "$TARGET_MAIN_CONTAINS_SHA" ] &&
+   ! [[ "$TARGET_MAIN_CONTAINS_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "publish-immutable-github-release: --target-main-contains-sha must be an exact lowercase 40-character SHA" >&2
+  exit 2
+fi
+if [ -n "$EXACT_TARGET_MAIN_SHA" ] &&
+   [ -n "$TARGET_MAIN_CONTAINS_SHA" ]; then
+  echo "publish-immutable-github-release: target exact-main and main-contains authority are mutually exclusive" >&2
   exit 2
 fi
 
@@ -89,6 +122,11 @@ if [ -n "$EXACT_TARGET_MAIN_SHA" ] &&
   echo "publish-immutable-github-release: manifest target differs from exact target main" >&2
   exit 2
 fi
+if [ -n "$TARGET_MAIN_CONTAINS_SHA" ] &&
+   [ "$TARGET_COMMIT" != "$TARGET_MAIN_CONTAINS_SHA" ]; then
+  echo "publish-immutable-github-release: manifest target differs from the contained target main source" >&2
+  exit 2
+fi
 
 [ "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}" = "$REPOSITORY" ] ||
   [ "${GITHUB_REPOSITORY,,}" = "$REPOSITORY" ] || {
@@ -103,18 +141,30 @@ fi
 # shellcheck source=.github/scripts/github-api-get.sh
 . "$REPO_ROOT/.github/scripts/github-api-get.sh"
 
-require_exact_main_authority() {
+require_main_authority() {
   # WHY: release discovery, asset verification, and retry reconciliation can
   # take minutes. Every individual GitHub write must therefore obtain fresh
   # authority instead of inheriting a check performed before that work.
-  GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}" \
-    bash "$REPO_ROOT/.github/scripts/require-exact-kandelo-main.sh" \
-      --repository Automattic/kandelo \
-      --source-sha "$EXACT_KANDELO_MAIN_SHA" >/dev/null
+  if [ -n "$EXACT_KANDELO_MAIN_SHA" ]; then
+    GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}" \
+      bash "$REPO_ROOT/.github/scripts/require-exact-kandelo-main.sh" \
+        --repository Automattic/kandelo \
+        --source-sha "$EXACT_KANDELO_MAIN_SHA" >/dev/null
+  else
+    GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}" \
+      bash \
+        "$REPO_ROOT/.github/scripts/require-repository-main-contains.sh" \
+        --repository Automattic/kandelo \
+        --source-sha "$KANDELO_MAIN_CONTAINS_SHA" >/dev/null
+  fi
   if [ -n "$EXACT_TARGET_MAIN_SHA" ]; then
     bash "$REPO_ROOT/.github/scripts/require-exact-repository-main.sh" \
       --repository "$REPOSITORY" \
       --source-sha "$EXACT_TARGET_MAIN_SHA" >/dev/null
+  elif [ -n "$TARGET_MAIN_CONTAINS_SHA" ]; then
+    bash "$REPO_ROOT/.github/scripts/require-repository-main-contains.sh" \
+      --repository "$REPOSITORY" \
+      --source-sha "$TARGET_MAIN_CONTAINS_SHA" >/dev/null
   fi
 }
 
@@ -251,7 +301,7 @@ create_or_discover_release() {
   local attempt=1 create_json="$TMP_ROOT/create.json" rc release_id
   while [ "$attempt" -le 4 ]; do
     : >"$create_json"
-    require_exact_main_authority
+    require_main_authority
     if gh api --method POST "/repos/${REPOSITORY}/releases" \
       -f "tag_name=$TAG" -f "target_commitish=$TARGET_COMMIT" \
       -f "name=$TITLE" -f "body=$BODY" -f make_latest=false \
@@ -400,7 +450,7 @@ ensure_asset() {
     fi
 
     upload_rc=0
-    require_exact_main_authority
+    require_main_authority
     gh release upload "$TAG" --repo "$REPOSITORY" "$STAGED_ASSETS/$name" || upload_rc=$?
     if [ "$upload_rc" -ne 0 ]; then
       echo "publish-immutable-github-release: upload response for $name was ambiguous; reconciling" >&2
@@ -454,7 +504,7 @@ ensure_direct_tag() {
 
   while [ "$attempt" -le 4 ]; do
     create_rc=0
-    require_exact_main_authority
+    require_main_authority
     gh api --method POST "/repos/${REPOSITORY}/git/refs" \
       -f "ref=refs/tags/${TAG}" -f "sha=${TARGET_COMMIT}" >/dev/null || create_rc=$?
     if [ "$create_rc" -ne 0 ]; then
@@ -486,7 +536,7 @@ publish_and_reconcile() {
       return 0
     fi
     patch_rc=0
-    require_exact_main_authority
+    require_main_authority
     gh api --method PATCH "/repos/${REPOSITORY}/releases/${release_id}" \
       -f make_latest=false -F draft=false -F prerelease=false >/dev/null || patch_rc=$?
     if [ "$patch_rc" -ne 0 ]; then

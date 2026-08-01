@@ -191,13 +191,13 @@ internal install plan, Linux variation, or bottle fails before
 installation. Prefix-expanded caveat and service presentation fields
 are intentionally excluded.
 
-The reviewed lock deliberately uses cf5's forced libc and compiler
-compatibility switches while deriving that closure. Exact cf5 otherwise
-decides whether `glibc` and `gcc` are implicit dependencies by comparing
-the runner's system glibc and libstdc++ with Homebrew's CI versions.
+The reviewed lock deliberately uses Homebrew's forced libc and compiler
+compatibility switches while deriving that closure. Exact Homebrew otherwise
+decides whether `glibc` and `gcc` are implicit dependencies by comparing the
+runner's system glibc and libstdc++ with Homebrew's CI versions.
 GitHub can roll `ubuntu-latest` between two such capability states. The
 forced lock therefore contains the conservative GCC/glibc bootstrap tree,
-while each publisher admits and installs only the subset cf5 selects for
+while each publisher admits and installs only the subset Homebrew selects for
 its actual host. This is a compatibility superset, not permission to
 install an undeclared native tool.
 
@@ -296,7 +296,7 @@ tap-main workflow bytes.
 
 Those two checks are deliberately compositional. The pre-merge Ruby
 lifecycle proves the signed install plan and certificate output in the
-exact, bounded cf5 environment. The post-merge `bzip2` dry-run
+exact, bounded Homebrew environment. The post-merge `bzip2` dry-run
 separately proves the real systemd-isolated build and verifier realms
 with their nonempty native tool closures. It does not claim that Ruby
 and `ca-certificates` ran inside that systemd lane. A future integrated
@@ -1157,28 +1157,35 @@ first-party tap owns a separate public-mirror publication lane. Its
 `reusable-homebrew-main-shell-mirror-publish.yml` only from the tap's live
 `main`. The initial caller pins one reviewed Kandelo `Mpre` SHA in both `uses:`
 and the `kandelo-ref` input and supplies exact final bottle-catalog `TF` and
-canary `C` identities. Its own `${{ github.sha }}` becomes `TA0`, the commit
-that owns the immutable bottle mirror. A later caller for the complete public
-browser proof pins the exact `TA0` as `mirror-authority-ref`; its own
-`${{ github.sha }}` becomes `TA1`, the live commit that may publish only the
-direct lifecycle inputs. Event data cannot select either authority. The
-consume-only reusable workflow anonymously rechecks Kandelo `Mpre`, tap `TA1`,
-and canary `C` as the three public main heads, proves the complete
-`TF -> TA0 -> TA1` ancestry chain, and requires the shell revision, structured
-package Git input, catalog locks, runtime-support cohort, and sealed artifact
-lock to agree with `TF` before preparing any bytes.
+canary `C` identities. It selects `publication-mode: create-mirror` and leaves
+`mirror-authority-ref` empty. The reusable workflow derives its own
+`${{ github.sha }}` as `TA0`, requires `TF -> TA0`, publishes the newly
+recovered immutable bottle mirror, and anonymously re-reads every release
+asset. It does not prepare or publish lifecycle inputs in this mode.
 
-Preparation resolves the public shell generation into a fresh cache, verifies
-the main-shell artifact lock, and anonymously recovers the exact bottle set
-declared by the embedded mirror plan. The only inter-job transfer is a
-pair of one-day, same-run artifacts with exact manifests and bounded
-inventories. One re-derives the bottle-mirror plan and payloads from `TF` and
-builds the exact release manifest that the already-public `TA0` release must
-match. It is verification evidence, not publication input. The other owns only
-the fixed lifecycle inputs: the exact shell image, bootstrap tree
-specification, bootstrap ZIP, and bootstrap environment. No personal access
-token (PAT), GitHub App token, cross-repository workflow artifact, run ID, or
-caller-selected artifact repository participates in either handoff.
+A later caller selects `publication-mode: publish-lifecycle`, pins the exact
+`TA0` as `mirror-authority-ref`, and derives its own `${{ github.sha }}` as
+`TA1`. This mode re-derives and verifies the existing mirror, then publishes
+only the direct lifecycle inputs and runs the complete public Node and browser
+proofs. Event data cannot select either authority. The workflow anonymously
+rechecks Kandelo `Mpre`, tap `TA1`, and canary `C` as the three public main
+heads, proves the complete `TF -> TA0 -> TA1` ancestry chain, and requires the
+shell revision, structured package Git input, catalog locks, runtime-support
+cohort, and sealed artifact lock to agree with `TF` before preparing any
+bytes.
+
+Both modes resolve the public shell generation into a fresh cache, verify
+the main-shell artifact lock, and anonymously recover the exact bottle set
+declared by the embedded mirror plan. The mirror is derived from that plan, so
+the publication code has no Formula-specific or Ruby-specific digest. Its
+one-day, same-run handoff has an exact manifest and bounded inventory. In
+`create-mirror` mode it is the only handoff and supplies the new TA0 release.
+In `publish-lifecycle` mode it is verification evidence for the already-public
+TA0 release, and a separate bounded handoff owns only the fixed lifecycle
+inputs: the exact shell image, bootstrap tree specification, bootstrap ZIP,
+and bootstrap environment. No personal access token (PAT), GitHub App token,
+cross-repository workflow artifact, run ID, or caller-selected artifact
+repository participates in either handoff.
 
 The fixed lifecycle inputs use a separate content-addressed immutable release
 in the first-party tap. The shell image is a member of its package archive,
@@ -1200,14 +1207,19 @@ handoff expires after one day; its immutable release is durable
 content-addressed evidence and is not a temporary release to delete after the
 run.
 
-Only the publication job receives `contents: write`. It uses the tap caller's
-own `GITHUB_TOKEN`, but the existing mirror path calls the separate
-`verify-existing-immutable-github-release.sh` verifier. That verifier exposes
-no write mode: it performs GET-only metadata reads, requires the release and
-its direct lightweight tag to target `TA0`, requires GitHub release
-immutability and the exact asset inventory, and anonymously rehashes every
-re-derived payload. It emits a receipt whose operation is
-`verified-existing`; it never calls the release publisher.
+Only the publication job receives `contents: write`. Both of its write paths
+are guarded by the admitted publication mode. `create-mirror` calls
+`publish-immutable-github-release.sh` once for the mirror manifest targeting
+the live TA0 caller; the publisher then anonymously re-reads and rehashes the
+public release. It has no lifecycle handoff to publish.
+
+`publish-lifecycle` uses the tap caller's own `GITHUB_TOKEN`, but the existing
+mirror path calls the separate `verify-existing-immutable-github-release.sh`
+verifier. That verifier exposes no write mode: it performs GET-only metadata
+reads, requires the release and its direct lightweight tag to target `TA0`,
+requires GitHub release immutability and the exact asset inventory, and
+anonymously rehashes every re-derived payload. It emits a receipt whose
+operation is `verified-existing`; it never calls the release publisher.
 
 The same job rechecks live Kandelo and `TA1` immediately before using
 `publish-immutable-github-release.sh` to write only four lifecycle assets:
@@ -1701,8 +1713,10 @@ cannot invoke the trusted publisher.
 
 Every call is fixed to a reviewed `repository_dispatch` workflow on the target
 tap repository's `main` branch, and the caller repository must exactly equal
-the target tap repository. Non-dry calls may come from `publish-bottles.yml` or
-`maintain-bottles.yml`; dry calls must come from `dry-run-bottles.yml`. The
+the target tap repository. Ordinary non-dry calls may come from
+`publish-bottles.yml` or `maintain-bottles.yml`; dry calls must come
+from `dry-run-bottles.yml`. The guest-prefix campaign has one additional
+reviewed caller, `prefix-campaign-bottles.yml`, described below. The
 first-party normal caller is displayed as
 **Publish Kandelo bottles**; do not restore the narrower retired single-Formula
 workflow name. The three dispatch events are `publish-kandelo-bottles`,
@@ -1715,14 +1729,24 @@ fallbacks. A missing value, mutable ref, abbreviated SHA, or uppercase SHA is
 rejected before checkout. The tap checkout must equal the requested tap SHA,
 which must remain the current protected tap `main` commit or its ancestor.
 
-Kandelo has a stricter source rule: `kandelo_sha` must equal the commit named by
-`Automattic/kandelo`'s live `refs/heads/main`, not merely an ancestor, an
-equal-tree commit, a tag target, or a pull-request head. The planner queries
-that ref before checkout and verifies the resulting checkout. Every
-credentialed bottle, version-index, tap-state, failure-report, and immutable
-VFS mutation queries the ref again immediately before writing. If `main`
-advances during a run, the next mutation fails closed; run-scoped build
-handoffs do not authorize publication from the now-stale source.
+Ordinary Kandelo publication has a stricter source rule:
+`kandelo_sha` must equal the commit named by `Automattic/kandelo`'s
+live `refs/heads/main`, not merely an ancestor, an equal-tree commit, a
+tag target, or a pull-request head. The planner queries that ref before
+checkout and verifies the resulting checkout. Every credentialed
+bottle, version-index, tap-state, failure-report, and immutable VFS
+mutation queries the ref again immediately before writing. If `main`
+advances during an ordinary run, the next mutation fails closed;
+run-scoped build handoffs do not authorize publication from the
+now-stale source.
+
+GHCR child and version-index writes also re-read the target tap's
+public protected `main` immediately before `oras cp`. The exact target
+repository and authority commit come from the already validated OCI
+layout receipt. The uploader requires its independently supplied
+target-authority SHA to equal that receipt value. A force-push that
+removes the authorized tap commit therefore stops the write even when
+the job passed its earlier planning check.
 
 The payload SHA is intentionally distinct from `github.sha`.
 `repository_dispatch` may be admitted while protected `main` is at one commit
@@ -1732,6 +1756,147 @@ authorizing a detached or force-pushed source. Maintenance rebuild dispatches
 use the same exact source contract. Rollback does not consume `tap_sha`; it
 refreshes and mutates the current protected branch under the tap-wide state
 lock.
+
+### Prefix Campaign Publisher Mode
+
+The guest-prefix campaign is a narrow mode of the same reusable
+publisher. It exists so a long-running, sealed campaign can finish
+without exposing a tap whose Formulae use two guest prefixes. Only the
+exact `prefix-campaign-bottles.yml` caller on the target repository's
+protected `main` branch may select it. Each call must:
+
+- publish exactly one Formula;
+- publish exactly one architecture;
+- use write mode and a forced rebuild;
+- set `defer-tap-finalization: true`;
+- disable ordinary VFS acceptance; and
+- provide one content-addressed campaign tag plus the exact, canonical
+  dependency-handoff request.
+
+Ordinary, maintenance, dry-run, and third-party workflow names cannot
+pass campaign authority or defer tap finalization.
+
+The campaign keeps public source identity separate from local execution
+identity:
+
+- `tap_commit` is the raw, reviewed commit in the public tap's protected
+  history. Public bottle provenance and immutable release targets
+  continue to name this SHA.
+- `tap_checkout_commit` is a deterministic local commit whose tree
+  contains the sealed target Formula source and, for an architecture
+  build, the exact dependency bottle blocks fetched from earlier
+  campaign handoffs.
+
+The publisher begins with a clean checkout of `tap_commit`. It verifies
+the campaign's sealed target-source tree, creates a deterministic local
+descendant, and then creates an architecture-specific descendant when
+dependency bottle blocks are needed. Plan, build, upload,
+version-index, and verification jobs derive and verify the same
+identities independently. Build, dependency, handoff, and runtime
+evidence bind both SHAs. The prepared commit is never pushed, tagged,
+or substituted for public tap provenance.
+
+The campaign also binds the path and SHA-256 of
+`homebrew/kandelo-guest-layout.json`. The publisher first verifies those
+exact bytes in its Kandelo checkout. It then carries the digest through
+Formula closure, bottle build, dependency provenance, build and upload
+handoffs, bottle verification, sidecar preparation, and final handoff
+validation. Only this campaign digest selects
+`/opt/kandelo/homebrew` and `/opt/kandelo/homebrew/Cellar`. No digest
+selects the still-active layout for an ordinary publication; a campaign
+with a missing or different digest fails.
+
+`homebrew/guest-prefix-campaign-inputs.json` classifies each Formula that
+exists in the candidate source but has no selected sidecar yet. A required
+build has one exact, discriminated `build_input` shape:
+
+- `formula-source` means the conventional Formula source is the complete
+  package-owned build entry point. The campaign still binds its raw Formula
+  digest, exact native Homebrew `pkg_version`, architecture, qualified guest
+  dependencies, and absent destination. It does not fabricate a recipe lock.
+- `homebrew-bootstrap-recipe-lock` is reserved for
+  `homebrew-bootstrap`. In addition to the Formula source, derivation validates
+  its exact recipe manifest, source archive, patch, prepared tree, license
+  evidence, and declared outputs. The bootstrap Formula cannot select the
+  simpler `formula-source` shape.
+
+Only a dependency named exactly
+`kandelo-dev/tap-core/<formula>` enters the guest campaign graph. Unqualified
+build and test dependencies remain native tools even when the tap has a Formula
+with the same short name. Required and recommended guest dependencies must use
+the exact tap-qualified identity and name a Formula in the campaign inventory.
+This keeps host tooling out of bottle handoffs while preventing an incomplete
+guest closure from appearing usable.
+
+Current protected `main` remains the live mutation authority. An
+ordinary publication requires exact equality. The campaign instead may
+use its sealed Kandelo source only while that SHA remains an ancestor of
+current protected `main`. This is an explicit, mutually exclusive
+authority mode, not a fallback from an exact-main failure. Immediately
+before each GHCR or immutable-release mutation, the mutation primitive
+fetches protected `main` and repeats the ancestry proof. A detached,
+descendant, diverged, or force-pushed-away source fails closed.
+
+An immutable campaign or Formula-handoff release applies the same rule
+to its target repository. Its direct tag points to the raw public tap
+source commit, not to a prepared checkout. The two repositories
+therefore retain truthful review and release history even though
+package jobs execute a complete campaign-local Formula tree.
+
+The campaign still runs bottle build, upload, anonymous index readback,
+and runtime verification for every selected Formula/architecture. A
+failed sibling invocation does not prevent a successful variant from
+extending the public version index or completing verification. It does
+not schedule `finalize-tap` or `publish-vfs-release`. The campaign
+executor seals each verified result as
+`homebrew-prefix-handoff-sha256-<handoff-sha256>`.
+
+Full live-tap and named-product activation remain atomic, but bottle
+availability does not. `homebrew-prefix-campaign-executor.py
+prepare-selection` can materialize an ordinary tap-shaped candidate
+intended for Brew and the VFS builder as soon as one root's exact
+same-architecture dependency closure has verified handoffs. Its
+content-bound manifest records every handoff and bottle digest.
+Failures outside the selected closure are irrelevant; a missing
+dependency produces no candidate.
+
+For example, this prepares the prospective consumer input at `out/tap`:
+
+```sh
+bash scripts/dev-shell.sh python3 \
+  scripts/homebrew-prefix-campaign-executor.py prepare-selection \
+  --campaign campaign.json \
+  --source-tap-root target-tap \
+  --root-formula zlib \
+  --arch wasm32 \
+  --handoff handoffs/zlib \
+  --out out
+```
+
+The caller supplies exactly the selected transitive closure. Extra
+handoffs are rejected rather than silently widening the product, and
+unselected Formulae are omitted from the prepared tap. The generated
+`selection.json` binds the campaign, prepared tap tree, handoff
+manifests, and bottle archives. The normal whole-tap validator must also
+accept the generated Formula blocks and sidecars. `out/tap` is a local
+candidate; this command does not publish it or move a product pointer.
+
+Product activation requires a separate transaction that publishes the
+exact candidate at an immutable locator, proves that the resolver and
+VFS builder can read that locator, and then compare-and-swap updates the
+named product pointer. Until that transaction exists, the local
+candidate must not be described as an activated or durable product.
+
+The ordinary dependency-bearing VFS acceptance attached to an
+individual campaign publisher call is still skipped. That call has only
+one Formula/architecture and cannot claim a product closure. Product
+Node-and-Chromium acceptance must consume an immutable readback of the
+closed selection before activation. The
+independent `file-formula` browser smoke continues to run with the
+campaign layout and remains the per-bottle Chromium proof. After all
+migration handoffs are present, the campaign separately composes and
+validates the complete live tap, then updates `main` once under the
+tap-wide state lock.
 
 An ABI transition lands its coherent source and package changes through the
 ordinary Kandelo merge process first. The normal path then rebuilds final
@@ -1777,11 +1942,52 @@ in the separate digest-bound package-generation input receipt and must not
 replace `built_from`.
 
 A matching cache key, ABI, release tag, and bottle URL are still not enough to
-reuse an older bottle. Historical reuse needs its own content-bound
-`validated_against_main` evidence proving that historical build producer
-remains admissible for current `M`; top-level metadata from a newer run cannot
-make an older architecture current. That broader historical-reuse receipt is a
-follow-up and does not change the actual producer of a newly compiled bottle.
+reuse an older bottle. The prefix campaign admits historical bytes only when
+its sealed manifest classifies that exact Formula/architecture as
+`byte-clean-reuse-candidate`. The classification binds the old selected
+record, full archive inspection, historical Formula source, Formula/link
+sidecars, provenance report, candidate Formula identity, current ABI, and
+guest-layout digest.
+
+`homebrew-prefix-campaign-executor.py derive-reuse` consumes that authority.
+It requires the sealed candidate source tree and a clean old-tap checkout at
+the campaign's exact `old_tap_commit`. It rechecks every referenced sidecar
+and historical Formula blob, then uses the existing bearer-aware public-bottle
+reader with every package credential removed. The reader and executor verify
+the content-addressed GHCR blob's byte count and SHA-256 again. A private
+bottle, mutable checkout, changed evidence file, ambiguous record, non-empty
+retired-prefix scan, or substituted producer fails before a handoff appears.
+
+```sh
+bash scripts/dev-shell.sh python3 \
+  scripts/homebrew-prefix-campaign-executor.py derive-reuse \
+  --campaign campaign.json \
+  --source-tap-root target-tap \
+  --old-tap-root old-tap \
+  --formula zlib \
+  --arch wasm32 \
+  --out handoffs/zlib-wasm32
+```
+
+Repeat `--dependency-handoff <dir>` for the exact same-architecture
+dependency closure. Extra, missing, or wrong-architecture handoffs fail.
+
+Formula handoff schema 2 discriminates `build` and `reuse` publications. A
+reuse publication contains only canonical bottle JSON, the unchanged bottle
+archive, a sidecar-composition input, and a reuse evidence receipt. The normal
+release, readback, dependency staging, and closed-selection commands consume
+either kind. The tap controller invokes this Kandelo-owned command; it must
+not implement a second reuse-admission authority.
+
+The sidecar composition input names current campaign and tap state at its top
+level, but carries the historical bottle's exact `built_from` record. The
+sidecar generator verifies that the archived Formula receipt matches that
+historical record and preserves the same repository and commit identities in
+the generated bottle sidecar and provenance report. The old sidecar and
+provenance retain their historical rebuild number; the new Formula uses the
+campaign's strictly newer, collision-free destination rebuild. Current
+metadata can make the already-admitted bytes selectable; it cannot make them
+appear newly built.
 
 A dry run keeps those repository identities fixed, but may select a reviewed,
 valid Git branch name or an exact lowercase 40-character commit SHA from each
@@ -1823,40 +2029,72 @@ Formula, dirty or different tap checkout, fixed-identity mismatch, malformed
 old index, or ordinary non-forced run still fails; a finalized bottle with
 changed bytes requires a new Formula bottle `rebuild`.
 
-The repository-namespace visibility canary was a separate, one-shot transport
-path used to select the production bottle-root contract. Its exact reviewed caller
-on `Kandelo-dev/homebrew-tap-core@main` receives only the caller repository's
-`github.token` and passes no package PAT secret. The canary downloads the
+The original repository-namespace visibility canary was a separate, one-shot
+transport path used to select the production bottle-root contract. Its exact
+reviewed caller on `Kandelo-dev/homebrew-tap-core@main` received only the caller
+repository's `github.token` and passed no package PAT secret. It downloaded the
 immutable zlib OCI child produced by Actions run `29628202419`, artifact
-`homebrew-oci-child-zlib-wasm32-attempt-1`, and revalidates its pinned source,
-bottle, and manifest digests. That layout retains the canonical Homebrew tap
-identity and the original control bytes; only its registry transport
-destination changed from `ghcr.io/kandelo-dev/tap-core/zlib` to
-`ghcr.io/kandelo-dev/homebrew-tap-core/zlib`. The uploader derives that
-alternate destination from the already validated tap repository rather than
-accepting a URL.
+`homebrew-oci-child-zlib-wasm32-attempt-1`, and revalidated its pinned source,
+bottle, and manifest digests. Run `29652866481` created
+`homebrew-tap-core/zlib` as a public package linked to the public source
+repository, and its credential-free readback matched the pinned manifest
+digest. Earlier `GITHUB_TOKEN` and PAT uploads under `tap-core/*` both created
+private packages. Normal publication therefore uses the exact
+repository-rooted namespace and the scoped `github.token`; no visibility
+mutation or PAT is part of the production path.
 
-To prove first-package creation rather than reuse of existing public state, the
-canary authenticates only long enough to require that the destination package
-repository itself is absent before copying the child. It then retires the
-credential state and requires an anonymous readback of the exact manifest
-digest. PAT or automatic auth, dry-run or index uploads, third-party tap
-repositories, pre-existing destination packages, and non-public readback all
-fail closed. The canary stops after the immutable child upload: it does not
-publish the mutable version index, verify a release, edit Formulae, generate
-sidecars, or record a tap failure report. Run `29652866481` created
-`homebrew-tap-core/zlib` as a public package linked to the public
-`kandelo-dev/homebrew-tap-core` source repository, and its credential-free
-readback matched the pinned manifest digest. Earlier `GITHUB_TOKEN` and PAT
-uploads under `tap-core/*` both created private packages. Normal publication
-therefore uses the exact repository-rooted namespace and the scoped
-`github.token`; no visibility mutation or PAT is part of the production path.
+The same reusable workflow now exposes a bounded first-child publication API
+for a real Formula whose repository-rooted package does not yet exist. This is
+not a marker upload and is not a weaker mode of campaign admission. The
+protected tap caller fixes the Formula and architecture, then passes one exact
+successful dry-run run ID and attempt, the immutable Actions artifact digest of
+`homebrew-oci-child-<formula>-<arch>-attempt-<N>`, and its expected child
+manifest digest. It also binds the exact caller tap commit and the immutable
+Kandelo workflow commit.
+
+Before reading child bytes, the reusable workflow re-reads both protected
+`main` refs, requires the dry-run workflow path, repository-dispatch event,
+`main` head, exact head SHA and attempt, completed-success result, and exactly
+one unexpired artifact with the admitted archive digest. Without registry
+credentials it then validates the complete OCI child layout and requires the
+Formula, architecture, ABI, tap commit, Kandelo commit, and content-derived
+manifest reference to equal that evidence. The credentialed uploader rechecks
+tap `main`, rechecks Kandelo `main` at the final transport boundary, and uses
+repository-canary mode: both the exact descriptor and the package repository
+must be authentically absent before it copies the child. It retires its ORAS
+credential state and requires anonymous readback of the exact manifest digest.
+An expired or ambiguous artifact, a failed or different run, an advanced
+source ref, a pre-existing public or private package, PAT authentication, or a
+non-public readback fails before acceptance.
+
+GitHub concurrency groups are repository-scoped. The first-child workflow
+holds `kandelo-homebrew-ghcr-<formula>` from admission through public readback;
+ordinary child and version-index jobs use that exact group for their mutation,
+including rebuilds delegated by the maintenance workflow. Maintenance rollback
+has only package-read authority and does not write GHCR. This keeps the absence
+probe stable against every supported writer in the protected tap repository.
+It cannot lock an administrator's registry client, a workflow in another
+repository, or any future writer that bypasses the reviewed group. GHCR has no
+atomic create-if-absent operation, so those uncontrolled writers are outside
+the first-publication proof and must be excluded operationally; anonymous
+exact-digest readback still proves the child bytes that became public, not
+exclusive authorship against an external race.
+
+First-child publication deliberately stops after that immutable child upload.
+It does not publish the mutable version index, edit Formulae, generate
+sidecars, finalize tap state, or constitute post-publication acceptance. Once
+the package exists, replay of this path must fail; the normal publisher must
+later publish and verify the complete index and finalize the Formula. Keeping
+this as a separately dispatched protected caller lets an absent namespace be
+created from actual dry-run bottle bytes without changing any anonymous-only
+campaign selection or reuse rule.
 
 After a read-only planning job resolves the immutable Kandelo commit, tap
 commit, ABI namespace, derived bottle root, and formula matrix, each
 `(formula, arch)` entry crosses five separate runner roles. OCI child uploads
-remain architecture-parallel. The mutable Homebrew version index is serialized
-only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
+for different Formulae remain parallel. Every supported GHCR mutation for one
+Formula is serialized by one repository-wide lock, while architecture builds
+and all unrelated Formulae retain parallel throughput:
 
 1. `build-and-test` is read-only. It checks out the exact inputs and reviewed
    Homebrew/brew commit, and exposes the patched temporary Homebrew worktree
@@ -2032,7 +2270,9 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    directory, mode, and byte digest.
 
 2. `upload-bottle` runs only for a write publication and receives only
-   `packages: write`. On a fresh runner it validates the strict build handoff
+   `packages: write`. It holds the same repository-scoped, Formula-keyed GHCR
+   writer lock as first publication and version-index publication. On a fresh
+   runner it validates the strict build handoff
    and deterministic OCI child against the plan before exposing the caller
    repository's scoped `github.token` to an isolated ORAS transport. This
    includes bounded tar
@@ -2054,21 +2294,27 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    existing descriptor, an unclassified response, or an authorization failure
    stops before transport. A directly anonymous missing response is already
    public evidence that the destination tag is absent and does not need that
-   private-state disambiguation during ordinary publication. The one-shot
-   repository-namespace canary is stricter: it always requires an authenticated
+   private-state disambiguation during ordinary publication. The bounded
+   first-child publication path is stricter: it always requires an authenticated
    missing-repository result so an existing public package with a new tag cannot
    produce a false positive. The uploader copies only the validated child
    layout to its content-derived tag. Immediately before that credentialed
-   `oras cp`, the transport itself re-reads `Automattic/kandelo`'s protected
-   `main` ref and requires it to equal the explicit publication SHA; an earlier
-   workflow check cannot authorize a copy after `main` advances. The uploader
-   retires the isolated ORAS authentication state and requires an anonymous
+   `oras cp`, the transport itself re-reads both `Automattic/kandelo`'s
+   protected `main` and the receipt-bound target tap's public protected
+   `main`. An ordinary Kandelo call requires equality with the explicit
+   publication SHA. A prefix-campaign call requires that its explicit
+   sealed source remain an ancestor. The receipt's tap authority must
+   remain an ancestor of target `main`. These checks prevent an earlier
+   workflow check from authorizing a copy after either protected history
+   diverges. The uploader retires the
+   isolated ORAS authentication state and requires an anonymous
    exact-digest readback. Its only output is a
    strict data receipt binding the canonical layout receipt to that public
    readback.
 3. `publish-bottle-index` receives `packages: write` once per Formula. The
-   official caller-repository workflow uses a formula-scoped concurrency lock to
-   serialize supported writers. Under that lock it validates every requested
+   official caller-repository workflow uses the exact same formula-scoped
+   concurrency lock as child and first publication. Under that lock it
+   validates every requested
    child layout and public child receipt, anonymously imports the current
    Homebrew top reference, and preserves a compatible sibling architecture. The
    pinned artifact downloader extracts a single pattern match directly into the
@@ -2097,9 +2343,14 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    old children. This applies both to stale source identity and to different
    child bytes under the same semantic identity. It never carries a sibling
    architecture across either transition.
-   The top
-   index receipt records the previous digest, transport rechecks that digest
-   immediately before its copy, and an anonymous readback verifies the result.
+   A schema-3 top-index receipt keeps mutation authority separate from
+   child provenance. Its `authority` object records the current target
+   tap repository and commit that may publish the aggregate. This field
+   does not rewrite the producer provenance carried by historical child
+   handoffs and sidecars. The receipt also records the previous digest.
+   The transport rechecks that digest and both protected-main
+   authorities immediately before its copy, and an anonymous readback
+   verifies the result.
    GitHub Container Registry (GHCR) does not provide this path with a documented
    conditional tag update, so an authorized writer outside the official workflow
    lock must not publish the same Formula concurrently. New packages created by
@@ -2107,12 +2358,16 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    repository-rooted namespace inherit public access. Automation never changes
    package visibility, and a package that is not anonymously readable fails
    before tap finalization.
-4. `verify-bottle` is read-only and starts from fresh exact source checkouts. It
-   revalidates the build handoff and receipt, fetches only the declared Kandelo
-   platform runtime for Formula tests, builds the VFS image, and runs the
-   runtime and browser gates. The `file-formula` browser-gallery smoke separately
-   prepares the supported interactive-demo graph. That graph contains owned
-   wasm32 and wasm64 process fixtures, so the verifier builds both sysroots in
+4. `verify-bottle` is read-only and starts from fresh exact source
+   checkouts. In campaign mode it deterministically reconstructs the
+   prepared checkout and requires its separately recorded raw source and
+   local checkout identities. It revalidates the build handoff and
+   receipt, fetches only the declared Kandelo platform runtime for
+   Formula tests, builds the VFS image, and runs the runtime and browser
+   gates. The `file-formula` browser-gallery smoke separately prepares
+   the supported interactive-demo graph. That graph contains owned
+   wasm32 and wasm64 process fixtures, so the verifier builds both
+   sysroots in
    its isolated sysroot checkout and copies both exact outputs into the fresh
    browser checkout before running the supported preparation command. Packages
    supplied by the external software gallery are not verifier prerequisites.
@@ -2205,12 +2460,15 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    the same coordinated rollout may already describe its new bottle while
    aggregate metadata still describes the previous bottle. Downstream jobs
    never execute artifact-provided scripts, Formulae, or environment files.
-5. `finalize-tap` runs only for a write publication and receives only
-   `contents: write`. On another fresh runner it downloads exactly one handoff
-   for every planned Formula/architecture pair. The pinned artifact downloader
-   may flatten one matched handoff directly into the requested directory or
-   retain artifact-name directories, so the finalizer normalizes either exact
-   topology into one NUL-delimited plan-ordered path manifest. Correctly named
+5. `finalize-tap` runs only for a write publication that did not request
+   deferred finalization, and receives only `contents: write`. A
+   prefix-campaign Formula call therefore cannot mutate tap Git state.
+   On another fresh runner for an ordinary publication, the job
+   downloads exactly one handoff for every planned Formula/architecture
+   pair. The pinned artifact downloader may flatten one matched handoff
+   directly into the requested directory or retain artifact-name
+   directories, so the finalizer normalizes either exact topology into
+   one NUL-delimited plan-ordered path manifest. Correctly named
    nested single- and multi-handoff layouts are also accepted for compatibility
    with downloader topology changes. Mixed layouts, missing or extra entries,
    duplicate identities, symlinks, and special files fail closed. Each
@@ -2250,11 +2508,13 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    race after the workflow's earlier check and after potentially long
    composition. It does not load Formula Ruby or run Homebrew in the
    credentialed role.
-6. `publish-vfs-release` runs only when `require-vfs-acceptance: true`, every
-   verifier matrix entry succeeded, and the atomic tap finalizer succeeded. The
-   verifier exports only the selected wasm32 image, its deterministic lazy
-   shell ZIP, both descriptors, its VFS report, and the exact Node and Chromium
-   evidence. A fresh job
+6. `publish-vfs-release` runs only when finalization was not deferred,
+   `require-vfs-acceptance: true`, every verifier matrix entry
+   succeeded, and the atomic tap finalizer succeeded. A prefix-campaign
+   Formula call cannot publish this release. For an ordinary accepted
+   publication, the verifier exports only the selected wasm32 image, its
+   deterministic lazy shell ZIP, both descriptors, its VFS report, and
+   the exact Node and Chromium evidence. A fresh job
    checks out the exact planned Kandelo and tap commits, revalidates that inert
    bundle without a token in its environment, compares its ABI and bottle
    release tag to the trusted plan outputs, and only then exposes the scoped
@@ -2272,12 +2532,20 @@ only per `(tap, formula)`, so unrelated Formulae retain parallel throughput:
    records to set `immutable: true` before emitting success. A public release
    retry is read-only and idempotent.
 
-Tap writes use a tap-wide state lock, an attached `main` checkout, an explicit
-remote-main refresh, and an explicit `HEAD:refs/heads/main` push. The workflow
-uses a separate clean checkout for failure reports so a partially generated or
-locally committed success attempt cannot enter a last-green failure commit.
-Maintenance rollback resolves its freshly checked-out Kandelo `main` commit and
+Ordinary tap writes use a tap-wide state lock, an attached `main`
+checkout, an explicit remote-main refresh, and an explicit
+`HEAD:refs/heads/main` push. The workflow uses a separate clean checkout
+for failure reports so a partially generated or locally committed
+success attempt cannot enter a last-green failure commit. Maintenance
+rollback resolves its freshly checked-out Kandelo `main` commit and
 passes that same identity as both report provenance and push authority.
+Prefix-campaign Formula/architecture calls do not write Git tap state.
+Each successful bottle upload and Formula index update is nevertheless
+independently public and usable after anonymous verification. A consumer
+selects one exact same-architecture dependency closure, so that selected
+closure is the atomic unit for composition. Only the named full-tap or
+prefix activation waits for the complete candidate and its final pointer
+update.
 
 Use `dry-run: true` for local or CI validation that must not push GHCR blobs or
 tap commits. Dry runs still build bottles and validate the generated metadata
@@ -3495,12 +3763,19 @@ checks a credential. The publisher then holds the tag state lock while it
 reconciles create, upload, and publish responses, authentically downloads every
 complete draft asset immediately before publication, and verifies the
 immutable release, direct tag, and every anonymous download afterward. A
-caller must pass the exact Kandelo `main` SHA. The credentialed primitive
-re-reads protected `main` immediately before each release creation, individual
-asset upload, direct-tag creation, and draft-to-public transition. If `main`
-advances during reconciliation, the next mutation fails closed; a complete
-draft may remain for a later exact-main run to inspect, but it is not made
-public under stale authority. A
+caller must pass exactly one Kandelo authority: the exact current
+`main` SHA for an ordinary release, or the explicitly contained sealed
+source SHA for the prefix campaign. Passing both or neither fails. A
+campaign handoff also passes its raw tap source as contained
+target-repository authority; the manifest target must equal that source.
+Exact and contained target authority are also mutually exclusive.
+
+The credentialed primitive re-reads protected `main` immediately before
+each release creation, individual asset upload, direct-tag creation,
+and draft-to-public transition. Exact mode fails if `main` advances.
+Contained mode fails if the source leaves protected history. In either
+case a complete draft may remain for a later authorized run to inspect,
+but it is not made public under stale authority. A
 failed attempt leaves any older receipt untouched. Success atomically replaces
 the receipt with the release ID and every asset's ID, URL, digest, and size.
 This same bounded 256-asset contract can carry the production shell mirror's
@@ -3705,6 +3980,20 @@ build, upload, and verifier matrix instance as well as each Formula-level index
 job and the single atomic finalizer. A finalizer that
 successfully writes a failure report still concludes as a failed job and does
 not satisfy this gate.
+
+Use two acceptance levels for a prefix campaign. Each Formula and
+architecture deliberately omits `finalize-tap` and
+`publish-vfs-release`. Its bottle becomes independently usable after
+build, upload, anonymous index readback, and verification all succeed.
+The immutable `homebrew-prefix-handoff-sha256-<handoff-sha256>` release
+must also exist. A failed sibling does not invalidate that successful
+bottle.
+
+A consumer must still select one complete same-architecture dependency
+closure. That selected closure is the atomic composition unit: a missing
+dependency makes the selection fail without hiding unrelated successful
+bottles. The separate named full-tap or prefix activation waits for the
+complete campaign candidate and one atomic final pointer update.
 
 The workflow pins Kandelo source at planning time, while browser-graph package
 resolution reads the canonical ABI package index later in the run. If another
