@@ -1958,9 +1958,15 @@ bash scripts/dev-shell.sh python3 \
   --commit-receipt-out final-commit.json
 ```
 
-Repeat `--handoff` for every campaign Formula. A missing, extra,
-duplicated, wrong-architecture, or dependency-inconsistent handoff fails
-before either output appears.
+Repeat `--handoff` for every campaign Formula/architecture variant. The
+finalizer expands every input handoff into a variant-keyed inventory, so
+separate `wasm32` and `wasm64` handoffs for the same Formula are expected.
+A handoff may contain more than one architecture only when its dependency
+evidence is valid for every included architecture. Missing, extra,
+duplicated, wrong-architecture, or dependency-inconsistent variants fail
+before either output appears. Each dependency must resolve to the handoff
+for the same architecture; a valid `wasm32` dependency cannot authorize a
+`wasm64` consumer.
 
 An ABI transition lands its coherent source and package changes through the
 ordinary Kandelo merge process first. The normal path then rebuilds final

@@ -880,6 +880,29 @@ class FinalTapFixture(Fixture):
         )
         return alpha, beta
 
+    def split_handoffs(
+        self,
+    ) -> dict[tuple[str, str], pathlib.Path]:
+        handoffs: dict[tuple[str, str], pathlib.Path] = {}
+        for arch in ("wasm32", "wasm64"):
+            alpha = self.root / f"final-alpha-{arch}"
+            self.derive(
+                "alpha",
+                [(arch, self.publication("alpha", arch))],
+                [],
+                alpha,
+            )
+            handoffs[("alpha", arch)] = alpha
+            beta = self.root / f"final-beta-{arch}"
+            self.derive(
+                "beta",
+                [(arch, self.publication("beta", arch))],
+                [alpha],
+                beta,
+            )
+            handoffs[("beta", arch)] = beta
+        return handoffs
+
     def generate_final_sidecars(
         self,
         *,
@@ -1420,7 +1443,7 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
     ) -> None:
         fixture = FinalTapFixture()
         self.addCleanup(fixture.close)
-        alpha, beta = fixture.complete_handoffs()
+        handoffs = fixture.split_handoffs()
         output = fixture.root / "final-candidate"
         finalization_path = fixture.root / "finalization.json"
         merge_order: list[tuple[str, str]] = []
@@ -1432,7 +1455,12 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             fixture.merge_dependency(**arguments)
 
         fixture.prepare_final(
-            [beta, alpha],
+            [
+                handoffs[("beta", "wasm64")],
+                handoffs[("alpha", "wasm32")],
+                handoffs[("beta", "wasm32")],
+                handoffs[("alpha", "wasm64")],
+            ],
             output,
             finalization_path,
             bottle_merger=record_merge,
@@ -1521,11 +1549,11 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
         )
         self.assertEqual(
             [value["formula"] for value in finalization["handoffs"]],
-            ["alpha", "beta"],
+            ["alpha", "alpha", "beta", "beta"],
         )
         self.assertEqual(
-            [value["arches"] for value in finalization["handoffs"]],
-            [["wasm32", "wasm64"], ["wasm32", "wasm64"]],
+            [value["arch"] for value in finalization["handoffs"]],
+            ["wasm32", "wasm64", "wasm32", "wasm64"],
         )
         self.assertEqual(
             finalization["handoffs_sha256"],
@@ -1577,34 +1605,25 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
         )
         self.assertFalse((output / ".git").exists())
 
-    def test_final_tap_requires_one_complete_handoff_per_formula(
-        self,
-    ) -> None:
+    def test_final_tap_requires_exact_campaign_variant_union(self) -> None:
         fixture = FinalTapFixture()
         self.addCleanup(fixture.close)
-        alpha, beta = fixture.complete_handoffs()
-        partial_alpha = fixture.root / "partial-final-alpha"
-        fixture.derive(
-            "alpha",
-            [("wasm32", fixture.publication("alpha", "wasm32"))],
-            [],
-            partial_alpha,
-        )
+        handoffs = fixture.split_handoffs()
+        complete = list(handoffs.values())
         cases = (
             (
-                "missing",
-                [alpha],
-                "handoffs differ from the campaign Formulae",
+                "missing-sibling",
+                [
+                    root
+                    for key, root in handoffs.items()
+                    if key != ("alpha", "wasm64")
+                ],
+                "handoff variants differ.*alpha.*wasm64",
             ),
             (
-                "duplicate",
-                [alpha, alpha, beta],
-                "handoff alpha is duplicated",
-            ),
-            (
-                "partial",
-                [partial_alpha, beta],
-                "does not cover every declared architecture",
+                "duplicate-variant",
+                [handoffs[("alpha", "wasm32")], *complete],
+                "handoff alpha/wasm32 is duplicated",
             ),
         )
         for label, handoffs, message in cases:
@@ -1622,6 +1641,85 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
                     )
                 self.assertFalse(output.exists())
                 self.assertFalse(receipt.exists())
+
+    def test_final_tap_rejects_substituted_architecture(self) -> None:
+        fixture = FinalTapFixture()
+        self.addCleanup(fixture.close)
+        handoffs = fixture.split_handoffs()
+        substituted = fixture.root / "substituted-alpha-architecture"
+        shutil.copytree(handoffs[("alpha", "wasm32")], substituted)
+        manifest_path = substituted / "handoff.json"
+        manifest = json.loads(manifest_path.read_text())
+        publication = manifest["publications"][0]
+        publication["arch"] = "wasm64"
+        for record in publication["files"]:
+            record["path"] = record["path"].replace(
+                "payload/wasm32/", "payload/wasm64/", 1
+            )
+            record["asset_name"] = record["asset_name"].replace(
+                "wasm32.", "wasm64.", 1
+            )
+        (substituted / "payload/wasm32").rename(
+            substituted / "payload/wasm64"
+        )
+        write_json(manifest_path, manifest)
+
+        output = fixture.root / "wrong-arch"
+        receipt = fixture.root / "wrong-arch.json"
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "handoff variants differ.*alpha.*wasm32",
+        ):
+            fixture.prepare_final(
+                [
+                    substituted,
+                    handoffs[("beta", "wasm32")],
+                    handoffs[("beta", "wasm64")],
+                ],
+                output,
+                receipt,
+            )
+        self.assertFalse(output.exists())
+        self.assertFalse(receipt.exists())
+
+    def test_final_tap_requires_same_arch_dependency_identity(self) -> None:
+        fixture = FinalTapFixture()
+        self.addCleanup(fixture.close)
+        handoffs = fixture.split_handoffs()
+        substituted = fixture.root / "substituted-beta-dependency"
+        shutil.copytree(handoffs[("beta", "wasm64")], substituted)
+        manifest_path = substituted / "handoff.json"
+        manifest = json.loads(manifest_path.read_text())
+        alpha_wasm32_payload = (
+            handoffs[("alpha", "wasm32")] / "handoff.json"
+        ).read_bytes()
+        alpha_wasm32_digest = sha256(alpha_wasm32_payload)
+        manifest["dependency_handoffs"][0].update(
+            {
+                "manifest_sha256": alpha_wasm32_digest,
+                "tag": EXECUTOR.handoff_tag(alpha_wasm32_payload),
+            }
+        )
+        write_json(manifest_path, manifest)
+
+        output = fixture.root / "wrong-dependency-arch"
+        receipt = fixture.root / "wrong-dependency-arch.json"
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "dependencies differ from the exact campaign closure",
+        ):
+            fixture.prepare_final(
+                [
+                    handoffs[("alpha", "wasm32")],
+                    handoffs[("alpha", "wasm64")],
+                    handoffs[("beta", "wasm32")],
+                    substituted,
+                ],
+                output,
+                receipt,
+            )
+        self.assertFalse(output.exists())
+        self.assertFalse(receipt.exists())
 
     def test_final_tap_rejects_wrong_dependency_or_live_authority(
         self,

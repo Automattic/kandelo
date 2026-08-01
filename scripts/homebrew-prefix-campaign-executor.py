@@ -45,6 +45,7 @@ MAX_JSON_BYTES = 64 * 1024 * 1024
 MAX_ASSET_BYTES = 2 * 1024 * 1024 * 1024
 MAX_TOTAL_BYTES = 8 * 1024 * 1024 * 1024
 MAX_FORMULAE = 256
+MAX_VARIANTS = MAX_FORMULAE * 2
 MAX_DEPENDENCIES = 256
 MAX_RELEASE_ASSETS = 32
 HTTP_TIMEOUT = 300
@@ -3008,9 +3009,10 @@ def prepare_final_tap(
             validate_source_formula(stable_source, index[name])
 
         loaded: dict[
-            str, tuple[pathlib.Path, dict[str, Any], bytes]
+            tuple[str, str],
+            tuple[pathlib.Path, dict[str, Any], bytes],
         ] = {}
-        identities: dict[str, tuple[str, str]] = {}
+        identities: dict[tuple[str, str], tuple[str, str]] = {}
         handoffs: list[dict[str, Any]] = []
         for position, handoff_root in enumerate(handoff_roots):
             stable = input_snapshot / f"handoff-{position}"
@@ -3025,8 +3027,6 @@ def prepare_final_tap(
                 "final tap handoff Formula",
                 FORMULA,
             )
-            if name in loaded:
-                fail(f"final tap handoff {name} is duplicated")
             if name not in index:
                 fail(f"final tap handoff {name} is outside the campaign")
             if handoff["formula"] != campaign_formula_evidence(
@@ -3035,51 +3035,59 @@ def prepare_final_tap(
             ):
                 fail(f"final tap handoff {name} differs from the campaign")
             validate_handoff_arches(handoff, index[name])
-            declared_arches = sorted(
-                variant["arch"] for variant in index[name]["variants"]
-            )
             actual_arches = [
                 publication["arch"]
                 for publication in handoff["publications"]
             ]
-            if actual_arches != declared_arches:
-                fail(
-                    f"final tap handoff {name} does not cover every "
-                    "declared architecture"
-                )
             digest = sha256_bytes(payload)
             tag = handoff_tag(payload)
-            loaded[name] = (stable, handoff, payload)
-            identities[name] = (tag, digest)
-            handoffs.append(
-                {
-                    "arches": actual_arches,
-                    "formula": name,
-                    "manifest_sha256": digest,
-                    "tag": tag,
-                }
-            )
-        if set(loaded) != set(index):
-            missing = sorted(set(index) - set(loaded))
-            extra = sorted(set(loaded) - set(index))
+            for arch in actual_arches:
+                key = (name, arch)
+                if key in loaded:
+                    fail(f"final tap handoff {name}/{arch} is duplicated")
+                # WHY: the publisher emits one durable result per variant.
+                # Formula-only ownership would make a failed sibling strand a
+                # successful bottle or let the wrong architecture satisfy it.
+                loaded[key] = (stable, handoff, payload)
+                identities[key] = (tag, digest)
+                handoffs.append(
+                    {
+                        "arch": arch,
+                        "formula": name,
+                        "manifest_sha256": digest,
+                        "tag": tag,
+                    }
+                )
+        expected_variants = {
+            (name, variant["arch"])
+            for name, formula in index.items()
+            for variant in formula["variants"]
+        }
+        if set(loaded) != expected_variants:
+            missing = sorted(expected_variants - set(loaded))
+            extra = sorted(set(loaded) - expected_variants)
             fail(
-                "final tap handoffs differ from the campaign Formulae "
+                "final tap handoff variants differ from the campaign "
                 f"(missing={missing}, extra={extra})"
             )
         for name in ordered:
-            expected_dependencies = {
-                dependency: identities[dependency]
-                for dependency in dependency_closure(
-                    campaign,
-                    index,
-                    name,
+            for variant in index[name]["variants"]:
+                arch = variant["arch"]
+                expected_dependencies = {
+                    dependency: identities[(dependency, arch)]
+                    for dependency in dependency_closure(
+                        campaign,
+                        index,
+                        name,
+                    )
+                }
+                validate_dependency_records(
+                    loaded[(name, arch)][1]["dependency_handoffs"],
+                    expected_dependencies,
                 )
-            }
-            validate_dependency_records(
-                loaded[name][1]["dependency_handoffs"],
-                expected_dependencies,
-            )
-        handoffs.sort(key=lambda value: value["formula"])
+        handoffs.sort(
+            key=lambda value: (value["formula"], value["arch"])
+        )
         handoffs_sha256 = sha256_bytes(canonical_json(handoffs))
         catalog_cohort_sha256 = sha256_bytes(
             canonical_json(
@@ -3107,11 +3115,9 @@ def prepare_final_tap(
         canonical_root = temporary / "bottle-inputs"
         canonical_root.mkdir()
         for name in ordered:
-            handoff_root, handoff, _payload = loaded[name]
-            for arch in (
-                publication["arch"]
-                for publication in handoff["publications"]
-            ):
+            for variant in index[name]["variants"]:
+                arch = variant["arch"]
+                handoff_root, handoff, _payload = loaded[(name, arch)]
                 label = f"final tap handoff {name}/{arch}"
                 publication = handoff_publication(
                     handoff,
@@ -3369,14 +3375,14 @@ def validate_finalization_candidate(
     if (
         not isinstance(handoffs, list)
         or not handoffs
-        or len(handoffs) > MAX_FORMULAE
+        or len(handoffs) > MAX_VARIANTS
     ):
         fail("finalization handoffs are invalid")
-    prior = ""
+    prior: tuple[str, str] | None = None
     for position, record in enumerate(handoffs):
         record = exact_keys(
             record,
-            {"arches", "formula", "manifest_sha256", "tag"},
+            {"arch", "formula", "manifest_sha256", "tag"},
             f"finalization handoff #{position}",
         )
         name = require_string(
@@ -3384,24 +3390,25 @@ def validate_finalization_candidate(
             f"finalization handoff #{position} Formula",
             FORMULA,
         )
-        if name <= prior:
-            fail("finalization handoffs must be unique and sorted")
-        prior = name
-        arches = record["arches"]
-        if (
-            not isinstance(arches, list)
-            or not arches
-            or arches != sorted(set(arches))
-            or any(arch not in ("wasm32", "wasm64") for arch in arches)
-        ):
-            fail(f"finalization handoff {name} arches are invalid")
+        arch = require_string(
+            record["arch"],
+            f"finalization handoff {name} architecture",
+        )
+        if arch not in ("wasm32", "wasm64"):
+            fail(f"finalization handoff {name} architecture is invalid")
+        key = (name, arch)
+        if prior is not None and key <= prior:
+            fail(
+                "finalization handoff variants must be unique and sorted"
+            )
+        prior = key
         digest = require_string(
             record["manifest_sha256"],
-            f"finalization handoff {name} SHA-256",
+            f"finalization handoff {name}/{arch} SHA-256",
             SHA256,
         )
         if record["tag"] != f"homebrew-prefix-handoff-sha256-{digest}":
-            fail(f"finalization handoff {name} tag is invalid")
+            fail(f"finalization handoff {name}/{arch} tag is invalid")
     handoffs_sha256 = require_string(
         finalization["handoffs_sha256"],
         "finalization handoffs SHA-256",
