@@ -16,6 +16,7 @@ import {
   parseHomebrewInstallReceiptRelocation,
   relocateHomebrewBottleFile,
 } from "./homebrew-bottle-relocation";
+import { KANDELO_HOMEBREW_GUEST_LAYOUT } from "./homebrew-guest-layout";
 
 const DEFAULT_IMAGE_BYTES = 128 * 1024 * 1024;
 const S_IFMT = 0xf000;
@@ -1045,7 +1046,12 @@ function applyCompatibilityLinks(
   }
   for (const targetDirectory of mirrorTargets) {
     validateCompatibilityAbsolutePath(targetDirectory, "mirror target directory");
-    if (guestPathIsUnder(targetDirectory, plan.packages[0]?.prefix ?? "/home/linuxbrew/.linuxbrew")) {
+    if (
+      guestPathIsUnder(
+        targetDirectory,
+        plan.packages[0]?.prefix ?? KANDELO_HOMEBREW_GUEST_LAYOUT.prefix,
+      )
+    ) {
       throw new HomebrewVfsBuildError(
         `Homebrew compatibility mirror target ${targetDirectory} must be outside the Homebrew prefix`,
       );

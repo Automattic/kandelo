@@ -24,6 +24,7 @@ COPIED = [
     "homebrew/homebrew-bootstrap-source-lock.json",
     "homebrew/main-shell-brew-package-tree.json",
     "homebrew/main-shell.Brewfile",
+    "homebrew/main-shell-default.json",
     "homebrew/main-shell-demo.json",
     "packages/registry/shell/build.toml",
     "docs/homebrew-publishing.md",
@@ -326,6 +327,10 @@ with tempfile.TemporaryDirectory(prefix="kandelo-shell-finalizer-test.") as temp
     assert support["availability"]["audited_catalog"]["checkout_commit"] == head
     assert artifact_lock["state"] == "pending"
     assert artifact_lock["image"] is None
+    assert artifact_lock["schema"] == 3
+    assert artifact_lock["inputs"]["shell_config_sha256"] == digest(
+        source / "homebrew/main-shell-default.json"
+    )
     assert 'publication_state = "pending"' in (
         source / "packages/registry/shell/build.toml"
     ).read_text()
@@ -335,6 +340,25 @@ with tempfile.TemporaryDirectory(prefix="kandelo-shell-finalizer-test.") as temp
     }
     assert rebuilt["file-formula"] == 4
     assert rebuilt["zip"] == 2
+
+    shell_config_path = source / "homebrew/main-shell-default.json"
+    first_shell_config_sha = artifact_lock["inputs"]["shell_config_sha256"]
+    shell_config = json.loads(shell_config_path.read_text())
+    shell_config["argv"].append("--norc")
+    shell_config_path.write_text(json.dumps(shell_config, indent=2) + "\n")
+    refreshed = run(
+        "--source-root", str(source), "--tap-root", str(tap), "--apply"
+    )
+    refreshed_json = json.loads(refreshed.stdout)
+    assert refreshed_json["artifact_state"] == "pending"
+    artifact_lock = json.loads(
+        (source / "homebrew/main-shell-lazy-artifact-lock.json").read_text()
+    )
+    assert artifact_lock["inputs"]["shell_config_sha256"] == digest(
+        shell_config_path
+    )
+    assert artifact_lock["inputs"]["shell_config_sha256"] != first_shell_config_sha
+    assert artifact_lock["image"] is None
     checker = run_checker(source, tap)
     assert (
         "38 base Formulae, 21 runtime Formulae, and 25 audited Formulae; "
@@ -547,6 +571,28 @@ with tempfile.TemporaryDirectory(
 
     write_json(support_path, baseline)
     run_checker(source, tap)
+
+with tempfile.TemporaryDirectory(
+    prefix="kandelo-shell-finalizer-schema-fail."
+) as temporary:
+    root = pathlib.Path(temporary)
+    source = copy_source(root)
+    tap = create_tap(root, source)
+    artifact_path = source / "homebrew/main-shell-lazy-artifact-lock.json"
+    artifact_lock = json.loads(artifact_path.read_text())
+    artifact_lock["schema"] = 2
+    artifact_path.write_text(json.dumps(artifact_lock, indent=2) + "\n")
+    invalid_schema = run(
+        "--source-root",
+        str(source),
+        "--tap-root",
+        str(tap),
+        success=False,
+    )
+    assert (
+        "artifact lock is not the exact schema-3 contract"
+        in invalid_schema.stderr
+    )
 
 with tempfile.TemporaryDirectory(prefix="kandelo-shell-finalizer-fail.") as temporary:
     root = pathlib.Path(temporary)

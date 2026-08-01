@@ -90,11 +90,11 @@ with tarfile.open(
     add_file(
         archive,
         f"{root}/share/readme.txt",
-        b"fixture\n/home/linuxbrew/.linuxbrew/opt/zlib\n/opt/homebrew/opt/zlib\n",
+        b"fixture\n/opt/kandelo/homebrew/opt/zlib\n/opt/homebrew/opt/zlib\n",
     )
 
     if kind in {
-        "valid", "duplicate", "special", "non-utf8", "forbidden",
+        "valid", "duplicate", "special", "non-utf8", "forbidden", "retired",
         "forbidden-boundary", "side-module", "side-module-late",
         "side-module-unsupported-import", "side-module-uninstrumented-fork",
         "so-executable",
@@ -138,6 +138,12 @@ with tarfile.open(
             f"{root}/bin/bashbug",
             b"x" * split_at + forbidden_root + b"/source\n",
             0o755,
+        )
+    elif kind == "retired":
+        add_file(
+            archive,
+            f"{root}/share/retired.txt",
+            b"/home/linuxbrew/.linuxbrew/opt/zlib\n",
         )
 
     if kind in {
@@ -217,8 +223,11 @@ jq -e --arg formula_sha "$formula_sha" '
   ]
 ' --argjson abi "$ABI_VERSION" "$VALID_JSON" >/dev/null
 
+RETIRED_ARCHIVE="$TMP_ROOT/retired.tar.gz"
+make_archive retired "$RETIRED_ARCHIVE"
+
 if python3 "$INSPECTOR" \
-  --archive "$VALID_ARCHIVE" \
+  --archive "$RETIRED_ARCHIVE" \
   --formula tool \
   --version 1.0 \
   --expected-abi "$ABI_VERSION" \
@@ -234,7 +243,7 @@ grep -F "contains forbidden path '/home/linuxbrew/.linuxbrew'" \
   "$TMP_ROOT/retired-reject.err" >/dev/null
 
 python3 "$INSPECTOR" \
-  --archive "$VALID_ARCHIVE" \
+  --archive "$RETIRED_ARCHIVE" \
   --formula tool \
   --version 1.0 \
   --expected-abi "$ABI_VERSION" \

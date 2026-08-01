@@ -57,5 +57,5 @@ remain manifest-controlled.
 For example:
 
 ```text
-archive url=homebrew.zip base=/home/linuxbrew/.linuxbrew fmode=0644 fmode_policy=preserve-executable dmode=0755 uid=1000 gid=1000
+archive url=homebrew.zip base=/opt/kandelo/homebrew fmode=0644 fmode_policy=preserve-executable dmode=0755 uid=1000 gid=1000
 ```

@@ -20,7 +20,7 @@ import type { TarEntry } from "../src/vfs/tar";
 
 const CORE_TAP = "kandelo-dev/tap-core";
 const EXTERNAL_TAP = "example/homebrew-apps";
-const PREFIX = "/home/linuxbrew/.linuxbrew";
+const PREFIX = "/opt/kandelo/homebrew";
 
 function pkg(
   tapName: string,
@@ -411,13 +411,13 @@ describe("Homebrew VFS Formula bottle projection", () => {
         path: "usr/bin/absolute-tool",
         type: "symlink",
         mode: 0o777,
-        linkName: "/home/linuxbrew/.linuxbrew/opt/dependency/bin/tool",
+        linkName: "/opt/kandelo/homebrew/opt/dependency/bin/tool",
       },
       {
         path: "usr/bin/relative-tool",
         type: "symlink",
         mode: 0o777,
-        linkName: "../../home/linuxbrew/.linuxbrew/opt/dependency/bin/tool",
+        linkName: "../../opt/kandelo/homebrew/opt/dependency/bin/tool",
       },
     ];
 
@@ -431,13 +431,13 @@ describe("Homebrew VFS Formula bottle projection", () => {
       entry.path === "/usr/bin/absolute-tool"
     )).toMatchObject({
       type: "symlink",
-      target: "/home/linuxbrew/.linuxbrew/opt/dependency/bin/tool",
+      target: "/opt/kandelo/homebrew/opt/dependency/bin/tool",
     });
     expect(projected.entries.find((entry) =>
       entry.path === "/usr/bin/relative-tool"
     )).toMatchObject({
       type: "symlink",
-      target: "../../home/linuxbrew/.linuxbrew/opt/dependency/bin/tool",
+      target: "../../opt/kandelo/homebrew/opt/dependency/bin/tool",
     });
   });
 

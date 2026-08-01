@@ -583,7 +583,7 @@ jq -e \
   ] | all) and
   ([.packages[].source_status] | all(. == "success")) and
   ([.packages[].metadata_status] | all(. == "success")) and
-  (.default_shell.path == "/home/linuxbrew/.linuxbrew/bin/bash") and
+  (.default_shell.path == "/opt/kandelo/homebrew/bin/bash") and
   # WHY: the migration lock is the reviewed public shell namespace. Derive the
   # complete command-path proof from it so adding a Formula cannot silently
   # leave the command absent from the composed image.
@@ -613,9 +613,9 @@ jq -e \
   ([.compatibility_links[] |
     (.package | startswith("kandelo-dev/tap-core/")) and
     ((.ownership == "bottle-link-manifest" and
-      (.target | startswith("/home/linuxbrew/.linuxbrew/bin/"))) or
+      (.target | startswith("/opt/kandelo/homebrew/bin/"))) or
      (.ownership == "bottle-keg" and
-      (.target | startswith("/home/linuxbrew/.linuxbrew/Cellar/"))))
+      (.target | startswith("/opt/kandelo/homebrew/Cellar/"))))
   ] | all) and
   (([.link_conflicts[] | {
       target,
@@ -633,7 +633,7 @@ jq -e \
     (.owners | length) > 1 and
     (.owners | index($selected)) != null and
     (.skipped_packages == [.owners[] | select(. != $selected)]) and
-    (.path == ("/home/linuxbrew/.linuxbrew/" + .target))
+    (.path == ("/opt/kandelo/homebrew/" + .target))
   ] | all) and
   (([(.runtime_state // [])[] | {
       requires_package,
@@ -706,17 +706,17 @@ jq -e \
         },
         entrypoint: {
           path: "/usr/bin/brew",
-          target: "/home/linuxbrew/.linuxbrew/bin/brew"
+          target: "/opt/kandelo/homebrew/bin/brew"
         },
         ownership: {
-          prefix: "/home/linuxbrew/.linuxbrew",
+          prefix: "/opt/kandelo/homebrew",
           uid: 1000,
           gid: 1000,
           mutable_paths: [
-            "/home/linuxbrew/.linuxbrew/Cellar",
-            "/home/linuxbrew/.linuxbrew/Library/Taps",
-            "/home/linuxbrew/.linuxbrew/var/homebrew/linked",
-            "/home/linuxbrew/.linuxbrew/var/homebrew/locks",
+            "/opt/kandelo/homebrew/Cellar",
+            "/opt/kandelo/homebrew/Library/Taps",
+            "/opt/kandelo/homebrew/var/homebrew/linked",
+            "/opt/kandelo/homebrew/var/homebrew/locks",
             "/home/user/.cache/Homebrew"
           ]
         }

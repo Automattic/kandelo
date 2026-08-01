@@ -522,11 +522,11 @@ case "$brew_version" in
   "Homebrew "*) ;;
   *) brew_smoke_fail "unexpected brew version: $brew_version" ;;
 esac
-test "$(/usr/bin/brew --prefix 2>&1)" = /home/linuxbrew/.linuxbrew ||
+test "$(/usr/bin/brew --prefix 2>&1)" = /opt/kandelo/homebrew ||
   brew_smoke_fail 'brew --prefix differs from the guest prefix'
-test "$(/usr/bin/brew --repository 2>&1)" = /home/linuxbrew/.linuxbrew ||
+test "$(/usr/bin/brew --repository 2>&1)" = /opt/kandelo/homebrew ||
   brew_smoke_fail 'brew --repository differs from the guest repository'
-test "$(/usr/bin/brew --cellar 2>&1)" = /home/linuxbrew/.linuxbrew/Cellar ||
+test "$(/usr/bin/brew --cellar 2>&1)" = /opt/kandelo/homebrew/Cellar ||
   brew_smoke_fail 'brew --cellar differs from the guest Cellar'
 test "$(/usr/bin/brew --cache 2>&1)" = /home/user/.cache/Homebrew ||
   brew_smoke_fail 'brew --cache differs from the guest cache'
@@ -534,7 +534,7 @@ test "$(/usr/bin/brew --cache 2>&1)" = /home/user/.cache/Homebrew ||
 # package API. A temporary stock Bash command observes the same post-brew.env
 # process environment without turning this offline smoke into a network test;
 # the lifecycle test separately proves that installs use this bottle tag.
-probe=/home/linuxbrew/.linuxbrew/Library/Homebrew/cmd/kandelo-env-probe.sh
+probe=/opt/kandelo/homebrew/Library/Homebrew/cmd/kandelo-env-probe.sh
 cat > "$probe" <<'KANDELO_BREW_ENV_PROBE'
 homebrew-kandelo-env-probe() {
   printf '%s\n' "$HOMEBREW_KANDELO_BOTTLE_TAG"
@@ -687,7 +687,7 @@ function assertHomebrewBootstrapConsumerContract(
 ): void {
   const environmentPath = "/etc/homebrew/brew.env";
   const entrypointPath = "/usr/bin/brew";
-  const target = "/home/linuxbrew/.linuxbrew/bin/brew";
+  const target = "/opt/kandelo/homebrew/bin/brew";
   const actualEnvironment = readVfsFile(fs, environmentPath);
   if (
     actualEnvironment.byteLength !== expectedEnvironment.byteLength ||
@@ -708,7 +708,7 @@ function assertHomebrewBootstrapConsumerContract(
       "main-shell does not expose the canonical /usr/bin/brew alias",
     );
   }
-  assertTreeOwner(fs, "/home/linuxbrew/.linuxbrew", 1000, 1000);
+  assertTreeOwner(fs, "/opt/kandelo/homebrew", 1000, 1000);
   assertTreeOwner(fs, "/home/user/.cache", 1000, 1000);
 
   const imageMetadata = asRecord(metadata, "main-shell image metadata");
@@ -720,14 +720,14 @@ function assertHomebrewBootstrapConsumerContract(
     },
     entrypoint: { path: entrypointPath, target },
     ownership: {
-      prefix: "/home/linuxbrew/.linuxbrew",
+      prefix: "/opt/kandelo/homebrew",
       uid: 1000,
       gid: 1000,
       mutable_paths: [
-        "/home/linuxbrew/.linuxbrew/Cellar",
-        "/home/linuxbrew/.linuxbrew/Library/Taps",
-        "/home/linuxbrew/.linuxbrew/var/homebrew/linked",
-        "/home/linuxbrew/.linuxbrew/var/homebrew/locks",
+        "/opt/kandelo/homebrew/Cellar",
+        "/opt/kandelo/homebrew/Library/Taps",
+        "/opt/kandelo/homebrew/var/homebrew/linked",
+        "/opt/kandelo/homebrew/var/homebrew/locks",
         "/home/user/.cache/Homebrew",
       ],
     },
@@ -1179,7 +1179,7 @@ async function spawnWithTimeout(
   try {
     const exitPromise = host.spawn(toArrayBuffer(programBytes), argv, {
       env: [
-        "PATH=/home/linuxbrew/.linuxbrew/bin:/usr/bin:/bin",
+        "PATH=/opt/kandelo/homebrew/bin:/usr/bin:/bin",
         "HOME=/home/user",
         "USER=user",
         "TMPDIR=/tmp",

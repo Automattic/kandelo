@@ -758,7 +758,7 @@ describe("LiveKernelHost: shell command queue", () => {
       } as any,
     });
     host.setDefaultShell({
-      programPath: "/home/linuxbrew/.linuxbrew/bin/dash",
+      programPath: "/opt/kandelo/homebrew/bin/dash",
       argv: ["dash", "-l", "-i"],
       env: ["PS1=kandelo$ "],
       cwd: "/home/user",
@@ -769,7 +769,7 @@ describe("LiveKernelHost: shell command queue", () => {
     await host.attachPty("/dev/pts/0", { cols: 100, rows: 30 });
 
     expect(spawnFromVfs).toHaveBeenCalledWith(
-      "/home/linuxbrew/.linuxbrew/bin/dash",
+      "/opt/kandelo/homebrew/bin/dash",
       ["dash", "-l", "-i"],
       expect.objectContaining({
         pty: true,
@@ -1681,11 +1681,11 @@ describe("Kandelo default shell image configuration", () => {
   it("accepts one exact VFS executable and interactive argv", () => {
     expect(parseKandeloShellConfig(JSON.stringify({
       version: 1,
-      path: "/home/linuxbrew/.linuxbrew/bin/dash",
+      path: "/opt/kandelo/homebrew/bin/dash",
       argv: ["dash", "-l", "-i"],
     }))).toEqual({
       version: 1,
-      path: "/home/linuxbrew/.linuxbrew/bin/dash",
+      path: "/opt/kandelo/homebrew/bin/dash",
       argv: ["dash", "-l", "-i"],
     });
   });
@@ -1693,12 +1693,12 @@ describe("Kandelo default shell image configuration", () => {
   it("rejects executable paths that can escape or drift", () => {
     expect(() => parseKandeloShellConfig(JSON.stringify({
       version: 1,
-      path: "/home/linuxbrew/../bin/dash",
+      path: "/opt/kandelo/../bin/dash",
       argv: ["dash", "-l", "-i"],
     }))).toThrow("normalized");
     expect(() => parseKandeloShellConfig(JSON.stringify({
       version: 1,
-      path: "home/linuxbrew/bin/dash",
+      path: "opt/kandelo/bin/dash",
       argv: ["dash", "-l", "-i"],
     }))).toThrow("absolute guest file path");
   });

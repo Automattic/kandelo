@@ -14,7 +14,7 @@
   },
   "patch": {
     "path": "homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch",
-    "sha256": "9c52238d811616c210cd1ecdd23b0192a3e0333219a70b34d8ea6d77dbcfbf74"
+    "sha256": "faf62befeb70033ea450e88eb1b21427e221030a7f6b6ce932ad2c7c728ac2bc"
   },
   "license": {
     "expression": "BSD-2-Clause AND GPL-2.0-or-later",
@@ -31,14 +31,14 @@
     }
   },
   "prepared": {
-    "patched_tree_git_oid": "aa63e300318064a4d0801723574ff7c9430f12ce",
-    "patched_tree_sha256": "4e6bea0da427684a04acdd7126b8ebb92f2a6b5c7ee8abfe8da0271a6d7314b0",
+    "patched_tree_git_oid": "79bea9c61e31e7df2fef5fd8407b3101042774a6",
+    "patched_tree_sha256": "62ba79f7768a3a766e832715b6ecc3c22aeb9c2f986599730e9d9b65aba81a9c",
     "portable_ruby_version": "4.0.5_1",
     "git_version": "2.51.2"
   },
   "output": {
     "path": "homebrew-bootstrap.zip",
-    "sha256": "6882b622453ca2f0935159bba7e0d7c3269dd97736a5c45f64049466d06db0c0",
-    "bytes": 5101587
+    "sha256": "1d60dcb986f525a3ce4acab710b22ffed3c4296fbae24b9db88ef050526c37eb",
+    "bytes": 5096725
   }
 }

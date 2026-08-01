@@ -23,6 +23,7 @@ inputs = [
   "apps/browser-demos/lib/init/mysql-benchmark.ts",
   "apps/browser-demos/lib/init/wordpress-runtime-config.ts",
   "host/src",
+  "homebrew/kandelo-guest-layout.json",
   "web-libs/kandelo-session/src/demo-config.ts",
   "web-libs/kandelo-session/src/demo-guides.ts",
   "web-libs/kandelo-session/src/vfs-capacity.ts",

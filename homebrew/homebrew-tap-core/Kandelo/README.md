@@ -251,7 +251,7 @@ single-line stdout substring:
   "schema": 1,
   "formula": "consumer",
   "brewfile": "Kandelo/vfs-acceptance.Brewfile",
-  "executable": "/home/linuxbrew/.linuxbrew/bin/consumer",
+  "executable": "/opt/kandelo/homebrew/bin/consumer",
   "argv": ["consumer", "--version"],
   "expected_stdout": "consumer"
 }
@@ -296,7 +296,7 @@ workflow builds the VFS image, serves it from the browser demo, boots it with
 Playwright Chromium, and runs:
 
 ```bash
-/home/linuxbrew/.linuxbrew/bin/file --version
+/opt/kandelo/homebrew/bin/file --version
 ```
 
 On success, sidecars record `runtime_support = ["node", "browser"]` and

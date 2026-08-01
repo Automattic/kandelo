@@ -41,7 +41,7 @@ GUEST_PATH_RE = re.compile(
     r"^/(?:[A-Za-z0-9._@%+=:-]+/)*[A-Za-z0-9._@%+=:-]+$"
 )
 HOMEBREW_COMMAND_RE = re.compile(
-    r"^/home/linuxbrew/\.linuxbrew/(?:bin|sbin)/[A-Za-z0-9._@%+=:-]+$"
+    r"^/opt/kandelo/homebrew/(?:bin|sbin)/[A-Za-z0-9._@%+=:-]+$"
 )
 
 IMAGE_ASSET = "kandelo-homebrew.vfs.zst"
@@ -70,7 +70,7 @@ MAX_LAZY_LAYER_RUNTIME_ID_BYTES = (
 )
 MAX_LAZY_LAYER_ARCHIVE_BYTES = 256 * 1024 * 1024
 MAX_LAZY_LAYER_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
-HOMEBREW_PREFIX = "/home/linuxbrew/.linuxbrew"
+HOMEBREW_PREFIX = "/opt/kandelo/homebrew"
 MAX_BOTTLE_CHANGED_FILES = 100_000
 HOMEBREW_REPLACEMENTS = (
     (b"@@HOMEBREW_PREFIX@@", HOMEBREW_PREFIX.encode()),
@@ -3412,8 +3412,8 @@ def validate_lazy_layer(
         ):
             fail(f"Homebrew lazy layer entry {index} has an unsafe path")
         if not (
-            path == "home/linuxbrew/.linuxbrew"
-            or path.startswith("home/linuxbrew/.linuxbrew/")
+            path == "opt/kandelo/homebrew"
+            or path.startswith("opt/kandelo/homebrew/")
         ):
             fail(f"Homebrew lazy layer entry {index} escapes the Homebrew prefix")
         if path in seen_paths:
