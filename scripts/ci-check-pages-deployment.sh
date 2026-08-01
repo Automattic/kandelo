@@ -214,8 +214,6 @@ grep -Fq 'id: shell_product' <<<"$shell_product_block" &&
     <<<"$shell_product_block" &&
   grep -Fq 'programs/homebrew-bootstrap/homebrew-bootstrap.zip)' \
     <<<"$shell_product_block" &&
-  grep -Fq 'cmp "$image" apps/browser-demos/public/shell.vfs.zst' \
-    <<<"$shell_product_block" &&
   grep -Fq 'scripts/verify-homebrew-main-shell-artifact-lock.sh' \
     <<<"$shell_product_block" &&
   grep -Fq 'scripts/inspect-homebrew-main-shell-public-product.ts' \
@@ -232,6 +230,21 @@ grep -Fq 'npx tsx --test \' <<<"$shell_product_block" &&
   fail "Pages must run the public-product inspector rejection tests"
 if grep -Fq 'recover-homebrew-bottle-mirror' <<<"$shell_product_block"; then
   fail "Pages inspection must not eagerly download the complete bottle mirror"
+fi
+
+browser_build_block="$(
+  step_block "$PAGES_WORKFLOW" "Build browser demos for GitHub Pages"
+)"
+grep -Fxq '          npm run build' <<<"$browser_build_block" &&
+  grep -Fq 'bash ../../scripts/verify-browser-shell-vfs-asset.sh \' \
+    <<<"$browser_build_block" &&
+  grep -Fxq \
+    '            dist "${{ steps.shell_product.outputs.image }}"' \
+    <<<"$browser_build_block" ||
+  fail "the Pages build must verify its exact hashed shell asset"
+if grep -Fq 'dist/shell.vfs.zst' "$PAGES_WORKFLOW" ||
+   grep -Fq 'apps/browser-demos/public/shell.vfs.zst' "$PAGES_WORKFLOW"; then
+  fail "Pages must not trust Vite's optional unhashed public shell copy"
 fi
 
 sealed_boot_block="$(
@@ -258,9 +271,6 @@ grep -Fq 'VITE_BASE: /kandelo/' <<<"$sealed_boot_block" &&
     <<<"$sealed_boot_block" &&
   grep -Fq 'KANDELO_PLAYWRIGHT_SERVE_DIST: "1"' <<<"$sealed_boot_block" &&
   grep -Fq 'KANDELO_TEST_BASE_URL: http://127.0.0.1:5401/kandelo/' \
-    <<<"$sealed_boot_block" &&
-  grep -Fq \
-    'cmp dist/shell.vfs.zst "${{ steps.shell_product.outputs.image }}"' \
     <<<"$sealed_boot_block" &&
   grep -Fq 'bash ../../scripts/dev-shell.sh env \' <<<"$sealed_boot_block" &&
   grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
