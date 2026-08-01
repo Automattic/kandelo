@@ -1,0 +1,29 @@
+name: Build Kandelo bottle candidate
+
+on:
+  repository_dispatch:
+    types: [build-kandelo-bottle-candidate]
+
+jobs:
+  candidate:
+    # Formula and PR code run only in read-only jobs. The reusable workflow's
+    # reviewed final job receives contents:write solely to seal inert bytes in
+    # a run-bound release after all candidate execution has stopped.
+    permissions:
+      actions: read
+      contents: write
+    uses: Automattic/kandelo/.github/workflows/reusable-homebrew-bottle-publish.yml@__KANDELO_CANDIDATE_BASE_SHA__
+    with:
+      kandelo-repository: Automattic/kandelo
+      kandelo-ref: ${{ github.event.client_payload.kandelo_ref }}
+      tap-repository: kandelo-dev/homebrew-tap-core
+      tap-name: kandelo-dev/tap-core
+      tap-ref: ${{ github.event.client_payload.tap_ref }}
+      formulae: ${{ github.event.client_payload.formula }}
+      arches: ${{ github.event.client_payload.arch }}
+      force: true
+      dry-run: true
+      candidate-pr-number: ${{ github.event.client_payload.pr_number }}
+      candidate-package-staging-tag: ${{ github.event.client_payload.package_staging_tag }}
+      prefix-campaign-tag: ${{ github.event.client_payload.prefix_campaign_tag }}
+      prefix-campaign-dependencies: ${{ github.event.client_payload.prefix_campaign_dependencies }}

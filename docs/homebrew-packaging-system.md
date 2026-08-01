@@ -348,38 +348,169 @@ An ABI bump changes the contract between Kandelo programs and the
 kernel. Every bottle for the new ABI must therefore be rebuilt, even
 when the upstream software version did not change.
 
-### There is no canonical candidate-bottle lane today
+### Transitional pre-merge candidate bottles
 
-The Kandelo merge-candidate workflow can build package-registry archives
-for the proposed ABI, create an isolated candidate index, and run
-kernel, libc, POSIX, Node, and browser validation against the synthetic
-merge. These are candidate artifacts. They are valuable test evidence,
-but Prepare Merge does not publish public canonical Homebrew bottles.
+Kandelo has a narrow candidate lane for building a bottle before its
+producer pull request merges. It exists to move ABI testing earlier
+without letting pull-request code publish a canonical package.
 
-The complete Homebrew publisher intentionally cannot run from
-PR-controlled workflow code. Ordinary canonical publication also
-requires exact protected `main` authority. A pull-request head, a
-synthetic merge, or a commit that may become an ancestor later does not
-satisfy that rule. Tree equality is used after merge to admit
-package-generation inputs; it does not turn a pre-merge Homebrew bottle
-into a canonical publication.
+As of 2026-08-01, this repository contains the implementation and
+caller templates. The lane is not live until a coordinated tap commit
+installs rendered exact-SHA callers. Do not dispatch the candidate
+events while the live tap lacks those rendered files.
 
-The reviewed prefix-campaign mode is a narrow exception for a sealed
-source commit that is already in protected `main` history. It may
-continue while that exact source remains an ancestor, and it preserves
-that source in bottle provenance. It never admits a PR-only commit.
+The first version supports one leaf Formula for `wasm32`. A leaf has no
+Homebrew runtime dependencies in the selected campaign. Dependency
+Formulae and `wasm64` need a later version of the protocol.
 
-A workflow already reviewed on protected tap `main` may select an
-unmerged Kandelo SHA as read-only input for a no-write dry run. The
-trusted workflow, not the selected candidate, still owns the job graph
-and permissions. This is useful for ABI-neutral publisher or Formula
-testing when all required package inputs already exist. It does not make
-the candidate protected or canonical.
+The protocol gives each commit one role:
 
-That dry-run path is not a complete new-ABI bottle prebuild. A new ABI
-does not yet have the durable package generations needed by the bottle
-builder, and dry runs are not allowed to create or substitute those
-generations.
+- `B` is the protected Kandelo `main` commit used as the pull request's
+  base;
+- `S` is the exact pull-request head that produces the candidate bottle;
+- `A` is the protected Kandelo workflow and validator authority, which
+  must equal `B` in version 1;
+- `C` is the exact protected tap commit that owns a caller run;
+- `T` is the protected tap source used to prepare the Formula; and
+- `M` is the later merge commit that may admit the candidate.
+
+The candidate caller lives on protected tap `main`. Its build jobs have
+read-only permissions. Candidate Formula and Kandelo code can run there,
+but no registry or tap write credential is present. After that execution
+has stopped, code from `A` validates the results and seals them in one
+immutable, run-bound candidate release. The release tag says that it is
+a candidate. It is not a Homebrew version tag, a Formula update, or a
+canonical bottle reference.
+
+Before a bottle is built, a separate candidate-campaign run binds `B`,
+`S`, `C`, `T`, the native Homebrew source, ABI snapshot, guest layout,
+package catalog, and complete Formula plan. Its immutable release uses
+the noncanonical
+`homebrew-prefix-campaign-candidate-pr-...-sha256-...` namespace. The
+release contains only `campaign.json` and
+`candidate-campaign.json`. Neither asset selects a public Formula.
+
+The candidate campaign may use a package catalog from the same ABI or
+an older ABI. It must reject a catalog from a newer ABI. When the
+catalog is older, every catalog variant is marked for rebuild because
+an older-ABI archive cannot be reused under the candidate ABI. This
+lets an ABI pull request plan its first bottles without pretending that
+old archives are compatible.
+
+The bottle candidate then binds that campaign, `B`, `S`, protected
+validator authority `A`, `C`, `T`, the prepared tap tree, Formula,
+package input ledger, build handoff, OCI child, workflow run, and
+artifact identities. Version 1 also binds an empty dependency list. A
+rerun gets a distinct tag and cannot replace an earlier candidate.
+
+The successful sealer also uploads one small release receipt for 90
+days. The receipt binds the public release ID, tag, target commit,
+immutability, and the complete asset inventory by ID, name, size, URL,
+and SHA-256. This receipt is the durable proof that protected code
+accepted the release. The larger derivation and build artifacts may
+expire after two days because the immutable public release retains the
+bytes needed for promotion.
+
+The package input currently comes from Kandelo's immutable pull-request
+staging release. This is an explicit migration bridge, not the final
+Homebrew ownership model. It is read as inert data by protected
+validator code. The bridge must be removed once the tap-owned candidate
+builder can derive every build input from Formulae and immutable
+bottles. At that point the Formula build, seal, and candidate artifacts
+should all be owned by the tap.
+
+### Exact merge and promotion
+
+A candidate can be promoted only after GitHub reports the pull request
+as merged and all of these statements are true:
+
+```text
+parents(M) = [B, S]
+tree(M) = tree(S)
+M and S are in protected main history
+```
+
+This requires a merge commit that preserves the exact pull-request head.
+A squash merge, rebase merge, conflict resolution, changed pull-request
+head, or changed base invalidates the candidate. Build another candidate
+instead of claiming that different source produced the old bytes.
+
+The trusted workflow at `M` then regenerates the complete package
+ledger and compares it byte for byte with the candidate input. It also
+rederives the campaign from `S`, `T`, and the native Homebrew source.
+Public registry observations recorded while the candidate was sealed
+are replayed because unrelated bottles may have been published since
+then. The exact bottle being promoted still receives a live collision
+check before every public write.
+
+The workflow locates the exact original run and attempt recorded in the
+candidate. The run must be complete and successful, and every job in
+that attempt must have completed successfully or been skipped. Exactly
+one live 90-day sealer-receipt artifact must match the recorded run and
+caller commit. Promotion validates that artifact's ID, name, size,
+digest, and workflow-run identity before downloading it by artifact ID.
+
+Protected code then exact-key validates the receipt and compares it
+with the live immutable release. The repository, tag, target commit,
+release ID, immutability flag, and complete asset inventory must all
+match. Every release asset is downloaded anonymously and rehashed. The
+workflow reconstructs the prepared tap and the exact build and OCI
+handoffs from those release bytes. It does not rebuild the bottle and
+does not depend on the two-day build artifacts still existing.
+
+Promotion is available only while both 90-day receipt artifacts remain
+live. If a candidate workflow needs another attempt, use **Re-run all
+jobs**. Do not use a partial rerun or combine evidence from different
+attempts. The new complete attempt receives its own candidate tag and
+receipts.
+
+The canonical publisher receives the reconstructed bytes only after
+those checks. Bottle provenance continues to say `built_from = S`.
+Separate admission evidence records `validated_against_main = M`. This
+is more accurate than rewriting the producer to `M`, which never built
+the archive.
+
+Successful promotion publishes the exact OCI bytes and an immutable
+Formula handoff for the campaign. The bottle is then durable and can be
+selected by its immutable digest. The campaign's later tap finalization
+still updates the public Formula bottle block and normal `brew`
+selection. An unrelated failed Formula does not invalidate a promoted
+bottle. The candidate release itself remains candidate evidence; it is
+never renamed or treated as the canonical package.
+
+### Installing exact candidate callers
+
+The three caller files stored under
+`homebrew/homebrew-tap-core/.github/workflows/` are templates. They
+contain deliberate placeholders and must not be copied directly into
+the live tap. GitHub does not allow an expression in a reusable
+workflow `uses:` reference, so the caller files must contain literal
+Kandelo commit SHAs.
+
+Before a pre-merge candidate build, render the callers with `B` as both
+inputs:
+
+```sh
+python3 scripts/homebrew-candidate-caller-pins.py render \
+  --template-root homebrew/homebrew-tap-core \
+  --base-sha "$B" \
+  --merge-sha "$B" \
+  --out rendered-candidate-callers
+```
+
+Install the three files from
+`rendered-candidate-callers/.github/workflows/` in one protected tap
+commit. The campaign and bottle callers now execute reusable workflows
+from exact `B`. The promotion caller is intentionally pinned to `B`, so
+it cannot admit a later merge accidentally.
+
+After the exact merge creates `M`, render again with `--base-sha "$B"`
+and `--merge-sha "$M"`. Install all three files in one new protected tap
+commit. The campaign and bottle callers remain pinned to `B`; the
+promotion caller now executes the materializer and publisher from exact
+`M`. Each reusable workflow checks the literal pins in the exact tap
+caller commit `C` that GitHub reports for that run. A mutable `@main`
+reference, an unresolved placeholder, or a different SHA fails closed.
 
 ### Supported ABI-bump sequence
 
@@ -393,26 +524,38 @@ Use this sequence for an ABI candidate:
    the synthetic merge, creates an isolated candidate index, and runs
    the relevant kernel, libc, POSIX, Node, and browser suites. Fix the
    platform before adding package-specific workarounds.
-3. Merge the exact prepared tree. The post-merge
+3. Render and install the pre-merge callers with exact `B` as described
+   above. For an early bottle test, dispatch the protected tap's
+   `prepare-kandelo-candidate-campaign` event with exact `S`, `T`, and
+   pull-request number. It creates the noncanonical candidate-campaign
+   tag. Keep `B`, `S`, and `T` unchanged while it derives and seals.
+4. Dispatch `build-kandelo-bottle-candidate` with exact `S`, `T`,
+   Formula, candidate-campaign tag, pull-request number, and staging
+   tag. Independent version-1 leaf Formulae may run in parallel. Skip
+   this step for Formulae outside the `wasm32` leaf scope.
+5. Merge the exact prepared tree. The post-merge
    `activate-merge-candidate.yml` workflow verifies that the tested
    producer tree equals the resulting `main` tree, creates the new
    `binaries-abi-v<N>` release, copies the complete tested closure,
    commits one canonical index transaction, and publishes the release
    once. `force-rebuild.yml` is not the initializer for a new ABI
    release.
-4. Read the final `main` commit `M` and the immutable archive producer
+6. Read the final `main` commit `M` and the immutable archive producer
    `S` from activation evidence. Promote the required roots with
    `promote-package-generation.yml`, using `identical-git-tree-v1` to
    prove that the complete `S` tree equals `M`. The archives keep
    truthful `S` provenance even when `S` and `M` are different commit
    identities.
-5. Rotate the tap's pinned Kandelo workflow trust to `M` and run a
+7. Render the callers again with exact `B` and `M`, then install that
+   coordinated tap commit. If step 4 created a candidate, dispatch
+   `promote-kandelo-bottle-candidate` with `S`, `M`, its candidate tag,
+   Formula, and exact `M`-bound rootfs generation. Otherwise run a
    no-write bottle canary.
-6. Publish Formulae in dependency order. Run independent branches in
+8. Publish Formulae in dependency order. Run independent branches in
    parallel. Each anonymously verified bottle becomes usable
    immediately; do not wait for unrelated failures before consuming it
    by immutable digest.
-7. Recompose and validate the selected VFS image. Deploy only the image
+9. Recompose and validate the selected VFS image. Deploy only the image
    and guest lifecycle claims that passed both Node and browser
    evidence.
 
@@ -421,31 +564,19 @@ transaction. The dependency graph imposes ordering, but independent
 leaves can publish at the same time and successful results remain
 useful.
 
-### Why not publish candidate bottles before merge?
+### Why candidates stay noncanonical before merge
 
-Publishing before merge would make unmerged code a public package
-authority. Preserving a PR commit with a merge commit only proves that
-it became an ancestor; it does not prove that the bottle was produced
-from the final protected-main identity. Kandelo does not use that
-history trick as the normal release model.
+Publishing directly from `S` would make unmerged code a package
+authority. The candidate lane instead separates three actions:
 
-A future safe prebuild lane is possible, but it needs an explicit
-design. At minimum it must:
+1. untrusted source produces bytes without write credentials;
+2. protected code seals those bytes under a candidate-only identity;
+3. protected post-merge code may publish the same bytes after proving
+   the exact merge and every bound input.
 
-- build without registry or tap write credentials;
-- store candidate bottles in a quarantined, run-bound namespace;
-- bind the exact Formula, dependencies, SDK, sysroot, ABI, and synthetic
-  merge tree;
-- after merge, prove that every output-affecting input is identical to
-  final `main`;
-- preserve the candidate producer in immutable `built_from` provenance
-  and record final-main validation as separate admission evidence; and
-- publish through a trusted default-branch workflow that rechecks all
-  public destinations before mutation.
-
-Until that promotion contract exists, build and test the ABI and package
-candidate before merge, activate its complete package closure after
-merge, then build Homebrew bottles through exact-main publication.
+The third action is what makes the bottle canonical. A public immutable
+candidate release is only quarantined evidence; public readability does
+not grant package authority.
 
 ## VFS images and lazy bottles
 

@@ -1,0 +1,276 @@
+name: Promote exact merged Kandelo bottle candidate
+
+on:
+  repository_dispatch:
+    types: [promote-kandelo-bottle-candidate]
+
+jobs:
+  admit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      candidate-tag: ${{ steps.admit.outputs.candidate-tag }}
+      formula: ${{ steps.admit.outputs.formula }}
+      merge-commit: ${{ steps.admit.outputs.merge-commit }}
+      producer-sha: ${{ steps.admit.outputs.producer-sha }}
+      rootfs-generation: ${{ steps.admit.outputs.rootfs-generation }}
+    steps:
+      - name: Admit one exact promotion request
+        id: admit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAP_REPOSITORY: ${{ github.repository }}
+          TAP_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          payload="$RUNNER_TEMP/candidate-promotion-request.json"
+          jq -eS '
+            .client_payload |
+            select(
+              type == "object" and
+              keys == [
+                "candidate_tag",
+                "formula",
+                "merge_commit",
+                "producer_sha",
+                "rootfs_generation"
+              ] and
+              (.candidate_tag | type == "string" and test(
+                "^homebrew-bottle-candidate-pr-[1-9][0-9]*-run-[1-9][0-9]*-attempt-[1-9][0-9]*-sha256-[0-9a-f]{64}$"
+              )) and
+              (.formula | type == "string" and
+                test("^[a-z0-9][a-z0-9._-]{0,254}$")) and
+              (.merge_commit | type == "string" and
+                test("^[0-9a-f]{40}$")) and
+              (.producer_sha | type == "string" and
+                test("^[0-9a-f]{40}$")) and
+              (.rootfs_generation | type == "string" and test(
+                "^package-generation-rootfs-wasm32-abi-v[1-9][0-9]*-sha256-[0-9a-f]{64}$"
+              ))
+            )
+          ' "$GITHUB_EVENT_PATH" >"$payload"
+          current_main="$(gh api \
+            "/repos/$TAP_REPOSITORY/git/ref/heads/main" \
+            --jq .object.sha)"
+          [ "$TAP_SHA" = "$current_main" ] || {
+            echo "::error::candidate promotion requires current tap main"
+            exit 1
+          }
+          {
+            echo "candidate-tag=$(jq -r .candidate_tag "$payload")"
+            echo "formula=$(jq -r .formula "$payload")"
+            echo "merge-commit=$(jq -r .merge_commit "$payload")"
+            echo "producer-sha=$(jq -r .producer_sha "$payload")"
+            echo "rootfs-generation=$(jq -r .rootfs_generation "$payload")"
+          } >>"$GITHUB_OUTPUT"
+
+  materialize:
+    needs: [admit]
+    permissions:
+      actions: read
+      contents: read
+    uses: Automattic/kandelo/.github/workflows/reusable-homebrew-bottle-candidate-materialize.yml@__KANDELO_CANDIDATE_MERGE_SHA__
+    with:
+      candidate-tag: ${{ needs.admit.outputs.candidate-tag }}
+      formula: ${{ needs.admit.outputs.formula }}
+      producer-sha: ${{ needs.admit.outputs.producer-sha }}
+      merge-commit: ${{ needs.admit.outputs.merge-commit }}
+
+  publish:
+    needs: [admit, materialize]
+    permissions:
+      actions: read
+      contents: read
+      packages: write
+    uses: Automattic/kandelo/.github/workflows/reusable-homebrew-bottle-publish.yml@__KANDELO_CANDIDATE_MERGE_SHA__
+    with:
+      kandelo-repository: Automattic/kandelo
+      kandelo-ref: ${{ needs.admit.outputs.merge-commit }}
+      tap-repository: kandelo-dev/homebrew-tap-core
+      tap-name: kandelo-dev/tap-core
+      tap-ref: ${{ needs.materialize.outputs.source-tap-commit }}
+      formulae: ${{ needs.admit.outputs.formula }}
+      arches: wasm32
+      release-tag: ${{ needs.materialize.outputs.release-tag }}
+      expected-cache-keys: ""
+      package-generation-wasm32: >-
+        ${{ needs.admit.outputs.rootfs-generation }}
+      force: true
+      dry-run: false
+      require-vfs-acceptance: false
+      defer-tap-finalization: true
+      prefix-campaign-tag: ${{ needs.materialize.outputs.campaign-tag }}
+      prefix-campaign-dependencies: '{"dependencies":[],"schema":1}'
+      candidate-promotion-tag: ${{ needs.admit.outputs.candidate-tag }}
+      candidate-producer-sha: ${{ needs.admit.outputs.producer-sha }}
+
+  seal-formula-handoff:
+    needs: [admit, materialize, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Checkout protected tap release authority
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          path: tap-authority
+
+      - name: Checkout exact merged Kandelo handoff authority
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          repository: Automattic/kandelo
+          ref: ${{ needs.admit.outputs.merge-commit }}
+          path: kandelo
+          submodules: false
+
+      - name: Checkout exact bottle producer as inert data
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          repository: Automattic/kandelo
+          ref: ${{ needs.admit.outputs.producer-sha }}
+          path: producer
+          submodules: false
+
+      - name: Checkout exact campaign source tap
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          repository: kandelo-dev/homebrew-tap-core
+          ref: ${{ needs.materialize.outputs.source-tap-commit }}
+          path: source-tap
+          fetch-depth: 0
+
+      - name: Download the exact validated publication handoff
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: >-
+            homebrew-publish-handoff-${{ needs.admit.outputs.formula }}-wasm32-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate-publication
+
+      - name: Download exact candidate campaign admission
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: >-
+            homebrew-candidate-promotion-${{ needs.admit.outputs.formula }}-wasm32-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate-promotion
+
+      - name: Install Nix for protected handoff validation
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Cache Nix store and flake evaluation
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
+        with:
+          use-gha-cache: false
+          use-flakehub: false
+
+      - name: Derive the immutable campaign Formula handoff
+        id: handoff
+        shell: bash
+        env:
+          ABI: ${{ needs.materialize.outputs.abi }}
+          CAMPAIGN_TAG: ${{ needs.materialize.outputs.campaign-tag }}
+          FORMULA: ${{ needs.admit.outputs.formula }}
+          MERGE_COMMIT: ${{ needs.admit.outputs.merge-commit }}
+          PRODUCER_SHA: ${{ needs.admit.outputs.producer-sha }}
+          TAP_SHA: ${{ needs.materialize.outputs.source-tap-commit }}
+        run: |
+          set -euo pipefail
+          campaign="$RUNNER_TEMP/campaign.json"
+          python3 kandelo/scripts/homebrew-candidate-campaign.py \
+            fetch-release \
+            --repository kandelo-dev/homebrew-tap-core \
+            --tag "$CAMPAIGN_TAG" --out "$campaign" \
+            --candidate-out \
+              "$RUNNER_TEMP/candidate-campaign-manifest.json" \
+            --receipt-out "$RUNNER_TEMP/campaign-readback.json"
+          layout_sha="$(sha256sum \
+            "$GITHUB_WORKSPACE/producer/homebrew/kandelo-guest-layout.json" |
+            awk '{print $1}')"
+          python3 kandelo/scripts/homebrew-candidate-campaign.py \
+            validate-admission \
+            --receipt \
+              "$RUNNER_TEMP/candidate-promotion/candidate-campaign-admission.json" \
+            --candidate-tag "$CAMPAIGN_TAG" \
+            --producer-commit "$PRODUCER_SHA" \
+            --merge-commit "$MERGE_COMMIT" \
+            --source-tap-commit "$TAP_SHA" \
+            --abi "$ABI" \
+            --guest-layout-sha256 "$layout_sha"
+          bash kandelo/scripts/dev-shell.sh \
+            python3 kandelo/scripts/homebrew-prefix-campaign-publisher.py \
+              prepare --tap-root "$GITHUB_WORKSPACE/source-tap" \
+              --kandelo-root "$GITHUB_WORKSPACE/producer" \
+              --kandelo-commit "$PRODUCER_SHA" \
+              --tap-repository kandelo-dev/homebrew-tap-core \
+              --tap-name kandelo-dev/tap-core \
+              --source-tap-commit "$TAP_SHA" \
+              --campaign-tag "$CAMPAIGN_TAG" \
+              --dependencies '{"dependencies":[],"schema":1}' \
+              --formula "$FORMULA" --arch wasm32 \
+              --work-root "$RUNNER_TEMP/prepared-campaign-tap" \
+              --receipt-out "$RUNNER_TEMP/prepared-campaign.json"
+          bash kandelo/scripts/dev-shell.sh \
+            python3 kandelo/scripts/homebrew-prefix-campaign-executor.py \
+              derive-build --campaign "$campaign" \
+              --source-tap-root "$GITHUB_WORKSPACE/source-tap" \
+              --formula "$FORMULA" \
+              --publication \
+                "wasm32=$RUNNER_TEMP/candidate-publication" \
+              --out "$RUNNER_TEMP/candidate-formula-handoff"
+          bash kandelo/scripts/dev-shell.sh \
+            python3 kandelo/scripts/homebrew-prefix-campaign-executor.py \
+              prepare-release --campaign "$campaign" \
+              --handoff "$RUNNER_TEMP/candidate-formula-handoff" \
+              --out "$RUNNER_TEMP/prepared-formula-release"
+          tag="$(jq -er .tag \
+            "$RUNNER_TEMP/prepared-formula-release/release-manifest.json")"
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+
+      - name: Publish the now-main-reachable Formula handoff
+        shell: bash
+        env:
+          FORMULA: ${{ needs.admit.outputs.formula }}
+          GH_TOKEN: ${{ github.token }}
+          HANDOFF_TAG: ${{ steps.handoff.outputs.tag }}
+          PRODUCER_SHA: ${{ needs.admit.outputs.producer-sha }}
+          SOURCE_TAP_SHA: >-
+            ${{ needs.materialize.outputs.source-tap-commit }}
+          STATE_LOCK_OWNER_DETAIL: promoted candidate Formula handoff
+        run: |
+          set -euo pipefail
+          bash kandelo/scripts/publish-immutable-github-release.sh \
+            --manifest \
+              "$RUNNER_TEMP/prepared-formula-release/release-manifest.json" \
+            --asset-root \
+              "$RUNNER_TEMP/prepared-formula-release/assets" \
+            --lock-root "$GITHUB_WORKSPACE/tap-authority" \
+            --receipt "$RUNNER_TEMP/formula-handoff-release.json" \
+            --kandelo-main-contains-sha "$PRODUCER_SHA" \
+            --target-main-contains-sha "$SOURCE_TAP_SHA"
+          {
+            echo "### Promoted Kandelo Homebrew bottle"
+            echo
+            printf "Formula: \`%s\`\n\n" "$FORMULA"
+            printf "Handoff: \`%s\`\n\n" "$HANDOFF_TAG"
+            printf "Built from: \`%s\`\n" "$PRODUCER_SHA"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Retain handoff publication evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: >-
+            promoted-formula-handoff-${{ needs.admit.outputs.formula }}-wasm32-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/formula-handoff-release.json
+          if-no-files-found: error
+          retention-days: 90

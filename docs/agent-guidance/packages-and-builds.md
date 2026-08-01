@@ -91,6 +91,40 @@ reachability, a tag, a merge method, or equality of only selected files is not
 this proof. Existing v1 generations remain readable, but new preparation uses
 v2.
 
+The transitional Homebrew candidate lane is the only path that may
+retain bottle bytes produced by an unmerged commit `S`. Version 1 is
+limited to one dependency-free `wasm32` Formula. Candidate execution
+must have no registry or tap write credential, and its immutable
+release must remain noncanonical.
+
+Derive a noncanonical candidate campaign before building the bottle.
+It must bind protected base `B`, producer `S`, protected tap caller and
+source, native Homebrew source, package catalog, ABI snapshot, guest
+layout, workflow run, and artifact. A catalog at an older ABI is valid
+input to a newer candidate ABI only when every ABI-mismatched variant
+is forced to rebuild. Reject a catalog newer than the candidate ABI.
+
+Promotion requires one merge commit `M` with exact parents `[B, S]`,
+`tree(M) == tree(S)`, a byte-identical regenerated package ledger, and
+protected-main code that revalidates the run, artifacts, prepared tap,
+and public destinations. Preserve `built_from = S`; record
+`validated_against_main = M` separately. A squash, rebase, changed base,
+conflict resolution, or changed input invalidates the candidate.
+
+Treat each 90-day protected sealer receipt as the durable promotion
+anchor. Require the exact successful run and attempt, exactly one live
+receipt artifact, exact release and asset metadata, and anonymous
+readback of every asset. Two-day build artifacts may expire. Require a
+full workflow rerun for a new attempt; never combine partial-rerun
+evidence. Candidate tap callers must contain literal reviewed Kandelo
+SHAs. Never replace their base or merge pins with `@main`.
+
+The candidate lane's Kandelo pull-request staging release is migration
+debt. Do not generalize it into the final bottle architecture. Remove
+that bridge once tap-owned Formula builds can derive all inputs from
+immutable bottles. Kandelo should then supply platform tools and ABI
+inputs while the tap owns build, seal, and artifact publication.
+
 The retired migration-only
 `identical-package-cache-projection-v1` method described distinct complete
 trees without claiming payload equivalence. Its historical reader and
