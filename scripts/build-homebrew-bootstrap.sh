@@ -91,7 +91,7 @@ if ! [[ "$BREW_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
     exit 2
 fi
 
-for tool in cargo git node npm rustc sha256sum; do
+for tool in cargo git node npm rustc sha256sum tar zip; do
     command -v "$tool" >/dev/null 2>&1 || {
         echo "build-homebrew-bootstrap: $tool not found; run through scripts/dev-shell.sh" >&2
         exit 2

@@ -18,11 +18,16 @@ import {
 const repoRoot = resolve(import.meta.dirname, "../..");
 const packageDir = join(repoRoot, "packages/registry/homebrew-bootstrap");
 const lockPath = join(repoRoot, "homebrew/homebrew-bootstrap-source-lock.json");
-const projectionPath = join(repoRoot, "packages/registry/program-packages.json");
+const projectionPath = join(
+  repoRoot,
+  "packages/registry/program-packages.json",
+);
 const temporaryRoots: string[] = [];
 
 function temporaryRoot(): string {
-  const root = mkdtempSync(join(tmpdir(), "kandelo-homebrew-bootstrap-package."));
+  const root = mkdtempSync(
+    join(tmpdir(), "kandelo-homebrew-bootstrap-package."),
+  );
   temporaryRoots.push(root);
   return root;
 }
@@ -32,7 +37,9 @@ function sha256(bytes: Uint8Array): string {
 }
 
 function parseMultilineStringArray(source: string, field: string): string[] {
-  const match = source.match(new RegExp(`^${field} = \\[\\n([\\s\\S]*?)^\\]$`, "m"));
+  const match = source.match(
+    new RegExp(`^${field} = \\[\\n([\\s\\S]*?)^\\]$`, "m"),
+  );
   if (!match) throw new Error(`missing multiline ${field} array`);
   return [...match[1].matchAll(/^\s*"([^"]+)",$/gm)].map((entry) => entry[1]);
 }
@@ -60,21 +67,30 @@ describe("homebrew-bootstrap package contract", () => {
     expect(manifest).toContain(`url = "${lock.source.archive_url}"`);
     expect(manifest).toContain(`sha256 = "${lock.source.archive_sha256}"`);
     expect(manifest).toContain(`spdx = "${lock.license.expression}"`);
-    expect(manifest).toContain('name = "homebrew-bootstrap"\nwasm = "homebrew-bootstrap.zip"');
-    expect(manifest).toContain('name = "homebrew-brew"\nwasm = "homebrew-brew.env"');
+    expect(manifest).toContain(
+      'name = "homebrew-bootstrap"\nwasm = "homebrew-bootstrap.zip"',
+    );
+    expect(manifest).toContain(
+      'name = "homebrew-brew"\nwasm = "homebrew-brew.env"',
+    );
     expect(manifest).toContain('fork_instrumentation = "disabled"');
+    expect(manifest).toContain('name = "tar"\nversion_constraint = ">=1.30"');
+    expect(manifest).toContain('name = "zip"\nversion_constraint = ">=3.0"');
 
     expect(build).toContain('name = "homebrew_brew"');
     expect(build).toContain(`repository = "${lock.source.repository}"`);
     expect(build).toContain(`commit = "${lock.source.revision}"`);
     expect(build).toContain('commit = "UNPUBLISHED"');
+    expect(build).toContain("revision = 6");
 
     const patch = readFileSync(join(repoRoot, lock.patch.path));
     expect(sha256(patch)).toBe(lock.patch.sha256);
     const licenseEvidence = readFileSync(
       join(repoRoot, lock.license.kandelo_patch.evidence_path),
     );
-    expect(sha256(licenseEvidence)).toBe(lock.license.kandelo_patch.evidence_sha256);
+    expect(sha256(licenseEvidence)).toBe(
+      lock.license.kandelo_patch.evidence_sha256,
+    );
     expect(lock.license.upstream.spdx).toBe("BSD-2-Clause");
     expect(lock.license.kandelo_patch.spdx).toBe("GPL-2.0-or-later");
   });
@@ -83,6 +99,7 @@ describe("homebrew-bootstrap package contract", () => {
     const build = readFileSync(join(packageDir, "build.toml"), "utf8");
     expect(parseMultilineStringArray(build, "inputs")).toEqual([
       "packages/registry/homebrew-bootstrap/build-homebrew-bootstrap.sh",
+      "images/vfs/scripts/create-deterministic-zip.sh",
       "scripts/package-build-roots.sh",
       "scripts/prepare-homebrew-bootstrap-source.sh",
       "scripts/verify-homebrew-bootstrap-source-lock.mjs",
@@ -125,15 +142,60 @@ describe("homebrew-bootstrap package contract", () => {
   it("rejects source, patch, prepared-tree, and output lock drift", () => {
     const original = JSON.parse(readFileSync(lockPath, "utf8"));
     const mutations: Array<[string, (lock: any) => void]> = [
-      ["source archive digest", (lock) => { lock.source.archive_sha256 = "not-a-digest"; }],
-      ["patch path", (lock) => { lock.patch.path = "homebrew/patches/other.patch"; }],
-      ["license expression", (lock) => { lock.license.expression = "BSD-2-Clause"; }],
-      ["upstream license", (lock) => { lock.license.upstream.sha256 = "not-a-digest"; }],
-      ["patch license evidence", (lock) => { lock.license.kandelo_patch.evidence_path = "COPYING"; }],
-      ["patched tree", (lock) => { lock.prepared.patched_tree_git_oid = "not-an-oid"; }],
-      ["portable Ruby", (lock) => { lock.prepared.portable_ruby_version = "../ruby"; }],
-      ["Git version", (lock) => { lock.prepared.git_version = "latest"; }],
-      ["output byte count", (lock) => { lock.output.bytes = 0; }],
+      [
+        "source archive digest",
+        (lock) => {
+          lock.source.archive_sha256 = "not-a-digest";
+        },
+      ],
+      [
+        "patch path",
+        (lock) => {
+          lock.patch.path = "homebrew/patches/other.patch";
+        },
+      ],
+      [
+        "license expression",
+        (lock) => {
+          lock.license.expression = "BSD-2-Clause";
+        },
+      ],
+      [
+        "upstream license",
+        (lock) => {
+          lock.license.upstream.sha256 = "not-a-digest";
+        },
+      ],
+      [
+        "patch license evidence",
+        (lock) => {
+          lock.license.kandelo_patch.evidence_path = "COPYING";
+        },
+      ],
+      [
+        "patched tree",
+        (lock) => {
+          lock.prepared.patched_tree_git_oid = "not-an-oid";
+        },
+      ],
+      [
+        "portable Ruby",
+        (lock) => {
+          lock.prepared.portable_ruby_version = "../ruby";
+        },
+      ],
+      [
+        "Git version",
+        (lock) => {
+          lock.prepared.git_version = "latest";
+        },
+      ],
+      [
+        "output byte count",
+        (lock) => {
+          lock.output.bytes = 0;
+        },
+      ],
     ];
 
     for (const [label, mutate] of mutations) {
@@ -203,13 +265,15 @@ describe("homebrew-bootstrap package contract", () => {
       ["provenance", provenancePath],
       ["archive", archivePath],
     ]);
-    expect(() => verifyHomebrewBootstrapSourceLock(validated, options)).not.toThrow();
+    expect(() =>
+      verifyHomebrewBootstrapSourceLock(validated, options),
+    ).not.toThrow();
 
     const wrongGit = new Map(options);
     wrongGit.set("git-version", "0.0.0");
-    expect(() => verifyHomebrewBootstrapSourceLock(validated, wrongGit)).toThrow(
-      /git-version mismatch/,
-    );
+    expect(() =>
+      verifyHomebrewBootstrapSourceLock(validated, wrongGit),
+    ).toThrow(/git-version mismatch/);
 
     writeFileSync(archivePath, "changed\n");
     expect(() => verifyHomebrewBootstrapSourceLock(validated, options)).toThrow(

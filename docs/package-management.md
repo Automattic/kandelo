@@ -630,16 +630,18 @@ rather than smuggled into the image.
 `homebrew/homebrew-bootstrap-source-lock.json` is the reviewed source/output
 identity. It binds the upstream archive URL and SHA-256, sealed
 `[[git_inputs]]` commit, patch path/SHA-256/license, patched Git and normalized
-tree identities, portable Ruby version, archive-producing Git version, and
-final ZIP SHA-256/byte count. The package build imports the resolver-owned
-exact Git checkout into private scratch storage and performs no source fetch
-of its own. The lock also records the dedicated package output's exact SHA-256
-and byte count, so a rebuild cannot silently change guest Homebrew source
-bytes. The package recipe emits the environment member in the same atomic
-generation, and the program projection records both canonical nested member
-paths. Run the build through `scripts/dev-shell.sh`; a different Git ZIP
-implementation fails the exact output lock instead of publishing different
-bytes.
+tree identities, portable Ruby version, normalized-TAR Git version, and final
+ZIP SHA-256/byte count. The package build imports the resolver-owned exact Git
+checkout into private scratch storage and performs no source fetch of its own.
+It materializes the exact hashed TAR privately, then uses Kandelo's shared
+deterministic ZIP serializer to normalize file modes, timestamps, entry order,
+extra fields, and compression across macOS and Linux. The lock records the
+dedicated package output's exact SHA-256 and byte count, so a rebuild cannot
+silently change guest Homebrew source bytes. The package recipe emits the
+environment member in the same atomic generation, and the program projection
+records both canonical nested member paths. Run the build through
+`scripts/dev-shell.sh`; any remaining serializer drift fails the exact output
+lock instead of publishing different bytes.
 
 See [docs/homebrew-publishing.md](homebrew-publishing.md) for the Homebrew
 formula, sidecar, GHCR, VFS, and runtime validation contract.

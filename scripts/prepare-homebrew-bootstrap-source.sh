@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+CREATE_DETERMINISTIC_ZIP="$REPO_ROOT/images/vfs/scripts/create-deterministic-zip.sh"
+
 REPOSITORY=""
 REVISION=""
 SOURCE_CHECKOUT=""
@@ -96,12 +100,17 @@ if [ ! -f "$PATCH_FILE" ]; then
     exit 2
 fi
 
-for tool in git node; do
+for tool in git node tar zip; do
     command -v "$tool" >/dev/null 2>&1 || {
         echo "prepare-homebrew-bootstrap-source: $tool not found; run through scripts/dev-shell.sh" >&2
         exit 2
     }
 done
+if [ ! -f "$CREATE_DETERMINISTIC_ZIP" ] ||
+   [ -L "$CREATE_DETERMINISTIC_ZIP" ]; then
+    echo "prepare-homebrew-bootstrap-source: deterministic ZIP helper is not a regular file: $CREATE_DETERMINISTIC_ZIP" >&2
+    exit 2
+fi
 
 # Git is a source parser here, not an ambient developer tool. Remove repository
 # redirection, injected `-c` entries, executable lookup, tracing, templates,
@@ -135,15 +144,6 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 process.stdout.write(createHash("sha256").update(readFileSync(process.argv[1])).digest("hex"));
 ' "$1"
-}
-
-sha256_stdin() {
-    node --input-type=module -e '
-import { createHash } from "node:crypto";
-const hash = createHash("sha256");
-for await (const chunk of process.stdin) hash.update(chunk);
-process.stdout.write(hash.digest("hex"));
-'
 }
 
 PATCH_FILE="$(cd "$(dirname "$PATCH_FILE")" && pwd)/$(basename "$PATCH_FILE")"
@@ -322,13 +322,27 @@ if ! [[ "$UPSTREAM_COMMIT_TIME" =~ ^[1-9][0-9]*$ ]]; then
     exit 1
 fi
 
-# A fixed mtime makes both serializations reproducible. The normalized tar
-# digest is a second provenance identity for the patched Git tree used by the ZIP.
-PATCHED_TREE_SHA256="$({
-    TZ=UTC git_store archive --format=tar --mtime="@$UPSTREAM_COMMIT_TIME" "$PATCHED_TREE"
-} | sha256_stdin)"
-TZ=UTC git_store archive --format=zip --mtime="@$UPSTREAM_COMMIT_TIME" \
-    -o "$ARCHIVE_TMP" "$PATCHED_TREE"
+# The normalized tar is a second provenance identity for the exact patched
+# Git tree. It also gives the ZIP owner a private materialized tree without
+# consulting a checkout or applying Git filters.
+PATCHED_TREE_TAR="$GIT_ISOLATION_ROOT/patched-tree.tar"
+PATCHED_TREE_ROOT="$GIT_ISOLATION_ROOT/patched-tree"
+TZ=UTC git_store archive --format=tar --mtime="@$UPSTREAM_COMMIT_TIME" \
+    -o "$PATCHED_TREE_TAR" "$PATCHED_TREE"
+PATCHED_TREE_SHA256="$(sha256_file "$PATCHED_TREE_TAR")"
+mkdir -m 0700 "$PATCHED_TREE_ROOT"
+(
+    cd "$PATCHED_TREE_ROOT"
+    umask 000
+    env -u TAR_OPTIONS LC_ALL=C TZ=UTC \
+        tar --no-same-owner -xpf "$PATCHED_TREE_TAR"
+)
+
+# WHY: an identical Git tree does not imply identical compressed `git
+# archive --format=zip` bytes. Git can use different zlib implementations on
+# macOS and Linux. Kandelo's shared ZIP owner normalizes metadata, order, and
+# compression so the locked bootstrap digest is portable across build hosts.
+bash "$CREATE_DETERMINISTIC_ZIP" "$PATCHED_TREE_ROOT" "$ARCHIVE_TMP"
 ARCHIVE_SHA256="$(sha256_file "$ARCHIVE_TMP")"
 
 BOTTLE_TAG="${ARCH}_kandelo"

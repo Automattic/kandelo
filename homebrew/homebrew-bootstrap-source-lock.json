@@ -38,7 +38,7 @@
   },
   "output": {
     "path": "homebrew-bootstrap.zip",
-    "sha256": "1d60dcb986f525a3ce4acab710b22ffed3c4296fbae24b9db88ef050526c37eb",
-    "bytes": 5096725
+    "sha256": "79be43e9781e95cd2b40835f97358e0b6d7b578215949661e3854f640a7dad63",
+    "bytes": 5046912
   }
 }

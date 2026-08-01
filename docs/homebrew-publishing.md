@@ -138,8 +138,9 @@ atomically emits `homebrew-bootstrap.zip` from a sealed exact Homebrew checkout
 and the reviewed guest-platform patch plus `homebrew-brew.env`, which owns the
 matching architecture and system-environment policy. Its source lock at
 `homebrew/homebrew-bootstrap-source-lock.json` binds all source, patch,
-prepared-tree, portable-Ruby, archive-producing Git, and final-archive
-identities. The program-package generation binds both declared members to one
+prepared-tree, portable-Ruby, normalized-TAR Git, and final-archive identities.
+The package cache identity separately binds the shared deterministic ZIP
+serializer. The program-package generation binds both declared members to one
 recipe, dependency closure, cache identity, and immutable release archive;
 consumers must resolve the canonical nested member paths together rather than
 recreating `brew.env` or resolving a mutable flat fallback.
@@ -2720,7 +2721,11 @@ diagnostic bootstrap image above remains an eager integration artifact. Source
 preparation verifies the reviewed patch SHA-256, refuses an upstream revision
 where the patch does not apply, limits the patch to its declared Homebrew
 files, and archives the patched Git tree with a fixed timestamp and UTC
-timezone.
+timezone. It hashes that normalized TAR, extracts the same bytes into private
+scratch storage with Git's executable intent preserved, and passes the tree to
+Kandelo's shared deterministic ZIP serializer. The serializer normalizes
+metadata, entry order, and compression instead of relying on Git's host-linked
+zlib implementation.
 
 `/etc/kandelo/homebrew-image.json` records the exact upstream Homebrew commit,
 patch SHA-256, patched-tree Git object and normalized-tree SHA-256, patched ZIP
@@ -2745,10 +2750,12 @@ The default 768 MiB VFS capacity leaves writable space for real guest Homebrew
 operations; use `--sab-size` and `--max-size` when a specific integration test
 needs a different capacity.
 
-The bootstrap manifest explicitly trusts executable bits from the pinned
-`git archive` ZIP. `mkrootfs` imports only those Unix `0111` bits; ownership,
-directory modes, non-executable file modes, and all other permission bits stay
-normalized by the manifest.
+The bootstrap manifest explicitly trusts executable intent from the pinned
+Git tree. The normalized TAR preserves that intent, and the deterministic ZIP
+serializer converts it to canonical executable or non-executable modes.
+`mkrootfs` imports only the resulting Unix `0111` bits; ownership, directory
+modes, non-executable file modes, and all other permission bits stay normalized
+by the manifest.
 
 Run the focused source and selection contract with:
 

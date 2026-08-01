@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PREPARE="$ROOT/scripts/prepare-homebrew-bootstrap-source.sh"
+BUILD_METADATA="$ROOT/packages/registry/homebrew-bootstrap/build.toml"
 PATCH_FILE="$ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
 PATCH_SHA256="faf62befeb70033ea450e88eb1b21427e221030a7f6b6ce932ad2c7c728ac2bc"
 BREW_REPOSITORY="${HOMEBREW_BOOTSTRAP_TEST_BREW_REPOSITORY:-https://github.com/Homebrew/brew.git}"
@@ -18,12 +19,28 @@ BOTTLE_SHA256="919fe4746f30a775963040995297c149972874fea50356530a8cb81b70845865"
 # namespace; fetching, pouring, and execution belong to integration tests.
 BOTTLE_ROOT_URL="https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
 
-for tool in git node unzip; do
+for tool in git node tar unzip zip; do
     command -v "$tool" >/dev/null 2>&1 || {
         echo "test-homebrew-bootstrap-source: $tool not found; run through scripts/dev-shell.sh" >&2
         exit 2
     }
 done
+
+# Git's ZIP compression is not byte-stable across zlib implementations. Keep
+# source preparation on the shared deterministic serializer, and keep that
+# serializer in the package's cache-invalidating build input set.
+if grep -Eq \
+    '^[[:space:]]*(TZ=UTC[[:space:]]+)?git_store archive .*--format=zip' \
+    "$PREPARE"; then
+    echo "test-homebrew-bootstrap-source: source preparation uses Git ZIP serialization" >&2
+    exit 1
+fi
+if ! grep -Fq 'create-deterministic-zip.sh' "$PREPARE" ||
+   ! grep -Fq '"images/vfs/scripts/create-deterministic-zip.sh"' \
+        "$BUILD_METADATA"; then
+    echo "test-homebrew-bootstrap-source: deterministic ZIP owner is not bound as a build input" >&2
+    exit 1
+fi
 
 bash "$ROOT/scripts/test-homebrew-guest-layout.sh"
 
@@ -100,6 +117,9 @@ EOF
     export GIT_EXEC_PATH="$HOSTILE_EXEC_PATH"
     export GIT_TEMPLATE_DIR="$HOSTILE_TEMPLATE"
     export SSH_ASKPASS="$HOSTILE_COMMAND"
+    export TAR_OPTIONS=--ambient-tar-options-must-not-run
+    export ZIP=--ambient-zip-options-must-not-run
+    export ZIPOPT=--ambient-zipopt-must-not-run
     prepare wasm32 "$RUN_ROOT/wasm32-hostile-env"
 )
 if [ -e "$HOSTILE_MARKER" ] || [ -L "$HOSTILE_MARKER" ]; then

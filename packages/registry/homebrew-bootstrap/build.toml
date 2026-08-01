@@ -1,6 +1,7 @@
 script_path = "packages/registry/homebrew-bootstrap/build-homebrew-bootstrap.sh"
 inputs = [
   "packages/registry/homebrew-bootstrap/build-homebrew-bootstrap.sh",
+  "images/vfs/scripts/create-deterministic-zip.sh",
   "scripts/package-build-roots.sh",
   "scripts/prepare-homebrew-bootstrap-source.sh",
   "scripts/verify-homebrew-bootstrap-source-lock.mjs",
@@ -10,7 +11,7 @@ inputs = [
 ]
 repo_url = "https://github.com/Automattic/kandelo.git"
 commit = "UNPUBLISHED"
-revision = 5
+revision = 6
 
 [[git_inputs]]
 name = "homebrew_brew"
