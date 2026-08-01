@@ -48,7 +48,10 @@ async function runChurn(
       readArrayBuffer(churnProgram),
       ["kernel_allocator_churn_test", mode, String(count)],
     );
-    expect(exitCode, `${mode} churn stderr: ${stderr}`).toBe(0);
+    expect(
+      exitCode,
+      `${mode} churn stderr: ${stderr}\nhost diagnostics: ${diagnostics.join("\n")}`,
+    ).toBe(0);
     expect(stderr).toBe("");
     expect(diagnostics).toEqual([]);
     expect(stdout).toContain(

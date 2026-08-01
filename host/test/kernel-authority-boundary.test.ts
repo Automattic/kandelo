@@ -145,7 +145,7 @@ describe("kernel authority boundary", () => {
     ).toThrow(/subclass|exact CentralizedKernelWorker/i);
   });
 
-  it("limits kernel test authority to one frozen six-method companion", () => {
+  it("limits kernel test authority to one frozen seven-method companion", () => {
     const production = new WasmPosixKernel({}, {});
     const harness = createWasmPosixKernelTestHarness({});
     const authority = harness.testAuthority;
@@ -154,6 +154,7 @@ describe("kernel authority boundary", () => {
       "hostClose",
       "hostClosedir",
       "hostFstat",
+      "hostOpendir",
       "hostReaddir",
       "writeKernelBytes",
     ];

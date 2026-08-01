@@ -47,7 +47,7 @@ import {
   CH_REQUEST_FLAGS,
   CH_REQUEST_FLAG_DEFER_SIGNAL_DELIVERY,
   CH_RETURN,
-  CH_SIG_BASE,
+  CH_SIG_SI_CODE,
   CH_SIG_SIGNUM,
   CH_STATUS,
   CH_SYSCALL,
@@ -160,9 +160,19 @@ function alignUp(value: number, align: number): number {
 const SYS_MMAP_NR = ABI_SYSCALLS.Mmap;
 const PROT_READ_WRITE = 3;
 const MAP_PRIVATE_ANONYMOUS = 0x22;
-const CH_SIG_SI_CODE = CH_SIG_BASE + 24;
+const SIGKILL = 9;
 
 class ExecRetirement extends Error {}
+
+/** @internal Exported so ABI-generated retirement-marker decoding is tested. */
+export function isExecRetirementMarker(
+  view: DataView,
+  channelOffset: number,
+): boolean {
+  return view.getUint32(channelOffset + CH_SIG_SIGNUM, true) === SIGKILL
+    && view.getUint32(channelOffset + CH_SIG_SI_CODE, true)
+      === EXEC_RETIRE_SIGNAL_CODE;
+}
 
 function markDeferredSignalDelivery(
   view: DataView,
@@ -436,11 +446,7 @@ function buildKernelImports(
     kernel_exit: (status: number): void => {
       const view = new DataView(memory.buffer);
       const base = channelOffset;
-      if (
-        view.getUint32(base + CH_SIG_SIGNUM, true) === 9
-        && view.getUint32(base + CH_SIG_SI_CODE, true)
-          === EXEC_RETIRE_SIGNAL_CODE
-      ) {
+      if (isExecRetirementMarker(view, base)) {
         // Exec keeps the kernel Process alive. The old browser Worker must
         // unwind without publishing SYS_EXIT, then its wrapper emits the
         // exact-generation memory_quiescent ownership fence.

@@ -329,6 +329,13 @@ a complete fetched package, but local, fetched, and installed-package tiers
 are never combined. If artifacts exist but no tier has the complete accepted
 closure, resolution fails loudly.
 
+The repo-side bridge incrementally builds the current release `xtask` once and
+then executes that prepared binary for metadata queries. CI and other direct
+callers may provide `WASM_POSIX_XTASK_BIN`; as with program-index checking,
+that override attests that the regular file was prepared from the current
+source. The bridge does not rebuild or silently substitute an explicitly
+provided tool.
+
 The host resolver applies the same rule automatically when any member of a
 program package with more than one total `[[outputs]]` plus
 `[[runtime_files]]` entry is requested. This includes a package with one

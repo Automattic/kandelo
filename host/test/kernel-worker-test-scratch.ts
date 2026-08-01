@@ -71,17 +71,21 @@ export function installKernelWorkerTestScratch(
   }
   const gate = options.gate ?? new KernelEntryGate();
   const gatedInstance = options.boundInstance ?? (() => {
-    const kernelExports = {
-      // Most worker tests do not model platform timers. An empty, bounded
-      // Rust-owned cleanup record is the neutral production result; timer
-      // ownership tests override this implementation explicitly.
-      kernel_take_process_timer_cleanup: emptyProcessTimerCleanup(memory),
-      ...options.kernelExports,
-    };
+    // Most worker tests do not model platform timers. An empty, bounded
+    // Rust-owned cleanup record is the neutral production result; timer
+    // ownership tests override this implementation explicitly.
+    const defaultTimerCleanup = emptyProcessTimerCleanup(memory);
     const rawInstance = createKernelScratchTestInstance(
       pointerWidth,
       memory,
-      () => kernelExports,
+      // WHY: scratch fixtures intentionally resolve mutable test doubles at
+      // call time. Rebuilding this shallow view preserves that late binding
+      // while still supplying the neutral timer implementation; capturing a
+      // one-time spread would silently ignore later fault injection.
+      () => ({
+        kernel_take_process_timer_cleanup: defaultTimerCleanup,
+        ...options.kernelExports,
+      }),
       () => pointerWidth === 8 ? BigInt(pointer) : pointer,
       4,
       options.kernelExportNames,

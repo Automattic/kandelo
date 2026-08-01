@@ -8,8 +8,8 @@ import { NodeTimeProvider } from "../src/vfs/time";
 import { VirtualPlatformIO } from "../src/vfs/vfs";
 
 interface ReusableKernelExports extends WebAssembly.Exports {
+  kernel_commit_process_exit(status: number): number;
   kernel_create_process(): number;
-  kernel_exit(status: number): void;
   kernel_get_stack_pointer(): number;
   kernel_reap_process(pid: number): number;
   kernel_set_current_tid(pid: number, tid: number): number;
@@ -67,7 +67,10 @@ describe("reusable kernel export shadow-stack lifetime", () => {
         exports.kernel_set_current_tid(pid, pid),
         `exit bind ${iteration}`,
       ).toBe(0);
-      exports.kernel_exit(0);
+      expect(
+        exports.kernel_commit_process_exit(0),
+        `exit commit ${iteration}`,
+      ).toBe(0);
       expect(
         exports.kernel_get_stack_pointer(),
         `exit stack ${iteration}`,

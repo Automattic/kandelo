@@ -235,18 +235,29 @@ describe.skipIf(!existsSync(programBinary) || !existsSync(kernelBinary))(
             }
           },
           onExit: (exitPid, exitStatus) => {
-            referenceOwners.release(exitPid);
-            const w = workers.get(exitPid);
-            if (w) {
-              w.terminate().catch(() => {});
-              workers.delete(exitPid);
-            }
-            if (exitPid === parentPid) {
-              kernel.unregisterProcess(exitPid);
-              resolveExit(exitStatus);
-            } else {
-              kernel.deactivateProcess(exitPid);
-            }
+            // WHY: lifecycle publication still runs inside the kernel entry
+            // gate. Retire the fixture's process from a fresh host turn so
+            // cleanup cannot reenter the export that published this exit.
+            queueMicrotask(() => {
+              try {
+                referenceOwners.release(exitPid);
+                const w = workers.get(exitPid);
+                if (w) {
+                  w.terminate().catch(() => {});
+                  workers.delete(exitPid);
+                }
+                if (exitPid === parentPid) {
+                  kernel.unregisterProcess(exitPid);
+                  resolveExit(exitStatus);
+                } else {
+                  kernel.deactivateProcess(exitPid);
+                }
+              } catch (error) {
+                rejectExit(
+                  error instanceof Error ? error : new Error(String(error)),
+                );
+              }
+            });
           },
         },
       );

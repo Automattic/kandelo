@@ -832,3 +832,29 @@ Still required before a broad vfork or Homebrew completion claim:
 - pristine upstream-selection tests at uid 1000 and privileged uid 0;
 - rebuilt and anonymously published Ruby/VFS artifacts; and
 - the exact real in-guest Homebrew lifecycle and RSS proof.
+
+### Selected ABI 43 batch validation — 2026-08-01
+
+The selected non-Homebrew PR batch, PRs #1096 and #1098, the borrowed-replay
+foundation, and PR #947 were composed on
+`integration/abi43-batch-20260731`. The frozen sources, history rule, and next
+implementation steps are recorded in
+`docs/plans/2026-08-01-abi-43-batch-plan.md`.
+
+The latest broad host run through `scripts/dev-shell.sh` recorded 4,027 passed,
+five failed, and 130 skipped tests out of 4,162. Every failure was an explicit
+missing complete ABI 43 program-artifact closure in the run-example credential
+or resolver fixtures. The exact 4,096-child `posix_spawn` churn passed in that
+same concurrent run.
+
+An earlier concurrent run had terminated a churn child with signal 11. Added
+diagnostics identified a test-only ownership race: the installed-host-package
+test ran tsup in the shared checkout, whose clean step removed
+`host/dist/worker-entry.js` while the churn machine was launching its next
+Worker. Building that package in a private temporary source tree removed the
+race; this was not evidence of kernel stack loss, renderer OOM, or incorrect
+fork admission.
+
+Guest-visible vfork remains unimplemented after this batch-validation update.
+No result above should be read as proof of parent suspension, zero-copy vfork
+launch, failed-exec lifetime handling, or pristine upstream Ruby selection.

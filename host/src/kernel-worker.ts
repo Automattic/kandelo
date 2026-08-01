@@ -320,6 +320,9 @@ const kernelEntryIntrinsicAtomicsStore = Atomics.store;
 const kernelEntryIntrinsicAtomicsNotify = Atomics.notify;
 const KERNEL_ENTRY_I32_BYTES = 4;
 
+// WHY: callers already hold the KernelEntryGate token for the exact process
+// memory they are materializing. Use the captured intrinsic getter so guest
+// hooks cannot replace WebAssembly.Memory.prototype.buffer mid-entry.
 function kernelEntryMemoryBuffer(
   memory: WebAssembly.Memory,
 ): ArrayBufferLike {
@@ -29376,7 +29379,14 @@ export class CentralizedKernelWorker {
         this.#kernelPointerWidth,
         "PCM transport",
       );
-      const buffer = kernelEntryMemoryBuffer(this.#kernelMemory!);
+      // WHY: SharedArrayBuffer cannot lend a bounded subrange. The trusted
+      // machine-level audio driver receives the backing plus checked offsets;
+      // its protocol exposes only this validated control-and-ring window.
+      const buffer = kernelEntryIntrinsicApply(
+        kernelEntryIntrinsicMemoryBuffer,
+        this.#kernelMemory!,
+        [],
+      ) as ArrayBufferLike;
       if (!(buffer instanceof SharedArrayBuffer)) {
         throw new KernelScratchError(
           "PCM transport is not backed by shared kernel memory",
@@ -31445,8 +31455,9 @@ export class CentralizedKernelWorker {
     udpPlan: UdpBindingCleanupPlan,
     tcpPlan: TcpListenerCleanupPlan,
   ): void {
-    // Publish every replacement before the first callback. The gate keeps
-    // reentrant ingress behind the complete detached protocol-effect record.
+    // Publish every replacement before the first callback. Reentrant void
+    // ingress can join the gate after this complete record; roots that owe a
+    // synchronous result reject reentrancy rather than returning a fiction.
     this.udpBindings = udpPlan.udpBindings;
     this.tcpListenerTargets = tcpPlan.tcpListenerTargets;
     this.tcpListenerRRIndex = tcpPlan.tcpListenerRRIndex;

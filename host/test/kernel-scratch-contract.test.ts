@@ -558,7 +558,7 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
     "apps/browser-demos/test/fixtures/reusable-kernel-export-stack-worker.ts::runProbe::kernel-export-direct-use::exports.kernel_create_process()",
   ),
   reviewedScalarKernelExportCall(
-    "apps/browser-demos/test/fixtures/reusable-kernel-export-stack-worker.ts::runProbe::kernel-export-direct-use::exports.kernel_exit(0)",
+    "apps/browser-demos/test/fixtures/reusable-kernel-export-stack-worker.ts::runProbe::kernel-export-direct-use::exports.kernel_commit_process_exit(0)",
   ),
   reviewedScalarKernelExportCall(
     "apps/browser-demos/test/fixtures/reusable-kernel-export-stack-worker.ts::runProbe::kernel-export-direct-use::exports.kernel_get_stack_pointer()",
@@ -590,6 +590,9 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#getProcessExitSignal::kernel-export-direct-use::getExitSignal(pid)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#generateHostSignalWithinKernelEntry::kernel-export-direct-use::generateHostSignal(targetPid, signum)",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#handleSyscallInner::kernel-export-direct-use::messageSizeForDescriptor( channel.pid, this.guestTidForChannel(channel), origArgs[0], )",
@@ -630,6 +633,9 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#releaseBlockingRetrySnapshot::kernel-export-direct-use::release( channel.pid, this.guestTidForChannel(channel), snapshot.retryToken, )",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.#reconcilePcmTransport::kernel-export-direct-use::reconcile()",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.#rememberBlockingRetrySnapshot::kernel-export-direct-use::tokenForRetry( channel.pid, this.guestTidForChannel(channel), snapshot.syscallNr, )",
@@ -703,6 +709,12 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.consumeExitedChild::kernel-export-direct-use::reapChild(parentPid, childPid)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.claimPcmTransport::kernel-export-direct-use::claimFn(PcmTransportMode.SharedClock)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.claimPcmTransport::kernel-export-direct-use::lenFn()",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.createProcess::kernel-export-direct-use::createProcess(stdinKind, stdoutKind, stderrKind)",
@@ -784,6 +796,9 @@ const reviewedScalarKernelExportCalls: AuditAllowance[] = [
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.notifyParentOfExitedProcess::kernel-export-direct-use::hasNoCldWait(parentPid)",
+  ),
+  reviewedScalarKernelExportCall(
+    "host/src/kernel-worker.ts::CentralizedKernelWorker.pcmClockUpdate::kernel-export-direct-use::clockUpdate(requestedFrames)",
   ),
   reviewedScalarKernelExportCall(
     "host/src/kernel-worker.ts::CentralizedKernelWorker.registerProcess::kernel-export-direct-use::getProcessState?.(pid)",
@@ -970,10 +985,41 @@ const auditAllowances: AuditAllowance[] = [
     why: "This browser epoll reproduction creates its test process memory, not the kernel's linear memory.",
   },
   {
+    key: "apps/browser-demos/test/fixtures/borrowed-active-side-replay-browser-worker.ts::<module>::wasm-instance-authority::new WebAssembly.Instance(mainModule, { env: { memory, ...mainEnv }, kernel: { kernel_fork: finishBorrowedFork }, })",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "This isolated browser worker instantiates the user process's main fork-replay module against the request-owned process memory and wrapped continuation imports.",
+  },
+  {
+    key: "apps/browser-demos/test/fixtures/borrowed-active-side-replay-browser-worker.ts::<module>::wasm-instance-authority::new WebAssembly.Instance(sideModule, { env: { memory, ...sideEnv }, })",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "This isolated browser worker instantiates the user process's side module against the same request-owned process memory and activation-specific replay imports.",
+  },
+  {
+    key: 'apps/browser-demos/test/fixtures/borrowed-fork-replay-browser-worker.ts::<module>::wasm-instance-authority::new WebAssembly.Instance(module, { env: { memory, ...runtime.envImports, }, kernel: { kernel_fork: () => { if (runtime.coordinator.phaseName() !== "child-replay") { throw new Error( `borrowed browser child reached fork while ` + runtime.coordinator.phaseName(), ); } runtime.coordinator.finishReplay(); return 0; }, }, })',
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "This isolated browser worker instantiates one user process replay activation against request-owned memory and the test runtime's wrapped fork imports.",
+  },
+  {
     key: "apps/browser-demos/test/fixtures/reusable-kernel-export-stack-worker.ts::runProbe::wasm-instance-authority::WebAssembly.instantiate(module, imports)",
     disposition: "kernel-control",
     authorityOwner: "kernel",
     why: "This exact dedicated test-worker site is injected through the module-secret kernel harness and retains the raw instance only long enough to verify returning kernel exports restore the Wasm shadow stack; production still publishes only the gated facade.",
+  },
+  {
+    key: "benchmarks/measure-fork-memory-components.mjs::measureSharedMemoryWorker::wasm-memory-authority::new WebAssembly.Memory({ initial: MEMORY_PAGES, maximum: MEMORY_PAGES, shared: true, })",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    why: "This standalone measurement allocates one disposable process-sized shared memory to isolate Worker/module transfer RSS from fork cloning.",
+  },
+  {
+    key: "benchmarks/measure-fork-memory-components.mjs::measureClone::wasm-memory-authority::new WebAssembly.Memory({ initial: MEMORY_PAGES, maximum: MEMORY_PAGES, shared: true, })",
+    disposition: "non-kernel",
+    authorityOwner: "process-memory",
+    count: 2,
+    why: "These two standalone measurement allocations are the disposable parent and child process memories used to compare full and sparse cloning RSS.",
   },
   {
     key: 'host/src/process-memory.ts::ProcessMemoryAllocator.createMemory::wasm-memory-authority::new WebAssembly.Memory({ initial: BigInt(request.initialPages) as any, maximum: BigInt(request.maximumPages) as any, shared: true, address: "i64", } as any)',
@@ -1103,6 +1149,16 @@ const auditAllowances: AuditAllowance[] = [
     key: "host/src/kernel-worker.ts::CentralizedKernelWorker.init::scratch-address-contract::runtimeAccess.instance()",
     disposition: "kernel-control",
     why: "The dedicated worker retrieves the gated façade through the package-private authority; raw callable exports never leave kernel.ts.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.claimPcmTransport::kernel-export-direct-use::ptrFn()",
+    disposition: "kernel-control",
+    why: "This exact no-argument export returns the start of the versioned PCM transport; the claim path immediately applies lossless pointer conversion plus a complete current-memory range check before publishing the descriptor.",
+  },
+  {
+    key: "host/src/kernel-worker.ts::CentralizedKernelWorker.claimPcmTransport::kernel-memory-escape::kernelEntryIntrinsicApply( kernelEntryIntrinsicMemoryBuffer, this.#kernelMemory!, [], )",
+    disposition: "kernel-control",
+    why: "The trusted Node/browser audio driver must retain the shared backing for the checked PCM control-and-ring range; the exact claim entry validates the pointer, length, shared backing, and transport header before this machine-level descriptor is published.",
   },
   {
     key: "host/src/kernel-worker.ts::CentralizedKernelWorker.#createTestAuthority::scratch-address-contract::options.instance",
