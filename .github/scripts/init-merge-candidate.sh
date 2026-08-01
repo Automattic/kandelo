@@ -16,6 +16,7 @@ MERGE_METHOD=""
 PR_COMMIT_COUNT=""
 RUN_ID=""
 RUN_ATTEMPT=""
+RELEASE_ID_OUTPUT=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -34,6 +35,7 @@ while [ "$#" -gt 0 ]; do
     --pr-commit-count) PR_COMMIT_COUNT="$2"; shift 2 ;;
     --run-id) RUN_ID="$2"; shift 2 ;;
     --run-attempt) RUN_ATTEMPT="$2"; shift 2 ;;
+    --release-id-file) RELEASE_ID_OUTPUT="$2"; shift 2 ;;
     *) echo "init-merge-candidate: unknown flag $1" >&2; exit 2 ;;
   esac
 done
@@ -73,6 +75,14 @@ fi
 if [ "$MERGE_METHOD" != "squash" ] && [ "$MERGE_METHOD" != "rebase" ] &&
    [ "$MERGE_METHOD" != "merge" ]; then
   echo "init-merge-candidate: merge method must be squash, rebase, or merge" >&2
+  exit 2
+fi
+if [ -n "$RELEASE_ID_OUTPUT" ] && {
+     [ -L "$RELEASE_ID_OUTPUT" ] ||
+     { [ -e "$RELEASE_ID_OUTPUT" ] && [ ! -f "$RELEASE_ID_OUTPUT" ]; } ||
+     [ ! -d "$(dirname "$RELEASE_ID_OUTPUT")" ];
+   }; then
+  echo "init-merge-candidate: release ID output must be a regular file path" >&2
   exit 2
 fi
 
@@ -121,7 +131,7 @@ export STATE_LOCK_OWNER_DETAIL="candidate init, PR ${PR_NUMBER}"
 STATE_LOCK_STATE_FILE="$LOCK_STATE" bash "$STATE_LOCK_SCRIPT" acquire "$CANDIDATE_TAG"
 
 release_json="$TMP_ROOT/release.json"
-release_id_file="$TMP_ROOT/release-id"
+lifecycle_release_id_file="$TMP_ROOT/release-id"
 candidate_body="$TMP_ROOT/candidate-release-body.txt"
 printf '%s' \
   "Isolated package candidate for PR #${PR_NUMBER}; not resolver-visible until post-merge activation." \
@@ -134,9 +144,9 @@ bash "$RELEASE_LIFECYCLE_SCRIPT" ensure-draft \
   --target-commit "$HEAD_SHA" \
   --title "$CANDIDATE_TAG" \
   --body-file "$candidate_body" \
-  --release-id-file "$release_id_file" \
+  --release-id-file "$lifecycle_release_id_file" \
   --prerelease true >/dev/null
-candidate_release_id="$(cat "$release_id_file" 2>/dev/null || true)"
+candidate_release_id="$(cat "$lifecycle_release_id_file" 2>/dev/null || true)"
 if ! [[ "$candidate_release_id" =~ ^[1-9][0-9]*$ ]]; then
   echo "init-merge-candidate: lifecycle did not return an exact release ID" >&2
   exit 1
@@ -275,5 +285,15 @@ ensure_immutable_asset() {
 ensure_immutable_asset candidate.json "$expected_json"
 ensure_immutable_asset base-index.toml "$TMP_ROOT/base-index.toml"
 ensure_immutable_asset index.toml "$candidate_index"
+
+if [ -n "$RELEASE_ID_OUTPUT" ]; then
+  output_dir="$(dirname "$RELEASE_ID_OUTPUT")"
+  output_tmp="$(mktemp "$output_dir/.merge-candidate-release-id.XXXXXX")"
+  printf '%s\n' "$candidate_release_id" >"$output_tmp"
+  # WHY: downstream readers cannot resolve a draft through GitHub's tag
+  # endpoint. Publish the exact ID only after all initial candidate assets
+  # were uploaded and read back successfully.
+  mv -f "$output_tmp" "$RELEASE_ID_OUTPUT"
+fi
 
 echo "init-merge-candidate: initialized isolated candidate $CANDIDATE_TAG"

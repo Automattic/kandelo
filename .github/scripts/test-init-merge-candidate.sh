@@ -142,7 +142,8 @@ run_init() {
       --head-sha 2222222222222222222222222222222222222222 \
       --synthetic-merge-sha 3333333333333333333333333333333333333333 \
       --synthetic-tree-sha 4444444444444444444444444444444444444444 \
-      --merge-method "$merge_method" --pr-commit-count 1 --run-id 2 --run-attempt 1
+      --merge-method "$merge_method" --pr-commit-count 1 --run-id 2 --run-attempt 1 \
+      --release-id-file "$store/final-release-id"
 }
 
 for fail_asset in candidate.json base-index.toml index.toml; do
@@ -155,6 +156,7 @@ for fail_asset in candidate.json base-index.toml index.toml; do
     exit 1
   fi
   run_init "$store" >"$store/retry.out"
+  [ "$(cat "$store/final-release-id")" = 7 ]
   [ -f "$store/candidate.json" ] && [ -f "$store/base-index.toml" ] && [ -f "$store/index.toml" ]
   [ "$(wc -l < "$store/uploads.log" | tr -d '[:space:]')" = 3 ]
   grep -qx 'generated_at = "2026-07-14T10:00:00Z"' "$store/index.toml"

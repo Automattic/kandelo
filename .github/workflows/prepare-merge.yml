@@ -598,6 +598,7 @@ jobs:
       promote_matrix: ${{ steps.compute.outputs.promote_matrix }}
       abi: ${{ steps.compute.outputs.abi }}
       target_tag: ${{ steps.compute.outputs.target_tag }}
+      candidate_release_id: ${{ steps.compute.outputs.candidate_release_id }}
       candidate_run_attempt: ${{ steps.compute.outputs.candidate_run_attempt }}
       canonical_tag: ${{ steps.compute.outputs.canonical_tag }}
       staging_tag: ${{ steps.compute.outputs.staging_tag }}
@@ -771,6 +772,7 @@ jobs:
               echo "::error::synthesize-merge did not report a positive PR commit count"
               exit 1
             fi
+            candidate_release_id_file=$(mktemp)
             bash .github/scripts/init-merge-candidate.sh \
               --canonical-index "$existing_index" \
               --candidate-tag "$TARGET_TAG" \
@@ -786,7 +788,14 @@ jobs:
               --merge-method "${{ env.PREPARE_MERGE_METHOD }}" \
               --pr-commit-count "$PR_COMMIT_COUNT" \
               --run-id "$GITHUB_RUN_ID" \
-              --run-attempt "$CANDIDATE_RUN_ATTEMPT"
+              --run-attempt "$CANDIDATE_RUN_ATTEMPT" \
+              --release-id-file "$candidate_release_id_file"
+            candidate_release_id=$(cat "$candidate_release_id_file")
+            if ! [[ "$candidate_release_id" =~ ^[1-9][0-9]*$ ]]; then
+              echo "::error::candidate initialization returned an invalid release ID"
+              exit 1
+            fi
+            echo "candidate_release_id=$candidate_release_id" >> "$GITHUB_OUTPUT"
             staging_assets_file=$(mktemp)
             gh release view "$STAGING_TAG" \
               --repo "${{ github.repository }}" \
@@ -1431,12 +1440,130 @@ jobs:
         run: |
           bash scripts/dev-shell.sh bash scripts/ci-run-test-suite.sh "$SUITE"
 
+  candidate-snapshot:
+    needs: [synthesize-merge, change-scope, preflight, promote-staging, lib-matrix-build, matrix-build]
+    if: |
+      !cancelled() &&
+      needs.change-scope.outputs.package_staging_required == 'true' &&
+      needs.preflight.result == 'success' &&
+      (needs.promote-staging.result == 'success' || needs.promote-staging.result == 'skipped') &&
+      (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
+      (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      # Draft releases are visible only to repository writers. This job
+      # snapshots inert bytes and never checks out the synthetic merge or
+      # executes repository scripts.
+      contents: write
+    steps:
+      - name: Snapshot exact candidate draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_RELEASE_ID: ${{ needs.preflight.outputs.candidate_release_id }}
+          CANDIDATE_TAG: ${{ needs.preflight.outputs.target_tag }}
+          CANDIDATE_HEAD_SHA: ${{ needs.synthesize-merge.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$CANDIDATE_RELEASE_ID" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::preflight did not return an exact candidate release ID"
+            exit 1
+          fi
+          snapshot="$RUNNER_TEMP/candidate-release"
+          mkdir -p "$snapshot"
+          release_before="$snapshot/release-before.json"
+          gh api \
+            "/repos/${GITHUB_REPOSITORY}/releases/${CANDIDATE_RELEASE_ID}" \
+            >"$release_before"
+          assets_before="$snapshot/assets-before.json"
+          gh api --paginate --slurp \
+            "/repos/${GITHUB_REPOSITORY}/releases/${CANDIDATE_RELEASE_ID}/assets?per_page=100" \
+            | jq -e 'add' >"$assets_before"
+          jq -e \
+            --argjson id "$CANDIDATE_RELEASE_ID" \
+            --arg tag "$CANDIDATE_TAG" \
+            --arg head "$CANDIDATE_HEAD_SHA" '
+              .id == $id and .tag_name == $tag and
+              .target_commitish == $head and
+              .draft == true and .immutable == false
+            ' "$release_before" >/dev/null
+          jq -e '
+              type == "array" and length > 0 and
+              ([.[].id] | length == (unique | length)) and
+              ([.[].name] | length == (unique | length)) and
+              all(.[];
+                (.id | type == "number" and . > 0) and
+                (.name | type == "string" and
+                  test("^[A-Za-z0-9][A-Za-z0-9._+,-]*$")) and
+                .state == "uploaded" and
+                (.size | type == "number" and . > 0 and floor == .) and
+                (.digest | type == "string" and
+                  test("^sha256:[0-9a-f]{64}$")))
+            ' "$assets_before" >/dev/null
+          jq -r '.[] |
+            [.id, .name, .size, (.digest | sub("^sha256:"; ""))] |
+            @tsv' "$assets_before" >"$snapshot/assets.tsv"
+          while IFS=$'\t' read -r asset_id name expected_size expected_sha; do
+            tmp="$snapshot/.${name}.download"
+            gh api -H 'Accept: application/octet-stream' \
+              "/repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" \
+              >"$tmp"
+            actual_size=$(wc -c <"$tmp" | tr -d '[:space:]')
+            actual_sha=$(sha256sum "$tmp" | awk '{print $1}')
+            if [ "$actual_size" != "$expected_size" ] ||
+               [ "$actual_sha" != "$expected_sha" ]; then
+              echo "::error::candidate asset $name differs from release metadata"
+              exit 1
+            fi
+            mv "$tmp" "$snapshot/$name"
+          done <"$snapshot/assets.tsv"
+          release_after="$snapshot/release-after.json"
+          gh api \
+            "/repos/${GITHUB_REPOSITORY}/releases/${CANDIDATE_RELEASE_ID}" \
+            >"$release_after"
+          assets_after="$snapshot/assets-after.json"
+          gh api --paginate --slurp \
+            "/repos/${GITHUB_REPOSITORY}/releases/${CANDIDATE_RELEASE_ID}/assets?per_page=100" \
+            | jq -e 'add' >"$assets_after"
+          jq -S '{id, tag_name, target_commitish, draft, immutable}' \
+            "$release_before" >"$snapshot/before-identity.json"
+          jq -S '{id, tag_name, target_commitish, draft, immutable}' \
+            "$release_after" >"$snapshot/after-identity.json"
+          jq -S 'sort_by(.name) |
+            map({id, name, state, size, digest})' \
+            "$assets_before" >"$snapshot/before-assets.json"
+          jq -S 'sort_by(.name) |
+            map({id, name, state, size, digest})' \
+            "$assets_after" >"$snapshot/after-assets.json"
+          if ! cmp "$snapshot/before-identity.json" \
+              "$snapshot/after-identity.json" ||
+             ! cmp "$snapshot/before-assets.json" \
+              "$snapshot/after-assets.json"; then
+            echo "::error::candidate release changed while it was snapshotted"
+            exit 1
+          fi
+          # WHY: candidate assets can carry relative URLs. Keeping them beside
+          # index.toml lets the credential-free resolver consume those exact
+          # bytes while unchanged entries continue to use canonical URLs.
+          test -f "$snapshot/candidate.json"
+          test -f "$snapshot/base-index.toml"
+          test -f "$snapshot/index.toml"
+
+      - name: Upload exact candidate snapshot
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: merge-candidate-${{ needs.preflight.outputs.candidate_release_id }}
+          path: ${{ runner.temp }}/candidate-release
+          if-no-files-found: error
+          retention-days: 1
+
   test-gate-prepare:
-    needs: [synthesize-merge, change-scope, preflight, toolchain-cache, promote-staging, lib-matrix-build, matrix-build]
+    needs: [synthesize-merge, change-scope, preflight, toolchain-cache, promote-staging, lib-matrix-build, matrix-build, candidate-snapshot]
     if: |
       !cancelled() &&
       needs.toolchain-cache.result == 'success' &&
       needs.preflight.result == 'success' &&
+      (needs.candidate-snapshot.result == 'success' || needs.candidate-snapshot.result == 'skipped') &&
       (needs.promote-staging.result == 'success' || needs.promote-staging.result == 'skipped') &&
       (needs.lib-matrix-build.result == 'success' || needs.lib-matrix-build.result == 'skipped') &&
       (needs.matrix-build.result == 'success' || needs.matrix-build.result == 'skipped')
@@ -1449,18 +1576,26 @@ jobs:
       candidate_index_sha256: ${{ steps.candidate_index.outputs.sha256 }}
     env:
       PACKAGE_STAGING_REQUIRED: ${{ needs.change-scope.outputs.package_staging_required }}
-      PACKAGE_STAGE_OVERLAYS_REQUIRED: ${{ needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]' }}
-      PACKAGE_TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           ref: ${{ needs.synthesize-merge.outputs.base_sha }}
           fetch-depth: 1
+          # WHY: all candidate bytes arrive as an Actions artifact. Synthetic
+          # PR code therefore needs no repository credential after checkout.
+          persist-credentials: false
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ${{ needs.synthesize-merge.outputs.bundle_artifact }}
           path: ${{ runner.temp }}/synthetic-pr-merge
+
+      - name: Download exact candidate snapshot
+        if: env.PACKAGE_STAGING_REQUIRED == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: merge-candidate-${{ needs.preflight.outputs.candidate_release_id }}
+          path: ${{ runner.temp }}/candidate-release
 
       - name: Checkout synthesized PR merge
         env:
@@ -1521,18 +1656,9 @@ jobs:
         run: |
           tar --zstd -xf "$RUNNER_TEMP/toolchain/toolchain-sysroots.tar.zst"
 
-      - name: Download matrix artifacts
-        if: ${{ needs.preflight.outputs.library_matrix != '[]' || needs.preflight.outputs.program_matrix != '[]' }}
-        uses: ./.github/actions/download-run-artifacts
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          pattern: '*-wasm*'
-          path: ${{ runner.temp }}/staged-archives
-
       - name: Materialize binaries
         id: candidate_index
         env:
-          GH_TOKEN: ${{ github.token }}
           WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis texlive
         # Package-changing PRs resolve the isolated candidate index. Its
         # unchanged entries carry absolute canonical URLs; changed entries
@@ -1562,37 +1688,12 @@ jobs:
             index_dir="$RUNNER_TEMP/tested-candidate-index"
             rm -rf "$index_dir"
             mkdir -p "$index_dir"
-            gh release download "$PACKAGE_TARGET_TAG" \
-              --repo "$GITHUB_REPOSITORY" \
-              --pattern index.toml \
-              --dir "$index_dir"
+            cp -R "$RUNNER_TEMP/candidate-release/." "$index_dir/"
             mv "$index_dir/index.toml" "$index_dir/source-index.toml"
             sha=$(sha256sum "$index_dir/source-index.toml" | awk '{print $1}')
-            candidate_index_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${PACKAGE_TARGET_TAG}/index.toml"
-            bash scripts/dev-shell.sh env \
-              SOURCE_INDEX="$index_dir/source-index.toml" \
-              LOCALIZED_INDEX="$index_dir/index.toml" \
-              CANDIDATE_INDEX_URL="$candidate_index_url" \
-              EXPECTED_ABI="$ABI" \
-              bash -c '
-                set -euo pipefail
-                host_target=$(rustc -vV | awk "/^host/ {print \$2}")
-                cargo run --release -p xtask --target "$host_target" --quiet -- \
-                  index-candidate seed \
-                    --canonical-index "$SOURCE_INDEX" \
-                    --candidate-index "$LOCALIZED_INDEX" \
-                    --canonical-index-url "$CANDIDATE_INDEX_URL" \
-                    --expected-abi "$EXPECTED_ABI" \
-                    --generated-at "1970-01-01T00:00:00Z" \
-                    --generator "prepare-merge frozen tested ledger"
-              '
-            export WASM_POSIX_BINARY_INDEX_URL="file://$index_dir/index.toml"
+            export WASM_POSIX_BINARY_INDEX_URL="file://$index_dir/source-index.toml"
             echo "sha256=$sha" >> "$GITHUB_OUTPUT"
             echo "Captured source candidate index sha256:$sha before materialization"
-            if [ "$PACKAGE_STAGE_OVERLAYS_REQUIRED" = "true" ]; then
-              STAGE="$RUNNER_TEMP/staged-overlay"
-              bash scripts/materialize-pr-overlays.sh "$RUNNER_TEMP/staged-archives" "$STAGE"
-            fi
           else
             export WASM_POSIX_BINARY_INDEX_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/binaries-abi-v${ABI}/index.toml"
           fi

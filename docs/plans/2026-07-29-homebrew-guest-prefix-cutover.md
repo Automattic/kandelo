@@ -103,6 +103,14 @@ absent-release test pass by stubbing around the index state machine;
 cover malformed IDs, wrong response IDs and tags, and a seal-time ID
 switch.
 
+After the usable ABI 42 cutover, finish carrying each merge candidate's
+identity as `(tag, release ID)` through package writers, ready-marker
+sealing, reconciliation, activation, cleanup, and rejected-candidate
+recovery. The current test boundary already transfers an exact-ID,
+closed asset snapshot into the read-only test job. The remaining phases
+must likewise reject draft-by-tag reads, bind the complete tested asset
+inventory, and prove that the same numeric release becomes immutable.
+
 The canonical guest contract is:
 
 - prefix and repository: `/opt/kandelo/homebrew`;
