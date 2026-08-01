@@ -500,16 +500,23 @@ short-name helper. This patch protects bottle metadata creation and guest
 loading; production publication continues to use Kandelo's independently
 validated, credential-isolated OCI/ORAS transport described below.
 
-The supported prefix and cellar are:
+The guest-prefix campaign targets:
 
 ```text
 /opt/kandelo/homebrew
 /opt/kandelo/homebrew/Cellar
 ```
 
-These are guest paths, not Linuxbrew paths. The guest uses the existing
-`/home/user` account for writable cache and configuration state and exposes
-`/usr/bin/brew` as the stable command. It must not create a `linuxbrew` user,
+These are Kandelo guest paths, not Linuxbrew paths. They become the
+supported product layout only when the atomic guest-prefix campaign and
+shell cutover land. The currently deployed bottle-backed shell and the
+diagnostic bootstrap still use the transitional
+`/home/linuxbrew/.linuxbrew` prefix. Do not describe that transitional
+layout as the campaign endpoint.
+
+The target guest uses the existing `/home/user` account for writable
+cache and configuration state and exposes `/usr/bin/brew` as the stable
+command. After cutover, new images must not create a `linuxbrew` user,
 install below `/home/linuxbrew`, or add a compatibility symlink for the
 retired guest prefix.
 
@@ -1200,12 +1207,16 @@ and bootstrap environment. No personal access token (PAT), GitHub App token,
 cross-repository workflow artifact, run ID, or caller-selected artifact
 repository participates in either handoff.
 
-The fixed lifecycle inputs use a separate content-addressed immutable release
-in the first-party tap. The shell image is a member of its package archive,
+The fixed lifecycle inputs use a separate content-addressed immutable
+release in the first-party tap. The shell image is a member of its package
+archive,
 while the bootstrap ZIP and environment still come from the transitional
-Kandelo registry package named `homebrew-bootstrap`. The bootstrap uses the
-canonical `/opt/kandelo/homebrew` guest prefix and keeps `/usr/bin/brew` as the
-stable entry point. It does not claim those bootstrap bytes are Formula-owned.
+Kandelo registry package named `homebrew-bootstrap`. The deployed lifecycle
+still uses `/home/linuxbrew/.linuxbrew` and keeps `/usr/bin/brew` as the
+stable entry point. The guest-prefix campaign replaces that layout with
+`/opt/kandelo/homebrew`; it has not done so merely because the target
+contract exists. The lifecycle does not claim those bootstrap bytes are
+Formula-owned.
 
 The browser's lazy Homebrew bootstrap requires direct asset URLs, and the
 exact source-tree specification must stay bound to the same proof. Publishing
@@ -2779,15 +2790,18 @@ The script writes `target/homebrew-bootstrap/homebrew-bootstrap.vfs`. It derives
 the ABI from `crates/shared`, resolves the Node kernel, canonical rootfs package
 set, and Homebrew bootstrap programs through `xtask build-deps`, and calls
 `scripts/prepare-homebrew-bootstrap-source.sh` to prepare Homebrew. The current
-`homebrew-bootstrap` registry package uses that same preparer and records the
-source ZIP and `homebrew-brew.env` as one transitional package generation. The
-product shell resolves both members from that exact package generation, embeds
-the small environment policy, and registers the source ZIP as a lazy tree
-behind `/usr/bin/brew`. Its canonical `/opt/kandelo/homebrew` prefix is shared
-by Formula-owned software; the stable `/usr/bin/brew` entry point lets a later
-Formula-owned bootstrap replace the transitional registry artifact without
-changing the guest command. The separate
-diagnostic bootstrap image above remains an eager integration artifact. Source
+`homebrew-bootstrap` registry package uses that same preparer and records
+the source ZIP and `homebrew-brew.env` as one transitional package
+generation. The product shell resolves both members from that exact
+package generation, embeds the small environment policy, and registers
+the source ZIP as a lazy tree
+behind `/usr/bin/brew`. Today that tree is mounted at the transitional
+`/home/linuxbrew/.linuxbrew` prefix. The atomic campaign changes both the
+Formula-owned software and bootstrap to `/opt/kandelo/homebrew`; the
+stable `/usr/bin/brew` entry point lets that cutover and a later
+Formula-owned bootstrap happen without changing the guest command. The
+separate diagnostic bootstrap image above remains an eager integration
+artifact. Source
 preparation verifies the reviewed patch SHA-256, refuses an upstream revision
 where the patch does not apply, limits the patch to its declared Homebrew
 files, and archives the patched Git tree with a fixed timestamp and UTC
@@ -2800,8 +2814,11 @@ selects `wasm32_kandelo` for the current wasm32 bootstrap and sets
 `HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY=1`, so prefix and user configuration cannot
 select a bottle for a different guest architecture. Homebrew's own `bin/brew`
 reads that supported system environment file; `/usr/bin/brew` stays a direct
-symlink to `/opt/kandelo/homebrew/bin/brew`, with no Kandelo launcher or
-install fallback. The patch recognizes that exact alias/repository pair so
+symlink to the selected bootstrap prefix's `bin/brew`, with no Kandelo
+launcher or install fallback. The target campaign resolves it to
+`/opt/kandelo/homebrew/bin/brew`; the current transitional image resolves it
+under `/home/linuxbrew/.linuxbrew`. The patch recognizes that exact
+alias/repository pair so
 Homebrew does not derive the forbidden `/usr` prefix from `$0`. The same source
 preparer emits `wasm64_kandelo` when a future bootstrap builder selects wasm64.
 The system environment also selects Homebrew's paired no-API mode:
