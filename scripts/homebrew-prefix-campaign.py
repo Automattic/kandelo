@@ -534,9 +534,9 @@ def git_blob(root: pathlib.Path, commit: str, relative: str, label: str) -> byte
     return result.stdout
 
 
-def historical_metadata_hashes(
+def historical_metadata_history(
     root: pathlib.Path, commit: str
-) -> set[str]:
+) -> list[tuple[str, str]]:
     output = run_command(
         [
             "git",
@@ -554,20 +554,23 @@ def historical_metadata_hashes(
     commits = output.splitlines()
     if not commits or len(commits) > 4096:
         fail("old tap metadata history is empty or unreasonably large")
-    hashes: set[str] = set()
+    history: list[tuple[str, str]] = []
     for index, revision in enumerate(commits):
         revision = require_commit(revision, f"old metadata revision #{index}")
-        hashes.add(
-            sha256_bytes(
-                git_blob(
-                    root,
-                    revision,
-                    METADATA_PATH,
-                    f"old metadata revision {revision}",
-                )
+        history.append(
+            (
+                revision,
+                sha256_bytes(
+                    git_blob(
+                        root,
+                        revision,
+                        METADATA_PATH,
+                        f"old metadata revision {revision}",
+                    )
+                ),
             )
         )
-    return hashes
+    return history
 
 
 def git_snapshot(
@@ -1859,6 +1862,7 @@ class CampaignOptions:
     native_brew_commit: str
     metadata_sha256: str
     guest_layout_sha256: str
+    old_catalog_commit: str | None = None
     jobs: int = MAX_JOBS
     source_materialization: dict[str, Any] | None = None
 
@@ -2503,6 +2507,9 @@ def _derive_campaign_from_snapshots(
     metadata_tap_commit = require_commit(
         metadata["tap_commit"], "old tap metadata tap_commit"
     )
+    old_catalog_commit = require_commit(
+        options.old_catalog_commit, "old selected catalog commit"
+    )
     require_string(
         metadata["kandelo_repository"],
         "old tap Kandelo repository",
@@ -2853,7 +2860,7 @@ def _derive_campaign_from_snapshots(
         )
         if name in selected_by_name and (
             sidecar_abi != metadata_abi
-            or sidecar_tap_commit != metadata["tap_commit"]
+            or sidecar_tap_commit != metadata_tap_commit
         ):
             fail(
                 f"metadata-selected Formula {name} sidecar ABI/tap_commit "
@@ -2862,12 +2869,12 @@ def _derive_campaign_from_snapshots(
         # WHY: the old archive was built from the old Formula. Candidate
         # new-prefix source is a separate authority and must never be
         # substituted into immutable built_from provenance.
-        # WHY: built_from owns the source that produced the archive, while the
-        # catalog commit owns the bottle block added after publication. Live
-        # source may already be ahead, and a stale extra sidecar can predate
-        # the catalog. Neither is the collision/rebuild authority.
+        # WHY: built_from and metadata.tap_commit own publisher inputs. The
+        # later commit containing this exact metadata blob owns the finalized
+        # bottle block. Live source may already be ahead, while a stale extra
+        # sidecar can predate it. Neither is the collision/rebuild authority.
         old_formula_path = stage_historical_formula(
-            name, metadata_tap_commit, "old catalog"
+            name, old_catalog_commit, "old catalog"
         )
         selected_old_source_sha, selected_old_source_identity, old_bottle_block = formula_identity(
             kandelo_root, old_formula_path
@@ -3305,6 +3312,7 @@ def _derive_campaign_from_snapshots(
                 "path": METADATA_PATH,
                 "sha256": metadata_sha256,
             },
+            "old_catalog_commit": old_catalog_commit,
             "old_tap_commit": options.old_tap_commit,
             "source_materialization": (
                 options.source_materialization
@@ -3387,9 +3395,24 @@ def derive_campaign(
         git_authority(root, commit, label)
         for root, commit, label in authorities
     )
-    metadata_hashes = historical_metadata_hashes(
+    metadata_history = historical_metadata_history(
         exact_roots[1], options.old_tap_commit
     )
+    metadata_hashes = {digest for _revision, digest in metadata_history}
+    selected_catalog_commits = [
+        revision
+        for revision, digest in metadata_history
+        if digest == options.metadata_sha256
+    ]
+    if not selected_catalog_commits:
+        fail(
+            "exact old metadata SHA-256 is not reachable from the old tap "
+            "history"
+        )
+    # WHY: source and Formula files can advance without regenerating the
+    # catalog. The newest commit that wrote these exact metadata bytes is the
+    # immutable tree containing the bottle blocks selected by that catalog.
+    old_catalog_commit = selected_catalog_commits[0]
     if dependencies.load_historical_formula is None:
         def load_historical_formula(
             _snapshot_root: pathlib.Path,
@@ -3452,6 +3475,7 @@ def derive_campaign(
                 old_tap_root=old_tap_snapshot,
                 source_tap_root=source_snapshot,
                 native_brew_root=native_brew_snapshot,
+                old_catalog_commit=old_catalog_commit,
                 source_materialization=source_materialization,
             )
             result = _derive_campaign_from_snapshots(

@@ -1308,7 +1308,7 @@ class PrefixCampaignTests(unittest.TestCase):
         ) -> bytes:
             calls.append((name, source_commit))
             if name == "beta":
-                if source_commit == HISTORICAL_TAP_COMMIT:
+                if source_commit == fixture.old_tap_commit:
                     return selected_beta
                 if source_commit == built_from_commit:
                     return stripped_formula("beta")
@@ -1328,9 +1328,14 @@ class PrefixCampaignTests(unittest.TestCase):
         )
 
         self.assertEqual(result["formulae"][0]["name"], "alpha")
-        self.assertIn(("beta", HISTORICAL_TAP_COMMIT), calls)
+        self.assertEqual(
+            result["authority"]["old_catalog_commit"],
+            fixture.old_tap_commit,
+        )
+        self.assertIn(("beta", fixture.old_tap_commit), calls)
         self.assertIn(("beta", built_from_commit), calls)
         self.assertNotIn(("beta", stale_sidecar_commit), calls)
+        self.assertNotIn(("beta", HISTORICAL_TAP_COMMIT), calls)
 
     def test_native_metadata_emits_only_exact_tap_qualified_dependencies(
         self,

@@ -2020,12 +2020,15 @@ sidecars, provenance report, candidate Formula identity, current ABI, and
 guest-layout digest.
 
 The old tap checkout is an object database as well as the current catalog.
-The old bottle block is read at the immutable tap commit recorded by the
-catalog metadata. A bottle's `built_from.tap_commit` separately identifies the
-earlier Formula source used to compile its bytes. Current tap source may
-already contain the next unpublished Formula, while an extra stale sidecar may
-predate the selected catalog. Using either as the old bottle-block authority
-would mix package generations or reuse a reserved rebuild number.
+The campaign finds the newest reachable commit that wrote the exact selected
+`Kandelo/metadata.json` bytes and reads old bottle blocks from that commit. It
+records this as `old_catalog_commit`. A bottle's `built_from.tap_commit` and
+the metadata's `tap_commit` instead identify earlier publisher inputs; they
+cannot identify the commit that embeds the final metadata because a Git commit
+cannot contain its own eventual SHA. Current tap source may already contain
+the next unpublished Formula, while an extra stale sidecar may predate the
+selected catalog. Using any of those as the old bottle-block authority would
+mix package generations or reuse a reserved rebuild number.
 
 A candidate Formula may advance its Homebrew `pkg_version` during the
 campaign. The manifest keeps the old version on the historical bottle,
