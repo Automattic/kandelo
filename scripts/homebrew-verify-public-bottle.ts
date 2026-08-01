@@ -2,7 +2,10 @@ import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
-import { fetchHomebrewBottleBytes } from "../host/src/homebrew-vfs-fetch";
+// WHY: the campaign runs this exact source with Node's built-in TypeScript
+// stripping and no node_modules. The explicit extension gives native ESM one
+// deterministic module path instead of relying on a third-party resolver.
+import { fetchHomebrewBottleBytes } from "../host/src/homebrew-vfs-fetch.ts";
 
 export interface PublicBottleVerificationOptions {
   url: string;
@@ -105,7 +108,8 @@ function verifyBottle(bottle: Uint8Array, options: PublicBottleVerificationOptio
 
 function usage(): never {
   console.error(
-    "usage: npx tsx scripts/homebrew-verify-public-bottle.ts " +
+    "usage: node --experimental-strip-types " +
+      "scripts/homebrew-verify-public-bottle.ts " +
       "--url <ghcr-blob-url> --sha256 <sha256> --bytes <bytes> --out <path>",
   );
   process.exit(2);

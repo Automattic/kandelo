@@ -18,6 +18,7 @@ import threading
 import unittest
 from dataclasses import dataclass
 from typing import Any
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -907,6 +908,35 @@ def make_fixture(
 
 
 class PrefixCampaignTests(unittest.TestCase):
+    def test_default_readback_uses_node_without_package_discovery(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(
+            prefix="campaign-readback-runner-test-"
+        ) as temporary_name:
+            root = pathlib.Path(temporary_name)
+            output = root / "bottle.tar.gz"
+            with mock.patch.object(CAMPAIGN, "run_command") as run_command:
+                CAMPAIGN.default_fetch_bottle(
+                    "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/"
+                    f"alpha/blobs/sha256:{'a' * 64}",
+                    "a" * 64,
+                    123,
+                    output,
+                    root,
+                )
+
+        command = run_command.call_args.args[0]
+        self.assertEqual(
+            command[:2], ["node", "--experimental-strip-types"]
+        )
+        self.assertEqual(
+            command[2],
+            str(root / "scripts/homebrew-verify-public-bottle.ts"),
+        )
+        self.assertNotIn("npx", command)
+        self.assertNotIn("tsx", command)
+
     def test_repository_inputs_classify_new_formulae_by_build_source(
         self,
     ) -> None:

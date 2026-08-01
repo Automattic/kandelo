@@ -1134,12 +1134,15 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
         environment = captured["options"]["env"]
         self.assertTrue(credentials.keys().isdisjoint(environment))
         self.assertEqual(
-            captured["command"][0:3], ["npx", "--no-install", "tsx"]
+            captured["command"][0:2],
+            ["node", "--experimental-strip-types"],
         )
         self.assertIn(
             "scripts/homebrew-verify-public-bottle.ts",
-            captured["command"][3],
+            captured["command"][2],
         )
+        self.assertNotIn("npx", captured["command"])
+        self.assertNotIn("tsx", captured["command"])
 
     def test_reuse_handoff_preserves_provenance_and_round_trips(
         self,

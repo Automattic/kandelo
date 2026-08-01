@@ -1608,9 +1608,11 @@ def default_fetch_bottle(
 ) -> None:
     run_command(
         [
-            "npx",
-            "--no-install",
-            "tsx",
+            # WHY: exact campaign snapshots intentionally contain no
+            # node_modules. Node 24 strips this verifier's erasable types
+            # itself, so publication never downloads or discovers a runner.
+            "node",
+            "--experimental-strip-types",
             str(kandelo_root / READBACK_PATH),
             "--url",
             url,

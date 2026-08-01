@@ -284,9 +284,11 @@ def anonymous_bottle_readback(
     expected_sha256: str,
 ) -> None:
     command = [
-        "npx",
-        "--no-install",
-        "tsx",
+        # WHY: the publisher consumes an exact source snapshot without
+        # node_modules. Node 24 can run this erasable-TypeScript verifier
+        # directly, avoiding an ambient or downloaded execution dependency.
+        "node",
+        "--experimental-strip-types",
         str(ROOT / "scripts/homebrew-verify-public-bottle.ts"),
         "--url",
         url,
