@@ -1,6 +1,6 @@
 name: Staging cleanup
 
-# Deletes pr-<NNN>-staging pre-releases when the corresponding PR closes,
+# Deletes writable PR-staging drafts when the corresponding PR closes,
 # except for a merged PR explicitly labeled `retain-package-staging`, and
 # deletes same-repo branches for merged `ready-to-ship` PRs unless that label
 # still owns their exact source commit. The daily sweep applies the same
@@ -34,20 +34,28 @@ jobs:
         run: |
           # WHY: a durable package generation may validate the exact producer
           # only after that producer is reachable from main.
-          echo "Keeping pr-${{ github.event.pull_request.number }}-staging for post-merge package validation"
+          echo "Keeping PR #${{ github.event.pull_request.number }} staging evidence for post-merge package validation"
 
-      - name: Delete pr-${{ github.event.pull_request.number }}-staging
+      - name: Delete writable PR staging releases
         if: |
           github.event.pull_request.merged != true ||
           !contains(github.event.pull_request.labels.*.name, 'retain-package-staging')
         run: |
-          TAG="pr-${{ github.event.pull_request.number }}-staging"
-          if gh release view "$TAG" --repo ${{ github.repository }} >/dev/null 2>&1; then
-            gh release delete "$TAG" --repo ${{ github.repository }} --yes --cleanup-tag
-            echo "Deleted $TAG"
-          else
-            echo "$TAG does not exist; nothing to clean up"
-          fi
+          prefix="pr-${{ github.event.pull_request.number }}-staging"
+          gh api --paginate --slurp \
+            "/repos/${{ github.repository }}/releases?per_page=100" \
+            | jq -r --arg prefix "$prefix" '
+                .[][] |
+                select(.tag_name == $prefix or
+                  (.tag_name | startswith($prefix + "-run-"))) |
+                select(.draft == true or .immutable == false) |
+                .tag_name
+              ' \
+            | while read -r TAG; do
+                gh release delete "$TAG" --repo ${{ github.repository }} \
+                  --yes --cleanup-tag
+                echo "Deleted writable $TAG"
+              done
 
       - name: Delete merged ready-to-ship PR branch
         if: |
@@ -126,17 +134,23 @@ jobs:
             .github/scripts/state-lock.sh
           sparse-checkout-cone-mode: false
 
-      - name: Sweep orphan pr-*-staging tags
+      - name: Sweep orphan writable PR staging tags
         run: |
-          # Up to 200 most recent pre-releases; pr-<N>-staging is the
-          # only naming pattern we own, so we filter on it directly.
-          gh release list --repo ${{ github.repository }} --limit 200 \
-              --json tagName,isPrerelease \
-              -q '.[] | select(.isPrerelease and (.tagName | startswith("pr-")) and (.tagName | endswith("-staging"))) | .tagName' \
+          # Published run-specific staging releases are immutable evidence and
+          # cannot be deleted. Sweep only drafts and grandfathered mutable
+          # fixed tags after their PR no longer owns them.
+          gh api --paginate --slurp \
+              "/repos/${{ github.repository }}/releases?per_page=100" \
+            | jq -r '
+                .[][] |
+                select(.prerelease == true) |
+                select(.tag_name |
+                  test("^pr-[1-9][0-9]*-staging(-run-[1-9][0-9]*-attempt-[1-9][0-9]*)?$")) |
+                select(.draft == true or .immutable == false) |
+                .tag_name
+              ' \
             | while read -r TAG; do
-                # Extract PR number from pr-<N>-staging.
-                PR=${TAG#pr-}
-                PR=${PR%-staging}
+                PR=$(sed -nE 's/^pr-([1-9][0-9]*)-staging.*$/\1/p' <<<"$TAG")
                 if [ -z "$PR" ] || ! [[ "$PR" =~ ^[0-9]+$ ]]; then
                   echo "WARN: cannot parse PR number from $TAG, skipping"
                   continue

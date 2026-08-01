@@ -65,6 +65,7 @@ VERIFY_SCRIPT="${VERIFY_SCRIPT:-$SCRIPT_DIR/verify-merge-candidate.sh}"
 MARK_READY_SCRIPT="${MARK_READY_SCRIPT:-$SCRIPT_DIR/mark-merge-candidate-ready.sh}"
 VALIDATE_RELEASE_SCRIPT="${VALIDATE_RELEASE_SCRIPT:-$SCRIPT_DIR/validate-staging-release.sh}"
 DOWNLOAD_ASSET_SCRIPT="${DOWNLOAD_ASSET_SCRIPT:-$SCRIPT_DIR/download-verified-release-asset.sh}"
+RELEASE_LIFECYCLE_SCRIPT="${RELEASE_LIFECYCLE_SCRIPT:-$SCRIPT_DIR/package-release-lifecycle.sh}"
 TMP_ROOT="$(mktemp -d)"
 AUTHORITY_LOCK_STATE="$TMP_ROOT/authority-lock.env"
 SOURCE_LOCK_STATE="$TMP_ROOT/source-lock.env"
@@ -482,19 +483,18 @@ export STATE_LOCK_OWNER_DETAIL="candidate recovery destination, PR ${PR_NUMBER}"
 STATE_LOCK_STATE_FILE="$DESTINATION_LOCK_STATE" bash "$STATE_LOCK_SCRIPT" acquire "$DESTINATION_CANDIDATE_TAG"
 DESTINATION_LOCKED=1
 
-destination_release="$TMP_ROOT/destination-release.json"
-if [ "$RESUME_EXISTING_CLONE" = 0 ] &&
-   ! gh api "/repos/${REPOSITORY}/releases/tags/${DESTINATION_CANDIDATE_TAG}" > "$destination_release" 2>/dev/null; then
-  if ! gh_retry gh release create "$DESTINATION_CANDIDATE_TAG" \
-      --repo "$REPOSITORY" \
-      --target "$head_sha" \
-      --title "$DESTINATION_CANDIDATE_TAG" \
-      --prerelease \
-      --notes "Immutable recovery clone of ${SOURCE_CANDIDATE_TAG}; source rejection retained."
-  then
-    : # A lost response is reconciled below.
-  fi
-fi
+destination_body="$TMP_ROOT/destination-release-body.txt"
+printf '%s' \
+  "Immutable recovery clone of ${SOURCE_CANDIDATE_TAG}; source rejection retained." \
+  >"$destination_body"
+# WHY: the recovery clone must remain writable through mark-ready and its
+# terminal activation. Publishing at creation would freeze an empty release.
+bash "$RELEASE_LIFECYCLE_SCRIPT" ensure-draft \
+  --tag "$DESTINATION_CANDIDATE_TAG" \
+  --target-commit "$head_sha" \
+  --title "$DESTINATION_CANDIDATE_TAG" \
+  --body-file "$destination_body" \
+  --prerelease true >/dev/null
 destination_inventory="$TMP_ROOT/destination-assets.json"
 snapshot_release "$DESTINATION_CANDIDATE_TAG" "$destination_inventory"
 if [ "$RESUME_EXISTING_CLONE" = 1 ]; then
@@ -530,9 +530,13 @@ expected_names="$TMP_ROOT/expected-destination-assets"
   cat "$expected_names"
   printf '%s\n' activated.json
 } | sort -u > "$TMP_ROOT/allowed-destination-assets"
+{
+  cat "$TMP_ROOT/allowed-destination-assets"
+  printf '%s\n' kandelo-package-release-seal-v1.json
+} | sort -u >"$TMP_ROOT/allowed-published-destination-assets"
 jq -r '.[].name' "$destination_inventory" | sort > "$TMP_ROOT/destination-existing-names"
 while IFS= read -r name; do
-  if ! grep -Fxq "$name" "$TMP_ROOT/allowed-destination-assets"; then
+  if ! grep -Fxq "$name" "$TMP_ROOT/allowed-published-destination-assets"; then
     echo "clone-rejected-merge-candidate: destination contains unexpected asset $name" >&2
     exit 1
   fi
@@ -593,7 +597,8 @@ jq -r '.[].name' "$destination_inventory" | sort > "$TMP_ROOT/destination-final-
 grep -Fxv ready.json "$expected_names" > "$TMP_ROOT/expected-before-ready"
 if [ "$RESUME_EXISTING_CLONE" = 1 ]; then
   if ! cmp "$expected_names" "$TMP_ROOT/destination-final-names" &&
-     ! cmp "$TMP_ROOT/allowed-destination-assets" "$TMP_ROOT/destination-final-names"; then
+     ! cmp "$TMP_ROOT/allowed-destination-assets" "$TMP_ROOT/destination-final-names" &&
+     ! cmp "$TMP_ROOT/allowed-published-destination-assets" "$TMP_ROOT/destination-final-names"; then
     echo "clone-rejected-merge-candidate: authoritative recovery clone is not complete and exact" >&2
     exit 1
   fi

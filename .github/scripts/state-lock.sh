@@ -5,7 +5,7 @@
 # positional arg that maps into a per-subject ref name. This lets one
 # script serialize independent workflows over independent subjects
 # (e.g., durable-release publish, binaries-abi-v8 index updates,
-# pr-<N>-staging index updates) without contention between them.
+# run-specific PR staging index updates) without contention between them.
 #
 # Backward-compatible env-var fallbacks for the older DURABLE_RELEASE_*
 # names are kept so an in-flight workflow that hasn't been migrated

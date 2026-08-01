@@ -23,7 +23,10 @@ ARCH = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 ASSET = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*\.tar\.zst$")
 SUPPORTING_ASSET = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 CANONICAL_BINARY_TAG = re.compile(r"^binaries-abi-v[1-9][0-9]*$")
-PR_STAGING_TAG = re.compile(r"^pr-[1-9][0-9]*-staging$")
+PR_STAGING_TAG = re.compile(
+    r"^pr-[1-9][0-9]*-staging"
+    r"(?:-run-[1-9][0-9]*-attempt-[1-9][0-9]*)?$"
+)
 STAGING_TAG = PR_STAGING_TAG
 PRESERVED_TAG = re.compile(
     r"^preserved-package-generation-[a-z0-9][a-z0-9._-]*-"

@@ -129,6 +129,24 @@ assert_job_needs "$PREPARE" lib-matrix-build preflight
 assert_job_needs "$PREPARE" matrix-build preflight
 assert_job_needs "$PREPARE" merge-gate-post test-gate
 
+# A published fixed PR tag cannot be repaired after repository release
+# immutability is enabled. Every full rerun therefore owns a new tag, while a
+# failed-job retry keeps using the draft selected by its successful preflight.
+grep -Fq \
+  'pr-${{ github.event.pull_request.number }}-staging-run-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}' \
+  "$STAGING_WORKFLOW" || \
+  fail "staging workflow must isolate every full rerun in a new release"
+for selection_contract in \
+  'select(.target_commitish == \$head)' \
+  'select(.draft == false and .immutable == true' \
+  'kandelo-package-release-seal-v1.json' \
+  'sort_by(.created_at) | last | .tag_name // \"\"' \
+  'STAGING_TAG="pr-${{ github.event.pull_request.number }}-staging"'
+do
+  grep -Fq "$selection_contract" "$PREPARE" || \
+    fail "Prepare merge lacks exact-head staging selection: $selection_contract"
+done
+
 synthesize_job=$(job_block "$PREPARE" synthesize-merge)
 synthesize_step=$(step_run_block "$PREPARE" "Capture base and synthesize PR merge")
 preflight_job=$(job_block "$PREPARE" preflight)
@@ -264,6 +282,7 @@ reusable-package-source-publish.yml:publish
 staging-build.yml:lib-matrix-build
 staging-build.yml:matrix-build
 staging-build.yml:repair-staging-index
+staging-build.yml:test-gate
 staging-cleanup.yml:sweep
 EOF
 )

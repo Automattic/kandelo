@@ -2,9 +2,8 @@ name: Staging build
 
 # Builds per-PR archives whose cache_key_sha differs from each
 # package's durable [binary.<arch>] pin. Uploads them to a
-# pr-<NNN>-staging pre-release for reviewers + CI to consume via the
-# resolver (per-package package.toml + optional package.pr.toml
-# overlay).
+# run-specific PR staging draft. The test gate publishes the completed
+# attempt once for reviewers and CI to consume through the resolver.
 #
 # All build steps run inside `scripts/dev-shell.sh` for a reproducible
 # Rust/LLVM/Node toolchain (see flake.nix). The wrapper enters
@@ -245,7 +244,9 @@ jobs:
             ABI=$(grep -oE "ABI_VERSION: u32 = [0-9]+" crates/shared/src/lib.rs | awk "{print \$4}")
             echo "abi=$ABI" >> "$GITHUB_OUTPUT"
 
-            TARGET_TAG="pr-${{ github.event.pull_request.number }}-staging"
+            # WHY: a published immutable release cannot be reused by a later
+            # push or rerun. Bind staging state to the exact workflow attempt.
+            TARGET_TAG="pr-${{ github.event.pull_request.number }}-staging-run-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}"
             BASELINE_TAG="binaries-abi-v${ABI}"
             echo "target_tag=$TARGET_TAG" >> "$GITHUB_OUTPUT"
 
@@ -543,7 +544,7 @@ jobs:
           source-commit: ${{ github.event.pull_request.head.sha }}
           expected-cache-key-sha: ${{ matrix.sha }}
 
-      # Atomic per-matrix-entry publish to the pr-<N>-staging tag.
+      # Atomic per-matrix-entry write to this attempt's staging draft.
       # Different state-lock subjects from durable-release, so PR
       # staging publishes don't block prepare-merge runs.
       - name: Publish archive + index entry
@@ -626,7 +627,7 @@ jobs:
           github-token: ${{ github.token }}
 
       # Atomic per-matrix-entry publish — same flow as
-      # lib-matrix-build, targeting the pr-<N>-staging tag.
+      # lib-matrix-build, targeting this attempt's staging draft.
       - name: Publish archive + index entry
         if: success()
         env:
@@ -816,8 +817,8 @@ jobs:
     # cancellation is respected and this long test job doesn't keep an
     # obsolete workflow alive.
     # Run even when preflight produces an empty matrix. A retry push can
-    # legitimately hit all package archives in pr-<N>-staging (because
-    # the previous run published them) while still needing to validate
+    # legitimately hit every selected package in the draft because earlier
+    # jobs in the same attempt uploaded them, while still needing to validate
     # the gate itself, especially after workflow/test-gate fixes.
     needs: [change-scope, preflight, toolchain-cache, lib-matrix-build, matrix-build, repair-staging-index]
     if: |
@@ -1211,7 +1212,7 @@ jobs:
           retention-days: 7
 
   test-gate:
-    needs: [change-scope, test-gate-validation, test-suite-early, test-gate-prepare, test-suite]
+    needs: [change-scope, preflight, test-gate-validation, test-suite-early, test-gate-prepare, test-suite]
     if: |
       always() &&
       !cancelled() &&
@@ -1219,6 +1220,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
+      actions: read
+      contents: write
       statuses: write
     env:
       GH_TOKEN: ${{ github.token }}
@@ -1228,6 +1231,13 @@ jobs:
       TEST_SUITE_RESULT: ${{ needs.test-suite.result }}
       SKIP_STAGING_TESTS: ${{ needs.change-scope.outputs.skip_staging_tests }}
     steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        if: needs.change-scope.outputs.package_staging_required == 'true'
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          sparse-checkout: |
+            .github/scripts
+
       - name: Check validation and split test suites
         run: |
           set -euo pipefail
@@ -1248,6 +1258,32 @@ jobs:
             exit 1
           fi
 
+      - name: Seal and publish exact staging release
+        if: needs.change-scope.outputs.package_staging_required == 'true'
+        env:
+          PACKAGE_TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
+        run: |
+          set -euo pipefail
+          body="$RUNNER_TEMP/staging-release-body.txt"
+          printf 'PR #%s staging build run %s attempt %s' \
+            '${{ github.event.pull_request.number }}' \
+            "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >"$body"
+          state="$RUNNER_TEMP/staging-release-lock.env"
+          export STATE_LOCK_OWNER_DETAIL="immutable staging finalizer"
+          STATE_LOCK_STATE_FILE="$state" \
+            bash .github/scripts/state-lock.sh acquire "$PACKAGE_TARGET_TAG"
+          release_lock() {
+            STATE_LOCK_STATE_FILE="$state" \
+              bash .github/scripts/state-lock.sh release || true
+          }
+          trap release_lock EXIT
+          bash .github/scripts/package-release-lifecycle.sh seal-publish \
+            --tag "$PACKAGE_TARGET_TAG" \
+            --target-commit '${{ github.event.pull_request.head.sha }}' \
+            --title "$PACKAGE_TARGET_TAG" \
+            --body-file "$body" \
+            --prerelease true
+
       - name: Post merge-gate success for runtime-only staging
         if: |
           env.SKIP_STAGING_TESTS != 'true' &&
@@ -1265,13 +1301,13 @@ jobs:
   # publish / generate-index — REMOVED.
   #
   # Per binary-resolution-via-index-ledger, each matrix-build entry
-  # now publishes its archive + mutates pr-<N>-staging/index.toml
+  # now publishes its archive + mutates the attempt-owned draft index.toml
   # atomically via scripts/index-update.sh. No separate publish
   # job; no generate-index aggregation pass.
   #
   # Stale-archive pruning (prune-staging-release.sh) is also gone:
   # the index.toml is authoritative, so orphan archives on the
-  # staging tag are harmless until cleaned by staging-cleanup.yml.
+  # staging draft are harmless until cleaned by staging-cleanup.yml.
 
   f2-status:
     # Phase B-2 Task 1 — F2 sticky PR-comment bot.

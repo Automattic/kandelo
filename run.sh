@@ -129,9 +129,9 @@ fi
 
 pr_staging_manual_override_hint() {
     local repo_hint=${1:-"<owner>/<repo>"}
-    local pr_hint=${2:-"<PR>"}
     err "Manual override:"
-    err "  WASM_POSIX_BINARY_INDEX_URL=https://github.com/${repo_hint}/releases/download/pr-${pr_hint}-staging/index.toml ./run.sh fetch --allow-stale"
+    err "  Set WASM_POSIX_BINARY_INDEX_URL to index.toml from an exact"
+    err "  pr-<PR>-staging-run-<RUN>-attempt-<ATTEMPT> release in ${repo_hint}."
 }
 
 configure_pr_staging_binary_index() {
@@ -148,10 +148,16 @@ configure_pr_staging_binary_index() {
         exit 2
     fi
 
-    local pr_number
+    local pr_number head_sha
     if ! pr_number=$(gh pr view --json number --jq '.number' 2>/dev/null) \
         || [ -z "$pr_number" ] || [ "$pr_number" = "null" ]; then
         err "PR staging binary index requested, but this branch is not associated with a GitHub PR."
+        pr_staging_manual_override_hint
+        exit 2
+    fi
+    head_sha=$(gh pr view --json headRefOid --jq '.headRefOid' 2>/dev/null || true)
+    if ! [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
+        err "PR staging binary index requested, but gh returned no exact PR head."
         pr_staging_manual_override_hint
         exit 2
     fi
@@ -164,20 +170,39 @@ configure_pr_staging_binary_index() {
     fi
     if [ -z "$repo" ] || [ "$repo" = "null" ]; then
         err "PR staging binary index requested, but gh could not determine the GitHub repository."
-        pr_staging_manual_override_hint "<owner>/<repo>" "$pr_number"
+        pr_staging_manual_override_hint "<owner>/<repo>"
         exit 2
     fi
 
-    local tag="pr-${pr_number}-staging"
+    local tag releases
+    releases=$(gh api --paginate --slurp \
+        "/repos/${repo}/releases?per_page=100" 2>/dev/null || true)
+    tag=$(jq -r \
+        --arg prefix "pr-${pr_number}-staging-run-" \
+        --arg head "$head_sha" '
+          [.[][] |
+            select(.tag_name | startswith($prefix)) |
+            select(.target_commitish == $head) |
+            select(.draft == false and .immutable == true and
+              .prerelease == true) |
+            select(any(.assets[]?; .name == "index.toml") and
+              any(.assets[]?; .name ==
+                "kandelo-package-release-seal-v1.json"))] |
+          sort_by(.created_at) | last | .tag_name // ""
+        ' <<<"${releases:-[]}" 2>/dev/null || true)
+    # Pre-immutability PRs may still expose the old fixed mutable tag.
+    if [ -z "$tag" ]; then
+        tag="pr-${pr_number}-staging"
+    fi
     local assets
     if ! assets=$(gh release view "$tag" --repo "$repo" --json assets --jq '.assets[].name' 2>/dev/null); then
         err "PR staging release $repo@$tag is not available."
-        pr_staging_manual_override_hint "$repo" "$pr_number"
+        pr_staging_manual_override_hint "$repo"
         exit 2
     fi
     if ! grep -Fxq "index.toml" <<<"$assets"; then
         err "PR staging release $repo@$tag does not contain index.toml."
-        pr_staging_manual_override_hint "$repo" "$pr_number"
+        pr_staging_manual_override_hint "$repo"
         exit 2
     fi
 

@@ -731,9 +731,10 @@ CI runs `staging-build.yml` on the PR, which:
 2. Runs `archive-stage` for it in `matrix-build`, then invokes
    `scripts/index-update.sh` per matrix entry to upload the
    content-addressed `.tar.zst` and mutate the isolated PR staging
-   `index.toml` entry under a workflow-level state-lock.
+   draft's `index.toml` entry under a workflow-level state-lock.
 3. `test-gate` runs the full 5-suite test gate against the union of
-   matrix-built + durable-release archives.
+   matrix-built + durable-release archives, seals the run-specific release,
+   and publishes it once.
 4. On `ready-to-ship`, `prepare-merge.yml` snapshots the durable
    ledger into a run-specific merge-candidate release. It builds or
    promotes changed archives there, tests the exact synthetic merge,
@@ -741,8 +742,10 @@ CI runs `staging-build.yml` on the PR, which:
 5. After a reviewer merges the exact prepared tree,
    `activate-merge-candidate.yml` verifies the merge, copies and
    verifies the candidate archives, and commits one complete canonical
-   ledger through the crash-recoverable release-index publisher. No bot
-   PR rewrites package metadata.
+   ledger through the crash-recoverable release-index publisher. New
+   canonical releases are sealed and published once; the existing ABI 42
+   ledger remains the grandfathered mutable exception. No bot PR rewrites
+   package metadata.
 
 After the staging workflow has published `index.toml`, use
 `./run.sh --pr-staging browser` or

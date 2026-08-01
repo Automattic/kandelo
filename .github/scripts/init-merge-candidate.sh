@@ -82,6 +82,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=.github/scripts/github-api-get.sh
 source "$SCRIPT_DIR/github-api-get.sh"
 STATE_LOCK_SCRIPT="${STATE_LOCK_SCRIPT:-.github/scripts/state-lock.sh}"
+RELEASE_LIFECYCLE_SCRIPT="${RELEASE_LIFECYCLE_SCRIPT:-$SCRIPT_DIR/package-release-lifecycle.sh}"
 LOCK_STATE="$(mktemp)"
 TMP_ROOT="$(mktemp -d)"
 
@@ -120,30 +121,32 @@ export STATE_LOCK_OWNER_DETAIL="candidate init, PR ${PR_NUMBER}"
 STATE_LOCK_STATE_FILE="$LOCK_STATE" bash "$STATE_LOCK_SCRIPT" acquire "$CANDIDATE_TAG"
 
 release_json="$TMP_ROOT/release.json"
+candidate_body="$TMP_ROOT/candidate-release-body.txt"
+printf '%s' \
+  "Isolated package candidate for PR #${PR_NUMBER}; not resolver-visible until post-merge activation." \
+  >"$candidate_body"
+# WHY: repository release immutability begins at publication. Candidate jobs
+# therefore share a draft while building and seal it only after its terminal
+# activation or rejection receipt has been attached.
+bash "$RELEASE_LIFECYCLE_SCRIPT" ensure-draft \
+  --tag "$CANDIDATE_TAG" \
+  --target-commit "$HEAD_SHA" \
+  --title "$CANDIDATE_TAG" \
+  --body-file "$candidate_body" \
+  --prerelease true >/dev/null
 release_rc=0
 GITHUB_API_CONTEXT=init-merge-candidate \
-  github_api_get_json "/repos/${REPOSITORY}/releases/tags/${CANDIDATE_TAG}" "$release_json" || release_rc=$?
-if [ "$release_rc" -eq 44 ]; then
-  if ! gh_retry gh release create "$CANDIDATE_TAG" \
-    --repo "$REPOSITORY" \
-    --target "$HEAD_SHA" \
-    --title "$CANDIDATE_TAG" \
-    --prerelease \
-    --notes "Isolated package candidate for PR #${PR_NUMBER}; not resolver-visible until post-merge activation."
-  then
-    # A lost create response is success only if the exact release is visible.
-    :
-  fi
-  release_rc=0
-  GITHUB_API_CONTEXT=init-merge-candidate \
-    github_api_get_json "/repos/${REPOSITORY}/releases/tags/${CANDIDATE_TAG}" "$release_json" || release_rc=$?
-fi
+  github_api_get_json "/repos/${REPOSITORY}/releases/tags/${CANDIDATE_TAG}" \
+    "$release_json" || release_rc=$?
 if [ "$release_rc" -ne 0 ]; then
   echo "init-merge-candidate: candidate release state is uncertain" >&2
   exit 1
 fi
 if ! jq -e --arg tag "$CANDIDATE_TAG" '
     .tag_name == $tag and (.id | type == "number" and . > 0) and
+    ((.draft == true and .immutable == false) or
+      (.draft == false and .immutable == true)) and
+    .prerelease == true and
     (.created_at | type == "string" and
       test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
     (.assets | type == "array")

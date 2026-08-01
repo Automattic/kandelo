@@ -274,8 +274,26 @@ jobs:
 
           if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
             pr_number=$(jq -er '.pull_request.number' "$GITHUB_EVENT_PATH")
+            pr_head=$(jq -er '.pull_request.head.sha' "$GITHUB_EVENT_PATH")
             [[ "$pr_number" =~ ^[1-9][0-9]*$ ]]
-            target_tag="pr-${pr_number}-staging"
+            [[ "$pr_head" =~ ^[0-9a-f]{40}$ ]]
+            target_tag=$(gh api --paginate --slurp \
+              "/repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              | jq -r --arg prefix "pr-${pr_number}-staging-run-" \
+                  --arg head "$pr_head" '
+                    [.[][] |
+                      select(.tag_name | startswith($prefix)) |
+                      select(.target_commitish == $head) |
+                      select(.draft == false and .immutable == true and
+                        .prerelease == true) |
+                      select(any(.assets[]?; .name == "index.toml") and
+                        any(.assets[]?; .name ==
+                          "kandelo-package-release-seal-v1.json"))] |
+                    sort_by(.created_at) | last | .tag_name // ""
+                  ')
+            if [ -z "$target_tag" ]; then
+              target_tag="pr-${pr_number}-staging"
+            fi
             expected="$RUNNER_TEMP/homebrew-main-shell-staging-expected.json"
             snapshot="$RUNNER_TEMP/homebrew-main-shell-staging-snapshot"
 

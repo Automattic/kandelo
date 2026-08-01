@@ -38,7 +38,7 @@ case "${1:-}" in
     done
     if [[ "$endpoint" == */releases/tags/* ]]; then
       [ "$include" = false ] || printf 'HTTP/2.0 200 OK\n\n'
-      printf '{"id":7,"tag_name":"%s","created_at":"2026-07-14T10:00:00Z","assets":' "$GH_INIT_TAG"
+      printf '{"id":7,"tag_name":"%s","target_commitish":"2222222222222222222222222222222222222222","name":"%s","body":"Isolated package candidate for PR #1; not resolver-visible until post-merge activation.","draft":true,"immutable":false,"prerelease":true,"created_at":"2026-07-14T10:00:00Z","assets":' "$GH_INIT_TAG" "$GH_INIT_TAG"
       assets
       printf '}\n'
     elif [[ "$endpoint" =~ /releases/assets/([0-9]+)$ ]]; then
@@ -96,6 +96,10 @@ LOCK="$TMP_ROOT/lock.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$LOCK"
 chmod +x "$LOCK"
 
+LIFECYCLE="$TMP_ROOT/lifecycle.sh"
+printf '#!/usr/bin/env bash\nprintf "draft\\n"\n' >"$LIFECYCLE"
+chmod +x "$LIFECYCLE"
+
 CANONICAL="$TMP_ROOT/canonical.toml"
 printf 'abi_version = 39\n' > "$CANONICAL"
 TAG=merge-candidate-abi-v39-pr-1-run-2-attempt-1
@@ -104,6 +108,7 @@ run_init() {
   GH_INIT_STORE="$store" GH_INIT_TAG="$TAG" GH_INIT_UPLOAD_LOG="$store/uploads.log" \
     GITHUB_API_RETRY_DELAY_SECONDS=0 GITHUB_REPOSITORY=example/repo \
     CANDIDATE_INIT_FAIL_AFTER_ASSET="$fail" STATE_LOCK_SCRIPT="$LOCK" \
+    RELEASE_LIFECYCLE_SCRIPT="$LIFECYCLE" \
     PATH="$BIN:$PATH" bash "$SCRIPT" \
       --canonical-index "$CANONICAL" --canonical-state present \
       --candidate-tag "$TAG" --canonical-tag binaries-abi-v39 --abi 39 \

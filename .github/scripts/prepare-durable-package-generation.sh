@@ -43,7 +43,7 @@ done
 selection_count=0
 [ -n "$ROOT_PACKAGE" ] && selection_count=$((selection_count + 1))
 [ "$BROWSER_INPUTS" = true ] && selection_count=$((selection_count + 1))
-if ! [[ "$SOURCE_TAG" =~ ^(binaries-abi-v[1-9][0-9]*|pr-[1-9][0-9]*-staging|preserved-package-generation-[A-Za-z0-9._-]+)$ ]] ||
+if ! [[ "$SOURCE_TAG" =~ ^(binaries-abi-v[1-9][0-9]*|pr-[1-9][0-9]*-staging(-run-[1-9][0-9]*-attempt-[1-9][0-9]*)?|preserved-package-generation-[A-Za-z0-9._-]+)$ ]] ||
    ! [[ "$PRODUCER_SHA" =~ ^[0-9a-f]{40}$ ]] ||
    ! [[ "$VALIDATED_MAIN_SHA" =~ ^[0-9a-f]{40}$ ]] ||
    ! [[ "$VALIDATION_METHOD" =~ ^(identical-git-tree-v1|identical-package-cache-projection-v1)$ ]] ||
@@ -120,7 +120,7 @@ file_bytes() {
 
 require_pr_staging_retention() {
   local pr_number pr_json="$TMP_ROOT/retained-source-pr.json"
-  if [[ "$SOURCE_TAG" =~ ^pr-([1-9][0-9]*)-staging$ ]]; then
+  if [[ "$SOURCE_TAG" =~ ^pr-([1-9][0-9]*)-staging(-run-[1-9][0-9]*-attempt-[1-9][0-9]*)?$ ]]; then
     pr_number="${BASH_REMATCH[1]}"
     gh api "/repos/$REPOSITORY/pulls/$pr_number" >"$pr_json"
     # WHY: promotion is necessarily post-merge. The retention label makes the

@@ -305,7 +305,14 @@ grep -Fq 'staging-reuse expected \' <<<"$generation_block" &&
   fail "main-shell CI must accept only a complete current PR package generation"
 grep -Fq 'index-candidate seed \' <<<"$generation_block" &&
   grep -Fq 'selected_url="file://${frozen_index}"' <<<"$generation_block" ||
-  fail "main-shell CI must freeze the validated mutable staging index locally"
+  fail "main-shell CI must freeze the validated staging index locally"
+grep -Fq 'pr-${pr_number}-staging-run-' <<<"$generation_block" &&
+  grep -Fq 'select(.target_commitish == $head)' <<<"$generation_block" &&
+  grep -Fq '.draft == false and .immutable == true' \
+    <<<"$generation_block" &&
+  grep -Fq 'kandelo-package-release-seal-v1.json' \
+    <<<"$generation_block" ||
+  fail "main-shell CI must select immutable staging for the exact PR head"
 grep -Fq 'env -u GH_TOKEN -u GITHUB_TOKEN \' <<<"$generation_block" &&
   grep -Fq -- '-u HOMEBREW_GITHUB_PACKAGES_TOKEN \' <<<"$generation_block" ||
   fail "local index freezing must run without GitHub credentials"

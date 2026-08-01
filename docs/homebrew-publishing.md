@@ -32,8 +32,8 @@ Homebrew's `bottle do` block.
 ## Durable Kandelo Package Input
 
 The Homebrew publisher may consume Kandelo package archives while validating
-or building bottles, but a PR's `pr-<N>-staging` release is never a durable
-input. After coherent canonical activation has landed, dispatch
+or building bottles, but a PR's run-specific staging release is never a
+durable input. After coherent canonical activation has landed, dispatch
 `promote-package-generation.yml` from the exact freshly queried
 `refs/heads/main` SHA. The resulting append-only prerelease has a
 content-derived tag such as:

@@ -168,7 +168,7 @@ delete_candidate() {
 classify_candidate_locked() {
   local tag="$1" pr="$2"
   local release_json="$TMP_ROOT/current-release-$pr.json"
-  local release_id pr_json state merged_at assets rejected_at rejected_epoch
+  local release_id immutable pr_json state merged_at assets rejected_at rejected_epoch
   local rejected_age retention_seconds head_sha target_url expected_url rc=0
 
   GITHUB_API_CONTEXT=cleanup-merge-candidates \
@@ -188,6 +188,7 @@ classify_candidate_locked() {
     return 1
   fi
   release_id=$(jq -r .id "$release_json")
+  immutable=$(jq -r '.immutable // false' "$release_json")
 
   if ! pr_json=$(gh_retry gh api "/repos/${REPOSITORY}/pulls/${pr}"); then
     echo "cleanup-merge-candidates: retaining $tag; PR #$pr state is unavailable" >&2
@@ -218,6 +219,18 @@ classify_candidate_locked() {
   assets="$TMP_ROOT/assets-$release_id.tsv"
   if ! list_assets "$release_id" "$assets"; then
     echo "cleanup-merge-candidates: retaining $tag; asset state is uncertain" >&2
+    return 1
+  fi
+  if [ "$immutable" = true ]; then
+    # WHY: new candidates become public only after a terminal receipt has
+    # been attached. GitHub then locks the release and tag, so cleanup retains
+    # that evidence instead of repeatedly attempting an impossible deletion.
+    if grep -q $'^activated.json\t' "$assets" ||
+       grep -q $'^rejected.json\t' "$assets"; then
+      echo "cleanup-merge-candidates: retaining immutable terminal evidence $tag"
+      return 0
+    fi
+    echo "cleanup-merge-candidates: immutable candidate lacks a terminal receipt: $tag" >&2
     return 1
   fi
   if grep -q $'^activated.json\t' "$assets"; then

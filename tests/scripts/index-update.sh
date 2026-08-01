@@ -87,10 +87,16 @@ shift || true
         ;;
       download)
         dir=""
+        pattern=""
+        tag="${1:-}"
         while [ "$#" -gt 0 ]; do
           case "$1" in
             --dir)
               dir="$2"
+              shift 2
+              ;;
+            --pattern)
+              pattern="$2"
               shift 2
               ;;
             *)
@@ -100,6 +106,13 @@ shift || true
         done
         if [ "${GH_STUB_HAS_INDEX:-0}" = "1" ]; then
           cp "${GH_STUB_INDEX_SOURCE:?}" "$dir/index.toml"
+        fi
+        if [ "$pattern" = candidate.json ]; then
+          pr="$(sed -nE 's/^merge-candidate-abi-v[0-9]+-pr-([0-9]+)-run-.*$/\1/p' <<<"$tag")"
+          jq -n --arg tag "$tag" --argjson pr "$pr" \
+            --arg head "${GITHUB_SHA:?}" \
+            '{candidate_tag:$tag,pr_number:$pr,head_sha:$head}' \
+            >"$dir/candidate.json"
         fi
         ;;
       upload)
@@ -228,6 +241,42 @@ esac
 EOF
 chmod +x "$INDEX_STATE_STUB"
 
+RELEASE_LIFECYCLE_STUB="$TMP_ROOT/package-release-lifecycle.sh"
+cat >"$RELEASE_LIFECYCLE_STUB" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+command_name="${1:-}"
+shift || true
+tag=""
+canonical_source_sha=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --tag) tag="$2"; shift 2 ;;
+    --canonical-source-sha) canonical_source_sha="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ "$command_name" = ensure-draft ] &&
+   [ "${GH_STUB_RELEASE_MISSING:-0}" = 1 ] &&
+   [ ! -f "${GH_STUB_STATE_DIR:?}/release-created" ]; then
+  if [ -n "$canonical_source_sha" ]; then
+    GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}" \
+      bash "${REPO_ROOT_FOR_STUB:?}/.github/scripts/require-exact-kandelo-main.sh" \
+        --repository Automattic/kandelo \
+        --source-sha "$canonical_source_sha" >/dev/null
+  fi
+  touch "$GH_STUB_STATE_DIR/release-created"
+fi
+if [ "$tag" = "${GH_STUB_IMMUTABLE_TAG:-}" ]; then
+  printf 'immutable\n'
+elif [ "$tag" = binaries-abi-v42 ]; then
+  printf 'grandfathered-mutable\n'
+else
+  printf 'draft\n'
+fi
+EOF
+chmod +x "$RELEASE_LIFECYCLE_STUB"
+
 run_index_update() {
   local target_tag="$1"
   local archive_abi="$2"
@@ -264,6 +313,7 @@ run_index_update() {
        GH_STUB_MAIN_SHA="0123456789abcdef0123456789abcdef01234567" \
        GH_STUB_NEXT_MAIN_SHA="ffffffffffffffffffffffffffffffffffffffff" \
        GH_STUB_MAIN_FLIP_AFTER="$main_flip_after" \
+       GH_STUB_IMMUTABLE_TAG="${GH_STUB_IMMUTABLE_TAG_OVERRIDE:-}" \
        GH_STUB_RELEASE_MISSING="$release_missing" \
        GH_STUB_EXISTING_ARCHIVE_NAME="$(basename "$archive_path")" \
        GH_STUB_DELETE_FAIL_ONCE="$delete_fail_once" \
@@ -274,6 +324,8 @@ run_index_update() {
        GITHUB_RUN_ID="123" \
        STATE_LOCK_SCRIPT="$STATE_LOCK_STUB" \
        RELEASE_INDEX_STATE_SCRIPT="$INDEX_STATE_STUB" \
+       RELEASE_LIFECYCLE_SCRIPT="$RELEASE_LIFECYCLE_STUB" \
+       REPO_ROOT_FOR_STUB="$REPO_ROOT" \
        PATH="$STUB_BIN:$PATH" \
        bash "$REPO_ROOT/scripts/index-update.sh" \
          --target-tag "$target_tag" \
@@ -315,6 +367,8 @@ run_index_repair() {
        GITHUB_RUN_ID="123" \
        STATE_LOCK_SCRIPT="$STATE_LOCK_STUB" \
        RELEASE_INDEX_STATE_SCRIPT="$INDEX_STATE_STUB" \
+       RELEASE_LIFECYCLE_SCRIPT="$RELEASE_LIFECYCLE_STUB" \
+       REPO_ROOT_FOR_STUB="$REPO_ROOT" \
        PATH="$STUB_BIN:$PATH" \
        bash "$REPO_ROOT/scripts/index-update.sh" \
          --target-tag "$target_tag" \
@@ -340,7 +394,29 @@ assert_index_abi() {
   fi
 }
 
-pr_index="$(run_index_update "pr-595-staging" "$CURRENT_ABI" 0)"
+legacy_staging_tag="pr-595-staging"
+if GH_STUB_IMMUTABLE_TAG_OVERRIDE="$legacy_staging_tag" \
+    run_index_update "$legacy_staging_tag" "$CURRENT_ABI" 0 \
+      >/dev/null 2>"$TMP_ROOT/immutable-staging.err"
+then
+  echo "expected an existing immutable fixed staging tag to reject mutation" \
+    >&2
+  exit 1
+fi
+if ! grep -Fq 'publish a new run or generation instead of mutating it' \
+    "$TMP_ROOT/immutable-staging.err"
+then
+  cat "$TMP_ROOT/immutable-staging.err" >&2
+  echo "immutable fixed staging failure lacked the recovery guidance" >&2
+  exit 1
+fi
+
+# WHY: this is the recovery path for PRs such as #1160 whose old fixed tag was
+# made immutable before its index was complete. The same exact head gets a new
+# attempt-owned draft instead of deleting or rewriting the published release.
+staging_tag="pr-595-staging-run-123-attempt-1"
+pr_index="$(GH_STUB_IMMUTABLE_TAG_OVERRIDE="$legacy_staging_tag" \
+  run_index_update "$staging_tag" "$CURRENT_ABI" 0)"
 assert_index_abi "$pr_index" "$CURRENT_ABI"
 
 stale_index="$TMP_ROOT/stale-index.toml"
@@ -349,14 +425,24 @@ abi_version = 1
 generated_at = "old"
 generator = "test"
 EOF
-rewritten_index="$(run_index_update "pr-595-staging" "$CURRENT_ABI" 1 "$stale_index")"
+rewritten_index="$(run_index_update "$staging_tag" "$CURRENT_ABI" 1 "$stale_index")"
 assert_index_abi "$rewritten_index" "$CURRENT_ABI"
 
-repair_index="$(run_index_repair "pr-595-staging" 1 "$stale_index")"
+repair_index="$(run_index_repair "$staging_tag" 1 "$stale_index")"
 assert_index_abi "$repair_index" "$CURRENT_ABI"
 
 durable_index="$(run_index_update "binaries-abi-v42" 42 0)"
 assert_index_abi "$durable_index" 42
+
+future_abi=$((CURRENT_ABI + 1))
+if run_index_update "binaries-abi-v${future_abi}" "$future_abi" 0 \
+    >/dev/null 2>"$TMP_ROOT/future-canonical.err"
+then
+  echo "expected per-package writes to a future canonical ABI to fail" >&2
+  exit 1
+fi
+grep -Fq 'must be initialized by post-merge candidate activation' \
+  "$TMP_ROOT/future-canonical.err"
 
 canonical_sha="0123456789abcdef0123456789abcdef01234567"
 canonical_index="$(

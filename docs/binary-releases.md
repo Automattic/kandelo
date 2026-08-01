@@ -333,13 +333,36 @@ reported URL exactly names the regular, non-symlink local index it just
 materialized. Dry runs may omit generation tags because they cannot mutate
 canonical state; supplied dry-run tags are still validated.
 
-Repository-wide GitHub Release immutability cannot be assumed because
-`binaries-abi-v<N>` is intentionally updated. Durable generation releases are
-therefore append-only by application contract. A retry may resume an exact
-partial draft, but never changes a public generation. Any metadata, asset,
-digest, direct-tag, or anonymous-readback mutation fails closed. Ordinary
-`pr-<N>-staging` cleanup remains unchanged because durable tags are outside
-that namespace.
+Repository-wide GitHub Release immutability is enabled. Every new package
+release is created as a draft, populated under its existing state lock, sealed
+with `kandelo-package-release-seal-v1.json`, and published once. A retry may
+resume the exact draft or verify an already immutable release, but it cannot
+change public bytes. GitHub did not apply the setting retroactively, so the
+existing `binaries-abi-v42` release remains the one explicitly grandfathered
+mutable ledger while the conventional registry is retired.
+
+This changes the future canonical contract. A new `binaries-abi-v<N>` must be
+initialized from the complete admitted package ledger before publication. It
+cannot receive later same-tag package updates. A writer that reaches a public
+immutable canonical release with new bytes fails loudly; a content-addressed
+generation or Homebrew bottle release must carry those bytes instead of
+weakening release immutability.
+
+This is the fail-closed rule for the transitional conventional registry, not a
+new long-lived package-distribution design. The broader question of how to
+name evolving conventional package sets within one unchanged ABI is deferred;
+Homebrew bottles and content-addressed generations already avoid that mutable
+same-tag requirement.
+
+`.github/scripts/package-release-lifecycle.sh` owns this boundary. Its
+`ensure-draft` operation reconciles a lost create response and accepts only an
+exact release identity. Its `seal-publish` operation snapshots the unique
+uploaded asset names, sizes, and GitHub sha256 digests into the seal, verifies
+the exact direct tag, and then makes the release public. If publication fails,
+the sealed draft remains resumable. If a retry finds a public immutable
+release, it verifies the same identity, seal, asset inventory, and direct tag
+without writing. An unexpected mutable public release is rejected unless it
+is the exact Automattic/kandelo ABI 42 exception.
 
 #### Preserving a pre-merge closure without admitting it
 
@@ -367,7 +390,7 @@ must byte-match the selected staging-release archive. The preserved
 `rootfs-job.log` must show the exact selected program dependencies, successful
 downloads for all 14 rootfs dependencies, and no selected-dependency fallback.
 The workflow derives a new minimal index from those 15 archives; it neither
-trusts nor preserves the staging release's mutable full index.
+trusts nor preserves the staging release's full index.
 
 Before sealing, preparation re-reads the source release/tag anchor, the 15
 selected release asset IDs/names/sizes/digests, the 15 selected workflow
@@ -375,12 +398,12 @@ artifact identities, and the rootfs job/log. Unrelated asset uploads and
 unrelated job progress are deliberately ignored. A selected change fails
 closed.
 
-The mutable `pr-<N>-staging` tag is only a locator. It can still point to an
-older PR commit, so the capture records and race-rechecks that observed anchor
-without treating it as producer authority. Producer authority comes from the
-exact workflow-run head, selected artifact identities and bytes from that run,
-byte equality with the selected release assets, and each archive's embedded
-repository and producer commit.
+The run-specific staging tag is an immutable locator. The capture still
+records and race-rechecks its observed anchor without treating the tag as
+producer authority. Producer authority comes from the exact workflow-run
+head, selected artifact identities and bytes from that run, byte equality with
+the selected release assets, and each archive's embedded repository and
+producer commit.
 
 Preserved tags have this form:
 
@@ -568,7 +591,8 @@ preflight → toolchain-cache → matrix-build → test-gate → merge-gate
 ```
 
 - **preflight** asks `xtask staging-reuse expected` for the complete,
-  cache-keyed package/arch ledger. It may reuse `pr-<N>-staging` only
+  cache-keyed package/arch ledger. It may reuse an exact-head run-specific
+  staging release only
   directly when the target index has the exact ABI, covers every managed entry
   once, every indexed archive names one uploaded, nonempty release asset whose
   GitHub `sha256:` digest matches the ledger, and every entry has the current
@@ -601,7 +625,7 @@ preflight → toolchain-cache → matrix-build → test-gate → merge-gate
      tag), runs `xtask index-update` to mutate this package's entry,
      uploads the archive and publishes the new `index.toml` through the
      journaled release-index state machine described below, then releases the
-     lock. Candidate and legacy staging tags use their isolated mutable index;
+     lock. Candidate and staging drafts use their isolated mutable index;
      canonical tags never replace `index.toml` with an unjournaled clobber.
   4. On failure: a separate `if: failure()` step runs
      `scripts/index-update.sh --status failed --error <msg>` so the
@@ -700,7 +724,10 @@ invocation observes one ledger even if the release changes later. After all
 tests and the final base-drift check pass, `ready.json` records the sha256 of
 the snapshotted source candidate index and sealing verifies the live release
 still has those exact bytes. A ready candidate is sealed; supported index
-writers refuse further mutation.
+writers refuse further package mutation. The release remains a draft until
+post-merge activation records either `activated.json` or `rejected.json`.
+That terminal path writes the inventory seal and publishes the candidate once;
+retries then validate immutable evidence without changing it.
 
 When the canonical release already contains the exact cache-keyed archive but
 its ledger entry is stale, Prepare merge snapshots that asset's release digest,
@@ -884,7 +911,8 @@ refs/heads/github-actions/state-lock/<subject>
 ```
 
 Where `<subject>` is the target release tag (`binaries-abi-v11`,
-`pr-447-staging`, a run-specific merge-candidate tag, etc.). Different tags
+`pr-447-staging-run-123-attempt-1`, a run-specific merge-candidate tag, etc.).
+Different tags
 use different subjects and independent locks, so concurrent rebuilds for the
 durable release don't block per-PR staging publishes and vice versa.
 
@@ -912,18 +940,22 @@ owner is dead.
 binaries-abi-v<ABI_VERSION>
 ```
 
-The tag is **mutable** — new packages and arches are added as new
-assets over time. What's *immutable* is each archive: its filename
-encodes the `cache_key_sha` of the build inputs, so a published
-asset's bytes never change. Different inputs → different filename.
+The existing ABI 42 tag is a grandfathered mutable release. A new ABI tag is
+draft-only while its complete initial ledger is assembled, then immutable.
+Each archive filename still encodes the `cache_key_sha` of its build inputs,
+so different inputs produce a different filename.
 
-PR-staging releases use `pr-<NNN>-staging` (also mutable, but ephemeral;
-staging cleanup deletes them immediately when the PR closes).
+PR-staging releases use
+`pr-<NNN>-staging-run-<RUN>-attempt-<ATTEMPT>`. Each workflow attempt owns a
+draft, publishes it once after validation, and never reuses it for another
+push or rerun. Cleanup deletes abandoned drafts; published immutable staging
+evidence is retained. The old `pr-<NNN>-staging` form remains a read-only
+compatibility source for releases created before this transition.
 
 Prepare-merge candidates use the run-specific
 `merge-candidate-abi-v<N>-pr-<PR>-run-<RUN>-attempt-<ATTEMPT>` shape. They are
-mutable only until `ready.json` seals the tested index and are never configured
-as the normal resolver endpoint.
+drafts until a terminal activation or rejection seals and publishes them, and
+are never configured as the normal resolver endpoint.
 
 Homebrew sidecars use the ABI namespace:
 
@@ -1068,8 +1100,8 @@ fallback_built_at       = "2026-05-12T..."
 Each `index.toml` is single-ABI. Its top-level `abi_version` must
 match every `archive_url` and `fallback_archive_url` filename segment
 of the form `-abi<N>-`. Durable `binaries-abi-v<N>` releases use `N`
-from the tag. Mutable `pr-<NNN>-staging` releases use the in-tree
-`ABI_VERSION` from `crates/shared/src/lib.rs` at publish time.
+from the tag. Run-specific PR staging drafts use the in-tree `ABI_VERSION`
+from `crates/shared/src/lib.rs` at publish time.
 
 `scripts/index-update.sh` passes the expected ABI into
 `xtask index-update` on every publish. If a reused PR-staging release
@@ -1169,14 +1201,14 @@ swaps: a sibling `packages/registry/<pkg>/package.pr.toml` injects
 time (see `apply_pr_overlay` in `tools/xtask/src/pkg_manifest.rs`).
 Gitignored.
 
-For CI-driven PR testing, the matrix flow uses a dedicated
-`pr-<NNN>-staging` release tag instead: that tag has its own
+For CI-driven PR testing, each workflow attempt uses a dedicated
+`pr-<NNN>-staging-run-<RUN>-attempt-<ATTEMPT>` release tag instead: that tag has its own
 `index.toml` (separate state-lock subject from the durable
 release). To consume that staging index locally, run through
 `run.sh` with `--pr-staging`, or set `WASM_POSIX_USE_PR_STAGING=1`.
-`run.sh` detects the current PR and repository with `gh`, verifies the
-staging release has `index.toml`, and exports
-`WASM_POSIX_BINARY_INDEX_URL=https://github.com/<owner>/<repo>/releases/download/pr-<NNN>-staging/index.toml`.
+`run.sh` detects the current PR, repository, and exact head with `gh`, selects
+the newest public immutable attempt for that head, verifies the release has
+`index.toml`, and exports its run-specific release URL.
 If `WASM_POSIX_BINARY_INDEX_URL` is already set, that manual override
 remains authoritative.
 
@@ -1364,16 +1396,20 @@ success-then-failure-then-fallback grouping.
 ## ABI bumps
 
 Bumping `ABI_VERSION` in `crates/shared/src/lib.rs` invalidates every
-durable archive against the resolver's ABI check. The bump PR's
-matrix flow rebuilds every package whose `cache_key_sha` is now
-stale (the ABI is part of the sha), and each matrix entry's
-`scripts/index-update.sh` invocation atomically publishes its
-archive + index entry to the new `binaries-abi-v<N+1>/` release.
+durable archive against the resolver's ABI check. The bump PR's candidate
+matrix rebuilds every package whose `cache_key_sha` is now stale (the ABI is
+part of the sha). Post-merge activation creates the new canonical release as a
+draft, copies the complete tested closure, commits its index transaction, and
+publishes it once. The exact-main `force-rebuild` path remains scoped to the
+grandfathered ABI 42 ledger until a later design gives partial rebuilds an
+immutable destination distinct from the complete canonical tag.
 
 Because the resolver substitutes `{abi}` in `build.toml`'s
 `index_url`, no in-tree edit is required for the URL pivot — the
 next fetch automatically hits the new release. The v(N) release
-stays as historical state.
+stays as historical immutable state. Later package evolution under the same
+ABI must use content-addressed package generations or Homebrew bottles; the
+canonical tag cannot be reopened.
 
 See [`abi-versioning.md`](abi-versioning.md) for the full ABI-bump
 checklist.

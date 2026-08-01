@@ -63,6 +63,17 @@ cp "$SCRIPT_DIR/clone-rejected-merge-candidate.sh" \
   "$SCRIPT_DIR/mark-merge-candidate-ready.sh" \
   "$SCRIPT_DIR/download-verified-release-asset.sh" \
   "$CHECKOUT/.github/scripts/"
+cat >"$CHECKOUT/.github/scripts/package-release-lifecycle.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+tag=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in --tag) tag="$2"; shift 2 ;; *) shift ;; esac
+done
+mkdir -p "${GH_STUB_RELEASES:?}/$tag"
+printf 'draft\n'
+EOF
+chmod +x "$CHECKOUT/.github/scripts/package-release-lifecycle.sh"
 printf 'pub const ABI_VERSION: u32 = 39;\n' \
   > "$CHECKOUT/crates/shared/src/lib.rs"
 CLONE="$CHECKOUT/.github/scripts/clone-rejected-merge-candidate.sh"

@@ -532,10 +532,11 @@ fi
 # Ordinary cleanup remains deliberately narrow. Durable generations do not
 # acquire a PR-shaped alias merely to escape that lifecycle.
 cleanup_workflow="$SCRIPT_DIR/../workflows/staging-cleanup.yml"
-grep -Fq 'startswith("pr-")' "$cleanup_workflow"
-grep -Fq 'endswith("-staging")' "$cleanup_workflow"
+grep -Fq 'startswith($prefix + "-run-")' "$cleanup_workflow"
+grep -Fq 'staging(-run-[1-9][0-9]*-attempt-' "$cleanup_workflow"
 grep -Fq 'retain-package-staging' "$cleanup_workflow"
-if [[ "$tag" == pr-*-staging ]]; then
+if [[ "$tag" == pr-*-staging ||
+      "$tag" == pr-*-staging-run-*-attempt-* ]]; then
   echo "durable tag overlaps the staging-cleanup namespace" >&2
   exit 1
 fi
