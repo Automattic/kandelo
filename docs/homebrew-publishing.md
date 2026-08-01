@@ -1279,9 +1279,12 @@ and reseals it. Exact-live-main equality remains necessary authority, not
 sufficient release evidence: the exact-Mpre rebuild and closed first- and
 third-party lifecycle proof are still required.
 
-Pull-request, push, and manual runs all select the bottled product lane. The
-source-rootfs bridge remains separate internal comparison plumbing and cannot
-satisfy this cutover gate. Before either host creates live lifecycle evidence,
+Pull-request, push, and manual runs all select the bottled product lane.
+Pull requests reach this lane through `staging-build.yml`, after that
+exact workflow attempt has sealed its package release. Push and manual
+runs invoke the workflow directly. The source-rootfs bridge remains
+separate internal comparison plumbing and cannot satisfy this cutover
+gate. Before either host creates live lifecycle evidence,
 the candidate's bootstrap recipe and composition report must bind the exact
 atomic runtime-support cohort; the shell bottle closure alone is not accepted
 as a `brew` runtime. A manual closed dispatch additionally invokes the
@@ -3058,8 +3061,9 @@ those new identities. The pull-request/rehearsal bottles remain test evidence
 only. The canonical shell stays on the strict bottle closure throughout; only
 the provisional CI lane uses the source bridge.
 
-The `.github/workflows/homebrew-main-shell-ci.yml` gate retains the historical
-branch needed to inspect this implementation. When
+The `.github/workflows/homebrew-main-shell-ci.yml` gate is reusable by
+package staging and retains the historical branch needed to inspect this
+implementation. When
 `SHELL_ACTIVATION_MODE` is `source-rootfs`, it
 explicitly stages `homebrew/source-rootfs-shell-package`, uses an empty index
 and fresh cache, and force-source-builds every buildable node in the exact
@@ -3126,8 +3130,16 @@ Pages intentionally continues to run for every `main` push without a path
 filter. The canonical browser package projection and shared inputs can grow;
 filtering by a maintained list would allow a new input to change without
 superseding the deployed product. The Homebrew main-shell workflow also runs
-for every pull request and `main` push so its exact closed-transport
-Node.js/Chromium product gate cannot be bypassed by the same allowlist drift.
+for every `main` push. For pull requests, staging calls it after the
+producer gate. The call passes the exact pull-request identity, whether
+package staging was required, and that run's exact release tag. Required
+staging validates the public immutable prerelease, its inventory seal,
+direct tag, and complete current ledger before freezing the index
+locally. It never probes for a latest release or falls back to canonical
+bytes. The caller retains the historical required aggregate check and
+turns producer failures or unexpected skips into failures. Marking a
+draft pull request ready reruns the same ordered path without invoking
+close-time staging cleanup.
 
 Pages uses a fresh resolver cache and
 `./run.sh --fetch-only prepare-browser`. It verifies the selected shell against

@@ -202,6 +202,96 @@ expect_closed_browser_acceptance_contract_rejected() {
   fi
 }
 
+check_ordered_staging_shell_contract() {
+  local workflow="$1"
+  local test_gate prerequisites proof gate
+  test_gate="$(sed -n \
+    '/^  test-gate:/,/^  homebrew-main-shell-prerequisites:/p' \
+    "$workflow")"
+  prerequisites="$(sed -n \
+    '/^  homebrew-main-shell-prerequisites:/,/^  homebrew-main-shell-proof:/p' \
+    "$workflow")"
+  proof="$(sed -n \
+    '/^  homebrew-main-shell-proof:/,/^  homebrew-main-shell-gate:/p' \
+    "$workflow")"
+  gate="$(sed -n \
+    '/^  homebrew-main-shell-gate:/,/^  # publish \/ generate-index/p' \
+    "$workflow")"
+
+  grep -Fq 'ready_for_review' "$workflow" &&
+    grep -Fq 'package-release-lifecycle.sh seal-publish' \
+      <<<"$test_gate" &&
+    grep -Fq -- \
+      '--target-commit '\''${{ github.event.pull_request.head.sha }}'\''' \
+      <<<"$test_gate" &&
+    grep -Fq 'needs: [change-scope, preflight, test-gate]' \
+      <<<"$prerequisites" &&
+    grep -Fq '[ "$TEST_GATE_RESULT" = success ]' \
+      <<<"$prerequisites" &&
+    grep -Fq \
+      'expected_tag="pr-${{ github.event.pull_request.number }}-staging-run-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}"' \
+      <<<"$prerequisites" &&
+    grep -Fq '[ "$TARGET_TAG" = "$expected_tag" ]' \
+      <<<"$prerequisites" &&
+    grep -Fq 'uses: ./.github/workflows/homebrew-main-shell-ci.yml' \
+      <<<"$proof" &&
+    grep -Fq 'always() &&' <<<"$proof" &&
+    grep -Fq 'caller_event_name: pull_request' <<<"$proof" &&
+    grep -Fq \
+      'pull_request_head_sha: ${{ github.event.pull_request.head.sha }}' \
+      <<<"$proof" &&
+    grep -Fq \
+      "staging_required: \${{ needs.change-scope.outputs.package_staging_required == 'true' }}" \
+      <<<"$proof" &&
+    grep -Fq 'needs.preflight.outputs.target_tag' <<<"$proof" &&
+    grep -Fq 'name: exact current lazy shell (Node + Chromium)' \
+      <<<"$gate" &&
+    grep -Fq 'if: |' <<<"$gate" &&
+    grep -Fq 'always() &&' <<<"$gate" &&
+    grep -Fq '[ "$PREREQUISITES_RESULT" = success ]' <<<"$gate" &&
+    grep -Fq '[ "$PROOF_RESULT" = success ]' <<<"$gate"
+}
+
+expect_ordered_staging_shell_contract_rejected() {
+  local workflow="$1"
+  if check_ordered_staging_shell_contract "$workflow"; then
+    fail "ordered staging-shell mutation unexpectedly passed: $workflow"
+  fi
+}
+
+check_required_staging_verifier_contract() {
+  local workflow="$1" generation
+  generation="$(sed -n \
+    '/- name: Select one verified package generation/,/- name: Resolve exact shell browser inputs/p' \
+    "$workflow")"
+
+  grep -Fq \
+      'expected_tag="pr-${pr_number}-staging-run-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}"' \
+      <<<"$generation" &&
+    grep -Fq '[ "$STAGING_TAG" = "$expected_tag" ]' \
+      <<<"$generation" &&
+    grep -Fq 'package-release-lifecycle.sh \' <<<"$generation" &&
+    grep -Fq 'verify-immutable \' <<<"$generation" &&
+    grep -Fq -- '--tag "$target_tag" \' <<<"$generation" &&
+    grep -Fq -- '--target-commit "$pr_head" \' <<<"$generation" &&
+    grep -Fq -- '--title "$target_tag" \' <<<"$generation" &&
+    grep -Fq -- '--body-file "$release_body" \' <<<"$generation" &&
+    grep -Fq -- '--prerelease true' <<<"$generation" &&
+    grep -Fq 'case "$STAGING_REQUIRED" in' <<<"$generation" &&
+    grep -Fq \
+      'echo "::error::non-staging call supplied release authority"' \
+      <<<"$generation" &&
+    ! grep -Fq '/releases?per_page=100' <<<"$generation" &&
+    ! grep -Fq 'using canonical/source fallback' <<<"$generation"
+}
+
+expect_required_staging_verifier_contract_rejected() {
+  local workflow="$1"
+  if check_required_staging_verifier_contract "$workflow"; then
+    fail "required staging verifier mutation unexpectedly passed: $workflow"
+  fi
+}
+
 command -v git >/dev/null 2>&1 || fail "git is required"
 command -v jq >/dev/null 2>&1 || fail "jq is required"
 command -v node >/dev/null 2>&1 || fail "node is required"
@@ -239,14 +329,60 @@ main_shell_trigger_block="$(
     inside { print }
   ' "$WORKFLOW"
 )"
-grep -Fxq '  pull_request:' <<<"$main_shell_trigger_block" &&
+grep -Fxq '  workflow_call:' <<<"$main_shell_trigger_block" &&
+  ! grep -Fxq '  pull_request:' <<<"$main_shell_trigger_block" &&
   grep -Fxq '  push:' <<<"$main_shell_trigger_block" &&
   grep -Fxq '    branches: [main]' <<<"$main_shell_trigger_block" ||
-  fail "Homebrew main-shell CI must validate pull requests and every main push"
+  fail "Homebrew main-shell CI must be called after PR staging and validate every main push"
 if grep -Eq '^[[:space:]]+(paths|paths-ignore):' \
   <<<"$main_shell_trigger_block"; then
-  fail "temporary source-rootfs CI must not filter pull requests or main pushes by path"
+  fail "Homebrew main-shell CI must not filter reusable calls or main pushes by path"
 fi
+for workflow_input in \
+  caller_event_name \
+  pull_request_number \
+  pull_request_base_sha \
+  pull_request_head_sha \
+  staging_required \
+  staging_tag
+do
+  grep -Fq "      $workflow_input:" <<<"$main_shell_trigger_block" ||
+    fail "main-shell workflow_call omits $workflow_input"
+done
+
+check_ordered_staging_shell_contract "$STAGING_WORKFLOW" ||
+  fail "staging must seal one exact attempt before its reusable shell proof"
+sed '/ready_for_review/d' "$STAGING_WORKFLOW" \
+  >"$TMP_ROOT/staging-shell-no-ready-rerun.yml"
+expect_ordered_staging_shell_contract_rejected \
+  "$TMP_ROOT/staging-shell-no-ready-rerun.yml"
+sed '/package-release-lifecycle.sh seal-publish/d' "$STAGING_WORKFLOW" \
+  >"$TMP_ROOT/staging-shell-no-seal.yml"
+expect_ordered_staging_shell_contract_rejected \
+  "$TMP_ROOT/staging-shell-no-seal.yml"
+sed 's/\[ "$TEST_GATE_RESULT" = success \]/[ "$TEST_GATE_RESULT" = skipped ]/' \
+  "$STAGING_WORKFLOW" >"$TMP_ROOT/staging-shell-accepts-skipped-producer.yml"
+expect_ordered_staging_shell_contract_rejected \
+  "$TMP_ROOT/staging-shell-accepts-skipped-producer.yml"
+sed '/uses: \.\/\.github\/workflows\/homebrew-main-shell-ci.yml/d' \
+  "$STAGING_WORKFLOW" >"$TMP_ROOT/staging-shell-no-reusable-call.yml"
+expect_ordered_staging_shell_contract_rejected \
+  "$TMP_ROOT/staging-shell-no-reusable-call.yml"
+sed '/pull_request_head_sha:/d' "$STAGING_WORKFLOW" \
+  >"$TMP_ROOT/staging-shell-no-explicit-head.yml"
+expect_ordered_staging_shell_contract_rejected \
+  "$TMP_ROOT/staging-shell-no-explicit-head.yml"
+sed '/\[ "$PROOF_RESULT" = success \]/d' "$STAGING_WORKFLOW" \
+  >"$TMP_ROOT/staging-shell-aggregate-drops-proof.yml"
+expect_ordered_staging_shell_contract_rejected \
+  "$TMP_ROOT/staging-shell-aggregate-drops-proof.yml"
+
+check_required_staging_verifier_contract "$WORKFLOW" ||
+  fail "main-shell CI must verify its exact immutable staging authority"
+sed '/verify-immutable \\/d' "$WORKFLOW" \
+  >"$TMP_ROOT/main-shell-no-immutable-verifier.yml"
+expect_required_staging_verifier_contract_rejected \
+  "$TMP_ROOT/main-shell-no-immutable-verifier.yml"
 
 setup_node_line="$(grep -n 'uses: actions/setup-node@' "$WORKFLOW" | cut -d: -f1 | head -1)"
 checker_line="$(grep -n 'node scripts/check-homebrew-main-shell-brewfile.mjs' "$WORKFLOW" | cut -d: -f1 | head -1)"
@@ -306,17 +442,14 @@ grep -Fq 'staging-reuse expected \' <<<"$generation_block" &&
 grep -Fq 'index-candidate seed \' <<<"$generation_block" &&
   grep -Fq 'selected_url="file://${frozen_index}"' <<<"$generation_block" ||
   fail "main-shell CI must freeze the validated staging index locally"
-grep -Fq 'pr-${pr_number}-staging-run-' <<<"$generation_block" &&
-  grep -Fq 'select(.target_commitish == $head)' <<<"$generation_block" &&
-  grep -Fq '.draft == false and .immutable == true' \
-    <<<"$generation_block" &&
-  grep -Fq 'kandelo-package-release-seal-v1.json' \
-    <<<"$generation_block" ||
-  fail "main-shell CI must select immutable staging for the exact PR head"
+check_required_staging_verifier_contract "$WORKFLOW" ||
+  fail "main-shell CI must require its exact sealed staging attempt"
 grep -Fq 'env -u GH_TOKEN -u GITHUB_TOKEN \' <<<"$generation_block" &&
   grep -Fq -- '-u HOMEBREW_GITHUB_PACKAGES_TOKEN \' <<<"$generation_block" ||
   fail "local index freezing must run without GitHub credentials"
-grep -Fq 'selected_url="$canonical_url"' <<<"$generation_block" ||
+grep -Fq 'selected_url="$canonical_url"' <<<"$generation_block" &&
+  grep -Fq '[ "$STAGING_TAG" = not-required ]' \
+    <<<"$generation_block" ||
   fail "main-shell CI must retain the canonical package generation"
 grep -Fq 'echo "WASM_POSIX_BINARY_INDEX_URL=$selected_url" >> "$GITHUB_ENV"' \
   <<<"$generation_block" ||
@@ -777,7 +910,7 @@ live_input_block="$(sed -n \
   '/- name: Bind exact live lifecycle revisions/,/- name: Fetch musl submodule/p' \
   "$WORKFLOW")"
 for exact_binding in \
-  "github.event_name == 'workflow_dispatch' && inputs.transport_mode == 'closed'" \
+  "(inputs.caller_event_name || github.event_name) == 'workflow_dispatch' && inputs.transport_mode == 'closed'" \
   '[ "$SHELL_ACTIVATION_MODE" = bottles ]' \
   '[[ "$revision" =~ ^[0-9a-f]{40}$ ]]' \
   '[ "$GITHUB_REF" = refs/heads/main ]' \
@@ -888,7 +1021,7 @@ live_fixture_block="$(sed -n \
   '/- name: Create the exact closed Chromium lifecycle fixture/,/- name: Build the sealed browser product tree/p' \
   "$WORKFLOW")"
 for fixture_binding in \
-  "if: github.event_name == 'workflow_dispatch' && inputs.transport_mode == 'closed'" \
+  "if: (inputs.caller_event_name || github.event_name) == 'workflow_dispatch' && inputs.transport_mode == 'closed'" \
   'scripts/create-homebrew-guest-lifecycle-fixture.ts' \
   'env -u GH_TOKEN -u GITHUB_TOKEN git ls-remote' \
   '.activation.atomic_group == $runtime_id' \
@@ -923,7 +1056,7 @@ live_node_block="$(sed -n \
   '/- name: Exercise the live first- and third-party lifecycle in Node/,/- name: Boot the current main-shell path in Chromium/p' \
   "$WORKFLOW")"
 grep -Fq \
-  "if: github.event_name == 'workflow_dispatch' && inputs.transport_mode == 'closed'" \
+  "if: (inputs.caller_event_name || github.event_name) == 'workflow_dispatch' && inputs.transport_mode == 'closed'" \
   <<<"$live_node_block" ||
   fail "the Node live lifecycle must remain manual and closed-transport only"
 for node_binding in \

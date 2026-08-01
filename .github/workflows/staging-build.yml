@@ -17,7 +17,9 @@ name: Staging build
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    # WHY: Marking a draft ready is the non-destructive rerun control for
+    # the exact product gate. Closing a package PR can invoke cleanup.
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
 
 # Serialize concurrent runs on the same PR so a slow build doesn't
 # step on a fresher push or label state. cancel-in-progress: true means
@@ -1302,6 +1304,133 @@ jobs:
             -f context=merge-gate \
             -f description="Runtime/materialization tests passed; package staging skipped." \
             -f target_url="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+  homebrew-main-shell-prerequisites:
+    name: order exact Homebrew shell after package staging
+    needs: [change-scope, preflight, test-gate]
+    if: |
+      always() &&
+      !cancelled() &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (
+        github.event.action != 'labeled' &&
+        github.event.action != 'unlabeled' ||
+        github.event.label.name == 'skip-staging-tests'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require the expected producer result
+        env:
+          CHANGE_SCOPE_RESULT: ${{ needs.change-scope.result }}
+          PACKAGE_STAGING_REQUIRED: ${{ needs.change-scope.outputs.package_staging_required }}
+          PREFLIGHT_RESULT: ${{ needs.preflight.result }}
+          TARGET_TAG: ${{ needs.preflight.outputs.target_tag }}
+          TEST_GATE_REQUIRED: ${{ needs.change-scope.outputs.test_gate_required }}
+          TEST_GATE_RESULT: ${{ needs.test-gate.result }}
+        run: |
+          set -euo pipefail
+          [ "$CHANGE_SCOPE_RESULT" = success ] || {
+            echo "::error::package change classification ended as $CHANGE_SCOPE_RESULT"
+            exit 1
+          }
+          for state in "$PACKAGE_STAGING_REQUIRED" "$TEST_GATE_REQUIRED"; do
+            case "$state" in
+              true | false) ;;
+              *)
+                echo "::error::invalid package staging state: $state"
+                exit 1
+                ;;
+            esac
+          done
+
+          if [ "$PACKAGE_STAGING_REQUIRED" = true ]; then
+            [ "$PREFLIGHT_RESULT" = success ] || {
+              echo "::error::staging preflight ended as $PREFLIGHT_RESULT"
+              exit 1
+            }
+            [ "$TEST_GATE_RESULT" = success ] || {
+              echo "::error::staging release was not sealed: $TEST_GATE_RESULT"
+              exit 1
+            }
+            expected_tag="pr-${{ github.event.pull_request.number }}-staging-run-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}"
+            [ "$TARGET_TAG" = "$expected_tag" ] || {
+              echo "::error::producer selected a different staging attempt"
+              exit 1
+            }
+          elif [ "$TEST_GATE_REQUIRED" = true ]; then
+            [ "$PREFLIGHT_RESULT" = success ] || {
+              echo "::error::runtime preflight ended as $PREFLIGHT_RESULT"
+              exit 1
+            }
+            [ "$TEST_GATE_RESULT" = success ] || {
+              echo "::error::runtime test gate ended as $TEST_GATE_RESULT"
+              exit 1
+            }
+          else
+            # WHY: No-op and publisher-only changes intentionally skip the
+            # generic test gate. Any other result means workflow routing
+            # drifted and must not silently satisfy the product aggregate.
+            [ "$TEST_GATE_RESULT" = skipped ] || {
+              echo "::error::unexpected test-gate result: $TEST_GATE_RESULT"
+              exit 1
+            }
+          fi
+
+  homebrew-main-shell-proof:
+    name: run exact current lazy shell (Node + Chromium)
+    needs:
+      - change-scope
+      - preflight
+      - test-gate
+      - homebrew-main-shell-prerequisites
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.homebrew-main-shell-prerequisites.result == 'success'
+    uses: ./.github/workflows/homebrew-main-shell-ci.yml
+    with:
+      caller_event_name: pull_request
+      pull_request_number: ${{ format('{0}', github.event.pull_request.number) }}
+      pull_request_base_sha: ${{ github.event.pull_request.base.sha }}
+      pull_request_head_sha: ${{ github.event.pull_request.head.sha }}
+      staging_required: ${{ needs.change-scope.outputs.package_staging_required == 'true' }}
+      staging_tag: ${{ needs.change-scope.outputs.package_staging_required == 'true' && needs.preflight.outputs.target_tag || 'not-required' }}
+
+  homebrew-main-shell-gate:
+    # Keep the historical required-check name on one aggregate. The reusable
+    # proof may skip when producer ordering failed; this wrapper makes that
+    # skip a visible failure.
+    name: exact current lazy shell (Node + Chromium)
+    needs:
+      - homebrew-main-shell-prerequisites
+      - homebrew-main-shell-proof
+    if: |
+      always() &&
+      !cancelled() &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      (
+        github.event.action != 'labeled' &&
+        github.event.action != 'unlabeled' ||
+        github.event.label.name == 'skip-staging-tests'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require ordered exact-shell validation
+        env:
+          PREREQUISITES_RESULT: ${{ needs.homebrew-main-shell-prerequisites.result }}
+          PROOF_RESULT: ${{ needs.homebrew-main-shell-proof.result }}
+        run: |
+          set -euo pipefail
+          [ "$PREREQUISITES_RESULT" = success ] || {
+            echo "::error::exact-shell prerequisites ended as $PREREQUISITES_RESULT"
+            exit 1
+          }
+          [ "$PROOF_RESULT" = success ] || {
+            echo "::error::exact-shell proof ended as $PROOF_RESULT"
+            exit 1
+          }
 
   # publish / generate-index — REMOVED.
   #

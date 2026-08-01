@@ -1,15 +1,35 @@
 name: Homebrew main shell
 
 on:
-  # WHY: a top-level path filter cannot distinguish product inputs from
-  # publisher-only controls. Trigger for every PR, then use the fail-closed
-  # effect classifier below so unknown and mixed changes still run the exact
-  # Node/Chromium product gate.
-  pull_request:
-    # WHY: marking a draft ready gives maintainers a non-destructive way to
-    # rerun this long exact-product gate after a base-side CI correction.
-    # Closing and reopening a package PR would delete its staging release.
-    types: [opened, synchronize, reopened, ready_for_review]
+  # WHY: An independent PR workflow starts before package bytes exist.
+  # Staging build calls this workflow only after sealing the exact attempt,
+  # so the consumer can never race its producer.
+  workflow_call:
+    inputs:
+      caller_event_name:
+        description: Event that started the calling workflow
+        required: true
+        type: string
+      pull_request_number:
+        description: Exact pull request number from the caller
+        required: true
+        type: string
+      pull_request_base_sha:
+        description: Exact pull request base commit from the caller
+        required: true
+        type: string
+      pull_request_head_sha:
+        description: Exact pull request head commit from the caller
+        required: true
+        type: string
+      staging_required:
+        description: Whether this pull request produced a staging release
+        required: true
+        type: boolean
+      staging_tag:
+        description: Exact sealed release tag or not-required
+        required: true
+        type: string
   push:
     branches: [main]
   workflow_dispatch:
@@ -36,7 +56,7 @@ on:
         type: string
 
 concurrency:
-  group: homebrew-main-shell-${{ github.event.pull_request.number || github.ref }}
+  group: homebrew-main-shell-${{ inputs.pull_request_number || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -52,18 +72,20 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ inputs.pull_request_head_sha || github.sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Classify the exact shell effect
         id: scope
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          CALLER_EVENT_NAME: ${{ inputs.caller_event_name || github.event_name }}
+          BASE_SHA: ${{ inputs.pull_request_base_sha }}
+          HEAD_SHA: ${{ inputs.pull_request_head_sha }}
         run: |
           set -euo pipefail
           bash .github/scripts/homebrew-main-shell-change-scope.sh \
-            --event "$GITHUB_EVENT_NAME" \
+            --event "$CALLER_EVENT_NAME" \
             --base "$BASE_SHA" \
             --head "$HEAD_SHA" \
             --output "$GITHUB_OUTPUT"
@@ -80,7 +102,12 @@ jobs:
     timeout-minutes: 90
     env:
       PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
-      TRANSPORT_MODE: ${{ github.event_name == 'workflow_dispatch' && inputs.transport_mode || 'closed' }}
+      CALLER_EVENT_NAME: ${{ inputs.caller_event_name || github.event_name }}
+      CALLER_PR_NUMBER: ${{ inputs.pull_request_number }}
+      CALLER_PR_HEAD: ${{ inputs.pull_request_head_sha }}
+      STAGING_REQUIRED: ${{ inputs.staging_required && 'true' || 'false' }}
+      STAGING_TAG: ${{ inputs.staging_tag || 'not-required' }}
+      TRANSPORT_MODE: ${{ (inputs.caller_event_name || github.event_name) == 'workflow_dispatch' && inputs.transport_mode || 'closed' }}
       KANDELO_HOMEBREW_MAIN_SHELL_STRICT: "1"
       # WHY: this workflow is the product cutover gate. Every trigger must
       # compose and boot the bottle-owned shell; allowing PR or main runs to
@@ -90,10 +117,11 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
+          ref: ${{ inputs.pull_request_head_sha || github.sha }}
           persist-credentials: false
 
       - name: Bind exact live lifecycle revisions
-        if: github.event_name == 'workflow_dispatch' && inputs.transport_mode == 'closed'
+        if: (inputs.caller_event_name || github.event_name) == 'workflow_dispatch' && inputs.transport_mode == 'closed'
         id: live-inputs
         env:
           KANDELO_M: ${{ inputs.kandelo_main_revision }}
@@ -277,90 +305,107 @@ jobs:
           canonical_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/binaries-abi-v${abi}/index.toml"
           selected_url="$canonical_url"
 
-          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-            pr_number=$(jq -er '.pull_request.number' "$GITHUB_EVENT_PATH")
-            pr_head=$(jq -er '.pull_request.head.sha' "$GITHUB_EVENT_PATH")
+          if [ "$CALLER_EVENT_NAME" = pull_request ]; then
+            pr_number="$CALLER_PR_NUMBER"
+            pr_head="$CALLER_PR_HEAD"
             [[ "$pr_number" =~ ^[1-9][0-9]*$ ]]
             [[ "$pr_head" =~ ^[0-9a-f]{40}$ ]]
-            target_tag=$(gh api --paginate --slurp \
-              "/repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-              | jq -r --arg prefix "pr-${pr_number}-staging-run-" \
-                  --arg head "$pr_head" '
-                    [.[][] |
-                      select(.tag_name | startswith($prefix)) |
-                      select(.target_commitish == $head) |
-                      select(.draft == false and .immutable == true and
-                        .prerelease == true) |
-                      select(any(.assets[]?; .name == "index.toml") and
-                        any(.assets[]?; .name ==
-                          "kandelo-package-release-seal-v1.json"))] |
-                    sort_by(.created_at) | last | .tag_name // ""
-                  ')
-            if [ -z "$target_tag" ]; then
-              target_tag="pr-${pr_number}-staging"
-            fi
-            expected="$RUNNER_TEMP/homebrew-main-shell-staging-expected.json"
-            snapshot="$RUNNER_TEMP/homebrew-main-shell-staging-snapshot"
+            case "$STAGING_REQUIRED" in
+              true)
+                expected_tag="pr-${pr_number}-staging-run-${GITHUB_RUN_ID}-attempt-${GITHUB_RUN_ATTEMPT}"
+                [ "$STAGING_TAG" = "$expected_tag" ] || {
+                  echo "::error::staging tag differs from this exact workflow attempt"
+                  exit 1
+                }
+                target_tag="$STAGING_TAG"
+                release_body="$RUNNER_TEMP/homebrew-main-shell-staging-body.txt"
 
-            # WHY: an ABI bump has no canonical package release yet. Reuse the
-            # parallel staging build only after proving it is a complete,
-            # exact-current generation; accepting a partial mutable index would
-            # mix packages from different builds or silently source-build gaps.
-            if bash scripts/dev-shell.sh env \
-                EXPECTED="$expected" \
-                SNAPSHOT="$snapshot" \
-                TARGET_TAG="$target_tag" \
-                ABI="$abi" \
-                bash -c '
-                  set -euo pipefail
-                  host_target=$(rustc -vV | awk "/^host/ {print \$2}")
-                  cargo build --release -p xtask --target "$host_target"
-                  xtask="target/$host_target/release/xtask"
-                  "$xtask" staging-reuse expected \
-                    --registry packages/registry \
-                    --expected-abi "$ABI" \
-                    --exclude erlang-vfs,perl,perl-vfs,python-vfs,redis,texlive \
-                    --output "$EXPECTED"
-                  bash .github/scripts/validate-staging-release.sh \
-                    --tag "$TARGET_TAG" \
-                    --expected-ledger "$EXPECTED" \
-                    --mode current \
-                    --output-dir "$SNAPSHOT" \
-                    --xtask "$xtask"
-                '; then
-              frozen_index="$snapshot/frozen-index.toml"
-              target_index_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${target_tag}/index.toml"
-              # WHY: index freezing consumes only the bytes already validated
-              # above. Remove network credentials so this pure transformation
-              # cannot accidentally grow an authenticated code path.
-              env -u GH_TOKEN -u GITHUB_TOKEN \
-                -u HOMEBREW_GITHUB_API_TOKEN \
-                -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+                printf 'PR #%s staging build run %s attempt %s' \
+                  "$pr_number" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" \
+                  >"$release_body"
+
+                # WHY: Producer success is only an ordering signal. Recheck
+                # the exact immutable release, direct tag, and sealed asset
+                # inventory before any package bytes become executable input.
+                bash .github/scripts/package-release-lifecycle.sh \
+                  verify-immutable \
+                  --tag "$target_tag" \
+                  --target-commit "$pr_head" \
+                  --title "$target_tag" \
+                  --body-file "$release_body" \
+                  --prerelease true
+
+                expected="$RUNNER_TEMP/homebrew-main-shell-staging-expected.json"
+                snapshot="$RUNNER_TEMP/homebrew-main-shell-staging-snapshot"
+                # WHY: The exact sealed attempt is mandatory when package
+                # inputs changed. A canonical fallback would test older bytes
+                # and let a missing new package masquerade as success.
+                # shellcheck disable=SC2016
                 bash scripts/dev-shell.sh env \
-                SOURCE_INDEX="$snapshot/source-index.toml" \
-                FROZEN_INDEX="$frozen_index" \
-                TARGET_INDEX_URL="$target_index_url" \
-                ABI="$abi" \
-                bash -c '
-                  set -euo pipefail
-                  host_target=$(rustc -vV | awk "/^host/ {print \$2}")
-                  xtask="target/$host_target/release/xtask"
-                  # WHY: the PR release tag remains mutable. Keep the validated
-                  # index bytes local while rewriting relative archive names to
-                  # their exact release URLs; archive hashes still fail closed.
-                  "$xtask" index-candidate seed \
-                    --canonical-index "$SOURCE_INDEX" \
-                    --candidate-index "$FROZEN_INDEX" \
-                    --canonical-index-url "$TARGET_INDEX_URL" \
-                    --expected-abi "$ABI" \
-                    --generated-at "1970-01-01T00:00:00Z" \
-                    --generator "Homebrew main-shell frozen staging generation"
-                '
-              selected_url="file://${frozen_index}"
-              echo "Using complete verified package generation from $target_tag"
-            else
-              echo "Complete current $target_tag generation is unavailable; using canonical/source fallback"
-            fi
+                  EXPECTED="$expected" \
+                  SNAPSHOT="$snapshot" \
+                  TARGET_TAG="$target_tag" \
+                  ABI="$abi" \
+                  bash -c '
+                    set -euo pipefail
+                    host_target=$(rustc -vV | awk "/^host/ {print \$2}")
+                    cargo build --release -p xtask --target "$host_target"
+                    xtask="target/$host_target/release/xtask"
+                    "$xtask" staging-reuse expected \
+                      --registry packages/registry \
+                      --expected-abi "$ABI" \
+                      --exclude erlang-vfs,perl,perl-vfs,python-vfs,redis,texlive \
+                      --output "$EXPECTED"
+                    bash .github/scripts/validate-staging-release.sh \
+                      --tag "$TARGET_TAG" \
+                      --expected-ledger "$EXPECTED" \
+                      --mode current \
+                      --output-dir "$SNAPSHOT" \
+                      --xtask "$xtask"
+                  '
+                frozen_index="$snapshot/frozen-index.toml"
+                target_index_url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${target_tag}/index.toml"
+                # WHY: index freezing consumes only the bytes already
+                # validated above. Remove network credentials so this pure
+                # transformation cannot grow an authenticated code path.
+                # shellcheck disable=SC2016
+                env -u GH_TOKEN -u GITHUB_TOKEN \
+                  -u HOMEBREW_GITHUB_API_TOKEN \
+                  -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+                  bash scripts/dev-shell.sh env \
+                  SOURCE_INDEX="$snapshot/source-index.toml" \
+                  FROZEN_INDEX="$frozen_index" \
+                  TARGET_INDEX_URL="$target_index_url" \
+                  ABI="$abi" \
+                  bash -c '
+                    set -euo pipefail
+                    host_target=$(rustc -vV | awk "/^host/ {print \$2}")
+                    xtask="target/$host_target/release/xtask"
+                    # WHY: retain validated index bytes locally while
+                    # rewriting relative archive names to exact release URLs;
+                    # archive hashes still fail closed.
+                    "$xtask" index-candidate seed \
+                      --canonical-index "$SOURCE_INDEX" \
+                      --candidate-index "$FROZEN_INDEX" \
+                      --canonical-index-url "$TARGET_INDEX_URL" \
+                      --expected-abi "$ABI" \
+                      --generated-at "1970-01-01T00:00:00Z" \
+                      --generator "Homebrew main-shell frozen staging generation"
+                  '
+                selected_url="file://${frozen_index}"
+                echo "Using complete verified package generation from $target_tag"
+                ;;
+              false)
+                [ "$STAGING_TAG" = not-required ] || {
+                  echo "::error::non-staging call supplied release authority"
+                  exit 1
+                }
+                ;;
+              *)
+                echo "::error::invalid staging requirement: $STAGING_REQUIRED"
+                exit 1
+                ;;
+            esac
           fi
 
           echo "WASM_POSIX_BINARY_INDEX_URL=$selected_url" >> "$GITHUB_ENV"
@@ -417,6 +462,8 @@ jobs:
           archive_root="$candidate_root/archive"
           test ! -e "$candidate_root"
           mkdir -p "$archive_root"
+          # WHY: the isolated child shell owns these variable expansions.
+          # shellcheck disable=SC2016
           env \
             WASM_POSIX_BINARY_INDEX_URL="$SOURCE_SHELL_BINARY_INDEX_URL" \
             bash scripts/dev-shell.sh env \
@@ -782,7 +829,7 @@ jobs:
           echo "plan=$mirror_dir/kandelo-homebrew-bottle-mirror-plan.json" >> "$GITHUB_OUTPUT"
 
       - name: Create the exact closed Chromium lifecycle fixture
-        if: github.event_name == 'workflow_dispatch' && inputs.transport_mode == 'closed'
+        if: (inputs.caller_event_name || github.event_name) == 'workflow_dispatch' && inputs.transport_mode == 'closed'
         id: live-fixture
         run: |
           set -euo pipefail
@@ -935,7 +982,7 @@ jobs:
           esac
 
       - name: Exercise the live first- and third-party lifecycle in Node
-        if: github.event_name == 'workflow_dispatch' && inputs.transport_mode == 'closed'
+        if: (inputs.caller_event_name || github.event_name) == 'workflow_dispatch' && inputs.transport_mode == 'closed'
         run: |
           set -euo pipefail
           bash scripts/dev-shell.sh npx tsx \
@@ -1013,7 +1060,7 @@ jobs:
                 npx playwright test test/homebrew-guest-lifecycle.spec.ts \
                 --project=chromium \
                 --grep "rejects a guest lifecycle fixture"
-              if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] &&
+              if [ "$CALLER_EVENT_NAME" = workflow_dispatch ] &&
                  [ "$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" = closed ]; then
                 # Run the rebooting live lifecycle in its own browser process so
                 # it receives the same exact image/bootstrap/mirror as Node.
@@ -1053,7 +1100,7 @@ jobs:
               ' "$report" >/dev/null
             done
           )
-          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] &&
+          if [ "$CALLER_EVENT_NAME" = workflow_dispatch ] &&
              [ "$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" = closed ]; then
             jq -e '
               .stats.expected == 1 and .stats.unexpected == 0 and
