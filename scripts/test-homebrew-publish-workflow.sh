@@ -7550,6 +7550,14 @@ PYTHONDONTWRITEBYTECODE=1 \
   python3 "$REPO_ROOT/scripts/test-homebrew-prefix-campaign-executor.py"
 PYTHONDONTWRITEBYTECODE=1 \
   python3 "$REPO_ROOT/scripts/test-homebrew-prefix-campaign-publisher.py"
+PYTHONDONTWRITEBYTECODE=1 \
+  python3 "$REPO_ROOT/scripts/test-homebrew-candidate-campaign.py"
+PYTHONDONTWRITEBYTECODE=1 \
+  python3 "$REPO_ROOT/scripts/test-homebrew-bottle-candidate.py"
+PYTHONDONTWRITEBYTECODE=1 \
+  python3 "$REPO_ROOT/scripts/test-homebrew-candidate-release-receipt.py"
+PYTHONDONTWRITEBYTECODE=1 \
+  python3 "$REPO_ROOT/scripts/test-homebrew-candidate-caller-pins.py"
 bash "$REPO_ROOT/scripts/test-homebrew-inspect-bottle.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-formula-runtime-closure.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-validate-host-dependency-plan.sh"

@@ -1,0 +1,538 @@
+name: Seal an unmerged Homebrew campaign candidate
+
+on:
+  workflow_call:
+    inputs:
+      kandelo-repository:
+        type: string
+        required: true
+      producer-sha:
+        type: string
+        required: true
+      pr-number:
+        type: number
+        required: true
+      tap-repository:
+        type: string
+        required: true
+      tap-name:
+        type: string
+        required: true
+      tap-sha:
+        type: string
+        required: true
+    outputs:
+      candidate-tag:
+        value: ${{ jobs.seal.outputs.candidate-tag }}
+
+jobs:
+  admit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      base-sha: ${{ steps.admit.outputs.base-sha }}
+      caller-sha: ${{ steps.admit.outputs.caller-sha }}
+    steps:
+      - name: Bind the request to current protected branches
+        id: admit
+        shell: bash
+        env:
+          CALLER_REF: ${{ github.ref }}
+          CALLER_REPOSITORY: ${{ github.repository }}
+          CALLER_SHA: ${{ github.sha }}
+          CALLER_WORKFLOW_REF: ${{ github.workflow_ref }}
+          GH_TOKEN: ${{ github.token }}
+          KANDELO_REPOSITORY: ${{ inputs.kandelo-repository }}
+          PR_NUMBER: ${{ inputs.pr-number }}
+          PRODUCER_SHA: ${{ inputs.producer-sha }}
+          TAP_NAME: ${{ inputs.tap-name }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_SHA: ${{ inputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          expected_caller="$CALLER_REPOSITORY/.github/workflows/"
+          expected_caller+="candidate-campaign.yml@refs/heads/main"
+          [ "${CALLER_REPOSITORY,,}" = \
+            "kandelo-dev/homebrew-tap-core" ] &&
+            [ "$CALLER_REF" = refs/heads/main ] &&
+            [ "$CALLER_WORKFLOW_REF" = "$expected_caller" ] &&
+            [ "${KANDELO_REPOSITORY,,}" = automattic/kandelo ] &&
+            [ "${TAP_REPOSITORY,,}" = \
+              kandelo-dev/homebrew-tap-core ] &&
+            [ "${TAP_NAME,,}" = kandelo-dev/tap-core ] &&
+            [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] &&
+            [[ "$PRODUCER_SHA" =~ ^[0-9a-f]{40}$ ]] &&
+            [[ "$TAP_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+              echo "::error::candidate campaign caller is not exact"
+              exit 2
+            }
+          tap_main="$(gh api \
+            "/repos/$TAP_REPOSITORY/git/ref/heads/main" \
+            --jq .object.sha)"
+          [ "$CALLER_SHA" = "$tap_main" ] || {
+            echo "::error::candidate campaign requires current tap main"
+            exit 1
+          }
+          tap_status="$(gh api \
+            "/repos/$TAP_REPOSITORY/compare/$TAP_SHA...$tap_main" \
+            --jq .status)"
+          case "$tap_status" in ahead|identical) ;; *)
+            echo "::error::candidate campaign tap source is not on main"
+            exit 1
+          esac
+          pr="$RUNNER_TEMP/candidate-campaign-pr.json"
+          gh api "/repos/$KANDELO_REPOSITORY/pulls/$PR_NUMBER" >"$pr"
+          base_sha="$(jq -er .base.sha "$pr")"
+          current_main="$(gh api \
+            "/repos/$KANDELO_REPOSITORY/git/ref/heads/main" \
+            --jq .object.sha)"
+          jq -e \
+            --arg base "$current_main" \
+            --arg head "$PRODUCER_SHA" '
+              .state == "open" and .base.ref == "main" and
+              .base.sha == $base and .head.sha == $head
+            ' "$pr" >/dev/null || {
+              echo "::error::candidate PR is not based on current main"
+              exit 1
+            }
+          [ "$base_sha" = "$current_main" ] || exit 1
+          {
+            echo "base-sha=$base_sha"
+            echo "caller-sha=$CALLER_SHA"
+          } >>"$GITHUB_OUTPUT"
+
+      - name: Checkout protected campaign caller validator
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.kandelo-repository }}
+          ref: ${{ steps.admit.outputs.base-sha }}
+          path: caller-validator
+          submodules: false
+
+      - name: Checkout exact campaign caller as inert data
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.tap-repository }}
+          ref: ${{ steps.admit.outputs.caller-sha }}
+          path: caller-data
+          submodules: false
+
+      - name: Require the campaign caller to pin its exact base
+        shell: bash
+        env:
+          BASE_SHA: ${{ steps.admit.outputs.base-sha }}
+        run: |
+          set -euo pipefail
+          # WHY: GitHub resolves a reusable workflow ref before Kandelo code
+          # starts. The caller at exact tap commit C must name B literally;
+          # a mutable @main ref could execute code that was never reviewed.
+          python3 caller-validator/scripts/homebrew-candidate-caller-pins.py \
+            validate --tap-root "$GITHUB_WORKSPACE/caller-data" \
+            --mode campaign --kandelo-sha "$BASE_SHA"
+
+  derive:
+    needs: [admit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout protected campaign wrapper authority
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.kandelo-repository }}
+          ref: ${{ needs.admit.outputs.base-sha }}
+          path: authority
+          submodules: false
+
+      - name: Checkout exact candidate as untrusted source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.kandelo-repository }}
+          ref: ${{ inputs.producer-sha }}
+          path: producer
+          submodules: false
+
+      - name: Checkout exact tap campaign source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.tap-repository }}
+          ref: ${{ inputs.tap-sha }}
+          path: tap
+          fetch-depth: 0
+
+      - name: Describe exact candidate inputs with protected code
+        id: source
+        shell: bash
+        env:
+          BASE_SHA: ${{ needs.admit.outputs.base-sha }}
+          CALLER_SHA: ${{ needs.admit.outputs.caller-sha }}
+          KANDELO_REPOSITORY: ${{ inputs.kandelo-repository }}
+          PR_NUMBER: ${{ inputs.pr-number }}
+          PRODUCER_SHA: ${{ inputs.producer-sha }}
+          TAP_NAME: ${{ inputs.tap-name }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_SHA: ${{ inputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          for secret_name in GH_TOKEN GITHUB_TOKEN \
+            HOMEBREW_GITHUB_API_TOKEN \
+            HOMEBREW_GITHUB_PACKAGES_TOKEN \
+            HOMEBREW_DOCKER_REGISTRY_TOKEN; do
+            [ -z "${!secret_name:-}" ] || {
+              echo "::error::candidate campaign source received $secret_name"
+              exit 2
+            }
+          done
+          python3 authority/scripts/homebrew-candidate-campaign.py \
+            describe-source \
+            --kandelo-root "$GITHUB_WORKSPACE/producer" \
+            --kandelo-repository "$KANDELO_REPOSITORY" \
+            --base-commit "$BASE_SHA" \
+            --producer-commit "$PRODUCER_SHA" \
+            --workflow-authority-commit "$BASE_SHA" \
+            --pr-number "$PR_NUMBER" \
+            --tap-root "$GITHUB_WORKSPACE/tap" \
+            --tap-repository "$TAP_REPOSITORY" \
+            --tap-name "$TAP_NAME" \
+            --source-tap-commit "$TAP_SHA" \
+            --tap-workflow-authority-commit "$CALLER_SHA" \
+            --out "$RUNNER_TEMP/candidate-campaign-source.json"
+          echo "native-commit=$(jq -er .native_homebrew_commit \
+            "$RUNNER_TEMP/candidate-campaign-source.json")" \
+            >>"$GITHUB_OUTPUT"
+
+      - name: Checkout reviewed native Homebrew implementation
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          repository: Homebrew/brew
+          ref: ${{ steps.source.outputs.native-commit }}
+          path: native-homebrew
+
+      - name: Install Nix for credential-free campaign derivation
+        uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
+        with:
+          github-token: ""
+
+      - name: Cache Nix store and flake evaluation
+        uses: DeterminateSystems/magic-nix-cache-action@908b263ff629f4cc17666315b7fd3ec127c6244d # v14
+        with:
+          use-gha-cache: false
+          use-flakehub: false
+
+      - name: Derive the candidate campaign without credentials
+        shell: bash
+        env:
+          PRODUCER_SHA: ${{ inputs.producer-sha }}
+          TAP_SHA: ${{ inputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          for secret_name in GH_TOKEN GITHUB_TOKEN \
+            HOMEBREW_GITHUB_API_TOKEN \
+            HOMEBREW_GITHUB_PACKAGES_TOKEN \
+            HOMEBREW_DOCKER_REGISTRY_TOKEN; do
+            [ -z "${!secret_name:-}" ] || {
+              echo "::error::candidate campaign derivation received $secret_name"
+              exit 2
+            }
+          done
+          source="$RUNNER_TEMP/candidate-campaign-source.json"
+          metadata_sha="$(jq -er .old_metadata.sha256 "$source")"
+          layout_sha="$(jq -er .guest_layout.sha256 "$source")"
+          native_sha="$(jq -er .native_homebrew_commit "$source")"
+          env -u GH_TOKEN -u GITHUB_TOKEN \
+            -u HOMEBREW_GITHUB_API_TOKEN \
+            -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+            -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+            bash producer/scripts/dev-shell.sh \
+              python3 producer/scripts/homebrew-prefix-campaign.py derive \
+                --kandelo-root "$GITHUB_WORKSPACE/producer" \
+                --kandelo-commit "$PRODUCER_SHA" \
+                --old-tap-root "$GITHUB_WORKSPACE/tap" \
+                --old-tap-commit "$TAP_SHA" \
+                --source-tap-root "$GITHUB_WORKSPACE/tap" \
+                --source-tap-commit "$TAP_SHA" \
+                --native-brew-root "$GITHUB_WORKSPACE/native-homebrew" \
+                --native-brew-commit "$native_sha" \
+                --metadata-sha256 "$metadata_sha" \
+                --guest-layout-sha256 "$layout_sha" \
+                --out "$RUNNER_TEMP/campaign.json"
+
+      - name: Retain one exact credential-free derivation
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: >-
+            homebrew-candidate-campaign-derivation-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/candidate-campaign-source.json
+            ${{ runner.temp }}/campaign.json
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 2
+
+  seal:
+    needs: [admit, derive]
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      actions: read
+      contents: write
+    outputs:
+      candidate-tag: ${{ steps.publish.outputs.candidate-tag }}
+    steps:
+      - name: Checkout protected Kandelo sealer authority
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.kandelo-repository }}
+          ref: ${{ needs.admit.outputs.base-sha }}
+          path: authority
+          submodules: false
+
+      - name: Checkout protected tap release authority
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          ref: ${{ needs.admit.outputs.caller-sha }}
+          fetch-depth: 0
+          path: tap-authority
+
+      - name: Checkout candidate only as inert source data
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.kandelo-repository }}
+          ref: ${{ inputs.producer-sha }}
+          path: producer-data
+          submodules: false
+
+      - name: Checkout exact tap only as inert source data
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          repository: ${{ inputs.tap-repository }}
+          ref: ${{ inputs.tap-sha }}
+          path: tap-data
+          fetch-depth: 0
+
+      - name: Download exact credential-free derivation
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: >-
+            homebrew-candidate-campaign-derivation-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate-campaign-derivation
+
+      - name: Revalidate run, source, and branch authority
+        shell: bash
+        env:
+          BASE_SHA: ${{ needs.admit.outputs.base-sha }}
+          CALLER_SHA: ${{ needs.admit.outputs.caller-sha }}
+          GH_TOKEN: ${{ github.token }}
+          KANDELO_REPOSITORY: ${{ inputs.kandelo-repository }}
+          PR_NUMBER: ${{ inputs.pr-number }}
+          PRODUCER_SHA: ${{ inputs.producer-sha }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+          TAP_SHA: ${{ inputs.tap-sha }}
+        run: |
+          set -euo pipefail
+          kandelo_main="$(gh api \
+            "/repos/$KANDELO_REPOSITORY/git/ref/heads/main" \
+            --jq .object.sha)"
+          tap_main="$(gh api \
+            "/repos/$TAP_REPOSITORY/git/ref/heads/main" \
+            --jq .object.sha)"
+          [ "$kandelo_main" = "$BASE_SHA" ] || {
+            echo "::error::Kandelo main moved during campaign derivation"
+            exit 1
+          }
+          # WHY: the exact caller commit owns this run. Later append-only tap
+          # commits do not change its code and should not discard completed
+          # derivation work.
+          caller_status="$(gh api \
+            "/repos/$TAP_REPOSITORY/compare/$CALLER_SHA...$tap_main" \
+            --jq .status)"
+          case "$caller_status" in
+            ahead|identical) ;;
+            *)
+              echo "::error::candidate caller left protected tap main"
+              exit 1
+              ;;
+          esac
+          gh api "/repos/$KANDELO_REPOSITORY/pulls/$PR_NUMBER" \
+            >"$RUNNER_TEMP/candidate-campaign-pr-live.json"
+          jq -e \
+            --arg base "$BASE_SHA" \
+            --arg head "$PRODUCER_SHA" '
+              .state == "open" and .base.ref == "main" and
+              .base.sha == $base and .head.sha == $head
+            ' "$RUNNER_TEMP/candidate-campaign-pr-live.json" >/dev/null || {
+              echo "::error::candidate PR changed during campaign derivation"
+              exit 1
+            }
+          source="$RUNNER_TEMP/candidate-campaign-derivation/"
+          source+="candidate-campaign-source.json"
+          jq -e \
+            --arg base "$BASE_SHA" \
+            --arg producer "$PRODUCER_SHA" \
+            --arg caller "$CALLER_SHA" \
+            --arg tap "$TAP_SHA" \
+            --argjson pr "$PR_NUMBER" '
+              .base_commit == $base and
+              .workflow_authority_commit == $base and
+              .producer_commit == $producer and
+              .tap_workflow_authority_commit == $caller and
+              .source_tap_commit == $tap and .pr_number == $pr
+            ' "$source" >/dev/null || {
+              echo "::error::candidate campaign source changed"
+              exit 1
+            }
+          env -u GH_TOKEN -u GITHUB_TOKEN \
+            python3 authority/scripts/homebrew-candidate-campaign.py \
+              describe-source \
+              --kandelo-root "$GITHUB_WORKSPACE/producer-data" \
+              --kandelo-repository "$KANDELO_REPOSITORY" \
+              --base-commit "$BASE_SHA" \
+              --producer-commit "$PRODUCER_SHA" \
+              --workflow-authority-commit "$BASE_SHA" \
+              --pr-number "$PR_NUMBER" \
+              --tap-root "$GITHUB_WORKSPACE/tap-data" \
+              --tap-repository "$TAP_REPOSITORY" \
+              --tap-name kandelo-dev/tap-core \
+              --source-tap-commit "$TAP_SHA" \
+              --tap-workflow-authority-commit "$CALLER_SHA" \
+              --out "$RUNNER_TEMP/rederived-candidate-campaign-source.json"
+          cmp -s "$source" \
+            "$RUNNER_TEMP/rederived-candidate-campaign-source.json" || {
+              echo "::error::candidate execution changed protected source evidence"
+              exit 1
+            }
+          run_json="$RUNNER_TEMP/candidate-campaign-run-live.json"
+          pages="$RUNNER_TEMP/candidate-campaign-artifact-pages.json"
+          artifacts="$RUNNER_TEMP/candidate-campaign-artifacts.json"
+          gh api "/repos/$TAP_REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            >"$run_json"
+          gh api --paginate --slurp \
+            "/repos/$TAP_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" \
+            >"$pages"
+          jq -e '[.[].artifacts[]]' "$pages" >"$artifacts"
+          artifact_name="homebrew-candidate-campaign-derivation-"
+          artifact_name+="attempt-$GITHUB_RUN_ATTEMPT"
+          jq -e \
+            --arg caller "$CALLER_SHA" \
+            --arg repository "$TAP_REPOSITORY" \
+            --argjson run_id "$GITHUB_RUN_ID" \
+            --argjson attempt "$GITHUB_RUN_ATTEMPT" '
+              .id == $run_id and .run_attempt == $attempt and
+              .head_sha == $caller and
+              .path == ".github/workflows/candidate-campaign.yml" and
+              (.repository.full_name | ascii_downcase) ==
+                ($repository | ascii_downcase) and
+              .event == "repository_dispatch" and
+              (.status == "in_progress" or
+                (.status == "completed" and .conclusion == "success"))
+            ' "$run_json" >/dev/null || {
+              echo "::error::candidate campaign live run is not exact"
+              exit 1
+            }
+          jq -e --arg name "$artifact_name" '
+            [ .[] | select(.name == $name) ] as $selected |
+            ($selected | length) == 1 and
+            $selected[0].expired == false and
+            ($selected[0].id | type == "number" and . > 0) and
+            ($selected[0].size_in_bytes | type == "number" and . > 0) and
+            ($selected[0].digest | type == "string" and
+              test("^sha256:[0-9a-f]{64}$"))
+          ' "$artifacts" >/dev/null || {
+            echo "::error::candidate campaign derivation artifact is absent"
+            exit 1
+          }
+          jq -nS \
+            --arg repository "$TAP_REPOSITORY" \
+            --arg caller "$CALLER_SHA" \
+            --arg name "$artifact_name" \
+            --argjson run_id "$GITHUB_RUN_ID" \
+            --argjson attempt "$GITHUB_RUN_ATTEMPT" \
+            --slurpfile run "$run_json" \
+            --slurpfile artifacts "$artifacts" '
+              ($artifacts[0] | map(select(.name == $name))[0]) as $artifact |
+              {
+                schema:1,
+                repository:$repository,
+                workflow_path:".github/workflows/candidate-campaign.yml",
+                caller_commit:$caller,
+                event:"repository_dispatch",
+                run_id:$run_id,
+                run_attempt:$attempt,
+                status:$run[0].status,
+                conclusion:$run[0].conclusion,
+                artifacts:[{
+                  id:$artifact.id,
+                  name:$artifact.name,
+                  bytes:$artifact.size_in_bytes,
+                  digest:$artifact.digest,
+                  run_id:$run_id,
+                  run_attempt:$attempt
+                }]
+              }
+            ' >"$RUNNER_TEMP/candidate-campaign-run.json"
+
+      - name: Prepare inert noncanonical campaign release
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -z "${GH_TOKEN:-}" ] && [ -z "${GITHUB_TOKEN:-}" ] || {
+            echo "::error::candidate campaign preparation received credentials"
+            exit 2
+          }
+          python3 authority/scripts/homebrew-candidate-campaign.py prepare \
+            --source \
+              "$RUNNER_TEMP/candidate-campaign-derivation/candidate-campaign-source.json" \
+            --run-evidence "$RUNNER_TEMP/candidate-campaign-run.json" \
+            --campaign \
+              "$RUNNER_TEMP/candidate-campaign-derivation/campaign.json" \
+            --out "$RUNNER_TEMP/prepared-candidate-campaign"
+
+      - name: Publish immutable candidate campaign
+        id: publish
+        shell: bash
+        env:
+          BASE_SHA: ${{ needs.admit.outputs.base-sha }}
+          CALLER_SHA: ${{ needs.admit.outputs.caller-sha }}
+          GH_TOKEN: ${{ github.token }}
+          STATE_LOCK_OWNER_DETAIL: immutable Homebrew candidate campaign
+        run: |
+          set -euo pipefail
+          bash authority/scripts/publish-immutable-github-release.sh \
+            --manifest \
+              "$RUNNER_TEMP/prepared-candidate-campaign/release-manifest.json" \
+            --asset-root \
+              "$RUNNER_TEMP/prepared-candidate-campaign/assets" \
+            --lock-root "$GITHUB_WORKSPACE/tap-authority" \
+            --receipt "$RUNNER_TEMP/candidate-campaign-release.json" \
+            --exact-kandelo-main-sha "$BASE_SHA" \
+            --target-main-contains-sha "$CALLER_SHA"
+          tag="$(cat "$RUNNER_TEMP/prepared-candidate-campaign/tag.txt")"
+          echo "candidate-tag=$tag" >>"$GITHUB_OUTPUT"
+          {
+            echo "### Immutable Homebrew candidate campaign"
+            echo
+            printf "Candidate: \`%s\`\n\n" "$tag"
+            echo "This release cannot publish canonical bottles before merge."
+          } >>"$GITHUB_STEP_SUMMARY"
+
+      - name: Retain candidate campaign publication evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: >-
+            homebrew-candidate-campaign-release-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/candidate-campaign-release.json
+          if-no-files-found: error
+          retention-days: 90
