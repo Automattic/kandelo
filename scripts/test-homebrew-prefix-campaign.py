@@ -1186,6 +1186,66 @@ class PrefixCampaignTests(unittest.TestCase):
             ],
         )
 
+    def test_historical_formula_staging_ignores_tap_owned_root_symlink(
+        self,
+    ) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        alpha = (fixture.old_tap / "Formula/alpha.rb").read_bytes()
+        collision = (
+            fixture.old_tap
+            / f"Kandelo/reports/failures/{sha256(alpha)}.rb"
+        )
+        collision.write_text("repository-controlled collision\n")
+        staging = fixture.old_tap / ".campaign-historical-formula"
+        staging.symlink_to(
+            "Kandelo/reports/failures",
+            target_is_directory=True,
+        )
+        old_head = commit(
+            fixture.old_tap,
+            "add adversarial historical Formula root symlink",
+        )
+
+        result = CAMPAIGN.derive_campaign(
+            fixture.options(old_tap_commit=old_head),
+            fixture.dependencies(),
+        )
+
+        self.assertEqual(result["summary"]["formulae"], 4)
+        self.assertEqual(
+            collision.read_text(), "repository-controlled collision\n"
+        )
+        self.assertTrue(staging.is_symlink())
+
+    def test_historical_formula_staging_ignores_tap_owned_leaf_symlink(
+        self,
+    ) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        staging = fixture.old_tap / ".campaign-historical-formula"
+        staging.mkdir()
+        alpha = (fixture.old_tap / "Formula/alpha.rb").read_bytes()
+        collision = fixture.old_tap / "historical-formula-collision.rb"
+        collision.write_text("repository-controlled collision\n")
+        leaf = staging / f"{sha256(alpha)}.rb"
+        leaf.symlink_to("../historical-formula-collision.rb")
+        old_head = commit(
+            fixture.old_tap,
+            "add adversarial historical Formula leaf symlink",
+        )
+
+        result = CAMPAIGN.derive_campaign(
+            fixture.options(old_tap_commit=old_head),
+            fixture.dependencies(),
+        )
+
+        self.assertEqual(result["summary"]["formulae"], 4)
+        self.assertEqual(
+            collision.read_text(), "repository-controlled collision\n"
+        )
+        self.assertTrue(leaf.is_symlink())
+
     def test_unchanged_formula_is_required_for_reuse(self) -> None:
         fixture = make_fixture(alpha_source_changed=False)
         self.addCleanup(fixture.close)

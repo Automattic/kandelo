@@ -2580,6 +2580,7 @@ def _derive_campaign_from_snapshots(
     options: CampaignOptions,
     dependencies: CampaignDependencies,
     metadata_hashes: set[str],
+    historical_formula_root: pathlib.Path,
 ) -> dict[str, Any]:
     if not 1 <= options.jobs <= MAX_JOBS:
         fail(f"jobs must be between 1 and {MAX_JOBS}")
@@ -2590,6 +2591,10 @@ def _derive_campaign_from_snapshots(
     )
     native_brew_root = real_directory(
         options.native_brew_root, "native Homebrew snapshot"
+    )
+    historical_formula_root = real_directory(
+        historical_formula_root,
+        "private historical Formula staging root",
     )
     current_abi = derive_current_abi(kandelo_root)
     _abi_snapshot, abi_snapshot_sha256 = validate_abi_snapshot(
@@ -2943,14 +2948,24 @@ def _derive_campaign_from_snapshots(
         ):
             fail(f"{name} {label} Formula source is invalid")
         digest = sha256_bytes(payload)
-        directory = old_tap_root / ".campaign-historical-formula"
-        directory.mkdir(exist_ok=True)
-        path = directory / f"{digest}.rb"
+        # WHY: the tap snapshot is repository-controlled input. Staging under
+        # it would let a tracked directory or leaf symlink redirect generated
+        # writes into repository-selected paths. This root is created by the
+        # tool beside its private input snapshots, so repository contents
+        # cannot choose the destination.
+        path = historical_formula_root / f"{digest}.rb"
         if path.exists():
-            if path.read_bytes() != payload:
+            if (
+                regular_file(
+                    path,
+                    f"{name} historical Formula staging",
+                    1024 * 1024,
+                ).read_bytes()
+                != payload
+            ):
                 fail(f"{name} historical Formula staging collided")
         else:
-            path.write_bytes(payload)
+            write_new_file(path, payload)
         return path
 
     for name in sorted(sidecars_by_name):
@@ -3600,6 +3615,8 @@ def derive_campaign(
                 temporary / "input-3",
                 "native Homebrew input",
             )
+            historical_formula_root = temporary / "historical-formula"
+            historical_formula_root.mkdir(mode=0o700)
             snapshot_options = dataclasses.replace(
                 options,
                 kandelo_root=kandelo_snapshot,
@@ -3610,7 +3627,10 @@ def derive_campaign(
                 source_materialization=source_materialization,
             )
             result = _derive_campaign_from_snapshots(
-                snapshot_options, dependencies, metadata_hashes
+                snapshot_options,
+                dependencies,
+                metadata_hashes,
+                historical_formula_root,
             )
     except BaseException as primary:
         try:
