@@ -86,9 +86,9 @@ if jq -e 'any(.entries[]; .package == "shell")' "$report" >/dev/null; then
         source_repository="https://github.com/${GITHUB_REPOSITORY:-Automattic/kandelo}"
         cache_root="$("$xtask" build-deps cache-root)"
         # WHY: workflows without a proved staging closure still need the
-        # explicitly separate source-rootfs bridge. This fallback never claims
-        # bottle composition metadata and therefore remains unsuitable for a
-        # derived image that requires bottle-owned lazy trees.
+        # explicitly separate source-rootfs bridge. Its source composition
+        # marker lets conventional derived images preserve that ownership
+        # truthfully, but it cannot satisfy closed Homebrew mirror acceptance.
         "$xtask" archive-stage \
             --package "$REPO_ROOT/homebrew/source-rootfs-shell-package" \
             --registry "$REPO_ROOT/packages/registry" \

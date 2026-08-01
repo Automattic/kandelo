@@ -37,7 +37,10 @@ import {
   SHELL_LAZY_ARCHIVE_SPECS,
   type ShellLazyArchiveResolver,
 } from "./shell-lazy-archives";
-import { populateShellEnvironment } from "./shell-vfs-build";
+import {
+  populateShellEnvironment,
+  SOURCE_ROOTFS_SHELL_COMPOSITION,
+} from "./shell-vfs-build";
 
 const REGULAR_FILE_MODE = 0o100000;
 const SYMBOLIC_LINK_MODE = 0o120000;
@@ -665,6 +668,9 @@ export async function buildSourceRootfsShellImage(
       version: 1,
       kernelAbi: ABI_VERSION,
       createdBy: "build-source-rootfs-shell-image",
+      // WHY: downstream products must distinguish this conventional source
+      // closure from a shell whose lazy trees carry Homebrew package authority.
+      shellComposition: SOURCE_ROOTFS_SHELL_COMPOSITION,
     },
     normalizeTimestampsMs: sourceDateEpochMilliseconds(
       inputs.sourceDateEpoch ?? process.env.SOURCE_DATE_EPOCH,

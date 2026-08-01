@@ -299,7 +299,7 @@ describe("source-rootfs shell bridge", () => {
       'name = "node"',
     ]);
     expect(buildToml).toMatch(/^commit\s*=\s*"UNPUBLISHED"$/m);
-    expect(buildToml).toMatch(/^revision\s*=\s*2$/m);
+    expect(buildToml).toMatch(/^revision\s*=\s*3$/m);
     expect(buildToml).not.toContain("[[git_inputs]]");
     for (const input of [
       "homebrew/source-rootfs-shell-default.json",
@@ -410,6 +410,10 @@ describe("source-rootfs shell bridge", () => {
       version: 1,
       kernelAbi: ABI_VERSION,
       createdBy: "build-source-rootfs-shell-image",
+      shellComposition: {
+        schema: 1,
+        kind: "source-rootfs",
+      },
     });
     expect(MemoryFileSystem.readImageCapacity(first).maxByteLength).toBe(
       source.maxByteLength,
