@@ -496,7 +496,8 @@ done
 # WHY: a prefix campaign materializes dependency bottle blocks in a local
 # synthetic commit. The public source commit remains publication authority,
 # while Homebrew must truthfully record the synthetic commit it actually runs.
-"$BREW_BIN" tap "$TAP_NAME" "$TAP_ROOT"
+PRIMARY_TAP_CLONE_URL="$(homebrew_local_tap_clone_url "$TAP_ROOT")"
+"$BREW_BIN" tap "$TAP_NAME" "$PRIMARY_TAP_CLONE_URL"
 TAPPED_TAP_ROOT="$("$BREW_BIN" --repository "$TAP_NAME")"
 TAPPED_TAP_ROOT="$(cd "$TAPPED_TAP_ROOT" && pwd -P)"
 [ "$TAPPED_TAP_ROOT" != "$TAP_ROOT" ] && \
@@ -522,7 +523,10 @@ if [ -n "${KANDELO_HOMEBREW_RESOLVED_TAPS_FILE:-}" ]; then
       echo "homebrew-bottle-build.sh: resolved dependency tap is incomplete" >&2
       exit 2
     }
-    "$BREW_BIN" tap "$dependency_tap" "$dependency_root"
+    dependency_tap_clone_url="$(
+      homebrew_local_tap_clone_url "$dependency_root"
+    )"
+    "$BREW_BIN" tap "$dependency_tap" "$dependency_tap_clone_url"
     tapped_dependency_root="$("$BREW_BIN" --repository "$dependency_tap")"
     tapped_dependency_root="$(cd "$tapped_dependency_root" && pwd -P)"
     locked_dependency_root="$(cd "$dependency_root" && pwd -P)"
