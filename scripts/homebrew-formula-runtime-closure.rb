@@ -19,7 +19,7 @@ MAX_TIER2_CONTROL_BYTES = 65_536
 MAX_SUPPORT_RUNTIME_FILES = 128
 MAX_SUPPORT_RUNTIME_BYTES = 16_777_216
 MAX_TAP_RECIPE_RESOURCES = 32
-CURRENT_BOTTLE_CELLAR = "/home/linuxbrew/.linuxbrew/Cellar"
+KANDELO_BOTTLE_CELLAR = "/opt/kandelo/homebrew/Cellar"
 PREFIX_CAMPAIGN_LAYOUT_SHA256 =
   ENV.fetch("KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256", "")
 FORMULA_NAME = /\A[a-z0-9][a-z0-9._-]*\z/
@@ -89,7 +89,7 @@ FORBIDDEN_SUPPORT_IDENTIFIERS = (
     ]
 ).freeze
 
-allowed_bottle_cellar = CURRENT_BOTTLE_CELLAR
+allowed_bottle_cellar = KANDELO_BOTTLE_CELLAR
 unless PREFIX_CAMPAIGN_LAYOUT_SHA256.empty?
   unless PREFIX_CAMPAIGN_LAYOUT_SHA256.match?(/\A[0-9a-f]{64}\z/)
     abort "invalid prefix-campaign guest layout SHA-256"

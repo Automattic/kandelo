@@ -14,7 +14,7 @@ import {
 
 const expectation: LanguageRuntimeExpectation = {
   label: "Homebrew python3",
-  expectedStdout: "python-runtime-ok:/home/linuxbrew/.linuxbrew/bin/python3\n",
+  expectedStdout: "python-runtime-ok:/opt/kandelo/homebrew/bin/python3\n",
 };
 
 const compatibilityLinkSpecs = [
@@ -143,8 +143,8 @@ function compositionDocuments(expectation: CompositionExpectation): {
         url: `https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/${pkg.name}/blobs/sha256:${pkg.cacheKeySha}`,
         cache_key_sha: pkg.cacheKeySha,
         sha256: pkg.cacheKeySha,
-        prefix: "/home/linuxbrew/.linuxbrew",
-        keg: `/home/linuxbrew/.linuxbrew/Cellar/${pkg.name}/${pkg.version}`,
+        prefix: "/opt/kandelo/homebrew",
+        keg: `/opt/kandelo/homebrew/Cellar/${pkg.name}/${pkg.version}`,
         built_from: {
           tap_repository: "kandelo-dev/homebrew-tap-core",
           tap_commit: pkg.builtFromTapCommit,
@@ -157,7 +157,7 @@ function compositionDocuments(expectation: CompositionExpectation): {
         ([path, packageName, targetName]) => ({
           path,
           package: `kandelo-dev/tap-core/${packageName}`,
-          target: `/home/linuxbrew/.linuxbrew/bin/${targetName}`,
+          target: `/opt/kandelo/homebrew/bin/${targetName}`,
         }),
       ),
     },
@@ -792,7 +792,7 @@ const compositionFailureCases: CompositionFailureCase[] = [
     label: "binds report package keg",
     mutate: (documents) => {
       reportPackage(documents).keg =
-        "/home/linuxbrew/.linuxbrew/Cellar/dash/0.5.11";
+        "/opt/kandelo/homebrew/Cellar/dash/0.5.11";
     },
     error: /Homebrew VFS report package dash\.keg/,
   },
@@ -869,7 +869,7 @@ const compositionFailureCases: CompositionFailureCase[] = [
     label: "binds compatibility link targets",
     mutate: (documents) => {
       compatibilityLink(documents, "/usr/bin/python3.13").target =
-        "/home/linuxbrew/.linuxbrew/bin/python3";
+        "/opt/kandelo/homebrew/bin/python3";
     },
     error: /compatibility link \/usr\/bin\/python3\.13\.target/,
   },
@@ -928,8 +928,8 @@ describe("Homebrew language runtime smoke result validation", () => {
       "erl",
       "/bin/erl",
       "/usr/bin/erl",
-      "/home/linuxbrew/.linuxbrew/opt/erlang/bin/erl",
-      "/home/linuxbrew/.linuxbrew/Cellar/erlang/28.2_1/bin/erl",
+      "/opt/kandelo/homebrew/opt/erlang/bin/erl",
+      "/opt/kandelo/homebrew/Cellar/erlang/28.2_1/bin/erl",
     ]);
     for (const invocation of LANGUAGE_RUNTIME_INVOCATIONS) {
       expect(invocation.executable).toBe("/bin/sh");

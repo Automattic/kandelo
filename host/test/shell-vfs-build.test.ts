@@ -96,7 +96,7 @@ function shellImageMetadata(maxByteLength: number): VfsImageMetadata {
     ],
     homebrewBootstrap: {
       entrypoint: "/usr/bin/brew",
-      prefix: "/home/linuxbrew/.linuxbrew",
+      prefix: "/opt/kandelo/homebrew",
     },
     homebrew: {
       tapRepository: "Kandelo-dev/homebrew-tap-core",

@@ -1,18 +1,18 @@
 {
-  "schema": 2,
+  "schema": 3,
   "kind": "kandelo-homebrew-lazy-shell-artifact-lock",
   "source_date_epoch": 0,
   "state": "pending",
   "inputs": {
-    "bootstrap_source_lock_sha256": "b0991908c1bea447d6fa175f0570361406bf31e3663d932f77c4dcb1452ba05b",
-    "bootstrap_tree_spec_sha256": "b1f4b479a8364282700bdada99257160f66a3b314cc6a237d1d52c868a4a9b62",
+    "bootstrap_source_lock_sha256": "d18666b70db4f2bfd59046042e5999d60345006c9046fea4634fa6e51d6d8517",
+    "bootstrap_tree_spec_sha256": "7160094ad36d0684210a46331ec73bd8fe938222358f045ca60d3d6b210a04c4",
     "brewfile_sha256": "6f59fe83d93548bd2521a0fe9af1942ab321b2fb249939bf9e6a37f7de0f4722",
     "demo_config_sha256": "6a09a53f0b169400948aa4f5c9c7a4b904ed7007ad0912d9cd73a66f7b57e455",
     "materialization_policy_sha256": "fb170c25f71e6e7fdd3470901b3ab3a42e7765648d55f62fad38230e30461fe0",
-    "migration_lock_sha256": "9b19540a88790fa5d7a03b3aa2270365c25e0f24a528bdaf9e7bf6a0b71ed738",
+    "migration_lock_sha256": "92b6c3946e40e9384de0ed98c13b6f9ec595e487a5112cc8a450bc2ac3ea524e",
     "runtime_support_sha256": "d14cd4ebbe184c3179a1a033263b35c8b35a7ec44a691bd8bcfd6acbde386a18",
-    "selection_lock_sha256": "5abb232aa9bd5198e49b4bdb6d96dc60cf56c1c9cf18aa8f568811b5f37e8541",
-    "shell_config_sha256": "3477d3a836d59f8f12c734f46df9047550d0845d71aae4d8938318446c021c57"
+    "selection_lock_sha256": "fdbee3c2dbbf1f2465d83f5778e703fa6c8b24e2ad0be01467bc11629a6f0084",
+    "shell_config_sha256": "bc3c4027b5f83fd74178364bf0b073b546eca5a098bf8bf47bc38a555b4cfe0c"
   },
   "image": null
 }

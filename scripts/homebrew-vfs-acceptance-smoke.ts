@@ -467,7 +467,7 @@ async function runNodeAcceptance(
         env: [
           "HOME=/tmp",
           "TMPDIR=/tmp",
-          "PATH=/home/linuxbrew/.linuxbrew/bin:/usr/bin:/bin",
+          "PATH=/opt/kandelo/homebrew/bin:/usr/bin:/bin",
         ],
         stdin: new Uint8Array(),
       }),

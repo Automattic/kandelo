@@ -22,9 +22,10 @@ import {
   HOMEBREW_RUNTIME_LAYER_LIMITS,
   isHomebrewRuntimeLayerId,
 } from "./homebrew-runtime-layer-limits";
+import { KANDELO_HOMEBREW_GUEST_LAYOUT } from "./homebrew-guest-layout";
 export { HOMEBREW_RUNTIME_LAYER_LIMITS } from "./homebrew-runtime-layer-limits";
 
-const HOMEBREW_PREFIX = "/home/linuxbrew/.linuxbrew";
+const HOMEBREW_PREFIX = KANDELO_HOMEBREW_GUEST_LAYOUT.prefix;
 const COMPOSITION_PATH = "/etc/kandelo/homebrew-vfs.json";
 const ACCEPTANCE_ASSET = "kandelo-homebrew.vfs.zst";
 const ACCEPTANCE_DESCRIPTOR_ASSET = "kandelo-homebrew-vfs.json";

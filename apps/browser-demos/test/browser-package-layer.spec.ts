@@ -63,7 +63,7 @@ const mountProbeProgram = join(
 );
 const kernel = join(here, "../../../host/wasm/kandelo-kernel.wasm");
 const available = existsSync(mountProbeProgram) && existsSync(kernel);
-const HOME_BREW_PREFIX = "/home/linuxbrew/.linuxbrew";
+const HOME_BREW_PREFIX = "/opt/kandelo/homebrew";
 const PACKAGE = "lazyfixture";
 const VERSION = "1.0";
 const KEG = `${HOME_BREW_PREFIX}/Cellar/${PACKAGE}/${VERSION}`;

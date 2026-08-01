@@ -114,7 +114,7 @@ jq -e \
     state: "transitional",
     source_kind: "kandelo-package-registry",
     package: "homebrew-bootstrap",
-    guest_prefix: "/home/linuxbrew/.linuxbrew",
+    guest_prefix: "/opt/kandelo/homebrew",
     stable_entrypoint: "/usr/bin/brew"
   } and
   .bottle_mirror == {

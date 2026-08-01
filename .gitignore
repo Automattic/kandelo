@@ -65,6 +65,8 @@ node_modules/
 .vite/
 .playwright-mcp/
 .build-cache/
+__pycache__/
+*.py[cod]
 docs-site/.vitepress/cache/
 docs-site/.vitepress/dist/
 

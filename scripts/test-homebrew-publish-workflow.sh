@@ -2140,9 +2140,9 @@ write_publish_dependency_link_manifest() {
       version: $version,
       arch: $arch,
       kandelo_abi: 18,
-      prefix: "/home/linuxbrew/.linuxbrew",
-      cellar: "/home/linuxbrew/.linuxbrew/Cellar",
-      keg: ("/home/linuxbrew/.linuxbrew/Cellar/" + $name + "/" + $version),
+      prefix: "/opt/kandelo/homebrew",
+      cellar: "/opt/kandelo/homebrew/Cellar",
+      keg: ("/opt/kandelo/homebrew/Cellar/" + $name + "/" + $version),
       bottle: {
         url: (
           "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/" +
@@ -2179,8 +2179,8 @@ seed_publish_dependency_sidecars() {
         arch: "wasm32",
         bottle_tag: "wasm32_kandelo",
         kandelo_abi: 18,
-        cellar: "/home/linuxbrew/.linuxbrew/Cellar",
-        prefix: "/home/linuxbrew/.linuxbrew",
+        cellar: "/opt/kandelo/homebrew/Cellar",
+        prefix: "/opt/kandelo/homebrew",
         runtime_support: ["node"],
         browser_compatible: false,
         fork_instrumentation: "not-required",
@@ -2373,8 +2373,8 @@ EOF
         bottles: [{
           arch: "wasm32",
           bottle_tag: "wasm32_kandelo",
-          cellar: "/home/linuxbrew/.linuxbrew/Cellar",
-          prefix: "/home/linuxbrew/.linuxbrew",
+          cellar: "/opt/kandelo/homebrew/Cellar",
+          prefix: "/opt/kandelo/homebrew",
           runtime_support: ["node"],
           browser_compatible: false,
           fork_instrumentation: "not-required",

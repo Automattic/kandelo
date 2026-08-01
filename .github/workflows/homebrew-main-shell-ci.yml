@@ -252,6 +252,7 @@ jobs:
       - name: Validate the stock guest lifecycle contracts
         run: |
           set -euo pipefail
+          bash scripts/test-homebrew-guest-layout.sh
           npx tsx --test \
             apps/browser-demos/homebrew-closed-acceptance.test.ts \
             apps/browser-demos/homebrew-closed-acceptance-vite-config.test.ts \

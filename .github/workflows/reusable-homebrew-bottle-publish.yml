@@ -835,7 +835,7 @@ jobs:
             # WHY: the default shell must name an executable from the same
             # reviewed guest layout as the bottles in this invocation.
             # Campaign validation must not silently retain the retired
-            # Linuxbrew prefix.
+            # retired guest prefix.
             # shellcheck disable=SC1091
             . kandelo/scripts/homebrew-guest-layout.sh
             homebrew_select_guest_layout \
@@ -4035,7 +4035,7 @@ jobs:
 
             # WHY: the smoke command is evidence for the selected guest
             # layout. A campaign bottle at /opt/kandelo/homebrew must never
-            # be credited with a command from the retired Linuxbrew prefix.
+            # be credited with a command from the retired guest prefix.
             # shellcheck disable=SC1091
             . scripts/homebrew-guest-layout.sh
             homebrew_select_guest_layout \
