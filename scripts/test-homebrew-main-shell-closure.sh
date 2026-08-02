@@ -1636,7 +1636,12 @@ do
     fail "$package_workflow must let the shell source recipe install mkrootfs"
 done
 
-bash "$REPO_ROOT/scripts/dev-shell.sh" bash "$SHELL_TOOL_PREPARER_TEST" ||
+# WHY: publisher preflight already enters the repository dev shell before it
+# runs this complete contract suite. Re-entering the wrapper would require the
+# Nix command itself to be a package build tool, even though only the flake's
+# declared build tools belong inside the purified shell. The suite's caller
+# owns that one shell-entry boundary.
+bash "$SHELL_TOOL_PREPARER_TEST" ||
   fail "shell source-build tool preparation tests failed"
 [ "$(grep -Fc 'bash "$SCRIPT_DIR/prepare-build-tools.sh" "$SOURCE_ROOT"' "$SHELL_BUILDER")" -eq 1 ] ||
   fail "shell recipe must prepare its locked build tools exactly once"
