@@ -3,19 +3,26 @@ inputs = [
   "packages/registry/shell/build-shell.sh",
   "packages/registry/shell/build-tool-path.sh",
   "packages/registry/shell/prepare-build-tools.sh",
+  "scripts/build-homebrew-main-shell-product.sh",
   "scripts/build-homebrew-main-shell-closure.sh",
-  "scripts/verify-homebrew-bootstrap-source-lock.mjs",
+  "scripts/prepare-homebrew-main-shell-inputs.sh",
+  "scripts/homebrew-main-shell-product-state.py",
+  "scripts/homebrew-main-shell-selection-lock.py",
+  "scripts/homebrew-prefix-campaign-executor.py",
+  "scripts/extract-homebrew-support-data-bottle.ts",
+  "scripts/verify-homebrew-support-data-extraction.ts",
+  "scripts/homebrew-selection-tree.ts",
   "scripts/verify-homebrew-main-shell-artifact-lock.sh",
   "scripts/check-homebrew-main-shell-brewfile.mjs",
   "scripts/homebrew-brewfile-selection.rb",
   "homebrew/main-shell.Brewfile",
-  "homebrew/homebrew-bootstrap-source-lock.json",
   "homebrew/main-shell-default.json",
   "homebrew/main-shell-demo.json",
   "homebrew/main-shell-brew-package-tree.json",
   "homebrew/main-shell-homebrew-runtime-support.json",
   "homebrew/main-shell-lazy-artifact-lock.json",
   "homebrew/main-shell-migration-lock.json",
+  "homebrew/main-shell-selection-lock.json",
   "homebrew/main-shell-materialization-policy.json",
   "images/vfs/scripts/build-homebrew-materialized-vfs-image.ts",
   "images/vfs/scripts/build-homebrew-vfs-image.ts",
@@ -35,6 +42,7 @@ inputs = [
   "host/src/constants.ts",
   "host/src/generated/abi.ts",
   "host/src/homebrew-bottle-mirror-plan.ts",
+  "host/src/homebrew-support-data-bottle.ts",
   "host/src/homebrew-bottle-relocation.ts",
   "host/src/homebrew-guest-layout.ts",
   "homebrew/kandelo-guest-layout.json",
@@ -68,16 +76,11 @@ inputs = [
 ]
 repo_url    = "https://github.com/Automattic/kandelo.git"
 commit      = "UNPUBLISHED"
-revision    = 22
+revision    = 23
 # WHY: advancing the guest Homebrew source changes a shell input, so the old
 # sealed VFS identity is no longer valid. Publication remains blocked until a
 # reproducible image made from this exact input set is reviewed and sealed.
 publication_state = "pending"
-
-[[git_inputs]]
-name = "homebrew_tap_core"
-repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"
-commit = "6ad0e3dbc60e5572c4288c86919238f71c1bc110"
 
 [binary]
 index_url = "https://github.com/Automattic/kandelo/releases/download/binaries-abi-v{abi}/index.toml"

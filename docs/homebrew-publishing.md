@@ -1248,7 +1248,7 @@ only the direct lifecycle inputs and runs the complete public Node and browser
 proofs. Event data cannot select either authority. The workflow anonymously
 rechecks Kandelo `Mpre`, tap `TA1`, and canary `C` as the three public main
 heads, proves the complete `TF -> TA0 -> TA1` ancestry chain, and requires the
-shell revision, structured package Git input, catalog locks, runtime-support
+shell revision, immutable selection lock, catalog locks, runtime-support
 cohort, and sealed artifact lock to agree with `TF` before preparing any
 bytes.
 
@@ -3732,25 +3732,30 @@ same declared bytes. It may not maintain a second recipe or partial runtime.
 The independent canary M4 is intentionally absent from both trusted image
 closures and is installed only by the live guest lifecycle.
 
-CI materialization uses the exact public tap checkout pinned in the migration
-lock. An explicit SHA is optional, but when supplied it must match the lock:
+Product materialization uses the immutable closed selection named by
+`homebrew/main-shell-selection-lock.json`. The preparer downloads that release
+anonymously, verifies its public readback and exact Formula closure, and
+extracts Homebrew's source tree from the selected `homebrew-bootstrap` bottle:
 
 ```bash
-scripts/dev-shell.sh bash scripts/build-homebrew-main-shell-closure.sh \
-  --tap-root /path/to/exact/homebrew-tap-core \
-  --expected-tap-sha <full-sha> \
+scripts/dev-shell.sh bash scripts/prepare-homebrew-main-shell-inputs.sh \
+  --output-directory /path/to/new-prepared-inputs
+scripts/dev-shell.sh bash scripts/build-homebrew-main-shell-product.sh \
+  --prepared-inputs /path/to/new-prepared-inputs \
   --work-dir /path/to/new-exclusive-work-dir
 ```
 
-The strict composer is the active canonical shell package recipe and remains
-directly testable with the exact tap checkout pinned in the migration lock.
-The dedicated candidate workflow retains its post-build Node and Chromium
-gates. The source bridge above is a separate non-published validation package;
-it does not mutate the canonical recipe or its tap binding. Composition scratch
-files and downloaded bottles stay in a resolver-owned workspace, only the
-declared `shell.vfs.zst` is published, and the post-archive exact-byte runtime
-gates remain required. There is no legacy ambient registry-composition
-fallback.
+The direct CI candidate and the canonical `shell` package both call these same
+two helpers. The lower-level strict composer remains directly testable with a
+tap checkout, but that mode is not product authority: a raw source tap may not
+contain generated campaign Formulae such as `homebrew-bootstrap`. A pending
+selection therefore skips exact product execution honestly instead of falling
+back to a different tap tree. Once a selection is sealed, a pending artifact
+may be composed for review; package publication still waits for the sealed
+artifact lock. Composition scratch files and downloaded bottles stay in a
+resolver-owned workspace, only the declared `shell.vfs.zst` is published, and
+the post-archive exact-byte runtime gates remain required. There is no legacy
+ambient registry-composition fallback.
 
 The wider browser application also imports service and profile artifacts that
 are not part of the shell closure. The workflow derives that supporting set
@@ -4255,15 +4260,16 @@ or cache dependencies merely because they share the planner and serializer.
 
 `homebrew/main-shell-lazy-artifact-lock.json` makes the canonical lazy shell's
 outer image identity reviewable rather than merely reporting whatever one
-runner produced. Schema 2 has an explicit `pending` state that binds the exact
-Brewfile, Homebrew bootstrap source lock and tree recipe, migration lock,
+runner produced. Schema 3 has an explicit `pending` state that binds the exact
+Brewfile, immutable selection lock, bootstrap tree recipe, migration lock,
 materialization policy, demo configuration, and runtime-support declaration
-while refusing every output artifact. The composer also verifies that the
-supplied bootstrap ZIP has the exact digest and byte count authorized by that
-source lock before it derives the deferred-tree descriptor. Publication may
-change the artifact lock to `sealed` only after recording the new compressed
-SHA-256 and byte count. The strict composer pins `SOURCE_DATE_EPOCH` to Unix
-epoch zero and will not publish while the reviewed identity remains pending.
+while refusing every output artifact. The typed bottle extractor and verifier
+bind the supplied bootstrap ZIP to the selected Formula, recipe lock, bottle,
+and immutable build receipt before deriving the deferred-tree descriptor.
+Publication may change the artifact lock to `sealed` only after recording the
+new compressed SHA-256 and byte count. The strict composer pins
+`SOURCE_DATE_EPOCH` to Unix epoch zero and will not publish while the reviewed
+identity remains pending.
 
 `homebrew/runtime-layer-policy.json` is the reviewed planning contract for
 runtime derivation. It names the canonical `shell` package-output receipt as

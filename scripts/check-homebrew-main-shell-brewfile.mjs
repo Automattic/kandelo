@@ -55,16 +55,13 @@ const runtimeSupport = readRuntimeSupport(runtimeSupportPath, lock);
 const shellDependencies = readDependencies(
   `${repoRoot}/packages/registry/shell/package.toml`,
 );
-const homebrewBootstrap = readPackageIdentity(
-  `${repoRoot}/packages/registry/homebrew-bootstrap/package.toml`,
-);
-// Bottle Formulae remain selected only by the reviewed Brewfile. The sole
-// registry dependency is distribution machinery: exact Homebrew source bytes
-// that the VFS registers without materializing until a guest invokes brew.
+// Formulae and Homebrew's source tree come from the same immutable closed
+// selection. A registry dependency here would let the canonical package use
+// different bytes than the direct product proof.
 assertExactSequence(
   shellDependencies,
-  [homebrewBootstrap],
-  "the canonical shell package must depend only on its exact Homebrew source package",
+  [],
+  "the canonical shell package must not depend on transitional registry packages",
   ({ name, version }) => `${name}@${version}`,
 );
 const lockedRegistryPackages = lock.packages.map(({ registry }) => registry);
@@ -1204,21 +1201,6 @@ function readDependencies(path) {
     }
     return { name, version };
   });
-}
-
-function readPackageIdentity(path) {
-  const source = readFileSync(path, "utf8");
-  const name = /(?:^|\n)name\s*=\s*"([^"]+)"/.exec(source)?.[1];
-  const version = /(?:^|\n)version\s*=\s*"([^"]+)"/.exec(source)?.[1];
-  if (
-    name === undefined ||
-    !/^[a-z0-9][a-z0-9._-]*$/.test(name) ||
-    version === undefined ||
-    version.length === 0
-  ) {
-    throw new Error(`cannot read package identity from ${path}`);
-  }
-  return { name, version };
 }
 
 function readBrewfilePackages(path) {

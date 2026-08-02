@@ -21,7 +21,6 @@ from typing import Any
 
 TAP_REPOSITORY = "kandelo-dev/homebrew-tap-core"
 TAP_NAME = "kandelo-dev/tap-core"
-TAP_URL = "https://github.com/Kandelo-dev/homebrew-tap-core.git"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 FORMULA = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
@@ -37,7 +36,6 @@ BUILD_PATH = "packages/registry/shell/build.toml"
 DOC_PATH = "docs/homebrew-publishing.md"
 BREWFILE_PATH = "homebrew/main-shell.Brewfile"
 BOUND_INPUTS = {
-    "bootstrap_source_lock_sha256": "homebrew/homebrew-bootstrap-source-lock.json",
     "bootstrap_tree_spec_sha256": "homebrew/main-shell-brew-package-tree.json",
     "brewfile_sha256": BREWFILE_PATH,
     "demo_config_sha256": "homebrew/main-shell-demo.json",
@@ -346,7 +344,7 @@ def require_bottle(package: dict[str, Any]) -> None:
         )
 
 
-def update_build_toml(value: bytes, old_tap: str, new_tap: str, sealed: bool) -> bytes:
+def update_build_toml(value: bytes, sealed: bool) -> bytes:
     try:
         text = value.decode()
     except UnicodeDecodeError as error:
@@ -358,19 +356,11 @@ def update_build_toml(value: bytes, old_tap: str, new_tap: str, sealed: bool) ->
     original_revision = positive_revision(
         original_build.get("revision"), f"{BUILD_PATH} revision"
     )
-    block = re.compile(
-        r'(\[\[git_inputs\]\]\n'
-        r'name = "homebrew_tap_core"\n'
-        r'repository = "https://github\.com/Kandelo-dev/homebrew-tap-core\.git"\n'
-        r'commit = ")'
-        + re.escape(old_tap)
-        + r'("\n)'
-    )
-    text, count = block.subn(rf"\g<1>{new_tap}\g<2>", text)
-    if count != 1:
-        raise FinalizeError(
-            f"{BUILD_PATH} does not contain one exact old core-tap Git input"
-        )
+    if original_build.get("git_inputs") is not None:
+        # WHY: the package consumes the immutable closed selection that this
+        # finalizer seals. Keeping a second raw-tap input would let the package
+        # and the directly tested product compose different Formula trees.
+        raise FinalizeError(f"{BUILD_PATH} must not declare raw tap Git inputs")
     expected_state = "ready" if sealed else "pending"
     text, count = re.subn(
         r'^publication_state = "(?:ready|pending)"$',
@@ -394,14 +384,7 @@ def update_build_toml(value: bytes, old_tap: str, new_tap: str, sealed: bool) ->
         # stale copy of the current revision number.
         or build.get("revision") != original_revision
         or build.get("publication_state") != expected_state
-        or build.get("git_inputs")
-        != [
-            {
-                "name": "homebrew_tap_core",
-                "repository": TAP_URL,
-                "commit": new_tap,
-            }
-        ]
+        or build.get("git_inputs") is not None
     ):
         raise FinalizeError(f"{BUILD_PATH} release identity is not exact")
     return text.encode()
@@ -1131,7 +1114,7 @@ def prepare_stable_inputs(
         raise FinalizeError("Homebrew shell/runtime Formula union repeats a Formula")
 
     sealed = artifact_file is not None
-    build_bytes = update_build_toml(old[BUILD_PATH], old_tap, final_tap, sealed)
+    build_bytes = update_build_toml(old[BUILD_PATH], sealed)
     docs_bytes = update_docs(old[DOC_PATH], old_tap, final_tap)
     staged: dict[str, bytes] = {
         MIGRATION_PATH: migration_bytes,
