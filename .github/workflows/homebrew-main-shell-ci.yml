@@ -886,6 +886,7 @@ jobs:
         run: |
           set -euo pipefail
           browser_copy=apps/browser-demos/public/shell.vfs.zst
+          browser_bootstrap_copy=apps/browser-demos/public/homebrew-bootstrap.zip
           install_session="homebrew-main-shell-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${GITHUB_JOB}"
           test -f "$CANDIDATE_PATH"
           mkdir -p "$(dirname "$browser_copy")"
@@ -904,12 +905,15 @@ jobs:
           if [ "$SHELL_ACTIVATION_MODE" = bottles ]; then
             test -f "$CANDIDATE_BOOTSTRAP_PATH"
             test -f "$CANDIDATE_BOOTSTRAP_ENV_PATH"
-            resolved_bootstrap=$(bash scripts/resolve-binary.sh \
-              programs/homebrew-bootstrap/homebrew-bootstrap.zip)
-            resolved_bootstrap_env=$(bash scripts/resolve-binary.sh \
-              programs/homebrew-bootstrap/homebrew-brew.env)
-            cmp "$CANDIDATE_BOOTSTRAP_PATH" "$resolved_bootstrap"
-            cmp "$CANDIDATE_BOOTSTRAP_ENV_PATH" "$resolved_bootstrap_env"
+            test ! -L "$CANDIDATE_BOOTSTRAP_PATH"
+            test ! -e "$browser_bootstrap_copy"
+            # WHY: the VFS intentionally leaves Homebrew lazy. Stage the
+            # archive already extracted from its verified public bottle at the
+            # same-origin URL the browser fetches on first use. Going through
+            # resolve-binary here would restore the transitional registry
+            # package as the browser's real source.
+            cp "$CANDIDATE_BOOTSTRAP_PATH" "$browser_bootstrap_copy"
+            cmp "$CANDIDATE_BOOTSTRAP_PATH" "$browser_bootstrap_copy"
             bootstrap_sha=$(sha256sum "$CANDIDATE_BOOTSTRAP_PATH" | awk '{print $1}')
             bootstrap_bytes=$(wc -c <"$CANDIDATE_BOOTSTRAP_PATH" | tr -d '[:space:]')
             [[ "$bootstrap_sha" =~ ^[0-9a-f]{64}$ ]]
@@ -1084,6 +1088,10 @@ jobs:
           test -f dist/index.html
           bash ../../scripts/verify-browser-shell-vfs-asset.sh \
             dist "${{ steps.image.outputs.path }}"
+          if [ "$SHELL_ACTIVATION_MODE" = bottles ]; then
+            cmp "${{ steps.bottle_candidate.outputs.bootstrap }}" \
+              dist/homebrew-bootstrap.zip
+          fi
 
       - name: Boot the exact installed bytes in Node
         run: |

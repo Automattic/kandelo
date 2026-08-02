@@ -100,8 +100,58 @@ jobs:
         run: |
           set -euo pipefail
           image=$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)
-          bootstrap=$(bash scripts/resolve-binary.sh \
-            programs/homebrew-bootstrap/homebrew-bootstrap.zip)
+          selection_root="$RUNNER_TEMP/pages-homebrew-shell-selection"
+          selection_receipt="$RUNNER_TEMP/pages-homebrew-shell-selection-receipt.json"
+          selection_report="$RUNNER_TEMP/pages-homebrew-shell-selection-verification.json"
+          bootstrap_root="$RUNNER_TEMP/pages-homebrew-bootstrap-bottle"
+          test "$(jq -er '.state' \
+            homebrew/main-shell-selection-lock.json)" = sealed
+          selection_repository=$(jq -er '.release.repository' \
+            homebrew/main-shell-selection-lock.json)
+          selection_tag=$(jq -er '.release.tag' \
+            homebrew/main-shell-selection-lock.json)
+          tap_sha=$(jq -er '.catalog.tap_commit' \
+            homebrew/main-shell-migration-lock.json)
+          # WHY: the browser must fetch the same Formula-owned source tree as
+          # the shell composer. Re-resolving the retired Kandelo package here
+          # would make the deployed first-use path registry-owned again.
+          env -u GH_TOKEN -u GITHUB_TOKEN \
+            -u HOMEBREW_GITHUB_API_TOKEN \
+            -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+            -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+            PYTHONDONTWRITEBYTECODE=1 \
+            python3 scripts/homebrew-prefix-campaign-executor.py \
+              fetch-selection-release \
+              --repository "$selection_repository" \
+              --tag "$selection_tag" \
+              --out "$selection_root" \
+              --receipt-out "$selection_receipt"
+          bash scripts/dev-shell.sh python3 \
+            scripts/homebrew-main-shell-selection-lock.py verify \
+              --lock homebrew/main-shell-selection-lock.json \
+              --selection "$selection_root" \
+              --receipt "$selection_receipt" \
+              --report-out "$selection_report"
+          bootstrap_package=$(jq -er '.package.name' \
+            homebrew/main-shell-brew-package-tree.json)
+          tap_abi=$(jq -er '.kandelo_abi' \
+            "$selection_root/tap/Kandelo/metadata.json")
+          env -u GH_TOKEN -u GITHUB_TOKEN \
+            -u HOMEBREW_GITHUB_API_TOKEN \
+            -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+            -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+            bash scripts/dev-shell.sh node_modules/.bin/tsx \
+              scripts/extract-homebrew-support-data-bottle.ts \
+                --tap-root "$selection_root/tap" \
+                --expected-tap-sha "$tap_sha" \
+                --tap-repository kandelo-dev/homebrew-tap-core \
+                --tap-name kandelo-dev/tap-core \
+                --package "$bootstrap_package" \
+                --arch wasm32 \
+                --expected-abi "$tap_abi" \
+                --selection-verification-report "$selection_report" \
+                --output-directory "$bootstrap_root"
+          bootstrap="$bootstrap_root/homebrew-bootstrap.zip"
           report="$RUNNER_TEMP/homebrew-main-shell-public-product.json"
           for path in "$image" "$bootstrap"; do
             test -f "$path"
@@ -138,8 +188,13 @@ jobs:
               endswith("/kandelo-homebrew-bottle-mirror-plan.json")) and
             (.bottle_mirror.asset_count > 0)
           ' "$report" >/dev/null
+          browser_bootstrap=apps/browser-demos/public/homebrew-bootstrap.zip
+          test ! -e "$browser_bootstrap"
+          cp "$bootstrap" "$browser_bootstrap"
+          cmp "$bootstrap" "$browser_bootstrap"
           {
             echo "image=$image"
+            echo "bootstrap=$bootstrap"
             echo "image_sha256=$(jq -er '.image.sha256' "$report")"
             echo "bootstrap_sha256=$(jq -er \
               '.homebrew_bootstrap.sha256' "$report")"
@@ -157,6 +212,8 @@ jobs:
         run: |
           set -euo pipefail
           npm run build
+          cmp "${{ steps.shell_product.outputs.bootstrap }}" \
+            dist/homebrew-bootstrap.zip
           # WHY: Vite imports the resolver-selected shell under a hashed asset
           # name. Verify that exact emitted asset; an unhashed public copy can
           # be absent or stale without affecting the image the browser boots.

@@ -161,6 +161,15 @@ build receipt, and both output members. The shell composer reruns the same
 typed verifier against the detached files before embedding its canonical
 report. It does not consult the Kandelo package registry for these bytes.
 
+Browser builds preserve that ownership. Their publication workflows
+extract `homebrew-bootstrap.zip` from the verified support-data bottle
+and stage it at the same-origin `homebrew-bootstrap.zip` URL used by the
+lazy VFS descriptor. The browser source must not import that archive
+through the `@binaries` package projection. The public lifecycle-input
+release is another fixed transport for those same verified bottle bytes;
+it does not transfer ownership back to Kandelo's transitional package
+registry.
+
 Three Git coordinates remain intentionally distinct. The checkout commit names
 the exact tap tree being read; the metadata commit names the aggregate catalog
 publication; and `built_from.tap_commit` names the source tree that produced
@@ -1257,21 +1266,19 @@ cross-repository workflow artifact, run ID, or caller-selected artifact
 repository participates in either handoff.
 
 The fixed lifecycle inputs use a separate content-addressed immutable
-release in the first-party tap. The shell image is a member of its package
-archive,
-while the bootstrap ZIP and environment still come from the transitional
-Kandelo registry package named `homebrew-bootstrap`. The deployed lifecycle
-still uses the retired guest prefix and keeps `/usr/bin/brew` as the stable
-entry point. The guest-prefix campaign replaces that layout with
-`/opt/kandelo/homebrew`; it has not done so merely because the target contract
-exists. The lifecycle does not claim those bootstrap bytes are Formula-owned.
+release in the first-party tap. The shell image is a member of its
+package archive, while the bootstrap ZIP and environment are extracted
+from the verified `homebrew-bootstrap` support-data bottle. The deployed
+lifecycle uses `/opt/kandelo/homebrew` and keeps `/usr/bin/brew` as the
+stable entry point.
 
 The browser's lazy Homebrew bootstrap requires direct asset URLs, and the
 exact source-tree specification must stay bound to the same proof. Publishing
 direct assets avoids adding archive-member extraction to the browser and
-keeps lifecycle-input ownership separate from the bottle mirror. The handoff
-records the transitional package, guest prefix, and stable entry point. The
-lifecycle collection identity binds that ownership, all four asset hashes and
+keeps lifecycle-input ownership separate from the bottle mirror. The
+handoff records the support-data bottle, guest prefix, and stable entry
+point. The lifecycle collection identity binds that ownership, all four
+asset hashes and
 sizes, Kandelo, catalog, mirror-authority, caller-authority, and canary
 revisions, and the exact public mirror-plan URL, hash, and size. Its temporary
 handoff expires after one day; its immutable release is durable
@@ -3050,19 +3057,16 @@ set, and Homebrew bootstrap programs through `xtask build-deps`, and calls
 `scripts/prepare-homebrew-bootstrap-source.sh` to prepare Homebrew. The current
 `homebrew-bootstrap` registry package uses that same preparer and records
 the source ZIP and `homebrew-brew.env` as one transitional package
-generation. The product shell resolves both members from that exact
-package generation, embeds the small environment policy, and registers
-the source ZIP as a lazy tree
-behind `/usr/bin/brew`. Today that tree is mounted at the retired guest
-prefix. The atomic campaign changes both the Formula-owned software and
-bootstrap to `/opt/kandelo/homebrew`; the stable `/usr/bin/brew` entry point
-lets that cutover and a later Formula-owned bootstrap happen without changing
-the guest command. The separate diagnostic bootstrap image above remains an
-eager integration artifact. Source
-preparation verifies the reviewed patch SHA-256, refuses an upstream revision
-where the patch does not apply, limits the patch to its declared Homebrew
-files, and archives the patched Git tree with a fixed timestamp and UTC
-timezone.
+generation. It remains available only to the source-rootfs compatibility
+lane. The product shell instead extracts both members from the public
+support-data bottle, embeds the small environment policy, and registers
+the source ZIP as a lazy tree behind `/usr/bin/brew`. That tree is mounted
+at `/opt/kandelo/homebrew`. The stable entry point keeps this ownership
+change invisible to guest commands. The separate diagnostic bootstrap
+image above remains an eager integration artifact. Source preparation
+verifies the reviewed patch SHA-256, refuses an upstream revision where
+the patch does not apply, limits the patch to its declared Homebrew files,
+and archives the patched Git tree with a fixed timestamp and UTC timezone.
 
 `/etc/kandelo/homebrew-image.json` records the exact upstream Homebrew commit,
 patch SHA-256, patched-tree Git object and normalized-tree SHA-256, patched ZIP

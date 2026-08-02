@@ -215,7 +215,14 @@ grep -Fq 'id: shell_product' <<<"$shell_product_block" &&
   grep -Fq \
     'image=$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)' \
     <<<"$shell_product_block" &&
-  grep -Fq 'programs/homebrew-bootstrap/homebrew-bootstrap.zip)' \
+  grep -Fq 'fetch-selection-release' <<<"$shell_product_block" &&
+  grep -Fq 'scripts/homebrew-main-shell-selection-lock.py verify' \
+    <<<"$shell_product_block" &&
+  grep -Fq 'scripts/extract-homebrew-support-data-bottle.ts' \
+    <<<"$shell_product_block" &&
+  grep -Fq -- '--selection-verification-report "$selection_report"' \
+    <<<"$shell_product_block" &&
+  grep -Fq 'cp "$bootstrap" "$browser_bootstrap"' \
     <<<"$shell_product_block" &&
   grep -Fq 'scripts/verify-homebrew-main-shell-artifact-lock.sh' \
     <<<"$shell_product_block" &&
@@ -227,6 +234,9 @@ grep -Fq 'id: shell_product' <<<"$shell_product_block" &&
     <<<"$shell_product_block" &&
   grep -Fq 'mirror_plan_url=$(jq -er' <<<"$shell_product_block" ||
   fail "Pages must bind the canonical shell, bootstrap, and embedded mirror plan"
+if grep -Fq 'programs/homebrew-bootstrap/' <<<"$shell_product_block"; then
+  fail "Pages must not resolve Homebrew bootstrap from the package registry"
+fi
 grep -Fq 'npx tsx --test \' <<<"$shell_product_block" &&
   grep -Fq 'scripts/inspect-homebrew-main-shell-public-product.test.ts' \
     <<<"$shell_product_block" ||
@@ -243,6 +253,7 @@ browser_build_block="$(
   step_block "$PAGES_WORKFLOW" "Build browser demos for GitHub Pages"
 )"
 grep -Fxq '          npm run build' <<<"$browser_build_block" &&
+  grep -Fq 'dist/homebrew-bootstrap.zip' <<<"$browser_build_block" &&
   grep -Fq 'bash ../../scripts/verify-browser-shell-vfs-asset.sh \' \
     <<<"$browser_build_block" &&
   grep -Fxq \

@@ -219,23 +219,52 @@ jobs:
         shell: bash
         env:
           WASM_POSIX_BINARY_CACHE_ROOT: ${{ runner.temp }}/main-shell-mirror-package-cache
+          TAP_CATALOG_REF: ${{ inputs.tap-catalog-ref }}
         run: |
           set -euo pipefail
           test ! -e "$WASM_POSIX_BINARY_CACHE_ROOT"
-          # WHY: A fetched shell archive does not materialize separate
-          # dependency products into binaries/. That keeps bootstrap lazy for
-          # shell consumers. This publisher consumes both products, so it must
-          # select both roots explicitly.
+          # WHY: the shell image remains a transitional Kandelo package while
+          # its lazy Homebrew tree is Formula-owned. Fetch only that image here;
+          # resolving the old homebrew-bootstrap package would make the later
+          # lifecycle release registry-owned again.
           bash scripts/dev-shell.sh env \
             "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
             bash scripts/fetch-binaries.sh --fetch-only \
-              --package shell \
-              --package homebrew-bootstrap
+              --package shell
           image="$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)"
-          bootstrap="$(bash scripts/resolve-binary.sh \
-            programs/homebrew-bootstrap/homebrew-bootstrap.zip)"
-          bootstrap_env="$(bash scripts/resolve-binary.sh \
-            programs/homebrew-bootstrap/homebrew-brew.env)"
+          bootstrap_package="$(jq -er '.package.name' \
+            homebrew/main-shell-brew-package-tree.json)"
+          runtime_bootstrap_package="$(jq -er \
+            '.activation.bootstrap_package.name' \
+            homebrew/main-shell-homebrew-runtime-support.json)"
+          [ "$bootstrap_package" = "$runtime_bootstrap_package" ]
+          tap_abi="$(jq -er '.kandelo_abi' \
+            ../tap-catalog/Kandelo/metadata.json)"
+          source_abi="$(sed -nE \
+            's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
+            crates/shared/src/lib.rs)"
+          [ "$tap_abi" = "$source_abi" ]
+          bootstrap_root="$RUNNER_TEMP/homebrew-bootstrap-bottle"
+          test ! -e "$bootstrap_root"
+          # WHY: extract only the support files declared by the exact Formula.
+          # The typed extractor verifies the public bottle, recipe lock, keg,
+          # catalog, and build receipt before these bytes enter a release.
+          env -u GH_TOKEN -u GITHUB_TOKEN \
+            -u HOMEBREW_GITHUB_API_TOKEN \
+            -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+            -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+            bash scripts/dev-shell.sh node_modules/.bin/tsx \
+              scripts/extract-homebrew-support-data-bottle.ts \
+                --tap-root ../tap-catalog \
+                --expected-tap-sha "$TAP_CATALOG_REF" \
+                --tap-repository kandelo-dev/homebrew-tap-core \
+                --tap-name kandelo-dev/tap-core \
+                --package "$bootstrap_package" \
+                --arch wasm32 \
+                --expected-abi "$tap_abi" \
+                --output-directory "$bootstrap_root"
+          bootstrap="$bootstrap_root/homebrew-bootstrap.zip"
+          bootstrap_env="$bootstrap_root/homebrew-brew.env"
           for path in "$image" "$bootstrap" "$bootstrap_env"; do
             test -f "$path"
             test ! -L "$path"
@@ -413,11 +442,11 @@ jobs:
           root="$RUNNER_TEMP/homebrew-guest-lifecycle-inputs-handoff"
           test ! -e "$root"
           # WHY: the shell package exposes its image only inside an archive,
-          # while the transitional registry package contains the bootstrap
-          # ZIP and environment as members. The browser needs direct immutable
-          # URLs, so publish only these fixed proof inputs under a separate
-          # identity instead of adding them to the bottle-layer mirror. The
-          # handoff records the temporary ownership and prefix explicitly.
+          # while the support-data bottle contains the bootstrap ZIP and
+          # environment as members. The browser needs direct immutable URLs,
+          # so publish only these fixed proof inputs under a separate identity
+          # instead of adding them to the bottle-layer mirror. The handoff
+          # records the Formula ownership and stable guest prefix explicitly.
           bash scripts/dev-shell.sh npx tsx \
             scripts/homebrew-guest-lifecycle-publication.ts create \
               --image "$IMAGE" \
@@ -1020,6 +1049,14 @@ jobs:
           WASM_POSIX_BINARY_CACHE_ROOT: ${{ runner.temp }}/main-shell-public-chromium-proof-cache
         run: |
           set -euo pipefail
+          browser_bootstrap=public/homebrew-bootstrap.zip
+          test ! -e "$browser_bootstrap"
+          # WHY: publish the anonymously re-read bottle member at the fixed
+          # same-origin URL used by the lazy VFS descriptor. The optimized
+          # browser build must not rediscover these bytes through Kandelo's
+          # transitional package registry.
+          cp "${{ steps.public.outputs.bootstrap }}" "$browser_bootstrap"
+          cmp "${{ steps.public.outputs.bootstrap }}" "$browser_bootstrap"
           # WHY: dev-shell intentionally drops ambient variables. Forward the
           # selector or Vite builds its default pages and omits the proof page.
           bash ../../scripts/dev-shell.sh env \
@@ -1028,6 +1065,8 @@ jobs:
             npm run build
           test -f dist/index.html
           test -f dist/pages/homebrew-vfs-test/index.html
+          cmp "${{ steps.public.outputs.bootstrap }}" \
+            dist/homebrew-bootstrap.zip
           bash ../../scripts/verify-browser-shell-vfs-asset.sh \
             dist "${{ steps.public.outputs.image }}"
 

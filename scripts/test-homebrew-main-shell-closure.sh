@@ -862,6 +862,19 @@ grep -Fq 'cmp "$source_image" "$resolved"' \
 grep -Fq 'cp "$CANDIDATE_PATH" "$browser_copy"' \
   <<<"$candidate_install_workflow_block" ||
   fail "candidate proof must retain a separate browser-public copy"
+grep -Fq \
+  'browser_bootstrap_copy=apps/browser-demos/public/homebrew-bootstrap.zip' \
+  <<<"$candidate_install_workflow_block" &&
+  grep -Fq \
+    'cp "$CANDIDATE_BOOTSTRAP_PATH" "$browser_bootstrap_copy"' \
+    <<<"$candidate_install_workflow_block" &&
+  grep -Fq \
+    'cmp "$CANDIDATE_BOOTSTRAP_PATH" "$browser_bootstrap_copy"' \
+    <<<"$candidate_install_workflow_block" ||
+  fail "browser proof must stage the verified bottle bootstrap at its lazy URL"
+grep -Fq 'programs/homebrew-bootstrap/' \
+  <<<"$candidate_install_workflow_block" &&
+  fail "browser bootstrap staging must not resolve the legacy registry package"
 grep -Eq '(^|[[:space:]])(cp|mv|install|ln)[[:space:]].*(local-binaries|\$installed)' \
   <<<"$candidate_install_workflow_block" &&
   fail "candidate proof must not write or copy directly into local-binaries"
@@ -1787,13 +1800,16 @@ grep -Fq 'wasm = "homebrew-bootstrap.zip"' "$HOMEBREW_BOOTSTRAP_PACKAGE_TOML" ||
   fail "standalone Homebrew source package omits its exact ZIP output"
 grep -Fq '"homebrew/main-shell-brew-package-tree.json"' "$SHELL_BUILD_TOML" ||
   fail "shell build identity omits the package-tree recipe"
+grep -Fq '@binaries/programs/homebrew-bootstrap/' \
+  "$LAZY_ARCHIVE_RESOLVER" &&
+  fail "browser shell must not import bootstrap from the package registry"
 grep -Fq \
-  'import homebrewBootstrapZipUrl from "@binaries/programs/homebrew-bootstrap/homebrew-bootstrap.zip?url";' \
-  "$LAZY_ARCHIVE_RESOLVER" ||
-  fail "browser shell does not resolve the standalone Homebrew package output"
-grep -Fq '"homebrew-bootstrap.zip": homebrewBootstrapZipUrl' \
-  "$LAZY_ARCHIVE_RESOLVER" ||
-  fail "browser shell does not bind the descriptor-relative Homebrew asset"
+  'const HOMEBREW_BOOTSTRAP_ARCHIVE = "homebrew-bootstrap.zip";' \
+  "$LAZY_ARCHIVE_RESOLVER" &&
+  grep -Fq \
+    'return import.meta.env.BASE_URL + HOMEBREW_BOOTSTRAP_ARCHIVE;' \
+    "$LAZY_ARCHIVE_RESOLVER" ||
+  fail "browser shell does not bind the bottle-owned same-origin bootstrap"
 
 shell_build_function="$TMP_ROOT/build-shell-vfs-function.sh"
 sed -n '/^build_shell_vfs()/,/^}/p' "$RUN_SH" >"$shell_build_function"
