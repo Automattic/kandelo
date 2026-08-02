@@ -26,6 +26,7 @@ for name in \
   materialize-durable-package-generation.sh \
   package-generation.py \
   github-api-get.sh \
+  verify-package-generation-ancestry.sh \
   verify-preserved-package-source.sh
 do
   cp "$SCRIPT_DIR/$name" "$AUTHORITY_ROOT/.github/scripts/$name"
@@ -362,6 +363,13 @@ if [ "${1:-}" = -C ] && [ "${2:-}" = "${TEST_PRODUCER_ROOT:-}" ]; then
       ;;
   esac
 fi
+if [ "${1:-}" = -C ] && [ "${3:-}" = merge-base ] &&
+   [ "${4:-}" = --is-ancestor ] &&
+   [ "${5:-}" = "${TEST_ARCHIVE_SOURCE_SHA:-}" ] &&
+   [ "${6:-}" = "${TEST_MAIN_SHA:-}" ]; then
+  [ "${FORCE_NOT_ANCESTOR:-false}" != true ]
+  exit
+fi
 exec "${REAL_GIT:?}" "$@"
 EOF
 chmod +x "$TMP_ROOT/bin/git"
@@ -562,18 +570,24 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
+source_tag=""
+source_release_id=""
+if [ -f "$source_root/release.json" ]; then
+  source_tag="$(jq -r .tag_name "$source_root/release.json")"
+  source_release_id="$(jq -r .id "$source_root/release.json")"
+fi
 if [ "$method" = GET ] &&
-   [ "$endpoint" = "/repos/Automattic/kandelo/releases/tags/pr-1097-staging" ]; then
+   [ "$endpoint" = "/repos/Automattic/kandelo/releases/tags/$source_tag" ]; then
   emit_get "$(cat "$source_root/release.json")"
   exit 0
 fi
 if [ "$method" = GET ] &&
-   [ "$endpoint" = "/repos/Automattic/kandelo/git/ref/tags/pr-1097-staging" ]; then
+   [ "$endpoint" = "/repos/Automattic/kandelo/git/ref/tags/$source_tag" ]; then
   emit_get "$(cat "$source_root/tag.json")"
   exit 0
 fi
 if [ "$method" = GET ] &&
-   [ "$endpoint" = "/repos/Automattic/kandelo/releases/901/assets?per_page=100" ]; then
+   [ "$endpoint" = "/repos/Automattic/kandelo/releases/$source_release_id/assets?per_page=100" ]; then
   body="$(cat "$source_root/release-assets.json")"
   if [ "$paginate" = true ] && [ "$slurp" = true ]; then
     printf '[%s]\n' "$body"
@@ -609,7 +623,11 @@ if [ "$method" = GET ] &&
 fi
 if [ "$method" = GET ] &&
    [ "$endpoint" = "/repos/Automattic/kandelo/actions/jobs/904/logs" ]; then
-  cat "$source_root/rootfs-job.log"
+  if [ -f "$source_root/root-package-job.log" ]; then
+    cat "$source_root/root-package-job.log"
+  else
+    cat "$source_root/rootfs-job.log"
+  fi
   exit 0
 fi
 if [ "$method" = GET ] &&
@@ -865,6 +883,8 @@ run_publisher() {
   bundle_source_sha="$(jq -er '
     if .format == "kandelo-package-generation-v2"
     then .identity.validated_against_main.commit
+    elif .format == "kandelo-preserved-package-generation-v2"
+    then .identity.authority_sha
     else .identity.package_source_sha
     end
   ' "$bundle/generation.json")"
@@ -880,7 +900,8 @@ run_publisher() {
   if [ "$validation_method" = identical-package-cache-projection-v1 ]; then
     use_cache_source=true
   fi
-  if [ "$format" = kandelo-preserved-pr-package-generation-v1 ]; then
+  if [ "$format" = kandelo-preserved-pr-package-generation-v1 ] ||
+     [ "$format" = kandelo-preserved-package-generation-v2 ]; then
     authority_args=(
       --expected-authority-sha "$expected_authority"
       --default-ref main
@@ -931,9 +952,10 @@ run_publisher() {
     GITHUB_JOB=publish \
     GITHUB_WORKFLOW=test \
     GH_STUB_ROOT="$remote" \
-    GH_SOURCE_ROOT="$TMP_ROOT/preserved-source" \
+    GH_SOURCE_ROOT="${TEST_RUN_SOURCE_ROOT:-$TMP_ROOT/preserved-source}" \
     GH_CACHE_SOURCE_ROOT="${TEST_RUN_CACHE_SOURCE_ROOT:-$TMP_ROOT/preserved-remote}" \
     USE_CACHE_SOURCE="$use_cache_source" \
+    FORCE_NOT_ANCESTOR="${FORCE_NOT_ANCESTOR:-false}" \
     AUTHORITY_REPO="$publisher_authority_root" \
     MUTATE_SOURCE_AFTER_SEAL="${MUTATE_SOURCE_AFTER_SEAL:-}" \
     MUTATE_LIVE_SOURCE_DURING_VALIDATION="${MUTATE_LIVE_SOURCE_DURING_VALIDATION:-}" \
@@ -1150,6 +1172,119 @@ python3 "$TOOL" prepare-preserved \
   --archives-dir "$TMP_ROOT/archives" \
   --supporting-assets-dir "$TMP_ROOT/preserved-supporting" \
   --output-dir "$TMP_ROOT/preserved-bundle" >/dev/null
+
+# Canonical Force evidence uses the neutral v2 schema. Its release targets the
+# current publisher authority, while the manifest retains the older producer.
+jq -S '.release_tag = "binaries-abi-v42"' "$TMP_ROOT/snapshot.json" \
+  >"$TMP_ROOT/canonical-preserved-snapshot.json"
+mkdir \
+  "$TMP_ROOT/canonical-preserved-supporting" \
+  "$TMP_ROOT/canonical-preserved-source"
+printf 'same-run dependency artifacts:\n' \
+  >"$TMP_ROOT/canonical-preserved-supporting/root-package-job.log"
+canonical_log_sha="$(
+  sha_file "$TMP_ROOT/canonical-preserved-supporting/root-package-job.log"
+)"
+canonical_log_size="$(
+  wc -c <"$TMP_ROOT/canonical-preserved-supporting/root-package-job.log" |
+    tr -d '[:space:]'
+)"
+jq -nS \
+  --arg source_sha "$preserved_source_sha" \
+  --arg archive_sha "$archive_sha" \
+  --arg log_sha "$canonical_log_sha" \
+  --argjson archive_size "$archive_size" \
+  --argjson log_size "$canonical_log_size" '{
+    format:"kandelo-preserved-package-source-capture-v2",
+    repository:"Automattic/kandelo",
+    package_source_sha:$source_sha,
+    source_release:{
+      tag:"binaries-abi-v42",release_id:906,
+      observed_target_commitish:"old-anchor",
+      observed_tag_object_sha:"2222222222222222222222222222222222222222",
+      selected_assets:[{
+        id:902,name:"rootfs-1-rev1-abi42-wasm32-aaaaaaaa.tar.zst",
+        bytes:$archive_size,sha256:$archive_sha
+      }]
+    },
+    source_run:{
+      id:903,attempt:1,event:"workflow_dispatch",
+      workflow_path:".github/workflows/force-rebuild.yml",
+      head_sha:$source_sha,status:"completed",conclusion:"success",
+      root_job:{
+        id:904,name:"matrix-build-level-0 (wasm32, rootfs, test)",
+        status:"completed",conclusion:"success",
+        log_sha256:$log_sha,log_bytes:$log_size
+      },
+      selected_artifacts:[{
+        id:905,name:"rootfs-wasm32",bytes:$archive_size,
+        archive_name:"rootfs-1-rev1-abi42-wasm32-aaaaaaaa.tar.zst",
+        archive_bytes:$archive_size,archive_sha256:$archive_sha
+      }]
+    }
+  }' >"$TMP_ROOT/canonical-preserved-capture.json"
+python3 "$TOOL" prepare-preserved \
+  --repository Automattic/kandelo \
+  --package-source-sha "$preserved_source_sha" \
+  --authority-sha "$authority_sha" \
+  --source-capture "$TMP_ROOT/canonical-preserved-capture.json" \
+  --projection "$TMP_ROOT/projection.json" \
+  --expected-ledger "$TMP_ROOT/expected.json" \
+  --snapshot "$TMP_ROOT/canonical-preserved-snapshot.json" \
+  --localized-index "$TMP_ROOT/localized-index.toml" \
+  --archives-dir "$TMP_ROOT/archives" \
+  --supporting-assets-dir "$TMP_ROOT/canonical-preserved-supporting" \
+  --output-dir "$TMP_ROOT/canonical-preserved-bundle" >/dev/null
+[ "$(jq -r .release.target_commitish \
+    "$TMP_ROOT/canonical-preserved-bundle/generation.json")" = \
+  "$authority_sha" ]
+
+cp -R "$TMP_ROOT/preserved-source/." \
+  "$TMP_ROOT/canonical-preserved-source/"
+cp "$TMP_ROOT/canonical-preserved-supporting/root-package-job.log" \
+  "$TMP_ROOT/canonical-preserved-source/root-package-job.log"
+rm "$TMP_ROOT/canonical-preserved-source/rootfs-job.log"
+jq -nS '{
+  id:906,tag_name:"binaries-abi-v42",target_commitish:"old-anchor",
+  draft:false,prerelease:false
+}' >"$TMP_ROOT/canonical-preserved-source/release.json"
+jq -nS '{
+  ref:"refs/tags/binaries-abi-v42",
+  object:{type:"commit",sha:"2222222222222222222222222222222222222222"}
+}' >"$TMP_ROOT/canonical-preserved-source/tag.json"
+jq -nS --arg source_sha "$preserved_source_sha" '{
+  id:903,run_attempt:1,event:"workflow_dispatch",
+  path:".github/workflows/force-rebuild.yml",head_sha:$source_sha,
+  status:"completed",conclusion:"success"
+}' >"$TMP_ROOT/canonical-preserved-source/run.json"
+jq -nS '[{
+  id:904,name:"matrix-build-level-0 (wasm32, rootfs, test)",
+  status:"completed",conclusion:"success"
+}]' >"$TMP_ROOT/canonical-preserved-source/jobs.json"
+
+mkdir "$TMP_ROOT/canonical-preserved-remote"
+: >"$TMP_ROOT/writes.log"
+mkdir "$TMP_ROOT/canonical-preserved-no-ancestor"
+if FORCE_NOT_ANCESTOR=true \
+   TEST_RUN_SOURCE_ROOT="$TMP_ROOT/canonical-preserved-source" \
+   run_publisher \
+     "$TMP_ROOT/canonical-preserved-no-ancestor" \
+     "$TMP_ROOT/canonical-preserved-no-ancestor-receipt.json" \
+     "$TMP_ROOT/canonical-preserved-bundle"; then
+  echo "canonical preserved writer accepted a producer outside authority" >&2
+  exit 1
+fi
+[ ! -s "$TMP_ROOT/writes.log" ]
+
+TEST_RUN_SOURCE_ROOT="$TMP_ROOT/canonical-preserved-source" \
+  run_publisher \
+    "$TMP_ROOT/canonical-preserved-remote" \
+    "$TMP_ROOT/canonical-preserved-receipt.json" \
+    "$TMP_ROOT/canonical-preserved-bundle"
+[ "$(cat "$TMP_ROOT/canonical-preserved-remote/ref-sha")" = "$authority_sha" ]
+grep -Fxq "upload root-package-job.log" "$TMP_ROOT/writes.log"
+[ "$(jq -r .application_sealed \
+  "$TMP_ROOT/canonical-preserved-receipt.json")" = true ]
 
 wrong_authority_sha="$(printf '4%.0s' {1..40})"
 mkdir "$TMP_ROOT/wrong-authority-remote"
@@ -1534,9 +1669,9 @@ jq -nS \
       uses_fork_instrument:false
     }]
   }' >"$TMP_ROOT/cache-components.json"
-# Keep coverage for reading and validating the historical one-shot evidence.
-# New publication is disabled in the workflow and the production pin remains
-# on these reviewed bytes rather than following current source.
+# Reader identities are recorded from both complete trees. Current authority
+# interprets the selected component closure instead of trusting either source
+# tree's implementation.
 main_build_deps_blob="d8a095c60ed3bb90831afc11ec586c21abd886ee"
 main_staging_reuse_blob="0edc5fe7bc1f6b919816050cdc82a5e549da054b"
 jq -nS --arg tree "$preserved_tree_sha" '{
@@ -1614,9 +1749,100 @@ jq -e \
     .release.target_commitish == $main
   ' "$TMP_ROOT/cache-bundle/generation.json" >/dev/null
 
-# The compatibility proof is deliberately one-shot. Generic generation tools
-# may describe other coherent projections, but #1097's audited H→M comparison
-# authorizes only the schema-1 rootfs/wasm32/ABI-42 closure.
+# Admit the neutral canonical preservation schema through the same cache
+# projection. The public tag anchors preservation authority M0 while the
+# nested seal retains historical producer S.
+canonical_preserved_tag="$(jq -er .tag \
+  "$TMP_ROOT/canonical-preserved-bundle/generation.json")"
+jq -nS \
+  --arg tag "$canonical_preserved_tag" \
+  --arg target "$authority_sha" \
+  --arg title "$(cat "$TMP_ROOT/canonical-preserved-remote/title")" \
+  --arg body "$(cat "$TMP_ROOT/canonical-preserved-remote/body")" '{
+    id:29,tag_name:$tag,target_commitish:$target,
+    name:$title,body:$body,draft:false,prerelease:true,immutable:false
+  }' >"$TMP_ROOT/canonical-cache-source-release.json"
+jq -nS \
+  --arg tag "$canonical_preserved_tag" \
+  --arg target "$authority_sha" '{
+    ref:("refs/tags/" + $tag),object:{type:"commit",sha:$target}
+  }' >"$TMP_ROOT/canonical-cache-source-tag.json"
+i=0
+for path in "$TMP_ROOT"/canonical-preserved-remote/assets/*; do
+  [ -f "$path" ] || continue
+  i=$((i + 1))
+  jq -cn \
+    --arg name "${path##*/}" \
+    --arg digest "sha256:$(sha_file "$path")" \
+    --argjson size "$(wc -c <"$path" | tr -d '[:space:]')" \
+    --argjson id "$((3000 + i))" \
+    '{id:$id,name:$name,state:"uploaded",size:$size,digest:$digest}'
+done | jq -s . >"$TMP_ROOT/canonical-cache-source-assets.json"
+python3 "$TOOL" producer-release-evidence \
+  --repository Automattic/kandelo \
+  --source-tag "$canonical_preserved_tag" \
+  --producer-sha "$preserved_source_sha" \
+  --release "$TMP_ROOT/canonical-cache-source-release.json" \
+  --tag-ref "$TMP_ROOT/canonical-cache-source-tag.json" \
+  --producer-commit "$TMP_ROOT/cache-producer-commit.json" \
+  --preserved-manifest \
+    "$TMP_ROOT/canonical-preserved-bundle/generation.json" \
+  --release-assets "$TMP_ROOT/canonical-cache-source-assets.json" \
+  --output "$TMP_ROOT/canonical-cache-producer-evidence.json"
+jq --arg tag "$canonical_preserved_tag" '.release_tag = $tag' \
+  "$TMP_ROOT/snapshot.json" \
+  >"$TMP_ROOT/canonical-cache-snapshot.json"
+python3 "$TOOL" prepare \
+  --repository Automattic/kandelo \
+  --producer-sha "$preserved_source_sha" \
+  --authority-sha "$source_sha" \
+  --source-tag "$canonical_preserved_tag" \
+  --producer-evidence "$TMP_ROOT/canonical-cache-producer-evidence.json" \
+  --main-validation "$TMP_ROOT/cache-main-validation.json" \
+  --cache-projection "$TMP_ROOT/cache-projection-evidence.json" \
+  --source-index "$TMP_ROOT/canonical-preserved-bundle/index.toml" \
+  --projection "$TMP_ROOT/projection.json" \
+  --expected-ledger "$TMP_ROOT/expected.json" \
+  --snapshot "$TMP_ROOT/canonical-cache-snapshot.json" \
+  --localized-index "$TMP_ROOT/localized-index.toml" \
+  --archives-dir "$TMP_ROOT/archives" \
+  --output-dir "$TMP_ROOT/canonical-cache-bundle" >/dev/null
+jq -e '
+  .format == "kandelo-package-generation-v2" and
+  .identity.producer.evidence.preserved_manifest.format ==
+    "kandelo-preserved-package-generation-v2"
+' "$TMP_ROOT/canonical-cache-bundle/generation.json" >/dev/null
+
+mkdir "$TMP_ROOT/canonical-cache-no-ancestor"
+: >"$TMP_ROOT/writes.log"
+if FORCE_NOT_ANCESTOR=true \
+   TEST_RUN_CACHE_SOURCE_ROOT="$TMP_ROOT/canonical-preserved-remote" \
+   TEST_RUN_COMPONENTS="$TMP_ROOT/cache-components.json" \
+   TEST_RUN_PRODUCER_COMPONENTS="$TMP_ROOT/cache-components.json" \
+   run_publisher \
+     "$TMP_ROOT/canonical-cache-no-ancestor" \
+     "$TMP_ROOT/canonical-cache-no-ancestor-receipt.json" \
+     "$TMP_ROOT/canonical-cache-bundle"; then
+  echo "canonical cache writer accepted a producer outside authority" >&2
+  exit 1
+fi
+[ ! -s "$TMP_ROOT/writes.log" ]
+
+mkdir "$TMP_ROOT/canonical-cache-remote"
+: >"$TMP_ROOT/writes.log"
+TEST_RUN_CACHE_SOURCE_ROOT="$TMP_ROOT/canonical-preserved-remote" \
+  TEST_RUN_COMPONENTS="$TMP_ROOT/cache-components.json" \
+  TEST_RUN_PRODUCER_COMPONENTS="$TMP_ROOT/cache-components.json" \
+  run_publisher \
+    "$TMP_ROOT/canonical-cache-remote" \
+    "$TMP_ROOT/canonical-cache-receipt.json" \
+    "$TMP_ROOT/canonical-cache-bundle"
+[ "$(jq -r .application_sealed \
+  "$TMP_ROOT/canonical-cache-receipt.json")" = true ]
+
+# The compatibility proof binds the exact sealed projection, architecture,
+# root set, and ABI. Editing any one without regenerating all matching source,
+# main, component, archive, and preservation evidence must fail closed.
 for policy_case in schema2 root arch abi; do
   policy_bundle="$TMP_ROOT/cache-policy-$policy_case"
   cp -R "$TMP_ROOT/cache-bundle" "$policy_bundle"
@@ -1655,11 +1881,8 @@ for policy_case in schema2 root arch abi; do
     echo "cache admission accepted unauthorized $policy_case selection" >&2
     exit 1
   fi
-  if ! grep -Fq \
-      "cache projection compatibility is restricted to the reviewed rootfs wasm32 ABI 42 selection" \
-      "$TMP_ROOT/cache-policy-$policy_case.err"; then
-    echo "unauthorized $policy_case selection missed the one-shot policy boundary" >&2
-    sed -n '1,20p' "$TMP_ROOT/cache-policy-$policy_case.err" >&2
+  if grep -Fq "Traceback" "$TMP_ROOT/cache-policy-$policy_case.err"; then
+    echo "unauthorized $policy_case selection caused an internal exception" >&2
     exit 1
   fi
 done

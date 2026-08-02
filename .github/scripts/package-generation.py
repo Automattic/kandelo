@@ -27,7 +27,11 @@ PR_STAGING_TAG = re.compile(
     r"^pr-[1-9][0-9]*-staging"
     r"(?:-run-[1-9][0-9]*-attempt-[1-9][0-9]*)?$"
 )
-STAGING_TAG = PR_STAGING_TAG
+PRESERVABLE_SOURCE_TAG = re.compile(
+    r"^(?:pr-[1-9][0-9]*-staging"
+    r"(?:-run-[1-9][0-9]*-attempt-[1-9][0-9]*)?"
+    r"|binaries-abi-v[1-9][0-9]*)$"
+)
 PRESERVED_TAG = re.compile(
     r"^preserved-package-generation-[a-z0-9][a-z0-9._-]*-"
     r"[a-z0-9][a-z0-9._-]*-abi-v[1-9][0-9]*-source-[0-9a-f]{40}-"
@@ -41,6 +45,17 @@ MANIFEST_FORMAT_V2 = "kandelo-package-generation-v2"
 PRESERVED_IDENTITY_FORMAT = "kandelo-preserved-pr-package-generation-identity-v1"
 PRESERVED_MANIFEST_FORMAT = "kandelo-preserved-pr-package-generation-v1"
 SOURCE_CAPTURE_FORMAT = "kandelo-preserved-pr-source-capture-v1"
+PRESERVED_IDENTITY_FORMAT_V2 = "kandelo-preserved-package-generation-identity-v2"
+PRESERVED_MANIFEST_FORMAT_V2 = "kandelo-preserved-package-generation-v2"
+SOURCE_CAPTURE_FORMAT_V2 = "kandelo-preserved-package-source-capture-v2"
+PRESERVED_IDENTITY_FORMATS = {
+    PRESERVED_IDENTITY_FORMAT,
+    PRESERVED_IDENTITY_FORMAT_V2,
+}
+PRESERVED_MANIFEST_FORMATS = {
+    PRESERVED_MANIFEST_FORMAT,
+    PRESERVED_MANIFEST_FORMAT_V2,
+}
 PRESERVED_PRODUCER_EVIDENCE_FORMAT = (
     "kandelo-preserved-package-producer-release-v1"
 )
@@ -65,18 +80,6 @@ PACKAGE_CACHE_PROJECTION_POLICY = "selected-build-input-closure-v1"
 SELECTED_BUILD_INPUT_CLOSURE_FORMAT = (
     "kandelo-selected-package-build-input-closure-v1"
 )
-# WHY: cache-projection validation is a deliberately one-shot bridge for the
-# already-built #1097 staging closure. Binding both immutable inputs here keeps
-# this narrower proof from silently becoming a general way to publish old
-# package caches after unrelated future changes.
-CACHE_PROJECTION_BRIDGE_PRODUCER_SHA = (
-    "748c2609954d2809bbcbbcb642fa7d257fc0dbc6"
-)
-CACHE_PROJECTION_BRIDGE_SOURCE_TAG = "pr-1097-staging"
-CACHE_PROJECTION_BRIDGE_ABI_VERSION = 42
-CACHE_PROJECTION_BRIDGE_PROJECTION_SCHEMA = SINGLE_ROOT_PROJECTION_SCHEMA
-CACHE_PROJECTION_BRIDGE_ROOT_PACKAGE = "rootfs"
-CACHE_PROJECTION_BRIDGE_ARCH = "wasm32"
 VALIDATION_METHODS = {
     IDENTICAL_GIT_TREE_METHOD,
     IDENTICAL_PACKAGE_CACHE_PROJECTION_METHOD,
@@ -93,26 +96,17 @@ MAX_SUPPORTING_ASSET_BYTES = 256 * 1024 * 1024
 MAX_ROOT_JOB_LOG_BYTES = 16 * 1024 * 1024
 MAX_GITHUB_METADATA_BYTES = 32 * 1024 * 1024
 
-# WHY: current authority computes the selected build-input closure for both
-# trees, so unrelated host/runtime changes are irrelevant by construction.
-# These two readers still define that compatibility decision; pinning their
-# exact H→M transition prevents a later validator rewrite from reinterpreting
-# the one-shot #1097 evidence.
-#
-# Keep the reviewed historical transition immutable even after retiring its
-# production dispatch path. In particular, do not rotate these pins to current
-# source: a mismatch is the deliberate second fail-closed boundary that keeps
-# the superseded #1097 bridge from becoming active again by accident.
-PACKAGE_CACHE_PROJECTION_PINNED_TRANSITIONS = {
-    "tools/xtask/src/build_deps.rs": {
-        "producer": "9c8930dd137fcb836756657c43288e76e55fce36",
-        "validated_main": "d8a095c60ed3bb90831afc11ec586c21abd886ee",
-    },
-    "tools/xtask/src/staging_reuse.rs": {
-        "producer": "66a19dfc1542ef4f33e6b2ca06e8a3b170959508",
-        "validated_main": "0edc5fe7bc1f6b919816050cdc82a5e549da054b",
-    },
-}
+# WHY: protected current-main code computes the selected build-input closure
+# for both trees. Recording the exact reader blobs keeps that decision
+# auditable without coupling an otherwise identical package closure to one
+# historical transition or to unrelated repository files.
+PACKAGE_CACHE_PROJECTION_VALIDATOR_PATHS = (
+    "tools/xtask/src/build_deps.rs",
+    "tools/xtask/src/staging_reuse.rs",
+)
+
+PR_STAGING_SOURCE_KIND = "pr-staging"
+CANONICAL_FORCE_SOURCE_KIND = "canonical-force"
 
 
 class ContractError(ValueError):
@@ -334,6 +328,41 @@ def package_release_kind(tag: str) -> str:
     fail("package producer tag is neither canonical nor PR staging")
 
 
+def preservable_source_kind(tag: str) -> str:
+    """Classify a mutable source whose exact bytes can be application-sealed."""
+    if PR_STAGING_TAG.fullmatch(tag) is not None:
+        return PR_STAGING_SOURCE_KIND
+    if CANONICAL_BINARY_TAG.fullmatch(tag) is not None:
+        return CANONICAL_FORCE_SOURCE_KIND
+    fail("preserved source tag is neither canonical nor PR staging")
+
+
+def preserved_source_release(capture: dict[str, Any]) -> dict[str, Any]:
+    if capture.get("format") == SOURCE_CAPTURE_FORMAT:
+        return mapping_field(capture, "source_staging", "preserved source capture")
+    if capture.get("format") == SOURCE_CAPTURE_FORMAT_V2:
+        return mapping_field(capture, "source_release", "preserved source capture")
+    fail("preserved source capture format is unsupported")
+
+
+def source_root_job_matches(
+    name: Any, *, source_kind: str, arch: str, root_package: str
+) -> bool:
+    if not isinstance(name, str) or f", {root_package}," not in name:
+        return False
+    if source_kind == PR_STAGING_SOURCE_KIND:
+        return name.startswith(f"matrix-build ({arch},")
+    if source_kind == CANONICAL_FORCE_SOURCE_KIND:
+        return (
+            re.match(
+                rf"^matrix-build-level-(?:0|[1-9][0-9]*) \({re.escape(arch)},",
+                name,
+            )
+            is not None
+        )
+    fail("preserved source kind is unsupported")
+
+
 def validate_ordinary_producer_release_evidence(value: Any) -> dict[str, Any]:
     evidence = exact_keys(
         value,
@@ -516,8 +545,8 @@ def validate_preserved_producer_release_evidence(
     tag_sha = text_matching(
         evidence["tag_sha"], HEX_40, "preserved producer tag SHA"
     )
-    if tag_sha != producer_sha or evidence["release_kind"] != "preserved-evidence":
-        fail("preserved producer tag must directly anchor its package source")
+    if evidence["release_kind"] != "preserved-evidence":
+        fail("preserved producer release kind is invalid")
     manifest_sha256 = text_matching(
         evidence["manifest_sha256"], HEX_64, "preserved manifest digest"
     )
@@ -531,14 +560,21 @@ def validate_preserved_producer_release_evidence(
         evidence["preserved_manifest"]
     )
     if (
-        manifest["format"] != PRESERVED_MANIFEST_FORMAT
-        or identity["format"] != PRESERVED_IDENTITY_FORMAT
+        manifest["format"] not in PRESERVED_MANIFEST_FORMATS
+        or identity["format"] not in PRESERVED_IDENTITY_FORMATS
         or identity["admission"] != "none"
         or identity["repository"] != repository
         or identity["package_source_sha"] != producer_sha
         or manifest_tag != tag
     ):
         fail("preserved manifest does not bind the producer release")
+    expected_tag_sha = (
+        producer_sha
+        if identity["format"] == PRESERVED_IDENTITY_FORMAT
+        else identity["authority_sha"]
+    )
+    if tag_sha != expected_tag_sha:
+        fail("preserved producer tag does not anchor its publishing authority")
     manifest_body = canonical_bytes(manifest)
     if (
         len(manifest_body) != manifest_bytes
@@ -647,7 +683,8 @@ def derive_preserved_producer_release_evidence(
     )
     manifest, identity, manifest_tag = validate_manifest(preserved_manifest)
     if (
-        manifest["format"] != PRESERVED_MANIFEST_FORMAT
+        manifest["format"] not in PRESERVED_MANIFEST_FORMATS
+        or identity["format"] not in PRESERVED_IDENTITY_FORMATS
         or identity["admission"] != "none"
         or identity["repository"] != repository
         or identity["package_source_sha"] != producer_sha
@@ -657,7 +694,7 @@ def derive_preserved_producer_release_evidence(
     if (
         not isinstance(release, dict)
         or release.get("tag_name") != source_tag
-        or release.get("target_commitish") != producer_sha
+        or release.get("target_commitish") != manifest["release"]["target_commitish"]
         or release.get("draft") is not False
         or release.get("prerelease") is not True
         or release.get("name") != manifest["release"]["title"]
@@ -675,9 +712,9 @@ def derive_preserved_producer_release_evidence(
         not isinstance(tag_ref, dict)
         or tag_ref.get("ref") != f"refs/tags/{source_tag}"
         or tag_object.get("type") != "commit"
-        or tag_sha != producer_sha
+        or tag_sha != manifest["release"]["target_commitish"]
     ):
-        fail("preserved producer tag does not directly anchor the package source")
+        fail("preserved producer tag does not anchor its publishing authority")
     producer_tree = mapping_field(
         producer_commit, "tree", "preserved package producer commit"
     )
@@ -1274,22 +1311,14 @@ def validate_cache_projection_evidence(value: Any) -> dict[str, Any]:
             transition["validated_main"],
             f"cache projection validator transition {index} validated main",
         )
-        pinned = PACKAGE_CACHE_PROJECTION_PINNED_TRANSITIONS.get(path)
+        ordinary_blob = {"mode": "100644", "type": "blob"}
         if (
-            pinned is None
-            or producer_leaf
-            != {"mode": "100644", "type": "blob", "sha": pinned["producer"]}
-            or main_leaf
-            != {
-                "mode": "100644",
-                "type": "blob",
-                "sha": pinned["validated_main"],
-            }
+            {"mode": producer_leaf["mode"], "type": producer_leaf["type"]}
+            != ordinary_blob
+            or {"mode": main_leaf["mode"], "type": main_leaf["type"]}
+            != ordinary_blob
         ):
-            fail(
-                "cache projection compatibility requires the exact reviewed "
-                f"validator transition for {path!r}"
-            )
+            fail(f"cache projection validator path is not a regular file: {path!r}")
         normalized_transitions.append(
             {
                 "path": path,
@@ -1297,7 +1326,7 @@ def validate_cache_projection_evidence(value: Any) -> dict[str, Any]:
                 "validated_main": main_leaf,
             }
         )
-    expected_paths = sorted(PACKAGE_CACHE_PROJECTION_PINNED_TRANSITIONS)
+    expected_paths = sorted(PACKAGE_CACHE_PROJECTION_VALIDATOR_PATHS)
     if [transition["path"] for transition in normalized_transitions] != expected_paths:
         fail("cache projection evidence lacks the exact validator transitions")
     return {
@@ -1512,7 +1541,7 @@ def derive_cache_projection_evidence(
         context="validated-main recursive Git tree",
     )
     validator_transitions = []
-    for path in sorted(PACKAGE_CACHE_PROJECTION_PINNED_TRANSITIONS):
+    for path in sorted(PACKAGE_CACHE_PROJECTION_VALIDATOR_PATHS):
         producer_leaf = producer_leaves.get(path)
         main_leaf = main_leaves.get(path)
         if producer_leaf is None or main_leaf is None:
@@ -1730,7 +1759,7 @@ def validate_preserved_projection(value: Any) -> dict[str, Any]:
     # closure. A schema-2 root set has no single root_package and must fail as a
     # contract violation, not later through an incidental dictionary lookup.
     if projection["schema"] != SINGLE_ROOT_PROJECTION_SCHEMA:
-        fail("preserved PR package generations require a schema-1 projection")
+        fail("preserved package generations require a schema-1 projection")
     return projection
 
 
@@ -2040,16 +2069,16 @@ def validate_snapshot(
     abi_version: int,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     if not isinstance(value, dict):
-        fail("validated staging snapshot must be an object")
+        fail("validated source snapshot must be an object")
     if (
         value.get("abi_version") != abi_version
         or value.get("release_tag") != source_tag
         or value.get("complete_current") is not True
     ):
-        fail("validated staging snapshot does not bind the source tag and ABI")
+        fail("validated source snapshot does not bind the source tag and ABI")
     raw_entries = value.get("entries")
     if not isinstance(raw_entries, list):
-        fail("validated staging snapshot entries must be an array")
+        fail("validated source snapshot entries must be an array")
     wanted = {
         (entry["package"], entry["arch"]): entry["cache_key_sha"]
         for entry in projection_entries(projection)
@@ -2290,27 +2319,43 @@ def validate_source_capture(
     archives: list[dict[str, Any]],
     projection: dict[str, Any],
 ) -> dict[str, Any]:
+    source_kind = preservable_source_kind(source_tag)
+    if not isinstance(value, dict):
+        fail("preserved source capture must be an object")
+    capture_format = value.get("format")
+    if capture_format == SOURCE_CAPTURE_FORMAT:
+        release_key = "source_staging"
+        if source_kind != PR_STAGING_SOURCE_KIND:
+            # WHY: v1 is already public and explicitly PR-shaped. Expanding
+            # its meaning would retroactively reinterpret immutable evidence.
+            fail("v1 preserved source captures require a PR staging source")
+    elif capture_format == SOURCE_CAPTURE_FORMAT_V2:
+        release_key = "source_release"
+        if source_kind != CANONICAL_FORCE_SOURCE_KIND:
+            # WHY: authority-anchored v2 does not keep an unmerged PR commit
+            # reachable. PR sources retain v1's direct producer anchor.
+            fail("v2 preserved source captures require a canonical Force source")
+    else:
+        fail("preserved source capture format is unsupported")
     capture = exact_keys(
         value,
         {
             "format",
             "repository",
             "package_source_sha",
-            "source_staging",
+            release_key,
             "source_run",
         },
         "preserved source capture",
     )
-    if capture["format"] != SOURCE_CAPTURE_FORMAT:
-        fail("preserved source capture format is unsupported")
     if (
         capture["repository"] != repository
         or capture["package_source_sha"] != package_source_sha
     ):
         fail("preserved source capture belongs to another repository or source SHA")
 
-    staging = exact_keys(
-        capture["source_staging"],
+    source_release = exact_keys(
+        capture[release_key],
         {
             "tag",
             "release_id",
@@ -2318,30 +2363,30 @@ def validate_source_capture(
             "observed_tag_object_sha",
             "selected_assets",
         },
-        "preserved source staging identity",
+        "preserved source release identity",
     )
-    if staging["tag"] != source_tag:
-        fail("preserved source capture belongs to another staging tag")
-    integer(staging["release_id"], "source staging release ID", minimum=1)
+    if source_release["tag"] != source_tag:
+        fail("preserved source capture belongs to another source release")
+    integer(source_release["release_id"], "source release ID", minimum=1)
     bounded_text(
-        staging["observed_target_commitish"],
-        "observed source staging target",
+        source_release["observed_target_commitish"],
+        "observed source release target",
         maximum=256,
     )
     text_matching(
-        staging["observed_tag_object_sha"],
+        source_release["observed_tag_object_sha"],
         HEX_40,
-        "observed source staging tag object",
+        "observed source release tag object",
     )
-    selected_assets = staging["selected_assets"]
+    selected_assets = source_release["selected_assets"]
     if not isinstance(selected_assets, list):
-        fail("source staging selected assets must be an array")
+        fail("source release selected assets must be an array")
     normalized_assets: list[dict[str, Any]] = []
     for index, raw in enumerate(selected_assets):
         record = exact_keys(
             raw,
             {"id", "name", "bytes", "sha256"},
-            f"source staging selected asset {index}",
+            f"source release selected asset {index}",
         )
         normalized_assets.append(
             {
@@ -2374,40 +2419,76 @@ def validate_source_capture(
     if len({item["id"] for item in normalized_assets}) != len(normalized_assets):
         fail("source release selected asset IDs must be unique")
 
+    source_run_keys = {
+        "id",
+        "attempt",
+        "event",
+        "workflow_path",
+        "head_sha",
+        "root_job",
+        "selected_artifacts",
+    }
+    if (
+        capture_format == SOURCE_CAPTURE_FORMAT_V2
+        and source_kind == CANONICAL_FORCE_SOURCE_KIND
+    ):
+        source_run_keys.update({"status", "conclusion"})
     source_run = exact_keys(
         capture["source_run"],
-        {
-            "id",
-            "attempt",
-            "event",
-            "workflow_path",
-            "head_sha",
-            "root_job",
-            "selected_artifacts",
-        },
+        source_run_keys,
         "preserved source run identity",
     )
     integer(source_run["id"], "source run ID", minimum=1)
     integer(source_run["attempt"], "source run attempt", minimum=1)
-    if bounded_text(source_run["event"], "source run event", maximum=64) != (
+    run_event = bounded_text(source_run["event"], "source run event", maximum=64)
+    expected_event = (
         "pull_request"
+        if source_kind == PR_STAGING_SOURCE_KIND
+        else "workflow_dispatch"
+    )
+    expected_workflow = (
+        ".github/workflows/staging-build.yml"
+        if source_kind == PR_STAGING_SOURCE_KIND
+        else ".github/workflows/force-rebuild.yml"
+    )
+    if run_event != expected_event or source_run["workflow_path"] != expected_workflow:
+        fail("source run does not use the workflow required by its release kind")
+    if source_kind == CANONICAL_FORCE_SOURCE_KIND and (
+        source_run["status"] != "completed"
+        or source_run["conclusion"] != "success"
     ):
-        fail("preserved source run event must be pull_request")
-    if source_run["workflow_path"] != ".github/workflows/staging-build.yml":
-        fail("source run does not use staging-build.yml")
+        fail("preserved canonical run is not complete and successful")
     if source_run["head_sha"] != package_source_sha:
         fail("source run head SHA differs from the package source")
+    root_job_keys = {"id", "name", "log_sha256", "log_bytes"}
+    if capture_format == SOURCE_CAPTURE_FORMAT_V2:
+        root_job_keys.update({"status", "conclusion"})
     root_job = exact_keys(
         source_run["root_job"],
-        {"id", "name", "log_sha256", "log_bytes"},
-        "rootfs source job",
+        root_job_keys,
+        "root-package source job",
     )
-    integer(root_job["id"], "rootfs source job ID", minimum=1)
-    bounded_text(root_job["name"], "rootfs source job name", maximum=1024)
-    text_matching(root_job["log_sha256"], HEX_64, "rootfs source job log digest")
+    integer(root_job["id"], "root-package source job ID", minimum=1)
+    root_job_name = bounded_text(
+        root_job["name"], "root-package source job name", maximum=1024
+    )
+    if not source_root_job_matches(
+        root_job_name,
+        source_kind=source_kind,
+        arch=projection["arch"],
+        root_package=projection["root_package"],
+    ):
+        fail("source root job name differs from its workflow contract")
+    if capture_format == SOURCE_CAPTURE_FORMAT_V2 and (
+        root_job["status"] != "completed" or root_job["conclusion"] != "success"
+    ):
+        fail("preserved root-package job is not complete and successful")
+    text_matching(
+        root_job["log_sha256"], HEX_64, "root-package source job log digest"
+    )
     integer(
         root_job["log_bytes"],
-        "rootfs source job log size",
+        "root-package source job log size",
         minimum=1,
         maximum=MAX_ROOT_JOB_LOG_BYTES,
     )
@@ -2481,7 +2562,7 @@ def validate_source_capture(
         (item["name"], item["bytes"], item["sha256"]) for item in archives
     )
     if run_archives != expected_archives:
-        fail("source run archive bytes differ from the selected staging archives")
+        fail("source run archive bytes differ from selected source archives")
     return capture
 
 
@@ -2499,7 +2580,7 @@ def source_activation_tag(identity: dict[str, Any]) -> str:
 
 def generation_tag(identity: dict[str, Any], digest: str) -> str:
     projection = identity["projection"]
-    if identity["format"] == PRESERVED_IDENTITY_FORMAT:
+    if identity["format"] in PRESERVED_IDENTITY_FORMATS:
         return (
             f"preserved-package-generation-{projection['root_package']}"
             f"-{projection['arch']}-abi-v{identity['abi_version']}"
@@ -2532,15 +2613,40 @@ def release_fields(identity: dict[str, Any], tag: str) -> dict[str, Any]:
             "`generation.json` and every asset. `generation.json` is the "
             "application seal; GitHub release metadata is not treated as immutable."
         )
-        # WHY: anchoring the direct tag at the producer keeps that exact source
-        # object reachable after its PR staging ref is removed. The separately
-        # recorded current-main authority says which reviewed publisher sealed
-        # the bytes; it does not make the producer an ancestor of main or admit
-        # this closure for package resolution.
+        # WHY: this byte-for-byte derivation is part of immutable public v1
+        # manifests. Keep their PR wording and direct producer anchor intact.
         return {
             "title": title,
             "body": body,
             "target_commitish": identity["package_source_sha"],
+            "prerelease": True,
+        }
+    if identity["format"] == PRESERVED_IDENTITY_FORMAT_V2:
+        title = (
+            f"Preserved package closure: {projection_label(projection)} "
+            f"{projection['arch']}, ABI {identity['abi_version']}"
+        )
+        body = (
+            "Application-sealed Kandelo package closure.\n\n"
+            f"Package producer: `{identity['package_source_sha']}`\n"
+            f"Trusted publisher authority: `{identity['authority_sha']}`\n"
+            "Direct tag anchor: trusted publisher authority\n"
+            f"Source release: `{preserved_source_release(identity['source_capture'])['tag']}`\n"
+            f"Source workflow run: `{identity['source_capture']['source_run']['id']}`\n"
+            f"Content identity: `{tag.rsplit('-sha256-', 1)[1]}`\n\n"
+            "This prerelease preserves exact build evidence only. It does not "
+            "claim that the producer is on main, ABI-compatible with main, or "
+            "admitted for package resolution. Consumers must validate "
+            "`generation.json` and every asset. `generation.json` is the "
+            "application seal; GitHub release metadata is not treated as immutable."
+        )
+        # WHY: target current authority so GitHub does not treat a historical
+        # workflow commit as release authority. The manifest independently
+        # binds the canonical producer, Force run, and exact archive bytes.
+        return {
+            "title": title,
+            "body": body,
+            "target_commitish": identity["authority_sha"],
             "prerelease": True,
         }
     title = (
@@ -2657,7 +2763,7 @@ def validate_identity_v1(value: Any) -> dict[str, Any]:
         abi_version,
     )
     if identity["archives"] != derived_archives:
-        fail("generation archives differ from the validated staging snapshot")
+        fail("generation archives differ from the validated source snapshot")
     return identity
 
 
@@ -2730,40 +2836,13 @@ def validate_identity_v2(value: Any) -> dict[str, Any]:
         if identity["cache_projection"] is not None:
             fail("exact-tree generation must not carry cache projection evidence")
     else:
-        # WHY: the PR release is mutable and therefore cannot be the admission
-        # source. The separate preservation release binds its complete bytes,
-        # same-run artifacts, and source log before this one-shot H→M proof.
+        # WHY: canonical and PR releases can both be rewritten, so neither is
+        # an admission source. The preservation release binds complete bytes,
+        # same-run artifacts, and the source log before comparing build inputs.
         if producer_evidence["format"] != PRESERVED_PRODUCER_EVIDENCE_FORMAT:
             fail(
                 "cache projection admission requires sealed preserved "
                 "producer evidence"
-            )
-        bridge_source_tag = producer_evidence["preserved_manifest"]["identity"][
-            "source_capture"
-        ]["source_staging"]["tag"]
-        if (
-            producer_evidence["producer_sha"]
-            != CACHE_PROJECTION_BRIDGE_PRODUCER_SHA
-            or bridge_source_tag != CACHE_PROJECTION_BRIDGE_SOURCE_TAG
-        ):
-            fail(
-                "cache projection compatibility is restricted to the "
-                "retained PR #1097 staging producer"
-            )
-        # WHY: the H→M audit covered exactly the preserved rootfs closure, not
-        # every internally coherent selection that generic generation tooling
-        # could construct from the same historical producer.
-        if (
-            abi_version != CACHE_PROJECTION_BRIDGE_ABI_VERSION
-            or projection.get("schema")
-            != CACHE_PROJECTION_BRIDGE_PROJECTION_SCHEMA
-            or projection.get("root_package")
-            != CACHE_PROJECTION_BRIDGE_ROOT_PACKAGE
-            or projection.get("arch") != CACHE_PROJECTION_BRIDGE_ARCH
-        ):
-            fail(
-                "cache projection compatibility is restricted to the "
-                "reviewed rootfs wasm32 ABI 42 selection"
             )
         cache_projection = validate_cache_projection_evidence(
             identity["cache_projection"]
@@ -2876,8 +2955,15 @@ def validate_preserved_identity(value: Any) -> dict[str, Any]:
         },
         "preserved generation identity",
     )
-    if identity["format"] != PRESERVED_IDENTITY_FORMAT:
+    if identity["format"] not in PRESERVED_IDENTITY_FORMATS:
         fail("preserved generation identity format is unsupported")
+    expected_capture_format = (
+        SOURCE_CAPTURE_FORMAT
+        if identity["format"] == PRESERVED_IDENTITY_FORMAT
+        else SOURCE_CAPTURE_FORMAT_V2
+    )
+    if identity.get("source_capture", {}).get("format") != expected_capture_format:
+        fail("preserved identity and source-capture formats do not correspond")
     repository = text_matching(
         identity["repository"], REPOSITORY, "preserved generation repository"
     )
@@ -2886,7 +2972,7 @@ def validate_preserved_identity(value: Any) -> dict[str, Any]:
     )
     text_matching(identity["authority_sha"], HEX_40, "publisher authority SHA")
     if identity["admission"] != "none":
-        fail("preserved PR package generations must not claim package admission")
+        fail("preserved package generations must not claim package admission")
     abi_version = integer(identity["abi_version"], "preserved ABI", minimum=1)
     projection = validate_preserved_projection(identity["projection"])
     expected = select_expected(identity["expected_ledger"], projection, abi_version)
@@ -2896,7 +2982,14 @@ def validate_preserved_identity(value: Any) -> dict[str, Any]:
     if not isinstance(snapshot, dict):
         fail("preserved validated snapshot must be an object")
     source_tag = snapshot.get("release_tag")
-    text_matching(source_tag, STAGING_TAG, "preserved source staging tag")
+    text_matching(
+        source_tag, PRESERVABLE_SOURCE_TAG, "preserved package source tag"
+    )
+    if (
+        CANONICAL_BINARY_TAG.fullmatch(source_tag) is not None
+        and source_tag != f"binaries-abi-v{abi_version}"
+    ):
+        fail("preserved canonical source tag differs from its selected ABI")
     _, derived_archives = validate_snapshot(
         snapshot,
         projection,
@@ -2929,15 +3022,18 @@ def validate_preserved_identity(value: Any) -> dict[str, Any]:
         archives=derived_archives,
         projection=projection,
     )
-    log_assets = [
-        item for item in supporting if item["name"] == "rootfs-job.log"
-    ]
+    log_asset_name = (
+        "rootfs-job.log"
+        if identity["format"] == PRESERVED_IDENTITY_FORMAT
+        else "root-package-job.log"
+    )
+    log_assets = [item for item in supporting if item["name"] == log_asset_name]
     root_job = capture["source_run"]["root_job"]
     if len(log_assets) != 1 or (
         log_assets[0]["sha256"] != root_job["log_sha256"]
         or log_assets[0]["bytes"] != root_job["log_bytes"]
     ):
-        fail("rootfs-job.log must exactly preserve the source-run log evidence")
+        fail(f"{log_asset_name} must exactly preserve source-run log evidence")
     return identity
 
 
@@ -2951,7 +3047,7 @@ def validate_identity(value: Any) -> dict[str, Any]:
         return validate_identity_v1(value)
     if value.get("format") == IDENTITY_FORMAT_V2:
         return validate_identity_v2(value)
-    if value.get("format") == PRESERVED_IDENTITY_FORMAT:
+    if value.get("format") in PRESERVED_IDENTITY_FORMATS:
         return validate_preserved_identity(value)
     fail("generation identity format is unsupported")
 
@@ -2973,6 +3069,7 @@ def validate_manifest(value: Any) -> tuple[dict[str, Any], dict[str, Any], str]:
         MANIFEST_FORMAT,
         MANIFEST_FORMAT_V2,
         PRESERVED_MANIFEST_FORMAT,
+        PRESERVED_MANIFEST_FORMAT_V2,
     }:
         fail("generation manifest format is unsupported")
     identity = validate_identity(manifest["identity"])
@@ -2980,6 +3077,7 @@ def validate_manifest(value: Any) -> tuple[dict[str, Any], dict[str, Any], str]:
         IDENTITY_FORMAT: MANIFEST_FORMAT,
         IDENTITY_FORMAT_V2: MANIFEST_FORMAT_V2,
         PRESERVED_IDENTITY_FORMAT: PRESERVED_MANIFEST_FORMAT,
+        PRESERVED_IDENTITY_FORMAT_V2: PRESERVED_MANIFEST_FORMAT_V2,
     }[identity["format"]]
     if manifest["format"] != expected_manifest_format:
         fail("generation manifest and identity formats do not correspond")
@@ -3019,7 +3117,9 @@ def command_select(args: argparse.Namespace) -> None:
 
 
 def command_select_source_assets(args: argparse.Namespace) -> None:
-    source_tag = text_matching(args.source_tag, STAGING_TAG, "source staging tag")
+    source_tag = text_matching(
+        args.source_tag, PRESERVABLE_SOURCE_TAG, "preservable source tag"
+    )
     projection = validate_preserved_projection(read_json(args.projection))
     expected_raw = read_json(args.expected_ledger)
     abi_version = integer(expected_raw.get("abi_version"), "expected ABI", minimum=1)
@@ -3063,11 +3163,12 @@ def verify_root_dependency_log(
     log_bytes: bytes,
     projection: dict[str, Any],
     expected: dict[str, Any],
+    source_kind: str,
 ) -> None:
     try:
         lines = [log_content(line) for line in log_bytes.decode("utf-8").splitlines()]
     except UnicodeDecodeError as error:
-        fail(f"rootfs source job log is not UTF-8: {error}")
+        fail(f"root-package source job log is not UTF-8: {error}")
     root = projection["root_package"]
     arch = projection["arch"]
     selected_programs = sorted(
@@ -3081,19 +3182,29 @@ def verify_root_dependency_log(
         if entry["package"] != root
     )
     artifact_line = re.compile(r"^\s+([A-Za-z0-9._-]+-wasm(?:32|64))\s*$")
+    expected_block = (
+        selected_programs
+        if source_kind == PR_STAGING_SOURCE_KIND
+        else selected_all
+    )
+    heading = (
+        "selected program dependency artifacts:"
+        if source_kind == PR_STAGING_SOURCE_KIND
+        else "same-run dependency artifacts:"
+    )
     dependency_headings = [
         index
         for index, line in enumerate(lines)
-        if line.strip() == "selected program dependency artifacts:"
+        if line.strip() == heading
     ]
     if len(dependency_headings) != 1:
         fail(
-            "rootfs source job log must contain exactly one selected-program "
+            "root-package source job log must contain exactly one expected "
             "dependency heading"
         )
     exact_blocks: list[list[str]] = []
     for index, line in enumerate(lines):
-        if line.strip() != "selected program dependency artifacts:":
+        if line.strip() != heading:
             continue
         block: list[str] = []
         for following in lines[index + 1 :]:
@@ -3101,12 +3212,12 @@ def verify_root_dependency_log(
             if match is None:
                 break
             block.append(match.group(1))
-        if sorted(block) == selected_programs and len(block) == len(selected_programs):
+        if sorted(block) == expected_block and len(block) == len(expected_block):
             exact_blocks.append(block)
     if len(exact_blocks) != 1:
         fail(
-            "rootfs source job log does not contain exactly one complete "
-            "selected-program dependency block"
+            "root-package source job log does not contain exactly one complete "
+            "dependency-artifact block"
         )
 
     downloaded = Counter(
@@ -3127,14 +3238,14 @@ def verify_root_dependency_log(
     }
     if wrong_download_counts:
         fail(
-            "rootfs source job log must contain exactly one same-run download "
+            "root-package source log must contain exactly one same-run download "
             f"for every selected dependency: {wrong_download_counts}"
         )
     for line in lines:
         if "continuing without overlay" not in line:
             continue
         if any(artifact in line for artifact in selected_all):
-            fail("rootfs source job log used a fallback for a selected dependency")
+            fail("root-package source log used a fallback for a selected dependency")
 
 
 def command_capture_source(args: argparse.Namespace) -> None:
@@ -3142,7 +3253,23 @@ def command_capture_source(args: argparse.Namespace) -> None:
     package_source_sha = text_matching(
         args.package_source_sha, HEX_40, "package source SHA"
     )
-    source_tag = text_matching(args.source_tag, STAGING_TAG, "source staging tag")
+    source_tag = text_matching(
+        args.source_tag, PRESERVABLE_SOURCE_TAG, "preservable source tag"
+    )
+    source_kind = preservable_source_kind(source_tag)
+    capture_format = args.capture_format
+    if capture_format == "auto":
+        capture_format = (
+            SOURCE_CAPTURE_FORMAT
+            if source_kind == PR_STAGING_SOURCE_KIND
+            else SOURCE_CAPTURE_FORMAT_V2
+        )
+    if capture_format == SOURCE_CAPTURE_FORMAT:
+        release_key = "source_staging"
+    elif capture_format == SOURCE_CAPTURE_FORMAT_V2:
+        release_key = "source_release"
+    else:
+        fail("requested source-capture format is unsupported")
     projection = validate_preserved_projection(read_json(args.projection))
     expected_raw = read_json(args.expected_ledger)
     abi_version = integer(expected_raw.get("abi_version"), "expected ABI", minimum=1)
@@ -3167,12 +3294,13 @@ def command_capture_source(args: argparse.Namespace) -> None:
     release = read_json(args.release, max_bytes=MAX_GITHUB_METADATA_BYTES)
     if not isinstance(release, dict):
         fail("source release metadata must be an object")
+    expected_prerelease = source_kind == PR_STAGING_SOURCE_KIND
     if (
         release.get("tag_name") != source_tag
         or release.get("draft") is not False
-        or release.get("prerelease") is not True
+        or release.get("prerelease") is not expected_prerelease
     ):
-        fail("source release is not the selected published staging prerelease")
+        fail("source release kind differs from its selected tag")
     release_id = integer(release.get("id"), "source release ID", minimum=1)
     release_target = bounded_text(
         release.get("target_commitish"), "source release target", maximum=256
@@ -3184,15 +3312,15 @@ def command_capture_source(args: argparse.Namespace) -> None:
         or not isinstance(tag_ref.get("object"), dict)
         or tag_ref["object"].get("type") != "commit"
     ):
-        fail("source staging tag is not a direct commit reference")
+        fail("source release tag is not a direct commit reference")
     tag_object_sha = text_matching(
-        tag_ref["object"].get("sha"), HEX_40, "source staging tag object"
+        tag_ref["object"].get("sha"), HEX_40, "source release tag object"
     )
-    # WHY: a mutable pr-N-staging tag is only the release locator and may still
-    # point at an older PR commit. Preserve and race-recheck that observed
-    # anchor, but derive producer authority from the exact workflow run head,
-    # same-run artifact bytes, release-byte equality, and archive provenance.
-    # The new content-addressed preserved tag directly anchors the producer.
+    # WHY: mutable source tags are only release locators. Preserve and
+    # race-recheck the observed anchor, but derive producer authority from the
+    # exact workflow head, same-run bytes, release equality, and provenance.
+    # A later content-addressed v1 tag anchors that producer directly; a v2 tag
+    # anchors current authority that contains the canonical producer.
 
     run = read_json(args.run, max_bytes=MAX_GITHUB_METADATA_BYTES)
     if not isinstance(run, dict):
@@ -3202,13 +3330,27 @@ def command_capture_source(args: argparse.Namespace) -> None:
         fail("source workflow run does not bind the requested run and package SHA")
     run_attempt = integer(run.get("run_attempt"), "source run attempt", minimum=1)
     run_event = bounded_text(run.get("event"), "source run event", maximum=64)
-    if run_event != "pull_request":
-        fail("source workflow run event must be pull_request")
+    expected_event = (
+        "pull_request"
+        if source_kind == PR_STAGING_SOURCE_KIND
+        else "workflow_dispatch"
+    )
+    if run_event != expected_event:
+        fail("source workflow run event differs from its release kind")
     workflow_path = bounded_text(
         run.get("path"), "source workflow path", maximum=256
     )
-    if workflow_path != ".github/workflows/staging-build.yml":
-        fail("source workflow run is not staging-build.yml")
+    expected_workflow = (
+        ".github/workflows/staging-build.yml"
+        if source_kind == PR_STAGING_SOURCE_KIND
+        else ".github/workflows/force-rebuild.yml"
+    )
+    if workflow_path != expected_workflow:
+        fail("source workflow run path differs from its release kind")
+    if source_kind == CANONICAL_FORCE_SOURCE_KIND and (
+        run.get("status") != "completed" or run.get("conclusion") != "success"
+    ):
+        fail("canonical Force rebuild run is not complete and successful")
 
     jobs = read_json(args.jobs, max_bytes=MAX_GITHUB_METADATA_BYTES)
     if not isinstance(jobs, list):
@@ -3218,26 +3360,31 @@ def command_capture_source(args: argparse.Namespace) -> None:
         for job in jobs
         if isinstance(job, dict)
         and isinstance(job.get("name"), str)
-        and job["name"].startswith("matrix-build (")
-        and f", {projection['root_package']}," in job["name"]
-        and job["name"].startswith(f"matrix-build ({projection['arch']},")
+        and source_root_job_matches(
+            job.get("name"),
+            source_kind=source_kind,
+            arch=projection["arch"],
+            root_package=projection["root_package"],
+        )
     ]
     if len(root_job_matches) != 1:
         fail("source run must contain exactly one selected root-package matrix job")
     root_job = root_job_matches[0]
     if root_job.get("status") != "completed" or root_job.get("conclusion") != "success":
         fail("selected root-package matrix job is not complete and successful")
-    root_job_id = integer(root_job.get("id"), "rootfs source job ID", minimum=1)
+    root_job_id = integer(
+        root_job.get("id"), "root-package source job ID", minimum=1
+    )
     root_job_name = bounded_text(
-        root_job.get("name"), "rootfs source job name", maximum=1024
+        root_job.get("name"), "root-package source job name", maximum=1024
     )
 
     root_log_path = args.root_job_log
-    regular_file(root_log_path, "rootfs source job log")
+    regular_file(root_log_path, "root-package source job log")
     root_log_bytes = root_log_path.read_bytes()
     if not root_log_bytes or len(root_log_bytes) > MAX_ROOT_JOB_LOG_BYTES:
-        fail("rootfs source job log is empty or oversized")
-    verify_root_dependency_log(root_log_bytes, projection, expected)
+        fail("root-package source job log is empty or oversized")
+    verify_root_dependency_log(root_log_bytes, projection, expected, source_kind)
 
     run_artifacts = read_json(
         args.run_artifacts, max_bytes=MAX_GITHUB_METADATA_BYTES
@@ -3305,31 +3452,41 @@ def command_capture_source(args: argparse.Namespace) -> None:
             }
         )
 
+    captured_root_job = {
+        "id": root_job_id,
+        "name": root_job_name,
+        "log_sha256": sha256_bytes(root_log_bytes),
+        "log_bytes": len(root_log_bytes),
+    }
+    if capture_format == SOURCE_CAPTURE_FORMAT_V2:
+        captured_root_job.update(
+            {"status": "completed", "conclusion": "success"}
+        )
+    captured_source_run = {
+        "id": run_id,
+        "attempt": run_attempt,
+        "event": run_event,
+        "workflow_path": workflow_path,
+        "head_sha": package_source_sha,
+        "root_job": captured_root_job,
+        "selected_artifacts": selected_run_artifacts,
+    }
+    if source_kind == CANONICAL_FORCE_SOURCE_KIND:
+        captured_source_run.update(
+            {"status": "completed", "conclusion": "success"}
+        )
     capture = {
-        "format": SOURCE_CAPTURE_FORMAT,
+        "format": capture_format,
         "repository": repository,
         "package_source_sha": package_source_sha,
-        "source_staging": {
+        release_key: {
             "tag": source_tag,
             "release_id": release_id,
             "observed_target_commitish": release_target,
             "observed_tag_object_sha": tag_object_sha,
             "selected_assets": selected_release_assets,
         },
-        "source_run": {
-            "id": run_id,
-            "attempt": run_attempt,
-            "event": run_event,
-            "workflow_path": workflow_path,
-            "head_sha": package_source_sha,
-            "root_job": {
-                "id": root_job_id,
-                "name": root_job_name,
-                "log_sha256": sha256_bytes(root_log_bytes),
-                "log_bytes": len(root_log_bytes),
-            },
-            "selected_artifacts": selected_run_artifacts,
-        },
+        "source_run": captured_source_run,
     }
     validate_source_capture(
         capture,
@@ -3644,7 +3801,9 @@ def command_prepare_preserved(args: argparse.Namespace) -> None:
         fail("selected expected ledger is not canonical")
     snapshot_value = read_json(args.snapshot)
     source_tag = text_matching(
-        snapshot_value.get("release_tag"), STAGING_TAG, "source staging tag"
+        snapshot_value.get("release_tag"),
+        PRESERVABLE_SOURCE_TAG,
+        "preservable source tag",
     )
     snapshot, archives = validate_snapshot(
         snapshot_value,
@@ -3693,8 +3852,18 @@ def command_prepare_preserved(args: argparse.Namespace) -> None:
         archives=archives,
         projection=projection,
     )
+    preserved_identity_format = (
+        PRESERVED_IDENTITY_FORMAT
+        if capture["format"] == SOURCE_CAPTURE_FORMAT
+        else PRESERVED_IDENTITY_FORMAT_V2
+    )
+    preserved_manifest_format = (
+        PRESERVED_MANIFEST_FORMAT
+        if preserved_identity_format == PRESERVED_IDENTITY_FORMAT
+        else PRESERVED_MANIFEST_FORMAT_V2
+    )
     identity = {
-        "format": PRESERVED_IDENTITY_FORMAT,
+        "format": preserved_identity_format,
         "repository": repository,
         "package_source_sha": package_source_sha,
         "authority_sha": authority_sha,
@@ -3719,7 +3888,7 @@ def command_prepare_preserved(args: argparse.Namespace) -> None:
         localized_bytes, archive_names, release_prefix
     )
     manifest = {
-        "format": PRESERVED_MANIFEST_FORMAT,
+        "format": preserved_manifest_format,
         "tag": tag,
         "identity_sha256": identity_digest,
         "identity": identity,
@@ -3826,9 +3995,9 @@ def command_compare_consumer(args: argparse.Namespace) -> None:
     if args.generation_manifest.read_bytes() != canonical_bytes(manifest_value):
         fail("generation.json is not canonical JSON")
     _, identity, tag = validate_manifest(manifest_value)
-    if identity["format"] == PRESERVED_IDENTITY_FORMAT:
+    if identity["format"] in PRESERVED_IDENTITY_FORMATS:
         fail(
-            "preserved PR package generations are evidence only and are not "
+            "preserved package generations are evidence only and are not "
             "admitted for consumer materialization"
         )
     projection = identity["projection"]
@@ -3853,8 +4022,8 @@ def command_compare_source_capture(args: argparse.Namespace) -> None:
     if args.generation_manifest.read_bytes() != canonical_bytes(manifest_value):
         fail("generation.json is not canonical JSON")
     _, identity, tag = validate_manifest(manifest_value)
-    if identity["format"] != PRESERVED_IDENTITY_FORMAT:
-        fail("source capture comparison requires a preserved PR generation")
+    if identity["format"] not in PRESERVED_IDENTITY_FORMATS:
+        fail("source capture comparison requires a preserved package generation")
     captured_value = read_json(args.source_capture, max_bytes=MAX_MANIFEST_BYTES)
     if args.source_capture.read_bytes() != canonical_bytes(captured_value):
         fail("source capture is not canonical JSON")
@@ -3906,6 +4075,11 @@ def parser() -> argparse.ArgumentParser:
     capture.add_argument("--archives-dir", type=Path, required=True)
     capture.add_argument("--run-archives-dir", type=Path, required=True)
     capture.add_argument("--root-job-log", type=Path, required=True)
+    capture.add_argument(
+        "--capture-format",
+        choices=["auto", SOURCE_CAPTURE_FORMAT, SOURCE_CAPTURE_FORMAT_V2],
+        default="auto",
+    )
     capture.add_argument("--capture-out", type=Path, required=True)
     capture.set_defaults(action=command_capture_source)
 

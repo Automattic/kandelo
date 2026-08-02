@@ -3,8 +3,47 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 TOOL="$SCRIPT_DIR/package-generation.py"
+ANCESTRY_HELPER="$SCRIPT_DIR/verify-package-generation-ancestry.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
+
+# The v2 canonical seal is admissible only while both immutable ancestry
+# links remain present. Exercise the shared check directly so prepare and
+# publish cannot drift into different interpretations.
+mkdir "$TMP_ROOT/ancestry-repo"
+git -C "$TMP_ROOT/ancestry-repo" init -q
+git -C "$TMP_ROOT/ancestry-repo" config user.name "Kandelo test"
+git -C "$TMP_ROOT/ancestry-repo" config user.email test@example.invalid
+git -C "$TMP_ROOT/ancestry-repo" commit -q --allow-empty -m producer
+ancestry_producer="$(git -C "$TMP_ROOT/ancestry-repo" rev-parse HEAD)"
+git -C "$TMP_ROOT/ancestry-repo" commit -q --allow-empty -m preservation
+ancestry_preservation="$(git -C "$TMP_ROOT/ancestry-repo" rev-parse HEAD)"
+git -C "$TMP_ROOT/ancestry-repo" commit -q --allow-empty -m current
+ancestry_current="$(git -C "$TMP_ROOT/ancestry-repo" rev-parse HEAD)"
+ancestry_tree="$(git -C "$TMP_ROOT/ancestry-repo" rev-parse 'HEAD^{tree}')"
+ancestry_unrelated="$(printf 'unrelated\n' |
+  git -C "$TMP_ROOT/ancestry-repo" commit-tree "$ancestry_tree")"
+bash "$ANCESTRY_HELPER" \
+  --repository-root "$TMP_ROOT/ancestry-repo" \
+  --producer-sha "$ancestry_producer" \
+  --preservation-authority-sha "$ancestry_preservation" \
+  --current-authority-sha "$ancestry_current"
+if bash "$ANCESTRY_HELPER" \
+    --repository-root "$TMP_ROOT/ancestry-repo" \
+    --producer-sha "$ancestry_unrelated" \
+    --preservation-authority-sha "$ancestry_preservation" \
+    --current-authority-sha "$ancestry_current"; then
+  echo "canonical ancestry check accepted an unrelated producer" >&2
+  exit 1
+fi
+if bash "$ANCESTRY_HELPER" \
+    --repository-root "$TMP_ROOT/ancestry-repo" \
+    --producer-sha "$ancestry_producer" \
+    --preservation-authority-sha "$ancestry_preservation" \
+    --current-authority-sha "$ancestry_unrelated"; then
+  echo "canonical ancestry check accepted unrelated current authority" >&2
+  exit 1
+fi
 mkdir "$TMP_ROOT/archives"
 
 sha_file() {
@@ -548,8 +587,9 @@ validation_method_input="$(awk '
 ' "$promotion_workflow")"
 validation_method_options="$(awk '$1 == "-" {print $2}' \
   <<<"$validation_method_input")"
-if [ "$validation_method_options" != identical-git-tree-v1 ]; then
-  echo "promotion workflow exposes a retired compatibility method" >&2
+if [ "$validation_method_options" != \
+     $'identical-git-tree-v1\nidentical-package-cache-projection-v1' ]; then
+  echo "promotion workflow does not expose the two reviewed validation methods" >&2
   exit 1
 fi
 prepare_job="$(awk '
@@ -564,7 +604,7 @@ validation_method_guard="$(awk '
 ' <<<"$prepare_job")"
 grep -Fq 'VALIDATION_METHOD: ${{ inputs.validation-method }}' \
   <<<"$validation_method_guard"
-grep -Fq 'if [ "$VALIDATION_METHOD" != identical-git-tree-v1 ]; then' \
+grep -Fq 'identical-git-tree-v1|identical-package-cache-projection-v1' \
   <<<"$validation_method_guard"
 grep -Fq 'unsupported generation validation method' \
   <<<"$validation_method_guard"
@@ -826,16 +866,12 @@ fi
 cache_producer_sha="748c2609954d2809bbcbbcb642fa7d257fc0dbc6"
 cache_producer_tree="$(printf '6%.0s' {1..40})"
 cache_main_tree="$(printf '7%.0s' {1..40})"
-# Historical fixtures keep the retired reader and its exact reviewed transition
-# covered without making current source eligible for a new bridge promotion.
-historical_main_build_deps_blob="d8a095c60ed3bb90831afc11ec586c21abd886ee"
-current_main_build_deps_blob="$(git -C "$SCRIPT_DIR/../.." \
-  hash-object tools/xtask/src/build_deps.rs)"
-if [ "$current_main_build_deps_blob" = "$historical_main_build_deps_blob" ]; then
-  echo "retired cache-projection validator transition became current again" >&2
-  exit 1
-fi
-main_staging_reuse_blob="0edc5fe7bc1f6b919816050cdc82a5e549da054b"
+# The evidence records the exact current-authority readers from both complete
+# trees. Their bytes may differ because current main owns interpretation.
+producer_build_deps_blob="$(printf '1%.0s' {1..40})"
+producer_staging_reuse_blob="$(printf '2%.0s' {1..40})"
+main_build_deps_blob="$(printf '3%.0s' {1..40})"
+main_staging_reuse_blob="$(printf '4%.0s' {1..40})"
 mkdir "$TMP_ROOT/cache-evidence"
 jq -nS \
   --arg a "$hex_a" \
@@ -911,17 +947,19 @@ jq -nS \
     ]
   }' >"$TMP_ROOT/cache-evidence/components.json"
 jq -nS \
-  --arg tree "$cache_producer_tree" '{
+  --arg tree "$cache_producer_tree" \
+  --arg build_deps "$producer_build_deps_blob" \
+  --arg staging_reuse "$producer_staging_reuse_blob" '{
     sha:$tree,truncated:false,tree:[
       {
         path:"tools/xtask/src/build_deps.rs",
         mode:"100644",type:"blob",
-        sha:"9c8930dd137fcb836756657c43288e76e55fce36"
+        sha:$build_deps
       },
       {
         path:"tools/xtask/src/staging_reuse.rs",
         mode:"100644",type:"blob",
-        sha:"66a19dfc1542ef4f33e6b2ca06e8a3b170959508"
+        sha:$staging_reuse
       },
       {
         path:"host/src/kernel-worker.ts",
@@ -931,7 +969,7 @@ jq -nS \
   }' >"$TMP_ROOT/cache-evidence/producer-tree.json"
 jq -nS \
   --arg tree "$cache_main_tree" \
-  --arg build_deps "$historical_main_build_deps_blob" \
+  --arg build_deps "$main_build_deps_blob" \
   --arg staging_reuse "$main_staging_reuse_blob" '{
     sha:$tree,truncated:false,tree:[
       {
@@ -1009,29 +1047,29 @@ if "${cache_truncated[@]}" \
   echo "cache projection accepted a truncated recursive Git tree" >&2
   exit 1
 fi
-jq '(.tree[] | select(
+jq 'del(.tree[] | select(
       .path == "tools/xtask/src/build_deps.rs"
-    ).sha) = ("0" * 40)' \
+    ))' \
   "$TMP_ROOT/cache-evidence/main-tree.json" \
-  >"$TMP_ROOT/cache-evidence/unreviewed-validator-tree.json"
-cache_unreviewed=("${cache_evidence_command[@]}")
-cache_unreviewed[26]="$TMP_ROOT/cache-evidence/unreviewed-validator-tree.json"
-if "${cache_unreviewed[@]}" \
+  >"$TMP_ROOT/cache-evidence/missing-validator-tree.json"
+cache_missing_validator=("${cache_evidence_command[@]}")
+cache_missing_validator[26]="$TMP_ROOT/cache-evidence/missing-validator-tree.json"
+if "${cache_missing_validator[@]}" \
     --output "$TMP_ROOT/cache-evidence/rejected-validator.json"; then
-  echo "cache projection accepted unreviewed validator bytes" >&2
+  echo "cache projection accepted missing validator evidence" >&2
   exit 1
 fi
-jq --arg current "$current_main_build_deps_blob" '
+jq '
     (.tree[] | select(
       .path == "tools/xtask/src/build_deps.rs"
-    ).sha) = $current
+    ).mode) = "120000"
   ' "$TMP_ROOT/cache-evidence/main-tree.json" \
-  >"$TMP_ROOT/cache-evidence/current-validator-tree.json"
-cache_current_validator=("${cache_evidence_command[@]}")
-cache_current_validator[26]="$TMP_ROOT/cache-evidence/current-validator-tree.json"
-if "${cache_current_validator[@]}" \
-    --output "$TMP_ROOT/cache-evidence/rejected-current-validator.json"; then
-  echo "retired cache projection accepted the current validator bytes" >&2
+  >"$TMP_ROOT/cache-evidence/symlink-validator-tree.json"
+cache_symlink_validator=("${cache_evidence_command[@]}")
+cache_symlink_validator[26]="$TMP_ROOT/cache-evidence/symlink-validator-tree.json"
+if "${cache_symlink_validator[@]}" \
+    --output "$TMP_ROOT/cache-evidence/rejected-symlink-validator.json"; then
+  echo "cache projection accepted a symlinked validator path" >&2
   exit 1
 fi
 
@@ -1263,7 +1301,7 @@ if python3 "$TOOL" validate --bundle "$TMP_ROOT/bundle-link"; then
   exit 1
 fi
 
-# A preserved PR closure uses only selected release assets and exact same-run
+# A preserved package closure uses only selected release assets and exact same-run
 # workflow artifacts. It remains evidence-only even when a current authority
 # publishes it.
 mkdir \
@@ -1463,6 +1501,156 @@ if capture_preserved \
 fi
 mv "$TMP_ROOT/preserved-run-original.json" "$TMP_ROOT/preserved-run.json"
 
+# A canonical source is accepted only when a completed, successful Force
+# rebuild supplies the exact same-run closure. Level zero is valid for a leaf
+# root; malformed or leading-zero level names are not.
+python3 "$TOOL" select-source-assets \
+  --source-tag binaries-abi-v42 \
+  --projection "$TMP_ROOT/projection.json" \
+  --expected-ledger "$TMP_ROOT/expected.json" \
+  --release-assets "$TMP_ROOT/preserved-release-assets.json" \
+  --snapshot-out "$TMP_ROOT/canonical-snapshot.json" \
+  --selected-assets-out "$TMP_ROOT/canonical-selected-assets.json"
+jq -nS '{
+  id:502,tag_name:"binaries-abi-v42",target_commitish:"old-anchor",
+  draft:false,prerelease:false
+}' >"$TMP_ROOT/canonical-release.json"
+jq -nS --arg sha "$other_source_sha" '{
+  ref:"refs/tags/binaries-abi-v42",
+  object:{type:"commit",sha:$sha}
+}' >"$TMP_ROOT/canonical-tag.json"
+jq -nS --arg sha "$source_sha" '{
+  id:602,run_attempt:1,event:"workflow_dispatch",
+  path:".github/workflows/force-rebuild.yml",head_sha:$sha,
+  status:"completed",conclusion:"success"
+}' >"$TMP_ROOT/canonical-run.json"
+jq -nS '[
+  {
+    id:702,
+    name:"matrix-build-level-0 (wasm32, rootfs, 1, digest, 1)",
+    status:"completed",conclusion:"success"
+  }
+]' >"$TMP_ROOT/canonical-jobs.json"
+jq 'map(.workflow_run.id = 602)' \
+  "$TMP_ROOT/preserved-run-artifacts.json" \
+  >"$TMP_ROOT/canonical-run-artifacts.json"
+cat >"$TMP_ROOT/canonical-root-job.log" <<'EOF'
+2026-01-01T00:00:00Z same-run dependency artifacts:
+2026-01-01T00:00:01Z   dep-wasm32
+2026-01-01T00:00:02Z dependency artifacts to download:
+2026-01-01T00:00:03Z   dep-wasm32
+2026-01-01T00:00:04Z downloaded dependency artifact dep-wasm32
+EOF
+
+capture_canonical() {
+  local output="$1"
+  local jobs="$TMP_ROOT/canonical-jobs.json"
+  local run="$TMP_ROOT/canonical-run.json"
+  shift
+  if [ "$#" -gt 0 ]; then jobs="$1"; shift; fi
+  if [ "$#" -gt 0 ]; then run="$1"; shift; fi
+  python3 "$TOOL" capture-source \
+    --repository Automattic/kandelo \
+    --package-source-sha "$source_sha" \
+    --source-tag binaries-abi-v42 \
+    --run-id 602 \
+    --projection "$TMP_ROOT/projection.json" \
+    --expected-ledger "$TMP_ROOT/expected.json" \
+    --snapshot "$TMP_ROOT/canonical-snapshot.json" \
+    --release "$TMP_ROOT/canonical-release.json" \
+    --tag-ref "$TMP_ROOT/canonical-tag.json" \
+    --release-assets "$TMP_ROOT/preserved-release-assets.json" \
+    --run "$run" \
+    --jobs "$jobs" \
+    --run-artifacts "$TMP_ROOT/canonical-run-artifacts.json" \
+    --archives-dir "$TMP_ROOT/preserved-archives" \
+    --run-archives-dir "$TMP_ROOT/preserved-run-archives" \
+    --root-job-log "$TMP_ROOT/canonical-root-job.log" \
+    "$@" \
+    --capture-out "$output"
+}
+capture_canonical "$TMP_ROOT/canonical-capture.json"
+jq -e '
+  .format == "kandelo-preserved-package-source-capture-v2" and
+  .source_release.tag == "binaries-abi-v42" and
+  .source_run.event == "workflow_dispatch" and
+  .source_run.workflow_path == ".github/workflows/force-rebuild.yml"
+' "$TMP_ROOT/canonical-capture.json" >/dev/null
+
+for bad_level in 00 01 -1 x; do
+  jq --arg level "$bad_level" \
+    '.[0].name = ("matrix-build-level-" + $level +
+      " (wasm32, rootfs, 1, digest, 1)")' \
+    "$TMP_ROOT/canonical-jobs.json" >"$TMP_ROOT/canonical-bad-jobs.json"
+  if capture_canonical \
+      "$TMP_ROOT/canonical-bad-level.json" \
+      "$TMP_ROOT/canonical-bad-jobs.json" \
+      "$TMP_ROOT/canonical-run.json"; then
+    echo "canonical capture accepted malformed level $bad_level" >&2
+    exit 1
+  fi
+done
+
+jq '.status = "in_progress" | .conclusion = null' \
+  "$TMP_ROOT/canonical-run.json" >"$TMP_ROOT/canonical-incomplete-run.json"
+if capture_canonical \
+    "$TMP_ROOT/canonical-incomplete-capture.json" \
+    "$TMP_ROOT/canonical-jobs.json" \
+    "$TMP_ROOT/canonical-incomplete-run.json"; then
+  echo "canonical capture accepted an incomplete Force rebuild" >&2
+  exit 1
+fi
+
+if capture_canonical \
+    "$TMP_ROOT/canonical-v1-capture.json" \
+    "$TMP_ROOT/canonical-jobs.json" \
+    "$TMP_ROOT/canonical-run.json" \
+    --capture-format kandelo-preserved-pr-source-capture-v1; then
+  echo "canonical Force evidence expanded the immutable v1 PR format" >&2
+  exit 1
+fi
+
+cp "$TMP_ROOT/preserved-run-archives/dep-wasm32/$dep_name" \
+  "$TMP_ROOT/canonical-run-archive-before-tamper"
+printf 'tamper\n' \
+  >>"$TMP_ROOT/preserved-run-archives/dep-wasm32/$dep_name"
+if capture_canonical "$TMP_ROOT/canonical-tampered-bytes.json"; then
+  echo "canonical capture accepted changed same-run archive bytes" >&2
+  exit 1
+fi
+mv "$TMP_ROOT/canonical-run-archive-before-tamper" \
+  "$TMP_ROOT/preserved-run-archives/dep-wasm32/$dep_name"
+
+mkdir "$TMP_ROOT/canonical-supporting"
+cp "$TMP_ROOT/canonical-root-job.log" \
+  "$TMP_ROOT/canonical-supporting/root-package-job.log"
+canonical_preserved_tag="$(python3 "$TOOL" prepare-preserved \
+  --repository Automattic/kandelo \
+  --package-source-sha "$source_sha" \
+  --authority-sha "$authority_sha" \
+  --source-capture "$TMP_ROOT/canonical-capture.json" \
+  --projection "$TMP_ROOT/projection.json" \
+  --expected-ledger "$TMP_ROOT/expected.json" \
+  --snapshot "$TMP_ROOT/canonical-snapshot.json" \
+  --localized-index "$TMP_ROOT/preserved-local-index.toml" \
+  --archives-dir "$TMP_ROOT/preserved-archives" \
+  --supporting-assets-dir "$TMP_ROOT/canonical-supporting" \
+  --output-dir "$TMP_ROOT/canonical-preserved-bundle")"
+python3 "$TOOL" validate \
+  --bundle "$TMP_ROOT/canonical-preserved-bundle" \
+  --expected-tag "$canonical_preserved_tag" >/dev/null
+jq -e '
+  .format == "kandelo-preserved-package-generation-v2" and
+  .identity.format ==
+    "kandelo-preserved-package-generation-identity-v2" and
+  .identity.source_capture.source_release.tag == "binaries-abi-v42" and
+  .identity.admission == "none"
+' "$TMP_ROOT/canonical-preserved-bundle/generation.json" >/dev/null
+[ "$(jq -r .release.target_commitish \
+  "$TMP_ROOT/canonical-preserved-bundle/generation.json")" = \
+  "$authority_sha" ]
+[ "$authority_sha" != "$source_sha" ]
+
 cp "$TMP_ROOT/preserved-rootfs-job.log" \
   "$TMP_ROOT/preserved-supporting/rootfs-job.log"
 if python3 "$TOOL" prepare-preserved \
@@ -1482,7 +1670,7 @@ if python3 "$TOOL" prepare-preserved \
   exit 1
 fi
 grep -Fq \
-  "preserved PR package generations require a schema-1 projection" \
+  "preserved package generations require a schema-1 projection" \
   "$TMP_ROOT/preserved-schema2.err"
 if grep -Fq "Traceback" "$TMP_ROOT/preserved-schema2.err"; then
   echo "schema-2 preserved projection failed through an internal exception" >&2
@@ -1607,6 +1795,16 @@ fi
 grep -Fq "working-directory: authority" <<<"$preserve_prepare_job"
 grep -Fq "staging-reuse scan-source" \
   "$SCRIPT_DIR/prepare-preserved-pr-package-generation.sh"
+v1_capture_format="$(jq -er .format "$TMP_ROOT/preserved-capture.json")"
+v2_capture_format="$(jq -er .format "$TMP_ROOT/canonical-capture.json")"
+grep -Fq "  $v1_capture_format)" \
+  "$SCRIPT_DIR/prepare-preserved-pr-package-generation.sh"
+grep -Fq "  $v2_capture_format)" \
+  "$SCRIPT_DIR/prepare-preserved-pr-package-generation.sh"
+grep -Fq 'supporting_log_name="rootfs-job.log"' \
+  "$SCRIPT_DIR/prepare-preserved-pr-package-generation.sh"
+grep -Fq 'supporting_log_name="root-package-job.log"' \
+  "$SCRIPT_DIR/prepare-preserved-pr-package-generation.sh"
 if grep -Fq "staging-reuse scan-source-admitted" \
      "$SCRIPT_DIR/prepare-preserved-pr-package-generation.sh"; then
   echo "preservation-only evidence unexpectedly requires publication admission" >&2
@@ -1619,8 +1817,11 @@ if grep -Fq "staging-reuse expected" \
   echo "preservation preparation derives producer identities through the checkout-relative reader" >&2
   exit 1
 fi
-grep -Fq "reviewed 15-archive closure" \
-  "$SCRIPT_DIR/prepare-preserved-pr-package-generation.sh"
+if grep -Fq "reviewed 15-archive closure" \
+     "$SCRIPT_DIR/prepare-preserved-pr-package-generation.sh"; then
+  echo "preservation remains hard-coded to the historical rootfs closure" >&2
+  exit 1
+fi
 grep -Fq "contents: write" <<<"$preserve_publish_job"
 grep -Fq "actions: read" <<<"$preserve_publish_job"
 grep -Fq -- '--expected-authority-sha "$GITHUB_SHA"' \

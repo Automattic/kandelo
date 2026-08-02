@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Preserve one exact, same-run PR package closure without admitting it as a
-# main-compatible package generation. This script performs no release writes.
+# Preserve one exact, same-run package closure without admitting it as a
+# main-compatible package generation. The filename is retained because public
+# workflow history refers to it; canonical Force rebuilds are supported too.
 set -euo pipefail
 
 SOURCE_TAG=""
@@ -35,19 +36,19 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 
-if ! [[ "$SOURCE_TAG" =~ ^pr-[1-9][0-9]*-staging(-run-[1-9][0-9]*-attempt-[1-9][0-9]*)?$ ]] ||
+if ! [[ "$SOURCE_TAG" =~ ^(pr-[1-9][0-9]*-staging(-run-[1-9][0-9]*-attempt-[1-9][0-9]*)?|binaries-abi-v[1-9][0-9]*)$ ]] ||
    ! [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] ||
    ! [[ "$PACKAGE_SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] ||
    ! [[ "$AUTHORITY_SHA" =~ ^[0-9a-f]{40}$ ]] ||
    ! [[ "$EXPECTED_ABI" =~ ^[1-9][0-9]*$ ]] ||
-   [ "$ROOT_PACKAGE" != rootfs ] ||
-   [ "$ARCH" != wasm32 ] ||
+   ! [[ "$ROOT_PACKAGE" =~ ^[a-z0-9][a-z0-9._-]*$ ]] ||
+   ! [[ "$ARCH" =~ ^[a-z0-9][a-z0-9._-]*$ ]] ||
    [ "$REPOSITORY" != "Automattic/kandelo" ] ||
    [ ! -d "$PACKAGE_SOURCE_ROOT" ] || [ -L "$PACKAGE_SOURCE_ROOT" ] ||
    [ ! -f "$AUTHORITY_XTASK" ] || [ -L "$AUTHORITY_XTASK" ] ||
    [ ! -x "$AUTHORITY_XTASK" ] ||
    [ -z "$OUTPUT_DIR" ] || [ "$OUTPUT_DIR" = / ]; then
-  echo "prepare-preserved-pr-package-generation: exact source tag/run/SHA, authority, ABI, rootfs/wasm32 selection, repository, checkout, xtask, and output are required" \
+  echo "prepare-preserved-pr-package-generation: exact source tag/run/SHA, authority, ABI, package selection, repository, checkout, xtask, and output are required" \
     >&2
   exit 2
 fi
@@ -73,6 +74,16 @@ if [ "$(git -C "$PACKAGE_SOURCE_ROOT" rev-parse HEAD)" != "$PACKAGE_SOURCE_SHA" 
     >&2
   exit 2
 fi
+if [[ "$SOURCE_TAG" =~ ^binaries-abi-v ]] &&
+   ! git -C "$AUTHORITY_ROOT" merge-base --is-ancestor \
+     "$PACKAGE_SOURCE_SHA" "$AUTHORITY_SHA"; then
+  # WHY: a canonical Force rebuild is trusted as historical main output only
+  # while protected current main still contains its exact producer. The v2
+  # release targets current authority to avoid GitHub's historical-workflow
+  # write restriction; its manifest continues to bind the older producer.
+  echo "prepare-preserved-pr-package-generation: canonical producer is not an ancestor of current authority" >&2
+  exit 1
+fi
 grep -Fxq "pub const ABI_VERSION: u32 = $EXPECTED_ABI;" \
   "$PACKAGE_SOURCE_ROOT/crates/shared/src/lib.rs" || {
   echo "prepare-preserved-pr-package-generation: package-source checkout does not declare the selected ABI" \
@@ -82,12 +93,12 @@ grep -Fxq "pub const ABI_VERSION: u32 = $EXPECTED_ABI;" \
 
 PARENT="$(dirname "$OUTPUT_DIR")"
 mkdir -p "$PARENT"
-TMP_ROOT="$(mktemp -d "$PARENT/.preserved-pr-package-generation.XXXXXX")"
+TMP_ROOT="$(mktemp -d "$PARENT/.preserved-package-generation.XXXXXX")"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 mkdir "$TMP_ROOT/release-archives" "$TMP_ROOT/run-archives" "$TMP_ROOT/supporting"
 
 run_authority_xtask_without_credentials() {
-  # WHY: the unmerged producer checkout is untrusted inert input. Only the
+  # WHY: the producer checkout is untrusted inert input. Only the
   # reviewed current-main authority computes identities and parses archives;
   # it runs with the producer checkout only as its data root and never receives
   # the token used to read GitHub metadata and artifacts.
@@ -111,12 +122,6 @@ run_authority_xtask_without_credentials staging-reuse scan-source \
   --root-package "$ROOT_PACKAGE" \
   --projection-output "$TMP_ROOT/projection.json" \
   --expected-output "$TMP_ROOT/expected.json"
-if [ "$(jq -r '.entries | length' "$TMP_ROOT/projection.json")" != 15 ]; then
-  echo "prepare-preserved-pr-package-generation: rootfs/wasm32 projection is not the reviewed 15-archive closure" \
-    >&2
-  exit 1
-fi
-
 fetch_source_state() {
   local prefix="$1" release_id root_job_id
   gh api "/repos/$REPOSITORY/releases/tags/$SOURCE_TAG" \
@@ -151,18 +156,25 @@ fetch_source_state() {
     >"$TMP_ROOT/$prefix-run-artifacts.json"
 
   root_job_id="$(jq -er \
-    --arg prefix "matrix-build ($ARCH," \
-    --arg package "$ROOT_PACKAGE" '
+    --arg arch "$ARCH" \
+    --arg package "$ROOT_PACKAGE" \
+    --arg source_tag "$SOURCE_TAG" '
       [.[] |
         select(
-          (.name | startswith($prefix)) and
+          (if ($source_tag | startswith("binaries-abi-v")) then
+             (.name | test(
+               "^matrix-build-level-(0|[1-9][0-9]*) \\(" + $arch + ","
+             ))
+           else
+             (.name | startswith("matrix-build (" + $arch + ","))
+           end) and
           (.name | contains(", " + $package + ","))
         )
       ] |
       if length == 1 then .[0].id else empty end
     ' "$TMP_ROOT/$prefix-jobs.json")"
   gh api "/repos/$REPOSITORY/actions/jobs/$root_job_id/logs" \
-    >"$TMP_ROOT/$prefix-rootfs-job.log"
+    >"$TMP_ROOT/$prefix-root-package-job.log"
 }
 
 fetch_source_state before
@@ -214,7 +226,7 @@ capture_source() {
       --run-artifacts "$TMP_ROOT/$prefix-run-artifacts.json" \
       --archives-dir "$TMP_ROOT/release-archives" \
       --run-archives-dir "$TMP_ROOT/run-archives" \
-      --root-job-log "$TMP_ROOT/$prefix-rootfs-job.log" \
+      --root-job-log "$TMP_ROOT/$prefix-root-package-job.log" \
       --capture-out "$output"
 }
 
@@ -232,12 +244,12 @@ run_authority_xtask_without_credentials staging-reuse validate-archives \
   --expected-source-repository "https://github.com/$REPOSITORY" \
   --expected-source-commit "$PACKAGE_SOURCE_SHA"
 
-# WHY: the mutable staging index contains unrelated matrix entries. Rebuilding
-# an index from these 15 validated archives makes the preserved closure
+# WHY: a mutable source index contains unrelated matrix entries. Rebuilding
+# an index from only the validated archives makes the preserved closure
 # independent of later unrelated uploads.
 run_authority_xtask_without_credentials build-index \
   --abi "$EXPECTED_ABI" \
-  --generator "Preserved PR closure from $PACKAGE_SOURCE_SHA" \
+  --generator "Preserved package closure from $PACKAGE_SOURCE_SHA" \
   --archives-dir "$TMP_ROOT/release-archives" \
   --out "$TMP_ROOT/minimal-index.toml" \
   --generated-at "1970-01-01T00:00:00Z"
@@ -263,7 +275,22 @@ if ! cmp \
   exit 1
 fi
 
-cp "$TMP_ROOT/after-rootfs-job.log" "$TMP_ROOT/supporting/rootfs-job.log"
+source_capture_format="$(jq -er .format \
+  "$TMP_ROOT/source-capture-after.json")"
+case "$source_capture_format" in
+  kandelo-preserved-pr-source-capture-v1)
+    supporting_log_name="rootfs-job.log"
+    ;;
+  kandelo-preserved-package-source-capture-v2)
+    supporting_log_name="root-package-job.log"
+    ;;
+  *)
+    echo "prepare-preserved-pr-package-generation: unsupported source capture format" >&2
+    exit 1
+    ;;
+esac
+cp "$TMP_ROOT/after-root-package-job.log" \
+  "$TMP_ROOT/supporting/$supporting_log_name"
 PYTHONDONTWRITEBYTECODE=1 \
   python3 "$SCRIPT_DIR/package-generation.py" prepare-preserved \
     --repository "$REPOSITORY" \

@@ -1,23 +1,24 @@
-name: Preserve PR package closure
+name: Preserve package closure
 
-# Preserve one exact same-run rootfs/wasm32 closure before its mutable PR
-# staging release is replaced. The result is evidence, not an admitted package
-# generation: its direct tag keeps the exact producer object reachable, while
-# its manifest separately binds the current default-branch publisher authority
-# and explicitly records admission=none.
+# Preserve one exact same-run closure before its mutable source release is
+# replaced. Sources may be PR staging or a completed canonical Force rebuild.
+# The result is evidence, not an admitted package generation. PR v1 tags keep
+# their producer reachable. Canonical v2 producers remain reachable through
+# protected-main ancestry, while their tags anchor current publishing
+# authority.
 on:
   workflow_dispatch:
     inputs:
       source-tag:
-        description: 'Exact temporary source release to preserve as non-admitted audit evidence'
+        description: 'Exact PR staging or canonical ABI release to preserve as non-admitted evidence'
         required: true
         type: string
       source-run-id:
-        description: 'Staging-build run that produced all selected workflow artifacts'
+        description: 'Workflow run that produced all selected artifacts'
         required: true
         type: string
       package-source-sha:
-        description: 'Full 40-character commit that produced every source archive'
+        description: 'Full commit that produced every selected archive'
         required: true
         type: string
       expected-abi:
@@ -175,11 +176,11 @@ jobs:
                 --receipt "$RUNNER_TEMP/preserved-package-generation-receipt.json"
           tag="$(jq -r .tag "$RUNNER_TEMP/preserved-package-generation/generation.json")"
           {
-            echo "## Application-sealed PR package closure"
+            echo "## Application-sealed package closure"
             echo
             echo "- Tag: \`$tag\`"
             echo "- Producer: \`${{ inputs.package-source-sha }}\`"
-            echo "- Source staging release: \`${{ inputs.source-tag }}\`"
+            echo "- Source release: \`${{ inputs.source-tag }}\`"
             echo "- Source workflow run: \`${{ inputs.source-run-id }}\`"
             echo "- Admission: **none**"
           } >>"$GITHUB_STEP_SUMMARY"

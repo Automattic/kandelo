@@ -268,6 +268,9 @@ runs:
           kernel_state="skip — $BASE_REF is the known-good baseline"
         fi
 
+        # Binary materialization includes generated resolver policy such as
+        # program-packages.json. It must exercise runtime consumers without
+        # incorrectly rebuilding conventional package archives.
         if [ "$kernel_changed" = 'true' ] ||
            [ "$binary_materialization_changed" = 'true' ] ||
            [ "$package_publish_flow_changed" = 'true' ] ||

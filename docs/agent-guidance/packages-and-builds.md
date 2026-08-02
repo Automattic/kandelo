@@ -113,6 +113,9 @@ non-truncated Git tree IDs and the exact regular-file identities of both
 validator sources are recorded for audit; unrelated leaves may differ because
 they cannot affect the selected closure. Global program-index consumers and
 deployment still validate the complete index rather than this selected subset.
+For v2 canonical evidence, both admission jobs also prove that `S` is an
+ancestor of preservation authority `M0` and that `M0` is an ancestor of the
+current publishing `M`; the writer repeats that chain before every mutation.
 
 The selected-input comparison proves package-input equivalence. It does not
 prove whole-tree equality, ancestry, or reproducible payload bytes at `M`.

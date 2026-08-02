@@ -26,7 +26,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 if [[ "$TAG" =~ ^preserved-package-generation- ]]; then
-  echo "materialize-durable-package-generation: preserved PR closures are evidence only; admit them into a package-generation tag before use" >&2
+  echo "materialize-durable-package-generation: preserved package closures are evidence only; admit them into a package-generation tag before use" >&2
   exit 2
 fi
 if ! [[ "$TAG" =~ ^package-generation-[a-z0-9][a-z0-9._-]*-[a-z0-9][a-z0-9._-]*-abi-v[1-9][0-9]*-sha256-[0-9a-f]{64}$ ]] ||

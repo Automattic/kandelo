@@ -218,6 +218,12 @@ embed and revalidate a sealed v1 PR or v2 canonical closure, prove the
 selected-input contract below, and publish a separate admitted
 `package-generation-...` release.
 
+When v2 canonical evidence is admitted, preparation and publication each
+prove the complete protected-main chain: producer `S` must be an ancestor of
+the preservation authority `M0`, and `M0` must be an ancestor of the current
+publishing authority `M`. The writer repeats this check before every release
+mutation rather than trusting the earlier preservation workflow.
+
 `generation.json` independently binds the source release's direct tag anchor
 `R`, immutable archive producer `S`, freshly queried main `M`, the complete
 trees of `S` and `M`, ABI and ABI snapshot digest, selected package projection,

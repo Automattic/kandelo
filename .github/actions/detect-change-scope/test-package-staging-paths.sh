@@ -46,6 +46,9 @@ assert_not_selected \
   "packages/registry/php/test/php.test.ts" \
   "packages/registry/php/test/php.test.ts"
 assert_not_selected \
+  "packages/registry/program-packages.json" \
+  "packages/registry/program-packages.json"
+assert_not_selected \
   "packages/registry/nginx/demo/run.sh" \
   "packages/registry/nginx/demo/run.sh"
 assert_not_selected \

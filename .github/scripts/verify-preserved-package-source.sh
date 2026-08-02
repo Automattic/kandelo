@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Reconstruct one preserved generation's selected source evidence using only
-# current-authority code and read-only GitHub APIs.
+# current-authority code and read-only GitHub APIs. Historical v1 bundles use
+# PR-specific field names; new v2 bundles use neutral source-release names.
 set -euo pipefail
 
 BUNDLE=""
@@ -94,15 +95,19 @@ run_authority_python_without_credentials() {
 
 run_authority_python_without_credentials validate \
   --bundle "$BUNDLE" >/dev/null
-if [ "$(jq -r .format "$MANIFEST")" != \
-     "kandelo-preserved-pr-package-generation-v1" ]; then
-  echo "verify-preserved-package-source: bundle is not a preserved PR generation" >&2
+MANIFEST_FORMAT="$(jq -r .format "$MANIFEST")"
+if [ "$MANIFEST_FORMAT" != "kandelo-preserved-pr-package-generation-v1" ] &&
+   [ "$MANIFEST_FORMAT" != "kandelo-preserved-package-generation-v2" ]; then
+  echo "verify-preserved-package-source: bundle is not a preserved package generation" >&2
   exit 2
 fi
 
 REPOSITORY="$(jq -er .identity.repository "$MANIFEST")"
 PACKAGE_SOURCE_SHA="$(jq -er .identity.package_source_sha "$MANIFEST")"
-SOURCE_TAG="$(jq -er .identity.source_capture.source_staging.tag "$MANIFEST")"
+SOURCE_TAG="$(jq -er \
+  '.identity.source_capture | (.source_release // .source_staging).tag' \
+  "$MANIFEST")"
+SOURCE_CAPTURE_FORMAT="$(jq -er .identity.source_capture.format "$MANIFEST")"
 SOURCE_RUN_ID="$(jq -er .identity.source_capture.source_run.id "$MANIFEST")"
 ROOT_PACKAGE="$(jq -er .identity.projection.root_package "$MANIFEST")"
 ARCH="$(jq -er .identity.projection.arch "$MANIFEST")"
@@ -150,17 +155,24 @@ fetch_source_state() {
     >"$TMP_ROOT/$prefix-run-artifacts.json"
 
   root_job_id="$(jq -er \
-    --arg prefix "matrix-build ($ARCH," \
-    --arg package "$ROOT_PACKAGE" '
+    --arg arch "$ARCH" \
+    --arg package "$ROOT_PACKAGE" \
+    --arg source_tag "$SOURCE_TAG" '
       [.[] |
         select(
-          (.name | startswith($prefix)) and
+          (if ($source_tag | startswith("binaries-abi-v")) then
+             (.name | test(
+               "^matrix-build-level-(0|[1-9][0-9]*) \\(" + $arch + ","
+             ))
+           else
+             (.name | startswith("matrix-build (" + $arch + ","))
+           end) and
           (.name | contains(", " + $package + ","))
         )
       ] |
       if length == 1 then .[0].id else empty end
     ' "$TMP_ROOT/$prefix-jobs.json")"
-  retry_to_file "$TMP_ROOT/$prefix-rootfs-job.log" \
+  retry_to_file "$TMP_ROOT/$prefix-root-package-job.log" \
     gh api "/repos/$REPOSITORY/actions/jobs/$root_job_id/logs"
 }
 
@@ -182,7 +194,8 @@ capture_source() {
     --run-artifacts "$TMP_ROOT/$prefix-run-artifacts.json" \
     --archives-dir "$TMP_ROOT/release-archives" \
     --run-archives-dir "$TMP_ROOT/run-archives" \
-    --root-job-log "$TMP_ROOT/$prefix-rootfs-job.log" \
+    --root-job-log "$TMP_ROOT/$prefix-root-package-job.log" \
+    --capture-format "$SOURCE_CAPTURE_FORMAT" \
     --capture-out "$output"
 }
 

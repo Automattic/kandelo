@@ -26,6 +26,7 @@ on:
         type: choice
         options:
           - identical-git-tree-v1
+          - identical-package-cache-projection-v1
       expected-abi:
         description: 'Kernel ABI carried by the package generation'
         required: true
@@ -83,8 +84,8 @@ jobs:
           set -euo pipefail
           # workflow_dispatch choices are a UI affordance, not an API
           # allowlist. Enforce the production contract before reading producer
-          # data so a hand-crafted dispatch cannot revive a retired method.
-          if [ "$VALIDATION_METHOD" != identical-git-tree-v1 ]; then
+          # data so a hand-crafted dispatch cannot select an unknown method.
+          if ! [[ "$VALIDATION_METHOD" =~ ^(identical-git-tree-v1|identical-package-cache-projection-v1)$ ]]; then
             echo "unsupported generation validation method: $VALIDATION_METHOD" >&2
             exit 2
           fi

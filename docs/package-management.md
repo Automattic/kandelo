@@ -1510,6 +1510,8 @@ closure. V2 canonical capture additionally requires producer `S` to be an
 ancestor of current authority `M`. Current-main promotion then revalidates
 that seal and requires exact selected projection, ledger, and canonical
 component-closure equality before admitting a separate generation. The
+promotion jobs also prove the full protected-main chain from producer `S`
+through preservation authority `M0` to current publishing authority `M`. The
 promoter builds a minimal exact index, drops unrelated entries and every
 fallback, and rewrites URLs to the content-addressed generation tag. It
 preserves the archive's truthful producer separately from validated current

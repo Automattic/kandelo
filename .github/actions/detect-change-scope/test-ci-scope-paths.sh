@@ -52,6 +52,12 @@ assert_not_matches package_archive_changed_files \
 assert_not_matches package_archive_changed_files \
   "packages/registry/php/test/php.test.ts" \
   "packages/registry/php/test/php.test.ts"
+# An index-only refresh changes consumer policy, not package build inputs. It
+# must skip both conventional package matrices while still reaching the
+# materialization-driven test gate below.
+assert_not_matches package_archive_changed_files \
+  "packages/registry/program-packages.json" \
+  "packages/registry/program-packages.json"
 assert_not_matches package_archive_changed_files \
   "tests/sortix/os-test/include/sys/socket.c" \
   "tests/sortix/os-test/include/sys/socket.c"
@@ -114,6 +120,18 @@ assert_not_matches package_archive_changed_files \
 assert_matches binary_materialization_changed_files \
   "tools/xtask/src/remote_fetch.rs" \
   "tools/xtask/src/remote_fetch.rs"
+assert_matches binary_materialization_changed_files \
+  "packages/registry/program-packages.json" \
+  "packages/registry/program-packages.json"
+# Keep the action-level routing coupled to the classifiers above: index-only
+# changes skip package staging, but binary materialization makes the runtime
+# test gate mandatory.
+grep -Fq \
+  '[ "$binary_materialization_changed" = '\''true'\'' ]' \
+  "$ACTION_DIR/action.yml"
+grep -Fq \
+  'emit_bool package_staging_required "$package_archive_changed"' \
+  "$ACTION_DIR/action.yml"
 for package_index_contract in \
   tools/xtask/src/index_candidate.rs \
   tools/xtask/src/index_toml.rs \
