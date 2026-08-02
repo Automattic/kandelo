@@ -30,6 +30,7 @@ fixture_paths=(
   .github/workflows/homebrew-main-shell-ci.yml
   .github/workflows/homebrew-native-publisher-compatibility.yml
   .github/workflows/reusable-homebrew-main-shell-mirror-publish.yml
+  .github/workflows/reusable-homebrew-prefix-first-child-publish.yml
   homebrew/kandelo-guest-layout.json
   homebrew/homebrew-native-compatibility-lock.json
   homebrew/main-shell-migration-lock.json
@@ -204,6 +205,7 @@ campaign_publisher_paths=(
   .github/scripts/require-repository-main-contains.sh
   .github/scripts/test-require-repository-main-contains.sh
   .github/workflows/reusable-homebrew-bottle-publish.yml
+  .github/workflows/reusable-homebrew-prefix-first-child-publish.yml
   docs/binary-releases.md
   docs/homebrew-publishing.md
   docs/plans/2026-07-29-homebrew-guest-prefix-cutover.md
@@ -250,6 +252,23 @@ done
 commit_change host/src/kernel-worker.ts
 HEAD="$(finish_change)"
 assert_scope true pull_request "$BASE" "$HEAD" "host/src/kernel-worker.ts"
+
+# The first-child workflow only admits and publishes one campaign bottle.
+# It does not select a shell closure, compose a VFS image, or boot either
+# host, so the publisher preflight covers its complete behavior. A shell
+# product input in the same diff must still restore exact host proof.
+reset_fixture
+commit_change .github/workflows/reusable-homebrew-prefix-first-child-publish.yml
+HEAD="$(finish_change)"
+assert_scope false pull_request "$BASE" "$HEAD" \
+  "diff is limited to audited publisher-only"
+
+reset_fixture
+commit_change .github/workflows/reusable-homebrew-prefix-first-child-publish.yml
+commit_change homebrew/main-shell-migration-lock.json
+HEAD="$(finish_change)"
+assert_scope true pull_request "$BASE" "$HEAD" \
+  "homebrew/main-shell-migration-lock.json"
 
 # The publisher-only part of PR #1144 is also safe independently.
 reset_fixture
