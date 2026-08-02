@@ -538,6 +538,11 @@ The remaining first in-guest lifecycle proof should remain small:
 - a live in-guest `brew tap` and `brew install`; and
 - anonymous bottle retrieval in both Node and Chromium.
 
+The bounded 25-Formula diagnostic used for that proof is documented
+in [In-guest Homebrew real-install diagnostic]. It deliberately
+remains separate from the complete main-shell selection lock, so a
+successful experiment cannot activate or weaken the shipping product.
+
 After that proof, adding more third-party Formulae is ordinary
 dependency-graph work rather than a new platform exception.
 
@@ -584,7 +589,10 @@ For each migrated package:
 The migration ledger and current execution order live in the
 [Homebrew migration plan].
 
-[Homebrew migration plan]: plans/2026-07-21-homebrew-migration-execution-plan.md
+[Homebrew migration plan]:
+  plans/2026-07-21-homebrew-migration-execution-plan.md
+[In-guest Homebrew real-install diagnostic]:
+  homebrew-real-install-diagnostic.md
 
 ## Where to look next
 

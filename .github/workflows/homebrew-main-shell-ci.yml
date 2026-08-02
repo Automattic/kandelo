@@ -300,6 +300,7 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/test-homebrew-guest-layout.sh
+          bash scripts/test-homebrew-real-install-diagnostic.sh
           npx tsx --test \
             apps/browser-demos/homebrew-closed-acceptance.test.ts \
             apps/browser-demos/homebrew-closed-acceptance-vite-config.test.ts \

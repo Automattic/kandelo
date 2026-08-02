@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "kind": "kandelo-package-deferred-zip-tree",
+  "id": "homebrew-real-install-diagnostic/bootstrap-source-tree",
+  "content_role": "source-tree",
+  "package": {
+    "name": "homebrew-bootstrap",
+    "output": "homebrew-bootstrap.zip"
+  },
+  "archive": {
+    "url": "homebrew-bootstrap.zip",
+    "mode_policy": "portable-posix-v1"
+  },
+  "mount_prefix": "/opt/kandelo/homebrew",
+  "owner": {
+    "uid": 1000,
+    "gid": 1000
+  },
+  "activation": {
+    "mode": "first-use",
+    "capabilities": [
+      "homebrew:bootstrap"
+    ],
+    "roots": [
+      "/opt/kandelo/homebrew/bin/brew"
+    ]
+  }
+}

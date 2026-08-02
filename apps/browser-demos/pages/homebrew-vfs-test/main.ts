@@ -22,9 +22,14 @@ import type {
 import {
   createBrowserLifecycleMachine,
   runHomebrewGuestLifecycleInBrowser,
+  runHomebrewGuestShippingProofInBrowser,
   type HomebrewGuestLifecycleBrowserFixture,
   type HomebrewGuestLifecycleBrowserResult,
+  type HomebrewGuestShippingProofBrowserResult,
 } from "../../../../homebrew/test/homebrew_guest_lifecycle_browser";
+import type {
+  HomebrewGuestShippingBottleDigests,
+} from "../../../../homebrew/test/homebrew_guest_lifecycle_contract";
 import {
   runHomebrewSystemCommandSpawnProof,
 } from "../../../../homebrew/test/homebrew_system_command_spawn_proof";
@@ -190,6 +195,11 @@ declare global {
     __runHomebrewGuestLifecycleAcceptance: (
       fixture: HomebrewGuestLifecycleBrowserFixture,
     ) => Promise<HomebrewGuestLifecycleBrowserResult>;
+    __runHomebrewGuestShippingProofAcceptance: (
+      fixture: HomebrewGuestLifecycleBrowserFixture,
+      scope: "core" | "canary",
+      bottleDigests: HomebrewGuestShippingBottleDigests,
+    ) => Promise<HomebrewGuestShippingProofBrowserResult>;
     __runHomebrewSystemCommandProof: (
       request: HomebrewSystemCommandProofRequest,
     ) => Promise<HomebrewSystemCommandProofResult>;
@@ -341,6 +351,24 @@ async function init(): Promise<void> {
   window.__runHomebrewGuestLifecycleAcceptance = (fixture) =>
     runHomebrewGuestLifecycleInBrowser({
       fixture,
+      kernelWasm: kernelBytes,
+      corsProxyUrl,
+      ...(closedLifecycleAssetRoot === undefined
+        ? {}
+        : { closedAssetRootUrl: closedLifecycleAssetRoot }),
+      afterMachineDestroy: settleWebKitReclaim,
+    });
+
+  window.__runHomebrewGuestShippingProofAcceptance = (
+    fixture,
+    scope,
+    bottleDigests,
+  ) =>
+    runHomebrewGuestShippingProofInBrowser({
+      fixture,
+      scope,
+      imageContract: "real-install-diagnostic",
+      bottleDigests,
       kernelWasm: kernelBytes,
       corsProxyUrl,
       ...(closedLifecycleAssetRoot === undefined

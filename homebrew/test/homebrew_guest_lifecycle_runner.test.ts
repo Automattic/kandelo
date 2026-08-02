@@ -177,6 +177,65 @@ test("runs the bounded shipping contract without export or reboot work", async (
   }
 });
 
+test("threads the diagnostic image contract into the shared runner", async () => {
+  const scripts: string[] = [];
+  await runHomebrewGuestShippingProof({
+    runtime: {
+      imageBytes: new Uint8Array([1]),
+      shellPath: "/bin/bash",
+      shellArgv0: "bash",
+      lazyUrlBase: "https://example.test/",
+      bootstrapTransportUrl: "https://example.test/homebrew-bootstrap.zip",
+      bootstrapBytes: 7,
+    },
+    revisions: {
+      coreRevision: "1".repeat(40),
+      canaryRevision: "2".repeat(40),
+    },
+    scope: "canary",
+    imageContract: "real-install-diagnostic",
+    bottleDigests: {
+      coreBzip2Sha256: "3".repeat(64),
+      coreDashSha256: "4".repeat(64),
+    },
+    deadlineMs: Date.now() + 1_000,
+    createMachine: () => ({
+      lazyDownloads: [
+        event(
+          "https://example.test/homebrew-bootstrap.zip",
+          "started",
+          0,
+        ),
+        event(
+          "https://example.test/homebrew-bootstrap.zip",
+          "complete",
+          7,
+        ),
+      ],
+      diagnostics: [],
+      start: async () => {},
+      readFile: async () => {
+        throw new Error("bounded diagnostic must not read reboot state");
+      },
+      runShellScript: async ({ script }) => {
+        scripts.push(script);
+      },
+      exportRootfsImage: async () => {
+        throw new Error("bounded diagnostic must not export the rootfs");
+      },
+      destroy: async () => {},
+    }),
+  });
+  assert.match(
+    scripts[1]!,
+    /diagnostic unexpectedly contains a precomposed core M4 keg/,
+  );
+  assert.doesNotMatch(
+    scripts[1]!,
+    /brew uninstall --ignore-dependencies kandelo-dev\/tap-core\/m4/,
+  );
+});
+
 test("runs one shared lifecycle contract across export and reboot", async () => {
   const bootstrapUrl = "https://example.test/homebrew-bootstrap.zip";
   const runtimeSupportUrl = "https://example.test/ruby-tree.bin";

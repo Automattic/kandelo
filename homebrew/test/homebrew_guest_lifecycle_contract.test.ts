@@ -12,11 +12,39 @@ import {
   HOMEBREW_GUEST_LIFECYCLE_PHASE_ONE_MARKER,
   HOMEBREW_GUEST_LIFECYCLE_PHASE_TWO_MARKER,
 } from "./homebrew_guest_lifecycle_contract";
+import {
+  projectRealInstallPreparedBottleDigests,
+} from "./homebrew_real_install_diagnostic_prepared";
 
 const revisions = {
   coreRevision: "1".repeat(40),
   canaryRevision: "2".repeat(40),
 };
+const bottleDigests = {
+  coreBzip2Sha256: "3".repeat(64),
+  coreDashSha256: "4".repeat(64),
+};
+
+test("projects the shell receipt bottle digests into the browser contract", () => {
+  assert.deepEqual(
+    projectRealInstallPreparedBottleDigests({
+      bottles: {
+        core_bzip2_sha256: bottleDigests.coreBzip2Sha256,
+        core_dash_sha256: bottleDigests.coreDashSha256,
+      },
+    }),
+    bottleDigests,
+  );
+  assert.throws(
+    () => projectRealInstallPreparedBottleDigests({
+      bottles: {
+        coreBzip2Sha256: bottleDigests.coreBzip2Sha256,
+        coreDashSha256: bottleDigests.coreDashSha256,
+      },
+    }),
+    /invalid selected bottle digests/,
+  );
+});
 
 test("requires immutable lower-case tap revisions", () => {
   assert.doesNotThrow(() => assertHomebrewGuestLifecycleRevisions(revisions));
@@ -109,6 +137,70 @@ test("canary shipping scope proves M4's exact first-party dependency", () => {
   );
   assert.equal(script.match(/^assert_poured /gm)?.length, 1);
   assert.equal(script.match(/^assert_runtime_dependency /gm)?.length, 1);
+});
+
+test("diagnostic canary scope starts without a precomposed core M4", () => {
+  const script = createHomebrewGuestShippingProofScript(
+    revisions,
+    "canary",
+    "real-install-diagnostic",
+    bottleDigests,
+  );
+  assertBoundedShippingScript(script, "diagnostic canary shipping proof");
+  for (const expected of [
+    "diagnostic unexpectedly contains a precomposed core M4 keg",
+    "brew install --no-ask --force-bottle brandonpayton/kandelo-canary/m4",
+    "brew trust --formula kandelo-dev/tap-core/dash",
+    'assert_runtime_dependency "$m4_prefix" kandelo-dev/tap-core/dash',
+    'assert_precomposed_bottle "$dash_prefix"',
+    bottleDigests.coreBzip2Sha256,
+    bottleDigests.coreDashSha256,
+    "Formula does not bind the selected bottle archive",
+  ]) {
+    assert.ok(
+      script.includes(expected),
+      `missing diagnostic canary contract: ${expected}`,
+    );
+  }
+  for (const forbidden of [
+    "brew --prefix kandelo-dev/tap-core/m4",
+    "brew uninstall --ignore-dependencies kandelo-dev/tap-core/m4",
+    'assert_precomposed_bottle "$composed_m4_prefix"',
+  ]) {
+    assert.ok(
+      !script.includes(forbidden),
+      `diagnostic canary impersonates the full shell: ${forbidden}`,
+    );
+  }
+});
+
+test("diagnostic core scope binds the actually poured archive", () => {
+  const script = createHomebrewGuestShippingProofScript(
+    revisions,
+    "core",
+    "real-install-diagnostic",
+    bottleDigests,
+  );
+  assert.match(
+    script,
+    new RegExp(
+      `assert_cached_bottle_sha kandelo-dev/tap-core/bzip2 ` +
+        bottleDigests.coreBzip2Sha256,
+    ),
+  );
+  assert.match(script, /brew --cache --force-bottle "\$formula"/);
+  assert.match(script, /poured bottle archive differs from the closed selection/);
+});
+
+test("diagnostic scope rejects missing selection bottle identities", () => {
+  assert.throws(
+    () => createHomebrewGuestShippingProofScript(
+      revisions,
+      "core",
+      "real-install-diagnostic",
+    ),
+    /requires exact Bzip2 and Dash bottle digests/,
+  );
 });
 
 function assertBoundedShippingScript(script: string, label: string): void {

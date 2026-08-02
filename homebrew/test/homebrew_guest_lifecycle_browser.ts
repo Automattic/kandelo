@@ -11,6 +11,11 @@ import {
   type HomebrewGuestLifecycleBrowserFixture,
 } from "./homebrew_guest_lifecycle_browser_fixture";
 import {
+  type HomebrewGuestShippingBottleDigests,
+  type HomebrewGuestShippingImageContract,
+  type HomebrewGuestShippingProofScope,
+} from "./homebrew_guest_lifecycle_contract";
+import {
   formatHomebrewGuestLifecycleFailureContext,
   HOMEBREW_GUEST_LIFECYCLE_ENV,
   type HomebrewGuestForkCountSample,
@@ -19,6 +24,7 @@ import {
   type HomebrewGuestObservedScriptResult,
   runHomebrewGuestLifecycle,
   runHomebrewGuestLifecycleProcess,
+  runHomebrewGuestShippingProof,
 } from "./homebrew_guest_lifecycle_runner";
 import {
   deriveHomebrewGuestLifecycleRuntimeInputs,
@@ -42,6 +48,24 @@ export interface HomebrewGuestLifecycleBrowserResult {
   phaseTwoLazyDownloads: readonly LazyDownloadEvent[];
 }
 
+export interface HomebrewGuestShippingProofBrowserResult {
+  coreRevision: string;
+  canaryRevision: string;
+  scope: HomebrewGuestShippingProofScope;
+  completedUrls: string[];
+  lazyDownloads: readonly LazyDownloadEvent[];
+}
+
+export interface HomebrewGuestLifecycleBrowserOptions {
+  fixture: unknown;
+  kernelWasm: ArrayBuffer;
+  corsProxyUrl: string;
+  /** Same-origin directory containing the exact closed-transport fixtures. */
+  closedAssetRootUrl?: string;
+  fetchImpl?: FetchLike;
+  afterMachineDestroy?: () => Promise<void>;
+}
+
 type FetchLike = (
   input: string | URL,
   init?: RequestInit,
@@ -60,7 +84,6 @@ export async function runHomebrewGuestLifecycleInBrowser(options: {
   fixture: unknown;
   kernelWasm: ArrayBuffer;
   corsProxyUrl: string;
-  /** Same-origin directory containing the exact closed-transport fixtures. */
   closedAssetRootUrl?: string;
   fetchImpl?: FetchLike;
   afterMachineDestroy?: () => Promise<void>;
@@ -76,50 +99,11 @@ export async function runHomebrewGuestLifecycleInBrowser(options: {
     fixture.timeoutMs,
   );
   try {
-    const loaded = await loadHomebrewGuestLifecycleBrowserFixture(
+    const runtime = await loadBrowserLifecycleRuntime(
+      options,
       fixture,
-      {
-        fetchImpl: options.fetchImpl,
-        sourceUrl: (canonicalUrl) =>
-          fixture.transportMode === "closed"
-            ? createClosedFixtureSourceUrl(
-                options.closedAssetRootUrl,
-                canonicalUrl,
-              )
-            : createCorsProxySourceUrl(
-                options.corsProxyUrl,
-                canonicalUrl,
-              ),
-        signal: deadlineController.signal,
-      },
+      deadlineController.signal,
     );
-    MemoryFileSystem.assertImageKernelAbi(
-      loaded.imageBytes,
-      ABI_VERSION,
-      "Homebrew guest lifecycle browser image",
-    );
-    const publicTransport = fixture.transportMode === "public";
-    const runtime = await deriveHomebrewGuestLifecycleRuntimeInputs({
-      imageBytes: loaded.imageBytes,
-      takeImageOwnership: true,
-      bootstrapSpecBytes: loaded.bootstrapSpecBytes,
-      bootstrapArchiveBytes: loaded.bootstrapArchiveBytes,
-      bootstrapArchiveSha256: fixture.bootstrap.archive.sha256,
-      bootstrapEnvironmentBytes: loaded.bootstrapEnvironmentBytes,
-      coreRevision: fixture.revisions.coreRevision,
-      transportMode: fixture.transportMode,
-      expectedEmbeddedBottlePlanBytes: loaded.bottleMirrorPlanBytes,
-      lazyUrlBase: publicTransport
-        ? new URL(".", fixture.bootstrap.archive.url).href
-        : "https://closed.kandelo.invalid/homebrew-guest-lifecycle/",
-      ...(publicTransport
-        ? {
-            expectedBootstrapTransportUrl: fixture.bootstrap.archive.url,
-          }
-        : {
-            closedBottleAssets: loaded.closedBottleAssets!,
-      }),
-    });
 
     // WHY: the focused proof must not consume the image buffer that the
     // durable lifecycle transfers afterward. A separate machine gets an
@@ -168,6 +152,129 @@ export async function runHomebrewGuestLifecycleInBrowser(options: {
   } finally {
     clearTimeout(deadlineTimer);
   }
+}
+
+/**
+ * Run the same bounded first-install proof as Node against one exact VFS.
+ *
+ * The diagnostic image contract changes only the expected starting contents:
+ * it omits core M4 instead of pretending to be the complete main shell.
+ */
+export async function runHomebrewGuestShippingProofInBrowser(
+  options: HomebrewGuestLifecycleBrowserOptions & {
+    scope: HomebrewGuestShippingProofScope;
+    imageContract: HomebrewGuestShippingImageContract;
+    bottleDigests?: HomebrewGuestShippingBottleDigests;
+  },
+): Promise<HomebrewGuestShippingProofBrowserResult> {
+  const fixture = projectHomebrewGuestLifecycleBrowserFixture(options.fixture);
+  const deadlineMs = Date.now() + fixture.timeoutMs;
+  const deadlineController = new AbortController();
+  const deadlineTimer = setTimeout(
+    () => deadlineController.abort(
+      new Error("Homebrew guest shipping proof exceeded its total deadline"),
+    ),
+    fixture.timeoutMs,
+  );
+  try {
+    const runtime = await loadBrowserLifecycleRuntime(
+      options,
+      fixture,
+      deadlineController.signal,
+    );
+    if (options.scope === "core") {
+      const proofRuntime: HomebrewGuestLifecycleRuntimeInputs = {
+        ...runtime,
+        imageBytes: runtime.imageBytes.slice(),
+        takeImageOwnership: true,
+      };
+      await runHomebrewSystemCommandSpawnProof({
+        runtime: proofRuntime,
+        deadlineMs,
+        machine: createBrowserLifecycleMachine({
+          runtime: proofRuntime,
+          kernelWasm: options.kernelWasm,
+          corsProxyUrl: options.corsProxyUrl,
+          afterDestroy: options.afterMachineDestroy,
+        }),
+      });
+    }
+    const result = await runHomebrewGuestShippingProof({
+      runtime,
+      revisions: fixture.revisions,
+      scope: options.scope,
+      imageContract: options.imageContract,
+      bottleDigests: options.bottleDigests,
+      deadlineMs,
+      createMachine: (machineRuntime) =>
+        createBrowserLifecycleMachine({
+          runtime: machineRuntime,
+          kernelWasm: options.kernelWasm,
+          corsProxyUrl: options.corsProxyUrl,
+          afterDestroy: options.afterMachineDestroy,
+        }),
+    });
+    return {
+      coreRevision: fixture.revisions.coreRevision,
+      canaryRevision: fixture.revisions.canaryRevision,
+      scope: result.scope,
+      completedUrls: [...result.completedUrls].sort(),
+      lazyDownloads: result.lazyDownloads,
+    };
+  } finally {
+    clearTimeout(deadlineTimer);
+  }
+}
+
+async function loadBrowserLifecycleRuntime(
+  options: HomebrewGuestLifecycleBrowserOptions,
+  fixture: HomebrewGuestLifecycleBrowserFixture,
+  signal: AbortSignal,
+): Promise<HomebrewGuestLifecycleRuntimeInputs> {
+  const loaded = await loadHomebrewGuestLifecycleBrowserFixture(
+    fixture,
+    {
+      fetchImpl: options.fetchImpl,
+      sourceUrl: (canonicalUrl) =>
+        fixture.transportMode === "closed"
+          ? createClosedFixtureSourceUrl(
+              options.closedAssetRootUrl,
+              canonicalUrl,
+            )
+          : createCorsProxySourceUrl(
+              options.corsProxyUrl,
+              canonicalUrl,
+            ),
+      signal,
+    },
+  );
+  MemoryFileSystem.assertImageKernelAbi(
+    loaded.imageBytes,
+    ABI_VERSION,
+    "Homebrew guest lifecycle browser image",
+  );
+  const publicTransport = fixture.transportMode === "public";
+  return deriveHomebrewGuestLifecycleRuntimeInputs({
+    imageBytes: loaded.imageBytes,
+    takeImageOwnership: true,
+    bootstrapSpecBytes: loaded.bootstrapSpecBytes,
+    bootstrapArchiveBytes: loaded.bootstrapArchiveBytes,
+    bootstrapArchiveSha256: fixture.bootstrap.archive.sha256,
+    bootstrapEnvironmentBytes: loaded.bootstrapEnvironmentBytes,
+    coreRevision: fixture.revisions.coreRevision,
+    transportMode: fixture.transportMode,
+    expectedEmbeddedBottlePlanBytes: loaded.bottleMirrorPlanBytes,
+    lazyUrlBase: publicTransport
+      ? new URL(".", fixture.bootstrap.archive.url).href
+      : "https://closed.kandelo.invalid/homebrew-guest-lifecycle/",
+    ...(publicTransport
+      ? {
+          expectedBootstrapTransportUrl: fixture.bootstrap.archive.url,
+        }
+      : {
+          closedBottleAssets: loaded.closedBottleAssets!,
+        }),
+  });
 }
 
 export function createCorsProxySourceUrl(

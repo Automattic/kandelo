@@ -18,6 +18,8 @@ import {
 import {
   assertHomebrewGuestLifecycleRevisions,
   type HomebrewGuestLifecycleRevisions,
+  type HomebrewGuestShippingBottleDigests,
+  type HomebrewGuestShippingImageContract,
 } from "./homebrew_guest_lifecycle_contract";
 import {
   assertNoUnexpectedHostDiagnostics,
@@ -55,6 +57,8 @@ interface Options extends HomebrewGuestLifecycleRevisions {
   transportMode: "closed" | "public";
   bottleMirrorPlanPath?: string;
   proofMode: "shipping-core" | "shipping-canary" | "comprehensive";
+  imageContract: HomebrewGuestShippingImageContract;
+  bottleDigests?: HomebrewGuestShippingBottleDigests;
   timeoutMs: number;
   traceProcessesFromPid?: number;
 }
@@ -131,6 +135,8 @@ async function main(): Promise<void> {
       runtime,
       revisions,
       scope,
+      imageContract: options.imageContract,
+      bottleDigests: options.bottleDigests,
       deadlineMs,
       createMachine: (machineRuntime) =>
         createNodeLifecycleMachine(machineRuntime, options),
@@ -543,6 +549,9 @@ function parseOptions(args: string[]): Options {
     "--transport-mode",
     "--bottle-mirror-plan",
     "--proof-mode",
+    "--image-contract",
+    "--core-bzip2-sha256",
+    "--core-dash-sha256",
     "--core-revision",
     "--canary-revision",
     "--timeout-ms",
@@ -568,6 +577,9 @@ function parseOptions(args: string[]): Options {
   const transportMode = values.get("--transport-mode");
   const bottleMirrorPlan = values.get("--bottle-mirror-plan");
   const proofMode = values.get("--proof-mode") ?? "comprehensive";
+  const imageContract = values.get("--image-contract") ?? "full-main-shell";
+  const coreBzip2Sha256 = values.get("--core-bzip2-sha256");
+  const coreDashSha256 = values.get("--core-dash-sha256");
   const coreRevision = values.get("--core-revision");
   const canaryRevision = values.get("--canary-revision");
   const timeoutMs = Number(values.get("--timeout-ms") ?? "900000");
@@ -585,6 +597,24 @@ function parseOptions(args: string[]): Options {
       proofMode !== "shipping-core" &&
       proofMode !== "shipping-canary" &&
       proofMode !== "comprehensive"
+    ) ||
+    (
+      imageContract !== "full-main-shell" &&
+      imageContract !== "real-install-diagnostic"
+    ) ||
+    (
+      imageContract === "real-install-diagnostic" &&
+      (
+        proofMode === "comprehensive" ||
+        coreBzip2Sha256 === undefined ||
+        coreDashSha256 === undefined ||
+        !/^[0-9a-f]{64}$/.test(coreBzip2Sha256) ||
+        !/^[0-9a-f]{64}$/.test(coreDashSha256)
+      )
+    ) ||
+    (
+      imageContract === "full-main-shell" &&
+      (coreBzip2Sha256 !== undefined || coreDashSha256 !== undefined)
     ) ||
     (transportMode !== "closed" && transportMode !== "public") ||
     (transportMode === "closed" && bottleMirrorPlan === undefined) ||
@@ -607,6 +637,12 @@ function parseOptions(args: string[]): Options {
     bootstrapEnvironmentPath: resolve(bootstrapEnvironment),
     transportMode,
     proofMode,
+    imageContract,
+    ...(coreBzip2Sha256 === undefined || coreDashSha256 === undefined
+      ? {}
+      : {
+          bottleDigests: { coreBzip2Sha256, coreDashSha256 },
+        }),
     ...(bottleMirrorPlan === undefined
       ? {}
       : { bottleMirrorPlanPath: resolve(bottleMirrorPlan) }),
@@ -629,6 +665,8 @@ function usage(): never {
       "--transport-mode <closed|public> " +
       "[--bottle-mirror-plan <kandelo-homebrew-bottle-mirror-plan.json>] " +
       "[--proof-mode <shipping-core|shipping-canary|comprehensive>] " +
+      "[--image-contract <full-main-shell|real-install-diagnostic>] " +
+      "[--core-bzip2-sha256 <sha256> --core-dash-sha256 <sha256>] " +
       "--core-revision <40-character SHA> " +
       "--canary-revision <40-character SHA> [--timeout-ms <N>] " +
       "[--trace-processes-from-pid <N>]",

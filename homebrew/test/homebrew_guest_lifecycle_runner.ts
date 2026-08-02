@@ -10,6 +10,8 @@ import {
   HOMEBREW_GUEST_LIFECYCLE_PHASE_ONE_MARKER,
   HOMEBREW_GUEST_LIFECYCLE_PHASE_TWO_MARKER,
   type HomebrewGuestLifecycleRevisions,
+  type HomebrewGuestShippingBottleDigests,
+  type HomebrewGuestShippingImageContract,
   type HomebrewGuestShippingProofScope,
 } from "./homebrew_guest_lifecycle_contract";
 import {
@@ -192,6 +194,8 @@ export async function runHomebrewGuestShippingProof(options: {
   runtime: HomebrewGuestLifecycleRuntimeInputs;
   revisions: HomebrewGuestLifecycleRevisions;
   scope: HomebrewGuestShippingProofScope;
+  imageContract?: HomebrewGuestShippingImageContract;
+  bottleDigests?: HomebrewGuestShippingBottleDigests;
   deadlineMs: number;
   createMachine: (
     runtime: HomebrewGuestLifecycleRuntimeInputs,
@@ -242,6 +246,8 @@ export async function runHomebrewGuestShippingProof(options: {
         script: createHomebrewGuestShippingProofScript(
           options.revisions,
           options.scope,
+          options.imageContract,
+          options.bottleDigests,
         ),
         marker,
         label: `bounded stock Homebrew ${label} shipping proof`,

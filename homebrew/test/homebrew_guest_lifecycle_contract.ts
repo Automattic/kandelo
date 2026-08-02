@@ -27,6 +27,14 @@ export interface HomebrewGuestLifecycleRevisions {
 }
 
 export type HomebrewGuestShippingProofScope = "core" | "canary";
+export type HomebrewGuestShippingImageContract =
+  | "full-main-shell"
+  | "real-install-diagnostic";
+
+export interface HomebrewGuestShippingBottleDigests {
+  coreBzip2Sha256: string;
+  coreDashSha256: string;
+}
 
 export function assertHomebrewGuestLifecycleRevisions(
   revisions: HomebrewGuestLifecycleRevisions,
@@ -72,18 +80,27 @@ export function createHomebrewGuestLifecyclePhaseOneScript(
 export function createHomebrewGuestShippingProofScript(
   revisions: HomebrewGuestLifecycleRevisions,
   scope: HomebrewGuestShippingProofScope,
+  imageContract: HomebrewGuestShippingImageContract = "full-main-shell",
+  bottleDigests?: HomebrewGuestShippingBottleDigests,
 ): string {
   return createHomebrewGuestInstallScript(
     revisions,
     scope === "core" ? "shipping-core" : "shipping-canary",
+    imageContract,
+    bottleDigests,
   );
 }
 
 function createHomebrewGuestInstallScript(
   revisions: HomebrewGuestLifecycleRevisions,
   mode: "shipping-core" | "shipping-canary" | "comprehensive",
+  imageContract: HomebrewGuestShippingImageContract = "full-main-shell",
+  bottleDigests?: HomebrewGuestShippingBottleDigests,
 ): string {
   assertHomebrewGuestLifecycleRevisions(revisions);
+  const selectedBottleDigests = imageContract === "real-install-diagnostic"
+    ? assertShippingBottleDigests(bottleDigests)
+    : undefined;
   // WHY: a hosted Node process may retain collectible Wasm backing stores
   // longer than this fork-heavy workload can tolerate. Keep the release gate
   // focused on first installation; the comprehensive contract still owns
@@ -131,6 +148,9 @@ progress "installing and executing the first-party Bzip2 bottle"
 bzip2_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/bzip2)"
 assert_poured "$bzip2_prefix"
 assert_bzip2_roundtrip "$bzip2_prefix"
+${selectedBottleDigests === undefined ? "" : String.raw`
+assert_cached_bottle_sha ${CORE_BZIP2} ${selectedBottleDigests.coreBzip2Sha256}
+`}
 
 ${coreReinstall}
 snapshot_trust "$core_trust_after"
@@ -139,6 +159,35 @@ assert_formula_trust "$core_trust_after" ${CORE_TAP} ${CORE_BZIP2} present
 assert_untrusted_tap_discovery ${CORE_TAP} "$core_untrusted"
 `;
   const expectedBzip2Trust = mode === "comprehensive" ? "present" : "absent";
+  const selectedFormulaAssertions = selectedBottleDigests === undefined
+    ? ""
+    : String.raw`
+# WHY: the public source commit can predate the detached closed-selection
+# tree. Bind the two Formulae exercised by this proof to the exact archives
+# admitted by the immutable C2 selection before Homebrew evaluates either.
+assert_formula_bottle_sha \
+  "$core_tap/Formula/bzip2.rb" ${selectedBottleDigests.coreBzip2Sha256}
+assert_formula_bottle_sha \
+  "$core_tap/Formula/dash.rb" ${selectedBottleDigests.coreDashSha256}
+`;
+  const coreM4Transition = imageContract === "full-main-shell"
+    ? String.raw`
+# WHY: core M4 and canary M4 have the same conventional Cellar identity. Use
+# stock uninstall to create one truthful target before the independent tap
+# pours its own bottle; do not rewrite either Formula to avoid the collision.
+composed_m4_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/m4)"
+assert_precomposed_bottle "$composed_m4_prefix"
+/usr/bin/brew uninstall --ignore-dependencies ${CORE_TAP}/m4
+[ ! -e "$composed_m4_prefix" ] ||
+  fail "direct-composed M4 prefix remains after transition uninstall"
+`
+    : String.raw`
+# WHY: the bounded diagnostic deliberately omits core M4. Requiring its
+# absence keeps this proof from impersonating the complete shell and gives the
+# independent tap one normal, unoccupied Homebrew Cellar identity.
+[ ! -e "$repository/Cellar/m4" ] ||
+  fail "diagnostic unexpectedly contains a precomposed core M4 keg"
+`;
   const canaryInstall = mode === "shipping-core"
     ? ""
     : String.raw`
@@ -158,14 +207,7 @@ assert_untrusted_tap_discovery ${CANARY_TAP} "$canary_untrusted"
 snapshot_trust "$canary_trust_before"
 assert_formula_trust "$canary_trust_before" ${CANARY_TAP} ${CANARY_M4} absent
 
-# WHY: core M4 and canary M4 have the same conventional Cellar identity. Use
-# stock uninstall to create one truthful target before the independent tap
-# pours its own bottle; do not rewrite either Formula to avoid the collision.
-composed_m4_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/m4)"
-assert_precomposed_bottle "$composed_m4_prefix"
-/usr/bin/brew uninstall --ignore-dependencies ${CORE_TAP}/m4
-[ ! -e "$composed_m4_prefix" ] ||
-  fail "direct-composed M4 prefix remains after transition uninstall"
+${coreM4Transition}
 
 dash_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/dash)"
 assert_precomposed_bottle "$dash_prefix"
@@ -240,6 +282,26 @@ assert_poured() {
     receipt = JSON.parse(File.binread(File.join(ARGV.fetch(0), "INSTALL_RECEIPT.json")))
     abort "bottle was not poured" unless receipt.fetch("poured_from_bottle") == true
   ' "$1"
+}
+assert_formula_bottle_sha() {
+  /usr/bin/ruby -e '
+    source = File.binread(ARGV.fetch(0))
+    matches = source.scan(
+      /sha256\s+cellar:\s*:[a-z_]+,\s*wasm32_kandelo:\s*"([0-9a-f]{64})"/,
+    ).flatten
+    abort "Formula does not bind the selected bottle archive" unless
+      matches == [ARGV.fetch(1)]
+  ' "$1" "$2"
+}
+assert_cached_bottle_sha() {
+  formula="$1"
+  expected="$2"
+  cache="$(/usr/bin/brew --cache --force-bottle "$formula")"
+  [ -f "$cache" ] || fail "poured bottle is absent from Homebrew cache"
+  actual="$(/usr/bin/sha256sum "$cache")"
+  actual="\${actual%% *}"
+  [ "$actual" = "$expected" ] ||
+    fail "poured bottle archive differs from the closed selection"
 }
 assert_runtime_dependency() {
   /usr/bin/ruby -rjson -e '
@@ -319,6 +381,12 @@ export GIT_TERMINAL_PROMPT=0
 
 progress "${startMessage}"
 repository="$(/usr/bin/brew --repository)"
+[ "$repository" = /opt/kandelo/homebrew ] ||
+  fail "Homebrew repository is outside Kandelo's prefix"
+[ "$(/usr/bin/brew --prefix)" = /opt/kandelo/homebrew ] ||
+  fail "Homebrew prefix is outside Kandelo's namespace"
+[ "$(/usr/bin/brew --cellar)" = /opt/kandelo/homebrew/Cellar ] ||
+  fail "Homebrew Cellar is outside Kandelo's prefix"
 core_repository="$repository/Library/Taps/homebrew/homebrew-core"
 [ ! -e "$core_repository" ] || fail "homebrew/core existed before the lifecycle proof"
 
@@ -328,6 +396,7 @@ core_tap="$(/usr/bin/brew --repository ${CORE_TAP})"
 /usr/bin/git -C "$core_tap" fetch --no-tags origin ${revisions.coreRevision}
 /usr/bin/git -C "$core_tap" checkout --detach ${revisions.coreRevision}
 assert_clean_tap "$core_tap" ${CORE_ORIGIN} ${revisions.coreRevision}
+${selectedFormulaAssertions}
 [ ! -e "$core_repository" ] || fail "first-party tap created homebrew/core"
 
 # WHY: cloning a tap must not grant authority to all of its current and future
@@ -359,6 +428,21 @@ ${canaryFinalAssertion}
 progress "${completionMessage}"
 /usr/bin/printf '%s\n' ${completionMarker}
 `.trim();
+}
+
+function assertShippingBottleDigests(
+  value: HomebrewGuestShippingBottleDigests | undefined,
+): HomebrewGuestShippingBottleDigests {
+  if (
+    value === undefined ||
+    !/^[0-9a-f]{64}$/.test(value.coreBzip2Sha256) ||
+    !/^[0-9a-f]{64}$/.test(value.coreDashSha256)
+  ) {
+    throw new Error(
+      "real-install diagnostic requires exact Bzip2 and Dash bottle digests",
+    );
+  }
+  return value;
 }
 
 /**

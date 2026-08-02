@@ -1,0 +1,266 @@
+{
+  "schema": 1,
+  "kind": "kandelo-homebrew-real-install-diagnostic",
+  "diagnostic_only": true,
+  "authority": {
+    "tap_repository": "kandelo-dev/homebrew-tap-core",
+    "tap_name": "kandelo-dev/tap-core",
+    "source_tap_commit": "b19a62636c9c8136740eba05237e3106ddd37c97",
+    "campaign_sha256": "2b76fa4d54560a7bf8c5b1a1d3acceaa8be6727983ce0a72885ed23e110b7fc9",
+    "kandelo_commit": "6024539d7849bb5f0d9c235b97218e60f03a2fef",
+    "kandelo_abi": 42,
+    "arch": "wasm32"
+  },
+  "selection": {
+    "roots": [
+      "bash",
+      "bzip2",
+      "coreutils",
+      "curl",
+      "findutils",
+      "gawk",
+      "git",
+      "homebrew-bootstrap",
+      "posix-utils-lite",
+      "ruby",
+      "tar"
+    ],
+    "dependencies": {
+      "libcxx": [],
+      "ncurses": ["libcxx"],
+      "bash": ["ncurses"],
+      "bzip2": [],
+      "coreutils": [],
+      "openssl": [],
+      "zlib": [],
+      "libcurl": ["openssl", "zlib"],
+      "curl": ["libcurl", "openssl", "zlib"],
+      "dash": [],
+      "findutils": ["dash"],
+      "gawk": [],
+      "ed": [],
+      "diffutils": ["coreutils", "ed"],
+      "grep": [],
+      "less": ["dash", "ncurses"],
+      "sed": [],
+      "vim": ["dash", "ncurses"],
+      "git": [
+        "coreutils",
+        "dash",
+        "diffutils",
+        "grep",
+        "less",
+        "libcurl",
+        "openssl",
+        "sed",
+        "vim",
+        "zlib"
+      ],
+      "homebrew-bootstrap": [],
+      "posix-utils-lite": [],
+      "libyaml": [],
+      "ruby": ["libyaml", "zlib"],
+      "gzip": [],
+      "tar": ["dash", "gzip"]
+    },
+    "formula_order": [
+      "libcxx",
+      "ncurses",
+      "bash",
+      "bzip2",
+      "coreutils",
+      "openssl",
+      "zlib",
+      "libcurl",
+      "curl",
+      "dash",
+      "findutils",
+      "gawk",
+      "ed",
+      "diffutils",
+      "grep",
+      "less",
+      "sed",
+      "vim",
+      "git",
+      "homebrew-bootstrap",
+      "posix-utils-lite",
+      "libyaml",
+      "ruby",
+      "gzip",
+      "tar"
+    ]
+  },
+  "vfs": {
+    "brewfile": "homebrew/real-install-diagnostic.Brewfile",
+    "bootstrap_tree": "homebrew/real-install-diagnostic-brew-package-tree.json",
+    "formula_roots": [
+      "bash",
+      "coreutils",
+      "ruby",
+      "git",
+      "curl",
+      "findutils",
+      "gawk",
+      "tar",
+      "posix-utils-lite",
+      "bzip2"
+    ],
+    "formula_order": [
+      "libcxx",
+      "ncurses",
+      "bash",
+      "bzip2",
+      "coreutils",
+      "openssl",
+      "zlib",
+      "libcurl",
+      "curl",
+      "dash",
+      "findutils",
+      "gawk",
+      "ed",
+      "diffutils",
+      "grep",
+      "less",
+      "sed",
+      "vim",
+      "git",
+      "posix-utils-lite",
+      "libyaml",
+      "ruby",
+      "gzip",
+      "tar"
+    ],
+    "materialization_policy": {
+      "schema": 1,
+      "kind": "kandelo-homebrew-vfs-materialization-policy",
+      "embedded_roots": [
+        "kandelo-dev/tap-core/bash"
+      ],
+      "embedded_package_order": [
+        "kandelo-dev/tap-core/libcxx",
+        "kandelo-dev/tap-core/ncurses",
+        "kandelo-dev/tap-core/bash"
+      ]
+    },
+    "max_vfs_byte_length": 536870912
+  },
+  "lifecycle": {
+    "core_formula": "kandelo-dev/tap-core/bzip2",
+    "independent_tap": "brandonpayton/kandelo-canary",
+    "independent_repository": "brandonpayton/homebrew-kandelo-canary",
+    "independent_revision": "d8bdda662f6d80cf3dcdbe8451edb12bb33bbafc",
+    "independent_formula": "brandonpayton/kandelo-canary/m4",
+    "independent_dependency": "kandelo-dev/tap-core/dash"
+  },
+  "compatibility": {
+    "mirror_link_manifest_bin": {
+      "targets": [
+        "/usr/bin",
+        "/bin"
+      ]
+    },
+    "link_conflict_owners": [
+      {
+        "target": "bin/ed",
+        "package": "kandelo-dev/tap-core/ed",
+        "reason": "Use the dedicated ed Formula instead of the compatibility copy bundled by posix-utils-lite."
+      },
+      {
+        "target": "bin/ex",
+        "package": "kandelo-dev/tap-core/vim",
+        "reason": "Use Vim's dedicated ex command instead of the compatibility copy bundled by posix-utils-lite."
+      },
+      {
+        "target": "bin/more",
+        "package": "kandelo-dev/tap-core/less",
+        "reason": "Use less's dedicated more command instead of the compatibility copy bundled by posix-utils-lite."
+      }
+    ],
+    "aliases": [
+      {
+        "package": "kandelo-dev/tap-core/dash",
+        "source_kind": "link",
+        "source": "bin/dash",
+        "targets": [
+          "/usr/bin/sh",
+          "/bin/sh"
+        ]
+      },
+      {
+        "package": "kandelo-dev/tap-core/bzip2",
+        "source_kind": "link",
+        "source": "bin/bzip2",
+        "targets": [
+          "/usr/bin/bunzip2",
+          "/bin/bunzip2",
+          "/usr/bin/bzcat",
+          "/bin/bzcat"
+        ]
+      },
+      {
+        "package": "kandelo-dev/tap-core/gawk",
+        "source_kind": "link",
+        "source": "bin/gawk",
+        "targets": [
+          "/usr/bin/awk",
+          "/bin/awk"
+        ]
+      },
+      {
+        "package": "kandelo-dev/tap-core/grep",
+        "source_kind": "link",
+        "source": "bin/grep",
+        "targets": [
+          "/usr/bin/egrep",
+          "/bin/egrep",
+          "/usr/bin/fgrep",
+          "/bin/fgrep"
+        ]
+      },
+      {
+        "package": "kandelo-dev/tap-core/git",
+        "source_kind": "keg",
+        "source": "libexec/git-core/git-remote-http",
+        "targets": [
+          "/usr/bin/git-remote-http",
+          "/usr/bin/git-remote-https",
+          "/usr/bin/git-remote-ftp",
+          "/usr/bin/git-remote-ftps"
+        ]
+      }
+    ],
+    "runtime_state": [
+      {
+        "requires_package": "kandelo-dev/tap-core/bash",
+        "path": "/etc/profile.d/kandelo-shell.sh",
+        "kind": "text_file",
+        "mode": 420,
+        "uid": 0,
+        "gid": 0,
+        "contents": "alias ls='ls --color=auto'\nalias grep='grep --color=auto'\n",
+        "reason": "Keep the diagnostic shell's normal interactive aliases without claiming the complete product profile."
+      },
+      {
+        "requires_package": "kandelo-dev/tap-core/git",
+        "path": "/etc/gitconfig",
+        "kind": "text_file",
+        "mode": 420,
+        "uid": 0,
+        "gid": 0,
+        "contents": "[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n[core]\n\tpager = cat\n[user]\n\tname = User\n\temail = user@wasm.local\n[init]\n\tdefaultBranch = main\n",
+        "reason": "Give live tap operations deterministic Git identity and disable ambient maintenance in the bounded diagnostic."
+      },
+      {
+        "requires_package": "kandelo-dev/tap-core/bash",
+        "path": "/usr/sbin",
+        "kind": "directory",
+        "mode": 493,
+        "uid": 0,
+        "gid": 0,
+        "reason": "Keep the standard shell filesystem layout used by Homebrew's environment probes."
+      }
+    ]
+  }
+}
