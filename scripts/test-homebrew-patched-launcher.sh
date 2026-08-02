@@ -2974,7 +2974,10 @@ EOF
     "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION"
   homebrew_patched_launcher_verify_native_overlay_attestation
 
-  overlay_attestation_hardlink="$ISOLATION_ROOT/overlay-attestation-hardlink"
+  # WHY: a hard link can only be created within one filesystem. The protected
+  # contract lives under /run on Linux, while the fixture root may live under
+  # /tmp, so keep the adversarial alias beside the attestation itself.
+  overlay_attestation_hardlink="${HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION}.hardlink"
   /usr/bin/sudo -n -- /usr/bin/ln \
     "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION" \
     "$overlay_attestation_hardlink"
