@@ -7784,21 +7784,40 @@ def check_publisher(workflow)
     'ensure_direct_tag',
     'publish response was ambiguous; reconciling',
     '--exact-kandelo-main-sha) EXACT_KANDELO_MAIN_SHA=',
+    "--exact-execution-kandelo-main-sha)",
+    "--exact-execution-target-main-sha)",
     "--kandelo-main-contains-sha)",
     "--target-main-contains-sha)",
     "exactly one Kandelo main authority is required",
     "target exact-main and main-contains authority are mutually exclusive",
+    "exact execution authorities must be supplied together",
     'require_main_authority()',
     'bash "$REPO_ROOT/.github/scripts/require-exact-kandelo-main.sh"',
     '--source-sha "$EXACT_KANDELO_MAIN_SHA"',
     '"$REPO_ROOT/.github/scripts/require-repository-main-contains.sh"',
     '--source-sha "$KANDELO_MAIN_CONTAINS_SHA"',
+    '--source-sha "$EXACT_EXECUTION_KANDELO_MAIN_SHA"',
+    '--source-sha "$EXACT_EXECUTION_TARGET_MAIN_SHA"',
     'anonymous digest readback failed', '.object.type == "commit"',
     'visibility: "public-anonymous-readback"',
   ].each do |fragment|
     check(immutable_publisher_source.include?(fragment),
           "immutable GitHub release publisher lacks #{fragment}")
   end
+  authority_body = immutable_publisher_source
+    .split(/^require_main_authority\(\) \{\n/, 2).fetch(1, "")
+    .split(/^\}\n/, 2).fetch(0, "")
+  contained_authority = authority_body.index(
+    'if [ -n "$EXACT_KANDELO_MAIN_SHA" ]'
+  )
+  execution_authority = authority_body.index(
+    'if [ -n "$EXACT_EXECUTION_KANDELO_MAIN_SHA" ]'
+  )
+  check(
+    contained_authority && execution_authority &&
+      contained_authority < execution_authority,
+    "immutable publisher checks exact execution before content authority"
+  )
   [
     /require_main_authority\n\s+if gh api --method POST "\/repos\/\$\{REPOSITORY\}\/releases"/,
     /require_main_authority\n\s+gh release upload "\$TAG"/,
@@ -7891,6 +7910,10 @@ def check_publisher(workflow)
     "advanced Kandelo main reached the public release PATCH",
     "publisher made a release public after its tag moved during final authority",
     "moved tag reached the public release PATCH",
+    "dual publisher accepted a revoked Kandelo execution commit",
+    "dual publisher accepted a revoked target execution commit",
+    "dual publisher accepted diverged Kandelo content",
+    "dual publisher accepted diverged target content",
   ].each do |fragment|
     check(immutable_publisher_test_source.include?(fragment),
           "immutable release publisher tests lack #{fragment}")
@@ -8127,6 +8150,7 @@ def check_publisher(workflow)
     'atomic batch metadata did not contain both exact bottle handoffs',
     'deferred whole-tap validation weakened selected bottle evidence',
     'bash "$REPO_ROOT/scripts/test-publish-immutable-github-release.sh"',
+    'bash "$REPO_ROOT/scripts/test-publish-homebrew-closed-selection-release.sh"',
     'bash "$REPO_ROOT/scripts/test-homebrew-vfs-release.sh"',
     'assert_publish_handoff_download_topologies',
     'correctly named nested single-publication handoff was not accepted',

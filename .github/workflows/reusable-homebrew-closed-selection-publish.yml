@@ -33,6 +33,7 @@ jobs:
       artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
       campaign-kandelo-commit: >-
         ${{ steps.admit.outputs.campaign-kandelo-commit }}
+      plan-sha256: ${{ steps.admit.outputs.plan-sha256 }}
       source-tap-commit: ${{ steps.admit.outputs.source-tap-commit }}
     steps:
       - name: Admit the protected tap caller and publisher ref
@@ -162,13 +163,12 @@ jobs:
         run: |
           set -euo pipefail
           env -u GH_TOKEN -u GITHUB_TOKEN \
-            python3 kandelo/scripts/prefix-campaign-source.py \
-              materialize \
-              --root source-tap \
-              --authority \
-                source-tap/Kandelo/prefix-campaign-authority.json \
-              --manifest \
-                source-tap/Kandelo/campaigns/prefix-v1/manifest.json \
+            python3 \
+              kandelo/scripts/homebrew-prefix-campaign-executor.py \
+              materialize-campaign-source \
+              --campaign \
+                "$RUNNER_TEMP/closed-selection/campaign.json" \
+              --source-tap-root source-tap \
               --out "$RUNNER_TEMP/closed-selection/target-source"
 
       - name: Assemble the exact selection from public handoffs
@@ -190,12 +190,6 @@ jobs:
               --executor \
                 kandelo/scripts/homebrew-prefix-campaign-executor.py \
               --out "$RUNNER_TEMP/closed-selection/prepared"
-          install -m 0644 \
-            "$RUNNER_TEMP/closed-selection/plan.json" \
-            "$RUNNER_TEMP/closed-selection/prepared/plan.json"
-          install -m 0644 \
-            "$RUNNER_TEMP/closed-selection/campaign-receipt.json" \
-            "$RUNNER_TEMP/closed-selection/prepared/campaign-receipt.json"
 
       - name: Retain the exact prepared selection
         id: upload
@@ -270,8 +264,13 @@ jobs:
 
       - name: Verify the downloaded selection against its plan
         shell: bash
+        env:
+          SELECTION_PLAN: ${{ inputs.selection-plan }}
+          PLAN_SHA256: ${{ inputs.selection-plan-sha256 }}
+          ADMITTED_PLAN_SHA256: ${{ needs.prepare.outputs.plan-sha256 }}
         run: |
           set -euo pipefail
+          [ "$PLAN_SHA256" = "$ADMITTED_PLAN_SHA256" ]
           env -u GH_TOKEN -u GITHUB_TOKEN \
             -u HOMEBREW_GITHUB_API_TOKEN \
             -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
@@ -279,10 +278,12 @@ jobs:
             python3 \
               kandelo/scripts/homebrew-closed-selection-controller.py \
               verify \
-              --plan \
-                "$RUNNER_TEMP/closed-selection-preparation/plan.json" \
-              --selection \
-                "$RUNNER_TEMP/closed-selection-preparation/selection"
+              --selection-plan "$SELECTION_PLAN" \
+              --selection-plan-sha256 "$PLAN_SHA256" \
+              --prepared-release \
+                "$RUNNER_TEMP/closed-selection-preparation" \
+              --executor \
+                kandelo/scripts/homebrew-prefix-campaign-executor.py
 
       - name: Recheck protected publication authorities
         shell: bash
@@ -302,6 +303,10 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          KANDELO_REF: ${{ inputs.kandelo-ref }}
+          TAP_CALLER_SHA: ${{ github.sha }}
+          SELECTION_PLAN: ${{ inputs.selection-plan }}
+          PLAN_SHA256: ${{ inputs.selection-plan-sha256 }}
           CAMPAIGN_KANDELO_COMMIT: >-
             ${{ needs.prepare.outputs.campaign-kandelo-commit }}
           SOURCE_TAP_COMMIT: ${{ needs.prepare.outputs.source-tap-commit }}
@@ -313,11 +318,15 @@ jobs:
           # credentials for its final byte-for-byte public readback.
           bash \
             kandelo/scripts/publish-homebrew-closed-selection-release.sh \
-            --selection \
-              "$RUNNER_TEMP/closed-selection-preparation/selection" \
+            --prepared-release \
+              "$RUNNER_TEMP/closed-selection-preparation" \
             --lock-root "$GITHUB_WORKSPACE/tap-authority" \
             --receipt \
               "$RUNNER_TEMP/closed-selection-publication/receipt.json" \
+            --selection-plan "$SELECTION_PLAN" \
+            --selection-plan-sha256 "$PLAN_SHA256" \
+            --exact-execution-kandelo-main-sha "$KANDELO_REF" \
+            --exact-execution-target-main-sha "$TAP_CALLER_SHA" \
             --kandelo-main-contains-sha \
               "$CAMPAIGN_KANDELO_COMMIT" \
             --target-main-contains-sha "$SOURCE_TAP_COMMIT"

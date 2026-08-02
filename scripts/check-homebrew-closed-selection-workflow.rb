@@ -12,7 +12,7 @@ WORKFLOW = ARGV.empty? ?
     ".github/workflows/reusable-homebrew-closed-selection-publish.yml"
   ) : File.expand_path(ARGV.fetch(0))
 WORKFLOW_DIGEST =
-  "e87a43bc0aa8fb7e24c933f12509325e663b0bad3f6207e9b795087cca15e698"
+  "87e262285f7999191ee51d70b5a0fe9dad92d5bca2fdf417ef3b45354e5b3ce5"
 PREPARATION_ARTIFACT = "homebrew-closed-selection-preparation"
 CHECKOUT_ACTION =
   "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
@@ -124,6 +124,11 @@ def check_workflow(workflow)
   )
   check(!prepare.key?("needs"), "prepare must be the source job")
   check(publish["needs"] == "prepare", "publish dependency differs")
+  check(
+    prepare.fetch("outputs")["plan-sha256"] ==
+      "${{ steps.admit.outputs.plan-sha256 }}",
+    "publish job does not inherit the admitted plan digest"
+  )
   [prepare, publish].each do |job|
     check(job["runs-on"] == "ubuntu-latest", "job runner differs")
     check(job.fetch("steps").all?(Hash), "job steps are malformed")
@@ -199,6 +204,31 @@ def check_workflow(workflow)
     prepare,
     "Admit the exact digest-bound selection plan"
   )
+
+  materialization = named_step(
+    prepare,
+    "Materialize the sealed campaign tap source"
+  ).fetch("run")
+  %w[
+    homebrew-prefix-campaign-executor.py
+    materialize-campaign-source
+    --campaign
+    --source-tap-root
+  ].each do |text|
+    check(materialization.include?(text),
+          "source materialization omits #{text}")
+  end
+  check(!materialization.include?("prefix-campaign-source.py"),
+        "workflow executes materializer code from tap data")
+
+  assembly = named_step(
+    prepare,
+    "Assemble the exact selection from public handoffs"
+  ).fetch("run")
+  check(assembly.include?("homebrew-closed-selection-controller.py") &&
+          assembly.include?("prepare") &&
+          !assembly.include?("install -m"),
+        "prepare job does not emit only its deterministic release")
   check(
     plan_admission.fetch("env") == {
       "SELECTION_PLAN" => "${{ inputs.selection-plan }}",
@@ -211,6 +241,33 @@ def check_workflow(workflow)
     publish,
     "Admit the exact same-run preparation artifact"
   )
+
+  verify_step = named_step(
+    publish,
+    "Verify the downloaded selection against its plan"
+  )
+  check(
+    verify_step.fetch("env") == {
+      "SELECTION_PLAN" => "${{ inputs.selection-plan }}",
+      "PLAN_SHA256" => "${{ inputs.selection-plan-sha256 }}",
+      "ADMITTED_PLAN_SHA256" =>
+        "${{ needs.prepare.outputs.plan-sha256 }}",
+    },
+    "write job does not bind the artifact to trusted plan inputs"
+  )
+  verify_source = verify_step.fetch("run")
+  %w[
+    --selection-plan
+    --selection-plan-sha256
+    --prepared-release
+    --executor
+  ].each do |text|
+    check(verify_source.include?(text),
+          "write-job selection verification omits #{text}")
+  end
+  check(verify_source.include?(
+    '[ "$PLAN_SHA256" = "$ADMITTED_PLAN_SHA256" ]'
+  ), "write job does not compare both independently carried plan digests")
   artifact_source = artifact_admission.fetch("run")
   check(
     artifact_source.include?("actions/artifacts/$EXPECTED_ID") &&
@@ -237,9 +294,13 @@ def check_workflow(workflow)
   publish_source = publish_step.fetch("run")
   %w[
     publish-homebrew-closed-selection-release.sh
-    --selection
+    --prepared-release
     --lock-root
     --receipt
+    --selection-plan
+    --selection-plan-sha256
+    --exact-execution-kandelo-main-sha
+    --exact-execution-target-main-sha
     --kandelo-main-contains-sha
     --target-main-contains-sha
   ].each do |text|
@@ -248,7 +309,8 @@ def check_workflow(workflow)
   end
   check(
     publish_step.fetch("env").keys.sort == %w[
-      CAMPAIGN_KANDELO_COMMIT GH_TOKEN SOURCE_TAP_COMMIT
+      CAMPAIGN_KANDELO_COMMIT GH_TOKEN KANDELO_REF PLAN_SHA256
+      SELECTION_PLAN SOURCE_TAP_COMMIT TAP_CALLER_SHA
     ],
     "publication step receives unexpected environment authority"
   )
@@ -258,6 +320,70 @@ def check_workflow(workflow)
         source.include?("gh release upload")
     end,
     "workflow duplicates immutable release publication logic"
+  )
+  controller_source = File.read(
+    File.join(ROOT, "scripts/homebrew-closed-selection-controller.py")
+  )
+  %w[
+    prepare_selection_release
+    load_prepared_selection_release
+    expected_plan
+  ].each do |text|
+    check(controller_source.include?(text),
+          "closed-selection controller omits #{text}")
+  end
+  executor_source = File.read(
+    File.join(ROOT, "scripts/homebrew-prefix-campaign-executor.py")
+  )
+  %w[
+    closed-selection.zip
+    zip-stored-v1
+    snapshot_selection_release
+    materialize_campaign_source
+  ].each do |text|
+    check(executor_source.include?(text),
+          "closed-selection executor omits #{text}")
+  end
+  wrapper_source = File.read(
+    File.join(ROOT, "scripts/publish-homebrew-closed-selection-release.sh")
+  )
+  check(
+    wrapper_source.include?(
+      'fetch-selection-release'
+    ) && wrapper_source.include?(
+      'ln "$READBACK_RECEIPT" "$RECEIPT"'
+    ),
+    "selection publisher does not install its receipt after readback"
+  )
+  controller_tests = File.read(
+    File.join(ROOT, "scripts/test-homebrew-closed-selection-controller.py")
+  )
+  check(controller_tests.include?(
+    "test_verify_rejects_coherent_artifact_plan_substitution"
+  ), "controller tests omit coherent artifact substitution")
+  executor_tests = File.read(
+    File.join(ROOT, "scripts/test-homebrew-prefix-campaign-executor.py")
+  )
+  check(
+    executor_tests.include?(".github/workflows/selection.yml") &&
+      executor_tests.include?(
+        'self.assertEqual(executable_record["mode"], "100755")'
+      ),
+    "executor tests omit hidden paths or executable archive modes"
+  )
+  wrapper_tests = File.read(
+    File.join(
+      ROOT,
+      "scripts/test-publish-homebrew-closed-selection-release.sh"
+    )
+  )
+  check(
+    wrapper_tests.include?(
+      "failed semantic readback exposed a success receipt"
+    ) && wrapper_tests.include?(
+      "unchanged retry did not install the verified readback receipt"
+    ),
+    "selection publisher tests omit receipt-last retry behavior"
   )
   check(
     contract_digest(workflow) == WORKFLOW_DIGEST,
@@ -310,6 +436,18 @@ begin
     end
     step["run"] = step.fetch("run").sub(
       /\s+--target-main-contains-sha "\$SOURCE_TAP_COMMIT"/,
+      ""
+    )
+    check_workflow(mutated)
+  end
+  expect_rejection("publication without exact execution authority") do
+    mutated = deep_copy(workflow)
+    step = mutated.dig("jobs", "publish", "steps").find do |candidate|
+      candidate["name"] ==
+        "Publish and anonymously read back the exact selection"
+    end
+    step["run"] = step.fetch("run").sub(
+      /\s+--exact-execution-target-main-sha "\$TAP_CALLER_SHA"/,
       ""
     )
     check_workflow(mutated)

@@ -2046,21 +2046,43 @@ Kandelo ref, or Kandelo ref that no longer equals public protected
 `main`.
 
 The read-only preparation job anonymously fetches the campaign and every
-Formula handoff, reconstructs the sealed source tap, and prepares the
-exact selection. It uploads one same-run artifact whose Actions identity
-and digest are passed to the write job. The write job has only
-`actions: read` and `contents: write`. It admits that exact artifact,
-validates the selection against the plan again, and rechecks both
-protected-main authorities immediately before publication.
+Formula handoff. Kandelo's campaign executor reconstructs the sealed
+source tap from the exact source checkout. It validates the campaign's
+base, overlay manifest, file identities, and final Git tree. Code in the
+tap checkout remains inert data and is never executed as a materializer.
+
+The job prepares one deterministic ZIP archive, its content descriptor,
+and its release manifest. Its same-run Actions artifact contains only
+those three ordinary files. It does not transport the raw tap tree.
+GitHub artifact upload and download normalize executable modes, and
+hidden paths are easy to omit from a raw directory upload. The ZIP owns
+the complete path inventory and each file's `100644` or `100755` Git
+mode, including paths below `.github`.
+
+The write job has only `actions: read` and `contents: write`. It binds
+the artifact ID, artifact digest, workflow run, and head commit. It also
+compares the admitted plan digest with the original reusable-workflow
+input, then validates the downloaded descriptor and archive against that
+independently trusted plan. Changing a coherent artifact plan and
+selection together cannot select different Formulae.
 
 The write job delegates the release lifecycle to
 `publish-homebrew-closed-selection-release.sh`. That wrapper reuses the
 generic immutable-release publisher, its run-owned Git-ref lock, and its
-per-write ancestry checks. After publication it removes all credentials,
-downloads the public descriptor and archive, verifies their hashes and
-bounded inventory, reconstructs the tap tree, and compares that tree and
-`selection.json` with the prepared candidate. A receipt is emitted only
-after that anonymous readback succeeds.
+per-write authority checks. Historical campaign commits are content
+authority and may remain valid while protected `main` contains them. The
+current Kandelo publisher commit and current tap caller commit are
+separate execution authority and must still equal both protected `main`
+branches before every write.
+
+After publication the wrapper removes all credentials, downloads the
+public descriptor and archive, verifies their hashes and bounded
+inventory, reconstructs the tap tree, and compares that tree and
+`selection.json` with its private prepared snapshot. It keeps the
+semantic readback receipt private during those comparisons and installs
+the requested receipt atomically as the last operation. A mismatch may
+leave an immutable release for an unchanged retry to reconcile, but it
+cannot leave a false success receipt.
 
 The reusable workflow alone is not a dispatchable authority. Activate
 it only after its exact Kandelo commit is on protected `main` and a
@@ -4148,23 +4170,36 @@ checks a credential. The publisher then holds the tag state lock while it
 reconciles create, upload, and publish responses, authentically downloads every
 complete draft asset immediately before publication, and verifies the
 immutable release, direct tag, and every anonymous download afterward. A
-caller must pass exactly one Kandelo authority: the exact current
-`main` SHA for an ordinary release, or the explicitly contained sealed
+caller must pass exactly one Kandelo content authority: the exact
+current `main` SHA for an ordinary release, or the explicitly contained
 source SHA for the prefix campaign. Passing both or neither fails. A
 campaign handoff also passes its raw tap source as contained
-target-repository authority; the manifest target must equal that source.
-Exact and contained target authority are also mutually exclusive.
+target-repository content authority; the manifest target must equal that
+source. Exact and contained target content authority are also mutually
+exclusive.
+
+Historical content publication may additionally pass a paired execution
+authority: one exact current Kandelo `main` SHA and one exact current
+target-repository `main` SHA. Both execution SHAs must be present or
+both must be absent. They are intentionally independent from the
+manifest's historical target commit. Before each mutation, the publisher
+checks historical content containment first and exact execution
+ownership last.
+That ordering prevents either protected branch from revoking the
+publisher or caller while slower ancestry reads are still in progress.
 
 The credentialed primitive re-reads protected `main` immediately before
-each release creation, individual asset upload, direct-tag creation,
-and draft-to-public transition. After that last authority read, it revalidates
-the direct tag at the final possible point before every public-transition
-attempt. Exact mode fails if `main` advances.
-Contained mode fails if the source leaves protected history. In either
-case a complete draft may remain for a later authorized run to inspect,
-but it is not made public under stale authority. A
-failed attempt leaves any older receipt untouched. Success atomically replaces
-the receipt with the release ID and every asset's ID, URL, digest, and size.
+each release creation, individual asset upload, direct-tag creation, and
+draft-to-public transition. When execution authority is present, its two
+exact reads are the last authority reads before the mutation. After
+those reads, the publisher revalidates the direct tag at the final
+possible point before every public-transition attempt. Exact mode fails
+if `main` advances. Contained mode fails if the source leaves protected
+history. In either case a complete draft may remain for a later
+authorized run to inspect, but it is not made public under stale
+authority. A failed attempt leaves any older receipt untouched. Success
+atomically replaces the receipt with the release ID and every asset's
+ID, URL, digest, and size.
 This same bounded 256-asset contract can carry the production shell mirror's
 36 bottle payloads plus its canonical plan without adding a second publication
 protocol.

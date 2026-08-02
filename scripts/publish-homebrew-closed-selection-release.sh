@@ -3,17 +3,34 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SELECTION=""
+PREPARED_RELEASE=""
 LOCK_ROOT=""
 RECEIPT=""
+SELECTION_PLAN=""
+SELECTION_PLAN_SHA256=""
+EXACT_EXECUTION_KANDELO_MAIN_SHA=""
+EXACT_EXECUTION_TARGET_MAIN_SHA=""
 KANDELO_MAIN_CONTAINS_SHA=""
 TARGET_MAIN_CONTAINS_SHA=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --selection) SELECTION="${2:-}"; shift 2 ;;
+    --prepared-release) PREPARED_RELEASE="${2:-}"; shift 2 ;;
     --lock-root) LOCK_ROOT="${2:-}"; shift 2 ;;
     --receipt) RECEIPT="${2:-}"; shift 2 ;;
+    --selection-plan) SELECTION_PLAN="${2:-}"; shift 2 ;;
+    --selection-plan-sha256)
+      SELECTION_PLAN_SHA256="${2:-}"
+      shift 2
+      ;;
+    --exact-execution-kandelo-main-sha)
+      EXACT_EXECUTION_KANDELO_MAIN_SHA="${2:-}"
+      shift 2
+      ;;
+    --exact-execution-target-main-sha)
+      EXACT_EXECUTION_TARGET_MAIN_SHA="${2:-}"
+      shift 2
+      ;;
     --kandelo-main-contains-sha)
       KANDELO_MAIN_CONTAINS_SHA="${2:-}"
       shift 2
@@ -30,7 +47,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 for required in \
-  SELECTION LOCK_ROOT RECEIPT KANDELO_MAIN_CONTAINS_SHA \
+  PREPARED_RELEASE LOCK_ROOT RECEIPT SELECTION_PLAN \
+  SELECTION_PLAN_SHA256 EXACT_EXECUTION_KANDELO_MAIN_SHA \
+  EXACT_EXECUTION_TARGET_MAIN_SHA KANDELO_MAIN_CONTAINS_SHA \
   TARGET_MAIN_CONTAINS_SHA
 do
   if [ -z "${!required}" ]; then
@@ -39,6 +58,8 @@ do
   fi
 done
 for revision in \
+  "$EXACT_EXECUTION_KANDELO_MAIN_SHA" \
+  "$EXACT_EXECUTION_TARGET_MAIN_SHA" \
   "$KANDELO_MAIN_CONTAINS_SHA" "$TARGET_MAIN_CONTAINS_SHA"
 do
   if ! [[ "$revision" =~ ^[0-9a-f]{40}$ ]]; then
@@ -46,8 +67,12 @@ do
     exit 2
   fi
 done
-if [ ! -d "$SELECTION" ] || [ -L "$SELECTION" ]; then
-  echo "publish-homebrew-closed-selection-release: selection must be a real directory" >&2
+if ! [[ "$SELECTION_PLAN_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "publish-homebrew-closed-selection-release: plan digest must be a lowercase SHA-256" >&2
+  exit 2
+fi
+if [ ! -d "$PREPARED_RELEASE" ] || [ -L "$PREPARED_RELEASE" ]; then
+  echo "publish-homebrew-closed-selection-release: prepared release must be a real directory" >&2
   exit 2
 fi
 if [ ! -d "$LOCK_ROOT" ] || [ -L "$LOCK_ROOT" ]; then
@@ -74,19 +99,33 @@ trap cleanup EXIT
 PREPARED="$TMP_ROOT/prepared"
 PUBLISH_RECEIPT="$TMP_ROOT/immutable-release-receipt.json"
 READBACK="$TMP_ROOT/readback"
+READBACK_RECEIPT="$TMP_ROOT/readback-receipt.json"
 
-# WHY: preparing the release does not need credentials. Keep them out so
-# malformed selection data cannot influence a token-bearing process before
-# the generic immutable publisher has normalized the complete manifest.
+# WHY: Actions artifact transport preserves ordinary file bytes but not a raw
+# tree's hidden-path or executable-mode semantics. The read-only job therefore
+# transports the deterministic release archive and manifests. Snapshot and
+# validate those exact files before any token-bearing process observes them.
 env -u GH_TOKEN -u GITHUB_TOKEN \
   -u HOMEBREW_GITHUB_API_TOKEN \
   -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
   -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
   PYTHONDONTWRITEBYTECODE=1 \
   python3 "$SCRIPT_DIR/homebrew-prefix-campaign-executor.py" \
-    prepare-selection-release \
-    --selection "$SELECTION" \
+    snapshot-selection-release \
+    --prepared-release "$PREPARED_RELEASE" \
     --out "$PREPARED"
+
+env -u GH_TOKEN -u GITHUB_TOKEN \
+  -u HOMEBREW_GITHUB_API_TOKEN \
+  -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+  -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+  PYTHONDONTWRITEBYTECODE=1 \
+  python3 "$SCRIPT_DIR/homebrew-closed-selection-controller.py" \
+    verify \
+    --selection-plan "$SELECTION_PLAN" \
+    --selection-plan-sha256 "$SELECTION_PLAN_SHA256" \
+    --prepared-release "$PREPARED" \
+    --executor "$SCRIPT_DIR/homebrew-prefix-campaign-executor.py"
 
 selection_kandelo_sha="$(jq -er \
   '.selection_manifest.value.campaign.kandelo_commit' \
@@ -105,6 +144,10 @@ bash "$SCRIPT_DIR/publish-immutable-github-release.sh" \
   --asset-root "$PREPARED/assets" \
   --lock-root "$LOCK_ROOT" \
   --receipt "$PUBLISH_RECEIPT" \
+  --exact-execution-kandelo-main-sha \
+    "$EXACT_EXECUTION_KANDELO_MAIN_SHA" \
+  --exact-execution-target-main-sha \
+    "$EXACT_EXECUTION_TARGET_MAIN_SHA" \
   --kandelo-main-contains-sha "$KANDELO_MAIN_CONTAINS_SHA" \
   --target-main-contains-sha "$TARGET_MAIN_CONTAINS_SHA"
 
@@ -123,14 +166,23 @@ env -u GH_TOKEN -u GITHUB_TOKEN \
     --repository "$repository" \
     --tag "$tag" \
     --out "$READBACK" \
-    --receipt-out "$RECEIPT"
+    --receipt-out "$READBACK_RECEIPT"
 
-cmp "$SELECTION/selection.json" "$READBACK/selection.json"
+# WHY: a successful public readback is not sufficient if it describes a
+# different coherent selection. Compare it with the immutable private snapshot
+# before making the requested receipt visible to downstream consumers.
+jq -e --slurpfile observed "$READBACK/selection.json" \
+  '.selection_manifest.value == $observed[0]' \
+  "$PREPARED/assets/closed-selection.json" >/dev/null
 expected_tree="$(jq -er '.tap.prepared_tree_git_oid' \
-  "$SELECTION/selection.json")"
-observed_tree="$(jq -er '.prepared_tree_git_oid' "$RECEIPT")"
+  "$READBACK/selection.json")"
+observed_tree="$(jq -er '.prepared_tree_git_oid' "$READBACK_RECEIPT")"
 [ "$observed_tree" = "$expected_tree" ] || {
   echo "publish-homebrew-closed-selection-release: semantic readback tree differs" >&2
   exit 1
 }
+# WHY: hard-linking within the receipt parent is an atomic no-clobber install.
+# A failed comparison leaves no success receipt and an unchanged retry can
+# safely reconcile the already immutable release.
+ln "$READBACK_RECEIPT" "$RECEIPT"
 echo "Published closed Homebrew selection: $tag"
