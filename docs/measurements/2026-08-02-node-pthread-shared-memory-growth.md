@@ -4,8 +4,8 @@
 
 A Node.js pthread worker must synchronize the shared WebAssembly memory
 it receives before it creates a JavaScript view or a WebAssembly
-instance from that memory. Kandelo now does that by calling
-`memory.grow(0)` once at pthread startup.
+instance from that memory. Kandelo now does that by asking the memory to
+grow by zero pages once at pthread startup.
 
 Growing by zero pages does not allocate another WebAssembly page. It
 asks the receiving JavaScript isolate to refresh its fixed-length view
@@ -34,11 +34,18 @@ ownership path that the reclamation change deliberately removed.
 
 ## Correction
 
-The pthread startup path calls `memory.grow(0)` immediately after
-receiving its initialization data. The call happens before the worker
-creates any view or WebAssembly instance from that memory. This ordering
-matters because those objects can bind engine state to the receiving
-isolate's current view of the memory length.
+The pthread startup path calls `memory.grow` with the address width's
+zero value immediately after receiving its initialization data. The call
+happens before the worker creates any view or WebAssembly instance from
+that memory. This ordering matters because those objects can bind engine
+state to the receiving isolate's current view of the memory length.
+
+The JavaScript API represents page counts differently for the two Wasm
+address widths. Memory32 accepts the number `0` and returns a number;
+memory64 requires the BigInt `0n` and returns a BigInt. Kandelo selects
+the zero value from the process's existing, authoritative pointer width.
+It does not try to inspect `WebAssembly.Memory` because
+`WebAssembly.Memory.type()` is not available in every supported engine.
 
 The correction is host-runtime behavior shared by all pthread-using
 guest programs. It does not patch SpiderMonkey, change the Kandelo ABI,
@@ -77,6 +84,7 @@ The focused committed tests run with:
 
 ```bash
 scripts/dev-shell.sh npm --prefix host test -- --run \
+  test/shared-wasm-memory-growth.test.ts \
   test/shared-wasm-memory-growth-isolate.test.ts \
   test/pthread-shared-memory-growth.test.ts --maxWorkers=1
 ```
@@ -106,7 +114,8 @@ subsystem contract; it is not a replacement for the exact SpiderMonkey
 regression.
 
 A standalone browser-engine check exercised the same synchronization
-rule in the locally installed Playwright engines:
+rule in the locally installed Playwright engines. The original growth
+scenario used memory32:
 
 | Engine   | Startup synchronization | Later growth |
 | -------- | ----------------------: | -----------: |
@@ -120,6 +129,13 @@ before handoff. The receiving worker observed 752 pages,
 before and after that call. The main isolate then grew the memory to 816
 pages, and the running worker read the new tail without another
 synchronization call.
+
+A separate address-width check on the same date covered both actual
+memory32 and memory64 shared memories in Node.js, Chromium, Firefox, and
+WebKit. Every engine accepted `0` and returned a number for memory32;
+every engine accepted `0n` and returned a BigInt for memory64. The byte
+length stayed unchanged in both cases. Passing `0` to memory64 instead
+threw a type error in Node.js, matching the prepared merge failure.
 
 ## Validation boundary
 

@@ -1,3 +1,7 @@
+type AddressedMemory = {
+  grow(delta: number | bigint): number | bigint;
+};
+
 /**
  * Synchronize a received shared Wasm memory with its backing store.
  *
@@ -14,6 +18,12 @@
  */
 export function synchronizeReceivedSharedWasmMemory(
   memory: WebAssembly.Memory,
-): number {
-  return memory.grow(0);
+  ptrWidth: 4 | 8,
+): void {
+  // WHY: memory32's JavaScript API accepts a number page delta, while
+  // memory64 requires a BigInt even when the zero delta only refreshes this
+  // isolate's view. The process pointer width is already authoritative and
+  // works across engines that do not expose WebAssembly.Memory.type().
+  const zeroPages = ptrWidth === 8 ? 0n : 0;
+  (memory as unknown as AddressedMemory).grow(zeroPages);
 }

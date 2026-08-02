@@ -132,7 +132,11 @@ describe("shared WebAssembly.Memory growth across Node isolates", () => {
       maximum: 4,
       shared: true,
     });
-    const initialization = { memory, module: compiledModule };
+    const initialization = {
+      memory,
+      module: compiledModule,
+      ptrWidth: 4 as const,
+    };
     const barrier = new SharedArrayBuffer(2 * Int32Array.BYTES_PER_ELEMENT);
     const barrierView = new Int32Array(barrier);
     const target = createTypeScriptWorker(workerUrl, { barrier });

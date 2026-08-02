@@ -5,6 +5,7 @@ import { synchronizeReceivedSharedWasmMemory } from "../../src/shared-wasm-memor
 type Initialization = {
   memory: WebAssembly.Memory;
   module: WebAssembly.Module;
+  ptrWidth: 4 | 8;
 };
 
 type FixtureWorkerData = {
@@ -40,7 +41,7 @@ port.postMessage({ type: "bootstrap-ready" });
 Atomics.wait(barrier, RECEIVE_INITIALIZATION, 0);
 
 try {
-  const { memory, module } = await receiveInitialization();
+  const { memory, module, ptrWidth } = await receiveInitialization();
 
   // Memory is deserialized in this isolate, but no local buffer, view, or
   // instance exists. Hold this precise startup boundary while the process
@@ -49,10 +50,9 @@ try {
   Atomics.wait(barrier, USE_INITIALIZATION, 0);
 
   // Exercise the same production boundary as centralizedThreadWorkerMain.
-  // The return value is the page count before delta-zero growth; comparing it
-  // with the buffer below proves synchronization did not add a page.
-  const synchronizedPages = synchronizeReceivedSharedWasmMemory(memory);
+  synchronizeReceivedSharedWasmMemory(memory, ptrWidth);
   const synchronizedMemoryBytes = memory.buffer.byteLength;
+  const synchronizedPages = synchronizedMemoryBytes / (64 * 1024);
   const retainedView = new Uint8Array(memory.buffer, 0, 1);
   const instance = await WebAssembly.instantiate(module, {
     env: { memory },
