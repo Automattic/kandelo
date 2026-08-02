@@ -169,7 +169,14 @@ jobs:
       - name: Build user guide for the complete Pages tree
         env:
           VITEPRESS_BASE: /kandelo/guide/
-        run: npm run docs:build
+        run: |
+          set -euo pipefail
+          # WHY: documentation checks belong to the Pages publication path.
+          # Adding them to the repository-wide package scripts changes the
+          # cache identity of unrelated Kandelo runtime packages.
+          node --test docs-site/.vitepress/homebrew-doc-links.test.mjs
+          npm run docs:build
+          node --test docs-site/.vitepress/homebrew-doc-output.test.mjs
 
       - name: Typecheck API docs for the complete Pages tree
         working-directory: host
