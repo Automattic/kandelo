@@ -1228,7 +1228,8 @@ grep -Fq '(mode === "public" && plan !== undefined)' "$NODE_SMOKE" ||
 
 for input_contract in \
   "Exact live Kandelo default-branch commit M" \
-  "Exact live first-party tap commit TF" \
+  "Exact selected first-party bottle-catalog commit TF" \
+  "Exact live first-party tap main commit TA" \
   "Exact live independent-canary tap commit C"
 do
   grep -Fq "$input_contract" "$WORKFLOW" ||
@@ -1245,7 +1246,7 @@ grep -Fq \
   fail "every Homebrew main-shell gate must select the bottled product lane"
 
 live_input_block="$(sed -n \
-  '/- name: Bind exact live lifecycle revisions/,/- name: Fetch musl submodule/p' \
+  '/- name: Bind exact catalog and live lifecycle revisions/,/- name: Fetch musl submodule/p' \
   "$WORKFLOW")"
 for exact_binding in \
   "(inputs.caller_event_name || github.event_name) == 'workflow_dispatch' && inputs.transport_mode == 'closed'" \
@@ -1261,25 +1262,33 @@ for exact_binding in \
   '[ "${record#*[[:space:]]}" = refs/heads/main ]' \
   '[ "${record%%[[:space:]]*}" = "$expected" ]' \
   '"https://github.com/${GITHUB_REPOSITORY}.git" "$KANDELO_M"' \
-  '"https://github.com/Kandelo-dev/homebrew-tap-core.git" "$CORE_TAP_TF"' \
+  '"https://github.com/Kandelo-dev/homebrew-tap-core.git" \' \
+  '"$CORE_TAP_LIVE_TA"' \
   '"https://github.com/brandonpayton/homebrew-kandelo-canary.git" "$CANARY_C"' \
   'homebrew/main-shell-homebrew-runtime-support.json' \
   'homebrew/main-shell-migration-lock.json' \
+  '"$CORE_TAP_CATALOG_TF" ]' \
   'jq -e --arg canary "$CANARY_C"' \
   '$installs[0].revision == $canary' \
+  'git -C "$tap_authority_root" fetch --quiet --no-tags \' \
+  '--filter=blob:none origin refs/heads/main' \
+  'git -C "$tap_authority_root" merge-base --is-ancestor \' \
+  '"$CORE_TAP_CATALOG_TF" "$CORE_TAP_LIVE_TA"' \
   'echo "m=$KANDELO_M"' \
-  'echo "tf=$CORE_TAP_TF"' \
+  'echo "catalog=$CORE_TAP_CATALOG_TF"' \
+  'echo "tap=$CORE_TAP_LIVE_TA"' \
   'echo "c=$CANARY_C"'
 do
-  grep -Fq "$exact_binding" <<<"$live_input_block" ||
-    fail "manual live lifecycle does not bind exact M/TF/C input: $exact_binding"
+  grep -Fq -- "$exact_binding" <<<"$live_input_block" ||
+    fail "manual lifecycle does not bind exact M/TF/TA/C input: $exact_binding"
 done
 grep -Fq 'mistakes reachability for live' <<<"$live_input_block" &&
-  grep -Fq 'Local locks remain independent corroboration' \
-  <<<"$live_input_block" ||
-  fail "the M/TF/C input boundary needs its maintenance rationale inline"
+  grep -Fq 'local locks separately own catalog TF' \
+    <<<"$live_input_block" &&
+  grep -Fq 'intentionally different' <<<"$live_input_block" ||
+  fail "the M/TF/TA/C boundary needs its maintenance rationale inline"
 runtime_tf_lock_line="$(grep -nF \
-  'homebrew/main-shell-homebrew-runtime-support.json)" = "$CORE_TAP_TF" ]' \
+  'homebrew/main-shell-homebrew-runtime-support.json)" = \' \
   <<<"$live_input_block" | head -n1 | cut -d: -f1)"
 migration_tf_lock_line="$(grep -nF \
   'homebrew/main-shell-migration-lock.json' <<<"$live_input_block" |
@@ -1294,22 +1303,26 @@ kandelo_live_call_line="$(grep -nF \
   '"https://github.com/${GITHUB_REPOSITORY}.git" "$KANDELO_M"' \
   <<<"$live_input_block" | head -n1 | cut -d: -f1)"
 core_live_call_line="$(grep -nF \
-  '"https://github.com/Kandelo-dev/homebrew-tap-core.git" "$CORE_TAP_TF"' \
+  '"https://github.com/Kandelo-dev/homebrew-tap-core.git" \' \
   <<<"$live_input_block" | head -n1 | cut -d: -f1)"
 canary_live_call_line="$(grep -nF \
   '"https://github.com/brandonpayton/homebrew-kandelo-canary.git" "$CANARY_C"' \
   <<<"$live_input_block" | head -n1 | cut -d: -f1)"
+tap_ancestry_line="$(grep -nF \
+  'git -C "$tap_authority_root" merge-base --is-ancestor \' \
+  <<<"$live_input_block" | head -n1 | cut -d: -f1)"
 [ -n "$runtime_tf_lock_line" ] && [ -n "$migration_tf_lock_line" ] &&
   [ -n "$canary_product_lock_line" ] && [ -n "$live_helper_line" ] &&
   [ -n "$kandelo_live_call_line" ] && [ -n "$core_live_call_line" ] &&
-  [ -n "$canary_live_call_line" ] &&
+  [ -n "$canary_live_call_line" ] && [ -n "$tap_ancestry_line" ] &&
   [ "$runtime_tf_lock_line" -lt "$live_helper_line" ] &&
   [ "$migration_tf_lock_line" -lt "$live_helper_line" ] &&
   [ "$canary_product_lock_line" -lt "$live_helper_line" ] &&
   [ "$live_helper_line" -lt "$kandelo_live_call_line" ] &&
   [ "$kandelo_live_call_line" -lt "$core_live_call_line" ] &&
-  [ "$core_live_call_line" -lt "$canary_live_call_line" ] ||
-  fail "all local locks must precede the three anonymous live-main bindings"
+  [ "$core_live_call_line" -lt "$canary_live_call_line" ] &&
+  [ "$canary_live_call_line" -lt "$tap_ancestry_line" ] ||
+  fail "catalog locks, live heads, and TF-to-TA ancestry are misordered"
 
 live_head_matches_record() {
   local supplied_revision="$1"
@@ -1319,22 +1332,22 @@ live_head_matches_record() {
     [ "${main_record#*[[:space:]]}" = refs/heads/main ] &&
     [ "${main_record%%[[:space:]]*}" = "$supplied_revision" ]
 }
-exact_live_tf="1111111111111111111111111111111111111111"
-stale_but_reachable_tf="2222222222222222222222222222222222222222"
+exact_live_ta="1111111111111111111111111111111111111111"
+stale_but_reachable_ta="2222222222222222222222222222222222222222"
 exact_live_c="3333333333333333333333333333333333333333"
 stale_but_reachable_c="4444444444444444444444444444444444444444"
-synthetic_tf_main="$exact_live_tf"$'\trefs/heads/main'
-synthetic_tf_reachable="$stale_but_reachable_tf"$'\trefs/tags/rehearsal'
+synthetic_ta_main="$exact_live_ta"$'\trefs/heads/main'
+synthetic_ta_reachable="$stale_but_reachable_ta"$'\trefs/tags/rehearsal'
 synthetic_c_main="$exact_live_c"$'\trefs/heads/main'
 synthetic_c_reachable="$stale_but_reachable_c"$'\trefs/tags/rehearsal'
-live_head_matches_record "$exact_live_tf" "$synthetic_tf_main" ||
-  fail "exact live TF must satisfy the anonymous main-head binding"
+live_head_matches_record "$exact_live_ta" "$synthetic_ta_main" ||
+  fail "exact live TA must satisfy the anonymous main-head binding"
 live_head_matches_record "$exact_live_c" "$synthetic_c_main" ||
   fail "exact live C must satisfy the anonymous main-head binding"
-if live_head_matches_record "$stale_but_reachable_tf" "$synthetic_tf_main" ||
-   live_head_matches_record "$stale_but_reachable_tf" "$synthetic_tf_reachable"
+if live_head_matches_record "$stale_but_reachable_ta" "$synthetic_ta_main" ||
+   live_head_matches_record "$stale_but_reachable_ta" "$synthetic_ta_reachable"
 then
-  fail "stale-but-reachable TF must not satisfy the live main-head binding"
+  fail "stale-but-reachable TA must not satisfy the live main-head binding"
 fi
 if live_head_matches_record "$stale_but_reachable_c" "$synthetic_c_main" ||
    live_head_matches_record "$stale_but_reachable_c" "$synthetic_c_reachable"
@@ -1342,24 +1355,27 @@ then
   fail "stale-but-reachable C must not satisfy the live main-head binding"
 fi
 if live_head_matches_record \
-  "$exact_live_tf" "$synthetic_tf_main"$'\n'"$synthetic_tf_main"
+  "$exact_live_ta" "$synthetic_ta_main"$'\n'"$synthetic_ta_main"
 then
   fail "duplicate live tap records must fail the exact-one-record binding"
 fi
 
-live_input_line="$(grep -nF -- '- name: Bind exact live lifecycle revisions' \
+live_input_line="$(grep -nF -- \
+  '- name: Bind exact catalog and live lifecycle revisions' \
   "$WORKFLOW" | cut -d: -f1)"
 bottle_candidate_line="$(grep -nF -- '- name: Build the exact lazy shell from public bottles' \
   "$WORKFLOW" | cut -d: -f1)"
 [ -n "$live_input_line" ] && [ -n "$bottle_candidate_line" ] &&
   [ "$live_input_line" -lt "$bottle_candidate_line" ] ||
-  fail "live M/TF/C validation must precede bottled candidate and lifecycle work"
+  fail "live M/TF/TA/C validation must precede candidate and lifecycle work"
 
 live_fixture_block="$(sed -n \
   '/- name: Create the exact closed Chromium lifecycle fixture/,/- name: Build the sealed browser product tree/p' \
   "$WORKFLOW")"
 for fixture_binding in \
   "if: (inputs.caller_event_name || github.event_name) == 'workflow_dispatch' && inputs.transport_mode == 'closed'" \
+  '[ "${{ steps.live-inputs.outputs.catalog }}" = \' \
+  '"${{ steps.bottle_candidate.outputs.tap_sha }}" ]' \
   'scripts/create-homebrew-guest-lifecycle-fixture.ts' \
   'env -u GH_TOKEN -u GITHUB_TOKEN git ls-remote' \
   '.activation.atomic_group == $runtime_id' \
@@ -1375,7 +1391,7 @@ for fixture_binding in \
   '--homebrew-bootstrap-archive "${{ steps.bottle_candidate.outputs.bootstrap }}"' \
   '--homebrew-bootstrap-env "${{ steps.bottle_candidate.outputs.bootstrap_env }}"' \
   '--bottle-mirror "$RUNNER_TEMP/homebrew-main-shell-bottles"' \
-  '--core-revision "${{ steps.live-inputs.outputs.tf }}"' \
+  '--core-revision "${{ steps.live-inputs.outputs.tap }}"' \
   '--canary-revision "${{ steps.live-inputs.outputs.c }}"' \
   'install_browser_fixture_asset "${{ steps.bottle_candidate.outputs.image }}"' \
   'install_browser_fixture_asset homebrew/main-shell-brew-package-tree.json' \
@@ -1406,7 +1422,7 @@ for node_binding in \
   '--transport-mode closed' \
   '--bottle-mirror-plan "${{ steps.mirror.outputs.plan }}"' \
   '--proof-mode comprehensive' \
-  '--core-revision "${{ steps.live-inputs.outputs.tf }}"' \
+  '--core-revision "${{ steps.live-inputs.outputs.tap }}"' \
   '--canary-revision "${{ steps.live-inputs.outputs.c }}"'
 do
   grep -Fq -- "$node_binding" <<<"$live_node_block" ||

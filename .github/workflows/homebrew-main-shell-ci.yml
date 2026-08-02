@@ -50,8 +50,12 @@ on:
         description: Exact live Kandelo default-branch commit M
         required: true
         type: string
-      core_tap_final_revision:
-        description: Exact live first-party tap commit TF
+      core_tap_catalog_revision:
+        description: Exact selected first-party bottle-catalog commit TF
+        required: true
+        type: string
+      core_tap_live_revision:
+        description: Exact live first-party tap main commit TA
         required: true
         type: string
       canary_tap_revision:
@@ -125,25 +129,31 @@ jobs:
           ref: ${{ inputs.pull_request_head_sha || github.sha }}
           persist-credentials: false
 
-      - name: Bind exact live lifecycle revisions
+      - name: Bind exact catalog and live lifecycle revisions
         if: (inputs.caller_event_name || github.event_name) == 'workflow_dispatch' && inputs.transport_mode == 'closed'
         id: live-inputs
         env:
           KANDELO_M: ${{ inputs.kandelo_main_revision }}
-          CORE_TAP_TF: ${{ inputs.core_tap_final_revision }}
+          CORE_TAP_CATALOG_TF: ${{ inputs.core_tap_catalog_revision }}
+          CORE_TAP_LIVE_TA: ${{ inputs.core_tap_live_revision }}
           CANARY_C: ${{ inputs.canary_tap_revision }}
         run: |
           set -euo pipefail
           [ "$SHELL_ACTIVATION_MODE" = bottles ]
-          for revision in "$KANDELO_M" "$CORE_TAP_TF" "$CANARY_C"; do
+          for revision in \
+            "$KANDELO_M" "$CORE_TAP_CATALOG_TF" \
+            "$CORE_TAP_LIVE_TA" "$CANARY_C"
+          do
             [[ "$revision" =~ ^[0-9a-f]{40}$ ]]
           done
           [ "$GITHUB_REF" = refs/heads/main ]
           [ "$(git rev-parse HEAD)" = "$KANDELO_M" ]
           [ "$(jq -er '.catalog.tap_commit' \
-            homebrew/main-shell-homebrew-runtime-support.json)" = "$CORE_TAP_TF" ]
+            homebrew/main-shell-homebrew-runtime-support.json)" = \
+            "$CORE_TAP_CATALOG_TF" ]
           [ "$(jq -er '.catalog.tap_commit' \
-            homebrew/main-shell-migration-lock.json)" = "$CORE_TAP_TF" ]
+            homebrew/main-shell-migration-lock.json)" = \
+            "$CORE_TAP_CATALOG_TF" ]
           jq -e --arg canary "$CANARY_C" '
             .lifecycle_installs as $installs |
             ($installs | length) == 1 and
@@ -156,9 +166,9 @@ jobs:
             $installs[0].image_closure == false
           ' homebrew/main-shell-homebrew-runtime-support.json >/dev/null
           # WHY: a reviewed historical commit can remain fetchable forever.
-          # Require each operator-supplied identity to be its anonymous public
-          # main head before a detached fetch mistakes reachability for live
-          # cutover authority. Local locks remain independent corroboration.
+          # Require M, live tap TA, and C to be their anonymous public main
+          # heads before a detached fetch mistakes reachability for live
+          # cutover authority. The local locks separately own catalog TF.
           require_exact_live_main() {
             local repository="$1"
             local expected="$2"
@@ -173,12 +183,30 @@ jobs:
           require_exact_live_main \
             "https://github.com/${GITHUB_REPOSITORY}.git" "$KANDELO_M"
           require_exact_live_main \
-            "https://github.com/Kandelo-dev/homebrew-tap-core.git" "$CORE_TAP_TF"
+            "https://github.com/Kandelo-dev/homebrew-tap-core.git" \
+            "$CORE_TAP_LIVE_TA"
           require_exact_live_main \
             "https://github.com/brandonpayton/homebrew-kandelo-canary.git" "$CANARY_C"
+          tap_authority_root="$RUNNER_TEMP/homebrew-main-shell-tap-authority"
+          test ! -e "$tap_authority_root"
+          git init -q "$tap_authority_root"
+          git -C "$tap_authority_root" remote add origin \
+            https://github.com/Kandelo-dev/homebrew-tap-core.git
+          env -u GH_TOKEN -u GITHUB_TOKEN \
+            git -C "$tap_authority_root" fetch --quiet --no-tags \
+              --filter=blob:none origin refs/heads/main
+          [ "$(git -C "$tap_authority_root" rev-parse FETCH_HEAD)" = \
+            "$CORE_TAP_LIVE_TA" ]
+          # WHY: TF owns the selected Formula and bottle provenance. A later
+          # activation commit owns the live tap used by `brew tap`. They are
+          # intentionally different, but the live tap must contain TF rather
+          # than substitute an unrelated catalog.
+          git -C "$tap_authority_root" merge-base --is-ancestor \
+            "$CORE_TAP_CATALOG_TF" "$CORE_TAP_LIVE_TA"
           {
             echo "m=$KANDELO_M"
-            echo "tf=$CORE_TAP_TF"
+            echo "catalog=$CORE_TAP_CATALOG_TF"
+            echo "tap=$CORE_TAP_LIVE_TA"
             echo "c=$CANARY_C"
           } >> "$GITHUB_OUTPUT"
 
@@ -989,7 +1017,7 @@ jobs:
         id: live-fixture
         run: |
           set -euo pipefail
-          [ "${{ steps.live-inputs.outputs.tf }}" = \
+          [ "${{ steps.live-inputs.outputs.catalog }}" = \
             "${{ steps.bottle_candidate.outputs.tap_sha }}" ]
           main_record=$(env -u GH_TOKEN -u GITHUB_TOKEN git ls-remote \
             "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/main)
@@ -1037,7 +1065,7 @@ jobs:
               --homebrew-bootstrap-env "${{ steps.bottle_candidate.outputs.bootstrap_env }}" \
               --bottle-mirror "$RUNNER_TEMP/homebrew-main-shell-bottles" \
               --fixed-asset-url-root "$fixed_url_root" \
-              --core-revision "${{ steps.live-inputs.outputs.tf }}" \
+              --core-revision "${{ steps.live-inputs.outputs.tap }}" \
               --canary-revision "${{ steps.live-inputs.outputs.c }}" \
               --timeout-ms 900000 \
               --out "$fixture"
@@ -1154,7 +1182,7 @@ jobs:
               --transport-mode closed \
               --bottle-mirror-plan "${{ steps.mirror.outputs.plan }}" \
               --proof-mode comprehensive \
-              --core-revision "${{ steps.live-inputs.outputs.tf }}" \
+              --core-revision "${{ steps.live-inputs.outputs.tap }}" \
               --canary-revision "${{ steps.live-inputs.outputs.c }}" \
               --timeout-ms 900000
 

@@ -1376,13 +1376,18 @@ mirror. That manual Node result is diagnostic evidence until the phases use
 fresh process boundaries; it does not block the public first-install shipping
 claim.
 
-Dispatch the live lane only after recording the three observed live commits:
+Dispatch the live lane only after recording its four exact identities.
+`TF` is the source catalog selected by the sealed shell lock. `TA` is the
+later live tap `main` used by `brew tap`; activation commits may make
+`TA` differ from `TF`. The workflow requires `TF` to be an ancestor of
+`TA` instead of incorrectly requiring both roles to name the same commit.
 
 ```bash
 gh workflow run homebrew-main-shell-ci.yml --ref main \
   -f transport_mode=closed \
   -f kandelo_main_revision=<M> \
-  -f core_tap_final_revision=<TF> \
+  -f core_tap_catalog_revision=<TF> \
+  -f core_tap_live_revision=<TA> \
   -f canary_tap_revision=<C>
 ```
 
