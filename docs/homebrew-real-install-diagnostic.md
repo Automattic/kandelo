@@ -5,11 +5,12 @@ This diagnostic answers two bounded questions:
 1. Can stock Homebrew install and run the public core Bzip2 bottle
    inside Kandelo?
 2. Can the same image tap an independent public repository, install
-   its M4 bottle, and use Dash from the core tap as a dependency?
+   its keg-only `m4-canary` bottle, and use Dash from the core tap as a
+   dependency?
 
 It does **not** authorize the main shell. The shipping shell has a
-separate 41-Formula contract and product pointer. A successful
-diagnostic must not replace, seal, or weaken either one.
+separate, larger contract and product pointer. A successful diagnostic
+must not replace, seal, or weaken either one.
 
 ## What the image contains
 
@@ -44,89 +45,69 @@ making that policy a prerequisite for this bounded experiment.
 
 The 25 Formula handoffs must be frozen in one campaign scheduler state.
 Do not mix handoffs from another campaign, architecture, or source tap.
-The paths below are examples; use new output directories every time.
+The tap's protected data-only workflow, rather than a developer
+checkout, owns selection publication.
+
+Create canonical compact JSON from the campaign's exact identities and
+the scheduler-recorded immutable handoff tag for every Formula below.
+The roots are policy; the publisher independently derives their closure
+and rejects a missing or extra handoff.
 
 ```bash
-CAMPAIGN_ROOT=/path/to/c2-campaign
-STATE_ROOT="$CAMPAIGN_ROOT/scheduler-state"
-KANDELO_ROOT=/path/to/exact-kandelo-checkout
-SELECTION_CANDIDATE=/path/to/new-selection-candidate
-SELECTION_RELEASE=/path/to/new-selection-release
+CAMPAIGN_TAG=<immutable-campaign-tag>
+KANDELO_COMMIT=<campaign-kandelo-commit>
+SOURCE_TAP_COMMIT=<campaign-source-tap-commit>
+HANDOFFS_JSON=/path/to/sorted-25-formula-handoff-object.json
 DIAGNOSTIC_WORK=/path/to/new-diagnostic-work
-```
 
-Materialize every frozen handoff from its immutable public release.
-This read must work without credentials:
-
-```bash
-env -u GH_TOKEN -u GITHUB_TOKEN \
-  -u HOMEBREW_GITHUB_API_TOKEN \
-  -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-  -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
-  python3 "$CAMPAIGN_ROOT/campaign_scheduler.py" \
-    --campaign "$CAMPAIGN_ROOT/campaign.json" \
-    --state-root "$STATE_ROOT" \
-    materialize \
-    --kandelo-root "$KANDELO_ROOT" \
-    --source-tap-root "$CAMPAIGN_ROOT/source-tap"
-```
-
-Prepare the exact 25-Formula closed selection:
-
-```bash
-formulae=(
-  libcxx ncurses bash bzip2 coreutils openssl zlib libcurl curl dash
-  findutils gawk ed diffutils grep less sed vim git homebrew-bootstrap
-  posix-utils-lite libyaml ruby gzip tar
-)
-handoff_args=()
-for formula in "${formulae[@]}"; do
-  handoff_args+=(--handoff "$STATE_ROOT/materialized/handoffs/$formula")
-done
-
-cd "$KANDELO_ROOT"
-bash scripts/dev-shell.sh python3 \
-  scripts/homebrew-prefix-campaign-executor.py prepare-selection \
-  --campaign "$CAMPAIGN_ROOT/campaign.json" \
-  --source-tap-root "$STATE_ROOT/materialized/target-source" \
-  --root-formula bash \
-  --root-formula bzip2 \
-  --root-formula coreutils \
-  --root-formula curl \
-  --root-formula findutils \
-  --root-formula gawk \
-  --root-formula git \
-  --root-formula homebrew-bootstrap \
-  --root-formula posix-utils-lite \
-  --root-formula ruby \
-  --root-formula tar \
-  --arch wasm32 \
-  "${handoff_args[@]}" \
-  --out "$SELECTION_CANDIDATE"
+roots='["bash","bzip2","coreutils","curl","findutils","gawk","git","homebrew-bootstrap","posix-utils-lite","ruby","tar"]'
+plan="$(jq -cnS \
+    --arg campaign_tag "$CAMPAIGN_TAG" \
+    --arg kandelo_commit "$KANDELO_COMMIT" \
+    --arg source_tap_commit "$SOURCE_TAP_COMMIT" \
+    --argjson handoffs "$(jq -cS . "$HANDOFFS_JSON")" \
+    --argjson roots "$roots" \
+    '{
+      schema: 1,
+      kind: "kandelo-homebrew-closed-selection-publish-plan",
+      campaign_tag: $campaign_tag,
+      kandelo_commit: $kandelo_commit,
+      source_tap_commit: $source_tap_commit,
+      roots: $roots,
+      handoffs: $handoffs
+    }')"
+plan_sha256="$(printf '%s\n' "$plan" | sha256sum | cut -d' ' -f1)"
 ```
 
 ## Publish and verify the selection
 
-Publication is a mutation. Run it only from the reviewed current-main
-authority and only after checking the exact Kandelo and tap commits
-again. The publisher creates an immutable content-addressed release;
-it does not move the main-shell product pointer.
+Publication is a mutation. Dispatch the protected tap workflow only
+after checking the exact Kandelo and tap commits again. The reusable
+Kandelo workflow anonymously reconstructs every handoff, publishes an
+immutable content-addressed release, and anonymously reads it back. It
+does not move the main-shell product pointer.
 
 ```bash
-cd "$KANDELO_ROOT"
-bash scripts/publish-homebrew-closed-selection-release.sh \
-  --selection "$SELECTION_CANDIDATE" \
-  --lock-root "$SELECTION_RELEASE" \
-  --receipt "$SELECTION_RELEASE/publish-receipt.json" \
-  --kandelo-main-contains-sha \
-    6024539d7849bb5f0d9c235b97218e60f03a2fef \
-  --target-main-contains-sha \
-    b19a62636c9c8136740eba05237e3106ddd37c97
+gh workflow run publish-closed-selection.yml \
+  --repo Kandelo-dev/homebrew-tap-core \
+  --ref main \
+  -f selection_plan="$plan" \
+  -f selection_plan_sha256="$plan_sha256"
 
-SELECTION_TAG="$(
-  jq -er '.tag' "$SELECTION_RELEASE/publish-receipt.json"
-)"
+# Record the exact successful workflow run; do not select a merely recent run.
+RUN_ID=<exact-workflow-run-id>
+SELECTION_RECEIPT=/path/to/new-selection-receipt
+gh run download "$RUN_ID" \
+  --repo Kandelo-dev/homebrew-tap-core \
+  --name "homebrew-closed-selection-publication-$plan_sha256" \
+  --dir "$SELECTION_RECEIPT"
+SELECTION_TAG="$(jq -er '.tag' "$SELECTION_RECEIPT/receipt.json")"
 ```
+
+Before opening the proof pull request, update the reviewed diagnostic
+contract from this exact selection and the canary tap revision that
+publishes `m4-canary`. Do not substitute the main-shell selection lock
+or copy an unrelated campaign's identities.
 
 ## Compose and prove the exact VFS
 
@@ -185,7 +166,8 @@ hosts:
 - the downloaded Bzip2 archive hashes to the exact digest admitted by
   the closed selection;
 - a separate public tap can be cloned and pinned to an exact revision;
-- its M4 bottle can depend on the exact selected core Dash bottle; and
+- its keg-only `m4-canary` bottle can depend on the exact selected core
+  Dash bottle without uninstalling the shell's core M4; and
 - both installed programs execute successfully.
 
 It does not prove the complete shell selection, upgrades, reboot

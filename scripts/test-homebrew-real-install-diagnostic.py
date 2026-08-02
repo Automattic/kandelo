@@ -76,6 +76,35 @@ class DiagnosticContractTest(unittest.TestCase):
         ):
             self.read_changed_contract(changed)
 
+    def test_lifecycle_requires_the_unique_keg_only_canary(self) -> None:
+        changed = copy.deepcopy(self.contract)
+        changed["lifecycle"]["independent_formula"] = (
+            "brandonpayton/kandelo-canary/m4"
+        )
+        with self.assertRaisesRegex(
+            MODULE.DiagnosticError, "shared guest proof"
+        ):
+            self.read_changed_contract(changed)
+
+    def test_lifecycle_accepts_an_exact_canary_release_revision(self) -> None:
+        changed = copy.deepcopy(self.contract)
+        changed["lifecycle"]["independent_revision"] = "a" * 40
+        with tempfile.TemporaryDirectory() as temporary:
+            path = pathlib.Path(temporary) / "contract.json"
+            path.write_text(json.dumps(changed) + "\n")
+            parsed, _payload = MODULE.read_contract(path)
+        self.assertEqual(
+            parsed["lifecycle"]["independent_revision"], "a" * 40
+        )
+
+    def test_lifecycle_rejects_a_mutable_canary_revision(self) -> None:
+        changed = copy.deepcopy(self.contract)
+        changed["lifecycle"]["independent_revision"] = "main"
+        with self.assertRaisesRegex(
+            MODULE.DiagnosticError, "shared guest proof"
+        ):
+            self.read_changed_contract(changed)
+
     def test_exact_anonymous_selection_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root, receipt, authorization = self.write_selection(

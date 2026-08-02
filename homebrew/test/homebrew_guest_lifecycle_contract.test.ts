@@ -157,7 +157,7 @@ test("diagnostic canary scope starts without a precomposed core M4", () => {
   assertBoundedShippingScript(script, "diagnostic canary shipping proof");
   for (const expected of [
     "diagnostic unexpectedly contains a precomposed core M4 keg",
-    "brew install --no-ask --force-bottle brandonpayton/kandelo-canary/m4",
+    "brew install --no-ask --force-bottle brandonpayton/kandelo-canary/m4-canary",
     "brew trust --formula kandelo-dev/tap-core/dash",
     'assert_runtime_dependency "$m4_prefix" kandelo-dev/tap-core/dash',
     'assert_precomposed_bottle "$dash_prefix"',

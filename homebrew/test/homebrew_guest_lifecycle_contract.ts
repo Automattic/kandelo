@@ -163,7 +163,8 @@ assert_untrusted_tap_discovery ${CORE_TAP} "$core_untrusted"
     : String.raw`
 # WHY: the public source commit can predate the detached closed-selection
 # tree. Bind the two Formulae exercised by this proof to the exact archives
-# admitted by the immutable C2 selection before Homebrew evaluates either.
+# admitted by the immutable diagnostic selection before Homebrew evaluates
+# either Formula.
 assert_formula_bottle_sha \
   "$core_tap/Formula/bzip2.rb" ${selectedBottleDigests.coreBzip2Sha256}
 assert_formula_bottle_sha \

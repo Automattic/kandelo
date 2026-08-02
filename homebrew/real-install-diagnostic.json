@@ -151,7 +151,7 @@
     "independent_tap": "brandonpayton/kandelo-canary",
     "independent_repository": "brandonpayton/homebrew-kandelo-canary",
     "independent_revision": "d8bdda662f6d80cf3dcdbe8451edb12bb33bbafc",
-    "independent_formula": "brandonpayton/kandelo-canary/m4",
+    "independent_formula": "brandonpayton/kandelo-canary/m4-canary",
     "independent_dependency": "kandelo-dev/tap-core/dash"
   },
   "compatibility": {

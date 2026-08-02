@@ -108,16 +108,24 @@ def validate_lifecycle_and_compatibility(
         "core_formula": "kandelo-dev/tap-core/bzip2",
         "independent_tap": "brandonpayton/kandelo-canary",
         "independent_repository": "brandonpayton/homebrew-kandelo-canary",
-        "independent_revision": "d8bdda662f6d80cf3dcdbe8451edb12bb33bbafc",
-        "independent_formula": "brandonpayton/kandelo-canary/m4",
+        "independent_formula": "brandonpayton/kandelo-canary/m4-canary",
         "independent_dependency": "kandelo-dev/tap-core/dash",
     }
     lifecycle = exact(
         contract["lifecycle"],
-        set(expected_lifecycle),
+        set(expected_lifecycle) | {"independent_revision"},
         "diagnostic lifecycle",
     )
-    if lifecycle != expected_lifecycle:
+    fixed_lifecycle = dict(lifecycle)
+    independent_revision = fixed_lifecycle.pop("independent_revision")
+    # WHY: the independent tap revision is release evidence, not a Kandelo
+    # source constant. Accept any exact commit here while keeping every tap,
+    # Formula, and cross-tap dependency identity fixed by this proof.
+    if (
+        fixed_lifecycle != expected_lifecycle
+        or not isinstance(independent_revision, str)
+        or GIT_SHA.fullmatch(independent_revision) is None
+    ):
         fail("diagnostic lifecycle differs from the shared guest proof")
 
     compatibility = exact(
