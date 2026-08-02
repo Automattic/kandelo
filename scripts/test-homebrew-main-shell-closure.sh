@@ -652,7 +652,10 @@ if check_browser_fetch_only_contract \
 then
   fail "browser support contract accepted removed fetch-only resolution"
 fi
-sed '/fetch_args=(--fetch-only)/a\          fetch_args=()' \
+# WHY: a literal newline after `a\` is accepted by both BSD and GNU sed.
+sed '/fetch_args=(--fetch-only)/a\
+          fetch_args=()
+' \
   "$WORKFLOW" >"$TMP_ROOT/browser-fetch-only-overridden.yml"
 if check_browser_fetch_only_contract \
   "$TMP_ROOT/browser-fetch-only-overridden.yml"
