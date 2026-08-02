@@ -3441,6 +3441,10 @@ EOF
   grep -F "CI Formula execution requires KANDELO_HOMEBREW_BUILD_USER" \
     "$ci_err" >/dev/null ||
     fail "CI bottle build did not explain its isolated-identity requirement"
+  [ ! -e "$out" ] ||
+    fail "CI bottle build created output before requiring its isolated identity"
+  [ ! -s "$log" ] ||
+    fail "CI bottle build loaded Homebrew before requiring its isolated identity"
   : >"$log"
 
   different_checker="$FORMULA_RUNNER_FIXTURE_ROOT/target/different-safe-host/release/xtask"

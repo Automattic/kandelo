@@ -71,6 +71,14 @@ case "$ARCH" in
   *) echo "homebrew-bottle-build.sh: invalid arch: $ARCH" >&2; exit 2 ;;
 esac
 
+if [ "${GITHUB_ACTIONS:-}" = "true" ] && [ -z "$BUILD_USER" ]; then
+  # WHY: every CI Formula must run as the isolated build identity. Reject the
+  # missing authority before creating output, temporary realms, or loading
+  # Homebrew so a secondary setup error cannot hide the actual trust failure.
+  echo "homebrew-bottle-build.sh: CI Formula execution requires KANDELO_HOMEBREW_BUILD_USER" >&2
+  exit 2
+fi
+
 TAP_ROOT="$(cd "$TAP_ROOT" && pwd -P)"
 mkdir -p "$OUT_DIR"
 OUT_DIR="$(cd "$OUT_DIR" && pwd)"
@@ -604,9 +612,6 @@ if [ -n "$BUILD_USER" ]; then
     "${DEPENDENCY_TAP_ROOTS[@]}"
   homebrew_native_contract_stage_marker formula-realm-isolation completed
   BREW_BIN="$HOMEBREW_PATCHED_BREW_BIN"
-elif [ "${GITHUB_ACTIONS:-}" = "true" ]; then
-  echo "homebrew-bottle-build.sh: CI Formula execution requires KANDELO_HOMEBREW_BUILD_USER" >&2
-  exit 2
 fi
 
 run_brew_logged() {
