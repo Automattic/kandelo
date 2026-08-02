@@ -4072,9 +4072,20 @@ not expose a draft, so recovery discovers the unique pending tag through the
 authenticated, paginated release list and refreshes that draft by its database
 ID. Release assets are inventoried through their separately paginated endpoint,
 not the release object's potentially truncated embedded list. Once public, the
-release is never mutated. Publication creates the tag,
-after which it must be a direct commit reference to the exact tap source
-commit. Success requires GitHub-enforced release immutability plus anonymous
+release is never mutated. Before creating a draft, the publisher creates or
+validates a lightweight tag that points directly to the exact tap source
+commit. This order matters when an older source commit changed files under
+`.github/workflows`: GitHub's
+[Create a release API](https://docs.github.com/en/rest/releases/releases#create-a-release)
+otherwise requires a token with the `Workflows: write` repository permission,
+and a workflow's built-in `GITHUB_TOKEN` cannot receive that permission. When
+the exact tag already exists, GitHub ignores `target_commitish` during release
+creation. The publisher performs both operations under the same content-tag
+state lock, so a conflicting or annotated tag fails before any draft is
+created. A failed draft creation leaves the exact tag reserved for a later run
+to resume safely.
+
+Success requires GitHub-enforced release immutability plus anonymous
 digest-and-size readback of the acceptance release's exact five assets and the
 runtime release's descriptor plus every declared deferred-bottle asset. A new
 schema-3 publication receipt records both tags and both independently verified

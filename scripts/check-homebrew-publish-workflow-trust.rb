@@ -7750,6 +7750,15 @@ def check_publisher(workflow)
     check(immutable_publisher_source.match?(pattern),
           "immutable GitHub release mutation is not immediately preceded by exact-main authority")
   end
+  publisher_entrypoint = immutable_publisher_source.split(
+    /^acquire_lock\n/, 2
+  ).fetch(1, "")
+  early_tag = publisher_entrypoint.index("\nensure_direct_tag\n")
+  release_reconciliation = publisher_entrypoint.index("\nrelease_rc=0\n")
+  check(
+    early_tag && release_reconciliation && early_tag < release_reconciliation,
+    "immutable GitHub release publisher does not reserve its exact tag before release reconciliation"
+  )
   immutable_manifest_validator_source = File.read(
     File.join(REPO_ROOT, "scripts/validate-immutable-github-release-manifest.py")
   )
@@ -7804,6 +7813,11 @@ def check_publisher(workflow)
     "failed anonymous readback", "anonymous recovery mutated",
     "FAKE_CREATE_RESPONSE_LOST", "FAKE_UPLOAD_RESPONSE_LOST",
     "FAKE_TAG_RESPONSE_LOST", "FAKE_PUBLISH_RESPONSE_LOST",
+    "workflow-containing target release was attempted before its exact tag",
+    "publisher tried to recreate an existing exact tag",
+    "conflicting tag failure created a release",
+    "tag creation failure reached release creation",
+    "release-creation retry did not resume from the retained tag",
     "publisher made a release public after Kandelo main advanced",
     "advanced Kandelo main reached the public release PATCH",
   ].each do |fragment|

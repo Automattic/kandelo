@@ -489,8 +489,8 @@ validate_direct_tag() {
 }
 
 # GitHub ignores target_commitish when a release tag already exists. Establish
-# or verify the exact lightweight tag before making the release immutable, so a
-# stale or annotated tag cannot poison an otherwise valid content release.
+# the exact lightweight tag before draft creation, then recheck it before the
+# immutable transition. A stale or annotated tag must not claim valid content.
 ensure_direct_tag() {
   local attempt=1 create_rc tag_rc
   tag_rc=0
@@ -572,6 +572,14 @@ acquire_lock() {
 }
 
 acquire_lock
+
+# WHY: GitHub requires a token with `workflows: write` when release creation
+# targets an older commit that changed a workflow relative to current main.
+# The built-in GITHUB_TOKEN can never receive that permission. GitHub ignores
+# target_commitish when the exact tag already exists, so reserve and validate
+# the direct tag under this same state lock before creating the draft.
+# https://docs.github.com/en/rest/releases/releases#create-a-release
+ensure_direct_tag
 
 release_rc=0
 refresh_public_release || release_rc=$?

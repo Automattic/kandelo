@@ -187,6 +187,13 @@ def by_tag(state, tag):
     return [item for item in state["releases"] if item["tag"] == tag]
 
 
+def publication_reached_asset_count(state):
+    expected = int(os.environ.get("FAKE_ADVANCE_AFTER_ASSET_COUNT", "0"))
+    return expected > 0 and any(
+        len(item["assets"]) >= expected for item in state["releases"]
+    )
+
+
 def asset_json(item):
     return {
         "id": item["id"],
@@ -231,7 +238,11 @@ if args == [
     "--jq", ".object.sha",
 ]:
     state = load()
-    if os.environ.get("FAKE_MAIN_ADVANCE_AFTER_TAG") and state["tags"]:
+    if (
+        os.environ.get("FAKE_MAIN_ADVANCE_AFTER_TAG")
+        and state["tags"]
+        and publication_reached_asset_count(state)
+    ):
         print("f" * 40)
     else:
         print(os.environ["FAKE_KANDELO_MAIN_SHA"])
@@ -264,6 +275,7 @@ elif (
         repository.lower() == "automattic/kandelo"
         and os.environ.get("FAKE_CONTAINS_DIVERGE_AFTER_TAG")
         and state["tags"]
+        and publication_reached_asset_count(state)
     ):
         print("\t".join(["diverged", source, "0" * 40]))
     else:
@@ -336,6 +348,9 @@ elif args[:3] == ["api", "--method", "POST"]:
         if not values["ref"].startswith(prefix):
             sys.exit(2)
         tag = values["ref"][len(prefix):]
+        if os.environ.get("FAKE_TAG_CREATION_DENIED"):
+            print("tag creation denied", file=sys.stderr)
+            sys.exit(1)
         if tag in state["tags"]:
             print("duplicate tag", file=sys.stderr)
             sys.exit(1)
@@ -347,6 +362,15 @@ elif args[:3] == ["api", "--method", "POST"]:
             sys.exit(1)
         print(json.dumps({"ref": values["ref"], "object": state["tags"][tag]}))
     else:
+        if (
+            os.environ.get("FAKE_WORKFLOW_TARGET_REQUIRES_TAG")
+            and values["tag_name"] not in state["tags"]
+        ):
+            print("Resource not accessible by integration", file=sys.stderr)
+            sys.exit(1)
+        if os.environ.get("FAKE_RELEASE_CREATION_DENIED"):
+            print("release creation denied", file=sys.stderr)
+            sys.exit(1)
         if by_tag(state, values["tag_name"]):
             print("duplicate release", file=sys.stderr)
             sys.exit(1)
@@ -544,6 +568,10 @@ run_publisher_with_authority() {
   FAKE_TARGET_CONTAINED_SHA="$target" \
   FAKE_MAIN_ADVANCE_AFTER_TAG="${FAKE_MAIN_ADVANCE_AFTER_TAG:-}" \
   FAKE_CONTAINS_DIVERGE_AFTER_TAG="${FAKE_CONTAINS_DIVERGE_AFTER_TAG:-}" \
+  FAKE_ADVANCE_AFTER_ASSET_COUNT="${FAKE_ADVANCE_AFTER_ASSET_COUNT:-}" \
+  FAKE_TAG_CREATION_DENIED="${FAKE_TAG_CREATION_DENIED:-}" \
+  FAKE_RELEASE_CREATION_DENIED="${FAKE_RELEASE_CREATION_DENIED:-}" \
+  FAKE_WORKFLOW_TARGET_REQUIRES_TAG="${FAKE_WORKFLOW_TARGET_REQUIRES_TAG:-}" \
   GH_TOKEN=fake-token \
     bash "$REPO_ROOT/scripts/publish-immutable-github-release.sh" \
       --manifest "$ACTIVE_MANIFEST" \
@@ -574,6 +602,117 @@ contains_manifest="$TMP_ROOT/contains-manifest.json"
 jq '.assets = [.assets[0]] |
     .preferred_asset_names = [.assets[0].name] |
     .accepted_existing_asset_sets = []' "$manifest" >"$contains_manifest"
+
+seed_tag_only() {
+  local type="$1" sha="$2"
+  jq -n --arg tag "$tag" --arg type "$type" --arg sha "$sha" '{
+    releases: [],
+    tags: {($tag): {type: $type, sha: $sha}},
+    next_release_id: 70,
+    next_asset_id: 100
+  }' >"$ACTIVE_STATE/state.json"
+}
+
+# GitHub rejects a GITHUB_TOKEN release request when an older target commit
+# changed a workflow and the release tag does not already exist. The publisher
+# must create its exact tag first, while it still holds the same state lock.
+new_state workflow-target
+ACTIVE_MANIFEST="$contains_manifest"
+FAKE_WORKFLOW_TARGET_REQUIRES_TAG=1 run_publisher >/dev/null
+tag_mutation_line="$(
+  grep -nF '"/repos/kandelo-dev/homebrew-tap-core/git/refs"' \
+    "$ACTIVE_STATE/gh.log" | head -1 | cut -d: -f1
+)"
+release_mutation_line="$(
+  grep -nF '"/repos/kandelo-dev/homebrew-tap-core/releases"' \
+    "$ACTIVE_STATE/gh.log" | head -1 | cut -d: -f1
+)"
+[ -n "$tag_mutation_line" ] && [ -n "$release_mutation_line" ] &&
+  [ "$tag_mutation_line" -lt "$release_mutation_line" ] ||
+  fail "workflow-containing target release was attempted before its exact tag"
+jq -e '.releases | length == 1 and .[0].draft == false' \
+  "$ACTIVE_STATE/state.json" >/dev/null ||
+  fail "workflow-containing target did not publish after exact tag creation"
+
+# An exact existing tag is the durable reservation left by a prior attempt.
+# Resume must use it without trying to create or replace the tag.
+new_state existing-exact-tag
+ACTIVE_MANIFEST="$contains_manifest"
+seed_tag_only commit "$target"
+FAKE_WORKFLOW_TARGET_REQUIRES_TAG=1 run_publisher >/dev/null
+if jq -s -e 'any(.[];
+    .[0:4] == ["api", "--method", "POST",
+      "/repos/kandelo-dev/homebrew-tap-core/git/refs"])
+  ' "$ACTIVE_STATE/gh.log" >/dev/null
+then
+  fail "publisher tried to recreate an existing exact tag"
+fi
+jq -e '.releases | length == 1 and .[0].draft == false' \
+  "$ACTIVE_STATE/state.json" >/dev/null ||
+  fail "publisher did not create a release under an existing exact tag"
+
+# A conflicting direct or annotated tag owns the release identity already.
+# Fail before release creation instead of attaching bytes to the wrong commit.
+new_state conflicting-tag-before-release
+ACTIVE_MANIFEST="$contains_manifest"
+seed_tag_only commit 9999999999999999999999999999999999999999
+expect_failure_containing \
+  "publisher accepted a conflicting tag before release creation" \
+  "release tag is not a direct reference to the planned commit" \
+  run_publisher
+jq -e '.releases | length == 0' "$ACTIVE_STATE/state.json" >/dev/null ||
+  fail "conflicting tag failure created a release"
+if jq -s -e 'any(.[];
+    .[0:4] == ["api", "--method", "POST",
+      "/repos/kandelo-dev/homebrew-tap-core/releases"])
+  ' "$ACTIVE_STATE/gh.log" >/dev/null
+then
+  fail "conflicting tag was detected only after release creation"
+fi
+
+# If GitHub cannot create the reservation tag, no draft may be attempted. The
+# lock is still released so a later authorized run can try again.
+new_state tag-creation-denied
+ACTIVE_MANIFEST="$contains_manifest"
+FAKE_TAG_CREATION_DENIED=1 expect_failure_containing \
+  "publisher continued after exact tag creation failed" \
+  "exact release tag creation remained uncertain" \
+  run_publisher
+if jq -s -e 'any(.[];
+    .[0:4] == ["api", "--method", "POST",
+      "/repos/kandelo-dev/homebrew-tap-core/releases"])
+  ' "$ACTIVE_STATE/gh.log" >/dev/null
+then
+  fail "tag creation failure reached release creation"
+fi
+[ "$(grep -c '^release$' "$ACTIVE_STATE/lock.log")" -eq 1 ] ||
+  fail "tag creation failure did not release its state lock"
+
+# Release creation may fail after the exact tag is durable. Keep that tag and
+# let the next run resume without deleting or recreating the reservation.
+new_state release-creation-resume
+ACTIVE_MANIFEST="$contains_manifest"
+FAKE_RELEASE_CREATION_DENIED=1 expect_failure_containing \
+  "publisher accepted an unreconciled release-creation failure" \
+  "release creation remained uncertain" \
+  run_publisher
+jq -e --arg tag "$tag" --arg target "$target" '
+  (.releases | length) == 0 and
+  .tags[$tag] == {type: "commit", sha: $target}
+' "$ACTIVE_STATE/state.json" >/dev/null ||
+  fail "release-creation failure did not retain only the exact tag"
+: >"$ACTIVE_STATE/gh.log"
+FAKE_WORKFLOW_TARGET_REQUIRES_TAG=1 run_publisher >/dev/null
+if jq -s -e 'any(.[];
+    .[0:4] == ["api", "--method", "POST",
+      "/repos/kandelo-dev/homebrew-tap-core/git/refs"])
+  ' "$ACTIVE_STATE/gh.log" >/dev/null
+then
+  fail "release-creation resume tried to recreate its exact tag"
+fi
+jq -e '.releases | length == 1 and .[0].draft == false' \
+  "$ACTIVE_STATE/state.json" >/dev/null ||
+  fail "release-creation retry did not resume from the retained tag"
 
 new_state wrong-target-main
 expect_failure_containing \
@@ -709,7 +848,9 @@ PY
 # mutation check must stop before PATCH and leave the recoverable draft intact.
 new_state contained-main-diverged-before-publish
 ACTIVE_MANIFEST="$contains_manifest"
-FAKE_CONTAINS_DIVERGE_AFTER_TAG=1 expect_failure_containing \
+FAKE_CONTAINS_DIVERGE_AFTER_TAG=1 \
+FAKE_ADVANCE_AFTER_ASSET_COUNT=1 \
+  expect_failure_containing \
   "publisher made a release public after contained history diverged" \
   "source SHA is not contained in the current refs/heads/main history" \
   run_publisher_contains
@@ -757,7 +898,9 @@ jq -e '
 # irreversible public transition. The final primitive-owned check must leave
 # the fully reconciled release as a draft and emit no success receipt.
 new_state main-advanced-before-publish
-FAKE_MAIN_ADVANCE_AFTER_TAG=1 expect_failure_containing \
+FAKE_MAIN_ADVANCE_AFTER_TAG=1 \
+FAKE_ADVANCE_AFTER_ASSET_COUNT=36 \
+  expect_failure_containing \
   "publisher made a release public after Kandelo main advanced" \
   "source SHA must equal the current refs/heads/main commit" \
   run_publisher
