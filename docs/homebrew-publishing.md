@@ -2020,11 +2020,55 @@ manifests, and bottle archives. The normal whole-tap validator must also
 accept the generated Formula blocks and sidecars. `out/tap` is a local
 candidate; this command does not publish it or move a product pointer.
 
-Product activation requires a separate transaction that publishes the
-exact candidate at an immutable locator, proves that the resolver and
-VFS builder can read that locator, and then compare-and-swap updates the
-named product pointer. Until that transaction exists, the local
-candidate must not be described as an activated or durable product.
+Publishing a closed selection uses a small, reviewed plan. The plan
+names:
+
+- the immutable campaign release tag;
+- the campaign's Kandelo and source-tap commits;
+- the sorted product roots; and
+- the exact content-addressed Formula handoff tag for every member of
+  the roots' dependency closure.
+
+The plan is canonical compact JSON and has a separate SHA-256 input. The
+publisher rejects a missing or extra handoff, a dependency outside the
+campaign, a changed authority, duplicate JSON keys, a noncanonical plan,
+or a digest mismatch. A plan therefore selects one already verified
+closure; it does not make the rest of the campaign an all-or-nothing
+publication.
+
+`reusable-homebrew-closed-selection-publish.yml` owns the executable
+path. The corresponding tap workflow must be a data-only
+`workflow_dispatch` caller from protected `main`. It pins one exact
+Kandelo commit in both its `uses:` target and `kandelo-ref` input, then
+forwards only the canonical plan and its digest. The reusable workflow
+rejects another event, branch, repository, workflow path, mutable
+Kandelo ref, or Kandelo ref that no longer equals public protected
+`main`.
+
+The read-only preparation job anonymously fetches the campaign and every
+Formula handoff, reconstructs the sealed source tap, and prepares the
+exact selection. It uploads one same-run artifact whose Actions identity
+and digest are passed to the write job. The write job has only
+`actions: read` and `contents: write`. It admits that exact artifact,
+validates the selection against the plan again, and rechecks both
+protected-main authorities immediately before publication.
+
+The write job delegates the release lifecycle to
+`publish-homebrew-closed-selection-release.sh`. That wrapper reuses the
+generic immutable-release publisher, its run-owned Git-ref lock, and its
+per-write ancestry checks. After publication it removes all credentials,
+downloads the public descriptor and archive, verifies their hashes and
+bounded inventory, reconstructs the tap tree, and compares that tree and
+`selection.json` with the prepared candidate. A receipt is emitted only
+after that anonymous readback succeeds.
+
+The reusable workflow alone is not a dispatchable authority. Activate
+it only after its exact Kandelo commit is on protected `main` and a
+reviewed tap caller pins that commit. Product activation remains a later
+compare-and-swap: Node and Chromium must consume the immutable readback
+before a named shell pointer moves. A published closed selection is
+durable consumer input, but it is not by itself proof that the shell
+product passed those runtime gates.
 
 The ordinary dependency-bearing VFS acceptance attached to an
 individual campaign publisher call is still skipped. That call has only

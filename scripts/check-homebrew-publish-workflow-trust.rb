@@ -958,6 +958,7 @@ def check_native_compatibility_workflow(workflow)
       "paths" => [
         ".github/workflows/homebrew-native-publisher-compatibility.yml",
         ".github/workflows/reusable-homebrew-bottle-publish.yml",
+        ".github/workflows/reusable-homebrew-closed-selection-publish.yml",
         ".github/workflows/reusable-homebrew-prefix-first-child-publish.yml",
         "flake.lock",
         "flake.nix",

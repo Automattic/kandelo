@@ -7551,12 +7551,16 @@ PYTHONDONTWRITEBYTECODE=1 \
 PYTHONDONTWRITEBYTECODE=1 \
   python3 "$REPO_ROOT/scripts/test-homebrew-prefix-campaign-executor.py"
 PYTHONDONTWRITEBYTECODE=1 \
+  python3 \
+    "$REPO_ROOT/scripts/test-homebrew-closed-selection-controller.py"
+PYTHONDONTWRITEBYTECODE=1 \
   python3 "$REPO_ROOT/scripts/test-homebrew-prefix-campaign-publisher.py"
 bash "$REPO_ROOT/scripts/test-homebrew-inspect-bottle.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-formula-runtime-closure.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-validate-host-dependency-plan.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-bottle-runtime-evidence.sh"
 bash "$REPO_ROOT/scripts/test-publish-immutable-github-release.sh"
+ruby "$REPO_ROOT/scripts/check-homebrew-closed-selection-workflow.rb"
 bash "$REPO_ROOT/scripts/test-homebrew-main-shell-mirror-workflow.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-main-shell-mirror-handoff.sh"
 bash "$REPO_ROOT/scripts/test-verify-existing-immutable-github-release.sh"
