@@ -415,7 +415,10 @@ check_premerge_browser_production_contract() {
     local function_block
     local browser_block
     local materialize_line
-    local fetch_line
+    local state_line
+    local source_authority_line
+    local fetch_first_line
+    local fetch_last_line
     local production_line
     local mirror_line
     function_block="$(sed -n \
@@ -451,17 +454,32 @@ check_premerge_browser_production_contract() {
     materialize_line="$(grep -nF \
         'bash scripts/materialize-ci-publication-blockers.sh' \
         <<<"$browser_block" | cut -d: -f1)"
-    fetch_line="$(grep -nF \
-        './run.sh --already-materialized --fetch-only prepare-browser' \
+    state_line="$(grep -nF 'validate_ci_homebrew_browser_state' \
         <<<"$browser_block" | cut -d: -f1)"
+    source_authority_line="$(grep -nF \
+        'WASM_POSIX_CI_BROWSER_SOURCE_AUTHORITY="$CI_HOMEBREW_BROWSER_SOURCE_AUTHORITY"' \
+        <<<"$browser_block" | cut -d: -f1)"
+    [ "$(grep -Fc \
+        './run.sh --already-materialized --fetch-only prepare-browser' \
+        <<<"$browser_block")" -eq 2 ] || return 1
+    fetch_first_line="$(grep -nF \
+        './run.sh --already-materialized --fetch-only prepare-browser' \
+        <<<"$browser_block" | head -n 1 | cut -d: -f1)"
+    fetch_last_line="$(grep -nF \
+        './run.sh --already-materialized --fetch-only prepare-browser' \
+        <<<"$browser_block" | tail -n 1 | cut -d: -f1)"
     production_line="$(grep -nF 'run_pages_shaped_browser_build' \
         <<<"$browser_block" | cut -d: -f1)"
     mirror_line="$(grep -nF 'prepare_ci_homebrew_browser_mirror' \
         <<<"$browser_block" | cut -d: -f1)"
-    [ -n "$materialize_line" ] && [ -n "$fetch_line" ] &&
+    [ -n "$materialize_line" ] && [ -n "$state_line" ] &&
+        [ -n "$source_authority_line" ] &&
+        [ -n "$fetch_first_line" ] && [ -n "$fetch_last_line" ] &&
         [ -n "$production_line" ] && [ -n "$mirror_line" ] &&
-        [ "$materialize_line" -lt "$fetch_line" ] &&
-        [ "$fetch_line" -lt "$production_line" ] &&
+        [ "$materialize_line" -lt "$state_line" ] &&
+        [ "$state_line" -lt "$source_authority_line" ] &&
+        [ "$source_authority_line" -lt "$fetch_first_line" ] &&
+        [ "$fetch_last_line" -lt "$production_line" ] &&
         [ "$production_line" -lt "$mirror_line" ]
 }
 
