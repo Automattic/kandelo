@@ -49,6 +49,7 @@ MAX_FORMULAE = 256
 MAX_VARIANTS = MAX_FORMULAE * 2
 MAX_DEPENDENCIES = 256
 MAX_RELEASE_ASSETS = 32
+MAX_GITHUB_TOKEN_BYTES = 4 * 1024
 HTTP_TIMEOUT = 300
 CAMPAIGN_COMMIT_TIMESTAMP = 946684800
 CAMPAIGN_COMMIT_TIMEZONE = "+0000"
@@ -5503,15 +5504,49 @@ def prepare_release(
             shutil.rmtree(temporary)
 
 
+def github_api_token(url: str) -> str | None:
+    parsed = urllib.parse.urlsplit(url)
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "api.github.com"
+        or parsed.port is not None
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        return None
+    token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    if token is None:
+        return None
+    if (
+        not token
+        or any(not 0x21 <= ord(character) <= 0x7E for character in token)
+        or len(token.encode("utf-8")) > MAX_GITHUB_TOKEN_BYTES
+    ):
+        fail("GitHub API token is malformed")
+    return token
+
+
 def http_json(url: str, label: str) -> Any:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "kandelo-homebrew-prefix-campaign",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
     request = urllib.request.Request(
         url,
-        headers={
-            "Accept": "application/vnd.github+json",
-            "User-Agent": "kandelo-homebrew-prefix-campaign",
-            "X-GitHub-Api-Version": "2022-11-28",
-        },
+        headers=headers,
     )
+    token = github_api_token(url)
+    if token is not None:
+        # WHY: GitHub-hosted runners share a very small anonymous API quota.
+        # Authenticate only the first api.github.com metadata request. An
+        # unredirected header cannot leak the token if GitHub redirects to
+        # another host. Release assets remain anonymous so public availability
+        # is still proved separately.
+        request.add_unredirected_header(
+            "Authorization",
+            f"Bearer {token}",
+        )
     try:
         with urllib.request.urlopen(
             request, timeout=HTTP_TIMEOUT

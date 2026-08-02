@@ -1292,6 +1292,126 @@ def rewrite_handoff_release(
 
 
 class PrefixCampaignExecutorTests(unittest.TestCase):
+    def test_publisher_workflow_authenticates_each_metadata_read(
+        self,
+    ) -> None:
+        workflow_counts = {
+            ".github/workflows/reusable-homebrew-bottle-publish.yml": 7,
+            ".github/workflows/"
+            "reusable-homebrew-prefix-first-child-publish.yml": 1,
+        }
+        for relative, expected in workflow_counts.items():
+            workflow = (ROOT / relative).read_text()
+            step_blocks = re.split(
+                r"(?=^      - name: )",
+                workflow,
+                flags=re.M,
+            )
+            publisher_steps = [
+                block
+                for block in step_blocks
+                if "homebrew-prefix-campaign-publisher.py" in block
+            ]
+            self.assertEqual(len(publisher_steps), expected)
+            for step in publisher_steps:
+                self.assertIn("GH_TOKEN: ${{ github.token }}", step)
+
+    def test_github_metadata_uses_token_without_credentialing_assets(
+        self,
+    ) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b"{}"
+        with mock.patch.dict(
+            os.environ,
+            {"GH_TOKEN": "test-token", "GITHUB_TOKEN": "fallback-token"},
+            clear=False,
+        ), mock.patch.object(
+            EXECUTOR.urllib.request,
+            "urlopen",
+            return_value=response,
+        ) as urlopen:
+            self.assertEqual(
+                EXECUTOR.http_json(
+                    "https://api.github.com/repos/example/repo/releases/1",
+                    "fixture metadata",
+                ),
+                {},
+            )
+        request = urlopen.call_args.args[0]
+        self.assertEqual(
+            request.get_header("Authorization"),
+            "Bearer test-token",
+        )
+        redirected = (
+            EXECUTOR.urllib.request.HTTPRedirectHandler().redirect_request(
+                request,
+                None,
+                302,
+                "fixture redirect",
+                {},
+                "https://example.invalid/redirected",
+            )
+        )
+        self.assertIsNotNone(redirected)
+        self.assertIsNone(redirected.get_header("Authorization"))
+
+        asset_request = mock.MagicMock()
+        asset_request.__enter__.return_value.read.side_effect = [b"x", b""]
+        with mock.patch.dict(
+            os.environ,
+            {"GH_TOKEN": "test-token"},
+            clear=False,
+        ), tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            EXECUTOR.urllib.request,
+            "urlopen",
+            return_value=asset_request,
+        ) as asset_urlopen:
+            EXECUTOR.http_asset(
+                "https://github.com/example/repo/releases/download/tag/a",
+                pathlib.Path(temporary) / "asset",
+                1,
+                sha256(b"x"),
+            )
+        request = asset_urlopen.call_args.args[0]
+        self.assertIsNone(request.get_header("Authorization"))
+
+    def test_github_token_is_not_sent_to_another_host(self) -> None:
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = b"{}"
+        with mock.patch.dict(
+            os.environ,
+            {"GH_TOKEN": "test-token"},
+            clear=False,
+        ), mock.patch.object(
+            EXECUTOR.urllib.request,
+            "urlopen",
+            return_value=response,
+        ) as urlopen:
+            EXECUTOR.http_json(
+                "https://example.invalid/metadata",
+                "fixture metadata",
+            )
+        request = urlopen.call_args.args[0]
+        self.assertIsNone(request.get_header("Authorization"))
+
+    def test_malformed_github_token_fails_before_network(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"GH_TOKEN": "bad\ntoken"},
+            clear=False,
+        ), mock.patch.object(
+            EXECUTOR.urllib.request,
+            "urlopen",
+        ) as urlopen, self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "GitHub API token is malformed",
+        ):
+            EXECUTOR.http_json(
+                "https://api.github.com/repos/example/repo/releases/1",
+                "fixture metadata",
+            )
+        urlopen.assert_not_called()
+
     def test_destination_admission_requires_campaign_schema_two(
         self,
     ) -> None:

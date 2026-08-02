@@ -212,6 +212,7 @@ jobs:
             ${{ inputs.prefix-campaign-dependencies }}
           CAMPAIGN_TAG: ${{ inputs.prefix-campaign-tag }}
           FORMULA: ${{ inputs.formula }}
+          GH_TOKEN: ${{ github.token }}
           KANDELO_REF: ${{ inputs.kandelo-ref }}
           TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
@@ -445,8 +446,9 @@ jobs:
             "$RUNNER_TEMP/homebrew-oci-child/receipt.json")"
           expected="$(jq -er '.oci.manifest.digest' \
             "$RUNNER_TEMP/homebrew-oci-child/receipt.json")"
-          bash kandelo/scripts/dev-shell.sh python3 \
-            kandelo/scripts/homebrew-oci-layout.py probe-registry \
+          cd kandelo
+          bash scripts/dev-shell.sh python3 \
+            scripts/homebrew-oci-layout.py probe-registry \
             --kind manifest \
             --remote "ghcr.io/kandelo-dev/homebrew-tap-core/$FORMULA" \
             --reference "$reference" --registry-config "$config" \

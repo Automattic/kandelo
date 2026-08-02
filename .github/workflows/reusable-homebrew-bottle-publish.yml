@@ -488,6 +488,7 @@ jobs:
           CAMPAIGN_DEPENDENCIES: ${{ steps.trust.outputs.prefix-campaign-dependencies }}
           CAMPAIGN_TAG: ${{ steps.trust.outputs.prefix-campaign-tag }}
           FORMULA: ${{ inputs.formulae }}
+          GH_TOKEN: ${{ github.token }}
           KANDELO_SHA: ${{ steps.source-commits.outputs.kandelo-sha }}
           TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
@@ -1035,14 +1036,16 @@ jobs:
           CAMPAIGN_DEPENDENCIES: ${{ needs.plan.outputs.prefix-campaign-dependencies }}
           CAMPAIGN_TAG: ${{ needs.plan.outputs.prefix-campaign-tag }}
           FORMULA: ${{ matrix.formula }}
+          GH_TOKEN: ${{ github.token }}
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
           TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
           TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
         run: |
           set -euo pipefail
-          bash kandelo/scripts/dev-shell.sh \
-            python3 kandelo/scripts/homebrew-prefix-campaign-publisher.py \
+          cd kandelo
+          bash scripts/dev-shell.sh \
+            python3 scripts/homebrew-prefix-campaign-publisher.py \
               prepare \
               --tap-root "$GITHUB_WORKSPACE/tap" \
               --kandelo-commit "$KANDELO_SHA" \
@@ -1761,15 +1764,17 @@ jobs:
           CAMPAIGN_DEPENDENCIES: ${{ needs.plan.outputs.prefix-campaign-dependencies }}
           CAMPAIGN_TAG: ${{ needs.plan.outputs.prefix-campaign-tag }}
           FORMULA: ${{ matrix.formula }}
+          GH_TOKEN: ${{ github.token }}
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
           TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
           TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
         run: |
           set -euo pipefail
-          bash kandelo-postbuild/scripts/dev-shell.sh \
+          cd kandelo-postbuild
+          bash scripts/dev-shell.sh \
             python3 \
-              kandelo-postbuild/scripts/homebrew-prefix-campaign-publisher.py \
+              scripts/homebrew-prefix-campaign-publisher.py \
               prepare \
               --tap-root "$GITHUB_WORKSPACE/tap-reviewed" \
               --kandelo-commit "$KANDELO_SHA" \
@@ -2075,6 +2080,7 @@ jobs:
           CAMPAIGN_DEPENDENCIES: ${{ needs.plan.outputs.prefix-campaign-dependencies }}
           CAMPAIGN_TAG: ${{ needs.plan.outputs.prefix-campaign-tag }}
           FORMULA: ${{ matrix.formula }}
+          GH_TOKEN: ${{ github.token }}
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
           TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
@@ -2371,6 +2377,7 @@ jobs:
           CAMPAIGN_DEPENDENCIES: ${{ needs.plan.outputs.prefix-campaign-dependencies }}
           CAMPAIGN_TAG: ${{ needs.plan.outputs.prefix-campaign-tag }}
           FORMULA: ${{ matrix.formula }}
+          GH_TOKEN: ${{ github.token }}
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
           TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
@@ -2803,14 +2810,16 @@ jobs:
           CAMPAIGN_DEPENDENCIES: ${{ needs.plan.outputs.prefix-campaign-dependencies }}
           CAMPAIGN_TAG: ${{ needs.plan.outputs.prefix-campaign-tag }}
           FORMULA: ${{ matrix.formula }}
+          GH_TOKEN: ${{ github.token }}
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
           TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
           TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
         run: |
           set -euo pipefail
-          bash kandelo/scripts/dev-shell.sh \
-            python3 kandelo/scripts/homebrew-prefix-campaign-publisher.py \
+          cd kandelo
+          bash scripts/dev-shell.sh \
+            python3 scripts/homebrew-prefix-campaign-publisher.py \
               prepare \
               --tap-root "$GITHUB_WORKSPACE/tap" \
               --kandelo-commit "$KANDELO_SHA" \
@@ -3809,15 +3818,17 @@ jobs:
           CAMPAIGN_DEPENDENCIES: ${{ needs.plan.outputs.prefix-campaign-dependencies }}
           CAMPAIGN_TAG: ${{ needs.plan.outputs.prefix-campaign-tag }}
           FORMULA: ${{ matrix.formula }}
+          GH_TOKEN: ${{ github.token }}
           KANDELO_SHA: ${{ needs.plan.outputs.kandelo-sha }}
           TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
           TAP_SHA: ${{ needs.plan.outputs.tap-sha }}
         run: |
           set -euo pipefail
-          bash kandelo-postverify/scripts/dev-shell.sh \
+          cd kandelo-postverify
+          bash scripts/dev-shell.sh \
             python3 \
-              kandelo-postverify/scripts/homebrew-prefix-campaign-publisher.py \
+              scripts/homebrew-prefix-campaign-publisher.py \
               prepare \
               --tap-root "$GITHUB_WORKSPACE/tap-postverify" \
               --kandelo-commit "$KANDELO_SHA" \

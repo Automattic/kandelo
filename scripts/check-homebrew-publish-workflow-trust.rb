@@ -67,17 +67,17 @@ NATIVE_CA_PROOF_RUN_SHA256 =
   "c8192c2521864005b34e9eaa39d44d11d580997db39d6e64f2afe30fe447eb91"
 NATIVE_CA_VALIDATION_RUN_SHA256 =
   "7cb1417ec6df08daefa71c2ee6a364be76737b9d7f7ed4aa4022d3d7ca90a8b9"
-PUBLISHER_PLAN_DIGEST = "4064b0f7ae61f01fbe0db68c2ce02cae25b57ae6d3ca55bd15178a609775e48f"
-PUBLISHER_BUILD_DIGEST = "b50114b394faf7efb56818fd421ff15acb9630ad838ab10b2da6c4d259075cb0"
-PUBLISHER_UPLOAD_DIGEST = "ec78200c83223dec9e8d85d1b25e19e7e748ac7a7c5a2e0ce1f9cafc2ebadcbb"
-PUBLISHER_INDEX_DIGEST = "08a8c2360535d9e3dea92af39c4039d2966434049f9a2333d3d118fc6c4a1936"
-PUBLISHER_VERIFY_DIGEST = "7755e34bfdb25bd775eb321f3b5588467f8a599440d324710fd9b984cb43a7ef"
+PUBLISHER_PLAN_DIGEST = "52939a92dbec649cd11a88ea3b980dfe65004d6c540503590c46c621ede15c0a"
+PUBLISHER_BUILD_DIGEST = "78f735ac34a6acdb56558a1725a2939807a8f5032598de3ac82d8abcd044fb20"
+PUBLISHER_UPLOAD_DIGEST = "861d649d73bb470fc37f99751733e8360f3f59f6245b80e2dd8d7eb4f40f3290"
+PUBLISHER_INDEX_DIGEST = "30531067dcd20c314ef8ae4b9d8584716a92fc803a194098913355ebb519754b"
+PUBLISHER_VERIFY_DIGEST = "3065aee3c33c5de227ce46bbf4300a821bca3809db6842bb0f59a65cb8a5dddc"
 PUBLISHER_FINALIZE_DIGEST = "b17e7bf5d0a5ef512e49f74c224a94958642dfdd80a27439f2a0335816a0886b"
 PUBLISHER_VFS_RELEASE_DIGEST = "2db9ec075edf382e326066d5f49a32947f5a584fce26a966fb9fff23bbbe3c26"
 MAINTENANCE_VALIDATE_DIGEST = "30ebccd5d44e004e37f168e81284d7ceb18accfa067c05248c1cc19398a7515f"
 MAINTENANCE_ROLLBACK_DIGEST = "f82d9f351202c3a20824e4525eb88ce7f75879740014d3232e69f3d585ed5781"
 FIRST_PUBLICATION_STEPS_DIGEST = "cf1c41bbfb91a1e5de6e7e0bfe7c16406dd3d022ad66dec7188cb31240168c7e"
-PREFIX_FIRST_CHILD_STEPS_DIGEST = "6b948371b5d912d762063cc788b945ac67f78b9f862412230bc1ee620e434fd4"
+PREFIX_FIRST_CHILD_STEPS_DIGEST = "a21e78df740ced6c50719eec1d749e590410b83f776a153c0858cad708841959"
 SELF_TEST_TAP_SHA = "e" * 40
 SELF_TEST_KANDELO_MAIN_SHA = "a351fc9b18da032c09160c95f1da672374ade700"
 SELF_TEST_PACKAGE_GENERATION_WASM32 =
@@ -1444,6 +1444,7 @@ def check_prefix_first_child(workflow)
     steps, "Materialize sealed bootstrap campaign source"
   )
   check(materialize["id"] == "campaign-source" &&
+        materialize.dig("env", "GH_TOKEN") == "${{ github.token }}" &&
         materialize.fetch("run").include?(
           "homebrew-prefix-campaign-publisher.py"
         ) && materialize.fetch("run").include?('--arch "$ARCH"') &&
@@ -1536,6 +1537,10 @@ def check_prefix_first_child(workflow)
     check(resume_probe.fetch("run").include?(fragment),
           "prefix first-child anonymous resumption lacks #{fragment}")
   end
+  check(resume_probe.fetch("run").include?("cd kandelo\n") &&
+        resume_probe.fetch("run").include?(
+          "bash scripts/dev-shell.sh python3"
+        ), "prefix first-child anonymous resumption uses another flake")
   resume = named_step(
     steps, "Record exact public child without credentials"
   )
@@ -1591,6 +1596,7 @@ def check_prefix_first_child(workflow)
   end
   check(credential_steps.map { |step| step["name"] } == [
     "Admit protected source history",
+    "Materialize sealed bootstrap campaign source",
     "Admit two exact same-run bootstrap artifacts",
     "Publish one absent first child with GITHUB_TOKEN",
   ], "prefix first-child credentials escaped reviewed boundaries")
@@ -2282,45 +2288,52 @@ def check_publisher(workflow)
       "Materialize sealed prefix-campaign tap source",
       "${{ steps.trust.outputs.prefix-campaign-mode == 'true' }}",
       false,
+      nil,
     ],
     [
       build_steps,
       "Prepare sealed campaign Formula dependencies",
       "${{ needs.plan.outputs.prefix-campaign-mode == 'true' }}",
       true,
+      "kandelo",
     ],
     [
       build_steps,
       "Recreate sealed campaign source for post-build review",
       "${{ needs.plan.outputs.prefix-campaign-mode == 'true' }}",
       true,
+      "kandelo-postbuild",
     ],
     [
       upload_steps,
       "Materialize sealed campaign source for upload validation",
       "${{ needs.plan.outputs.prefix-campaign-mode == 'true' }}",
       true,
+      nil,
     ],
     [
       index_steps,
       "Materialize sealed campaign source for index validation",
       "${{ needs.plan.outputs.prefix-campaign-mode == 'true' }}",
       false,
+      nil,
     ],
     [
       verify_steps,
       "Prepare sealed campaign dependencies for verification",
       "${{ needs.plan.outputs.prefix-campaign-mode == 'true' }}",
       true,
+      "kandelo",
     ],
     [
       verify_steps,
       "Recreate sealed campaign source for post-verification review",
       "${{ needs.plan.outputs.prefix-campaign-mode == 'true' }}",
       true,
+      "kandelo-postverify",
     ],
   ]
-  campaign_materializations.each do |steps, name, condition, per_arch|
+  campaign_materializations.each do |steps, name, condition, per_arch, checkout|
     step = named_step(steps, name)
     run = step.fetch("run")
     env = step.fetch("env")
@@ -2338,6 +2351,8 @@ def check_publisher(workflow)
       check(env.key?(key),
             "publisher campaign materialization #{name.inspect} lacks #{key}")
     end
+    check(env["GH_TOKEN"] == "${{ github.token }}",
+          "publisher campaign materialization #{name.inspect} lacks API auth")
     check(env.key?("ARCH") == per_arch,
           "publisher campaign materialization #{name.inspect} arch scope changed")
     [
@@ -2354,6 +2369,11 @@ def check_publisher(workflow)
     end
     check(run.include?('--arch "$ARCH"') == per_arch,
           "publisher campaign materialization #{name.inspect} arch binding changed")
+    if checkout
+      check(run.include?("cd #{checkout}\n") &&
+            run.include?("bash scripts/dev-shell.sh"),
+            "publisher campaign materialization #{name.inspect} uses another flake")
+    end
   end
   campaign_plan = named_step(
     plan_steps, "Materialize sealed prefix-campaign tap source"
@@ -2996,22 +3016,33 @@ def check_publisher(workflow)
     "Admit exact Kandelo main source",
     "Admit prefix-campaign Kandelo main history",
     "Bind write tap source to protected main history",
+    "Materialize sealed prefix-campaign tap source",
   ] && plan_credential_steps.all? do |step|
     step.fetch("env").slice(*credential_names) == {
       "GH_TOKEN" => "${{ github.token }}",
     }
   end, "publisher plan credential escapes source validation")
   {
-    build_steps => build_generation,
-    verify_steps => verify_generations,
-  }.each do |steps, generation_step|
+    build_steps => [
+      "Materialize exact-main Formula runtime packages",
+      "Prepare sealed campaign Formula dependencies",
+      "Recreate sealed campaign source for post-build review",
+    ],
+    verify_steps => [
+      "Materialize exact-main verification runtime packages",
+      "Prepare sealed campaign dependencies for verification",
+      "Recreate sealed campaign source for post-verification review",
+    ],
+  }.each do |steps, expected_names|
     credential_steps = steps.select do |step|
       !(step.fetch("env", {}).keys & credential_names).empty?
     end
-    check(credential_steps == [generation_step] &&
-          generation_step.fetch("env").slice(*credential_names) == {
-            "GH_TOKEN" => "${{ github.token }}",
-          },
+    check(credential_steps.map { |step| step["name"] } == expected_names &&
+          credential_steps.all? do |step|
+            step.fetch("env").slice(*credential_names) == {
+              "GH_TOKEN" => "${{ github.token }}",
+            }
+          end,
           "publisher read credential escapes exact public-generation metadata fetch")
     check(steps.select { |step| step["uses"] == CHECKOUT_ACTION }.all? do |step|
       step.dig("with", "persist-credentials") == false
@@ -3021,8 +3052,14 @@ def check_publisher(workflow)
     !(step.fetch("env", {}).keys & credential_names).empty?
   end
   check(uploader_credential_steps.map { |step| step["name"] } ==
-        ["Upload validated bottle in isolated ORAS auth state"] &&
-        uploader_credential_steps.first["env"] == {
+        [
+          "Materialize sealed campaign source for upload validation",
+          "Upload validated bottle in isolated ORAS auth state",
+        ] &&
+        uploader_credential_steps.first.fetch("env").slice(
+          *credential_names
+        ) == { "GH_TOKEN" => "${{ github.token }}" } &&
+        uploader_credential_steps.last["env"] == {
           "GH_TOKEN" => "${{ github.token }}",
           "KANDELO_HOMEBREW_FORMULA" => "${{ matrix.formula }}",
           "KANDELO_HOMEBREW_KANDELO_COMMIT" =>
@@ -3039,8 +3076,14 @@ def check_publisher(workflow)
     !(step.fetch("env", {}).keys & credential_names).empty?
   end
   check(index_credential_steps.map { |step| step["name"] } ==
-        ["Publish the complete Homebrew version index in isolated ORAS auth state"] &&
-        index_credential_steps.first["env"] == {
+        [
+          "Materialize sealed campaign source for index validation",
+          "Publish the complete Homebrew version index in isolated ORAS auth state",
+        ] &&
+        index_credential_steps.first.fetch("env").slice(
+          *credential_names
+        ) == { "GH_TOKEN" => "${{ github.token }}" } &&
+        index_credential_steps.last["env"] == {
           "GH_TOKEN" => "${{ github.token }}",
           "KANDELO_HOMEBREW_FORMULA" => "${{ matrix.formula }}",
           "KANDELO_HOMEBREW_KANDELO_COMMIT" =>
