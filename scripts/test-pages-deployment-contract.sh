@@ -197,6 +197,41 @@ expect_mutation_rejected \
   's/(          done\n)/$1          cmp "\$image" apps\/browser-demos\/public\/shell.vfs.zst\n/'
 
 expect_mutation_rejected \
+  "guide build without strict failure handling" \
+  "must run strict source checks, build, then output checks" \
+  's/(      - name: Build user guide for the complete Pages tree[\s\S]*?        run: \|\n)          set -euo pipefail\n/$1/m'
+
+expect_mutation_rejected \
+  "missing Homebrew guide source-link check" \
+  "must run strict source checks, build, then output checks" \
+  's/^          node --test docs-site\/\.vitepress\/homebrew-doc-links\.test\.mjs\n//m'
+
+expect_mutation_rejected \
+  "ignored Homebrew guide source-link failure" \
+  "must run strict source checks, build, then output checks" \
+  's#(node --test docs-site/\.vitepress/homebrew-doc-links\.test\.mjs)#$1 || true#'
+
+expect_mutation_rejected \
+  "late Homebrew guide source-link check" \
+  "must run strict source checks, build, then output checks" \
+  's#(          node --test docs-site/\.vitepress/homebrew-doc-links\.test\.mjs\n)(          npm run docs:build\n)#$2$1#'
+
+expect_mutation_rejected \
+  "missing generated Homebrew guide check" \
+  "must run strict source checks, build, then output checks" \
+  's/^          node --test docs-site\/\.vitepress\/homebrew-doc-output\.test\.mjs\n//m'
+
+expect_mutation_rejected \
+  "ignored generated Homebrew guide failure" \
+  "must run strict source checks, build, then output checks" \
+  's#(node --test docs-site/\.vitepress/homebrew-doc-output\.test\.mjs)#$1 || true#'
+
+expect_mutation_rejected \
+  "early generated Homebrew guide check" \
+  "must run strict source checks, build, then output checks" \
+  's#(          npm run docs:build\n)(          node --test docs-site/\.vitepress/homebrew-doc-output\.test\.mjs\n)#$2$1#'
+
+expect_mutation_rejected \
   "closed bottle transport in Pages" \
   "must prove the public bottled shell at the published base" \
   's/KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE: public/KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE: closed/'

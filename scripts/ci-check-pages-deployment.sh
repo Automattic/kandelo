@@ -257,6 +257,24 @@ if grep -Fq 'KANDELO_BROWSER_DEMO_INPUTS' <<<"$browser_build_block"; then
   fail "the Pages publisher must build the complete browser entry set"
 fi
 
+guide_build_block="$(
+  step_block "$PAGES_WORKFLOW" "Build user guide for the complete Pages tree"
+)"
+guide_build_commands="$(
+  awk '
+    $0 == "        run: |" { inside = 1; next }
+    inside && /^          #/ { next }
+    inside && /^          [^[:space:]]/ { print; next }
+    inside && NF { exit }
+  ' <<<"$guide_build_block"
+)"
+expected_guide_build_commands=$'          set -euo pipefail\n          node --test docs-site/.vitepress/homebrew-doc-links.test.mjs\n          npm run docs:build\n          node --test docs-site/.vitepress/homebrew-doc-output.test.mjs'
+# WHY: run the source-link test before VitePress consumes the Markdown.
+# Run the generated-output test only after the site exists. This exact,
+# failure-propagating order prevents publication of an unchecked guide.
+[ "$guide_build_commands" = "$expected_guide_build_commands" ] ||
+  fail "the Pages guide must run strict source checks, build, then output checks"
+
 sealed_boot_block="$(
   step_block "$PAGES_WORKFLOW" "Boot the canonical bottled Pages shell in Chromium"
 )"
