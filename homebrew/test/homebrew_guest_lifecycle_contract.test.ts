@@ -81,7 +81,7 @@ test("core shipping scope pours and runs only the first-party bottle", () => {
   }
   for (const forbidden of [
     "brew tap brandonpayton/kandelo-canary https://github.com/brandonpayton/homebrew-kandelo-canary.git",
-    "brandonpayton/kandelo-canary/m4",
+    "brandonpayton/kandelo-canary/m4-canary",
     "brew trust --formula kandelo-dev/tap-core/dash",
     HOMEBREW_GUEST_CANARY_SHIPPING_PROOF_MARKER,
   ]) {
@@ -109,7 +109,9 @@ test("canary shipping scope proves M4's exact first-party dependency", () => {
     "brew tap brandonpayton/kandelo-canary https://github.com/brandonpayton/homebrew-kandelo-canary.git",
     `checkout --detach ${revisions.canaryRevision}`,
     "brew trust --formula kandelo-dev/tap-core/dash",
-    "brew install --no-ask --force-bottle brandonpayton/kandelo-canary/m4",
+    "brew install --no-ask --force-bottle brandonpayton/kandelo-canary/m4-canary",
+    'm4_prefix="$(/usr/bin/brew --prefix brandonpayton/kandelo-canary/m4-canary)"',
+    '"$m4_prefix/bin/m4" --version >/dev/null',
     'assert_runtime_dependency "$m4_prefix" kandelo-dev/tap-core/dash',
     'assert_precomposed_bottle "$dash_prefix"',
     "assert_m4_execution \"$m4_prefix\" cross-tap-ok",
@@ -122,18 +124,24 @@ test("canary shipping scope proves M4's exact first-party dependency", () => {
   }
   for (const forbidden of [
     "brew install --no-ask --force-bottle kandelo-dev/tap-core/bzip2",
+    "composed_m4_prefix",
     "assert_bzip2_roundtrip \"$bzip2_prefix\"",
     HOMEBREW_GUEST_CORE_SHIPPING_PROOF_MARKER,
   ]) {
     assert.ok(!script.includes(forbidden), `canary scope includes: ${forbidden}`);
   }
+  assert.doesNotMatch(
+    script,
+    /^\/usr\/bin\/brew uninstall[^\n]* kandelo-dev\/tap-core\/m4(?:\s|$)/m,
+    "the uniquely named canary must not uninstall core M4",
+  );
   assert.equal(
     script.match(/brew install --no-ask --force-bottle/g)?.length,
     1,
   );
   assert.equal(
-    script.match(/brew uninstall --ignore-dependencies/g)?.length,
-    1,
+    script.match(/brew uninstall --ignore-dependencies/g)?.length ?? 0,
+    0,
   );
   assert.equal(script.match(/^assert_poured /gm)?.length, 1);
   assert.equal(script.match(/^assert_runtime_dependency /gm)?.length, 1);
@@ -237,15 +245,15 @@ test("phase one uses only stock Homebrew against clean canonical tap checkouts",
     "brew trust --formula kandelo-dev/tap-core/dash",
     "brew tap brandonpayton/kandelo-canary https://github.com/brandonpayton/homebrew-kandelo-canary.git",
     `checkout --detach ${revisions.canaryRevision}`,
-    "brew install --no-ask --force-bottle brandonpayton/kandelo-canary/m4",
-    "brew reinstall --force-bottle brandonpayton/kandelo-canary/m4",
+    "brew install --no-ask --force-bottle brandonpayton/kandelo-canary/m4-canary",
+    "brew reinstall --force-bottle brandonpayton/kandelo-canary/m4-canary",
     'assert_runtime_dependency "$m4_prefix" kandelo-dev/tap-core/dash',
     'assert_runtime_dependency "$reinstalled_m4_prefix" kandelo-dev/tap-core/dash',
     "cross-tap-reinstall-ok",
     "brew untrust --tap",
     "brew trust --json=v1",
-    "assert_formula_trust \"$canary_trust_before\" brandonpayton/kandelo-canary brandonpayton/kandelo-canary/m4 absent",
-    "assert_formula_trust \"$canary_trust_after\" brandonpayton/kandelo-canary brandonpayton/kandelo-canary/m4 present",
+    "assert_formula_trust \"$canary_trust_before\" brandonpayton/kandelo-canary brandonpayton/kandelo-canary/m4-canary absent",
+    "assert_formula_trust \"$canary_trust_after\" brandonpayton/kandelo-canary brandonpayton/kandelo-canary/m4-canary present",
     "assert_formula_trust \"$core_dependency_trust\" kandelo-dev/tap-core kandelo-dev/tap-core/dash present",
     "assert_untrusted_tap_discovery kandelo-dev/tap-core \"$core_untrusted\"",
     "assert_untrusted_tap_discovery brandonpayton/kandelo-canary \"$canary_untrusted\"",
@@ -253,7 +261,6 @@ test("phase one uses only stock Homebrew against clean canonical tap checkouts",
     'receipt.fetch("built_as_bottle") == true',
     'receipt.fetch("poured_from_bottle") == false',
     'assert_precomposed_bottle "$composed_bzip2_prefix"',
-    'assert_precomposed_bottle "$composed_m4_prefix"',
     'assert_precomposed_bottle "$dash_prefix"',
     HOMEBREW_GUEST_LIFECYCLE_PHASE_ONE_MARKER,
   ]) {
@@ -261,13 +268,13 @@ test("phase one uses only stock Homebrew against clean canonical tap checkouts",
   }
   assert.equal(
     script.match(/brew uninstall --ignore-dependencies/g)?.length,
-    2,
-    "only the Bzip2 and M4 direct-composer transitions may ignore dependents",
+    1,
+    "only the Bzip2 direct-composer transition may ignore dependents",
   );
   assert.equal(
     script.match(/^assert_precomposed_bottle /gm)?.length,
-    5,
-    "initial Bzip2/M4 and Dash across both M4 pours must retain composed receipts",
+    4,
+    "initial Bzip2 and Dash across both M4 pours must retain composed receipts",
   );
   assert.equal(
     script.match(/^assert_poured /gm)?.length,
@@ -279,18 +286,18 @@ test("phase one uses only stock Homebrew against clean canonical tap checkouts",
     "installing M4 must not make the precomposed Dash receipt claim a pour",
   );
   assert.equal(
-    script.match(/brew reinstall --force-bottle brandonpayton\/kandelo-canary\/m4/g)?.length,
+    script.match(/brew reinstall --force-bottle brandonpayton\/kandelo-canary\/m4-canary/g)?.length,
     1,
     "the independent M4 bottle must be reinstalled exactly once",
   );
   const canaryInstall = script.indexOf(
-    "brew install --no-ask --force-bottle brandonpayton/kandelo-canary/m4",
+    "brew install --no-ask --force-bottle brandonpayton/kandelo-canary/m4-canary",
   );
   const dependencyTrust = script.indexOf(
     "brew trust --formula kandelo-dev/tap-core/dash",
   );
   const canaryReinstall = script.indexOf(
-    "brew reinstall --force-bottle brandonpayton/kandelo-canary/m4",
+    "brew reinstall --force-bottle brandonpayton/kandelo-canary/m4-canary",
   );
   const canaryTrust = script.indexOf(
     "assert_formula_trust \"$canary_trust_after\"",
@@ -325,17 +332,17 @@ test("phase two proves durable state and labels the pinned upgrade as a no-op", 
   assertPairedNoApiEnvironment(script, "phase two");
   assertRequiresTapTrust(script, "phase two");
   for (const expected of [
-    "brew outdated --json=v2 kandelo-dev/tap-core/bzip2 brandonpayton/kandelo-canary/m4",
+    "brew outdated --json=v2 kandelo-dev/tap-core/bzip2 brandonpayton/kandelo-canary/m4-canary",
     "snapshot_package_identity kandelo-dev/tap-core/bzip2 \"$before_bzip2\"",
-    "snapshot_package_identity brandonpayton/kandelo-canary/m4 \"$before_m4\"",
-    "brew upgrade --force-bottle kandelo-dev/tap-core/bzip2 brandonpayton/kandelo-canary/m4",
+    "snapshot_package_identity brandonpayton/kandelo-canary/m4-canary \"$before_m4\"",
+    "brew upgrade --force-bottle kandelo-dev/tap-core/bzip2 brandonpayton/kandelo-canary/m4-canary",
     "snapshot_package_identity kandelo-dev/tap-core/bzip2 \"$after_bzip2\"",
-    "snapshot_package_identity brandonpayton/kandelo-canary/m4 \"$after_m4\"",
+    "snapshot_package_identity brandonpayton/kandelo-canary/m4-canary \"$after_m4\"",
     "receipt_sha256",
     "content_sha256",
     "/usr/bin/cmp \"$before_bzip2\" \"$after_bzip2\"",
     "/usr/bin/cmp \"$before_m4\" \"$after_m4\"",
-    "brew uninstall brandonpayton/kandelo-canary/m4",
+    "brew uninstall brandonpayton/kandelo-canary/m4-canary",
     "brew uninstall kandelo-dev/tap-core/bzip2",
     "brew untrust brandonpayton/kandelo-canary",
     "brew untap brandonpayton/kandelo-canary",
@@ -343,7 +350,7 @@ test("phase two proves durable state and labels the pinned upgrade as a no-op", 
     "brew untap --force kandelo-dev/tap-core",
     "assert_formula_trust \"$reboot_trust\" kandelo-dev/tap-core kandelo-dev/tap-core/bzip2 present",
     "assert_formula_trust \"$reboot_trust\" kandelo-dev/tap-core kandelo-dev/tap-core/dash present",
-    "assert_formula_trust \"$reboot_trust\" brandonpayton/kandelo-canary brandonpayton/kandelo-canary/m4 present",
+    "assert_formula_trust \"$reboot_trust\" brandonpayton/kandelo-canary brandonpayton/kandelo-canary/m4-canary present",
     "assert_no_tap_trust \"$cleanup_trust\" brandonpayton/kandelo-canary",
     "assert_no_tap_trust \"$cleanup_trust\" kandelo-dev/tap-core",
     'assert_precomposed_bottle "$dash_prefix"',
