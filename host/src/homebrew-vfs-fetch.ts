@@ -5,7 +5,9 @@ export class HomebrewBottleFetchError extends Error {
   }
 }
 
-import { VFS_DEFERRED_TREE_LIMITS } from "./vfs/deferred-tree-limits";
+// WHY: the credential-free campaign runs this source directly with Node's
+// built-in TypeScript stripping. Native ESM does not infer `.ts` extensions.
+import { VFS_DEFERRED_TREE_LIMITS } from "./vfs/deferred-tree-limits.ts";
 
 type FetchLike = (input: string | URL, init?: RequestInit) => Promise<Response>;
 
