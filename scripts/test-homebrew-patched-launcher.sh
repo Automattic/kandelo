@@ -2674,6 +2674,8 @@ EOF
     fail "Formula isolation accepted a sysroot build root overlapping its mutable prefix"
   fi
   rm -rf "$isolated_prefix/sysroot"
+  [ ! -e "$isolated_prefix/etc" ] && [ ! -L "$isolated_prefix/etc" ] ||
+    fail "Formula isolation fixture already has a target etc directory"
   homebrew_patched_launcher_isolate \
     "$ISOLATION_BUILD_USER" "$isolated_work" "$isolated_kandelo" "$isolated_tap" \
     "$isolated_output" "$isolated_sysroot_owner" "$isolated_dependency_tap"
@@ -2753,6 +2755,22 @@ EOF
   if /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
       /usr/bin/rm -f "$HOMEBREW_PATCHED_LAUNCHER" >/dev/null 2>&1; then
     fail "build identity can replace the canonical target Brew launcher"
+  fi
+  [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a' \
+      "$isolated_prefix/etc")" = \
+      "0:$(id -g "$ISOLATION_BUILD_USER"):1775" ] && \
+    [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a' \
+      "$isolated_prefix/etc/homebrew")" = "0:0:555" ] ||
+    fail "isolated launcher did not protect mutable Homebrew configuration"
+  /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- /bin/sh -c \
+    'mkdir "$1/formula-write-probe" && : >"$1/formula-write-probe/value" &&
+      rm "$1/formula-write-probe/value" && rmdir "$1/formula-write-probe"' \
+    sh "$isolated_prefix/etc" ||
+    fail "isolated launcher left normal Homebrew configuration read-only"
+  if /usr/bin/sudo -n -H -u "$ISOLATION_BUILD_USER" -- \
+      /usr/bin/mv "$isolated_prefix/etc/homebrew" \
+      "$isolated_prefix/etc/homebrew-replaced" >/dev/null 2>&1; then
+    fail "build identity can replace protected Homebrew configuration"
   fi
   [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a' \
     "$isolated_prefix/Cellar")" = \
