@@ -2341,12 +2341,23 @@ ordinary Kandelo merge process first. The normal path then rebuilds final
 package archives and canonical bottles from exact resulting `main`. When an
 already-built immutable producer `S` has the complete Git tree of current main
 `M`, a v2 durable generation may preserve those archive bytes and their
-truthful `S` provenance under complete-tree validation. The retired #1097
-cache-projection experiment also recorded both trees, the ABI snapshot,
-producer release, projection/ledger, selected build-input component evidence,
-and assets. Later declared rootfs inputs invalidated even its narrow selection,
-so the production workflow no longer exposes that method. Build a fresh
-generation from exact `M`.
+truthful `S` provenance under complete-tree validation. When the trees differ
+only outside the selected package closure, production also exposes the bounded
+`identical-package-cache-projection-v1` method. It requires a public,
+application-sealed preservation release before admission. PR preservation uses
+the existing v1 evidence format; a completed, successful canonical Force run
+uses v2 evidence. Canonical v2 preservation requires `S` to remain in protected
+main ancestry and binds the exact run, selected job and log, same-run artifacts,
+release archives, and archive-byte equality.
+
+Current-main admission revalidates that public seal and independently derives
+the selected projection, expected ledger, and build-input component closure
+from both `S` and `M`. Any selected manifest, recipe, declared or Git input,
+dependency identity, toolchain input, architecture, or ABI difference fails.
+The particular v1 evidence produced by the retired #1097 experiment remains
+readable, but later declared rootfs inputs invalidate its selected closure, so
+that evidence cannot produce a supported bottle input. That historical result
+does not retire the versioned cache-projection method or canonical v2 path.
 Merely making `S` reachable, preserving its SHA with a special merge, or
 joining it to history is still insufficient.
 
@@ -2357,8 +2368,10 @@ live main SHA. That workflow source-builds each selected target and embeds
 generation revalidates both fields for every selected archive. Under v2, the
 same validation requires the archive commit to equal immutable producer `S`
 and the content-bound receipt to prove complete `S^{tree} == M^{tree}`.
-Historical readers retain support for the non-admitted #1097 evidence, but it
-cannot produce a supported bottle input.
+For bounded cache-projection admission, the content-bound receipt instead
+proves selected-input equivalence through a separately sealed v1 PR or v2
+canonical preservation release. Preserved evidence remains non-admitted; only
+the separate durable generation may become a bottle input.
 An archive that entered the mutable resolver ledger through ordinary
 merge-candidate activation without that complete-tree proof remains useful to
 general consumers but is not a bottle input.
