@@ -1011,6 +1011,29 @@ class PrefixCampaignTests(unittest.TestCase):
         self.assertNotIn("npx", command)
         self.assertNotIn("tsx", command)
 
+    def test_production_readback_module_graph_loads_in_plain_node(self) -> None:
+        result = subprocess.run(
+            [
+                "node",
+                "--experimental-strip-types",
+                str(ROOT / "scripts/homebrew-verify-public-bottle.ts"),
+            ],
+            cwd=ROOT,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(result.stdout, "")
+        self.assertIn(
+            "usage: node --experimental-strip-types ",
+            result.stderr,
+        )
+        self.assertNotIn("ERR_MODULE_NOT_FOUND", result.stderr)
+
     def test_default_destination_probe_preserves_auth_required(self) -> None:
         with tempfile.TemporaryDirectory(
             prefix="campaign-destination-probe-test-"
