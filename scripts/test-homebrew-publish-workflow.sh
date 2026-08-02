@@ -260,7 +260,7 @@ make_formula_runner_fixture() {
 homebrew_select_guest_layout() {
   # This fixture isolates Formula-runner behavior. Layout selection itself has
   # dedicated production-helper tests elsewhere in this suite.
-  HOMEBREW_GUEST_LAYOUT_MODE="current"
+  HOMEBREW_GUEST_LAYOUT_MODE="canonical"
   HOMEBREW_GUEST_PREFIX="${FAKE_BREW_PREFIX:?}"
   HOMEBREW_GUEST_CELLAR="$HOMEBREW_GUEST_PREFIX/Cellar"
   HOMEBREW_GUEST_LAYOUT_SHA256=""

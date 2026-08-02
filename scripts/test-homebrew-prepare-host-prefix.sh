@@ -125,46 +125,6 @@ expect_failure "mutable Homebrew prefix must be a real non-symlink directory" \
     "$TEST_ROOT/prefix-link-parent/kandelo/homebrew" \
     "$test_uid" "$test_gid" "$test_uid" "$test_gid"
 
-if [ -x /usr/bin/mkdir ]; then
-  current_prefix="$TEST_ROOT/current-layout/absent/homebrew"
-  homebrew_prepare_current_prefix "$current_prefix"
-  [ -d "$current_prefix" ] && [ ! -L "$current_prefix" ]
-  [ -d "$current_prefix/bin" ] && [ ! -L "$current_prefix/bin" ]
-  printf 'preserve across repeat activation\n' >"$current_prefix/repeat-marker"
-  homebrew_prepare_current_prefix "$current_prefix"
-  grep -F 'preserve across repeat activation' \
-    "$current_prefix/repeat-marker" >/dev/null
-  printf 'current layout remains writable\n' >"$current_prefix/bin/write-probe"
-
-  mkdir -m 0755 "$TEST_ROOT/current-layout/symlink-prefix-target"
-  ln -s "$TEST_ROOT/current-layout/symlink-prefix-target" \
-    "$TEST_ROOT/current-layout/symlink-prefix"
-  expect_failure \
-    "current Homebrew prefix must be a real non-symlink directory" \
-    homebrew_prepare_current_prefix "$TEST_ROOT/current-layout/symlink-prefix"
-
-  mkdir -m 0755 "$TEST_ROOT/current-layout/symlink-bin"
-  ln -s "$TEST_ROOT/current-layout/symlink-prefix-target" \
-    "$TEST_ROOT/current-layout/symlink-bin/bin"
-  expect_failure "current Homebrew bin must be a real non-symlink directory" \
-    homebrew_prepare_current_prefix "$TEST_ROOT/current-layout/symlink-bin"
-
-  nonwritable_prefix="$TEST_ROOT/current-layout/nonwritable"
-  mkdir -p "$nonwritable_prefix/bin"
-  chmod 0555 "$nonwritable_prefix" "$nonwritable_prefix/bin"
-  if [ "$test_uid" != 0 ]; then
-    expect_failure "current Homebrew prefix is not writable" \
-      homebrew_prepare_current_prefix "$nonwritable_prefix"
-  else
-    echo "test-homebrew-prepare-host-prefix:" \
-      "skipping nonwritable current-layout proof as root" >&2
-  fi
-  chmod 0755 "$nonwritable_prefix" "$nonwritable_prefix/bin"
-else
-  echo "test-homebrew-prepare-host-prefix:" \
-    "skipping current-layout proof (requires Linux /usr/bin/mkdir)" >&2
-fi
-
 if [ "$(uname -s)" = Linux ] && [ "$test_uid" != 0 ] && \
    [ -x /usr/bin/sudo ] && \
    /usr/bin/sudo -n -- /usr/bin/true >/dev/null 2>&1; then
@@ -206,6 +166,8 @@ expect_failure "not a reviewed pair" \
     --layout-mode current --prefix /opt/kandelo/homebrew
 
 grep -F 'prefix-campaign:/opt/kandelo/homebrew)' \
+  "$REPO_ROOT/scripts/homebrew-prepare-host-prefix.sh" >/dev/null
+grep -F 'canonical:/opt/kandelo/homebrew' \
   "$REPO_ROOT/scripts/homebrew-prepare-host-prefix.sh" >/dev/null
 grep -F '"$prefix" 0 0 "$(/usr/bin/id -u)" "$(/usr/bin/id -g)"' \
   "$REPO_ROOT/scripts/homebrew-prepare-host-prefix.sh" >/dev/null

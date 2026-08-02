@@ -158,33 +158,6 @@ homebrew_prepare_prefix_campaign_tree() {
     "mutable Homebrew bin" || return
 }
 
-homebrew_prepare_current_prefix() {
-  if [ "$#" -ne 1 ]; then
-    homebrew_prepare_host_prefix_fail "expected PREFIX"
-    return
-  fi
-  local prefix="$1"
-
-  if { [ -e "$prefix" ] || [ -L "$prefix" ]; } && \
-     { [ ! -d "$prefix" ] || [ -L "$prefix" ]; }; then
-    homebrew_prepare_host_prefix_fail \
-      "current Homebrew prefix must be a real non-symlink directory: $prefix"
-    return
-  fi
-  if { [ -e "$prefix/bin" ] || [ -L "$prefix/bin" ]; } && \
-     { [ ! -d "$prefix/bin" ] || [ -L "$prefix/bin" ]; }; then
-    homebrew_prepare_host_prefix_fail \
-      "current Homebrew bin must be a real non-symlink directory: $prefix/bin"
-    return
-  fi
-  /usr/bin/mkdir -p -- "$prefix/bin"
-  [ -w "$prefix" ] && [ -w "$prefix/bin" ] || {
-    homebrew_prepare_host_prefix_fail \
-      "current Homebrew prefix is not writable: $prefix"
-    return
-  }
-}
-
 homebrew_prepare_host_prefix_main() {
   local layout_mode="" prefix=""
   while [ "$#" -gt 0 ]; do
@@ -213,10 +186,9 @@ homebrew_prepare_host_prefix_main() {
   done
 
   case "$layout_mode:$prefix" in
-    current:/home/linuxbrew/.linuxbrew)
-      homebrew_prepare_current_prefix "$prefix"
-      ;;
-    prefix-campaign:/opt/kandelo/homebrew)
+    canonical:/opt/kandelo/homebrew|prefix-campaign:/opt/kandelo/homebrew)
+      # WHY: both modes use the post-cutover guest layout. The campaign name
+      # remains valid so already sealed handoffs can bind their layout digest.
       homebrew_prepare_prefix_campaign_tree \
         "$prefix" 0 0 "$(/usr/bin/id -u)" "$(/usr/bin/id -g)"
       ;;
@@ -239,7 +211,7 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   for required in \
     "$HOMEBREW_HOST_PREFIX_SUDO" "$HOMEBREW_HOST_PREFIX_STAT" \
     "$HOMEBREW_HOST_PREFIX_INSTALL" "$HOMEBREW_HOST_PREFIX_REALPATH" \
-    /usr/bin/id /usr/bin/mkdir; do
+    /usr/bin/id; do
     [ -x "$required" ] || {
       homebrew_prepare_host_prefix_fail "missing required host tool: $required"
       exit 2
