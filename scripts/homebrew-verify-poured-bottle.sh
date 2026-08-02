@@ -214,18 +214,7 @@ BREW_BIN="${HOMEBREW_BREW_FILE:-}"
 . "$KANDELO_ROOT/scripts/homebrew-guest-layout.sh"
 homebrew_select_guest_layout \
   "${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}"
-case "$HOMEBREW_GUEST_LAYOUT_MODE" in
-  current)
-    PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
-    ;;
-  prefix-campaign)
-    PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags-prefix-campaign.patch"
-    ;;
-  *)
-    echo "homebrew-verify-poured-bottle.sh: unsupported guest layout mode" >&2
-    exit 2
-    ;;
-esac
+PATCH_FILE="$HOMEBREW_GUEST_PATCH_FILE"
 PUBLISHER_ISOLATION_PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0002-support-isolated-publisher.patch"
 # shellcheck source=/dev/null
 . "$KANDELO_ROOT/scripts/homebrew-patched-launcher.sh"

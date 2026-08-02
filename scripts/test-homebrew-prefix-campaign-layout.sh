@@ -9,6 +9,8 @@ homebrew_select_guest_layout ""
 [ "$HOMEBREW_GUEST_LAYOUT_MODE" = "canonical" ]
 [ "$HOMEBREW_GUEST_PREFIX" = "/opt/kandelo/homebrew" ]
 [ "$HOMEBREW_GUEST_CELLAR" = "/opt/kandelo/homebrew/Cellar" ]
+[ "$HOMEBREW_GUEST_PATCH_FILE" = \
+  "$REPO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch" ]
 
 layout_sha256="$(
   sha256sum "$REPO_ROOT/homebrew/kandelo-guest-layout.json" |
@@ -19,6 +21,8 @@ homebrew_select_guest_layout "$layout_sha256"
 [ "$HOMEBREW_GUEST_LAYOUT_SHA256" = "$layout_sha256" ]
 [ "$HOMEBREW_GUEST_PREFIX" = "/opt/kandelo/homebrew" ]
 [ "$HOMEBREW_GUEST_CELLAR" = "/opt/kandelo/homebrew/Cellar" ]
+[ "$HOMEBREW_GUEST_PATCH_FILE" = \
+  "$REPO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags-prefix-campaign.patch" ]
 
 if (
   homebrew_select_guest_layout \

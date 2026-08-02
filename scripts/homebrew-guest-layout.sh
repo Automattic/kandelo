@@ -15,6 +15,7 @@ homebrew_select_guest_layout() {
   HOMEBREW_GUEST_PREFIX=""
   HOMEBREW_GUEST_CELLAR=""
   HOMEBREW_GUEST_LAYOUT_SHA256=""
+  HOMEBREW_GUEST_PATCH_FILE=""
 
   if [ -n "$campaign_sha256" ] &&
     ! [[ "$campaign_sha256" =~ ^[0-9a-f]{64}$ ]]; then
@@ -23,6 +24,10 @@ homebrew_select_guest_layout() {
   fi
 
   helper_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)" || return 2
+  # WHY: the layout mode and its Homebrew patch are one authority decision.
+  # Returning both keeps bottle building and bottle verification from growing
+  # separate mode maps that can drift when the canonical layout changes.
+  HOMEBREW_GUEST_PATCH_FILE="$helper_root/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
   contract="$helper_root/homebrew/kandelo-guest-layout.json"
   [ -f "$contract" ] && [ ! -L "$contract" ] || {
     echo "homebrew guest layout: target contract is not a regular file" >&2
@@ -88,5 +93,6 @@ homebrew_select_guest_layout() {
   if [ -n "$campaign_sha256" ]; then
     HOMEBREW_GUEST_LAYOUT_MODE="prefix-campaign"
     HOMEBREW_GUEST_LAYOUT_SHA256="$campaign_sha256"
+    HOMEBREW_GUEST_PATCH_FILE="$helper_root/homebrew/patches/0001-add-kandelo-wasm-bottle-tags-prefix-campaign.patch"
   fi
 }

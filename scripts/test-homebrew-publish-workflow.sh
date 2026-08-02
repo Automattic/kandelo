@@ -264,6 +264,7 @@ homebrew_select_guest_layout() {
   HOMEBREW_GUEST_PREFIX="${FAKE_BREW_PREFIX:?}"
   HOMEBREW_GUEST_CELLAR="$HOMEBREW_GUEST_PREFIX/Cellar"
   HOMEBREW_GUEST_LAYOUT_SHA256=""
+  HOMEBREW_GUEST_PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
 }
 EOF
   : >"$FORMULA_RUNNER_FIXTURE_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
@@ -3474,7 +3475,10 @@ EOF
   fi
   grep -F "scoped program-index checker differs from the exact host xtask" \
     "$checker_err" >/dev/null ||
-    fail "isolated bottle build did not explain the mismatched checker authority"
+    {
+      cat "$checker_err" >&2
+      fail "isolated bottle build did not explain the mismatched checker authority"
+    }
   : >"$log"
 
   prepare_formula_runner_tapped_clone \
