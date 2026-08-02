@@ -49,6 +49,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 STATUS_SCRIPT="${STATUS_SCRIPT:-$SCRIPT_DIR/latest-merge-gate-status.sh}"
 RELEASE_INDEX_STATE_SCRIPT="${RELEASE_INDEX_STATE_SCRIPT:-$REPO_ROOT/scripts/release-index-state.sh}"
 RELEASE_LIFECYCLE_SCRIPT="${RELEASE_LIFECYCLE_SCRIPT:-$SCRIPT_DIR/package-release-lifecycle.sh}"
+FIND_RELEASE_SCRIPT="${FIND_RELEASE_SCRIPT:-$SCRIPT_DIR/find-release-by-tag.sh}"
 # shellcheck source=.github/scripts/github-api-get.sh
 source "$SCRIPT_DIR/github-api-get.sh"
 TMP_ROOT="$(mktemp -d)"
@@ -58,6 +59,7 @@ CANONICAL_LOCK_STATE="$TMP_ROOT/canonical-lock.env"
 AUTHORITY_LOCKED=0
 CANDIDATE_LOCKED=0
 CANONICAL_LOCKED=0
+CANDIDATE_RELEASE_ID=""
 
 cleanup() {
   if [ "$CANONICAL_LOCKED" = "1" ]; then
@@ -105,9 +107,33 @@ gh_retry() {
 release_asset_info() {
   local tag="$1"
   local name="$2"
-  gh_retry gh api "/repos/${REPOSITORY}/releases/tags/${tag}" \
-    | jq -r --arg name "$name" \
-        '.assets[] | select(.name == $name) | [.id, .size, (.digest // "")] | @tsv'
+  local endpoint release_json
+  if [ "$tag" = "$CANDIDATE_TAG" ]; then
+    if ! [[ "$CANDIDATE_RELEASE_ID" =~ ^[1-9][0-9]*$ ]]; then
+      echo "activate-merge-candidate: candidate release ID is unavailable" >&2
+      return 1
+    fi
+    # WHY: the candidate remains a draft while activation copies its bytes.
+    # GitHub hides drafts from get-by-tag, but its stable numeric ID remains
+    # readable and keeps every asset check bound to the discovered release.
+    endpoint="/repos/${REPOSITORY}/releases/${CANDIDATE_RELEASE_ID}"
+  else
+    endpoint="/repos/${REPOSITORY}/releases/tags/${tag}"
+  fi
+  release_json="$(gh_retry gh api "$endpoint")"
+  if [ "$tag" = "$CANDIDATE_TAG" ] && ! jq -e \
+      --arg tag "$tag" \
+      --argjson release_id "$CANDIDATE_RELEASE_ID" \
+      '.id == $release_id and .tag_name == $tag' \
+      <<<"$release_json" >/dev/null
+  then
+    echo "activate-merge-candidate: candidate release identity changed" >&2
+    return 1
+  fi
+  jq -r --arg name "$name" \
+    '.assets[] | select(.name == $name) |
+      [.id, .size, (.digest // "")] | @tsv' \
+    <<<"$release_json"
 }
 
 download_asset() {
@@ -398,6 +424,31 @@ AUTHORITY_LOCKED=1
 export STATE_LOCK_OWNER_DETAIL="candidate activation, PR ${PR_NUMBER}"
 STATE_LOCK_STATE_FILE="$CANDIDATE_LOCK_STATE" bash "$STATE_LOCK_SCRIPT" acquire "$CANDIDATE_TAG"
 CANDIDATE_LOCKED=1
+
+candidate_release_json="$TMP_ROOT/candidate-release.json"
+find_candidate_rc=0
+FIND_RELEASE_RETRY_DELAY_SECONDS=2 \
+  bash "$FIND_RELEASE_SCRIPT" \
+    --tag "$CANDIDATE_TAG" \
+    --output-file "$candidate_release_json" || find_candidate_rc=$?
+if [ "$find_candidate_rc" -eq 44 ]; then
+  echo "activate-merge-candidate: candidate release $CANDIDATE_TAG was not found" >&2
+  exit 1
+fi
+[ "$find_candidate_rc" -eq 0 ] || exit "$find_candidate_rc"
+if ! jq -e \
+    --arg tag "$CANDIDATE_TAG" '
+      .tag_name == $tag and
+      (.id | (type == "number" and . > 0 and floor == .)) and
+      .prerelease == true and
+      ((.draft == true and .immutable == false) or
+       (.draft == false and .immutable == true))
+    ' "$candidate_release_json" >/dev/null
+then
+  echo "activate-merge-candidate: release $CANDIDATE_TAG does not satisfy the candidate release contract" >&2
+  exit 1
+fi
+CANDIDATE_RELEASE_ID="$(jq -r .id "$candidate_release_json")"
 
 candidate_dir="$TMP_ROOT/candidate"
 mkdir -p "$candidate_dir"

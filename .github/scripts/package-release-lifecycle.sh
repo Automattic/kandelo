@@ -73,6 +73,7 @@ NORMALIZED_REPOSITORY="$(printf '%s' "$REPOSITORY" | tr '[:upper:]' '[:lower:]')
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck source=.github/scripts/github-api-get.sh
 source "$SCRIPT_DIR/github-api-get.sh"
+FIND_RELEASE_SCRIPT="${FIND_RELEASE_SCRIPT:-$SCRIPT_DIR/find-release-by-tag.sh}"
 
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
@@ -139,44 +140,18 @@ validate_release_identity() {
     }
 }
 
-fetch_release_pages() {
-  local output="$1" page page_json count reached_end=false
-  : >"$output.jsonl"
-  for ((page = 1; page <= MAX_RELEASE_PAGES; page++)); do
-    page_json="$(gh_retry gh api \
-      "/repos/${REPOSITORY}/releases?per_page=100&page=${page}")"
-    jq -e 'type == "array"' <<<"$page_json" >/dev/null || {
-      echo "package-release-lifecycle: malformed release page $page" >&2
-      return 1
-    }
-    jq -c '.[]' <<<"$page_json" >>"$output.jsonl"
-    count="$(jq 'length' <<<"$page_json")"
-    if [ "$count" -lt 100 ]; then reached_end=true; break; fi
-  done
-  if [ "$reached_end" != true ]; then
-    echo "package-release-lifecycle: release discovery reached its safety bound" >&2
-    return 1
-  fi
-  if [ -s "$output.jsonl" ]; then
-    jq -s . "$output.jsonl" >"$output"
-  else
-    printf '[]\n' >"$output"
-  fi
-}
-
 discover_release() {
-  local releases="$TMP_ROOT/releases.json" matches
-  fetch_release_pages "$releases"
-  matches="$(jq -c --arg tag "$TAG" '[.[] | select(.tag_name == $tag)]' \
-    "$releases")"
-  case "$(jq 'length' <<<"$matches")" in
-    0) return 44 ;;
-    1) jq '.[0]' <<<"$matches" >"$RELEASE_JSON" ;;
-    *)
-      echo "package-release-lifecycle: multiple releases claim tag $TAG" >&2
-      return 1
-      ;;
-  esac
+  local rc=0
+  # WHY: GitHub's get-by-tag endpoint hides drafts. Use the shared bounded
+  # list scan so every package-release caller gets the same duplicate and
+  # malformed-page protection as post-merge candidate activation.
+  FIND_RELEASE_MAX_PAGES="$MAX_RELEASE_PAGES" \
+    FIND_RELEASE_PER_PAGE=100 \
+    FIND_RELEASE_RETRY_DELAY_SECONDS="$RETRY_DELAY_SECONDS" \
+    bash "$FIND_RELEASE_SCRIPT" \
+      --tag "$TAG" \
+      --output-file "$RELEASE_JSON" || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
   validate_release_identity
 }
 

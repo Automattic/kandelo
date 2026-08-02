@@ -76,6 +76,7 @@ SERVER_URL="${SERVER_URL%/}"
 TMP_ROOT="$(mktemp -d)"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 STATUS_SCRIPT="${STATUS_SCRIPT:-$SCRIPT_DIR/latest-merge-gate-status.sh}"
+FIND_RELEASE_SCRIPT="${FIND_RELEASE_SCRIPT:-$SCRIPT_DIR/find-release-by-tag.sh}"
 UNSORTED_PLAN="$TMP_ROOT/plan.tsv"
 trap 'rm -rf "$TMP_ROOT"' EXIT
 : > "$UNSORTED_PLAN"
@@ -154,8 +155,9 @@ list_candidate_assets() {
 plan_candidate() {
   local tag="$1"
   local targeted="$2"
+  local discovered_release_id="${3:-}"
   local pr release_json release_id asset_names pr_json state merged_at head_sha target_url expected_url
-  local merge_sha base_ref distance
+  local merge_sha base_ref distance release_file find_rc=0
 
   if ! pr=$(candidate_pr "$tag"); then
     if [ "$targeted" = "true" ]; then
@@ -173,11 +175,42 @@ plan_candidate() {
     return 0
   fi
 
-  release_json=$(gh_retry gh api "/repos/${REPOSITORY}/releases/tags/${tag}")
+  if [ -n "$discovered_release_id" ]; then
+    if ! [[ "$discovered_release_id" =~ ^[1-9][0-9]*$ ]]; then
+      echo "reconcile-merge-candidates: malformed discovered release ID for $tag" >&2
+      return 1
+    fi
+    release_json=$(gh_retry gh api \
+      "/repos/${REPOSITORY}/releases/${discovered_release_id}")
+  else
+    release_file="$TMP_ROOT/release-by-tag.json"
+    # WHY: ready candidates remain drafts until activation records a terminal
+    # receipt. GitHub returns 404 for those releases by tag, so targeted
+    # recovery must use the authenticated list and bind the one exact match.
+    FIND_RELEASE_MAX_PAGES="$MAX_PAGES" \
+      FIND_RELEASE_PER_PAGE="$PER_PAGE" \
+      FIND_RELEASE_RETRY_DELAY_SECONDS="$RETRY_DELAY_SECONDS" \
+      bash "$FIND_RELEASE_SCRIPT" \
+        --tag "$tag" \
+        --output-file "$release_file" || find_rc=$?
+    if [ "$find_rc" -eq 44 ]; then
+      echo "reconcile-merge-candidates: candidate release $tag was not found" >&2
+      return 1
+    fi
+    [ "$find_rc" -eq 0 ] || return "$find_rc"
+    release_json="$(cat "$release_file")"
+  fi
   if ! jq -e \
       --arg tag "$tag" \
+      --arg discovered_release_id "$discovered_release_id" \
       '(.tag_name == $tag) and (.prerelease == true) and
-       (.id | type == "number" and . > 0)' \
+       (.id | (type == "number" and . > 0 and floor == .)) and
+       ($discovered_release_id == "" or
+        .id == ($discovered_release_id | tonumber)) and
+       (.draft | type == "boolean") and
+       (.immutable | type == "boolean") and
+       ((.draft == true and .immutable == false) or
+        (.draft == false and .immutable == true))' \
       <<<"$release_json" >/dev/null
   then
     echo "reconcile-merge-candidates: release $tag does not satisfy the candidate release contract" >&2
@@ -283,21 +316,33 @@ if [ -n "$CANDIDATE_TAG" ]; then
 elif [ -n "$PR_NUMBER" ]; then
   resolve_pr_candidate "$PR_NUMBER"
 else
-  tags="$TMP_ROOT/tags"
-  : > "$tags"
+  releases_file="$TMP_ROOT/candidate-releases.tsv"
+  : > "$releases_file"
   reached_end=false
   for ((page = 1; page <= MAX_PAGES; page++)); do
     releases=$(gh_retry gh api "/repos/${REPOSITORY}/releases?per_page=${PER_PAGE}&page=${page}")
-    if ! jq -e 'type == "array"' <<<"$releases" >/dev/null; then
+    if ! jq -e '
+        type == "array" and
+        all(.[];
+          type == "object" and
+          (.id | (type == "number" and . > 0 and floor == .)) and
+          (.tag_name | (type == "string" and length > 0 and
+            (test("[[:cntrl:]]") | not))) and
+          (.draft | type == "boolean") and
+          (.prerelease | type == "boolean") and
+          (.immutable | type == "boolean") and
+          ((.draft and .immutable) | not))
+      ' <<<"$releases" >/dev/null
+    then
       echo "reconcile-merge-candidates: release page $page is malformed" >&2
       exit 1
     fi
     count=$(jq 'length' <<<"$releases")
     jq -r '
       .[] |
-      .tag_name |
-      select(type == "string" and startswith("merge-candidate-abi-v"))
-    ' <<<"$releases" >> "$tags"
+      select(.tag_name | startswith("merge-candidate-abi-v")) |
+      [.id, .tag_name] | @tsv
+    ' <<<"$releases" >> "$releases_file"
     if [ "$count" -lt "$PER_PAGE" ]; then
       reached_end=true
       break
@@ -308,11 +353,19 @@ else
     exit 1
   fi
 
-  LC_ALL=C sort -u "$tags" -o "$tags"
-  while IFS= read -r tag; do
+  if [ -n "$(cut -f1 "$releases_file" | LC_ALL=C sort | uniq -d)" ]; then
+    echo "reconcile-merge-candidates: release scan contains duplicate candidate IDs" >&2
+    exit 1
+  fi
+  if [ -n "$(cut -f2 "$releases_file" | LC_ALL=C sort | uniq -d)" ]; then
+    echo "reconcile-merge-candidates: multiple releases claim one candidate tag" >&2
+    exit 1
+  fi
+  LC_ALL=C sort -t $'\t' -k2,2 "$releases_file" -o "$releases_file"
+  while IFS=$'\t' read -r release_id tag; do
     [ -n "$tag" ] || continue
-    plan_candidate "$tag" false
-  done < "$tags"
+    plan_candidate "$tag" false "$release_id"
+  done < "$releases_file"
 fi
 
 if [ -s "$UNSORTED_PLAN" ]; then

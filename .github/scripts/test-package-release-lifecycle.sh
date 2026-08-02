@@ -80,10 +80,17 @@ if [ "$method" = GET ]; then
   case "$endpoint" in
     */releases\?per_page=100\&page=1)
       if [ -f "$store/release-on-second-page" ]; then
-        jq -n '[range(0; 100) as $n | {tag_name:("other-" + ($n | tostring))}]'
+        jq -n '[range(0; 100) as $n | {
+          id:(1000 + $n),
+          tag_name:("other-" + ($n | tostring)),
+          draft:false,
+          prerelease:true,
+          immutable:true
+        }]'
       elif [ -f "$store/release.json" ] &&
            [ -f "$store/duplicate-release" ]; then
-        release_json | jq -s '.[0] as $release | [$release, $release]'
+        release_json | jq -s \
+          '.[0] as $release | [$release, ($release | .id = 8)]'
       elif [ -f "$store/release.json" ]; then
         release_json | jq -s .
       else
