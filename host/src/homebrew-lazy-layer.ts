@@ -1013,7 +1013,12 @@ function prepareOriginalBottleRelocation(
     sourcePaths.add(source.path);
     const canonical = resolveTarRegularSource(source, sourceByPath, pkg);
     try {
-      const relocated = relocateHomebrewBottleFile(canonical.data, receipt, guestPath);
+      const relocated = relocateHomebrewBottleFile(
+        canonical.data,
+        receipt,
+        guestPath,
+        pkg.prefix,
+      );
       const prior = bytesByCanonicalSource.get(canonical.path);
       if (prior !== undefined && !bytesEqual(prior, relocated)) {
         throw new Error("hard-link aliases produce different relocated bytes");

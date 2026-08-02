@@ -22,6 +22,7 @@ import {
   type VfsDeferredTreeUsage,
 } from "./deferred-tree-limits";
 import {
+  inferHomebrewBottlePrefix,
   parseHomebrewInstallReceiptRelocation,
   relocateHomebrewBottleFile,
 } from "../homebrew-bottle-relocation";
@@ -5303,6 +5304,13 @@ export class MemoryFileSystem implements FileSystemBackend {
           : []
       ),
     );
+    const relocationPrefix = relocationSources.size === 0
+      ? undefined
+      : inferHomebrewBottlePrefix(
+          inventory.filter(
+            (entry) => entry.materialization === "archive-homebrew-relocate",
+          ),
+        );
     if (content.source !== undefined) {
       const sourceByPath = new Map(
         content.source.entries.map((entry) => [entry.sourcePath, entry]),
@@ -5370,7 +5378,12 @@ export class MemoryFileSystem implements FileSystemBackend {
             );
           }
           if (relocatedCanonicalSources.has(canonical.sourcePath)) continue;
-          actual.data = relocateHomebrewBottleFile(actual.data, receipt, sourcePath);
+          actual.data = relocateHomebrewBottleFile(
+            actual.data,
+            receipt,
+            sourcePath,
+            relocationPrefix!,
+          );
           relocatedCanonicalSources.add(canonical.sourcePath);
         }
       }
