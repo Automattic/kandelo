@@ -112,6 +112,8 @@ fi
 if [ "${WASM_POSIX_REQUIRE_SEALED_HOMEBREW_SELECTION:-0}" = "1" ]; then
     REQUIRE_SEALED_HOMEBREW_SELECTION=1
 fi
+CI_BROWSER_SOURCE_AUTHORITY="${WASM_POSIX_CI_BROWSER_SOURCE_AUTHORITY:-}"
+unset WASM_POSIX_CI_BROWSER_SOURCE_AUTHORITY
 if [ "${#ALLOW_STALE_ARGS[@]}" -gt 0 ] && [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then
     err "--allow-stale and --fetch-only cannot be combined."
     exit 2
@@ -144,6 +146,24 @@ if [ "$REQUIRE_SEALED_HOMEBREW_SELECTION" -eq 1 ]; then
         exit 2
     }
 fi
+
+validate_ci_browser_source_authority() {
+    [ -n "$CI_BROWSER_SOURCE_AUTHORITY" ] || return 0
+    if [ "$CI_BROWSER_SOURCE_AUTHORITY" != source-rootfs-mirror-state-v1 ]; then
+        err "Unknown internal browser source authority."
+        return 2
+    fi
+    if [ "$#" -ne 1 ] || [ "${1:-}" != prepare-browser ] ||
+        [ "$ALREADY_MATERIALIZED" -ne 1 ] ||
+        [ "${#FETCH_ONLY_ARGS[@]}" -eq 0 ] ||
+        [ "$SOURCE_ROOTFS_SHELL" -ne 0 ] ||
+        [ "$REQUIRE_SEALED_HOMEBREW_SELECTION" -ne 0 ] ||
+        [ "$USE_PR_STAGING" -ne 0 ]; then
+        err "Internal browser source authority requires isolated CI preparation."
+        return 2
+    fi
+}
+validate_ci_browser_source_authority "$@" || exit $?
 
 pr_staging_manual_override_hint() {
     local repo_hint=${1:-"<owner>/<repo>"}
@@ -2380,6 +2400,14 @@ build_browser() {
 }
 
 prepare_browser_homebrew_bootstrap() {
+    # WHY: generic Prepare Merge has already authenticated this materialized
+    # image as the explicit source-rootfs bridge. That bridge truthfully has
+    # no Homebrew selection, so asking it for a bootstrap bottle would turn a
+    # valid source-shell test into a false product-publication requirement.
+    if [ -n "$CI_BROWSER_SOURCE_AUTHORITY" ]; then
+        step "Using authenticated CI source-rootfs shell without Homebrew"
+        return 0
+    fi
     if [ ! -x "$REPO_ROOT/node_modules/.bin/tsx" ]; then
         step "Installing locked browser-product preparation tools"
         (cd "$REPO_ROOT" && npm ci --no-audit --no-fund)

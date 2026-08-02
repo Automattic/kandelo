@@ -496,10 +496,6 @@ describe("declared shell lazy-archive inputs", () => {
       join(repoRoot, "packages/registry/shell/package.toml"),
       "utf8",
     );
-    const bootstrapPackageToml = readFileSync(
-      join(repoRoot, "packages/registry/homebrew-bootstrap/package.toml"),
-      "utf8",
-    );
     const buildToml = readFileSync(
       join(repoRoot, "packages/registry/shell/build.toml"),
       "utf8",
@@ -573,18 +569,9 @@ describe("declared shell lazy-archive inputs", () => {
       }>;
     };
 
-    // The canonical shell no longer resolves the old registry ZIP packages.
-    // Its only registry dependency is the atomic Homebrew source/launcher
-    // package needed to register `brew` lazily. Formula-owned bottle trees now
-    // carry the complete current shell surface independently of that source
-    // package.
-    const bootstrapVersion = bootstrapPackageToml.match(
-      /^version\s*=\s*"([^"]+)"$/m,
-    )?.[1];
-    expect(bootstrapVersion).toBeTruthy();
-    expect(packageToml.match(/^depends_on\s*=\s*\["([^"]+)"\]$/m)?.[1]).toBe(
-      `homebrew-bootstrap@${bootstrapVersion}`,
-    );
+    // The canonical shell no longer resolves any registry package. Bottle
+    // selection owns both its Formula closure and lazy Homebrew source tree.
+    expect(packageToml.match(/^depends_on\s*=\s*(.+)$/m)?.[1]).toBe("[]");
     expect(packageToml).not.toContain("vim-browser-bundle@");
     expect(packageToml).not.toContain("nethack-browser-bundle@");
     for (const input of [
@@ -601,12 +588,10 @@ describe("declared shell lazy-archive inputs", () => {
     ]) {
       expect(buildToml).toContain(`"${input}"`);
     }
-    expect(buildToml).toContain('name = "homebrew_tap_core"');
-    expect(buildToml).toContain(
-      'repository = "https://github.com/Kandelo-dev/homebrew-tap-core.git"',
-    );
-    expect(buildToml).toContain(
-      `commit = "${migrationLock.catalog.tap_commit}"`,
+    expect(buildToml).not.toContain("[[git_inputs]]");
+    expect(buildScript).toContain("prepare-homebrew-main-shell-inputs.sh");
+    expect(composer).toContain(
+      'BOTTLE_MIRROR_REPOSITORY="kandelo-dev/homebrew-tap-core"',
     );
 
     const canonicalDemoBytes = readFileSync(
@@ -724,16 +709,12 @@ describe("declared shell lazy-archive inputs", () => {
         `${runtimeSupport.additional_formula_order.length} beyond the base`,
     );
 
-    // The package build consumes only public bottle provenance from the
-    // locked checkout. The strict composer must reject fallback, verify every
-    // bottle's source metadata, and bind the saved image to the reviewed lock.
-    expect(buildScript).toContain("WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_DIR");
-    expect(buildScript).toContain(
-      "WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_COMMIT",
-    );
-    expect(buildScript).toContain(
-      "scripts/build-homebrew-main-shell-closure.sh",
-    );
+    // The package build consumes the authenticated public selection instead
+    // of an ambient tap checkout. The strict composer must reject fallback,
+    // verify every bottle's metadata, and bind the image to the reviewed lock.
+    expect(buildScript).toContain("prepare-homebrew-main-shell-inputs.sh");
+    expect(buildScript).toContain("build-homebrew-main-shell-product.sh");
+    expect(buildScript).not.toContain("WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE");
     expect(buildScript).toContain("unset GH_TOKEN GITHUB_TOKEN");
     expect(buildScript).not.toContain("build-vim-zip.sh");
     expect(buildScript).not.toContain("build-nethack-zip.sh");

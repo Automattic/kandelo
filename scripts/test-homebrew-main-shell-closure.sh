@@ -52,6 +52,7 @@ CI_BLOCKER_MATERIALIZER="$REPO_ROOT/scripts/materialize-ci-publication-blockers.
 CI_STAGING_SHELL_VERIFIER="$REPO_ROOT/scripts/verify-ci-staging-shell-handoff.sh"
 CI_BROWSER_MIRROR_STATE="$REPO_ROOT/scripts/ci-homebrew-browser-mirror-state.sh"
 CI_WORKSPACE_PACKER="$REPO_ROOT/scripts/pack-ci-test-workspace.sh"
+CI_TEST_RUNNER="$REPO_ROOT/scripts/ci-run-test-suite.sh"
 BUILD_PROGRAMS="$REPO_ROOT/scripts/build-programs.sh"
 TMP_ROOT="$(mktemp -d)"
 trap 'rm -rf "$TMP_ROOT"' EXIT
@@ -1872,6 +1873,9 @@ source_clear_fetched_function="$TMP_ROOT/clear-source-rootfs-shell-transient-fet
 browser_fetch_function="$TMP_ROOT/fetch-browser-binaries-function.sh"
 browser_bootstrap_function="$TMP_ROOT/prepare-browser-homebrew-bootstrap-function.sh"
 prepare_browser_function="$TMP_ROOT/prepare-browser-function.sh"
+browser_source_authority_function="$TMP_ROOT/validate-ci-browser-source-authority-function.sh"
+ci_browser_state_function="$TMP_ROOT/validate-ci-homebrew-browser-state-function.sh"
+ci_browser_prepare_function="$TMP_ROOT/prepare-ci-homebrew-browser-mirror-function.sh"
 sed -n '/^validate_source_rootfs_shell_pages_mode()/,/^}/p' "$RUN_SH" \
   >"$source_validate_function"
 sed -n '/^initialize_source_rootfs_shell_pages_mode()/,/^}/p' "$RUN_SH" \
@@ -1902,6 +1906,12 @@ sed -n '/^prepare_browser_homebrew_bootstrap()/,/^}/p' "$RUN_SH" \
   >"$browser_bootstrap_function"
 sed -n '/^cmd_prepare_browser()/,/^}/p' "$RUN_SH" \
   >"$prepare_browser_function"
+sed -n '/^validate_ci_browser_source_authority()/,/^}/p' "$RUN_SH" \
+  >"$browser_source_authority_function"
+sed -n '/^validate_ci_homebrew_browser_state()/,/^}/p' "$CI_TEST_RUNNER" \
+  >"$ci_browser_state_function"
+sed -n '/^prepare_ci_homebrew_browser_mirror()/,/^}/p' "$CI_TEST_RUNNER" \
+  >"$ci_browser_prepare_function"
 grep -Fq -- '--source-rootfs-shell)' "$RUN_SH" &&
 grep -Fq \
     'export WASM_POSIX_SOURCE_ROOTFS_SHELL=$SOURCE_ROOTFS_SHELL' "$RUN_SH" ||
@@ -2515,6 +2525,199 @@ grep -Fq 'scripts/prepare-homebrew-browser-bootstrap.sh' \
     "$browser_bootstrap_function" &&
   grep -Fq -- '--require-sealed' "$browser_bootstrap_function" ||
   fail "browser preparation must stage the selected Formula bottle asset"
+
+for source_authority_contract in \
+  'source-rootfs-mirror-state-v1' \
+  '[ "$ALREADY_MATERIALIZED" -ne 1 ]' \
+  '[ "${#FETCH_ONLY_ARGS[@]}" -eq 0 ]' \
+  '[ "$REQUIRE_SEALED_HOMEBREW_SELECTION" -ne 0 ]'
+do
+  grep -Fq "$source_authority_contract" \
+    "$browser_source_authority_function" ||
+    fail "internal source-shell authority omits: $source_authority_contract"
+done
+grep -Fq 'if [ -n "$CI_BROWSER_SOURCE_AUTHORITY" ]; then' \
+  "$browser_bootstrap_function" ||
+  fail "browser bootstrap does not recognize validated source-shell authority"
+grep -Fq 'WASM_POSIX_CI_BROWSER_SOURCE_AUTHORITY' \
+  "$ci_browser_state_function" ||
+  fail "CI source-shell validation does not reject ambient authority"
+if grep -Fq 'export KANDELO_PLAYWRIGHT_' "$ci_browser_state_function"; then
+  fail "initial CI state validation must not grant Playwright authority"
+fi
+
+ci_materialize_line="$(grep -nF \
+  'bash scripts/materialize-ci-publication-blockers.sh' \
+  "$CI_TEST_RUNNER" | tail -n 1 | cut -d: -f1)"
+ci_initial_state_line="$(grep -nF 'validate_ci_homebrew_browser_state' \
+  "$CI_TEST_RUNNER" | tail -n 1 | cut -d: -f1)"
+ci_source_authority_line="$(grep -nF \
+  'WASM_POSIX_CI_BROWSER_SOURCE_AUTHORITY="$CI_HOMEBREW_BROWSER_SOURCE_AUTHORITY"' \
+  "$CI_TEST_RUNNER" | tail -n 1 | cut -d: -f1)"
+ci_browser_run_line="$(grep -nF \
+  './run.sh --already-materialized --fetch-only prepare-browser' \
+  "$CI_TEST_RUNNER" | tail -n 1 | cut -d: -f1)"
+ci_product_build_line="$(grep -nF 'run_pages_shaped_browser_build' \
+  "$CI_TEST_RUNNER" | tail -n 1 | cut -d: -f1)"
+ci_mirror_line="$(grep -nF 'prepare_ci_homebrew_browser_mirror' \
+  "$CI_TEST_RUNNER" | tail -n 1 | cut -d: -f1)"
+[ "$ci_materialize_line" -lt "$ci_initial_state_line" ] &&
+  [ "$ci_initial_state_line" -lt "$ci_source_authority_line" ] &&
+  [ "$ci_source_authority_line" -lt "$ci_browser_run_line" ] &&
+  [ "$ci_browser_run_line" -lt "$ci_product_build_line" ] &&
+  [ "$ci_product_build_line" -lt "$ci_mirror_line" ] ||
+  fail "CI must authenticate source state before run.sh and recover the mirror after the product build"
+
+[ "$(grep -Ec '^[[:space:]]+validate_ci_homebrew_browser_state$' \
+  "$CI_TEST_RUNNER")" -eq 2 ] ||
+  fail "CI must validate browser state exactly before and after browser preparation"
+ci_prepare_state_line="$(grep -nF 'validate_ci_homebrew_browser_state' \
+  "$ci_browser_prepare_function" | cut -d: -f1)"
+ci_prepare_source_line="$(grep -nF \
+  'export KANDELO_PLAYWRIGHT_EXPECT_SOURCE_ROOTFS_SHELL=1' \
+  "$ci_browser_prepare_function" | cut -d: -f1)"
+ci_prepare_recovery_line="$(grep -nF \
+  'npx tsx scripts/recover-homebrew-bottle-mirror.ts' \
+  "$ci_browser_prepare_function" | cut -d: -f1)"
+[ "$ci_prepare_state_line" -lt "$ci_prepare_source_line" ] &&
+  [ "$ci_prepare_state_line" -lt "$ci_prepare_recovery_line" ] ||
+  fail "CI must revalidate browser state before granting final browser authority"
+
+ci_prepare_probe_root="$TMP_ROOT/ci-browser-prepare-revalidation"
+ci_prepare_probe="$ci_prepare_probe_root/probe.sh"
+ci_prepare_probe_log="$ci_prepare_probe_root/revalidated"
+mkdir -p "$ci_prepare_probe_root/apps/browser-demos/public"
+{
+  printf 'set -euo pipefail\n'
+  printf 'REPO_ROOT=%q\n' "$ci_prepare_probe_root"
+  printf 'CI_HOMEBREW_BROWSER_STATE_VALIDATED=1\n'
+  printf 'CI_HOMEBREW_BROWSER_STATE_MODE=unvalidated\n'
+  printf 'CI_HOMEBREW_BROWSER_MIRROR_REQUIRED=""\n'
+  printf 'CI_HOMEBREW_BROWSER_IMAGE=""\n'
+  printf 'CI_HOMEBREW_BROWSER_REPORT_ROOT=""\n'
+  printf 'CI_HOMEBREW_BROWSER_MIRROR=""\n'
+  printf 'validate_ci_homebrew_browser_state() {\n'
+  printf '  printf revalidated >%q\n' "$ci_prepare_probe_log"
+  printf '  if [ "${TEST_REVALIDATE_FAIL:-0}" = 1 ]; then\n'
+  printf '    echo "browser state changed before final authority" >&2\n'
+  printf '    return 73\n'
+  printf '  fi\n'
+  printf '  CI_HOMEBREW_BROWSER_STATE_MODE=publication-blocked\n'
+  printf '}\n'
+  cat "$ci_browser_prepare_function"
+  printf 'prepare_ci_homebrew_browser_mirror\n'
+  printf 'printf "authority=%%s\\n" "${KANDELO_PLAYWRIGHT_EXPECT_SOURCE_ROOTFS_SHELL:-}"\n'
+} >"$ci_prepare_probe"
+[ "$(bash "$ci_prepare_probe")" = 'authority=1' ] &&
+  [ -f "$ci_prepare_probe_log" ] ||
+  fail "CI browser preparation did not revalidate before source authority"
+rm -f "$ci_prepare_probe_log"
+expect_failure "browser state changed before final authority" \
+  env TEST_REVALIDATE_FAIL=1 bash "$ci_prepare_probe"
+[ -f "$ci_prepare_probe_log" ] ||
+  fail "CI browser preparation did not run its final state validation"
+
+ci_state_probe="$TMP_ROOT/ci-browser-state-authority.sh"
+{
+  printf 'set -euo pipefail\n'
+  printf 'REPO_ROOT=%q\n' "$REPO_ROOT"
+  printf 'CI_HOMEBREW_BROWSER_IMAGE=""\n'
+  printf 'CI_HOMEBREW_BROWSER_MIRROR_REQUIRED=""\n'
+  printf 'CI_HOMEBREW_BROWSER_SOURCE_AUTHORITY=""\n'
+  printf 'CI_HOMEBREW_BROWSER_STATE_MODE=""\n'
+  printf 'CI_HOMEBREW_BROWSER_STATE_VALIDATED=0\n'
+  cat "$ci_browser_state_function"
+  printf 'validate_ci_homebrew_browser_state\n'
+} >"$ci_state_probe"
+expect_failure \
+  'ambient closed Homebrew browser authority is forbidden: WASM_POSIX_CI_BROWSER_SOURCE_AUTHORITY' \
+  env WASM_POSIX_CI_BROWSER_SOURCE_AUTHORITY=source-rootfs-mirror-state-v1 \
+    bash "$ci_state_probe"
+
+source_authority_probe="$TMP_ROOT/browser-source-authority.sh"
+{
+  printf 'set -euo pipefail\n'
+  printf 'err() { printf "%%s\\n" "$*" >&2; }\n'
+  printf 'CI_BROWSER_SOURCE_AUTHORITY="${TEST_AUTHORITY:-}"\n'
+  printf 'ALREADY_MATERIALIZED="${TEST_ALREADY_MATERIALIZED:-1}"\n'
+  printf 'FETCH_ONLY_ARGS=()\n'
+  printf '[ "${TEST_FETCH_ONLY:-1}" = 0 ] || FETCH_ONLY_ARGS=(--fetch-only)\n'
+  printf 'SOURCE_ROOTFS_SHELL="${TEST_SOURCE_ROOTFS:-0}"\n'
+  printf 'REQUIRE_SEALED_HOMEBREW_SELECTION="${TEST_REQUIRE_SEALED:-0}"\n'
+  printf 'USE_PR_STAGING="${TEST_PR_STAGING:-0}"\n'
+  printf 'COMMAND_ARGS=(prepare-browser)\n'
+  printf 'case "${TEST_COMMAND_SHAPE:-exact}" in\n'
+  printf '  wrong) COMMAND_ARGS=(build) ;;\n'
+  printf '  extra) COMMAND_ARGS=(prepare-browser extra) ;;\n'
+  printf 'esac\n'
+  cat "$browser_source_authority_function"
+  printf 'validate_ci_browser_source_authority "${COMMAND_ARGS[@]}"\n'
+} >"$source_authority_probe"
+TEST_AUTHORITY=source-rootfs-mirror-state-v1 \
+  bash "$source_authority_probe" ||
+  fail "exact CI source-shell authority was rejected"
+expect_failure "Unknown internal browser source authority" \
+  env TEST_AUTHORITY=unreviewed bash "$source_authority_probe"
+expect_failure "requires isolated CI preparation" \
+  env TEST_AUTHORITY=source-rootfs-mirror-state-v1 \
+    TEST_ALREADY_MATERIALIZED=0 bash "$source_authority_probe"
+expect_failure "requires isolated CI preparation" \
+  env TEST_AUTHORITY=source-rootfs-mirror-state-v1 TEST_FETCH_ONLY=0 \
+    bash "$source_authority_probe"
+expect_failure "requires isolated CI preparation" \
+  env TEST_AUTHORITY=source-rootfs-mirror-state-v1 TEST_REQUIRE_SEALED=1 \
+    bash "$source_authority_probe"
+expect_failure "requires isolated CI preparation" \
+  env TEST_AUTHORITY=source-rootfs-mirror-state-v1 TEST_SOURCE_ROOTFS=1 \
+    bash "$source_authority_probe"
+expect_failure "requires isolated CI preparation" \
+  env TEST_AUTHORITY=source-rootfs-mirror-state-v1 TEST_PR_STAGING=1 \
+    bash "$source_authority_probe"
+expect_failure "requires isolated CI preparation" \
+  env TEST_AUTHORITY=source-rootfs-mirror-state-v1 TEST_COMMAND_SHAPE=wrong \
+    bash "$source_authority_probe"
+expect_failure "requires isolated CI preparation" \
+  env TEST_AUTHORITY=source-rootfs-mirror-state-v1 TEST_COMMAND_SHAPE=extra \
+    bash "$source_authority_probe"
+
+bootstrap_probe_root="$TMP_ROOT/browser-bootstrap-product-path"
+bootstrap_probe_log="$bootstrap_probe_root/calls.log"
+mkdir -p "$bootstrap_probe_root/node_modules/.bin" \
+  "$bootstrap_probe_root/apps/browser-demos/public" \
+  "$bootstrap_probe_root/scripts"
+: >"$bootstrap_probe_root/node_modules/.bin/tsx"
+chmod 0755 "$bootstrap_probe_root/node_modules/.bin/tsx"
+cat >"$bootstrap_probe_root/scripts/prepare-homebrew-browser-bootstrap.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >>"$TEST_BOOTSTRAP_LOG"
+EOF
+chmod 0755 \
+  "$bootstrap_probe_root/scripts/prepare-homebrew-browser-bootstrap.sh"
+bootstrap_probe="$bootstrap_probe_root/run.sh"
+{
+  printf 'set -euo pipefail\n'
+  printf 'REPO_ROOT=%q\n' "$bootstrap_probe_root"
+  printf 'CI_BROWSER_SOURCE_AUTHORITY="${TEST_AUTHORITY:-}"\n'
+  printf 'REQUIRE_SEALED_HOMEBREW_SELECTION="${TEST_REQUIRE_SEALED:-0}"\n'
+  printf 'step() { :; }\n'
+  cat "$browser_bootstrap_function"
+  printf 'prepare_browser_homebrew_bootstrap\n'
+} >"$bootstrap_probe"
+TEST_BOOTSTRAP_LOG="$bootstrap_probe_log" bash "$bootstrap_probe"
+grep -Fq -- '--browser-asset' "$bootstrap_probe_log" ||
+  fail "ordinary browser preparation skipped the Homebrew bootstrap"
+: >"$bootstrap_probe_log"
+TEST_BOOTSTRAP_LOG="$bootstrap_probe_log" TEST_REQUIRE_SEALED=1 \
+  bash "$bootstrap_probe"
+grep -Fq -- '--require-sealed' "$bootstrap_probe_log" ||
+  fail "publishable browser preparation did not require a sealed bootstrap"
+: >"$bootstrap_probe_log"
+TEST_BOOTSTRAP_LOG="$bootstrap_probe_log" \
+  TEST_AUTHORITY=source-rootfs-mirror-state-v1 bash "$bootstrap_probe"
+[ ! -s "$bootstrap_probe_log" ] ||
+  fail "authenticated source-rootfs preparation fetched a Homebrew bootstrap"
+
 [ -x "$BROWSER_BOOTSTRAP_PREPARER" ] ||
   fail "the shared browser bootstrap preparer must be executable"
 for contract in \
