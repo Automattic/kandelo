@@ -33,6 +33,18 @@ cp "$REPO_ROOT/homebrew/main-shell-selection-lock.json" \
   "$fixture/homebrew/main-shell-selection-lock.json"
 cp "$REPO_ROOT/homebrew/main-shell-lazy-artifact-lock.json" \
   "$fixture/homebrew/main-shell-lazy-artifact-lock.json"
+for input in \
+  main-shell.Brewfile \
+  kandelo-guest-layout.json \
+  main-shell-migration-lock.json \
+  main-shell-homebrew-runtime-support.json \
+  main-shell-brew-package-tree.json \
+  main-shell-demo.json \
+  main-shell-materialization-policy.json \
+  main-shell-default.json
+do
+  cp "$REPO_ROOT/homebrew/$input" "$fixture/homebrew/$input"
+done
 cp "$REPO_ROOT/packages/registry/shell/build.toml" \
   "$fixture/packages/registry/shell/build.toml"
 cp "$REPO_ROOT/packages/registry/shell/package.toml" \
@@ -40,6 +52,16 @@ cp "$REPO_ROOT/packages/registry/shell/package.toml" \
 
 [ "$(python3 "$STATE_TOOL" --root "$fixture")" = awaiting-selection ] ||
   fail "pending selection was not classified as awaiting-selection"
+
+# A pending lock is an honest description of missing publication state, not
+# permission to ignore changed inputs. Otherwise CI could skip a shell change
+# after the checked-in lock stopped describing that change.
+printf '\n' >>"$fixture/homebrew/main-shell.Brewfile"
+expect_failure \
+  "main-shell selection input digest changed: homebrew/main-shell.Brewfile" \
+  python3 "$STATE_TOOL" --root "$fixture"
+cp "$REPO_ROOT/homebrew/main-shell.Brewfile" \
+  "$fixture/homebrew/main-shell.Brewfile"
 
 printf '%s\n' \
   '[[git_inputs]]' \
@@ -75,6 +97,15 @@ jq '.state = "sealed" | .release = {
   >"$fixture/homebrew/selection.next"
 mv "$fixture/homebrew/selection.next" \
   "$fixture/homebrew/main-shell-selection-lock.json"
+selection_sha="$(sha256sum \
+  "$fixture/homebrew/main-shell-selection-lock.json")"
+selection_sha="${selection_sha%% *}"
+jq --arg sha "$selection_sha" \
+  '.inputs.selection_lock_sha256 = $sha' \
+  "$fixture/homebrew/main-shell-lazy-artifact-lock.json" \
+  >"$fixture/homebrew/artifact.next"
+mv "$fixture/homebrew/artifact.next" \
+  "$fixture/homebrew/main-shell-lazy-artifact-lock.json"
 [ "$(python3 "$STATE_TOOL" --root "$fixture")" = candidate ] ||
   fail "sealed selection with pending image was not a candidate"
 

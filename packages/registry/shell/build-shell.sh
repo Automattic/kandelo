@@ -86,13 +86,16 @@ esac
 
 bash "$SOURCE_ROOT/scripts/prepare-homebrew-main-shell-inputs.sh" \
     --output-directory "$PREPARED_INPUTS"
+# WHY: Bash 3.2 treats an empty array as unset under `set -u`. Guard the
+# expansion so publishable builds pass no review option, while candidates pass
+# the one explicit option selected above.
 bash "$SOURCE_ROOT/scripts/build-homebrew-main-shell-product.sh" \
     --prepared-inputs "$PREPARED_INPUTS" \
     --work-dir "$WORK_DIR" \
     --report "$REPORT" \
     --bottle-cache "$BOTTLE_CACHE" \
     --out "$VFS" \
-    "${PRODUCT_REVIEW_ARGS[@]}"
+    ${PRODUCT_REVIEW_ARGS[@]+"${PRODUCT_REVIEW_ARGS[@]}"}
 
 [ -f "$VFS" ] || { echo "ERROR: $VFS not produced by builder" >&2; exit 1; }
 [ -f "$REPORT" ] || { echo "ERROR: $REPORT not produced by builder" >&2; exit 1; }

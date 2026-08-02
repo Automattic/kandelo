@@ -1636,6 +1636,15 @@ grep -Fq '"packages/registry/shell/prepare-build-tools.sh"' \
 grep -A4 -F 'name = "npm"' "$SHELL_PACKAGE_TOML" |
   grep -Fq 'version_constraint = ">=10.0"' ||
   fail "shell package must declare the npm host tool its recipe executes"
+grep -A4 -F 'name = "python3"' "$SHELL_PACKAGE_TOML" |
+  grep -Fq 'version_constraint = ">=3.11"' ||
+  fail "shell package must declare Python with standard-library tomllib"
+grep -Fq 'git jq node npm python3 ruby sha256sum tar wc' \
+  "$REPO_ROOT/packages/registry/shell/build-tool-path.sh" ||
+  fail "shell Nix-source validation must include Python"
+grep -Fq '${PRODUCT_REVIEW_ARGS[@]+"${PRODUCT_REVIEW_ARGS[@]}"}' \
+  "$SHELL_BUILDER" ||
+  fail "publishable shell recipe must support Bash 3.2 with no review option"
 grep -Fq '# WHY: the package resolver may source-build shell' \
   "$SHELL_TOOL_PREPARER" ||
   fail "shell tool ownership boundary must retain its WHY comment"
@@ -2619,14 +2628,15 @@ done
 [ -n "$work" ] && [ -n "$report" ] && [ -n "$cache" ] && [ -n "$out" ] &&
   [ "$prepared" = "$WASM_POSIX_DEP_OUT_DIR/.homebrew-shell-build/prepared-inputs" ] &&
   [ -f "$prepared/bootstrap/homebrew-bootstrap.zip" ] &&
-  [ "$review" = true ]
+  [ "$review" = "${FAKE_EXPECT_REVIEW:-true}" ]
 [ ! -e "$work" ] && [ ! -L "$work" ]
 mkdir "$work"
 mkdir "$cache"
 printf '%s\n' "$WASM_POSIX_DEP_OUT_DIR" >"$out"
 printf '{}\n' >"$report"
-printf '%s|%s|%s|%s|%s|%s\n' \
+printf '%s|%s|%s|%s|%s|%s|%s\n' \
   "$WASM_POSIX_DEP_OUT_DIR" "$work" "$report" "$cache" "$out" "$prepared" \
+  "$review" \
   >>"$FAKE_COMPOSER_LOG"
 FAKE_COMPOSER
 cat >"$fake_bin/python3" <<'FAKE_PYTHON'
@@ -2661,15 +2671,20 @@ chmod 0755 \
   "$fake_bin/tar"
 parallel_one="$TMP_ROOT/parallel-shell-one"
 parallel_two="$TMP_ROOT/parallel-shell-two"
-mkdir "$parallel_one" "$parallel_two"
+publishable="$TMP_ROOT/publishable-shell"
+mkdir "$parallel_one" "$parallel_two" "$publishable"
 run_fake_shell_build() {
   local out_dir="$1"
+  local product_state="${2:-candidate}"
+  local expected_review="${3:-true}"
   # This fixture intentionally replaces bash/npm to observe the wrapper. Run
   # it through the recipe's supported external-resolver mode; the separate
   # preparer test exercises and verifies the authoritative Nix-only path.
   env -u KANDELO_DEV_SHELL_TOOL_PATH \
     PATH="$fake_bin:$PATH" \
     FAKE_COMPOSER_LOG="$fake_log" \
+    FAKE_PRODUCT_STATE="$product_state" \
+    FAKE_EXPECT_REVIEW="$expected_review" \
     PACKAGE_TREE_SPEC="$PACKAGE_TREE_SPEC" \
     GH_TOKEN=forbidden \
     GITHUB_TOKEN=forbidden \
@@ -2696,10 +2711,12 @@ run_fake_shell_build "$parallel_two" &
 parallel_two_pid=$!
 wait "$parallel_one_pid" || fail "first concurrent shell wrapper failed"
 wait "$parallel_two_pid" || fail "second concurrent shell wrapper failed"
+run_fake_shell_build "$publishable" publishable false ||
+  fail "publishable shell wrapper failed"
 
-[ "$(wc -l <"$fake_log" | tr -d '[:space:]')" -eq 2 ] ||
-  fail "concurrent shell wrappers did not produce two composer records"
-for out_dir in "$parallel_one" "$parallel_two"; do
+[ "$(wc -l <"$fake_log" | tr -d '[:space:]')" -eq 3 ] ||
+  fail "candidate and publishable wrappers did not produce three records"
+for out_dir in "$parallel_one" "$parallel_two" "$publishable"; do
   [ -f "$out_dir/shell.vfs.zst" ] || fail "shell wrapper omitted final VFS in $out_dir"
   [ "$(find "$out_dir" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d '[:space:]')" -eq 1 ] ||
     fail "shell wrapper leaked scratch outputs into $out_dir"
@@ -2708,8 +2725,20 @@ for out_dir in "$parallel_one" "$parallel_two"; do
   grep -Fq "$out_dir|$out_dir/.homebrew-shell-build/work|" "$fake_log" ||
     fail "composer did not receive the exclusive workspace below $out_dir"
 done
-[ "$(cut -d'|' -f2 "$fake_log" | sort -u | wc -l | tr -d '[:space:]')" -eq 2 ] ||
-  fail "concurrent shell wrappers shared one composer workspace"
+[ "$(cut -d'|' -f2 "$fake_log" | sort -u | wc -l | tr -d '[:space:]')" -eq 3 ] ||
+  fail "shell wrappers shared one composer workspace"
+awk -F'|' \
+  -v one="$parallel_one" \
+  -v two="$parallel_two" '
+    ($1 == one || $1 == two) && $7 == "true" { seen[$1] = 1 }
+    END { exit !(seen[one] && seen[two]) }
+  ' "$fake_log" ||
+  fail "candidate package build did not request pending-artifact review"
+awk -F'|' -v out="$publishable" '
+    $1 == out && $7 == "false" { found = 1 }
+    END { exit !found }
+  ' "$fake_log" ||
+  fail "publishable package build bypassed the strict product path"
 grep -Fq "$REPO_ROOT/target/homebrew-main-shell" "$fake_log" &&
   fail "composer reused the repository-global Homebrew target workspace"
 

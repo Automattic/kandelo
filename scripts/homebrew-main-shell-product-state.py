@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import pathlib
 import re
@@ -15,6 +16,26 @@ from typing import Any, NoReturn
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 MAX_CONTRACT_BYTES = 16 * 1024 * 1024
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+SELECTION_INPUTS = {
+    "brewfile": "homebrew/main-shell.Brewfile",
+    "guest_layout": "homebrew/kandelo-guest-layout.json",
+    "migration_lock": "homebrew/main-shell-migration-lock.json",
+    "runtime_support": "homebrew/main-shell-homebrew-runtime-support.json",
+}
+ARTIFACT_INPUTS = {
+    "bootstrap_tree_spec_sha256": "homebrew/main-shell-brew-package-tree.json",
+    "brewfile_sha256": "homebrew/main-shell.Brewfile",
+    "demo_config_sha256": "homebrew/main-shell-demo.json",
+    "materialization_policy_sha256": (
+        "homebrew/main-shell-materialization-policy.json"
+    ),
+    "migration_lock_sha256": "homebrew/main-shell-migration-lock.json",
+    "runtime_support_sha256": (
+        "homebrew/main-shell-homebrew-runtime-support.json"
+    ),
+    "selection_lock_sha256": "homebrew/main-shell-selection-lock.json",
+    "shell_config_sha256": "homebrew/main-shell-default.json",
+}
 
 
 class ProductStateError(RuntimeError):
@@ -34,7 +55,7 @@ def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
-def regular_text(path: pathlib.Path, label: str) -> str:
+def regular_bytes(path: pathlib.Path, label: str) -> bytes:
     try:
         metadata = path.lstat()
         if (
@@ -44,11 +65,22 @@ def regular_text(path: pathlib.Path, label: str) -> str:
             or metadata.st_size > MAX_CONTRACT_BYTES
         ):
             fail(f"{label} must be one bounded regular non-symlink file")
-        return path.read_text(encoding="utf-8")
+        return path.read_bytes()
     except ProductStateError:
         raise
-    except (OSError, UnicodeDecodeError) as error:
+    except OSError as error:
         fail(f"cannot read {label}: {error}")
+
+
+def regular_text(path: pathlib.Path, label: str) -> str:
+    try:
+        return regular_bytes(path, label).decode("utf-8")
+    except UnicodeDecodeError as error:
+        fail(f"cannot read {label}: {error}")
+
+
+def digest(root: pathlib.Path, relative: str, label: str) -> str:
+    return hashlib.sha256(regular_bytes(root / relative, label)).hexdigest()
 
 
 def load_json(path: pathlib.Path, label: str) -> dict[str, Any]:
@@ -81,6 +113,41 @@ def load_toml(path: pathlib.Path, label: str) -> dict[str, Any]:
     return value
 
 
+def verify_selection_inputs(root: pathlib.Path, value: Any) -> None:
+    if not isinstance(value, dict) or set(value) != set(SELECTION_INPUTS):
+        fail("main-shell selection lock has unsupported inputs")
+    for key, relative in SELECTION_INPUTS.items():
+        record = value[key]
+        if (
+            not isinstance(record, dict)
+            or set(record) != {"path", "sha256"}
+            or record.get("path") != relative
+            or not isinstance(record.get("sha256"), str)
+            or SHA256.fullmatch(record["sha256"]) is None
+        ):
+            fail(f"main-shell selection input {key} is invalid")
+        if record["sha256"] != digest(
+            root, relative, f"main-shell selection input {key}"
+        ):
+            fail(f"main-shell selection input digest changed: {relative}")
+
+
+def verify_artifact_inputs(root: pathlib.Path, value: Any) -> None:
+    if not isinstance(value, dict) or set(value) != set(ARTIFACT_INPUTS):
+        fail("main-shell artifact lock has unsupported inputs")
+    for key, relative in ARTIFACT_INPUTS.items():
+        expected = value[key]
+        if (
+            not isinstance(expected, str)
+            or SHA256.fullmatch(expected) is None
+        ):
+            fail(f"main-shell artifact input {key} is invalid")
+        if expected != digest(
+            root, relative, f"main-shell artifact input {key}"
+        ):
+            fail(f"main-shell artifact input digest changed: {relative}")
+
+
 def classify(root: pathlib.Path) -> str:
     selection = load_json(
         root / "homebrew/main-shell-selection-lock.json",
@@ -108,27 +175,12 @@ def classify(root: pathlib.Path) -> str:
         or selection.get("arch") != "wasm32"
     ):
         fail("main-shell selection lock has an unsupported contract")
+    verify_selection_inputs(root, selection.get("inputs"))
     artifact_inputs = artifact.get("inputs")
-    if not isinstance(artifact_inputs, dict):
-        fail("main-shell artifact lock has unsupported inputs")
+    verify_artifact_inputs(root, artifact_inputs)
     if (
         set(artifact)
         != {"image", "inputs", "kind", "schema", "source_date_epoch", "state"}
-        or set(artifact_inputs)
-        != {
-            "bootstrap_tree_spec_sha256",
-            "brewfile_sha256",
-            "demo_config_sha256",
-            "materialization_policy_sha256",
-            "migration_lock_sha256",
-            "runtime_support_sha256",
-            "selection_lock_sha256",
-            "shell_config_sha256",
-        }
-        or any(
-            not isinstance(digest, str) or SHA256.fullmatch(digest) is None
-            for digest in artifact_inputs.values()
-        )
         or artifact.get("schema") != 3
         or artifact.get("kind")
         != "kandelo-homebrew-lazy-shell-artifact-lock"
