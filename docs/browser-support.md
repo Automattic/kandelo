@@ -535,7 +535,7 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | Python (legacy opt-in) | `python-vfs.vfs.zst` | `bash packages/registry/python-vfs/build-python-vfs.sh` | ABI-bound CPython interpreter, complete stdlib, license, aliases, and demo metadata |
 | Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `bash packages/registry/erlang-vfs/build-erlang-vfs.sh` | ABI-bound BEAM emulator, relocatable core OTP tree, executable helpers, and boot files |
 | Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
-| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | platform base plus the complete reviewed current-shell closure: embedded `libcxx`/Ncurses/Bash, with the other 35 Formula trees independently lazy. `/usr/bin/brew` names a separate lazy source and atomic runtime-support layer whose only additional Formula is Ruby. |
+| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | platform base plus the complete reviewed current-shell closure: embedded `libcxx`/Ncurses/Bash, with the other base Formula trees independently lazy. `/usr/bin/brew` names a separate lazy source and an atomic runtime-support layer derived from the selected dependency graph; dependencies absent from the base, such as Ruby and its selected `libyaml` dependency, remain lazy together. |
 | Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | embedded package-resolved Node executable + npm 10.9.2 dist + writable `/work`; shell Formula trees remain lazy |
 | WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |

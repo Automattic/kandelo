@@ -627,15 +627,18 @@ Ruby nor Git, curl, extraction tools, or their data/dependencies. The base
 shell therefore registers `/usr/bin/brew` as a lazy activation reference
 without claiming the bootstrap source can execute by itself.
 `homebrew/main-shell-homebrew-runtime-support.json` owns the separate atomic
-runtime-support closure. Its active seven-root closure contains 21 Formulae;
-the complete shell bottle closure already supplies 20 of them, so only Ruby is
-an additional atomic lazy tree. All 25 audited support candidates, including
-`libmagic` and `file-formula`, have admitted public ABI-42 identities and none
-remain deferred. The base keeps the active layer deferred; an opt-in demo may
-materialize the same layer. A guest lifecycle is valid only when every
-declared tree has an exact admitted ABI/digest/size identity, all support bytes
-come from that declaration, and the independent-tap Formula is installed live
-rather than smuggled into the image.
+runtime-support closure. Its seven reviewed roots resolve through the exact
+closed-selection metadata that the shell consumes. Dependencies already in the
+complete shell remain shared; additional dependencies become part of the same
+atomic lazy group. This matters when a Formula changes its real dependency
+graph—for example, Ruby now requires `libyaml`. The selection-aware release
+finalizer derives the new order and base-relative difference, requires an
+admitted public ABI-42 bottle for every member, and seals the selection and
+artifact locks together. The base keeps the active layer deferred; an opt-in
+demo may materialize the same layer. A guest lifecycle is valid only when
+every declared tree has an exact admitted ABI/digest/size identity, all
+support bytes come from that declaration, and the independent-tap Formula is
+installed live rather than smuggled into the image.
 
 `Kandelo/recipes/homebrew-bootstrap/source-lock.json` in the tap is the
 Formula's reviewed source/output identity. It binds the prepared source inputs

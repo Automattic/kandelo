@@ -5,18 +5,41 @@ from __future__ import annotations
 
 from collections.abc import Callable
 import hashlib
+import importlib.util
 import json
 import pathlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
+from unittest import mock
 
 
 REPO = pathlib.Path(__file__).resolve().parent.parent
 FINALIZER = REPO / "scripts/finalize-homebrew-main-shell-release.py"
 CHECKER = REPO / "scripts/check-homebrew-main-shell-brewfile.mjs"
+PRODUCT_STATE = REPO / "scripts/homebrew-main-shell-product-state.py"
+EXECUTOR_PATH = REPO / "scripts/homebrew-prefix-campaign-executor.py"
+EXECUTOR_SPEC = importlib.util.spec_from_file_location(
+    "homebrew_prefix_campaign_executor_for_finalizer_test",
+    EXECUTOR_PATH,
+)
+assert EXECUTOR_SPEC is not None and EXECUTOR_SPEC.loader is not None
+EXECUTOR = importlib.util.module_from_spec(EXECUTOR_SPEC)
+sys.modules[EXECUTOR_SPEC.name] = EXECUTOR
+EXECUTOR_SPEC.loader.exec_module(EXECUTOR)
+FINALIZER_SPEC = importlib.util.spec_from_file_location(
+    "finalize_homebrew_main_shell_release_for_test",
+    FINALIZER,
+)
+assert FINALIZER_SPEC is not None and FINALIZER_SPEC.loader is not None
+FINALIZER_MODULE = importlib.util.module_from_spec(FINALIZER_SPEC)
+sys.modules[FINALIZER_SPEC.name] = FINALIZER_MODULE
+FINALIZER_SPEC.loader.exec_module(FINALIZER_MODULE)
 COPIED = [
+    "crates/shared/src/lib.rs",
+    "homebrew/kandelo-guest-layout.json",
     "homebrew/main-shell-migration-lock.json",
     "homebrew/main-shell-homebrew-runtime-support.json",
     "homebrew/main-shell-selection-lock.json",
@@ -28,6 +51,8 @@ COPIED = [
     "homebrew/main-shell-default.json",
     "homebrew/main-shell-demo.json",
     "packages/registry/shell/build.toml",
+    "packages/registry/shell/package.toml",
+    "scripts/homebrew-brewfile-selection.rb",
     "docs/homebrew-publishing.md",
 ]
 TAP_NAME = "kandelo-dev/tap-core"
@@ -74,6 +99,21 @@ def run(*arguments: str, success: bool = True) -> subprocess.CompletedProcess[st
     if not success and result.returncode == 0:
         raise AssertionError("invalid finalization unexpectedly succeeded")
     return result
+
+
+def assert_product_state(source: pathlib.Path, expected: str) -> None:
+    result = subprocess.run(
+        [sys.executable, str(PRODUCT_STATE), "--root", str(source)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if result.returncode != 0:
+        raise AssertionError(result.stderr)
+    if result.stdout.strip() != expected:
+        raise AssertionError(
+            f"expected product state {expected!r}, got {result.stdout!r}"
+        )
 
 
 def copy_source(root: pathlib.Path) -> pathlib.Path:
@@ -193,6 +233,177 @@ def create_tap(
         ["git", "-C", str(tap), "commit", "-qm", "fixture"], check=True
     )
     return tap
+
+
+def dependency_order(
+    roots: list[str], packages: dict[str, dict]
+) -> list[str]:
+    result: list[str] = []
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(name: str) -> None:
+        assert name not in visiting
+        if name in visited:
+            return
+        visiting.add(name)
+        for dependency in packages[name]["dependencies"]:
+            visit(dependency["name"])
+        visiting.remove(name)
+        visited.add(name)
+        result.append(name)
+
+    for name in roots:
+        visit(name)
+    return result
+
+
+def canonical_json(value: object) -> bytes:
+    return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
+
+
+def create_closed_selection(
+    root: pathlib.Path,
+    source: pathlib.Path,
+) -> tuple[pathlib.Path, pathlib.Path, str]:
+    selection_root = root / "selection"
+    tap = selection_root / "tap"
+    (tap / "Kandelo").mkdir(parents=True)
+    migration = json.loads(
+        (source / "homebrew/main-shell-migration-lock.json").read_text()
+    )
+    support = json.loads(
+        (
+            source / "homebrew/main-shell-homebrew-runtime-support.json"
+        ).read_text()
+    )
+    formulae = {
+        entry["formula"]["name"]: entry["formula"]
+        for entry in migration["packages"]
+    }
+    dependencies = {**DEPENDENCIES, "ruby": ["zlib", "libyaml"]}
+    names = {
+        identity.split("/")[-1]
+        for identity in migration["formula_closure"]
+    } | {
+        identity.split("/")[-1]
+        for identity in support["availability"]["reusable_public_abi42"]
+    }
+    names.update({"homebrew-bootstrap", "libyaml"})
+    packages = {
+        name: package_record(name, formulae.get(name), dependencies)
+        for name in names
+    }
+    source_commit = "e" * 40
+    metadata = {
+        "schema": 1,
+        "generated_at": "2026-08-01T00:00:00Z",
+        "generator": "selection-finalizer-test",
+        "tap_repository": "kandelo-dev/homebrew-tap-core",
+        "tap_name": TAP_NAME,
+        "tap_commit": source_commit,
+        "kandelo_repository": "Automattic/kandelo",
+        "kandelo_commit": "c" * 40,
+        "kandelo_abi": 42,
+        "release_tag": "bottles-abi-v42",
+        "packages": [packages[name] for name in sorted(packages)],
+    }
+    write_json(tap / "Kandelo/metadata.json", metadata)
+
+    roots = sorted(
+        {
+            entry["formula"]["name"]
+            for entry in migration["packages"]
+        }
+        | {
+            entry["package"].split("/")[-1]
+            for entry in support["formula_roots"]
+        }
+        | {"homebrew-bootstrap"}
+    )
+    ordered = dependency_order(roots, packages)
+    selection_formulae = []
+    for name in ordered:
+        bottle = packages[name]["bottles"][0]
+        selection_formulae.append(
+            {
+                "archive": {
+                    "bytes": bottle["bytes"],
+                    "sha256": bottle["sha256"],
+                },
+                "formula": name,
+                "handoff": {
+                    "manifest_sha256": hashlib.sha256(
+                        f"handoff:{name}".encode()
+                    ).hexdigest(),
+                    "tag": "homebrew-prefix-handoff-sha256-"
+                    + hashlib.sha256(f"handoff:{name}".encode()).hexdigest(),
+                },
+                "version": packages[name]["version"],
+            }
+        )
+    campaign_sha = "f" * 64
+    selection = {
+        "arch": "wasm32",
+        "campaign": {
+            "guest_layout_sha256": digest(
+                source / "homebrew/kandelo-guest-layout.json"
+            ),
+            "kandelo_commit": metadata["kandelo_commit"],
+            "sha256": campaign_sha,
+            "tag": f"homebrew-prefix-campaign-sha256-{campaign_sha}",
+        },
+        "formulae": selection_formulae,
+        "kandelo_abi": 42,
+        "kind": "kandelo-homebrew-closed-selection-candidate",
+        "roots": roots,
+        "schema": 1,
+        "tap": {
+            "name": TAP_NAME,
+            "path": "tap",
+            "prepared_tree_git_oid": EXECUTOR.filesystem_git_tree_oid(
+                tap, "selection finalizer fixture"
+            ),
+            "repository": "kandelo-dev/homebrew-tap-core",
+            "source_commit": source_commit,
+            "source_tree_git_oid": "1" * 40,
+        },
+    }
+    selection_payload = EXECUTOR.pretty_json(selection)
+    (selection_root / "selection.json").write_bytes(selection_payload)
+
+    descriptor_sha = "9" * 64
+    receipt = {
+        "arch": "wasm32",
+        "assets": {
+            "closed-selection.json": {
+                "bytes": len(selection_payload),
+                "sha256": descriptor_sha,
+            },
+            "closed-selection.zip": {
+                "bytes": 1,
+                "sha256": "8" * 64,
+            },
+        },
+        "formula_count": len(ordered),
+        "kind": "kandelo-homebrew-closed-selection-readback",
+        "prepared_tree_git_oid": selection["tap"][
+            "prepared_tree_git_oid"
+        ],
+        "release_id": 1,
+        "repository": "kandelo-dev/homebrew-tap-core",
+        "roots": roots,
+        "schema": 1,
+        "selection_manifest_sha256": hashlib.sha256(
+            selection_payload
+        ).hexdigest(),
+        "tag": f"homebrew-prefix-selection-sha256-{descriptor_sha}",
+        "target_commitish": source_commit,
+        "visibility": "public-anonymous-readback",
+    }
+    receipt_path = root / "selection-readback.json"
+    receipt_path.write_bytes(canonical_json(receipt))
+    return selection_root, receipt_path, source_commit
 
 
 def write_json(path: pathlib.Path, value: object) -> None:
@@ -323,18 +534,33 @@ with tempfile.TemporaryDirectory(prefix="kandelo-shell-finalizer-test.") as temp
     artifact_lock = json.loads(
         (source / "homebrew/main-shell-lazy-artifact-lock.json").read_text()
     )
+    selection_lock = json.loads(
+        (source / "homebrew/main-shell-selection-lock.json").read_text()
+    )
     assert migration["catalog"]["tap_commit"] == head
     assert support["catalog"]["tap_commit"] == head
     assert support["availability"]["audited_catalog"]["checkout_commit"] == head
     assert artifact_lock["state"] == "pending"
     assert artifact_lock["image"] is None
     assert artifact_lock["schema"] == 3
+    assert selection_lock["state"] == "pending"
+    assert selection_lock["release"] is None
+    assert selection_lock["inputs"]["migration_lock"]["sha256"] == digest(
+        source / "homebrew/main-shell-migration-lock.json"
+    )
+    assert selection_lock["inputs"]["runtime_support"]["sha256"] == digest(
+        source / "homebrew/main-shell-homebrew-runtime-support.json"
+    )
+    assert artifact_lock["inputs"]["selection_lock_sha256"] == digest(
+        source / "homebrew/main-shell-selection-lock.json"
+    )
     assert artifact_lock["inputs"]["shell_config_sha256"] == digest(
         source / "homebrew/main-shell-default.json"
     )
     assert 'publication_state = "pending"' in (
         source / "packages/registry/shell/build.toml"
     ).read_text()
+    assert_product_state(source, "awaiting-selection")
     rebuilt = {
         entry["formula"]["name"]: entry["formula"]["bottle_rebuild"]
         for entry in migration["packages"]
@@ -360,6 +586,7 @@ with tempfile.TemporaryDirectory(prefix="kandelo-shell-finalizer-test.") as temp
     )
     assert artifact_lock["inputs"]["shell_config_sha256"] != first_shell_config_sha
     assert artifact_lock["image"] is None
+    assert_product_state(source, "awaiting-selection")
     checker = run_checker(source, tap)
     assert (
         "38 base Formulae, 21 runtime Formulae, and 25 audited Formulae; "
@@ -369,7 +596,7 @@ with tempfile.TemporaryDirectory(prefix="kandelo-shell-finalizer-test.") as temp
 
     artifact = root / "shell.vfs.zst"
     artifact.write_bytes(b"reviewed deterministic shell bytes\n")
-    sealed = run(
+    rejected_artifact = run(
         "--source-root",
         str(source),
         "--tap-root",
@@ -377,19 +604,13 @@ with tempfile.TemporaryDirectory(prefix="kandelo-shell-finalizer-test.") as temp
         "--artifact",
         str(artifact),
         "--apply",
+        success=False,
     )
-    sealed_json = json.loads(sealed.stdout)
-    assert sealed_json["artifact_state"] == "sealed"
-    artifact_lock = json.loads(
-        (source / "homebrew/main-shell-lazy-artifact-lock.json").read_text()
+    assert_failure(
+        rejected_artifact,
+        "--artifact requires --selection and --selection-receipt",
     )
-    assert artifact_lock["image"] == {
-        "sha256": digest(artifact),
-        "bytes": artifact.stat().st_size,
-    }
-    assert 'publication_state = "ready"' in (
-        source / "packages/registry/shell/build.toml"
-    ).read_text()
+    assert_product_state(source, "awaiting-selection")
 
     canonical_build = (
         source / "packages/registry/shell/build.toml"
@@ -572,6 +793,185 @@ with tempfile.TemporaryDirectory(
 
     write_json(support_path, baseline)
     run_checker(source, tap)
+
+with tempfile.TemporaryDirectory(
+    prefix="kandelo-shell-finalizer-selection."
+) as temporary:
+    root = pathlib.Path(temporary)
+    source = copy_source(root)
+    clean_source_tap = create_tap(root, source)
+    clean_source_head = subprocess.run(
+        ["git", "-C", str(clean_source_tap), "rev-parse", "HEAD"],
+        check=True,
+        stdout=subprocess.PIPE,
+        text=True,
+    ).stdout.strip()
+    selection, receipt, source_commit = create_closed_selection(root, source)
+    assert clean_source_head != source_commit
+    assert not (selection / "tap/.git").exists()
+    paths = [source / relative for relative in COPIED]
+    before = {path: digest(path) for path in paths}
+
+    ambiguous = run(
+        "--source-root",
+        str(source),
+        "--tap-root",
+        str(clean_source_tap),
+        "--selection",
+        str(selection),
+        "--selection-receipt",
+        str(receipt),
+        success=False,
+    )
+    assert "not allowed with argument --tap-root" in ambiguous.stderr
+
+    preview = run(
+        "--source-root",
+        str(source),
+        "--selection",
+        str(selection),
+        "--selection-receipt",
+        str(receipt),
+    )
+    preview_summary = json.loads(preview.stdout)
+    assert preview_summary["final_tap_commit"] == source_commit
+    assert preview_summary["runtime_formulae"] == 22
+    assert preview_summary["audited_formulae"] == 26
+    assert preview_summary["runtime_extra"] == 2
+    assert preview_summary["total"] == 40
+    assert preview_summary["selection"]["formula_count"] == 41
+    assert before == {path: digest(path) for path in paths}
+
+    applied = run(
+        "--source-root",
+        str(source),
+        "--selection",
+        str(selection),
+        "--selection-receipt",
+        str(receipt),
+        "--apply",
+    )
+    summary = json.loads(applied.stdout)
+    assert summary["applied"] is True
+    migration = json.loads(
+        (source / "homebrew/main-shell-migration-lock.json").read_text()
+    )
+    support = json.loads(
+        (
+            source / "homebrew/main-shell-homebrew-runtime-support.json"
+        ).read_text()
+    )
+    selection_lock = json.loads(
+        (source / "homebrew/main-shell-selection-lock.json").read_text()
+    )
+    artifact_lock = json.loads(
+        (source / "homebrew/main-shell-lazy-artifact-lock.json").read_text()
+    )
+    libyaml = f"{TAP_NAME}/libyaml"
+    ruby = f"{TAP_NAME}/ruby"
+    assert migration["catalog"]["tap_commit"] == source_commit
+    assert support["catalog"]["tap_commit"] == source_commit
+    assert support["availability"]["audited_catalog"][
+        "checkout_commit"
+    ] == source_commit
+    assert support["formula_order"].index(libyaml) < support[
+        "formula_order"
+    ].index(ruby)
+    assert support["additional_formula_order"] == [libyaml, ruby]
+    assert libyaml in support["availability"]["reusable_public_abi42"]
+    assert selection_lock["state"] == "sealed"
+    assert selection_lock["release"]["target_commitish"] == source_commit
+    assert artifact_lock["state"] == "pending"
+    assert artifact_lock["inputs"]["selection_lock_sha256"] == digest(
+        source / "homebrew/main-shell-selection-lock.json"
+    )
+    assert_product_state(source, "candidate")
+
+    artifact = root / "selected-shell.vfs.zst"
+    artifact.write_bytes(b"selected deterministic shell bytes\n")
+    sealed = run(
+        "--source-root",
+        str(source),
+        "--selection",
+        str(selection),
+        "--selection-receipt",
+        str(receipt),
+        "--artifact",
+        str(artifact),
+        "--apply",
+    )
+    assert json.loads(sealed.stdout)["artifact_state"] == "sealed"
+    assert json.loads(
+        (source / "homebrew/main-shell-lazy-artifact-lock.json").read_text()
+    )["image"] == {
+        "bytes": artifact.stat().st_size,
+        "sha256": digest(artifact),
+    }
+    assert_product_state(source, "publishable")
+
+with tempfile.TemporaryDirectory(
+    prefix="kandelo-shell-finalizer-selection-authority."
+) as temporary:
+    root = pathlib.Path(temporary)
+    source = copy_source(root)
+    selection, receipt, _source_commit = create_closed_selection(root, source)
+    receipt_value = json.loads(receipt.read_text())
+    receipt_value["target_commitish"] = "a" * 40
+    receipt.write_bytes(canonical_json(receipt_value))
+    wrong_authority = run(
+        "--source-root",
+        str(source),
+        "--selection",
+        str(selection),
+        "--selection-receipt",
+        str(receipt),
+        success=False,
+    )
+    assert_failure(
+        wrong_authority,
+        "closed selection does not retain one exact source-tap authority",
+    )
+
+with tempfile.TemporaryDirectory(
+    prefix="kandelo-shell-finalizer-selection-race."
+) as temporary:
+    root = pathlib.Path(temporary)
+    source = copy_source(root)
+    selection, receipt, source_commit = create_closed_selection(root, source)
+    caller_metadata = selection / "tap/Kandelo/metadata.json"
+    original_metadata = caller_metadata.read_bytes()
+    original_receipt = receipt.read_bytes()
+    original_runtime_provenance = FINALIZER_MODULE.runtime_provenance
+    checked_paths: list[pathlib.Path] = []
+
+    def mutate_caller_inputs(
+        metadata_path: pathlib.Path,
+        support_bytes: bytes,
+    ) -> str:
+        checked_paths.append(metadata_path)
+        caller_metadata.write_bytes(b"{}\n")
+        receipt.write_bytes(b"{}\n")
+        return original_runtime_provenance(metadata_path, support_bytes)
+
+    try:
+        with mock.patch.object(
+            FINALIZER_MODULE,
+            "runtime_provenance",
+            side_effect=mutate_caller_inputs,
+        ):
+            _staged, summary = FINALIZER_MODULE.prepare(
+                source,
+                None,
+                selection,
+                receipt,
+                None,
+            )
+    finally:
+        caller_metadata.write_bytes(original_metadata)
+        receipt.write_bytes(original_receipt)
+    assert summary["final_tap_commit"] == source_commit
+    assert len(checked_paths) == 1
+    assert checked_paths[0] != caller_metadata
 
 with tempfile.TemporaryDirectory(
     prefix="kandelo-shell-finalizer-schema-fail."

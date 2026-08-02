@@ -1336,11 +1336,47 @@ This public-mirror lane is independent of the existing Bash bottle caller and
 its frozen workflow digest.
 
 Refresh the shell release locks with
-`scripts/finalize-homebrew-main-shell-release.py` from one clean
-checkout of the final live tap commit. Its default preview is read-only.
-`--apply` without an artifact advances the catalog, Formula identities,
-metadata/provenance digests, Git input, and bound artifact inputs
-together while changing the shell to `publication_state = "pending"`.
+`scripts/finalize-homebrew-main-shell-release.py`. A review-only live-tap
+catalog refresh supplies one clean checkout with `--tap-root`. That mode
+refreshes the catalog descriptors and creates a new pending selection lock.
+It cannot accept `--artifact`, because a source checkout is not an immutable
+selection release and therefore cannot authorize a publishable shell.
+
+The product cutover instead supplies the fetched immutable selection and its
+public readback receipt together:
+
+```sh
+bash scripts/dev-shell.sh python3 \
+  scripts/finalize-homebrew-main-shell-release.py \
+  --source-root . \
+  --selection fetched-selection \
+  --selection-receipt selection-readback.json
+```
+
+The two input modes are mutually exclusive. A selection keeps its raw tap
+source commit as catalog authority, while its prepared tree and public release
+own the generated Formula blocks, sidecars, metadata, and bottle identities.
+The finalizer must read the runtime dependency graph from those selected
+bytes. The clean source checkout contains source-only Formulae and may not yet
+show a newly selected dependency such as `libyaml` below Ruby.
+
+Selection mode first copies the fetched selection and receipt into one private
+temporary snapshot before parsing either input. Every later metadata,
+provenance, catalog, and lock check consumes only that snapshot, so a
+concurrent edit to the fetched input paths cannot change the bytes after
+validation. Before deriving a successor, the finalizer validates the
+checked-in predecessor lock. It then revalidates the canonical selection and
+public receipt, derives the exact runtime-support dependency order, admits any
+newly required dependency that has a selected public bottle, runs the normal
+catalog checker, and seals the selection lock to the refreshed product inputs.
+The artifact lock binds that new selection-lock digest in the same transaction.
+A stale receipt, different source commit, unrelated Formula, missing
+dependency, or unavailable bottle fails before any file is replaced.
+
+The default preview is read-only. `--apply` without an artifact advances the
+catalog, Formula identities, metadata/provenance digests, selection lock, Git
+input, and bound artifact inputs together while changing the shell to
+`publication_state = "pending"`.
 The review-only `--review-pending-artifact` composer option can then
 measure the deterministic candidate. The exact pull-request and
 protected-main checks may also use that option to run a candidate while
@@ -1351,15 +1387,21 @@ still require a sealed identity. Rerun the finalizer with
 the ordinary sealed path, and only then return the recipe to
 `publication_state = "ready"`.
 
-The checked-in `6ad0e3dbc60e5572c4288c86919238f71c1bc110` first-party tap value is the final shell
-catalog authority. The shell recipe remains `UNPUBLISHED` so archive staging
-can substitute the exact landed Kandelo commit, while
-`publication_state = "ready"` admits that normal exact-main path. The lazy
-artifact lock independently binds every deterministic input plus the compressed
-digest and size; any input drift rejects the output until final review measures
-and reseals it. Exact-live-main equality remains necessary authority, not
-sufficient release evidence: the exact-Mpre rebuild and closed first- and
-third-party lifecycle proof are still required.
+The checked-in `6ad0e3dbc60e5572c4288c86919238f71c1bc110` tap value is a
+reviewed pre-selection catalog reference, not final shell authority. The
+selection lock is pending and names no release, the artifact lock is pending
+and names no image, and the shell recipe has
+`publication_state = "pending"`. A fetched immutable selection must bind the
+catalog and move the product to candidate state before independently
+reproduced image bytes can be sealed and the recipe can become ready.
+
+The shell recipe remains `UNPUBLISHED` so archive staging can substitute the
+exact landed Kandelo commit after that seal exists. The lazy artifact lock
+then binds every deterministic input plus the compressed digest and size; any
+input drift rejects the output until final review measures and reseals it.
+Exact-live-main equality remains necessary authority, not sufficient release
+evidence: the exact-Mpre rebuild and closed first- and third-party lifecycle
+proof are still required.
 
 Pull-request, push, and manual runs all select the bottled product lane.
 Pull requests reach this lane through `staging-build.yml`, after that
@@ -3596,19 +3638,18 @@ The shell closure does not by itself claim that `/usr/bin/brew` can run.
 first-use atomic layer. It binds the lazy `homebrew-bootstrap` bottle's
 extracted source and launcher outputs to seven reviewed runtime roots—Ruby,
 Git, curl, Findutils, Gawk, Tar, and `posix-utils-lite`—and to their exact
-21-Formula dependency-first closure derived from tap metadata. The complete
-shell already supplies 20 of those Formulae, so activation adds only Ruby as an
-atomic lazy bottle tree. The complete declared image inventory is therefore 39
-Formulae: three embedded base Formulae, 35 deferred base Formulae, and one
-deferred runtime-support Formula. The public bottle mirror transports those 36
-deferred payloads; the three embedded Formulae already reside in the sealed
-shell image.
+dependency-first closure derived from the selected tap metadata. Dependencies
+already present in the complete shell remain shared. Any additional dependency
+is another atomic lazy bottle tree; for example, a Ruby bottle that declares
+`libyaml` adds both `libyaml` and Ruby beyond the base closure. The finalizer
+derives this difference instead of preserving a stale hand-counted inventory.
 
-The availability audit covers all 25 Formulae considered during the runtime
-rollout. Every one now has an admitted public wasm32 ABI-42 identity, including
-`libmagic` and `file-formula`; none remains deferred. Bzip2 and Xz are ordinary
-members of the complete shell closure even when a narrower `brew` lifecycle
-does not touch them.
+The availability audit includes every Formula considered during the runtime
+rollout plus any newly selected runtime dependency. Every member must have an
+admitted public wasm32 ABI-42 identity; none may remain in a rebuild, missing,
+or deferred partition when the atomic layer is finalized. Bzip2 and Xz are
+ordinary members of the complete shell closure even when a narrower `brew`
+lifecycle does not touch them.
 
 The audit binds the exact aggregate metadata digest, ABI, release, and catalog
 publication commits separately from the immutable bottles' producer commits.
