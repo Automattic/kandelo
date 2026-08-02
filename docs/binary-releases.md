@@ -49,6 +49,9 @@ program-resolution boundary. That one Rust implementation recomputes every
 existing registry root in its ordered suffix context, including `build.toml`
 revision and declared inputs, global toolchain inputs, and transitive
 dependency identities. It fails closed when an index is missing or stale.
+Automation passes the checkout's canonical path through `--source-repo-root`
+so a Cargo executable reused from another worktree cannot select that
+compile-time checkout's package identity inputs.
 The standalone npm package does not reach back into a checkout; its projection
 is checked before packaging and shipped as immutable package content.
 Index generation stages complete JSON and serializes cooperating publishers

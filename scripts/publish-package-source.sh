@@ -26,7 +26,7 @@ PACKAGE_LIST=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --package-source-root) PACKAGE_SOURCE_ROOT="$(cd "$2" && pwd)"; shift 2 ;;
-    --kandelo-root) KANDELO_ROOT="$(cd "$2" && pwd)"; shift 2 ;;
+    --kandelo-root) KANDELO_ROOT="$(cd "$2" && pwd -P)"; shift 2 ;;
     --packages) PACKAGE_SELECTION="$2"; shift 2 ;;
     --target-tag) TARGET_TAG="$2"; shift 2 ;;
     --repo) REPOSITORY="$2"; shift 2 ;;
@@ -61,7 +61,8 @@ source "$KANDELO_ROOT/sdk/activate.sh"
 HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 export WASM_POSIX_DEPS_REGISTRY="$PACKAGE_SOURCE_ROOT/packages:$KANDELO_ROOT/packages/registry"
 cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
-  build-deps program-index-context-check
+  build-deps program-index-context-check \
+  --source-repo-root "$KANDELO_ROOT"
 
 "$KANDELO_ROOT/scripts/sync-package-source.sh" \
   --package-source-root "$PACKAGE_SOURCE_ROOT" \

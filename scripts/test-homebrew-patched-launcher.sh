@@ -121,17 +121,21 @@ if negative_output="$(
   echo "relocated checker unexpectedly used its inaccessible compile checkout" >&2
   exit 1
 fi
-# WHY: The package closure can gain an earlier required source input over time.
-# Match the inaccessible compile root rather than coupling this regression to
-# whichever input the resolver happens to validate first.
-case "$negative_output" in
-  *"build input \""*"\" not found"*"$original_root/"*) ;;
-  *)
-    echo "relocated checker negative control failed for the wrong reason:" >&2
-    echo "$negative_output" >&2
-    exit 1
-    ;;
-esac
+# WHY: A relocated checker without explicit authority must stop before it can
+# read manifests or hash build inputs. Assert that early boundary directly so
+# a later missing-input error cannot masquerade as safe source selection.
+for fragment in \
+  "the xtask compile checkout $original_root is not accessible (" \
+  "pass the intended canonical checkout with --source-repo-root"; do
+  case "$negative_output" in
+    *"$fragment"*) ;;
+    *)
+      echo "relocated checker negative control missed: $fragment" >&2
+      echo "$negative_output" >&2
+      exit 1
+      ;;
+  esac
+done
 
 "$checker" build-deps program-index-context-check \
   --source-repo-root "$source_alias"

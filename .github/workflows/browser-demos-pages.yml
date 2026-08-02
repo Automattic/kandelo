@@ -69,8 +69,10 @@ jobs:
         run: |
           bash scripts/dev-shell.sh bash -c '
             host_target="$(rustc -vV | sed -n "s/^host: //p")"
+            source_root="$(pwd -P)"
             cargo run -p xtask --target "$host_target" --quiet -- \
               build-deps program-index-check \
+              --source-repo-root "$source_root" \
               packages/registry packages/registry/program-packages.json
           '
 
