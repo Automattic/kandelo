@@ -3031,6 +3031,23 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             sidecar_generator=fixture.generate_sidecars,
             tap_validator=fixture.validate_tap,
         )
+        hidden = selection / "tap/.github/workflows/selection.yml"
+        hidden.parent.mkdir(parents=True)
+        hidden.write_text("name: preserved inside selection archive\n")
+        executable = selection / "tap/scripts/selection-proof"
+        executable.parent.mkdir()
+        executable.write_text("#!/bin/sh\nexit 0\n")
+        executable.chmod(0o755)
+        selection_value = json.loads(
+            (selection / "selection.json").read_text()
+        )
+        selection_value["tap"]["prepared_tree_git_oid"] = (
+            EXECUTOR.filesystem_git_tree_oid(
+                selection / "tap",
+                "selection with hidden and executable paths",
+            )
+        )
+        write_json(selection / "selection.json", selection_value)
         first = fixture.root / "selection-release-first"
         second = fixture.root / "selection-release-second"
         EXECUTOR.prepare_selection_release(
@@ -3056,6 +3073,35 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
         )
         self.assertIn(
             "not the complete tap catalog", manifest["body"]
+        )
+        descriptor, _payload, observed_manifest = (
+            EXECUTOR.load_prepared_selection_release(first)
+        )
+        self.assertEqual(observed_manifest, manifest)
+        inventory = descriptor["tap_archive"]["inventory"]
+        self.assertIn(
+            ".github/workflows/selection.yml",
+            {record["path"] for record in inventory},
+        )
+        executable_record = next(
+            record
+            for record in inventory
+            if record["path"] == "scripts/selection-proof"
+        )
+        self.assertEqual(executable_record["mode"], "100755")
+
+        snapshot = fixture.root / "selection-release-snapshot"
+        EXECUTOR.snapshot_selection_release(
+            prepared_root=first,
+            output=snapshot,
+        )
+        self.assertEqual(
+            EXECUTOR.filesystem_git_leaf_inventory(
+                first, "prepared release"
+            ),
+            EXECUTOR.filesystem_git_leaf_inventory(
+                snapshot, "snapshotted prepared release"
+            ),
         )
         fetch_json, fetch_asset, _release = release_fetchers(first)
         output = fixture.root / "selection-release-readback"
@@ -3086,6 +3132,52 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             "public-anonymous-readback",
         )
         self.assertEqual(receipt_value["formula_count"], 1)
+
+    def test_materialize_campaign_source_uses_kandelo_authority(self) -> None:
+        fixture = FinalTapFixture()
+        self.addCleanup(fixture.close)
+        checkout = fixture.root / "materializer-source-checkout"
+        subprocess.run(
+            ["git", "clone", "-q", "--no-hardlinks", fixture.live, checkout],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "checkout", "--detach", "--quiet", fixture.source_commit],
+            cwd=checkout,
+            check=True,
+        )
+        output = fixture.root / "materialized-campaign-source"
+        EXECUTOR.materialize_campaign_source(
+            campaign_path=fixture.campaign_path,
+            source_tap_root=checkout,
+            output=output,
+        )
+        self.assertEqual(
+            EXECUTOR.filesystem_git_leaf_inventory(
+                output, "materialized campaign source"
+            ),
+            EXECUTOR.filesystem_git_leaf_inventory(
+                fixture.source, "expected sealed campaign source"
+            ),
+        )
+        self.assertFalse(
+            (output / ".github/workflows/dry-run-bottles.yml").exists()
+        )
+
+        subprocess.run(
+            ["git", "checkout", "--detach", "--quiet", fixture.live_commit],
+            cwd=checkout,
+            check=True,
+        )
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "exact commit",
+        ):
+            EXECUTOR.materialize_campaign_source(
+                campaign_path=fixture.campaign_path,
+                source_tap_root=checkout,
+                output=fixture.root / "wrong-source-output",
+            )
 
     def test_closed_selection_release_rejects_unsafe_tree_and_zip(
         self,

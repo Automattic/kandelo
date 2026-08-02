@@ -313,8 +313,10 @@ def load_executor(path: pathlib.Path) -> dict[str, Any]:
         "dependency_closure",
         "dependency_names",
         "fetch_release",
+        "load_prepared_selection_release",
         "load_campaign",
         "prepare_selection",
+        "prepare_selection_release",
     ):
         if name not in executor:
             fail(f"Kandelo selection executor lacks {name}")
@@ -442,18 +444,11 @@ def prepare(
             handoff_roots=[handoff_root / name for name in ordered],
             output=temporary / "selection",
         )
-        (temporary / "summary.json").write_bytes(
-            pretty_json(
-                {
-                    "formula_count": len(required),
-                    "kind": "kandelo-homebrew-closed-selection-preparation",
-                    "plan_sha256": plan_digest(plan),
-                    "root_count": len(plan["roots"]),
-                    "schema": 1,
-                }
-            )
+        executor["prepare_selection_release"](
+            selection_root=temporary / "selection",
+            output=temporary / "release",
         )
-        os.rename(temporary, output)
+        os.rename(temporary / "release", output)
     except ControllerError:
         raise
     except executor["ExecutorError"] as error:
@@ -461,23 +456,55 @@ def prepare(
     finally:
         if temporary.exists():
             shutil.rmtree(temporary, ignore_errors=True)
-    return verify(plan_path=plan_path, selection_root=output / "selection")
+    return verify(
+        selection_plan=compact_json(plan).decode("utf-8").removesuffix("\n"),
+        selection_plan_sha256=plan_digest(plan),
+        prepared_release=output,
+        executor_path=executor_path,
+    )
+
+
+def expected_plan(
+    selection_plan: str,
+    selection_plan_sha256: str,
+) -> dict[str, Any]:
+    digest = require_sha256(
+        selection_plan_sha256,
+        "expected selection plan digest",
+    )
+    if not isinstance(selection_plan, str):
+        fail("expected selection plan must be a string")
+    plan = validate_plan(
+        load_json_bytes(
+            selection_plan.encode("utf-8"),
+            "expected selection plan",
+        )
+    )
+    canonical = compact_json(plan)
+    if selection_plan != canonical.decode("utf-8").removesuffix("\n"):
+        fail("expected selection plan is not canonical compact JSON")
+    if hashlib.sha256(canonical).hexdigest() != digest:
+        fail("expected selection plan differs from its SHA-256")
+    return plan
 
 
 def verify(
     *,
-    plan_path: pathlib.Path,
-    selection_root: pathlib.Path,
+    selection_plan: str,
+    selection_plan_sha256: str,
+    prepared_release: pathlib.Path,
+    executor_path: pathlib.Path,
 ) -> dict[str, Any]:
-    plan, plan_payload = load_json_file(plan_path, "selection publish plan")
-    plan = validate_plan(plan)
-    if plan_payload != pretty_json(plan):
-        fail("selection publish plan is not canonical pretty JSON")
-    selection, selection_payload = load_json_file(
-        selection_root / "selection.json",
-        "prepared selection manifest",
-        MAX_SELECTION_BYTES,
-    )
+    plan = expected_plan(selection_plan, selection_plan_sha256)
+    executor = load_executor(executor_path)
+    try:
+        descriptor, _descriptor_payload, _manifest = executor[
+            "load_prepared_selection_release"
+        ](prepared_release)
+    except executor["ExecutorError"] as error:
+        fail(str(error))
+    selection = descriptor["selection_manifest"]["value"]
+    selection_payload = pretty_json(selection)
     selection_tap = selection.get("tap") if isinstance(selection, dict) else None
     selection_tap_repository = (
         selection_tap.get("repository")
@@ -554,9 +581,13 @@ def parse_args() -> argparse.Namespace:
     prepare_parser.add_argument("--out", type=pathlib.Path, required=True)
 
     verify_parser = commands.add_parser("verify")
-    verify_parser.add_argument("--plan", type=pathlib.Path, required=True)
+    verify_parser.add_argument("--selection-plan", required=True)
+    verify_parser.add_argument("--selection-plan-sha256", required=True)
     verify_parser.add_argument(
-        "--selection", type=pathlib.Path, required=True
+        "--prepared-release", type=pathlib.Path, required=True
+    )
+    verify_parser.add_argument(
+        "--executor", type=pathlib.Path, required=True
     )
     return parser.parse_args()
 
@@ -590,8 +621,10 @@ def main() -> int:
             )
         elif arguments.command == "verify":
             verify(
-                plan_path=arguments.plan,
-                selection_root=arguments.selection,
+                selection_plan=arguments.selection_plan,
+                selection_plan_sha256=arguments.selection_plan_sha256,
+                prepared_release=arguments.prepared_release,
+                executor_path=arguments.executor,
             )
             print("homebrew-closed-selection-controller: verified exact plan")
         else:  # pragma: no cover - argparse owns command selection.

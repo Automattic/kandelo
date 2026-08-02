@@ -268,17 +268,41 @@ class ClosedSelectionControllerTests(unittest.TestCase):
                 CONTROLLER.pretty_json(selection)
             )
 
+        def prepare_selection_release(**arguments) -> None:
+            output = arguments["output"]
+            output.mkdir()
+            (output / "fixture-selection.json").write_bytes(
+                (
+                    arguments["selection_root"] / "selection.json"
+                ).read_bytes()
+            )
+
+        def load_prepared_selection_release(
+            prepared_root: pathlib.Path,
+        ) -> tuple[dict, bytes, dict]:
+            selection = json.loads(
+                (prepared_root / "fixture-selection.json").read_text()
+            )
+            descriptor = {
+                "selection_manifest": {"value": selection},
+            }
+            return descriptor, b"fixture\n", {"fixture": True}
+
         return {
             "ExecutorError": FakeExecutorError,
             "dependency_closure": dependency_closure,
             "dependency_names": dependency_names,
             "fetch_release": fetch_release,
+            "load_prepared_selection_release": (
+                load_prepared_selection_release
+            ),
             "load_campaign": lambda _path: (
                 self.campaign,
                 self.campaign_payload,
                 self.index,
             ),
             "prepare_selection": prepare_selection,
+            "prepare_selection_release": prepare_selection_release,
         }
 
     def test_real_executor_exposes_the_required_contract(self) -> None:
@@ -324,8 +348,7 @@ class ClosedSelectionControllerTests(unittest.TestCase):
                     ("prepare", ("dep", "root")),
                 ],
             )
-            self.assertTrue((output / "selection/selection.json").is_file())
-            self.assertTrue((output / "receipts/root.json").is_file())
+            self.assertTrue((output / "fixture-selection.json").is_file())
 
     def test_prepare_rejects_extra_handoff_before_fetch(self) -> None:
         plan = json.loads(json.dumps(self.plan))
@@ -368,8 +391,8 @@ class ClosedSelectionControllerTests(unittest.TestCase):
             temporary = pathlib.Path(directory)
             plan_path = temporary / "plan.json"
             plan_path.write_bytes(CONTROLLER.pretty_json(self.plan))
-            selection = temporary / "selection"
-            selection.mkdir()
+            prepared = temporary / "prepared"
+            prepared.mkdir()
             value = {
                 "arch": "wasm32",
                 "campaign": {
@@ -399,32 +422,110 @@ class ClosedSelectionControllerTests(unittest.TestCase):
                     "source_commit": self.plan["source_tap_commit"],
                 },
             }
-            (selection / "selection.json").write_bytes(
+            (prepared / "fixture-selection.json").write_bytes(
                 CONTROLLER.pretty_json(value)
             )
-            with self.assertRaisesRegex(
-                CONTROLLER.ControllerError,
-                "handoffs differ",
+            plan_input = CONTROLLER.compact_json(self.plan).decode().rstrip(
+                "\n"
+            )
+            with mock.patch.object(
+                CONTROLLER,
+                "load_executor",
+                return_value=self.fake_executor([]),
             ):
-                CONTROLLER.verify(
-                    plan_path=plan_path,
-                    selection_root=selection,
-                )
+                with self.assertRaisesRegex(
+                    CONTROLLER.ControllerError,
+                    "handoffs differ",
+                ):
+                    CONTROLLER.verify(
+                        selection_plan=plan_input,
+                        selection_plan_sha256=CONTROLLER.plan_digest(
+                            self.plan
+                        ),
+                        prepared_release=prepared,
+                        executor_path=temporary / "executor.py",
+                    )
             value["formulae"][0]["handoff"]["tag"] = (
                 self.plan["handoffs"]["dep"]
             )
             value["tap"]["repository"] = None
-            (selection / "selection.json").write_bytes(
+            (prepared / "fixture-selection.json").write_bytes(
                 CONTROLLER.pretty_json(value)
             )
-            with self.assertRaisesRegex(
-                CONTROLLER.ControllerError,
-                "authority differs",
+            with mock.patch.object(
+                CONTROLLER,
+                "load_executor",
+                return_value=self.fake_executor([]),
             ):
-                CONTROLLER.verify(
-                    plan_path=plan_path,
-                    selection_root=selection,
-                )
+                with self.assertRaisesRegex(
+                    CONTROLLER.ControllerError,
+                    "authority differs",
+                ):
+                    CONTROLLER.verify(
+                        selection_plan=plan_input,
+                        selection_plan_sha256=CONTROLLER.plan_digest(
+                            self.plan
+                        ),
+                        prepared_release=prepared,
+                        executor_path=temporary / "executor.py",
+                    )
+
+    def test_verify_rejects_coherent_artifact_plan_substitution(self) -> None:
+        substituted = json.loads(json.dumps(self.plan))
+        substituted["roots"] = ["dep"]
+        substituted["handoffs"] = {
+            "dep": substituted["handoffs"]["dep"],
+        }
+        selection = {
+            "arch": "wasm32",
+            "campaign": {
+                "kandelo_commit": substituted["kandelo_commit"],
+                "tag": substituted["campaign_tag"],
+            },
+            "formulae": [
+                {
+                    "formula": "dep",
+                    "handoff": {
+                        "tag": substituted["handoffs"]["dep"],
+                    },
+                }
+            ],
+            "kind": "kandelo-homebrew-closed-selection-candidate",
+            "roots": ["dep"],
+            "schema": 1,
+            "tap": {
+                "repository": "kandelo-dev/homebrew-tap-core",
+                "source_commit": substituted["source_tap_commit"],
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = pathlib.Path(directory)
+            prepared = temporary / "prepared"
+            prepared.mkdir()
+            (prepared / "fixture-selection.json").write_bytes(
+                CONTROLLER.pretty_json(selection)
+            )
+            with mock.patch.object(
+                CONTROLLER,
+                "load_executor",
+                return_value=self.fake_executor([]),
+            ):
+                with self.assertRaisesRegex(
+                    CONTROLLER.ControllerError,
+                    "authority differs from its plan",
+                ):
+                    CONTROLLER.verify(
+                        selection_plan=(
+                            CONTROLLER.compact_json(self.plan)
+                            .decode()
+                            .rstrip("\n")
+                        ),
+                        selection_plan_sha256=CONTROLLER.plan_digest(
+                            self.plan
+                        ),
+                        prepared_release=prepared,
+                        executor_path=temporary / "executor.py",
+                    )
 
 
 if __name__ == "__main__":

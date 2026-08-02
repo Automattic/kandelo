@@ -3328,6 +3328,61 @@ def exact_live_tap_checkout(
     return root
 
 
+def materialize_sealed_campaign_target(
+    *,
+    campaign: dict[str, Any],
+    history_root: pathlib.Path,
+    source_commit_root: pathlib.Path,
+    destination: pathlib.Path,
+    label: str,
+) -> tuple[
+    pathlib.Path,
+    dict[str, Any],
+    list[tuple[str, dict[str, Any] | None, dict[str, Any]]],
+]:
+    provenance, records = load_source_overlay_contract(
+        source_commit_root,
+        campaign,
+    )
+    base = provenance["base"]
+    actual_base_tree = run_git(
+        history_root,
+        ["rev-parse", f"{base['commit']}^{{tree}}"],
+        f"{label} sealed base tree",
+    ).decode("ascii", errors="strict").strip()
+    if actual_base_tree != base["tree_git_oid"]:
+        fail(f"{label} sealed base commit has the wrong tree")
+    if not git_is_ancestor(
+        history_root,
+        base["commit"],
+        provenance["source_tap_commit"],
+        f"{label} sealed base ancestry",
+    ):
+        fail(f"{label} sealed base is not an ancestor of the source")
+
+    result = git_snapshot(
+        history_root,
+        base["commit"],
+        destination,
+        f"{label} sealed target base",
+    )
+    overlay_root = source_commit_root / campaign["authority"][
+        "source_materialization"
+    ]["source_root"]
+    replay_overlay_files(
+        tap_root=result,
+        source_root=overlay_root,
+        records=records,
+        label=f"{label} sealed target replay",
+    )
+    if (
+        filesystem_git_tree_oid(result, f"{label} sealed target")
+        != provenance["sealed_target_tree_git_oid"]
+    ):
+        fail(f"{label} sealed target has the wrong Git tree")
+    return result, provenance, records
+
+
 def prepare_live_source_replay(
     *,
     campaign: dict[str, Any],
@@ -3378,53 +3433,21 @@ def prepare_live_source_replay(
         snapshot_root / "source-commit",
         "campaign complete source commit",
     )
-    provenance, records = load_source_overlay_contract(
-        source_commit_root,
-        campaign,
+    sealed_target, provenance, records = materialize_sealed_campaign_target(
+        campaign=campaign,
+        history_root=live_tap_root,
+        source_commit_root=source_commit_root,
+        destination=snapshot_root / "sealed-target",
+        label="campaign",
     )
     provenance = {
         **provenance,
         "source_tap_tree_git_oid": actual_source_tree,
     }
-    base = provenance["base"]
-    actual_base_tree = run_git(
-        live_tap_root,
-        ["rev-parse", f"{base['commit']}^{{tree}}"],
-        "campaign sealed base tree in live history",
-    ).decode("ascii", errors="strict").strip()
-    if actual_base_tree != base["tree_git_oid"]:
-        fail("campaign sealed base commit has the wrong tree")
-    if not git_is_ancestor(
-        live_tap_root,
-        base["commit"],
-        source_commit,
-        "campaign sealed base ancestry",
-    ):
-        fail("campaign sealed base is not an ancestor of the source commit")
 
     overlay_root = source_commit_root / campaign["authority"][
         "source_materialization"
     ]["source_root"]
-    sealed_target = git_snapshot(
-        live_tap_root,
-        base["commit"],
-        snapshot_root / "sealed-target",
-        "campaign sealed historical target",
-    )
-    replay_overlay_files(
-        tap_root=sealed_target,
-        source_root=overlay_root,
-        records=records,
-        label="campaign sealed historical target replay",
-    )
-    if (
-        filesystem_git_tree_oid(
-            sealed_target,
-            "campaign sealed historical target",
-        )
-        != provenance["sealed_target_tree_git_oid"]
-    ):
-        fail("campaign sealed historical target has the wrong tree")
     if filesystem_git_leaf_inventory(
         sealed_target,
         "campaign sealed historical target",
@@ -3474,6 +3497,53 @@ def prepare_live_source_replay(
         ),
     }
     return replayed_live, provenance
+
+
+def materialize_campaign_source(
+    *,
+    campaign_path: pathlib.Path,
+    source_tap_root: pathlib.Path,
+    output: pathlib.Path,
+) -> None:
+    campaign, _campaign_payload, _index = load_campaign(campaign_path)
+    provenance = campaign_source_provenance(campaign)
+    source_commit = provenance["source_tap_commit"]
+    source_tap_root = exact_git_checkout(
+        source_tap_root,
+        source_commit,
+        "campaign source tap checkout",
+    )
+    output = validate_new_output(
+        output,
+        "materialized campaign source",
+        (campaign_path, source_tap_root),
+    )
+    temporary = pathlib.Path(
+        tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent)
+    )
+    try:
+        # WHY: campaign source is a sealed historical target, not the source
+        # commit's complete tree. Rebuild it from the manifest-bound base and
+        # overlay with Kandelo's validator so the tap checkout remains inert
+        # data and cannot provide executable materialization code.
+        source_commit_root = git_snapshot(
+            source_tap_root,
+            source_commit,
+            temporary / "source-commit",
+            "campaign complete source commit",
+        )
+        result, _provenance, _records = (
+            materialize_sealed_campaign_target(
+                campaign=campaign,
+                history_root=source_tap_root,
+                source_commit_root=source_commit_root,
+                destination=temporary / "target",
+                label="campaign",
+            )
+        )
+        os.rename(result, output)
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
 
 
 def default_final_prefix_validator(
@@ -5300,6 +5370,45 @@ def validate_selection_descriptor(
     return value
 
 
+def selection_release_manifest(
+    *,
+    descriptor: dict[str, Any],
+    descriptor_payload: bytes,
+    archive_path: pathlib.Path,
+) -> dict[str, Any]:
+    selection = descriptor["selection_manifest"]["value"]
+    archive = descriptor["tap_archive"]
+    descriptor_sha256 = sha256_bytes(descriptor_payload)
+    return {
+        "accepted_existing_asset_sets": [],
+        "assets": [
+            {
+                "bytes": len(descriptor_payload),
+                "name": SELECTION_DESCRIPTOR_ASSET,
+                "sha256": descriptor_sha256,
+            },
+            {
+                "bytes": archive_path.stat().st_size,
+                "name": SELECTION_ARCHIVE_ASSET,
+                "sha256": archive["sha256"],
+            },
+        ],
+        "body": (
+            "Immutable closed Formula selection for one Kandelo consumer. "
+            "This is intentionally not the complete tap catalog."
+        ),
+        "preferred_asset_names": [
+            SELECTION_DESCRIPTOR_ASSET,
+            SELECTION_ARCHIVE_ASSET,
+        ],
+        "repository": selection["tap"]["repository"].lower(),
+        "schema": 1,
+        "tag": f"homebrew-prefix-selection-sha256-{descriptor_sha256}",
+        "target_commitish": selection["tap"]["source_commit"],
+        "title": "Kandelo Homebrew closed Formula selection",
+    }
+
+
 def prepare_selection_release(
     *, selection_root: pathlib.Path, output: pathlib.Path
 ) -> None:
@@ -5364,36 +5473,11 @@ def prepare_selection_release(
             fail("prepared selection archive changed its Git tree")
         shutil.rmtree(extracted)
 
-        descriptor_sha256 = sha256_bytes(descriptor_payload)
-        tag = f"homebrew-prefix-selection-sha256-{descriptor_sha256}"
-        release = {
-            "accepted_existing_asset_sets": [],
-            "assets": [
-                {
-                    "bytes": len(descriptor_payload),
-                    "name": SELECTION_DESCRIPTOR_ASSET,
-                    "sha256": descriptor_sha256,
-                },
-                {
-                    "bytes": archive_bytes,
-                    "name": SELECTION_ARCHIVE_ASSET,
-                    "sha256": archive_sha256,
-                },
-            ],
-            "body": (
-                "Immutable closed Formula selection for one Kandelo consumer. "
-                "This is intentionally not the complete tap catalog."
-            ),
-            "preferred_asset_names": [
-                SELECTION_DESCRIPTOR_ASSET,
-                SELECTION_ARCHIVE_ASSET,
-            ],
-            "repository": selection["tap"]["repository"].lower(),
-            "schema": 1,
-            "tag": tag,
-            "target_commitish": selection["tap"]["source_commit"],
-            "title": "Kandelo Homebrew closed Formula selection",
-        }
+        release = selection_release_manifest(
+            descriptor=descriptor,
+            descriptor_payload=descriptor_payload,
+            archive_path=archive_path,
+        )
         (temporary / "release-manifest.json").write_bytes(
             pretty_json(release)
         )
@@ -5402,6 +5486,154 @@ def prepare_selection_release(
     finally:
         if temporary.exists():
             shutil.rmtree(temporary, ignore_errors=True)
+
+
+def load_prepared_selection_release(
+    prepared_root: pathlib.Path,
+) -> tuple[dict[str, Any], bytes, dict[str, Any]]:
+    prepared_root = real_directory(
+        prepared_root,
+        "prepared closed selection release",
+    )
+    expected_paths = {
+        "assets/closed-selection.json",
+        "assets/closed-selection.zip",
+        "release-manifest.json",
+    }
+    observed_files: set[str] = set()
+    observed_directories: set[str] = set()
+    for child in prepared_root.rglob("*"):
+        relative = child.relative_to(prepared_root).as_posix()
+        metadata = child.lstat()
+        if stat.S_ISDIR(metadata.st_mode) and not child.is_symlink():
+            observed_directories.add(relative)
+        elif stat.S_ISREG(metadata.st_mode) and not child.is_symlink():
+            observed_files.add(relative)
+        else:
+            fail("prepared closed selection release has an indirect path")
+    if (
+        observed_files != expected_paths
+        or observed_directories != {"assets"}
+    ):
+        fail("prepared closed selection release has unexpected files")
+
+    descriptor_path = regular_file_within(
+        prepared_root,
+        f"assets/{SELECTION_DESCRIPTOR_ASSET}",
+        "prepared closed selection descriptor",
+        MAX_JSON_BYTES,
+    )
+    descriptor, descriptor_payload = load_json_bytes(
+        descriptor_path,
+        "prepared closed selection descriptor",
+    )
+    descriptor = validate_selection_descriptor(
+        descriptor,
+        descriptor_payload,
+    )
+    archive_path = regular_file_within(
+        prepared_root,
+        f"assets/{SELECTION_ARCHIVE_ASSET}",
+        "prepared closed selection archive",
+        MAX_ASSET_BYTES,
+    )
+    archive = descriptor["tap_archive"]
+    if (
+        archive_path.stat().st_size != archive["bytes"]
+        or sha256_file(archive_path) != archive["sha256"]
+    ):
+        fail("prepared closed selection archive differs from its descriptor")
+
+    manifest_path = regular_file_within(
+        prepared_root,
+        "release-manifest.json",
+        "prepared closed selection release manifest",
+        MAX_JSON_BYTES,
+    )
+    manifest, manifest_payload = load_json_bytes(
+        manifest_path,
+        "prepared closed selection release manifest",
+    )
+    expected_manifest = selection_release_manifest(
+        descriptor=descriptor,
+        descriptor_payload=descriptor_payload,
+        archive_path=archive_path,
+    )
+    if (
+        manifest != expected_manifest
+        or manifest_payload != pretty_json(expected_manifest)
+    ):
+        fail("prepared closed selection release manifest differs")
+
+    temporary = pathlib.Path(
+        tempfile.mkdtemp(prefix=".closed-selection-release-readback.")
+    )
+    try:
+        selection_root = temporary / "selection"
+        selection_root.mkdir()
+        (selection_root / "selection.json").write_bytes(
+            pretty_json(descriptor["selection_manifest"]["value"])
+        )
+        extract_selection_archive(
+            archive_path,
+            selection_root / "tap",
+            archive["inventory"],
+        )
+        selection, selection_payload, _tap_root = load_selection_candidate(
+            selection_root
+        )
+        if (
+            selection != descriptor["selection_manifest"]["value"]
+            or len(selection_payload)
+            != descriptor["selection_manifest"]["bytes"]
+            or sha256_bytes(selection_payload)
+            != descriptor["selection_manifest"]["sha256"]
+        ):
+            fail("prepared closed selection differs from its descriptor")
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+    return descriptor, descriptor_payload, manifest
+
+
+def snapshot_selection_release(
+    *,
+    prepared_root: pathlib.Path,
+    output: pathlib.Path,
+) -> None:
+    prepared_root = real_directory(
+        prepared_root,
+        "prepared closed selection release",
+    )
+    output = validate_new_output(
+        output,
+        "verified closed selection release snapshot",
+        (prepared_root,),
+    )
+    temporary = pathlib.Path(
+        tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent)
+    )
+    try:
+        result = temporary / "release"
+        (result / "assets").mkdir(parents=True)
+        for relative, maximum in (
+            ("release-manifest.json", MAX_JSON_BYTES),
+            (f"assets/{SELECTION_DESCRIPTOR_ASSET}", MAX_JSON_BYTES),
+            (f"assets/{SELECTION_ARCHIVE_ASSET}", MAX_ASSET_BYTES),
+        ):
+            source = regular_file_within(
+                prepared_root,
+                relative,
+                f"prepared release {relative}",
+                maximum,
+            )
+            shutil.copyfile(source, result / relative)
+        # WHY: validate the private copy, not the caller-owned paths. That
+        # turns later publication and semantic readback into one immutable
+        # local input even if the caller can edit its directory concurrently.
+        load_prepared_selection_release(result)
+        os.rename(result, output)
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
 
 
 def fetch_selection_release(
@@ -6773,6 +7005,11 @@ def parse_args() -> argparse.Namespace:
     campaign.add_argument("--out", required=True)
     campaign.add_argument("--receipt-out", required=True)
 
+    materialize_source = commands.add_parser("materialize-campaign-source")
+    materialize_source.add_argument("--campaign", required=True)
+    materialize_source.add_argument("--source-tap-root", required=True)
+    materialize_source.add_argument("--out", required=True)
+
     derive = commands.add_parser("derive-build")
     derive.add_argument("--campaign", required=True)
     derive.add_argument("--source-tap-root", required=True)
@@ -6826,6 +7063,12 @@ def parse_args() -> argparse.Namespace:
     selection_release.add_argument("--selection", required=True)
     selection_release.add_argument("--out", required=True)
 
+    snapshot_selection = commands.add_parser(
+        "snapshot-selection-release"
+    )
+    snapshot_selection.add_argument("--prepared-release", required=True)
+    snapshot_selection.add_argument("--out", required=True)
+
     fetch_selection = commands.add_parser("fetch-selection-release")
     fetch_selection.add_argument("--repository", required=True)
     fetch_selection.add_argument("--tag", required=True)
@@ -6873,6 +7116,12 @@ def main() -> int:
                 tag=arguments.tag,
                 output=pathlib.Path(arguments.out),
                 receipt_output=pathlib.Path(arguments.receipt_out),
+            )
+        elif arguments.command == "materialize-campaign-source":
+            materialize_campaign_source(
+                campaign_path=pathlib.Path(arguments.campaign),
+                source_tap_root=pathlib.Path(arguments.source_tap_root),
+                output=pathlib.Path(arguments.out),
             )
         elif arguments.command == "derive-build":
             derive_build(
@@ -6931,6 +7180,11 @@ def main() -> int:
         elif arguments.command == "prepare-selection-release":
             prepare_selection_release(
                 selection_root=pathlib.Path(arguments.selection),
+                output=pathlib.Path(arguments.out),
+            )
+        elif arguments.command == "snapshot-selection-release":
+            snapshot_selection_release(
+                prepared_root=pathlib.Path(arguments.prepared_release),
                 output=pathlib.Path(arguments.out),
             )
         elif arguments.command == "fetch-selection-release":
