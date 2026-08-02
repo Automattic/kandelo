@@ -249,6 +249,7 @@ homebrew_native_contract_install() {
   local closure="$control/native-closure.txt"
   local cumulative_roots="$control/native-cumulative-roots.txt"
   local oracle policy staged_roots prime lock staged_closure
+  local overlay_attestation
   local dependency staged_cumulative_roots install_index=0
   local -a formula_refs native_dependencies
 
@@ -268,6 +269,12 @@ homebrew_native_contract_install() {
   # preserve the failed `-s` test's status and silently reject that valid empty
   # closure before the target Formula can run.
   [ -s "$roots" ] || return 0
+  overlay_attestation="${HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION:-}"
+  [ -f "$overlay_attestation" ] && [ ! -L "$overlay_attestation" ] || {
+    homebrew_native_contract_fail \
+      "sealed native Homebrew identity is unavailable"
+    return
+  }
 
   : >"$raw"
   : >"$closure"
@@ -320,7 +327,8 @@ homebrew_native_contract_install() {
   homebrew_native_contract_run_logged \
     signed-api-admission "$control" "$log" - \
     homebrew_patched_launcher_run_native ruby "$oracle" \
-      admit "$brew_commit" "$policy" "$purpose" "$staged_roots" \
+      admit "$brew_commit" "$overlay_attestation" "$policy" "$purpose" \
+      "$staged_roots" \
       "$staged_closure" "$prime" "$lock" \
       "$native_temp/native-api-admission.json" || return
 
@@ -339,8 +347,8 @@ homebrew_native_contract_install() {
     homebrew_native_contract_run_logged \
       "installed-cellar-audit-$install_index" "$control" "$log" - \
       homebrew_patched_launcher_run_native ruby "$oracle" \
-        audit-cellar "$brew_commit" "$prime" "$staged_closure" \
-        "$staged_cumulative_roots" \
+        audit-cellar "$brew_commit" "$overlay_attestation" "$prime" \
+        "$staged_closure" "$staged_cumulative_roots" \
         "$native_temp/native-cellar-${install_index}.json" || return
   done
 }

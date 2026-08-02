@@ -15,6 +15,7 @@ PREFLIGHT="$SCRIPT_DIR/homebrew-native-api-preflight.sh"
 SOURCE_CHECK="$SCRIPT_DIR/homebrew-native-check-brew-source.sh"
 BOUNDED_ENV="$SCRIPT_DIR/homebrew-native-bounded-environment.sh"
 TMP_ROOT="$(mktemp -d)"
+TMP_ROOT="$(cd "$TMP_ROOT" && pwd -P)"
 cleanup() {
   chmod -R u+rwX "$TMP_ROOT" 2>/dev/null || true
   rm -rf "$TMP_ROOT"
@@ -218,12 +219,29 @@ end
 RUBY
 
 COMMIT="1111111111111111111111111111111111111111"
+TREE="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+OVERLAY_STATE="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 CORE_HEAD="2222222222222222222222222222222222222222"
 OTHER_HEAD="3333333333333333333333333333333333333333"
 ADVANCED_HEAD="4444444444444444444444444444444444444444"
 BREW_REPOSITORY="$TMP_ROOT/oracle-brew"
 CELLAR="$TMP_ROOT/cellar"
 mkdir -p "$BREW_REPOSITORY" "$CELLAR"
+OVERLAY_ATTESTATION="$TMP_ROOT/native-overlay-attestation.json"
+jq -S -n \
+  --arg commit "$COMMIT" \
+  --arg repository "$BREW_REPOSITORY" \
+  --arg state "$OVERLAY_STATE" \
+  --arg tree "$TREE" \
+  '{
+    schema: 1,
+    kind: "kandelo-homebrew-native-overlay-attestation",
+    homebrew_commit: $commit,
+    homebrew_tree: $tree,
+    repository: $repository,
+    overlay_state_sha256: $state
+  }' >"$OVERLAY_ATTESTATION"
+chmod 0444 "$OVERLAY_ATTESTATION"
 
 create_api() {
   local root="$1" public_head="$2" internal_head="$3"
@@ -363,9 +381,174 @@ jq -e '
   fail "generated lock lost its exact envelope or run install step"
 
 ADMISSION_A="$TMP_ROOT/admission-a.json"
+KANDELO_TEST_GIT_FAILURE_STATUS=77 \
+KANDELO_TEST_API_ROOT="$API_A" oracle admit \
+  "$COMMIT" "$OVERLAY_ATTESTATION" "$POLICY" test \
+  "$ROOTS" "$CLOSURE" "$PRIME_A" "$LOCK_A" \
+  "$ADMISSION_A"
 KANDELO_TEST_API_ROOT="$API_A" oracle admit \
   "$COMMIT" "$POLICY" test "$ROOTS" "$CLOSURE" "$PRIME_A" "$LOCK_A" \
-  "$ADMISSION_A"
+  "$TMP_ROOT/legacy-direct-ca-admission.json"
+
+expect_overlay_attestation_failure() {
+  local label="$1" message="$2" filter="$3"
+  local candidate="$TMP_ROOT/overlay-attestation-${label// /-}.json"
+  jq "$filter" "$OVERLAY_ATTESTATION" >"$candidate"
+  chmod 0444 "$candidate"
+  expect_failure "$label" "$message" \
+    env -u GITHUB_ACTIONS \
+      HOMEBREW_KANDELO_NATIVE_CONTRACT_TESTING=1 \
+      KANDELO_TEST_API_ROOT="$API_A" \
+      KANDELO_TEST_BREW_COMMIT="$COMMIT" \
+      KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
+      KANDELO_TEST_CELLAR="$CELLAR" \
+      KANDELO_TEST_GIT_FAILURE_STATUS=77 \
+      ruby -I"$STUB_ROOT" "$ORACLE" admit \
+        "$COMMIT" "$candidate" "$POLICY" test \
+        "$ROOTS" "$CLOSURE" "$PRIME_A" "$LOCK_A" \
+        "$TMP_ROOT/rejected-overlay-admission.json"
+}
+
+expect_overlay_attestation_failure \
+  "wrong overlay commit" \
+  "Homebrew checkout is $OTHER_HEAD, expected $COMMIT" \
+  ".homebrew_commit = \"$OTHER_HEAD\""
+expect_overlay_attestation_failure \
+  "wrong overlay repository" \
+  "native overlay attestation names another repository" \
+  '.repository = "/tmp/not-the-running-homebrew"'
+expect_overlay_attestation_failure \
+  "invalid overlay tree" \
+  "native overlay attestation tree is invalid" \
+  '.homebrew_tree = "not-a-tree"'
+expect_overlay_attestation_failure \
+  "invalid overlay state digest" \
+  "native overlay attestation state digest is invalid" \
+  '.overlay_state_sha256 = "not-a-digest"'
+expect_overlay_attestation_failure \
+  "wrong overlay kind" \
+  "native overlay attestation kind is invalid" \
+  '.kind = "not-the-overlay-contract"'
+expect_overlay_attestation_failure \
+  "wrong overlay schema" \
+  "native overlay attestation schema is unsupported" \
+  '.schema = 2'
+expect_overlay_attestation_failure \
+  "extra overlay field" \
+  "native overlay attestation has unexpected fields" \
+  '.unexpected = true'
+expect_overlay_attestation_failure \
+  "missing overlay field" \
+  "native overlay attestation has unexpected fields" \
+  'del(.homebrew_tree)'
+
+MUTABLE_OVERLAY_ATTESTATION="$TMP_ROOT/mutable-overlay-attestation.json"
+cp "$OVERLAY_ATTESTATION" "$MUTABLE_OVERLAY_ATTESTATION"
+chmod 0644 "$MUTABLE_OVERLAY_ATTESTATION"
+expect_failure \
+  "mutable overlay attestation" \
+  "native overlay attestation is not sealed" \
+  env -u GITHUB_ACTIONS \
+    HOMEBREW_KANDELO_NATIVE_CONTRACT_TESTING=1 \
+    KANDELO_TEST_API_ROOT="$API_A" \
+    KANDELO_TEST_BREW_COMMIT="$COMMIT" \
+    KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
+    KANDELO_TEST_CELLAR="$CELLAR" \
+    ruby -I"$STUB_ROOT" "$ORACLE" admit \
+      "$COMMIT" "$MUTABLE_OVERLAY_ATTESTATION" "$POLICY" test \
+      "$ROOTS" "$CLOSURE" "$PRIME_A" "$LOCK_A" \
+      "$TMP_ROOT/rejected-mutable-overlay-admission.json"
+
+SYMLINKED_OVERLAY_ATTESTATION="$TMP_ROOT/symlinked-overlay-attestation.json"
+ln -s "$OVERLAY_ATTESTATION" "$SYMLINKED_OVERLAY_ATTESTATION"
+expect_failure \
+  "symlinked overlay attestation" \
+  "native overlay attestation is not sealed" \
+  env -u GITHUB_ACTIONS \
+    HOMEBREW_KANDELO_NATIVE_CONTRACT_TESTING=1 \
+    KANDELO_TEST_API_ROOT="$API_A" \
+    KANDELO_TEST_BREW_COMMIT="$COMMIT" \
+    KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
+    KANDELO_TEST_CELLAR="$CELLAR" \
+    ruby -I"$STUB_ROOT" "$ORACLE" admit \
+      "$COMMIT" "$SYMLINKED_OVERLAY_ATTESTATION" "$POLICY" test \
+      "$ROOTS" "$CLOSURE" "$PRIME_A" "$LOCK_A" \
+      "$TMP_ROOT/rejected-symlinked-overlay-admission.json"
+
+expect_failure \
+  "relative overlay attestation" \
+  "native overlay attestation path is not absolute" \
+  env -u GITHUB_ACTIONS \
+    HOMEBREW_KANDELO_NATIVE_CONTRACT_TESTING=1 \
+    KANDELO_TEST_API_ROOT="$API_A" \
+    KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
+    KANDELO_TEST_CELLAR="$CELLAR" \
+    ruby -I"$STUB_ROOT" "$ORACLE" admit \
+      "$COMMIT" native-overlay-attestation.json "$POLICY" test \
+      "$ROOTS" "$CLOSURE" "$PRIME_A" "$LOCK_A" \
+      "$TMP_ROOT/rejected-relative-overlay-admission.json"
+
+MALFORMED_OVERLAY_ATTESTATION="$TMP_ROOT/malformed-overlay-attestation.json"
+printf '{\n' >"$MALFORMED_OVERLAY_ATTESTATION"
+chmod 0444 "$MALFORMED_OVERLAY_ATTESTATION"
+expect_failure \
+  "malformed overlay attestation" \
+  "cannot read $MALFORMED_OVERLAY_ATTESTATION" \
+  env -u GITHUB_ACTIONS \
+    HOMEBREW_KANDELO_NATIVE_CONTRACT_TESTING=1 \
+    KANDELO_TEST_API_ROOT="$API_A" \
+    KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
+    KANDELO_TEST_CELLAR="$CELLAR" \
+    ruby -I"$STUB_ROOT" "$ORACLE" admit \
+      "$COMMIT" "$MALFORMED_OVERLAY_ATTESTATION" "$POLICY" test \
+      "$ROOTS" "$CLOSURE" "$PRIME_A" "$LOCK_A" \
+      "$TMP_ROOT/rejected-malformed-overlay-admission.json"
+
+NONOBJECT_OVERLAY_ATTESTATION="$TMP_ROOT/nonobject-overlay-attestation.json"
+printf '[]\n' >"$NONOBJECT_OVERLAY_ATTESTATION"
+chmod 0444 "$NONOBJECT_OVERLAY_ATTESTATION"
+expect_failure \
+  "nonobject overlay attestation" \
+  "native overlay attestation is not an object" \
+  env -u GITHUB_ACTIONS \
+    HOMEBREW_KANDELO_NATIVE_CONTRACT_TESTING=1 \
+    KANDELO_TEST_API_ROOT="$API_A" \
+    KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
+    KANDELO_TEST_CELLAR="$CELLAR" \
+    ruby -I"$STUB_ROOT" "$ORACLE" admit \
+      "$COMMIT" "$NONOBJECT_OVERLAY_ATTESTATION" "$POLICY" test \
+      "$ROOTS" "$CLOSURE" "$PRIME_A" "$LOCK_A" \
+      "$TMP_ROOT/rejected-nonobject-overlay-admission.json"
+
+HARDLINKED_OVERLAY_ATTESTATION="$TMP_ROOT/hardlinked-overlay-attestation.json"
+ln "$OVERLAY_ATTESTATION" "$HARDLINKED_OVERLAY_ATTESTATION"
+expect_failure \
+  "hardlinked overlay attestation" \
+  "native overlay attestation is not sealed" \
+  env -u GITHUB_ACTIONS \
+    HOMEBREW_KANDELO_NATIVE_CONTRACT_TESTING=1 \
+    KANDELO_TEST_API_ROOT="$API_A" \
+    KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
+    KANDELO_TEST_CELLAR="$CELLAR" \
+    ruby -I"$STUB_ROOT" "$ORACLE" admit \
+      "$COMMIT" "$HARDLINKED_OVERLAY_ATTESTATION" "$POLICY" test \
+      "$ROOTS" "$CLOSURE" "$PRIME_A" "$LOCK_A" \
+      "$TMP_ROOT/rejected-hardlinked-overlay-admission.json"
+rm "$HARDLINKED_OVERLAY_ATTESTATION"
+
+expect_failure \
+  "CI overlay owner exception" \
+  "native overlay attestation is not sealed" \
+  env \
+    GITHUB_ACTIONS=true \
+    HOMEBREW_KANDELO_NATIVE_CONTRACT_TESTING=1 \
+    KANDELO_TEST_API_ROOT="$API_A" \
+    KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
+    KANDELO_TEST_CELLAR="$CELLAR" \
+    ruby -I"$STUB_ROOT" "$ORACLE" admit \
+      "$COMMIT" "$OVERLAY_ATTESTATION" "$POLICY" test \
+      "$ROOTS" "$CLOSURE" "$PRIME_A" "$LOCK_A" \
+      "$TMP_ROOT/rejected-ci-owner-overlay-admission.json"
 
 API_PUBLIC_UNUSED="$TMP_ROOT/api-public-unused"
 PRIME_PUBLIC_UNUSED="$TMP_ROOT/prime-public-unused.json"
@@ -375,7 +558,7 @@ create_api \
   /prefix/other
 prime_and_seal "$API_PUBLIC_UNUSED" "$PRIME_PUBLIC_UNUSED"
 KANDELO_TEST_API_ROOT="$API_PUBLIC_UNUSED" oracle admit \
-  "$COMMIT" "$POLICY" test "$ROOTS" "$CLOSURE" \
+  "$COMMIT" "$OVERLAY_ATTESTATION" "$POLICY" test "$ROOTS" "$CLOSURE" \
   "$PRIME_PUBLIC_UNUSED" "$LOCK_A" \
   "$TMP_ROOT/admission-public-unused.json"
 jq -e --arg head "$CORE_HEAD" '.source.tap_git_head == $head' \
@@ -390,7 +573,7 @@ create_api \
   /prefix/other
 prime_and_seal "$API_INTERNAL_UNUSED" "$PRIME_INTERNAL_UNUSED"
 KANDELO_TEST_API_ROOT="$API_INTERNAL_UNUSED" oracle admit \
-  "$COMMIT" "$POLICY" test "$ROOTS" "$CLOSURE" \
+  "$COMMIT" "$OVERLAY_ATTESTATION" "$POLICY" test "$ROOTS" "$CLOSURE" \
   "$PRIME_INTERNAL_UNUSED" "$LOCK_A" \
   "$TMP_ROOT/admission-internal-unused.json"
 jq -e --arg head "$CORE_HEAD" '.source.tap_git_head == $head' \
@@ -406,7 +589,7 @@ create_api \
   /prefix/advanced
 prime_and_seal "$API_ADVANCED" "$PRIME_ADVANCED"
 KANDELO_TEST_API_ROOT="$API_ADVANCED" oracle admit \
-  "$COMMIT" "$POLICY" test "$ROOTS" "$CLOSURE" \
+  "$COMMIT" "$OVERLAY_ATTESTATION" "$POLICY" test "$ROOTS" "$CLOSURE" \
   "$PRIME_ADVANCED" "$LOCK_A" "$ADMISSION_ADVANCED"
 jq -e --arg head "$ADVANCED_HEAD" '
   .source == {
@@ -438,7 +621,8 @@ expect_failure "public-only selected Formula drift" \
     KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
     KANDELO_TEST_CELLAR="$CELLAR" \
     ruby -I"$STUB_ROOT" "$ORACLE" admit \
-      "$COMMIT" "$POLICY" test "$ROOTS" "$CLOSURE" \
+      "$COMMIT" "$OVERLAY_ATTESTATION" "$POLICY" test \
+      "$ROOTS" "$CLOSURE" \
       "$PRIME_PUBLIC_SELECTED" "$LOCK_A" \
       "$TMP_ROOT/admission-public-selected.json"
 
@@ -457,7 +641,8 @@ expect_failure "internal-only selected Formula drift" \
     KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
     KANDELO_TEST_CELLAR="$CELLAR" \
     ruby -I"$STUB_ROOT" "$ORACLE" admit \
-      "$COMMIT" "$POLICY" test "$ROOTS" "$CLOSURE" \
+      "$COMMIT" "$OVERLAY_ATTESTATION" "$POLICY" test \
+      "$ROOTS" "$CLOSURE" \
       "$PRIME_INTERNAL_SELECTED" "$LOCK_A" \
       "$TMP_ROOT/admission-internal-selected.json"
 
@@ -486,7 +671,8 @@ expect_failure "malformed native roots" "contains an invalid Formula name" \
     KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
     KANDELO_TEST_CELLAR="$CELLAR" \
     ruby -I"$STUB_ROOT" "$ORACLE" admit \
-      "$COMMIT" "$POLICY" test "$BAD_ROOTS" "$CLOSURE" "$PRIME_A" \
+      "$COMMIT" "$OVERLAY_ATTESTATION" "$POLICY" test \
+      "$BAD_ROOTS" "$CLOSURE" "$PRIME_A" \
       "$LOCK_A" "$TMP_ROOT/admission-bad-roots.json"
 
 API_SYMLINK="$TMP_ROOT/api-symlink"
@@ -527,7 +713,8 @@ expect_failure "occupied attestation output" "refusing to replace" \
     KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
     KANDELO_TEST_CELLAR="$CELLAR" \
     ruby -I"$STUB_ROOT" "$ORACLE" admit \
-      "$COMMIT" "$POLICY" test "$ROOTS" "$CLOSURE" \
+      "$COMMIT" "$OVERLAY_ATTESTATION" "$POLICY" test \
+      "$ROOTS" "$CLOSURE" \
       "$PRIME_PUBLIC_UNUSED" \
       "$LOCK_A" "$OCCUPIED"
 
@@ -541,9 +728,14 @@ cat >"$CELLAR/root/1.0/INSTALL_RECEIPT.json" <<'JSON'
   }
 }
 JSON
+KANDELO_TEST_GIT_FAILURE_STATUS=77 \
+KANDELO_TEST_API_ROOT="$API_PUBLIC_UNUSED" oracle audit-cellar \
+  "$COMMIT" "$OVERLAY_ATTESTATION" "$PRIME_PUBLIC_UNUSED" \
+  "$CLOSURE" "$ROOTS" \
+  "$TMP_ROOT/cellar-attestation.json"
 KANDELO_TEST_API_ROOT="$API_PUBLIC_UNUSED" oracle audit-cellar \
   "$COMMIT" "$PRIME_PUBLIC_UNUSED" "$CLOSURE" "$ROOTS" \
-  "$TMP_ROOT/cellar-attestation.json"
+  "$TMP_ROOT/legacy-direct-ca-cellar-attestation.json"
 jq -e '.kegs | map(.name) == ["root"]' \
   "$TMP_ROOT/cellar-attestation.json" >/dev/null ||
   fail "Cellar audit did not record the admitted poured keg"
@@ -741,7 +933,11 @@ exercise_native_install_stage() (
   printf 'root\n' >"$roots"
   mkdir "$state"
   printf '{}\n' >"$state/prime.json"
-  chmod 0600 "$roots" "$state/prime.json"
+  HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION="${DIAGNOSTIC_CONTROL}/\
+native-overlay-attestation.json"
+  printf '{}\n' >"$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION"
+  chmod 0600 "$roots" "$state/prime.json" \
+    "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION"
   KANDELO_HOMEBREW_NATIVE_API_STATE="$state"
   HOMEBREW_NATIVE_CONTRACT_ENABLED=1
   KANDELO_TEST_NATIVE_FAILURE_STAGE="$selected_stage"
@@ -763,6 +959,10 @@ exercise_native_install_stage() (
       return 0
     fi
     if [ "$1" = ruby ] && [ "$3" = admit ]; then
+      [ "$#" -eq 12 ] && \
+        [ "$4" = 0000000000000000000000000000000000000000 ] && \
+        [ "$5" = "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION" ] && \
+        [ "$7" = tap_formula_host_dependencies ] || return 98
       if [ "$KANDELO_TEST_NATIVE_FAILURE_STAGE" = admit ]; then
         printf 'compatibility lock does not admit gettext\n' >&2
         return 52
@@ -770,6 +970,10 @@ exercise_native_install_stage() (
       return 0
     fi
     if [ "$1" = ruby ] && [ "$3" = audit-cellar ]; then
+      [ "$#" -eq 9 ] && \
+        [ "$4" = 0000000000000000000000000000000000000000 ] && \
+        [ "$5" = "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION" ] || \
+        return 98
       if [ "$KANDELO_TEST_NATIVE_FAILURE_STAGE" = audit ]; then
         printf 'installed Cellar receipt is not admitted\n' >&2
         return 53

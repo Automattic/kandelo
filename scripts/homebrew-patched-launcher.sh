@@ -68,6 +68,9 @@ HOMEBREW_PATCHED_NATIVE_RUNNER=""
 HOMEBREW_PATCHED_NATIVE_SEALED=0
 HOMEBREW_PATCHED_NATIVE_API_SOURCE=""
 HOMEBREW_PATCHED_NATIVE_CONTRACT_DIR=""
+HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION=""
+HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION_STATE=""
+HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION_SHA256=""
 HOMEBREW_PATCHED_NATIVE_BRIDGE_NAMES=()
 HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP=""
 HOMEBREW_PATCHED_STAGED_INPUT_DIR=""
@@ -86,10 +89,31 @@ homebrew_sha256_stream() {
 }
 
 homebrew_patched_launcher_integrity() {
-  {
-    git -C "$HOMEBREW_PATCHED_OVERLAY" diff --binary HEAD
-    git -C "$HOMEBREW_PATCHED_OVERLAY" status --porcelain=v1 --untracked-files=all
-  } | homebrew_sha256_stream
+  local git_path="${HOMEBREW_GIT_PATH:-}"
+  [ -n "$git_path" ] && [ -x "$git_path" ] || {
+    echo "homebrew-patched-launcher: protected Git is unavailable for overlay verification" >&2
+    return 2
+  }
+  # WHY: a missing Git checkout and a genuinely clean checkout can both feed
+  # zero bytes to a hash. Preserve Git's failure status so loss of the linked
+  # worktree backing metadata can never look like a valid clean overlay.
+  (
+    set -o pipefail
+    {
+      /usr/bin/env -i \
+        HOME=/nonexistent PATH=/usr/bin:/bin LC_ALL=C \
+        GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+        GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 \
+        "$git_path" -C "$HOMEBREW_PATCHED_OVERLAY" \
+          diff --no-ext-diff --binary HEAD &&
+      /usr/bin/env -i \
+        HOME=/nonexistent PATH=/usr/bin:/bin LC_ALL=C \
+        GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+        GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 \
+        "$git_path" -C "$HOMEBREW_PATCHED_OVERLAY" \
+          status --porcelain=v1 --untracked-files=all
+    } | homebrew_sha256_stream
+  )
 }
 
 homebrew_patched_launcher_verify_protected_xtask() {
@@ -2201,6 +2225,10 @@ homebrew_patched_launcher_cleanup() {
     echo "homebrew-patched-launcher: protected recipe runner changed; preserving launcher state for inspection" >&2
     return 1
   fi
+  if ! homebrew_patched_launcher_verify_native_overlay_attestation; then
+    echo "homebrew-patched-launcher: sealed Homebrew identity changed; preserving launcher state for inspection" >&2
+    return 1
+  fi
   if ! homebrew_patched_launcher_remove_staged_input; then
     echo "homebrew-patched-launcher: protected input remains; preserving launcher state for retry" >&2
     return 1
@@ -2279,6 +2307,9 @@ homebrew_patched_launcher_cleanup() {
     HOMEBREW_PATCHED_RECIPE_SUPERVISOR_UNIT=""
     HOMEBREW_PATCHED_RECIPE_USER=""
     HOMEBREW_PATCHED_RECIPE_UID=""
+    HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION=""
+    HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION_STATE=""
+    HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION_SHA256=""
   fi
   if [ -n "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR" ]; then
     if ! "$HOMEBREW_PATCHED_SUDO_BIN" rm -rf "$HOMEBREW_PATCHED_SOURCE_ALIAS_DIR" \
@@ -2373,6 +2404,9 @@ homebrew_patched_launcher_cleanup() {
   HOMEBREW_PATCHED_NATIVE_SEALED=0
   HOMEBREW_PATCHED_NATIVE_API_SOURCE=""
   HOMEBREW_PATCHED_NATIVE_CONTRACT_DIR=""
+  HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION=""
+  HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION_STATE=""
+  HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION_SHA256=""
   HOMEBREW_PATCHED_NATIVE_BRIDGE_NAMES=()
   HOMEBREW_PATCHED_STAGED_INPUT_SHARED_TEMP=""
   HOMEBREW_PATCHED_STAGED_INPUT_DIR=""
@@ -2668,6 +2702,127 @@ homebrew_patched_launcher_stage_native_contract_file() {
   printf '%s\n' "$destination"
 }
 
+homebrew_patched_launcher_verify_native_overlay_attestation() {
+  if [ "$#" -ne 0 ]; then
+    echo "homebrew_patched_launcher_verify_native_overlay_attestation: expected no arguments" >&2
+    return 2
+  fi
+  if [ -z "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION" ] && \
+     [ -z "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION_STATE" ] && \
+     [ -z "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION_SHA256" ]; then
+    return 0
+  fi
+
+  local expected actual_state actual_sha actual_integrity
+  expected="$HOMEBREW_PATCHED_NATIVE_CONTRACT_DIR/native-overlay-attestation.json"
+  actual_state="$(/usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' \
+    "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION" 2>/dev/null || true)"
+  actual_sha="$(/usr/bin/sha256sum \
+    "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION" 2>/dev/null || true)"
+  actual_sha="${actual_sha%% *}"
+  if ! actual_integrity="$(
+    homebrew_patched_launcher_integrity 2>/dev/null
+  )"; then
+    actual_integrity=""
+  fi
+  if [ "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION" != "$expected" ] || \
+     [ ! -f "$expected" ] || [ -L "$expected" ] || \
+     [ "$actual_state" != \
+       "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION_STATE" ] || \
+     [ "$actual_sha" != \
+       "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION_SHA256" ] || \
+     [ "$actual_integrity" != "$HOMEBREW_PATCHED_INTEGRITY_SHA256" ]; then
+    echo "homebrew-patched-launcher: sealed Homebrew identity attestation changed" >&2
+    return 1
+  fi
+}
+
+homebrew_patched_launcher_stage_native_overlay_attestation() {
+  if [ "$#" -ne 5 ]; then
+    echo "homebrew_patched_launcher_stage_native_overlay_attestation: expected WORK-DIR JQ BUILD-USER COMMIT TREE" >&2
+    return 2
+  fi
+  local work_dir="$1" jq_bin="$2" build_user="$3"
+  local commit="$4" tree="$5"
+  local repository integrity source destination destination_sha
+  if [ ! -d "$work_dir" ] || [ -L "$work_dir" ] || \
+     [ "$HOMEBREW_PATCHED_OVERLAY_SEAL_STATE" != "sealed" ] || \
+     [ -z "$HOMEBREW_PATCHED_INTEGRITY_SHA256" ] || \
+     [ -n "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION" ] || \
+     [ -n "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION_STATE" ] || \
+     [ -n "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION_SHA256" ]; then
+    echo "homebrew-patched-launcher: sealed Homebrew identity cannot be attested" >&2
+    return 2
+  fi
+  repository="$(cd "$HOMEBREW_PATCHED_OVERLAY" && pwd -P)" || return
+  [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || {
+    echo "homebrew-patched-launcher: sealed Homebrew base commit is invalid" >&2
+    return 2
+  }
+  [[ "$tree" =~ ^[0-9a-f]{40}$ ]] || {
+    echo "homebrew-patched-launcher: sealed Homebrew base tree is invalid" >&2
+    return 2
+  }
+  integrity="$HOMEBREW_PATCHED_INTEGRITY_SHA256"
+  [[ "$integrity" =~ ^[0-9a-f]{64}$ ]] || {
+    echo "homebrew-patched-launcher: sealed Homebrew integrity is invalid" >&2
+    return 2
+  }
+
+  # WHY: the isolated native process can read the sealed overlay but cannot
+  # traverse the workflow-owned Git directory referenced by its `.git` file.
+  # Record the commit and frozen overlay digest while that metadata is still
+  # available, then copy the record into the root-owned native contract.
+  # `/tmp` is sticky and this private 0600 file is owned by the trusted
+  # launcher. The Formula user owns WORK-DIR and could otherwise replace a
+  # pathname between JSON creation and the root-owned install below.
+  source="$(/usr/bin/mktemp \
+    /tmp/kandelo-native-overlay-attestation.XXXXXX)" || return
+  if ! "$jq_bin" -S -n \
+      --arg commit "$commit" \
+      --arg integrity "$integrity" \
+      --arg repository "$repository" \
+      --arg tree "$tree" \
+      '{
+        schema: 1,
+        kind: "kandelo-homebrew-native-overlay-attestation",
+        homebrew_commit: $commit,
+        homebrew_tree: $tree,
+        repository: $repository,
+        overlay_state_sha256: $integrity
+      }' >"$source" || \
+     ! /usr/bin/chmod 0600 "$source"; then
+    /usr/bin/rm -f -- "$source"
+    return 1
+  fi
+  destination="$HOMEBREW_PATCHED_NATIVE_CONTRACT_DIR/native-overlay-attestation.json"
+  if [ -e "$destination" ] || [ -L "$destination" ] || \
+     ! "$HOMEBREW_PATCHED_SUDO_BIN" -n -- /usr/bin/install \
+       -o root -g root -m 0444 "$source" "$destination"; then
+    /usr/bin/rm -f -- "$source"
+    echo "homebrew-patched-launcher: could not protect the sealed Homebrew identity" >&2
+    return 1
+  fi
+  /usr/bin/rm -f -- "$source" || return
+  destination_sha="$(/usr/bin/sha256sum "$destination")" || return
+  destination_sha="${destination_sha%% *}"
+  [ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$destination")" = \
+      "0:0:444:1" ] && \
+    "$HOMEBREW_PATCHED_SUDO_BIN" -n -H -u "$build_user" -- \
+      /usr/bin/test -r "$destination" && \
+    ! "$HOMEBREW_PATCHED_SUDO_BIN" -n -H -u "$build_user" -- \
+      /usr/bin/test -w "$destination" || {
+    echo "homebrew-patched-launcher: sealed Homebrew identity has unsafe access" >&2
+    return 1
+  }
+  HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION="$destination"
+  HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION_STATE="$(
+    /usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s' "$destination"
+  )" || return
+  HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION_SHA256="$destination_sha"
+  homebrew_patched_launcher_verify_native_overlay_attestation
+}
+
 homebrew_patched_launcher_run_native() {
   if [ "$#" -eq 0 ]; then
     echo "homebrew_patched_launcher_run_native: expected a Homebrew command" >&2
@@ -2677,6 +2832,7 @@ homebrew_patched_launcher_run_native() {
     echo "homebrew-patched-launcher: native Homebrew is not prepared" >&2
     return 2
   fi
+  homebrew_patched_launcher_verify_native_overlay_attestation || return
   if [ "$HOMEBREW_PATCHED_NATIVE_SEALED" = "1" ]; then
     echo "homebrew-patched-launcher: native Homebrew is sealed" >&2
     return 2
@@ -3288,6 +3444,7 @@ homebrew_patched_launcher_isolate() {
   local primary_tap_root primary_tap_owner_root taps_root
   local recipe_user recipe_uid jq_bin node_bin protected_anchor protected_nonce
   local recipe_runner_path recipe_sealed_root
+  local overlay_repository overlay_commit overlay_tree
   local xtask_bin xtask_relative xtask_alias xtask_mode xtask_links
   local formula_test_program_index
   local xtask_uid xtask_state xtask_sha256 xtask_state_after xtask_sha256_after
@@ -3757,6 +3914,15 @@ homebrew_patched_launcher_isolate() {
       tap_recipe_isolation=1
     fi
   fi
+  if [ -n "$HOMEBREW_PATCHED_NATIVE_API_SOURCE" ] || \
+     [ "$tap_recipe_isolation" = "1" ]; then
+    # The native overlay attestation exists for both build and verifier jobs.
+    # Verifiers do not create a schema-3 recipe realm, so resolve its JSON
+    # writer independently from that narrower isolation path.
+    jq_bin="$(command -v jq)"
+    homebrew_assert_protected_host_executable \
+      "$build_user" "$jq_bin" "$jq_bin" jq || return
+  fi
   if [ "$tap_recipe_isolation" = "1" ]; then
     recipe_user="${KANDELO_HOMEBREW_RECIPE_USER:-}"
     id "$recipe_user" >/dev/null 2>&1 || {
@@ -3775,10 +3941,7 @@ homebrew_patched_launcher_isolate() {
       echo "homebrew-patched-launcher: tap recipe identity unexpectedly has sudo access" >&2
       return 2
     fi
-    jq_bin="$(command -v jq)"
     node_bin="${HOMEBREW_KANDELO_NODE:-}"
-    homebrew_assert_protected_host_executable \
-      "$build_user" "$jq_bin" "$jq_bin" jq || return
     homebrew_assert_protected_host_executable \
       "$build_user" "$node_bin" "$node_bin" node || return
   fi
@@ -4319,6 +4482,33 @@ homebrew_patched_launcher_isolate() {
     "$sudo_bin" chmod 0555 "$HOMEBREW_PATCHED_PROTECTED_DIR"
   fi
 
+  # Capture Git identity while the trusted workflow user still owns the
+  # overlay and can traverse its linked-worktree backing metadata. After the
+  # next step seals the workflow-owned overlay against mutation, isolated
+  # admission uses only the immutable attestation built from these values.
+  overlay_repository="$(cd "$HOMEBREW_PATCHED_OVERLAY" && pwd -P)" || return
+  overlay_commit="$(
+    /usr/bin/env -i \
+      HOME=/nonexistent PATH=/usr/bin:/bin LC_ALL=C \
+      GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+      GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 \
+      "$HOMEBREW_GIT_PATH" -C "$overlay_repository" \
+        rev-parse --verify 'HEAD^{commit}'
+  )" || return
+  overlay_tree="$(
+    /usr/bin/env -i \
+      HOME=/nonexistent PATH=/usr/bin:/bin LC_ALL=C \
+      GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+      GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 \
+      "$HOMEBREW_GIT_PATH" -C "$overlay_repository" \
+        rev-parse --verify 'HEAD^{tree}'
+  )" || return
+  [[ "$overlay_commit" =~ ^[0-9a-f]{40}$ ]] &&
+    [[ "$overlay_tree" =~ ^[0-9a-f]{40}$ ]] || {
+    echo "homebrew-patched-launcher: trusted Homebrew Git identity is invalid" >&2
+    return 2
+  }
+
   # Git still needs the workflow-owned backing repository. Normalize every
   # trusted file materialized in the temporary worktree, including Bundler
   # output whose archive modes are not part of the publisher boundary.
@@ -4327,7 +4517,14 @@ homebrew_patched_launcher_isolate() {
     "$build_user" "$source_alias_dir" || return
   homebrew_assert_tree_not_replaceable_by_user \
     "$build_user" "$source_alias_dir" || return
-  HOMEBREW_PATCHED_INTEGRITY_SHA256="$(homebrew_patched_launcher_integrity)"
+  HOMEBREW_PATCHED_INTEGRITY_SHA256="$(
+    homebrew_patched_launcher_integrity
+  )" || return
+  if [ -n "$HOMEBREW_PATCHED_NATIVE_CONTRACT_DIR" ]; then
+    homebrew_patched_launcher_stage_native_overlay_attestation \
+      "$work_dir" "$jq_bin" "$build_user" \
+      "$overlay_commit" "$overlay_tree" || return
+  fi
   HOMEBREW_PATCHED_SYSTEMD_RUN_BIN="$systemd_run_bin"
   HOMEBREW_PATCHED_SYSTEMCTL_BIN="$systemctl_bin"
   HOMEBREW_PATCHED_GETENT_BIN="$getent_bin"
@@ -4644,6 +4841,7 @@ homebrew_patched_launcher_verify_isolation() {
   homebrew_patched_launcher_verify_formula_test_runtime || return
   homebrew_patched_launcher_verify_sysroot_projection || return
   homebrew_patched_launcher_verify_recipe_runner || return
+  homebrew_patched_launcher_verify_native_overlay_attestation || return
   [ "$(homebrew_patched_launcher_integrity)" = "$HOMEBREW_PATCHED_INTEGRITY_SHA256" ] || {
     echo "homebrew-patched-launcher: patched Homebrew source changed during Formula execution" >&2
     return 1

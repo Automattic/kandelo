@@ -587,12 +587,22 @@ read-only mode before it activates the Formula identity. The complete overlay
 is then verified as sealed, so later
 `brew test` and `brew bottle` commands use the reviewed gem set without writing
 Homebrew source or downloading executable code during Formula evaluation.
-The workflow identity intentionally continues to own that sealed checkout.
-Git therefore rejects it when the separate build identity asks for repository
-metadata. The source-provenance oracle grants one command-scoped
-`safe.directory` exception for the exact sealed checkout and checks the Git
-exit status. It does not grant that exception to general native Homebrew
-commands, authorize a parent directory, or use Git's `*` wildcard.
+The production overlay is a linked Git worktree. Its `.git` file points back
+into workflow-owned worktree metadata under the original Homebrew checkout,
+whose private ancestors the isolated build identity cannot traverse. A
+`safe.directory` exception can suppress Git's cross-owner protection, but it
+cannot grant that missing filesystem access, so even an exception for the
+exact overlay cannot verify its commit from inside the isolated realm.
+
+Before isolation, the trusted launcher instead uses protected Git to record
+the overlay's exact base commit and tree. After sealing, it binds those values,
+the canonical overlay path, and the exact sealed overlay-state digest into a
+root-owned, read-only, single-linked attestation. The isolated `admit` and
+`audit-cellar` operations validate that record and the expected commit without
+invoking Git. Trusted outer `prime`, `recheck`, and `generate-lock` operations
+retain their protected-Git checks because they run where the workflow-owned
+metadata is traversable. General native Homebrew commands receive neither Git
+metadata access nor a `safe.directory` exception.
 The bootstrap and guest Homebrew apply only the platform patch above, so their
 repository and trust behaviors are unchanged.
 
