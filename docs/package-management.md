@@ -298,12 +298,25 @@ dependency-context validation stays complete.
 Generate or verify an index with:
 
 ```bash
-cargo xtask build-deps program-index <registry-root> \
+KANDELO_ROOT="$(pwd -P)"
+cargo xtask build-deps program-index --source-repo-root "$KANDELO_ROOT" \
+  <registry-root> \
   <registry-root>/program-packages.json
-cargo xtask build-deps program-index-check <registry-root> \
+cargo xtask build-deps program-index-check \
+  --source-repo-root "$KANDELO_ROOT" \
+  <registry-root> \
   <registry-root>/program-packages.json
-cargo xtask build-deps program-index-context-check
+cargo xtask build-deps program-index-context-check \
+  --source-repo-root "$KANDELO_ROOT"
 ```
+
+`--source-repo-root` names the canonical Kandelo checkout that owns every
+repo-relative recipe input, global toolchain input, and fork-instrument Cargo
+identity. This matters when several worktrees share a Cargo target directory:
+the reused executable may have been compiled in another checkout. A copied or
+reused xtask therefore must receive this flag. The no-flag form remains safe
+only when the current checkout is the same canonical checkout in which xtask
+was compiled; otherwise it fails before reading package identity.
 
 The root passed to `program-index` or `program-index-check` must be the
 highest-priority existing root in `WASM_POSIX_DEPS_REGISTRY`. Generate a lower

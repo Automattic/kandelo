@@ -1407,8 +1407,9 @@ fn cmd_check_program_package_index(
         .map_err(|e| format!("read program package index {}: {e}", index.display()))?;
     if actual != expected {
         return Err(format!(
-            "{} is stale; regenerate it with `cargo run -p xtask -- build-deps program-index {} {}`",
+            "{} is stale; regenerate it with `cargo run -p xtask -- build-deps program-index --source-repo-root {} {} {}`",
             index.display(),
+            repo_root().display(),
             root.display(),
             index.display()
         ));
@@ -6157,12 +6158,7 @@ fn validate_source_repo_root_scope(
     source_repo_root: Option<&Path>,
     subcommand: &str,
 ) -> Result<(), String> {
-    if source_repo_root.is_some()
-        && !matches!(
-            subcommand,
-            "program-index-context-check" | "program-index-selected"
-        )
-    {
+    if source_repo_root.is_some() && !uses_program_index_source_context(subcommand) {
         return Err(format!(
             "build-deps {subcommand}: --source-repo-root is only valid for \
              program-index source-context commands"
@@ -6170,6 +6166,24 @@ fn validate_source_repo_root_scope(
     }
     Ok(())
 }
+
+fn uses_program_index_source_context(subcommand: &str) -> bool {
+    matches!(
+        subcommand,
+        "check"
+            | "program-index"
+            | "program-index-check"
+            | "program-index-context-check"
+            | "program-index-selected"
+    )
+}
+
+const KANDELO_CHECKOUT_MARKERS: &[&str] = &[
+    "Cargo.toml",
+    "package.json",
+    "tools/xtask/Cargo.toml",
+    "scripts/dev-shell.sh",
+];
 
 fn validate_source_repo_root(path: &Path) -> Result<PathBuf, String> {
     if !path.is_absolute() {
@@ -6197,12 +6211,7 @@ fn validate_source_repo_root(path: &Path) -> Result<PathBuf, String> {
             canonical.display()
         ));
     }
-    for marker in [
-        "Cargo.toml",
-        "package.json",
-        "tools/xtask/Cargo.toml",
-        "scripts/dev-shell.sh",
-    ] {
+    for marker in KANDELO_CHECKOUT_MARKERS {
         let marker_path = canonical.join(marker);
         let metadata = std::fs::symlink_metadata(&marker_path).map_err(|_| {
             format!(
@@ -6220,6 +6229,75 @@ fn validate_source_repo_root(path: &Path) -> Result<PathBuf, String> {
         }
     }
     Ok(canonical)
+}
+
+fn runtime_kandelo_checkout() -> Result<Option<PathBuf>, String> {
+    let current = std::env::current_dir()
+        .map_err(|error| format!("read current directory: {error}"))?;
+    let current = std::fs::canonicalize(&current).map_err(|error| {
+        format!(
+            "canonicalize current directory {}: {error}",
+            current.display()
+        )
+    })?;
+    for candidate in current.ancestors() {
+        if KANDELO_CHECKOUT_MARKERS
+            .iter()
+            .all(|marker| candidate.join(marker).exists())
+        {
+            return validate_source_repo_root(candidate).map(Some);
+        }
+    }
+    Ok(None)
+}
+
+fn resolve_source_repo_root(
+    explicit: Option<&Path>,
+    subcommand: &str,
+) -> Result<Option<PathBuf>, String> {
+    validate_source_repo_root_scope(explicit, subcommand)?;
+    if let Some(explicit) = explicit {
+        return validate_source_repo_root(explicit).map(Some);
+    }
+    if !uses_program_index_source_context(subcommand) {
+        return Ok(None);
+    }
+
+    // WHY: Cargo may reuse an otherwise-current xtask executable from a
+    // shared target directory. CARGO_MANIFEST_DIR then names the worktree that
+    // compiled that executable, not necessarily the checkout that invoked it.
+    // Preserve the no-flag CLI only when both checkout identities agree.
+    let runtime_root = runtime_kandelo_checkout()?.ok_or_else(|| {
+        format!(
+            "build-deps {subcommand}: cannot identify the intended Kandelo \
+             checkout from the current directory; pass its canonical path \
+             with --source-repo-root"
+        )
+    })?;
+    let compiled_root_path = crate::repo_root();
+    let compiled_root = std::fs::canonicalize(&compiled_root_path).map_err(|error| {
+        format!(
+            "build-deps {subcommand}: the xtask compile checkout {} is not \
+             accessible ({error}); pass the intended canonical checkout with \
+             --source-repo-root",
+            compiled_root_path.display()
+        )
+    })?;
+    if runtime_root != compiled_root {
+        return Err(format!(
+            "build-deps {subcommand}: this xtask was compiled for {}, but the \
+             current checkout is {}; pass the intended canonical checkout \
+             with --source-repo-root",
+            compiled_root.display(),
+            runtime_root.display()
+        ));
+    }
+
+    // WHY: even the compatible no-flag form installs one canonical root. This
+    // prevents repo-relative recipe inputs, global toolchain inputs, and Cargo
+    // metadata from independently falling back to a path embedded at compile
+    // time.
+    Ok(Some(runtime_root))
 }
 
 pub fn run(args: Vec<String>) -> Result<(), String> {
@@ -6252,11 +6330,7 @@ pub fn run(args: Vec<String>) -> Result<(), String> {
         return Err(format!("build-deps {sub}: unexpected extra args"));
     }
 
-    validate_source_repo_root_scope(source_repo_root.as_deref(), &sub)?;
-    let source_repo_root = source_repo_root
-        .as_deref()
-        .map(validate_source_repo_root)
-        .transpose()?;
+    let source_repo_root = resolve_source_repo_root(source_repo_root.as_deref(), &sub)?;
     // WHY: install the explicit identity before Registry::from_env or any
     // global input digest can consult crate::repo_root(). The guard makes
     // toolchain files, fork-tool Cargo metadata, and repo-relative declared
@@ -19940,15 +20014,21 @@ libs = ["lib/libF3b.a"]
     }
 
     #[test]
-    fn source_repo_root_override_is_bounded_to_context_check() {
-        for allowed in ["program-index-context-check", "program-index-selected"] {
+    fn source_repo_root_override_is_bounded_to_program_index_context() {
+        for allowed in [
+            "check",
+            "program-index",
+            "program-index-check",
+            "program-index-context-check",
+            "program-index-selected",
+        ] {
             validate_source_repo_root_scope(
                 Some(Path::new("/reviewed/kandelo")),
                 allowed,
             )
             .unwrap();
         }
-        for other in ["check", "resolve", "program-index-check", "cache-root"] {
+        for other in ["resolve", "path", "cache-root"] {
             let error =
                 validate_source_repo_root_scope(Some(Path::new("/reviewed/kandelo")), other)
                     .unwrap_err();

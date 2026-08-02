@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 HOST_WASM_DIR="$REPO_ROOT/host/wasm"
 mkdir -p "$HOST_WASM_DIR"
 
@@ -11,6 +11,7 @@ mkdir -p "$HOST_WASM_DIR"
 HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 cargo run -p xtask --target "$HOST_TARGET" --quiet -- \
     build-deps program-index-check \
+    --source-repo-root "$REPO_ROOT" \
     "$REPO_ROOT/packages/registry" \
     "$REPO_ROOT/packages/registry/program-packages.json"
 cp \

@@ -44,16 +44,24 @@ If the source is used directly through `WASM_POSIX_DEPS_REGISTRY`, generate
 same ordered registry roots that consumers will use:
 
 ```bash
-WASM_POSIX_DEPS_REGISTRY="$PWD/packages:/path/to/kandelo/packages/registry" \
-  cargo xtask build-deps program-index packages packages/program-packages.json
+KANDELO_ROOT=/absolute/path/to/kandelo
+WASM_POSIX_DEPS_REGISTRY="$PWD/packages:$KANDELO_ROOT/packages/registry" \
+  cargo xtask build-deps program-index \
+    --source-repo-root "$KANDELO_ROOT" \
+    packages packages/program-packages.json
 ```
 
 Validate all existing roots exactly as a source consumer will see them:
 
 ```bash
-WASM_POSIX_DEPS_REGISTRY="$PWD/packages:/path/to/kandelo/packages/registry" \
-  cargo xtask build-deps program-index-context-check
+WASM_POSIX_DEPS_REGISTRY="$PWD/packages:$KANDELO_ROOT/packages/registry" \
+  cargo xtask build-deps program-index-context-check \
+    --source-repo-root "$KANDELO_ROOT"
 ```
+
+The Kandelo root must be an absolute canonical path. Passing it explicitly
+keeps package identities independent of whichever worktree originally built a
+reused xtask executable.
 
 Commit the result beside the package directories. Runtime consumers require it
 to preserve exact first-hit output closures, per-architecture cache keys, and
