@@ -768,6 +768,15 @@ post-merge activation records either `activated.json` or `rejected.json`.
 That terminal path writes the inventory seal and publishes the candidate once;
 retries then validate immutable evidence without changing it.
 
+GitHub's release-by-tag API does not return draft releases. Candidate
+discovery therefore reads the authenticated, paginated release list, rejects
+malformed pages or duplicate identities, and selects exactly one matching
+tag. Activation then keeps the numeric release ID from that lookup and uses it
+for candidate reads. This is not a fallback from a 404: treating the draft as
+missing would strand every correctly prepared candidate before activation.
+The same bounded lookup helper owns draft discovery for package-release
+creation and reconciliation.
+
 When the canonical release already contains the exact cache-keyed archive but
 its ledger entry is stale, Prepare merge snapshots that asset's release digest,
 copies and verifies those exact bytes into the candidate, and updates the

@@ -14,6 +14,7 @@ cargo test -p xtask --target "$HOST_TARGET" package_matrix --no-fail-fast
 bash "$REPO_ROOT/tests/scripts/index-update.sh"
 bash "$REPO_ROOT/tests/scripts/release-index-state.sh"
 bash "$REPO_ROOT/.github/scripts/test-state-lock.sh"
+bash "$REPO_ROOT/.github/scripts/test-find-release-by-tag.sh"
 bash "$REPO_ROOT/.github/scripts/test-package-release-lifecycle.sh"
 bash "$REPO_ROOT/.github/scripts/test-merge-candidate-workflows.sh"
 bash "$REPO_ROOT/.github/scripts/test-prepare-merge-retry.sh"

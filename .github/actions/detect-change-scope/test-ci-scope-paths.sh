@@ -191,6 +191,12 @@ assert_matches package_publish_flow_changed_files \
   ".github/scripts/test-activate-merge-candidate.sh" \
   ".github/scripts/test-activate-merge-candidate.sh"
 assert_matches package_publish_flow_changed_files \
+  ".github/scripts/find-release-by-tag.sh" \
+  ".github/scripts/find-release-by-tag.sh"
+assert_matches package_publish_flow_changed_files \
+  ".github/scripts/test-find-release-by-tag.sh" \
+  ".github/scripts/test-find-release-by-tag.sh"
+assert_matches package_publish_flow_changed_files \
   ".github/scripts/clone-rejected-merge-candidate.sh" \
   ".github/scripts/clone-rejected-merge-candidate.sh"
 assert_matches package_publish_flow_changed_files \
@@ -434,6 +440,12 @@ assert_matches ci_control_changed_files \
 assert_matches ci_control_changed_files \
   ".github/scripts/activate-merge-candidate.sh" \
   ".github/scripts/activate-merge-candidate.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/find-release-by-tag.sh" \
+  ".github/scripts/find-release-by-tag.sh"
+assert_matches ci_control_changed_files \
+  ".github/scripts/test-find-release-by-tag.sh" \
+  ".github/scripts/test-find-release-by-tag.sh"
 assert_matches ci_control_changed_files \
   ".github/scripts/clone-rejected-merge-candidate.sh" \
   ".github/scripts/clone-rejected-merge-candidate.sh"

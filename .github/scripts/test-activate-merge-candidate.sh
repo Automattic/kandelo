@@ -138,6 +138,37 @@ sha256_file() {
   fi
 }
 
+release_json() {
+  local tag="$1" id=7 target="${GH_STUB_CANDIDATE_TARGET:?}"
+  local draft=true immutable=false
+  if [ "$tag" = "${GH_STUB_CANONICAL_TAG:?}" ]; then
+    id=8
+    target="${GH_STUB_CANONICAL_TARGET:?}"
+    draft=false
+    immutable=true
+  fi
+  release_dir="$GH_STUB_RELEASES/$tag"
+  [ -d "$release_dir" ] || return 1
+  printf '{"id":%s,"tag_name":"%s","target_commitish":"%s","body":"managed","draft":%s,"prerelease":true,"immutable":%s,"assets":[' \
+    "$id" "$tag" "$target" "$draft" "$immutable"
+  separator=""
+  for path in "$release_dir"/*; do
+    [ -f "$path" ] || continue
+    name=$(basename "$path")
+    size=$(wc -c < "$path" | tr -d '[:space:]')
+    sha=$(sha256_file "$path")
+    printf '%s' "$separator"
+    jq -cn \
+      --arg name "$name" \
+      --arg id "${tag}__${name}" \
+      --argjson size "$size" \
+      --arg digest "sha256:$sha" \
+      '{name: $name, id: $id, size: $size, digest: $digest}'
+    separator=,
+  done
+  printf ']}\n'
+}
+
 command_name="${1:-}"
 shift || true
 case "$command_name" in
@@ -167,34 +198,41 @@ case "$command_name" in
       cat "$GH_STUB_RELEASES/$tag/$name"
       exit 0
     fi
-    tag="${endpoint##*/}"
-    release_dir="$GH_STUB_RELEASES/$tag"
-    if [ ! -d "$release_dir" ]; then
+    case "$endpoint" in
+      */releases\?per_page=100\&page=1)
+        {
+          release_json "${GH_STUB_CANDIDATE_TAG:?}"
+          release_json "${GH_STUB_CANONICAL_TAG:?}"
+          if [ "${GH_STUB_DUPLICATE_CANDIDATE_RELEASE:-0}" = 1 ]; then
+            release_json "${GH_STUB_CANDIDATE_TAG:?}" |
+              jq '.id = 9'
+          fi
+        } | jq -s .
+        exit 0
+        ;;
+      */releases\?per_page=100\&page=*)
+        printf '[]\n'
+        exit 0
+        ;;
+      */releases/7)
+        tag="${GH_STUB_CANDIDATE_TAG:?}"
+        ;;
+      */releases/8)
+        tag="${GH_STUB_CANONICAL_TAG:?}"
+        ;;
+      */releases/tags/*)
+        tag="${endpoint##*/}"
+        # Match GitHub: draft candidates are absent from get-by-tag.
+        if [ "$tag" != "${GH_STUB_CANONICAL_TAG:?}" ]; then exit 77; fi
+        ;;
+      *) exit 99 ;;
+    esac
+    if [ ! -d "$GH_STUB_RELEASES/$tag" ]; then
       [ "$include" = false ] || printf 'HTTP/2.0 404 Not Found\n\n{}\n'
       exit 1
     fi
     [ "$include" = false ] || printf 'HTTP/2.0 200 OK\n\n'
-    target="${GH_STUB_CANDIDATE_TARGET:?}"
-    if [ "$tag" = "${GH_STUB_CANONICAL_TAG:?}" ]; then
-      target="${GH_STUB_CANONICAL_TARGET:?}"
-    fi
-    printf '{"id":7,"tag_name":"%s","target_commitish":"%s","body":"managed","assets":[' "$tag" "$target"
-    separator=""
-    for path in "$release_dir"/*; do
-      [ -f "$path" ] || continue
-      name=$(basename "$path")
-      size=$(wc -c < "$path" | tr -d '[:space:]')
-      sha=$(sha256_file "$path")
-      printf '%s' "$separator"
-      jq -cn \
-        --arg name "$name" \
-        --arg id "${tag}__${name}" \
-        --argjson size "$size" \
-        --arg digest "sha256:$sha" \
-        '{name: $name, id: $id, size: $size, digest: $digest}'
-      separator=,
-    done
-    printf ']}\n'
+    release_json "$tag"
     ;;
   pr)
     [ "${1:-}" = view ] || exit 99
@@ -571,6 +609,7 @@ run_activation() {
   fi
   (cd "$CHECKOUT" && \
     GH_STUB_RELEASES="$RELEASES" \
+    GH_STUB_CANDIDATE_TAG="$CANDIDATE_TAG" \
     GH_STUB_PR_JSON="$PR_JSON" \
     GH_STUB_UPLOAD_LOG="$UPLOAD_LOG" \
     GH_STUB_STATUS_LOG="$STATUS_LOG" \
@@ -579,6 +618,7 @@ run_activation() {
     CARGO_STUB_ASSET_PLAN="$ASSET_PLAN" \
     CARGO_STUB_NOOP="${CARGO_STUB_NOOP:-0}" \
     CARGO_STUB_REJECT_REASON="${CARGO_STUB_REJECT_REASON:-}" \
+    GH_STUB_DUPLICATE_CANDIDATE_RELEASE="${GH_STUB_DUPLICATE_CANDIDATE_RELEASE:-0}" \
     JQ_STUB_FAIL_ASSET_PLAN_STREAM="${JQ_STUB_FAIL_ASSET_PLAN_STREAM:-0}" \
     REAL_JQ="$REAL_JQ" \
     STATUS_STUB_CANDIDATE_TAG="${STATUS_STUB_CANDIDATE_TAG:-$CANDIDATE_TAG}" \

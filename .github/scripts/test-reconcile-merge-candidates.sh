@@ -58,8 +58,10 @@ make_release() {
   local assets_json="$2"
   local release_id="$3"
   jq -n --arg tag "$tag" --argjson assets "$assets_json" --argjson release_id "$release_id" \
-    '{id: $release_id, tag_name: $tag, prerelease: true, assets: $assets}' \
+    '{id: $release_id, tag_name: $tag, draft: true, prerelease: true,
+      immutable: false, assets: $assets}' \
     > "$DATA/release-$tag.json"
+  cp "$DATA/release-$tag.json" "$DATA/release-id-$release_id.json"
   printf '%s\n' "$assets_json" > "$DATA/assets-$release_id-page-1.json"
   printf '[]\n' > "$DATA/assets-$release_id-page-2.json"
 }
@@ -165,14 +167,17 @@ case "$endpoint" in
     cat "$GH_STUB_DATA/releases-page-$page.json"
     ;;
   /repos/example/repo/releases/tags/*)
-    tag="${endpoint##*/}"
-    cat "$GH_STUB_DATA/release-$tag.json"
+    exit 77
     ;;
   /repos/example/repo/releases/*/assets\?per_page=2\&page=*)
     release_id="${endpoint#/repos/example/repo/releases/}"
     release_id="${release_id%%/*}"
     page="${endpoint##*=}"
     cat "$GH_STUB_DATA/assets-$release_id-page-$page.json"
+    ;;
+  /repos/example/repo/releases/[0-9]*)
+    release_id="${endpoint##*/}"
+    cat "$GH_STUB_DATA/release-id-$release_id.json"
     ;;
   /repos/example/repo/pulls/*)
     pr="${endpoint##*/}"
@@ -260,16 +265,19 @@ cmp "$TMP_ROOT/capped-plan.tsv" "$PLAN"
 grep -q 'limiting this run to 1 of 2 candidates' "$TMP_ROOT/capped.err"
 
 # A closed-event/manual PR target resolves the authoritative candidate from
-# the latest merge-gate status without depending on a release sweep.
+# the latest merge-gate status, then scans the authenticated release list.
+# GitHub's get-by-tag endpoint deliberately remains unavailable in this stub
+# because the candidate is still a draft.
 : > "$LOG"
 rm -f "$TMP_ROOT/failure-count"
-run_reconcile --plan-file "$PLAN" --pr-number 1 --max-pages 1 --per-page 2 --asset-per-page 2 >/dev/null
+run_reconcile --plan-file "$PLAN" --pr-number 1 --max-pages 5 --per-page 2 --asset-per-page 2 >/dev/null
 printf '2026-07-14T02:00:00Z\t1\t%s\n' "$TAG_READY" > "$TMP_ROOT/target-plan.tsv"
 cmp "$TMP_ROOT/target-plan.tsv" "$PLAN"
-if grep -Fq 'releases?per_page=' "$LOG"; then
-  echo "targeted PR reconciliation performed an unnecessary release sweep" >&2
+if grep -Fq '/releases/tags/' "$LOG"; then
+  echo "targeted PR reconciliation used the draft-blind tag endpoint" >&2
   exit 1
 fi
+grep -Fxq '/repos/example/repo/releases?per_page=2&page=5' "$LOG"
 
 # GitHub fields written into the TSV plan are schema-checked; a malformed
 # timestamp cannot inject an extra candidate row or reorder activation.
@@ -279,6 +287,8 @@ jq '.merged_at = "2026-07-14T02:00:00Z\n8\tmerge-candidate-abi-v39-pr-8-run-1-at
 if run_reconcile \
     --plan-file "$PLAN" \
     --candidate-tag "$TAG_READY" \
+    --max-pages 5 \
+    --per-page 2 \
     --asset-per-page 2 \
     >"$TMP_ROOT/injected.out" \
     2>"$TMP_ROOT/injected.err"
@@ -296,6 +306,8 @@ if run_reconcile \
     --plan-file "$PLAN" \
     --pr-number 6 \
     --candidate-tag "$TAG_NONAUTHORITATIVE" \
+    --max-pages 5 \
+    --per-page 2 \
     --asset-per-page 2 \
     >"$TMP_ROOT/non-authoritative.out" \
     2>"$TMP_ROOT/non-authoritative.err"

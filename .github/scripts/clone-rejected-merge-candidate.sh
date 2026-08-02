@@ -146,6 +146,9 @@ snapshot_release() {
       > "$release_json"
   else
     release_json="$TMP_ROOT/release-${tag}.json"
+    # WHY: recovery accepts a source only after rejected.json exists. The
+    # lifecycle publishes and freezes that source before recovery, so unlike a
+    # ready activation candidate it is visible through the exact-tag endpoint.
     gh_retry gh api "/repos/${REPOSITORY}/releases/tags/${tag}" \
       > "$release_json"
   fi
