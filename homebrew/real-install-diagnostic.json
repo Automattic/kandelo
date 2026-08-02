@@ -5,9 +5,9 @@
   "authority": {
     "tap_repository": "kandelo-dev/homebrew-tap-core",
     "tap_name": "kandelo-dev/tap-core",
-    "source_tap_commit": "b19a62636c9c8136740eba05237e3106ddd37c97",
-    "campaign_sha256": "2b76fa4d54560a7bf8c5b1a1d3acceaa8be6727983ce0a72885ed23e110b7fc9",
-    "kandelo_commit": "6024539d7849bb5f0d9c235b97218e60f03a2fef",
+    "source_tap_commit": "4a786fc4915f71d07bdab9a7f98f88e7a56e02d6",
+    "campaign_sha256": "2a0376c07f8c74fae0e3e867dfce3e39cbce280635ede2e519b2b5cffdf0b720",
+    "kandelo_commit": "214cfb2d656383655d083b7ada0771bfb2fd05e6",
     "kandelo_abi": 42,
     "arch": "wasm32"
   },
