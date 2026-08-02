@@ -4169,10 +4169,22 @@ def check_publisher(workflow)
     'receipt["loaded_from_internal_api"] == true',
     'receipt["poured_from_bottle"] == true',
     'receipt.dig("source", "tap") == "homebrew/core"',
+    "Utils.safe_popen_read(",
+    '"GIT_CONFIG_NOSYSTEM" => "1"',
+    '"GIT_CONFIG_GLOBAL" => File::NULL',
+    '"GIT_CONFIG_COUNT" => "1"',
+    '"GIT_CONFIG_KEY_0" => "safe.directory"',
+    '"GIT_CONFIG_VALUE_0" => repository',
+    '"GIT_NO_REPLACE_OBJECTS" => "1"',
+    '"GIT_OPTIONAL_LOCKS" => "0"',
+    '"rev-parse", "--verify", "HEAD^{commit}"',
+    "cannot verify Homebrew checkout with protected Git",
   ].each do |fragment|
     check(native_api_oracle.include?(fragment),
           "native Homebrew API oracle lacks #{fragment}")
   end
+  check(!native_api_oracle.include?('safe.directory=*'),
+        "native Homebrew API oracle authorizes every Git checkout")
   native_api_preflight = File.read(
     File.join(REPO_ROOT, "scripts/homebrew-native-api-preflight.sh")
   )

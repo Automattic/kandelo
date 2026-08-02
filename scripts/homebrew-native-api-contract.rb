@@ -313,11 +313,34 @@ end
 def current_brew_commit
   require "env_config"
   require "utils/popen"
-  Utils.popen_read(
+  repository = HOMEBREW_REPOSITORY.to_s
+  # WHY: the publisher deliberately keeps the sealed Homebrew checkout owned
+  # by the workflow identity, not the isolated build identity. Git rejects
+  # that cross-user checkout by default. Authorize only this exact read-only
+  # provenance query; native Brew commands do not receive general Git trust.
+  git_environment = {
+    "GIT_CONFIG_NOSYSTEM" => "1",
+    "GIT_CONFIG_GLOBAL" => File::NULL,
+    "GIT_CONFIG_COUNT" => "1",
+    "GIT_CONFIG_KEY_0" => "safe.directory",
+    "GIT_CONFIG_VALUE_0" => repository,
+    "GIT_NO_REPLACE_OBJECTS" => "1",
+    "GIT_OPTIONAL_LOCKS" => "0",
+  }
+  actual = Utils.safe_popen_read(
+    git_environment,
     Homebrew::EnvConfig.git_path,
-    "-C", HOMEBREW_REPOSITORY.to_s,
-    "rev-parse", "HEAD"
+    "-C", repository,
+    "rev-parse", "--verify", "HEAD^{commit}"
   ).strip
+  fail_contract("protected Git returned an invalid Homebrew commit") unless
+    /\A[0-9a-f]{40}\z/.match?(actual)
+  actual
+rescue ErrorDuringExecution => e
+  status = e.exitstatus || "unknown"
+  fail_contract(
+    "cannot verify Homebrew checkout with protected Git (status #{status})"
+  )
 end
 
 def check_brew_commit(expected)

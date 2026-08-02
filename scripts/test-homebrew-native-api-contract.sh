@@ -166,8 +166,40 @@ end
 RUBY
 
 cat >"$STUB_ROOT/utils/popen.rb" <<'RUBY'
+class ErrorDuringExecution < RuntimeError
+  attr_reader :exitstatus
+
+  def initialize(exitstatus)
+    @exitstatus = exitstatus
+    super("fixture Git failure")
+  end
+end unless defined?(ErrorDuringExecution)
+
 module Utils
-  def self.popen_read(*_arguments)
+  def self.safe_popen_read(*arguments)
+    repository = ENV.fetch("KANDELO_TEST_BREW_REPOSITORY")
+    expected_environment = {
+      "GIT_CONFIG_NOSYSTEM" => "1",
+      "GIT_CONFIG_GLOBAL" => File::NULL,
+      "GIT_CONFIG_COUNT" => "1",
+      "GIT_CONFIG_KEY_0" => "safe.directory",
+      "GIT_CONFIG_VALUE_0" => repository,
+      "GIT_NO_REPLACE_OBJECTS" => "1",
+      "GIT_OPTIONAL_LOCKS" => "0",
+    }
+    expected_arguments = [
+      expected_environment,
+      "git",
+      "-C", repository,
+      "rev-parse", "--verify", "HEAD^{commit}",
+    ]
+    raise "unsafe protected Git command: #{arguments.inspect}" unless
+      arguments == expected_arguments
+    if ENV.key?("KANDELO_TEST_GIT_FAILURE_STATUS")
+      raise ErrorDuringExecution.new(
+        Integer(ENV.fetch("KANDELO_TEST_GIT_FAILURE_STATUS"), 10)
+      )
+    end
     "#{ENV.fetch("KANDELO_TEST_BREW_COMMIT")}\n"
   end
 end
@@ -260,7 +292,7 @@ oracle() {
   env -u GITHUB_ACTIONS \
     HOMEBREW_KANDELO_NATIVE_CONTRACT_TESTING=1 \
     KANDELO_TEST_API_ROOT="$KANDELO_TEST_API_ROOT" \
-    KANDELO_TEST_BREW_COMMIT="$COMMIT" \
+    KANDELO_TEST_BREW_COMMIT="${KANDELO_TEST_OBSERVED_BREW_COMMIT:-$COMMIT}" \
     KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
     KANDELO_TEST_CELLAR="$CELLAR" \
     ruby -I"$STUB_ROOT" "$ORACLE" "$@"
@@ -297,6 +329,21 @@ create_api \
   "$API_A" "$CORE_HEAD" "$CORE_HEAD" \
   public-stable public-unused-a internal-stable internal-unused-a /prefix/a
 prime_and_seal "$API_A" "$PRIME_A"
+KANDELO_TEST_OBSERVED_BREW_COMMIT="$OTHER_HEAD" \
+KANDELO_TEST_API_ROOT="$API_A" \
+  expect_failure "wrong protected Git commit" \
+    "Homebrew checkout is $OTHER_HEAD, expected $COMMIT" \
+    oracle recheck "$COMMIT" "$PRIME_A"
+KANDELO_TEST_OBSERVED_BREW_COMMIT=not-a-commit \
+KANDELO_TEST_API_ROOT="$API_A" \
+  expect_failure "invalid protected Git output" \
+    "protected Git returned an invalid Homebrew commit" \
+    oracle recheck "$COMMIT" "$PRIME_A"
+KANDELO_TEST_GIT_FAILURE_STATUS=77 \
+KANDELO_TEST_API_ROOT="$API_A" \
+  expect_failure "protected Git command failure" \
+    "cannot verify Homebrew checkout with protected Git (status 77)" \
+    oracle recheck "$COMMIT" "$PRIME_A"
 expect_failure "CI test-owner exception" \
   "sealed API path is not owned by the trusted identity" \
   env \

@@ -587,6 +587,12 @@ read-only mode before it activates the Formula identity. The complete overlay
 is then verified as sealed, so later
 `brew test` and `brew bottle` commands use the reviewed gem set without writing
 Homebrew source or downloading executable code during Formula evaluation.
+The workflow identity intentionally continues to own that sealed checkout.
+Git therefore rejects it when the separate build identity asks for repository
+metadata. The source-provenance oracle grants one command-scoped
+`safe.directory` exception for the exact sealed checkout and checks the Git
+exit status. It does not grant that exception to general native Homebrew
+commands, authorize a parent directory, or use Git's `*` wildcard.
 The bootstrap and guest Homebrew apply only the platform patch above, so their
 repository and trust behaviors are unchanged.
 

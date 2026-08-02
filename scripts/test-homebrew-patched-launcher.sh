@@ -361,6 +361,43 @@ case "${1:-}" in
     [ ! -w "$2" ] && [ ! -w "${2%/*}" ]
     [[ "$("$2" --version)" =~ ^git\ version\ ([0-9]+)\.([0-9]+) ]]
     ;;
+  assert-cross-owner-git)
+    [ "$#" -eq 3 ]
+    [ "$repository" = "$2" ]
+    expected_commit="$3"
+    # WHY: this is the production ownership split. The bare command must hit
+    # Git's dubious-ownership guard, while the exact command-scope exception
+    # may authorize only this sealed checkout for the provenance read.
+    [ "$(/usr/bin/stat -c %u "$repository")" != \
+      "$(/usr/bin/id -u)" ]
+    if /usr/bin/env -i \
+        HOME=/nonexistent LC_ALL=C \
+        GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+        "$HOMEBREW_GIT_PATH" -C "$repository" \
+        rev-parse --verify 'HEAD^{commit}' >/dev/null 2>&1; then
+      exit 1
+    fi
+    if /usr/bin/env -i \
+        HOME=/nonexistent LC_ALL=C \
+        GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+        GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory \
+        GIT_CONFIG_VALUE_0="${repository%/*}" \
+        "$HOMEBREW_GIT_PATH" -C "$repository" \
+        rev-parse --verify 'HEAD^{commit}' >/dev/null 2>&1; then
+      exit 1
+    fi
+    actual_commit="$(
+      /usr/bin/env -i \
+        HOME=/nonexistent LC_ALL=C \
+        GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+        GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory \
+        GIT_CONFIG_VALUE_0="$repository" \
+        GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 \
+        "$HOMEBREW_GIT_PATH" -C "$repository" \
+        rev-parse --verify 'HEAD^{commit}'
+    )"
+    [ "$actual_commit" = "$expected_commit" ]
+    ;;
   assert-target-native-boundary)
     [ "$#" -eq 7 ]
     native_prefix="$2"
@@ -2870,6 +2907,9 @@ EOF
       "$isolated_dependency_tap"
   homebrew_patched_launcher_run_native assert-protected-git \
     "$HOMEBREW_GIT_PATH"
+  homebrew_patched_launcher_run_native assert-cross-owner-git \
+    "$isolated_overlay" \
+    "$(git -C "$isolated_overlay" rev-parse --verify 'HEAD^{commit}')"
   homebrew_patched_launcher_run_native spawn-daemon \
     "$native_daemon_marker" "$native_daemon_started"
   /usr/bin/sudo -n -- test -e "$native_daemon_started" ||
