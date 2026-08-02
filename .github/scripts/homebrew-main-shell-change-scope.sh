@@ -73,6 +73,7 @@ is_audited_publisher_only_path() {
       .github/workflows/homebrew-native-publisher-compatibility.yml | \
       .github/workflows/reusable-homebrew-bottle-maintenance.yml | \
       .github/workflows/reusable-homebrew-bottle-publish.yml | \
+      .github/workflows/reusable-homebrew-prefix-first-child-publish.yml | \
       .github/workflows/reusable-homebrew-repository-namespace-canary.yml | \
       docs/binary-releases.md | \
       docs/homebrew-publishing.md | \
