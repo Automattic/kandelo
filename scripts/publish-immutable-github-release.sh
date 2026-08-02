@@ -537,6 +537,11 @@ publish_and_reconcile() {
     fi
     patch_rc=0
     require_main_authority
+    # WHY: the content-tag lock coordinates this publisher, but it cannot stop
+    # another authorized repository writer from moving the tag while the
+    # protected-main reads above are in flight. Re-read the direct tag at the
+    # last possible point before GitHub makes the release immutable.
+    validate_direct_tag
     gh api --method PATCH "/repos/${REPOSITORY}/releases/${release_id}" \
       -f make_latest=false -F draft=false -F prerelease=false >/dev/null || patch_rc=$?
     if [ "$patch_rc" -ne 0 ]; then

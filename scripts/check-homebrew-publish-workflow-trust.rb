@@ -7802,11 +7802,22 @@ def check_publisher(workflow)
     /require_main_authority\n\s+if gh api --method POST "\/repos\/\$\{REPOSITORY\}\/releases"/,
     /require_main_authority\n\s+gh release upload "\$TAG"/,
     /require_main_authority\n\s+gh api --method POST "\/repos\/\$\{REPOSITORY\}\/git\/refs"/,
-    /require_main_authority\n\s+gh api --method PATCH "\/repos\/\$\{REPOSITORY\}\/releases\/\$\{release_id\}"/,
   ].each do |pattern|
     check(immutable_publisher_source.match?(pattern),
           "immutable GitHub release mutation is not immediately preceded by exact-main authority")
   end
+  publish_transition_pattern = Regexp.new(
+    'require_main_authority\n' \
+      '(?:\s+#.*\n)*' \
+      '\s+validate_direct_tag\n' \
+      '\s+gh api --method PATCH ' \
+      '"/repos/\$\{REPOSITORY\}/releases/\$\{release_id\}"'
+  )
+  check(
+    immutable_publisher_source.match?(publish_transition_pattern),
+    "immutable GitHub release publish is not immediately preceded by " \
+      "exact-main authority and direct-tag validation"
+  )
   publisher_entrypoint = immutable_publisher_source.split(
     /^acquire_lock\n/, 2
   ).fetch(1, "")
@@ -7877,6 +7888,8 @@ def check_publisher(workflow)
     "release-creation retry did not resume from the retained tag",
     "publisher made a release public after Kandelo main advanced",
     "advanced Kandelo main reached the public release PATCH",
+    "publisher made a release public after its tag moved during final authority",
+    "moved tag reached the public release PATCH",
   ].each do |fragment|
     check(immutable_publisher_test_source.include?(fragment),
           "immutable release publisher tests lack #{fragment}")

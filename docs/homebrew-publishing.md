@@ -4113,7 +4113,9 @@ Exact and contained target authority are also mutually exclusive.
 
 The credentialed primitive re-reads protected `main` immediately before
 each release creation, individual asset upload, direct-tag creation,
-and draft-to-public transition. Exact mode fails if `main` advances.
+and draft-to-public transition. After that last authority read, it revalidates
+the direct tag at the final possible point before every public-transition
+attempt. Exact mode fails if `main` advances.
 Contained mode fails if the source leaves protected history. In either
 case a complete draft may remain for a later authorized run to inspect,
 but it is not made public under stale authority. A

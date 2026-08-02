@@ -239,6 +239,17 @@ if args == [
 ]:
     state = load()
     if (
+        os.environ.get("FAKE_MOVE_TAG_DURING_FINAL_AUTHORITY")
+        and publication_reached_asset_count(state)
+    ):
+        # GitHub's immutable-release transition locks the tag that exists when
+        # the release is published; it does not compare that tag with our
+        # manifest's expected commit. Model an unrelated authorized writer
+        # moving the tag while the publisher performs its final authority read.
+        for tag_value in state["tags"].values():
+            tag_value["sha"] = "9" * 40
+        save(state)
+    if (
         os.environ.get("FAKE_MAIN_ADVANCE_AFTER_TAG")
         and state["tags"]
         and publication_reached_asset_count(state)
@@ -399,9 +410,12 @@ elif args[:3] == ["api", "--method", "PATCH"]:
     if not release["draft"]:
         print("release is immutable", file=sys.stderr)
         sys.exit(1)
-    if state["tags"].get(release["tag"]) != {
-        "type": "commit", "sha": release["target"]
-    }:
+    if (
+        not os.environ.get("FAKE_MOVE_TAG_DURING_FINAL_AUTHORITY")
+        and state["tags"].get(release["tag"]) != {
+            "type": "commit", "sha": release["target"]
+        }
+    ):
         print("release tag is not exact", file=sys.stderr)
         sys.exit(1)
     release["draft"] = False
@@ -569,6 +583,7 @@ run_publisher_with_authority() {
   FAKE_MAIN_ADVANCE_AFTER_TAG="${FAKE_MAIN_ADVANCE_AFTER_TAG:-}" \
   FAKE_CONTAINS_DIVERGE_AFTER_TAG="${FAKE_CONTAINS_DIVERGE_AFTER_TAG:-}" \
   FAKE_ADVANCE_AFTER_ASSET_COUNT="${FAKE_ADVANCE_AFTER_ASSET_COUNT:-}" \
+  FAKE_MOVE_TAG_DURING_FINAL_AUTHORITY="${FAKE_MOVE_TAG_DURING_FINAL_AUTHORITY:-}" \
   FAKE_TAG_CREATION_DENIED="${FAKE_TAG_CREATION_DENIED:-}" \
   FAKE_RELEASE_CREATION_DENIED="${FAKE_RELEASE_CREATION_DENIED:-}" \
   FAKE_WORKFLOW_TARGET_REQUIRES_TAG="${FAKE_WORKFLOW_TARGET_REQUIRES_TAG:-}" \
@@ -789,13 +804,13 @@ jq -e --arg tag "$tag" --arg target "$target" '
   fail "contained-main run did not publish one exact immutable release"
 PYTHONDONTWRITEBYTECODE=1 python3 - \
   "$ACTIVE_STATE/gh.log" "$EXACT_MAIN_SHA" "$CONTAINS_KANDELO_MAIN_SHA" \
-  "$target" "$CONTAINS_TARGET_MAIN_SHA" <<'PY'
+  "$target" "$CONTAINS_TARGET_MAIN_SHA" "$tag" <<'PY'
 import json
 import pathlib
 import sys
 
 log_path = pathlib.Path(sys.argv[1])
-kandelo_source, kandelo_main, target_source, target_main = sys.argv[2:]
+kandelo_source, kandelo_main, target_source, target_main, tag = sys.argv[2:]
 calls = [json.loads(line) for line in log_path.read_text().splitlines()]
 jq_filter = "[.status, .base_commit.sha, .merge_base_commit.sha] | @tsv"
 kandelo_compare = [
@@ -813,6 +828,13 @@ target_compare = [
     "--jq",
     jq_filter,
 ]
+tag_read = [
+    "api",
+    "--include",
+    "-H",
+    "Cache-Control: no-cache",
+    f"/repos/kandelo-dev/homebrew-tap-core/git/ref/tags/{tag}",
+]
 
 
 def is_mutation(call):
@@ -826,9 +848,13 @@ mutations = [index for index, call in enumerate(calls) if is_mutation(call)]
 if len(mutations) != 4:
     raise SystemExit(f"expected four release mutations, found {len(mutations)}")
 for index in mutations:
-    if index < 2 or calls[index - 2:index] != [kandelo_compare, target_compare]:
+    authority = [kandelo_compare, target_compare]
+    if calls[index][:3] == ["api", "--method", "PATCH"]:
+        authority.append(tag_read)
+    if index < len(authority) or calls[index - len(authority):index] != authority:
         raise SystemExit(
-            "release mutation was not immediately preceded by both contains checks"
+            "release mutation was not immediately preceded by its contains "
+            "checks and, for publish, its direct-tag check"
         )
 PY
 PYTHONDONTWRITEBYTECODE=1 python3 - "$ACTIVE_STATE/git.log" <<'PY'
@@ -914,6 +940,31 @@ jq -e '
 if jq -s -e 'any(.[]; .[0:3] == ["api", "--method", "PATCH"])' \
   "$ACTIVE_STATE/gh.log" >/dev/null; then
   fail "advanced Kandelo main reached the public release PATCH"
+fi
+
+# A different repository writer can move the release tag despite this
+# publisher's cooperative state lock. If that happens during the final
+# protected-main read, recheck the tag before PATCH; a check after publication
+# cannot repair an immutable release that GitHub has already bound incorrectly.
+new_state tag-moved-during-final-authority
+ACTIVE_MANIFEST="$contains_manifest"
+FAKE_MOVE_TAG_DURING_FINAL_AUTHORITY=1 \
+FAKE_ADVANCE_AFTER_ASSET_COUNT=1 \
+  expect_failure_containing \
+  "publisher made a release public after its tag moved during final authority" \
+  "release tag is not a direct reference to the planned commit" \
+  run_publisher
+jq -e '
+  (.releases | length) == 1 and .releases[0].draft == true and
+  (.releases[0].assets | length) == 1 and
+  ([.tags[].sha] == [("9" * 40)])
+' "$ACTIVE_STATE/state.json" >/dev/null ||
+  fail "moved-tag race did not leave the complete release as a draft"
+[ ! -e "$ACTIVE_RECEIPT" ] ||
+  fail "moved-tag race emitted a success receipt"
+if jq -s -e 'any(.[]; .[0:3] == ["api", "--method", "PATCH"])' \
+  "$ACTIVE_STATE/gh.log" >/dev/null; then
+  fail "moved tag reached the public release PATCH"
 fi
 
 ACTIVE_STATE="$TMP_ROOT/state-ambiguous"
