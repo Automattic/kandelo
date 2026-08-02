@@ -785,6 +785,9 @@ done
 for workflow in "$STAGING_WORKFLOW" "$PREPARE"; do
   grep -Fq 'WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang ' "$workflow" ||
     fail "$(basename "$workflow") lost its heavy-runtime materialization optimization"
+  grep -Fq 'WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs homebrew-bootstrap ' \
+    "$workflow" ||
+    fail "$(basename "$workflow") tries to fetch tap-owned Homebrew bootstrap from the legacy registry"
 done
 grep -Fq "needs.preflight.outputs.reuse_staging == 'false'" "$STAGING_WORKFLOW" || \
   fail "reused staging runs must not download absent matrix artifacts"

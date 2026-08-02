@@ -6,6 +6,138 @@ homebrew_native_contract_fail() {
   return 2
 }
 
+homebrew_native_contract_stage_marker() {
+  if [ "$#" -ne 2 ] ||
+     ! [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] ||
+     ! [[ "$2" =~ ^(starting|completed)$ ]]; then
+    homebrew_native_contract_fail "invalid publisher-stage marker"
+    return
+  fi
+  local stage="$1" state="$2" component
+  component="${HOMEBREW_NATIVE_CONTRACT_COMPONENT:-homebrew-native-contract}"
+  if ! [[ "$component" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$ ]]; then
+    component=homebrew-native-contract
+  fi
+  # WHY: this helper only prints markers. Calling a stateful shell function
+  # through `if` or `||` would suppress errexit inside that function; direct
+  # calls between these markers preserve both failure semantics and state.
+  printf '%s: %s %s stage\n' "$component" "$state" "$stage" >&2
+}
+
+homebrew_native_contract_diagnostic_tool() {
+  local script_dir
+  script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)" || return
+  ruby "$script_dir/homebrew-native-command-diagnostic.rb" "$@"
+}
+
+homebrew_native_contract_report_command_failure() {
+  if [ "$#" -ne 3 ]; then
+    homebrew_native_contract_fail \
+      "report_command_failure expects STAGE STATUS LOG"
+    return
+  fi
+  local stage="$1" status="$2" log="$3" component
+  component="${HOMEBREW_NATIVE_CONTRACT_COMPONENT:-homebrew-native-contract}"
+  if ! [[ "$component" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$ ]]; then
+    component=homebrew-native-contract
+  fi
+  printf '%s: native Homebrew %s failed with status %s; bounded diagnostic follows\n' \
+    "$component" "$stage" "$status" >&2
+  if [ "$log" = - ]; then
+    # This explicit sentinel never reaches the path-reading diagnostic tool.
+    printf '| diagnostic unavailable: log is not a private regular file\n' >&2
+  elif homebrew_native_contract_diagnostic_tool render "$log" >&2; then
+    :
+  else
+    # WHY: the command's status is the failure authority. A missing or replaced
+    # log must not hide that status, and following an unsafe path could disclose
+    # unrelated runner data while GitHub workflow commands are disabled.
+    printf '| diagnostic unavailable: log is not a private regular file\n' >&2
+  fi
+}
+
+homebrew_native_contract_run_logged() {
+  if [ "$#" -lt 5 ]; then
+    homebrew_native_contract_fail \
+      "run_logged expects STAGE CONTROL LOG OUTPUT COMMAND..."
+    return
+  fi
+  local stage="$1" control="$2" aggregate_log="$3" output="$4"
+  shift 4
+  local diagnostic_log command_status capture_status append_status=0
+  local restore_errexit=0
+  local -a pipeline_status
+
+  [[ "$stage" =~ ^[a-z0-9][a-z0-9+@._-]{0,126}$ ]] &&
+    [ -d "$control" ] && [ ! -L "$control" ] || {
+    homebrew_native_contract_fail "native command diagnostic inputs are invalid"
+    return
+  }
+  if [ "$output" != - ]; then
+    [ -f "$output" ] && [ ! -L "$output" ] || {
+      homebrew_native_contract_fail \
+        "native command output is not a regular control file"
+      return
+    }
+  fi
+  HOMEBREW_NATIVE_DIAGNOSTIC_SEQUENCE="${HOMEBREW_NATIVE_DIAGNOSTIC_SEQUENCE:-0}"
+  [[ "$HOMEBREW_NATIVE_DIAGNOSTIC_SEQUENCE" =~ ^[0-9]{1,4}$ ]] || {
+    homebrew_native_contract_fail "native command diagnostic sequence is invalid"
+    return
+  }
+  HOMEBREW_NATIVE_DIAGNOSTIC_SEQUENCE=$((
+    10#$HOMEBREW_NATIVE_DIAGNOSTIC_SEQUENCE + 1
+  ))
+  diagnostic_log="$control/native-command-${HOMEBREW_NATIVE_DIAGNOSTIC_SEQUENCE}.log"
+
+  # WHY: the command may emit an unbounded or terminal-active upstream error.
+  # Let the capture process atomically create and retain its no-follow file
+  # descriptor. Reopening the path with shell `>` would create a symlink race.
+  # PIPESTATUS keeps the native command's result separate from capture.
+  case "$-" in
+    *e*) restore_errexit=1; set +e ;;
+  esac
+  if [ "$output" = - ]; then
+    "$@" 2>&1 |
+      homebrew_native_contract_diagnostic_tool capture "$diagnostic_log"
+    pipeline_status=("${PIPESTATUS[@]}")
+  else
+    { "$@" >"$output"; } 2>&1 |
+      homebrew_native_contract_diagnostic_tool capture "$diagnostic_log"
+    pipeline_status=("${PIPESTATUS[@]}")
+  fi
+  [ "$restore_errexit" -eq 0 ] || set -e
+  command_status="${pipeline_status[0]:-2}"
+  capture_status="${pipeline_status[1]:-2}"
+
+  if [ "$capture_status" -eq 0 ]; then
+    if homebrew_native_contract_diagnostic_tool append \
+      "$diagnostic_log" "$aggregate_log" >/dev/null 2>&1; then
+      :
+    else
+      append_status="$?"
+    fi
+  fi
+  if [ "$command_status" -ne 0 ]; then
+    if [ "$capture_status" -eq 0 ]; then
+      homebrew_native_contract_report_command_failure \
+        "$stage" "$command_status" "$diagnostic_log"
+    else
+      # WHY: a pre-existing or unsafe path cannot be evidence for this command.
+      # Do not append or render stale bytes; retain the native command's status.
+      homebrew_native_contract_report_command_failure \
+        "$stage" "$command_status" -
+    fi
+    return "$command_status"
+  fi
+  if [ "$capture_status" -ne 0 ] || [ "$append_status" -ne 0 ]; then
+    homebrew_native_contract_fail \
+      "could not retain the native command diagnostic safely"
+    return
+  fi
+  return 0
+}
+
 homebrew_native_contract_select_api_source() {
   if [ "$#" -ne 4 ]; then
     homebrew_native_contract_fail \
@@ -117,6 +249,7 @@ homebrew_native_contract_install() {
   local closure="$control/native-closure.txt"
   local cumulative_roots="$control/native-cumulative-roots.txt"
   local oracle policy staged_roots prime lock staged_closure
+  local overlay_attestation
   local dependency staged_cumulative_roots install_index=0
   local -a formula_refs native_dependencies
 
@@ -136,6 +269,12 @@ homebrew_native_contract_install() {
   # preserve the failed `-s` test's status and silently reject that valid empty
   # closure before the target Formula can run.
   [ -s "$roots" ] || return 0
+  overlay_attestation="${HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION:-}"
+  [ -f "$overlay_attestation" ] && [ ! -L "$overlay_attestation" ] || {
+    homebrew_native_contract_fail \
+      "sealed native Homebrew identity is unavailable"
+    return
+  }
 
   : >"$raw"
   : >"$closure"
@@ -169,9 +308,10 @@ homebrew_native_contract_install() {
   for dependency in "${native_dependencies[@]}"; do
     formula_refs+=("homebrew/core/$dependency")
   done
-  homebrew_patched_launcher_run_native deps --union --include-implicit \
-    --full-name --formula "${formula_refs[@]}" \
-    >"$raw" 2>>"$log"
+  homebrew_native_contract_run_logged \
+    signed-api-dependency-resolution "$control" "$log" "$raw" \
+    homebrew_patched_launcher_run_native deps --union --include-implicit \
+      --full-name --formula "${formula_refs[@]}" || return
   LC_ALL=C sort -u "$roots" "$raw" >"$closure"
   homebrew_native_contract_validate_names \
     "$closure" "native dependency closure" || return
@@ -184,10 +324,13 @@ homebrew_native_contract_install() {
   # the installs. Homebrew therefore owns aliases, implicit host requirements,
   # Linux variations, and selected bottle semantics; Kandelo only admits its
   # exact result against reviewed records from the signed API.
-  homebrew_patched_launcher_run_native ruby "$oracle" \
-    admit "$brew_commit" "$policy" "$purpose" "$staged_roots" \
-    "$staged_closure" "$prime" "$lock" \
-    "$native_temp/native-api-admission.json" >>"$log" 2>&1
+  homebrew_native_contract_run_logged \
+    signed-api-admission "$control" "$log" - \
+    homebrew_patched_launcher_run_native ruby "$oracle" \
+      admit "$brew_commit" "$overlay_attestation" "$policy" "$purpose" \
+      "$staged_roots" \
+      "$staged_closure" "$prime" "$lock" \
+      "$native_temp/native-api-admission.json" || return
 
   for dependency in "${native_dependencies[@]}"; do
     install_index=$((install_index + 1))
@@ -201,10 +344,12 @@ homebrew_native_contract_install() {
     # every possible dependency. Audit what it actually installed after each
     # root: every keg must be admitted, every requested root must exist, and
     # every receipt must identify a signed homebrew/core bottle.
-    homebrew_patched_launcher_run_native ruby "$oracle" \
-      audit-cellar "$brew_commit" "$prime" "$staged_closure" \
-      "$staged_cumulative_roots" \
-      "$native_temp/native-cellar-${install_index}.json" >>"$log" 2>&1
+    homebrew_native_contract_run_logged \
+      "installed-cellar-audit-$install_index" "$control" "$log" - \
+      homebrew_patched_launcher_run_native ruby "$oracle" \
+        audit-cellar "$brew_commit" "$overlay_attestation" "$prime" \
+        "$staged_closure" "$staged_cumulative_roots" \
+        "$native_temp/native-cellar-${install_index}.json" || return
   done
 }
 

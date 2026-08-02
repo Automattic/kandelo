@@ -91,6 +91,7 @@ is_audited_publisher_only_path() {
       scripts/homebrew-inspect-bottle.py | \
       scripts/homebrew-merge-bottle-json.sh | \
       scripts/homebrew-native-api-preflight.sh | \
+      scripts/homebrew-native-command-diagnostic.rb | \
       scripts/homebrew-oci-layout.py | \
       scripts/homebrew-patched-launcher.sh | \
       scripts/homebrew-prefix-campaign-executor.py | \

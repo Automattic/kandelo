@@ -75,7 +75,7 @@
     "at-spi2-core": {
       "internal": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "7c5f480ad5a354ec07e0046d258d79aaa96545a9cabb71d4dc71a43180264f01",
+        "bottle_checksum": "82fd9a718fcc1d4edbae46ca95234b76bbbcbe26dd76dbe62099bb86127e11ea",
         "desc": "Protocol definitions and daemon for D-Bus at-spi",
         "head_dependencies": [
           "dbus",
@@ -119,8 +119,8 @@
           "at-spi2-atk",
           "atk"
         ],
-        "ruby_source_checksum": "f5126bf47f0c16198e43791ca9fc098ec9fb5220dc36cffdbc4fbdfb03817a7d",
-        "stable_checksum": "6059a77d507438ff6c8d6d06025f8f9f5774fa0f8eabe9c9b059b1cc41e1bbc0",
+        "ruby_source_checksum": "ced859f7447ae9461acadc510e6a70cd286121721e34cd1d6b226f2b51ac7bd9",
+        "stable_checksum": "a89b64a8b217a8042bdf0e35cbfab629ceee35640dba75df578afde9aa789d57",
         "stable_dependencies": [
           "dbus",
           "glib",
@@ -150,7 +150,7 @@
           }
         ],
         "stable_url_args": [
-          "https://download.gnome.org/sources/at-spi2-core/2.60/at-spi2-core-2.60.5.tar.xz"
+          "https://download.gnome.org/sources/at-spi2-core/2.60/at-spi2-core-2.60.6.tar.xz"
         ],
         "stable_uses_from_macos": [
           [
@@ -159,11 +159,11 @@
             }
           ]
         ],
-        "stable_version": "2.60.5"
+        "stable_version": "2.60.6"
       },
       "public": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "7c5f480ad5a354ec07e0046d258d79aaa96545a9cabb71d4dc71a43180264f01",
+        "bottle_checksum": "82fd9a718fcc1d4edbae46ca95234b76bbbcbe26dd76dbe62099bb86127e11ea",
         "desc": "Protocol definitions and daemon for D-Bus at-spi",
         "head_dependencies": [
           "dbus",
@@ -207,8 +207,8 @@
           "at-spi2-atk",
           "atk"
         ],
-        "ruby_source_checksum": "f5126bf47f0c16198e43791ca9fc098ec9fb5220dc36cffdbc4fbdfb03817a7d",
-        "stable_checksum": "6059a77d507438ff6c8d6d06025f8f9f5774fa0f8eabe9c9b059b1cc41e1bbc0",
+        "ruby_source_checksum": "ced859f7447ae9461acadc510e6a70cd286121721e34cd1d6b226f2b51ac7bd9",
+        "stable_checksum": "a89b64a8b217a8042bdf0e35cbfab629ceee35640dba75df578afde9aa789d57",
         "stable_dependencies": [
           "dbus",
           "glib",
@@ -238,7 +238,7 @@
           }
         ],
         "stable_url_args": [
-          "https://download.gnome.org/sources/at-spi2-core/2.60/at-spi2-core-2.60.5.tar.xz"
+          "https://download.gnome.org/sources/at-spi2-core/2.60/at-spi2-core-2.60.6.tar.xz"
         ],
         "stable_uses_from_macos": [
           [
@@ -247,7 +247,7 @@
             }
           ]
         ],
-        "stable_version": "2.60.5"
+        "stable_version": "2.60.6"
       }
     },
     "autoconf": {

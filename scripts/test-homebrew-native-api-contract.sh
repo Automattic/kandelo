@@ -15,6 +15,7 @@ PREFLIGHT="$SCRIPT_DIR/homebrew-native-api-preflight.sh"
 SOURCE_CHECK="$SCRIPT_DIR/homebrew-native-check-brew-source.sh"
 BOUNDED_ENV="$SCRIPT_DIR/homebrew-native-bounded-environment.sh"
 TMP_ROOT="$(mktemp -d)"
+TMP_ROOT="$(cd "$TMP_ROOT" && pwd -P)"
 cleanup() {
   chmod -R u+rwX "$TMP_ROOT" 2>/dev/null || true
   rm -rf "$TMP_ROOT"
@@ -166,8 +167,40 @@ end
 RUBY
 
 cat >"$STUB_ROOT/utils/popen.rb" <<'RUBY'
+class ErrorDuringExecution < RuntimeError
+  attr_reader :exitstatus
+
+  def initialize(exitstatus)
+    @exitstatus = exitstatus
+    super("fixture Git failure")
+  end
+end unless defined?(ErrorDuringExecution)
+
 module Utils
-  def self.popen_read(*_arguments)
+  def self.safe_popen_read(*arguments)
+    repository = ENV.fetch("KANDELO_TEST_BREW_REPOSITORY")
+    expected_environment = {
+      "GIT_CONFIG_NOSYSTEM" => "1",
+      "GIT_CONFIG_GLOBAL" => File::NULL,
+      "GIT_CONFIG_COUNT" => "1",
+      "GIT_CONFIG_KEY_0" => "safe.directory",
+      "GIT_CONFIG_VALUE_0" => repository,
+      "GIT_NO_REPLACE_OBJECTS" => "1",
+      "GIT_OPTIONAL_LOCKS" => "0",
+    }
+    expected_arguments = [
+      expected_environment,
+      "git",
+      "-C", repository,
+      "rev-parse", "--verify", "HEAD^{commit}",
+    ]
+    raise "unsafe protected Git command: #{arguments.inspect}" unless
+      arguments == expected_arguments
+    if ENV.key?("KANDELO_TEST_GIT_FAILURE_STATUS")
+      raise ErrorDuringExecution.new(
+        Integer(ENV.fetch("KANDELO_TEST_GIT_FAILURE_STATUS"), 10)
+      )
+    end
     "#{ENV.fetch("KANDELO_TEST_BREW_COMMIT")}\n"
   end
 end
@@ -186,12 +219,29 @@ end
 RUBY
 
 COMMIT="1111111111111111111111111111111111111111"
+TREE="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+OVERLAY_STATE="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 CORE_HEAD="2222222222222222222222222222222222222222"
 OTHER_HEAD="3333333333333333333333333333333333333333"
 ADVANCED_HEAD="4444444444444444444444444444444444444444"
 BREW_REPOSITORY="$TMP_ROOT/oracle-brew"
 CELLAR="$TMP_ROOT/cellar"
 mkdir -p "$BREW_REPOSITORY" "$CELLAR"
+OVERLAY_ATTESTATION="$TMP_ROOT/native-overlay-attestation.json"
+jq -S -n \
+  --arg commit "$COMMIT" \
+  --arg repository "$BREW_REPOSITORY" \
+  --arg state "$OVERLAY_STATE" \
+  --arg tree "$TREE" \
+  '{
+    schema: 1,
+    kind: "kandelo-homebrew-native-overlay-attestation",
+    homebrew_commit: $commit,
+    homebrew_tree: $tree,
+    repository: $repository,
+    overlay_state_sha256: $state
+  }' >"$OVERLAY_ATTESTATION"
+chmod 0444 "$OVERLAY_ATTESTATION"
 
 create_api() {
   local root="$1" public_head="$2" internal_head="$3"
@@ -260,7 +310,7 @@ oracle() {
   env -u GITHUB_ACTIONS \
     HOMEBREW_KANDELO_NATIVE_CONTRACT_TESTING=1 \
     KANDELO_TEST_API_ROOT="$KANDELO_TEST_API_ROOT" \
-    KANDELO_TEST_BREW_COMMIT="$COMMIT" \
+    KANDELO_TEST_BREW_COMMIT="${KANDELO_TEST_OBSERVED_BREW_COMMIT:-$COMMIT}" \
     KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
     KANDELO_TEST_CELLAR="$CELLAR" \
     ruby -I"$STUB_ROOT" "$ORACLE" "$@"
@@ -297,6 +347,21 @@ create_api \
   "$API_A" "$CORE_HEAD" "$CORE_HEAD" \
   public-stable public-unused-a internal-stable internal-unused-a /prefix/a
 prime_and_seal "$API_A" "$PRIME_A"
+KANDELO_TEST_OBSERVED_BREW_COMMIT="$OTHER_HEAD" \
+KANDELO_TEST_API_ROOT="$API_A" \
+  expect_failure "wrong protected Git commit" \
+    "Homebrew checkout is $OTHER_HEAD, expected $COMMIT" \
+    oracle recheck "$COMMIT" "$PRIME_A"
+KANDELO_TEST_OBSERVED_BREW_COMMIT=not-a-commit \
+KANDELO_TEST_API_ROOT="$API_A" \
+  expect_failure "invalid protected Git output" \
+    "protected Git returned an invalid Homebrew commit" \
+    oracle recheck "$COMMIT" "$PRIME_A"
+KANDELO_TEST_GIT_FAILURE_STATUS=77 \
+KANDELO_TEST_API_ROOT="$API_A" \
+  expect_failure "protected Git command failure" \
+    "cannot verify Homebrew checkout with protected Git (status 77)" \
+    oracle recheck "$COMMIT" "$PRIME_A"
 expect_failure "CI test-owner exception" \
   "sealed API path is not owned by the trusted identity" \
   env \
@@ -316,9 +381,174 @@ jq -e '
   fail "generated lock lost its exact envelope or run install step"
 
 ADMISSION_A="$TMP_ROOT/admission-a.json"
+KANDELO_TEST_GIT_FAILURE_STATUS=77 \
+KANDELO_TEST_API_ROOT="$API_A" oracle admit \
+  "$COMMIT" "$OVERLAY_ATTESTATION" "$POLICY" test \
+  "$ROOTS" "$CLOSURE" "$PRIME_A" "$LOCK_A" \
+  "$ADMISSION_A"
 KANDELO_TEST_API_ROOT="$API_A" oracle admit \
   "$COMMIT" "$POLICY" test "$ROOTS" "$CLOSURE" "$PRIME_A" "$LOCK_A" \
-  "$ADMISSION_A"
+  "$TMP_ROOT/legacy-direct-ca-admission.json"
+
+expect_overlay_attestation_failure() {
+  local label="$1" message="$2" filter="$3"
+  local candidate="$TMP_ROOT/overlay-attestation-${label// /-}.json"
+  jq "$filter" "$OVERLAY_ATTESTATION" >"$candidate"
+  chmod 0444 "$candidate"
+  expect_failure "$label" "$message" \
+    env -u GITHUB_ACTIONS \
+      HOMEBREW_KANDELO_NATIVE_CONTRACT_TESTING=1 \
+      KANDELO_TEST_API_ROOT="$API_A" \
+      KANDELO_TEST_BREW_COMMIT="$COMMIT" \
+      KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
+      KANDELO_TEST_CELLAR="$CELLAR" \
+      KANDELO_TEST_GIT_FAILURE_STATUS=77 \
+      ruby -I"$STUB_ROOT" "$ORACLE" admit \
+        "$COMMIT" "$candidate" "$POLICY" test \
+        "$ROOTS" "$CLOSURE" "$PRIME_A" "$LOCK_A" \
+        "$TMP_ROOT/rejected-overlay-admission.json"
+}
+
+expect_overlay_attestation_failure \
+  "wrong overlay commit" \
+  "Homebrew checkout is $OTHER_HEAD, expected $COMMIT" \
+  ".homebrew_commit = \"$OTHER_HEAD\""
+expect_overlay_attestation_failure \
+  "wrong overlay repository" \
+  "native overlay attestation names another repository" \
+  '.repository = "/tmp/not-the-running-homebrew"'
+expect_overlay_attestation_failure \
+  "invalid overlay tree" \
+  "native overlay attestation tree is invalid" \
+  '.homebrew_tree = "not-a-tree"'
+expect_overlay_attestation_failure \
+  "invalid overlay state digest" \
+  "native overlay attestation state digest is invalid" \
+  '.overlay_state_sha256 = "not-a-digest"'
+expect_overlay_attestation_failure \
+  "wrong overlay kind" \
+  "native overlay attestation kind is invalid" \
+  '.kind = "not-the-overlay-contract"'
+expect_overlay_attestation_failure \
+  "wrong overlay schema" \
+  "native overlay attestation schema is unsupported" \
+  '.schema = 2'
+expect_overlay_attestation_failure \
+  "extra overlay field" \
+  "native overlay attestation has unexpected fields" \
+  '.unexpected = true'
+expect_overlay_attestation_failure \
+  "missing overlay field" \
+  "native overlay attestation has unexpected fields" \
+  'del(.homebrew_tree)'
+
+MUTABLE_OVERLAY_ATTESTATION="$TMP_ROOT/mutable-overlay-attestation.json"
+cp "$OVERLAY_ATTESTATION" "$MUTABLE_OVERLAY_ATTESTATION"
+chmod 0644 "$MUTABLE_OVERLAY_ATTESTATION"
+expect_failure \
+  "mutable overlay attestation" \
+  "native overlay attestation is not sealed" \
+  env -u GITHUB_ACTIONS \
+    HOMEBREW_KANDELO_NATIVE_CONTRACT_TESTING=1 \
+    KANDELO_TEST_API_ROOT="$API_A" \
+    KANDELO_TEST_BREW_COMMIT="$COMMIT" \
+    KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
+    KANDELO_TEST_CELLAR="$CELLAR" \
+    ruby -I"$STUB_ROOT" "$ORACLE" admit \
+      "$COMMIT" "$MUTABLE_OVERLAY_ATTESTATION" "$POLICY" test \
+      "$ROOTS" "$CLOSURE" "$PRIME_A" "$LOCK_A" \
+      "$TMP_ROOT/rejected-mutable-overlay-admission.json"
+
+SYMLINKED_OVERLAY_ATTESTATION="$TMP_ROOT/symlinked-overlay-attestation.json"
+ln -s "$OVERLAY_ATTESTATION" "$SYMLINKED_OVERLAY_ATTESTATION"
+expect_failure \
+  "symlinked overlay attestation" \
+  "native overlay attestation is not sealed" \
+  env -u GITHUB_ACTIONS \
+    HOMEBREW_KANDELO_NATIVE_CONTRACT_TESTING=1 \
+    KANDELO_TEST_API_ROOT="$API_A" \
+    KANDELO_TEST_BREW_COMMIT="$COMMIT" \
+    KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
+    KANDELO_TEST_CELLAR="$CELLAR" \
+    ruby -I"$STUB_ROOT" "$ORACLE" admit \
+      "$COMMIT" "$SYMLINKED_OVERLAY_ATTESTATION" "$POLICY" test \
+      "$ROOTS" "$CLOSURE" "$PRIME_A" "$LOCK_A" \
+      "$TMP_ROOT/rejected-symlinked-overlay-admission.json"
+
+expect_failure \
+  "relative overlay attestation" \
+  "native overlay attestation path is not absolute" \
+  env -u GITHUB_ACTIONS \
+    HOMEBREW_KANDELO_NATIVE_CONTRACT_TESTING=1 \
+    KANDELO_TEST_API_ROOT="$API_A" \
+    KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
+    KANDELO_TEST_CELLAR="$CELLAR" \
+    ruby -I"$STUB_ROOT" "$ORACLE" admit \
+      "$COMMIT" native-overlay-attestation.json "$POLICY" test \
+      "$ROOTS" "$CLOSURE" "$PRIME_A" "$LOCK_A" \
+      "$TMP_ROOT/rejected-relative-overlay-admission.json"
+
+MALFORMED_OVERLAY_ATTESTATION="$TMP_ROOT/malformed-overlay-attestation.json"
+printf '{\n' >"$MALFORMED_OVERLAY_ATTESTATION"
+chmod 0444 "$MALFORMED_OVERLAY_ATTESTATION"
+expect_failure \
+  "malformed overlay attestation" \
+  "cannot read $MALFORMED_OVERLAY_ATTESTATION" \
+  env -u GITHUB_ACTIONS \
+    HOMEBREW_KANDELO_NATIVE_CONTRACT_TESTING=1 \
+    KANDELO_TEST_API_ROOT="$API_A" \
+    KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
+    KANDELO_TEST_CELLAR="$CELLAR" \
+    ruby -I"$STUB_ROOT" "$ORACLE" admit \
+      "$COMMIT" "$MALFORMED_OVERLAY_ATTESTATION" "$POLICY" test \
+      "$ROOTS" "$CLOSURE" "$PRIME_A" "$LOCK_A" \
+      "$TMP_ROOT/rejected-malformed-overlay-admission.json"
+
+NONOBJECT_OVERLAY_ATTESTATION="$TMP_ROOT/nonobject-overlay-attestation.json"
+printf '[]\n' >"$NONOBJECT_OVERLAY_ATTESTATION"
+chmod 0444 "$NONOBJECT_OVERLAY_ATTESTATION"
+expect_failure \
+  "nonobject overlay attestation" \
+  "native overlay attestation is not an object" \
+  env -u GITHUB_ACTIONS \
+    HOMEBREW_KANDELO_NATIVE_CONTRACT_TESTING=1 \
+    KANDELO_TEST_API_ROOT="$API_A" \
+    KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
+    KANDELO_TEST_CELLAR="$CELLAR" \
+    ruby -I"$STUB_ROOT" "$ORACLE" admit \
+      "$COMMIT" "$NONOBJECT_OVERLAY_ATTESTATION" "$POLICY" test \
+      "$ROOTS" "$CLOSURE" "$PRIME_A" "$LOCK_A" \
+      "$TMP_ROOT/rejected-nonobject-overlay-admission.json"
+
+HARDLINKED_OVERLAY_ATTESTATION="$TMP_ROOT/hardlinked-overlay-attestation.json"
+ln "$OVERLAY_ATTESTATION" "$HARDLINKED_OVERLAY_ATTESTATION"
+expect_failure \
+  "hardlinked overlay attestation" \
+  "native overlay attestation is not sealed" \
+  env -u GITHUB_ACTIONS \
+    HOMEBREW_KANDELO_NATIVE_CONTRACT_TESTING=1 \
+    KANDELO_TEST_API_ROOT="$API_A" \
+    KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
+    KANDELO_TEST_CELLAR="$CELLAR" \
+    ruby -I"$STUB_ROOT" "$ORACLE" admit \
+      "$COMMIT" "$HARDLINKED_OVERLAY_ATTESTATION" "$POLICY" test \
+      "$ROOTS" "$CLOSURE" "$PRIME_A" "$LOCK_A" \
+      "$TMP_ROOT/rejected-hardlinked-overlay-admission.json"
+rm "$HARDLINKED_OVERLAY_ATTESTATION"
+
+expect_failure \
+  "CI overlay owner exception" \
+  "native overlay attestation is not sealed" \
+  env \
+    GITHUB_ACTIONS=true \
+    HOMEBREW_KANDELO_NATIVE_CONTRACT_TESTING=1 \
+    KANDELO_TEST_API_ROOT="$API_A" \
+    KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
+    KANDELO_TEST_CELLAR="$CELLAR" \
+    ruby -I"$STUB_ROOT" "$ORACLE" admit \
+      "$COMMIT" "$OVERLAY_ATTESTATION" "$POLICY" test \
+      "$ROOTS" "$CLOSURE" "$PRIME_A" "$LOCK_A" \
+      "$TMP_ROOT/rejected-ci-owner-overlay-admission.json"
 
 API_PUBLIC_UNUSED="$TMP_ROOT/api-public-unused"
 PRIME_PUBLIC_UNUSED="$TMP_ROOT/prime-public-unused.json"
@@ -328,7 +558,7 @@ create_api \
   /prefix/other
 prime_and_seal "$API_PUBLIC_UNUSED" "$PRIME_PUBLIC_UNUSED"
 KANDELO_TEST_API_ROOT="$API_PUBLIC_UNUSED" oracle admit \
-  "$COMMIT" "$POLICY" test "$ROOTS" "$CLOSURE" \
+  "$COMMIT" "$OVERLAY_ATTESTATION" "$POLICY" test "$ROOTS" "$CLOSURE" \
   "$PRIME_PUBLIC_UNUSED" "$LOCK_A" \
   "$TMP_ROOT/admission-public-unused.json"
 jq -e --arg head "$CORE_HEAD" '.source.tap_git_head == $head' \
@@ -343,7 +573,7 @@ create_api \
   /prefix/other
 prime_and_seal "$API_INTERNAL_UNUSED" "$PRIME_INTERNAL_UNUSED"
 KANDELO_TEST_API_ROOT="$API_INTERNAL_UNUSED" oracle admit \
-  "$COMMIT" "$POLICY" test "$ROOTS" "$CLOSURE" \
+  "$COMMIT" "$OVERLAY_ATTESTATION" "$POLICY" test "$ROOTS" "$CLOSURE" \
   "$PRIME_INTERNAL_UNUSED" "$LOCK_A" \
   "$TMP_ROOT/admission-internal-unused.json"
 jq -e --arg head "$CORE_HEAD" '.source.tap_git_head == $head' \
@@ -359,7 +589,7 @@ create_api \
   /prefix/advanced
 prime_and_seal "$API_ADVANCED" "$PRIME_ADVANCED"
 KANDELO_TEST_API_ROOT="$API_ADVANCED" oracle admit \
-  "$COMMIT" "$POLICY" test "$ROOTS" "$CLOSURE" \
+  "$COMMIT" "$OVERLAY_ATTESTATION" "$POLICY" test "$ROOTS" "$CLOSURE" \
   "$PRIME_ADVANCED" "$LOCK_A" "$ADMISSION_ADVANCED"
 jq -e --arg head "$ADVANCED_HEAD" '
   .source == {
@@ -391,7 +621,8 @@ expect_failure "public-only selected Formula drift" \
     KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
     KANDELO_TEST_CELLAR="$CELLAR" \
     ruby -I"$STUB_ROOT" "$ORACLE" admit \
-      "$COMMIT" "$POLICY" test "$ROOTS" "$CLOSURE" \
+      "$COMMIT" "$OVERLAY_ATTESTATION" "$POLICY" test \
+      "$ROOTS" "$CLOSURE" \
       "$PRIME_PUBLIC_SELECTED" "$LOCK_A" \
       "$TMP_ROOT/admission-public-selected.json"
 
@@ -410,7 +641,8 @@ expect_failure "internal-only selected Formula drift" \
     KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
     KANDELO_TEST_CELLAR="$CELLAR" \
     ruby -I"$STUB_ROOT" "$ORACLE" admit \
-      "$COMMIT" "$POLICY" test "$ROOTS" "$CLOSURE" \
+      "$COMMIT" "$OVERLAY_ATTESTATION" "$POLICY" test \
+      "$ROOTS" "$CLOSURE" \
       "$PRIME_INTERNAL_SELECTED" "$LOCK_A" \
       "$TMP_ROOT/admission-internal-selected.json"
 
@@ -439,7 +671,8 @@ expect_failure "malformed native roots" "contains an invalid Formula name" \
     KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
     KANDELO_TEST_CELLAR="$CELLAR" \
     ruby -I"$STUB_ROOT" "$ORACLE" admit \
-      "$COMMIT" "$POLICY" test "$BAD_ROOTS" "$CLOSURE" "$PRIME_A" \
+      "$COMMIT" "$OVERLAY_ATTESTATION" "$POLICY" test \
+      "$BAD_ROOTS" "$CLOSURE" "$PRIME_A" \
       "$LOCK_A" "$TMP_ROOT/admission-bad-roots.json"
 
 API_SYMLINK="$TMP_ROOT/api-symlink"
@@ -480,7 +713,8 @@ expect_failure "occupied attestation output" "refusing to replace" \
     KANDELO_TEST_BREW_REPOSITORY="$BREW_REPOSITORY" \
     KANDELO_TEST_CELLAR="$CELLAR" \
     ruby -I"$STUB_ROOT" "$ORACLE" admit \
-      "$COMMIT" "$POLICY" test "$ROOTS" "$CLOSURE" \
+      "$COMMIT" "$OVERLAY_ATTESTATION" "$POLICY" test \
+      "$ROOTS" "$CLOSURE" \
       "$PRIME_PUBLIC_UNUSED" \
       "$LOCK_A" "$OCCUPIED"
 
@@ -494,9 +728,14 @@ cat >"$CELLAR/root/1.0/INSTALL_RECEIPT.json" <<'JSON'
   }
 }
 JSON
+KANDELO_TEST_GIT_FAILURE_STATUS=77 \
+KANDELO_TEST_API_ROOT="$API_PUBLIC_UNUSED" oracle audit-cellar \
+  "$COMMIT" "$OVERLAY_ATTESTATION" "$PRIME_PUBLIC_UNUSED" \
+  "$CLOSURE" "$ROOTS" \
+  "$TMP_ROOT/cellar-attestation.json"
 KANDELO_TEST_API_ROOT="$API_PUBLIC_UNUSED" oracle audit-cellar \
   "$COMMIT" "$PRIME_PUBLIC_UNUSED" "$CLOSURE" "$ROOTS" \
-  "$TMP_ROOT/cellar-attestation.json"
+  "$TMP_ROOT/legacy-direct-ca-cellar-attestation.json"
 jq -e '.kegs | map(.name) == ["root"]' \
   "$TMP_ROOT/cellar-attestation.json" >/dev/null ||
   fail "Cellar audit did not record the admitted poured keg"
@@ -526,6 +765,444 @@ run_native_brew_logged() {
   [ "${KANDELO_TEST_NATIVE_MISSING_STATUS:-0}" -eq 0 ]
 }
 . "$SCRIPT_DIR/homebrew-native-install-contract.sh"
+
+HOMEBREW_NATIVE_CONTRACT_COMPONENT=homebrew-bottle-build.sh
+for stage in \
+  tier2-execution-rescan \
+  tier2-execution-preflight \
+  tier2-attestation-staging \
+  formula-realm-isolation \
+  signed-native-contract; do
+  stage_marker_output="$(
+    {
+      homebrew_native_contract_stage_marker "$stage" starting
+      homebrew_native_contract_stage_marker "$stage" completed
+    } 2>&1
+  )"
+  grep -F "homebrew-bottle-build.sh: starting $stage stage" \
+    <<<"$stage_marker_output" >/dev/null &&
+    grep -F "homebrew-bottle-build.sh: completed $stage stage" \
+      <<<"$stage_marker_output" >/dev/null ||
+    fail "$stage did not expose both publisher boundaries"
+done
+
+publisher_unguarded_stage_failure() {
+  (exit 67)
+  printf 'unguarded stage continued\n' >>"$TMP_ROOT/stage-continued"
+}
+
+exercise_direct_stage_errexit() (
+  set -euo pipefail
+  HOMEBREW_NATIVE_CONTRACT_COMPONENT=homebrew-bottle-build.sh
+  homebrew_native_contract_stage_marker unguarded-stage starting
+  publisher_unguarded_stage_failure
+  homebrew_native_contract_stage_marker unguarded-stage completed
+)
+
+set +e
+exercise_direct_stage_errexit 2>"$TMP_ROOT/stage-errexit.stderr"
+stage_status="$?"
+set -e
+[ "$stage_status" -eq 67 ] &&
+  [ ! -e "$TMP_ROOT/stage-continued" ] &&
+  grep -F 'homebrew-bottle-build.sh: starting unguarded-stage stage' \
+    "$TMP_ROOT/stage-errexit.stderr" >/dev/null &&
+  ! grep -F 'completed unguarded-stage stage' \
+    "$TMP_ROOT/stage-errexit.stderr" >/dev/null ||
+  fail "direct publisher boundary suppressed an unguarded inner failure"
+
+publisher_stage_state=before
+publisher_mutate_stage_state() {
+  publisher_stage_state=after
+}
+homebrew_native_contract_stage_marker stateful-stage starting 2>/dev/null
+publisher_mutate_stage_state
+homebrew_native_contract_stage_marker stateful-stage completed 2>/dev/null
+[ "$publisher_stage_state" = after ] ||
+  fail "publisher boundary discarded stateful function changes"
+unset HOMEBREW_NATIVE_CONTRACT_COMPONENT
+
+prepare_diagnostic_case() {
+  local label="$1"
+  DIAGNOSTIC_CONTROL="$TMP_ROOT/diagnostic-$label"
+  DIAGNOSTIC_AGGREGATE="$DIAGNOSTIC_CONTROL/native-install.log"
+  DIAGNOSTIC_OUTPUT="$DIAGNOSTIC_CONTROL/output"
+  DIAGNOSTIC_STDERR="$DIAGNOSTIC_CONTROL/stderr"
+  mkdir "$DIAGNOSTIC_CONTROL"
+  chmod 0700 "$DIAGNOSTIC_CONTROL"
+  : >"$DIAGNOSTIC_AGGREGATE"
+  : >"$DIAGNOSTIC_OUTPUT"
+  : >"$DIAGNOSTIC_STDERR"
+  chmod 0600 \
+    "$DIAGNOSTIC_AGGREGATE" "$DIAGNOSTIC_OUTPUT" "$DIAGNOSTIC_STDERR"
+  HOMEBREW_NATIVE_DIAGNOSTIC_SEQUENCE=0
+}
+
+diagnostic_success() {
+  printf 'machine-readable output\n'
+  printf 'successful command note\n' >&2
+}
+
+prepare_diagnostic_case success
+homebrew_native_contract_run_logged \
+  successful-probe "$DIAGNOSTIC_CONTROL" "$DIAGNOSTIC_AGGREGATE" \
+  "$DIAGNOSTIC_OUTPUT" diagnostic_success 2>"$DIAGNOSTIC_STDERR"
+[ ! -s "$DIAGNOSTIC_STDERR" ] &&
+  [ "$(cat "$DIAGNOSTIC_OUTPUT")" = "machine-readable output" ] &&
+  grep -Fx 'successful command note' "$DIAGNOSTIC_AGGREGATE" >/dev/null ||
+  fail "successful native command did not preserve output quietly"
+
+exercise_installed_formula_metadata_failure() (
+  local status
+  prepare_diagnostic_case installed-formula-metadata
+  homebrew_patched_launcher_run_native() {
+    [ "$*" = 'info --json=v2 homebrew/core/cmake' ] || return 96
+    printf 'native Formula metadata is unavailable\n' >&2
+    return 55
+  }
+  set +e
+  homebrew_native_contract_run_logged \
+    installed-formula-metadata "$DIAGNOSTIC_CONTROL" \
+    "$DIAGNOSTIC_AGGREGATE" "$DIAGNOSTIC_OUTPUT" \
+    homebrew_patched_launcher_run_native \
+      info --json=v2 homebrew/core/cmake 2>"$DIAGNOSTIC_STDERR"
+  status="$?"
+  set -e
+  [ "$status" -eq 55 ] ||
+    fail "installed Formula metadata failure returned $status, expected 55"
+  grep -F \
+    'native Homebrew installed-formula-metadata failed with status 55' \
+    "$DIAGNOSTIC_STDERR" >/dev/null &&
+    grep -F 'native Formula metadata is unavailable' \
+      "$DIAGNOSTIC_STDERR" >/dev/null ||
+    fail "failing info command lost its stage, status, or diagnostic"
+)
+
+exercise_installed_formula_metadata_failure
+
+diagnostic_errexit_failure() {
+  printf 'errexit native failure\n' >&2
+  return 56
+}
+
+exercise_native_failure_under_errexit() (
+  prepare_diagnostic_case errexit-failure
+  set -euo pipefail
+  homebrew_native_contract_run_logged \
+    errexit-failure "$DIAGNOSTIC_CONTROL" "$DIAGNOSTIC_AGGREGATE" - \
+    diagnostic_errexit_failure 2>"$DIAGNOSTIC_STDERR"
+  printf 'unreachable\n' >"$DIAGNOSTIC_CONTROL/reached"
+)
+
+set +e
+exercise_native_failure_under_errexit
+errexit_status="$?"
+set -e
+[ "$errexit_status" -eq 56 ] &&
+  [ ! -e "$TMP_ROOT/diagnostic-errexit-failure/reached" ] &&
+  grep -F 'native Homebrew errexit-failure failed with status 56' \
+    "$TMP_ROOT/diagnostic-errexit-failure/stderr" >/dev/null ||
+  fail "errexit caller did not exit with the native command status"
+
+exercise_native_success_restores_errexit() (
+  prepare_diagnostic_case errexit-success
+  set -euo pipefail
+  homebrew_native_contract_run_logged \
+    errexit-success "$DIAGNOSTIC_CONTROL" "$DIAGNOSTIC_AGGREGATE" \
+    "$DIAGNOSTIC_OUTPUT" diagnostic_success 2>"$DIAGNOSTIC_STDERR"
+  false
+  printf 'unreachable\n' >"$DIAGNOSTIC_CONTROL/reached"
+)
+
+set +e
+exercise_native_success_restores_errexit
+errexit_status="$?"
+set -e
+[ "$errexit_status" -eq 1 ] &&
+  [ ! -e "$TMP_ROOT/diagnostic-errexit-success/reached" ] ||
+  fail "successful native diagnostic did not restore caller errexit"
+
+# Exercise the real install dispatcher, not only the reporting primitive, so
+# each signed-API boundary is kept on the diagnostic path as the contract grows.
+exercise_native_install_stage() (
+  local selected_stage="$1" expected_status="$2" expected_label="$3"
+  local roots state failure_status
+  prepare_diagnostic_case "contract-$selected_stage"
+  roots="$DIAGNOSTIC_CONTROL/roots.txt"
+  state="$DIAGNOSTIC_CONTROL/state"
+  printf 'root\n' >"$roots"
+  mkdir "$state"
+  printf '{}\n' >"$state/prime.json"
+  HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION="${DIAGNOSTIC_CONTROL}/\
+native-overlay-attestation.json"
+  printf '{}\n' >"$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION"
+  chmod 0600 "$roots" "$state/prime.json" \
+    "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION"
+  KANDELO_HOMEBREW_NATIVE_API_STATE="$state"
+  HOMEBREW_NATIVE_CONTRACT_ENABLED=1
+  KANDELO_TEST_NATIVE_FAILURE_STAGE="$selected_stage"
+
+  homebrew_patched_launcher_stage_native_contract_file() {
+    printf '%s\n' "$1"
+  }
+  run_native_brew_logged() {
+    [ "$KANDELO_TEST_NATIVE_FAILURE_STAGE" != install ] || return 54
+    return 0
+  }
+  homebrew_patched_launcher_run_native() {
+    if [ "$1" = deps ]; then
+      if [ "$KANDELO_TEST_NATIVE_FAILURE_STAGE" = deps ]; then
+        printf 'dependency resolution rejected gettext\n' >&2
+        return 51
+      fi
+      printf 'dep\nroot\n'
+      return 0
+    fi
+    if [ "$1" = ruby ] && [ "$3" = admit ]; then
+      [ "$#" -eq 12 ] && \
+        [ "$2" = "$REPO_ROOT/scripts/homebrew-native-api-contract.rb" ] && \
+        [ "$4" = 0000000000000000000000000000000000000000 ] && \
+        [ "$5" = "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION" ] && \
+        [ "$6" = \
+          "$REPO_ROOT/homebrew/homebrew-native-compatibility-roots.json" ] && \
+        [ "$7" = tap_formula_host_dependencies ] && \
+        [ "$8" = "$roots" ] && \
+        [ "$9" = "$DIAGNOSTIC_CONTROL/native-closure.txt" ] && \
+        [ "${10}" = "$state/prime.json" ] && \
+        [ "${11}" = \
+          "$REPO_ROOT/homebrew/homebrew-native-compatibility-lock.json" ] && \
+        [ "${12}" = \
+          "$DIAGNOSTIC_CONTROL/native-api-admission.json" ] || return 98
+      if [ "$KANDELO_TEST_NATIVE_FAILURE_STAGE" = admit ]; then
+        printf 'compatibility lock does not admit gettext\n' >&2
+        return 52
+      fi
+      return 0
+    fi
+    if [ "$1" = ruby ] && [ "$3" = audit-cellar ]; then
+      [ "$#" -eq 9 ] && \
+        [ "$2" = "$REPO_ROOT/scripts/homebrew-native-api-contract.rb" ] && \
+        [ "$4" = 0000000000000000000000000000000000000000 ] && \
+        [ "$5" = "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION" ] && \
+        [ "$6" = "$state/prime.json" ] && \
+        [ "$7" = "$DIAGNOSTIC_CONTROL/native-closure.txt" ] && \
+        [ "$8" = "$DIAGNOSTIC_CONTROL/native-cumulative-roots.txt" ] && \
+        [ "$9" = "$DIAGNOSTIC_CONTROL/native-cellar-1.json" ] || \
+        return 98
+      if [ "$KANDELO_TEST_NATIVE_FAILURE_STAGE" = audit ]; then
+        printf 'installed Cellar receipt is not admitted\n' >&2
+        return 53
+      fi
+      return 0
+    fi
+    return 99
+  }
+
+  set +e
+  homebrew_native_contract_install \
+    "$roots" "$DIAGNOSTIC_CONTROL" "$DIAGNOSTIC_AGGREGATE" \
+    "$DIAGNOSTIC_CONTROL" 0000000000000000000000000000000000000000 \
+    "$REPO_ROOT" tap_formula_host_dependencies \
+    2>"$DIAGNOSTIC_STDERR"
+  failure_status="$?"
+  set -e
+  [ "$failure_status" -eq "$expected_status" ] ||
+    fail "$selected_stage failure returned $failure_status, expected $expected_status"
+  grep -F "native Homebrew $expected_label failed with status $expected_status" \
+    "$DIAGNOSTIC_STDERR" >/dev/null ||
+    fail "$selected_stage failure lost its native command stage"
+)
+
+exercise_native_install_stage \
+  deps 51 signed-api-dependency-resolution
+exercise_native_install_stage \
+  admit 52 signed-api-admission
+exercise_native_install_stage \
+  audit 53 installed-cellar-audit-1
+
+diagnostic_large_failure() {
+  ruby -e '10_000.times { warn "earlier line" }; warn "final root cause"'
+  return 29
+}
+
+prepare_diagnostic_case bounded
+set +e
+homebrew_native_contract_run_logged \
+  bounded-failure "$DIAGNOSTIC_CONTROL" "$DIAGNOSTIC_AGGREGATE" \
+  "$DIAGNOSTIC_OUTPUT" diagnostic_large_failure 2>"$DIAGNOSTIC_STDERR"
+diagnostic_status="$?"
+set -e
+[ "$diagnostic_status" -eq 29 ] &&
+  [ "$(wc -c <"$DIAGNOSTIC_CONTROL/native-command-1.log")" -le 16448 ] &&
+  [ "$(wc -c <"$DIAGNOSTIC_STDERR")" -le 70000 ] &&
+  [ "$(grep -c '^| ' "$DIAGNOSTIC_STDERR")" -eq 200 ] &&
+  grep -F 'earlier diagnostic lines omitted' "$DIAGNOSTIC_STDERR" >/dev/null &&
+  grep -F 'final root cause' "$DIAGNOSTIC_STDERR" >/dev/null ||
+  fail "large native diagnostic was not bounded around its useful tail"
+
+diagnostic_preexisting_capture_failure() {
+  ruby -e '10_000.times { puts "current command output" }'
+  return 74
+}
+
+prepare_diagnostic_case preexisting-capture
+printf 'stale prior command reason\n' \
+  >"$DIAGNOSTIC_CONTROL/native-command-1.log"
+printf 'dash sentinel must not be read\n' >"$DIAGNOSTIC_CONTROL/-"
+chmod 0600 \
+  "$DIAGNOSTIC_CONTROL/native-command-1.log" "$DIAGNOSTIC_CONTROL/-"
+set +e
+(
+  cd "$DIAGNOSTIC_CONTROL"
+  homebrew_native_contract_run_logged \
+    preexisting-capture "$DIAGNOSTIC_CONTROL" "$DIAGNOSTIC_AGGREGATE" - \
+    diagnostic_preexisting_capture_failure
+) 2>"$DIAGNOSTIC_STDERR"
+diagnostic_status="$?"
+set -e
+[ "$diagnostic_status" -eq 74 ] &&
+  [ ! -s "$DIAGNOSTIC_AGGREGATE" ] &&
+  [ "$(cat "$DIAGNOSTIC_CONTROL/native-command-1.log")" = \
+    'stale prior command reason' ] &&
+  grep -F 'diagnostic unavailable: log is not a private regular file' \
+    "$DIAGNOSTIC_STDERR" >/dev/null &&
+  ! grep -E 'stale prior command reason|dash sentinel must not be read' \
+    "$DIAGNOSTIC_STDERR" >/dev/null ||
+  fail "failed capture appended or rendered stale diagnostic bytes"
+
+diagnostic_fixed_failure() {
+  printf '%s\n' "${KANDELO_TEST_DIAGNOSTIC_MESSAGE:-fixed failure}" >&2
+  return "${KANDELO_TEST_DIAGNOSTIC_STATUS:-31}"
+}
+
+prepare_diagnostic_case missing-aggregate
+rm "$DIAGNOSTIC_AGGREGATE"
+KANDELO_TEST_DIAGNOSTIC_MESSAGE='missing aggregate root cause'
+KANDELO_TEST_DIAGNOSTIC_STATUS=31
+set +e
+homebrew_native_contract_run_logged \
+  missing-aggregate "$DIAGNOSTIC_CONTROL" "$DIAGNOSTIC_AGGREGATE" \
+  "$DIAGNOSTIC_OUTPUT" diagnostic_fixed_failure 2>"$DIAGNOSTIC_STDERR"
+diagnostic_status="$?"
+set -e
+[ "$diagnostic_status" -eq 31 ] &&
+  grep -F 'missing aggregate root cause' "$DIAGNOSTIC_STDERR" >/dev/null ||
+  fail "missing aggregate log hid or replaced the command failure"
+
+prepare_diagnostic_case symlink-aggregate
+aggregate_target="$DIAGNOSTIC_CONTROL/aggregate-target"
+printf 'unrelated private data\n' >"$aggregate_target"
+chmod 0600 "$aggregate_target"
+rm "$DIAGNOSTIC_AGGREGATE"
+ln -s "$aggregate_target" "$DIAGNOSTIC_AGGREGATE"
+KANDELO_TEST_DIAGNOSTIC_MESSAGE='symlink aggregate root cause'
+KANDELO_TEST_DIAGNOSTIC_STATUS=32
+set +e
+homebrew_native_contract_run_logged \
+  symlink-aggregate "$DIAGNOSTIC_CONTROL" "$DIAGNOSTIC_AGGREGATE" \
+  "$DIAGNOSTIC_OUTPUT" diagnostic_fixed_failure 2>"$DIAGNOSTIC_STDERR"
+diagnostic_status="$?"
+set -e
+[ "$diagnostic_status" -eq 32 ] &&
+[ "$(cat "$aggregate_target")" = 'unrelated private data' ] &&
+  grep -F 'symlink aggregate root cause' "$DIAGNOSTIC_STDERR" >/dev/null ||
+  fail "symlink aggregate log was followed or replaced the command failure"
+
+wait_for_capture_log() {
+  local log="$DIAGNOSTIC_CONTROL/native-command-1.log" attempt
+  for ((attempt = 0; attempt < 500; attempt++)); do
+    [ ! -f "$log" ] || return 0
+    sleep 0.01
+  done
+  printf 'capture process did not open its diagnostic log\n' >&2
+  return 97
+}
+
+diagnostic_remove_capture() {
+  wait_for_capture_log || return
+  rm -f "$DIAGNOSTIC_CONTROL/native-command-1.log"
+  printf 'unreachable removed-log contents\n' >&2
+  return 41
+}
+
+prepare_diagnostic_case missing-capture
+set +e
+homebrew_native_contract_run_logged \
+  missing-capture "$DIAGNOSTIC_CONTROL" "$DIAGNOSTIC_AGGREGATE" \
+  "$DIAGNOSTIC_OUTPUT" diagnostic_remove_capture 2>"$DIAGNOSTIC_STDERR"
+diagnostic_status="$?"
+set -e
+[ "$diagnostic_status" -eq 41 ] &&
+  grep -F 'diagnostic unavailable: log is not a private regular file' \
+    "$DIAGNOSTIC_STDERR" >/dev/null &&
+  ! grep -F 'unreachable removed-log contents' "$DIAGNOSTIC_STDERR" >/dev/null ||
+  fail "missing per-command log did not fail closed around its original status"
+
+diagnostic_replace_capture() {
+  wait_for_capture_log || return
+  rm -f "$DIAGNOSTIC_CONTROL/native-command-1.log"
+  ln -s "$KANDELO_TEST_DIAGNOSTIC_SECRET" \
+    "$DIAGNOSTIC_CONTROL/native-command-1.log"
+  printf 'unreachable replaced-log contents\n' >&2
+  return 42
+}
+
+prepare_diagnostic_case symlink-capture
+diagnostic_secret="$DIAGNOSTIC_CONTROL/secret"
+printf 'must not be rendered or replaced\n' >"$diagnostic_secret"
+chmod 0600 "$diagnostic_secret"
+KANDELO_TEST_DIAGNOSTIC_SECRET="$diagnostic_secret"
+set +e
+homebrew_native_contract_run_logged \
+  symlink-capture "$DIAGNOSTIC_CONTROL" "$DIAGNOSTIC_AGGREGATE" \
+  "$DIAGNOSTIC_OUTPUT" diagnostic_replace_capture 2>"$DIAGNOSTIC_STDERR"
+diagnostic_status="$?"
+set -e
+[ "$diagnostic_status" -eq 42 ] &&
+  [ "$(cat "$diagnostic_secret")" = 'must not be rendered or replaced' ] &&
+  grep -F 'diagnostic unavailable: log is not a private regular file' \
+    "$DIAGNOSTIC_STDERR" >/dev/null &&
+  ! grep -F 'must not be rendered or replaced' "$DIAGNOSTIC_STDERR" >/dev/null ||
+  fail "symlink per-command log was followed or replaced the command status"
+
+diagnostic_hostile_failure() {
+  printf '::error::must remain inert\n'
+  printf '\033[31mred\033[0m\r\n'
+  printf 'nul\000byte\n'
+  printf 'https://user:password@example.invalid/path\n'
+  printf 'github_pat_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n'
+  printf 'Authorization: Bearer must-not-appear\n'
+  return 43
+}
+
+prepare_diagnostic_case inert
+set +e
+homebrew_native_contract_run_logged \
+  hostile-output "$DIAGNOSTIC_CONTROL" "$DIAGNOSTIC_AGGREGATE" - \
+  diagnostic_hostile_failure 2>"$DIAGNOSTIC_STDERR"
+diagnostic_status="$?"
+set -e
+[ "$diagnostic_status" -eq 43 ] ||
+  fail "hostile diagnostic replaced the command's status"
+ruby - "$DIAGNOSTIC_STDERR" <<'RUBY'
+bytes = File.binread(ARGV.fetch(0))
+raise "terminal control byte escaped" if
+  bytes.each_byte.any? { |byte| byte < 0x20 && byte != 0x0a }
+raise "workflow command stayed active" if
+  bytes.lines.any? { |line| line.start_with?("::") }
+RUBY
+grep -F '| ::error::must remain inert' "$DIAGNOSTIC_STDERR" >/dev/null &&
+  grep -F '\x1B[31mred\x1B[0m\x0D' "$DIAGNOSTIC_STDERR" >/dev/null &&
+  grep -F 'nul\x00byte' "$DIAGNOSTIC_STDERR" >/dev/null &&
+  grep -F 'https://[redacted]@example.invalid/path' \
+    "$DIAGNOSTIC_STDERR" >/dev/null &&
+  grep -F '[redacted-github-token]' "$DIAGNOSTIC_STDERR" >/dev/null &&
+  grep -F 'Authorization: [redacted]' "$DIAGNOSTIC_STDERR" >/dev/null &&
+  ! grep -F 'must-not-appear' "$DIAGNOSTIC_STDERR" >/dev/null ||
+  fail "native command diagnostic was not inert and credential-safe"
+unset KANDELO_TEST_DIAGNOSTIC_MESSAGE KANDELO_TEST_DIAGNOSTIC_STATUS
+unset KANDELO_TEST_DIAGNOSTIC_SECRET KANDELO_TEST_NATIVE_FAILURE_STAGE
+
 NATIVE_INSTALL_CALLS="$TMP_ROOT/native-install-calls.txt"
 : >"$NATIVE_INSTALL_CALLS"
 (

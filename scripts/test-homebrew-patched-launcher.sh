@@ -361,6 +361,85 @@ case "${1:-}" in
     [ ! -w "$2" ] && [ ! -w "${2%/*}" ]
     [[ "$("$2" --version)" =~ ^git\ version\ ([0-9]+)\.([0-9]+) ]]
     ;;
+  assert-hidden-backing-git)
+    [ "$#" -eq 3 ]
+    [ "$repository" = "$2" ]
+    hidden_backing_parent="$3"
+    # WHY: this models production's linked worktree. The Formula user can read
+    # the overlay, but its `.git` file points through a workflow-private
+    # ancestor. `safe.directory` can waive ownership checks; it cannot grant
+    # traversal permission, so every Git form must fail here.
+    [ "$(/usr/bin/stat -c %u "$repository")" != \
+      "$(/usr/bin/id -u)" ]
+    [ -f "$repository/.git" ] && [ ! -L "$repository/.git" ]
+    gitdir="$(/usr/bin/sed -n 's/^gitdir: //p' "$repository/.git")"
+    case "$gitdir" in
+      "$hidden_backing_parent"/*) ;;
+      *) exit 1 ;;
+    esac
+    [ ! -x "$hidden_backing_parent" ]
+    if /usr/bin/ls "$hidden_backing_parent" >/dev/null 2>&1; then
+      exit 1
+    fi
+    if /usr/bin/env -i \
+        HOME=/nonexistent LC_ALL=C \
+        GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+        "$HOMEBREW_GIT_PATH" -C "$repository" \
+        rev-parse --verify 'HEAD^{commit}' >/dev/null 2>&1; then
+      exit 1
+    fi
+    if /usr/bin/env -i \
+        HOME=/nonexistent LC_ALL=C \
+        GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+        GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory \
+        GIT_CONFIG_VALUE_0="${repository%/*}" \
+        "$HOMEBREW_GIT_PATH" -C "$repository" \
+        rev-parse --verify 'HEAD^{commit}' >/dev/null 2>&1; then
+      exit 1
+    fi
+    if /usr/bin/env -i \
+        HOME=/nonexistent LC_ALL=C \
+        GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+        GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=safe.directory \
+        GIT_CONFIG_VALUE_0="$repository" \
+        GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0 \
+        "$HOMEBREW_GIT_PATH" -C "$repository" \
+        rev-parse --verify 'HEAD^{commit}' >/dev/null 2>&1; then
+      exit 1
+    fi
+    ;;
+  assert-native-overlay-attestation)
+    [ "$#" -eq 7 ]
+    attestation="$2"
+    expected_repository="$3"
+    expected_commit="$4"
+    expected_tree="$5"
+    expected_state="$6"
+    expected_uid="$7"
+    [ "$(/usr/bin/stat -c '%u:%g:%a:%h' "$attestation")" = \
+      "0:0:444:1" ]
+    [ -r "$attestation" ] && [ ! -w "$attestation" ]
+    /usr/bin/python3 -I - \
+      "$attestation" "$expected_repository" "$expected_commit" \
+      "$expected_tree" "$expected_state" "$expected_uid" <<'PY'
+import json
+import os
+import sys
+
+path, repository, commit, tree, state, expected_uid = sys.argv[1:]
+with open(path, encoding="utf-8") as source:
+    attestation = json.load(source)
+assert attestation == {
+    "schema": 1,
+    "kind": "kandelo-homebrew-native-overlay-attestation",
+    "homebrew_commit": commit,
+    "homebrew_tree": tree,
+    "repository": repository,
+    "overlay_state_sha256": state,
+}
+assert os.getuid() == int(expected_uid)
+PY
+    ;;
   assert-target-native-boundary)
     [ "$#" -eq 7 ]
     native_prefix="$2"
@@ -932,8 +1011,49 @@ printf '%s\n' '{"schema":1}' >"$tap_recipe_attestation"
 if homebrew_patched_launcher_tier2_schema "$tap_recipe_attestation" >/dev/null 2>&1; then
   fail "Tier-2 schema reader accepted a retired control schema"
 fi
+
+exercise_isolated_native_identity_failure() (
+  local failing_probe="$1" expected_status="$2" expected_label="$3"
+  local output status
+  HOMEBREW_PATCHED_NATIVE_PREFIX="$TMPDIR/native-identity-prefix"
+  HOMEBREW_PATCHED_OVERLAY="$TMPDIR/native-identity-repository"
+  mkdir -p "$HOMEBREW_PATCHED_NATIVE_PREFIX" "$HOMEBREW_PATCHED_OVERLAY"
+  homebrew_patched_launcher_run_native() {
+    case "$1" in
+      --prefix)
+        [ "$failing_probe" != prefix ] || return "$expected_status"
+        printf '%s\n' "$HOMEBREW_PATCHED_NATIVE_PREFIX"
+        ;;
+      --repository)
+        [ "$failing_probe" != repository ] || return "$expected_status"
+        printf '%s\n' "$HOMEBREW_PATCHED_OVERLAY"
+        ;;
+      *) return 96 ;;
+    esac
+  }
+  set +e
+  output="$(
+    homebrew_patched_launcher_verify_isolated_native_identity 2>&1
+  )"
+  status="$?"
+  set -e
+  [ "$status" -eq "$expected_status" ] ||
+    fail "isolated $failing_probe probe returned $status, expected $expected_status"
+  grep -F "$expected_label failed with status $expected_status" \
+    <<<"$output" >/dev/null ||
+    fail "isolated $failing_probe probe did not label its exact status"
+)
+
+exercise_isolated_native_identity_failure \
+  prefix 71 'isolated native prefix probe'
+exercise_isolated_native_identity_failure \
+  repository 72 'isolated native repository probe'
+
 xtask_audit_source="$(declare -f homebrew_patched_launcher_emit_xtask_access_audit)"
 isolate_source="$(declare -f homebrew_patched_launcher_isolate)"
+native_identity_source="$(
+  declare -f homebrew_patched_launcher_verify_isolated_native_identity
+)"
 projection_source="$(declare -f homebrew_patched_launcher_prepare_platform_projection)"
 projection_manifest_source="$(
   declare -f homebrew_patched_launcher_platform_projection_manifest
@@ -960,6 +1080,14 @@ grep -Fq 'expected_protected_xtask=%q' <<<"$xtask_audit_source" &&
   grep -Fq 'tools/bin/wasm-fork-instrument' <<<"$projection_source" &&
   grep -Fq 'tools/bin/wasm-local-root-spill' <<<"$projection_source" ||
   fail "schema-3 isolation does not remove both resolver paths from a minimal platform projection"
+grep -Fq 'isolated native prefix probe failed with status $status' \
+  <<<"$native_identity_source" &&
+  grep -Fq 'isolated native repository probe failed with status $status' \
+    <<<"$native_identity_source" &&
+  [ "$(grep -Fc 'return "$status"' <<<"$native_identity_source")" -eq 2 ] &&
+  grep -Fq 'homebrew_patched_launcher_verify_isolated_native_identity || return' \
+    <<<"$isolate_source" ||
+  fail "isolated native identity probes do not label and preserve failures"
 grep -Fq "stat -c '%u:%g:%a'" <<<"$sealed_directory_source" &&
   ! grep -Fq '%h' <<<"$sealed_directory_source" &&
   grep -Fq 'sealed_directory_state "$root"' <<<"$projection_manifest_source" &&
@@ -1841,7 +1969,8 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   /usr/bin/sudo -n -- rm -rf "$platform_projection"
   HOMEBREW_PATCHED_PLATFORM_ROOT=""
   HOMEBREW_PATCHED_PLATFORM_SHA256=""
-  isolated_repo="$ISOLATION_ROOT/repo"
+  isolated_source_parent="$ISOLATION_ROOT/private-runner-home"
+  isolated_repo="$isolated_source_parent/homebrew-prefix/Homebrew"
   isolated_prefix="$ISOLATION_ROOT/prefix"
   isolated_work="$ISOLATION_ROOT/work"
   isolated_cache="$ISOLATION_ROOT/cache"
@@ -1859,7 +1988,6 @@ if [ "$(uname -s)" = "Linux" ] && [ -x /usr/bin/sudo ] && \
   isolated_native_api_source="$ISOLATION_ROOT/native-api-source"
   unsafe_native_api_source="$ISOLATION_ROOT/unsafe-native-api-source"
   native_contract_source="$ISOLATION_ROOT/native-contract-source.json"
-  isolated_source_parent="$ISOLATION_ROOT/private-runner-home"
   isolated_private_bottle_dir="$ISOLATION_ROOT/private-runner-cache"
   isolated_shared_temp="$ISOLATION_ROOT/shared-temp"
   isolated_kandelo="$isolated_source_parent/kandelo"
@@ -2821,6 +2949,93 @@ EOF
       "$isolated_dependency_tap"
   homebrew_patched_launcher_run_native assert-protected-git \
     "$HOMEBREW_GIT_PATH"
+  isolated_overlay_commit="$(
+    git -C "$isolated_overlay" rev-parse --verify 'HEAD^{commit}'
+  )"
+  isolated_overlay_tree="$(
+    git -C "$isolated_overlay" rev-parse --verify 'HEAD^{tree}'
+  )"
+  homebrew_patched_launcher_run_native assert-hidden-backing-git \
+    "$isolated_overlay" "$isolated_source_parent"
+  homebrew_patched_launcher_run_native assert-native-overlay-attestation \
+    "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION" \
+    "$isolated_overlay" "$isolated_overlay_commit" "$isolated_overlay_tree" \
+    "$HOMEBREW_PATCHED_INTEGRITY_SHA256" \
+    "$(id -u "$ISOLATION_BUILD_USER")"
+  overlay_attestation_backup="$ISOLATION_ROOT/native-overlay-attestation.backup"
+  cp "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION" \
+    "$overlay_attestation_backup"
+  /usr/bin/sudo -n -- /usr/bin/chmod 0644 \
+    "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION"
+  if homebrew_patched_launcher_run_native --version >/dev/null 2>&1; then
+    fail "native command accepted a mutable overlay identity attestation"
+  fi
+  /usr/bin/sudo -n -- /usr/bin/chmod 0444 \
+    "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION"
+  homebrew_patched_launcher_verify_native_overlay_attestation
+
+  # WHY: a hard link can only be created within one filesystem. The protected
+  # contract lives under /run on Linux, while the fixture root may live under
+  # /tmp, so keep the adversarial alias beside the attestation itself.
+  overlay_attestation_hardlink="${HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION}.hardlink"
+  /usr/bin/sudo -n -- /usr/bin/ln \
+    "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION" \
+    "$overlay_attestation_hardlink"
+  if homebrew_patched_launcher_run_native --version >/dev/null 2>&1; then
+    fail "native command accepted a hard-linked overlay identity attestation"
+  fi
+  /usr/bin/sudo -n -- /usr/bin/unlink "$overlay_attestation_hardlink"
+  homebrew_patched_launcher_verify_native_overlay_attestation
+
+  overlay_attestation_original="${HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION}.original"
+  /usr/bin/sudo -n -- /usr/bin/mv \
+    "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION" \
+    "$overlay_attestation_original"
+  /usr/bin/sudo -n -- /usr/bin/install -o root -g root -m 0444 \
+    "$overlay_attestation_backup" \
+    "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION"
+  if homebrew_patched_launcher_run_native --version >/dev/null 2>&1; then
+    fail "native command accepted a replaced overlay identity attestation"
+  fi
+  /usr/bin/sudo -n -- /usr/bin/rm -f \
+    "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION"
+  /usr/bin/sudo -n -- /usr/bin/mv \
+    "$overlay_attestation_original" \
+    "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION"
+  homebrew_patched_launcher_verify_native_overlay_attestation
+
+  /usr/bin/sudo -n -- /usr/bin/chmod 0644 \
+    "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION"
+  printf '{"changed":true}\n' | /usr/bin/sudo -n -- /usr/bin/tee \
+    "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION" >/dev/null
+  /usr/bin/sudo -n -- /usr/bin/chmod 0444 \
+    "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION"
+  if homebrew_patched_launcher_run_native --version >/dev/null 2>&1; then
+    fail "native command accepted a changed overlay identity attestation"
+  fi
+  /usr/bin/sudo -n -- /usr/bin/chmod 0644 \
+    "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION"
+  /usr/bin/sudo -n -- /usr/bin/cp \
+    "$overlay_attestation_backup" \
+    "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION"
+  /usr/bin/sudo -n -- /usr/bin/chmod 0444 \
+    "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION"
+  homebrew_patched_launcher_verify_native_overlay_attestation
+
+  isolated_marker_backup="$(cat "$isolated_overlay/marker.txt")"
+  /usr/bin/sudo -n -- /usr/bin/chmod 0644 "$isolated_overlay/marker.txt"
+  printf 'changed after attestation\n' | /usr/bin/sudo -n -- /usr/bin/tee \
+    "$isolated_overlay/marker.txt" >/dev/null
+  /usr/bin/sudo -n -- /usr/bin/chmod 0444 "$isolated_overlay/marker.txt"
+  if homebrew_patched_launcher_run_native --version >/dev/null 2>&1; then
+    fail "native command accepted a changed sealed Homebrew overlay"
+  fi
+  /usr/bin/sudo -n -- /usr/bin/chmod 0644 "$isolated_overlay/marker.txt"
+  printf '%s\n' "$isolated_marker_backup" | \
+    /usr/bin/sudo -n -- /usr/bin/tee \
+      "$isolated_overlay/marker.txt" >/dev/null
+  /usr/bin/sudo -n -- /usr/bin/chmod 0444 "$isolated_overlay/marker.txt"
+  homebrew_patched_launcher_verify_native_overlay_attestation
   homebrew_patched_launcher_run_native spawn-daemon \
     "$native_daemon_marker" "$native_daemon_started"
   /usr/bin/sudo -n -- test -e "$native_daemon_started" ||
@@ -3271,6 +3486,19 @@ EOF
   homebrew_patched_launcher_verify_isolation
   [ -r "$protected_bottle" ] ||
     fail "protected bottle disappeared before launcher cleanup"
+  protected_overlay_attestation="$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION"
+  /usr/bin/sudo -n -- /usr/bin/chmod 0644 \
+    "$protected_overlay_attestation"
+  if homebrew_patched_launcher_cleanup >/dev/null 2>&1; then
+    fail "cleanup accepted a changed native overlay identity attestation"
+  fi
+  [ -e "$protected_overlay_attestation" ] && [ -d "$protected_dir" ] &&
+    [ "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION" = \
+      "$protected_overlay_attestation" ] ||
+    fail "failed attestation cleanup discarded diagnostic state"
+  /usr/bin/sudo -n -- /usr/bin/chmod 0444 \
+    "$protected_overlay_attestation"
+  homebrew_patched_launcher_verify_native_overlay_attestation
   homebrew_patched_launcher_cleanup
   [ ! -e "$isolated_overlay" ] && \
     [ -z "$HOMEBREW_PATCHED_OVERLAY_SEAL_STATE" ] ||
@@ -3279,6 +3507,11 @@ EOF
     fail "isolated cleanup left the native Formula proxy rack"
   [ ! -e "$target_proxy_opt" ] && [ ! -L "$target_proxy_opt" ] ||
     fail "isolated cleanup left the native Formula proxy opt link"
+  [ ! -e "$protected_overlay_attestation" ] &&
+    [ -z "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION" ] &&
+    [ -z "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION_STATE" ] &&
+    [ -z "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION_SHA256" ] ||
+    fail "isolated cleanup left the native overlay identity attestation"
   [ ! -e "$ninja_proxy_rack" ] && [ ! -L "$ninja_proxy_rack" ] &&
     [ ! -e "$ninja_proxy_opt" ] && [ ! -L "$ninja_proxy_opt" ] ||
     fail "isolated cleanup left the second native Formula proxy"
@@ -3375,6 +3608,11 @@ EOF
   homebrew_patched_launcher_prepare_native_prefix \
     "$schema2_native_prefix" "$schema2_native_cache" "$schema2_native_temp" \
     "$schema2_native_config" "$schema2_native_home"
+  # This is the poured-bottle verifier shape: populated signed API state but
+  # no schema-3 recipe realm. It still needs the sealed overlay attestation and
+  # therefore the protected JSON writer selected outside recipe isolation.
+  homebrew_patched_launcher_set_native_api_source \
+    "$isolated_native_api_source"
   homebrew_patched_launcher_stage_dependency_plan "$schema2_dependency_plan"
   homebrew_patched_launcher_stage_tier2_attestation "$schema2_attestation"
   homebrew_patched_launcher_isolate \
@@ -3382,6 +3620,7 @@ EOF
     "$schema2_output" "$isolated_sysroot_owner" "$isolated_dependency_tap"
   schema2_protected_dir="$HOMEBREW_PATCHED_PROTECTED_DIR"
   schema2_native_auditor="$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR"
+  schema2_overlay_attestation="$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION"
   [ -n "$schema2_native_auditor" ] && \
     [ "$schema2_native_auditor" = \
       "$schema2_protected_dir/native-link-auditor" ] && \
@@ -3396,6 +3635,7 @@ EOF
     [ -z "$HOMEBREW_PATCHED_RECIPE_SUPERVISOR_UNIT" ] && \
     [ -z "$HOMEBREW_PATCHED_RECIPE_USER" ] && \
     [ -z "$HOMEBREW_PATCHED_RECIPE_UID" ] && \
+    [ -f "$schema2_overlay_attestation" ] && \
     [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a:%h' \
       "$schema2_native_auditor")" = "0:0:555:1" ] &&
     /usr/bin/sudo -n -- /usr/bin/cmp -s -- \
@@ -3418,6 +3658,8 @@ EOF
   homebrew_patched_launcher_teardown "$ISOLATION_BUILD_USER"
   homebrew_patched_launcher_cleanup
   [ ! -e "$schema2_protected_dir" ] && \
+    [ ! -e "$schema2_overlay_attestation" ] && \
+    [ -z "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION" ] && \
     [ -z "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR" ] && \
     [ -z "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_STATE" ] && \
     [ -z "$HOMEBREW_PATCHED_NATIVE_LINK_AUDITOR_SHA256" ] ||

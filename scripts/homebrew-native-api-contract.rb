@@ -313,15 +313,118 @@ end
 def current_brew_commit
   require "env_config"
   require "utils/popen"
-  Utils.popen_read(
+  repository = HOMEBREW_REPOSITORY.to_s
+  # WHY: the publisher deliberately keeps the sealed Homebrew checkout owned
+  # by the workflow identity, not the isolated build identity. Git rejects
+  # that cross-user checkout by default. Authorize only this exact read-only
+  # provenance query; native Brew commands do not receive general Git trust.
+  git_environment = {
+    "GIT_CONFIG_NOSYSTEM" => "1",
+    "GIT_CONFIG_GLOBAL" => File::NULL,
+    "GIT_CONFIG_COUNT" => "1",
+    "GIT_CONFIG_KEY_0" => "safe.directory",
+    "GIT_CONFIG_VALUE_0" => repository,
+    "GIT_NO_REPLACE_OBJECTS" => "1",
+    "GIT_OPTIONAL_LOCKS" => "0",
+  }
+  actual = Utils.safe_popen_read(
+    git_environment,
     Homebrew::EnvConfig.git_path,
-    "-C", HOMEBREW_REPOSITORY.to_s,
-    "rev-parse", "HEAD"
+    "-C", repository,
+    "rev-parse", "--verify", "HEAD^{commit}"
   ).strip
+  fail_contract("protected Git returned an invalid Homebrew commit") unless
+    /\A[0-9a-f]{40}\z/.match?(actual)
+  actual
+rescue ErrorDuringExecution => e
+  status = e.exitstatus || "unknown"
+  fail_contract(
+    "cannot verify Homebrew checkout with protected Git (status #{status})"
+  )
 end
 
-def check_brew_commit(expected)
-  fail_contract("expected Homebrew commit is invalid") unless /\A[0-9a-f]{40}\z/.match?(expected)
+def validate_overlay_attestation(path, expected_commit)
+  require "env_config"
+  attestation_path = Pathname(path)
+  repository = Pathname(HOMEBREW_REPOSITORY.to_s)
+  expected_uid = 0
+  require_root_group = true
+  if ENV["HOMEBREW_KANDELO_NATIVE_CONTRACT_TESTING"] == "1" &&
+     ENV["GITHUB_ACTIONS"] != "true"
+    expected_uid = Process.uid
+    require_root_group = false
+  end
+
+  fail_contract("native overlay attestation path is not absolute") unless
+    attestation_path.absolute?
+  before = attestation_path.lstat
+  unless before.file? && !attestation_path.symlink? && before.nlink == 1 &&
+         before.uid == expected_uid && (!require_root_group || before.gid.zero?) &&
+         (before.mode & 0o777) == 0o444
+    fail_contract("native overlay attestation is not sealed")
+  end
+  attestation = read_json(attestation_path)
+  after = attestation_path.lstat
+  fail_contract("native overlay attestation changed while reading") unless
+    source_identity(before) == source_identity(after)
+  fail_contract("native overlay attestation is not an object") unless
+    attestation.is_a?(Hash)
+
+  expected_keys = %w[
+    homebrew_commit
+    homebrew_tree
+    kind
+    overlay_state_sha256
+    repository
+    schema
+  ]
+  unless attestation.keys.sort == expected_keys
+    fail_contract("native overlay attestation has unexpected fields")
+  end
+  fail_contract("native overlay attestation schema is unsupported") unless
+    attestation["schema"] == 1
+  unless attestation["kind"] ==
+         "kandelo-homebrew-native-overlay-attestation"
+    fail_contract("native overlay attestation kind is invalid")
+  end
+  fail_contract("native overlay attestation commit is invalid") unless
+    /\A[0-9a-f]{40}\z/.match?(attestation["homebrew_commit"].to_s)
+  fail_contract("native overlay attestation tree is invalid") unless
+    /\A[0-9a-f]{40}\z/.match?(attestation["homebrew_tree"].to_s)
+  unless /\A[0-9a-f]{64}\z/.match?(
+    attestation["overlay_state_sha256"].to_s
+  )
+    fail_contract("native overlay attestation state digest is invalid")
+  end
+  unless repository.absolute? && repository.directory? &&
+         !repository.symlink? && repository.realpath == repository
+    fail_contract("Homebrew repository is not one canonical directory")
+  end
+  unless attestation["repository"] == repository.to_s
+    fail_contract("native overlay attestation names another repository")
+  end
+  unless attestation["homebrew_commit"] == expected_commit
+    fail_contract(
+      "Homebrew checkout is #{attestation['homebrew_commit']}, " \
+      "expected #{expected_commit}"
+    )
+  end
+  attestation
+rescue Errno::ENOENT, Errno::ELOOP, Errno::EACCES => e
+  fail_contract("cannot read native overlay attestation: #{e.message}")
+end
+
+def check_brew_commit(expected, overlay_attestation = nil)
+  fail_contract("expected Homebrew commit is invalid") unless
+    /\A[0-9a-f]{40}\z/.match?(expected)
+  if overlay_attestation
+    # WHY: the isolated Formula user can read the sealed overlay but cannot
+    # traverse the workflow-owned Git metadata behind its linked-worktree
+    # `.git` file. The trusted launcher records this exact identity before
+    # isolation, so admission validates that immutable record without Git.
+    validate_overlay_attestation(overlay_attestation, expected)
+    return
+  end
   actual = current_brew_commit
   fail_contract("Homebrew checkout is #{actual}, expected #{expected}") unless actual == expected
 end
@@ -539,9 +642,15 @@ when "recheck"
     prime["source"] == api_source_provenance &&
     prime["api_inventory"] == api_inventory
 when "audit-cellar"
-  fail_contract("usage: audit-cellar COMMIT PRIME ALLOWED REQUIRED OUT") unless ARGV.length == 5
-  expected_commit, prime_path, allowed_path, required_path, output = ARGV
-  check_brew_commit(expected_commit)
+  unless [5, 6].include?(ARGV.length)
+    fail_contract(
+      "usage: audit-cellar COMMIT [OVERLAY-ATTESTATION] PRIME ALLOWED REQUIRED OUT"
+    )
+  end
+  expected_commit = ARGV.shift
+  overlay_attestation = ARGV.shift if ARGV.length == 5
+  prime_path, allowed_path, required_path, output = ARGV
+  check_brew_commit(expected_commit, overlay_attestation)
   prime = read_json(prime_path)
   allowed_names = read_names(allowed_path)
   required_names = read_names(required_path)
@@ -563,15 +672,18 @@ when "audit-cellar"
     "api_inventory" => inventory,
   })
 when "admit", "generate-lock"
-  expected = mode == "admit" ? 8 : 6
-  fail_contract("invalid #{mode} arguments") unless ARGV.length == expected
-  expected_commit, policy_path = ARGV.shift(2)
+  valid_lengths = mode == "admit" ? [8, 9] : [6]
+  fail_contract("invalid #{mode} arguments") unless
+    valid_lengths.include?(ARGV.length)
+  expected_commit = ARGV.shift
+  overlay_attestation = ARGV.shift if mode == "admit" && ARGV.length == 8
+  policy_path = ARGV.shift
   purpose = mode == "admit" ? ARGV.shift : "all"
   roots_path, closure_path, prime_path = ARGV.shift(3)
   lock_path = ARGV.shift if mode == "admit"
   output = ARGV.shift
 
-  check_brew_commit(expected_commit)
+  check_brew_commit(expected_commit, overlay_attestation)
   policy = read_json(policy_path)
   allowed_by_purpose = validate_policy(policy, expected_commit)
   roots = read_names(roots_path)

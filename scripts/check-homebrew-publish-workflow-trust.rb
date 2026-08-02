@@ -4133,6 +4133,7 @@ def check_publisher(workflow)
     scripts/homebrew-native-api-preflight.sh
     scripts/homebrew-native-bounded-environment.sh
     scripts/homebrew-native-check-brew-source.sh
+    scripts/homebrew-native-command-diagnostic.rb
     scripts/homebrew-native-install-contract.sh
     scripts/update-homebrew-native-compatibility-lock.sh
     homebrew/homebrew-native-compatibility-roots.json
@@ -4168,10 +4169,153 @@ def check_publisher(workflow)
     'receipt["loaded_from_internal_api"] == true',
     'receipt["poured_from_bottle"] == true',
     'receipt.dig("source", "tap") == "homebrew/core"',
+    "kandelo-homebrew-native-overlay-attestation",
+    "native overlay attestation has unexpected fields",
+    "native overlay attestation names another repository",
+    "native overlay attestation changed while reading",
   ].each do |fragment|
     check(native_api_oracle.include?(fragment),
           "native Homebrew API oracle lacks #{fragment}")
   end
+  protected_git_contract = native_api_oracle[
+    /def current_brew_commit\n(.*?)\nend\n\ndef validate_overlay_attestation/m,
+    1
+  ]
+  check(protected_git_contract,
+        "native Homebrew API oracle lost its trusted protected-Git check")
+  [
+    "Utils.safe_popen_read(",
+    '"GIT_CONFIG_NOSYSTEM" => "1"',
+    '"GIT_CONFIG_GLOBAL" => File::NULL',
+    '"GIT_CONFIG_COUNT" => "1"',
+    '"GIT_CONFIG_KEY_0" => "safe.directory"',
+    '"GIT_CONFIG_VALUE_0" => repository',
+    '"GIT_NO_REPLACE_OBJECTS" => "1"',
+    '"GIT_OPTIONAL_LOCKS" => "0"',
+    '"rev-parse", "--verify", "HEAD^{commit}"',
+    "cannot verify Homebrew checkout with protected Git",
+  ].each do |fragment|
+    check(protected_git_contract.include?(fragment),
+          "trusted native Homebrew Git check lacks #{fragment}")
+  end
+  check(!protected_git_contract.include?('safe.directory=*'),
+        "native Homebrew API oracle authorizes every Git checkout")
+  overlay_attestation_contract = native_api_oracle[
+    /def validate_overlay_attestation\(path, expected_commit\)\n(.*?)\nend\n\ndef check_brew_commit/m,
+    1
+  ]
+  check(overlay_attestation_contract,
+        "native Homebrew API oracle lost its sealed-overlay attestation validator")
+  overlay_attestation_keys = overlay_attestation_contract[
+    /expected_keys = %w\[\n(.*?)\n  \]/m,
+    1
+  ]&.split
+  check(overlay_attestation_keys == %w[
+          homebrew_commit
+          homebrew_tree
+          kind
+          overlay_state_sha256
+          repository
+          schema
+        ], "native overlay attestation schema is not the exact flat six-key contract")
+  [
+    "expected_keys = %w[",
+    "homebrew_commit",
+    "homebrew_tree",
+    "kind",
+    "overlay_state_sha256",
+    "repository",
+    "schema",
+    'attestation.keys.sort == expected_keys',
+    'attestation["schema"] == 1',
+    '"kandelo-homebrew-native-overlay-attestation"',
+    'before.nlink == 1',
+    '(before.mode & 0o777) == 0o444',
+    'attestation["repository"] == repository.to_s',
+    'attestation["homebrew_commit"] == expected_commit',
+  ].each do |fragment|
+    check(overlay_attestation_contract.include?(fragment),
+          "sealed native overlay attestation validator lacks #{fragment}")
+  end
+  check(!overlay_attestation_contract.match?(
+          /Utils\.safe_popen_read|safe\.directory|rev-parse/
+        ), "isolated native overlay attestation validation still invokes Git")
+  brew_commit_contract = native_api_oracle[
+    /def check_brew_commit\(expected, overlay_attestation = nil\)\n(.*?)\nend\n\ndef with_target_api/m,
+    1
+  ]
+  check(brew_commit_contract &&
+        brew_commit_contract.include?(
+          "validate_overlay_attestation(overlay_attestation, expected)"
+        ) && brew_commit_contract.include?("actual = current_brew_commit") &&
+        brew_commit_contract.index("validate_overlay_attestation") <
+          brew_commit_contract.index("actual = current_brew_commit"),
+        "native Homebrew commit check does not separate sealed admission from trusted Git")
+  prime_command = native_api_oracle[/when "prime"\n(.*?)\nwhen "recheck"/m, 1]
+  recheck_command = native_api_oracle[/when "recheck"\n(.*?)\nwhen "audit-cellar"/m, 1]
+  audit_cellar_command = native_api_oracle[
+    /when "audit-cellar"\n(.*?)\nwhen "admit", "generate-lock"/m,
+    1
+  ]
+  admit_and_lock_command = native_api_oracle[
+    /when "admit", "generate-lock"\n(.*?)\nelse\n  fail_contract/m,
+    1
+  ]
+  check(prime_command&.include?("check_brew_commit(expected_commit)") &&
+        recheck_command&.include?("check_brew_commit(expected_commit)"),
+        "native prime or recheck no longer verifies trusted outer Git")
+  check(audit_cellar_command&.include?(
+          "check_brew_commit(expected_commit, overlay_attestation)"
+        ) && audit_cellar_command.include?(
+          "unless [5, 6].include?(ARGV.length)"
+        ) && !audit_cellar_command.match?(
+          /Utils\.safe_popen_read|safe\.directory|rev-parse/
+        ), "isolated native Cellar audit does not consume the overlay attestation")
+  check(admit_and_lock_command&.include?(
+          'overlay_attestation = ARGV.shift if mode == "admit"'
+        ) && admit_and_lock_command.include?(
+          "check_brew_commit(expected_commit, overlay_attestation)"
+        ) && admit_and_lock_command.include?(
+          'valid_lengths = mode == "admit" ? [8, 9] : [6]'
+        ) && admit_and_lock_command.scan("overlay_attestation =").length == 1,
+        "native admission and trusted lock generation lost their distinct identity sources")
+  production_native_install = native_install_contract[
+    /homebrew_native_contract_install\(\) \{\n(.*?)\n\}\n\nhomebrew_native_contract_verify_no_missing_dependencies/m,
+    1
+  ]
+  check(production_native_install,
+        "native Homebrew install lost its signed admission contract")
+  [
+    'overlay_attestation="${HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION:-}"',
+    '[ -f "$overlay_attestation" ] && [ ! -L "$overlay_attestation" ]',
+    '"sealed native Homebrew identity is unavailable"',
+    'admit "$brew_commit" "$overlay_attestation" "$policy"',
+    'audit-cellar "$brew_commit" "$overlay_attestation" "$prime"',
+  ].each do |fragment|
+    check(production_native_install.include?(fragment),
+          "production native Homebrew install lacks #{fragment}")
+  end
+  attestation_selection_index = production_native_install.index(
+    'overlay_attestation="${HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION:-}"'
+  )
+  dependency_resolution_index = production_native_install.index(
+    "signed-api-dependency-resolution"
+  )
+  admission_index = production_native_install.index(
+    'admit "$brew_commit" "$overlay_attestation"'
+  )
+  cellar_audit_index = production_native_install.index(
+    'audit-cellar "$brew_commit" "$overlay_attestation"'
+  )
+  check(attestation_selection_index && dependency_resolution_index &&
+        admission_index && cellar_audit_index &&
+        attestation_selection_index < dependency_resolution_index &&
+        dependency_resolution_index < admission_index &&
+        admission_index < cellar_audit_index,
+        "production native install does not bind its sealed overlay identity before admission")
+  check(!production_native_install.include?('admit "$brew_commit" "$policy"') &&
+        !production_native_install.include?('audit-cellar "$brew_commit" "$prime"'),
+        "production native install can invoke isolated admission without its attestation")
   native_api_preflight = File.read(
     File.join(REPO_ROOT, "scripts/homebrew-native-api-preflight.sh")
   )
@@ -4256,6 +4400,22 @@ def check_publisher(workflow)
   native_contract_test = File.read(
     File.join(REPO_ROOT, "scripts/test-homebrew-native-api-contract.sh")
   )
+  native_command_diagnostic = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-native-command-diagnostic.rb")
+  )
+  [
+    "MAX_CAPTURE_BYTES = 16 * 1024",
+    "MAX_RENDERED_LINES = 200",
+    "File::NOFOLLOW",
+    "File::CREAT | File::EXCL | File::NOFOLLOW",
+    'fail_diagnostic("capture expects PATH")',
+    "diagnostic log is not a private regular file",
+    "[redacted-github-token]",
+    'puts "| #{line}"',
+  ].each do |fragment|
+    check(native_command_diagnostic.include?(fragment),
+          "native Homebrew command diagnostic lacks #{fragment}")
+  end
   publisher_contract_test = File.read(
     File.join(REPO_ROOT, "scripts/test-homebrew-publish-workflow.sh")
   )
@@ -4296,6 +4456,21 @@ def check_publisher(workflow)
     "escaping portable Ruby symlink",
     "wrong Brew commit",
     "wrapped Brew executable",
+    "exercise_native_install_stage",
+    "deps 51 signed-api-dependency-resolution",
+    "admit 52 signed-api-admission",
+    "audit 53 installed-cellar-audit-1",
+    "large native diagnostic was not bounded around its useful tail",
+    "failed capture appended or rendered stale diagnostic bytes",
+    "missing per-command log did not fail closed",
+    "symlink per-command log was followed",
+    "native command diagnostic was not inert and credential-safe",
+    "exercise_installed_formula_metadata_failure",
+    "installed-formula-metadata failed with status 55",
+    "errexit caller did not exit with the native command status",
+    "successful native diagnostic did not restore caller errexit",
+    "direct publisher boundary suppressed an unguarded inner failure",
+    "publisher boundary discarded stateful function changes",
   ].each do |fragment|
     check(native_contract_test.include?(fragment),
           "native Homebrew adversarial fixture lacks #{fragment}")
@@ -4345,10 +4520,13 @@ def check_publisher(workflow)
     "native host plan changed after signed-API preflight",
     "signed native API preflight is unavailable",
     "zero-root job received populated native API state",
+    "homebrew_native_contract_run_logged()",
+    "homebrew_native_contract_report_command_failure()",
+    "homebrew-native-command-diagnostic.rb",
     "deps --union --include-implicit",
-    'admit "$brew_commit" "$policy" "$purpose"',
+    'admit "$brew_commit" "$overlay_attestation" "$policy" "$purpose"',
     "run_native_brew_logged install --as-dependency --formula",
-    "audit-cellar",
+    'audit-cellar "$brew_commit" "$overlay_attestation" "$prime"',
   ].each do |fragment|
     check(native_install_contract.include?(fragment),
           "shared native Homebrew admission contract lacks #{fragment}")
@@ -4424,6 +4602,8 @@ def check_publisher(workflow)
       "homebrew_native_contract_install",
       '"homebrew/core/$dependency"',
       'homebrew_patched_launcher_run_native info --json=v2',
+      'homebrew_native_contract_run_logged',
+      'installed-formula-metadata',
       '.formulae[0].name == $name',
       '.formulae[0].full_name == $name',
       '.formulae[0].tap == "homebrew/core"',
@@ -4433,7 +4613,7 @@ def check_publisher(workflow)
       'homebrew_patched_launcher_bridge_native_formula "$dependency"',
       '"$BREW_BIN" list --formula "$dependency" >/dev/null',
       'homebrew_patched_launcher_run_native "$@" 2>&1 | tee -a "$NATIVE_INSTALL_LOG"',
-      '>"$native_info" 2>>"$NATIVE_INSTALL_LOG"',
+      '"$NATIVE_INSTALL_LOG" "$native_info"',
       '--install-log "$INSTALL_LOG"',
       'cleanup_and_exit() {',
       'trap \'cleanup_and_exit $?\' EXIT',
@@ -4469,6 +4649,35 @@ def check_publisher(workflow)
           "Formula runner exposes its native parent outside isolated CI")
     check(formula_runner.scan('NATIVE_BASE="$(mktemp -d /tmp/k.XXXXXX)"').length == 1,
           "Formula runner does not use exactly one bounded native prefix")
+  end
+  build_stage_marker = native_install_contract[
+    /homebrew_native_contract_stage_marker\(\) \{\n(.*?)\n\}\n/m,
+    1
+  ]
+  check(build_stage_marker &&
+        build_stage_marker.include?('^(starting|completed)$') &&
+        build_stage_marker.include?('printf \'%s: %s %s stage\\n\'') &&
+        !build_stage_marker.include?('"$@"'),
+        "bottle builder stage marker executes the stateful stage")
+  check(!native_install_contract.include?(
+          "homebrew_native_contract_run_stage"
+        ), "native contract retains an errexit-suppressing stage wrapper")
+  %w[
+    tier2-execution-rescan
+    tier2-execution-preflight
+    tier2-attestation-staging
+    formula-realm-isolation
+    signed-native-contract
+  ].each do |stage|
+    runners = [bottle_builder]
+    runners << bottle_verifier if stage == "signed-native-contract"
+    runners.each do |runner|
+      starting = "homebrew_native_contract_stage_marker #{stage} starting"
+      completed = "homebrew_native_contract_stage_marker #{stage} completed"
+      check(runner.include?(starting) && runner.include?(completed) &&
+            runner.index(starting) < runner.index(completed),
+            "Formula runner does not bound the #{stage} stage")
+    end
   end
   builder_tap_clone_index = bottle_builder.index(
     '"$BREW_BIN" tap "$TAP_NAME" "$PRIMARY_TAP_CLONE_URL"'
@@ -5164,6 +5373,101 @@ def check_publisher(workflow)
   ].each do |fragment|
     check(launcher.include?(fragment), "isolated Brew launcher lacks #{fragment}")
   end
+  overlay_integrity_contract = launcher[
+    /homebrew_patched_launcher_integrity\(\) \{\n(.*?)\n\}\n\nhomebrew_patched_launcher_verify_protected_xtask/m,
+    1
+  ]
+  check(overlay_integrity_contract,
+        "isolated Brew launcher lost its sealed-overlay integrity contract")
+  [
+    'git_path="${HOMEBREW_GIT_PATH:-}"',
+    "set -o pipefail",
+    'GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null',
+    'GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0',
+    'diff --no-ext-diff --binary HEAD &&',
+    'status --porcelain=v1 --untracked-files=all',
+  ].each do |fragment|
+    check(overlay_integrity_contract.include?(fragment),
+          "sealed-overlay integrity contract lacks #{fragment}")
+  end
+  check(!overlay_integrity_contract.match?(/\n\s+git -C /),
+        "sealed-overlay integrity contract can use an ambient Git executable")
+  native_overlay_attestation_verifier = launcher[
+    /homebrew_patched_launcher_verify_native_overlay_attestation\(\) \{\n(.*?)\n\}\n\nhomebrew_patched_launcher_stage_native_overlay_attestation/m,
+    1
+  ]
+  check(native_overlay_attestation_verifier,
+        "isolated Brew launcher lost its native overlay attestation verifier")
+  [
+    'HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION_STATE',
+    'HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION_SHA256',
+    'native-overlay-attestation.json',
+    "/usr/bin/stat -c '%d:%i:%u:%g:%a:%h:%s'",
+    "/usr/bin/sha256sum",
+    'homebrew_patched_launcher_integrity 2>/dev/null',
+    '"$actual_integrity" != "$HOMEBREW_PATCHED_INTEGRITY_SHA256"',
+    "sealed Homebrew identity attestation changed",
+  ].each do |fragment|
+    check(native_overlay_attestation_verifier.include?(fragment),
+          "native overlay attestation verification lacks #{fragment}")
+  end
+  native_overlay_attestation_stager = launcher[
+    /homebrew_patched_launcher_stage_native_overlay_attestation\(\) \{\n(.*?)\n\}\n\nhomebrew_patched_launcher_run_native/m,
+    1
+  ]
+  check(native_overlay_attestation_stager,
+        "isolated Brew launcher lost trusted native overlay attestation staging")
+  trusted_overlay_git = launcher[
+    /# Capture Git identity while the trusted workflow user still owns the\n(.*?)\n  # Git still needs the workflow-owned backing repository/m,
+    1
+  ]
+  check(trusted_overlay_git,
+        "isolated Brew launcher lost its pre-seal overlay identity capture")
+  [
+    'GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null',
+    'GIT_NO_REPLACE_OBJECTS=1 GIT_OPTIONAL_LOCKS=0',
+    "rev-parse --verify 'HEAD^{commit}'",
+    "rev-parse --verify 'HEAD^{tree}'",
+    '[[ "$overlay_commit" =~ ^[0-9a-f]{40}$ ]]',
+    '[[ "$overlay_tree" =~ ^[0-9a-f]{40}$ ]]',
+  ].each do |fragment|
+    check(trusted_overlay_git.include?(fragment),
+          "trusted pre-seal Homebrew identity capture lacks #{fragment}")
+  end
+  check(!trusted_overlay_git.include?("safe.directory"),
+        "trusted pre-seal identity capture adds unnecessary Git ownership trust")
+  [
+    'HOMEBREW_PATCHED_OVERLAY_SEAL_STATE" != "sealed',
+    'HOMEBREW_PATCHED_INTEGRITY_SHA256',
+    'local commit="$4" tree="$5"',
+    'schema: 1',
+    'kind: "kandelo-homebrew-native-overlay-attestation"',
+    'homebrew_commit: $commit',
+    'homebrew_tree: $tree',
+    'overlay_state_sha256: $integrity',
+    'repository: $repository',
+    'native-overlay-attestation.json',
+    '-o root -g root -m 0444',
+    '"0:0:444:1"',
+    'HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION="$destination"',
+    'HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION_STATE=',
+    'HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION_SHA256="$destination_sha"',
+    'homebrew_patched_launcher_verify_native_overlay_attestation',
+  ].each do |fragment|
+    check(native_overlay_attestation_stager.include?(fragment),
+          "trusted native overlay attestation staging lacks #{fragment}")
+  end
+  check(!native_overlay_attestation_stager.include?("safe.directory"),
+        "sealed overlay attestation staging relies on cross-owner safe.directory")
+  [
+    'if [ -n "$HOMEBREW_PATCHED_NATIVE_API_SOURCE" ] ||',
+    '[ "$tap_recipe_isolation" = "1" ]; then',
+    'jq_bin="$(command -v jq)"',
+    '"$build_user" "$jq_bin" "$jq_bin" jq || return',
+  ].each do |fragment|
+    check(launcher.include?(fragment),
+          "native overlay attestation JSON writer lacks #{fragment}")
+  end
   protected_executable_contract = launcher[
     /homebrew_assert_protected_host_executable\(\) \{\n(.*?)\n\}\n\nhomebrew_assert_protected_host_versioned_executable\(\)/m,
     1
@@ -5369,6 +5673,13 @@ def check_publisher(workflow)
           "homebrew_patched_launcher_isolate: expected BUILD_USER WORK_DIR " \
           "KANDELO_ROOT TAP_ROOT OUTPUT_ROOT SYSROOT_BUILD_ROOT"
         ), "isolated Brew launcher does not require an explicit sysroot build root")
+  [
+    "isolated native prefix probe failed with status",
+    "isolated native repository probe failed with status",
+  ].each do |fragment|
+    check(launcher.include?(fragment),
+          "isolated Brew launcher lacks #{fragment}")
+  end
   check(launcher.scan('"--property=InaccessiblePaths=$sysroot_build_root"').length == 2,
         "isolated target and native Homebrew do not both hide the sysroot build root")
   [
@@ -5495,6 +5806,53 @@ def check_publisher(workflow)
         seal_state_index < seal_mode_index && seal_mode_index < sealed_state_index &&
         isolate_seal_index < isolate_integrity_index,
         "Homebrew overlay sealing is not registered before mode changes and integrity capture")
+  isolate_attestation_index = launcher.index(
+    "homebrew_patched_launcher_stage_native_overlay_attestation",
+    isolate_integrity_index
+  )
+  isolate_runtime_activation_index = launcher.index(
+    'HOMEBREW_PATCHED_SYSTEMD_RUN_BIN="$systemd_run_bin"',
+    isolate_attestation_index
+  )
+  run_native_index = launcher.index("homebrew_patched_launcher_run_native()")
+  run_native_attestation_index = launcher.index(
+    "homebrew_patched_launcher_verify_native_overlay_attestation || return",
+    run_native_index
+  )
+  run_native_dispatch_index = launcher.index(
+    '"$HOMEBREW_PATCHED_SUDO_BIN" -n -- "$HOMEBREW_PATCHED_NATIVE_RUNNER"',
+    run_native_attestation_index
+  )
+  isolation_verifier_index = launcher.index(
+    "homebrew_patched_launcher_verify_isolation()"
+  )
+  isolation_attestation_index = launcher.index(
+    "homebrew_patched_launcher_verify_native_overlay_attestation || return",
+    isolation_verifier_index
+  )
+  isolation_integrity_index = launcher.index(
+    'homebrew_patched_launcher_integrity)" = "$HOMEBREW_PATCHED_INTEGRITY_SHA256"',
+    isolation_attestation_index
+  )
+  cleanup_attestation_index = launcher.index(
+    "if ! homebrew_patched_launcher_verify_native_overlay_attestation; then",
+    cleanup_index
+  )
+  cleanup_protected_remove_index = launcher.index(
+    '"$HOMEBREW_PATCHED_PROTECTED_DIR"',
+    cleanup_attestation_index
+  )
+  check(isolate_attestation_index && isolate_runtime_activation_index &&
+        run_native_attestation_index && run_native_dispatch_index &&
+        isolation_attestation_index && isolation_integrity_index &&
+        cleanup_attestation_index && cleanup_protected_remove_index &&
+        isolate_integrity_index < isolate_attestation_index &&
+        isolate_attestation_index < isolate_runtime_activation_index &&
+        run_native_attestation_index < run_native_dispatch_index &&
+        isolation_attestation_index < isolation_integrity_index &&
+        teardown_preserve_index < cleanup_attestation_index &&
+        cleanup_attestation_index < cleanup_protected_remove_index,
+        "sealed native overlay identity is not staged and rechecked across its lifecycle")
   cleanup_restore_index = launcher.index(
     "homebrew_patched_launcher_restore_overlay_for_cleanup", cleanup_index
   )
@@ -5540,6 +5898,32 @@ def check_publisher(workflow)
   launcher_test = File.read(
     File.join(REPO_ROOT, "scripts/test-homebrew-patched-launcher.sh")
   )
+  check(launcher_test.include?(
+          "isolated native identity probes do not label and preserve failures"
+        ), "launcher tests omit native identity probe status preservation")
+  hidden_backing_git_fixture = launcher_test[
+    /  assert-hidden-backing-git\)\n(.*?)\n    ;;/m,
+    1
+  ]
+  check(hidden_backing_git_fixture &&
+        !launcher_test.include?("assert-cross-owner-git") &&
+        launcher_test.include?(
+          "homebrew_patched_launcher_run_native assert-hidden-backing-git"
+        ), "launcher regression still expects exact safe.directory to expose hidden Git metadata")
+  [
+    'GIT_CONFIG_VALUE_0="${repository%/*}"',
+    'GIT_CONFIG_VALUE_0="$repository"',
+    "rev-parse --verify 'HEAD^{commit}'",
+  ].each do |fragment|
+    check(hidden_backing_git_fixture.include?(fragment),
+          "hidden backing-Git regression lacks #{fragment}")
+  end
+  check(hidden_backing_git_fixture.scan("if /usr/bin/env -i").length == 3 &&
+        hidden_backing_git_fixture.scan(
+          "rev-parse --verify 'HEAD^{commit}'"
+        ).length == 3 &&
+        !hidden_backing_git_fixture.include?("actual_commit="),
+        "hidden backing-Git regression does not reject bare, parent-safe, and exact-safe Git")
   [
     "a missing program-index checker",
     "a symlinked program-index checker",
