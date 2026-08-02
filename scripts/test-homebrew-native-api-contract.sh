@@ -960,9 +960,19 @@ native-overlay-attestation.json"
     fi
     if [ "$1" = ruby ] && [ "$3" = admit ]; then
       [ "$#" -eq 12 ] && \
+        [ "$2" = "$REPO_ROOT/scripts/homebrew-native-api-contract.rb" ] && \
         [ "$4" = 0000000000000000000000000000000000000000 ] && \
         [ "$5" = "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION" ] && \
-        [ "$7" = tap_formula_host_dependencies ] || return 98
+        [ "$6" = \
+          "$REPO_ROOT/homebrew/homebrew-native-compatibility-roots.json" ] && \
+        [ "$7" = tap_formula_host_dependencies ] && \
+        [ "$8" = "$roots" ] && \
+        [ "$9" = "$DIAGNOSTIC_CONTROL/native-closure.txt" ] && \
+        [ "${10}" = "$state/prime.json" ] && \
+        [ "${11}" = \
+          "$REPO_ROOT/homebrew/homebrew-native-compatibility-lock.json" ] && \
+        [ "${12}" = \
+          "$DIAGNOSTIC_CONTROL/native-api-admission.json" ] || return 98
       if [ "$KANDELO_TEST_NATIVE_FAILURE_STAGE" = admit ]; then
         printf 'compatibility lock does not admit gettext\n' >&2
         return 52
@@ -971,8 +981,13 @@ native-overlay-attestation.json"
     fi
     if [ "$1" = ruby ] && [ "$3" = audit-cellar ]; then
       [ "$#" -eq 9 ] && \
+        [ "$2" = "$REPO_ROOT/scripts/homebrew-native-api-contract.rb" ] && \
         [ "$4" = 0000000000000000000000000000000000000000 ] && \
-        [ "$5" = "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION" ] || \
+        [ "$5" = "$HOMEBREW_PATCHED_NATIVE_OVERLAY_ATTESTATION" ] && \
+        [ "$6" = "$state/prime.json" ] && \
+        [ "$7" = "$DIAGNOSTIC_CONTROL/native-closure.txt" ] && \
+        [ "$8" = "$DIAGNOSTIC_CONTROL/native-cumulative-roots.txt" ] && \
+        [ "$9" = "$DIAGNOSTIC_CONTROL/native-cellar-1.json" ] || \
         return 98
       if [ "$KANDELO_TEST_NATIVE_FAILURE_STAGE" = audit ]; then
         printf 'installed Cellar receipt is not admitted\n' >&2
