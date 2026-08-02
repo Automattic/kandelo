@@ -933,7 +933,9 @@ jobs:
       - name: Materialize binaries
         env:
           GH_TOKEN: ${{ github.token }}
-          WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis texlive
+          # homebrew-bootstrap is built by tap campaigns, not the legacy
+          # Kandelo package registry this step materializes.
+          WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs homebrew-bootstrap perl perl-vfs python-vfs redis texlive
         # A reused staging release is fetched again after every matrix writer
         # finishes, validated as fully current, and frozen into a local
         # file:// snapshot. Otherwise retain the durable release + local

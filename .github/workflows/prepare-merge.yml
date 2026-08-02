@@ -2013,7 +2013,9 @@ jobs:
         id: candidate_index
         env:
           AUTHENTICATED_CANONICAL_INDEX_SHA256: ${{ steps.candidate_canonical_index.outputs.sha256 || steps.public_canonical_index.outputs.sha256 }}
-          WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis texlive
+          # homebrew-bootstrap is built by tap campaigns, not the legacy
+          # Kandelo package registry this step materializes.
+          WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs homebrew-bootstrap perl perl-vfs python-vfs redis texlive
         # Package-changing PRs resolve the isolated candidate index. Its
         # unchanged entries carry absolute canonical URLs; changed entries
         # resolve from candidate assets or local build overlays.

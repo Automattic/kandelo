@@ -752,7 +752,9 @@ jobs:
         # missing or stale archive visible instead of source-building an
         # unrelated registry root inside the test gate.
         env:
-          WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs perl perl-vfs python-vfs redis texlive
+          # homebrew-bootstrap is built by tap campaigns, not the legacy
+          # Kandelo package registry this step materializes.
+          WASM_POSIX_FETCH_SKIP_PKGS: cpython erlang erlang-vfs homebrew-bootstrap perl perl-vfs python-vfs redis texlive
         run: |
           bash scripts/dev-shell.sh bash -c '
             set -euo pipefail
