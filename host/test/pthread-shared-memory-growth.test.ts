@@ -32,17 +32,33 @@ const fixtures = [
   },
 ] as const;
 
+const architectures = [
+  {
+    name: "wasm32",
+    compiler: "wasm32posix-cc",
+    suffix: ".wasm",
+    iterations: ITERATIONS,
+  },
+  {
+    name: "wasm64",
+    compiler: "wasm64posix-cc",
+    suffix: ".wasm64.wasm",
+    iterations: 1,
+  },
+] as const;
+
 /*
  * These executable fixtures cover the real Kandelo pthread and worker path.
  * They protect two related safety properties: an existing pthread observes a
  * later grow, and growth can straddle creation of another pthread.
  *
- * They are intentionally not described as the RED reproduction for the
- * startup bug. Minimal guests also pass without the startup synchronization,
- * because a later grow gives Node another chance to update the receiving
- * isolate. The repeated SpiderMonkey test is the product-path RED evidence;
- * the focused isolate test protects the synchronization contract without
- * depending on guest scheduling.
+ * For wasm32, these are intentionally not described as the RED reproduction
+ * for the stale-view startup bug: a later grow gives Node another chance to
+ * update the receiving isolate. For wasm64, the first pthread startup is a
+ * deterministic RED test for the same synchronization boundary because the
+ * JavaScript memory64 API rejects a numeric page delta. One wasm64 execution
+ * per fixture proves that distinct width contract without multiplying this
+ * already-repeated suite's permanent cost.
  */
 
 let buildDirectory: string;
@@ -50,12 +66,15 @@ const programs = new Map<string, string>();
 
 beforeAll(() => {
   buildDirectory = mkdtempSync(join(tmpdir(), "kandelo-pthread-growth-"));
-  for (const fixture of fixtures) {
-    const output = join(buildDirectory, fixture.output);
-    execFileSync("wasm32posix-cc", [fixture.source, "-o", output], {
-      stdio: "inherit",
-    });
-    programs.set(fixture.output, output);
+  for (const architecture of architectures) {
+    for (const fixture of fixtures) {
+      const outputName = fixture.output.replace(/\.wasm$/, architecture.suffix);
+      const output = join(buildDirectory, outputName);
+      execFileSync(architecture.compiler, [fixture.source, "-o", output], {
+        stdio: "inherit",
+      });
+      programs.set(`${architecture.name}:${fixture.output}`, output);
+    }
   }
 });
 
@@ -66,28 +85,36 @@ afterAll(() => {
 });
 
 describe("pthread shared WebAssembly.Memory growth", () => {
-  for (const fixture of fixtures) {
-    it(
-      `runs ${basename(fixture.source)} repeatedly`,
-      async () => {
-        const programPath = programs.get(fixture.output);
-        expect(programPath).toBeDefined();
+  for (const architecture of architectures) {
+    for (const fixture of fixtures) {
+      it(
+        `runs ${basename(fixture.source)} (${architecture.name})`,
+        async () => {
+          const programPath = programs.get(
+            `${architecture.name}:${fixture.output}`,
+          );
+          expect(programPath).toBeDefined();
 
-        for (let iteration = 1; iteration <= ITERATIONS; iteration++) {
-          const result = await runCentralizedProgram({
-            programPath: programPath!,
-            argv: [fixture.output],
-            timeout: PROGRAM_TIMEOUT_MS,
-            useDefaultRootfs: false,
-          });
-          expect(result, `iteration ${iteration}`).toMatchObject({
-            exitCode: 0,
-            stdout: fixture.stdout,
-            stderr: "",
-          });
-        }
-      },
-      TEST_TIMEOUT_MS,
-    );
+          for (
+            let iteration = 1;
+            iteration <= architecture.iterations;
+            iteration++
+          ) {
+            const result = await runCentralizedProgram({
+              programPath: programPath!,
+              argv: [fixture.output],
+              timeout: PROGRAM_TIMEOUT_MS,
+              useDefaultRootfs: false,
+            });
+            expect(result, `iteration ${iteration}`).toMatchObject({
+              exitCode: 0,
+              stdout: fixture.stdout,
+              stderr: "",
+            });
+          }
+        },
+        TEST_TIMEOUT_MS,
+      );
+    }
   }
 });

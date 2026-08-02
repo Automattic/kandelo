@@ -2621,7 +2621,7 @@ export async function centralizedThreadWorkerMain(
 
   // WHY: synchronize the received memory before this isolate binds any view
   // or Wasm instance to a possibly stale fixed-length view of its backing.
-  synchronizeReceivedSharedWasmMemory(memory);
+  synchronizeReceivedSharedWasmMemory(memory, ptrWidth);
 
   let threadInstance: WebAssembly.Instance | undefined;
   let processDlopenLock: Int32Array | undefined;
