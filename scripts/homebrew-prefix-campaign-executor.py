@@ -5779,6 +5779,212 @@ def fetch_selection_release(
         shutil.rmtree(temporary, ignore_errors=True)
 
 
+def validate_selection_readback_receipt(
+    value: Any,
+    payload: bytes,
+    selection: dict[str, Any],
+    selection_payload: bytes,
+) -> dict[str, Any]:
+    value = exact_keys(
+        value,
+        {
+            "arch",
+            "assets",
+            "formula_count",
+            "kind",
+            "prepared_tree_git_oid",
+            "release_id",
+            "repository",
+            "roots",
+            "schema",
+            "selection_manifest_sha256",
+            "tag",
+            "target_commitish",
+            "visibility",
+        },
+        "closed selection readback receipt",
+    )
+    if (
+        value["schema"] != 1
+        or value["kind"]
+        != "kandelo-homebrew-closed-selection-readback"
+        or value["visibility"] != "public-anonymous-readback"
+    ):
+        fail("closed selection readback receipt is unsupported")
+    assets = exact_keys(
+        value["assets"],
+        {SELECTION_DESCRIPTOR_ASSET, SELECTION_ARCHIVE_ASSET},
+        "closed selection readback assets",
+    )
+    for name in (SELECTION_DESCRIPTOR_ASSET, SELECTION_ARCHIVE_ASSET):
+        asset = exact_keys(
+            assets[name],
+            {"bytes", "sha256"},
+            f"closed selection readback asset {name}",
+        )
+        require_int(
+            asset["bytes"],
+            f"closed selection readback asset {name} bytes",
+            1,
+            MAX_ASSET_BYTES,
+        )
+        require_string(
+            asset["sha256"],
+            f"closed selection readback asset {name} SHA-256",
+            SHA256,
+        )
+    tag = require_string(
+        value["tag"], "closed selection readback tag"
+    )
+    match = SELECTION_TAG.fullmatch(tag)
+    if (
+        match is None
+        or match.group(1)
+        != assets[SELECTION_DESCRIPTOR_ASSET]["sha256"]
+    ):
+        fail("closed selection readback tag differs from its descriptor")
+    repository = require_string(
+        value["repository"],
+        "closed selection readback repository",
+        REPOSITORY,
+    )
+    if repository != repository.lower():
+        fail("closed selection readback repository is not canonical")
+    require_int(
+        value["release_id"],
+        "closed selection readback release id",
+        1,
+    )
+    require_string(
+        value["prepared_tree_git_oid"],
+        "closed selection readback prepared tree",
+        COMMIT,
+    )
+    require_string(
+        value["selection_manifest_sha256"],
+        "closed selection readback manifest SHA-256",
+        SHA256,
+    )
+    require_string(
+        value["target_commitish"],
+        "closed selection readback target commit",
+        COMMIT,
+    )
+    require_int(
+        value["formula_count"],
+        "closed selection readback Formula count",
+        1,
+        MAX_FORMULAE,
+    )
+    roots = value["roots"]
+    if (
+        not isinstance(roots, list)
+        or not roots
+        or len(roots) > MAX_FORMULAE
+    ):
+        fail("closed selection readback roots are invalid")
+    checked_roots = [
+        require_string(
+            root, "closed selection readback root", FORMULA
+        )
+        for root in roots
+    ]
+    if checked_roots != sorted(set(checked_roots)):
+        fail("closed selection readback roots must be unique and sorted")
+
+    tap = selection["tap"]
+    if (
+        value["arch"] != selection["arch"]
+        or repository != tap["repository"].lower()
+        or value["target_commitish"] != tap["source_commit"]
+        or checked_roots != selection["roots"]
+        or value["formula_count"] != len(selection["formulae"])
+        or value["prepared_tree_git_oid"]
+        != tap["prepared_tree_git_oid"]
+        or value["selection_manifest_sha256"]
+        != sha256_bytes(selection_payload)
+    ):
+        fail("closed selection readback differs from selected tap bytes")
+    if payload != pretty_json(value):
+        fail("closed selection readback receipt is not canonical JSON")
+    return value
+
+
+def verify_selection_readback(
+    *,
+    selection_root: pathlib.Path,
+    receipt_path: pathlib.Path,
+    output: pathlib.Path,
+) -> None:
+    selection_root = real_directory(
+        selection_root, "closed selection root"
+    )
+    receipt_path = regular_file(
+        receipt_path, "closed selection readback receipt"
+    )
+    output = validate_new_output(
+        output,
+        "closed selection verification report",
+        (selection_root, receipt_path),
+    )
+    selection, selection_payload, _tap_root = load_selection_candidate(
+        selection_root
+    )
+    receipt, receipt_payload = load_json_bytes(
+        receipt_path, "closed selection readback receipt"
+    )
+    receipt = validate_selection_readback_receipt(
+        receipt,
+        receipt_payload,
+        selection,
+        selection_payload,
+    )
+    formulae = sorted(
+        require_string(
+            formula["formula"],
+            "closed selection verification Formula",
+            FORMULA,
+        )
+        for formula in selection["formulae"]
+    )
+    report = {
+        "arch": selection["arch"],
+        "formula_count": len(formulae),
+        "formulae": formulae,
+        "kandelo_abi": selection["kandelo_abi"],
+        "kind": "kandelo-homebrew-closed-selection-verification",
+        "prepared_tree_git_oid": selection["tap"][
+            "prepared_tree_git_oid"
+        ],
+        "readback": {
+            "receipt_sha256": sha256_bytes(receipt_payload),
+            "release_id": receipt["release_id"],
+            "repository": receipt["repository"],
+            "tag": receipt["tag"],
+            "visibility": receipt["visibility"],
+        },
+        "roots": selection["roots"],
+        "schema": 1,
+        "selection_manifest_sha256": sha256_bytes(selection_payload),
+        "source_tap_commit": selection["tap"]["source_commit"],
+        "tap_name": selection["tap"]["name"],
+    }
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{output.name}.", dir=output.parent
+    )
+    temporary = pathlib.Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(pretty_json(report))
+        os.chmod(temporary, 0o644)
+        # WHY: the report is authorization for a detached tap tree. Publish
+        # it only after the immutable readback receipt and every tree byte
+        # agree, and never replace an authorization another process created.
+        os.link(temporary, output)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def stage_dependency_bottle_inputs(
     *,
     loaded_handoffs: LoadedDependencyHandoffs,
@@ -7075,6 +7281,13 @@ def parse_args() -> argparse.Namespace:
     fetch_selection.add_argument("--out", required=True)
     fetch_selection.add_argument("--receipt-out", required=True)
 
+    verify_selection = commands.add_parser(
+        "verify-selection-readback"
+    )
+    verify_selection.add_argument("--selection", required=True)
+    verify_selection.add_argument("--receipt", required=True)
+    verify_selection.add_argument("--report-out", required=True)
+
     final_tap = commands.add_parser("prepare-final-tap")
     final_tap.add_argument("--campaign", required=True)
     final_tap.add_argument("--source-tap-root", required=True)
@@ -7193,6 +7406,12 @@ def main() -> int:
                 tag=arguments.tag,
                 output=pathlib.Path(arguments.out),
                 receipt_output=pathlib.Path(arguments.receipt_out),
+            )
+        elif arguments.command == "verify-selection-readback":
+            verify_selection_readback(
+                selection_root=pathlib.Path(arguments.selection),
+                receipt_path=pathlib.Path(arguments.receipt),
+                output=pathlib.Path(arguments.report_out),
             )
         elif arguments.command == "prepare-final-tap":
             prepare_final_tap(

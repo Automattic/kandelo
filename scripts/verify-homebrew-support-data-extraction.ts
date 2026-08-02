@@ -42,7 +42,14 @@ export async function runHomebrewSupportDataExtractionVerifier(
   const options = parseArgs(args);
   const tapRoot = requireTapInput(
     options.tapRoot,
-    options.expectedTapSha,
+    {
+      expectedTapSha: options.expectedTapSha,
+      expectedTapRepository: options.tapRepository,
+      expectedTapName: options.tapName,
+      expectedPackageName: options.packageName,
+      expectedArch: options.arch,
+      expectedAbi: options.expectedAbi,
+    },
     options.selectionVerificationReport,
   );
   const report = parseJson(

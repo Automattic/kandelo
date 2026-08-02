@@ -2193,6 +2193,34 @@ product passed those runtime gates.
 
 #### Binding the main shell to a closed selection
 
+The fetched tap is a directory of released bytes, not a Git checkout. Before
+passing it to a consumer that normally requires a clean checkout, create the
+generic detached-tree authorization:
+
+```sh
+bash scripts/dev-shell.sh python3 \
+  scripts/homebrew-prefix-campaign-executor.py \
+  verify-selection-readback \
+  --selection fetched-selection \
+  --receipt selection-readback.json \
+  --report-out selection-verification.json
+```
+
+This command independently rechecks the selection manifest, anonymous
+readback receipt, source commit, ABI, Formula inventory, release identity, and
+every byte in the prepared tap tree. The resulting bounded report lets the
+support-data extractor and its detached-output verifier accept that exact
+tree without pretending it has a Git `HEAD`. The consumer still compares the
+report with its requested tap, package, architecture, and ABI and recomputes
+the Git tree identity before opening tap metadata.
+
+This report authorizes one released input; it does not choose a product or
+move a product pointer. The main shell's separate selection lock continues to
+own its reviewed roots and shipping policy. This separation also lets a
+smaller diagnostic consumer, such as the five-Formula `brew --version`
+closure, use the same released-selection contract without claiming to be the
+main shell.
+
 The shell has a separate reviewed lock,
 `homebrew/main-shell-selection-lock.json`. Its pending form binds the Brewfile,
 guest layout, migration lock, and in-guest Homebrew runtime-support contract,

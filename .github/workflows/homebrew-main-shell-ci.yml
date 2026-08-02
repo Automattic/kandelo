@@ -660,6 +660,7 @@ jobs:
               selection_root="$RUNNER_TEMP/homebrew-main-shell-selection"
               selection_receipt="$RUNNER_TEMP/homebrew-main-shell-selection-receipt.json"
               selection_report="$RUNNER_TEMP/homebrew-main-shell-selection-verification.json"
+              selection_authorization="$RUNNER_TEMP/homebrew-closed-selection-authorization.json"
               selection_tag=$(jq -er '.release.tag' \
                 homebrew/main-shell-selection-lock.json)
               selection_repository=$(jq -er '.release.repository' \
@@ -679,6 +680,12 @@ jobs:
                   --out "$selection_root" \
                   --receipt-out "$selection_receipt"
               bash scripts/dev-shell.sh python3 \
+                scripts/homebrew-prefix-campaign-executor.py \
+                  verify-selection-readback \
+                  --selection "$selection_root" \
+                  --receipt "$selection_receipt" \
+                  --report-out "$selection_authorization"
+              bash scripts/dev-shell.sh python3 \
                 scripts/homebrew-main-shell-selection-lock.py verify \
                   --lock homebrew/main-shell-selection-lock.json \
                   --selection "$selection_root" \
@@ -690,7 +697,7 @@ jobs:
                 --closed-selection-receipt "$selection_receipt"
               )
               selection_support_args=(
-                --selection-verification-report "$selection_report"
+                --selection-verification-report "$selection_authorization"
               )
               ;;
             pending)

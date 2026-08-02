@@ -21,6 +21,11 @@ import type { HomebrewBottleArch } from "../host/src/homebrew-vfs-planner";
 import { filesystemGitTreeOid } from "./homebrew-selection-tree";
 
 const GIT_SHA_RE = /^[0-9a-f]{40}$/;
+const SHA256_RE = /^[0-9a-f]{64}$/;
+const FORMULA_RE = /^[a-z0-9][a-z0-9._-]{0,254}$/;
+const REPOSITORY_RE =
+  /^[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})\/[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})$/;
+const SELECTION_TAG_RE = /^homebrew-prefix-selection-sha256-[0-9a-f]{64}$/;
 const MAX_TAP_CONTROL_FILE_BYTES = 16 * 1024 * 1024;
 
 interface CliOptions {
@@ -35,13 +40,29 @@ interface CliOptions {
   selectionVerificationReport?: string;
 }
 
+export interface HomebrewTapInputRequirements {
+  expectedTapSha: string;
+  expectedTapRepository: string;
+  expectedTapName: string;
+  expectedPackageName: string;
+  expectedArch: HomebrewBottleArch;
+  expectedAbi: number;
+}
+
 export async function runHomebrewSupportDataBottleExtractor(
   args: string[],
 ): Promise<void> {
   const options = parseArgs(args);
   const tapRoot = requireTapInput(
     options.tapRoot,
-    options.expectedTapSha,
+    {
+      expectedTapSha: options.expectedTapSha,
+      expectedTapRepository: options.tapRepository,
+      expectedTapName: options.tapName,
+      expectedPackageName: options.packageName,
+      expectedArch: options.arch,
+      expectedAbi: options.expectedAbi,
+    },
     options.selectionVerificationReport,
   );
   const outputDirectory = resolve(options.outputDirectory);
@@ -233,11 +254,21 @@ export function requireExactTapCheckout(
 
 export function requireTapInput(
   path: string,
-  expectedTapSha: string,
+  requirements: HomebrewTapInputRequirements,
   selectionVerificationReport?: string,
 ): string {
+  if (
+    !GIT_SHA_RE.test(requirements.expectedTapSha) ||
+    !REPOSITORY_RE.test(requirements.expectedTapRepository) ||
+    !REPOSITORY_RE.test(requirements.expectedTapName) ||
+    !FORMULA_RE.test(requirements.expectedPackageName) ||
+    !Number.isSafeInteger(requirements.expectedAbi) ||
+    requirements.expectedAbi < 1
+  ) {
+    throw new Error("tap input requirements are invalid");
+  }
   if (selectionVerificationReport === undefined) {
-    return requireExactTapCheckout(path, expectedTapSha);
+    return requireExactTapCheckout(path, requirements.expectedTapSha);
   }
   const tapRoot = requireRealDirectory(path, "tap root");
   const reportPath = resolve(selectionVerificationReport);
@@ -260,14 +291,124 @@ export function requireTapInput(
       "selection verification report must be one bounded regular file",
     );
   }
+  const reportBytes = readFileSync(reportPath);
   const report = parseJson(
-    new Uint8Array(readFileSync(reportPath)),
+    new Uint8Array(reportBytes),
     "selection verification report",
   );
+  if (
+    !reportBytes.equals(
+      Buffer.from(`${JSON.stringify(report, null, 2)}\n`, "utf8"),
+    )
+  ) {
+    // WHY: JSON.parse keeps only the last occurrence of a repeated key. The
+    // Python verifier emits canonical pretty JSON, so byte equality rejects
+    // duplicate authority fields instead of silently choosing one value.
+    throw new Error("selection verification report is not canonical JSON");
+  }
   if (typeof report !== "object" || report === null || Array.isArray(report)) {
     throw new Error("selection verification report must be an object");
   }
   const record = report as Record<string, unknown>;
+  if (record.kind === "kandelo-homebrew-main-shell-selection-verification") {
+    return requireLegacyMainShellSelection(
+      tapRoot,
+      record,
+      requirements.expectedTapSha,
+    );
+  }
+  const expectedKeys = [
+    "arch",
+    "formula_count",
+    "formulae",
+    "kandelo_abi",
+    "kind",
+    "prepared_tree_git_oid",
+    "readback",
+    "roots",
+    "schema",
+    "selection_manifest_sha256",
+    "source_tap_commit",
+    "tap_name",
+  ];
+  const formulae = canonicalFormulaList(record.formulae, "report Formulae");
+  const roots = canonicalFormulaList(record.roots, "report roots");
+  const readback = plainRecord(record.readback);
+  const expectedReadbackKeys = [
+    "receipt_sha256",
+    "release_id",
+    "repository",
+    "tag",
+    "visibility",
+  ];
+  if (
+    Object.keys(record).sort().join("\0") !== expectedKeys.join("\0") ||
+    record.schema !== 1 ||
+    record.kind !== "kandelo-homebrew-closed-selection-verification" ||
+    record.arch !== requirements.expectedArch ||
+    record.kandelo_abi !== requirements.expectedAbi ||
+    record.source_tap_commit !== requirements.expectedTapSha ||
+    record.tap_name !== requirements.expectedTapName ||
+    typeof record.prepared_tree_git_oid !== "string" ||
+    !GIT_SHA_RE.test(record.prepared_tree_git_oid) ||
+    typeof record.selection_manifest_sha256 !== "string" ||
+    !SHA256_RE.test(record.selection_manifest_sha256) ||
+    !Number.isSafeInteger(record.formula_count) ||
+    record.formula_count !== formulae.length ||
+    !formulae.includes(requirements.expectedPackageName) ||
+    roots.some((root) => !formulae.includes(root)) ||
+    readback === undefined ||
+    Object.keys(readback).sort().join("\0") !==
+      expectedReadbackKeys.join("\0") ||
+    readback.visibility !== "public-anonymous-readback" ||
+    readback.repository !== requirements.expectedTapRepository.toLowerCase() ||
+    typeof readback.receipt_sha256 !== "string" ||
+    !SHA256_RE.test(readback.receipt_sha256) ||
+    !Number.isSafeInteger(readback.release_id) ||
+    (readback.release_id as number) < 1 ||
+    typeof readback.tag !== "string" ||
+    !SELECTION_TAG_RE.test(readback.tag) ||
+    filesystemGitTreeOid(tapRoot) !== record.prepared_tree_git_oid
+  ) {
+    throw new Error(
+      "selection verification report does not authorize this tap input",
+    );
+  }
+  // WHY: a released selection is an immutable tree, not a branch checkout.
+  // The generic campaign verifier binds its public readback receipt, Formula
+  // inventory, source commit, and tree bytes. Requiring a fictional HEAD here
+  // would force a useful partial catalog onto tap main before consumption.
+  return tapRoot;
+}
+
+function plainRecord(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
+}
+
+function canonicalFormulaList(value: unknown, label: string): string[] {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 256) {
+    throw new Error(`${label} must be one bounded non-empty array`);
+  }
+  const checked = value.map((item) => {
+    if (typeof item !== "string" || !FORMULA_RE.test(item)) {
+      throw new Error(`${label} contains an invalid Formula name`);
+    }
+    return item;
+  });
+  if (checked.some((item, index) => index > 0 && item <= checked[index - 1]!)) {
+    throw new Error(`${label} must be unique and sorted`);
+  }
+  return checked;
+}
+
+function requireLegacyMainShellSelection(
+  tapRoot: string,
+  record: Record<string, unknown>,
+  expectedTapSha: string,
+): string {
   const expectedKeys = [
     "arch",
     "formula_count",
@@ -282,14 +423,13 @@ export function requireTapInput(
   if (
     Object.keys(record).sort().join("\0") !== expectedKeys.join("\0") ||
     record.schema !== 1 ||
-    record.kind !== "kandelo-homebrew-main-shell-selection-verification" ||
     record.arch !== "wasm32" ||
     (record.state !== "pending" && record.state !== "sealed") ||
     record.source_tap_commit !== expectedTapSha ||
     typeof record.prepared_tree_git_oid !== "string" ||
     !GIT_SHA_RE.test(record.prepared_tree_git_oid) ||
     typeof record.selection_manifest_sha256 !== "string" ||
-    !/^[0-9a-f]{64}$/.test(record.selection_manifest_sha256) ||
+    !SHA256_RE.test(record.selection_manifest_sha256) ||
     !Number.isSafeInteger(record.formula_count) ||
     (record.formula_count as number) < 1 ||
     !Array.isArray(record.roots) ||
@@ -300,10 +440,6 @@ export function requireTapInput(
       "selection verification report does not authorize this tap input",
     );
   }
-  // WHY: a closed selection is an immutable released tree, not a branch
-  // checkout. Its Python verifier has already recomputed the selected Git
-  // tree and bound it to this report, so requiring a fictional HEAD here
-  // would force the partial catalog onto tap main before it can be consumed.
   return tapRoot;
 }
 

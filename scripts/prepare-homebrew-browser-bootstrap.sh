@@ -107,6 +107,7 @@ trap 'exit 143' TERM
 
 selection_state="$(jq -er '.state' "$SELECTION_LOCK")"
 selection_report="$work_root/selection-verification.json"
+product_selection_report="$work_root/main-shell-selection-verification.json"
 case "$selection_state" in
   sealed)
     [ -z "$PENDING_SELECTION_ROOT" ] ||
@@ -131,6 +132,11 @@ case "$selection_state" in
     python3 "$REPO_ROOT/scripts/homebrew-main-shell-selection-lock.py" \
       verify \
       --lock "$SELECTION_LOCK" \
+      --selection "$selection_root" \
+      --receipt "$selection_receipt" \
+      --report-out "$product_selection_report"
+    python3 "$REPO_ROOT/scripts/homebrew-prefix-campaign-executor.py" \
+      verify-selection-readback \
       --selection "$selection_root" \
       --receipt "$selection_receipt" \
       --report-out "$selection_report"

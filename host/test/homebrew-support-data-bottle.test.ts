@@ -231,6 +231,73 @@ describe("Homebrew support-data bottle extraction", () => {
       ]);
 
       expect(JSON.parse(readFileSync(verifiedPath, "utf8"))).toEqual(report);
+
+      const preparedTree = git(tapRoot, ["write-tree"]).trim();
+      rmSync(join(tapRoot, ".git"), { recursive: true, force: true });
+      const selectionAuthorization = join(
+        root,
+        "closed-selection-authorization.json",
+      );
+      writeFileSync(
+        selectionAuthorization,
+        jsonBytes({
+          arch: "wasm32",
+          formula_count: 1,
+          formulae: [PACKAGE],
+          kandelo_abi: ABI_VERSION,
+          kind: "kandelo-homebrew-closed-selection-verification",
+          prepared_tree_git_oid: preparedTree,
+          readback: {
+            receipt_sha256: "5".repeat(64),
+            release_id: 19,
+            repository: TAP_REPOSITORY,
+            tag: `homebrew-prefix-selection-sha256-${"6".repeat(64)}`,
+            visibility: "public-anonymous-readback",
+          },
+          roots: [PACKAGE],
+          schema: 1,
+          selection_manifest_sha256: "7".repeat(64),
+          source_tap_commit: checkoutCommit,
+          tap_name: TAP_NAME,
+        }),
+      );
+      const detachedVerifiedPath = join(
+        root,
+        "detached-verified",
+        "report.json",
+      );
+      // WHY: public closed selections intentionally have no `.git` directory.
+      // The reusable Python verifier authorizes their exact tree and receipt;
+      // this detached pass proves the output verifier consumes that contract.
+      await runHomebrewSupportDataExtractionVerifier([
+        "--tap-root",
+        tapRoot,
+        "--expected-tap-sha",
+        checkoutCommit,
+        "--tap-repository",
+        TAP_REPOSITORY,
+        "--tap-name",
+        TAP_NAME,
+        "--package",
+        PACKAGE,
+        "--arch",
+        "wasm32",
+        "--expected-abi",
+        String(ABI_VERSION),
+        "--report",
+        reportPath,
+        "--output",
+        `archive=${join(extractionRoot, "support.zip")}`,
+        "--output",
+        `environment=${join(extractionRoot, "support.env")}`,
+        "--selection-verification-report",
+        selectionAuthorization,
+        "--verified-report-out",
+        detachedVerifiedPath,
+      ]);
+      expect(JSON.parse(readFileSync(detachedVerifiedPath, "utf8"))).toEqual(
+        report,
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

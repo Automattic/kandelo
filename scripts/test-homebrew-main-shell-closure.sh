@@ -716,9 +716,14 @@ grep -Fq 'prepare-selection-release' "$SELECTION_PUBLISHER" &&
   grep -Fq 'fetch-selection-release' "$SELECTION_PUBLISHER" ||
   fail "closed-selection publisher must prepare, publish, and read back one immutable selection"
 grep -Fq 'fetch-selection-release' "$WORKFLOW" &&
+  grep -Fq 'verify-selection-readback' "$WORKFLOW" &&
+  grep -Fq -- '--report-out "$selection_authorization"' "$WORKFLOW" &&
+  grep -Fq -- \
+    '--selection-verification-report "$selection_authorization"' \
+    "$WORKFLOW" &&
   grep -Fq -- '--closed-selection-root "$selection_root"' "$WORKFLOW" &&
   grep -Fq -- '--closed-selection-receipt "$selection_receipt"' "$WORKFLOW" ||
-  fail "main-shell workflow does not consume its immutable closed selection"
+  fail "main-shell workflow does not authorize its immutable closed selection"
 grep -Fq 'validate_selected_formula_closure' "$SELECTION_LOCK_TOOL" &&
   grep -Fq 'filesystemGitTreeOid(tapRoot)' \
     "$REPO_ROOT/scripts/extract-homebrew-support-data-bottle.ts" ||
@@ -2497,6 +2502,7 @@ grep -Fq 'scripts/prepare-homebrew-browser-bootstrap.sh' \
   fail "the shared browser bootstrap preparer must be executable"
 for contract in \
   'fetch-selection-release' \
+  'verify-selection-readback' \
   'homebrew-main-shell-selection-lock.py' \
   'extract-homebrew-support-data-bottle.ts' \
   'env -u GH_TOKEN -u GITHUB_TOKEN' \

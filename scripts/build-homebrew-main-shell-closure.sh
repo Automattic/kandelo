@@ -24,6 +24,7 @@ MATERIALIZATION_POLICY="$REPO_ROOT/homebrew/main-shell-materialization-policy.js
 RUNTIME_SUPPORT="$REPO_ROOT/homebrew/main-shell-homebrew-runtime-support.json"
 CLOSED_SELECTION_LOCK="$REPO_ROOT/homebrew/main-shell-selection-lock.json"
 CLOSED_SELECTION_CHECKER="$REPO_ROOT/scripts/homebrew-main-shell-selection-lock.py"
+CLOSED_SELECTION_AUTHORIZER="$REPO_ROOT/scripts/homebrew-prefix-campaign-executor.py"
 LAZY_ARTIFACT_LOCK="$REPO_ROOT/homebrew/main-shell-lazy-artifact-lock.json"
 LAZY_ARTIFACT_CHECKER="$REPO_ROOT/scripts/verify-homebrew-main-shell-artifact-lock.sh"
 BOTTLE_MIRROR_REPOSITORY="kandelo-dev/homebrew-tap-core"
@@ -315,11 +316,14 @@ for tool in git jq node python3 ruby sha256sum wc; do
 done
 
 CLOSED_SELECTION_REPORT=""
+CLOSED_SELECTION_AUTHORIZATION=""
 if [ -n "$CLOSED_SELECTION_ROOT" ]; then
   if [ ! -f "$CLOSED_SELECTION_LOCK" ] ||
      [ -L "$CLOSED_SELECTION_LOCK" ] ||
      [ ! -f "$CLOSED_SELECTION_CHECKER" ] ||
-     [ -L "$CLOSED_SELECTION_CHECKER" ]; then
+     [ -L "$CLOSED_SELECTION_CHECKER" ] ||
+     [ ! -f "$CLOSED_SELECTION_AUTHORIZER" ] ||
+     [ -L "$CLOSED_SELECTION_AUTHORIZER" ]; then
     echo "build-homebrew-main-shell-closure: closed-selection verifier is unavailable" >&2
     exit 2
   fi
@@ -361,6 +365,19 @@ if [ -n "$CLOSED_SELECTION_ROOT" ]; then
     echo "build-homebrew-main-shell-closure: selection report differs from the catalog lock" >&2
     exit 1
   }
+  if [ "$selection_state" = sealed ]; then
+    CLOSED_SELECTION_AUTHORIZATION="$WORK_DIR/closed-selection-authorization.json"
+    PYTHONDONTWRITEBYTECODE=1 python3 "$CLOSED_SELECTION_AUTHORIZER" \
+      verify-selection-readback \
+      --selection "$CLOSED_SELECTION_ROOT" \
+      --receipt "$CLOSED_SELECTION_RECEIPT" \
+      --report-out "$CLOSED_SELECTION_AUTHORIZATION"
+  else
+    # Pending selections are review-only and have no public receipt yet. The
+    # product verifier remains their narrow temporary authorization; sealed
+    # products use the reusable public-readback contract above.
+    CLOSED_SELECTION_AUTHORIZATION="$CLOSED_SELECTION_REPORT"
+  fi
 else
   if [ -n "$CLOSED_SELECTION_RECEIPT" ]; then
     echo "build-homebrew-main-shell-closure: selection receipt requires a closed selection" >&2
@@ -531,9 +548,9 @@ if [ -n "$PACKAGE_TREE_SPEC" ]; then
   if [ -n "$HOMEBREW_BOOTSTRAP_BOTTLE_REPORT" ]; then
     VERIFIED_BOOTSTRAP_REPORT="$WORK_DIR/homebrew-bootstrap-bottle-report.json"
     SUPPORT_SELECTION_ARGS=()
-    if [ -n "$CLOSED_SELECTION_REPORT" ]; then
+    if [ -n "$CLOSED_SELECTION_AUTHORIZATION" ]; then
       SUPPORT_SELECTION_ARGS=(
-        --selection-verification-report "$CLOSED_SELECTION_REPORT"
+        --selection-verification-report "$CLOSED_SELECTION_AUTHORIZATION"
       )
     fi
     # WHY: the archive and environment are detached from their bottle here.

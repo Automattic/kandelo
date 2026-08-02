@@ -3132,6 +3132,85 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             "public-anonymous-readback",
         )
         self.assertEqual(receipt_value["formula_count"], 1)
+        verification = fixture.root / "selection-verification.json"
+        EXECUTOR.verify_selection_readback(
+            selection_root=output,
+            receipt_path=receipt,
+            output=verification,
+        )
+        report = json.loads(verification.read_text())
+        self.assertEqual(
+            report["kind"],
+            "kandelo-homebrew-closed-selection-verification",
+        )
+        self.assertEqual(report["formulae"], ["alpha"])
+        self.assertEqual(report["kandelo_abi"], 42)
+        self.assertEqual(report["source_tap_commit"], SOURCE_TAP_COMMIT)
+        self.assertEqual(
+            report["readback"]["visibility"],
+            "public-anonymous-readback",
+        )
+
+        receipt_mutations = {
+            "architecture": lambda value: value.__setitem__(
+                "arch", "wasm64"
+            ),
+            "Formula count": lambda value: value.__setitem__(
+                "formula_count", 2
+            ),
+            "manifest digest": lambda value: value.__setitem__(
+                "selection_manifest_sha256", "e" * 64
+            ),
+            "prepared tree": lambda value: value.__setitem__(
+                "prepared_tree_git_oid", "f" * 40
+            ),
+            "release repository": lambda value: value.__setitem__(
+                "repository", "example/other-tap"
+            ),
+            "release target": lambda value: value.__setitem__(
+                "target_commitish", "e" * 40
+            ),
+            "roots": lambda value: value.__setitem__(
+                "roots", ["beta"]
+            ),
+            "visibility": lambda value: value.__setitem__(
+                "visibility", "authenticated-readback"
+            ),
+        }
+        for position, (label, mutate) in enumerate(
+            receipt_mutations.items()
+        ):
+            with self.subTest(receipt_mutation=label):
+                changed = json.loads(receipt.read_text())
+                mutate(changed)
+                changed_receipt = (
+                    fixture.root / f"changed-receipt-{position}.json"
+                )
+                write_json(changed_receipt, changed)
+                rejected = fixture.root / f"rejected-report-{position}.json"
+                with self.assertRaisesRegex(
+                    EXECUTOR.ExecutorError,
+                    "unsupported|differs|canonical",
+                ):
+                    EXECUTOR.verify_selection_readback(
+                        selection_root=output,
+                        receipt_path=changed_receipt,
+                        output=rejected,
+                    )
+                self.assertFalse(rejected.exists())
+
+        (output / "tap/Formula/alpha.rb").write_text(
+            "class Substituted < Formula\nend\n"
+        )
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "differs from its prepared Git tree",
+        ):
+            EXECUTOR.verify_selection_readback(
+                selection_root=output,
+                receipt_path=receipt,
+                output=fixture.root / "substituted-tree-report.json",
+            )
 
     def test_materialize_campaign_source_uses_kandelo_authority(self) -> None:
         fixture = FinalTapFixture()
