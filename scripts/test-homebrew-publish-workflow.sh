@@ -7545,6 +7545,7 @@ bash "$REPO_ROOT/scripts/test-homebrew-sibling-bottle-policy.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-patched-launcher.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-native-api-contract.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-prefix-campaign-layout.sh"
+bash "$REPO_ROOT/scripts/test-homebrew-prepare-host-prefix.sh"
 PYTHONDONTWRITEBYTECODE=1 \
   python3 "$REPO_ROOT/scripts/test-homebrew-prefix-campaign.py"
 PYTHONDONTWRITEBYTECODE=1 \

@@ -68,10 +68,10 @@ NATIVE_CA_PROOF_RUN_SHA256 =
 NATIVE_CA_VALIDATION_RUN_SHA256 =
   "7cb1417ec6df08daefa71c2ee6a364be76737b9d7f7ed4aa4022d3d7ca90a8b9"
 PUBLISHER_PLAN_DIGEST = "52939a92dbec649cd11a88ea3b980dfe65004d6c540503590c46c621ede15c0a"
-PUBLISHER_BUILD_DIGEST = "78f735ac34a6acdb56558a1725a2939807a8f5032598de3ac82d8abcd044fb20"
+PUBLISHER_BUILD_DIGEST = "785a38120f383559364d1f401ea0e46b8d5938408bac7db705cd0acf3eeedc9d"
 PUBLISHER_UPLOAD_DIGEST = "861d649d73bb470fc37f99751733e8360f3f59f6245b80e2dd8d7eb4f40f3290"
 PUBLISHER_INDEX_DIGEST = "30531067dcd20c314ef8ae4b9d8584716a92fc803a194098913355ebb519754b"
-PUBLISHER_VERIFY_DIGEST = "3065aee3c33c5de227ce46bbf4300a821bca3809db6842bb0f59a65cb8a5dddc"
+PUBLISHER_VERIFY_DIGEST = "4901878e1d88590f103dff6df2f17216e10427f37684f854faa64bf6bf3b68f9"
 PUBLISHER_FINALIZE_DIGEST = "b17e7bf5d0a5ef512e49f74c224a94958642dfdd80a27439f2a0335816a0886b"
 PUBLISHER_VFS_RELEASE_DIGEST = "2db9ec075edf382e326066d5f49a32947f5a584fce26a966fb9fff23bbbe3c26"
 MAINTENANCE_VALIDATE_DIGEST = "30ebccd5d44e004e37f168e81284d7ceb18accfa067c05248c1cc19398a7515f"
@@ -2696,6 +2696,63 @@ def check_publisher(workflow)
       },
     },
   ], "publisher verifier checkout wiring changed")
+
+  [
+    [build_steps, "Activate reviewed Homebrew implementation"],
+    [verify_steps,
+     "Activate reviewed Homebrew implementation for bottle verification"],
+  ].each do |steps, name|
+    activation = named_step(steps, name)
+    activation_run = activation.fetch("run")
+    [
+      '. kandelo/scripts/homebrew-guest-layout.sh',
+      'homebrew_select_guest_layout',
+      'brew_prefix="$HOMEBREW_GUEST_PREFIX"',
+      'bash kandelo/scripts/homebrew-prepare-host-prefix.sh',
+      '--layout-mode "$HOMEBREW_GUEST_LAYOUT_MODE"',
+      '--prefix "$brew_prefix"',
+    ].each do |fragment|
+      check(activation_run.include?(fragment),
+            "publisher #{name.inspect} lacks #{fragment}")
+    end
+    check(!activation_run.include?('sudo install -d -o "$(id -u)"'),
+          "publisher #{name.inspect} bypasses the protected prefix anchor")
+  end
+
+  host_prefix_preparer = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-prepare-host-prefix.sh")
+  )
+  [
+    'prefix-campaign:/opt/kandelo/homebrew)',
+    '"$prefix" 0 0 "$(/usr/bin/id -u)" "$(/usr/bin/id -g)"',
+    '"$anchor_parent" "$trusted_uid" "$trusted_gid"',
+    '"$anchor" "$trusted_uid" "$trusted_gid" "prefix anchor"',
+    '"$HOMEBREW_HOST_PREFIX_INSTALL" -d',
+    '"mutable Homebrew prefix must be a real non-symlink directory',
+    '"mutable Homebrew bin must be a real non-symlink directory',
+    'is replaceable because its owner is not trusted',
+    'does not have its required trusted group',
+    'A root-owned /opt/kandelo prevents the build user from renaming the',
+  ].each do |fragment|
+    check(host_prefix_preparer.include?(fragment),
+          "host prefix preparer lacks #{fragment}")
+  end
+  host_prefix_preparer_test = File.read(
+    File.join(REPO_ROOT, "scripts/test-homebrew-prepare-host-prefix.sh")
+  )
+  [
+    'absent_prefix=',
+    'prefix anchor must be a real non-symlink directory',
+    'prefix anchor is replaceable',
+    'prefix anchor does not have its required trusted group',
+    'prefix anchor parent must be traversable',
+    'prefix anchor must be traversable',
+    'mutable Homebrew prefix must be a real non-symlink directory',
+    'not a reviewed pair',
+  ].each do |fragment|
+    check(host_prefix_preparer_test.include?(fragment),
+          "host prefix preparer tests lack #{fragment}")
+  end
 
   failure_condition = "${{ always() && (steps.publish-handoffs.outcome != 'success' || " \
                       "steps.validate-payload.outcome != 'success' || steps.publish.outcome != 'success') }}"

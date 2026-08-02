@@ -1133,12 +1133,9 @@ jobs:
           [ -z "$(git -C "$brew_repository" status --short --untracked-files=no)" ] || {
             echo "::error::reviewed Homebrew checkout has tracked modifications"; exit 2;
           }
-          if [ "$HOMEBREW_GUEST_LAYOUT_MODE" = prefix-campaign ]; then
-            sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 \
-              "$brew_prefix" "$brew_prefix/bin"
-          else
-            mkdir -p "$brew_prefix/bin"
-          fi
+          bash kandelo/scripts/homebrew-prepare-host-prefix.sh \
+            --layout-mode "$HOMEBREW_GUEST_LAYOUT_MODE" \
+            --prefix "$brew_prefix"
           rm -f "$brew_prefix/bin/brew"
           ln -s "$brew_repository/bin/brew" "$brew_prefix/bin/brew"
           brew_bin="$brew_prefix/bin/brew"
@@ -2904,12 +2901,9 @@ jobs:
           [ -z "$(git -C "$brew_repository" status --short --untracked-files=no)" ] || {
             echo "::error::reviewed Homebrew verifier checkout has tracked modifications"; exit 2;
           }
-          if [ "$HOMEBREW_GUEST_LAYOUT_MODE" = prefix-campaign ]; then
-            sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0755 \
-              "$brew_prefix" "$brew_prefix/bin"
-          else
-            mkdir -p "$brew_prefix/bin"
-          fi
+          bash kandelo/scripts/homebrew-prepare-host-prefix.sh \
+            --layout-mode "$HOMEBREW_GUEST_LAYOUT_MODE" \
+            --prefix "$brew_prefix"
           rm -f "$brew_prefix/bin/brew"
           ln -s "$brew_repository/bin/brew" "$brew_prefix/bin/brew"
           brew_bin="$brew_prefix/bin/brew"
