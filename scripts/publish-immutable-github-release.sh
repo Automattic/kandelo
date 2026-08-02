@@ -8,6 +8,8 @@ LOCK_ROOT=""
 RECEIPT=""
 EXACT_KANDELO_MAIN_SHA=""
 EXACT_TARGET_MAIN_SHA=""
+EXACT_EXECUTION_KANDELO_MAIN_SHA=""
+EXACT_EXECUTION_TARGET_MAIN_SHA=""
 KANDELO_MAIN_CONTAINS_SHA=""
 TARGET_MAIN_CONTAINS_SHA=""
 
@@ -19,6 +21,14 @@ while [ "$#" -gt 0 ]; do
     --receipt) RECEIPT="$2"; shift 2 ;;
     --exact-kandelo-main-sha) EXACT_KANDELO_MAIN_SHA="$2"; shift 2 ;;
     --exact-target-main-sha) EXACT_TARGET_MAIN_SHA="$2"; shift 2 ;;
+    --exact-execution-kandelo-main-sha)
+      EXACT_EXECUTION_KANDELO_MAIN_SHA="${2:-}"
+      shift 2
+      ;;
+    --exact-execution-target-main-sha)
+      EXACT_EXECUTION_TARGET_MAIN_SHA="${2:-}"
+      shift 2
+      ;;
     --kandelo-main-contains-sha)
       KANDELO_MAIN_CONTAINS_SHA="${2:-}"
       shift 2
@@ -57,6 +67,23 @@ fi
 if [ -n "$EXACT_TARGET_MAIN_SHA" ] &&
    ! [[ "$EXACT_TARGET_MAIN_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   echo "publish-immutable-github-release: --exact-target-main-sha must be an exact lowercase 40-character SHA" >&2
+  exit 2
+fi
+for execution_revision in \
+  "$EXACT_EXECUTION_KANDELO_MAIN_SHA" \
+  "$EXACT_EXECUTION_TARGET_MAIN_SHA"
+do
+  if [ -n "$execution_revision" ] &&
+     ! [[ "$execution_revision" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "publish-immutable-github-release: exact execution authority must be a lowercase 40-character SHA" >&2
+    exit 2
+  fi
+done
+if { [ -n "$EXACT_EXECUTION_KANDELO_MAIN_SHA" ] &&
+     [ -z "$EXACT_EXECUTION_TARGET_MAIN_SHA" ]; } ||
+   { [ -z "$EXACT_EXECUTION_KANDELO_MAIN_SHA" ] &&
+     [ -n "$EXACT_EXECUTION_TARGET_MAIN_SHA" ]; }; then
+  echo "publish-immutable-github-release: exact execution authorities must be supplied together" >&2
   exit 2
 fi
 if [ -n "$TARGET_MAIN_CONTAINS_SHA" ] &&
@@ -165,6 +192,19 @@ require_main_authority() {
     bash "$REPO_ROOT/.github/scripts/require-repository-main-contains.sh" \
       --repository "$REPOSITORY" \
       --source-sha "$TARGET_MAIN_CONTAINS_SHA" >/dev/null
+  fi
+  # WHY: historical content remains publishable while it is contained in both
+  # protected histories, but the executable Kandelo publisher and tap caller
+  # are independently revocable. Check those exact current commits last so a
+  # main advance during the slower ancestry reads cannot authorize stale code.
+  if [ -n "$EXACT_EXECUTION_KANDELO_MAIN_SHA" ]; then
+    GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}" \
+      bash "$REPO_ROOT/.github/scripts/require-exact-kandelo-main.sh" \
+        --repository Automattic/kandelo \
+        --source-sha "$EXACT_EXECUTION_KANDELO_MAIN_SHA" >/dev/null
+    bash "$REPO_ROOT/.github/scripts/require-exact-repository-main.sh" \
+      --repository "$REPOSITORY" \
+      --source-sha "$EXACT_EXECUTION_TARGET_MAIN_SHA" >/dev/null
   fi
 }
 

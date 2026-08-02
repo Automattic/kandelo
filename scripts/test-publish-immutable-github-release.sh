@@ -282,9 +282,18 @@ elif (
         print("compare endpoint used an unexpected source or main", file=sys.stderr)
         sys.exit(2)
     state = load()
+    diverged = (
+        (
+            repository.lower() == "automattic/kandelo"
+            and os.environ.get("FAKE_CONTAINS_DIVERGE_AFTER_TAG")
+        )
+        or (
+            repository.lower() == "kandelo-dev/homebrew-tap-core"
+            and os.environ.get("FAKE_TARGET_CONTAINS_DIVERGE_AFTER_TAG")
+        )
+    )
     if (
-        repository.lower() == "automattic/kandelo"
-        and os.environ.get("FAKE_CONTAINS_DIVERGE_AFTER_TAG")
+        diverged
         and state["tags"]
         and publication_reached_asset_count(state)
     ):
@@ -471,6 +480,7 @@ chmod +x "$fake_bin/gh"
 
 cat >"$fake_bin/git" <<'PY'
 #!/usr/bin/env python3
+import json
 import os
 import pathlib
 import sys
@@ -494,6 +504,33 @@ if len(args) == 7 and args[:5] == prefix and args[6] == "refs/heads/main":
         "https://github.com/kandelo-dev/homebrew-tap-core.git"
     ):
         main = os.environ["FAKE_TARGET_MAIN_SHA"]
+        root = pathlib.Path(os.environ["FAKE_GITHUB_STATE"])
+        state_path = root / "state.json"
+        log_path = root / "git.log"
+        prior_calls = (
+            log_path.read_text().splitlines() if log_path.exists() else []
+        )
+        execution_read = bool(
+            prior_calls
+            and prior_calls[-1].lower()
+            == "https://github.com/kandelo-dev/homebrew-tap-core.git"
+        )
+        if state_path.exists():
+            state = json.loads(state_path.read_text())
+            expected = int(
+                os.environ.get("FAKE_ADVANCE_AFTER_ASSET_COUNT") or "0"
+            )
+            complete = expected > 0 and any(
+                len(item["assets"]) >= expected
+                for item in state["releases"]
+            )
+            if (
+                os.environ.get("FAKE_TARGET_MAIN_ADVANCE_AFTER_TAG")
+                and state.get("tags")
+                and complete
+                and execution_read
+            ):
+                main = "f" * 40
     else:
         print("unsupported anonymous repository", file=sys.stderr)
         sys.exit(2)
@@ -582,6 +619,8 @@ run_publisher_with_authority() {
   FAKE_TARGET_CONTAINED_SHA="$target" \
   FAKE_MAIN_ADVANCE_AFTER_TAG="${FAKE_MAIN_ADVANCE_AFTER_TAG:-}" \
   FAKE_CONTAINS_DIVERGE_AFTER_TAG="${FAKE_CONTAINS_DIVERGE_AFTER_TAG:-}" \
+  FAKE_TARGET_CONTAINS_DIVERGE_AFTER_TAG="${FAKE_TARGET_CONTAINS_DIVERGE_AFTER_TAG:-}" \
+  FAKE_TARGET_MAIN_ADVANCE_AFTER_TAG="${FAKE_TARGET_MAIN_ADVANCE_AFTER_TAG:-}" \
   FAKE_ADVANCE_AFTER_ASSET_COUNT="${FAKE_ADVANCE_AFTER_ASSET_COUNT:-}" \
   FAKE_MOVE_TAG_DURING_FINAL_AUTHORITY="${FAKE_MOVE_TAG_DURING_FINAL_AUTHORITY:-}" \
   FAKE_TAG_CREATION_DENIED="${FAKE_TAG_CREATION_DENIED:-}" \
@@ -609,6 +648,18 @@ run_publisher_contains() {
   FAKE_KANDELO_MAIN_SHA="$CONTAINS_KANDELO_MAIN_SHA" \
   FAKE_TARGET_MAIN_SHA="$CONTAINS_TARGET_MAIN_SHA" \
     run_publisher_with_authority \
+      --kandelo-main-contains-sha "$EXACT_MAIN_SHA" \
+      --target-main-contains-sha "$target"
+}
+
+run_publisher_dual_authority() {
+  FAKE_KANDELO_MAIN_SHA="$CONTAINS_KANDELO_MAIN_SHA" \
+  FAKE_TARGET_MAIN_SHA="$CONTAINS_TARGET_MAIN_SHA" \
+    run_publisher_with_authority \
+      --exact-execution-kandelo-main-sha \
+        "$CONTAINS_KANDELO_MAIN_SHA" \
+      --exact-execution-target-main-sha \
+        "$CONTAINS_TARGET_MAIN_SHA" \
       --kandelo-main-contains-sha "$EXACT_MAIN_SHA" \
       --target-main-contains-sha "$target"
 }
@@ -784,6 +835,19 @@ expect_failure_containing \
 [ ! -s "$ACTIVE_STATE/gh.log" ] ||
   fail "contained target mismatch reached a GitHub API client"
 
+new_state incomplete-execution-authority
+ACTIVE_MANIFEST="$contains_manifest"
+expect_failure_containing \
+  "publisher accepted one unpaired execution authority" \
+  "exact execution authorities must be supplied together" \
+  run_publisher_with_authority \
+    --exact-execution-kandelo-main-sha \
+      "$CONTAINS_KANDELO_MAIN_SHA" \
+    --kandelo-main-contains-sha "$EXACT_MAIN_SHA" \
+    --target-main-contains-sha "$target"
+[ ! -s "$ACTIVE_STATE/gh.log" ] ||
+  fail "unpaired execution authority reached a GitHub API client"
+
 # A reviewed source may remain authorized after both protected main branches
 # advance. The publisher must re-prove both ancestry relationships immediately
 # before every release mutation rather than inheriting one campaign-wide check.
@@ -869,6 +933,150 @@ expected = [
 if calls != expected:
     raise SystemExit("anonymous protected-main reads did not precede every mutation")
 PY
+
+# Historical selection bytes and the code allowed to publish them are separate
+# authorities. The contained campaign commits may remain valid after main has
+# advanced, while the current Kandelo publisher and tap caller remain exactly
+# revocable before every write.
+new_state dual-execution-and-content-authority
+ACTIVE_MANIFEST="$contains_manifest"
+run_publisher_dual_authority >/dev/null
+PYTHONDONTWRITEBYTECODE=1 python3 - \
+  "$ACTIVE_STATE/gh.log" "$ACTIVE_STATE/git.log" \
+  "$CONTAINS_KANDELO_MAIN_SHA" "$EXACT_MAIN_SHA" \
+  "$CONTAINS_TARGET_MAIN_SHA" "$target" "$tag" <<'PY'
+import json
+import pathlib
+import sys
+
+gh_path, git_path = map(pathlib.Path, sys.argv[1:3])
+(
+    kandelo_execution,
+    kandelo_content,
+    target_execution,
+    target_content,
+    tag,
+) = sys.argv[3:]
+calls = [json.loads(line) for line in gh_path.read_text().splitlines()]
+jq_filter = "[.status, .base_commit.sha, .merge_base_commit.sha] | @tsv"
+exact_kandelo = [
+    "api",
+    "/repos/Automattic/kandelo/git/ref/heads/main",
+    "--jq",
+    ".object.sha",
+]
+kandelo_compare = [
+    "api",
+    (
+        "/repos/Automattic/kandelo/compare/"
+        f"{kandelo_content}...{kandelo_execution}"
+    ),
+    "--jq",
+    jq_filter,
+]
+target_compare = [
+    "api",
+    (
+        "/repos/kandelo-dev/homebrew-tap-core/compare/"
+        f"{target_content}...{target_execution}"
+    ),
+    "--jq",
+    jq_filter,
+]
+tag_read = [
+    "api",
+    "--include",
+    "-H",
+    "Cache-Control: no-cache",
+    f"/repos/kandelo-dev/homebrew-tap-core/git/ref/tags/{tag}",
+]
+
+
+def is_mutation(call):
+    return (
+        call[:3] in (
+            ["api", "--method", "POST"],
+            ["api", "--method", "PATCH"],
+        )
+        or call[:2] == ["release", "upload"]
+    )
+
+
+mutations = [index for index, call in enumerate(calls) if is_mutation(call)]
+if len(mutations) != 4:
+    raise SystemExit("dual-authority fixture expected four mutations")
+for index in mutations:
+    expected = [kandelo_compare, target_compare, exact_kandelo]
+    if calls[index][:3] == ["api", "--method", "PATCH"]:
+        expected.append(tag_read)
+    if calls[index - len(expected):index] != expected:
+        raise SystemExit(
+            "a mutation lacks immediate execution/content GitHub checks"
+        )
+
+git_calls = git_path.read_text().splitlines()
+expected_git = [
+    "https://github.com/Automattic/kandelo.git",
+    "https://github.com/kandelo-dev/homebrew-tap-core.git",
+    "https://github.com/kandelo-dev/homebrew-tap-core.git",
+] * 4
+if git_calls != expected_git:
+    raise SystemExit("dual-authority anonymous main checks differ")
+PY
+
+assert_dual_authority_race_stopped() {
+  jq -e '
+    (.releases | length) == 1 and .releases[0].draft == true and
+    (.releases[0].assets | length) == 1 and (.tags | length) == 1
+  ' "$ACTIVE_STATE/state.json" >/dev/null ||
+    fail "$1 did not leave one recoverable complete draft"
+  [ ! -e "$ACTIVE_RECEIPT" ] ||
+    fail "$1 emitted a success receipt"
+  if jq -s -e 'any(.[]; .[0:3] == ["api", "--method", "PATCH"])' \
+    "$ACTIVE_STATE/gh.log" >/dev/null; then
+    fail "$1 reached the public release PATCH"
+  fi
+}
+
+new_state dual-kandelo-execution-advanced
+ACTIVE_MANIFEST="$contains_manifest"
+FAKE_MAIN_ADVANCE_AFTER_TAG=1 \
+FAKE_ADVANCE_AFTER_ASSET_COUNT=1 \
+  expect_failure_containing \
+  "dual publisher accepted a revoked Kandelo execution commit" \
+  "source SHA must equal the current refs/heads/main commit" \
+  run_publisher_dual_authority
+assert_dual_authority_race_stopped "revoked Kandelo execution authority"
+
+new_state dual-target-execution-advanced
+ACTIVE_MANIFEST="$contains_manifest"
+FAKE_TARGET_MAIN_ADVANCE_AFTER_TAG=1 \
+FAKE_ADVANCE_AFTER_ASSET_COUNT=1 \
+  expect_failure_containing \
+  "dual publisher accepted a revoked target execution commit" \
+  "source SHA must equal the public refs/heads/main commit" \
+  run_publisher_dual_authority
+assert_dual_authority_race_stopped "revoked target execution authority"
+
+new_state dual-kandelo-content-diverged
+ACTIVE_MANIFEST="$contains_manifest"
+FAKE_CONTAINS_DIVERGE_AFTER_TAG=1 \
+FAKE_ADVANCE_AFTER_ASSET_COUNT=1 \
+  expect_failure_containing \
+  "dual publisher accepted diverged Kandelo content" \
+  "source SHA is not contained in the current refs/heads/main history" \
+  run_publisher_dual_authority
+assert_dual_authority_race_stopped "diverged Kandelo content authority"
+
+new_state dual-target-content-diverged
+ACTIVE_MANIFEST="$contains_manifest"
+FAKE_TARGET_CONTAINS_DIVERGE_AFTER_TAG=1 \
+FAKE_ADVANCE_AFTER_ASSET_COUNT=1 \
+  expect_failure_containing \
+  "dual publisher accepted diverged target content" \
+  "source SHA is not contained in the current refs/heads/main history" \
+  run_publisher_dual_authority
+assert_dual_authority_race_stopped "diverged target content authority"
 
 # If ancestry changes after the complete draft and exact tag exist, the next
 # mutation check must stop before PATCH and leave the recoverable draft intact.
