@@ -5308,6 +5308,9 @@ export class MemoryFileSystem implements FileSystemBackend {
       ? undefined
       : inferHomebrewBottlePrefix(
           inventory.filter(
+            // WHY: only explicitly marked bottle files belong to Homebrew's
+            // Cellar relocation contract. Other VFS sources may use any valid
+            // guest path, including paths outside the Homebrew prefix.
             (entry) => entry.materialization === "archive-homebrew-relocate",
           ),
         );

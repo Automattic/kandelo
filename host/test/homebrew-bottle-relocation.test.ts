@@ -99,68 +99,100 @@ describe("Homebrew bottle relocation authority", () => {
     expect(() => inferHomebrewBottlePrefix([entry])).toThrow(expected);
   });
 
-  it("materializes a retired-prefix bottle from its sealed VFS inventory", async () => {
-    const sourceRoot = "ruby/4.0.5_1";
-    const keg = `${LEGACY_PREFIX}/Cellar/${sourceRoot}`;
-    const receipt = new TextEncoder().encode(JSON.stringify({
-      changed_files: ["lib/runtime.conf"],
-    }) + "\n");
-    const runtime = new TextEncoder().encode("prefix=@@HOMEBREW_PREFIX@@\n");
-    const relocatedRuntime = new TextEncoder().encode(
+  it("limits Cellar ownership to marked Homebrew relocation entries", async () => {
+    const fixture = homebrewRelocationTreeFixture();
+
+    await expect(fixture.fs.preparePath(fixture.runtimePath)).resolves.toBe(true);
+    expect(readFile(fixture.fs, fixture.runtimePath)).toBe(
       `prefix=${LEGACY_PREFIX}\n`,
     );
-    const source = [
-      { path: sourceRoot, mode: 0o755 },
-      { path: `${sourceRoot}/INSTALL_RECEIPT.json`, mode: 0o644, data: receipt },
-      { path: `${sourceRoot}/lib`, mode: 0o755 },
-      { path: `${sourceRoot}/lib/runtime.conf`, mode: 0o644, data: runtime },
-    ];
-    const tar = testTar(source);
-    const payload = gzipSync(tar);
-    const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
-    fs.setLazyFetcher(async () => new Response(payload));
-    fs.registerLazyTree({
-      decoder: "homebrew-bottle-tar-gzip-v1",
-      mediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
-      sha256: createHash("sha256").update(payload).digest("hex"),
-      bytes: payload.byteLength,
-      expandedBytes: tar.byteLength,
-      sourceEntryCount: source.length,
-      transports: ["https://example.invalid/ruby.tar.gz"],
-      source: {
-        schema: 1,
-        kind: "homebrew-bottle-tar-gzip-v1",
-        entries: source.map((entry) => ({
-          sourcePath: entry.path,
-          type: entry.data === undefined ? "directory" as const : "file" as const,
-          mode: entry.mode,
-          size: entry.data?.byteLength ?? 0,
-        })),
-      },
-    }, source.map((entry) => ({
-      vfsPath: `${LEGACY_PREFIX}/Cellar/${entry.path}`,
-      sourcePath: entry.path,
-      materialization: entry.path.endsWith("/lib/runtime.conf")
-        ? "archive-homebrew-relocate" as const
-        : "archive" as const,
-      type: entry.data === undefined ? "directory" as const : "file" as const,
-      mode: entry.mode,
-      size: entry.path.endsWith("/lib/runtime.conf")
-        ? relocatedRuntime.byteLength
-        : entry.data?.byteLength ?? 0,
-      ...(entry.data === undefined ? {} : { inodeGroup: entry.path }),
-    })), "/", {
-      mode: "first-use",
-      capabilities: ["test:retired-homebrew-prefix"],
-      roots: [keg],
-    });
+    expect(readFile(fixture.fs, fixture.ordinaryPath)).toBe(
+      "ordinary VFS content\n",
+    );
+  });
 
-    await expect(fs.preparePath(`${keg}/lib/runtime.conf`)).resolves.toBe(true);
-    expect(readFile(fs, `${keg}/lib/runtime.conf`)).toBe(
-      `prefix=${LEGACY_PREFIX}\n`,
+  it("rejects a marked Homebrew relocation entry outside Cellar", async () => {
+    const malformedPath = "/var/lib/kandelo/runtime.conf";
+    const fixture = homebrewRelocationTreeFixture(malformedPath);
+
+    await expect(fixture.fs.preparePath(malformedPath)).rejects.toThrow(
+      /does not end in/,
     );
   });
 });
+
+function homebrewRelocationTreeFixture(
+  runtimePath = `${LEGACY_PREFIX}/Cellar/ruby/4.0.5_1/lib/runtime.conf`,
+): {
+  fs: MemoryFileSystem;
+  runtimePath: string;
+  ordinaryPath: string;
+} {
+  const sourceRoot = "ruby/4.0.5_1";
+  const keg = `${LEGACY_PREFIX}/Cellar/${sourceRoot}`;
+  const runtimeSourcePath = `${sourceRoot}/lib/runtime.conf`;
+  const ordinarySourcePath = "share/non-homebrew.txt";
+  const ordinaryPath = "/etc/kandelo/non-homebrew.txt";
+  const receipt = new TextEncoder().encode(JSON.stringify({
+    changed_files: ["lib/runtime.conf"],
+  }) + "\n");
+  const runtime = new TextEncoder().encode("prefix=@@HOMEBREW_PREFIX@@\n");
+  const relocatedRuntime = new TextEncoder().encode(
+    `prefix=${LEGACY_PREFIX}\n`,
+  );
+  const ordinary = new TextEncoder().encode("ordinary VFS content\n");
+  const source = [
+    { path: sourceRoot, mode: 0o755 },
+    { path: `${sourceRoot}/INSTALL_RECEIPT.json`, mode: 0o644, data: receipt },
+    { path: `${sourceRoot}/lib`, mode: 0o755 },
+    { path: runtimeSourcePath, mode: 0o644, data: runtime },
+    { path: ordinarySourcePath, mode: 0o644, data: ordinary },
+  ];
+  const tar = testTar(source);
+  const payload = gzipSync(tar);
+  const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
+  fs.setLazyFetcher(async () => new Response(payload));
+  fs.registerLazyTree({
+    decoder: "homebrew-bottle-tar-gzip-v1",
+    mediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
+    sha256: createHash("sha256").update(payload).digest("hex"),
+    bytes: payload.byteLength,
+    expandedBytes: tar.byteLength,
+    sourceEntryCount: source.length,
+    transports: ["https://example.invalid/ruby.tar.gz"],
+    source: {
+      schema: 1,
+      kind: "homebrew-bottle-tar-gzip-v1",
+      entries: source.map((entry) => ({
+        sourcePath: entry.path,
+        type: entry.data === undefined ? "directory" as const : "file" as const,
+        mode: entry.mode,
+        size: entry.data?.byteLength ?? 0,
+      })),
+    },
+  }, source.map((entry) => ({
+    vfsPath: entry.path === runtimeSourcePath
+      ? runtimePath
+      : entry.path === ordinarySourcePath
+        ? ordinaryPath
+        : `${LEGACY_PREFIX}/Cellar/${entry.path}`,
+    sourcePath: entry.path,
+    materialization: entry.path === runtimeSourcePath
+      ? "archive-homebrew-relocate" as const
+      : "archive" as const,
+    type: entry.data === undefined ? "directory" as const : "file" as const,
+    mode: entry.mode,
+    size: entry.path === runtimeSourcePath
+      ? relocatedRuntime.byteLength
+      : entry.data?.byteLength ?? 0,
+    ...(entry.data === undefined ? {} : { inodeGroup: entry.path }),
+  })), "/", {
+    mode: "first-use",
+    capabilities: ["test:retired-homebrew-prefix"],
+    roots: [keg],
+  });
+  return { fs, runtimePath, ordinaryPath };
+}
 
 interface TestTarEntry {
   path: string;
