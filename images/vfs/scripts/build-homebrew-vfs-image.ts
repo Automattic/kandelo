@@ -37,6 +37,7 @@ import {
   homebrewRuntimeLayerDescriptorAsset,
   parseHomebrewLazyLayerBasePackageSource,
 } from "../../../host/src/homebrew-lazy-layer";
+import { KANDELO_HOMEBREW_GUEST_LAYOUT } from "../../../host/src/homebrew-guest-layout";
 import { fetchHomebrewBottleBytes } from "../../../host/src/homebrew-vfs-fetch";
 import {
   planFederatedHomebrewVfs,
@@ -172,13 +173,13 @@ const SHARED_FS_BLOCK_BYTES = 4096;
 const HOMEBREW_COMPOSITION_PATH = "/etc/kandelo/homebrew-vfs.json";
 const HOMEBREW_BOOTSTRAP_ENV_PATH = "/etc/homebrew/brew.env";
 const HOMEBREW_BOOTSTRAP_ENTRYPOINT = "/usr/bin/brew";
-const HOMEBREW_BOOTSTRAP_PREFIX = "/home/linuxbrew/.linuxbrew";
-const HOMEBREW_BOOTSTRAP_TARGET = "/home/linuxbrew/.linuxbrew/bin/brew";
+const HOMEBREW_BOOTSTRAP_PREFIX = KANDELO_HOMEBREW_GUEST_LAYOUT.prefix;
+const HOMEBREW_BOOTSTRAP_TARGET = `${HOMEBREW_BOOTSTRAP_PREFIX}/bin/brew`;
 const HOMEBREW_BOOTSTRAP_MUTABLE_PATHS = [
-  "/home/linuxbrew/.linuxbrew/Cellar",
-  "/home/linuxbrew/.linuxbrew/Library/Taps",
-  "/home/linuxbrew/.linuxbrew/var/homebrew/linked",
-  "/home/linuxbrew/.linuxbrew/var/homebrew/locks",
+  KANDELO_HOMEBREW_GUEST_LAYOUT.cellar,
+  `${HOMEBREW_BOOTSTRAP_PREFIX}/Library/Taps`,
+  `${HOMEBREW_BOOTSTRAP_PREFIX}/var/homebrew/linked`,
+  `${HOMEBREW_BOOTSTRAP_PREFIX}/var/homebrew/locks`,
   "/home/user/.cache/Homebrew",
 ] as const;
 const MAX_HOMEBREW_BOOTSTRAP_ENV_BYTES = 1024;
@@ -1331,7 +1332,7 @@ export function installHomebrewBootstrapConsumerState(
   if (
     descriptor.content_role !== "source-tree" ||
     descriptor.package.name !== "homebrew-bootstrap" ||
-    descriptor.mount_prefix !== "/home/linuxbrew/.linuxbrew" ||
+    descriptor.mount_prefix !== HOMEBREW_BOOTSTRAP_PREFIX ||
     !descriptor.activation.roots.includes(HOMEBREW_BOOTSTRAP_TARGET) ||
     !descriptor.inventory.some(
       (entry) =>
@@ -1463,7 +1464,7 @@ export function prepareHomebrewBootstrapConsumerNamespace(
   for (const path of HOMEBREW_BOOTSTRAP_MUTABLE_PATHS) {
     ensureDirRecursive(fs, path);
   }
-  // WHY: a real Linuxbrew installation belongs to the unprivileged brew user.
+  // WHY: the guest package store belongs to the unprivileged Kandelo user.
   // Bottle composition initially creates structural prefix directories as
   // root; adopting the complete prefix here both avoids a false lazy-tree
   // collision and lets in-guest brew update Cellar, taps, links, and locks.
@@ -2080,7 +2081,9 @@ async function loadBottleBytes(
     );
   }
 
-  const bytes = await fetchHomebrewBottleBytes(pkg.url);
+  const bytes = await fetchHomebrewBottleBytes(pkg.url, {
+    expectedBytes: pkg.bytes,
+  });
   if (cachePath) {
     mkdirSync(dirname(cachePath), { recursive: true });
     writeFileSync(cachePath, bytes);

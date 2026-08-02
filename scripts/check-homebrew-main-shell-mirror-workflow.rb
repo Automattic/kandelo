@@ -15,7 +15,7 @@ NODE_SCOPE_RUNNER = ARGV.length < 2 ?
 PUBLISH_JOB_DIGEST =
   "5f38b593eeffd4cacf3d728baa64695e88fe2f0723757628dbc936b6b679c54b"
 WORKFLOW_DIGEST =
-  "b4ea52ea9da6a1d178ecd8dcc42fdc848e6116d85642b21a0f14b17ac674b154"
+  "9dee4c5bb5a12cb06aa25f2c54fe884febf5762cb698772c0c6629283cf9af91"
 NODE_SCOPE_RUNNER_DIGEST =
   "a351c57bba3b4ad05d58a346ccf2ffa22d6de194d1839c24a78d2b9bc07f1bf8"
 DOWNLOAD_ACTION =
@@ -238,6 +238,17 @@ selected_roots = normalized_shell_run.scan(
 ).flatten.uniq
 check(selected_roots.include?("shell"),
       "shell generation does not fetch the shell root")
+check(selected_roots == ["shell"] &&
+      shell_run.include?(
+        "scripts/prepare-homebrew-browser-bootstrap.sh"
+      ) &&
+      shell_run.include?('--require-sealed \\') &&
+      shell_run.include?('--output-directory "$bootstrap_root"') &&
+      !shell_run.include?(
+        "scripts/extract-homebrew-support-data-bottle.ts"
+      ) &&
+      !shell_run.include?("programs/homebrew-bootstrap/"),
+      "bootstrap must use the shared sealed-selection preparation path")
 direct_product_roots = normalized_shell_run.scan(
   %r{resolve-binary\.sh programs/([a-z0-9][a-z0-9._+-]*)/},
 ).flatten.uniq
@@ -648,6 +659,18 @@ check(
     !chromium_build_run.include?("dist/shell.vfs.zst"),
   "Chromium proof does not verify its exact hashed shell asset",
 )
+check(
+  chromium_build_run.include?(
+    'cmp "${{ steps.public.outputs.bootstrap }}" "$browser_bootstrap"'
+  ) &&
+    !chromium_build_run.include?(
+      'cp "${{ steps.public.outputs.bootstrap }}" "$browser_bootstrap"'
+    ) &&
+    chromium_build_run.include?(
+      'dist/homebrew-bootstrap.zip'
+    ),
+  "Chromium proof does not consume and verify the prepared bootstrap",
+)
 
 node_resolution = named_step(
   node_proof_job,
@@ -675,6 +698,16 @@ chromium_resolution = named_step(
   chromium_proof_job,
   "Resolve the exact public browser generation",
 ).fetch("run")
+check(
+  chromium_resolution.include?(
+    "--require-sealed-homebrew-selection prepare-browser"
+  ) &&
+    chromium_resolution.include?(
+      'bootstrap="$PWD/apps/browser-demos/public/homebrew-bootstrap.zip"'
+    ) &&
+    !chromium_resolution.include?("programs/homebrew-bootstrap/"),
+  "Chromium proof must use the sealed shared bottle preparation path",
+)
 [
   ["Node", node_resolution, "$RUNNER_TEMP/public-node-$name"],
   ["Chromium", chromium_resolution, "$RUNNER_TEMP/public-$name"],

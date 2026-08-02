@@ -111,9 +111,13 @@ expect_rejected "$TMP_ROOT/no-caller-ancestry.yml"
 sed '/check-homebrew-main-shell-release-locks.py/d' \
   "$WORKFLOW" >"$TMP_ROOT/no-structured-lock-check.yml"
 expect_rejected "$TMP_ROOT/no-structured-lock-check.yml"
-sed '/--package homebrew-bootstrap/d' \
-  "$WORKFLOW" >"$TMP_ROOT/unfetched-direct-product.yml"
-expect_rejected "$TMP_ROOT/unfetched-direct-product.yml"
+sed '/scripts\/prepare-homebrew-browser-bootstrap.sh/d' \
+  "$WORKFLOW" >"$TMP_ROOT/no-bottle-bootstrap-extractor.yml"
+expect_rejected "$TMP_ROOT/no-bottle-bootstrap-extractor.yml"
+sed \
+  's#\$PWD/apps/browser-demos/public/homebrew-bootstrap.zip#programs/homebrew-bootstrap/homebrew-bootstrap.zip#' \
+  "$WORKFLOW" >"$TMP_ROOT/registry-bootstrap-browser-proof.yml"
+expect_rejected "$TMP_ROOT/registry-bootstrap-browser-proof.yml"
 sed \
   '/      - name: Fetch musl submodule for browser source-build fallback/,/          submodules: libc\/musl/d' \
   "$WORKFLOW" >"$TMP_ROOT/no-public-chromium-proof-musl.yml"

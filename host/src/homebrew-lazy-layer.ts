@@ -41,6 +41,7 @@ import {
   parseHomebrewInstallReceiptRelocation,
   relocateHomebrewBottleFile,
 } from "./homebrew-bottle-relocation";
+import { KANDELO_HOMEBREW_GUEST_LAYOUT } from "./homebrew-guest-layout";
 export type {
   HomebrewDeferredTreeDescriptor,
   HomebrewDeferredTreeDraftDescriptor,
@@ -77,7 +78,7 @@ const HOMEBREW_VFS_REPORT_ASSET = "kandelo-homebrew-vfs-report.json";
 const HOMEBREW_NODE_EVIDENCE_ASSET = "kandelo-homebrew-node-evidence.json";
 const HOMEBREW_BROWSER_EVIDENCE_ASSET = "kandelo-homebrew-browser-evidence.json";
 const HOMEBREW_COMPOSITION_PATH = "/etc/kandelo/homebrew-vfs.json";
-const HOME_BREW_PREFIX = "/home/linuxbrew/.linuxbrew";
+const HOME_BREW_PREFIX = KANDELO_HOMEBREW_GUEST_LAYOUT.prefix;
 const ZIP_EPOCH = new Date(1980, 0, 1, 0, 0, 0);
 const S_IFMT = 0xf000;
 const S_IFREG = 0x8000;

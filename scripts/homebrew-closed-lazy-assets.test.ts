@@ -161,7 +161,7 @@ function createFixture(root: string, writePayload = true): {
         transports: [`${releaseRoot}/${identity.asset}`],
       },
       url: `${releaseRoot}/${identity.asset}`,
-      mountPrefix: "/home/linuxbrew/.linuxbrew",
+      mountPrefix: "/opt/kandelo/homebrew",
       materialized: false,
       entries: [],
     },

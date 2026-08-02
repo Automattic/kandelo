@@ -495,7 +495,7 @@ An image that contains its own interactive shell can select it with
 ```json
 {
   "version": 1,
-  "path": "/home/linuxbrew/.linuxbrew/bin/dash",
+  "path": "/opt/kandelo/homebrew/bin/dash",
   "argv": ["dash", "-l", "-i"]
 }
 ```
@@ -535,7 +535,7 @@ For local browser artifacts, force a rebuild with `./run.sh rebuild <target>`.
 | Python (legacy opt-in) | `python-vfs.vfs.zst` | `bash packages/registry/python-vfs/build-python-vfs.sh` | ABI-bound CPython interpreter, complete stdlib, license, aliases, and demo metadata |
 | Erlang (legacy opt-in) | `erlang-vfs.vfs.zst` | `bash packages/registry/erlang-vfs/build-erlang-vfs.sh` | ABI-bound BEAM emulator, relocatable core OTP tree, executable helpers, and boot files |
 | Perl | `perl.vfs.zst` | `bash images/vfs/scripts/build-perl-vfs-image.sh` | Perl stdlib |
-| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | platform base plus the complete reviewed current-shell closure: embedded `libcxx`/Ncurses/Bash, with the other 35 Formula trees independently lazy. `/usr/bin/brew` names a separate lazy source and atomic runtime-support layer whose only additional Formula is Ruby. |
+| Shell | `shell.vfs.zst` | `./run.sh build shell-vfs` | platform base plus the complete reviewed current-shell closure: embedded `libcxx`/Ncurses/Bash, with the other base Formula trees independently lazy. `/usr/bin/brew` names a separate lazy source and an atomic runtime-support layer derived from the selected dependency graph; dependencies absent from the base, such as Ruby and its selected `libyaml` dependency, remain lazy together. |
 | Node | `node-vfs.vfs.zst` | `bash images/vfs/scripts/build-node-vfs-image.sh` | embedded package-resolved Node executable + npm 10.9.2 dist + writable `/work`; shell Formula trees remain lazy |
 | WordPress | `wordpress.vfs.zst` | `bash images/vfs/scripts/build-wp-vfs-image.sh` | WP files, nginx/PHP configs |
 | LAMP | `lamp.vfs.zst` | `bash images/vfs/scripts/build-lamp-vfs-image.sh` | MariaDB + WP + configs |
@@ -697,7 +697,7 @@ Boot accepts at most eight package layers and 16 MiB of descriptor bytes in
 aggregate. The shared consumer additionally caps aggregate compressed payload
 bytes, expanded bytes, and entry count. Boot-prefetch downloads use at most two
 workers. Each package's declared keg and `opt` link must match its indexed
-paths. Every schema-5 ancestor at or below `/home/linuxbrew/.linuxbrew` must be
+paths. Every schema-5 ancestor at or below `/opt/kandelo/homebrew` must be
 declared in the aggregate guest projection. Equal-mode `mergeable-directory`
 claims can create an absent directory once or reuse an equal-mode lower-image
 directory; undeclared ancestors, unequal modes, and non-directory collisions
@@ -729,7 +729,7 @@ and the image-owned default-shell contract selects the embedded Bash.
 That direct release proves only its configured acceptance image; it does not
 set generic package browser flags. The separate gallery path first boots a
 package image in the browser UI and runs its smoke command, such as
-`/home/linuxbrew/.linuxbrew/bin/file --version`. Only then may generated
+`/opt/kandelo/homebrew/bin/file --version`. Only then may generated
 Homebrew sidecars and gallery `index.toml` set `browser_compatible = true`.
 Generic gallery archives are currently retained as run diagnostics rather than
 published as durable gallery releases.
@@ -778,10 +778,20 @@ remain follow-up validation.
 
 GitHub Pages is a public product consumer, not a package producer. Its sole
 publisher starts with a fresh resolver cache and runs
-`./run.sh --fetch-only prepare-browser`; any missing or stale canonical archive
-therefore stops deployment instead of falling back to a source build. It
-requires the resolved shell bytes to match the sealed lazy-artifact lock. A
-read-only inspector then verifies that those exact bytes still contain:
+`./run.sh --fetch-only --require-sealed-homebrew-selection prepare-browser`;
+any missing or stale canonical archive therefore stops deployment instead of
+falling back to a source build. That same preparation command anonymously
+reads and verifies the immutable closed Homebrew selection, extracts only the
+declared bootstrap files from its Formula bottle, and atomically places the ZIP
+at the browser's fixed same-origin URL. It never resolves the transitional
+`homebrew-bootstrap` registry package. Ordinary local `./run.sh browser` uses
+the same path. A generated bootstrap Formula exists only in the prepared
+selection, not in the raw tap, so a pending review must explicitly provide that
+prepared tree with `WASM_POSIX_HOMEBREW_PENDING_SELECTION_ROOT`. A deployed
+product and an ordinary invocation require the sealed public selection.
+
+Pages requires the resolved shell bytes to match the sealed lazy-artifact
+lock. A read-only inspector then verifies that those exact bytes still contain:
 
 - one deferred Homebrew bootstrap ZIP selected by `/usr/bin/brew`;
 - the complete deferred bottle-tree inventory;

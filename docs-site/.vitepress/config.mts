@@ -1,5 +1,7 @@
 import { defineConfig } from "vitepress";
 
+import { prepareHomebrewDocTokens } from "./homebrew-doc-links.mjs";
+
 const repo = "https://github.com/Automattic/kandelo";
 
 export default defineConfig({
@@ -9,6 +11,14 @@ export default defineConfig({
   cleanUrls: true,
   lastUpdated: true,
   ignoreDeadLinks: [/^https:\/\/github\.com\/Automattic\/kandelo/],
+  markdown: {
+    headers: true,
+    config(md) {
+      md.core.ruler.after("inline", "homebrew-repository-doc-links", (state) => {
+        prepareHomebrewDocTokens(state.tokens, state.env.relativePath);
+      });
+    },
+  },
   themeConfig: {
     search: {
       provider: "local",
@@ -33,6 +43,19 @@ export default defineConfig({
         items: [
           { text: "VFS Images", link: "/guide/vfs-images" },
           { text: "Publish Software", link: "/guide/publish-software" },
+        ],
+      },
+      {
+        text: "Homebrew",
+        items: [
+          {
+            text: "Homebrew Packaging",
+            link: "/reference/homebrew-packaging-system",
+          },
+          {
+            text: "Homebrew Publishing",
+            link: "/reference/homebrew-publishing",
+          },
         ],
       },
       {

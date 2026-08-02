@@ -14,6 +14,8 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import warnings
+import zipfile
 from typing import Any
 from unittest import mock
 
@@ -3004,6 +3006,351 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             )["packages"],
             [{"name": "alpha"}],
         )
+
+    def test_closed_selection_release_is_deterministic_and_round_trips(
+        self,
+    ) -> None:
+        fixture = Fixture(multi_arch=True)
+        self.addCleanup(fixture.close)
+        alpha = fixture.root / "selection-release-alpha"
+        fixture.derive(
+            "alpha",
+            [("wasm32", fixture.publication("alpha", "wasm32"))],
+            [],
+            alpha,
+        )
+        selection = fixture.root / "selection-release-candidate"
+        EXECUTOR.prepare_selection(
+            campaign_path=fixture.campaign_path,
+            source_tap_root=fixture.source,
+            roots=["alpha"],
+            arch="wasm32",
+            handoff_roots=[alpha],
+            output=selection,
+            bottle_merger=fixture.merge_dependency,
+            sidecar_generator=fixture.generate_sidecars,
+            tap_validator=fixture.validate_tap,
+        )
+        hidden = selection / "tap/.github/workflows/selection.yml"
+        hidden.parent.mkdir(parents=True)
+        hidden.write_text("name: preserved inside selection archive\n")
+        executable = selection / "tap/scripts/selection-proof"
+        executable.parent.mkdir()
+        executable.write_text("#!/bin/sh\nexit 0\n")
+        executable.chmod(0o755)
+        selection_value = json.loads(
+            (selection / "selection.json").read_text()
+        )
+        selection_value["tap"]["prepared_tree_git_oid"] = (
+            EXECUTOR.filesystem_git_tree_oid(
+                selection / "tap",
+                "selection with hidden and executable paths",
+            )
+        )
+        write_json(selection / "selection.json", selection_value)
+        first = fixture.root / "selection-release-first"
+        second = fixture.root / "selection-release-second"
+        EXECUTOR.prepare_selection_release(
+            selection_root=selection, output=first
+        )
+        EXECUTOR.prepare_selection_release(
+            selection_root=selection, output=second
+        )
+        self.assertEqual(
+            (first / "release-manifest.json").read_bytes(),
+            (second / "release-manifest.json").read_bytes(),
+        )
+        for name in (
+            EXECUTOR.SELECTION_DESCRIPTOR_ASSET,
+            EXECUTOR.SELECTION_ARCHIVE_ASSET,
+        ):
+            self.assertEqual(
+                (first / "assets" / name).read_bytes(),
+                (second / "assets" / name).read_bytes(),
+            )
+        manifest = json.loads(
+            (first / "release-manifest.json").read_text()
+        )
+        self.assertIn(
+            "not the complete tap catalog", manifest["body"]
+        )
+        descriptor, _payload, observed_manifest = (
+            EXECUTOR.load_prepared_selection_release(first)
+        )
+        self.assertEqual(observed_manifest, manifest)
+        inventory = descriptor["tap_archive"]["inventory"]
+        self.assertIn(
+            ".github/workflows/selection.yml",
+            {record["path"] for record in inventory},
+        )
+        executable_record = next(
+            record
+            for record in inventory
+            if record["path"] == "scripts/selection-proof"
+        )
+        self.assertEqual(executable_record["mode"], "100755")
+
+        snapshot = fixture.root / "selection-release-snapshot"
+        EXECUTOR.snapshot_selection_release(
+            prepared_root=first,
+            output=snapshot,
+        )
+        self.assertEqual(
+            EXECUTOR.filesystem_git_leaf_inventory(
+                first, "prepared release"
+            ),
+            EXECUTOR.filesystem_git_leaf_inventory(
+                snapshot, "snapshotted prepared release"
+            ),
+        )
+        fetch_json, fetch_asset, _release = release_fetchers(first)
+        output = fixture.root / "selection-release-readback"
+        receipt = fixture.root / "selection-release-receipt.json"
+        EXECUTOR.fetch_selection_release(
+            repository=TAP_REPOSITORY,
+            tag=manifest["tag"],
+            output=output,
+            receipt_output=receipt,
+            json_fetcher=fetch_json,
+            asset_fetcher=fetch_asset,
+        )
+        self.assertEqual(
+            (selection / "selection.json").read_bytes(),
+            (output / "selection.json").read_bytes(),
+        )
+        self.assertEqual(
+            EXECUTOR.filesystem_git_tree_oid(
+                selection / "tap", "source selected tap"
+            ),
+            EXECUTOR.filesystem_git_tree_oid(
+                output / "tap", "downloaded selected tap"
+            ),
+        )
+        receipt_value = json.loads(receipt.read_text())
+        self.assertEqual(
+            receipt_value["visibility"],
+            "public-anonymous-readback",
+        )
+        self.assertEqual(receipt_value["formula_count"], 1)
+        verification = fixture.root / "selection-verification.json"
+        EXECUTOR.verify_selection_readback(
+            selection_root=output,
+            receipt_path=receipt,
+            output=verification,
+        )
+        report = json.loads(verification.read_text())
+        self.assertEqual(
+            report["kind"],
+            "kandelo-homebrew-closed-selection-verification",
+        )
+        self.assertEqual(report["formulae"], ["alpha"])
+        self.assertEqual(report["kandelo_abi"], 42)
+        self.assertEqual(report["source_tap_commit"], SOURCE_TAP_COMMIT)
+        self.assertEqual(
+            report["readback"]["visibility"],
+            "public-anonymous-readback",
+        )
+
+        receipt_mutations = {
+            "architecture": lambda value: value.__setitem__(
+                "arch", "wasm64"
+            ),
+            "Formula count": lambda value: value.__setitem__(
+                "formula_count", 2
+            ),
+            "manifest digest": lambda value: value.__setitem__(
+                "selection_manifest_sha256", "e" * 64
+            ),
+            "prepared tree": lambda value: value.__setitem__(
+                "prepared_tree_git_oid", "f" * 40
+            ),
+            "release repository": lambda value: value.__setitem__(
+                "repository", "example/other-tap"
+            ),
+            "release target": lambda value: value.__setitem__(
+                "target_commitish", "e" * 40
+            ),
+            "roots": lambda value: value.__setitem__(
+                "roots", ["beta"]
+            ),
+            "visibility": lambda value: value.__setitem__(
+                "visibility", "authenticated-readback"
+            ),
+        }
+        for position, (label, mutate) in enumerate(
+            receipt_mutations.items()
+        ):
+            with self.subTest(receipt_mutation=label):
+                changed = json.loads(receipt.read_text())
+                mutate(changed)
+                changed_receipt = (
+                    fixture.root / f"changed-receipt-{position}.json"
+                )
+                write_json(changed_receipt, changed)
+                rejected = fixture.root / f"rejected-report-{position}.json"
+                with self.assertRaisesRegex(
+                    EXECUTOR.ExecutorError,
+                    "unsupported|differs|canonical",
+                ):
+                    EXECUTOR.verify_selection_readback(
+                        selection_root=output,
+                        receipt_path=changed_receipt,
+                        output=rejected,
+                    )
+                self.assertFalse(rejected.exists())
+
+        (output / "tap/Formula/alpha.rb").write_text(
+            "class Substituted < Formula\nend\n"
+        )
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "differs from its prepared Git tree",
+        ):
+            EXECUTOR.verify_selection_readback(
+                selection_root=output,
+                receipt_path=receipt,
+                output=fixture.root / "substituted-tree-report.json",
+            )
+
+    def test_materialize_campaign_source_uses_kandelo_authority(self) -> None:
+        fixture = FinalTapFixture()
+        self.addCleanup(fixture.close)
+        checkout = fixture.root / "materializer-source-checkout"
+        subprocess.run(
+            ["git", "clone", "-q", "--no-hardlinks", fixture.live, checkout],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "checkout", "--detach", "--quiet", fixture.source_commit],
+            cwd=checkout,
+            check=True,
+        )
+        output = fixture.root / "materialized-campaign-source"
+        EXECUTOR.materialize_campaign_source(
+            campaign_path=fixture.campaign_path,
+            source_tap_root=checkout,
+            output=output,
+        )
+        self.assertEqual(
+            EXECUTOR.filesystem_git_leaf_inventory(
+                output, "materialized campaign source"
+            ),
+            EXECUTOR.filesystem_git_leaf_inventory(
+                fixture.source, "expected sealed campaign source"
+            ),
+        )
+        self.assertFalse(
+            (output / ".github/workflows/dry-run-bottles.yml").exists()
+        )
+
+        subprocess.run(
+            ["git", "checkout", "--detach", "--quiet", fixture.live_commit],
+            cwd=checkout,
+            check=True,
+        )
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "exact commit",
+        ):
+            EXECUTOR.materialize_campaign_source(
+                campaign_path=fixture.campaign_path,
+                source_tap_root=checkout,
+                output=fixture.root / "wrong-source-output",
+            )
+
+    def test_closed_selection_release_rejects_unsafe_tree_and_zip(
+        self,
+    ) -> None:
+        fixture = Fixture(multi_arch=True)
+        self.addCleanup(fixture.close)
+        alpha = fixture.root / "unsafe-selection-alpha"
+        fixture.derive(
+            "alpha",
+            [("wasm32", fixture.publication("alpha", "wasm32"))],
+            [],
+            alpha,
+        )
+        selection = fixture.root / "unsafe-selection"
+        EXECUTOR.prepare_selection(
+            campaign_path=fixture.campaign_path,
+            source_tap_root=fixture.source,
+            roots=["alpha"],
+            arch="wasm32",
+            handoff_roots=[alpha],
+            output=selection,
+            bottle_merger=fixture.merge_dependency,
+            sidecar_generator=fixture.generate_sidecars,
+            tap_validator=fixture.validate_tap,
+        )
+
+        os.symlink("Formula/alpha.rb", selection / "tap/unsafe-link")
+        unsafe_output = fixture.root / "unsafe-selection-release"
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "prepared Git tree|symlink or special file",
+        ):
+            EXECUTOR.prepare_selection_release(
+                selection_root=selection, output=unsafe_output
+            )
+        self.assertFalse(unsafe_output.exists())
+        (selection / "tap/unsafe-link").unlink()
+
+        prepared = fixture.root / "duplicate-selection-release"
+        EXECUTOR.prepare_selection_release(
+            selection_root=selection, output=prepared
+        )
+        descriptor_path = (
+            prepared / "assets" / EXECUTOR.SELECTION_DESCRIPTOR_ASSET
+        )
+        archive_path = (
+            prepared / "assets" / EXECUTOR.SELECTION_ARCHIVE_ASSET
+        )
+        descriptor = json.loads(descriptor_path.read_text())
+        first_record = descriptor["tap_archive"]["inventory"][0]
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            with zipfile.ZipFile(archive_path, mode="a") as archive:
+                info = zipfile.ZipInfo(
+                    f"tap/{first_record['path']}",
+                    date_time=(2000, 1, 1, 0, 0, 0),
+                )
+                info.create_system = 3
+                info.compress_type = zipfile.ZIP_STORED
+                info.external_attr = int(first_record["mode"], 8) << 16
+                archive.writestr(info, b"duplicate")
+        descriptor["tap_archive"]["bytes"] = archive_path.stat().st_size
+        descriptor["tap_archive"]["sha256"] = sha256(
+            archive_path.read_bytes()
+        )
+        write_json(descriptor_path, descriptor)
+        manifest_path = prepared / "release-manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        descriptor_payload = descriptor_path.read_bytes()
+        descriptor_sha = sha256(descriptor_payload)
+        manifest["tag"] = (
+            f"homebrew-prefix-selection-sha256-{descriptor_sha}"
+        )
+        for record in manifest["assets"]:
+            if record["name"] == EXECUTOR.SELECTION_DESCRIPTOR_ASSET:
+                record["bytes"] = len(descriptor_payload)
+                record["sha256"] = descriptor_sha
+            elif record["name"] == EXECUTOR.SELECTION_ARCHIVE_ASSET:
+                record["bytes"] = archive_path.stat().st_size
+                record["sha256"] = sha256(archive_path.read_bytes())
+        write_json(manifest_path, manifest)
+        fetch_json, fetch_asset, _release = release_fetchers(prepared)
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "inventory is incomplete|repeats a member",
+        ):
+            EXECUTOR.fetch_selection_release(
+                repository=TAP_REPOSITORY,
+                tag=manifest["tag"],
+                output=fixture.root / "duplicate-readback",
+                receipt_output=fixture.root / "duplicate-receipt.json",
+                json_fetcher=fetch_json,
+                asset_fetcher=fetch_asset,
+            )
 
     def test_incomplete_named_closure_produces_no_candidate(
         self,

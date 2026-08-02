@@ -790,19 +790,19 @@
       "supporting_paths": [
         {
           "package": "kandelo-dev/tap-core/libmagic",
-          "path": "/home/linuxbrew/.linuxbrew/share/misc/magic.mgc",
+          "path": "/opt/kandelo/homebrew/share/misc/magic.mgc",
           "kind": "file",
           "reason": "The file command needs the version-matched compiled magic database from the same bottle closure."
         },
         {
           "package": "kandelo-dev/tap-core/vim",
-          "path": "/home/linuxbrew/.linuxbrew/share/vim/vim92/defaults.vim",
+          "path": "/opt/kandelo/homebrew/share/vim/vim92/defaults.vim",
           "kind": "file",
           "reason": "Vim must activate its runtime files atomically with the editor executable."
         },
         {
           "package": "kandelo-dev/tap-core/nethack",
-          "path": "/home/linuxbrew/.linuxbrew/share/nethack/nhdat",
+          "path": "/opt/kandelo/homebrew/share/nethack/nhdat",
           "kind": "file",
           "reason": "NetHack must activate its game data atomically with the executable."
         }

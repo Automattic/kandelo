@@ -3031,7 +3031,7 @@
         "pour_bottle_args": {
           ":only_if": ":clt_installed"
         },
-        "ruby_source_checksum": "31394a36780900922acadfe16d63d75d746fc08d72d8e7add66ca1d012d5d836",
+        "ruby_source_checksum": "10c9c6f62538f850cda2ca3eeb03910aeff5ac53b907768f9fadb75530a9791a",
         "stable_checksum": "50efb4d94c3397aff3b0d61a5abd748b4dd31d9d3f2ab7be05b171d36a510f79",
         "stable_dependencies": [
           "gmp",
@@ -3144,7 +3144,7 @@
         "pour_bottle_args": {
           ":only_if": ":clt_installed"
         },
-        "ruby_source_checksum": "31394a36780900922acadfe16d63d75d746fc08d72d8e7add66ca1d012d5d836",
+        "ruby_source_checksum": "10c9c6f62538f850cda2ca3eeb03910aeff5ac53b907768f9fadb75530a9791a",
         "stable_checksum": "50efb4d94c3397aff3b0d61a5abd748b4dd31d9d3f2ab7be05b171d36a510f79",
         "stable_dependencies": [
           "gmp",
@@ -7336,7 +7336,7 @@
     "libpsl": {
       "internal": {
         "bottle_cellar": ":any",
-        "bottle_checksum": "6cd60a67781652b96fbb0570d563c25707c6788dffbea3ecf381eafc719999fa",
+        "bottle_checksum": "f1450e6e5c4d7d0afbc078cdcee3015885c4542bd8a6c8221bf2434f4cdf7dcb",
         "desc": "C library for the Public Suffix List",
         "executables": [
           "psl",
@@ -7352,8 +7352,8 @@
         "homepage": "https://rockdaboot.github.io/libpsl",
         "license": "MIT",
         "name": "libpsl",
-        "ruby_source_checksum": "e1c0998f946bc5dd3dd2ca26f5681c88e172d9157a280fd6e122a42013de4bd5",
-        "stable_checksum": "f39b9631b3d369a21259ea4654f8875c0ec6995ce9551c0eb5d423e4c011f911",
+        "ruby_source_checksum": "bf4f965d6367f4220aa22b81b6390d68f8ccb46b0b669987a123d6b5280402e9",
+        "stable_checksum": "8fbb03054556498ba9c4cc48fcaa36a4483748c6504a65bdb9ba348f555b0e56",
         "stable_dependencies": [
           "libidn2",
           "libunistring",
@@ -7362,13 +7362,13 @@
           }
         ],
         "stable_url_args": [
-          "https://github.com/rockdaboot/libpsl/releases/download/0.23.0/libpsl-0.23.0.tar.gz"
+          "https://github.com/rockdaboot/libpsl/releases/download/0.23.1/libpsl-0.23.1.tar.gz"
         ],
-        "stable_version": "0.23.0"
+        "stable_version": "0.23.1"
       },
       "public": {
         "bottle_cellar": ":any",
-        "bottle_checksum": "6cd60a67781652b96fbb0570d563c25707c6788dffbea3ecf381eafc719999fa",
+        "bottle_checksum": "f1450e6e5c4d7d0afbc078cdcee3015885c4542bd8a6c8221bf2434f4cdf7dcb",
         "desc": "C library for the Public Suffix List",
         "executables": [
           "psl",
@@ -7384,8 +7384,8 @@
         "homepage": "https://rockdaboot.github.io/libpsl",
         "license": "MIT",
         "name": "libpsl",
-        "ruby_source_checksum": "e1c0998f946bc5dd3dd2ca26f5681c88e172d9157a280fd6e122a42013de4bd5",
-        "stable_checksum": "f39b9631b3d369a21259ea4654f8875c0ec6995ce9551c0eb5d423e4c011f911",
+        "ruby_source_checksum": "bf4f965d6367f4220aa22b81b6390d68f8ccb46b0b669987a123d6b5280402e9",
+        "stable_checksum": "8fbb03054556498ba9c4cc48fcaa36a4483748c6504a65bdb9ba348f555b0e56",
         "stable_dependencies": [
           "libidn2",
           "libunistring",
@@ -7394,9 +7394,9 @@
           }
         ],
         "stable_url_args": [
-          "https://github.com/rockdaboot/libpsl/releases/download/0.23.0/libpsl-0.23.0.tar.gz"
+          "https://github.com/rockdaboot/libpsl/releases/download/0.23.1/libpsl-0.23.1.tar.gz"
         ],
-        "stable_version": "0.23.0"
+        "stable_version": "0.23.1"
       }
     },
     "libsm": {

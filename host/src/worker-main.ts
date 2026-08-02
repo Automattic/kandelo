@@ -64,6 +64,7 @@ import {
 // native channel-syscall binaries (mariadbd, dinit, dash, coreutils,
 // everything compiled by wasm32-posix) never trigger.
 import { isWasiModule, wasiModuleDefinesMemory } from "./wasi-detect";
+import { synchronizeReceivedSharedWasmMemory } from "./shared-wasm-memory-growth";
 export interface MessagePort {
   postMessage(msg: unknown, transferList?: unknown[]): void;
   on(event: string, handler: (...args: unknown[]) => void): void;
@@ -2617,6 +2618,10 @@ export async function centralizedThreadWorkerMain(
   } = initData;
   const tlsOffset = initData.tlsOffset ?? initData.tlsAllocAddr;
   const ptrWidth = initData.ptrWidth ?? 4;
+
+  // WHY: synchronize the received memory before this isolate binds any view
+  // or Wasm instance to a possibly stale fixed-length view of its backing.
+  synchronizeReceivedSharedWasmMemory(memory, ptrWidth);
 
   let threadInstance: WebAssembly.Instance | undefined;
   let processDlopenLock: Int32Array | undefined;

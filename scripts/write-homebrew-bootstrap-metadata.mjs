@@ -79,7 +79,7 @@ const metadata = {
   ...source,
   schema: 1,
   created_by: "scripts/build-homebrew-bootstrap.sh",
-  prefix: "/home/linuxbrew/.linuxbrew",
+  prefix: "/opt/kandelo/homebrew",
   kandelo_abi: abi,
   notes: [
     "The pinned upstream Homebrew tree carries the provenance-bound Kandelo platform patch.",

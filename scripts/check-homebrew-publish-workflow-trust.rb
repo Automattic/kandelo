@@ -67,11 +67,11 @@ NATIVE_CA_PROOF_RUN_SHA256 =
   "c8192c2521864005b34e9eaa39d44d11d580997db39d6e64f2afe30fe447eb91"
 NATIVE_CA_VALIDATION_RUN_SHA256 =
   "7cb1417ec6df08daefa71c2ee6a364be76737b9d7f7ed4aa4022d3d7ca90a8b9"
-PUBLISHER_PLAN_DIGEST = "52939a92dbec649cd11a88ea3b980dfe65004d6c540503590c46c621ede15c0a"
-PUBLISHER_BUILD_DIGEST = "78f735ac34a6acdb56558a1725a2939807a8f5032598de3ac82d8abcd044fb20"
+PUBLISHER_PLAN_DIGEST = "a01844e87d7be2f9ad71a1f0a1b43245163a6939b714ce96de63c614338f1c32"
+PUBLISHER_BUILD_DIGEST = "785a38120f383559364d1f401ea0e46b8d5938408bac7db705cd0acf3eeedc9d"
 PUBLISHER_UPLOAD_DIGEST = "861d649d73bb470fc37f99751733e8360f3f59f6245b80e2dd8d7eb4f40f3290"
 PUBLISHER_INDEX_DIGEST = "30531067dcd20c314ef8ae4b9d8584716a92fc803a194098913355ebb519754b"
-PUBLISHER_VERIFY_DIGEST = "3065aee3c33c5de227ce46bbf4300a821bca3809db6842bb0f59a65cb8a5dddc"
+PUBLISHER_VERIFY_DIGEST = "8b2f821882da1f3a68ac93039da25be1ea530a68cee36d02f79d3d3bd1f4ae39"
 PUBLISHER_FINALIZE_DIGEST = "b17e7bf5d0a5ef512e49f74c224a94958642dfdd80a27439f2a0335816a0886b"
 PUBLISHER_VFS_RELEASE_DIGEST = "2db9ec075edf382e326066d5f49a32947f5a584fce26a966fb9fff23bbbe3c26"
 MAINTENANCE_VALIDATE_DIGEST = "30ebccd5d44e004e37f168e81284d7ceb18accfa067c05248c1cc19398a7515f"
@@ -958,6 +958,7 @@ def check_native_compatibility_workflow(workflow)
       "paths" => [
         ".github/workflows/homebrew-native-publisher-compatibility.yml",
         ".github/workflows/reusable-homebrew-bottle-publish.yml",
+        ".github/workflows/reusable-homebrew-closed-selection-publish.yml",
         ".github/workflows/reusable-homebrew-prefix-first-child-publish.yml",
         "flake.lock",
         "flake.nix",
@@ -2696,6 +2697,63 @@ def check_publisher(workflow)
       },
     },
   ], "publisher verifier checkout wiring changed")
+
+  [
+    [build_steps, "Activate reviewed Homebrew implementation"],
+    [verify_steps,
+     "Activate reviewed Homebrew implementation for bottle verification"],
+  ].each do |steps, name|
+    activation = named_step(steps, name)
+    activation_run = activation.fetch("run")
+    [
+      '. kandelo/scripts/homebrew-guest-layout.sh',
+      'homebrew_select_guest_layout',
+      'brew_prefix="$HOMEBREW_GUEST_PREFIX"',
+      'bash kandelo/scripts/homebrew-prepare-host-prefix.sh',
+      '--layout-mode "$HOMEBREW_GUEST_LAYOUT_MODE"',
+      '--prefix "$brew_prefix"',
+    ].each do |fragment|
+      check(activation_run.include?(fragment),
+            "publisher #{name.inspect} lacks #{fragment}")
+    end
+    check(!activation_run.include?('sudo install -d -o "$(id -u)"'),
+          "publisher #{name.inspect} bypasses the protected prefix anchor")
+  end
+
+  host_prefix_preparer = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew-prepare-host-prefix.sh")
+  )
+  [
+    'prefix-campaign:/opt/kandelo/homebrew)',
+    '"$prefix" 0 0 "$(/usr/bin/id -u)" "$(/usr/bin/id -g)"',
+    '"$anchor_parent" "$trusted_uid" "$trusted_gid"',
+    '"$anchor" "$trusted_uid" "$trusted_gid" "prefix anchor"',
+    '"$HOMEBREW_HOST_PREFIX_INSTALL" -d',
+    '"mutable Homebrew prefix must be a real non-symlink directory',
+    '"mutable Homebrew bin must be a real non-symlink directory',
+    'is replaceable because its owner is not trusted',
+    'does not have its required trusted group',
+    'A root-owned /opt/kandelo prevents the build user from renaming the',
+  ].each do |fragment|
+    check(host_prefix_preparer.include?(fragment),
+          "host prefix preparer lacks #{fragment}")
+  end
+  host_prefix_preparer_test = File.read(
+    File.join(REPO_ROOT, "scripts/test-homebrew-prepare-host-prefix.sh")
+  )
+  [
+    'absent_prefix=',
+    'prefix anchor must be a real non-symlink directory',
+    'prefix anchor is replaceable',
+    'prefix anchor does not have its required trusted group',
+    'prefix anchor parent must be traversable',
+    'prefix anchor must be traversable',
+    'mutable Homebrew prefix must be a real non-symlink directory',
+    'not a reviewed pair',
+  ].each do |fragment|
+    check(host_prefix_preparer_test.include?(fragment),
+          "host prefix preparer tests lack #{fragment}")
+  end
 
   failure_condition = "${{ always() && (steps.publish-handoffs.outcome != 'success' || " \
                       "steps.validate-payload.outcome != 'success' || steps.publish.outcome != 'success') }}"
@@ -5249,8 +5307,10 @@ def check_publisher(workflow)
     '"-$source_alias_dir/kandelo/$tap_recipe_relative"',
     'target Brew launcher changed before isolation',
     '"$HOMEBREW_PATCHED_PREFIX/bin"',
+    '"$HOMEBREW_PATCHED_PREFIX/etc"',
+    '"$HOMEBREW_PATCHED_PREFIX/etc/homebrew"',
     'chown -h root:root "$HOMEBREW_PATCHED_LAUNCHER"',
-    'could not protect the canonical target Brew launcher',
+    'could not protect mutable target Homebrew roots',
     '/usr/bin/find "$cellar" -xdev -mindepth 1 -type d',
     'homebrew_patched_launcher_prepare_platform_projection',
     'homebrew_patched_launcher_prepare_formula_test_runtime',
@@ -5998,8 +6058,9 @@ def check_publisher(workflow)
     '"--property=BindReadOnlyPaths=$REPO_ROOT:$source_alias"',
     '"--property=InaccessiblePaths=$REPO_ROOT"',
     '--source-repo-root "$source_alias"',
-    "Match the inaccessible compile root rather than coupling this regression",
-    %q{*"build input \""*"\" not found"*"$original_root/"*)},
+    "A relocated checker without explicit authority must stop before it can",
+    '"the xtask compile checkout $original_root is not accessible ("',
+    '"pass the intended canonical checkout with --source-repo-root"',
     'protected_selector_root="$ISOLATION_ROOT/protected-version-selector"',
     'escaped_selector_target_root="$ISOLATION_ROOT/escaped-version-target"',
     'replaceable_selector_root="$ISOLATION_ROOT/replaceable-version-selector"',
@@ -6017,6 +6078,9 @@ def check_publisher(workflow)
     "isolated launcher did not stage the admitted root-owned recipe runner",
     "isolated launcher did not protect the canonical target Brew path",
     "build identity can replace the canonical target Brew launcher",
+    "isolated launcher did not protect mutable Homebrew configuration",
+    "isolated launcher left normal Homebrew configuration read-only",
+    "build identity can replace protected Homebrew configuration",
     "dependency sealing disabled the target Formula insertion roots",
     "workflow user retaining accidental write access to Formula-owned state",
     "protected source audit ignored a missing required namespace path",
@@ -7721,30 +7785,69 @@ def check_publisher(workflow)
     'ensure_direct_tag',
     'publish response was ambiguous; reconciling',
     '--exact-kandelo-main-sha) EXACT_KANDELO_MAIN_SHA=',
+    "--exact-execution-kandelo-main-sha)",
+    "--exact-execution-target-main-sha)",
     "--kandelo-main-contains-sha)",
     "--target-main-contains-sha)",
     "exactly one Kandelo main authority is required",
     "target exact-main and main-contains authority are mutually exclusive",
+    "exact execution authorities must be supplied together",
     'require_main_authority()',
     'bash "$REPO_ROOT/.github/scripts/require-exact-kandelo-main.sh"',
     '--source-sha "$EXACT_KANDELO_MAIN_SHA"',
     '"$REPO_ROOT/.github/scripts/require-repository-main-contains.sh"',
     '--source-sha "$KANDELO_MAIN_CONTAINS_SHA"',
+    '--source-sha "$EXACT_EXECUTION_KANDELO_MAIN_SHA"',
+    '--source-sha "$EXACT_EXECUTION_TARGET_MAIN_SHA"',
     'anonymous digest readback failed', '.object.type == "commit"',
     'visibility: "public-anonymous-readback"',
   ].each do |fragment|
     check(immutable_publisher_source.include?(fragment),
           "immutable GitHub release publisher lacks #{fragment}")
   end
+  authority_body = immutable_publisher_source
+    .split(/^require_main_authority\(\) \{\n/, 2).fetch(1, "")
+    .split(/^\}\n/, 2).fetch(0, "")
+  contained_authority = authority_body.index(
+    'if [ -n "$EXACT_KANDELO_MAIN_SHA" ]'
+  )
+  execution_authority = authority_body.index(
+    'if [ -n "$EXACT_EXECUTION_KANDELO_MAIN_SHA" ]'
+  )
+  check(
+    contained_authority && execution_authority &&
+      contained_authority < execution_authority,
+    "immutable publisher checks exact execution before content authority"
+  )
   [
     /require_main_authority\n\s+if gh api --method POST "\/repos\/\$\{REPOSITORY\}\/releases"/,
     /require_main_authority\n\s+gh release upload "\$TAG"/,
     /require_main_authority\n\s+gh api --method POST "\/repos\/\$\{REPOSITORY\}\/git\/refs"/,
-    /require_main_authority\n\s+gh api --method PATCH "\/repos\/\$\{REPOSITORY\}\/releases\/\$\{release_id\}"/,
   ].each do |pattern|
     check(immutable_publisher_source.match?(pattern),
           "immutable GitHub release mutation is not immediately preceded by exact-main authority")
   end
+  publish_transition_pattern = Regexp.new(
+    'require_main_authority\n' \
+      '(?:\s+#.*\n)*' \
+      '\s+validate_direct_tag\n' \
+      '\s+gh api --method PATCH ' \
+      '"/repos/\$\{REPOSITORY\}/releases/\$\{release_id\}"'
+  )
+  check(
+    immutable_publisher_source.match?(publish_transition_pattern),
+    "immutable GitHub release publish is not immediately preceded by " \
+      "exact-main authority and direct-tag validation"
+  )
+  publisher_entrypoint = immutable_publisher_source.split(
+    /^acquire_lock\n/, 2
+  ).fetch(1, "")
+  early_tag = publisher_entrypoint.index("\nensure_direct_tag\n")
+  release_reconciliation = publisher_entrypoint.index("\nrelease_rc=0\n")
+  check(
+    early_tag && release_reconciliation && early_tag < release_reconciliation,
+    "immutable GitHub release publisher does not reserve its exact tag before release reconciliation"
+  )
   immutable_manifest_validator_source = File.read(
     File.join(REPO_ROOT, "scripts/validate-immutable-github-release-manifest.py")
   )
@@ -7799,8 +7902,19 @@ def check_publisher(workflow)
     "failed anonymous readback", "anonymous recovery mutated",
     "FAKE_CREATE_RESPONSE_LOST", "FAKE_UPLOAD_RESPONSE_LOST",
     "FAKE_TAG_RESPONSE_LOST", "FAKE_PUBLISH_RESPONSE_LOST",
+    "workflow-containing target release was attempted before its exact tag",
+    "publisher tried to recreate an existing exact tag",
+    "conflicting tag failure created a release",
+    "tag creation failure reached release creation",
+    "release-creation retry did not resume from the retained tag",
     "publisher made a release public after Kandelo main advanced",
     "advanced Kandelo main reached the public release PATCH",
+    "publisher made a release public after its tag moved during final authority",
+    "moved tag reached the public release PATCH",
+    "dual publisher accepted a revoked Kandelo execution commit",
+    "dual publisher accepted a revoked target execution commit",
+    "dual publisher accepted diverged Kandelo content",
+    "dual publisher accepted diverged target content",
   ].each do |fragment|
     check(immutable_publisher_test_source.include?(fragment),
           "immutable release publisher tests lack #{fragment}")
@@ -8037,6 +8151,7 @@ def check_publisher(workflow)
     'atomic batch metadata did not contain both exact bottle handoffs',
     'deferred whole-tap validation weakened selected bottle evidence',
     'bash "$REPO_ROOT/scripts/test-publish-immutable-github-release.sh"',
+    'bash "$REPO_ROOT/scripts/test-publish-homebrew-closed-selection-release.sh"',
     'bash "$REPO_ROOT/scripts/test-homebrew-vfs-release.sh"',
     'assert_publish_handoff_download_topologies',
     'correctly named nested single-publication handoff was not accepted',

@@ -511,7 +511,7 @@ grep -Fq "if: env.PACKAGE_STAGING_REQUIRED == 'true'" <<<"$homebrew_guest_block"
   fail "candidate-backed Homebrew execution must run for package and ABI staging"
 grep -Fq 'build-homebrew-bootstrap.sh --skip-package-resolve' <<<"$homebrew_guest_step" || \
   fail "candidate-backed Homebrew execution must use only materialized candidate packages"
-grep -Fq -- '--brew-script /home/linuxbrew/.linuxbrew/bin/brew' <<<"$homebrew_guest_step" || \
+grep -Fq -- '--brew-script /opt/kandelo/homebrew/bin/brew' <<<"$homebrew_guest_step" || \
   fail "candidate-backed Homebrew execution must test the canonical brew entry point"
 grep -Fq -- '--brew-script /usr/bin/brew' <<<"$homebrew_guest_step" || \
   fail "candidate-backed Homebrew execution must test the /usr/bin/brew alias"
@@ -521,7 +521,7 @@ if [ "$host_dist_clear_count" -ne 2 ]; then
 fi
 first_host_dist_clear_line=$(grep -nF 'rm -rf host/dist' <<<"$homebrew_guest_step" | sed -n '1s/:.*//p')
 second_host_dist_clear_line=$(grep -nF 'rm -rf host/dist' <<<"$homebrew_guest_step" | sed -n '2s/:.*//p')
-canonical_brew_line=$(grep -nF -- '--brew-script /home/linuxbrew/.linuxbrew/bin/brew' <<<"$homebrew_guest_step" | cut -d: -f1)
+canonical_brew_line=$(grep -nF -- '--brew-script /opt/kandelo/homebrew/bin/brew' <<<"$homebrew_guest_step" | cut -d: -f1)
 alias_brew_line=$(grep -nF -- '--brew-script /usr/bin/brew' <<<"$homebrew_guest_step" | cut -d: -f1)
 if [ "$first_host_dist_clear_line" -ge "$canonical_brew_line" ] || \
    [ "$canonical_brew_line" -ge "$second_host_dist_clear_line" ] || \

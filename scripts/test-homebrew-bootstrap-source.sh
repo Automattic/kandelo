@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PREPARE="$ROOT/scripts/prepare-homebrew-bootstrap-source.sh"
 PATCH_FILE="$ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
-PATCH_SHA256="9c52238d811616c210cd1ecdd23b0192a3e0333219a70b34d8ea6d77dbcfbf74"
+PATCH_SHA256="faf62befeb70033ea450e88eb1b21427e221030a7f6b6ce932ad2c7c728ac2bc"
 BREW_REPOSITORY="${HOMEBREW_BOOTSTRAP_TEST_BREW_REPOSITORY:-https://github.com/Homebrew/brew.git}"
 BREW_REVISION="21aba0bc7080a75753f01c06d2358ca27706bfeb"
 TAP_REPOSITORY="${HOMEBREW_BOOTSTRAP_TEST_TAP_REPOSITORY:-https://github.com/kandelo-dev/homebrew-tap-core.git}"
@@ -24,6 +24,8 @@ for tool in git node unzip; do
         exit 2
     }
 done
+
+bash "$ROOT/scripts/test-homebrew-guest-layout.sh"
 
 RUN_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-homebrew-bootstrap-source.XXXXXX")"
 RUN_ROOT="$(cd "$RUN_ROOT" && pwd -P)"
@@ -301,7 +303,7 @@ grep -Fxq 'HOMEBREW_SYSTEM_ENV_TAKES_PRIORITY=1' "$RUN_ROOT/wasm32/brew.env"
 grep -Fxq 'HOMEBREW_NO_INSTALL_FROM_API=1' "$RUN_ROOT/wasm32/brew.env"
 grep -Fxq 'HOMEBREW_AUTOMATICALLY_SET_NO_INSTALL_FROM_API=1' \
     "$RUN_ROOT/wasm32/brew.env"
-grep -Fq '/usr/bin/brew l 0777 0 0 target=/home/linuxbrew/.linuxbrew/bin/brew' \
+grep -Fq '/usr/bin/brew l 0777 0 0 target=/opt/kandelo/homebrew/bin/brew' \
     "$ROOT/scripts/build-homebrew-bootstrap.sh"
 
 EXTRACT_ROOT="$RUN_ROOT/prefix"
@@ -333,7 +335,7 @@ const source = readFileSync(brewPath, "utf8");
 const replacements = [
   ['"/etc/homebrew/brew.env"', JSON.stringify(systemEnvPath), 2, "system brew.env"],
   ['"/usr/bin/brew"', JSON.stringify(aliasPath), 1, "guest brew alias"],
-  ['"/home/linuxbrew/.linuxbrew"', JSON.stringify(prefixPath), 1, "guest Homebrew prefix"],
+  ['"/opt/kandelo/homebrew"', JSON.stringify(prefixPath), 1, "guest Homebrew prefix"],
 ];
 let patched = source;
 for (const [literal, replacement, expected, label] of replacements) {

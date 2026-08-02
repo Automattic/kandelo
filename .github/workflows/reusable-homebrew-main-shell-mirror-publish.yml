@@ -219,23 +219,30 @@ jobs:
         shell: bash
         env:
           WASM_POSIX_BINARY_CACHE_ROOT: ${{ runner.temp }}/main-shell-mirror-package-cache
+          TAP_CATALOG_REF: ${{ inputs.tap-catalog-ref }}
         run: |
           set -euo pipefail
           test ! -e "$WASM_POSIX_BINARY_CACHE_ROOT"
-          # WHY: A fetched shell archive does not materialize separate
-          # dependency products into binaries/. That keeps bootstrap lazy for
-          # shell consumers. This publisher consumes both products, so it must
-          # select both roots explicitly.
+          # WHY: the shell image remains a transitional Kandelo package while
+          # its lazy Homebrew tree is Formula-owned. Fetch only that image here;
+          # resolving the old homebrew-bootstrap package would make the later
+          # lifecycle release registry-owned again.
           bash scripts/dev-shell.sh env \
             "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
             bash scripts/fetch-binaries.sh --fetch-only \
-              --package shell \
-              --package homebrew-bootstrap
+              --package shell
           image="$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)"
-          bootstrap="$(bash scripts/resolve-binary.sh \
-            programs/homebrew-bootstrap/homebrew-bootstrap.zip)"
-          bootstrap_env="$(bash scripts/resolve-binary.sh \
-            programs/homebrew-bootstrap/homebrew-brew.env)"
+          bootstrap_root="$RUNNER_TEMP/homebrew-bootstrap-bottle"
+          test ! -e "$bootstrap_root"
+          # WHY: use the same anonymous sealed-selection admission path as the
+          # deployed browser. The source tap does not contain generated support
+          # Formulae, so even this publisher must not substitute its checkout.
+          bash scripts/dev-shell.sh bash \
+            scripts/prepare-homebrew-browser-bootstrap.sh \
+              --require-sealed \
+              --output-directory "$bootstrap_root"
+          bootstrap="$bootstrap_root/homebrew-bootstrap.zip"
+          bootstrap_env="$bootstrap_root/homebrew-brew.env"
           for path in "$image" "$bootstrap" "$bootstrap_env"; do
             test -f "$path"
             test ! -L "$path"
@@ -413,11 +420,11 @@ jobs:
           root="$RUNNER_TEMP/homebrew-guest-lifecycle-inputs-handoff"
           test ! -e "$root"
           # WHY: the shell package exposes its image only inside an archive,
-          # while the transitional registry package contains the bootstrap
-          # ZIP and environment as members. The browser needs direct immutable
-          # URLs, so publish only these fixed proof inputs under a separate
-          # identity instead of adding them to the bottle-layer mirror. The
-          # handoff records the temporary ownership and prefix explicitly.
+          # while the support-data bottle contains the bootstrap ZIP and
+          # environment as members. The browser needs direct immutable URLs,
+          # so publish only these fixed proof inputs under a separate identity
+          # instead of adding them to the bottle-layer mirror. The handoff
+          # records the Formula ownership and stable guest prefix explicitly.
           bash scripts/dev-shell.sh npx tsx \
             scripts/homebrew-guest-lifecycle-publication.ts create \
               --image "$IMAGE" \
@@ -967,13 +974,13 @@ jobs:
           test ! -e "$WASM_POSIX_BINARY_CACHE_ROOT"
           bash scripts/dev-shell.sh env \
             "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
-            ./run.sh --fetch-only prepare-browser
+            ./run.sh --fetch-only \
+              --require-sealed-homebrew-selection prepare-browser
           handoff="$RUNNER_TEMP/main-shell-mirror-handoff"
+          lifecycle="$RUNNER_TEMP/homebrew-guest-lifecycle-inputs-handoff"
           image="$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)"
-          bootstrap="$(bash scripts/resolve-binary.sh \
-            programs/homebrew-bootstrap/homebrew-bootstrap.zip)"
-          bootstrap_env="$(bash scripts/resolve-binary.sh \
-            programs/homebrew-bootstrap/homebrew-brew.env)"
+          bootstrap="$PWD/apps/browser-demos/public/homebrew-bootstrap.zip"
+          bootstrap_env="$lifecycle/homebrew-brew.env"
           cmp "$image" "$handoff/main-shell.vfs.zst"
           cmp "$bootstrap" "$handoff/homebrew-bootstrap.zip"
           cmp "$bootstrap_env" "$handoff/homebrew-brew.env"
@@ -982,7 +989,6 @@ jobs:
           env -u GH_TOKEN -u GITHUB_TOKEN curl --disable --fail --location \
             --silent --show-error "$plan_url" --output "$RUNNER_TEMP/public-plan.json"
           cmp "$plan" "$RUNNER_TEMP/public-plan.json"
-          lifecycle="$RUNNER_TEMP/homebrew-guest-lifecycle-inputs-handoff"
           lifecycle_root="$(jq -er '.release.root' "$lifecycle/handoff.json")"
           for name in \
             main-shell.vfs.zst \
@@ -1020,6 +1026,13 @@ jobs:
           WASM_POSIX_BINARY_CACHE_ROOT: ${{ runner.temp }}/main-shell-public-chromium-proof-cache
         run: |
           set -euo pipefail
+          browser_bootstrap=public/homebrew-bootstrap.zip
+          test -f "$browser_bootstrap"
+          test ! -L "$browser_bootstrap"
+          # WHY: prepare-browser owns this fixed same-origin asset. The build
+          # must consume those admitted bytes instead of silently replacing
+          # them from a second package source.
+          cmp "${{ steps.public.outputs.bootstrap }}" "$browser_bootstrap"
           # WHY: dev-shell intentionally drops ambient variables. Forward the
           # selector or Vite builds its default pages and omits the proof page.
           bash ../../scripts/dev-shell.sh env \
@@ -1028,6 +1041,8 @@ jobs:
             npm run build
           test -f dist/index.html
           test -f dist/pages/homebrew-vfs-test/index.html
+          cmp "${{ steps.public.outputs.bootstrap }}" \
+            dist/homebrew-bootstrap.zip
           bash ../../scripts/verify-browser-shell-vfs-asset.sh \
             dist "${{ steps.public.outputs.image }}"
 

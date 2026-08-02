@@ -8,6 +8,8 @@ LOCK_ROOT=""
 RECEIPT=""
 EXACT_KANDELO_MAIN_SHA=""
 EXACT_TARGET_MAIN_SHA=""
+EXACT_EXECUTION_KANDELO_MAIN_SHA=""
+EXACT_EXECUTION_TARGET_MAIN_SHA=""
 KANDELO_MAIN_CONTAINS_SHA=""
 TARGET_MAIN_CONTAINS_SHA=""
 
@@ -19,6 +21,14 @@ while [ "$#" -gt 0 ]; do
     --receipt) RECEIPT="$2"; shift 2 ;;
     --exact-kandelo-main-sha) EXACT_KANDELO_MAIN_SHA="$2"; shift 2 ;;
     --exact-target-main-sha) EXACT_TARGET_MAIN_SHA="$2"; shift 2 ;;
+    --exact-execution-kandelo-main-sha)
+      EXACT_EXECUTION_KANDELO_MAIN_SHA="${2:-}"
+      shift 2
+      ;;
+    --exact-execution-target-main-sha)
+      EXACT_EXECUTION_TARGET_MAIN_SHA="${2:-}"
+      shift 2
+      ;;
     --kandelo-main-contains-sha)
       KANDELO_MAIN_CONTAINS_SHA="${2:-}"
       shift 2
@@ -57,6 +67,23 @@ fi
 if [ -n "$EXACT_TARGET_MAIN_SHA" ] &&
    ! [[ "$EXACT_TARGET_MAIN_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   echo "publish-immutable-github-release: --exact-target-main-sha must be an exact lowercase 40-character SHA" >&2
+  exit 2
+fi
+for execution_revision in \
+  "$EXACT_EXECUTION_KANDELO_MAIN_SHA" \
+  "$EXACT_EXECUTION_TARGET_MAIN_SHA"
+do
+  if [ -n "$execution_revision" ] &&
+     ! [[ "$execution_revision" =~ ^[0-9a-f]{40}$ ]]; then
+    echo "publish-immutable-github-release: exact execution authority must be a lowercase 40-character SHA" >&2
+    exit 2
+  fi
+done
+if { [ -n "$EXACT_EXECUTION_KANDELO_MAIN_SHA" ] &&
+     [ -z "$EXACT_EXECUTION_TARGET_MAIN_SHA" ]; } ||
+   { [ -z "$EXACT_EXECUTION_KANDELO_MAIN_SHA" ] &&
+     [ -n "$EXACT_EXECUTION_TARGET_MAIN_SHA" ]; }; then
+  echo "publish-immutable-github-release: exact execution authorities must be supplied together" >&2
   exit 2
 fi
 if [ -n "$TARGET_MAIN_CONTAINS_SHA" ] &&
@@ -165,6 +192,19 @@ require_main_authority() {
     bash "$REPO_ROOT/.github/scripts/require-repository-main-contains.sh" \
       --repository "$REPOSITORY" \
       --source-sha "$TARGET_MAIN_CONTAINS_SHA" >/dev/null
+  fi
+  # WHY: historical content remains publishable while it is contained in both
+  # protected histories, but the executable Kandelo publisher and tap caller
+  # are independently revocable. Check those exact current commits last so a
+  # main advance during the slower ancestry reads cannot authorize stale code.
+  if [ -n "$EXACT_EXECUTION_KANDELO_MAIN_SHA" ]; then
+    GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}" \
+      bash "$REPO_ROOT/.github/scripts/require-exact-kandelo-main.sh" \
+        --repository Automattic/kandelo \
+        --source-sha "$EXACT_EXECUTION_KANDELO_MAIN_SHA" >/dev/null
+    bash "$REPO_ROOT/.github/scripts/require-exact-repository-main.sh" \
+      --repository "$REPOSITORY" \
+      --source-sha "$EXACT_EXECUTION_TARGET_MAIN_SHA" >/dev/null
   fi
 }
 
@@ -489,8 +529,8 @@ validate_direct_tag() {
 }
 
 # GitHub ignores target_commitish when a release tag already exists. Establish
-# or verify the exact lightweight tag before making the release immutable, so a
-# stale or annotated tag cannot poison an otherwise valid content release.
+# the exact lightweight tag before draft creation, then recheck it before the
+# immutable transition. A stale or annotated tag must not claim valid content.
 ensure_direct_tag() {
   local attempt=1 create_rc tag_rc
   tag_rc=0
@@ -537,6 +577,11 @@ publish_and_reconcile() {
     fi
     patch_rc=0
     require_main_authority
+    # WHY: the content-tag lock coordinates this publisher, but it cannot stop
+    # another authorized repository writer from moving the tag while the
+    # protected-main reads above are in flight. Re-read the direct tag at the
+    # last possible point before GitHub makes the release immutable.
+    validate_direct_tag
     gh api --method PATCH "/repos/${REPOSITORY}/releases/${release_id}" \
       -f make_latest=false -F draft=false -F prerelease=false >/dev/null || patch_rc=$?
     if [ "$patch_rc" -ne 0 ]; then
@@ -572,6 +617,14 @@ acquire_lock() {
 }
 
 acquire_lock
+
+# WHY: GitHub requires a token with `workflows: write` when release creation
+# targets an older commit that changed a workflow relative to current main.
+# The built-in GITHUB_TOKEN can never receive that permission. GitHub ignores
+# target_commitish when the exact tag already exists, so reserve and validate
+# the direct tag under this same state lock before creating the draft.
+# https://docs.github.com/en/rest/releases/releases#create-a-release
+ensure_direct_tag
 
 release_rc=0
 refresh_public_release || release_rc=$?

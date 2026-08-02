@@ -15,7 +15,7 @@ export {
 } from "./homebrew-main-shell-catalog-contract";
 
 const EXPECTED_ARCH = "wasm32";
-const EXPECTED_SHELL_PATH = "/home/linuxbrew/.linuxbrew/bin/bash";
+const EXPECTED_SHELL_PATH = "/opt/kandelo/homebrew/bin/bash";
 const EXPECTED_SHELL_ARGV = ["bash", "-l", "-i"];
 
 export interface MainShellImageContractInput {

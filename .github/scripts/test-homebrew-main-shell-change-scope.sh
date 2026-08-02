@@ -197,10 +197,10 @@ HEAD="$(finish_change)"
 assert_scope false pull_request "$BASE" "$HEAD" \
   "diff is limited to audited publisher-only"
 
-# The campaign bridge is one publisher contract even though it spans
-# reconstruction, provenance, transport, immutable-release, and documentation
-# helpers. Keep that complete reviewed set cheap to validate, while proving
-# that one product-runtime path still restores the exact-shell gate.
+# The publisher side of the campaign bridge spans reconstruction, provenance,
+# transport, immutable-release, and documentation helpers. Keep that reviewed
+# set cheap to validate, while proving that one product-runtime path still
+# restores the exact-shell gate.
 campaign_publisher_paths=(
   .github/scripts/require-repository-main-contains.sh
   .github/scripts/test-require-repository-main-contains.sh
@@ -219,7 +219,6 @@ campaign_publisher_paths=(
   scripts/homebrew-generate-sidecars-from-env.sh
   scripts/homebrew-ghcr-upload.sh
   scripts/homebrew-oci-layout.py
-  scripts/homebrew-prefix-campaign-executor.py
   scripts/homebrew-prefix-campaign-publisher.py
   scripts/homebrew-prefix-campaign.py
   scripts/homebrew-validate-build-handoff.sh
@@ -244,6 +243,15 @@ done
 HEAD="$(finish_change)"
 assert_scope false pull_request "$BASE" "$HEAD" \
   "diff is limited to audited publisher-only"
+
+# WHY: the final shell consumer imports the campaign executor to validate and
+# materialize a closed selection. An executor change can therefore alter the
+# exact bytes composed into the product even when no other shell file changes.
+reset_fixture
+commit_change scripts/homebrew-prefix-campaign-executor.py
+HEAD="$(finish_change)"
+assert_scope true pull_request "$BASE" "$HEAD" \
+  "scripts/homebrew-prefix-campaign-executor.py"
 
 reset_fixture
 for path in "${campaign_publisher_paths[@]}"; do
@@ -388,9 +396,13 @@ done
 [ "$(grep -Fc 'name: exact current lazy shell (Node + Chromium)' \
   "$WORKFLOW")" -eq 1 ] ||
   fail "the stable exact-shell check name must appear exactly once"
-grep -Fq 'if: needs.homebrew-main-shell-scope.outputs.required == '\''true'\''' \
-  "$WORKFLOW" ||
-  fail "the expensive exact-shell job is not scope-gated"
+grep -Fq \
+  "needs.homebrew-main-shell-scope.outputs.required == 'true'" \
+  "$WORKFLOW" &&
+  grep -Fq \
+    "needs.homebrew-main-shell-scope.outputs.selection_ready == 'true'" \
+    "$WORKFLOW" ||
+  fail "the expensive exact-shell job is not scope and selection gated"
 grep -Fq 'if: always()' "$WORKFLOW" ||
   fail "the stable exact-shell gate is not always present"
 grep -Fq 'needs.exact-public-bottle-closure.result' "$WORKFLOW" ||

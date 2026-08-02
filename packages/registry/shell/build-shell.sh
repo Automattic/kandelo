@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Canonical package-system build for today's browser shell. The resolver
-# provisions the exact public Homebrew tap commit declared in build.toml; this
-# script composes the declared output exclusively from that tap's bottles.
+# Canonical package-system build for today's browser shell. This recipe fetches
+# the same immutable closed selection as product CI and composes its declared
+# output exclusively from that selection's public bottles.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -13,20 +13,9 @@ source "$SCRIPT_DIR/build-tool-path.sh"
 kandelo_shell_activate_build_tool_path
 
 OUT_DIR="${WASM_POSIX_DEP_OUT_DIR:-}"
-HOMEBREW_TAP_ROOT="${WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_DIR:-}"
-HOMEBREW_TAP_SHA="${WASM_POSIX_BUILD_GIT_HOMEBREW_TAP_CORE_COMMIT:-}"
-HOMEBREW_BOOTSTRAP_DIR="${WASM_POSIX_DEP_HOMEBREW_BOOTSTRAP_DIR:-}"
 
 if [ -z "$OUT_DIR" ]; then
     echo "ERROR: shell is a resolver-owned package build; WASM_POSIX_DEP_OUT_DIR is required" >&2
-    exit 2
-fi
-if [ -z "$HOMEBREW_TAP_ROOT" ] || [ -z "$HOMEBREW_TAP_SHA" ]; then
-    echo "ERROR: shell requires build.toml git input homebrew_tap_core (DIR and COMMIT)" >&2
-    exit 2
-fi
-if [ -z "$HOMEBREW_BOOTSTRAP_DIR" ]; then
-    echo "ERROR: shell requires its declared homebrew-bootstrap dependency" >&2
     exit 2
 fi
 if [ "${WASM_POSIX_DEP_TARGET_ARCH:-}" != "wasm32" ]; then
@@ -55,8 +44,7 @@ BUILD_DIR="$OUT_DIR/.homebrew-shell-build"
 SOURCE_ROOT="$BUILD_DIR/source"
 WORK_DIR="$BUILD_DIR/work"
 VFS="$BUILD_DIR/shell.vfs.zst"
-HOMEBREW_BOOTSTRAP="$HOMEBREW_BOOTSTRAP_DIR/homebrew-bootstrap.zip"
-HOMEBREW_BREW_ENV="$HOMEBREW_BOOTSTRAP_DIR/homebrew-brew.env"
+PREPARED_INPUTS="$BUILD_DIR/prepared-inputs"
 REPORT="$BUILD_DIR/main-shell-report.json"
 BOTTLE_CACHE="$BUILD_DIR/bottle-cache"
 if [ -e "$BUILD_DIR" ] || [ -L "$BUILD_DIR" ]; then
@@ -64,14 +52,6 @@ if [ -e "$BUILD_DIR" ] || [ -L "$BUILD_DIR" ]; then
     exit 1
 fi
 mkdir "$BUILD_DIR"
-if [ ! -f "$HOMEBREW_BOOTSTRAP" ] || [ -L "$HOMEBREW_BOOTSTRAP" ]; then
-    echo "ERROR: declared homebrew-bootstrap output is not a regular file: $HOMEBREW_BOOTSTRAP" >&2
-    exit 2
-fi
-if [ ! -f "$HOMEBREW_BREW_ENV" ] || [ -L "$HOMEBREW_BREW_ENV" ]; then
-    echo "ERROR: declared Homebrew environment output is not a regular file: $HOMEBREW_BREW_ENV" >&2
-    exit 2
-fi
 cleanup() {
     rm -rf -- "$BUILD_DIR"
 }
@@ -84,21 +64,38 @@ trap cleanup EXIT
 # npm and the composer never mutate or execute from the shared checkout.
 bash "$SCRIPT_DIR/prepare-build-tools.sh" "$SOURCE_ROOT"
 
-# The checkout is sealed read-only by the resolver. Disable Git's optional
-# index refresh while the strict composer independently verifies exact HEAD,
-# cleanliness, and the migration-lock commit.
-GIT_OPTIONAL_LOCKS=0 \
-bash "$SOURCE_ROOT/scripts/build-homebrew-main-shell-closure.sh" \
-    --lazy-shell \
-    --tap-root "$HOMEBREW_TAP_ROOT" \
-    --expected-tap-sha "$HOMEBREW_TAP_SHA" \
+# WHY: the package must reproduce the exact product path, including candidate
+# review before publication. It may review pending image bytes only after the
+# Formula selection is sealed; a publishable package uses the strict path.
+PRODUCT_STATE="$(python3 \
+    "$SOURCE_ROOT/scripts/homebrew-main-shell-product-state.py" \
+    --root "$SOURCE_ROOT")"
+PRODUCT_REVIEW_ARGS=()
+case "$PRODUCT_STATE" in
+    candidate) PRODUCT_REVIEW_ARGS=(--review-pending-artifact) ;;
+    publishable) ;;
+    awaiting-selection)
+        echo "ERROR: shell package awaits its immutable bottle selection" >&2
+        exit 1
+        ;;
+    *)
+        echo "ERROR: unsupported shell product state: $PRODUCT_STATE" >&2
+        exit 1
+        ;;
+esac
+
+bash "$SOURCE_ROOT/scripts/prepare-homebrew-main-shell-inputs.sh" \
+    --output-directory "$PREPARED_INPUTS"
+# WHY: Bash 3.2 treats an empty array as unset under `set -u`. Guard the
+# expansion so publishable builds pass no review option, while candidates pass
+# the one explicit option selected above.
+bash "$SOURCE_ROOT/scripts/build-homebrew-main-shell-product.sh" \
+    --prepared-inputs "$PREPARED_INPUTS" \
     --work-dir "$WORK_DIR" \
     --report "$REPORT" \
     --bottle-cache "$BOTTLE_CACHE" \
-    --package-tree-spec "$SOURCE_ROOT/homebrew/main-shell-brew-package-tree.json" \
-    --package-tree-archive "$HOMEBREW_BOOTSTRAP" \
-    --homebrew-bootstrap-env "$HOMEBREW_BREW_ENV" \
-    --out "$VFS"
+    --out "$VFS" \
+    ${PRODUCT_REVIEW_ARGS[@]+"${PRODUCT_REVIEW_ARGS[@]}"}
 
 [ -f "$VFS" ] || { echo "ERROR: $VFS not produced by builder" >&2; exit 1; }
 [ -f "$REPORT" ] || { echo "ERROR: $REPORT not produced by builder" >&2; exit 1; }

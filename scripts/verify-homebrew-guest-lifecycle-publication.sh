@@ -111,10 +111,10 @@ jq -e \
   .tap_caller_authority_ref == $tap_caller_authority and
   .canary_ref == $canary and
   .bootstrap == {
-    state: "transitional",
-    source_kind: "kandelo-package-registry",
+    state: "formula-owned",
+    source_kind: "homebrew-support-data-bottle",
     package: "homebrew-bootstrap",
-    guest_prefix: "/home/linuxbrew/.linuxbrew",
+    guest_prefix: "/opt/kandelo/homebrew",
     stable_entrypoint: "/usr/bin/brew"
   } and
   .bottle_mirror == {

@@ -260,10 +260,11 @@ make_formula_runner_fixture() {
 homebrew_select_guest_layout() {
   # This fixture isolates Formula-runner behavior. Layout selection itself has
   # dedicated production-helper tests elsewhere in this suite.
-  HOMEBREW_GUEST_LAYOUT_MODE="current"
+  HOMEBREW_GUEST_LAYOUT_MODE="canonical"
   HOMEBREW_GUEST_PREFIX="${FAKE_BREW_PREFIX:?}"
   HOMEBREW_GUEST_CELLAR="$HOMEBREW_GUEST_PREFIX/Cellar"
   HOMEBREW_GUEST_LAYOUT_SHA256=""
+  HOMEBREW_GUEST_PATCH_FILE="$KANDELO_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
 }
 EOF
   : >"$FORMULA_RUNNER_FIXTURE_ROOT/homebrew/patches/0001-add-kandelo-wasm-bottle-tags.patch"
@@ -2140,9 +2141,9 @@ write_publish_dependency_link_manifest() {
       version: $version,
       arch: $arch,
       kandelo_abi: 18,
-      prefix: "/home/linuxbrew/.linuxbrew",
-      cellar: "/home/linuxbrew/.linuxbrew/Cellar",
-      keg: ("/home/linuxbrew/.linuxbrew/Cellar/" + $name + "/" + $version),
+      prefix: "/opt/kandelo/homebrew",
+      cellar: "/opt/kandelo/homebrew/Cellar",
+      keg: ("/opt/kandelo/homebrew/Cellar/" + $name + "/" + $version),
       bottle: {
         url: (
           "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/" +
@@ -2179,8 +2180,8 @@ seed_publish_dependency_sidecars() {
         arch: "wasm32",
         bottle_tag: "wasm32_kandelo",
         kandelo_abi: 18,
-        cellar: "/home/linuxbrew/.linuxbrew/Cellar",
-        prefix: "/home/linuxbrew/.linuxbrew",
+        cellar: "/opt/kandelo/homebrew/Cellar",
+        prefix: "/opt/kandelo/homebrew",
         runtime_support: ["node"],
         browser_compatible: false,
         fork_instrumentation: "not-required",
@@ -2373,8 +2374,8 @@ EOF
         bottles: [{
           arch: "wasm32",
           bottle_tag: "wasm32_kandelo",
-          cellar: "/home/linuxbrew/.linuxbrew/Cellar",
-          prefix: "/home/linuxbrew/.linuxbrew",
+          cellar: "/opt/kandelo/homebrew/Cellar",
+          prefix: "/opt/kandelo/homebrew",
           runtime_support: ["node"],
           browser_compatible: false,
           fork_instrumentation: "not-required",
@@ -3441,6 +3442,10 @@ EOF
   grep -F "CI Formula execution requires KANDELO_HOMEBREW_BUILD_USER" \
     "$ci_err" >/dev/null ||
     fail "CI bottle build did not explain its isolated-identity requirement"
+  [ ! -e "$out" ] ||
+    fail "CI bottle build created output before requiring its isolated identity"
+  [ ! -s "$log" ] ||
+    fail "CI bottle build loaded Homebrew before requiring its isolated identity"
   : >"$log"
 
   different_checker="$FORMULA_RUNNER_FIXTURE_ROOT/target/different-safe-host/release/xtask"
@@ -3470,7 +3475,10 @@ EOF
   fi
   grep -F "scoped program-index checker differs from the exact host xtask" \
     "$checker_err" >/dev/null ||
-    fail "isolated bottle build did not explain the mismatched checker authority"
+    {
+      cat "$checker_err" >&2
+      fail "isolated bottle build did not explain the mismatched checker authority"
+    }
   : >"$log"
 
   prepare_formula_runner_tapped_clone \
@@ -7545,10 +7553,14 @@ bash "$REPO_ROOT/scripts/test-homebrew-sibling-bottle-policy.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-patched-launcher.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-native-api-contract.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-prefix-campaign-layout.sh"
+bash "$REPO_ROOT/scripts/test-homebrew-prepare-host-prefix.sh"
 PYTHONDONTWRITEBYTECODE=1 \
   python3 "$REPO_ROOT/scripts/test-homebrew-prefix-campaign.py"
 PYTHONDONTWRITEBYTECODE=1 \
   python3 "$REPO_ROOT/scripts/test-homebrew-prefix-campaign-executor.py"
+PYTHONDONTWRITEBYTECODE=1 \
+  python3 \
+    "$REPO_ROOT/scripts/test-homebrew-closed-selection-controller.py"
 PYTHONDONTWRITEBYTECODE=1 \
   python3 "$REPO_ROOT/scripts/test-homebrew-prefix-campaign-publisher.py"
 bash "$REPO_ROOT/scripts/test-homebrew-inspect-bottle.sh"
@@ -7556,6 +7568,8 @@ bash "$REPO_ROOT/scripts/test-homebrew-formula-runtime-closure.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-validate-host-dependency-plan.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-bottle-runtime-evidence.sh"
 bash "$REPO_ROOT/scripts/test-publish-immutable-github-release.sh"
+bash "$REPO_ROOT/scripts/test-publish-homebrew-closed-selection-release.sh"
+ruby "$REPO_ROOT/scripts/check-homebrew-closed-selection-workflow.rb"
 bash "$REPO_ROOT/scripts/test-homebrew-main-shell-mirror-workflow.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-main-shell-mirror-handoff.sh"
 bash "$REPO_ROOT/scripts/test-verify-existing-immutable-github-release.sh"

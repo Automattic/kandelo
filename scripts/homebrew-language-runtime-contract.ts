@@ -1,4 +1,7 @@
-const HOMEBREW_PREFIX = "/home/linuxbrew/.linuxbrew";
+import { KANDELO_HOMEBREW_GUEST_LAYOUT } from
+  "../host/src/homebrew-guest-layout";
+
+const HOMEBREW_PREFIX = KANDELO_HOMEBREW_GUEST_LAYOUT.prefix;
 const PYTHON_PREFIX = `${HOMEBREW_PREFIX}/Cellar/python/3.13.3_1`;
 const ERLANG_KEG = `${HOMEBREW_PREFIX}/Cellar/erlang/28.2_1`;
 const SHELL = "/bin/sh";

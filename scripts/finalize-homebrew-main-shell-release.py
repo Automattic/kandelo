@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Refresh the reviewed main-shell locks from one exact final tap checkout."""
+"""Refresh main-shell locks from a live tap or sealed closed selection."""
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import pathlib
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -19,27 +21,29 @@ from typing import Any
 
 TAP_REPOSITORY = "kandelo-dev/homebrew-tap-core"
 TAP_NAME = "kandelo-dev/tap-core"
-TAP_URL = "https://github.com/Kandelo-dev/homebrew-tap-core.git"
 SHA = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 FORMULA = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 MAX_INPUT_BYTES = 4 * 1024 * 1024
+MAX_SELECTION_RECEIPT_BYTES = 64 * 1024 * 1024
 EXPECTED_EMBEDDED = 3
 
 MIGRATION_PATH = "homebrew/main-shell-migration-lock.json"
 SUPPORT_PATH = "homebrew/main-shell-homebrew-runtime-support.json"
+SELECTION_PATH = "homebrew/main-shell-selection-lock.json"
 ARTIFACT_PATH = "homebrew/main-shell-lazy-artifact-lock.json"
 BUILD_PATH = "packages/registry/shell/build.toml"
 DOC_PATH = "docs/homebrew-publishing.md"
 BREWFILE_PATH = "homebrew/main-shell.Brewfile"
 BOUND_INPUTS = {
-    "bootstrap_source_lock_sha256": "homebrew/homebrew-bootstrap-source-lock.json",
     "bootstrap_tree_spec_sha256": "homebrew/main-shell-brew-package-tree.json",
     "brewfile_sha256": BREWFILE_PATH,
     "demo_config_sha256": "homebrew/main-shell-demo.json",
     "materialization_policy_sha256": "homebrew/main-shell-materialization-policy.json",
     "migration_lock_sha256": MIGRATION_PATH,
     "runtime_support_sha256": SUPPORT_PATH,
+    "selection_lock_sha256": SELECTION_PATH,
+    "shell_config_sha256": "homebrew/main-shell-default.json",
 }
 
 
@@ -100,6 +104,48 @@ def json_bytes(value: Any) -> bytes:
     return (json.dumps(value, indent=2, ensure_ascii=False) + "\n").encode()
 
 
+def require_artifact_lock(value: Any) -> dict[str, Any]:
+    if (
+        not isinstance(value, dict)
+        or set(value)
+        != {
+            "schema",
+            "kind",
+            "source_date_epoch",
+            "state",
+            "inputs",
+            "image",
+        }
+        or value.get("schema") != 3
+        or value.get("kind") != "kandelo-homebrew-lazy-shell-artifact-lock"
+        or not isinstance(value.get("source_date_epoch"), int)
+        or isinstance(value["source_date_epoch"], bool)
+        or value.get("source_date_epoch") != 0
+        or not isinstance(value.get("inputs"), dict)
+        or set(value["inputs"]) != set(BOUND_INPUTS)
+        or any(
+            not isinstance(digest, str) or not SHA256.fullmatch(digest)
+            for digest in value["inputs"].values()
+        )
+    ):
+        raise FinalizeError("artifact lock is not the exact schema-3 contract")
+    image = value.get("image")
+    if value.get("state") == "pending" and image is None:
+        return value
+    if (
+        value.get("state") == "sealed"
+        and isinstance(image, dict)
+        and set(image) == {"sha256", "bytes"}
+        and isinstance(image.get("sha256"), str)
+        and SHA256.fullmatch(image["sha256"])
+        and isinstance(image.get("bytes"), int)
+        and not isinstance(image["bytes"], bool)
+        and image["bytes"] > 0
+    ):
+        return value
+    raise FinalizeError("artifact lock has an invalid publication state")
+
+
 def run_git(tap_root: pathlib.Path, *arguments: str) -> str:
     try:
         result = subprocess.run(
@@ -129,6 +175,10 @@ def require_tap_checkout(tap_root: pathlib.Path) -> tuple[str, bytes, dict[str, 
     if run_git(tap_root, "status", "--porcelain=v1", "--untracked-files=all"):
         raise FinalizeError("tap checkout must be clean")
     metadata_bytes = regular_bytes(tap_root, "Kandelo/metadata.json")
+    return head, metadata_bytes, require_tap_metadata(metadata_bytes)
+
+
+def require_tap_metadata(metadata_bytes: bytes) -> dict[str, Any]:
     tap = exact_json(metadata_bytes, "tap metadata")
     if (
         not isinstance(tap, dict)
@@ -142,7 +192,7 @@ def require_tap_checkout(tap_root: pathlib.Path) -> tuple[str, bytes, dict[str, 
         or not isinstance(tap.get("packages"), list)
     ):
         raise FinalizeError("tap metadata is not the exact ABI-42 core-tap catalog")
-    return head, metadata_bytes, tap
+    return tap
 
 
 def package_map(tap: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -294,7 +344,7 @@ def require_bottle(package: dict[str, Any]) -> None:
         )
 
 
-def update_build_toml(value: bytes, old_tap: str, new_tap: str, sealed: bool) -> bytes:
+def update_build_toml(value: bytes, sealed: bool) -> bytes:
     try:
         text = value.decode()
     except UnicodeDecodeError as error:
@@ -306,19 +356,11 @@ def update_build_toml(value: bytes, old_tap: str, new_tap: str, sealed: bool) ->
     original_revision = positive_revision(
         original_build.get("revision"), f"{BUILD_PATH} revision"
     )
-    block = re.compile(
-        r'(\[\[git_inputs\]\]\n'
-        r'name = "homebrew_tap_core"\n'
-        r'repository = "https://github\.com/Kandelo-dev/homebrew-tap-core\.git"\n'
-        r'commit = ")'
-        + re.escape(old_tap)
-        + r'("\n)'
-    )
-    text, count = block.subn(rf"\g<1>{new_tap}\g<2>", text)
-    if count != 1:
-        raise FinalizeError(
-            f"{BUILD_PATH} does not contain one exact old core-tap Git input"
-        )
+    if original_build.get("git_inputs") is not None:
+        # WHY: the package consumes the immutable closed selection that this
+        # finalizer seals. Keeping a second raw-tap input would let the package
+        # and the directly tested product compose different Formula trees.
+        raise FinalizeError(f"{BUILD_PATH} must not declare raw tap Git inputs")
     expected_state = "ready" if sealed else "pending"
     text, count = re.subn(
         r'^publication_state = "(?:ready|pending)"$',
@@ -342,14 +384,7 @@ def update_build_toml(value: bytes, old_tap: str, new_tap: str, sealed: bool) ->
         # stale copy of the current revision number.
         or build.get("revision") != original_revision
         or build.get("publication_state") != expected_state
-        or build.get("git_inputs")
-        != [
-            {
-                "name": "homebrew_tap_core",
-                "repository": TAP_URL,
-                "commit": new_tap,
-            }
-        ]
+        or build.get("git_inputs") is not None
     ):
         raise FinalizeError(f"{BUILD_PATH} release identity is not exact")
     return text.encode()
@@ -360,8 +395,8 @@ def update_docs(value: bytes, old_tap: str, new_tap: str) -> bytes:
         text = value.decode()
     except UnicodeDecodeError as error:
         raise FinalizeError(f"{DOC_PATH} is not UTF-8") from error
-    old = f"The checked-in `{old_tap}` first-party tap value"
-    new = f"The checked-in `{new_tap}` first-party tap value"
+    old = f"The checked-in `{old_tap}` tap value"
+    new = f"The checked-in `{new_tap}` tap value"
     if text.count(old) != 1:
         raise FinalizeError(
             f"{DOC_PATH} does not name the old catalog exactly once"
@@ -451,6 +486,295 @@ def runtime_provenance(
     return digest
 
 
+def load_selection_lock_module() -> Any:
+    path = pathlib.Path(__file__).with_name(
+        "homebrew-main-shell-selection-lock.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "homebrew_main_shell_selection_lock_for_finalizer",
+        path,
+    )
+    if spec is None or spec.loader is None:
+        raise FinalizeError("closed-selection verifier is unavailable")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def require_closed_selection(
+    source_root: pathlib.Path,
+    selection_root: pathlib.Path,
+    receipt_path: pathlib.Path,
+) -> dict[str, Any]:
+    verifier = load_selection_lock_module()
+    current_lock = exact_json(
+        regular_bytes(source_root, SELECTION_PATH),
+        "main-shell selection lock",
+    )
+    try:
+        # WHY: the finalizer may replace a pending lock, but it must not use a
+        # stale or hand-written predecessor as permission to change product
+        # inputs. Validate the checked-in lock before deriving its successor.
+        verifier.validate_lock(current_lock, source_root)
+    except verifier.LockError as error:
+        raise FinalizeError(
+            f"checked-in closed-selection lock is invalid: {error}"
+        ) from error
+    executor = verifier.executor()
+    try:
+        selection, selection_payload, tap_root = (
+            executor.load_selection_candidate(selection_root)
+        )
+        receipt, receipt_payload = verifier.load_json(
+            receipt_path,
+            "closed selection public readback receipt",
+        )
+        if receipt_payload != verifier.pretty_json(receipt):
+            raise FinalizeError(
+                "closed selection readback receipt is not canonical JSON"
+            )
+        receipt = verifier.validate_receipt(receipt)
+    except FinalizeError:
+        raise
+    except (verifier.LockError, executor.ExecutorError) as error:
+        raise FinalizeError(f"closed selection is invalid: {error}") from error
+
+    metadata_path = tap_root / "Kandelo/metadata.json"
+    metadata_bytes = regular_bytes(tap_root, "Kandelo/metadata.json")
+    tap = require_tap_metadata(metadata_bytes)
+    source_commit = selection.get("tap", {}).get("source_commit")
+    if (
+        not SHA.fullmatch(source_commit or "")
+        or tap.get("tap_commit") != source_commit
+        or receipt.get("target_commitish") != source_commit
+    ):
+        raise FinalizeError(
+            "closed selection does not retain one exact source-tap authority"
+        )
+    return {
+        "metadata_bytes": metadata_bytes,
+        "metadata_path": metadata_path,
+        "receipt": receipt,
+        "selection": selection,
+        "selection_payload": selection_payload,
+        "selection_root": selection_root,
+        "source_commit": source_commit,
+        "tap": tap,
+        "tap_root": tap_root,
+        "verifier": verifier,
+    }
+
+
+def insert_dependency_order(
+    existing: list[str], required: list[str]
+) -> list[str]:
+    result = list(existing)
+    for position, identity in enumerate(required):
+        if identity in result:
+            continue
+        later = next(
+            (
+                candidate
+                for candidate in required[position + 1 :]
+                if candidate in result
+            ),
+            None,
+        )
+        if later is not None:
+            result.insert(result.index(later), identity)
+            continue
+        earlier = [
+            result.index(candidate)
+            for candidate in required[:position]
+            if candidate in result
+        ]
+        result.insert(max(earlier) + 1 if earlier else len(result), identity)
+    return result
+
+
+def refresh_runtime_support(
+    support: dict[str, Any],
+    packages: dict[str, dict[str, Any]],
+    reviewed_closure: list[str],
+) -> None:
+    roots = support.get("formula_roots")
+    if not isinstance(roots, list) or not roots:
+        raise FinalizeError("runtime support has no Formula roots")
+    root_names: list[str] = []
+    for index, entry in enumerate(roots):
+        identity = entry.get("package") if isinstance(entry, dict) else None
+        if (
+            not isinstance(identity, str)
+            or not identity.startswith(f"{TAP_NAME}/")
+            or not FORMULA.fullmatch(identity.removeprefix(f"{TAP_NAME}/"))
+        ):
+            raise FinalizeError(
+                f"runtime-support Formula root {index} is invalid"
+            )
+        root_names.append(identity.removeprefix(f"{TAP_NAME}/"))
+    if len(set(root_names)) != len(root_names):
+        raise FinalizeError("runtime-support Formula roots are duplicated")
+
+    runtime_formulae = closure(root_names, packages)
+    support["formula_order"] = runtime_formulae
+    support["additional_formula_order"] = [
+        identity
+        for identity in runtime_formulae
+        if identity not in reviewed_closure
+    ]
+
+    availability = support.get("availability")
+    if not isinstance(availability, dict):
+        raise FinalizeError("runtime support lacks its availability partition")
+    reusable = formula_identities(
+        availability.get("reusable_public_abi42"),
+        "Homebrew runtime-support availability.reusable_public_abi42",
+    )
+    for key in ["requires_rebuild", "missing_metadata", "can_be_deferred"]:
+        entries = formula_identities(
+            availability.get(key),
+            f"Homebrew runtime-support availability.{key}",
+        )
+        if entries:
+            # WHY: a sealed product selection proves the bytes it contains;
+            # it does not silently decide that an earlier unavailable or
+            # deferred audit candidate has become product policy.
+            raise FinalizeError(
+                "closed-selection finalization requires the reviewed "
+                f"availability.{key} partition to be empty"
+            )
+    reusable = insert_dependency_order(reusable, runtime_formulae)
+    if len(set(reusable)) != len(reusable):
+        raise FinalizeError(
+            "Homebrew runtime-support reusable cohort repeats a Formula"
+        )
+    for identity in reusable:
+        package = packages.get(identity.removeprefix(f"{TAP_NAME}/"))
+        if package is None:
+            raise FinalizeError(
+                f"closed selection omits audited Formula {identity}"
+            )
+        require_bottle(package)
+    availability["reusable_public_abi42"] = reusable
+
+
+def selection_lock_inputs(
+    *,
+    source_root: pathlib.Path,
+    verifier: Any,
+    migration: dict[str, Any],
+    migration_bytes: bytes,
+    support: dict[str, Any],
+    support_bytes: bytes,
+) -> tuple[
+    dict[str, tuple[dict[str, Any], bytes]],
+    dict[str, dict[str, str]],
+]:
+    inputs: dict[str, tuple[dict[str, Any], bytes]] = {}
+    records: dict[str, dict[str, str]] = {}
+    for name, relative in verifier.INPUT_PATHS.items():
+        if name == "migration_lock":
+            value, payload = migration, migration_bytes
+        elif name == "runtime_support":
+            value, payload = support, support_bytes
+        else:
+            payload = regular_bytes(source_root, relative)
+            value = {} if name == "brewfile" else exact_json(
+                payload, f"main-shell {name}"
+            )
+        inputs[name] = (value, payload)
+        records[name] = {
+            "path": relative,
+            "sha256": sha256(payload),
+        }
+    return inputs, records
+
+
+def create_pending_selection_lock(
+    *,
+    source_root: pathlib.Path,
+    migration: dict[str, Any],
+    migration_bytes: bytes,
+    support: dict[str, Any],
+    support_bytes: bytes,
+) -> bytes:
+    verifier = load_selection_lock_module()
+    try:
+        # WHY: --tap-root is a review-only catalog refresh. Rebuilding the
+        # pending lock keeps its input digests coherent with the refreshed
+        # catalog while deliberately granting no immutable release authority.
+        # It must also repair an intentionally edited input, so it does not
+        # require the superseded pending lock to match that input first.
+        inputs, records = selection_lock_inputs(
+            source_root=source_root,
+            verifier=verifier,
+            migration=migration,
+            migration_bytes=migration_bytes,
+            support=support,
+            support_bytes=support_bytes,
+        )
+        verifier.derive_roots_and_required_formulae(source_root, inputs)
+    except verifier.LockError as error:
+        raise FinalizeError(
+            f"cannot refresh the pending closed-selection lock: {error}"
+        ) from error
+    return verifier.pretty_json(
+        {
+            "arch": "wasm32",
+            "inputs": records,
+            "kind": "kandelo-homebrew-main-shell-closed-selection-lock",
+            "release": None,
+            "schema": 1,
+            "state": "pending",
+        }
+    )
+
+
+def seal_selection_lock(
+    *,
+    source_root: pathlib.Path,
+    migration: dict[str, Any],
+    migration_bytes: bytes,
+    support: dict[str, Any],
+    support_bytes: bytes,
+    selection_input: dict[str, Any],
+) -> tuple[bytes, dict[str, Any]]:
+    verifier = selection_input["verifier"]
+    inputs, records = selection_lock_inputs(
+        source_root=source_root,
+        verifier=verifier,
+        migration=migration,
+        migration_bytes=migration_bytes,
+        support=support,
+        support_bytes=support_bytes,
+    )
+    lock = {
+        "arch": "wasm32",
+        "inputs": records,
+        "kind": "kandelo-homebrew-main-shell-closed-selection-lock",
+        "release": verifier.release_from_receipt(
+            selection_input["receipt"]
+        ),
+        "schema": 1,
+        "state": "sealed",
+    }
+    try:
+        report = verifier.verify_selection(
+            root=source_root,
+            lock=lock,
+            inputs=inputs,
+            selection_root=selection_input["selection_root"],
+            receipt=selection_input["receipt"],
+            allow_pending=False,
+        )
+    except verifier.LockError as error:
+        raise FinalizeError(
+            f"closed selection does not match refreshed product inputs: {error}"
+        ) from error
+    return verifier.pretty_json(lock), report
+
+
 def atomic_write(path: pathlib.Path, value: bytes) -> None:
     metadata = path.lstat()
     if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
@@ -469,9 +793,105 @@ def atomic_write(path: pathlib.Path, value: bytes) -> None:
             pass
 
 
+def snapshot_closed_selection(
+    selection_root: pathlib.Path,
+    receipt_path: pathlib.Path,
+    snapshot_root: pathlib.Path,
+) -> tuple[pathlib.Path, pathlib.Path]:
+    try:
+        selection_metadata = selection_root.lstat()
+    except OSError as error:
+        raise FinalizeError("closed selection is not readable") from error
+    if (
+        not stat.S_ISDIR(selection_metadata.st_mode)
+        or selection_root.is_symlink()
+    ):
+        raise FinalizeError(
+            "closed selection must be one non-symlink directory"
+        )
+
+    stable_selection = snapshot_root / "selection"
+    stable_receipt = snapshot_root / "selection-readback.json"
+    try:
+        # WHY: fetched release inputs are caller-owned local paths. Later
+        # provenance and lock checks reopen their files, so consuming those
+        # paths directly would permit an edit/restore race after validation.
+        # Validate and consume only this one private, internally owned copy.
+        shutil.copytree(selection_root, stable_selection, symlinks=True)
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_NONBLOCK", 0)
+        )
+        with os.fdopen(os.open(receipt_path, flags), "rb") as receipt:
+            receipt_metadata = os.fstat(receipt.fileno())
+            if (
+                not stat.S_ISREG(receipt_metadata.st_mode)
+                or receipt_metadata.st_size < 1
+                or receipt_metadata.st_size > MAX_SELECTION_RECEIPT_BYTES
+            ):
+                raise FinalizeError(
+                    "closed selection receipt is not one bounded regular file"
+                )
+            receipt_bytes = receipt.read(MAX_SELECTION_RECEIPT_BYTES + 1)
+        if not receipt_bytes or len(receipt_bytes) > MAX_SELECTION_RECEIPT_BYTES:
+            raise FinalizeError(
+                "closed selection receipt is not one bounded regular file"
+            )
+        stable_receipt.write_bytes(receipt_bytes)
+    except OSError as error:
+        raise FinalizeError(
+            "closed selection and receipt could not be snapshotted"
+        ) from error
+    return stable_selection, stable_receipt
+
+
 def prepare(
     source_root: pathlib.Path,
-    tap_root: pathlib.Path,
+    tap_root: pathlib.Path | None,
+    selection_root: pathlib.Path | None,
+    selection_receipt: pathlib.Path | None,
+    artifact_file: pathlib.Path | None,
+) -> tuple[dict[str, bytes], dict[str, Any]]:
+    if tap_root is not None and artifact_file is not None:
+        # WHY: a clean source tap proves reviewed catalog contents, but it is
+        # not an immutable closed-selection release. Accepting artifact bytes
+        # here would advertise a publishable shell without selection authority.
+        raise FinalizeError(
+            "--artifact requires --selection and --selection-receipt"
+        )
+    if selection_root is not None:
+        assert selection_receipt is not None
+        with tempfile.TemporaryDirectory(
+            prefix="kandelo-shell-selection-inputs."
+        ) as temporary:
+            stable_selection, stable_receipt = snapshot_closed_selection(
+                selection_root,
+                selection_receipt,
+                pathlib.Path(temporary),
+            )
+            return prepare_stable_inputs(
+                source_root,
+                tap_root,
+                stable_selection,
+                stable_receipt,
+                artifact_file,
+            )
+    return prepare_stable_inputs(
+        source_root,
+        tap_root,
+        selection_root,
+        selection_receipt,
+        artifact_file,
+    )
+
+
+def prepare_stable_inputs(
+    source_root: pathlib.Path,
+    tap_root: pathlib.Path | None,
+    selection_root: pathlib.Path | None,
+    selection_receipt: pathlib.Path | None,
     artifact_file: pathlib.Path | None,
 ) -> tuple[dict[str, bytes], dict[str, Any]]:
     try:
@@ -483,11 +903,20 @@ def prepare(
 
     old = {
         path: regular_bytes(source_root, path)
-        for path in [MIGRATION_PATH, SUPPORT_PATH, ARTIFACT_PATH, BUILD_PATH, DOC_PATH]
+        for path in [
+            MIGRATION_PATH,
+            SUPPORT_PATH,
+            SELECTION_PATH,
+            ARTIFACT_PATH,
+            BUILD_PATH,
+            DOC_PATH,
+        ]
     }
     migration = exact_json(old[MIGRATION_PATH], "migration lock")
     support = exact_json(old[SUPPORT_PATH], "runtime support")
-    artifact_lock = exact_json(old[ARTIFACT_PATH], "artifact lock")
+    artifact_lock = require_artifact_lock(
+        exact_json(old[ARTIFACT_PATH], "artifact lock")
+    )
     if not isinstance(migration, dict) or not isinstance(support, dict):
         raise FinalizeError("main-shell migration and runtime-support locks must be objects")
     old_tap = migration.get("catalog", {}).get("tap_commit")
@@ -501,7 +930,22 @@ def prepare(
     ):
         raise FinalizeError("existing main-shell catalog locks disagree")
 
-    final_tap, metadata_bytes, tap = require_tap_checkout(tap_root)
+    closed_selection: dict[str, Any] | None = None
+    if selection_root is not None:
+        assert selection_receipt is not None
+        closed_selection = require_closed_selection(
+            source_root,
+            selection_root,
+            selection_receipt,
+        )
+        final_tap = closed_selection["source_commit"]
+        metadata_bytes = closed_selection["metadata_bytes"]
+        metadata_path = closed_selection["metadata_path"]
+        tap = closed_selection["tap"]
+    else:
+        assert tap_root is not None
+        final_tap, metadata_bytes, tap = require_tap_checkout(tap_root)
+        metadata_path = tap_root / "Kandelo/metadata.json"
     packages = package_map(tap)
     roots = migration.get("packages")
     reviewed_closure = formula_identities(
@@ -582,6 +1026,13 @@ def prepare(
             "of its reviewed roots"
         )
 
+    if closed_selection is not None:
+        # WHY: a closed selection owns the exact generated tap bytes that the
+        # shell will consume. The clean source checkout owns review history,
+        # but its source-only Formulae cannot reveal newly selected runtime
+        # dependencies such as Ruby's libyaml dependency.
+        refresh_runtime_support(support, packages, reviewed_closure)
+
     migration["catalog"]["tap_commit"] = final_tap
     support["catalog"]["tap_commit"] = final_tap
     audited = support.get("availability", {}).get("audited_catalog")
@@ -597,17 +1048,37 @@ def prepare(
     # of replacing truthful per-bottle provenance with final catalog authority.
     provisional_support = json_bytes(support)
     audited["runtime_bottle_provenance_sha256"] = runtime_provenance(
-        tap_root / "Kandelo/metadata.json", provisional_support
+        metadata_path, provisional_support
     )
 
     migration_bytes = json_bytes(migration)
     support_bytes = json_bytes(support)
     checker_output = validate_with_canonical_checker(
         source_root,
-        tap_root / "Kandelo/metadata.json",
+        metadata_path,
         migration_bytes,
         support_bytes,
     )
+
+    selection_bytes: bytes
+    selection_report: dict[str, Any] | None = None
+    if closed_selection is not None:
+        selection_bytes, selection_report = seal_selection_lock(
+            source_root=source_root,
+            migration=migration,
+            migration_bytes=migration_bytes,
+            support=support,
+            support_bytes=support_bytes,
+            selection_input=closed_selection,
+        )
+    else:
+        selection_bytes = create_pending_selection_lock(
+            source_root=source_root,
+            migration=migration,
+            migration_bytes=migration_bytes,
+            support=support,
+            support_bytes=support_bytes,
+        )
 
     # WHY: these counts describe the reviewed descriptors that the canonical
     # checker just proved against tap metadata. Deriving them keeps a new
@@ -643,23 +1114,24 @@ def prepare(
         raise FinalizeError("Homebrew shell/runtime Formula union repeats a Formula")
 
     sealed = artifact_file is not None
-    build_bytes = update_build_toml(old[BUILD_PATH], old_tap, final_tap, sealed)
+    build_bytes = update_build_toml(old[BUILD_PATH], sealed)
     docs_bytes = update_docs(old[DOC_PATH], old_tap, final_tap)
     staged: dict[str, bytes] = {
         MIGRATION_PATH: migration_bytes,
         SUPPORT_PATH: support_bytes,
+        SELECTION_PATH: selection_bytes,
         BUILD_PATH: build_bytes,
         DOC_PATH: docs_bytes,
     }
 
-    if not isinstance(artifact_lock, dict):
-        raise FinalizeError("artifact lock must be an object")
     bound_values: dict[str, str] = {}
     for key, relative in BOUND_INPUTS.items():
         if relative == MIGRATION_PATH:
             value = migration_bytes
         elif relative == SUPPORT_PATH:
             value = support_bytes
+        elif relative == SELECTION_PATH:
+            value = selection_bytes
         else:
             value = regular_bytes(source_root, relative)
         bound_values[key] = sha256(value)
@@ -703,6 +1175,7 @@ def prepare(
         "artifact_state": artifact_lock["state"],
         "artifact": artifact_lock["image"],
         "checker": checker_output,
+        "selection": selection_report,
         "changed_paths": sorted(staged),
     }
     return staged, summary
@@ -711,7 +1184,22 @@ def prepare(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source-root", type=pathlib.Path, required=True)
-    parser.add_argument("--tap-root", type=pathlib.Path, required=True)
+    inputs = parser.add_mutually_exclusive_group(required=True)
+    inputs.add_argument(
+        "--tap-root",
+        type=pathlib.Path,
+        help="one clean final live-tap checkout",
+    )
+    inputs.add_argument(
+        "--selection",
+        type=pathlib.Path,
+        help="one fetched immutable closed-selection directory",
+    )
+    parser.add_argument(
+        "--selection-receipt",
+        type=pathlib.Path,
+        help="public readback receipt required with --selection",
+    )
     parser.add_argument(
         "--artifact",
         type=pathlib.Path,
@@ -720,15 +1208,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="replace the five reviewed files; otherwise print a read-only preview",
+        help="replace the reviewed files; otherwise print a read-only preview",
     )
-    return parser.parse_args()
+    arguments = parser.parse_args()
+    if (arguments.selection is None) != (
+        arguments.selection_receipt is None
+    ):
+        parser.error("--selection and --selection-receipt must be used together")
+    return arguments
 
 
 def main() -> int:
     args = parse_args()
     try:
-        staged, summary = prepare(args.source_root, args.tap_root, args.artifact)
+        staged, summary = prepare(
+            args.source_root,
+            args.tap_root,
+            args.selection,
+            args.selection_receipt,
+            args.artifact,
+        )
         if args.apply:
             # WHY: pending publication state is written first when invalidating
             # an old seal, while ready is written last when installing a new
@@ -751,6 +1250,11 @@ def main() -> int:
                     ARTIFACT_PATH,
                     BUILD_PATH,
                 ]
+            # Any intermediate mix of old/new inputs and lock fails closed.
+            # Put the pending or sealed selection beside its refreshed
+            # authorities before the artifact identity is installed.
+            position = order.index(SUPPORT_PATH) + 1
+            order.insert(position, SELECTION_PATH)
             for relative in order:
                 atomic_write(args.source_root / relative, staged[relative])
             summary["applied"] = True

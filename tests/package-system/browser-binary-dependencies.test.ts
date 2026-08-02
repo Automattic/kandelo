@@ -1366,7 +1366,10 @@ guest_path = "/usr/share/data"
     });
 
     expect(roots).toContain("bash");
-    expect(roots).toContain("homebrew-bootstrap");
+    // WHY: bootstrap support is extracted from the selected public bottle.
+    // Keeping it out of this conventional registry closure prevents the
+    // browser proof from silently restoring the retired package bridge.
+    expect(roots).not.toContain("homebrew-bootstrap");
     expect(roots).toContain("rootfs");
     expect(roots).not.toContain("shell");
     expect(roots).not.toContain("node-vfs");

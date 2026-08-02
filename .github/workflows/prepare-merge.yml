@@ -2216,7 +2216,7 @@ jobs:
               homebrew/test/homebrew_bootstrap_guest_env.ts \
               --image target/homebrew-bootstrap/homebrew-bootstrap.vfs \
               --bash binaries/programs/wasm32/bash.wasm \
-              --brew-script /home/linuxbrew/.linuxbrew/bin/brew \
+              --brew-script /opt/kandelo/homebrew/bin/brew \
               --timeout-ms 120000
 
             rm -rf host/dist

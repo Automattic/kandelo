@@ -3597,7 +3597,7 @@ homebrew_patched_launcher_isolate() {
   fi
   primary_tap_root="$(cd "$primary_tap_root" && pwd -P)" || return 2
   # Taps belong to HOMEBREW_REPOSITORY, not HOMEBREW_PREFIX. The reviewed
-  # launcher intentionally keeps the canonical Linuxbrew prefix while running
+  # launcher intentionally keeps the canonical Kandelo prefix while running
   # from a patched repository worktree, so only the active repository can own
   # the tapped checkouts that Formula resolution actually loads.
   taps_root="$HOMEBREW_PATCHED_OVERLAY/Library/Taps"
@@ -3887,18 +3887,23 @@ homebrew_patched_launcher_isolate() {
   # WHY: Homebrew derives its target prefix from the path used to invoke
   # bin/brew. Keep that canonical path, but make both its parent and the exact
   # symlink sticky/root-owned before the less-trusted Formula identity starts.
-  # The build user can still add normal keg links below bin, but cannot replace
-  # the launcher whose $0 selects the target prefix.
+  # Homebrew also requires the prefix's etc directory to remain writable while
+  # etc/homebrew holds protected publisher configuration. A root-owned sticky
+  # parent lets the build group add normal files without replacing that sealed
+  # child. The same boundary protects dependency insertion points.
   "$sudo_bin" /usr/bin/install -d -o root -g "$build_group" -m 1775 \
     "$HOMEBREW_PATCHED_PREFIX" "$HOMEBREW_PATCHED_PREFIX/bin" \
-    "$HOMEBREW_PATCHED_PREFIX/Cellar" "$HOMEBREW_PATCHED_PREFIX/opt"
+    "$HOMEBREW_PATCHED_PREFIX/Cellar" "$HOMEBREW_PATCHED_PREFIX/opt" \
+    "$HOMEBREW_PATCHED_PREFIX/etc"
   "$sudo_bin" /usr/bin/chown -h root:root "$HOMEBREW_PATCHED_LAUNCHER"
   [ "$(/usr/bin/stat -c '%u:%g' "$HOMEBREW_PATCHED_LAUNCHER")" = "0:0" ] && \
     [ "$(/usr/bin/stat -c '%u:%g:%a' "$HOMEBREW_PATCHED_PREFIX/bin")" = \
       "0:$build_gid:1775" ] && \
+    [ "$(/usr/bin/stat -c '%u:%g:%a' "$HOMEBREW_PATCHED_PREFIX/etc")" = \
+      "0:$build_gid:1775" ] && \
     [ "$(/usr/bin/readlink "$HOMEBREW_PATCHED_LAUNCHER")" = \
       "$HOMEBREW_PATCHED_OVERLAY/bin/brew" ] || {
-      echo "homebrew-patched-launcher: could not protect the canonical target Brew launcher" >&2
+      echo "homebrew-patched-launcher: could not protect mutable target Homebrew roots" >&2
       return 2
     }
   homebrew_patched_launcher_seal_target_dependencies \

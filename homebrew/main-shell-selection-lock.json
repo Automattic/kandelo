@@ -1,0 +1,25 @@
+{
+  "arch": "wasm32",
+  "inputs": {
+    "brewfile": {
+      "path": "homebrew/main-shell.Brewfile",
+      "sha256": "6f59fe83d93548bd2521a0fe9af1942ab321b2fb249939bf9e6a37f7de0f4722"
+    },
+    "guest_layout": {
+      "path": "homebrew/kandelo-guest-layout.json",
+      "sha256": "03cbe2ef439d1c274a5b43cc86fb877da3b4942cc6489fba9df99d8e3968f857"
+    },
+    "migration_lock": {
+      "path": "homebrew/main-shell-migration-lock.json",
+      "sha256": "92b6c3946e40e9384de0ed98c13b6f9ec595e487a5112cc8a450bc2ac3ea524e"
+    },
+    "runtime_support": {
+      "path": "homebrew/main-shell-homebrew-runtime-support.json",
+      "sha256": "d14cd4ebbe184c3179a1a033263b35c8b35a7ec44a691bd8bcfd6acbde386a18"
+    }
+  },
+  "kind": "kandelo-homebrew-main-shell-closed-selection-lock",
+  "release": null,
+  "schema": 1,
+  "state": "pending"
+}

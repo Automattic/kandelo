@@ -193,14 +193,17 @@ grep -Fq 'bash scripts/dev-shell.sh env \' <<<"$prepare_browser_block" &&
   grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
     <<<"$prepare_browser_block" ||
   fail "browser preparation must retain the canonical cache inside dev-shell"
-grep -Fxq '            ./run.sh --fetch-only prepare-browser' \
-  <<<"$prepare_browser_block" ||
-  fail "browser preparation must refuse source fallback"
+grep -Fxq '            ./run.sh --fetch-only \' \
+  <<<"$prepare_browser_block" &&
+  grep -Fq \
+    '              --require-sealed-homebrew-selection prepare-browser' \
+    <<<"$prepare_browser_block" ||
+  fail "browser preparation must require sealed bottle inputs"
 prepare_browser_last="$(
   awk 'NF { line = $0 } END { print line }' <<<"$prepare_browser_block"
 )"
 [ "$prepare_browser_last" = \
-    '            ./run.sh --fetch-only prepare-browser' ] ||
+    '              --require-sealed-homebrew-selection prepare-browser' ] ||
   fail "canonical browser preparation must be the final failure-propagating command"
 if grep -Fq -- '--source-rootfs-shell' "$PAGES_WORKFLOW" ||
    grep -Fq 'WASM_POSIX_SOURCE_ROOTFS_SHELL_' "$PAGES_WORKFLOW" ||
@@ -215,7 +218,8 @@ grep -Fq 'id: shell_product' <<<"$shell_product_block" &&
   grep -Fq \
     'image=$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)' \
     <<<"$shell_product_block" &&
-  grep -Fq 'programs/homebrew-bootstrap/homebrew-bootstrap.zip)' \
+  grep -Fq \
+    'bootstrap="$PWD/apps/browser-demos/public/homebrew-bootstrap.zip"' \
     <<<"$shell_product_block" &&
   grep -Fq 'scripts/verify-homebrew-main-shell-artifact-lock.sh' \
     <<<"$shell_product_block" &&
@@ -227,6 +231,12 @@ grep -Fq 'id: shell_product' <<<"$shell_product_block" &&
     <<<"$shell_product_block" &&
   grep -Fq 'mirror_plan_url=$(jq -er' <<<"$shell_product_block" ||
   fail "Pages must bind the canonical shell, bootstrap, and embedded mirror plan"
+if grep -Fq 'programs/homebrew-bootstrap/' "$PAGES_WORKFLOW" ||
+   grep -Fq 'fetch-selection-release' <<<"$shell_product_block" ||
+   grep -Fq 'scripts/extract-homebrew-support-data-bottle.ts' \
+     <<<"$shell_product_block"; then
+  fail "Pages must use the one prepared Formula-bottle bootstrap asset"
+fi
 grep -Fq 'npx tsx --test \' <<<"$shell_product_block" &&
   grep -Fq 'scripts/inspect-homebrew-main-shell-public-product.test.ts' \
     <<<"$shell_product_block" ||
@@ -243,6 +253,7 @@ browser_build_block="$(
   step_block "$PAGES_WORKFLOW" "Build browser demos for GitHub Pages"
 )"
 grep -Fxq '          npm run build' <<<"$browser_build_block" &&
+  grep -Fq 'dist/homebrew-bootstrap.zip' <<<"$browser_build_block" &&
   grep -Fq 'bash ../../scripts/verify-browser-shell-vfs-asset.sh \' \
     <<<"$browser_build_block" &&
   grep -Fxq \
@@ -256,6 +267,24 @@ fi
 if grep -Fq 'KANDELO_BROWSER_DEMO_INPUTS' <<<"$browser_build_block"; then
   fail "the Pages publisher must build the complete browser entry set"
 fi
+
+guide_build_block="$(
+  step_block "$PAGES_WORKFLOW" "Build user guide for the complete Pages tree"
+)"
+guide_build_commands="$(
+  awk '
+    $0 == "        run: |" { inside = 1; next }
+    inside && /^          #/ { next }
+    inside && /^          [^[:space:]]/ { print; next }
+    inside && NF { exit }
+  ' <<<"$guide_build_block"
+)"
+expected_guide_build_commands=$'          set -euo pipefail\n          node --test docs-site/.vitepress/homebrew-doc-links.test.mjs\n          npm run docs:build\n          node --test docs-site/.vitepress/homebrew-doc-output.test.mjs'
+# WHY: run the source-link test before VitePress consumes the Markdown.
+# Run the generated-output test only after the site exists. This exact,
+# failure-propagating order prevents publication of an unchecked guide.
+[ "$guide_build_commands" = "$expected_guide_build_commands" ] ||
+  fail "the Pages guide must run strict source checks, build, then output checks"
 
 sealed_boot_block="$(
   step_block "$PAGES_WORKFLOW" "Boot the canonical bottled Pages shell in Chromium"

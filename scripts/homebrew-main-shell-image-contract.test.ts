@@ -213,7 +213,7 @@ function fixture(): Parameters<typeof assertMainShellImageContract>[0] {
           brewfile: structuredClone(brewfile),
         },
         defaultShell: {
-          path: "/home/linuxbrew/.linuxbrew/bin/bash",
+          path: "/opt/kandelo/homebrew/bin/bash",
           argv: ["bash", "-l", "-i"],
         },
         demoConfig: {
@@ -230,7 +230,7 @@ function fixture(): Parameters<typeof assertMainShellImageContract>[0] {
     },
     shellConfig: {
       version: 1,
-      path: "/home/linuxbrew/.linuxbrew/bin/bash",
+      path: "/opt/kandelo/homebrew/bin/bash",
       argv: ["bash", "-l", "-i"],
     },
     demoConfigSource: demoConfigSource.slice(),
@@ -449,7 +449,7 @@ for (const [name, mutate, expected] of [
     (value: any) => {
       value.publicPaths.find(
         (entry: any) =>
-          entry.path === "/home/linuxbrew/.linuxbrew/share/misc/magic.mgc",
+          entry.path === "/opt/kandelo/homebrew/share/misc/magic.mgc",
       ).kind = "directory";
     },
     "magic.mgc decoded kind",

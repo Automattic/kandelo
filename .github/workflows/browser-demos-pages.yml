@@ -69,8 +69,10 @@ jobs:
         run: |
           bash scripts/dev-shell.sh bash -c '
             host_target="$(rustc -vV | sed -n "s/^host: //p")"
+            source_root="$(pwd -P)"
             cargo run -p xtask --target "$host_target" --quiet -- \
               build-deps program-index-check \
+              --source-repo-root "$source_root" \
               packages/registry packages/registry/program-packages.json
           '
 
@@ -93,15 +95,18 @@ jobs:
           # neither path can replace the canonical shell bound below.
           bash scripts/dev-shell.sh env \
             "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
-            ./run.sh --fetch-only prepare-browser
+            ./run.sh --fetch-only \
+              --require-sealed-homebrew-selection prepare-browser
 
       - name: Bind the canonical bottled shell product
         id: shell_product
         run: |
           set -euo pipefail
           image=$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)
-          bootstrap=$(bash scripts/resolve-binary.sh \
-            programs/homebrew-bootstrap/homebrew-bootstrap.zip)
+          # WHY: prepare-browser already admitted and atomically staged the
+          # bottle member. Repeating selection or extraction here could make
+          # inspection and the bytes actually served by Vite disagree.
+          bootstrap="$PWD/apps/browser-demos/public/homebrew-bootstrap.zip"
           report="$RUNNER_TEMP/homebrew-main-shell-public-product.json"
           for path in "$image" "$bootstrap"; do
             test -f "$path"
@@ -140,6 +145,7 @@ jobs:
           ' "$report" >/dev/null
           {
             echo "image=$image"
+            echo "bootstrap=$bootstrap"
             echo "image_sha256=$(jq -er '.image.sha256' "$report")"
             echo "bootstrap_sha256=$(jq -er \
               '.homebrew_bootstrap.sha256' "$report")"
@@ -157,6 +163,8 @@ jobs:
         run: |
           set -euo pipefail
           npm run build
+          cmp "${{ steps.shell_product.outputs.bootstrap }}" \
+            dist/homebrew-bootstrap.zip
           # WHY: Vite imports the resolver-selected shell under a hashed asset
           # name. Verify that exact emitted asset; an unhashed public copy can
           # be absent or stale without affecting the image the browser boots.
@@ -169,7 +177,14 @@ jobs:
       - name: Build user guide for the complete Pages tree
         env:
           VITEPRESS_BASE: /kandelo/guide/
-        run: npm run docs:build
+        run: |
+          set -euo pipefail
+          # WHY: documentation checks belong to the Pages publication path.
+          # Adding them to the repository-wide package scripts changes the
+          # cache identity of unrelated Kandelo runtime packages.
+          node --test docs-site/.vitepress/homebrew-doc-links.test.mjs
+          npm run docs:build
+          node --test docs-site/.vitepress/homebrew-doc-output.test.mjs
 
       - name: Typecheck API docs for the complete Pages tree
         working-directory: host

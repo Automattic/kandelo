@@ -32,7 +32,7 @@ import { saveImage } from "../../../../images/vfs/scripts/vfs-image-helpers";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../../..");
 const DEFAULT_TAP_REPOSITORY = "kandelo-dev/homebrew-tap-core";
-const FILE_PATH = "/home/linuxbrew/.linuxbrew/bin/file";
+const FILE_PATH = "/opt/kandelo/homebrew/bin/file";
 
 type OutcomeStatus = "pass" | "fail" | "skip";
 
@@ -222,7 +222,7 @@ async function runFileVersion(built: BuiltVfs, options: CliOptions): Promise<str
   try {
     const exitPromise = host.spawn(toArrayBuffer(fileBytes), ["file", "--version"], {
       env: [
-        "PATH=/home/linuxbrew/.linuxbrew/bin:/usr/bin:/bin",
+        "PATH=/opt/kandelo/homebrew/bin:/usr/bin:/bin",
         "HOME=/tmp",
         "TMPDIR=/tmp",
       ],
@@ -325,7 +325,9 @@ async function loadBottleBytes(
     );
   }
 
-  const bytes = await fetchHomebrewBottleBytes(pkg.url);
+  const bytes = await fetchHomebrewBottleBytes(pkg.url, {
+    expectedBytes: pkg.bytes,
+  });
   writeFileSync(cachePath, bytes);
   return bytes;
 }

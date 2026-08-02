@@ -28,7 +28,7 @@ const SPEC = {
     url: "homebrew-bootstrap.zip",
     mode_policy: "portable-posix-v1",
   },
-  mount_prefix: "/home/linuxbrew/.linuxbrew",
+  mount_prefix: "/opt/kandelo/homebrew",
   owner: {
     uid: 1000,
     gid: 1000,
@@ -36,7 +36,7 @@ const SPEC = {
   activation: {
     mode: "first-use",
     capabilities: ["homebrew:bootstrap"],
-    roots: ["/home/linuxbrew/.linuxbrew/bin/brew"],
+    roots: ["/opt/kandelo/homebrew/bin/brew"],
   },
 } as const satisfies PackageDeferredZipTreeSpec;
 
@@ -61,32 +61,32 @@ describe("package deferred ZIP trees", () => {
     expect(first.content.modePolicy).toBe("portable-posix-v1");
     expect(first.descriptor.inventory).toEqual([
       expect.objectContaining({
-        vfs_path: "/home/linuxbrew/.linuxbrew/bin",
+        vfs_path: "/opt/kandelo/homebrew/bin",
         type: "directory",
         mode: 0o755,
       }),
       expect.objectContaining({
-        vfs_path: "/home/linuxbrew/.linuxbrew/bin/brew",
+        vfs_path: "/opt/kandelo/homebrew/bin/brew",
         type: "file",
         mode: 0o755,
         size: 12,
       }),
       expect.objectContaining({
-        vfs_path: "/home/linuxbrew/.linuxbrew/bin/brew-link",
+        vfs_path: "/opt/kandelo/homebrew/bin/brew-link",
         type: "symlink",
         mode: 0o777,
         target: "brew",
       }),
       expect.objectContaining({
-        vfs_path: "/home/linuxbrew/.linuxbrew/Library",
+        vfs_path: "/opt/kandelo/homebrew/Library",
         type: "directory",
       }),
       expect.objectContaining({
-        vfs_path: "/home/linuxbrew/.linuxbrew/Library/Homebrew",
+        vfs_path: "/opt/kandelo/homebrew/Library/Homebrew",
         type: "directory",
       }),
       expect.objectContaining({
-        vfs_path: "/home/linuxbrew/.linuxbrew/Library/Homebrew/global.rb",
+        vfs_path: "/opt/kandelo/homebrew/Library/Homebrew/global.rb",
         type: "file",
         mode: 0o644,
       }),
@@ -373,10 +373,10 @@ function zipEntry(bytes: Uint8Array, mode: number): Zippable[string] {
 
 function packageFs(): MemoryFileSystem {
   const fs = MemoryFileSystem.create(new SharedArrayBuffer(32 * 1024 * 1024));
-  for (const path of ["/home", "/home/linuxbrew", SPEC.mount_prefix]) {
+  for (const path of ["/opt", "/opt/kandelo", SPEC.mount_prefix]) {
     fs.mkdir(path, 0o755);
-    fs.chown(path, 1000, 1000);
   }
+  fs.chown(SPEC.mount_prefix, 1000, 1000);
   return fs;
 }
 

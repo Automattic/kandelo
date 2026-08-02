@@ -58,6 +58,24 @@ Node.js and Chromium product validation. The usable cutover must reuse
 those layers. An unfinished sibling Formula or the later full campaign
 is not a reason to rebuild them.
 
+Implementation checkpoint, 2026-08-01: the usable shell no longer waits
+for the complete campaign. As soon as the 34 roots derived from the
+main-shell Brewfile, runtime-support contract, and Homebrew bootstrap
+have a closed wasm32 dependency graph, `prepare-selection` may compose
+that graph from immutable Formula handoffs. The current graph happens
+to contain 41 Formulae, but no executable contract encodes that count.
+The selection must grow or shrink when the actual dependency graph does.
+
+The selected tree is published as a content-addressed immutable release
+without moving tap `main`. Public readback verifies its two exact assets,
+bounded file inventory, bottle identities, and prepared Git tree. A
+separate reviewed shell lock binds that readback to the product inputs.
+Only then may the ordinary resolver, VFS composer, Node.js proof, and
+Chromium proof consume the partial tap. The existing shell artifact and
+bottle-mirror pointer remains the atomic user-visible activation
+boundary. This reduces time to the usable shell without changing the
+later requirement for one complete final tap.
+
 The bottle delta for the first usable proof is Libyaml and Ruby. Resume
 from the landed baseline in this order:
 

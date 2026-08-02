@@ -23,11 +23,11 @@ const TITLE = "Kandelo Homebrew guest lifecycle inputs";
 const MAX_HANDOFF_BYTES = 512 * 1024 * 1024;
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const GIT_SHA_RE = /^[0-9a-f]{40}$/;
-const TRANSITIONAL_BOOTSTRAP = {
-  state: "transitional",
-  source_kind: "kandelo-package-registry",
+const BOTTLED_BOOTSTRAP = {
+  state: "formula-owned",
+  source_kind: "homebrew-support-data-bottle",
   package: "homebrew-bootstrap",
-  guest_prefix: "/home/linuxbrew/.linuxbrew",
+  guest_prefix: "/opt/kandelo/homebrew",
   stable_entrypoint: "/usr/bin/brew",
 } as const;
 
@@ -187,7 +187,7 @@ export function createHomebrewGuestLifecyclePublication(
       tap_mirror_authority_ref: options.tapMirrorAuthorityRef,
       tap_caller_authority_ref: options.tapCallerAuthorityRef,
       canary_ref: options.canaryRef,
-      bootstrap: TRANSITIONAL_BOOTSTRAP,
+      bootstrap: BOTTLED_BOOTSTRAP,
       bottle_mirror: planIdentity,
       release: {
         repository: REPOSITORY,
@@ -289,7 +289,7 @@ export function verifyHomebrewGuestLifecyclePublication(
     tap_mirror_authority_ref: options.tapMirrorAuthorityRef,
     tap_caller_authority_ref: options.tapCallerAuthorityRef,
     canary_ref: options.canaryRef,
-    bootstrap: TRANSITIONAL_BOOTSTRAP,
+    bootstrap: BOTTLED_BOOTSTRAP,
     bottle_mirror: planIdentity,
     release: {
       repository: REPOSITORY,
@@ -347,10 +347,10 @@ function publicationManifest(
     body:
       "Immutable direct inputs for Kandelo's public Chromium stock-Homebrew " +
       `lifecycle proof. Collection SHA-256: ${identity.collectionSha256}. ` +
-      `Bottle mirror plan: ${plan.sha256}. The Homebrew bootstrap remains ` +
-      "the transitional Kandelo registry package at " +
-      `${TRANSITIONAL_BOOTSTRAP.guest_prefix}; ` +
-      `${TRANSITIONAL_BOOTSTRAP.stable_entrypoint} remains stable.`,
+      `Bottle mirror plan: ${plan.sha256}. The Homebrew bootstrap is copied ` +
+      "from its verified support-data bottle into this fixed browser " +
+      `transport at ${BOTTLED_BOOTSTRAP.guest_prefix}; ` +
+      `${BOTTLED_BOOTSTRAP.stable_entrypoint} remains stable.`,
     assets,
     preferred_asset_names: assets.map((asset) => asset.name),
     accepted_existing_asset_sets: [],
@@ -371,7 +371,7 @@ function deriveIdentity(
     tap_mirror_authority_ref: refs.tapMirrorAuthorityRef,
     tap_caller_authority_ref: refs.tapCallerAuthorityRef,
     canary_ref: refs.canaryRef,
-    bootstrap: TRANSITIONAL_BOOTSTRAP,
+    bootstrap: BOTTLED_BOOTSTRAP,
     bottle_mirror: plan,
     assets,
   });

@@ -1,7 +1,7 @@
 # Homebrew Migration Living Execution Plan
 
 - Status: active
-- Last reconciled: 2026-08-01
+- Last reconciled: 2026-08-02
 - Primary repositories: `Automattic/kandelo` and
   `Kandelo-dev/homebrew-tap-core`
 - Purpose: preserve the complete Homebrew migration scope, record what has
@@ -13,7 +13,198 @@ goal merely because it is not part of the next pull request. A goal leaves this
 plan only when it is completed with evidence or explicitly superseded with the
 replacement decision recorded in the disposition log.
 
-## Current Resume Checkpoint — 2026-08-01
+## Current Resume Checkpoint — 2026-08-02
+
+This checkpoint supersedes delivery ordering in the 2026-08-01
+checkpoint below. It does not remove any completion goal from that
+checkpoint or the older plan.
+
+The protected Kandelo publication authority is now exact:
+
+- Kandelo `main` is
+  `6024539d7849bb5f0d9c235b97218e60f03a2fef` (M2);
+- the reviewed tap source is
+  `b19a62636c9c8136740eba05237e3106ddd37c97`;
+- the immutable prefix campaign is
+  `homebrew-prefix-campaign-sha256-`
+  `2b76fa4d54560a7bf8c5b1a1d3acceaa8be6727983ce0a72885ed23e110b7fc9`
+  (C2); and
+- C2 has passed an independent credential-free byte-for-byte readback.
+
+PR #1186 landed the narrow fail-closed publisher-only CI route. PR
+#1185 then landed authenticated GitHub metadata reads without sending a
+token to bottle bytes or another host, and made every campaign dev shell
+enter through its exact Kandelo checkout. The earlier shell cache-key
+failure was a pre-existing pending-package condition, not a cache or
+publisher defect.
+
+Force-rebuild run `30733686849` produced the exact M2 wasm32 rootfs
+generation. Promotion run `30735369175` admitted it as immutable G2 and
+an anonymous readback verified the generation contract and every asset.
+The exact tag is
+`package-generation-rootfs-wasm32-abi-v42-sha256-`
+`d098e1f6b90cdc7a214a59f7dcfb5b87c2dda077572177ed4f1a4a8eeca46a1c`.
+
+Tap PR #174 rotated the live authority to M2, C2, G2, and source tap
+`b19a6263`. Tap PR #175 retained the ancestor history required to verify
+reused Formula sources. Its reviewed tree is now live on tap `main` at
+`d61b3a3162f3c5b0aa564886e993f4b0e6a79632`.
+
+The shell integration stack is rebased onto M2. Its current focused
+evidence is:
+
+- the complete publisher trust checker;
+- all 54 controller, source, and rotation tests;
+- the 48-case main-shell closure contract; and
+- a clean replay of the shell commits plus the combined trust bind; and
+- a 25-Formula diagnostic that proves a real in-guest install without
+  claiming to be the complete product shell.
+
+This is implementation evidence, not a supported-product claim. No new
+shell is activated until its exact bottle selection passes both Node.js
+and Chromium.
+
+The fresh C2 scheduler was launched with up to eight concurrent runs. Its
+first wave dispatched Homebrew Bootstrap, Libcxx, Coreutils, Libyaml,
+OpenSSL, Gawk, Zlib, and Dash. The next freed slots dispatched Ed, Grep,
+Sed, and Gzip before the systemic failure pattern became clear. All
+eight completed reuse attempts failed before publication because the
+historical tap checkout fetched only one commit while the verifier needs
+older ancestor Formula sources. The C2 paths, commits, and hashes are
+valid in the full repository history. No bottle build failed, no
+candidate was published, and no retry was issued. Do not dispatch
+further reuse candidates until the checkout repair from tap PR #175 is
+live and the operator performs a fresh repository dispatch. GitHub run
+reruns retain the old workflow and are not valid retries. The live
+repair update below supersedes that initial resume instruction.
+
+Live repair update (2026-08-02): C2 is now terminal with zero active
+or frozen runs, twelve failed runs, and no published candidate. Tap PR
+#175 repaired the shallow historical checkout. Fresh repository
+dispatches then reached two additional shared boundaries before any
+Formula source or test ran:
+
+- reused handoffs could not create an immutable release for an older
+  workflow-changing tap commit because the built-in `GITHUB_TOKEN`
+  cannot receive `Workflows: write`;
+- new builds found that ordinary Homebrew configuration was read-only;
+  and
+- bootstrap found that `/opt/kandelo` did not provide a trusted,
+  non-replaceable parent for the mutable campaign prefix.
+
+PR #1187 batches the general fixes: reserve an exact direct tag before
+draft creation, recheck it at the last possible point before every
+public transition, keep ordinary configuration writable while sealing
+publisher controls, and prepare the canonical prefix below one trusted
+anchor shared by build and verifier jobs. It is the lower stack for the
+final integration and is not itself the next campaign authority until
+it lands on protected `main`.
+
+The reusable closed-selection publisher is being extracted before the
+next authority checkpoint. Independent review rejected its first local
+draft before publication because it called a missing materializer,
+transferred a raw tap through an artifact format that drops hidden
+paths and executable modes, checked current execution authority only
+once, trusted the artifact's own plan, and exposed a final receipt
+before its last semantic comparison. The corrected design uses
+Kandelo-owned source replay, transports the deterministic verified
+selection archive, binds both current execution and historical content
+authority before every write, independently rebinds the requested plan,
+and installs the receipt last. No selection or named product has been
+published from the rejected draft.
+
+PR #1188 is now the final pre-M3 integration batch. It combines that
+corrected publisher with the canonical guest prefix, detached selection
+authorization, bottle-backed support data, one shared shell product
+builder, browser preparation, and #1182's GitHub Pages guide publication.
+Its checked-in locks remain review-only until real public selection and
+image bytes exist. Its generated program index and publisher trust
+digests must match the final combined tree before merge.
+
+Do not treat a pull-request head recorded in this plan as release
+authority. Read the reviewed head from GitHub while validating the pull
+request, then read protected `main` again after merge. PR #1182 remains
+closed as superseded. Do not insert another pre-M3 packaging or
+documentation merge after #1188; an essential correction belongs in
+this final batch and restarts its exact-tree validation.
+
+Do not resume or migrate C2 runs after these Kandelo publisher commits
+land. C2 truthfully remains the failed M2 experiment. Hold protected
+main stable after #1187 and the final combined #1188 merge. Then produce
+one exact new rootfs generation, derive one new campaign from that final
+main, rotate tap trust once, and start a fresh scheduler state. Existing
+ABI-42 package archives remain reusable inputs; this is an
+authority/provenance checkpoint, not a demand to rebuild every bottle.
+
+Resume in this order:
+
+1. Preserve the anonymously verified M2/G2/C2 tuple and terminal C2
+   scheduler state as exact evidence. Do not rewrite it as a successful
+   campaign or reuse the failed C1 state.
+2. Land and verify #1187, then the final combined #1188, before creating
+   another exact authority checkpoint. Keep live tap commit `d61b3a31`
+   unchanged meanwhile.
+3. From the final protected Kandelo main, produce one exact rootfs
+   generation, derive and anonymously verify the replacement campaign,
+   rotate tap trust once, and start a new scheduler state. Never rerun a
+   failed C2 workflow attempt or duplicate a live dispatch.
+4. Derive the complete campaign from the checked-in 34 shell roots and
+   their Formula metadata. The current dependency graph contains 41
+   Formulae, but derive the graph instead of encoding that point-in-time
+   count in the scheduler. Work this whole graph; the earlier
+   five-Formula Bash diagnostic is not a product shell selection.
+5. Within that campaign, prioritize the independently derived runtime
+   closure needed for real `brew tap` and `brew install` operations. It
+   currently contains 25 Formulae. The count is evidence, not policy:
+   dependency metadata decides the exact set for each run.
+   Dispatch `homebrew-bootstrap`, Libcxx, and Coreutils concurrently,
+   then dispatch Ncurses and Bash as their complete sorted handoff sets
+   become available. Fill every unused slot with another
+   dependency-ready Formula from the full shell graph.
+6. Admit each successful bottle independently. As soon as the derived
+   Brew runtime closure is complete, publish an immutable diagnostic
+   selection and prove normal `brew tap` and `brew install` against a
+   public third-party tap. This proof may proceed before the rest of the
+   shell graph, but it is not the product cutover.
+7. Finish every Formula required by the 34 shell roots and publish one
+   immutable closed product selection for that complete graph. A failure
+   outside the shell graph must not block it, and a successful Formula
+   must remain usable while a sibling is retried.
+8. Compose the mostly-lazy shell from the complete product selection.
+   Keep the shell itself eager and `/usr/bin/brew` lazy. Run shell boot,
+   `brew --version`, `brew tap`, and `brew install` through the same VFS
+   bytes in Node.js and Chromium.
+9. Merge and deploy the shell only after those exact host proofs agree.
+10. Continue the remaining 65-Formula, 72-variant campaign
+    progressively. Successful bottles remain independently durable and
+    usable while a sibling fails.
+
+The worktree is not complete after the first deployed Brew proof. It
+still must:
+
+- migrate every conventional registry bridge and the remaining service
+  runtimes into the core tap;
+- remove traditional registry owners only after replacement evidence
+  exists;
+- finish the complete tap replay and retired-prefix removal;
+- add a `man` package and normal package manual pages, choosing lazy
+  grouping from measured size rather than assumption;
+- optimize single-file lazy references for bundle-like command packages
+  while preserving whole-tree retrieval for programs such as Vim; and
+- make bottle-declared VFS layers independently composable.
+
+ABI-changing kernel, scratch-memory, and fork-instrumentation work stays
+in its dedicated worktrees and approval path. Do not fold an ABI bump
+into this ABI-42 delivery sequence merely to make a Formula pass.
+
+Throughput means keeping independent work active, admitting every
+successful bottle immediately, and batching related fixes. It does not
+mean rerunning the whole catalog after one sibling fails or waiting for
+the complete catalog before proving the prioritized Brew runtime
+closure. It also does not mean treating that proof, or the earlier
+five-Formula diagnostic, as the complete 34-root shell cutover.
+
+## Superseded Resume Checkpoint — 2026-08-01
 
 This checkpoint supersedes the delivery sequence in the 2026-07-31
 checkpoint without removing any of its completion scope.
@@ -136,6 +327,22 @@ earlier shell composition and lifecycle run, but it does not rebuild
 successful bottles. It does not mean repeating the entire catalog after
 one sibling fails, withholding successful bottles until a campaign is
 perfect, or weakening immutable public readback.
+
+For a packaging pull request that will enter Prepare Merge immediately,
+apply `skip-staging-tests` as soon as the pull request opens. Staging
+still builds and publishes the exact package artifacts. The broad suite
+runs once against the synthetic merge instead of once on the head and
+again on the synthetic merge. This label changes scheduling only; it
+must never omit the final validation before merge.
+
+That scheduling rule is transitional. It applies while a Formula or
+product still needs a Kandelo registry bridge. It is not the Homebrew
+endpoint. Before migration completion, move every Formula source build,
+bottle artifact, candidate release, closed selection, and publication
+write into a tap-owned workflow. Kandelo may continue to supply platform
+source, SDK, ABI, validation, and reusable workflow code, but no Homebrew
+publisher or VFS consumer may depend on a Kandelo PR-staging package
+release or package generation for Formula-owned software.
 
 ## Superseded Resume Checkpoint — 2026-07-31
 
@@ -1574,6 +1781,9 @@ The migration is complete only when all of the following are true:
 - a normal `man` command resolves the ordinary manual pages shipped by
   applicable embedded and deferred packages;
 - upstream `brew` inside Kandelo installs first-party and third-party bottles;
+- Formula source builds, bottle artifacts, candidate custody, and
+  selections are tap-owned, and no Homebrew build or consumer depends
+  on Kandelo package staging for Formula-owned software;
 - every historical registry and support role has a durable owner and no
   accepted package has duplicate authoritative recipes;
 - every historical and current declared `(Formula, architecture)` pair has

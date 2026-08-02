@@ -309,7 +309,6 @@ def canonical_bottle(args: argparse.Namespace) -> dict[str, Any]:
     if bottle["cellar"] not in (
         "any",
         "any_skip_relocation",
-        "/home/linuxbrew/.linuxbrew/Cellar",
         "/opt/kandelo/homebrew/Cellar",
     ):
         fail("canonical bottle cellar is invalid")

@@ -298,12 +298,25 @@ dependency-context validation stays complete.
 Generate or verify an index with:
 
 ```bash
-cargo xtask build-deps program-index <registry-root> \
+KANDELO_ROOT="$(pwd -P)"
+cargo xtask build-deps program-index --source-repo-root "$KANDELO_ROOT" \
+  <registry-root> \
   <registry-root>/program-packages.json
-cargo xtask build-deps program-index-check <registry-root> \
+cargo xtask build-deps program-index-check \
+  --source-repo-root "$KANDELO_ROOT" \
+  <registry-root> \
   <registry-root>/program-packages.json
-cargo xtask build-deps program-index-context-check
+cargo xtask build-deps program-index-context-check \
+  --source-repo-root "$KANDELO_ROOT"
 ```
+
+`--source-repo-root` names the canonical Kandelo checkout that owns every
+repo-relative recipe input, global toolchain input, and fork-instrument Cargo
+identity. This matters when several worktrees share a Cargo target directory:
+the reused executable may have been compiled in another checkout. A copied or
+reused xtask therefore must receive this flag. The no-flag form remains safe
+only when the current checkout is the same canonical checkout in which xtask
+was compiled; otherwise it fails before reading package identity.
 
 The root passed to `program-index` or `program-index-check` must be the
 highest-priority existing root in `WASM_POSIX_DEPS_REGISTRY`. Generate a lower
@@ -602,45 +615,52 @@ atomically materializes its guest projection. It does not fetch individual TAR
 members or use HTTP ranges. Dependency bottles have separate identities and
 remain unfetched until a path owned by that dependency is used.
 
-The guest `brew` implementation is distributed separately from Formula
-bottles as the `homebrew-bootstrap` program package. One package generation
-contains two declared outputs: `homebrew-bootstrap.zip`, a deterministic
+The guest `brew` implementation is distributed as the
+`homebrew-bootstrap` support-data Formula bottle. Its tap-native recipe
+declares two `libexec` outputs: `homebrew-bootstrap.zip`, a deterministic
 archive of one exact upstream Homebrew commit plus Kandelo's reviewed
 guest-platform patch, and `homebrew-brew.env`, the architecture tag and system
-environment policy consumed with that exact tree. Consumers resolve both from
-the same immutable generation; they must not reconstruct the environment file
-or combine it with a ZIP from another build. Neither output is Wasm, but both
-use the ordinary program-package resolver, projection, cache key, and release
-archive contracts and therefore declare `fork_instrumentation = "disabled"`.
+environment policy consumed with that exact tree. Consumers extract both from
+the same immutable public bottle; they must not reconstruct the environment
+file or combine it with a ZIP from another build. Neither output is Wasm, so
+the Formula uses the support-data bottle test contract rather than claiming
+Node or browser execution evidence.
+
+The generic support-data extractor verifies the exact checkout, catalog and
+Formula sidecar, tap recipe lock, link manifest, keg, bottle digest and size,
+build receipt, and declared member bytes. Once extracted, the shell composer
+uses the same typed contract to verify the detached files again. The exact tap
+checkout commit, aggregate metadata publication commit, and bottle
+`built_from.tap_commit` are separate provenance coordinates. The current tap
+Formula SHA-256 and Homebrew's `.brew` receipt SHA-256 are separate too,
+because the receipt canonically omits the finalized bottle block.
 
 The bootstrap archive is not a bundled Homebrew runtime. It contains neither
 Ruby nor Git, curl, extraction tools, or their data/dependencies. The base
 shell therefore registers `/usr/bin/brew` as a lazy activation reference
 without claiming the bootstrap source can execute by itself.
 `homebrew/main-shell-homebrew-runtime-support.json` owns the separate atomic
-runtime-support closure. Its active seven-root closure contains 21 Formulae;
-the complete shell bottle closure already supplies 20 of them, so only Ruby is
-an additional atomic lazy tree. All 25 audited support candidates, including
-`libmagic` and `file-formula`, have admitted public ABI-42 identities and none
-remain deferred. The base keeps the active layer deferred; an opt-in demo may
-materialize the same layer. A guest lifecycle is valid only when every
-declared tree has an exact admitted ABI/digest/size identity, all support bytes
-come from that declaration, and the independent-tap Formula is installed live
-rather than smuggled into the image.
+runtime-support closure. Its seven reviewed roots resolve through the exact
+closed-selection metadata that the shell consumes. Dependencies already in the
+complete shell remain shared; additional dependencies become part of the same
+atomic lazy group. This matters when a Formula changes its real dependency
+graph—for example, Ruby now requires `libyaml`. The selection-aware release
+finalizer derives the new order and base-relative difference, requires an
+admitted public ABI-42 bottle for every member, and seals the selection and
+artifact locks together. The base keeps the active layer deferred; an opt-in
+demo may materialize the same layer. A guest lifecycle is valid only when
+every declared tree has an exact admitted ABI/digest/size identity, all
+support bytes come from that declaration, and the independent-tap Formula is
+installed live rather than smuggled into the image.
 
-`homebrew/homebrew-bootstrap-source-lock.json` is the reviewed source/output
-identity. It binds the upstream archive URL and SHA-256, sealed
-`[[git_inputs]]` commit, patch path/SHA-256/license, patched Git and normalized
-tree identities, portable Ruby version, archive-producing Git version, and
-final ZIP SHA-256/byte count. The package build imports the resolver-owned
-exact Git checkout into private scratch storage and performs no source fetch
-of its own. The lock also records the dedicated package output's exact SHA-256
-and byte count, so a rebuild cannot silently change guest Homebrew source
-bytes. The package recipe emits the environment member in the same atomic
-generation, and the program projection records both canonical nested member
-paths. Run the build through `scripts/dev-shell.sh`; a different Git ZIP
-implementation fails the exact output lock instead of publishing different
-bytes.
+`Kandelo/recipes/homebrew-bootstrap/source-lock.json` in the tap is the
+Formula's reviewed source/output identity. It binds the prepared source inputs
+and normalized source TAR, deterministic ZIP serializer, and each output's
+exact path, SHA-256, and byte count. A rebuild therefore cannot silently change
+guest Homebrew source or environment bytes across macOS and Linux. The older
+`homebrew/homebrew-bootstrap-source-lock.json` and registry package remain only
+for the transitional source-rootfs compatibility lane; the bottled product
+shell does not consult either one.
 
 See [docs/homebrew-publishing.md](homebrew-publishing.md) for the Homebrew
 formula, sidecar, GHCR, VFS, and runtime validation contract.

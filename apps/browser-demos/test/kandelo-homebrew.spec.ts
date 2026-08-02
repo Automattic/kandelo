@@ -1,6 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tryResolveBinary } from "../../../host/src/binary-resolver";
+import { KANDELO_HOMEBREW_GUEST_LAYOUT } from
+  "../../../host/src/homebrew-guest-layout";
 import {
   ensureDirRecursive,
   writeVfsBinary,
@@ -99,15 +101,16 @@ async function writeHomebrewDefaultShellFixture(): Promise<string> {
     "utf8",
   );
   const fs = MemoryFileSystem.fromImage(rootfsBytes);
-  const shellPath = "/home/linuxbrew/.linuxbrew/bin/dash";
-  ensureDirRecursive(fs, "/home/linuxbrew/.linuxbrew/bin");
+  const shellPath = `${KANDELO_HOMEBREW_GUEST_LAYOUT.prefix}/bin/dash`;
+  ensureDirRecursive(fs, `${KANDELO_HOMEBREW_GUEST_LAYOUT.prefix}/bin`);
   writeVfsBinary(fs, shellPath, dashBytes, 0o755);
   ensureDirRecursive(fs, "/etc/profile.d");
   writeVfsFile(fs, "/etc/profile", profile, 0o644);
   writeVfsFile(
     fs,
     "/etc/profile.d/kandelo-homebrew.sh",
-    'PATH="/home/linuxbrew/.linuxbrew/bin:$PATH"\nexport PATH\n',
+    `PATH="${KANDELO_HOMEBREW_GUEST_LAYOUT.prefix}/bin:$PATH"\n` +
+      "export PATH\n",
     0o644,
   );
   ensureDirRecursive(fs, "/etc/kandelo");
@@ -173,7 +176,7 @@ test("Homebrew file-formula VFS image boots in browser and runs file --version",
   const vfsUrl = process.env.KANDELO_BROWSER_FILE_FORMULA_VFS_URL;
   const fileCommand =
     process.env.KANDELO_HOMEBREW_FILE_FORMULA_COMMAND ??
-    "/home/linuxbrew/.linuxbrew/bin/file --version";
+    `${KANDELO_HOMEBREW_GUEST_LAYOUT.prefix}/bin/file --version`;
   if (!vfsUrl && process.env.KANDELO_HOMEBREW_STRICT_PUBLISHER_SMOKE === "1") {
     throw new Error("KANDELO_BROWSER_FILE_FORMULA_VFS_URL is required for the strict publisher smoke");
   }
@@ -216,7 +219,8 @@ test("an image-owned Homebrew shell boots without legacy shell downloads", async
       "KANDELO_HOMEBREW_DEFAULT_SHELL_ARGV0 must be configured together",
     );
   }
-  const shellPath = configuredShellPath ?? "/home/linuxbrew/.linuxbrew/bin/dash";
+  const shellPath = configuredShellPath ??
+    `${KANDELO_HOMEBREW_GUEST_LAYOUT.prefix}/bin/dash`;
   const shellArgv0 = configuredShellArgv0 ?? "dash";
   const fixturePath = configuredVfsUrl ? undefined : await writeHomebrewDefaultShellFixture();
   const vfsUrl = configuredVfsUrl ?? new URL(fixturePath!, baseURL).href;
@@ -240,7 +244,8 @@ test("an image-owned Homebrew shell boots without legacy shell downloads", async
   await runParentShellProbe(
     page,
     "printf 'HOMEBREW_DEFAULT_SHELL:%s:%s:%s\\n' \"$0\" \"$(command -v \"$0\")\" \"${PATH%%:*}\"",
-    `HOMEBREW_DEFAULT_SHELL:${shellArgv0}:${shellPath}:/home/linuxbrew/.linuxbrew/bin`,
+    `HOMEBREW_DEFAULT_SHELL:${shellArgv0}:${shellPath}:` +
+      `${KANDELO_HOMEBREW_GUEST_LAYOUT.prefix}/bin`,
     120_000,
   );
 

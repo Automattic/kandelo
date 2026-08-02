@@ -95,7 +95,6 @@ is_audited_publisher_only_path() {
       scripts/homebrew-native-command-diagnostic.rb | \
       scripts/homebrew-oci-layout.py | \
       scripts/homebrew-patched-launcher.sh | \
-      scripts/homebrew-prefix-campaign-executor.py | \
       scripts/homebrew-prefix-campaign-publisher.py | \
       scripts/homebrew-prefix-campaign.py | \
       scripts/homebrew-publish-sidecars.sh | \
