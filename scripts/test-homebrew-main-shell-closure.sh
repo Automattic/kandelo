@@ -13,7 +13,9 @@ SOURCE_LOCK="$REPO_ROOT/homebrew/main-shell-migration-lock.json"
 RUNTIME_SUPPORT="$REPO_ROOT/homebrew/main-shell-homebrew-runtime-support.json"
 SELECTION_LOCK="$REPO_ROOT/homebrew/main-shell-selection-lock.json"
 SELECTION_LOCK_TOOL="$REPO_ROOT/scripts/homebrew-main-shell-selection-lock.py"
+SELECTION_CONTROLLER="$REPO_ROOT/scripts/homebrew-closed-selection-controller.py"
 SELECTION_PUBLISHER="$REPO_ROOT/scripts/publish-homebrew-closed-selection-release.sh"
+SELECTION_WORKFLOW="$REPO_ROOT/.github/workflows/reusable-homebrew-closed-selection-publish.yml"
 LAZY_ARTIFACT_LOCK="$REPO_ROOT/homebrew/main-shell-lazy-artifact-lock.json"
 LAZY_ARTIFACT_CHECKER="$REPO_ROOT/scripts/verify-homebrew-main-shell-artifact-lock.sh"
 FINALIZER_TEST="$REPO_ROOT/scripts/test-finalize-homebrew-main-shell-release.py"
@@ -684,10 +686,17 @@ bash "$LAZY_ARTIFACT_CHECKER" \
   fail "lazy shell artifact lock is not an exact digest/size/timestamp contract"
 [ "$(jq -er '.state' "$SELECTION_LOCK")" = pending ] ||
   fail "new shell selection authority must begin in review-only pending state"
-grep -Fq 'prepare-selection-release' "$SELECTION_PUBLISHER" &&
+# WHY: preparation runs without write credentials in the workflow's first
+# job. The publisher receives only that same-run deterministic archive, so a
+# token-bearing job never has to execute tap-controlled materialization code.
+grep -Fq 'homebrew-closed-selection-controller.py' "$SELECTION_WORKFLOW" &&
+  grep -Fq 'prepare \' "$SELECTION_WORKFLOW" &&
+  grep -Fq 'prepare_selection_release' "$SELECTION_CONTROLLER" &&
+  grep -Fq 'publish-homebrew-closed-selection-release.sh' \
+    "$SELECTION_WORKFLOW" &&
   grep -Fq 'publish-immutable-github-release.sh' "$SELECTION_PUBLISHER" &&
   grep -Fq 'fetch-selection-release' "$SELECTION_PUBLISHER" ||
-  fail "closed-selection publisher must prepare, publish, and read back one immutable selection"
+  fail "closed-selection workflow must prepare, publish, and read back one immutable selection"
 grep -Fq 'fetch-selection-release' "$PRODUCT_INPUT_PREPARER" &&
   grep -Fq 'verify-selection-readback' "$PRODUCT_INPUT_PREPARER" &&
   grep -Fq -- '--report-out "$AUTHORIZATION"' \
