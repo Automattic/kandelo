@@ -1284,27 +1284,33 @@ content-bound proof that source-release anchor `R`, archive producer `S`, and
 main `M` are independently bound. Normally `identical-git-tree-v1` requires
 identical complete Git trees.
 
-The retired migration-only
-`identical-package-cache-projection-v1` method required exact selected
-projection/ledger equality and a byte-identical canonical component ledger for
-every selected manifest, parsed recipe, declared and Git input, direct
-dependency identity, global toolchain input, fork-instrument input,
-architecture, and ABI. Schema-2 source-only dependencies remain in the
-projection and direct-dependency evidence but not in the archive/component
-set. Complete tree IDs remain audit evidence and the validator transition is
-exactly pinned. It does not claim that rebuilding at `M` would reproduce `S`.
-It was hard-bound to #1097 producer
-`748c2609954d2809bbcbbcb642fa7d257fc0dbc6` and the
-`pr-1097-staging` source capture, not a reusable historical-cache escape hatch.
-The original H-to-M equality was limited to schema-1 `rootfs`/`wasm32`; the
-broader browser projection differed, and later declared rootfs input changes
-invalidated the narrow selection too. The promotion workflow no longer
-exposes this method. Its reader and validator remain for historical evidence;
-new generations require an exact-main rebuild and `identical-git-tree-v1`.
+The bounded `identical-package-cache-projection-v1` method may retain one
+distinct-tree producer only after its complete selected closure is published
+as application-sealed preservation evidence with `admission = "none"`. V1
+evidence records a PR-staging run and keeps its direct tag at producer `S`. V2
+evidence records a completed, successful canonical Force rebuild, requires
+`S` to be an ancestor of current authority `M`, and targets its preservation
+release and tag at `M`. Both seals bind the source release/tag observation,
+exact run and head, unique successful selected-root job and log, every selected
+same-run artifact, and release/run archive-byte equality.
 
-The preservation workflow may still freeze the historical source as
-`admission = "none"` audit evidence. No current path promotes or materializes
-that preservation tag.
+At admission, current-main code requires exact selected projection/ledger
+equality and a byte-identical canonical component ledger for every selected
+manifest, parsed recipe, declared and Git input, direct dependency identity,
+global toolchain input, fork-instrument input, architecture, and ABI. Schema-2
+source-only dependencies remain in the projection and direct-dependency
+evidence but not in the archive/component set. Complete non-truncated tree IDs
+and exact regular-file identities for the validator sources remain audit
+evidence. Unrelated leaves may differ; selected-input drift fails closed.
+
+The selected-input comparison does not prove ancestry, whole-tree equality,
+payload reproducibility, or that rebuilding at `M` would reproduce `S`.
+`identical-git-tree-v1` remains the preferred ordinary route. A preserved
+release is never materialized directly; exact current main must revalidate its
+public seal and publish a separate admitted generation. V1 formats remain
+PR-only and cannot be reinterpreted for canonical Force runs. V2 avoids
+GitHub's historical-workflow write restriction without changing the producer
+bound by its seal.
 
 Missing current-run artifacts are errors, not permission to consult the
 mutable canonical index, and each archive uses an empty job-local cache so a
@@ -1414,14 +1420,15 @@ post-merge canonical rebuild records the exact live `main` commit. A v2
 durable generation may instead bind immutable producer `S`, its release assets,
 independently resolved release anchor `R`, current main `M`, and the main ABI
 snapshot under a versioned method. `identical-git-tree-v1` proves
-`S^{tree} == M^{tree}`. The retired
-`identical-package-cache-projection-v1` migration method proved exact selected
-projection/ledger equality plus the byte-identical canonical selected
-build-input component ledger. It retains complete `S` and `M` tree IDs for
-audit and exact-pins the validators that interpret the ledger. It is hard-bound
-to #1097's exact producer/source capture and intentionally not general payload
-equivalence. Ancestry, reachability, a tag, or a bare cache-key match is not
-equivalent provenance.
+`S^{tree} == M^{tree}`. The bounded
+`identical-package-cache-projection-v1` method instead requires a public,
+application-sealed v1 PR or v2 canonical producer closure, exact selected
+projection/ledger equality, and a byte-identical canonical selected
+build-input component ledger. It retains complete `S` and `M` tree IDs plus
+exact regular-file identities for the validator sources. Unrelated leaves may
+differ, but every selected input remains bound. Ancestry, reachability, a tag,
+a bare cache-key match, or similarly named payloads are not equivalent
+provenance.
 
 ### Why `cache_key_sha` is the strict equivalence check
 
@@ -1496,18 +1503,23 @@ landed, dispatch `promote-package-generation.yml` from the same exact
 `refs/heads/main` SHA as described in
 [Binary releases: durable package generations](binary-releases.md#durable-package-generations-for-cross-workflow-publication).
 The normal source tag is `binaries-abi-v<N>`. A retained merged run-specific
-PR staging source is accepted only when the v2 contract proves exact
-complete-tree equality. The retired PR #1097 cache-projection bridge is not a
-new-publication path. The promoter rebuilds
-a minimal exact index, drops unrelated entries and every fallback, and rewrites
-URLs to the content-addressed generation tag. It preserves the archive's
-truthful producer separately from validated current main; later Homebrew
-bottles are compiled at that validated main commit and record it as their own
-producer.
+PR staging source is accepted only when the durable-generation v2 contract
+proves exact complete-tree equality. A distinct-tree producer must first be
+captured as a public, application-sealed v1 PR or v2 canonical preserved
+closure. V2 canonical capture additionally requires producer `S` to be an
+ancestor of current authority `M`. Current-main promotion then revalidates
+that seal and requires exact selected projection, ledger, and canonical
+component-closure equality before admitting a separate generation. The
+promoter builds a minimal exact index, drops unrelated entries and every
+fallback, and rewrites URLs to the content-addressed generation tag. It
+preserves the archive's truthful producer separately from validated current
+main; later Homebrew bottles are compiled at that validated main commit and
+record it as their own producer.
 
-Historical #1097 preservation tags remain non-admitted audit evidence.
-`materialize-durable-package-generation.sh` rejects such a preservation tag;
-there is no supported production path from it to resolver input.
+Preservation tags remain non-admitted evidence.
+`materialize-durable-package-generation.sh` rejects them directly; only the
+separate exact-current-main promotion may consume a valid v1 or v2 public seal
+as evidence for a newly published admitted generation.
 
 Schema 1 selects one program root and its dependency closure. Schema 2
 `browser-inputs` binds the sorted browser roots, with `shell` excluded and
