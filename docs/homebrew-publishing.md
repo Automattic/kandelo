@@ -1925,6 +1925,15 @@ identities independently. Build, dependency, handoff, and runtime
 evidence bind both SHAs. The prepared commit is never pushed, tagged,
 or substituted for public tap provenance.
 
+Campaign control-plane reads and public artifact proof use different
+credential boundaries. Trusted preparation steps use the workflow token only
+for release metadata requested directly from `https://api.github.com`. The
+token is attached as a non-redirectable header,
+so a redirect cannot carry it to another host. Release assets, GHCR bottle
+bytes, and final public readback remain credential-free. This avoids the small
+anonymous API quota shared by GitHub-hosted runners without treating an
+authenticated response as evidence that a Kandelo user can fetch the bytes.
+
 The campaign also binds the path and SHA-256 of
 `homebrew/kandelo-guest-layout.json`. The publisher first verifies those
 exact bytes in its Kandelo checkout. It then carries the digest through
