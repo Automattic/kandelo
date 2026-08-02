@@ -21,6 +21,10 @@
 #                                  package binaries.
 #   --already-materialized        Skip browser package fetching because the
 #                                  exact binaries/ tree was prepared earlier.
+#   --require-sealed-homebrew-selection
+#                                 Refuse a pending local Homebrew selection.
+#                                 Release workflows use this before serving
+#                                 the browser bootstrap asset.
 #   --source-rootfs-shell         Internal GitHub Pages-only bridge. Requires
 #                                  the exact Pages job identity, provenance,
 #                                  empty file index, fresh cache, and clean
@@ -67,6 +71,7 @@ ALLOW_STALE_ARGS=()
 FETCH_ONLY_ARGS=()
 ALREADY_MATERIALIZED=0
 SOURCE_ROOTFS_SHELL=0
+REQUIRE_SEALED_HOMEBREW_SELECTION=0
 USE_PR_STAGING=0
 NEW_ARGS=()
 for a in "$@"; do
@@ -82,6 +87,9 @@ for a in "$@"; do
             ;;
         --source-rootfs-shell)
             SOURCE_ROOTFS_SHELL=1
+            ;;
+        --require-sealed-homebrew-selection)
+            REQUIRE_SEALED_HOMEBREW_SELECTION=1
             ;;
         --pr-staging)
             USE_PR_STAGING=1
@@ -101,6 +109,9 @@ fi
 if [ "${WASM_POSIX_ALREADY_MATERIALIZED:-0}" = "1" ]; then
     ALREADY_MATERIALIZED=1
 fi
+if [ "${WASM_POSIX_REQUIRE_SEALED_HOMEBREW_SELECTION:-0}" = "1" ]; then
+    REQUIRE_SEALED_HOMEBREW_SELECTION=1
+fi
 if [ "${#ALLOW_STALE_ARGS[@]}" -gt 0 ] && [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then
     err "--allow-stale and --fetch-only cannot be combined."
     exit 2
@@ -109,6 +120,7 @@ export WASM_POSIX_ALLOW_STALE=$([ "${#ALLOW_STALE_ARGS[@]}" -gt 0 ] && echo 1 ||
 export WASM_POSIX_FETCH_ONLY=$([ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ] && echo 1 || echo 0)
 export WASM_POSIX_ALREADY_MATERIALIZED=$ALREADY_MATERIALIZED
 export WASM_POSIX_SOURCE_ROOTFS_SHELL=$SOURCE_ROOTFS_SHELL
+export WASM_POSIX_REQUIRE_SEALED_HOMEBREW_SELECTION=$REQUIRE_SEALED_HOMEBREW_SELECTION
 if [ "${WASM_POSIX_USE_PR_STAGING:-0}" = "1" ]; then
     USE_PR_STAGING=1
 fi
@@ -125,6 +137,12 @@ if [ "$SOURCE_ROOTFS_SHELL" -eq 1 ]; then
         err "--source-rootfs-shell cannot combine with already-materialized, fetch-only, or PR-staging modes."
         exit 2
     fi
+fi
+if [ "$REQUIRE_SEALED_HOMEBREW_SELECTION" -eq 1 ]; then
+    [ "$#" -eq 1 ] && [ "${1:-}" = "prepare-browser" ] || {
+        err "--require-sealed-homebrew-selection is valid only for prepare-browser."
+        exit 2
+    }
 fi
 
 pr_staging_manual_override_hint() {
@@ -406,11 +424,7 @@ has_cpython()       { pkg_has_output cpython python.wasm || [ -f "$REPO_ROOT/pac
 has_python_vfs()    { pkg_has_output python-vfs python-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/python.vfs.zst" ]; }
 has_perl_vfs()      { pkg_has_output perl-vfs perl-vfs.vfs.zst || [ -f "$REPO_ROOT/apps/browser-demos/public/perl.vfs.zst" ]; }
 has_shell_vfs()     {
-    pkg_has_output shell shell.vfs.zst &&
-    # The VFS keeps this dependency lazy, but the browser must still be able
-    # to serve its exact package bytes when the guest first invokes brew.
-    pkg_has_output homebrew-bootstrap homebrew-bootstrap.zip &&
-    pkg_has_output homebrew-bootstrap homebrew-brew.env
+    pkg_has_output shell shell.vfs.zst
 }
 has_node()          { pkg_has_output node node.wasm; }
 has_spidermonkey_node() { pkg_has_output spidermonkey-node node.wasm || [ -f "$REPO_ROOT/packages/registry/spidermonkey-node/bin/node.wasm" ]; }
@@ -1620,14 +1634,6 @@ verify_source_rootfs_shell_runtime_vfs() {
 
 verify_source_rootfs_shell_browser_closure() {
     verify_source_rootfs_shell_vfs
-    pkg_has_output homebrew-bootstrap homebrew-bootstrap.zip || {
-        err "Source-rootfs browser preparation omitted the statically served Homebrew archive"
-        return 1
-    }
-    pkg_has_output homebrew-bootstrap homebrew-brew.env || {
-        err "Source-rootfs browser preparation omitted the Homebrew launcher policy"
-        return 1
-    }
 }
 
 verify_source_rootfs_shell_runtime_browser_closure() {
@@ -1674,14 +1680,6 @@ build_shell_vfs() {
     (cd "$REPO_ROOT" && "$xtask" "${resolve_args[@]}" >/dev/null)
     if ! pkg_has_output shell shell.vfs.zst; then
         err "Package resolver did not materialize the declared shell.vfs.zst output"
-        return 1
-    fi
-    if ! pkg_has_output homebrew-bootstrap homebrew-bootstrap.zip; then
-        err "Package resolver did not materialize shell's Homebrew source dependency"
-        return 1
-    fi
-    if ! pkg_has_output homebrew-bootstrap homebrew-brew.env; then
-        err "Package resolver did not materialize shell's Homebrew launcher policy"
         return 1
     fi
     info "Bottle-built Shell VFS image resolved"
@@ -2362,7 +2360,10 @@ BROWSER_EXTERNAL_GALLERY_PKGS=(cpython python-vfs perl perl-vfs ruby erlang erla
 # the SpiderMonkey JS shell package directly. `spidermonkey-node` carries the
 # browser UI's Node-compatible runtime; `build_node` installs that same
 # runtime at `programs/node.wasm` for the Kandelo Node preset.
-BROWSER_FETCH_SKIP_PKGS=(spidermonkey node)
+# WHY: Homebrew bootstrap bytes come from the selected Formula bottle through
+# prepare-homebrew-browser-bootstrap.sh. Fetching the transitional package too
+# would make browser readiness depend on the registry we are retiring.
+BROWSER_FETCH_SKIP_PKGS=(spidermonkey node homebrew-bootstrap)
 
 # All targets needed for the Kandelo browser UI and retained browser labs.
 # Each entry's `has_X` short-circuits when its release binary is in
@@ -2376,6 +2377,22 @@ build_browser() {
     for t in "${BROWSER_DEPS[@]}"; do
         build_target "$t"
     done
+}
+
+prepare_browser_homebrew_bootstrap() {
+    if [ ! -x "$REPO_ROOT/node_modules/.bin/tsx" ]; then
+        step "Installing locked browser-product preparation tools"
+        (cd "$REPO_ROOT" && npm ci --no-audit --no-fund)
+    fi
+    local prepare_args=(
+        --browser-asset \
+        "$REPO_ROOT/apps/browser-demos/public/homebrew-bootstrap.zip"
+    )
+    if [ "$REQUIRE_SEALED_HOMEBREW_SELECTION" -eq 1 ]; then
+        prepare_args+=(--require-sealed)
+    fi
+    bash "$REPO_ROOT/scripts/prepare-homebrew-browser-bootstrap.sh" \
+        "${prepare_args[@]}"
 }
 
 fetch_browser_binaries() {
@@ -2911,6 +2928,11 @@ cmd_prepare_browser() {
         # instead of source-building the canonical bottle recipe.
         install_source_rootfs_shell_vfs
     fi
+
+    # Resolve the small lazy bootstrap first. A pending or unavailable
+    # Formula selection should fail before the much larger gallery fetch and
+    # build, not after spending those resources on a product we cannot serve.
+    prepare_browser_homebrew_bootstrap
 
     # Fetch the per-package binaries for the browser UI and retained labs first.
     # The resolver-aware has_X

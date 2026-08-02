@@ -778,10 +778,20 @@ remain follow-up validation.
 
 GitHub Pages is a public product consumer, not a package producer. Its sole
 publisher starts with a fresh resolver cache and runs
-`./run.sh --fetch-only prepare-browser`; any missing or stale canonical archive
-therefore stops deployment instead of falling back to a source build. It
-requires the resolved shell bytes to match the sealed lazy-artifact lock. A
-read-only inspector then verifies that those exact bytes still contain:
+`./run.sh --fetch-only --require-sealed-homebrew-selection prepare-browser`;
+any missing or stale canonical archive therefore stops deployment instead of
+falling back to a source build. That same preparation command anonymously
+reads and verifies the immutable closed Homebrew selection, extracts only the
+declared bootstrap files from its Formula bottle, and atomically places the ZIP
+at the browser's fixed same-origin URL. It never resolves the transitional
+`homebrew-bootstrap` registry package. Ordinary local `./run.sh browser` uses
+the same path. A generated bootstrap Formula exists only in the prepared
+selection, not in the raw tap, so a pending review must explicitly provide that
+prepared tree with `WASM_POSIX_HOMEBREW_PENDING_SELECTION_ROOT`. A deployed
+product and an ordinary invocation require the sealed public selection.
+
+Pages requires the resolved shell bytes to match the sealed lazy-artifact
+lock. A read-only inspector then verifies that those exact bytes still contain:
 
 - one deferred Homebrew bootstrap ZIP selected by `/usr/bin/brew`;
 - the complete deferred bottle-tree inventory;

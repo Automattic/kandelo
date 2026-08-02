@@ -1285,6 +1285,25 @@ handoff expires after one day; its immutable release is durable
 content-addressed evidence and is not a temporary release to delete after the
 run.
 
+`scripts/prepare-homebrew-browser-bootstrap.sh` is the one admission path for
+that direct browser asset. It verifies the package-tree and runtime-support
+contracts select the same Formula, checks the tap and Kandelo ABI, and delegates
+the recipe, bottle, receipt, and member checks to the typed support-data
+extractor. Production callers require the sealed selection and anonymous
+release readback. This includes the mirror publisher: the raw source tap does
+not contain generated support Formulae and cannot replace the selection. Local
+review can explicitly supply a prepared selection through
+`WASM_POSIX_HOMEBREW_PENDING_SELECTION_ROOT`; the same product-lock verifier
+admits it without claiming public-release authority. The script writes the
+fixed same-origin ZIP with an atomic rename, so Vite can see either the
+preceding verified asset or the new one, never a partial copy.
+
+`./run.sh prepare-browser`, Pages, and the public Chromium mirror proof all use
+this path. They deliberately skip the conventional `homebrew-bootstrap`
+registry package. The shell image's availability is therefore independent of
+that transitional package, and retiring it cannot make an otherwise valid
+Formula-backed browser product unavailable.
+
 Only the publication job receives `contents: write`. Both of its write paths
 are guarded by the admitted publication mode. `create-mirror` calls
 `publish-immutable-github-release.sh` once for the mirror manifest targeting
@@ -3600,18 +3619,20 @@ draft pull request ready reruns the same ordered path without invoking
 close-time staging cleanup.
 
 Pages uses a fresh resolver cache and
-`./run.sh --fetch-only prepare-browser`. It verifies the selected shell against
-the sealed artifact lock, reads the embedded immutable mirror plan without
-eagerly downloading its payloads, and boots the assembled `/kandelo/` tree
-through the existing public-transport Chromium acceptance. Missing canonical
-archives, a missing public mirror, or any shell/bootstrap/plan identity drift
-stops deployment. The source-rootfs bridge cannot stand in for that product
-artifact and can be deleted in a later cleanup. The first cutover deliberately
-does not wait for the complete public lifecycle. Its Pages job is the
-publication gate: it must anonymously recover the canonical product, boot the
-exact assembled site in Chromium, keep `brew` deferred until first use, and run
-a real in-guest `brew` command. Tap/install/upgrade/remove/reboot and memory-soak
-coverage remain independent follow-up work.
+`./run.sh --fetch-only --require-sealed-homebrew-selection prepare-browser`.
+It verifies the selected shell against the sealed artifact lock, stages the
+bootstrap from the same sealed Formula selection, reads the embedded immutable
+mirror plan without eagerly downloading its payloads, and boots the assembled
+`/kandelo/` tree through the existing public-transport Chromium acceptance.
+Missing canonical archives, a missing public mirror, or any
+shell/bootstrap/plan identity drift stops deployment. The source-rootfs bridge
+cannot stand in for that product artifact and can be deleted in a later
+cleanup. The first cutover deliberately does not wait for the complete public
+lifecycle. Its Pages job is the publication gate: it must anonymously recover
+the canonical product, boot the exact assembled site in Chromium, keep `brew`
+deferred until first use, and run a real in-guest `brew` command.
+Tap/install/upgrade/remove/reboot and memory-soak coverage remain independent
+follow-up work.
 
 ### Strict Main-Shell Bottle Closure
 

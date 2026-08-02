@@ -138,18 +138,18 @@ expect_mutation_rejected \
 
 expect_mutation_rejected \
   "source-fallback browser preparation" \
-  "browser preparation must refuse source fallback" \
-  's/\.\x2frun\.sh --fetch-only prepare-browser/.\/run.sh --allow-stale prepare-browser/'
+  "canonical Pages product must not activate the source bridge" \
+  's#(            \./run\.sh --fetch-only \\\n)#$1              --allow-stale \\\n#'
 
 expect_mutation_rejected \
   "swallowed canonical preparation failure" \
-  "browser preparation must refuse source fallback" \
-  's#(\./run\.sh --fetch-only prepare-browser)#$1 || true#'
+  "must be the final failure-propagating command" \
+  's#(--require-sealed-homebrew-selection prepare-browser)#$1 || true#'
 
 expect_mutation_rejected \
   "work after canonical preparation command" \
   "must be the final failure-propagating command" \
-  's#(\./run\.sh --fetch-only prepare-browser\n)#$1          echo continued\n#'
+  's#(--require-sealed-homebrew-selection prepare-browser\n)#$1          echo continued\n#'
 
 expect_mutation_rejected \
   "missing sealed shell artifact check" \

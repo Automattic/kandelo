@@ -39,6 +39,7 @@ LAZY_ARCHIVE_RESOLVER="$REPO_ROOT/apps/browser-demos/lib/init/lazy-archives.ts"
 SHELL_TOOL_PREPARER="$REPO_ROOT/packages/registry/shell/prepare-build-tools.sh"
 SHELL_TOOL_PREPARER_TEST="$REPO_ROOT/packages/registry/shell/test-prepare-build-tools.sh"
 RUN_SH="$REPO_ROOT/run.sh"
+BROWSER_BOOTSTRAP_PREPARER="$REPO_ROOT/scripts/prepare-homebrew-browser-bootstrap.sh"
 LOCAL_SHELL_INSTALLER="$REPO_ROOT/scripts/install-local-shell-artifact.sh"
 LOCAL_SHELL_OVERRIDE="$REPO_ROOT/scripts/activate-local-shell-build-override.sh"
 CI_BLOCKER_MATERIALIZER="$REPO_ROOT/scripts/materialize-ci-publication-blockers.sh"
@@ -1847,6 +1848,7 @@ source_cleanup_function="$TMP_ROOT/cleanup-source-rootfs-shell-work-root-functio
 source_exit_cleanup_function="$TMP_ROOT/source-rootfs-shell-exit-cleanup-function.sh"
 source_clear_fetched_function="$TMP_ROOT/clear-source-rootfs-shell-transient-fetched-mirror-function.sh"
 browser_fetch_function="$TMP_ROOT/fetch-browser-binaries-function.sh"
+browser_bootstrap_function="$TMP_ROOT/prepare-browser-homebrew-bootstrap-function.sh"
 prepare_browser_function="$TMP_ROOT/prepare-browser-function.sh"
 sed -n '/^validate_source_rootfs_shell_pages_mode()/,/^}/p' "$RUN_SH" \
   >"$source_validate_function"
@@ -1874,6 +1876,8 @@ sed -n '/^clear_source_rootfs_shell_transient_fetched_mirror()/,/^}/p' "$RUN_SH"
   >"$source_clear_fetched_function"
 sed -n '/^fetch_browser_binaries()/,/^}/p' "$RUN_SH" \
   >"$browser_fetch_function"
+sed -n '/^prepare_browser_homebrew_bootstrap()/,/^}/p' "$RUN_SH" \
+  >"$browser_bootstrap_function"
 sed -n '/^cmd_prepare_browser()/,/^}/p' "$RUN_SH" \
   >"$prepare_browser_function"
 grep -Fq -- '--source-rootfs-shell)' "$RUN_SH" &&
@@ -2234,11 +2238,8 @@ grep -Fq 'verify_source_rootfs_shell_vfs' "$source_runtime_verify_function" &&
   grep -Fq '[ ! -L "$SOURCE_ROOTFS_SHELL_OVERRIDE_PATH" ]' \
     "$source_runtime_verify_function" ||
   fail "source-rootfs runtime verification must bind the temporary override"
-grep -Fq 'pkg_has_output homebrew-bootstrap homebrew-bootstrap.zip' \
-  "$source_closure_function" &&
-  grep -Fq 'pkg_has_output homebrew-bootstrap homebrew-brew.env' \
-    "$source_closure_function" ||
-  fail "source-rootfs browser prep must retain all statically imported Homebrew assets"
+! grep -Fq 'homebrew-bootstrap' "$source_closure_function" ||
+  fail "source-rootfs shell verification must not restore registry bootstrap ownership"
 grep -Fq \
   '[ "$(readlink "$SOURCE_ROOTFS_SHELL_FETCHED_MIRROR")" = "$SOURCE_ROOTFS_SHELL_TRANSIENT_FETCHED_TARGET" ]' \
   "$source_clear_fetched_function" &&
@@ -2439,13 +2440,17 @@ final_source_release_line="$(grep -nF 'release_source_rootfs_shell_runtime_overr
   "$prepare_browser_function" | tail -n 1 | cut -d: -f1)"
 final_source_verify_line="$(grep -nF 'verify_source_rootfs_shell_browser_closure' \
   "$prepare_browser_function" | tail -n 1 | cut -d: -f1)"
+browser_bootstrap_line="$(grep -nF 'prepare_browser_homebrew_bootstrap' \
+  "$prepare_browser_function" | cut -d: -f1)"
 [ "$source_install_line" -lt "$browser_fetch_line" ] &&
+  [ "$source_install_line" -lt "$browser_bootstrap_line" ] &&
+  [ "$browser_bootstrap_line" -lt "$browser_fetch_line" ] &&
   [ "$browser_fetch_line" -lt "$browser_build_line" ] &&
   [ "$browser_build_line" -lt "$final_source_runtime_verify_line" ] &&
   [ "$final_source_runtime_verify_line" -lt "$final_source_release_line" ] &&
   [ "$final_source_release_line" -lt "$final_source_verify_line" ] &&
   [ "$browser_build_line" -lt "$final_source_verify_line" ] ||
-  fail "browser prep must verify, release runtime activation, and reverify before succeeding"
+  fail "browser prep must admit Homebrew early, then release and reverify runtime activation"
 grep -Fq 'need_shell_vfs_build_tools' "$RUN_SH" &&
   fail "run.sh must not duplicate prerequisites owned by the shell recipe"
 grep -Fq 'if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then' \
@@ -2471,12 +2476,39 @@ grep -Fq 'pkg_has_output shell shell.vfs.zst' "$RUN_SH" ||
   fail "run.sh must validate the shell package's declared output"
 has_shell_vfs_function="$TMP_ROOT/has-shell-vfs-function.sh"
 sed -n '/^has_shell_vfs()/,/^}/p' "$RUN_SH" >"$has_shell_vfs_function"
-grep -Fq 'pkg_has_output homebrew-bootstrap homebrew-bootstrap.zip' \
-  "$has_shell_vfs_function" ||
-  fail "shell availability must include its lazily served Homebrew package"
-grep -Fq "Package resolver did not materialize shell's Homebrew source dependency" \
-  "$shell_build_function" ||
-  fail "shell resolution must verify its Homebrew package dependency"
+! grep -Fq 'homebrew-bootstrap' "$has_shell_vfs_function" ||
+  fail "shell image availability must not depend on the retired bootstrap package"
+! grep -Fq 'homebrew-bootstrap' "$shell_build_function" ||
+  fail "shell image resolution must not require the retired bootstrap package"
+grep -Fq 'homebrew-bootstrap' "$browser_fetch_function" &&
+  fail "browser package fetching must skip the retired bootstrap package"
+grep -Fq \
+  'BROWSER_FETCH_SKIP_PKGS=(spidermonkey node homebrew-bootstrap)' \
+  "$RUN_SH" ||
+  fail "browser package selection must exclude the retired bootstrap package"
+grep -Fq 'scripts/prepare-homebrew-browser-bootstrap.sh' \
+  "$browser_bootstrap_function" &&
+  grep -Fq \
+    'apps/browser-demos/public/homebrew-bootstrap.zip' \
+    "$browser_bootstrap_function" &&
+  grep -Fq -- '--require-sealed' "$browser_bootstrap_function" ||
+  fail "browser preparation must stage the selected Formula bottle asset"
+[ -x "$BROWSER_BOOTSTRAP_PREPARER" ] ||
+  fail "the shared browser bootstrap preparer must be executable"
+for contract in \
+  'fetch-selection-release' \
+  'homebrew-main-shell-selection-lock.py' \
+  'extract-homebrew-support-data-bottle.ts' \
+  'env -u GH_TOKEN -u GITHUB_TOKEN' \
+  'mv -f -- "$staged_browser_asset" "$BROWSER_ASSET"'
+do
+  grep -Fq "$contract" "$BROWSER_BOOTSTRAP_PREPARER" ||
+    fail "browser bootstrap preparer omits contract: $contract"
+done
+expect_failure "a pending selection cannot replace a sealed selection" \
+  bash "$BROWSER_BOOTSTRAP_PREPARER" --require-sealed \
+    --pending-selection-root "$TMP_ROOT/untrusted-pending-selection" \
+    --output-directory "$TMP_ROOT/strict-bootstrap-output"
 grep -Fq 'packages/registry/shell/build-shell.sh' "$RUN_SH" &&
   fail "run.sh must not bypass the resolver by invoking the shell recipe directly"
 grep -Fq 'build_fbdoom' "$shell_build_function" &&

@@ -232,37 +232,15 @@ jobs:
             bash scripts/fetch-binaries.sh --fetch-only \
               --package shell
           image="$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)"
-          bootstrap_package="$(jq -er '.package.name' \
-            homebrew/main-shell-brew-package-tree.json)"
-          runtime_bootstrap_package="$(jq -er \
-            '.activation.bootstrap_package.name' \
-            homebrew/main-shell-homebrew-runtime-support.json)"
-          [ "$bootstrap_package" = "$runtime_bootstrap_package" ]
-          tap_abi="$(jq -er '.kandelo_abi' \
-            ../tap-catalog/Kandelo/metadata.json)"
-          source_abi="$(sed -nE \
-            's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
-            crates/shared/src/lib.rs)"
-          [ "$tap_abi" = "$source_abi" ]
           bootstrap_root="$RUNNER_TEMP/homebrew-bootstrap-bottle"
           test ! -e "$bootstrap_root"
-          # WHY: extract only the support files declared by the exact Formula.
-          # The typed extractor verifies the public bottle, recipe lock, keg,
-          # catalog, and build receipt before these bytes enter a release.
-          env -u GH_TOKEN -u GITHUB_TOKEN \
-            -u HOMEBREW_GITHUB_API_TOKEN \
-            -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-            -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
-            bash scripts/dev-shell.sh node_modules/.bin/tsx \
-              scripts/extract-homebrew-support-data-bottle.ts \
-                --tap-root ../tap-catalog \
-                --expected-tap-sha "$TAP_CATALOG_REF" \
-                --tap-repository kandelo-dev/homebrew-tap-core \
-                --tap-name kandelo-dev/tap-core \
-                --package "$bootstrap_package" \
-                --arch wasm32 \
-                --expected-abi "$tap_abi" \
-                --output-directory "$bootstrap_root"
+          # WHY: use the same anonymous sealed-selection admission path as the
+          # deployed browser. The source tap does not contain generated support
+          # Formulae, so even this publisher must not substitute its checkout.
+          bash scripts/dev-shell.sh bash \
+            scripts/prepare-homebrew-browser-bootstrap.sh \
+              --require-sealed \
+              --output-directory "$bootstrap_root"
           bootstrap="$bootstrap_root/homebrew-bootstrap.zip"
           bootstrap_env="$bootstrap_root/homebrew-brew.env"
           for path in "$image" "$bootstrap" "$bootstrap_env"; do
@@ -996,13 +974,13 @@ jobs:
           test ! -e "$WASM_POSIX_BINARY_CACHE_ROOT"
           bash scripts/dev-shell.sh env \
             "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
-            ./run.sh --fetch-only prepare-browser
+            ./run.sh --fetch-only \
+              --require-sealed-homebrew-selection prepare-browser
           handoff="$RUNNER_TEMP/main-shell-mirror-handoff"
+          lifecycle="$RUNNER_TEMP/homebrew-guest-lifecycle-inputs-handoff"
           image="$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)"
-          bootstrap="$(bash scripts/resolve-binary.sh \
-            programs/homebrew-bootstrap/homebrew-bootstrap.zip)"
-          bootstrap_env="$(bash scripts/resolve-binary.sh \
-            programs/homebrew-bootstrap/homebrew-brew.env)"
+          bootstrap="$PWD/apps/browser-demos/public/homebrew-bootstrap.zip"
+          bootstrap_env="$lifecycle/homebrew-brew.env"
           cmp "$image" "$handoff/main-shell.vfs.zst"
           cmp "$bootstrap" "$handoff/homebrew-bootstrap.zip"
           cmp "$bootstrap_env" "$handoff/homebrew-brew.env"
@@ -1011,7 +989,6 @@ jobs:
           env -u GH_TOKEN -u GITHUB_TOKEN curl --disable --fail --location \
             --silent --show-error "$plan_url" --output "$RUNNER_TEMP/public-plan.json"
           cmp "$plan" "$RUNNER_TEMP/public-plan.json"
-          lifecycle="$RUNNER_TEMP/homebrew-guest-lifecycle-inputs-handoff"
           lifecycle_root="$(jq -er '.release.root' "$lifecycle/handoff.json")"
           for name in \
             main-shell.vfs.zst \
@@ -1050,12 +1027,11 @@ jobs:
         run: |
           set -euo pipefail
           browser_bootstrap=public/homebrew-bootstrap.zip
-          test ! -e "$browser_bootstrap"
-          # WHY: publish the anonymously re-read bottle member at the fixed
-          # same-origin URL used by the lazy VFS descriptor. The optimized
-          # browser build must not rediscover these bytes through Kandelo's
-          # transitional package registry.
-          cp "${{ steps.public.outputs.bootstrap }}" "$browser_bootstrap"
+          test -f "$browser_bootstrap"
+          test ! -L "$browser_bootstrap"
+          # WHY: prepare-browser owns this fixed same-origin asset. The build
+          # must consume those admitted bytes instead of silently replacing
+          # them from a second package source.
           cmp "${{ steps.public.outputs.bootstrap }}" "$browser_bootstrap"
           # WHY: dev-shell intentionally drops ambient variables. Forward the
           # selector or Vite builds its default pages and omits the proof page.

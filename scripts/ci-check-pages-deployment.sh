@@ -193,14 +193,17 @@ grep -Fq 'bash scripts/dev-shell.sh env \' <<<"$prepare_browser_block" &&
   grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
     <<<"$prepare_browser_block" ||
   fail "browser preparation must retain the canonical cache inside dev-shell"
-grep -Fxq '            ./run.sh --fetch-only prepare-browser' \
-  <<<"$prepare_browser_block" ||
-  fail "browser preparation must refuse source fallback"
+grep -Fxq '            ./run.sh --fetch-only \' \
+  <<<"$prepare_browser_block" &&
+  grep -Fq \
+    '              --require-sealed-homebrew-selection prepare-browser' \
+    <<<"$prepare_browser_block" ||
+  fail "browser preparation must require sealed bottle inputs"
 prepare_browser_last="$(
   awk 'NF { line = $0 } END { print line }' <<<"$prepare_browser_block"
 )"
 [ "$prepare_browser_last" = \
-    '            ./run.sh --fetch-only prepare-browser' ] ||
+    '              --require-sealed-homebrew-selection prepare-browser' ] ||
   fail "canonical browser preparation must be the final failure-propagating command"
 if grep -Fq -- '--source-rootfs-shell' "$PAGES_WORKFLOW" ||
    grep -Fq 'WASM_POSIX_SOURCE_ROOTFS_SHELL_' "$PAGES_WORKFLOW" ||
@@ -215,14 +218,8 @@ grep -Fq 'id: shell_product' <<<"$shell_product_block" &&
   grep -Fq \
     'image=$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)' \
     <<<"$shell_product_block" &&
-  grep -Fq 'fetch-selection-release' <<<"$shell_product_block" &&
-  grep -Fq 'scripts/homebrew-main-shell-selection-lock.py verify' \
-    <<<"$shell_product_block" &&
-  grep -Fq 'scripts/extract-homebrew-support-data-bottle.ts' \
-    <<<"$shell_product_block" &&
-  grep -Fq -- '--selection-verification-report "$selection_report"' \
-    <<<"$shell_product_block" &&
-  grep -Fq 'cp "$bootstrap" "$browser_bootstrap"' \
+  grep -Fq \
+    'bootstrap="$PWD/apps/browser-demos/public/homebrew-bootstrap.zip"' \
     <<<"$shell_product_block" &&
   grep -Fq 'scripts/verify-homebrew-main-shell-artifact-lock.sh' \
     <<<"$shell_product_block" &&
@@ -234,8 +231,11 @@ grep -Fq 'id: shell_product' <<<"$shell_product_block" &&
     <<<"$shell_product_block" &&
   grep -Fq 'mirror_plan_url=$(jq -er' <<<"$shell_product_block" ||
   fail "Pages must bind the canonical shell, bootstrap, and embedded mirror plan"
-if grep -Fq 'programs/homebrew-bootstrap/' <<<"$shell_product_block"; then
-  fail "Pages must not resolve Homebrew bootstrap from the package registry"
+if grep -Fq 'programs/homebrew-bootstrap/' "$PAGES_WORKFLOW" ||
+   grep -Fq 'fetch-selection-release' <<<"$shell_product_block" ||
+   grep -Fq 'scripts/extract-homebrew-support-data-bottle.ts' \
+     <<<"$shell_product_block"; then
+  fail "Pages must use the one prepared Formula-bottle bootstrap asset"
 fi
 grep -Fq 'npx tsx --test \' <<<"$shell_product_block" &&
   grep -Fq 'scripts/inspect-homebrew-main-shell-public-product.test.ts' \
