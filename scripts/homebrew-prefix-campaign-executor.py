@@ -8191,6 +8191,10 @@ def validate_predecessor_recovery_binding(
     predecessor_payload: bytes,
     campaign_tag: str,
 ) -> None:
+    # WHY: the predecessor manifest describes the bytes that already exist,
+    # but only the current campaign may authorize their use now. Bind the
+    # immutable old manifest back to the exact recovery record instead of
+    # treating possession of an old handoff as successor authority.
     records = campaign["authority"].get("predecessor_recovery")
     if not isinstance(records, list):
         fail("campaign lacks predecessor recovery authority")
@@ -8316,6 +8320,10 @@ def derive_predecessor_reuse(
         predecessor_publication,
         f"predecessor {formula_name}/{arch}",
     )
+    # WHY: the old dependency handoffs prove what the bottle was built with;
+    # the new handoffs prove what the successor campaign will expose. Both
+    # closures must describe the same bottle bytes before this Formula can be
+    # rebound without rebuilding it.
     (
         predecessor_dependency_records,
         predecessor_dependency_identities,
