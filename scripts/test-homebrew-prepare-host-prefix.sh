@@ -36,6 +36,7 @@ trap cleanup EXIT
 HOMEBREW_HOST_PREFIX_STAT="$(command -v stat)"
 HOMEBREW_HOST_PREFIX_INSTALL="$(command -v install)"
 HOMEBREW_HOST_PREFIX_REALPATH="$(command -v realpath)"
+HOMEBREW_HOST_PREFIX_CHMOD="$(command -v chmod)"
 HOMEBREW_HOST_PREFIX_SUDO="$TEST_ROOT/fake-sudo"
 cat >"$HOMEBREW_HOST_PREFIX_SUDO" <<'EOF'
 #!/usr/bin/env bash
@@ -116,6 +117,43 @@ expect_failure "prefix anchor must be traversable" \
     "$TEST_ROOT/writable-anchor-parent/kandelo/homebrew" \
     "$test_uid" "$test_gid" "$test_uid" "$test_gid"
 
+# GitHub-hosted Ubuntu runners provision /opt as 0777. Privileged setup must
+# remove only its group/world write bits before it creates the protected
+# Kandelo anchor, while leaving the Formula-owned prefix writable.
+mkdir -m 0777 "$TEST_ROOT/hosted-runner-opt"
+hosted_parent="$TEST_ROOT/hosted-runner-opt"
+hosted_anchor="$hosted_parent/kandelo"
+hosted_prefix="$hosted_anchor/homebrew"
+homebrew_prepare_host_prefix_harden_anchor_parent \
+  "$hosted_parent" "$hosted_anchor" "$test_uid" "$test_gid"
+[ "$(state "$hosted_parent")" = "$test_uid:$test_gid:755" ]
+homebrew_prepare_prefix_campaign_tree \
+  "$hosted_prefix" "$test_uid" "$test_gid" "$test_uid" "$test_gid"
+[ "$(state "$hosted_anchor")" = "$test_uid:$test_gid:755" ]
+[ "$(state "$hosted_prefix")" = "$test_uid:$test_gid:755" ]
+printf 'hosted runner child write succeeds\n' >"$hosted_prefix/write-probe"
+rm "$hosted_prefix/write-probe"
+
+# Hardening must never turn a hostile pre-existing child into the protected
+# anchor merely by making its parent non-writable.
+mkdir -m 0777 "$TEST_ROOT/hostile-runner-opt"
+hostile_parent="$TEST_ROOT/hostile-runner-opt"
+hostile_anchor="$hostile_parent/kandelo"
+mkdir -m 0777 "$hostile_anchor"
+expect_failure "prefix anchor must be traversable" \
+  homebrew_prepare_host_prefix_harden_anchor_parent \
+    "$hostile_parent" "$hostile_anchor" "$test_uid" "$test_gid"
+[ "$(state "$hostile_parent")" = "$test_uid:$test_gid:777" ]
+[ "$(state "$hostile_anchor")" = "$test_uid:$test_gid:777" ]
+
+mkdir -m 0777 "$TEST_ROOT/linked-runner-opt"
+linked_parent="$TEST_ROOT/linked-runner-opt"
+ln -s "$TEST_ROOT/symlink-target" "$linked_parent/kandelo"
+expect_failure "prefix anchor must be a real non-symlink directory" \
+  homebrew_prepare_host_prefix_harden_anchor_parent \
+    "$linked_parent" "$linked_parent/kandelo" "$test_uid" "$test_gid"
+[ "$(state "$linked_parent")" = "$test_uid:$test_gid:777" ]
+
 mkdir -m 0755 "$TEST_ROOT/prefix-link-parent"
 mkdir -m 0755 "$TEST_ROOT/prefix-link-parent/kandelo"
 ln -s "$TEST_ROOT/symlink-target" \
@@ -170,6 +208,8 @@ grep -F 'prefix-campaign:/opt/kandelo/homebrew)' \
 grep -F 'canonical:/opt/kandelo/homebrew' \
   "$REPO_ROOT/scripts/homebrew-prepare-host-prefix.sh" >/dev/null
 grep -F '"$prefix" 0 0 "$(/usr/bin/id -u)" "$(/usr/bin/id -g)"' \
+  "$REPO_ROOT/scripts/homebrew-prepare-host-prefix.sh" >/dev/null
+grep -F '/opt /opt/kandelo 0 0 || return' \
   "$REPO_ROOT/scripts/homebrew-prepare-host-prefix.sh" >/dev/null
 
 echo "test-homebrew-prepare-host-prefix: pass"

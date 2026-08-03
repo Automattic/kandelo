@@ -89,6 +89,81 @@ homebrew_prepare_host_prefix_assert_mutable_directory() {
   }
 }
 
+# GitHub-hosted Ubuntu runners deliberately make /opt group- and
+# world-writable so preinstalled tools can update themselves. That is not a
+# safe parent for a prefix which becomes protected before untrusted Formula
+# code runs. Validate the runner-owned directory and any existing anchor
+# before changing permissions, remove only the unsafe write bits, and then
+# revalidate both paths.
+homebrew_prepare_host_prefix_harden_anchor_parent() {
+  if [ "$#" -ne 4 ]; then
+    homebrew_prepare_host_prefix_fail \
+      "expected PARENT ANCHOR TRUSTED_UID TRUSTED_GID"
+    return
+  fi
+  local parent="$1" anchor="$2" trusted_uid="$3" trusted_gid="$4"
+  local physical state owner group mode
+
+  [ "$anchor" = "$parent/kandelo" ] || {
+    homebrew_prepare_host_prefix_fail \
+      "prefix anchor is not the reviewed child of its parent: $anchor"
+    return
+  }
+  [ -d "$parent" ] && [ ! -L "$parent" ] || {
+    homebrew_prepare_host_prefix_fail \
+      "prefix anchor parent must be a real non-symlink directory: $parent"
+    return
+  }
+  physical="$("$HOMEBREW_HOST_PREFIX_REALPATH" -- "$parent")" || return
+  [ "$physical" = "$parent" ] || {
+    homebrew_prepare_host_prefix_fail \
+      "prefix anchor parent must use its physical canonical path: $parent"
+    return
+  }
+  state="$(
+    "$HOMEBREW_HOST_PREFIX_SUDO" -n -- \
+      "$HOMEBREW_HOST_PREFIX_STAT" -c '%u:%g:%a' -- "$parent"
+  )" || return
+  IFS=: read -r owner group mode <<<"$state"
+  [[ "$owner" =~ ^[0-9]+$ && "$group" =~ ^[0-9]+$ && \
+    "$mode" =~ ^[0-7]+$ ]] || {
+    homebrew_prepare_host_prefix_fail \
+      "could not read a numeric owner and mode for prefix anchor parent:" \
+      "$parent"
+    return
+  }
+  [ "$owner" = "$trusted_uid" ] && [ "$group" = "$trusted_gid" ] || {
+    homebrew_prepare_host_prefix_fail \
+      "prefix anchor parent does not have its required trusted ownership:" \
+      "$parent"
+    return
+  }
+  [ $((8#$mode & 0111)) -eq $((0111)) ] || {
+    homebrew_prepare_host_prefix_fail \
+      "prefix anchor parent must be traversable before hardening: $parent"
+    return
+  }
+
+  # WHY: locking a writable parent after accepting an attacker-controlled
+  # child would preserve that child as the trusted anchor. Reject it first.
+  if [ -e "$anchor" ] || [ -L "$anchor" ]; then
+    homebrew_prepare_host_prefix_assert_trusted_directory \
+      "$anchor" "$trusted_uid" "$trusted_gid" "prefix anchor" || return
+  fi
+
+  if [ $((8#$mode & 0022)) -ne 0 ]; then
+    "$HOMEBREW_HOST_PREFIX_SUDO" -n -- \
+      "$HOMEBREW_HOST_PREFIX_CHMOD" g-w,o-w -- "$parent" || return
+  fi
+  homebrew_prepare_host_prefix_assert_trusted_directory \
+    "$parent" "$trusted_uid" "$trusted_gid" \
+    "prefix anchor parent" || return
+  if [ -e "$anchor" ] || [ -L "$anchor" ]; then
+    homebrew_prepare_host_prefix_assert_trusted_directory \
+      "$anchor" "$trusted_uid" "$trusted_gid" "prefix anchor" || return
+  fi
+}
+
 # Prepare the prefix-campaign layout below a trusted anchor. This function is
 # kept separately callable so its filesystem contract can be tested in a
 # temporary tree without creating host-global /opt state.
@@ -189,6 +264,8 @@ homebrew_prepare_host_prefix_main() {
     canonical:/opt/kandelo/homebrew|prefix-campaign:/opt/kandelo/homebrew)
       # WHY: both modes use the post-cutover guest layout. The campaign name
       # remains valid so already sealed handoffs can bind their layout digest.
+      homebrew_prepare_host_prefix_harden_anchor_parent \
+        /opt /opt/kandelo 0 0 || return
       homebrew_prepare_prefix_campaign_tree \
         "$prefix" 0 0 "$(/usr/bin/id -u)" "$(/usr/bin/id -g)"
       ;;
@@ -208,10 +285,11 @@ if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   HOMEBREW_HOST_PREFIX_STAT=/usr/bin/stat
   HOMEBREW_HOST_PREFIX_INSTALL=/usr/bin/install
   HOMEBREW_HOST_PREFIX_REALPATH=/usr/bin/realpath
+  HOMEBREW_HOST_PREFIX_CHMOD=/usr/bin/chmod
   for required in \
     "$HOMEBREW_HOST_PREFIX_SUDO" "$HOMEBREW_HOST_PREFIX_STAT" \
     "$HOMEBREW_HOST_PREFIX_INSTALL" "$HOMEBREW_HOST_PREFIX_REALPATH" \
-    /usr/bin/id; do
+    "$HOMEBREW_HOST_PREFIX_CHMOD" /usr/bin/id; do
     [ -x "$required" ] || {
       homebrew_prepare_host_prefix_fail "missing required host tool: $required"
       exit 2
