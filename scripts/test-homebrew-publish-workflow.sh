@@ -249,6 +249,8 @@ make_formula_runner_fixture() {
   FORMULA_RUNNER_FIXTURE_ROOT="$(cd "$FORMULA_RUNNER_FIXTURE_ROOT" && pwd -P)"
   cp "$REPO_ROOT/scripts/homebrew-bottle-build.sh" \
     "$REPO_ROOT/scripts/homebrew-verify-poured-bottle.sh" \
+    "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" \
+    "$REPO_ROOT/scripts/homebrew_cache_archive.py" \
     "$REPO_ROOT/scripts/homebrew-formula-support-inputs.sh" \
     "$REPO_ROOT/scripts/homebrew-formula-runtime-closure.rb" \
     "$REPO_ROOT/scripts/homebrew-native-command-diagnostic.rb" \
@@ -370,7 +372,11 @@ homebrew_patched_launcher_select_host_git() {
 homebrew_patched_launcher_prepare() {
   HOMEBREW_PATCHED_BREW_BIN="$1"
   HOMEBREW_PATCHED_PREFIX="${FAKE_BREW_PREFIX:?}"
-  mkdir -p "$HOMEBREW_PATCHED_PREFIX/Cellar"
+  HOMEBREW_CACHE="${HOMEBREW_CACHE:-$3/target-cache}"
+  HOMEBREW_TEMP="${HOMEBREW_TEMP:-$3/target-temp}"
+  export HOMEBREW_CACHE HOMEBREW_TEMP
+  mkdir -p "$HOMEBREW_PATCHED_PREFIX/Cellar" \
+    "$HOMEBREW_CACHE/downloads" "$HOMEBREW_TEMP"
 }
 
 homebrew_patched_launcher_snapshot_target_cellar_layout() {
@@ -3978,23 +3984,37 @@ if [ "$(basename "${1:-}")" != 'homebrew-dependency-provenance.py' ]; then
   exec "$REAL_PYTHON3" "$@"
 fi
 shift
-[ "${1:-}" = 'capture' ] || exit 47
+subcommand="${1:-}"
 shift
 expected=""
 out=""
 install_log=""
+cache_evidence=""
+cache_root=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --expected-dependencies) expected="${2:-}"; shift 2 ;;
     --install-log) install_log="${2:-}"; shift 2 ;;
+    --cache-evidence) cache_evidence="${2:-}"; shift 2 ;;
+    --cache-root) cache_root="${2:-}"; shift 2 ;;
     --out) out="${2:-}"; shift 2 ;;
     *) shift ;;
   esac
 done
-[ -n "$expected" ] && [ -n "$install_log" ] && [ -n "$out" ] || exit 48
-cp "$expected" "$FAKE_PROVENANCE_CAPTURE"
-cp "$install_log" "$FAKE_PROVENANCE_LOG_CAPTURE"
-printf '{"schema":1}\n' >"$out"
+case "$subcommand" in
+  capture-cache)
+    [ -n "$expected" ] && [ -n "$cache_root" ] && [ -n "$out" ] || exit 47
+    printf '{"schema":1}\n' >"$out"
+    ;;
+  capture)
+    [ -n "$expected" ] && [ -n "$install_log" ] && [ -n "$out" ] || exit 48
+    [ -n "$cache_evidence" ] && [ -f "$cache_evidence" ] || exit 49
+    cp "$expected" "$FAKE_PROVENANCE_CAPTURE"
+    cp "$install_log" "$FAKE_PROVENANCE_LOG_CAPTURE"
+    printf '{"schema":1}\n' >"$out"
+    ;;
+  *) exit 50 ;;
+esac
 EOF
   chmod +x "$fake_bin/python3"
 
@@ -4734,11 +4754,13 @@ if [ "$tool" != homebrew-dependency-provenance.py ] && \
   exec "$REAL_PYTHON3" "$@"
 fi
 shift
-[ "${1:-}" = capture ] || exit 60
+subcommand="${1:-}"
 shift
 expected=""
 out=""
 install_log=""
+cache_evidence=""
+cache_root=""
 target_prefix=""
 target_receipt=""
 tap_root=""
@@ -4747,6 +4769,8 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --expected-dependencies) expected="${2:-}"; shift 2 ;;
     --install-log) install_log="${2:-}"; shift 2 ;;
+    --cache-evidence) cache_evidence="${2:-}"; shift 2 ;;
+    --cache-root) cache_root="${2:-}"; shift 2 ;;
     --target-prefix) target_prefix="${2:-}"; shift 2 ;;
     --target-receipt) target_receipt="${2:-}"; shift 2 ;;
     --tap-root) tap_root="${2:-}"; shift 2 ;;
@@ -4755,22 +4779,41 @@ while [ "$#" -gt 0 ]; do
     *) shift ;;
   esac
 done
-[ -n "$install_log" ] && [ -n "$out" ] || exit 61
-cp "$install_log" "$FAKE_PROVENANCE_LOG_CAPTURE"
-if [ "$tool" = homebrew-dependency-provenance.py ]; then
-  [ -n "$expected" ] || exit 62
-  [ "$(cd "$tap_root" && pwd -P)" = \
-    "$(cd "$FAKE_PROVENANCE_TAP_ROOT" && pwd -P)" ] || exit 65
-  cp "$expected" "$FAKE_PROVENANCE_CAPTURE"
-else
-  [ "$(cd "$tap_root" && pwd -P)" = \
-    "$(cd "$FAKE_RECONSTRUCTED_TAP" && pwd -P)" ] || exit 66
-  [ "$(cd "$dependency_tap_root" && pwd -P)" = \
-    "$(cd "$FAKE_PROVENANCE_TAP_ROOT" && pwd -P)" ] || exit 67
-  [ "$target_prefix" = "$FAKE_TARGET_PREFIX" ] || exit 63
-  [ "$target_receipt" = "$FAKE_TARGET_PREFIX/INSTALL_RECEIPT.json" ] || exit 64
-fi
-printf '{"schema":1}\n' >"$out"
+case "$tool:$subcommand" in
+  homebrew-dependency-provenance.py:capture-cache)
+    [ -n "$expected" ] && [ -n "$cache_root" ] && [ -n "$out" ] || exit 60
+    [ "$(cd "$tap_root" && pwd -P)" = \
+      "$(cd "$FAKE_PROVENANCE_TAP_ROOT" && pwd -P)" ] || exit 65
+    [ "$(cd "$cache_root" && pwd -P)" = \
+      "$(cd "$HOMEBREW_CACHE" && pwd -P)" ] || exit 68
+    printf '{"schema":1}\n' >"$out"
+    ;;
+  homebrew-dependency-provenance.py:capture)
+    [ -n "$expected" ] && [ -n "$install_log" ] && \
+      [ -n "$cache_evidence" ] && [ -f "$cache_evidence" ] && \
+      [ -n "$out" ] || exit 61
+    [ "$(cd "$tap_root" && pwd -P)" = \
+      "$(cd "$FAKE_PROVENANCE_TAP_ROOT" && pwd -P)" ] || exit 65
+    cp "$expected" "$FAKE_PROVENANCE_CAPTURE"
+    cp "$install_log" "$FAKE_PROVENANCE_LOG_CAPTURE"
+    printf '{"schema":1}\n' >"$out"
+    ;;
+  homebrew-bottle-runtime-evidence.py:capture)
+    [ -n "$install_log" ] && [ -n "$cache_root" ] && \
+      [ -n "$out" ] || exit 61
+    [ "$(cd "$tap_root" && pwd -P)" = \
+      "$(cd "$FAKE_RECONSTRUCTED_TAP" && pwd -P)" ] || exit 66
+    [ "$(cd "$dependency_tap_root" && pwd -P)" = \
+      "$(cd "$FAKE_PROVENANCE_TAP_ROOT" && pwd -P)" ] || exit 67
+    [ "$(cd "$cache_root" && pwd -P)" = \
+      "$(cd "$HOMEBREW_CACHE" && pwd -P)" ] || exit 68
+    [ "$target_prefix" = "$FAKE_TARGET_PREFIX" ] || exit 63
+    [ "$target_receipt" = "$FAKE_TARGET_PREFIX/INSTALL_RECEIPT.json" ] || exit 64
+    cp "$install_log" "$FAKE_PROVENANCE_LOG_CAPTURE"
+    printf '{"schema":1}\n' >"$out"
+    ;;
+  *) exit 60 ;;
+esac
 EOF
   chmod +x "$fake_bin/python3"
 
@@ -5039,23 +5082,35 @@ assert_dependency_pour_provenance_is_bounded() {
   local target_receipt="$root/target-receipt.json"
   local expected_dependencies="$root/expected-dependencies.txt"
   local install_log="$root/install.log"
+  local machine_install_log="$root/machine-install.log"
   local fake_brew="$root/prefix/bin/brew"
   local fake_brew_target="$root/homebrew/bin/brew"
   local info="$root/zlib-info.json"
   local output="$root/provenance.json"
+  local cache_evidence="$root/cache-evidence.json"
+  local machine_output="$root/machine-provenance.json"
+  local cache_root="$root/cache"
+  local cache_archive cache_parent_alias cache_url_sha noncanonical_cache_root
   local bad="$root/bad.json"
   local err="$root/external-dependency.err"
   local formula_sha
-  local bottle_sha="1111111111111111111111111111111111111111111111111111111111111111"
+  local bottle_sha
   local tap_commit="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-  mkdir -p "$tap/Formula" "$cellar" "$(dirname "$fake_brew")" "$(dirname "$fake_brew_target")"
-  cat >"$tap/Formula/zlib.rb" <<'EOF'
+  mkdir -p "$tap/Formula" "$cellar" "$cache_root/downloads" \
+    "$(dirname "$fake_brew")" "$(dirname "$fake_brew_target")"
+  cache_root="$(cd "$cache_root" && pwd -P)"
+  printf 'exact cached dependency bottle\n' >"$root/cache-archive-source"
+  bottle_sha="$(sha256sum "$root/cache-archive-source" 2>/dev/null | awk '{print $1}' || shasum -a 256 "$root/cache-archive-source" | awk '{print $1}')"
+  cache_url_sha="$(printf '%s' "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/zlib/blobs/sha256:$bottle_sha" | sha256sum 2>/dev/null | awk '{print $1}' || printf '%s' "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/zlib/blobs/sha256:$bottle_sha" | shasum -a 256 | awk '{print $1}')"
+  cache_archive="$cache_root/downloads/$cache_url_sha--zlib--1.3.1.wasm32_kandelo.bottle.tar.gz"
+  cp "$root/cache-archive-source" "$cache_archive"
+  cat >"$tap/Formula/zlib.rb" <<EOF
 class Zlib < Formula
   desc "fixture"
 
   bottle do
     root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
-    sha256 cellar: :any_skip_relocation, wasm32_kandelo: "1111111111111111111111111111111111111111111111111111111111111111"
+    sha256 cellar: :any_skip_relocation, wasm32_kandelo: "$bottle_sha"
   end
 end
 EOF
@@ -5111,6 +5166,12 @@ expected_prefix="$(cd "$FAKE_PREFIX" && pwd -P)"
   exit 3
 }
 case "${1:-}" in
+  --cache)
+    [ "${2:-}" = "--force-bottle" ]
+    [ "${3:-}" = "--formula" ]
+    [ "${4:-}" = "kandelo-dev/tap-core/zlib" ]
+    printf '%s\n' "$FAKE_BOTTLE_CACHE"
+    ;;
   --cellar)
     [ "${2:-}" = "kandelo-dev/tap-core/zlib" ]
     printf '%s\n' "$FAKE_CELLAR/zlib"
@@ -5166,6 +5227,208 @@ EOF
     (.dependencies[0].install_log.pour | length) == 1 and
     .dependencies[0].install_log.source_build_absent == true
   ' "$output" >/dev/null || fail "dependency provenance omitted exact bottle-pour evidence"
+
+  cat >"$machine_install_log" <<'EOF'
+✔︎ Bottle Manifest zlib (1.3.1)
+✔︎ Bottle zlib (1.3.1)
+==> Pouring zlib--1.3.1.wasm32_kandelo.bottle.tar.gz
+EOF
+  FAKE_PREFIX="$root/prefix" FAKE_BOTTLE_CACHE="$cache_archive" \
+    python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" \
+      capture-cache \
+      --brew-bin "$fake_brew" \
+      --tap-root "$tap" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --tap-commit "$tap_commit" \
+      --formula curl \
+      --arch wasm32 \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      --expected-dependencies "$expected_dependencies" \
+      --cache-root "$cache_root" \
+      --out "$cache_evidence"
+  FAKE_PREFIX="$root/prefix" FAKE_CELLAR="$root/cellar" FAKE_INFO="$info" \
+    python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" capture \
+      --brew-bin "$fake_brew" \
+      --tap-root "$tap" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --tap-commit "$tap_commit" \
+      --formula curl \
+      --arch wasm32 \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      --target-receipt "$target_receipt" \
+      --expected-dependencies "$expected_dependencies" \
+      --install-log "$machine_install_log" \
+      --cache-evidence "$cache_evidence" \
+      --out "$machine_output"
+  python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
+    --input "$machine_output" \
+    --tap-repository kandelo-dev/homebrew-tap-core \
+    --tap-commit "$tap_commit" \
+    --formula curl \
+    --arch wasm32 \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --tap-root "$tap"
+  jq -e --arg bottle_sha "$bottle_sha" \
+    --arg cache_basename "${cache_archive##*/}" '
+    .schema == 6 and
+    (.dependencies | length) == 1 and
+    .dependencies[0].archive == {
+      bytes: 31,
+      cache_basename: $cache_basename,
+      sha256: $bottle_sha
+    } and
+    (.dependencies[0].install_log | keys) == [
+      "pour", "source_build_absent"
+    ]
+  ' "$machine_output" >/dev/null ||
+    fail "machine dependency provenance omitted exact cached archive evidence"
+
+  if FAKE_PREFIX="$root/prefix" FAKE_CELLAR="$root/cellar" FAKE_INFO="$info" \
+    python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" capture \
+      --brew-bin "$fake_brew" --tap-root "$tap" \
+      --tap-repository kandelo-dev/homebrew-tap-core --tap-commit "$tap_commit" \
+      --formula curl --arch wasm32 \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      --target-receipt "$target_receipt" \
+      --expected-dependencies "$expected_dependencies" \
+      --install-log "$machine_install_log" \
+      --out "$root/missing-machine-evidence.json" \
+      >/dev/null 2>"$root/missing-machine-evidence.err"; then
+    fail "dependency provenance accepted a progress-only log without cache evidence"
+  fi
+  grep -F "lacks bounded fetch evidence" \
+    "$root/missing-machine-evidence.err" >/dev/null ||
+    fail "legacy dependency provenance did not explain its missing URL evidence"
+
+  cp "$cache_archive" "$root/cache-archive-good"
+  printf 'wrong cached dependency bottle\n' >"$cache_archive"
+  if FAKE_PREFIX="$root/prefix" FAKE_BOTTLE_CACHE="$cache_archive" \
+    python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" \
+      capture-cache --brew-bin "$fake_brew" --tap-root "$tap" \
+      --tap-repository kandelo-dev/homebrew-tap-core --tap-commit "$tap_commit" \
+      --formula curl --arch wasm32 \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      --expected-dependencies "$expected_dependencies" \
+      --cache-root "$cache_root" --out "$root/wrong-cache-content.json" \
+      >/dev/null 2>&1; then
+    fail "dependency cache evidence accepted archive bytes with the wrong digest"
+  fi
+  mv "$root/cache-archive-good" "$cache_archive"
+
+  ln "$cache_archive" "$root/cache-archive-hardlink"
+  if FAKE_PREFIX="$root/prefix" FAKE_BOTTLE_CACHE="$cache_archive" \
+    python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" \
+      capture-cache --brew-bin "$fake_brew" --tap-root "$tap" \
+      --tap-repository kandelo-dev/homebrew-tap-core --tap-commit "$tap_commit" \
+      --formula curl --arch wasm32 \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      --expected-dependencies "$expected_dependencies" \
+      --cache-root "$cache_root" --out "$root/hardlinked-cache.json" \
+      >/dev/null 2>&1; then
+    fail "dependency cache evidence accepted a hardlinked archive"
+  fi
+  rm "$root/cache-archive-hardlink"
+
+  mv "$cache_archive" "$root/cache-archive-real"
+  ln -s "$root/cache-archive-real" "$cache_archive"
+  if FAKE_PREFIX="$root/prefix" FAKE_BOTTLE_CACHE="$cache_archive" \
+    python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" \
+      capture-cache --brew-bin "$fake_brew" --tap-root "$tap" \
+      --tap-repository kandelo-dev/homebrew-tap-core --tap-commit "$tap_commit" \
+      --formula curl --arch wasm32 \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      --expected-dependencies "$expected_dependencies" \
+      --cache-root "$cache_root" --out "$root/symlink-cache.json" \
+      >/dev/null 2>&1; then
+    fail "dependency cache evidence accepted a symlink archive"
+  fi
+  rm "$cache_archive"
+  mv "$root/cache-archive-real" "$cache_archive"
+
+  cache_parent_alias="$(dirname "$cache_root")/cache-parent-alias"
+  ln -s "$(dirname "$cache_root")" "$cache_parent_alias"
+  noncanonical_cache_root="$cache_parent_alias/$(basename "$cache_root")"
+  if FAKE_PREFIX="$root/prefix" \
+    FAKE_BOTTLE_CACHE="$noncanonical_cache_root/downloads/${cache_archive##*/}" \
+    python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" \
+      capture-cache --brew-bin "$fake_brew" --tap-root "$tap" \
+      --tap-repository kandelo-dev/homebrew-tap-core --tap-commit "$tap_commit" \
+      --formula curl --arch wasm32 \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      --expected-dependencies "$expected_dependencies" \
+      --cache-root "$noncanonical_cache_root" \
+      --out "$root/symlink-ancestor-cache.json" >/dev/null 2>&1; then
+    fail "dependency cache evidence accepted a symlinked cache ancestor"
+  fi
+  rm "$cache_parent_alias"
+
+  if FAKE_PREFIX="$root/prefix" \
+    FAKE_BOTTLE_CACHE="$cache_root/downloads/../downloads/${cache_archive##*/}" \
+    python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" \
+      capture-cache --brew-bin "$fake_brew" --tap-root "$tap" \
+      --tap-repository kandelo-dev/homebrew-tap-core --tap-commit "$tap_commit" \
+      --formula curl --arch wasm32 \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      --expected-dependencies "$expected_dependencies" \
+      --cache-root "$cache_root" --out "$root/aliased-cache-path.json" \
+      >/dev/null 2>&1; then
+    fail "dependency cache evidence accepted a noncanonical archive path"
+  fi
+
+  if FAKE_PREFIX="$root/prefix" \
+    FAKE_BOTTLE_CACHE="$root/cache-archive-source" \
+    python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" \
+      capture-cache --brew-bin "$fake_brew" --tap-root "$tap" \
+      --tap-repository kandelo-dev/homebrew-tap-core --tap-commit "$tap_commit" \
+      --formula curl --arch wasm32 \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      --expected-dependencies "$expected_dependencies" \
+      --cache-root "$cache_root" --out "$root/outside-cache.json" \
+      >/dev/null 2>&1; then
+    fail "dependency cache evidence accepted an archive outside the cache"
+  fi
+
+  if FAKE_PREFIX="$root/prefix" \
+    FAKE_BOTTLE_CACHE="$cache_archive
+$cache_archive" \
+    python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" \
+      capture-cache --brew-bin "$fake_brew" --tap-root "$tap" \
+      --tap-repository kandelo-dev/homebrew-tap-core --tap-commit "$tap_commit" \
+      --formula curl --arch wasm32 \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      --expected-dependencies "$expected_dependencies" \
+      --cache-root "$cache_root" --out "$root/ambiguous-cache-path.json" \
+      >/dev/null 2>&1; then
+    fail "dependency cache evidence accepted multiple brew --cache paths"
+  fi
+
+  jq '.dependencies[0].archive.sha256 = ("2" * 64)' \
+    "$machine_output" >"$bad"
+  if python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
+    --input "$bad" --tap-repository kandelo-dev/homebrew-tap-core \
+    --tap-commit "$tap_commit" --formula curl --arch wasm32 \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --tap-root "$tap" >/dev/null 2>&1; then
+    fail "dependency provenance accepted an archive digest unlike its bottle"
+  fi
+  jq '.dependencies[0].archive.cache_basename = "not-the-selected-bottle.tar.gz"' \
+    "$machine_output" >"$bad"
+  if python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
+    --input "$bad" --tap-repository kandelo-dev/homebrew-tap-core \
+    --tap-commit "$tap_commit" --formula curl --arch wasm32 \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --tap-root "$tap" >/dev/null 2>&1; then
+    fail "dependency provenance accepted a cache name unlike the exact bottle"
+  fi
+  jq '.dependencies[0].install_log.fetch = ["fabricated"]' \
+    "$machine_output" >"$bad"
+  if python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
+    --input "$bad" --tap-repository kandelo-dev/homebrew-tap-core \
+    --tap-commit "$tap_commit" --formula curl --arch wasm32 \
+    --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+    --tap-root "$tap" >/dev/null 2>&1; then
+    fail "machine dependency provenance accepted fabricated human fetch text"
+  fi
 
   local exact_blob_output="$root/provenance-exact-blob.json"
   jq --arg bottle_sha "$bottle_sha" '
@@ -5279,14 +5542,14 @@ EOF
   cp "$info" "$root/zlib-info-rebuild0.json"
   cp "$target_receipt" "$root/target-receipt-rebuild0.json"
   cp "$install_log" "$root/install-rebuild0.log"
-  cat >"$tap/Formula/zlib.rb" <<'EOF'
+  cat >"$tap/Formula/zlib.rb" <<EOF
 class Zlib < Formula
   desc "fixture"
 
   bottle do
     root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
     rebuild 1
-    sha256 cellar: :any_skip_relocation, wasm32_kandelo: "1111111111111111111111111111111111111111111111111111111111111111"
+    sha256 cellar: :any_skip_relocation, wasm32_kandelo: "$bottle_sha"
   end
 end
 EOF
@@ -5472,6 +5735,7 @@ EOF
   local cross_cellar="$cross_root/cellar/zlib/1.3.1"
   local cross_info="$cross_root/zlib-info.json"
   local cross_resolved="$cross_root/resolved-taps.json"
+  local cross_cache_evidence="$cross_root/cache-evidence.json"
   local cross_output="$cross_root/provenance.json"
   local cross_primary_commit cross_core_commit cross_formula_sha
   mkdir -p "$cross_primary/Formula" "$cross_primary/Kandelo" \
@@ -5523,6 +5787,22 @@ EOF
     "$cellar/INSTALL_RECEIPT.json" >"$cross_cellar/INSTALL_RECEIPT.json"
 
   KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$cross_resolved" \
+    FAKE_PREFIX="$root/prefix" FAKE_BOTTLE_CACHE="$cache_archive" \
+    python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" \
+      capture-cache \
+      --brew-bin "$fake_brew" \
+      --tap-root "$cross_primary" \
+      --tap-name example/tools \
+      --tap-repository example/homebrew-tools \
+      --tap-commit "$cross_primary_commit" \
+      --formula m4 \
+      --arch wasm32 \
+      --bottle-root-url https://ghcr.io/v2/example/homebrew-tools \
+      --expected-dependencies "$expected_dependencies" \
+      --cache-root "$cache_root" \
+      --out "$cross_cache_evidence"
+
+  KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$cross_resolved" \
     FAKE_PREFIX="$root/prefix" FAKE_CELLAR="$cross_root/cellar" FAKE_INFO="$cross_info" \
     python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" capture \
       --brew-bin "$fake_brew" \
@@ -5535,7 +5815,8 @@ EOF
       --bottle-root-url https://ghcr.io/v2/example/homebrew-tools \
       --target-receipt "$target_receipt" \
       --expected-dependencies "$expected_dependencies" \
-      --install-log "$install_log" \
+      --install-log "$machine_install_log" \
+      --cache-evidence "$cross_cache_evidence" \
       --out "$cross_output"
   KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$cross_resolved" \
     python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" validate \
@@ -5559,14 +5840,15 @@ EOF
       --arch wasm32 \
       --bottle-root-url https://ghcr.io/v2/example/homebrew-tools
   jq -e --arg core_commit "$cross_core_commit" '
-    .schema == 5 and
+    .schema == 7 and
     .tap_name == "example/tools" and
     .dependencies == [
       (.dependencies[0] | select(
         .full_name == "kandelo-dev/tap-core/zlib" and
         .origin.tap_name == "kandelo-dev/tap-core" and
         .origin.tap_commit == $core_commit and
-        .origin.checkout_commit == $core_commit
+        .origin.checkout_commit == $core_commit and
+        .archive.sha256 == .bottle.sha256
       ))
     ]
   ' "$cross_output" >/dev/null ||

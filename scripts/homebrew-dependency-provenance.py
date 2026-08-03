@@ -14,6 +14,14 @@ import subprocess
 import sys
 from typing import Any
 
+from homebrew_cache_archive import (
+    CacheArchiveError,
+    MAX_BOTTLE_BYTES,
+    expected_cache_basename,
+    hash_exact_cached_archive,
+    validate_archive_record,
+)
+
 
 MAX_JSON_BYTES = 1_048_576
 MAX_LOG_BYTES = 16_777_216
@@ -580,6 +588,188 @@ def exact_direct_dependencies(
     )
 
 
+def write_bounded_json(path: pathlib.Path, document: dict[str, Any], label: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink():
+        fail(f"refusing to replace symlink {label}: {path}")
+    payload = json.dumps(document, indent=2, sort_keys=True) + "\n"
+    if len(payload.encode("utf-8")) > MAX_JSON_BYTES:
+        fail(f"{label} exceeds {MAX_JSON_BYTES} bytes")
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    temporary.write_text(payload, encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def capture_cache(args: argparse.Namespace) -> None:
+    require_string(args.tap_commit, "tap commit", COMMIT)
+    require_string(
+        args.tap_checkout_commit or args.tap_commit,
+        "tap checkout commit",
+        COMMIT,
+    )
+    require_string(args.formula, "formula", FORMULA_NAME)
+    if args.arch not in ("wasm32", "wasm64"):
+        fail(f"unsupported architecture: {args.arch}")
+
+    normalized_repository = normalized_tap_name(args.tap_repository)
+    normalized_tap = selected_tap_name(args)
+    expected_root = f"https://ghcr.io/v2/{normalized_repository}"
+    if args.bottle_root_url != expected_root:
+        fail(f"bottle root URL must be {expected_root}")
+    brew_input = pathlib.Path(args.brew_bin)
+    brew_bin = pathlib.Path(os.path.abspath(brew_input))
+    brew_target = brew_bin.resolve()
+    if not brew_target.is_file() or not os.access(brew_target, os.X_OK):
+        fail(f"brew executable does not resolve to an executable file: {brew_input}")
+
+    contexts = resolved_tap_contexts(args)
+    expected = expected_dependencies(
+        pathlib.Path(args.expected_dependencies), contexts
+    )
+    static = exact_tap_dependencies(
+        pathlib.Path(args.tap_root),
+        normalized_tap,
+        args.formula,
+        args.arch,
+        contexts,
+        selected_bottle_cellars(args),
+    )
+    if set(static) != expected:
+        fail("cache evidence dependency set differs from the exact Formula closure")
+
+    cache_root = pathlib.Path(args.cache_root)
+    dependencies: list[dict[str, Any]] = []
+    for full_name in sorted(expected):
+        bottle = static[full_name]
+        reported_path = run_brew(
+            brew_bin,
+            "--cache",
+            "--force-bottle",
+            "--formula",
+            full_name,
+        )
+        archive = hash_exact_cached_archive(
+            cache_root,
+            reported_path,
+            bottle["url"],
+        )
+        if archive["sha256"] != bottle["sha256"]:
+            fail(f"cached dependency {full_name} digest differs from its exact bottle")
+        dependencies.append(
+            {
+                "archive": archive,
+                "bottle": bottle,
+                "full_name": full_name,
+            }
+        )
+
+    document = {
+        "arch": args.arch,
+        "bottle_root_url": args.bottle_root_url,
+        "dependencies": dependencies,
+        "formula": args.formula,
+        "schema": 1,
+        "tap_checkout_commit": args.tap_checkout_commit or args.tap_commit,
+        "tap_commit": args.tap_commit,
+        "tap_name": normalized_tap,
+        "tap_repository": args.tap_repository,
+    }
+    write_bounded_json(
+        pathlib.Path(args.out), document, "dependency cache evidence"
+    )
+
+
+def load_cache_evidence(
+    args: argparse.Namespace,
+    expected: set[str],
+) -> dict[str, dict[str, Any]]:
+    document = exact_keys(
+        load_json(pathlib.Path(args.cache_evidence), "dependency cache evidence"),
+        {
+            "arch",
+            "bottle_root_url",
+            "dependencies",
+            "formula",
+            "schema",
+            "tap_checkout_commit",
+            "tap_commit",
+            "tap_name",
+            "tap_repository",
+        },
+        "dependency cache evidence",
+    )
+    expected_identity = {
+        "arch": args.arch,
+        "bottle_root_url": args.bottle_root_url,
+        "formula": args.formula,
+        "tap_checkout_commit": args.tap_checkout_commit or args.tap_commit,
+        "tap_commit": args.tap_commit,
+        "tap_name": selected_tap_name(args),
+        "tap_repository": args.tap_repository,
+    }
+    if document["schema"] != 1 or any(
+        document[key] != value for key, value in expected_identity.items()
+    ):
+        fail("dependency cache evidence identity differs from the bottle build")
+    raw_dependencies = document["dependencies"]
+    if (
+        not isinstance(raw_dependencies, list)
+        or len(raw_dependencies) > MAX_DEPENDENCIES
+    ):
+        fail("dependency cache evidence has an invalid dependency count")
+    records: dict[str, dict[str, Any]] = {}
+    prior = ""
+    for index, raw in enumerate(raw_dependencies):
+        record = exact_keys(
+            raw,
+            {"archive", "bottle", "full_name"},
+            f"dependency cache evidence dependencies[{index}]",
+        )
+        full_name = require_string(
+            record["full_name"],
+            f"dependency cache evidence dependencies[{index}].full_name",
+        )
+        if full_name in records or full_name <= prior:
+            fail("dependency cache evidence must be uniquely sorted by full_name")
+        prior = full_name
+        archive = exact_keys(
+            record["archive"],
+            {"bytes", "cache_basename", "sha256"},
+            f"dependency cache evidence dependencies[{index}].archive",
+        )
+        if (
+            not isinstance(archive["bytes"], int)
+            or isinstance(archive["bytes"], bool)
+            or archive["bytes"] <= 0
+            or archive["bytes"] > MAX_BOTTLE_BYTES
+        ):
+            fail(f"dependency cache evidence dependencies[{index}] has invalid bytes")
+        require_string(
+            archive["sha256"],
+            f"dependency cache evidence dependencies[{index}].archive.sha256",
+            SHA256,
+        )
+        cache_basename = require_string(
+            archive["cache_basename"],
+            f"dependency cache evidence dependencies[{index}].archive.cache_basename",
+        )
+        if (
+            len(cache_basename.encode("utf-8")) > 1_024
+            or "/" in cache_basename
+            or "\\" in cache_basename
+        ):
+            fail(f"dependency cache evidence dependencies[{index}] has invalid cache name")
+        bottle = exact_keys(
+            record["bottle"],
+            {"cellar", "rebuild", "sha256", "tag", "url"},
+            f"dependency cache evidence dependencies[{index}].bottle",
+        )
+        records[full_name] = {"archive": archive, "bottle": bottle}
+    if set(records) != expected:
+        fail("dependency cache evidence does not match the expected dependency set")
+    return records
+
+
 def read_log_lines(path: pathlib.Path) -> list[str]:
     regular_file(path, "Homebrew install log", MAX_LOG_BYTES)
     data = path.read_bytes().decode("utf-8", errors="replace")
@@ -633,6 +823,7 @@ def selected_evidence(
     bottle_sha: str,
     bottle_manifest_url: str,
     bottle_filename: str,
+    require_fetch: bool = True,
 ) -> tuple[list[str], list[str]]:
     dependency_url = f"/{dependency}/blobs/sha256:{bottle_sha}"
     fetch_references = (bottle_url, bottle_manifest_url)
@@ -655,7 +846,7 @@ def selected_evidence(
             pour.append(line)
     if source_build:
         fail(f"dependency {dependency} was reported as built from source: {source_build[0]}")
-    if not fetch:
+    if require_fetch and not fetch:
         fail(f"dependency {dependency} lacks bounded fetch evidence for {bottle_sha}")
     if not pour:
         fail(f"dependency {dependency} lacks pour evidence for {bottle_filename}")
@@ -746,6 +937,9 @@ def capture(args: argparse.Namespace) -> None:
     contexts = resolved_tap_contexts(args)
     bottle_cellars = selected_bottle_cellars(args)
     expected = expected_dependencies(pathlib.Path(args.expected_dependencies), contexts)
+    cache_records = None
+    if args.cache_evidence:
+        cache_records = load_cache_evidence(args, expected)
 
     selected: dict[str, dict[str, Any]] = {}
     for index, dependency in enumerate(runtime_dependencies):
@@ -849,16 +1043,18 @@ def capture(args: argparse.Namespace) -> None:
             bottle_sha,
             bottle_manifest_url,
             bottle_filename,
+            require_fetch=cache_records is None,
         )
+        bottle_identity = {
+            "cellar": bottle_cellar,
+            "rebuild": rebuild,
+            "sha256": bottle_sha,
+            "tag": bottle_tag,
+            "url": bottle_url,
+        }
         relative_receipt = f"Cellar/{name}/{version}/INSTALL_RECEIPT.json"
         selected[full_name] = {
-            "bottle": {
-                "cellar": bottle_cellar,
-                "rebuild": rebuild,
-                "sha256": bottle_sha,
-                "tag": bottle_tag,
-                "url": bottle_url,
-            },
+            "bottle": bottle_identity,
             "declared_directly": declared_directly,
             "formula": {
                 "path": f"Formula/{name}.rb",
@@ -866,7 +1062,6 @@ def capture(args: argparse.Namespace) -> None:
             },
             "full_name": full_name,
             "install_log": {
-                "fetch": fetch_lines,
                 "pour": pour_lines,
                 "source_build_absent": True,
             },
@@ -883,6 +1078,23 @@ def capture(args: argparse.Namespace) -> None:
             },
             "version": version,
         }
+
+        if cache_records is None:
+            selected[full_name]["install_log"]["fetch"] = fetch_lines
+        else:
+            cache_record = cache_records[full_name]
+            cache_basename = expected_cache_basename(
+                bottle_url, bottle_filename
+            )
+            if cache_record["bottle"] != bottle_identity:
+                fail(f"dependency {full_name} cache bottle identity changed")
+            archive = cache_record["archive"]
+            if (
+                archive["sha256"] != bottle_sha
+                or archive["cache_basename"] != cache_basename
+            ):
+                fail(f"dependency {full_name} cache archive identity changed")
+            selected[full_name]["archive"] = archive
 
         selected[full_name]["origin"] = {
             "bottle_root_url": dependency_root_url,
@@ -912,23 +1124,18 @@ def capture(args: argparse.Namespace) -> None:
         "bottle_tag": bottle_tag,
         "dependencies": [selected[name] for name in sorted(selected)],
         "formula": args.formula,
-        "schema": 5 if cross_tap else 4,
+        "schema": (
+            7 if cross_tap else 6
+        ) if cache_records is not None else (
+            5 if cross_tap else 4
+        ),
         "tap_commit": args.tap_commit,
         "tap_checkout_commit": contexts[normalized_tap]["checkout_commit"],
         "tap_name": normalized_tap,
         "tap_repository": repository,
     }
     validate_document(output, args)
-    output_path = pathlib.Path(args.out)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    if output_path.is_symlink():
-        fail(f"refusing to replace symlink output: {output_path}")
-    temporary = output_path.with_name(f".{output_path.name}.tmp-{os.getpid()}")
-    payload = json.dumps(output, indent=2, sort_keys=True) + "\n"
-    if len(payload.encode("utf-8")) > MAX_JSON_BYTES:
-        fail(f"dependency provenance exceeds {MAX_JSON_BYTES} bytes")
-    temporary.write_text(payload, encoding="utf-8")
-    os.replace(temporary, output_path)
+    write_bounded_json(pathlib.Path(args.out), output, "dependency provenance")
 
 
 def exact_keys(value: Any, expected: set[str], label: str) -> dict[str, Any]:
@@ -967,8 +1174,8 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
     if not isinstance(document, dict):
         fail("dependency provenance must be an object")
     schema = document.get("schema")
-    if schema not in (2, 3, 4, 5):
-        fail("dependency provenance schema must be 2, 3, 4, or 5")
+    if schema not in (2, 3, 4, 5, 6, 7):
+        fail("dependency provenance schema must be 2, 3, 4, 5, 6, or 7")
     expected_root_keys = {
         "arch",
         "bottle_root_url",
@@ -980,7 +1187,7 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
         "tap_name",
         "tap_repository",
     }
-    if schema in (4, 5):
+    if schema in (4, 5, 6, 7):
         expected_root_keys.add("tap_checkout_commit")
     root = exact_keys(
         document,
@@ -1062,7 +1269,9 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
             "receipt",
             "version",
         }
-        if root["schema"] in (3, 5):
+        if root["schema"] in (6, 7):
+            expected_dependency_keys.add("archive")
+        if root["schema"] in (3, 5, 7):
             expected_dependency_keys.add("origin")
         dependency = exact_keys(
             dependency,
@@ -1079,19 +1288,19 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
         context = contexts.get(dependency_tap)
         if context is None:
             fail(f"dependencies[{index}] is not from an immutable resolved tap")
-        if root["schema"] in (2, 4) and dependency_tap != normalized_tap:
+        if root["schema"] in (2, 4, 6) and dependency_tap != normalized_tap:
             fail(
                 f"dependencies[{index}] same-tap provenance contains "
                 "a cross-tap dependency"
             )
-        if root["schema"] in (3, 5):
+        if root["schema"] in (3, 5, 7):
             origin_keys = {
                 "bottle_root_url",
                 "tap_commit",
                 "tap_name",
                 "tap_repository",
             }
-            if root["schema"] == 5:
+            if root["schema"] in (5, 7):
                 origin_keys.add("checkout_commit")
             origin = exact_keys(
                 dependency["origin"],
@@ -1104,7 +1313,7 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
                 "tap_name": dependency_tap,
                 "tap_repository": context["tap_repository"],
             }
-            if root["schema"] == 5:
+            if root["schema"] in (5, 7):
                 expected_origin["checkout_commit"] = context[
                     "checkout_commit"
                 ]
@@ -1151,6 +1360,30 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
         bottle_filename = canonical_bottle_filename(
             name, version, expected_tag, bottle["rebuild"]
         )
+        if root["schema"] in (6, 7):
+            archive = exact_keys(
+                dependency["archive"],
+                {"bytes", "cache_basename", "sha256"},
+                f"dependencies[{index}].archive",
+            )
+            if (
+                not isinstance(archive["bytes"], int)
+                or isinstance(archive["bytes"], bool)
+                or archive["bytes"] <= 0
+                or archive["bytes"] > MAX_BOTTLE_BYTES
+            ):
+                fail(f"dependencies[{index}] archive byte count is invalid")
+            if archive["sha256"] != bottle_sha:
+                fail(f"dependencies[{index}] archive digest differs from the bottle")
+            try:
+                validate_archive_record(
+                    archive,
+                    bottle["url"],
+                    bottle_filename=bottle_filename,
+                    bottle_sha256=bottle_sha,
+                )
+            except CacheArchiveError as error:
+                fail(f"dependencies[{index}] archive is invalid: {error}")
         if static_dependencies is not None and static_dependencies.get(full_name) != bottle:
             fail(f"dependencies[{index}] bottle metadata differs from the exact tap")
         receipt = exact_keys(
@@ -1183,9 +1416,12 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
                 f"dependencies[{index}] receipt source is not the exact "
                 "reviewed tap checkout"
             )
+        install_log_keys = {"pour", "source_build_absent"}
+        if root["schema"] not in (6, 7):
+            install_log_keys.add("fetch")
         install_log = exact_keys(
             dependency["install_log"],
-            {"fetch", "pour", "source_build_absent"},
+            install_log_keys,
             f"dependencies[{index}].install_log",
         )
         if install_log["source_build_absent"] is not True:
@@ -1193,11 +1429,12 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
         bottle_manifest_url = public_manifest_url(
             dependency_root_url, name, version, bottle["rebuild"]
         )
-        validate_fetch_evidence(
-            install_log["fetch"],
-            f"dependencies[{index}].install_log.fetch",
-            (bottle["url"], bottle_manifest_url),
-        )
+        if root["schema"] not in (6, 7):
+            validate_fetch_evidence(
+                install_log["fetch"],
+                f"dependencies[{index}].install_log.fetch",
+                (bottle["url"], bottle_manifest_url),
+            )
         validate_pour_evidence(
             install_log["pour"],
             f"dependencies[{index}].install_log.pour",
@@ -1267,8 +1504,17 @@ def parser() -> argparse.ArgumentParser:
     capture_parser.add_argument("--target-receipt", required=True)
     capture_parser.add_argument("--expected-dependencies", required=True)
     capture_parser.add_argument("--install-log", required=True)
+    capture_parser.add_argument("--cache-evidence")
     capture_parser.add_argument("--out", required=True)
     capture_parser.set_defaults(handler=capture)
+
+    cache_parser = subparsers.add_parser("capture-cache", parents=[common])
+    cache_parser.add_argument("--brew-bin", required=True)
+    cache_parser.add_argument("--tap-root", required=True)
+    cache_parser.add_argument("--expected-dependencies", required=True)
+    cache_parser.add_argument("--cache-root", required=True)
+    cache_parser.add_argument("--out", required=True)
+    cache_parser.set_defaults(handler=capture_cache)
 
     validate_parser = subparsers.add_parser("validate", parents=[common])
     validate_parser.add_argument("--input", required=True)
@@ -1282,7 +1528,7 @@ def main() -> int:
     args = parser().parse_args()
     try:
         args.handler(args)
-    except ProvenanceError as error:
+    except (CacheArchiveError, ProvenanceError) as error:
         print(f"homebrew-dependency-provenance.py: {error}", file=sys.stderr)
         return 1
     return 0
