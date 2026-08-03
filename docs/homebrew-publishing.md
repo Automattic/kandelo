@@ -3612,14 +3612,73 @@ image metadata. This is an exact-byte copy: callers that need a canonical
 configuration should track one JSON source rather than regenerate equivalent
 JSON in each image builder.
 
+### Transitional Rev22 Pages Deployment
+
+The Pages deployment temporarily reuses one already-published ABI 42 shell
+rather than waiting for another complete bottle campaign. The exact archive,
+shell image, bootstrap archive, bootstrap files, and immutable bottle-mirror
+plan are recorded in
+`homebrew/transitional-pages-shell-rev22-lock.json`. The deployment downloads
+those public files without GitHub credentials and verifies every byte count
+and SHA-256 digest before it exposes the image to the package resolver.
+
+This is reuse, not a rebuild or a claim that historical bytes came from the
+current `main` commit. The inspection report records
+`exact_current_main: false`, the historical Kandelo commit and workflow run,
+and the final condition that removes this lane. Replacing an asset behind the
+mutable `binaries-abi-v42` release tag does not replace the locked product:
+the changed digest is rejected. The bottle-mirror release itself is immutable.
+
+Rev22 predates Kandelo's final guest-prefix contract. Its embedded Homebrew
+files use `/home/linuxbrew/.linuxbrew` as a temporary compatibility path.
+That path does not mean Kandelo is Linux and must not become a new Kandelo
+convention. The final target remains `/opt/kandelo/homebrew`. Delete the lock,
+fetcher, `run.sh` transition flag, and workflow branch as soon as a canonical
+Kandelo-prefix shell is deployable.
+
+The current workflow still uses current host, browser, service-worker, and UI
+code. It assembles the full current Pages tree, then boots the exact rev22
+shell in Chromium. Every strict Playwright input is passed explicitly through
+the development shell. The JSON result must report one executed test, zero
+skipped tests, and zero failures before deployment. The acceptance test proves
+that the shell begins mostly lazy, materializes the bootstrap and Ruby cohort
+on first use, executes `brew --prefix`, and reuses the materialized runtime.
+The dated live result and exact reproduction inputs are committed in
+[`2026-08-03-live-pages-homebrew-rev22.json`](measurements/2026-08-03-live-pages-homebrew-rev22.json).
+
+This lane does not re-admit every published bottle, wait for unrelated Formula
+builds, or invoke the source-rootfs bridge. It is deliberately bounded to the
+existing immutable product bytes needed to ship the in-guest `brew` proof.
+
+Five conventional gallery recipes changed cache identity after the assets now
+served by Pages were published: `lamp`, `nginx-php-vfs`, `nginx-vfs`,
+`node-vfs`, and `wordpress`. Rebuilding them is unrelated to changing the
+shell. The transition lock therefore records each old package archive and its
+one VFS member by digest and byte count. Those members were also compared with
+the live Pages assets and are byte-for-byte identical. During this bounded
+cutover, Pages installs those exact members under their normal resolver-owned
+package identities. That preserves the existing WordPress, LAMP, Nginx, and
+Node demos while keeping unrelated recipe drift off the shell critical path.
+This compatibility set is part of the rev22 transition and must be removed
+with the rest of the lane; it is not a general stale-package fallback.
+
+The descriptor-prefix host correction also changes files that six
+conventional package variants list as broad build inputs: `kandelo-sdk`,
+`mariadb-test`, both `mariadb-vfs` architectures, `redis-vfs`, and `rootfs`.
+That consumer correction cannot change their already-built bytes, but the
+legacy cache contract gives the rows new identities and correctly refuses to
+silently accept the old archives. The transition lock therefore binds each
+old archive and output member explicitly, and the Pages job installs those
+exact outputs as local generations under the new source identity. This avoids
+six unrelated rebuilds without weakening the normal stale-archive check.
+
 ### Dormant Exact-Main Source Bridge
 
 The source bridge described below was activation scaffolding. The canonical
-Homebrew shell CI now selects the bottled product, and the Pages publisher
-fetches only admitted canonical archives. The implementation remains
-temporarily for diagnosis and historical comparison, but no production
-workflow invokes it and it cannot satisfy the artifact-lock or public-mirror
-gates.
+Homebrew shell CI selects the bottled product. The temporary rev22 Pages lane
+above selects exact locked published bytes. The source-bridge implementation
+remains for diagnosis and historical comparison, but no production workflow
+invokes it and it cannot satisfy either product path.
 
 During the ABI 42 activation window, required CI could not consume bottles built
 from a pull-request checkout and then call them main-built merely because that
@@ -3708,13 +3767,11 @@ proof's critical path. This pre-merge shard compiles but never deploys; pull
 requests still cannot invoke the Pages publisher.
 
 The Pages publisher remains the full-gallery build gate, but its browser boot
-checks the shell route rather than booting every gallery entry. It consumes the
-canonical bottled product from a fresh package cache with source fallback
-disabled, binds the exact public shell, bootstrap, and mirror plan, and proves
-first-use `brew` materialization in Chromium before deployment. It deliberately
-does not invoke the internal source bridge or provide that bridge's exact event
-repository and SHA, `pages-exact-main-v1` isolation attestation, empty
-current-ABI file index, or unmaterialized resolver workspace.
+checks the shell route rather than booting every gallery entry. During the
+bounded rev22 transition it binds the exact locked shell, bootstrap, and mirror
+plan described above, while unrelated gallery packages use a fresh cache with
+source fallback disabled. It proves first-use `brew` materialization in
+Chromium before deployment and does not invoke the internal source bridge.
 
 The lane stages and inspects only the distinct bridge recipe before beginning
 canonical installation. Before any mutation it verifies the exact GitHub
@@ -3756,19 +3813,17 @@ turns producer failures or unexpected skips into failures. Marking a
 draft pull request ready reruns the same ordered path without invoking
 close-time staging cleanup.
 
-Pages uses a fresh resolver cache and
-`./run.sh --fetch-only --require-sealed-homebrew-selection prepare-browser`.
-It verifies the selected shell against the sealed artifact lock, stages the
-bootstrap from the same sealed Formula selection, reads the embedded immutable
-mirror plan without eagerly downloading its payloads, and boots the assembled
-`/kandelo/` tree through the existing public-transport Chromium acceptance.
-Missing canonical archives, a missing public mirror, or any
-shell/bootstrap/plan identity drift stops deployment. The source-rootfs bridge
-cannot stand in for that product artifact and can be deleted in a later
-cleanup. The first cutover deliberately does not wait for the complete public
-lifecycle. Its Pages job is the publication gate: it must anonymously recover
-the canonical product, boot the exact assembled site in Chromium, keep `brew`
-deferred until first use, and run a real in-guest `brew` command.
+Pages uses a fresh resolver cache and runs `prepare-browser` with fetch-only
+resolution plus the explicit transitional-shell flag. It anonymously fetches
+the locked package archives, safely extracts only the named members, reads the
+embedded immutable mirror plan without eagerly downloading its payloads, and
+boots the assembled `/kandelo/` tree through the existing public-transport
+Chromium acceptance. A missing public asset or any shell, bootstrap, or plan
+identity drift stops deployment. The source-rootfs bridge cannot stand in for
+that product artifact. The first cutover deliberately does not wait for the
+complete public lifecycle. Its Pages job is the publication gate: it must boot
+the exact assembled site in Chromium, keep `brew` deferred until first use,
+and run a real in-guest `brew` command.
 Tap/install/upgrade/remove/reboot and memory-soak coverage remain independent
 follow-up work.
 

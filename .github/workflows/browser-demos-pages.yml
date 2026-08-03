@@ -76,68 +76,82 @@ jobs:
               packages/registry packages/registry/program-packages.json
           '
 
-      - name: Isolate the canonical bottled browser product
+      - name: Isolate browser package preparation
         run: |
           set -euo pipefail
           product_cache="$RUNNER_TEMP/pages-canonical-bottle-cache"
           test ! -e "$product_cache"
-          # WHY: an empty runner-local cache proves this deployment can recover
-          # the complete canonical package generation. Reusing another job's
-          # cache could hide an unavailable or stale public product archive.
+          # WHY: keep unrelated gallery package resolution from inheriting
+          # mutable state. The shell itself is fetched and verified by digest
+          # in the next step and never enters this cache.
           echo "WASM_POSIX_BINARY_CACHE_ROOT=$product_cache" >> "$GITHUB_ENV"
+
+      - name: Prepare the exact published transitional Homebrew shell
+        run: |
+          set -euo pipefail
+          transition_root="$RUNNER_TEMP/homebrew-pages-rev22-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          test ! -e "$transition_root"
+          bash scripts/dev-shell.sh npx tsx --test \
+            scripts/inspect-transitional-homebrew-pages-shell.test.ts
+          bash scripts/dev-shell.sh bash \
+            scripts/prepare-transitional-homebrew-pages-shell.sh \
+              --out "$transition_root"
+          echo "WASM_POSIX_TRANSITIONAL_PAGES_SHELL_ROOT=$transition_root" \
+            >> "$GITHUB_ENV"
 
       - name: Prepare browser demo assets
         run: |
           set -euo pipefail
-          # WHY: --fetch-only prevents a missing package archive from being
-          # replaced by a source build. The current gallery still compiles its
-          # repository-owned support-program bundle and derives VFS images;
-          # neither path can replace the canonical shell bound below.
+          # WHY: --fetch-only prevents a missing gallery package archive from
+          # becoming an unrelated source build. The transition flag preserves
+          # the exact rev22 shell and bootstrap prepared above while the rest
+          # of the current gallery is assembled.
           bash scripts/dev-shell.sh env \
             "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
+            "WASM_POSIX_TRANSITIONAL_PAGES_SHELL_ROOT=$WASM_POSIX_TRANSITIONAL_PAGES_SHELL_ROOT" \
             ./run.sh --fetch-only \
-              --require-sealed-homebrew-selection prepare-browser
+              --transitional-pages-homebrew-shell prepare-browser
 
-      - name: Bind the canonical bottled shell product
+      - name: Bind the exact transitional bottled shell product
         id: shell_product
         run: |
           set -euo pipefail
           image=$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)
-          # WHY: prepare-browser already admitted and atomically staged the
-          # bottle member. Repeating selection or extraction here could make
-          # inspection and the bytes actually served by Vite disagree.
           bootstrap="$PWD/apps/browser-demos/public/homebrew-bootstrap.zip"
-          report="$RUNNER_TEMP/homebrew-main-shell-public-product.json"
+          report="$WASM_POSIX_TRANSITIONAL_PAGES_SHELL_ROOT/inspection.json"
           for path in "$image" "$bootstrap"; do
             test -f "$path"
             test ! -L "$path"
           done
-          bash scripts/verify-homebrew-main-shell-artifact-lock.sh \
-            --lock homebrew/main-shell-lazy-artifact-lock.json \
-            --expected-source-date-epoch 0 \
-            --artifact "$image"
-          test ! -e "$report"
-          # WHY: keep the inspector's rejection cases beside the only
-          # production workflow that relies on its admission decision.
-          bash scripts/dev-shell.sh npx tsx --test \
-            scripts/inspect-homebrew-main-shell-public-product.test.ts
-          bash scripts/dev-shell.sh npx tsx \
-            scripts/inspect-homebrew-main-shell-public-product.ts \
-              --image "$image" \
-              --homebrew-bootstrap-archive "$bootstrap" \
-              --homebrew-bootstrap-spec \
-                homebrew/main-shell-brew-package-tree.json \
-              --homebrew-runtime-support \
-                homebrew/main-shell-homebrew-runtime-support.json \
-              --out "$report"
+          cmp "$WASM_POSIX_TRANSITIONAL_PAGES_SHELL_ROOT/shell.vfs.zst" \
+            "$image"
+          cmp "$WASM_POSIX_TRANSITIONAL_PAGES_SHELL_ROOT/homebrew-bootstrap.zip" \
+            "$bootstrap"
           jq -e '
             .schema == 1 and
-            .kind == "kandelo-homebrew-main-shell-public-product" and
-            (.image.sha256 | test("^[0-9a-f]{64}$")) and
-            (.image.bytes > 0) and
+            .kind ==
+              "kandelo-transitional-homebrew-pages-shell-inspection" and
+            .lifecycle == "transitional" and
+            .exact_current_main == false and
+            .guest_prefix == "/home/linuxbrew/.linuxbrew" and
+            (.shell.sha256 | test("^[0-9a-f]{64}$")) and
+            (.shell.bytes > 0) and
             (.homebrew_bootstrap.sha256 | test("^[0-9a-f]{64}$")) and
             (.homebrew_bootstrap.bytes > 0) and
-            .homebrew_bootstrap.activation_root == "/usr/bin/brew" and
+            (.gallery_compatibility | map(.package)) == [
+              "lamp", "nginx-php-vfs", "nginx-vfs", "node-vfs",
+              "wordpress"
+            ] and
+            all(.gallery_compatibility[];
+              (.sha256 | test("^[0-9a-f]{64}$")) and .bytes > 0) and
+            (.source_projection_compatibility |
+              map(.package + ":" + .arch)) == [
+                "kandelo-sdk:wasm32", "mariadb-test:wasm32",
+                "mariadb-vfs:wasm32", "mariadb-vfs:wasm64",
+                "redis-vfs:wasm32", "rootfs:wasm32"
+              ] and
+            all(.source_projection_compatibility[];
+              (.sha256 | test("^[0-9a-f]{64}$")) and .bytes > 0) and
             (.bottle_mirror.plan_url |
               startswith("https://github.com/") and
               endswith("/kandelo-homebrew-bottle-mirror-plan.json")) and
@@ -146,7 +160,7 @@ jobs:
           {
             echo "image=$image"
             echo "bootstrap=$bootstrap"
-            echo "image_sha256=$(jq -er '.image.sha256' "$report")"
+            echo "image_sha256=$(jq -er '.shell.sha256' "$report")"
             echo "bootstrap_sha256=$(jq -er \
               '.homebrew_bootstrap.sha256' "$report")"
             echo "bootstrap_bytes=$(jq -er \
@@ -199,7 +213,7 @@ jobs:
           cp -R docs-site/.vitepress/dist apps/browser-demos/dist/guide
           cp -R host/docs apps/browser-demos/dist/api
 
-      - name: Boot the canonical bottled Pages shell in Chromium
+      - name: Boot the transitional bottled Pages shell in Chromium
         working-directory: apps/browser-demos
         env:
           VITE_BASE: /kandelo/
@@ -210,15 +224,37 @@ jobs:
           KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES: ${{ steps.shell_product.outputs.bootstrap_bytes }}
           KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE: public
           KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL: ${{ steps.shell_product.outputs.mirror_plan_url }}
+          KANDELO_HOMEBREW_MAIN_SHELL_EXPECTED_PREFIX: /home/linuxbrew/.linuxbrew
           KANDELO_PLAYWRIGHT_SERVE_DIST: "1"
           KANDELO_TEST_BASE_URL: http://127.0.0.1:5401/kandelo/
         run: |
           set -euo pipefail
+          report="$RUNNER_TEMP/transitional-homebrew-pages-playwright.json"
+          test ! -e "$report"
+          # WHY: dev-shell intentionally starts from a controlled environment.
+          # Forward every acceptance input explicitly so a missing variable
+          # cannot silently turn this production proof into a skipped test.
           bash ../../scripts/dev-shell.sh env \
+            "VITE_BASE=$VITE_BASE" \
             "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
+            "KANDELO_BROWSER_DEMO_INPUTS=$KANDELO_BROWSER_DEMO_INPUTS" \
+            "KANDELO_HOMEBREW_MAIN_SHELL_STRICT=$KANDELO_HOMEBREW_MAIN_SHELL_STRICT" \
+            "KANDELO_HOMEBREW_MAIN_SHELL_SHA256=$KANDELO_HOMEBREW_MAIN_SHELL_SHA256" \
+            "KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256=$KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256" \
+            "KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES=$KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES" \
+            "KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE=$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" \
+            "KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL=$KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL" \
+            "KANDELO_HOMEBREW_MAIN_SHELL_EXPECTED_PREFIX=$KANDELO_HOMEBREW_MAIN_SHELL_EXPECTED_PREFIX" \
+            "KANDELO_PLAYWRIGHT_SERVE_DIST=$KANDELO_PLAYWRIGHT_SERVE_DIST" \
+            "KANDELO_TEST_BASE_URL=$KANDELO_TEST_BASE_URL" \
+            "PLAYWRIGHT_JSON_OUTPUT_FILE=$report" \
             npx playwright test \
             test/kandelo-homebrew-main-shell.spec.ts \
-            --project=chromium
+            --project=chromium --reporter=json
+          jq -e '
+            .stats.expected == 1 and .stats.unexpected == 0 and
+            .stats.flaky == 0 and .stats.skipped == 0
+          ' "$report" >/dev/null
 
       - name: Enforce the GitHub Pages published-site size limit
         run: node scripts/check-pages-publish-size.mjs apps/browser-demos/dist 1000000000

@@ -2644,6 +2644,7 @@ source_authority_probe="$TMP_ROOT/browser-source-authority.sh"
   printf '[ "${TEST_FETCH_ONLY:-1}" = 0 ] || FETCH_ONLY_ARGS=(--fetch-only)\n'
   printf 'SOURCE_ROOTFS_SHELL="${TEST_SOURCE_ROOTFS:-0}"\n'
   printf 'REQUIRE_SEALED_HOMEBREW_SELECTION="${TEST_REQUIRE_SEALED:-0}"\n'
+  printf 'TRANSITIONAL_PAGES_HOMEBREW_SHELL="${TEST_TRANSITIONAL:-0}"\n'
   printf 'USE_PR_STAGING="${TEST_PR_STAGING:-0}"\n'
   printf 'COMMAND_ARGS=(prepare-browser)\n'
   printf 'case "${TEST_COMMAND_SHAPE:-exact}" in\n'
@@ -2666,6 +2667,9 @@ expect_failure "requires isolated CI preparation" \
     bash "$source_authority_probe"
 expect_failure "requires isolated CI preparation" \
   env TEST_AUTHORITY=source-rootfs-mirror-state-v1 TEST_REQUIRE_SEALED=1 \
+    bash "$source_authority_probe"
+expect_failure "requires isolated CI preparation" \
+  env TEST_AUTHORITY=source-rootfs-mirror-state-v1 TEST_TRANSITIONAL=1 \
     bash "$source_authority_probe"
 expect_failure "requires isolated CI preparation" \
   env TEST_AUTHORITY=source-rootfs-mirror-state-v1 TEST_SOURCE_ROOTFS=1 \
@@ -2700,6 +2704,7 @@ bootstrap_probe="$bootstrap_probe_root/run.sh"
   printf 'REPO_ROOT=%q\n' "$bootstrap_probe_root"
   printf 'CI_BROWSER_SOURCE_AUTHORITY="${TEST_AUTHORITY:-}"\n'
   printf 'REQUIRE_SEALED_HOMEBREW_SELECTION="${TEST_REQUIRE_SEALED:-0}"\n'
+  printf 'TRANSITIONAL_PAGES_HOMEBREW_SHELL=0\n'
   printf 'step() { :; }\n'
   cat "$browser_bootstrap_function"
   printf 'prepare_browser_homebrew_bootstrap\n'
@@ -2749,6 +2754,18 @@ local_output_function="$TMP_ROOT/pkg-local-output-path-function.sh"
 sed -n '/^pkg_local_output_path()/,/^}/p' "$RUN_SH" >"$local_output_function"
 grep -Fq 'rel=$(pkg_output_rel "$pkg" "$wasm" "$arch")' "$local_output_function" ||
   fail "local package cleanup must derive output layout from package metadata"
+resolver_rel_probe="$TMP_ROOT/pkg-resolver-rel-probe.sh"
+{
+  printf 'set -euo pipefail\n'
+  printf 'pkg_output_rel() { printf "artifact.vfs.zst\\n"; }\n'
+  sed -n '/^pkg_resolver_rel()/,/^}/p' "$RUN_SH"
+  printf '[ "$(pkg_resolver_rel demo artifact.vfs.zst wasm32)" = '
+  printf '"programs/artifact.vfs.zst" ]\n'
+  printf '[ "$(pkg_resolver_rel demo artifact.vfs.zst wasm64)" = '
+  printf '"programs/wasm64/artifact.vfs.zst" ]\n'
+} >"$resolver_rel_probe"
+bash "$resolver_rel_probe" ||
+  fail "resolver paths must keep non-default architectures explicit"
 clean_target_function="$TMP_ROOT/clean-target-function.sh"
 sed -n '/^clean_target()/,/^}/p' "$RUN_SH" >"$clean_target_function"
 shell_clean_case="$TMP_ROOT/clean-shell-vfs-case.sh"
