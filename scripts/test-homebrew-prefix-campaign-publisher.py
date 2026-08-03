@@ -15,6 +15,7 @@ import tempfile
 import unittest
 from types import SimpleNamespace
 from typing import Any
+from unittest import mock
 
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -54,6 +55,11 @@ def sha256(value: bytes) -> str:
 GUEST_LAYOUT_SHA256 = sha256(
     (ROOT / "homebrew/kandelo-guest-layout.json").read_bytes()
 )
+# WHY: rejection fixtures need the retired identity, but only the reviewed
+# guest-layout contract may define that identity as a source literal.
+RETIRED_PREFIX = json.loads(
+    (ROOT / "homebrew/kandelo-guest-layout.json").read_text()
+)["retired_prefixes"][0]
 
 
 def run(arguments: list[str], root: pathlib.Path) -> str:
@@ -111,7 +117,7 @@ def file_identity(payload: bytes) -> dict[str, Any]:
 
 
 class Fixture:
-    def __init__(self) -> None:
+    def __init__(self, *, beta_target: bytes | None = None) -> None:
         self.temporary = tempfile.TemporaryDirectory(
             prefix="homebrew-prefix-publisher-test-"
         )
@@ -136,6 +142,8 @@ class Fixture:
             name: formula(name, "sealed campaign target")
             for name in ("alpha", "beta")
         }
+        if beta_target is not None:
+            self.target_payloads["beta"] = beta_target
         for name, payload in self.target_payloads.items():
             (self.tap / f"Formula/{name}.rb").write_bytes(payload)
         self.target_commit = commit(self.tap, "target tap")
@@ -163,6 +171,12 @@ class Fixture:
                     "target": file_identity(target),
                 }
             )
+        self.target_identities = {
+            name: PUBLISHER.formula_identity(
+                source_root / f"Formula/{name}.rb"
+            )
+            for name in ("alpha", "beta")
+        }
         manifest = {
             "base": {
                 "commit": self.base_commit,
@@ -287,7 +301,9 @@ class Fixture:
                 "remote": f"ghcr.io/{TAP_REPOSITORY}/{name}",
             },
             "formula_source": {
-                "identity_excluding_bottle_sha256": sha256(payload),
+                "identity_excluding_bottle_sha256": (
+                    self.target_identities[name]
+                ),
                 "path": f"Formula/{name}.rb",
                 "sha256": sha256(payload),
             },
@@ -568,6 +584,355 @@ class Fixture:
 
 
 class PrefixCampaignPublisherTests(unittest.TestCase):
+    def test_formula_identity_ignores_ambient_ruby_startup(self) -> None:
+        temporary = tempfile.TemporaryDirectory(
+            prefix="homebrew-campaign-ruby-startup-test-"
+        )
+        self.addCleanup(temporary.cleanup)
+        root = pathlib.Path(temporary.name)
+        formula = root / "Formula.rb"
+        formula.write_text(
+            "class FormulaFixture < Formula\n\nend\n",
+            encoding="utf-8",
+        )
+        marker = root / "ambient-ruby-hook-ran"
+        poison = root / "poison.rb"
+        poison.write_text(
+            f'File.binwrite("{marker}", "executed\\n")\n',
+            encoding="utf-8",
+        )
+        with mock.patch.dict(
+            os.environ,
+            {
+                "BUNDLE_GEMFILE": str(root / "missing-Gemfile"),
+                "BUNDLE_PATH": str(root / "bundle"),
+                "GEM_HOME": str(root / "gems"),
+                "GEM_PATH": str(root / "gems"),
+                "RUBYLIB": str(root),
+                "RUBYOPT": f"-r{poison}",
+            },
+        ):
+            identity = PUBLISHER.formula_identity(formula)
+        self.assertRegex(identity, r"^[0-9a-f]{64}$")
+        self.assertFalse(marker.exists())
+
+    def prepare_bound_bottle_fixture(
+        self,
+        *,
+        source_rebuild: int = 0,
+        destination_rebuild: int = 0,
+    ) -> tuple[Fixture, pathlib.Path, pathlib.Path]:
+        fixture = Fixture()
+        self.addCleanup(fixture.close)
+        beta = fixture.campaign["formulae"][1]
+        beta["destination"]["bottle_rebuild"] = destination_rebuild
+        beta["destination"]["reference"] = (
+            "2.0"
+            if destination_rebuild == 0
+            else f"2.0-{destination_rebuild}"
+        )
+        write_json(fixture.campaign_path, fixture.campaign)
+        fixture.campaign_tag = (
+            "homebrew-prefix-campaign-sha256-"
+            + sha256(fixture.campaign_path.read_bytes())
+        )
+        fixture.prepare()
+
+        payload = b"exact built bottle bytes\n"
+        digest = sha256(payload)
+        tag = "wasm32_kandelo"
+        filename = PUBLISHER.bottle_filename(
+            "beta", "2.0", tag, source_rebuild
+        )
+        archive = fixture.root / filename
+        archive.write_bytes(payload)
+        bottle_json = fixture.root / "built-bottle.json"
+        write_json(
+            bottle_json,
+            {
+                f"{TAP_NAME}/beta": {
+                    "bottle": {
+                        "cellar": "/opt/kandelo/homebrew/Cellar",
+                        "rebuild": source_rebuild,
+                        "root_url": (
+                            "https://ghcr.io/v2/"
+                            f"{TAP_REPOSITORY}"
+                        ),
+                        "tags": {
+                            tag: {
+                                "local_filename": filename,
+                                "sha256": digest,
+                            }
+                        },
+                    },
+                    "formula": {
+                        "name": "beta",
+                        "path": (
+                            "Library/Taps/kandelo-dev/"
+                            "homebrew-tap-core/Formula/beta.rb"
+                        ),
+                        "pkg_version": "2.0",
+                    },
+                }
+            },
+        )
+        return fixture, archive, bottle_json
+
+    def test_built_bottle_verification_preserves_exact_input(
+        self,
+    ) -> None:
+        fixture, archive, bottle_json = (
+            self.prepare_bound_bottle_fixture()
+        )
+        output = fixture.root / "built-bottle-verification.json"
+        verification = PUBLISHER.verify_built_bottle(
+            tap_root=fixture.tap,
+            campaign_work_root=fixture.root / "publisher-work",
+            receipt_path=fixture.root / "publisher-receipt.json",
+            campaign_tag=fixture.campaign_tag,
+            bottle_path=archive,
+            bottle_json_path=bottle_json,
+            output_path=output,
+        )
+        destination_name = (
+            "beta--2.0.wasm32_kandelo.bottle.tar.gz"
+        )
+        self.assertEqual(
+            verification["archive"]["filename"], destination_name
+        )
+        self.assertEqual(
+            verification["destination"]["bottle_rebuild"], 0
+        )
+        self.assertEqual(
+            verification["archive"]["sha256"],
+            sha256(archive.read_bytes()),
+        )
+        self.assertEqual(
+            json.loads(output.read_text()), verification
+        )
+
+    def test_built_bottle_verification_rejects_wrong_or_mutated_input(
+        self,
+    ) -> None:
+        fixture, archive, bottle_json = (
+            self.prepare_bound_bottle_fixture(
+                source_rebuild=1,
+                destination_rebuild=0,
+            )
+        )
+        with self.assertRaisesRegex(
+            PUBLISHER.PublisherCampaignError,
+            "does not use the campaign-reserved rebuild",
+        ):
+            PUBLISHER.verify_built_bottle(
+                tap_root=fixture.tap,
+                campaign_work_root=fixture.root / "publisher-work",
+                receipt_path=fixture.root / "publisher-receipt.json",
+                campaign_tag=fixture.campaign_tag,
+                bottle_path=archive,
+                bottle_json_path=bottle_json,
+                output_path=fixture.root / "wrong-verification.json",
+            )
+
+        fixture, archive, bottle_json = (
+            self.prepare_bound_bottle_fixture()
+        )
+        campaign_path = fixture.root / "publisher-work/campaign.json"
+        campaign = json.loads(campaign_path.read_text())
+        campaign["formulae"][1]["destination"]["bottle_rebuild"] = 2
+        write_json(campaign_path, campaign)
+        with self.assertRaisesRegex(
+            PUBLISHER.PublisherCampaignError,
+            "differs from the selected campaign tag",
+        ):
+            PUBLISHER.verify_built_bottle(
+                tap_root=fixture.tap,
+                campaign_work_root=fixture.root / "publisher-work",
+                receipt_path=fixture.root / "publisher-receipt.json",
+                campaign_tag=fixture.campaign_tag,
+                bottle_path=archive,
+                bottle_json_path=bottle_json,
+                output_path=fixture.root / "mutated-verification.json",
+            )
+
+    def test_built_bottle_rejects_substituted_campaign_receipt(self) -> None:
+        fixture, archive, bottle_json = (
+            self.prepare_bound_bottle_fixture()
+        )
+        receipt_path = fixture.root / "publisher-receipt.json"
+        receipt = json.loads(receipt_path.read_text())
+        receipt["campaign"]["sha256"] = "0" * 64
+        write_json(receipt_path, receipt)
+        with self.assertRaisesRegex(
+            PUBLISHER.PublisherCampaignError,
+            "receipt SHA-256 differs",
+        ):
+            PUBLISHER.verify_built_bottle(
+                tap_root=fixture.tap,
+                campaign_work_root=fixture.root / "publisher-work",
+                receipt_path=receipt_path,
+                campaign_tag=fixture.campaign_tag,
+                bottle_path=archive,
+                bottle_json_path=bottle_json,
+                output_path=fixture.root / "receipt-substitution.json",
+            )
+
+    def test_prepare_advances_only_the_target_bottle_rebuild(self) -> None:
+        beta = (
+            b'class Beta < Formula\n'
+            b'  desc "sealed campaign target"\n\n'
+            b'  bottle do\n'
+            b'    root_url "https://ghcr.io/v2/'
+            b'kandelo-dev/homebrew-tap-core"\n'
+            b'    sha256 cellar: "'
+            + f"{RETIRED_PREFIX}/Cellar".encode()
+            + b'", '
+            b'wasm32_kandelo: "'
+            + b"d" * 64
+            + b'"\n'
+            b'  end\n'
+            b'end\n'
+        )
+        fixture = Fixture(beta_target=beta)
+        self.addCleanup(fixture.close)
+        record = fixture.campaign["formulae"][1]
+        record["dependencies"] = []
+        record["destination"]["bottle_rebuild"] = 1
+        record["destination"]["reference"] = "2.0-1"
+        write_json(fixture.campaign_path, fixture.campaign)
+        fixture.campaign_tag = (
+            "homebrew-prefix-campaign-sha256-"
+            + sha256(fixture.campaign_path.read_bytes())
+        )
+
+        receipt = fixture.prepare(
+            dependency_request='{"dependencies":[],"schema":1}'
+        )
+
+        prepared = fixture.tap / "Formula/beta.rb"
+        self.assertIn("    rebuild 1\n", prepared.read_text())
+        self.assertIn(
+            'cellar: "/opt/kandelo/homebrew/Cellar"',
+            prepared.read_text(),
+        )
+        self.assertNotIn(
+            RETIRED_PREFIX,
+            prepared.read_text(),
+        )
+        self.assertEqual(
+            PUBLISHER.formula_identity(prepared),
+            record["formula_source"][
+                "identity_excluding_bottle_sha256"
+            ],
+        )
+        self.assertNotEqual(
+            receipt["preparation"]["tree_git_oid"],
+            receipt["source"]["target_tree_git_oid"],
+        )
+        environment = os.environ.copy()
+        environment[
+            "KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256"
+        ] = GUEST_LAYOUT_SHA256
+        identity = subprocess.run(
+            [
+                "ruby",
+                str(
+                    ROOT
+                    / "scripts/homebrew-formula-runtime-closure.rb"
+                ),
+                str(fixture.tap),
+                TAP_NAME,
+                "beta",
+                "--bottle-identity-json",
+            ],
+            check=True,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        bottle = json.loads(identity.stdout)
+        self.assertEqual(
+            bottle["bottle"]["rebuild"],
+            1,
+        )
+
+    def test_prepare_resets_rebuild_only_for_a_version_transition(
+        self,
+    ) -> None:
+        def add_previous_version_evidence(record: dict[str, Any]) -> None:
+            old_record = {
+                "arch": "wasm32",
+                "link_manifest": (
+                    "Kandelo/link/beta-2.0-rebuild3-wasm32.json"
+                ),
+            }
+            record["previous_version"] = "2.0"
+            record["variants"][0]["old_record"] = old_record
+            record["variants"][0]["old_record_sha256"] = sha256(
+                PUBLISHER.EXECUTOR.canonical_json(old_record)
+            )
+
+        beta = (
+            b'class Beta < Formula\n'
+            b'  desc "sealed version transition"\n\n'
+            b'  bottle do\n'
+            b'    root_url "https://ghcr.io/v2/'
+            b'kandelo-dev/homebrew-tap-core"\n'
+            b'    rebuild 3\n'
+            b'    sha256 cellar: "'
+            + f"{RETIRED_PREFIX}/Cellar".encode()
+            + b'", '
+            b'wasm32_kandelo: "'
+            + b"d" * 64
+            + b'"\n'
+            b'  end\n'
+            b'end\n'
+        )
+        fixture = Fixture(beta_target=beta)
+        self.addCleanup(fixture.close)
+        record = fixture.campaign["formulae"][1]
+        record["dependencies"] = []
+        add_previous_version_evidence(record)
+        record["version"] = "2.1"
+        record["destination"]["bottle_rebuild"] = 0
+        record["destination"]["reference"] = "2.1"
+        write_json(fixture.campaign_path, fixture.campaign)
+        fixture.campaign_tag = (
+            "homebrew-prefix-campaign-sha256-"
+            + sha256(fixture.campaign_path.read_bytes())
+        )
+
+        fixture.prepare(
+            dependency_request='{"dependencies":[],"schema":1}'
+        )
+        prepared = fixture.tap / "Formula/beta.rb"
+        self.assertNotIn("    rebuild ", prepared.read_text())
+        self.assertIn(
+            'cellar: "/opt/kandelo/homebrew/Cellar"',
+            prepared.read_text(),
+        )
+
+        same_version = Fixture(beta_target=beta)
+        self.addCleanup(same_version.close)
+        same_record = same_version.campaign["formulae"][1]
+        same_record["dependencies"] = []
+        add_previous_version_evidence(same_record)
+        same_record["destination"]["bottle_rebuild"] = 0
+        same_record["destination"]["reference"] = "2.0"
+        write_json(same_version.campaign_path, same_version.campaign)
+        same_version.campaign_tag = (
+            "homebrew-prefix-campaign-sha256-"
+            + sha256(same_version.campaign_path.read_bytes())
+        )
+        with self.assertRaisesRegex(
+            PUBLISHER.PublisherCampaignError,
+            "regresses the Formula bottle rebuild",
+        ):
+            same_version.prepare(
+                dependency_request='{"dependencies":[],"schema":1}'
+            )
+
     def test_dependency_input_accepts_build_and_reuse_handoffs(
         self,
     ) -> None:

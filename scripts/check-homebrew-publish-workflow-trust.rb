@@ -68,7 +68,7 @@ NATIVE_CA_PROOF_RUN_SHA256 =
 NATIVE_CA_VALIDATION_RUN_SHA256 =
   "7cb1417ec6df08daefa71c2ee6a364be76737b9d7f7ed4aa4022d3d7ca90a8b9"
 PUBLISHER_PLAN_DIGEST = "a01844e87d7be2f9ad71a1f0a1b43245163a6939b714ce96de63c614338f1c32"
-PUBLISHER_BUILD_DIGEST = "785a38120f383559364d1f401ea0e46b8d5938408bac7db705cd0acf3eeedc9d"
+PUBLISHER_BUILD_DIGEST = "5df97f21d6e5e2a01c64e9e4cd28ad7a36bd7235c68b6fe2d9bbdbb31ffa1007"
 PUBLISHER_UPLOAD_DIGEST = "861d649d73bb470fc37f99751733e8360f3f59f6245b80e2dd8d7eb4f40f3290"
 PUBLISHER_INDEX_DIGEST = "30531067dcd20c314ef8ae4b9d8584716a92fc803a194098913355ebb519754b"
 PUBLISHER_VERIFY_DIGEST = "8b2f821882da1f3a68ac93039da25be1ea530a68cee36d02f79d3d3bd1f4ae39"
@@ -6580,6 +6580,9 @@ def check_publisher(workflow)
     build_steps, "Checkout exact post-build Kandelo validator source"
   )
   postbuild_tap_step = named_step(build_steps, "Checkout exact post-build tap source")
+  postbuild_campaign_step = named_step(
+    build_steps, "Recreate sealed campaign source for post-build review"
+  )
   source_closure_step = named_step(build_steps,
                                    "Recheck reviewed sources after Formula execution")
   source_closure_run = source_closure_step.fetch("run")
@@ -6608,14 +6611,54 @@ def check_publisher(workflow)
         build_steps.index(build_formula_step) < build_steps.index(retire_identity_step) &&
         build_steps.index(retire_identity_step) < build_steps.index(postbuild_kandelo_step) &&
         build_steps.index(retire_identity_step) < build_steps.index(postbuild_tap_step) &&
+        build_steps.index(postbuild_tap_step) <
+          build_steps.index(postbuild_campaign_step) &&
         build_steps.index(postbuild_kandelo_step) < build_steps.index(source_closure_step) &&
+        build_steps.index(postbuild_campaign_step) <
+          build_steps.index(source_closure_step) &&
         build_steps.index(postbuild_tap_step) < build_steps.index(source_closure_step) &&
         build_steps.index(build_formula_step) < build_steps.index(source_closure_step),
         "publisher Formula test runtime is materialized outside the unprivileged pre-test phase")
-  create_handoff_run = named_step(build_steps, "Create strict bottle data handoff").fetch("run")
+  create_handoff_step = named_step(
+    build_steps, "Create strict bottle data handoff"
+  )
+  create_handoff_run = create_handoff_step.fetch("run")
   check(build_steps.index(source_closure_step) <
-        build_steps.index(named_step(build_steps, "Create strict bottle data handoff")),
+        build_steps.index(create_handoff_step),
         "publisher creates the bottle handoff before revalidating Formula sources")
+  check(
+    create_handoff_step.dig(
+      "env", "KANDELO_HOMEBREW_PREFIX_CAMPAIGN_TAG"
+    ) == "${{ needs.plan.outputs.prefix-campaign-tag }}",
+    "publisher post-build campaign verifier lacks the selected tag"
+  )
+  [
+    'if [ -n "${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_RECEIPT:-}" ]',
+    'cd "$GITHUB_WORKSPACE/kandelo-postbuild"',
+    "python3 scripts/homebrew-prefix-campaign-publisher.py",
+    "verify-built-bottle",
+    '--tap-root "$GITHUB_WORKSPACE/tap-reviewed"',
+    '--campaign-work-root "$campaign_work"',
+    '"$KANDELO_HOMEBREW_PREFIX_CAMPAIGN_RECEIPT"',
+    '"$KANDELO_HOMEBREW_PREFIX_CAMPAIGN_TAG"',
+    '--bottle "$BOTTLE_ARCHIVE"',
+    '--bottle-json "$BOTTLE_JSON"',
+    '"$RUNNER_TEMP/homebrew-campaign-built-bottle.json"',
+  ].each do |fragment|
+    check(
+      create_handoff_run.include?(fragment),
+      "publisher post-build campaign verifier lacks #{fragment}"
+    )
+  end
+  campaign_verify_index = create_handoff_run.index("verify-built-bottle")
+  strict_handoff_index = create_handoff_run.index(
+    "scripts/homebrew-create-build-handoff.sh"
+  )
+  check(
+    campaign_verify_index && strict_handoff_index &&
+      campaign_verify_index < strict_handoff_index,
+    "publisher creates a handoff before campaign bottle verification"
+  )
   [
     'cd "$GITHUB_WORKSPACE/kandelo-postbuild"',
     '. "$RUNNER_TEMP/homebrew-bottle/build.env"',
@@ -6850,7 +6893,7 @@ def check_publisher(workflow)
   [
     'from homebrew_cache_archive import (',
     '"--cache",',
-    '"--force-bottle",',
+    'f"--bottle-tag={expected_tag}",',
     'if archive["sha256"] != bottle["sha256"]:',
     'if root["schema"] in (6, 7):',
     'if archive["sha256"] != bottle_sha:',
@@ -7024,13 +7067,17 @@ def check_publisher(workflow)
     'def top_semantics_from_annotations(',
     'def exact_clean_git_head(',
     'def authorize_unfinalized_recovery(',
+    'def canonical_tap_document(',
+    'def validate_finalized_bottle(',
+    'def validate_finalized_predecessor(',
     'expected_checkout = tap_checkout_commit or receipt["tap_commit"]',
     "if head != expected_checkout:",
     'if expected_checkout != receipt["tap_commit"]:',
     '"merge-base",',
     '"--is-ancestor",',
-    'unfinalized recovery is forbidden because the tap has a Formula sidecar',
-    'unfinalized recovery is forbidden because the tap aggregate metadata',
+    'tap Formula sidecar and aggregate metadata do not agree on',
+    'tap aggregate Homebrew package differs from its Formula',
+    'tap Formula sidecar already finalizes this or a newer rebuild',
     'existing_semantics = top_semantics_from_annotations(',
     'existing_layout, descriptor, existing_semantics',
     '"dev.kandelo.homebrew.tap_repository",',
@@ -9576,6 +9623,22 @@ def self_test(publisher, native_compatibility, maintenance,
     "handoff mutable validator reuse" => lambda { |w|
       step = mutate_named_step(w, "build-and-test", "Create strict bottle data handoff")
       step["run"] = step.fetch("run").sub("kandelo-postbuild", "kandelo")
+    },
+    "post-build campaign bottle verification bypass" => lambda { |w|
+      step = mutate_named_step(
+        w, "build-and-test", "Create strict bottle data handoff"
+      )
+      step["run"] = step.fetch("run").sub(
+        "verify-built-bottle", "verify"
+      )
+    },
+    "post-build campaign tag substitution" => lambda { |w|
+      step = mutate_named_step(
+        w, "build-and-test", "Create strict bottle data handoff"
+      )
+      step.fetch("env")[
+        "KANDELO_HOMEBREW_PREFIX_CAMPAIGN_TAG"
+      ] = "homebrew-prefix-campaign-sha256-#{"0" * 64}"
     },
     "native build root handoff scan bypass" => lambda { |w|
       step = mutate_named_step(w, "build-and-test", "Create strict bottle data handoff")

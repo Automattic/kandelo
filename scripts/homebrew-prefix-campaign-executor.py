@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import functools
 import hashlib
+import importlib.util
 import json
 import os
 import pathlib
@@ -121,6 +122,7 @@ SELECTION_ARCHIVE_READ_FORMATS = (
     SELECTION_ARCHIVE_WRITE_FORMAT,
 )
 MAX_SELECTION_SYMLINK_BYTES = 1024
+CAMPAIGN_FORMULA_TOOL = ROOT / "scripts/homebrew_campaign_formula.py"
 
 
 class ExecutorError(RuntimeError):
@@ -129,6 +131,22 @@ class ExecutorError(RuntimeError):
 
 def fail(message: str) -> NoReturn:
     raise ExecutorError(message)
+
+
+def load_tool(name: str, path: pathlib.Path) -> Any:
+    specification = importlib.util.spec_from_file_location(name, path)
+    if specification is None or specification.loader is None:
+        fail(f"cannot load reviewed tool {path}")
+    module = importlib.util.module_from_spec(specification)
+    sys.modules[name] = module
+    specification.loader.exec_module(module)
+    return module
+
+
+CAMPAIGN_FORMULA = load_tool(
+    "homebrew_prefix_campaign_executor_formula",
+    CAMPAIGN_FORMULA_TOOL,
+)
 
 
 def dev_shell_command(*arguments: str) -> list[str]:
@@ -1016,6 +1034,65 @@ def validate_destination_admission(formula: dict[str, Any]) -> None:
         )
 
 
+def validate_previous_formula_version(formula: dict[str, Any]) -> None:
+    if "previous_version" not in formula:
+        return
+    name = formula["name"]
+    previous_version = require_string(
+        formula["previous_version"],
+        f"campaign Formula {name} previous version",
+        VERSION,
+    )
+    observed: set[str] = set()
+    for variant in formula["variants"]:
+        arch = variant["arch"]
+        old_record = variant.get("old_record")
+        if not isinstance(old_record, dict):
+            fail(
+                f"campaign Formula {name} previous version lacks "
+                f"{arch} old bottle evidence"
+            )
+        old_record_sha256 = require_string(
+            variant.get("old_record_sha256"),
+            f"campaign Formula {name}/{arch} old record SHA-256",
+            SHA256,
+        )
+        if sha256_bytes(canonical_json(old_record)) != old_record_sha256:
+            fail(
+                f"campaign Formula {name}/{arch} old record differs "
+                "from its digest"
+            )
+        link_manifest = require_string(
+            old_record.get("link_manifest"),
+            f"campaign Formula {name}/{arch} old link manifest",
+        )
+        prefix = f"Kandelo/link/{name}-"
+        suffix = f"-{arch}.json"
+        if not link_manifest.startswith(prefix) or not link_manifest.endswith(
+            suffix
+        ):
+            fail(
+                f"campaign Formula {name}/{arch} old link manifest is "
+                "not canonical"
+            )
+        identity = link_manifest[len(prefix) : -len(suffix)]
+        match = re.fullmatch(
+            r"(.+)-rebuild(?:0|[1-9][0-9]*)",
+            identity,
+        )
+        if match is None or VERSION.fullmatch(match.group(1)) is None:
+            fail(
+                f"campaign Formula {name}/{arch} old link manifest has "
+                "no canonical version"
+            )
+        observed.add(match.group(1))
+    if observed != {previous_version}:
+        fail(
+            f"campaign Formula {name} previous version differs from its "
+            "old bottle evidence"
+        )
+
+
 def load_campaign(
     path: pathlib.Path,
 ) -> tuple[dict[str, Any], bytes, dict[str, dict[str, Any]]]:
@@ -1098,6 +1175,7 @@ def load_campaign(
             )
         ):
             fail(f"campaign Formula {name} variants are invalid")
+        validate_previous_formula_version(formula)
         validate_destination_admission(formula)
         index[name] = formula
     for name, formula in index.items():
@@ -2497,12 +2575,22 @@ def validate_handoff_publication_shape(
     campaign: dict[str, Any],
     formula: dict[str, Any],
     arch: str,
+    source_tap_root: pathlib.Path,
 ) -> None:
     kind = publication_kind(
         publication, f"{formula['name']}/{arch} publication"
     )
     if kind == "build":
-        validate_publication_shape(publication_root, formula, arch)
+        validate_publication_shape(
+            publication_root,
+            formula,
+            arch,
+            prepared_formula_sha256(
+                source_tap_root,
+                campaign,
+                formula,
+            ),
+        )
     else:
         validate_reuse_publication_shape(
             publication_root, campaign, formula, arch
@@ -2513,7 +2601,13 @@ def validate_publication_shape(
     publication: pathlib.Path,
     formula: dict[str, Any],
     arch: str,
+    expected_formula_sha256: str,
 ) -> None:
+    expected_formula_sha256 = require_string(
+        expected_formula_sha256,
+        f"{formula['name']}/{arch} prepared Formula SHA-256",
+        SHA256,
+    )
     actual = walk_regular_files(
         publication, f"{formula['name']}/{arch} publication"
     )
@@ -2560,7 +2654,7 @@ def validate_publication_shape(
         or package.get("version") != evidence["version"]
         or package.get("bottle_rebuild") != evidence["bottle_rebuild"]
         or package.get("formula_source_sha256")
-        != evidence["formula_sha256"]
+        != expected_formula_sha256
         or normalized_dependencies != evidence["dependencies"]
     ):
         fail(
@@ -3966,6 +4060,7 @@ def prepare_final_tap(
                     campaign,
                     index[name],
                     arch,
+                    stable_source,
                 )
                 archive_relative = publication_semantic_path(
                     publication,
@@ -4817,6 +4912,7 @@ def prepare_selection(
                 campaign,
                 index[name],
                 arch,
+                tap_root,
             )
             archive_relative = publication_semantic_path(
                 publication,
@@ -6439,6 +6535,55 @@ def snapshot_source_root(
     return validate_source_root(destination, campaign, formula)
 
 
+def bind_campaign_formula_destination(
+    root: pathlib.Path,
+    campaign: dict[str, Any],
+    formula: dict[str, Any],
+) -> bool:
+    campaign_guest_layout(campaign)
+    source = formula["formula_source"]
+    try:
+        return CAMPAIGN_FORMULA.bind_formula_destination(
+            root / source["path"],
+            formula["destination"]["bottle_rebuild"],
+            source["identity_excluding_bottle_sha256"],
+            formula["version"],
+            formula.get("previous_version"),
+            repository_root=ROOT,
+        )
+    except CAMPAIGN_FORMULA.CampaignFormulaError as error:
+        fail(str(error))
+
+
+def prepared_formula_sha256(
+    source_root: pathlib.Path,
+    campaign: dict[str, Any],
+    formula: dict[str, Any],
+) -> str:
+    validate_source_formula(source_root, formula)
+    temporary = pathlib.Path(
+        tempfile.mkdtemp(prefix="homebrew-campaign-formula-")
+    )
+    try:
+        source = source_root / formula["formula_source"]["path"]
+        destination = temporary / source.name
+        shutil.copy2(source, destination, follow_symlinks=False)
+        bind_campaign_formula_destination(
+            temporary,
+            campaign,
+            {
+                **formula,
+                "formula_source": {
+                    **formula["formula_source"],
+                    "path": destination.name,
+                },
+            },
+        )
+        return sha256_file(destination)
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+
+
 def prepare_arch_checkout(
     *,
     source: pathlib.Path,
@@ -6461,6 +6606,29 @@ def prepare_arch_checkout(
         root,
         f"{formula['name']}/{arch} source checkout",
     )
+    target_tree = source_tree_identity(campaign["authority"])
+    target_commit = deterministic_campaign_commit_oid(
+        parent=campaign["authority"]["source_tap_commit"],
+        tree=target_tree,
+        label="sealed target source",
+    )
+    destination_changed = bind_campaign_formula_destination(
+        root,
+        campaign,
+        formula,
+    )
+    destination_tree = target_tree
+    destination_commit = target_commit
+    if destination_changed:
+        destination_tree = filesystem_git_tree_oid(
+            root,
+            f"{formula['name']}/{arch} destination-bound checkout",
+        )
+        destination_commit = deterministic_campaign_commit_oid(
+            parent=target_commit,
+            tree=destination_tree,
+            label=f"{formula['name']} reserved bottle destination",
+        )
     staged = stage_dependency_bottle_inputs(
         loaded_handoffs=loaded_handoffs,
         campaign=campaign,
@@ -6492,11 +6660,22 @@ def prepare_arch_checkout(
         )
     )
     expected_changed = tuple(
-        f"Formula/{name}.rb"
-        for name in dependency_closure(
-            campaign,
-            index,
-            formula["name"],
+        sorted(
+            {
+                *(
+                    f"Formula/{name}.rb"
+                    for name in dependency_closure(
+                        campaign,
+                        index,
+                        formula["name"],
+                    )
+                ),
+                *(
+                    [formula["formula_source"]["path"]]
+                    if destination_changed
+                    else []
+                ),
+            }
         )
     )
     if changed != expected_changed:
@@ -6504,12 +6683,6 @@ def prepare_arch_checkout(
             "dependency bottle composition changed files outside "
             "its exact Formula closure"
         )
-    target_tree = source_tree_identity(campaign["authority"])
-    target_commit = deterministic_campaign_commit_oid(
-        parent=campaign["authority"]["source_tap_commit"],
-        tree=target_tree,
-        label="sealed target source",
-    )
     prepared_tree = filesystem_git_tree_oid(
         root,
         f"{formula['name']}/{arch} prepared checkout",
@@ -6518,9 +6691,9 @@ def prepare_arch_checkout(
     # it. Recomputing its Git object ID from sealed inputs lets the trusted
     # executor bind the handoff without trusting a job-supplied receipt.
     prepared_commit = deterministic_campaign_commit_oid(
-        parent=target_commit,
+        parent=destination_commit,
         tree=prepared_tree,
-        label=f"{formula['name']}/{arch} dependency bottles",
+        label=f"{formula['name']}/{arch} publisher inputs",
     )
     return root, prepared_tree, prepared_commit
 
@@ -6530,8 +6703,14 @@ def snapshot_publication(
     destination: pathlib.Path,
     formula: dict[str, Any],
     arch: str,
+    expected_formula_sha256: str,
 ) -> tuple[pathlib.Path, dict[str, dict[str, Any]]]:
-    validate_publication_shape(source, formula, arch)
+    validate_publication_shape(
+        source,
+        formula,
+        arch,
+        expected_formula_sha256,
+    )
     destination.mkdir(parents=True)
     records: dict[str, dict[str, Any]] = {}
     for relative in PUBLICATION_FILES:
@@ -6543,7 +6722,12 @@ def snapshot_publication(
             handoff_relative,
             publication_asset_name(arch, relative),
         )
-    validate_publication_shape(destination, formula, arch)
+    validate_publication_shape(
+        destination,
+        formula,
+        arch,
+        expected_formula_sha256,
+    )
     return destination, records
 
 
@@ -7028,12 +7212,6 @@ def derive_build(
         result.mkdir()
         publication_records: list[dict[str, Any]] = []
         for arch, publication in publications:
-            private_publication, bound_records = snapshot_publication(
-                publication,
-                temporary / "publications" / arch,
-                formula,
-                arch,
-            )
             private_source, prepared_tree, prepared_commit = (
                 prepare_arch_checkout(
                     source=source_tap_root,
@@ -7048,6 +7226,16 @@ def derive_build(
                     arch=arch,
                     dependency_merger=dependency_merger,
                 )
+            )
+            prepared_formula_digest = sha256_file(
+                private_source / formula["formula_source"]["path"]
+            )
+            private_publication, bound_records = snapshot_publication(
+                publication,
+                temporary / "publications" / arch,
+                formula,
+                arch,
+                prepared_formula_digest,
             )
             validator(
                 campaign,
@@ -7069,7 +7257,10 @@ def derive_build(
                     "after validation"
                 )
             validate_publication_shape(
-                private_publication, formula, arch
+                private_publication,
+                formula,
+                arch,
+                prepared_formula_digest,
             )
             records: list[dict[str, Any]] = []
             for relative in PUBLICATION_FILES:

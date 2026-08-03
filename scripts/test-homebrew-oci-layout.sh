@@ -26,11 +26,13 @@ make_fixture() {
   local formula_extra="${6:-}"
   local tap_repository="${7:-kandelo-dev/homebrew-tap-core}"
   local tap_name="${8:-kandelo-dev/tap-core}"
+  local rebuild="${9:-0}" rebuild_suffix=""
   local tap_owner="${tap_name%%/*}" tap_short_name="${tap_name#*/}"
   local root_url="https://ghcr.io/v2/$(printf '%s' "$tap_repository" | tr '[:upper:]' '[:lower:]')"
   local root="$TMP_ROOT/$label"
   local stage="$root/stage/hello/1.0"
-  local bottle="$root/hello--1.0.${arch}_kandelo.bottle.tar.gz"
+  [ "$rebuild" = "0" ] || rebuild_suffix=".$rebuild"
+  local bottle="$root/hello--1.0.${arch}_kandelo.bottle${rebuild_suffix}.tar.gz"
   local bottle_json="$root/bottle.json" sha
   mkdir -p "$stage/.brew" "$stage/bin" \
     "$root/tap/Formula" "$root/tap/Kandelo/formula_support"
@@ -126,6 +128,7 @@ RUBY
   tar -czf "$bottle" -C "$root/stage" hello
   sha="$(sha256_file "$bottle")"
   jq -nS --arg arch "$arch" --arg sha "$sha" \
+    --argjson rebuild "$rebuild" \
     --arg formula_path "Library/Taps/$(printf '%s' "$tap_owner" | tr '[:upper:]' '[:lower:]')/homebrew-$(printf '%s' "$tap_short_name" | tr '[:upper:]' '[:lower:]')/Formula/hello.rb" \
     --arg root_url "$root_url" '{
     hello: {
@@ -137,7 +140,7 @@ RUBY
       bottle: {
         root_url: $root_url,
         cellar: "any_skip_relocation",
-        rebuild: 0,
+        rebuild: $rebuild,
         tags: {($arch + "_kandelo"): {sha256: $sha}}
       }
     }
@@ -152,11 +155,13 @@ build_child() {
   local formula_extra="${6:-}"
   local tap_repository="${7:-kandelo-dev/homebrew-tap-core}"
   local tap_name="${8:-kandelo-dev/tap-core}"
+  local rebuild="${9:-0}"
   local root_url="https://ghcr.io/v2/$(printf '%s' "$tap_repository" | tr '[:upper:]' '[:lower:]')"
   local paths bottle bottle_json
   mapfile -t paths < <(
     make_fixture "$label" "$arch" "$payload" "$support_payload" \
-      "$archived_formula_mode" "$formula_extra" "$tap_repository" "$tap_name"
+      "$archived_formula_mode" "$formula_extra" "$tap_repository" \
+      "$tap_name" "$rebuild"
   )
   bottle="${paths[0]}"
   bottle_json="${paths[1]}"
@@ -976,7 +981,231 @@ expect_failure recovery-fixed-identity "cannot change the fixed Formula/version/
     --out-layout "$TMP_ROOT/recovery-fixed-identity/layout" \
     --out-receipt "$TMP_ROOT/recovery-fixed-identity/receipt.json"
 
-# Formula-level and aggregate sidecars both make the identity finalized.
+# An index retry may coexist with the preceding finalized tap generation. The
+# sidecar and aggregate record must agree, use the same package version, and be
+# strictly older than the candidate rebuild.
+write_finalized_predecessor() {
+  local tap="$1" version="$2" rebuild="$3" digest="$4"
+  local sidecar="$tap/Kandelo/formula/hello.json"
+  mkdir -p "$(dirname "$sidecar")"
+  jq -nS --arg abi "$ABI" --arg version "$version" \
+    --arg rebuild "$rebuild" --arg digest "$digest" '{
+      bottle_rebuild: ($rebuild | tonumber),
+      bottles: [{
+        arch: "wasm32",
+        bottle_tag: "wasm32_kandelo",
+        browser_compatible: false,
+        built_at: "2026-08-03T00:00:00Z",
+        built_by: "https://github.com/example/actions/runs/1",
+        built_from: {
+          formula_sha256: ("a" * 64),
+          kandelo_commit: ("2" * 40),
+          kandelo_repository: "Automattic/kandelo",
+          tap_commit: ("1" * 40),
+          tap_repository: "kandelo-dev/homebrew-tap-core"
+        },
+        bytes: 1,
+        cache_key_sha: $digest,
+        cellar: "/opt/kandelo/homebrew/Cellar",
+        fork_instrumentation: "not-required",
+        kandelo_abi: ($abi | tonumber),
+        link_manifest: "Kandelo/link/hello.json",
+        prefix: "/opt/kandelo/homebrew",
+        runtime_support: ["node"],
+        sha256: $digest,
+        status: "success",
+        url: ("https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/hello/blobs/sha256:" + $digest)
+      }],
+      dependencies: [],
+      formula_path: "Formula/hello.rb",
+      formula_revision: 0,
+      full_name: "kandelo-dev/tap-core/hello",
+      kandelo_abi: ($abi | tonumber),
+      name: "hello",
+      schema: 1,
+      source_metadata: "Kandelo/metadata.json",
+      tap_commit: ("1" * 40),
+      tap_name: "kandelo-dev/tap-core",
+      tap_repository: "kandelo-dev/homebrew-tap-core",
+      version: $version
+    }' >"$sidecar"
+  jq -nS --slurpfile sidecar "$sidecar" --arg abi "$ABI" '{
+    generated_at: "2026-08-03T00:00:00Z",
+    generator: "kandelo-homebrew-publish 1",
+    kandelo_abi: ($abi | tonumber),
+    kandelo_commit: ("2" * 40),
+    kandelo_repository: "Automattic/kandelo",
+    packages: [($sidecar[0] | {
+      bottle_rebuild,
+      bottles,
+      dependencies,
+      formula_metadata: "Kandelo/formula/hello.json",
+      formula_path,
+      formula_revision,
+      full_name,
+      name,
+      version
+    })],
+    release_tag: ("bottles-abi-v" + $abi),
+    schema: 1,
+    tap_commit: ("1" * 40),
+    tap_name: "kandelo-dev/tap-core",
+    tap_repository: "kandelo-dev/homebrew-tap-core"
+  }' >"$tap/Kandelo/metadata.json"
+}
+
+build_child recovery-rebuild1 wasm32 "candidate generation one" \
+  "fixture support v1" 0644 "" kandelo-dev/homebrew-tap-core \
+  kandelo-dev/tap-core 1
+build_child recovery-changed-rebuild1 wasm32 \
+  "changed candidate generation one" "fixture support v1" 0644 "" \
+  kandelo-dev/homebrew-tap-core kandelo-dev/tap-core 1
+python3 "$TOOL" merge-index \
+  --tap-commit "$TAP_COMMIT" \
+  --child-layout "$TMP_ROOT/recovery-rebuild1/layout" \
+  --child-receipt "$TMP_ROOT/recovery-rebuild1/receipt.json" \
+  --out-layout "$TMP_ROOT/recovery-rebuild1-index/layout" \
+  --out-receipt "$TMP_ROOT/recovery-rebuild1-index/receipt.json"
+finalized_predecessor_tap="$TMP_ROOT/finalized-predecessor-tap"
+cp -a "$TMP_ROOT/recovery-changed-rebuild1/tap" \
+  "$finalized_predecessor_tap"
+write_finalized_predecessor "$finalized_predecessor_tap" "1.0" 0 \
+  "$(printf 'a%.0s' {1..64})"
+git -C "$finalized_predecessor_tap" init -q
+git -C "$finalized_predecessor_tap" config user.name \
+  "Homebrew OCI fixture"
+git -C "$finalized_predecessor_tap" config user.email \
+  "homebrew-oci@example.invalid"
+git -C "$finalized_predecessor_tap" add .
+git -C "$finalized_predecessor_tap" commit -qm \
+  "record finalized predecessor"
+finalized_predecessor_head="$(git -C "$finalized_predecessor_tap" \
+  rev-parse HEAD)"
+jq --arg head "$finalized_predecessor_head" '.tap_commit = $head' \
+  "$TMP_ROOT/recovery-changed-rebuild1/receipt.json" \
+  >"$TMP_ROOT/finalized-predecessor-receipt.json"
+python3 "$TOOL" merge-index \
+  --tap-commit "$TAP_COMMIT" \
+  --existing-layout "$TMP_ROOT/recovery-rebuild1-index/layout" \
+  --child-layout "$TMP_ROOT/recovery-changed-rebuild1/layout" \
+  --child-receipt "$TMP_ROOT/finalized-predecessor-receipt.json" \
+  --recover-unfinalized-tap-root "$finalized_predecessor_tap" \
+  --out-layout "$TMP_ROOT/finalized-predecessor-recovery/layout" \
+  --out-receipt "$TMP_ROOT/finalized-predecessor-recovery/receipt.json"
+
+# Matching version/rebuild text cannot hide disagreement about the finalized
+# bottle bytes between the aggregate catalog and Formula sidecar.
+jq '.packages[0].bottles[0].sha256 = ("b" * 64)' \
+  "$finalized_predecessor_tap/Kandelo/metadata.json" \
+  >"$finalized_predecessor_tap/Kandelo/metadata.json.tmp"
+mv "$finalized_predecessor_tap/Kandelo/metadata.json.tmp" \
+  "$finalized_predecessor_tap/Kandelo/metadata.json"
+git -C "$finalized_predecessor_tap" add -A
+git -C "$finalized_predecessor_tap" commit -qm \
+  "make predecessor bottle projections disagree"
+bottle_mismatch_head="$(git -C "$finalized_predecessor_tap" \
+  rev-parse HEAD)"
+jq --arg head "$bottle_mismatch_head" '.tap_commit = $head' \
+  "$TMP_ROOT/recovery-changed-rebuild1/receipt.json" \
+  >"$TMP_ROOT/bottle-mismatch-receipt.json"
+expect_failure recovery-bottle-mismatch \
+  "differs from its Formula sidecar at bottles" \
+  python3 "$TOOL" merge-index \
+    --tap-commit "$TAP_COMMIT" \
+    --existing-layout "$TMP_ROOT/recovery-rebuild1-index/layout" \
+    --child-layout "$TMP_ROOT/recovery-changed-rebuild1/layout" \
+    --child-receipt "$TMP_ROOT/bottle-mismatch-receipt.json" \
+    --recover-unfinalized-tap-root "$finalized_predecessor_tap" \
+    --out-layout "$TMP_ROOT/recovery-bottle-mismatch/layout" \
+    --out-receipt "$TMP_ROOT/recovery-bottle-mismatch/receipt.json"
+jq '.packages[0].bottles = $sidecar[0].bottles' \
+  --slurpfile sidecar \
+    "$finalized_predecessor_tap/Kandelo/formula/hello.json" \
+  "$finalized_predecessor_tap/Kandelo/metadata.json" \
+  >"$finalized_predecessor_tap/Kandelo/metadata.json.tmp"
+mv "$finalized_predecessor_tap/Kandelo/metadata.json.tmp" \
+  "$finalized_predecessor_tap/Kandelo/metadata.json"
+
+# The two tap views must identify the same predecessor generation.
+jq '.packages[0].version = "0.9"' \
+  "$finalized_predecessor_tap/Kandelo/metadata.json" \
+  >"$finalized_predecessor_tap/Kandelo/metadata.json.tmp"
+mv "$finalized_predecessor_tap/Kandelo/metadata.json.tmp" \
+  "$finalized_predecessor_tap/Kandelo/metadata.json"
+git -C "$finalized_predecessor_tap" add -A
+git -C "$finalized_predecessor_tap" commit -qm \
+  "make predecessor records disagree"
+mismatched_predecessor_head="$(git -C "$finalized_predecessor_tap" \
+  rev-parse HEAD)"
+jq --arg head "$mismatched_predecessor_head" '.tap_commit = $head' \
+  "$TMP_ROOT/recovery-changed-rebuild1/receipt.json" \
+  >"$TMP_ROOT/mismatched-predecessor-receipt.json"
+expect_failure recovery-mismatched-predecessor \
+  "differs from its Formula sidecar at version" \
+  python3 "$TOOL" merge-index \
+    --tap-commit "$TAP_COMMIT" \
+    --existing-layout "$TMP_ROOT/recovery-rebuild1-index/layout" \
+    --child-layout "$TMP_ROOT/recovery-changed-rebuild1/layout" \
+    --child-receipt "$TMP_ROOT/mismatched-predecessor-receipt.json" \
+    --recover-unfinalized-tap-root "$finalized_predecessor_tap" \
+    --out-layout "$TMP_ROOT/recovery-mismatched-predecessor/layout" \
+    --out-receipt "$TMP_ROOT/recovery-mismatched-predecessor/receipt.json"
+
+# A version transition also leaves the previous version finalized until the
+# candidate version's tap sidecars are committed.
+jq '.version = "0.9"' \
+  "$finalized_predecessor_tap/Kandelo/formula/hello.json" \
+  >"$finalized_predecessor_tap/Kandelo/formula/hello.json.tmp"
+mv "$finalized_predecessor_tap/Kandelo/formula/hello.json.tmp" \
+  "$finalized_predecessor_tap/Kandelo/formula/hello.json"
+git -C "$finalized_predecessor_tap" add -A
+git -C "$finalized_predecessor_tap" commit -qm \
+  "record prior-version predecessor"
+prior_version_head="$(git -C "$finalized_predecessor_tap" rev-parse HEAD)"
+jq --arg head "$prior_version_head" '.tap_commit = $head' \
+  "$TMP_ROOT/recovery-changed-rebuild1/receipt.json" \
+  >"$TMP_ROOT/prior-version-predecessor-receipt.json"
+python3 "$TOOL" merge-index \
+  --tap-commit "$TAP_COMMIT" \
+  --existing-layout "$TMP_ROOT/recovery-rebuild1-index/layout" \
+  --child-layout "$TMP_ROOT/recovery-changed-rebuild1/layout" \
+  --child-receipt "$TMP_ROOT/prior-version-predecessor-receipt.json" \
+  --recover-unfinalized-tap-root "$finalized_predecessor_tap" \
+  --out-layout "$TMP_ROOT/prior-version-predecessor-recovery/layout" \
+  --out-receipt \
+    "$TMP_ROOT/prior-version-predecessor-recovery/receipt.json"
+
+# A tap record at the candidate rebuild finalizes that immutable reference.
+jq '.version = "1.0" | .bottle_rebuild = 1' \
+  "$finalized_predecessor_tap/Kandelo/formula/hello.json" \
+  >"$finalized_predecessor_tap/Kandelo/formula/hello.json.tmp"
+mv "$finalized_predecessor_tap/Kandelo/formula/hello.json.tmp" \
+  "$finalized_predecessor_tap/Kandelo/formula/hello.json"
+jq '.packages[0].version = "1.0" | .packages[0].bottle_rebuild = 1' \
+  "$finalized_predecessor_tap/Kandelo/metadata.json" \
+  >"$finalized_predecessor_tap/Kandelo/metadata.json.tmp"
+mv "$finalized_predecessor_tap/Kandelo/metadata.json.tmp" \
+  "$finalized_predecessor_tap/Kandelo/metadata.json"
+git -C "$finalized_predecessor_tap" add -A
+git -C "$finalized_predecessor_tap" commit -qm \
+  "finalize candidate generation"
+finalized_candidate_head="$(git -C "$finalized_predecessor_tap" \
+  rev-parse HEAD)"
+jq --arg head "$finalized_candidate_head" '.tap_commit = $head' \
+  "$TMP_ROOT/recovery-changed-rebuild1/receipt.json" \
+  >"$TMP_ROOT/finalized-candidate-receipt.json"
+expect_failure recovery-finalized-candidate \
+  "already finalizes this or a newer rebuild" \
+  python3 "$TOOL" merge-index \
+    --tap-commit "$TAP_COMMIT" \
+    --existing-layout "$TMP_ROOT/recovery-rebuild1-index/layout" \
+    --child-layout "$TMP_ROOT/recovery-changed-rebuild1/layout" \
+    --child-receipt "$TMP_ROOT/finalized-candidate-receipt.json" \
+    --recover-unfinalized-tap-root "$finalized_predecessor_tap" \
+    --out-layout "$TMP_ROOT/recovery-finalized-candidate/layout" \
+    --out-receipt "$TMP_ROOT/recovery-finalized-candidate/receipt.json"
+
+# Malformed Formula-level and aggregate sidecars do not authorize recovery.
 jq -nS '{}' >"$recovery_tap/Kandelo/formula/hello.json"
 git -C "$recovery_tap" add Kandelo/formula/hello.json
 git -C "$recovery_tap" commit -qm "add finalized Formula sidecar"
@@ -984,7 +1213,8 @@ sidecar_head="$(git -C "$recovery_tap" rev-parse HEAD)"
 jq --arg head "$sidecar_head" '.tap_commit = $head' \
   "$TMP_ROOT/changed32/receipt.json" \
   >"$TMP_ROOT/recovery-sidecar-receipt.json"
-expect_failure recovery-formula-sidecar "tap has a Formula sidecar" \
+expect_failure recovery-formula-sidecar \
+  "do not agree on the finalized predecessor" \
   python3 "$TOOL" merge-index \
     --tap-commit "$TAP_COMMIT" \
     --existing-layout "$TMP_ROOT/combined/layout" \
@@ -1004,7 +1234,8 @@ aggregate_head="$(git -C "$recovery_tap" rev-parse HEAD)"
 jq --arg head "$aggregate_head" '.tap_commit = $head' \
   "$TMP_ROOT/changed32/receipt.json" \
   >"$TMP_ROOT/recovery-aggregate-receipt.json"
-expect_failure recovery-aggregate-sidecar "aggregate metadata contains hello" \
+expect_failure recovery-aggregate-sidecar \
+  "do not agree on the finalized predecessor" \
   python3 "$TOOL" merge-index \
     --tap-commit "$TAP_COMMIT" \
     --existing-layout "$TMP_ROOT/combined/layout" \

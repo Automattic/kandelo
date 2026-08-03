@@ -1096,6 +1096,12 @@ also carries the sorted immutable target-tap set plus three native lists:
 - `runtime_and_test` is used by the bottle verifier and excludes dependencies
   that are only tagged `:build`.
 
+Host-dependency and Tier-2-only planning inspect source requirements; they do
+not select or pour the target Formula's old bottle. Those two parser modes may
+therefore read a Formula whose old bottle block names a retired guest Cellar.
+Every mode that consumes bottle identity remains strict, and the replacement
+bottle must use the active guest Cellar before it can be published.
+
 ### Publisher-Only Native Requirements
 
 Publisher-only tools are represented by three closed, tap-local Homebrew
@@ -1776,8 +1782,11 @@ concurrent download can print a checkmark for a bottle without printing its
 manifest or blob URL. The builder therefore records dependency bytes before it
 runs the selected, untrusted Formula. For every dependency it asks the pinned
 Homebrew for the selected bottle's cache path with `brew --cache
---force-bottle`, opens that regular non-symlink file beneath the exact
-`downloads` cache directory, and hashes the bytes. The file must be
+--bottle-tag=<arch>_kandelo --formula <full-name>`, opens that regular
+non-symlink file beneath the exact `downloads` cache directory, and hashes the
+bytes. The explicit tag matters because the publisher runs on native Linux;
+without it, Homebrew searches for a Linux host bottle and can report no cache
+path even when the selected Kandelo bottle is already present. The file must be
 single-linked, stable while it is read, within the bottle size limit, and named
 with Homebrew's hash of the exact locked bottle URL. Its digest must equal the
 digest selected by the dependency's Formula. The resulting cache record lives
@@ -2065,6 +2074,28 @@ version-index, and verification jobs derive and verify the same
 identities independently. Build, dependency, handoff, and runtime
 evidence bind both SHAs. The prepared commit is never pushed, tagged,
 or substituted for public tap provenance.
+
+Before adding dependency bottle blocks, the publisher binds the target
+Formula's build-only bottle block to the destination reserved by the campaign.
+For an unchanged package version, a rebuild number may only advance. A package
+version change records `previous_version` in campaign authority and may reset
+the new namespace to rebuild zero only when the retained block is exactly the
+old selected bottle identity. Rebuild zero is represented by omitting the Ruby
+`rebuild` line. A same-version decrease still fails.
+
+That local preparation also replaces a known retired guest Cellar with the
+active `/opt/kandelo/homebrew/Cellar`. This is safe because the target Formula
+is always source-built and its old SHA lines are never poured. The Formula's
+identity outside its bottle block must remain unchanged. Publisher and executor
+independently reconstruct the same intermediate and final Git commits. The new
+archive's `.brew/<formula>.rb` must be receipt-equivalent to that prepared
+Formula and must not reintroduce a retired Cellar. If Homebrew retains the
+bottle block, it carries the active Cellar.
+
+After Homebrew builds the bottle, the campaign publisher verifies the exact
+archive and JSON that Homebrew emitted against the reserved version, rebuild,
+architecture, filename, and digest. It does not rename or patch those outputs
+after the build. The verified bytes are the bytes handed to OCI publication.
 
 Campaign control-plane reads and public artifact proof use different
 credential boundaries. Trusted preparation steps use the workflow token only
@@ -2543,9 +2574,10 @@ sidecar generator verifies that the archived Formula receipt matches that
 historical record and preserves the same repository and commit identities in
 the generated bottle sidecar and provenance report. The old sidecar and
 provenance retain their historical rebuild number; the new Formula uses the
-campaign's strictly newer, collision-free destination rebuild. Current
-metadata can make the already-admitted bytes selectable; it cannot make them
-appear newly built.
+campaign's collision-free destination rebuild. That rebuild is strictly newer
+for an unchanged package version and starts at zero for a new package version.
+Current metadata can make the already-admitted bytes selectable; it cannot
+make them appear newly built.
 
 A dry run keeps those repository identities fixed, but may select a reviewed,
 valid Git branch name or an exact lowercase 40-character commit SHA from each
@@ -2574,13 +2606,18 @@ matrix even when its current cache key matches." It is not a general overwrite
 switch. When a forced run encounters a version index left by a partial
 publication, the credential-free composer may recover either a stale source
 identity or different child bytes at the same semantic identity. Recovery is
-allowed only if the exact, clean planned tap commit contains neither
-`Kandelo/formula/<formula>.json` nor that Formula in `Kandelo/metadata.json`.
-The composer first validates the complete old index and every child under their
-own identity, requires the ABI, Formula, version, Formula revision, bottle
-rebuild, and repository identities to match the new children, and then discards
-every old child instead of retaining a sibling architecture. Its receipt keeps
-the previous top digest and records either
+allowed when the exact candidate generation is still unfinalized. The clean
+planned tap may contain neither finalized record, or it may contain a complete
+older generation in both `Kandelo/formula/<formula>.json` and
+`Kandelo/metadata.json`. A one-sided, malformed, same-candidate, or newer
+record fails closed. This distinction lets an interrupted candidate retry
+without mistaking the previous live bottle for the candidate itself.
+
+The composer validates the complete old index and every child under their own
+identity, requires the ABI, Formula, version, Formula revision, bottle rebuild,
+and repository identities to match the new children, and then discards every
+old child instead of retaining a sibling architecture. Its receipt keeps the
+previous top digest and records either
 `unfinalized-stale-source-identity` or the distinct
 `unfinalized-same-identity-child-replacement` transition reason. A finalized
 Formula, dirty or different tap checkout, fixed-identity mismatch, malformed

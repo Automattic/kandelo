@@ -3903,7 +3903,8 @@
           "glibc@2.39"
         ],
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "f1db9e3af712f4867410d083810f0a5ae066705b7627d2babdda8b8c42d6cb98",
+        "bottle_checksum": "eadef01a89719a26cfe308bce1744c363452bf0023b595442236b87ade0b09c1",
+        "bottle_rebuild": 1,
         "caveats": "The Homebrew's Glibc has been installed with the following executables:\n  $HOMEBREW_PREFIX/opt/glibc/bin/ldd\n  $HOMEBREW_PREFIX/opt/glibc/bin/ld.so\n  $HOMEBREW_PREFIX/opt/glibc/sbin/ldconfig\n\nBy default, Homebrew's linker will not search for the system's libraries. If you\nwant Homebrew to do so, run:\n\n  cp \"$HOMEBREW_PREFIX/etc/ld.so.conf.d/99-system-ld.so.conf.example\" \"$HOMEBREW_PREFIX/etc/ld.so.conf.d/99-system-ld.so.conf\"\n  brew postinstall glibc\n\nto append the system libraries to Homebrew's ld search paths. This is risky and\n**highly not recommended**, because it may cause linkage to Homebrew libraries\nmixed with system libraries.\n",
         "desc": "GNU C Library",
         "executables": [
@@ -3946,6 +3947,16 @@
         "name": "glibc",
         "post_install_steps": [
           {
+            "force": true,
+            "source": {
+              "path": "{{prefix}}/etc/ld.so.conf"
+            },
+            "target": {
+              "path": "{{etc}}/ld.so.conf"
+            },
+            "type": "symlink"
+          },
+          {
             "paths": [
               {
                 "base": "etc",
@@ -3966,7 +3977,7 @@
           }
         ],
         "revision": 1,
-        "ruby_source_checksum": "af58b96368b2818413257e2f9e5c2c5ce26cbfb0c799a38798d1e618e9c1d381",
+        "ruby_source_checksum": "c7f9626cd354d02e32d8e7cc7ee73b269e2eddbe91df89f625a3a76fd8375148",
         "stable_checksum": "97f84f3b7588cd54093a6f6389b0c1a81e70d99708d74963a2e3eab7c7dc942d",
         "stable_dependencies": [
           "linux-headers@6.8"
@@ -4096,7 +4107,8 @@
           "glibc@2.39"
         ],
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "f1db9e3af712f4867410d083810f0a5ae066705b7627d2babdda8b8c42d6cb98",
+        "bottle_checksum": "eadef01a89719a26cfe308bce1744c363452bf0023b595442236b87ade0b09c1",
+        "bottle_rebuild": 1,
         "desc": "GNU C Library",
         "executables": [
           "gencat",
@@ -4138,6 +4150,16 @@
         "name": "glibc",
         "post_install_steps": [
           {
+            "force": true,
+            "source": {
+              "path": "{{prefix}}/etc/ld.so.conf"
+            },
+            "target": {
+              "path": "{{etc}}/ld.so.conf"
+            },
+            "type": "symlink"
+          },
+          {
             "paths": [
               {
                 "base": "etc",
@@ -4158,7 +4180,7 @@
           }
         ],
         "revision": 1,
-        "ruby_source_checksum": "af58b96368b2818413257e2f9e5c2c5ce26cbfb0c799a38798d1e618e9c1d381",
+        "ruby_source_checksum": "c7f9626cd354d02e32d8e7cc7ee73b269e2eddbe91df89f625a3a76fd8375148",
         "stable_checksum": "97f84f3b7588cd54093a6f6389b0c1a81e70d99708d74963a2e3eab7c7dc942d",
         "stable_dependencies": [
           "linux-headers@6.8",

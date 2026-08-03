@@ -1782,6 +1782,17 @@ grep -F 'Formula bottle block uses an unsupported cellar' \
 KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256="$layout_sha" \
   ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core retired-bottle \
     --tier2-bridge-json >/dev/null
+# Native dependency planning reads only build requirements. It must be able to
+# plan a rebuild without claiming that the retired bottle can be poured.
+KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$PRIMARY_RESOLVED_TAPS" \
+  ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core retired-bottle \
+    --host-dependencies-json >"$TMP_ROOT/retired-host-plan.json"
+jq -e '
+  .schema == 4 and
+  .formula == "retired-bottle" and
+  .full_name == "kandelo-dev/tap-core/retired-bottle" and
+  .native_requirements == []
+' "$TMP_ROOT/retired-host-plan.json" >/dev/null
 if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core retired-bottle \
     --bottle-identity-json >"$TMP_ROOT/retired-ordinary.out" \
     2>"$TMP_ROOT/retired-ordinary.err"; then

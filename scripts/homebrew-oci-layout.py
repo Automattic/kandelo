@@ -85,6 +85,72 @@ MAX_LINK_DEPTH = 256
 MAX_ANNOTATION_BYTES = 1024 * 1024
 MAX_SUPPORT_FILES = 4_096
 MAX_SUPPORT_BYTES = 64 * 1024 * 1024
+TAP_METADATA_KEYS = {
+    "generated_at",
+    "generator",
+    "kandelo_abi",
+    "kandelo_commit",
+    "kandelo_repository",
+    "packages",
+    "release_tag",
+    "schema",
+    "tap_commit",
+    "tap_name",
+    "tap_repository",
+}
+TAP_PACKAGE_KEYS = {
+    "bottle_rebuild",
+    "bottles",
+    "dependencies",
+    "formula_metadata",
+    "formula_path",
+    "formula_revision",
+    "full_name",
+    "name",
+    "version",
+}
+TAP_FORMULA_SIDECAR_KEYS = {
+    "bottle_rebuild",
+    "bottles",
+    "dependencies",
+    "formula_path",
+    "formula_revision",
+    "full_name",
+    "kandelo_abi",
+    "name",
+    "schema",
+    "source_metadata",
+    "tap_commit",
+    "tap_name",
+    "tap_repository",
+    "version",
+}
+TAP_BOTTLE_KEYS = {
+    "arch",
+    "bottle_tag",
+    "browser_compatible",
+    "built_at",
+    "built_by",
+    "built_from",
+    "bytes",
+    "cache_key_sha",
+    "cellar",
+    "fork_instrumentation",
+    "kandelo_abi",
+    "link_manifest",
+    "prefix",
+    "runtime_support",
+    "sha256",
+    "status",
+    "url",
+}
+TAP_BUILT_FROM_KEYS = {
+    "formula_sha256",
+    "kandelo_commit",
+    "kandelo_repository",
+    "tap_commit",
+    "tap_repository",
+}
 
 
 class LayoutError(RuntimeError):
@@ -1457,6 +1523,242 @@ def exact_clean_git_head(root: pathlib.Path, label: str) -> tuple[pathlib.Path, 
     return root, head
 
 
+def canonical_tap_document(
+    path: pathlib.Path,
+    label: str,
+) -> dict[str, Any]:
+    document = load_json(path, label, MAX_RECEIPT_BYTES)
+    if not isinstance(document, dict):
+        fail(f"{label} is not an object")
+    expected = (
+        json.dumps(document, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    if path.read_bytes() != expected:
+        fail(f"{label} is not canonical pretty JSON")
+    return document
+
+
+def validate_finalized_bottle(
+    record: Any,
+    *,
+    label: str,
+    formula: str,
+    tap_repository: str,
+    kandelo_abi: int,
+) -> str:
+    record = exact_keys(record, TAP_BOTTLE_KEYS, label)
+    if record["status"] != "success":
+        fail(f"{label} is not a successful finalized bottle")
+    arch = record["arch"]
+    if arch not in ("wasm32", "wasm64"):
+        fail(f"{label} has an invalid architecture")
+    if record["bottle_tag"] != f"{arch}_kandelo":
+        fail(f"{label} has an invalid bottle tag")
+    if require_int(record["kandelo_abi"], f"{label} ABI", 1) != kandelo_abi:
+        fail(f"{label} ABI differs from its Formula sidecar")
+    require_int(record["bytes"], f"{label} bytes", 1)
+    digest = require_string(record["sha256"], f"{label} SHA-256", SHA256)
+    if record["cache_key_sha"] != digest:
+        fail(f"{label} cache key differs from its SHA-256")
+    expected_url = (
+        f"https://ghcr.io/v2/{tap_repository}/{formula}/"
+        f"blobs/sha256:{digest}"
+    )
+    if record["url"] != expected_url:
+        fail(f"{label} URL differs from its repository and SHA-256")
+    for key in ("prefix", "cellar"):
+        value = require_string(record[key], f"{label} {key}")
+        if not value.startswith("/") or ".." in value.split("/"):
+            fail(f"{label} {key} is not a canonical absolute path")
+    if record["cellar"] != f"{record['prefix']}/Cellar":
+        fail(f"{label} Cellar differs from its prefix")
+    require_string(record["built_at"], f"{label} built_at")
+    built_by = require_string(record["built_by"], f"{label} built_by")
+    if not built_by.startswith("https://"):
+        fail(f"{label} built_by is not HTTPS")
+    require_string(record["link_manifest"], f"{label} link manifest")
+    built_from = exact_keys(
+        record["built_from"],
+        TAP_BUILT_FROM_KEYS,
+        f"{label} built_from",
+    )
+    require_string(
+        built_from["formula_sha256"],
+        f"{label} built_from Formula SHA-256",
+        SHA256,
+    )
+    for key in ("kandelo_commit", "tap_commit"):
+        require_string(
+            built_from[key],
+            f"{label} built_from {key}",
+            COMMIT,
+        )
+    for key in ("kandelo_repository", "tap_repository"):
+        require_string(
+            built_from[key],
+            f"{label} built_from {key}",
+            TAP_REPOSITORY,
+        )
+    if normalized_identity(built_from["tap_repository"]) != tap_repository:
+        fail(f"{label} built_from tap repository differs")
+    runtime_support = record["runtime_support"]
+    if (
+        not isinstance(runtime_support, list)
+        or runtime_support != sorted(set(runtime_support))
+        or any(value not in ("browser", "node") for value in runtime_support)
+    ):
+        fail(f"{label} runtime support is invalid")
+    if not isinstance(record["browser_compatible"], bool):
+        fail(f"{label} browser compatibility is not boolean")
+    if record["browser_compatible"] and "browser" not in runtime_support:
+        fail(f"{label} browser compatibility lacks browser support")
+    if record["fork_instrumentation"] not in (
+        "disabled",
+        "not-required",
+        "required",
+        "unknown",
+    ):
+        fail(f"{label} fork instrumentation is invalid")
+    return arch
+
+
+def validate_finalized_predecessor(
+    *,
+    sidecar: dict[str, Any],
+    metadata: dict[str, Any],
+    package: dict[str, Any],
+    formula: str,
+    receipt: dict[str, Any],
+) -> tuple[str, int]:
+    sidecar = exact_keys(
+        sidecar,
+        TAP_FORMULA_SIDECAR_KEYS,
+        f"tap Formula sidecar for {formula}",
+    )
+    metadata = exact_keys(
+        metadata,
+        TAP_METADATA_KEYS,
+        "tap aggregate Homebrew metadata",
+    )
+    package = exact_keys(
+        package,
+        TAP_PACKAGE_KEYS,
+        f"tap aggregate Homebrew package for {formula}",
+    )
+    tap_repository = normalized_identity(receipt["tap_repository"])
+    tap_name = normalized_identity(receipt["tap_name"])
+    if (
+        metadata["schema"] != 1
+        or sidecar["schema"] != 1
+        or normalized_identity(metadata["tap_repository"])
+        != tap_repository
+        or normalized_identity(metadata["tap_name"]) != tap_name
+        or normalized_identity(sidecar["tap_repository"])
+        != tap_repository
+        or normalized_identity(sidecar["tap_name"]) != tap_name
+        or sidecar["source_metadata"] != "Kandelo/metadata.json"
+        or sidecar["formula_path"] != f"Formula/{formula}.rb"
+        or package["formula_metadata"]
+        != f"Kandelo/formula/{formula}.json"
+    ):
+        fail("finalized predecessor has inconsistent top-level identity")
+    for document, label in ((metadata, "metadata"), (sidecar, "sidecar")):
+        require_string(document["tap_commit"], f"{label} tap commit", COMMIT)
+    if sidecar["tap_commit"] != metadata["tap_commit"]:
+        fail("finalized predecessor tap commits disagree")
+    kandelo_abi = require_int(
+        metadata["kandelo_abi"], "tap aggregate Homebrew ABI", 1
+    )
+    if (
+        require_int(sidecar["kandelo_abi"], "tap Formula sidecar ABI", 1)
+        != kandelo_abi
+        or metadata["release_tag"] != f"bottles-abi-v{kandelo_abi}"
+    ):
+        fail("finalized predecessor ABI identity is inconsistent")
+    require_string(metadata["kandelo_commit"], "tap Kandelo commit", COMMIT)
+    require_string(
+        metadata["kandelo_repository"],
+        "tap Kandelo repository",
+        TAP_REPOSITORY,
+    )
+    require_string(metadata["generated_at"], "tap metadata generation time")
+    require_string(metadata["generator"], "tap metadata generator")
+    projection_keys = (
+        "bottle_rebuild",
+        "bottles",
+        "dependencies",
+        "formula_path",
+        "formula_revision",
+        "full_name",
+        "name",
+        "version",
+    )
+    for key in projection_keys:
+        if package[key] != sidecar[key]:
+            fail(
+                "tap aggregate Homebrew package differs from its Formula "
+                f"sidecar at {key}"
+            )
+    if (
+        sidecar["name"] != formula
+        or sidecar["full_name"] != f"{tap_name}/{formula}"
+    ):
+        fail("finalized predecessor Formula identity is inconsistent")
+    version = require_string(
+        sidecar["version"], "finalized predecessor version", PKG_VERSION
+    )
+    revision = require_int(
+        sidecar["formula_revision"],
+        "finalized predecessor Formula revision",
+    )
+    if revision != formula_revision(version):
+        fail("finalized predecessor Formula revision differs from its version")
+    rebuild = require_int(
+        sidecar["bottle_rebuild"],
+        "finalized predecessor bottle rebuild",
+    )
+    dependencies = sidecar["dependencies"]
+    if not isinstance(dependencies, list) or len(dependencies) > 512:
+        fail("finalized predecessor dependencies are invalid")
+    prior_dependency = ""
+    for index, dependency in enumerate(dependencies):
+        dependency = exact_keys(
+            dependency,
+            {"full_name", "name", "version"},
+            f"finalized predecessor dependency {index}",
+        )
+        name = require_string(
+            dependency["name"],
+            f"finalized predecessor dependency {index} name",
+            FORMULA_NAME,
+        )
+        full_name = f"{tap_name}/{name}"
+        if dependency["full_name"] != full_name or full_name <= prior_dependency:
+            fail("finalized predecessor dependencies are not canonical")
+        prior_dependency = full_name
+        require_string(
+            dependency["version"],
+            f"finalized predecessor dependency {index} version",
+            PKG_VERSION,
+        )
+    bottles = sidecar["bottles"]
+    if not isinstance(bottles, list) or not bottles or len(bottles) > 2:
+        fail("finalized predecessor bottles are invalid")
+    arches = [
+        validate_finalized_bottle(
+            bottle,
+            label=f"finalized predecessor bottle {index}",
+            formula=formula,
+            tap_repository=tap_repository,
+            kandelo_abi=kandelo_abi,
+        )
+        for index, bottle in enumerate(bottles)
+    ]
+    if arches != sorted(set(arches)):
+        fail("finalized predecessor bottle architectures are not canonical")
+    return version, rebuild
+
+
 def authorize_unfinalized_recovery(
     tap_root_name: str,
     tap_checkout_commit: str | None,
@@ -1522,35 +1824,77 @@ def authorize_unfinalized_recovery(
         kandelo_root / "formula", "tap Formula sidecar root"
     )
     formula = receipt["formula"]
+    candidate_version = selected_semantics[
+        "dev.kandelo.homebrew.pkg_version"
+    ]
+    candidate_rebuild = int(
+        selected_semantics["dev.kandelo.homebrew.bottle_rebuild"],
+        10,
+    )
+
     sidecar = formula_root / f"{formula}.json"
+    sidecar_document: dict[str, Any] | None = None
     try:
         sidecar.lstat()
     except FileNotFoundError:
         pass
     else:
-        fail(
-            "unfinalized recovery is forbidden because the tap has a Formula sidecar "
-            f"for {formula}"
+        sidecar_document = canonical_tap_document(
+            sidecar,
+            f"tap Formula sidecar for {formula}",
         )
 
+    metadata_path = kandelo_root / "metadata.json"
     metadata = load_json(
-        kandelo_root / "metadata.json", "tap aggregate Homebrew metadata", MAX_RECEIPT_BYTES
+        metadata_path,
+        "tap aggregate Homebrew metadata",
+        MAX_RECEIPT_BYTES,
     )
     require_bounded_json(metadata, "tap aggregate Homebrew metadata")
     if not isinstance(metadata, dict) or not isinstance(metadata.get("packages"), list):
         fail("tap aggregate Homebrew metadata lacks a packages array")
-    matches = 0
+    matches: list[dict[str, Any]] = []
     for index, package in enumerate(metadata["packages"]):
         if not isinstance(package, dict):
             fail(f"tap aggregate Homebrew package {index} is not an object")
         name = package.get("name")
         if not isinstance(name, str) or FORMULA_NAME.fullmatch(name) is None:
             fail(f"tap aggregate Homebrew package {index} has an invalid name")
-        matches += int(name == formula)
-    if matches:
+        if name == formula:
+            matches.append(package)
+    if len(matches) > 1:
         fail(
-            "unfinalized recovery is forbidden because the tap aggregate metadata "
-            f"contains {formula}"
+            "tap aggregate Homebrew metadata repeats the recovery Formula"
+        )
+    if (sidecar_document is None) != (not matches):
+        fail(
+            "tap Formula sidecar and aggregate metadata do not agree on "
+            "the finalized predecessor"
+        )
+    if sidecar_document is None:
+        return
+    metadata = canonical_tap_document(
+        metadata_path,
+        "tap aggregate Homebrew metadata",
+    )
+    generation = validate_finalized_predecessor(
+        sidecar=sidecar_document,
+        metadata=metadata,
+        package=matches[0],
+        formula=formula,
+        receipt=receipt,
+    )
+    # WHY: an interrupted publication may leave the new immutable OCI index
+    # beside the previously finalized tap record. That older record proves
+    # only the preceding generation is live. A record at the candidate
+    # rebuild means the candidate is already finalized and must never be
+    # replaced under the same Homebrew reference.
+    if (
+        generation[0] == candidate_version
+        and generation[1] >= candidate_rebuild
+    ):
+        fail(
+            "tap Formula sidecar already finalizes this or a newer rebuild"
         )
 
 
