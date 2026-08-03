@@ -41,6 +41,9 @@ LAYOUT_PATH = "homebrew/kandelo-guest-layout.json"
 INPUTS_PATH = "homebrew/guest-prefix-campaign-inputs.json"
 SOURCE_AUTHORITY_PATH = "Kandelo/prefix-campaign-authority.json"
 SOURCE_MANIFEST_PATH = "Kandelo/campaigns/prefix-v1/manifest.json"
+PREDECESSOR_ARCHIVE_ROOT = (
+    "Kandelo/campaigns/prefix-v1/aborted-campaigns"
+)
 SOURCE_MATERIALIZER_PATH = "scripts/prefix-campaign-source.py"
 INSPECTOR_PATH = "scripts/homebrew-inspect-bottle.py"
 CAMPAIGN_TOOL_PATH = "scripts/homebrew-prefix-campaign.py"
@@ -61,6 +64,52 @@ RETIRED_PREFIX_HISTORICAL_DIRECTORIES = (
     "Kandelo/reports/failures/",
     "Kandelo/reports/rollbacks/",
 )
+PREDECESSOR_ARCHIVE_KIND = (
+    "kandelo-homebrew-prefix-abandoned-campaign"
+)
+PREDECESSOR_RELEASE_REPOSITORY = (
+    "kandelo-dev/homebrew-tap-core"
+)
+PREDECESSOR_CAMPAIGN_TAG = re.compile(
+    r"^homebrew-prefix-campaign-sha256-([0-9a-f]{64})$"
+)
+PREDECESSOR_HANDOFF_TAG = re.compile(
+    r"^homebrew-prefix-handoff-sha256-([0-9a-f]{64})$"
+)
+PREDECESSOR_ROOTFS_TAG = re.compile(
+    r"^package-generation-rootfs-wasm32-abi-v[1-9][0-9]*-"
+    r"sha256-[0-9a-f]{64}$"
+)
+PREDECESSOR_RECOVERY = {
+    "authority_state": "armed",
+    "fresh_builds_require_successor_campaign": True,
+    "partial_publications_require_successor_revalidation": True,
+    "predecessor_handoffs_are_not_successor_authority": True,
+    "published_handoffs_remain_independently_usable": True,
+}
+# These key sets identify archives whose predecessor handoffs were not
+# reusable. They remain history, but cannot authorize present packages.
+LEGACY_PREDECESSOR_RECOVERY_KEYS = {
+    frozenset(
+        {
+            "authority_state",
+            "fresh_builds_require_successor_campaign",
+            "planned_reuse_handoff_rebinding_requires",
+        }
+    ),
+    frozenset(
+        {
+            "authority_state",
+            "fresh_builds_require_successor_campaign",
+            "predecessor_handoffs_are_not_successor_authority",
+            "reserved_successor_versions",
+        }
+    ),
+}
+MAX_PREDECESSOR_ARCHIVES = 256
+MAX_PREDECESSOR_ARCHIVE_BYTES = 4 * 1024 * 1024
+MAX_PREDECESSOR_ARCHIVE_TOTAL_BYTES = 64 * 1024 * 1024
+MAX_PREDECESSOR_DISPATCHES = 4096
 
 
 # WHY: campaign JSON is capped separately at 64 MiB, but a valid compressed
@@ -612,8 +661,24 @@ def git_authority(root: pathlib.Path, expected: str, label: str) -> pathlib.Path
     return root
 
 
-def git_blob(root: pathlib.Path, commit: str, relative: str, label: str) -> bytes:
+def git_blob(
+    root: pathlib.Path,
+    commit: str,
+    relative: str,
+    label: str,
+    maximum: int = MAX_JSON_BYTES,
+) -> bytes:
     relative = require_tap_path(relative, f"{label} path")
+    size_payload = run_command(
+        ["git", "cat-file", "-s", f"{commit}:{relative}"],
+        cwd=root,
+        label=f"{label} size check",
+        timeout=60,
+    ).decode("ascii", errors="strict").strip()
+    if re.fullmatch(r"[0-9]+", size_payload) is None:
+        fail(f"{label} has an invalid Git object size")
+    if int(size_payload, 10) > maximum:
+        fail(f"{label} exceeds {maximum} bytes")
     try:
         result = subprocess.run(
             ["git", "show", f"{commit}:{relative}"],
@@ -629,9 +694,347 @@ def git_blob(root: pathlib.Path, commit: str, relative: str, label: str) -> byte
     if result.returncode != 0:
         detail = result.stderr.decode("utf-8", errors="replace").strip()[:4096]
         fail(f"cannot read {label}: {detail}")
-    if len(result.stdout) > MAX_JSON_BYTES:
-        fail(f"{label} exceeds {MAX_JSON_BYTES} bytes")
+    if len(result.stdout) > maximum:
+        fail(f"{label} exceeds {maximum} bytes")
     return result.stdout
+
+
+def predecessor_archive_paths(
+    root: pathlib.Path,
+    commit: str,
+) -> list[str]:
+    output = run_command(
+        [
+            "git",
+            "ls-tree",
+            "-r",
+            "-z",
+            "--name-only",
+            commit,
+            "--",
+            PREDECESSOR_ARCHIVE_ROOT,
+        ],
+        cwd=root,
+        label="predecessor recovery archive inventory",
+        timeout=60,
+    )
+    if output and not output.endswith(b"\0"):
+        fail("predecessor recovery archive inventory is truncated")
+    try:
+        entries = [
+            raw.decode("utf-8", errors="strict")
+            for raw in output.split(b"\0")
+            if raw
+        ]
+    except UnicodeDecodeError as error:
+        fail(f"predecessor recovery archive path is not UTF-8: {error}")
+    prefix = PREDECESSOR_ARCHIVE_ROOT + "/"
+    archives: list[str] = []
+    for entry in entries:
+        if not entry.startswith(prefix):
+            fail("predecessor archive escaped its inventory root")
+        if not entry.endswith(".json"):
+            continue
+        leaf = entry.removeprefix(prefix)
+        stem = leaf.removesuffix(".json")
+        if "/" in leaf or SHA256.fullmatch(stem) is None:
+            fail(f"predecessor archive path is invalid: {entry}")
+        archives.append(entry)
+    archives.sort()
+    if len(archives) > MAX_PREDECESSOR_ARCHIVES:
+        fail(
+            "predecessor recovery archive inventory exceeds "
+            f"{MAX_PREDECESSOR_ARCHIVES} files"
+        )
+    return archives
+
+
+def parse_predecessor_archive(
+    payload: bytes,
+    path: str,
+) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    label = f"predecessor archive {path}"
+    try:
+        document = json.loads(
+            payload.decode("utf-8"),
+            object_pairs_hook=duplicate_rejecting_object,
+            parse_constant=lambda value: fail(
+                f"{label} contains {value}"
+            ),
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        fail(f"{label} is not valid strict UTF-8 JSON: {error}")
+    if payload != pretty_json(document):
+        fail(f"{label} is not canonical pretty JSON")
+    if not isinstance(document, dict):
+        fail(f"{label} must be an object")
+    if require_int(document.get("schema"), f"{label} schema", 1) != 1:
+        fail(f"{label} has an unsupported schema")
+    if document.get("kind") != PREDECESSOR_ARCHIVE_KIND:
+        fail(f"{label} has an unsupported kind")
+    recovery = document.get("recovery")
+    if not isinstance(recovery, dict):
+        fail(f"{label} recovery must be an object")
+    recovery_keys = frozenset(recovery)
+    if recovery_keys in LEGACY_PREDECESSOR_RECOVERY_KEYS:
+        return None
+    if recovery_keys != frozenset(PREDECESSOR_RECOVERY):
+        fail(f"{label} recovery flags are not recognized")
+    if recovery != PREDECESSOR_RECOVERY:
+        fail(f"{label} recovery flags do not permit reuse")
+
+    document = exact_keys(
+        document,
+        {
+            "abandoned_at",
+            "authority",
+            "cause",
+            "dispatches",
+            "kind",
+            "recovery",
+            "schema",
+        },
+        label,
+    )
+    require_timestamp(document["abandoned_at"], f"{label} abandoned_at")
+    cause = exact_keys(
+        document["cause"],
+        {"corrective_workstream", "kind", "summary"},
+        f"{label} cause",
+    )
+    for key in ("corrective_workstream", "kind", "summary"):
+        require_string(cause[key], f"{label} cause {key}")
+
+    authority = exact_keys(
+        document["authority"],
+        {
+            "activation_commit",
+            "campaign_release",
+            "kandelo_commit",
+            "payload_sha256",
+            "rootfs_wasm32",
+            "source_tap_commit",
+            "target_source",
+        },
+        f"{label} authority",
+    )
+    activation_commit = require_commit(
+        authority["activation_commit"],
+        f"{label} activation commit",
+    )
+    kandelo_commit = require_commit(
+        authority["kandelo_commit"],
+        f"{label} Kandelo commit",
+    )
+    source_tap_commit = require_commit(
+        authority["source_tap_commit"],
+        f"{label} source tap commit",
+    )
+    require_sha256(
+        authority["payload_sha256"],
+        f"{label} authority payload SHA-256",
+    )
+    require_string(
+        authority["rootfs_wasm32"],
+        f"{label} rootfs generation",
+        PREDECESSOR_ROOTFS_TAG,
+    )
+    campaign_release = exact_keys(
+        authority["campaign_release"],
+        {"id", "repository", "tag"},
+        f"{label} campaign release",
+    )
+    require_int(
+        campaign_release["id"],
+        f"{label} campaign release id",
+        1,
+    )
+    if campaign_release["repository"] != PREDECESSOR_RELEASE_REPOSITORY:
+        fail(f"{label} campaign release repository is invalid")
+    campaign_tag = require_string(
+        campaign_release["tag"],
+        f"{label} campaign release tag",
+        PREDECESSOR_CAMPAIGN_TAG,
+    )
+    campaign_sha = campaign_tag.rsplit("-", 1)[1]
+    archive_stem = pathlib.PurePosixPath(path).stem
+    if campaign_sha != archive_stem:
+        fail(f"{label} path does not match its campaign release tag")
+
+    target = exact_keys(
+        authority["target_source"],
+        {
+            "manifest_path",
+            "manifest_sha256",
+            "source_root",
+            "source_tree_git_oid",
+            "target_tree_git_oid",
+        },
+        f"{label} target source",
+    )
+    if target["manifest_path"] != SOURCE_MANIFEST_PATH:
+        fail(f"{label} target manifest path is invalid")
+    if target["source_root"] != "Kandelo/campaigns/prefix-v1/source":
+        fail(f"{label} target source root is invalid")
+    require_sha256(
+        target["manifest_sha256"],
+        f"{label} target manifest SHA-256",
+    )
+    require_string(
+        target["source_tree_git_oid"],
+        f"{label} source tree Git object id",
+        COMMIT,
+    )
+    target_tree = require_string(
+        target["target_tree_git_oid"],
+        f"{label} target tree Git object id",
+        COMMIT,
+    )
+    dispatches = document["dispatches"]
+    if (
+        not isinstance(dispatches, list)
+        or len(dispatches) > MAX_PREDECESSOR_DISPATCHES
+    ):
+        fail(f"{label} dispatches must be a bounded array")
+    completed: list[dict[str, Any]] = []
+    run_ids: set[int] = set()
+    handoff_tags: set[str] = set()
+    for index, dispatch in enumerate(dispatches):
+        dispatch_label = f"{label} dispatch #{index}"
+        dispatch = allowed_keys(
+            dispatch,
+            {"arch", "formula", "result", "run_id"},
+            {
+                "arch",
+                "failure",
+                "formula",
+                "handoff_release",
+                "partial_publication",
+                "result",
+                "run_id",
+            },
+            dispatch_label,
+        )
+        formula = require_string(
+            dispatch["formula"],
+            f"{dispatch_label} formula",
+            FORMULA_NAME,
+        )
+        arch = require_string(
+            dispatch["arch"],
+            f"{dispatch_label} arch",
+        )
+        if arch not in ("wasm32", "wasm64"):
+            fail(f"{dispatch_label} arch is unsupported")
+        result = require_string(
+            dispatch["result"],
+            f"{dispatch_label} result",
+        )
+        run_id = require_int(
+            dispatch["run_id"],
+            f"{dispatch_label} run id",
+            1,
+        )
+        if run_id in run_ids:
+            fail(f"{label} repeats dispatch run id {run_id}")
+        run_ids.add(run_id)
+        if result != "handoff-published-and-publicly-verified":
+            if "handoff_release" in dispatch:
+                fail(f"{dispatch_label} has an unverified handoff")
+            continue
+        dispatch = exact_keys(
+            dispatch,
+            {
+                "arch",
+                "formula",
+                "handoff_release",
+                "result",
+                "run_id",
+            },
+            dispatch_label,
+        )
+        handoff = exact_keys(
+            dispatch["handoff_release"],
+            {"id", "tag"},
+            f"{dispatch_label} handoff release",
+        )
+        require_int(
+            handoff["id"],
+            f"{dispatch_label} handoff release id",
+            1,
+        )
+        handoff_tag = require_string(
+            handoff["tag"],
+            f"{dispatch_label} handoff release tag",
+            PREDECESSOR_HANDOFF_TAG,
+        )
+        if handoff_tag in handoff_tags:
+            fail(f"{label} repeats handoff tag {handoff_tag}")
+        handoff_tags.add(handoff_tag)
+        completed.append(
+            {
+                "arch": arch,
+                "campaign_tag": campaign_tag,
+                "formula": formula,
+                "handoff_tag": handoff_tag,
+            }
+        )
+
+    archive_sha = sha256_bytes(payload)
+    recovery_authority = {
+        "activation_commit": activation_commit,
+        "archive": {"path": path, "sha256": archive_sha},
+        "campaign": {
+            "sha256": campaign_sha,
+            "tag": campaign_tag,
+        },
+        "kandelo_commit": kandelo_commit,
+        "source_tap_commit": source_tap_commit,
+        "target_tree_git_oid": target_tree,
+    }
+    return recovery_authority, completed
+
+
+def load_predecessor_handoffs(
+    root: pathlib.Path,
+    commit: str,
+) -> dict[tuple[str, str], dict[str, Any]]:
+    by_variant: dict[tuple[str, str], dict[str, Any]] = {}
+    total_bytes = 0
+    for path in predecessor_archive_paths(root, commit):
+        payload = git_blob(
+            root,
+            commit,
+            path,
+            f"predecessor archive {path}",
+            MAX_PREDECESSOR_ARCHIVE_BYTES,
+        )
+        total_bytes += len(payload)
+        if total_bytes > MAX_PREDECESSOR_ARCHIVE_TOTAL_BYTES:
+            fail(
+                "predecessor recovery archives exceed their total limit"
+            )
+        parsed = parse_predecessor_archive(payload, path)
+        if parsed is None:
+            continue
+        authority, dispatches = parsed
+        for dispatch in dispatches:
+            key = (dispatch["formula"], dispatch["arch"])
+            if key in by_variant:
+                fail(
+                    "predecessor recovery repeats completed handoff "
+                    f"for {key[0]}/{key[1]}"
+                )
+            by_variant[key] = {
+                "authority": authority,
+                "reuse_source": {
+                    "arch": dispatch["arch"],
+                    "campaign_tag": dispatch["campaign_tag"],
+                    "handoff_tag": dispatch["handoff_tag"],
+                    "kind": "predecessor-handoff",
+                },
+            }
+    return by_variant
 
 
 def historical_metadata_history(
@@ -1804,14 +2207,49 @@ def destination_admission(
     formula_name: str,
     source_kind: str,
     variants: list[dict[str, Any]],
+    predecessor_handoffs: dict[
+        tuple[str, str], dict[str, Any]
+    ] | None = None,
+    used_predecessors: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     probe = validate_destination_probe(
         probe, f"{formula_name} destination probe"
     )
     status = probe["status"]
     if status == "present":
-        fail(f"{formula_name} destination manifest is already present")
-    if status == "missing":
+        predecessor_handoffs = predecessor_handoffs or {}
+        if used_predecessors is None:
+            used_predecessors = {}
+        matches: list[dict[str, Any]] = []
+        for variant in variants:
+            arch = variant.get("arch")
+            match = predecessor_handoffs.get((formula_name, arch))
+            if match is None:
+                fail(
+                    f"{formula_name} destination manifest is already "
+                    "present without an archived predecessor handoff "
+                    f"for {formula_name}/{arch}"
+                )
+            matches.append(match)
+        if not matches:
+            fail(
+                f"{formula_name} destination manifest is present "
+                "without any campaign variants"
+            )
+        # WHY: validate the complete Formula arch set before mutation. A
+        # partial multiarch rebind must not produce a plausible-looking,
+        # half-authorized campaign in memory.
+        for variant, match in zip(variants, matches, strict=True):
+            if "reuse_source" in variant:
+                fail(
+                    f"{formula_name} variant already has a reuse source"
+                )
+            variant["reuse_source"] = match["reuse_source"]
+            authority = match["authority"]
+            archive_path = authority["archive"]["path"]
+            used_predecessors[archive_path] = authority
+        kind = "archived-predecessor-exact-presence"
+    elif status == "missing":
         kind = "anonymous-absence"
     else:
         # WHY: GHCR deliberately gives the same anonymous response for a new
@@ -2034,6 +2472,8 @@ class CampaignOptions:
     old_tap_commit: str
     source_tap_root: pathlib.Path
     source_tap_commit: str
+    recovery_tap_root: pathlib.Path
+    recovery_tap_commit: str
     native_brew_root: pathlib.Path
     native_brew_commit: str
     metadata_sha256: str
@@ -2664,6 +3104,9 @@ def _derive_campaign_from_snapshots(
     dependencies: CampaignDependencies,
     metadata_hashes: set[str],
     historical_formula_root: pathlib.Path,
+    predecessor_handoffs: dict[
+        tuple[str, str], dict[str, Any]
+    ] | None = None,
 ) -> dict[str, Any]:
     if not 1 <= options.jobs <= MAX_JOBS:
         fail(f"jobs must be between 1 and {MAX_JOBS}")
@@ -3471,17 +3914,25 @@ def _derive_campaign_from_snapshots(
                 )
 
     variants_by_formula: dict[str, list[dict[str, Any]]] = {}
+    used_predecessors: dict[str, dict[str, Any]] = {}
     for key, result in variant_results.items():
         variants_by_formula.setdefault(key[0], []).append(result)
     for name in sorted(formula_context):
         context = formula_context[name]
         destination = dict(context["destination"])
-        variants = entrant_variants.get(name, variants_by_formula.get(name, []))
+        variants = [
+            dict(variant)
+            for variant in entrant_variants.get(
+                name, variants_by_formula.get(name, [])
+            )
+        ]
         destination["admission"] = destination_admission(
             probe_results[name],
             formula_name=name,
             source_kind=context["source_kind"],
             variants=variants,
+            predecessor_handoffs=predecessor_handoffs,
+            used_predecessors=used_predecessors,
         )
         record = {**context, "destination": destination}
         record["variants"] = sorted(variants, key=lambda value: value["arch"])
@@ -3514,51 +3965,66 @@ def _derive_campaign_from_snapshots(
         variant["disposition"]["kind"] in ("required-rebuild", "required-build")
         for variant in all_variants
     )
-    return {
-        "authority": {
-            "abi_snapshot": {
-                "path": ABI_SNAPSHOT_PATH,
-                "sha256": abi_snapshot_sha256,
-            },
-            "campaign_inputs": {
-                "path": INPUTS_PATH,
-                "sha256": sha256_bytes(inputs_bytes),
-            },
-            "current_kandelo_abi": current_abi,
-            "guest_layout": {
-                "path": LAYOUT_PATH,
-                "sha256": layout_sha256,
-            },
-            "kandelo_commit": options.kandelo_commit,
-            "native_homebrew_commit": options.native_brew_commit,
-            "old_metadata": {
-                "path": METADATA_PATH,
-                "sha256": metadata_sha256,
-            },
-            "old_catalog_commit": old_catalog_commit,
-            "old_tap_commit": options.old_tap_commit,
-            "source_materialization": (
-                options.source_materialization
-                if options.source_materialization is not None
-                else {"kind": "unrecorded-snapshot"}
-            ),
-            "source_tap_commit": options.source_tap_commit,
-            "tap_name": tap_name,
-            "tap_repository": tap_repository,
-            "tools": {
-                path: sha256_file(regular_file(kandelo_root / path, path))
-                for path in (
-                    CAMPAIGN_TOOL_PATH,
-                    FORMULA_DIGEST_PATH,
-                    INSPECTOR_PATH,
-                    OCI_TOOL_PATH,
-                    PUBLICATION_LIMITS_PATH,
-                    READBACK_PATH,
-                    READBACK_FETCH_PATH,
-                    WASM_VALIDATOR_PATH,
-                )
-            },
+    authority = {
+        "abi_snapshot": {
+            "path": ABI_SNAPSHOT_PATH,
+            "sha256": abi_snapshot_sha256,
         },
+        "campaign_inputs": {
+            "path": INPUTS_PATH,
+            "sha256": sha256_bytes(inputs_bytes),
+        },
+        "current_kandelo_abi": current_abi,
+        "guest_layout": {
+            "path": LAYOUT_PATH,
+            "sha256": layout_sha256,
+        },
+        "kandelo_commit": options.kandelo_commit,
+        "native_homebrew_commit": options.native_brew_commit,
+        "old_metadata": {
+            "path": METADATA_PATH,
+            "sha256": metadata_sha256,
+        },
+        "old_catalog_commit": old_catalog_commit,
+        "old_tap_commit": options.old_tap_commit,
+        "source_materialization": (
+            options.source_materialization
+            if options.source_materialization is not None
+            else {"kind": "unrecorded-snapshot"}
+        ),
+        "source_tap_commit": options.source_tap_commit,
+        "tap_name": tap_name,
+        "tap_repository": tap_repository,
+        "tools": {
+            path: sha256_file(regular_file(kandelo_root / path, path))
+            for path in (
+                CAMPAIGN_TOOL_PATH,
+                FORMULA_DIGEST_PATH,
+                INSPECTOR_PATH,
+                OCI_TOOL_PATH,
+                PUBLICATION_LIMITS_PATH,
+                READBACK_PATH,
+                READBACK_FETCH_PATH,
+                WASM_VALIDATOR_PATH,
+            )
+        },
+    }
+    schema = 2
+    if used_predecessors:
+        # WHY: schema 2 says each destination was absent. Schema 3 binds
+        # predecessor authority while preserving schema-2 bytes when no
+        # predecessor handoff was consumed.
+        authority["predecessor_recovery"] = [
+            used_predecessors[path]
+            for path in sorted(used_predecessors)
+        ]
+        authority["predecessor_recovery_source"] = {
+            "commit": options.recovery_tap_commit,
+            "repository": PREDECESSOR_RELEASE_REPOSITORY,
+        }
+        schema = 3
+    return {
+        "authority": authority,
         "deferred_source_formulae": deferred_formulae,
         "candidate_retired_prefix_replacements": (
             candidate_retired_prefix_replacements
@@ -3567,7 +4033,7 @@ def _derive_campaign_from_snapshots(
         "kind": "kandelo-homebrew-guest-prefix-campaign",
         "retirements": retirements,
         "permitted_retired_prefix_evidence": permitted_retired_prefix_evidence,
-        "schema": 2,
+        "schema": schema,
         "summary": {
             "byte_clean_reuse_candidates": reuse,
             "deferred_source_formulae": len(deferred_formulae),
@@ -3611,6 +4077,11 @@ def derive_campaign(
             "candidate source tap input",
         ),
         (
+            options.recovery_tap_root,
+            options.recovery_tap_commit,
+            "predecessor recovery tap input",
+        ),
+        (
             options.native_brew_root,
             options.native_brew_commit,
             "native Homebrew input",
@@ -3620,6 +4091,8 @@ def derive_campaign(
         git_authority(root, commit, label)
         for root, commit, label in authorities
     )
+    if len(set(exact_roots)) != len(exact_roots):
+        fail("campaign Git authority roots must be independent")
     metadata_history = historical_metadata_history(
         exact_roots[1], options.old_tap_commit
     )
@@ -3662,6 +4135,9 @@ def derive_campaign(
             git_authority(root, commit, f"{label} final rebind")
 
     try:
+        predecessor_handoffs = load_predecessor_handoffs(
+            exact_roots[3], options.recovery_tap_commit
+        )
         # Homebrew refuses to run from an operating-system temporary prefix.
         # A private directory directly under the invoking user's home keeps
         # native metadata evaluation valid while remaining ephemeral.
@@ -3689,9 +4165,9 @@ def derive_campaign(
                 )
             )
             native_brew_snapshot = git_snapshot(
-                exact_roots[3],
+                exact_roots[4],
                 options.native_brew_commit,
-                temporary / "input-3",
+                temporary / "input-4",
                 "native Homebrew input",
             )
             historical_formula_root = temporary / "historical-formula"
@@ -3710,6 +4186,7 @@ def derive_campaign(
                 dependencies,
                 metadata_hashes,
                 historical_formula_root,
+                predecessor_handoffs,
             )
     except BaseException as primary:
         try:
@@ -3797,6 +4274,8 @@ def parse_args() -> argparse.Namespace:
         command.add_argument("--old-tap-commit", required=True)
         command.add_argument("--source-tap-root", required=True)
         command.add_argument("--source-tap-commit", required=True)
+        command.add_argument("--recovery-tap-root", required=True)
+        command.add_argument("--recovery-tap-commit", required=True)
         command.add_argument("--native-brew-root", required=True)
         command.add_argument("--native-brew-commit", required=True)
         command.add_argument("--metadata-sha256", required=True)
@@ -3838,6 +4317,8 @@ def main() -> int:
             old_tap_commit=args.old_tap_commit,
             source_tap_root=pathlib.Path(args.source_tap_root),
             source_tap_commit=args.source_tap_commit,
+            recovery_tap_root=pathlib.Path(args.recovery_tap_root),
+            recovery_tap_commit=args.recovery_tap_commit,
             native_brew_root=pathlib.Path(args.native_brew_root),
             native_brew_commit=args.native_brew_commit,
             metadata_sha256=args.metadata_sha256,
@@ -3849,6 +4330,10 @@ def main() -> int:
         source_tap_root = real_directory(
             options.source_tap_root, "candidate source tap input"
         )
+        recovery_tap_root = real_directory(
+            options.recovery_tap_root,
+            "predecessor recovery tap input",
+        )
         native_brew_root = real_directory(
             options.native_brew_root, "native Homebrew input"
         )
@@ -3858,6 +4343,7 @@ def main() -> int:
                 kandelo_root,
                 old_tap_root,
                 source_tap_root,
+                recovery_tap_root,
                 native_brew_root,
             )
             document = derive_campaign(options)
@@ -3873,6 +4359,7 @@ def main() -> int:
                     kandelo_root,
                     old_tap_root,
                     source_tap_root,
+                    recovery_tap_root,
                     native_brew_root,
                 )
             ):

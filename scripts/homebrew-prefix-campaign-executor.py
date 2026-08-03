@@ -34,6 +34,7 @@ REPOSITORY = re.compile(
 )
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+OCI_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+,-]{0,255}$")
 RUST_TARGET = re.compile(r"^[a-z0-9_][a-z0-9_.-]{2,127}$")
 CAMPAIGN_TAG = re.compile(
@@ -959,7 +960,10 @@ def dependency_names(
     return tuple(result)
 
 
-def validate_destination_admission(formula: dict[str, Any]) -> None:
+def validate_destination_admission(
+    formula: dict[str, Any],
+    predecessor_campaign_tags: frozenset[str],
+) -> frozenset[str]:
     name = formula.get("name")
     destination = exact_keys(
         formula.get("destination"),
@@ -996,18 +1000,75 @@ def validate_destination_admission(formula: dict[str, Any]) -> None:
     if probe["schema"] != 1 or probe["kind"] != "manifest":
         fail(f"campaign Formula {name} destination probe is invalid")
     kind = admission["kind"]
+    variants = formula.get("variants")
+    if kind == "archived-predecessor-exact-presence":
+        digest = probe["digest"]
+        if (
+            probe["status"] != "present"
+            or not isinstance(digest, str)
+            or OCI_DIGEST.fullmatch(digest) is None
+            or not isinstance(variants, list)
+            or not variants
+        ):
+            fail(
+                f"campaign Formula {name} predecessor presence is invalid"
+            )
+        used: set[str] = set()
+        for variant in variants:
+            if not isinstance(variant, dict):
+                fail(
+                    f"campaign Formula {name} predecessor variant is invalid"
+                )
+            arch = variant.get("arch")
+            source = exact_keys(
+                variant.get("reuse_source"),
+                {"arch", "campaign_tag", "handoff_tag", "kind"},
+                f"campaign Formula {name}/{arch} predecessor source",
+            )
+            if (
+                source["kind"] != "predecessor-handoff"
+                or source["arch"] != arch
+            ):
+                fail(
+                    f"campaign Formula {name}/{arch} predecessor source "
+                    "is invalid"
+                )
+            campaign_tag = require_string(
+                source["campaign_tag"],
+                f"campaign Formula {name}/{arch} predecessor campaign tag",
+                CAMPAIGN_TAG,
+            )
+            require_string(
+                source["handoff_tag"],
+                f"campaign Formula {name}/{arch} predecessor handoff tag",
+                HANDOFF_TAG,
+            )
+            if campaign_tag not in predecessor_campaign_tags:
+                fail(
+                    f"campaign Formula {name}/{arch} predecessor campaign "
+                    "is not archived"
+                )
+            used.add(campaign_tag)
+        return frozenset(used)
+    if isinstance(variants, list) and any(
+        isinstance(variant, dict) and "reuse_source" in variant
+        for variant in variants
+    ):
+        fail(
+            f"campaign Formula {name} predecessor source has no exact "
+            "destination"
+        )
     if kind == "anonymous-absence":
         if probe["status"] != "missing" or probe["digest"] is not None:
             fail(
                 f"campaign Formula {name} anonymous absence is invalid"
             )
-        return
+        return frozenset()
     if kind != "first-package-namespace-bootstrap-required":
         fail(f"campaign Formula {name} destination admission is invalid")
     if probe["status"] != "auth-required" or probe["digest"] is not None:
         fail(f"campaign Formula {name} namespace bootstrap probe is invalid")
 
-    variants = formula.get("variants")
     # WHY: an anonymous authentication challenge is ambiguous between a new
     # namespace and a private existing package. Only source reviewed as a new
     # required-build entrant may reach the later authenticated bootstrap gate.
@@ -1032,6 +1093,110 @@ def validate_destination_admission(formula: dict[str, Any]) -> None:
             f"campaign Formula {name} is not eligible for first-package "
             "namespace bootstrap"
         )
+    return frozenset()
+
+
+def validate_predecessor_recovery_authority(
+    authority: dict[str, Any],
+    campaign_schema: int,
+) -> frozenset[str]:
+    records = authority.get("predecessor_recovery")
+    recovery_source = authority.get("predecessor_recovery_source")
+    if campaign_schema == 2:
+        if records is not None or recovery_source is not None:
+            fail("schema-2 campaign cannot name predecessor recovery")
+        return frozenset()
+    recovery_source = exact_keys(
+        recovery_source,
+        {"commit", "repository"},
+        "predecessor recovery source",
+    )
+    require_string(
+        recovery_source["commit"],
+        "predecessor recovery source commit",
+        COMMIT,
+    )
+    recovery_repository = require_string(
+        recovery_source["repository"],
+        "predecessor recovery source repository",
+        REPOSITORY,
+    )
+    if recovery_repository.lower() != authority["tap_repository"].lower():
+        fail("predecessor recovery source repository is inconsistent")
+    if not isinstance(records, list) or not records:
+        fail("schema-3 campaign lacks predecessor recovery authority")
+    paths: list[str] = []
+    tags: set[str] = set()
+    for position, record in enumerate(records):
+        record = exact_keys(
+            record,
+            {
+                "activation_commit",
+                "archive",
+                "campaign",
+                "kandelo_commit",
+                "source_tap_commit",
+                "target_tree_git_oid",
+            },
+            f"predecessor recovery #{position}",
+        )
+        for key in (
+            "activation_commit",
+            "kandelo_commit",
+            "source_tap_commit",
+            "target_tree_git_oid",
+        ):
+            require_string(
+                record[key], f"predecessor recovery #{position} {key}", COMMIT
+            )
+        archive = exact_keys(
+            record["archive"],
+            {"path", "sha256"},
+            f"predecessor recovery #{position} archive",
+        )
+        campaign = exact_keys(
+            record["campaign"],
+            {"sha256", "tag"},
+            f"predecessor recovery #{position} campaign",
+        )
+        path = safe_relative(
+            archive["path"],
+            f"predecessor recovery #{position} archive path",
+        )
+        archive_sha256 = require_string(
+            archive["sha256"],
+            f"predecessor recovery #{position} archive SHA-256",
+            SHA256,
+        )
+        campaign_sha256 = require_string(
+            campaign["sha256"],
+            f"predecessor recovery #{position} campaign SHA-256",
+            SHA256,
+        )
+        tag = require_string(
+            campaign["tag"],
+            f"predecessor recovery #{position} campaign tag",
+            CAMPAIGN_TAG,
+        )
+        tag_match = CAMPAIGN_TAG.fullmatch(tag)
+        if (
+            tag_match is None
+            or tag_match.group(1) != campaign_sha256
+            or path
+            != (
+                "Kandelo/campaigns/prefix-v1/aborted-campaigns/"
+                f"{campaign_sha256}.json"
+            )
+            or tag in tags
+        ):
+            fail(
+                f"predecessor recovery #{position} is not content-addressed"
+            )
+        paths.append(path)
+        tags.add(tag)
+    if paths != sorted(paths) or len(paths) != len(set(paths)):
+        fail("predecessor recovery archives must be unique and sorted")
+    return frozenset(tags)
 
 
 def validate_previous_formula_version(formula: dict[str, Any]) -> None:
@@ -1099,7 +1264,7 @@ def load_campaign(
     value, payload = load_json_bytes(path, "campaign manifest")
     if (
         not isinstance(value, dict)
-        or value.get("schema") != 2
+        or value.get("schema") not in (2, 3)
         or value.get("kind")
         != "kandelo-homebrew-guest-prefix-campaign"
     ):
@@ -1128,6 +1293,9 @@ def load_campaign(
         REPOSITORY,
     )
     source_tree_identity(authority)
+    predecessor_campaign_tags = validate_predecessor_recovery_authority(
+        authority, value["schema"]
+    )
     formulae = value.get("formulae")
     if (
         not isinstance(formulae, list)
@@ -1137,6 +1305,7 @@ def load_campaign(
         fail("campaign Formula inventory is invalid")
     index: dict[str, dict[str, Any]] = {}
     prior = ""
+    used_predecessor_campaign_tags: set[str] = set()
     for position, formula in enumerate(formulae):
         if not isinstance(formula, dict):
             fail(f"campaign Formula #{position} must be an object")
@@ -1176,8 +1345,14 @@ def load_campaign(
         ):
             fail(f"campaign Formula {name} variants are invalid")
         validate_previous_formula_version(formula)
-        validate_destination_admission(formula)
+        used_predecessor_campaign_tags.update(
+            validate_destination_admission(
+                formula, predecessor_campaign_tags
+            )
+        )
         index[name] = formula
+    if used_predecessor_campaign_tags != set(predecessor_campaign_tags):
+        fail("campaign predecessor recovery authority is not used exactly")
     for name, formula in index.items():
         dependencies = dependency_names(formula, tap_name)
         missing = sorted(set(dependencies) - set(index))
@@ -1860,6 +2035,46 @@ def validate_reuse_variant(
     return variant
 
 
+def validate_predecessor_reuse_variant(
+    campaign: dict[str, Any],
+    formula: dict[str, Any],
+    arch: str,
+) -> tuple[dict[str, Any], dict[str, str]]:
+    name = formula["name"]
+    variant = campaign_variant(formula, arch)
+    if not isinstance(variant, dict) or variant.get("arch") != arch:
+        fail(f"{name}/{arch} predecessor reuse variant is invalid")
+    source = exact_keys(
+        variant.get("reuse_source"),
+        {"arch", "campaign_tag", "handoff_tag", "kind"},
+        f"{name}/{arch} predecessor reuse source",
+    )
+    if source["kind"] != "predecessor-handoff" or source["arch"] != arch:
+        fail(f"{name}/{arch} predecessor reuse source is invalid")
+    require_string(
+        source["campaign_tag"],
+        f"{name}/{arch} predecessor campaign tag",
+        CAMPAIGN_TAG,
+    )
+    require_string(
+        source["handoff_tag"],
+        f"{name}/{arch} predecessor handoff tag",
+        HANDOFF_TAG,
+    )
+    admission = formula.get("destination", {}).get("admission")
+    if (
+        not isinstance(admission, dict)
+        or admission.get("kind")
+        != "archived-predecessor-exact-presence"
+        or not isinstance(admission.get("probe"), dict)
+        or admission["probe"].get("status") != "present"
+        or not isinstance(admission["probe"].get("digest"), str)
+        or OCI_DIGEST.fullmatch(admission["probe"]["digest"]) is None
+    ):
+        fail(f"{name}/{arch} has no exact predecessor destination")
+    return variant, source
+
+
 def load_digest_bound_json(
     root: pathlib.Path,
     record: dict[str, Any],
@@ -2453,6 +2668,392 @@ def reuse_sidecars_input(
     }
 
 
+def predecessor_reuse_inputs(
+    *,
+    campaign: dict[str, Any],
+    formula: dict[str, Any],
+    handoff_root: pathlib.Path,
+    handoff: dict[str, Any],
+    arch: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    name = formula["name"]
+    publication = handoff_publication(
+        handoff, arch, f"predecessor {name}/{arch}"
+    )
+    kind = publication_kind(
+        publication, f"predecessor {name}/{arch} publication"
+    )
+    archive_path = (
+        f"payload/{arch}/"
+        + publication_semantic_path(
+            publication,
+            "bottle_archive",
+            f"predecessor {name}/{arch}",
+        )
+    )
+    bottle_json_path = (
+        f"payload/{arch}/"
+        + publication_semantic_path(
+            publication,
+            "bottle_json",
+            f"predecessor {name}/{arch}",
+        )
+    )
+    sidecars_path = (
+        f"payload/{arch}/"
+        + publication_semantic_path(
+            publication,
+            "sidecars_input",
+            f"predecessor {name}/{arch}",
+        )
+    )
+    archive_record = handoff_publication_file(
+        publication,
+        archive_path,
+        f"predecessor {name}/{arch}",
+    )
+    bottle_json_record = handoff_publication_file(
+        publication,
+        bottle_json_path,
+        f"predecessor {name}/{arch}",
+    )
+    sidecars_record = handoff_publication_file(
+        publication,
+        sidecars_path,
+        f"predecessor {name}/{arch}",
+    )
+    _canonical, bottle_digest, _root_url, _cellar = (
+        validate_dependency_bottle_input(
+            bottle_json=handoff_root / bottle_json_record["path"],
+            handoff=handoff,
+            arch=arch,
+            archive_record=archive_record,
+            campaign=campaign,
+        )
+    )
+    if bottle_digest != archive_record["sha256"]:
+        fail(f"predecessor {name}/{arch} bottle digest is inconsistent")
+
+    sidecars, _sidecars_payload = load_json_bytes(
+        handoff_root / sidecars_record["path"],
+        f"predecessor {name}/{arch} sidecars input",
+    )
+    sidecars = exact_keys(
+        sidecars,
+        {
+            "generated_at",
+            "generator",
+            "kandelo_abi",
+            "kandelo_commit",
+            "kandelo_repository",
+            "packages",
+            "release_tag",
+            "schema",
+            "tap_commit",
+            "tap_name",
+            "tap_repository",
+        },
+        f"predecessor {name}/{arch} sidecars input",
+    )
+    authority = campaign["authority"]
+    packages = sidecars["packages"]
+    if not isinstance(packages, list) or len(packages) != 1:
+        fail(f"predecessor {name}/{arch} sidecars lack one package")
+    package = exact_keys(
+        packages[0],
+        {
+            "bottle_rebuild",
+            "bottles",
+            "dependencies",
+            "formula_path",
+            "formula_revision",
+            "formula_source_sha256",
+            "full_name",
+            "name",
+            "version",
+        },
+        f"predecessor {name}/{arch} package",
+    )
+    dependencies: list[dict[str, str]] = []
+    if not isinstance(package["dependencies"], list):
+        fail(f"predecessor {name}/{arch} dependencies are invalid")
+    for position, dependency in enumerate(package["dependencies"]):
+        dependency = exact_keys(
+            dependency,
+            {"full_name", "name", "version"},
+            f"predecessor {name}/{arch} dependency #{position}",
+        )
+        if dependency["full_name"] != (
+            f"{authority['tap_name']}/{dependency['name']}"
+        ):
+            fail(f"predecessor {name}/{arch} dependency is ambiguous")
+        dependencies.append(
+            {
+                "full_name": dependency["full_name"],
+                "version": dependency["version"],
+            }
+        )
+    bottles = package["bottles"]
+    if not isinstance(bottles, list) or len(bottles) != 1:
+        fail(f"predecessor {name}/{arch} package has no exact bottle")
+    bottle = bottles[0]
+    required_bottle_keys = {
+        "arch",
+        "archived_formula_sha256",
+        "bottle_file",
+        "bottle_tag",
+        "browser_compatible",
+        "build",
+        "built_at",
+        "built_by",
+        "cache_key_sha",
+        "cellar",
+        "env",
+        "fork_instrumentation",
+        "links",
+        "payload_root",
+        "prefix",
+        "receipts",
+        "runtime_support",
+        "status",
+        "url",
+        "validation",
+    }
+    if (
+        not isinstance(bottle, dict)
+        or not required_bottle_keys <= set(bottle)
+        or not set(bottle) <= required_bottle_keys | {"built_from", "keg"}
+    ):
+        fail(f"predecessor {name}/{arch} bottle is ambiguous")
+    expected_file = f"../{kind}/bottle.tar.gz"
+    expected_url = (
+        "https://ghcr.io/v2/"
+        f"{authority['tap_repository'].lower()}/{name}/"
+        f"blobs/sha256:{archive_record['sha256']}"
+    )
+    layout = campaign_guest_layout(campaign)
+    if (
+        sidecars["schema"] != 1
+        or sidecars["kandelo_abi"] != authority["current_kandelo_abi"]
+        or sidecars["kandelo_commit"] != authority["kandelo_commit"]
+        or require_string(
+            sidecars["kandelo_repository"],
+            f"predecessor {name}/{arch} Kandelo repository",
+            REPOSITORY,
+        ).lower()
+        != "automattic/kandelo"
+        or sidecars["release_tag"]
+        != f"bottles-abi-v{authority['current_kandelo_abi']}"
+        or sidecars["tap_commit"] != authority["source_tap_commit"]
+        or sidecars["tap_name"] != authority["tap_name"]
+        or require_string(
+            sidecars["tap_repository"],
+            f"predecessor {name}/{arch} tap repository",
+            REPOSITORY,
+        ).lower()
+        != authority["tap_repository"].lower()
+        or package["name"] != name
+        or package["full_name"] != f"{authority['tap_name']}/{name}"
+        or package["version"] != formula["version"]
+        or package["bottle_rebuild"]
+        != formula["destination"]["bottle_rebuild"]
+        or package["formula_path"] != f"Formula/{name}.rb"
+        or package["formula_source_sha256"] != formula["formula_source"][
+            "sha256"
+        ]
+        or dependencies != formula["dependencies"]
+        or bottle["arch"] != arch
+        or bottle["bottle_tag"] != f"{arch}_kandelo"
+        or bottle["bottle_file"] != expected_file
+        or bottle["cache_key_sha"] != archive_record["sha256"]
+        or bottle["cellar"] != layout["cellar"]
+        or bottle["prefix"] != layout["prefix"]
+        or bottle["status"] != "success"
+        or bottle["url"] != expected_url
+    ):
+        fail(f"predecessor {name}/{arch} sidecars are inconsistent")
+    if not isinstance(package["formula_revision"], int) or isinstance(
+        package["formula_revision"], bool
+    ):
+        fail(f"predecessor {name}/{arch} Formula revision is invalid")
+    archived_formula_sha256 = require_string(
+        bottle["archived_formula_sha256"],
+        f"predecessor {name}/{arch} archived Formula SHA-256",
+        SHA256,
+    )
+    if not isinstance(bottle["browser_compatible"], bool):
+        fail(f"predecessor {name}/{arch} browser compatibility is invalid")
+    for field in ("build", "env", "validation"):
+        if not isinstance(bottle[field], dict):
+            fail(f"predecessor {name}/{arch} {field} is invalid")
+    for field in ("links", "receipts", "runtime_support"):
+        if not isinstance(bottle[field], list):
+            fail(f"predecessor {name}/{arch} {field} is invalid")
+    if bottle["fork_instrumentation"] not in (
+        "disabled",
+        "not-required",
+        "required",
+        "unknown",
+    ):
+        fail(f"predecessor {name}/{arch} fork instrumentation is invalid")
+    built_at = require_string(
+        bottle["built_at"], f"predecessor {name}/{arch} built_at"
+    )
+    built_by = require_string(
+        bottle["built_by"], f"predecessor {name}/{arch} built_by"
+    )
+    if not built_by.startswith("https://"):
+        fail(f"predecessor {name}/{arch} built_by is not HTTPS")
+    if "built_from" in bottle:
+        built_from = validate_built_from_record(
+            bottle["built_from"],
+            f"predecessor {name}/{arch} built_from",
+        )
+    else:
+        # WHY: a build handoff records its producer at the sidecar root,
+        # while a reuse handoff already carries the older producer inside the
+        # bottle.  Normalize both forms without claiming the successor built
+        # bytes that it only revalidated.
+        built_from = {
+            "formula_sha256": archived_formula_sha256,
+            "kandelo_commit": sidecars["kandelo_commit"],
+            "kandelo_repository": sidecars["kandelo_repository"],
+            "tap_commit": sidecars["tap_commit"],
+            "tap_repository": sidecars["tap_repository"],
+        }
+        validate_built_from_record(
+            built_from, f"predecessor {name}/{arch} synthesized producer"
+        )
+    return (
+        {
+            "archived_formula_sha256": archived_formula_sha256,
+            "browser_compatible": bottle["browser_compatible"],
+            "build": bottle["build"],
+            "built_at": built_at,
+            "built_by": built_by,
+            "built_from": built_from,
+            "cache_key_sha": bottle["cache_key_sha"],
+            "env": bottle["env"],
+            "fork_instrumentation": bottle["fork_instrumentation"],
+            "formula_revision": package["formula_revision"],
+            "links": bottle["links"],
+            "payload_root": require_string(
+                bottle["payload_root"],
+                f"predecessor {name}/{arch} payload root",
+            ),
+            "receipts": bottle["receipts"],
+            "runtime_support": bottle["runtime_support"],
+            "url": bottle["url"],
+            "validation": bottle["validation"],
+        },
+        archive_record,
+    )
+
+
+def predecessor_reuse_sidecars_input(
+    campaign: dict[str, Any],
+    formula: dict[str, Any],
+    arch: str,
+    extracted: dict[str, Any],
+) -> dict[str, Any]:
+    authority = campaign["authority"]
+    layout = campaign_guest_layout(campaign)
+    name = formula["name"]
+    dependencies = [
+        {
+            "full_name": value["full_name"],
+            "name": value["full_name"].rsplit("/", 1)[1],
+            "version": value["version"],
+        }
+        for value in formula["dependencies"]
+    ]
+    return {
+        "generated_at": extracted["built_at"],
+        "generator": "Kandelo Homebrew predecessor handoff reseal",
+        "kandelo_abi": authority["current_kandelo_abi"],
+        "kandelo_commit": authority["kandelo_commit"],
+        "kandelo_repository": "Automattic/kandelo",
+        "packages": [
+            {
+                "bottle_rebuild": formula["destination"]["bottle_rebuild"],
+                "bottles": [
+                    {
+                        "arch": arch,
+                        "archived_formula_sha256": extracted[
+                            "archived_formula_sha256"
+                        ],
+                        "bottle_file": "../reuse/bottle.tar.gz",
+                        "bottle_tag": f"{arch}_kandelo",
+                        "browser_compatible": extracted[
+                            "browser_compatible"
+                        ],
+                        "build": extracted["build"],
+                        "built_at": extracted["built_at"],
+                        "built_by": extracted["built_by"],
+                        "built_from": extracted["built_from"],
+                        "cache_key_sha": extracted["cache_key_sha"],
+                        "cellar": layout["cellar"],
+                        "env": extracted["env"],
+                        "fork_instrumentation": extracted[
+                            "fork_instrumentation"
+                        ],
+                        "keg": (
+                            f"{layout['cellar']}/{name}/{formula['version']}"
+                        ),
+                        "links": extracted["links"],
+                        "payload_root": extracted["payload_root"],
+                        "prefix": layout["prefix"],
+                        "receipts": extracted["receipts"],
+                        "runtime_support": extracted["runtime_support"],
+                        "status": "success",
+                        "url": extracted["url"],
+                        "validation": extracted["validation"],
+                    }
+                ],
+                "dependencies": dependencies,
+                "formula_path": f"Formula/{name}.rb",
+                "formula_revision": extracted["formula_revision"],
+                "formula_source_sha256": formula["formula_source"][
+                    "sha256"
+                ],
+                "full_name": f"{authority['tap_name']}/{name}",
+                "name": name,
+                "version": formula["version"],
+            }
+        ],
+        "release_tag": f"bottles-abi-v{authority['current_kandelo_abi']}",
+        "schema": 1,
+        "tap_commit": authority["source_tap_commit"],
+        "tap_name": authority["tap_name"],
+        "tap_repository": authority["tap_repository"],
+    }
+
+
+def predecessor_reuse_evidence_document(
+    *,
+    campaign_payload: bytes,
+    formula: dict[str, Any],
+    variant: dict[str, Any],
+    arch: str,
+    extracted: dict[str, Any],
+    predecessor: dict[str, Any],
+    destination: dict[str, Any],
+    dependency_bottles: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "arch": arch,
+        "campaign_sha256": sha256_bytes(campaign_payload),
+        "dependency_bottles": dependency_bottles,
+        "destination": destination,
+        "extracted": extracted,
+        "formula": formula["name"],
+        "kind": "kandelo-homebrew-prefix-predecessor-reuse-publication",
+        "predecessor": predecessor,
+        "schema": 2,
+        "variant_sha256": sha256_bytes(canonical_json(variant)),
+    }
+
+
 def reuse_evidence_document(
     campaign_payload: bytes,
     formula: dict[str, Any],
@@ -2478,6 +3079,253 @@ def reuse_evidence_document(
     }
 
 
+def validate_predecessor_reuse_publication_shape(
+    publication: pathlib.Path,
+    campaign: dict[str, Any],
+    formula: dict[str, Any],
+    arch: str,
+    evidence: dict[str, Any],
+) -> None:
+    name = formula["name"]
+    variant, reuse_source = validate_predecessor_reuse_variant(
+        campaign, formula, arch
+    )
+    evidence = exact_keys(
+        evidence,
+        {
+            "arch",
+            "campaign_sha256",
+            "dependency_bottles",
+            "destination",
+            "extracted",
+            "formula",
+            "kind",
+            "predecessor",
+            "schema",
+            "variant_sha256",
+        },
+        f"{name}/{arch} predecessor reuse evidence",
+    )
+    if (
+        evidence["schema"] != 2
+        or evidence["kind"]
+        != "kandelo-homebrew-prefix-predecessor-reuse-publication"
+        or evidence["arch"] != arch
+        or evidence["formula"] != name
+        or evidence["campaign_sha256"]
+        != sha256_bytes(pretty_json(campaign))
+        or evidence["variant_sha256"]
+        != sha256_bytes(canonical_json(variant))
+    ):
+        fail(f"{name}/{arch} predecessor reuse evidence is invalid")
+    predecessor = exact_keys(
+        evidence["predecessor"],
+        {
+            "bottle",
+            "campaign_sha256",
+            "campaign_tag",
+            "handoff_sha256",
+            "handoff_tag",
+            "publication_kind",
+            "source",
+        },
+        f"{name}/{arch} predecessor identity",
+    )
+    campaign_match = CAMPAIGN_TAG.fullmatch(
+        require_string(
+            predecessor["campaign_tag"],
+            f"{name}/{arch} predecessor campaign tag",
+        )
+    )
+    handoff_match = HANDOFF_TAG.fullmatch(
+        require_string(
+            predecessor["handoff_tag"],
+            f"{name}/{arch} predecessor handoff tag",
+        )
+    )
+    if campaign_match is None or handoff_match is None:
+        fail(f"{name}/{arch} predecessor tags are not content-addressed")
+    if (
+        predecessor["campaign_tag"] != reuse_source["campaign_tag"]
+        or predecessor["handoff_tag"] != reuse_source["handoff_tag"]
+        or predecessor["campaign_sha256"] != campaign_match.group(1)
+        or predecessor["handoff_sha256"] != handoff_match.group(1)
+        or predecessor["publication_kind"] not in ("build", "reuse")
+    ):
+        fail(f"{name}/{arch} predecessor identity is inconsistent")
+    bottle = exact_keys(
+        predecessor["bottle"],
+        {"bytes", "sha256"},
+        f"{name}/{arch} predecessor bottle",
+    )
+    bottle_bytes = require_int(
+        bottle["bytes"],
+        f"{name}/{arch} predecessor bottle bytes",
+        1,
+        MAX_ASSET_BYTES,
+    )
+    bottle_sha256 = require_string(
+        bottle["sha256"],
+        f"{name}/{arch} predecessor bottle SHA-256",
+        SHA256,
+    )
+    source = exact_keys(
+        predecessor["source"],
+        {
+            "kandelo_commit",
+            "source_tap_commit",
+            "target_tree_git_oid",
+            "tap_name",
+            "tap_repository",
+        },
+        f"{name}/{arch} predecessor source",
+    )
+    for key in (
+        "kandelo_commit",
+        "source_tap_commit",
+        "target_tree_git_oid",
+    ):
+        require_string(
+            source[key], f"{name}/{arch} predecessor {key}", COMMIT
+        )
+    authority = campaign["authority"]
+    if (
+        source["target_tree_git_oid"] != source_tree_identity(authority)
+        or source["tap_name"] != authority["tap_name"]
+        or require_string(
+            source["tap_repository"],
+            f"{name}/{arch} predecessor tap repository",
+            REPOSITORY,
+        ).lower()
+        != authority["tap_repository"].lower()
+    ):
+        fail(f"{name}/{arch} predecessor source closure changed")
+    destination = exact_keys(
+        evidence["destination"],
+        {"manifest_digest", "reference", "remote", "source_closure_sha256"},
+        f"{name}/{arch} predecessor destination",
+    )
+    admission = formula["destination"]["admission"]
+    if (
+        destination["manifest_digest"] != admission["probe"]["digest"]
+        or destination["reference"] != formula["destination"]["reference"]
+        or destination["remote"] != formula["destination"]["remote"]
+        or OCI_DIGEST.fullmatch(destination["manifest_digest"]) is None
+    ):
+        fail(f"{name}/{arch} predecessor destination changed")
+    require_string(
+        destination["source_closure_sha256"],
+        f"{name}/{arch} source closure SHA-256",
+        SHA256,
+    )
+    dependency_bottles = evidence["dependency_bottles"]
+    if not isinstance(dependency_bottles, list):
+        fail(f"{name}/{arch} predecessor dependencies are invalid")
+    prior = ""
+    for position, dependency in enumerate(dependency_bottles):
+        dependency = exact_keys(
+            dependency,
+            {
+                "bytes",
+                "formula",
+                "predecessor_handoff_tag",
+                "sha256",
+                "successor_handoff_tag",
+            },
+            f"{name}/{arch} predecessor dependency #{position}",
+        )
+        dependency_name = require_string(
+            dependency["formula"],
+            f"{name}/{arch} predecessor dependency #{position}",
+            FORMULA,
+        )
+        if dependency_name <= prior:
+            fail(f"{name}/{arch} predecessor dependencies are not sorted")
+        prior = dependency_name
+        require_int(
+            dependency["bytes"],
+            f"{name}/{arch} predecessor dependency bytes",
+            1,
+            MAX_ASSET_BYTES,
+        )
+        require_string(
+            dependency["sha256"],
+            f"{name}/{arch} predecessor dependency SHA-256",
+            SHA256,
+        )
+        for key in ("predecessor_handoff_tag", "successor_handoff_tag"):
+            require_string(
+                dependency[key],
+                f"{name}/{arch} dependency {key}",
+                HANDOFF_TAG,
+            )
+    extracted = exact_keys(
+        evidence["extracted"],
+        {
+            "archived_formula_sha256",
+            "browser_compatible",
+            "build",
+            "built_at",
+            "built_by",
+            "built_from",
+            "cache_key_sha",
+            "env",
+            "fork_instrumentation",
+            "formula_revision",
+            "links",
+            "payload_root",
+            "receipts",
+            "runtime_support",
+            "url",
+            "validation",
+        },
+        f"{name}/{arch} predecessor extracted evidence",
+    )
+    validate_built_from_record(
+        extracted["built_from"],
+        f"{name}/{arch} predecessor producer",
+    )
+    if (
+        extracted["cache_key_sha"] != bottle_sha256
+        or extracted["url"]
+        != (
+            "https://ghcr.io/v2/"
+            f"{authority['tap_repository'].lower()}/{name}/"
+            f"blobs/sha256:{bottle_sha256}"
+        )
+    ):
+        fail(f"{name}/{arch} predecessor extracted bottle changed")
+    archive = regular_file(
+        publication / "reuse/bottle.tar.gz",
+        f"{name}/{arch} predecessor reused bottle",
+        MAX_ASSET_BYTES,
+    )
+    if archive.stat().st_size != bottle_bytes or sha256_file(
+        archive
+    ) != bottle_sha256:
+        fail(f"{name}/{arch} predecessor reused bottle changed")
+    sidecars, _sidecars_payload = load_json_bytes(
+        publication / "composition/sidecars-input.json",
+        f"{name}/{arch} predecessor reuse sidecars input",
+    )
+    if sidecars != predecessor_reuse_sidecars_input(
+        campaign, formula, arch, extracted
+    ):
+        fail(f"{name}/{arch} predecessor reuse sidecars are substituted")
+    bottle_json, _bottle_payload = load_json_bytes(
+        publication / "reuse/bottle.json",
+        f"{name}/{arch} predecessor reuse bottle JSON",
+    )
+    if bottle_json != reuse_bottle_json(
+        campaign,
+        formula,
+        arch,
+        bottle_sha256,
+        campaign_guest_layout(campaign),
+    ):
+        fail(f"{name}/{arch} predecessor reuse bottle JSON is substituted")
+
+
 def validate_reuse_publication_shape(
     publication: pathlib.Path,
     campaign: dict[str, Any],
@@ -2493,11 +3341,24 @@ def validate_reuse_publication_shape(
             f"{name}/{arch} reuse publication file set differs "
             "from the reuse contract"
         )
-    variant = validate_reuse_variant(campaign, formula, arch)
     evidence, _payload = load_json_bytes(
         publication / "reuse/evidence.json",
         f"{name}/{arch} reuse evidence",
     )
+    if (
+        isinstance(evidence, dict)
+        and evidence.get("kind")
+        == "kandelo-homebrew-prefix-predecessor-reuse-publication"
+    ):
+        validate_predecessor_reuse_publication_shape(
+            publication,
+            campaign,
+            formula,
+            arch,
+            evidence,
+        )
+        return
+    variant = validate_reuse_variant(campaign, formula, arch)
     evidence = exact_keys(
         evidence,
         {
@@ -6737,6 +7598,299 @@ def snapshot_publication(
     return destination, records
 
 
+PredecessorDestinationVerifier = Callable[
+    [
+        dict[str, Any],
+        dict[str, Any],
+        str,
+        pathlib.Path,
+        dict[str, Any],
+        dict[str, Any],
+    ],
+    dict[str, Any],
+]
+
+
+def load_oci_json_blob(
+    layout: pathlib.Path,
+    descriptor: dict[str, Any],
+    *,
+    media_type: str,
+    maximum: int,
+    label: str,
+) -> dict[str, Any]:
+    descriptor = exact_keys(
+        descriptor,
+        {"digest", "mediaType", "size"},
+        f"{label} descriptor",
+    )
+    digest = require_string(
+        descriptor["digest"], f"{label} digest", OCI_DIGEST
+    ).removeprefix("sha256:")
+    size = require_int(
+        descriptor["size"], f"{label} bytes", 1, maximum
+    )
+    if descriptor["mediaType"] != media_type:
+        fail(f"{label} has the wrong OCI media type")
+    path = regular_file(
+        layout / "blobs/sha256" / digest,
+        label,
+        maximum,
+    )
+    if path.stat().st_size != size or sha256_file(path) != digest:
+        fail(f"{label} differs from its OCI descriptor")
+    value, _payload = load_json_bytes(path, label, canonical=False)
+    if not isinstance(value, dict):
+        fail(f"{label} is not a JSON object")
+    return value
+
+
+def default_predecessor_destination_verifier(
+    campaign: dict[str, Any],
+    formula: dict[str, Any],
+    arch: str,
+    source_tap_root: pathlib.Path,
+    archive_record: dict[str, Any],
+    extracted: dict[str, Any],
+) -> dict[str, Any]:
+    # WHY: The current tap checkout proves the successor Formula contract,
+    # but it cannot recreate historical source-closure evidence after the
+    # closure parser evolves. Read that evidence from the immutable public
+    # OCI index; campaign compatibility independently binds Formula source,
+    # dependencies, ABI, Homebrew, and every critical validation tool.
+    del source_tap_root
+    name = formula["name"]
+    destination = formula["destination"]
+    expected_digest = destination["admission"]["probe"]["digest"]
+    temporary = pathlib.Path(
+        tempfile.mkdtemp(prefix=f"kandelo-predecessor-{name}-{arch}-")
+    )
+    try:
+        registry_config = temporary / "anonymous-registry.json"
+        registry_config.write_bytes(pretty_json({"auths": {}}))
+        layout = temporary / "layout"
+        result_path = temporary / "import.json"
+        run_oci_layout_command(
+            [
+                "import-public-index",
+                "--remote",
+                destination["remote"],
+                "--reference",
+                destination["reference"],
+                "--registry-config",
+                str(registry_config),
+                "--out-layout",
+                str(layout),
+                "--out-result",
+                str(result_path),
+            ],
+            f"import predecessor OCI index for {name}/{arch}",
+        )
+        result, _result_payload = load_json_bytes(
+            result_path, f"{name}/{arch} predecessor OCI import"
+        )
+        if (
+            result
+            != {
+                "digest": expected_digest,
+                "layout": str(layout),
+                "schema": 1,
+                "status": "present",
+            }
+        ):
+            fail(f"{name}/{arch} predecessor OCI destination changed")
+
+        authority = campaign["authority"]
+        index, _index_payload = load_json_bytes(
+            layout / "index.json", f"{name}/{arch} imported OCI index"
+        )
+        index = exact_keys(
+            index,
+            {"manifests", "mediaType", "schemaVersion"},
+            f"{name}/{arch} imported OCI index",
+        )
+        roots = index["manifests"]
+        if (
+            index["schemaVersion"] != 2
+            or index["mediaType"]
+            != "application/vnd.oci.image.index.v1+json"
+            or not isinstance(roots, list)
+            or len(roots) != 1
+        ):
+            fail(f"{name}/{arch} imported OCI root is invalid")
+        root = exact_keys(
+            roots[0],
+            {"annotations", "digest", "mediaType", "size"},
+            f"{name}/{arch} imported OCI root",
+        )
+        if root["digest"] != expected_digest:
+            fail(f"{name}/{arch} imported OCI root digest changed")
+        top = load_oci_json_blob(
+            layout,
+            {
+                "digest": root["digest"],
+                "mediaType": root["mediaType"],
+                "size": root["size"],
+            },
+            media_type="application/vnd.oci.image.index.v1+json",
+            maximum=MAX_JSON_BYTES,
+            label=f"{name}/{arch} public top index",
+        )
+        top = exact_keys(
+            top,
+            {"annotations", "manifests", "mediaType", "schemaVersion"},
+            f"{name}/{arch} public top index",
+        )
+        annotation_keys = {
+            "com.github.package.type",
+            "dev.kandelo.homebrew.abi",
+            "dev.kandelo.homebrew.bottle_rebuild",
+            "dev.kandelo.homebrew.formula",
+            "dev.kandelo.homebrew.formula_revision",
+            "dev.kandelo.homebrew.formula_source_identity_sha256",
+            "dev.kandelo.homebrew.pkg_version",
+            "dev.kandelo.homebrew.source_closure_sha256",
+            "dev.kandelo.homebrew.tap_repository",
+            "org.opencontainers.image.ref.name",
+            "org.opencontainers.image.source",
+            "org.opencontainers.image.title",
+            "org.opencontainers.image.version",
+        }
+        annotations = exact_keys(
+            top["annotations"],
+            annotation_keys,
+            f"{name}/{arch} public top annotations",
+        )
+        source_closure_sha256 = require_string(
+            annotations["dev.kandelo.homebrew.source_closure_sha256"],
+            f"{name}/{arch} source closure SHA-256",
+            SHA256,
+        )
+        formula_identity = formula["formula_source"][
+            "identity_excluding_bottle_sha256"
+        ]
+        expected_annotations = {
+            "com.github.package.type": "homebrew_bottle",
+            "dev.kandelo.homebrew.abi": str(
+                authority["current_kandelo_abi"]
+            ),
+            "dev.kandelo.homebrew.bottle_rebuild": str(
+                formula["destination"]["bottle_rebuild"]
+            ),
+            "dev.kandelo.homebrew.formula": name,
+            "dev.kandelo.homebrew.formula_revision": str(
+                extracted["formula_revision"]
+            ),
+            "dev.kandelo.homebrew.formula_source_identity_sha256": (
+                formula_identity
+            ),
+            "dev.kandelo.homebrew.pkg_version": formula["version"],
+            "dev.kandelo.homebrew.source_closure_sha256": (
+                source_closure_sha256
+            ),
+            "dev.kandelo.homebrew.tap_repository": authority[
+                "tap_repository"
+            ].lower(),
+            "org.opencontainers.image.ref.name": destination["reference"],
+            "org.opencontainers.image.source": (
+                "https://github.com/"
+                f"{authority['tap_repository'].lower()}"
+            ),
+            "org.opencontainers.image.title": (
+                f"{authority['tap_name']}/{name}"
+            ),
+            "org.opencontainers.image.version": formula["version"],
+        }
+        if (
+            top["schemaVersion"] != 2
+            or top["mediaType"]
+            != "application/vnd.oci.image.index.v1+json"
+            or annotations != expected_annotations
+        ):
+            fail(f"{name}/{arch} public top metadata changed")
+        manifests = top["manifests"]
+        declared_arches = sorted(
+            variant["arch"]
+            for variant in formula["variants"]
+            if isinstance(variant, dict) and "reuse_source" in variant
+        )
+        actual_arches = sorted(
+            child.get("platform", {}).get("variant")
+            for child in manifests
+            if isinstance(child, dict)
+            and isinstance(child.get("platform"), dict)
+        ) if isinstance(manifests, list) else []
+        if actual_arches != declared_arches:
+            fail(f"{name}/{arch} public OCI architecture set changed")
+        matching = [
+            child
+            for child in manifests
+            if child.get("platform")
+            == {"architecture": "wasm", "os": "kandelo", "variant": arch}
+        ]
+        if len(matching) != 1:
+            fail(f"{name}/{arch} public OCI child is missing")
+        child = exact_keys(
+            matching[0],
+            {"annotations", "digest", "mediaType", "platform", "size"},
+            f"{name}/{arch} public child descriptor",
+        )
+        child_manifest = load_oci_json_blob(
+            layout,
+            {
+                "digest": child["digest"],
+                "mediaType": child["mediaType"],
+                "size": child["size"],
+            },
+            media_type="application/vnd.oci.image.manifest.v1+json",
+            maximum=MAX_JSON_BYTES,
+            label=f"{name}/{arch} public child manifest",
+        )
+        child_manifest = exact_keys(
+            child_manifest,
+            {"annotations", "config", "layers", "mediaType", "schemaVersion"},
+            f"{name}/{arch} public child manifest",
+        )
+        layers = child_manifest["layers"]
+        if not isinstance(layers, list) or len(layers) != 1:
+            fail(f"{name}/{arch} public child has no exact bottle layer")
+        layer = exact_keys(
+            layers[0],
+            {"annotations", "digest", "mediaType", "size"},
+            f"{name}/{arch} public bottle layer",
+        )
+        expected_layer_digest = f"sha256:{archive_record['sha256']}"
+        if (
+            layer["digest"] != expected_layer_digest
+            or layer["size"] != archive_record["bytes"]
+            or layer["mediaType"]
+            != "application/vnd.oci.image.layer.v1.tar+gzip"
+            or child["annotations"].get("sh.brew.bottle.digest")
+            != archive_record["sha256"]
+            or child["annotations"].get("sh.brew.bottle.size")
+            != str(archive_record["bytes"])
+        ):
+            fail(f"{name}/{arch} public OCI bottle layer changed")
+        layer_path = regular_file(
+            layout / "blobs/sha256" / archive_record["sha256"],
+            f"{name}/{arch} public OCI bottle layer",
+            MAX_ASSET_BYTES,
+        )
+        if (
+            layer_path.stat().st_size != archive_record["bytes"]
+            or sha256_file(layer_path) != archive_record["sha256"]
+        ):
+            fail(f"{name}/{arch} public OCI bottle bytes changed")
+        return {
+            "manifest_digest": expected_digest,
+            "reference": destination["reference"],
+            "remote": destination["remote"],
+            "source_closure_sha256": source_closure_sha256,
+        }
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+
+
 def derive_reuse(
     *,
     campaign_path: pathlib.Path,
@@ -6919,6 +8073,455 @@ def derive_reuse(
         validate_dependency_records(
             manifest["dependency_handoffs"], dependency_identities
         )
+        (result / "handoff.json").write_bytes(pretty_json(manifest))
+        load_handoff(result, campaign, campaign_payload)
+        os.rename(result, output)
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+
+
+def handoff_bottle_identity(
+    root: pathlib.Path,
+    handoff: dict[str, Any],
+    campaign: dict[str, Any],
+    arch: str,
+) -> dict[str, Any]:
+    name = handoff["formula"]["name"]
+    publication = handoff_publication(
+        handoff, arch, f"{name}/{arch} bottle identity"
+    )
+    archive_path = (
+        f"payload/{arch}/"
+        + publication_semantic_path(
+            publication,
+            "bottle_archive",
+            f"{name}/{arch} bottle identity",
+        )
+    )
+    bottle_json_path = (
+        f"payload/{arch}/"
+        + publication_semantic_path(
+            publication,
+            "bottle_json",
+            f"{name}/{arch} bottle identity",
+        )
+    )
+    archive_record = handoff_publication_file(
+        publication,
+        archive_path,
+        f"{name}/{arch} bottle identity",
+    )
+    bottle_json_record = handoff_publication_file(
+        publication,
+        bottle_json_path,
+        f"{name}/{arch} bottle identity",
+    )
+    _canonical, digest, _root_url, _cellar = (
+        validate_dependency_bottle_input(
+            bottle_json=root / bottle_json_record["path"],
+            handoff=handoff,
+            arch=arch,
+            archive_record=archive_record,
+            campaign=campaign,
+        )
+    )
+    if digest != archive_record["sha256"]:
+        fail(f"{name}/{arch} bottle identity is inconsistent")
+    return {
+        "bytes": archive_record["bytes"],
+        "path": archive_record["path"],
+        "sha256": archive_record["sha256"],
+    }
+
+
+def validate_predecessor_campaign_compatibility(
+    campaign: dict[str, Any],
+    predecessor: dict[str, Any],
+    formula: dict[str, Any],
+    predecessor_formula: dict[str, Any],
+) -> None:
+    name = formula["name"]
+    authority = campaign["authority"]
+    predecessor_authority = predecessor["authority"]
+    if (
+        campaign_formula_evidence(campaign, formula)
+        != campaign_formula_evidence(predecessor, predecessor_formula)
+        or authority["current_kandelo_abi"]
+        != predecessor_authority["current_kandelo_abi"]
+        or authority["guest_layout"]
+        != predecessor_authority["guest_layout"]
+        or source_tree_identity(authority)
+        != source_tree_identity(predecessor_authority)
+        or authority["tap_name"] != predecessor_authority["tap_name"]
+        or authority["tap_repository"].lower()
+        != predecessor_authority["tap_repository"].lower()
+        or authority.get("native_homebrew_commit")
+        != predecessor_authority.get("native_homebrew_commit")
+        or authority.get("abi_snapshot")
+        != predecessor_authority.get("abi_snapshot")
+    ):
+        fail(f"{name} predecessor campaign changes a bottle input")
+    tools = authority.get("tools")
+    predecessor_tools = predecessor_authority.get("tools")
+    required_tools = {
+        "host/src/homebrew-vfs-fetch.ts",
+        "scripts/homebrew-formula-source-digest.rb",
+        "scripts/homebrew-inspect-bottle.py",
+        "scripts/homebrew-publication-limits.sh",
+        "scripts/homebrew-validate-wasm-artifact.sh",
+        "scripts/homebrew-verify-public-bottle.ts",
+    }
+    if (
+        not isinstance(tools, dict)
+        or not isinstance(predecessor_tools, dict)
+        or any(
+            tools.get(path) != predecessor_tools.get(path)
+            or not isinstance(tools.get(path), str)
+            or SHA256.fullmatch(tools[path]) is None
+            for path in required_tools
+        )
+    ):
+        fail(f"{name} predecessor validation contract changed")
+
+
+def validate_predecessor_recovery_binding(
+    *,
+    campaign: dict[str, Any],
+    predecessor: dict[str, Any],
+    predecessor_payload: bytes,
+    campaign_tag: str,
+) -> None:
+    # WHY: the predecessor manifest describes the bytes that already exist,
+    # but only the current campaign may authorize their use now. Bind the
+    # immutable old manifest back to the exact recovery record instead of
+    # treating possession of an old handoff as successor authority.
+    records = campaign["authority"].get("predecessor_recovery")
+    if not isinstance(records, list):
+        fail("campaign lacks predecessor recovery authority")
+    matching = [
+        record
+        for record in records
+        if isinstance(record, dict)
+        and isinstance(record.get("campaign"), dict)
+        and record["campaign"].get("tag") == campaign_tag
+    ]
+    if len(matching) != 1:
+        fail("predecessor campaign has no unique recovery authority")
+    record = matching[0]
+    campaign_sha256 = sha256_bytes(predecessor_payload)
+    predecessor_authority = predecessor["authority"]
+    if (
+        record["campaign"]["sha256"] != campaign_sha256
+        or record["kandelo_commit"]
+        != predecessor_authority["kandelo_commit"]
+        or record["source_tap_commit"]
+        != predecessor_authority["source_tap_commit"]
+        or record["target_tree_git_oid"]
+        != source_tree_identity(predecessor_authority)
+    ):
+        fail("predecessor campaign differs from its recovery authority")
+
+
+def derive_predecessor_reuse(
+    *,
+    campaign_path: pathlib.Path,
+    source_tap_root: pathlib.Path,
+    predecessor_campaign_path: pathlib.Path,
+    predecessor_handoff_root: pathlib.Path,
+    formula_name: str,
+    arch: str,
+    predecessor_dependency_roots: list[pathlib.Path],
+    dependency_roots: list[pathlib.Path],
+    output: pathlib.Path,
+    destination_verifier: PredecessorDestinationVerifier = (
+        default_predecessor_destination_verifier
+    ),
+) -> None:
+    campaign, campaign_payload, index = load_campaign(campaign_path)
+    predecessor, predecessor_payload, predecessor_index = load_campaign(
+        predecessor_campaign_path
+    )
+    formula_name = require_string(formula_name, "Formula name", FORMULA)
+    if formula_name not in index or formula_name not in predecessor_index:
+        fail(f"Formula {formula_name} is outside a predecessor campaign")
+    if arch not in ("wasm32", "wasm64"):
+        fail("predecessor reuse architecture is invalid")
+    formula = index[formula_name]
+    predecessor_formula = predecessor_index[formula_name]
+    variant, reuse_source = validate_predecessor_reuse_variant(
+        campaign, formula, arch
+    )
+    predecessor_campaign_match = CAMPAIGN_TAG.fullmatch(
+        reuse_source["campaign_tag"]
+    )
+    if predecessor_campaign_match is None:
+        fail("predecessor campaign tag is not content-addressed")
+    if sha256_bytes(predecessor_payload) != predecessor_campaign_match.group(1):
+        fail("predecessor campaign tag differs from its manifest")
+    validate_predecessor_campaign_compatibility(
+        campaign, predecessor, formula, predecessor_formula
+    )
+    source_tap_root = validate_source_root(
+        source_tap_root, campaign, formula
+    )
+    validate_predecessor_recovery_binding(
+        campaign=campaign,
+        predecessor=predecessor,
+        predecessor_payload=predecessor_payload,
+        campaign_tag=reuse_source["campaign_tag"],
+    )
+    predecessor_handoff_root = real_directory(
+        predecessor_handoff_root, "predecessor Formula handoff"
+    )
+    predecessor_dependency_roots = [
+        real_directory(root, "predecessor dependency handoff")
+        for root in predecessor_dependency_roots
+    ]
+    dependency_roots = [
+        real_directory(root, "successor dependency handoff")
+        for root in dependency_roots
+    ]
+    output = validate_new_output(
+        output,
+        "predecessor reuse Formula handoff output",
+        (
+            campaign_path,
+            source_tap_root,
+            predecessor_campaign_path,
+            predecessor_handoff_root,
+            *predecessor_dependency_roots,
+            *dependency_roots,
+        ),
+    )
+    predecessor_handoff, predecessor_handoff_payload = load_handoff(
+        predecessor_handoff_root,
+        predecessor,
+        predecessor_payload,
+    )
+    predecessor_handoff_match = HANDOFF_TAG.fullmatch(
+        reuse_source["handoff_tag"]
+    )
+    if predecessor_handoff_match is None:
+        fail("predecessor handoff tag is not content-addressed")
+    if (
+        sha256_bytes(predecessor_handoff_payload)
+        != predecessor_handoff_match.group(1)
+        or predecessor_handoff["formula"]
+        != campaign_formula_evidence(campaign, formula)
+    ):
+        fail("predecessor Formula handoff differs from its successor")
+    validate_handoff_arches(predecessor_handoff, predecessor_formula)
+    predecessor_publication = handoff_publication(
+        predecessor_handoff,
+        arch,
+        f"predecessor {formula_name}/{arch}",
+    )
+    predecessor_kind = publication_kind(
+        predecessor_publication,
+        f"predecessor {formula_name}/{arch}",
+    )
+    # WHY: the old dependency handoffs prove what the bottle was built with;
+    # the new handoffs prove what the successor campaign will expose. Both
+    # closures must describe the same bottle bytes before this Formula can be
+    # rebound without rebuilding it.
+    (
+        predecessor_dependency_records,
+        predecessor_dependency_identities,
+        predecessor_loaded_dependencies,
+    ) = load_dependency_handoff_set(
+        predecessor_dependency_roots,
+        predecessor,
+        predecessor_payload,
+        predecessor_index,
+        formula_name,
+        (arch,),
+    )
+    if (
+        predecessor_handoff["dependency_handoffs"]
+        != predecessor_dependency_records
+    ):
+        fail("predecessor handoff dependency evidence changed")
+    validate_dependency_records(
+        predecessor_handoff["dependency_handoffs"],
+        predecessor_dependency_identities,
+    )
+    (
+        dependency_records,
+        dependency_identities,
+        loaded_dependencies,
+    ) = load_dependency_handoff_set(
+        dependency_roots,
+        campaign,
+        campaign_payload,
+        index,
+        formula_name,
+        (arch,),
+    )
+    dependency_names_expected = dependency_closure(
+        campaign, index, formula_name
+    )
+    if tuple(sorted(predecessor_loaded_dependencies)) != (
+        dependency_names_expected
+    ) or tuple(sorted(loaded_dependencies)) != dependency_names_expected:
+        fail("predecessor and successor dependency closures differ")
+    dependency_bottles: list[dict[str, Any]] = []
+    for dependency_name in dependency_names_expected:
+        predecessor_root, predecessor_value, predecessor_value_payload = (
+            predecessor_loaded_dependencies[dependency_name]
+        )
+        successor_root, successor_value, successor_value_payload = (
+            loaded_dependencies[dependency_name]
+        )
+        predecessor_bottle = handoff_bottle_identity(
+            predecessor_root,
+            predecessor_value,
+            predecessor,
+            arch,
+        )
+        successor_bottle = handoff_bottle_identity(
+            successor_root,
+            successor_value,
+            campaign,
+            arch,
+        )
+        if {
+            "bytes": predecessor_bottle["bytes"],
+            "sha256": predecessor_bottle["sha256"],
+        } != {
+            "bytes": successor_bottle["bytes"],
+            "sha256": successor_bottle["sha256"],
+        }:
+            fail(f"dependency {dependency_name}/{arch} bottle changed")
+        dependency_bottles.append(
+            {
+                "bytes": predecessor_bottle["bytes"],
+                "formula": dependency_name,
+                "predecessor_handoff_tag": handoff_tag(
+                    predecessor_value_payload
+                ),
+                "sha256": predecessor_bottle["sha256"],
+                "successor_handoff_tag": handoff_tag(
+                    successor_value_payload
+                ),
+            }
+        )
+    validate_dependency_records(dependency_records, dependency_identities)
+    extracted, archive_record = predecessor_reuse_inputs(
+        campaign=predecessor,
+        formula=predecessor_formula,
+        handoff_root=predecessor_handoff_root,
+        handoff=predecessor_handoff,
+        arch=arch,
+    )
+    destination = destination_verifier(
+        campaign,
+        formula,
+        arch,
+        source_tap_root,
+        archive_record,
+        extracted,
+    )
+    destination = exact_keys(
+        destination,
+        {"manifest_digest", "reference", "remote", "source_closure_sha256"},
+        f"{formula_name}/{arch} predecessor destination proof",
+    )
+    temporary = pathlib.Path(
+        tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent)
+    )
+    try:
+        publication = temporary / "publication"
+        (publication / "composition").mkdir(parents=True)
+        (publication / "reuse").mkdir()
+        archive_source = predecessor_handoff_root / archive_record["path"]
+        archive = publication / "reuse/bottle.tar.gz"
+        copy_verified(
+            archive_source,
+            archive,
+            expected_bytes=archive_record["bytes"],
+            expected_sha256=archive_record["sha256"],
+        )
+        (publication / "reuse/bottle.json").write_bytes(
+            pretty_json(
+                reuse_bottle_json(
+                    campaign,
+                    formula,
+                    arch,
+                    archive_record["sha256"],
+                    campaign_guest_layout(campaign),
+                )
+            )
+        )
+        (publication / "composition/sidecars-input.json").write_bytes(
+            pretty_json(
+                predecessor_reuse_sidecars_input(
+                    campaign, formula, arch, extracted
+                )
+            )
+        )
+        predecessor_record = {
+            "bottle": {
+                "bytes": archive_record["bytes"],
+                "sha256": archive_record["sha256"],
+            },
+            "campaign_sha256": sha256_bytes(predecessor_payload),
+            "campaign_tag": reuse_source["campaign_tag"],
+            "handoff_sha256": sha256_bytes(predecessor_handoff_payload),
+            "handoff_tag": reuse_source["handoff_tag"],
+            "publication_kind": predecessor_kind,
+            "source": predecessor_handoff["source"],
+        }
+        evidence = predecessor_reuse_evidence_document(
+            campaign_payload=campaign_payload,
+            formula=formula,
+            variant=variant,
+            arch=arch,
+            extracted=extracted,
+            predecessor=predecessor_record,
+            destination=destination,
+            dependency_bottles=dependency_bottles,
+        )
+        (publication / "reuse/evidence.json").write_bytes(
+            pretty_json(evidence)
+        )
+        validate_reuse_publication_shape(
+            publication, campaign, formula, arch
+        )
+
+        result = temporary / "handoff"
+        result.mkdir()
+        records: list[dict[str, Any]] = []
+        for relative in REUSE_PUBLICATION_FILES:
+            destination_path = result / f"payload/{arch}/{relative}"
+            copy_verified(publication / relative, destination_path)
+            records.append(
+                file_record(
+                    destination_path,
+                    f"payload/{arch}/{relative}",
+                    publication_asset_name(arch, relative),
+                )
+            )
+        manifest = {
+            "campaign": {"sha256": sha256_bytes(campaign_payload)},
+            "dependency_handoffs": dependency_records,
+            "formula": campaign_formula_evidence(campaign, formula),
+            "kind": "kandelo-homebrew-prefix-formula-handoff",
+            "publications": [
+                {"arch": arch, "files": records, "kind": "reuse"}
+            ],
+            "schema": HANDOFF_SCHEMA,
+            "source": {
+                "kandelo_commit": campaign["authority"]["kandelo_commit"],
+                "source_tap_commit": campaign["authority"][
+                    "source_tap_commit"
+                ],
+                "target_tree_git_oid": source_tree_identity(
+                    campaign["authority"]
+                ),
+                "tap_name": campaign["authority"]["tap_name"],
+                "tap_repository": campaign["authority"]["tap_repository"],
+            },
+        }
         (result / "handoff.json").write_bytes(pretty_json(manifest))
         load_handoff(result, campaign, campaign_payload)
         os.rename(result, output)
@@ -7969,6 +9572,31 @@ def parse_args() -> argparse.Namespace:
     )
     reuse.add_argument("--out", required=True)
 
+    predecessor_reuse = commands.add_parser(
+        "derive-predecessor-reuse"
+    )
+    predecessor_reuse.add_argument("--campaign", required=True)
+    predecessor_reuse.add_argument("--source-tap-root", required=True)
+    predecessor_reuse.add_argument(
+        "--predecessor-campaign", required=True
+    )
+    predecessor_reuse.add_argument(
+        "--predecessor-handoff", required=True
+    )
+    predecessor_reuse.add_argument("--formula", required=True)
+    predecessor_reuse.add_argument(
+        "--arch", choices=("wasm32", "wasm64"), required=True
+    )
+    predecessor_reuse.add_argument(
+        "--predecessor-dependency-handoff",
+        action="append",
+        default=[],
+    )
+    predecessor_reuse.add_argument(
+        "--dependency-handoff", action="append", default=[]
+    )
+    predecessor_reuse.add_argument("--out", required=True)
+
     compose_reuse = commands.add_parser("compose-reuse-child")
     compose_reuse.add_argument("--campaign", required=True)
     compose_reuse.add_argument("--source-tap-root", required=True)
@@ -8098,6 +9726,32 @@ def main() -> int:
                 old_tap_root=pathlib.Path(arguments.old_tap_root),
                 formula_name=arguments.formula,
                 arch=arguments.arch,
+                dependency_roots=[
+                    pathlib.Path(value)
+                    for value in arguments.dependency_handoff
+                ],
+                output=pathlib.Path(arguments.out),
+            )
+        elif arguments.command == "derive-predecessor-reuse":
+            derive_predecessor_reuse(
+                campaign_path=pathlib.Path(arguments.campaign),
+                source_tap_root=pathlib.Path(
+                    arguments.source_tap_root
+                ),
+                predecessor_campaign_path=pathlib.Path(
+                    arguments.predecessor_campaign
+                ),
+                predecessor_handoff_root=pathlib.Path(
+                    arguments.predecessor_handoff
+                ),
+                formula_name=arguments.formula,
+                arch=arguments.arch,
+                predecessor_dependency_roots=[
+                    pathlib.Path(value)
+                    for value in (
+                        arguments.predecessor_dependency_handoff
+                    )
+                ],
                 dependency_roots=[
                     pathlib.Path(value)
                     for value in arguments.dependency_handoff
