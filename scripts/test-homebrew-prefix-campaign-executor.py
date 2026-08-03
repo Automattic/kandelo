@@ -37,6 +37,9 @@ TAP_REPOSITORY = "kandelo-dev/homebrew-tap-core"
 TAP_NAME = "kandelo-dev/tap-core"
 KANDELO_COMMIT = "a" * 40
 SOURCE_TAP_COMMIT = "b" * 40
+GUEST_LAYOUT_SHA256 = hashlib.sha256(
+    (ROOT / "homebrew/kandelo-guest-layout.json").read_bytes()
+).hexdigest()
 
 
 def sha256(value: bytes) -> str:
@@ -77,6 +80,7 @@ def formula_source(name: str) -> bytes:
     return (
         f"class {class_name} < Formula\n"
         '  desc "campaign executor fixture"\n'
+        "\n"
         "end\n"
     ).encode()
 
@@ -108,8 +112,8 @@ def make_formula(
                 },
                 "schema": 1,
             },
-            "bottle_rebuild": 1,
-            "reference": f"{version}-1",
+            "bottle_rebuild": 0,
+            "reference": version,
             "remote": f"ghcr.io/{TAP_REPOSITORY}/{name}",
         },
         "formula_source": {
@@ -170,7 +174,7 @@ class Fixture:
                 "current_kandelo_abi": 42,
                 "guest_layout": {
                     "path": "homebrew/kandelo-guest-layout.json",
-                    "sha256": "c" * 64,
+                    "sha256": GUEST_LAYOUT_SHA256,
                 },
                 "kandelo_commit": KANDELO_COMMIT,
                 "source_materialization": {
@@ -202,6 +206,11 @@ class Fixture:
         package = next(
             item for item in self.formulae if item["name"] == formula
         )
+        prepared_formula_digest = EXECUTOR.prepared_formula_sha256(
+            self.source,
+            self.campaign,
+            package,
+        )
         archive_payload = (
             f"{formula}/{arch} bottle bytes\n".encode()
         )
@@ -228,9 +237,9 @@ class Fixture:
                                 ],
                                 "bottles": [{"arch": arch}],
                                 "dependencies": dependencies,
-                                "formula_source_sha256": package[
-                                    "formula_source"
-                                ]["sha256"],
+                                "formula_source_sha256": (
+                                    prepared_formula_digest
+                                ),
                                 "name": formula,
                                 "version": package["version"],
                             }
@@ -325,7 +334,7 @@ class Fixture:
         input_path: pathlib.Path,
         prefix_campaign_layout_sha256: str,
     ) -> None:
-        if prefix_campaign_layout_sha256 != "c" * 64:
+        if prefix_campaign_layout_sha256 != GUEST_LAYOUT_SHA256:
             raise AssertionError("selection used the wrong guest layout")
         package = json.loads(input_path.read_text())["packages"][0]
         metadata_path = tap_root / "Kandelo/metadata.json"
@@ -346,7 +355,7 @@ class Fixture:
         tap_root: pathlib.Path,
         prefix_campaign_layout_sha256: str,
     ) -> None:
-        if prefix_campaign_layout_sha256 != "c" * 64:
+        if prefix_campaign_layout_sha256 != GUEST_LAYOUT_SHA256:
             raise AssertionError("selection used the wrong guest layout")
         if not (tap_root / "Kandelo/metadata.json").is_file():
             raise AssertionError("selection validation lacked metadata")
@@ -663,6 +672,8 @@ class ReuseFixture(Fixture):
             }
         )
         alpha = self.formulae[0]
+        alpha["destination"]["bottle_rebuild"] = 1
+        alpha["destination"]["reference"] = "1.0-1"
         alpha["variants"] = [
             {
                 "anonymous_readback": {
@@ -1490,6 +1501,7 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
                 block
                 for block in step_blocks
                 if "homebrew-prefix-campaign-publisher.py" in block
+                and "verify-built-bottle" not in block
             ]
             self.assertEqual(len(publisher_steps), expected)
             for step in publisher_steps:
@@ -4252,6 +4264,7 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
                 [],
                 fixture.root / "missing-dependency",
             )
+        alpha_publication = fixture.publication("alpha", "wasm32")
         (fixture.source / "Formula/alpha.rb").write_bytes(b"tampered\n")
         with self.assertRaisesRegex(
             EXECUTOR.ExecutorError,
@@ -4262,7 +4275,7 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
                 [
                     (
                         "wasm32",
-                        fixture.publication("alpha", "wasm32"),
+                        alpha_publication,
                     )
                 ],
                 [],
@@ -4539,7 +4552,7 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
         expected = EXECUTOR.deterministic_campaign_commit_oid(
             parent=target_commit,
             tree=fixture.source_tree,
-            label="alpha/wasm32 dependency bottles",
+            label="alpha/wasm32 publisher inputs",
         )
         self.assertEqual(observed["arch"], "wasm32")
         self.assertEqual(observed["tree"], fixture.source_tree)
@@ -4549,6 +4562,161 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             observed["formula"],
             formula_source("alpha"),
         )
+
+    def test_destination_bound_build_is_reconstructed_exactly(self) -> None:
+        fixture = Fixture()
+        self.addCleanup(fixture.close)
+        retired = "/home/linuxbrew/.linuxbrew"
+        beta_payload = (
+            b'class Beta < Formula\n'
+            b'  desc "campaign executor fixture"\n'
+            b'\n'
+            b'  bottle do\n'
+            b'    root_url "https://ghcr.io/v2/'
+            b'kandelo-dev/homebrew-tap-core"\n'
+            b'    sha256 cellar: "'
+            + f"{retired}/Cellar".encode()
+            + b'", wasm32_kandelo: "'
+            + b"d" * 64
+            + b'"\n'
+            b'  end\n'
+            b'\n'
+            b'end\n'
+        )
+        beta_path = fixture.source / "Formula/beta.rb"
+        beta_path.write_bytes(beta_payload)
+        beta = fixture.formulae[1]
+        beta["formula_source"]["sha256"] = sha256(beta_payload)
+        beta["formula_source"][
+            "identity_excluding_bottle_sha256"
+        ] = EXECUTOR.CAMPAIGN_FORMULA.formula_identity(
+            beta_path,
+            repository_root=ROOT,
+        )
+        beta["destination"]["bottle_rebuild"] = 1
+        beta["destination"]["reference"] = "2.0-1"
+        fixture.source_tree = EXECUTOR.filesystem_git_tree_oid(
+            fixture.source,
+            "destination-bound fixture source",
+        )
+        fixture.campaign["authority"]["source_materialization"][
+            "tree_git_oid"
+        ] = fixture.source_tree
+        write_json(fixture.campaign_path, fixture.campaign)
+
+        destination_root = fixture.root / "expected-destination"
+        shutil.copytree(fixture.source, destination_root)
+        self.assertTrue(
+            EXECUTOR.bind_campaign_formula_destination(
+                destination_root,
+                fixture.campaign,
+                beta,
+            )
+        )
+        destination_tree = EXECUTOR.filesystem_git_tree_oid(
+            destination_root,
+            "expected destination-bound checkout",
+        )
+        target_commit = EXECUTOR.deterministic_campaign_commit_oid(
+            parent=SOURCE_TAP_COMMIT,
+            tree=fixture.source_tree,
+            label="sealed target source",
+        )
+        destination_commit = EXECUTOR.deterministic_campaign_commit_oid(
+            parent=target_commit,
+            tree=destination_tree,
+            label="beta reserved bottle destination",
+        )
+
+        alpha = fixture.root / "destination-bound-alpha"
+        fixture.derive(
+            "alpha",
+            [("wasm32", fixture.publication("alpha", "wasm32"))],
+            [],
+            alpha,
+        )
+        observed: dict[str, Any] = {}
+
+        def capture(
+            _campaign: dict[str, Any],
+            _formula: dict[str, Any],
+            _arch: str,
+            publication: pathlib.Path,
+            prepared_root: pathlib.Path,
+            checkout_commit: str,
+        ) -> None:
+            observed["commit"] = checkout_commit
+            observed["tree"] = EXECUTOR.filesystem_git_tree_oid(
+                prepared_root,
+                "observed destination-bound checkout",
+            )
+            observed["formula"] = (
+                prepared_root / "Formula/beta.rb"
+            ).read_text()
+            observed["sidecars"] = json.loads(
+                (
+                    publication
+                    / "composition/sidecars-input.json"
+                ).read_text()
+            )
+
+        publication = fixture.publication("beta", "wasm32")
+        fixture_output = fixture.root / "destination-bound-beta"
+        EXECUTOR.derive_build(
+            campaign_path=fixture.campaign_path,
+            source_tap_root=fixture.source,
+            formula_name="beta",
+            publications=[("wasm32", publication)],
+            dependency_roots=[alpha],
+            output=fixture_output,
+            validator=capture,
+            dependency_merger=fixture.merge_dependency,
+        )
+        self.assertIn("    rebuild 1\n", observed["formula"])
+        self.assertIn(
+            'cellar: "/opt/kandelo/homebrew/Cellar"',
+            observed["formula"],
+        )
+        self.assertNotIn(retired, observed["formula"])
+        expected_commit = EXECUTOR.deterministic_campaign_commit_oid(
+            parent=destination_commit,
+            tree=observed["tree"],
+            label="beta/wasm32 publisher inputs",
+        )
+        self.assertEqual(observed["commit"], expected_commit)
+        prepared_digest = sha256(observed["formula"].encode())
+        self.assertEqual(
+            observed["sidecars"]["packages"][0][
+                "formula_source_sha256"
+            ],
+            prepared_digest,
+        )
+        self.assertNotEqual(
+            prepared_digest,
+            beta["formula_source"]["sha256"],
+        )
+
+        substituted = fixture.publication("beta", "wasm32")
+        sidecars_path = (
+            substituted / "composition/sidecars-input.json"
+        )
+        sidecars = json.loads(sidecars_path.read_text())
+        sidecars["packages"][0]["formula_source_sha256"] = "e" * 64
+        write_json(sidecars_path, sidecars)
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "composition differs from the campaign",
+        ):
+            EXECUTOR.derive_build(
+                campaign_path=fixture.campaign_path,
+                source_tap_root=fixture.source,
+                formula_name="beta",
+                publications=[("wasm32", substituted)],
+                dependency_roots=[alpha],
+                output=fixture.root / "substituted-destination-beta",
+                validator=lambda *_arguments: None,
+                dependency_merger=fixture.merge_dependency,
+            )
 
     def test_each_arch_derives_its_own_dependency_checkout(self) -> None:
         fixture = Fixture(multi_arch=True)
@@ -4607,7 +4775,7 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             expected = EXECUTOR.deterministic_campaign_commit_oid(
                 parent=target_commit,
                 tree=observed[arch]["tree"],
-                label=f"beta/{arch} dependency bottles",
+                label=f"beta/{arch} publisher inputs",
             )
             self.assertEqual(
                 observed[arch]["checkout_commit"],

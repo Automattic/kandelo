@@ -1374,7 +1374,7 @@ class PrefixCampaignTests(unittest.TestCase):
                 fixture.dependencies(),
             )
 
-    def test_changed_pkg_version_rejects_stale_candidate_bottle_block(
+    def test_changed_pkg_version_keeps_prior_block_as_build_input(
         self,
     ) -> None:
         fixture = make_fixture()
@@ -1397,18 +1397,31 @@ class PrefixCampaignTests(unittest.TestCase):
             metadata["alpha"]["version"] = "9.9"
             return metadata
 
-        with self.assertRaisesRegex(
-            CAMPAIGN.CampaignError, "pkg_version changed from 1.0 to 9.9"
-        ):
-            CAMPAIGN.derive_campaign(
-                fixture.options(),
-                CAMPAIGN.CampaignDependencies(
-                    fetch_bottle=base.fetch_bottle,
-                    probe_destination=base.probe_destination,
-                    resolve_formula_metadata=mismatched_metadata,
-                    load_historical_formula=base.load_historical_formula,
-                ),
-            )
+        result = CAMPAIGN.derive_campaign(
+            fixture.options(),
+            CAMPAIGN.CampaignDependencies(
+                fetch_bottle=base.fetch_bottle,
+                probe_destination=base.probe_destination,
+                resolve_formula_metadata=mismatched_metadata,
+                load_historical_formula=base.load_historical_formula,
+            ),
+        )
+        alpha = next(
+            formula
+            for formula in result["formulae"]
+            if formula["name"] == "alpha"
+        )
+        self.assertEqual(alpha["previous_version"], "1.0")
+        self.assertEqual(alpha["version"], "9.9")
+        self.assertEqual(alpha["destination"]["bottle_rebuild"], 0)
+        self.assertEqual(
+            alpha["variants"][0]["disposition"]["kind"],
+            "required-rebuild",
+        )
+        self.assertIn(
+            "pkg-version-changed",
+            alpha["variants"][0]["disposition"]["reasons"],
+        )
 
     def test_changed_pkg_version_preserves_old_bottle_identity(self) -> None:
         fixture = make_fixture(alpha_source_changed=False)
@@ -1430,6 +1443,7 @@ class PrefixCampaignTests(unittest.TestCase):
         alpha = by_name["alpha"]
 
         self.assertEqual(alpha["version"], "1.0_1")
+        self.assertEqual(alpha["previous_version"], "1.0")
         self.assertEqual(
             alpha["destination"],
             {

@@ -3754,7 +3754,7 @@ class Hello < Formula
   bottle do
     root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
     rebuild 1
-    sha256 cellar: :any_skip_relocation, wasm32_kandelo: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    sha256 cellar: "/opt/kandelo/homebrew/Cellar", wasm32_kandelo: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   end
 
   depends_on "cmake" => [:build, :test]
@@ -3937,7 +3937,10 @@ TARGET_GIT
     [[ "${HOMEBREW_KANDELO_GNU_TAR:-}" =~ ^/nix/store/[0-9a-z]{32}-gnutar-[^/]+/bin/tar$ ]] || exit 54
     bottle_dir="$PWD"
     bottle_stage="$(mktemp -d "$PWD/fake-bottle.XXXXXX")"
-    mkdir -p "$bottle_stage/hello/1.0/bin"
+    mkdir -p "$bottle_stage/hello/1.0/.brew" \
+      "$bottle_stage/hello/1.0/bin"
+    cp "$FAKE_TAP_ROOT/Formula/hello.rb" \
+      "$bottle_stage/hello/1.0/.brew/hello.rb"
     jq 'del(.source.tap_git_head)' \
       "$FAKE_BREW_PREFIX/INSTALL_RECEIPT.json" \
       >"$bottle_stage/hello/1.0/INSTALL_RECEIPT.json"
@@ -4328,6 +4331,15 @@ EOF
     jq -e '.source.tap == "kandelo-dev/tap-core" and
       (.source | has("tap_git_head") | not)' >/dev/null ||
     fail "first bottle archive did not retain only stable receipt provenance"
+  "$gnu_tar_bin" --extract --gzip --to-stdout \
+    --file "$first_archive" hello/1.0/.brew/hello.rb \
+    >"$TMPDIR/archived-campaign-formula.rb"
+  grep -F 'cellar: "/opt/kandelo/homebrew/Cellar"' \
+    "$TMPDIR/archived-campaign-formula.rb" >/dev/null ||
+    fail "bottle archive did not retain the active guest Cellar"
+  ! grep -F '/home/linuxbrew/.linuxbrew' \
+    "$TMPDIR/archived-campaign-formula.rb" >/dev/null ||
+    fail "bottle archive reintroduced the retired guest prefix"
 
   printf 'retry after unrelated finalizer commit\n' >"$tap/Kandelo/retry-state.txt"
   git -C "$tap" add Kandelo/retry-state.txt
@@ -5179,6 +5191,7 @@ class Zlib < Formula
   bottle do
     root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"
     sha256 cellar: :any_skip_relocation, wasm32_kandelo: "$bottle_sha"
+    sha256 cellar: :any_skip_relocation, wasm64_kandelo: "$bottle_sha"
   end
 end
 EOF
@@ -5235,7 +5248,7 @@ expected_prefix="$(cd "$FAKE_PREFIX" && pwd -P)"
 }
 case "${1:-}" in
   --cache)
-    [ "${2:-}" = "--force-bottle" ]
+    [ "${2:-}" = "--bottle-tag=${FAKE_EXPECTED_BOTTLE_TAG:-wasm32_kandelo}" ]
     [ "${3:-}" = "--formula" ]
     [ "${4:-}" = "kandelo-dev/tap-core/zlib" ]
     printf '%s\n' "$FAKE_BOTTLE_CACHE"
@@ -5302,6 +5315,7 @@ EOF
 ==> Pouring zlib--1.3.1.wasm32_kandelo.bottle.tar.gz
 EOF
   FAKE_PREFIX="$root/prefix" FAKE_BOTTLE_CACHE="$cache_archive" \
+    FAKE_EXPECTED_BOTTLE_TAG=wasm32_kandelo \
     python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" \
       capture-cache \
       --brew-bin "$fake_brew" \
@@ -5314,6 +5328,20 @@ EOF
       --expected-dependencies "$expected_dependencies" \
       --cache-root "$cache_root" \
       --out "$cache_evidence"
+  FAKE_PREFIX="$root/prefix" FAKE_BOTTLE_CACHE="$cache_archive" \
+    FAKE_EXPECTED_BOTTLE_TAG=wasm64_kandelo \
+    python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" \
+      capture-cache \
+      --brew-bin "$fake_brew" \
+      --tap-root "$tap" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --tap-commit "$tap_commit" \
+      --formula curl \
+      --arch wasm64 \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      --expected-dependencies "$expected_dependencies" \
+      --cache-root "$cache_root" \
+      --out "$root/cache-evidence-wasm64.json"
   FAKE_PREFIX="$root/prefix" FAKE_CELLAR="$root/cellar" FAKE_INFO="$info" \
     python3 "$REPO_ROOT/scripts/homebrew-dependency-provenance.py" capture \
       --brew-bin "$fake_brew" \

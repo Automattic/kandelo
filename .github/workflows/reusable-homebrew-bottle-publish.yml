@@ -1873,11 +1873,28 @@ jobs:
           KANDELO_HOMEBREW_TAP_COMMIT: ${{ needs.plan.outputs.tap-sha }}
           KANDELO_HOMEBREW_TAP_REPOSITORY: ${{ inputs.tap-repository }}
           KANDELO_HOMEBREW_TAP_NAME: ${{ inputs.tap-name }}
+          KANDELO_HOMEBREW_PREFIX_CAMPAIGN_TAG: ${{ needs.plan.outputs.prefix-campaign-tag }}
         run: |
           set -euo pipefail
           cd "$GITHUB_WORKSPACE/kandelo-postbuild"
           # shellcheck disable=SC1091
           . "$RUNNER_TEMP/homebrew-bottle/build.env"
+          if [ -n "${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_RECEIPT:-}" ]; then
+            campaign_work="$RUNNER_TEMP/prefix-campaign-postbuild-$KANDELO_HOMEBREW_FORMULA-$KANDELO_HOMEBREW_ARCH"
+            bash scripts/dev-shell.sh \
+              python3 scripts/homebrew-prefix-campaign-publisher.py \
+                verify-built-bottle \
+                --tap-root "$GITHUB_WORKSPACE/tap-reviewed" \
+                --campaign-work-root "$campaign_work" \
+                --receipt \
+                  "$KANDELO_HOMEBREW_PREFIX_CAMPAIGN_RECEIPT" \
+                --campaign-tag \
+                  "$KANDELO_HOMEBREW_PREFIX_CAMPAIGN_TAG" \
+                --bottle "$BOTTLE_ARCHIVE" \
+                --bottle-json "$BOTTLE_JSON" \
+                --out \
+                  "$RUNNER_TEMP/homebrew-campaign-built-bottle.json"
+          fi
           layout_args=()
           if [ -n "${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}" ]; then
             layout_args+=(--prefix-campaign-layout-sha256 \

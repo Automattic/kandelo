@@ -3131,30 +3131,25 @@ def _derive_campaign_from_snapshots(
                 "sidecar"
             )
         # WHY: a new pkg_version has its own Homebrew bottle namespace and
-        # starts at rebuild zero. Its sealed candidate Formula must therefore
-        # be bottleless. For an unchanged pkg_version, the selected block is
-        # still the collision authority and must match the old sidecars.
+        # starts at rebuild zero. Its sealed candidate Formula may still carry
+        # the exact prior version's bottle block; the build-only checkout will
+        # bind that block to the new destination. For an unchanged pkg_version,
+        # the selected block remains the collision authority.
         version_changed = candidate_version != old_version
-        if version_changed:
-            if source_bottle_block is not None:
-                fail(
-                    f"{name} candidate pkg_version changed from {old_version} "
-                    f"to {candidate_version}, but its Formula still has a "
-                    "bottle block"
-                )
-        elif source_bottle_block is None:
+        if not version_changed and source_bottle_block is None:
             fail(
                 f"{name} has bottle sidecars but no candidate Formula bottle "
                 "block for the unchanged pkg_version"
             )
-        else:
+        elif source_bottle_block is not None:
             if source_bottle_block["root_url"] != expected_root:
                 fail(
                     f"{name} candidate Formula bottle identity differs from "
                     "its sidecar"
                 )
             if (
-                sidecar_abi == current_abi
+                not version_changed
+                and sidecar_abi == current_abi
                 and source_bottle_block["rebuild"] != rebuild
             ):
                 fail(
@@ -3260,6 +3255,15 @@ def _derive_campaign_from_snapshots(
         ):
             fail(f"{name} old Formula bottle tags differ from its sidecar bottles")
         if (
+            source_bottle_block is not None
+            and version_changed
+            and source_bottle_block != old_bottle_block
+        ):
+            fail(
+                f"{name} version-transition bottle block differs from the "
+                "old selected bottle identity"
+            )
+        if (
             not version_changed
             and sidecar_abi == current_abi
             and source_bottle_block is not None
@@ -3317,6 +3321,7 @@ def _derive_campaign_from_snapshots(
                 "sha256": sha256_bytes(sidecar_bytes),
             },
             "name": name,
+            "previous_version": old_version,
             "source_kind": source_kind,
             "version": candidate_version,
         }

@@ -1537,16 +1537,16 @@ parse_formula = lambda do |full_name|
       end
       if method == "bottle"
         abort "Formula class has multiple bottle blocks: #{path}" unless bottle.nil?
-        # WHY: build-authority classification binds the whole Formula source
-        # but does not consume its old bottle. A campaign may therefore
-        # classify a Formula whose previous bottle used a retired Cellar; the
-        # rebuilt bottle must still pass the strict runtime Cellar check in
-        # every mode that actually reads bottle identity.
+        # WHY: build planning binds the whole Formula source but does not
+        # consume its old bottle. A campaign may therefore classify native
+        # requirements or a Tier-2 bridge for a Formula whose previous bottle
+        # used a retired Cellar. The rebuilt bottle must still pass the strict
+        # runtime Cellar check in every mode that reads bottle identity.
         bottle = parse_bottle.call(
           statement,
           lines,
           path,
-          !tier2_bridge_only,
+          !(tier2_bridge_only || host_dependencies_only),
         )
       elsif method == "patch"
         validate_static_block.call(statement, path, "patch", Set["apply", "sha256", "type", "url"])

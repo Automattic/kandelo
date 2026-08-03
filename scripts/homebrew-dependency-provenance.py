@@ -610,6 +610,7 @@ def capture_cache(args: argparse.Namespace) -> None:
     require_string(args.formula, "formula", FORMULA_NAME)
     if args.arch not in ("wasm32", "wasm64"):
         fail(f"unsupported architecture: {args.arch}")
+    expected_tag = f"{args.arch}_kandelo"
 
     normalized_repository = normalized_tap_name(args.tap_repository)
     normalized_tap = selected_tap_name(args)
@@ -644,7 +645,10 @@ def capture_cache(args: argparse.Namespace) -> None:
         reported_path = run_brew(
             brew_bin,
             "--cache",
-            "--force-bottle",
+            # WHY: Homebrew otherwise chooses the native host bottle tag for
+            # `brew --cache`. That can return no path even though the exact
+            # Kandelo bottle selected above is already in the cache.
+            f"--bottle-tag={expected_tag}",
             "--formula",
             full_name,
         )
