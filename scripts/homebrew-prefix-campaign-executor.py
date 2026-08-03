@@ -6736,6 +6736,220 @@ def derive_reuse(
         shutil.rmtree(temporary, ignore_errors=True)
 
 
+def run_oci_layout_command(arguments: list[str], label: str) -> None:
+    command = [
+        sys.executable,
+        str(ROOT / "scripts/homebrew-oci-layout.py"),
+        *arguments,
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            cwd=ROOT,
+            check=False,
+            env=anonymous_environment(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=600,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        fail(f"cannot {label}: {error}")
+    if result.returncode != 0:
+        detail = result.stderr.decode(
+            "utf-8", errors="replace"
+        )[-16_384:]
+        fail(f"cannot {label}: {detail}")
+
+
+def compose_reuse_child(
+    *,
+    campaign_path: pathlib.Path,
+    source_tap_root: pathlib.Path,
+    handoff_root: pathlib.Path,
+    formula_name: str,
+    arch: str,
+    output: pathlib.Path,
+) -> None:
+    campaign, campaign_payload, index = load_campaign(campaign_path)
+    formula_name = require_string(formula_name, "Formula name", FORMULA)
+    if formula_name not in index:
+        fail(f"Formula {formula_name} is outside the campaign")
+    if arch not in ("wasm32", "wasm64"):
+        fail("reuse architecture is invalid")
+    formula = index[formula_name]
+    variant = validate_reuse_variant(campaign, formula, arch)
+    source_tap_root = validate_source_root(
+        source_tap_root, campaign, formula
+    )
+    handoff_root = real_directory(handoff_root, "reuse Formula handoff")
+    handoff, _handoff_payload = load_handoff(
+        handoff_root, campaign, campaign_payload
+    )
+    if handoff["formula"] != campaign_formula_evidence(campaign, formula):
+        fail("reuse Formula handoff names another Formula")
+    if len(handoff["publications"]) != 1:
+        fail("reuse Formula handoff must contain one publication")
+    publication = handoff_publication(
+        handoff, arch, f"{formula_name}/{arch} reuse publication"
+    )
+    if publication_kind(
+        publication, f"{formula_name}/{arch} reuse publication"
+    ) != "reuse":
+        fail("reuse OCI composition requires a reuse publication")
+    output = validate_new_output(
+        output,
+        "reuse OCI child output",
+        (campaign_path, source_tap_root, handoff_root),
+    )
+    bottle_json_record = handoff_publication_file(
+        publication,
+        "payload/" + arch + "/reuse/bottle.json",
+        f"{formula_name}/{arch} reuse publication",
+    )
+    archive_record = handoff_publication_file(
+        publication,
+        "payload/" + arch + "/reuse/bottle.tar.gz",
+        f"{formula_name}/{arch} reuse publication",
+    )
+    bottle_json = handoff_root / bottle_json_record["path"]
+    archive = handoff_root / archive_record["path"]
+    canonical, digest, root_url, _cellar = (
+        validate_dependency_bottle_input(
+            bottle_json=bottle_json,
+            handoff=handoff,
+            arch=arch,
+            archive_record=archive_record,
+            campaign=campaign,
+        )
+    )
+    old_record = variant["old_record"]
+    if (
+        digest != old_record["sha256"]
+        or archive_record["bytes"] != old_record["bytes"]
+    ):
+        fail("reuse OCI input differs from the admitted historical bottle")
+
+    temporary = pathlib.Path(
+        tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent)
+    )
+    try:
+        canonical_bottle = temporary / "bottle.json"
+        canonical_bottle.write_bytes(pretty_json(canonical))
+        child = temporary / "child"
+        layout = child / "layout"
+        receipt_path = child / "receipt.json"
+        authority = campaign["authority"]
+        # WHY: reuse preserves the public archive bytes, but its new target
+        # rebuild is a distinct Homebrew package identity. Compose that
+        # identity from sealed inputs before any registry credential exists.
+        run_oci_layout_command(
+            [
+                "build-child",
+                "--formula",
+                formula_name,
+                "--arch",
+                arch,
+                "--abi",
+                str(authority["current_kandelo_abi"]),
+                "--tap-repository",
+                authority["tap_repository"],
+                "--tap-name",
+                authority["tap_name"],
+                "--tap-commit",
+                authority["source_tap_commit"],
+                "--kandelo-commit",
+                authority["kandelo_commit"],
+                "--bottle-root-url",
+                root_url,
+                "--bottle",
+                str(archive),
+                "--bottle-json",
+                str(canonical_bottle),
+                "--kandelo-root",
+                str(ROOT),
+                "--tap-root",
+                str(source_tap_root),
+                "--out-layout",
+                str(layout),
+                "--out-receipt",
+                str(receipt_path),
+            ],
+            f"compose reuse OCI child for {formula_name}/{arch}",
+        )
+        run_oci_layout_command(
+            [
+                "validate-child",
+                "--layout",
+                str(layout),
+                "--receipt",
+                str(receipt_path),
+            ],
+            f"validate reuse OCI child for {formula_name}/{arch}",
+        )
+        receipt, _receipt_payload = load_json_bytes(
+            receipt_path,
+            f"{formula_name}/{arch} reuse OCI child receipt",
+            canonical=False,
+        )
+        if not isinstance(receipt, dict):
+            fail("reuse OCI child receipt is not an object")
+        rebuild = formula["destination"]["bottle_rebuild"]
+        revision_match = re.search(r"_([1-9][0-9]*)$", formula["version"])
+        formula_revision = (
+            int(revision_match.group(1), 10) if revision_match else 0
+        )
+        expected_child_ref = f"{formula['version']}.{arch}_kandelo"
+        if rebuild:
+            expected_child_ref += f".{rebuild}"
+        expected = {
+            "abi": authority["current_kandelo_abi"],
+            "arch": arch,
+            "bottle_rebuild": rebuild,
+            "formula": formula_name,
+            "formula_revision": formula_revision,
+            "formula_source_identity_sha256": formula["formula_source"][
+                "identity_excluding_bottle_sha256"
+            ],
+            "formula_source_sha256": old_record["built_from"][
+                "formula_sha256"
+            ],
+            "kandelo_commit": authority["kandelo_commit"],
+            "pkg_version": formula["version"],
+            "schema": 2,
+            "tap_commit": authority["source_tap_commit"],
+            "tap_name": authority["tap_name"],
+            "tap_repository": authority["tap_repository"],
+            "top_ref": formula["destination"]["reference"],
+        }
+        for key, value in expected.items():
+            if receipt.get(key) != value:
+                fail(f"reuse OCI child receipt has wrong {key}")
+        if (
+            receipt.get("kind") != "child"
+            or receipt.get("bottle")
+            != {
+                "bytes": old_record["bytes"],
+                "sha256": old_record["sha256"],
+                "url": old_record["url"],
+            }
+            or not isinstance(receipt.get("oci"), dict)
+            or receipt["oci"].get("homebrew_ref")
+            != expected_child_ref
+            or receipt["oci"].get("platform")
+            != {
+                "architecture": "wasm",
+                "os": "kandelo",
+                "variant": arch,
+            }
+        ):
+            fail("reuse OCI child receipt differs from the campaign target")
+        walk_regular_files(child, "reuse OCI child output")
+        os.rename(child, output)
+    finally:
+        shutil.rmtree(temporary, ignore_errors=True)
+
+
 def derive_build(
     *,
     campaign_path: pathlib.Path,
@@ -7558,6 +7772,16 @@ def parse_args() -> argparse.Namespace:
     )
     reuse.add_argument("--out", required=True)
 
+    compose_reuse = commands.add_parser("compose-reuse-child")
+    compose_reuse.add_argument("--campaign", required=True)
+    compose_reuse.add_argument("--source-tap-root", required=True)
+    compose_reuse.add_argument("--handoff", required=True)
+    compose_reuse.add_argument("--formula", required=True)
+    compose_reuse.add_argument(
+        "--arch", choices=("wasm32", "wasm64"), required=True
+    )
+    compose_reuse.add_argument("--out", required=True)
+
     prepare = commands.add_parser("prepare-release")
     prepare.add_argument("--campaign", required=True)
     prepare.add_argument("--handoff", required=True)
@@ -7681,6 +7905,17 @@ def main() -> int:
                     pathlib.Path(value)
                     for value in arguments.dependency_handoff
                 ],
+                output=pathlib.Path(arguments.out),
+            )
+        elif arguments.command == "compose-reuse-child":
+            compose_reuse_child(
+                campaign_path=pathlib.Path(arguments.campaign),
+                source_tap_root=pathlib.Path(
+                    arguments.source_tap_root
+                ),
+                handoff_root=pathlib.Path(arguments.handoff),
+                formula_name=arguments.formula,
+                arch=arguments.arch,
                 output=pathlib.Path(arguments.out),
             )
         elif arguments.command == "prepare-release":

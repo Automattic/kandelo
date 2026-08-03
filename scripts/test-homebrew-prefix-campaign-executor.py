@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import importlib.util
 import json
 import os
@@ -12,6 +13,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 import warnings
@@ -107,7 +109,7 @@ def make_formula(
                 "schema": 1,
             },
             "bottle_rebuild": 1,
-            "reference": f"{version}_1",
+            "reference": f"{version}-1",
             "remote": f"ghcr.io/{TAP_REPOSITORY}/{name}",
         },
         "formula_source": {
@@ -386,18 +388,69 @@ class ReuseFixture(Fixture):
         layout = json.loads(
             (ROOT / "homebrew/kandelo-guest-layout.json").read_text()
         )
-        archive = b"alpha/wasm32 historical bottle bytes\n"
+        archived_formula = (
+            b'class Alpha < Formula\n'
+            b'  desc "campaign executor fixture"\n'
+            b'  bottle do\n'
+            b'    root_url "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core"\n'
+            b'    sha256 cellar: :any, wasm32_kandelo: "'
+            + b"0" * 64
+            + b'"\n'
+            b'  end\n'
+            b'end\n'
+        )
+        receipt = EXECUTOR.canonical_json(
+            {
+                "arch": "wasm32",
+                "built_on": {
+                    "os": "Kandelo",
+                    "os_version": "42",
+                },
+                "changed_files": None,
+                "compiler": "clang",
+                "homebrew_version": "Homebrew fixture",
+                "runtime_dependencies": [],
+                "source_modified_time": 0,
+            }
+        )
+        archive_buffer = io.BytesIO()
+        with tarfile.open(
+            fileobj=archive_buffer,
+            mode="w:gz",
+            format=tarfile.PAX_FORMAT,
+        ) as bottle:
+            for path, payload, mode in (
+                ("alpha/1.0/.brew/alpha.rb", archived_formula, 0o644),
+                ("alpha/1.0/INSTALL_RECEIPT.json", receipt, 0o644),
+                ("alpha/1.0/bin/alpha", b"#!/bin/sh\nexit 0\n", 0o755),
+            ):
+                member = tarfile.TarInfo(path)
+                member.mode = mode
+                member.mtime = 0
+                member.size = len(payload)
+                bottle.addfile(member, io.BytesIO(payload))
+        archive = archive_buffer.getvalue()
         self.archive = archive
         digest = sha256(archive)
-        source_formula_digest = sha256(formula_source("alpha"))
+        source_formula_sha256 = sha256(formula_source("alpha"))
+        source_formula_digest = subprocess.check_output(
+            [
+                "ruby",
+                str(ROOT / "scripts/homebrew-formula-source-digest.rb"),
+                "--identity-excluding-bottle",
+                str(self.old_tap / "Formula/alpha.rb"),
+            ],
+            text=True,
+        ).strip()
+        self.formulae[0]["formula_source"][
+            "identity_excluding_bottle_sha256"
+        ] = source_formula_digest
         # Homebrew archives the Formula receipt that produced a bottle. Its
         # digest is independent from the current tap source identity, which
         # excludes mutable bottle blocks when deciding whether bytes can be
         # reused. Keep the fixture values distinct so admission cannot
         # accidentally substitute one provenance identity for the other.
-        archived_formula_digest = sha256(
-            b"historical Formula receipt embedded in the bottle\n"
-        )
+        archived_formula_digest = sha256(archived_formula)
         link_path = "Kandelo/link/alpha-1.0-rebuild0-wasm32.json"
         provenance_path = (
             "Kandelo/reports/"
@@ -636,7 +689,7 @@ class ReuseFixture(Fixture):
                         source_formula_digest
                     ),
                     "path": "Formula/alpha.rb",
-                    "sha256": source_formula_digest,
+                    "sha256": source_formula_sha256,
                 },
                 "old_record": self.old_record,
                 "old_record_sha256": sha256(
@@ -1771,6 +1824,49 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             composition["kandelo_commit"],
         )
 
+        child = fixture.root / "reuse-oci-child"
+        EXECUTOR.compose_reuse_child(
+            campaign_path=fixture.campaign_path,
+            source_tap_root=fixture.source,
+            handoff_root=handoff,
+            formula_name="alpha",
+            arch="wasm32",
+            output=child,
+        )
+        child_receipt = json.loads(
+            (child / "receipt.json").read_text()
+        )
+        self.assertEqual(child_receipt["schema"], 2)
+        self.assertEqual(child_receipt["kind"], "child")
+        self.assertEqual(child_receipt["top_ref"], "1.0-1")
+        self.assertEqual(
+            child_receipt["oci"]["homebrew_ref"],
+            "1.0.wasm32_kandelo.1",
+        )
+        self.assertEqual(
+            child_receipt["bottle"],
+            {
+                "bytes": fixture.old_record["bytes"],
+                "sha256": fixture.old_record["sha256"],
+                "url": fixture.old_record["url"],
+            },
+        )
+        self.assertEqual(
+            child_receipt["formula_source_sha256"],
+            fixture.old_record["built_from"]["formula_sha256"],
+        )
+        self.assertEqual(
+            child_receipt["formula_source_identity_sha256"],
+            fixture.formulae[0]["formula_source"][
+                "identity_excluding_bottle_sha256"
+            ],
+        )
+        self.assertEqual(
+            (child / "layout/blobs/sha256" /
+             fixture.old_record["sha256"]).read_bytes(),
+            fixture.archive,
+        )
+
         prepared = fixture.root / "reuse-release"
         EXECUTOR.prepare_release(
             campaign_path=fixture.campaign_path,
@@ -1915,6 +2011,152 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
                     self.assertEqual(fixture.fetches, [])
                 finally:
                     fixture.close()
+
+    def test_reuse_oci_child_rejects_substituted_inputs_and_output(
+        self,
+    ) -> None:
+        wrong_kind = ReuseFixture()
+        self.addCleanup(wrong_kind.close)
+        wrong_kind_handoff = wrong_kind.root / "wrong-kind-handoff"
+        wrong_kind.derive_reuse(wrong_kind_handoff)
+        manifest_path = wrong_kind_handoff / "handoff.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["publications"][0]["kind"] = "build"
+        write_json(manifest_path, manifest)
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "file inventory is invalid",
+        ):
+            EXECUTOR.compose_reuse_child(
+                campaign_path=wrong_kind.campaign_path,
+                source_tap_root=wrong_kind.source,
+                handoff_root=wrong_kind_handoff,
+                formula_name="alpha",
+                arch="wasm32",
+                output=wrong_kind.root / "wrong-kind-child",
+            )
+
+        wrong_formula = ReuseFixture()
+        self.addCleanup(wrong_formula.close)
+        wrong_formula_handoff = wrong_formula.root / "wrong-formula-handoff"
+        wrong_formula.derive_reuse(wrong_formula_handoff)
+        manifest_path = wrong_formula_handoff / "handoff.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["formula"] = EXECUTOR.campaign_formula_evidence(
+            wrong_formula.campaign,
+            wrong_formula.formulae[1],
+        )
+        write_json(manifest_path, manifest)
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "beta/wasm32 reuse variant|another Formula",
+        ):
+            EXECUTOR.compose_reuse_child(
+                campaign_path=wrong_formula.campaign_path,
+                source_tap_root=wrong_formula.source,
+                handoff_root=wrong_formula_handoff,
+                formula_name="alpha",
+                arch="wasm32",
+                output=wrong_formula.root / "wrong-formula-child",
+            )
+
+        wrong_arch = ReuseFixture()
+        self.addCleanup(wrong_arch.close)
+        wrong_arch_handoff = wrong_arch.root / "wrong-arch-handoff"
+        wrong_arch.derive_reuse(wrong_arch_handoff)
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "not one campaign variant",
+        ):
+            EXECUTOR.compose_reuse_child(
+                campaign_path=wrong_arch.campaign_path,
+                source_tap_root=wrong_arch.source,
+                handoff_root=wrong_arch_handoff,
+                formula_name="alpha",
+                arch="wasm64",
+                output=wrong_arch.root / "wrong-arch-child",
+            )
+
+        tampered = ReuseFixture()
+        self.addCleanup(tampered.close)
+        tampered_handoff = tampered.root / "tampered-archive-handoff"
+        tampered.derive_reuse(tampered_handoff)
+        with (
+            tampered_handoff
+            / "payload/wasm32/reuse/bottle.tar.gz"
+        ).open("ab") as archive:
+            archive.write(b"tampered")
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "differs from its manifest",
+        ):
+            EXECUTOR.compose_reuse_child(
+                campaign_path=tampered.campaign_path,
+                source_tap_root=tampered.source,
+                handoff_root=tampered_handoff,
+                formula_name="alpha",
+                arch="wasm32",
+                output=tampered.root / "tampered-archive-child",
+            )
+
+        receipt = ReuseFixture()
+        self.addCleanup(receipt.close)
+        receipt_handoff = receipt.root / "tampered-receipt-handoff"
+        receipt.derive_reuse(receipt_handoff)
+        original_runner = EXECUTOR.run_oci_layout_command
+
+        def tamper_receipt(arguments: list[str], label: str) -> None:
+            original_runner(arguments, label)
+            if arguments[0] != "validate-child":
+                return
+            path = pathlib.Path(
+                arguments[arguments.index("--receipt") + 1]
+            )
+            value = json.loads(path.read_text())
+            value["formula_revision"] = 7
+            write_json(path, value)
+
+        with (
+            mock.patch.object(
+                EXECUTOR,
+                "run_oci_layout_command",
+                side_effect=tamper_receipt,
+            ),
+            self.assertRaisesRegex(
+                EXECUTOR.ExecutorError,
+                "wrong formula_revision",
+            ),
+        ):
+            EXECUTOR.compose_reuse_child(
+                campaign_path=receipt.campaign_path,
+                source_tap_root=receipt.source,
+                handoff_root=receipt_handoff,
+                formula_name="alpha",
+                arch="wasm32",
+                output=receipt.root / "tampered-receipt-child",
+            )
+        self.assertFalse(
+            (receipt.root / "tampered-receipt-child").exists()
+        )
+
+        existing = ReuseFixture()
+        self.addCleanup(existing.close)
+        existing_handoff = existing.root / "existing-output-handoff"
+        existing.derive_reuse(existing_handoff)
+        existing_output = existing.root / "existing-output"
+        existing_output.mkdir()
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "already exists",
+        ):
+            EXECUTOR.compose_reuse_child(
+                campaign_path=existing.campaign_path,
+                source_tap_root=existing.source,
+                handoff_root=existing_handoff,
+                formula_name="alpha",
+                arch="wasm32",
+                output=existing_output,
+            )
 
     def test_reuse_rejects_mutable_evidence_and_wrong_public_bytes(
         self,
