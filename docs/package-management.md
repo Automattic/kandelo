@@ -137,15 +137,24 @@ registry recipe, build script, shared package input, or a mixed pull request
 still runs package staging normally. The scope detector also fails if this
 transition path ever escapes the exact Homebrew product gate.
 
-The route does not make an old `program-packages.json` row current source
-policy. Such a row can continue to describe the last conventional generation
-while it is being retired, but it cannot authorize a source build and it does
-not contain a release URL. Conventional resolution still checks the complete
-projection and fails on stale input. Homebrew publisher preflight checks only
-the five conventional packages it actually transports into Formula tests:
-`dash`, `coreutils`, `grep`, `sed`, and `rootfs`, including their complete
-dependency identities. A selected change fails that check; an unrelated VFS
-row cannot block bottle publication.
+The route does not permit `program-packages.json` to become stale. That file
+describes which source inputs a resolver may accept; it does not say that an
+archive has been built or published. Regenerating it records the shell's new
+cache identity and the new identities of its five reverse dependents:
+`node-vfs`, `nginx-vfs`, `nginx-php-vfs`, `lamp`, and `wordpress`.
+
+The shell's `build.toml` keeps `commit = "UNPUBLISHED"` and
+`publication_state = "pending"`. Shared publication policy therefore blocks
+the shell and every package that depends on it from staging or publication.
+The exact product gate may build those identities from source for tests, but
+the generated index does not invent a missing archive or accept an old
+archive under a new cache key.
+
+Homebrew publisher preflight checks only the five conventional packages it
+actually transports into Formula tests: `dash`, `coreutils`, `grep`, `sed`,
+and `rootfs`, including their complete dependency identities. A selected
+change fails that check; an unrelated pending VFS identity cannot block
+bottle publication.
 
 Remove this transition route when the conventional shell recipe is deleted.
 At that point the executor will no longer appear in a registry `build.toml`,
