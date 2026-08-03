@@ -905,7 +905,7 @@ jq -e '
   }
 ' <<<"$bridge_plan" >/dev/null
 [ "$(jq -r '.support_runtime_sha256' <<<"$bridge_plan")" = \
-  "64f702d8c9646fa309bba0924b0028ef38c5527f239377e62c18925a955b5ba0" ]
+  "de140fa2319d8467ac44e3d6f1329dc27cc67f15d20fd1823a14c8a8c06b2f2a" ]
 [ "$bridge_plan" = "$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core bridge --tier2-bridge-json)" ]
 rm "$TAP_ROOT/Kandelo/formula_support/a-runtime.txt" \
   "$TAP_ROOT/Kandelo/formula_support/z-runtime.txt"
