@@ -2472,6 +2472,8 @@ class CampaignOptions:
     old_tap_commit: str
     source_tap_root: pathlib.Path
     source_tap_commit: str
+    recovery_tap_root: pathlib.Path
+    recovery_tap_commit: str
     native_brew_root: pathlib.Path
     native_brew_commit: str
     metadata_sha256: str
@@ -4016,6 +4018,10 @@ def _derive_campaign_from_snapshots(
             used_predecessors[path]
             for path in sorted(used_predecessors)
         ]
+        authority["predecessor_recovery_source"] = {
+            "commit": options.recovery_tap_commit,
+            "repository": PREDECESSOR_RELEASE_REPOSITORY,
+        }
         schema = 3
     return {
         "authority": authority,
@@ -4071,6 +4077,11 @@ def derive_campaign(
             "candidate source tap input",
         ),
         (
+            options.recovery_tap_root,
+            options.recovery_tap_commit,
+            "predecessor recovery tap input",
+        ),
+        (
             options.native_brew_root,
             options.native_brew_commit,
             "native Homebrew input",
@@ -4080,6 +4091,8 @@ def derive_campaign(
         git_authority(root, commit, label)
         for root, commit, label in authorities
     )
+    if len(set(exact_roots)) != len(exact_roots):
+        fail("campaign Git authority roots must be independent")
     metadata_history = historical_metadata_history(
         exact_roots[1], options.old_tap_commit
     )
@@ -4123,7 +4136,7 @@ def derive_campaign(
 
     try:
         predecessor_handoffs = load_predecessor_handoffs(
-            exact_roots[2], options.source_tap_commit
+            exact_roots[3], options.recovery_tap_commit
         )
         # Homebrew refuses to run from an operating-system temporary prefix.
         # A private directory directly under the invoking user's home keeps
@@ -4152,9 +4165,9 @@ def derive_campaign(
                 )
             )
             native_brew_snapshot = git_snapshot(
-                exact_roots[3],
+                exact_roots[4],
                 options.native_brew_commit,
-                temporary / "input-3",
+                temporary / "input-4",
                 "native Homebrew input",
             )
             historical_formula_root = temporary / "historical-formula"
@@ -4261,6 +4274,8 @@ def parse_args() -> argparse.Namespace:
         command.add_argument("--old-tap-commit", required=True)
         command.add_argument("--source-tap-root", required=True)
         command.add_argument("--source-tap-commit", required=True)
+        command.add_argument("--recovery-tap-root", required=True)
+        command.add_argument("--recovery-tap-commit", required=True)
         command.add_argument("--native-brew-root", required=True)
         command.add_argument("--native-brew-commit", required=True)
         command.add_argument("--metadata-sha256", required=True)
@@ -4302,6 +4317,8 @@ def main() -> int:
             old_tap_commit=args.old_tap_commit,
             source_tap_root=pathlib.Path(args.source_tap_root),
             source_tap_commit=args.source_tap_commit,
+            recovery_tap_root=pathlib.Path(args.recovery_tap_root),
+            recovery_tap_commit=args.recovery_tap_commit,
             native_brew_root=pathlib.Path(args.native_brew_root),
             native_brew_commit=args.native_brew_commit,
             metadata_sha256=args.metadata_sha256,
@@ -4313,6 +4330,10 @@ def main() -> int:
         source_tap_root = real_directory(
             options.source_tap_root, "candidate source tap input"
         )
+        recovery_tap_root = real_directory(
+            options.recovery_tap_root,
+            "predecessor recovery tap input",
+        )
         native_brew_root = real_directory(
             options.native_brew_root, "native Homebrew input"
         )
@@ -4322,6 +4343,7 @@ def main() -> int:
                 kandelo_root,
                 old_tap_root,
                 source_tap_root,
+                recovery_tap_root,
                 native_brew_root,
             )
             document = derive_campaign(options)
@@ -4337,6 +4359,7 @@ def main() -> int:
                     kandelo_root,
                     old_tap_root,
                     source_tap_root,
+                    recovery_tap_root,
                     native_brew_root,
                 )
             ):

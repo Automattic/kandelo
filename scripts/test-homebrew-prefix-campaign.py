@@ -592,12 +592,14 @@ class Fixture:
     kandelo: pathlib.Path
     old_tap: pathlib.Path
     source_tap: pathlib.Path
+    recovery_tap: pathlib.Path
     native_brew: pathlib.Path
     archives: dict[str, bytes]
     versions: dict[str, str]
     kandelo_commit: str
     old_tap_commit: str
     source_tap_commit: str
+    recovery_tap_commit: str
     native_brew_commit: str
     metadata_sha256: str
     layout_sha256: str
@@ -608,6 +610,8 @@ class Fixture:
         kandelo_commit: str | None = None,
         old_tap_commit: str | None = None,
         source_tap_commit: str | None = None,
+        recovery_tap_root: pathlib.Path | None = None,
+        recovery_tap_commit: str | None = None,
         native_brew_commit: str | None = None,
         metadata_sha256: str | None = None,
         layout_sha256: str | None = None,
@@ -619,6 +623,12 @@ class Fixture:
             old_tap_commit=old_tap_commit or self.old_tap_commit,
             source_tap_root=self.source_tap,
             source_tap_commit=source_tap_commit or self.source_tap_commit,
+            recovery_tap_root=(
+                recovery_tap_root or self.recovery_tap
+            ),
+            recovery_tap_commit=(
+                recovery_tap_commit or self.recovery_tap_commit
+            ),
             native_brew_root=self.native_brew,
             native_brew_commit=(
                 native_brew_commit or self.native_brew_commit
@@ -700,6 +710,7 @@ def make_fixture(
     kandelo = root / "kandelo"
     tap = root / "old-tap"
     source_tap = root / "source-tap"
+    recovery_tap = root / "recovery-tap"
     native_brew = root / "native-brew"
     kandelo.mkdir()
     tap.mkdir()
@@ -884,6 +895,16 @@ def make_fixture(
             alpha_source.replace('desc "fixture"', 'desc "candidate fixture"')
         )
     source_tap_commit = commit(source_tap, "fixture candidate source tap")
+    shutil.copytree(
+        source_tap,
+        recovery_tap,
+        ignore=shutil.ignore_patterns(".git"),
+    )
+    run(["git", "init", "-q"], recovery_tap)
+    recovery_tap_commit = commit(
+        recovery_tap,
+        "fixture independent recovery tap",
+    )
     (native_brew / "bin").mkdir()
     (native_brew / "Library/Homebrew").mkdir(parents=True)
     (native_brew / "bin/brew").write_text("#!/bin/sh\nexit 1\n")
@@ -897,6 +918,7 @@ def make_fixture(
         kandelo=kandelo,
         old_tap=tap,
         source_tap=source_tap,
+        recovery_tap=recovery_tap,
         native_brew=native_brew,
         archives=archives,
         versions={
@@ -909,6 +931,7 @@ def make_fixture(
         kandelo_commit=kandelo_commit,
         old_tap_commit=tap_commit,
         source_tap_commit=source_tap_commit,
+        recovery_tap_commit=recovery_tap_commit,
         native_brew_commit=native_brew_commit,
         metadata_sha256=metadata_sha,
         layout_sha256=layout_sha,
@@ -2918,14 +2941,16 @@ class PrefixCampaignTests(unittest.TestCase):
         document = predecessor_archive(campaign_sha)
         path = predecessor_path(campaign_sha)
         payload = CAMPAIGN.pretty_json(document)
-        archive_path = fixture.source_tap / path
+        archive_path = fixture.recovery_tap / path
         archive_path.parent.mkdir(parents=True, exist_ok=True)
         archive_path.write_bytes(payload)
-        source_head = commit(
-            fixture.source_tap,
+        recovery_head = commit(
+            fixture.recovery_tap,
             "add reusable predecessor handoff",
         )
-        options = fixture.options(source_tap_commit=source_head)
+        options = fixture.options(
+            recovery_tap_commit=recovery_head
+        )
         dependencies = dependencies_with_present_formula(
             fixture, "alpha"
         )
@@ -2934,6 +2959,17 @@ class PrefixCampaignTests(unittest.TestCase):
 
         self.assertEqual(first, second)
         self.assertEqual(first["schema"], 3)
+        self.assertEqual(
+            first["authority"]["source_tap_commit"],
+            fixture.source_tap_commit,
+        )
+        self.assertEqual(
+            first["authority"]["predecessor_recovery_source"],
+            {
+                "commit": recovery_head,
+                "repository": TAP_REPOSITORY,
+            },
+        )
         alpha = next(
             value
             for value in first["formulae"]
@@ -3016,11 +3052,12 @@ class PrefixCampaignTests(unittest.TestCase):
                         "tag"
                     ] = "homebrew-prefix-handoff-sha256-invalid"
                 write_json(
-                    fixture.source_tap / predecessor_path(campaign_sha),
+                    fixture.recovery_tap
+                    / predecessor_path(campaign_sha),
                     document,
                 )
-                source_head = commit(
-                    fixture.source_tap,
+                recovery_head = commit(
+                    fixture.recovery_tap,
                     f"mutate predecessor {mutation}",
                 )
                 with self.assertRaisesRegex(
@@ -3028,10 +3065,105 @@ class PrefixCampaignTests(unittest.TestCase):
                 ):
                     CAMPAIGN.derive_campaign(
                         fixture.options(
-                            source_tap_commit=source_head
+                            recovery_tap_commit=recovery_head
                         ),
                         fixture.dependencies(),
                     )
+
+    def test_recovery_tap_is_an_independent_exact_authority(
+        self,
+    ) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        cases = (
+            (
+                "shared-root",
+                fixture.source_tap,
+                fixture.source_tap_commit,
+                "authority roots must be independent",
+            ),
+            (
+                "wrong-commit",
+                fixture.recovery_tap,
+                fixture.source_tap_commit,
+                "does not match exact commit",
+            ),
+            (
+                "swapped-root",
+                fixture.source_tap,
+                fixture.recovery_tap_commit,
+                "does not match exact commit",
+            ),
+        )
+        for name, root, revision, message in cases:
+            with self.subTest(name=name):
+                with self.assertRaisesRegex(
+                    CAMPAIGN.CampaignError, message
+                ):
+                    CAMPAIGN.derive_campaign(
+                        fixture.options(
+                            recovery_tap_root=root,
+                            recovery_tap_commit=revision,
+                        ),
+                        fixture.dependencies(),
+                    )
+
+        dirty = fixture.recovery_tap / "untracked-recovery-input"
+        dirty.write_text("dirty\n")
+        with self.assertRaisesRegex(
+            CAMPAIGN.CampaignError,
+            "recovery tap input worktree is dirty",
+        ):
+            CAMPAIGN.derive_campaign(
+                fixture.options(), fixture.dependencies()
+            )
+        dirty.unlink()
+
+        original = CAMPAIGN.load_predecessor_handoffs
+
+        def dirty_after_read(
+            root: pathlib.Path,
+            revision: str,
+        ) -> dict[tuple[str, str], dict[str, Any]]:
+            result = original(root, revision)
+            dirty.write_text("dirty after read\n")
+            return result
+
+        with mock.patch.object(
+            CAMPAIGN,
+            "load_predecessor_handoffs",
+            side_effect=dirty_after_read,
+        ):
+            with self.assertRaisesRegex(
+                CAMPAIGN.CampaignError,
+                "recovery tap input final rebind worktree is dirty",
+            ):
+                CAMPAIGN.derive_campaign(
+                    fixture.options(), fixture.dependencies()
+                )
+
+    def test_source_tap_archive_cannot_replace_recovery_authority(
+        self,
+    ) -> None:
+        fixture = make_fixture(alpha_source_changed=False)
+        self.addCleanup(fixture.close)
+        campaign_sha = "a" * 64
+        write_json(
+            fixture.source_tap / predecessor_path(campaign_sha),
+            predecessor_archive(campaign_sha),
+        )
+        source_head = commit(
+            fixture.source_tap,
+            "place recovery record in Formula authority",
+        )
+        with self.assertRaisesRegex(
+            CAMPAIGN.CampaignError,
+            "without an archived predecessor handoff",
+        ):
+            CAMPAIGN.derive_campaign(
+                fixture.options(source_tap_commit=source_head),
+                dependencies_with_present_formula(fixture, "alpha"),
+            )
 
     def test_predecessor_recovery_rejects_duplicate_variant(
         self,
@@ -3040,11 +3172,12 @@ class PrefixCampaignTests(unittest.TestCase):
         self.addCleanup(fixture.close)
         for campaign_sha in ("a" * 64, "b" * 64):
             write_json(
-                fixture.source_tap / predecessor_path(campaign_sha),
+                fixture.recovery_tap
+                / predecessor_path(campaign_sha),
                 predecessor_archive(campaign_sha),
             )
-        source_head = commit(
-            fixture.source_tap,
+        recovery_head = commit(
+            fixture.recovery_tap,
             "add duplicate predecessor handoffs",
         )
         with self.assertRaisesRegex(
@@ -3052,7 +3185,9 @@ class PrefixCampaignTests(unittest.TestCase):
             "repeats completed handoff for alpha/wasm32",
         ):
             CAMPAIGN.derive_campaign(
-                fixture.options(source_tap_commit=source_head),
+                fixture.options(
+                    recovery_tap_commit=recovery_head
+                ),
                 fixture.dependencies(),
             )
 
@@ -3069,20 +3204,23 @@ class PrefixCampaignTests(unittest.TestCase):
             "planned_reuse_handoff_rebinding_requires": ["abi"],
         }
         write_json(
-            fixture.source_tap / predecessor_path(campaign_sha),
+            fixture.recovery_tap / predecessor_path(campaign_sha),
             document,
         )
-        source_head = commit(
-            fixture.source_tap,
+        recovery_head = commit(
+            fixture.recovery_tap,
             "add legacy predecessor archive",
         )
         result = CAMPAIGN.derive_campaign(
-            fixture.options(source_tap_commit=source_head),
+            fixture.options(recovery_tap_commit=recovery_head),
             fixture.dependencies(),
         )
         self.assertEqual(result["schema"], 2)
         self.assertNotIn(
             "predecessor_recovery", result["authority"]
+        )
+        self.assertNotIn(
+            "predecessor_recovery_source", result["authority"]
         )
 
     def test_predecessor_dispatch_inventory_is_bounded(self) -> None:
@@ -3168,13 +3306,13 @@ class PrefixCampaignTests(unittest.TestCase):
                         separators=(",", ":"),
                         sort_keys=True,
                     ).encode()
-                path = fixture.source_tap / predecessor_path(
+                path = fixture.recovery_tap / predecessor_path(
                     campaign_sha
                 )
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(payload)
-                source_head = commit(
-                    fixture.source_tap,
+                recovery_head = commit(
+                    fixture.recovery_tap,
                     f"add {mutation} predecessor archive",
                 )
                 with self.assertRaisesRegex(
@@ -3182,7 +3320,7 @@ class PrefixCampaignTests(unittest.TestCase):
                 ):
                     CAMPAIGN.derive_campaign(
                         fixture.options(
-                            source_tap_commit=source_head
+                            recovery_tap_commit=recovery_head
                         ),
                         fixture.dependencies(),
                     )
