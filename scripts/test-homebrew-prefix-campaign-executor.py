@@ -3406,6 +3406,87 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             [{"name": "alpha"}],
         )
 
+    def test_closed_selection_accepts_only_supported_cellar_identities(
+        self,
+    ) -> None:
+        fixture = Fixture()
+        self.addCleanup(fixture.close)
+        handoff = fixture.root / "symbolic-cellar-handoff"
+        fixture.derive(
+            "alpha",
+            [("wasm32", fixture.publication("alpha", "wasm32"))],
+            [],
+            handoff,
+        )
+
+        bottle_path = handoff / "payload/wasm32/build/bottle.json"
+
+        def set_cellar(value: str) -> None:
+            bottle = json.loads(bottle_path.read_text())
+            bottle[f"{TAP_NAME}/alpha"]["bottle"]["cellar"] = value
+            write_json(bottle_path, bottle)
+            manifest_path = handoff / "handoff.json"
+            manifest = json.loads(manifest_path.read_text())
+            record = next(
+                item
+                for item in manifest["publications"][0]["files"]
+                if item["path"]
+                == "payload/wasm32/build/bottle.json"
+            )
+            record["bytes"] = bottle_path.stat().st_size
+            record["sha256"] = sha256(bottle_path.read_bytes())
+            write_json(manifest_path, manifest)
+
+        observed_cellars: list[str] = []
+
+        def merge_symbolic(**arguments: Any) -> None:
+            observed_cellars.append(arguments["cellar"])
+            fixture.merge_dependency(**arguments)
+
+        accepted = (
+            "/opt/kandelo/homebrew/Cellar",
+            "any",
+            "any_skip_relocation",
+        )
+        for position, cellar in enumerate(accepted):
+            with self.subTest(accepted_cellar=cellar):
+                set_cellar(cellar)
+                EXECUTOR.prepare_selection(
+                    campaign_path=fixture.campaign_path,
+                    source_tap_root=fixture.source,
+                    roots=["alpha"],
+                    arch="wasm32",
+                    handoff_roots=[handoff],
+                    output=fixture.root / f"accepted-cellar-{position}",
+                    bottle_merger=merge_symbolic,
+                    sidecar_generator=fixture.generate_sidecars,
+                    tap_validator=fixture.validate_tap,
+                )
+        self.assertEqual(observed_cellars, list(accepted))
+
+        rejected = (
+            "/home/linuxbrew/.linuxbrew/Cellar",
+            "/usr/local/Cellar",
+            "unknown_relocation_mode",
+        )
+        for position, cellar in enumerate(rejected):
+            with self.subTest(rejected_cellar=cellar), self.assertRaisesRegex(
+                EXECUTOR.ExecutorError,
+                "bottle cellar is not the Kandelo prefix",
+            ):
+                set_cellar(cellar)
+                EXECUTOR.prepare_selection(
+                    campaign_path=fixture.campaign_path,
+                    source_tap_root=fixture.source,
+                    roots=["alpha"],
+                    arch="wasm32",
+                    handoff_roots=[handoff],
+                    output=fixture.root / f"rejected-cellar-{position}",
+                    bottle_merger=fixture.merge_dependency,
+                    sidecar_generator=fixture.generate_sidecars,
+                    tap_validator=fixture.validate_tap,
+                )
+
     def test_closed_selection_release_is_deterministic_and_round_trips(
         self,
     ) -> None:
