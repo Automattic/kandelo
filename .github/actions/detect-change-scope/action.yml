@@ -34,6 +34,10 @@ description: |
       audited bottle-publisher surface. Staging still runs the complete
       publisher preflight, but may omit unrelated runtime workspace tests.
 
+    Homebrew product-owned package input — a reviewed transition input whose
+      complete effect is proved by the exact Homebrew product gate rather than
+      by rebuilding the retiring conventional shell and derived VFS archives.
+
     package_staging_required — compatibility alias for
       package_archive_changed. Ordinary kernel/runtime changes do not
       set it unless a package declares the changed path as a build
@@ -181,6 +185,8 @@ runs:
         binary_materialization_files=$(printf '%s\n' "$files" | binary_materialization_changed_files)
         kernel_runtime_files=$(printf '%s\n' "$files" | kernel_runtime_changed_files)
         ci_control_files=$(printf '%s\n' "$files" | ci_control_changed_files)
+        homebrew_product_files=$(printf '%s\n' "$files" |
+          homebrew_product_owned_package_input_changed_files)
 
         publisher_scope_output=$(mktemp)
         publisher_scope_base=$(git rev-parse "${BASE_REF}^{commit}")
@@ -206,6 +212,11 @@ runs:
             exit 1
             ;;
         esac
+        if [ -n "$(printf '%s\n' "$homebrew_product_files" | sed '/^$/d')" ] &&
+           [ "$publisher_product_required" != true ]; then
+          echo "::error::Homebrew product-owned input escaped the exact product gate"
+          exit 1
+        fi
 
         # Tier A — docs-only filter. Implemented as inverse: any file
         # outside the docs allowlist forces docs_only=false. Empty diff
@@ -221,12 +232,13 @@ runs:
           -e '^benchmarks/results/' \
           || true)
 
-        all_scoped_files=$(printf '%s\n%s\n%s\n%s\n%s\n' \
+        all_scoped_files=$(printf '%s\n%s\n%s\n%s\n%s\n%s\n' \
           "$package_archive_files" \
           "$package_publish_flow_files" \
           "$binary_materialization_files" \
           "$kernel_runtime_files" \
           "$ci_control_files" \
+          "$homebrew_product_files" \
           | sed '/^$/d' | sort -u)
         uncategorized_non_docs_files=$(comm -23 \
           <(printf '%s\n' "$non_docs" | sed '/^$/d' | sort -u) \
@@ -258,6 +270,7 @@ runs:
         binary_materialization_changed=$(bool_for_matches "$binary_materialization_files")
         kernel_runtime_changed=$(bool_for_matches "$kernel_runtime_files")
         ci_control_changed=$(bool_for_matches "$ci_control_files")
+        homebrew_product_changed=$(bool_for_matches "$homebrew_product_files")
         uncategorized_non_docs_changed=$(bool_for_matches "$uncategorized_non_docs_files")
 
         if [ "$kernel_runtime_changed" = 'true' ] || [ "$ci_control_changed" = 'true' ]; then
@@ -274,6 +287,7 @@ runs:
         if [ "$kernel_changed" = 'true' ] ||
            [ "$binary_materialization_changed" = 'true' ] ||
            [ "$package_publish_flow_changed" = 'true' ] ||
+           [ "$homebrew_product_changed" = 'true' ] ||
            [ "$uncategorized_non_docs_changed" = 'true' ]; then
           test_gate_required=true
         else
@@ -306,7 +320,8 @@ runs:
         materialization_state="$(summarize_matches 'binary materialization' "$binary_materialization_files")"
         runtime_state="$(summarize_matches 'kernel runtime' "$kernel_runtime_files")"
         ci_state="$(summarize_matches 'CI scope control' "$ci_control_files")"
+        homebrew_product_state="$(summarize_matches 'Homebrew product-owned input' "$homebrew_product_files")"
         uncategorized_state="$(summarize_matches 'uncategorized non-docs' "$uncategorized_non_docs_files")"
 
         echo "::notice::package staging: $package_staging_state | test gate: $test_gate_required | Homebrew publisher only: $homebrew_publisher_only_changed | vitest: $vitest_state | cargo+libc-test+POSIX+sortix: $kernel_state"
-        echo "::notice::$package_staging_reason | $publish_state | $materialization_state | $runtime_state | $ci_state | $uncategorized_state"
+        echo "::notice::$package_staging_reason | $publish_state | $materialization_state | $runtime_state | $ci_state | $homebrew_product_state | $uncategorized_state"

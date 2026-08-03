@@ -6210,19 +6210,25 @@ def check_publisher(workflow)
   check(!dev_shell.include?("WASM_POSIX_XTASK_BIN"),
         "dev shell makes the Formula checker a global package-toolchain input")
   check(publisher_test.include?(
-          "assert_exact_source_program_projection_is_fresh"
-        ) && publisher_test.include?(
-          'WASM_POSIX_DEPS_REGISTRY="$REPO_ROOT/packages/registry"'
-        ) && publisher_test.include?(
-          "Formula checker handoff made the exact-source program projection stale"
-        ),
-        "publisher regression does not protect exact-source program cache keys")
-  check(publisher_test.include?(
           "assert_formula_test_program_projection_is_current_and_bounded"
         ) && publisher_test.include?(
           "Formula checker could not generate its selected source projection"
+        ) && publisher_test.include?(
+          'committed="$REPO_ROOT/packages/registry/program-packages.json"'
+        ) && publisher_test.include?(
+          'committed.fetch("packages").fetch(name) == row'
+        ) && publisher_test.include?(
+          'committed.fetch("identities").fetch(name) == row'
+        ) && publisher_test.include?(
+          "Formula checker projection is not the current selected package closure"
         ),
-        "publisher regression does not protect the selected Formula-test projection")
+        "publisher regression does not protect the current selected Formula-test closure")
+  check(!publisher_test.include?(
+          "assert_exact_source_program_projection_is_fresh"
+        ) && !publisher_test.include?(
+          "build-deps program-index-context-check"
+        ),
+        "publisher regression still couples Homebrew to the global package projection")
   checker_sealer = File.read(
     File.join(REPO_ROOT, "scripts/seal-homebrew-formula-checker.sh")
   )

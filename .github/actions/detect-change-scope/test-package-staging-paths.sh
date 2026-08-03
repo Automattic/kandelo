@@ -72,6 +72,17 @@ assert_not_selected "tools/mkrootfs/test/builder.test.ts" "tools/mkrootfs/test/b
 assert_selected "host/src/vfs/memory-fs.ts" "host/src/vfs/memory-fs.ts"
 assert_selected "host/src/vfs/sharedfs-vendor.ts" "host/src/vfs/sharedfs-vendor.ts"
 assert_selected "images/rootfs/etc/profile" "images/rootfs/etc/profile"
+# Closed-selection behavior is now proved by the exact Homebrew product gate;
+# it must not rebuild the retiring conventional shell and derived VFS images.
+assert_not_selected \
+  "scripts/homebrew-prefix-campaign-executor.py" \
+  "scripts/homebrew-prefix-campaign-executor.py"
+# The exception is exact. Conventional shell recipe inputs still stage, even
+# when one product-owned path appears in the same pull request.
+assert_selected \
+  "packages/registry/shell/build-shell.sh" \
+  "scripts/homebrew-prefix-campaign-executor.py" \
+  "packages/registry/shell/build-shell.sh"
 # WordPress and LAMP boot the host runtime to derive their VFS images, so a
 # host runtime change must invalidate package staging even when it is outside
 # the shell package's narrower host-side input closure.
