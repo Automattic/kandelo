@@ -915,6 +915,114 @@ def make_fixture(
     )
 
 
+def predecessor_dispatch(
+    *,
+    formula: str = "alpha",
+    arch: str = "wasm32",
+    handoff_sha: str = "d" * 64,
+    run_id: int = 101,
+) -> dict[str, Any]:
+    return {
+        "arch": arch,
+        "formula": formula,
+        "handoff_release": {
+            "id": run_id + 1000,
+            "tag": (
+                "homebrew-prefix-handoff-sha256-"
+                f"{handoff_sha}"
+            ),
+        },
+        "result": "handoff-published-and-publicly-verified",
+        "run_id": run_id,
+    }
+
+
+def predecessor_archive(
+    campaign_sha: str,
+    *,
+    dispatches: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    return {
+        "abandoned_at": "2026-08-01T01:02:03Z",
+        "authority": {
+            "activation_commit": "5" * 40,
+            "campaign_release": {
+                "id": 201,
+                "repository": TAP_REPOSITORY,
+                "tag": (
+                    "homebrew-prefix-campaign-sha256-"
+                    f"{campaign_sha}"
+                ),
+            },
+            "kandelo_commit": "6" * 40,
+            "payload_sha256": "7" * 64,
+            "rootfs_wasm32": (
+                "package-generation-rootfs-wasm32-abi-v42-"
+                "sha256-" + "8" * 64
+            ),
+            "source_tap_commit": "9" * 40,
+            "target_source": {
+                "manifest_path": (
+                    "Kandelo/campaigns/prefix-v1/manifest.json"
+                ),
+                "manifest_sha256": "a" * 64,
+                "source_root": "Kandelo/campaigns/prefix-v1/source",
+                "source_tree_git_oid": "b" * 40,
+                "target_tree_git_oid": "c" * 40,
+            },
+        },
+        "cause": {
+            "corrective_workstream": "M5",
+            "kind": "campaign-publisher-recovery-incomplete",
+            "summary": "fixture predecessor was archived",
+        },
+        "dispatches": dispatches or [predecessor_dispatch()],
+        "kind": CAMPAIGN.PREDECESSOR_ARCHIVE_KIND,
+        "recovery": dict(CAMPAIGN.PREDECESSOR_RECOVERY),
+        "schema": 1,
+    }
+
+
+def predecessor_path(campaign_sha: str) -> str:
+    return (
+        "Kandelo/campaigns/prefix-v1/aborted-campaigns/"
+        f"{campaign_sha}.json"
+    )
+
+
+def dependencies_with_present_formula(
+    fixture: Fixture,
+    formula: str,
+) -> Any:
+    base = fixture.dependencies()
+
+    def probe(
+        remote: str,
+        _reference: str,
+        _kandelo_root: pathlib.Path,
+    ) -> dict[str, Any]:
+        if remote.endswith("/" + formula):
+            return {
+                "digest": "sha256:" + "e" * 64,
+                "kind": "manifest",
+                "schema": 1,
+                "status": "present",
+            }
+        return {
+            "digest": None,
+            "kind": "manifest",
+            "schema": 1,
+            "status": "missing",
+        }
+
+    return CAMPAIGN.CampaignDependencies(
+        fetch_bottle=base.fetch_bottle,
+        probe_destination=probe,
+        resolve_formula_metadata=base.resolve_formula_metadata,
+        load_historical_formula=base.load_historical_formula,
+    )
+
+
 class PrefixCampaignTests(unittest.TestCase):
     def test_compressed_bottle_limit_comes_from_publication_policy(
         self,
@@ -2788,6 +2896,296 @@ class PrefixCampaignTests(unittest.TestCase):
                     ),
                 ),
             )
+
+    def test_present_destination_reuses_exact_archived_handoff(
+        self,
+    ) -> None:
+        fixture = make_fixture(alpha_source_changed=False)
+        self.addCleanup(fixture.close)
+        baseline = CAMPAIGN.derive_campaign(
+            fixture.options(), fixture.dependencies()
+        )
+        baseline_alpha = next(
+            value
+            for value in baseline["formulae"]
+            if value["name"] == "alpha"
+        )
+        prior_disposition = baseline_alpha["variants"][0][
+            "disposition"
+        ]
+
+        campaign_sha = "a" * 64
+        document = predecessor_archive(campaign_sha)
+        path = predecessor_path(campaign_sha)
+        payload = CAMPAIGN.pretty_json(document)
+        archive_path = fixture.source_tap / path
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        archive_path.write_bytes(payload)
+        source_head = commit(
+            fixture.source_tap,
+            "add reusable predecessor handoff",
+        )
+        options = fixture.options(source_tap_commit=source_head)
+        dependencies = dependencies_with_present_formula(
+            fixture, "alpha"
+        )
+        first = CAMPAIGN.derive_campaign(options, dependencies)
+        second = CAMPAIGN.derive_campaign(options, dependencies)
+
+        self.assertEqual(first, second)
+        self.assertEqual(first["schema"], 3)
+        alpha = next(
+            value
+            for value in first["formulae"]
+            if value["name"] == "alpha"
+        )
+        self.assertEqual(
+            alpha["destination"]["admission"]["kind"],
+            "archived-predecessor-exact-presence",
+        )
+        self.assertEqual(
+            alpha["variants"][0]["disposition"],
+            prior_disposition,
+        )
+        self.assertEqual(
+            alpha["variants"][0]["reuse_source"],
+            {
+                "arch": "wasm32",
+                "campaign_tag": (
+                    "homebrew-prefix-campaign-sha256-"
+                    f"{campaign_sha}"
+                ),
+                "handoff_tag": (
+                    "homebrew-prefix-handoff-sha256-" + "d" * 64
+                ),
+                "kind": "predecessor-handoff",
+            },
+        )
+        self.assertEqual(
+            first["authority"]["predecessor_recovery"],
+            [
+                {
+                    "activation_commit": "5" * 40,
+                    "archive": {
+                        "path": path,
+                        "sha256": sha256(payload),
+                    },
+                    "campaign": {
+                        "sha256": campaign_sha,
+                        "tag": (
+                            "homebrew-prefix-campaign-sha256-"
+                            f"{campaign_sha}"
+                        ),
+                    },
+                    "kandelo_commit": "6" * 40,
+                    "source_tap_commit": "9" * 40,
+                    "target_tree_git_oid": "c" * 40,
+                }
+            ],
+        )
+
+    def test_predecessor_recovery_authority_is_exact(self) -> None:
+        cases = (
+            ("flags", "recovery flags do not permit reuse"),
+            ("tag", "path does not match its campaign release tag"),
+            ("repository", "campaign release repository is invalid"),
+            ("handoff", "handoff release tag has an invalid value"),
+        )
+        for mutation, message in cases:
+            with self.subTest(mutation=mutation):
+                fixture = make_fixture()
+                self.addCleanup(fixture.close)
+                campaign_sha = "a" * 64
+                document = predecessor_archive(campaign_sha)
+                if mutation == "flags":
+                    document["recovery"][
+                        "published_handoffs_remain_independently_usable"
+                    ] = False
+                elif mutation == "tag":
+                    document["authority"]["campaign_release"][
+                        "tag"
+                    ] = (
+                        "homebrew-prefix-campaign-sha256-" + "f" * 64
+                    )
+                elif mutation == "repository":
+                    document["authority"]["campaign_release"][
+                        "repository"
+                    ] = "example/homebrew-wrong"
+                else:
+                    document["dispatches"][0]["handoff_release"][
+                        "tag"
+                    ] = "homebrew-prefix-handoff-sha256-invalid"
+                write_json(
+                    fixture.source_tap / predecessor_path(campaign_sha),
+                    document,
+                )
+                source_head = commit(
+                    fixture.source_tap,
+                    f"mutate predecessor {mutation}",
+                )
+                with self.assertRaisesRegex(
+                    CAMPAIGN.CampaignError, message
+                ):
+                    CAMPAIGN.derive_campaign(
+                        fixture.options(
+                            source_tap_commit=source_head
+                        ),
+                        fixture.dependencies(),
+                    )
+
+    def test_predecessor_recovery_rejects_duplicate_variant(
+        self,
+    ) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        for campaign_sha in ("a" * 64, "b" * 64):
+            write_json(
+                fixture.source_tap / predecessor_path(campaign_sha),
+                predecessor_archive(campaign_sha),
+            )
+        source_head = commit(
+            fixture.source_tap,
+            "add duplicate predecessor handoffs",
+        )
+        with self.assertRaisesRegex(
+            CAMPAIGN.CampaignError,
+            "repeats completed handoff for alpha/wasm32",
+        ):
+            CAMPAIGN.derive_campaign(
+                fixture.options(source_tap_commit=source_head),
+                fixture.dependencies(),
+            )
+
+    def test_legacy_predecessor_archive_cannot_authorize_reuse(
+        self,
+    ) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        campaign_sha = "a" * 64
+        document = predecessor_archive(campaign_sha)
+        document["recovery"] = {
+            "authority_state": "armed",
+            "fresh_builds_require_successor_campaign": True,
+            "planned_reuse_handoff_rebinding_requires": ["abi"],
+        }
+        write_json(
+            fixture.source_tap / predecessor_path(campaign_sha),
+            document,
+        )
+        source_head = commit(
+            fixture.source_tap,
+            "add legacy predecessor archive",
+        )
+        result = CAMPAIGN.derive_campaign(
+            fixture.options(source_tap_commit=source_head),
+            fixture.dependencies(),
+        )
+        self.assertEqual(result["schema"], 2)
+        self.assertNotIn(
+            "predecessor_recovery", result["authority"]
+        )
+
+    def test_predecessor_dispatch_inventory_is_bounded(self) -> None:
+        campaign_sha = "a" * 64
+        document = predecessor_archive(campaign_sha)
+        document["dispatches"] = [
+            predecessor_dispatch(run_id=index + 1)
+            for index in range(
+                CAMPAIGN.MAX_PREDECESSOR_DISPATCHES + 1
+            )
+        ]
+        with self.assertRaisesRegex(
+            CAMPAIGN.CampaignError,
+            "dispatches must be a bounded array",
+        ):
+            CAMPAIGN.parse_predecessor_archive(
+                CAMPAIGN.pretty_json(document),
+                predecessor_path(campaign_sha),
+            )
+
+    def test_predecessor_recovery_requires_complete_multiarch_set(
+        self,
+    ) -> None:
+        probe = {
+            "digest": "sha256:" + "e" * 64,
+            "kind": "manifest",
+            "schema": 1,
+            "status": "present",
+        }
+        variants = [
+            {"arch": "wasm32", "disposition": {"kind": "existing"}},
+            {"arch": "wasm64", "disposition": {"kind": "existing"}},
+        ]
+        authority = {
+            "archive": {"path": "archive.json", "sha256": "f" * 64}
+        }
+        handoffs = {
+            ("alpha", "wasm32"): {
+                "authority": authority,
+                "reuse_source": {
+                    "arch": "wasm32",
+                    "campaign_tag": "campaign",
+                    "handoff_tag": "handoff",
+                    "kind": "predecessor-handoff",
+                },
+            }
+        }
+        used: dict[str, dict[str, Any]] = {}
+        with self.assertRaisesRegex(
+            CAMPAIGN.CampaignError,
+            "without an archived predecessor handoff for alpha/wasm64",
+        ):
+            CAMPAIGN.destination_admission(
+                probe,
+                formula_name="alpha",
+                source_kind="selected-old-formula",
+                variants=variants,
+                predecessor_handoffs=handoffs,
+                used_predecessors=used,
+            )
+        self.assertNotIn("reuse_source", variants[0])
+        self.assertEqual(used, {})
+
+    def test_predecessor_archive_must_be_canonical_and_exact(
+        self,
+    ) -> None:
+        cases = (
+            ("noncanonical", "is not canonical pretty JSON"),
+            ("mutated", "must contain exactly"),
+        )
+        for mutation, message in cases:
+            with self.subTest(mutation=mutation):
+                fixture = make_fixture()
+                self.addCleanup(fixture.close)
+                campaign_sha = "a" * 64
+                document = predecessor_archive(campaign_sha)
+                if mutation == "mutated":
+                    document["unexpected"] = True
+                    payload = CAMPAIGN.pretty_json(document)
+                else:
+                    payload = json.dumps(
+                        document,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ).encode()
+                path = fixture.source_tap / predecessor_path(
+                    campaign_sha
+                )
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(payload)
+                source_head = commit(
+                    fixture.source_tap,
+                    f"add {mutation} predecessor archive",
+                )
+                with self.assertRaisesRegex(
+                    CAMPAIGN.CampaignError, message
+                ):
+                    CAMPAIGN.derive_campaign(
+                        fixture.options(
+                            source_tap_commit=source_head
+                        ),
+                        fixture.dependencies(),
+                    )
 
     def test_auth_required_sidecar_build_and_reuse_are_rejected(
         self,
