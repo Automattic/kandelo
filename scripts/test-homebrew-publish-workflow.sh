@@ -7366,8 +7366,9 @@ EOF
     --reviewed-tap-root "$reviewed" >/dev/null
 
   # Canonical native Requirement declarations name the support module without
-  # loading another local source. Both closure validators must accept that
-  # static reference while the Formula parser retains semantic authority.
+  # loading another local source. The source-closure validator delegates Ruby
+  # semantics to the authoritative Ripper parser, which accepts only the
+  # reviewed static Requirement form below.
   bash "$REPO_ROOT/scripts/homebrew-validate-formula-source-closure.sh" \
     --tap-root "$tap" \
     --tap-repository kandelo-dev/homebrew-tap-core \
@@ -7386,7 +7387,8 @@ EOF
     --base-ref "$base" >/dev/null 2>"$err"; then
     fail "Formula source-closure validator accepted a dynamic Requirement reference"
   fi
-  grep -F "Formula support reference is not a bounded canonical closure" "$err" >/dev/null ||
+  grep -F 'Formula uses forbidden dependency metaprogramming "const_get"' \
+    "$err" >/dev/null ||
     fail "Formula source-closure validator did not explain the dynamic Requirement reference"
 
   printf 'test-only-v2\n' \
