@@ -196,7 +196,11 @@ test("diagnostic core scope binds the actually poured archive", () => {
         bottleDigests.coreBzip2Sha256,
     ),
   );
-  assert.match(script, /brew --cache --force-bottle "\$formula"/);
+  assert.match(
+    script,
+    /brew --cache --bottle-tag=wasm32_kandelo "\$formula"/,
+  );
+  assert.doesNotMatch(script, /brew --cache --force-bottle/);
   assert.match(script, /poured bottle archive differs from the closed selection/);
 });
 

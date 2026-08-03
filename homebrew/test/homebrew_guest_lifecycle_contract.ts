@@ -290,7 +290,9 @@ assert_formula_bottle_sha() {
 assert_cached_bottle_sha() {
   formula="$1"
   expected="$2"
-  cache="$(/usr/bin/brew --cache --force-bottle "$formula")"
+  # --force-bottle affects installation, but brew --cache otherwise
+  # infers the host tag. Name Kandelo so it checks the archive we poured.
+  cache="$(/usr/bin/brew --cache --bottle-tag=wasm32_kandelo "$formula")"
   [ -f "$cache" ] || fail "poured bottle is absent from Homebrew cache"
   actual="$(/usr/bin/sha256sum "$cache")"
   actual="\${actual%% *}"
