@@ -261,6 +261,7 @@ BUILD_TEST_DEPENDENCY_LIST="$CONTROL_DIR/same-tap-build-test-dependencies.txt"
 DEPENDENCY_POUR_LIST="$CONTROL_DIR/target-pour-dependencies.txt"
 ALLOWED_TARGET_TAPS="$CONTROL_DIR/allowed-target-taps.txt"
 STATIC_RUNTIME_DEPENDENCIES="$CONTROL_DIR/static-runtime-dependencies.txt"
+DEPENDENCY_CACHE_EVIDENCE="$CONTROL_DIR/dependency-cache-evidence.json"
 TARGET_CELLAR_BEFORE_TEST="$CONTROL_DIR/target-cellar-before-test.txt"
 TARGET_CELLAR_AFTER_TEST="$CONTROL_DIR/target-cellar-after-test.txt"
 DEPENDENCY_PROVENANCE="$OUT_DIR/dependency-provenance.json"
@@ -278,6 +279,7 @@ DEPENDENCY_PROVENANCE="$OUT_DIR/dependency-provenance.json"
 : >"$DEPENDENCY_POUR_LIST"
 : >"$ALLOWED_TARGET_TAPS"
 : >"$STATIC_RUNTIME_DEPENDENCIES"
+: >"$DEPENDENCY_CACHE_EVIDENCE"
 : >"$TARGET_CELLAR_BEFORE_TEST"
 : >"$TARGET_CELLAR_AFTER_TEST"
 for attempt in 1 2 3; do
@@ -290,6 +292,7 @@ chmod 0600 "$INSTALL_LOG" "$NATIVE_INSTALL_LOG" \
   "$HOST_DEPENDENCY_LIST" "$DEPENDENCY_LIST" \
   "$BUILD_TEST_DEPENDENCY_LIST" "$DEPENDENCY_POUR_LIST" \
   "$ALLOWED_TARGET_TAPS" "$STATIC_RUNTIME_DEPENDENCIES" \
+  "$DEPENDENCY_CACHE_EVIDENCE" \
   "$TARGET_CELLAR_BEFORE_TEST" "$TARGET_CELLAR_AFTER_TEST" \
   "$CONTROL_DIR"/brew-install-attempt-*.log
 
@@ -738,6 +741,37 @@ while IFS= read -r dependency; do
     --formula "$dependency"
 done <"$DEPENDENCY_POUR_LIST"
 
+# WHY: Homebrew's human-readable progress output is not a stable provenance
+# API. Its concurrent downloader may print only a checkmark even though it
+# fetched and verified a bottle. Before untrusted Formula code runs, resolve
+# every runtime dependency's machine-readable cache path and hash the exact
+# regular file that Homebrew retained. The control directory is hidden from
+# each isolated Brew command, so the later Formula cannot rewrite this record.
+dependency_cache_args=(
+  capture-cache
+  --brew-bin "$BREW_BIN"
+  --tap-root "$TAP_ROOT"
+  --tap-repository "$TAP_REPOSITORY"
+  --tap-name "$TAP_NAME"
+  --tap-commit "$TAP_COMMIT"
+  --tap-checkout-commit "$TAP_CHECKOUT_COMMIT"
+  --formula "$FORMULA"
+  --arch "$ARCH"
+  --bottle-root-url "$BOTTLE_ROOT_URL"
+  --expected-dependencies "$DEPENDENCY_LIST"
+  --cache-root "$HOMEBREW_CACHE"
+  --out "$DEPENDENCY_CACHE_EVIDENCE"
+)
+if [ -n "$HOMEBREW_GUEST_LAYOUT_SHA256" ]; then
+  dependency_cache_args+=(
+    --prefix-campaign-layout-sha256 "$HOMEBREW_GUEST_LAYOUT_SHA256"
+  )
+fi
+HOMEBREW_KANDELO_BOTTLE_TAG="$BOTTLE_TAG" \
+KANDELO_HOMEBREW_BOTTLE_TAG="$BOTTLE_TAG" \
+  python3 "$KANDELO_ROOT/scripts/homebrew-dependency-provenance.py" \
+    "${dependency_cache_args[@]}"
+
 # WHY: dependency bottles are installed after the isolation boundary is
 # prepared. Seal the complete poured dependency set now, before selected
 # Formula Ruby can invoke its tap recipe, so the recipe supervisor never
@@ -804,6 +838,7 @@ dependency_provenance_args=(
   --target-receipt "$TARGET_PREFIX/INSTALL_RECEIPT.json" \
   --expected-dependencies "$DEPENDENCY_LIST" \
   --install-log "$INSTALL_LOG" \
+  --cache-evidence "$DEPENDENCY_CACHE_EVIDENCE" \
   --out "$DEPENDENCY_PROVENANCE"
 )
 if [ -n "$HOMEBREW_GUEST_LAYOUT_SHA256" ]; then

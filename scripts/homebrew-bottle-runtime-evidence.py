@@ -14,6 +14,13 @@ import subprocess
 import sys
 from typing import Any
 
+from homebrew_cache_archive import (
+    CacheArchiveError,
+    hash_exact_cached_archive,
+    hash_exact_local_archive,
+    validate_archive_record,
+)
+
 
 MAX_JSON_BYTES = 1_048_576
 MAX_LOG_BYTES = 16_777_216
@@ -410,32 +417,32 @@ def target_install_evidence(
     if not pour:
         fail(f"target install lacks pour evidence for {bottle_filename}")
     mode = selection["bottle"]["mode"]
-    if mode == "anonymous-public-readback":
-        fetch_references = (
-            args.bottle_url,
-            public_manifest_url(args, version, rebuild),
-        )
-        fetch = [
-            line
-            for line in lines
-            if line_fetches_reference(line, fetch_references)
-        ]
-        if not fetch:
-            fail(
-                "target Homebrew install lacks fetch evidence for the exact public "
-                "bottle blob or version manifest"
-            )
-    else:
-        fetch = list(selection["fetch"])
     installed_bottle = regular_file(
         pathlib.Path(args.installed_bottle), "Homebrew-selected target bottle", 2_147_483_648
     )
-    if sha256_file(installed_bottle) != args.bottle_sha256:
-        fail("Homebrew-selected target bottle digest does not match")
-    if installed_bottle.stat().st_size != args.bottle_bytes:
-        fail("Homebrew-selected target bottle byte count does not match")
+    try:
+        if mode == "anonymous-public-readback":
+            archive = hash_exact_cached_archive(
+                pathlib.Path(args.cache_root),
+                str(installed_bottle),
+                args.bottle_url,
+                bottle_filename=bottle_filename,
+                bottle_sha256=args.bottle_sha256,
+                bottle_bytes=args.bottle_bytes,
+            )
+            archive["source"] = "homebrew-cache"
+        else:
+            archive = hash_exact_local_archive(
+                installed_bottle,
+                bottle_filename,
+                args.bottle_sha256,
+                args.bottle_bytes,
+            )
+            archive["source"] = "local-input"
+    except CacheArchiveError as error:
+        fail(f"Homebrew-selected target bottle is invalid: {error}")
     return {
-        "fetch": fetch[:MAX_EVIDENCE_LINES],
+        "archive": archive,
         "pour": pour[:MAX_EVIDENCE_LINES],
         "source_build_absent": True,
     }
@@ -655,7 +662,7 @@ def build_document(args: argparse.Namespace) -> dict[str, Any]:
         },
         "dependencies": dependencies,
         "formula": args.formula,
-        "schema": 4,
+        "schema": 5,
         "selection": selection,
         "tap": {
             "checkout_commit": selected_tap_checkout_commit(args),
@@ -720,7 +727,7 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
             },
             "runtime evidence",
         )
-    elif schema in (3, 4):
+    elif schema in (3, 4, 5):
         root = exact_keys(
             document,
             {
@@ -744,7 +751,7 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
     if root["abi"] != args.abi:
         fail("runtime evidence ABI does not match")
     tap_keys = {"commit", "name", "repository"}
-    if schema == 4:
+    if schema in (4, 5):
         tap_keys.add("checkout_commit")
     tap = exact_keys(root["tap"], tap_keys, "runtime evidence tap")
     expected_tap = {
@@ -752,7 +759,7 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
         "name": normalized_tap_name(args),
         "repository": args.tap_repository,
     }
-    if schema == 4:
+    if schema in (4, 5):
         expected_tap["checkout_commit"] = selected_tap_checkout_commit(args)
     elif selected_tap_checkout_commit(args) != args.tap_commit:
         fail(
@@ -866,8 +873,13 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
             if test != expected_test:
                 fail("runtime evidence does not prove the support-data Formula test")
     target = exact_keys(root["target"], {"install_log", "receipt"}, "runtime target evidence")
+    install_log_keys = {"pour", "source_build_absent"}
+    if schema == 5:
+        install_log_keys.add("archive")
+    else:
+        install_log_keys.add("fetch")
     install_log = exact_keys(
-        target["install_log"], {"fetch", "pour", "source_build_absent"}, "runtime target install log"
+        target["install_log"], install_log_keys, "runtime target install log"
     )
     if install_log["source_build_absent"] is not True:
         fail("runtime target evidence permits a source fallback")
@@ -880,25 +892,56 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
             fail(f"runtime target pour[{index}] exceeds its byte limit")
         if not line_names_bottle(line, bottle_filename):
             fail("runtime target pour evidence does not identify the exact bottle filename")
-    target_fetch = install_log["fetch"]
-    if not isinstance(target_fetch, list) or not target_fetch or len(target_fetch) > MAX_EVIDENCE_LINES:
-        fail("runtime target evidence lacks bounded fetch evidence")
-    for index, line in enumerate(target_fetch):
-        line = require_string(line, f"runtime target fetch[{index}]")
-        if len(line.encode("utf-8")) > MAX_EVIDENCE_LINE_BYTES:
-            fail(f"runtime target fetch[{index}] exceeds its byte limit")
-        if selected_bottle["mode"] == "anonymous-public-readback":
-            fetch_references = (
+    if schema == 5:
+        archive = exact_keys(
+            install_log["archive"],
+            {"bytes", "cache_basename", "sha256", "source"},
+            "runtime target archive",
+        )
+        expected_source = (
+            "homebrew-cache"
+            if selected_bottle["mode"] == "anonymous-public-readback"
+            else "local-input"
+        )
+        if archive["source"] != expected_source:
+            fail("runtime target archive source differs from selection mode")
+        archive_identity = dict(archive)
+        del archive_identity["source"]
+        try:
+            validate_archive_record(
+                archive_identity,
                 args.bottle_url,
-                public_manifest_url(args, version, rebuild),
+                bottle_filename=bottle_filename,
+                bottle_sha256=args.bottle_sha256,
+                bottle_bytes=args.bottle_bytes,
+                local=expected_source == "local-input",
             )
-            if not line_fetches_reference(line, fetch_references):
-                fail(
-                    "runtime target fetch evidence lacks the exact public bottle "
-                    "blob or version manifest"
+        except CacheArchiveError as error:
+            fail(f"runtime target archive is invalid: {error}")
+    else:
+        target_fetch = install_log["fetch"]
+        if (
+            not isinstance(target_fetch, list)
+            or not target_fetch
+            or len(target_fetch) > MAX_EVIDENCE_LINES
+        ):
+            fail("runtime target evidence lacks bounded fetch evidence")
+        for index, line in enumerate(target_fetch):
+            line = require_string(line, f"runtime target fetch[{index}]")
+            if len(line.encode("utf-8")) > MAX_EVIDENCE_LINE_BYTES:
+                fail(f"runtime target fetch[{index}] exceeds its byte limit")
+            if selected_bottle["mode"] == "anonymous-public-readback":
+                fetch_references = (
+                    args.bottle_url,
+                    public_manifest_url(args, version, rebuild),
                 )
-        elif args.bottle_sha256 not in line:
-            fail("runtime dry-run target selection lacks the exact digest")
+                if not line_fetches_reference(line, fetch_references):
+                    fail(
+                        "runtime target fetch evidence lacks the exact public bottle "
+                        "blob or version manifest"
+                    )
+            elif args.bottle_sha256 not in line:
+                fail("runtime dry-run target selection lacks the exact digest")
     receipt = exact_keys(
         target["receipt"],
         {
@@ -986,6 +1029,7 @@ def parser() -> argparse.ArgumentParser:
     capture_parser.add_argument("--install-log", required=True)
     capture_parser.add_argument("--node-receipt", required=True)
     capture_parser.add_argument("--installed-bottle", required=True)
+    capture_parser.add_argument("--cache-root", required=True)
     capture_parser.add_argument("--selection-receipt", required=True)
     capture_parser.add_argument("--out", required=True)
     capture_parser.set_defaults(handler=capture)
@@ -1000,7 +1044,7 @@ def main() -> int:
     args = parser().parse_args()
     try:
         args.handler(args)
-    except EvidenceError as error:
+    except (CacheArchiveError, EvidenceError) as error:
         print(f"homebrew-bottle-runtime-evidence.py: {error}", file=sys.stderr)
         return 1
     return 0

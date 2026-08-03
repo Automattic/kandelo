@@ -1757,13 +1757,41 @@ those two known spellings to the canonical `any` and `any_skip_relocation`
 values used by the static Formula resolver. Unknown symbolic spellings and all
 other unsupported cellar values fail closed.
 
-When Homebrew pours an immutable-tap dependency from GHCR, its install log can name
-the exact version/rebuild manifest instead of the selected layer's digest URL.
-The collector accepts only that exact manifest endpoint or the exact
-digest-bound blob URL as fetch evidence. It still independently requires the
-exact Formula to select the recorded digest, the installed receipt to prove a
-bottle pour, and the log to name the exact canonical bottle filename. A
-different version, rebuild, package, or suffixed URL fails closed.
+Homebrew's human-readable download progress is not a stable provenance API. A
+concurrent download can print a checkmark for a bottle without printing its
+manifest or blob URL. The builder therefore records dependency bytes before it
+runs the selected, untrusted Formula. For every dependency it asks the pinned
+Homebrew for the selected bottle's cache path with `brew --cache
+--force-bottle`, opens that regular non-symlink file beneath the exact
+`downloads` cache directory, and hashes the bytes. The file must be
+single-linked, stable while it is read, within the bottle size limit, and named
+with Homebrew's hash of the exact locked bottle URL. Its digest must equal the
+digest selected by the dependency's Formula. The resulting cache record lives
+in the publisher control directory, which Formula execution cannot access.
+
+Dependency-provenance schemas 6 and 7 use that machine-derived archive record
+for same-tap and cross-tap dependencies, respectively. They do not carry or
+trust human download text. The final record still independently requires the
+exact Formula to select the digest, the installed receipt to prove a bottle
+pour, and the install log to name the exact canonical bottle filename. Fresh
+verifier and finalizer runners rederive the same locked Formula metadata before
+accepting the record. A different archive, cache name, version, rebuild,
+package, receipt, or poured filename fails closed.
+
+Schemas 2 through 5 remain readable for already-built handoffs. In those
+legacy records, the install log can name either the exact version/rebuild
+manifest or the digest-bound blob URL. New builds always emit schema 6 or 7 so
+publication no longer depends on how Homebrew happened to render progress.
+
+The fresh target-bottle verifier uses the same archive-byte contract. It first
+empties the target Homebrew cache, anonymously asks Homebrew to install the
+public bottle, and finds the one cached archive with the selected digest. The
+shared cache verifier requires that archive to have Homebrew's canonical cache
+name and exact expected bytes. Runtime-evidence schema 5 records that archive,
+the canonical pour line, the installed receipt, and the Formula test result;
+it does not record optional download-progress text. Legacy runtime-evidence
+schemas remain readable. Local dry runs record the canonical local input file
+instead of claiming an anonymous cache readback.
 
 While holding the tap state lock, the finalizer repeats the complete static
 dependency-closure derivation against refreshed `main`. Every recorded

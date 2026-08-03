@@ -4006,6 +4006,7 @@ def check_publisher(workflow)
     'DEPENDENCY_POUR_LIST="$CONTROL_DIR/target-pour-dependencies.txt"',
     'ALLOWED_TARGET_TAPS="$CONTROL_DIR/allowed-target-taps.txt"',
     'STATIC_RUNTIME_DEPENDENCIES="$CONTROL_DIR/static-runtime-dependencies.txt"',
+    'DEPENDENCY_CACHE_EVIDENCE="$CONTROL_DIR/dependency-cache-evidence.json"',
     'log="$CONTROL_DIR/brew-install-attempt-${attempt}.log"',
     'rm -rf "$CONTROL_DIR"',
     'unset HOMEBREW_KANDELO_BOTTLE_TAG KANDELO_HOMEBREW_BOTTLE_TAG',
@@ -4042,6 +4043,10 @@ def check_publisher(workflow)
     '"$BUILD_TEST_DEPENDENCY_LIST" "build/test dependency list"',
     'validate_dependency_list "$DEPENDENCY_POUR_LIST"',
     'done <"$DEPENDENCY_POUR_LIST"',
+    'capture-cache',
+    '--cache-root "$HOMEBREW_CACHE"',
+    '--out "$DEPENDENCY_CACHE_EVIDENCE"',
+    '--cache-evidence "$DEPENDENCY_CACHE_EVIDENCE"',
     'homebrew_patched_launcher_seal_target_dependencies',
     '"$BREW_BIN" list --formula "$dependency" >/dev/null',
     'target Homebrew rejected the native Formula proxy keg',
@@ -4090,6 +4095,7 @@ def check_publisher(workflow)
   dependency_pour_index = bottle_builder.index(
     'run_brew_logged run_brew_for_kandelo_bottles "$BREW_BIN" install'
   )
+  dependency_cache_index = bottle_builder.index("  capture-cache")
   target_dependency_seal_index = bottle_builder.index(
     "homebrew_patched_launcher_seal_target_dependencies"
   )
@@ -4097,7 +4103,8 @@ def check_publisher(workflow)
   check(host_plan_index && native_install_index && native_info_index &&
         native_missing_index && runtime_dependency_index && build_test_dependency_index &&
         native_seal_index && native_bridge_index && native_proxy_index &&
-        dependency_pour_index && target_dependency_seal_index &&
+        dependency_pour_index && dependency_cache_index &&
+        target_dependency_seal_index &&
         target_build_index &&
         host_plan_index < native_install_index &&
         native_install_index < native_info_index &&
@@ -4108,7 +4115,8 @@ def check_publisher(workflow)
         native_seal_index < native_bridge_index &&
         native_bridge_index < native_proxy_index &&
         native_proxy_index < dependency_pour_index &&
-        dependency_pour_index < target_dependency_seal_index &&
+        dependency_pour_index < dependency_cache_index &&
+        dependency_cache_index < target_dependency_seal_index &&
         target_dependency_seal_index < target_build_index,
         "reviewed bottle builder mixes native and target dependency phases")
   check(!bottle_builder.include?("--only-dependencies"),
@@ -4205,6 +4213,7 @@ def check_publisher(workflow)
     "brew test did not emit Node execution evidence",
     "support-data brew test unexpectedly emitted Node execution evidence",
     '[ -L "$HOMEBREW_KANDELO_NODE_RECEIPT_PATH" ]',
+    '--cache-root "$HOMEBREW_CACHE"',
   ].each do |fragment|
     check(bottle_verifier.include?(fragment),
           "reviewed bottle verifier weakens typed Formula test evidence: #{fragment}")
@@ -5137,6 +5146,7 @@ def check_publisher(workflow)
     'HOST_DEPENDENCY_PLAN="$CONTROL_DIR/host-dependencies.json"',
     'NATIVE_INSTALL_LOG="$CONTROL_DIR/native-install.log"',
     'DEPENDENCY_POUR_LIST="$CONTROL_DIR/pour-dependencies.txt"',
+    'VERIFIED_DEPENDENCY_CACHE_EVIDENCE="$CONTROL_DIR/verified-dependency-cache-evidence.json"',
     'bash "$KANDELO_ROOT/scripts/homebrew-validate-host-dependency-plan.sh"',
     "--include-test",
     'validate_dependency_list "$DEPENDENCY_LIST"',
@@ -5146,6 +5156,11 @@ def check_publisher(workflow)
     'jq -r \'.runtime_and_test[]\' "$HOST_DEPENDENCY_PLAN" >"$HOST_DEPENDENCY_LIST"',
     'homebrew_patched_launcher_stage_dependency_plan "$HOST_DEPENDENCY_PLAN"',
     'done <"$DEPENDENCY_POUR_LIST"',
+    'dependency_cache_args=(',
+    'capture-cache',
+    '--cache-root "$HOMEBREW_CACHE"',
+    '--out "$VERIFIED_DEPENDENCY_CACHE_EVIDENCE"',
+    '--cache-evidence "$VERIFIED_DEPENDENCY_CACHE_EVIDENCE"',
     'done <"$HOST_DEPENDENCY_LIST"',
     '"$BREW_BIN" list --formula "$dependency" >/dev/null',
     'target Homebrew rejected the native Formula proxy keg',
@@ -5187,6 +5202,9 @@ def check_publisher(workflow)
   verifier_dependency_pour_index = bottle_verifier.index(
     'run_brew_logged run_brew_for_kandelo_bottles "$BREW_BIN" install'
   )
+  verifier_dependency_cache_index = bottle_verifier.index(
+    "dependency_cache_args=("
+  )
   verifier_cache_clear_index = bottle_verifier.index(
     'find "$HOMEBREW_CACHE" -mindepth 1 -delete'
   )
@@ -5203,6 +5221,7 @@ def check_publisher(workflow)
         verifier_native_seal_index && verifier_native_bridge_index &&
         verifier_native_proxy_index &&
         verifier_dependency_pour_index &&
+        verifier_dependency_cache_index &&
         verifier_cache_clear_index && verifier_target_install_index &&
         verifier_formula_test_index &&
         verifier_host_plan_index < verifier_plan_stage_index &&
@@ -5215,7 +5234,8 @@ def check_publisher(workflow)
         verifier_native_seal_index < verifier_native_bridge_index &&
         verifier_native_bridge_index < verifier_native_proxy_index &&
         verifier_native_proxy_index < verifier_dependency_pour_index &&
-        verifier_dependency_pour_index < verifier_cache_clear_index &&
+        verifier_dependency_pour_index < verifier_dependency_cache_index &&
+        verifier_dependency_cache_index < verifier_cache_clear_index &&
         verifier_cache_clear_index < verifier_target_install_index &&
         verifier_target_install_index < verifier_formula_test_index,
         "reviewed bottle verifier mixes native, target, or test phases")
@@ -6717,6 +6737,9 @@ def check_publisher(workflow)
   runtime_evidence = File.read(
     File.join(REPO_ROOT, "scripts/homebrew-bottle-runtime-evidence.py")
   )
+  cache_archive = File.read(
+    File.join(REPO_ROOT, "scripts/homebrew_cache_archive.py")
+  )
   [
     'args.dependency_tap_root',
     'parser.add_argument("--dependency-tap-root", required=True)',
@@ -6728,7 +6751,7 @@ def check_publisher(workflow)
     '"--bottle-test-contract-json"',
     '"contract": "support-data"',
     '"runtime": "homebrew"',
-    '"schema": 4',
+    '"schema": 5',
     "legacy runtime evidence cannot satisfy a support-data test contract",
     "support-data Formula test unexpectedly emitted Node execution evidence",
   ].each do |fragment|
@@ -6783,6 +6806,47 @@ def check_publisher(workflow)
   ].each do |fragment|
     check(dependency_provenance.include?(fragment),
           "publisher dependency provenance weakens exact manifest fetch evidence: #{fragment}")
+  end
+  [
+    'MAX_BOTTLE_BYTES = 2_147_483_648',
+    'def hash_exact_cached_archive(',
+    'flags |= os.O_NOFOLLOW',
+    'if before_path.st_nlink != 1:',
+    'if resolved_cache != cache_root:',
+    'resolved_downloads != downloads',
+    'archive.parent != resolved_downloads',
+    '_stable_file_identity(after_path) != identity',
+    'url_sha256 = hashlib.sha256(bottle_url.encode("utf-8")).hexdigest()',
+    'def hash_exact_local_archive(',
+    'def validate_archive_record(',
+  ].each do |fragment|
+    check(cache_archive.include?(fragment),
+          "publisher shared cache-archive evidence weakens #{fragment}")
+  end
+  [
+    'from homebrew_cache_archive import (',
+    '"--cache",',
+    '"--force-bottle",',
+    'if archive["sha256"] != bottle["sha256"]:',
+    'if root["schema"] in (6, 7):',
+    'if archive["sha256"] != bottle_sha:',
+    'if root["schema"] not in (6, 7):',
+  ].each do |fragment|
+    check(dependency_provenance.include?(fragment),
+          "publisher dependency provenance weakens machine cache evidence: #{fragment}")
+  end
+  [
+    'from homebrew_cache_archive import (',
+    'hash_exact_cached_archive(',
+    'hash_exact_local_archive(',
+    'archive["source"] = "homebrew-cache"',
+    'archive["source"] = "local-input"',
+    '"schema": 5',
+    'if schema == 5:',
+    'validate_archive_record(',
+  ].each do |fragment|
+    check(runtime_evidence.include?(fragment),
+          "publisher runtime evidence weakens machine archive evidence: #{fragment}")
   end
   [
     'def exact_git_head(root: pathlib.Path, label: str) -> str:',
