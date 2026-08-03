@@ -338,6 +338,7 @@ def check_workflow(workflow)
   %w[
     closed-selection.zip
     zip-stored-v1
+    zip-stored-v2
     snapshot_selection_release
     materialize_campaign_source
   ].each do |text|

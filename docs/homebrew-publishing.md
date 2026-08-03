@@ -2118,6 +2118,9 @@ unselected Formulae are omitted from the prepared tap. The generated
 manifests, and bottle archives. The normal whole-tap validator must also
 accept the generated Formula blocks and sidecars. `out/tap` is a local
 candidate; this command does not publish it or move a product pointer.
+Aliases for selected Formulae stay in the prepared tap. Aliases for
+omitted Formulae are omitted too, so a narrow selection does not contain
+a dangling name for software outside its dependency closure.
 
 Publishing a closed selection uses a small, reviewed plan. The plan
 names:
@@ -2155,8 +2158,17 @@ and its release manifest. Its same-run Actions artifact contains only
 those three ordinary files. It does not transport the raw tap tree.
 GitHub artifact upload and download normalize executable modes, and
 hidden paths are easy to omit from a raw directory upload. The ZIP owns
-the complete path inventory and each file's `100644` or `100755` Git
-mode, including paths below `.github`.
+the complete path inventory and every entry's Git mode, including paths
+below `.github`.
+
+Writers produce `zip-stored-v2`. It records regular files as `100644` or
+`100755` and preserves Homebrew aliases as `120000` symbolic links. An
+alias must use a relative target that resolves directly to one regular
+file in the selected tap. Absolute targets, escapes, dangling targets,
+directory targets, link chains, and cycles are rejected before any link
+is created. Extraction writes and verifies every regular file first, so
+archive member order cannot redirect a later write through an alias.
+Readers continue to accept regular-file-only `zip-stored-v1` releases.
 
 The write job has only `actions: read` and `contents: write`. It binds
 the artifact ID, artifact digest, workflow run, and head commit. It also
