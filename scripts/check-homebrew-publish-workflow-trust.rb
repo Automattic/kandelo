@@ -68,7 +68,7 @@ NATIVE_CA_PROOF_RUN_SHA256 =
 NATIVE_CA_VALIDATION_RUN_SHA256 =
   "7cb1417ec6df08daefa71c2ee6a364be76737b9d7f7ed4aa4022d3d7ca90a8b9"
 PUBLISHER_PLAN_DIGEST = "a01844e87d7be2f9ad71a1f0a1b43245163a6939b714ce96de63c614338f1c32"
-PUBLISHER_BUILD_DIGEST = "5df97f21d6e5e2a01c64e9e4cd28ad7a36bd7235c68b6fe2d9bbdbb31ffa1007"
+PUBLISHER_BUILD_DIGEST = "78b41d3cd4d28c9a73d2c167bc58d6bde2c740826e817357ec99371b9cc96430"
 PUBLISHER_UPLOAD_DIGEST = "861d649d73bb470fc37f99751733e8360f3f59f6245b80e2dd8d7eb4f40f3290"
 PUBLISHER_INDEX_DIGEST = "30531067dcd20c314ef8ae4b9d8584716a92fc803a194098913355ebb519754b"
 PUBLISHER_VERIFY_DIGEST = "8b2f821882da1f3a68ac93039da25be1ea530a68cee36d02f79d3d3bd1f4ae39"
@@ -6599,6 +6599,18 @@ def check_publisher(workflow)
     check(source_closure_run.include?(fragment),
           "publisher Formula source-closure check lacks #{fragment}")
   end
+  resolved_taps_export =
+    'export KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$resolved"'
+  resolved_taps_persist =
+    'echo "KANDELO_HOMEBREW_RESOLVED_TAPS_FILE=$resolved" >> "$GITHUB_ENV"'
+  resolved_taps_use =
+    'KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"'
+  export_index = source_closure_run.index(resolved_taps_export)
+  persist_index = source_closure_run.index(resolved_taps_persist)
+  use_index = source_closure_run.index(resolved_taps_use)
+  check(export_index && persist_index && use_index &&
+        export_index < persist_index && persist_index < use_index,
+        "publisher does not use the reviewed post-build tap map immediately")
   check(build_steps.index(kernel_step) < build_steps.index(fork_instrument_step) &&
         build_steps.index(fork_instrument_step) < build_steps.index(runtime_step) &&
         build_steps.index(runtime_step) < build_steps.index(javascript_step) &&
@@ -9618,6 +9630,13 @@ def self_test(publisher, native_compatibility, maintenance,
                                "Recheck reviewed sources after Formula execution")
       step["run"] = step.fetch("run").sub(
         '--reviewed-tap-root "$GITHUB_WORKSPACE/tap-reviewed"', ""
+      )
+    },
+    "Formula source closure stale dependency map" => lambda { |w|
+      step = mutate_named_step(w, "build-and-test",
+                               "Recheck reviewed sources after Formula execution")
+      step["run"] = step.fetch("run").sub(
+        'export KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$resolved"', ""
       )
     },
     "handoff mutable validator reuse" => lambda { |w|
