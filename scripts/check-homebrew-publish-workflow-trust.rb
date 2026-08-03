@@ -68,7 +68,7 @@ NATIVE_CA_PROOF_RUN_SHA256 =
 NATIVE_CA_VALIDATION_RUN_SHA256 =
   "7cb1417ec6df08daefa71c2ee6a364be76737b9d7f7ed4aa4022d3d7ca90a8b9"
 PUBLISHER_PLAN_DIGEST = "a01844e87d7be2f9ad71a1f0a1b43245163a6939b714ce96de63c614338f1c32"
-PUBLISHER_BUILD_DIGEST = "78b41d3cd4d28c9a73d2c167bc58d6bde2c740826e817357ec99371b9cc96430"
+PUBLISHER_BUILD_DIGEST = "4dabfbe8be3192f1b4d62ad72e2ec27b275d527d24a8c89c12d9822eb5430afc"
 PUBLISHER_UPLOAD_DIGEST = "861d649d73bb470fc37f99751733e8360f3f59f6245b80e2dd8d7eb4f40f3290"
 PUBLISHER_INDEX_DIGEST = "30531067dcd20c314ef8ae4b9d8584716a92fc803a194098913355ebb519754b"
 PUBLISHER_VERIFY_DIGEST = "8b2f821882da1f3a68ac93039da25be1ea530a68cee36d02f79d3d3bd1f4ae39"
@@ -76,6 +76,10 @@ PUBLISHER_FINALIZE_DIGEST = "b17e7bf5d0a5ef512e49f74c224a94958642dfdd80a27439f2a
 PUBLISHER_VFS_RELEASE_DIGEST = "2db9ec075edf382e326066d5f49a32947f5a584fce26a966fb9fff23bbbe3c26"
 MAINTENANCE_VALIDATE_DIGEST = "30ebccd5d44e004e37f168e81284d7ceb18accfa067c05248c1cc19398a7515f"
 MAINTENANCE_ROLLBACK_DIGEST = "f82d9f351202c3a20824e4525eb88ce7f75879740014d3232e69f3d585ed5781"
+OCI_CROSS_TAP_COMPOSE_BOUNDARY =
+  "bash scripts/dev-shell.sh env \\\n" \
+  '  KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \\' + "\n" \
+  "  python3 scripts/homebrew-oci-layout.py build-child \\"
 FIRST_PUBLICATION_STEPS_DIGEST = "cf1c41bbfb91a1e5de6e7e0bfe7c16406dd3d022ad66dec7188cb31240168c7e"
 PREFIX_FIRST_CHILD_STEPS_DIGEST = "a21e78df740ced6c50719eec1d749e590410b83f776a153c0858cad708841959"
 SELF_TEST_TAP_SHA = "e" * 40
@@ -3668,7 +3672,7 @@ def check_publisher(workflow)
         "dev shell globally preserves Homebrew resolved-tap state and invalidates package caches")
   resolved_taps_forwarding =
     'KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \\'
-  check(values_for_key(workflow, "run").join("\n").scan(resolved_taps_forwarding).length == 16,
+  check(values_for_key(workflow, "run").join("\n").scan(resolved_taps_forwarding).length == 17,
         "publisher does not explicitly carry immutable resolved taps across every consuming dev-shell boundary")
   native_api_variables = %w[
     KANDELO_HOMEBREW_EARLY_HOST_PLAN
@@ -6695,6 +6699,8 @@ def check_publisher(workflow)
     build_steps, "Compose deterministic Homebrew OCI child without credentials"
   )
   compose_child_run = compose_child.fetch("run")
+  check(compose_child_run.scan(OCI_CROSS_TAP_COMPOSE_BOUNDARY).length == 1,
+        "publisher OCI composition does not explicitly carry cross-tap authority")
   [
     "credential-free OCI composer received $secret_name",
     "scripts/homebrew-validate-build-handoff.sh",
@@ -9673,6 +9679,19 @@ def self_test(publisher, native_compatibility, maintenance,
       end
       steps[closure], steps[compose] = steps[compose], steps[closure]
     },
+    "OCI child composition drops cross-tap authority" => lambda { |w|
+      step = mutate_named_step(
+        w, "build-and-test",
+        "Compose deterministic Homebrew OCI child without credentials"
+      )
+      original = step.fetch("run")
+      step["run"] = original.sub(
+        OCI_CROSS_TAP_COMPOSE_BOUNDARY,
+        "bash scripts/dev-shell.sh python3 " \
+          "scripts/homebrew-oci-layout.py build-child \\"
+      )
+      raise "self-test did not remove OCI cross-tap authority" if step["run"] == original
+    },
     "verifier token exposure" => lambda { |w|
       step = mutate_named_step(w, "verify-bottle",
                                "Select exact anonymous bottle bytes for runtime validation")
@@ -10043,9 +10062,11 @@ def self_test(publisher, native_compatibility, maintenance,
     },
   }
   publisher_mutations.each do |label, mutation|
+    mutated = deep_copy(publisher)
+    # WHY: fixture drift must fail the self-test rather than being mistaken
+    # for the policy checker rejecting the intended unsafe mutation.
+    mutation.call(mutated)
     expect_rejection(label) do
-      mutated = deep_copy(publisher)
-      mutation.call(mutated)
       check_publisher(mutated)
     end
   end

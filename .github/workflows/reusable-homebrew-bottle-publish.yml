@@ -1992,7 +1992,12 @@ jobs:
             "${validation_args[@]}"
           # shellcheck disable=SC1091
           . "$validated/build.env"
-          bash scripts/dev-shell.sh python3 scripts/homebrew-oci-layout.py build-child \
+          # WHY: the dev shell intentionally drops ambient workflow state.
+          # Pass only the reviewed dependency-tap map needed to prove this
+          # Formula's cross-tap dependency closure.
+          bash scripts/dev-shell.sh env \
+            KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE" \
+            python3 scripts/homebrew-oci-layout.py build-child \
             --formula "$FORMULA" \
             --arch "$ARCH" \
             --abi "$KANDELO_HOMEBREW_ABI" \
