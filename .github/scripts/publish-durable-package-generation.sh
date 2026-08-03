@@ -547,6 +547,25 @@ jq -S \
     }] |
     sort_by(.name)
   ' "$MANIFEST" >"$VALIDATOR_ASSETS"
+
+# WHY: preserved generations carry application-sealed evidence such as the
+# selected root job log. The Rust validator below owns the package archives,
+# index, and generation manifest; it deliberately rejects any other bundle
+# member. Give it an exact view of that archive contract without dropping the
+# supporting evidence from the full bundle that is validated above and
+# published and read back below.
+ARCHIVE_VALIDATION_BUNDLE="$TMP_ROOT/archive-validation-bundle"
+mkdir "$ARCHIVE_VALIDATION_BUNDLE"
+while IFS= read -r asset_name; do
+  if ! [[ "$asset_name" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] ||
+     [ ! -f "$BUNDLE/$asset_name" ] || [ -L "$BUNDLE/$asset_name" ] ||
+     [ -e "$ARCHIVE_VALIDATION_BUNDLE/$asset_name" ] ||
+     [ -L "$ARCHIVE_VALIDATION_BUNDLE/$asset_name" ]; then
+    echo "publish-durable-package-generation: invalid archive-validation asset $asset_name" >&2
+    exit 1
+  fi
+  cp "$BUNDLE/$asset_name" "$ARCHIVE_VALIDATION_BUNDLE/$asset_name"
+done < <(jq -er '.[].name' "$VALIDATOR_ASSETS")
 env -u GH_TOKEN -u GITHUB_TOKEN \
   -u HOMEBREW_GITHUB_API_TOKEN \
   -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
@@ -558,9 +577,9 @@ env -u GH_TOKEN -u GITHUB_TOKEN \
   "$AUTHORITY_XTASK" staging-reuse validate-generation \
     --expected-ledger "$expected_ledger" \
     --snapshot "$validated_snapshot" \
-    --index "$BUNDLE/index.toml" \
+    --index "$ARCHIVE_VALIDATION_BUNDLE/index.toml" \
     --assets "$VALIDATOR_ASSETS" \
-    --bundle-dir "$BUNDLE" \
+    --bundle-dir "$ARCHIVE_VALIDATION_BUNDLE" \
     --release-tag "$TAG" \
     --release-base-url "https://github.com/$REPOSITORY/releases/download/$TAG/" \
     --source-release-tag "$manifest_source_tag" \
@@ -1249,9 +1268,9 @@ env -u GH_TOKEN -u GITHUB_TOKEN \
   "$AUTHORITY_XTASK" staging-reuse validate-generation \
     --expected-ledger "$expected_ledger" \
     --snapshot "$validated_snapshot" \
-    --index "$BUNDLE/index.toml" \
+    --index "$ARCHIVE_VALIDATION_BUNDLE/index.toml" \
     --assets "$VALIDATOR_ASSETS" \
-    --bundle-dir "$BUNDLE" \
+    --bundle-dir "$ARCHIVE_VALIDATION_BUNDLE" \
     --release-tag "$TAG" \
     --release-base-url "https://github.com/$REPOSITORY/releases/download/$TAG/" \
     --source-release-tag "$manifest_source_tag" \
