@@ -812,7 +812,10 @@ function relocateBottlePlaceholders(
     }
     let bytes: Uint8Array;
     try {
-      bytes = relocateHomebrewBottleFile(readVfsFile(fs, path), relocation, path);
+      bytes = relocateHomebrewBottleFile(readVfsFile(fs, path), relocation, {
+        guestPrefix: pkg.prefix,
+        path,
+      });
     } catch (error) {
       fail(pkg, error instanceof Error ? error.message : String(error));
     }

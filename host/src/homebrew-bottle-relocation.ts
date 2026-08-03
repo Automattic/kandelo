@@ -6,23 +6,20 @@
  * archive has been verified and decoded.
  */
 
-import { KANDELO_HOMEBREW_GUEST_LAYOUT } from "./homebrew-guest-layout";
-
 const MAX_BOTTLE_CHANGED_FILES = 100_000;
 const MAX_BOTTLE_PATH_BYTES = 4096;
-const HOMEBREW_PREFIX = KANDELO_HOMEBREW_GUEST_LAYOUT.prefix;
-const HOMEBREW_REPLACEMENTS = [
-  ["@@HOMEBREW_PREFIX@@", HOMEBREW_PREFIX],
-  ["@@HOMEBREW_CELLAR@@", `${HOMEBREW_PREFIX}/Cellar`],
-  ["@@HOMEBREW_REPOSITORY@@", HOMEBREW_PREFIX],
-  ["@@HOMEBREW_LIBRARY@@", `${HOMEBREW_PREFIX}/Library`],
-  ["@@HOMEBREW_PERL@@", `${HOMEBREW_PREFIX}/opt/perl/bin/perl`],
-] as const;
 const HOMEBREW_JAVA_PLACEHOLDER = "@@HOMEBREW_JAVA@@";
 const HOMEBREW_OPENJDK_NAME_RE = /^openjdk(?:@\d+(?:\.\d+)*)?/;
 const TEXT_ENCODER = new TextEncoder();
+const HOMEBREW_TEXT_PLACEHOLDERS = [
+  "@@HOMEBREW_PREFIX@@",
+  "@@HOMEBREW_CELLAR@@",
+  "@@HOMEBREW_REPOSITORY@@",
+  "@@HOMEBREW_LIBRARY@@",
+  "@@HOMEBREW_PERL@@",
+] as const;
 const PLACEHOLDER_BYTES = [
-  ...HOMEBREW_REPLACEMENTS.map(([placeholder]) => placeholder),
+  ...HOMEBREW_TEXT_PLACEHOLDERS,
   HOMEBREW_JAVA_PLACEHOLDER,
 ].map((placeholder) => ({
   placeholder,
@@ -33,6 +30,38 @@ export interface HomebrewInstallReceiptRelocation {
   changedFiles: readonly string[];
   /** Kept opaque until a changed file actually uses the Java placeholder. */
   runtimeDependencies: unknown;
+}
+
+export interface HomebrewBottleRelocationDestination {
+  /** Authenticated guest prefix that owns the bottle's Cellar. */
+  guestPrefix: string;
+  /** Guest or source path used only to identify a relocation failure. */
+  path: string;
+}
+
+/**
+ * Recover the prefix recorded by one authenticated deferred-tree descriptor.
+ *
+ * The destination is the authority because immutable descriptors retain the
+ * exact path and relocated byte sizes they were built for. A newer runtime
+ * must not silently reinterpret those bytes using its own default prefix.
+ */
+export function deriveHomebrewBottleGuestPrefix(
+  receiptGuestPath: string,
+  receiptSourcePath: string,
+): string {
+  validateSafeRelativePath(receiptSourcePath, "Homebrew receipt source path");
+  validateSafeAbsolutePath(receiptGuestPath, "Homebrew receipt guest path");
+  const cellarSuffix = `/Cellar/${receiptSourcePath}`;
+  if (!receiptGuestPath.endsWith(cellarSuffix)) {
+    throw new Error(
+      `Homebrew receipt guest path does not match its source path: ` +
+        receiptGuestPath,
+    );
+  }
+  return validateGuestPrefix(
+    receiptGuestPath.slice(0, -cellarSuffix.length),
+  );
 }
 
 export function parseHomebrewInstallReceiptRelocation(
@@ -88,10 +117,18 @@ export function parseHomebrewInstallReceiptRelocation(
 export function relocateHomebrewBottleFile(
   bytes: Uint8Array,
   receipt: HomebrewInstallReceiptRelocation,
-  path: string,
+  destination: HomebrewBottleRelocationDestination,
 ): Uint8Array {
+  const guestPrefix = validateGuestPrefix(destination.guestPrefix);
+  const replacements = [
+    ["@@HOMEBREW_PREFIX@@", guestPrefix],
+    ["@@HOMEBREW_CELLAR@@", `${guestPrefix}/Cellar`],
+    ["@@HOMEBREW_REPOSITORY@@", guestPrefix],
+    ["@@HOMEBREW_LIBRARY@@", `${guestPrefix}/Library`],
+    ["@@HOMEBREW_PERL@@", `${guestPrefix}/opt/perl/bin/perl`],
+  ] as const;
   let relocated = bytes;
-  for (const [placeholder, replacement] of HOMEBREW_REPLACEMENTS) {
+  for (const [placeholder, replacement] of replacements) {
     relocated = replaceBytes(
       relocated,
       TEXT_ENCODER.encode(placeholder),
@@ -100,10 +137,14 @@ export function relocateHomebrewBottleFile(
   }
   const javaPlaceholder = TEXT_ENCODER.encode(HOMEBREW_JAVA_PLACEHOLDER);
   if (containsBytes(relocated, javaPlaceholder)) {
-    const javaHome = homebrewJavaHome(receipt.runtimeDependencies);
+    const javaHome = homebrewJavaHome(
+      receipt.runtimeDependencies,
+      guestPrefix,
+    );
     if (javaHome === undefined) {
       throw new Error(
-        `Homebrew changed file ${path} uses ${HOMEBREW_JAVA_PLACEHOLDER} ` +
+        `Homebrew changed file ${destination.path} uses ` +
+          `${HOMEBREW_JAVA_PLACEHOLDER} ` +
           "without exactly one OpenJDK runtime dependency",
       );
     }
@@ -113,12 +154,18 @@ export function relocateHomebrewBottleFile(
     containsBytes(relocated, placeholder)
   );
   if (remaining !== undefined) {
-    throw new Error(`Homebrew changed file ${path} retains ${remaining.placeholder}`);
+    throw new Error(
+      `Homebrew changed file ${destination.path} retains ` +
+        remaining.placeholder,
+    );
   }
   return relocated;
 }
 
-function homebrewJavaHome(value: unknown): string | undefined {
+function homebrewJavaHome(
+  value: unknown,
+  guestPrefix: string,
+): string | undefined {
   if (!Array.isArray(value)) return undefined;
   const names: string[] = [];
   for (const dependency of value) {
@@ -140,8 +187,29 @@ function homebrewJavaHome(value: unknown): string | undefined {
   }
   const unique = [...new Set(names)];
   return unique.length === 1
-    ? `${HOMEBREW_PREFIX}/opt/${unique[0]}/libexec`
+    ? `${guestPrefix}/opt/${unique[0]}/libexec`
     : undefined;
+}
+
+function validateGuestPrefix(value: string): string {
+  validateSafeAbsolutePath(value, "Homebrew guest prefix");
+  if (value === "/") {
+    throw new Error("Homebrew guest prefix must not be the filesystem root");
+  }
+  return value;
+}
+
+function validateSafeAbsolutePath(value: string, label: string): void {
+  if (
+    !value.startsWith("/") || value.includes("\\") || value.includes("\0") ||
+    hasLoneUnicodeSurrogate(value) ||
+    TEXT_ENCODER.encode(value).byteLength > MAX_BOTTLE_PATH_BYTES ||
+    value.slice(1).split("/").some((part) =>
+      part === "" || part === "." || part === ".."
+    )
+  ) {
+    throw new Error(`${label} has an unsafe path segment: ${value}`);
+  }
 }
 
 function validateSafeRelativePath(value: string, label: string): void {
