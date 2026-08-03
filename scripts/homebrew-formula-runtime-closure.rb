@@ -298,13 +298,34 @@ call_position = lambda do |node|
   end
 end
 
+qualified_constant_path = nil
+qualified_constant_path = lambda do |node|
+  next nil unless node.is_a?(Array)
+
+  case node.first
+  when :var_ref
+    token = node[1]
+    token[1] if token.is_a?(Array) && token.first == :@const
+  when :const_path_ref
+    parent = qualified_constant_path.call(node[1])
+    token = node[2]
+    if !parent.nil? && token.is_a?(Array) && token.first == :@const
+      "#{parent}::#{token[1]}"
+    end
+  end
+end
+
 static_expression = nil
-static_expression = lambda do |node|
+static_expression = lambda do |node, allowed_constant_paths = Set.new|
   next true if node.nil? || node == false
   next false unless node.is_a?(Array)
 
   kind = node.first
-  next node.all? { |child| static_expression.call(child) } unless kind.is_a?(Symbol)
+  unless kind.is_a?(Symbol)
+    next node.all? do |child|
+      static_expression.call(child, allowed_constant_paths)
+    end
+  end
   if kind.is_a?(Symbol) && kind.to_s.start_with?("@")
     next [:@const, :@ident, :@int, :@kw, :@label, :@tstring_content].include?(kind)
   end
@@ -312,11 +333,15 @@ static_expression = lambda do |node|
   when :args_add_block, :array, :assoc_new, :assoclist_from_args, :bare_assoc_hash,
        :hash, :string_content, :string_embexpr, :string_literal, :symbol,
        :symbol_literal, :var_ref
-    node.drop(1).all? { |child| static_expression.call(child) }
+    node.drop(1).all? do |child|
+      static_expression.call(child, allowed_constant_paths)
+    end
+  when :const_path_ref
+    allowed_constant_paths.include?(qualified_constant_path.call(node))
   when :call
     method = node[3]
     method.is_a?(Array) && method.first == :@ident && method[1] == "freeze" &&
-      static_expression.call(node[1])
+      static_expression.call(node[1], allowed_constant_paths)
   else
     false
   end
@@ -384,7 +409,7 @@ parse_tags = lambda do |literal, path, line_number|
   tags
 end
 
-parse_bottle = lambda do |statement, lines, path|
+parse_bottle = lambda do |statement, lines, path, enforce_runtime_cellar|
   position = call_position.call(statement)
   line_number = position[0] if position.is_a?(Array)
   unless line_number.is_a?(Integer) && lines.fetch(line_number - 1) == "  bottle do\n"
@@ -412,7 +437,7 @@ parse_bottle = lambda do |statement, lines, path|
       tag = Regexp.last_match(2)
       sha256 = Regexp.last_match(3)
       cellar = cellar_literal.start_with?(":") ? cellar_literal.delete_prefix(":") : cellar_literal[1...-1]
-      unless ALLOWED_BOTTLE_CELLARS.include?(cellar)
+      if enforce_runtime_cellar && !ALLOWED_BOTTLE_CELLARS.include?(cellar)
         abort "Formula bottle block uses an unsupported cellar: #{path}"
       end
       abort "Formula bottle block repeats tag #{tag}: #{path}" if tags.key?(tag)
@@ -993,6 +1018,7 @@ support_runtime_sha256_by_tap = {}
 support_api_version_by_tap = {}
 support_tier2_package_keyword_by_tap = {}
 support_native_requirements_by_tap = {}
+support_static_constants_by_tap = {}
 validate_support = lambda do |context|
   context_tap_name = context.fetch("tap_name")
   next if support_validated.include?(context_tap_name)
@@ -1121,6 +1147,7 @@ validate_support = lambda do |context|
   support_api_version = nil
   tier2_package_keyword = false
   native_requirements = Set.new
+  static_constants = Set.new
   module_body.each_with_index do |statement, statement_index|
     next if statement.is_a?(Array) && statement.first == :void_stmt
 
@@ -1310,6 +1337,7 @@ validate_support = lambda do |context|
           abort "Kandelo Formula support must declare one canonical API version: #{support_path}"
         end
         support_api_version = FORMULA_SUPPORT_API_VERSION
+        static_constants.add(constant[1])
       elsif constant.is_a?(Array) && constant.first == :@const &&
          constant[1] == TIER2_RUNTIME_CONSTANT
         unless runtime_assignment_index.nil? &&
@@ -1320,6 +1348,8 @@ validate_support = lambda do |context|
       elsif !(constant.is_a?(Array) && constant.first == :@const &&
               constant[1].match?(/\AKANDELO_[A-Z0-9_]+\z/) && static_expression.call(statement[2]))
         abort "Kandelo Formula support assignment must be a static KANDELO_ constant: #{support_path}"
+      else
+        static_constants.add(constant[1])
       end
     else
       abort "Kandelo Formula support contains executable module structure: #{support_path}"
@@ -1343,6 +1373,7 @@ validate_support = lambda do |context|
   support_api_version_by_tap[context_tap_name] = support_api_version
   support_tier2_package_keyword_by_tap[context_tap_name] = tier2_package_keyword
   support_native_requirements_by_tap[context_tap_name] = native_requirements.freeze
+  support_static_constants_by_tap[context_tap_name] = static_constants.freeze
   support_validated.add(context_tap_name)
 end
 
@@ -1441,6 +1472,10 @@ parse_formula = lambda do |full_name|
   end
   abort "Formula class must be a direct top-level statement: #{path}" unless seen_class
   validate_support.call(context) if seen_requires.include?(support_require_line)
+  formula_static_constant_paths = support_static_constants_by_tap
+    .fetch(formula_tap_name, Set.new)
+    .map { |constant| "KandeloFormulaSupport::#{constant}" }
+    .to_set
 
   class_bodystmt = selected_class[3]
   unless class_bodystmt.is_a?(Array) && class_bodystmt.first == :bodystmt &&
@@ -1484,7 +1519,17 @@ parse_formula = lambda do |full_name|
       end
       if method == "bottle"
         abort "Formula class has multiple bottle blocks: #{path}" unless bottle.nil?
-        bottle = parse_bottle.call(statement, lines, path)
+        # WHY: build-authority classification binds the whole Formula source
+        # but does not consume its old bottle. A campaign may therefore
+        # classify a Formula whose previous bottle used a retired Cellar; the
+        # rebuilt bottle must still pass the strict runtime Cellar check in
+        # every mode that actually reads bottle identity.
+        bottle = parse_bottle.call(
+          statement,
+          lines,
+          path,
+          !tier2_bridge_only,
+        )
       elsif method == "patch"
         validate_static_block.call(statement, path, "patch", Set["apply", "sha256", "type", "url"])
       elsif method == "on_macos"
@@ -1509,7 +1554,8 @@ parse_formula = lambda do |full_name|
       left = statement[1]
       constant = left.dig(1) if left.is_a?(Array) && left.first == :var_field
       unless constant.is_a?(Array) && constant.first == :@const &&
-             constant[1].match?(/\A[A-Z][A-Z0-9_]*\z/) && static_expression.call(statement[2])
+             constant[1].match?(/\A[A-Z][A-Z0-9_]*\z/) &&
+             static_expression.call(statement[2], formula_static_constant_paths)
         abort "Formula class assignment must be a static constant: #{path}"
       end
     when :vcall

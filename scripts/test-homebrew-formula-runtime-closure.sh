@@ -506,6 +506,7 @@ if defined?(KandeloFormulaSupport)
 else
 module KandeloFormulaSupport
   KANDELO_FORMULA_SUPPORT_API_VERSION = 1
+  KANDELO_GUEST_HOMEBREW_PREFIX = "/opt/kandelo/homebrew".freeze
 
   class BinaryenRequirement < Requirement
     KANDELO_NATIVE_FORMULA = "binaryen"
@@ -545,6 +546,37 @@ module KandeloFormulaSupport
 end
 end
 RUBY
+
+cat >"$TAP_ROOT/Formula/static-support-constant.rb" <<'RUBY'
+require (Tap.fetch("kandelo-dev", "tap-core").path/"Kandelo/formula_support/kandelo_formula_support").to_s
+
+class StaticSupportConstant < Formula
+  include KandeloFormulaSupport
+
+  GUEST_PREFIX =
+    KandeloFormulaSupport::KANDELO_GUEST_HOMEBREW_PREFIX
+  GUEST_BIN =
+    "#{KandeloFormulaSupport::KANDELO_GUEST_HOMEBREW_PREFIX}/bin".freeze
+end
+RUBY
+ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core \
+  static-support-constant --tier2-bridge-json >/dev/null
+
+sed \
+  's/KANDELO_GUEST_HOMEBREW_PREFIX/KANDELO_UNDECLARED_CONSTANT/g' \
+  "$TAP_ROOT/Formula/static-support-constant.rb" \
+  >"$TAP_ROOT/Formula/static-support-constant.rb.tmp"
+mv "$TAP_ROOT/Formula/static-support-constant.rb.tmp" \
+  "$TAP_ROOT/Formula/static-support-constant.rb"
+if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core \
+    static-support-constant --tier2-bridge-json \
+    >"$TMP_ROOT/undeclared-support-constant.out" \
+    2>"$TMP_ROOT/undeclared-support-constant.err"; then
+  echo "test-homebrew-formula-runtime-closure.sh: accepted an undeclared support constant" >&2
+  exit 1
+fi
+grep -F 'Formula class assignment must be a static constant' \
+  "$TMP_ROOT/undeclared-support-constant.err" >/dev/null
 
 cat >"$TAP_ROOT/Formula/native-requirements.rb" <<'RUBY'
 require (Tap.fetch("kandelo-dev", "tap-core").path/"Kandelo/formula_support/kandelo_formula_support").to_s
@@ -1687,6 +1719,12 @@ if KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256="$layout_sha" \
 fi
 grep -F 'Formula bottle block uses an unsupported cellar' \
   "$TMP_ROOT/retired-layout.err" >/dev/null
+# Build-authority classification binds the retired bottle bytes but does not
+# claim they are usable. The newly built bottle still has to pass the strict
+# Cellar check before publication and consumption.
+KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256="$layout_sha" \
+  ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core retired-bottle \
+    --tier2-bridge-json >/dev/null
 if ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core retired-bottle \
     --bottle-identity-json >"$TMP_ROOT/retired-ordinary.out" \
     2>"$TMP_ROOT/retired-ordinary.err"; then
