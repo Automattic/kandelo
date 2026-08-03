@@ -133,7 +133,10 @@ def source_only_formula(name: str) -> bytes:
     ).encode()
 
 
-def bootstrap_formula(version: str, manifest_sha256: str) -> bytes:
+def bootstrap_formula(
+    version: str, manifest_sha256: str, revision: int = 0
+) -> bytes:
+    revision_line = f"  revision {revision}\n" if revision else ""
     return (
         "class HomebrewBootstrap < Formula\n"
         '  desc "source-only fixture"\n'
@@ -141,6 +144,7 @@ def bootstrap_formula(version: str, manifest_sha256: str) -> bytes:
         f'{BOOTSTRAP_REVISION}.tar.gz"\n'
         f'  version "{version}"\n'
         f'  sha256 "{BOOTSTRAP_ARCHIVE_SHA}"\n'
+        f"{revision_line}"
         "\n"
         "  def install\n"
         f'    kandelo_build_tap_recipe(manifest_sha256: "{manifest_sha256}")\n'
@@ -150,9 +154,11 @@ def bootstrap_formula(version: str, manifest_sha256: str) -> bytes:
 
 
 def write_bootstrap_recipe(
-    tap: pathlib.Path, *, retired_prefix: bool = False
+    tap: pathlib.Path, *, retired_prefix: bool = False, revision: int = 0
 ) -> str:
     version = f"6.0.3-4-g{BOOTSTRAP_REVISION[:7]}"
+    if revision:
+        version += f"_{revision}"
     recipe_root = tap / "Kandelo/recipes/homebrew-bootstrap"
     (recipe_root / "patches").mkdir(parents=True, exist_ok=True)
     patch = b"fixture patch\n"
@@ -234,7 +240,7 @@ def write_bootstrap_recipe(
     )
     manifest_sha = sha256((recipe_root / "recipe.json").read_bytes())
     (tap / "Formula/homebrew-bootstrap.rb").write_bytes(
-        bootstrap_formula(version, manifest_sha)
+        bootstrap_formula(version, manifest_sha, revision)
     )
     return version
 
@@ -1960,6 +1966,42 @@ class PrefixCampaignTests(unittest.TestCase):
                 fixture.options(source_tap_commit=source_head),
                 fixture.dependencies(),
             )
+
+    def test_bootstrap_recipe_accepts_homebrew_formula_revision(self) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        version = write_bootstrap_recipe(fixture.source_tap, revision=1)
+        fixture.versions["homebrew-bootstrap"] = version
+        source_head = commit(
+            fixture.source_tap, "revise bootstrap Formula fixture"
+        )
+
+        result = CAMPAIGN.derive_campaign(
+            fixture.options(source_tap_commit=source_head),
+            fixture.dependencies(),
+        )
+
+        bootstrap = next(
+            value
+            for value in result["formulae"]
+            if value["name"] == "homebrew-bootstrap"
+        )
+        self.assertEqual(bootstrap["version"], version)
+
+    def test_bootstrap_recipe_rejects_invalid_formula_revision_suffix(
+        self,
+    ) -> None:
+        for suffix in ("_0", "_01", "_x", "_1_extra"):
+            with self.subTest(suffix=suffix):
+                with self.assertRaisesRegex(
+                    CAMPAIGN.CampaignError,
+                    "does not identify its source revision",
+                ):
+                    CAMPAIGN.require_version_source_revision(
+                        f"6.0.3-4-g{BOOTSTRAP_REVISION[:7]}{suffix}",
+                        BOOTSTRAP_REVISION,
+                        "homebrew-bootstrap lock version",
+                    )
 
     def test_final_candidate_guard_covers_examples_and_acceptance_files(
         self,

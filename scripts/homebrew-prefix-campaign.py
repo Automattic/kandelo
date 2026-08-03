@@ -442,6 +442,21 @@ def require_commit(value: Any, label: str) -> str:
     return require_string(value, label, COMMIT)
 
 
+def require_version_source_revision(
+    version: str, revision: str, label: str
+) -> None:
+    # WHY: Homebrew appends `_N` to pkg_version when a Formula has a positive
+    # revision. That packaging suffix does not change the Git revision encoded
+    # immediately before it in Homebrew's own version string.
+    version_revision = re.search(
+        r"-g([0-9a-f]{7,40})(?:_[1-9][0-9]*)?$", version
+    )
+    if version_revision is None or not revision.startswith(
+        version_revision.group(1)
+    ):
+        fail(f"{label} does not identify its source revision")
+
+
 def require_tap_path(value: Any, label: str) -> str:
     path = require_string(value, label, TAP_PATH)
     # WHY: the JSON schemas' character grammar also admits "." and "..".
@@ -2486,9 +2501,9 @@ def validate_required_entrant_recipe(
     require_sha256(source["archive_sha256"], f"{name} lock source archive SHA-256")
     require_commit(source["tree_git_oid"], f"{name} lock source tree Git OID")
     require_int(source["commit_timestamp"], f"{name} lock source timestamp", 1)
-    version_revision = re.search(r"-g([0-9a-f]{7,40})$", version)
-    if version_revision is None or not revision.startswith(version_revision.group(1)):
-        fail(f"{name} lock version does not identify its source revision")
+    require_version_source_revision(
+        version, revision, f"{name} lock version"
+    )
     patch = exact_keys(
         lock["patch"], {"path", "sha256"}, f"{name} lock patch"
     )
