@@ -54,7 +54,7 @@ if grep -Fq -- '--selection-root' "$RUNNER" ||
 fi
 
 # WHY: using either product lock would let a 25-Formula diagnostic appear to
-# authorize the 41-Formula shipping shell. This runner owns neither pointer.
+# authorize the complete shipping shell. This runner owns neither pointer.
 if grep -Eq \
   'main-shell-(selection-lock|homebrew-runtime-support)' "$RUNNER"; then
   echo "diagnostic runner references a main-shell product lock" >&2

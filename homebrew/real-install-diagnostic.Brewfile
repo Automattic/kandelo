@@ -3,7 +3,7 @@
 # This is intentionally smaller than the shipping main-shell Brewfile. Its
 # exact dependency closure plus homebrew-bootstrap is recorded in
 # real-install-diagnostic.json. It must never satisfy or replace the shipping
-# shell's separate 41-Formula selection lock.
+# shell's separate complete selection lock.
 tap "kandelo-dev/tap-core"
 
 brew "kandelo-dev/tap-core/bash"
