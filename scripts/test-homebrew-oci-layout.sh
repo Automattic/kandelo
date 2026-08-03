@@ -41,6 +41,7 @@ class Hello < Formula
   depends_on KandeloFormulaSupport::BinaryenRequirement => :build
   depends_on KandeloFormulaSupport::WabtRequirement => [:build, :test]
   include KandeloFormulaSupport
+  GUEST_PREFIX = KandeloFormulaSupport::KANDELO_GUEST_HOMEBREW_PREFIX
   desc "OCI fixture"
 end
 RUBY
@@ -48,9 +49,65 @@ RUBY
     >>"$root/tap/Formula/hello.rb"
   cp "$root/tap/Formula/hello.rb" "$stage/.brew/hello.rb"
   chmod "$archived_formula_mode" "$stage/.brew/hello.rb"
-  printf 'module KandeloFormulaSupport\n  VALUE = %q{%s}\nend\n' \
-    "$support_payload" \
-    >"$root/tap/Kandelo/formula_support/kandelo_formula_support.rb"
+  cat >"$root/tap/Kandelo/formula_support/kandelo_formula_support.rb" <<RUBY
+require "digest"
+require "fileutils"
+require "json"
+require "pathname"
+require "shellwords"
+require "tempfile"
+require "tmpdir"
+
+if defined?(KandeloFormulaSupport)
+  unless KandeloFormulaSupport::KANDELO_FORMULA_SUPPORT_API_VERSION == 1 &&
+         Digest::SHA256.file(Pathname(__FILE__).realpath).hexdigest ==
+           KandeloFormulaSupport::KANDELO_TIER2_RUNTIME.fetch("support_sha256")
+    raise "loaded Kandelo Formula support copies are incompatible"
+  end
+else
+module KandeloFormulaSupport
+  KANDELO_FORMULA_SUPPORT_API_VERSION = 1
+  KANDELO_GUEST_HOMEBREW_PREFIX = "/opt/kandelo/homebrew".freeze
+  KANDELO_FIXTURE_VALUE = "$support_payload".freeze
+
+  class BinaryenRequirement < Requirement
+    KANDELO_NATIVE_FORMULA = "binaryen"
+    KANDELO_NATIVE_SENTINEL = "wasm-opt"
+    fatal true
+    satisfy(build_env: false) { which("wasm-opt") }
+  end
+
+  class PkgconfRequirement < Requirement
+    KANDELO_NATIVE_FORMULA = "pkgconf"
+    KANDELO_NATIVE_SENTINEL = "pkg-config"
+    fatal true
+    satisfy(build_env: false) { which("pkg-config") }
+  end
+
+  class WabtRequirement < Requirement
+    KANDELO_NATIVE_FORMULA = "wabt"
+    KANDELO_NATIVE_SENTINEL = "wasm-validate"
+    fatal true
+    satisfy(build_env: false) { which("wasm-validate") }
+  end
+
+  def self.kandelo_load_tier2_runtime!
+    support_path = Pathname(__FILE__).realpath
+    support_path.freeze
+  end
+
+  KANDELO_TIER2_RUNTIME = kandelo_load_tier2_runtime!
+
+  def kandelo_build_package(package: nil, script_env: {})
+    [package, script_env]
+  end
+
+  def kandelo_build_tap_recipe(manifest_sha256:, resources: [], script_env: {})
+    [manifest_sha256, resources, script_env]
+  end
+end
+end
+RUBY
   printf '#!/bin/sh\nprintf %s\\n %s\n' "'$payload'" "'$payload'" >"$stage/bin/hello"
   chmod +x "$stage/bin/hello"
   jq -nS --arg arch "$arch" '{
@@ -331,6 +388,24 @@ source_closure_args=(
 )
 python3 "$TOOL" "${source_closure_args[@]}" \
   --out "$TMP_ROOT/source-closure-baseline.json"
+ruby_poison_marker="$TMP_ROOT/ruby-startup-hook-ran"
+cat >"$TMP_ROOT/ruby-startup-poison.rb" <<RUBY
+File.binwrite("$ruby_poison_marker", "ambient Ruby hook executed\n")
+RUBY
+RUBYOPT="-r$TMP_ROOT/ruby-startup-poison.rb" \
+RUBYLIB="$TMP_ROOT" \
+GEM_HOME="$TMP_ROOT/poison-gems" \
+GEM_PATH="$TMP_ROOT/poison-gems" \
+BUNDLE_GEMFILE="$TMP_ROOT/missing-Gemfile" \
+BUNDLE_PATH="$TMP_ROOT/poison-bundle" \
+  python3 "$TOOL" "${source_closure_args[@]}" \
+    --out "$TMP_ROOT/source-closure-poisoned-environment.json"
+[ ! -e "$ruby_poison_marker" ] || {
+  echo "Formula source closure executed an ambient Ruby startup hook" >&2
+  exit 1
+}
+cmp "$TMP_ROOT/source-closure-baseline.json" \
+  "$TMP_ROOT/source-closure-poisoned-environment.json"
 cp "$source_closure_root/Formula/hello.rb" \
   "$TMP_ROOT/source-closure-canonical-requirement.rb"
 sed -i.bak \
@@ -412,22 +487,17 @@ python3 "$TOOL" "${source_closure_args[@]}" \
 mkdir -p "$source_closure_root/Kandelo/formula_support/runtime/test"
 printf 'nested production input\n' \
   >"$source_closure_root/Kandelo/formula_support/runtime/test/input.ts"
-python3 "$TOOL" "${source_closure_args[@]}" \
-  --out "$TMP_ROOT/source-closure-with-nested-test.json"
-[ "$(jq -r '.source_closure_sha256' "$TMP_ROOT/source-closure-with-test-other.json")" != \
-  "$(jq -r '.source_closure_sha256' "$TMP_ROOT/source-closure-with-nested-test.json")" ] || {
-  echo "Nested Formula support directory named test was excluded from the source closure" >&2
-  exit 1
-}
+expect_failure source-closure-with-nested-runtime \
+  "Formula support runtime entry must be a canonical regular file" \
+  python3 "$TOOL" "${source_closure_args[@]}" \
+    --out "$TMP_ROOT/source-closure-with-nested-test.json"
+rm -rf "$source_closure_root/Kandelo/formula_support/runtime"
 printf 'regular direct child, not an excluded test directory\n' \
   >"$source_closure_root/Kandelo/formula_support/test"
-python3 "$TOOL" "${source_closure_args[@]}" \
-  --out "$TMP_ROOT/source-closure-with-test-file.json"
-[ "$(jq -r '.source_closure_sha256' "$TMP_ROOT/source-closure-with-nested-test.json")" != \
-  "$(jq -r '.source_closure_sha256' "$TMP_ROOT/source-closure-with-test-file.json")" ] || {
-  echo "Formula support direct file named test was excluded from the source closure" >&2
-  exit 1
-}
+expect_failure source-closure-with-test-file \
+  "Formula support test path must be a real directory" \
+  python3 "$TOOL" "${source_closure_args[@]}" \
+    --out "$TMP_ROOT/source-closure-with-test-file.json"
 
 python3 - "$TMP_ROOT/generic32/layout" "$TMP_ROOT/generic32/receipt.json" <<'PY'
 import json
@@ -450,7 +520,7 @@ assert "dev.kandelo.homebrew.tap_name" not in annotations
 PY
 expect_failure archived-formula-mode "tap Formula mode differs from the archived" \
   build_child archived-formula-mode wasm32 "hello fixture" "fixture support v1" 0755
-expect_failure require-relative "not a bounded canonical closure" \
+expect_failure require-relative "violates the static contract" \
   build_child require-relative wasm32 "hello fixture" "fixture support v1" 0644 \
     'require_relative "../other"'
 python3 "$TOOL" validate-child \
