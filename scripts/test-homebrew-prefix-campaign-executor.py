@@ -4566,7 +4566,13 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
     def test_destination_bound_build_is_reconstructed_exactly(self) -> None:
         fixture = Fixture()
         self.addCleanup(fixture.close)
-        retired = "/home/linuxbrew/.linuxbrew"
+        # WHY: this fixture must exercise retired-prefix normalization without
+        # becoming a second source literal for the retired guest identity.
+        retired = json.loads(
+            (
+                ROOT / "homebrew/kandelo-guest-layout.json"
+            ).read_text()
+        )["retired_prefixes"][0]
         beta_payload = (
             b'class Beta < Formula\n'
             b'  desc "campaign executor fixture"\n'

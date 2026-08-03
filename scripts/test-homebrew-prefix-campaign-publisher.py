@@ -55,6 +55,11 @@ def sha256(value: bytes) -> str:
 GUEST_LAYOUT_SHA256 = sha256(
     (ROOT / "homebrew/kandelo-guest-layout.json").read_bytes()
 )
+# WHY: rejection fixtures need the retired identity, but only the reviewed
+# guest-layout contract may define that identity as a source literal.
+RETIRED_PREFIX = json.loads(
+    (ROOT / "homebrew/kandelo-guest-layout.json").read_text()
+)["retired_prefixes"][0]
 
 
 def run(arguments: list[str], root: pathlib.Path) -> str:
@@ -780,7 +785,8 @@ class PrefixCampaignPublisherTests(unittest.TestCase):
             b'    root_url "https://ghcr.io/v2/'
             b'kandelo-dev/homebrew-tap-core"\n'
             b'    sha256 cellar: "'
-            b'/home/linuxbrew/.linuxbrew/Cellar", '
+            + f"{RETIRED_PREFIX}/Cellar".encode()
+            + b'", '
             b'wasm32_kandelo: "'
             + b"d" * 64
             + b'"\n'
@@ -810,7 +816,7 @@ class PrefixCampaignPublisherTests(unittest.TestCase):
             prepared.read_text(),
         )
         self.assertNotIn(
-            "/home/linuxbrew/.linuxbrew",
+            RETIRED_PREFIX,
             prepared.read_text(),
         )
         self.assertEqual(
@@ -875,7 +881,8 @@ class PrefixCampaignPublisherTests(unittest.TestCase):
             b'kandelo-dev/homebrew-tap-core"\n'
             b'    rebuild 3\n'
             b'    sha256 cellar: "'
-            b'/home/linuxbrew/.linuxbrew/Cellar", '
+            + f"{RETIRED_PREFIX}/Cellar".encode()
+            + b'", '
             b'wasm32_kandelo: "'
             + b"d" * 64
             + b'"\n'

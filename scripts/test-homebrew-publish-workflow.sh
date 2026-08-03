@@ -3721,8 +3721,15 @@ assert_bottle_build_installs_test_dependencies() {
   local tier2_preflight_log="$TMPDIR/bottle-test-dependency-tier2-preflight.log"
   local runner_err="$TMPDIR/bottle-test-dependency-runner.err"
   local native_prefix_capture="$TMPDIR/bottle-test-dependency-native-prefix.txt"
-  local native_prefix real_python3 gnu_tar_bin host_git_bin
+  local native_prefix retired_guest_prefix real_python3 gnu_tar_bin
+  local host_git_bin
   local KANDELO_HOMEBREW_RESOLVED_TAPS_FILE
+  # WHY: prove the archive removed the retired identity without copying that
+  # identity into another guest-owned source location.
+  retired_guest_prefix="$(
+    jq -er '.retired_prefixes[0]' \
+      "$REPO_ROOT/homebrew/kandelo-guest-layout.json"
+  )"
   make_tap "$tap"
   mkdir -p "$brew_repo" "$brew_prefix" "$fake_bin"
   mkdir -p "$tap/Kandelo/formula_support/test"
@@ -4337,7 +4344,7 @@ EOF
   grep -F 'cellar: "/opt/kandelo/homebrew/Cellar"' \
     "$TMPDIR/archived-campaign-formula.rb" >/dev/null ||
     fail "bottle archive did not retain the active guest Cellar"
-  ! grep -F '/home/linuxbrew/.linuxbrew' \
+  ! grep -F "$retired_guest_prefix" \
     "$TMPDIR/archived-campaign-formula.rb" >/dev/null ||
     fail "bottle archive reintroduced the retired guest prefix"
 
