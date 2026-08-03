@@ -52,6 +52,23 @@ def write_json(path: pathlib.Path, value: Any) -> None:
     path.write_bytes(EXECUTOR.pretty_json(value))
 
 
+def write_oci_json_blob(
+    layout: pathlib.Path,
+    value: Any,
+    media_type: str,
+) -> dict[str, Any]:
+    payload = EXECUTOR.canonical_json(value)
+    digest = sha256(payload)
+    path = layout / "blobs/sha256" / digest
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(payload)
+    return {
+        "digest": f"sha256:{digest}",
+        "mediaType": media_type,
+        "size": len(payload),
+    }
+
+
 def commit_repo(root: pathlib.Path, message: str) -> str:
     subprocess.run(["git", "add", "--all"], cwd=root, check=True)
     subprocess.run(
@@ -820,9 +837,12 @@ class PredecessorReuseFixture(Fixture):
         "scripts/homebrew-verify-public-bottle.ts",
     )
 
-    def __init__(self) -> None:
+    def __init__(self, *, dependent: bool = False) -> None:
         super().__init__()
-        self.formulae = [self.formulae[0]]
+        if not dependent:
+            self.formulae = [self.formulae[0]]
+        self.target_formula = self.formulae[-1]
+        self.target_name = self.target_formula["name"]
         self.campaign["formulae"] = self.formulae
         self.campaign["authority"].update(
             {
@@ -846,8 +866,22 @@ class PredecessorReuseFixture(Fixture):
             "homebrew-prefix-campaign-sha256-"
             + sha256(predecessor_payload)
         )
+        self.predecessor_dependency_roots: list[pathlib.Path] = []
+        if dependent:
+            predecessor_dependency = (
+                self.root / "predecessor-alpha-handoff"
+            )
+            self._derive_alpha_dependency(
+                campaign_path=self.predecessor_path,
+                output=predecessor_dependency,
+            )
+            self.predecessor_dependency_roots.append(
+                predecessor_dependency
+            )
         self.predecessor_handoff = self.root / "predecessor-handoff"
-        self.archive = b"alpha predecessor bottle\n"
+        self.archive = (
+            f"{self.target_name} predecessor bottle\n".encode()
+        )
         self.archive_sha256 = sha256(self.archive)
         self._write_predecessor_handoff()
         predecessor_handoff_payload = (
@@ -883,7 +917,7 @@ class PredecessorReuseFixture(Fixture):
                 "target_tree_git_oid": self.source_tree,
             }
         ]
-        formula = self.formulae[0]
+        formula = self.target_formula
         formula["destination"]["admission"] = {
             "kind": "archived-predecessor-exact-presence",
             "method": "anonymous-oras-manifest-probe",
@@ -902,9 +936,49 @@ class PredecessorReuseFixture(Fixture):
             "kind": "predecessor-handoff",
         }
         write_json(self.campaign_path, self.campaign)
+        self.dependency_roots: list[pathlib.Path] = []
+        if dependent:
+            dependency = self.root / "successor-alpha-handoff"
+            self._derive_alpha_dependency(
+                campaign_path=self.campaign_path,
+                output=dependency,
+            )
+            self.dependency_roots.append(dependency)
+
+        self.public_destination_layout: pathlib.Path | None = None
+        self.destination_imports: list[list[str]] = []
+
+    def _derive_alpha_dependency(
+        self,
+        *,
+        campaign_path: pathlib.Path,
+        output: pathlib.Path,
+        archive_payload: bytes | None = None,
+    ) -> None:
+        publication = self.publication("alpha", "wasm32")
+        if archive_payload is not None:
+            archive = publication / "build/bottle.tar.gz"
+            archive.write_bytes(archive_payload)
+            bottle_json = publication / "build/bottle.json"
+            value = json.loads(bottle_json.read_text())
+            value[f"{TAP_NAME}/alpha"]["bottle"]["tags"][
+                "wasm32_kandelo"
+            ]["sha256"] = sha256(archive_payload)
+            write_json(bottle_json, value)
+        EXECUTOR.derive_build(
+            campaign_path=campaign_path,
+            source_tap_root=self.source,
+            formula_name="alpha",
+            publications=[("wasm32", publication)],
+            dependency_roots=[],
+            output=output,
+            validator=lambda *_arguments: None,
+            dependency_merger=self.merge_dependency,
+        )
 
     def _write_predecessor_handoff(self) -> None:
-        formula = self.formulae[0]
+        formula = self.target_formula
+        name = self.target_name
         arch = "wasm32"
         publication = self.predecessor_handoff / f"payload/{arch}"
         layout = EXECUTOR.campaign_guest_layout(self.predecessor)
@@ -949,37 +1023,49 @@ class PredecessorReuseFixture(Fixture):
                                 "env": {"PATH_prepend": ["bin"]},
                                 "fork_instrumentation": "not-required",
                                 "keg": (
-                                    f"{layout['cellar']}/alpha/1.0"
+                                    f"{layout['cellar']}/{name}/"
+                                    f"{formula['version']}"
                                 ),
                                 "links": [
                                     {
-                                        "source": "bin/alpha",
-                                        "target": "bin/alpha",
+                                        "source": f"bin/{name}",
+                                        "target": f"bin/{name}",
                                         "type": "symlink",
                                     }
                                 ],
-                                "payload_root": "alpha/1.0",
+                                "payload_root": (
+                                    f"{name}/{formula['version']}"
+                                ),
                                 "prefix": layout["prefix"],
                                 "receipts": ["INSTALL_RECEIPT.json"],
                                 "runtime_support": ["node"],
                                 "status": "success",
                                 "url": (
                                     "https://ghcr.io/v2/"
-                                    f"{TAP_REPOSITORY}/alpha/blobs/"
+                                    f"{TAP_REPOSITORY}/{name}/blobs/"
                                     f"sha256:{self.archive_sha256}"
                                 ),
                                 "validation": {"fixture": "validation"},
                             }
                         ],
-                        "dependencies": [],
-                        "formula_path": "Formula/alpha.rb",
+                        "dependencies": [
+                            {
+                                "full_name": dependency["full_name"],
+                                "name": dependency["full_name"].rsplit(
+                                    "/", 1
+                                )[1],
+                                "version": dependency["version"],
+                            }
+                            for dependency in formula["dependencies"]
+                        ],
+                        "formula_path": f"Formula/{name}.rb",
                         "formula_revision": 0,
                         "formula_source_sha256": (
                             formula["formula_source"]["sha256"]
                         ),
-                        "full_name": f"{TAP_NAME}/alpha",
-                        "name": "alpha",
-                        "version": "1.0",
+                        "full_name": f"{TAP_NAME}/{name}",
+                        "name": name,
+                        "version": formula["version"],
                     }
                 ],
                 "release_tag": "bottles-abi-v42",
@@ -1004,11 +1090,25 @@ class PredecessorReuseFixture(Fixture):
             for relative in EXECUTOR.BUILD_PUBLICATION_FILES
         ]
         predecessor_payload = self.predecessor_path.read_bytes()
+        predecessor_index = {
+            value["name"]: value
+            for value in self.predecessor["formulae"]
+        }
+        dependency_records, _identities, _loaded = (
+            EXECUTOR.load_dependency_handoff_set(
+                self.predecessor_dependency_roots,
+                self.predecessor,
+                predecessor_payload,
+                predecessor_index,
+                name,
+                (arch,),
+            )
+        )
         write_json(
             self.predecessor_handoff / "handoff.json",
             {
                 "campaign": {"sha256": sha256(predecessor_payload)},
-                "dependency_handoffs": [],
+                "dependency_handoffs": dependency_records,
                 "formula": EXECUTOR.campaign_formula_evidence(
                     self.predecessor, formula
                 ),
@@ -1044,7 +1144,7 @@ class PredecessorReuseFixture(Fixture):
         del arch, source_tap_root, extracted
         if (
             campaign != self.campaign
-            or formula != self.formulae[0]
+            or formula != self.target_formula
             or archive_record["sha256"] != self.archive_sha256
         ):
             raise AssertionError("destination verifier received substitution")
@@ -1056,19 +1156,201 @@ class PredecessorReuseFixture(Fixture):
             "source_closure_sha256": "6" * 64,
         }
 
-    def derive(self, output: pathlib.Path) -> None:
+    def install_public_destination(
+        self,
+        *,
+        layer_payload: bytes | None = None,
+    ) -> None:
+        formula = self.target_formula
+        authority = self.campaign["authority"]
+        destination = formula["destination"]
+        layout = self.root / "public-destination-layout"
+        blobs = layout / "blobs/sha256"
+        blobs.mkdir(parents=True)
+        config = write_oci_json_blob(
+            layout,
+            {},
+            "application/vnd.oci.image.config.v1+json",
+        )
+        if layer_payload is None:
+            layer_payload = self.archive
+        layer_sha256 = sha256(layer_payload)
+        (blobs / layer_sha256).write_bytes(layer_payload)
+        layer = {
+            "annotations": {},
+            "digest": f"sha256:{layer_sha256}",
+            "mediaType": "application/vnd.oci.image.layer.v1.tar+gzip",
+            "size": len(layer_payload),
+        }
+        child = write_oci_json_blob(
+            layout,
+            {
+                "annotations": {},
+                "config": config,
+                "layers": [layer],
+                "mediaType": (
+                    "application/vnd.oci.image.manifest.v1+json"
+                ),
+                "schemaVersion": 2,
+            },
+            "application/vnd.oci.image.manifest.v1+json",
+        )
+        child.update(
+            {
+                "annotations": {
+                    "sh.brew.bottle.digest": layer_sha256,
+                    "sh.brew.bottle.size": str(len(layer_payload)),
+                },
+                "platform": {
+                    "architecture": "wasm",
+                    "os": "kandelo",
+                    "variant": "wasm32",
+                },
+            }
+        )
+        source_closure_sha256 = "6" * 64
+        top = write_oci_json_blob(
+            layout,
+            {
+                "annotations": {
+                    "com.github.package.type": "homebrew_bottle",
+                    "dev.kandelo.homebrew.abi": str(
+                        authority["current_kandelo_abi"]
+                    ),
+                    "dev.kandelo.homebrew.bottle_rebuild": str(
+                        destination["bottle_rebuild"]
+                    ),
+                    "dev.kandelo.homebrew.formula": self.target_name,
+                    "dev.kandelo.homebrew.formula_revision": "0",
+                    (
+                        "dev.kandelo.homebrew."
+                        "formula_source_identity_sha256"
+                    ): formula["formula_source"][
+                        "identity_excluding_bottle_sha256"
+                    ],
+                    "dev.kandelo.homebrew.pkg_version": formula[
+                        "version"
+                    ],
+                    "dev.kandelo.homebrew.source_closure_sha256": (
+                        source_closure_sha256
+                    ),
+                    "dev.kandelo.homebrew.tap_repository": authority[
+                        "tap_repository"
+                    ].lower(),
+                    "org.opencontainers.image.ref.name": destination[
+                        "reference"
+                    ],
+                    "org.opencontainers.image.source": (
+                        "https://github.com/"
+                        + authority["tap_repository"].lower()
+                    ),
+                    "org.opencontainers.image.title": (
+                        f"{authority['tap_name']}/{self.target_name}"
+                    ),
+                    "org.opencontainers.image.version": formula["version"],
+                },
+                "manifests": [child],
+                "mediaType": (
+                    "application/vnd.oci.image.index.v1+json"
+                ),
+                "schemaVersion": 2,
+            },
+            "application/vnd.oci.image.index.v1+json",
+        )
+        write_json(
+            layout / "index.json",
+            {
+                "manifests": [
+                    {
+                        **top,
+                        "annotations": {
+                            "org.opencontainers.image.ref.name": (
+                                destination["reference"]
+                            )
+                        },
+                    }
+                ],
+                "mediaType": "application/vnd.oci.image.index.v1+json",
+                "schemaVersion": 2,
+            },
+        )
+        destination["admission"]["probe"]["digest"] = top["digest"]
+        write_json(self.campaign_path, self.campaign)
+        self.public_destination_layout = layout
+
+    def import_public_destination(
+        self,
+        arguments: list[str],
+        _label: str,
+    ) -> None:
+        if arguments[0] != "import-public-index":
+            raise AssertionError("destination used the wrong OCI command")
+        destination = self.target_formula["destination"]
+        expected = {
+            "--remote": destination["remote"],
+            "--reference": destination["reference"],
+        }
+        for option, value in expected.items():
+            if arguments[arguments.index(option) + 1] != value:
+                raise AssertionError(f"destination changed {option}")
+        registry_config = pathlib.Path(
+            arguments[arguments.index("--registry-config") + 1]
+        )
+        if json.loads(registry_config.read_text()) != {"auths": {}}:
+            raise AssertionError("destination import was not anonymous")
+        if self.public_destination_layout is None:
+            raise AssertionError("public destination was not installed")
+        output = pathlib.Path(
+            arguments[arguments.index("--out-layout") + 1]
+        )
+        shutil.copytree(self.public_destination_layout, output)
+        write_json(
+            pathlib.Path(
+                arguments[arguments.index("--out-result") + 1]
+            ),
+            {
+                "digest": destination["admission"]["probe"]["digest"],
+                "layout": str(output),
+                "schema": 1,
+                "status": "present",
+            },
+        )
+        self.destination_imports.append(arguments)
+
+    def derive(
+        self,
+        output: pathlib.Path,
+        *,
+        predecessor_dependency_roots: list[pathlib.Path] | None = None,
+        dependency_roots: list[pathlib.Path] | None = None,
+        use_default_destination_verifier: bool = False,
+    ) -> None:
+        if predecessor_dependency_roots is None:
+            predecessor_dependency_roots = (
+                self.predecessor_dependency_roots
+            )
+        if dependency_roots is None:
+            dependency_roots = self.dependency_roots
+        options: dict[str, Any] = {}
+        if not use_default_destination_verifier:
+            options["destination_verifier"] = self.destination_verifier
         EXECUTOR.derive_predecessor_reuse(
             campaign_path=self.campaign_path,
             source_tap_root=self.source,
             predecessor_campaign_path=self.predecessor_path,
             predecessor_handoff_root=self.predecessor_handoff,
-            formula_name="alpha",
+            formula_name=self.target_name,
             arch="wasm32",
-            predecessor_dependency_roots=[],
-            dependency_roots=[],
+            predecessor_dependency_roots=predecessor_dependency_roots,
+            dependency_roots=dependency_roots,
             output=output,
-            destination_verifier=self.destination_verifier,
+            **options,
         )
+
+
+class PredecessorDependencyReuseFixture(PredecessorReuseFixture):
+    def __init__(self) -> None:
+        super().__init__(dependent=True)
 
 
 class FinalTapFixture(Fixture):
@@ -2097,6 +2379,172 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             output=prepared,
         )
         self.assertTrue((prepared / "release-manifest.json").is_file())
+
+    def test_default_predecessor_destination_verifier_binds_public_oci(
+        self,
+    ) -> None:
+        fixture = PredecessorReuseFixture()
+        self.addCleanup(fixture.close)
+        fixture.install_public_destination()
+        handoff = fixture.root / "default-verifier-handoff"
+
+        with mock.patch.object(
+            EXECUTOR,
+            "run_oci_layout_command",
+            side_effect=fixture.import_public_destination,
+        ):
+            fixture.derive(
+                handoff,
+                use_default_destination_verifier=True,
+            )
+
+        self.assertEqual(len(fixture.destination_imports), 1)
+        self.assertEqual(
+            (
+                handoff / "payload/wasm32/reuse/bottle.tar.gz"
+            ).read_bytes(),
+            fixture.archive,
+        )
+        evidence = json.loads(
+            (
+                handoff / "payload/wasm32/reuse/evidence.json"
+            ).read_text()
+        )
+        destination = fixture.target_formula["destination"]
+        self.assertEqual(
+            evidence["destination"],
+            {
+                "manifest_digest": destination["admission"]["probe"][
+                    "digest"
+                ],
+                "reference": destination["reference"],
+                "remote": destination["remote"],
+                "source_closure_sha256": "6" * 64,
+            },
+        )
+
+    def test_default_predecessor_destination_rejects_another_layer(
+        self,
+    ) -> None:
+        fixture = PredecessorReuseFixture()
+        self.addCleanup(fixture.close)
+        fixture.install_public_destination(
+            layer_payload=b"substituted public bottle\n"
+        )
+        output = fixture.root / "substituted-destination"
+
+        with (
+            mock.patch.object(
+                EXECUTOR,
+                "run_oci_layout_command",
+                side_effect=fixture.import_public_destination,
+            ),
+            self.assertRaisesRegex(
+                EXECUTOR.ExecutorError,
+                "public OCI bottle layer changed",
+            ),
+        ):
+            fixture.derive(
+                output,
+                use_default_destination_verifier=True,
+            )
+        self.assertFalse(output.exists())
+
+    def test_predecessor_reuse_reseals_matching_dependency_closures(
+        self,
+    ) -> None:
+        fixture = PredecessorDependencyReuseFixture()
+        self.addCleanup(fixture.close)
+        handoff = fixture.root / "dependent-successor-handoff"
+        fixture.derive(handoff)
+
+        predecessor_dependency = fixture.predecessor_dependency_roots[0]
+        successor_dependency = fixture.dependency_roots[0]
+        predecessor_payload = (
+            predecessor_dependency / "handoff.json"
+        ).read_bytes()
+        successor_payload = (
+            successor_dependency / "handoff.json"
+        ).read_bytes()
+        successor_manifest = json.loads(
+            (handoff / "handoff.json").read_text()
+        )
+        self.assertEqual(successor_manifest["formula"]["name"], "beta")
+        self.assertEqual(
+            successor_manifest["dependency_handoffs"],
+            [
+                {
+                    "formula": "alpha",
+                    "manifest_sha256": sha256(successor_payload),
+                    "tag": EXECUTOR.handoff_tag(successor_payload),
+                }
+            ],
+        )
+
+        dependency_archive = (
+            predecessor_dependency
+            / "payload/wasm32/build/bottle.tar.gz"
+        ).read_bytes()
+        evidence = json.loads(
+            (
+                handoff / "payload/wasm32/reuse/evidence.json"
+            ).read_text()
+        )
+        self.assertEqual(
+            evidence["dependency_bottles"],
+            [
+                {
+                    "bytes": len(dependency_archive),
+                    "formula": "alpha",
+                    "predecessor_handoff_tag": EXECUTOR.handoff_tag(
+                        predecessor_payload
+                    ),
+                    "sha256": sha256(dependency_archive),
+                    "successor_handoff_tag": EXECUTOR.handoff_tag(
+                        successor_payload
+                    ),
+                }
+            ],
+        )
+        self.assertNotEqual(
+            evidence["dependency_bottles"][0][
+                "predecessor_handoff_tag"
+            ],
+            evidence["dependency_bottles"][0][
+                "successor_handoff_tag"
+            ],
+        )
+        prepared = fixture.root / "dependent-successor-release"
+        EXECUTOR.prepare_release(
+            campaign_path=fixture.campaign_path,
+            handoff_root=handoff,
+            dependency_roots=fixture.dependency_roots,
+            output=prepared,
+        )
+        self.assertTrue((prepared / "release-manifest.json").is_file())
+
+    def test_predecessor_reuse_rejects_changed_dependency_bottle(
+        self,
+    ) -> None:
+        fixture = PredecessorDependencyReuseFixture()
+        self.addCleanup(fixture.close)
+        changed_dependency = fixture.root / "changed-alpha-handoff"
+        fixture._derive_alpha_dependency(
+            campaign_path=fixture.campaign_path,
+            output=changed_dependency,
+            archive_payload=b"changed alpha bottle bytes\n",
+        )
+        output = fixture.root / "changed-dependency-successor"
+
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "dependency alpha/wasm32 bottle changed",
+        ):
+            fixture.derive(
+                output,
+                dependency_roots=[changed_dependency],
+            )
+        self.assertFalse(output.exists())
 
     def test_predecessor_reuse_authority_fails_closed(self) -> None:
         def schema_two(fixture: PredecessorReuseFixture) -> None:
