@@ -22,6 +22,7 @@ import {
   type VfsDeferredTreeUsage,
 } from "./deferred-tree-limits";
 import {
+  deriveHomebrewBottleGuestPrefix,
   parseHomebrewInstallReceiptRelocation,
   relocateHomebrewBottleFile,
 } from "../homebrew-bottle-relocation";
@@ -5337,6 +5338,36 @@ export class MemoryFileSystem implements FileSystemBackend {
           throw new Error("Lazy Homebrew bottle INSTALL_RECEIPT.json is not regular");
         }
         const receipt = parseHomebrewInstallReceiptRelocation(receiptDecoded.data);
+        const receiptGuests = inventory.filter((entry) =>
+          entry.sourcePath === receiptSource.sourcePath &&
+          entry.vfsPath.endsWith(`/Cellar/${receiptSource.sourcePath}`)
+        );
+        if (receiptGuests.length !== 1) {
+          throw new Error(
+            "Lazy Homebrew bottle cannot identify one receipt guest destination",
+          );
+        }
+        // WHY: immutable trees own both their destination paths and their
+        // expected relocated sizes. Deriving the prefix from that authenticated
+        // destination lets older and current artifacts remain truthful without
+        // weakening the byte-size check below.
+        const guestPrefix = deriveHomebrewBottleGuestPrefix(
+          receiptGuests[0]!.vfsPath,
+          receiptSource.sourcePath,
+        );
+        for (const entry of inventory) {
+          if (entry.materialization !== "archive-homebrew-relocate") continue;
+          // WHY: one immutable bottle cannot truthfully relocate files into two
+          // prefixes. The receipt establishes the bottle's prefix; every
+          // changed file, including a hardlink alias, must preserve the same
+          // source-to-Cellar mapping before any payload bytes are rewritten.
+          if (entry.vfsPath !== `${guestPrefix}/Cellar/${entry.sourcePath}`) {
+            throw new Error(
+              `Lazy Homebrew bottle changed destination ${entry.vfsPath} ` +
+                "does not match its receipt guest prefix",
+            );
+          }
+        }
         const separator = receiptSource.sourcePath.lastIndexOf("/");
         const sourceRoot = separator < 0
           ? ""
@@ -5370,7 +5401,10 @@ export class MemoryFileSystem implements FileSystemBackend {
             );
           }
           if (relocatedCanonicalSources.has(canonical.sourcePath)) continue;
-          actual.data = relocateHomebrewBottleFile(actual.data, receipt, sourcePath);
+          actual.data = relocateHomebrewBottleFile(actual.data, receipt, {
+            guestPrefix,
+            path: sourcePath,
+          });
           relocatedCanonicalSources.add(canonical.sourcePath);
         }
       }

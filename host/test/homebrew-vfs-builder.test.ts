@@ -1544,6 +1544,110 @@ describe("Homebrew runtime layer consumer", () => {
       .toBe(0o640);
   });
 
+  it("uses the immutable tree destination when relocating an older guest prefix", async () => {
+    const legacyPrefix = "/home/linuxbrew/.linuxbrew";
+    const sourcePath = "runtime/3.0/INSTALL_RECEIPT.json";
+    const guestPath = `${legacyPrefix}/Cellar/${sourcePath}`;
+    const configSourcePath = "runtime/3.0/lib/runtime.conf";
+    const configGuestPath = `${legacyPrefix}/Cellar/${configSourcePath}`;
+    const receipt = JSON.stringify({
+      changed_files: ["INSTALL_RECEIPT.json", "lib/runtime.conf"],
+      source: { path: "@@HOMEBREW_LIBRARY@@/Formula/runtime.rb" },
+    }) + "\n";
+    const source = utf8(receipt);
+    const configSource = utf8("prefix=@@HOMEBREW_PREFIX@@\n");
+    const archive = bottleTar([{
+      path: sourcePath,
+      data: source,
+      mode: 0o664,
+    }, {
+      path: configSourcePath,
+      data: configSource,
+      mode: 0o640,
+    }]);
+    const relocatedSize = utf8(
+      receipt.replace(
+        "@@HOMEBREW_LIBRARY@@",
+        `${legacyPrefix}/Library`,
+      ),
+    ).byteLength;
+    const configRelocatedSize = utf8(
+      `prefix=${legacyPrefix}\n`,
+    ).byteLength;
+    const createFs = (configDestination = configGuestPath) => {
+      const fs = MemoryFileSystem.create(
+        new SharedArrayBuffer(4 * 1024 * 1024),
+      );
+      fs.registerLazyTree({
+        decoder: "homebrew-bottle-tar-gzip-v1",
+        mediaType: "application/vnd.oci.image.layer.v1.tar+gzip",
+        sha256: sha256(archive),
+        bytes: archive.byteLength,
+        expandedBytes: new DataView(
+          archive.buffer,
+          archive.byteOffset,
+          archive.byteLength,
+        ).getUint32(archive.byteLength - 4, true),
+        sourceEntryCount: 2,
+        transports: ["https://example.invalid/runtime.bottle.tar.gz"],
+        source: {
+          schema: 1,
+          kind: "homebrew-bottle-tar-gzip-v1",
+          entries: [{
+            sourcePath,
+            type: "file",
+            mode: 0o664,
+            size: source.byteLength,
+          }, {
+            sourcePath: configSourcePath,
+            type: "file",
+            mode: 0o640,
+            size: configSource.byteLength,
+          }],
+        },
+      }, [{
+        vfsPath: guestPath,
+        sourcePath,
+        materialization: "archive-homebrew-relocate",
+        type: "file",
+        mode: 0o664,
+        size: relocatedSize,
+        inodeGroup: "runtime-receipt",
+      }, {
+        vfsPath: configDestination,
+        sourcePath: configSourcePath,
+        materialization: "archive-homebrew-relocate",
+        type: "file",
+        mode: 0o640,
+        size: configRelocatedSize,
+        inodeGroup: "runtime-config",
+      }], "/", {
+        mode: "first-use",
+        capabilities: ["homebrew-bottle:runtime"],
+        roots: ["/"],
+      });
+      fs.setLazyFetcher(async () => new Response(archive));
+      return fs;
+    };
+    const fs = createFs();
+
+    await expect(
+      fs.ensureMaterialized(guestPath),
+    ).resolves.toBe(true);
+    expect(JSON.parse(
+      readVfsFile(fs, guestPath),
+    )).toMatchObject({
+      source: { path: `${legacyPrefix}/Library/Formula/runtime.rb` },
+    });
+    expect(readVfsFile(fs, configGuestPath)).toBe(`prefix=${legacyPrefix}\n`);
+
+    const mixedPrefixPath = `${PREFIX}/Cellar/${configSourcePath}`;
+    const mixedPrefixFs = createFs(mixedPrefixPath);
+    await expect(
+      mixedPrefixFs.ensureMaterialized(mixedPrefixPath),
+    ).rejects.toThrow(/does not match its receipt guest prefix/);
+  });
+
   it("accepts upstream null changed_files as an empty relocation set", async () => {
     const fixture = await runtimeLayerConsumerFixture({
       runtimeReceipt: JSON.stringify({ changed_files: null }) + "\n",
