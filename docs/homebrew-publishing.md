@@ -772,6 +772,14 @@ each `WASM_POSIX_DEP_<NAME>_DIR` from the exact poured Homebrew keg and exposes
 separate caller-owned `WASM_POSIX_DEP_WORK_DIR` and
 `WASM_POSIX_DEP_OUT_DIR` roots. `WASM_POSIX_DEP_RECIPE_DIR` is read-only.
 
+The recipe receives the Formula's base version in
+`WASM_POSIX_DEP_VERSION`. It receives Homebrew's complete package version,
+including a positive Formula `revision` suffix such as `_1`, in
+`WASM_POSIX_DEP_PKG_VERSION`. The static Formula parser derives both values,
+the schema-3 attestation binds them, and the privileged runner rejects any
+different environment value. A recipe must use the package version when it
+binds bottle or source-lock identity; it must not reconstruct the suffix.
+
 Selected Homebrew resources use the same closed authority path. The publisher
 binds each resource's literal URL and SHA-256 into the schema-3 attestation.
 The Formula helper verifies that identity against Homebrew's selected resource,

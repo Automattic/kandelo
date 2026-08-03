@@ -156,9 +156,10 @@ def bootstrap_formula(
 def write_bootstrap_recipe(
     tap: pathlib.Path, *, retired_prefix: bool = False, revision: int = 0
 ) -> str:
-    version = f"6.0.3-4-g{BOOTSTRAP_REVISION[:7]}"
-    if revision:
-        version += f"_{revision}"
+    base_version = f"6.0.3-4-g{BOOTSTRAP_REVISION[:7]}"
+    package_version = (
+        base_version if revision == 0 else f"{base_version}_{revision}"
+    )
     recipe_root = tap / "Kandelo/recipes/homebrew-bootstrap"
     (recipe_root / "patches").mkdir(parents=True, exist_ok=True)
     patch = b"fixture patch\n"
@@ -189,7 +190,7 @@ def write_bootstrap_recipe(
         "package": {
             "arch": "wasm32",
             "name": "homebrew-bootstrap",
-            "version": version,
+            "version": package_version,
         },
         "patch": {
             "path": "patches/0001-add-kandelo-wasm-bottle-tags.patch",
@@ -240,9 +241,9 @@ def write_bootstrap_recipe(
     )
     manifest_sha = sha256((recipe_root / "recipe.json").read_bytes())
     (tap / "Formula/homebrew-bootstrap.rb").write_bytes(
-        bootstrap_formula(version, manifest_sha, revision)
+        bootstrap_formula(base_version, manifest_sha, revision)
     )
-    return version
+    return package_version
 
 
 def add_bytes(
@@ -1972,6 +1973,13 @@ class PrefixCampaignTests(unittest.TestCase):
         self.addCleanup(fixture.close)
         version = write_bootstrap_recipe(fixture.source_tap, revision=1)
         fixture.versions["homebrew-bootstrap"] = version
+        formula_text = (
+            fixture.source_tap / "Formula/homebrew-bootstrap.rb"
+        ).read_text()
+        self.assertIn(
+            f'version "6.0.3-4-g{BOOTSTRAP_REVISION[:7]}"', formula_text
+        )
+        self.assertNotIn(f'version "{version}"', formula_text)
         source_head = commit(
             fixture.source_tap, "revise bootstrap Formula fixture"
         )
@@ -1987,6 +1995,160 @@ class PrefixCampaignTests(unittest.TestCase):
             if value["name"] == "homebrew-bootstrap"
         )
         self.assertEqual(bootstrap["version"], version)
+
+    def test_bootstrap_recipe_rejects_pkg_version_as_formula_version(
+        self,
+    ) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        version = write_bootstrap_recipe(fixture.source_tap, revision=1)
+        fixture.versions["homebrew-bootstrap"] = version
+        formula_path = fixture.source_tap / "Formula/homebrew-bootstrap.rb"
+        formula_text = formula_path.read_text()
+        base_version = f"6.0.3-4-g{BOOTSTRAP_REVISION[:7]}"
+        formula_path.write_text(
+            formula_text.replace(
+                f'version "{base_version}"', f'version "{version}"'
+            )
+        )
+        source_head = commit(
+            fixture.source_tap, "put pkg_version in Formula version"
+        )
+
+        with self.assertRaisesRegex(
+            CAMPAIGN.CampaignError,
+            "Formula base version does not identify its source revision",
+        ):
+            CAMPAIGN.derive_campaign(
+                fixture.options(source_tap_commit=source_head),
+                fixture.dependencies(),
+            )
+
+    def test_bootstrap_recipe_requires_revision_in_formula_dsl(self) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        version = write_bootstrap_recipe(fixture.source_tap, revision=1)
+        fixture.versions["homebrew-bootstrap"] = version
+        formula_path = fixture.source_tap / "Formula/homebrew-bootstrap.rb"
+        formula_text = formula_path.read_text()
+        base_version = f"6.0.3-4-g{BOOTSTRAP_REVISION[:7]}"
+        formula_path.write_text(
+            formula_text.replace(
+                f'version "{base_version}"', f'version "{version}"'
+            ).replace("  revision 1\n", "")
+        )
+        source_head = commit(
+            fixture.source_tap, "hide revision in Formula base version"
+        )
+
+        with self.assertRaisesRegex(
+            CAMPAIGN.CampaignError,
+            "Formula base version does not identify its source revision",
+        ):
+            CAMPAIGN.derive_campaign(
+                fixture.options(source_tap_commit=source_head),
+                fixture.dependencies(),
+            )
+
+    def test_bootstrap_recipe_requires_native_pkg_version_to_match_lock(
+        self,
+    ) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        write_bootstrap_recipe(fixture.source_tap, revision=1)
+        base_version = f"6.0.3-4-g{BOOTSTRAP_REVISION[:7]}"
+        fixture.versions["homebrew-bootstrap"] = base_version
+        source_head = commit(
+            fixture.source_tap, "revise bootstrap without native metadata"
+        )
+
+        with self.assertRaisesRegex(
+            CAMPAIGN.CampaignError,
+            "native Homebrew pkg_version .* differs from its exact recipe",
+        ):
+            CAMPAIGN.derive_campaign(
+                fixture.options(source_tap_commit=source_head),
+                fixture.dependencies(),
+            )
+
+    def test_bootstrap_recipe_requires_formula_pkg_version_to_match_lock(
+        self,
+    ) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        version = write_bootstrap_recipe(fixture.source_tap, revision=1)
+        fixture.versions["homebrew-bootstrap"] = version
+        formula_path = fixture.source_tap / "Formula/homebrew-bootstrap.rb"
+        formula_path.write_text(
+            formula_path.read_text().replace("  revision 1\n", "  revision 2\n")
+        )
+        source_head = commit(
+            fixture.source_tap, "mismatch Formula and locked revisions"
+        )
+
+        with self.assertRaisesRegex(
+            CAMPAIGN.CampaignError,
+            "Formula pkg_version .* differs from its exact source lock",
+        ):
+            CAMPAIGN.derive_campaign(
+                fixture.options(source_tap_commit=source_head),
+                fixture.dependencies(),
+            )
+
+    def test_formula_version_requires_one_literal_base_version(self) -> None:
+        cases = {
+            "missing": "",
+            "duplicate": '  version "1.2.3"\n  version "1.2.4"\n',
+            "expression": "  version SOME_VALUE\n",
+            "empty": '  version ""\n',
+        }
+        for label, formula_text in cases.items():
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(
+                    CAMPAIGN.CampaignError,
+                    "version (must|statement)",
+                ):
+                    CAMPAIGN.require_formula_version_revision(
+                        formula_text, "homebrew-bootstrap Formula"
+                    )
+
+    def test_formula_version_enforces_the_shared_255_byte_limit(self) -> None:
+        accepted = "a" * 255
+        rejected = "a" * 256
+        self.assertEqual(
+            CAMPAIGN.require_formula_version_revision(
+                f'  version "{accepted}"\n', "homebrew-bootstrap Formula"
+            ),
+            (accepted, 0),
+        )
+        with self.assertRaisesRegex(
+            CAMPAIGN.CampaignError, "base version has an invalid value"
+        ):
+            CAMPAIGN.require_formula_version_revision(
+                f'  version "{rejected}"\n', "homebrew-bootstrap Formula"
+            )
+
+    def test_formula_pkg_version_rejects_malformed_or_ambiguous_revision(
+        self,
+    ) -> None:
+        base = '  version "1.2.3"\n'
+        cases = {
+            "zero": base + "  revision 0\n",
+            "negative": base + "  revision -1\n",
+            "quoted": base + '  revision "1"\n',
+            "expression": base + "  revision SOME_VALUE\n",
+            "leading zero": base + "  revision 01\n",
+            "duplicate": base + "  revision 1\n  revision 2\n",
+        }
+        for label, formula_text in cases.items():
+            with self.subTest(label=label):
+                with self.assertRaisesRegex(
+                    CAMPAIGN.CampaignError,
+                    "revision (must|statement)",
+                ):
+                    CAMPAIGN.require_formula_version_revision(
+                        formula_text, "homebrew-bootstrap Formula"
+                    )
 
     def test_bootstrap_recipe_rejects_invalid_formula_revision_suffix(
         self,

@@ -364,7 +364,7 @@ if ! jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" \
     else
       keys == ["arch", "formula", "formula_sha256", "full_name", "schema", "support_runtime_sha256", "support_sha256", "tap", "tap_recipe", "tier2_bridge"] and
       .tier2_bridge == null and .support_sha256 != null and
-      (.tap_recipe | keys == ["dependencies", "entrypoint", "file_count", "manifest_sha256", "resources", "script_env_keys", "source_sha256", "source_url", "total_bytes", "version"]) and
+      (.tap_recipe | keys == ["dependencies", "entrypoint", "file_count", "manifest_sha256", "pkg_version", "resources", "script_env_keys", "source_sha256", "source_url", "total_bytes", "version"]) and
       (.tap_recipe.dependencies | type == "array" and . == (sort | unique) and
         length <= 128 and all(.[]; type == "string" and
           test("^[a-z0-9._-]+/[a-z0-9._-]+/[a-z0-9][a-z0-9._-]{0,254}$"))) and
@@ -398,7 +398,17 @@ if ! jq -e --arg tap "$EXPECTED_PLAN_TAP" --arg formula "$FORMULA" \
         ([$resource_keys[] |
           select(. as $key | $script_env_keys | index($key))] | length == 0)) and
       (.tap_recipe.source_url | type == "string" and startswith("https://")) and
-      (.tap_recipe.version | type == "string" and length > 0)
+      (.tap_recipe.pkg_version |
+        type == "string" and
+        test("^[A-Za-z0-9][A-Za-z0-9._+,-]{0,254}$")) and
+      (.tap_recipe.version as $version |
+        .tap_recipe.pkg_version == $version or
+        (.tap_recipe.pkg_version |
+          startswith($version + "_") and
+          (ltrimstr($version + "_") | test("^[1-9][0-9]*$")))) and
+      (.tap_recipe.version |
+        type == "string" and
+        test("^[A-Za-z0-9][A-Za-z0-9._+,-]{0,254}$"))
     end
   ' "$TIER2_ATTESTATION" >/dev/null; then
   echo "homebrew-bottle-build.sh: Tier-2 bridge attestation has an invalid schema" >&2
@@ -884,6 +894,11 @@ if ! jq -e \
 fi
 
 PKG_VERSION="$(jq -r --arg key "$FORMULA_KEY" '.[$key].formula.pkg_version' "$BOTTLE_SOURCE_JSON")"
+if jq -e '.schema == 3' "$TIER2_ATTESTATION" >/dev/null &&
+   [ "$PKG_VERSION" != "$(jq -r '.tap_recipe.pkg_version' "$TIER2_ATTESTATION")" ]; then
+  echo "homebrew-bottle-build.sh: bottle pkg_version differs from the sealed tap recipe attestation" >&2
+  exit 1
+fi
 BOTTLE_REBUILD="$(jq -r --arg key "$FORMULA_KEY" '.[$key].bottle.rebuild' "$BOTTLE_SOURCE_JSON")"
 if [ "$BOTTLE_REBUILD" != "$EXPECTED_BOTTLE_REBUILD" ]; then
   echo "homebrew-bottle-build.sh: Homebrew bottle rebuild $BOTTLE_REBUILD differs from planned Formula rebuild $EXPECTED_BOTTLE_REBUILD" >&2

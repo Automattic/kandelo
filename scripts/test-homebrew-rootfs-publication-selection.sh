@@ -118,6 +118,7 @@ class Nethack < Formula
   homepage "https://example.test/nethack"
   url "https://example.test/nethack-1.0.tar.gz"
   version "1.0"
+  revision 2
   sha256 "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
   license "MIT"
 
@@ -334,6 +335,14 @@ jq '.tap_recipe.declared_dependencies = ["kandelo-dev/tap-core/direct"] |
     .tap_recipe.script_env_keys = ["lowercase"]' \
   "$recipe_plan" >"$mutated_plan"
 expect_plan_failure malformed-recipe-environment "$mutated_plan" nethack
+jq 'del(.tap_recipe.pkg_version)' "$recipe_plan" >"$mutated_plan"
+expect_plan_failure missing-recipe-package-version "$mutated_plan" nethack
+jq '.tap_recipe.pkg_version = "other_2"' \
+  "$recipe_plan" >"$mutated_plan"
+expect_plan_failure mismatched-recipe-package-version "$mutated_plan" nethack
+jq '.tap_recipe.pkg_version = "1.0_02"' \
+  "$recipe_plan" >"$mutated_plan"
+expect_plan_failure malformed-recipe-package-revision "$mutated_plan" nethack
 
 LARGE_KANDELO_ROOT="$TMP_ROOT/large-kandelo"
 mkdir -p "$LARGE_KANDELO_ROOT/scripts"

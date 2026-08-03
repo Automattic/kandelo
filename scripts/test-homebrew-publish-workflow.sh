@@ -427,6 +427,30 @@ homebrew_patched_launcher_stage_tier2_attestation() {
       (.tier2_bridge | keys == ["build_toml_sha256", "package", "package_toml_sha256", "script", "script_env_keys", "script_sha256", "source_mode", "source_sha256", "source_url", "version"])
     end
   ' "$1" >/dev/null || return 2
+  if [ -n "${FAKE_POST_BUILD_TAP_RECIPE_PKG_VERSION:-}" ]; then
+    # WHY: the production preflight/schema chain has focused tests of its own.
+    # This test-only promotion reaches the later bottle-output comparison so
+    # it cannot silently disappear while the earlier validators stay green.
+    jq --arg pkg_version "$FAKE_POST_BUILD_TAP_RECIPE_PKG_VERSION" '
+      .schema = 3 |
+      .tier2_bridge = null |
+      .tap_recipe = {
+        dependencies: [],
+        entrypoint: "build.sh",
+        file_count: 1,
+        manifest_sha256: ("c" * 64),
+        pkg_version: $pkg_version,
+        resources: [],
+        script_env_keys: [],
+        source_sha256: ("c" * 64),
+        source_url: "https://example.test/hello-1.0.tar.gz",
+        total_bytes: 1,
+        version: "1.0"
+      }
+    ' "$1" >"$1.promoted"
+    mv "$1.promoted" "$1"
+    cp "$1" "$(dirname "$1")/tier2-attestation.json"
+  fi
   if [ -n "${FAKE_TIER2_ATTESTATION_CAPTURE:-}" ]; then
     cp "$1" "$FAKE_TIER2_ATTESTATION_CAPTURE"
   fi
@@ -4068,6 +4092,50 @@ EOF
     .tier2_bridge.version == "1.0"
   ' "$tier2_attestation_capture" >/dev/null ||
     fail "bottle build did not stage the exact active Tier-2 attestation"
+
+  local pkg_drift_out="$TMPDIR/bottle-package-version-drift-out"
+  local pkg_drift_prefix="$TMPDIR/bottle-package-version-drift-prefix"
+  local pkg_drift_err="$TMPDIR/bottle-package-version-drift.err"
+  local pkg_drift_log="$TMPDIR/bottle-package-version-drift.log"
+  local pkg_drift_realm_log="$TMPDIR/bottle-package-version-drift-realms.log"
+  local pkg_drift_lifecycle="$TMPDIR/bottle-package-version-drift-lifecycle.log"
+  local pkg_drift_provenance="$TMPDIR/bottle-package-version-drift-provenance.txt"
+  local pkg_drift_install_log="$TMPDIR/bottle-package-version-drift-install.log"
+  local pkg_drift_status
+  mkdir -p "$pkg_drift_prefix"
+  local tapped_pkg_drift="$TMPDIR/bottle-package-version-drift-tapped"
+  prepare_formula_runner_tapped_clone \
+    "$tap" "$tapped_pkg_drift" "$KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"
+  set +e
+  PATH="$fake_bin:$PATH" \
+    REAL_PYTHON3="$real_python3" \
+    FAKE_PROVENANCE_CAPTURE="$pkg_drift_provenance" \
+    FAKE_PROVENANCE_LOG_CAPTURE="$pkg_drift_install_log" \
+    FAKE_BREW_LOG="$pkg_drift_log" \
+    FAKE_REALM_COMMAND_LOG="$pkg_drift_realm_log" \
+    FAKE_REALM_LIFECYCLE_LOG="$pkg_drift_lifecycle" \
+    FAKE_BUILD_TIME=1700000000 \
+    FAKE_BREW_PREFIX="$pkg_drift_prefix" \
+    FAKE_BREW_REPOSITORY="$brew_repo" \
+    FAKE_TAP_ROOT="$tapped_pkg_drift" \
+    FAKE_POST_BUILD_TAP_RECIPE_PKG_VERSION=1.0_2 \
+    HOMEBREW_BREW_FILE="$fake_brew" \
+    GITHUB_ACTIONS= \
+    bash "$FORMULA_RUNNER_FIXTURE_ROOT/scripts/homebrew-bottle-build.sh" \
+      --tap-root "$tap" \
+      --tap-repository kandelo-dev/homebrew-tap-core \
+      --formula hello \
+      --arch wasm32 \
+      --out "$pkg_drift_out" \
+      --bottle-root-url https://ghcr.io/v2/kandelo-dev/homebrew-tap-core \
+      >/dev/null 2>"$pkg_drift_err"
+  pkg_drift_status="$?"
+  set -e
+  [ "$pkg_drift_status" -eq 1 ] ||
+    fail "bottle build accepted attested package-version drift: $pkg_drift_status"
+  grep -F 'bottle pkg_version differs from the sealed tap recipe attestation' \
+    "$pkg_drift_err" >/dev/null ||
+    fail "bottle build did not explain attested package-version drift"
 
   local tier2_drift_out="$TMPDIR/bottle-tier2-drift-out"
   local tier2_drift_prefix="$TMPDIR/bottle-tier2-drift-prefix"

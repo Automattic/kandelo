@@ -68,6 +68,7 @@ struct BridgeDeclaration {
 struct TapRecipeDeclaration {
     declared_dependencies: Vec<String>,
     manifest_sha256: String,
+    pkg_version: String,
     resources: Vec<TapRecipeResource>,
     script_env_keys: Vec<String>,
     source_sha256: String,
@@ -136,6 +137,7 @@ struct AttestedTapRecipe {
     entrypoint: String,
     file_count: usize,
     manifest_sha256: String,
+    pkg_version: String,
     resources: Vec<TapRecipeResource>,
     script_env_keys: Vec<String>,
     source_sha256: String,
@@ -643,6 +645,7 @@ fn validate_tap_recipe(
         entrypoint: manifest.entrypoint,
         file_count: manifest.files.len(),
         manifest_sha256,
+        pkg_version: recipe.pkg_version.clone(),
         resources: recipe.resources.clone(),
         script_env_keys: recipe.script_env_keys.clone(),
         source_sha256: recipe.source_sha256.clone(),
@@ -714,6 +717,7 @@ fn validate_tap_recipe_declaration(
     {
         return Err(format!("invalid tap recipe version {:?}", recipe.version));
     }
+    validate_tap_recipe_pkg_version(&recipe.version, &recipe.pkg_version)?;
     if recipe
         .declared_dependencies
         .windows(2)
@@ -736,6 +740,35 @@ fn validate_tap_recipe_declaration(
         return Err(format!(
             "Formula recipe dependency and resource paths collide at {conflict:?}"
         ));
+    }
+    Ok(())
+}
+
+fn validate_tap_recipe_pkg_version(version: &str, pkg_version: &str) -> Result<(), String> {
+    if pkg_version.is_empty()
+        || pkg_version.len() > 255
+        || !pkg_version.is_ascii()
+        || !pkg_version
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._+,-".contains(&byte))
+        || !pkg_version.as_bytes()[0].is_ascii_alphanumeric()
+    {
+        return Err(format!("invalid tap recipe pkg_version {pkg_version:?}"));
+    }
+    if pkg_version == version {
+        return Ok(());
+    }
+    let Some(revision) = pkg_version
+        .strip_prefix(version)
+        .and_then(|suffix| suffix.strip_prefix('_'))
+    else {
+        return Err("tap recipe pkg_version differs from its base version".to_string());
+    };
+    if revision.is_empty()
+        || revision.as_bytes()[0] == b'0'
+        || !revision.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err("tap recipe pkg_version has an invalid revision suffix".to_string());
     }
     Ok(())
 }
@@ -1013,6 +1046,7 @@ fn is_reserved_script_env_key(key: &str) -> bool {
         key,
         "WASM_POSIX_DEP_NAME"
             | "WASM_POSIX_DEP_OUT_DIR"
+            | "WASM_POSIX_DEP_PKG_VERSION"
             | "WASM_POSIX_DEP_RECIPE_DIR"
             | "WASM_POSIX_DEP_SOURCE_DIR"
             | "WASM_POSIX_DEP_SOURCE_SHA256"
@@ -1373,6 +1407,7 @@ mod tests {
             "tap_recipe": {
                 "declared_dependencies": ["kandelo-dev/tap-core/zlib"],
                 "manifest_sha256": sha256_hex(&manifest_bytes),
+                "pkg_version": "1.2.3_2",
                 "resources": [{
                     "name": "fixture-data",
                     "source_sha256": "e".repeat(64),
@@ -1511,6 +1546,7 @@ index_url = "https://example.test/index.toml"
         assert_eq!(attestation.tier2_bridge, None);
         assert_eq!(recipe.entrypoint, "build.sh");
         assert_eq!(recipe.file_count, 2);
+        assert_eq!(recipe.pkg_version, "1.2.3_2");
         assert_eq!(recipe.total_bytes, 52);
         assert_eq!(
             recipe.dependencies,
@@ -1525,6 +1561,75 @@ index_url = "https://example.test/index.toml"
             }]
         );
         assert_eq!(recipe.script_env_keys, ["BRIDGE_FEATURE".to_string()]);
+    }
+
+    #[test]
+    fn tap_recipe_pkg_version_binds_base_and_positive_revision() {
+        for (label, pkg_version, expected_error) in [
+            ("base", "1.2.3", None),
+            ("revision", "1.2.3_7", None),
+            (
+                "unrelated base",
+                "2.0_7",
+                Some("differs from its base version"),
+            ),
+            (
+                "zero revision",
+                "1.2.3_0",
+                Some("invalid revision suffix"),
+            ),
+            (
+                "leading zero",
+                "1.2.3_07",
+                Some("invalid revision suffix"),
+            ),
+            (
+                "nonnumeric revision",
+                "1.2.3_x",
+                Some("invalid revision suffix"),
+            ),
+        ] {
+            let fixture = Fixture::new();
+            write_tap_recipe(&fixture);
+            let mut plan: serde_json::Value =
+                serde_json::from_slice(&fs::read(&fixture.plan).unwrap()).unwrap();
+            plan["tap_recipe"]["pkg_version"] = serde_json::json!(pkg_version);
+            fs::write(&fixture.plan, serde_json::to_vec(&plan).unwrap()).unwrap();
+
+            let result = validate(
+                fixture.root(),
+                Some(fixture.root()),
+                TargetArch::Wasm32,
+                &fixture.plan,
+            );
+            if let Some(expected_error) = expected_error {
+                let error = result.expect_err(label);
+                assert!(error.contains(expected_error), "{label}: {error}");
+            } else {
+                assert_eq!(
+                    result.unwrap().tap_recipe.unwrap().pkg_version,
+                    pkg_version,
+                    "{label}",
+                );
+            }
+        }
+
+        let fixture = Fixture::new();
+        write_tap_recipe(&fixture);
+        let mut plan: serde_json::Value =
+            serde_json::from_slice(&fs::read(&fixture.plan).unwrap()).unwrap();
+        plan["tap_recipe"].as_object_mut().unwrap().remove("pkg_version");
+        fs::write(&fixture.plan, serde_json::to_vec(&plan).unwrap()).unwrap();
+        assert!(
+            validate(
+                fixture.root(),
+                Some(fixture.root()),
+                TargetArch::Wasm32,
+                &fixture.plan,
+            )
+            .unwrap_err()
+            .contains("missing field `pkg_version`")
+        );
     }
 
     #[test]
@@ -1999,6 +2104,10 @@ index_url = "https://example.test/index.toml"
             (serde_json::json!(["Z_KEY", "A_KEY"]), "sorted and unique"),
             (
                 serde_json::json!(["WASM_POSIX_DEP_SOURCE_DIR"]),
+                "reserved variable",
+            ),
+            (
+                serde_json::json!(["WASM_POSIX_DEP_PKG_VERSION"]),
                 "reserved variable",
             ),
             (

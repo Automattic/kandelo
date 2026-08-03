@@ -45,7 +45,7 @@ ROOTFS_PUBLICATION_SELECTION_PATH = File.join(
   REPO_ROOT, "scripts/homebrew-rootfs-publication-selection.sh"
 )
 ROOTFS_PUBLICATION_SELECTION_SHA256 =
-  "4f64ae46fb71e0ebc4eac6cec8f288583b1ec922844d6a555632867b4efcbcda"
+  "c48f0369a5e85aa3c8b5a52124e0e2e38f383f4ce64a03ad23ab5312ed50f900"
 TAP_CALLER_ROOT = File.join(REPO_ROOT, "homebrew/homebrew-tap-core/.github/workflows")
 CHECKOUT_ACTION = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
 # WHY: the reusable publishers freeze v6 in their reviewed step digests. This
@@ -1631,7 +1631,9 @@ def check_rootfs_publication_selection_semantics(source)
     '--tier2-bridge-json',
     '.full_name == ($tap + "/" + $formula)',
     'keys == ["package", "script_env_keys", "source_sha256", "source_url", "version"]',
-    '"declared_dependencies", "manifest_sha256", "resources"',
+    '"declared_dependencies", "manifest_sha256", "pkg_version"',
+    '.pkg_version == $version',
+    'test("^[1-9][0-9]*$")',
     '.tier2_bridge == null',
     'authority_class="tap-recipe"',
     'authority_class="direct"',
@@ -3708,6 +3710,9 @@ def check_publisher(workflow)
   )
   [
     "if jq -e '.schema == 3'",
+    '"manifest_sha256", "pkg_version", "resources"',
+    '.tap_recipe.pkg_version == $version',
+    'bottle pkg_version differs from the sealed tap recipe attestation',
     '(.tap_recipe.resources | type == "array"',
     'keys == ["name", "source_sha256", "source_url"]',
     'length <= 32',
@@ -3752,6 +3757,10 @@ def check_publisher(workflow)
     "expected=absolute-root:root-{expected_name}-not-group/other-writable",
     "prepare_service_root(service_root, readonly_binds, readwrite_binds)",
     "add_runner_owned_platform_environment(",
+    '"WASM_POSIX_DEP_PKG_VERSION"',
+    '"WASM_POSIX_DEP_PKG_VERSION": config["pkg_version"]',
+    "valid_homebrew_pkg_version(",
+    "config pkg_version differs from its base version",
     'SDK_CONFIG_SITE_ENV_KEY = "WASM_POSIX_SDK_CONFIG_SITE"',
     'SDK_CONFIG_SITE_RELATIVE = Path("sdk/config.site")',
     "projected SDK config site is not one sealed mode-0444 file",
@@ -3931,6 +3940,10 @@ def check_publisher(workflow)
     'TAP_RECIPE_METHOD = "kandelo_build_tap_recipe"',
     'TAP_RECIPE_MARKER = "KANDELO_TAP_RECIPE"',
     'tap recipe marker and canonical helper call must appear together',
+    'canonical_nonnegative_integer_value = lambda do |node, lines|',
+    'pkg_version_value = formula_revision.zero?',
+    '"pkg_version" => pkg_version_value',
+    'tap-recipe Formula pkg_version is invalid or oversized',
     '"manifest_sha256" => recipe_calls.first.fetch("manifest_sha256")',
     '"resources" => selected_resources',
     'tap-recipe Formula resource selection must be sorted and unique',
@@ -3958,6 +3971,10 @@ def check_publisher(workflow)
     "const MAX_BRIDGE_PLAN_BYTES: usize = 65_536;",
     '"Formula recipe dependencies differ from the Formula\'s declared target dependencies"',
     "resources: Vec<TapRecipeResource>",
+    "pkg_version: String",
+    "pkg_version: recipe.pkg_version.clone()",
+    "validate_tap_recipe_pkg_version(&recipe.version, &recipe.pkg_version)?",
+    '"WASM_POSIX_DEP_PKG_VERSION"',
     "resources: recipe.resources.clone()",
     "MAX_TAP_RECIPE_RESOURCES",
     "tap recipe resources must be sorted by unique name",
@@ -5342,6 +5359,7 @@ def check_publisher(workflow)
     'homebrew_patched_launcher_verify_formula_test_runtime',
     'homebrew_patched_launcher_seal_target_dependencies',
     '"$jq_bin" -cSjn',
+    'pkg_version: $a.tap_recipe.pkg_version',
     '"$sudo_bin" -n -- /usr/bin/tee "$config" >/dev/null',
     '"--property=InaccessiblePaths=$tap_recipe_path"',
     "--property=KillMode=control-group", "--property=SendSIGKILL=yes",
