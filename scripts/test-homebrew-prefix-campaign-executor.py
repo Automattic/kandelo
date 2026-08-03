@@ -1294,6 +1294,130 @@ def rewrite_handoff_release(
 
 
 class PrefixCampaignExecutorTests(unittest.TestCase):
+    def test_host_tools_reuse_an_active_dev_shell(self) -> None:
+        with mock.patch.dict(
+            EXECUTOR.os.environ,
+            {"KANDELO_DEV_SHELL_TOOL_PATH": "/declared/tools"},
+        ):
+            self.assertEqual(
+                EXECUTOR.dev_shell_command("rustc", "-vV"),
+                ["rustc", "-vV"],
+            )
+
+    def test_rustc_host_target_is_derived_once(self) -> None:
+        EXECUTOR.rustc_host_target.cache_clear()
+        self.addCleanup(EXECUTOR.rustc_host_target.cache_clear)
+        completed = subprocess.CompletedProcess(
+            [],
+            0,
+            stdout=(
+                b"rustc 1.97.0-nightly\n"
+                b"host: x86_64-unknown-linux-gnu\n"
+            ),
+            stderr=b"",
+        )
+        with mock.patch.object(
+            EXECUTOR.subprocess,
+            "run",
+            return_value=completed,
+        ) as runner:
+            self.assertEqual(
+                EXECUTOR.rustc_host_target(),
+                "x86_64-unknown-linux-gnu",
+            )
+            self.assertEqual(
+                EXECUTOR.rustc_host_target(),
+                "x86_64-unknown-linux-gnu",
+            )
+        runner.assert_called_once()
+
+    def test_closed_selection_xtasks_explicitly_target_the_host(
+        self,
+    ) -> None:
+        root = pathlib.Path(
+            tempfile.mkdtemp(prefix="closed-selection-xtask-test-")
+        )
+        self.addCleanup(shutil.rmtree, root)
+        tap_root = root / "tap"
+        tap_root.mkdir()
+        sidecar_input = root / "sidecars.json"
+        sidecar_input.write_text("{}\n")
+        completed = subprocess.CompletedProcess(
+            [],
+            0,
+            stdout=b"",
+            stderr=b"",
+        )
+        host_target = "x86_64-unknown-linux-gnu"
+        with mock.patch.object(
+            EXECUTOR,
+            "rustc_host_target",
+            return_value=host_target,
+        ), mock.patch.object(
+            EXECUTOR.subprocess,
+            "run",
+            return_value=completed,
+        ) as runner:
+            EXECUTOR.default_sidecar_generator(
+                tap_root=tap_root,
+                input_path=sidecar_input,
+                prefix_campaign_layout_sha256="a" * 64,
+            )
+            EXECUTOR.default_tap_validator(
+                tap_root=tap_root,
+                prefix_campaign_layout_sha256="a" * 64,
+            )
+
+        self.assertEqual(runner.call_count, 2)
+        for call in runner.call_args_list:
+            command = call.args[0]
+            self.assertEqual(
+                command[command.index("--target") + 1],
+                host_target,
+            )
+            self.assertLess(
+                command.index("--target"),
+                command.index("--quiet"),
+            )
+
+    def test_real_host_xtask_escapes_the_default_wasm_target(
+        self,
+    ) -> None:
+        EXECUTOR.rustc_host_target.cache_clear()
+        self.addCleanup(EXECUTOR.rustc_host_target.cache_clear)
+        root = pathlib.Path(
+            tempfile.mkdtemp(prefix="host-xtask-executable-test-")
+        )
+        self.addCleanup(shutil.rmtree, root)
+        matrix = root / "empty-matrix.json"
+        matrix.write_text("[]\n")
+        environment = os.environ.copy()
+        environment.pop("CARGO_BUILD_TARGET", None)
+        command = EXECUTOR.host_xtask_command(
+            "sort-package-matrix",
+            "--matrix",
+            str(matrix),
+        )
+        result = subprocess.run(
+            command,
+            cwd=ROOT,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=environment,
+            timeout=1800,
+        )
+        self.assertEqual(
+            result.returncode,
+            0,
+            result.stderr.decode("utf-8", errors="replace")[-4096:],
+        )
+        self.assertEqual(
+            result.stdout.decode("utf-8").splitlines()[-1],
+            "[]",
+        )
+
     def test_publisher_workflow_authenticates_each_metadata_read(
         self,
     ) -> None:
@@ -2954,6 +3078,19 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
     ) -> None:
         fixture = Fixture(multi_arch=True)
         self.addCleanup(fixture.close)
+        (fixture.source / "Aliases").mkdir()
+        os.symlink(
+            "../Formula/alpha.rb", fixture.source / "Aliases/alpha"
+        )
+        os.symlink(
+            "../Formula/beta.rb", fixture.source / "Aliases/beta"
+        )
+        fixture.campaign["authority"]["source_materialization"][
+            "tree_git_oid"
+        ] = EXECUTOR.filesystem_git_tree_oid(
+            fixture.source, "fixture source with aliases"
+        )
+        write_json(fixture.campaign_path, fixture.campaign)
         alpha = fixture.root / "selection-alpha"
         fixture.derive(
             "alpha",
@@ -2992,6 +3129,14 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
         )
         self.assertFalse(
             (output / "tap/Formula/beta.rb").exists()
+        )
+        self.assertTrue((output / "tap/Aliases/alpha").is_symlink())
+        self.assertEqual(
+            os.readlink(output / "tap/Aliases/alpha"),
+            "../Formula/alpha.rb",
+        )
+        self.assertFalse(
+            (output / "tap/Aliases/beta").exists()
         )
         self.assertFalse(
             (
@@ -3038,6 +3183,9 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
         executable.parent.mkdir()
         executable.write_text("#!/bin/sh\nexit 0\n")
         executable.chmod(0o755)
+        alias = selection / "tap/Aliases/alpha"
+        alias.parent.mkdir()
+        os.symlink("../Formula/alpha.rb", alias)
         selection_value = json.loads(
             (selection / "selection.json").read_text()
         )
@@ -3079,6 +3227,9 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
         )
         self.assertEqual(observed_manifest, manifest)
         inventory = descriptor["tap_archive"]["inventory"]
+        self.assertEqual(
+            descriptor["tap_archive"]["format"], "zip-stored-v2"
+        )
         self.assertIn(
             ".github/workflows/selection.yml",
             {record["path"] for record in inventory},
@@ -3089,6 +3240,13 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             if record["path"] == "scripts/selection-proof"
         )
         self.assertEqual(executable_record["mode"], "100755")
+        alias_record = next(
+            record
+            for record in inventory
+            if record["path"] == "Aliases/alpha"
+        )
+        self.assertEqual(alias_record["mode"], "120000")
+        self.assertEqual(alias_record["target"], "../Formula/alpha.rb")
 
         snapshot = fixture.root / "selection-release-snapshot"
         EXECUTOR.snapshot_selection_release(
@@ -3125,6 +3283,11 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             EXECUTOR.filesystem_git_tree_oid(
                 output / "tap", "downloaded selected tap"
             ),
+        )
+        self.assertTrue((output / "tap/Aliases/alpha").is_symlink())
+        self.assertEqual(
+            os.readlink(output / "tap/Aliases/alpha"),
+            "../Formula/alpha.rb",
         )
         receipt_value = json.loads(receipt.read_text())
         self.assertEqual(
@@ -3283,17 +3446,82 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             tap_validator=fixture.validate_tap,
         )
 
-        os.symlink("Formula/alpha.rb", selection / "tap/unsafe-link")
-        unsafe_output = fixture.root / "unsafe-selection-release"
-        with self.assertRaisesRegex(
-            EXECUTOR.ExecutorError,
-            "prepared Git tree|symlink or special file",
-        ):
-            EXECUTOR.prepare_selection_release(
-                selection_root=selection, output=unsafe_output
+        def add_link(tap: pathlib.Path, target: str) -> None:
+            (tap / "Aliases").mkdir(exist_ok=True)
+            os.symlink(target, tap / "Aliases/unsafe")
+
+        def add_chain(tap: pathlib.Path) -> None:
+            (tap / "Aliases").mkdir(exist_ok=True)
+            os.symlink(
+                "../Formula/alpha.rb", tap / "Aliases/first"
             )
-        self.assertFalse(unsafe_output.exists())
-        (selection / "tap/unsafe-link").unlink()
+            os.symlink("first", tap / "Aliases/unsafe")
+
+        def add_cycle(tap: pathlib.Path) -> None:
+            (tap / "Aliases").mkdir(exist_ok=True)
+            os.symlink("second", tap / "Aliases/first")
+            os.symlink("first", tap / "Aliases/second")
+
+        def add_special_target(tap: pathlib.Path) -> None:
+            (tap / "Aliases").mkdir(exist_ok=True)
+            (tap / "targets").mkdir()
+            os.mkfifo(tap / "targets/fifo")
+            os.symlink("../targets/fifo", tap / "Aliases/unsafe")
+
+        unsafe_cases = (
+            ("absolute", lambda tap: add_link(tap, "/etc/passwd")),
+            ("escape", lambda tap: add_link(tap, "../../outside")),
+            (
+                "control",
+                lambda tap: add_link(tap, "../Formula/alpha.rb\n"),
+            ),
+            (
+                "non-ASCII",
+                lambda tap: add_link(tap, "../Formula/álpha.rb"),
+            ),
+            (
+                "dangling",
+                lambda tap: add_link(tap, "../Formula/missing.rb"),
+            ),
+            ("directory", lambda tap: add_link(tap, "../Formula")),
+            ("chain", add_chain),
+            ("cycle", add_cycle),
+        )
+        for label, configure in unsafe_cases:
+            with self.subTest(unsafe_link=label):
+                candidate = fixture.root / f"unsafe-selection-{label}"
+                shutil.copytree(selection, candidate, symlinks=True)
+                configure(candidate / "tap")
+                selection_value = json.loads(
+                    (candidate / "selection.json").read_text()
+                )
+                selection_value["tap"]["prepared_tree_git_oid"] = (
+                    EXECUTOR.filesystem_git_tree_oid(
+                        candidate / "tap", f"unsafe {label} tap"
+                    )
+                )
+                write_json(candidate / "selection.json", selection_value)
+                unsafe_output = (
+                    fixture.root / f"unsafe-selection-release-{label}"
+                )
+                with self.assertRaisesRegex(
+                    EXECUTOR.ExecutorError,
+                    "relative target|escapes|dangling|directory|another "
+                    "link|special file|regular file",
+                ):
+                    EXECUTOR.prepare_selection_release(
+                        selection_root=candidate,
+                        output=unsafe_output,
+                    )
+                self.assertFalse(unsafe_output.exists())
+
+        special_tap = fixture.root / "unsafe-selection-special-tap"
+        shutil.copytree(selection / "tap", special_tap, symlinks=True)
+        add_special_target(special_tap)
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError, "special file|regular file"
+        ):
+            EXECUTOR.selection_tree_inventory(special_tap)
 
         prepared = fixture.root / "duplicate-selection-release"
         EXECUTOR.prepare_selection_release(
@@ -3306,6 +3534,25 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             prepared / "assets" / EXECUTOR.SELECTION_ARCHIVE_ASSET
         )
         descriptor = json.loads(descriptor_path.read_text())
+        legacy_descriptor = json.loads(descriptor_path.read_text())
+        legacy_descriptor["tap_archive"]["format"] = "zip-stored-v1"
+        legacy_payload = EXECUTOR.pretty_json(legacy_descriptor)
+        EXECUTOR.validate_selection_descriptor(
+            legacy_descriptor, legacy_payload
+        )
+        legacy_tap = fixture.root / "legacy-selection-tap"
+        EXECUTOR.extract_selection_archive(
+            archive_path,
+            legacy_tap,
+            legacy_descriptor["tap_archive"]["inventory"],
+            legacy_descriptor["tap_archive"]["format"],
+        )
+        self.assertEqual(
+            EXECUTOR.filesystem_git_tree_oid(
+                legacy_tap, "legacy selection readback"
+            ),
+            legacy_descriptor["tap_archive"]["tree_git_oid"],
+        )
         first_record = descriptor["tap_archive"]["inventory"][0]
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)

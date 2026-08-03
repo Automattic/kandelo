@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import hashlib
 import json
 import os
@@ -33,6 +34,7 @@ REPOSITORY = re.compile(
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+,-]{0,255}$")
+RUST_TARGET = re.compile(r"^[a-z0-9_][a-z0-9_.-]{2,127}$")
 CAMPAIGN_TAG = re.compile(
     r"^homebrew-prefix-campaign-sha256-([0-9a-f]{64})$"
 )
@@ -113,6 +115,12 @@ FINAL_TAP_COMMIT_MESSAGE = (
 )
 SELECTION_DESCRIPTOR_ASSET = "closed-selection.json"
 SELECTION_ARCHIVE_ASSET = "closed-selection.zip"
+SELECTION_ARCHIVE_WRITE_FORMAT = "zip-stored-v2"
+SELECTION_ARCHIVE_READ_FORMATS = (
+    "zip-stored-v1",
+    SELECTION_ARCHIVE_WRITE_FORMAT,
+)
+MAX_SELECTION_SYMLINK_BYTES = 1024
 
 
 class ExecutorError(RuntimeError):
@@ -121,6 +129,72 @@ class ExecutorError(RuntimeError):
 
 def fail(message: str) -> NoReturn:
     raise ExecutorError(message)
+
+
+def dev_shell_command(*arguments: str) -> list[str]:
+    # WHY: repository tests may already be running inside dev-shell.sh. That
+    # shell deliberately removes the Nix CLI from PATH, so nesting the wrapper
+    # would fail even though every declared tool is already present.
+    if os.environ.get("KANDELO_DEV_SHELL_TOOL_PATH"):
+        return list(arguments)
+    return [
+        "bash",
+        str(ROOT / "scripts/dev-shell.sh"),
+        *arguments,
+    ]
+
+
+@functools.cache
+def rustc_host_target() -> str:
+    command = dev_shell_command("rustc", "-vV")
+    try:
+        result = subprocess.run(
+            command,
+            cwd=ROOT,
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=600,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        fail(f"cannot derive the Rust host target: {error}")
+    if result.returncode != 0:
+        detail = result.stderr.decode(
+            "utf-8", errors="replace"
+        )[-4096:]
+        fail(f"cannot derive the Rust host target: {detail}")
+    host_lines = [
+        line.removeprefix("host: ")
+        for line in result.stdout.decode(
+            "utf-8", errors="replace"
+        ).splitlines()
+        if line.startswith("host: ")
+    ]
+    if (
+        len(host_lines) != 1
+        or RUST_TARGET.fullmatch(host_lines[0]) is None
+    ):
+        fail("rustc did not report one valid host target")
+    return host_lines[0]
+
+
+def host_xtask_command(*arguments: str) -> list[str]:
+    # WHY: Kandelo's Cargo default is the Wasm kernel target. These xtasks
+    # execute on the runner, so leaving the target implicit tries to compile
+    # the host-side publisher for Wasm before it can inspect a selection.
+    return dev_shell_command(
+        "cargo",
+        "run",
+        "--release",
+        "-p",
+        "xtask",
+        "--target",
+        rustc_host_target(),
+        "--quiet",
+        "--",
+        *arguments,
+    )
 
 
 def duplicate_rejecting_object(
@@ -2949,6 +3023,53 @@ def restrict_formulae(
         f"{name}.rb"
         for name in selected_names
     }
+    alias_path = tap_root / "Aliases"
+    if alias_path.exists() or alias_path.is_symlink():
+        alias_root = real_directory(
+            alias_path, "candidate tap Alias directory"
+        )
+        for path in sorted(
+            alias_root.iterdir(), key=lambda item: item.name
+        ):
+            relative = selection_relative_path(
+                path.relative_to(tap_root)
+            )
+            metadata = path.lstat()
+            if not stat.S_ISLNK(metadata.st_mode):
+                fail("candidate tap contains an unsafe Alias entry")
+            _target, normalized = selection_symlink_target(
+                relative,
+                os.readlink(path),
+                f"candidate tap Alias {relative} target",
+            )
+            parts = normalized.split("/")
+            if (
+                len(parts) != 2
+                or parts[0] != "Formula"
+                or not parts[1].endswith(".rb")
+            ):
+                fail("candidate tap Alias does not name one Formula")
+            formula = require_string(
+                parts[1].removesuffix(".rb"),
+                f"candidate tap Alias {relative} Formula",
+                FORMULA,
+            )
+            target_path = tap_root / normalized
+            try:
+                target_metadata = target_path.lstat()
+                target_path.resolve(strict=True).relative_to(tap_root)
+            except (OSError, ValueError):
+                fail("candidate tap Alias target escapes the source tap")
+            if not stat.S_ISREG(target_metadata.st_mode):
+                fail(
+                    "candidate tap Alias must target one regular Formula"
+                )
+            # WHY: a closed selection intentionally hides unselected Formulae.
+            # Keeping their aliases would reveal an unavailable package or
+            # leave a dangling link in the independently consumable tap.
+            if formula not in selected_names:
+                path.unlink()
+
     for path in formula_root.glob("*.rb"):
         if path.name in selected_paths:
             continue
@@ -2963,16 +3084,7 @@ def default_sidecar_generator(
     input_path: pathlib.Path,
     prefix_campaign_layout_sha256: str,
 ) -> None:
-    command = [
-        "bash",
-        str(ROOT / "scripts/dev-shell.sh"),
-        "cargo",
-        "run",
-        "--release",
-        "-p",
-        "xtask",
-        "--quiet",
-        "--",
+    command = host_xtask_command(
         "homebrew-sidecars",
         "--tap-root",
         str(tap_root),
@@ -2984,7 +3096,7 @@ def default_sidecar_generator(
             "prefix campaign layout SHA-256",
             SHA256,
         ),
-    ]
+    )
     previous = tap_root / "Kandelo/metadata.json"
     if previous.is_symlink() or (
         previous.exists() and not previous.is_file()
@@ -3016,16 +3128,7 @@ def default_tap_validator(
     tap_root: pathlib.Path,
     prefix_campaign_layout_sha256: str,
 ) -> None:
-    command = [
-        "bash",
-        str(ROOT / "scripts/dev-shell.sh"),
-        "cargo",
-        "run",
-        "--release",
-        "-p",
-        "xtask",
-        "--quiet",
-        "--",
+    command = host_xtask_command(
         "homebrew-validate",
         "--tap-root",
         str(tap_root),
@@ -3035,7 +3138,7 @@ def default_tap_validator(
             "prefix campaign layout SHA-256",
             SHA256,
         ),
-    ]
+    )
     try:
         result = subprocess.run(
             command,
@@ -5059,7 +5162,7 @@ def load_selection_candidate(
     return validate_selection_manifest(value, payload, tap_root), payload, tap_root
 
 
-def selection_relative_path(path: pathlib.Path) -> str:
+def selection_relative_path(path: pathlib.PurePath) -> str:
     value = path.as_posix()
     if (
         not value
@@ -5073,6 +5176,154 @@ def selection_relative_path(path: pathlib.Path) -> str:
     if any(part in ("", ".", "..", ".git") for part in parts):
         fail("closed selection tap contains an unsafe path")
     return value
+
+
+def selection_symlink_target(
+    link_path: str,
+    value: Any,
+    label: str,
+) -> tuple[str, str]:
+    target = require_string(value, label)
+    if (
+        target.startswith("/")
+        or "\\" in target
+        or any(
+            ord(character) < 0x20 or ord(character) > 0x7E
+            for character in target
+        )
+    ):
+        fail(f"{label} is not a safe relative target")
+    payload = target.encode("ascii")
+    if len(payload) > MAX_SELECTION_SYMLINK_BYTES:
+        fail(f"{label} is not a safe relative target")
+
+    parts = link_path.split("/")[:-1]
+    for part in target.split("/"):
+        if not part:
+            fail(f"{label} is not a safe relative target")
+        if part == ".":
+            continue
+        if part == "..":
+            if not parts:
+                fail(f"{label} escapes the selected tap")
+            parts.pop()
+        else:
+            parts.append(part)
+    if not parts:
+        fail(f"{label} does not name a selected file")
+    normalized = selection_relative_path(
+        pathlib.PurePosixPath(*parts)
+    )
+    return target, normalized
+
+
+def validate_selection_inventory(
+    inventory: Any,
+    archive_format: str,
+) -> list[dict[str, Any]]:
+    if archive_format not in SELECTION_ARCHIVE_READ_FORMATS:
+        fail("closed selection archive format is unsupported")
+    if (
+        not isinstance(inventory, list)
+        or not inventory
+        or len(inventory) > MAX_SELECTION_FILES
+    ):
+        fail("closed selection archive inventory is invalid")
+
+    checked: list[dict[str, Any]] = []
+    link_targets: dict[str, str] = {}
+    prior = ""
+    total = 0
+    for position, raw in enumerate(inventory):
+        if not isinstance(raw, dict):
+            fail(
+                f"closed selection archive file #{position} is invalid"
+            )
+        mode_value = raw.get("mode")
+        expected_keys = {"bytes", "mode", "path", "sha256"}
+        if (
+            archive_format == SELECTION_ARCHIVE_WRITE_FORMAT
+            and mode_value == "120000"
+        ):
+            expected_keys.add("target")
+        record = exact_keys(
+            raw,
+            expected_keys,
+            f"closed selection archive file #{position}",
+        )
+        relative = selection_relative_path(
+            pathlib.PurePosixPath(
+                require_string(
+                    record["path"],
+                    f"closed selection archive file #{position} path",
+                )
+            )
+        )
+        if relative <= prior:
+            fail("closed selection archive paths must be unique and sorted")
+        prior = relative
+        mode = require_string(
+            record["mode"],
+            f"closed selection archive file {relative} mode",
+        )
+        allowed_modes = {"100644", "100755"}
+        if archive_format == SELECTION_ARCHIVE_WRITE_FORMAT:
+            allowed_modes.add("120000")
+        if mode not in allowed_modes:
+            fail("closed selection archive file mode is unsupported")
+        byte_count = require_int(
+            record["bytes"],
+            f"closed selection archive file {relative} bytes",
+            0,
+            MAX_ASSET_BYTES,
+        )
+        total += byte_count
+        if total > MAX_SELECTION_TREE_BYTES:
+            fail("closed selection archive inventory exceeds its byte bound")
+        digest = require_string(
+            record["sha256"],
+            f"closed selection archive file {relative} SHA-256",
+            SHA256,
+        )
+        if mode == "120000":
+            target, normalized = selection_symlink_target(
+                relative,
+                record["target"],
+                f"closed selection archive link {relative} target",
+            )
+            target_payload = target.encode("utf-8")
+            if (
+                byte_count != len(target_payload)
+                or digest != sha256_bytes(target_payload)
+            ):
+                fail(
+                    "closed selection archive link target evidence differs"
+                )
+            link_targets[relative] = normalized
+        checked.append(record)
+
+    by_path = {record["path"]: record for record in checked}
+    for relative in by_path:
+        parts = relative.split("/")
+        for length in range(1, len(parts)):
+            if "/".join(parts[:length]) in by_path:
+                fail("closed selection archive paths overlap")
+    for relative, target in link_targets.items():
+        target_record = by_path.get(target)
+        if target_record is None:
+            fail(
+                f"closed selection archive link {relative} target is "
+                "dangling or a directory"
+            )
+        # WHY: allowing one alias to point through another would make archive
+        # extraction order part of the security model. Homebrew aliases point
+        # directly to Formula files, so chains and cycles are unnecessary.
+        if target_record["mode"] == "120000":
+            fail(
+                f"closed selection archive link {relative} target is "
+                "another link"
+            )
+    return checked
 
 
 def selection_tree_inventory(
@@ -5089,19 +5340,14 @@ def selection_tree_inventory(
         metadata = child.lstat()
         if stat.S_ISDIR(metadata.st_mode) and not child.is_symlink():
             continue
-        if not stat.S_ISREG(metadata.st_mode) or child.is_symlink():
-            fail("closed selection tap contains a symlink or special file")
-        byte_count = require_int(
-            metadata.st_size,
-            f"closed selection tap file {relative} size",
-            0,
-            MAX_ASSET_BYTES,
-        )
-        total += byte_count
-        if total > MAX_SELECTION_TREE_BYTES:
-            fail("closed selection tap exceeds its total byte bound")
-        inventory.append(
-            {
+        if stat.S_ISREG(metadata.st_mode) and not child.is_symlink():
+            byte_count = require_int(
+                metadata.st_size,
+                f"closed selection tap file {relative} size",
+                0,
+                MAX_ASSET_BYTES,
+            )
+            record = {
                 "bytes": byte_count,
                 "mode": (
                     "100755"
@@ -5112,12 +5358,54 @@ def selection_tree_inventory(
                 "path": relative,
                 "sha256": sha256_file(child),
             }
-        )
+        elif stat.S_ISLNK(metadata.st_mode):
+            target, _normalized = selection_symlink_target(
+                relative,
+                os.readlink(child),
+                f"closed selection tap link {relative} target",
+            )
+            payload = target.encode("utf-8")
+            byte_count = len(payload)
+            record = {
+                "bytes": byte_count,
+                "mode": "120000",
+                "path": relative,
+                "sha256": sha256_bytes(payload),
+                "target": target,
+            }
+        else:
+            fail("closed selection tap contains a special file")
+        total += byte_count
+        if total > MAX_SELECTION_TREE_BYTES:
+            fail("closed selection tap exceeds its total byte bound")
+        inventory.append(record)
         if len(inventory) > MAX_SELECTION_FILES:
             fail("closed selection tap has too many files")
     if not inventory:
         fail("closed selection tap is empty")
-    return inventory
+    checked = validate_selection_inventory(
+        inventory, SELECTION_ARCHIVE_WRITE_FORMAT
+    )
+    for record in checked:
+        if record["mode"] != "120000":
+            continue
+        _target, normalized = selection_symlink_target(
+            record["path"],
+            record["target"],
+            f"closed selection tap link {record['path']} target",
+        )
+        target_path = tap_root / normalized
+        try:
+            target_metadata = target_path.lstat()
+            resolved_target = target_path.resolve(strict=True)
+            resolved_target.relative_to(tap_root)
+        except (OSError, ValueError):
+            fail("closed selection tap link escapes its prepared tree")
+        if not stat.S_ISREG(target_metadata.st_mode):
+            fail(
+                "closed selection tap link must target one regular file"
+            )
+    return checked
 
 
 def write_selection_archive(
@@ -5145,13 +5433,19 @@ def write_selection_archive(
             info.compress_type = zipfile.ZIP_STORED
             info.external_attr = int(record["mode"], 8) << 16
             info.flag_bits |= 0x800
-            archive.writestr(info, source.read_bytes())
+            payload = (
+                record["target"].encode("utf-8")
+                if record["mode"] == "120000"
+                else source.read_bytes()
+            )
+            archive.writestr(info, payload)
 
 
 def extract_selection_archive(
     archive_path: pathlib.Path,
     output: pathlib.Path,
     inventory: list[dict[str, Any]],
+    archive_format: str,
 ) -> pathlib.Path:
     regular_file(
         archive_path,
@@ -5161,6 +5455,7 @@ def extract_selection_archive(
     output = validate_new_output(
         output, "closed selection extracted tap", (archive_path,)
     )
+    inventory = validate_selection_inventory(inventory, archive_format)
     expected = {f"tap/{record['path']}": record for record in inventory}
     if len(expected) != len(inventory):
         fail("closed selection tap inventory repeats a path")
@@ -5170,6 +5465,7 @@ def extract_selection_archive(
     try:
         result = temporary / "tap"
         result.mkdir()
+        pending_links: list[tuple[pathlib.Path, str, str]] = []
         try:
             with zipfile.ZipFile(archive_path, mode="r") as archive:
                 members = archive.infolist()
@@ -5205,28 +5501,83 @@ def extract_selection_archive(
                     )
                     digest = hashlib.sha256()
                     copied = 0
-                    with archive.open(member, mode="r") as source, destination.open(
-                        "xb"
-                    ) as target:
-                        while chunk := source.read(1024 * 1024):
-                            copied += len(chunk)
-                            if copied > record["bytes"]:
-                                fail(
-                                    "closed selection archive member "
-                                    "exceeds its bound"
-                                )
-                            digest.update(chunk)
-                            target.write(chunk)
+                    payload = bytearray()
+                    target_handle = (
+                        None
+                        if record["mode"] == "120000"
+                        else destination.open("xb")
+                    )
+                    try:
+                        with archive.open(member, mode="r") as source:
+                            while chunk := source.read(1024 * 1024):
+                                copied += len(chunk)
+                                if copied > record["bytes"]:
+                                    fail(
+                                        "closed selection archive member "
+                                        "exceeds its bound"
+                                    )
+                                digest.update(chunk)
+                                if target_handle is None:
+                                    payload.extend(chunk)
+                                else:
+                                    target_handle.write(chunk)
+                    finally:
+                        if target_handle is not None:
+                            target_handle.close()
                     if (
                         copied != record["bytes"]
                         or digest.hexdigest() != record["sha256"]
                     ):
                         fail("closed selection archive member bytes differ")
-                    destination.chmod(int(record["mode"], 8) & 0o777)
+                    if record["mode"] == "120000":
+                        try:
+                            target_value = bytes(payload).decode("utf-8")
+                        except UnicodeDecodeError:
+                            fail(
+                                "closed selection archive link target is "
+                                "not UTF-8"
+                            )
+                        if target_value != record["target"]:
+                            fail(
+                                "closed selection archive link target "
+                                "differs"
+                            )
+                        _raw, normalized = selection_symlink_target(
+                            relative,
+                            target_value,
+                            "closed selection archive link target",
+                        )
+                        pending_links.append(
+                            (destination, target_value, normalized)
+                        )
+                    else:
+                        destination.chmod(
+                            int(record["mode"], 8) & 0o777
+                        )
         except (OSError, zipfile.BadZipFile, RuntimeError) as error:
             fail(f"cannot extract closed selection archive: {error}")
         if seen != set(expected):
             fail("closed selection archive inventory is incomplete")
+        # WHY: regular files are complete before any alias is created. A
+        # malicious archive order therefore cannot redirect a later write
+        # through a symlink, even if future callers stop sorting members.
+        for destination, target, normalized in pending_links:
+            target_path = result / normalized
+            try:
+                target_metadata = target_path.lstat()
+            except OSError:
+                fail("closed selection archive link target is unavailable")
+            if not stat.S_ISREG(target_metadata.st_mode):
+                fail(
+                    "closed selection archive link target is not a "
+                    "regular file"
+                )
+            destination = private_destination(
+                result,
+                destination.relative_to(result).as_posix(),
+                "closed selection archive link",
+            )
+            os.symlink(target, destination)
         os.rename(result, output)
     finally:
         shutil.rmtree(temporary, ignore_errors=True)
@@ -5285,7 +5636,10 @@ def validate_selection_descriptor(
     )
     if archive["asset"] != SELECTION_ARCHIVE_ASSET:
         fail("closed selection archive asset is not canonical")
-    if archive["format"] != "zip-stored-v1":
+    archive_format = require_string(
+        archive["format"], "closed selection archive format"
+    )
+    if archive_format not in SELECTION_ARCHIVE_READ_FORMATS:
         fail("closed selection archive format is unsupported")
     require_int(
         archive["bytes"],
@@ -5303,54 +5657,10 @@ def validate_selection_descriptor(
         "closed selection archive Git tree",
         COMMIT,
     )
-    inventory = archive["inventory"]
-    if (
-        not isinstance(inventory, list)
-        or not inventory
-        or len(inventory) > MAX_SELECTION_FILES
-    ):
-        fail("closed selection archive inventory is invalid")
-    checked: list[dict[str, Any]] = []
-    prior = ""
-    total = 0
-    for position, raw in enumerate(inventory):
-        record = exact_keys(
-            raw,
-            {"bytes", "mode", "path", "sha256"},
-            f"closed selection archive file #{position}",
-        )
-        relative = selection_relative_path(
-            pathlib.Path(
-                require_string(
-                    record["path"],
-                    f"closed selection archive file #{position} path",
-                )
-            )
-        )
-        if relative <= prior:
-            fail("closed selection archive paths must be unique and sorted")
-        prior = relative
-        mode = require_string(
-            record["mode"],
-            f"closed selection archive file {relative} mode",
-        )
-        if mode not in ("100644", "100755"):
-            fail("closed selection archive file mode is unsupported")
-        byte_count = require_int(
-            record["bytes"],
-            f"closed selection archive file {relative} bytes",
-            0,
-            MAX_ASSET_BYTES,
-        )
-        total += byte_count
-        if total > MAX_SELECTION_TREE_BYTES:
-            fail("closed selection archive inventory exceeds its byte bound")
-        require_string(
-            record["sha256"],
-            f"closed selection archive file {relative} SHA-256",
-            SHA256,
-        )
-        checked.append(record)
+    checked = validate_selection_inventory(
+        archive["inventory"], archive_format
+    )
+    total = sum(record["bytes"] for record in checked)
     if (
         archive["file_count"] != len(checked)
         or archive["uncompressed_bytes"] != total
@@ -5449,7 +5759,7 @@ def prepare_selection_release(
                 "asset": SELECTION_ARCHIVE_ASSET,
                 "bytes": archive_bytes,
                 "file_count": len(inventory),
-                "format": "zip-stored-v1",
+                "format": SELECTION_ARCHIVE_WRITE_FORMAT,
                 "inventory": inventory,
                 "sha256": archive_sha256,
                 "tree_git_oid": selection["tap"][
@@ -5466,7 +5776,12 @@ def prepare_selection_release(
         validate_selection_descriptor(descriptor, descriptor_payload)
 
         extracted = temporary / "self-check-tap"
-        extract_selection_archive(archive_path, extracted, inventory)
+        extract_selection_archive(
+            archive_path,
+            extracted,
+            inventory,
+            SELECTION_ARCHIVE_WRITE_FORMAT,
+        )
         if filesystem_git_tree_oid(extracted, "archived closed selection tap") != (
             selection["tap"]["prepared_tree_git_oid"]
         ):
@@ -5578,6 +5893,7 @@ def load_prepared_selection_release(
             archive_path,
             selection_root / "tap",
             archive["inventory"],
+            archive["format"],
         )
         selection, selection_payload, _tap_root = load_selection_candidate(
             selection_root
@@ -5724,6 +6040,7 @@ def fetch_selection_release(
             archive_path,
             result / "tap",
             archive_record["inventory"],
+            archive_record["format"],
         )
         observed, selection_payload, _tap_root = load_selection_candidate(
             result
