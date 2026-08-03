@@ -161,7 +161,11 @@ def fail(message: str) -> NoReturn:
     raise LayoutError(message)
 
 
-def run_trusted_ruby(script: pathlib.Path, *arguments: str) -> subprocess.CompletedProcess[bytes]:
+def run_trusted_ruby(
+    script: pathlib.Path,
+    *arguments: str,
+    resolved_taps_authority: str | None = None,
+) -> subprocess.CompletedProcess[bytes]:
     ruby = shutil.which("ruby")
     if ruby is None:
         fail("trusted Ruby parser is unavailable")
@@ -169,18 +173,28 @@ def run_trusted_ruby(script: pathlib.Path, *arguments: str) -> subprocess.Comple
     # without executing them. Ruby and Bundler startup variables can load
     # caller-owned code first, so match Kandelo's other trusted Ruby oracles:
     # a fixed minimal environment plus interpreter startup restrictions.
+    trusted_environment = {
+        "HOME": "/nonexistent",
+        "LANG": "C.UTF-8",
+        "LC_ALL": "C.UTF-8",
+        "PATH": "/usr/bin:/bin",
+    }
+    if resolved_taps_authority is not None:
+        if not resolved_taps_authority or "\0" in resolved_taps_authority:
+            fail("resolved tap authority has an invalid path")
+        # WHY: the runtime-closure parser needs this one caller-selected file
+        # to admit exact cross-tap Formula dependencies. Copying os.environ
+        # would also restore Ruby startup hooks and unrelated caller authority.
+        trusted_environment["KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"] = (
+            resolved_taps_authority
+        )
     return subprocess.run(
         [ruby, "--disable=gems,rubyopt", str(script), *arguments],
         check=False,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        env={
-            "HOME": "/nonexistent",
-            "LANG": "C.UTF-8",
-            "LC_ALL": "C.UTF-8",
-            "PATH": "/usr/bin:/bin",
-        },
+        env=trusted_environment,
         timeout=120,
     )
 
@@ -459,6 +473,12 @@ def validate_formula_source_contract(
         tap_name,
         formula,
         "--tier2-bridge-json",
+        # WHY: select only the resolved-tap authority that the workflow bound
+        # explicitly. The trusted Ruby process must not inherit the rest of
+        # the Python caller's environment.
+        resolved_taps_authority=os.environ.get(
+            "KANDELO_HOMEBREW_RESOLVED_TAPS_FILE"
+        ) or None,
     )
     if result.returncode != 0:
         detail = result.stderr.decode("utf-8", errors="replace")[:4096]

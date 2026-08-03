@@ -411,6 +411,93 @@ BUNDLE_PATH="$TMP_ROOT/poison-bundle" \
 }
 cmp "$TMP_ROOT/source-closure-baseline.json" \
   "$TMP_ROOT/source-closure-poisoned-environment.json"
+
+# A cross-tap Formula needs one additional authority file. The OCI wrapper
+# must pass that file to the static Ruby parser without restoring any of the
+# caller's Ruby startup environment.
+cross_primary="$TMP_ROOT/source-closure-cross-primary"
+cross_dependency="$TMP_ROOT/source-closure-cross-dependency"
+cp -a "$source_closure_root" "$cross_primary"
+cp -a "$source_closure_root" "$cross_dependency"
+python3 - \
+  "$cross_primary/Formula/hello.rb" \
+  "$cross_dependency/Formula/hello.rb" <<'PY'
+import pathlib
+import sys
+
+primary = pathlib.Path(sys.argv[1])
+primary_source = primary.read_text()
+primary_source = primary_source.replace(
+    'Tap.fetch("kandelo-dev", "tap-core")',
+    'Tap.fetch("third-party", "canary")',
+    1,
+)
+primary_source = primary_source.replace(
+    "  include KandeloFormulaSupport\n",
+    '  depends_on "kandelo-dev/tap-core/dash"\n'
+    "  include KandeloFormulaSupport\n",
+    1,
+)
+primary.write_text(primary_source)
+
+dependency = pathlib.Path(sys.argv[2])
+dependency_source = dependency.read_text()
+dependency.write_text(
+    dependency_source.replace(
+        "class Hello < Formula",
+        "class Dash < Formula",
+        1,
+    )
+)
+dependency.rename(dependency.with_name("dash.rb"))
+PY
+cross_resolved_taps="$TMP_ROOT/source-closure-cross-resolved-taps.json"
+cat >"$cross_resolved_taps" <<JSON
+{
+  "schema": 1,
+  "primary": {
+    "root": "$cross_primary",
+    "tap_commit": "1111111111111111111111111111111111111111",
+    "tap_name": "third-party/canary",
+    "tap_repository": "third-party/homebrew-canary"
+  },
+  "dependencies": [
+    {
+      "root": "$cross_dependency",
+      "tap_commit": "2222222222222222222222222222222222222222",
+      "tap_name": "kandelo-dev/tap-core",
+      "tap_repository": "kandelo-dev/homebrew-tap-core"
+    }
+  ]
+}
+JSON
+chmod 0444 "$cross_resolved_taps"
+cross_source_closure_args=(
+  source-closure
+  --tap-root "$cross_primary"
+  --kandelo-root "$REPO_ROOT"
+  --tap-repository third-party/homebrew-canary
+  --tap-name third-party/canary
+  --formula hello
+)
+expect_failure source-closure-cross-tap-without-authority \
+  "required dependency uses an undeclared tap" \
+  python3 "$TOOL" "${cross_source_closure_args[@]}" \
+    --out "$TMP_ROOT/source-closure-cross-without-authority.json"
+KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$cross_resolved_taps" \
+RUBYOPT="-r$TMP_ROOT/ruby-startup-poison.rb" \
+RUBYLIB="$TMP_ROOT" \
+GEM_HOME="$TMP_ROOT/poison-gems" \
+GEM_PATH="$TMP_ROOT/poison-gems" \
+BUNDLE_GEMFILE="$TMP_ROOT/missing-Gemfile" \
+BUNDLE_PATH="$TMP_ROOT/poison-bundle" \
+  python3 "$TOOL" "${cross_source_closure_args[@]}" \
+    --out "$TMP_ROOT/source-closure-cross-tap.json"
+[ ! -e "$ruby_poison_marker" ] || {
+  echo "Cross-tap source closure executed an ambient Ruby startup hook" >&2
+  exit 1
+}
+
 cp "$source_closure_root/Formula/hello.rb" \
   "$TMP_ROOT/source-closure-canonical-requirement.rb"
 sed -i.bak \
