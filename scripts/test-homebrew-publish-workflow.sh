@@ -7736,25 +7736,8 @@ EOF
     fail "under-lock publisher does not revalidate the Formula source closure"
 }
 
-assert_exact_source_program_projection_is_fresh() {
-  local host_target xtask_bin
-  host_target="$(rustc -vV | sed -n 's/^host: //p')"
-  xtask_bin="$REPO_ROOT/target/$host_target/release/xtask"
-  [ -n "$host_target" ] && [ -f "$xtask_bin" ] && [ ! -L "$xtask_bin" ] &&
-    [ -x "$xtask_bin" ] ||
-    fail "exact-source projection regression lacks the prebuilt host xtask"
-
-  # WHY: dev-shell.sh is a global package-toolchain input. Passing the scoped
-  # Formula checker through the workflow command argv must not edit that file
-  # or silently invalidate every committed program package cache key.
-  WASM_POSIX_DEPS_REGISTRY="$REPO_ROOT/packages/registry" \
-    "$xtask_bin" build-deps program-index-context-check \
-      --source-repo-root "$REPO_ROOT" ||
-    fail "Formula checker handoff made the exact-source program projection stale"
-}
-
 assert_formula_test_program_projection_is_current_and_bounded() {
-  local host_target xtask_bin projection selected
+  local committed host_target xtask_bin projection selected
   host_target="$(rustc -vV | sed -n 's/^host: //p')"
   xtask_bin="$REPO_ROOT/target/$host_target/release/xtask"
   [ -n "$host_target" ] && [ -f "$xtask_bin" ] && [ ! -L "$xtask_bin" ] &&
@@ -7763,9 +7746,12 @@ assert_formula_test_program_projection_is_current_and_bounded() {
 
   selected="dash,coreutils,grep,sed,rootfs"
   projection="$TMPDIR/formula-test-program-packages.json"
+  committed="$REPO_ROOT/packages/registry/program-packages.json"
   # WHY: Formula tests transport only these fetched package generations. Give
-  # the sealed runtime current identity for that bounded set instead of
-  # granting it authority over unrelated repository package policy.
+  # the sealed runtime current identity for that bounded set. Comparing only
+  # those rows and their dependency identities keeps this trust boundary
+  # source-current without making an unrelated, retiring VFS row a reason to
+  # rebuild or reject Homebrew bottles.
   WASM_POSIX_DEPS_REGISTRY="$REPO_ROOT/packages/registry" \
     "$xtask_bin" build-deps program-index-selected \
       --source-repo-root "$REPO_ROOT" \
@@ -7773,19 +7759,27 @@ assert_formula_test_program_projection_is_current_and_bounded() {
     fail "Formula checker could not generate its selected source projection"
   ruby -rjson -e '
     document = JSON.parse(File.read(ARGV.fetch(0)))
-    expected = ARGV.fetch(1).split(",").sort
+    committed = JSON.parse(File.read(ARGV.fetch(1)))
+    expected = ARGV.fetch(2).split(",").sort
     abort "selected Formula packages differ" unless
       document.fetch("packages").keys.sort == expected
     identities = document.fetch("identities")
     abort "selected Formula identity missing" unless
       expected.all? { |name| identities.key?(name) }
-  ' "$projection" "$selected" ||
-    fail "Formula checker projection is not the exact selected package set"
+    document.fetch("packages").each do |name, row|
+      abort "selected Formula program row is stale: #{name}" unless
+        committed.fetch("packages").fetch(name) == row
+    end
+    identities.each do |name, row|
+      abort "selected Formula identity row is stale: #{name}" unless
+        committed.fetch("identities").fetch(name) == row
+    end
+  ' "$projection" "$committed" "$selected" ||
+    fail "Formula checker projection is not the current selected package closure"
 }
 
 assert_canonical_formula_support_is_load_order_independent
 make_formula_runner_fixture
-assert_exact_source_program_projection_is_fresh
 assert_formula_test_program_projection_is_current_and_bounded
 assert_formula_support_test_pruning_is_bounded
 assert_local_root_spill_uses_caller_work_root

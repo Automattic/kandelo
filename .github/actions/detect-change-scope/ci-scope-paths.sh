@@ -6,7 +6,7 @@
 ci_scope_paths_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 package_archive_changed_files() {
-  local files static_matches declared_input_matches
+  local files static_matches declared_input_matches product_owned_matches
   files=$(cat)
 
   static_matches=$(printf '%s\n' "$files" | grep -E \
@@ -31,13 +31,17 @@ package_archive_changed_files() {
     || true)
 
   declared_input_matches=$(printf '%s\n' "$files" | package_declared_build_input_changed_files)
+  product_owned_matches=$(printf '%s\n' "$files" |
+    homebrew_product_owned_package_input_changed_files)
 
   # WHY: program-packages.json is generated resolver/materialization policy,
   # not a package recipe. Rebuilding every archive after refreshing only this
   # index wastes the staging matrix without changing any archive cache key.
   printf '%s\n%s\n' "$static_matches" "$declared_input_matches" |
     grep -vFx 'packages/registry/program-packages.json' |
-    sed '/^$/d' | sort -u
+    sed '/^$/d' | sort -u |
+    comm -23 - <(printf '%s\n' "$product_owned_matches" |
+      sed '/^$/d' | sort -u)
 }
 
 package_declared_build_input_changed_files() {
@@ -47,6 +51,20 @@ package_declared_build_input_changed_files() {
   [ -d packages/registry ] || return 0
 
   printf '%s\n' "$files" | python3 "$ci_scope_paths_dir/package-build-input-matches.py" packages/registry
+}
+
+homebrew_product_owned_package_input_changed_files() {
+  # WHY: this executor used to belong only to the conventional shell archive.
+  # It now validates the closed bottle selection used by the exact Homebrew
+  # product gate, which independently composes and boots that shell in Node and
+  # Chromium. Sending its changes through both owners rebuilds the retiring
+  # shell archive and every derived VFS identity without adding evidence.
+  #
+  # This is deliberately one reviewed ownership route, not a Homebrew path
+  # wildcard. Add a path only when the exact product gate proves its complete
+  # effect and focused tests establish that conventional package inputs still
+  # stage normally.
+  grep -Fx 'scripts/homebrew-prefix-campaign-executor.py' || true
 }
 
 package_publish_flow_changed_files() {

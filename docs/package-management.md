@@ -123,6 +123,34 @@ non-doc paths should also run the non-package test gate as a fail-safe,
 but should not trigger the package matrix unless they are package
 archive inputs.
 
+### Transition ownership during the Homebrew cutover
+
+One temporary rule prevents the retiring package registry and its Homebrew
+replacement from both owning the same proof. Changes to
+`scripts/homebrew-prefix-campaign-executor.py` go through the exact Homebrew
+product gate. That gate fetches the closed bottle selection, composes the real
+shell, and boots it in Node and Chromium. The same change does not stage the
+old conventional shell archive or the VFS images derived from that archive.
+
+This is one exact reviewed path, not a `scripts/homebrew-*` exemption. A real
+registry recipe, build script, shared package input, or a mixed pull request
+still runs package staging normally. The scope detector also fails if this
+transition path ever escapes the exact Homebrew product gate.
+
+The route does not make an old `program-packages.json` row current source
+policy. Such a row can continue to describe the last conventional generation
+while it is being retired, but it cannot authorize a source build and it does
+not contain a release URL. Conventional resolution still checks the complete
+projection and fails on stale input. Homebrew publisher preflight checks only
+the five conventional packages it actually transports into Formula tests:
+`dash`, `coreutils`, `grep`, `sed`, and `rootfs`, including their complete
+dependency identities. A selected change fails that check; an unrelated VFS
+row cannot block bottle publication.
+
+Remove this transition route when the conventional shell recipe is deleted.
+At that point the executor will no longer appear in a registry `build.toml`,
+so no exception will be necessary.
+
 ## Schema: `package.toml` (recipe) + `build.toml` (project view)
 
 Every package ships TWO TOML files in `packages/registry/<name>/`:
