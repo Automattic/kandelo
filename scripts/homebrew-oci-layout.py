@@ -35,13 +35,6 @@ SHA256 = re.compile(r"^[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 TAP_REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 CANONICAL_UINT = re.compile(r"^(0|[1-9][0-9]*)$")
-# WHY: source closure needs to recognize references into the already-bound
-# support tree without deciding which Requirements are trusted. The Ripper
-# parser remains authoritative for AST placement, class names, and tags.
-NATIVE_REQUIREMENT_REFERENCE = re.compile(
-    r"^  depends_on KandeloFormulaSupport::[A-Z][A-Za-z0-9]*Requirement"
-    r" => (:[a-z]+|\[(?::[a-z]+)(?:, :[a-z]+)*\])$"
-)
 OCI_REMOTE = re.compile(
     r"^ghcr\.io/[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$"
 )
@@ -100,6 +93,30 @@ class LayoutError(RuntimeError):
 
 def fail(message: str) -> NoReturn:
     raise LayoutError(message)
+
+
+def run_trusted_ruby(script: pathlib.Path, *arguments: str) -> subprocess.CompletedProcess[bytes]:
+    ruby = shutil.which("ruby")
+    if ruby is None:
+        fail("trusted Ruby parser is unavailable")
+    # WHY: these parsers decide whether untrusted Formula bytes are safe
+    # without executing them. Ruby and Bundler startup variables can load
+    # caller-owned code first, so match Kandelo's other trusted Ruby oracles:
+    # a fixed minimal environment plus interpreter startup restrictions.
+    return subprocess.run(
+        [ruby, "--disable=gems,rubyopt", str(script), *arguments],
+        check=False,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env={
+            "HOME": "/nonexistent",
+            "LANG": "C.UTF-8",
+            "LC_ALL": "C.UTF-8",
+            "PATH": "/usr/bin:/bin",
+        },
+        timeout=120,
+    )
 
 
 def sha256_bytes(payload: bytes) -> str:
@@ -343,19 +360,71 @@ def formula_identity_for_path(path: pathlib.Path, kandelo_root: pathlib.Path) ->
         "Formula source identity tool",
         MAX_FORMULA_BYTES,
     )
-    result = subprocess.run(
-        ["ruby", str(script), "--identity-excluding-bottle", str(path)],
-        check=False,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        timeout=120,
+    result = run_trusted_ruby(
+        script,
+        "--identity-excluding-bottle",
+        str(path),
     )
     if result.returncode != 0:
         detail = result.stderr.decode("utf-8", errors="replace")[:4096]
         fail(f"cannot compute tap Formula source identity: {detail}")
     identity = result.stdout.decode("ascii", errors="strict").strip()
     return require_string(identity, "tap Formula source identity", SHA256)
+
+
+def validate_formula_source_contract(
+    *,
+    tap_root: pathlib.Path,
+    kandelo_root: pathlib.Path,
+    tap_name: str,
+    formula: str,
+    formula_path: pathlib.Path,
+) -> None:
+    """Validate Formula Ruby through the one authoritative static parser."""
+
+    script = regular_file(
+        kandelo_root / "scripts/homebrew-formula-runtime-closure.rb",
+        "Formula source contract parser",
+        MAX_FORMULA_BYTES,
+    )
+    result = run_trusted_ruby(
+        script,
+        str(tap_root),
+        tap_name,
+        formula,
+        "--tier2-bridge-json",
+    )
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace")[:4096]
+        fail(f"tap Formula source violates the static contract: {detail}")
+    if len(result.stdout) > 65_536:
+        fail("tap Formula source contract result exceeds 65536 bytes")
+    try:
+        plan = json.loads(result.stdout.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        fail(f"tap Formula source contract result is invalid JSON: {error}")
+    schema = plan.get("schema") if isinstance(plan, dict) else None
+    expected_keys = {
+        "formula",
+        "formula_sha256",
+        "full_name",
+        "schema",
+        "support_runtime_sha256",
+        "support_sha256",
+        "tap",
+        "tier2_bridge",
+    }
+    if schema == 3:
+        expected_keys.add("tap_recipe")
+    plan = exact_keys(plan, expected_keys, "tap Formula source contract result")
+    if (
+        schema not in (2, 3)
+        or plan["tap"] != normalized_identity(tap_name)
+        or plan["formula"] != formula
+        or plan["full_name"] != f"{normalized_identity(tap_name)}/{formula}"
+        or plan["formula_sha256"] != sha256_file(formula_path)
+    ):
+        fail("tap Formula source contract result differs from the selected Formula")
 
 
 def formula_support_tree_paths(
@@ -441,6 +510,17 @@ def source_closure(
         formula_source = formula_path.read_text(encoding="utf-8")
     except UnicodeDecodeError as error:
         fail(f"tap Formula source is not UTF-8: {error}")
+    # WHY: this OCI tool owns bounded source enumeration and hashing, while
+    # the Ripper-based parser owns safe Formula Ruby semantics. Calling it here
+    # keeps standalone OCI composition safe without maintaining a second,
+    # inevitably incomplete line-oriented Formula parser.
+    validate_formula_source_contract(
+        tap_root=tap_root,
+        kandelo_root=kandelo_root,
+        tap_name=tap_name,
+        formula=formula,
+        formula_path=formula_path,
+    )
     owner, repository = normalized_identity(tap_name).split("/", 1)
     require_line = (
         f'require (Tap.fetch("{owner}", "{repository}").path/'
@@ -452,23 +532,6 @@ def source_closure(
         formula_lines = formula_source.splitlines()
         if formula_lines.count(require_line) != 1:
             fail("Formula support require is not canonical")
-        support_reference_lines = [
-            line for line in formula_lines if "KandeloFormulaSupport" in line
-        ]
-        allowed_support_references = [
-            line
-            for line in support_reference_lines
-            if line == "  include KandeloFormulaSupport"
-            or NATIVE_REQUIREMENT_REFERENCE.fullmatch(line) is not None
-        ]
-        if (
-            formula_source.count("Tap.fetch") != 1
-            or "require_relative" in formula_source
-            or allowed_support_references != support_reference_lines
-        ):
-            fail("Formula support reference is not a bounded canonical closure")
-        if formula_lines.count("  include KandeloFormulaSupport") != 1:
-            fail("Formula support include is not canonical")
         support_root = real_directory(
             tap_root / "Kandelo/formula_support", "Formula support source root"
         )
@@ -748,13 +811,10 @@ class BottleMetadata:
         with tempfile.NamedTemporaryFile() as source:
             source.write(formula_bytes)
             source.flush()
-            result = subprocess.run(
-                ["ruby", str(script), "--identity-excluding-bottle", source.name],
-                check=False,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                timeout=120,
+            result = run_trusted_ruby(
+                script,
+                "--identity-excluding-bottle",
+                source.name,
             )
         if result.returncode != 0:
             detail = result.stderr.decode("utf-8", errors="replace")[:4096]
