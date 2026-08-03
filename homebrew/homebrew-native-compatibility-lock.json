@@ -3680,13 +3680,12 @@
         "post_install_steps": [
           {
             "path": {
-              "base": "homebrew_prefix",
-              "path": "lib/gio/modules"
+              "path": "{{HOMEBREW_PREFIX}}/lib/gio/modules"
             },
             "type": "mkdir_p"
           }
         ],
-        "ruby_source_checksum": "18ec76babcd6aebbdfeca6f09f9bfb24b3694d4e432c926c7f9612ee53515742",
+        "ruby_source_checksum": "658003a495be4141e3f5856ff34a1334c58fe7a0fc745afbc84258394472a6db",
         "stable_checksum": "ab24d24e698dfa1e408b7bcdb508f4aafc906185a8b8ce72fdf79bbbdc9b383b",
         "stable_dependencies": [
           "pcre2",
@@ -3834,13 +3833,12 @@
         "post_install_steps": [
           {
             "path": {
-              "base": "homebrew_prefix",
-              "path": "lib/gio/modules"
+              "path": "{{HOMEBREW_PREFIX}}/lib/gio/modules"
             },
             "type": "mkdir_p"
           }
         ],
-        "ruby_source_checksum": "18ec76babcd6aebbdfeca6f09f9bfb24b3694d4e432c926c7f9612ee53515742",
+        "ruby_source_checksum": "658003a495be4141e3f5856ff34a1334c58fe7a0fc745afbc84258394472a6db",
         "stable_checksum": "ab24d24e698dfa1e408b7bcdb508f4aafc906185a8b8ce72fdf79bbbdc9b383b",
         "stable_dependencies": [
           "pcre2",
