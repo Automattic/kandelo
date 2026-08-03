@@ -2554,6 +2554,13 @@ source checkout for historical evidence. This matters because the Formula tree
 may be intentionally old while the recovery archive was added by a later
 control-plane commit.
 
+The archived JSON is an authorization ledger, not a campaign manifest. The tap
+controller reads that ledger as an exact Git blob and accepts only dispatches
+recorded as publicly verified handoff releases. It then downloads the real
+`campaign.json` from the content-addressed campaign release named by the ledger.
+Treating the ledger itself as `campaign.json` would skip the immutable release
+readback and confuse recovery evidence with executable campaign authority.
+
 Before selecting a predecessor handoff, derivation proves that the Formula
 source, version, dependency graph, ABI snapshot, guest layout, native Homebrew
 revision, and critical validation tools are unchanged. The executor then
