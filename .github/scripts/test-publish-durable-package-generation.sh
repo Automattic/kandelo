@@ -258,6 +258,7 @@ projection_output=""
 expected_output=""
 components_output=""
 bundle=""
+index=""
 package_source_sha=""
 producer_sha=""
 source_repository=""
@@ -271,6 +272,7 @@ while [ "$#" -gt 0 ]; do
     --snapshot) snapshot="$2"; shift 2 ;;
     --bundle-dir) bundle="$2"; shift 2 ;;
     --archives-dir) bundle="$2"; shift 2 ;;
+    --index) index="$2"; shift 2 ;;
     --package-source-sha) package_source_sha="$2"; shift 2 ;;
     --producer-sha) producer_sha="$2"; shift 2 ;;
     --expected-source-commit) package_source_sha="$2"; shift 2 ;;
@@ -283,7 +285,7 @@ while [ "$#" -gt 0 ]; do
     --roots-file) roots_file="$2"; shift 2 ;;
     --source-root) source_root="$2"; shift 2 ;;
     --source-release-tag) source_release_tag="$2"; shift 2 ;;
-    --expected-abi|--arch|--index|--assets|--release-tag|--release-base-url|--scope)
+    --expected-abi|--arch|--assets|--release-tag|--release-base-url|--scope)
       shift 2
       ;;
     *) echo "unexpected authority xtask flag: $1" >&2; exit 2 ;;
@@ -296,7 +298,30 @@ case "$action" in
     [ "$source_release_tag" = "$(jq -r .release_tag "$snapshot")" ]
     [ "${producer_sha:-$package_source_sha}" = \
       "${TEST_ARCHIVE_SOURCE_SHA:-${TEST_SOURCE_SHA:?}}" ]
+    [ "$index" = "$bundle/index.toml" ] || {
+      echo "archive validator index is outside its exact bundle view" >&2
+      exit 1
+    }
     [ -f "$bundle/rootfs-1-rev1-abi42-wasm32-aaaaaaaa.tar.zst" ]
+    expected_bundle_members="$(
+      jq -r '.identity.archives | length + 2' "$bundle/generation.json"
+    )"
+    actual_bundle_members="$(
+      find "$bundle" -mindepth 1 -maxdepth 1 -type f | wc -l |
+        tr -d '[:space:]'
+    )"
+    [ "$actual_bundle_members" = "$expected_bundle_members" ] || {
+      echo "archive validator view has $actual_bundle_members members; expected $expected_bundle_members" >&2
+      find "$bundle" -mindepth 1 -maxdepth 1 -print >&2
+      exit 1
+    }
+    while IFS= read -r supporting_asset; do
+      [ ! -e "$bundle/$supporting_asset" ] || {
+        echo "archive validator received $supporting_asset" >&2
+        exit 1
+      }
+    done < <(jq -r '.identity.supporting_assets[]?.name' \
+      "$bundle/generation.json")
     ;;
   "staging-reuse validate-archives")
     [ "$(jq -r .abi_version "$expected")" = 42 ]
@@ -1283,6 +1308,8 @@ TEST_RUN_SOURCE_ROOT="$TMP_ROOT/canonical-preserved-source" \
     "$TMP_ROOT/canonical-preserved-bundle"
 [ "$(cat "$TMP_ROOT/canonical-preserved-remote/ref-sha")" = "$authority_sha" ]
 grep -Fxq "upload root-package-job.log" "$TMP_ROOT/writes.log"
+cmp "$TMP_ROOT/canonical-preserved-supporting/root-package-job.log" \
+  "$TMP_ROOT/canonical-preserved-remote/assets/root-package-job.log"
 [ "$(jq -r .application_sealed \
   "$TMP_ROOT/canonical-preserved-receipt.json")" = true ]
 
