@@ -25,6 +25,9 @@ Usage:
   scripts/run-homebrew-real-install-diagnostic.sh prove-browser \
     --work-dir <prepared-directory>
 
+  scripts/run-homebrew-real-install-diagnostic.sh verify-independent-tap \
+    --work-dir <new-directory>
+
 The diagnostic consumes 25 Formula handoffs without satisfying or changing
 the complete main-shell product lock. The prepare step is resumable: Node and
 Chromium consume the same resulting VFS and closed lazy-asset fixture.
@@ -58,7 +61,7 @@ if [ -z "$WORK_DIR" ] || [ "$WORK_DIR" = / ] || [ -L "$WORK_DIR" ]; then
   exit 2
 fi
 
-for tool in cmp cp jq node python3 ruby sha256sum wc; do
+for tool in cmp cp git jq node python3 ruby sha256sum wc; do
   command -v "$tool" >/dev/null 2>&1 || {
     echo "run-homebrew-real-install-diagnostic: missing $tool" >&2
     exit 2
@@ -96,6 +99,7 @@ assert_prepared() {
   assert_prepared_file selection_receipt selection-receipt.json
   assert_prepared_file selection_authorization selection-authorization.json
   assert_prepared_file selection_check selection-check.json
+  assert_prepared_file independent_tap independent-tap-check.json
   assert_prepared_file image real-install-diagnostic.vfs.zst
   assert_prepared_file composition_report composition-report.json
   assert_prepared_file browser_fixture browser-fixture.json
@@ -133,6 +137,76 @@ assert_prepared() {
   rm -rf -- "$temporary"
 }
 
+fetch_and_verify_independent_tap() {
+  local checkout="$1"
+  local report="$2"
+  local repository revision bottle_url bottle_sha bottle_bytes bottle_path
+  repository="$(jq -er '.lifecycle.independent_repository' "$CONTRACT")"
+  revision="$(jq -er '.lifecycle.independent_revision' "$CONTRACT")"
+  if ! [[ "$repository" =~ ^[a-z0-9_.-]+/[a-z0-9_.-]+$ ]] ||
+     ! [[ "$revision" =~ ^[0-9a-f]{40}$ ]] ||
+     [ -e "$checkout" ] || [ -L "$checkout" ] ||
+     [ -e "$report" ] || [ -L "$report" ]; then
+    echo "run-homebrew-real-install-diagnostic: unsafe independent tap input" >&2
+    exit 2
+  fi
+
+  # WHY: this checkout proves the contract's exact public third-party tap
+  # revision actually contains the uniquely named Formula and the generated
+  # bottle metadata. Static identity strings cannot catch a stale commit that
+  # predates the Formula, which would otherwise fail only after the VFS boots.
+  env -u GH_TOKEN -u GITHUB_TOKEN \
+    -u HOMEBREW_GITHUB_API_TOKEN \
+    -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+    -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+    GIT_TERMINAL_PROMPT=0 \
+    git -c credential.helper= \
+      -c http.https://github.com/.extraheader= \
+      clone --quiet --no-tags --filter=blob:none \
+      "https://github.com/${repository}.git" "$checkout"
+  git -C "$checkout" checkout --quiet --detach "$revision"
+  [ "$(git -C "$checkout" rev-parse HEAD)" = "$revision" ]
+  [ -z "$(git -C "$checkout" status --short --untracked-files=all)" ]
+  PYTHONDONTWRITEBYTECODE=1 python3 \
+    "$REPO_ROOT/scripts/homebrew-real-install-diagnostic.py" \
+    --contract "$CONTRACT" verify-independent-tap \
+    --tap-root "$checkout" \
+    --report-out "$report"
+
+  bottle_url="$(jq -er '.bottle_url' "$report")"
+  bottle_sha="$(jq -er '.bottle_sha256' "$report")"
+  bottle_bytes="$(jq -er '.bottle_bytes' "$report")"
+  bottle_path="$checkout/m4-canary.bottle.tar.gz"
+  # WHY: a committed bottle block can still point at absent or private bytes.
+  # Stream the exact archive without credentials now so the diagnostic does
+  # not spend a VFS build merely to discover an unreadable third-party bottle.
+  env -u GH_TOKEN -u GITHUB_TOKEN \
+    -u HOMEBREW_GITHUB_API_TOKEN \
+    -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+    -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+    node --experimental-strip-types \
+      "$REPO_ROOT/scripts/homebrew-verify-public-bottle.ts" \
+      --url "$bottle_url" \
+      --sha256 "$bottle_sha" \
+      --bytes "$bottle_bytes" \
+      --out "$bottle_path"
+  rm -f -- "$bottle_path"
+}
+
+verify_independent_tap() {
+  if [ -e "$WORK_DIR" ] || [ -L "$WORK_DIR" ]; then
+    echo "run-homebrew-real-install-diagnostic: work directory already exists" >&2
+    exit 2
+  fi
+  mkdir "$WORK_DIR"
+  fetch_and_verify_independent_tap \
+    "$(prepared_path independent-tap)" \
+    "$(prepared_path independent-tap-check.json)"
+  rm -rf -- "$(prepared_path independent-tap)"
+  printf 'Verified independent tap: %s\n' \
+    "$(prepared_path independent-tap-check.json)"
+}
+
 assert_prepared_file() {
   local key="$1"
   local expected_name="$2"
@@ -166,18 +240,24 @@ prepare() {
   mkdir "$WORK_DIR"
 
   local selection_root selection_receipt selection_authorization
-  local selection_check bootstrap_dir policy platform image report mirror
+  local selection_check independent_check bootstrap_dir policy platform image report mirror
   local bzip2_sha dash_sha
   selection_root="$(prepared_path selection)"
   selection_receipt="$(prepared_path selection-receipt.json)"
   selection_authorization="$(prepared_path selection-authorization.json)"
   selection_check="$(prepared_path selection-check.json)"
+  independent_check="$(prepared_path independent-tap-check.json)"
   bootstrap_dir="$(prepared_path bootstrap)"
   policy="$(prepared_path materialization-policy.json)"
   platform="$(prepared_path platform-only.vfs)"
   image="$(prepared_path real-install-diagnostic.vfs.zst)"
   report="$(prepared_path composition-report.json)"
   mirror="$(prepared_path bottle-mirror)"
+
+  fetch_and_verify_independent_tap \
+    "$(prepared_path independent-tap)" \
+    "$independent_check"
+  rm -rf -- "$(prepared_path independent-tap)"
 
   # WHY: fetch the immutable release anonymously into this new private work
   # directory. Every later consumer uses only this verified snapshot, so a
@@ -323,6 +403,8 @@ prepare() {
         --argjson selection_authorization_bytes "$(wc -c <"$selection_authorization")" \
         --arg selection_check_sha "$(sha256sum "$selection_check" | cut -d' ' -f1)" \
         --argjson selection_check_bytes "$(wc -c <"$selection_check")" \
+        --arg independent_tap_sha "$(sha256sum "$independent_check" | cut -d' ' -f1)" \
+        --argjson independent_tap_bytes "$(wc -c <"$independent_check")" \
         --arg image_sha "$(sha256sum "$image" | cut -d' ' -f1)" \
         --argjson image_bytes "$(wc -c <"$image")" \
         --arg report_sha "$(sha256sum "$report" | cut -d' ' -f1)" \
@@ -349,6 +431,11 @@ prepare() {
             file: "selection-check.json",
             sha256: $selection_check_sha,
             bytes: $selection_check_bytes
+          },
+          independent_tap: {
+            file: "independent-tap-check.json",
+            sha256: $independent_tap_sha,
+            bytes: $independent_tap_bytes
           },
           image: {
             file: "real-install-diagnostic.vfs.zst",
@@ -476,6 +563,7 @@ case "$COMMAND" in
   prepare) prepare ;;
   prove-node) prove_node ;;
   prove-browser) prove_browser ;;
+  verify-independent-tap) verify_independent_tap ;;
   -h|--help|"") usage ;;
   *)
     echo "run-homebrew-real-install-diagnostic: unknown command: $COMMAND" >&2

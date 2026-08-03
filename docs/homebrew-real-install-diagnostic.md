@@ -109,6 +109,15 @@ contract from this exact selection and the canary tap revision that
 publishes `m4-canary`. Do not substitute the main-shell selection lock
 or copy an unrelated campaign's identities.
 
+The focused contract test anonymously clones that exact canary
+revision. It requires both `Formula/m4-canary.rb` and its generated
+`Kandelo/formula/m4-canary.json` metadata. The Formula's canonical
+bottle block, bottle digest, ABI, guest prefix, tap identity, and Dash
+dependency must all agree with the metadata. It also downloads and
+hashes the public bottle without credentials. This catches a valid but
+stale commit that predates `m4-canary`, or metadata that points at
+unreadable bytes, before image composition begins.
+
 ## Compose and prove the exact VFS
 
 Install the repository-declared Node and rootfs-builder dependencies
@@ -126,6 +135,13 @@ new work directory. It runs the generic closed-selection readback
 verifier, then uses only that private snapshot for every extractor and
 composer read. The diagnostic check retains all 25 versions, handoff
 digests, archive digests, and immutable release evidence.
+
+Preparation also repeats the anonymous canary checkout and records its
+Formula, metadata, and bottle digests in
+`independent-tap-check.json`. Node and Chromium therefore consume a
+fixture bound to a third-party revision already proven to contain the
+installable Formula; they do not discover a missing Formula only after
+the guest boots.
 
 It then extracts `homebrew-bootstrap` from its authenticated bottle,
 builds a platform-only base, composes the 24 executable Formula trees,

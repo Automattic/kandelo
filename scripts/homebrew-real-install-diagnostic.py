@@ -22,6 +22,7 @@ GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
 FORMULA = re.compile(r"^[a-z0-9][a-z0-9+._-]*$")
 MAX_JSON_BYTES = 64 * 1024 * 1024
 EXECUTOR_PATH = ROOT / "scripts/homebrew-prefix-campaign-executor.py"
+CAMPAIGN_PATH = ROOT / "scripts/homebrew-prefix-campaign.py"
 
 
 class DiagnosticError(RuntimeError):
@@ -439,6 +440,269 @@ def campaign_executor() -> Any:
     return module
 
 
+def campaign_validator() -> Any:
+    spec = importlib.util.spec_from_file_location(
+        "homebrew_prefix_campaign_for_real_install_diagnostic",
+        CAMPAIGN_PATH,
+    )
+    if spec is None or spec.loader is None:
+        fail("cannot load the Formula bottle validator")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def git_output(root: pathlib.Path, arguments: list[str], label: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), *arguments],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        fail(f"cannot inspect {label}: {error}")
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace")[-4096:]
+        fail(f"cannot inspect {label}: {detail}")
+    try:
+        return result.stdout.decode("utf-8").strip()
+    except UnicodeDecodeError as error:
+        fail(f"{label} returned invalid UTF-8: {error}")
+
+
+def verify_independent_tap(
+    contract_path: pathlib.Path,
+    tap_root: pathlib.Path,
+) -> dict[str, Any]:
+    contract, _payload = read_contract(contract_path)
+    lifecycle = contract["lifecycle"]
+    root = real_directory(tap_root, "independent tap checkout")
+    revision = lifecycle["independent_revision"]
+    if git_output(root, ["rev-parse", "HEAD"], "independent tap HEAD") != revision:
+        fail("independent tap checkout differs from the pinned revision")
+    if git_output(
+        root,
+        ["status", "--short", "--untracked-files=all"],
+        "independent tap status",
+    ):
+        fail("independent tap checkout has local modifications")
+
+    formula_name = lifecycle["independent_formula"].rsplit("/", 1)[-1]
+    formula_path = root / "Formula" / f"{formula_name}.rb"
+    sidecar_path = root / "Kandelo" / "formula" / f"{formula_name}.json"
+    sidecar, sidecar_payload = load_json(
+        sidecar_path,
+        "independent Formula metadata",
+    )
+    exact(
+        sidecar,
+        {
+            "bottle_rebuild",
+            "bottles",
+            "dependencies",
+            "formula_path",
+            "formula_revision",
+            "full_name",
+            "kandelo_abi",
+            "name",
+            "schema",
+            "source_metadata",
+            "tap_commit",
+            "tap_name",
+            "tap_repository",
+            "version",
+        },
+        "independent Formula metadata",
+    )
+    if (
+        sidecar["schema"] != 1
+        or sidecar["name"] != formula_name
+        or sidecar["full_name"] != lifecycle["independent_formula"]
+        or sidecar["formula_path"] != f"Formula/{formula_name}.rb"
+        or sidecar["kandelo_abi"] != contract["authority"]["kandelo_abi"]
+        or sidecar["tap_name"] != lifecycle["independent_tap"]
+        or sidecar["tap_repository"] != lifecycle["independent_repository"]
+        or sidecar["source_metadata"] != "Kandelo/metadata.json"
+        or not isinstance(sidecar["formula_revision"], int)
+        or isinstance(sidecar["formula_revision"], bool)
+        or sidecar["formula_revision"] < 0
+        or not isinstance(sidecar["bottle_rebuild"], int)
+        or isinstance(sidecar["bottle_rebuild"], bool)
+        or sidecar["bottle_rebuild"] < 0
+        or not isinstance(sidecar["version"], str)
+        or not sidecar["version"]
+    ):
+        fail("independent Formula metadata has the wrong identity")
+
+    source_commit = string(
+        sidecar["tap_commit"],
+        "independent Formula source commit",
+        GIT_SHA,
+    )
+    try:
+        ancestry = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(root),
+                "merge-base",
+                "--is-ancestor",
+                source_commit,
+                revision,
+            ],
+            check=False,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        fail(f"cannot inspect independent Formula ancestry: {error}")
+    if ancestry.returncode != 0:
+        fail("independent Formula metadata is not from pinned tap history")
+
+    dependency_name = lifecycle["independent_dependency"].rsplit("/", 1)[-1]
+    dependencies = sidecar["dependencies"]
+    if not isinstance(dependencies, list) or len(dependencies) != 1:
+        fail("independent Formula metadata has the wrong dependency closure")
+    dependency = exact(
+        dependencies[0],
+        {"full_name", "name", "version"},
+        "independent Formula dependency",
+    )
+    if (
+        dependency["full_name"] != lifecycle["independent_dependency"]
+        or dependency["name"] != dependency_name
+        or not isinstance(dependency["version"], str)
+        or not dependency["version"]
+    ):
+        fail("independent Formula metadata has the wrong dependency closure")
+
+    bottles = sidecar["bottles"]
+    if not isinstance(bottles, list):
+        fail("independent Formula metadata bottle inventory is invalid")
+    matching = [
+        bottle
+        for bottle in bottles
+        if isinstance(bottle, dict)
+        and bottle.get("arch") == contract["authority"]["arch"]
+    ]
+    if len(matching) != 1:
+        fail("independent Formula metadata lacks one wasm32 bottle")
+    bottle = exact(
+        matching[0],
+        {
+            "arch",
+            "bottle_tag",
+            "browser_compatible",
+            "built_at",
+            "built_by",
+            "built_from",
+            "bytes",
+            "cache_key_sha",
+            "cellar",
+            "fork_instrumentation",
+            "kandelo_abi",
+            "link_manifest",
+            "prefix",
+            "runtime_support",
+            "sha256",
+            "status",
+            "url",
+        },
+        "independent Formula bottle metadata",
+    )
+    bottle_sha = string(
+        bottle["sha256"],
+        "independent Formula bottle SHA-256",
+        SHA256,
+    )
+    built_from = exact(
+        bottle["built_from"],
+        {
+            "formula_sha256",
+            "kandelo_commit",
+            "kandelo_repository",
+            "tap_commit",
+            "tap_repository",
+        },
+        "independent Formula bottle build source",
+    )
+    string(
+        built_from["formula_sha256"],
+        "independent Formula build-source digest",
+        SHA256,
+    )
+    expected_root = (
+        "https://ghcr.io/v2/"
+        + lifecycle["independent_repository"]
+    )
+    if (
+        bottle["arch"] != "wasm32"
+        or bottle["bottle_tag"] != "wasm32_kandelo"
+        or bottle["kandelo_abi"] != contract["authority"]["kandelo_abi"]
+        or bottle["status"] != "success"
+        or bottle["cache_key_sha"] != bottle_sha
+        or bottle["url"]
+        != f"{expected_root}/{formula_name}/blobs/sha256:{bottle_sha}"
+        or built_from["kandelo_commit"] != contract["authority"]["kandelo_commit"]
+        or built_from["kandelo_repository"] != "Automattic/kandelo"
+        or built_from["tap_commit"] != source_commit
+        or built_from["tap_repository"] != lifecycle["independent_repository"]
+        or bottle["prefix"] != "/opt/kandelo/homebrew"
+        or bottle["cellar"] != "/opt/kandelo/homebrew/Cellar"
+        or not isinstance(bottle["bytes"], int)
+        or isinstance(bottle["bytes"], bool)
+        or bottle["bytes"] <= 0
+    ):
+        fail("independent Formula bottle metadata is not publishable")
+
+    campaign = campaign_validator()
+    try:
+        formula_sha, formula_identity, bottle_block = campaign.formula_identity(
+            ROOT,
+            formula_path,
+        )
+    except (OSError, UnicodeError, campaign.CampaignError) as error:
+        fail(f"cannot validate independent Formula source: {error}")
+    if (
+        bottle_block is None
+        or bottle_block["root_url"] != expected_root
+        or bottle_block["rebuild"] != sidecar["bottle_rebuild"]
+        or bottle_block["tags"] != {"wasm32_kandelo": bottle_sha}
+    ):
+        fail("independent Formula source lacks its exact generated bottle block")
+    try:
+        formula_text = formula_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        fail(f"cannot read independent Formula source: {error}")
+    if (
+        f"class {formula_name.title().replace('-', '')} < Formula" not in formula_text
+        or "keg_only " not in formula_text
+        or f'depends_on "{lifecycle["independent_dependency"]}"' not in formula_text
+    ):
+        fail("independent Formula source is not the unique keg-only canary")
+
+    return {
+        "schema": 1,
+        "kind": "kandelo-homebrew-real-install-independent-tap-check",
+        "repository": lifecycle["independent_repository"],
+        "revision": revision,
+        "formula": lifecycle["independent_formula"],
+        "formula_sha256": formula_sha,
+        "formula_identity_sha256": formula_identity,
+        "metadata_sha256": hashlib.sha256(sidecar_payload).hexdigest(),
+        "bottle_sha256": bottle_sha,
+        "bottle_bytes": bottle["bytes"],
+        "bottle_url": bottle["url"],
+        "dependency": lifecycle["independent_dependency"],
+    }
+
+
 def real_directory(path: pathlib.Path, label: str) -> pathlib.Path:
     try:
         if not path.is_dir() or path.is_symlink():
@@ -636,6 +900,9 @@ def parser() -> argparse.ArgumentParser:
     verify.add_argument("--receipt", type=pathlib.Path, required=True)
     verify.add_argument("--authorization", type=pathlib.Path, required=True)
     verify.add_argument("--report-out", type=pathlib.Path, required=True)
+    independent = commands.add_parser("verify-independent-tap")
+    independent.add_argument("--tap-root", type=pathlib.Path, required=True)
+    independent.add_argument("--report-out", type=pathlib.Path, required=True)
     return result
 
 
@@ -648,7 +915,7 @@ def main() -> None:
                 print(json.dumps(report, indent=2, sort_keys=True))
             else:
                 write_new_json(arguments.report_out, report)
-        else:
+        elif arguments.command == "verify-selection":
             write_new_json(
                 arguments.report_out,
                 verify_selection(
@@ -656,6 +923,14 @@ def main() -> None:
                     arguments.selection,
                     arguments.receipt,
                     arguments.authorization,
+                ),
+            )
+        else:
+            write_new_json(
+                arguments.report_out,
+                verify_independent_tap(
+                    arguments.contract,
+                    arguments.tap_root,
                 ),
             )
     except DiagnosticError as error:

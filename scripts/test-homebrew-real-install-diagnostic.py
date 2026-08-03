@@ -7,6 +7,7 @@ import hashlib
 import importlib.util
 import json
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -105,6 +106,42 @@ class DiagnosticContractTest(unittest.TestCase):
         ):
             self.read_changed_contract(changed)
 
+    def test_independent_tap_requires_exact_formula_and_bottle_metadata(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            contract, tap = self.write_independent_tap(
+                pathlib.Path(temporary)
+            )
+            report = MODULE.verify_independent_tap(contract, tap)
+        self.assertEqual(
+            report["kind"],
+            "kandelo-homebrew-real-install-independent-tap-check",
+        )
+        self.assertEqual(
+            report["formula"],
+            "brandonpayton/kandelo-canary/m4-canary",
+        )
+        self.assertEqual(report["bottle_sha256"], "3" * 64)
+
+    def test_independent_tap_rejects_missing_generated_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            contract, tap = self.write_independent_tap(root)
+            (tap / "Kandelo/formula/m4-canary.json").unlink()
+            self.git(tap, "add", "Kandelo/formula/m4-canary.json")
+            self.git(tap, "commit", "-m", "remove generated metadata")
+            changed = json.loads(contract.read_text())
+            changed["lifecycle"]["independent_revision"] = self.git(
+                tap, "rev-parse", "HEAD"
+            )
+            contract.write_text(json.dumps(changed) + "\n")
+            with self.assertRaisesRegex(
+                MODULE.DiagnosticError,
+                "cannot read independent Formula metadata",
+            ):
+                MODULE.verify_independent_tap(contract, tap)
+
     def test_exact_anonymous_selection_is_accepted(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root, receipt, authorization = self.write_selection(
@@ -199,6 +236,120 @@ class DiagnosticContractTest(unittest.TestCase):
             path = pathlib.Path(temporary) / "contract.json"
             path.write_text(json.dumps(value) + "\n")
             MODULE.read_contract(path)
+
+    def write_independent_tap(
+        self,
+        temporary: pathlib.Path,
+    ) -> tuple[pathlib.Path, pathlib.Path]:
+        tap = temporary / "independent-tap"
+        (tap / "Formula").mkdir(parents=True)
+        (tap / "Kandelo/formula").mkdir(parents=True)
+        self.git(tap, "init", "-q")
+        self.git(tap, "config", "user.name", "Diagnostic Test")
+        self.git(tap, "config", "user.email", "test@kandelo.invalid")
+        formula = tap / "Formula/m4-canary.rb"
+        formula.write_text(
+            "class M4Canary < Formula\n"
+            "  keg_only \"it is an independent canary\"\n"
+            "  depends_on \"kandelo-dev/tap-core/dash\"\n"
+            "end\n"
+        )
+        self.git(tap, "add", "Formula/m4-canary.rb")
+        self.git(tap, "commit", "-m", "add independent Formula")
+        source_commit = self.git(tap, "rev-parse", "HEAD")
+
+        formula.write_text(
+            "class M4Canary < Formula\n"
+            "  keg_only \"it is an independent canary\"\n"
+            "  depends_on \"kandelo-dev/tap-core/dash\"\n"
+            "\n"
+            "  bottle do\n"
+            "    root_url \"https://ghcr.io/v2/"
+            "brandonpayton/homebrew-kandelo-canary\"\n"
+            "    sha256 cellar: :any_skip_relocation, "
+            f"wasm32_kandelo: \"{'3' * 64}\"\n"
+            "  end\n"
+            "end\n"
+        )
+        metadata = {
+            "bottle_rebuild": 0,
+            "bottles": [
+                {
+                    "arch": "wasm32",
+                    "bottle_tag": "wasm32_kandelo",
+                    "browser_compatible": False,
+                    "built_at": "2026-08-03T00:00:00Z",
+                    "built_by": "https://github.com/example/actions/runs/1",
+                    "built_from": {
+                        "formula_sha256": "4" * 64,
+                        "kandelo_commit": self.contract["authority"][
+                            "kandelo_commit"
+                        ],
+                        "kandelo_repository": "Automattic/kandelo",
+                        "tap_commit": source_commit,
+                        "tap_repository": (
+                            "brandonpayton/homebrew-kandelo-canary"
+                        ),
+                    },
+                    "bytes": 123,
+                    "cache_key_sha": "3" * 64,
+                    "cellar": "/opt/kandelo/homebrew/Cellar",
+                    "fork_instrumentation": "not-required",
+                    "kandelo_abi": 42,
+                    "link_manifest": (
+                        "Kandelo/link/m4-canary-1.4.21-wasm32.json"
+                    ),
+                    "prefix": "/opt/kandelo/homebrew",
+                    "runtime_support": ["node"],
+                    "sha256": "3" * 64,
+                    "status": "success",
+                    "url": (
+                        "https://ghcr.io/v2/brandonpayton/"
+                        "homebrew-kandelo-canary/m4-canary/blobs/sha256:"
+                        + "3" * 64
+                    ),
+                }
+            ],
+            "dependencies": [
+                {
+                    "full_name": "kandelo-dev/tap-core/dash",
+                    "name": "dash",
+                    "version": "0.5.12",
+                }
+            ],
+            "formula_path": "Formula/m4-canary.rb",
+            "formula_revision": 0,
+            "full_name": "brandonpayton/kandelo-canary/m4-canary",
+            "kandelo_abi": 42,
+            "name": "m4-canary",
+            "schema": 1,
+            "source_metadata": "Kandelo/metadata.json",
+            "tap_commit": source_commit,
+            "tap_name": "brandonpayton/kandelo-canary",
+            "tap_repository": "brandonpayton/homebrew-kandelo-canary",
+            "version": "1.4.21",
+        }
+        (tap / "Kandelo/formula/m4-canary.json").write_text(
+            json.dumps(metadata) + "\n"
+        )
+        self.git(tap, "add", "Formula/m4-canary.rb", "Kandelo/formula")
+        self.git(tap, "commit", "-m", "publish independent bottle")
+        revision = self.git(tap, "rev-parse", "HEAD")
+        contract_value = copy.deepcopy(self.contract)
+        contract_value["lifecycle"]["independent_revision"] = revision
+        contract = temporary / "contract.json"
+        contract.write_text(json.dumps(contract_value) + "\n")
+        return contract, tap
+
+    def git(self, root: pathlib.Path, *arguments: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(root), *arguments],
+            check=True,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        ).stdout.strip()
 
     def write_selection(
         self, temporary: pathlib.Path

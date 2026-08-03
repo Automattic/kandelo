@@ -23,7 +23,7 @@ jq -e '
   ])
 ' "$CONTRACT" >/dev/null
 
-for command in prepare prove-node prove-browser; do
+for command in prepare prove-node prove-browser verify-independent-tap; do
   grep -Fq "$command" "$RUNNER"
 done
 grep -Fq -- '--image-contract real-install-diagnostic' "$RUNNER"
@@ -60,5 +60,30 @@ if grep -Eq \
   echo "diagnostic runner references a main-shell product lock" >&2
   exit 1
 fi
+
+# WHY: a syntactically valid revision can still predate the independent
+# Formula or its generated bottle metadata. Fetch the exact public commit now
+# so this mistake fails before an expensive VFS composition or guest boot.
+independent_test_root="$(mktemp -d "${TMPDIR:-/tmp}/kandelo-independent-tap.XXXXXX")"
+cleanup_independent_test() {
+  rm -rf -- "$independent_test_root"
+}
+trap cleanup_independent_test EXIT
+"$RUNNER" verify-independent-tap \
+  --work-dir "$independent_test_root/check"
+jq -e \
+  --arg revision "$(jq -er '.lifecycle.independent_revision' "$CONTRACT")" '
+  .schema == 1 and
+  .kind == "kandelo-homebrew-real-install-independent-tap-check" and
+  .revision == $revision and
+  (.formula_sha256 | test("^[0-9a-f]{64}$")) and
+  (.metadata_sha256 | test("^[0-9a-f]{64}$")) and
+  (.bottle_sha256 | test("^[0-9a-f]{64}$")) and
+  (.bottle_bytes | type == "number" and . > 0) and
+  (.bottle_url == (
+    "https://ghcr.io/v2/brandonpayton/homebrew-kandelo-canary/" +
+    "m4-canary/blobs/sha256:" + .bottle_sha256
+  ))
+' "$independent_test_root/check/independent-tap-check.json" >/dev/null
 
 echo "test-homebrew-real-install-diagnostic: pass"
