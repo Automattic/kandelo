@@ -6,6 +6,7 @@ import { parseHomebrewVfsMaterializationPolicy } from "../../../host/src/homebre
 import { corsProxyTargetUrl } from "../../../host/src/networking/cors-proxy-url";
 import { assertMainShellOperationalRuntimeFetches } from "../../../scripts/homebrew-main-shell-image-contract";
 import { DEFAULT_BROWSER_CORS_PROXY_URL } from "../lib/browser-cors-proxy";
+import { configuredPlaywrightTestBaseUrl } from "../playwright-test-target";
 import {
   isShellVfsImageUrl,
   isVfsImageUrl,
@@ -30,6 +31,20 @@ const closedMirrorRoot =
   process.env.KANDELO_PLAYWRIGHT_CLOSED_ACCEPTANCE_ROOT;
 const transportMode = process.env.KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE;
 const mirrorPlanUrl = process.env.KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL;
+const configuredTestBaseUrl = configuredPlaywrightTestBaseUrl(process.env);
+const expectedGuestPrefix =
+  process.env.KANDELO_HOMEBREW_MAIN_SHELL_EXPECTED_PREFIX ??
+  "/opt/kandelo/homebrew";
+// WHY: immutable rev22 bytes predate Kandelo's final guest path. The
+// Linuxbrew-shaped value is a temporary compatibility assertion for those
+// exact bytes; Kandelo is not Linux and `/opt/kandelo/homebrew` remains the
+// only final product target.
+if (
+  expectedGuestPrefix !== "/opt/kandelo/homebrew" &&
+  expectedGuestPrefix !== "/home/linuxbrew/.linuxbrew"
+) {
+  throw new Error("Homebrew main-shell test received an unsupported prefix");
+}
 const runtimeSupport = parseHomebrewRuntimeSupportContract(
   JSON.parse(
     readFileSync(
@@ -494,7 +509,10 @@ async function bootExactShellPage(page: Page): Promise<ExactShellPage> {
     }
   });
 
-  await page.goto("/?demo=shell", { waitUntil: "domcontentloaded" });
+  const pageUrl = configuredTestBaseUrl === undefined
+    ? "/?demo=shell"
+    : new URL("?demo=shell", configuredTestBaseUrl).href;
+  await page.goto(pageUrl, { waitUntil: "domcontentloaded" });
   await page.waitForTimeout(2_000);
   const overlay = page.locator("vite-error-overlay");
   if (await overlay.count()) {
@@ -711,7 +729,7 @@ test("a fresh exact shell activates brew support atomically after independent ba
   await runParentShellProbe(
     page,
     'printf \'HOMEBREW_MAIN_SHELL_PATH:%s:%s\\n\' "$0" "${PATH%%:*}"',
-    "HOMEBREW_MAIN_SHELL_PATH:bash:/opt/kandelo/homebrew/bin",
+    `HOMEBREW_MAIN_SHELL_PATH:bash:${expectedGuestPrefix}/bin`,
   );
   let lazyRows = await readLazyDownloadRows(page);
   expect(lazyRows).toEqual([]);
@@ -857,8 +875,8 @@ printf 'HOMEBREW_ATOMIC_RUNTIME_ACTIVATED\n'
     page,
     `
 set -eu
-test "$(/usr/bin/brew --prefix)" = /opt/kandelo/homebrew
-probe=/opt/kandelo/homebrew/Library/Homebrew/cmd/kandelo-env-probe.sh
+test "$(/usr/bin/brew --prefix)" = ${expectedGuestPrefix}
+probe=${expectedGuestPrefix}/Library/Homebrew/cmd/kandelo-env-probe.sh
 cat > "$probe" <<'KANDELO_BREW_ENV_PROBE'
 homebrew-kandelo-env-probe() {
   printf '%s\n' "$HOMEBREW_KANDELO_BOTTLE_TAG"
@@ -894,7 +912,7 @@ printf 'HOMEBREW_OPERATIONAL_RUNTIME_OK\n'
   const repeatBrewPriorSources = new Set(lazyRows.map(({ source }) => source));
   await runTerminalCommand(
     page,
-    'test "$(/usr/bin/brew --prefix)" = /opt/kandelo/homebrew && ' +
+    `test "$(/usr/bin/brew --prefix)" = ${expectedGuestPrefix} && ` +
       "printf 'HOMEBREW_RUNTIME_REUSE_OK\\n'",
     "HOMEBREW_RUNTIME_REUSE_OK",
     240_000,

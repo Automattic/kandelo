@@ -1,0 +1,67 @@
+{
+  "schema": 1,
+  "kind": "kandelo-live-pages-homebrew-acceptance-evidence",
+  "date": "2026-08-03",
+  "started_at": "2026-08-03T15:39:33.757Z",
+  "live_base_url": "https://automattic.github.io/kandelo/",
+  "test": "test/kandelo-homebrew-main-shell.spec.ts",
+  "project": "chromium",
+  "product": {
+    "kernel_abi": 42,
+    "guest_prefix": "/home/linuxbrew/.linuxbrew",
+    "guest_prefix_status": "temporary-rev22-compatibility-path",
+    "final_guest_prefix": "/opt/kandelo/homebrew",
+    "shell": {
+      "sha256": "d82a397d9b441269b6ea8a0fe1a37d82983a52bd6ed40b8d7387a16c3037218c",
+      "bytes": 5752199
+    },
+    "homebrew_bootstrap": {
+      "sha256": "6b94235c4463a7ae03104decb20910fb660af4d2313fc0c87a84ef02acde440c",
+      "bytes": 5081250
+    },
+    "bottle_mirror": {
+      "collection_sha256": "fd15162a8c9c06e6d7936af470cd16ba916528708356750751b55bac567a0ce2",
+      "plan_sha256": "405d59443b28137a5f00d6405ca07281e1ff5924742ffb8a666d37872063b39a",
+      "plan_bytes": 19373,
+      "asset_count": 36,
+      "plan_url": "https://github.com/Kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-fd15162a8c9c06e6d7936af470cd16ba916528708356750751b55bac567a0ce2/kandelo-homebrew-bottle-mirror-plan.json"
+    }
+  },
+  "playwright": {
+    "stats": {
+      "expected": 1,
+      "skipped": 0,
+      "unexpected": 0,
+      "flaky": 0
+    },
+    "test_status": "passed",
+    "test_duration_ms": 40551,
+    "report_duration_ms": 42449.751000000004
+  },
+  "reproduction": {
+    "working_directory": "apps/browser-demos",
+    "wrapper": "bash ../../scripts/dev-shell.sh env",
+    "environment": {
+      "CI": "1",
+      "KANDELO_BROWSER_DEMO_INPUTS": "main",
+      "KANDELO_HOMEBREW_MAIN_SHELL_STRICT": "1",
+      "KANDELO_HOMEBREW_MAIN_SHELL_SHA256": "d82a397d9b441269b6ea8a0fe1a37d82983a52bd6ed40b8d7387a16c3037218c",
+      "KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256": "6b94235c4463a7ae03104decb20910fb660af4d2313fc0c87a84ef02acde440c",
+      "KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES": "5081250",
+      "KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE": "public",
+      "KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL": "https://github.com/Kandelo-dev/homebrew-tap-core/releases/download/homebrew-shell-bottles-sha256-fd15162a8c9c06e6d7936af470cd16ba916528708356750751b55bac567a0ce2/kandelo-homebrew-bottle-mirror-plan.json",
+      "KANDELO_HOMEBREW_MAIN_SHELL_EXPECTED_PREFIX": "/home/linuxbrew/.linuxbrew",
+      "KANDELO_TEST_BASE_URL": "https://automattic.github.io/kandelo/",
+      "PLAYWRIGHT_JSON_OUTPUT_FILE": "<new-report.json>"
+    },
+    "command": [
+      "npx",
+      "playwright",
+      "test",
+      "test/kandelo-homebrew-main-shell.spec.ts",
+      "--project=chromium",
+      "--reporter=json"
+    ],
+    "harness_note": "The measured run started a local Vite process, but KANDELO_TEST_BASE_URL made the test navigate to the live Pages deployment. The committed Playwright configuration now validates an external deployment root and omits that unused local server."
+  }
+}

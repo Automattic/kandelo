@@ -25,6 +25,9 @@
 #                                 Refuse a pending local Homebrew selection.
 #                                 Release workflows use this before serving
 #                                 the browser bootstrap asset.
+#   --transitional-pages-homebrew-shell
+#                                 Internal Pages lane for the exact, published
+#                                 rev22 Homebrew shell during prefix cutover.
 #   --source-rootfs-shell         Internal GitHub Pages-only bridge. Requires
 #                                  the exact Pages job identity, provenance,
 #                                  empty file index, fresh cache, and clean
@@ -72,6 +75,7 @@ FETCH_ONLY_ARGS=()
 ALREADY_MATERIALIZED=0
 SOURCE_ROOTFS_SHELL=0
 REQUIRE_SEALED_HOMEBREW_SELECTION=0
+TRANSITIONAL_PAGES_HOMEBREW_SHELL=0
 USE_PR_STAGING=0
 NEW_ARGS=()
 for a in "$@"; do
@@ -90,6 +94,9 @@ for a in "$@"; do
             ;;
         --require-sealed-homebrew-selection)
             REQUIRE_SEALED_HOMEBREW_SELECTION=1
+            ;;
+        --transitional-pages-homebrew-shell)
+            TRANSITIONAL_PAGES_HOMEBREW_SHELL=1
             ;;
         --pr-staging)
             USE_PR_STAGING=1
@@ -123,6 +130,7 @@ export WASM_POSIX_FETCH_ONLY=$([ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ] && echo 1 || e
 export WASM_POSIX_ALREADY_MATERIALIZED=$ALREADY_MATERIALIZED
 export WASM_POSIX_SOURCE_ROOTFS_SHELL=$SOURCE_ROOTFS_SHELL
 export WASM_POSIX_REQUIRE_SEALED_HOMEBREW_SELECTION=$REQUIRE_SEALED_HOMEBREW_SELECTION
+export WASM_POSIX_TRANSITIONAL_PAGES_HOMEBREW_SHELL=$TRANSITIONAL_PAGES_HOMEBREW_SHELL
 if [ "${WASM_POSIX_USE_PR_STAGING:-0}" = "1" ]; then
     USE_PR_STAGING=1
 fi
@@ -146,6 +154,20 @@ if [ "$REQUIRE_SEALED_HOMEBREW_SELECTION" -eq 1 ]; then
         exit 2
     }
 fi
+if [ "$TRANSITIONAL_PAGES_HOMEBREW_SHELL" -eq 1 ]; then
+    [ "$#" -eq 1 ] && [ "${1:-}" = "prepare-browser" ] || {
+        err "--transitional-pages-homebrew-shell is valid only for prepare-browser."
+        exit 2
+    }
+    if [ "${#FETCH_ONLY_ARGS[@]}" -eq 0 ] ||
+        [ "$ALREADY_MATERIALIZED" -eq 1 ] ||
+        [ "$SOURCE_ROOTFS_SHELL" -eq 1 ] ||
+        [ "$REQUIRE_SEALED_HOMEBREW_SELECTION" -eq 1 ] ||
+        [ "$USE_PR_STAGING" -eq 1 ]; then
+        err "--transitional-pages-homebrew-shell requires isolated fetch-only preparation."
+        exit 2
+    fi
+fi
 
 validate_ci_browser_source_authority() {
     [ -n "$CI_BROWSER_SOURCE_AUTHORITY" ] || return 0
@@ -158,6 +180,7 @@ validate_ci_browser_source_authority() {
         [ "${#FETCH_ONLY_ARGS[@]}" -eq 0 ] ||
         [ "$SOURCE_ROOTFS_SHELL" -ne 0 ] ||
         [ "$REQUIRE_SEALED_HOMEBREW_SELECTION" -ne 0 ] ||
+        [ "$TRANSITIONAL_PAGES_HOMEBREW_SHELL" -ne 0 ] ||
         [ "$USE_PR_STAGING" -ne 0 ]; then
         err "Internal browser source authority requires isolated CI preparation."
         return 2
@@ -346,6 +369,24 @@ pkg_output_rel() {
     "$xtask" build-deps --arch "$arch" output-path "$pkg" "$wasm" 2>/dev/null
 }
 
+# pkg_resolver_rel <pkg-name> <wasm-basename> [arch]
+#
+# Print the complete path accepted by resolve-binary.sh. The wasm32 resolver
+# retains a historical default-architecture shorthand; make every caller use
+# this helper so wasm64 can never be mistaken for that default.
+pkg_resolver_rel() {
+    local pkg=$1
+    local wasm=$2
+    local arch=${3:-wasm32}
+    local rel
+    rel=$(pkg_output_rel "$pkg" "$wasm" "$arch") || return 1
+    if [ "$arch" = "wasm32" ]; then
+        printf 'programs/%s\n' "$rel"
+    else
+        printf 'programs/%s/%s\n' "$arch" "$rel"
+    fi
+}
+
 # pkg_local_output_path <pkg-name> <wasm-basename> [arch]
 pkg_local_output_path() {
     local pkg=$1
@@ -387,16 +428,9 @@ pkg_has_output() {
     local pkg=$1
     local wasm=$2
     local arch=${3:-wasm32}
-    local rel
-    rel=$(pkg_output_rel "$pkg" "$wasm" "$arch") || return 1
-    if [ "$arch" = "wasm32" ]; then
-        # `has_resolvable programs/<x>` injects `wasm32/` per the
-        # default-arch shim (matches host/src/binary-resolver.ts). No
-        # explicit arch segment needed.
-        has_resolvable "programs/$rel"
-    else
-        has_resolvable "programs/$arch/$rel"
-    fi
+    local resolver_rel
+    resolver_rel=$(pkg_resolver_rel "$pkg" "$wasm" "$arch") || return 1
+    has_resolvable "$resolver_rel"
 }
 
 has_kernel()    { has_resolvable kernel.wasm || has_valid_kernel_file "$REPO_ROOT/host/wasm/kandelo-kernel.wasm"; }
@@ -2385,6 +2419,17 @@ BROWSER_EXTERNAL_GALLERY_PKGS=(cpython python-vfs perl perl-vfs ruby erlang erla
 # would make browser readiness depend on the registry we are retiring.
 BROWSER_FETCH_SKIP_PKGS=(spidermonkey node homebrew-bootstrap)
 
+# These five conventional VFS packages are byte-for-byte the same as the
+# currently deployed Pages assets, but their recipe cache keys changed after
+# publication. The temporary rev22 lane installs their reviewed archive
+# members directly so unrelated gallery rebuilds do not block the shell.
+TRANSITIONAL_PAGES_GALLERY_COMPAT_PKGS=(
+    lamp nginx-php-vfs nginx-vfs node-vfs wordpress
+)
+TRANSITIONAL_PAGES_SOURCE_PROJECTION_COMPAT_PKGS=(
+    kandelo-sdk mariadb-test mariadb-vfs redis-vfs rootfs
+)
+
 # All targets needed for the Kandelo browser UI and retained browser labs.
 # Each entry's `has_X` short-circuits when its release binary is in
 # `binaries/`, so this loop is a no-op on a fully-fetched checkout.
@@ -2400,6 +2445,13 @@ build_browser() {
 }
 
 prepare_browser_homebrew_bootstrap() {
+    if [ "$TRANSITIONAL_PAGES_HOMEBREW_SHELL" -eq 1 ]; then
+        # WHY: this temporary Pages lane has already staged the bootstrap from
+        # the exact historical package archive. Running the ordinary selector
+        # here would replace it with a different, incomplete campaign result.
+        verify_transitional_pages_homebrew_shell
+        return 0
+    fi
     # WHY: generic Prepare Merge has already authenticated this materialized
     # image as the explicit source-rootfs bridge. That bridge truthfully has
     # no Homebrew selection, so asking it for a bootstrap bottle would turn a
@@ -2427,11 +2479,16 @@ fetch_browser_binaries() {
     local disabled_pkgs
     local fetch_args=()
     disabled_pkgs="${BROWSER_EXTERNAL_GALLERY_PKGS[*]} ${BROWSER_FETCH_SKIP_PKGS[*]}"
-    if [ "$SOURCE_ROOTFS_SHELL" -eq 1 ]; then
-        # WHY: the selected bridge has already installed its inspected bytes
-        # under the canonical browser path. A full-registry fetch must not
-        # directly resolve the bottle-backed shell and replace that selection.
+    if [ "$SOURCE_ROOTFS_SHELL" -eq 1 ] ||
+        [ "$TRANSITIONAL_PAGES_HOMEBREW_SHELL" -eq 1 ]; then
+        # WHY: one exact shell has already been installed under the canonical
+        # package identity. A full-registry fetch must not replace it through
+        # ordinary shell selection while the browser closure is assembled.
         disabled_pkgs="$disabled_pkgs shell"
+    fi
+    if [ "$TRANSITIONAL_PAGES_HOMEBREW_SHELL" -eq 1 ]; then
+        disabled_pkgs="$disabled_pkgs ${TRANSITIONAL_PAGES_GALLERY_COMPAT_PKGS[*]}"
+        disabled_pkgs+=" ${TRANSITIONAL_PAGES_SOURCE_PROJECTION_COMPAT_PKGS[*]}"
     fi
     if [ "${#FETCH_ONLY_ARGS[@]}" -gt 0 ]; then
         fetch_args+=("${FETCH_ONLY_ARGS[@]}")
@@ -2447,6 +2504,327 @@ fetch_browser_binaries() {
     fi
     WASM_POSIX_FETCH_SKIP_PKGS="${WASM_POSIX_FETCH_SKIP_PKGS:-} $disabled_pkgs" \
         "$REPO_ROOT/scripts/fetch-binaries.sh" "${fetch_args[@]}"
+}
+
+transitional_pages_gallery_rows() {
+    local report="$1"
+    jq -er '
+      .gallery_compatibility as $assets |
+      if
+        ($assets | type) == "array" and
+        ($assets | map(.package + ":" + .output)) == [
+          "lamp:lamp.vfs.zst",
+          "nginx-php-vfs:nginx-php.vfs.zst",
+          "nginx-vfs:nginx.vfs.zst",
+          "node-vfs:node-vfs.vfs.zst",
+          "wordpress:wordpress.vfs.zst"
+        ] and
+        all($assets[];
+          (.archive_sha256 | type) == "string" and
+          (.archive_sha256 | test("^[0-9a-f]{64}$")) and
+          (.sha256 | type) == "string" and
+          (.sha256 | test("^[0-9a-f]{64}$")) and
+          (.bytes | type) == "number" and .bytes > 0 and
+          (.archive_url | type) == "string" and
+          (.archive_url |
+            startswith("https://github.com/Automattic/kandelo/releases/")) and
+          .verified_live_base_url ==
+            "https://automattic.github.io/kandelo/")
+      then
+        $assets[] |
+          [.package, .output, .sha256, (.bytes | tostring)] | @tsv
+      else
+        error("invalid transitional gallery compatibility set")
+      end
+    ' "$report"
+}
+
+transitional_pages_source_projection_rows() {
+    local report="$1"
+    jq -er '
+      .source_projection_compatibility as $assets |
+      if
+        ($assets | type) == "array" and
+        ($assets | map(.package + ":" + .arch + ":" + .output)) == [
+          "kandelo-sdk:wasm32:kandelo-sdk.vfs.zst",
+          "mariadb-test:wasm32:mariadb-test.vfs.zst",
+          "mariadb-vfs:wasm32:mariadb-vfs.vfs.zst",
+          "mariadb-vfs:wasm64:mariadb-vfs.vfs.zst",
+          "redis-vfs:wasm32:redis.vfs.zst",
+          "rootfs:wasm32:rootfs.vfs"
+        ] and
+        all($assets[];
+          (.archive_sha256 | type) == "string" and
+          (.archive_sha256 | test("^[0-9a-f]{64}$")) and
+          (.sha256 | type) == "string" and
+          (.sha256 | test("^[0-9a-f]{64}$")) and
+          (.bytes | type) == "number" and .bytes > 0 and
+          (.archive_url | type) == "string" and
+          (.archive_url |
+            startswith("https://github.com/Automattic/kandelo/releases/")))
+      then
+        $assets[] |
+          [.package, .arch, .output, .sha256, (.bytes | tostring)] | @tsv
+      else
+        error("invalid source projection compatibility set")
+      end
+    ' "$report"
+}
+
+verify_transitional_pages_homebrew_shell() {
+    local root="${WASM_POSIX_TRANSITIONAL_PAGES_SHELL_ROOT:-}"
+    local report="$root/inspection.json"
+    local image="$root/shell.vfs.zst"
+    local bootstrap="$root/homebrew-bootstrap.zip"
+    local resolved browser_bootstrap actual_sha actual_bytes path
+    local gallery_rows projection_rows package arch output resolver_rel
+    local expected_sha expected_bytes output_rel
+    case "$root" in
+        /*) ;;
+        *)
+            err "Transitional Pages shell root must be an absolute path."
+            return 2
+            ;;
+    esac
+    for path in "$report" "$image" "$bootstrap"; do
+        [ -f "$path" ] && [ ! -L "$path" ] || {
+            err "Transitional Pages shell input is not a regular file: $path"
+            return 1
+        }
+    done
+    jq -e '
+      .schema == 1 and
+      .kind == "kandelo-transitional-homebrew-pages-shell-inspection" and
+      .lifecycle == "transitional" and
+      .removal_condition ==
+        "canonical-kandelo-prefix-shell-is-deployable" and
+      .exact_current_main == false and
+      .kernel_abi == 42 and
+      .guest_prefix == "/home/linuxbrew/.linuxbrew" and
+      .bottle_mirror.immutable == true
+    ' "$report" >/dev/null || {
+        err "Transitional Pages shell inspection report is invalid."
+        return 1
+    }
+    gallery_rows="$(transitional_pages_gallery_rows "$report")" || {
+        err "Transitional Pages gallery compatibility report is invalid."
+        return 1
+    }
+    projection_rows="$(
+        transitional_pages_source_projection_rows "$report"
+    )" || {
+        err "Transitional Pages source projection report is invalid."
+        return 1
+    }
+    actual_sha="$(shasum -a 256 "$image" | awk '{print $1}')"
+    actual_bytes="$(wc -c <"$image" | tr -d '[:space:]')"
+    [ "$actual_sha" = "$(jq -er '.shell.sha256' "$report")" ] &&
+        [ "$actual_bytes" = "$(jq -er '.shell.bytes' "$report")" ] || {
+        err "Transitional Pages shell changed after inspection."
+        return 1
+    }
+    actual_sha="$(shasum -a 256 "$bootstrap" | awk '{print $1}')"
+    actual_bytes="$(wc -c <"$bootstrap" | tr -d '[:space:]')"
+    [ "$actual_sha" = "$(jq -er '.homebrew_bootstrap.sha256' "$report")" ] &&
+        [ "$actual_bytes" = "$(jq -er '.homebrew_bootstrap.bytes' "$report")" ] || {
+        err "Transitional Pages Homebrew bootstrap changed after inspection."
+        return 1
+    }
+    resolved="$(bash "$REPO_ROOT/scripts/resolve-binary.sh" \
+        programs/shell.vfs.zst)" || {
+        err "Transitional Pages shell is not resolver-selected."
+        return 1
+    }
+    [ -f "$resolved" ] && [ ! -L "$resolved" ] &&
+        cmp -s "$image" "$resolved" || {
+        err "Resolver selected different shell bytes."
+        return 1
+    }
+    while IFS=$'\t' read -r package output expected_sha expected_bytes; do
+        case "$package:$output" in
+            lamp:lamp.vfs.zst | \
+            nginx-php-vfs:nginx-php.vfs.zst | \
+            nginx-vfs:nginx.vfs.zst | \
+            node-vfs:node-vfs.vfs.zst | \
+            wordpress:wordpress.vfs.zst) ;;
+            *)
+                err "Transitional Pages gallery report has an unsafe path."
+                return 1
+                ;;
+        esac
+        path="$root/gallery/$package/$output"
+        [ -f "$path" ] && [ ! -L "$path" ] || {
+            err "Transitional Pages gallery input is missing: $path"
+            return 1
+        }
+        actual_sha="$(shasum -a 256 "$path" | awk '{print $1}')"
+        actual_bytes="$(wc -c <"$path" | tr -d '[:space:]')"
+        [ "$actual_sha" = "$expected_sha" ] &&
+            [ "$actual_bytes" = "$expected_bytes" ] || {
+            err "Transitional Pages gallery input changed: $package"
+            return 1
+        }
+        output_rel="$(pkg_output_rel "$package" "$output" wasm32)" || {
+            err "Could not derive resolver path for $package."
+            return 1
+        }
+        resolved="$(bash "$REPO_ROOT/scripts/resolve-binary.sh" \
+            "programs/$output_rel")" || {
+            err "Transitional Pages gallery package is not selected: $package"
+            return 1
+        }
+        [ -f "$resolved" ] && [ ! -L "$resolved" ] &&
+            cmp -s "$path" "$resolved" || {
+            err "Resolver selected different gallery bytes for $package."
+            return 1
+        }
+    done <<<"$gallery_rows"
+    while IFS=$'\t' read -r \
+        package arch output expected_sha expected_bytes; do
+        case "$package:$arch:$output" in
+            kandelo-sdk:wasm32:kandelo-sdk.vfs.zst | \
+            mariadb-test:wasm32:mariadb-test.vfs.zst | \
+            mariadb-vfs:wasm32:mariadb-vfs.vfs.zst | \
+            mariadb-vfs:wasm64:mariadb-vfs.vfs.zst | \
+            redis-vfs:wasm32:redis.vfs.zst | \
+            rootfs:wasm32:rootfs.vfs) ;;
+            *)
+                err "Transitional source projection report has an unsafe path."
+                return 1
+                ;;
+        esac
+        path="$root/source-projection/$arch/$package/$output"
+        [ -f "$path" ] && [ ! -L "$path" ] || {
+            err "Transitional source projection input is missing: $path"
+            return 1
+        }
+        actual_sha="$(shasum -a 256 "$path" | awk '{print $1}')"
+        actual_bytes="$(wc -c <"$path" | tr -d '[:space:]')"
+        [ "$actual_sha" = "$expected_sha" ] &&
+            [ "$actual_bytes" = "$expected_bytes" ] || {
+            err "Transitional source projection input changed: $package $arch"
+            return 1
+        }
+        resolver_rel="$(pkg_resolver_rel "$package" "$output" "$arch")" || {
+            err "Could not derive resolver path for $package $arch."
+            return 1
+        }
+        resolved="$(bash "$REPO_ROOT/scripts/resolve-binary.sh" \
+            "$resolver_rel")" || {
+            err "Transitional source projection is not selected: $package $arch"
+            return 1
+        }
+        [ -f "$resolved" ] && [ ! -L "$resolved" ] &&
+            cmp -s "$path" "$resolved" || {
+            err "Resolver selected different bytes for $package $arch."
+            return 1
+        }
+    done <<<"$projection_rows"
+    browser_bootstrap="$REPO_ROOT/apps/browser-demos/public/homebrew-bootstrap.zip"
+    [ -f "$browser_bootstrap" ] && [ ! -L "$browser_bootstrap" ] &&
+        cmp -s "$bootstrap" "$browser_bootstrap" || {
+        err "Browser bootstrap differs from the inspected transitional bytes."
+        return 1
+    }
+}
+
+install_transitional_pages_homebrew_shell() {
+    [ "$TRANSITIONAL_PAGES_HOMEBREW_SHELL" -eq 1 ] || return 0
+    local root="${WASM_POSIX_TRANSITIONAL_PAGES_SHELL_ROOT:-}"
+    local image="$root/shell.vfs.zst"
+    local bootstrap="$root/homebrew-bootstrap.zip"
+    local browser_bootstrap="$REPO_ROOT/apps/browser-demos/public/homebrew-bootstrap.zip"
+    local temporary="$browser_bootstrap.transitional-${BASHPID:-$$}"
+    local report="$root/inspection.json"
+    local gallery_rows projection_rows package arch output
+    local expected_sha expected_bytes source xtask install_session
+    [ -f "$image" ] && [ ! -L "$image" ] &&
+        [ -f "$bootstrap" ] && [ ! -L "$bootstrap" ] || {
+        err "Transitional Pages shell was not prepared before browser setup."
+        return 1
+    }
+    bash "$REPO_ROOT/scripts/install-local-shell-artifact.sh" \
+        "$image" \
+        "transitional-pages-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
+    bash "$REPO_ROOT/scripts/activate-local-shell-build-override.sh" "$image"
+    gallery_rows="$(transitional_pages_gallery_rows "$report")" || {
+        err "Transitional Pages gallery compatibility report is invalid."
+        return 1
+    }
+    projection_rows="$(
+        transitional_pages_source_projection_rows "$report"
+    )" || {
+        err "Transitional Pages source projection report is invalid."
+        return 1
+    }
+    xtask="$(pkg_xtask_bin)" || return 1
+    while IFS=$'\t' read -r package output expected_sha expected_bytes; do
+        case "$package:$output" in
+            lamp:lamp.vfs.zst | \
+            nginx-php-vfs:nginx-php.vfs.zst | \
+            nginx-vfs:nginx.vfs.zst | \
+            node-vfs:node-vfs.vfs.zst | \
+            wordpress:wordpress.vfs.zst) ;;
+            *)
+                err "Transitional Pages gallery report has an unsafe path."
+                return 1
+                ;;
+        esac
+        source="$root/gallery/$package/$output"
+        [ -f "$source" ] && [ ! -L "$source" ] || {
+            err "Transitional Pages gallery input is missing: $source"
+            return 1
+        }
+        install_session="transitional-pages-${GITHUB_RUN_ID:-local}-"
+        install_session+="${GITHUB_RUN_ATTEMPT:-1}-$package"
+        WASM_POSIX_LOCAL_INSTALL_SOURCE="$source" \
+        WASM_POSIX_LOCAL_INSTALL_SESSION="$install_session" \
+            "$xtask" build-deps --arch wasm32 \
+                --binaries-dir "$REPO_ROOT/local-binaries" \
+                install-local-artifact "$package" "$output"
+    done <<<"$gallery_rows"
+    while IFS=$'\t' read -r \
+        package arch output expected_sha expected_bytes; do
+        case "$package:$arch:$output" in
+            kandelo-sdk:wasm32:kandelo-sdk.vfs.zst | \
+            mariadb-test:wasm32:mariadb-test.vfs.zst | \
+            mariadb-vfs:wasm32:mariadb-vfs.vfs.zst | \
+            mariadb-vfs:wasm64:mariadb-vfs.vfs.zst | \
+            redis-vfs:wasm32:redis.vfs.zst | \
+            rootfs:wasm32:rootfs.vfs) ;;
+            *)
+                err "Transitional source projection report has an unsafe path."
+                return 1
+                ;;
+        esac
+        source="$root/source-projection/$arch/$package/$output"
+        [ -f "$source" ] && [ ! -L "$source" ] || {
+            err "Transitional source projection input is missing: $source"
+            return 1
+        }
+        install_session="transitional-pages-${GITHUB_RUN_ID:-local}-"
+        install_session+="${GITHUB_RUN_ATTEMPT:-1}-$package-$arch"
+        WASM_POSIX_LOCAL_INSTALL_SOURCE="$source" \
+        WASM_POSIX_LOCAL_INSTALL_SESSION="$install_session" \
+            "$xtask" build-deps --arch "$arch" \
+                --binaries-dir "$REPO_ROOT/local-binaries" \
+                install-local-artifact "$package" "$output"
+    done <<<"$projection_rows"
+    if [ -e "$browser_bootstrap" ] || [ -L "$browser_bootstrap" ] ||
+        [ -e "$temporary" ] || [ -L "$temporary" ]; then
+        err "Transitional Pages lane cannot replace an existing bootstrap path."
+        return 1
+    fi
+    # WHY: VFS metadata deliberately names this same-origin URL. Publish only
+    # the already-inspected bytes, and never let the ordinary selector replace
+    # them with a sibling campaign result.
+    cp -- "$bootstrap" "$temporary"
+    cmp -s "$bootstrap" "$temporary" || {
+        err "Could not stage the exact transitional bootstrap bytes."
+        return 1
+    }
+    mv -- "$temporary" "$browser_bootstrap"
+    verify_transitional_pages_homebrew_shell
 }
 
 build_all() {
@@ -2956,6 +3334,9 @@ cmd_prepare_browser() {
         # instead of source-building the canonical bottle recipe.
         install_source_rootfs_shell_vfs
     fi
+    if [ "$TRANSITIONAL_PAGES_HOMEBREW_SHELL" -eq 1 ]; then
+        install_transitional_pages_homebrew_shell
+    fi
 
     # Resolve the small lazy bootstrap first. A pending or unavailable
     # Formula selection should fail before the much larger gallery fetch and
@@ -2980,6 +3361,11 @@ cmd_prepare_browser() {
         verify_source_rootfs_shell_runtime_browser_closure
     fi
     build_browser
+    if [ "$TRANSITIONAL_PAGES_HOMEBREW_SHELL" -eq 1 ]; then
+        # General gallery preparation may resolve many unrelated packages.
+        # Prove none of those operations changed the selected shell product.
+        verify_transitional_pages_homebrew_shell
+    fi
     if [ "$SOURCE_ROOTFS_SHELL" -eq 1 ]; then
         # WHY: browser preparation can resolve many transitive packages. Prove
         # none of those steps replaced the selected bridge before releasing
@@ -3198,6 +3584,8 @@ cmd_list() {
     echo "                                        pages-exact-main-v1 attestation, an"
     echo "                                        empty file index, fresh cache, and"
     echo "                                        unmaterialized package workspace."
+    echo "  --transitional-pages-homebrew-shell  INTERNAL: Pages-only exact rev22"
+    echo "                                        Homebrew shell during prefix cutover."
     echo "  --pr-staging                         Use the current PR's staging binary"
     echo "                                        index unless WASM_POSIX_BINARY_INDEX_URL"
     echo "                                        is already set."

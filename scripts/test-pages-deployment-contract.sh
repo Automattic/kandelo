@@ -127,14 +127,19 @@ expect_mutation_rejected \
   's/submodules: libc\/musl/submodules: libc\/missing/'
 
 expect_mutation_rejected \
-  "missing canonical package cache root" \
-  "must establish one fresh canonical package cache" \
+  "missing gallery package cache root" \
+  "must establish one fresh gallery package cache" \
   's/^          echo "WASM_POSIX_BINARY_CACHE_ROOT=\$product_cache" >> "\$GITHUB_ENV"\n//m'
 
 expect_mutation_rejected \
   "cache root lost inside dev-shell" \
-  "browser preparation must retain the canonical cache inside dev-shell" \
+  "browser preparation must retain exact transition inputs inside dev-shell" \
   's/^            "WASM_POSIX_BINARY_CACHE_ROOT=\$WASM_POSIX_BINARY_CACHE_ROOT" \\\n//m'
+
+expect_mutation_rejected \
+  "Pages base path lost inside Chromium dev-shell" \
+  "must prove the public bottled shell at the published base" \
+  's/^            "VITE_BASE=\$VITE_BASE" \\\n//m'
 
 expect_mutation_rejected \
   "source-fallback browser preparation" \
@@ -142,19 +147,29 @@ expect_mutation_rejected \
   's#(            \./run\.sh --fetch-only \\\n)#$1              --allow-stale \\\n#'
 
 expect_mutation_rejected \
-  "swallowed canonical preparation failure" \
+  "swallowed transitional preparation failure" \
   "must be the final failure-propagating command" \
-  's#(--require-sealed-homebrew-selection prepare-browser)#$1 || true#'
+  's#(--transitional-pages-homebrew-shell prepare-browser)#$1 || true#'
 
 expect_mutation_rejected \
-  "work after canonical preparation command" \
+  "work after transitional preparation command" \
   "must be the final failure-propagating command" \
-  's#(--require-sealed-homebrew-selection prepare-browser\n)#$1          echo continued\n#'
+  's#(--transitional-pages-homebrew-shell prepare-browser\n)#$1          echo continued\n#'
 
 expect_mutation_rejected \
-  "missing sealed shell artifact check" \
-  "must bind the canonical shell, bootstrap, and embedded mirror plan" \
-  's/scripts\/verify-homebrew-main-shell-artifact-lock\.sh/scripts\/skipped-artifact-lock.sh/'
+  "missing transitional shell report binding" \
+  "must bind the exact transitional shell, gallery, and bootstrap" \
+  's#WASM_POSIX_TRANSITIONAL_PAGES_SHELL_ROOT/inspection\.json#WASM_POSIX_TRANSITIONAL_PAGES_SHELL_ROOT/skipped.json#'
+
+expect_mutation_rejected \
+  "missing transitional gallery binding" \
+  "must bind the exact transitional shell, gallery, and bootstrap" \
+  's/\(\.gallery_compatibility \| map\(\.package\)\) == \[/\(.unbound_gallery | map(.package)\) == [/g'
+
+expect_mutation_rejected \
+  "missing transitional source projection binding" \
+  "must bind the exact transitional source projection set" \
+  's/\(\.source_projection_compatibility \|/\(.unbound_source_projection |/'
 
 expect_mutation_rejected \
   "shell-only Pages build" \
@@ -162,19 +177,19 @@ expect_mutation_rejected \
   's/(      - name: Build browser demos for GitHub Pages\n        working-directory: apps\/browser-demos\n)/$1        env:\n          KANDELO_BROWSER_DEMO_INPUTS: main\n/'
 
 expect_mutation_rejected \
-  "missing public product inspector" \
-  "must bind the canonical shell, bootstrap, and embedded mirror plan" \
-  's/scripts\/inspect-homebrew-main-shell-public-product\.ts/scripts\/skipped-public-product.ts/'
+  "missing transitional product inspector" \
+  "must fetch, inspect, and expose the exact transitional shell" \
+  's/scripts\/prepare-transitional-homebrew-pages-shell\.sh/scripts\/skipped-transitional-shell.sh/'
 
 expect_mutation_rejected \
-  "missing public product inspector rejection tests" \
-  "must run the public-product inspector rejection tests" \
-  's/scripts\/inspect-homebrew-main-shell-public-product\.test\.ts/scripts\/skipped-public-product.test.ts/'
+  "missing transitional product inspector rejection tests" \
+  "must fetch, inspect, and expose the exact transitional shell" \
+  's/scripts\/inspect-transitional-homebrew-pages-shell\.test\.ts/scripts\/skipped-transitional-shell.test.ts/'
 
 expect_mutation_rejected \
   "eager mirror recovery during inspection" \
   "must not eagerly download the complete bottle mirror" \
-  's#(          test ! -e "\$report"\n)#$1          npx tsx scripts/recover-homebrew-bottle-mirror.ts\n#'
+  's#(          test ! -e "\$transition_root"\n)#$1          npx tsx scripts/recover-homebrew-bottle-mirror.ts\n#'
 
 expect_mutation_rejected \
   "missing hashed shell asset verifier" \
@@ -244,12 +259,12 @@ expect_mutation_rejected \
 expect_mutation_rejected \
   "bottled preview without Pages base" \
   "must prove the public bottled shell at the published base" \
-  's/(      - name: Boot the canonical bottled Pages shell in Chromium\n        working-directory: apps\/browser-demos\n        env:\n)          VITE_BASE: \/kandelo\/\n/$1/'
+  's/(      - name: Boot the transitional bottled Pages shell in Chromium\n        working-directory: apps\/browser-demos\n        env:\n)          VITE_BASE: \/kandelo\/\n/$1/'
 
 expect_mutation_rejected \
   "bottled preview loses package cache root" \
   "must prove the public bottled shell at the published base" \
-  's/(      - name: Boot the canonical bottled Pages shell in Chromium[\s\S]*?)^            "WASM_POSIX_BINARY_CACHE_ROOT=\$WASM_POSIX_BINARY_CACHE_ROOT" \\\n/$1/m'
+  's/(      - name: Boot the transitional bottled Pages shell in Chromium[\s\S]*?)^            "WASM_POSIX_BINARY_CACHE_ROOT=\$WASM_POSIX_BINARY_CACHE_ROOT" \\\n/$1/m'
 
 expect_mutation_rejected \
   "bottled preview uses the retired source test" \

@@ -2,11 +2,20 @@ import { defineConfig } from "@playwright/test";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { shouldReuseExistingPlaywrightServer } from "./playwright-server-policy";
+import {
+  configuredPlaywrightTestBaseUrl,
+  usesManagedPlaywrightServer,
+} from "./playwright-test-target";
 import { HOMEBREW_CLOSED_ACCEPTANCE_VITE_MODE } from "./lib/homebrew-closed-acceptance";
 import { playwrightWebServerEnvironment } from "./playwright-closed-acceptance";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.KANDELO_PLAYWRIGHT_PORT ?? 5401);
+const configuredTestBaseUrl = configuredPlaywrightTestBaseUrl(process.env);
+const startManagedWebServer = usesManagedPlaywrightServer(
+  configuredTestBaseUrl,
+  port,
+);
 const serveSealedDist = process.env.KANDELO_PLAYWRIGHT_SERVE_DIST === "1";
 const configuredViteMode = process.env.KANDELO_PLAYWRIGHT_VITE_MODE?.trim();
 if (
@@ -76,7 +85,7 @@ export default defineConfig({
   timeout: 120_000,
   workers: process.env.CI ? 1 : undefined,
   use: {
-    baseURL: `http://127.0.0.1:${port}`,
+    baseURL: configuredTestBaseUrl ?? `http://127.0.0.1:${port}`,
     // Nix dev-shell build/linker paths are for toolchain commands, not
     // downloaded Playwright browser binaries. WebKitGTK reads more host
     // environment than Chromium/Firefox and can crash before navigation.
@@ -84,7 +93,10 @@ export default defineConfig({
     screenshot: "only-on-failure",
     trace: process.env.CI ? "retain-on-failure" : "off",
   },
-  webServer: {
+  // WHY: an external acceptance test must exercise the deployed bytes. A
+  // local Vite server would be unused and could obscure which product the run
+  // actually proved while consuming runner time and resources.
+  webServer: startManagedWebServer ? {
     command: serveSealedDist
       ? `npx vite preview${viteModeArgument} --config ${join(__dirname, "vite.config.ts")} --host 127.0.0.1 --port ${port} --strictPort`
       : `npx vite${viteModeArgument} --config ${join(__dirname, "vite.config.ts")} --host 127.0.0.1 --port ${port} --strictPort`,
@@ -92,7 +104,7 @@ export default defineConfig({
     env: webServerEnvironment,
     reuseExistingServer: shouldReuseExistingPlaywrightServer(process.env),
     timeout: 30_000,
-  },
+  } : undefined,
   projects: [
     {
       name: "chromium",
