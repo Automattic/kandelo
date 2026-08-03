@@ -846,12 +846,18 @@ physical package generations transported into this runtime. It carries
 those package projections and every contextual dependency identity they
 name, so a fetched generation remains bound to its package name,
 architecture, manifest, outputs, and cache key. Unrelated repository
-index rows are not copied. The repository-wide index remains an independently
-checked, current source projection; the smaller file is a least-authority
-runtime input, not a substitute for that repository contract. Workspace
-members, the source/build registry, local binaries, unrelated package
-identities, Cargo output, source-build helpers, and the mutable checkout
-remain absent.
+index rows are not copied. Publisher preflight regenerates this exact
+selection and compares its program rows and complete dependency identities
+with the committed repository projection. A change to one of these selected
+inputs therefore fails, while a change to an unrelated retiring VFS recipe
+does not reject or rebuild a Homebrew bottle.
+
+The repository-wide index remains a separate conventional-package contract.
+Normal source-checkout resolution still requires that complete projection to
+be current. The smaller Formula-test file is a least-authority runtime input,
+not permission to use a stale conventional row. Workspace members, the
+source/build registry, local binaries, unrelated package identities, Cargo
+output, source-build helpers, and the mutable checkout remain absent.
 
 The stager snapshots and hashes every selected source before copying, checks
 the source identities again after copying, validates symlinks against the
