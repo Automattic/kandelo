@@ -123,10 +123,13 @@ describe("development CORS proxy", () => {
         return;
       }
       response.writeHead(200, {
+        "Alt-Svc": 'h3=":443"',
         "Access-Control-Allow-Origin": "https://ambient.invalid",
+        "Clear-Site-Data": '"cache"',
         "Content-Type": request.method === "POST"
           ? "application/x-git-upload-pack-result"
           : "application/x-git-upload-pack-advertisement",
+        "Report-To": '{"group":"upstream"}',
         "Set-Cookie": "upstream=secret",
       });
       response.end(request.method === "POST" ? "0008NAK\n" : "001e# service=git-upload-pack\n0000");
@@ -189,6 +192,9 @@ describe("development CORS proxy", () => {
       );
       expect(post.headers["set-cookie"]).toBeUndefined();
       expect(post.headers["access-control-allow-origin"]).toBeUndefined();
+      expect(post.headers["alt-svc"]).toBeUndefined();
+      expect(post.headers["clear-site-data"]).toBeUndefined();
+      expect(post.headers["report-to"]).toBeUndefined();
       expect(post.headers["cross-origin-resource-policy"]).toBe("same-origin");
       expect(postRedirectMode).toBe("manual");
 
@@ -212,7 +218,7 @@ describe("development CORS proxy", () => {
         "application/x-git-upload-pack-request",
       );
       expect(observed[2]!.headers["git-protocol"]).toBe("version=2");
-      expect(observed[2]!.headers["x-guest-probe"]).toBe("preserved");
+      expect(observed[2]!.headers["x-guest-probe"]).toBeUndefined();
       expect(observed[2]!.headers.authorization).toBeUndefined();
       expect(observed[2]!.headers.cookie).toBeUndefined();
       expect(observed[2]!.headers.origin).toBeUndefined();
@@ -311,21 +317,15 @@ describe("development CORS proxy", () => {
     }
   });
 
-  it("returns only safe POST redirects without following them", async () => {
+  it("keeps default-following outer fetches inside the relay", async () => {
     let redirectedRequests = 0;
     const redirectedTarget = createServer((_request, response) => {
       redirectedRequests += 1;
       response.end("unexpected private target");
     });
     const redirectedRoot = await listen(redirectedTarget);
-    const safeLocation =
-      "https://github.com/example/renamed.git/git-upload-pack";
-    const redirector = createServer((request, response) => {
-      response.writeHead(302, {
-        Location: request.url?.includes("/safe.git/")
-          ? safeLocation
-          : `${redirectedRoot}/private`,
-      });
+    const redirector = createServer((_request, response) => {
+      response.writeHead(302, { Location: `${redirectedRoot}/private` });
       response.end();
     });
     const redirectorRoot = await listen(redirector);
@@ -338,34 +338,21 @@ describe("development CORS proxy", () => {
     const relayRoot = await listen(relay);
 
     try {
-      const result = await sendRequest({
-        url: proxyUrl(
+      const result = await fetch(
+        proxyUrl(
           relayRoot,
           "https://github.com/example/repo.git/git-upload-pack",
         ),
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-git-upload-pack-request",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/x-git-upload-pack-request",
+          },
+          body: Buffer.from("0014command=ls-refs\n0000"),
         },
-        body: Buffer.from("0014command=ls-refs\n0000"),
-      });
+      );
       expect(result.status).toBe(502);
-      expect(result.headers.location).toBeUndefined();
-      expect(redirectedRequests).toBe(0);
-
-      const safeResult = await sendRequest({
-        url: proxyUrl(
-          relayRoot,
-          "https://github.com/example/safe.git/git-upload-pack",
-        ),
-        method: "POST",
-        headers: {
-          "Content-Type": "application/x-git-upload-pack-request",
-        },
-        body: Buffer.from("0014command=ls-refs\n0000"),
-      });
-      expect(safeResult.status).toBe(302);
-      expect(safeResult.headers.location).toBe(safeLocation);
+      expect(result.headers.get("location")).toBeNull();
       expect(redirectedRequests).toBe(0);
     } finally {
       await Promise.all([

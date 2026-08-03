@@ -20,51 +20,30 @@ export type DevCorsProxyFetch = (
 // WHY: this local relay proves anonymous public Git and bottle transport.
 // Forwarding credentials needs a separately reviewed host/proxy protocol;
 // ambient browser Authorization must not become guest authority by accident.
-const DISALLOWED_REQUEST_HEADERS = new Set([
-  "accept-encoding",
-  "accept-language",
-  "authorization",
-  "connection",
-  "content-length",
-  "cookie",
-  "cookie2",
-  "forwarded",
-  "host",
-  "keep-alive",
-  "origin",
-  "priority",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "proxy-connection",
-  "referer",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade",
-  "user-agent",
-  "via",
-  "x-cors-proxy-allowed-request-headers",
+const ALLOWED_REQUEST_HEADERS = new Set([
+  "accept",
+  "cache-control",
+  "content-type",
+  "git-protocol",
+  "if-match",
+  "if-modified-since",
+  "if-none-match",
+  "if-unmodified-since",
+  "pragma",
+  "range",
 ]);
 
-const DISALLOWED_RESPONSE_HEADERS = new Set([
-  "access-control-allow-credentials",
-  "access-control-allow-headers",
-  "access-control-allow-methods",
-  "access-control-allow-origin",
-  "authorization",
-  "connection",
-  "content-encoding",
-  "content-length",
-  "cross-origin-embedder-policy",
-  "cross-origin-opener-policy",
-  "cross-origin-resource-policy",
-  "keep-alive",
-  "set-cookie",
-  "set-cookie2",
-  "strict-transport-security",
-  "transfer-encoding",
-  "upgrade-insecure-requests",
-  "www-authenticate",
+// WHY: the browser receives this relay response from Kandelo's own origin.
+// Copying an arbitrary upstream header would therefore give an external host
+// same-origin authority such as clearing storage, setting client hints, or
+// changing connection policy. Keep this to inert payload/cache metadata.
+const ALLOWED_RESPONSE_HEADERS = new Set([
+  "accept-ranges",
+  "cache-control",
+  "content-type",
+  "etag",
+  "expires",
+  "last-modified",
 ]);
 
 class EntityTooLargeError extends Error {}
@@ -77,8 +56,10 @@ function headerValue(
 }
 
 /**
- * Preserve ordinary guest protocol headers while removing browser-session,
- * reverse-proxy, and transport-owned state before contacting the target.
+ * Preserve only inert cache/data and Git protocol headers.
+ *
+ * WHY: a denylist lets newly standardized browser or proxy authority cross
+ * this boundary by default. New forwarded headers need an explicit review.
  */
 export function devCorsProxyRequestHeaders(
   incoming: IncomingHttpHeaders,
@@ -88,13 +69,7 @@ export function devCorsProxyRequestHeaders(
     [string, string | string[] | undefined]
   >) {
     const lower = name.toLowerCase();
-    if (
-      DISALLOWED_REQUEST_HEADERS.has(lower) ||
-      lower.startsWith("sec-") ||
-      lower.startsWith("x-forwarded-")
-    ) {
-      continue;
-    }
+    if (!ALLOWED_REQUEST_HEADERS.has(lower)) continue;
     const value = headerValue(rawValue);
     if (value !== undefined) headers.set(name, value);
   }
@@ -106,7 +81,7 @@ function copySafeResponseHeaders(
   response: ServerResponse,
 ): void {
   upstream.forEach((value, name) => {
-    if (!DISALLOWED_RESPONSE_HEADERS.has(name.toLowerCase())) {
+    if (ALLOWED_RESPONSE_HEADERS.has(name.toLowerCase())) {
       response.setHeader(name, value);
     }
   });
@@ -311,30 +286,21 @@ export async function relayDevCorsProxyRequest(
         ? Uint8Array.from(requestBody).buffer
         : undefined,
       credentials: "omit",
-      // WHY: a public Git endpoint must not redirect this newly enabled POST
-      // into a private-network target. Return the redirect to Git so its next
-      // request crosses the same admission boundary again.
+      // WHY: the browser's outer fetch follows Location by default and would
+      // bypass this relay on its next hop. Observe redirects here so the relay
+      // can reject them instead of granting unreviewed network authority.
       redirect: method === "POST" ? "manual" : "follow",
     });
-    const redirectLocation = upstream.headers.get("location");
     if (
       method === "POST" &&
-      upstream.status >= 300 && upstream.status < 400 &&
-      redirectLocation !== null
+      upstream.status >= 300 && upstream.status < 400
     ) {
-      let redirectedUrl: URL;
-      try {
-        redirectedUrl = new URL(redirectLocation, targetUrl);
-      } catch {
-        await upstream.body?.cancel().catch(() => {});
-        fail(response, 502, "Git endpoint returned an invalid redirect");
-        return;
-      }
-      if (redirectedUrl.origin !== GITHUB_ORIGIN) {
-        await upstream.body?.cancel().catch(() => {});
-        fail(response, 502, "Git endpoint redirected outside GitHub");
-        return;
-      }
+      // Exact public tap URLs do not need a redirect. Refusing every POST
+      // redirect is safer than exposing Location to the default-following
+      // outer fetch, which would leave the same-origin relay entirely.
+      await upstream.body?.cancel().catch(() => {});
+      fail(response, 502, "Git upload-pack redirects are not supported");
+      return;
     }
     const rawDeclaredLength = upstream.headers.get("content-length");
     const declaredLength = Number(rawDeclaredLength ?? 0);
