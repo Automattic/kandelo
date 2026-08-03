@@ -2533,6 +2533,63 @@ campaign derivation. The executor repeats the same eligibility checks so a
 rewritten campaign manifest cannot route an existing or reused package through
 first-package publication.
 
+Campaign manifest schema 3 adds one bounded recovery path for a bottle that a
+previous campaign already published successfully. It does not turn the whole
+previous campaign back on. Each recovered Formula/architecture names one exact,
+content-addressed predecessor campaign and handoff. Its anonymous destination
+probe must find the exact public OCI manifest that the predecessor handoff
+describes. A missing, private, rewritten, or differently indexed destination
+cannot be recovered.
+
+The current Formula source and the recovery archive have separate Git
+authorities:
+
+- `source_tap_commit` selects the candidate Formulae and build inputs;
+- `predecessor_recovery_source` selects the tap commit that contains the
+  archived campaign ledger.
+
+Both commits must be clean, exact checkouts of the same repository. Neither may
+stand in for the other, and derivation has no fallback that scans the current
+source checkout for historical evidence. This matters because the Formula tree
+may be intentionally old while the recovery archive was added by a later
+control-plane commit.
+
+Before selecting a predecessor handoff, derivation proves that the Formula
+source, version, dependency graph, ABI snapshot, guest layout, native Homebrew
+revision, and critical validation tools are unchanged. The executor then
+downloads the exact predecessor campaign and Formula handoff, verifies the
+public OCI index and bottle layer without package credentials, and issues a
+new handoff bound to the current campaign. The bottle archive bytes and their
+original `built_from` provenance stay unchanged. An integrating controller must
+publish only that new handoff; it must not upload the already-public OCI child
+or version index again.
+
+Dependencies are resealed in topological order. A recovered Formula consumes
+both the predecessor dependency handoffs that originally justified its bottle
+and the current dependency handoffs that the new campaign will expose. Their
+bottle identities must match exactly. This lets each successful old bottle
+become independently usable in the new campaign without waiting for failed or
+unrelated siblings and without spending another source-build cycle.
+
+For example:
+
+```sh
+bash scripts/dev-shell.sh python3 \
+  scripts/homebrew-prefix-campaign-executor.py derive-predecessor-reuse \
+  --campaign current-campaign.json \
+  --source-tap-root current-source-tap \
+  --predecessor-campaign predecessor-campaign.json \
+  --predecessor-handoff predecessor-handoffs/zlib \
+  --formula zlib \
+  --arch wasm32 \
+  --out current-handoffs/zlib
+```
+
+Repeat `--predecessor-dependency-handoff <dir>` for the exact historical
+dependency closure and `--dependency-handoff <dir>` for the exact current
+closure. Campaigns that do not use predecessor recovery remain schema 2 and
+retain their existing byte-level contract.
+
 Candidate dependency versions come from the same exact Homebrew metadata
 resolution. When that closure differs from the historical Formula sidecar,
 the dependent bottle also requires a build. This prevents a campaign from
