@@ -1843,6 +1843,9 @@ jobs:
             --tap-commit "$TAP_SHA" \
             "${dependency_args[@]}" \
             --out "$resolved"
+          # WHY: GITHUB_ENV only changes later steps. Export the reviewed map
+          # here so this step cannot validate against its stale pre-build map.
+          export KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$resolved"
           echo "KANDELO_HOMEBREW_RESOLVED_TAPS_FILE=$resolved" >> "$GITHUB_ENV"
           brew_repository="$GITHUB_WORKSPACE/homebrew-prefix/Homebrew"
           [ "$(git -C "$brew_repository" rev-parse HEAD)" = "$HOMEBREW_BREW_COMMIT" ] || {
