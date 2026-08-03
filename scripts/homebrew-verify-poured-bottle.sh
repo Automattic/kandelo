@@ -364,6 +364,7 @@ STATIC_RUNTIME_DEPENDENCIES="$CONTROL_DIR/static-runtime-dependencies.txt"
 FORMULA_INFO="$CONTROL_DIR/formula-info.json"
 FORMULA_TEST_CONTRACT_FILE="$CONTROL_DIR/formula-test-contract.json"
 VERIFIED_DEPENDENCIES="$CONTROL_DIR/verified-dependency-provenance.json"
+VERIFIED_DEPENDENCY_CACHE_EVIDENCE="$CONTROL_DIR/verified-dependency-cache-evidence.json"
 TARGET_CELLAR_BEFORE_TEST="$CONTROL_DIR/target-cellar-before-test.txt"
 TARGET_CELLAR_AFTER_TEST="$CONTROL_DIR/target-cellar-after-test.txt"
 : >"$INSTALL_LOG"
@@ -377,6 +378,7 @@ TARGET_CELLAR_AFTER_TEST="$CONTROL_DIR/target-cellar-after-test.txt"
 : >"$ALLOWED_TARGET_TAPS"
 : >"$STATIC_RUNTIME_DEPENDENCIES"
 : >"$FORMULA_TEST_CONTRACT_FILE"
+: >"$VERIFIED_DEPENDENCY_CACHE_EVIDENCE"
 : >"$TARGET_CELLAR_BEFORE_TEST"
 : >"$TARGET_CELLAR_AFTER_TEST"
 chmod 0600 "$INSTALL_LOG" "$NATIVE_INSTALL_LOG" \
@@ -384,6 +386,7 @@ chmod 0600 "$INSTALL_LOG" "$NATIVE_INSTALL_LOG" \
   "$TEST_DEPENDENCY_LIST" "$SAME_TAP_TEST_DEPENDENCY_LIST" \
   "$DEPENDENCY_POUR_LIST" "$ALLOWED_TARGET_TAPS" \
   "$STATIC_RUNTIME_DEPENDENCIES" "$FORMULA_TEST_CONTRACT_FILE" \
+  "$VERIFIED_DEPENDENCY_CACHE_EVIDENCE" \
   "$TARGET_CELLAR_BEFORE_TEST" \
   "$TARGET_CELLAR_AFTER_TEST"
 
@@ -671,6 +674,36 @@ while IFS= read -r dependency; do
     --force-bottle --as-dependency --ignore-dependencies --formula "$dependency"
 done <"$DEPENDENCY_POUR_LIST"
 
+# WHY: dependency and target downloads use the same Homebrew progress
+# renderer, which may summarize a verified download without printing its URL.
+# Bind the dependency archives while they still exist in the cache. The cache
+# is deliberately emptied immediately afterward so the target proof remains
+# an independent anonymous readback.
+dependency_cache_args=(
+  capture-cache
+  --brew-bin "$BREW_BIN"
+  --tap-root "$PROVENANCE_TAP_ROOT"
+  --tap-repository "$TAP_REPOSITORY"
+  --tap-name "$TAP_NAME"
+  --tap-commit "$TAP_COMMIT"
+  --tap-checkout-commit "$TAP_CHECKOUT_COMMIT"
+  --formula "$FORMULA"
+  --arch "$ARCH"
+  --bottle-root-url "$BOTTLE_ROOT_URL"
+  --expected-dependencies "$DEPENDENCY_LIST"
+  --cache-root "$HOMEBREW_CACHE"
+  --out "$VERIFIED_DEPENDENCY_CACHE_EVIDENCE"
+)
+if [ -n "$HOMEBREW_GUEST_LAYOUT_SHA256" ]; then
+  dependency_cache_args+=(
+    --prefix-campaign-layout-sha256 "$HOMEBREW_GUEST_LAYOUT_SHA256"
+  )
+fi
+HOMEBREW_KANDELO_BOTTLE_TAG="$BOTTLE_TAG" \
+KANDELO_HOMEBREW_BOTTLE_TAG="$BOTTLE_TAG" \
+  python3 "$KANDELO_ROOT/scripts/homebrew-dependency-provenance.py" \
+    "${dependency_cache_args[@]}"
+
 # Dependency downloads have already been proven independently. Remove every
 # cached object before the target selection so a public publication must make
 # Homebrew fetch the target selected by the reconstructed bottle block.
@@ -786,6 +819,7 @@ dependency_provenance_args=(
   --target-receipt "$TARGET_RECEIPT" \
   --expected-dependencies "$DEPENDENCY_LIST" \
   --install-log "$INSTALL_LOG" \
+  --cache-evidence "$VERIFIED_DEPENDENCY_CACHE_EVIDENCE" \
   --out "$VERIFIED_DEPENDENCIES"
 )
 if [ -n "$HOMEBREW_GUEST_LAYOUT_SHA256" ]; then
@@ -842,6 +876,7 @@ python3 "$KANDELO_ROOT/scripts/homebrew-bottle-runtime-evidence.py" capture \
   --install-log "$INSTALL_LOG" \
   --node-receipt "$HOMEBREW_KANDELO_NODE_RECEIPT_PATH" \
   --installed-bottle "$INSTALLED_BOTTLE" \
+  --cache-root "$HOMEBREW_CACHE" \
   --out "$OUT"
 
 echo "homebrew-verify-poured-bottle.sh: verified $FORMULA $ARCH from $BOTTLE_SHA256"
