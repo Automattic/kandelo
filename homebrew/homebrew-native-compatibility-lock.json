@@ -11325,18 +11325,15 @@
           {
             "force": true,
             "source": {
-              "base": "formula_pkgetc",
-              "formula": "ca-certificates",
-              "path": "cert.pem"
+              "path": "{{etc}}/ca-certificates/cert.pem"
             },
             "target": {
-              "base": "pkgetc",
-              "path": "cert.pem"
+              "path": "{{pkgetc}}/cert.pem"
             },
             "type": "symlink"
           }
         ],
-        "ruby_source_checksum": "00e19cdcb1b7d99058a8a15f316e5dce2e4b5cd2afee14b272e7f5448624801d",
+        "ruby_source_checksum": "7f4156fac938a48e1dbf1d03afe3fe3dc15eb20f1139f4d8aa471058cabd5996",
         "stable_checksum": "243a86649cf6f23eeb6a2ff2456e09e5d77dd9018a54d3d96b0c6bdd6ba6c7f1",
         "stable_dependencies": [
           "ca-certificates"
@@ -11408,18 +11405,15 @@
           {
             "force": true,
             "source": {
-              "base": "formula_pkgetc",
-              "formula": "ca-certificates",
-              "path": "cert.pem"
+              "path": "{{etc}}/ca-certificates/cert.pem"
             },
             "target": {
-              "base": "pkgetc",
-              "path": "cert.pem"
+              "path": "{{pkgetc}}/cert.pem"
             },
             "type": "symlink"
           }
         ],
-        "ruby_source_checksum": "00e19cdcb1b7d99058a8a15f316e5dce2e4b5cd2afee14b272e7f5448624801d",
+        "ruby_source_checksum": "7f4156fac938a48e1dbf1d03afe3fe3dc15eb20f1139f4d8aa471058cabd5996",
         "stable_checksum": "243a86649cf6f23eeb6a2ff2456e09e5d77dd9018a54d3d96b0c6bdd6ba6c7f1",
         "stable_dependencies": [
           "ca-certificates"
