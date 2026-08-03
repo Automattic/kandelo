@@ -11945,7 +11945,7 @@
           "pkgconfig"
         ],
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "333e8073cfc25ce6fbba732c6a2ebb6aa6e71473120f85d2319c6653e7cc54fd",
+        "bottle_checksum": "501bbf411ae3f204c110fff60bae26dc3d1ac089549e3ea333dd0677a402ef2c",
         "desc": "Package compiler and linker metadata toolkit",
         "executables": [
           "bomtool",
@@ -11963,12 +11963,12 @@
         "homepage": "https://github.com/pkgconf/pkgconf",
         "license": "ISC",
         "name": "pkgconf",
-        "ruby_source_checksum": "034139059a823141a5a54234651cdd16574d3d7b4100a5b071be1aca07d8d3f9",
-        "stable_checksum": "91ce346b47f46b87d680c6928e6c43240b9cdc7a31afbea19f2298de4dbe266d",
+        "ruby_source_checksum": "8db5060a087ff51f7166b3341fd152a094d4fb5a5b2d1edcd3e12a97a3df9332",
+        "stable_checksum": "3acd3a8a3cce65a8d620321855d92fb602e026cbe8e13ee36bdec58483b59ace",
         "stable_url_args": [
-          "https://distfiles.ariadne.space/pkgconf/pkgconf-3.0.4.tar.xz"
+          "https://distfiles.ariadne.space/pkgconf/pkgconf-3.0.5.tar.xz"
         ],
-        "stable_version": "3.0.4"
+        "stable_version": "3.0.5"
       },
       "public": {
         "aliases": [
@@ -11976,7 +11976,7 @@
           "pkgconfig"
         ],
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "333e8073cfc25ce6fbba732c6a2ebb6aa6e71473120f85d2319c6653e7cc54fd",
+        "bottle_checksum": "501bbf411ae3f204c110fff60bae26dc3d1ac089549e3ea333dd0677a402ef2c",
         "desc": "Package compiler and linker metadata toolkit",
         "executables": [
           "bomtool",
@@ -11994,12 +11994,12 @@
         "homepage": "https://github.com/pkgconf/pkgconf",
         "license": "ISC",
         "name": "pkgconf",
-        "ruby_source_checksum": "034139059a823141a5a54234651cdd16574d3d7b4100a5b071be1aca07d8d3f9",
-        "stable_checksum": "91ce346b47f46b87d680c6928e6c43240b9cdc7a31afbea19f2298de4dbe266d",
+        "ruby_source_checksum": "8db5060a087ff51f7166b3341fd152a094d4fb5a5b2d1edcd3e12a97a3df9332",
+        "stable_checksum": "3acd3a8a3cce65a8d620321855d92fb602e026cbe8e13ee36bdec58483b59ace",
         "stable_url_args": [
-          "https://distfiles.ariadne.space/pkgconf/pkgconf-3.0.4.tar.xz"
+          "https://distfiles.ariadne.space/pkgconf/pkgconf-3.0.5.tar.xz"
         ],
-        "stable_version": "3.0.4"
+        "stable_version": "3.0.5"
       }
     },
     "python@3.13": {
