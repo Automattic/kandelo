@@ -2607,7 +2607,13 @@ and all unrelated Formulae retain parallel throughput:
    through a root-owned launcher under the canonical
    `/opt/kandelo/homebrew` target prefix. Native host dependencies use a
    separate ephemeral prefix, preventing their Cellar racks from colliding
-   with Kandelo target Formulae. Within that read-only build, all
+   with Kandelo target Formulae. GitHub-hosted Ubuntu runners provision
+   `/opt` as group- and world-writable. Before creating the launcher, the
+   privileged setup verifies that `/opt` is the real root-owned directory,
+   rejects an unsafe pre-existing `/opt/kandelo`, removes only the group and
+   world write bits from `/opt`, and revalidates the protected path. The
+   Formula identity still owns only its intended writable prefix below that
+   anchor. Within that read-only build, all
    Formula-evaluating Homebrew commands run as a distinct
    unprivileged user. The original Kandelo, primary-tap, and dependency-tap
    checkouts remain hidden from that identity. Each transient service receives
