@@ -1447,7 +1447,13 @@ def validate_dependency_bottle_input(
         bottle.get("cellar"),
         f"{name}/{arch} bottle cellar",
     )
-    if cellar != "/opt/kandelo/homebrew/Cellar":
+    guest_cellar = campaign_guest_layout(campaign)["cellar"]
+    # WHY: Homebrew uses these symbolic values for relocatable bottles.  The
+    # generated Kandelo sidecar still owns the concrete guest placement.
+    # Accept only those upstream markers or the exact campaign Cellar; an old
+    # Linuxbrew path, unknown marker, or other absolute path remains a hard
+    # failure.
+    if cellar not in (guest_cellar, "any", "any_skip_relocation"):
         fail(f"{name}/{arch} bottle cellar is not the Kandelo prefix")
     canonical = {
         name: {
