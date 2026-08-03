@@ -211,8 +211,9 @@ for formula in "${selected_formulae[@]}"; do
     def canonical_recipe:
       type == "object" and
       keys == [
-        "declared_dependencies", "manifest_sha256", "resources",
-        "script_env_keys", "source_sha256", "source_url", "version"
+        "declared_dependencies", "manifest_sha256", "pkg_version",
+        "resources", "script_env_keys", "source_sha256", "source_url",
+        "version"
       ] and
       (.declared_dependencies |
         type == "array" and length <= 128 and . == (sort | unique) and
@@ -233,6 +234,13 @@ for formula in "${selected_formulae[@]}"; do
             type == "string" and test("^[0-9a-f]{64}$")) and
           (.source_url | type == "string" and
             test("^https://[A-Za-z0-9][A-Za-z0-9._~:/?#\\[\\]@!$&'\''()*+,;=%-]{0,1015}$")))) and
+      (.pkg_version | type == "string" and
+        test("^[A-Za-z0-9][A-Za-z0-9._+,-]{0,254}$")) and
+      (.version as $version |
+        .pkg_version == $version or
+        (.pkg_version |
+          startswith($version + "_") and
+          (ltrimstr($version + "_") | test("^[1-9][0-9]*$")))) and
       (.script_env_keys | canonical_env_keys) and canonical_source;
     type == "object" and
     .formula == $formula and .tap == $tap and

@@ -916,6 +916,7 @@ homebrew_patched_launcher_prepare_recipe_runner() {
         native_formulae: (($h.build_and_test - $requirements) | sort | unique),
         native_requirement_formulae: $requirements,
         node_bin: $node_bin,
+        pkg_version: $a.tap_recipe.pkg_version,
         platform_alias_root: $platform_alias_root,
         platform_host_root: $platform_host_root,
         passwd_file: $passwd_file,

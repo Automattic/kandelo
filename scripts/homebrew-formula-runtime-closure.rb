@@ -57,6 +57,7 @@ TIER2_BRIDGE_SOURCE_SHA256 = /\A[0-9a-f]{64}\z/
 TIER2_RESERVED_ENV = Set[
   "WASM_POSIX_DEP_NAME",
   "WASM_POSIX_DEP_OUT_DIR",
+  "WASM_POSIX_DEP_PKG_VERSION",
   "WASM_POSIX_DEP_RECIPE_DIR",
   "WASM_POSIX_DEP_SOURCE_DIR",
   "WASM_POSIX_DEP_SOURCE_SHA256",
@@ -626,6 +627,23 @@ canonical_literal_value = lambda do |node, lines|
                   line.byteslice(start_column, encoded.bytesize) == encoded
 
   value
+end
+
+canonical_nonnegative_integer_value = lambda do |node, lines|
+  next nil unless node.is_a?(Array) && node.first == :@int
+
+  value = node[1]
+  position = node[2]
+  next nil unless value.is_a?(String) &&
+                  value.match?(/\A(?:0|[1-9][0-9]*)\z/) &&
+                  position.is_a?(Array)
+
+  line_number, column = position
+  line = lines.fetch(line_number - 1, nil)
+  next nil unless line.is_a?(String) && column >= 0 &&
+                  line.byteslice(column, value.bytesize) == value
+
+  Integer(value, 10)
 end
 
 canonical_command_arguments = lambda do |node, expected_name|
@@ -1880,6 +1898,34 @@ parse_formula = lambda do |full_name|
     unless sha256_value&.match?(TIER2_BRIDGE_SOURCE_SHA256)
       abort "tap-recipe Formula must declare one canonical literal class source SHA-256: #{path}"
     end
+    revision_statements = class_body.select do |statement|
+      statement.is_a?(Array) && statement.first == :command &&
+        call_name.call(statement) == "revision"
+    end
+    formula_revision = 0
+    unless revision_statements.empty?
+      if revision_statements.length != 1
+        abort "tap-recipe Formula must declare at most one canonical literal class revision: #{path}"
+      end
+      revision_arguments = canonical_command_arguments.call(
+        revision_statements.first,
+        "revision",
+      )
+      formula_revision = canonical_nonnegative_integer_value.call(
+        revision_arguments&.first,
+        lines,
+      ) if revision_arguments&.length == 1
+      if formula_revision.nil? || formula_revision.zero?
+        abort "tap-recipe Formula revision must be one positive integer literal: #{path}"
+      end
+    end
+    # WHY: Formula#version omits Homebrew's packaging revision. The closed
+    # recipe contract carries both values so no later layer has to guess `_N`.
+    pkg_version_value = formula_revision.zero? ?
+      version_value : "#{version_value}_#{formula_revision}"
+    unless pkg_version_value.match?(TIER2_BRIDGE_VERSION)
+      abort "tap-recipe Formula pkg_version is invalid or oversized: #{path}"
+    end
     selected_resource_names = recipe_calls.first.fetch("resource_names")
     unless selected_resource_names == selected_resource_names.sort.uniq &&
            selected_resource_names.length <= MAX_TAP_RECIPE_RESOURCES
@@ -1916,6 +1962,7 @@ parse_formula = lambda do |full_name|
     end
     tap_recipe = {
       "manifest_sha256" => recipe_calls.first.fetch("manifest_sha256"),
+      "pkg_version" => pkg_version_value,
       "resources" => selected_resources,
       "script_env_keys" => recipe_calls.first.fetch("script_env_keys"),
       "source_sha256" => sha256_value,

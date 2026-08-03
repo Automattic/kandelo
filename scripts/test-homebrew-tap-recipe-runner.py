@@ -566,6 +566,95 @@ class ProtocolTests(unittest.TestCase):
                 runner.parse_runner_reply(runner.compact_json(document))
 
 
+class RecipeEnvironmentContractTests(unittest.TestCase):
+    @staticmethod
+    def fixture(pkg_version: str) -> tuple[dict[str, object], dict[str, object]]:
+        work = Path("/build/kandelo-package-work")
+        output = Path("/build/kandelo-package-out")
+        recipe = Path("/platform/tap/Kandelo/recipes/fixture")
+        source = Path("/build/kandelo-package-source")
+        platform = Path("/platform/kandelo")
+        sysroot = Path("/platform/sysroot")
+        llvm = Path("/opt/llvm/bin")
+        request: dict[str, object] = {
+            "environment": {
+                "HOME": str(work / "home"),
+                "LOGNAME": "kandelo-homebrew-recipe",
+                "PATH": "/usr/bin:/bin",
+                "TMPDIR": str(work / "tmp"),
+                "USER": "kandelo-homebrew-recipe",
+                "WASM_POSIX_DEP_NAME": "fixture",
+                "WASM_POSIX_DEP_OUT_DIR": str(output),
+                "WASM_POSIX_DEP_PKG_VERSION": pkg_version,
+                "WASM_POSIX_DEP_RECIPE_DIR": str(recipe),
+                "WASM_POSIX_DEP_SOURCE_DIR": str(source),
+                "WASM_POSIX_DEP_SOURCE_SHA256": "a" * 64,
+                "WASM_POSIX_DEP_SOURCE_URL": (
+                    "https://example.test/fixture-1.2.3.tar.gz"
+                ),
+                "WASM_POSIX_DEP_TARGET_ARCH": "wasm32",
+                "WASM_POSIX_DEP_VERSION": "1.2.3",
+                "WASM_POSIX_DEP_WORK_DIR": str(work),
+                "WASM_POSIX_GLUE_DIR": str(platform / "libc/glue"),
+                "WASM_POSIX_INSTALL_LOCAL_MIRROR": "0",
+                "WASM_POSIX_LLVM_DIR": str(llvm),
+                "WASM_POSIX_SYSROOT": str(sysroot),
+            },
+            "output_root": output,
+            "platform_root": platform,
+            "recipe_root": recipe,
+            "source_root": source,
+            "sysroot": sysroot,
+            "work_root": work,
+        }
+        config: dict[str, object] = {
+            "arch": "wasm32",
+            "formula": "kandelo-dev/tap-core/fixture",
+            "llvm_bin": llvm,
+            "node_bin": Path("/opt/node/bin/node"),
+            "pkg_version": pkg_version,
+            "recipe_user": "kandelo-homebrew-recipe",
+            "resources": [],
+            "script_env_keys": [],
+            "source_sha256": "a" * 64,
+            "source_url": "https://example.test/fixture-1.2.3.tar.gz",
+            "version": "1.2.3",
+        }
+        return request, config
+
+    def test_accepts_attested_base_and_revision_package_versions(self) -> None:
+        for pkg_version in ("1.2.3", "1.2.3_7"):
+            with self.subTest(pkg_version=pkg_version):
+                request, config = self.fixture(pkg_version)
+                environment = runner.validate_environment(
+                    request, config, {}, [], []
+                )
+                self.assertEqual(
+                    environment["WASM_POSIX_DEP_PKG_VERSION"], pkg_version
+                )
+
+    def test_rejects_missing_or_overridden_package_version(self) -> None:
+        request, config = self.fixture("1.2.3_7")
+        del request["environment"]["WASM_POSIX_DEP_PKG_VERSION"]
+        with self.assertRaisesRegex(runner.RunnerError, "omits required keys"):
+            runner.validate_environment(request, config, {}, [], [])
+
+        request, config = self.fixture("1.2.3_7")
+        request["environment"]["WASM_POSIX_DEP_PKG_VERSION"] = "1.2.3_8"
+        with self.assertRaisesRegex(
+            runner.RunnerError,
+            "wrong protected value: WASM_POSIX_DEP_PKG_VERSION",
+        ):
+            runner.validate_environment(request, config, {}, [], [])
+
+    def test_package_version_relation_rejects_injected_identities(self) -> None:
+        for pkg_version in ("other_7", "1.2.3_0", "1.2.3_07", "1.2.3_x"):
+            with self.subTest(pkg_version=pkg_version):
+                self.assertFalse(
+                    runner.valid_homebrew_pkg_version("1.2.3", pkg_version)
+                )
+
+
 @unittest.skipUnless(
     Path("/nix/var/nix/profiles/default/bin/nix-store").exists(),
     "Nix closure query is unavailable",

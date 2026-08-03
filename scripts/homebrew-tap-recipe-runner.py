@@ -126,6 +126,7 @@ CONFIG_KEYS = {
     "native_formulae",
     "native_requirement_formulae",
     "node_bin",
+    "pkg_version",
     "platform_alias_root",
     "platform_host_root",
     "passwd_file",
@@ -241,6 +242,7 @@ SAFE_FIXED_ENV_KEYS = {
 HELPER_ENV_KEYS = {
     "WASM_POSIX_DEP_NAME",
     "WASM_POSIX_DEP_OUT_DIR",
+    "WASM_POSIX_DEP_PKG_VERSION",
     "WASM_POSIX_DEP_RECIPE_DIR",
     "WASM_POSIX_DEP_SOURCE_DIR",
     "WASM_POSIX_DEP_SOURCE_SHA256",
@@ -964,6 +966,16 @@ def normalize_config_paths(config: dict[str, Any]) -> None:
         config[key] = canonical_requested_path(config[key], label=key)
 
 
+def valid_homebrew_pkg_version(version: str, pkg_version: str) -> bool:
+    if pkg_version == version:
+        return True
+    prefix = f"{version}_"
+    if not pkg_version.startswith(prefix):
+        return False
+    revision = pkg_version[len(prefix) :]
+    return re.fullmatch(r"[1-9][0-9]*", revision) is not None
+
+
 def validate_config(path: Path) -> dict[str, Any]:
     data, _ = open_regular_file(
         path,
@@ -997,10 +1009,11 @@ def validate_config(path: Path) -> dict[str, Any]:
         config["formula"]
     ):
         fail("recipe runner config has an invalid Formula")
-    if type(config["version"]) is not str or not VERSION_RE.fullmatch(
-        config["version"]
-    ):
-        fail("recipe runner config has an invalid version")
+    for key in ("version", "pkg_version"):
+        if type(config[key]) is not str or not VERSION_RE.fullmatch(config[key]):
+            fail(f"recipe runner config has an invalid {key}")
+    if not valid_homebrew_pkg_version(config["version"], config["pkg_version"]):
+        fail("recipe runner config pkg_version differs from its base version")
     for key in ("manifest_sha256", "source_sha256"):
         if type(config[key]) is not str or not SHA256_RE.fullmatch(config[key]):
             fail(f"recipe runner config has an invalid {key}")
@@ -2288,6 +2301,7 @@ def validate_environment(
         "USER",
         "WASM_POSIX_DEP_NAME",
         "WASM_POSIX_DEP_OUT_DIR",
+        "WASM_POSIX_DEP_PKG_VERSION",
         "WASM_POSIX_DEP_RECIPE_DIR",
         "WASM_POSIX_DEP_SOURCE_DIR",
         "WASM_POSIX_DEP_SOURCE_SHA256",
@@ -2312,6 +2326,7 @@ def validate_environment(
         "USER": config["recipe_user"],
         "WASM_POSIX_DEP_NAME": formula_short,
         "WASM_POSIX_DEP_OUT_DIR": str(request["output_root"]),
+        "WASM_POSIX_DEP_PKG_VERSION": config["pkg_version"],
         "WASM_POSIX_DEP_RECIPE_DIR": str(request["recipe_root"]),
         "WASM_POSIX_DEP_SOURCE_DIR": str(request["source_root"]),
         "WASM_POSIX_DEP_SOURCE_SHA256": config["source_sha256"],

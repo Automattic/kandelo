@@ -784,6 +784,7 @@ class Recipe < Formula
   homepage "https://example.test/recipe"
   url "https://example.test/recipe-1.2.3.tar.gz"
   version "1.2.3"
+  revision 2
   sha256 "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   license "MIT"
 
@@ -925,6 +926,7 @@ jq -e '
   .tap_recipe == {
     declared_dependencies: ["kandelo-dev/tap-core/required"],
     manifest_sha256: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    pkg_version: "1.2.3_2",
     resources: [{
       name: "fixture-data",
       source_sha256: "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
@@ -938,6 +940,54 @@ jq -e '
 ' <<<"$tap_recipe_plan" >/dev/null
 [ "$tap_recipe_plan" = \
   "$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core recipe --tier2-bridge-json)" ]
+
+write_valid_tap_recipe_formula
+sed -i.bak '/  revision 2/d' "$TAP_ROOT/Formula/recipe.rb"
+rm "$TAP_ROOT/Formula/recipe.rb.bak"
+unrevised_tap_recipe_plan="$(ruby "$resolver" "$TAP_ROOT" kandelo-dev/tap-core recipe --tier2-bridge-json)"
+jq -e '
+  .tap_recipe.version == "1.2.3" and
+  .tap_recipe.pkg_version == "1.2.3"
+' <<<"$unrevised_tap_recipe_plan" >/dev/null
+
+for revision_case in zero leading-zero dynamic; do
+  write_valid_tap_recipe_formula
+  revision_error="tap-recipe Formula revision must be one positive integer literal"
+  case "$revision_case" in
+    zero)
+      sed -i.bak 's/  revision 2/  revision 0/' "$TAP_ROOT/Formula/recipe.rb"
+      ;;
+    leading-zero)
+      sed -i.bak 's/  revision 2/  revision 02/' "$TAP_ROOT/Formula/recipe.rb"
+      ;;
+    dynamic)
+      sed -i.bak 's/  revision 2/  revision ENV.fetch("REVISION")/' \
+        "$TAP_ROOT/Formula/recipe.rb"
+      revision_error="Formula class DSL arguments must be static"
+      ;;
+  esac
+  rm "$TAP_ROOT/Formula/recipe.rb.bak"
+  expect_tap_recipe_failure "revision-$revision_case" \
+    "$revision_error"
+done
+
+write_valid_tap_recipe_formula
+sed -i.bak '/  revision 2/a\
+  revision 3' "$TAP_ROOT/Formula/recipe.rb"
+rm "$TAP_ROOT/Formula/recipe.rb.bak"
+expect_tap_recipe_failure duplicate-revision \
+  "tap-recipe Formula must declare at most one canonical literal class revision"
+
+write_valid_tap_recipe_formula
+ruby - "$TAP_ROOT/Formula/recipe.rb" <<'RUBY'
+path = ARGV.fetch(0)
+source = File.binread(path)
+source.sub!('  version "1.2.3"', %(  version "#{"a" * 255}")) or
+  abort "missing tap-recipe version"
+File.binwrite(path, source)
+RUBY
+expect_tap_recipe_failure oversized-package-version \
+  "tap-recipe Formula pkg_version is invalid or oversized"
 
 write_valid_tap_recipe_formula
 sed -i.bak '/  KANDELO_TAP_RECIPE = true/d' "$TAP_ROOT/Formula/recipe.rb"
@@ -1004,6 +1054,13 @@ sed -i.bak 's/"RECIPE_FEATURE"/"WASM_POSIX_DEP_RECIPE_DIR"/' \
 rm "$TAP_ROOT/Formula/recipe.rb.bak"
 expect_tap_recipe_failure reserved-recipe-environment \
   'script_env overrides reserved variables ["WASM_POSIX_DEP_RECIPE_DIR"]'
+
+write_valid_tap_recipe_formula
+sed -i.bak 's/"RECIPE_FEATURE"/"WASM_POSIX_DEP_PKG_VERSION"/' \
+  "$TAP_ROOT/Formula/recipe.rb"
+rm "$TAP_ROOT/Formula/recipe.rb.bak"
+expect_tap_recipe_failure reserved-package-version-environment \
+  'script_env overrides reserved variables ["WASM_POSIX_DEP_PKG_VERSION"]'
 
 write_valid_tap_recipe_formula
 sed -i.bak '/  KANDELO_TAP_RECIPE = true/a\

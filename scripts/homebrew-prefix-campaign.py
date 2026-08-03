@@ -27,7 +27,7 @@ COMMIT = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 OCI_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 FORMULA_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
-VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+,-]{0,255}$")
+VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+,-]{0,254}$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 TAP_PATH = re.compile(r"^[A-Za-z0-9._@%+=:-]+(?:/[A-Za-z0-9._@%+=:-]+)*$")
 LINK_RELATIVE_PATH = re.compile(
@@ -451,6 +451,51 @@ def require_version_source_revision(
     version_revision = re.search(
         r"-g([0-9a-f]{7,40})(?:_[1-9][0-9]*)?$", version
     )
+    if version_revision is None or not revision.startswith(
+        version_revision.group(1)
+    ):
+        fail(f"{label} does not identify its source revision")
+
+
+def require_formula_version_revision(
+    formula_text: str, label: str
+) -> tuple[str, int]:
+    lines = formula_text.splitlines()
+    version_lines = [
+        line for line in lines if re.match(r"^  version(?:\s|$)", line)
+    ]
+    if len(version_lines) != 1:
+        fail(f"{label} must contain exactly one version statement")
+    version_match = re.fullmatch(r'  version "([^"\r\n]+)"', version_lines[0])
+    if version_match is None:
+        fail(f"{label} version must be one literal string")
+    base_version = require_string(
+        version_match.group(1), f"{label} base version", VERSION
+    )
+
+    revision_lines = [
+        line for line in lines if re.match(r"^  revision(?:\s|$)", line)
+    ]
+    if len(revision_lines) > 1:
+        fail(f"{label} must contain at most one revision statement")
+    revision = 0
+    if revision_lines:
+        revision_match = re.fullmatch(
+            r"  revision ([1-9][0-9]*)", revision_lines[0]
+        )
+        if revision_match is None:
+            fail(f"{label} revision must be one positive integer literal")
+        revision = int(revision_match.group(1))
+
+    return base_version, revision
+
+
+def require_formula_base_source_revision(
+    version: str, revision: str, label: str
+) -> None:
+    # WHY: the Formula DSL owns packaging revisions. Allowing its base version
+    # to absorb `_N` would make a deleted `revision N` statement look valid.
+    version_revision = re.search(r"-g([0-9a-f]{7,40})$", version)
     if version_revision is None or not revision.startswith(
         version_revision.group(1)
     ):
@@ -2355,6 +2400,7 @@ def validate_required_entrant_recipe(
     source_tap_root: pathlib.Path,
     *,
     name: str,
+    native_pkg_version: str,
     recipe_rel: str,
     formula_path: pathlib.Path,
     retired_prefixes: list[str],
@@ -2570,13 +2616,35 @@ def validate_required_entrant_recipe(
     )
     if manifest_matches != [sha256_bytes(manifest_bytes)]:
         fail(f"{name} Formula does not bind the exact recipe.json")
-    for expected in (
-        f'url "{source["archive_url"]}"',
-        f'version "{version}"',
-        f'sha256 "{source["archive_sha256"]}"',
-    ):
-        if formula_text.count(expected) != 1:
-            fail(f"{name} Formula source differs from its exact source lock")
+    expected_url = f'url "{source["archive_url"]}"'
+    if formula_text.count(expected_url) != 1:
+        fail(f"{name} Formula URL differs from its exact source lock")
+    expected_sha256 = f'sha256 "{source["archive_sha256"]}"'
+    if formula_text.count(expected_sha256) != 1:
+        fail(f"{name} Formula SHA-256 differs from its exact source lock")
+    formula_base_version, formula_revision = require_formula_version_revision(
+        formula_text, f"{name} Formula"
+    )
+    require_formula_base_source_revision(
+        formula_base_version, revision, f"{name} Formula base version"
+    )
+    # WHY: source locks and bottle metadata use Homebrew's combined
+    # pkg_version even though Formula source stores its two parts separately.
+    formula_pkg_version = (
+        formula_base_version
+        if formula_revision == 0
+        else f"{formula_base_version}_{formula_revision}"
+    )
+    if formula_pkg_version != version:
+        fail(
+            f"{name} Formula pkg_version {formula_pkg_version} differs "
+            f"from its exact source lock {version}"
+        )
+    if native_pkg_version != version:
+        fail(
+            f"{name} native Homebrew pkg_version {native_pkg_version} "
+            f"differs from its exact recipe lock {version}"
+        )
     return (
         lock,
         lock_bytes,
@@ -3304,6 +3372,7 @@ def _derive_campaign_from_snapshots(
                 validate_required_entrant_recipe(
                     source_tap_root,
                     name=name,
+                    native_pkg_version=version,
                     recipe_rel=recipe_rel,
                     formula_path=source_formula_files[name],
                     retired_prefixes=layout["retired_prefixes"],
@@ -3314,16 +3383,6 @@ def _derive_campaign_from_snapshots(
                 fail(
                     f"{name} entrant arches must exactly equal its "
                     "recipe-lock arch"
-                )
-            recipe_version = require_string(
-                package["version"],
-                f"{name} recipe version",
-                VERSION,
-            )
-            if version != recipe_version:
-                fail(
-                    f"{name} native Homebrew pkg_version {version} differs "
-                    f"from its exact recipe lock {recipe_version}"
                 )
             recipe_lock = {
                 "path": recipe_rel,

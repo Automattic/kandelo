@@ -2126,7 +2126,7 @@ EOF
   dependency_plan_json='{"build":["cmake"],"build_and_test":["cmake","ninja"],"formula":"hello","full_name":"kandelo-dev/tap-core/hello","native_requirements":[],"runtime_and_test":["ninja"],"schema":4,"tap":"kandelo-dev/tap-core","target_taps":[{"tap_commit":"1111111111111111111111111111111111111111","tap_name":"kandelo-dev/tap-core","tap_repository":"kandelo-dev/homebrew-tap-core"}]}'
   printf '%s\n' "$dependency_plan_json" >"$isolated_dependency_plan"
   chmod 0600 "$isolated_dependency_plan"
-  tier2_attestation_json='{"arch":"wasm32","formula":"hello","formula_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","full_name":"kandelo-dev/tap-core/hello","schema":3,"support_runtime_sha256":"1111111111111111111111111111111111111111111111111111111111111111","support_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tap":"kandelo-dev/tap-core","tap_recipe":{"dependencies":[],"entrypoint":"build.sh","file_count":1,"manifest_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","resources":[],"script_env_keys":[],"source_sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","source_url":"https://example.test/hello-1.0.tar.gz","total_bytes":1,"version":"1.0"},"tier2_bridge":null}'
+  tier2_attestation_json='{"arch":"wasm32","formula":"hello","formula_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","full_name":"kandelo-dev/tap-core/hello","schema":3,"support_runtime_sha256":"1111111111111111111111111111111111111111111111111111111111111111","support_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","tap":"kandelo-dev/tap-core","tap_recipe":{"dependencies":[],"entrypoint":"build.sh","file_count":1,"manifest_sha256":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","pkg_version":"1.0_2","resources":[],"script_env_keys":[],"source_sha256":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","source_url":"https://example.test/hello-1.0.tar.gz","total_bytes":1,"version":"1.0"},"tier2_bridge":null}'
   printf '%s\n' "$tier2_attestation_json" >"$isolated_tier2_attestation"
   chmod 0600 "$isolated_tier2_attestation"
   mkdir "$isolated_kandelo/runner-control"
@@ -2413,6 +2413,7 @@ EOF
           entrypoint: "build.sh",
           file_count: $file_count,
           manifest_sha256: $manifest_sha256,
+          pkg_version: "1.0_2",
           resources: [{
             name: "fixture-data",
             source_sha256: ("e" * 64),
@@ -2801,6 +2802,8 @@ EOF
   )"
   [ "$(jq -r '.native_closure_manifest' <<<"$recipe_config_json")" = \
       "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" ] &&
+    [ "$(jq -r '.version' <<<"$recipe_config_json")" = "1.0" ] &&
+    [ "$(jq -r '.pkg_version' <<<"$recipe_config_json")" = "1.0_2" ] &&
     [ ! -e "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" ] &&
     [ ! -L "$HOMEBREW_PATCHED_RECIPE_NATIVE_CLOSURE" ] ||
     fail "recipe supervisor did not reserve an absent native closure handoff"
@@ -3285,6 +3288,7 @@ EOF
       --arg llvm_bin "$(jq -r '.llvm_bin' <<<"$recipe_config_json")" \
       --arg manifest_sha256 "$(jq -r '.manifest_sha256' <<<"$recipe_config_json")" \
       --arg output_root "$recipe_output_root" \
+      --arg pkg_version "$(jq -r '.pkg_version' <<<"$recipe_config_json")" \
       --arg platform_root "$(jq -r '.platform_alias_root' <<<"$recipe_config_json")" \
       --arg recipe_root "$(jq -r '.recipe_alias_root' <<<"$recipe_config_json")" \
       --arg recipe_user "$(jq -r '.recipe_user' <<<"$recipe_config_json")" \
@@ -3308,6 +3312,7 @@ EOF
           USER: $recipe_user,
           WASM_POSIX_DEP_NAME: "hello",
           WASM_POSIX_DEP_OUT_DIR: $output_root,
+          WASM_POSIX_DEP_PKG_VERSION: $pkg_version,
           WASM_POSIX_DEP_RECIPE_DIR: $recipe_root,
           WASM_POSIX_DEP_RESOURCE_FIXTURE_DATA_DIR: "/kandelo/resources/fixture-data",
           WASM_POSIX_DEP_SOURCE_DIR: $source_root,
