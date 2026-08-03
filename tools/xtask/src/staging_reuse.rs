@@ -404,10 +404,12 @@ fn run_scan_source(args: &[String], require_publication_admission: bool) -> Resu
     enforce_source_publication_mode(require_publication_admission, &roots, &registry)?;
     let fresh_cache_identities =
         source_cache_identities(source_root, &registry, expected_abi)?;
+    let selected = selected_source_package_names(&packages, &roots)?;
     validate_source_program_index(
         &program_index,
         &packages,
         &fresh_cache_identities,
+        &selected,
     )?;
 
     let (projection, expected) = build_source_selection(
@@ -504,14 +506,8 @@ fn build_source_selection(
     expected_abi: u32,
     schema: u32,
 ) -> Result<(serde_json::Value, ExpectedLedger), String> {
-    let mut selected = BTreeSet::new();
+    let selected = selected_source_package_names(packages, roots)?;
     for root in roots {
-        let root_manifest = packages
-            .get(root)
-            .ok_or_else(|| format!("source root package {root:?} is absent"))?;
-        if root_manifest.manifest.kind != ManifestKind::Program {
-            return Err(format!("source root package {root:?} is not a program"));
-        }
         let root_projection = program_index
             .packages
             .get(root)
@@ -526,8 +522,6 @@ fn build_source_selection(
                 arch.as_str()
             ));
         }
-        selected.insert(root.clone());
-        collect_source_dependency_names(root, packages, &mut selected, &mut Vec::new())?;
     }
 
     let mut expected_entries = Vec::new();
@@ -644,6 +638,24 @@ fn build_source_selection(
         return Err(format!("unsupported source projection schema {schema}"));
     };
     Ok((projection, expected))
+}
+
+fn selected_source_package_names(
+    packages: &BTreeMap<String, SourcePackage>,
+    roots: &[String],
+) -> Result<BTreeSet<String>, String> {
+    let mut selected = BTreeSet::new();
+    for root in roots {
+        let root_manifest = packages
+            .get(root)
+            .ok_or_else(|| format!("source root package {root:?} is absent"))?;
+        if root_manifest.manifest.kind != ManifestKind::Program {
+            return Err(format!("source root package {root:?} is not a program"));
+        }
+        selected.insert(root.clone());
+        collect_source_dependency_names(root, packages, &mut selected, &mut Vec::new())?;
+    }
+    Ok(selected)
 }
 
 fn require_nonsymlink_dir(path: &Path, context: &str) -> Result<(), String> {
@@ -923,6 +935,7 @@ fn validate_source_program_index(
     index: &SourceProgramIndex,
     packages: &BTreeMap<String, SourcePackage>,
     fresh_cache_identities: &BTreeMap<String, BTreeMap<String, String>>,
+    selected: &BTreeSet<String>,
 ) -> Result<(), String> {
     if index.format != "kandelo-program-packages-v2" {
         return Err(format!(
@@ -930,22 +943,27 @@ fn validate_source_program_index(
             index.format
         ));
     }
-    if index.identities.keys().ne(packages.keys()) {
-        return Err(
-            "source program index identities do not exactly cover package.toml manifests".into(),
-        );
-    }
     if fresh_cache_identities.keys().ne(packages.keys()) {
         return Err(
             "fresh source cache identities do not exactly cover package.toml manifests".into(),
         );
     }
     let expected_identity_arches = BTreeSet::from(["wasm32", "wasm64"]);
-    for (name, package) in packages {
+    // WHY: a durable generation binds one explicitly selected dependency
+    // closure. Unrelated stale rows cannot influence that generation and must
+    // not force its archives to be rebuilt. Full registry consumers and the
+    // deployment gate continue to use `build-deps program-index-check`, which
+    // validates every row against the complete source registry.
+    for name in selected {
+        let package = packages
+            .get(name)
+            .ok_or_else(|| format!("selected source package {name:?} is absent"))?;
         let identity = index
             .identities
             .get(name)
-            .expect("source identity key set was compared");
+            .ok_or_else(|| {
+                format!("source program index lacks selected identity {name:?}")
+            })?;
         validate_sha256(&identity.manifest_sha256, "source manifest_sha256")?;
         if identity.manifest_sha256 != package.manifest_sha256 {
             return Err(format!(
@@ -977,7 +995,8 @@ fn validate_source_program_index(
     let expected_programs = packages
         .iter()
         .filter_map(|(name, package)| {
-            (package.manifest.kind == ManifestKind::Program
+            (selected.contains(name)
+                && package.manifest.kind == ManifestKind::Program
                 && !package.manifest.uses_root_binary_mirror())
             .then_some(name.as_str())
         })
@@ -985,18 +1004,24 @@ fn validate_source_program_index(
     let actual_programs = index
         .packages
         .keys()
+        .filter(|name| selected.contains(*name))
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
     if actual_programs != expected_programs {
         return Err(
-            "source program projections do not exactly cover eligible program manifests".into(),
+            "source program projections do not exactly cover selected eligible program manifests"
+                .into(),
         );
     }
 
-    for (name, projection) in &index.packages {
+    for name in expected_programs {
+        let projection = index
+            .packages
+            .get(name)
+            .expect("selected program projection set was compared");
         let package = packages
             .get(name)
-            .expect("source program projection set was compared");
+            .expect("selected source package set was derived from packages");
         let identity = index
             .identities
             .get(name)
@@ -3045,15 +3070,16 @@ index_url = "https://example.test/binaries-abi-v{{abi}}/index.toml"
             .iter()
             .map(|(name, identity)| (name.clone(), identity.cache_keys.clone()))
             .collect::<BTreeMap<_, _>>();
-        validate_source_program_index(&index, &packages, &fresh).unwrap();
+        let selected = packages.keys().cloned().collect::<BTreeSet<_>>();
+        validate_source_program_index(&index, &packages, &fresh, &selected).unwrap();
 
         let mut omitted = index.clone();
         let omitted_name = omitted.identities.keys().next().unwrap().clone();
         omitted.identities.remove(&omitted_name);
         assert!(
-            validate_source_program_index(&omitted, &packages, &fresh)
+            validate_source_program_index(&omitted, &packages, &fresh, &selected)
                 .unwrap_err()
-                .contains("exactly cover")
+                .contains("lacks selected identity")
         );
 
         let mut stale = index.clone();
@@ -3065,7 +3091,7 @@ index_url = "https://example.test/binaries-abi-v{{abi}}/index.toml"
             .cache_keys
             .insert("wasm32".into(), "f".repeat(64));
         assert!(
-            validate_source_program_index(&stale, &packages, &fresh)
+            validate_source_program_index(&stale, &packages, &fresh, &selected)
                 .unwrap_err()
                 .contains("stale contextual cache key")
         );
@@ -3088,9 +3114,78 @@ index_url = "https://example.test/binaries-abi-v{{abi}}/index.toml"
             .unwrap();
         closure[0].cache_key = "e".repeat(64);
         assert!(
-            validate_source_program_index(&substituted, &packages, &fresh)
+            validate_source_program_index(&substituted, &packages, &fresh, &selected)
                 .unwrap_err()
                 .contains("stale or substituted")
+        );
+    }
+
+    #[test]
+    fn source_index_freshness_is_bounded_to_the_selected_closure() {
+        let (packages, index) = fresh_source_fixture();
+        let fresh = index
+            .identities
+            .iter()
+            .map(|(name, identity)| (name.clone(), identity.cache_keys.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let selected =
+            selected_source_package_names(&packages, &["rootfs".into()]).unwrap();
+        let unrelated = packages
+            .keys()
+            .find(|name| !selected.contains(*name))
+            .expect("repository fixture has a package outside the rootfs closure")
+            .clone();
+        let selected_dependency = selected
+            .iter()
+            .find(|name| name.as_str() != "rootfs")
+            .expect("rootfs fixture has a dependency")
+            .clone();
+
+        let mut stale_unrelated = index.clone();
+        stale_unrelated
+            .identities
+            .get_mut(&unrelated)
+            .unwrap()
+            .cache_keys
+            .insert("wasm32".into(), "f".repeat(64));
+        validate_source_program_index(
+            &stale_unrelated,
+            &packages,
+            &fresh,
+            &selected,
+        )
+        .expect("an unrelated stale row cannot influence rootfs admission");
+
+        let complete = packages.keys().cloned().collect::<BTreeSet<_>>();
+        assert!(
+            validate_source_program_index(
+                &stale_unrelated,
+                &packages,
+                &fresh,
+                &complete,
+            )
+            .unwrap_err()
+            .contains("stale contextual cache key"),
+            "the same row must fail a complete-registry freshness check",
+        );
+
+        let mut stale_selected = index;
+        stale_selected
+            .identities
+            .get_mut(&selected_dependency)
+            .unwrap()
+            .cache_keys
+            .insert("wasm32".into(), "e".repeat(64));
+        assert!(
+            validate_source_program_index(
+                &stale_selected,
+                &packages,
+                &fresh,
+                &selected,
+            )
+            .unwrap_err()
+            .contains("stale contextual cache key"),
+            "a stale identity inside the selected closure must fail",
         );
     }
 

@@ -201,6 +201,35 @@ env -u GH_TOKEN -u GITHUB_TOKEN \
     --producer-commit "$producer_commit_json" \
     "${producer_evidence_extra_args[@]}" \
     --output "$TMP_ROOT/producer-evidence.json"
+
+verify_preserved_v2_ancestry() {
+  local evidence="$1" preservation_authority format
+  format="$(jq -er \
+    '.preserved_manifest.format // ""' "$evidence")"
+  [ -n "$format" ] || return 0
+  case "$format" in
+    kandelo-preserved-pr-package-generation-v1)
+      return 0
+      ;;
+    kandelo-preserved-package-generation-v2)
+      preservation_authority="$(jq -er \
+        '.preserved_manifest.identity.authority_sha' "$evidence")"
+      ;;
+    *)
+      echo "prepare-durable-package-generation: preserved source format is unsupported" >&2
+      return 1
+      ;;
+  esac
+  # WHY: admission is a separate trust boundary from preservation. Recheck
+  # the sealed canonical producer's complete protected-main chain here.
+  bash "$SCRIPT_DIR/verify-package-generation-ancestry.sh" \
+    --repository-root "$AUTHORITY_ROOT" \
+    --producer-sha "$PRODUCER_SHA" \
+    --preservation-authority-sha "$preservation_authority" \
+    --current-authority-sha "$AUTHORITY_SHA"
+}
+
+verify_preserved_v2_ancestry "$TMP_ROOT/producer-evidence.json"
 env -u GH_TOKEN -u GITHUB_TOKEN \
   -u HOMEBREW_GITHUB_API_TOKEN \
   -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
@@ -503,6 +532,7 @@ if ! env -u GH_TOKEN -u GITHUB_TOKEN \
   echo "prepare-durable-package-generation: producer or current-main validation changed during preparation" >&2
   exit 1
 fi
+verify_preserved_v2_ancestry "$TMP_ROOT/producer-evidence-after.json"
 
 env -u GH_TOKEN -u GITHUB_TOKEN \
   -u HOMEBREW_GITHUB_API_TOKEN \

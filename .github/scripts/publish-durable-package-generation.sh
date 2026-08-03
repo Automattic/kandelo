@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Publish one validated content-addressed package generation. This common
-# writer supports admitted durable generations and evidence-only preserved PR
-# closures; both are application-sealed and read-only after publication.
+# writer supports admitted durable generations and evidence-only preserved
+# package closures; both are application-sealed and read-only after
+# publication.
 set -euo pipefail
 
 BUNDLE=""
@@ -190,20 +191,41 @@ manifest_source_tag="$(jq -er '
   then .identity.producer.evidence.tag
   elif .format == "kandelo-preserved-pr-package-generation-v1"
   then .identity.source_capture.source_staging.tag
+  elif .format == "kandelo-preserved-package-generation-v2"
+  then .identity.source_capture.source_release.tag
   else empty
   end
 ' "$MANIFEST")"
 IS_PRESERVED=false
+PRESERVED_V2_AUTHORITY_SHA=""
 if [ "$preserved_dispatch" = true ]; then
   IS_PRESERVED=true
-  if [ "$manifest_format" != kandelo-preserved-pr-package-generation-v1 ] ||
+  preserved_target="$(jq -er '
+    if .format == "kandelo-preserved-pr-package-generation-v1"
+    then .identity.package_source_sha
+    elif .format == "kandelo-preserved-package-generation-v2"
+    then .identity.authority_sha
+    else empty
+    end
+  ' "$MANIFEST")"
+  if { [ "$manifest_format" != kandelo-preserved-pr-package-generation-v1 ] &&
+       [ "$manifest_format" != kandelo-preserved-package-generation-v2 ]; } ||
      [ "$(jq -er .identity.authority_sha "$MANIFEST")" != "$EXPECTED_AUTHORITY_SHA" ] ||
      [ "$(jq -er .identity.admission "$MANIFEST")" != none ] ||
-     [ "$TARGET_COMMIT" != "$(jq -er .identity.package_source_sha "$MANIFEST")" ]; then
+     [ "$TARGET_COMMIT" != "$preserved_target" ]; then
     echo "publish-durable-package-generation: preserved generation differs from dispatch authority" >&2
     exit 2
   fi
   ARCHIVE_PRODUCER_SHA="$(jq -er .identity.package_source_sha "$MANIFEST")"
+  if [ "$manifest_format" = kandelo-preserved-package-generation-v2 ] &&
+     ! git -C "$REPO_ROOT" merge-base --is-ancestor \
+       "$ARCHIVE_PRODUCER_SHA" "$EXPECTED_AUTHORITY_SHA"; then
+    # WHY: v2 anchors its tag at current authority to satisfy GitHub's
+    # historical-workflow rule. Protected-main ancestry is the durable ref
+    # that keeps the independently sealed canonical producer reachable.
+    echo "publish-durable-package-generation: canonical producer is no longer contained by publishing authority" >&2
+    exit 1
+  fi
   archive_source_args=(--package-source-sha "$ARCHIVE_PRODUCER_SHA")
 else
 if [ "$manifest_abi" != "$EXPECTED_ABI" ] ||
@@ -237,6 +259,25 @@ fi
 if [ "$(jq -er '.identity.authority_sha' "$MANIFEST")" != "$AUTHORITY_SHA" ]; then
   echo "publish-durable-package-generation: manifest authority differs from the writer" >&2
   exit 2
+fi
+if [ "$v2_dispatch" = true ] &&
+   [ "$VALIDATION_METHOD" = identical-package-cache-projection-v1 ]; then
+  preserved_source_format="$(jq -er \
+    '.identity.producer.evidence.preserved_manifest.format // ""' \
+    "$MANIFEST")"
+  case "$preserved_source_format" in
+    kandelo-preserved-pr-package-generation-v1)
+      ;;
+    kandelo-preserved-package-generation-v2)
+      PRESERVED_V2_AUTHORITY_SHA="$(jq -er \
+        '.identity.producer.evidence.preserved_manifest.identity.authority_sha' \
+        "$MANIFEST")"
+      ;;
+    *)
+      echo "publish-durable-package-generation: cache projection lacks a supported preserved source" >&2
+      exit 2
+      ;;
+  esac
 fi
 archive_source_args=(--package-source-sha "$ARCHIVE_PRODUCER_SHA")
 # WHY: the existing validator's legacy flag means "the exact commit embedded
@@ -435,6 +476,20 @@ verify_producer_checkout() {
     return 1
   fi
 }
+
+verify_preserved_v2_admission_ancestry() {
+  [ -n "$PRESERVED_V2_AUTHORITY_SHA" ] || return 0
+  # WHY: the writer is independent of preparation. Recheck the sealed
+  # canonical producer's complete protected-main chain before every release
+  # mutation instead of trusting the transferred admission bundle.
+  bash "$SCRIPT_DIR/verify-package-generation-ancestry.sh" \
+    --repository-root "$REPO_ROOT" \
+    --producer-sha "$PRODUCER_SHA" \
+    --preservation-authority-sha "$PRESERVED_V2_AUTHORITY_SHA" \
+    --current-authority-sha "$AUTHORITY_SHA"
+}
+
+verify_preserved_v2_admission_ancestry
 
 verify_preserved_source_evidence() {
   [ "$IS_PRESERVED" = true ] || return 0
@@ -649,6 +704,7 @@ assert_live_main_source_snapshot() {
 authorize_publication_mutation() {
   verify_authority_checkout
   verify_producer_checkout
+  verify_preserved_v2_admission_ancestry
   if [ "$IS_PRESERVED" = true ]; then
     verify_live_preserved_authority
   else

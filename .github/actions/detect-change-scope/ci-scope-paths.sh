@@ -32,7 +32,12 @@ package_archive_changed_files() {
 
   declared_input_matches=$(printf '%s\n' "$files" | package_declared_build_input_changed_files)
 
-  printf '%s\n%s\n' "$static_matches" "$declared_input_matches" | sed '/^$/d' | sort -u
+  # WHY: program-packages.json is generated resolver/materialization policy,
+  # not a package recipe. Rebuilding every archive after refreshing only this
+  # index wastes the staging matrix without changing any archive cache key.
+  printf '%s\n%s\n' "$static_matches" "$declared_input_matches" |
+    grep -vFx 'packages/registry/program-packages.json' |
+    sed '/^$/d' | sort -u
 }
 
 package_declared_build_input_changed_files() {
@@ -46,6 +51,7 @@ package_declared_build_input_changed_files() {
 
 package_publish_flow_changed_files() {
   grep -E \
+    -e '^\.github/scripts/verify-package-generation-ancestry\.sh$' \
     -e '^\.github/actions/detect-change-scope/(ci-scope-paths|test-ci-scope-paths)\.sh$' \
     -e '^\.github/workflows/(staging-build|prepare-merge|activate-merge-candidate|recover-rejected-merge-candidate|staging-cleanup|force-rebuild|reusable-package-source-publish|promote-package-generation|preserve-pr-package-generation)\.yml$' \
     -e '^\.github/actions/exact-main-package-rebuild/' \
@@ -59,6 +65,7 @@ package_publish_flow_changed_files() {
 
 binary_materialization_changed_files() {
   grep -E \
+    -e '^packages/registry/program-packages\.json$' \
     -e '^tools/xtask/src/(index_candidate|index_toml|package_archive_name|remote_fetch|util)\.rs$' \
     -e '^scripts/(activate-local-shell-build-override|ci-homebrew-browser-mirror-state|fetch-binaries|install-local-binary|install-local-shell-artifact|materialize-ci-canonical-package-index|materialize-ci-publication-blockers|materialize-pr-overlays|materialize-resolver-binaries|pack-ci-test-workspace|resolve-binary|stage-portable-resolver-binaries|test-wasm-artifact-guards|validate-publication-blocker-report|wasm-artifact-guards)\.sh$' \
     -e '^scripts/(build-resolve-binary-bundle|test-resolve-binary-bundle)\.sh$' \
@@ -80,6 +87,7 @@ kernel_runtime_changed_files() {
 
 ci_control_changed_files() {
   grep -E \
+    -e '^\.github/scripts/verify-package-generation-ancestry\.sh$' \
     -e '^\.github/workflows/(staging-build|prepare-merge|activate-merge-candidate|recover-rejected-merge-candidate|staging-cleanup|force-rebuild|reusable-package-source-publish|promote-package-generation|preserve-pr-package-generation)\.yml$' \
     -e '^\.github/actions/exact-main-package-rebuild/' \
     -e '^\.github/scripts/(activate-merge-candidate|classify-pr-staging|cleanup-merge-candidates|clone-rejected-merge-candidate|compose-staging-release-snapshots|delete-writable-release|download-verified-release-asset|fetch-canonical-index|find-release-by-tag|github-api-get|init-merge-candidate|latest-merge-gate-status|mark-merge-candidate-ready|materialize-durable-package-generation|materialize-exact-package-generations|package-release-lifecycle|prepare-current-authority-validator|prepare-durable-package-generation|prepare-preserved-pr-package-generation|publish-durable-package-generation|reconcile-merge-candidates|recover-canonical-indexes|require-exact-head-approval|require-exact-kandelo-main|select-package-archive-source|split-staging-package-ledger|state-lock|test-activate-merge-candidate|test-classify-pr-staging|test-cleanup-merge-candidates|test-clone-rejected-merge-candidate|test-delete-writable-release|test-download-verified-release-asset|test-exact-main-package-publication|test-fetch-canonical-index|test-find-release-by-tag|test-init-merge-candidate|test-latest-merge-gate-status|test-materialize-exact-package-generations|test-merge-candidate-workflows|test-package-generation|test-package-release-lifecycle|test-prepare-current-authority-validator|test-publish-durable-package-generation|test-reconcile-merge-candidates|test-recover-canonical-indexes|test-require-exact-head-approval|test-require-exact-kandelo-main|test-select-package-archive-source|test-split-staging-package-ledger|test-state-lock|test-validate-staging-release|test-verify-merge-candidate|validate-staging-release|verify-merge-candidate|verify-preserved-package-source)\.sh$' \

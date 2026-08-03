@@ -74,8 +74,8 @@ release. Recheck its exact lowercase commit SHA immediately before each
 mutation. Normally the archives are rebuilt after their source changes land
 and record that exact `main` SHA.
 
-One narrow, versioned compatibility path may preserve archives from a distinct
-immutable producer commit `S`: `kandelo-package-generation-v2` records
+The ordinary versioned compatibility path may preserve archives from a
+distinct immutable producer commit `S`: `kandelo-package-generation-v2` records
 `validated_against_main` commit `M` using `identical-git-tree-v1`. The trusted
 current-`main` implementation must independently bind the source release's
 direct tag anchor `R`, require every selected archive to identify the same
@@ -91,45 +91,40 @@ reachability, a tag, a merge method, or equality of only selected files is not
 this proof. Existing v1 generations remain readable, but new preparation uses
 v2.
 
-The retired migration-only
-`identical-package-cache-projection-v1` method described distinct complete
-trees without claiming payload equivalence. Its historical reader and
-fail-closed validator remain for audit and regression coverage, but
-`promote-package-generation.yml` no longer exposes it and agents must not
-dispatch it. Build a fresh closure from exact current main and use
-`identical-git-tree-v1` instead. The historical method required current-main
-code to derive the exact same selected package projection, expected ledger,
-and canonical per-package build-input component closure from inert `S` and
-`M`. That closure
-binds each package manifest, parsed build recipe and Git inputs, every declared
-input digest, direct dependency cache identities, the global toolchain,
-fork-instrument inputs when used, architecture, and ABI. In schema-2
-selections, source-only dependencies remain bound by the full projection and
-direct dependency records but never acquire archive components. Complete
-non-truncated Git tree IDs remain bound for audit, and the exact validator
-transition is pinned; unrelated host/runtime leaves are not package inputs and
-therefore do not require a broad path exception.
+The bounded `identical-package-cache-projection-v1` method may admit distinct
+trees only from a public, application-sealed preserved closure. Existing v1
+preservation records one PR-staging run and keeps its direct tag at producer
+`S`. V2 preservation records one completed, successful canonical
+`force-rebuild.yml` run, requires `S` to be an ancestor of current authority
+`M`, and targets its preservation release and tag at `M`. The seal binds the
+observed source release and direct tag, run ID and attempt, event, workflow,
+exact head, the unique successful selected-root job and its log, every selected
+same-run artifact, and equality between workflow-artifact and release-archive
+bytes. A preserved release must declare `admission = "none"`; it is evidence,
+never a resolver input.
 
-This one-shot method was hard-bound to #1097 producer
-`748c2609954d2809bbcbbcb642fa7d257fc0dbc6` and
-the `pr-1097-staging` source capture; do not generalize it to another producer
-or source. Its design first preserved that mutable source as an evidence-only
-`preserved-package-generation-...` release. The preserved manifest binds the
-complete selected archives, minimal index,
-projection, expected ledger, same-run workflow artifacts, and root-job log,
-and must claim `admission = "none"`. The retired promotion design would have
-taken the exact published preservation tag, embedded and revalidated its
-complete manifest and release inventory, and only then emitted an admitted
-`package-generation-...` tag. Never dispatch this method or materialize a
-preserved release directly. The historical H-to-M comparison was equal only
-for the schema-1 `rootfs`/`wasm32` selection.
-`lamp`, `nginx-php-vfs`, and `wordpress` changed cache identities in the
-schema-2 browser selection, and later declared rootfs inputs changed too. No
-#1097 selection remains admissible.
-Any difference in the selected recipe, declared inputs, dependency identities,
-toolchain, fork instrumentation, architecture, ABI, projection, expected
-ledger, or preserved archive evidence fails closed. All selected archives
-still use one coherent `S`; mixed producers remain invalid.
+At admission, trusted current-main code must revalidate that public seal and
+derive byte-identical selected projections, expected ledgers, and canonical
+selected build-input component closures from inert `S` and `M`. That closure
+binds every selected manifest, parsed recipe, declared and Git input, direct
+dependency identity, global toolchain input, fork-instrument input when used,
+architecture, and ABI. A difference in any bound input fails closed. Complete,
+non-truncated Git tree IDs and the exact regular-file identities of both
+validator sources are recorded for audit; unrelated leaves may differ because
+they cannot affect the selected closure. Global program-index consumers and
+deployment still validate the complete index rather than this selected subset.
+For v2 canonical evidence, both admission jobs also prove that `S` is an
+ancestor of preservation authority `M0` and that `M0` is an ancestor of the
+current publishing `M`; the writer repeats that chain before every mutation.
+
+The selected-input comparison proves package-input equivalence. It does not
+prove whole-tree equality, ancestry, or reproducible payload bytes at `M`.
+`identical-git-tree-v1` remains the preferred ordinary route. V1 preservation
+remains valid only with its immutable PR semantics and cannot be reinterpreted
+as canonical Force evidence. V2 canonical preservation avoids GitHub's
+historical-workflow write restriction without changing the producer recorded
+in its seal. All selected archives must still identify one coherent `S`;
+mixed producers remain invalid.
 
 For a normal exact-main rebuild under the active v2 method, the selected
 archive's transitive buildable dependencies
