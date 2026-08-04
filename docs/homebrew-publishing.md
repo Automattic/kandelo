@@ -1171,10 +1171,12 @@ to machine teardown, whose worker-termination fallback remains responsible
 for releasing the host.
 The core scope removes the direct-composed Bzip2 receipt, pours first-party
 Bzip2 through stock Homebrew, executes it, and exits. The canary scope taps
-both repositories, removes the direct-composed M4 receipt, pours and executes
-independent-canary M4, verifies its first-party Dash dependency, and exits.
-Reinstall, upgrade, cleanup, export, and reboot do not change whether a user
-can perform those first installs.
+both repositories and pours the independent `m4-canary` Formula beside the
+precomposed core `m4` Formula. The canary is keg-only, so the Formulae have
+different Cellar paths, but its installed program is still `bin/m4`. The
+scope executes both programs, verifies the canary's first-party Dash
+dependency, and exits. Reinstall, upgrade, cleanup, export, and reboot do not
+change whether a user can perform those first installs.
 
 The comprehensive lifecycle retains the additional maintenance and durability
 assertions. It reinstalls both bottles, exports and reboots the rootfs, checks
@@ -3903,8 +3905,10 @@ projection cannot excuse catalog-authority drift. An optional Formula cannot
 leak into activation merely because a legacy sidecar exists. The base image
 keeps this layer deferred; a derived main-demo image may pre-materialize the
 same declared bytes. It may not maintain a second recipe or partial runtime.
-The independent canary M4 is intentionally absent from both trusted image
-closures and is installed only by the live guest lifecycle.
+The independent canary `m4-canary` Formula is intentionally absent from both
+trusted image closures and is installed only by the live guest lifecycle. It
+uses a distinct keg-only Formula name so it can coexist with core `m4`, while
+its installed command remains `bin/m4`.
 
 Product materialization uses the immutable closed selection named by
 `homebrew/main-shell-selection-lock.json`. The preparer downloads that release
@@ -4630,14 +4634,14 @@ This is a repository rule, not a first-party naming exception. A public
 third-party repository `<owner>/homebrew-<repo>` has canonical tap name
 `<owner>/<repo>`, while its bottles publish below
 `ghcr.io/<owner>/homebrew-<repo>/<formula>`. For example, tap
-`brandonpayton/kandelo-canary` publishes `m4` as registry repository
-`ghcr.io/brandonpayton/homebrew-kandelo-canary/m4`.
+`brandonpayton/kandelo-canary` publishes `m4-canary` as registry repository
+`ghcr.io/brandonpayton/homebrew-kandelo-canary/m4-canary`.
 
 GitHub's package page may render only the final component, such as `zlib` or
-`m4`. That short display label does not change the package API name
+`m4-canary`. That short display label does not change the package API name
 `<homebrew-repository>/<formula>` or its registry path. The first-party
-`zlib` API name is `homebrew-tap-core/zlib`; the third-party example's `m4`
-API name is `homebrew-kandelo-canary/m4`.
+`zlib` API name is `homebrew-tap-core/zlib`; the third-party example's
+`m4-canary` API name is `homebrew-kandelo-canary/m4-canary`.
 
 Do not derive the GHCR path from the canonical tap name. The earlier
 `ghcr.io/kandelo-dev/tap-core/<formula>` destination created private packages
@@ -4681,12 +4685,13 @@ against a GitHub behavior or organization policy change.
 
 The independent, user-owned
 [third-party canary run 29783196350](https://github.com/brandonpayton/homebrew-kandelo-canary/actions/runs/29783196350)
-used the same built-in-token path and created public, repository-linked package
-`homebrew-kandelo-canary/m4` (GitHub package ID `13494393`). Its anonymous
-bottle verification, tap finalization, Node and Chromium VFS acceptance, and
-immutable VFS release publication all passed. This demonstrates that
-public-by-default creation does not depend on a `Kandelo-dev`-specific policy
-exception.
+used the same built-in-token path and created public, repository-linked
+package `homebrew-kandelo-canary/m4` (GitHub package ID `13494393`). That
+retired legacy `m4` canary passed anonymous bottle verification, tap
+finalization, Node and Chromium VFS acceptance, and immutable VFS release
+publication. The current independent proof uses `m4-canary`. Together these
+prove that public-by-default creation does not depend on a
+`Kandelo-dev`-specific policy exception.
 
 ### New tap bootstrap checklist
 

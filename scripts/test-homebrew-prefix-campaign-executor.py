@@ -4299,8 +4299,11 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
                 )
         self.assertEqual(observed_cellars, list(accepted))
 
+        retired_prefix = json.loads(
+            (ROOT / "homebrew/kandelo-guest-layout.json").read_text()
+        )["retired_prefixes"][0]
         rejected = (
-            "/home/linuxbrew/.linuxbrew/Cellar",
+            f"{retired_prefix}/Cellar",
             "/usr/local/Cellar",
             "unknown_relocation_mode",
         )

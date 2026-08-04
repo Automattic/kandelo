@@ -204,8 +204,8 @@
     {
       "tap": "brandonpayton/kandelo-canary",
       "repository": "brandonpayton/homebrew-kandelo-canary",
-      "revision": "d8bdda662f6d80cf3dcdbe8451edb12bb33bbafc",
-      "formula": "m4",
+      "revision": "b86d1810c68e3ab17bdab218856da3a7516ec95c",
+      "formula": "m4-canary",
       "phase": "guest-lifecycle",
       "image_closure": false,
       "reason": "The independent tap is proof of live third-party installation, not a trusted base-image input."

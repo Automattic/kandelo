@@ -3901,8 +3901,8 @@
           "glibc@2.39"
         ],
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "eadef01a89719a26cfe308bce1744c363452bf0023b595442236b87ade0b09c1",
-        "bottle_rebuild": 1,
+        "bottle_checksum": "2fe24afa0fd4034a66340b61fbe952ec7628d5eb30358191730c9ba2b6a1d421",
+        "bottle_rebuild": 2,
         "caveats": "The Homebrew's Glibc has been installed with the following executables:\n  $HOMEBREW_PREFIX/opt/glibc/bin/ldd\n  $HOMEBREW_PREFIX/opt/glibc/bin/ld.so\n  $HOMEBREW_PREFIX/opt/glibc/sbin/ldconfig\n\nBy default, Homebrew's linker will not search for the system's libraries. If you\nwant Homebrew to do so, run:\n\n  cp \"$HOMEBREW_PREFIX/etc/ld.so.conf.d/99-system-ld.so.conf.example\" \"$HOMEBREW_PREFIX/etc/ld.so.conf.d/99-system-ld.so.conf\"\n  brew postinstall glibc\n\nto append the system libraries to Homebrew's ld search paths. This is risky and\n**highly not recommended**, because it may cause linkage to Homebrew libraries\nmixed with system libraries.\n",
         "desc": "GNU C Library",
         "executables": [
@@ -3975,7 +3975,7 @@
           }
         ],
         "revision": 1,
-        "ruby_source_checksum": "c7f9626cd354d02e32d8e7cc7ee73b269e2eddbe91df89f625a3a76fd8375148",
+        "ruby_source_checksum": "70e24aa18d5229d4cba91496fa1d3c5af4dd2a48fdd20e30e330ba7fecebfad0",
         "stable_checksum": "97f84f3b7588cd54093a6f6389b0c1a81e70d99708d74963a2e3eab7c7dc942d",
         "stable_dependencies": [
           "linux-headers@6.8"
@@ -4105,8 +4105,8 @@
           "glibc@2.39"
         ],
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "eadef01a89719a26cfe308bce1744c363452bf0023b595442236b87ade0b09c1",
-        "bottle_rebuild": 1,
+        "bottle_checksum": "2fe24afa0fd4034a66340b61fbe952ec7628d5eb30358191730c9ba2b6a1d421",
+        "bottle_rebuild": 2,
         "desc": "GNU C Library",
         "executables": [
           "gencat",
@@ -4178,7 +4178,7 @@
           }
         ],
         "revision": 1,
-        "ruby_source_checksum": "c7f9626cd354d02e32d8e7cc7ee73b269e2eddbe91df89f625a3a76fd8375148",
+        "ruby_source_checksum": "70e24aa18d5229d4cba91496fa1d3c5af4dd2a48fdd20e30e330ba7fecebfad0",
         "stable_checksum": "97f84f3b7588cd54093a6f6389b0c1a81e70d99708d74963a2e3eab7c7dc942d",
         "stable_dependencies": [
           "linux-headers@6.8",

@@ -126,16 +126,17 @@ archive inputs.
 ### Transition ownership during the Homebrew cutover
 
 One temporary rule prevents the retiring package registry and its Homebrew
-replacement from both owning the same proof. Changes to
-`scripts/homebrew-prefix-campaign-executor.py` go through the exact Homebrew
-product gate. That gate fetches the closed bottle selection, composes the real
-shell, and boots it in Node and Chromium. The same change does not stage the
-old conventional shell archive or the VFS images derived from that archive.
+replacement from both owning the same proof. The exact reviewed inputs that
+define or validate the closed Homebrew shell selection go through the exact
+Homebrew product gate. That gate fetches the closed bottle selection, composes
+the real shell, and boots it in Node and Chromium. The same change does not
+stage the old conventional shell archive or the VFS images derived from it.
 
-This is one exact reviewed path, not a `scripts/homebrew-*` exemption. A real
-registry recipe, build script, shared package input, or a mixed pull request
-still runs package staging normally. The scope detector also fails if this
-transition path ever escapes the exact Homebrew product gate.
+This is an exact reviewed path list, not a `homebrew/**` or
+`scripts/homebrew-*` exemption. A real registry recipe, build script, shared
+package input, or a mixed pull request still runs package staging normally.
+The scope detector also fails if one of these transition inputs ever escapes
+the exact Homebrew product gate.
 
 The route does not permit `program-packages.json` to become stale. That file
 describes which source inputs a resolver may accept; it does not say that an

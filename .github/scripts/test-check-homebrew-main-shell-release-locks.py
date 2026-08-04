@@ -66,7 +66,7 @@ index_url = "https://example.invalid/index.toml"
                         "tap": "brandonpayton/kandelo-canary",
                         "repository": "brandonpayton/homebrew-kandelo-canary",
                         "revision": C,
-                        "formula": "m4",
+                        "formula": "m4-canary",
                         "phase": "guest-lifecycle",
                         "image_closure": False,
                         "reason": (
@@ -163,6 +163,10 @@ commit = "{TF}"
     support_path = root / "homebrew/main-shell-homebrew-runtime-support.json"
     support = support_path.read_text()
     support_path.write_text(support.replace(C, "f" * 40))
+    rejected(root)
+    support_path.write_text(support)
+
+    support_path.write_text(support.replace('"m4-canary"', '"m4"'))
     rejected(root)
     support_path.write_text(support)
 

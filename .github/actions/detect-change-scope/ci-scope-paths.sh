@@ -54,17 +54,25 @@ package_declared_build_input_changed_files() {
 }
 
 homebrew_product_owned_package_input_changed_files() {
-  # WHY: this executor used to belong only to the conventional shell archive.
-  # It now validates the closed bottle selection used by the exact Homebrew
-  # product gate, which independently composes and boots that shell in Node and
-  # Chromium. Sending its changes through both owners rebuilds the retiring
-  # shell archive and every derived VFS identity without adding evidence.
+  # WHY: these inputs used to belong only to the conventional shell archive.
+  # They now define or validate the closed bottle selection used by the exact
+  # Homebrew product gate, which independently composes and boots that shell in
+  # Node and Chromium. Sending a change through both owners attempts to rebuild
+  # the unpublished, retiring shell archive and every derived VFS identity
+  # without adding evidence.
   #
-  # This is deliberately one reviewed ownership route, not a Homebrew path
+  # This is deliberately an exact reviewed ownership list, not a Homebrew path
   # wildcard. Add a path only when the exact product gate proves its complete
   # effect and focused tests establish that conventional package inputs still
   # stage normally.
-  grep -Fx 'scripts/homebrew-prefix-campaign-executor.py' || true
+  grep -Fx \
+    -e 'homebrew/main-shell-homebrew-runtime-support.json' \
+    -e 'homebrew/main-shell-lazy-artifact-lock.json' \
+    -e 'homebrew/main-shell-selection-lock.json' \
+    -e 'host/src/homebrew-runtime-support.ts' \
+    -e 'scripts/check-homebrew-main-shell-brewfile.mjs' \
+    -e 'scripts/homebrew-prefix-campaign-executor.py' \
+    || true
 }
 
 package_publish_flow_changed_files() {

@@ -15,7 +15,7 @@
     },
     "runtime_support": {
       "path": "homebrew/main-shell-homebrew-runtime-support.json",
-      "sha256": "d14cd4ebbe184c3179a1a033263b35c8b35a7ec44a691bd8bcfd6acbde386a18"
+      "sha256": "4ee373429d0f26e459cd9fe5ea16901d1769f9947f89cffeaee262b94e403616"
     }
   },
   "kind": "kandelo-homebrew-main-shell-closed-selection-lock",

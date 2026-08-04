@@ -833,20 +833,22 @@ function readRuntimeSupport(path, lock) {
     );
   }
   const lifecycleInstall = value.lifecycle_installs[0];
+  // WHY: the canary's keg-only Formula identity must not collide with the
+  // core `m4` keg, even though both payloads intentionally provide `bin/m4`.
   if (
     !isRecord(lifecycleInstall) ||
     lifecycleInstall.tap !== "brandonpayton/kandelo-canary" ||
     lifecycleInstall.repository !== "brandonpayton/homebrew-kandelo-canary" ||
     typeof lifecycleInstall.revision !== "string" ||
     !/^[0-9a-f]{40}$/.test(lifecycleInstall.revision) ||
-    lifecycleInstall.formula !== "m4" ||
+    lifecycleInstall.formula !== "m4-canary" ||
     lifecycleInstall.phase !== "guest-lifecycle" ||
     lifecycleInstall.image_closure !== false ||
     typeof lifecycleInstall.reason !== "string" ||
     lifecycleInstall.reason.trim().length === 0
   ) {
     throw new Error(
-      "the third-party canary M4 must remain a live lifecycle install outside the image",
+      "the third-party m4-canary must remain a live lifecycle install outside the image",
     );
   }
   const canaryIdentity = `${lifecycleInstall.tap}/${lifecycleInstall.formula}`;
@@ -855,7 +857,7 @@ function readRuntimeSupport(path, lock) {
     formulaOrder.includes(canaryIdentity)
   ) {
     throw new Error(
-      "third-party canary M4 leaked into a trusted image closure",
+      "third-party m4-canary leaked into a trusted image closure",
     );
   }
 

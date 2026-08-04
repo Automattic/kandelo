@@ -686,7 +686,7 @@ describe("declared shell lazy-archive inputs", () => {
     expect(runtimeSupport.lifecycle_installs).toEqual([
       expect.objectContaining({
         tap: "brandonpayton/kandelo-canary",
-        formula: "m4",
+        formula: "m4-canary",
         phase: "guest-lifecycle",
         image_closure: false,
       }),

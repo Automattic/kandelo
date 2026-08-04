@@ -4132,7 +4132,7 @@ describe("Homebrew VFS builder", () => {
         tap: "brandonpayton/kandelo-canary",
         repository: "brandonpayton/homebrew-kandelo-canary",
         revision: "4".repeat(40),
-        formula: "m4",
+        formula: "m4-canary",
       },
     };
     const fs = MemoryFileSystem.create(
@@ -4443,7 +4443,7 @@ describe("Homebrew VFS builder", () => {
         tap: "brandonpayton/kandelo-canary",
         repository: "brandonpayton/homebrew-kandelo-canary",
         revision: "4".repeat(40),
-        formula: "m4",
+        formula: "m4-canary",
       },
     };
     const bashProfile = "export SHELL=/usr/bin/bash\n";
