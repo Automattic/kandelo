@@ -2044,6 +2044,58 @@ The later write run uses the original artifact names in the same workflow
 run, so the two invocations cannot collide or cause the tap controller to
 download bootstrap evidence as a normal handoff.
 
+#### Bounded Cross-Run Revalidation Of A Partial Publication
+
+The prefix campaign has one migration-only recovery lane for a child whose
+bottle, OCI child, upload receipt, and aggregate-index receipt were all
+published successfully, but whose original verifier failed later and therefore
+never emitted the ordinary publication handoff. This lane recovers evidence;
+it does not rebuild the bottle or write another GHCR child or index.
+
+Recovery is admitted only from the reviewed
+`prefix-campaign-bottles.yml` caller on protected tap `main`, under its exact
+revalidation dispatch action and an empty dispatch payload. Every ordinary
+campaign call must leave `revalidation-source` empty. The recovery call must
+remain a non-dry, forced, single-Formula, single-architecture campaign call
+with deferred tap finalization and no VFS release.
+
+`revalidation-source` is canonical, bounded JSON that binds all of the
+following before any historical artifact is downloaded:
+
+- the exact failed run, attempt, workflow path, head commit, and repository;
+- the successful build, upload, and index jobs and the failed verifier job;
+- the verifier's successful publication-proof steps, its exact later failure
+  boundary, and the skipped post-failure steps;
+- four unexpired artifacts by ID, name, archive digest, byte size, run, and
+  head commit; and
+- the exact producer Kandelo and tap commits, campaign, Formula,
+  architecture, bottle bytes, OCI-child digest, and public top-index digest.
+
+The plan job re-reads that run, each job, and each artifact through the Actions
+API. The producer commits must still belong to their protected `main`
+histories. The build, GHCR upload, and index-writer jobs are then required to be
+skipped. A separate staging job has only `actions: read`; it downloads the four
+artifacts by ID, rejects links, special files, and unexpected file topology,
+rechecks the bottle and OCI content digests and receipt graph, and uploads the
+same files under the ordinary current-run artifact names. It has no source
+checkout, package authority, Homebrew execution, or registry tooling.
+
+The normal verifier then consumes those same-run names without recovery-only
+steps or elevated Actions authority. The reusable workflow itself is selected
+at the current reviewed Kandelo commit, while `kandelo-ref` remains the
+historical producer commit. Consequently the verifier's checked-out source and
+the ordinary handoff truthfully retain the producer identity; the newer
+orchestration identity remains visible in the caller's immutable workflow pin
+and run metadata. Deferred finalization ensures the reusable does not edit the
+tap or publish a VFS release. The campaign controller may seal only the normal
+verified handoff through the usual immutable-release path.
+
+If any source artifact expires, any identity or job boundary differs, or the
+ordinary verifier no longer accepts the exact bytes, recovery fails honestly.
+The successor campaign must then build the Formula normally. The lane never
+authorizes reconstruction from GHCR alone and never fabricates an archived
+handoff for a failed run.
+
 The first-child reusable is:
 
 ```text
