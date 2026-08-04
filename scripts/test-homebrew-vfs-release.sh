@@ -600,6 +600,34 @@ common_args=(
   --abi 42
   --bottle-release-tag bottles-abi-v42
 )
+browser_shell_mismatch="$TMP_ROOT/browser-shell-mismatch"
+cp -a "$source_root" "$browser_shell_mismatch"
+jq '.default_shell.path = "/opt/kandelo/homebrew/bin/file"' \
+  "$browser_shell_mismatch/browser.json" >"$browser_shell_mismatch/browser.tmp"
+mv "$browser_shell_mismatch/browser.tmp" "$browser_shell_mismatch/browser.json"
+expect_failure "publisher accepted browser evidence for another default shell" \
+  python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" prepare \
+    --image "$browser_shell_mismatch/image.vfs.zst" \
+    --report "$browser_shell_mismatch/report.json" \
+    --node-evidence "$browser_shell_mismatch/node.json" \
+    --browser-evidence "$browser_shell_mismatch/browser.json" \
+    --lazy-layer "$browser_shell_mismatch/layer.bin" \
+    --lazy-layer-descriptor "$browser_shell_mismatch/layer.json" \
+    --out "$TMP_ROOT/browser-shell-mismatch-handoff" "${common_args[@]}"
+browser_shell_missing="$TMP_ROOT/browser-shell-missing"
+cp -a "$source_root" "$browser_shell_missing"
+jq 'del(.default_shell)' \
+  "$browser_shell_missing/browser.json" >"$browser_shell_missing/browser.tmp"
+mv "$browser_shell_missing/browser.tmp" "$browser_shell_missing/browser.json"
+expect_failure "publisher accepted browser evidence without the reviewed default shell" \
+  python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" prepare \
+    --image "$browser_shell_missing/image.vfs.zst" \
+    --report "$browser_shell_missing/report.json" \
+    --node-evidence "$browser_shell_missing/node.json" \
+    --browser-evidence "$browser_shell_missing/browser.json" \
+    --lazy-layer "$browser_shell_missing/layer.bin" \
+    --lazy-layer-descriptor "$browser_shell_missing/layer.json" \
+    --out "$TMP_ROOT/browser-shell-missing-handoff" "${common_args[@]}"
 handoff="$TMP_ROOT/handoff"
 python3 "$REPO_ROOT/scripts/homebrew-vfs-release.py" prepare \
   --image "$source_root/image.vfs.zst" \

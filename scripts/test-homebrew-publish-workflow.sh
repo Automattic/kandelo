@@ -7959,6 +7959,9 @@ bash "$REPO_ROOT/.github/scripts/test-require-repository-main-contains.sh"
 bash "$REPO_ROOT/.github/scripts/test-validate-staging-release.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-vfs-release.sh"
 bash "$REPO_ROOT/scripts/test-homebrew-main-shell-closure.sh"
+npx tsx --test \
+  "$REPO_ROOT/apps/browser-demos/homebrew-shell-request.test.ts" \
+  "$REPO_ROOT/apps/browser-demos/homebrew-vfs-acceptance-request.test.ts"
 assert_formula_composition_is_static_and_lossless
 assert_formula_source_closure_is_bound
 assert_playwright_json_capture_excludes_dev_shell_stdout

@@ -4250,9 +4250,11 @@ It clones or reads the tap, builds a Homebrew VFS from published sidecars, runs
 checks negative ABI-mismatch and missing-bottle cases.
 
 Browser compatibility requires a separate browser smoke. For the current
-`file-formula` path, the trusted publisher builds a precomposed wasm32 VFS image,
-serves it through the browser demo, runs Chromium Playwright against
-`apps/browser-demos/test/kandelo-homebrew.spec.ts`, and executes:
+`file-formula` path, the trusted publisher builds a precomposed wasm32
+VFS image. It serves the image through the focused `homebrew-vfs-test`
+page and runs Chromium Playwright against
+`apps/browser-demos/test/homebrew-brewfile-vfs.spec.ts`.
+The test binds both the VFS image and kernel by SHA-256 before running:
 
 ```bash
 /opt/kandelo/homebrew/bin/file --version
@@ -4262,20 +4264,28 @@ Only after that smoke passes may sidecars record
 `runtime_support = ["node", "browser"]` and `browser_compatible = true`.
 Packages without a successful browser smoke remain Node-only.
 
-The `file-formula` package bytes in this smoke come from the current Homebrew bottle:
-from the local build in dry-run mode, or from the anonymously fetched GHCR blob
-in write mode. The browser demo still resolves Kandelo-owned ABI platform
-prerequisites such as `node.wasm` and `node-vfs.vfs.zst` through Kandelo's normal
-binary release. Generic Formula and schema 1 dependency-bearing VFS verification
-fetch only the base command set and `rootfs`; their focused Vite input does not
-scan the interactive demo. Schema 2 acceptance also boots the image-owned
-default shell through the full machine UI, so the selected acceptance matrix
-entry materializes the supported interactive graph through
-`./run.sh --fetch-only prepare-browser` before that smoke. The `file-formula` gallery
-smoke materializes the same graph. Browser preparation excludes packages whose
-demos are provided by the external software gallery. Those platform assets are
-not the migrated package under test, and unrelated gallery packages are not
-bottle verification prerequisites.
+The `file-formula` package bytes in this smoke come from the current
+Homebrew bottle. They come from the local build in dry-run mode, or from
+the anonymously fetched GHCR blob in write mode. Package publication
+does not run `prepare-browser` or require the main shell's pending
+selection.
+Its focused Vite input uses the exact worktree kernel and package VFS.
+Therefore, an independently valid bottle cannot be blocked by an
+incomplete product-shell selection. When a package VFS declares an
+image-owned default shell, the same focused page starts that exact path
+and argument vector with a PTY. It sends a bounded marker command and
+requires a clean exit. This proves the shell inside the exact image
+without loading the complete browser-demo graph.
+
+The complete interactive shell remains a required product test, but it
+belongs to the closed-selection and cutover workflows.
+`homebrew-main-shell-ci.yml` proves the selected shell in Node and
+Chromium before the repository can adopt it.
+`reusable-homebrew-main-shell-mirror-publish.yml`
+then repeats the public Node and Chromium lifecycle proof before
+publishing the closed mirror.
+This split keeps package publication independent without weakening the
+final shell gate.
 
 ## Durable Browser-Proven VFS Releases
 

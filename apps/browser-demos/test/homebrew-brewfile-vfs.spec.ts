@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { isLegacyShellProgramFetch } from "./homebrew-shell-request";
 
 interface AcceptanceResult {
   exitCode: number;
@@ -12,6 +13,8 @@ interface AcceptanceRequest {
   vfsUrl: string;
   executable: string;
   argv: string[];
+  stdin?: string;
+  pty?: boolean;
   timeoutMs: number;
 }
 
@@ -24,7 +27,7 @@ declare global {
   }
 }
 
-test("the exact dependency-bearing Brewfile VFS boots in Chromium", async ({
+test("the exact Homebrew VFS boots in Chromium", async ({
   page,
   baseURL,
 }) => {
@@ -34,6 +37,9 @@ test("the exact dependency-bearing Brewfile VFS boots in Chromium", async ({
   const executable = process.env.KANDELO_HOMEBREW_ACCEPTANCE_EXECUTABLE;
   const argvJson = process.env.KANDELO_HOMEBREW_ACCEPTANCE_ARGV_JSON;
   const expectedStdout = process.env.KANDELO_HOMEBREW_ACCEPTANCE_EXPECTED_STDOUT;
+  const shellPath = process.env.KANDELO_HOMEBREW_ACCEPTANCE_DEFAULT_SHELL_PATH;
+  const shellArgvJson = process.env.KANDELO_HOMEBREW_ACCEPTANCE_DEFAULT_SHELL_ARGV_JSON;
+  const shellExpectedStdout = "kandelo-homebrew-default-shell";
   const configured = [
     vfsUrl,
     imageSha256,
@@ -61,7 +67,35 @@ test("the exact dependency-bearing Brewfile VFS boots in Chromium", async ({
   if (!Array.isArray(argv) || argv.length === 0 || argv.some((value) => typeof value !== "string")) {
     throw new Error("KANDELO_HOMEBREW_ACCEPTANCE_ARGV_JSON must be a non-empty string array");
   }
+  const shellConfigured = [shellPath, shellArgvJson]
+    .some((value) => value !== undefined);
+  if (shellConfigured && (!shellPath || !shellArgvJson)) {
+    throw new Error("all Homebrew default-shell acceptance inputs are required together");
+  }
+  const shellArgv: unknown = shellArgvJson === undefined
+    ? undefined
+    : JSON.parse(shellArgvJson);
+  if (
+    shellConfigured &&
+    (
+      !Array.isArray(shellArgv) ||
+      shellArgv.length === 0 ||
+      shellArgv.some((value) => typeof value !== "string")
+    )
+  ) {
+    throw new Error(
+      "KANDELO_HOMEBREW_ACCEPTANCE_DEFAULT_SHELL_ARGV_JSON must be a non-empty string array",
+    );
+  }
   if (!baseURL) throw new Error("Playwright baseURL is required");
+  if (shellConfigured) test.setTimeout(360_000);
+  const legacyShellFetches: string[] = [];
+  page.on("request", (request) => {
+    const url = request.url();
+    if (isLegacyShellProgramFetch(request.resourceType(), url)) {
+      legacyShellFetches.push(url);
+    }
+  });
 
   await page.goto(new URL("/pages/homebrew-vfs-test/", baseURL).href);
   await expect.poll(
@@ -82,4 +116,30 @@ test("the exact dependency-bearing Brewfile VFS boots in Chromium", async ({
   expect(result.kernelSha256).toBe(kernelSha256);
   expect(result.exitCode, result.stderr).toBe(0);
   expect(result.stdout).toContain(expectedStdout!);
+
+  if (shellConfigured) {
+    const shellResult = await page.evaluate(
+      async ({ url, program, args, expected }) =>
+        window.__runHomebrewVfsAcceptance({
+          vfsUrl: url,
+          executable: program,
+          argv: args,
+          stdin: `printf '${expected}\\n'\nexit\n`,
+          pty: true,
+          timeoutMs: 180_000,
+        }),
+      {
+        url: vfsUrl!,
+        program: shellPath!,
+        args: shellArgv as string[],
+        expected: shellExpectedStdout!,
+      },
+    ) as AcceptanceResult;
+
+    expect(shellResult.imageSha256).toBe(imageSha256);
+    expect(shellResult.kernelSha256).toBe(kernelSha256);
+    expect(shellResult.exitCode, shellResult.stderr).toBe(0);
+    expect(shellResult.stdout).toContain(shellExpectedStdout!);
+    expect(legacyShellFetches).toEqual([]);
+  }
 });

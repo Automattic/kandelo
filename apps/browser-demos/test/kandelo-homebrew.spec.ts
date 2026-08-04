@@ -12,6 +12,7 @@ import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   KANDELO_SHELL_CONFIG_PATH,
 } from "../../../web-libs/kandelo-session/src/shell-config";
+import { isLegacyShellProgramFetch } from "./homebrew-shell-request";
 import {
   runParentShellProbe,
   runTerminalCommand,
@@ -227,11 +228,7 @@ test("an image-owned Homebrew shell boots without legacy shell downloads", async
   const legacyShellFetches: string[] = [];
   page.on("request", (request) => {
     const url = request.url();
-    if (
-      request.resourceType() === "fetch"
-      && /\/(?:bash|dash)\.wasm(?:\?|$)/.test(url)
-      && !url.includes("?import&url")
-    ) {
+    if (isLegacyShellProgramFetch(request.resourceType(), url)) {
       legacyShellFetches.push(url);
     }
   });

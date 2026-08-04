@@ -29,6 +29,10 @@ import {
   runHomebrewSystemCommandSpawnProof,
 } from "../../../../homebrew/test/homebrew_system_command_spawn_proof";
 import kernelWasmUrl from "@kernel-wasm?url";
+import {
+  validateHomebrewVfsAcceptanceRequest,
+  type HomebrewVfsAcceptanceRequest,
+} from "./acceptance-request";
 
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const corsProxyUrl = new URL(
@@ -40,13 +44,6 @@ const closedLifecycleAssetRoot = homebrewClosedAcceptanceAssetRoot(
   import.meta.env.VITE_KANDELO_HOMEBREW_CLOSED_ACCEPTANCE_ROOT as
     string | undefined,
 );
-
-interface HomebrewVfsAcceptanceRequest {
-  vfsUrl: string;
-  executable: string;
-  argv: string[];
-  timeoutMs: number;
-}
 
 interface HomebrewVfsAcceptanceResult {
   exitCode: number;
@@ -410,12 +407,7 @@ async function init(): Promise<void> {
   };
 
   window.__runHomebrewVfsAcceptance = async (request) => {
-    if (!Array.isArray(request.argv) || request.argv.length === 0) {
-      throw new Error("argv must contain at least one entry");
-    }
-    if (!Number.isInteger(request.timeoutMs) || request.timeoutMs < 1_000) {
-      throw new Error("timeoutMs must be an integer of at least 1000");
-    }
+    const stdin = validateHomebrewVfsAcceptanceRequest(request);
 
     const imageBytes = await fetchBytes(request.vfsUrl, "Homebrew VFS image");
     const imageSha256 = await sha256(imageBytes);
@@ -445,15 +437,29 @@ async function init(): Promise<void> {
       });
       const executable = new Uint8Array(executableBytes.byteLength);
       executable.set(executableBytes);
+      const spawnOptions = {
+        cwd: "/",
+        env: [
+          "HOME=/tmp",
+          "TMPDIR=/tmp",
+          "PATH=/opt/kandelo/homebrew/bin:/usr/bin:/bin",
+        ],
+        ...(stdin === undefined ? {} : { stdin }),
+        ...(request.pty !== true
+          ? {}
+          : {
+              pty: true,
+              onStarted: (pid: number) => {
+                // WHY: a PTY routes its combined terminal stream through the
+                // PTY callback rather than the ordinary stdout callback.
+                kernel.onPtyOutput(pid, (bytes) => {
+                  stdout = appendOutput(stdout, bytes, "PTY output");
+                });
+              },
+            }),
+      };
       const exitCode = await Promise.race([
-        kernel.spawn(executable.buffer, request.argv, {
-          cwd: "/",
-          env: [
-            "HOME=/tmp",
-            "TMPDIR=/tmp",
-            "PATH=/opt/kandelo/homebrew/bin:/usr/bin:/bin",
-          ],
-        }),
+        kernel.spawn(executable.buffer, request.argv, spawnOptions),
         new Promise<never>((_resolve, reject) => {
           timer = setTimeout(
             () => reject(new Error(`browser acceptance timed out after ${request.timeoutMs}ms`)),
