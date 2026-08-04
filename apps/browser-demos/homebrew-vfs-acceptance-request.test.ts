@@ -19,12 +19,11 @@ function request(
 }
 
 test("focused PTY acceptance keeps stdin bounded by encoded bytes", () => {
-  assert.equal(
-    validateHomebrewVfsAcceptanceRequest(
-      request({ pty: true, stdin: "a".repeat(65_536) }),
-    )?.byteLength,
-    65_536,
+  const accepted = validateHomebrewVfsAcceptanceRequest(
+    request({ pty: true, stdin: "a".repeat(65_536) }),
   );
+  assert.equal(accepted.kind, "pty");
+  assert.equal(accepted.kind === "pty" && accepted.input.byteLength, 65_536);
   assert.throws(
     () => validateHomebrewVfsAcceptanceRequest(
       request({ pty: true, stdin: "a".repeat(65_537) }),
@@ -39,14 +38,28 @@ test("focused PTY acceptance keeps stdin bounded by encoded bytes", () => {
   );
 });
 
-test("focused PTY acceptance requires an input that can reach EOF", () => {
+test("focused PTY acceptance requires bounded terminal input", () => {
   assert.throws(
     () => validateHomebrewVfsAcceptanceRequest(request({ pty: true })),
-    /focused PTY acceptance requires bounded stdin/,
+    /focused PTY acceptance requires bounded terminal input/,
   );
+});
+
+test("focused acceptance keeps stdio and PTY input transports distinct", () => {
+  const stdio = validateHomebrewVfsAcceptanceRequest(
+    request({ stdin: "input\n" }),
+  );
+  assert.equal(stdio.kind, "stdio");
+  assert.equal(stdio.kind === "stdio" && stdio.stdin?.byteLength, 6);
+  assert.equal("input" in stdio, false);
+
+  const pty = validateHomebrewVfsAcceptanceRequest(
+    request({ pty: true, stdin: "printf marker\\n\nexit\n" }),
+  );
+  assert.equal(pty.kind, "pty");
+  assert.equal("stdin" in pty, false);
   assert.equal(
-    validateHomebrewVfsAcceptanceRequest(request({ stdin: "input\n" }))
-      ?.byteLength,
-    6,
+    pty.kind === "pty" && new TextDecoder().decode(pty.input),
+    "printf marker\\n\nexit\n",
   );
 });

@@ -7704,8 +7704,11 @@ def check_publisher(workflow)
         browser_acceptance_request_source.include?("stdin?: string") &&
         browser_acceptance_request_source.include?("pty?: boolean") &&
         browser_acceptance_request_source.include?("MAX_STDIN_BYTES = 64 * 1024") &&
-        browser_acceptance_request_source.include?("focused PTY acceptance requires bounded stdin") &&
+        browser_acceptance_request_source.include?("focused PTY acceptance requires bounded terminal input") &&
+        browser_acceptance_request_source.include?('{ kind: "stdio"; stdin?: Uint8Array }') &&
+        browser_acceptance_request_source.include?('{ kind: "pty"; input: Uint8Array }') &&
         browser_acceptance_source.include?("kernel.onPtyOutput") &&
+        browser_acceptance_source.include?("kernel.ptyWrite(pid, input.input)") &&
         browser_acceptance_source.include?('appendOutput(stdout, bytes, "PTY output")') &&
         !browser_acceptance_source.include?("live-setup") &&
         !browser_acceptance_source.include?(".saveImage("),

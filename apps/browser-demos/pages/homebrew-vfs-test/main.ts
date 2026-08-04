@@ -407,7 +407,7 @@ async function init(): Promise<void> {
   };
 
   window.__runHomebrewVfsAcceptance = async (request) => {
-    const stdin = validateHomebrewVfsAcceptanceRequest(request);
+    const input = validateHomebrewVfsAcceptanceRequest(request);
 
     const imageBytes = await fetchBytes(request.vfsUrl, "Homebrew VFS image");
     const imageSha256 = await sha256(imageBytes);
@@ -444,17 +444,22 @@ async function init(): Promise<void> {
           "TMPDIR=/tmp",
           "PATH=/opt/kandelo/homebrew/bin:/usr/bin:/bin",
         ],
-        ...(stdin === undefined ? {} : { stdin }),
-        ...(request.pty !== true
+        ...(input.kind !== "stdio" || input.stdin === undefined
+          ? {}
+          : { stdin: input.stdin }),
+        ...(input.kind !== "pty"
           ? {}
           : {
               pty: true,
               onStarted: (pid: number) => {
-                // WHY: a PTY routes its combined terminal stream through the
-                // PTY callback rather than the ordinary stdout callback.
+                // WHY: a PTY routes both input and combined terminal output
+                // through its master side. The browser worker intentionally
+                // ignores SpawnMessage.stdin for PTY processes, so register
+                // output first and then send the bounded script via ptyWrite.
                 kernel.onPtyOutput(pid, (bytes) => {
                   stdout = appendOutput(stdout, bytes, "PTY output");
                 });
+                kernel.ptyWrite(pid, input.input);
               },
             }),
       };

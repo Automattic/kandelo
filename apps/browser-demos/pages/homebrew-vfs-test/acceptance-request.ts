@@ -11,9 +11,13 @@ export interface HomebrewVfsAcceptanceRequest {
   timeoutMs: number;
 }
 
+export type HomebrewVfsAcceptanceInput =
+  | { kind: "stdio"; stdin?: Uint8Array }
+  | { kind: "pty"; input: Uint8Array };
+
 export function validateHomebrewVfsAcceptanceRequest(
   request: HomebrewVfsAcceptanceRequest,
-): Uint8Array | undefined {
+): HomebrewVfsAcceptanceInput {
   if (!Array.isArray(request.argv) || request.argv.length === 0) {
     throw new Error("argv must contain at least one entry");
   }
@@ -25,9 +29,9 @@ export function validateHomebrewVfsAcceptanceRequest(
   }
   if (request.stdin === undefined) {
     if (request.pty === true) {
-      throw new Error("focused PTY acceptance requires bounded stdin");
+      throw new Error("focused PTY acceptance requires bounded terminal input");
     }
-    return undefined;
+    return { kind: "stdio" };
   }
   if (typeof request.stdin !== "string") {
     throw new Error(`stdin must be a string of at most ${MAX_STDIN_BYTES} bytes`);
@@ -36,5 +40,10 @@ export function validateHomebrewVfsAcceptanceRequest(
   if (stdin.byteLength > MAX_STDIN_BYTES) {
     throw new Error(`stdin must be a string of at most ${MAX_STDIN_BYTES} bytes`);
   }
-  return stdin;
+  // WHY: SpawnMessage.stdin is a finite stdio buffer, but the browser worker
+  // deliberately ignores it for PTY processes. Keep the two transports
+  // distinct so a PTY proof cannot silently wait for input that never arrives.
+  return request.pty === true
+    ? { kind: "pty", input: stdin }
+    : { kind: "stdio", stdin };
 }

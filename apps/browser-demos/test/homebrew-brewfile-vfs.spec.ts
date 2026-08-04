@@ -124,6 +124,9 @@ test("the exact Homebrew VFS boots in Chromium", async ({
           vfsUrl: url,
           executable: program,
           argv: args,
+          // WHY: PTYs are interactive streams, not finite stdin buffers, so
+          // they have no implicit EOF after this write. Make the shell exit
+          // explicitly and require its clean status below.
           stdin: `printf '${expected}\\n'\nexit\n`,
           pty: true,
           timeoutMs: 180_000,
