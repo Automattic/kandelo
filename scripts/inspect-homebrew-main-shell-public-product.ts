@@ -6,6 +6,8 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { parseHomebrewRuntimeSupportContract } from "../host/src/homebrew-runtime-support";
+import { deriveHomebrewPortableRubyTree } from
+  "../host/src/homebrew-portable-ruby";
 import { HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH } from "../host/src/homebrew-bottle-mirror-plan";
 import { MemoryFileSystem } from "../host/src/vfs/memory-fs";
 import {
@@ -32,6 +34,10 @@ export interface HomebrewMainShellPublicProduct {
     bytes: number;
     activation_root: "/usr/bin/brew";
   };
+  homebrew_portable_ruby: {
+    sha256: string;
+    bytes: number;
+  };
   bottle_mirror: {
     repository: string;
     collection_sha256: string;
@@ -46,6 +52,7 @@ export interface HomebrewMainShellPublicProduct {
 export async function inspectHomebrewMainShellPublicProduct(input: {
   imageBytes: Uint8Array;
   homebrewBootstrapArchiveBytes: Uint8Array;
+  homebrewPortableRubyArchiveBytes: Uint8Array;
   homebrewBootstrapSpec: unknown;
   homebrewRuntimeSupport: unknown;
 }): Promise<HomebrewMainShellPublicProduct> {
@@ -54,12 +61,21 @@ export async function inspectHomebrewMainShellPublicProduct(input: {
     input.homebrewBootstrapArchiveBytes,
     "Homebrew bootstrap archive",
   );
+  const portableRubyBytes = nonemptyBytes(
+    input.homebrewPortableRubyArchiveBytes,
+    "Homebrew portable Ruby archive",
+  );
   const runtimeSupport = parseHomebrewRuntimeSupportContract(
     input.homebrewRuntimeSupport,
   );
   const bootstrap = derivePackageDeferredZipTree(
     input.homebrewBootstrapSpec,
     bootstrapBytes,
+  );
+  const portableRuby = deriveHomebrewPortableRubyTree(
+    bootstrap,
+    bootstrapBytes,
+    portableRubyBytes,
   );
   if (
     bootstrap.descriptor.activation.atomicGroup?.id !==
@@ -80,6 +96,7 @@ export async function inspectHomebrewMainShellPublicProduct(input: {
   // fails closed before that trust boundary.
   await fs.verifyImportedLazyAtomicGroupSeals();
   assertPackageDeferredZipTreeState(fs, bootstrap, "deferred");
+  assertPackageDeferredZipTreeState(fs, portableRuby, "deferred");
   const activationRoot = runtimeSupport.activation.root;
   if (!fs.isPathDeferred(activationRoot)) {
     throw new Error(
@@ -107,10 +124,24 @@ export async function inspectHomebrewMainShellPublicProduct(input: {
   const bootstrapTrees = allPendingTrees.filter((tree) =>
     tree.activation?.capabilities.includes("homebrew:bootstrap"),
   );
-  const unknownTrees = allPendingTrees.filter(
-    (tree) => !bottleTrees.includes(tree) && !bootstrapTrees.includes(tree),
+  const portableRubyTrees = allPendingTrees.filter((tree) =>
+    tree.activation?.capabilities.includes("homebrew:runtime") &&
+    !tree.activation.capabilities.includes("homebrew:bootstrap") &&
+    !tree.activation.capabilities.some((capability) =>
+      capability.startsWith("homebrew-bottle:")
+    )
   );
-  if (bootstrapTrees.length !== 1 || unknownTrees.length !== 0) {
+  const unknownTrees = allPendingTrees.filter(
+    (tree) =>
+      !bottleTrees.includes(tree) &&
+      !bootstrapTrees.includes(tree) &&
+      !portableRubyTrees.includes(tree),
+  );
+  if (
+    bootstrapTrees.length !== 1 ||
+    portableRubyTrees.length !== 1 ||
+    unknownTrees.length !== 0
+  ) {
     throw new Error(
       "main-shell image has an unexpected deferred package-tree inventory",
     );
@@ -157,6 +188,10 @@ export async function inspectHomebrewMainShellPublicProduct(input: {
       sha256: sha256(bootstrapBytes),
       bytes: bootstrapBytes.byteLength,
       activation_root: activationRoot,
+    },
+    homebrew_portable_ruby: {
+      sha256: sha256(portableRubyBytes),
+      bytes: portableRubyBytes.byteLength,
     },
     bottle_mirror: {
       repository: plan.repository,
@@ -228,6 +263,7 @@ function parseJsonFile(path: string, label: string): unknown {
 function parseArgs(args: string[]): {
   image: string;
   homebrewBootstrapArchive: string;
+  homebrewPortableRubyArchive: string;
   homebrewBootstrapSpec: string;
   homebrewRuntimeSupport: string;
   output: string;
@@ -242,6 +278,7 @@ function parseArgs(args: string[]): {
       ![
         "--image",
         "--homebrew-bootstrap-archive",
+        "--homebrew-portable-ruby-archive",
         "--homebrew-bootstrap-spec",
         "--homebrew-runtime-support",
         "--out",
@@ -252,11 +289,14 @@ function parseArgs(args: string[]): {
     }
     values.set(key, value);
   }
-  if (values.size !== 5) usage();
+  if (values.size !== 6) usage();
   return {
     image: resolve(values.get("--image")!),
     homebrewBootstrapArchive: resolve(
       values.get("--homebrew-bootstrap-archive")!,
+    ),
+    homebrewPortableRubyArchive: resolve(
+      values.get("--homebrew-portable-ruby-archive")!,
     ),
     homebrewBootstrapSpec: resolve(values.get("--homebrew-bootstrap-spec")!),
     homebrewRuntimeSupport: resolve(values.get("--homebrew-runtime-support")!),
@@ -269,6 +309,7 @@ function usage(): never {
     "usage: npx tsx scripts/inspect-homebrew-main-shell-public-product.ts " +
       "--image <shell.vfs.zst> " +
       "--homebrew-bootstrap-archive <homebrew-bootstrap.zip> " +
+      "--homebrew-portable-ruby-archive <homebrew-portable-ruby.zip> " +
       "--homebrew-bootstrap-spec <main-shell-brew-package-tree.json> " +
       "--homebrew-runtime-support <runtime-support.json> --out <new-report.json>",
   );
@@ -284,6 +325,10 @@ if (
     homebrewBootstrapArchiveBytes: readRegularFile(
       options.homebrewBootstrapArchive,
       "Homebrew bootstrap archive",
+    ),
+    homebrewPortableRubyArchiveBytes: readRegularFile(
+      options.homebrewPortableRubyArchive,
+      "Homebrew portable Ruby archive",
     ),
     homebrewBootstrapSpec: parseJsonFile(
       options.homebrewBootstrapSpec,

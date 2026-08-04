@@ -221,6 +221,9 @@ grep -Fq 'id: shell_product' <<<"$shell_product_block" &&
   grep -Fq \
     'bootstrap="$PWD/apps/browser-demos/public/homebrew-bootstrap.zip"' \
     <<<"$shell_product_block" &&
+  grep -Fq \
+    'portable_ruby="$PWD/apps/browser-demos/public/homebrew-portable-ruby.zip"' \
+    <<<"$shell_product_block" &&
   grep -Fq 'scripts/verify-homebrew-main-shell-artifact-lock.sh' \
     <<<"$shell_product_block" &&
   grep -Fq 'scripts/inspect-homebrew-main-shell-public-product.ts' \
@@ -254,6 +257,8 @@ browser_build_block="$(
 )"
 grep -Fxq '          npm run build' <<<"$browser_build_block" &&
   grep -Fq 'dist/homebrew-bootstrap.zip' <<<"$browser_build_block" &&
+  grep -Fq 'dist/homebrew-portable-ruby.zip' \
+    <<<"$browser_build_block" &&
   grep -Fq 'bash ../../scripts/verify-browser-shell-vfs-asset.sh \' \
     <<<"$browser_build_block" &&
   grep -Fxq \

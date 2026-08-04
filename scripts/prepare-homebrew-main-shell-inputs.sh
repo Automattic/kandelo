@@ -155,6 +155,7 @@ BOOTSTRAP_PACKAGE="$(jq -er '.package.name' \
 for required in \
   "$BOOTSTRAP/homebrew-bootstrap.zip" \
   "$BOOTSTRAP/homebrew-brew.env" \
+  "$BOOTSTRAP/homebrew-portable-ruby.zip" \
   "$BOOTSTRAP/report.json"; do
   [ -f "$required" ] && [ ! -L "$required" ] || {
     echo "prepare-homebrew-main-shell-inputs: extractor omitted $required" >&2

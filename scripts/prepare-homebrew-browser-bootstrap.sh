@@ -9,6 +9,7 @@ BOOTSTRAP_SPEC="$REPO_ROOT/homebrew/main-shell-brew-package-tree.json"
 
 OUTPUT_DIRECTORY=""
 BROWSER_ASSET=""
+BROWSER_PORTABLE_RUBY_ASSET=""
 REQUIRE_SEALED=0
 PENDING_SELECTION_ROOT="${WASM_POSIX_HOMEBREW_PENDING_SELECTION_ROOT:-}"
 
@@ -21,7 +22,8 @@ usage() {
   cat >&2 <<'EOF'
 usage: prepare-homebrew-browser-bootstrap.sh \
   [--output-directory <new-directory>] \
-  [--browser-asset <zip-path>] [--require-sealed] \
+  [--browser-asset <zip-path> \
+   --browser-portable-ruby-asset <zip-path>] [--require-sealed] \
   [--pending-selection-root <prepared-selection>]
 EOF
   exit 2
@@ -37,6 +39,11 @@ while [ "$#" -gt 0 ]; do
     --browser-asset)
       [ "$#" -ge 2 ] || usage
       BROWSER_ASSET="$2"
+      shift 2
+      ;;
+    --browser-portable-ruby-asset)
+      [ "$#" -ge 2 ] || usage
+      BROWSER_PORTABLE_RUBY_ASSET="$2"
       shift 2
       ;;
     --require-sealed)
@@ -55,6 +62,9 @@ while [ "$#" -gt 0 ]; do
 done
 
 [ -n "$OUTPUT_DIRECTORY" ] || [ -n "$BROWSER_ASSET" ] || usage
+if [ -n "$BROWSER_ASSET" ] || [ -n "$BROWSER_PORTABLE_RUBY_ASSET" ]; then
+  [ -n "$BROWSER_ASSET" ] && [ -n "$BROWSER_PORTABLE_RUBY_ASSET" ] || usage
+fi
 [ "$REQUIRE_SEALED" -eq 0 ] || [ -z "$PENDING_SELECTION_ROOT" ] ||
   fail "a pending selection cannot replace a sealed selection"
 
@@ -86,6 +96,7 @@ temporary_parent="${RUNNER_TEMP:-${TMPDIR:-/tmp}}"
 work_root="$(mktemp -d \
   "$temporary_parent/kandelo-homebrew-browser-bootstrap.XXXXXX")"
 staged_browser_asset=""
+staged_portable_ruby_asset=""
 cleanup() {
   local status=$?
   local cleanup_failed=0
@@ -93,6 +104,11 @@ cleanup() {
   if [ -n "$staged_browser_asset" ] && [ -f "$staged_browser_asset" ] &&
     [ ! -L "$staged_browser_asset" ]; then
     rm -f -- "$staged_browser_asset" || cleanup_failed=1
+  fi
+  if [ -n "$staged_portable_ruby_asset" ] &&
+    [ -f "$staged_portable_ruby_asset" ] &&
+    [ ! -L "$staged_portable_ruby_asset" ]; then
+    rm -f -- "$staged_portable_ruby_asset" || cleanup_failed=1
   fi
   rm -rf -- "$work_root" || cleanup_failed=1
   if [ "$status" -eq 0 ] && [ "$cleanup_failed" -ne 0 ]; then
@@ -201,7 +217,12 @@ env -u GH_TOKEN -u GITHUB_TOKEN \
     "$REPO_ROOT/scripts/extract-homebrew-support-data-bottle.ts" \
     "${extract_args[@]}"
 
-for name in homebrew-bootstrap.zip homebrew-brew.env report.json; do
+for name in \
+  homebrew-bootstrap.zip \
+  homebrew-portable-ruby.zip \
+  homebrew-brew.env \
+  report.json
+do
   [ -f "$extraction_root/$name" ] && [ ! -L "$extraction_root/$name" ] ||
     fail "verified extraction omitted $name"
 done
@@ -224,6 +245,25 @@ if [ -n "$BROWSER_ASSET" ]; then
   mv -f -- "$staged_browser_asset" "$BROWSER_ASSET"
   staged_browser_asset=""
   cmp "$extraction_root/homebrew-bootstrap.zip" "$BROWSER_ASSET"
+
+  portable_parent="$(dirname "$BROWSER_PORTABLE_RUBY_ASSET")"
+  [ -d "$portable_parent" ] && [ ! -L "$portable_parent" ] ||
+    fail "portable Ruby browser asset parent must be a real directory"
+  if [ -e "$BROWSER_PORTABLE_RUBY_ASSET" ] ||
+    [ -L "$BROWSER_PORTABLE_RUBY_ASSET" ]; then
+    [ -f "$BROWSER_PORTABLE_RUBY_ASSET" ] &&
+      [ ! -L "$BROWSER_PORTABLE_RUBY_ASSET" ] ||
+      fail "portable Ruby browser asset must be absent or a regular file"
+  fi
+  staged_portable_ruby_asset="$(mktemp \
+    "$portable_parent/.homebrew-portable-ruby.zip.XXXXXX")"
+  cp -- "$extraction_root/homebrew-portable-ruby.zip" \
+    "$staged_portable_ruby_asset"
+  chmod 0644 "$staged_portable_ruby_asset"
+  mv -f -- "$staged_portable_ruby_asset" "$BROWSER_PORTABLE_RUBY_ASSET"
+  staged_portable_ruby_asset=""
+  cmp "$extraction_root/homebrew-portable-ruby.zip" \
+    "$BROWSER_PORTABLE_RUBY_ASSET"
 fi
 
 echo "Homebrew browser bootstrap prepared from tap $locked_tap_sha"

@@ -107,3 +107,34 @@ export async function waitForExecRetirement(
   // memory_quiescent proves worker-main returned and no longer owns Memory.
   return retirement.settled && quiescence.settled;
 }
+
+/**
+ * Wait for a sibling thread to leave an address space discarded by exec.
+ *
+ * A thread can race exec by completing its ordinary thread-exit path before
+ * the host queues the private exec-retirement marker. Those dispositions are
+ * mutually exclusive, but both are authoritative only after the wrapper's
+ * exact `memory_quiescent` fence proves that the Worker realm has returned.
+ */
+export async function waitForThreadExecRetirement(
+  retirement: WorkerQuiescence,
+  threadExit: WorkerQuiescence,
+  quiescence: WorkerQuiescence,
+  timeoutMs: number,
+): Promise<boolean> {
+  if ((retirement.settled || threadExit.settled) && quiescence.settled) {
+    return true;
+  }
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    Promise.all([
+      Promise.race([retirement.promise, threadExit.promise]),
+      quiescence.promise,
+    ]),
+    new Promise<void>((resolve) => {
+      timeout = setTimeout(resolve, timeoutMs);
+    }),
+  ]);
+  if (timeout !== undefined) clearTimeout(timeout);
+  return (retirement.settled || threadExit.settled) && quiescence.settled;
+}

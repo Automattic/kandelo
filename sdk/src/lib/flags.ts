@@ -305,7 +305,9 @@ export const SHARED_LINK_FLAGS: string[] = [
 ];
 
 const IGNORED_EXACT = new Set([
-  '-lpthread',
+  // Executables get the authoritative libc archive after SDK glue; side
+  // modules must import that same process-wide libc state from their loader.
+  '-lc', '-lpthread',
   '-fPIE', '-pie',
   '-lrt', '-lresolv', '-lm', '-lcrypt', '-lutil',
   '-rdynamic', '-Wl,-Bsymbolic',

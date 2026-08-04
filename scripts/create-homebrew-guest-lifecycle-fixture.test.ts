@@ -34,6 +34,11 @@ test("creates one exact closed-browser lifecycle fixture", () => {
     const image = write(root, "main-shell.vfs.zst", new Uint8Array([1]));
     const spec = write(root, "tree.json", new Uint8Array([2]));
     const archive = write(root, "homebrew-bootstrap.zip", new Uint8Array([3]));
+    const portableRubyArchive = write(
+      root,
+      "homebrew-portable-ruby.zip",
+      new Uint8Array([7]),
+    );
     const environment = write(root, "homebrew-brew.env", new Uint8Array([4]));
     const mirror = join(root, "mirror");
     mkdirSync(mirror);
@@ -50,6 +55,7 @@ test("creates one exact closed-browser lifecycle fixture", () => {
       image,
       bootstrapSpec: spec,
       bootstrapArchive: archive,
+      portableRubyArchive,
       bootstrapEnvironment: environment,
       bottleMirror: mirror,
       fixedAssetUrlRoot: "https://closed.example.test/run/",
@@ -84,6 +90,7 @@ test("creates one exact closed-browser lifecycle fixture", () => {
           image,
           bootstrapSpec: spec,
           bootstrapArchive: archive,
+          portableRubyArchive,
           bootstrapEnvironment: environment,
           bottleMirror: mirror,
           fixedAssetUrlRoot: "https://closed.example.test/run/",
@@ -107,6 +114,11 @@ test("creates one exact public-browser fixture without local bottle payloads", (
     const image = write(root, "main-shell.vfs.zst", new Uint8Array([1]));
     const spec = write(root, "tree.json", new Uint8Array([2]));
     const archive = write(root, "homebrew-bootstrap.zip", new Uint8Array([3]));
+    const portableRubyArchive = write(
+      root,
+      "homebrew-portable-ruby.zip",
+      new Uint8Array([7]),
+    );
     const environment = write(root, "homebrew-brew.env", new Uint8Array([4]));
     const mirror = join(root, "mirror");
     mkdirSync(mirror);
@@ -124,6 +136,7 @@ test("creates one exact public-browser fixture without local bottle payloads", (
       image,
       bootstrapSpec: spec,
       bootstrapArchive: archive,
+      portableRubyArchive,
       bootstrapEnvironment: environment,
       bottleMirror: mirror,
       fixedAssetUrlRoot:

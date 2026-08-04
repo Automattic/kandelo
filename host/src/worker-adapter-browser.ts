@@ -1,18 +1,39 @@
 import type { WorkerAdapter, WorkerHandle } from "./worker-adapter";
+import { PrestartedWorkerPool } from "./prestarted-worker-pool";
 
 export class BrowserWorkerAdapter implements WorkerAdapter {
   private entryUrl: string | URL;
+  private readonly workerPool: PrestartedWorkerPool | null;
 
-  constructor(entryUrl: string | URL) {
+  constructor(entryUrl: string | URL, prestartedWorkers?: number) {
     this.entryUrl = entryUrl;
+    // Only the machine-owned adapter opts into retention and has a matching
+    // destroy boundary. Other public callers keep one Worker per handle.
+    this.workerPool = prestartedWorkers === undefined
+      ? null
+      : new PrestartedWorkerPool(
+          () => this.createPhysicalWorker(),
+          prestartedWorkers,
+        );
   }
 
   createWorker(workerData: unknown): WorkerHandle {
-    const worker = new Worker(this.entryUrl, { type: "module" });
-    // Web Workers don't have workerData — send init data via postMessage
-    const handle = new BrowserWorkerHandle(worker);
-    worker.postMessage(workerData);
+    // Web Workers don't have workerData. A reserved realm receives exactly one
+    // initialization message and is never returned to the reserve afterward.
+    if (this.workerPool) return this.workerPool.createWorker(workerData);
+    const handle = this.createPhysicalWorker();
+    handle.postMessage(workerData);
     return handle;
+  }
+
+  async destroy(): Promise<void> {
+    await this.workerPool?.destroy();
+  }
+
+  private createPhysicalWorker(): WorkerHandle {
+    return new BrowserWorkerHandle(
+      new Worker(this.entryUrl, { type: "module" }),
+    );
   }
 }
 
@@ -35,6 +56,7 @@ class BrowserWorkerHandle implements WorkerHandle {
         this.terminated = true;
         for (const h of this.handlers.get("exit") ?? []) h(1);
       }
+      this.releaseCallbacks();
     };
   }
 
@@ -83,6 +105,17 @@ class BrowserWorkerHandle implements WorkerHandle {
       this.terminated = true;
       for (const h of this.handlers.get("exit") ?? []) h(0);
     }
+    this.releaseCallbacks();
     return 0;
+  }
+
+  private releaseCallbacks(): void {
+    // WHY: the native Worker owns these closures, and each closure owns this
+    // handle's process listeners. Leaving them attached after termination can
+    // retain the just-finished process's Module and SharedArrayBuffer graph
+    // until cycle collection, even though that worker realm is never reused.
+    this.worker.onmessage = null;
+    this.worker.onerror = null;
+    this.handlers.clear();
   }
 }

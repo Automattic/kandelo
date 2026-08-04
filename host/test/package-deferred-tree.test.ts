@@ -169,6 +169,23 @@ describe("package deferred ZIP trees", () => {
     expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
+  it("gives a newly created mount directory to the declared package owner", () => {
+    const archive = packageArchive();
+    const derived = derivePackageDeferredZipTree(SPEC, archive);
+    const fs = MemoryFileSystem.create(
+      new SharedArrayBuffer(32 * 1024 * 1024),
+    );
+
+    registerPackageDeferredZipTree(fs, derived);
+
+    expect(fs.lstat(SPEC.mount_prefix)).toMatchObject({
+      mode: expect.any(Number),
+      uid: SPEC.owner.uid,
+      gid: SPEC.owner.gid,
+    });
+    assertPackageDeferredZipTreeState(fs, derived, "deferred");
+  });
+
   it("preserves guest-external symlink text without following it", () => {
     const archive = packageArchive("../../../../usr/bin/env");
     const derived = derivePackageDeferredZipTree(SPEC, archive);
@@ -283,6 +300,12 @@ describe("package deferred ZIP trees", () => {
     fs.chown(`${SPEC.mount_prefix}/bin`, 1000, 1000);
     expect(() => registerPackageDeferredZipTree(fs, derived)).toThrow(
       /collides with the base/,
+    );
+
+    const wrongOwnerFs = packageFs();
+    wrongOwnerFs.chown(SPEC.mount_prefix, 0, 0);
+    expect(() => registerPackageDeferredZipTree(wrongOwnerFs, derived)).toThrow(
+      /ancestor collides/,
     );
 
     const blockedFs = MemoryFileSystem.create(

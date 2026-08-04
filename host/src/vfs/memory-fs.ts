@@ -1319,6 +1319,39 @@ function resolveLazyTreeSourceHardlinks(
   return canonicalByPath;
 }
 
+function homebrewPrefixFromLazyTree(
+  inventory: readonly LazyTreeRegistrationEntry[],
+  activation: LazyTreeActivation | undefined,
+  receiptSourcePath: string,
+  receiptSourceRoot: string,
+): string {
+  const candidates = new Set<string>();
+  const receiptSuffix = `/Cellar/${receiptSourcePath}`;
+  for (const entry of inventory) {
+    if (
+      entry.sourcePath === receiptSourcePath &&
+      entry.vfsPath.endsWith(receiptSuffix)
+    ) {
+      candidates.add(entry.vfsPath.slice(0, -receiptSuffix.length));
+    }
+  }
+  if (receiptSourceRoot !== "") {
+    const kegSuffix = `/Cellar/${receiptSourceRoot}`;
+    for (const root of activation?.roots ?? []) {
+      if (root.endsWith(kegSuffix)) {
+        candidates.add(root.slice(0, -kegSuffix.length));
+      }
+    }
+  }
+  if (candidates.size !== 1) {
+    throw new Error(
+      "Lazy Homebrew bottle cannot derive one relocation prefix from its " +
+        "authenticated guest projection",
+    );
+  }
+  return candidates.values().next().value!;
+}
+
 function requireCanonicalTreePath(
   path: unknown,
   absolute: boolean,
@@ -4175,10 +4208,15 @@ export class MemoryFileSystem implements FileSystemBackend {
     }
 
     if (owner !== undefined) {
-      // WHY: ownership is part of the package namespace contract. Apply it
-      // before publishing any lazy-inode metadata or returning a direct
-      // materialization handle, so callers cannot observe a registered tree
-      // whose stubs still carry SharedFS's default owner.
+      // WHY: a ZIP inventory starts below its mount and therefore does not
+      // contain an entry for the mount directory itself. That directory is
+      // still part of the package namespace: leaving a newly created mount as
+      // root while all descendants use the declared owner produces a prefix
+      // the package cannot mutate. Apply the owner before publishing any lazy
+      // inode metadata or returning a direct-materialization handle.
+      if (validatedMountPrefix !== "/") {
+        this.lchown(validatedMountPrefix, owner.uid, owner.gid);
+      }
       for (const entry of entries) {
         this.lchown(entry.vfsPath, owner.uid, owner.gid);
       }
@@ -5341,12 +5379,30 @@ export class MemoryFileSystem implements FileSystemBackend {
         const sourceRoot = separator < 0
           ? ""
           : receiptSource.sourcePath.slice(0, separator);
+        const prefix = homebrewPrefixFromLazyTree(
+          inventory,
+          atomicSnapshot?.activation ?? group.activation,
+          receiptSource.sourcePath,
+          sourceRoot,
+        );
         const receiptChangedSources = new Set(receipt.changedFiles.map((path) =>
           sourceRoot.length === 0 ? path : `${sourceRoot}/${path}`
         ));
+        // The authenticated source inventory may intentionally be broader
+        // than this tree's guest projection. Only projected changed members
+        // need lazy relocation markers; an omitted source member produces no
+        // lazy write (for example, an exact receipt embedded in the image).
+        const projectedChangedSources = new Set(
+          inventory.flatMap((entry) =>
+            entry.materialization !== "descriptor" &&
+              receiptChangedSources.has(entry.sourcePath)
+              ? [entry.sourcePath]
+              : []
+          ),
+        );
         if (
-          relocationSources.size !== receiptChangedSources.size ||
-          [...relocationSources].some((path) => !receiptChangedSources.has(path))
+          relocationSources.size !== projectedChangedSources.size ||
+          [...relocationSources].some((path) => !projectedChangedSources.has(path))
         ) {
           throw new Error(
             "Lazy Homebrew bottle relocation markers differ from INSTALL_RECEIPT.json",
@@ -5370,7 +5426,12 @@ export class MemoryFileSystem implements FileSystemBackend {
             );
           }
           if (relocatedCanonicalSources.has(canonical.sourcePath)) continue;
-          actual.data = relocateHomebrewBottleFile(actual.data, receipt, sourcePath);
+          actual.data = relocateHomebrewBottleFile(
+            actual.data,
+            receipt,
+            sourcePath,
+            prefix,
+          );
           relocatedCanonicalSources.add(canonical.sourcePath);
         }
       }

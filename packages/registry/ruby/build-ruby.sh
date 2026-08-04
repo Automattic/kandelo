@@ -4,7 +4,7 @@ set -euo pipefail
 # Build Ruby 4.0.5 for wasm32-posix-kernel.
 #
 # Two-phase build:
-#   1. Host-native miniruby (generates C source files during cross-compilation)
+#   1. Host-native Ruby (runs source-matched build and install tooling)
 #   2. Cross-compile Ruby for wasm32 using the SDK toolchain
 #
 # Output: packages/registry/ruby/bin/ruby.wasm and ruby-runtime.zip for a
@@ -33,6 +33,13 @@ RUBY_VERSION="${WASM_POSIX_DEP_VERSION:-${RUBY_VERSION:-4.0.5}}"
 RUBY_MAJOR_MINOR="$(echo "$RUBY_VERSION" | cut -d. -f1-2)"
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://cache.ruby-lang.org/pub/ruby/${RUBY_MAJOR_MINOR}/ruby-${RUBY_VERSION}.tar.gz}"
 SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+MSGPACK_VERSION="1.8.0"
+MSGPACK_URL="https://rubygems.org/downloads/msgpack-${MSGPACK_VERSION}.gem"
+MSGPACK_SHA256="e64ce0212000d016809f5048b48eb3a65ffb169db22238fb4b72472fecb2d732"
+BOOTSNAP_VERSION="1.24.5"
+BOOTSNAP_URL="https://rubygems.org/downloads/bootsnap-${BOOTSNAP_VERSION}.gem"
+BOOTSNAP_SHA256="36b677448524d279b470469aabd5dff4a980e3fa4931a0df68da4a500eb1b6c4"
+SOURCE_IDENTITY="ruby-${RUBY_VERSION}-msgpack-${MSGPACK_VERSION}-bootsnap-${BOOTSNAP_VERSION}-portable-v2"
 PACKAGE_NAME="${WASM_POSIX_DEP_NAME:-ruby}"
 GUEST_PREFIX="${WASM_POSIX_DEP_GUEST_PREFIX-/usr}"
 
@@ -81,15 +88,15 @@ if [ -n "${WASM_POSIX_DEP_WORK_DIR:-}" ]; then
 fi
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-if [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$RUBY_VERSION" ]; then
-    echo "==> Existing Ruby source is not $RUBY_VERSION; cleaning Ruby build directories..."
+if [ -d "$SRC_DIR" ] && [ "$(cat "$SOURCE_MARKER" 2>/dev/null || true)" != "$SOURCE_IDENTITY" ]; then
+    echo "==> Existing Ruby source does not match $SOURCE_IDENTITY; cleaning Ruby build directories..."
     rm -rf "$SRC_DIR" "$HOST_BUILD_DIR" "$CROSS_BUILD_DIR" "$INSTALL_DIR" "$BIN_DIR"
 fi
 
-if [ -x "$HOST_BUILD_DIR/miniruby" ]; then
-    HOST_RUBY_VERSION="$("$HOST_BUILD_DIR/miniruby" -e 'print RUBY_VERSION' 2>/dev/null || true)"
+if [ -x "$HOST_BUILD_DIR/ruby" ]; then
+    HOST_RUBY_VERSION="$("$HOST_BUILD_DIR/ruby" --disable=gems -e 'print RUBY_VERSION' 2>/dev/null || true)"
     if [ "$HOST_RUBY_VERSION" != "$RUBY_VERSION" ]; then
-        echo "==> Existing host miniruby is $HOST_RUBY_VERSION, expected $RUBY_VERSION; rebuilding..."
+        echo "==> Existing host Ruby is $HOST_RUBY_VERSION, expected $RUBY_VERSION; rebuilding..."
         rm -rf "$HOST_BUILD_DIR"
     fi
 fi
@@ -116,11 +123,18 @@ echo "==> zlib at $ZLIB_PREFIX"
 
 # Build libyaml if not already built (Ruby needs it for psych/YAML)
 LIBYAML_DIR="$WORK_DIR/libyaml-install"
-if [ ! -f "$LIBYAML_DIR/lib/libyaml.a" ]; then
+LIBYAML_BUILD_ID="libyaml-0.2.5-pic-v1"
+LIBYAML_BUILD_MARKER="$LIBYAML_DIR/.kandelo-build-id"
+if [ ! -f "$LIBYAML_DIR/lib/libyaml.a" ] || \
+   [ "$(cat "$LIBYAML_BUILD_MARKER" 2>/dev/null || true)" != "$LIBYAML_BUILD_ID" ]; then
     echo "==> Building libyaml for wasm32..."
     LIBYAML_VERSION="0.2.5"
     LIBYAML_SHA256="c642ae9b75fee120b2d96c712538bd2cf283228d2337df2cf2988e3c02678ef4"
     LIBYAML_SRC="$WORK_DIR/libyaml-src"
+    # A prior direct developer build may predate the PIC contract. Re-extract
+    # rather than trusting its configured Makefile, whose compile flags are not
+    # represented in libyaml's own output tree.
+    rm -rf "$LIBYAML_DIR" "$LIBYAML_SRC"
     if [ ! -d "$LIBYAML_SRC" ]; then
         curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "https://pyyaml.org/download/libyaml/yaml-${LIBYAML_VERSION}.tar.gz" \
             -o "/tmp/yaml-${LIBYAML_VERSION}.tar.gz"
@@ -131,10 +145,14 @@ if [ ! -f "$LIBYAML_DIR/lib/libyaml.a" ]; then
     fi
     cd "$LIBYAML_SRC"
     if [ ! -f Makefile ]; then
-        wasm32posix-configure --prefix="$LIBYAML_DIR" --disable-shared --enable-static
+        # psych.so absorbs libyaml.a, so every object in the archive must use
+        # the side-module-compatible position-independent relocation model.
+        CFLAGS="-O2 -fPIC" wasm32posix-configure \
+            --prefix="$LIBYAML_DIR" --disable-shared --enable-static
     fi
     make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
     make install
+    printf '%s\n' "$LIBYAML_BUILD_ID" > "$LIBYAML_BUILD_MARKER"
     cd "$REPO_ROOT"
     echo "==> libyaml built"
 fi
@@ -167,9 +185,38 @@ if [ ! -d "$SRC_DIR" ]; then
     mkdir -p "$SRC_DIR"
     tar xzf "/tmp/${TARBALL}" -C "$SRC_DIR" --strip-components=1
     rm "/tmp/${TARBALL}"
-    printf '%s\n' "$RUBY_VERSION" > "$SOURCE_MARKER"
+    printf '%s\n' "$SOURCE_IDENTITY" > "$SOURCE_MARKER"
     echo "==> Source extracted to $SRC_DIR"
 fi
+
+stage_bundled_gem() {
+    local name="$1"
+    local version="$2"
+    local url="$3"
+    local sha256="$4"
+    local destination="$SRC_DIR/gems/${name}-${version}.gem"
+    local temporary="$destination.download"
+
+    if [ ! -f "$destination" ] ||
+       ! echo "$sha256  $destination" | shasum -a 256 -c - >/dev/null 2>&1; then
+        echo "==> Downloading Homebrew portable Ruby resource ${name} ${version}..."
+        curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors \
+            -fsSL "$url" -o "$temporary"
+        echo "$sha256  $temporary" | shasum -a 256 -c -
+        mv "$temporary" "$destination"
+    fi
+    if ! grep -Eq "^${name}[[:space:]]+${version}([[:space:]]|$)" \
+        "$SRC_DIR/gems/bundled_gems"; then
+        printf '%-19s %s\n' "$name" "$version" >> "$SRC_DIR/gems/bundled_gems"
+    fi
+}
+
+# Match Homebrew's own portable-ruby Formula: these are the exact upstream
+# bundled-gem resources that Homebrew adds before CRuby's normal build.
+stage_bundled_gem \
+    "msgpack" "$MSGPACK_VERSION" "$MSGPACK_URL" "$MSGPACK_SHA256"
+stage_bundled_gem \
+    "bootsnap" "$BOOTSNAP_VERSION" "$BOOTSNAP_URL" "$BOOTSNAP_SHA256"
 
 # ─── Source patches for wasm32-posix ──────────────────────────────────
 # thread_none.c: missing thread_sched_atfork stub (called by thread.c unconditionally)
@@ -498,23 +545,48 @@ EOF
 }
 
 # ─── Phase 1: Build host-native Ruby ─────────────────────────────────
-if [ ! -x "$HOST_BUILD_DIR/miniruby" ]; then
+if [ ! -x "$HOST_BUILD_DIR/ruby" ]; then
     echo "==> Building host Ruby (native build)..."
     mkdir -p "$HOST_BUILD_DIR"
     cd "$HOST_BUILD_DIR"
-    "$SRC_DIR/configure" \
+    HOST_AR="$(command -v llvm-ar)"
+    HOST_RANLIB="$(command -v llvm-ranlib)"
+    # WHY: macOS /usr/bin/ar consults DEVELOPER_DIR and exits 255 when the
+    # repository's Nix SDK supplies that path. The dev shell's declared LLVM
+    # archiver is host-portable and also keeps this bootstrap independent of
+    # an ambient Xcode installation.
+    AR="$HOST_AR" RANLIB="$HOST_RANLIB" "$SRC_DIR/configure" \
         --prefix="$HOST_BUILD_DIR/install" \
         --disable-install-doc \
         --disable-install-rdoc \
         --disable-jit-support \
+        --with-ext=monitor \
         --with-out-ext=openssl,fiddle,readline
-    make miniruby -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)"
+    # CRuby's normal install runs RubyGems code from this exact source tree.
+    # A miniruby cannot load monitor, while an unrelated host Ruby can differ
+    # in core-library semantics. Build the smallest full, source-matched Ruby
+    # that can execute those host-side install tools faithfully.
+    make -j"$(sysctl -n hw.ncpu 2>/dev/null || nproc)" \
+        AR="$HOST_AR" RANLIB="$HOST_RANLIB"
     cd "$REPO_ROOT"
 fi
 
 HOST_MINIRUBY="$HOST_BUILD_DIR/miniruby"
+HOST_RUBY="$HOST_BUILD_DIR/ruby"
 echo "==> Host miniruby: $HOST_MINIRUBY"
 "$HOST_MINIRUBY" -e 'puts "Ruby #{RUBY_VERSION} miniruby OK"'
+HOST_RUBY_ARCH="$(
+    "$HOST_RUBY" --disable=gems -I"$HOST_BUILD_DIR" -rrbconfig \
+        -e 'print RbConfig::CONFIG.fetch("arch")'
+)"
+if [ -z "$HOST_RUBY_ARCH" ] || \
+   [ ! -d "$HOST_BUILD_DIR/.ext/$HOST_RUBY_ARCH" ]; then
+    echo "ERROR: host Ruby did not produce a usable extension architecture" >&2
+    exit 1
+fi
+HOST_RUBY_COMMAND="$HOST_RUBY --disable=gems -I$HOST_BUILD_DIR -I$HOST_BUILD_DIR/.ext/common -I$HOST_BUILD_DIR/.ext/$HOST_RUBY_ARCH -I$SRC_DIR/lib"
+echo "==> Host Ruby: $HOST_RUBY ($HOST_RUBY_ARCH)"
+$HOST_RUBY_COMMAND -e 'require "monitor"; puts "source-matched host Ruby install tooling OK"'
 
 # ─── Phase 2: Cross-compile Ruby for wasm32-posix ────────────────────
 echo "==> Cross-compiling Ruby for wasm32-posix..."
@@ -707,9 +779,20 @@ ac_cv_func_sem_trywait=no
 ac_cv_func_sem_post=no
 ac_cv_func_posix_spawn=no
 ac_cv_func_posix_spawnp=no
-ac_cv_func_dlopen=no
-ac_cv_lib_dl_dlopen=no
-ac_cv_func_dladdr=no
+# Kandelo provides functional Wasm side modules through the SDK's explicit
+# -ldl glue. Ruby uses HAVE_DLOPEN to compile its ordinary dln_load() path, so
+# both the selected library and the function probe must describe that surface
+# truthfully when cross-compilation cannot execute the Autoconf probe.
+ac_cv_func_dlopen=yes
+ac_cv_lib_dl_dlopen=yes
+ac_cv_func_dladdr=yes
+# WHY: CRuby derives this internal capability only from a closed list of
+# native target operating systems. wasm32-unknown-none is deliberately not
+# mislabelled as Linux, but Kandelo does provide dlopen() and dladdr(). Select
+# CRuby's normal --enable-load-relative implementation just as portable Ruby
+# does on supported native targets; this is a general Ruby relocation contract,
+# not a Homebrew load-path override.
+LOAD_RELATIVE=1
 ac_cv_func_sigaltstack=no
 ac_cv_func_statvfs=no
 ac_cv_func_fstatvfs=no
@@ -904,6 +987,7 @@ SITE_EOF
     CONFIG_SITE="$CONFIG_SITE" \
     CC="$RUBY_CC_COMMAND" \
     LD=wasm32posix-cc \
+    LDSHARED="$RUBY_CC_COMMAND -shared" \
     AR=wasm32posix-ar \
     RANLIB=wasm32posix-ranlib \
     NM=wasm32posix-nm \
@@ -915,6 +999,7 @@ SITE_EOF
     CFLAGS="-O2" \
     CPPFLAGS="-DRUBY_KANDELO_POSIX=1 -I$ZLIB_PREFIX/include" \
     LDFLAGS="-L$ZLIB_PREFIX/lib -Wl,-z,stack-size=1048576" \
+    DLDFLAGS="-L$ZLIB_PREFIX/lib" \
     "$SRC_DIR/configure" \
         --host=wasm32-unknown-none \
         --build="$(uname -m)-apple-darwin" \
@@ -934,14 +1019,33 @@ SITE_EOF
         --without-openssl \
         --without-fiddle \
         --without-readline \
-        --with-static-linked-ext \
-        --with-ext=stringio,zlib,monitor,psych,digest,digest/md5,digest/sha1,digest/sha2,json,json/parser,json/generator,strscan,date,etc,fcntl,io/console,pty,socket,continuation \
+        --enable-load-relative \
+        --with-ext=stringio,zlib,monitor,psych,digest,digest/md5,digest/sha1,digest/sha2,json,json/parser,json/generator,strscan,date,etc,fcntl,io/console,pty,socket,continuation,msgpack,bootsnap-* \
         --with-out-ext=openssl,fiddle,readline,syslog,nkf,bigdecimal \
         2>&1 | tail -50
 
+    if ! grep -Eq '^LIBRUBY_RELATIVE[[:space:]]*=[[:space:]]*yes$' Makefile; then
+        echo "ERROR: Ruby ignored its load-relative build contract" >&2
+        exit 1
+    fi
     echo "==> Configure complete."
 
     reject_asyncify_coroutine
+
+    # Ruby owns bundled-gem extraction and extension discovery. Run the same
+    # target as Homebrew portable-ruby before extmk computes the static graph.
+    # This target only unpacks the verified gem archives and needs the build
+    # environment's zlib extension. Keep it on the declared dev-shell Ruby;
+    # Ruby-version-sensitive install tooling below uses the source-matched
+    # full host Ruby instead.
+    make extract-gems "BASERUBY=$(command -v ruby) --disable=gems"
+    BOOTSNAP_SOURCE="$SRC_DIR/.bundle/gems/bootsnap-${BOOTSNAP_VERSION}"
+    if ! grep -q 'cygwin|wasm' \
+        "$BOOTSNAP_SOURCE/lib/bootsnap/load_path_cache.rb"; then
+        echo "==> Patching Bootsnap platform support for Ruby on WebAssembly..."
+        patch -d "$BOOTSNAP_SOURCE" -p1 \
+            < "$SCRIPT_DIR/patches/bootsnap-wasm-platform.patch"
+    fi
 
     if [ -f Makefile ]; then
         echo "==> Ensuring Ruby generated POSTLINK is disabled (root-spill/fork instrumentation run explicitly after make)..."
@@ -988,7 +1092,6 @@ content = re.sub(
 
 # Force-disable functions/features not available in wasm32-posix
 disable = {
-    'HAVE_DLOPEN', 'HAVE_DYNAMIC_LOADING',
     'HAVE_PTHREAD_CONDATTR_SETCLOCK', 'HAVE_PTHREAD_GETCPUCLOCKID',
     'HAVE_PTHREAD_SETNAME_NP', 'HAVE_PTHREAD_SET_NAME_NP',
     'HAVE_PTHREAD_GETATTR_NP',
@@ -1087,7 +1190,7 @@ fi
 reject_asyncify_coroutine
 
 if [ -f Makefile ]; then
-    echo "==> Patching Ruby static archive rule for generated extension initializers..."
+    echo "==> Patching Ruby archive rule for generated objects..."
     perl -0pi -e 's/^(CPPFLAGS = )(?!.*RUBY_KANDELO_POSIX)/$1-DRUBY_KANDELO_POSIX=1 /m' Makefile
     perl -0pi -e 's/^\t\t\$\(Q\).*ARFLAGS.*LIBRUBY_A_OBJS.*$/\t\t\$(Q) \$(AR) \$(ARFLAGS) \$@ \$(LIBRUBY_A_OBJS)/m' Makefile
     rm -f libruby-static.a
@@ -1135,34 +1238,33 @@ if [ ! -f exts.mk ]; then
     exit 1
 fi
 
-STATIC_EXTINITS="continuation date_core digest digest/md5 digest/sha1 digest/sha2 etc fcntl io/console json/ext/generator json/ext/parser monitor psych pty socket stringio strscan zlib"
-STATIC_EXTOBJS="ext/extinit.o ext/continuation/continuation.a ext/date/date_core.a ext/digest/digest.a ext/digest/md5/md5.a ext/digest/sha1/sha1.a ext/digest/sha2/sha2.a ext/etc/etc.a ext/fcntl/fcntl.a ext/io/console/console.a ext/json/generator/generator.a ext/json/parser/parser.a ext/monitor/monitor.a ext/psych/psych.a ext/pty/pty.a ext/socket/socket.a ext/stringio/stringio.a ext/strscan/strscan.a ext/zlib/zlib.a"
-STATIC_ENCOBJS="enc/encinit.o enc/libenc.a enc/libtrans.a"
-STATIC_EXTLIBS="-lyaml -lz"
-STATIC_LINK_PATHS="-L. -L$SYSROOT/lib -L$ZLIB_PREFIX/lib"
-FINAL_RUBY_LDFLAGS="$STATIC_LINK_PATHS -Wl,-z,stack-size=1048576"
-
-echo "==> Relinking Ruby with static extensions and encodings..."
-make -f exts.mk \
-    libdir="$GUEST_PREFIX/lib" \
-    LIBRUBY_EXTS=./.libruby-with-ext.time \
-    "EXTENCS=$STATIC_ENCOBJS" \
-    "BASERUBY=$BASERUBY_COMMAND" \
-    "MINIRUBY=$BASERUBY_COMMAND -I. -rwasm32-none-fake" \
-    static
+FINAL_LINK_PATHS="-L. -L$SYSROOT/lib -L$ZLIB_PREFIX/lib"
+# Ruby extensions resolve their public Ruby and libc imports from the one main
+# process module. -ldl selects Kandelo's real loader glue, while
+# --export-dynamic exposes the default-visibility API exactly as a native
+# portable Ruby executable does for its extension shared objects.
+FINAL_RUBY_LDFLAGS="$FINAL_LINK_PATHS -ldl -Wl,--export-dynamic -Wl,-z,stack-size=1048576"
 
 # Ruby's generated LDFLAGS include CFLAGS. Passing those compile flags through
 # the final wasm32 link produces a smaller executable shape that loses the
 # validated Ruby GC/root behavior. Keep the final link to linker paths plus the
 # explicit 1 MiB stack, matching the known-good fullmake package artifact.
+#
+# Keep CRuby's ordinary dynamic extension graph rather than folding its
+# standard extensions into ruby.wasm. This is the layout in upstream portable
+# Ruby, and Kandelo's general dlopen path now supports it. Besides preserving
+# that compatibility contract, real extension files let ordinary Ruby loader
+# caches index the runtime instead of repeatedly probing for statically linked
+# features that cannot exist on disk.
+#
+# Re-enter through CRuby's `main` target rather than its leaf `ruby` target.
+# The generated extension makefile passes dmyenc.o through EXTOBJS there; a
+# direct leaf relink silently leaves Ruby's required Init_enc unresolved.
+rm -f ruby
 make \
     "LDFLAGS=$FINAL_RUBY_LDFLAGS" \
-    "EXTOBJS=$STATIC_EXTOBJS $STATIC_ENCOBJS" \
-    "EXTLIBS=$STATIC_EXTLIBS" \
-    "EXTLDFLAGS=$STATIC_LINK_PATHS" \
-    "EXTINITS=$STATIC_EXTINITS" \
     SHOWFLAGS= \
-    ruby
+    main
 
 # Collect binary
 mkdir -p "$BIN_DIR"
@@ -1173,7 +1275,22 @@ else
     exit 1
 fi
 
-ROOT_SPILL="$REPO_ROOT/scripts/run-wasm-local-root-spill.sh"
+# A sealed package build normally gives each root-spill invocation a fresh
+# native-tool scratch directory. Ruby transforms the main executable and every
+# installed dynamic extension in one package transaction, so rebuilding that
+# identical helper for each file adds minutes without increasing isolation.
+# Build it once inside this transaction's authoritative work directory and
+# reuse only that immutable native executable for the remaining transforms.
+ROOT_SPILL_TOOL_ROOT="$WASM_POSIX_DEP_WORK_DIR/ruby-local-root-spill"
+mkdir -p "$ROOT_SPILL_TOOL_ROOT/target" "$ROOT_SPILL_TOOL_ROOT/bin"
+CARGO_TARGET_DIR="$ROOT_SPILL_TOOL_ROOT/target" \
+    WASM_POSIX_LOCAL_ROOT_SPILL_OUT_DIR="$ROOT_SPILL_TOOL_ROOT/bin" \
+    bash "$REPO_ROOT/scripts/build-local-root-spill-tool.sh"
+ROOT_SPILL="$ROOT_SPILL_TOOL_ROOT/bin/wasm-local-root-spill"
+if [ ! -f "$ROOT_SPILL" ] || [ -L "$ROOT_SPILL" ] || [ ! -x "$ROOT_SPILL" ]; then
+    echo "ERROR: package-local wasm-local-root-spill is not a regular executable" >&2
+    exit 1
+fi
 FORK_INSTRUMENT="$REPO_ROOT/scripts/run-wasm-fork-instrument.sh"
 echo "==> Applying wasm-local-root-spill to ruby.wasm..."
 "$ROOT_SPILL" --profile ruby "$BIN_DIR/ruby.wasm" -o "$BIN_DIR/ruby.wasm.roots"
@@ -1182,27 +1299,69 @@ echo "==> Applying wasm-fork-instrument to ruby.wasm..."
 "$FORK_INSTRUMENT" "$BIN_DIR/ruby.wasm" -o "$BIN_DIR/ruby.wasm.instr"
 mv "$BIN_DIR/ruby.wasm.instr" "$BIN_DIR/ruby.wasm"
 
-# Install stdlib and default RubyGems/Bundler files under the selected guest
-# prefix. Direct package builds retain /usr; Homebrew builds select their
-# stable guest opt prefix so Ruby's built-in load path works after pouring.
+# Install the relocatable stdlib and default RubyGems/Bundler tree. CRuby's
+# load-relative install deliberately writes bin/ and lib/ at DESTDIR's root;
+# the package archive adds /usr only as the direct-runtime mount location.
+# Homebrew can instead place the same exact tree below vendor/portable-ruby.
 echo "==> Installing Ruby runtime..."
 mkdir -p "$INSTALL_DIR"
-RUBY_INSTALL_ROOT="$INSTALL_DIR$GUEST_PREFIX"
+RUBY_INSTALL_ROOT="$INSTALL_DIR"
 RUBY_LIB_DIR="$RUBY_INSTALL_ROOT/lib/ruby/${RUBY_MAJOR_MINOR}.0"
-make install \
-    DESTDIR="$INSTALL_DIR" 2>/dev/null || {
-    echo "==> make install failed, copying lib manually..."
-    mkdir -p "$RUBY_LIB_DIR"
-    cp -r "$SRC_DIR/lib/"* "$RUBY_LIB_DIR/" 2>/dev/null || true
-}
-if [ -d "$CROSS_BUILD_DIR/.ext/common" ]; then
-    cp -R "$CROSS_BUILD_DIR/.ext/common"/. "$RUBY_LIB_DIR"/
+
+# Match Homebrew portable-ruby's public bundled-gem entrypoint. Ruby's
+# out-of-tree build keeps generated gems below .bundle but installs library
+# sources from srcdir/lib, so place the generated helper in that source tree.
+# Its contents remain prefix-independent through RbConfig, exactly like the
+# upstream Formula's helper. Kandelo's target binary cannot run on the build
+# host, so use the full Ruby built from this exact source tree for CRuby's
+# host-side install tools; the generated fake RbConfig keeps those tools on the
+# target configuration.
+HOST_INSTALL_RUBY="$HOST_RUBY_COMMAND"
+TARGET_INSTALL_RUBY="$HOST_INSTALL_RUBY -I. -rwasm32-none-fake -I.ext/common"
+RUBY_INSTALL_MAKE_ARGS=(
+    "BASERUBY=$HOST_INSTALL_RUBY"
+    "MINIRUBY=$TARGET_INSTALL_RUBY"
+)
+make ruby.pc "${RUBY_INSTALL_MAKE_ARGS[@]}"
+PORTABLE_RUBY_ARCH="$(
+    wasm32posix-pkg-config \
+        --variable=arch "$CROSS_BUILD_DIR/ruby-${RUBY_MAJOR_MINOR}.pc"
+)"
+if [ -z "$PORTABLE_RUBY_ARCH" ]; then
+    echo "ERROR: ruby.pc did not declare the portable Ruby architecture" >&2
+    exit 1
 fi
-for ext_lib_dir in "$SRC_DIR/ext/monitor/lib" "$SRC_DIR/ext/socket/lib"; do
-    if [ -d "$ext_lib_dir" ]; then
-        cp -R "$ext_lib_dir"/. "$RUBY_LIB_DIR"/
-    fi
+PORTABLE_GEMS_FILE="$SRC_DIR/lib/$PORTABLE_RUBY_ARCH/portable_ruby_gems.rb"
+mkdir -p "$(dirname "$PORTABLE_GEMS_FILE")"
+: > "$PORTABLE_GEMS_FILE"
+for require_path in \
+    "$CROSS_BUILD_DIR"/.bundle/extensions/*/*/* \
+    "$CROSS_BUILD_DIR"/.bundle/gems/*/lib; do
+    [ -d "$require_path" ] || continue
+    require_path="${require_path#"$CROSS_BUILD_DIR/.bundle/"}"
+    printf '%s\n' \
+        '$:.unshift "#{RbConfig::CONFIG["rubylibprefix"]}/gems/#{RbConfig::CONFIG["ruby_version"]}/'"$require_path"'"' \
+        >> "$PORTABLE_GEMS_FILE"
 done
+
+# Keep the same host-tool/target-configuration split for CRuby's ordinary
+# install target. The target-generated common path supplies monitor.rb while
+# the full host Ruby supplies the matching native monitor extension.
+make install DESTDIR="$INSTALL_DIR" "${RUBY_INSTALL_MAKE_ARGS[@]}"
+
+# Ruby's native gems are ordinary upstream-style Wasm side modules loaded by
+# dlopen. Their C frames have the same conservative-GC requirement as code in
+# the main executable, so protecting only ruby.wasm leaves live VALUEs in an
+# extension's Wasm locals invisible during collection. Transform the freshly
+# installed copies rather than the build outputs: repeated local package builds
+# then start from make install's authoritative unmodified modules and cannot
+# accidentally stack the rewrite twice.
+while IFS= read -r -d '' ruby_extension; do
+    echo "==> Applying wasm-local-root-spill to ${ruby_extension#"$RUBY_INSTALL_ROOT"/}..."
+    "$ROOT_SPILL" --profile ruby "$ruby_extension" -o "$ruby_extension.roots"
+    mv "$ruby_extension.roots" "$ruby_extension"
+done < <(find "$RUBY_INSTALL_ROOT" -type f -name '*.so' -print0)
+
 RUBY_ARCH_DIR="$RUBY_LIB_DIR/wasm32-none"
 mkdir -p "$RUBY_ARCH_DIR"
 cp rbconfig.rb "$RUBY_ARCH_DIR/rbconfig.rb"
@@ -1240,12 +1399,19 @@ rm -f "$RUNTIME_ZIP"
 RUNTIME_STAGE="$(mktemp -d)"
 trap 'rm -rf "$RUNTIME_STAGE"' EXIT
 mkdir -p "$RUNTIME_STAGE/usr/lib"
-# Keep the archive's existing /usr payload layout. The direct package VFS
-# overlays it at /, while the Formula treats it as a portable staging tree and
-# installs the contents into its keg. The generated rbconfig and executable
-# still retain the selected guest prefix.
+# Keep the direct package archive's existing /usr payload layout. Its contents
+# are intrinsically relocatable: consumers may strip that staging component
+# and install the unchanged bin/ and lib/ tree at any runtime prefix.
 cp -R "$RUBY_INSTALL_ROOT/lib/ruby" "$RUNTIME_STAGE/usr/lib/ruby"
-cp -R "$RUBY_INSTALL_ROOT/bin" "$RUNTIME_STAGE/usr/bin"
+mkdir -p "$RUNTIME_STAGE/usr/bin"
+for runtime_executable in "$RUBY_INSTALL_ROOT"/bin/*; do
+    [ -e "$runtime_executable" ] || continue
+    # ruby.wasm is the separately validated, root-spilled, fork-instrumented
+    # package output. The binary emitted by `make install` is neither that
+    # authoritative artifact nor runtime data, so never duplicate it here.
+    [ "${runtime_executable##*/}" = "ruby" ] && continue
+    cp -R "$runtime_executable" "$RUNTIME_STAGE/usr/bin/"
+done
 (cd "$RUNTIME_STAGE" && zip -r -q "$RUNTIME_ZIP" usr)
 echo "==> Ruby runtime archive: $RUNTIME_ZIP"
 

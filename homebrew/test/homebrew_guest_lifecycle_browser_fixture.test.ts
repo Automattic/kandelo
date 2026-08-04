@@ -124,6 +124,10 @@ test("loads every exact fixture byte and binds payloads to the mirror plan", asy
   assert.deepEqual(loaded.imageBytes, fixture.imageBytes);
   assert.deepEqual(loaded.bootstrapSpecBytes, fixture.specBytes);
   assert.deepEqual(loaded.bootstrapArchiveBytes, fixture.archiveBytes);
+  assert.deepEqual(
+    loaded.portableRubyArchiveBytes,
+    fixture.portableRubyBytes,
+  );
   assert.deepEqual(loaded.bootstrapEnvironmentBytes, fixture.environmentBytes);
   assert.deepEqual(loaded.bottleMirrorPlanBytes, fixture.planBytes);
   assert.deepEqual(loaded.closedBottleAssets, [{
@@ -379,7 +383,7 @@ test("preserves caller cancellation during public plan identity validation", asy
       data: BufferSource,
     ): Promise<ArrayBuffer> => {
       digestCalls += 1;
-      if (digestCalls === 6) {
+      if (digestCalls === 7) {
         markIdentityStarted();
         await identityGate;
       }
@@ -463,6 +467,7 @@ function createFixture() {
   const imageBytes = new Uint8Array([1, 2]);
   const specBytes = new Uint8Array([3]);
   const archiveBytes = new Uint8Array([4]);
+  const portableRubyBytes = new Uint8Array([9, 10]);
   const environmentBytes = new Uint8Array([5]);
   const payloadBytes = new Uint8Array([6, 7, 8]);
   const repository = "example/project";
@@ -497,6 +502,7 @@ function createFixture() {
     image: "https://example.test/main-shell.vfs.zst",
     spec: "https://example.test/main-shell-brew-package-tree.json",
     archive: "https://example.test/homebrew-bootstrap.zip",
+    portableRuby: "https://example.test/homebrew-portable-ruby.zip",
     environment: "https://example.test/homebrew-brew.env",
     plan: `${releaseRoot}/${HOMEBREW_BOTTLE_MIRROR_PLAN_ASSET}`,
   };
@@ -508,6 +514,7 @@ function createFixture() {
     bootstrap: {
       spec: exact(urls.spec, specBytes),
       archive: exact(urls.archive, archiveBytes),
+      portableRuby: exact(urls.portableRuby, portableRubyBytes),
       environment: exact(urls.environment, environmentBytes),
     },
     bottleMirror: {
@@ -527,6 +534,7 @@ function createFixture() {
     [urls.image, imageBytes],
     [urls.spec, specBytes],
     [urls.archive, archiveBytes],
+    [urls.portableRuby, portableRubyBytes],
     [urls.environment, environmentBytes],
     [urls.plan, planBytes],
     [plan.assets[0]!.url, payloadBytes],
@@ -537,6 +545,7 @@ function createFixture() {
     imageBytes,
     specBytes,
     archiveBytes,
+    portableRubyBytes,
     environmentBytes,
     payloadBytes,
     plan,

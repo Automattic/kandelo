@@ -57,7 +57,8 @@
       "name": "homebrew-bootstrap",
       "outputs": [
         "homebrew-bootstrap.zip",
-        "homebrew-brew.env"
+        "homebrew-brew.env",
+        "homebrew-portable-ruby.zip"
       ],
       "required_kernel_abi": 42
     },
@@ -65,10 +66,6 @@
     "demo_variant": "may-materialize"
   },
   "formula_roots": [
-    {
-      "package": "kandelo-dev/tap-core/ruby",
-      "reason": "Homebrew executes its Ruby command implementation after the Bash launcher."
-    },
     {
       "package": "kandelo-dev/tap-core/git",
       "reason": "Stock brew tap and exact-revision lifecycle operations use Git."
@@ -95,8 +92,6 @@
     }
   ],
   "formula_order": [
-    "kandelo-dev/tap-core/zlib",
-    "kandelo-dev/tap-core/ruby",
     "kandelo-dev/tap-core/coreutils",
     "kandelo-dev/tap-core/dash",
     "kandelo-dev/tap-core/ed",
@@ -106,6 +101,7 @@
     "kandelo-dev/tap-core/ncurses",
     "kandelo-dev/tap-core/less",
     "kandelo-dev/tap-core/openssl",
+    "kandelo-dev/tap-core/zlib",
     "kandelo-dev/tap-core/libcurl",
     "kandelo-dev/tap-core/sed",
     "kandelo-dev/tap-core/vim",
@@ -117,15 +113,8 @@
     "kandelo-dev/tap-core/tar",
     "kandelo-dev/tap-core/posix-utils-lite"
   ],
-  "additional_formula_order": [
-    "kandelo-dev/tap-core/ruby"
-  ],
+  "additional_formula_order": [],
   "required_commands": [
-    {
-      "path": "/usr/bin/ruby",
-      "package": "kandelo-dev/tap-core/ruby",
-      "reason": "Homebrew's Bash launcher transfers control to Ruby."
-    },
     {
       "path": "/usr/bin/git",
       "package": "kandelo-dev/tap-core/git",
@@ -163,14 +152,13 @@
       "metadata_sha256": "34f1cb2454ff6d9c134195302a5c5fcac85b9502f2522d3e584bf55d539c9a7d",
       "metadata_tap_commit": "b5ffda55d9b0e27efdfdec30ebb38d48a21518c4",
       "kandelo_commit": "c647adda31d0918de944135543fb94039135cef1",
-      "runtime_bottle_provenance_sha256": "b9070afcb5ddcdc112c1b994c16f8f46251d78dff3877e01adf30b226e4c31d2",
+      "runtime_bottle_provenance_sha256": "a1269194b223c47c97ccc0504369b889357f77dc0675bb7245d14c587de082dd",
       "kandelo_abi": 42,
       "release_tag": "bottles-abi-v42",
       "required_arch": "wasm32"
     },
     "reusable_public_abi42": [
       "kandelo-dev/tap-core/zlib",
-      "kandelo-dev/tap-core/ruby",
       "kandelo-dev/tap-core/coreutils",
       "kandelo-dev/tap-core/dash",
       "kandelo-dev/tap-core/ed",

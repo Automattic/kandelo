@@ -20,6 +20,13 @@ import {
   assertHomebrewGuestLifecycleCatalog,
   resolveHomebrewGuestLifecycleShell,
 } from "./homebrew_guest_lifecycle_runtime_contract";
+import {
+  HOMEBREW_PORTABLE_RUBY_OUTPUT,
+  HOMEBREW_PORTABLE_RUBY_TREE_ID,
+  homebrewPortableRubyExecutable,
+  homebrewPortableRubyMountPrefix,
+  readHomebrewPortableRubyVersion,
+} from "../../host/src/homebrew-portable-ruby-contract";
 
 export type HomebrewGuestLifecycleTransportMode = "closed" | "public";
 
@@ -36,7 +43,7 @@ export interface HomebrewGuestLifecycleRuntimeInputs {
   lazyAssets?: readonly ClosedLazyAsset[];
   bootstrapTransportUrl: string;
   bootstrapBytes: number;
-  /** Bottle trees committed by the same first-use transaction as bootstrap. */
+  /** Trees committed by the same first-use transaction as Brew's source. */
   runtimeSupportTrees?: readonly { url: string; bytes: number }[];
 }
 
@@ -52,11 +59,14 @@ export interface DeriveHomebrewGuestLifecycleRuntimeInputs {
   bootstrapSpecBytes: Uint8Array;
   bootstrapArchiveBytes: Uint8Array;
   bootstrapArchiveSha256: string;
+  portableRubyArchiveBytes: Uint8Array;
+  portableRubyArchiveSha256: string;
   bootstrapEnvironmentBytes: Uint8Array;
   coreRevision: string;
   transportMode: HomebrewGuestLifecycleTransportMode;
   lazyUrlBase: string;
   expectedBootstrapTransportUrl?: string;
+  expectedPortableRubyTransportUrl?: string;
   expectedEmbeddedBottlePlanBytes?: Uint8Array;
   validateEmbeddedBottlePlan?: (plan: HomebrewBottleMirrorPlan) => void;
   closedBottleAssets?: readonly ClosedLazyAsset[];
@@ -89,9 +99,11 @@ export async function deriveHomebrewGuestLifecycleRuntimeInputs(
   );
   if (
     !SHA256_RE.test(input.bootstrapArchiveSha256) ||
-    input.bootstrapArchiveBytes.byteLength === 0
+    input.bootstrapArchiveBytes.byteLength === 0 ||
+    !SHA256_RE.test(input.portableRubyArchiveSha256) ||
+    input.portableRubyArchiveBytes.byteLength === 0
   ) {
-    throw new Error("Homebrew bootstrap archive identity is invalid");
+    throw new Error("Homebrew runtime archive identity is invalid");
   }
   const fs = MemoryFileSystem.fromImage(input.imageBytes);
   // WHY: callbacks and closed-asset binding act on exported lazy metadata;
@@ -112,12 +124,14 @@ export async function deriveHomebrewGuestLifecycleRuntimeInputs(
   const pendingTrees = classifyPendingTrees(fs.exportLazyArchiveEntries());
   if (
     pendingTrees.bootstrap.length !== 1 ||
+    pendingTrees.portableRuby.length !== 1 ||
     pendingTrees.unclassified.length !== 0
   ) {
     throw new Error(
       `lifecycle image has ${pendingTrees.bootstrap.length} pending Homebrew ` +
-        `source trees and ${pendingTrees.unclassified.length} unclassified ` +
-        `package trees`,
+        `source trees, ${pendingTrees.portableRuby.length} portable Ruby ` +
+        `trees, and ${pendingTrees.unclassified.length} unclassified package ` +
+        `trees`,
     );
   }
   assertBootstrapTreeBinding(
@@ -126,6 +140,17 @@ export async function deriveHomebrewGuestLifecycleRuntimeInputs(
     bootstrapSpec,
     input.bootstrapArchiveSha256,
     input.bootstrapArchiveBytes.byteLength,
+  );
+  const portableRubyVersion = readHomebrewPortableRubyVersion(
+    input.bootstrapArchiveBytes,
+  );
+  assertPortableRubyTreeBinding(
+    fs,
+    pendingTrees.portableRuby[0]!,
+    bootstrapSpec,
+    portableRubyVersion,
+    input.portableRubyArchiveSha256,
+    input.portableRubyArchiveBytes.byteLength,
   );
 
   const embeddedPlanBytes = readVfsFile(
@@ -157,19 +182,23 @@ export async function deriveHomebrewGuestLifecycleRuntimeInputs(
   );
   const bootstrapAtomicGroup =
     pendingTrees.bootstrap[0]!.activation?.atomicGroup;
-  const runtimeSupportTrees = bootstrapAtomicGroup === undefined
+  const runtimeSupportBottleTrees = bootstrapAtomicGroup === undefined
     ? []
     : pendingTrees.bottles.filter(
       (tree) =>
         tree.activation?.atomicGroup?.id === bootstrapAtomicGroup.id,
     );
+  const portableRubyTree = pendingTrees.portableRuby[0]!;
+  const runtimeSupportTrees = [
+    ...runtimeSupportBottleTrees,
+    portableRubyTree,
+  ];
   if (
-    bootstrapAtomicGroup !== undefined &&
+    bootstrapAtomicGroup === undefined ||
     (
       bootstrapAtomicGroup.descriptorSha256 === undefined ||
       bootstrapAtomicGroup.expectedCount !== runtimeSupportTrees.length + 1 ||
       bootstrapAtomicGroup.cohortSha256 === undefined ||
-      runtimeSupportTrees.length === 0 ||
       runtimeSupportTrees.some(
         (tree) =>
           tree.activation?.mode !== "first-use" ||
@@ -191,6 +220,10 @@ export async function deriveHomebrewGuestLifecycleRuntimeInputs(
     bootstrapSpec.archive.url,
     input.lazyUrlBase,
   ).toString();
+  const portableRubyTransportUrl = new URL(
+    HOMEBREW_PORTABLE_RUBY_OUTPUT,
+    input.lazyUrlBase,
+  ).toString();
   if (
     input.expectedBootstrapTransportUrl !== undefined &&
     bootstrapTransportUrl !== input.expectedBootstrapTransportUrl
@@ -198,6 +231,16 @@ export async function deriveHomebrewGuestLifecycleRuntimeInputs(
     throw new Error(
       `Homebrew bootstrap transport resolves to ${bootstrapTransportUrl}, ` +
         `expected ${input.expectedBootstrapTransportUrl}`,
+    );
+  }
+  if (
+    input.expectedPortableRubyTransportUrl !== undefined &&
+    portableRubyTransportUrl !== input.expectedPortableRubyTransportUrl
+  ) {
+    throw new Error(
+      `Homebrew portable Ruby transport resolves to ` +
+        `${portableRubyTransportUrl}, expected ` +
+        input.expectedPortableRubyTransportUrl,
     );
   }
 
@@ -209,6 +252,9 @@ export async function deriveHomebrewGuestLifecycleRuntimeInputs(
     bootstrapTransportUrl,
     input.bootstrapArchiveSha256,
     input.bootstrapArchiveBytes.byteLength,
+    portableRubyTransportUrl,
+    input.portableRubyArchiveSha256,
+    input.portableRubyArchiveBytes.byteLength,
   );
   input.validateImageFileSystem?.(fs);
 
@@ -223,10 +269,16 @@ export async function deriveHomebrewGuestLifecycleRuntimeInputs(
     ...(lazyAssets === undefined ? {} : { lazyAssets }),
     bootstrapTransportUrl,
     bootstrapBytes: input.bootstrapArchiveBytes.byteLength,
-    runtimeSupportTrees: runtimeSupportTrees.map((tree) => ({
-      url: tree.content!.transports[0]!,
-      bytes: tree.content!.bytes,
-    })),
+    runtimeSupportTrees: [
+      ...runtimeSupportBottleTrees.map((tree) => ({
+        url: tree.content!.transports[0]!,
+        bytes: tree.content!.bytes,
+      })),
+      {
+        url: portableRubyTransportUrl,
+        bytes: portableRubyTree.content!.bytes,
+      },
+    ],
   };
 }
 
@@ -337,6 +389,120 @@ function assertBootstrapTreeBinding(
   }
 }
 
+function assertPortableRubyTreeBinding(
+  fs: MemoryFileSystem,
+  tree: SerializedLazyArchiveEntry,
+  sourceSpec: PackageDeferredZipTreeSpec,
+  version: string,
+  archiveSha256: string,
+  archiveBytes: number,
+): void {
+  const content = tree.content;
+  const inventory = tree.inventory;
+  const inventoryBytes = inventory?.reduce(
+    (total, entry) => total + entry.size,
+    0,
+  );
+  const mountPrefix = homebrewPortableRubyMountPrefix(
+    sourceSpec.mount_prefix,
+  );
+  const rubyPath = homebrewPortableRubyExecutable(
+    sourceSpec.mount_prefix,
+    version,
+  );
+  const currentPath = `${mountPrefix}/current`;
+  const atomicGroup = tree.activation?.atomicGroup;
+  const sourceAtomicGroup = sourceSpec.activation.atomicGroup;
+  const current = inventory?.find((entry) => entry.vfsPath === currentPath);
+  const ruby = inventory?.find((entry) => entry.vfsPath === rubyPath);
+  const allowedTopLevel = new Set([version, "current"]);
+  if (
+    sourceSpec.package.name !== "homebrew-bootstrap" ||
+    sourceSpec.package.output !== "homebrew-bootstrap.zip" ||
+    sourceAtomicGroup === undefined ||
+    tree.kind !== "kandelo-deferred-tree-v3" ||
+    tree.materialized ||
+    tree.mountPrefix !== mountPrefix ||
+    tree.url !== HOMEBREW_PORTABLE_RUBY_OUTPUT ||
+    content === undefined ||
+    content.decoder !== "zip-v1" ||
+    content.mediaType !== "application/zip" ||
+    content.sha256 !== archiveSha256 ||
+    content.bytes !== archiveBytes ||
+    content.expandedBytes !== inventoryBytes ||
+    content.sourceEntryCount !== inventory?.length ||
+    content.transports.length !== 1 ||
+    content.transports[0] !== HOMEBREW_PORTABLE_RUBY_OUTPUT ||
+    content.modePolicy !== "portable-posix-v1" ||
+    content.source !== undefined ||
+    inventory === undefined ||
+    inventory.length === 0 ||
+    tree.activation?.mode !== "first-use" ||
+    JSON.stringify(tree.activation.capabilities) !==
+      JSON.stringify(["homebrew:runtime"]) ||
+    JSON.stringify(tree.activation.roots) !== JSON.stringify([rubyPath]) ||
+    atomicGroup?.id !== sourceAtomicGroup.id ||
+    atomicGroup.member !== HOMEBREW_PORTABLE_RUBY_TREE_ID ||
+    atomicGroup.descriptorSha256 === undefined ||
+    atomicGroup.expectedCount === undefined ||
+    atomicGroup.cohortSha256 === undefined ||
+    current?.type !== "symlink" ||
+    current.target !== version ||
+    ruby?.type !== "file" ||
+    ruby.size <= 0 ||
+    (ruby.mode & 0o111) === 0 ||
+    inventory.some((entry) => {
+      if (!entry.vfsPath.startsWith(`${mountPrefix}/`)) return true;
+      const relative = entry.vfsPath.slice(mountPrefix.length + 1);
+      return !allowedTopLevel.has(relative.split("/", 1)[0]!);
+    })
+  ) {
+    throw new Error(
+      "Homebrew portable Ruby deferred tree changed descriptor: " +
+        JSON.stringify({
+          kind: tree.kind,
+          materialized: tree.materialized,
+          mountPrefix: tree.mountPrefix,
+          url: tree.url,
+          content,
+          inventoryBytes,
+          inventoryLength: inventory?.length,
+          activation: tree.activation,
+        }),
+    );
+  }
+
+  for (const entry of inventory) {
+    if (entry.type === "hardlink") {
+      throw new Error(
+        "Homebrew portable Ruby ZIP tree contains a hardlink inventory entry",
+      );
+    }
+    const stat = fs.lstat(entry.vfsPath);
+    const expectedType = entry.type === "directory"
+      ? S_IFDIR
+      : entry.type === "symlink"
+        ? S_IFLNK
+        : S_IFREG;
+    if (
+      (stat.mode & S_IFMT) !== expectedType ||
+      (stat.mode & 0o7777) !== entry.mode ||
+      stat.uid !== sourceSpec.owner.uid ||
+      stat.gid !== sourceSpec.owner.gid ||
+      (entry.type !== "directory" && stat.size !== entry.size) ||
+      (entry.type === "file" && !fs.isPathDeferred(entry.vfsPath)) ||
+      (
+        entry.type === "symlink" &&
+        fs.readlink(entry.vfsPath) !== entry.target
+      )
+    ) {
+      throw new Error(
+        `Homebrew portable Ruby deferred tree changed ${entry.vfsPath}`,
+      );
+    }
+  }
+}
+
 function bindClosedLifecycleAssets(
   input: DeriveHomebrewGuestLifecycleRuntimeInputs,
   plan: HomebrewBottleMirrorPlan,
@@ -345,6 +511,9 @@ function bindClosedLifecycleAssets(
   bootstrapTransportUrl: string,
   bootstrapSha256: string,
   bootstrapBytes: number,
+  portableRubyTransportUrl: string,
+  portableRubySha256: string,
+  portableRubyBytes: number,
 ): readonly ClosedLazyAsset[] | undefined {
   if (input.transportMode === "public") {
     if (
@@ -376,6 +545,12 @@ function bindClosedLifecycleAssets(
       sha256: bootstrapSha256,
       size: bootstrapBytes,
       bytes: input.bootstrapArchiveBytes,
+    },
+    {
+      url: portableRubyTransportUrl,
+      sha256: portableRubySha256,
+      size: portableRubyBytes,
+      bytes: input.portableRubyArchiveBytes,
     },
   ];
 }
@@ -412,6 +587,7 @@ function assertClosedBottleAssets(
 function classifyPendingTrees(entries: readonly SerializedLazyArchiveEntry[]): {
   bottles: SerializedLazyArchiveEntry[];
   bootstrap: SerializedLazyArchiveEntry[];
+  portableRuby: SerializedLazyArchiveEntry[];
   unclassified: SerializedLazyArchiveEntry[];
 } {
   const pending = entries.filter((tree) => tree.content !== undefined);
@@ -420,12 +596,15 @@ function classifyPendingTrees(entries: readonly SerializedLazyArchiveEntry[]): {
     const bottleCapabilities = capabilities.filter((capability) =>
       capability.startsWith("homebrew-bottle:")
     );
+    const ownershipCapabilities = [
+      bottleCapabilities.length > 0,
+      capabilities.includes("homebrew:bootstrap"),
+      capabilities.includes("homebrew:runtime") &&
+        !capabilities.includes("homebrew:bootstrap"),
+    ].filter(Boolean).length;
     if (
       bottleCapabilities.length > 1 ||
-      (
-        bottleCapabilities.length === 1 &&
-        capabilities.includes("homebrew:bootstrap")
-      )
+      ownershipCapabilities > 1
     ) {
       throw new Error(
         `pending tree ${tree.mountPrefix} has ambiguous Homebrew ownership`,
@@ -440,10 +619,20 @@ function classifyPendingTrees(entries: readonly SerializedLazyArchiveEntry[]): {
   const bootstrap = pending.filter((tree) =>
     tree.activation?.capabilities.includes("homebrew:bootstrap")
   );
-  const unclassified = pending.filter(
-    (tree) => !bottles.includes(tree) && !bootstrap.includes(tree),
+  const portableRuby = pending.filter((tree) =>
+    tree.activation?.capabilities.includes("homebrew:runtime") &&
+    !tree.activation.capabilities.includes("homebrew:bootstrap") &&
+    !tree.activation.capabilities.some((capability) =>
+      capability.startsWith("homebrew-bottle:")
+    )
   );
-  return { bottles, bootstrap, unclassified };
+  const unclassified = pending.filter(
+    (tree) =>
+      !bottles.includes(tree) &&
+      !bootstrap.includes(tree) &&
+      !portableRuby.includes(tree),
+  );
+  return { bottles, bootstrap, portableRuby, unclassified };
 }
 
 function readVfsFile(fs: MemoryFileSystem, path: string): Uint8Array {

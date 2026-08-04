@@ -15,6 +15,8 @@ import {
   type HomebrewBottleMirrorPlan,
 } from "../host/src/homebrew-bottle-mirror-plan";
 import { homebrewRuntimeLayerPayloadAsset } from "../host/src/homebrew-runtime-layer-limits";
+import { deriveHomebrewPortableRubyTree } from
+  "../host/src/homebrew-portable-ruby";
 import { parseHomebrewRuntimeSupportContract } from "../host/src/homebrew-runtime-support";
 import {
   ensureDirRecursive,
@@ -62,6 +64,7 @@ test("binds the sealed image, deferred brew source, and public mirror plan", asy
   const result = await inspectHomebrewMainShellPublicProduct({
     imageBytes: fixture.imageBytes,
     homebrewBootstrapArchiveBytes: fixture.bootstrapArchive,
+    homebrewPortableRubyArchiveBytes: fixture.portableRubyArchive,
     homebrewBootstrapSpec: bootstrapSpec,
     homebrewRuntimeSupport: runtimeSupportValue,
   });
@@ -77,6 +80,10 @@ test("binds the sealed image, deferred brew source, and public mirror plan", asy
       sha256: sha256(fixture.bootstrapArchive),
       bytes: fixture.bootstrapArchive.byteLength,
       activation_root: "/usr/bin/brew",
+    },
+    homebrew_portable_ruby: {
+      sha256: sha256(fixture.portableRubyArchive),
+      bytes: fixture.portableRubyArchive.byteLength,
     },
     bottle_mirror: {
       repository: runtimeSupport.catalog.tapRepository,
@@ -98,6 +105,7 @@ test("rejects bootstrap bytes that are not the deferred tree in the image", asyn
       inspectHomebrewMainShellPublicProduct({
         imageBytes: fixture.imageBytes,
         homebrewBootstrapArchiveBytes: changedArchive,
+        homebrewPortableRubyArchiveBytes: fixture.portableRubyArchive,
         homebrewBootstrapSpec: bootstrapSpec,
         homebrewRuntimeSupport: runtimeSupportValue,
       }),
@@ -114,6 +122,7 @@ test("rejects a public mirror outside the runtime-support catalog", async () => 
       inspectHomebrewMainShellPublicProduct({
         imageBytes: fixture.imageBytes,
         homebrewBootstrapArchiveBytes: fixture.bootstrapArchive,
+        homebrewPortableRubyArchiveBytes: fixture.portableRubyArchive,
         homebrewBootstrapSpec: bootstrapSpec,
         homebrewRuntimeSupport: runtimeSupportValue,
       }),
@@ -128,6 +137,7 @@ test("rejects an unclassified deferred package tree", async () => {
       inspectHomebrewMainShellPublicProduct({
         imageBytes: fixture.imageBytes,
         homebrewBootstrapArchiveBytes: fixture.bootstrapArchive,
+        homebrewPortableRubyArchiveBytes: fixture.portableRubyArchive,
         homebrewBootstrapSpec: bootstrapSpec,
         homebrewRuntimeSupport: runtimeSupportValue,
       }),
@@ -141,6 +151,7 @@ async function productFixture(options?: {
 }): Promise<{
   imageBytes: Uint8Array;
   bootstrapArchive: Uint8Array;
+  portableRubyArchive: Uint8Array;
   plan: HomebrewBottleMirrorPlan;
 }> {
   const repository =
@@ -150,6 +161,12 @@ async function productFixture(options?: {
     bootstrapSpec,
     bootstrapArchive,
   );
+  const portableRubyArchive = homebrewPortableRubyArchive();
+  const portableRuby = deriveHomebrewPortableRubyTree(
+    bootstrap,
+    bootstrapArchive,
+    portableRubyArchive,
+  );
   const fs = MemoryFileSystem.create(
     new SharedArrayBuffer(8 * MiB, { maxByteLength: 32 * MiB }),
     32 * MiB,
@@ -158,8 +175,9 @@ async function productFixture(options?: {
   prepareHomebrewBootstrapConsumerNamespace(fs, bootstrap);
   registerPackageDeferredZipTree(fs, bootstrap);
   installHomebrewBootstrapConsumerState(fs, bootstrap, bootstrapEnvironment);
+  registerPackageDeferredZipTree(fs, portableRuby);
 
-  const identities = runtimeSupport.additionalFormulaOrder.map(
+  const identities = runtimeSupport.baseFormulaOrder.map(
     (packageName, index) => {
       const id = `fixture-${String(index).padStart(2, "0")}`;
       const payload = new Uint8Array([index + 1]);
@@ -219,17 +237,13 @@ async function productFixture(options?: {
         mode: "first-use",
         capabilities: [`homebrew-bottle:${asset.id}`],
         roots: [`${mountPrefix}/bin/tool`],
-        atomicGroup: {
-          id: runtimeSupport.activation.atomicGroup,
-          member: asset.id,
-        },
       },
       { uid: 1000, gid: 1000 },
     );
   }
   await fs.sealLazyAtomicGroup(runtimeSupport.activation.atomicGroup, [
     bootstrap.descriptor.activation.atomicGroup!.member,
-    ...plan.assets.map((asset) => asset.id),
+    portableRuby.descriptor.activation.atomicGroup!.member,
   ]);
   if (options?.includeUnknownTree) {
     fs.registerLazyTreeWithMaterializationHandle(
@@ -272,6 +286,7 @@ async function productFixture(options?: {
   return {
     imageBytes: await fs.saveImage(),
     bootstrapArchive,
+    portableRubyArchive,
     plan,
   };
 }
@@ -282,11 +297,31 @@ function homebrewBootstrapArchive(contents: string): Uint8Array {
       "bin/": zipEntry(new Uint8Array(), 0o040755),
       "Library/": zipEntry(new Uint8Array(), 0o040755),
       "Library/Homebrew/": zipEntry(new Uint8Array(), 0o040755),
+      "Library/Homebrew/vendor/": zipEntry(new Uint8Array(), 0o040755),
+      "Library/Homebrew/vendor/portable-ruby-version": zipEntry(
+        encoder.encode("4.0.5\n"),
+        0o100644,
+      ),
       "Library/Homebrew/global.rb": zipEntry(
         encoder.encode(contents),
         0o100644,
       ),
       "bin/brew": zipEntry(encoder.encode("#!/bin/bash -pu\n"), 0o100755),
+    } satisfies Zippable,
+    { level: 9 },
+  );
+}
+
+function homebrewPortableRubyArchive(): Uint8Array {
+  return zipSync(
+    {
+      "4.0.5/": zipEntry(new Uint8Array(), 0o040755),
+      "4.0.5/bin/": zipEntry(new Uint8Array(), 0o040755),
+      "4.0.5/bin/ruby": zipEntry(
+        encoder.encode("ruby-wasm\n"),
+        0o100755,
+      ),
+      current: zipEntry(encoder.encode("4.0.5"), 0o120777),
     } satisfies Zippable,
     { level: 9 },
   );

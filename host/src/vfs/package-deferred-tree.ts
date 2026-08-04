@@ -435,7 +435,16 @@ function preflightNamespace(
     }
     const entry = entryByPath.get(path);
     if (entry === undefined) {
-      if ((existing.mode & S_IFMT) !== S_IFDIR) {
+      if (
+        (existing.mode & S_IFMT) !== S_IFDIR ||
+        (
+          path === descriptor.mount_prefix &&
+          (
+            existing.uid !== descriptor.owner.uid ||
+            existing.gid !== descriptor.owner.gid
+          )
+        )
+      ) {
         throw new Error(
           `package deferred ZIP tree ancestor collides at ${path}`,
         );

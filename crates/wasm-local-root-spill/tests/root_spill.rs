@@ -1,5 +1,5 @@
 use walrus::{
-    ExportItem, FunctionId, FunctionKind, GlobalId, LocalFunction, Module,
+    ExportItem, FunctionId, FunctionKind, GlobalId, ImportKind, LocalFunction, Module,
     ir::{self, Instr, InstrSeqId},
 };
 use wasm_local_root_spill::{Options, SpillSet, spill};
@@ -223,6 +223,61 @@ fn rejects_missing_stack_pointer() {
     "#;
     let err = spill(&parse_wat(wat), &Options::default()).expect_err("missing sp rejected");
     assert!(format!("{err:#}").contains("__stack_pointer"));
+}
+
+#[test]
+fn imports_process_stack_pointer_for_stackless_side_module() {
+    let wat = r#"
+        (module
+          (@custom "dylink.0" (before first) "test metadata")
+          (import "env" "memory" (memory 1))
+          (import "env" "alloc" (func $alloc))
+          (func $main (export "main") (param $root i32) (result i32)
+            call $alloc
+            local.get $root))
+    "#;
+
+    let bytes = spill_wat(wat);
+    validate(&bytes);
+    let module = module(&bytes);
+    let stack_pointer = stack_pointer(&module);
+
+    assert!(module.imports.iter().any(|import| {
+        import.module == "env"
+            && import.name == "__stack_pointer"
+            && matches!(import.kind, ImportKind::Global(id) if id == stack_pointer)
+    }));
+    assert_eq!(count_stack_pointer_sets(&module, "main"), 2);
+}
+
+#[test]
+fn keeps_side_module_dylink_section_first() {
+    let wat = r#"
+        (module
+          (@custom "dylink.0" (before first) "test metadata")
+          (memory (export "memory") 1)
+          (global $__stack_pointer
+            (export "__stack_pointer") (mut i32) (i32.const 65536))
+          (func $alloc)
+          (func $main (export "main") (param $root i32) (result i32)
+            call $alloc
+            local.get $root))
+    "#;
+
+    let bytes = spill_wat(wat);
+    validate(&bytes);
+    let mut payloads = wasmparser::Parser::new(0).parse_all(&bytes);
+    assert!(matches!(
+        payloads.next().unwrap().unwrap(),
+        wasmparser::Payload::Version { .. }
+    ));
+    match payloads.next().unwrap().unwrap() {
+        wasmparser::Payload::CustomSection(section) => {
+            assert_eq!(section.name(), "dylink.0");
+            assert_eq!(section.data(), b"test metadata");
+        }
+        other => panic!("dylink.0 must remain the first section, got {other:?}"),
+    }
 }
 
 #[test]

@@ -107,7 +107,9 @@ and browser hosts diverge.
 These are deliberate limits of the first Ruby-focused implementation:
 
 - only the `ruby` profile is accepted;
-- only wasm32 modules with a mutable `i32` `__stack_pointer` are supported;
+- wasm32 main modules must expose a mutable `i32` `__stack_pointer`; a
+  `dylink.0` side module whose linker omitted an otherwise-unused stack pointer
+  imports the process-wide global before spill frames are added;
 - only 32-bit `VALUE`-like roots are spilled;
 - `i64`, `f32`, `f64`, `v128`, and reference-typed values are not root slots;
 - memory64 and runtimes that depend on Wasm GC refs are unsupported;

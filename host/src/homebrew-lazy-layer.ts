@@ -41,7 +41,6 @@ import {
   parseHomebrewInstallReceiptRelocation,
   relocateHomebrewBottleFile,
 } from "./homebrew-bottle-relocation";
-import { KANDELO_HOMEBREW_GUEST_LAYOUT } from "./homebrew-guest-layout";
 export type {
   HomebrewDeferredTreeDescriptor,
   HomebrewDeferredTreeDraftDescriptor,
@@ -78,7 +77,6 @@ const HOMEBREW_VFS_REPORT_ASSET = "kandelo-homebrew-vfs-report.json";
 const HOMEBREW_NODE_EVIDENCE_ASSET = "kandelo-homebrew-node-evidence.json";
 const HOMEBREW_BROWSER_EVIDENCE_ASSET = "kandelo-homebrew-browser-evidence.json";
 const HOMEBREW_COMPOSITION_PATH = "/etc/kandelo/homebrew-vfs.json";
-const HOME_BREW_PREFIX = KANDELO_HOMEBREW_GUEST_LAYOUT.prefix;
 const ZIP_EPOCH = new Date(1980, 0, 1, 0, 0, 0);
 const S_IFMT = 0xf000;
 const S_IFREG = 0x8000;
@@ -198,6 +196,7 @@ export async function buildHomebrewOriginalBottleCollection(
   }
   await authenticateHomebrewCompositionBase(options.baseFs);
   commonArch(plan);
+  const guestPrefix = commonPrefix(plan);
   const tapLock = planTapLock(plan);
   validatePackageTapOwnership(plan.packages, tapLock);
   if (plan.packages.length === 0) {
@@ -284,7 +283,11 @@ export async function buildHomebrewOriginalBottleCollection(
     compatibilityPolicy: options.compatibilityPolicy,
     consumerState: "defer",
   });
-  const finalEntries = collectLayerEntries(options.fs, options.baseFs);
+  const finalEntries = collectLayerEntries(
+    options.fs,
+    options.baseFs,
+    guestPrefix,
+  );
   const trees = createOriginalBottleTrees(
     bottles,
     finalEntries,
@@ -1013,7 +1016,12 @@ function prepareOriginalBottleRelocation(
     sourcePaths.add(source.path);
     const canonical = resolveTarRegularSource(source, sourceByPath, pkg);
     try {
-      const relocated = relocateHomebrewBottleFile(canonical.data, receipt, guestPath);
+      const relocated = relocateHomebrewBottleFile(
+        canonical.data,
+        receipt,
+        guestPath,
+        pkg.prefix,
+      );
       const prior = bytesByCanonicalSource.get(canonical.path);
       if (prior !== undefined && !bytesEqual(prior, relocated)) {
         throw new Error("hard-link aliases produce different relocated bytes");
@@ -1577,6 +1585,17 @@ function commonArch(plan: HomebrewVfsPlan): "wasm32" | "wasm64" {
   return arch;
 }
 
+function commonPrefix(plan: HomebrewVfsPlan): string {
+  const prefix = plan.packages[0]?.prefix;
+  if (
+    prefix === undefined ||
+    plan.packages.some((pkg) => pkg.prefix !== prefix)
+  ) {
+    throw new Error("Homebrew lazy layer plan must have one non-empty prefix");
+  }
+  return prefix;
+}
+
 function planTapLock(plan: HomebrewVfsPlan): HomebrewVfsTapIdentity[] {
   const federated = plan as Partial<HomebrewFederatedVfsPlan>;
   const candidates = Array.isArray(federated.taps)
@@ -1868,12 +1887,17 @@ function packageArtifactIdentity(value: unknown): Record<string, unknown> {
 function collectLayerEntries(
   layerFs: MemoryFileSystem,
   baseFs: MemoryFileSystem,
+  guestPrefix: string,
 ): HomebrewLazyLayerEntry[] {
-  if (!pathExists(layerFs, HOME_BREW_PREFIX)) {
+  // WHY: the bottle plan is the authenticated owner of its poured prefix.
+  // Compatibility products and the canonical product use different prefixes,
+  // so consulting a process-global layout here could omit the complete layer
+  // after a valid pour or accidentally collect an unrelated namespace.
+  if (!pathExists(layerFs, guestPrefix)) {
     throw new Error("Homebrew lazy layer is missing its poured prefix");
   }
   const entries: HomebrewLazyLayerEntry[] = [];
-  collectPath(layerFs, HOME_BREW_PREFIX, entries, new Map());
+  collectPath(layerFs, guestPrefix, entries, new Map());
   entries.sort((left, right) => compareHomebrewCanonicalText(left.path, right.path));
   for (const entry of entries) {
     const basePath = `/${entry.path}`;

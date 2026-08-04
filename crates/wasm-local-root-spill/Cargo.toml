@@ -18,8 +18,8 @@ path = "src/lib.rs"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 walrus = "0.26"
+wasmparser = "0.247"
 
 [dev-dependencies]
-wasmparser = "0.247"
 wasmprinter = "0.247"
 wat = "1"

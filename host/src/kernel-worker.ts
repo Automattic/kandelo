@@ -880,6 +880,9 @@ export interface ForkLaunchRequest {
 export interface ResolvedSpawnProgram {
   programBytes: ArrayBuffer;
   programModule: WebAssembly.Module;
+  /** Pre-inspected worker launch metadata; hosts derive it if omitted. */
+  programAbiVersion?: number | null;
+  channelBaseTlsOffset?: number;
   argv: string[];
 }
 

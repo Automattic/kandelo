@@ -12,6 +12,7 @@ REPORT=""
 BOTTLE_CACHE=""
 PACKAGE_TREE_SPEC=""
 PACKAGE_TREE_ARCHIVE=""
+HOMEBREW_PORTABLE_RUBY_ARCHIVE=""
 HOMEBREW_BOOTSTRAP_ENV=""
 HOMEBREW_BOOTSTRAP_BOTTLE_REPORT=""
 HOMEBREW_BOOTSTRAP_SOURCE_LOCK="$REPO_ROOT/homebrew/homebrew-bootstrap-source-lock.json"
@@ -67,6 +68,8 @@ Options:
                             reviewed package-owned lazy-tree recipe
   --package-tree-archive <zip>
                             exact dependency output named by the recipe
+  --homebrew-portable-ruby-archive <zip>
+                            source-matched upstream portable Ruby tree
   --homebrew-bootstrap-env <env>
                             exact package-owned launcher environment
   --homebrew-bootstrap-bottle-report <json>
@@ -124,6 +127,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --package-tree-archive)
       PACKAGE_TREE_ARCHIVE="${2:-}"
+      shift 2
+      ;;
+    --homebrew-portable-ruby-archive)
+      HOMEBREW_PORTABLE_RUBY_ARCHIVE="${2:-}"
       shift 2
       ;;
     --homebrew-bootstrap-env)
@@ -200,9 +207,19 @@ if { [ -n "$PACKAGE_TREE_SPEC" ] && [ -z "$PACKAGE_TREE_ARCHIVE" ]; } ||
   echo "build-homebrew-main-shell-closure: package-tree spec and archive must be provided together" >&2
   exit 2
 fi
+if [ -n "$HOMEBREW_PORTABLE_RUBY_ARCHIVE" ] &&
+   [ -z "$PACKAGE_TREE_SPEC" ]; then
+  echo "build-homebrew-main-shell-closure: portable Ruby requires a package tree" >&2
+  exit 2
+fi
 if { [ -n "$PACKAGE_TREE_SPEC" ] && [ -z "$HOMEBREW_BOOTSTRAP_ENV" ]; } ||
    { [ -z "$PACKAGE_TREE_SPEC" ] && [ -n "$HOMEBREW_BOOTSTRAP_ENV" ]; }; then
   echo "build-homebrew-main-shell-closure: Homebrew bootstrap environment and package tree must be provided together" >&2
+  exit 2
+fi
+if [ -n "$HOMEBREW_BOOTSTRAP_ENV" ] &&
+   [ -z "$HOMEBREW_PORTABLE_RUBY_ARCHIVE" ]; then
+  echo "build-homebrew-main-shell-closure: Homebrew bootstrap environment requires portable Ruby" >&2
   exit 2
 fi
 if [ -z "$PACKAGE_TREE_SPEC" ] &&
@@ -226,6 +243,12 @@ fi
 if [ -n "$PACKAGE_TREE_ARCHIVE" ] &&
    { [ ! -f "$PACKAGE_TREE_ARCHIVE" ] || [ -L "$PACKAGE_TREE_ARCHIVE" ]; }; then
   echo "build-homebrew-main-shell-closure: package-tree archive must be a regular non-symlink file" >&2
+  exit 2
+fi
+if [ -n "$HOMEBREW_PORTABLE_RUBY_ARCHIVE" ] &&
+   { [ ! -f "$HOMEBREW_PORTABLE_RUBY_ARCHIVE" ] ||
+     [ -L "$HOMEBREW_PORTABLE_RUBY_ARCHIVE" ]; }; then
+  echo "build-homebrew-main-shell-closure: portable Ruby archive must be a regular non-symlink file" >&2
   exit 2
 fi
 if [ -n "$HOMEBREW_BOOTSTRAP_ENV" ] &&
@@ -525,6 +548,8 @@ PACKAGE_TREE_ARGS=()
 PACKAGE_TREE_JSON=null
 PACKAGE_TREE_ARCHIVE_SHA=""
 PACKAGE_TREE_ARCHIVE_BYTES=0
+HOMEBREW_PORTABLE_RUBY_ARCHIVE_SHA=""
+HOMEBREW_PORTABLE_RUBY_ARCHIVE_BYTES=0
 HOMEBREW_BOOTSTRAP_ENV_SHA=""
 HOMEBREW_BOOTSTRAP_ENV_BYTES=0
 HOMEBREW_BOOTSTRAP_BOTTLE_JSON=null
@@ -532,6 +557,7 @@ if [ -n "$PACKAGE_TREE_SPEC" ]; then
   PACKAGE_TREE_ARGS=(
     --package-tree-spec "$PACKAGE_TREE_SPEC"
     --package-tree-archive "$PACKAGE_TREE_ARCHIVE"
+    --homebrew-portable-ruby-archive "$HOMEBREW_PORTABLE_RUBY_ARCHIVE"
     --homebrew-bootstrap-env "$HOMEBREW_BOOTSTRAP_ENV"
   )
   if [ "$MATERIALIZE_PACKAGE_TREE" = true ]; then
@@ -541,6 +567,11 @@ if [ -n "$PACKAGE_TREE_SPEC" ]; then
   PACKAGE_TREE_ARCHIVE_SHA="$(sha256sum "$PACKAGE_TREE_ARCHIVE")"
   PACKAGE_TREE_ARCHIVE_SHA="${PACKAGE_TREE_ARCHIVE_SHA%% *}"
   PACKAGE_TREE_ARCHIVE_BYTES="$(wc -c <"$PACKAGE_TREE_ARCHIVE" | tr -d '[:space:]')"
+  HOMEBREW_PORTABLE_RUBY_ARCHIVE_SHA="$(sha256sum \
+    "$HOMEBREW_PORTABLE_RUBY_ARCHIVE")"
+  HOMEBREW_PORTABLE_RUBY_ARCHIVE_SHA="${HOMEBREW_PORTABLE_RUBY_ARCHIVE_SHA%% *}"
+  HOMEBREW_PORTABLE_RUBY_ARCHIVE_BYTES="$(wc -c \
+    <"$HOMEBREW_PORTABLE_RUBY_ARCHIVE" | tr -d '[:space:]')"
   HOMEBREW_BOOTSTRAP_ENV_SHA="$(sha256sum "$HOMEBREW_BOOTSTRAP_ENV")"
   HOMEBREW_BOOTSTRAP_ENV_SHA="${HOMEBREW_BOOTSTRAP_ENV_SHA%% *}"
   HOMEBREW_BOOTSTRAP_ENV_BYTES="$(wc -c <"$HOMEBREW_BOOTSTRAP_ENV" | tr -d '[:space:]')"
@@ -569,6 +600,7 @@ if [ -n "$PACKAGE_TREE_SPEC" ]; then
       --report "$HOMEBREW_BOOTSTRAP_BOTTLE_REPORT" \
       --output "archive=$PACKAGE_TREE_ARCHIVE" \
       --output "environment=$HOMEBREW_BOOTSTRAP_ENV" \
+      --output "portable_ruby=$HOMEBREW_PORTABLE_RUBY_ARCHIVE" \
       "${SUPPORT_SELECTION_ARGS[@]}" \
       --verified-report-out "$VERIFIED_BOOTSTRAP_REPORT"
     HOMEBREW_BOOTSTRAP_BOTTLE_JSON="$(
@@ -675,6 +707,10 @@ jq -e \
   --argjson homebrew_bootstrap_bottle "$HOMEBREW_BOOTSTRAP_BOTTLE_JSON" \
   --arg package_tree_archive_sha "$PACKAGE_TREE_ARCHIVE_SHA" \
   --argjson package_tree_archive_bytes "$PACKAGE_TREE_ARCHIVE_BYTES" \
+  --arg homebrew_portable_ruby_archive_sha \
+    "$HOMEBREW_PORTABLE_RUBY_ARCHIVE_SHA" \
+  --argjson homebrew_portable_ruby_archive_bytes \
+    "$HOMEBREW_PORTABLE_RUBY_ARCHIVE_BYTES" \
   --arg homebrew_bootstrap_env_sha "$HOMEBREW_BOOTSTRAP_ENV_SHA" \
   --argjson homebrew_bootstrap_env_bytes "$HOMEBREW_BOOTSTRAP_ENV_BYTES" \
   --argjson materialize_package_tree "$MATERIALIZE_PACKAGE_TREE" \
@@ -895,8 +931,13 @@ jq -e \
     (.homebrew_bootstrap_bottle == null)
   else
     (.homebrew_bootstrap_bottle == $homebrew_bootstrap_bottle) and
-    (.package_deferred_trees | length == 1) and
-    (.package_deferred_trees[0] as $tree |
+    (.package_deferred_trees | length == 2) and
+    ([.package_deferred_trees[] |
+      select(.id == $package_tree_spec.id)] | length == 1) and
+    ([.package_deferred_trees[] |
+      select(.id == "homebrew-bootstrap/portable-ruby")] | length == 1) and
+    ([.package_deferred_trees[] |
+      select(.id == $package_tree_spec.id)][0] as $tree |
       $tree.schema == $package_tree_spec.schema and
       $tree.kind == $package_tree_spec.kind and
       $tree.id == $package_tree_spec.id and
@@ -923,7 +964,43 @@ jq -e \
       $tree.state == (if $materialize_package_tree
         then "materialized"
         else "deferred"
-      end) and
+      end)) and
+    ([.package_deferred_trees[] |
+      select(.id == "homebrew-bootstrap/portable-ruby")][0] as $ruby |
+      $ruby.schema == 1 and
+      $ruby.kind == "kandelo-package-deferred-zip-tree" and
+      $ruby.content_role == "runtime-tree" and
+      $ruby.package == {
+        name: $package_tree_spec.package.name,
+        output: "homebrew-portable-ruby.zip"
+      } and
+      $ruby.archive.output == "homebrew-portable-ruby.zip" and
+      $ruby.archive.url == "homebrew-portable-ruby.zip" and
+      $ruby.archive.sha256 == $homebrew_portable_ruby_archive_sha and
+      $ruby.archive.bytes == $homebrew_portable_ruby_archive_bytes and
+      $ruby.archive.expanded_bytes > 0 and
+      $ruby.archive.source_entry_count > 0 and
+      ($ruby.descriptor.sha256 | test("^[0-9a-f]{64}$")) and
+      $ruby.descriptor.bytes > 0 and
+      $ruby.mount_prefix ==
+        ((if $package_tree_spec.mount_prefix == "/" then ""
+          else $package_tree_spec.mount_prefix end) +
+          "/Library/Homebrew/vendor/portable-ruby") and
+      $ruby.owner == $package_tree_spec.owner and
+      $ruby.activation.mode == "first-use" and
+      $ruby.activation.capabilities == ["homebrew:runtime"] and
+      ($ruby.activation.roots | length == 1) and
+      ($ruby.activation.roots[0] |
+        startswith($ruby.mount_prefix + "/")) and
+      ($ruby.activation.roots[0] | endswith("/bin/ruby")) and
+      $ruby.activation.atomicGroup == {
+        id: $package_tree_spec.activation.atomic_group,
+        member: "homebrew-bootstrap/portable-ruby"
+      } and
+      $ruby.state == (if $materialize_package_tree
+        then "materialized"
+        else "deferred"
+      end)) and
       .homebrew_bootstrap == {
         environment: {
           path: "/etc/homebrew/brew.env",
@@ -947,7 +1024,6 @@ jq -e \
           ]
         }
       }
-    )
   end)
 ' "$REPORT" >/dev/null
 

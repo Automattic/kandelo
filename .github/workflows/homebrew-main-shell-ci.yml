@@ -683,9 +683,11 @@ jobs:
                 --output-directory "$prepared_inputs"
           bootstrap_root="$prepared_inputs/bootstrap"
           bootstrap="$bootstrap_root/homebrew-bootstrap.zip"
+          portable_ruby="$bootstrap_root/homebrew-portable-ruby.zip"
           bootstrap_env="$bootstrap_root/homebrew-brew.env"
           bootstrap_bottle_report="$bootstrap_root/report.json"
           test -f "$bootstrap"
+          test -f "$portable_ruby"
           test -f "$bootstrap_env"
           test -f "$bootstrap_bottle_report"
           artifact_state=$(jq -er '.state' \
@@ -727,6 +729,7 @@ jobs:
             echo "image=$candidate_root/main-shell.vfs.zst"
             echo "report=$candidate_root/main-shell-report.json"
             echo "bootstrap=$bootstrap"
+            echo "portable_ruby=$portable_ruby"
             echo "bootstrap_env=$bootstrap_env"
             echo "bootstrap_bottle_report=$bootstrap_bottle_report"
             echo "tap_sha=$tap_sha"
@@ -975,6 +978,7 @@ jobs:
               --image "${{ steps.bottle_candidate.outputs.image }}" \
               --homebrew-bootstrap-spec homebrew/main-shell-brew-package-tree.json \
               --homebrew-bootstrap-archive "${{ steps.bottle_candidate.outputs.bootstrap }}" \
+              --homebrew-portable-ruby-archive "${{ steps.bottle_candidate.outputs.portable_ruby }}" \
               --homebrew-bootstrap-env "${{ steps.bottle_candidate.outputs.bootstrap_env }}" \
               --bottle-mirror "$RUNNER_TEMP/homebrew-main-shell-bottles" \
               --fixed-asset-url-root "$fixed_url_root" \
@@ -999,6 +1003,7 @@ jobs:
           install_browser_fixture_asset "${{ steps.bottle_candidate.outputs.image }}"
           install_browser_fixture_asset homebrew/main-shell-brew-package-tree.json
           install_browser_fixture_asset "${{ steps.bottle_candidate.outputs.bootstrap }}"
+          install_browser_fixture_asset "${{ steps.bottle_candidate.outputs.portable_ruby }}"
           install_browser_fixture_asset "${{ steps.bottle_candidate.outputs.bootstrap_env }}"
           echo "fixture=$fixture" >> "$GITHUB_OUTPUT"
 
@@ -1032,6 +1037,8 @@ jobs:
           if [ "$SHELL_ACTIVATION_MODE" = bottles ]; then
             cmp "${{ steps.bottle_candidate.outputs.bootstrap }}" \
               dist/homebrew-bootstrap.zip
+            cmp "${{ steps.bottle_candidate.outputs.portable_ruby }}" \
+              dist/homebrew-portable-ruby.zip
           fi
 
       - name: Boot the exact installed bytes in Node
@@ -1053,6 +1060,7 @@ jobs:
                 --migration-lock homebrew/main-shell-migration-lock.json
                 --homebrew-bootstrap-spec homebrew/main-shell-brew-package-tree.json
                 --homebrew-bootstrap-archive "${{ steps.bottle_candidate.outputs.bootstrap }}"
+                --homebrew-portable-ruby-archive "${{ steps.bottle_candidate.outputs.portable_ruby }}"
                 --homebrew-bootstrap-env "${{ steps.bottle_candidate.outputs.bootstrap_env }}"
                 --homebrew-bootstrap-state deferred
                 --homebrew-runtime-support homebrew/main-shell-homebrew-runtime-support.json
@@ -1091,6 +1099,7 @@ jobs:
               --image "${{ steps.bottle_candidate.outputs.image }}" \
               --homebrew-bootstrap-spec homebrew/main-shell-brew-package-tree.json \
               --homebrew-bootstrap-archive "${{ steps.bottle_candidate.outputs.bootstrap }}" \
+              --homebrew-portable-ruby-archive "${{ steps.bottle_candidate.outputs.portable_ruby }}" \
               --homebrew-bootstrap-env "${{ steps.bottle_candidate.outputs.bootstrap_env }}" \
               --transport-mode closed \
               --bottle-mirror-plan "${{ steps.mirror.outputs.plan }}" \
@@ -1220,6 +1229,7 @@ jobs:
             ${{ steps.source_candidate.outputs.manifest }}
             ${{ steps.bottle_candidate.outputs.report }}
             ${{ steps.bottle_candidate.outputs.bootstrap }}
+            ${{ steps.bottle_candidate.outputs.portable_ruby }}
             ${{ steps.bottle_candidate.outputs.bootstrap_env }}
             ${{ steps.bottle_candidate.outputs.bootstrap_bottle_report }}
             ${{ runner.temp }}/homebrew-main-shell-bottles

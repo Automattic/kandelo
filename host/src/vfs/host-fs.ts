@@ -152,6 +152,11 @@ export class HostFileSystem implements FileSystemBackend {
    */
   private safePath(relative: string, followFinal = true): string {
     const hadTrailingSlash = relative.length > 1 && /\/+$/.test(relative);
+    const fastPath = this.tryUnchangedNativePath(relative, followFinal);
+    if (fastPath !== null) {
+      return this.withTrailingSlash(fastPath, hadTrailingSlash);
+    }
+
     let current = this.rootPath;
     let pending = this.pathParts(relative);
     let symlinkDepth = 0;
@@ -211,19 +216,78 @@ export class HostFileSystem implements FileSystemBackend {
       }
     }
 
+    current = this.withTrailingSlash(current, hadTrailingSlash);
+    this.assertWithinRoot(current);
+    return current;
+  }
+
+  /**
+   * Resolve the common symlink-free case with one native canonicalization.
+   *
+   * Accepting any path merely because realpath leaves it inside rootPath is
+   * not sufficient: an absolute symlink contains a guest path, while the host
+   * realpath implementation interprets it in the host namespace. Requiring
+   * the canonical path to equal the lexical path proves that no symlink
+   * changed the lookup. Ambiguous paths fall back to the component resolver,
+   * which remains the source of truth for guest symlinks and POSIX `..`
+   * ordering. Nothing is cached, so externally replaced directories are
+   * revalidated on every operation just as they are on the slow path.
+   */
+  private tryUnchangedNativePath(
+    relative: string,
+    followFinal: boolean,
+  ): string | null {
+    const parts = this.pathParts(relative);
+    if (parts.includes("..")) return null;
+
+    const candidate = nodePath.join(this.rootPath, ...parts);
+    this.assertWithinRoot(candidate);
+    if (followFinal) {
+      try {
+        return fs.realpathSync(candidate) === candidate ? candidate : null;
+      } catch (error: any) {
+        if (error?.code !== "ENOENT" || parts.length === 0) return null;
+
+        // realpath cannot distinguish a missing final name from a dangling
+        // final symlink. Validate the parent first, then require lstat to prove
+        // that the final directory entry itself is absent.
+        const parent = nodePath.dirname(candidate);
+        try {
+          if (fs.realpathSync(parent) !== parent) return null;
+        } catch {
+          return null;
+        }
+        try {
+          fs.lstatSync(candidate);
+          return null;
+        } catch (missingError: any) {
+          return missingError?.code === "ENOENT" ? candidate : null;
+        }
+      }
+    }
+
+    if (parts.length === 0) return this.rootPath;
+    const parent = nodePath.dirname(candidate);
+    try {
+      return fs.realpathSync(parent) === parent ? candidate : null;
+    } catch {
+      return null;
+    }
+  }
+
+  private withTrailingSlash(path: string, hadTrailingSlash: boolean): string {
     if (
       hadTrailingSlash &&
-      current !== this.rootPath &&
-      !current.endsWith(nodePath.sep)
+      path !== this.rootPath &&
+      !path.endsWith(nodePath.sep)
     ) {
       // Keep a final separator for native fs calls. POSIX requires a
       // trailing slash to resolve the preceding component as a directory; the
       // native call then returns ENOTDIR for regular files while still
       // permitting operations such as mkdir("new-dir/").
-      current += nodePath.sep;
+      return `${path}${nodePath.sep}`;
     }
-    this.assertWithinRoot(current);
-    return current;
+    return path;
   }
 
   private normalizeGuestMountPoint(mountPoint: string): string {

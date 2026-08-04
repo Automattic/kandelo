@@ -276,7 +276,9 @@ while [[ "$#" -gt 0 ]]; do
       raw_threads_or_dynamic=1
       filtered+=("$arg")
       ;;
-    -lpthread|-rdynamic)
+    # The SDK places libc after its executable glue. Shared modules import the
+    # same process-wide libc state instead of embedding a second copy.
+    -lc|-lpthread|-rdynamic)
       raw_threads_or_dynamic=1
       ;;
     -fPIE|-pie|-lrt|-lresolv|-lm|-lcrypt|-lutil|-Wl,-Bsymbolic)
@@ -679,9 +681,31 @@ if (( lld_major >= 22 )); then
   # stack-after-data layout; LLD 21 does not accept this negative option.
   exe_link_flags+=(-Wl,--no-stack-first)
 fi
+libc_prefix_inputs=()
+libc_inputs=("${SYSROOT}/lib/libc.a")
+if [[ "$link_dl" -eq 1 ]]; then
+  dynamic_libc="${SYSROOT}/lib/libc-dynamic.o"
+  dynamic_libc_anchor="${SYSROOT}/lib/libc-dynamic-anchor.o"
+  [[ -f "$dynamic_libc" ]] || die "missing $dynamic_libc; rebuild the Kandelo sysroot"
+  [[ -f "$dynamic_libc_anchor" ]] || \
+    die "missing $dynamic_libc_anchor; rebuild the Kandelo sysroot"
+  # WHY: place the anchor's undefined relocations before caller archives so
+  # intentional executable interpositions win. Keep the fallback dynamic
+  # libc after caller inputs so the archive resolver selects one definition.
+  exe_link_flags+=(
+    -Wl,--export-all
+    -Wl,--undefined=__kandelo_dynamic_libc_functions
+    -Wl,--undefined=__kandelo_dynamic_libc_data
+  )
+  libc_prefix_inputs=("$dynamic_libc_anchor")
+  # The resolved object contains one coherent libc selected by the ordinary
+  # archive resolver, with weak definitions for executable interposition.
+  libc_inputs=("$dynamic_libc")
+fi
 append_ld_flags "${exe_link_flags[@]}"
 "$WASM_LD" -m wasm32 -L"${SYSROOT}/lib" \
-  "${object_inputs[@]}" "${compiled_objects[@]}" "${glue_inputs[@]}" \
-  "${SYSROOT}/lib/crt1.o" "${user_link_args[@]}" "${stdlib_inputs[@]}" "${SYSROOT}/lib/libc.a" \
+  "${libc_prefix_inputs[@]}" "${object_inputs[@]}" "${compiled_objects[@]}" \
+  "${glue_inputs[@]}" \
+  "${SYSROOT}/lib/crt1.o" "${user_link_args[@]}" "${stdlib_inputs[@]}" "${libc_inputs[@]}" \
   "${ld_flags[@]}" -o "$output"
 exit $?

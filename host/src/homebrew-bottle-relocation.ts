@@ -6,23 +6,20 @@
  * archive has been verified and decoded.
  */
 
-import { KANDELO_HOMEBREW_GUEST_LAYOUT } from "./homebrew-guest-layout";
-
 const MAX_BOTTLE_CHANGED_FILES = 100_000;
 const MAX_BOTTLE_PATH_BYTES = 4096;
-const HOMEBREW_PREFIX = KANDELO_HOMEBREW_GUEST_LAYOUT.prefix;
-const HOMEBREW_REPLACEMENTS = [
-  ["@@HOMEBREW_PREFIX@@", HOMEBREW_PREFIX],
-  ["@@HOMEBREW_CELLAR@@", `${HOMEBREW_PREFIX}/Cellar`],
-  ["@@HOMEBREW_REPOSITORY@@", HOMEBREW_PREFIX],
-  ["@@HOMEBREW_LIBRARY@@", `${HOMEBREW_PREFIX}/Library`],
-  ["@@HOMEBREW_PERL@@", `${HOMEBREW_PREFIX}/opt/perl/bin/perl`],
+const HOMEBREW_PLACEHOLDERS = [
+  "@@HOMEBREW_PREFIX@@",
+  "@@HOMEBREW_CELLAR@@",
+  "@@HOMEBREW_REPOSITORY@@",
+  "@@HOMEBREW_LIBRARY@@",
+  "@@HOMEBREW_PERL@@",
 ] as const;
 const HOMEBREW_JAVA_PLACEHOLDER = "@@HOMEBREW_JAVA@@";
 const HOMEBREW_OPENJDK_NAME_RE = /^openjdk(?:@\d+(?:\.\d+)*)?/;
 const TEXT_ENCODER = new TextEncoder();
 const PLACEHOLDER_BYTES = [
-  ...HOMEBREW_REPLACEMENTS.map(([placeholder]) => placeholder),
+  ...HOMEBREW_PLACEHOLDERS,
   HOMEBREW_JAVA_PLACEHOLDER,
 ].map((placeholder) => ({
   placeholder,
@@ -89,9 +86,21 @@ export function relocateHomebrewBottleFile(
   bytes: Uint8Array,
   receipt: HomebrewInstallReceiptRelocation,
   path: string,
+  prefix: string,
 ): Uint8Array {
+  validateHomebrewPrefix(prefix);
+  // WHY: the prefix belongs to the authenticated package/tree projection.
+  // Deriving replacements here keeps already-published compatibility images
+  // usable without weakening the canonical prefix selected by new products.
+  const replacements = [
+    ["@@HOMEBREW_PREFIX@@", prefix],
+    ["@@HOMEBREW_CELLAR@@", `${prefix}/Cellar`],
+    ["@@HOMEBREW_REPOSITORY@@", prefix],
+    ["@@HOMEBREW_LIBRARY@@", `${prefix}/Library`],
+    ["@@HOMEBREW_PERL@@", `${prefix}/opt/perl/bin/perl`],
+  ] as const;
   let relocated = bytes;
-  for (const [placeholder, replacement] of HOMEBREW_REPLACEMENTS) {
+  for (const [placeholder, replacement] of replacements) {
     relocated = replaceBytes(
       relocated,
       TEXT_ENCODER.encode(placeholder),
@@ -100,7 +109,7 @@ export function relocateHomebrewBottleFile(
   }
   const javaPlaceholder = TEXT_ENCODER.encode(HOMEBREW_JAVA_PLACEHOLDER);
   if (containsBytes(relocated, javaPlaceholder)) {
-    const javaHome = homebrewJavaHome(receipt.runtimeDependencies);
+    const javaHome = homebrewJavaHome(receipt.runtimeDependencies, prefix);
     if (javaHome === undefined) {
       throw new Error(
         `Homebrew changed file ${path} uses ${HOMEBREW_JAVA_PLACEHOLDER} ` +
@@ -118,7 +127,7 @@ export function relocateHomebrewBottleFile(
   return relocated;
 }
 
-function homebrewJavaHome(value: unknown): string | undefined {
+function homebrewJavaHome(value: unknown, prefix: string): string | undefined {
   if (!Array.isArray(value)) return undefined;
   const names: string[] = [];
   for (const dependency of value) {
@@ -140,8 +149,22 @@ function homebrewJavaHome(value: unknown): string | undefined {
   }
   const unique = [...new Set(names)];
   return unique.length === 1
-    ? `${HOMEBREW_PREFIX}/opt/${unique[0]}/libexec`
+    ? `${prefix}/opt/${unique[0]}/libexec`
     : undefined;
+}
+
+function validateHomebrewPrefix(prefix: string): void {
+  if (
+    typeof prefix !== "string" || prefix === "/" || !prefix.startsWith("/") ||
+    prefix.endsWith("/") || prefix.includes("\\") || prefix.includes("\0") ||
+    hasLoneUnicodeSurrogate(prefix) ||
+    TEXT_ENCODER.encode(prefix).byteLength > MAX_BOTTLE_PATH_BYTES ||
+    prefix.slice(1).split("/").some((part) =>
+      part === "" || part === "." || part === ".."
+    )
+  ) {
+    throw new Error(`Homebrew relocation prefix is not canonical: ${prefix}`);
+  }
 }
 
 function validateSafeRelativePath(value: string, label: string): void {

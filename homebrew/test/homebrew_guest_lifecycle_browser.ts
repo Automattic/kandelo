@@ -105,6 +105,8 @@ export async function runHomebrewGuestLifecycleInBrowser(options: {
       bootstrapSpecBytes: loaded.bootstrapSpecBytes,
       bootstrapArchiveBytes: loaded.bootstrapArchiveBytes,
       bootstrapArchiveSha256: fixture.bootstrap.archive.sha256,
+      portableRubyArchiveBytes: loaded.portableRubyArchiveBytes,
+      portableRubyArchiveSha256: fixture.bootstrap.portableRuby.sha256,
       bootstrapEnvironmentBytes: loaded.bootstrapEnvironmentBytes,
       coreRevision: fixture.revisions.coreRevision,
       transportMode: fixture.transportMode,
@@ -115,6 +117,8 @@ export async function runHomebrewGuestLifecycleInBrowser(options: {
       ...(publicTransport
         ? {
             expectedBootstrapTransportUrl: fixture.bootstrap.archive.url,
+            expectedPortableRubyTransportUrl:
+              fixture.bootstrap.portableRuby.url,
           }
         : {
             closedBottleAssets: loaded.closedBottleAssets!,

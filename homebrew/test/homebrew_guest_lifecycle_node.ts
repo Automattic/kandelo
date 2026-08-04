@@ -8,6 +8,8 @@ import { pathToFileURL } from "node:url";
 import { NodeKernelHost } from "../../host/src/node-kernel-host";
 import type { LazyDownloadEvent } from "../../host/src/vfs/memory-fs";
 import { assertHomebrewBottleMirrorPlan } from "../../host/src/homebrew-vfs-composer";
+import { deriveHomebrewPortableRubyTree } from
+  "../../host/src/homebrew-portable-ruby";
 import {
   assertPackageDeferredZipTreeState,
   derivePackageDeferredZipTree,
@@ -51,6 +53,7 @@ interface Options extends HomebrewGuestLifecycleRevisions {
   imagePath: string;
   bootstrapSpecPath: string;
   bootstrapArchivePath: string;
+  portableRubyArchivePath: string;
   bootstrapEnvironmentPath: string;
   transportMode: "closed" | "public";
   bottleMirrorPlanPath?: string;
@@ -166,6 +169,10 @@ async function loadRootfsRuntimeInputs(
     options.bootstrapArchivePath,
     "Homebrew bootstrap archive",
   );
+  const portableRubyArchiveBytes = readRegularFile(
+    options.portableRubyArchivePath,
+    "Homebrew portable Ruby archive",
+  );
   const bootstrapEnvironmentBytes = readRegularFile(
     options.bootstrapEnvironmentPath,
     "Homebrew bootstrap environment",
@@ -181,23 +188,39 @@ async function loadRootfsRuntimeInputs(
     parseJson(bootstrapSpecBytes, options.bootstrapSpecPath),
     bootstrapArchiveBytes,
   );
+  const portableRubyTree = deriveHomebrewPortableRubyTree(
+    bootstrapTree,
+    bootstrapArchiveBytes,
+    portableRubyArchiveBytes,
+  );
   const bootstrapArchiveSha256 = createHash("sha256")
     .update(bootstrapArchiveBytes)
+    .digest("hex");
+  const portableRubyArchiveSha256 = createHash("sha256")
+    .update(portableRubyArchiveBytes)
     .digest("hex");
   const lazyUrlBase = options.transportMode === "closed"
     ? "https://closed.kandelo.invalid/homebrew-guest-lifecycle/"
     : pathToFileURL(`${dirname(options.bootstrapArchivePath)}/`).toString();
   return await deriveHomebrewGuestLifecycleRuntimeInputs({
     imageBytes,
-    validateImageFileSystem: (imageFileSystem) =>
+    validateImageFileSystem: (imageFileSystem) => {
       assertPackageDeferredZipTreeState(
         imageFileSystem,
         bootstrapTree,
         "deferred",
-      ),
+      );
+      assertPackageDeferredZipTreeState(
+        imageFileSystem,
+        portableRubyTree,
+        "deferred",
+      );
+    },
     bootstrapSpecBytes,
     bootstrapArchiveBytes,
     bootstrapArchiveSha256,
+    portableRubyArchiveBytes,
+    portableRubyArchiveSha256,
     bootstrapEnvironmentBytes,
     coreRevision: options.coreRevision,
     transportMode: options.transportMode,
@@ -207,6 +230,9 @@ async function loadRootfsRuntimeInputs(
       ? {
           expectedBootstrapTransportUrl: pathToFileURL(
             options.bootstrapArchivePath,
+          ).toString(),
+          expectedPortableRubyTransportUrl: pathToFileURL(
+            options.portableRubyArchivePath,
           ).toString(),
         }
       : {
@@ -539,6 +565,7 @@ function parseOptions(args: string[]): Options {
     "--image",
     "--homebrew-bootstrap-spec",
     "--homebrew-bootstrap-archive",
+    "--homebrew-portable-ruby-archive",
     "--homebrew-bootstrap-env",
     "--transport-mode",
     "--bottle-mirror-plan",
@@ -564,6 +591,9 @@ function parseOptions(args: string[]): Options {
   const image = values.get("--image");
   const bootstrapSpec = values.get("--homebrew-bootstrap-spec");
   const bootstrapArchive = values.get("--homebrew-bootstrap-archive");
+  const portableRubyArchive = values.get(
+    "--homebrew-portable-ruby-archive",
+  );
   const bootstrapEnvironment = values.get("--homebrew-bootstrap-env");
   const transportMode = values.get("--transport-mode");
   const bottleMirrorPlan = values.get("--bottle-mirror-plan");
@@ -578,6 +608,7 @@ function parseOptions(args: string[]): Options {
     !image ||
     !bootstrapSpec ||
     !bootstrapArchive ||
+    !portableRubyArchive ||
     !bootstrapEnvironment ||
     !coreRevision ||
     !canaryRevision ||
@@ -604,6 +635,7 @@ function parseOptions(args: string[]): Options {
     imagePath: resolve(image),
     bootstrapSpecPath: resolve(bootstrapSpec),
     bootstrapArchivePath: resolve(bootstrapArchive),
+    portableRubyArchivePath: resolve(portableRubyArchive),
     bootstrapEnvironmentPath: resolve(bootstrapEnvironment),
     transportMode,
     proofMode,
@@ -625,6 +657,7 @@ function usage(): never {
       "--image <main-shell.vfs.zst> " +
       "--homebrew-bootstrap-spec <main-shell-brew-package-tree.json> " +
       "--homebrew-bootstrap-archive <homebrew-bootstrap.zip> " +
+      "--homebrew-portable-ruby-archive <homebrew-portable-ruby.zip> " +
       "--homebrew-bootstrap-env <homebrew-brew.env> " +
       "--transport-mode <closed|public> " +
       "[--bottle-mirror-plan <kandelo-homebrew-bottle-mirror-plan.json>] " +

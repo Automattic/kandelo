@@ -238,6 +238,7 @@ mkdir -p "$INSTALL_DIR"
 audit_wasm_imports() {
     local wasm_path="$1"
     local label="$2"
+    local platform_control="${3:-}"
     local import_dump declared_import_count wasm_imports parsed_import_count
     local wasm_import required_import allowed candidate
     local unexpected_imports=()
@@ -258,6 +259,31 @@ audit_wasm_imports() {
         kernel.kernel_is_fork_child
         kernel.kernel_push_argv
     )
+
+    if [ -n "$platform_control" ]; then
+        # WHY: this audit owns unresolved references introduced by libcurl,
+        # not imports intentionally owned by Kandelo's executable SDK. Compare
+        # against a minimal -ldl executable built by the same toolchain so a
+        # new process-libc capability does not require duplicating the SDK's
+        # complete import surface in this package recipe.
+        while IFS= read -r candidate; do
+            [ -n "$candidate" ] || continue
+            case "$candidate" in
+                env.*|kernel.*) allowed_imports+=("$candidate") ;;
+                *)
+                    echo "ERROR: libcurl platform control has unsupported import module: $candidate" >&2
+                    exit 1
+                    ;;
+            esac
+        done < <(
+            wasm-objdump -x "$platform_control" |
+                awk '
+                    /^Import\[[0-9]+\]:$/ { inside = 1; next }
+                    inside && /^[[:alpha:]_][[:alnum:]_]*\[/ { exit }
+                    inside && / <- / { sub(/^.* <- /, ""); print }
+                '
+        )
+    fi
 
     import_dump="$(wasm-objdump -x "$wasm_path")"
     declared_import_count="$(
@@ -303,6 +329,12 @@ audit_wasm_imports() {
     fi
     echo "==> Validated $label import closure ($declared_import_count imports)"
 }
+
+PLATFORM_CONTROL_SOURCE="$WORK_DIR/kandelo-dlopen-control.c"
+PLATFORM_CONTROL_WASM="$WORK_DIR/kandelo-dlopen-control.wasm"
+printf '%s\n' 'int main(void) { return 0; }' > "$PLATFORM_CONTROL_SOURCE"
+"$CC" -O2 "$PLATFORM_CONTROL_SOURCE" -Wl,--no-gc-sections -ldl \
+    -o "$PLATFORM_CONTROL_WASM"
 
 if [ "$RESOLVER_MODE" = "1" ]; then
     case "$PACKAGE_NAME" in
@@ -426,7 +458,9 @@ EOF
                 "$OPENSSL_PREFIX/lib/libcrypto.a" \
                 -ldl \
                 -o "$SMOKE_WASM"
-            audit_wasm_imports "$SMOKE_WASM" "libcurl full-member smoke Wasm"
+            audit_wasm_imports \
+                "$SMOKE_WASM" "libcurl full-member smoke Wasm" \
+                "$PLATFORM_CONTROL_WASM"
 
             for forbidden in "$WORK_DIR" "$REPO_ROOT" "$ZLIB_PREFIX" "$OPENSSL_PREFIX" "$INSTALL_DIR"; do
                 if grep -aFq "$forbidden" "${output_files[@]}"; then
@@ -445,7 +479,9 @@ EOF
                 find "$INSTALL_DIR" -type f -print >&2
                 exit 1
             fi
-            audit_wasm_imports "$INSTALL_DIR/curl.wasm" "curl CLI Wasm"
+            audit_wasm_imports \
+                "$INSTALL_DIR/curl.wasm" "curl CLI Wasm" \
+                "$PLATFORM_CONTROL_WASM"
             for forbidden in "$WORK_DIR" "$REPO_ROOT" "$ZLIB_PREFIX" "$OPENSSL_PREFIX" "$INSTALL_DIR"; do
                 if grep -aFq "$forbidden" "$INSTALL_DIR/curl.wasm"; then
                     echo "ERROR: curl.wasm contains producer path: $forbidden" >&2

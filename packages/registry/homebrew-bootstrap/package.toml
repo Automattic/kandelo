@@ -3,7 +3,7 @@ name = "homebrew-bootstrap"
 version = "6.0.4-3-gd6c1be4"
 kernel_abi = 41
 arches = ["wasm32"]
-depends_on = []
+depends_on = ["ruby@4.0.5"]
 
 # The portable recipe identifies Homebrew's immutable upstream archive. The
 # Kandelo project build additionally consumes the same commit through a sealed
@@ -32,6 +32,15 @@ name = "homebrew-brew"
 wasm = "homebrew-brew.env"
 fork_instrumentation = "disabled"
 
+# Homebrew normally downloads this versioned tree through `vendor-install`.
+# Kandelo publishes the source-matched Ruby dependency in the same support
+# package so first-use activation can expose the stock upstream layout without
+# a network bootstrap or a system-Ruby compatibility path.
+[[outputs]]
+name = "homebrew-portable-ruby"
+wasm = "homebrew-portable-ruby.zip"
+fork_instrumentation = "disabled"
+
 [[host_tools]]
 name = "git"
 version_constraint = ">=2.30"
@@ -42,4 +51,16 @@ install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run thro
 name = "node"
 version_constraint = ">=20.0"
 probe = { args = ["--version"], version_regex = "v(\\d+\\.\\d+(?:\\.\\d+)?)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "unzip"
+version_constraint = ">=6.0"
+probe = { args = ["-v"], version_regex = "UnZip ([0-9]+\\.[0-9]+)" }
+install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }
+
+[[host_tools]]
+name = "zip"
+version_constraint = ">=3.0"
+probe = { args = ["-v"], version_regex = "Zip ([0-9]+\\.[0-9]+)" }
 install_hints = { darwin = "run through scripts/dev-shell.sh", linux = "run through scripts/dev-shell.sh" }

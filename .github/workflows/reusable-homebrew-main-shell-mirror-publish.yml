@@ -242,8 +242,9 @@ jobs:
               --require-sealed \
               --output-directory "$bootstrap_root"
           bootstrap="$bootstrap_root/homebrew-bootstrap.zip"
+          portable_ruby="$bootstrap_root/homebrew-portable-ruby.zip"
           bootstrap_env="$bootstrap_root/homebrew-brew.env"
-          for path in "$image" "$bootstrap" "$bootstrap_env"; do
+          for path in "$image" "$bootstrap" "$portable_ruby" "$bootstrap_env"; do
             test -f "$path"
             test ! -L "$path"
           done
@@ -254,6 +255,7 @@ jobs:
           {
             echo "image=$image"
             echo "bootstrap=$bootstrap"
+            echo "portable-ruby=$portable_ruby"
             echo "bootstrap-env=$bootstrap_env"
           } >>"$GITHUB_OUTPUT"
 
@@ -305,6 +307,7 @@ jobs:
         env:
           IMAGE: ${{ steps.shell.outputs.image }}
           BOOTSTRAP: ${{ steps.shell.outputs.bootstrap }}
+          PORTABLE_RUBY: ${{ steps.shell.outputs.portable-ruby }}
           BOOTSTRAP_ENV: ${{ steps.shell.outputs.bootstrap-env }}
           MIRROR: ${{ steps.mirror.outputs.root }}
           PUBLISH: ${{ steps.mirror.outputs.publish }}
@@ -321,6 +324,7 @@ jobs:
           mkdir "$handoff"
           cp "$IMAGE" "$handoff/main-shell.vfs.zst"
           cp "$BOOTSTRAP" "$handoff/homebrew-bootstrap.zip"
+          cp "$PORTABLE_RUBY" "$handoff/homebrew-portable-ruby.zip"
           cp "$BOOTSTRAP_ENV" "$handoff/homebrew-brew.env"
           cp "$PUBLISH" "$handoff/publish.json"
           cp -R "$MIRROR" "$handoff/mirror"
@@ -345,6 +349,8 @@ jobs:
             --argjson image_bytes "$(bytes "$handoff/main-shell.vfs.zst")" \
             --arg bootstrap_sha "$(digest "$handoff/homebrew-bootstrap.zip")" \
             --argjson bootstrap_bytes "$(bytes "$handoff/homebrew-bootstrap.zip")" \
+            --arg portable_ruby_sha "$(digest "$handoff/homebrew-portable-ruby.zip")" \
+            --argjson portable_ruby_bytes "$(bytes "$handoff/homebrew-portable-ruby.zip")" \
             --arg env_sha "$(digest "$handoff/homebrew-brew.env")" \
             --argjson env_bytes "$(bytes "$handoff/homebrew-brew.env")" \
             --arg publish_sha "$(digest "$handoff/publish.json")" \
@@ -366,6 +372,9 @@ jobs:
                 },
                 "homebrew-bootstrap.zip": {
                   sha256: $bootstrap_sha, bytes: $bootstrap_bytes
+                },
+                "homebrew-portable-ruby.zip": {
+                  sha256: $portable_ruby_sha, bytes: $portable_ruby_bytes
                 },
                 "homebrew-brew.env": {
                   sha256: $env_sha, bytes: $env_bytes
@@ -408,6 +417,7 @@ jobs:
         env:
           IMAGE: ${{ steps.shell.outputs.image }}
           BOOTSTRAP: ${{ steps.shell.outputs.bootstrap }}
+          PORTABLE_RUBY: ${{ steps.shell.outputs.portable-ruby }}
           BOOTSTRAP_ENV: ${{ steps.shell.outputs.bootstrap-env }}
           MIRROR_PLAN: ${{ steps.mirror.outputs.root }}/kandelo-homebrew-bottle-mirror-plan.json
           KANDELO_REF: ${{ inputs.kandelo-ref }}
@@ -431,6 +441,7 @@ jobs:
               --homebrew-bootstrap-spec \
                 homebrew/main-shell-brew-package-tree.json \
               --homebrew-bootstrap-archive "$BOOTSTRAP" \
+              --homebrew-portable-ruby-archive "$PORTABLE_RUBY" \
               --homebrew-bootstrap-env "$BOOTSTRAP_ENV" \
               --bottle-mirror-plan "$MIRROR_PLAN" \
               --kandelo-ref "$KANDELO_REF" \
@@ -627,7 +638,7 @@ jobs:
             .repository == "kandelo-dev/homebrew-tap-core" and
             .target_commitish == $tap and
             .immutable == true and
-            (.assets | length) == 4
+            (.assets | length) == 5
           ' "$lifecycle_receipt" >/dev/null
           {
             echo "mirror-receipt=$mirror_receipt"
@@ -789,6 +800,7 @@ jobs:
             main-shell.vfs.zst \
             main-shell-brew-package-tree.json \
             homebrew-bootstrap.zip \
+            homebrew-portable-ruby.zip \
             homebrew-brew.env
           do
             env -u GH_TOKEN -u GITHUB_TOKEN \
@@ -803,11 +815,14 @@ jobs:
             "$lifecycle/main-shell-brew-package-tree.json"
           cmp "$handoff/homebrew-bootstrap.zip" \
             "$lifecycle/homebrew-bootstrap.zip"
+          cmp "$handoff/homebrew-portable-ruby.zip" \
+            "$lifecycle/homebrew-portable-ruby.zip"
           cmp "$handoff/homebrew-brew.env" \
             "$lifecycle/homebrew-brew.env"
           {
             echo "image=$lifecycle/main-shell.vfs.zst"
             echo "bootstrap=$lifecycle/homebrew-bootstrap.zip"
+            echo "portable-ruby=$lifecycle/homebrew-portable-ruby.zip"
             echo "bootstrap-env=$lifecycle/homebrew-brew.env"
           } >>"$GITHUB_OUTPUT"
 
@@ -825,6 +840,7 @@ jobs:
         env:
           IMAGE: ${{ steps.public.outputs.image }}
           BOOTSTRAP: ${{ steps.public.outputs.bootstrap }}
+          PORTABLE_RUBY: ${{ steps.public.outputs.portable-ruby }}
           BOOTSTRAP_ENV: ${{ steps.public.outputs.bootstrap-env }}
           TAP_CATALOG_REF: ${{ inputs.tap-catalog-ref }}
           CANARY_REF: ${{ inputs.canary-ref }}
@@ -839,6 +855,7 @@ jobs:
         env:
           IMAGE: ${{ steps.public.outputs.image }}
           BOOTSTRAP: ${{ steps.public.outputs.bootstrap }}
+          PORTABLE_RUBY: ${{ steps.public.outputs.portable-ruby }}
           BOOTSTRAP_ENV: ${{ steps.public.outputs.bootstrap-env }}
           TAP_CATALOG_REF: ${{ inputs.tap-catalog-ref }}
           CANARY_REF: ${{ inputs.canary-ref }}
@@ -980,9 +997,11 @@ jobs:
           lifecycle="$RUNNER_TEMP/homebrew-guest-lifecycle-inputs-handoff"
           image="$(bash scripts/resolve-binary.sh programs/shell.vfs.zst)"
           bootstrap="$PWD/apps/browser-demos/public/homebrew-bootstrap.zip"
+          portable_ruby="$PWD/apps/browser-demos/public/homebrew-portable-ruby.zip"
           bootstrap_env="$lifecycle/homebrew-brew.env"
           cmp "$image" "$handoff/main-shell.vfs.zst"
           cmp "$bootstrap" "$handoff/homebrew-bootstrap.zip"
+          cmp "$portable_ruby" "$handoff/homebrew-portable-ruby.zip"
           cmp "$bootstrap_env" "$handoff/homebrew-brew.env"
           plan="$handoff/mirror/kandelo-homebrew-bottle-mirror-plan.json"
           plan_url="$(jq -er '.release_root + "/" + .manifest_asset' "$plan")"
@@ -994,6 +1013,7 @@ jobs:
             main-shell.vfs.zst \
             main-shell-brew-package-tree.json \
             homebrew-bootstrap.zip \
+            homebrew-portable-ruby.zip \
             homebrew-brew.env
           do
             env -u GH_TOKEN -u GITHUB_TOKEN \
@@ -1006,10 +1026,12 @@ jobs:
           cmp homebrew/main-shell-brew-package-tree.json \
             "$lifecycle/main-shell-brew-package-tree.json"
           cmp "$bootstrap" "$lifecycle/homebrew-bootstrap.zip"
+          cmp "$portable_ruby" "$lifecycle/homebrew-portable-ruby.zip"
           cmp "$bootstrap_env" "$lifecycle/homebrew-brew.env"
           {
             echo "image=$image"
             echo "bootstrap=$bootstrap"
+            echo "portable-ruby=$portable_ruby"
             echo "bootstrap-env=$bootstrap_env"
             echo "plan-url=$plan_url"
             echo "image-sha=$(sha256sum "$image" | awk '{print $1}')"
@@ -1027,12 +1049,17 @@ jobs:
         run: |
           set -euo pipefail
           browser_bootstrap=public/homebrew-bootstrap.zip
+          browser_portable_ruby=public/homebrew-portable-ruby.zip
           test -f "$browser_bootstrap"
           test ! -L "$browser_bootstrap"
+          test -f "$browser_portable_ruby"
+          test ! -L "$browser_portable_ruby"
           # WHY: prepare-browser owns this fixed same-origin asset. The build
           # must consume those admitted bytes instead of silently replacing
           # them from a second package source.
           cmp "${{ steps.public.outputs.bootstrap }}" "$browser_bootstrap"
+          cmp "${{ steps.public.outputs.portable-ruby }}" \
+            "$browser_portable_ruby"
           # WHY: dev-shell intentionally drops ambient variables. Forward the
           # selector or Vite builds its default pages and omits the proof page.
           bash ../../scripts/dev-shell.sh env \
@@ -1043,6 +1070,8 @@ jobs:
           test -f dist/pages/homebrew-vfs-test/index.html
           cmp "${{ steps.public.outputs.bootstrap }}" \
             dist/homebrew-bootstrap.zip
+          cmp "${{ steps.public.outputs.portable-ruby }}" \
+            dist/homebrew-portable-ruby.zip
           bash ../../scripts/verify-browser-shell-vfs-asset.sh \
             dist "${{ steps.public.outputs.image }}"
 
@@ -1065,6 +1094,8 @@ jobs:
                 "$lifecycle/main-shell-brew-package-tree.json" \
               --homebrew-bootstrap-archive \
                 "$lifecycle/homebrew-bootstrap.zip" \
+              --homebrew-portable-ruby-archive \
+                "$lifecycle/homebrew-portable-ruby.zip" \
               --homebrew-bootstrap-env "$lifecycle/homebrew-brew.env" \
               --bottle-mirror \
                 "$RUNNER_TEMP/main-shell-mirror-handoff/mirror" \

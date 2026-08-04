@@ -57,9 +57,19 @@ export LLVM_BIN
 CC="$LLVM_BIN/clang"
 AR="$LLVM_BIN/llvm-ar"
 RANLIB="$LLVM_BIN/llvm-ranlib"
+NM="$LLVM_BIN/llvm-nm"
+READOBJ="$LLVM_BIN/llvm-readobj"
+LD="$LLVM_BIN/wasm-ld"
+LD_ARCH_ARGS=()
+if [ "$ARCH" = "wasm64posix" ]; then
+    # WHY: unlike clang, wasm-ld does not infer the memory model from a
+    # relocatable input. Without this explicit emulation it rejects the
+    # wasm64 process-libc objects after musl has otherwise built successfully.
+    LD_ARCH_ARGS=(-mwasm64)
+fi
 
 # Verify toolchain exists
-for tool in "$CC" "$AR" "$RANLIB"; do
+for tool in "$CC" "$AR" "$RANLIB" "$NM" "$READOBJ" "$LD"; do
     if [ ! -x "$tool" ]; then
         echo "Error: $tool not found. Run scripts/dev-shell.sh or set LLVM_BIN/LLVM_PREFIX." >&2
         exit 1
@@ -298,13 +308,125 @@ echo "==> Building sigsetjmp helpers..."
 "$AR" rcs "$SYSROOT/lib/libc.a" "$SYSROOT/lib/sigsetjmp_helpers.o"
 
 # ---------------------------------------------------------------
-# 9. Install override headers
+# 9. Build the resolved process-libc fallback and retention anchor used by dlopen
+# ---------------------------------------------------------------
+echo "==> Building dynamic process-libc object and retention anchor..."
+DYNAMIC_LIBC="$SYSROOT/lib/libc-dynamic.o"
+DYNAMIC_LIBC_ARCHIVE="$MUSL_DIR/obj/libc-dynamic-strong.a"
+DYNAMIC_LIBC_RESOLVED_STRONG="$MUSL_DIR/obj/libc-dynamic-resolved-strong.o"
+DYNAMIC_LIBC_SYMBOLS="$MUSL_DIR/obj/dynamic-libc-symbols.txt"
+DYNAMIC_LIBC_ANCHOR_SOURCE="$MUSL_DIR/obj/dynamic-libc-anchor.c"
+DYNAMIC_LIBC_ANCHOR="$SYSROOT/lib/libc-dynamic-anchor.o"
+
+# A dlopen-capable Wasm executable must expose libc routines that only a
+# future side module references. Resolve those routines from the strong musl
+# archive first so mutually exclusive implementations (notably allocators)
+# remain coherent, then weaken the resolved object so executable definitions
+# interpose exactly as they do over a native shared libc.
+cp "$SYSROOT/lib/libc.a" "$DYNAMIC_LIBC_ARCHIVE"
+DYNAMIC_LIBC_EXCLUDED_MEMBERS=(
+    dladdr.o
+    dlclose.o
+    dlerror.o
+    dlopen.o
+    dlsym.o
+    _Fork.o
+    fork.o
+    vfork.o
+    __syscall_cp.o
+    sigsetjmp_helpers.o
+)
+for member in "${DYNAMIC_LIBC_EXCLUDED_MEMBERS[@]}"; do
+    if ! "$AR" t "$DYNAMIC_LIBC_ARCHIVE" | grep -Fx "$member" >/dev/null; then
+        echo "ERROR: expected $member in $DYNAMIC_LIBC_ARCHIVE" >&2
+        exit 1
+    fi
+done
+"$AR" d "$DYNAMIC_LIBC_ARCHIVE" "${DYNAMIC_LIBC_EXCLUDED_MEMBERS[@]}"
+"$RANLIB" "$DYNAMIC_LIBC_ARCHIVE"
+
+"$READOBJ" --symbols "$DYNAMIC_LIBC_ARCHIVE" 2>/dev/null |
+    awk '
+function emit() {
+    if (name ~ /^[A-Za-z_][A-Za-z0-9_]*$/ && !undefined && !local &&
+        (type == "FUNCTION" || type == "DATA")) print type, name
+}
+/^  Symbol \{$/ {
+    in_symbol=1; name=""; type=""; undefined=0; local=0; next
+}
+in_symbol && /^    Name: / { name=$2; next }
+in_symbol && /^    Type: / { type=$2; next }
+in_symbol && /UNDEFINED/ { undefined=1; next }
+in_symbol && /BINDING_LOCAL/ { local=1; next }
+in_symbol && /^  \}$/ { emit(); in_symbol=0 }
+' | LC_ALL=C sort -u > "$DYNAMIC_LIBC_SYMBOLS"
+
+awk '
+BEGIN {
+    print "typedef void (*kandelo_dynamic_function)(void);"
+}
+$1 == "FUNCTION" {
+    functions[++function_count]=$2
+    print "extern void " $2 "(void);"
+}
+$1 == "DATA" {
+    data[++data_count]=$2
+    print "extern unsigned char " $2 ";"
+}
+END {
+    print "__attribute__((used, visibility(\"hidden\")))"
+    print "kandelo_dynamic_function const __kandelo_dynamic_libc_functions[] = {"
+    for (i=1; i<=function_count; i++) print "    " functions[i] ","
+    print "};"
+    print "__attribute__((used, visibility(\"hidden\")))"
+    print "void const *const __kandelo_dynamic_libc_data[] = {"
+    for (i=1; i<=data_count; i++) print "    &" data[i] ","
+    print "};"
+}
+' "$DYNAMIC_LIBC_SYMBOLS" > "$DYNAMIC_LIBC_ANCHOR_SOURCE"
+"$CC" --target="$TARGET" -O2 -fPIC -fno-builtin -w \
+    -matomics -mbulk-memory -mexception-handling \
+    -c "$DYNAMIC_LIBC_ANCHOR_SOURCE" -o "$DYNAMIC_LIBC_ANCHOR"
+
+if ! "$NM" --undefined-only --format=posix "$DYNAMIC_LIBC_ANCHOR" \
+    2>/dev/null | grep -E '^ntohs U ' >/dev/null; then
+    echo "ERROR: $DYNAMIC_LIBC_ANCHOR does not retain ntohs" >&2
+    exit 1
+fi
+
+# The anchor's strong undefined relocations make the ordinary archive
+# resolver choose one definition for every process-libc symbol. A native
+# shared libc then acts as a fallback to strong executable definitions.
+"$LD" "${LD_ARCH_ARGS[@]}" -r --allow-undefined "$DYNAMIC_LIBC_ANCHOR" \
+    "$DYNAMIC_LIBC_ARCHIVE" -o "$DYNAMIC_LIBC_RESOLVED_STRONG"
+
+# wasm-ld supports weak Wasm definitions, but llvm-objcopy does not implement
+# Wasm symbol weakening. The repository transformer changes only the binding
+# bits in the already-resolved object; code, data, and relocations stay exact.
+HOST_TARGET="$(rustc -vV | awk '/^host:/ { print $2 }')"
+if [ -z "$HOST_TARGET" ]; then
+    echo "ERROR: rustc -vV did not report a host target" >&2
+    exit 1
+fi
+(
+    cd "$REPO_ROOT"
+    cargo run --release -p xtask --target "$HOST_TARGET" --quiet -- \
+        weaken-wasm-object "$DYNAMIC_LIBC_RESOLVED_STRONG" "$DYNAMIC_LIBC"
+)
+if ! "$NM" --defined-only --format=posix "$DYNAMIC_LIBC" 2>/dev/null |
+    grep -E '^malloc W ' >/dev/null; then
+    echo "ERROR: $DYNAMIC_LIBC does not provide weak malloc" >&2
+    exit 1
+fi
+
+# ---------------------------------------------------------------
+# 10. Install override headers
 # ---------------------------------------------------------------
 echo "==> Installing override headers..."
 bash "$REPO_ROOT/scripts/install-overlay-headers.sh" "$SYSROOT"
 
 # ---------------------------------------------------------------
-# 10. Build platform graphics/DRI stub libraries
+# 11. Build platform graphics/DRI stub libraries
 # ---------------------------------------------------------------
 if [ "$ARCH" = "wasm32posix" ]; then
     echo "==> Building platform graphics stubs..."
@@ -316,4 +438,8 @@ echo ""
 echo "==> musl build complete!"
 echo "    Sysroot: $SYSROOT"
 echo "    libc.a:  $SYSROOT/lib/libc.a"
+echo "    dynamic: $DYNAMIC_LIBC"
+echo "    anchor:  $DYNAMIC_LIBC_ANCHOR"
 ls -la "$SYSROOT/lib/libc.a" 2>/dev/null || echo "    WARNING: libc.a not found!"
+ls -la "$DYNAMIC_LIBC" 2>/dev/null || echo "    WARNING: libc-dynamic.o not found!"
+ls -la "$DYNAMIC_LIBC_ANCHOR" 2>/dev/null || echo "    WARNING: libc-dynamic-anchor.o not found!"

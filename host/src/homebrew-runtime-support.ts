@@ -79,6 +79,7 @@ export function parseHomebrewRuntimeSupportContract(
   const additionalFormulaOrder = formulaArray(
     root.additional_formula_order,
     "Homebrew runtime-support additional Formula order",
+    true,
   );
   if (
     JSON.stringify(additionalFormulaOrder) !==
@@ -269,9 +270,10 @@ export function assertHomebrewRuntimeSupportPlan(
 /**
  * Produce only the support trees absent from the base shell contract.
  *
- * The current reviewed contract adds 18 trees, but deriving the boundary from
- * the contract keeps a future catalog update from silently disagreeing with
- * the runtime implementation.
+ * The current reviewed contract obtains Ruby from Homebrew's portable runtime
+ * output and therefore adds no Formula trees. Deriving the boundary from the
+ * contract keeps a future catalog update from silently disagreeing with the
+ * runtime implementation.
  */
 export function projectHomebrewRuntimeSupportDelta(
   contract: HomebrewRuntimeSupportContract,
@@ -298,9 +300,15 @@ function record(value: unknown, label: string): Record<string, any> {
   return value as Record<string, any>;
 }
 
-function formulaArray(value: unknown, label: string): string[] {
-  if (!Array.isArray(value) || value.length === 0) {
-    throw new Error(`${label} must be a nonempty array`);
+function formulaArray(
+  value: unknown,
+  label: string,
+  allowEmpty = false,
+): string[] {
+  if (!Array.isArray(value) || (!allowEmpty && value.length === 0)) {
+    throw new Error(
+      `${label} must be ${allowEmpty ? "an array" : "a nonempty array"}`,
+    );
   }
   const result = value.map((entry, index) =>
     formula(entry, `${label} ${index}`),

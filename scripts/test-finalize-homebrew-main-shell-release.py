@@ -281,7 +281,10 @@ def create_closed_selection(
         entry["formula"]["name"]: entry["formula"]
         for entry in migration["packages"]
     }
-    dependencies = {**DEPENDENCIES, "ruby": ["zlib", "libyaml"]}
+    dependencies = {
+        **DEPENDENCIES,
+        "git": [*DEPENDENCIES["git"], "bzip2"],
+    }
     names = {
         identity.split("/")[-1]
         for identity in migration["formula_closure"]
@@ -289,7 +292,7 @@ def create_closed_selection(
         identity.split("/")[-1]
         for identity in support["availability"]["reusable_public_abi42"]
     }
-    names.update({"homebrew-bootstrap", "libyaml"})
+    names.add("homebrew-bootstrap")
     packages = {
         name: package_record(name, formulae.get(name), dependencies)
         for name in names
@@ -423,16 +426,13 @@ def set_shell_revision(source: pathlib.Path, literal: str) -> None:
     path.write_text(updated)
 
 
-def add_future_libyaml_shape(source: pathlib.Path) -> None:
+def add_future_bzip2_shape(source: pathlib.Path) -> None:
     support_path = source / "homebrew/main-shell-homebrew-runtime-support.json"
     support = json.loads(support_path.read_text())
-    libyaml = f"{TAP_NAME}/libyaml"
-    ruby = f"{TAP_NAME}/ruby"
+    bzip2 = f"{TAP_NAME}/bzip2"
+    git = f"{TAP_NAME}/git"
     formula_order = support["formula_order"]
-    formula_order.insert(formula_order.index(ruby), libyaml)
-    support["additional_formula_order"].insert(0, libyaml)
-    reusable = support["availability"]["reusable_public_abi42"]
-    reusable.insert(reusable.index(ruby), libyaml)
+    formula_order.insert(formula_order.index(git), bzip2)
     write_json(support_path, support)
 
 
@@ -515,10 +515,10 @@ with tempfile.TemporaryDirectory(prefix="kandelo-shell-finalizer-test.") as temp
     assert applied_json["base_formulae"] == 38
     assert applied_json["embedded"] == 3
     assert applied_json["lazy"] == 35
-    assert applied_json["runtime_formulae"] == 21
-    assert applied_json["audited_formulae"] == 25
-    assert applied_json["runtime_extra"] == 1
-    assert applied_json["total"] == 39
+    assert applied_json["runtime_formulae"] == 20
+    assert applied_json["audited_formulae"] == 24
+    assert applied_json["runtime_extra"] == 0
+    assert applied_json["total"] == 38
     head = subprocess.run(
         ["git", "-C", str(tap), "rev-parse", "HEAD"],
         check=True,
@@ -589,8 +589,8 @@ with tempfile.TemporaryDirectory(prefix="kandelo-shell-finalizer-test.") as temp
     assert_product_state(source, "awaiting-selection")
     checker = run_checker(source, tap)
     assert (
-        "38 base Formulae, 21 runtime Formulae, and 25 audited Formulae; "
-        "the runtime adds 1 beyond the base, yielding 39 total Formulae"
+        "38 base Formulae, 20 runtime Formulae, and 24 audited Formulae; "
+        "the runtime adds 0 beyond the base, yielding 38 total Formulae"
         in checker.stdout
     )
 
@@ -642,12 +642,14 @@ with tempfile.TemporaryDirectory(
 ) as temporary:
     root = pathlib.Path(temporary)
     source = copy_source(root)
-    add_future_libyaml_shape(source)
+    add_future_bzip2_shape(source)
     set_shell_revision(source, "23")
     tap = create_tap(
         root,
         source,
-        dependency_overrides={"ruby": ["zlib", "libyaml"]},
+        dependency_overrides={
+            "git": [*DEPENDENCIES["git"], "bzip2"],
+        },
     )
     applied = run(
         "--source-root", str(source), "--tap-root", str(tap), "--apply"
@@ -657,10 +659,10 @@ with tempfile.TemporaryDirectory(
     assert summary["base_formulae"] == 38
     assert summary["embedded"] == 3
     assert summary["lazy"] == 35
-    assert summary["runtime_formulae"] == 22
-    assert summary["audited_formulae"] == 26
-    assert summary["runtime_extra"] == 2
-    assert summary["total"] == 40
+    assert summary["runtime_formulae"] == 21
+    assert summary["audited_formulae"] == 24
+    assert summary["runtime_extra"] == 0
+    assert summary["total"] == 38
     assert re.search(
         r"^revision\s*=\s*23$",
         (source / "packages/registry/shell/build.toml").read_text(),
@@ -668,20 +670,19 @@ with tempfile.TemporaryDirectory(
     )
     checker = run_checker(source, tap)
     assert (
-        "38 base Formulae, 22 runtime Formulae, and 26 audited Formulae; "
-        "the runtime adds 2 beyond the base, yielding 40 total Formulae"
+        "38 base Formulae, 21 runtime Formulae, and 24 audited Formulae; "
+        "the runtime adds 0 beyond the base, yielding 38 total Formulae"
         in checker.stdout
     )
 
     support_path = source / "homebrew/main-shell-homebrew-runtime-support.json"
     baseline = json.loads(support_path.read_text())
-    libyaml = f"{TAP_NAME}/libyaml"
-    ruby = f"{TAP_NAME}/ruby"
+    bzip2 = f"{TAP_NAME}/bzip2"
+    git = f"{TAP_NAME}/git"
 
     missing_runtime = json.loads(json.dumps(baseline))
-    missing_runtime["formula_order"].remove(libyaml)
-    missing_runtime["additional_formula_order"].remove(libyaml)
-    missing_runtime["availability"]["reusable_public_abi42"].remove(libyaml)
+    missing_runtime["formula_order"].remove(bzip2)
+    missing_runtime["availability"]["reusable_public_abi42"].remove(bzip2)
     write_json(support_path, missing_runtime)
     assert_failure(
         run_checker(source, tap, success=False),
@@ -691,18 +692,18 @@ with tempfile.TemporaryDirectory(
 
     missing_availability = json.loads(json.dumps(baseline))
     missing_availability["availability"]["reusable_public_abi42"].remove(
-        libyaml
+        bzip2
     )
     write_json(support_path, missing_availability)
     assert_failure(
         run_checker(source, tap, success=False),
         "Homebrew runtime-support activation includes Formulae without "
-        f"admitted public ABI-42 bottles: {libyaml}",
+        f"admitted public ABI-42 bottles: {bzip2}",
     )
 
-    missing_additional = json.loads(json.dumps(baseline))
-    missing_additional["additional_formula_order"].remove(libyaml)
-    write_json(support_path, missing_additional)
+    unexpected_additional = json.loads(json.dumps(baseline))
+    unexpected_additional["additional_formula_order"].append(bzip2)
+    write_json(support_path, unexpected_additional)
     assert_failure(
         run_checker(source, tap, success=False),
         "Homebrew runtime-support additional closure is not its exact "
@@ -710,49 +711,49 @@ with tempfile.TemporaryDirectory(
     )
 
     duplicate_runtime = json.loads(json.dumps(baseline))
-    duplicate_runtime["formula_order"].append(libyaml)
+    duplicate_runtime["formula_order"].append(bzip2)
     write_json(support_path, duplicate_runtime)
     assert_failure(
         run_checker(source, tap, success=False),
-        f"Homebrew runtime-support formula_order contains duplicate {libyaml}",
+        f"Homebrew runtime-support formula_order contains duplicate {bzip2}",
     )
 
     duplicate_additional = json.loads(json.dumps(baseline))
-    duplicate_additional["additional_formula_order"].append(libyaml)
+    duplicate_additional["additional_formula_order"].extend([bzip2, bzip2])
     write_json(support_path, duplicate_additional)
     assert_failure(
         run_checker(source, tap, success=False),
         "Homebrew runtime-support additional_formula_order contains "
-        f"duplicate {libyaml}",
+        f"duplicate {bzip2}",
     )
 
     duplicate_availability = json.loads(json.dumps(baseline))
     duplicate_availability["availability"]["reusable_public_abi42"].append(
-        libyaml
+        bzip2
     )
     write_json(support_path, duplicate_availability)
     assert_failure(
         run_checker(source, tap, success=False),
         "Homebrew runtime-support availability.reusable_public_abi42 "
-        f"contains duplicate {libyaml}",
+        f"contains duplicate {bzip2}",
     )
 
     duplicate_across_partitions = json.loads(json.dumps(baseline))
     duplicate_across_partitions["availability"]["requires_rebuild"] = [
-        libyaml
+        bzip2
     ]
     write_json(support_path, duplicate_across_partitions)
     assert_failure(
         run_checker(source, tap, success=False),
         "Homebrew runtime-support availability partition contains duplicate "
-        f"{libyaml}",
+        f"{bzip2}",
     )
 
     mismatched_availability = json.loads(json.dumps(baseline))
     reusable = mismatched_availability["availability"][
         "reusable_public_abi42"
     ]
-    reusable[reusable.index(libyaml)] = f"{TAP_NAME}/unknown"
+    reusable[reusable.index(bzip2)] = f"{TAP_NAME}/unknown"
     write_json(support_path, mismatched_availability)
     assert_failure(
         run_checker(source, tap, success=False),
@@ -762,13 +763,13 @@ with tempfile.TemporaryDirectory(
 
     mismatched_runtime_order = json.loads(json.dumps(baseline))
     formula_order = mismatched_runtime_order["formula_order"]
-    libyaml_index = formula_order.index(libyaml)
-    ruby_index = formula_order.index(ruby)
-    formula_order[libyaml_index], formula_order[ruby_index] = (
-        formula_order[ruby_index],
-        formula_order[libyaml_index],
+    bzip2_index = formula_order.index(bzip2)
+    git_index = formula_order.index(git)
+    formula_order[bzip2_index], formula_order[git_index] = (
+        formula_order[git_index],
+        formula_order[bzip2_index],
     )
-    mismatched_runtime_order["additional_formula_order"] = [ruby, libyaml]
+    mismatched_runtime_order["additional_formula_order"] = []
     write_json(support_path, mismatched_runtime_order)
     assert_failure(
         run_checker(source, tap, success=False),
@@ -777,13 +778,9 @@ with tempfile.TemporaryDirectory(
     )
 
     substituted_runtime = json.loads(json.dumps(baseline))
-    bzip2 = f"{TAP_NAME}/bzip2"
+    xz = f"{TAP_NAME}/xz"
     formula_order = substituted_runtime["formula_order"]
-    formula_order[formula_order.index(libyaml)] = bzip2
-    substituted_runtime["additional_formula_order"].remove(libyaml)
-    substituted_runtime["availability"]["reusable_public_abi42"].remove(
-        libyaml
-    )
+    formula_order[formula_order.index(bzip2)] = xz
     write_json(support_path, substituted_runtime)
     assert_failure(
         run_checker(source, tap, success=False),
@@ -835,11 +832,11 @@ with tempfile.TemporaryDirectory(
     )
     preview_summary = json.loads(preview.stdout)
     assert preview_summary["final_tap_commit"] == source_commit
-    assert preview_summary["runtime_formulae"] == 22
-    assert preview_summary["audited_formulae"] == 26
-    assert preview_summary["runtime_extra"] == 2
-    assert preview_summary["total"] == 40
-    assert preview_summary["selection"]["formula_count"] == 41
+    assert preview_summary["runtime_formulae"] == 21
+    assert preview_summary["audited_formulae"] == 24
+    assert preview_summary["runtime_extra"] == 0
+    assert preview_summary["total"] == 38
+    assert preview_summary["selection"]["formula_count"] == 39
     assert before == {path: digest(path) for path in paths}
 
     applied = run(
@@ -867,18 +864,18 @@ with tempfile.TemporaryDirectory(
     artifact_lock = json.loads(
         (source / "homebrew/main-shell-lazy-artifact-lock.json").read_text()
     )
-    libyaml = f"{TAP_NAME}/libyaml"
-    ruby = f"{TAP_NAME}/ruby"
+    bzip2 = f"{TAP_NAME}/bzip2"
+    git = f"{TAP_NAME}/git"
     assert migration["catalog"]["tap_commit"] == source_commit
     assert support["catalog"]["tap_commit"] == source_commit
     assert support["availability"]["audited_catalog"][
         "checkout_commit"
     ] == source_commit
-    assert support["formula_order"].index(libyaml) < support[
+    assert support["formula_order"].index(bzip2) < support[
         "formula_order"
-    ].index(ruby)
-    assert support["additional_formula_order"] == [libyaml, ruby]
-    assert libyaml in support["availability"]["reusable_public_abi42"]
+    ].index(git)
+    assert support["additional_formula_order"] == []
+    assert bzip2 in support["availability"]["reusable_public_abi42"]
     assert selection_lock["state"] == "sealed"
     assert selection_lock["release"]["target_commitish"] == source_commit
     assert artifact_lock["state"] == "pending"

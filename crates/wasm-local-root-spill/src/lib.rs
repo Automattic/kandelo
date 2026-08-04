@@ -30,6 +30,7 @@ use walrus::{
         TryTable, TryTableCatch, UnaryOp, Value,
     },
 };
+use wasmparser::{Parser, Payload};
 
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -84,7 +85,8 @@ pub fn spill(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
 
     let mut module =
         Module::from_buffer(input).context("failed to parse input wasm module for root spill")?;
-    let stack_pointer = find_stack_pointer(&module)?;
+    let stack_pointer =
+        find_or_import_stack_pointer(&mut module, input_starts_with_dylink(input)?)?;
     let memory = find_wasm32_memory(&module)?;
 
     let targets: Vec<FunctionId> = module
@@ -101,7 +103,79 @@ pub fn spill(input: &[u8], opts: &Options) -> Result<Vec<u8>> {
             .with_context(|| format!("spilling {}", function_name(&module, func_id)))?;
     }
 
-    Ok(module.emit_wasm())
+    let output = module.emit_wasm();
+    restore_leading_dylink_section(input, output)
+}
+
+/// Walrus emits raw custom sections after the standard sections. Ruby native
+/// extensions are Wasm side modules, whose `dylink.0` section must remain the
+/// first section for the dynamic loader to recognize them. Preserve that
+/// input ordering after adding root spill frames; otherwise protecting a
+/// native extension from GC would make the same extension unloadable.
+fn restore_leading_dylink_section(input: &[u8], output: Vec<u8>) -> Result<Vec<u8>> {
+    if !input_starts_with_dylink(input)? {
+        return Ok(output);
+    }
+
+    let mut dylink_range = None;
+    for payload in Parser::new(0).parse_all(&output) {
+        if let Payload::CustomSection(section) = payload? {
+            if section.name() != "dylink.0" {
+                continue;
+            }
+            ensure!(
+                dylink_range.is_none(),
+                "root-spilled module contains more than one dylink.0 section"
+            );
+            dylink_range = Some(section.range());
+        }
+    }
+
+    let payload_range = dylink_range.context(
+        "input shared module started with dylink.0, but the root-spilled output lost it",
+    )?;
+    let payload_len = u32::try_from(payload_range.len())
+        .context("dylink.0 section is too large for a wasm section")?;
+    let section_header_len = 1 + u32_leb_len(payload_len);
+    let section_start = payload_range
+        .start
+        .checked_sub(section_header_len)
+        .context("dylink.0 section range does not include a valid header")?;
+    ensure!(
+        section_start >= 8 && output.get(section_start) == Some(&0),
+        "dylink.0 section does not have a valid custom-section header"
+    );
+    if section_start == 8 {
+        return Ok(output);
+    }
+
+    let mut reordered = Vec::with_capacity(output.len());
+    reordered.extend_from_slice(&output[..8]);
+    reordered.extend_from_slice(&output[section_start..payload_range.end]);
+    reordered.extend_from_slice(&output[8..section_start]);
+    reordered.extend_from_slice(&output[payload_range.end..]);
+    Ok(reordered)
+}
+
+fn input_starts_with_dylink(input: &[u8]) -> Result<bool> {
+    let mut payloads = Parser::new(0).parse_all(input);
+    let _version = payloads
+        .next()
+        .transpose()
+        .context("parsing input wasm header")?;
+    Ok(matches!(
+        payloads.next().transpose()?,
+        Some(Payload::CustomSection(section)) if section.name() == "dylink.0"
+    ))
+}
+
+fn u32_leb_len(mut value: u32) -> usize {
+    let mut len = 1;
+    while value >= 0x80 {
+        value >>= 7;
+        len += 1;
+    }
+    len
 }
 
 fn spill_function(
@@ -1199,7 +1273,7 @@ fn emit_store_local(
     push(out, store_i32(memory, offset), loc());
 }
 
-fn find_stack_pointer(module: &Module) -> Result<GlobalId> {
+fn find_or_import_stack_pointer(module: &mut Module, is_side_module: bool) -> Result<GlobalId> {
     let from_export = module.exports.iter().find_map(|export| match export.item {
         ExportItem::Global(id) if export.name == "__stack_pointer" => Some(id),
         _ => None,
@@ -1211,7 +1285,22 @@ fn find_stack_pointer(module: &Module) -> Result<GlobalId> {
             .find(|global| global.name.as_deref() == Some("__stack_pointer"))
             .map(|global| global.id())
     });
-    let id = id.context("mutable i32 `__stack_pointer` global not found")?;
+    let id = match id {
+        Some(id) => id,
+        None if is_side_module => {
+            // WHY: wasm-ld omits __stack_pointer from a side module when the
+            // original object code needs no linear stack. Root spilling can
+            // still need a frame for live GC roots, as in a call-bearing Ruby
+            // extension initializer. Import the process's existing stack
+            // pointer exactly as wasm-ld does for side modules that happened
+            // to use stack storage; this adds no private stack or host ABI.
+            let (id, _) =
+                module.add_import_global("env", "__stack_pointer", ValType::I32, true, false);
+            module.exports.add("__stack_pointer", id);
+            id
+        }
+        None => bail!("mutable i32 `__stack_pointer` global not found"),
+    };
     let global = module.globals.get(id);
     ensure!(
         global.ty == ValType::I32 && global.mutable,

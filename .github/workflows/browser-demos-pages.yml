@@ -107,8 +107,9 @@ jobs:
           # bottle member. Repeating selection or extraction here could make
           # inspection and the bytes actually served by Vite disagree.
           bootstrap="$PWD/apps/browser-demos/public/homebrew-bootstrap.zip"
+          portable_ruby="$PWD/apps/browser-demos/public/homebrew-portable-ruby.zip"
           report="$RUNNER_TEMP/homebrew-main-shell-public-product.json"
-          for path in "$image" "$bootstrap"; do
+          for path in "$image" "$bootstrap" "$portable_ruby"; do
             test -f "$path"
             test ! -L "$path"
           done
@@ -125,6 +126,7 @@ jobs:
             scripts/inspect-homebrew-main-shell-public-product.ts \
               --image "$image" \
               --homebrew-bootstrap-archive "$bootstrap" \
+              --homebrew-portable-ruby-archive "$portable_ruby" \
               --homebrew-bootstrap-spec \
                 homebrew/main-shell-brew-package-tree.json \
               --homebrew-runtime-support \
@@ -137,6 +139,8 @@ jobs:
             (.image.bytes > 0) and
             (.homebrew_bootstrap.sha256 | test("^[0-9a-f]{64}$")) and
             (.homebrew_bootstrap.bytes > 0) and
+            (.homebrew_portable_ruby.sha256 | test("^[0-9a-f]{64}$")) and
+            (.homebrew_portable_ruby.bytes > 0) and
             .homebrew_bootstrap.activation_root == "/usr/bin/brew" and
             (.bottle_mirror.plan_url |
               startswith("https://github.com/") and
@@ -146,6 +150,7 @@ jobs:
           {
             echo "image=$image"
             echo "bootstrap=$bootstrap"
+            echo "portable_ruby=$portable_ruby"
             echo "image_sha256=$(jq -er '.image.sha256' "$report")"
             echo "bootstrap_sha256=$(jq -er \
               '.homebrew_bootstrap.sha256' "$report")"
@@ -165,6 +170,8 @@ jobs:
           npm run build
           cmp "${{ steps.shell_product.outputs.bootstrap }}" \
             dist/homebrew-bootstrap.zip
+          cmp "${{ steps.shell_product.outputs.portable_ruby }}" \
+            dist/homebrew-portable-ruby.zip
           # WHY: Vite imports the resolver-selected shell under a hashed asset
           # name. Verify that exact emitted asset; an unhashed public copy can
           # be absent or stale without affecting the image the browser boots.

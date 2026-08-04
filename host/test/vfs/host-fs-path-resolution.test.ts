@@ -61,6 +61,23 @@ describe("HostFileSystem component-wise path resolution", () => {
     expect(existsSync(join(root, "target.txt"))).toBe(true);
   });
 
+  it("interprets absolute symlinks in the guest namespace even when the host target exists", () => {
+    writeFileSync(join(root, "guest-target"), "g");
+    mkdirSync(join(root, "host-collision"));
+    writeFileSync(join(root, "host-collision", "guest-target"), "native");
+
+    const collidingMountPoint = join(root, "host-collision");
+    symlinkSync(
+      join(collidingMountPoint, "guest-target"),
+      join(root, "absolute-collision"),
+    );
+    const collidingHostFs = new HostFileSystem(root, collidingMountPoint);
+
+    // Native realpath resolves the link to root/host-collision/guest-target,
+    // but the guest-absolute target names /guest-target within this mount.
+    expect(collidingHostFs.stat("/absolute-collision").size).toBe(1);
+  });
+
   it("does not follow a final symlink for an exclusive create", () => {
     symlinkSync("created-through-link", join(root, "exclusive-link"));
 

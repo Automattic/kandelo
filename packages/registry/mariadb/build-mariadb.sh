@@ -150,6 +150,26 @@ if ! host_helpers_ready; then
     mkdir -p "$HOST_BUILD_DIR"
     cd "$HOST_BUILD_DIR"
 
+    HOST_CXX_FLAGS="${CXXFLAGS:-}"
+    HOST_EXE_LINKER_FLAGS="${LDFLAGS:-}"
+    if [ "$(uname -s)" = "Darwin" ]; then
+        : "${LLVM_PREFIX:?ERROR: LLVM_PREFIX is required for the MariaDB host build on macOS}"
+        [ -f "$LLVM_PREFIX/include/c++/v1/new" ] || {
+            echo "ERROR: declared host libc++ headers missing below $LLVM_PREFIX" >&2
+            exit 1
+        }
+        [ -f "$LLVM_PREFIX/lib/libc++.dylib" ] || {
+            echo "ERROR: declared host libc++ library missing below $LLVM_PREFIX" >&2
+            exit 1
+        }
+        # WHY: Nix clang's real installed directory is outside the unified
+        # LLVM_PREFIX tree, so CMake cannot discover that tree's libc++ by
+        # following the compiler symlink. Keep native build helpers on the
+        # declared toolchain instead of falling back to ambient Xcode headers.
+        HOST_CXX_FLAGS="${HOST_CXX_FLAGS:+$HOST_CXX_FLAGS }-nostdinc++ -isystem $LLVM_PREFIX/include/c++/v1"
+        HOST_EXE_LINKER_FLAGS="${HOST_EXE_LINKER_FLAGS:+$HOST_EXE_LINKER_FLAGS }-L$LLVM_PREFIX/lib"
+    fi
+
     # `WITH_SSL=OFF` + `CONC_WITH_SSL=OFF`: the host build only
     # produces helper executables (the import_executables target).
     # None of those helpers need SSL, but libmariadb's
@@ -162,6 +182,8 @@ if ! host_helpers_ready; then
     # ≥3.4.2 installed (Nix dev shell, fresh CI runner, etc.).
     cmake "$SRC_DIR" \
         -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+        "-DCMAKE_CXX_FLAGS=$HOST_CXX_FLAGS" \
+        "-DCMAKE_EXE_LINKER_FLAGS=$HOST_EXE_LINKER_FLAGS" \
         -DWITH_UNIT_TESTS=OFF \
         -DWITH_MARIABACKUP=OFF \
         -DPLUGIN_CONNECT=NO \

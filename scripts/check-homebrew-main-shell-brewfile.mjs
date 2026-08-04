@@ -14,7 +14,6 @@ const provenanceDigestFlag = "--print-runtime-bottle-provenance-sha256";
 const provenanceDigestDomain =
   "kandelo-homebrew-runtime-bottle-provenance-v1\u0000";
 const runtimeSupportRootOrder = [
-  `${tapName}/ruby`,
   `${tapName}/git`,
   `${tapName}/curl`,
   `${tapName}/findutils`,
@@ -778,7 +777,11 @@ function readRuntimeSupport(path, lock) {
     !isRecord(activation.bootstrap_package) ||
     activation.bootstrap_package.name !== "homebrew-bootstrap" ||
     JSON.stringify(activation.bootstrap_package.outputs) !==
-      JSON.stringify(["homebrew-bootstrap.zip", "homebrew-brew.env"]) ||
+      JSON.stringify([
+        "homebrew-bootstrap.zip",
+        "homebrew-brew.env",
+        "homebrew-portable-ruby.zip",
+      ]) ||
     activation.bootstrap_package.required_kernel_abi !== 42
   ) {
     throw new Error(

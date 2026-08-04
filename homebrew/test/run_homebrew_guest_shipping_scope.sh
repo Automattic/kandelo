@@ -17,6 +17,7 @@ esac
 
 : "${IMAGE:?missing public Homebrew image}"
 : "${BOOTSTRAP:?missing public Homebrew bootstrap archive}"
+: "${PORTABLE_RUBY:?missing public Homebrew portable Ruby archive}"
 : "${BOOTSTRAP_ENV:?missing public Homebrew bootstrap environment}"
 : "${TAP_CATALOG_REF:?missing sealed tap catalog revision}"
 : "${CANARY_REF:?missing canary revision}"
@@ -94,6 +95,7 @@ bash scripts/dev-shell.sh npx tsx \
     --homebrew-bootstrap-spec \
       homebrew/main-shell-brew-package-tree.json \
     --homebrew-bootstrap-archive "$BOOTSTRAP" \
+    --homebrew-portable-ruby-archive "$PORTABLE_RUBY" \
     --homebrew-bootstrap-env "$BOOTSTRAP_ENV" \
     --transport-mode public \
     --proof-mode "$scope" \

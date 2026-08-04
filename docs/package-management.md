@@ -686,14 +686,16 @@ remain unfetched until a path owned by that dependency is used.
 
 The guest `brew` implementation is distributed as the
 `homebrew-bootstrap` support-data Formula bottle. Its tap-native recipe
-declares two `libexec` outputs: `homebrew-bootstrap.zip`, a deterministic
+declares three `libexec` outputs: `homebrew-bootstrap.zip`, a deterministic
 archive of one exact upstream Homebrew commit plus Kandelo's reviewed
-guest-platform patch, and `homebrew-brew.env`, the architecture tag and system
-environment policy consumed with that exact tree. Consumers extract both from
-the same immutable public bottle; they must not reconstruct the environment
-file or combine it with a ZIP from another build. Neither output is Wasm, so
-the Formula uses the support-data bottle test contract rather than claiming
-Node or browser execution evidence.
+guest-platform patch; `homebrew-brew.env`, the architecture tag and system
+environment policy consumed with that exact tree; and
+`homebrew-portable-ruby.zip`, the source-selected Ruby runtime in Homebrew's
+ordinary versioned vendor layout. Consumers extract all three from the same
+immutable public bottle; they must not reconstruct the environment file or
+combine outputs from different builds. These support-data outputs use the
+support-data bottle test contract rather than making an execution claim about
+the ZIP or environment members themselves.
 
 The generic support-data extractor verifies the exact checkout, catalog and
 Formula sidecar, tap recipe lock, link manifest, keg, bottle digest and size,
@@ -704,23 +706,30 @@ checkout commit, aggregate metadata publication commit, and bottle
 Formula SHA-256 and Homebrew's `.brew` receipt SHA-256 are separate too,
 because the receipt canonically omits the finalized bottle block.
 
-The bootstrap archive is not a bundled Homebrew runtime. It contains neither
-Ruby nor Git, curl, extraction tools, or their data/dependencies. The base
-shell therefore registers `/usr/bin/brew` as a lazy activation reference
-without claiming the bootstrap source can execute by itself.
+The bootstrap source archive is not a bundled Homebrew runtime. It contains
+neither Ruby nor Git, curl, extraction tools, or their data/dependencies.
+Portable Ruby remains a separate, digest-bound output. Its exact version comes
+from the source archive's
+`Library/Homebrew/vendor/portable-ruby-version`; the image derives both its
+mount and executable paths from the authenticated bootstrap descriptor rather
+than assuming a guest prefix. The output exposes the standard
+`Library/Homebrew/vendor/portable-ruby/<version>` tree and `current` symlink,
+so Homebrew follows its normal portable-Ruby and Bootsnap startup path.
+
+The base shell therefore registers `/usr/bin/brew` as a lazy activation
+reference without claiming the bootstrap source can execute by itself.
 `homebrew/main-shell-homebrew-runtime-support.json` owns the separate atomic
-runtime-support closure. Its seven reviewed roots resolve through the exact
-closed-selection metadata that the shell consumes. Dependencies already in the
-complete shell remain shared; additional dependencies become part of the same
-atomic lazy group. This matters when a Formula changes its real dependency
-graph—for example, Ruby now requires `libyaml`. The selection-aware release
-finalizer derives the new order and base-relative difference, requires an
-admitted public ABI-42 bottle for every member, and seals the selection and
-artifact locks together. The base keeps the active layer deferred; an opt-in
-demo may materialize the same layer. A guest lifecycle is valid only when
-every declared tree has an exact admitted ABI/digest/size identity, all
-support bytes come from that declaration, and the independent-tap Formula is
-installed live rather than smuggled into the image.
+runtime-support closure. Portable Ruby and six reviewed Formula roots resolve
+through the exact closed-selection metadata that the shell consumes.
+Dependencies already in the complete shell remain shared; additional Formula
+dependencies become part of the same atomic lazy group. The selection-aware
+release finalizer derives the new order and base-relative difference, requires
+an admitted public ABI-42 bottle for every Formula member, and seals the
+selection and artifact locks together. The base keeps the active layer
+deferred; an opt-in demo may materialize the same layer. A guest lifecycle is
+valid only when every declared tree has an exact admitted ABI/digest/size
+identity, all support bytes come from that declaration, and the
+independent-tap Formula is installed live rather than smuggled into the image.
 
 `Kandelo/recipes/homebrew-bootstrap/source-lock.json` in the tap is the
 Formula's reviewed source/output identity. It binds the prepared source inputs

@@ -48,6 +48,11 @@ const ASSETS = [
     label: "Homebrew bootstrap archive",
   },
   {
+    name: "homebrew-portable-ruby.zip",
+    option: "portableRubyArchive",
+    label: "Homebrew portable Ruby archive",
+  },
+  {
     name: "homebrew-brew.env",
     option: "bootstrapEnvironment",
     label: "Homebrew bootstrap environment",
@@ -78,6 +83,7 @@ export interface CreateHomebrewGuestLifecyclePublicationOptions extends ExactRef
   image: string;
   bootstrapSpec: string;
   bootstrapArchive: string;
+  portableRubyArchive: string;
   bootstrapEnvironment: string;
   bottleMirrorPlan: string;
   out: string;
@@ -99,9 +105,10 @@ export interface HomebrewGuestLifecyclePublicationIdentity {
  *
  * The bottle mirror remains a separate release and source of truth. This
  * handoff owns only the fixed shell/bootstrap inputs. The shell image is a
- * package-archive member. The bootstrap ZIP and environment still come from
- * the transitional Kandelo registry package; none is a direct lazy-VFS URL.
- * The source spec and transitional ownership are bound beside them.
+ * package-archive member. The source, environment, and source-matched portable
+ * Ruby come from one verified support-data bottle; none is accepted as an
+ * ambient lazy-VFS URL. The source spec and Formula ownership are bound beside
+ * them.
  */
 export function createHomebrewGuestLifecyclePublication(
   options: CreateHomebrewGuestLifecyclePublicationOptions,
@@ -545,6 +552,7 @@ function main(args: readonly string[]): void {
       "--image",
       "--homebrew-bootstrap-spec",
       "--homebrew-bootstrap-archive",
+      "--homebrew-portable-ruby-archive",
       "--homebrew-bootstrap-env",
       "--bottle-mirror-plan",
       "--kandelo-ref",
@@ -558,6 +566,9 @@ function main(args: readonly string[]): void {
       image: values.get("--image")!,
       bootstrapSpec: values.get("--homebrew-bootstrap-spec")!,
       bootstrapArchive: values.get("--homebrew-bootstrap-archive")!,
+      portableRubyArchive: values.get(
+        "--homebrew-portable-ruby-archive",
+      )!,
       bootstrapEnvironment: values.get("--homebrew-bootstrap-env")!,
       bottleMirrorPlan: values.get("--bottle-mirror-plan")!,
       out: values.get("--out")!,
@@ -592,6 +603,7 @@ function usage(): never {
     "usage: homebrew-guest-lifecycle-publication.ts create " +
       "--image <shell.vfs.zst> --homebrew-bootstrap-spec <tree.json> " +
       "--homebrew-bootstrap-archive <bootstrap.zip> " +
+      "--homebrew-portable-ruby-archive <portable-ruby.zip> " +
       "--homebrew-bootstrap-env <brew.env> --bottle-mirror-plan <plan.json> " +
       "--kandelo-ref <M> --tap-catalog-ref <TF> " +
       "--tap-mirror-authority-ref <TA0> --tap-caller-authority-ref <TA1> " +

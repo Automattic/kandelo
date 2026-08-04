@@ -2415,6 +2415,8 @@ prepare_browser_homebrew_bootstrap() {
     local prepare_args=(
         --browser-asset \
         "$REPO_ROOT/apps/browser-demos/public/homebrew-bootstrap.zip"
+        --browser-portable-ruby-asset \
+        "$REPO_ROOT/apps/browser-demos/public/homebrew-portable-ruby.zip"
     )
     if [ "$REQUIRE_SEALED_HOMEBREW_SELECTION" -eq 1 ]; then
         prepare_args+=(--require-sealed)

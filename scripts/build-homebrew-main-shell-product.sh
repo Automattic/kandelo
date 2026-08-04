@@ -59,6 +59,7 @@ for required in \
   "$RECEIPT" \
   "$BOOTSTRAP/homebrew-bootstrap.zip" \
   "$BOOTSTRAP/homebrew-brew.env" \
+  "$BOOTSTRAP/homebrew-portable-ruby.zip" \
   "$BOOTSTRAP/report.json"; do
   [ -e "$required" ] && [ ! -L "$required" ] || {
     echo "build-homebrew-main-shell-product: prepared inputs omit $required" >&2
@@ -77,6 +78,8 @@ arguments=(
   --package-tree-spec \
     "$REPO_ROOT/homebrew/main-shell-brew-package-tree.json"
   --package-tree-archive "$BOOTSTRAP/homebrew-bootstrap.zip"
+  --homebrew-portable-ruby-archive \
+    "$BOOTSTRAP/homebrew-portable-ruby.zip"
   --homebrew-bootstrap-env "$BOOTSTRAP/homebrew-brew.env"
   --homebrew-bootstrap-bottle-report "$BOOTSTRAP/report.json"
 )

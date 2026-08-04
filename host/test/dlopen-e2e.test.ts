@@ -157,6 +157,92 @@ describe.skipIf(!hasSysroot || !hasKernel || !hasCompiler())("dlopen end-to-end"
     expect(result.stdout).toContain("done");
   });
 
+  it("exports libc functions referenced only by a side module", { timeout: 30_000 }, async () => {
+    const soPath = buildSharedLib(
+      `
+      #include <arpa/inet.h>
+      unsigned short network_value(void) { return ntohs(0x3412); }
+      `,
+      "lib-process-libc",
+    );
+    const wasmPath = buildMainProgram(
+      `
+      #include <dlfcn.h>
+      #include <stdio.h>
+
+      int main(int argc, char *argv[]) {
+        void *lib = dlopen(argv[1], RTLD_NOW);
+        if (!lib) {
+          printf("dlopen failed: %s\\n", dlerror());
+          return 1;
+        }
+        unsigned short (*network_value)(void) =
+          (unsigned short (*)(void))dlsym(lib, "network_value");
+        if (!network_value) {
+          printf("dlsym failed: %s\\n", dlerror());
+          return 2;
+        }
+        printf("network-value=%u\\n", network_value());
+        return dlclose(lib);
+      }
+      `,
+      "test-dlopen-process-libc",
+    );
+
+    const result = await runCentralizedProgram({
+      programPath: wasmPath,
+      argv: ["test-dlopen-process-libc", soPath],
+      timeout: 10_000,
+      io: io(),
+    });
+
+    expect(result.exitCode, `stdout=${result.stdout}\nstderr=${result.stderr}`).toBe(0);
+    expect(result.stdout).toBe("network-value=4660\n");
+    expect(result.stderr).toBe("");
+  });
+
+  it("prefers a strong executable libc interposition over the dynamic fallback", async () => {
+    const interposeSource = join(BUILD_DIR, "putenv-interpose.c");
+    const interposeObject = join(BUILD_DIR, "putenv-interpose.o");
+    const interposeArchive = join(BUILD_DIR, "libputenv-interpose.a");
+    writeFileSync(interposeSource, `
+      #include <stdlib.h>
+      int putenv(char *value) { return value[0] == 'K' ? 73 : 74; }
+    `);
+    execFileSync("wasm32posix-cc", [
+      "-O2", "-c", interposeSource, "-o", interposeObject,
+    ], { stdio: "pipe" });
+    execFileSync("wasm32posix-ar", [
+      "rcs", interposeArchive, interposeObject,
+    ], { stdio: "pipe" });
+
+    const wasmPath = buildMainProgram(
+      `
+      #include <stdio.h>
+      #include <stdlib.h>
+
+      int main(void) {
+        char value[] = "KANDELO_INTERPOSE=1";
+        printf("interposed=%d\\n", putenv(value));
+        return 0;
+      }
+      `,
+      "test-dlopen-libc-interposition",
+      [interposeArchive],
+    );
+
+    const result = await runCentralizedProgram({
+      programPath: wasmPath,
+      argv: ["test-dlopen-libc-interposition"],
+      timeout: 10_000,
+      useDefaultRootfs: false,
+    });
+
+    expect(result.exitCode, `stdout=${result.stdout}\nstderr=${result.stderr}`).toBe(0);
+    expect(result.stdout).toBe("interposed=73\n");
+    expect(result.stderr).toBe("");
+  });
+
   it.skipIf(!hasSysroot64 || !hasCompiler("wasm64posix-cc"))(
     "loads and resolves a memory64 shared library through dlopen/dlsym",
     { timeout: 30_000 },

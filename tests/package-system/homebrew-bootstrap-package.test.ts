@@ -62,6 +62,9 @@ describe("homebrew-bootstrap package contract", () => {
     expect(manifest).toContain(`spdx = "${lock.license.expression}"`);
     expect(manifest).toContain('name = "homebrew-bootstrap"\nwasm = "homebrew-bootstrap.zip"');
     expect(manifest).toContain('name = "homebrew-brew"\nwasm = "homebrew-brew.env"');
+    expect(manifest).toContain(
+      'name = "homebrew-portable-ruby"\nwasm = "homebrew-portable-ruby.zip"',
+    );
     expect(manifest).toContain('fork_instrumentation = "disabled"');
 
     expect(build).toContain('name = "homebrew_brew"');
@@ -84,6 +87,7 @@ describe("homebrew-bootstrap package contract", () => {
     expect(parseMultilineStringArray(build, "inputs")).toEqual([
       "packages/registry/homebrew-bootstrap/build-homebrew-bootstrap.sh",
       "scripts/package-build-roots.sh",
+      "images/vfs/scripts/create-deterministic-zip.sh",
       "scripts/prepare-homebrew-bootstrap-source.sh",
       "scripts/verify-homebrew-bootstrap-source-lock.mjs",
       "homebrew/homebrew-bootstrap-source-lock.json",
@@ -96,30 +100,40 @@ describe("homebrew-bootstrap package contract", () => {
     );
   });
 
-  it("projects the non-Wasm package output through the ordinary resolver policy", () => {
+  it("projects the complete package closure through the ordinary resolver policy", () => {
     const projection = JSON.parse(readFileSync(projectionPath, "utf8"));
     expect(projection.format).toBe("kandelo-program-packages-v2");
     expect(projection.identities["homebrew-bootstrap"]).toBeDefined();
-    expect(projection.packages["homebrew-bootstrap"]).toMatchObject({
-      arches: ["wasm32"],
-      dependencyClosures: { wasm32: [] },
-      members: [
-        {
-          kind: "output",
-          sourceArtifact: "homebrew-bootstrap.zip",
-          mirrorPath: "homebrew-bootstrap/homebrew-bootstrap.zip",
-          outputName: "homebrew-bootstrap",
-          forkInstrumentation: "disabled",
-        },
-        {
-          kind: "output",
-          sourceArtifact: "homebrew-brew.env",
-          mirrorPath: "homebrew-bootstrap/homebrew-brew.env",
-          outputName: "homebrew-brew",
-          forkInstrumentation: "disabled",
-        },
-      ],
-    });
+    const packageProjection = projection.packages["homebrew-bootstrap"];
+    expect(packageProjection.arches).toEqual(["wasm32"]);
+    expect(
+      packageProjection.dependencyClosures.wasm32.map(
+        (dependency: { packageName: string }) => dependency.packageName,
+      ),
+    ).toEqual(["ruby", "zlib"]);
+    expect(packageProjection.members).toEqual([
+      {
+        kind: "output",
+        sourceArtifact: "homebrew-bootstrap.zip",
+        mirrorPath: "homebrew-bootstrap/homebrew-bootstrap.zip",
+        outputName: "homebrew-bootstrap",
+        forkInstrumentation: "disabled",
+      },
+      {
+        kind: "output",
+        sourceArtifact: "homebrew-brew.env",
+        mirrorPath: "homebrew-bootstrap/homebrew-brew.env",
+        outputName: "homebrew-brew",
+        forkInstrumentation: "disabled",
+      },
+      {
+        kind: "output",
+        sourceArtifact: "homebrew-portable-ruby.zip",
+        mirrorPath: "homebrew-bootstrap/homebrew-portable-ruby.zip",
+        outputName: "homebrew-portable-ruby",
+        forkInstrumentation: "disabled",
+      },
+    ]);
   });
 
   it("rejects source, patch, prepared-tree, and output lock drift", () => {

@@ -55,6 +55,8 @@
 //!                         Bind one statically-scanned Formula bridge to its
 //!                         authoritative in-tree registry recipe.
 //!   homebrew-validate     Validate Kandelo/Homebrew tap sidecar metadata.
+//!   weaken-wasm-archive   Make archive definitions weak process-libc fallbacks.
+//!   weaken-wasm-object    Make object definitions weak process-libc fallbacks.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -98,6 +100,7 @@ mod source_extract;
 mod staging_reuse;
 mod update_pkg_manifest;
 mod util;
+mod weaken_wasm_archive;
 
 fn main() -> ExitCode {
     let mut args = std::env::args().skip(1);
@@ -106,7 +109,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, materialize-package-output, staging-reuse, archive-stage, archive-extract-member, build-index, set-build-commit, set-package-binary, index-update, index-candidate, homebrew-sidecars, homebrew-tier2-preflight, homebrew-validate"
+                "subcommands: dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, materialize-package-output, staging-reuse, archive-stage, archive-extract-member, build-index, set-build-commit, set-package-binary, index-update, index-candidate, homebrew-sidecars, homebrew-tier2-preflight, homebrew-validate, weaken-wasm-archive, weaken-wasm-object"
             );
             return ExitCode::from(2);
         }
@@ -132,6 +135,8 @@ fn main() -> ExitCode {
         "homebrew-sidecars" => homebrew_sidecars::run(rest),
         "homebrew-tier2-preflight" => homebrew_tier2_preflight::run(rest),
         "homebrew-validate" => homebrew_validate::run(rest),
+        "weaken-wasm-archive" => weaken_wasm_archive::run(rest),
+        "weaken-wasm-object" => weaken_wasm_archive::run_object(rest),
         other => {
             eprintln!("xtask: unknown subcommand {other:?}");
             return ExitCode::from(2);
