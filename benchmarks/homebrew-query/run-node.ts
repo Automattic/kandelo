@@ -176,9 +176,14 @@ class NodeHomebrewQueryMachine implements HomebrewQueryMachine {
     const elapsedMs = performance.now() - startedAt;
     const stdout = concatenate(this.stdout.slice(stdoutStart));
     const stderr = concatenate(this.stderr.slice(stderrStart));
-    if (status !== 0) {
+    const invalidQueryOutput = command.id !== "shell_boot" && (
+      stdout.byteLength === 0 || stderr.byteLength !== 0
+    );
+    if (status !== 0 || invalidQueryOutput) {
       throw new Error(
-        `Homebrew query ${command.id} exited ${status}: ` +
+        `Homebrew query ${command.id} did not produce clean output ` +
+          `(status=${status}, stdout=${stdout.byteLength}, ` +
+          `stderr=${stderr.byteLength}): ` +
           decoder.decode(stderr).slice(-4_000),
       );
     }

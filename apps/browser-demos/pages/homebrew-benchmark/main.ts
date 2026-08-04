@@ -27,6 +27,7 @@ declare global {
     __homebrewQueryBenchmarkReady: boolean;
     __runHomebrewQueryBenchmark(
       rounds: number,
+      auditNetwork?: boolean,
     ): Promise<{
       fixture: HomebrewQueryFixtureManifest;
       rounds: HomebrewQueryScenarioResult[];
@@ -175,9 +176,17 @@ class BrowserHomebrewQueryMachine implements HomebrewQueryMachine {
     const elapsedMs = performance.now() - startedAt;
     const stdout = concatenate(this.stdout.slice(stdoutStart));
     const stderr = concatenate(this.stderr.slice(stderrStart));
-    if (status !== 0 || this.diagnostics.length !== diagnosticStart) {
+    const invalidQueryOutput = command.id !== "shell_boot" && (
+      stdout.byteLength === 0 || stderr.byteLength !== 0
+    );
+    if (
+      status !== 0 || invalidQueryOutput ||
+      this.diagnostics.length !== diagnosticStart
+    ) {
       throw new Error(
-        `Homebrew query ${command.id} exited ${status}: ` +
+        `Homebrew query ${command.id} did not produce clean output ` +
+          `(status=${status}, stdout=${stdout.byteLength}, ` +
+          `stderr=${stderr.byteLength}): ` +
           decoder.decode(stderr).slice(-4_000) + "\n" +
           this.diagnostics.slice(diagnosticStart).join("\n"),
       );
@@ -313,7 +322,7 @@ async function withTimeout<T>(
 
 const prepared = prepare();
 window.__homebrewQueryBenchmarkReady = false;
-window.__runHomebrewQueryBenchmark = async (roundCount) => {
+window.__runHomebrewQueryBenchmark = async (roundCount, auditNetwork = true) => {
   if (!Number.isSafeInteger(roundCount) || roundCount <= 0) {
     throw new Error("Homebrew query rounds must be a positive integer");
   }
@@ -324,7 +333,7 @@ window.__runHomebrewQueryBenchmark = async (roundCount) => {
     rounds.push(await runHomebrewQueryScenario({
       fixture,
       machines: factory,
-      auditNetwork: index === 0,
+      auditNetwork: auditNetwork && index === 0,
     }));
   }
   return { fixture, rounds, median: medianMetrics(rounds) };

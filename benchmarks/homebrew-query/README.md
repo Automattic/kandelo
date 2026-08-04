@@ -51,6 +51,17 @@ npx tsx benchmarks/homebrew-query/run-browser.ts \
   --rounds 3 --output /tmp/homebrew-chromium.json
 ```
 
+Each Chromium sample uses a newly launched browser. Browser launch is outside
+the timed machine and command intervals. This makes rounds independent and
+guarantees that a previous round's renderer, Workers, JavaScript Realms,
+WebAssembly memories, and shared buffers cannot survive into the next sample.
+Used guest Workers are still terminated within each round; no guest Realm or
+process state is reused.
+
+The runners reject a zero exit with empty standard output or non-empty standard
+error for a measured Brew command. This catches shell wrappers that accidentally
+mask an inner command failure instead of recording a fast false success.
+
 Results include artifact and tap identities, host versions, machine details,
 host-side monotonic timings, process counts, lazy transfer counts and bytes,
 output hashes, and the syscall network audit. Compare like-for-like results

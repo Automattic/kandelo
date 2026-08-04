@@ -10,6 +10,7 @@ import { chromium } from "playwright";
 import { createServer, type Plugin, type ViteDevServer } from "vite";
 
 import { withRejectingTimeout } from "../timeout";
+import { medianMetrics } from "./contracts";
 import type {
   HomebrewQueryBenchmarkResult,
   HomebrewQueryFixtureManifest,
@@ -31,7 +32,10 @@ interface PageResult {
 declare global {
   interface Window {
     __homebrewQueryBenchmarkReady: boolean;
-    __runHomebrewQueryBenchmark(rounds: number): Promise<PageResult>;
+    __runHomebrewQueryBenchmark(
+      rounds: number,
+      auditNetwork?: boolean,
+    ): Promise<PageResult>;
   }
 }
 
@@ -70,62 +74,96 @@ async function main(): Promise<void> {
       throw new Error("Vite did not expose its benchmark port");
     }
     const origin = `http://127.0.0.1:${address.port}`;
-    browser = await chromium.launch();
-    const browserVersion = browser.version();
-    const context = await browser.newContext();
+    let browserVersion: string | undefined;
+    let fixture: HomebrewQueryFixtureManifest | undefined;
+    const rounds: HomebrewQueryScenarioResult[] = [];
     const externalRequests: string[] = [];
-    await context.route("**/*", async (route) => {
-      const url = route.request().url();
-      if (url.startsWith(`${origin}/`) || url.startsWith(`http://localhost:${address.port}/`)) {
-        await route.continue();
-      } else {
-        externalRequests.push(url);
-        await route.abort("blockedbyclient");
+    for (let index = 0; index < options.rounds; index += 1) {
+      process.stderr.write(
+        `Homebrew query independent Chromium round ${index + 1}/${options.rounds}\n`,
+      );
+      browser = await chromium.launch();
+      browserVersion ??= browser.version();
+      const context = await browser.newContext();
+      try {
+        await context.route("**/*", async (route) => {
+          const url = route.request().url();
+          if (
+            url.startsWith(`${origin}/`) ||
+            url.startsWith(`http://localhost:${address.port}/`)
+          ) {
+            await route.continue();
+          } else {
+            externalRequests.push(url);
+            await route.abort("blockedbyclient");
+          }
+        });
+        const page = await context.newPage();
+        let rejectPageCrash!: (error: Error) => void;
+        const pageCrash = new Promise<never>((_resolve, reject) => {
+          rejectPageCrash = reject;
+        });
+        page.on("crash", () => {
+          rejectPageCrash(new Error(
+            "Chromium renderer crashed during the Homebrew query benchmark",
+          ));
+        });
+        page.on("console", (message) => {
+          if (["log", "info", "warning", "error"].includes(message.type())) {
+            process.stderr.write(`[Chromium] ${message.text()}\n`);
+          }
+        });
+        page.on("pageerror", (error) => {
+          process.stderr.write(`[Chromium page error] ${error.stack ?? error.message}\n`);
+        });
+        await page.goto(
+          `${origin}/pages/homebrew-benchmark/?fixture=${encodeURIComponent(fixtureRoute)}`,
+          { waitUntil: "domcontentloaded", timeout: 30_000 },
+        );
+        await page.waitForFunction(
+          () => window.__homebrewQueryBenchmarkReady === true,
+          undefined,
+          { timeout: 180_000 },
+        );
+        const pageResult = await withRejectingTimeout(
+          Promise.race([
+            page.evaluate(
+              ({ auditNetwork }) => window.__runHomebrewQueryBenchmark(
+                1,
+                auditNetwork,
+              ),
+              { auditNetwork: index === 0 },
+            ),
+            pageCrash,
+          ]),
+          BENCHMARK_TIMEOUT_MS,
+          `Chromium Homebrew query benchmark timed out after ${BENCHMARK_TIMEOUT_MS}ms`,
+        );
+        if (pageResult.rounds.length !== 1) {
+          throw new Error("Chromium Homebrew query round returned invalid results");
+        }
+        fixture ??= pageResult.fixture;
+        rounds.push(pageResult.rounds[0]!);
+      } finally {
+        try {
+          await context.close();
+        } finally {
+          // WHY: each round must release its renderer, Realms, workers and
+          // SABs. Keeping Chromium alive made independent rounds retain enough
+          // opaque engine state to crash before a three-round run ended.
+          await browser.close();
+          browser = undefined;
+        }
       }
-    });
-    const page = await context.newPage();
-    let rejectPageCrash!: (error: Error) => void;
-    const pageCrash = new Promise<never>((_resolve, reject) => {
-      rejectPageCrash = reject;
-    });
-    page.on("crash", () => {
-      rejectPageCrash(new Error(
-        "Chromium renderer crashed during the Homebrew query benchmark",
-      ));
-    });
-    page.on("console", (message) => {
-      if (["log", "info", "warning", "error"].includes(message.type())) {
-        process.stderr.write(`[Chromium] ${message.text()}\n`);
-      }
-    });
-    page.on("pageerror", (error) => {
-      process.stderr.write(`[Chromium page error] ${error.stack ?? error.message}\n`);
-    });
-    await page.goto(
-      `${origin}/pages/homebrew-benchmark/?fixture=${encodeURIComponent(fixtureRoute)}`,
-      { waitUntil: "domcontentloaded", timeout: 30_000 },
-    );
-    await page.waitForFunction(
-      () => window.__homebrewQueryBenchmarkReady === true,
-      undefined,
-      { timeout: 180_000 },
-    );
-    const pageResult = await withRejectingTimeout(
-      Promise.race([
-        page.evaluate(
-          (rounds) => window.__runHomebrewQueryBenchmark(rounds),
-          options.rounds,
-        ),
-        pageCrash,
-      ]),
-      BENCHMARK_TIMEOUT_MS,
-      `Chromium Homebrew query benchmark timed out after ${BENCHMARK_TIMEOUT_MS}ms`,
-    );
+    }
     if (externalRequests.length > 0) {
       throw new Error(
         "Chromium Homebrew query benchmark attempted external requests:\n" +
           [...new Set(externalRequests)].join("\n"),
       );
+    }
+    if (browserVersion === undefined || fixture === undefined) {
+      throw new Error("Chromium Homebrew query benchmark produced no rounds");
     }
     const result: HomebrewQueryBenchmarkResult = {
       schema: 1,
@@ -139,9 +177,9 @@ async function main(): Promise<void> {
         architecture: arch(),
         cpu: cpus()[0]?.model ?? "unknown",
       },
-      fixture: pageResult.fixture,
-      rounds: pageResult.rounds,
-      median: pageResult.median,
+      fixture,
+      rounds,
+      median: medianMetrics(rounds),
     };
     const encoded = `${JSON.stringify(result, null, 2)}\n`;
     if (options.outputPath) {
