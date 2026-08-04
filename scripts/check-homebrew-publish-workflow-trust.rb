@@ -21,6 +21,10 @@ PREFIX_FIRST_CHILD_PATH = File.join(
   REPO_ROOT,
   ".github/workflows/reusable-homebrew-prefix-first-child-publish.yml"
 )
+CLOSED_SELECTION_PATH = File.join(
+  REPO_ROOT,
+  ".github/workflows/reusable-homebrew-closed-selection-publish.yml"
+)
 WORKFLOW_ROOT = File.join(REPO_ROOT, ".github/workflows")
 HOST_RUNTIME_PREPARER_PATH = File.join(
   REPO_ROOT, "scripts/prepare-homebrew-recipe-host-runtime.py"
@@ -1131,6 +1135,62 @@ def check_native_compatibility_workflow(workflow)
           "if-no-files-found" => "error",
           "retention-days" => 14,
         }, "native compatibility CA evidence changed")
+end
+
+def check_closed_selection_workflow(workflow)
+  check(
+    workflow["name"] == "Reusable Homebrew closed-selection publish",
+    "closed-selection workflow name changed"
+  )
+  jobs = workflow_jobs(workflow)
+  check(jobs.keys.sort == %w[prepare publish],
+        "closed-selection workflow job set changed")
+  prepare = jobs.fetch("prepare")
+  publish = jobs.fetch("publish")
+  check(
+    prepare.fetch("outputs").fetch("campaign-tag") ==
+      "${{ steps.admit.outputs.campaign-tag }}",
+    "closed-selection prepare job does not export admitted campaign tag"
+  )
+  steps = job_steps(publish, "closed-selection publish")
+  download = named_step(
+    steps, "Download only the same-run prepared selection"
+  )
+  fetch = named_step(
+    steps, "Fetch the exact campaign for independent verification"
+  )
+  verify = named_step(
+    steps, "Verify the downloaded selection against its plan"
+  )
+  check(steps.index(download) < steps.index(fetch) &&
+        steps.index(fetch) < steps.index(verify),
+        "closed-selection campaign verification order changed")
+  check(fetch["shell"] == "bash" && fetch["env"] == {
+    "CAMPAIGN_TAG" => "${{ needs.prepare.outputs.campaign-tag }}",
+  }, "closed-selection campaign readback authority changed")
+  fetch_run = fetch.fetch("run")
+  [
+    "env -u GH_TOKEN -u GITHUB_TOKEN",
+    "-u HOMEBREW_GITHUB_API_TOKEN",
+    "-u HOMEBREW_GITHUB_PACKAGES_TOKEN",
+    "-u HOMEBREW_DOCKER_REGISTRY_TOKEN",
+    "homebrew-prefix-campaign-executor.py",
+    "fetch-campaign-release",
+    "--repository kandelo-dev/homebrew-tap-core",
+    '--tag "$CAMPAIGN_TAG"',
+    'closed-selection-verification/campaign.json',
+    'closed-selection-verification/receipt.json',
+  ].each do |fragment|
+    check(fetch_run.include?(fragment),
+          "closed-selection campaign readback lacks #{fragment}")
+  end
+  verify_run = verify.fetch("run")
+  check(verify_run.include?("--campaign") &&
+        verify_run.include?(
+          "closed-selection-verification/campaign.json"
+        ),
+        "closed-selection cross-job verifier lacks exact campaign input"
+  )
 end
 
 def check_first_publication(workflow)
@@ -10139,6 +10199,7 @@ begin
   all_workflows = load_all_workflows
   publisher = load_workflow(PUBLISHER_PATH)
   native_compatibility = load_workflow(NATIVE_COMPATIBILITY_PATH)
+  closed_selection = load_workflow(CLOSED_SELECTION_PATH)
   maintenance = load_workflow(MAINTENANCE_PATH)
   first_publication = load_workflow(FIRST_PUBLICATION_PATH)
   prefix_first_child = load_workflow(PREFIX_FIRST_CHILD_PATH)
@@ -10150,6 +10211,7 @@ begin
   check_privileged_recipe_host_runtime(all_workflows)
   check_publisher(publisher)
   check_native_compatibility_workflow(native_compatibility)
+  check_closed_selection_workflow(closed_selection)
   check_caller_validation_behavior(publisher)
   check_kandelo_main_admission_behavior(publisher)
   check_tap_source_binding_behavior(publisher)

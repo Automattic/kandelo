@@ -8298,6 +8298,11 @@ def validate_predecessor_campaign_compatibility(
     if (
         campaign_formula_evidence(campaign, formula)
         != campaign_formula_evidence(predecessor, predecessor_formula)
+        # WHY: Formula evidence intentionally carries only runtime identity.
+        # Predecessor byte reuse must also preserve the complete build/test
+        # graph or it would attribute old bytes to dependencies they never
+        # observed.
+        or formula["dependencies"] != predecessor_formula["dependencies"]
         or authority["current_kandelo_abi"]
         != predecessor_authority["current_kandelo_abi"]
         or authority["guest_layout"]

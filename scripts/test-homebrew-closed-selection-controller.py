@@ -48,11 +48,18 @@ class ClosedSelectionControllerTests(unittest.TestCase):
         self.index = {
             "dep": {
                 "dependencies": [],
+                "runtime_dependencies": [],
                 "name": "dep",
                 "version": "1",
             },
             "root": {
                 "dependencies": [
+                    {
+                        "full_name": "kandelo-dev/tap-core/dep",
+                        "version": "1",
+                    }
+                ],
+                "runtime_dependencies": [
                     {
                         "full_name": "kandelo-dev/tap-core/dep",
                         "version": "1",
@@ -315,6 +322,33 @@ class ClosedSelectionControllerTests(unittest.TestCase):
         ) -> tuple[str, ...]:
             return ("dep",) if name == "root" else ()
 
+        def runtime_selected_formula_order(
+            _campaign: dict,
+            index: dict,
+            roots: list[str],
+        ) -> tuple[str, ...]:
+            ordered: list[str] = []
+            visited: set[str] = set()
+
+            def visit(name: str) -> None:
+                if name in visited:
+                    return
+                for dependency in index[name].get(
+                    "runtime_dependencies",
+                    index[name]["dependencies"],
+                ):
+                    visit(
+                        dependency["full_name"].removeprefix(
+                            "kandelo-dev/tap-core/"
+                        )
+                    )
+                visited.add(name)
+                ordered.append(name)
+
+            for root in roots:
+                visit(root)
+            return tuple(ordered)
+
         def fetch_release(**arguments) -> None:
             dependencies = tuple(
                 pathlib.Path(path).name
@@ -395,6 +429,9 @@ class ClosedSelectionControllerTests(unittest.TestCase):
             ),
             "prepare_selection": prepare_selection,
             "prepare_selection_release": prepare_selection_release,
+            "runtime_selected_formula_order": (
+                runtime_selected_formula_order
+            ),
         }
 
     def test_real_executor_exposes_the_required_contract(self) -> None:
@@ -446,6 +483,7 @@ class ClosedSelectionControllerTests(unittest.TestCase):
         self,
     ) -> None:
         calls: list[tuple] = []
+        self.index["root"]["runtime_dependencies"] = []
         with tempfile.TemporaryDirectory() as directory:
             temporary = pathlib.Path(directory)
             plan_path = temporary / "plan.json"
@@ -523,6 +561,8 @@ class ClosedSelectionControllerTests(unittest.TestCase):
             temporary = pathlib.Path(directory)
             plan_path = temporary / "plan.json"
             plan_path.write_bytes(CONTROLLER.pretty_json(self.plan))
+            campaign_path = temporary / "campaign.json"
+            campaign_path.write_bytes(self.campaign_payload)
             prepared = temporary / "prepared"
             prepared.mkdir()
             value = {
@@ -575,6 +615,7 @@ class ClosedSelectionControllerTests(unittest.TestCase):
                             self.plan
                         ),
                         prepared_release=prepared,
+                        campaign_path=campaign_path,
                         executor_path=temporary / "executor.py",
                     )
             value["formulae"][0]["handoff"]["tag"] = (
@@ -599,8 +640,63 @@ class ClosedSelectionControllerTests(unittest.TestCase):
                             self.plan
                         ),
                         prepared_release=prepared,
+                        campaign_path=campaign_path,
                         executor_path=temporary / "executor.py",
                     )
+
+    def test_verify_rejects_omitted_runtime_dependency(self) -> None:
+        selection = {
+            "arch": "wasm32",
+            "campaign": {
+                "kandelo_commit": self.plan["kandelo_commit"],
+                "tag": self.plan["campaign_tag"],
+            },
+            "formulae": [
+                {
+                    "formula": "root",
+                    "handoff": {
+                        "tag": self.plan["handoffs"]["root"],
+                    },
+                }
+            ],
+            "kind": "kandelo-homebrew-closed-selection-candidate",
+            "roots": ["root"],
+            "schema": 1,
+            "tap": {
+                "repository": "kandelo-dev/homebrew-tap-core",
+                "source_commit": self.plan["source_tap_commit"],
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = pathlib.Path(directory)
+            campaign_path = temporary / "campaign.json"
+            campaign_path.write_bytes(self.campaign_payload)
+            prepared = temporary / "prepared"
+            prepared.mkdir()
+            (prepared / "fixture-selection.json").write_bytes(
+                CONTROLLER.pretty_json(selection)
+            )
+            with mock.patch.object(
+                CONTROLLER,
+                "load_executor",
+                return_value=self.fake_executor([]),
+            ), self.assertRaisesRegex(
+                CONTROLLER.ControllerError,
+                "handoffs differ",
+            ):
+                CONTROLLER.verify(
+                    selection_plan=(
+                        CONTROLLER.compact_json(self.plan)
+                        .decode()
+                        .rstrip("\n")
+                    ),
+                    selection_plan_sha256=CONTROLLER.plan_digest(
+                        self.plan
+                    ),
+                    prepared_release=prepared,
+                    campaign_path=campaign_path,
+                    executor_path=temporary / "executor.py",
+                )
 
     def test_verify_rejects_coherent_artifact_plan_substitution(self) -> None:
         substituted = json.loads(json.dumps(self.plan))
@@ -632,6 +728,8 @@ class ClosedSelectionControllerTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as directory:
             temporary = pathlib.Path(directory)
+            campaign_path = temporary / "campaign.json"
+            campaign_path.write_bytes(self.campaign_payload)
             prepared = temporary / "prepared"
             prepared.mkdir()
             (prepared / "fixture-selection.json").write_bytes(
@@ -656,6 +754,7 @@ class ClosedSelectionControllerTests(unittest.TestCase):
                             self.plan
                         ),
                         prepared_release=prepared,
+                        campaign_path=campaign_path,
                         executor_path=temporary / "executor.py",
                     )
 

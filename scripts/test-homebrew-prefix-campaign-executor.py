@@ -2620,6 +2620,25 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             )
         self.assertFalse(output.exists())
 
+    def test_predecessor_reuse_rejects_changed_build_test_version(
+        self,
+    ) -> None:
+        fixture = PredecessorDependencyReuseFixture(
+            scoped_dependency=True
+        )
+        self.addCleanup(fixture.close)
+        fixture.formulae[0]["version"] = "1.1"
+        fixture.target_formula["dependencies"][0]["version"] = "1.1"
+        write_json(fixture.campaign_path, fixture.campaign)
+        output = fixture.root / "changed-build-test-version"
+
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "predecessor campaign changes a bottle input",
+        ):
+            fixture.derive(output)
+        self.assertFalse(output.exists())
+
     def test_predecessor_reuse_authority_fails_closed(self) -> None:
         def schema_two(fixture: PredecessorReuseFixture) -> None:
             fixture.campaign["schema"] = 2

@@ -333,6 +333,7 @@ def load_executor(path: pathlib.Path) -> dict[str, Any]:
         "load_campaign",
         "prepare_selection",
         "prepare_selection_release",
+        "runtime_selected_formula_order",
     ):
         if name not in executor:
             fail(f"Kandelo selection executor lacks {name}")
@@ -372,6 +373,60 @@ def topological_formulae(
     return tuple(ordered)
 
 
+def load_plan_campaign(
+    *,
+    executor: dict[str, Any],
+    campaign_path: pathlib.Path,
+    plan: dict[str, Any],
+) -> tuple[dict[str, Any], bytes, dict[str, dict[str, Any]]]:
+    campaign, campaign_payload, index = executor["load_campaign"](
+        regular_file(campaign_path, "campaign manifest")
+    )
+    authority = campaign["authority"]
+    match = CAMPAIGN_TAG.fullmatch(plan["campaign_tag"])
+    assert match is not None
+    if (
+        hashlib.sha256(campaign_payload).hexdigest() != match.group(1)
+        or authority["kandelo_commit"] != plan["kandelo_commit"]
+        or authority["source_tap_commit"]
+        != plan["source_tap_commit"]
+        or authority["tap_repository"].lower() != TAP_REPOSITORY
+    ):
+        fail("campaign authority differs from the selection plan")
+    return campaign, campaign_payload, index
+
+
+def plan_formula_sets(
+    *,
+    executor: dict[str, Any],
+    campaign: dict[str, Any],
+    index: dict[str, dict[str, Any]],
+    plan: dict[str, Any],
+) -> tuple[set[str], tuple[str, ...]]:
+    proof = set(plan["roots"])
+    for root in plan["roots"]:
+        if root not in index:
+            fail(f"selection root {root} is absent from the campaign")
+        proof.update(
+            executor["dependency_closure"](campaign, index, root)
+        )
+    if set(plan["handoffs"]) != proof:
+        missing = sorted(proof - set(plan["handoffs"]))
+        extra = sorted(set(plan["handoffs"]) - proof)
+        fail(
+            "selection handoffs differ from the exact dependency "
+            f"closure (missing={missing}, extra={extra})"
+        )
+    runtime = executor["runtime_selected_formula_order"](
+        campaign,
+        index,
+        plan["roots"],
+    )
+    if not set(runtime).issubset(proof):
+        fail("selection runtime closure escapes its provenance closure")
+    return proof, runtime
+
+
 def prepare(
     *,
     plan_path: pathlib.Path,
@@ -396,35 +451,17 @@ def prepare(
         tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent)
     )
     try:
-        campaign, campaign_payload, index = executor["load_campaign"](
-            regular_file(campaign_path, "campaign manifest")
+        campaign, _campaign_payload, index = load_plan_campaign(
+            executor=executor,
+            campaign_path=campaign_path,
+            plan=plan,
         )
-        authority = campaign["authority"]
-        match = CAMPAIGN_TAG.fullmatch(plan["campaign_tag"])
-        assert match is not None
-        if (
-            hashlib.sha256(campaign_payload).hexdigest() != match.group(1)
-            or authority["kandelo_commit"] != plan["kandelo_commit"]
-            or authority["source_tap_commit"]
-            != plan["source_tap_commit"]
-            or authority["tap_repository"].lower() != TAP_REPOSITORY
-        ):
-            fail("campaign authority differs from the selection plan")
-
-        required = set(plan["roots"])
-        for root in plan["roots"]:
-            if root not in index:
-                fail(f"selection root {root} is absent from the campaign")
-            required.update(
-                executor["dependency_closure"](campaign, index, root)
-            )
-        if set(plan["handoffs"]) != required:
-            missing = sorted(required - set(plan["handoffs"]))
-            extra = sorted(set(plan["handoffs"]) - required)
-            fail(
-                "selection handoffs differ from the exact dependency "
-                f"closure (missing={missing}, extra={extra})"
-            )
+        required, _runtime = plan_formula_sets(
+            executor=executor,
+            campaign=campaign,
+            index=index,
+            plan=plan,
+        )
 
         ordered = topological_formulae(
             executor,
@@ -476,6 +513,7 @@ def prepare(
         selection_plan=compact_json(plan).decode("utf-8").removesuffix("\n"),
         selection_plan_sha256=plan_digest(plan),
         prepared_release=output,
+        campaign_path=campaign_path,
         executor_path=executor_path,
     )
 
@@ -509,10 +547,25 @@ def verify(
     selection_plan: str,
     selection_plan_sha256: str,
     prepared_release: pathlib.Path,
+    campaign_path: pathlib.Path,
     executor_path: pathlib.Path,
 ) -> dict[str, Any]:
     plan = expected_plan(selection_plan, selection_plan_sha256)
     executor = load_executor(executor_path)
+    try:
+        campaign, _campaign_payload, index = load_plan_campaign(
+            executor=executor,
+            campaign_path=campaign_path,
+            plan=plan,
+        )
+        _proof, runtime = plan_formula_sets(
+            executor=executor,
+            campaign=campaign,
+            index=index,
+            plan=plan,
+        )
+    except executor["ExecutorError"] as error:
+        fail(str(error))
     try:
         descriptor, _descriptor_payload, _manifest = executor[
             "load_prepared_selection_release"
@@ -558,19 +611,14 @@ def verify(
         ):
             fail("prepared selection has an invalid Formula handoff")
         observed_handoffs[record["formula"]] = record["handoff"]["tag"]
-    # WHY: the plan carries every handoff needed to verify build provenance,
-    # including build/test-only Formulae. The prepared selection carries only
-    # the runtime closure derived from the campaign. Require every emitted
-    # runtime handoff to match the plan exactly without confusing proof-only
-    # inputs with guest membership.
-    if (
-        not set(plan["roots"]).issubset(observed_handoffs)
-        or not set(observed_handoffs).issubset(plan["handoffs"])
-        or any(
-            tag != plan["handoffs"][name]
-            for name, tag in observed_handoffs.items()
-        )
-    ):
+    # WHY: the artifact crosses a job boundary. Derive runtime members
+    # again from the independently fetched, content-addressed campaign. A
+    # self-consistent selection could otherwise omit a dependency.
+    expected_handoffs = {
+        name: plan["handoffs"][name]
+        for name in runtime
+    }
+    if observed_handoffs != expected_handoffs:
         fail("prepared selection handoffs differ from its plan")
     return {
         "formula_count": len(observed_handoffs),
@@ -616,6 +664,9 @@ def parse_args() -> argparse.Namespace:
         "--prepared-release", type=pathlib.Path, required=True
     )
     verify_parser.add_argument(
+        "--campaign", type=pathlib.Path, required=True
+    )
+    verify_parser.add_argument(
         "--executor", type=pathlib.Path, required=True
     )
     return parser.parse_args()
@@ -654,6 +705,7 @@ def main() -> int:
                 selection_plan=arguments.selection_plan,
                 selection_plan_sha256=arguments.selection_plan_sha256,
                 prepared_release=arguments.prepared_release,
+                campaign_path=arguments.campaign,
                 executor_path=arguments.executor,
             )
             print("homebrew-closed-selection-controller: verified exact plan")

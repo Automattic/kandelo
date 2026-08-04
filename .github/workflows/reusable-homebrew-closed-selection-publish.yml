@@ -36,6 +36,7 @@ jobs:
       artifact-id: ${{ steps.upload.outputs.artifact-id }}
       artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
       caller-sha: ${{ steps.admit.outputs.caller-sha }}
+      campaign-tag: ${{ steps.admit.outputs.campaign-tag }}
       campaign-kandelo-commit: >-
         ${{ steps.admit.outputs.campaign-kandelo-commit }}
       plan-sha256: ${{ steps.admit.outputs.plan-sha256 }}
@@ -284,6 +285,27 @@ jobs:
           artifact-ids: ${{ needs.prepare.outputs.artifact-id }}
           path: ${{ runner.temp }}/closed-selection-preparation
 
+      - name: Fetch the exact campaign for independent verification
+        shell: bash
+        env:
+          CAMPAIGN_TAG: ${{ needs.prepare.outputs.campaign-tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/closed-selection-verification"
+          env -u GH_TOKEN -u GITHUB_TOKEN \
+            -u HOMEBREW_GITHUB_API_TOKEN \
+            -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+            -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+            python3 \
+              kandelo/scripts/homebrew-prefix-campaign-executor.py \
+              fetch-campaign-release \
+              --repository kandelo-dev/homebrew-tap-core \
+              --tag "$CAMPAIGN_TAG" \
+              --out \
+                "$RUNNER_TEMP/closed-selection-verification/campaign.json" \
+              --receipt-out \
+                "$RUNNER_TEMP/closed-selection-verification/receipt.json"
+
       - name: Verify the downloaded selection against its plan
         shell: bash
         env:
@@ -307,6 +329,8 @@ jobs:
               --selection-plan-sha256 "$PLAN_SHA256" \
               --prepared-release \
                 "$RUNNER_TEMP/closed-selection-preparation" \
+              --campaign \
+                "$RUNNER_TEMP/closed-selection-verification/campaign.json" \
               --executor \
                 kandelo/scripts/homebrew-prefix-campaign-executor.py
 

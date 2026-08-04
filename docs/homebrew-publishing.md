@@ -2290,9 +2290,12 @@ Readers continue to accept regular-file-only `zip-stored-v1` releases.
 The write job has only `actions: read` and `contents: write`. It binds
 the artifact ID, artifact digest, workflow run, and head commit. It also
 compares the admitted plan digest with the original reusable-workflow
-input, then validates the downloaded descriptor and archive against that
-independently trusted plan. Changing a coherent artifact plan and
-selection together cannot select different Formulae.
+input. Before validating the downloaded descriptor, it anonymously
+refetches the campaign by the admitted content-addressed tag. The pinned
+executor independently derives the runtime Formula set from that
+campaign. It requires the artifact's Formula names and handoff tags to
+match exactly. Changing a coherent artifact plan and selection together
+therefore cannot omit a runtime dependency or select different Formulae.
 
 The write job delegates the release lifecycle to
 `publish-homebrew-closed-selection-release.sh`. That wrapper reuses the
@@ -2645,11 +2648,13 @@ Candidate dependency versions come from the same exact Homebrew metadata
 resolution. When that closure differs from the historical Formula sidecar,
 the dependent bottle also requires a build. This prevents a campaign from
 publishing new dependency metadata beside bytes built for the old closure.
-Build and test scope alone does not change that runtime identity. It can change
-the scheduling closure, but reuse comparison, Formula identity inside a
-handoff, and generated sidecars compare the explicit runtime subset. The
-handoff's separate `dependency_handoffs` evidence still records the complete
-build/test closure that produced the bottle.
+Build and test scope alone does not change runtime identity. Formula
+identity inside a handoff and generated sidecars therefore use the
+explicit runtime subset. Byte reuse is stricter: its build provenance
+must match the complete scheduling closure. A new or changed
+build/test-only edge requires a rebuild instead of relabeling old bytes
+as if they had observed that dependency. The handoff's separate
+`dependency_handoffs` evidence records that complete build/test closure.
 
 `homebrew-prefix-campaign-executor.py derive-reuse` consumes that authority.
 It requires the sealed candidate source tree and a clean old-tap checkout at

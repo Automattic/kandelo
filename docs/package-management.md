@@ -633,6 +633,9 @@ test requirements. Its `runtime_dependencies` list is the exact required and
 recommended subset recorded in the handoff's Formula identity and sidecars.
 The handoff keeps the full build closure as separate provenance evidence. This
 lets CI stage a test-only tool without making every user install that tool.
+Changing that build closure still invalidates byte reuse. Old bytes
+cannot claim they were built or tested with a dependency they never
+observed.
 The runtime list must be a canonical subset with the same versions; an older
 campaign without the scoped field keeps its historical one-list meaning.
 

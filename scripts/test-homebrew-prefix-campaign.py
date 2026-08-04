@@ -1954,6 +1954,54 @@ class PrefixCampaignTests(unittest.TestCase):
         )
         self.assertEqual(alpha["runtime_dependencies"], [])
 
+    def test_unproven_test_only_dependency_forces_rebuild(self) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        base = fixture.dependencies()
+
+        def scoped_metadata(
+            native: pathlib.Path,
+            source: pathlib.Path,
+            tap_name: str,
+            formulae: list[str],
+        ) -> dict[str, dict[str, Any]]:
+            metadata = base.resolve_formula_metadata(
+                native,
+                source,
+                tap_name,
+                formulae,
+            )
+            metadata["alpha"]["dependencies"] = ["beta", "libyaml"]
+            metadata["alpha"]["runtime_dependencies"] = ["beta"]
+            return metadata
+
+        campaign = CAMPAIGN.derive_campaign(
+            fixture.options(),
+            CAMPAIGN.CampaignDependencies(
+                fetch_bottle=base.fetch_bottle,
+                probe_destination=base.probe_destination,
+                resolve_formula_metadata=scoped_metadata,
+                load_historical_formula=base.load_historical_formula,
+            ),
+        )
+        alpha = next(
+            formula
+            for formula in campaign["formulae"]
+            if formula["name"] == "alpha"
+        )
+        # The old sidecar proves only its runtime dependencies. Until one
+        # scoped campaign has rebuilt this Formula, it cannot truthfully
+        # claim that old bytes were built and tested with libyaml.
+        for variant in alpha["variants"]:
+            self.assertEqual(
+                variant["disposition"]["kind"],
+                "required-rebuild",
+            )
+            self.assertIn(
+                "dependency-closure-changed",
+                variant["disposition"]["reasons"],
+            )
+
     def test_protected_overlay_is_materialized_and_tree_bound(self) -> None:
         with tempfile.TemporaryDirectory(
             prefix="campaign-overlay-test-"

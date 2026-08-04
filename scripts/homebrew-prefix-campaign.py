@@ -2668,8 +2668,9 @@ def inspect_variant(
     if variant.version != variant.candidate_version:
         reasons.append("pkg-version-changed")
     # WHY: even unchanged Formula text can resolve a different dependency
-    # version after a sibling Formula advances. Reusing that bottle would keep
-    # the old runtime closure while publishing candidate dependency metadata.
+    # version after a sibling Formula advances. This comparison includes
+    # build/test-only edges because reusing old bytes would otherwise claim
+    # they were built and tested against a closure they never observed.
     if variant.dependencies != variant.candidate_dependencies:
         reasons.append("dependency-closure-changed")
     if (
@@ -3731,9 +3732,7 @@ def _derive_campaign_from_snapshots(
                     historical_formula_commit=built_from_tap_commit,
                     historical_formula_sha256=historical_source_sha,
                     dependencies=normalized_dependencies,
-                    candidate_dependencies=(
-                        resolved_runtime_dependencies[name]
-                    ),
+                    candidate_dependencies=resolved_dependencies[name],
                     formula_sidecar_path=sidecar_path.relative_to(old_tap_root).as_posix(),
                     formula_sidecar_sha256=sha256_bytes(sidecar_bytes),
                     link_path=link_rel,

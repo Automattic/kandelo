@@ -12,7 +12,7 @@ WORKFLOW = ARGV.empty? ?
     ".github/workflows/reusable-homebrew-closed-selection-publish.yml"
   ) : File.expand_path(ARGV.fetch(0))
 WORKFLOW_DIGEST =
-  "73d1c1f053ed0d6037ae6a1a4b0fec276116a4b597ae73b7e0c9d25e5fa51362"
+  "5078978d37bc25c2e4eaa0e5a1e956cd8a5b7217d7e51d407cff622808715425"
 PREPARATION_ARTIFACT = "homebrew-closed-selection-preparation"
 CHECKOUT_ACTION =
   "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
