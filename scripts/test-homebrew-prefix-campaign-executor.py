@@ -108,8 +108,12 @@ def make_formula(
     version: str,
     dependencies: list[tuple[str, str]],
     arches: list[str],
+    *,
+    runtime_dependencies: list[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     payload = formula_source(name)
+    if runtime_dependencies is None:
+        runtime_dependencies = dependencies
     return {
         "dependencies": [
             {
@@ -140,6 +144,13 @@ def make_formula(
             "sha256": sha256(payload),
         },
         "name": name,
+        "runtime_dependencies": [
+            {
+                "full_name": f"{TAP_NAME}/{dependency}",
+                "version": dependency_version,
+            }
+            for dependency, dependency_version in runtime_dependencies
+        ],
         "source_kind": "fixture",
         "variants": [
             {
@@ -157,7 +168,12 @@ def make_formula(
 
 
 class Fixture:
-    def __init__(self, *, multi_arch: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        multi_arch: bool = False,
+        scoped_beta_dependency: bool = False,
+    ) -> None:
         self.temporary = tempfile.TemporaryDirectory(
             prefix="homebrew-prefix-executor-test-"
         )
@@ -185,6 +201,9 @@ class Fixture:
                 "2.0",
                 [("alpha", "1.0")],
                 arches,
+                runtime_dependencies=(
+                    [] if scoped_beta_dependency else None
+                ),
             ),
         ]
         self.campaign = {
@@ -243,7 +262,7 @@ class Fixture:
                         "name": value["full_name"].rsplit("/", 1)[1],
                         "version": value["version"],
                     }
-                    for value in package["dependencies"]
+                    for value in package["runtime_dependencies"]
                 ]
                 write_json(
                     path,
@@ -837,8 +856,16 @@ class PredecessorReuseFixture(Fixture):
         "scripts/homebrew-verify-public-bottle.ts",
     )
 
-    def __init__(self, *, dependent: bool = False) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        *,
+        dependent: bool = False,
+        legacy_predecessor: bool = False,
+        scoped_dependency: bool = False,
+    ) -> None:
+        super().__init__(
+            scoped_beta_dependency=scoped_dependency,
+        )
         if not dependent:
             self.formulae = [self.formulae[0]]
         self.target_formula = self.formulae[-1]
@@ -858,6 +885,9 @@ class PredecessorReuseFixture(Fixture):
             }
         )
         self.predecessor = copy.deepcopy(self.campaign)
+        if legacy_predecessor:
+            for formula in self.predecessor["formulae"]:
+                formula.pop("runtime_dependencies")
         self.predecessor["authority"]["kandelo_commit"] = "1" * 40
         self.predecessor_path = self.root / "predecessor-campaign.json"
         write_json(self.predecessor_path, self.predecessor)
@@ -1056,7 +1086,9 @@ class PredecessorReuseFixture(Fixture):
                                 )[1],
                                 "version": dependency["version"],
                             }
-                            for dependency in formula["dependencies"]
+                            for dependency in formula[
+                                "runtime_dependencies"
+                            ]
                         ],
                         "formula_path": f"Formula/{name}.rb",
                         "formula_revision": 0,
@@ -1349,8 +1381,17 @@ class PredecessorReuseFixture(Fixture):
 
 
 class PredecessorDependencyReuseFixture(PredecessorReuseFixture):
-    def __init__(self) -> None:
-        super().__init__(dependent=True)
+    def __init__(
+        self,
+        *,
+        legacy_predecessor: bool = False,
+        scoped_dependency: bool = False,
+    ) -> None:
+        super().__init__(
+            dependent=True,
+            legacy_predecessor=legacy_predecessor,
+            scoped_dependency=scoped_dependency,
+        )
 
 
 class FinalTapFixture(Fixture):
@@ -2380,6 +2421,29 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
         )
         self.assertTrue((prepared / "release-manifest.json").is_file())
 
+    def test_legacy_predecessor_without_scopes_remains_reusable(
+        self,
+    ) -> None:
+        fixture = PredecessorDependencyReuseFixture(
+            legacy_predecessor=True
+        )
+        self.addCleanup(fixture.close)
+        handoff = fixture.root / "legacy-predecessor-handoff"
+
+        fixture.derive(handoff)
+
+        manifest = json.loads((handoff / "handoff.json").read_text())
+        self.assertEqual(
+            manifest["formula"]["dependencies"],
+            [
+                {
+                    "full_name": f"{TAP_NAME}/alpha",
+                    "version": "1.0",
+                }
+            ],
+        )
+        self.assertEqual(manifest["publications"][0]["kind"], "reuse")
+
     def test_default_predecessor_destination_verifier_binds_public_oci(
         self,
     ) -> None:
@@ -2453,7 +2517,9 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
     def test_predecessor_reuse_reseals_matching_dependency_closures(
         self,
     ) -> None:
-        fixture = PredecessorDependencyReuseFixture()
+        fixture = PredecessorDependencyReuseFixture(
+            scoped_dependency=True
+        )
         self.addCleanup(fixture.close)
         handoff = fixture.root / "dependent-successor-handoff"
         fixture.derive(handoff)
@@ -2470,6 +2536,7 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             (handoff / "handoff.json").read_text()
         )
         self.assertEqual(successor_manifest["formula"]["name"], "beta")
+        self.assertEqual(successor_manifest["formula"]["dependencies"], [])
         self.assertEqual(
             successor_manifest["dependency_handoffs"],
             [
@@ -2514,6 +2581,13 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
                 "successor_handoff_tag"
             ],
         )
+        sidecars = json.loads(
+            (
+                handoff
+                / "payload/wasm32/composition/sidecars-input.json"
+            ).read_text()
+        )
+        self.assertEqual(sidecars["packages"][0]["dependencies"], [])
         prepared = fixture.root / "dependent-successor-release"
         EXECUTOR.prepare_release(
             campaign_path=fixture.campaign_path,
@@ -4794,9 +4868,9 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
         output = fixture.root / "incomplete-selection"
 
         with self.assertRaisesRegex(
-            EXECUTOR.ExecutorError,
-            "selected dependency closure lacks handoffs.*alpha",
-        ):
+                EXECUTOR.ExecutorError,
+                "selected provenance closure lacks handoffs.*alpha",
+            ):
             EXECUTOR.prepare_selection(
                 campaign_path=fixture.campaign_path,
                 source_tap_root=fixture.source,
@@ -5365,6 +5439,202 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             "version differs from its Formula",
         ):
             EXECUTOR.load_campaign(fixture.campaign_path)
+
+    def test_runtime_dependency_scope_fails_closed(self) -> None:
+        mutations = {
+            "outside scheduling graph": (
+                "exact scheduling-dependency subset",
+                [
+                    {
+                        "full_name": f"{TAP_NAME}/beta",
+                        "version": "2.0",
+                    }
+                ],
+            ),
+            "wrong scheduling version": (
+                "exact scheduling-dependency subset",
+                [
+                    {
+                        "full_name": f"{TAP_NAME}/alpha",
+                        "version": "9.9",
+                    }
+                ],
+            ),
+            "duplicate": (
+                "must be unique and sorted",
+                [
+                    {
+                        "full_name": f"{TAP_NAME}/alpha",
+                        "version": "1.0",
+                    },
+                    {
+                        "full_name": f"{TAP_NAME}/alpha",
+                        "version": "1.0",
+                    },
+                ],
+            ),
+        }
+        for label, (expected, runtime_dependencies) in mutations.items():
+            with self.subTest(label=label):
+                fixture = Fixture()
+                self.addCleanup(fixture.close)
+                fixture.formulae[1]["runtime_dependencies"] = (
+                    runtime_dependencies
+                )
+                write_json(fixture.campaign_path, fixture.campaign)
+                with self.assertRaisesRegex(
+                    EXECUTOR.ExecutorError,
+                    expected,
+                ):
+                    EXECUTOR.load_campaign(fixture.campaign_path)
+
+        formula = make_formula(
+            "gamma",
+            "3.0",
+            [("alpha", "1.0"), ("beta", "2.0")],
+            ["wasm32"],
+        )
+        formula["runtime_dependencies"].reverse()
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "must be unique and sorted",
+        ):
+            EXECUTOR.dependency_names_for_field(
+                formula,
+                TAP_NAME,
+                "runtime_dependencies",
+            )
+
+    def test_build_only_dependency_orders_without_becoming_runtime(
+        self,
+    ) -> None:
+        fixture = Fixture(scoped_beta_dependency=True)
+        self.addCleanup(fixture.close)
+        _campaign, _payload, index = EXECUTOR.load_campaign(
+            fixture.campaign_path
+        )
+        self.assertEqual(
+            EXECUTOR.dependency_closure(
+                fixture.campaign,
+                index,
+                "beta",
+            ),
+            ("alpha",),
+        )
+        self.assertEqual(
+            EXECUTOR.runtime_dependency_closure(
+                fixture.campaign,
+                index,
+                "beta",
+            ),
+            (),
+        )
+        alpha_handoff = fixture.root / "alpha-handoff"
+        fixture.derive(
+            "alpha",
+            [("wasm32", fixture.publication("alpha", "wasm32"))],
+            [],
+            alpha_handoff,
+        )
+
+        missing_output = fixture.root / "missing-build-dependency"
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "dependency handoffs differ from the exact campaign closure",
+        ):
+            fixture.derive(
+                "beta",
+                [("wasm32", fixture.publication("beta", "wasm32"))],
+                [],
+                missing_output,
+            )
+        self.assertFalse(missing_output.exists())
+
+        beta_handoff = fixture.root / "beta-handoff"
+        fixture.derive(
+            "beta",
+            [("wasm32", fixture.publication("beta", "wasm32"))],
+            [alpha_handoff],
+            beta_handoff,
+        )
+        manifest = json.loads(
+            (beta_handoff / "handoff.json").read_text()
+        )
+        self.assertEqual(manifest["formula"]["dependencies"], [])
+        self.assertEqual(
+            [
+                value["formula"]
+                for value in manifest["dependency_handoffs"]
+            ],
+            ["alpha"],
+        )
+        sidecars = json.loads(
+            (
+                beta_handoff
+                / "payload/wasm32/composition/sidecars-input.json"
+            ).read_text()
+        )
+        self.assertEqual(sidecars["packages"][0]["dependencies"], [])
+
+        runtime_selection = fixture.root / "runtime-only-selection"
+        EXECUTOR.prepare_selection(
+            campaign_path=fixture.campaign_path,
+            source_tap_root=fixture.source,
+            roots=["beta"],
+            arch="wasm32",
+            handoff_roots=[alpha_handoff, beta_handoff],
+            output=runtime_selection,
+            bottle_merger=fixture.merge_dependency,
+            sidecar_generator=fixture.generate_sidecars,
+            tap_validator=fixture.validate_tap,
+        )
+        selection = json.loads(
+            (runtime_selection / "selection.json").read_text()
+        )
+        self.assertEqual(
+            [value["formula"] for value in selection["formulae"]],
+            ["beta"],
+        )
+        self.assertFalse(
+            (runtime_selection / "tap/Formula/alpha.rb").exists()
+        )
+        self.assertEqual(
+            json.loads(
+                (
+                    runtime_selection / "tap/Kandelo/metadata.json"
+                ).read_text()
+            )["packages"],
+            [{"name": "beta"}],
+        )
+
+        explicit_selection = fixture.root / "explicit-build-dependency"
+        EXECUTOR.prepare_selection(
+            campaign_path=fixture.campaign_path,
+            source_tap_root=fixture.source,
+            roots=["alpha", "beta"],
+            arch="wasm32",
+            handoff_roots=[alpha_handoff, beta_handoff],
+            output=explicit_selection,
+            bottle_merger=fixture.merge_dependency,
+            sidecar_generator=fixture.generate_sidecars,
+            tap_validator=fixture.validate_tap,
+        )
+        explicit = json.loads(
+            (explicit_selection / "selection.json").read_text()
+        )
+        self.assertEqual(
+            [value["formula"] for value in explicit["formulae"]],
+            ["alpha", "beta"],
+        )
+        self.assertEqual(
+            len(
+                {
+                    value["formula"]
+                    for value in explicit["formulae"]
+                }
+            ),
+            2,
+        )
 
     def test_deterministic_checkout_identity_matches_git(self) -> None:
         fixture = Fixture()

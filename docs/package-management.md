@@ -626,6 +626,16 @@ Bump `build.toml` `revision` only when a legacy Kandelo package archive cache
 key should change. Do not bump it for Formula-only docs, tap metadata, or
 browser-gallery wording.
 
+Prefix campaigns distinguish dependencies needed while producing a bottle
+from dependencies needed after pouring it. The campaign's `dependencies` list
+is the full same-tap scheduling closure, including fully qualified build and
+test requirements. Its `runtime_dependencies` list is the exact required and
+recommended subset recorded in the handoff's Formula identity and sidecars.
+The handoff keeps the full build closure as separate provenance evidence. This
+lets CI stage a test-only tool without making every user install that tool.
+The runtime list must be a canonical subset with the same versions; an older
+campaign without the scoped field keeps its historical one-list meaning.
+
 A closed tap recipe runs as a separate unprivileged identity inside a
 root-owned, empty service root. The publisher mounts only its attested recipe,
 verified source, projected SDK/tooling, sysroot, sealed Homebrew dependency

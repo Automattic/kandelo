@@ -294,7 +294,12 @@ class ClosedSelectionControllerTests(unittest.TestCase):
         ):
             CONTROLLER.validate_plan(plan)
 
-    def fake_executor(self, calls: list[tuple]) -> dict:
+    def fake_executor(
+        self,
+        calls: list[tuple],
+        *,
+        selected_formulae: tuple[str, ...] = ("dep", "root"),
+    ) -> dict:
         def dependency_names(formula: dict, _tap_name: str) -> tuple[str, ...]:
             return tuple(
                 item["full_name"].removeprefix(
@@ -341,7 +346,7 @@ class ClosedSelectionControllerTests(unittest.TestCase):
                         "formula": name,
                         "handoff": {"tag": self.plan["handoffs"][name]},
                     }
-                    for name in ("dep", "root")
+                    for name in selected_formulae
                 ],
                 "kind": "kandelo-homebrew-closed-selection-candidate",
                 "roots": ["root"],
@@ -436,6 +441,46 @@ class ClosedSelectionControllerTests(unittest.TestCase):
                 ],
             )
             self.assertTrue((output / "fixture-selection.json").is_file())
+
+    def test_prepare_verifies_proof_only_handoff_without_selecting_it(
+        self,
+    ) -> None:
+        calls: list[tuple] = []
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = pathlib.Path(directory)
+            plan_path = temporary / "plan.json"
+            plan_path.write_bytes(CONTROLLER.pretty_json(self.plan))
+            campaign_path = temporary / "campaign.json"
+            campaign_path.write_bytes(self.campaign_payload)
+            source_root = temporary / "source"
+            source_root.mkdir()
+            executor_path = temporary / "executor.py"
+            executor_path.touch()
+            output = temporary / "prepared"
+            with mock.patch.object(
+                CONTROLLER,
+                "load_executor",
+                return_value=self.fake_executor(
+                    calls,
+                    selected_formulae=("root",),
+                ),
+            ):
+                summary = CONTROLLER.prepare(
+                    plan_path=plan_path,
+                    campaign_path=campaign_path,
+                    source_tap_root=source_root,
+                    executor_path=executor_path,
+                    output=output,
+                )
+        self.assertEqual(summary["formula_count"], 1)
+        self.assertEqual(
+            calls,
+            [
+                ("fetch", "dep", ()),
+                ("fetch", "root", ("dep",)),
+                ("prepare", ("dep", "root")),
+            ],
+        )
 
     def test_prepare_rejects_extra_handoff_before_fetch(self) -> None:
         plan = json.loads(json.dumps(self.plan))

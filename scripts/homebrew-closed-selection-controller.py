@@ -558,7 +558,19 @@ def verify(
         ):
             fail("prepared selection has an invalid Formula handoff")
         observed_handoffs[record["formula"]] = record["handoff"]["tag"]
-    if observed_handoffs != plan["handoffs"]:
+    # WHY: the plan carries every handoff needed to verify build provenance,
+    # including build/test-only Formulae. The prepared selection carries only
+    # the runtime closure derived from the campaign. Require every emitted
+    # runtime handoff to match the plan exactly without confusing proof-only
+    # inputs with guest membership.
+    if (
+        not set(plan["roots"]).issubset(observed_handoffs)
+        or not set(observed_handoffs).issubset(plan["handoffs"])
+        or any(
+            tag != plan["handoffs"][name]
+            for name, tag in observed_handoffs.items()
+        )
+    ):
         fail("prepared selection handoffs differ from its plan")
     return {
         "formula_count": len(observed_handoffs),

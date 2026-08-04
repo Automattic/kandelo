@@ -2151,6 +2151,24 @@ the exact tap-qualified identity and name a Formula in the campaign inventory.
 This keeps host tooling out of bottle handoffs while preventing an incomplete
 guest closure from appearing usable.
 
+Each campaign Formula keeps two related dependency lists:
+
+- `dependencies` is the scheduling graph. It contains every fully qualified
+  same-tap runtime, recommended, build, or test dependency. The controller uses
+  this graph to wait for and stage every bottle needed to build and test the
+  Formula.
+- `runtime_dependencies` contains only required and recommended dependencies.
+  This is the exact list sealed into the Formula identity inside its handoff
+  and into composition sidecars for somebody who later pours the bottle.
+
+`runtime_dependencies` must be a sorted, duplicate-free, version-identical
+subset of `dependencies`. A dependency declared in both runtime and test scope
+therefore appears once in both lists. A test-only dependency appears only in
+the scheduling list: its bottle is available to the test job, but it is not
+misrepresented as software required by the installed package. Older immutable
+campaigns that lack `runtime_dependencies` use their existing `dependencies`
+list for both meanings.
+
 Current protected `main` remains the live mutation authority. An
 ordinary publication requires exact equality. The campaign instead may
 use its sealed Kandelo source only while that SHA remains an ancestor of
@@ -2196,16 +2214,21 @@ bash scripts/dev-shell.sh python3 \
   --out out
 ```
 
-The caller supplies exactly the selected transitive closure. Extra
-handoffs are rejected rather than silently widening the product, and
-unselected Formulae are omitted from the prepared tap. The generated
-`selection.json` binds the campaign, prepared tap tree, handoff
-manifests, and bottle archives. The normal whole-tap validator must also
-accept the generated Formula blocks and sidecars. `out/tap` is a local
-candidate; this command does not publish it or move a product pointer.
-Aliases for selected Formulae stay in the prepared tap. Aliases for
-omitted Formulae are omitted too, so a narrow selection does not contain
-a dangling name for software outside its dependency closure.
+The caller supplies exactly the selected build-provenance closure. That
+set includes build/test-only handoffs so the executor can verify how each
+selected bottle was produced. The prepared tap, sidecars, and
+`selection.json` contain only the independently derived runtime closure.
+A build/test-only Formula therefore does not become guest software unless
+it is also named as a product root or reached through a runtime dependency.
+
+Extra handoffs are rejected rather than silently widening either closure.
+The generated `selection.json` binds the campaign, prepared tap tree,
+runtime handoff manifests, and bottle archives. The normal whole-tap
+validator must also accept the generated Formula blocks and sidecars.
+`out/tap` is a local candidate; this command does not publish it or move a
+product pointer. Aliases for selected Formulae stay in the prepared tap.
+Aliases for omitted Formulae are omitted too, so a narrow selection does
+not contain a dangling name for software outside its runtime closure.
 
 Publishing a closed selection uses a small, reviewed plan. The plan
 names:
@@ -2214,7 +2237,7 @@ names:
 - the campaign's Kandelo and source-tap commits;
 - the sorted product roots; and
 - the exact content-addressed Formula handoff tag for every member of
-  the roots' dependency closure.
+  the roots' build-provenance closure.
 
 The plan is canonical compact JSON and has a separate SHA-256 input. The
 publisher rejects a missing or extra handoff, a dependency outside the
@@ -2242,7 +2265,7 @@ repository, workflow path, caller commit, mutable Kandelo ref, or either
 execution commit that no longer equals its public protected `main`.
 
 The read-only preparation job anonymously fetches the campaign and every
-Formula handoff. Kandelo's campaign executor reconstructs the sealed
+provenance handoff. Kandelo's campaign executor reconstructs the sealed
 source tap from the exact source checkout. It validates the campaign's
 base, overlay manifest, file identities, and final Git tree. Code in the
 tap checkout remains inert data and is never executed as a materializer.
@@ -2622,6 +2645,11 @@ Candidate dependency versions come from the same exact Homebrew metadata
 resolution. When that closure differs from the historical Formula sidecar,
 the dependent bottle also requires a build. This prevents a campaign from
 publishing new dependency metadata beside bytes built for the old closure.
+Build and test scope alone does not change that runtime identity. It can change
+the scheduling closure, but reuse comparison, Formula identity inside a
+handoff, and generated sidecars compare the explicit runtime subset. The
+handoff's separate `dependency_handoffs` evidence still records the complete
+build/test closure that produced the bottle.
 
 `homebrew-prefix-campaign-executor.py derive-reuse` consumes that authority.
 It requires the sealed candidate source tree and a clean old-tap checkout at
