@@ -3022,8 +3022,14 @@ def predecessor_reuse_inputs(
     handoff_root: pathlib.Path,
     handoff: dict[str, Any],
     arch: str,
+    expected_formula_source_sha256: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     name = formula["name"]
+    expected_formula_source_sha256 = require_string(
+        expected_formula_source_sha256,
+        f"predecessor {name}/{arch} Formula source SHA-256",
+        SHA256,
+    )
     publication = handoff_publication(
         handoff, arch, f"predecessor {name}/{arch}"
     )
@@ -3205,9 +3211,8 @@ def predecessor_reuse_inputs(
         or package["bottle_rebuild"]
         != formula["destination"]["bottle_rebuild"]
         or package["formula_path"] != f"Formula/{name}.rb"
-        or package["formula_source_sha256"] != formula["formula_source"][
-            "sha256"
-        ]
+        or package["formula_source_sha256"]
+        != expected_formula_source_sha256
         or dependencies
         != runtime_dependency_records(
             formula,
@@ -9075,12 +9080,27 @@ def derive_predecessor_reuse(
             }
         )
     validate_dependency_records(dependency_records, dependency_identities)
+    # WHY: build handoffs bind the Formula after build-only bottle metadata
+    # is normalized to its reserved destination. Reuse handoffs instead bind
+    # the sealed successor Formula that authorized those historical bytes.
+    expected_predecessor_formula_sha256 = (
+        prepared_formula_sha256(
+            source_tap_root,
+            predecessor,
+            predecessor_formula,
+        )
+        if predecessor_kind == "build"
+        else predecessor_formula["formula_source"]["sha256"]
+    )
     extracted, archive_record = predecessor_reuse_inputs(
         campaign=predecessor,
         formula=predecessor_formula,
         handoff_root=predecessor_handoff_root,
         handoff=predecessor_handoff,
         arch=arch,
+        expected_formula_source_sha256=(
+            expected_predecessor_formula_sha256
+        ),
     )
     destination = destination_verifier(
         campaign,

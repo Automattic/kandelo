@@ -862,12 +862,63 @@ class PredecessorReuseFixture(Fixture):
         dependent: bool = False,
         legacy_predecessor: bool = False,
         partial_multiarch: bool = False,
+        prepared_formula_differs: bool = False,
+        raw_predecessor_build_digest: bool = False,
         scoped_dependency: bool = False,
     ) -> None:
         super().__init__(
             multi_arch=partial_multiarch,
             scoped_beta_dependency=scoped_dependency,
         )
+        self.raw_predecessor_build_digest = (
+            raw_predecessor_build_digest
+        )
+        if prepared_formula_differs:
+            prepared_target = (
+                self.formulae[-1] if dependent else self.formulae[0]
+            )
+            name = prepared_target["name"]
+            source = self.source / prepared_target["formula_source"]["path"]
+            retired_prefix = json.loads(
+                (ROOT / "homebrew/kandelo-guest-layout.json").read_text()
+            )["retired_prefixes"][0]
+            fixture_bottle_sha256 = "a" * 64
+            payload = formula_source(name).replace(
+                b"\nend\n",
+                (
+                    "\n  bottle do\n"
+                    '    root_url "https://ghcr.io/v2/'
+                    f'{TAP_REPOSITORY}/{name}"\n'
+                    f'    sha256 cellar: "{retired_prefix}/Cellar", '
+                    f'wasm32_kandelo: "{fixture_bottle_sha256}"\n'
+                    "  end\n\n"
+                    "end\n"
+                ).encode(),
+            )
+            source.write_bytes(payload)
+            prepared_target["destination"].update(
+                {
+                    "bottle_rebuild": 1,
+                    "reference": f"{prepared_target['version']}-1",
+                }
+            )
+            prepared_target["formula_source"].update(
+                {
+                    "identity_excluding_bottle_sha256": (
+                        EXECUTOR.CAMPAIGN_FORMULA.formula_identity(
+                            source,
+                            repository_root=ROOT,
+                        )
+                    ),
+                    "sha256": sha256(payload),
+                }
+            )
+            self.source_tree = EXECUTOR.filesystem_git_tree_oid(
+                self.source, "prepared Formula fixture target source"
+            )
+            self.campaign["authority"]["source_materialization"][
+                "tree_git_oid"
+            ] = self.source_tree
         self.partial_multiarch = partial_multiarch
         if not dependent:
             self.formulae = [self.formulae[0]]
@@ -1041,6 +1092,11 @@ class PredecessorReuseFixture(Fixture):
         formula = self.target_formula
         name = self.target_name
         arch = "wasm32"
+        prepared_formula_digest = EXECUTOR.prepared_formula_sha256(
+            self.source,
+            self.predecessor,
+            formula,
+        )
         publication = self.predecessor_handoff / f"payload/{arch}"
         layout = EXECUTOR.campaign_guest_layout(self.predecessor)
         archive = publication / "build/bottle.tar.gz"
@@ -1066,7 +1122,9 @@ class PredecessorReuseFixture(Fixture):
                 "kandelo_repository": "Automattic/kandelo",
                 "packages": [
                     {
-                        "bottle_rebuild": 0,
+                        "bottle_rebuild": formula["destination"][
+                            "bottle_rebuild"
+                        ],
                         "bottles": [
                             {
                                 "arch": arch,
@@ -1125,6 +1183,8 @@ class PredecessorReuseFixture(Fixture):
                         "formula_revision": 0,
                         "formula_source_sha256": (
                             formula["formula_source"]["sha256"]
+                            if self.raw_predecessor_build_digest
+                            else prepared_formula_digest
                         ),
                         "full_name": f"{TAP_NAME}/{name}",
                         "name": name,
@@ -2579,8 +2639,32 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
     def test_predecessor_handoff_is_resealed_without_rebuilding(
         self,
     ) -> None:
-        fixture = PredecessorReuseFixture()
+        fixture = PredecessorReuseFixture(
+            prepared_formula_differs=True
+        )
         self.addCleanup(fixture.close)
+        raw_formula_digest = fixture.target_formula["formula_source"][
+            "sha256"
+        ]
+        prepared_formula_digest = EXECUTOR.prepared_formula_sha256(
+            fixture.source,
+            fixture.predecessor,
+            fixture.target_formula,
+        )
+        predecessor_sidecars = json.loads(
+            (
+                fixture.predecessor_handoff
+                / "payload/wasm32/composition/sidecars-input.json"
+            ).read_text()
+        )
+        self.assertNotEqual(prepared_formula_digest, raw_formula_digest)
+        self.assertEqual(
+            predecessor_sidecars["packages"][0][
+                "formula_source_sha256"
+            ],
+            prepared_formula_digest,
+        )
+
         handoff = fixture.root / "successor-handoff"
         fixture.derive(handoff)
 
@@ -2606,6 +2690,10 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
         bottle = sidecars["packages"][0]["bottles"][0]
         self.assertEqual(sidecars["kandelo_commit"], "2" * 40)
         self.assertEqual(
+            sidecars["packages"][0]["formula_source_sha256"],
+            raw_formula_digest,
+        )
+        self.assertEqual(
             bottle["built_from"]["kandelo_commit"],
             "1" * 40,
         )
@@ -2630,6 +2718,22 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             output=prepared,
         )
         self.assertTrue((prepared / "release-manifest.json").is_file())
+
+        successor_handoff, _payload = EXECUTOR.load_handoff(
+            handoff,
+            fixture.campaign,
+            fixture.campaign_path.read_bytes(),
+        )
+        extracted, archive_record = EXECUTOR.predecessor_reuse_inputs(
+            campaign=fixture.campaign,
+            formula=fixture.target_formula,
+            handoff_root=handoff,
+            handoff=successor_handoff,
+            arch="wasm32",
+            expected_formula_source_sha256=raw_formula_digest,
+        )
+        self.assertEqual(archive_record["sha256"], fixture.archive_sha256)
+        self.assertEqual(extracted["cache_key_sha"], fixture.archive_sha256)
 
     def test_legacy_predecessor_without_scopes_remains_reusable(
         self,
@@ -3036,6 +3140,22 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
             output=prepared,
         )
         self.assertTrue((prepared / "release-manifest.json").is_file())
+
+    def test_predecessor_reuse_rejects_raw_digest_for_prepared_formula(
+        self,
+    ) -> None:
+        fixture = PredecessorReuseFixture(
+            prepared_formula_differs=True,
+            raw_predecessor_build_digest=True,
+        )
+        self.addCleanup(fixture.close)
+        output = fixture.root / "raw-formula-digest-successor"
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "predecessor alpha/wasm32 sidecars are inconsistent",
+        ):
+            fixture.derive(output)
+        self.assertFalse(output.exists())
 
     def test_predecessor_reuse_rejects_changed_dependency_bottle(
         self,

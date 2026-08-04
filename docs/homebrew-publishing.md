@@ -2732,10 +2732,12 @@ source-closure digest must still match, including every publisher-consumable
 `Kandelo/formula_support` input. The executor then downloads the exact
 predecessor campaign and Formula handoff, verifies the public OCI index and
 bottle layer without package credentials, and issues a new handoff bound to the
-current campaign. The bottle archive bytes and their original `built_from`
-provenance stay unchanged. An integrating controller must publish only that
-new handoff; it must not upload the already-public OCI child or version index
-again.
+current campaign. An incoming build publication binds the Formula digest after
+build-only destination preparation, while an incoming reuse publication binds
+the sealed raw campaign Formula digest. The successor reseal emits the latter
+and preserves the bottle archive bytes plus their original `built_from`
+provenance. An integrating controller must publish only that new handoff; it
+must not upload the already-public OCI child or version index again.
 
 Dependencies are resealed in topological order. A recovered Formula consumes
 both the predecessor dependency handoffs that originally justified its bottle
