@@ -615,6 +615,8 @@ class Fixture:
         native_brew_commit: str | None = None,
         metadata_sha256: str | None = None,
         layout_sha256: str | None = None,
+        successor_scope_path: str | None = None,
+        successor_scope_sha256: str | None = None,
     ) -> Any:
         return CAMPAIGN.CampaignOptions(
             kandelo_root=self.kandelo,
@@ -635,6 +637,8 @@ class Fixture:
             ),
             metadata_sha256=metadata_sha256 or self.metadata_sha256,
             guest_layout_sha256=layout_sha256 or self.layout_sha256,
+            successor_scope_path=successor_scope_path,
+            successor_scope_sha256=successor_scope_sha256,
             jobs=4,
         )
 
@@ -1012,6 +1016,164 @@ def predecessor_path(campaign_sha: str) -> str:
         "Kandelo/campaigns/prefix-v1/aborted-campaigns/"
         f"{campaign_sha}.json"
     )
+
+
+F901_REUSE_TASKS = tuple(
+    (name, "wasm32")
+    for name in (
+        "bash",
+        "bc",
+        "bzip2",
+        "coreutils",
+        "curl",
+        "dash",
+        "diffutils",
+        "ed",
+        "fbdoom",
+        "gawk",
+        "grep",
+        "gzip",
+        "homebrew-bootstrap",
+        "libcurl",
+        "libcxx",
+        "libmagic",
+        "libyaml",
+        "lsof",
+        "m4",
+        "make",
+        "modeset",
+        "nano",
+        "ncurses",
+        "netcat",
+        "nethack",
+        "openssl",
+        "posix-utils-lite",
+        "sed",
+        "tar",
+        "unzip",
+        "wget",
+        "xz",
+        "zip",
+        "zlib",
+        "zstd",
+    )
+)
+F901_OVERLAP_TASKS = tuple(
+    (name, "wasm32")
+    for name in (
+        "bc",
+        "bzip2",
+        "coreutils",
+        "dash",
+        "ed",
+        "fbdoom",
+        "grep",
+        "gzip",
+        "homebrew-bootstrap",
+        "libcxx",
+        "libyaml",
+        "lsof",
+        "m4",
+        "modeset",
+        "netcat",
+        "posix-utils-lite",
+        "sed",
+        "unzip",
+        "xz",
+        "zip",
+        "zlib",
+        "zstd",
+    )
+)
+OLDER_DISJOINT_TASKS = (
+    ("asa", "wasm32"),
+    ("ctags", "wasm32"),
+    ("gencat", "wasm32"),
+    ("getconf", "wasm32"),
+    ("libcxx", "wasm64"),
+    ("libzip", "wasm32"),
+    ("musl-fts", "wasm32"),
+    ("musl-fts", "wasm64"),
+    ("ncompress", "wasm32"),
+    ("pcre2", "wasm32"),
+    ("zlib", "wasm64"),
+)
+
+
+def task_records(
+    tasks: list[tuple[str, str]] | tuple[tuple[str, str], ...],
+) -> list[dict[str, str]]:
+    return [
+        {"arch": arch, "formula": formula}
+        for formula, arch in sorted(tasks)
+    ]
+
+
+def dispatches_for_tasks(
+    campaign_sha: str,
+    tasks: list[tuple[str, str]] | tuple[tuple[str, str], ...],
+    *,
+    first_run_id: int,
+) -> list[dict[str, Any]]:
+    return [
+        predecessor_dispatch(
+            formula=formula,
+            arch=arch,
+            handoff_sha=sha256(
+                f"{campaign_sha}:{formula}:{arch}".encode()
+            ),
+            run_id=first_run_id + position,
+        )
+        for position, (formula, arch) in enumerate(sorted(tasks))
+    ]
+
+
+def write_successor_scope(
+    fixture: Fixture,
+    *,
+    selected_campaign_sha: str,
+    selected_archive: dict[str, Any],
+    reuse_tasks: list[tuple[str, str]] | tuple[tuple[str, str], ...],
+    build_tasks: list[tuple[str, str]] | tuple[tuple[str, str], ...],
+) -> tuple[str, str, dict[str, Any]]:
+    archive_relative = predecessor_path(selected_campaign_sha)
+    archive_path = fixture.recovery_tap / archive_relative
+    write_json(archive_path, selected_archive)
+    graph_relative = (
+        "Kandelo/campaigns/prefix-v1/successor/test-graph.json"
+    )
+    graph_path = fixture.recovery_tap / graph_relative
+    write_json(
+        graph_path,
+        {
+            "kind": CAMPAIGN.SUCCESSOR_GRAPH_KIND,
+            "max_active": 8,
+            "repository": CAMPAIGN.SUCCESSOR_GRAPH_REPOSITORY,
+            "schema": 1,
+            "tasks": task_records([*reuse_tasks, *build_tasks]),
+            "workflow": CAMPAIGN.SUCCESSOR_GRAPH_WORKFLOW,
+        },
+    )
+    scope_relative = (
+        "Kandelo/campaigns/prefix-v1/successor/test-scope.json"
+    )
+    scope = {
+        "build_tasks": task_records(build_tasks),
+        "graph": {
+            "path": graph_relative,
+            "sha256": sha256(graph_path.read_bytes()),
+        },
+        "kind": CAMPAIGN.SUCCESSOR_SCOPE_KIND,
+        "predecessor_archive": {
+            "path": archive_relative,
+            "sha256": sha256(archive_path.read_bytes()),
+        },
+        "reuse_tasks": task_records(reuse_tasks),
+        "schema": 1,
+    }
+    scope_path = fixture.recovery_tap / scope_relative
+    write_json(scope_path, scope)
+    return scope_relative, sha256(scope_path.read_bytes()), scope
 
 
 def dependencies_with_present_formula(
@@ -3130,6 +3292,341 @@ class PrefixCampaignTests(unittest.TestCase):
             ],
         )
 
+    def test_successor_scope_selects_f901_and_preserves_disjoint_2a(
+        self,
+    ) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        f901 = (
+            "f90144f439caa3806cbd145fc0d5f34d"
+            "dbf6905d43a15b023106389696376de0"
+        )
+        older = (
+            "2a0376c07f8c74fae0e3e867dfce3e39"
+            "cbce280635ede2e519b2b5cffdf0b720"
+        )
+        selected_archive = predecessor_archive(
+            f901,
+            dispatches=dispatches_for_tasks(
+                f901,
+                F901_REUSE_TASKS,
+                first_run_id=1_000,
+            ),
+        )
+        older_tasks = (*F901_OVERLAP_TASKS, *OLDER_DISJOINT_TASKS)
+        write_json(
+            fixture.recovery_tap / predecessor_path(older),
+            predecessor_archive(
+                older,
+                dispatches=dispatches_for_tasks(
+                    older,
+                    older_tasks,
+                    first_run_id=2_000,
+                ),
+            ),
+        )
+        scope_path, scope_sha256, _scope = write_successor_scope(
+            fixture,
+            selected_campaign_sha=f901,
+            selected_archive=selected_archive,
+            reuse_tasks=F901_REUSE_TASKS,
+            build_tasks=[("ruby", "wasm32")],
+        )
+        recovery_head = commit(
+            fixture.recovery_tap,
+            "select exact f901 predecessor scope",
+        )
+
+        scope = CAMPAIGN.load_successor_scope(
+            fixture.recovery_tap,
+            recovery_head,
+            scope_path,
+            scope_sha256,
+        )
+        handoffs = CAMPAIGN.load_predecessor_handoffs(
+            fixture.recovery_tap,
+            recovery_head,
+            scope,
+        )
+
+        self.assertEqual(len(F901_OVERLAP_TASKS), 22)
+        self.assertEqual(len(F901_REUSE_TASKS), 35)
+        self.assertEqual(len(OLDER_DISJOINT_TASKS), 11)
+        self.assertEqual(
+            set(handoffs),
+            set(F901_REUSE_TASKS) | set(OLDER_DISJOINT_TASKS),
+        )
+        for formula, arch in F901_REUSE_TASKS:
+            with self.subTest(selected=f"{formula}/{arch}"):
+                self.assertEqual(
+                    handoffs[(formula, arch)]["reuse_source"],
+                    {
+                        "arch": arch,
+                        "campaign_tag": (
+                            "homebrew-prefix-campaign-sha256-" + f901
+                        ),
+                        "handoff_tag": (
+                            "homebrew-prefix-handoff-sha256-"
+                            + sha256(
+                                f"{f901}:{formula}:{arch}".encode()
+                            )
+                        ),
+                        "kind": "predecessor-handoff",
+                    },
+                )
+        for formula, arch in OLDER_DISJOINT_TASKS:
+            with self.subTest(disjoint=f"{formula}/{arch}"):
+                self.assertEqual(
+                    handoffs[(formula, arch)]["reuse_source"][
+                        "campaign_tag"
+                    ],
+                    "homebrew-prefix-campaign-sha256-" + older,
+                )
+
+    def test_successor_scope_is_emitted_and_binds_exact_routes(
+        self,
+    ) -> None:
+        fixture = make_fixture(alpha_source_changed=False)
+        self.addCleanup(fixture.close)
+        campaign_sha = "a" * 64
+        archive = predecessor_archive(campaign_sha)
+        scope_path, scope_sha256, _scope = write_successor_scope(
+            fixture,
+            selected_campaign_sha=campaign_sha,
+            selected_archive=archive,
+            reuse_tasks=[("alpha", "wasm32")],
+            build_tasks=[("libyaml", "wasm32")],
+        )
+        recovery_head = commit(
+            fixture.recovery_tap,
+            "bind successor overlap routes",
+        )
+        result = CAMPAIGN.derive_campaign(
+            fixture.options(
+                recovery_tap_commit=recovery_head,
+                successor_scope_path=scope_path,
+                successor_scope_sha256=scope_sha256,
+            ),
+            dependencies_with_present_formula(fixture, "alpha"),
+        )
+
+        self.assertEqual(result["schema"], 3)
+        self.assertEqual(
+            result["authority"]["successor_scope"],
+            {"path": scope_path, "sha256": scope_sha256},
+        )
+        by_name = {value["name"]: value for value in result["formulae"]}
+        self.assertEqual(
+            by_name["alpha"]["variants"][0]["reuse_source"],
+            {
+                "arch": "wasm32",
+                "campaign_tag": (
+                    "homebrew-prefix-campaign-sha256-" + campaign_sha
+                ),
+                "handoff_tag": (
+                    "homebrew-prefix-handoff-sha256-" + "d" * 64
+                ),
+                "kind": "predecessor-handoff",
+            },
+        )
+        self.assertEqual(
+            by_name["libyaml"]["variants"][0]["disposition"]["kind"],
+            "required-build",
+        )
+
+    def test_successor_scope_pair_and_exact_git_inputs_fail_closed(
+        self,
+    ) -> None:
+        fixture = make_fixture(alpha_source_changed=False)
+        self.addCleanup(fixture.close)
+        campaign_sha = "a" * 64
+        scope_path, scope_sha256, scope = write_successor_scope(
+            fixture,
+            selected_campaign_sha=campaign_sha,
+            selected_archive=predecessor_archive(campaign_sha),
+            reuse_tasks=[("alpha", "wasm32")],
+            build_tasks=[("libyaml", "wasm32")],
+        )
+        recovery_head = commit(
+            fixture.recovery_tap,
+            "bind exact successor scope inputs",
+        )
+        for label, path, digest, message in (
+            (
+                "missing-digest",
+                scope_path,
+                None,
+                "must be provided together",
+            ),
+            (
+                "missing-path",
+                None,
+                scope_sha256,
+                "must be provided together",
+            ),
+            (
+                "wrong-path",
+                scope_path + ".missing",
+                scope_sha256,
+                "does not exist|cannot read",
+            ),
+            (
+                "wrong-digest",
+                scope_path,
+                "0" * 64,
+                "differs from its exact Git bytes",
+            ),
+        ):
+            with self.subTest(label=label), self.assertRaisesRegex(
+                CAMPAIGN.CampaignError, message
+            ):
+                CAMPAIGN.derive_campaign(
+                    fixture.options(
+                        recovery_tap_commit=recovery_head,
+                        successor_scope_path=path,
+                        successor_scope_sha256=digest,
+                    ),
+                    fixture.dependencies(),
+                )
+
+        scope["predecessor_archive"]["sha256"] = "1" * 64
+        write_json(fixture.recovery_tap / scope_path, scope)
+        changed_head = commit(
+            fixture.recovery_tap,
+            "break successor archive digest",
+        )
+        changed_digest = sha256(
+            (fixture.recovery_tap / scope_path).read_bytes()
+        )
+        with self.assertRaisesRegex(
+            CAMPAIGN.CampaignError,
+            "predecessor archive SHA-256 differs",
+        ):
+            CAMPAIGN.derive_campaign(
+                fixture.options(
+                    recovery_tap_commit=changed_head,
+                    successor_scope_path=scope_path,
+                    successor_scope_sha256=changed_digest,
+                ),
+                fixture.dependencies(),
+            )
+
+        scope["predecessor_archive"] = {
+            "path": predecessor_path("f" * 64),
+            "sha256": "2" * 64,
+        }
+        write_json(fixture.recovery_tap / scope_path, scope)
+        missing_archive_head = commit(
+            fixture.recovery_tap,
+            "remove successor predecessor archive target",
+        )
+        missing_archive_scope_sha = sha256(
+            (fixture.recovery_tap / scope_path).read_bytes()
+        )
+        with self.assertRaisesRegex(
+            CAMPAIGN.CampaignError,
+            "predecessor archive.*failed|predecessor archive.*exist",
+        ):
+            CAMPAIGN.derive_campaign(
+                fixture.options(
+                    recovery_tap_commit=missing_archive_head,
+                    successor_scope_path=scope_path,
+                    successor_scope_sha256=missing_archive_scope_sha,
+                ),
+                fixture.dependencies(),
+            )
+
+    def test_successor_scope_rejects_missing_task_and_changed_route(
+        self,
+    ) -> None:
+        for label, reuse_tasks, expected in (
+            (
+                "missing-selected-task",
+                [("beta", "wasm32")],
+                "reuse tasks differ from its selected predecessor archive",
+            ),
+            (
+                "missing-campaign-route",
+                [("alpha", "wasm32")],
+                "reuse route differs from its selected predecessor",
+            ),
+        ):
+            with self.subTest(label=label):
+                fixture = make_fixture(alpha_source_changed=False)
+                try:
+                    campaign_sha = "a" * 64
+                    scope_path, scope_sha256, _scope = (
+                        write_successor_scope(
+                            fixture,
+                            selected_campaign_sha=campaign_sha,
+                            selected_archive=predecessor_archive(
+                                campaign_sha
+                            ),
+                            reuse_tasks=reuse_tasks,
+                            build_tasks=[("libyaml", "wasm32")],
+                        )
+                    )
+                    recovery_head = commit(
+                        fixture.recovery_tap,
+                        f"add {label} successor scope",
+                    )
+                    with self.assertRaisesRegex(
+                        CAMPAIGN.CampaignError, expected
+                    ):
+                        CAMPAIGN.derive_campaign(
+                            fixture.options(
+                                recovery_tap_commit=recovery_head,
+                                successor_scope_path=scope_path,
+                                successor_scope_sha256=scope_sha256,
+                            ),
+                            fixture.dependencies(),
+                        )
+                finally:
+                    fixture.close()
+
+    def test_successor_scope_rejects_duplicate_outside_selection(
+        self,
+    ) -> None:
+        fixture = make_fixture(alpha_source_changed=False)
+        self.addCleanup(fixture.close)
+        selected_sha = "a" * 64
+        for position, campaign_sha in enumerate(("b" * 64, "c" * 64)):
+            write_json(
+                fixture.recovery_tap / predecessor_path(campaign_sha),
+                predecessor_archive(
+                    campaign_sha,
+                    dispatches=[
+                        predecessor_dispatch(
+                            formula="beta",
+                            run_id=500 + position,
+                        )
+                    ],
+                ),
+            )
+        scope_path, scope_sha256, _scope = write_successor_scope(
+            fixture,
+            selected_campaign_sha=selected_sha,
+            selected_archive=predecessor_archive(selected_sha),
+            reuse_tasks=[("alpha", "wasm32")],
+            build_tasks=[("libyaml", "wasm32")],
+        )
+        recovery_head = commit(
+            fixture.recovery_tap,
+            "leave one predecessor duplicate unresolved",
+        )
+        with self.assertRaisesRegex(
+            CAMPAIGN.CampaignError,
+            "beta/wasm32 without an exact successor scope",
+        ):
+            CAMPAIGN.derive_campaign(
+                fixture.options(
+                    recovery_tap_commit=recovery_head,
+                    successor_scope_path=scope_path,
+                    successor_scope_sha256=scope_sha256,
+                ),
+                fixture.dependencies(),
+            )
+
     def test_predecessor_recovery_authority_is_exact(self) -> None:
         cases = (
             ("flags", "recovery flags do not permit reuse"),
@@ -3234,8 +3731,9 @@ class PrefixCampaignTests(unittest.TestCase):
         def dirty_after_read(
             root: pathlib.Path,
             revision: str,
+            successor_scope: CAMPAIGN.SuccessorScope | None = None,
         ) -> dict[tuple[str, str], dict[str, Any]]:
-            result = original(root, revision)
+            result = original(root, revision, successor_scope)
             dirty.write_text("dirty after read\n")
             return result
 

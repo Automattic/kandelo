@@ -51,6 +51,7 @@ SAFE_PATH = re.compile(
 )
 ASSET_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,254}$")
 MAX_JSON_BYTES = 64 * 1024 * 1024
+MAX_SUCCESSOR_SCOPE_BYTES = 4 * 1024 * 1024
 MAX_ASSET_BYTES = 2 * 1024 * 1024 * 1024
 MAX_TOTAL_BYTES = 8 * 1024 * 1024 * 1024
 MAX_FORMULAE = 256
@@ -998,6 +999,128 @@ def runtime_dependency_records(
     return formula[field]
 
 
+def successor_scope_authority(
+    authority: dict[str, Any],
+    campaign_schema: int,
+) -> dict[str, str] | None:
+    value = authority.get("successor_scope")
+    if value is None:
+        # Legacy schema-3 campaigns sealed before overlap scopes remain valid.
+        return None
+    if campaign_schema != 3:
+        fail("only a schema-3 campaign may name a successor scope")
+    value = exact_keys(
+        value,
+        {"path", "sha256"},
+        "campaign successor scope",
+    )
+    return {
+        "path": safe_relative(
+            value["path"], "campaign successor scope path"
+        ),
+        "sha256": require_string(
+            value["sha256"],
+            "campaign successor scope SHA-256",
+            SHA256,
+        ),
+    }
+
+
+def validate_successor_scope_checkout(
+    source_tap_root: pathlib.Path,
+    campaign: dict[str, Any],
+) -> None:
+    record = successor_scope_authority(
+        campaign["authority"], campaign["schema"]
+    )
+    if record is None:
+        return
+    recovery = exact_keys(
+        campaign["authority"].get("predecessor_recovery_source"),
+        {"commit", "repository"},
+        "campaign successor scope recovery source",
+    )
+    recovery_commit = require_string(
+        recovery["commit"],
+        "campaign successor scope recovery commit",
+        COMMIT,
+    )
+    size_payload = run_git(
+        source_tap_root,
+        ["cat-file", "-s", f"{recovery_commit}:{record['path']}"],
+        "campaign successor scope size",
+        maximum=64,
+    ).decode("ascii", errors="strict").strip()
+    if (
+        re.fullmatch(r"[1-9][0-9]*", size_payload) is None
+        or int(size_payload, 10) > MAX_SUCCESSOR_SCOPE_BYTES
+    ):
+        fail("campaign successor scope has an invalid Git object size")
+    payload = run_git(
+        source_tap_root,
+        ["show", f"{recovery_commit}:{record['path']}"],
+        "campaign successor scope",
+        maximum=MAX_SUCCESSOR_SCOPE_BYTES,
+    )
+    try:
+        scope = json.loads(
+            payload.decode("utf-8"),
+            object_pairs_hook=duplicate_rejecting_object,
+            parse_constant=lambda item: fail(
+                f"campaign successor scope contains invalid constant {item}"
+            ),
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        fail(f"campaign successor scope is not strict UTF-8 JSON: {error}")
+    if payload != pretty_json(scope):
+        fail("campaign successor scope is not canonical pretty JSON")
+    if sha256_bytes(payload) != record["sha256"]:
+        fail("campaign successor scope differs from its recovery authority")
+
+
+def validate_predecessor_reuse_recovery_checkout(
+    campaign: dict[str, Any],
+    recovery_tap_root: pathlib.Path | None,
+) -> pathlib.Path | None:
+    scope = successor_scope_authority(
+        campaign["authority"], campaign["schema"]
+    )
+    if recovery_tap_root is None:
+        if scope is not None:
+            fail("scoped predecessor reuse requires a recovery tap checkout")
+        return None
+
+    authority = campaign["authority"]
+    recovery = exact_keys(
+        authority.get("predecessor_recovery_source"),
+        {"commit", "repository"},
+        "predecessor reuse recovery source",
+    )
+    recovery_commit = require_string(
+        recovery["commit"],
+        "predecessor reuse recovery source commit",
+        COMMIT,
+    )
+    recovery_repository = require_string(
+        recovery["repository"],
+        "predecessor reuse recovery source repository",
+        REPOSITORY,
+    )
+    if recovery_repository.lower() != authority["tap_repository"].lower():
+        fail("predecessor reuse recovery repository is inconsistent")
+    recovery_tap_root = exact_git_checkout(
+        recovery_tap_root,
+        recovery_commit,
+        "predecessor reuse recovery tap checkout",
+    )
+    if scope is not None:
+        # WHY: a materialized target source intentionally excludes recovery
+        # controls. A scoped reseal therefore needs this separate protected
+        # checkout before it may produce any successor handoff bytes.
+        validate_successor_scope_checkout(recovery_tap_root, campaign)
+    return recovery_tap_root
+
+
 def validate_destination_admission(
     formula: dict[str, Any],
     predecessor_campaign_tags: frozenset[str],
@@ -1334,6 +1457,7 @@ def load_campaign(
     predecessor_campaign_tags = validate_predecessor_recovery_authority(
         authority, value["schema"]
     )
+    successor_scope_authority(authority, value["schema"])
     formulae = value.get("formulae")
     if (
         not isinstance(formulae, list)
@@ -4722,6 +4846,7 @@ def materialize_campaign_source(
         source_commit,
         "campaign source tap checkout",
     )
+    validate_successor_scope_checkout(source_tap_root, campaign)
     output = validate_new_output(
         output,
         "materialized campaign source",
@@ -8390,11 +8515,15 @@ def derive_predecessor_reuse(
     predecessor_dependency_roots: list[pathlib.Path],
     dependency_roots: list[pathlib.Path],
     output: pathlib.Path,
+    recovery_tap_root: pathlib.Path | None = None,
     destination_verifier: PredecessorDestinationVerifier = (
         default_predecessor_destination_verifier
     ),
 ) -> None:
     campaign, campaign_payload, index = load_campaign(campaign_path)
+    recovery_tap_root = validate_predecessor_reuse_recovery_checkout(
+        campaign, recovery_tap_root
+    )
     predecessor, predecessor_payload, predecessor_index = load_campaign(
         predecessor_campaign_path
     )
@@ -8444,6 +8573,11 @@ def derive_predecessor_reuse(
         (
             campaign_path,
             source_tap_root,
+            *(
+                ()
+                if recovery_tap_root is None
+                else (recovery_tap_root,)
+            ),
             predecessor_campaign_path,
             predecessor_handoff_root,
             *predecessor_dependency_roots,
@@ -9734,6 +9868,7 @@ def parse_args() -> argparse.Namespace:
     )
     predecessor_reuse.add_argument("--campaign", required=True)
     predecessor_reuse.add_argument("--source-tap-root", required=True)
+    predecessor_reuse.add_argument("--recovery-tap-root")
     predecessor_reuse.add_argument(
         "--predecessor-campaign", required=True
     )
@@ -9894,6 +10029,11 @@ def main() -> int:
                 campaign_path=pathlib.Path(arguments.campaign),
                 source_tap_root=pathlib.Path(
                     arguments.source_tap_root
+                ),
+                recovery_tap_root=(
+                    pathlib.Path(arguments.recovery_tap_root)
+                    if arguments.recovery_tap_root is not None
+                    else None
                 ),
                 predecessor_campaign_path=pathlib.Path(
                     arguments.predecessor_campaign

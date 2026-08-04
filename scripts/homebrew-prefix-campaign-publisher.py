@@ -679,13 +679,20 @@ def prepare(
         admission_kind = index[formula]["destination"]["admission"][
             "kind"
         ]
+        source_authority = CAMPAIGN.git_authority(
+            tap_root,
+            source_tap_commit,
+            "publisher campaign tap",
+        )
+        # WHY: the campaign digest binds the scope record, while the exact
+        # protected tap commit owns its bytes. Recheck both before this
+        # publisher checkout can receive package-write authority.
+        EXECUTOR.validate_successor_scope_checkout(
+            source_authority, campaign
+        )
         materialized, source_materialization = (
             CAMPAIGN.candidate_source_snapshot(
-                CAMPAIGN.git_authority(
-                    tap_root,
-                    source_tap_commit,
-                    "publisher campaign tap",
-                ),
+                source_authority,
                 source_tap_commit,
                 source_snapshot,
             )
