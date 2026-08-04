@@ -1528,7 +1528,7 @@ function hasCompleteForkInstrumentation(
  * before `_start`, which breaks runtimes such as SpiderMonkey.
  */
 function verifyProgramAbi(
-  programBytes: ArrayBuffer,
+  actual: number | null,
   expected: number | undefined,
   pid: number,
 ): void {
@@ -1537,7 +1537,6 @@ function verifyProgramAbi(
     // Will be removed once all callers are updated.
     return;
   }
-  const actual = extractAbiVersion(programBytes);
   if (actual === null) {
     if (!abiMissingWarned) {
       abiMissingWarned = true;
@@ -1573,10 +1572,28 @@ export async function centralizedWorkerMain(
   try {
     const { memory, programBytes, channelOffset, pid } = initData;
     const ptrWidth = initData.ptrWidth ?? 4;
+    if (!initData.programModule && !programBytes) {
+      throw new Error(`pid=${pid}: process worker has neither program bytes nor a module`);
+    }
+    if (
+      !programBytes &&
+      (initData.programAbiVersion === undefined ||
+        initData.channelBaseTlsOffset === undefined)
+    ) {
+      throw new Error(
+        `pid=${pid}: byte-free process worker is missing inspected launch metadata`,
+      );
+    }
     // Use pre-compiled module if provided (avoids recompilation in workers)
     const module = initData.programModule
       ? initData.programModule
-      : await WebAssembly.compile(programBytes);
+      : await WebAssembly.compile(programBytes!);
+    const programAbiVersion = initData.programAbiVersion !== undefined
+      ? initData.programAbiVersion
+      : extractAbiVersion(programBytes!);
+    const channelBaseTlsOffset = initData.channelBaseTlsOffset !== undefined
+      ? initData.channelBaseTlsOffset
+      : detectChannelBaseTlsOffset(programBytes!);
     // --- WASI module detection and handling ---
     if (isWasiModule(module)) {
       if (wasiModuleDefinesMemory(module)) {
@@ -1778,7 +1795,7 @@ export async function centralizedWorkerMain(
       if (initData.isForkChild) {
         dlopenSupport.resetForkChildLock();
       }
-      verifyProgramAbi(programBytes, initData.kernelAbiVersion, pid);
+      verifyProgramAbi(programAbiVersion, initData.kernelAbiVersion, pid);
 
       // For the fork-parent case (initial launch, not a fork child), install
       // __channel_base now — the parent's __tls_base is already correctly
@@ -1789,7 +1806,14 @@ export async function centralizedWorkerMain(
       // the child's __tls_base from the fork save buffer; setupChannelBase
       // would otherwise see a zeroed __tls_base.
       if (!initData.isForkChild) {
-        setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer, ptrWidth);
+        setupChannelBase(
+          instance,
+          module,
+          memory,
+          channelOffset,
+          channelBaseTlsOffset,
+          ptrWidth,
+        );
       }
 
       // Signal ready
@@ -1866,7 +1890,14 @@ export async function centralizedWorkerMain(
             );
             // Now that rewind_begin has restored __tls_base, install
             // __channel_base for this (child) instance.
-            setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer, ptrWidth);
+            setupChannelBase(
+              instance,
+              module,
+              memory,
+              channelOffset,
+              channelBaseTlsOffset,
+              ptrWidth,
+            );
             if (initData.isForkChild && !replayedForkChildDlopens) {
               try {
                 dlopenSupport.replayDlopens();
@@ -1966,9 +1997,16 @@ export async function centralizedWorkerMain(
         });
       const instance = await WebAssembly.instantiate(module, importObject);
       processInstance = instance;
-      verifyProgramAbi(programBytes, initData.kernelAbiVersion, pid);
+      verifyProgramAbi(programAbiVersion, initData.kernelAbiVersion, pid);
 
-      setupChannelBase(instance, module, memory, channelOffset, programBytes as ArrayBuffer, ptrWidth);
+      setupChannelBase(
+        instance,
+        module,
+        memory,
+        channelOffset,
+        channelBaseTlsOffset,
+        ptrWidth,
+      );
 
       port.postMessage({ type: "ready", pid } satisfies WorkerToHostMessage);
 
@@ -2040,7 +2078,7 @@ export async function centralizedWorkerMain(
  * We find this function by looking at the export wrapper's call target.
  * Returns the i32.const value, or -1 if detection fails.
  */
-function detectChannelBaseTlsOffset(programBytes: ArrayBuffer): number {
+export function detectChannelBaseTlsOffset(programBytes: ArrayBuffer): number {
   const src = new Uint8Array(programBytes);
   if (src.length < 8) return -1;
 
@@ -2187,7 +2225,7 @@ function setupChannelBase(
   module: WebAssembly.Module,
   memory: WebAssembly.Memory,
   channelOffset: number,
-  programBytes?: ArrayBuffer,
+  channelBaseTlsOffset = -1,
   ptrWidth: 4 | 8 = 4,
 ): void {
   // If the module imports env.__channel_base as a global, the channel offset was
@@ -2203,11 +2241,9 @@ function setupChannelBase(
   const tlsAddr = tlsBase ? Number(tlsBase.value) : 0;
 
   if (tlsAddr > 0) {
-    let detectedOffset = -1;
-    if (programBytes) {
-      detectedOffset = detectChannelBaseTlsOffset(programBytes);
-    }
-    const addr = tlsAddr + (detectedOffset >= 0 ? detectedOffset : 0);
+    const addr = tlsAddr + (
+      channelBaseTlsOffset >= 0 ? channelBaseTlsOffset : 0
+    );
     if (ptrWidth === 8) {
       view.setBigUint64(addr, BigInt(channelOffset), true);
     } else {
@@ -2370,6 +2406,13 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
     }
   }
 
+  // WHY: --export-all executables expose the authoritative constructor
+  // function directly. Prefer that identity over call-frequency inference:
+  // large programs can have another helper (notably __errno_location) called
+  // by several exported wrappers, and replacing a result-returning helper with
+  // a void no-op makes the thread module invalid.
+  ctorFuncIndex = exportFuncIndicesByName.get("__wasm_call_ctors") ?? -1;
+
   function skipLEB(pos: number): number {
     const [, n] = readLEB128(src, pos);
     return pos + n;
@@ -2469,8 +2512,9 @@ export function patchWasmForThread(bytes: ArrayBuffer): ArrayBuffer {
     return calls;
   }
 
-  // Find the Code section and identify a call target shared by LLVM helper exports.
-  for (const sec of sections) {
+  // Older executables do not export __wasm_call_ctors. For those, find the
+  // Code section and identify the call target shared by LLVM helper exports.
+  for (const sec of ctorFuncIndex < 0 ? sections : []) {
     if (sec.id === 10 && exportedFuncIndices.length > 0) {
       const helperNames = [
         "__wasm_init_tls",
@@ -2678,11 +2722,26 @@ export async function centralizedThreadWorkerMain(
     // thread; re-running constructors would clobber global state.
     let programBytes: ArrayBuffer | null = null;
     if (!initData.programModule) {
+      if (!initData.programBytes) {
+        throw new Error(
+          `pid=${pid} tid=${tid}: thread worker has neither program bytes nor a module`,
+        );
+      }
       programBytes = patchWasmForThread(initData.programBytes);
     }
     const module = initData.programModule
       ? initData.programModule
       : new WebAssembly.Module(programBytes!);
+    if (
+      !initData.programBytes && initData.channelBaseTlsOffset === undefined
+    ) {
+      throw new Error(
+        `pid=${pid} tid=${tid}: byte-free thread worker is missing channel metadata`,
+      );
+    }
+    const channelBaseTlsOffset = initData.channelBaseTlsOffset !== undefined
+      ? initData.channelBaseTlsOffset
+      : detectChannelBaseTlsOffset(initData.programBytes!);
 
     const moduleExports = WebAssembly.Module.exports(module);
     const hasForkInstrumentation = hasCompleteForkInstrumentation(moduleExports, pid);
@@ -2872,7 +2931,14 @@ export async function centralizedThreadWorkerMain(
     // Set __channel_base without calling the exported helper. lld can prefix
     // exported functions with __wasm_call_ctors, and thread workers must not
     // re-run constructors in shared process memory.
-    setupChannelBase(instance, module, memory, channelOffset, initData.programBytes, ptrWidth);
+    setupChannelBase(
+      instance,
+      module,
+      memory,
+      channelOffset,
+      channelBaseTlsOffset,
+      ptrWidth,
+    );
 
     // Call the thread function via indirect function table
     const table = instance.exports.__indirect_function_table as WebAssembly.Table | undefined;

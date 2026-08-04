@@ -79,11 +79,14 @@ done
     writeFileSync(source, 'int main(void) { return 0; }\n');
     for (const path of [
       join(sysroot, 'lib/libc.a'),
+      join(sysroot, 'lib/libc-dynamic.o'),
+      join(sysroot, 'lib/libc-dynamic-anchor.o'),
       join(sysroot, 'lib/crt1.o'),
       join(glue, 'channel_syscall.c'),
       join(glueObjects, 'channel_syscall.o'),
       join(glueObjects, 'compiler_rt.o'),
       join(glueObjects, 'cxxrt.o'),
+      join(glueObjects, 'dlopen.o'),
     ]) writeFileSync(path, '');
 
     const env = {
@@ -263,6 +266,23 @@ done
       expect(emitted.filter((arg) => arg.startsWith('stack-size=')).at(-1)).toBe(expected);
       for (const arg of preserved ?? []) expect(emitted).toContain(arg);
     }
+
+    execFileSync(
+      'bash',
+      [nativeCc, source, join(root, 'libinterpose.a'), '-ldl', '-o', join(root, 'dlopen.wasm')],
+      { cwd: root, env },
+    );
+    const dynamicLink = readFileSync(capture, 'utf8').trim().split('\n');
+    expect(dynamicLink).toContain('--export-all');
+    expect(dynamicLink).toContain('--undefined=__kandelo_dynamic_libc_functions');
+    expect(dynamicLink).toContain('--undefined=__kandelo_dynamic_libc_data');
+    expect(dynamicLink).toContain(join(sysroot, 'lib/libc-dynamic-anchor.o'));
+    expect(dynamicLink).toContain(join(sysroot, 'lib/libc-dynamic.o'));
+    expect(dynamicLink).not.toContain(join(sysroot, 'lib/libc.a'));
+    expect(dynamicLink.indexOf(join(sysroot, 'lib/libc-dynamic-anchor.o')))
+      .toBeLessThan(dynamicLink.indexOf(join(root, 'libinterpose.a')));
+    expect(dynamicLink.indexOf(join(root, 'libinterpose.a')))
+      .toBeLessThan(dynamicLink.indexOf(join(sysroot, 'lib/libc-dynamic.o')));
 
     for (const [name, value] of Object.entries(responseValues)) {
       expect(readFileSync(responses[name], 'utf8')).toBe(`-z\nstack-size=${value}\n`);

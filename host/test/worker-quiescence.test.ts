@@ -4,6 +4,7 @@ import {
   createWorkerQuiescence,
   runWithProcessWorkerQuiescence,
   waitForExecRetirement,
+  waitForThreadExecRetirement,
   waitForWorkerQuiescence,
 } from "../src/worker-quiescence";
 
@@ -99,5 +100,43 @@ describe("exact process Worker quiescence fences", () => {
     );
     quiescence.settle();
     await expect(complete).resolves.toBe(true);
+  });
+
+  it("accepts a raced ordinary thread exit only with final quiescence", async () => {
+    vi.useFakeTimers();
+    const retirement = createWorkerQuiescence();
+    const threadExit = createWorkerQuiescence();
+    const quiescence = createWorkerQuiescence();
+    const waiting = waitForThreadExecRetirement(
+      retirement,
+      threadExit,
+      quiescence,
+      25,
+    );
+
+    threadExit.settle();
+    await vi.advanceTimersByTimeAsync(24);
+    expect(quiescence.settled).toBe(false);
+    quiescence.settle();
+
+    await expect(waiting).resolves.toBe(true);
+    expect(retirement.settled).toBe(false);
+  });
+
+  it("does not mistake quiescence without a terminal disposition for safety", async () => {
+    vi.useFakeTimers();
+    const retirement = createWorkerQuiescence();
+    const threadExit = createWorkerQuiescence();
+    const quiescence = createWorkerQuiescence();
+    const waiting = waitForThreadExecRetirement(
+      retirement,
+      threadExit,
+      quiescence,
+      25,
+    );
+    quiescence.settle();
+
+    await vi.advanceTimersByTimeAsync(25);
+    await expect(waiting).resolves.toBe(false);
   });
 });

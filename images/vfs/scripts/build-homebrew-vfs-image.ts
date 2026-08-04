@@ -37,7 +37,6 @@ import {
   homebrewRuntimeLayerDescriptorAsset,
   parseHomebrewLazyLayerBasePackageSource,
 } from "../../../host/src/homebrew-lazy-layer";
-import { KANDELO_HOMEBREW_GUEST_LAYOUT } from "../../../host/src/homebrew-guest-layout";
 import { fetchHomebrewBottleBytes } from "../../../host/src/homebrew-vfs-fetch";
 import {
   planFederatedHomebrewVfs,
@@ -52,6 +51,8 @@ import {
   parseHomebrewRuntimeSupportContract,
   type HomebrewRuntimeSupportContract,
 } from "../../../host/src/homebrew-runtime-support";
+import { deriveHomebrewPortableRubyTree } from
+  "../../../host/src/homebrew-portable-ruby";
 import {
   MemoryFileSystem,
   type VfsImageMetadata,
@@ -116,6 +117,7 @@ interface CliOptions {
   bottleMirrorOut?: string;
   packageTreeSpec?: string;
   packageTreeArchive?: string;
+  homebrewPortableRubyArchive?: string;
   homebrewBootstrapEnv?: string;
   homebrewRuntimeSupport?: string;
   materializePackageTree: boolean;
@@ -173,15 +175,6 @@ const SHARED_FS_BLOCK_BYTES = 4096;
 const HOMEBREW_COMPOSITION_PATH = "/etc/kandelo/homebrew-vfs.json";
 const HOMEBREW_BOOTSTRAP_ENV_PATH = "/etc/homebrew/brew.env";
 const HOMEBREW_BOOTSTRAP_ENTRYPOINT = "/usr/bin/brew";
-const HOMEBREW_BOOTSTRAP_PREFIX = KANDELO_HOMEBREW_GUEST_LAYOUT.prefix;
-const HOMEBREW_BOOTSTRAP_TARGET = `${HOMEBREW_BOOTSTRAP_PREFIX}/bin/brew`;
-const HOMEBREW_BOOTSTRAP_MUTABLE_PATHS = [
-  KANDELO_HOMEBREW_GUEST_LAYOUT.cellar,
-  `${HOMEBREW_BOOTSTRAP_PREFIX}/Library/Taps`,
-  `${HOMEBREW_BOOTSTRAP_PREFIX}/var/homebrew/linked`,
-  `${HOMEBREW_BOOTSTRAP_PREFIX}/var/homebrew/locks`,
-  "/home/user/.cache/Homebrew",
-] as const;
 const MAX_HOMEBREW_BOOTSTRAP_ENV_BYTES = 1024;
 const MAX_SIDECAR_JSON_BYTES = 16_777_216;
 const MAX_BREWFILE_BYTES = 65_536;
@@ -246,10 +239,10 @@ export interface HomebrewBootstrapConsumerState {
   };
   entrypoint: {
     path: typeof HOMEBREW_BOOTSTRAP_ENTRYPOINT;
-    target: typeof HOMEBREW_BOOTSTRAP_TARGET;
+    target: string;
   };
   ownership: {
-    prefix: typeof HOMEBREW_BOOTSTRAP_PREFIX;
+    prefix: string;
     uid: 1000;
     gid: 1000;
     mutable_paths: string[];
@@ -452,6 +445,12 @@ export async function runHomebrewVfsImageBuilder(
         state: "deferred" | "materialized";
       }
     | undefined;
+  let portableRubyTree:
+    | {
+        derived: DerivedPackageDeferredZipTree;
+        state: "deferred" | "materialized";
+      }
+    | undefined;
   let homebrewBootstrapConsumerState:
     HomebrewBootstrapConsumerState | undefined;
   if (options.packageTreeSpec !== undefined) {
@@ -472,13 +471,63 @@ export async function runHomebrewVfsImageBuilder(
       prepareHomebrewBootstrapConsumerNamespace(fs, derived);
     }
     const registered = registerPackageDeferredZipTree(fs, derived);
+    let portableRubyRegistered:
+      | ReturnType<typeof registerPackageDeferredZipTree>
+      | undefined;
+    let portableRubyArchiveBytes: Uint8Array | undefined;
+    if (options.homebrewPortableRubyArchive !== undefined) {
+      portableRubyArchiveBytes = readPackageTreeArchive(
+        options.homebrewPortableRubyArchive,
+      );
+      const portableRuby = deriveHomebrewPortableRubyTree(
+        derived,
+        archiveBytes,
+        portableRubyArchiveBytes,
+      );
+      if (
+        basename(options.homebrewPortableRubyArchive) !==
+        portableRuby.descriptor.package.output
+      ) {
+        throw new Error(
+          `Homebrew portable Ruby archive must be named ` +
+            portableRuby.descriptor.package.output,
+        );
+      }
+      portableRubyRegistered = registerPackageDeferredZipTree(
+        fs,
+        portableRuby,
+      );
+      portableRubyTree = {
+        derived: portableRuby,
+        state: options.materializePackageTree
+          ? "materialized"
+          : "deferred",
+      };
+    }
     if (options.materializePackageTree) {
       await materializePackageDeferredZipTree(fs, registered, archiveBytes);
+      if (
+        portableRubyRegistered !== undefined &&
+        portableRubyArchiveBytes !== undefined
+      ) {
+        await materializePackageDeferredZipTree(
+          fs,
+          portableRubyRegistered,
+          portableRubyArchiveBytes,
+        );
+      }
     }
     const state = options.materializePackageTree ? "materialized" : "deferred";
     packageTree = { derived, state };
     if (runtimeSupport === undefined) {
       assertPackageDeferredZipTreeState(fs, derived, state);
+      if (portableRubyTree !== undefined) {
+        assertPackageDeferredZipTreeState(
+          fs,
+          portableRubyTree.derived,
+          portableRubyTree.state,
+        );
+      }
     }
     if (homebrewBootstrapEnv !== undefined) {
       homebrewBootstrapConsumerState = installHomebrewBootstrapConsumerState(
@@ -502,6 +551,9 @@ export async function runHomebrewVfsImageBuilder(
       [
         ...materializedBuild.runtimeSupportAtomicMembers,
         packageTree.derived.descriptor.id,
+        ...(portableRubyTree === undefined
+          ? []
+          : [portableRubyTree.derived.descriptor.id]),
       ],
     );
     // WHY: package-tree state validation serializes the lazy registry. A
@@ -512,6 +564,13 @@ export async function runHomebrewVfsImageBuilder(
       packageTree.derived,
       packageTree.state,
     );
+    if (portableRubyTree !== undefined) {
+      assertPackageDeferredZipTreeState(
+        fs,
+        portableRubyTree.derived,
+        portableRubyTree.state,
+      );
+    }
   }
   materializedBuild?.assert(fs);
   if (shellConfig) {
@@ -559,7 +618,12 @@ export async function runHomebrewVfsImageBuilder(
         ...(packageTree === undefined
           ? {}
           : {
-              packageDeferredTrees: [packageTreeBinding(packageTree)],
+              packageDeferredTrees: [
+                packageTreeBinding(packageTree),
+                ...(portableRubyTree === undefined
+                  ? []
+                  : [packageTreeBinding(portableRubyTree)]),
+              ],
             }),
         ...(homebrewBootstrapConsumerState === undefined
           ? {}
@@ -693,6 +757,13 @@ export async function runHomebrewVfsImageBuilder(
         packageTree.state,
       );
     }
+    if (portableRubyTree !== undefined) {
+      assertPackageDeferredZipTreeState(
+        restored,
+        portableRubyTree.derived,
+        portableRubyTree.state,
+      );
+    }
     if (homebrewBootstrapConsumerState !== undefined) {
       assertHomebrewBootstrapConsumerState(
         restored,
@@ -812,7 +883,12 @@ export async function runHomebrewVfsImageBuilder(
     ...(packageTree === undefined
       ? {}
       : {
-          package_deferred_trees: [packageTreeBinding(packageTree)],
+          package_deferred_trees: [
+            packageTreeBinding(packageTree),
+            ...(portableRubyTree === undefined
+              ? []
+              : [packageTreeBinding(portableRubyTree)]),
+          ],
         }),
     ...(homebrewBootstrapConsumerState === undefined
       ? {}
@@ -1000,6 +1076,12 @@ function parseArgs(args: string[]): CliOptions {
         }
         options.packageTreeArchive = requireValue(args, ++i, arg);
         break;
+      case "--homebrew-portable-ruby-archive":
+        if (options.homebrewPortableRubyArchive !== undefined) {
+          usage("--homebrew-portable-ruby-archive may be provided only once");
+        }
+        options.homebrewPortableRubyArchive = requireValue(args, ++i, arg);
+        break;
       case "--homebrew-bootstrap-env":
         if (options.homebrewBootstrapEnv !== undefined) {
           usage("--homebrew-bootstrap-env may be provided only once");
@@ -1094,6 +1176,7 @@ function parseArgs(args: string[]): CliOptions {
       options.materializationPolicy === undefined ||
       options.catalogCommit === undefined ||
       options.packageTreeSpec === undefined ||
+      options.homebrewPortableRubyArchive === undefined ||
       options.homebrewBootstrapEnv === undefined ||
       options.materializePackageTree ||
       !existsSync(options.homebrewRuntimeSupport)
@@ -1101,7 +1184,8 @@ function parseArgs(args: string[]): CliOptions {
   ) {
     usage(
       "--homebrew-runtime-support requires an existing contract, " +
-        "--catalog-commit, a deferred package bootstrap with its environment, " +
+        "--catalog-commit, a deferred package bootstrap with portable Ruby " +
+        "and its environment, " +
         "and materialized shell composition",
     );
   }
@@ -1124,6 +1208,12 @@ function parseArgs(args: string[]): CliOptions {
     usage("--materialize-package-tree requires a package tree");
   }
   if (
+    options.homebrewPortableRubyArchive !== undefined &&
+    options.packageTreeSpec === undefined
+  ) {
+    usage("--homebrew-portable-ruby-archive requires a package tree");
+  }
+  if (
     options.homebrewBootstrapEnv !== undefined &&
     options.packageTreeSpec === undefined
   ) {
@@ -1140,6 +1230,15 @@ function parseArgs(args: string[]): CliOptions {
     !existsSync(options.packageTreeArchive)
   ) {
     usage(`package tree archive does not exist: ${options.packageTreeArchive}`);
+  }
+  if (
+    options.homebrewPortableRubyArchive !== undefined &&
+    !existsSync(options.homebrewPortableRubyArchive)
+  ) {
+    usage(
+      `Homebrew portable Ruby archive does not exist: ` +
+        options.homebrewPortableRubyArchive,
+    );
   }
   if (
     options.homebrewBootstrapEnv !== undefined &&
@@ -1329,26 +1428,29 @@ export function installHomebrewBootstrapConsumerState(
   environment: Uint8Array,
 ): HomebrewBootstrapConsumerState {
   const descriptor = tree.descriptor;
+  const prefix = descriptor.mount_prefix;
+  const target = `${prefix}/bin/brew`;
   if (
     descriptor.content_role !== "source-tree" ||
     descriptor.package.name !== "homebrew-bootstrap" ||
-    descriptor.mount_prefix !== HOMEBREW_BOOTSTRAP_PREFIX ||
-    !descriptor.activation.roots.includes(HOMEBREW_BOOTSTRAP_TARGET) ||
+    descriptor.owner.uid !== 1000 ||
+    descriptor.owner.gid !== 1000 ||
+    !descriptor.activation.roots.includes(target) ||
     !descriptor.inventory.some(
       (entry) =>
-        entry.vfs_path === HOMEBREW_BOOTSTRAP_TARGET &&
+        entry.vfs_path === target &&
         entry.type === "file" &&
         (entry.mode & 0o111) !== 0,
     )
   ) {
     throw new Error(
-      "Homebrew bootstrap environment requires the canonical deferred source tree",
+      "Homebrew bootstrap environment requires its descriptor-owned deferred source tree",
     );
   }
   // WHY: descriptor ownership alone does not prove the registered VFS still
   // contains its activation root. Check before writing consumer state so a
   // deleted tree member cannot leave a new dangling /usr/bin/brew alias.
-  assertHomebrewBootstrapTarget(fs, HOMEBREW_BOOTSTRAP_TARGET);
+  assertHomebrewBootstrapTarget(fs, target);
   for (const path of [
     HOMEBREW_BOOTSTRAP_ENV_PATH,
     HOMEBREW_BOOTSTRAP_ENTRYPOINT,
@@ -1361,10 +1463,10 @@ export function installHomebrewBootstrapConsumerState(
   }
   ensureDirRecursive(fs, dirname(HOMEBREW_BOOTSTRAP_ENV_PATH));
   writeVfsBinary(fs, HOMEBREW_BOOTSTRAP_ENV_PATH, environment, 0o644);
-  // WHY: Homebrew derives its canonical Kandelo prefix from this public alias.
-  // Pointing PATH straight at bin/brew appears to work but bypasses that
-  // launcher contract and can select the wrong prefix or bottle tag.
-  fs.symlink(HOMEBREW_BOOTSTRAP_TARGET, HOMEBREW_BOOTSTRAP_ENTRYPOINT);
+  // WHY: Homebrew derives the prefix owned by this authenticated source tree
+  // from the stable public alias. Pointing PATH straight at bin/brew bypasses
+  // that launcher contract and can select the wrong prefix or bottle tag.
+  fs.symlink(target, HOMEBREW_BOOTSTRAP_ENTRYPOINT);
   const state: HomebrewBootstrapConsumerState = {
     environment: {
       path: HOMEBREW_BOOTSTRAP_ENV_PATH,
@@ -1373,13 +1475,13 @@ export function installHomebrewBootstrapConsumerState(
     },
     entrypoint: {
       path: HOMEBREW_BOOTSTRAP_ENTRYPOINT,
-      target: HOMEBREW_BOOTSTRAP_TARGET,
+      target,
     },
     ownership: {
-      prefix: HOMEBREW_BOOTSTRAP_PREFIX,
+      prefix,
       uid: 1000,
       gid: 1000,
-      mutable_paths: [...HOMEBREW_BOOTSTRAP_MUTABLE_PATHS],
+      mutable_paths: homebrewBootstrapMutablePaths(prefix),
     },
   };
   assertHomebrewBootstrapConsumerState(fs, state);
@@ -1443,7 +1545,7 @@ function assertHomebrewBootstrapTarget(
     }
   } catch (error) {
     throw new Error(
-      "Homebrew bootstrap environment requires the canonical deferred source tree",
+      "Homebrew bootstrap environment requires its descriptor-owned deferred source tree",
       { cause: error },
     );
   }
@@ -1454,22 +1556,35 @@ export function prepareHomebrewBootstrapConsumerNamespace(
   tree: DerivedPackageDeferredZipTree,
 ): void {
   if (
+    tree.descriptor.content_role !== "source-tree" ||
     tree.descriptor.package.name !== "homebrew-bootstrap" ||
-    tree.descriptor.mount_prefix !== HOMEBREW_BOOTSTRAP_PREFIX
+    tree.descriptor.owner.uid !== 1000 ||
+    tree.descriptor.owner.gid !== 1000
   ) {
     throw new Error(
-      "Homebrew bootstrap ownership requires the canonical deferred source tree",
+      "Homebrew bootstrap ownership requires its descriptor-owned deferred source tree",
     );
   }
-  for (const path of HOMEBREW_BOOTSTRAP_MUTABLE_PATHS) {
+  const prefix = tree.descriptor.mount_prefix;
+  for (const path of homebrewBootstrapMutablePaths(prefix)) {
     ensureDirRecursive(fs, path);
   }
   // WHY: the guest package store belongs to the unprivileged Kandelo user.
   // Bottle composition initially creates structural prefix directories as
   // root; adopting the complete prefix here both avoids a false lazy-tree
   // collision and lets in-guest brew update Cellar, taps, links, and locks.
-  chownVfsTree(fs, HOMEBREW_BOOTSTRAP_PREFIX, 1000, 1000);
+  chownVfsTree(fs, prefix, 1000, 1000);
   chownVfsTree(fs, "/home/user/.cache", 1000, 1000);
+}
+
+function homebrewBootstrapMutablePaths(prefix: string): string[] {
+  return [
+    `${prefix}/Cellar`,
+    `${prefix}/Library/Taps`,
+    `${prefix}/var/homebrew/linked`,
+    `${prefix}/var/homebrew/locks`,
+    "/home/user/.cache/Homebrew",
+  ];
 }
 
 function chownVfsTree(
@@ -2113,6 +2228,7 @@ function usage(message?: string, code = 2): never {
    [--homebrew-runtime-support <runtime-support.json>]] \\
   [--package-tree-spec <tree.json> \\
    --package-tree-archive <package-output.zip> \\
+   [--homebrew-portable-ruby-archive <homebrew-portable-ruby.zip>] \\
    [--homebrew-bootstrap-env <homebrew-brew.env>] \\
    [--materialize-package-tree]] \\
   [--lazy-layer-out <layer.bin> \\

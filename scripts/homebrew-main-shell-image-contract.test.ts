@@ -251,7 +251,7 @@ test("bounds operational Homebrew downloads to the reviewed support closure", ()
   assert.doesNotThrow(() =>
     assertMainShellOperationalRuntimeFetches(runtimeSupport, [
       "kandelo-dev/tap-core/coreutils",
-      "kandelo-dev/tap-core/ruby",
+      "kandelo-dev/tap-core/git",
     ]),
   );
   assert.throws(

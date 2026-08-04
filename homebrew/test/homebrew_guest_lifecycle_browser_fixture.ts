@@ -38,6 +38,7 @@ export interface HomebrewGuestLifecycleBrowserFixture {
   bootstrap: {
     spec: HomebrewGuestLifecycleExactAsset;
     archive: HomebrewGuestLifecycleExactAsset;
+    portableRuby: HomebrewGuestLifecycleExactAsset;
     environment: HomebrewGuestLifecycleExactAsset;
   };
   bottleMirror: {
@@ -53,6 +54,7 @@ export interface LoadedHomebrewGuestLifecycleBrowserFixture {
   imageBytes: Uint8Array;
   bootstrapSpecBytes: Uint8Array;
   bootstrapArchiveBytes: Uint8Array;
+  portableRubyArchiveBytes: Uint8Array;
   bootstrapEnvironmentBytes: Uint8Array;
   bottleMirrorPlanBytes: Uint8Array;
   closedBottleAssets?: readonly ClosedLazyAsset[];
@@ -127,13 +129,18 @@ const TOP_LEVEL_KEYS = [
   "revisions",
   "timeoutMs",
 ] as const;
-const BOOTSTRAP_KEYS = ["spec", "archive", "environment"] as const;
+const BOOTSTRAP_KEYS = [
+  "spec",
+  "archive",
+  "portableRuby",
+  "environment",
+] as const;
 const MIRROR_KEYS = ["plan", "payloads"] as const;
 const REVISION_KEYS = ["coreRevision", "canaryRevision"] as const;
 const ASSET_KEYS = ["url", "sha256", "bytes"] as const;
 const PAYLOAD_KEYS = ["asset", "url", "sha256", "bytes"] as const;
 const SHA256_RE = /^[0-9a-f]{64}$/;
-const FIXED_EXACT_ASSET_COUNT = 5;
+const FIXED_EXACT_ASSET_COUNT = 6;
 
 /**
  * Reject ambient or partially specified live inputs before any browser fetch.
@@ -220,6 +227,10 @@ export function projectHomebrewGuestLifecycleBrowserFixture(
         value.bootstrap.archive,
         "bootstrap archive",
       ),
+      portableRuby: projectExactAsset(
+        value.bootstrap.portableRuby,
+        "portable Ruby archive",
+      ),
       environment: projectExactAsset(
         value.bootstrap.environment,
         "bootstrap environment",
@@ -258,6 +269,7 @@ async function loadHomebrewGuestLifecycleBrowserFixtureImpl(
     fixture.image,
     fixture.bootstrap.spec,
     fixture.bootstrap.archive,
+    fixture.bootstrap.portableRuby,
     fixture.bootstrap.environment,
     fixture.bottleMirror.plan,
     ...payloads,
@@ -287,12 +299,14 @@ async function loadHomebrewGuestLifecycleBrowserFixtureImpl(
     image,
     bootstrapSpec,
     bootstrapArchive,
+    portableRubyArchive,
     bootstrapEnvironment,
     bottleMirrorPlan,
   ] = loadedFixedAssets;
   const imageBytes = image!.bytes;
   const bootstrapSpecBytes = bootstrapSpec!.bytes;
   const bootstrapArchiveBytes = bootstrapArchive!.bytes;
+  const portableRubyArchiveBytes = portableRubyArchive!.bytes;
   const bootstrapEnvironmentBytes = bootstrapEnvironment!.bytes;
   const bottleMirrorPlanBytes = bottleMirrorPlan!.bytes;
   const plan = decodeHomebrewBottleMirrorPlan(
@@ -314,6 +328,7 @@ async function loadHomebrewGuestLifecycleBrowserFixtureImpl(
       imageBytes,
       bootstrapSpecBytes,
       bootstrapArchiveBytes,
+      portableRubyArchiveBytes,
       bootstrapEnvironmentBytes,
       bottleMirrorPlanBytes,
     };
@@ -381,6 +396,7 @@ async function loadHomebrewGuestLifecycleBrowserFixtureImpl(
     imageBytes,
     bootstrapSpecBytes,
     bootstrapArchiveBytes,
+    portableRubyArchiveBytes,
     bootstrapEnvironmentBytes,
     bottleMirrorPlanBytes,
     closedBottleAssets,

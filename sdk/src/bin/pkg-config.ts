@@ -1,4 +1,5 @@
 #!/usr/bin/env -S node --experimental-strip-types
+import { isAbsolute } from 'node:path';
 import { findSysroot } from '../lib/toolchain.ts';
 import { runPassthrough } from '../lib/exec.ts';
 import { isMain } from '../lib/is-main.ts';
@@ -35,13 +36,16 @@ export function buildPkgConfigEnv(
   };
 }
 
-/** True if the path is part of the kandelo cache or sysroot.
+/** True if the path is caller-local or part of the Kandelo cache/sysroot.
  * Anything under `kandelo/...` (the dep cache root used by
  * `~/.cache/kandelo/libs/<name>...`) or under `sysroot`/
- * `sysroot64` is wasm32/64 targeted; everything else is host-targeted
- * (Nix-store host pc files, /usr/lib/pkgconfig, etc.) and gets dropped. */
+ * `sysroot64` is wasm32/64 targeted. Relative entries are also explicit
+ * caller-owned build paths; projects conventionally use `PKG_CONFIG_PATH=.`
+ * for metadata they just generated. Other absolute paths are host-targeted
+ * (Nix-store host pc files, /usr/lib/pkgconfig, etc.) and get dropped. */
 function isWasmPosixPath(p: string): boolean {
   return (
+    !isAbsolute(p) ||
     p.includes('kandelo/') ||
     p.includes('/sysroot/') ||
     p.includes('/sysroot64/') ||

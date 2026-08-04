@@ -3446,11 +3446,14 @@ def validate_required_entrant_recipe(
     if prepared["archive_format"] != "kandelo-deterministic-zip-v1":
         fail(f"{name} lock archive format is unsupported")
     outputs = exact_keys(
-        lock["outputs"], {"archive", "environment"}, f"{name} lock outputs"
+        lock["outputs"],
+        {"archive", "environment", "portable_ruby"},
+        f"{name} lock outputs",
     )
     for output_name, expected_path in (
         ("archive", "homebrew-bootstrap.zip"),
         ("environment", "homebrew-brew.env"),
+        ("portable_ruby", "homebrew-portable-ruby.zip"),
     ):
         output = exact_keys(
             outputs[output_name],

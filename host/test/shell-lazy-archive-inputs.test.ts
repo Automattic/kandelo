@@ -669,9 +669,15 @@ describe("declared shell lazy-archive inputs", () => {
         (name) => !runtimeSupport.base_formula_order.includes(name),
       ),
     );
-    expect(runtimeSupport.additional_formula_order).toContain(
-      "kandelo-dev/tap-core/ruby",
+    expect(runtimeSupport.additional_formula_order).toEqual([]);
+    expect(runtimeSupport.formula_roots).not.toContainEqual(
+      expect.objectContaining({ package: "kandelo-dev/tap-core/ruby" }),
     );
+    expect(runtimeSupport.activation.bootstrap_package.outputs).toEqual([
+      "homebrew-bootstrap.zip",
+      "homebrew-brew.env",
+      "homebrew-portable-ruby.zip",
+    ]);
     const auditedFormulae = [
       ...runtimeSupport.availability.reusable_public_abi42,
       ...runtimeSupport.availability.requires_rebuild,

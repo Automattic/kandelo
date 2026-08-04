@@ -91,6 +91,7 @@ for path in \
   "$PUBLISH" \
   "$ROOT/main-shell.vfs.zst" \
   "$ROOT/homebrew-bootstrap.zip" \
+  "$ROOT/homebrew-portable-ruby.zip" \
   "$ROOT/homebrew-brew.env"
 do
   [ -f "$path" ] && [ ! -L "$path" ] || {
@@ -112,6 +113,7 @@ expected_root_entries="$(
     handoff.json \
     homebrew-bootstrap.zip \
     homebrew-brew.env \
+    homebrew-portable-ruby.zip \
     main-shell.vfs.zst \
     mirror \
     publish.json |
@@ -150,6 +152,7 @@ jq -e \
   .canary_ref == $canary and
   (.files | keys | sort) == [
     "homebrew-bootstrap.zip", "homebrew-brew.env",
+    "homebrew-portable-ruby.zip",
     "main-shell.vfs.zst", "publish.json"
   ] and
   ([.files[] |
@@ -179,6 +182,7 @@ file_bytes() {
 for name in \
   main-shell.vfs.zst \
   homebrew-bootstrap.zip \
+  homebrew-portable-ruby.zip \
   homebrew-brew.env \
   publish.json
 do

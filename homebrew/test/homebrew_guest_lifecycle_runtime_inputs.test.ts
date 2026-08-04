@@ -13,6 +13,8 @@ import {
 } from "../../host/src/homebrew-bottle-mirror-plan";
 import { homebrewRuntimeLayerPayloadAsset } from
   "../../host/src/homebrew-runtime-layer-limits";
+import { deriveHomebrewPortableRubyTree } from
+  "../../host/src/homebrew-portable-ruby";
 import { MemoryFileSystem } from "../../host/src/vfs/memory-fs";
 import {
   derivePackageDeferredZipTree,
@@ -32,14 +34,21 @@ test("binds verified bootstrap bytes and bottle payloads to one exact image", as
   const bootstrapArchive = zipSync({
     "bin/": zipEntry(new Uint8Array(), 0o040755),
     "bin/brew": zipEntry(encoder.encode("#!/bin/sh\n"), 0o100755),
+    "Library/": zipEntry(new Uint8Array(), 0o040755),
+    "Library/Homebrew/": zipEntry(new Uint8Array(), 0o040755),
+    "Library/Homebrew/vendor/": zipEntry(new Uint8Array(), 0o040755),
+    "Library/Homebrew/vendor/portable-ruby-version": zipEntry(
+      encoder.encode("4.0.5\n"),
+      0o100644,
+    ),
   }, { level: 9 });
   const bootstrapSpec = {
     schema: 1,
     kind: "kandelo-package-deferred-zip-tree",
-    id: "shell/homebrew-bootstrap",
+    id: "homebrew-bootstrap/source-tree",
     content_role: "source-tree",
     package: {
-      name: "shell",
+      name: "homebrew-bootstrap",
       output: "homebrew-bootstrap.zip",
     },
     archive: {
@@ -58,6 +67,17 @@ test("binds verified bootstrap bytes and bottle payloads to one exact image", as
   const bootstrapTree = derivePackageDeferredZipTree(
     bootstrapSpec,
     bootstrapArchive,
+  );
+  const portableRubyArchive = zipSync({
+    "4.0.5/": zipEntry(new Uint8Array(), 0o040755),
+    "4.0.5/bin/": zipEntry(new Uint8Array(), 0o040755),
+    "4.0.5/bin/ruby": zipEntry(encoder.encode("ruby-wasm\n"), 0o100755),
+    current: zipEntry(encoder.encode("4.0.5"), 0o120777),
+  }, { level: 9 });
+  const portableRubyTree = deriveHomebrewPortableRubyTree(
+    bootstrapTree,
+    bootstrapArchive,
+    portableRubyArchive,
   );
   const bottleBytes = new Uint8Array([42]);
   const mirror = createMirrorPlan(bottleBytes);
@@ -117,6 +137,7 @@ test("binds verified bootstrap bytes and bottle payloads to one exact image", as
   );
   writeFile(fs, HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH, mirrorBytes);
   registerPackageDeferredZipTree(fs, bootstrapTree);
+  registerPackageDeferredZipTree(fs, portableRubyTree);
   fs.registerLazyTree(
     {
       decoder: "zip-v1",
@@ -151,6 +172,7 @@ test("binds verified bootstrap bytes and bottle payloads to one exact image", as
   await fs.sealLazyAtomicGroup("homebrew-runtime-support", [
     bootstrapTree.descriptor.id,
     "bottle-test",
+    portableRubyTree.descriptor.id,
   ]);
 
   const imageBytes = await fs.saveImage();
@@ -158,6 +180,8 @@ test("binds verified bootstrap bytes and bottle payloads to one exact image", as
     bootstrapSpecBytes: encoder.encode(JSON.stringify(bootstrapSpec)),
     bootstrapArchiveBytes: bootstrapArchive,
     bootstrapArchiveSha256: sha256(bootstrapArchive),
+    portableRubyArchiveBytes: portableRubyArchive,
+    portableRubyArchiveSha256: sha256(portableRubyArchive),
     bootstrapEnvironmentBytes: environmentBytes,
     coreRevision,
     transportMode: "closed" as const,
@@ -186,14 +210,26 @@ test("binds verified bootstrap bytes and bottle payloads to one exact image", as
     "https://closed.kandelo.invalid/lifecycle/homebrew-bootstrap.zip",
   );
   assert.equal(runtime.bootstrapBytes, bootstrapArchive.byteLength);
-  assert.deepEqual(runtime.runtimeSupportTrees, [{
-    url: mirror.assets[0]!.url,
-    bytes: bottleBytes.byteLength,
-  }]);
-  assert.equal(runtime.lazyAssets?.length, 2);
+  assert.deepEqual(runtime.runtimeSupportTrees, [
+    {
+      url: mirror.assets[0]!.url,
+      bytes: bottleBytes.byteLength,
+    },
+    {
+      url:
+        "https://closed.kandelo.invalid/lifecycle/" +
+        "homebrew-portable-ruby.zip",
+      bytes: portableRubyArchive.byteLength,
+    },
+  ]);
+  assert.equal(runtime.lazyAssets?.length, 3);
   assert.equal(
     runtime.lazyAssets?.[1]?.sha256,
     bootstrapTree.content.sha256,
+  );
+  assert.equal(
+    runtime.lazyAssets?.[2]?.sha256,
+    portableRubyTree.content.sha256,
   );
   assert.deepEqual(validatedMirror, mirror);
 

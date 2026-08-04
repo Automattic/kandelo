@@ -40,6 +40,7 @@ class MockBrowserWorker {
 // Keep a reference to the last constructed MockBrowserWorker so tests
 // can interact with it after BrowserWorkerAdapter creates one internally.
 let lastMockWorker: MockBrowserWorker | null = null;
+let mockWorkers: MockBrowserWorker[] = [];
 const OriginalMockBrowserWorker = MockBrowserWorker;
 
 function TrackingMockBrowserWorker(
@@ -49,6 +50,7 @@ function TrackingMockBrowserWorker(
 ) {
   const instance = new OriginalMockBrowserWorker(url, options);
   lastMockWorker = instance;
+  mockWorkers.push(instance);
   return instance;
 }
 
@@ -59,6 +61,7 @@ function TrackingMockBrowserWorker(
 describe("BrowserWorkerAdapter", () => {
   beforeEach(() => {
     lastMockWorker = null;
+    mockWorkers = [];
     vi.stubGlobal("Worker", TrackingMockBrowserWorker);
   });
 
@@ -104,6 +107,33 @@ describe("BrowserWorkerAdapter", () => {
       expect(typeof handle.on).toBe("function");
       expect(typeof handle.off).toBe("function");
       expect(typeof handle.terminate).toBe("function");
+    });
+
+    it("leases each prestarted Worker once and replaces it", async () => {
+      const adapter = new BrowserWorkerAdapter("worker.js", 1);
+      const firstPhysical = lastMockWorker!;
+      const first = adapter.createWorker({ type: "centralized_init", pid: 71 });
+      await Promise.resolve();
+      const secondPhysical = lastMockWorker!;
+
+      firstPhysical.simulateMessage({ type: "memory_quiescent", pid: 71 });
+      await first.terminate();
+      const second = adapter.createWorker({
+        type: "centralized_init",
+        pid: 72,
+      });
+
+      expect(secondPhysical).not.toBe(firstPhysical);
+      expect(firstPhysical.terminated).toBe(true);
+      expect(firstPhysical.sentMessages).toEqual([
+        { type: "centralized_init", pid: 71 },
+      ]);
+      expect(secondPhysical.sentMessages).toEqual([
+        { type: "centralized_init", pid: 72 },
+      ]);
+
+      await second.terminate();
+      await adapter.destroy();
     });
   });
 
@@ -235,6 +265,8 @@ describe("BrowserWorkerAdapter", () => {
 
       await handle.terminate();
       expect(lastMockWorker!.terminated).toBe(true);
+      expect(lastMockWorker!.onmessage).toBeNull();
+      expect(lastMockWorker!.onerror).toBeNull();
     });
 
     it("should fire exit handlers with code 0", async () => {
@@ -245,6 +277,10 @@ describe("BrowserWorkerAdapter", () => {
       handle.on("exit", (code) => exitCodes.push(code));
       await handle.terminate();
 
+      expect(exitCodes).toEqual([0]);
+
+      lastMockWorker!.simulateMessage("after termination");
+      lastMockWorker!.simulateError("after termination");
       expect(exitCodes).toEqual([0]);
     });
 

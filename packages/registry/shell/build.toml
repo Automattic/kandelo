@@ -48,6 +48,8 @@ inputs = [
   "homebrew/kandelo-guest-layout.json",
   "host/src/homebrew-lazy-layer.ts",
   "host/src/homebrew-lazy-layer-descriptor.ts",
+  "host/src/homebrew-portable-ruby-contract.ts",
+  "host/src/homebrew-portable-ruby.ts",
   "host/src/homebrew-runtime-layer-consumer.ts",
   "host/src/homebrew-runtime-layer-limits.ts",
   "host/src/homebrew-runtime-layer-policy.ts",

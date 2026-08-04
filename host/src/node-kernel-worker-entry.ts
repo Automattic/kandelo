@@ -48,9 +48,13 @@ import { resolveLazyUrl } from "./vfs/lazy-url";
 import { TcpNetworkBackend } from "./networking/tcp-backend";
 import { findRepoRoot } from "./binary-resolver";
 import { NodeWorkerAdapter } from "./worker-adapter";
+import { prestartedWorkerPoolSize } from "./prestarted-worker-pool";
 import { DeferredWorkerHandle } from "./deferred-worker-handle";
 import { ThreadPageAllocator } from "./thread-allocator";
-import { patchWasmForThread } from "./worker-main";
+import {
+  detectChannelBaseTlsOffset,
+  patchWasmForThread,
+} from "./worker-main";
 import { ThreadExitCoordinator } from "./thread-exit-coordinator";
 import { detectPtrWidth, extractAbiVersion, extractHeapBase, isWasmModuleBytes } from "./constants";
 import { CH_TOTAL_SIZE, DEFAULT_MAX_PAGES, PAGES_PER_THREAD, WASM_PAGE_SIZE } from "./constants";
@@ -69,6 +73,7 @@ import {
   createWorkerQuiescence,
   type WorkerQuiescence,
   waitForExecRetirement,
+  waitForThreadExecRetirement,
   waitForWorkerQuiescence,
 } from "./worker-quiescence";
 import { RootfsSnapshotGate } from "./rootfs-snapshot-gate";
@@ -90,6 +95,12 @@ import {
   type ExactProcessGenerationDetachResult,
 } from "./process-generation-detach";
 import { ProcessMemoryCreatorGate } from "./process-memory-creator-gate";
+import {
+  DEFAULT_EXECUTABLE_MODULE_CACHE_MAX_ALIASES,
+  DEFAULT_EXECUTABLE_MODULE_CACHE_MAX_ENTRIES,
+  DEFAULT_EXECUTABLE_MODULE_CACHE_MAX_RETAINED_BYTES,
+  ExecutableModuleCache,
+} from "./executable-module-cache";
 import type { PlatformIO } from "./types";
 import type {
   CentralizedWorkerInitMessage,
@@ -177,7 +188,9 @@ interface ProcessInfo extends ProcessGenerationOwnership {
   workerQuiescence: WorkerQuiescence;
   execRetirement: WorkerQuiescence;
   programBytes: ArrayBuffer;
-  programModule?: WebAssembly.Module;
+  programModule: WebAssembly.Module;
+  programAbiVersion: number | null;
+  channelBaseTlsOffset: number;
   worker: ReturnType<NodeWorkerAdapter["createWorker"]>;
   channelOffset: number;
   ptrWidth: 4 | 8;
@@ -290,6 +303,7 @@ interface ThreadWorkerInfo {
   basePage: number;
   workerQuiescence: WorkerQuiescence;
   execRetirement: WorkerQuiescence;
+  threadExit: WorkerQuiescence;
   termination?: Promise<void>;
 }
 const threadWorkers = new Map<number, ThreadWorkerInfo[]>();
@@ -312,8 +326,9 @@ async function terminateThreadWorkers(
   const quiescence = await Promise.all(
     threads.map((thread) =>
       requireExecRetirement
-        ? waitForExecRetirement(
+        ? waitForThreadExecRetirement(
             thread.execRetirement,
+            thread.threadExit,
             thread.workerQuiescence,
             EXEC_WORKER_RETIREMENT_WAIT_MS,
           )
@@ -693,6 +708,17 @@ async function resolveExec(path: string): Promise<ArrayBuffer | null> {
 }
 
 const MAX_SHEBANG_DEPTH = 4;
+interface ExecutableModuleMetadata {
+  programAbiVersion: number | null;
+  channelBaseTlsOffset: number;
+}
+// Keep Node and browser launch semantics identical: workers and process state
+// remain one-shot while immutable compiled code is reused within one machine.
+const executableModuleCache = new ExecutableModuleCache<ExecutableModuleMetadata>({
+  maxEntries: DEFAULT_EXECUTABLE_MODULE_CACHE_MAX_ENTRIES,
+  maxAliases: DEFAULT_EXECUTABLE_MODULE_CACHE_MAX_ALIASES,
+  maxRetainedBytes: DEFAULT_EXECUTABLE_MODULE_CACHE_MAX_RETAINED_BYTES,
+});
 
 function parseShebang(bytes: ArrayBuffer): { interpreter: string; arg?: string } | null {
   const view = new Uint8Array(bytes);
@@ -718,6 +744,16 @@ async function resolveExecutableForLaunch(
   const shebang = parseShebang(bytes);
   if (!shebang) {
     if (!isWasmModuleBytes(bytes)) return { errno: ENOEXEC };
+    const cached = executableModuleCache.get(path, bytes);
+    if (cached) {
+      return {
+        programBytes: bytes,
+        programModule: cached.module,
+        programAbiVersion: cached.metadata.programAbiVersion,
+        channelBaseTlsOffset: cached.metadata.channelBaseTlsOffset,
+        argv,
+      };
+    }
     let programModule: WebAssembly.Module;
     try {
       programModule = await WebAssembly.compile(bytes);
@@ -729,7 +765,18 @@ async function resolveExecutableForLaunch(
     if (declaredAbi !== null && declaredAbi !== kernelWorker.getKernelAbiVersion()) {
       return { errno: ENOEXEC };
     }
-    return { programBytes: bytes, programModule, argv };
+    const channelBaseTlsOffset = detectChannelBaseTlsOffset(bytes);
+    executableModuleCache.set(path, bytes, programModule, {
+      programAbiVersion: declaredAbi,
+      channelBaseTlsOffset,
+    });
+    return {
+      programBytes: bytes,
+      programModule,
+      programAbiVersion: declaredAbi,
+      channelBaseTlsOffset,
+      argv,
+    };
   }
 
   const scriptArgv = [
@@ -840,6 +887,9 @@ function cleanupSessionDir(): void {
 
 async function handleInit(msg: InitMessage) {
   initReady = false;
+  // A kernel Worker normally owns one machine, but keep the cache lifetime
+  // explicit if an embedder initializes the realm again after teardown.
+  executableModuleCache.clear();
   maxPages = msg.config.maxPages ?? DEFAULT_MAX_PAGES;
   defaultThreadSlots = msg.config.defaultThreadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
   processMemoryAllocator = new ProcessMemoryAllocator({
@@ -855,7 +905,13 @@ async function handleInit(msg: InitMessage) {
     retirementPressureHook: processMemoryRetirementPressureHook,
   });
   execPrograms = msg.execPrograms ?? {};
-  workerAdapter = new NodeWorkerAdapter();
+  // Prestart only pristine runners. Once a process receives its Memory, its
+  // Worker is one-shot and the existing quiescence/termination path reclaims
+  // the complete realm instead of returning it to this reserve.
+  workerAdapter = new NodeWorkerAdapter(
+    undefined,
+    prestartedWorkerPoolSize(msg.config.maxWorkers),
+  );
 
   const io: PlatformIO = msg.rootfsImage
     ? await buildVirtualPlatformIO(
@@ -969,7 +1025,6 @@ async function handleSpawn(msg: SpawnMessage) {
     }
     const programBytes = msg.programBytes ??
       await readExecFromVfs(msg.programPath!);
-    const programModule = hasProgramBytes ? msg.programModule : undefined;
     if (programBytes === null) {
       respondError(msg.requestId, `ENOENT: ${msg.programPath}`);
       return;
@@ -978,6 +1033,34 @@ async function handleSpawn(msg: SpawnMessage) {
       respondError(msg.requestId, "ENOEXEC: program is not a WebAssembly module");
       return;
     }
+    const cached = hasProgramPath
+      ? executableModuleCache.get(msg.programPath!, programBytes)
+      : undefined;
+    let programModule = hasProgramBytes ? msg.programModule : cached?.module;
+    let programAbiVersion = cached?.metadata.programAbiVersion;
+    let channelBaseTlsOffset = cached?.metadata.channelBaseTlsOffset;
+    if (!programModule) {
+      try {
+        programModule = await WebAssembly.compile(programBytes);
+      } catch (error) {
+        if (error instanceof WebAssembly.CompileError) {
+          respondError(msg.requestId, "ENOEXEC: program is not a valid WebAssembly module");
+          return;
+        }
+        throw error;
+      }
+      programAbiVersion = extractAbiVersion(programBytes);
+      channelBaseTlsOffset = detectChannelBaseTlsOffset(programBytes);
+      if (hasProgramPath) {
+        executableModuleCache.set(msg.programPath!, programBytes, programModule, {
+          programAbiVersion,
+          channelBaseTlsOffset,
+        });
+      }
+    }
+    // A caller-supplied Module still needs byte-derived launch metadata.
+    programAbiVersion ??= extractAbiVersion(programBytes);
+    channelBaseTlsOffset ??= detectChannelBaseTlsOffset(programBytes);
 
     const pid = kernelWorker.createProcess(
       msg.pty ? TERMINAL_STDIO : CAPTURED_STDIO,
@@ -1035,8 +1118,9 @@ async function handleSpawn(msg: SpawnMessage) {
     const initData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
       pid,
-      programBytes,
       programModule,
+      programAbiVersion,
+      channelBaseTlsOffset,
       memory,
       channelOffset,
       env: msg.env,
@@ -1057,6 +1141,8 @@ async function handleSpawn(msg: SpawnMessage) {
       execRetirement: createWorkerQuiescence(),
       programBytes,
       programModule,
+      programAbiVersion,
+      channelBaseTlsOffset,
       worker,
       channelOffset,
       ptrWidth,
@@ -1189,8 +1275,9 @@ async function handleFork(
     const childInitData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
       pid: childPid,
-      programBytes: parentProgram,
       programModule: parentInfo.programModule,
+      programAbiVersion: parentInfo.programAbiVersion,
+      channelBaseTlsOffset: parentInfo.channelBaseTlsOffset,
       memory: childMemory,
       channelOffset: childChannelOffset,
       isForkChild: true,
@@ -1212,6 +1299,8 @@ async function handleFork(
       execRetirement: createWorkerQuiescence(),
       programBytes: parentProgram,
       programModule: parentInfo.programModule,
+      programAbiVersion: parentInfo.programAbiVersion,
+      channelBaseTlsOffset: parentInfo.channelBaseTlsOffset,
       worker,
       channelOffset: childChannelOffset,
       ptrWidth,
@@ -1294,6 +1383,11 @@ async function handleExec(
   if (!resolved) return -2; // ENOENT
   if ("errno" in resolved) return -resolved.errno;
   const { programBytes, programModule, argv: launchArgv } = resolved;
+  const programAbiVersion = resolved.programAbiVersion !== undefined
+    ? resolved.programAbiVersion
+    : extractAbiVersion(programBytes);
+  const channelBaseTlsOffset = resolved.channelBaseTlsOffset ??
+    detectChannelBaseTlsOffset(programBytes);
   const newPtrWidth = detectPtrWidth(programBytes);
   const metadataResult = kernelWorker.validateExecMetadata(
     launchArgv,
@@ -1424,8 +1518,9 @@ async function handleExec(
     const initData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
       pid,
-      programBytes,
       programModule,
+      programAbiVersion,
+      channelBaseTlsOffset,
       memory: newMemory,
       channelOffset: newChannelOffset,
       argv: launchArgv,
@@ -1461,6 +1556,8 @@ async function handleExec(
       execRetirement: createWorkerQuiescence(),
       programBytes,
       programModule,
+      programAbiVersion,
+      channelBaseTlsOffset,
       worker: replacementWorker,
       channelOffset: newChannelOffset,
       ptrWidth: newPtrWidth,
@@ -1625,6 +1722,11 @@ async function handlePosixSpawn(
   post({ type: "proc_event", kind: "spawn", pid: childPid, ppid: parentPid });
 
   const { programBytes, programModule, argv } = program;
+  const programAbiVersion = program.programAbiVersion !== undefined
+    ? program.programAbiVersion
+    : extractAbiVersion(programBytes);
+  const channelBaseTlsOffset = program.channelBaseTlsOffset ??
+    detectChannelBaseTlsOffset(programBytes);
   const ptrWidth = detectPtrWidth(programBytes);
   let fresh: Awaited<ReturnType<typeof createFreshProcessMemory>>;
   try {
@@ -1666,8 +1768,9 @@ async function handlePosixSpawn(
     const initData: CentralizedWorkerInitMessage = {
       type: "centralized_init",
       pid: childPid,
-      programBytes,
       programModule,
+      programAbiVersion,
+      channelBaseTlsOffset,
       memory,
       channelOffset,
       argv,
@@ -1687,6 +1790,8 @@ async function handlePosixSpawn(
       execRetirement: createWorkerQuiescence(),
       programBytes,
       programModule,
+      programAbiVersion,
+      channelBaseTlsOffset,
       worker,
       channelOffset,
       ptrWidth,
@@ -1811,8 +1916,9 @@ async function handleClone(
     type: "centralized_thread_init",
     pid,
     tid,
-    programBytes: processInfo.programBytes,
     programModule: threadModule,
+    programAbiVersion: processInfo.programAbiVersion,
+    channelBaseTlsOffset: processInfo.channelBaseTlsOffset,
     memory,
     processChannelOffset: processInfo.channelOffset,
     channelOffset: alloc.channelOffset,
@@ -1838,6 +1944,7 @@ async function handleClone(
     basePage: alloc.slotStartPage,
     workerQuiescence: createWorkerQuiescence(),
     execRetirement: createWorkerQuiescence(),
+    threadExit: createWorkerQuiescence(),
   };
   threadWorkers.get(pid)!.push(threadEntry);
 
@@ -1904,7 +2011,8 @@ async function handleClone(
     const m = msg as WorkerToHostMessage;
     if (m.type === "exec_retired" && m.tid === tid) {
       threadEntry.execRetirement.settle();
-    } else if (m.type === "thread_exit") {
+    } else if (m.type === "thread_exit" && m.tid === tid) {
+      threadEntry.threadExit.settle();
       if (!isCurrentThreadGeneration()) {
         void terminateThreadEntry();
         return;
@@ -2224,6 +2332,10 @@ async function performDestroy() {
       t.worker.terminate().catch(() => {});
     }
   }
+  // Unleased reserve workers own no process Memory, but their JS realms remain
+  // explicit host resources. Destroy the entire adapter reserve before
+  // acknowledging teardown so sessions cannot accumulate idle Workers.
+  await workerAdapter.destroy();
   // Only exact-generation transactions may remove map entries. The enclosing
   // creator gate proves no later spawn/exec/fork/clone continuation can install
   // another Worker alias after this check.
@@ -2232,6 +2344,9 @@ async function performDestroy() {
   vmInterruptTimers.clearAll();
   processTeardowns.clear();
   reportedExits.clear();
+  // Release retained comparison bytes and compiled code before the enclosing
+  // kernel Worker realm receives its terminal acknowledgement.
+  executableModuleCache.clear();
   threadModuleCache.clear();
   threadWorkers.clear();
   ptyByPid.clear();

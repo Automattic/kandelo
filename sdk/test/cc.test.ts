@@ -50,10 +50,33 @@ describe('buildClangArgs', () => {
     expect(args.join(' ')).toContain('libc.a');
   });
 
-  it('-ldl selects the functional dynamic-loading glue', () => {
-    const args = build(['foo.c', '-ldl', '-o', 'foo.wasm']);
+  it('owns libc placement for executables and imports libc from shared modules', () => {
+    const executableArgs = build(['foo.o', '-lc', '-o', 'foo.wasm']);
+    expect(executableArgs).not.toContain('-lc');
+    expect(executableArgs.filter((arg) => arg === '/tmp/sysroot/lib/libc.a')).toHaveLength(1);
+
+    const sharedArgs = build(['-shared', 'foo.o', '-lc', '-o', 'foo.so']);
+    expect(sharedArgs).not.toContain('-lc');
+    expect(sharedArgs).not.toContain('/tmp/sysroot/lib/libc.a');
+    expect(sharedArgs.join(' ')).not.toContain('channel_syscall.c');
+    expect(sharedArgs).toContain('-Wl,--shared');
+    expect(sharedArgs).toContain('-Wl,--allow-undefined');
+  });
+
+  it('-ldl provides the complete process symbol scope for side modules', () => {
+    const args = build(['foo.c', '/tmp/libinterpose.a', '-ldl', '-o', 'foo.wasm']);
     expect(args).not.toContain('-ldl');
     expect(args).toContain('/tmp/glue/dlopen.c');
+    expect(args).toContain('-Wl,--export-all');
+    expect(args).toContain('/tmp/sysroot/lib/libc-dynamic-anchor.o');
+    expect(args).toContain('-Wl,--undefined=__kandelo_dynamic_libc_functions');
+    expect(args).toContain('-Wl,--undefined=__kandelo_dynamic_libc_data');
+    expect(args).toContain('/tmp/sysroot/lib/libc-dynamic.o');
+    expect(args).not.toContain('/tmp/sysroot/lib/libc.a');
+    expect(args.indexOf('/tmp/sysroot/lib/libc-dynamic-anchor.o'))
+      .toBeLessThan(args.indexOf('/tmp/libinterpose.a'));
+    expect(args.indexOf('/tmp/libinterpose.a'))
+      .toBeLessThan(args.indexOf('/tmp/sysroot/lib/libc-dynamic.o'));
   });
 
   it('uses the 8 MiB stack floor for default and smaller requests', () => {

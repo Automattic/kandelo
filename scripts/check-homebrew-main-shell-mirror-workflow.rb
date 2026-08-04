@@ -13,11 +13,11 @@ NODE_SCOPE_RUNNER = ARGV.length < 2 ?
   File.join(ROOT, "homebrew/test/run_homebrew_guest_shipping_scope.sh") :
   File.expand_path(ARGV.fetch(1))
 PUBLISH_JOB_DIGEST =
-  "5f38b593eeffd4cacf3d728baa64695e88fe2f0723757628dbc936b6b679c54b"
+  "3e8ae714ec2c2024c0413efc1f4489a3f094c0b971db2b41c8a64d286e0c247a"
 WORKFLOW_DIGEST =
-  "9dee4c5bb5a12cb06aa25f2c54fe884febf5762cb698772c0c6629283cf9af91"
+  "83a18a6935a098c1ba04c945a1876fcfdcf0a3d2563a3275b6da840af0c99b54"
 NODE_SCOPE_RUNNER_DIGEST =
-  "a351c57bba3b4ad05d58a346ccf2ffa22d6de194d1839c24a78d2b9bc07f1bf8"
+  "6cc77de083c1be972a20ef4d2a26e52a2ee1ff93969a3e6caac0d3a19e1fecbf"
 DOWNLOAD_ACTION =
   "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 UPLOAD_ACTION =
@@ -28,6 +28,7 @@ LIFECYCLE_ASSETS = %w[
   main-shell.vfs.zst
   main-shell-brew-package-tree.json
   homebrew-bootstrap.zip
+  homebrew-portable-ruby.zip
   homebrew-brew.env
 ].freeze
 PUBLIC_CHROMIUM_PLAYWRIGHT_ENV = {
@@ -400,7 +401,7 @@ check(
     '.visibility == "public-anonymous-readback"'
   ).length == 2 &&
     publication_run.include?('.operation == "verified-existing"') &&
-    publication_run.include?('(.assets | length) == 4') &&
+    publication_run.include?('(.assets | length) == 5') &&
     publication_run.include?('"mirror-receipt=$mirror_receipt"') &&
     publication_run.include?('"lifecycle-receipt=$lifecycle_receipt"'),
   "mirror verification and lifecycle publication receipts are not exact",
@@ -527,6 +528,7 @@ node_telemetry_upload_index = node_proof_steps.index(node_telemetry_upload)
 node_scope_env = {
   "IMAGE" => "${{ steps.public.outputs.image }}",
   "BOOTSTRAP" => "${{ steps.public.outputs.bootstrap }}",
+  "PORTABLE_RUBY" => "${{ steps.public.outputs.portable-ruby }}",
   "BOOTSTRAP_ENV" => "${{ steps.public.outputs.bootstrap-env }}",
   "TAP_CATALOG_REF" => "${{ inputs.tap-catalog-ref }}",
   "CANARY_REF" => "${{ inputs.canary-ref }}",
@@ -663,6 +665,10 @@ check(
   chromium_build_run.include?(
     'cmp "${{ steps.public.outputs.bootstrap }}" "$browser_bootstrap"'
   ) &&
+    chromium_build_run.include?(
+      'cmp "${{ steps.public.outputs.portable-ruby }}"'
+    ) &&
+    chromium_build_run.include?('dist/homebrew-portable-ruby.zip') &&
     !chromium_build_run.include?(
       'cp "${{ steps.public.outputs.bootstrap }}" "$browser_bootstrap"'
     ) &&
@@ -704,6 +710,9 @@ check(
   ) &&
     chromium_resolution.include?(
       'bootstrap="$PWD/apps/browser-demos/public/homebrew-bootstrap.zip"'
+    ) &&
+    chromium_resolution.include?(
+      'portable_ruby="$PWD/apps/browser-demos/public/homebrew-portable-ruby.zip"'
     ) &&
     !chromium_resolution.include?("programs/homebrew-bootstrap/"),
   "Chromium proof must use the sealed shared bottle preparation path",

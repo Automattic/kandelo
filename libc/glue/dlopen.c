@@ -186,10 +186,14 @@ typedef struct {
 
 int dladdr(const void *addr, Dl_info *info) {
     if (!addr || !info) return 0;
-    /* In Wasm there are no shared libraries with address ranges to look up.
-     * Return success with minimal info — the address belongs to the main
-     * program (the only "module"). */
-    info->dli_fname = "";
+    /* Wasm function pointers are table indexes, so this C shim cannot recover
+     * the host linker's per-module symbol record without a new host ABI. The
+     * address is nevertheless in the main program for ordinary callers of
+     * dladdr(), and /proc/self/exe is Kandelo's authoritative executable
+     * symlink. Returning that stable path lets portable runtimes derive their
+     * install prefix exactly as they do on Linux while leaving unavailable
+     * symbol-level fields explicitly empty. */
+    info->dli_fname = "/proc/self/exe";
     info->dli_fbase = (void *)0;
     info->dli_sname = NULL;
     info->dli_saddr = NULL;

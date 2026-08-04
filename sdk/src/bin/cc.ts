@@ -239,6 +239,13 @@ function buildClangArgsInternal(
   if (parsed.preprocessOnly) args.push('-E');
   if (parsed.assemblyOnly) args.push('-S');
   if (parsed.outputFile) args.push('-o', parsed.outputFile);
+  const dynamicLibcAnchor = join(toolchain.sysroot, 'lib', 'libc-dynamic-anchor.o');
+  if (linking && !classifyLink && !parsed.shared && parsed.linkDl) {
+    // WHY: the anchor's undefined relocations must exist before caller
+    // archives are scanned. That lets an executable's intentional libc
+    // interpositions win before the fallback dynamic-libc archive is seen.
+    args.push(dynamicLibcAnchor);
+  }
   // Static link semantics depend on the caller's exact ordering of objects,
   // archives, -l flags, and linker group controls. Parsed classifications are
   // for SDK decisions only; forwarding must never rebuild the command in
@@ -315,9 +322,25 @@ function buildClangArgsInternal(
       if (parsed.linkDl) {
         args.push(join(toolchain.glueDir, 'dlopen.c'));
       }
+      const libcArchive = join(toolchain.sysroot, 'lib', 'libc.a');
+      const dynamicLibcObject = join(toolchain.sysroot, 'lib', 'libc-dynamic.o');
       args.push(
         join(toolchain.sysroot, 'lib', 'crt1.o'),
-        join(toolchain.sysroot, 'lib', 'libc.a'),
+        // A side module shares the process's one libc instead of linking a
+        // second copy. The rooted anchor retains the process-libc scope using
+        // ordinary relocations, so executable/glue definitions interpose and
+        // musl's archive resolver still chooses one coherent implementation.
+        ...(parsed.linkDl
+          ? [
+              '-Wl,--export-all',
+              '-Wl,--undefined=__kandelo_dynamic_libc_functions',
+              '-Wl,--undefined=__kandelo_dynamic_libc_data',
+              // This resolved object contains one coherent libc selected by
+              // the ordinary archive resolver, with weak definitions so
+              // caller-owned strong symbols can interpose.
+              dynamicLibcObject,
+            ]
+          : [libcArchive]),
         // LLD 22 made --stack-first the default; LLD 21 neither defaults to
         // it nor accepts --no-stack-first. Preserve Kandelo's established
         // stack-after-data layout explicitly only where the option exists.

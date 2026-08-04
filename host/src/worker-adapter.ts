@@ -9,6 +9,7 @@ export interface WorkerHandle {
 
 export interface WorkerAdapter {
   createWorker(workerData: unknown): WorkerHandle;
+  destroy?(): Promise<void>;
 }
 
 // --- Mock implementation for testing ---
@@ -93,6 +94,8 @@ export class MockWorkerAdapter implements WorkerAdapter {
     this.allWorkers.push(handle);
     return handle;
   }
+
+  async destroy(): Promise<void> {}
 }
 
 // --- Node.js implementation ---
@@ -102,6 +105,7 @@ import { pathToFileURL } from "node:url";
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import { NODE_WORKER_INIT_BY_MESSAGE } from "./node-worker-initialization";
+import { PrestartedWorkerPool } from "./prestarted-worker-pool";
 
 // Wasm guest stacks consume the embedding worker's native stack when engines
 // recurse through Wasm frames. Keep the default high enough for stack-heavy
@@ -164,8 +168,8 @@ export function nodeWorkerInitialization(
   // WHY: built-in process init carries Shared WebAssembly.Memory. Node exposes
   // the structured clone as the worker module's workerData value. The matched
   // lifecycle reached lower peak RSS when Kandelo avoided that startup route.
-  // A one-shot message keeps the same structured-clone semantics while letting
-  // its listener and message be released after delivery.
+  // A message keeps the same structured-clone semantics while letting its
+  // listener and activation-owned value be released after delivery.
   return {
     transport: "message",
     workerDataValue: NODE_WORKER_INIT_BY_MESSAGE,
@@ -177,8 +181,12 @@ export class NodeWorkerAdapter implements WorkerAdapter {
   private entryUrl: URL;
   private _compiledEntry: URL | false | undefined;
   private readonly initializeByMessage: boolean;
+  private readonly workerPool: PrestartedWorkerPool | null;
 
-  constructor(entryUrl?: URL) {
+  constructor(
+    entryUrl?: URL,
+    prestartedWorkers?: number,
+  ) {
     // WHY: arbitrary custom entries may read workerData directly and do not
     // understand Kandelo's marker/message protocol. Only the built-in entry can
     // safely select the new transport without changing the public custom-entry
@@ -186,6 +194,15 @@ export class NodeWorkerAdapter implements WorkerAdapter {
     this.initializeByMessage = entryUrl === undefined;
     this.entryUrl =
       entryUrl ?? new URL("./worker-entry.ts", currentModuleUrl());
+    // The machine-owned adapter starts a bounded reserve of pristine runners.
+    // Direct/public adapter callers retain their historical one-shot Worker
+    // lifetime unless they opt in explicitly.
+    this.workerPool = this.initializeByMessage && prestartedWorkers !== undefined
+      ? new PrestartedWorkerPool(() =>
+          new NodeWorkerHandle(
+            this.createWorkerThread(NODE_WORKER_INIT_BY_MESSAGE),
+          ), prestartedWorkers)
+      : null;
   }
 
   /**
@@ -237,20 +254,12 @@ export class NodeWorkerAdapter implements WorkerAdapter {
     return new NodeWorkerHandle(worker);
   }
 
-  createWorker(workerData: unknown): WorkerHandle {
-    const initialization = nodeWorkerInitialization(
-      workerData,
-      this.initializeByMessage,
-    );
+  private createWorkerThread(workerData: unknown): Worker {
     // Try the compiled JS entry first (much faster startup — avoids tsx
     // bootstrap which takes >500ms with 10+ concurrent workers).
     const compiledEntry = this.resolveCompiledEntry();
     if (compiledEntry) {
-      const worker = new Worker(
-        compiledEntry,
-        nodeWorkerOptions(initialization.workerDataValue),
-      );
-      return this.initializeWorker(worker, initialization);
+      return new Worker(compiledEntry, nodeWorkerOptions(workerData));
     }
 
     // Fallback: tsx eval bootstrap for running from TypeScript source.
@@ -265,15 +274,33 @@ export class NodeWorkerAdapter implements WorkerAdapter {
       `await import('${entryUrl}');`,
     ].join("\n");
 
-    const worker = new Worker(
+    return new Worker(
       bootstrap,
-      nodeWorkerOptions(initialization.workerDataValue, { eval: true }),
+      nodeWorkerOptions(workerData, { eval: true }),
     );
-    return this.initializeWorker(worker, initialization);
+  }
+
+  createWorker(workerData: unknown): WorkerHandle {
+    if (this.workerPool) return this.workerPool.createWorker(workerData);
+
+    const initialization = nodeWorkerInitialization(
+      workerData,
+      this.initializeByMessage,
+    );
+    return this.initializeWorker(
+      this.createWorkerThread(initialization.workerDataValue),
+      initialization,
+    );
+  }
+
+  async destroy(): Promise<void> {
+    await this.workerPool?.destroy();
   }
 }
 
 class NodeWorkerHandle implements WorkerHandle {
+  private terminationPromise: Promise<number> | null = null;
+
   constructor(private worker: Worker) {}
 
   postMessage(message: unknown, transfer?: Transferable[]): void {
@@ -301,6 +328,9 @@ class NodeWorkerHandle implements WorkerHandle {
   }
 
   async terminate(): Promise<number> {
-    return this.worker.terminate();
+    if (this.terminationPromise) return this.terminationPromise;
+    const termination = this.worker.terminate();
+    this.terminationPromise = termination;
+    return termination;
   }
 }

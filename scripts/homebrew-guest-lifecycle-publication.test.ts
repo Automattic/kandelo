@@ -86,6 +86,7 @@ test("creates and revalidates one separate immutable lifecycle-input handoff", (
         "main-shell.vfs.zst",
         "main-shell-brew-package-tree.json",
         "homebrew-bootstrap.zip",
+        "homebrew-portable-ruby.zip",
         "homebrew-brew.env",
       ],
     );
@@ -253,6 +254,11 @@ function createInputs(root: string) {
     new Uint8Array([3]),
   );
   const bootstrapArchive = write(inputRoot, "source.zip", new Uint8Array([4]));
+  const portableRubyArchive = write(
+    inputRoot,
+    "portable-ruby.zip",
+    new Uint8Array([8]),
+  );
   const bootstrapEnvironment = write(
     inputRoot,
     "source.env",
@@ -299,6 +305,7 @@ function createInputs(root: string) {
     image,
     bootstrapSpec,
     bootstrapArchive,
+    portableRubyArchive,
     bootstrapEnvironment,
     bottleMirrorPlan,
   };

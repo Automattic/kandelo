@@ -55,6 +55,7 @@ expected_names="$(
     handoff.json \
     homebrew-bootstrap.zip \
     homebrew-brew.env \
+    homebrew-portable-ruby.zip \
     main-shell-brew-package-tree.json \
     main-shell.vfs.zst \
     publish.json |
@@ -134,6 +135,7 @@ jq -e \
       .release.tag + "/") and
   (.files | keys | sort) == [
     "homebrew-bootstrap.zip", "homebrew-brew.env",
+    "homebrew-portable-ruby.zip",
     "main-shell-brew-package-tree.json", "main-shell.vfs.zst",
     "publish.json"
   ] and
@@ -151,6 +153,7 @@ for name in \
   main-shell.vfs.zst \
   main-shell-brew-package-tree.json \
   homebrew-bootstrap.zip \
+  homebrew-portable-ruby.zip \
   homebrew-brew.env \
   publish.json
 do
@@ -175,6 +178,7 @@ jq -e \
       "main-shell.vfs.zst",
       "main-shell-brew-package-tree.json",
       "homebrew-bootstrap.zip",
+      "homebrew-portable-ruby.zip",
       "homebrew-brew.env"
     ] | map(. as $name |
       {name: $name} + $handoff[0].files[$name]

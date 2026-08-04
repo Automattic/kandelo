@@ -61,7 +61,7 @@ sed \
   's#verify-existing-immutable-github-release.sh#publish-immutable-github-release.sh#' \
   "$WORKFLOW" >"$TMP_ROOT/republished-mirror.yml"
 expect_rejected "$TMP_ROOT/republished-mirror.yml"
-sed 's/(.assets | length) == 4/(.assets | length) == 3/' \
+sed 's/(.assets | length) == 5/(.assets | length) == 4/' \
   "$WORKFLOW" >"$TMP_ROOT/wrong-lifecycle-asset-count.yml"
 expect_rejected "$TMP_ROOT/wrong-lifecycle-asset-count.yml"
 sed 's|cmp "$lifecycle/$name" "$RUNNER_TEMP/public-$name"|true|' \

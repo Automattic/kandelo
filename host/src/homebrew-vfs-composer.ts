@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import {
   applyHomebrewVfsConsumerState,
+  homebrewManifestSourcePath,
   writeHomebrewVfsComposition,
   type HomebrewVfsBuildReport,
   type HomebrewVfsCatalogCheckout,
@@ -110,6 +111,16 @@ interface MaterializedEntryEvidence {
   target?: string;
 }
 
+interface EmbeddedDeferredMetadataEntry {
+  package: string;
+  treeId: string;
+  path: string;
+  sourcePath: string;
+  mode: number;
+  size: number;
+  bytes: Uint8Array;
+}
+
 export interface HomebrewVfsMaterializationEvidence {
   embedded: Array<{
     package: string;
@@ -200,13 +211,21 @@ export async function buildHomebrewMaterializedVfs(
     embeddedSet.has(binding.package),
     provisionalMirrorByPackage.get(binding.package),
   ));
+  const deferredMetadata = embedDeferredPackageMetadata(
+    options.collectionFs,
+    plan,
+    deferredBindings,
+    closedTrees,
+  );
+  const deferredMetadataEntries = [...deferredMetadata.entries];
   createHomebrewPrefixAncestors(options.fs, plan);
   const registered = registerHomebrewDeferredTreeCollection({
     fs: options.fs,
     id: "main-shell",
     schema: 5,
-    trees: closedTrees,
+    trees: deferredMetadata.trees,
   });
+  writeEmbeddedDeferredMetadata(options.fs, deferredMetadata.entries);
   const registeredByPackage = bindRegisteredTrees(registered, bindings);
 
   for (const pkg of selection.embeddedPackages) {
@@ -244,25 +263,32 @@ export async function buildHomebrewMaterializedVfs(
       runtimeSupport.plan,
     );
     runtimeSupportPlan = deltaPlan;
-    const supportCollection = await buildHomebrewOriginalBottleCollection(
-      deltaPlan,
-      {
-        fs: options.runtimeSupportCollectionFs,
-        baseFs: options.fs,
-        loadBottleBytes: options.loadBottleBytes,
-        compatibilityPolicy: options.compatibilityPolicy,
-        catalogCheckout: options.catalogCheckout,
-        createdBy: options.createdBy ?? "host/src/homebrew-vfs-composer.ts",
-      },
-    );
+    // Portable Ruby can satisfy the complete runtime delta outside the bottle
+    // catalog. An empty delta is authoritative and must not be converted into
+    // a fake bottle collection merely to keep this composition path nonempty.
+    const supportCollection = deltaPlan.packages.length === 0
+      ? undefined
+      : await buildHomebrewOriginalBottleCollection(
+          deltaPlan,
+          {
+            fs: options.runtimeSupportCollectionFs,
+            baseFs: options.fs,
+            loadBottleBytes: options.loadBottleBytes,
+            compatibilityPolicy: options.compatibilityPolicy,
+            catalogCheckout: options.catalogCheckout,
+            createdBy: options.createdBy ?? "host/src/homebrew-vfs-composer.ts",
+          },
+        );
     runtimeSupportCollectionConflicts =
-      supportCollection.report.link_conflicts ?? [];
-    runtimeSupportPackageReports = supportCollection.report.packages;
-    const boundSupport = bindCollection(
-      deltaPlan,
-      supportCollection.deferredTrees,
-      supportCollection.payloads,
-    );
+      supportCollection?.report.link_conflicts ?? [];
+    runtimeSupportPackageReports = supportCollection?.report.packages ?? [];
+    const boundSupport = supportCollection === undefined
+      ? []
+      : bindCollection(
+          deltaPlan,
+          supportCollection.deferredTrees,
+          supportCollection.payloads,
+        );
     const supportByPackage = new Map(
       boundSupport.map((binding) => [binding.package, binding]),
     );
@@ -331,14 +357,24 @@ export async function buildHomebrewMaterializedVfs(
         mirrorByPackage.get(binding.package),
       )
     );
-    registerHomebrewDeferredTreeCollection({
-      fs: options.fs,
-      id: runtimeSupport.contract.id,
-      schema: 5,
-      trees: supportTrees,
-      atomicActivationGroup:
-        runtimeSupport.contract.activation.atomicGroup,
-    });
+    if (supportTrees.length > 0) {
+      const supportMetadata = embedDeferredPackageMetadata(
+        options.runtimeSupportCollectionFs!,
+        runtimeSupportPlan!,
+        runtimeSupportBindings,
+        supportTrees,
+      );
+      registerHomebrewDeferredTreeCollection({
+        fs: options.fs,
+        id: runtimeSupport.contract.id,
+        schema: 5,
+        trees: supportMetadata.trees,
+        atomicActivationGroup:
+          runtimeSupport.contract.activation.atomicGroup,
+      });
+      writeEmbeddedDeferredMetadata(options.fs, supportMetadata.entries);
+      deferredMetadataEntries.push(...supportMetadata.entries);
+    }
   }
   writeHomebrewBottleMirrorPlan(options.fs, mirrorPlanAsset);
 
@@ -440,6 +476,7 @@ export async function buildHomebrewMaterializedVfs(
     mirrorPlan,
     allDeferredBindings,
     runtimeSupport?.contract,
+    deferredMetadataEntries,
   );
   // Runtime-support trees are intentionally incomplete until the image
   // builder adds the separately packaged Homebrew bootstrap tree and seals
@@ -837,6 +874,140 @@ function closeCollectionTree(
   };
 }
 
+function embedDeferredPackageMetadata(
+  collectionFs: MemoryFileSystem,
+  plan: HomebrewVfsPlan,
+  deferredBindings: readonly BoundCollectionTree[],
+  trees: readonly HomebrewDeferredTreeDescriptor[],
+): {
+  trees: HomebrewDeferredTreeDescriptor[];
+  entries: EmbeddedDeferredMetadataEntry[];
+} {
+  const deferredPackages = new Set(
+    deferredBindings.map((binding) => binding.package),
+  );
+  const packages = new Map(
+    plan.packages.map((pkg) => [pkg.fullName, pkg]),
+  );
+  const embedded: EmbeddedDeferredMetadataEntry[] = [];
+  const projected = trees.map((tree): HomebrewDeferredTreeDescriptor => {
+    const packageName = tree.package;
+    if (packageName === undefined || !deferredPackages.has(packageName)) {
+      return tree;
+    }
+    const pkg = packages.get(packageName);
+    if (pkg === undefined) {
+      throw new Error(`Homebrew deferred metadata has no package ${packageName}`);
+    }
+    const receiptPaths = new Set(
+      pkg.linkManifest.receipts.map((receipt) =>
+        homebrewManifestSourcePath(pkg, receipt).slice(1)
+      ),
+    );
+    const metadataEntries = tree.inventory.entries.filter((entry) =>
+      receiptPaths.has(entry.path)
+    );
+    if (metadataEntries.length !== receiptPaths.size) {
+      throw new Error(
+        `Homebrew deferred tree ${tree.id} omits declared package metadata`,
+      );
+    }
+    for (const entry of metadataEntries) {
+      const aliases = tree.inventory.entries.filter((candidate) =>
+        candidate.inode_group === entry.inode_group
+      );
+      if (
+        entry.type !== "file" ||
+        entry.ownership !== "layer" ||
+        entry.inode_group === undefined ||
+        aliases.length !== 1
+      ) {
+        throw new Error(
+          `Homebrew deferred tree ${tree.id} metadata /${entry.path} ` +
+            "must be an independent regular file",
+        );
+      }
+      const bytes = readVfsFile(collectionFs, `/${entry.path}`);
+      const stat = collectionFs.stat(`/${entry.path}`);
+      if (
+        bytes.byteLength !== entry.size ||
+        (stat.mode & S_IFMT) !== S_IFREG ||
+        (stat.mode & 0o7777) !== entry.mode
+      ) {
+        throw new Error(
+          `Homebrew deferred tree ${tree.id} metadata /${entry.path} ` +
+            "differs from its verified pour",
+        );
+      }
+      embedded.push({
+        package: packageName,
+        treeId: tree.id,
+        path: entry.path,
+        sourcePath: entry.source_path,
+        mode: entry.mode,
+        size: entry.size,
+        bytes,
+      });
+    }
+
+    const entries = tree.inventory.entries.filter((entry) =>
+      !receiptPaths.has(entry.path)
+    );
+    if (
+      entries.some((entry) =>
+        entry.type === "hardlink" && receiptPaths.has(entry.target!)
+      ) ||
+      !entries.some((entry) =>
+        entry.ownership === "layer" && entry.type !== "directory"
+      )
+    ) {
+      throw new Error(
+        `Homebrew deferred tree ${tree.id} cannot separate its package metadata`,
+      );
+    }
+    const inodeGroups = new Set(
+      entries.flatMap((entry) =>
+        entry.inode_group === undefined ? [] : [entry.inode_group]
+      ),
+    );
+    return {
+      ...tree,
+      inventory: {
+        ...tree.inventory,
+        entry_count: entries.length,
+        regular_inode_count: inodeGroups.size,
+        layer_entry_count: entries.filter((entry) =>
+          entry.ownership === "layer"
+        ).length,
+        mergeable_directory_count: entries.filter((entry) =>
+          entry.ownership === "mergeable-directory"
+        ).length,
+        payload_bytes: entries
+          .filter((entry) => entry.type === "file")
+          .reduce((total, entry) => total + entry.size, 0),
+        entries,
+      },
+    };
+  });
+  embedded.sort((left, right) =>
+    compareText(left.path, right.path) || compareText(left.package, right.package)
+  );
+  return { trees: projected, entries: embedded };
+}
+
+function writeEmbeddedDeferredMetadata(
+  fs: MemoryFileSystem,
+  entries: readonly EmbeddedDeferredMetadataEntry[],
+): void {
+  for (const entry of entries) {
+    // WHY: these bytes came from the same digest-verified bottle pour whose
+    // complete source inventory remains in the deferred descriptor. Keeping
+    // Homebrew's ordinary receipt files eager lets metadata-only queries read
+    // authoritative package state without fetching unrelated executables.
+    writeVfsBinary(fs, `/${entry.path}`, entry.bytes, entry.mode);
+  }
+}
+
 function bindRegisteredTrees(
   registered: readonly RegisteredHomebrewDeferredTree[],
   bindings: readonly BoundCollectionTree[],
@@ -880,7 +1051,8 @@ function createMaterializationEvidence(
   mirrorPlanAsset: HomebrewBottleMirrorPlanAsset,
   mirrorPlan: HomebrewBottleMirrorPlan,
   deferredBindings: readonly BoundCollectionTree[],
-  runtimeSupport?: HomebrewRuntimeSupportContract,
+  runtimeSupport: HomebrewRuntimeSupportContract | undefined,
+  deferredMetadataEntries: readonly EmbeddedDeferredMetadataEntry[],
 ): HomebrewVfsMaterializationEvidence {
   const mirrorByPackage = new Map(
     mirrorPlan.assets.map((asset) => [asset.package, asset]),
@@ -910,7 +1082,15 @@ function createMaterializationEvidence(
       ...(entry.type === "file" || entry.type === "hardlink"
         ? { sha256: digest(readVfsFile(collectionFs, `/${entry.path}`)) }
         : {}),
-    }));
+    }))
+    .concat(deferredMetadataEntries.map((entry) => ({
+      path: entry.path,
+      type: "file" as const,
+      mode: entry.mode,
+      size: entry.size,
+      sha256: digest(entry.bytes),
+    })))
+    .sort((left, right) => compareText(left.path, right.path));
   return {
     embedded: selection.embeddedPackages.map(toIdentity),
     deferred: deferredBindings.map((binding) => {

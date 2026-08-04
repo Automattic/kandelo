@@ -17,6 +17,12 @@ describe('buildPkgConfigEnv', () => {
     expect(env.PKG_CONFIG_PATH).toBe(cachePath);
   });
 
+  it('honors caller-local metadata paths', () => {
+    const relativePaths = ['.', './pkgconfig', '../target/pkgconfig'].join(':');
+    const env = buildPkgConfigEnv({ PKG_CONFIG_PATH: relativePaths }, SYSROOT);
+    expect(env.PKG_CONFIG_PATH).toBe(relativePaths);
+  });
+
   it('keeps exact-main dependency metadata only inside the target-cache namespace', () => {
     const oldRunnerPath =
       '/home/runner/work/_temp/exact-main-package-cache.abc/libs/icu/lib/pkgconfig';

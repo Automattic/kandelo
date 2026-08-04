@@ -2827,6 +2827,8 @@ if [[ "$composer" == */scripts/prepare-homebrew-main-shell-inputs.sh ]]; then
   printf '{}\n' >"$prepared/selection-receipt.json"
   printf 'Formula-owned Homebrew source\n' \
     >"$prepared/bootstrap/homebrew-bootstrap.zip"
+  printf 'Formula-owned portable Ruby\n' \
+    >"$prepared/bootstrap/homebrew-portable-ruby.zip"
   printf 'HOMEBREW_NO_ANALYTICS=1\n' \
     >"$prepared/bootstrap/homebrew-brew.env"
   printf '{}\n' >"$prepared/bootstrap/report.json"
@@ -2854,6 +2856,7 @@ done
 [ -n "$work" ] && [ -n "$report" ] && [ -n "$cache" ] && [ -n "$out" ] &&
   [ "$prepared" = "$WASM_POSIX_DEP_OUT_DIR/.homebrew-shell-build/prepared-inputs" ] &&
   [ -f "$prepared/bootstrap/homebrew-bootstrap.zip" ] &&
+  [ -f "$prepared/bootstrap/homebrew-portable-ruby.zip" ] &&
   [ "$review" = "${FAKE_EXPECT_REVIEW:-true}" ]
 [ ! -e "$work" ] && [ ! -L "$work" ]
 mkdir "$work"
@@ -3028,6 +3031,8 @@ printf '%s\n' "untrusted Homebrew source" \
   >"$bootstrap_dir/homebrew-bootstrap.zip"
 printf '%s\n' "HOMEBREW_NO_ANALYTICS=1" \
   >"$bootstrap_dir/homebrew-brew.env"
+printf '%s\n' "untrusted portable Ruby" \
+  >"$bootstrap_dir/homebrew-portable-ruby.zip"
 
 # A manual composer invocation must not be able to seal a locally generated or
 # stale ZIP under the trusted homebrew-bootstrap package name. The package's
@@ -3038,6 +3043,8 @@ expect_failure "homebrew-bootstrap source lock: output archive has" \
   --migration-lock "$lock" \
   --package-tree-spec "$PACKAGE_TREE_SPEC" \
   --package-tree-archive "$bootstrap_dir/homebrew-bootstrap.zip" \
+  --homebrew-portable-ruby-archive \
+    "$bootstrap_dir/homebrew-portable-ruby.zip" \
   --homebrew-bootstrap-env "$bootstrap_dir/homebrew-brew.env"
 
 wrong_epoch_lock="$TMP_ROOT/main-shell-wrong-epoch-lock.json"

@@ -147,19 +147,32 @@ for dispatch, recovery, seal-last publication, and mutation handling.
 ## Guest Homebrew Bootstrap Bottle
 
 The patched Homebrew Ruby tree used by a guest is the support-data Formula
-`homebrew-bootstrap`. Its bottle contains two declared `libexec` members:
+`homebrew-bootstrap`. Its bottle contains three declared `libexec` members:
 `homebrew-bootstrap.zip`, built from one sealed Homebrew checkout and the
 reviewed guest-platform patch, and `homebrew-brew.env`, which owns the matching
-architecture and system-environment policy. The tap-native recipe lock at
-`Kandelo/recipes/homebrew-bootstrap/source-lock.json` binds both outputs by
-path, SHA-256, and byte count.
+architecture and system-environment policy, plus
+`homebrew-portable-ruby.zip`. The latter packages the source-selected Ruby
+dependency in Homebrew's standard versioned vendor layout, including the
+`current` symlink and the real Bootsnap and msgpack gems. Bootsnap's only
+guest-platform patch extends its upstream supported-platform test to Ruby's
+Wasm target; the cache and loader remain Bootsnap's implementation. The
+tap-native recipe lock at
+`Kandelo/recipes/homebrew-bootstrap/source-lock.json` binds all three outputs
+by path, SHA-256, and byte count.
 
 The product shell fetches that public bottle anonymously. The shared typed
 extractor binds the exact tap checkout, aggregate catalog and Formula sidecar,
 recipe lock, link manifest, bottle digest and size, keg identity, immutable
-build receipt, and both output members. The shell composer reruns the same
+build receipt, and all three output members. The shell composer reruns the same
 typed verifier against the detached files before embedding its canonical
 report. It does not consult the Kandelo package registry for these bytes.
+
+The composer reads
+`Library/Homebrew/vendor/portable-ruby-version` from the authenticated source
+ZIP and requires the portable-Ruby output to expose that exact version. It
+derives the vendor mount and executable from the bootstrap descriptor's guest
+prefix. This preserves Homebrew's normal portable-Ruby detection and startup
+without encoding either the compatibility or canonical Kandelo prefix.
 
 Browser builds preserve that ownership. Their publication workflows
 extract `homebrew-bootstrap.zip` from the verified support-data bottle
@@ -3776,6 +3789,15 @@ hardlink aliases for `@@HOMEBREW_PREFIX@@`, `@@HOMEBREW_CELLAR@@`,
 receipt-selected `@@HOMEBREW_JAVA@@` replacement. The eager composer uses the
 same browser-safe relocation implementation.
 
+Read-only package discovery must not activate an otherwise unused bottle just
+to read its standard metadata. For every deferred Formula, the shell composer
+therefore copies the exact authenticated `.brew/<formula>.rb` and
+`INSTALL_RECEIPT.json` bytes from the verified pour into the image. It removes
+only those guest entries from the deferred projection; the complete bottle
+source inventory, payload digest, and byte count remain authoritative. The
+materialization evidence hashes the eager metadata independently. This is an
+exact projection of upstream bottle members, not reconstructed Homebrew state.
+
 First use still fetches and verifies the complete unmodified `.tar.gz`; the
 content digest and byte count never describe relocated or recompressed bytes.
 After decoding and complete source-inventory validation, the runtime requires
@@ -4032,13 +4054,13 @@ or stale compatibility link fail before browser acceptance.
 The shell closure does not by itself claim that `/usr/bin/brew` can run.
 `homebrew/main-shell-homebrew-runtime-support.json` declares a second,
 first-use atomic layer. It binds the lazy `homebrew-bootstrap` bottle's
-extracted source and launcher outputs to seven reviewed runtime roots—Ruby,
-Git, curl, Findutils, Gawk, Tar, and `posix-utils-lite`—and to their exact
-dependency-first closure derived from the selected tap metadata. Dependencies
-already present in the complete shell remain shared. Any additional dependency
-is another atomic lazy bottle tree; for example, a Ruby bottle that declares
-`libyaml` adds both `libyaml` and Ruby beyond the base closure. The finalizer
-derives this difference instead of preserving a stale hand-counted inventory.
+extracted source, launcher, and portable-Ruby outputs to six reviewed Formula
+roots—Git, curl, Findutils, Gawk, Tar, and `posix-utils-lite`—and to their
+exact dependency-first closure derived from the selected tap metadata.
+Dependencies already present in the complete shell remain shared. Any
+additional Formula dependency is another atomic lazy bottle tree. The
+finalizer derives this difference instead of preserving a stale hand-counted
+inventory.
 
 The availability audit includes every Formula considered during the runtime
 rollout plus any newly selected runtime dependency. Every member must have an

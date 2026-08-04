@@ -35,6 +35,7 @@ make_fixture() {
   mkdir -p "$root/mirror"
   printf 'shell\n' >"$root/main-shell.vfs.zst"
   printf 'bootstrap\n' >"$root/homebrew-bootstrap.zip"
+  printf 'portable ruby\n' >"$root/homebrew-portable-ruby.zip"
   printf 'env\n' >"$root/homebrew-brew.env"
   printf 'bottle\n' >"$root/mirror/hello.bottle.tar.gz"
   bottle_sha="$(sha256_file "$root/mirror/hello.bottle.tar.gz")"
@@ -115,6 +116,8 @@ make_fixture() {
     --argjson image_bytes "$(bytes "$root/main-shell.vfs.zst")" \
     --arg bootstrap_sha "$(sha256_file "$root/homebrew-bootstrap.zip")" \
     --argjson bootstrap_bytes "$(bytes "$root/homebrew-bootstrap.zip")" \
+    --arg portable_ruby_sha "$(sha256_file "$root/homebrew-portable-ruby.zip")" \
+    --argjson portable_ruby_bytes "$(bytes "$root/homebrew-portable-ruby.zip")" \
     --arg env_sha "$(sha256_file "$root/homebrew-brew.env")" \
     --argjson env_bytes "$(bytes "$root/homebrew-brew.env")" \
     --arg publish_sha "$(sha256_file "$root/publish.json")" \
@@ -134,6 +137,9 @@ make_fixture() {
         "main-shell.vfs.zst": { sha256: $image_sha, bytes: $image_bytes },
         "homebrew-bootstrap.zip": {
           sha256: $bootstrap_sha, bytes: $bootstrap_bytes
+        },
+        "homebrew-portable-ruby.zip": {
+          sha256: $portable_ruby_sha, bytes: $portable_ruby_bytes
         },
         "homebrew-brew.env": { sha256: $env_sha, bytes: $env_bytes },
         "publish.json": { sha256: $publish_sha, bytes: $publish_bytes }

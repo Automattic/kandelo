@@ -19,7 +19,7 @@ const source = JSON.parse(
 );
 
 describe("Homebrew shell runtime-support contract", () => {
-  it("binds the declared runtime delta and admits file/libmagic through the base", () => {
+  it("uses portable Ruby and admits file/libmagic through the base", () => {
     const contract = parseHomebrewRuntimeSupportContract(source);
     expect(contract.activation).toEqual({
       capability: "homebrew:runtime",
@@ -31,7 +31,8 @@ describe("Homebrew shell runtime-support contract", () => {
         (name) => !contract.baseFormulaOrder.includes(name),
       ),
     );
-    expect(contract.additionalFormulaOrder).toContain(
+    expect(contract.additionalFormulaOrder).toEqual([]);
+    expect(contract.formulaRoots).not.toContain(
       "kandelo-dev/tap-core/ruby",
     );
     expect(contract.deferredRelocationFormulae).toEqual([]);
@@ -57,12 +58,12 @@ describe("Homebrew shell runtime-support contract", () => {
   it("rejects declaring one Formula as both admitted and deferred", () => {
     const changed = structuredClone(source);
     changed.deferred_formulae.push({
-      package: "kandelo-dev/tap-core/ruby",
+      package: "kandelo-dev/tap-core/git",
       current_state: "public-abi41-only",
       reason: "fixture",
       reentry_gate: "fixture",
     });
-    changed.availability.can_be_deferred.push("kandelo-dev/tap-core/ruby");
+    changed.availability.can_be_deferred.push("kandelo-dev/tap-core/git");
     expect(() => parseHomebrewRuntimeSupportContract(changed)).toThrow(
       /cannot both admit and defer/,
     );

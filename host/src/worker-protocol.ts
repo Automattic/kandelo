@@ -24,10 +24,22 @@ export type HostToWorkerMessage =
 export interface CentralizedWorkerInitMessage {
   type: "centralized_init";
   pid: number;
-  /** User program bytes (compiled with channel_syscall.c — no kernel imports) */
-  programBytes: ArrayBuffer;
+  /**
+   * User program bytes (compiled with channel_syscall.c — no kernel imports).
+   *
+   * Direct worker callers may provide bytes and let the worker compile and
+   * inspect them. Kernel-owned launches instead provide `programModule` plus
+   * the two inspected fields below, keeping the authoritative bytes in the
+   * kernel realm instead of structured-cloning a large executable into every
+   * one-shot process realm.
+   */
+  programBytes?: ArrayBuffer;
   /** Pre-compiled WebAssembly module (avoids recompilation in web workers) */
   programModule?: WebAssembly.Module;
+  /** ABI marker inspected from the authoritative program bytes; null if absent. */
+  programAbiVersion?: number | null;
+  /** TLS offset used by legacy channel-base binaries; -1 when unavailable. */
+  channelBaseTlsOffset?: number;
   /** Shared Memory for this process (also shared with CentralizedKernelWorker) */
   memory: WebAssembly.Memory;
   /** Channel offset within the shared Memory for this thread's syscall channel */
@@ -70,8 +82,10 @@ export interface CentralizedThreadInitMessage {
   type: "centralized_thread_init";
   pid: number;
   tid: number;
-  programBytes: ArrayBuffer;
+  programBytes?: ArrayBuffer;
   programModule?: WebAssembly.Module;
+  programAbiVersion?: number | null;
+  channelBaseTlsOffset?: number;
   memory: WebAssembly.Memory;
   /** Main process channel offset. The thread reads the process-wide dlopen
    * archive head relative to this live shared-memory anchor before fork. */

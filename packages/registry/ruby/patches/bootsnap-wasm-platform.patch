@@ -1,0 +1,21 @@
+diff --git a/lib/bootsnap/compile_cache.rb b/lib/bootsnap/compile_cache.rb
+index 045917c..8628a49 100644
+--- a/lib/bootsnap/compile_cache.rb
++++ b/lib/bootsnap/compile_cache.rb
+@@ -44 +44 @@ module Bootsnap
+-        RUBY_PLATFORM.match?(/darwin|linux|bsd|mswin|mingw|cygwin/)
++        RUBY_PLATFORM.match?(/darwin|linux|bsd|mswin|mingw|cygwin|wasm/)
+diff --git a/lib/bootsnap/load_path_cache.rb b/lib/bootsnap/load_path_cache.rb
+index 7272a7d..ace7771 100644
+--- a/lib/bootsnap/load_path_cache.rb
++++ b/lib/bootsnap/load_path_cache.rb
+@@ -57 +57 @@ module Bootsnap
+-        if RUBY_PLATFORM.match?(/darwin|linux|bsd|mswin|mingw|cygwin/)
++        if RUBY_PLATFORM.match?(/darwin|linux|bsd|mswin|mingw|cygwin|wasm/)
+diff --git a/lib/bootsnap/load_path_cache/path_scanner.rb b/lib/bootsnap/load_path_cache/path_scanner.rb
+index c398b3e..4684b91 100644
+--- a/lib/bootsnap/load_path_cache/path_scanner.rb
++++ b/lib/bootsnap/load_path_cache/path_scanner.rb
+@@ -30 +30 @@ module Bootsnap
+-        if RUBY_ENGINE == "ruby" && RUBY_PLATFORM.match?(/darwin|linux|bsd|mswin|mingw|cygwin/)
++        if RUBY_ENGINE == "ruby" && RUBY_PLATFORM.match?(/darwin|linux|bsd|mswin|mingw|cygwin|wasm/)

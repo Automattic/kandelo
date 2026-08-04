@@ -58,7 +58,7 @@ describe("Homebrew VFS image publication boundary", () => {
       const fs = bootstrapConsumerFs();
 
       expect(() => registerPackageDeferredZipTree(fs, derived)).toThrow(
-        "collides with the base",
+        /collides/,
       );
       prepareHomebrewBootstrapConsumerNamespace(fs, derived);
       const registered = registerPackageDeferredZipTree(fs, derived);
@@ -143,7 +143,7 @@ describe("Homebrew VFS image publication boundary", () => {
         valid,
         bootstrapEnvironment,
       ),
-    ).toThrow("canonical deferred source tree");
+    ).toThrow("descriptor-owned deferred source tree");
 
     const directory = mkdtempSync(join(tmpdir(), "homebrew-bootstrap-env-"));
     try {
@@ -170,6 +170,37 @@ describe("Homebrew VFS image publication boundary", () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it("derives compatibility-image ownership from the authenticated source prefix", () => {
+    const compatibilityPrefix = "/home/linuxbrew/.linuxbrew";
+    const spec = {
+      ...bootstrapSpec,
+      mount_prefix: compatibilityPrefix,
+      activation: {
+        ...bootstrapSpec.activation,
+        roots: [`${compatibilityPrefix}/bin/brew`],
+      },
+    } satisfies PackageDeferredZipTreeSpec;
+    const tree = derivePackageDeferredZipTree(spec, bootstrapArchive(true));
+    const fs = bootstrapConsumerFs(compatibilityPrefix);
+
+    prepareHomebrewBootstrapConsumerNamespace(fs, tree);
+    registerPackageDeferredZipTree(fs, tree);
+    const consumer = installHomebrewBootstrapConsumerState(
+      fs,
+      tree,
+      bootstrapEnvironment,
+    );
+
+    expect(consumer.ownership.prefix).toBe(compatibilityPrefix);
+    expect(consumer.ownership.mutable_paths).toContain(
+      `${compatibilityPrefix}/Cellar`,
+    );
+    expect(fs.readlink("/usr/bin/brew")).toBe(
+      `${compatibilityPrefix}/bin/brew`,
+    );
+    assertHomebrewBootstrapConsumerState(fs, consumer);
   });
 
   it.each(["environment", "entrypoint"] as const)(
@@ -333,33 +364,42 @@ function zipEntry(bytes: Uint8Array, mode: number): Zippable[string] {
   return [bytes, { os: 3, attrs: (mode << 16) >>> 0 }];
 }
 
-function bootstrapConsumerFs(): MemoryFileSystem {
+function bootstrapConsumerFs(
+  prefix = "/opt/kandelo/homebrew",
+): MemoryFileSystem {
   const fs = MemoryFileSystem.create(
     new SharedArrayBuffer(8 * MiB, { maxByteLength: 32 * MiB }),
     32 * MiB,
   );
-  for (const path of [
-    "/opt",
-    "/opt/kandelo",
-    "/opt/kandelo/homebrew",
-    "/opt/kandelo/homebrew/bin",
-    "/opt/kandelo/homebrew/Cellar",
-    "/opt/kandelo/homebrew/Cellar/existing",
-    "/opt/kandelo/homebrew/Cellar/existing/1",
-    "/opt/kandelo/homebrew/Cellar/existing/1/bin",
+  for (const path of new Set([
+    ...prefixAncestors(prefix),
+    `${prefix}/bin`,
+    `${prefix}/Cellar`,
+    `${prefix}/Cellar/existing`,
+    `${prefix}/Cellar/existing/1`,
+    `${prefix}/Cellar/existing/1/bin`,
     "/home",
     "/home/user",
     "/usr",
     "/usr/bin",
     "/etc",
-  ]) {
+  ])) {
     fs.mkdir(path, 0o755);
   }
   writeVfsBinary(
     fs,
-    "/opt/kandelo/homebrew/Cellar/existing/1/bin/tool",
+    `${prefix}/Cellar/existing/1/bin/tool`,
     encoder.encode("tool\n"),
     0o755,
   );
   return fs;
+}
+
+function prefixAncestors(prefix: string): string[] {
+  const result: string[] = [];
+  const parts = prefix.slice(1).split("/");
+  for (let index = 1; index <= parts.length; index += 1) {
+    result.push(`/${parts.slice(0, index).join("/")}`);
+  }
+  return result;
 }

@@ -27,6 +27,7 @@ export interface CreateHomebrewGuestLifecycleFixtureOptions {
   image: string;
   bootstrapSpec: string;
   bootstrapArchive: string;
+  portableRubyArchive: string;
   bootstrapEnvironment: string;
   bottleMirror: string;
   fixedAssetUrlRoot: string;
@@ -74,6 +75,11 @@ export function createHomebrewGuestLifecycleFixture(
     options.bootstrapArchive,
     fixedAssetUrl(fixedAssetUrlRoot, options.bootstrapArchive),
     "Homebrew bootstrap archive",
+  );
+  const portableRubyArchive = exactLocalAsset(
+    options.portableRubyArchive,
+    fixedAssetUrl(fixedAssetUrlRoot, options.portableRubyArchive),
+    "Homebrew portable Ruby archive",
   );
   const bootstrapEnvironment = exactLocalAsset(
     options.bootstrapEnvironment,
@@ -143,6 +149,7 @@ export function createHomebrewGuestLifecycleFixture(
     bootstrap: {
       spec: bootstrapSpec,
       archive: bootstrapArchive,
+      portableRuby: portableRubyArchive,
       environment: bootstrapEnvironment,
     },
     bottleMirror: {
@@ -167,6 +174,7 @@ function parseOptions(
     "--image",
     "--homebrew-bootstrap-spec",
     "--homebrew-bootstrap-archive",
+    "--homebrew-portable-ruby-archive",
     "--homebrew-bootstrap-env",
     "--bottle-mirror",
     "--fixed-asset-url-root",
@@ -229,6 +237,9 @@ function parseOptions(
     bootstrapSpec: resolve(values.get("--homebrew-bootstrap-spec")!),
     bootstrapArchive: resolve(
       values.get("--homebrew-bootstrap-archive")!,
+    ),
+    portableRubyArchive: resolve(
+      values.get("--homebrew-portable-ruby-archive")!,
     ),
     bootstrapEnvironment: resolve(
       values.get("--homebrew-bootstrap-env")!,
@@ -360,6 +371,7 @@ function usage(): never {
       "--image <main-shell.vfs.zst> " +
       "--homebrew-bootstrap-spec <tree.json> " +
       "--homebrew-bootstrap-archive <homebrew-bootstrap.zip> " +
+      "--homebrew-portable-ruby-archive <homebrew-portable-ruby.zip> " +
       "--homebrew-bootstrap-env <homebrew-brew.env> " +
       "--bottle-mirror <directory> --fixed-asset-url-root <https-url/> " +
       "--core-revision <sha> --canary-revision <sha> " +

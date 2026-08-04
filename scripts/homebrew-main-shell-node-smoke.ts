@@ -16,6 +16,8 @@ import {
   derivePackageDeferredZipTree,
   type DerivedPackageDeferredZipTree,
 } from "../host/src/vfs/package-deferred-tree";
+import { deriveHomebrewPortableRubyTree } from
+  "../host/src/homebrew-portable-ruby";
 import {
   HOMEBREW_BOTTLE_MIRROR_PLAN_VFS_PATH,
   type HomebrewBottleMirrorPlan,
@@ -48,6 +50,7 @@ const {
   migrationLockPath,
   homebrewBootstrapSpecPath,
   homebrewBootstrapArchivePath,
+  homebrewPortableRubyArchivePath,
   homebrewBootstrapEnvPath,
   homebrewBootstrapState,
   homebrewRuntimeSupportPath,
@@ -80,6 +83,10 @@ const homebrewBootstrapArchiveBytes = readRegularFile(
   homebrewBootstrapArchivePath,
   "Homebrew bootstrap package output",
 );
+const homebrewPortableRubyArchiveBytes = readRegularFile(
+  homebrewPortableRubyArchivePath,
+  "Homebrew portable Ruby package output",
+);
 const homebrewBootstrapEnvBytes = readRegularFile(
   homebrewBootstrapEnvPath,
   "Homebrew bootstrap launcher environment",
@@ -93,6 +100,11 @@ const homebrewBootstrapTree = derivePackageDeferredZipTree(
     homebrewBootstrapSpecPath,
   ),
   homebrewBootstrapArchiveBytes,
+);
+const homebrewPortableRubyTree = deriveHomebrewPortableRubyTree(
+  homebrewBootstrapTree,
+  homebrewBootstrapArchiveBytes,
+  homebrewPortableRubyArchiveBytes,
 );
 const metadata = MemoryFileSystem.readImageMetadata(imageBytes);
 const capacity = MemoryFileSystem.readImageCapacity(imageBytes);
@@ -114,9 +126,15 @@ assertPackageDeferredZipTreeState(
   homebrewBootstrapTree,
   homebrewBootstrapState,
 );
+assertPackageDeferredZipTreeState(
+  fs,
+  homebrewPortableRubyTree,
+  homebrewBootstrapState,
+);
 assertHomebrewBootstrapTreeMetadata(
   metadata,
   homebrewBootstrapTree,
+  homebrewPortableRubyTree,
   homebrewBootstrapState,
 );
 assertHomebrewBootstrapConsumerContract(
@@ -166,17 +184,33 @@ const pendingTrees = allPendingTrees.filter((tree) =>
 const pendingBootstrapTrees = allPendingTrees.filter((tree) =>
   tree.activation?.capabilities.includes("homebrew:bootstrap"),
 );
+const pendingPortableRubyTrees = allPendingTrees.filter((tree) =>
+  tree.activation?.capabilities.includes("homebrew:runtime") &&
+  !pendingTrees.includes(tree) &&
+  !pendingBootstrapTrees.includes(tree),
+);
 const pendingRuntimeSupportTrees = pendingTrees.filter(
   (tree) =>
     tree.activation?.atomicGroup?.id === runtimeSupport.activation.atomicGroup,
 );
 const unknownPendingTrees = allPendingTrees.filter(
   (tree) =>
-    !pendingTrees.includes(tree) && !pendingBootstrapTrees.includes(tree),
+    !pendingTrees.includes(tree) &&
+    !pendingBootstrapTrees.includes(tree) &&
+    !pendingPortableRubyTrees.includes(tree),
 );
 if (unknownPendingTrees.length !== 0) {
   throw new Error(
     `main-shell image has ${unknownPendingTrees.length} unclassified pending package trees`,
+  );
+}
+if (
+  pendingPortableRubyTrees.length !==
+  (homebrewBootstrapState === "deferred" ? 1 : 0)
+) {
+  throw new Error(
+    `main-shell image has ${pendingPortableRubyTrees.length} pending portable ` +
+      `Ruby trees; expected ${homebrewBootstrapState === "deferred" ? 1 : 0}`,
   );
 }
 if (
@@ -198,7 +232,7 @@ if (
   );
 }
 if (
-  pendingBootstrapTrees.some(
+  [...pendingBootstrapTrees, ...pendingPortableRubyTrees].some(
     (tree) =>
       tree.activation?.atomicGroup?.id !==
       runtimeSupport.activation.atomicGroup,
@@ -263,6 +297,10 @@ const homebrewBootstrapTransportUrl = new URL(
   homebrewBootstrapTree.descriptor.archive.url,
   homebrewBootstrapLazyBase,
 ).toString();
+const homebrewPortableRubyTransportUrl = new URL(
+  homebrewPortableRubyTree.descriptor.archive.url,
+  homebrewBootstrapLazyBase,
+).toString();
 const closedLazyAssets =
   transportMode === "closed"
     ? [
@@ -278,6 +316,13 @@ const closedLazyAssets =
                 sha256: homebrewBootstrapTree.descriptor.archive.sha256,
                 size: homebrewBootstrapTree.descriptor.archive.bytes,
                 bytes: homebrewBootstrapArchiveBytes,
+              } satisfies ClosedLazyAsset,
+              {
+                url: homebrewPortableRubyTransportUrl,
+                sha256:
+                  homebrewPortableRubyTree.descriptor.archive.sha256,
+                size: homebrewPortableRubyTree.descriptor.archive.bytes,
+                bytes: homebrewPortableRubyArchiveBytes,
               } satisfies ClosedLazyAsset,
             ]
           : []),
@@ -451,6 +496,11 @@ printf 'homebrew-m4-ok\\n'
     homebrewBootstrapTransportUrl,
     "base shell proof",
   );
+  assertNoTransportForUrl(
+    lazyDownloads,
+    homebrewPortableRubyTransportUrl,
+    "base shell proof",
+  );
 
   const runtimeActivationEventStart = lazyDownloads.length;
   const runtimeActivationStdoutStart = stdout.length;
@@ -491,15 +541,20 @@ printf 'homebrew-atomic-runtime-activated\n'
   const runtimeActivationEvents = lazyDownloads.slice(
     runtimeActivationEventStart,
   );
-  assertHomebrewBootstrapTransport(
+  assertPackageTreeTransport(
     runtimeActivationEvents,
     homebrewBootstrapTree,
     homebrewBootstrapTransportUrl,
   );
+  assertPackageTreeTransport(
+    runtimeActivationEvents,
+    homebrewPortableRubyTree,
+    homebrewPortableRubyTransportUrl,
+  );
   assertFetchedPackageSet(
-    withoutTransportUrl(
+    withoutTransportUrls(
       runtimeActivationEvents,
-      homebrewBootstrapTransportUrl,
+      [homebrewBootstrapTransportUrl, homebrewPortableRubyTransportUrl],
     ),
     pendingTrees,
     mirrorPlan,
@@ -575,6 +630,11 @@ printf 'homebrew-operational-runtime-ok\n'
     homebrewBootstrapTransportUrl,
     "operational Homebrew runtime",
   );
+  assertNoTransportForUrl(
+    brewOperationEvents,
+    homebrewPortableRubyTransportUrl,
+    "operational Homebrew runtime",
+  );
   const operationalRuntimePackages = fetchedPackagesForEvents(
     brewOperationEvents,
     pendingTrees,
@@ -605,14 +665,20 @@ printf 'homebrew-operational-runtime-ok\n'
     ...operationalRuntimePackages,
   ])].sort();
   assertFetchedPackageSet(
-    withoutTransportUrl(lazyDownloads, homebrewBootstrapTransportUrl),
+    withoutTransportUrls(lazyDownloads, [
+      homebrewBootstrapTransportUrl,
+      homebrewPortableRubyTransportUrl,
+    ]),
     pendingTrees,
     mirrorPlan,
     expectedFetchedPackages,
     "complete lazy shell and Homebrew runtime surface",
   );
   const transportEvidence = assertBottleTransportEvents(
-    withoutTransportUrl(lazyDownloads, homebrewBootstrapTransportUrl),
+    withoutTransportUrls(lazyDownloads, [
+      homebrewBootstrapTransportUrl,
+      homebrewPortableRubyTransportUrl,
+    ]),
     pendingTrees,
     mirrorPlan,
     expectedFetchedPackages,
@@ -637,16 +703,17 @@ printf 'homebrew-operational-runtime-ok\n'
 
 function assertHomebrewBootstrapTreeMetadata(
   metadata: unknown,
-  tree: DerivedPackageDeferredZipTree,
+  sourceTree: DerivedPackageDeferredZipTree,
+  portableRubyTree: DerivedPackageDeferredZipTree,
   state: "deferred" | "materialized",
 ): void {
   const imageMetadata = asRecord(metadata, "main-shell image metadata");
   if (!Array.isArray(imageMetadata.packageDeferredTrees)) {
     throw new Error("main-shell image metadata omits packageDeferredTrees");
   }
-  const descriptor = tree.descriptor;
-  const expected = [
-    {
+  const expected = [sourceTree, portableRubyTree].map((tree) => {
+    const descriptor = tree.descriptor;
+    return {
       schema: descriptor.schema,
       kind: descriptor.kind,
       id: descriptor.id,
@@ -668,8 +735,8 @@ function assertHomebrewBootstrapTreeMetadata(
       owner: descriptor.owner,
       activation: descriptor.activation,
       state,
-    },
-  ];
+    };
+  });
   if (
     canonicalJson(imageMetadata.packageDeferredTrees) !==
     canonicalJson(expected)
@@ -788,19 +855,20 @@ function assertNoTransportForUrl(
   const event = events.find((candidate) => candidate.url === url);
   if (event !== undefined) {
     throw new Error(
-      `${label} unexpectedly fetched the Homebrew source tree from ${url}`,
+      `${label} unexpectedly fetched a Homebrew support tree from ${url}`,
     );
   }
 }
 
-function withoutTransportUrl(
+function withoutTransportUrls(
   events: readonly LazyDownloadEvent[],
-  url: string,
+  urls: readonly string[],
 ): LazyDownloadEvent[] {
-  return events.filter((event) => event.url !== url);
+  const ignored = new Set(urls);
+  return events.filter((event) => !ignored.has(event.url));
 }
 
-function assertHomebrewBootstrapTransport(
+function assertPackageTreeTransport(
   events: readonly LazyDownloadEvent[],
   tree: DerivedPackageDeferredZipTree,
   url: string,
@@ -830,7 +898,7 @@ function assertHomebrewBootstrapTransport(
     )
   ) {
     throw new Error(
-      "first brew use did not fetch the exact bootstrap tree once",
+      `first brew use did not fetch ${tree.descriptor.id} exactly once`,
     );
   }
 }
@@ -1213,6 +1281,7 @@ function parseArgs(args: string[]): {
   migrationLockPath: string;
   homebrewBootstrapSpecPath: string;
   homebrewBootstrapArchivePath: string;
+  homebrewPortableRubyArchivePath: string;
   homebrewBootstrapEnvPath: string;
   homebrewBootstrapState: "deferred" | "materialized";
   homebrewRuntimeSupportPath: string;
@@ -1226,6 +1295,7 @@ function parseArgs(args: string[]): {
     "--migration-lock",
     "--homebrew-bootstrap-spec",
     "--homebrew-bootstrap-archive",
+    "--homebrew-portable-ruby-archive",
     "--homebrew-bootstrap-env",
     "--homebrew-bootstrap-state",
     "--homebrew-runtime-support",
@@ -1250,6 +1320,9 @@ function parseArgs(args: string[]): {
   const migrationLock = values.get("--migration-lock");
   const homebrewBootstrapSpec = values.get("--homebrew-bootstrap-spec");
   const homebrewBootstrapArchive = values.get("--homebrew-bootstrap-archive");
+  const homebrewPortableRubyArchive = values.get(
+    "--homebrew-portable-ruby-archive",
+  );
   const homebrewBootstrapEnv = values.get("--homebrew-bootstrap-env");
   const homebrewBootstrapState = values.get("--homebrew-bootstrap-state");
   const homebrewRuntimeSupport = values.get("--homebrew-runtime-support");
@@ -1261,6 +1334,7 @@ function parseArgs(args: string[]): {
     !migrationLock ||
     !homebrewBootstrapSpec ||
     !homebrewBootstrapArchive ||
+    !homebrewPortableRubyArchive ||
     !homebrewBootstrapEnv ||
     !homebrewRuntimeSupport ||
     !demoConfig ||
@@ -1277,6 +1351,7 @@ function parseArgs(args: string[]): {
     migrationLockPath: resolve(migrationLock),
     homebrewBootstrapSpecPath: resolve(homebrewBootstrapSpec),
     homebrewBootstrapArchivePath: resolve(homebrewBootstrapArchive),
+    homebrewPortableRubyArchivePath: resolve(homebrewPortableRubyArchive),
     homebrewBootstrapEnvPath: resolve(homebrewBootstrapEnv),
     homebrewBootstrapState,
     homebrewRuntimeSupportPath: resolve(homebrewRuntimeSupport),
@@ -1292,6 +1367,7 @@ function smokeUsage(): never {
       "--image <main-shell.vfs.zst> --migration-lock <main-shell-migration-lock.json> " +
       "--homebrew-bootstrap-spec <main-shell-brew-package-tree.json> " +
       "--homebrew-bootstrap-archive <homebrew-bootstrap.zip> " +
+      "--homebrew-portable-ruby-archive <homebrew-portable-ruby.zip> " +
       "--homebrew-bootstrap-env <homebrew-brew.env> " +
       "--homebrew-bootstrap-state <deferred|materialized> " +
       "--homebrew-runtime-support <runtime-support.json> " +

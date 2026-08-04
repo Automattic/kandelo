@@ -63,7 +63,10 @@ import {
 } from "../src/homebrew-vfs-planner";
 import type { HomebrewRuntimeSupportContract } from
   "../src/homebrew-runtime-support";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import {
+  MemoryFileSystem,
+  type LazyTreeRegistrationEntry,
+} from "../src/vfs/memory-fs";
 import {
   derivePackageDeferredZipTree,
   registerPackageDeferredZipTree,
@@ -549,6 +552,27 @@ function readVfsFile(fs: MemoryFileSystem, path: string): string {
     return new TextDecoder().decode(bytes);
   } finally {
     fs.close(fd);
+  }
+}
+
+function replaceStringValuesInPlace(
+  value: unknown,
+  from: string,
+  to: string,
+): void {
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index += 1) {
+      const item = value[index];
+      if (typeof item === "string") value[index] = item.replaceAll(from, to);
+      else replaceStringValuesInPlace(item, from, to);
+    }
+    return;
+  }
+  if (typeof value !== "object" || value === null) return;
+  const record = value as Record<string, unknown>;
+  for (const [key, item] of Object.entries(record)) {
+    if (typeof item === "string") record[key] = item.replaceAll(from, to);
+    else replaceStringValuesInPlace(item, from, to);
   }
 }
 
@@ -1542,6 +1566,100 @@ describe("Homebrew runtime layer consumer", () => {
     });
     expect(composed.fs.stat(`${fixture.runtimeKeg}/lib/runtime.conf`).mode & 0o7777)
       .toBe(0o640);
+  });
+
+  it("relocates a published lazy layer with its authenticated legacy prefix", async () => {
+    const legacyPrefix = "/home/linuxbrew/.linuxbrew";
+    const fixture = await runtimeLayerConsumerFixture({
+      runtimeReceipt: JSON.stringify({
+        changed_files: ["INSTALL_RECEIPT.json", "lib/runtime.conf"],
+        source: { path: "@@HOMEBREW_LIBRARY@@/Formula/runtime.rb" },
+      }) + "\n",
+      runtimeExtraEntries: [{
+        path: "runtime/3.0/lib/runtime.conf",
+        data: "prefix=@@HOMEBREW_PREFIX@@\ncellar=@@HOMEBREW_CELLAR@@\n",
+      }],
+    });
+
+    // Runtime descriptors are signed around their prefix. Exercise the VFS
+    // registration boundary directly so this fixture models an authenticated
+    // artifact published before the canonical-prefix migration, while current
+    // producers continue to emit only the new prefix.
+    const tree = structuredClone(descriptorTree(fixture.descriptor));
+    replaceStringValuesInPlace(tree, PREFIX, legacyPrefix);
+    replaceStringValuesInPlace(tree, PREFIX.slice(1), legacyPrefix.slice(1));
+    for (const entry of tree.inventory.entries) {
+      if (entry.type === "symlink") {
+        entry.size = utf8(entry.target!).byteLength;
+      } else if (
+        entry.materialization === "archive-homebrew-relocate" &&
+        entry.source_path.endsWith("/INSTALL_RECEIPT.json")
+      ) {
+        entry.size = utf8(JSON.stringify({
+          changed_files: ["INSTALL_RECEIPT.json", "lib/runtime.conf"],
+          source: { path: `${legacyPrefix}/Library/Formula/runtime.rb` },
+        }) + "\n").byteLength;
+      } else if (
+        entry.materialization === "archive-homebrew-relocate" &&
+        entry.source_path.endsWith("/lib/runtime.conf")
+      ) {
+        entry.size = utf8(
+          `prefix=${legacyPrefix}\ncellar=${legacyPrefix}/Cellar\n`,
+        ).byteLength;
+      }
+    }
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(16 * 1024 * 1024));
+    const entries = tree.inventory.entries.map((entry) => ({
+      vfsPath: `/${entry.path}`,
+      sourcePath: entry.source_path,
+      ...(entry.materialization === undefined
+        ? {}
+        : { materialization: entry.materialization }),
+      type: entry.type,
+      mode: entry.mode,
+      size: entry.size,
+      ...(entry.target === undefined
+        ? {}
+        : { target: entry.type === "hardlink" ? `/${entry.target}` : entry.target }),
+      ...(entry.inode_group === undefined ? {} : { inodeGroup: entry.inode_group }),
+    })) satisfies LazyTreeRegistrationEntry[];
+    const handle = fs.registerLazyTreeWithMaterializationHandle({
+      decoder: tree.content.decoder,
+      mediaType: tree.content.media_type,
+      sha256: tree.content.sha256,
+      bytes: tree.content.bytes,
+      expandedBytes: tree.inventory.expanded_bytes,
+      sourceEntryCount: tree.inventory.source_entry_count,
+      transports: tree.transports.map((transport) => transport.url),
+      source: {
+        schema: 1,
+        kind: "homebrew-bottle-tar-gzip-v1",
+        entries: tree.inventory.source!.entries.map((entry) => ({
+          sourcePath: entry.path,
+          type: entry.type,
+          mode: entry.mode,
+          size: entry.size,
+          ...(entry.target === undefined ? {} : { target: entry.target }),
+        })),
+      },
+    }, entries, tree.mount_prefix, {
+      mode: tree.activation.mode,
+      capabilities: [...tree.activation.capabilities],
+      roots: [...tree.activation.roots],
+    });
+    await expect(
+      fs.materializeRegisteredDeferredTree(handle, fixture.runtimeBytes),
+    ).resolves.toBe(true);
+
+    const legacyRuntimeKeg = fixture.runtimeKeg.replace(PREFIX, legacyPrefix);
+    expect(readVfsFile(fs, `${legacyRuntimeKeg}/lib/runtime.conf`)).toBe(
+      `prefix=${legacyPrefix}\ncellar=${legacyPrefix}/Cellar\n`,
+    );
+    expect(JSON.parse(
+      readVfsFile(fs, `${legacyRuntimeKeg}/INSTALL_RECEIPT.json`),
+    )).toMatchObject({
+      source: { path: `${legacyPrefix}/Library/Formula/runtime.rb` },
+    });
   });
 
   it("accepts upstream null changed_files as an empty relocation set", async () => {
@@ -3482,6 +3600,37 @@ describe("Homebrew VFS builder", () => {
     );
   });
 
+  it("collects original bottles from the prefix owned by their plan", async () => {
+    const compatibilityPrefix = "/home/linuxbrew/.linuxbrew";
+    const fixture = await lazyLayerFixture({
+      includeLayerDependency: true,
+      mutatePlan(plan) {
+        replaceStringValuesInPlace(plan, PREFIX, compatibilityPrefix);
+      },
+    });
+    const selectedPlan: HomebrewVfsPlan = {
+      ...fixture.plan,
+      packages: fixture.plan.packages.filter((pkg) => pkg.name !== "hello"),
+    };
+
+    const collection = await buildHomebrewOriginalBottleCollection(selectedPlan, {
+      fs: MemoryFileSystem.create(new SharedArrayBuffer(16 * 1024 * 1024)),
+      baseFs: fixture.baseFs,
+      loadBottleBytes: (pkg) =>
+        pkg.name === "runtime-dep" ? fixture.dependencyBytes : fixture.runtimeBytes,
+    });
+
+    expect(collection.deferredTrees).toHaveLength(2);
+    const compatibilityRoot = compatibilityPrefix.slice(1);
+    expect(
+      collection.deferredTrees.flatMap((tree) => tree.inventory.entries)
+        .every((entry) =>
+          entry.path === compatibilityRoot ||
+          entry.path.startsWith(`${compatibilityRoot}/`)
+        ),
+    ).toBe(true);
+  });
+
   it.each(["member", "cohort"] as const)(
     "rejects a forged imported %s seal before generic collection bottle loading or writes",
     async (forgery) => {
@@ -3588,6 +3737,9 @@ describe("Homebrew VFS builder", () => {
     const fixture = await lazyLayerFixture({ includeLayerDependency: true });
     const deferredVersion = "4.0";
     const deferredKeg = `${CELLAR}/deferred/${deferredVersion}`;
+    const deferredReceipt = JSON.stringify({
+      changed_files: [".brew/deferred.rb", "INSTALL_RECEIPT.json"],
+    }) + "\n";
     const deferredBytes = bottleTar([
       {
         path: `deferred/${deferredVersion}/bin/deferred`,
@@ -3605,7 +3757,7 @@ describe("Homebrew VFS builder", () => {
       },
       {
         path: `deferred/${deferredVersion}/INSTALL_RECEIPT.json`,
-        data: "{}\n",
+        data: deferredReceipt,
       },
     ]);
     const runtime = fixture.plan.packages.find((pkg) => pkg.name === "runtime")!;
@@ -3875,7 +4027,19 @@ describe("Homebrew VFS builder", () => {
         bytes: 512 * 1024 * 1024 + 1,
       }],
     })).toThrow(/asset ownership is not canonical/);
-    expect(fs.exportLazyArchiveEntries()).toHaveLength(1);
+    const pendingTrees = fs.exportLazyArchiveEntries();
+    expect(pendingTrees).toHaveLength(1);
+    expect(pendingTrees[0]!.inventory?.some((entry) =>
+      entry.vfsPath === `${deferredKeg}/INSTALL_RECEIPT.json`
+    )).toBe(false);
+    expect(pendingTrees[0]!.content?.source?.entries.some((entry) =>
+      entry.sourcePath.endsWith("/INSTALL_RECEIPT.json")
+    )).toBe(true);
+    expect(fs.isPathDeferred(`${deferredKeg}/INSTALL_RECEIPT.json`)).toBe(false);
+    expect(readVfsFile(fs, `${deferredKeg}/INSTALL_RECEIPT.json`)).toBe(
+      deferredReceipt,
+    );
+    expect(fs.isPathDeferred(`${deferredKeg}/.brew/deferred.rb`)).toBe(false);
     expect(fs.readlink(`${PREFIX}/bin/runtime`)).toBe(`${runtime.keg}/bin/runtime`);
     expect(fs.readlink("/bin/deferred")).toBe(`${deferredKeg}/bin/deferred`);
     expect(fs.lstat("/var/lib/deferred").mode & 0o7777).toBe(0o755);
@@ -3888,6 +4052,7 @@ describe("Homebrew VFS builder", () => {
     const restored = MemoryFileSystem.fromImage(savedImage);
     assertHomebrewVfsMaterialization(restored, result.evidence);
     expect(restored.exportLazyArchiveEntries()).toHaveLength(1);
+    expect(restored.isPathDeferred(`${deferredKeg}/INSTALL_RECEIPT.json`)).toBe(false);
     const offlineFetch = vi.fn(async () => {
       throw new Error("network disabled during embedded command proof");
     });
@@ -3909,7 +4074,21 @@ describe("Homebrew VFS builder", () => {
     expect(readVfsFile(restored, `${deferredKeg}/share/deferred.txt`)).toContain(
       "deferred sibling",
     );
+    expect(readVfsFile(restored, `${deferredKeg}/INSTALL_RECEIPT.json`)).toBe(
+      deferredReceipt,
+    );
     expect(restored.exportLazyArchiveEntries()).toEqual([]);
+
+    const tamperedReceiptFs = MemoryFileSystem.fromImage(savedImage);
+    writeVfsFile(
+      tamperedReceiptFs,
+      `${deferredKeg}/INSTALL_RECEIPT.json`,
+      deferredReceipt.replace("INSTALL", "iNSTALL"),
+    );
+    expect(() => assertHomebrewVfsMaterialization(
+      tamperedReceiptFs,
+      result.evidence,
+    )).toThrow(/embedded regular bytes changed/);
 
     const tamperedPlanFs = MemoryFileSystem.fromImage(savedImage);
     writeVfsFile(
@@ -3977,6 +4156,8 @@ describe("Homebrew VFS builder", () => {
     )!;
     const supportVersion = "4.0";
     const supportKeg = `${CELLAR}/brew-support/${supportVersion}`;
+    const supportFormula = "class BrewSupport < Formula\nend\n";
+    const supportReceipt = '{"changed_files":[]}\n';
     const supportBytes = bottleTar([
       {
         path: `brew-support/${supportVersion}/bin/brew-support`,
@@ -3985,11 +4166,11 @@ describe("Homebrew VFS builder", () => {
       },
       {
         path: `brew-support/${supportVersion}/.brew/brew-support.rb`,
-        data: "class BrewSupport < Formula\nend\n",
+        data: supportFormula,
       },
       {
         path: `brew-support/${supportVersion}/INSTALL_RECEIPT.json`,
-        data: "{}\n",
+        data: supportReceipt,
       },
     ]);
     const supportPackage = {
@@ -4031,6 +4212,8 @@ describe("Homebrew VFS builder", () => {
     };
     const fallbackVersion = "1.0";
     const fallbackKeg = `${CELLAR}/brew-support-fallback/${fallbackVersion}`;
+    const fallbackFormula = "class BrewSupportFallback < Formula\nend\n";
+    const fallbackReceipt = '{"changed_files":[]}\n';
     const fallbackBytes = bottleTar([
       {
         path:
@@ -4041,12 +4224,12 @@ describe("Homebrew VFS builder", () => {
       {
         path:
           `brew-support-fallback/${fallbackVersion}/.brew/brew-support-fallback.rb`,
-        data: "class BrewSupportFallback < Formula\nend\n",
+        data: fallbackFormula,
       },
       {
         path:
           `brew-support-fallback/${fallbackVersion}/INSTALL_RECEIPT.json`,
-        data: "{}\n",
+        data: fallbackReceipt,
       },
     ]);
     const fallbackPackage = {
@@ -4213,6 +4396,34 @@ describe("Homebrew VFS builder", () => {
       bootstrap.descriptor.id,
     ]);
     assertHomebrewVfsMaterialization(fs, result.evidence);
+    const sealedImage = await fs.saveImage();
+
+    const pendingSupportTrees = fs.exportLazyArchiveEntries().filter((tree) =>
+      tree.content?.source?.entries.some((entry) =>
+        entry.sourcePath ===
+          `brew-support/${supportVersion}/INSTALL_RECEIPT.json`
+      )
+    );
+    expect(pendingSupportTrees).toHaveLength(1);
+    expect(pendingSupportTrees[0]!.inventory?.some((entry) =>
+      entry.vfsPath === `${supportKeg}/INSTALL_RECEIPT.json`
+    )).toBe(false);
+    expect(fs.isPathDeferred(`${supportKeg}/INSTALL_RECEIPT.json`)).toBe(false);
+    expect(fs.isPathDeferred(`${supportKeg}/.brew/brew-support.rb`)).toBe(false);
+    expect(readVfsFile(fs, `${supportKeg}/INSTALL_RECEIPT.json`)).toBe(
+      supportReceipt,
+    );
+    expect(readVfsFile(fs, `${supportKeg}/.brew/brew-support.rb`)).toBe(
+      supportFormula,
+    );
+    expect(readVfsFile(
+      fs,
+      `${fallbackKeg}/INSTALL_RECEIPT.json`,
+    )).toBe(fallbackReceipt);
+    expect(readVfsFile(
+      fs,
+      `${fallbackKeg}/.brew/brew-support-fallback.rb`,
+    )).toBe(fallbackFormula);
 
     const supportAsset = result.mirrorPlan.assets.find(
       (asset) => asset.package === supportPackage.fullName,
@@ -4235,6 +4446,7 @@ describe("Homebrew VFS builder", () => {
       );
     });
     fs.setLazyFetcher(fetcher);
+    expect(fetcher).not.toHaveBeenCalled();
 
     await expect(
       fs.preparePath("/usr/bin/brew-support-command"),
@@ -4250,6 +4462,13 @@ describe("Homebrew VFS builder", () => {
       fs,
       `${fallbackKeg}/bin/brew-support-fallback`,
     )).toContain("fallback");
+    expect(readVfsFile(fs, `${supportKeg}/INSTALL_RECEIPT.json`)).toBe(
+      supportReceipt,
+    );
+    expect(readVfsFile(
+      fs,
+      `${fallbackKeg}/INSTALL_RECEIPT.json`,
+    )).toBe(fallbackReceipt);
     expect(fs.readlink(`${PREFIX}/bin/brew-support`)).toBe(
       `${supportKeg}/bin/brew-support`,
     );
@@ -4324,6 +4543,18 @@ describe("Homebrew VFS builder", () => {
     expect(composition.materialization.runtime_support.package_order).toEqual(
       contract.additionalFormulaOrder,
     );
+
+    const tamperedSupportMetadata = MemoryFileSystem.fromImage(sealedImage);
+    await tamperedSupportMetadata.verifyImportedLazyAtomicGroupSeals();
+    writeVfsFile(
+      tamperedSupportMetadata,
+      `${supportKeg}/INSTALL_RECEIPT.json`,
+      supportReceipt.replace("changed", "Changed"),
+    );
+    expect(() => assertHomebrewVfsMaterialization(
+      tamperedSupportMetadata,
+      result.evidence,
+    )).toThrow(/embedded regular bytes changed/);
   });
 
   it("applies Bash- and Ruby-owned consumer state once across a Ruby-only delta", async () => {

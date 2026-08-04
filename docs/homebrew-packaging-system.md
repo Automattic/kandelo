@@ -488,9 +488,17 @@ not turn an arbitrary URL in VFS metadata into network authority.
 Guest Homebrew has two separate inputs:
 
 1. `homebrew-bootstrap` contains one reviewed upstream Homebrew source
-   tree plus Kandelo's guest-platform patch and environment policy.
-2. A bottle-backed runtime-support closure supplies Ruby and the
-   ordinary tools that Homebrew needs.
+   tree plus Kandelo's guest-platform patch, environment policy, and the
+   source-selected portable Ruby as separate authenticated outputs.
+2. A bottle-backed runtime-support closure supplies the ordinary tools that
+   Homebrew needs.
+
+Portable Ruby uses Homebrew's standard
+`Library/Homebrew/vendor/portable-ruby/<version>` layout and `current`
+symlink. The version is read from the exact Homebrew source tree, and the
+guest prefix is derived from the authenticated deferred-tree descriptor.
+Neither the compatibility prefix nor the future canonical prefix is encoded
+in the portable-Ruby composition logic.
 
 The base shell can expose `/usr/bin/brew` as a lazy activation
 reference. A user who never runs `brew` does not pay the bootstrap and

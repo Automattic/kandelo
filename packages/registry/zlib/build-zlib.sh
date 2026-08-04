@@ -52,7 +52,13 @@ tar xzf "$TARBALL" -C "$SRC_DIR" --strip-components=1
 
 cd "$SRC_DIR"
 echo "==> Configuring zlib for $TARGET_ARCH..."
-CC="$CC" AR="$AR" RANLIB="$RANLIB" \
+# WHY: libz.a is also consumed by dynamically loaded Wasm modules (Ruby's
+# zlib extension is one example). wasm-ld requires every archive absorbed by a
+# `-shared --experimental-pic` side module to contain position-independent
+# objects. A PIC archive remains valid when statically linked into a main
+# module, so publish one truthful general-purpose zlib artifact rather than a
+# consumer-specific rebuild.
+CFLAGS="-O2 -fPIC" CC="$CC" AR="$AR" RANLIB="$RANLIB" \
     LDSHARED="$CC -shared" \
     ./configure --static --prefix=/usr
 
