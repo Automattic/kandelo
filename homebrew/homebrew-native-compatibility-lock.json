@@ -10238,6 +10238,110 @@
         "stable_version": "1.4.21"
       }
     },
+    "make": {
+      "internal": {
+        "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+        "bottle_checksum": "b9fc9f80dd7f93b1b5eb9545044d6f7b016a372e7b2beb03f3e1a045e701410f",
+        "bottle_rebuild": 1,
+        "desc": "Utility for directing compilation",
+        "executables": [
+          "gmake"
+        ],
+        "head_dependencies": [
+          {
+            "autoconf": ":build"
+          },
+          {
+            "automake": ":build"
+          },
+          {
+            "gettext": ":build"
+          },
+          {
+            "libtool": ":build"
+          },
+          {
+            "texinfo": ":build"
+          },
+          {
+            "wget": ":build"
+          }
+        ],
+        "head_url_args": [
+          "https://git.savannah.gnu.org/git/make.git",
+          {
+            ":branch": "master"
+          }
+        ],
+        "head_uses_from_macos": [
+          [
+            {
+              "m4": ":build"
+            }
+          ]
+        ],
+        "homepage": "https://www.gnu.org/software/make/",
+        "license": "GPL-3.0-only",
+        "name": "make",
+        "ruby_source_checksum": "f2fff2b58580a989a19861cc316a3876ba9ad71d8193414d3dec404d727e0fb8",
+        "stable_checksum": "8814ba072182b605d156d7589c19a43b89fc58ea479b9355146160946f8cf6e9",
+        "stable_url_args": [
+          "https://ftpmirror.gnu.org/gnu/make/make-4.4.1.tar.lz"
+        ],
+        "stable_version": "4.4.1"
+      },
+      "public": {
+        "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+        "bottle_checksum": "b9fc9f80dd7f93b1b5eb9545044d6f7b016a372e7b2beb03f3e1a045e701410f",
+        "bottle_rebuild": 1,
+        "desc": "Utility for directing compilation",
+        "executables": [
+          "gmake"
+        ],
+        "head_dependencies": [
+          {
+            "autoconf": ":build"
+          },
+          {
+            "automake": ":build"
+          },
+          {
+            "gettext": ":build"
+          },
+          {
+            "libtool": ":build"
+          },
+          {
+            "texinfo": ":build"
+          },
+          {
+            "wget": ":build"
+          }
+        ],
+        "head_url_args": [
+          "https://git.savannah.gnu.org/git/make.git",
+          {
+            ":branch": "master"
+          }
+        ],
+        "head_uses_from_macos": [
+          [
+            {
+              "m4": ":build"
+            }
+          ]
+        ],
+        "homepage": "https://www.gnu.org/software/make/",
+        "license": "GPL-3.0-only",
+        "name": "make",
+        "ruby_source_checksum": "f2fff2b58580a989a19861cc316a3876ba9ad71d8193414d3dec404d727e0fb8",
+        "stable_checksum": "8814ba072182b605d156d7589c19a43b89fc58ea479b9355146160946f8cf6e9",
+        "stable_url_args": [
+          "https://ftpmirror.gnu.org/gnu/make/make-4.4.1.tar.lz"
+        ],
+        "stable_version": "4.4.1"
+      }
+    },
     "mesa": {
       "internal": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",

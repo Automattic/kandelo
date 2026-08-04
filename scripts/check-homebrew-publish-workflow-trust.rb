@@ -45,7 +45,7 @@ ROOTFS_PUBLICATION_SELECTION_PATH = File.join(
   REPO_ROOT, "scripts/homebrew-rootfs-publication-selection.sh"
 )
 ROOTFS_PUBLICATION_SELECTION_SHA256 =
-  "c48f0369a5e85aa3c8b5a52124e0e2e38f383f4ce64a03ad23ab5312ed50f900"
+  "f1dfb9efdb1dcb81990b907c3ebee44cfa6cee87304af5fc54161f3fe4fc67c2"
 TAP_CALLER_ROOT = File.join(REPO_ROOT, "homebrew/homebrew-tap-core/.github/workflows")
 CHECKOUT_ACTION = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
 # WHY: the reusable publishers freeze v6 in their reviewed step digests. This

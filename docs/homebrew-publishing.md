@@ -253,6 +253,16 @@ an invented empty admission. This keeps zero-root jobs offline and
 prevents a network dependency from appearing where no native Formula
 can execute.
 
+Before a root-filesystem publisher starts any bottle builds, its selection
+step derives the `build_and_test` host tools for every Formula that its matrix
+selected to build. Every tool must appear in
+`homebrew/homebrew-native-compatibility-roots.json`. The check examines the
+complete build selection for that publisher run and fails during planning,
+rather than letting one Formula discover an omitted tool after build jobs have
+started. Reused bottles do not execute Formula build tools and need no host
+tool admission. Adding a new host tool requires updating the reviewed roots
+and the Linux compatibility lock together.
+
 When a selected native Formula legitimately changes, regenerate the
 lock only in a fresh Linux x86_64 publisher-equivalent realm using the
 exact Homebrew commit in
