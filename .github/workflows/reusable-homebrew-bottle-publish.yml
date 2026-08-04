@@ -57,11 +57,15 @@ on:
       prefix-campaign-dependencies:
         type: string
         default: ""
+      revalidation-source:
+        type: string
+        default: ""
 
 jobs:
   plan:
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: read
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
@@ -82,11 +86,15 @@ jobs:
       prefix-campaign-dependencies: ${{ steps.trust.outputs.prefix-campaign-dependencies }}
       prefix-campaign-layout-sha256: ${{ steps.campaign-source.outputs.prefix-campaign-layout-sha256 }}
       artifact-name-prefix: ${{ steps.artifact-scope.outputs.prefix }}
+      revalidation-mode: ${{ steps.trust.outputs.revalidation-mode }}
+      revalidation-source: ${{ steps.trust.outputs.revalidation-source }}
     steps:
       - name: Validate caller trust boundary
         id: trust
         shell: bash
         env:
+          CALLER_ACTION: ${{ github.event.action }}
+          CALLER_CLIENT_PAYLOAD: ${{ toJson(github.event.client_payload) }}
           CALLER_EVENT_NAME: ${{ github.event_name }}
           CALLER_REF: ${{ github.ref }}
           CALLER_REPOSITORY: ${{ github.repository }}
@@ -102,6 +110,7 @@ jobs:
           PACKAGE_GENERATION_WASM64: ${{ inputs.package-generation-wasm64 }}
           PREFIX_CAMPAIGN_DEPENDENCIES: ${{ inputs.prefix-campaign-dependencies }}
           PREFIX_CAMPAIGN_TAG: ${{ inputs.prefix-campaign-tag }}
+          REVALIDATION_SOURCE: ${{ inputs.revalidation-source }}
           REQUIRE_VFS_ACCEPTANCE: ${{ inputs.require-vfs-acceptance }}
           TAP_NAME: ${{ inputs.tap-name }}
           TAP_REPOSITORY: ${{ inputs.tap-repository }}
@@ -216,6 +225,79 @@ jobs:
             printf '%s\n' "$normalized"
           }
 
+          normalize_revalidation_source() {
+            local value="$1"
+            local normalized
+            [ "$(printf '%s' "$value" | wc -c)" -le 32768 ] &&
+              [[ "$value" != *$'\n'* ]] &&
+              [[ "$value" != *$'\r'* ]] || {
+                echo "::error::revalidation source exceeds its bounded single-line contract" >&2
+                return 2
+              }
+            normalized="$(
+              jq -ceS '
+                select(
+                  type == "object" and
+                  keys == [
+                    "arch", "artifacts", "bottle", "campaign_tag",
+                    "child_manifest_digest", "formula", "head_sha",
+                    "jobs", "producer_kandelo_commit", "producer_tap_commit",
+                    "repository", "run_attempt", "run_id", "schema",
+                    "top_index_digest"
+                  ] and
+                  .schema == 1 and
+                  .arch == "wasm32" and
+                  (.formula | type == "string" and
+                    test("^[a-z0-9][a-z0-9._-]{0,254}$")) and
+                  (.repository | type == "string" and
+                    test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")) and
+                  (.campaign_tag | type == "string" and
+                    test("^homebrew-prefix-campaign-sha256-[0-9a-f]{64}$")) and
+                  (.head_sha | type == "string" and test("^[0-9a-f]{40}$")) and
+                  (.producer_kandelo_commit | type == "string" and
+                    test("^[0-9a-f]{40}$")) and
+                  (.producer_tap_commit | type == "string" and
+                    test("^[0-9a-f]{40}$")) and
+                  (.run_id | type == "number" and . >= 1 and floor == .) and
+                  (.run_attempt | type == "number" and . >= 1 and floor == .) and
+                  (.bottle | type == "object" and keys == ["bytes", "sha256"] and
+                    (.bytes | type == "number" and . >= 1 and floor == .) and
+                    (.sha256 | type == "string" and test("^[0-9a-f]{64}$"))) and
+                  (.child_manifest_digest | type == "string" and
+                    test("^sha256:[0-9a-f]{64}$")) and
+                  (.top_index_digest | type == "string" and
+                    test("^sha256:[0-9a-f]{64}$")) and
+                  (.artifacts | type == "object" and keys == [
+                    "build_handoff", "index_publication", "oci_child",
+                    "upload_receipt"
+                  ]) and
+                  all(.artifacts[];
+                    type == "object" and keys == ["digest", "id", "name", "size"] and
+                    (.id | type == "number" and . >= 1 and floor == .) and
+                    (.size | type == "number" and . >= 1 and floor == .) and
+                    (.digest | type == "string" and
+                      test("^sha256:[0-9a-f]{64}$")) and
+                    (.name | type == "string" and length >= 1 and length <= 255 and
+                      test("^[A-Za-z0-9._-]+$"))) and
+                  ([.artifacts[].id] | length == (unique | length)) and
+                  ([.artifacts[].name] | length == (unique | length)) and
+                  (.jobs | type == "object" and
+                    keys == ["build", "index", "upload", "verify"] and
+                    all(.[]; type == "number" and . >= 1 and floor == .)) and
+                  ([.jobs[]] | length == (unique | length))
+                )
+              ' <<<"$value"
+            )" || {
+              echo "::error::revalidation source is invalid" >&2
+              return 2
+            }
+            [ "$normalized" = "$value" ] || {
+              echo "::error::revalidation source must be canonical compact JSON" >&2
+              return 2
+            }
+            printf '%s\n' "$normalized"
+          }
+
           normalized_caller_repository="$(printf '%s' "$CALLER_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           normalized_tap_repository="$(printf '%s' "$TAP_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
           normalized_tap_name="$(printf '%s' "$TAP_NAME" | tr '[:upper:]' '[:lower:]')"
@@ -245,6 +327,8 @@ jobs:
           validated_campaign_mode=false
           validated_campaign_tag=""
           validated_campaign_dependencies=""
+          validated_revalidation_mode=false
+          validated_revalidation_source=""
           campaign_caller="$CALLER_REPOSITORY/.github/workflows/prefix-campaign-bottles.yml@refs/heads/main"
           if [ "$CALLER_WORKFLOW_REF" = "$campaign_caller" ]; then
             [ "$DEFER_TAP_FINALIZATION" = "true" ] &&
@@ -267,11 +351,65 @@ jobs:
             )"
             validated_campaign_mode=true
             validated_campaign_tag="$PREFIX_CAMPAIGN_TAG"
+            if [ -n "$REVALIDATION_SOURCE" ]; then
+              [ "$CALLER_ACTION" = "revalidate-f901-file-formula" ] || {
+                echo "::error::partial publication revalidation requires its exact dispatch action"; exit 2;
+              }
+              jq -e 'type == "object" and length == 0' \
+                <<<"$CALLER_CLIENT_PAYLOAD" >/dev/null || {
+                  echo "::error::partial publication revalidation requires an empty client payload"; exit 2;
+                }
+              [ "$DRY_RUN" = "false" ] || {
+                echo "::error::partial publication revalidation cannot use dry-run"; exit 2;
+              }
+              validated_revalidation_source="$(
+                normalize_revalidation_source "$REVALIDATION_SOURCE"
+              )"
+              jq -e \
+                --arg arch "$ARCHES" \
+                --arg campaign_tag "$validated_campaign_tag" \
+                --arg formula "$FORMULAE" \
+                --arg kandelo_commit "$KANDELO_REF" \
+                --arg repository "$normalized_tap_repository" \
+                --arg tap_commit "$TAP_REF" '
+                  .arch == $arch and
+                  .campaign_tag == $campaign_tag and
+                  .formula == $formula and
+                  .producer_kandelo_commit == $kandelo_commit and
+                  (.repository | ascii_downcase) == $repository and
+                  .producer_tap_commit == $tap_commit and
+                  .artifacts.build_handoff.name ==
+                    ("homebrew-build-handoff-" + $formula + "-" + $arch +
+                     "-attempt-" + (.run_attempt | tostring)) and
+                  .artifacts.oci_child.name ==
+                    ("homebrew-oci-child-" + $formula + "-" + $arch +
+                     "-attempt-" + (.run_attempt | tostring)) and
+                  .artifacts.upload_receipt.name ==
+                    ("homebrew-upload-receipt-" + $formula + "-" + $arch +
+                     "-attempt-" + (.run_attempt | tostring)) and
+                  .artifacts.index_publication.name ==
+                    ("homebrew-index-publication-" + $formula +
+                     "-attempt-" + (.run_attempt | tostring))
+                ' <<<"$validated_revalidation_source" >/dev/null || {
+                  echo "::error::revalidation source differs from the exact publication request"; exit 2;
+                }
+              validated_revalidation_mode=true
+            else
+              [ "$CALLER_ACTION" = "publish-prefix-campaign-bottle" ] || {
+                echo "::error::prefix campaign publication requires its exact dispatch action"; exit 2;
+              }
+              [ -z "$REVALIDATION_SOURCE" ] || {
+                echo "::error::ordinary campaign publication cannot import prior-run artifacts"; exit 2;
+              }
+            fi
           else
             [ "$DEFER_TAP_FINALIZATION" = "false" ] &&
               [ -z "$PREFIX_CAMPAIGN_TAG" ] &&
               [ -z "$PREFIX_CAMPAIGN_DEPENDENCIES" ] || {
                 echo "::error::only the reviewed prefix campaign caller may defer tap finalization or pass campaign authority"; exit 2;
+              }
+            [ -z "$REVALIDATION_SOURCE" ] || {
+                echo "::error::only the reviewed prefix campaign caller may import prior-run artifacts"; exit 2;
               }
           fi
           if [ "$DRY_RUN" = "true" ] &&
@@ -355,6 +493,8 @@ jobs:
             echo "prefix-campaign-mode=$validated_campaign_mode"
             echo "prefix-campaign-tag=$validated_campaign_tag"
             echo "prefix-campaign-dependencies=$validated_campaign_dependencies"
+            echo "revalidation-mode=$validated_revalidation_mode"
+            echo "revalidation-source=$validated_revalidation_source"
           } >> "$GITHUB_OUTPUT"
 
       - name: Admit exact Kandelo main source
@@ -479,6 +619,147 @@ jobs:
             # force-pushed sources have not passed that branch's review path.
             *) echo "::error::requested tap commit must remain on protected main history"; exit 1 ;;
           esac
+
+      - name: Admit exact prior-run revalidation evidence
+        if: ${{ steps.trust.outputs.revalidation-mode == 'true' }}
+        shell: bash
+        env:
+          ARCHES: ${{ inputs.arches }}
+          FORMULAE: ${{ inputs.formulae }}
+          GH_TOKEN: ${{ github.token }}
+          KANDELO_REPOSITORY: ${{ inputs.kandelo-repository }}
+          REVALIDATION_SOURCE: ${{ steps.trust.outputs.revalidation-source }}
+          TAP_REPOSITORY: ${{ inputs.tap-repository }}
+        run: |
+          set -euo pipefail
+          run_id="$(jq -er '.run_id' <<<"$REVALIDATION_SOURCE")"
+          run_attempt="$(jq -er '.run_attempt' <<<"$REVALIDATION_SOURCE")"
+          head_sha="$(jq -er '.head_sha' <<<"$REVALIDATION_SOURCE")"
+          producer_kandelo="$(jq -er '.producer_kandelo_commit' <<<"$REVALIDATION_SOURCE")"
+
+          run_record="$RUNNER_TEMP/homebrew-revalidation-run.json"
+          gh api "/repos/$TAP_REPOSITORY/actions/runs/$run_id/attempts/$run_attempt" \
+            >"$run_record"
+          jq -e \
+            --arg repository "$TAP_REPOSITORY" \
+            --arg head_sha "$head_sha" \
+            --arg producer_kandelo "$producer_kandelo" \
+            --argjson run_id "$run_id" \
+            --argjson run_attempt "$run_attempt" '
+              .id == $run_id and
+              .run_attempt == $run_attempt and
+              .event == "repository_dispatch" and
+              .head_branch == "main" and
+              .status == "completed" and .conclusion == "failure" and
+              .head_sha == $head_sha and
+              .path == ".github/workflows/prefix-campaign-bottles.yml" and
+              (.repository.full_name | ascii_downcase) == ($repository | ascii_downcase) and
+              ([.referenced_workflows[] | select(
+                .path == ("Automattic/kandelo/.github/workflows/" +
+                  "reusable-homebrew-bottle-publish.yml@" + $producer_kandelo) and
+                .sha == $producer_kandelo
+              )] | length) == 1
+            ' "$run_record" >/dev/null || {
+              echo "::error::revalidation source run differs from the reviewed failed publication"; exit 2;
+            }
+
+          while IFS=$'\t' read -r key job_id expected_name expected_conclusion; do
+            job_record="$RUNNER_TEMP/homebrew-revalidation-job-$key.json"
+            gh api "/repos/$TAP_REPOSITORY/actions/jobs/$job_id" >"$job_record"
+            jq -e \
+              --arg conclusion "$expected_conclusion" \
+              --arg head_sha "$head_sha" \
+              --arg name "$expected_name" \
+              --argjson id "$job_id" \
+              --argjson run_attempt "$run_attempt" \
+              --argjson run_id "$run_id" '
+                .id == $id and .run_id == $run_id and
+                .run_attempt == $run_attempt and .head_sha == $head_sha and
+                .workflow_name == "Publish prefix-campaign bottle" and
+                .name == $name and .status == "completed" and
+                .conclusion == $conclusion
+              ' "$job_record" >/dev/null || {
+                echo "::error::revalidation $key job differs from reviewed evidence"; exit 2;
+              }
+          done < <(jq -r \
+            --arg arch "$ARCHES" \
+            --arg formula "$FORMULAE" '
+              [
+                ["build", (.jobs.build | tostring),
+                  ("publish-rootfs / build-and-test (" + $formula + ", " + $arch + ")"),
+                  "success"],
+                ["upload", (.jobs.upload | tostring),
+                  ("publish-rootfs / upload-bottle (" + $formula + ", " + $arch + ")"),
+                  "success"],
+                ["index", (.jobs.index | tostring),
+                  ("publish-rootfs / publish-bottle-index (" + $formula + ")"),
+                  "success"],
+                ["verify", (.jobs.verify | tostring),
+                  ("publish-rootfs / verify-bottle (" + $formula + ", " + $arch + ")"),
+                  "failure"]
+              ][] | @tsv
+            ' <<<"$REVALIDATION_SOURCE")
+
+          verify_job="$RUNNER_TEMP/homebrew-revalidation-job-verify.json"
+          jq -e '
+            def exact_step($number; $name; $conclusion):
+              ([.steps[] | select(
+                .number == $number and .name == $name and
+                .status == "completed" and .conclusion == $conclusion
+              )] | length) == 1;
+            exact_step(16; "Download strict build handoff"; "success") and
+            exact_step(17; "Download deterministic Homebrew OCI child for dry-run validation"; "success") and
+            exact_step(18; "Download strict upload receipt"; "success") and
+            exact_step(19; "Download public Homebrew version-index evidence"; "success") and
+            exact_step(20; "Validate build handoff and reconstruct canonical bottle JSON"; "success") and
+            exact_step(21; "Create local dry-run upload receipt"; "skipped") and
+            exact_step(22; "Validate receipt against exact bottle bytes"; "success") and
+            exact_step(23; "Validate exact public Homebrew index traversal without credentials"; "success") and
+            exact_step(24; "Fail when a required handoff is absent"; "skipped") and
+            exact_step(25; "Build Kandelo sysroot for sidecar evidence"; "success") and
+            exact_step(26; "Build Kandelo wasm64 sysroot for the interactive browser graph"; "success") and
+            exact_step(27; "Build exact Kandelo kernel"; "success") and
+            exact_step(28; "Build exact fork-instrument host tool for bottle tests"; "success") and
+            exact_step(29; "Install JavaScript dependencies"; "success") and
+            exact_step(30; "Prepare the supported interactive browser demo graph"; "failure") and
+            ([.steps[] | select(.number >= 31 and .number <= 51)] | length) == 21 and
+            all(.steps[] | select(.number >= 31 and .number <= 51);
+              .status == "completed" and .conclusion == "skipped")
+          ' "$verify_job" >/dev/null || {
+            echo "::error::revalidation source did not fail only after publication proof"; exit 2;
+          }
+
+          compare_status="$(gh api \
+            "/repos/$KANDELO_REPOSITORY/compare/$producer_kandelo...main" \
+            --jq .status)"
+          case "$compare_status" in
+            ahead|identical) ;;
+            *) echo "::error::revalidation producer Kandelo commit left protected main history"; exit 2 ;;
+          esac
+
+          while IFS=$'\t' read -r key artifact_id artifact_name artifact_size artifact_digest; do
+            artifact_record="$RUNNER_TEMP/homebrew-revalidation-artifact-$key.json"
+            gh api "/repos/$TAP_REPOSITORY/actions/artifacts/$artifact_id" \
+              >"$artifact_record"
+            jq -e \
+              --arg name "$artifact_name" \
+              --arg digest "$artifact_digest" \
+              --arg head_sha "$head_sha" \
+              --argjson id "$artifact_id" \
+              --argjson size "$artifact_size" \
+              --argjson run_id "$run_id" '
+                .id == $id and .name == $name and .digest == $digest and
+                .size_in_bytes == $size and .expired == false and
+                .workflow_run.id == $run_id and
+                .workflow_run.head_sha == $head_sha
+              ' "$artifact_record" >/dev/null || {
+                echo "::error::revalidation artifact $key differs from reviewed evidence"; exit 2;
+              }
+          done < <(jq -r '
+            .artifacts | to_entries[] |
+            [.key, (.value.id | tostring), .value.name,
+             (.value.size | tostring), .value.digest] | @tsv
+          ' <<<"$REVALIDATION_SOURCE")
 
       - name: Materialize sealed prefix-campaign tap source
         id: campaign-source
@@ -905,7 +1186,7 @@ jobs:
 
   build-and-test:
     needs: [plan]
-    if: ${{ needs.plan.outputs.matrix != '[]' }}
+    if: ${{ needs.plan.outputs.matrix != '[]' && needs.plan.outputs.revalidation-mode != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 1440
     # WHY: upload-artifact uses the current run's scoped artifact service.
@@ -2033,7 +2314,7 @@ jobs:
 
   upload-bottle:
     needs: [plan, build-and-test]
-    if: ${{ always() && !cancelled() && !inputs.dry-run && needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' }}
+    if: ${{ always() && !cancelled() && !inputs.dry-run && needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' && needs.plan.outputs.revalidation-mode != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     # WHY: GitHub scopes concurrency groups to the caller repository, so the
@@ -2349,7 +2630,7 @@ jobs:
     # strand an independently valid wasm32 child from the same Formula.
     # This job discovers and validates the exact successful child artifacts;
     # tap and VFS activation remain closed by their downstream gates.
-    if: ${{ always() && !cancelled() && !inputs.dry-run && needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' }}
+    if: ${{ always() && !cancelled() && !inputs.dry-run && needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' && needs.plan.outputs.revalidation-mode != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
@@ -2694,12 +2975,211 @@ jobs:
           if-no-files-found: error
           retention-days: 2
 
-  verify-bottle:
+  stage-cross-run-handoffs:
     needs: [plan, build-and-test, upload-bottle, publish-bottle-index]
+    if: ${{ always() && !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' && needs.plan.outputs.revalidation-mode == 'true' && needs.build-and-test.result == 'skipped' && needs.upload-bottle.result == 'skipped' && needs.publish-bottle-index.result == 'skipped' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # WHY: recovery is a data-only import from one exact reviewed run. It can
+    # read Actions artifacts, but it cannot build, access packages, mutate the
+    # repository, or contact GHCR. The ordinary verifier remains unchanged.
+    permissions:
+      actions: read
+    strategy:
+      fail-fast: true
+      matrix:
+        include: ${{ fromJson(needs.plan.outputs.matrix) }}
+    steps:
+      - name: Download exact prior-run build handoff
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ fromJson(needs.plan.outputs.revalidation-source).artifacts.build_handoff.id }}
+          path: ${{ runner.temp }}/homebrew-build-handoff
+          github-token: ${{ github.token }}
+          repository: ${{ inputs.tap-repository }}
+          run-id: ${{ fromJson(needs.plan.outputs.revalidation-source).run_id }}
+          merge-multiple: true
+
+      - name: Download exact prior-run OCI child
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ fromJson(needs.plan.outputs.revalidation-source).artifacts.oci_child.id }}
+          path: ${{ runner.temp }}/homebrew-oci-child
+          github-token: ${{ github.token }}
+          repository: ${{ inputs.tap-repository }}
+          run-id: ${{ fromJson(needs.plan.outputs.revalidation-source).run_id }}
+          merge-multiple: true
+
+      - name: Download exact prior-run upload receipt
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ fromJson(needs.plan.outputs.revalidation-source).artifacts.upload_receipt.id }}
+          path: ${{ runner.temp }}/homebrew-upload-receipt
+          github-token: ${{ github.token }}
+          repository: ${{ inputs.tap-repository }}
+          run-id: ${{ fromJson(needs.plan.outputs.revalidation-source).run_id }}
+          merge-multiple: true
+
+      - name: Download exact prior-run public index evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          artifact-ids: ${{ fromJson(needs.plan.outputs.revalidation-source).artifacts.index_publication.id }}
+          path: ${{ runner.temp }}/homebrew-index-publication
+          github-token: ${{ github.token }}
+          repository: ${{ inputs.tap-repository }}
+          run-id: ${{ fromJson(needs.plan.outputs.revalidation-source).run_id }}
+          merge-multiple: true
+
+      - name: Bind imported payloads to the reviewed partial publication
+        shell: bash
+        env:
+          ARCH: ${{ matrix.arch }}
+          FORMULA: ${{ matrix.formula }}
+          REVALIDATION_SOURCE: ${{ needs.plan.outputs.revalidation-source }}
+        run: |
+          set -euo pipefail
+          build_root="$RUNNER_TEMP/homebrew-build-handoff"
+          child_root="$RUNNER_TEMP/homebrew-oci-child"
+          upload_root="$RUNNER_TEMP/homebrew-upload-receipt"
+          index_root="$RUNNER_TEMP/homebrew-index-publication"
+          for root in "$build_root" "$child_root" "$upload_root" "$index_root"; do
+            [ -d "$root" ] &&
+              [ -z "$(find -H "$root" -mindepth 1 ! -type f ! -type d -print -quit)" ] || {
+                echo "::error::prior-run artifact contains a link or special file"; exit 2;
+              }
+          done
+          [ -z "$(cd "$build_root" && find . -mindepth 1 -type d -print -quit)" ] &&
+          [ -z "$(cd "$upload_root" && find . -mindepth 1 -type d -print -quit)" ] &&
+          [ -z "$(cd "$index_root" && find . -mindepth 1 -type d -print -quit)" ] &&
+          [ "$(cd "$child_root" && find . -mindepth 1 -type d -print | LC_ALL=C sort)" = \
+            "$(printf '%s\n' ./layout ./layout/blobs ./layout/blobs/sha256)" ] || {
+              echo "::error::prior-run artifact directory topology is not exact"; exit 2;
+            }
+          [ "$(cd "$build_root" && find . -type f -print | LC_ALL=C sort)" = \
+            "$(printf '%s\n' ./bottle.json ./bottle.tar.gz ./dependency-provenance.json ./manifest.json | LC_ALL=C sort)" ] &&
+          [ "$(cd "$upload_root" && find . -type f -print | LC_ALL=C sort)" = \
+            "./receipt.json" ] &&
+          [ "$(cd "$index_root" && find . -type f -print | LC_ALL=C sort)" = \
+            "$(printf '%s\n' ./layout-receipt.json ./transport-receipt.json)" ] || {
+              echo "::error::prior-run artifact topology differs from its strict handoff"; exit 2;
+            }
+
+          bottle="$build_root/bottle.tar.gz"
+          child_receipt="$child_root/receipt.json"
+          upload_receipt="$upload_root/receipt.json"
+          index_receipt="$index_root/layout-receipt.json"
+          actual_sha256="$(sha256sum "$bottle" | awk '{print $1}')"
+          actual_bytes="$(wc -c <"$bottle" | tr -d '[:space:]')"
+          expected_sha256="$(jq -er '.bottle.sha256' <<<"$REVALIDATION_SOURCE")"
+          expected_bytes="$(jq -er '.bottle.bytes' <<<"$REVALIDATION_SOURCE")"
+          expected_child="$(jq -er '.child_manifest_digest' <<<"$REVALIDATION_SOURCE")"
+          expected_top="$(jq -er '.top_index_digest' <<<"$REVALIDATION_SOURCE")"
+          config_digest="$(jq -er '.oci.config.digest | select(test("^sha256:[0-9a-f]{64}$"))' \
+            "$child_receipt")"
+          [ "$(cd "$child_root" && find . -type f -print | LC_ALL=C sort)" = \
+            "$(printf '%s\n' \
+              ./layout/index.json \
+              ./layout/oci-layout \
+              "./layout/blobs/sha256/${actual_sha256}" \
+              "./layout/blobs/sha256/${expected_child#sha256:}" \
+              "./layout/blobs/sha256/${config_digest#sha256:}" \
+              ./receipt.json | LC_ALL=C sort)" ] || {
+                echo "::error::prior-run OCI child topology differs from its receipt"; exit 2;
+              }
+          for digest in "sha256:$actual_sha256" "$expected_child" "$config_digest"; do
+            blob="$child_root/layout/blobs/sha256/${digest#sha256:}"
+            [ "$(sha256sum "$blob" | awk '{print $1}')" = "${digest#sha256:}" ] || {
+              echo "::error::prior-run OCI blob differs from its content digest"; exit 2;
+            }
+          done
+          [ "$actual_sha256" = "$expected_sha256" ] &&
+            [ "$actual_bytes" = "$expected_bytes" ] || {
+              echo "::error::prior-run bottle differs from the reviewed exact bytes"; exit 2;
+            }
+          jq -e \
+            --arg arch "$ARCH" \
+            --arg child "$expected_child" \
+            --arg formula "$FORMULA" \
+            --arg kandelo "$(jq -er '.producer_kandelo_commit' <<<"$REVALIDATION_SOURCE")" \
+            --arg sha256 "$expected_sha256" \
+            --arg tap "$(jq -er '.producer_tap_commit' <<<"$REVALIDATION_SOURCE")" \
+            --argjson bytes "$expected_bytes" '
+              .arch == $arch and .formula == $formula and
+              .kandelo_commit == $kandelo and .tap_commit == $tap and
+              .bottle.sha256 == $sha256 and .bottle.bytes == $bytes and
+              .oci.manifest.digest == $child
+            ' "$child_receipt" >/dev/null &&
+          jq -e \
+            --arg arch "$ARCH" \
+            --arg child "$expected_child" \
+            --arg formula "$FORMULA" \
+            --arg kandelo "$(jq -er '.producer_kandelo_commit' <<<"$REVALIDATION_SOURCE")" \
+            --arg sha256 "$expected_sha256" \
+            --arg tap "$(jq -er '.producer_tap_commit' <<<"$REVALIDATION_SOURCE")" \
+            --argjson bytes "$expected_bytes" '
+              .layout.arch == $arch and .layout.formula == $formula and
+              .layout.kandelo_commit == $kandelo and .layout.tap_commit == $tap and
+              .layout.bottle.sha256 == $sha256 and
+              .layout.bottle.bytes == $bytes and
+              .layout.oci.manifest.digest == $child
+            ' "$upload_receipt" >/dev/null &&
+          jq -e \
+            --arg arch "$ARCH" \
+            --arg child "$expected_child" \
+            --arg sha256 "$expected_sha256" \
+            --arg top "$expected_top" '
+              .top.digest == $top and
+              ([.children[] | select(
+                .arch == $arch and .bottle_sha256 == $sha256 and
+                .manifest_digest == $child
+              )] | length) == 1
+            ' "$index_receipt" >/dev/null || {
+              echo "::error::prior-run handoffs differ from the reviewed public graph"; exit 2;
+            }
+
+      - name: Stage strict bottle build handoff for ordinary verification
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ needs.plan.outputs.artifact-name-prefix }}homebrew-build-handoff-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/homebrew-build-handoff
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 2
+
+      - name: Stage deterministic Homebrew OCI child for ordinary verification
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ needs.plan.outputs.artifact-name-prefix }}homebrew-oci-child-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/homebrew-oci-child
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 2
+
+      - name: Stage strict upload receipt for ordinary verification
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: homebrew-upload-receipt-${{ matrix.formula }}-${{ matrix.arch }}-attempt-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/homebrew-upload-receipt/receipt.json
+          if-no-files-found: error
+          retention-days: 2
+
+      - name: Stage public Homebrew version-index evidence for ordinary verification
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: homebrew-index-publication-${{ matrix.formula }}-attempt-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/homebrew-index-publication/layout-receipt.json
+            ${{ runner.temp }}/homebrew-index-publication/transport-receipt.json
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 2
+
+  verify-bottle:
+    needs: [plan, build-and-test, upload-bottle, publish-bottle-index, stage-cross-run-handoffs]
     # WHY: each verifier matrix entry downloads its own exact handoffs and
     # fails closed when any are absent. Aggregate upstream status would keep a
     # successful sibling from becoming anonymously verified and reusable.
-    if: ${{ always() && !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' }}
+    if: ${{ always() && !cancelled() && needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' && ((needs.plan.outputs.revalidation-mode == 'true' && needs.stage-cross-run-handoffs.result == 'success') || (needs.plan.outputs.revalidation-mode != 'true' && needs.stage-cross-run-handoffs.result == 'skipped')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 1440
     # WHY: same-run download-artifact uses the scoped artifact service and
@@ -4703,7 +5183,7 @@ jobs:
 
   finalize-tap:
     needs: [plan, build-and-test, upload-bottle, verify-bottle]
-    if: ${{ always() && !cancelled() && !inputs.dry-run && !inputs.defer-tap-finalization && needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' }}
+    if: ${{ always() && !cancelled() && !inputs.dry-run && !inputs.defer-tap-finalization && needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' && needs.plan.outputs.revalidation-mode != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     permissions:
@@ -5004,7 +5484,7 @@ jobs:
 
   publish-vfs-release:
     needs: [plan, verify-bottle, finalize-tap]
-    if: ${{ always() && !cancelled() && !inputs.dry-run && !inputs.defer-tap-finalization && inputs.require-vfs-acceptance && needs.plan.result == 'success' && needs.verify-bottle.result == 'success' && needs.finalize-tap.result == 'success' && needs.plan.outputs.vfs-acceptance-formula != '' }}
+    if: ${{ always() && !cancelled() && !inputs.dry-run && !inputs.defer-tap-finalization && inputs.require-vfs-acceptance && needs.plan.result == 'success' && needs.plan.outputs.revalidation-mode != 'true' && needs.verify-bottle.result == 'success' && needs.finalize-tap.result == 'success' && needs.plan.outputs.vfs-acceptance-formula != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     permissions:

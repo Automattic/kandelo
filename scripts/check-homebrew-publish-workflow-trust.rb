@@ -71,10 +71,11 @@ NATIVE_CA_PROOF_RUN_SHA256 =
   "c8192c2521864005b34e9eaa39d44d11d580997db39d6e64f2afe30fe447eb91"
 NATIVE_CA_VALIDATION_RUN_SHA256 =
   "7cb1417ec6df08daefa71c2ee6a364be76737b9d7f7ed4aa4022d3d7ca90a8b9"
-PUBLISHER_PLAN_DIGEST = "a01844e87d7be2f9ad71a1f0a1b43245163a6939b714ce96de63c614338f1c32"
+PUBLISHER_PLAN_DIGEST = "f88ab589738de04a43c98d77acdb957870a096b74af2cec728d4920ee4f4011c"
 PUBLISHER_BUILD_DIGEST = "4dabfbe8be3192f1b4d62ad72e2ec27b275d527d24a8c89c12d9822eb5430afc"
 PUBLISHER_UPLOAD_DIGEST = "861d649d73bb470fc37f99751733e8360f3f59f6245b80e2dd8d7eb4f40f3290"
 PUBLISHER_INDEX_DIGEST = "30531067dcd20c314ef8ae4b9d8584716a92fc803a194098913355ebb519754b"
+PUBLISHER_STAGE_DIGEST = "b77b9c5196cdc12d77f900d9c385dc369da294348bbd238fdf7619dfb2e609e8"
 PUBLISHER_VERIFY_DIGEST = "c8f492ad56b2c2865eb2232b5a59ffa6ea849ce34acee79ea1b496ae011c356a"
 PUBLISHER_FINALIZE_DIGEST = "b17e7bf5d0a5ef512e49f74c224a94958642dfdd80a27439f2a0335816a0886b"
 PUBLISHER_VFS_RELEASE_DIGEST = "2db9ec075edf382e326066d5f49a32947f5a584fce26a966fb9fff23bbbe3c26"
@@ -218,6 +219,8 @@ end
 
 def caller_validation_result(source, overrides = {})
   env = {
+    "CALLER_ACTION" => "dry-run-bottles",
+    "CALLER_CLIENT_PAYLOAD" => "{}",
     "CALLER_EVENT_NAME" => "repository_dispatch",
     "CALLER_REF" => "refs/heads/main",
     "CALLER_REPOSITORY" => "kandelo-dev/homebrew-tap-core",
@@ -234,6 +237,7 @@ def caller_validation_result(source, overrides = {})
     "PACKAGE_GENERATION_WASM64" => "",
     "PREFIX_CAMPAIGN_DEPENDENCIES" => "",
     "PREFIX_CAMPAIGN_TAG" => "",
+    "REVALIDATION_SOURCE" => "",
     "REQUIRE_VFS_ACCEPTANCE" => "false",
     "TAP_NAME" => "kandelo-dev/tap-core",
     "TAP_REPOSITORY" => "kandelo-dev/homebrew-tap-core",
@@ -342,7 +346,8 @@ end
 
 def expected_caller_outputs(
   kandelo_ref, tap_ref, wasm32: "", wasm64: "", kind: "none",
-  campaign_mode: "false", campaign_tag: "", campaign_dependencies: ""
+  campaign_mode: "false", campaign_tag: "", campaign_dependencies: "",
+  revalidation_mode: "false", revalidation_source: ""
 )
   "kandelo-ref=#{kandelo_ref}\n" \
     "tap-ref=#{tap_ref}\n" \
@@ -351,7 +356,9 @@ def expected_caller_outputs(
     "package-generation-kind=#{kind}\n" \
     "prefix-campaign-mode=#{campaign_mode}\n" \
     "prefix-campaign-tag=#{campaign_tag}\n" \
-    "prefix-campaign-dependencies=#{campaign_dependencies}\n"
+    "prefix-campaign-dependencies=#{campaign_dependencies}\n" \
+    "revalidation-mode=#{revalidation_mode}\n" \
+    "revalidation-source=#{revalidation_source}\n"
 end
 
 def check_caller_validation_behavior(workflow)
@@ -466,6 +473,7 @@ def check_caller_validation_behavior(workflow)
   campaign_tag = "homebrew-prefix-campaign-sha256-#{"1" * 64}"
   campaign_dependencies = '{"dependencies":[],"schema":1}'
   campaign_caller = write_caller.merge({
+    "CALLER_ACTION" => "publish-prefix-campaign-bottle",
     "CALLER_WORKFLOW_REF" =>
       "kandelo-dev/homebrew-tap-core/.github/workflows/" \
       "prefix-campaign-bottles.yml@refs/heads/main",
@@ -535,6 +543,81 @@ def check_caller_validation_behavior(workflow)
         multiple_arches["stdout"].include?(
           "prefix campaign publication requires exactly one architecture"
         ), "publisher campaign accepts more than one architecture")
+
+  revalidation_source = JSON.generate(canonical_contract({
+    "schema" => 1,
+    "repository" => "kandelo-dev/homebrew-tap-core",
+    "run_id" => 30_868_804_114,
+    "run_attempt" => 1,
+    "head_sha" => "b" * 40,
+    "producer_kandelo_commit" => SELF_TEST_KANDELO_MAIN_SHA,
+    "producer_tap_commit" => SELF_TEST_TAP_SHA,
+    "campaign_tag" => campaign_tag,
+    "formula" => "bzip2",
+    "arch" => "wasm32",
+    "bottle" => { "bytes" => 123, "sha256" => "c" * 64 },
+    "child_manifest_digest" => "sha256:#{"d" * 64}",
+    "top_index_digest" => "sha256:#{"e" * 64}",
+    "artifacts" => {
+      "build_handoff" => {
+        "id" => 101, "size" => 1001, "digest" => "sha256:#{"1" * 64}",
+        "name" => "homebrew-build-handoff-bzip2-wasm32-attempt-1",
+      },
+      "oci_child" => {
+        "id" => 102, "size" => 1002, "digest" => "sha256:#{"2" * 64}",
+        "name" => "homebrew-oci-child-bzip2-wasm32-attempt-1",
+      },
+      "upload_receipt" => {
+        "id" => 103, "size" => 1003, "digest" => "sha256:#{"3" * 64}",
+        "name" => "homebrew-upload-receipt-bzip2-wasm32-attempt-1",
+      },
+      "index_publication" => {
+        "id" => 104, "size" => 1004, "digest" => "sha256:#{"4" * 64}",
+        "name" => "homebrew-index-publication-bzip2-attempt-1",
+      },
+    },
+    "jobs" => { "build" => 201, "upload" => 202, "index" => 203, "verify" => 204 },
+  }))
+  revalidation_caller = campaign_caller.merge({
+    "CALLER_ACTION" => "revalidate-f901-file-formula",
+    "REVALIDATION_SOURCE" => revalidation_source,
+  })
+  revalidation = caller_validation_result(source, revalidation_caller)
+  check(revalidation["status"] == 0 && revalidation["outputs"] ==
+        expected_caller_outputs(
+          SELF_TEST_KANDELO_MAIN_SHA,
+          SELF_TEST_TAP_SHA,
+          wasm32: SELF_TEST_PACKAGE_GENERATION_WASM32,
+          wasm64: SELF_TEST_PACKAGE_GENERATION_WASM64,
+          kind: "browser-inputs",
+          campaign_mode: "true",
+          campaign_tag: campaign_tag,
+          campaign_dependencies: campaign_dependencies,
+          revalidation_mode: "true",
+          revalidation_source: revalidation_source
+        ), "publisher rejects exact prior-run revalidation authority")
+  {
+    "ordinary campaign action" => {
+      "CALLER_ACTION" => "publish-prefix-campaign-bottle",
+    },
+    "nonempty payload" => { "CALLER_CLIENT_PAYLOAD" => '{"unexpected":true}' },
+    "dry-run" => { "DRY_RUN" => "true" },
+    "noncanonical descriptor" => {
+      "REVALIDATION_SOURCE" => "#{revalidation_source} ",
+    },
+  }.each do |label, override|
+    rejected = caller_validation_result(source, revalidation_caller.merge(override))
+    check(rejected["status"] == 2,
+          "publisher prior-run revalidation accepts #{label}")
+  end
+  ordinary_revalidation = caller_validation_result(
+    source, write_caller.merge("REVALIDATION_SOURCE" => revalidation_source)
+  )
+  check(ordinary_revalidation["status"] == 2 &&
+        ordinary_revalidation["stdout"].include?(
+          "only the reviewed prefix campaign caller may import prior-run artifacts"
+        ), "ordinary publisher caller imports prior-run artifacts")
+
   ordinary_with_campaign_authority = caller_validation_result(
     source, write_caller.merge({
       "DEFER_TAP_FINALIZATION" => "true",
@@ -1843,6 +1926,7 @@ def check_publisher(workflow)
     "defer-tap-finalization" => { "type" => "boolean", "default" => false },
     "prefix-campaign-tag" => { "type" => "string", "default" => "" },
     "prefix-campaign-dependencies" => { "type" => "string", "default" => "" },
+    "revalidation-source" => { "type" => "string", "default" => "" },
   }, "publisher inputs changed")
   check(!workflow.key?("permissions"), "publisher requests workflow-wide permissions")
   check_common(workflow, "reusable publisher")
@@ -1851,12 +1935,13 @@ def check_publisher(workflow)
         "publisher still accepts a caller secret")
 
   jobs = workflow_jobs(workflow)
-  check(jobs.keys.sort == %w[build-and-test finalize-tap plan publish-bottle-index publish-vfs-release upload-bottle verify-bottle],
+  check(jobs.keys.sort == %w[build-and-test finalize-tap plan publish-bottle-index publish-vfs-release stage-cross-run-handoffs upload-bottle verify-bottle],
         "publisher has an unexpected job set")
   plan = jobs.fetch("plan")
   build = jobs.fetch("build-and-test")
   upload = jobs.fetch("upload-bottle")
   index = jobs.fetch("publish-bottle-index")
+  stage = jobs.fetch("stage-cross-run-handoffs")
   verify = jobs.fetch("verify-bottle")
   finalize = jobs.fetch("finalize-tap")
   vfs_release = jobs.fetch("publish-vfs-release")
@@ -1875,10 +1960,14 @@ def check_publisher(workflow)
         "publisher atomic finalizer job contract changed")
   check(index.keys.sort == %w[concurrency if needs permissions runs-on steps strategy timeout-minutes],
         "publisher version-index job contract changed")
+  check(stage.keys.sort == %w[if needs permissions runs-on steps strategy timeout-minutes],
+        "publisher cross-run staging job contract changed")
   check(vfs_release.keys.sort == %w[if needs permissions runs-on steps timeout-minutes],
         "publisher VFS release job contract changed")
   check(plan["runs-on"] == "ubuntu-latest" &&
-        exact_permissions?(plan["permissions"], { "contents" => "read" }),
+        exact_permissions?(plan["permissions"], {
+          "actions" => "read", "contents" => "read",
+        }),
         "publisher plan authority changed")
   check(build["runs-on"] == "ubuntu-latest" && build["timeout-minutes"] == 1440 &&
         exact_permissions?(build["permissions"], { "contents" => "read" }),
@@ -1898,6 +1987,10 @@ def check_publisher(workflow)
         }) && index["concurrency"] == shared_ghcr_writer_concurrency &&
         index["concurrency"] == upload["concurrency"],
         "publisher version-index authority or shared GHCR concurrency changed")
+  check(stage["runs-on"] == "ubuntu-latest" &&
+        stage["timeout-minutes"] == 15 &&
+        exact_permissions?(stage["permissions"], { "actions" => "read" }),
+        "publisher cross-run staging authority changed")
   check(verify["runs-on"] == "ubuntu-latest" && verify["timeout-minutes"] == 1440 &&
         exact_permissions?(verify["permissions"], { "contents" => "read" }),
         "publisher verifier authority changed")
@@ -1917,6 +2010,10 @@ def check_publisher(workflow)
     check(job["strategy"] == matrix_strategy,
           "publisher execution job bypasses the validated matrix")
   end
+  check(stage["strategy"] == {
+    "fail-fast" => true,
+    "matrix" => { "include" => "${{ fromJson(needs.plan.outputs.matrix) }}" },
+  }, "publisher cross-run staging bypasses the validated matrix")
   check(!finalize.key?("strategy"),
         "publisher finalizer must compose the complete matrix in one job")
   check(index["strategy"] == {
@@ -1924,29 +2021,44 @@ def check_publisher(workflow)
     "matrix" => { "include" => "${{ fromJson(needs.plan.outputs.formula-matrix) }}" },
   }, "publisher version-index job bypasses the validated Formula matrix")
   check(build["needs"] == ["plan"] &&
-        build["if"] == "${{ needs.plan.outputs.matrix != '[]' }}",
+        build["if"] == "${{ needs.plan.outputs.matrix != '[]' && " \
+                        "needs.plan.outputs.revalidation-mode != 'true' }}",
         "publisher build graph changed")
   check(upload["needs"] == %w[plan build-and-test] &&
         upload["if"] == "${{ always() && !cancelled() && !inputs.dry-run && " \
-                         "needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' }}",
+                         "needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' && " \
+                         "needs.plan.outputs.revalidation-mode != 'true' }}",
         "publisher upload graph or dry-run isolation changed")
   check(index["needs"] == %w[plan build-and-test upload-bottle] &&
         index["if"] == "${{ always() && !cancelled() && !inputs.dry-run && needs.plan.result == 'success' && " \
-                        "needs.plan.outputs.matrix != '[]' }}",
+                        "needs.plan.outputs.matrix != '[]' && " \
+                        "needs.plan.outputs.revalidation-mode != 'true' }}",
         "publisher version-index graph or dry-run isolation changed")
-  check(verify["needs"] == %w[plan build-and-test upload-bottle publish-bottle-index] &&
+  check(stage["needs"] == %w[plan build-and-test upload-bottle publish-bottle-index] &&
+        stage["if"] == "${{ always() && !cancelled() && needs.plan.result == 'success' && " \
+                       "needs.plan.outputs.matrix != '[]' && needs.plan.outputs.revalidation-mode == 'true' && " \
+                       "needs.build-and-test.result == 'skipped' && needs.upload-bottle.result == 'skipped' && " \
+                       "needs.publish-bottle-index.result == 'skipped' }}",
+        "publisher cross-run staging graph changed")
+  check(verify["needs"] == %w[plan build-and-test upload-bottle publish-bottle-index stage-cross-run-handoffs] &&
         verify["if"] == "${{ always() && !cancelled() && needs.plan.result == 'success' && " \
-                         "needs.plan.outputs.matrix != '[]' }}",
+                         "needs.plan.outputs.matrix != '[]' && " \
+                         "((needs.plan.outputs.revalidation-mode == 'true' && " \
+                         "needs.stage-cross-run-handoffs.result == 'success') || " \
+                         "(needs.plan.outputs.revalidation-mode != 'true' && " \
+                         "needs.stage-cross-run-handoffs.result == 'skipped')) }}",
         "publisher verification graph changed")
   check(finalize["needs"] == %w[plan build-and-test upload-bottle verify-bottle] &&
         finalize["if"] == "${{ always() && !cancelled() && !inputs.dry-run && " \
                            "!inputs.defer-tap-finalization && " \
-                           "needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' }}",
+                           "needs.plan.result == 'success' && needs.plan.outputs.matrix != '[]' && " \
+                           "needs.plan.outputs.revalidation-mode != 'true' }}",
         "publisher finalization graph or dry-run isolation changed")
   check(vfs_release["needs"] == %w[plan verify-bottle finalize-tap] &&
         vfs_release["if"] == "${{ always() && !cancelled() && !inputs.dry-run && " \
                                "!inputs.defer-tap-finalization && " \
                                "inputs.require-vfs-acceptance && needs.plan.result == 'success' && " \
+                               "needs.plan.outputs.revalidation-mode != 'true' && " \
                                "needs.verify-bottle.result == 'success' && " \
                                "needs.finalize-tap.result == 'success' && " \
                                "needs.plan.outputs.vfs-acceptance-formula != '' }}",
@@ -1956,6 +2068,7 @@ def check_publisher(workflow)
   build_steps = job_steps(build, "publisher build")
   upload_steps = job_steps(upload, "publisher upload")
   index_steps = job_steps(index, "publisher version index")
+  stage_steps = job_steps(stage, "publisher cross-run staging")
   verify_steps = job_steps(verify, "publisher verification")
   finalize_steps = job_steps(finalize, "publisher finalization")
   vfs_release_steps = job_steps(vfs_release, "publisher VFS release")
@@ -1965,6 +2078,9 @@ def check_publisher(workflow)
   check(validation.keys.sort == %w[env id name run shell] && validation["id"] == "trust" &&
         validation["shell"] == "bash" &&
         validation["env"] == {
+          "CALLER_ACTION" => "${{ github.event.action }}",
+          "CALLER_CLIENT_PAYLOAD" =>
+            "${{ toJson(github.event.client_payload) }}",
           "CALLER_EVENT_NAME" => "${{ github.event_name }}",
           "CALLER_REF" => "${{ github.ref }}",
           "CALLER_REPOSITORY" => "${{ github.repository }}",
@@ -1981,6 +2097,7 @@ def check_publisher(workflow)
           "PREFIX_CAMPAIGN_DEPENDENCIES" =>
             "${{ inputs.prefix-campaign-dependencies }}",
           "PREFIX_CAMPAIGN_TAG" => "${{ inputs.prefix-campaign-tag }}",
+          "REVALIDATION_SOURCE" => "${{ inputs.revalidation-source }}",
           "REQUIRE_VFS_ACCEPTANCE" =>
             "${{ inputs.require-vfs-acceptance }}",
           "TAP_NAME" => "${{ inputs.tap-name }}",
@@ -1999,6 +2116,9 @@ def check_publisher(workflow)
     '"$CALLER_REPOSITORY/.github/workflows/dry-run-bottles.yml@refs/heads/main"',
     '"$CALLER_REPOSITORY/.github/workflows/publish-bottles.yml@refs/heads/main"',
     '"$CALLER_REPOSITORY/.github/workflows/maintain-bottles.yml@refs/heads/main"',
+    '[ "$CALLER_ACTION" = "publish-prefix-campaign-bottle" ]',
+    '[ "$CALLER_ACTION" = "revalidate-f901-file-formula" ]',
+    'jq -e \'type == "object" and length == 0\'',
     '[ "$KANDELO_REPOSITORY" = "Automattic/kandelo" ]',
     '[[ "$normalized_tap_repository" =~ ^[a-z0-9_.-]+/homebrew-[a-z0-9_.-]+$ ]]',
     'tap_short_name="${normalized_tap_repository#*/homebrew-}"',
@@ -2033,6 +2153,9 @@ def check_publisher(workflow)
     'echo "package-generation-wasm32=$validated_generation_wasm32"',
     'echo "package-generation-wasm64=$validated_generation_wasm64"',
     'echo "package-generation-kind=$validated_generation_kind"',
+    'normalize_revalidation_source()',
+    'echo "revalidation-mode=$validated_revalidation_mode"',
+    'echo "revalidation-source=$validated_revalidation_source"',
   ].each do |predicate|
     check(validation_run.include?(predicate), "publisher caller validation lacks #{predicate}")
   end
@@ -2379,6 +2502,8 @@ def check_publisher(workflow)
       "${{ steps.campaign-source.outputs.prefix-campaign-layout-sha256 }}",
     "artifact-name-prefix" =>
       "${{ steps.artifact-scope.outputs.prefix }}",
+    "revalidation-mode" => "${{ steps.trust.outputs.revalidation-mode }}",
+    "revalidation-source" => "${{ steps.trust.outputs.revalidation-source }}",
   }, "publisher plan outputs changed")
 
   campaign_materializations = [
@@ -2596,10 +2721,54 @@ def check_publisher(workflow)
     check(tap_source_binding.fetch("run").include?(fragment),
           "publisher protected-main tap source binding lacks #{fragment}")
   end
+  revalidation_admission = named_step(
+    plan_steps, "Admit exact prior-run revalidation evidence"
+  )
+  check(revalidation_admission.keys.sort == %w[env if name run shell] &&
+        revalidation_admission["if"] ==
+          "${{ steps.trust.outputs.revalidation-mode == 'true' }}" &&
+        revalidation_admission["shell"] == "bash" &&
+        revalidation_admission["env"] == {
+          "ARCHES" => "${{ inputs.arches }}",
+          "FORMULAE" => "${{ inputs.formulae }}",
+          "GH_TOKEN" => "${{ github.token }}",
+          "KANDELO_REPOSITORY" => "${{ inputs.kandelo-repository }}",
+          "REVALIDATION_SOURCE" =>
+            "${{ steps.trust.outputs.revalidation-source }}",
+          "TAP_REPOSITORY" => "${{ inputs.tap-repository }}",
+        }, "publisher prior-run admission mapping changed")
+  [
+    '"/repos/$TAP_REPOSITORY/actions/runs/$run_id/attempts/$run_attempt"',
+    '.head_branch == "main"',
+    '.path == ".github/workflows/prefix-campaign-bottles.yml"',
+    '.referenced_workflows[]',
+    '"reusable-homebrew-bottle-publish.yml@" + $producer_kandelo',
+    '.sha == $producer_kandelo',
+    '"/repos/$TAP_REPOSITORY/actions/jobs/$job_id"',
+    '.workflow_name == "Publish prefix-campaign bottle"',
+    '.conclusion == $conclusion',
+    'exact_step(16; "Download strict build handoff"; "success")',
+    'exact_step(21; "Create local dry-run upload receipt"; "skipped")',
+    'exact_step(24; "Fail when a required handoff is absent"; "skipped")',
+    'exact_step(30; "Prepare the supported interactive browser demo graph"; "failure")',
+    'select(.number >= 31 and .number <= 51)] | length) == 21',
+    '.number >= 31 and .number <= 51',
+    '"/repos/$KANDELO_REPOSITORY/compare/$producer_kandelo...main"',
+    '"/repos/$TAP_REPOSITORY/actions/artifacts/$artifact_id"',
+    '.size_in_bytes == $size',
+    '.expired == false',
+    '.workflow_run.id == $run_id',
+    '.workflow_run.head_sha == $head_sha',
+  ].each do |fragment|
+    check(revalidation_admission.fetch("run").include?(fragment),
+          "publisher prior-run admission lacks #{fragment}")
+  end
   release = named_step(plan_steps, "Resolve release and bottle root")
   matrix = named_step(plan_steps, "Plan formula matrix")
   check(plan_steps.index(kandelo_checkout) < plan_steps.index(source_commits) &&
         plan_steps.index(source_commits) < plan_steps.index(tap_source_binding) &&
+        plan_steps.index(tap_source_binding) < plan_steps.index(revalidation_admission) &&
+        plan_steps.index(revalidation_admission) < plan_steps.index(campaign_plan) &&
         plan_steps.index(tap_source_binding) < plan_steps.index(release) &&
         plan_steps.index(release) < plan_steps.index(matrix),
         "publisher resolves immutable sources outside the planning boundary")
@@ -2608,8 +2777,8 @@ def check_publisher(workflow)
     *Array.new(23, CHECKOUT_ACTION),
     *Array.new(6, NIX_ACTION),
     *Array.new(3, MAGIC_NIX_ACTION),
-    *Array.new(9, UPLOAD_ACTION),
-    *Array.new(10, DOWNLOAD_ACTION),
+    *Array.new(13, UPLOAD_ACTION),
+    *Array.new(14, DOWNLOAD_ACTION),
   ].sort
   check(values_for_key(workflow, "uses").sort == expected_uses,
         "publisher action set or pin changed")
@@ -3172,6 +3341,7 @@ def check_publisher(workflow)
     "Admit exact Kandelo main source",
     "Admit prefix-campaign Kandelo main history",
     "Bind write tap source to protected main history",
+    "Admit exact prior-run revalidation evidence",
     "Materialize sealed prefix-campaign tap source",
   ] && plan_credential_steps.all? do |step|
     step.fetch("env").slice(*credential_names) == {
@@ -3457,6 +3627,99 @@ def check_publisher(workflow)
           "name" => index_publication_name,
           "path" => "${{ runner.temp }}/homebrew-index-publication",
         }, "publisher version-index evidence download contract changed")
+
+  {
+    "Download exact prior-run build handoff" => [
+      "build_handoff",
+      "${{ runner.temp }}/homebrew-build-handoff",
+    ],
+    "Download exact prior-run OCI child" => [
+      "oci_child",
+      "${{ runner.temp }}/homebrew-oci-child",
+    ],
+    "Download exact prior-run upload receipt" => [
+      "upload_receipt",
+      "${{ runner.temp }}/homebrew-upload-receipt",
+    ],
+    "Download exact prior-run public index evidence" => [
+      "index_publication",
+      "${{ runner.temp }}/homebrew-index-publication",
+    ],
+  }.each do |name, (key, path)|
+    step = named_step(stage_steps, name)
+    check(step["uses"] == DOWNLOAD_ACTION && step["with"] == {
+            "artifact-ids" =>
+              "${{ fromJson(needs.plan.outputs.revalidation-source)." \
+              "artifacts.#{key}.id }}",
+            "path" => path,
+            "github-token" => "${{ github.token }}",
+            "repository" => "${{ inputs.tap-repository }}",
+            "run-id" =>
+              "${{ fromJson(needs.plan.outputs.revalidation-source).run_id }}",
+            "merge-multiple" => true,
+          }, "publisher #{name.inspect} contract changed")
+  end
+  stage_bind = named_step(
+    stage_steps, "Bind imported payloads to the reviewed partial publication"
+  )
+  check(stage_bind.keys.sort == %w[env name run shell] &&
+        stage_bind["shell"] == "bash" && stage_bind["env"] == {
+          "ARCH" => "${{ matrix.arch }}",
+          "FORMULA" => "${{ matrix.formula }}",
+          "REVALIDATION_SOURCE" =>
+            "${{ needs.plan.outputs.revalidation-source }}",
+        }, "publisher cross-run payload binding environment changed")
+  [
+    'find -H "$root" -mindepth 1 ! -type f ! -type d',
+    "prior-run artifact directory topology is not exact",
+    "prior-run artifact topology differs from its strict handoff",
+    'actual_sha256="$(sha256sum "$bottle"',
+    '.child_manifest_digest',
+    '.top_index_digest',
+    '.producer_kandelo_commit',
+    '.producer_tap_commit',
+    "prior-run OCI blob differs from its content digest",
+    "prior-run handoffs differ from the reviewed public graph",
+  ].each do |fragment|
+    check(stage_bind.fetch("run").include?(fragment),
+          "publisher cross-run payload binding lacks #{fragment}")
+  end
+  {
+    "Stage strict bottle build handoff for ordinary verification" => {
+      "name" => build_handoff_name,
+      "path" => "${{ runner.temp }}/homebrew-build-handoff",
+      "compression-level" => 0,
+      "if-no-files-found" => "error", "retention-days" => 2,
+    },
+    "Stage deterministic Homebrew OCI child for ordinary verification" => {
+      "name" => child_layout_name,
+      "path" => "${{ runner.temp }}/homebrew-oci-child",
+      "compression-level" => 0,
+      "if-no-files-found" => "error", "retention-days" => 2,
+    },
+    "Stage strict upload receipt for ordinary verification" => {
+      "name" => upload_receipt_name,
+      "path" => "${{ runner.temp }}/homebrew-upload-receipt/receipt.json",
+      "if-no-files-found" => "error", "retention-days" => 2,
+    },
+    "Stage public Homebrew version-index evidence for ordinary verification" => {
+      "name" => index_publication_name,
+      "path" => "${{ runner.temp }}/homebrew-index-publication/layout-receipt.json\n" \
+                "${{ runner.temp }}/homebrew-index-publication/transport-receipt.json\n",
+      "compression-level" => 0,
+      "if-no-files-found" => "error", "retention-days" => 2,
+    },
+  }.each do |name, with|
+    step = named_step(stage_steps, name)
+    check(step.keys.sort == %w[name uses with] &&
+          step["uses"] == UPLOAD_ACTION && step["with"] == with,
+          "publisher #{name.inspect} contract changed")
+  end
+  check(stage_steps.none? { |step| step["uses"] == CHECKOUT_ACTION } &&
+        !stage_steps.filter_map { |step| step["run"] }.join("\n").match?(
+          /\b(?:brew|oras|docker|podman|homebrew-ghcr-upload)\b/i
+        ),
+        "publisher cross-run staging executes source or registry tooling")
   publish_handoff_upload = named_step(verify_steps, "Upload validated publication handoff")
   check(publish_handoff_upload["uses"] == UPLOAD_ACTION && publish_handoff_upload["with"] == {
     "name" => publish_handoff_name,
@@ -7153,8 +7416,10 @@ def check_publisher(workflow)
   end, "publisher anonymous version-index import references an available credential")
   index_import_tool = File.read(File.join(REPO_ROOT, "scripts/homebrew-oci-layout.py"))
   [
+    'commands.add_parser("probe-public-index")',
     'commands.add_parser("import-public-index")',
-    'target=f"{remote}:{reference}"',
+    'def observe_public_index(',
+    'target = f"{remote}:{reference}"',
     'descriptor=True',
     'target=f"{remote}@sha256:{digest}"',
     'MAX_BOTTLE_BYTES',
@@ -8476,6 +8741,8 @@ def check_publisher(workflow)
         "publisher upload step contract changed")
   check(contract_digest(index_steps) == PUBLISHER_INDEX_DIGEST,
         "publisher version-index step contract changed")
+  check(contract_digest(stage_steps) == PUBLISHER_STAGE_DIGEST,
+        "publisher cross-run staging step contract changed")
   check(contract_digest(verify_steps) == PUBLISHER_VERIFY_DIGEST,
         "publisher verification step contract changed")
   check(contract_digest(finalize_steps) == PUBLISHER_FINALIZE_DIGEST,

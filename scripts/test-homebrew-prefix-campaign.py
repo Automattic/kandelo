@@ -1188,12 +1188,7 @@ def dependencies_with_present_formula(
         _kandelo_root: pathlib.Path,
     ) -> dict[str, Any]:
         if remote.endswith("/" + formula):
-            return {
-                "digest": "sha256:" + "e" * 64,
-                "kind": "manifest",
-                "schema": 1,
-                "status": "present",
-            }
+            return public_index_probe("wasm32")
         return {
             "digest": None,
             "kind": "manifest",
@@ -1207,6 +1202,30 @@ def dependencies_with_present_formula(
         resolve_formula_metadata=base.resolve_formula_metadata,
         load_historical_formula=base.load_historical_formula,
     )
+
+
+def public_index_probe(*arches: str) -> dict[str, Any]:
+    children = []
+    for position, arch in enumerate(sorted(arches), start=1):
+        marker = format(position, "x")
+        children.append(
+            {
+                "arch": arch,
+                "bottle_sha256": marker * 64,
+                "bottle_size": position,
+                "homebrew_ref": f"1.0.{arch}_kandelo",
+                "manifest_digest": "sha256:" + marker * 64,
+                "manifest_size": position,
+            }
+        )
+    return {
+        "children": children,
+        "digest": "sha256:" + "e" * 64,
+        "kind": "public-index",
+        "schema": 1,
+        "size": 1,
+        "status": "present",
+    }
 
 
 class PrefixCampaignTests(unittest.TestCase):
@@ -1744,14 +1763,16 @@ class PrefixCampaignTests(unittest.TestCase):
             {
                 "admission": {
                     "kind": "anonymous-absence",
-                    "method": "anonymous-oras-manifest-probe",
+                    "method": "anonymous-oras-public-index-probe",
                     "probe": {
+                        "children": [],
                         "digest": None,
-                        "kind": "manifest",
+                        "kind": "public-index",
                         "schema": 1,
+                        "size": None,
                         "status": "missing",
                     },
-                    "schema": 1,
+                    "schema": 2,
                 },
                 "bottle_rebuild": 0,
                 "reference": "1.0_1",
@@ -3167,12 +3188,7 @@ class PrefixCampaignTests(unittest.TestCase):
         def present(
             _remote: str, _reference: str, _kandelo_root: pathlib.Path
         ) -> dict[str, Any]:
-            return {
-                "digest": "sha256:" + "1" * 64,
-                "kind": "manifest",
-                "schema": 1,
-                "status": "present",
-            }
+            return public_index_probe("wasm32")
 
         with self.assertRaisesRegex(
             CAMPAIGN.CampaignError, "destination manifest is already present"
@@ -3849,15 +3865,60 @@ class PrefixCampaignTests(unittest.TestCase):
                 predecessor_path(campaign_sha),
             )
 
-    def test_predecessor_recovery_requires_complete_multiarch_set(
+    def test_predecessor_recovery_accepts_exact_partial_multiarch_set(
         self,
     ) -> None:
-        probe = {
-            "digest": "sha256:" + "e" * 64,
-            "kind": "manifest",
-            "schema": 1,
-            "status": "present",
+        probe = public_index_probe("wasm32")
+        variants = [
+            {"arch": "wasm32", "disposition": {"kind": "existing"}},
+            {"arch": "wasm64", "disposition": {"kind": "existing"}},
+        ]
+        authority = {
+            "archive": {"path": "archive.json", "sha256": "f" * 64}
         }
+        handoffs = {
+            ("alpha", "wasm32"): {
+                "authority": authority,
+                "reuse_source": {
+                    "arch": "wasm32",
+                    "campaign_tag": "campaign",
+                    "handoff_tag": "handoff",
+                    "kind": "predecessor-handoff",
+                },
+            }
+        }
+        used: dict[str, dict[str, Any]] = {}
+        admission = CAMPAIGN.destination_admission(
+            probe,
+            formula_name="alpha",
+            source_kind="selected-old-formula",
+            variants=variants,
+            predecessor_handoffs=handoffs,
+            used_predecessors=used,
+        )
+        self.assertEqual(
+            admission["kind"], "archived-predecessor-exact-presence"
+        )
+        self.assertEqual(
+            variants[0]["reuse_source"],
+            handoffs[("alpha", "wasm32")]["reuse_source"],
+        )
+        self.assertNotIn("reuse_source", variants[1])
+        self.assertEqual(used, {"archive.json": authority})
+
+    def test_public_index_probe_requires_bounded_homebrew_ref(self) -> None:
+        probe = public_index_probe("wasm32")
+        probe["children"][0]["homebrew_ref"] = "invalid/ref"
+
+        with self.assertRaisesRegex(
+            CAMPAIGN.CampaignError,
+            "child 0 has invalid OCI identity",
+        ):
+            CAMPAIGN.validate_destination_probe(probe, "fixture probe")
+
+    def test_predecessor_recovery_rejects_unarchived_observed_sibling_atomically(
+        self,
+    ) -> None:
         variants = [
             {"arch": "wasm32", "disposition": {"kind": "existing"}},
             {"arch": "wasm64", "disposition": {"kind": "existing"}},
@@ -3882,7 +3943,7 @@ class PrefixCampaignTests(unittest.TestCase):
             "without an archived predecessor handoff for alpha/wasm64",
         ):
             CAMPAIGN.destination_admission(
-                probe,
+                public_index_probe("wasm32", "wasm64"),
                 formula_name="alpha",
                 source_kind="selected-old-formula",
                 variants=variants,
@@ -3890,6 +3951,7 @@ class PrefixCampaignTests(unittest.TestCase):
                 used_predecessors=used,
             )
         self.assertNotIn("reuse_source", variants[0])
+        self.assertNotIn("reuse_source", variants[1])
         self.assertEqual(used, {})
 
     def test_predecessor_archive_must_be_canonical_and_exact(
@@ -4014,14 +4076,16 @@ class PrefixCampaignTests(unittest.TestCase):
             by_name["libyaml"]["destination"]["admission"],
             {
                 "kind": "first-package-namespace-bootstrap-required",
-                "method": "anonymous-oras-manifest-probe",
+                "method": "anonymous-oras-public-index-probe",
                 "probe": {
+                    "children": [],
                     "digest": None,
-                    "kind": "manifest",
+                    "kind": "public-index",
                     "schema": 1,
+                    "size": None,
                     "status": "auth-required",
                 },
-                "schema": 1,
+                "schema": 2,
             },
         )
         self.assertEqual(

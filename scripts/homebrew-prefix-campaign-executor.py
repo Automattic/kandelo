@@ -35,6 +35,7 @@ REPOSITORY = re.compile(
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 OCI_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+OCI_TAG = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$")
 VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+,-]{0,255}$")
 RUST_TARGET = re.compile(r"^[a-z0-9_][a-z0-9_.-]{2,127}$")
 CAMPAIGN_TAG = re.compile(
@@ -1148,18 +1149,87 @@ def validate_destination_admission(
         {"kind", "method", "probe", "schema"},
         f"campaign Formula {name} destination admission",
     )
-    if (
-        admission["schema"] != 1
-        or admission["method"] != "anonymous-oras-manifest-probe"
-    ):
-        fail(f"campaign Formula {name} destination admission is invalid")
-    probe = exact_keys(
-        admission["probe"],
-        {"digest", "kind", "schema", "status"},
-        f"campaign Formula {name} destination probe",
+    legacy_admission = (
+        admission["schema"] == 1
+        and admission["method"] == "anonymous-oras-manifest-probe"
     )
-    if probe["schema"] != 1 or probe["kind"] != "manifest":
-        fail(f"campaign Formula {name} destination probe is invalid")
+    public_index_admission = (
+        admission["schema"] == 2
+        and admission["method"]
+        == "anonymous-oras-public-index-probe"
+    )
+    if not legacy_admission and not public_index_admission:
+        fail(f"campaign Formula {name} destination admission is invalid")
+    if legacy_admission:
+        probe = exact_keys(
+            admission["probe"],
+            {"digest", "kind", "schema", "status"},
+            f"campaign Formula {name} destination probe",
+        )
+        if probe["schema"] != 1 or probe["kind"] != "manifest":
+            fail(f"campaign Formula {name} destination probe is invalid")
+        observed_arches: frozenset[str] | None = None
+    else:
+        probe = exact_keys(
+            admission["probe"],
+            {
+                "children",
+                "digest",
+                "kind",
+                "schema",
+                "size",
+                "status",
+            },
+            f"campaign Formula {name} destination probe",
+        )
+        children = probe["children"]
+        if (
+            probe["schema"] != 1
+            or probe["kind"] != "public-index"
+            or not isinstance(children, list)
+        ):
+            fail(f"campaign Formula {name} destination probe is invalid")
+        child_arches: list[str] = []
+        for position, child in enumerate(children):
+            child = exact_keys(
+                child,
+                {
+                    "arch",
+                    "bottle_sha256",
+                    "bottle_size",
+                    "homebrew_ref",
+                    "manifest_digest",
+                    "manifest_size",
+                },
+                f"campaign Formula {name} destination child {position}",
+            )
+            arch = child["arch"]
+            if (
+                arch not in ("wasm32", "wasm64")
+                or not isinstance(child["bottle_sha256"], str)
+                or SHA256.fullmatch(child["bottle_sha256"]) is None
+                or not isinstance(child["bottle_size"], int)
+                or isinstance(child["bottle_size"], bool)
+                or not 1 <= child["bottle_size"] <= MAX_ASSET_BYTES
+                or not isinstance(child["homebrew_ref"], str)
+                or OCI_TAG.fullmatch(child["homebrew_ref"]) is None
+                or not isinstance(child["manifest_digest"], str)
+                or OCI_DIGEST.fullmatch(child["manifest_digest"]) is None
+                or not isinstance(child["manifest_size"], int)
+                or isinstance(child["manifest_size"], bool)
+                or not 1 <= child["manifest_size"] <= MAX_JSON_BYTES
+            ):
+                fail(
+                    f"campaign Formula {name} destination child "
+                    f"{position} is invalid"
+                )
+            child_arches.append(arch)
+        if child_arches != sorted(set(child_arches)):
+            fail(
+                f"campaign Formula {name} destination children are not "
+                "a canonical architecture set"
+            )
+        observed_arches = frozenset(child_arches)
     kind = admission["kind"]
     variants = formula.get("variants")
     if kind == "archived-predecessor-exact-presence":
@@ -1168,6 +1238,15 @@ def validate_destination_admission(
             probe["status"] != "present"
             or not isinstance(digest, str)
             or OCI_DIGEST.fullmatch(digest) is None
+            or (
+                public_index_admission
+                and (
+                    not isinstance(probe["size"], int)
+                    or isinstance(probe["size"], bool)
+                    or not 1 <= probe["size"] <= MAX_JSON_BYTES
+                    or not observed_arches
+                )
+            )
             or not isinstance(variants, list)
             or not variants
         ):
@@ -1175,12 +1254,26 @@ def validate_destination_admission(
                 f"campaign Formula {name} predecessor presence is invalid"
             )
         used: set[str] = set()
+        reuse_arches: set[str] = set()
+        variant_arches: set[str] = set()
         for variant in variants:
             if not isinstance(variant, dict):
                 fail(
                     f"campaign Formula {name} predecessor variant is invalid"
                 )
             arch = variant.get("arch")
+            if arch not in ("wasm32", "wasm64") or arch in variant_arches:
+                fail(
+                    f"campaign Formula {name} predecessor variant is invalid"
+                )
+            variant_arches.add(arch)
+            if "reuse_source" not in variant:
+                if legacy_admission or arch in (observed_arches or ()):
+                    fail(
+                        f"campaign Formula {name}/{arch} predecessor source "
+                        "is missing"
+                    )
+                continue
             source = exact_keys(
                 variant.get("reuse_source"),
                 {"arch", "campaign_tag", "handoff_tag", "kind"},
@@ -1210,6 +1303,15 @@ def validate_destination_admission(
                     "is not archived"
                 )
             used.add(campaign_tag)
+            reuse_arches.add(arch)
+        if public_index_admission and (
+            frozenset(reuse_arches) != observed_arches
+            or not observed_arches.issubset(variant_arches)
+        ):
+            fail(
+                f"campaign Formula {name} predecessor inventory differs "
+                "from its reuse sources"
+            )
         return frozenset(used)
     if isinstance(variants, list) and any(
         isinstance(variant, dict) and "reuse_source" in variant
@@ -1220,14 +1322,28 @@ def validate_destination_admission(
             "destination"
         )
     if kind == "anonymous-absence":
-        if probe["status"] != "missing" or probe["digest"] is not None:
+        if (
+            probe["status"] != "missing"
+            or probe["digest"] is not None
+            or (
+                public_index_admission
+                and (probe["size"] is not None or probe["children"] != [])
+            )
+        ):
             fail(
                 f"campaign Formula {name} anonymous absence is invalid"
             )
         return frozenset()
     if kind != "first-package-namespace-bootstrap-required":
         fail(f"campaign Formula {name} destination admission is invalid")
-    if probe["status"] != "auth-required" or probe["digest"] is not None:
+    if (
+        probe["status"] != "auth-required"
+        or probe["digest"] is not None
+        or (
+            public_index_admission
+            and (probe["size"] is not None or probe["children"] != [])
+        )
+    ):
         fail(f"campaign Formula {name} namespace bootstrap probe is invalid")
 
     # WHY: an anonymous authentication challenge is ambiguous between a new
@@ -3287,7 +3403,9 @@ def predecessor_reuse_evidence_document(
         "formula": formula["name"],
         "kind": "kandelo-homebrew-prefix-predecessor-reuse-publication",
         "predecessor": predecessor,
-        "schema": 2,
+        "schema": (
+            3 if "admission_manifest_digest" in destination else 2
+        ),
         "variant_sha256": sha256_bytes(canonical_json(variant)),
     }
 
@@ -3345,7 +3463,7 @@ def validate_predecessor_reuse_publication_shape(
         f"{name}/{arch} predecessor reuse evidence",
     )
     if (
-        evidence["schema"] != 2
+        evidence["schema"] not in (2, 3)
         or evidence["kind"]
         != "kandelo-homebrew-prefix-predecessor-reuse-publication"
         or evidence["arch"] != arch
@@ -3438,17 +3556,55 @@ def validate_predecessor_reuse_publication_shape(
         != authority["tap_repository"].lower()
     ):
         fail(f"{name}/{arch} predecessor source closure changed")
-    destination = exact_keys(
-        evidence["destination"],
-        {"manifest_digest", "reference", "remote", "source_closure_sha256"},
-        f"{name}/{arch} predecessor destination",
-    )
     admission = formula["destination"]["admission"]
+    if evidence["schema"] == 2:
+        destination = exact_keys(
+            evidence["destination"],
+            {
+                "manifest_digest",
+                "reference",
+                "remote",
+                "source_closure_sha256",
+            },
+            f"{name}/{arch} predecessor destination",
+        )
+        destination_valid = (
+            admission["schema"] == 1
+            and destination["manifest_digest"]
+            == admission["probe"]["digest"]
+            and isinstance(destination["manifest_digest"], str)
+            and OCI_DIGEST.fullmatch(destination["manifest_digest"])
+            is not None
+        )
+    else:
+        destination = exact_keys(
+            evidence["destination"],
+            {
+                "admission_manifest_digest",
+                "observed_manifest_digest",
+                "reference",
+                "remote",
+                "source_closure_sha256",
+            },
+            f"{name}/{arch} predecessor destination",
+        )
+        destination_valid = (
+            admission["schema"] == 2
+            and destination["admission_manifest_digest"]
+            == admission["probe"]["digest"]
+            and isinstance(
+                destination["observed_manifest_digest"], str
+            )
+            and OCI_DIGEST.fullmatch(
+                destination["observed_manifest_digest"]
+            )
+            is not None
+        )
     if (
-        destination["manifest_digest"] != admission["probe"]["digest"]
-        or destination["reference"] != formula["destination"]["reference"]
+        not destination_valid
+        or destination["reference"]
+        != formula["destination"]["reference"]
         or destination["remote"] != formula["destination"]["remote"]
-        or OCI_DIGEST.fullmatch(destination["manifest_digest"]) is None
     ):
         fail(f"{name}/{arch} predecessor destination changed")
     require_string(
@@ -7938,7 +8094,14 @@ def default_predecessor_destination_verifier(
     del source_tap_root
     name = formula["name"]
     destination = formula["destination"]
-    expected_digest = destination["admission"]["probe"]["digest"]
+    admission = destination["admission"]
+    expected_digest = admission["probe"]["digest"]
+    admitted_children: dict[str, dict[str, Any]] | None = None
+    if admission["schema"] == 2:
+        admitted_children = {
+            child["arch"]: child
+            for child in admission["probe"]["children"]
+        }
     temporary = pathlib.Path(
         tempfile.mkdtemp(prefix=f"kandelo-predecessor-{name}-{arch}-")
     )
@@ -7967,15 +8130,20 @@ def default_predecessor_destination_verifier(
             result_path, f"{name}/{arch} predecessor OCI import"
         )
         if (
-            result
-            != {
-                "digest": expected_digest,
-                "layout": str(layout),
-                "schema": 1,
-                "status": "present",
-            }
+            not isinstance(result, dict)
+            or set(result) != {"digest", "layout", "schema", "status"}
+            or result.get("layout") != str(layout)
+            or result.get("schema") != 1
+            or result.get("status") != "present"
+            or not isinstance(result.get("digest"), str)
+            or OCI_DIGEST.fullmatch(result["digest"]) is None
+            or (
+                admitted_children is None
+                and result["digest"] != expected_digest
+            )
         ):
             fail(f"{name}/{arch} predecessor OCI destination changed")
+        observed_digest = result["digest"]
 
         authority = campaign["authority"]
         index, _index_payload = load_json_bytes(
@@ -8000,7 +8168,7 @@ def default_predecessor_destination_verifier(
             {"annotations", "digest", "mediaType", "size"},
             f"{name}/{arch} imported OCI root",
         )
-        if root["digest"] != expected_digest:
+        if root["digest"] != observed_digest:
             fail(f"{name}/{arch} imported OCI root digest changed")
         top = load_oci_json_blob(
             layout,
@@ -8086,29 +8254,98 @@ def default_predecessor_destination_verifier(
         ):
             fail(f"{name}/{arch} public top metadata changed")
         manifests = top["manifests"]
-        declared_arches = sorted(
-            variant["arch"]
-            for variant in formula["variants"]
-            if isinstance(variant, dict) and "reuse_source" in variant
-        )
-        actual_arches = sorted(
-            child.get("platform", {}).get("variant")
-            for child in manifests
-            if isinstance(child, dict)
-            and isinstance(child.get("platform"), dict)
-        ) if isinstance(manifests, list) else []
-        if actual_arches != declared_arches:
+        if not isinstance(manifests, list):
             fail(f"{name}/{arch} public OCI architecture set changed")
-        matching = [
-            child
-            for child in manifests
-            if child.get("platform")
-            == {"architecture": "wasm", "os": "kandelo", "variant": arch}
-        ]
-        if len(matching) != 1:
+        actual_children: dict[str, dict[str, Any]] = {}
+        for position, value in enumerate(manifests):
+            child = exact_keys(
+                value,
+                {"annotations", "digest", "mediaType", "platform", "size"},
+                f"{name}/{arch} public child descriptor {position}",
+            )
+            platform = child["platform"]
+            if platform not in (
+                {
+                    "architecture": "wasm",
+                    "os": "kandelo",
+                    "variant": "wasm32",
+                },
+                {
+                    "architecture": "wasm",
+                    "os": "kandelo",
+                    "variant": "wasm64",
+                },
+            ):
+                fail(f"{name}/{arch} public OCI architecture set changed")
+            child_arch = platform["variant"]
+            if child_arch in actual_children:
+                fail(f"{name}/{arch} public OCI architecture set changed")
+            actual_children[child_arch] = child
+        if admitted_children is None:
+            declared_arches = {
+                variant["arch"]
+                for variant in formula["variants"]
+                if isinstance(variant, dict) and "reuse_source" in variant
+            }
+            if set(actual_children) != declared_arches:
+                fail(f"{name}/{arch} public OCI architecture set changed")
+        else:
+            declared_arches = {
+                variant["arch"]
+                for variant in formula["variants"]
+                if isinstance(variant, dict)
+            }
+            if (
+                not set(admitted_children).issubset(actual_children)
+                or not set(actual_children).issubset(declared_arches)
+            ):
+                fail(f"{name}/{arch} public OCI architecture set changed")
+            for admitted_arch, admitted in admitted_children.items():
+                current = actual_children[admitted_arch]
+                if (
+                    current["digest"] != admitted["manifest_digest"]
+                    or current["size"] != admitted["manifest_size"]
+                    or current["annotations"].get(
+                        "org.opencontainers.image.ref.name"
+                    )
+                    != admitted["homebrew_ref"]
+                ):
+                    fail(
+                        f"{name}/{arch} admitted public OCI child changed"
+                    )
+                current_manifest = load_oci_json_blob(
+                    layout,
+                    {
+                        "digest": current["digest"],
+                        "mediaType": current["mediaType"],
+                        "size": current["size"],
+                    },
+                    media_type=(
+                        "application/vnd.oci.image.manifest.v1+json"
+                    ),
+                    maximum=MAX_JSON_BYTES,
+                    label=(
+                        f"{name}/{admitted_arch} admitted public child "
+                        "manifest"
+                    ),
+                )
+                current_layers = current_manifest.get("layers")
+                if (
+                    not isinstance(current_layers, list)
+                    or len(current_layers) != 1
+                    or current_layers[0].get("digest")
+                    != f"sha256:{admitted['bottle_sha256']}"
+                    or current_layers[0].get("size")
+                    != admitted["bottle_size"]
+                ):
+                    fail(
+                        f"{name}/{arch} admitted public OCI bottle changed"
+                    )
+        matching_child = actual_children.get(arch)
+        if matching_child is None:
             fail(f"{name}/{arch} public OCI child is missing")
         child = exact_keys(
-            matching[0],
+            matching_child,
             {"annotations", "digest", "mediaType", "platform", "size"},
             f"{name}/{arch} public child descriptor",
         )
@@ -8159,7 +8396,16 @@ def default_predecessor_destination_verifier(
         ):
             fail(f"{name}/{arch} public OCI bottle bytes changed")
         return {
-            "manifest_digest": expected_digest,
+            **(
+                {
+                    "manifest_digest": expected_digest,
+                }
+                if admitted_children is None
+                else {
+                    "admission_manifest_digest": expected_digest,
+                    "observed_manifest_digest": observed_digest,
+                }
+            ),
             "reference": destination["reference"],
             "remote": destination["remote"],
             "source_closure_sha256": source_closure_sha256,
@@ -8712,9 +8958,25 @@ def derive_predecessor_reuse(
         archive_record,
         extracted,
     )
+    destination_keys = (
+        {
+            "admission_manifest_digest",
+            "observed_manifest_digest",
+            "reference",
+            "remote",
+            "source_closure_sha256",
+        }
+        if formula["destination"]["admission"]["schema"] == 2
+        else {
+            "manifest_digest",
+            "reference",
+            "remote",
+            "source_closure_sha256",
+        }
+    )
     destination = exact_keys(
         destination,
-        {"manifest_digest", "reference", "remote", "source_closure_sha256"},
+        destination_keys,
         f"{formula_name}/{arch} predecessor destination proof",
     )
     temporary = pathlib.Path(

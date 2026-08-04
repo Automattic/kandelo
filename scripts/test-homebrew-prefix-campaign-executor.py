@@ -861,11 +861,14 @@ class PredecessorReuseFixture(Fixture):
         *,
         dependent: bool = False,
         legacy_predecessor: bool = False,
+        partial_multiarch: bool = False,
         scoped_dependency: bool = False,
     ) -> None:
         super().__init__(
+            multi_arch=partial_multiarch,
             scoped_beta_dependency=scoped_dependency,
         )
+        self.partial_multiarch = partial_multiarch
         if not dependent:
             self.formulae = [self.formulae[0]]
         self.target_formula = self.formulae[-1]
@@ -948,17 +951,42 @@ class PredecessorReuseFixture(Fixture):
             }
         ]
         formula = self.target_formula
-        formula["destination"]["admission"] = {
-            "kind": "archived-predecessor-exact-presence",
-            "method": "anonymous-oras-manifest-probe",
-            "probe": {
-                "digest": "sha256:" + "5" * 64,
-                "kind": "manifest",
+        formula["destination"]["admission"] = (
+            {
+                "kind": "archived-predecessor-exact-presence",
+                "method": "anonymous-oras-public-index-probe",
+                "probe": {
+                    "children": [
+                        {
+                            "arch": "wasm32",
+                            "bottle_sha256": "5" * 64,
+                            "bottle_size": 1,
+                            "homebrew_ref": "1.0.wasm32_kandelo.1",
+                            "manifest_digest": "sha256:" + "5" * 64,
+                            "manifest_size": 1,
+                        }
+                    ],
+                    "digest": "sha256:" + "5" * 64,
+                    "kind": "public-index",
+                    "schema": 1,
+                    "size": 1,
+                    "status": "present",
+                },
+                "schema": 2,
+            }
+            if partial_multiarch
+            else {
+                "kind": "archived-predecessor-exact-presence",
+                "method": "anonymous-oras-manifest-probe",
+                "probe": {
+                    "digest": "sha256:" + "5" * 64,
+                    "kind": "manifest",
+                    "schema": 1,
+                    "status": "present",
+                },
                 "schema": 1,
-                "status": "present",
-            },
-            "schema": 1,
-        }
+            }
+        )
         formula["variants"][0]["reuse_source"] = {
             "arch": "wasm32",
             "campaign_tag": self.predecessor_campaign_tag,
@@ -1181,16 +1209,32 @@ class PredecessorReuseFixture(Fixture):
         ):
             raise AssertionError("destination verifier received substitution")
         destination = formula["destination"]
-        return {
-            "manifest_digest": destination["admission"]["probe"]["digest"],
+        result = {
             "reference": destination["reference"],
             "remote": destination["remote"],
             "source_closure_sha256": "6" * 64,
         }
+        if destination["admission"]["schema"] == 2:
+            result.update(
+                {
+                    "admission_manifest_digest": destination[
+                        "admission"
+                    ]["probe"]["digest"],
+                    "observed_manifest_digest": destination[
+                        "admission"
+                    ]["probe"]["digest"],
+                }
+            )
+        else:
+            result["manifest_digest"] = destination["admission"][
+                "probe"
+            ]["digest"]
+        return result
 
     def install_public_destination(
         self,
         *,
+        include_wasm64: bool = False,
         layer_payload: bytes | None = None,
     ) -> None:
         formula = self.target_formula
@@ -1230,6 +1274,10 @@ class PredecessorReuseFixture(Fixture):
         child.update(
             {
                 "annotations": {
+                    "org.opencontainers.image.ref.name": (
+                        f"{formula['version']}.wasm32_kandelo."
+                        f"{destination['bottle_rebuild']}"
+                    ),
                     "sh.brew.bottle.digest": layer_sha256,
                     "sh.brew.bottle.size": str(len(layer_payload)),
                 },
@@ -1241,54 +1289,120 @@ class PredecessorReuseFixture(Fixture):
             }
         )
         source_closure_sha256 = "6" * 64
-        top = write_oci_json_blob(
-            layout,
-            {
-                "annotations": {
-                    "com.github.package.type": "homebrew_bottle",
-                    "dev.kandelo.homebrew.abi": str(
-                        authority["current_kandelo_abi"]
-                    ),
-                    "dev.kandelo.homebrew.bottle_rebuild": str(
-                        destination["bottle_rebuild"]
-                    ),
-                    "dev.kandelo.homebrew.formula": self.target_name,
-                    "dev.kandelo.homebrew.formula_revision": "0",
-                    (
-                        "dev.kandelo.homebrew."
-                        "formula_source_identity_sha256"
-                    ): formula["formula_source"][
-                        "identity_excluding_bottle_sha256"
-                    ],
-                    "dev.kandelo.homebrew.pkg_version": formula[
-                        "version"
-                    ],
-                    "dev.kandelo.homebrew.source_closure_sha256": (
-                        source_closure_sha256
-                    ),
-                    "dev.kandelo.homebrew.tap_repository": authority[
-                        "tap_repository"
-                    ].lower(),
-                    "org.opencontainers.image.ref.name": destination[
-                        "reference"
-                    ],
-                    "org.opencontainers.image.source": (
-                        "https://github.com/"
-                        + authority["tap_repository"].lower()
-                    ),
-                    "org.opencontainers.image.title": (
-                        f"{authority['tap_name']}/{self.target_name}"
-                    ),
-                    "org.opencontainers.image.version": formula["version"],
-                },
-                "manifests": [child],
-                "mediaType": (
-                    "application/vnd.oci.image.index.v1+json"
+        top_document = {
+            "annotations": {
+                "com.github.package.type": "homebrew_bottle",
+                "dev.kandelo.homebrew.abi": str(
+                    authority["current_kandelo_abi"]
                 ),
-                "schemaVersion": 2,
+                "dev.kandelo.homebrew.bottle_rebuild": str(
+                    destination["bottle_rebuild"]
+                ),
+                "dev.kandelo.homebrew.formula": self.target_name,
+                "dev.kandelo.homebrew.formula_revision": "0",
+                (
+                    "dev.kandelo.homebrew."
+                    "formula_source_identity_sha256"
+                ): formula["formula_source"][
+                    "identity_excluding_bottle_sha256"
+                ],
+                "dev.kandelo.homebrew.pkg_version": formula["version"],
+                "dev.kandelo.homebrew.source_closure_sha256": (
+                    source_closure_sha256
+                ),
+                "dev.kandelo.homebrew.tap_repository": authority[
+                    "tap_repository"
+                ].lower(),
+                "org.opencontainers.image.ref.name": destination[
+                    "reference"
+                ],
+                "org.opencontainers.image.source": (
+                    "https://github.com/"
+                    + authority["tap_repository"].lower()
+                ),
+                "org.opencontainers.image.title": (
+                    f"{authority['tap_name']}/{self.target_name}"
+                ),
+                "org.opencontainers.image.version": formula["version"],
             },
+            "manifests": [child],
+            "mediaType": "application/vnd.oci.image.index.v1+json",
+            "schemaVersion": 2,
+        }
+        admission_top = write_oci_json_blob(
+            layout,
+            top_document,
             "application/vnd.oci.image.index.v1+json",
         )
+        if destination["admission"]["schema"] == 2:
+            destination["admission"]["probe"].update(
+                {
+                    "children": [
+                        {
+                            "arch": "wasm32",
+                            "bottle_sha256": layer_sha256,
+                            "bottle_size": len(layer_payload),
+                            "homebrew_ref": child["annotations"][
+                                "org.opencontainers.image.ref.name"
+                            ],
+                            "manifest_digest": child["digest"],
+                            "manifest_size": child["size"],
+                        }
+                    ],
+                    "digest": admission_top["digest"],
+                    "size": admission_top["size"],
+                }
+            )
+        top = admission_top
+        if include_wasm64:
+            extra_payload = b"wasm64 sibling bottle\n"
+            extra_sha256 = sha256(extra_payload)
+            (blobs / extra_sha256).write_bytes(extra_payload)
+            extra_manifest = write_oci_json_blob(
+                layout,
+                {
+                    "annotations": {},
+                    "config": config,
+                    "layers": [
+                        {
+                            "annotations": {},
+                            "digest": f"sha256:{extra_sha256}",
+                            "mediaType": (
+                                "application/vnd.oci.image.layer.v1.tar+gzip"
+                            ),
+                            "size": len(extra_payload),
+                        }
+                    ],
+                    "mediaType": (
+                        "application/vnd.oci.image.manifest.v1+json"
+                    ),
+                    "schemaVersion": 2,
+                },
+                "application/vnd.oci.image.manifest.v1+json",
+            )
+            extra_manifest.update(
+                {
+                    "annotations": {
+                        "org.opencontainers.image.ref.name": (
+                            f"{formula['version']}.wasm64_kandelo."
+                            f"{destination['bottle_rebuild']}"
+                        ),
+                        "sh.brew.bottle.digest": extra_sha256,
+                        "sh.brew.bottle.size": str(len(extra_payload)),
+                    },
+                    "platform": {
+                        "architecture": "wasm",
+                        "os": "kandelo",
+                        "variant": "wasm64",
+                    },
+                }
+            )
+            top_document["manifests"] = [child, extra_manifest]
+            top = write_oci_json_blob(
+                layout,
+                top_document,
+                "application/vnd.oci.image.index.v1+json",
+            )
         write_json(
             layout / "index.json",
             {
@@ -1306,7 +1420,8 @@ class PredecessorReuseFixture(Fixture):
                 "schemaVersion": 2,
             },
         )
-        destination["admission"]["probe"]["digest"] = top["digest"]
+        if destination["admission"]["schema"] == 1:
+            destination["admission"]["probe"]["digest"] = top["digest"]
         write_json(self.campaign_path, self.campaign)
         self.public_destination_layout = layout
 
@@ -1336,12 +1451,15 @@ class PredecessorReuseFixture(Fixture):
             arguments[arguments.index("--out-layout") + 1]
         )
         shutil.copytree(self.public_destination_layout, output)
+        imported_index = json.loads(
+            (self.public_destination_layout / "index.json").read_text()
+        )
         write_json(
             pathlib.Path(
                 arguments[arguments.index("--out-result") + 1]
             ),
             {
-                "digest": destination["admission"]["probe"]["digest"],
+                "digest": imported_index["manifests"][0]["digest"],
                 "layout": str(output),
                 "schema": 1,
                 "status": "present",
@@ -2315,6 +2433,30 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
         ):
             EXECUTOR.load_campaign(fixture.campaign_path)
 
+    def test_partial_destination_inventory_must_equal_reuse_sources(
+        self,
+    ) -> None:
+        fixture = PredecessorReuseFixture(partial_multiarch=True)
+        self.addCleanup(fixture.close)
+        probe = fixture.target_formula["destination"]["admission"]["probe"]
+        probe["children"].append(
+            {
+                "arch": "wasm64",
+                "bottle_sha256": "6" * 64,
+                "bottle_size": 1,
+                "homebrew_ref": "1.0.wasm64_kandelo.1",
+                "manifest_digest": "sha256:" + "6" * 64,
+                "manifest_size": 1,
+            }
+        )
+        write_json(fixture.campaign_path, fixture.campaign)
+
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "wasm64 predecessor source is missing",
+        ):
+            EXECUTOR.load_campaign(fixture.campaign_path)
+
     def test_historical_bottle_readback_is_credential_free(
         self,
     ) -> None:
@@ -2489,6 +2631,113 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
                 "source_closure_sha256": "6" * 64,
             },
         )
+
+    def test_partial_predecessor_destination_accepts_appended_build_sibling(
+        self,
+    ) -> None:
+        fixture = PredecessorReuseFixture(partial_multiarch=True)
+        self.addCleanup(fixture.close)
+        fixture.install_public_destination(include_wasm64=True)
+        handoff = fixture.root / "partial-default-verifier-handoff"
+
+        with mock.patch.object(
+            EXECUTOR,
+            "run_oci_layout_command",
+            side_effect=fixture.import_public_destination,
+        ):
+            fixture.derive(
+                handoff,
+                use_default_destination_verifier=True,
+            )
+
+        evidence = json.loads(
+            (
+                handoff / "payload/wasm32/reuse/evidence.json"
+            ).read_text()
+        )
+        destination = fixture.target_formula["destination"]
+        imported_index = json.loads(
+            (fixture.public_destination_layout / "index.json").read_text()
+        )
+        observed_digest = imported_index["manifests"][0]["digest"]
+        self.assertEqual(evidence["schema"], 3)
+        self.assertEqual(
+            evidence["destination"],
+            {
+                "admission_manifest_digest": destination["admission"][
+                    "probe"
+                ]["digest"],
+                "observed_manifest_digest": observed_digest,
+                "reference": destination["reference"],
+                "remote": destination["remote"],
+                "source_closure_sha256": "6" * 64,
+            },
+        )
+        self.assertNotEqual(
+            evidence["destination"]["admission_manifest_digest"],
+            evidence["destination"]["observed_manifest_digest"],
+        )
+        self.assertNotIn(
+            "reuse_source", fixture.target_formula["variants"][1]
+        )
+
+    def test_partial_predecessor_destination_rejects_changed_admitted_child(
+        self,
+    ) -> None:
+        fixture = PredecessorReuseFixture(partial_multiarch=True)
+        self.addCleanup(fixture.close)
+        fixture.install_public_destination()
+        fixture.target_formula["destination"]["admission"]["probe"][
+            "children"
+        ][0]["manifest_digest"] = "sha256:" + "9" * 64
+        write_json(fixture.campaign_path, fixture.campaign)
+        output = fixture.root / "changed-admitted-child"
+
+        with (
+            mock.patch.object(
+                EXECUTOR,
+                "run_oci_layout_command",
+                side_effect=fixture.import_public_destination,
+            ),
+            self.assertRaisesRegex(
+                EXECUTOR.ExecutorError,
+                "admitted public OCI child changed",
+            ),
+        ):
+            fixture.derive(
+                output,
+                use_default_destination_verifier=True,
+            )
+        self.assertFalse(output.exists())
+
+    def test_partial_predecessor_destination_binds_admitted_homebrew_ref(
+        self,
+    ) -> None:
+        fixture = PredecessorReuseFixture(partial_multiarch=True)
+        self.addCleanup(fixture.close)
+        fixture.install_public_destination()
+        fixture.target_formula["destination"]["admission"]["probe"][
+            "children"
+        ][0]["homebrew_ref"] = "1.0.wasm32_kandelo.2"
+        write_json(fixture.campaign_path, fixture.campaign)
+        output = fixture.root / "changed-admitted-homebrew-ref"
+
+        with (
+            mock.patch.object(
+                EXECUTOR,
+                "run_oci_layout_command",
+                side_effect=fixture.import_public_destination,
+            ),
+            self.assertRaisesRegex(
+                EXECUTOR.ExecutorError,
+                "admitted public OCI child changed",
+            ),
+        ):
+            fixture.derive(
+                output,
+                use_default_destination_verifier=True,
+            )
+        self.assertFalse(output.exists())
 
     def test_default_predecessor_destination_rejects_another_layer(
         self,

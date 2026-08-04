@@ -368,6 +368,14 @@ The standalone `wasm-posix-host` package ships the same projection under
 `wasm/`, so installed consumers retain closure and fork policy without carrying
 source manifests.
 
+The shell package declares
+`scripts/homebrew-prefix-campaign-executor.py` as a build input. Changing that
+executor therefore requires regenerating the committed program index: shell's
+contextual cache key changes, as do the keys of programs whose dependency
+closure includes shell. This identity propagation is required even when the
+executor change affects only Homebrew campaign control and does not alter
+already-published bottle bytes.
+
 `scripts/resolve-binary.sh` runs a checked-in standalone Node bundle generated
 from the same TypeScript resolver, so clean checkouts do not need
 `node_modules` merely to probe fetched artifacts. After changing the resolver
