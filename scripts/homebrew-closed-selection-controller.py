@@ -236,6 +236,7 @@ def admit(
     *,
     event_path: pathlib.Path,
     caller_sha: str,
+    expected_caller_sha: str,
     github_ref: str,
     workflow_ref: str,
     selection_plan: str,
@@ -243,7 +244,16 @@ def admit(
     plan_output: pathlib.Path,
     github_output: pathlib.Path,
 ) -> dict[str, str]:
-    require_commit(caller_sha, "caller SHA")
+    caller_sha = require_commit(caller_sha, "caller SHA")
+    expected_caller_sha = require_commit(
+        expected_caller_sha,
+        "expected caller SHA",
+    )
+    # WHY: workflow_dispatch resolves a branch name when GitHub accepts the
+    # request. The operator's last read of protected main can otherwise race
+    # with that resolution and silently run a newer workflow commit.
+    if caller_sha != expected_caller_sha:
+        fail("workflow caller SHA differs from the expected caller SHA")
     if github_ref != "refs/heads/main" or workflow_ref != TAP_WORKFLOW_REF:
         fail("selection publication must run from the protected tap caller")
     event, _payload = load_json_file(
@@ -262,14 +272,19 @@ def admit(
         fail("workflow-dispatch repository is not the protected tap")
     inputs = exact_keys(
         event.get("inputs"),
-        {"selection_plan", "selection_plan_sha256"},
+        {
+            "expected_caller_sha",
+            "selection_plan",
+            "selection_plan_sha256",
+        },
         "workflow-dispatch inputs",
     )
     # WHY: reusable-workflow inputs and the original dispatch event travel
     # through different GitHub contexts. Requiring both copies to agree makes
-    # a future caller edit unable to substitute a different publication plan.
+    # a future caller edit unable to substitute the expected commit or plan.
     if (
-        inputs["selection_plan"] != selection_plan
+        inputs["expected_caller_sha"] != expected_caller_sha
+        or inputs["selection_plan"] != selection_plan
         or inputs["selection_plan_sha256"] != selection_plan_sha256
     ):
         fail("reusable workflow inputs differ from the dispatch event")
@@ -293,6 +308,7 @@ def admit(
         fail("selection plan input differs from its SHA-256")
     write_new(plan_output, pretty_json(plan), "admitted selection plan")
     outputs = {
+        "caller-sha": caller_sha,
         "campaign-tag": plan["campaign_tag"],
         "campaign-kandelo-commit": plan["kandelo_commit"],
         "plan-sha256": observed_digest,
@@ -558,6 +574,7 @@ def parse_args() -> argparse.Namespace:
     admit_parser = commands.add_parser("admit")
     admit_parser.add_argument("--event", type=pathlib.Path, required=True)
     admit_parser.add_argument("--caller-sha", required=True)
+    admit_parser.add_argument("--expected-caller-sha", required=True)
     admit_parser.add_argument("--github-ref", required=True)
     admit_parser.add_argument("--workflow-ref", required=True)
     admit_parser.add_argument("--selection-plan", required=True)
@@ -599,6 +616,7 @@ def main() -> int:
             admit(
                 event_path=arguments.event,
                 caller_sha=arguments.caller_sha,
+                expected_caller_sha=arguments.expected_caller_sha,
                 github_ref=arguments.github_ref,
                 workflow_ref=arguments.workflow_ref,
                 selection_plan=arguments.selection_plan,

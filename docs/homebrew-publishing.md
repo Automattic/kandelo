@@ -2227,10 +2227,19 @@ publication.
 path. The corresponding tap workflow must be a data-only
 `workflow_dispatch` caller from protected `main`. It pins one exact
 Kandelo commit in both its `uses:` target and `kandelo-ref` input, then
-forwards only the canonical plan and its digest. The reusable workflow
-rejects another event, branch, repository, workflow path, mutable
-Kandelo ref, or Kandelo ref that no longer equals public protected
-`main`.
+forwards the canonical plan, its digest, and the exact tap `main` commit
+that the operator observed before dispatch.
+
+The exact tap commit closes a `workflow_dispatch` race. GitHub resolves
+a branch name when it accepts a dispatch request. Without a separate
+expected commit, `main` could move after the operator's final check and
+GitHub could start the newer workflow. The reusable workflow compares
+GitHub's resolved `GITHUB_SHA` with the expected commit before preparing
+any files. It carries that admitted value into the write job, binds the
+same-run artifact to it, and supplies it to the publisher's per-write
+protected-`main` checks. The workflow rejects another event, branch,
+repository, workflow path, caller commit, mutable Kandelo ref, or either
+execution commit that no longer equals its public protected `main`.
 
 The read-only preparation job anonymously fetches the campaign and every
 Formula handoff. Kandelo's campaign executor reconstructs the sealed

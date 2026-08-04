@@ -3,6 +3,10 @@ name: Reusable Homebrew closed-selection publish
 on:
   workflow_call:
     inputs:
+      expected-caller-sha:
+        description: Exact tap main commit selected before dispatch
+        type: string
+        required: true
       kandelo-ref:
         description: Exact protected-main commit that owns this publisher
         type: string
@@ -18,7 +22,7 @@ on:
 
 concurrency:
   group: >-
-    homebrew-closed-selection-${{ github.repository }}-${{ inputs.selection-plan-sha256 }}
+    homebrew-closed-selection-${{ github.repository }}-${{ inputs.expected-caller-sha }}-${{ inputs.selection-plan-sha256 }}
   cancel-in-progress: false
 
 jobs:
@@ -31,6 +35,7 @@ jobs:
     outputs:
       artifact-id: ${{ steps.upload.outputs.artifact-id }}
       artifact-digest: ${{ steps.upload.outputs.artifact-digest }}
+      caller-sha: ${{ steps.admit.outputs.caller-sha }}
       campaign-kandelo-commit: >-
         ${{ steps.admit.outputs.campaign-kandelo-commit }}
       plan-sha256: ${{ steps.admit.outputs.plan-sha256 }}
@@ -39,6 +44,8 @@ jobs:
       - name: Admit the protected tap caller and publisher ref
         shell: bash
         env:
+          ACTUAL_CALLER_SHA: ${{ github.sha }}
+          EXPECTED_CALLER_SHA: ${{ inputs.expected-caller-sha }}
           KANDELO_REF: ${{ inputs.kandelo-ref }}
           SELECTION_PLAN: ${{ inputs.selection-plan }}
           PLAN_SHA256: ${{ inputs.selection-plan-sha256 }}
@@ -54,6 +61,10 @@ jobs:
             kandelo-dev/homebrew-tap-core ]
           [ "$CALLER_WORKFLOW_REF" = \
             "$CALLER_REPOSITORY/.github/workflows/publish-closed-selection.yml@refs/heads/main" ]
+          [[ "$EXPECTED_CALLER_SHA" =~ ^[0-9a-f]{40}$ ]]
+          # WHY: workflow_dispatch resolves `main` when GitHub accepts the
+          # request. Refuse a different resolved commit before preparing data.
+          [ "$ACTUAL_CALLER_SHA" = "$EXPECTED_CALLER_SHA" ]
           [[ "$KANDELO_REF" =~ ^[0-9a-f]{40}$ ]]
           [[ "$PLAN_SHA256" =~ ^[0-9a-f]{64}$ ]]
 
@@ -66,9 +77,10 @@ jobs:
           persist-credentials: false
           submodules: false
 
-      - name: Require the checked-out publisher to be current main
+      - name: Require the publisher and tap caller to be current main
         shell: bash
         env:
+          EXPECTED_CALLER_SHA: ${{ inputs.expected-caller-sha }}
           KANDELO_REF: ${{ inputs.kandelo-ref }}
         run: |
           set -euo pipefail
@@ -85,11 +97,15 @@ jobs:
                 refs/heads/main
           )"
           [ "$main_record" = "$KANDELO_REF"$'\t'refs/heads/main ]
+          bash kandelo/.github/scripts/require-exact-repository-main.sh \
+            --repository kandelo-dev/homebrew-tap-core \
+            --source-sha "$EXPECTED_CALLER_SHA"
 
       - name: Admit the exact digest-bound selection plan
         id: admit
         shell: bash
         env:
+          EXPECTED_CALLER_SHA: ${{ inputs.expected-caller-sha }}
           SELECTION_PLAN: ${{ inputs.selection-plan }}
           PLAN_SHA256: ${{ inputs.selection-plan-sha256 }}
         run: |
@@ -104,6 +120,7 @@ jobs:
               admit \
               --event "$GITHUB_EVENT_PATH" \
               --caller-sha "$GITHUB_SHA" \
+              --expected-caller-sha "$EXPECTED_CALLER_SHA" \
               --github-ref "$GITHUB_REF" \
               --workflow-ref "$GITHUB_WORKFLOW_REF" \
               --selection-plan "$SELECTION_PLAN" \
@@ -222,7 +239,7 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: kandelo-dev/homebrew-tap-core
-          ref: ${{ github.sha }}
+          ref: ${{ inputs.expected-caller-sha }}
           path: tap-authority
           fetch-depth: 0
           persist-credentials: false
@@ -231,12 +248,17 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          ACTUAL_CALLER_SHA: ${{ github.sha }}
+          EXPECTED_CALLER_SHA: ${{ inputs.expected-caller-sha }}
+          ADMITTED_CALLER_SHA: ${{ needs.prepare.outputs.caller-sha }}
           EXPECTED_ID: ${{ needs.prepare.outputs.artifact-id }}
           EXPECTED_DIGEST: ${{ needs.prepare.outputs.artifact-digest }}
         run: |
           set -euo pipefail
           [[ "$EXPECTED_ID" =~ ^[1-9][0-9]*$ ]]
           [[ "$EXPECTED_DIGEST" =~ ^[0-9a-f]{64}$ ]]
+          [ "$ACTUAL_CALLER_SHA" = "$EXPECTED_CALLER_SHA" ]
+          [ "$ADMITTED_CALLER_SHA" = "$EXPECTED_CALLER_SHA" ]
           # WHY: upload-artifact exposes a bare SHA-256 value, while the
           # Actions REST API prefixes the same digest with `sha256:`.
           expected_rest_digest="sha256:$EXPECTED_DIGEST"
@@ -248,7 +270,7 @@ jobs:
             --arg digest "$expected_rest_digest" \
             --argjson id "$EXPECTED_ID" \
             --argjson run_id "$GITHUB_RUN_ID" \
-            --arg head_sha "$GITHUB_SHA" '
+            --arg head_sha "$EXPECTED_CALLER_SHA" '
               .id == $id and
               .name == "homebrew-closed-selection-preparation" and
               .expired == false and .digest == $digest and
@@ -265,11 +287,14 @@ jobs:
       - name: Verify the downloaded selection against its plan
         shell: bash
         env:
+          EXPECTED_CALLER_SHA: ${{ inputs.expected-caller-sha }}
+          ADMITTED_CALLER_SHA: ${{ needs.prepare.outputs.caller-sha }}
           SELECTION_PLAN: ${{ inputs.selection-plan }}
           PLAN_SHA256: ${{ inputs.selection-plan-sha256 }}
           ADMITTED_PLAN_SHA256: ${{ needs.prepare.outputs.plan-sha256 }}
         run: |
           set -euo pipefail
+          [ "$EXPECTED_CALLER_SHA" = "$ADMITTED_CALLER_SHA" ]
           [ "$PLAN_SHA256" = "$ADMITTED_PLAN_SHA256" ]
           env -u GH_TOKEN -u GITHUB_TOKEN \
             -u HOMEBREW_GITHUB_API_TOKEN \
@@ -289,22 +314,25 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          ACTUAL_CALLER_SHA: ${{ github.sha }}
+          EXPECTED_CALLER_SHA: ${{ inputs.expected-caller-sha }}
           KANDELO_REF: ${{ inputs.kandelo-ref }}
         run: |
           set -euo pipefail
+          [ "$ACTUAL_CALLER_SHA" = "$EXPECTED_CALLER_SHA" ]
           bash kandelo/.github/scripts/require-exact-repository-main.sh \
             --repository Automattic/kandelo \
             --source-sha "$KANDELO_REF"
           bash kandelo/.github/scripts/require-exact-repository-main.sh \
             --repository kandelo-dev/homebrew-tap-core \
-            --source-sha "$GITHUB_SHA"
+            --source-sha "$EXPECTED_CALLER_SHA"
 
       - name: Publish and anonymously read back the exact selection
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           KANDELO_REF: ${{ inputs.kandelo-ref }}
-          TAP_CALLER_SHA: ${{ github.sha }}
+          TAP_CALLER_SHA: ${{ inputs.expected-caller-sha }}
           SELECTION_PLAN: ${{ inputs.selection-plan }}
           PLAN_SHA256: ${{ inputs.selection-plan-sha256 }}
           CAMPAIGN_KANDELO_COMMIT: >-

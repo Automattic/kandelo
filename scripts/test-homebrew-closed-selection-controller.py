@@ -28,6 +28,8 @@ class FakeExecutorError(RuntimeError):
 
 
 class ClosedSelectionControllerTests(unittest.TestCase):
+    CALLER_SHA = "3" * 40
+
     def setUp(self) -> None:
         self.campaign = {
             "authority": {
@@ -81,6 +83,7 @@ class ClosedSelectionControllerTests(unittest.TestCase):
         compact = CONTROLLER.compact_json(selected).decode().rstrip("\n")
         return {
             "inputs": {
+                "expected_caller_sha": self.CALLER_SHA,
                 "selection_plan": compact,
                 "selection_plan_sha256": hashlib.sha256(
                     CONTROLLER.compact_json(selected)
@@ -92,7 +95,13 @@ class ClosedSelectionControllerTests(unittest.TestCase):
             },
         }
 
-    def admit(self, event: dict) -> tuple[dict, str, bytes]:
+    def admit(
+        self,
+        event: dict,
+        *,
+        caller_sha: str | None = None,
+        expected_caller_sha: str | None = None,
+    ) -> tuple[dict, str, bytes]:
         with tempfile.TemporaryDirectory() as directory:
             temporary = pathlib.Path(directory)
             event_path = temporary / "event.json"
@@ -102,7 +111,10 @@ class ClosedSelectionControllerTests(unittest.TestCase):
             output_path.touch()
             result = CONTROLLER.admit(
                 event_path=event_path,
-                caller_sha="3" * 40,
+                caller_sha=caller_sha or self.CALLER_SHA,
+                expected_caller_sha=(
+                    expected_caller_sha or self.CALLER_SHA
+                ),
                 github_ref="refs/heads/main",
                 workflow_ref=CONTROLLER.TAP_WORKFLOW_REF,
                 selection_plan=event["inputs"]["selection_plan"],
@@ -116,6 +128,7 @@ class ClosedSelectionControllerTests(unittest.TestCase):
 
     def test_admit_binds_canonical_plan_and_digest(self) -> None:
         result, outputs, plan_payload = self.admit(self.event())
+        self.assertEqual(result["caller-sha"], self.CALLER_SHA)
         self.assertEqual(result["campaign-kandelo-commit"], "1" * 40)
         self.assertEqual(
             result["source-tap-commit"],
@@ -141,7 +154,8 @@ class ClosedSelectionControllerTests(unittest.TestCase):
             ):
                 CONTROLLER.admit(
                     event_path=event_path,
-                    caller_sha="3" * 40,
+                    caller_sha=self.CALLER_SHA,
+                    expected_caller_sha=self.CALLER_SHA,
                     github_ref="refs/heads/feature",
                     workflow_ref=CONTROLLER.TAP_WORKFLOW_REF,
                     selection_plan=event["inputs"]["selection_plan"],
@@ -175,7 +189,8 @@ class ClosedSelectionControllerTests(unittest.TestCase):
             ):
                 CONTROLLER.admit(
                     event_path=event_path,
-                    caller_sha="3" * 40,
+                    caller_sha=self.CALLER_SHA,
+                    expected_caller_sha=self.CALLER_SHA,
                     github_ref="refs/heads/main",
                     workflow_ref=CONTROLLER.TAP_WORKFLOW_REF,
                     selection_plan="{}",
@@ -185,6 +200,78 @@ class ClosedSelectionControllerTests(unittest.TestCase):
                     plan_output=temporary / "plan.json",
                     github_output=github_output,
                 )
+
+    def test_admit_rejects_resolved_caller_mismatch_before_writing(self) -> None:
+        event = self.event()
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = pathlib.Path(directory)
+            event_path = temporary / "event.json"
+            event_path.write_text(json.dumps(event), encoding="utf-8")
+            plan_path = temporary / "plan.json"
+            output_path = temporary / "github-output"
+            output_path.touch()
+            with self.assertRaisesRegex(
+                CONTROLLER.ControllerError,
+                "caller SHA differs from the expected caller SHA",
+            ):
+                CONTROLLER.admit(
+                    event_path=event_path,
+                    caller_sha="4" * 40,
+                    expected_caller_sha=self.CALLER_SHA,
+                    github_ref="refs/heads/main",
+                    workflow_ref=CONTROLLER.TAP_WORKFLOW_REF,
+                    selection_plan=event["inputs"]["selection_plan"],
+                    selection_plan_sha256=(
+                        event["inputs"]["selection_plan_sha256"]
+                    ),
+                    plan_output=plan_path,
+                    github_output=output_path,
+                )
+            self.assertFalse(plan_path.exists())
+            self.assertEqual(output_path.read_bytes(), b"")
+
+    def test_admit_rejects_dispatch_caller_substitution(self) -> None:
+        event = self.event()
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = pathlib.Path(directory)
+            event_path = temporary / "event.json"
+            event_path.write_text(json.dumps(event), encoding="utf-8")
+            output_path = temporary / "github-output"
+            output_path.touch()
+            with self.assertRaisesRegex(
+                CONTROLLER.ControllerError,
+                "differ from the dispatch event",
+            ):
+                CONTROLLER.admit(
+                    event_path=event_path,
+                    caller_sha="4" * 40,
+                    expected_caller_sha="4" * 40,
+                    github_ref="refs/heads/main",
+                    workflow_ref=CONTROLLER.TAP_WORKFLOW_REF,
+                    selection_plan=event["inputs"]["selection_plan"],
+                    selection_plan_sha256=(
+                        event["inputs"]["selection_plan_sha256"]
+                    ),
+                    plan_output=temporary / "plan.json",
+                    github_output=output_path,
+                )
+
+    def test_admit_rejects_missing_or_extra_dispatch_input(self) -> None:
+        for key, value in (
+            ("expected_caller_sha", None),
+            ("unexpected", "value"),
+        ):
+            with self.subTest(key=key, value=value):
+                event = self.event()
+                if value is None:
+                    del event["inputs"][key]
+                else:
+                    event["inputs"][key] = value
+                with self.assertRaisesRegex(
+                    CONTROLLER.ControllerError,
+                    "must contain exactly",
+                ):
+                    self.admit(event)
 
     def test_admit_rejects_noncanonical_plan(self) -> None:
         event = self.event()
