@@ -3435,6 +3435,25 @@ def reuse_evidence_document(
     }
 
 
+def predecessor_recovery_record(
+    campaign: dict[str, Any],
+    campaign_tag: str,
+) -> dict[str, Any]:
+    records = campaign["authority"].get("predecessor_recovery")
+    if not isinstance(records, list):
+        fail("campaign lacks predecessor recovery authority")
+    matching = [
+        record
+        for record in records
+        if isinstance(record, dict)
+        and isinstance(record.get("campaign"), dict)
+        and record["campaign"].get("tag") == campaign_tag
+    ]
+    if len(matching) != 1:
+        fail("predecessor campaign has no unique recovery authority")
+    return matching[0]
+
+
 def validate_predecessor_reuse_publication_shape(
     publication: pathlib.Path,
     campaign: dict[str, Any],
@@ -3545,8 +3564,18 @@ def validate_predecessor_reuse_publication_shape(
             source[key], f"{name}/{arch} predecessor {key}", COMMIT
         )
     authority = campaign["authority"]
+    recovery = predecessor_recovery_record(
+        campaign, predecessor["campaign_tag"]
+    )
+    # WHY: This evidence describes the tree that produced the old bottle.
+    # Bind it to the successor's exact recovery authority; comparing it with
+    # the successor tree would make an unrelated Formula rebuild invalidate
+    # otherwise unchanged predecessor bytes.
     if (
-        source["target_tree_git_oid"] != source_tree_identity(authority)
+        source["kandelo_commit"] != recovery["kandelo_commit"]
+        or source["source_tap_commit"] != recovery["source_tap_commit"]
+        or source["target_tree_git_oid"]
+        != recovery["target_tree_git_oid"]
         or source["tap_name"] != authority["tap_name"]
         or require_string(
             source["tap_repository"],
@@ -8086,12 +8115,10 @@ def default_predecessor_destination_verifier(
     archive_record: dict[str, Any],
     extracted: dict[str, Any],
 ) -> dict[str, Any]:
-    # WHY: The current tap checkout proves the successor Formula contract,
-    # but it cannot recreate historical source-closure evidence after the
-    # closure parser evolves. Read that evidence from the immutable public
-    # OCI index; campaign compatibility independently binds Formula source,
-    # dependencies, ABI, Homebrew, and every critical validation tool.
-    del source_tap_root
+    # WHY: The immutable OCI index preserves the producer's source closure.
+    # Recompute the successor closure with its reviewed tool and require the
+    # digests to agree. A Formula-support edit or closure-parser change must
+    # rebuild the bottle even when the selected Formula itself is unchanged.
     name = formula["name"]
     destination = formula["destination"]
     admission = destination["admission"]
@@ -8106,6 +8133,79 @@ def default_predecessor_destination_verifier(
         tempfile.mkdtemp(prefix=f"kandelo-predecessor-{name}-{arch}-")
     )
     try:
+        current_closure_path = temporary / "current-source-closure.json"
+        run_oci_layout_command(
+            [
+                "source-closure",
+                "--tap-root",
+                str(source_tap_root),
+                "--kandelo-root",
+                str(ROOT),
+                "--tap-repository",
+                campaign["authority"]["tap_repository"],
+                "--tap-name",
+                campaign["authority"]["tap_name"],
+                "--formula",
+                name,
+                "--out",
+                str(current_closure_path),
+            ],
+            f"derive current source closure for {name}/{arch}",
+        )
+        current_closure, _current_closure_payload = load_json_bytes(
+            current_closure_path,
+            f"{name}/{arch} current source closure",
+        )
+        current_closure = exact_keys(
+            current_closure,
+            {
+                "formula",
+                "formula_identity_sha256",
+                "formula_mode",
+                "schema",
+                "source_closure_sha256",
+                "tap_name",
+                "tap_repository",
+            },
+            f"{name}/{arch} current source closure",
+        )
+        current_source_closure_sha256 = require_string(
+            current_closure["source_closure_sha256"],
+            f"{name}/{arch} current source closure SHA-256",
+            SHA256,
+        )
+        current_formula_identity = require_string(
+            current_closure["formula_identity_sha256"],
+            f"{name}/{arch} current Formula identity",
+            SHA256,
+        )
+        current_formula_mode = require_string(
+            current_closure["formula_mode"],
+            f"{name}/{arch} current Formula mode",
+        )
+        current_tap_name = require_string(
+            current_closure["tap_name"],
+            f"{name}/{arch} current tap name",
+            REPOSITORY,
+        )
+        current_tap_repository = require_string(
+            current_closure["tap_repository"],
+            f"{name}/{arch} current tap repository",
+            REPOSITORY,
+        )
+        if (
+            current_closure["schema"] != 2
+            or current_closure["formula"] != name
+            or current_formula_identity
+            != formula["formula_source"][
+                "identity_excluding_bottle_sha256"
+            ]
+            or current_formula_mode not in ("100644", "100755")
+            or current_tap_name != campaign["authority"]["tap_name"]
+            or current_tap_repository.lower()
+            != campaign["authority"]["tap_repository"].lower()
+        ):
+            fail(f"{name}/{arch} current source closure is invalid")
         registry_config = temporary / "anonymous-registry.json"
         registry_config.write_bytes(pretty_json({"auths": {}}))
         layout = temporary / "layout"
@@ -8186,8 +8286,7 @@ def default_predecessor_destination_verifier(
             {"annotations", "manifests", "mediaType", "schemaVersion"},
             f"{name}/{arch} public top index",
         )
-        annotation_keys = {
-            "com.github.package.type",
+        semantic_annotation_keys = {
             "dev.kandelo.homebrew.abi",
             "dev.kandelo.homebrew.bottle_rebuild",
             "dev.kandelo.homebrew.formula",
@@ -8196,6 +8295,9 @@ def default_predecessor_destination_verifier(
             "dev.kandelo.homebrew.pkg_version",
             "dev.kandelo.homebrew.source_closure_sha256",
             "dev.kandelo.homebrew.tap_repository",
+        }
+        annotation_keys = semantic_annotation_keys | {
+            "com.github.package.type",
             "org.opencontainers.image.ref.name",
             "org.opencontainers.image.source",
             "org.opencontainers.image.title",
@@ -8211,6 +8313,8 @@ def default_predecessor_destination_verifier(
             f"{name}/{arch} source closure SHA-256",
             SHA256,
         )
+        if source_closure_sha256 != current_source_closure_sha256:
+            fail(f"{name}/{arch} predecessor source closure changed")
         formula_identity = formula["formula_source"][
             "identity_excluding_bottle_sha256"
         ]
@@ -8365,6 +8469,43 @@ def default_predecessor_destination_verifier(
             {"annotations", "config", "layers", "mediaType", "schemaVersion"},
             f"{name}/{arch} public child manifest",
         )
+        child_annotations = child["annotations"]
+        manifest_annotations = child_manifest["annotations"]
+        if not isinstance(child_annotations, dict) or not isinstance(
+            manifest_annotations, dict
+        ):
+            fail(f"{name}/{arch} public child metadata changed")
+        child_source_closure_sha256 = require_string(
+            child_annotations.get(
+                "dev.kandelo.homebrew.source_closure_sha256"
+            ),
+            f"{name}/{arch} child source closure SHA-256",
+            SHA256,
+        )
+        manifest_source_closure_sha256 = require_string(
+            manifest_annotations.get(
+                "dev.kandelo.homebrew.source_closure_sha256"
+            ),
+            f"{name}/{arch} child manifest source closure SHA-256",
+            SHA256,
+        )
+        if not (
+            source_closure_sha256
+            == child_source_closure_sha256
+            == manifest_source_closure_sha256
+            == current_source_closure_sha256
+        ):
+            fail(f"{name}/{arch} predecessor source closure changed")
+        expected_semantics = {
+            key: expected_annotations[key]
+            for key in semantic_annotation_keys
+        }
+        if any(
+            child_annotations.get(key) != value
+            or manifest_annotations.get(key) != value
+            for key, value in expected_semantics.items()
+        ):
+            fail(f"{name}/{arch} public child metadata changed")
         layers = child_manifest["layers"]
         if not isinstance(layers, list) or len(layers) != 1:
             fail(f"{name}/{arch} public child has no exact bottle layer")
@@ -8674,12 +8815,15 @@ def validate_predecessor_campaign_compatibility(
         # graph or it would attribute old bytes to dependencies they never
         # observed.
         or formula["dependencies"] != predecessor_formula["dependencies"]
+        # WHY: The complete target tree identifies a campaign, not one
+        # Formula's bottle inputs. A successor may intentionally rebuild an
+        # unrelated Formula. The selected Formula digest above and its full
+        # build/test dependency graph here keep reuse scoped to inputs that
+        # could have produced these bytes.
         or authority["current_kandelo_abi"]
         != predecessor_authority["current_kandelo_abi"]
         or authority["guest_layout"]
         != predecessor_authority["guest_layout"]
-        or source_tree_identity(authority)
-        != source_tree_identity(predecessor_authority)
         or authority["tap_name"] != predecessor_authority["tap_name"]
         or authority["tap_repository"].lower()
         != predecessor_authority["tap_repository"].lower()
@@ -8723,19 +8867,7 @@ def validate_predecessor_recovery_binding(
     # but only the current campaign may authorize their use now. Bind the
     # immutable old manifest back to the exact recovery record instead of
     # treating possession of an old handoff as successor authority.
-    records = campaign["authority"].get("predecessor_recovery")
-    if not isinstance(records, list):
-        fail("campaign lacks predecessor recovery authority")
-    matching = [
-        record
-        for record in records
-        if isinstance(record, dict)
-        and isinstance(record.get("campaign"), dict)
-        and record["campaign"].get("tag") == campaign_tag
-    ]
-    if len(matching) != 1:
-        fail("predecessor campaign has no unique recovery authority")
-    record = matching[0]
+    record = predecessor_recovery_record(campaign, campaign_tag)
     campaign_sha256 = sha256_bytes(predecessor_payload)
     predecessor_authority = predecessor["authority"]
     if (

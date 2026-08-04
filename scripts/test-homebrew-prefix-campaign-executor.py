@@ -1005,6 +1005,9 @@ class PredecessorReuseFixture(Fixture):
 
         self.public_destination_layout: pathlib.Path | None = None
         self.destination_imports: list[list[str]] = []
+        self.source_closure_requests: list[list[str]] = []
+        self.source_closure_sha256 = "6" * 64
+        self.current_source_closure_sha256 = self.source_closure_sha256
 
     def _derive_alpha_dependency(
         self,
@@ -1236,10 +1239,36 @@ class PredecessorReuseFixture(Fixture):
         *,
         include_wasm64: bool = False,
         layer_payload: bytes | None = None,
+        observed_child_source_closure_sha256: str | None = None,
+        observed_source_closure_sha256: str | None = None,
     ) -> None:
         formula = self.target_formula
         authority = self.campaign["authority"]
         destination = formula["destination"]
+        source_closure_sha256 = self.source_closure_sha256
+        semantic_annotations = {
+            "dev.kandelo.homebrew.abi": str(
+                authority["current_kandelo_abi"]
+            ),
+            "dev.kandelo.homebrew.bottle_rebuild": str(
+                destination["bottle_rebuild"]
+            ),
+            "dev.kandelo.homebrew.formula": self.target_name,
+            "dev.kandelo.homebrew.formula_revision": "0",
+            (
+                "dev.kandelo.homebrew."
+                "formula_source_identity_sha256"
+            ): formula["formula_source"][
+                "identity_excluding_bottle_sha256"
+            ],
+            "dev.kandelo.homebrew.pkg_version": formula["version"],
+            "dev.kandelo.homebrew.source_closure_sha256": (
+                source_closure_sha256
+            ),
+            "dev.kandelo.homebrew.tap_repository": authority[
+                "tap_repository"
+            ].lower(),
+        }
         layout = self.root / "public-destination-layout"
         blobs = layout / "blobs/sha256"
         blobs.mkdir(parents=True)
@@ -1261,7 +1290,7 @@ class PredecessorReuseFixture(Fixture):
         child = write_oci_json_blob(
             layout,
             {
-                "annotations": {},
+                "annotations": semantic_annotations,
                 "config": config,
                 "layers": [layer],
                 "mediaType": (
@@ -1274,6 +1303,7 @@ class PredecessorReuseFixture(Fixture):
         child.update(
             {
                 "annotations": {
+                    **semantic_annotations,
                     "org.opencontainers.image.ref.name": (
                         f"{formula['version']}.wasm32_kandelo."
                         f"{destination['bottle_rebuild']}"
@@ -1288,31 +1318,10 @@ class PredecessorReuseFixture(Fixture):
                 },
             }
         )
-        source_closure_sha256 = "6" * 64
         top_document = {
             "annotations": {
                 "com.github.package.type": "homebrew_bottle",
-                "dev.kandelo.homebrew.abi": str(
-                    authority["current_kandelo_abi"]
-                ),
-                "dev.kandelo.homebrew.bottle_rebuild": str(
-                    destination["bottle_rebuild"]
-                ),
-                "dev.kandelo.homebrew.formula": self.target_name,
-                "dev.kandelo.homebrew.formula_revision": "0",
-                (
-                    "dev.kandelo.homebrew."
-                    "formula_source_identity_sha256"
-                ): formula["formula_source"][
-                    "identity_excluding_bottle_sha256"
-                ],
-                "dev.kandelo.homebrew.pkg_version": formula["version"],
-                "dev.kandelo.homebrew.source_closure_sha256": (
-                    source_closure_sha256
-                ),
-                "dev.kandelo.homebrew.tap_repository": authority[
-                    "tap_repository"
-                ].lower(),
+                **semantic_annotations,
                 "org.opencontainers.image.ref.name": destination[
                     "reference"
                 ],
@@ -1354,6 +1363,23 @@ class PredecessorReuseFixture(Fixture):
                 }
             )
         top = admission_top
+        if observed_source_closure_sha256 is not None:
+            top_document["annotations"][
+                "dev.kandelo.homebrew.source_closure_sha256"
+            ] = observed_source_closure_sha256
+        if observed_child_source_closure_sha256 is not None:
+            child["annotations"][
+                "dev.kandelo.homebrew.source_closure_sha256"
+            ] = observed_child_source_closure_sha256
+        if (
+            observed_source_closure_sha256 is not None
+            or observed_child_source_closure_sha256 is not None
+        ):
+            top = write_oci_json_blob(
+                layout,
+                top_document,
+                "application/vnd.oci.image.index.v1+json",
+            )
         if include_wasm64:
             extra_payload = b"wasm64 sibling bottle\n"
             extra_sha256 = sha256(extra_payload)
@@ -1361,7 +1387,7 @@ class PredecessorReuseFixture(Fixture):
             extra_manifest = write_oci_json_blob(
                 layout,
                 {
-                    "annotations": {},
+                    "annotations": semantic_annotations,
                     "config": config,
                     "layers": [
                         {
@@ -1383,6 +1409,7 @@ class PredecessorReuseFixture(Fixture):
             extra_manifest.update(
                 {
                     "annotations": {
+                        **semantic_annotations,
                         "org.opencontainers.image.ref.name": (
                             f"{formula['version']}.wasm64_kandelo."
                             f"{destination['bottle_rebuild']}"
@@ -1430,6 +1457,44 @@ class PredecessorReuseFixture(Fixture):
         arguments: list[str],
         _label: str,
     ) -> None:
+        if arguments[0] == "source-closure":
+            expected = {
+                "--tap-root": str(self.source),
+                "--kandelo-root": str(ROOT),
+                "--tap-repository": TAP_REPOSITORY,
+                "--tap-name": TAP_NAME,
+                "--formula": self.target_name,
+            }
+            for option, value in expected.items():
+                observed = arguments[arguments.index(option) + 1]
+                matches = (
+                    pathlib.Path(observed).resolve()
+                    == pathlib.Path(value).resolve()
+                    if option in ("--tap-root", "--kandelo-root")
+                    else observed == value
+                )
+                if not matches:
+                    raise AssertionError(
+                        f"source closure changed {option}"
+                    )
+            write_json(
+                pathlib.Path(arguments[arguments.index("--out") + 1]),
+                {
+                    "formula": self.target_name,
+                    "formula_identity_sha256": self.target_formula[
+                        "formula_source"
+                    ]["identity_excluding_bottle_sha256"],
+                    "formula_mode": "100644",
+                    "schema": 2,
+                    "source_closure_sha256": (
+                        self.current_source_closure_sha256
+                    ),
+                    "tap_name": TAP_NAME,
+                    "tap_repository": TAP_REPOSITORY,
+                },
+            )
+            self.source_closure_requests.append(arguments)
+            return
         if arguments[0] != "import-public-index":
             raise AssertionError("destination used the wrong OCI command")
         destination = self.target_formula["destination"]
@@ -2607,6 +2672,7 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
                 use_default_destination_verifier=True,
             )
 
+        self.assertEqual(len(fixture.source_closure_requests), 1)
         self.assertEqual(len(fixture.destination_imports), 1)
         self.assertEqual(
             (
@@ -2631,6 +2697,128 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
                 "source_closure_sha256": "6" * 64,
             },
         )
+
+    def test_default_predecessor_destination_rejects_support_drift(
+        self,
+    ) -> None:
+        fixture = PredecessorReuseFixture()
+        self.addCleanup(fixture.close)
+        fixture.install_public_destination()
+        fixture.current_source_closure_sha256 = "7" * 64
+        output = fixture.root / "changed-support-closure"
+
+        with (
+            mock.patch.object(
+                EXECUTOR,
+                "run_oci_layout_command",
+                side_effect=fixture.import_public_destination,
+            ),
+            self.assertRaisesRegex(
+                EXECUTOR.ExecutorError,
+                "predecessor source closure changed",
+            ),
+        ):
+            fixture.derive(
+                output,
+                use_default_destination_verifier=True,
+            )
+        self.assertFalse(output.exists())
+
+    def test_default_predecessor_destination_rejects_formula_mode_drift(
+        self,
+    ) -> None:
+        fixture = PredecessorReuseFixture()
+        self.addCleanup(fixture.close)
+        baseline_path = fixture.root / "baseline-source-closure.json"
+        closure_arguments = [
+            "source-closure",
+            "--tap-root",
+            str(fixture.source),
+            "--kandelo-root",
+            str(ROOT),
+            "--tap-repository",
+            TAP_REPOSITORY,
+            "--tap-name",
+            TAP_NAME,
+            "--formula",
+            fixture.target_name,
+            "--out",
+            str(baseline_path),
+        ]
+        EXECUTOR.run_oci_layout_command(
+            closure_arguments,
+            "derive baseline test source closure",
+        )
+        fixture.source_closure_sha256 = json.loads(
+            baseline_path.read_text()
+        )["source_closure_sha256"]
+        fixture.install_public_destination()
+
+        formula_path = fixture.source / fixture.target_formula[
+            "formula_source"
+        ]["path"]
+        formula_path.chmod(0o755)
+        fixture.campaign["authority"]["source_materialization"][
+            "tree_git_oid"
+        ] = EXECUTOR.filesystem_git_tree_oid(
+            fixture.source, "executable Formula target source"
+        )
+        write_json(fixture.campaign_path, fixture.campaign)
+        output = fixture.root / "changed-formula-mode"
+        real_oci_command = EXECUTOR.run_oci_layout_command
+
+        def verify_destination(arguments: list[str], label: str) -> None:
+            if arguments[0] == "source-closure":
+                real_oci_command(arguments, label)
+            else:
+                fixture.import_public_destination(arguments, label)
+
+        with (
+            mock.patch.object(
+                EXECUTOR,
+                "run_oci_layout_command",
+                side_effect=verify_destination,
+            ),
+            self.assertRaisesRegex(
+                EXECUTOR.ExecutorError,
+                "predecessor source closure changed",
+            ),
+        ):
+            fixture.derive(
+                output,
+                use_default_destination_verifier=True,
+            )
+        self.assertFalse(output.exists())
+
+    def test_partial_predecessor_rejects_rewritten_top_closure(
+        self,
+    ) -> None:
+        fixture = PredecessorReuseFixture(partial_multiarch=True)
+        self.addCleanup(fixture.close)
+        fixture.current_source_closure_sha256 = "7" * 64
+        fixture.install_public_destination(
+            include_wasm64=True,
+            observed_child_source_closure_sha256=("7" * 64),
+            observed_source_closure_sha256=("7" * 64),
+        )
+        output = fixture.root / "rewritten-top-source-closure"
+
+        with (
+            mock.patch.object(
+                EXECUTOR,
+                "run_oci_layout_command",
+                side_effect=fixture.import_public_destination,
+            ),
+            self.assertRaisesRegex(
+                EXECUTOR.ExecutorError,
+                "predecessor source closure changed",
+            ),
+        ):
+            fixture.derive(
+                output,
+                use_default_destination_verifier=True,
+            )
+        self.assertFalse(output.exists())
 
     def test_partial_predecessor_destination_accepts_appended_build_sibling(
         self,
@@ -2870,6 +3058,142 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
                 output,
                 dependency_roots=[changed_dependency],
             )
+        self.assertFalse(output.exists())
+
+    def test_predecessor_reuse_allows_unrelated_formula_tree_change(
+        self,
+    ) -> None:
+        fixture = PredecessorReuseFixture()
+        self.addCleanup(fixture.close)
+        predecessor_tree = fixture.predecessor["authority"][
+            "source_materialization"
+        ]["tree_git_oid"]
+        (fixture.source / "Formula/unrelated.rb").write_bytes(
+            formula_source("unrelated")
+        )
+        successor_tree = EXECUTOR.filesystem_git_tree_oid(
+            fixture.source, "successor target source"
+        )
+        fixture.campaign["authority"]["source_materialization"][
+            "tree_git_oid"
+        ] = successor_tree
+        write_json(fixture.campaign_path, fixture.campaign)
+        output = fixture.root / "unrelated-formula-successor"
+
+        self.assertNotEqual(successor_tree, predecessor_tree)
+        fixture.derive(output)
+        manifest = json.loads((output / "handoff.json").read_text())
+        evidence = json.loads(
+            (
+                output / "payload/wasm32/reuse/evidence.json"
+            ).read_text()
+        )
+        self.assertEqual(
+            manifest["source"]["target_tree_git_oid"], successor_tree
+        )
+        self.assertEqual(
+            evidence["predecessor"]["source"]["target_tree_git_oid"],
+            predecessor_tree,
+        )
+        prepared = fixture.root / "unrelated-formula-release"
+        EXECUTOR.prepare_release(
+            campaign_path=fixture.campaign_path,
+            handoff_root=output,
+            dependency_roots=[],
+            output=prepared,
+        )
+        release = json.loads(
+            (prepared / "release-manifest.json").read_text()
+        )
+        fetch_json, fetch_asset, _release = release_fetchers(prepared)
+        readback = fixture.root / "unrelated-formula-readback"
+        EXECUTOR.fetch_release(
+            campaign_path=fixture.campaign_path,
+            tag=release["tag"],
+            output=readback,
+            receipt_output=fixture.root / "unrelated-formula-receipt.json",
+            dependency_roots=[],
+            json_fetcher=fetch_json,
+            asset_fetcher=fetch_asset,
+        )
+        readback_evidence = json.loads(
+            (
+                readback / "payload/wasm32/reuse/evidence.json"
+            ).read_text()
+        )
+        self.assertEqual(readback_evidence, evidence)
+
+    def test_predecessor_reuse_evidence_binds_recovery_source(self) -> None:
+        for field in (
+            "kandelo_commit",
+            "source_tap_commit",
+            "target_tree_git_oid",
+        ):
+            with self.subTest(field=field):
+                fixture = PredecessorReuseFixture()
+                try:
+                    handoff = fixture.root / f"changed-{field}-handoff"
+                    fixture.derive(handoff)
+                    evidence_path = (
+                        handoff / "payload/wasm32/reuse/evidence.json"
+                    )
+                    evidence = json.loads(evidence_path.read_text())
+                    evidence["predecessor"]["source"][field] = "f" * 40
+                    write_json(evidence_path, evidence)
+
+                    manifest_path = handoff / "handoff.json"
+                    manifest = json.loads(manifest_path.read_text())
+                    evidence_record = next(
+                        record
+                        for record in manifest["publications"][0]["files"]
+                        if record["path"]
+                        == "payload/wasm32/reuse/evidence.json"
+                    )
+                    payload = evidence_path.read_bytes()
+                    evidence_record["bytes"] = len(payload)
+                    evidence_record["sha256"] = sha256(payload)
+                    write_json(manifest_path, manifest)
+
+                    with self.assertRaisesRegex(
+                        EXECUTOR.ExecutorError,
+                        "predecessor source closure changed",
+                    ):
+                        EXECUTOR.load_handoff(
+                            handoff,
+                            fixture.campaign,
+                            fixture.campaign_path.read_bytes(),
+                        )
+                finally:
+                    fixture.close()
+
+    def test_predecessor_reuse_rejects_changed_formula_source(self) -> None:
+        fixture = PredecessorReuseFixture()
+        self.addCleanup(fixture.close)
+        formula = fixture.target_formula
+        changed_source = formula_source(fixture.target_name) + b"# changed\n"
+        (fixture.source / formula["formula_source"]["path"]).write_bytes(
+            changed_source
+        )
+        changed_sha256 = sha256(changed_source)
+        formula["formula_source"].update(
+            {
+                "identity_excluding_bottle_sha256": changed_sha256,
+                "sha256": changed_sha256,
+            }
+        )
+        fixture.campaign["authority"]["source_materialization"][
+            "tree_git_oid"
+        ] = EXECUTOR.filesystem_git_tree_oid(
+            fixture.source, "changed Formula target source"
+        )
+        write_json(fixture.campaign_path, fixture.campaign)
+        output = fixture.root / "changed-formula-successor"
+
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "predecessor campaign changes a bottle input",
+        ):
+            fixture.derive(output)
         self.assertFalse(output.exists())
 
     def test_predecessor_reuse_rejects_changed_build_test_version(

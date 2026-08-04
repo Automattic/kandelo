@@ -2135,7 +2135,7 @@
     "erlang@28": {
       "internal": {
         "bottle_cellar": ":any",
-        "bottle_checksum": "551913d349e5b7262ab9a03e7f859c694cb82a08b3241aeec50912da2899b490",
+        "bottle_checksum": "5a038b61ef28cc8ac4db44a6764da766fd2a555554234d4717a39a59cc566cfe",
         "caveats": "Man pages can be found in:\n  $HOMEBREW_PREFIX/opt/erlang@28/lib/erlang/man\n\nAccess them with `erl -man`, or add this directory to MANPATH.\n",
         "desc": "Programming language for highly scalable real-time systems",
         "executables": [
@@ -2172,8 +2172,8 @@
         ],
         "license": "Apache-2.0",
         "name": "erlang@28",
-        "ruby_source_checksum": "ccc81da9d3644e749aceafce78d3fe71089dd6b20cd7e88c951555712fd5b717",
-        "stable_checksum": "efb045f96ee56d274f6c1fe3a9612b45caa01d2f82e35fe4e0ac9b0c501f6e53",
+        "ruby_source_checksum": "1d4657aa9c2e1f0ecbc7890d1129428ceaa6d2ce0a57f20748504e079c1d67ea",
+        "stable_checksum": "5231ba18f31f8041c2d6514cc8842e46954d3b39a53f1617f03f2abe6fea59c7",
         "stable_dependencies": [
           "openssl@3",
           "unixodbc",
@@ -2182,7 +2182,7 @@
           "zlib-ng-compat"
         ],
         "stable_url_args": [
-          "https://github.com/erlang/otp/releases/download/OTP-28.5.0.4/otp_src_28.5.0.4.tar.gz"
+          "https://github.com/erlang/otp/releases/download/OTP-28.5.0.5/otp_src_28.5.0.5.tar.gz"
         ],
         "stable_uses_from_macos": [
           [
@@ -2194,7 +2194,7 @@
             "ncurses"
           ]
         ],
-        "stable_version": "28.5.0.4",
+        "stable_version": "28.5.0.5",
         "versioned_formulae": [
           "erlang@27",
           "erlang@26",
@@ -2203,7 +2203,7 @@
       },
       "public": {
         "bottle_cellar": ":any",
-        "bottle_checksum": "551913d349e5b7262ab9a03e7f859c694cb82a08b3241aeec50912da2899b490",
+        "bottle_checksum": "5a038b61ef28cc8ac4db44a6764da766fd2a555554234d4717a39a59cc566cfe",
         "desc": "Programming language for highly scalable real-time systems",
         "executables": [
           "ct_run",
@@ -2239,8 +2239,8 @@
         ],
         "license": "Apache-2.0",
         "name": "erlang@28",
-        "ruby_source_checksum": "ccc81da9d3644e749aceafce78d3fe71089dd6b20cd7e88c951555712fd5b717",
-        "stable_checksum": "efb045f96ee56d274f6c1fe3a9612b45caa01d2f82e35fe4e0ac9b0c501f6e53",
+        "ruby_source_checksum": "1d4657aa9c2e1f0ecbc7890d1129428ceaa6d2ce0a57f20748504e079c1d67ea",
+        "stable_checksum": "5231ba18f31f8041c2d6514cc8842e46954d3b39a53f1617f03f2abe6fea59c7",
         "stable_dependencies": [
           "openssl@3",
           "unixodbc",
@@ -2249,7 +2249,7 @@
           "zlib-ng-compat"
         ],
         "stable_url_args": [
-          "https://github.com/erlang/otp/releases/download/OTP-28.5.0.4/otp_src_28.5.0.4.tar.gz"
+          "https://github.com/erlang/otp/releases/download/OTP-28.5.0.5/otp_src_28.5.0.5.tar.gz"
         ],
         "stable_uses_from_macos": [
           [
@@ -2261,7 +2261,7 @@
             "ncurses"
           ]
         ],
-        "stable_version": "28.5.0.4",
+        "stable_version": "28.5.0.5",
         "versioned_formulae": [
           "erlang@27",
           "erlang@26",
@@ -3957,8 +3957,7 @@
           {
             "paths": [
               {
-                "base": "etc",
-                "path": "ld.so.cache"
+                "path": "{{etc}}/ld.so.cache"
               }
             ],
             "type": "remove"
@@ -3975,7 +3974,7 @@
           }
         ],
         "revision": 1,
-        "ruby_source_checksum": "70e24aa18d5229d4cba91496fa1d3c5af4dd2a48fdd20e30e330ba7fecebfad0",
+        "ruby_source_checksum": "d3966df4fac17714bc6db16d5c14f9c9a8114858cbb7d8cfe5adc13976cfa823",
         "stable_checksum": "97f84f3b7588cd54093a6f6389b0c1a81e70d99708d74963a2e3eab7c7dc942d",
         "stable_dependencies": [
           "linux-headers@6.8"
@@ -4160,8 +4159,7 @@
           {
             "paths": [
               {
-                "base": "etc",
-                "path": "ld.so.cache"
+                "path": "{{etc}}/ld.so.cache"
               }
             ],
             "type": "remove"
@@ -4178,7 +4176,7 @@
           }
         ],
         "revision": 1,
-        "ruby_source_checksum": "70e24aa18d5229d4cba91496fa1d3c5af4dd2a48fdd20e30e330ba7fecebfad0",
+        "ruby_source_checksum": "d3966df4fac17714bc6db16d5c14f9c9a8114858cbb7d8cfe5adc13976cfa823",
         "stable_checksum": "97f84f3b7588cd54093a6f6389b0c1a81e70d99708d74963a2e3eab7c7dc942d",
         "stable_dependencies": [
           "linux-headers@6.8",
