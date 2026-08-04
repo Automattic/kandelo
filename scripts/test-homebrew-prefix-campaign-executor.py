@@ -1355,6 +1355,7 @@ class PredecessorReuseFixture(Fixture):
         *,
         predecessor_dependency_roots: list[pathlib.Path] | None = None,
         dependency_roots: list[pathlib.Path] | None = None,
+        recovery_tap_root: pathlib.Path | None = None,
         use_default_destination_verifier: bool = False,
     ) -> None:
         if predecessor_dependency_roots is None:
@@ -1366,6 +1367,8 @@ class PredecessorReuseFixture(Fixture):
         options: dict[str, Any] = {}
         if not use_default_destination_verifier:
             options["destination_verifier"] = self.destination_verifier
+        if recovery_tap_root is not None:
+            options["recovery_tap_root"] = recovery_tap_root
         EXECUTOR.derive_predecessor_reuse(
             campaign_path=self.campaign_path,
             source_tap_root=self.source,
@@ -2697,6 +2700,155 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
                         EXECUTOR.load_campaign(fixture.campaign_path)
                 finally:
                     fixture.close()
+
+    def test_predecessor_reuse_scoped_recovery_checkout_fails_closed(
+        self,
+    ) -> None:
+        fixture = PredecessorReuseFixture()
+        self.addCleanup(fixture.close)
+        recovery = fixture.root / "recovery-tap"
+        recovery.mkdir()
+        subprocess.run(["git", "init", "-q"], cwd=recovery, check=True)
+        scope_relative = (
+            "Kandelo/campaigns/prefix-v1/successor/fixture-scope.json"
+        )
+        scope_path = recovery / scope_relative
+        write_json(
+            scope_path,
+            {"kind": "fixture-successor-scope", "schema": 1},
+        )
+        recovery_commit = commit_repo(
+            recovery, "bind predecessor reuse successor scope"
+        )
+        fixture.campaign["authority"]["predecessor_recovery_source"][
+            "commit"
+        ] = recovery_commit
+        fixture.campaign["authority"]["successor_scope"] = {
+            "path": scope_relative,
+            "sha256": sha256(scope_path.read_bytes()),
+        }
+        write_json(fixture.campaign_path, fixture.campaign)
+
+        valid = fixture.root / "scoped-predecessor-reuse"
+        fixture.derive(valid, recovery_tap_root=recovery)
+        self.assertTrue((valid / "handoff.json").is_file())
+
+        missing = fixture.root / "missing-recovery-checkout"
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "requires a recovery tap checkout",
+        ):
+            fixture.derive(missing)
+        self.assertFalse(missing.exists())
+
+        write_json(recovery / "later.json", {"schema": 1})
+        commit_repo(recovery, "move recovery checkout past authority")
+        wrong = fixture.root / "wrong-recovery-checkout"
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "does not name the campaign's exact commit",
+        ):
+            fixture.derive(wrong, recovery_tap_root=recovery)
+        self.assertFalse(wrong.exists())
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "advice.detachedHead=false",
+                "checkout",
+                "--detach",
+                "--quiet",
+                recovery_commit,
+            ],
+            cwd=recovery,
+            check=True,
+        )
+
+        fixture.campaign["authority"]["successor_scope"][
+            "sha256"
+        ] = "0" * 64
+        write_json(fixture.campaign_path, fixture.campaign)
+        changed_digest = fixture.root / "changed-recovery-scope-digest"
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "differs from its recovery authority",
+        ):
+            fixture.derive(
+                changed_digest,
+                recovery_tap_root=recovery,
+            )
+        self.assertFalse(changed_digest.exists())
+
+    def test_predecessor_reuse_legacy_scope_omission_remains_valid(
+        self,
+    ) -> None:
+        fixture = PredecessorReuseFixture()
+        self.addCleanup(fixture.close)
+        output = fixture.root / "legacy-unscoped-predecessor-reuse"
+        fixture.derive(output)
+        self.assertTrue((output / "handoff.json").is_file())
+
+    def test_successor_scope_authority_is_optional_and_exact(self) -> None:
+        fixture = PredecessorReuseFixture()
+        self.addCleanup(fixture.close)
+
+        # Schema-3 campaigns sealed before successor scopes remain readable.
+        EXECUTOR.load_campaign(fixture.campaign_path)
+        self.assertIsNone(
+            EXECUTOR.successor_scope_authority(
+                fixture.campaign["authority"], 3
+            )
+        )
+
+        record = {
+            "path": (
+                "Kandelo/campaigns/prefix-v1/successor/"
+                "f901-successor-scope.json"
+            ),
+            "sha256": "6" * 64,
+        }
+        fixture.campaign["authority"]["successor_scope"] = record
+        write_json(fixture.campaign_path, fixture.campaign)
+        EXECUTOR.load_campaign(fixture.campaign_path)
+        self.assertEqual(
+            EXECUTOR.successor_scope_authority(
+                fixture.campaign["authority"], 3
+            ),
+            record,
+        )
+
+        baseline = copy.deepcopy(fixture.campaign)
+        mutations = {
+            "missing-path": lambda value: value["authority"][
+                "successor_scope"
+            ].pop("path"),
+            "extra-field": lambda value: value["authority"][
+                "successor_scope"
+            ].__setitem__("archive", "not-authority"),
+            "unsafe-path": lambda value: value["authority"][
+                "successor_scope"
+            ].__setitem__("path", "../scope.json"),
+            "bad-digest": lambda value: value["authority"][
+                "successor_scope"
+            ].__setitem__("sha256", "invalid"),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label=label):
+                changed = copy.deepcopy(baseline)
+                mutate(changed)
+                write_json(fixture.campaign_path, changed)
+                with self.assertRaises(EXECUTOR.ExecutorError):
+                    EXECUTOR.load_campaign(fixture.campaign_path)
+
+        schema_two = Fixture()
+        self.addCleanup(schema_two.close)
+        schema_two.campaign["authority"]["successor_scope"] = record
+        write_json(schema_two.campaign_path, schema_two.campaign)
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "only a schema-3 campaign",
+        ):
+            EXECUTOR.load_campaign(schema_two.campaign_path)
 
     def test_predecessor_reuse_rejects_tampering(self) -> None:
         fixture = PredecessorReuseFixture()
@@ -4686,6 +4838,156 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
                 source_tap_root=checkout,
                 output=fixture.root / "wrong-source-output",
             )
+
+    def test_materialize_campaign_source_rechecks_successor_scope(
+        self,
+    ) -> None:
+        fixture = FinalTapFixture()
+        self.addCleanup(fixture.close)
+        subprocess.run(
+            [
+                "git",
+                "checkout",
+                "--detach",
+                "--quiet",
+                fixture.source_commit,
+            ],
+            cwd=fixture.live,
+            check=True,
+        )
+        scope_relative = (
+            "Kandelo/campaigns/prefix-v1/successor/"
+            "fixture-scope.json"
+        )
+        scope_path = fixture.live / scope_relative
+        write_json(
+            scope_path,
+            {
+                "kind": "fixture-successor-scope",
+                "schema": 1,
+            },
+        )
+        recovery_scope_payload = scope_path.read_bytes()
+        scoped_recovery_commit = commit_repo(
+            fixture.live,
+            "bind fixture successor scope",
+        )
+        # The two Git authorities are deliberately distinct. The executor
+        # must read the scope from recovery, not whichever bytes happen to be
+        # present at the Formula source commit.
+        write_json(
+            scope_path,
+            {
+                "kind": "later-source-control-bytes",
+                "schema": 1,
+            },
+        )
+        scoped_source_commit = commit_repo(
+            fixture.live,
+            "advance Formula source control bytes",
+        )
+
+        campaign_sha256 = "7" * 64
+        campaign_tag = (
+            "homebrew-prefix-campaign-sha256-" + campaign_sha256
+        )
+        fixture.campaign["schema"] = 3
+        fixture.campaign["authority"]["source_tap_commit"] = (
+            scoped_source_commit
+        )
+        fixture.campaign["authority"]["predecessor_recovery_source"] = {
+            "commit": scoped_recovery_commit,
+            "repository": TAP_REPOSITORY,
+        }
+        fixture.campaign["authority"]["predecessor_recovery"] = [
+            {
+                "activation_commit": "3" * 40,
+                "archive": {
+                    "path": (
+                        "Kandelo/campaigns/prefix-v1/"
+                        "aborted-campaigns/"
+                        f"{campaign_sha256}.json"
+                    ),
+                    "sha256": "4" * 64,
+                },
+                "campaign": {
+                    "sha256": campaign_sha256,
+                    "tag": campaign_tag,
+                },
+                "kandelo_commit": "5" * 40,
+                "source_tap_commit": "6" * 40,
+                "target_tree_git_oid": fixture.source_tree,
+            }
+        ]
+        fixture.campaign["authority"]["successor_scope"] = {
+            "path": scope_relative,
+            "sha256": sha256(recovery_scope_payload),
+        }
+        alpha = fixture.campaign["formulae"][0]
+        alpha["destination"]["admission"] = {
+            "kind": "archived-predecessor-exact-presence",
+            "method": "anonymous-oras-manifest-probe",
+            "probe": {
+                "digest": "sha256:" + "8" * 64,
+                "kind": "manifest",
+                "schema": 1,
+                "status": "present",
+            },
+            "schema": 1,
+        }
+        for variant in alpha["variants"]:
+            variant["reuse_source"] = {
+                "arch": variant["arch"],
+                "campaign_tag": campaign_tag,
+                "handoff_tag": (
+                    "homebrew-prefix-handoff-sha256-"
+                    + ("9" if variant["arch"] == "wasm32" else "a")
+                    * 64
+                ),
+                "kind": "predecessor-handoff",
+            }
+        write_json(fixture.campaign_path, fixture.campaign)
+
+        checkout = fixture.root / "scoped-source-checkout"
+        subprocess.run(
+            ["git", "clone", "-q", "--no-hardlinks", fixture.live, checkout],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "checkout",
+                "--detach",
+                "--quiet",
+                scoped_source_commit,
+            ],
+            cwd=checkout,
+            check=True,
+        )
+        output = fixture.root / "scoped-materialized-source"
+        EXECUTOR.materialize_campaign_source(
+            campaign_path=fixture.campaign_path,
+            source_tap_root=checkout,
+            output=output,
+        )
+        self.assertTrue((output / "Formula/alpha.rb").is_file())
+        self.assertFalse((output / scope_relative).exists())
+
+        fixture.campaign["authority"]["successor_scope"][
+            "sha256"
+        ] = "0" * 64
+        write_json(fixture.campaign_path, fixture.campaign)
+        rejected = fixture.root / "rejected-scoped-materialization"
+        with self.assertRaisesRegex(
+            EXECUTOR.ExecutorError,
+            "differs from its recovery authority",
+        ):
+            EXECUTOR.materialize_campaign_source(
+                campaign_path=fixture.campaign_path,
+                source_tap_root=checkout,
+                output=rejected,
+            )
+        self.assertFalse(rejected.exists())
 
     def test_closed_selection_release_rejects_unsafe_tree_and_zip(
         self,

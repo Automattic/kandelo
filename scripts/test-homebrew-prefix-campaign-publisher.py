@@ -584,6 +584,23 @@ class Fixture:
 
 
 class PrefixCampaignPublisherTests(unittest.TestCase):
+    def test_prepare_rechecks_successor_scope_before_materialization(
+        self,
+    ) -> None:
+        fixture = Fixture()
+        self.addCleanup(fixture.close)
+        original = EXECUTOR.validate_successor_scope_checkout
+        with mock.patch.object(
+            EXECUTOR,
+            "validate_successor_scope_checkout",
+            wraps=original,
+        ) as validate:
+            fixture.prepare()
+        validate.assert_called_once()
+        source_root, campaign = validate.call_args.args
+        self.assertEqual(source_root, fixture.tap.resolve())
+        self.assertEqual(campaign, fixture.campaign)
+
     def test_formula_identity_ignores_ambient_ruby_startup(self) -> None:
         temporary = tempfile.TemporaryDirectory(
             prefix="homebrew-campaign-ruby-startup-test-"

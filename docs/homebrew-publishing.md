@@ -2616,6 +2616,34 @@ recorded as publicly verified handoff releases. It then downloads the real
 Treating the ledger itself as `campaign.json` would skip the immutable release
 readback and confuse recovery evidence with executable campaign authority.
 
+Recovery still fails when two supported archives complete the same
+Formula and architecture. A successor may resolve intentional overlap
+only through the paired `--successor-scope-path` and
+`--successor-scope-sha256` derivation inputs. Both or neither must be
+present. The scope is canonical schema-1 JSON read as an exact Git blob
+from `predecessor_recovery_source`; working-tree bytes, timestamps,
+and filename order have no selection meaning.
+
+The scope binds one exact predecessor archive and one exact task graph.
+Its nonempty, sorted `reuse_tasks` and `build_tasks` arrays must be
+disjoint and must partition that graph. The selected archive's complete
+publicly verified handoff inventory must equal `reuse_tasks`.
+Derivation chooses that archive for every selected reuse task, retains
+useful disjoint handoffs from other archives, and still rejects every
+duplicate outside the explicit selection. Each selected reuse route
+must name the archive's exact campaign and handoff; each selected build
+route must remain a required build or rebuild.
+
+A scoped schema-3 campaign carries
+`authority.successor_scope = {path, sha256}`. The campaign executor
+accepts legacy schema-3 campaigns without this optional field. When it
+is present, predecessor resealing requires a separate recovery checkout
+at the exact `predecessor_recovery_source` commit and repository. The
+executor rechecks the canonical scope bytes and digest before creating
+any handoff output. Publisher materialization repeats that check. The
+scope is therefore durable audit authority rather than a derivation-only
+hint.
+
 Before selecting a predecessor handoff, derivation proves that the Formula
 source, version, dependency graph, ABI snapshot, guest layout, native Homebrew
 revision, and critical validation tools are unchanged. The executor then

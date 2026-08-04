@@ -93,6 +93,16 @@ The campaign release binds the path and SHA-256 of
 provenance, handoff, and runtime validation. A missing or different
 digest cannot silently fall back to the still-active guest layout.
 
+Schema-3 recovery normally rejects the same Formula and architecture in
+more than one archived campaign. A committed successor scope may resolve
+only the duplicates covered by its exact task graph and selected
+predecessor archive. The scope, graph, and archive are canonical Git
+blobs with independent SHA-256 bindings; file order and timestamps are
+not authority. Other disjoint handoffs remain available, while every
+unresolved duplicate still fails. The derived campaign preserves the
+exact scope path and digest in `authority.successor_scope`; legacy
+schema-3 releases without that optional record remain readable.
+
 Current `Automattic/kandelo` `refs/heads/main` is the sole live mutation
 authority for Homebrew and durable-package generation. The ordinary
 path requires the explicit source to equal current `main` immediately

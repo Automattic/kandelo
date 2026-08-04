@@ -639,6 +639,16 @@ observed.
 The runtime list must be a canonical subset with the same versions; an older
 campaign without the scoped field keeps its historical one-list meaning.
 
+Historical campaign recovery rejects duplicate Formula/architecture
+handoffs across supported archives. An explicitly committed successor
+scope may select one exact archive for a bounded task graph. Its path
+and SHA-256 are paired inputs read from the exact recovery Git commit.
+The selected archive must own every declared reuse task; build and reuse
+tasks must partition the graph, and duplicates outside that selection
+still fail. Disjoint handoffs remain usable. Scoped schema-3 campaigns
+retain the path and digest under `authority.successor_scope`, while
+legacy schema-3 campaigns remain readable.
+
 A closed tap recipe runs as a separate unprivileged identity inside a
 root-owned, empty service root. The publisher mounts only its attested recipe,
 verified source, projected SDK/tooling, sysroot, sealed Homebrew dependency

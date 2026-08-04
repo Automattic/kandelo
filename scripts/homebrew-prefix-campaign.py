@@ -87,6 +87,12 @@ PREDECESSOR_RECOVERY = {
     "predecessor_handoffs_are_not_successor_authority": True,
     "published_handoffs_remain_independently_usable": True,
 }
+SUCCESSOR_SCOPE_KIND = "kandelo-homebrew-prefix-successor-scope"
+SUCCESSOR_GRAPH_KIND = "kandelo-prefix-campaign-task-graph"
+SUCCESSOR_GRAPH_REPOSITORY = "Kandelo-dev/homebrew-tap-core"
+SUCCESSOR_GRAPH_WORKFLOW = (
+    ".github/workflows/prefix-campaign-bottles.yml"
+)
 # These key sets identify archives whose predecessor handoffs were not
 # reusable. They remain history, but cannot authorize present packages.
 LEGACY_PREDECESSOR_RECOVERY_KEYS = {
@@ -110,6 +116,7 @@ MAX_PREDECESSOR_ARCHIVES = 256
 MAX_PREDECESSOR_ARCHIVE_BYTES = 4 * 1024 * 1024
 MAX_PREDECESSOR_ARCHIVE_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_PREDECESSOR_DISPATCHES = 4096
+MAX_SUCCESSOR_TASKS = 4096
 
 
 # WHY: campaign JSON is capped separately at 64 MiB, but a valid compressed
@@ -321,6 +328,18 @@ LAYOUT_KEYS = {
 
 class CampaignError(RuntimeError):
     """A fail-closed campaign derivation error."""
+
+
+@dataclasses.dataclass(frozen=True)
+class SuccessorScope:
+    """One exact authority for resolving predecessor campaign overlaps."""
+
+    authority: dict[str, str]
+    build_tasks: frozenset[tuple[str, str]]
+    graph_tasks: tuple[tuple[str, str], ...]
+    reuse_tasks: frozenset[tuple[str, str]]
+    selected_archive_path: str
+    selected_handoffs: dict[tuple[str, str], dict[str, Any]]
 
 
 def fail(message: str) -> NoReturn:
@@ -699,6 +718,64 @@ def git_blob(
     return result.stdout
 
 
+def canonical_git_json(
+    root: pathlib.Path,
+    commit: str,
+    relative: str,
+    label: str,
+    maximum: int = MAX_JSON_BYTES,
+) -> tuple[Any, bytes, str]:
+    relative = require_tap_path(relative, f"{label} path")
+    payload = git_blob(root, commit, relative, label, maximum)
+    try:
+        document = json.loads(
+            payload.decode("utf-8"),
+            object_pairs_hook=duplicate_rejecting_object,
+            parse_constant=lambda value: fail(
+                f"{label} contains {value}"
+            ),
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        fail(f"{label} is not valid strict UTF-8 JSON: {error}")
+    if payload != pretty_json(document):
+        fail(f"{label} is not canonical pretty JSON")
+    return document, payload, relative
+
+
+def parse_successor_tasks(
+    value: Any,
+    label: str,
+) -> tuple[tuple[str, str], ...]:
+    if (
+        not isinstance(value, list)
+        or not value
+        or len(value) > MAX_SUCCESSOR_TASKS
+    ):
+        fail(f"{label} must be a bounded non-empty task array")
+    tasks: list[tuple[str, str]] = []
+    for position, raw in enumerate(value):
+        task = exact_keys(
+            raw,
+            {"arch", "formula"},
+            f"{label} task #{position}",
+        )
+        formula = require_string(
+            task["formula"],
+            f"{label} task #{position} Formula",
+            FORMULA_NAME,
+        )
+        arch = require_string(
+            task["arch"],
+            f"{label} task #{position} architecture",
+        )
+        if arch not in ("wasm32", "wasm64"):
+            fail(f"{label} task #{position} architecture is unsupported")
+        tasks.append((formula, arch))
+    if tasks != sorted(set(tasks)):
+        fail(f"{label} tasks must be unique and sorted")
+    return tuple(tasks)
+
+
 def predecessor_archive_paths(
     root: pathlib.Path,
     commit: str,
@@ -995,11 +1072,178 @@ def parse_predecessor_archive(
     return recovery_authority, completed
 
 
+def load_successor_scope(
+    root: pathlib.Path,
+    commit: str,
+    path: str,
+    expected_sha256: str,
+) -> SuccessorScope:
+    path = require_tap_path(path, "successor scope path")
+    expected_sha256 = require_sha256(
+        expected_sha256, "successor scope SHA-256"
+    )
+    scope, payload, path = canonical_git_json(
+        root,
+        commit,
+        path,
+        "successor scope",
+        MAX_PREDECESSOR_ARCHIVE_BYTES,
+    )
+    if sha256_bytes(payload) != expected_sha256:
+        fail("successor scope SHA-256 differs from its exact Git bytes")
+    scope = exact_keys(
+        scope,
+        {
+            "build_tasks",
+            "graph",
+            "kind",
+            "predecessor_archive",
+            "reuse_tasks",
+            "schema",
+        },
+        "successor scope",
+    )
+    if scope["schema"] != 1 or scope["kind"] != SUCCESSOR_SCOPE_KIND:
+        fail("successor scope has an unsupported contract")
+
+    graph_reference = exact_keys(
+        scope["graph"],
+        {"path", "sha256"},
+        "successor scope graph reference",
+    )
+    graph_sha256 = require_sha256(
+        graph_reference["sha256"],
+        "successor scope graph SHA-256",
+    )
+    graph, graph_payload, _graph_path = canonical_git_json(
+        root,
+        commit,
+        graph_reference["path"],
+        "successor scope graph",
+        MAX_PREDECESSOR_ARCHIVE_BYTES,
+    )
+    if sha256_bytes(graph_payload) != graph_sha256:
+        fail("successor scope graph SHA-256 differs from its exact Git bytes")
+    graph = exact_keys(
+        graph,
+        {
+            "kind",
+            "max_active",
+            "repository",
+            "schema",
+            "tasks",
+            "workflow",
+        },
+        "successor scope graph",
+    )
+    max_active = graph["max_active"]
+    if (
+        graph["schema"] != 1
+        or graph["kind"] != SUCCESSOR_GRAPH_KIND
+        or graph["repository"] != SUCCESSOR_GRAPH_REPOSITORY
+        or graph["workflow"] != SUCCESSOR_GRAPH_WORKFLOW
+        or isinstance(max_active, bool)
+        or not isinstance(max_active, int)
+        or not 1 <= max_active <= 32
+    ):
+        fail("successor scope graph has an unsupported contract")
+    graph_tasks = parse_successor_tasks(
+        graph["tasks"], "successor scope graph"
+    )
+    reuse_tasks = frozenset(
+        parse_successor_tasks(
+            scope["reuse_tasks"], "successor scope reuse"
+        )
+    )
+    build_tasks = frozenset(
+        parse_successor_tasks(
+            scope["build_tasks"], "successor scope build"
+        )
+    )
+    if (
+        reuse_tasks & build_tasks
+        or reuse_tasks | build_tasks != set(graph_tasks)
+    ):
+        fail("successor scope does not partition its exact graph")
+
+    archive_reference = exact_keys(
+        scope["predecessor_archive"],
+        {"path", "sha256"},
+        "successor scope predecessor archive reference",
+    )
+    archive_sha256 = require_sha256(
+        archive_reference["sha256"],
+        "successor scope predecessor archive SHA-256",
+    )
+    _archive, archive_payload, archive_path = canonical_git_json(
+        root,
+        commit,
+        archive_reference["path"],
+        "successor scope predecessor archive",
+        MAX_PREDECESSOR_ARCHIVE_BYTES,
+    )
+    if sha256_bytes(archive_payload) != archive_sha256:
+        fail(
+            "successor scope predecessor archive SHA-256 differs from "
+            "its exact Git bytes"
+        )
+    parsed = parse_predecessor_archive(archive_payload, archive_path)
+    if parsed is None:
+        fail("successor scope selects a predecessor archive without reuse")
+    archive_authority, dispatches = parsed
+    expected_archive_path = (
+        f"{PREDECESSOR_ARCHIVE_ROOT}/"
+        f"{archive_authority['campaign']['sha256']}.json"
+    )
+    if archive_path != expected_archive_path:
+        fail("successor scope predecessor archive path is not canonical")
+    if archive_authority["archive"] != {
+        "path": archive_path,
+        "sha256": archive_sha256,
+    }:
+        fail("successor scope predecessor archive authority changed")
+    selected_handoffs: dict[
+        tuple[str, str], dict[str, Any]
+    ] = {}
+    for dispatch in dispatches:
+        key = (dispatch["formula"], dispatch["arch"])
+        if key in selected_handoffs:
+            fail(
+                "successor scope predecessor archive repeats completed "
+                f"handoff for {key[0]}/{key[1]}"
+            )
+        selected_handoffs[key] = {
+            "authority": archive_authority,
+            "reuse_source": {
+                "arch": dispatch["arch"],
+                "campaign_tag": dispatch["campaign_tag"],
+                "handoff_tag": dispatch["handoff_tag"],
+                "kind": "predecessor-handoff",
+            },
+        }
+    if set(selected_handoffs) != set(reuse_tasks):
+        fail(
+            "successor scope reuse tasks differ from its selected "
+            "predecessor archive"
+        )
+    return SuccessorScope(
+        authority={"path": path, "sha256": expected_sha256},
+        build_tasks=build_tasks,
+        graph_tasks=graph_tasks,
+        reuse_tasks=reuse_tasks,
+        selected_archive_path=archive_path,
+        selected_handoffs=selected_handoffs,
+    )
+
+
 def load_predecessor_handoffs(
     root: pathlib.Path,
     commit: str,
+    successor_scope: SuccessorScope | None = None,
 ) -> dict[tuple[str, str], dict[str, Any]]:
-    by_variant: dict[tuple[str, str], dict[str, Any]] = {}
+    candidates: dict[
+        tuple[str, str], list[tuple[str, dict[str, Any]]]
+    ] = {}
     total_bytes = 0
     for path in predecessor_archive_paths(root, commit):
         payload = git_blob(
@@ -1020,21 +1264,95 @@ def load_predecessor_handoffs(
         authority, dispatches = parsed
         for dispatch in dispatches:
             key = (dispatch["formula"], dispatch["arch"])
-            if key in by_variant:
+            candidates.setdefault(key, []).append(
+                (
+                    path,
+                    {
+                        "authority": authority,
+                        "reuse_source": {
+                            "arch": dispatch["arch"],
+                            "campaign_tag": dispatch["campaign_tag"],
+                            "handoff_tag": dispatch["handoff_tag"],
+                            "kind": "predecessor-handoff",
+                        },
+                    },
+                )
+            )
+
+    by_variant: dict[tuple[str, str], dict[str, Any]] = {}
+    for key, records in candidates.items():
+        if len(records) == 1:
+            by_variant[key] = records[0][1]
+            continue
+        selected = []
+        if successor_scope is not None and key in successor_scope.reuse_tasks:
+            selected = [
+                record
+                for path, record in records
+                if path == successor_scope.selected_archive_path
+            ]
+        if len(selected) != 1:
+            fail(
+                "predecessor recovery repeats completed handoff "
+                f"for {key[0]}/{key[1]} without an exact successor scope"
+            )
+        by_variant[key] = selected[0]
+
+    if successor_scope is not None:
+        for key in successor_scope.reuse_tasks:
+            if by_variant.get(key) != successor_scope.selected_handoffs[key]:
                 fail(
-                    "predecessor recovery repeats completed handoff "
+                    "successor scope selected predecessor route differs "
                     f"for {key[0]}/{key[1]}"
                 )
-            by_variant[key] = {
-                "authority": authority,
-                "reuse_source": {
-                    "arch": dispatch["arch"],
-                    "campaign_tag": dispatch["campaign_tag"],
-                    "handoff_tag": dispatch["handoff_tag"],
-                    "kind": "predecessor-handoff",
-                },
-            }
     return by_variant
+
+
+def validate_successor_scope_routes(
+    scope: SuccessorScope,
+    formulae: list[dict[str, Any]],
+) -> None:
+    routes: dict[tuple[str, str], tuple[dict[str, Any], dict[str, Any]]] = {}
+    for formula in formulae:
+        name = formula["name"]
+        for variant in formula["variants"]:
+            key = (name, variant["arch"])
+            if key in routes:
+                fail(
+                    "successor campaign repeats scoped task "
+                    f"{key[0]}/{key[1]}"
+                )
+            routes[key] = (formula, variant)
+    for key in scope.graph_tasks:
+        if key not in routes:
+            fail(
+                "successor scope graph task is absent from the campaign: "
+                f"{key[0]}/{key[1]}"
+            )
+        formula, variant = routes[key]
+        if key in scope.reuse_tasks:
+            expected = scope.selected_handoffs[key]["reuse_source"]
+            if (
+                formula["destination"]["admission"]["kind"]
+                != "archived-predecessor-exact-presence"
+                or variant.get("reuse_source") != expected
+            ):
+                fail(
+                    "successor scope reuse route differs from its selected "
+                    f"predecessor for {key[0]}/{key[1]}"
+                )
+            continue
+        disposition = variant.get("disposition")
+        if (
+            "reuse_source" in variant
+            or not isinstance(disposition, dict)
+            or disposition.get("kind")
+            not in ("required-build", "required-rebuild")
+        ):
+            fail(
+                "successor scope build route became reusable for "
+                f"{key[0]}/{key[1]}"
+            )
 
 
 def historical_metadata_history(
@@ -2489,6 +2807,8 @@ class CampaignOptions:
     native_brew_commit: str
     metadata_sha256: str
     guest_layout_sha256: str
+    successor_scope_path: str | None = None
+    successor_scope_sha256: str | None = None
     old_catalog_commit: str | None = None
     jobs: int = MAX_JOBS
     source_materialization: dict[str, Any] | None = None
@@ -3119,6 +3439,7 @@ def _derive_campaign_from_snapshots(
     predecessor_handoffs: dict[
         tuple[str, str], dict[str, Any]
     ] | None = None,
+    successor_scope: SuccessorScope | None = None,
 ) -> dict[str, Any]:
     if not 1 <= options.jobs <= MAX_JOBS:
         fail(f"jobs must be between 1 and {MAX_JOBS}")
@@ -3993,6 +4314,12 @@ def _derive_campaign_from_snapshots(
         record["variants"] = sorted(variants, key=lambda value: value["arch"])
         formula_records.append(record)
 
+    if successor_scope is not None:
+        # WHY: the scope authorizes overlap resolution, but it also promises
+        # exact public routes. Validate the derived campaign rather than
+        # treating a selected archive as permission to relabel a build.
+        validate_successor_scope_routes(successor_scope, formula_records)
+
     retirements = [
         *retired_sidecars(
             link_files,
@@ -4077,7 +4404,13 @@ def _derive_campaign_from_snapshots(
             "commit": options.recovery_tap_commit,
             "repository": PREDECESSOR_RELEASE_REPOSITORY,
         }
+        if successor_scope is not None:
+            authority["successor_scope"] = dict(
+                successor_scope.authority
+            )
         schema = 3
+    elif successor_scope is not None:
+        fail("successor scope did not produce schema-3 predecessor routes")
     return {
         "authority": authority,
         "deferred_source_formulae": deferred_formulae,
@@ -4115,6 +4448,12 @@ def derive_campaign(
     options: CampaignOptions,
     dependencies: CampaignDependencies = CampaignDependencies(),
 ) -> dict[str, Any]:
+    if (options.successor_scope_path is None) != (
+        options.successor_scope_sha256 is None
+    ):
+        fail(
+            "successor scope path and SHA-256 must be provided together"
+        )
     authorities = (
         (
             options.kandelo_root,
@@ -4190,8 +4529,19 @@ def derive_campaign(
             git_authority(root, commit, f"{label} final rebind")
 
     try:
+        successor_scope = None
+        if options.successor_scope_path is not None:
+            assert options.successor_scope_sha256 is not None
+            successor_scope = load_successor_scope(
+                exact_roots[3],
+                options.recovery_tap_commit,
+                options.successor_scope_path,
+                options.successor_scope_sha256,
+            )
         predecessor_handoffs = load_predecessor_handoffs(
-            exact_roots[3], options.recovery_tap_commit
+            exact_roots[3],
+            options.recovery_tap_commit,
+            successor_scope,
         )
         # Homebrew refuses to run from an operating-system temporary prefix.
         # A private directory directly under the invoking user's home keeps
@@ -4242,6 +4592,7 @@ def derive_campaign(
                 metadata_hashes,
                 historical_formula_root,
                 predecessor_handoffs,
+                successor_scope,
             )
     except BaseException as primary:
         try:
@@ -4335,6 +4686,8 @@ def parse_args() -> argparse.Namespace:
         command.add_argument("--native-brew-commit", required=True)
         command.add_argument("--metadata-sha256", required=True)
         command.add_argument("--guest-layout-sha256", required=True)
+        command.add_argument("--successor-scope-path")
+        command.add_argument("--successor-scope-sha256")
         command.add_argument("--jobs", type=int, default=MAX_JOBS)
         if name == "derive":
             command.add_argument("--out", required=True)
@@ -4378,6 +4731,8 @@ def main() -> int:
             native_brew_commit=args.native_brew_commit,
             metadata_sha256=args.metadata_sha256,
             guest_layout_sha256=args.guest_layout_sha256,
+            successor_scope_path=args.successor_scope_path,
+            successor_scope_sha256=args.successor_scope_sha256,
             jobs=args.jobs,
         )
         kandelo_root = real_directory(options.kandelo_root, "Kandelo input")
