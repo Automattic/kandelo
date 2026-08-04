@@ -12,7 +12,7 @@ WORKFLOW = ARGV.empty? ?
     ".github/workflows/reusable-homebrew-closed-selection-publish.yml"
   ) : File.expand_path(ARGV.fetch(0))
 WORKFLOW_DIGEST =
-  "5078978d37bc25c2e4eaa0e5a1e956cd8a5b7217d7e51d407cff622808715425"
+  "1b34d7ffce36dfb97e96454d3c88e00bc2ac8996c9689f8e045a9fbf05e36041"
 PREPARATION_ARTIFACT = "homebrew-closed-selection-preparation"
 CHECKOUT_ACTION =
   "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
@@ -137,6 +137,7 @@ def check_workflow(workflow)
   )
   [prepare, publish].each do |job|
     check(job["runs-on"] == "ubuntu-latest", "job runner differs")
+    check(job["timeout-minutes"] == 60, "job timeout ceiling differs")
     check(job.fetch("steps").all?(Hash), "job steps are malformed")
   end
 
@@ -146,7 +147,7 @@ def check_workflow(workflow)
     uses.all? { |value| allowed_actions.include?(value) },
     "workflow contains an untrusted or unpinned action"
   )
-  check(uses.count(CHECKOUT_ACTION) == 4, "checkout set differs")
+  check(uses.count(CHECKOUT_ACTION) == 5, "checkout set differs")
   check(uses.count(UPLOAD_ACTION) == 2, "artifact upload set differs")
   check(uses.count(DOWNLOAD_ACTION) == 1, "artifact download set differs")
   check(values_for_key(workflow, "secrets").empty?,
@@ -207,15 +208,16 @@ def check_workflow(workflow)
     "preparation is not bound to both current public main commits"
   )
 
-  credential_free_steps = [
-    "Admit the exact digest-bound selection plan",
-    "Fetch the exact public campaign",
-    "Materialize the sealed campaign tap source",
-    "Assemble the exact selection from public handoffs",
-    "Verify the downloaded selection against its plan",
-  ]
-  credential_free_steps.each do |name|
-    job = name.start_with?("Verify") ? publish : prepare
+  credential_free_steps = {
+    "Admit the exact digest-bound selection plan" => prepare,
+    "Fetch the exact public campaign" => prepare,
+    "Materialize the sealed campaign tap source" => prepare,
+    "Assemble the exact selection from public handoffs" => prepare,
+    "Fetch the exact campaign for independent verification" => publish,
+    "Materialize campaign source for independent reconstruction" => publish,
+    "Reconstruct and verify the downloaded selection" => publish,
+  }
+  credential_free_steps.each do |name, job|
     source = named_step(job, name).fetch("run")
     check(source.include?("env -u GH_TOKEN -u GITHUB_TOKEN"),
           "#{name} can observe publication credentials")
@@ -276,10 +278,43 @@ def check_workflow(workflow)
       "${{ inputs.expected-caller-sha }}",
     "tap lock checkout is not bound to the expected caller SHA"
   )
+  reconstruction_checkout = named_step(
+    publish,
+    "Checkout exact campaign source for reconstruction"
+  )
+  check(
+    reconstruction_checkout["uses"] == CHECKOUT_ACTION &&
+      reconstruction_checkout.fetch("with") == {
+        "repository" => "kandelo-dev/homebrew-tap-core",
+        "ref" => "${{ needs.prepare.outputs.source-tap-commit }}",
+        "path" => "verification-source-tap",
+        "fetch-depth" => 0,
+        "persist-credentials" => false,
+      },
+    "independent reconstruction source checkout differs"
+  )
+
+  reconstruction_materialization = named_step(
+    publish,
+    "Materialize campaign source for independent reconstruction"
+  ).fetch("run")
+  %w[
+    homebrew-prefix-campaign-executor.py
+    materialize-campaign-source
+    --campaign
+    --source-tap-root
+    verification-source-tap
+    target-source
+  ].each do |text|
+    check(
+      reconstruction_materialization.include?(text),
+      "independent source materialization omits #{text}"
+    )
+  end
 
   verify_step = named_step(
     publish,
-    "Verify the downloaded selection against its plan"
+    "Reconstruct and verify the downloaded selection"
   )
   check(
     verify_step.fetch("env") == {
@@ -295,9 +330,11 @@ def check_workflow(workflow)
   )
   verify_source = verify_step.fetch("run")
   %w[
+    reconstruct-verify
     --selection-plan
     --selection-plan-sha256
     --prepared-release
+    --source-tap-root
     --executor
   ].each do |text|
     check(verify_source.include?(text),
@@ -384,6 +421,7 @@ def check_workflow(workflow)
     prepare_selection_release
     load_prepared_selection_release
     expected_plan
+    reconstruct_and_verify
   ].each do |text|
     check(controller_source.include?(text),
           "closed-selection controller omits #{text}")
@@ -418,6 +456,9 @@ def check_workflow(workflow)
   check(controller_tests.include?(
     "test_verify_rejects_coherent_artifact_plan_substitution"
   ), "controller tests omit coherent artifact substitution")
+  check(controller_tests.include?(
+    "test_reconstruct_rejects_coherent_archive_substitution"
+  ), "controller tests omit coherent archive substitution")
   check(
     controller_tests.include?(
       "test_admit_rejects_resolved_caller_mismatch_before_writing"

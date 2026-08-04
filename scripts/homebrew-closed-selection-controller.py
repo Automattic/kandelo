@@ -38,6 +38,11 @@ MAX_PLAN_BYTES = 64 * 1024
 MAX_EVENT_BYTES = 256 * 1024
 MAX_SELECTION_BYTES = 256 * 1024
 MAX_FORMULAE = 128
+PREPARED_RELEASE_PATHS = (
+    "assets/closed-selection.json",
+    "assets/closed-selection.zip",
+    "release-manifest.json",
+)
 
 
 class ControllerError(RuntimeError):
@@ -89,6 +94,16 @@ def regular_file(path: pathlib.Path, label: str) -> pathlib.Path:
     if path.is_symlink() or not stat.S_ISREG(metadata.st_mode):
         fail(f"{label} must be a regular non-symlink file")
     return path
+
+
+def real_directory(path: pathlib.Path, label: str) -> pathlib.Path:
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        fail(f"{label} is unavailable: {error}")
+    if path.is_symlink() or not stat.S_ISDIR(metadata.st_mode):
+        fail(f"{label} must be a real directory")
+    return path.resolve()
 
 
 def load_json_bytes(
@@ -627,6 +642,92 @@ def verify(
     }
 
 
+def files_match(left: pathlib.Path, right: pathlib.Path) -> bool:
+    left = regular_file(left, "transferred selection release file")
+    right = regular_file(right, "reconstructed selection release file")
+    if left.stat().st_size != right.stat().st_size:
+        return False
+    try:
+        with left.open("rb") as left_stream, right.open("rb") as right_stream:
+            while True:
+                left_chunk = left_stream.read(1024 * 1024)
+                right_chunk = right_stream.read(1024 * 1024)
+                if left_chunk != right_chunk:
+                    return False
+                if not left_chunk:
+                    return True
+    except OSError as error:
+        fail(f"cannot compare prepared selection releases: {error}")
+
+
+def reconstruct_and_verify(
+    *,
+    selection_plan: str,
+    selection_plan_sha256: str,
+    prepared_release: pathlib.Path,
+    campaign_path: pathlib.Path,
+    source_tap_root: pathlib.Path,
+    executor_path: pathlib.Path,
+) -> dict[str, Any]:
+    plan = expected_plan(selection_plan, selection_plan_sha256)
+    prepared_release = real_directory(
+        prepared_release,
+        "transferred prepared selection release",
+    )
+    source_tap_root = real_directory(
+        source_tap_root,
+        "independent campaign source tap",
+    )
+    # Reject an obviously wrong artifact before downloading its public handoff
+    # closure. Exact byte equality below is still the publication boundary.
+    summary = verify(
+        selection_plan=selection_plan,
+        selection_plan_sha256=selection_plan_sha256,
+        prepared_release=prepared_release,
+        campaign_path=campaign_path,
+        executor_path=executor_path,
+    )
+    with tempfile.TemporaryDirectory(
+        prefix=".closed-selection-independent-reconstruction.",
+        dir=prepared_release.parent,
+    ) as temporary_name:
+        temporary = pathlib.Path(temporary_name)
+        plan_path = temporary / "plan.json"
+        write_new(
+            plan_path,
+            pretty_json(plan),
+            "independent reconstruction plan",
+        )
+        reconstructed = temporary / "prepared"
+        # WHY: a handoff tag claimed inside an Actions artifact is only a
+        # string. Reusing the ordinary credential-free preparation path fetches
+        # the content-addressed public handoffs and independently derives the
+        # release bytes those tags actually authorize.
+        prepare(
+            plan_path=plan_path,
+            campaign_path=campaign_path,
+            source_tap_root=source_tap_root,
+            executor_path=executor_path,
+            output=reconstructed,
+        )
+        executor = load_executor(executor_path)
+        try:
+            executor["load_prepared_selection_release"](prepared_release)
+            executor["load_prepared_selection_release"](reconstructed)
+        except executor["ExecutorError"] as error:
+            fail(str(error))
+        for relative in PREPARED_RELEASE_PATHS:
+            if not files_match(
+                prepared_release / relative,
+                reconstructed / relative,
+            ):
+                fail(
+                    "transferred selection release differs from its "
+                    f"independent reconstruction at {relative}"
+                )
+    return summary
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -669,6 +770,24 @@ def parse_args() -> argparse.Namespace:
     verify_parser.add_argument(
         "--executor", type=pathlib.Path, required=True
     )
+
+    reconstruct_parser = commands.add_parser("reconstruct-verify")
+    reconstruct_parser.add_argument("--selection-plan", required=True)
+    reconstruct_parser.add_argument(
+        "--selection-plan-sha256", required=True
+    )
+    reconstruct_parser.add_argument(
+        "--prepared-release", type=pathlib.Path, required=True
+    )
+    reconstruct_parser.add_argument(
+        "--campaign", type=pathlib.Path, required=True
+    )
+    reconstruct_parser.add_argument(
+        "--source-tap-root", type=pathlib.Path, required=True
+    )
+    reconstruct_parser.add_argument(
+        "--executor", type=pathlib.Path, required=True
+    )
     return parser.parse_args()
 
 
@@ -709,6 +828,19 @@ def main() -> int:
                 executor_path=arguments.executor,
             )
             print("homebrew-closed-selection-controller: verified exact plan")
+        elif arguments.command == "reconstruct-verify":
+            summary = reconstruct_and_verify(
+                selection_plan=arguments.selection_plan,
+                selection_plan_sha256=arguments.selection_plan_sha256,
+                prepared_release=arguments.prepared_release,
+                campaign_path=arguments.campaign,
+                source_tap_root=arguments.source_tap_root,
+                executor_path=arguments.executor,
+            )
+            print(
+                "homebrew-closed-selection-controller: independently "
+                f"reconstructed {summary['formula_count']} Formulae"
+            )
         else:  # pragma: no cover - argparse owns command selection.
             raise AssertionError(arguments.command)
         return 0

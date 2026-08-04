@@ -2290,12 +2290,20 @@ Readers continue to accept regular-file-only `zip-stored-v1` releases.
 The write job has only `actions: read` and `contents: write`. It binds
 the artifact ID, artifact digest, workflow run, and head commit. It also
 compares the admitted plan digest with the original reusable-workflow
-input. Before validating the downloaded descriptor, it anonymously
-refetches the campaign by the admitted content-addressed tag. The pinned
-executor independently derives the runtime Formula set from that
-campaign. It requires the artifact's Formula names and handoff tags to
-match exactly. Changing a coherent artifact plan and selection together
-therefore cannot omit a runtime dependency or select different Formulae.
+input. Before granting write authority, it checks out the campaign's
+exact source tap and anonymously refetches the campaign and every
+content-addressed handoff in the plan. The pinned executor then runs the
+same credential-free preparation path that produced the artifact. It
+derives the exact runtime Formula set, reconstructs the tap, and creates
+a second deterministic descriptor, ZIP, and release manifest.
+
+Both releases must pass the strict release reader, and all three files
+must match byte for byte. This matters because a handoff tag written
+inside an Actions artifact is only a claim. Formula names and claimed
+tags could remain unchanged while the artifact substituted different
+bottle records, Formula files, sidecars, or archive bytes. Independent
+reconstruction binds the release to the bytes fetched from the public,
+content-addressed handoffs before the job can mutate a GitHub release.
 
 The write job delegates the release lifecycle to
 `publish-homebrew-closed-selection-release.sh`. That wrapper reuses the

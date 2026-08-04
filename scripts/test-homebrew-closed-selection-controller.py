@@ -386,6 +386,7 @@ class ClosedSelectionControllerTests(unittest.TestCase):
                 "roots": ["root"],
                 "schema": 1,
                 "tap": {
+                    "prepared_tree_git_oid": "c" * 40,
                     "repository": "kandelo-dev/homebrew-tap-core",
                     "source_commit": self.plan["source_tap_commit"],
                 },
@@ -395,24 +396,19 @@ class ClosedSelectionControllerTests(unittest.TestCase):
             )
 
         def prepare_selection_release(**arguments) -> None:
-            output = arguments["output"]
-            output.mkdir()
-            (output / "fixture-selection.json").write_bytes(
-                (
-                    arguments["selection_root"] / "selection.json"
-                ).read_bytes()
+            self.write_fake_release(
+                arguments["output"],
+                json.loads(
+                    (
+                        arguments["selection_root"] / "selection.json"
+                    ).read_text()
+                ),
             )
 
         def load_prepared_selection_release(
             prepared_root: pathlib.Path,
         ) -> tuple[dict, bytes, dict]:
-            selection = json.loads(
-                (prepared_root / "fixture-selection.json").read_text()
-            )
-            descriptor = {
-                "selection_manifest": {"value": selection},
-            }
-            return descriptor, b"fixture\n", {"fixture": True}
+            return self.load_fake_release(prepared_root)
 
         return {
             "ExecutorError": FakeExecutorError,
@@ -433,6 +429,81 @@ class ClosedSelectionControllerTests(unittest.TestCase):
                 runtime_selected_formula_order
             ),
         }
+
+    def write_fake_release(
+        self,
+        output: pathlib.Path,
+        selection: dict,
+    ) -> None:
+        assets = output / "assets"
+        assets.mkdir(parents=True)
+        archive = CONTROLLER.compact_json(
+            {
+                "prepared_tree_git_oid": selection["tap"][
+                    "prepared_tree_git_oid"
+                ]
+            }
+        )
+        archive_path = assets / "closed-selection.zip"
+        archive_path.write_bytes(archive)
+        descriptor = {
+            "selection_manifest": {"value": selection},
+            "tap_archive": {
+                "bytes": len(archive),
+                "sha256": hashlib.sha256(archive).hexdigest(),
+            },
+        }
+        descriptor_payload = CONTROLLER.pretty_json(descriptor)
+        (assets / "closed-selection.json").write_bytes(
+            descriptor_payload
+        )
+        manifest = {
+            "archive_sha256": descriptor["tap_archive"]["sha256"],
+            "descriptor_sha256": hashlib.sha256(
+                descriptor_payload
+            ).hexdigest(),
+        }
+        (output / "release-manifest.json").write_bytes(
+            CONTROLLER.pretty_json(manifest)
+        )
+
+    def load_fake_release(
+        self,
+        prepared_root: pathlib.Path,
+    ) -> tuple[dict, bytes, dict]:
+        observed = {
+            path.relative_to(prepared_root).as_posix()
+            for path in prepared_root.rglob("*")
+            if path.is_file()
+        }
+        if observed != set(CONTROLLER.PREPARED_RELEASE_PATHS):
+            raise FakeExecutorError("fake release has unexpected files")
+        descriptor_payload = (
+            prepared_root / "assets/closed-selection.json"
+        ).read_bytes()
+        descriptor = json.loads(descriptor_payload)
+        archive = (
+            prepared_root / "assets/closed-selection.zip"
+        ).read_bytes()
+        archive_record = descriptor["tap_archive"]
+        if (
+            archive_record["bytes"] != len(archive)
+            or archive_record["sha256"]
+            != hashlib.sha256(archive).hexdigest()
+        ):
+            raise FakeExecutorError("fake archive differs")
+        manifest = json.loads(
+            (prepared_root / "release-manifest.json").read_bytes()
+        )
+        expected_manifest = {
+            "archive_sha256": archive_record["sha256"],
+            "descriptor_sha256": hashlib.sha256(
+                descriptor_payload
+            ).hexdigest(),
+        }
+        if manifest != expected_manifest:
+            raise FakeExecutorError("fake manifest differs")
+        return descriptor, descriptor_payload, manifest
 
     def test_real_executor_exposes_the_required_contract(self) -> None:
         executor = CONTROLLER.load_executor(
@@ -477,7 +548,9 @@ class ClosedSelectionControllerTests(unittest.TestCase):
                     ("prepare", ("dep", "root")),
                 ],
             )
-            self.assertTrue((output / "fixture-selection.json").is_file())
+            self.assertTrue(
+                (output / "assets/closed-selection.json").is_file()
+            )
 
     def test_prepare_verifies_proof_only_handoff_without_selecting_it(
         self,
@@ -594,9 +667,8 @@ class ClosedSelectionControllerTests(unittest.TestCase):
                     "source_commit": self.plan["source_tap_commit"],
                 },
             }
-            (prepared / "fixture-selection.json").write_bytes(
-                CONTROLLER.pretty_json(value)
-            )
+            value["tap"]["prepared_tree_git_oid"] = "c" * 40
+            self.write_fake_release(prepared, value)
             plan_input = CONTROLLER.compact_json(self.plan).decode().rstrip(
                 "\n"
             )
@@ -622,9 +694,13 @@ class ClosedSelectionControllerTests(unittest.TestCase):
                 self.plan["handoffs"]["dep"]
             )
             value["tap"]["repository"] = None
-            (prepared / "fixture-selection.json").write_bytes(
-                CONTROLLER.pretty_json(value)
-            )
+            for child in sorted(prepared.rglob("*"), reverse=True):
+                if child.is_file():
+                    child.unlink()
+                else:
+                    child.rmdir()
+            prepared.rmdir()
+            self.write_fake_release(prepared, value)
             with mock.patch.object(
                 CONTROLLER,
                 "load_executor",
@@ -673,9 +749,8 @@ class ClosedSelectionControllerTests(unittest.TestCase):
             campaign_path.write_bytes(self.campaign_payload)
             prepared = temporary / "prepared"
             prepared.mkdir()
-            (prepared / "fixture-selection.json").write_bytes(
-                CONTROLLER.pretty_json(selection)
-            )
+            selection["tap"]["prepared_tree_git_oid"] = "c" * 40
+            self.write_fake_release(prepared, selection)
             with mock.patch.object(
                 CONTROLLER,
                 "load_executor",
@@ -732,9 +807,8 @@ class ClosedSelectionControllerTests(unittest.TestCase):
             campaign_path.write_bytes(self.campaign_payload)
             prepared = temporary / "prepared"
             prepared.mkdir()
-            (prepared / "fixture-selection.json").write_bytes(
-                CONTROLLER.pretty_json(selection)
-            )
+            selection["tap"]["prepared_tree_git_oid"] = "c" * 40
+            self.write_fake_release(prepared, selection)
             with mock.patch.object(
                 CONTROLLER,
                 "load_executor",
@@ -756,6 +830,87 @@ class ClosedSelectionControllerTests(unittest.TestCase):
                         prepared_release=prepared,
                         campaign_path=campaign_path,
                         executor_path=temporary / "executor.py",
+                    )
+
+    def test_reconstruct_rejects_coherent_archive_substitution(self) -> None:
+        calls: list[tuple] = []
+        plan_input = CONTROLLER.compact_json(self.plan).decode().rstrip(
+            "\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = pathlib.Path(directory)
+            plan_path = temporary / "plan.json"
+            plan_path.write_bytes(CONTROLLER.pretty_json(self.plan))
+            campaign_path = temporary / "campaign.json"
+            campaign_path.write_bytes(self.campaign_payload)
+            source_root = temporary / "source"
+            source_root.mkdir()
+            executor_path = temporary / "executor.py"
+            executor_path.touch()
+            prepared = temporary / "prepared"
+            executor = self.fake_executor(calls)
+            with mock.patch.object(
+                CONTROLLER,
+                "load_executor",
+                return_value=executor,
+            ):
+                CONTROLLER.prepare(
+                    plan_path=plan_path,
+                    campaign_path=campaign_path,
+                    source_tap_root=source_root,
+                    executor_path=executor_path,
+                    output=prepared,
+                )
+                summary = CONTROLLER.reconstruct_and_verify(
+                    selection_plan=plan_input,
+                    selection_plan_sha256=CONTROLLER.plan_digest(
+                        self.plan
+                    ),
+                    prepared_release=prepared,
+                    campaign_path=campaign_path,
+                    source_tap_root=source_root,
+                    executor_path=executor_path,
+                )
+                self.assertEqual(summary["formula_count"], 2)
+                descriptor, _payload, _manifest = (
+                    self.load_fake_release(prepared)
+                )
+                substituted = descriptor["selection_manifest"]["value"]
+                substituted["tap"]["prepared_tree_git_oid"] = "d" * 40
+                for child in sorted(prepared.rglob("*"), reverse=True):
+                    if child.is_file():
+                        child.unlink()
+                    else:
+                        child.rmdir()
+                prepared.rmdir()
+                self.write_fake_release(prepared, substituted)
+
+                # The old semantic check admits this internally coherent
+                # artifact because its Formula names and claimed handoff tags
+                # are unchanged. Independent reconstruction must reject its
+                # substituted archive, descriptor, and manifest bytes.
+                CONTROLLER.verify(
+                    selection_plan=plan_input,
+                    selection_plan_sha256=CONTROLLER.plan_digest(
+                        self.plan
+                    ),
+                    prepared_release=prepared,
+                    campaign_path=campaign_path,
+                    executor_path=executor_path,
+                )
+                with self.assertRaisesRegex(
+                    CONTROLLER.ControllerError,
+                    "differs from its independent reconstruction",
+                ):
+                    CONTROLLER.reconstruct_and_verify(
+                        selection_plan=plan_input,
+                        selection_plan_sha256=CONTROLLER.plan_digest(
+                            self.plan
+                        ),
+                        prepared_release=prepared,
+                        campaign_path=campaign_path,
+                        source_tap_root=source_root,
+                        executor_path=executor_path,
                     )
 
 

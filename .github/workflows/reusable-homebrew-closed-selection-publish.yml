@@ -222,7 +222,9 @@ jobs:
     name: Publish and read back immutable selection
     needs: prepare
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # WHY: this job independently repeats the bounded preparation path before
+    # publishing. It needs the same ceiling as the original 128-Formula pass.
+    timeout-minutes: 60
     permissions:
       actions: read
       contents: write
@@ -242,6 +244,15 @@ jobs:
           repository: kandelo-dev/homebrew-tap-core
           ref: ${{ inputs.expected-caller-sha }}
           path: tap-authority
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Checkout exact campaign source for reconstruction
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          repository: kandelo-dev/homebrew-tap-core
+          ref: ${{ needs.prepare.outputs.source-tap-commit }}
+          path: verification-source-tap
           fetch-depth: 0
           persist-credentials: false
 
@@ -306,7 +317,24 @@ jobs:
               --receipt-out \
                 "$RUNNER_TEMP/closed-selection-verification/receipt.json"
 
-      - name: Verify the downloaded selection against its plan
+      - name: Materialize campaign source for independent reconstruction
+        shell: bash
+        run: |
+          set -euo pipefail
+          env -u GH_TOKEN -u GITHUB_TOKEN \
+            -u HOMEBREW_GITHUB_API_TOKEN \
+            -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
+            -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+            python3 \
+              kandelo/scripts/homebrew-prefix-campaign-executor.py \
+              materialize-campaign-source \
+              --campaign \
+                "$RUNNER_TEMP/closed-selection-verification/campaign.json" \
+              --source-tap-root verification-source-tap \
+              --out \
+                "$RUNNER_TEMP/closed-selection-verification/target-source"
+
+      - name: Reconstruct and verify the downloaded selection
         shell: bash
         env:
           EXPECTED_CALLER_SHA: ${{ inputs.expected-caller-sha }}
@@ -324,13 +352,15 @@ jobs:
             -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
             python3 \
               kandelo/scripts/homebrew-closed-selection-controller.py \
-              verify \
+              reconstruct-verify \
               --selection-plan "$SELECTION_PLAN" \
               --selection-plan-sha256 "$PLAN_SHA256" \
               --prepared-release \
                 "$RUNNER_TEMP/closed-selection-preparation" \
               --campaign \
                 "$RUNNER_TEMP/closed-selection-verification/campaign.json" \
+              --source-tap-root \
+                "$RUNNER_TEMP/closed-selection-verification/target-source" \
               --executor \
                 kandelo/scripts/homebrew-prefix-campaign-executor.py
 

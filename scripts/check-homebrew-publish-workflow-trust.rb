@@ -1159,12 +1159,26 @@ def check_closed_selection_workflow(workflow)
   fetch = named_step(
     steps, "Fetch the exact campaign for independent verification"
   )
+  materialize = named_step(
+    steps, "Materialize campaign source for independent reconstruction"
+  )
   verify = named_step(
-    steps, "Verify the downloaded selection against its plan"
+    steps, "Reconstruct and verify the downloaded selection"
   )
   check(steps.index(download) < steps.index(fetch) &&
-        steps.index(fetch) < steps.index(verify),
+        steps.index(fetch) < steps.index(materialize) &&
+        steps.index(materialize) < steps.index(verify),
         "closed-selection campaign verification order changed")
+  source_checkout = named_step(
+    steps, "Checkout exact campaign source for reconstruction"
+  )
+  check(source_checkout.fetch("with") == {
+    "repository" => "kandelo-dev/homebrew-tap-core",
+    "ref" => "${{ needs.prepare.outputs.source-tap-commit }}",
+    "path" => "verification-source-tap",
+    "fetch-depth" => 0,
+    "persist-credentials" => false,
+  }, "closed-selection reconstruction source checkout changed")
   check(fetch["shell"] == "bash" && fetch["env"] == {
     "CAMPAIGN_TAG" => "${{ needs.prepare.outputs.campaign-tag }}",
   }, "closed-selection campaign readback authority changed")
@@ -1184,12 +1198,30 @@ def check_closed_selection_workflow(workflow)
     check(fetch_run.include?(fragment),
           "closed-selection campaign readback lacks #{fragment}")
   end
+  materialize_run = materialize.fetch("run")
+  [
+    "env -u GH_TOKEN -u GITHUB_TOKEN",
+    "-u HOMEBREW_GITHUB_API_TOKEN",
+    "-u HOMEBREW_GITHUB_PACKAGES_TOKEN",
+    "-u HOMEBREW_DOCKER_REGISTRY_TOKEN",
+    "homebrew-prefix-campaign-executor.py",
+    "materialize-campaign-source",
+    "--source-tap-root verification-source-tap",
+    "closed-selection-verification/target-source",
+  ].each do |fragment|
+    check(materialize_run.include?(fragment),
+          "closed-selection source reconstruction lacks #{fragment}")
+  end
   verify_run = verify.fetch("run")
-  check(verify_run.include?("--campaign") &&
+  check(verify_run.include?("reconstruct-verify") &&
+        verify_run.include?("--campaign") &&
         verify_run.include?(
           "closed-selection-verification/campaign.json"
+        ) && verify_run.include?("--source-tap-root") &&
+        verify_run.include?(
+          "closed-selection-verification/target-source"
         ),
-        "closed-selection cross-job verifier lacks exact campaign input"
+        "closed-selection verifier lacks independent reconstruction inputs"
   )
 end
 
