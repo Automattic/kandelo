@@ -4601,7 +4601,10 @@ jobs:
               # WHY: this focused page proves the exact package image and
               # kernel. Preparing the product shell here would make one
               # Formula depend on an unrelated, possibly pending selection.
-              bash ../../scripts/dev-shell.sh env \
+              # This heredoc already runs inside Kandelo's declared dev shell;
+              # re-entering it would require host Nix on the intentionally pure
+              # shell PATH instead of preserving the realized tool closure.
+              env \
                 KANDELO_PLAYWRIGHT_PORT="$KANDELO_PLAYWRIGHT_PORT" \
                 KANDELO_HOMEBREW_ACCEPTANCE_VFS_URL="$KANDELO_HOMEBREW_ACCEPTANCE_VFS_URL" \
                 KANDELO_HOMEBREW_ACCEPTANCE_VFS_SHA256="$KANDELO_HOMEBREW_ACCEPTANCE_VFS_SHA256" \

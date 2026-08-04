@@ -76,7 +76,7 @@ PUBLISHER_BUILD_DIGEST = "4dabfbe8be3192f1b4d62ad72e2ec27b275d527d24a8c89c12d982
 PUBLISHER_UPLOAD_DIGEST = "861d649d73bb470fc37f99751733e8360f3f59f6245b80e2dd8d7eb4f40f3290"
 PUBLISHER_INDEX_DIGEST = "30531067dcd20c314ef8ae4b9d8584716a92fc803a194098913355ebb519754b"
 PUBLISHER_STAGE_DIGEST = "b77b9c5196cdc12d77f900d9c385dc369da294348bbd238fdf7619dfb2e609e8"
-PUBLISHER_VERIFY_DIGEST = "222f31ef86cdad71e91d9b70b08de53fdcd8dd24a20caec1b2f41d7b0c96894b"
+PUBLISHER_VERIFY_DIGEST = "6534a97faf0369ddefa0d1a4687a429aeb31d2246ad7bb15bf7e5594d7b64d69"
 PUBLISHER_FINALIZE_DIGEST = "b17e7bf5d0a5ef512e49f74c224a94958642dfdd80a27439f2a0335816a0886b"
 PUBLISHER_VFS_RELEASE_DIGEST = "2db9ec075edf382e326066d5f49a32947f5a584fce26a966fb9fff23bbbe3c26"
 MAINTENANCE_VALIDATE_DIGEST = "30ebccd5d44e004e37f168e81284d7ceb18accfa067c05248c1cc19398a7515f"
@@ -7922,6 +7922,13 @@ def check_publisher(workflow)
         browser_run.match?(
           /\(\n\s+cd apps\/browser-demos\n\s+npx playwright install chromium --with-deps\n\s*\)\n\s*bash scripts\/dev-shell\.sh env/
         ), "publisher strict browser smoke does not provision Chromium once in the runner shell")
+  direct_browser_env = browser_run.lines.each_cons(2).any? do |command, input|
+    command.strip == 'env \\' &&
+      input.strip.start_with?('KANDELO_PLAYWRIGHT_PORT=')
+  end
+  check(direct_browser_env &&
+        !browser_run.include?("../../scripts/dev-shell.sh"),
+        "publisher strict browser smoke reenters an already active dev shell")
   forbidden_root_json_fragments.each do |fragment|
     check(browser_run.include?(fragment),
           "publisher browser sidecar regeneration lacks trusted forbidden-root source #{fragment}")
@@ -10287,6 +10294,18 @@ def self_test(publisher, native_compatibility, maintenance,
         "npx playwright install chromium --with-deps",
         "bash scripts/dev-shell.sh npx playwright install chromium --with-deps"
       )
+    },
+    "file-formula browser smoke reentered the active dev shell" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Build and strictly smoke the file-formula browser image"
+      )
+      lines = step.fetch("run").lines
+      direct_index = lines.each_index.find do |index|
+        lines.fetch(index).strip == 'env \\' &&
+          lines.fetch(index + 1, "").strip.start_with?('KANDELO_PLAYWRIGHT_PORT=')
+      end
+      lines.fetch(direct_index).sub!('env \\', 'bash ../../scripts/dev-shell.sh env \\')
+      step["run"] = lines.join
     },
     "browser smoke inner variables exposed to outer shell expansion" => lambda { |w|
       step = mutate_named_step(w, "verify-bottle", "Build and strictly smoke the file-formula browser image")
