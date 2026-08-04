@@ -2724,13 +2724,18 @@ hint.
 
 Before selecting a predecessor handoff, derivation proves that the Formula
 source, version, dependency graph, ABI snapshot, guest layout, native Homebrew
-revision, and critical validation tools are unchanged. The executor then
-downloads the exact predecessor campaign and Formula handoff, verifies the
-public OCI index and bottle layer without package credentials, and issues a
-new handoff bound to the current campaign. The bottle archive bytes and their
-original `built_from` provenance stay unchanged. An integrating controller must
-publish only that new handoff; it must not upload the already-public OCI child
-or version index again.
+revision, and critical validation tools are unchanged. The campaign's complete
+target tree may differ outside the selected Formula's source closure, such as
+at unrelated Formula leaves; whole-tree identity is campaign provenance, not
+an input to every bottle in that campaign. The selected Formula's complete
+source-closure digest must still match, including every publisher-consumable
+`Kandelo/formula_support` input. The executor then downloads the exact
+predecessor campaign and Formula handoff, verifies the public OCI index and
+bottle layer without package credentials, and issues a new handoff bound to the
+current campaign. The bottle archive bytes and their original `built_from`
+provenance stay unchanged. An integrating controller must publish only that
+new handoff; it must not upload the already-public OCI child or version index
+again.
 
 Dependencies are resealed in topological order. A recovered Formula consumes
 both the predecessor dependency handoffs that originally justified its bottle
