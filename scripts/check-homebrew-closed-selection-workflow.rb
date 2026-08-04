@@ -12,7 +12,7 @@ WORKFLOW = ARGV.empty? ?
     ".github/workflows/reusable-homebrew-closed-selection-publish.yml"
   ) : File.expand_path(ARGV.fetch(0))
 WORKFLOW_DIGEST =
-  "87e262285f7999191ee51d70b5a0fe9dad92d5bca2fdf417ef3b45354e5b3ce5"
+  "1b34d7ffce36dfb97e96454d3c88e00bc2ac8996c9689f8e045a9fbf05e36041"
 PREPARATION_ARTIFACT = "homebrew-closed-selection-preparation"
 CHECKOUT_ACTION =
   "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
@@ -79,6 +79,7 @@ def check_workflow(workflow)
     workflow["concurrency"] == {
       "group" =>
         "homebrew-closed-selection-${{ github.repository }}-" \
+        "${{ inputs.expected-caller-sha }}-" \
         "${{ inputs.selection-plan-sha256 }}",
       "cancel-in-progress" => false,
     },
@@ -94,7 +95,7 @@ def check_workflow(workflow)
   inputs = call.fetch("inputs")
   check(
     inputs.keys.sort == %w[
-      kandelo-ref selection-plan selection-plan-sha256
+      expected-caller-sha kandelo-ref selection-plan selection-plan-sha256
     ],
     "workflow input set differs"
   )
@@ -125,12 +126,18 @@ def check_workflow(workflow)
   check(!prepare.key?("needs"), "prepare must be the source job")
   check(publish["needs"] == "prepare", "publish dependency differs")
   check(
+    prepare.fetch("outputs")["caller-sha"] ==
+      "${{ steps.admit.outputs.caller-sha }}",
+    "publish job does not inherit the admitted caller SHA"
+  )
+  check(
     prepare.fetch("outputs")["plan-sha256"] ==
       "${{ steps.admit.outputs.plan-sha256 }}",
     "publish job does not inherit the admitted plan digest"
   )
   [prepare, publish].each do |job|
     check(job["runs-on"] == "ubuntu-latest", "job runner differs")
+    check(job["timeout-minutes"] == 60, "job timeout ceiling differs")
     check(job.fetch("steps").all?(Hash), "job steps are malformed")
   end
 
@@ -140,7 +147,7 @@ def check_workflow(workflow)
     uses.all? { |value| allowed_actions.include?(value) },
     "workflow contains an untrusted or unpinned action"
   )
-  check(uses.count(CHECKOUT_ACTION) == 4, "checkout set differs")
+  check(uses.count(CHECKOUT_ACTION) == 5, "checkout set differs")
   check(uses.count(UPLOAD_ACTION) == 2, "artifact upload set differs")
   check(uses.count(DOWNLOAD_ACTION) == 1, "artifact download set differs")
   check(values_for_key(workflow, "secrets").empty?,
@@ -180,22 +187,37 @@ def check_workflow(workflow)
     check(admission_source.include?(text),
           "caller admission omits #{text}")
   end
+  check(
+    admission.fetch("env")["ACTUAL_CALLER_SHA"] ==
+      "${{ github.sha }}" &&
+      admission.fetch("env")["EXPECTED_CALLER_SHA"] ==
+        "${{ inputs.expected-caller-sha }}" &&
+      admission_source.include?(
+        '[ "$ACTUAL_CALLER_SHA" = "$EXPECTED_CALLER_SHA" ]'
+      ),
+    "caller admission does not reject a differently resolved main commit"
+  )
   main_check = named_step(
     prepare,
-    "Require the checked-out publisher to be current main"
+    "Require the publisher and tap caller to be current main"
   ).fetch("run")
-  check(main_check.include?("refs/heads/main"),
-        "publisher checkout is not bound to current public main")
+  check(
+    main_check.include?("refs/heads/main") &&
+      main_check.include?("require-exact-repository-main.sh") &&
+      main_check.include?("$EXPECTED_CALLER_SHA"),
+    "preparation is not bound to both current public main commits"
+  )
 
-  credential_free_steps = [
-    "Admit the exact digest-bound selection plan",
-    "Fetch the exact public campaign",
-    "Materialize the sealed campaign tap source",
-    "Assemble the exact selection from public handoffs",
-    "Verify the downloaded selection against its plan",
-  ]
-  credential_free_steps.each do |name|
-    job = name.start_with?("Verify") ? publish : prepare
+  credential_free_steps = {
+    "Admit the exact digest-bound selection plan" => prepare,
+    "Fetch the exact public campaign" => prepare,
+    "Materialize the sealed campaign tap source" => prepare,
+    "Assemble the exact selection from public handoffs" => prepare,
+    "Fetch the exact campaign for independent verification" => publish,
+    "Materialize campaign source for independent reconstruction" => publish,
+    "Reconstruct and verify the downloaded selection" => publish,
+  }
+  credential_free_steps.each do |name, job|
     source = named_step(job, name).fetch("run")
     check(source.include?("env -u GH_TOKEN -u GITHUB_TOKEN"),
           "#{name} can observe publication credentials")
@@ -231,23 +253,74 @@ def check_workflow(workflow)
         "prepare job does not emit only its deterministic release")
   check(
     plan_admission.fetch("env") == {
+      "EXPECTED_CALLER_SHA" => "${{ inputs.expected-caller-sha }}",
       "SELECTION_PLAN" => "${{ inputs.selection-plan }}",
       "PLAN_SHA256" => "${{ inputs.selection-plan-sha256 }}",
     },
     "plan admission does not receive the exact reusable inputs"
+  )
+  check(
+    plan_admission.fetch("run").include?(
+      '--expected-caller-sha "$EXPECTED_CALLER_SHA"'
+    ),
+    "plan admission does not bind the expected caller SHA"
   )
 
   artifact_admission = named_step(
     publish,
     "Admit the exact same-run preparation artifact"
   )
+  tap_checkout = publish.fetch("steps").find do |step|
+    step["name"] == "Checkout protected tap lock authority"
+  end
+  check(
+    tap_checkout.fetch("with")["ref"] ==
+      "${{ inputs.expected-caller-sha }}",
+    "tap lock checkout is not bound to the expected caller SHA"
+  )
+  reconstruction_checkout = named_step(
+    publish,
+    "Checkout exact campaign source for reconstruction"
+  )
+  check(
+    reconstruction_checkout["uses"] == CHECKOUT_ACTION &&
+      reconstruction_checkout.fetch("with") == {
+        "repository" => "kandelo-dev/homebrew-tap-core",
+        "ref" => "${{ needs.prepare.outputs.source-tap-commit }}",
+        "path" => "verification-source-tap",
+        "fetch-depth" => 0,
+        "persist-credentials" => false,
+      },
+    "independent reconstruction source checkout differs"
+  )
+
+  reconstruction_materialization = named_step(
+    publish,
+    "Materialize campaign source for independent reconstruction"
+  ).fetch("run")
+  %w[
+    homebrew-prefix-campaign-executor.py
+    materialize-campaign-source
+    --campaign
+    --source-tap-root
+    verification-source-tap
+    target-source
+  ].each do |text|
+    check(
+      reconstruction_materialization.include?(text),
+      "independent source materialization omits #{text}"
+    )
+  end
 
   verify_step = named_step(
     publish,
-    "Verify the downloaded selection against its plan"
+    "Reconstruct and verify the downloaded selection"
   )
   check(
     verify_step.fetch("env") == {
+      "EXPECTED_CALLER_SHA" => "${{ inputs.expected-caller-sha }}",
+      "ADMITTED_CALLER_SHA" =>
+        "${{ needs.prepare.outputs.caller-sha }}",
       "SELECTION_PLAN" => "${{ inputs.selection-plan }}",
       "PLAN_SHA256" => "${{ inputs.selection-plan-sha256 }}",
       "ADMITTED_PLAN_SHA256" =>
@@ -257,9 +330,11 @@ def check_workflow(workflow)
   )
   verify_source = verify_step.fetch("run")
   %w[
+    reconstruct-verify
     --selection-plan
     --selection-plan-sha256
     --prepared-release
+    --source-tap-root
     --executor
   ].each do |text|
     check(verify_source.include?(text),
@@ -268,6 +343,9 @@ def check_workflow(workflow)
   check(verify_source.include?(
     '[ "$PLAN_SHA256" = "$ADMITTED_PLAN_SHA256" ]'
   ), "write job does not compare both independently carried plan digests")
+  check(verify_source.include?(
+    '[ "$EXPECTED_CALLER_SHA" = "$ADMITTED_CALLER_SHA" ]'
+  ), "write job does not compare both independently carried caller SHAs")
   artifact_source = artifact_admission.fetch("run")
   check(
     artifact_source.include?("actions/artifacts/$EXPECTED_ID") &&
@@ -275,7 +353,13 @@ def check_workflow(workflow)
       artifact_source.include?(".digest == $digest") &&
       artifact_source.include?(".id == $id") &&
       artifact_source.include?(".workflow_run.id == $run_id") &&
-      artifact_source.include?(".workflow_run.head_sha == $head_sha"),
+      artifact_source.include?(".workflow_run.head_sha == $head_sha") &&
+      artifact_source.include?(
+        '[ "$ACTUAL_CALLER_SHA" = "$EXPECTED_CALLER_SHA" ]'
+      ) &&
+      artifact_source.include?(
+        '[ "$ADMITTED_CALLER_SHA" = "$EXPECTED_CALLER_SHA" ]'
+      ),
     "write job does not bind the exact same-run artifact identity"
   )
 
@@ -284,7 +368,11 @@ def check_workflow(workflow)
     "Recheck protected publication authorities"
   ).fetch("run")
   check(
-    authority_source.scan("require-exact-repository-main.sh").length == 2,
+    authority_source.scan("require-exact-repository-main.sh").length == 2 &&
+      authority_source.include?(
+        '[ "$ACTUAL_CALLER_SHA" = "$EXPECTED_CALLER_SHA" ]'
+      ) &&
+      authority_source.include?('--source-sha "$EXPECTED_CALLER_SHA"'),
     "write job does not recheck both exact main authorities"
   )
   publish_step = named_step(
@@ -315,6 +403,11 @@ def check_workflow(workflow)
     "publication step receives unexpected environment authority"
   )
   check(
+    publish_step.fetch("env")["TAP_CALLER_SHA"] ==
+      "${{ inputs.expected-caller-sha }}",
+    "per-write authority is not the expected caller SHA"
+  )
+  check(
     values_for_key(workflow, "run").none? do |source|
       source.include?("gh release create") ||
         source.include?("gh release upload")
@@ -328,6 +421,7 @@ def check_workflow(workflow)
     prepare_selection_release
     load_prepared_selection_release
     expected_plan
+    reconstruct_and_verify
   ].each do |text|
     check(controller_source.include?(text),
           "closed-selection controller omits #{text}")
@@ -362,6 +456,17 @@ def check_workflow(workflow)
   check(controller_tests.include?(
     "test_verify_rejects_coherent_artifact_plan_substitution"
   ), "controller tests omit coherent artifact substitution")
+  check(controller_tests.include?(
+    "test_reconstruct_rejects_coherent_archive_substitution"
+  ), "controller tests omit coherent archive substitution")
+  check(
+    controller_tests.include?(
+      "test_admit_rejects_resolved_caller_mismatch_before_writing"
+    ) && controller_tests.include?(
+      "test_admit_rejects_missing_or_extra_dispatch_input"
+    ),
+    "controller tests omit caller mismatch or exact-input rejection"
+  )
   executor_tests = File.read(
     File.join(ROOT, "scripts/test-homebrew-prefix-campaign-executor.py")
   )
@@ -429,6 +534,37 @@ begin
     checkout.fetch("with")["ref"] = "main"
     check_workflow(mutated)
   end
+  expect_rejection("a missing expected caller input") do
+    mutated = deep_copy(workflow)
+    workflow_events(mutated).dig("workflow_call", "inputs").delete(
+      "expected-caller-sha"
+    )
+    check_workflow(mutated)
+  end
+  expect_rejection("preparation after caller main moved") do
+    mutated = deep_copy(workflow)
+    step = mutated.dig("jobs", "prepare", "steps").find do |candidate|
+      candidate["name"] ==
+        "Require the publisher and tap caller to be current main"
+    end
+    step["run"] = step.fetch("run").sub(
+      '--source-sha "$EXPECTED_CALLER_SHA"',
+      '--source-sha "$GITHUB_SHA"'
+    )
+    check_workflow(mutated)
+  end
+  expect_rejection("a differently resolved workflow caller") do
+    mutated = deep_copy(workflow)
+    step = mutated.dig("jobs", "prepare", "steps").find do |candidate|
+      candidate["name"] ==
+        "Admit the protected tap caller and publisher ref"
+    end
+    step["run"] = step.fetch("run").sub(
+      '[ "$ACTUAL_CALLER_SHA" = "$EXPECTED_CALLER_SHA" ]',
+      "true"
+    )
+    check_workflow(mutated)
+  end
   expect_rejection("publication without source ancestry") do
     mutated = deep_copy(workflow)
     step = mutated.dig("jobs", "publish", "steps").find do |candidate|
@@ -451,6 +587,15 @@ begin
       /\s+--exact-execution-target-main-sha "\$TAP_CALLER_SHA"/,
       ""
     )
+    check_workflow(mutated)
+  end
+  expect_rejection("per-write authority from resolved moving main") do
+    mutated = deep_copy(workflow)
+    step = mutated.dig("jobs", "publish", "steps").find do |candidate|
+      candidate["name"] ==
+        "Publish and anonymously read back the exact selection"
+    end
+    step.fetch("env")["TAP_CALLER_SHA"] = "${{ github.sha }}"
     check_workflow(mutated)
   end
   expect_rejection("cancellable publication") do

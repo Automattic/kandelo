@@ -21,6 +21,10 @@ PREFIX_FIRST_CHILD_PATH = File.join(
   REPO_ROOT,
   ".github/workflows/reusable-homebrew-prefix-first-child-publish.yml"
 )
+CLOSED_SELECTION_PATH = File.join(
+  REPO_ROOT,
+  ".github/workflows/reusable-homebrew-closed-selection-publish.yml"
+)
 WORKFLOW_ROOT = File.join(REPO_ROOT, ".github/workflows")
 HOST_RUNTIME_PREPARER_PATH = File.join(
   REPO_ROOT, "scripts/prepare-homebrew-recipe-host-runtime.py"
@@ -45,7 +49,7 @@ ROOTFS_PUBLICATION_SELECTION_PATH = File.join(
   REPO_ROOT, "scripts/homebrew-rootfs-publication-selection.sh"
 )
 ROOTFS_PUBLICATION_SELECTION_SHA256 =
-  "c48f0369a5e85aa3c8b5a52124e0e2e38f383f4ce64a03ad23ab5312ed50f900"
+  "f1dfb9efdb1dcb81990b907c3ebee44cfa6cee87304af5fc54161f3fe4fc67c2"
 TAP_CALLER_ROOT = File.join(REPO_ROOT, "homebrew/homebrew-tap-core/.github/workflows")
 CHECKOUT_ACTION = "actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd"
 # WHY: the reusable publishers freeze v6 in their reviewed step digests. This
@@ -71,7 +75,7 @@ PUBLISHER_PLAN_DIGEST = "a01844e87d7be2f9ad71a1f0a1b43245163a6939b714ce96de63c61
 PUBLISHER_BUILD_DIGEST = "4dabfbe8be3192f1b4d62ad72e2ec27b275d527d24a8c89c12d9822eb5430afc"
 PUBLISHER_UPLOAD_DIGEST = "861d649d73bb470fc37f99751733e8360f3f59f6245b80e2dd8d7eb4f40f3290"
 PUBLISHER_INDEX_DIGEST = "30531067dcd20c314ef8ae4b9d8584716a92fc803a194098913355ebb519754b"
-PUBLISHER_VERIFY_DIGEST = "8b2f821882da1f3a68ac93039da25be1ea530a68cee36d02f79d3d3bd1f4ae39"
+PUBLISHER_VERIFY_DIGEST = "c8f492ad56b2c2865eb2232b5a59ffa6ea849ce34acee79ea1b496ae011c356a"
 PUBLISHER_FINALIZE_DIGEST = "b17e7bf5d0a5ef512e49f74c224a94958642dfdd80a27439f2a0335816a0886b"
 PUBLISHER_VFS_RELEASE_DIGEST = "2db9ec075edf382e326066d5f49a32947f5a584fce26a966fb9fff23bbbe3c26"
 MAINTENANCE_VALIDATE_DIGEST = "30ebccd5d44e004e37f168e81284d7ceb18accfa067c05248c1cc19398a7515f"
@@ -1131,6 +1135,94 @@ def check_native_compatibility_workflow(workflow)
           "if-no-files-found" => "error",
           "retention-days" => 14,
         }, "native compatibility CA evidence changed")
+end
+
+def check_closed_selection_workflow(workflow)
+  check(
+    workflow["name"] == "Reusable Homebrew closed-selection publish",
+    "closed-selection workflow name changed"
+  )
+  jobs = workflow_jobs(workflow)
+  check(jobs.keys.sort == %w[prepare publish],
+        "closed-selection workflow job set changed")
+  prepare = jobs.fetch("prepare")
+  publish = jobs.fetch("publish")
+  check(
+    prepare.fetch("outputs").fetch("campaign-tag") ==
+      "${{ steps.admit.outputs.campaign-tag }}",
+    "closed-selection prepare job does not export admitted campaign tag"
+  )
+  steps = job_steps(publish, "closed-selection publish")
+  download = named_step(
+    steps, "Download only the same-run prepared selection"
+  )
+  fetch = named_step(
+    steps, "Fetch the exact campaign for independent verification"
+  )
+  materialize = named_step(
+    steps, "Materialize campaign source for independent reconstruction"
+  )
+  verify = named_step(
+    steps, "Reconstruct and verify the downloaded selection"
+  )
+  check(steps.index(download) < steps.index(fetch) &&
+        steps.index(fetch) < steps.index(materialize) &&
+        steps.index(materialize) < steps.index(verify),
+        "closed-selection campaign verification order changed")
+  source_checkout = named_step(
+    steps, "Checkout exact campaign source for reconstruction"
+  )
+  check(source_checkout.fetch("with") == {
+    "repository" => "kandelo-dev/homebrew-tap-core",
+    "ref" => "${{ needs.prepare.outputs.source-tap-commit }}",
+    "path" => "verification-source-tap",
+    "fetch-depth" => 0,
+    "persist-credentials" => false,
+  }, "closed-selection reconstruction source checkout changed")
+  check(fetch["shell"] == "bash" && fetch["env"] == {
+    "CAMPAIGN_TAG" => "${{ needs.prepare.outputs.campaign-tag }}",
+  }, "closed-selection campaign readback authority changed")
+  fetch_run = fetch.fetch("run")
+  [
+    "env -u GH_TOKEN -u GITHUB_TOKEN",
+    "-u HOMEBREW_GITHUB_API_TOKEN",
+    "-u HOMEBREW_GITHUB_PACKAGES_TOKEN",
+    "-u HOMEBREW_DOCKER_REGISTRY_TOKEN",
+    "homebrew-prefix-campaign-executor.py",
+    "fetch-campaign-release",
+    "--repository kandelo-dev/homebrew-tap-core",
+    '--tag "$CAMPAIGN_TAG"',
+    'closed-selection-verification/campaign.json',
+    'closed-selection-verification/receipt.json',
+  ].each do |fragment|
+    check(fetch_run.include?(fragment),
+          "closed-selection campaign readback lacks #{fragment}")
+  end
+  materialize_run = materialize.fetch("run")
+  [
+    "env -u GH_TOKEN -u GITHUB_TOKEN",
+    "-u HOMEBREW_GITHUB_API_TOKEN",
+    "-u HOMEBREW_GITHUB_PACKAGES_TOKEN",
+    "-u HOMEBREW_DOCKER_REGISTRY_TOKEN",
+    "homebrew-prefix-campaign-executor.py",
+    "materialize-campaign-source",
+    "--source-tap-root verification-source-tap",
+    "closed-selection-verification/target-source",
+  ].each do |fragment|
+    check(materialize_run.include?(fragment),
+          "closed-selection source reconstruction lacks #{fragment}")
+  end
+  verify_run = verify.fetch("run")
+  check(verify_run.include?("reconstruct-verify") &&
+        verify_run.include?("--campaign") &&
+        verify_run.include?(
+          "closed-selection-verification/campaign.json"
+        ) && verify_run.include?("--source-tap-root") &&
+        verify_run.include?(
+          "closed-selection-verification/target-source"
+        ),
+        "closed-selection verifier lacks independent reconstruction inputs"
+  )
 end
 
 def check_first_publication(workflow)
@@ -7304,55 +7396,10 @@ def check_publisher(workflow)
   check(index_verify_run.scan(repository_remote).length == 1 &&
         !index_verify_run.include?('remote="ghcr.io/${tap_name}/'),
         "publisher public Homebrew index verification is not repository-rooted")
-  browser_graph_condition =
-    "${{ matrix.arch == 'wasm32' && (matrix.formula == 'file-formula' || " \
-    "(!inputs.dry-run && matrix.formula == needs.plan.outputs.vfs-acceptance-formula)) }}"
-  browser_sysroot_step = named_step(
-    verify_steps, "Build Kandelo wasm64 sysroot for the interactive browser graph"
-  )
-  check(browser_sysroot_step.keys.sort == %w[if name run shell] &&
-        browser_sysroot_step["shell"] == "bash" &&
-        browser_sysroot_step["if"] == browser_graph_condition,
-        "publisher interactive browser wasm64 sysroot is not scoped to " \
-        "file-formula or the exact wasm32 VFS acceptance entry")
-  browser_sysroot_run = browser_sysroot_step.fetch("run")
-  [
-    "set -euo pipefail", "cd kandelo-sysroot-build",
-    "bash scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix",
-    "[ -f sysroot64/lib/libc.a ]",
-  ].each do |fragment|
-    check(browser_sysroot_run.include?(fragment),
-          "publisher interactive browser wasm64 sysroot lacks #{fragment}")
-  end
-  check(!browser_sysroot_run.lines.any? { |line| line.strip == "cd kandelo" },
-        "publisher builds the browser wasm64 sysroot in the reviewed verifier checkout")
-  browser_demo_step = named_step(verify_steps,
-                                 "Prepare the supported interactive browser demo graph")
-  check(browser_demo_step.keys.sort == %w[if name run shell] &&
-        browser_demo_step["shell"] == "bash" &&
-        browser_demo_step["if"] == browser_graph_condition,
-        "publisher interactive browser graph is not scoped to file-formula or the exact " \
-        "wasm32 VFS acceptance entry")
-  browser_demo_run = browser_demo_step.fetch("run")
-  [
-    "for sysroot_name in sysroot sysroot64",
-    'sysroot_source="$GITHUB_WORKSPACE/kandelo-sysroot-build/$sysroot_name"',
-    'sysroot_destination="$GITHUB_WORKSPACE/kandelo/$sysroot_name"',
-    '[ -d "$sysroot_source" ] && [ ! -L "$sysroot_source" ]',
-    '[ -f "$sysroot_source/lib/libc.a" ]',
-    '[ ! -e "$sysroot_destination" ] && [ ! -L "$sysroot_destination" ]',
-    'cp -a -- "$sysroot_source" "$sysroot_destination"',
-    '[ -f "$sysroot_destination/lib/libc.a" ]',
-    "bash scripts/dev-shell.sh ./run.sh --fetch-only prepare-browser",
-  ].each do |fragment|
-    check(browser_demo_run.include?(fragment),
-          "publisher file-formula verification browser graph lacks #{fragment}")
-  end
-  check(!browser_demo_run.include?("scripts/fetch-binaries.sh"),
-        "publisher file-formula verification bypasses the supported browser package selection")
   verifier_runtime_step = named_step(verify_steps,
                                      "Materialize Formula verification platform runtime")
-  browser_demo_index = verify_steps.index(browser_demo_step)
+  javascript_step = named_step(verify_steps, "Install JavaScript dependencies")
+  javascript_index = verify_steps.index(javascript_step)
   verifier_runtime_index = verify_steps.index(verifier_runtime_step)
   isolated_verifier_index = verify_steps.index(
     named_step(
@@ -7360,12 +7407,19 @@ def check_publisher(workflow)
     )
   )
   check(
-    !browser_demo_index.nil? && !verifier_runtime_index.nil? &&
+    !javascript_index.nil? && !verifier_runtime_index.nil? &&
       !isolated_verifier_index.nil? &&
-      verifier_runtime_index == browser_demo_index + 1 &&
+      verifier_runtime_index == javascript_index + 1 &&
       verifier_runtime_index < isolated_verifier_index,
     "publisher must materialize the portable Formula cache immediately after " \
-    "the final browser graph writer and before isolated verification"
+    "JavaScript setup and before isolated verification"
+  )
+  check(
+    verify_steps.none? do |step|
+      step.fetch("run", "").to_s.include?("prepare-browser") ||
+        step.fetch("run", "").to_s.include?("--pending-selection-root")
+    end,
+    "per-Formula verification must not prepare or require the complete shell selection"
   )
   # No later verifier step may resolve another package into binaries/: that
   # would replace the mirrors after their canonical generations were copied.
@@ -7531,19 +7585,34 @@ def check_publisher(workflow)
     "publisher campaign no longer retains the dynamic file-formula browser smoke"
   )
   browser_run = browser_step.fetch("run")
-  browser_test_title =
-    "Homebrew file-formula VFS image boots in browser and runs file --version"
-  browser_test_selector = "#{browser_test_title}$"
   browser_test_source = File.read(
-    File.join(REPO_ROOT, "apps/browser-demos/test/kandelo-homebrew.spec.ts")
+    File.join(REPO_ROOT, "apps/browser-demos/test/homebrew-brewfile-vfs.spec.ts")
   )
   [
     "bash -s <<'KANDELO_HOMEBREW_BROWSER_SMOKE'",
-    "KANDELO_HOMEBREW_STRICT_PUBLISHER_SMOKE=1",
-    'KANDELO_HOMEBREW_FILE_FORMULA_COMMAND="$file_command"',
     '. scripts/homebrew-guest-layout.sh',
-    'file_command="$HOMEBREW_GUEST_PREFIX/bin/file --version"',
+    'file_executable="$HOMEBREW_GUEST_PREFIX/bin/file"',
+    'file_argv_json=\'["file","--version"]\'',
+    'first(.packages[] | select(.name == $formula)).version',
+    'first(.packages[] | select(.name == $formula)).formula_revision',
+    'revision_suffix="_${file_formula_revision}"',
+    'file_upstream_version="${file_pkg_version%"$revision_suffix"}"',
+    'file pkg_version does not carry its Formula revision',
+    'file_expected_stdout="file-${file_upstream_version}"',
     'KANDELO_HOMEBREW_BUILD_ROOT="$GITHUB_WORKSPACE/kandelo-sysroot-build"',
+    '[ ! -e "$browser_public_dir" ] && [ ! -L "$browser_public_dir" ]',
+    'image_sha256="$(sha256sum "$browser_vfs"',
+    'served file browser VFS differs from the composed image',
+    'kernel="$GITHUB_WORKSPACE/kandelo/local-binaries/kernel.wasm"',
+    'kernel_sha256="$(sha256sum "$kernel"',
+    'KANDELO_HOMEBREW_ACCEPTANCE_VFS_URL="$KANDELO_HOMEBREW_ACCEPTANCE_VFS_URL"',
+    'KANDELO_HOMEBREW_ACCEPTANCE_VFS_SHA256="$KANDELO_HOMEBREW_ACCEPTANCE_VFS_SHA256"',
+    'KANDELO_HOMEBREW_ACCEPTANCE_KERNEL_SHA256="$KANDELO_HOMEBREW_ACCEPTANCE_KERNEL_SHA256"',
+    'KANDELO_HOMEBREW_ACCEPTANCE_EXECUTABLE="$KANDELO_HOMEBREW_ACCEPTANCE_EXECUTABLE"',
+    'KANDELO_HOMEBREW_ACCEPTANCE_ARGV_JSON="$KANDELO_HOMEBREW_ACCEPTANCE_ARGV_JSON"',
+    'KANDELO_HOMEBREW_ACCEPTANCE_EXPECTED_STDOUT="$KANDELO_HOMEBREW_ACCEPTANCE_EXPECTED_STDOUT"',
+    'KANDELO_BROWSER_DEMO_INPUTS="homebrew-vfs-test"',
+    'test/homebrew-brewfile-vfs.spec.ts',
     "'{schema: 1, formula: $formula, arch: $arch,",
     "KANDELO_HOMEBREW_BROWSER_SMOKE\n",
     "--reporter=json", ".stats.expected == 1", ".stats.unexpected == 0",
@@ -7551,14 +7620,17 @@ def check_publisher(workflow)
   ].each do |fragment|
     check(browser_run.include?(fragment), "publisher strict browser smoke lacks #{fragment}")
   end
-  check(browser_test_source.include?(%{test("#{browser_test_title}", async}) &&
-        browser_test_source.include?(
-          "process.env.KANDELO_HOMEBREW_FILE_FORMULA_COMMAND"
+  check(browser_test_source.include?(
+          'test("the exact Homebrew VFS boots in Chromium"'
         ) &&
-        browser_run.include?(%{--grep "#{browser_test_selector}"}),
-        "publisher strict browser smoke does not select its exact fully qualified Playwright test")
-  check(!browser_run.include?("bash -c '"),
-        "publisher strict browser smoke exposes its inner script to outer shell expansion")
+        browser_test_source.include?("expect(result.imageSha256).toBe(imageSha256)") &&
+        browser_test_source.include?("expect(result.kernelSha256).toBe(kernelSha256)") &&
+        browser_test_source.include?("expect(result.exitCode, result.stderr).toBe(0)"),
+        "publisher strict browser smoke does not use the exact-artifact package page")
+  check(!browser_run.include?("test/kandelo-homebrew.spec.ts") &&
+        !browser_run.include?("KANDELO_HOMEBREW_DEFAULT_SHELL") &&
+        !browser_run.include?("prepare-browser"),
+        "publisher file smoke depends on the complete interactive shell product")
   check(browser_run.scan("npx playwright install chromium --with-deps").length == 1 &&
         browser_run.match?(
           /\(\n\s+cd apps\/browser-demos\n\s+npx playwright install chromium --with-deps\n\s*\)\n\s*bash scripts\/dev-shell\.sh env/
@@ -7654,17 +7726,16 @@ def check_publisher(workflow)
     '--base-origin kandelo-package-registry', '--kernel-origin worktree-build',
     '--formula "$selected_formula"',
     '[ "$(jq -er \'.image.sha256\' "$node_evidence")" = "$image_sha256" ]',
+    'browser_shell_env=()',
+    'KANDELO_HOMEBREW_ACCEPTANCE_DEFAULT_SHELL_PATH=$shell_path',
+    'KANDELO_HOMEBREW_ACCEPTANCE_DEFAULT_SHELL_ARGV_JSON=$shell_argv_json',
+    '"${browser_shell_env[@]}"',
     'export KANDELO_BROWSER_DEMO_INPUTS="homebrew-vfs-test"',
     'KANDELO_BROWSER_DEMO_INPUTS="$KANDELO_BROWSER_DEMO_INPUTS"',
     'bash ../../scripts/dev-shell.sh env',
     'test/homebrew-brewfile-vfs.spec.ts',
     '--project=chromium --reporter=json >"$1"',
     '\' kandelo-homebrew-vfs-playwright "$playwright_report"',
-    'KANDELO_HOMEBREW_DEFAULT_SHELL_VFS_URL="$KANDELO_HOMEBREW_DEFAULT_SHELL_VFS_URL"',
-    'KANDELO_HOMEBREW_DEFAULT_SHELL_PATH="$KANDELO_HOMEBREW_DEFAULT_SHELL_PATH"',
-    'KANDELO_HOMEBREW_DEFAULT_SHELL_ARGV0="$KANDELO_HOMEBREW_DEFAULT_SHELL_ARGV0"',
-    'test/kandelo-homebrew.spec.ts',
-    '\' kandelo-homebrew-shell-playwright "$shell_playwright_report"',
     'legacy_shell_downloads: 0',
     '.stats.expected == 1', '.stats.unexpected == 0',
     '.stats.flaky == 0', '.stats.skipped == 0',
@@ -7672,10 +7743,13 @@ def check_publisher(workflow)
     check(acceptance_run.include?(fragment),
           "publisher dependency-bearing VFS acceptance lacks #{fragment}")
   end
-  check(acceptance_run.scan('--reporter=json >"$1"').length == 2 &&
-        !acceptance_run.include?('--reporter=json >"$playwright_report"') &&
-        !acceptance_run.include?('--reporter=json >"$shell_playwright_report"'),
+  check(acceptance_run.scan('--reporter=json >"$1"').length == 1 &&
+        !acceptance_run.include?('--reporter=json >"$playwright_report"'),
         "publisher captures dev-shell setup stdout in a Playwright JSON report")
+  check(!acceptance_run.include?("test/kandelo-homebrew.spec.ts") &&
+        !acceptance_run.include?('KANDELO_BROWSER_DEMO_INPUTS="main,kandelo"') &&
+        !acceptance_run.include?("prepare-browser"),
+        "package VFS acceptance still owns the complete interactive shell proof")
   check(acceptance_run.match?(
           /if \[ ! -e "\$config_candidate" \] && \[ ! -L "\$config_candidate" \]; then\n\s+if \[ "\$KANDELO_HOMEBREW_ACCEPTANCE_REQUIRED" = "true" \]; then\n\s+echo "::error::[^\n]+"\n\s+exit 1\n\s+fi\n\s+echo "::notice::[^\n]+no closure acceptance evidence was produced"\n\s+exit 0/
         ), "publisher does not preserve optional and required VFS acceptance semantics")
@@ -7710,8 +7784,24 @@ def check_publisher(workflow)
   browser_acceptance_source = File.read(
     File.join(REPO_ROOT, "apps/browser-demos/pages/homebrew-vfs-test/main.ts")
   )
+  browser_acceptance_request_source = File.read(
+    File.join(
+      REPO_ROOT,
+      "apps/browser-demos/pages/homebrew-vfs-test/acceptance-request.ts"
+    )
+  )
   check(browser_acceptance_source.include?('fetchBytes(request.vfsUrl, "Homebrew VFS image")') &&
         browser_acceptance_source.include?("vfsImage: new Uint8Array(imageBytes)") &&
+        browser_acceptance_source.include?("validateHomebrewVfsAcceptanceRequest(request)") &&
+        browser_acceptance_request_source.include?("stdin?: string") &&
+        browser_acceptance_request_source.include?("pty?: boolean") &&
+        browser_acceptance_request_source.include?("MAX_STDIN_BYTES = 64 * 1024") &&
+        browser_acceptance_request_source.include?("focused PTY acceptance requires bounded terminal input") &&
+        browser_acceptance_request_source.include?('{ kind: "stdio"; stdin?: Uint8Array }') &&
+        browser_acceptance_request_source.include?('{ kind: "pty"; input: Uint8Array }') &&
+        browser_acceptance_source.include?("kernel.onPtyOutput") &&
+        browser_acceptance_source.include?("kernel.ptyWrite(pid, input.input)") &&
+        browser_acceptance_source.include?('appendOutput(stdout, bytes, "PTY output")') &&
         !browser_acceptance_source.include?("live-setup") &&
         !browser_acceptance_source.include?(".saveImage("),
         "browser Homebrew VFS acceptance does not boot the exact fetched image bytes")
@@ -7720,19 +7810,36 @@ def check_publisher(workflow)
   )
   check(browser_acceptance_test.include?("expect(result.imageSha256).toBe(imageSha256)") &&
         browser_acceptance_test.include?("expect(result.kernelSha256).toBe(kernelSha256)") &&
-        browser_acceptance_test.include?("expect(result.exitCode, result.stderr).toBe(0)"),
-        "browser Homebrew VFS acceptance test does not bind exact artifacts and command success")
-  default_shell_test = File.read(
+        browser_acceptance_test.include?("expect(result.exitCode, result.stderr).toBe(0)") &&
+        browser_acceptance_test.include?("KANDELO_HOMEBREW_ACCEPTANCE_DEFAULT_SHELL_PATH") &&
+        browser_acceptance_test.include?("KANDELO_HOMEBREW_ACCEPTANCE_DEFAULT_SHELL_ARGV_JSON") &&
+        browser_acceptance_test.include?("pty: true") &&
+        browser_acceptance_test.include?("expect(shellResult.imageSha256).toBe(imageSha256)") &&
+        browser_acceptance_test.include?("expect(shellResult.kernelSha256).toBe(kernelSha256)") &&
+        browser_acceptance_test.include?("expect(shellResult.exitCode, shellResult.stderr).toBe(0)"),
+        "browser Homebrew VFS acceptance test does not bind exact artifacts, " \
+        "command success, and the focused default-shell PTY proof")
+  shell_request_matcher = File.read(
+    File.join(REPO_ROOT, "apps/browser-demos/test/homebrew-shell-request.ts")
+  )
+  product_shell_test = File.read(
     File.join(REPO_ROOT, "apps/browser-demos/test/kandelo-homebrew.spec.ts")
   )
-  check(default_shell_test.include?("KANDELO_HOMEBREW_DEFAULT_SHELL_VFS_URL") &&
-        default_shell_test.include?("KANDELO_HOMEBREW_DEFAULT_SHELL_PATH") &&
-        default_shell_test.include?("KANDELO_HOMEBREW_DEFAULT_SHELL_ARGV0") &&
-        default_shell_test.include?('element.shadowRoot?.querySelector(".message-body")') &&
-        default_shell_test.include?('element.attachShadow({ mode: "open" })') &&
-        default_shell_test.include?("expect(legacyShellFetches).toEqual([])"),
-        "browser Homebrew default-shell acceptance does not bind the exact image shell path " \
-        "and preserve Vite diagnostics")
+  check(shell_request_matcher.include?("isLegacyShellProgramFetch") &&
+        shell_request_matcher.include?('/\\/(?:bash|dash)\\.wasm(?:\\?|$)/') &&
+        product_shell_test.include?("isLegacyShellProgramFetch(request.resourceType(), url)") &&
+        browser_acceptance_test.include?("isLegacyShellProgramFetch(request.resourceType(), url)") &&
+        browser_acceptance_test.include?("expect(legacyShellFetches).toEqual([])"),
+        "focused and product default-shell proofs do not share the canonical " \
+        "legacy shell request observation")
+  publish_workflow_test = File.read(
+    File.join(REPO_ROOT, "scripts/test-homebrew-publish-workflow.sh")
+  )
+  check(publish_workflow_test.include?(
+          'scripts/test-homebrew-main-shell-mirror-workflow.sh'
+        ),
+        "publisher tests no longer delegate the complete Node and Chromium " \
+        "shell proof to the closed-selection mirror contract")
   diagnostics = named_step(verify_steps, "Upload read-only verification diagnostics")
   check(diagnostics.dig("with", "name") ==
           "${{ needs.plan.outputs.artifact-name-prefix }}" \
@@ -8015,6 +8122,8 @@ def check_publisher(workflow)
   vfs_test_source = File.read(File.join(REPO_ROOT, "scripts/test-homebrew-vfs-release.sh"))
   [
     "validator accepted a tampered VFS image", "browser evidence for different bytes",
+    "browser evidence for another default shell",
+    "browser evidence without the reviewed default shell",
     "validator accepted a symlinked handoff entry", "dirty exact tap checkout",
     "idempotent public retry mutated the release", "recover an exact partial draft",
     "replaced an exact partial draft instead of discovering it by authenticated release list",
@@ -9480,16 +9589,16 @@ def self_test(publisher, native_compatibility, maintenance,
         "WASM_POSIX_XTASK_BIN="
       )
     },
-    "Formula verification cache materialized before final browser package fetch" => lambda { |w|
+    "Formula verification cache materialized before JavaScript setup" => lambda { |w|
       steps = w.fetch("jobs").fetch("verify-bottle").fetch("steps")
-      browser_index = steps.index do |step|
-        step["name"] == "Prepare the supported interactive browser demo graph"
+      javascript_index = steps.index do |step|
+        step["name"] == "Install JavaScript dependencies"
       end
-      browser_step = steps.delete_at(browser_index)
+      javascript_step = steps.delete_at(javascript_index)
       runtime_index = steps.index do |step|
         step["name"] == "Materialize Formula verification platform runtime"
       end
-      steps.insert(runtime_index + 1, browser_step)
+      steps.insert(runtime_index + 1, javascript_step)
     },
     "Formula test runtime cache-link materialization bypass" => lambda { |w|
       step = mutate_named_step(w, "build-and-test",
@@ -9834,43 +9943,11 @@ def self_test(publisher, native_compatibility, maintenance,
         "KANDELO_HOMEBREW_TAP_REPOSITORY", "KANDELO_HOMEBREW_TAP_NAME"
       )
     },
-    "unbounded browser registry fetch" => lambda { |w|
+    "package verification reenters complete shell preparation" => lambda { |w|
       step = mutate_named_step(
-        w, "verify-bottle", "Prepare the supported interactive browser demo graph"
+        w, "verify-bottle", "Materialize Formula verification platform runtime"
       )
-      step["run"] = step.fetch("run").sub(
-        "./run.sh --fetch-only prepare-browser", "bash scripts/fetch-binaries.sh --fetch-only"
-      )
-    },
-    "VFS acceptance interactive browser graph omitted" => lambda { |w|
-      step = mutate_named_step(
-        w, "verify-bottle", "Prepare the supported interactive browser demo graph"
-      )
-      step["if"] = "${{ matrix.formula == 'file-formula' && matrix.arch == 'wasm32' }}"
-    },
-    "missing interactive browser wasm64 sysroot build" => lambda { |w|
-      step = mutate_named_step(
-        w, "verify-bottle", "Build Kandelo wasm64 sysroot for the interactive browser graph"
-      )
-      step["run"] = step.fetch("run").sub(
-        "bash scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix", "true"
-      )
-    },
-    "browser handoff omits the wasm64 sysroot" => lambda { |w|
-      step = mutate_named_step(
-        w, "verify-bottle", "Prepare the supported interactive browser demo graph"
-      )
-      step["run"] = step.fetch("run").sub(
-        "for sysroot_name in sysroot sysroot64", "for sysroot_name in sysroot"
-      )
-    },
-    "missing exact browser sysroot handoff" => lambda { |w|
-      step = mutate_named_step(
-        w, "verify-bottle", "Prepare the supported interactive browser demo graph"
-      )
-      step["run"] = step.fetch("run").sub(
-        'cp -a -- "$sysroot_source" "$sysroot_destination"', "true"
-      )
+      step["run"] = "./run.sh --fetch-only prepare-browser\n#{step.fetch('run')}"
     },
     "sidecar forbidden roots dropped at dev-shell boundary" => lambda { |w|
       step = mutate_named_step(w, "verify-bottle", "Generate sidecars from the selected bottle")
@@ -9881,6 +9958,15 @@ def self_test(publisher, native_compatibility, maintenance,
       step = mutate_named_step(w, "verify-bottle", "Build and strictly smoke the file-formula browser image")
       forwarding = 'KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON="$KANDELO_HOMEBREW_FORBIDDEN_ROOTS_JSON" \\'
       step["run"] = step.fetch("run").lines.reject { |line| line.include?(forwarding) }.join
+    },
+    "file browser expected version keeps the Formula revision" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Build and strictly smoke the file-formula browser image"
+      )
+      step["run"] = step.fetch("run").sub(
+        'file_upstream_version="${file_pkg_version%"$revision_suffix"}"',
+        'file_upstream_version="$file_pkg_version"'
+      )
     },
     "raw bottle JSON handoff" => lambda { |w|
       step = mutate_named_step(w, "verify-bottle",
@@ -9895,8 +9981,8 @@ def self_test(publisher, native_compatibility, maintenance,
     },
     "nonstrict browser smoke" => lambda { |w|
       step = mutate_named_step(w, "verify-bottle", "Build and strictly smoke the file-formula browser image")
-      step["run"] = step.fetch("run").sub("KANDELO_HOMEBREW_STRICT_PUBLISHER_SMOKE=1",
-                                             "KANDELO_HOMEBREW_STRICT_PUBLISHER_SMOKE=0")
+      step["run"] = step.fetch("run").sub(".stats.unexpected == 0",
+                                             ".stats.unexpected >= 0")
     },
     "campaign file-formula browser smoke suppressed" => lambda { |w|
       step = mutate_named_step(
@@ -9932,6 +10018,15 @@ def self_test(publisher, native_compatibility, maintenance,
         "::error::required dependency-bearing VFS acceptance selection disappeared after planning",
         "::notice::No dependency-bearing VFS acceptance selected"
       ).sub("exit 1", "exit 0")
+    },
+    "focused default-shell PTY input omitted" => lambda { |w|
+      step = mutate_named_step(
+        w, "verify-bottle", "Boot an exact dependency-bearing Brewfile image on Node and Chromium"
+      )
+      step["run"] = step.fetch("run").sub(
+        'KANDELO_HOMEBREW_ACCEPTANCE_DEFAULT_SHELL_ARGV_JSON=$shell_argv_json',
+        'KANDELO_HOMEBREW_ACCEPTANCE_DEFAULT_SHELL_ARGV_JSON=[]'
+      )
     },
     "campaign legacy VFS runtime reenabled" => lambda { |w|
       step = mutate_named_step(
@@ -10136,6 +10231,7 @@ begin
   all_workflows = load_all_workflows
   publisher = load_workflow(PUBLISHER_PATH)
   native_compatibility = load_workflow(NATIVE_COMPATIBILITY_PATH)
+  closed_selection = load_workflow(CLOSED_SELECTION_PATH)
   maintenance = load_workflow(MAINTENANCE_PATH)
   first_publication = load_workflow(FIRST_PUBLICATION_PATH)
   prefix_first_child = load_workflow(PREFIX_FIRST_CHILD_PATH)
@@ -10147,6 +10243,7 @@ begin
   check_privileged_recipe_host_runtime(all_workflows)
   check_publisher(publisher)
   check_native_compatibility_workflow(native_compatibility)
+  check_closed_selection_workflow(closed_selection)
   check_caller_validation_behavior(publisher)
   check_kandelo_main_admission_behavior(publisher)
   check_tap_source_binding_behavior(publisher)

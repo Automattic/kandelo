@@ -173,6 +173,9 @@ jobs:
           [ "$(jq -er '.catalog.tap_commit' \
             homebrew/main-shell-migration-lock.json)" = \
             "$CORE_TAP_CATALOG_TF" ]
+          # WHY: m4-canary has a separate keg-only Formula identity so the
+          # independent proof can coexist with core m4. Its command is still
+          # bin/m4 inside that separate keg.
           jq -e --arg canary "$CANARY_C" '
             .lifecycle_installs as $installs |
             ($installs | length) == 1 and
@@ -180,7 +183,7 @@ jobs:
             $installs[0].repository ==
               "brandonpayton/homebrew-kandelo-canary" and
             $installs[0].revision == $canary and
-            $installs[0].formula == "m4" and
+            $installs[0].formula == "m4-canary" and
             $installs[0].phase == "guest-lifecycle" and
             $installs[0].image_closure == false
           ' homebrew/main-shell-homebrew-runtime-support.json >/dev/null

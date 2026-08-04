@@ -38,6 +38,11 @@ MAX_PLAN_BYTES = 64 * 1024
 MAX_EVENT_BYTES = 256 * 1024
 MAX_SELECTION_BYTES = 256 * 1024
 MAX_FORMULAE = 128
+PREPARED_RELEASE_PATHS = (
+    "assets/closed-selection.json",
+    "assets/closed-selection.zip",
+    "release-manifest.json",
+)
 
 
 class ControllerError(RuntimeError):
@@ -89,6 +94,16 @@ def regular_file(path: pathlib.Path, label: str) -> pathlib.Path:
     if path.is_symlink() or not stat.S_ISREG(metadata.st_mode):
         fail(f"{label} must be a regular non-symlink file")
     return path
+
+
+def real_directory(path: pathlib.Path, label: str) -> pathlib.Path:
+    try:
+        metadata = path.lstat()
+    except OSError as error:
+        fail(f"{label} is unavailable: {error}")
+    if path.is_symlink() or not stat.S_ISDIR(metadata.st_mode):
+        fail(f"{label} must be a real directory")
+    return path.resolve()
 
 
 def load_json_bytes(
@@ -236,6 +251,7 @@ def admit(
     *,
     event_path: pathlib.Path,
     caller_sha: str,
+    expected_caller_sha: str,
     github_ref: str,
     workflow_ref: str,
     selection_plan: str,
@@ -243,7 +259,16 @@ def admit(
     plan_output: pathlib.Path,
     github_output: pathlib.Path,
 ) -> dict[str, str]:
-    require_commit(caller_sha, "caller SHA")
+    caller_sha = require_commit(caller_sha, "caller SHA")
+    expected_caller_sha = require_commit(
+        expected_caller_sha,
+        "expected caller SHA",
+    )
+    # WHY: workflow_dispatch resolves a branch name when GitHub accepts the
+    # request. The operator's last read of protected main can otherwise race
+    # with that resolution and silently run a newer workflow commit.
+    if caller_sha != expected_caller_sha:
+        fail("workflow caller SHA differs from the expected caller SHA")
     if github_ref != "refs/heads/main" or workflow_ref != TAP_WORKFLOW_REF:
         fail("selection publication must run from the protected tap caller")
     event, _payload = load_json_file(
@@ -262,14 +287,19 @@ def admit(
         fail("workflow-dispatch repository is not the protected tap")
     inputs = exact_keys(
         event.get("inputs"),
-        {"selection_plan", "selection_plan_sha256"},
+        {
+            "expected_caller_sha",
+            "selection_plan",
+            "selection_plan_sha256",
+        },
         "workflow-dispatch inputs",
     )
     # WHY: reusable-workflow inputs and the original dispatch event travel
     # through different GitHub contexts. Requiring both copies to agree makes
-    # a future caller edit unable to substitute a different publication plan.
+    # a future caller edit unable to substitute the expected commit or plan.
     if (
-        inputs["selection_plan"] != selection_plan
+        inputs["expected_caller_sha"] != expected_caller_sha
+        or inputs["selection_plan"] != selection_plan
         or inputs["selection_plan_sha256"] != selection_plan_sha256
     ):
         fail("reusable workflow inputs differ from the dispatch event")
@@ -293,6 +323,7 @@ def admit(
         fail("selection plan input differs from its SHA-256")
     write_new(plan_output, pretty_json(plan), "admitted selection plan")
     outputs = {
+        "caller-sha": caller_sha,
         "campaign-tag": plan["campaign_tag"],
         "campaign-kandelo-commit": plan["kandelo_commit"],
         "plan-sha256": observed_digest,
@@ -317,6 +348,7 @@ def load_executor(path: pathlib.Path) -> dict[str, Any]:
         "load_campaign",
         "prepare_selection",
         "prepare_selection_release",
+        "runtime_selected_formula_order",
     ):
         if name not in executor:
             fail(f"Kandelo selection executor lacks {name}")
@@ -356,6 +388,60 @@ def topological_formulae(
     return tuple(ordered)
 
 
+def load_plan_campaign(
+    *,
+    executor: dict[str, Any],
+    campaign_path: pathlib.Path,
+    plan: dict[str, Any],
+) -> tuple[dict[str, Any], bytes, dict[str, dict[str, Any]]]:
+    campaign, campaign_payload, index = executor["load_campaign"](
+        regular_file(campaign_path, "campaign manifest")
+    )
+    authority = campaign["authority"]
+    match = CAMPAIGN_TAG.fullmatch(plan["campaign_tag"])
+    assert match is not None
+    if (
+        hashlib.sha256(campaign_payload).hexdigest() != match.group(1)
+        or authority["kandelo_commit"] != plan["kandelo_commit"]
+        or authority["source_tap_commit"]
+        != plan["source_tap_commit"]
+        or authority["tap_repository"].lower() != TAP_REPOSITORY
+    ):
+        fail("campaign authority differs from the selection plan")
+    return campaign, campaign_payload, index
+
+
+def plan_formula_sets(
+    *,
+    executor: dict[str, Any],
+    campaign: dict[str, Any],
+    index: dict[str, dict[str, Any]],
+    plan: dict[str, Any],
+) -> tuple[set[str], tuple[str, ...]]:
+    proof = set(plan["roots"])
+    for root in plan["roots"]:
+        if root not in index:
+            fail(f"selection root {root} is absent from the campaign")
+        proof.update(
+            executor["dependency_closure"](campaign, index, root)
+        )
+    if set(plan["handoffs"]) != proof:
+        missing = sorted(proof - set(plan["handoffs"]))
+        extra = sorted(set(plan["handoffs"]) - proof)
+        fail(
+            "selection handoffs differ from the exact dependency "
+            f"closure (missing={missing}, extra={extra})"
+        )
+    runtime = executor["runtime_selected_formula_order"](
+        campaign,
+        index,
+        plan["roots"],
+    )
+    if not set(runtime).issubset(proof):
+        fail("selection runtime closure escapes its provenance closure")
+    return proof, runtime
+
+
 def prepare(
     *,
     plan_path: pathlib.Path,
@@ -380,35 +466,17 @@ def prepare(
         tempfile.mkdtemp(prefix=f".{output.name}.", dir=output.parent)
     )
     try:
-        campaign, campaign_payload, index = executor["load_campaign"](
-            regular_file(campaign_path, "campaign manifest")
+        campaign, _campaign_payload, index = load_plan_campaign(
+            executor=executor,
+            campaign_path=campaign_path,
+            plan=plan,
         )
-        authority = campaign["authority"]
-        match = CAMPAIGN_TAG.fullmatch(plan["campaign_tag"])
-        assert match is not None
-        if (
-            hashlib.sha256(campaign_payload).hexdigest() != match.group(1)
-            or authority["kandelo_commit"] != plan["kandelo_commit"]
-            or authority["source_tap_commit"]
-            != plan["source_tap_commit"]
-            or authority["tap_repository"].lower() != TAP_REPOSITORY
-        ):
-            fail("campaign authority differs from the selection plan")
-
-        required = set(plan["roots"])
-        for root in plan["roots"]:
-            if root not in index:
-                fail(f"selection root {root} is absent from the campaign")
-            required.update(
-                executor["dependency_closure"](campaign, index, root)
-            )
-        if set(plan["handoffs"]) != required:
-            missing = sorted(required - set(plan["handoffs"]))
-            extra = sorted(set(plan["handoffs"]) - required)
-            fail(
-                "selection handoffs differ from the exact dependency "
-                f"closure (missing={missing}, extra={extra})"
-            )
+        required, _runtime = plan_formula_sets(
+            executor=executor,
+            campaign=campaign,
+            index=index,
+            plan=plan,
+        )
 
         ordered = topological_formulae(
             executor,
@@ -460,6 +528,7 @@ def prepare(
         selection_plan=compact_json(plan).decode("utf-8").removesuffix("\n"),
         selection_plan_sha256=plan_digest(plan),
         prepared_release=output,
+        campaign_path=campaign_path,
         executor_path=executor_path,
     )
 
@@ -493,10 +562,25 @@ def verify(
     selection_plan: str,
     selection_plan_sha256: str,
     prepared_release: pathlib.Path,
+    campaign_path: pathlib.Path,
     executor_path: pathlib.Path,
 ) -> dict[str, Any]:
     plan = expected_plan(selection_plan, selection_plan_sha256)
     executor = load_executor(executor_path)
+    try:
+        campaign, _campaign_payload, index = load_plan_campaign(
+            executor=executor,
+            campaign_path=campaign_path,
+            plan=plan,
+        )
+        _proof, runtime = plan_formula_sets(
+            executor=executor,
+            campaign=campaign,
+            index=index,
+            plan=plan,
+        )
+    except executor["ExecutorError"] as error:
+        fail(str(error))
     try:
         descriptor, _descriptor_payload, _manifest = executor[
             "load_prepared_selection_release"
@@ -542,13 +626,106 @@ def verify(
         ):
             fail("prepared selection has an invalid Formula handoff")
         observed_handoffs[record["formula"]] = record["handoff"]["tag"]
-    if observed_handoffs != plan["handoffs"]:
+    # WHY: the artifact crosses a job boundary. Derive runtime members
+    # again from the independently fetched, content-addressed campaign. A
+    # self-consistent selection could otherwise omit a dependency.
+    expected_handoffs = {
+        name: plan["handoffs"][name]
+        for name in runtime
+    }
+    if observed_handoffs != expected_handoffs:
         fail("prepared selection handoffs differ from its plan")
     return {
         "formula_count": len(observed_handoffs),
         "plan_sha256": plan_digest(plan),
         "selection_sha256": hashlib.sha256(selection_payload).hexdigest(),
     }
+
+
+def files_match(left: pathlib.Path, right: pathlib.Path) -> bool:
+    left = regular_file(left, "transferred selection release file")
+    right = regular_file(right, "reconstructed selection release file")
+    if left.stat().st_size != right.stat().st_size:
+        return False
+    try:
+        with left.open("rb") as left_stream, right.open("rb") as right_stream:
+            while True:
+                left_chunk = left_stream.read(1024 * 1024)
+                right_chunk = right_stream.read(1024 * 1024)
+                if left_chunk != right_chunk:
+                    return False
+                if not left_chunk:
+                    return True
+    except OSError as error:
+        fail(f"cannot compare prepared selection releases: {error}")
+
+
+def reconstruct_and_verify(
+    *,
+    selection_plan: str,
+    selection_plan_sha256: str,
+    prepared_release: pathlib.Path,
+    campaign_path: pathlib.Path,
+    source_tap_root: pathlib.Path,
+    executor_path: pathlib.Path,
+) -> dict[str, Any]:
+    plan = expected_plan(selection_plan, selection_plan_sha256)
+    prepared_release = real_directory(
+        prepared_release,
+        "transferred prepared selection release",
+    )
+    source_tap_root = real_directory(
+        source_tap_root,
+        "independent campaign source tap",
+    )
+    # Reject an obviously wrong artifact before downloading its public handoff
+    # closure. Exact byte equality below is still the publication boundary.
+    summary = verify(
+        selection_plan=selection_plan,
+        selection_plan_sha256=selection_plan_sha256,
+        prepared_release=prepared_release,
+        campaign_path=campaign_path,
+        executor_path=executor_path,
+    )
+    with tempfile.TemporaryDirectory(
+        prefix=".closed-selection-independent-reconstruction.",
+        dir=prepared_release.parent,
+    ) as temporary_name:
+        temporary = pathlib.Path(temporary_name)
+        plan_path = temporary / "plan.json"
+        write_new(
+            plan_path,
+            pretty_json(plan),
+            "independent reconstruction plan",
+        )
+        reconstructed = temporary / "prepared"
+        # WHY: a handoff tag claimed inside an Actions artifact is only a
+        # string. Reusing the ordinary credential-free preparation path fetches
+        # the content-addressed public handoffs and independently derives the
+        # release bytes those tags actually authorize.
+        prepare(
+            plan_path=plan_path,
+            campaign_path=campaign_path,
+            source_tap_root=source_tap_root,
+            executor_path=executor_path,
+            output=reconstructed,
+        )
+        executor = load_executor(executor_path)
+        try:
+            executor["load_prepared_selection_release"](prepared_release)
+            executor["load_prepared_selection_release"](reconstructed)
+        except executor["ExecutorError"] as error:
+            fail(str(error))
+        for relative in PREPARED_RELEASE_PATHS:
+            if not files_match(
+                prepared_release / relative,
+                reconstructed / relative,
+            ):
+                fail(
+                    "transferred selection release differs from its "
+                    f"independent reconstruction at {relative}"
+                )
+    return summary
 
 
 def parse_args() -> argparse.Namespace:
@@ -558,6 +735,7 @@ def parse_args() -> argparse.Namespace:
     admit_parser = commands.add_parser("admit")
     admit_parser.add_argument("--event", type=pathlib.Path, required=True)
     admit_parser.add_argument("--caller-sha", required=True)
+    admit_parser.add_argument("--expected-caller-sha", required=True)
     admit_parser.add_argument("--github-ref", required=True)
     admit_parser.add_argument("--workflow-ref", required=True)
     admit_parser.add_argument("--selection-plan", required=True)
@@ -587,6 +765,27 @@ def parse_args() -> argparse.Namespace:
         "--prepared-release", type=pathlib.Path, required=True
     )
     verify_parser.add_argument(
+        "--campaign", type=pathlib.Path, required=True
+    )
+    verify_parser.add_argument(
+        "--executor", type=pathlib.Path, required=True
+    )
+
+    reconstruct_parser = commands.add_parser("reconstruct-verify")
+    reconstruct_parser.add_argument("--selection-plan", required=True)
+    reconstruct_parser.add_argument(
+        "--selection-plan-sha256", required=True
+    )
+    reconstruct_parser.add_argument(
+        "--prepared-release", type=pathlib.Path, required=True
+    )
+    reconstruct_parser.add_argument(
+        "--campaign", type=pathlib.Path, required=True
+    )
+    reconstruct_parser.add_argument(
+        "--source-tap-root", type=pathlib.Path, required=True
+    )
+    reconstruct_parser.add_argument(
         "--executor", type=pathlib.Path, required=True
     )
     return parser.parse_args()
@@ -599,6 +798,7 @@ def main() -> int:
             admit(
                 event_path=arguments.event,
                 caller_sha=arguments.caller_sha,
+                expected_caller_sha=arguments.expected_caller_sha,
                 github_ref=arguments.github_ref,
                 workflow_ref=arguments.workflow_ref,
                 selection_plan=arguments.selection_plan,
@@ -624,9 +824,23 @@ def main() -> int:
                 selection_plan=arguments.selection_plan,
                 selection_plan_sha256=arguments.selection_plan_sha256,
                 prepared_release=arguments.prepared_release,
+                campaign_path=arguments.campaign,
                 executor_path=arguments.executor,
             )
             print("homebrew-closed-selection-controller: verified exact plan")
+        elif arguments.command == "reconstruct-verify":
+            summary = reconstruct_and_verify(
+                selection_plan=arguments.selection_plan,
+                selection_plan_sha256=arguments.selection_plan_sha256,
+                prepared_release=arguments.prepared_release,
+                campaign_path=arguments.campaign,
+                source_tap_root=arguments.source_tap_root,
+                executor_path=arguments.executor,
+            )
+            print(
+                "homebrew-closed-selection-controller: independently "
+                f"reconstructed {summary['formula_count']} Formulae"
+            )
         else:  # pragma: no cover - argparse owns command selection.
             raise AssertionError(arguments.command)
         return 0

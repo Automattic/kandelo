@@ -126,16 +126,17 @@ archive inputs.
 ### Transition ownership during the Homebrew cutover
 
 One temporary rule prevents the retiring package registry and its Homebrew
-replacement from both owning the same proof. Changes to
-`scripts/homebrew-prefix-campaign-executor.py` go through the exact Homebrew
-product gate. That gate fetches the closed bottle selection, composes the real
-shell, and boots it in Node and Chromium. The same change does not stage the
-old conventional shell archive or the VFS images derived from that archive.
+replacement from both owning the same proof. The exact reviewed inputs that
+define or validate the closed Homebrew shell selection go through the exact
+Homebrew product gate. That gate fetches the closed bottle selection, composes
+the real shell, and boots it in Node and Chromium. The same change does not
+stage the old conventional shell archive or the VFS images derived from it.
 
-This is one exact reviewed path, not a `scripts/homebrew-*` exemption. A real
-registry recipe, build script, shared package input, or a mixed pull request
-still runs package staging normally. The scope detector also fails if this
-transition path ever escapes the exact Homebrew product gate.
+This is an exact reviewed path list, not a `homebrew/**` or
+`scripts/homebrew-*` exemption. A real registry recipe, build script, shared
+package input, or a mixed pull request still runs package staging normally.
+The scope detector also fails if one of these transition inputs ever escapes
+the exact Homebrew product gate.
 
 The route does not permit `program-packages.json` to become stale. That file
 describes which source inputs a resolver may accept; it does not say that an
@@ -624,6 +625,19 @@ Homebrew Formula revision or bottle rebuild so Homebrew fetches new bytes.
 Bump `build.toml` `revision` only when a legacy Kandelo package archive cache
 key should change. Do not bump it for Formula-only docs, tap metadata, or
 browser-gallery wording.
+
+Prefix campaigns distinguish dependencies needed while producing a bottle
+from dependencies needed after pouring it. The campaign's `dependencies` list
+is the full same-tap scheduling closure, including fully qualified build and
+test requirements. Its `runtime_dependencies` list is the exact required and
+recommended subset recorded in the handoff's Formula identity and sidecars.
+The handoff keeps the full build closure as separate provenance evidence. This
+lets CI stage a test-only tool without making every user install that tool.
+Changing that build closure still invalidates byte reuse. Old bytes
+cannot claim they were built or tested with a dependency they never
+observed.
+The runtime list must be a canonical subset with the same versions; an older
+campaign without the scoped field keeps its historical one-list meaning.
 
 A closed tap recipe runs as a separate unprivileged identity inside a
 root-owned, empty service root. The publisher mounts only its attested recipe,

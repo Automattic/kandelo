@@ -18,7 +18,7 @@ const CANARY_ORIGIN =
   "https://github.com/brandonpayton/homebrew-kandelo-canary.git";
 const CORE_BZIP2 = `${CORE_TAP}/bzip2`;
 const CORE_DASH = `${CORE_TAP}/dash`;
-const CANARY_M4 = `${CANARY_TAP}/m4`;
+const CANARY_M4_FORMULA = `${CANARY_TAP}/m4-canary`;
 const EXACT_GIT_REVISION = /^[0-9a-f]{40}$/;
 
 export interface HomebrewGuestLifecycleRevisions {
@@ -47,11 +47,12 @@ export function assertHomebrewGuestLifecycleRevisions(
  * Exercise stock Homebrew against exact first- and third-party tap revisions.
  *
  * The current lazy shell already contains direct-composed receipts for its
- * complete closure. The two `uninstall --ignore-dependencies` operations
- * below deliberately create empty Bzip2 and M4 targets before asking stock
- * Homebrew to install them. This is a transition proof between composition
- * models, not a package workaround: no Formula, bottle, or Homebrew source is
- * modified.
+ * complete closure. The Bzip2 `uninstall --ignore-dependencies` operation
+ * deliberately creates an empty target before asking stock Homebrew to
+ * install it. The third-party `m4-canary` Formula has a distinct keg-only
+ * identity and can be installed beside the precomposed core `m4`. This is a
+ * transition proof between composition models, not a package workaround: no
+ * Formula, bottle, or Homebrew source is modified.
  */
 export function createHomebrewGuestLifecyclePhaseOneScript(
   revisions: HomebrewGuestLifecycleRevisions,
@@ -102,14 +103,15 @@ assert_bzip2_roundtrip "$reinstalled_bzip2_prefix"
   const canaryReinstall = mode === "comprehensive"
     ? String.raw`
 progress "reinstalling independent M4 with the same first-party dependency"
-/usr/bin/brew reinstall --force-bottle ${CANARY_TAP}/m4
-reinstalled_m4_prefix="$(/usr/bin/brew --prefix ${CANARY_TAP}/m4)"
-[ "$reinstalled_m4_prefix" = "$m4_prefix" ] ||
+/usr/bin/brew reinstall --force-bottle ${CANARY_M4_FORMULA}
+reinstalled_canary_m4_prefix="$(/usr/bin/brew --prefix ${CANARY_M4_FORMULA})"
+[ "$reinstalled_canary_m4_prefix" = "$canary_m4_prefix" ] ||
   fail "M4 reinstall changed its versioned prefix"
-assert_poured "$reinstalled_m4_prefix"
+assert_poured "$reinstalled_canary_m4_prefix"
+assert_precomposed_bottle "$core_m4_prefix"
 assert_precomposed_bottle "$dash_prefix"
-assert_runtime_dependency "$reinstalled_m4_prefix" ${CORE_TAP}/dash
-assert_m4_execution "$reinstalled_m4_prefix" cross-tap-reinstall-ok
+assert_runtime_dependency "$reinstalled_canary_m4_prefix" ${CORE_TAP}/dash
+assert_m4_execution "$reinstalled_canary_m4_prefix" cross-tap-reinstall-ok
 `
     : "";
   const coreInstall = mode === "shipping-canary"
@@ -156,16 +158,14 @@ assert_clean_tap "$canary_tap" ${CANARY_ORIGIN} ${revisions.canaryRevision}
 /usr/bin/brew untrust --tap >"$canary_untrusted"
 assert_untrusted_tap_discovery ${CANARY_TAP} "$canary_untrusted"
 snapshot_trust "$canary_trust_before"
-assert_formula_trust "$canary_trust_before" ${CANARY_TAP} ${CANARY_M4} absent
+assert_formula_trust "$canary_trust_before" ${CANARY_TAP} ${CANARY_M4_FORMULA} absent
 
-# WHY: core M4 and canary M4 have the same conventional Cellar identity. Use
-# stock uninstall to create one truthful target before the independent tap
-# pours its own bottle; do not rewrite either Formula to avoid the collision.
-composed_m4_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/m4)"
-assert_precomposed_bottle "$composed_m4_prefix"
-/usr/bin/brew uninstall --ignore-dependencies ${CORE_TAP}/m4
-[ ! -e "$composed_m4_prefix" ] ||
-  fail "direct-composed M4 prefix remains after transition uninstall"
+# WHY: the canary Formula is named m4-canary and remains keg-only so it gets a
+# distinct Cellar path without competing with core M4's global links. Its
+# payload deliberately still provides bin/m4, which proves that a third-party
+# package can coexist without renaming the program users actually execute.
+core_m4_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/m4)"
+assert_precomposed_bottle "$core_m4_prefix"
 
 dash_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/dash)"
 assert_precomposed_bottle "$dash_prefix"
@@ -179,17 +179,21 @@ assert_formula_trust "$core_dependency_trust" ${CORE_TAP} ${CORE_DASH} present
 /usr/bin/brew untrust --tap >"$core_untrusted"
 assert_untrusted_tap_discovery ${CORE_TAP} "$core_untrusted"
 progress "installing independent M4 with its first-party Dash dependency"
-/usr/bin/brew install --no-ask --force-bottle ${CANARY_TAP}/m4
-m4_prefix="$(/usr/bin/brew --prefix ${CANARY_TAP}/m4)"
-assert_poured "$m4_prefix"
+/usr/bin/brew install --no-ask --force-bottle ${CANARY_M4_FORMULA}
+canary_m4_prefix="$(/usr/bin/brew --prefix ${CANARY_M4_FORMULA})"
+[ "$canary_m4_prefix" != "$core_m4_prefix" ] ||
+  fail "independent M4 reused the core M4 Cellar path"
+assert_poured "$canary_m4_prefix"
+assert_precomposed_bottle "$core_m4_prefix"
 assert_precomposed_bottle "$dash_prefix"
-assert_runtime_dependency "$m4_prefix" ${CORE_TAP}/dash
-"$m4_prefix/bin/m4" --version >/dev/null
-assert_m4_execution "$m4_prefix" cross-tap-ok
+assert_runtime_dependency "$canary_m4_prefix" ${CORE_TAP}/dash
+"$core_m4_prefix/bin/m4" --version >/dev/null
+"$canary_m4_prefix/bin/m4" --version >/dev/null
+assert_m4_execution "$canary_m4_prefix" cross-tap-ok
 
 ${canaryReinstall}
 snapshot_trust "$canary_trust_after"
-assert_formula_trust "$canary_trust_after" ${CANARY_TAP} ${CANARY_M4} present
+assert_formula_trust "$canary_trust_after" ${CANARY_TAP} ${CANARY_M4_FORMULA} present
 /usr/bin/brew untrust --tap >"$canary_untrusted"
 assert_untrusted_tap_discovery ${CANARY_TAP} "$canary_untrusted"
 `;
@@ -527,25 +531,32 @@ reboot_trust=/tmp/kandelo-homebrew-reboot.trust.json
 snapshot_trust "$reboot_trust"
 assert_formula_trust "$reboot_trust" ${CORE_TAP} ${CORE_BZIP2} present
 assert_formula_trust "$reboot_trust" ${CORE_TAP} ${CORE_DASH} present
-assert_formula_trust "$reboot_trust" ${CANARY_TAP} ${CANARY_M4} present
+assert_formula_trust "$reboot_trust" ${CANARY_TAP} ${CANARY_M4_FORMULA} present
 
 bzip2_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/bzip2)"
-m4_prefix="$(/usr/bin/brew --prefix ${CANARY_TAP}/m4)"
+core_m4_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/m4)"
+canary_m4_prefix="$(/usr/bin/brew --prefix ${CANARY_M4_FORMULA})"
 dash_prefix="$(/usr/bin/brew --prefix ${CORE_TAP}/dash)"
+[ "$canary_m4_prefix" != "$core_m4_prefix" ] ||
+  fail "independent M4 reused the core M4 Cellar path after reboot"
 assert_poured "$bzip2_prefix"
-assert_poured "$m4_prefix"
+assert_poured "$canary_m4_prefix"
+# WHY: the independent keg must survive reboot beside core M4 without
+# replacing or relabeling the core Formula's direct-composed bottle.
+assert_precomposed_bottle "$core_m4_prefix"
 # Dash remains the base image's direct-composed dependency; the lifecycle did
 # not uninstall or repour it merely because the independently tapped M4 uses it.
 assert_precomposed_bottle "$dash_prefix"
 
 progress "executing persisted bottles after rootfs reboot"
 assert_bzip2_roundtrip "$bzip2_prefix"
-"$m4_prefix/bin/m4" --version >/dev/null
+"$core_m4_prefix/bin/m4" --version >/dev/null
+"$canary_m4_prefix/bin/m4" --version >/dev/null
 m4_output="$(/usr/bin/printf '%s\n' \
   'changequote([,])dnl' \
   'define([KANDELO_LIFECYCLE_VALUE],[reboot-ok])dnl' \
   'KANDELO_LIFECYCLE_VALUE' |
-  "$m4_prefix/bin/m4")"
+  "$canary_m4_prefix/bin/m4")"
 [ "$m4_output" = reboot-ok ] || fail "M4 did not execute after reboot"
 
 progress "checking pinned upgrade state through stock Homebrew"
@@ -554,7 +565,7 @@ before_bzip2=/tmp/kandelo-homebrew-bzip2.before.json
 after_bzip2=/tmp/kandelo-homebrew-bzip2.after.json
 before_m4=/tmp/kandelo-homebrew-m4.before.json
 after_m4=/tmp/kandelo-homebrew-m4.after.json
-/usr/bin/brew outdated --json=v2 ${CORE_BZIP2} ${CANARY_M4} >"$outdated"
+/usr/bin/brew outdated --json=v2 ${CORE_BZIP2} ${CANARY_M4_FORMULA} >"$outdated"
 /usr/bin/ruby -rjson -e '
   document = JSON.parse(File.binread(ARGV.fetch(0)))
   abort "brew outdated omitted formulae" unless document["formulae"].is_a?(Array)
@@ -562,28 +573,32 @@ after_m4=/tmp/kandelo-homebrew-m4.after.json
   forbidden = ARGV.drop(1)
   abort "newly installed pinned Formula is unexpectedly outdated" unless
     (selected & forbidden).empty?
-' "$outdated" ${CORE_BZIP2} ${CANARY_M4}
+' "$outdated" ${CORE_BZIP2} ${CANARY_M4_FORMULA}
 snapshot_package_identity ${CORE_TAP}/bzip2 "$before_bzip2"
-snapshot_package_identity ${CANARY_TAP}/m4 "$before_m4"
-/usr/bin/brew upgrade --force-bottle ${CORE_TAP}/bzip2 ${CANARY_TAP}/m4
+snapshot_package_identity ${CANARY_M4_FORMULA} "$before_m4"
+/usr/bin/brew upgrade --force-bottle ${CORE_TAP}/bzip2 ${CANARY_M4_FORMULA}
 snapshot_package_identity ${CORE_TAP}/bzip2 "$after_bzip2"
-snapshot_package_identity ${CANARY_TAP}/m4 "$after_m4"
+snapshot_package_identity ${CANARY_M4_FORMULA} "$after_m4"
 /usr/bin/cmp "$before_bzip2" "$after_bzip2" ||
   fail "pinned Bzip2 upgrade changed its exact installed identity"
 /usr/bin/cmp "$before_m4" "$after_m4" ||
   fail "pinned M4 upgrade changed its exact installed identity"
 assert_poured "$bzip2_prefix"
-assert_poured "$m4_prefix"
+assert_poured "$canary_m4_prefix"
+assert_precomposed_bottle "$core_m4_prefix"
 assert_bzip2_roundtrip "$bzip2_prefix"
-"$m4_prefix/bin/m4" --version >/dev/null
+"$core_m4_prefix/bin/m4" --version >/dev/null
+"$canary_m4_prefix/bin/m4" --version >/dev/null
 /usr/bin/rm -f \
   "$outdated" \
   "$before_bzip2" "$after_bzip2" \
   "$before_m4" "$after_m4"
 
 progress "uninstalling lifecycle bottles and untapping both repositories"
-/usr/bin/brew uninstall ${CANARY_TAP}/m4
-[ ! -e "$m4_prefix" ] || fail "M4 prefix remains after uninstall"
+/usr/bin/brew uninstall ${CANARY_M4_FORMULA}
+[ ! -e "$canary_m4_prefix" ] || fail "M4 prefix remains after uninstall"
+[ -x "$core_m4_prefix/bin/m4" ] ||
+  fail "uninstalling independent M4 removed core M4"
 [ -x "$dash_prefix/bin/dash" ] ||
   fail "uninstalling M4 removed its pre-existing first-party dependency"
 /usr/bin/brew uninstall ${CORE_TAP}/bzip2

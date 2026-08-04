@@ -80,8 +80,29 @@ class Direct < Formula
   sha256 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
   license "MIT"
 
+  depends_on "make" => :build
+
   def install
     bin.install "direct"
+  end
+end
+RUBY
+}
+
+write_missing_host_tool_formula() {
+  cat >"$TAP_ROOT/Formula/missing-native.rb" <<'RUBY'
+class MissingNative < Formula
+  desc "Missing native host-tool fixture"
+  homepage "https://example.test/missing-native"
+  url "https://example.test/missing-native-1.0.tar.gz"
+  version "1.0"
+  sha256 "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  license "MIT"
+
+  depends_on "missing-native-tool" => :build
+
+  def install
+    bin.install "missing-native"
   end
 end
 RUBY
@@ -223,6 +244,15 @@ expect_plan_failure() {
     selection_with_plan "$plan" "$formula"
 }
 
+install_native_policy_contract() {
+  local root="$1"
+  mkdir -p "$root/homebrew" "$root/scripts"
+  cp "$REPO_ROOT/homebrew/homebrew-native-compatibility-roots.json" \
+    "$root/homebrew/"
+  cp "$REPO_ROOT/scripts/homebrew-validate-host-dependency-plan.sh" \
+    "$root/scripts/"
+}
+
 mkdir -p "$TAP_ROOT/Formula" "$TAP_ROOT/Kandelo"
 write_formula_support
 write_direct_formula
@@ -278,6 +308,12 @@ jq -e '
 ' <<<"$all_selection" >/dev/null ||
   fail "all did not expand the complete regular Formula set"
 
+write_missing_host_tool_formula
+refresh_tap_identity
+expect_failure missing-native-host-tool \
+  "native host-tool policy omits selected Formula requirements: missing-native-tool" \
+  selection direct,missing-native
+
 bridge_plan="$(selection modeset)"
 jq -e '
   length == 1 and
@@ -288,7 +324,7 @@ jq -e '
   fail "allowlisted bridge classification changed: $bridge_plan"
 
 FAKE_KANDELO_ROOT="$TMP_ROOT/fake-kandelo"
-mkdir -p "$FAKE_KANDELO_ROOT/scripts"
+install_native_policy_contract "$FAKE_KANDELO_ROOT"
 cat >"$FAKE_KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" <<'RUBY'
 plan = ENV.fetch("TEST_AUTHORITY_PLAN")
 abort "test authority plan must be a regular file" unless File.file?(plan)
@@ -345,12 +381,34 @@ jq '.tap_recipe.pkg_version = "1.0_02"' \
 expect_plan_failure malformed-recipe-package-revision "$mutated_plan" nethack
 
 LARGE_KANDELO_ROOT="$TMP_ROOT/large-kandelo"
-mkdir -p "$LARGE_KANDELO_ROOT/scripts"
+install_native_policy_contract "$LARGE_KANDELO_ROOT"
 cat >"$LARGE_KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb" <<'RUBY'
 require "json"
 
 tap = ARGV.fetch(1).downcase
 formula = ARGV.fetch(2)
+if ARGV.last == "--host-dependencies-json"
+  resolved = JSON.parse(
+    File.binread(ENV.fetch("KANDELO_HOMEBREW_RESOLVED_TAPS_FILE")),
+  )
+  target_taps = [resolved.fetch("primary"), *resolved.fetch("dependencies")]
+    .map do |entry|
+      entry.slice("tap_name", "tap_repository", "tap_commit")
+    end
+    .sort_by { |entry| entry.fetch("tap_name") }
+  puts JSON.generate({
+    "schema" => 4,
+    "tap" => tap,
+    "formula" => formula,
+    "full_name" => "#{tap}/#{formula}",
+    "build" => [],
+    "build_and_test" => [],
+    "runtime_and_test" => [],
+    "native_requirements" => [],
+    "target_taps" => target_taps,
+  })
+  exit
+end
 puts JSON.generate({
   "schema" => 2,
   "tap" => tap,

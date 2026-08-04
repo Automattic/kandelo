@@ -926,13 +926,14 @@ def replay_overlay_files(
         )
 
 
-def dependency_names(
+def dependency_names_for_field(
     formula: dict[str, Any],
     tap_name: str,
+    field: str,
 ) -> tuple[str, ...]:
-    values = formula.get("dependencies")
+    values = formula.get(field)
     if not isinstance(values, list) or len(values) > MAX_DEPENDENCIES:
-        fail(f"{formula.get('name')} dependencies are invalid")
+        fail(f"{formula.get('name')} {field} are invalid")
     prefix = f"{tap_name}/"
     result: list[str] = []
     prior = ""
@@ -940,24 +941,61 @@ def dependency_names(
         value = exact_keys(
             value,
             {"full_name", "version"},
-            f"{formula.get('name')} dependency #{index}",
+            f"{formula.get('name')} {field} #{index}",
         )
         full_name = require_string(
             value["full_name"],
-            f"{formula.get('name')} dependency #{index} full_name",
+            f"{formula.get('name')} {field} #{index} full_name",
         )
         if not full_name.startswith(prefix):
-            fail("campaign dependency is not a same-tap Formula")
+            fail(f"campaign {field} entry is not a same-tap Formula")
         name = full_name.removeprefix(prefix)
         require_string(name, "campaign dependency name", FORMULA)
         require_string(
-            value["version"], "campaign dependency version", VERSION
+            value["version"], f"campaign {field} version", VERSION
         )
         if name <= prior:
-            fail("campaign dependencies must be unique and sorted")
+            fail(f"campaign {field} must be unique and sorted")
         prior = name
         result.append(name)
     return tuple(result)
+
+
+def dependency_names(
+    formula: dict[str, Any],
+    tap_name: str,
+) -> tuple[str, ...]:
+    return dependency_names_for_field(formula, tap_name, "dependencies")
+
+
+def runtime_dependency_names(
+    formula: dict[str, Any],
+    tap_name: str,
+) -> tuple[str, ...]:
+    # WHY: old campaigns predate dependency scopes, so every recorded edge
+    # was both a build-order edge and part of the installed guest closure.
+    field = (
+        "runtime_dependencies"
+        if "runtime_dependencies" in formula
+        else "dependencies"
+    )
+    return dependency_names_for_field(formula, tap_name, field)
+
+
+def runtime_dependency_records(
+    formula: dict[str, Any],
+    tap_name: str,
+) -> list[dict[str, str]]:
+    # WHY: older sealed campaigns had one dependency field. Treat that field
+    # as runtime identity only when the newer scoped field is absent, so their
+    # immutable manifests and handoffs remain readable.
+    field = (
+        "runtime_dependencies"
+        if "runtime_dependencies" in formula
+        else "dependencies"
+    )
+    runtime_dependency_names(formula, tap_name)
+    return formula[field]
 
 
 def validate_destination_admission(
@@ -1366,13 +1404,45 @@ def load_campaign(
                     f"campaign Formula {name} dependency {dependency} "
                     "version differs from its Formula"
                 )
+        runtime_records = runtime_dependency_records(formula, tap_name)
+        by_name = {
+            dependency: edge
+            for dependency, edge in zip(
+                dependencies,
+                formula["dependencies"],
+                strict=True,
+            )
+        }
+        expected_runtime = [
+            by_name[dependency]
+            for dependency in sorted(
+                dependency_names_for_field(
+                    formula,
+                    tap_name,
+                    (
+                        "runtime_dependencies"
+                        if "runtime_dependencies" in formula
+                        else "dependencies"
+                    ),
+                )
+            )
+            if dependency in by_name
+        ]
+        if runtime_records != expected_runtime:
+            fail(
+                f"campaign Formula {name} runtime dependencies are not "
+                "an exact scheduling-dependency subset"
+            )
     return value, payload, index
 
 
-def dependency_closure(
+def dependency_closure_with(
     campaign: dict[str, Any],
     index: dict[str, dict[str, Any]],
     formula_name: str,
+    dependency_reader: Callable[
+        [dict[str, Any], str], tuple[str, ...]
+    ],
 ) -> tuple[str, ...]:
     tap_name = campaign["authority"]["tap_name"]
     reached: set[str] = set()
@@ -1386,14 +1456,42 @@ def dependency_closure(
         if name not in index:
             fail(f"campaign dependency {name} is missing")
         visiting.add(name)
-        for dependency in dependency_names(index[name], tap_name):
+        for dependency in dependency_reader(index[name], tap_name):
             visit(dependency)
         visiting.remove(name)
         reached.add(name)
 
-    for name in dependency_names(index[formula_name], tap_name):
+    for name in dependency_reader(index[formula_name], tap_name):
         visit(name)
     return tuple(sorted(reached))
+
+
+def dependency_closure(
+    campaign: dict[str, Any],
+    index: dict[str, dict[str, Any]],
+    formula_name: str,
+) -> tuple[str, ...]:
+    """Return every dependency needed to build and test one Formula."""
+    return dependency_closure_with(
+        campaign,
+        index,
+        formula_name,
+        dependency_names,
+    )
+
+
+def runtime_dependency_closure(
+    campaign: dict[str, Any],
+    index: dict[str, dict[str, Any]],
+    formula_name: str,
+) -> tuple[str, ...]:
+    """Return only dependencies installed with one Formula in a guest."""
+    return dependency_closure_with(
+        campaign,
+        index,
+        formula_name,
+        runtime_dependency_names,
+    )
 
 
 def validate_source_root(
@@ -1626,7 +1724,7 @@ def validate_dependency_bottle_input(
     # WHY: Homebrew uses these symbolic values for relocatable bottles.  The
     # generated Kandelo sidecar still owns the concrete guest placement.
     # Accept only those upstream markers or the exact campaign Cellar; an old
-    # Linuxbrew path, unknown marker, or other absolute path remains a hard
+    # retired host path, unknown marker, or other absolute path remains a hard
     # failure.
     if cellar not in (guest_cellar, "any", "any_skip_relocation"):
         fail(f"{name}/{arch} bottle cellar is not the Kandelo prefix")
@@ -1718,7 +1816,10 @@ def campaign_formula_evidence(
             destination.get("bottle_rebuild"),
             f"{formula.get('name')} bottle rebuild",
         ),
-        "dependencies": formula["dependencies"],
+        "dependencies": formula.get(
+            "runtime_dependencies",
+            formula["dependencies"],
+        ),
         "formula_sha256": require_string(
             formula["formula_source"].get("sha256"),
             f"{formula.get('name')} Formula SHA-256",
@@ -2138,7 +2239,10 @@ def historical_reuse_inputs(
         },
         f"{name}/{arch} historical Formula sidecar",
     )
-    expected_dependencies = formula["dependencies"]
+    expected_dependencies = runtime_dependency_records(
+        formula,
+        campaign["authority"]["tap_name"],
+    )
     sidecar_dependencies: list[dict[str, str]] = []
     raw_dependencies = formula_sidecar["dependencies"]
     if not isinstance(raw_dependencies, list):
@@ -2599,7 +2703,10 @@ def reuse_sidecars_input(
             "name": value["full_name"].rsplit("/", 1)[1],
             "version": value["version"],
         }
-        for value in formula["dependencies"]
+        for value in runtime_dependency_records(
+            formula,
+            campaign["authority"]["tap_name"],
+        )
     ]
     return {
         "generated_at": old_record["built_at"],
@@ -2861,7 +2968,11 @@ def predecessor_reuse_inputs(
         or package["formula_source_sha256"] != formula["formula_source"][
             "sha256"
         ]
-        or dependencies != formula["dependencies"]
+        or dependencies
+        != runtime_dependency_records(
+            formula,
+            campaign["authority"]["tap_name"],
+        )
         or bottle["arch"] != arch
         or bottle["bottle_tag"] != f"{arch}_kandelo"
         or bottle["bottle_file"] != expected_file
@@ -2965,7 +3076,10 @@ def predecessor_reuse_sidecars_input(
             "name": value["full_name"].rsplit("/", 1)[1],
             "version": value["version"],
         }
-        for value in formula["dependencies"]
+        for value in runtime_dependency_records(
+            formula,
+            campaign["authority"]["tap_name"],
+        )
     ]
     return {
         "generated_at": extracted["built_at"],
@@ -3912,10 +4026,13 @@ SidecarGenerator = Callable[..., None]
 TapValidator = Callable[..., None]
 
 
-def selected_formula_order(
+def formula_order_with(
     campaign: dict[str, Any],
     index: dict[str, dict[str, Any]],
     roots: Iterable[str],
+    dependency_reader: Callable[
+        [dict[str, Any], str], tuple[str, ...]
+    ],
 ) -> tuple[str, ...]:
     roots = tuple(
         sorted(
@@ -3940,7 +4057,7 @@ def selected_formula_order(
         if name not in index:
             fail(f"selection Formula {name} is outside the campaign")
         visiting.add(name)
-        for dependency in dependency_names(index[name], tap_name):
+        for dependency in dependency_reader(index[name], tap_name):
             visit(dependency)
         visiting.remove(name)
         visited.add(name)
@@ -3949,6 +4066,34 @@ def selected_formula_order(
     for root in roots:
         visit(root)
     return tuple(ordered)
+
+
+def selected_formula_order(
+    campaign: dict[str, Any],
+    index: dict[str, dict[str, Any]],
+    roots: Iterable[str],
+) -> tuple[str, ...]:
+    """Order Formulae by the complete build-and-test dependency graph."""
+    return formula_order_with(
+        campaign,
+        index,
+        roots,
+        dependency_names,
+    )
+
+
+def runtime_selected_formula_order(
+    campaign: dict[str, Any],
+    index: dict[str, dict[str, Any]],
+    roots: Iterable[str],
+) -> tuple[str, ...]:
+    """Order Formulae by the dependency graph installed in the guest."""
+    return formula_order_with(
+        campaign,
+        index,
+        roots,
+        runtime_dependency_names,
+    )
 
 
 def clear_generated_sidecars(tap_root: pathlib.Path) -> None:
@@ -5664,8 +5809,11 @@ def prepare_selection(
         1,
         2**32 - 1,
     )
-    ordered = selected_formula_order(campaign, index, roots)
+    ordered = runtime_selected_formula_order(campaign, index, roots)
     selected_names = set(ordered)
+    proof_names = set(selected_names)
+    for name in selected_names:
+        proof_names.update(dependency_closure(campaign, index, name))
     source_tap_root = real_directory(
         source_tap_root, "campaign target source"
     )
@@ -5711,10 +5859,10 @@ def prepare_selection(
             )
             if name in loaded:
                 fail(f"selection handoff {name} is duplicated")
-            if name not in selected_names:
+            if name not in proof_names:
                 fail(
                     f"selection handoff {name} is outside "
-                    "the selected closure"
+                    "the selected provenance closure"
                 )
             if handoff["formula"] != campaign_formula_evidence(
                 campaign, index[name]
@@ -5729,10 +5877,14 @@ def prepare_selection(
             loaded[name] = (handoff_root, handoff, payload)
             digest = sha256_bytes(payload)
             identities[name] = (handoff_tag(payload), digest)
-        if set(loaded) != selected_names:
-            missing = sorted(selected_names - set(loaded))
-            fail(f"selected dependency closure lacks handoffs {missing}")
-        for name in ordered:
+        if set(loaded) != proof_names:
+            missing = sorted(proof_names - set(loaded))
+            fail(f"selected provenance closure lacks handoffs {missing}")
+        # WHY: build/test-only dependencies are proof inputs, not installed
+        # guest members. Verify every selected handoff against the complete
+        # build graph before composing only the independently derived runtime
+        # closure below.
+        for name in sorted(proof_names):
             handoff = loaded[name][1]
             expected_dependencies = {
                 dependency: identities[dependency]
@@ -8146,6 +8298,11 @@ def validate_predecessor_campaign_compatibility(
     if (
         campaign_formula_evidence(campaign, formula)
         != campaign_formula_evidence(predecessor, predecessor_formula)
+        # WHY: Formula evidence intentionally carries only runtime identity.
+        # Predecessor byte reuse must also preserve the complete build/test
+        # graph or it would attribute old bytes to dependencies they never
+        # observed.
+        or formula["dependencies"] != predecessor_formula["dependencies"]
         or authority["current_kandelo_abi"]
         != predecessor_authority["current_kandelo_abi"]
         or authority["guest_layout"]

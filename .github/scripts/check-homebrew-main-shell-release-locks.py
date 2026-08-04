@@ -135,7 +135,7 @@ def check(source_root: pathlib.Path, tap_catalog: str, canary: str) -> None:
                 "tap": "brandonpayton/kandelo-canary",
                 "repository": "brandonpayton/homebrew-kandelo-canary",
                 "revision": canary,
-                "formula": "m4",
+                "formula": "m4-canary",
                 "phase": "guest-lifecycle",
                 "image_closure": False,
                 "reason": (

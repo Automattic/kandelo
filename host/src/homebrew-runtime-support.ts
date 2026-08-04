@@ -5,6 +5,9 @@ const FULL_FORMULA_RE =
 const GIT_SHA_RE = /^[0-9a-f]{40}$/;
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const RUNTIME_ID = "homebrew-runtime-support";
+// WHY: a distinct keg-only Formula identity lets the independent canary live
+// beside the core `m4` Formula. The canary payload still installs `bin/m4`.
+const LIFECYCLE_CANARY_FORMULA = "m4-canary" as const;
 
 export interface HomebrewRuntimeSupportContract {
   id: typeof RUNTIME_ID;
@@ -27,7 +30,7 @@ export interface HomebrewRuntimeSupportContract {
     tap: "brandonpayton/kandelo-canary";
     repository: "brandonpayton/homebrew-kandelo-canary";
     revision: string;
-    formula: "m4";
+    formula: typeof LIFECYCLE_CANARY_FORMULA;
   };
 }
 
@@ -195,7 +198,7 @@ export function parseHomebrewRuntimeSupportContract(
   if (
     lifecycleInstall.tap !== "brandonpayton/kandelo-canary" ||
     lifecycleInstall.repository !== "brandonpayton/homebrew-kandelo-canary" ||
-    lifecycleInstall.formula !== "m4" ||
+    lifecycleInstall.formula !== LIFECYCLE_CANARY_FORMULA ||
     lifecycleInstall.phase !== "guest-lifecycle" ||
     lifecycleInstall.image_closure !== false ||
     typeof lifecycleInstall.reason !== "string" ||
@@ -227,7 +230,7 @@ export function parseHomebrewRuntimeSupportContract(
       tap: "brandonpayton/kandelo-canary",
       repository: "brandonpayton/homebrew-kandelo-canary",
       revision: lifecycleRevision,
-      formula: "m4",
+      formula: LIFECYCLE_CANARY_FORMULA,
     },
   };
 }

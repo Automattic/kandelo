@@ -2390,6 +2390,7 @@ def default_resolve_formula_metadata(
         pkg_version = f"{stable}_{revision}" if revision else stable
         require_string(pkg_version, f"{name} resolved pkg_version", VERSION)
         dependency_names: set[str] = set()
+        runtime_dependency_names: set[str] = set()
         for field in (
             "dependencies",
             "build_dependencies",
@@ -2429,10 +2430,20 @@ def default_resolve_formula_metadata(
                         f"names absent candidate Formula {value}"
                     )
                 dependency_names.add(candidate)
+                # WHY: build and test dependencies must be ready before this
+                # Formula runs, but they are not installed when somebody
+                # later pours the bottle. Keep them in the scheduling graph
+                # without claiming that the finished bottle needs them.
+                if field in (
+                    "dependencies",
+                    "recommended_dependencies",
+                ):
+                    runtime_dependency_names.add(candidate)
         if name in metadata:
             fail(f"native Homebrew metadata repeats Formula {name}")
         metadata[name] = {
             "dependencies": sorted(dependency_names),
+            "runtime_dependencies": sorted(runtime_dependency_names),
             "version": pkg_version,
         }
     if set(metadata) != formula_set:
@@ -2657,8 +2668,9 @@ def inspect_variant(
     if variant.version != variant.candidate_version:
         reasons.append("pkg-version-changed")
     # WHY: even unchanged Formula text can resolve a different dependency
-    # version after a sibling Formula advances. Reusing that bottle would keep
-    # the old runtime closure while publishing candidate dependency metadata.
+    # version after a sibling Formula advances. This comparison includes
+    # build/test-only edges because reusing old bytes would otherwise claim
+    # they were built and tested against a closure they never observed.
     if variant.dependencies != variant.candidate_dependencies:
         reasons.append("dependency-closure-changed")
     if (
@@ -3374,7 +3386,7 @@ def _derive_campaign_from_snapshots(
     for name, raw_metadata in resolved_metadata.items():
         formula_metadata = exact_keys(
             raw_metadata,
-            {"dependencies", "version"},
+            {"dependencies", "runtime_dependencies", "version"},
             f"{name} resolved Formula metadata",
         )
         resolved_versions[name] = require_string(
@@ -3383,10 +3395,13 @@ def _derive_campaign_from_snapshots(
             VERSION,
         )
     resolved_dependencies: dict[str, list[dict[str, str]]] = {}
+    resolved_runtime_dependencies: dict[
+        str, list[dict[str, str]]
+    ] = {}
     for name, raw_metadata in resolved_metadata.items():
         formula_metadata = exact_keys(
             raw_metadata,
-            {"dependencies", "version"},
+            {"dependencies", "runtime_dependencies", "version"},
             f"{name} resolved Formula metadata",
         )
         dependency_names = formula_metadata["dependencies"]
@@ -3402,6 +3417,26 @@ def _derive_campaign_from_snapshots(
             fail(f"{name} resolved dependencies are not a canonical name set")
         if name in dependency_names:
             fail(f"{name} resolved dependencies include itself")
+        runtime_dependency_names = formula_metadata[
+            "runtime_dependencies"
+        ]
+        if (
+            not isinstance(runtime_dependency_names, list)
+            or runtime_dependency_names
+            != sorted(set(runtime_dependency_names))
+            or any(
+                not isinstance(value, str)
+                or FORMULA_NAME.fullmatch(value) is None
+                for value in runtime_dependency_names
+            )
+            or not set(runtime_dependency_names).issubset(
+                dependency_names
+            )
+        ):
+            fail(
+                f"{name} resolved runtime dependencies are not a "
+                "canonical subset"
+            )
         resolved_dependencies[name] = [
             {
                 "full_name": f"{tap_name}/{dependency_name}",
@@ -3412,6 +3447,20 @@ def _derive_campaign_from_snapshots(
                 ),
             }
             for dependency_name in dependency_names
+        ]
+        resolved_runtime_dependencies[name] = [
+            {
+                "full_name": f"{tap_name}/{dependency_name}",
+                "version": require_string(
+                    resolved_versions.get(dependency_name),
+                    (
+                        f"{name} runtime dependency {dependency_name} "
+                        "resolved version"
+                    ),
+                    VERSION,
+                ),
+            }
+            for dependency_name in runtime_dependency_names
         ]
     scheduled_formulae = set(sidecars_by_name) | {
         name
@@ -3766,6 +3815,9 @@ def _derive_campaign_from_snapshots(
             "name": name,
             "previous_version": old_version,
             "source_kind": source_kind,
+            "runtime_dependencies": (
+                resolved_runtime_dependencies[name]
+            ),
             "version": candidate_version,
         }
 
@@ -3861,6 +3913,9 @@ def _derive_campaign_from_snapshots(
             },
             "name": name,
             **recipe_context,
+            "runtime_dependencies": (
+                resolved_runtime_dependencies[name]
+            ),
             "source_kind": "reviewed-new-entrant",
             "version": version,
         }

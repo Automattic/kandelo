@@ -160,12 +160,44 @@ if [ "$normalized_formulae" = "all" ]; then
 fi
 resolver="$KANDELO_ROOT/scripts/homebrew-formula-runtime-closure.rb"
 resolver="$(canonical_regular_file "$resolver" "Formula authority parser")"
+host_plan_validator="$KANDELO_ROOT/scripts/homebrew-validate-host-dependency-plan.sh"
+host_plan_validator="$(
+  canonical_regular_file "$host_plan_validator" "host dependency plan validator"
+)"
+native_roots_policy="$KANDELO_ROOT/homebrew/homebrew-native-compatibility-roots.json"
+native_roots_policy="$(
+  canonical_regular_file "$native_roots_policy" "native host-tool policy"
+)"
 RUBY_BIN="$(canonical_executable "$RUBY_BIN" "pinned Formula authority Ruby")"
 
 tmp_root="$(mktemp -d)"
 trap 'rm -rf -- "$tmp_root"' EXIT
 records="$tmp_root/records.jsonl"
+allowed_host_roots="$tmp_root/allowed-host-roots.txt"
+missing_host_roots="$tmp_root/missing-host-roots.txt"
 : >"$records"
+: >"$missing_host_roots"
+
+if ! jq -er '
+    select(
+      type == "object" and
+      keys == ["architecture", "homebrew_commit", "kind", "roots", "schema"] and
+      .schema == 1 and
+      .kind == "kandelo-homebrew-native-roots" and
+      .architecture == "x86_64_linux" and
+      (.homebrew_commit |
+        type == "string" and test("^[0-9a-f]{40}$")) and
+      (.roots | keys == ["tap_formula_host_dependencies"]) and
+      (.roots.tap_formula_host_dependencies |
+        type == "array" and length > 0 and length <= 128 and
+        . == (sort | unique) and
+        all(.[];
+          type == "string" and test("^[a-z0-9][a-z0-9@+_.-]*$")))
+    ) |
+    .roots.tap_formula_host_dependencies[]
+  ' "$native_roots_policy" >"$allowed_host_roots"; then
+  fail "native host-tool policy has an invalid or unexpected schema"
+fi
 
 bridge_allowed() {
   local formula="$1" package="$2" mapping
@@ -178,10 +210,12 @@ bridge_allowed() {
 IFS=, read -r -a selected_formulae <<<"$normalized_formulae"
 [ "${#selected_formulae[@]}" -le 256 ] ||
   fail "the rootfs-wasm32 publication lane accepts at most 256 Formulae"
+formula_index=0
 for formula in "${selected_formulae[@]}"; do
+  formula_index=$((formula_index + 1))
   [[ "$formula" =~ ^[a-z0-9][a-z0-9._-]{0,254}$ ]] ||
     fail "invalid Formula name: $formula"
-  plan="$tmp_root/$formula.plan.json"
+  plan="$tmp_root/formula-$formula_index-authority.json"
   if ! KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$RESOLVED_TAPS" \
       "$RUBY_BIN" "$resolver" \
         "$TAP_ROOT" "$normalized_tap_name" "$formula" \
@@ -279,6 +313,26 @@ for formula in "${selected_formulae[@]}"; do
   ' "$plan" >/dev/null ||
     fail "Formula authority plan has an invalid or unexpected schema: $formula"
 
+  host_plan="$tmp_root/formula-$formula_index-host.json"
+  if ! KANDELO_HOMEBREW_RESOLVED_TAPS_FILE="$RESOLVED_TAPS" \
+      "$RUBY_BIN" "$resolver" \
+        "$TAP_ROOT" "$normalized_tap_name" "$formula" \
+        --host-dependencies-json >"$host_plan"; then
+    fail "could not classify native host tools: $formula"
+  fi
+  [ "$(wc -c <"$host_plan" | tr -d '[:space:]')" -le 65536 ] ||
+    fail "native host-tool plan exceeds 65536 bytes: $formula"
+  if ! bash "$host_plan_validator" \
+      "$host_plan" "$normalized_tap_name" "$formula" "$RESOLVED_TAPS"; then
+    fail "native host-tool plan has an invalid or unexpected schema: $formula"
+  fi
+  # WHY: the signed native API can install only roots admitted by this exact
+  # Kandelo commit. Check every Formula selected to build in this publisher
+  # run so a missing host tool stops the run before any bottle build starts.
+  comm -23 \
+    <(jq -r '.build_and_test[]' "$host_plan") \
+    "$allowed_host_roots" >>"$missing_host_roots"
+
   authority_class=""
   tap_recipe_manifest="null"
   tier2_package="null"
@@ -334,6 +388,13 @@ for formula in "${selected_formulae[@]}"; do
       tier2_version: $tier2_version
     }' >>"$records"
 done
+
+if [ -s "$missing_host_roots" ]; then
+  LC_ALL=C sort -u -o "$missing_host_roots" "$missing_host_roots"
+  fail "native host-tool policy omits selected Formula requirements: $(
+    paste -sd, "$missing_host_roots"
+  )"
+fi
 
 result="$tmp_root/selection.json"
 jq -cSs 'sort_by(.formula)' "$records" >"$result"

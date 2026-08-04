@@ -3215,17 +3215,6 @@ jobs:
               ;;
           esac
 
-      - name: Build Kandelo wasm64 sysroot for the interactive browser graph
-        if: ${{ matrix.arch == 'wasm32' && (matrix.formula == 'file-formula' || (!inputs.dry-run && matrix.formula == needs.plan.outputs.vfs-acceptance-formula)) }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          cd kandelo-sysroot-build
-          bash scripts/dev-shell.sh bash scripts/build-musl.sh --arch wasm64posix
-          [ -f sysroot64/lib/libc.a ] || {
-            echo "::error::interactive browser graph wasm64 sysroot is incomplete"; exit 1;
-          }
-
       - name: Build exact Kandelo kernel
         shell: bash
         run: |
@@ -3250,29 +3239,6 @@ jobs:
             cd ../apps/browser-demos
             PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --no-audit --no-fund
           '
-
-      - name: Prepare the supported interactive browser demo graph
-        if: ${{ matrix.arch == 'wasm32' && (matrix.formula == 'file-formula' || (!inputs.dry-run && matrix.formula == needs.plan.outputs.vfs-acceptance-formula)) }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          for sysroot_name in sysroot sysroot64; do
-            sysroot_source="$GITHUB_WORKSPACE/kandelo-sysroot-build/$sysroot_name"
-            sysroot_destination="$GITHUB_WORKSPACE/kandelo/$sysroot_name"
-            [ -d "$sysroot_source" ] && [ ! -L "$sysroot_source" ] && \
-              [ -f "$sysroot_source/lib/libc.a" ] || {
-              echo "::error::exact browser $sysroot_name handoff is missing or invalid"; exit 1;
-            }
-            [ ! -e "$sysroot_destination" ] && [ ! -L "$sysroot_destination" ] || {
-              echo "::error::browser verifier $sysroot_name destination already exists"; exit 1;
-            }
-            cp -a -- "$sysroot_source" "$sysroot_destination"
-            [ -f "$sysroot_destination/lib/libc.a" ] || {
-              echo "::error::browser verifier $sysroot_name handoff is incomplete"; exit 1;
-            }
-          done
-          cd kandelo
-          bash scripts/dev-shell.sh ./run.sh --fetch-only prepare-browser
 
       - name: Materialize Formula verification platform runtime
         id: formula-verification-runtime
@@ -3317,9 +3283,9 @@ jobs:
               /*) ;;
               *) echo "Formula verification cache root is not absolute" >&2; exit 2 ;;
             esac
-            # WHY: prepare-browser also resolves packages into binaries/.
-            # Materialize after that last writer so the read-only Formula
-            # identity receives one coherent portable generation snapshot.
+            # WHY: copy the selected resolver generation once before the
+            # untrusted Formula test. Package verification must not prepare
+            # the complete shell demo or depend on its pending selection.
             bash scripts/materialize-resolver-binaries.sh \
               "$PWD/binaries" "$cache_root"
             formula_test_index="$PWD/target/$host/release/formula-test-program-packages.json"
@@ -4056,6 +4022,9 @@ jobs:
             browser_report="$browser_vfs_root/homebrew-file-formula.vfs-report.json"
             playwright_report="$browser_vfs_root/playwright-report.json"
             browser_url="http://127.0.0.1:${browser_port}/__kandelo-smoke/homebrew-file-formula.vfs.zst"
+            [ ! -e "$browser_public_dir" ] && [ ! -L "$browser_public_dir" ] || {
+              echo "::error::file browser smoke asset path already exists"; exit 1;
+            }
             mkdir -p "$browser_vfs_root" "$browser_gallery_root" "$browser_public_dir"
 
             # WHY: the smoke command is evidence for the selected guest
@@ -4065,7 +4034,35 @@ jobs:
             . scripts/homebrew-guest-layout.sh
             homebrew_select_guest_layout \
               "${KANDELO_HOMEBREW_PREFIX_CAMPAIGN_LAYOUT_SHA256:-}"
-            file_command="$HOMEBREW_GUEST_PREFIX/bin/file --version"
+            file_executable="$HOMEBREW_GUEST_PREFIX/bin/file"
+            file_argv_json='["file","--version"]'
+            file_pkg_version="$(jq -er \
+              --arg formula "$KANDELO_HOMEBREW_FORMULA" \
+              'first(.packages[] | select(.name == $formula)).version' \
+              "$KANDELO_HOMEBREW_SIDECAR_ROOT/Kandelo/metadata.json")"
+            file_formula_revision="$(jq -er \
+              --arg formula "$KANDELO_HOMEBREW_FORMULA" \
+              'first(.packages[] | select(.name == $formula)).formula_revision |
+                select(type == "number" and . >= 0 and floor == .)' \
+              "$KANDELO_HOMEBREW_SIDECAR_ROOT/Kandelo/metadata.json")"
+            file_upstream_version="$file_pkg_version"
+            if [ "$file_formula_revision" -gt 0 ]; then
+              # WHY: Homebrew appends `_N` for a Formula revision, but
+              # `file --version` reports only the upstream program version.
+              revision_suffix="_${file_formula_revision}"
+              case "$file_pkg_version" in
+                *"$revision_suffix")
+                  file_upstream_version="${file_pkg_version%"$revision_suffix"}"
+                  ;;
+                *)
+                  echo "::error::file pkg_version does not carry its Formula revision"; exit 1;
+                  ;;
+              esac
+            fi
+            [ -n "$file_upstream_version" ] || {
+              echo "::error::file upstream version is empty"; exit 1;
+            }
+            file_expected_stdout="file-${file_upstream_version}"
 
             vfs_args=(
               --metadata "$KANDELO_HOMEBREW_SIDECAR_ROOT/Kandelo/metadata.json"
@@ -4079,21 +4076,45 @@ jobs:
               --write-profile
             )
             npx tsx images/vfs/scripts/build-homebrew-vfs-image.ts "${vfs_args[@]}"
+            image_sha256="$(sha256sum "$browser_vfs" | awk '{print $1}')"
             cp "$browser_vfs" "$browser_public_dir/homebrew-file-formula.vfs.zst"
+            [ "$(sha256sum "$browser_public_dir/homebrew-file-formula.vfs.zst" | awk '{print $1}')" = \
+              "$image_sha256" ] || {
+              echo "::error::served file browser VFS differs from the composed image"; exit 1;
+            }
+            kernel="$GITHUB_WORKSPACE/kandelo/local-binaries/kernel.wasm"
+            [ -f "$kernel" ] && [ ! -L "$kernel" ] || {
+              echo "::error::exact browser verification kernel is missing"; exit 1;
+            }
+            kernel_sha256="$(sha256sum "$kernel" | awk '{print $1}')"
 
             (
               cd apps/browser-demos
-              playwright_args=(
-                test test/kandelo-homebrew.spec.ts
-                --project=chromium
-                --grep "Homebrew file-formula VFS image boots in browser and runs file --version$"
-                --reporter=json
-              )
               export KANDELO_PLAYWRIGHT_PORT="$browser_port"
-              export KANDELO_BROWSER_FILE_FORMULA_VFS_URL="$browser_url"
-              export KANDELO_HOMEBREW_FILE_FORMULA_COMMAND="$file_command"
-              export KANDELO_HOMEBREW_STRICT_PUBLISHER_SMOKE=1
-              npx playwright "${playwright_args[@]}" >"$playwright_report"
+              export KANDELO_HOMEBREW_ACCEPTANCE_VFS_URL="$browser_url"
+              export KANDELO_HOMEBREW_ACCEPTANCE_VFS_SHA256="$image_sha256"
+              export KANDELO_HOMEBREW_ACCEPTANCE_KERNEL_SHA256="$kernel_sha256"
+              export KANDELO_HOMEBREW_ACCEPTANCE_EXECUTABLE="$file_executable"
+              export KANDELO_HOMEBREW_ACCEPTANCE_ARGV_JSON="$file_argv_json"
+              export KANDELO_HOMEBREW_ACCEPTANCE_EXPECTED_STDOUT="$file_expected_stdout"
+              export KANDELO_BROWSER_DEMO_INPUTS="homebrew-vfs-test"
+              # WHY: this focused page proves the exact package image and
+              # kernel. Preparing the product shell here would make one
+              # Formula depend on an unrelated, possibly pending selection.
+              bash ../../scripts/dev-shell.sh env \
+                KANDELO_PLAYWRIGHT_PORT="$KANDELO_PLAYWRIGHT_PORT" \
+                KANDELO_HOMEBREW_ACCEPTANCE_VFS_URL="$KANDELO_HOMEBREW_ACCEPTANCE_VFS_URL" \
+                KANDELO_HOMEBREW_ACCEPTANCE_VFS_SHA256="$KANDELO_HOMEBREW_ACCEPTANCE_VFS_SHA256" \
+                KANDELO_HOMEBREW_ACCEPTANCE_KERNEL_SHA256="$KANDELO_HOMEBREW_ACCEPTANCE_KERNEL_SHA256" \
+                KANDELO_HOMEBREW_ACCEPTANCE_EXECUTABLE="$KANDELO_HOMEBREW_ACCEPTANCE_EXECUTABLE" \
+                KANDELO_HOMEBREW_ACCEPTANCE_ARGV_JSON="$KANDELO_HOMEBREW_ACCEPTANCE_ARGV_JSON" \
+                KANDELO_HOMEBREW_ACCEPTANCE_EXPECTED_STDOUT="$KANDELO_HOMEBREW_ACCEPTANCE_EXPECTED_STDOUT" \
+                KANDELO_BROWSER_DEMO_INPUTS="$KANDELO_BROWSER_DEMO_INPUTS" \
+                bash -c '
+                  set -euo pipefail
+                  npx playwright test test/homebrew-brewfile-vfs.spec.ts \
+                    --project=chromium --reporter=json >"$1"
+                ' kandelo-homebrew-file-playwright "$playwright_report"
             )
             jq -e "
               .stats.expected == 1 and
@@ -4110,7 +4131,7 @@ jobs:
               --arg arch "$KANDELO_HOMEBREW_ARCH" \
               --arg bottle_sha256 "$KANDELO_HOMEBREW_BOTTLE_SHA256" \
               --arg bottle_url "$KANDELO_HOMEBREW_BOTTLE_URL" \
-              --arg command "$file_command" \
+              --arg command "$file_executable --version" \
               '{schema: 1, formula: $formula, arch: $arch,
                 bottle_sha256: $bottle_sha256, bottle_url: $bottle_url,
                 runtime: "browser", engine: "chromium", status: "success",
@@ -4225,7 +4246,6 @@ jobs:
           node_evidence="$acceptance_root/node-evidence.json"
           browser_evidence="$acceptance_root/browser-evidence.json"
           playwright_report="$acceptance_root/playwright-report.json"
-          shell_playwright_report="$acceptance_root/shell-playwright-report.json"
           mkdir -p "$acceptance_root" "$public_dir"
           cp -a "$GITHUB_WORKSPACE/tap-postverify" "$acceptance_tap"
           rsync -a "$RUNNER_TEMP/homebrew-sidecars/Formula/" "$acceptance_tap/Formula/"
@@ -4414,6 +4434,18 @@ jobs:
           cp "$image" "$public_dir/homebrew-brewfile.vfs.zst"
           browser_port="${KANDELO_PLAYWRIGHT_PORT:-5401}"
           browser_url="http://127.0.0.1:${browser_port}/__kandelo-acceptance/homebrew-brewfile.vfs.zst"
+          # WHY: a Formula publication proves this exact package VFS through
+          # the focused page. The complete interactive shell is a separate
+          # product and is proven only after its selection has been closed.
+          browser_shell_env=()
+          if [ -n "$shell_config" ]; then
+            shell_path="$(jq -er '.path' "$shell_config")"
+            shell_argv_json="$(jq -c '.argv' "$shell_config")"
+            browser_shell_env+=(
+              "KANDELO_HOMEBREW_ACCEPTANCE_DEFAULT_SHELL_PATH=$shell_path"
+              "KANDELO_HOMEBREW_ACCEPTANCE_DEFAULT_SHELL_ARGV_JSON=$shell_argv_json"
+            )
+          fi
           (
             cd apps/browser-demos
             npx playwright install chromium --with-deps
@@ -4434,6 +4466,7 @@ jobs:
               KANDELO_HOMEBREW_ACCEPTANCE_ARGV_JSON="$KANDELO_HOMEBREW_ACCEPTANCE_ARGV_JSON" \
               KANDELO_HOMEBREW_ACCEPTANCE_EXPECTED_STDOUT="$KANDELO_HOMEBREW_ACCEPTANCE_EXPECTED_STDOUT" \
               KANDELO_BROWSER_DEMO_INPUTS="$KANDELO_BROWSER_DEMO_INPUTS" \
+              "${browser_shell_env[@]}" \
               bash -c '
                 set -euo pipefail
                 npx playwright test test/homebrew-brewfile-vfs.spec.ts \
@@ -4446,37 +4479,6 @@ jobs:
           ' "$playwright_report" >/dev/null || {
             echo "::error::exact-byte Chromium Homebrew VFS smoke did not report one pass"; exit 1;
           }
-          if [ -n "$shell_config" ]; then
-            shell_path="$(jq -er '.path' "$shell_config")"
-            shell_argv0="$(jq -er '.argv[0]' "$shell_config")"
-            (
-              cd apps/browser-demos
-              export KANDELO_PLAYWRIGHT_PORT="$browser_port"
-              export KANDELO_HOMEBREW_DEFAULT_SHELL_VFS_URL="$browser_url"
-              export KANDELO_HOMEBREW_DEFAULT_SHELL_PATH="$shell_path"
-              export KANDELO_HOMEBREW_DEFAULT_SHELL_ARGV0="$shell_argv0"
-              export KANDELO_BROWSER_DEMO_INPUTS="main,kandelo"
-              bash ../../scripts/dev-shell.sh env \
-                KANDELO_PLAYWRIGHT_PORT="$KANDELO_PLAYWRIGHT_PORT" \
-                KANDELO_HOMEBREW_DEFAULT_SHELL_VFS_URL="$KANDELO_HOMEBREW_DEFAULT_SHELL_VFS_URL" \
-                KANDELO_HOMEBREW_DEFAULT_SHELL_PATH="$KANDELO_HOMEBREW_DEFAULT_SHELL_PATH" \
-                KANDELO_HOMEBREW_DEFAULT_SHELL_ARGV0="$KANDELO_HOMEBREW_DEFAULT_SHELL_ARGV0" \
-                KANDELO_BROWSER_DEMO_INPUTS="$KANDELO_BROWSER_DEMO_INPUTS" \
-                bash -c '
-                  set -euo pipefail
-                  npx playwright test test/kandelo-homebrew.spec.ts \
-                    --project=chromium \
-                    --grep "an image-owned Homebrew shell boots without legacy shell downloads$" \
-                    --reporter=json >"$1"
-                ' kandelo-homebrew-shell-playwright "$shell_playwright_report"
-            )
-            jq -e '
-              .stats.expected == 1 and .stats.unexpected == 0 and
-              .stats.flaky == 0 and .stats.skipped == 0
-            ' "$shell_playwright_report" >/dev/null || {
-              echo "::error::exact-image Homebrew default-shell smoke did not report one pass"; exit 1;
-            }
-          fi
           jq -nS \
             --arg image_sha256 "$image_sha256" \
             --arg kernel_sha256 "$kernel_sha256" \
@@ -4486,9 +4488,12 @@ jobs:
               image_sha256: $image_sha256, kernel_sha256: $kernel_sha256,
               executable: $executable, argv: $argv}' >"$browser_evidence"
           if [ -n "$shell_config" ]; then
+            # WHY: the focused Playwright request assertion observes canonical
+            # legacy shell URLs and fails if the exact-path PTY run requests
+            # one. Record zero only after that strict one-test report passes.
             jq -S \
               --arg path "$shell_path" \
-              --argjson argv "$(jq -c '.argv' "$shell_config")" \
+              --argjson argv "$shell_argv_json" \
               '.default_shell = {
                 path: $path, argv: $argv, interactive: true,
                 legacy_shell_downloads: 0

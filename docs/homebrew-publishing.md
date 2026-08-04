@@ -253,6 +253,16 @@ an invented empty admission. This keeps zero-root jobs offline and
 prevents a network dependency from appearing where no native Formula
 can execute.
 
+Before a root-filesystem publisher starts any bottle builds, its selection
+step derives the `build_and_test` host tools for every Formula that its matrix
+selected to build. Every tool must appear in
+`homebrew/homebrew-native-compatibility-roots.json`. The check examines the
+complete build selection for that publisher run and fails during planning,
+rather than letting one Formula discover an omitted tool after build jobs have
+started. Reused bottles do not execute Formula build tools and need no host
+tool admission. Adding a new host tool requires updating the reviewed roots
+and the Linux compatibility lock together.
+
 When a selected native Formula legitimately changes, regenerate the
 lock only in a fresh Linux x86_64 publisher-equivalent realm using the
 exact Homebrew commit in
@@ -1171,10 +1181,12 @@ to machine teardown, whose worker-termination fallback remains responsible
 for releasing the host.
 The core scope removes the direct-composed Bzip2 receipt, pours first-party
 Bzip2 through stock Homebrew, executes it, and exits. The canary scope taps
-both repositories, removes the direct-composed M4 receipt, pours and executes
-independent-canary M4, verifies its first-party Dash dependency, and exits.
-Reinstall, upgrade, cleanup, export, and reboot do not change whether a user
-can perform those first installs.
+both repositories and pours the independent `m4-canary` Formula beside the
+precomposed core `m4` Formula. The canary is keg-only, so the Formulae have
+different Cellar paths, but its installed program is still `bin/m4`. The
+scope executes both programs, verifies the canary's first-party Dash
+dependency, and exits. Reinstall, upgrade, cleanup, export, and reboot do not
+change whether a user can perform those first installs.
 
 The comprehensive lifecycle retains the additional maintenance and durability
 assertions. It reinstalls both bottles, exports and reboots the rootfs, checks
@@ -2139,6 +2151,24 @@ the exact tap-qualified identity and name a Formula in the campaign inventory.
 This keeps host tooling out of bottle handoffs while preventing an incomplete
 guest closure from appearing usable.
 
+Each campaign Formula keeps two related dependency lists:
+
+- `dependencies` is the scheduling graph. It contains every fully qualified
+  same-tap runtime, recommended, build, or test dependency. The controller uses
+  this graph to wait for and stage every bottle needed to build and test the
+  Formula.
+- `runtime_dependencies` contains only required and recommended dependencies.
+  This is the exact list sealed into the Formula identity inside its handoff
+  and into composition sidecars for somebody who later pours the bottle.
+
+`runtime_dependencies` must be a sorted, duplicate-free, version-identical
+subset of `dependencies`. A dependency declared in both runtime and test scope
+therefore appears once in both lists. A test-only dependency appears only in
+the scheduling list: its bottle is available to the test job, but it is not
+misrepresented as software required by the installed package. Older immutable
+campaigns that lack `runtime_dependencies` use their existing `dependencies`
+list for both meanings.
+
 Current protected `main` remains the live mutation authority. An
 ordinary publication requires exact equality. The campaign instead may
 use its sealed Kandelo source only while that SHA remains an ancestor of
@@ -2184,16 +2214,21 @@ bash scripts/dev-shell.sh python3 \
   --out out
 ```
 
-The caller supplies exactly the selected transitive closure. Extra
-handoffs are rejected rather than silently widening the product, and
-unselected Formulae are omitted from the prepared tap. The generated
-`selection.json` binds the campaign, prepared tap tree, handoff
-manifests, and bottle archives. The normal whole-tap validator must also
-accept the generated Formula blocks and sidecars. `out/tap` is a local
-candidate; this command does not publish it or move a product pointer.
-Aliases for selected Formulae stay in the prepared tap. Aliases for
-omitted Formulae are omitted too, so a narrow selection does not contain
-a dangling name for software outside its dependency closure.
+The caller supplies exactly the selected build-provenance closure. That
+set includes build/test-only handoffs so the executor can verify how each
+selected bottle was produced. The prepared tap, sidecars, and
+`selection.json` contain only the independently derived runtime closure.
+A build/test-only Formula therefore does not become guest software unless
+it is also named as a product root or reached through a runtime dependency.
+
+Extra handoffs are rejected rather than silently widening either closure.
+The generated `selection.json` binds the campaign, prepared tap tree,
+runtime handoff manifests, and bottle archives. The normal whole-tap
+validator must also accept the generated Formula blocks and sidecars.
+`out/tap` is a local candidate; this command does not publish it or move a
+product pointer. Aliases for selected Formulae stay in the prepared tap.
+Aliases for omitted Formulae are omitted too, so a narrow selection does
+not contain a dangling name for software outside its runtime closure.
 
 Publishing a closed selection uses a small, reviewed plan. The plan
 names:
@@ -2202,7 +2237,7 @@ names:
 - the campaign's Kandelo and source-tap commits;
 - the sorted product roots; and
 - the exact content-addressed Formula handoff tag for every member of
-  the roots' dependency closure.
+  the roots' build-provenance closure.
 
 The plan is canonical compact JSON and has a separate SHA-256 input. The
 publisher rejects a missing or extra handoff, a dependency outside the
@@ -2215,13 +2250,22 @@ publication.
 path. The corresponding tap workflow must be a data-only
 `workflow_dispatch` caller from protected `main`. It pins one exact
 Kandelo commit in both its `uses:` target and `kandelo-ref` input, then
-forwards only the canonical plan and its digest. The reusable workflow
-rejects another event, branch, repository, workflow path, mutable
-Kandelo ref, or Kandelo ref that no longer equals public protected
-`main`.
+forwards the canonical plan, its digest, and the exact tap `main` commit
+that the operator observed before dispatch.
+
+The exact tap commit closes a `workflow_dispatch` race. GitHub resolves
+a branch name when it accepts a dispatch request. Without a separate
+expected commit, `main` could move after the operator's final check and
+GitHub could start the newer workflow. The reusable workflow compares
+GitHub's resolved `GITHUB_SHA` with the expected commit before preparing
+any files. It carries that admitted value into the write job, binds the
+same-run artifact to it, and supplies it to the publisher's per-write
+protected-`main` checks. The workflow rejects another event, branch,
+repository, workflow path, caller commit, mutable Kandelo ref, or either
+execution commit that no longer equals its public protected `main`.
 
 The read-only preparation job anonymously fetches the campaign and every
-Formula handoff. Kandelo's campaign executor reconstructs the sealed
+provenance handoff. Kandelo's campaign executor reconstructs the sealed
 source tap from the exact source checkout. It validates the campaign's
 base, overlay manifest, file identities, and final Git tree. Code in the
 tap checkout remains inert data and is never executed as a materializer.
@@ -2246,9 +2290,20 @@ Readers continue to accept regular-file-only `zip-stored-v1` releases.
 The write job has only `actions: read` and `contents: write`. It binds
 the artifact ID, artifact digest, workflow run, and head commit. It also
 compares the admitted plan digest with the original reusable-workflow
-input, then validates the downloaded descriptor and archive against that
-independently trusted plan. Changing a coherent artifact plan and
-selection together cannot select different Formulae.
+input. Before granting write authority, it checks out the campaign's
+exact source tap and anonymously refetches the campaign and every
+content-addressed handoff in the plan. The pinned executor then runs the
+same credential-free preparation path that produced the artifact. It
+derives the exact runtime Formula set, reconstructs the tap, and creates
+a second deterministic descriptor, ZIP, and release manifest.
+
+Both releases must pass the strict release reader, and all three files
+must match byte for byte. This matters because a handoff tag written
+inside an Actions artifact is only a claim. Formula names and claimed
+tags could remain unchanged while the artifact substituted different
+bottle records, Formula files, sidecars, or archive bytes. Independent
+reconstruction binds the release to the bytes fetched from the public,
+content-addressed handoffs before the job can mutate a GitHub release.
 
 The write job delegates the release lifecycle to
 `publish-homebrew-closed-selection-release.sh`. That wrapper reuses the
@@ -2601,6 +2656,13 @@ Candidate dependency versions come from the same exact Homebrew metadata
 resolution. When that closure differs from the historical Formula sidecar,
 the dependent bottle also requires a build. This prevents a campaign from
 publishing new dependency metadata beside bytes built for the old closure.
+Build and test scope alone does not change runtime identity. Formula
+identity inside a handoff and generated sidecars therefore use the
+explicit runtime subset. Byte reuse is stricter: its build provenance
+must match the complete scheduling closure. A new or changed
+build/test-only edge requires a rebuild instead of relabeling old bytes
+as if they had observed that dependency. The handoff's separate
+`dependency_handoffs` evidence records that complete build/test closure.
 
 `homebrew-prefix-campaign-executor.py derive-reuse` consumes that authority.
 It requires the sealed candidate source tree and a clean old-tap checkout at
@@ -3903,8 +3965,10 @@ projection cannot excuse catalog-authority drift. An optional Formula cannot
 leak into activation merely because a legacy sidecar exists. The base image
 keeps this layer deferred; a derived main-demo image may pre-materialize the
 same declared bytes. It may not maintain a second recipe or partial runtime.
-The independent canary M4 is intentionally absent from both trusted image
-closures and is installed only by the live guest lifecycle.
+The independent canary `m4-canary` Formula is intentionally absent from both
+trusted image closures and is installed only by the live guest lifecycle. It
+uses a distinct keg-only Formula name so it can coexist with core `m4`, while
+its installed command remains `bin/m4`.
 
 Product materialization uses the immutable closed selection named by
 `homebrew/main-shell-selection-lock.json`. The preparer downloads that release
@@ -4199,9 +4263,11 @@ It clones or reads the tap, builds a Homebrew VFS from published sidecars, runs
 checks negative ABI-mismatch and missing-bottle cases.
 
 Browser compatibility requires a separate browser smoke. For the current
-`file-formula` path, the trusted publisher builds a precomposed wasm32 VFS image,
-serves it through the browser demo, runs Chromium Playwright against
-`apps/browser-demos/test/kandelo-homebrew.spec.ts`, and executes:
+`file-formula` path, the trusted publisher builds a precomposed wasm32
+VFS image. It serves the image through the focused `homebrew-vfs-test`
+page and runs Chromium Playwright against
+`apps/browser-demos/test/homebrew-brewfile-vfs.spec.ts`.
+The test binds both the VFS image and kernel by SHA-256 before running:
 
 ```bash
 /opt/kandelo/homebrew/bin/file --version
@@ -4211,20 +4277,28 @@ Only after that smoke passes may sidecars record
 `runtime_support = ["node", "browser"]` and `browser_compatible = true`.
 Packages without a successful browser smoke remain Node-only.
 
-The `file-formula` package bytes in this smoke come from the current Homebrew bottle:
-from the local build in dry-run mode, or from the anonymously fetched GHCR blob
-in write mode. The browser demo still resolves Kandelo-owned ABI platform
-prerequisites such as `node.wasm` and `node-vfs.vfs.zst` through Kandelo's normal
-binary release. Generic Formula and schema 1 dependency-bearing VFS verification
-fetch only the base command set and `rootfs`; their focused Vite input does not
-scan the interactive demo. Schema 2 acceptance also boots the image-owned
-default shell through the full machine UI, so the selected acceptance matrix
-entry materializes the supported interactive graph through
-`./run.sh --fetch-only prepare-browser` before that smoke. The `file-formula` gallery
-smoke materializes the same graph. Browser preparation excludes packages whose
-demos are provided by the external software gallery. Those platform assets are
-not the migrated package under test, and unrelated gallery packages are not
-bottle verification prerequisites.
+The `file-formula` package bytes in this smoke come from the current
+Homebrew bottle. They come from the local build in dry-run mode, or from
+the anonymously fetched GHCR blob in write mode. Package publication
+does not run `prepare-browser` or require the main shell's pending
+selection.
+Its focused Vite input uses the exact worktree kernel and package VFS.
+Therefore, an independently valid bottle cannot be blocked by an
+incomplete product-shell selection. When a package VFS declares an
+image-owned default shell, the same focused page starts that exact path
+and argument vector with a PTY. It sends a bounded marker command and
+requires a clean exit. This proves the shell inside the exact image
+without loading the complete browser-demo graph.
+
+The complete interactive shell remains a required product test, but it
+belongs to the closed-selection and cutover workflows.
+`homebrew-main-shell-ci.yml` proves the selected shell in Node and
+Chromium before the repository can adopt it.
+`reusable-homebrew-main-shell-mirror-publish.yml`
+then repeats the public Node and Chromium lifecycle proof before
+publishing the closed mirror.
+This split keeps package publication independent without weakening the
+final shell gate.
 
 ## Durable Browser-Proven VFS Releases
 
@@ -4630,14 +4704,14 @@ This is a repository rule, not a first-party naming exception. A public
 third-party repository `<owner>/homebrew-<repo>` has canonical tap name
 `<owner>/<repo>`, while its bottles publish below
 `ghcr.io/<owner>/homebrew-<repo>/<formula>`. For example, tap
-`brandonpayton/kandelo-canary` publishes `m4` as registry repository
-`ghcr.io/brandonpayton/homebrew-kandelo-canary/m4`.
+`brandonpayton/kandelo-canary` publishes `m4-canary` as registry repository
+`ghcr.io/brandonpayton/homebrew-kandelo-canary/m4-canary`.
 
 GitHub's package page may render only the final component, such as `zlib` or
-`m4`. That short display label does not change the package API name
+`m4-canary`. That short display label does not change the package API name
 `<homebrew-repository>/<formula>` or its registry path. The first-party
-`zlib` API name is `homebrew-tap-core/zlib`; the third-party example's `m4`
-API name is `homebrew-kandelo-canary/m4`.
+`zlib` API name is `homebrew-tap-core/zlib`; the third-party example's
+`m4-canary` API name is `homebrew-kandelo-canary/m4-canary`.
 
 Do not derive the GHCR path from the canonical tap name. The earlier
 `ghcr.io/kandelo-dev/tap-core/<formula>` destination created private packages
@@ -4681,12 +4755,13 @@ against a GitHub behavior or organization policy change.
 
 The independent, user-owned
 [third-party canary run 29783196350](https://github.com/brandonpayton/homebrew-kandelo-canary/actions/runs/29783196350)
-used the same built-in-token path and created public, repository-linked package
-`homebrew-kandelo-canary/m4` (GitHub package ID `13494393`). Its anonymous
-bottle verification, tap finalization, Node and Chromium VFS acceptance, and
-immutable VFS release publication all passed. This demonstrates that
-public-by-default creation does not depend on a `Kandelo-dev`-specific policy
-exception.
+used the same built-in-token path and created public, repository-linked
+package `homebrew-kandelo-canary/m4` (GitHub package ID `13494393`). That
+retired legacy `m4` canary passed anonymous bottle verification, tap
+finalization, Node and Chromium VFS acceptance, and immutable VFS release
+publication. The current independent proof uses `m4-canary`. Together these
+prove that public-by-default creation does not depend on a
+`Kandelo-dev`-specific policy exception.
 
 ### New tap bootstrap checklist
 

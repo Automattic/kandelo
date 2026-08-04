@@ -44,8 +44,8 @@ describe("Homebrew shell runtime-support contract", () => {
     expect(contract.lifecycleInstall).toEqual({
       tap: "brandonpayton/kandelo-canary",
       repository: "brandonpayton/homebrew-kandelo-canary",
-      revision: "d8bdda662f6d80cf3dcdbe8451edb12bb33bbafc",
-      formula: "m4",
+      revision: "b86d1810c68e3ab17bdab218856da3a7516ec95c",
+      formula: "m4-canary",
     });
     expect(
       contract.deferredRelocationFormulae.some((name) =>

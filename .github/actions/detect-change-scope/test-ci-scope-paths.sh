@@ -100,19 +100,29 @@ done
 assert_matches package_archive_changed_files \
   "images/rootfs/etc/profile" \
   "images/rootfs/etc/profile"
-# The closed-selection executor has moved from conventional package ownership
+# The closed-selection inputs have moved from conventional package ownership
 # to the exact Homebrew product gate. Prove both halves of that route: the
-# build.toml matcher still sees the declared historical dependency, while the
-# final archive classifier removes only this reviewed product-owned path.
-assert_matches package_declared_build_input_changed_files \
-  "scripts/homebrew-prefix-campaign-executor.py" \
-  "scripts/homebrew-prefix-campaign-executor.py"
-assert_matches homebrew_product_owned_package_input_changed_files \
-  "scripts/homebrew-prefix-campaign-executor.py" \
-  "scripts/homebrew-prefix-campaign-executor.py"
-assert_not_matches package_archive_changed_files \
-  "scripts/homebrew-prefix-campaign-executor.py" \
-  "scripts/homebrew-prefix-campaign-executor.py"
+# build.toml matcher still sees each declared historical dependency, while the
+# final archive classifier removes only these reviewed product-owned paths.
+homebrew_product_inputs=(
+  homebrew/main-shell-homebrew-runtime-support.json
+  homebrew/main-shell-lazy-artifact-lock.json
+  homebrew/main-shell-selection-lock.json
+  host/src/homebrew-runtime-support.ts
+  scripts/check-homebrew-main-shell-brewfile.mjs
+  scripts/homebrew-prefix-campaign-executor.py
+)
+for homebrew_product_input in "${homebrew_product_inputs[@]}"; do
+  assert_matches package_declared_build_input_changed_files \
+    "$homebrew_product_input" \
+    "$homebrew_product_input"
+  assert_matches homebrew_product_owned_package_input_changed_files \
+    "$homebrew_product_input" \
+    "$homebrew_product_input"
+  assert_not_matches package_archive_changed_files \
+    "$homebrew_product_input" \
+    "$homebrew_product_input"
+done
 assert_not_matches homebrew_product_owned_package_input_changed_files \
   "scripts/homebrew-main-shell-selection-lock.py" \
   "scripts/homebrew-main-shell-selection-lock.py"
@@ -120,12 +130,14 @@ assert_not_matches homebrew_product_owned_package_input_changed_files \
 # ownership route is not a Homebrew prefix wildcard or a whole-diff escape.
 assert_matches package_archive_changed_files \
   "packages/registry/shell/build-shell.sh" \
-  "scripts/homebrew-prefix-campaign-executor.py" \
+  "${homebrew_product_inputs[@]}" \
   "packages/registry/shell/build-shell.sh"
-assert_not_matches package_archive_changed_files \
-  "scripts/homebrew-prefix-campaign-executor.py" \
-  "scripts/homebrew-prefix-campaign-executor.py" \
-  "packages/registry/shell/build-shell.sh"
+for homebrew_product_input in "${homebrew_product_inputs[@]}"; do
+  assert_not_matches package_archive_changed_files \
+    "$homebrew_product_input" \
+    "${homebrew_product_inputs[@]}" \
+    "packages/registry/shell/build-shell.sh"
+done
 # This classifier is intentionally aggregated across the package registry.
 # WordPress and LAMP boot the host runtime while building their derived VFS
 # images, so their recursive host/src input makes these changes package inputs

@@ -675,6 +675,7 @@ class Fixture:
             return {
                 name: {
                     "dependencies": dependencies.get(name, []),
+                    "runtime_dependencies": dependencies.get(name, []),
                     "version": self.versions[name],
                 }
                 for name in formulae
@@ -1521,6 +1522,7 @@ class PrefixCampaignTests(unittest.TestCase):
             metadata = {
                 name: {
                     "dependencies": [],
+                    "runtime_dependencies": [],
                     "version": fixture.versions[name],
                 }
                 for name in formulae
@@ -1747,14 +1749,20 @@ class PrefixCampaignTests(unittest.TestCase):
                 "casks": [],
                 "formulae": [
                     {
-                        "build_dependencies": ["beta", "cmake"],
-                        "dependencies": [],
+                        "build_dependencies": [
+                            f"{TAP_NAME}/beta",
+                            "cmake",
+                        ],
+                        "dependencies": [f"{TAP_NAME}/beta"],
                         "full_name": f"{TAP_NAME}/alpha",
                         "name": "alpha",
                         "optional_dependencies": ["bootstrap"],
                         "recommended_dependencies": [],
                         "revision": 0,
-                        "test_dependencies": [],
+                        "test_dependencies": [
+                            f"{TAP_NAME}/beta",
+                            f"{TAP_NAME}/bootstrap",
+                        ],
                         "versions": {"stable": "1.0"},
                     },
                     {
@@ -1811,15 +1819,18 @@ class PrefixCampaignTests(unittest.TestCase):
                 resolved,
                 {
                     "alpha": {
-                        "dependencies": [],
+                        "dependencies": ["beta", "bootstrap"],
+                        "runtime_dependencies": ["beta"],
                         "version": "1.0",
                     },
                     "beta": {
                         "dependencies": [],
+                        "runtime_dependencies": [],
                         "version": "2.0_1",
                     },
                     "bootstrap": {
                         "dependencies": ["beta"],
+                        "runtime_dependencies": ["beta"],
                         "version": "3.0",
                     },
                 },
@@ -1865,6 +1876,7 @@ class PrefixCampaignTests(unittest.TestCase):
                 return {
                     name: {
                         "dependencies": dependencies.get(name, []),
+                        "runtime_dependencies": dependencies.get(name, []),
                         "version": fixture.versions[name],
                     }
                     for name in formulae
@@ -1892,6 +1904,102 @@ class PrefixCampaignTests(unittest.TestCase):
             CAMPAIGN.derive_campaign(
                 fixture.options(),
                 metadata_with({"alpha": ["later"]}),
+            )
+
+    def test_test_only_dependency_is_scheduled_but_not_runtime(self) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        base = fixture.dependencies()
+
+        def scoped_metadata(
+            native: pathlib.Path,
+            source: pathlib.Path,
+            tap_name: str,
+            formulae: list[str],
+        ) -> dict[str, dict[str, Any]]:
+            metadata = base.resolve_formula_metadata(
+                native,
+                source,
+                tap_name,
+                formulae,
+            )
+            # Model beta as a fully qualified test-only dependency. It must
+            # still be ready before alpha's build/test job starts.
+            metadata["alpha"]["dependencies"] = ["beta"]
+            metadata["alpha"]["runtime_dependencies"] = []
+            return metadata
+
+        campaign = CAMPAIGN.derive_campaign(
+            fixture.options(),
+            CAMPAIGN.CampaignDependencies(
+                fetch_bottle=base.fetch_bottle,
+                probe_destination=base.probe_destination,
+                resolve_formula_metadata=scoped_metadata,
+                load_historical_formula=base.load_historical_formula,
+            ),
+        )
+        alpha = next(
+            formula
+            for formula in campaign["formulae"]
+            if formula["name"] == "alpha"
+        )
+        self.assertEqual(
+            alpha["dependencies"],
+            [
+                {
+                    "full_name": f"{TAP_NAME}/beta",
+                    "version": fixture.versions["beta"],
+                }
+            ],
+        )
+        self.assertEqual(alpha["runtime_dependencies"], [])
+
+    def test_unproven_test_only_dependency_forces_rebuild(self) -> None:
+        fixture = make_fixture()
+        self.addCleanup(fixture.close)
+        base = fixture.dependencies()
+
+        def scoped_metadata(
+            native: pathlib.Path,
+            source: pathlib.Path,
+            tap_name: str,
+            formulae: list[str],
+        ) -> dict[str, dict[str, Any]]:
+            metadata = base.resolve_formula_metadata(
+                native,
+                source,
+                tap_name,
+                formulae,
+            )
+            metadata["alpha"]["dependencies"] = ["beta", "libyaml"]
+            metadata["alpha"]["runtime_dependencies"] = ["beta"]
+            return metadata
+
+        campaign = CAMPAIGN.derive_campaign(
+            fixture.options(),
+            CAMPAIGN.CampaignDependencies(
+                fetch_bottle=base.fetch_bottle,
+                probe_destination=base.probe_destination,
+                resolve_formula_metadata=scoped_metadata,
+                load_historical_formula=base.load_historical_formula,
+            ),
+        )
+        alpha = next(
+            formula
+            for formula in campaign["formulae"]
+            if formula["name"] == "alpha"
+        )
+        # The old sidecar proves only its runtime dependencies. Until one
+        # scoped campaign has rebuilt this Formula, it cannot truthfully
+        # claim that old bytes were built and tested with libyaml.
+        for variant in alpha["variants"]:
+            self.assertEqual(
+                variant["disposition"]["kind"],
+                "required-rebuild",
+            )
+            self.assertIn(
+                "dependency-closure-changed",
+                variant["disposition"]["reasons"],
             )
 
     def test_protected_overlay_is_materialized_and_tree_bound(self) -> None:
@@ -2723,6 +2831,7 @@ class PrefixCampaignTests(unittest.TestCase):
             return {
                 name: {
                     "dependencies": [],
+                    "runtime_dependencies": [],
                     "version": fixture.versions[name],
                 }
                 for name in formulae
@@ -2779,6 +2888,7 @@ class PrefixCampaignTests(unittest.TestCase):
             return {
                 name: {
                     "dependencies": [],
+                    "runtime_dependencies": [],
                     "version": fixture.versions[name],
                 }
                 for name in formulae

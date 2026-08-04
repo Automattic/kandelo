@@ -28,6 +28,8 @@ class FakeExecutorError(RuntimeError):
 
 
 class ClosedSelectionControllerTests(unittest.TestCase):
+    CALLER_SHA = "3" * 40
+
     def setUp(self) -> None:
         self.campaign = {
             "authority": {
@@ -46,11 +48,18 @@ class ClosedSelectionControllerTests(unittest.TestCase):
         self.index = {
             "dep": {
                 "dependencies": [],
+                "runtime_dependencies": [],
                 "name": "dep",
                 "version": "1",
             },
             "root": {
                 "dependencies": [
+                    {
+                        "full_name": "kandelo-dev/tap-core/dep",
+                        "version": "1",
+                    }
+                ],
+                "runtime_dependencies": [
                     {
                         "full_name": "kandelo-dev/tap-core/dep",
                         "version": "1",
@@ -81,6 +90,7 @@ class ClosedSelectionControllerTests(unittest.TestCase):
         compact = CONTROLLER.compact_json(selected).decode().rstrip("\n")
         return {
             "inputs": {
+                "expected_caller_sha": self.CALLER_SHA,
                 "selection_plan": compact,
                 "selection_plan_sha256": hashlib.sha256(
                     CONTROLLER.compact_json(selected)
@@ -92,7 +102,13 @@ class ClosedSelectionControllerTests(unittest.TestCase):
             },
         }
 
-    def admit(self, event: dict) -> tuple[dict, str, bytes]:
+    def admit(
+        self,
+        event: dict,
+        *,
+        caller_sha: str | None = None,
+        expected_caller_sha: str | None = None,
+    ) -> tuple[dict, str, bytes]:
         with tempfile.TemporaryDirectory() as directory:
             temporary = pathlib.Path(directory)
             event_path = temporary / "event.json"
@@ -102,7 +118,10 @@ class ClosedSelectionControllerTests(unittest.TestCase):
             output_path.touch()
             result = CONTROLLER.admit(
                 event_path=event_path,
-                caller_sha="3" * 40,
+                caller_sha=caller_sha or self.CALLER_SHA,
+                expected_caller_sha=(
+                    expected_caller_sha or self.CALLER_SHA
+                ),
                 github_ref="refs/heads/main",
                 workflow_ref=CONTROLLER.TAP_WORKFLOW_REF,
                 selection_plan=event["inputs"]["selection_plan"],
@@ -116,6 +135,7 @@ class ClosedSelectionControllerTests(unittest.TestCase):
 
     def test_admit_binds_canonical_plan_and_digest(self) -> None:
         result, outputs, plan_payload = self.admit(self.event())
+        self.assertEqual(result["caller-sha"], self.CALLER_SHA)
         self.assertEqual(result["campaign-kandelo-commit"], "1" * 40)
         self.assertEqual(
             result["source-tap-commit"],
@@ -141,7 +161,8 @@ class ClosedSelectionControllerTests(unittest.TestCase):
             ):
                 CONTROLLER.admit(
                     event_path=event_path,
-                    caller_sha="3" * 40,
+                    caller_sha=self.CALLER_SHA,
+                    expected_caller_sha=self.CALLER_SHA,
                     github_ref="refs/heads/feature",
                     workflow_ref=CONTROLLER.TAP_WORKFLOW_REF,
                     selection_plan=event["inputs"]["selection_plan"],
@@ -175,7 +196,8 @@ class ClosedSelectionControllerTests(unittest.TestCase):
             ):
                 CONTROLLER.admit(
                     event_path=event_path,
-                    caller_sha="3" * 40,
+                    caller_sha=self.CALLER_SHA,
+                    expected_caller_sha=self.CALLER_SHA,
                     github_ref="refs/heads/main",
                     workflow_ref=CONTROLLER.TAP_WORKFLOW_REF,
                     selection_plan="{}",
@@ -185,6 +207,78 @@ class ClosedSelectionControllerTests(unittest.TestCase):
                     plan_output=temporary / "plan.json",
                     github_output=github_output,
                 )
+
+    def test_admit_rejects_resolved_caller_mismatch_before_writing(self) -> None:
+        event = self.event()
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = pathlib.Path(directory)
+            event_path = temporary / "event.json"
+            event_path.write_text(json.dumps(event), encoding="utf-8")
+            plan_path = temporary / "plan.json"
+            output_path = temporary / "github-output"
+            output_path.touch()
+            with self.assertRaisesRegex(
+                CONTROLLER.ControllerError,
+                "caller SHA differs from the expected caller SHA",
+            ):
+                CONTROLLER.admit(
+                    event_path=event_path,
+                    caller_sha="4" * 40,
+                    expected_caller_sha=self.CALLER_SHA,
+                    github_ref="refs/heads/main",
+                    workflow_ref=CONTROLLER.TAP_WORKFLOW_REF,
+                    selection_plan=event["inputs"]["selection_plan"],
+                    selection_plan_sha256=(
+                        event["inputs"]["selection_plan_sha256"]
+                    ),
+                    plan_output=plan_path,
+                    github_output=output_path,
+                )
+            self.assertFalse(plan_path.exists())
+            self.assertEqual(output_path.read_bytes(), b"")
+
+    def test_admit_rejects_dispatch_caller_substitution(self) -> None:
+        event = self.event()
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = pathlib.Path(directory)
+            event_path = temporary / "event.json"
+            event_path.write_text(json.dumps(event), encoding="utf-8")
+            output_path = temporary / "github-output"
+            output_path.touch()
+            with self.assertRaisesRegex(
+                CONTROLLER.ControllerError,
+                "differ from the dispatch event",
+            ):
+                CONTROLLER.admit(
+                    event_path=event_path,
+                    caller_sha="4" * 40,
+                    expected_caller_sha="4" * 40,
+                    github_ref="refs/heads/main",
+                    workflow_ref=CONTROLLER.TAP_WORKFLOW_REF,
+                    selection_plan=event["inputs"]["selection_plan"],
+                    selection_plan_sha256=(
+                        event["inputs"]["selection_plan_sha256"]
+                    ),
+                    plan_output=temporary / "plan.json",
+                    github_output=output_path,
+                )
+
+    def test_admit_rejects_missing_or_extra_dispatch_input(self) -> None:
+        for key, value in (
+            ("expected_caller_sha", None),
+            ("unexpected", "value"),
+        ):
+            with self.subTest(key=key, value=value):
+                event = self.event()
+                if value is None:
+                    del event["inputs"][key]
+                else:
+                    event["inputs"][key] = value
+                with self.assertRaisesRegex(
+                    CONTROLLER.ControllerError,
+                    "must contain exactly",
+                ):
+                    self.admit(event)
 
     def test_admit_rejects_noncanonical_plan(self) -> None:
         event = self.event()
@@ -207,7 +301,12 @@ class ClosedSelectionControllerTests(unittest.TestCase):
         ):
             CONTROLLER.validate_plan(plan)
 
-    def fake_executor(self, calls: list[tuple]) -> dict:
+    def fake_executor(
+        self,
+        calls: list[tuple],
+        *,
+        selected_formulae: tuple[str, ...] = ("dep", "root"),
+    ) -> dict:
         def dependency_names(formula: dict, _tap_name: str) -> tuple[str, ...]:
             return tuple(
                 item["full_name"].removeprefix(
@@ -222,6 +321,33 @@ class ClosedSelectionControllerTests(unittest.TestCase):
             name: str,
         ) -> tuple[str, ...]:
             return ("dep",) if name == "root" else ()
+
+        def runtime_selected_formula_order(
+            _campaign: dict,
+            index: dict,
+            roots: list[str],
+        ) -> tuple[str, ...]:
+            ordered: list[str] = []
+            visited: set[str] = set()
+
+            def visit(name: str) -> None:
+                if name in visited:
+                    return
+                for dependency in index[name].get(
+                    "runtime_dependencies",
+                    index[name]["dependencies"],
+                ):
+                    visit(
+                        dependency["full_name"].removeprefix(
+                            "kandelo-dev/tap-core/"
+                        )
+                    )
+                visited.add(name)
+                ordered.append(name)
+
+            for root in roots:
+                visit(root)
+            return tuple(ordered)
 
         def fetch_release(**arguments) -> None:
             dependencies = tuple(
@@ -254,12 +380,13 @@ class ClosedSelectionControllerTests(unittest.TestCase):
                         "formula": name,
                         "handoff": {"tag": self.plan["handoffs"][name]},
                     }
-                    for name in ("dep", "root")
+                    for name in selected_formulae
                 ],
                 "kind": "kandelo-homebrew-closed-selection-candidate",
                 "roots": ["root"],
                 "schema": 1,
                 "tap": {
+                    "prepared_tree_git_oid": "c" * 40,
                     "repository": "kandelo-dev/homebrew-tap-core",
                     "source_commit": self.plan["source_tap_commit"],
                 },
@@ -269,24 +396,19 @@ class ClosedSelectionControllerTests(unittest.TestCase):
             )
 
         def prepare_selection_release(**arguments) -> None:
-            output = arguments["output"]
-            output.mkdir()
-            (output / "fixture-selection.json").write_bytes(
-                (
-                    arguments["selection_root"] / "selection.json"
-                ).read_bytes()
+            self.write_fake_release(
+                arguments["output"],
+                json.loads(
+                    (
+                        arguments["selection_root"] / "selection.json"
+                    ).read_text()
+                ),
             )
 
         def load_prepared_selection_release(
             prepared_root: pathlib.Path,
         ) -> tuple[dict, bytes, dict]:
-            selection = json.loads(
-                (prepared_root / "fixture-selection.json").read_text()
-            )
-            descriptor = {
-                "selection_manifest": {"value": selection},
-            }
-            return descriptor, b"fixture\n", {"fixture": True}
+            return self.load_fake_release(prepared_root)
 
         return {
             "ExecutorError": FakeExecutorError,
@@ -303,7 +425,85 @@ class ClosedSelectionControllerTests(unittest.TestCase):
             ),
             "prepare_selection": prepare_selection,
             "prepare_selection_release": prepare_selection_release,
+            "runtime_selected_formula_order": (
+                runtime_selected_formula_order
+            ),
         }
+
+    def write_fake_release(
+        self,
+        output: pathlib.Path,
+        selection: dict,
+    ) -> None:
+        assets = output / "assets"
+        assets.mkdir(parents=True)
+        archive = CONTROLLER.compact_json(
+            {
+                "prepared_tree_git_oid": selection["tap"][
+                    "prepared_tree_git_oid"
+                ]
+            }
+        )
+        archive_path = assets / "closed-selection.zip"
+        archive_path.write_bytes(archive)
+        descriptor = {
+            "selection_manifest": {"value": selection},
+            "tap_archive": {
+                "bytes": len(archive),
+                "sha256": hashlib.sha256(archive).hexdigest(),
+            },
+        }
+        descriptor_payload = CONTROLLER.pretty_json(descriptor)
+        (assets / "closed-selection.json").write_bytes(
+            descriptor_payload
+        )
+        manifest = {
+            "archive_sha256": descriptor["tap_archive"]["sha256"],
+            "descriptor_sha256": hashlib.sha256(
+                descriptor_payload
+            ).hexdigest(),
+        }
+        (output / "release-manifest.json").write_bytes(
+            CONTROLLER.pretty_json(manifest)
+        )
+
+    def load_fake_release(
+        self,
+        prepared_root: pathlib.Path,
+    ) -> tuple[dict, bytes, dict]:
+        observed = {
+            path.relative_to(prepared_root).as_posix()
+            for path in prepared_root.rglob("*")
+            if path.is_file()
+        }
+        if observed != set(CONTROLLER.PREPARED_RELEASE_PATHS):
+            raise FakeExecutorError("fake release has unexpected files")
+        descriptor_payload = (
+            prepared_root / "assets/closed-selection.json"
+        ).read_bytes()
+        descriptor = json.loads(descriptor_payload)
+        archive = (
+            prepared_root / "assets/closed-selection.zip"
+        ).read_bytes()
+        archive_record = descriptor["tap_archive"]
+        if (
+            archive_record["bytes"] != len(archive)
+            or archive_record["sha256"]
+            != hashlib.sha256(archive).hexdigest()
+        ):
+            raise FakeExecutorError("fake archive differs")
+        manifest = json.loads(
+            (prepared_root / "release-manifest.json").read_bytes()
+        )
+        expected_manifest = {
+            "archive_sha256": archive_record["sha256"],
+            "descriptor_sha256": hashlib.sha256(
+                descriptor_payload
+            ).hexdigest(),
+        }
+        if manifest != expected_manifest:
+            raise FakeExecutorError("fake manifest differs")
+        return descriptor, descriptor_payload, manifest
 
     def test_real_executor_exposes_the_required_contract(self) -> None:
         executor = CONTROLLER.load_executor(
@@ -348,7 +548,50 @@ class ClosedSelectionControllerTests(unittest.TestCase):
                     ("prepare", ("dep", "root")),
                 ],
             )
-            self.assertTrue((output / "fixture-selection.json").is_file())
+            self.assertTrue(
+                (output / "assets/closed-selection.json").is_file()
+            )
+
+    def test_prepare_verifies_proof_only_handoff_without_selecting_it(
+        self,
+    ) -> None:
+        calls: list[tuple] = []
+        self.index["root"]["runtime_dependencies"] = []
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = pathlib.Path(directory)
+            plan_path = temporary / "plan.json"
+            plan_path.write_bytes(CONTROLLER.pretty_json(self.plan))
+            campaign_path = temporary / "campaign.json"
+            campaign_path.write_bytes(self.campaign_payload)
+            source_root = temporary / "source"
+            source_root.mkdir()
+            executor_path = temporary / "executor.py"
+            executor_path.touch()
+            output = temporary / "prepared"
+            with mock.patch.object(
+                CONTROLLER,
+                "load_executor",
+                return_value=self.fake_executor(
+                    calls,
+                    selected_formulae=("root",),
+                ),
+            ):
+                summary = CONTROLLER.prepare(
+                    plan_path=plan_path,
+                    campaign_path=campaign_path,
+                    source_tap_root=source_root,
+                    executor_path=executor_path,
+                    output=output,
+                )
+        self.assertEqual(summary["formula_count"], 1)
+        self.assertEqual(
+            calls,
+            [
+                ("fetch", "dep", ()),
+                ("fetch", "root", ("dep",)),
+                ("prepare", ("dep", "root")),
+            ],
+        )
 
     def test_prepare_rejects_extra_handoff_before_fetch(self) -> None:
         plan = json.loads(json.dumps(self.plan))
@@ -391,6 +634,8 @@ class ClosedSelectionControllerTests(unittest.TestCase):
             temporary = pathlib.Path(directory)
             plan_path = temporary / "plan.json"
             plan_path.write_bytes(CONTROLLER.pretty_json(self.plan))
+            campaign_path = temporary / "campaign.json"
+            campaign_path.write_bytes(self.campaign_payload)
             prepared = temporary / "prepared"
             prepared.mkdir()
             value = {
@@ -422,9 +667,8 @@ class ClosedSelectionControllerTests(unittest.TestCase):
                     "source_commit": self.plan["source_tap_commit"],
                 },
             }
-            (prepared / "fixture-selection.json").write_bytes(
-                CONTROLLER.pretty_json(value)
-            )
+            value["tap"]["prepared_tree_git_oid"] = "c" * 40
+            self.write_fake_release(prepared, value)
             plan_input = CONTROLLER.compact_json(self.plan).decode().rstrip(
                 "\n"
             )
@@ -443,15 +687,20 @@ class ClosedSelectionControllerTests(unittest.TestCase):
                             self.plan
                         ),
                         prepared_release=prepared,
+                        campaign_path=campaign_path,
                         executor_path=temporary / "executor.py",
                     )
             value["formulae"][0]["handoff"]["tag"] = (
                 self.plan["handoffs"]["dep"]
             )
             value["tap"]["repository"] = None
-            (prepared / "fixture-selection.json").write_bytes(
-                CONTROLLER.pretty_json(value)
-            )
+            for child in sorted(prepared.rglob("*"), reverse=True):
+                if child.is_file():
+                    child.unlink()
+                else:
+                    child.rmdir()
+            prepared.rmdir()
+            self.write_fake_release(prepared, value)
             with mock.patch.object(
                 CONTROLLER,
                 "load_executor",
@@ -467,8 +716,62 @@ class ClosedSelectionControllerTests(unittest.TestCase):
                             self.plan
                         ),
                         prepared_release=prepared,
+                        campaign_path=campaign_path,
                         executor_path=temporary / "executor.py",
                     )
+
+    def test_verify_rejects_omitted_runtime_dependency(self) -> None:
+        selection = {
+            "arch": "wasm32",
+            "campaign": {
+                "kandelo_commit": self.plan["kandelo_commit"],
+                "tag": self.plan["campaign_tag"],
+            },
+            "formulae": [
+                {
+                    "formula": "root",
+                    "handoff": {
+                        "tag": self.plan["handoffs"]["root"],
+                    },
+                }
+            ],
+            "kind": "kandelo-homebrew-closed-selection-candidate",
+            "roots": ["root"],
+            "schema": 1,
+            "tap": {
+                "repository": "kandelo-dev/homebrew-tap-core",
+                "source_commit": self.plan["source_tap_commit"],
+            },
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = pathlib.Path(directory)
+            campaign_path = temporary / "campaign.json"
+            campaign_path.write_bytes(self.campaign_payload)
+            prepared = temporary / "prepared"
+            prepared.mkdir()
+            selection["tap"]["prepared_tree_git_oid"] = "c" * 40
+            self.write_fake_release(prepared, selection)
+            with mock.patch.object(
+                CONTROLLER,
+                "load_executor",
+                return_value=self.fake_executor([]),
+            ), self.assertRaisesRegex(
+                CONTROLLER.ControllerError,
+                "handoffs differ",
+            ):
+                CONTROLLER.verify(
+                    selection_plan=(
+                        CONTROLLER.compact_json(self.plan)
+                        .decode()
+                        .rstrip("\n")
+                    ),
+                    selection_plan_sha256=CONTROLLER.plan_digest(
+                        self.plan
+                    ),
+                    prepared_release=prepared,
+                    campaign_path=campaign_path,
+                    executor_path=temporary / "executor.py",
+                )
 
     def test_verify_rejects_coherent_artifact_plan_substitution(self) -> None:
         substituted = json.loads(json.dumps(self.plan))
@@ -500,11 +803,12 @@ class ClosedSelectionControllerTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as directory:
             temporary = pathlib.Path(directory)
+            campaign_path = temporary / "campaign.json"
+            campaign_path.write_bytes(self.campaign_payload)
             prepared = temporary / "prepared"
             prepared.mkdir()
-            (prepared / "fixture-selection.json").write_bytes(
-                CONTROLLER.pretty_json(selection)
-            )
+            selection["tap"]["prepared_tree_git_oid"] = "c" * 40
+            self.write_fake_release(prepared, selection)
             with mock.patch.object(
                 CONTROLLER,
                 "load_executor",
@@ -524,7 +828,89 @@ class ClosedSelectionControllerTests(unittest.TestCase):
                             self.plan
                         ),
                         prepared_release=prepared,
+                        campaign_path=campaign_path,
                         executor_path=temporary / "executor.py",
+                    )
+
+    def test_reconstruct_rejects_coherent_archive_substitution(self) -> None:
+        calls: list[tuple] = []
+        plan_input = CONTROLLER.compact_json(self.plan).decode().rstrip(
+            "\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = pathlib.Path(directory)
+            plan_path = temporary / "plan.json"
+            plan_path.write_bytes(CONTROLLER.pretty_json(self.plan))
+            campaign_path = temporary / "campaign.json"
+            campaign_path.write_bytes(self.campaign_payload)
+            source_root = temporary / "source"
+            source_root.mkdir()
+            executor_path = temporary / "executor.py"
+            executor_path.touch()
+            prepared = temporary / "prepared"
+            executor = self.fake_executor(calls)
+            with mock.patch.object(
+                CONTROLLER,
+                "load_executor",
+                return_value=executor,
+            ):
+                CONTROLLER.prepare(
+                    plan_path=plan_path,
+                    campaign_path=campaign_path,
+                    source_tap_root=source_root,
+                    executor_path=executor_path,
+                    output=prepared,
+                )
+                summary = CONTROLLER.reconstruct_and_verify(
+                    selection_plan=plan_input,
+                    selection_plan_sha256=CONTROLLER.plan_digest(
+                        self.plan
+                    ),
+                    prepared_release=prepared,
+                    campaign_path=campaign_path,
+                    source_tap_root=source_root,
+                    executor_path=executor_path,
+                )
+                self.assertEqual(summary["formula_count"], 2)
+                descriptor, _payload, _manifest = (
+                    self.load_fake_release(prepared)
+                )
+                substituted = descriptor["selection_manifest"]["value"]
+                substituted["tap"]["prepared_tree_git_oid"] = "d" * 40
+                for child in sorted(prepared.rglob("*"), reverse=True):
+                    if child.is_file():
+                        child.unlink()
+                    else:
+                        child.rmdir()
+                prepared.rmdir()
+                self.write_fake_release(prepared, substituted)
+
+                # The old semantic check admits this internally coherent
+                # artifact because its Formula names and claimed handoff tags
+                # are unchanged. Independent reconstruction must reject its
+                # substituted archive, descriptor, and manifest bytes.
+                CONTROLLER.verify(
+                    selection_plan=plan_input,
+                    selection_plan_sha256=CONTROLLER.plan_digest(
+                        self.plan
+                    ),
+                    prepared_release=prepared,
+                    campaign_path=campaign_path,
+                    executor_path=executor_path,
+                )
+                with self.assertRaisesRegex(
+                    CONTROLLER.ControllerError,
+                    "differs from its independent reconstruction",
+                ):
+                    CONTROLLER.reconstruct_and_verify(
+                        selection_plan=plan_input,
+                        selection_plan_sha256=CONTROLLER.plan_digest(
+                            self.plan
+                        ),
+                        prepared_release=prepared,
+                        campaign_path=campaign_path,
+                        source_tap_root=source_root,
+                        executor_path=executor_path,
                     )
 
 
