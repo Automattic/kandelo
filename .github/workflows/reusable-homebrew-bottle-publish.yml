@@ -3699,7 +3699,9 @@ jobs:
         shell: bash
         run: |
           cd kandelo
-          bash scripts/dev-shell.sh bash packages/registry/kernel/build-kernel.sh
+          bash scripts/dev-shell.sh env \
+            "WASM_POSIX_LOCAL_INSTALL_SESSION=homebrew-verifier-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            bash packages/registry/kernel/build-kernel.sh
 
       - name: Build exact fork-instrument host tool for bottle tests
         shell: bash
@@ -4562,10 +4564,28 @@ jobs:
               "$image_sha256" ] || {
               echo "::error::served file browser VFS differs from the composed image"; exit 1;
             }
-            kernel="$GITHUB_WORKSPACE/kandelo/local-binaries/kernel.wasm"
-            [ -f "$kernel" ] && [ ! -L "$kernel" ] || {
-              echo "::error::exact browser verification kernel is missing"; exit 1;
-            }
+            # WHY: direct package builds publish the compatibility mirror as a
+            # symlink into a claimed, immutable local generation. Resolve it
+            # through the same artifact policy as Node/browser consumers, then
+            # pin and validate the regular generation member before hashing it.
+            kernel="$(bash scripts/resolve-binary.sh kernel.wasm)"
+            kernel_namespace="$(realpath \
+              local-binaries/.kandelo-local-generations/wasm32/kernel)"
+            kernel_generation="$(dirname "$kernel")"
+            kernel_identity="$(dirname "$kernel_generation")"
+            kernel_session="$(basename "$kernel_generation")"
+            kernel_cache_key="$(basename "$kernel_identity")"
+            if [ "$(dirname "$kernel_identity")" != "$kernel_namespace" ] ||
+               [ "$(basename "$kernel")" != kandelo-kernel.wasm ] ||
+               [[ ! "$kernel_cache_key" =~ ^[0-9a-f]{64}$ ]] ||
+               [ "$kernel_session" != \
+                 "homebrew-verifier-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" ] ||
+               [ ! -f "$kernel_identity/.$kernel_session.publication-claimed" ] ||
+               [ -L "$kernel_identity/.$kernel_session.publication-claimed" ] ||
+               [ ! -f "$kernel" ] || [ -L "$kernel" ]; then
+              echo "::error::exact browser verification kernel is not a claimed local-generation member"
+              exit 1
+            fi
             kernel_sha256="$(sha256sum "$kernel" | awk '{print $1}')"
 
             (

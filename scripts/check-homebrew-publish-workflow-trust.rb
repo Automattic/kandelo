@@ -76,7 +76,7 @@ PUBLISHER_BUILD_DIGEST = "4dabfbe8be3192f1b4d62ad72e2ec27b275d527d24a8c89c12d982
 PUBLISHER_UPLOAD_DIGEST = "861d649d73bb470fc37f99751733e8360f3f59f6245b80e2dd8d7eb4f40f3290"
 PUBLISHER_INDEX_DIGEST = "30531067dcd20c314ef8ae4b9d8584716a92fc803a194098913355ebb519754b"
 PUBLISHER_STAGE_DIGEST = "b77b9c5196cdc12d77f900d9c385dc369da294348bbd238fdf7619dfb2e609e8"
-PUBLISHER_VERIFY_DIGEST = "c8f492ad56b2c2865eb2232b5a59ffa6ea849ce34acee79ea1b496ae011c356a"
+PUBLISHER_VERIFY_DIGEST = "222f31ef86cdad71e91d9b70b08de53fdcd8dd24a20caec1b2f41d7b0c96894b"
 PUBLISHER_FINALIZE_DIGEST = "b17e7bf5d0a5ef512e49f74c224a94958642dfdd80a27439f2a0335816a0886b"
 PUBLISHER_VFS_RELEASE_DIGEST = "2db9ec075edf382e326066d5f49a32947f5a584fce26a966fb9fff23bbbe3c26"
 MAINTENANCE_VALIDATE_DIGEST = "30ebccd5d44e004e37f168e81284d7ceb18accfa067c05248c1cc19398a7515f"
@@ -6740,6 +6740,18 @@ def check_publisher(workflow)
   end
   check(!verifier_sysroot_run.lines.any? { |line| line.strip == "cd kandelo" },
         "publisher verifier builds its mutable sysroot in the reviewed source checkout")
+  verifier_kernel_step = named_step(verify_steps, "Build exact Kandelo kernel")
+  verifier_kernel_run = verifier_kernel_step.fetch("run")
+  check(verifier_kernel_step.keys.sort == %w[name run shell] &&
+        verifier_kernel_step["shell"] == "bash" &&
+        verifier_kernel_run.include?("cd kandelo") &&
+        verifier_kernel_run.include?("bash scripts/dev-shell.sh env") &&
+        verifier_kernel_run.include?(
+          'WASM_POSIX_LOCAL_INSTALL_SESSION=homebrew-verifier-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}'
+        ) &&
+        verifier_kernel_run.include?(
+          "bash packages/registry/kernel/build-kernel.sh"
+        ), "publisher does not build the verifier kernel into its exact local generation")
   kernel_step = named_step(build_steps, "Build Kandelo kernel")
   fork_instrument_step = named_step(build_steps, "Build fork-instrument host tool")
   check(fork_instrument_step.keys.sort == %w[name run shell] &&
@@ -7868,7 +7880,17 @@ def check_publisher(workflow)
     '[ ! -e "$browser_public_dir" ] && [ ! -L "$browser_public_dir" ]',
     'image_sha256="$(sha256sum "$browser_vfs"',
     'served file browser VFS differs from the composed image',
-    'kernel="$GITHUB_WORKSPACE/kandelo/local-binaries/kernel.wasm"',
+    'kernel="$(bash scripts/resolve-binary.sh kernel.wasm)"',
+    'local-binaries/.kandelo-local-generations/wasm32/kernel)',
+    'kernel_generation="$(dirname "$kernel")"',
+    'kernel_identity="$(dirname "$kernel_generation")"',
+    'kernel_session="$(basename "$kernel_generation")"',
+    'kernel_cache_key="$(basename "$kernel_identity")"',
+    '[[ ! "$kernel_cache_key" =~ ^[0-9a-f]{64}$ ]]',
+    '"homebrew-verifier-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"',
+    '[ ! -f "$kernel_identity/.$kernel_session.publication-claimed" ]',
+    '[ -L "$kernel_identity/.$kernel_session.publication-claimed" ]',
+    '[ ! -f "$kernel" ] || [ -L "$kernel" ]',
     'kernel_sha256="$(sha256sum "$kernel"',
     'KANDELO_HOMEBREW_ACCEPTANCE_VFS_URL="$KANDELO_HOMEBREW_ACCEPTANCE_VFS_URL"',
     'KANDELO_HOMEBREW_ACCEPTANCE_VFS_SHA256="$KANDELO_HOMEBREW_ACCEPTANCE_VFS_SHA256"',
