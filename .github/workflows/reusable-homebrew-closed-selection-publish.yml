@@ -70,7 +70,7 @@ jobs:
           [[ "$PLAN_SHA256" =~ ^[0-9a-f]{64}$ ]]
 
       - name: Checkout exact Kandelo publisher
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Automattic/kandelo
           ref: ${{ inputs.kandelo-ref }}
@@ -131,7 +131,7 @@ jobs:
               --github-output "$GITHUB_OUTPUT"
 
       - name: Checkout exact campaign source tap
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: kandelo-dev/homebrew-tap-core
           ref: ${{ steps.admit.outputs.source-tap-commit }}
@@ -230,7 +230,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout exact Kandelo publisher
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Automattic/kandelo
           ref: ${{ inputs.kandelo-ref }}
@@ -239,7 +239,7 @@ jobs:
           submodules: false
 
       - name: Checkout protected tap lock authority
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: kandelo-dev/homebrew-tap-core
           ref: ${{ inputs.expected-caller-sha }}
@@ -248,7 +248,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkout exact campaign source for reconstruction
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: kandelo-dev/homebrew-tap-core
           ref: ${{ needs.prepare.outputs.source-tap-commit }}
