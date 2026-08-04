@@ -1918,12 +1918,8 @@ def authorize_unfinalized_recovery(
         )
 
 
-def validate_manifest_descriptor(
-    layout: pathlib.Path,
-    descriptor: dict[str, Any],
-    semantics: dict[str, str],
-    *,
-    expected_receipt: dict[str, Any] | None = None,
+def validate_homebrew_child_descriptor(
+    descriptor: dict[str, Any], semantics: dict[str, str]
 ) -> dict[str, Any]:
     descriptor = exact_keys(
         descriptor,
@@ -2000,15 +1996,41 @@ def validate_manifest_descriptor(
     if tab_text.encode("utf-8") != canonical_json(tab):
         fail("Homebrew tab annotation is not canonical JSON")
     validate_tab(tab)
+    manifest_digest = digest_value(
+        descriptor["digest"], "Homebrew child manifest digest"
+    )
+    manifest_size = require_int(
+        descriptor["size"], "Homebrew child manifest size", 1
+    )
+    if manifest_size > MAX_JSON:
+        fail(f"Homebrew child manifest exceeds {MAX_JSON} bytes")
+    return {
+        "annotations": annotations,
+        "arch": platform["variant"],
+        "bottle_sha256": bottle_sha,
+        "bottle_size": bottle_size,
+        "descriptor": descriptor,
+        "homebrew_ref": ref,
+        "manifest_digest": f"sha256:{manifest_digest}",
+        "manifest_size": manifest_size,
+        "platform": platform,
+    }
+
+
+def validate_homebrew_child_manifest(
+    manifest: Any,
+    child: dict[str, Any],
+    semantics: dict[str, str],
+) -> tuple[dict[str, Any], dict[str, Any]]:
     manifest = exact_keys(
-        read_json_blob(layout, descriptor, "child manifest"),
+        manifest,
         {"annotations", "config", "layers", "mediaType", "schemaVersion"},
         "OCI child manifest",
     )
     if manifest["schemaVersion"] != 2 or manifest["mediaType"] != OCI_MANIFEST:
         fail("OCI child manifest media type or schema is invalid")
     expected_manifest_annotations = {
-        **annotations,
+        **child["annotations"],
         "com.github.package.type": "homebrew_bottle",
         "org.opencontainers.image.source": (
             "https://github.com/"
@@ -2027,17 +2049,6 @@ def validate_manifest_descriptor(
     )
     if config_descriptor["mediaType"] != OCI_CONFIG:
         fail("OCI child config has the wrong media type")
-    config = exact_keys(
-        read_json_blob(layout, config_descriptor, "child config"),
-        {"architecture", "os", "rootfs", "variant"},
-        "OCI child config",
-    )
-    if {key: config[key] for key in ("architecture", "os", "variant")} != platform:
-        fail("OCI child config platform differs from its descriptor")
-    rootfs = exact_keys(config["rootfs"], {"diff_ids", "type"}, "OCI child rootfs")
-    if rootfs["type"] != "layers" or not isinstance(rootfs["diff_ids"], list) or len(rootfs["diff_ids"]) != 1:
-        fail("OCI child config rootfs is invalid")
-    diff_id = digest_value(rootfs["diff_ids"][0], "OCI child diff_id")
     layers = manifest["layers"]
     if not isinstance(layers, list) or len(layers) != 1:
         fail("OCI child manifest must contain exactly one layer")
@@ -2053,10 +2064,57 @@ def validate_manifest_descriptor(
     )
     if pathlib.PurePosixPath(layer_title).name != layer_title or len(layer_title.encode()) > 255:
         fail("OCI bottle layer title must be a bounded file name")
-    if layer["mediaType"] != OCI_LAYER or digest_value(layer["digest"], "layer digest") != bottle_sha:
+    if (
+        layer["mediaType"] != OCI_LAYER
+        or digest_value(layer["digest"], "layer digest")
+        != child["bottle_sha256"]
+    ):
         fail("OCI bottle layer media type or digest is invalid")
-    if layer["size"] != bottle_size:
+    if layer["size"] != child["bottle_size"]:
         fail("OCI bottle layer size does not match Homebrew metadata")
+    return config_descriptor, layer
+
+
+def validate_homebrew_child_config(
+    config: Any, platform: dict[str, str]
+) -> str:
+    config = exact_keys(
+        config,
+        {"architecture", "os", "rootfs", "variant"},
+        "OCI child config",
+    )
+    if {
+        key: config[key] for key in ("architecture", "os", "variant")
+    } != platform:
+        fail("OCI child config platform differs from its descriptor")
+    rootfs = exact_keys(
+        config["rootfs"], {"diff_ids", "type"}, "OCI child rootfs"
+    )
+    if (
+        rootfs["type"] != "layers"
+        or not isinstance(rootfs["diff_ids"], list)
+        or len(rootfs["diff_ids"]) != 1
+    ):
+        fail("OCI child config rootfs is invalid")
+    return digest_value(rootfs["diff_ids"][0], "OCI child diff_id")
+
+
+def validate_manifest_descriptor(
+    layout: pathlib.Path,
+    descriptor: dict[str, Any],
+    semantics: dict[str, str],
+    *,
+    expected_receipt: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    child = validate_homebrew_child_descriptor(descriptor, semantics)
+    manifest = read_json_blob(layout, descriptor, "child manifest")
+    config_descriptor, _layer = validate_homebrew_child_manifest(
+        manifest, child, semantics
+    )
+    config = read_json_blob(layout, config_descriptor, "child config")
+    diff_id = validate_homebrew_child_config(config, child["platform"])
+    bottle_sha = child["bottle_sha256"]
+    bottle_size = child["bottle_size"]
     layer_path = regular_file(
         layout / "blobs/sha256" / bottle_sha, "OCI bottle layer", MAX_BOTTLE_BYTES
     )
@@ -2079,18 +2137,21 @@ def validate_manifest_descriptor(
     if decompressed.hexdigest() != diff_id:
         fail("OCI child config diff_id does not match the decompressed bottle tar")
     if expected_receipt is not None:
-        if platform["variant"] != expected_receipt["arch"]:
+        if child["arch"] != expected_receipt["arch"]:
             fail("OCI child platform does not match receipt architecture")
         if bottle_sha != expected_receipt["bottle"]["sha256"] or bottle_size != expected_receipt["bottle"]["bytes"]:
             fail("OCI child bottle does not match receipt")
-        if descriptor["digest"] != expected_receipt["oci"]["manifest"]["digest"]:
+        if (
+            descriptor["digest"]
+            != expected_receipt["oci"]["manifest"]["digest"]
+        ):
             fail("OCI child manifest does not match receipt")
     return {
-        "arch": platform["variant"],
+        "arch": child["arch"],
         "bottle_sha256": bottle_sha,
         "descriptor": descriptor,
-        "homebrew_ref": ref,
-        "manifest_digest": descriptor["digest"],
+        "homebrew_ref": child["homebrew_ref"],
+        "manifest_digest": child["manifest_digest"],
     }
 
 
@@ -2839,9 +2900,10 @@ def validate_remote_index_graph(
     *,
     registry_config: pathlib.Path,
     remote: str,
+    reference: str,
     descriptor: dict[str, Any],
     temporary: pathlib.Path,
-) -> tuple[str, int]:
+) -> tuple[str, int, list[dict[str, Any]]]:
     _descriptor, top_digest, top_size = remote_descriptor(
         descriptor, "public top descriptor", OCI_INDEX, MAX_JSON
     )
@@ -2860,93 +2922,72 @@ def validate_remote_index_graph(
     )
     if top["mediaType"] != OCI_INDEX or top["schemaVersion"] != 2:
         fail("public top index has the wrong media type or schema")
+    semantics = top_semantics_from_annotations(
+        top["annotations"], reference
+    )
     manifests = top["manifests"]
     if not isinstance(manifests, list) or not 1 <= len(manifests) <= 2:
         fail("public top index must contain one or two child manifests")
 
     child_digests: set[str] = set()
     variants: set[str] = set()
+    inventory: list[dict[str, Any]] = []
     for index, value in enumerate(manifests):
-        child = exact_keys(
+        _descriptor, child_digest, child_size = remote_descriptor(
             value,
-            {"annotations", "digest", "mediaType", "platform", "size"},
             f"public child descriptor {index}",
+            OCI_MANIFEST,
+            MAX_JSON,
         )
-        _child, child_digest, child_size = remote_descriptor(
-            child, f"public child descriptor {index}", OCI_MANIFEST, MAX_JSON
-        )
+        child = validate_homebrew_child_descriptor(value, semantics)
         if child_digest in child_digests:
             fail("public top index repeats a child manifest digest")
         child_digests.add(child_digest)
         platform = child["platform"]
-        if platform not in (
-            {"architecture": "wasm", "os": "kandelo", "variant": "wasm32"},
-            {"architecture": "wasm", "os": "kandelo", "variant": "wasm64"},
-        ):
-            fail(f"public child descriptor {index} has invalid platform metadata")
         if platform["variant"] in variants:
             fail("public top index repeats a Kandelo architecture")
         variants.add(platform["variant"])
 
-        manifest = exact_keys(
-            fetch_remote_json(
-                registry_config=registry_config,
-                remote=remote,
-                digest=child_digest,
-                size=child_size,
-                maximum=MAX_JSON,
-                label=f"public child manifest {index}",
-                temporary=temporary,
-            ),
-            {"annotations", "config", "layers", "mediaType", "schemaVersion"},
-            f"public child manifest {index}",
+        manifest = fetch_remote_json(
+            registry_config=registry_config,
+            remote=remote,
+            digest=child_digest,
+            size=child_size,
+            maximum=MAX_JSON,
+            label=f"public child manifest {index}",
+            temporary=temporary,
         )
-        if manifest["mediaType"] != OCI_MANIFEST or manifest["schemaVersion"] != 2:
-            fail(f"public child manifest {index} has the wrong media type or schema")
-        config = exact_keys(
-            manifest["config"],
-            {"digest", "mediaType", "size"},
-            f"public child config descriptor {index}",
+        if isinstance(manifest, dict):
+            remote_layers = manifest.get("layers")
+            if isinstance(remote_layers, list) and len(remote_layers) == 1:
+                remote_layer = exact_keys(
+                    remote_layers[0],
+                    {"annotations", "digest", "mediaType", "size"},
+                    f"public bottle layer descriptor {index}",
+                )
+                remote_descriptor(
+                    remote_layer,
+                    f"public bottle layer descriptor {index}",
+                    OCI_LAYER,
+                    MAX_BOTTLE_BYTES,
+                )
+        config, layer = validate_homebrew_child_manifest(
+            manifest, child, semantics
         )
         _config, config_digest, config_size = remote_descriptor(
             config, f"public child config descriptor {index}", OCI_CONFIG, MAX_JSON
         )
-        config_document = exact_keys(
-            fetch_remote_json(
-                registry_config=registry_config,
-                remote=remote,
-                digest=config_digest,
-                size=config_size,
-                maximum=MAX_JSON,
-                label=f"public child config {index}",
-                temporary=temporary,
-                blob=True,
-            ),
-            {"architecture", "os", "rootfs", "variant"},
-            f"public child config {index}",
+        config_document = fetch_remote_json(
+            registry_config=registry_config,
+            remote=remote,
+            digest=config_digest,
+            size=config_size,
+            maximum=MAX_JSON,
+            label=f"public child config {index}",
+            temporary=temporary,
+            blob=True,
         )
-        if {key: config_document[key] for key in ("architecture", "os", "variant")} != platform:
-            fail(f"public child config {index} does not match its platform")
-        rootfs = exact_keys(
-            config_document["rootfs"], {"diff_ids", "type"},
-            f"public child config rootfs {index}",
-        )
-        if (
-            rootfs["type"] != "layers"
-            or not isinstance(rootfs["diff_ids"], list)
-            or len(rootfs["diff_ids"]) != 1
-        ):
-            fail(f"public child config rootfs {index} is invalid")
-        digest_value(rootfs["diff_ids"][0], f"public child config diff_id {index}")
-
-        layers = manifest["layers"]
-        if not isinstance(layers, list) or len(layers) != 1:
-            fail(f"public child manifest {index} must contain exactly one layer")
-        layer = exact_keys(
-            layers[0],
-            {"annotations", "digest", "mediaType", "size"},
-            f"public bottle layer descriptor {index}",
-        )
+        validate_homebrew_child_config(config_document, platform)
         _layer, layer_digest, layer_size = remote_descriptor(
             layer, f"public bottle layer descriptor {index}", OCI_LAYER,
             MAX_BOTTLE_BYTES,
@@ -2960,23 +3001,150 @@ def validate_remote_index_graph(
             label=f"public bottle layer {index}",
             temporary=temporary,
         )
-    return top_digest, top_size
+        inventory.append(
+            {
+                "arch": child["arch"],
+                "bottle_sha256": layer_digest,
+                "bottle_size": layer_size,
+                "homebrew_ref": child["homebrew_ref"],
+                "manifest_digest": child["manifest_digest"],
+                "manifest_size": child_size,
+            }
+        )
+    return top_digest, top_size, sorted(
+        inventory, key=lambda item: item["arch"]
+    )
 
 
-def import_public_index(args: argparse.Namespace) -> None:
-    remote = require_string(args.remote, "public OCI remote", OCI_REMOTE)
-    reference = require_string(args.reference, "public OCI reference", OCI_TAG)
-    registry_config = pathlib.Path(args.registry_config)
-    if load_json(registry_config, "anonymous ORAS registry config", MAX_MANIFEST_BYTES) != {
-        "auths": {}
-    }:
-        fail("anonymous ORAS registry config must contain only an empty auths object")
+def validate_public_index_probe_inputs(
+    remote_value: str,
+    reference_value: str,
+    registry_config_value: str,
+    operation: str,
+) -> tuple[str, str, pathlib.Path]:
+    remote = require_string(remote_value, "public OCI remote", OCI_REMOTE)
+    reference = require_string(
+        reference_value, "public OCI reference", OCI_TAG
+    )
+    registry_config = pathlib.Path(registry_config_value)
+    if load_json(
+        registry_config,
+        "anonymous ORAS registry config",
+        MAX_MANIFEST_BYTES,
+    ) != {"auths": {}}:
+        fail(
+            "anonymous ORAS registry config must contain only an empty "
+            "auths object"
+        )
     for name in (
         "GH_TOKEN", "GITHUB_TOKEN", "HOMEBREW_GITHUB_API_TOKEN",
         "HOMEBREW_GITHUB_PACKAGES_TOKEN", "HOMEBREW_DOCKER_REGISTRY_TOKEN",
     ):
         if os.environ.get(name):
-            fail(f"anonymous public-index import received {name}")
+            fail(f"anonymous public-index {operation} received {name}")
+    return remote, reference, registry_config
+
+
+def observe_public_index(
+    *,
+    remote: str,
+    reference: str,
+    registry_config: pathlib.Path,
+    temporary: pathlib.Path,
+    operation: str,
+) -> dict[str, Any]:
+    descriptor_path = temporary / "descriptor.json"
+    target = f"{remote}:{reference}"
+    status, error = run_oras_fetch(
+        registry_config=registry_config,
+        target=target,
+        output=descriptor_path,
+        maximum=MAX_MANIFEST_BYTES,
+        descriptor=True,
+    )
+    if status != 0:
+        result = classify_registry_error(
+            error, target=target, kind="manifest"
+        )
+        if result not in ("missing", "auth-required"):
+            fail(
+                f"could not classify anonymous Homebrew index {operation}: "
+                f"{command_error_detail(error)}"
+            )
+        return {
+            "children": [],
+            "digest": None,
+            "kind": "public-index",
+            "schema": 1,
+            "size": None,
+            "status": result,
+        }
+    descriptor = load_json(
+        descriptor_path, "public top descriptor", MAX_MANIFEST_BYTES
+    )
+    top_digest, top_size, children = validate_remote_index_graph(
+        registry_config=registry_config,
+        remote=remote,
+        reference=reference,
+        descriptor=descriptor,
+        temporary=temporary,
+    )
+    confirmed_path = temporary / "confirmed-descriptor.json"
+    confirmed_status, confirmed_error = run_oras_fetch(
+        registry_config=registry_config,
+        target=target,
+        output=confirmed_path,
+        maximum=MAX_MANIFEST_BYTES,
+        descriptor=True,
+    )
+    if confirmed_status != 0:
+        fail(
+            "public top reference changed during descriptor validation: "
+            f"{command_error_detail(confirmed_error)}"
+        )
+    _confirmed, confirmed_digest, confirmed_size = remote_descriptor(
+        load_json(
+            confirmed_path,
+            "confirmed public top descriptor",
+            MAX_MANIFEST_BYTES,
+        ),
+        "confirmed public top descriptor",
+        OCI_INDEX,
+        MAX_JSON,
+    )
+    if confirmed_digest != top_digest or confirmed_size != top_size:
+        fail("public top reference changed during descriptor validation")
+    return {
+        "children": children,
+        "digest": f"sha256:{top_digest}",
+        "kind": "public-index",
+        "schema": 1,
+        "size": top_size,
+        "status": "present",
+    }
+
+
+def probe_public_index(args: argparse.Namespace) -> None:
+    remote, reference, registry_config = validate_public_index_probe_inputs(
+        args.remote, args.reference, args.registry_config, "probe"
+    )
+    with tempfile.TemporaryDirectory(
+        prefix="homebrew-public-index-probe-"
+    ) as temporary_name:
+        result = observe_public_index(
+            remote=remote,
+            reference=reference,
+            registry_config=registry_config,
+            temporary=pathlib.Path(temporary_name),
+            operation="probe",
+        )
+    write_json(pathlib.Path(args.out_result), result)
+
+
+def import_public_index(args: argparse.Namespace) -> None:
+    remote, reference, registry_config = validate_public_index_probe_inputs(
+        args.remote, args.reference, args.registry_config, "import"
+    )
     output_layout = pathlib.Path(args.out_layout)
     if output_layout.exists() or output_layout.is_symlink():
         fail(f"public-index output layout already exists: {output_layout}")
@@ -2985,62 +3153,25 @@ def import_public_index(args: argparse.Namespace) -> None:
 
     with tempfile.TemporaryDirectory(prefix="homebrew-public-index-") as temporary_name:
         temporary = pathlib.Path(temporary_name)
-        descriptor_path = temporary / "descriptor.json"
-        status, error = run_oras_fetch(
+        observation = observe_public_index(
+            remote=remote,
+            reference=reference,
             registry_config=registry_config,
-            target=f"{remote}:{reference}",
-            output=descriptor_path,
-            maximum=MAX_MANIFEST_BYTES,
-            descriptor=True,
+            temporary=temporary,
+            operation="import",
         )
-        if status != 0:
-            result = classify_registry_error(
-                error, target=f"{remote}:{reference}", kind="manifest"
-            )
-            if result == "missing":
+        if observation["status"] != "present":
+            if observation["status"] == "missing":
                 write_json(output_result, {"schema": 1, "status": "missing"})
                 return
-            if result == "auth-required":
+            if observation["status"] == "auth-required":
                 fail(
                     f"{remote}:{reference} is not anonymously readable; "
                     "an authorized owner must make the GHCR package public"
                 )
-            fail(
-                "could not classify anonymous Homebrew index import: "
-                f"{command_error_detail(error)}"
-            )
-        descriptor = load_json(
-            descriptor_path, "public top descriptor", MAX_MANIFEST_BYTES
-        )
-        top_digest, top_size = validate_remote_index_graph(
-            registry_config=registry_config,
-            remote=remote,
-            descriptor=descriptor,
-            temporary=temporary,
-        )
-        confirmed_path = temporary / "confirmed-descriptor.json"
-        confirmed_status, confirmed_error = run_oras_fetch(
-            registry_config=registry_config,
-            target=f"{remote}:{reference}",
-            output=confirmed_path,
-            maximum=MAX_MANIFEST_BYTES,
-            descriptor=True,
-        )
-        if confirmed_status != 0:
-            fail(
-                "public top reference changed during descriptor validation: "
-                f"{command_error_detail(confirmed_error)}"
-            )
-        _confirmed, confirmed_digest, confirmed_size = remote_descriptor(
-            load_json(
-                confirmed_path, "confirmed public top descriptor", MAX_MANIFEST_BYTES
-            ),
-            "confirmed public top descriptor",
-            OCI_INDEX,
-            MAX_JSON,
-        )
-        if confirmed_digest != top_digest or confirmed_size != top_size:
-            fail("public top reference changed during descriptor validation")
+            fail("anonymous Homebrew index probe has an invalid status")
+        top_digest = observation["digest"].removeprefix("sha256:")
+        top_size = observation["size"]
 
     result = subprocess.run(
         [
@@ -3209,6 +3340,10 @@ def parser() -> argparse.ArgumentParser:
     validate_index_receipt = commands.add_parser("validate-index-receipt")
     validate_index_receipt.add_argument("--receipt", required=True)
     validate_index_receipt.set_defaults(handler=validate_index_receipt_command)
+    probe_index = commands.add_parser("probe-public-index")
+    for flag in ("remote", "reference", "registry-config", "out-result"):
+        probe_index.add_argument(f"--{flag}", required=True)
+    probe_index.set_defaults(handler=probe_public_index)
     import_index = commands.add_parser("import-public-index")
     for flag in (
         "remote", "reference", "registry-config", "out-layout", "out-result",

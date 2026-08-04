@@ -26,6 +26,7 @@ from typing import Any, NoReturn
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 OCI_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+OCI_TAG = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$")
 FORMULA_NAME = re.compile(r"^[a-z0-9][a-z0-9._-]*$")
 VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+,-]{0,254}$")
 REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -2469,9 +2470,7 @@ def default_probe_destination(
             [
                 "python3",
                 str(kandelo_root / OCI_TOOL_PATH),
-                "probe-registry",
-                "--kind",
-                "manifest",
+                "probe-public-index",
                 "--remote",
                 remote,
                 "--reference",
@@ -2499,20 +2498,89 @@ def validate_destination_probe(
     value: Any,
     label: str,
 ) -> dict[str, Any]:
+    if (
+        isinstance(value, dict)
+        and set(value) == {"digest", "kind", "schema", "status"}
+        and value.get("schema") == 1
+        and value.get("kind") == "manifest"
+    ):
+        # Legacy injected probes remain useful for absence/authentication
+        # tests. A present tag needs the complete public-index observation;
+        # arch names inferred from a Formula are not destination evidence.
+        if value.get("status") == "present":
+            fail(f"{label} present result lacks an exact public index graph")
+        value = {
+            "children": [],
+            "digest": value.get("digest"),
+            "kind": "public-index",
+            "schema": 1,
+            "size": None,
+            "status": value.get("status"),
+        }
     value = exact_keys(
         value,
-        {"digest", "kind", "schema", "status"},
+        {"children", "digest", "kind", "schema", "size", "status"},
         label,
     )
     status = value["status"]
     digest = value["digest"]
-    if value["schema"] != 1 or value["kind"] != "manifest":
+    children = value["children"]
+    size = value["size"]
+    if value["schema"] != 1 or value["kind"] != "public-index":
         fail(f"{label} has an unsupported contract")
     if status == "present":
-        if not isinstance(digest, str) or OCI_DIGEST.fullmatch(digest) is None:
+        if (
+            not isinstance(digest, str)
+            or OCI_DIGEST.fullmatch(digest) is None
+            or not isinstance(size, int)
+            or isinstance(size, bool)
+            or not 1 <= size <= MAX_JSON_BYTES
+            or not isinstance(children, list)
+            or not 1 <= len(children) <= 2
+        ):
             fail(f"{label} present result has an invalid digest")
+        normalized_children: list[dict[str, Any]] = []
+        for position, child in enumerate(children):
+            child = exact_keys(
+                child,
+                {
+                    "arch",
+                    "bottle_sha256",
+                    "bottle_size",
+                    "homebrew_ref",
+                    "manifest_digest",
+                    "manifest_size",
+                },
+                f"{label} child {position}",
+            )
+            arch = child["arch"]
+            if arch not in ("wasm32", "wasm64"):
+                fail(f"{label} child {position} has an invalid architecture")
+            require_sha256(
+                child["bottle_sha256"],
+                f"{label} child {position} bottle SHA-256",
+            )
+            bottle_size = child["bottle_size"]
+            manifest_size = child["manifest_size"]
+            if (
+                not isinstance(bottle_size, int)
+                or isinstance(bottle_size, bool)
+                or not 1 <= bottle_size <= MAX_COMPRESSED_BOTTLE_BYTES
+                or not isinstance(manifest_size, int)
+                or isinstance(manifest_size, bool)
+                or not 1 <= manifest_size <= MAX_JSON_BYTES
+                or not isinstance(child["homebrew_ref"], str)
+                or OCI_TAG.fullmatch(child["homebrew_ref"]) is None
+                or not isinstance(child["manifest_digest"], str)
+                or OCI_DIGEST.fullmatch(child["manifest_digest"]) is None
+            ):
+                fail(f"{label} child {position} has invalid OCI identity")
+            normalized_children.append(child)
+        arches = [child["arch"] for child in normalized_children]
+        if arches != sorted(set(arches)):
+            fail(f"{label} children are not a canonical architecture set")
     elif status in ("missing", "auth-required"):
-        if digest is not None:
+        if digest is not None or size is not None or children != []:
             fail(f"{label} {status} result unexpectedly has a digest")
     else:
         fail(f"{label} status is invalid")
@@ -2538,9 +2606,23 @@ def destination_admission(
         predecessor_handoffs = predecessor_handoffs or {}
         if used_predecessors is None:
             used_predecessors = {}
-        matches: list[dict[str, Any]] = []
-        for variant in variants:
-            arch = variant.get("arch")
+        by_arch = {
+            variant.get("arch"): variant for variant in variants
+        }
+        if (
+            len(by_arch) != len(variants)
+            or any(arch not in ("wasm32", "wasm64") for arch in by_arch)
+        ):
+            fail(f"{formula_name} campaign variants are not a unique arch set")
+        matches: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for child in probe["children"]:
+            arch = child["arch"]
+            variant = by_arch.get(arch)
+            if variant is None:
+                fail(
+                    f"{formula_name} destination contains undeclared "
+                    f"architecture {arch}"
+                )
             match = predecessor_handoffs.get((formula_name, arch))
             if match is None:
                 fail(
@@ -2548,23 +2630,31 @@ def destination_admission(
                     "present without an archived predecessor handoff "
                     f"for {formula_name}/{arch}"
                 )
-            matches.append(match)
+            if "reuse_source" in variant:
+                fail(
+                    f"{formula_name} variant already has a reuse source"
+                )
+            matches.append((variant, match))
         if not matches:
             fail(
                 f"{formula_name} destination manifest is present "
                 "without any campaign variants"
             )
-        # WHY: validate the complete Formula arch set before mutation. A
-        # partial multiarch rebind must not produce a plausible-looking,
-        # half-authorized campaign in memory.
-        for variant, match in zip(variants, matches, strict=True):
-            if "reuse_source" in variant:
-                fail(
-                    f"{formula_name} variant already has a reuse source"
-                )
-            variant["reuse_source"] = match["reuse_source"]
-            authority = match["authority"]
-            archive_path = authority["archive"]["path"]
+        # WHY: a version index is an aggregate of independently published
+        # architecture slots. Validate the entire observed subset first, then
+        # attach immutable predecessor authority atomically only to those
+        # occupied slots. An absent sibling keeps its reviewed build route.
+        prepared_matches = [
+            (
+                variant,
+                match["reuse_source"],
+                match["authority"],
+                match["authority"]["archive"]["path"],
+            )
+            for variant, match in matches
+        ]
+        for variant, reuse_source, authority, archive_path in prepared_matches:
+            variant["reuse_source"] = reuse_source
             used_predecessors[archive_path] = authority
         kind = "archived-predecessor-exact-presence"
     elif status == "missing":
@@ -2598,9 +2688,9 @@ def destination_admission(
         kind = "first-package-namespace-bootstrap-required"
     return {
         "kind": kind,
-        "method": "anonymous-oras-manifest-probe",
+        "method": "anonymous-oras-public-index-probe",
         "probe": probe,
-        "schema": 1,
+        "schema": 2,
     }
 
 

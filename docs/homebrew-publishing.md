@@ -2568,8 +2568,17 @@ version. An unchanged `pkg_version` continues to reserve a rebuild above the
 selected bottle block instead.
 
 Campaign manifest schema 2 gives every Formula a versioned
-`destination.admission` record. Admission schema 1 contains exactly the
-anonymous manifest probe, its method, and one of two states:
+`destination.admission` record. New derivations use admission schema 2 and an
+anonymous public-index graph probe. A present result binds the stable tag's
+top digest and size plus a canonical per-architecture inventory of child
+manifest digest/size, Homebrew child reference, and bottle-layer digest/size.
+The probe uses an empty ORAS auth configuration, validates Homebrew annotations
+and the complete digest-pinned OCI graph, then rereads the mutable tag before
+returning. It does not download or publish bottle layers. Admission schema 1
+manifest probes remain readable for already sealed campaigns.
+
+An absent or authentication-challenged graph has no children, digest, or
+size, and produces one of two states:
 
 - `anonymous-absence` means the credential-free probe returned `missing`.
   This is the ordinary build or reuse-publication path.
@@ -2591,10 +2600,27 @@ first-package publication.
 Campaign manifest schema 3 adds one bounded recovery path for a bottle that a
 previous campaign already published successfully. It does not turn the whole
 previous campaign back on. Each recovered Formula/architecture names one exact,
-content-addressed predecessor campaign and handoff. Its anonymous destination
-probe must find the exact public OCI manifest that the predecessor handoff
-describes. A missing, private, rewritten, or differently indexed destination
-cannot be recovered.
+content-addressed predecessor campaign and handoff. A Homebrew version index
+is an aggregate of independently published architecture children, so a
+present top tag does not mean that every declared Formula architecture is
+occupied. Derivation requires an archived handoff for every child actually
+observed in the graph and attaches `reuse_source` only to those exact
+architectures. A declared but absent sibling retains its reviewed build or
+rebuild disposition. An undeclared child, an occupied child without a handoff,
+or a successor-scope route that disagrees with the observed inventory fails
+before any variant is rebound.
+
+The executor anonymously imports the graph again before predecessor resealing.
+Every child admitted at derivation must still have the same manifest, canonical
+Homebrew child reference, and layer identity. The top digest may advance only
+by adding a declared non-reuse sibling, because successful architecture
+publication legitimately rewrites the aggregate index. Evidence therefore
+records the derivation-time
+`admission_manifest_digest` separately from the live
+`observed_manifest_digest`. The archived handoff and exact layer bytes remain
+the reuse authority; neither top-index presence nor a newly observed sibling
+creates reuse authority. A missing, private, rewritten admitted child, foreign
+architecture, or mismatched bottle remains a hard failure.
 
 The current Formula source and the recovery archive have separate Git
 authorities:

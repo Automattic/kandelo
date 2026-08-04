@@ -103,6 +103,17 @@ unresolved duplicate still fails. The derived campaign preserves the
 exact scope path and digest in `authority.successor_scope`; legacy
 schema-3 releases without that optional record remain readable.
 
+Recovery admission is per architecture even though GHCR exposes one mutable
+version-index tag per Formula. New admission records anonymously validate and
+bind the complete OCI graph observed at derivation. Each occupied child needs
+its own immutable archived handoff; a declared architecture absent from that
+graph remains a build route. During resealing, the admitted child manifest and
+canonical Homebrew child reference and bottle layer must remain exact. A later
+valid sibling publication may change the aggregate top digest, so successor
+evidence retains separate admission and live-observation digests instead of
+treating the mutable top digest as bottle authority. Existing
+admission-schema-1 campaign releases remain readable.
+
 Current `Automattic/kandelo` `refs/heads/main` is the sole live mutation
 authority for Homebrew and durable-package generation. The ordinary
 path requires the explicit source to equal current `main` immediately

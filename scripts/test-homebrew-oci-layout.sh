@@ -1606,8 +1606,46 @@ run_import() {
       --out-result "$TMP_ROOT/import-$label-result.json"
 }
 
+run_public_index_probe() {
+  local label="$1" fixture="$2"
+  local root="$TMP_ROOT/import-$fixture"
+  env -u GH_TOKEN -u GITHUB_TOKEN -u HOMEBREW_GITHUB_API_TOKEN \
+    -u HOMEBREW_GITHUB_PACKAGES_TOKEN -u HOMEBREW_DOCKER_REGISTRY_TOKEN \
+    ORAS_LOG="$TMP_ROOT/probe-$label.log" \
+    IMPORT_MODE="${IMPORT_MODE:-present}" \
+    IMPORT_DESCRIPTOR="$root/descriptor.json" IMPORT_LAYOUT="$root/remote-layout" \
+    IMPORT_BLOB_SIZE="${IMPORT_BLOB_SIZE:-}" \
+    IMPORT_MUTATED_DESCRIPTOR="${IMPORT_MUTATED_DESCRIPTOR:-}" \
+    IMPORT_STATE="$TMP_ROOT/probe-$label-state" \
+    PATH="$IMPORT_MOCK_BIN:$PATH" python3 "$TOOL" probe-public-index \
+      --remote ghcr.io/kandelo-dev/homebrew-tap-core/hello --reference 1.0 \
+      --registry-config "$TMP_ROOT/anonymous-oras.json" \
+      --out-result "$TMP_ROOT/probe-$label-result.json"
+}
+
 printf '{"auths":{}}\n' >"$TMP_ROOT/anonymous-oras.json"
 make_import_fixture valid valid
+run_public_index_probe valid valid
+jq -e --slurpfile receipt "$TMP_ROOT/combined/receipt.json" '
+  .schema == 1 and .kind == "public-index" and .status == "present" and
+  .digest == $receipt[0].top.digest and .size == $receipt[0].top.size and
+  [.children[].arch] == ["wasm32", "wasm64"] and
+  ([.children[] | {arch, bottle_sha256, homebrew_ref, manifest_digest}] ==
+    [$receipt[0].children[] |
+      {arch, bottle_sha256, homebrew_ref, manifest_digest}]) and
+  all(.children[];
+    (.bottle_size | type == "number" and . > 0) and
+    (.manifest_size | type == "number" and . > 0))
+' "$TMP_ROOT/probe-valid-result.json" >/dev/null
+! grep -F "cp --from-registry-config" "$TMP_ROOT/probe-valid.log" >/dev/null || {
+  echo "public index probe copied bottle layers" >&2
+  exit 1
+}
+IMPORT_MODE=missing run_public_index_probe missing valid
+jq -e '
+  . == {children: [], digest: null, kind: "public-index", schema: 1,
+    size: null, status: "missing"}
+' "$TMP_ROOT/probe-missing-result.json" >/dev/null
 run_import valid valid
 jq -e '
   .schema == 1 and .status == "present" and

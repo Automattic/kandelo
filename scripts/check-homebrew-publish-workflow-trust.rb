@@ -7153,8 +7153,10 @@ def check_publisher(workflow)
   end, "publisher anonymous version-index import references an available credential")
   index_import_tool = File.read(File.join(REPO_ROOT, "scripts/homebrew-oci-layout.py"))
   [
+    'commands.add_parser("probe-public-index")',
     'commands.add_parser("import-public-index")',
-    'target=f"{remote}:{reference}"',
+    'def observe_public_index(',
+    'target = f"{remote}:{reference}"',
     'descriptor=True',
     'target=f"{remote}@sha256:{digest}"',
     'MAX_BOTTLE_BYTES',
