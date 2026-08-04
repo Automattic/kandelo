@@ -3269,7 +3269,7 @@
             "type": "gdk_pixbuf_query_loaders"
           }
         ],
-        "ruby_source_checksum": "d0ca333a4e11f9d228804d12a3251ce27f266dd8e785ffba9a4ba1e839131288",
+        "ruby_source_checksum": "e071ff42de2c1bf25718aa0e422ab8e90851130d9777a38c430941bdfafb7823",
         "stable_checksum": "172f80e3626ec31520a970400f1a3694e04718f6c2cd2885f75250fb5a6995a4",
         "stable_dependencies": [
           "glib",
@@ -3350,7 +3350,7 @@
             "type": "gdk_pixbuf_query_loaders"
           }
         ],
-        "ruby_source_checksum": "d0ca333a4e11f9d228804d12a3251ce27f266dd8e785ffba9a4ba1e839131288",
+        "ruby_source_checksum": "e071ff42de2c1bf25718aa0e422ab8e90851130d9777a38c430941bdfafb7823",
         "stable_checksum": "172f80e3626ec31520a970400f1a3694e04718f6c2cd2885f75250fb5a6995a4",
         "stable_dependencies": [
           "glib",
@@ -11457,7 +11457,7 @@
             "type": "symlink"
           }
         ],
-        "ruby_source_checksum": "7f4156fac938a48e1dbf1d03afe3fe3dc15eb20f1139f4d8aa471058cabd5996",
+        "ruby_source_checksum": "e15cca35502166eb7a93940f3fe489e490b09a7b9e07ba3145d7ec1471bcd8d1",
         "stable_checksum": "243a86649cf6f23eeb6a2ff2456e09e5d77dd9018a54d3d96b0c6bdd6ba6c7f1",
         "stable_dependencies": [
           "ca-certificates"
@@ -11537,7 +11537,7 @@
             "type": "symlink"
           }
         ],
-        "ruby_source_checksum": "7f4156fac938a48e1dbf1d03afe3fe3dc15eb20f1139f4d8aa471058cabd5996",
+        "ruby_source_checksum": "e15cca35502166eb7a93940f3fe489e490b09a7b9e07ba3145d7ec1471bcd8d1",
         "stable_checksum": "243a86649cf6f23eeb6a2ff2456e09e5d77dd9018a54d3d96b0c6bdd6ba6c7f1",
         "stable_dependencies": [
           "ca-certificates"
@@ -12219,7 +12219,7 @@
           }
         ],
         "revision": 1,
-        "ruby_source_checksum": "3dc2436bee258ab1d1c55657be38bb76991715c59000eb925e12cfecf0ef9817",
+        "ruby_source_checksum": "fb5565f8206082e13e711cf13d7bf1cc4a13d8db1bcd5aec69ca82b74df81943",
         "stable_checksum": "5ae535a36af0ebca6fca176ecb8197f5db9c1cb8c8f0cd12cdf1787046db1f41",
         "stable_dependencies": [
           "mpdecimal",
@@ -12373,7 +12373,7 @@
           }
         ],
         "revision": 1,
-        "ruby_source_checksum": "3dc2436bee258ab1d1c55657be38bb76991715c59000eb925e12cfecf0ef9817",
+        "ruby_source_checksum": "fb5565f8206082e13e711cf13d7bf1cc4a13d8db1bcd5aec69ca82b74df81943",
         "stable_checksum": "5ae535a36af0ebca6fca176ecb8197f5db9c1cb8c8f0cd12cdf1787046db1f41",
         "stable_dependencies": [
           "mpdecimal",
@@ -12555,7 +12555,7 @@
             "type": "set_permissions"
           }
         ],
-        "ruby_source_checksum": "67db686b2a0b96593b2ad531b835f127223edc8506a203b0b8c4fc45f8d4c139",
+        "ruby_source_checksum": "3c8e08cd45c7ff01c5c6a1541244b6aa50c4f0ce9845fe53c1561238acd74938",
         "stable_checksum": "74d0d71d0600e477651a077101d6e62d1e2e69b8e992ba18c993dd643b7ba222",
         "stable_dependencies": [
           "mpdecimal",
@@ -12735,7 +12735,7 @@
             "type": "set_permissions"
           }
         ],
-        "ruby_source_checksum": "67db686b2a0b96593b2ad531b835f127223edc8506a203b0b8c4fc45f8d4c139",
+        "ruby_source_checksum": "3c8e08cd45c7ff01c5c6a1541244b6aa50c4f0ce9845fe53c1561238acd74938",
         "stable_checksum": "74d0d71d0600e477651a077101d6e62d1e2e69b8e992ba18c993dd643b7ba222",
         "stable_dependencies": [
           "mpdecimal",
