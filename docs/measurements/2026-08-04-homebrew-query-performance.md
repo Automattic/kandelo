@@ -2,14 +2,21 @@
 
 ## Status and scope
 
-This record captures the investigation state before the final three-round
-benchmark. It separates observed diagnostic evidence from formal performance
-claims. The focused fixture and its artifacts are immutable, but the latest
-one-round measurements used uncommitted candidate changes above protected
-`main` commit `333011ee523ce7344d00bf930b607009ada46d03`. The fixture itself
-records producer commit `5a025d98a5f6f1856618f0309c4ad7144dc78e52`.
-These values therefore explain ownership and guide the implementation; they
-are not the repository-contract before/after result for the eventual commit.
+This record contains the final three-round focused benchmark and the required
+repository-wide before/after benchmark. The implementation commit is
+`58e0c41e63d46f403d211c0aabfe7bb51baa9987`, based on protected `main`
+commit `880e5be7d2dbd3772602ff7eaed952c0b8c6608f`. The focused fixture records
+producer commit `5a025d98a5f6f1856618f0309c4ad7144dc78e52`. The deployed rev22
+compatibility-shell baseline records commit
+`00e30e1aeb9a1b691b2fd8ffcf0cf7ef561aab3c`.
+
+The rev22 and candidate shell images necessarily contain different runtime
+artifacts and tap-core revisions, so their focused numbers are a deployed
+product comparison, not an exact-artifact A/B. Each individual Node/browser
+pair used the same immutable image, kernel, taps, lazy bytes, command inputs,
+and environment. The repository-wide comparison used freshly built hosts at
+protected `main` and the candidate with identical benchmark workload
+artifacts, whose digests are recorded by the benchmark runner.
 
 The retained implementation does not reuse JavaScript Realms. A process may
 consume a pristine prestarted Worker, but that Worker is one-shot and is
@@ -20,8 +27,8 @@ reference it owns to the process `SharedArrayBuffer` (SAB) and
 
 ## Exact diagnostic inputs
 
-The latest focused Node and Chromium results were recorded on 2026-08-04 at
-`2026-08-04T17:55:56.829Z` and `2026-08-04T17:58:33.489Z` with:
+The final focused Node and Chromium results were recorded on 2026-08-04 at
+`2026-08-04T20:37:42.645Z` and `2026-08-04T20:43:45.208Z` with:
 
 - Apple M5 Max, arm64, Darwin 25.6.0;
 - Node.js `v24.15.0`;
@@ -58,20 +65,22 @@ socket syscalls. Every measured command reported an empty network-syscall
 map. Chromium served only the closed local fixture and rejected other
 requests. No measured query depended on the public network.
 
-## Current focused result
+## Final focused result
 
-These are one-round diagnostics, not a three-round formal comparison:
+These are host-side monotonic medians from three independent rounds. Each
+Chromium round launched a fresh browser so a prior renderer, Worker, Realm,
+memory, or shared buffer could not survive into the next sample:
 
 | Phase | Node | Chromium |
 | --- | ---: | ---: |
-| Machine boot | 854 ms | 1,131 ms |
-| Cold first invocation | 9,153 ms | 9,332 ms |
-| Cold boot plus first invocation | 10,012 ms | 10,480 ms |
-| Immediate repeat on that machine | 4,623 ms | 5,402 ms |
-| First invocation after a shell was booted | 4,727 ms | 5,365 ms |
-| Repeated warm invocation | 4,577 ms | 5,035 ms |
-| Eager-image first invocation | 7,185 ms | 6,415 ms |
-| Eager-image warm invocation | 4,582 ms | 5,064 ms |
+| Machine boot | 867 ms | 1,109 ms |
+| Cold first invocation | 9,586 ms | 9,106 ms |
+| Cold boot plus first invocation | 10,455 ms | 10,232 ms |
+| Immediate repeat on that machine | 4,920 ms | 5,335 ms |
+| First invocation after a shell was booted | 5,616 ms | 5,385 ms |
+| Repeated warm invocation | 4,616 ms | 5,005 ms |
+| Eager-image first invocation | 7,110 ms | 6,415 ms |
+| Eager-image warm invocation | 4,594 ms | 5,059 ms |
 
 The cold query fetched seven closed lazy assets totaling 28,040,511 bytes.
 Those assets were the Homebrew source tree, portable Ruby, and the ordinary
@@ -79,20 +88,42 @@ tools actually executed by the runtime. The warm query fetched zero bytes.
 Thus a second `brew info` is not waiting on the already materialized lazy
 references; it repeats process startup, Ruby loading, discovery, and parsing.
 
-Warm values for the complete command set in those rounds were:
+Warm values for the complete command set were:
 
 | Command | Node | Chromium |
 | --- | ---: | ---: |
-| `brew --version` | 474 ms | 923 ms |
-| `brew config` | 5,375 ms | 15,516 ms |
-| text `brew info` | 4,577 ms | 5,035 ms |
-| JSON v2 `brew info` | 4,952 ms | 5,573 ms |
-| `brew list --versions` | 3,605 ms | 3,687 ms |
-| canary `brew info` | 5,301 ms | 6,335 ms |
+| `brew --version` | 484 ms | 914 ms |
+| `brew config` | 5,570 ms | 15,532 ms |
+| text `brew info` | 4,616 ms | 5,005 ms |
+| JSON v2 `brew info` | 4,908 ms | 5,544 ms |
+| `brew list --versions` | 3,729 ms | 3,789 ms |
+| canary `brew info` | 5,399 ms | 6,181 ms |
 
-Every command completed successfully with the same output digest between the
-Node and Chromium runs. The unusually high one-round Chromium `brew config`
-value needs the final three-round median before it supports a claim.
+Every command completed successfully with nonempty standard output and empty
+standard error. Node and Chromium produced the same output digest for each
+command. The Chromium `brew config` result remained unusually noisy and slow;
+the table reports its median rather than treating the earlier low sample as
+representative.
+
+The deployed rev22 Node baseline and candidate compare as follows. This is a
+product-level comparison with the exact revisions disclosed above, not an
+exact-artifact micro A/B:
+
+| Metric | Rev22 | Candidate | Reduction |
+| --- | ---: | ---: | ---: |
+| Cold boot plus first `brew info` | 27,052 ms | 10,455 ms | 61.4% (2.59x) |
+| Immediate warm `brew info` | 26,081 ms | 4,920 ms | 81.1% (5.30x) |
+| Booted warm `brew info` | 25,560 ms | 4,616 ms | 81.9% (5.54x) |
+| Warm JSON v2 `brew info` | 28,633 ms | 4,908 ms | 82.9% (5.83x) |
+| Warm `brew config` | 30,814 ms | 5,570 ms | 81.9% (5.53x) |
+| Warm `brew list --versions` | 20,390 ms | 3,729 ms | 81.7% (5.47x) |
+| Warm canary `brew info` | 31,745 ms | 5,399 ms | 83.0% (5.88x) |
+
+Chrome 149 consistently lost the renderer on rev22 before the harness could
+produce one valid complete round. Required-unused rootfs bytes and disabling
+Wasm tier-up did not make rev22 complete, so there is no honest Chromium
+"before" duration. The candidate completed all three isolated Chromium rounds;
+its values are reported above without fabricating a speedup ratio.
 
 ## Attribution
 
@@ -239,11 +270,10 @@ on Homebrew or on a Brew subcommand.
 The old system-Ruby diagnostic took 23,601 ms and emitted 92,678 traced
 syscalls, including 54,206 opens and 9,070 readlinks. A comparable instrumented
 portable-Ruby diagnostic took 7,050 ms with 29,221 traced syscalls, 4,694
-opens, and 170 readlinks. The latest uninstrumented one-round warm values are
-4,577 ms on Node and 5,035 ms on Chromium. These are old-to-current diagnostic
-comparisons, not the formal benchmark, but they identify the dominant
-improvement: use Homebrew's real portable Ruby and upstream load-path cache
-path.
+opens, and 170 readlinks. The final uninstrumented three-round warm medians are
+4,616 ms on Node and 5,005 ms on Chromium. The traced pair identifies the
+dominant improvement: use Homebrew's real portable Ruby and upstream load-path
+cache path.
 
 Two platform-owned changes have separate controlled evidence:
 
@@ -294,13 +324,12 @@ set to zero, and 4,729–4,930 ms after restoring it. Warm medians were 4,804,
 control. Cold values were 10,088, 10,398, and 9,834 ms. This is evidence for
 the mechanism, not the required three-round performance result.
 
-With exact-content deduplication, repeated complete Chromium rounds covered
-cold and warm machines, every command, the eager control, and the network
-audit without a renderer loss. The latest focused values were 9,332 ms cold,
-5,402 ms immediate warm, 5,365 ms first on the booted command-sequence
-machine, 5,035 ms repeated warm, 6,415 ms eager first, and 5,064 ms eager
-warm. All six audited commands reported zero network syscalls. This is still
-a one-round diagnostic, not the required final comparison.
+With exact-content deduplication, the three independent complete Chromium
+rounds covered cold and warm machines, every command, the eager control, and
+the network audit without a renderer loss. Their medians were 9,106 ms cold,
+5,335 ms immediate warm, 5,385 ms first on the booted command-sequence
+machine, 5,005 ms repeated warm, 6,415 ms eager first, and 5,059 ms eager
+warm. All six audited commands reported zero network syscalls.
 
 Stock Ruby still grows one process memory to 303,300,608 bytes (289.25 MiB).
 Exactly 256 MiB comes from CRuby 4.0.5's optional red-black object-shape cache:
@@ -309,25 +338,62 @@ contiguously. A no-cache diagnostic reduced the final memory to 33.25 MiB, but
 no Ruby source special case is retained. That upstream/configuration boundary
 is separate from the compiled-module lifecycle fix.
 
-Final Node and Chromium numbers and the repository-wide before/after
-comparison remain required before an explicit product performance claim.
+The remaining 256 MiB Ruby object-shape reservation is not retained by a
+terminated process Worker, but it makes every live Ruby process expensive.
+Changing that upstream/configuration choice remains follow-up work rather than
+part of this performance claim.
+
+## Repository-wide performance contract
+
+Freshly built protected `main` and candidate hosts ran these required commands
+with three rounds and matching workload artifacts:
+
+```text
+npx tsx benchmarks/run.ts --rounds=3
+npx tsx benchmarks/run.ts --host=browser --rounds=3
+npx tsx benchmarks/compare.ts BEFORE.json AFTER.json
+```
+
+The final Node comparison improved process `clone`, `fork`, and `spawn` by
+91.0%, 85.8%, and 88.8%; `exec` improved 10.5%. WordPress improved 0.4% for
+its CLI path and 0.5% for first HTTP response. File reads improved 6.0%, while
+writes fell 9.4%. Median syscall latency increased by 1.08 us, or 7.8%.
+
+The full candidate-first/main-second Node pair showed several 5.0–16.1%
+MariaDB query differences, especially in `mariadb-innodb-64`. An immediately
+following three-round control of that exact suite and those exact artifact
+digests put candidate queries between 1.6% faster and 3.0% slower, with
+bootstrap 3.0% faster. An earlier reverse-order control was similarly within
+1.9%. The full-suite values are therefore sensitive to surrounding run state;
+they remain disclosed rather than supporting a universal regression-free
+claim.
+
+The final Chromium comparison improved process `clone`, `fork`, and `spawn`
+by 63.6%, 57.1%, and 38.5%. WordPress boot changed by +0.9%, while first HTTP
+response improved 49.6%. MariaDB bootstrap improved 7.0–8.4% across variants.
+Median syscall latency increased from 14 to 18 us, file writes fell 11.1%,
+and pipe throughput improved 111.1%. Some sub-14 ms SQL operations produced
+large percentages because of timer quantization: the largest candidate
+increase was 4.9 ms, while most select and join medians improved. These
+results support the measured Homebrew and process-start claims, not a claim
+that every microbenchmark improved.
 
 ## Remaining work, ranked by measured impact
 
-1. Reduce general process and syscall crossing cost while preserving the
-   dedicated kernel Worker, wakeup draining, POSIX semantics, and host parity.
-   ABI batching work is the likely owner if this requires an ABI change.
-2. Bound V8-owned compiled-code memory, whose size V8 does not expose. The
+1. Reduce the remaining 159 process launches, 55 execs, and roughly 29,000
+   syscalls in a warm text query through general process and channel work.
+   Preserve the dedicated kernel Worker, wakeup draining, POSIX semantics, and
+   host parity. ABI batching work is the likely owner if this requires an ABI
+   change.
+2. Investigate Chromium's remaining 0.39 s warm text-query gap and 9.96 s
+   `brew config` gap relative to Node. The same output and process counts point
+   to host scheduling or compilation behavior, not a different Homebrew path.
+3. Bound V8-owned compiled-code memory, whose size V8 does not expose. The
    complete Chromium query suite and focused 20-launch control are stable
    without Realm reuse, but only comparison bytes have an explicit 64 MiB cap.
-3. Continue general VFS lookup optimization only where exact symlink,
+4. Continue general VFS lookup optimization only where exact symlink,
    mutation, and `ENOENT` behavior can be proved. The accepted HostFS fast
    path is one such case; speculative negative caches are not.
-4. Revisit Ruby parsing after the syscall/process costs. The measured parser
+5. Revisit Ruby parsing after the syscall/process costs. The measured parser
    opportunity is about 0.6 s; the Prism control currently traps on a Psych
    path and is not a valid product candidate.
-
-The final change must run the focused benchmark for three rounds on Node and
-Chromium, the full repository benchmark suites on both hosts, and the
-correctness suites for every touched VFS, process, worker, libc, and package
-path.
