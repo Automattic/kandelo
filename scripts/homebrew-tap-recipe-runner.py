@@ -38,7 +38,12 @@ MAX_RECIPE_MANIFEST_BYTES = 65_536
 MAX_NATIVE_CLOSURE_MANIFEST_BYTES = 262_144
 MAX_RECIPE_FILES = 512
 MAX_DEPENDENCY_KEGS = 512
-NATIVE_PREFIX_RUNTIME_ROOT_NAMES = ("lib", "share")
+# Keep this list sorted and path-exact. LLVM's bottle intentionally points its
+# keg-local `etc/clang` link at the prefix-level system-config directory, but
+# exposing all of the native prefix's `etc` state would grant unrelated
+# configuration to the recipe. Seal and project only the directory Clang
+# actually names.
+NATIVE_PREFIX_RUNTIME_ROOT_NAMES = ("etc/clang", "lib", "share")
 MAX_RESOURCES = 32
 MAX_RECIPE_FILE_BYTES = 16_777_216
 MAX_RECIPE_BYTES = 67_108_864
@@ -1389,11 +1394,12 @@ def native_prefix_runtime_roots(
         exact_mode=exact_mode,
     )
     roots: list[Path] = []
-    # WHY: relocated native tools can name both executable support under
-    # <prefix>/lib (for example an ELF loader) and interpreter data under
-    # <prefix>/share (for example Automake Perl modules). Select only these
-    # fixed runner-owned roots, authenticate their complete trees, and keep
-    # mutable Homebrew state and unrelated prefix directories absent.
+    # WHY: relocated native tools can name executable support under
+    # <prefix>/lib (for example an ELF loader), interpreter data under
+    # <prefix>/share (for example Automake Perl modules), and LLVM's shared
+    # system configuration below <prefix>/etc/clang. Select only these fixed
+    # runner-owned roots, authenticate their complete trees, and keep mutable
+    # Homebrew state and unrelated prefix directories absent.
     for name in NATIVE_PREFIX_RUNTIME_ROOT_NAMES:
         runtime = prefix / name
         if not runtime.exists() and not runtime.is_symlink():
@@ -1486,11 +1492,12 @@ def parse_native_closure_manifest(
         roots.add(root)
         result[name] = root
     # WHY: relocated Linux Homebrew executables can name prefix runtime data
-    # directly (for example, Perl uses <prefix>/lib/ld.so and Automake uses
-    # <prefix>/share/automake-*). Keg and opt binds alone are therefore not a
-    # complete executable closure. The manifest may authenticate only these
-    # fixed, runner-derived prefix paths; it cannot ask the privileged runner
-    # to project an arbitrary prefix directory.
+    # directly (for example, Perl uses <prefix>/lib/ld.so, Automake uses
+    # <prefix>/share/automake-*, and LLVM links to <prefix>/etc/clang). Keg and
+    # opt binds alone are therefore not a complete executable closure. The
+    # manifest may authenticate only these fixed, runner-derived prefix paths;
+    # it cannot ask the privileged runner to project an arbitrary prefix
+    # directory.
     runtime_paths = native_prefix_runtime_roots(
         cellar.parent,
         label="sealed native dependency prefix",
