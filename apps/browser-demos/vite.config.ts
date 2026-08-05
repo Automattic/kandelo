@@ -39,6 +39,9 @@ import {
 import {
   DEFAULT_BROWSER_CORS_PROXY_URL,
 } from "./lib/browser-cors-proxy";
+import {
+  handleDevCorsProxyRequest,
+} from "./vite/dev-cors-proxy";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(__dirname, "../..");
@@ -594,65 +597,7 @@ function devCorsProxyMiddleware(): Plugin {
   ): void {
     const proxyPath = devCorsProxyPathForBase(base);
     middlewares.use(async (req, res, next) => {
-      if (!req.url) {
-        next();
-        return;
-      }
-      const requestUrl = new URL(req.url, "http://localhost");
-      if (requestUrl.pathname !== proxyPath) {
-        next();
-        return;
-      }
-      if (req.method !== "GET") {
-        res.statusCode = 405;
-        res.end("Method Not Allowed");
-        return;
-      }
-
-      const target = requestUrl.searchParams.get("url");
-      if (!target) {
-        res.statusCode = 400;
-        res.end("Missing url");
-        return;
-      }
-
-      let targetUrl: URL;
-      try {
-        targetUrl = new URL(target);
-      } catch {
-        res.statusCode = 400;
-        res.end("Invalid url");
-        return;
-      }
-      if (targetUrl.protocol !== "http:" && targetUrl.protocol !== "https:") {
-        res.statusCode = 400;
-        res.end("Unsupported url");
-        return;
-      }
-
-      try {
-        const upstream = await fetch(targetUrl.href, { redirect: "follow" });
-        const bytes = Buffer.from(await upstream.arrayBuffer());
-        res.statusCode = upstream.status;
-        res.statusMessage = upstream.statusText;
-        for (const name of [
-          "accept-ranges",
-          "cache-control",
-          "content-type",
-          "etag",
-          "expires",
-          "last-modified",
-        ]) {
-          const value = upstream.headers.get(name);
-          if (value) res.setHeader(name, value);
-        }
-        res.setHeader("Content-Length", String(bytes.byteLength));
-        res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
-        res.end(bytes);
-      } catch (err) {
-        res.statusCode = 502;
-        res.end(err instanceof Error ? err.message : String(err));
-      }
+      if (!await handleDevCorsProxyRequest(req, res, proxyPath)) next();
     });
   }
 
