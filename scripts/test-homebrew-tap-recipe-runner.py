@@ -2131,6 +2131,86 @@ class NativeClosureAuthenticationTests(unittest.TestCase):
         self.validation_calls = validate_tree.call_args_list
         return result
 
+    def test_staging_validates_native_kegs_with_the_native_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            protected = root / "publisher"
+            build = protected / f"build-{'a' * 64}"
+            fake_runner = build / "homebrew-tap-recipe-runner"
+            build.mkdir(parents=True)
+            fake_runner.write_text("#!/usr/bin/python3\n")
+            protected.chmod(0o711)
+            build.chmod(0o555)
+            fake_runner.chmod(0o555)
+            cellar = root / "native/Cellar"
+            keg = cellar / "llvm/22.1.8"
+
+            real_lstat = Path.lstat
+
+            def root_lstat(path: Path) -> os.stat_result:
+                value = real_lstat(path)
+                if path not in {protected, build, fake_runner}:
+                    return value
+                return os.stat_result(
+                    (
+                        value.st_mode,
+                        value.st_ino,
+                        value.st_dev,
+                        value.st_nlink,
+                        0,
+                        0,
+                        value.st_size,
+                        value.st_atime,
+                        value.st_mtime,
+                        value.st_ctime,
+                    )
+                )
+
+            with (
+                mock.patch.object(runner, "__file__", str(fake_runner)),
+                mock.patch.object(
+                    runner, "PROTECTED_PUBLISHER_ROOT", protected
+                ),
+                mock.patch.object(runner.os, "geteuid", return_value=0),
+                mock.patch.object(
+                    Path, "lstat", autospec=True, side_effect=root_lstat
+                ),
+                mock.patch.object(
+                    runner, "canonical_real_directory", return_value=cellar
+                ),
+                mock.patch.object(
+                    runner,
+                    "installed_keg_roots",
+                    return_value={"llvm": keg},
+                ),
+                mock.patch.object(
+                    runner, "native_prefix_runtime_roots", return_value=[]
+                ),
+                mock.patch.object(
+                    runner,
+                    "dependency_projection_map",
+                    return_value=mock.sentinel.projections,
+                ),
+                mock.patch.object(
+                    runner,
+                    "validate_sealed_dependency_tree",
+                    side_effect=runner.RunnerError("stop after validation"),
+                ) as validate_tree,
+                self.assertRaisesRegex(
+                    runner.RunnerError, "stop after validation"
+                ),
+            ):
+                runner.stage_native_closure(
+                    str(cellar), str(build / "native-closure.json")
+                )
+
+            validate_tree.assert_called_once_with(
+                keg,
+                "native dependency llvm",
+                symlink_projections=mock.sentinel.projections,
+                limits=runner.NATIVE_KEG_LIMITS,
+            )
+
     def test_accepts_transitive_kegs_but_exposes_direct_roots_separately(
         self,
     ) -> None:
@@ -2158,11 +2238,13 @@ class NativeClosureAuthenticationTests(unittest.TestCase):
                         transitive,
                         "native dependency openssl@3",
                         symlink_projections=mock.sentinel.projections,
+                        limits=runner.NATIVE_KEG_LIMITS,
                     ),
                     mock.call(
                         direct,
                         "native dependency wabt",
                         symlink_projections=mock.sentinel.projections,
+                        limits=runner.NATIVE_KEG_LIMITS,
                     ),
                 ],
             )
@@ -2464,6 +2546,32 @@ class NativeClosureAuthenticationTests(unittest.TestCase):
                 two_proxies,
             )
 
+    def test_selects_only_the_native_proxy_keg_limit(self) -> None:
+        target_cellar = Path("/target/Cellar")
+        llvm = target_cellar / "llvm/22.1.8"
+        zlib = target_cellar / "zlib/1.3.2"
+
+        self.assertEqual(
+            runner.target_cellar_tree_policy(
+                "llvm", llvm, {"llvm": llvm}
+            ),
+            ("native dependency proxy llvm", runner.NATIVE_KEG_LIMITS),
+        )
+        self.assertEqual(
+            runner.target_cellar_tree_policy(
+                "zlib", zlib, {"llvm": llvm}
+            ),
+            ("target dependency zlib", runner.EXPECTED_LIMITS),
+        )
+        with self.assertRaisesRegex(
+            runner.RunnerError, "inventory differs"
+        ):
+            runner.target_cellar_tree_policy(
+                "llvm",
+                llvm,
+                {"llvm": target_cellar / "llvm/substituted"},
+            )
+
     def test_direct_proxy_precedes_a_same_named_transitive_command(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
@@ -2517,6 +2625,67 @@ class SealedDependencyPathTests(unittest.TestCase):
                 value.st_ctime,
             )
         )
+
+    def test_native_keg_uses_only_its_larger_aggregate_byte_limit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            keg = Path(temporary).resolve() / "Cellar/llvm/22.1.8"
+            keg.mkdir(parents=True)
+            for index in range(3):
+                member = keg / f"member-{index}"
+                with member.open("wb") as output:
+                    output.truncate(900_000_000)
+                member.chmod(0o444)
+            keg.chmod(0o555)
+
+            real_stat = os.stat
+            real_fstat = os.fstat
+
+            def root_stat(*args, **kwargs):
+                return self.root_owned(real_stat(*args, **kwargs))
+
+            def root_fstat(*args, **kwargs):
+                return self.root_owned(real_fstat(*args, **kwargs))
+
+            projections = {keg: (keg, False)}
+            with (
+                mock.patch.object(runner.os, "stat", side_effect=root_stat),
+                mock.patch.object(runner.os, "fstat", side_effect=root_fstat),
+                self.assertRaisesRegex(runner.RunnerError, "byte limit"),
+            ):
+                runner.validate_sealed_dependency_tree(
+                    keg,
+                    "target dependency llvm",
+                    symlink_projections=projections,
+                )
+            with (
+                mock.patch.object(runner.os, "stat", side_effect=root_stat),
+                mock.patch.object(runner.os, "fstat", side_effect=root_fstat),
+            ):
+                runner.validate_sealed_dependency_tree(
+                    keg,
+                    "native dependency llvm",
+                    symlink_projections=projections,
+                    limits=runner.NATIVE_KEG_LIMITS,
+                )
+
+            for index in range(3, 5):
+                keg.chmod(0o755)
+                member = keg / f"member-{index}"
+                with member.open("wb") as output:
+                    output.truncate(900_000_000)
+                member.chmod(0o444)
+                keg.chmod(0o555)
+            with (
+                mock.patch.object(runner.os, "stat", side_effect=root_stat),
+                mock.patch.object(runner.os, "fstat", side_effect=root_fstat),
+                self.assertRaisesRegex(runner.RunnerError, "byte limit"),
+            ):
+                runner.validate_sealed_dependency_tree(
+                    keg,
+                    "native dependency llvm",
+                    symlink_projections=projections,
+                    limits=runner.NATIVE_KEG_LIMITS,
+                )
 
     def test_accepts_colons_in_sealed_keg_members_and_symlink_targets(
         self,
