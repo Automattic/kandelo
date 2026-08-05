@@ -1545,26 +1545,28 @@ This preserves executable meaning while ensuring that a bottle's original
 owner-only mode cannot make a root-owned build input unreadable to the recipe
 identity. The same admitted root runner then writes, with exclusive creation,
 a mode-`0400` inventory of every Formula name and exact keg path it found in
-that sealed Cellar. It also records the runner-selected prefix `lib` and
-`share` runtime roots and each root's type/mode/content manifest digest when
-present. Relocated native executables can name `<prefix>/lib/ld.so` directly,
-while interpreted tools such as Automake can name modules below
-`<prefix>/share`. Cellar and `opt` projections alone are therefore not an
-executable closure. The runner admits only those two fixed runtime roots, not
-the whole prefix. Every symlink in every projected keg and runtime tree is
-resolved component by component in the exact mount namespace the recipe will
-receive. `<prefix>/opt/<formula>` is modeled as the exact selected-keg bind,
-and conventional system targets are allowed only when that same host runtime
-root is projected. A chain that visits `/tmp`, another prefix directory, an
-unknown `opt` alias, or any other unmounted host path fails even if its
-host-side final `realpath` re-enters a sealed keg. Runtime fingerprints
-include indirect link hops and the terminal identity, so changing an
-intermediate alias cannot preserve the authenticated digest. When the recipe
-request arrives, the supervisor rescans every root-owned, read-only tree,
-rehashes the runtime trees, and requires exact equality with that inventory.
-A late extra rack, removed or replaced keg, mutable tree, duplicate name,
-changed loader chain, changed runtime root, or missing planned direct tool
-fails closed.
+that sealed Cellar. It also records the runner-selected prefix `etc/clang`,
+`lib`, and `share` runtime roots and each root's type/mode/content manifest
+digest when present. LLVM's keg links its shared system configuration to
+`<prefix>/etc/clang`, relocated native executables can name
+`<prefix>/lib/ld.so` directly, and interpreted tools such as Automake can name
+modules below `<prefix>/share`. Cellar and `opt` projections alone are
+therefore not an executable closure. The runner admits only those three fixed
+runtime roots—not the whole prefix or even all of `etc`. Every symlink in
+every projected keg and runtime tree is resolved component by component in
+the exact mount namespace the recipe will receive.
+`<prefix>/opt/<formula>` is modeled as the exact selected-keg bind, and
+conventional system targets are allowed only when that same host runtime root
+is projected. A chain that visits `/tmp`, another prefix directory, an
+unknown `opt` alias, an adjacent `etc` child, or any other unmounted host path
+fails even if its host-side final `realpath` re-enters a sealed keg. Runtime
+fingerprints include indirect link hops and the terminal identity, so
+changing an intermediate alias cannot preserve the authenticated digest.
+When the recipe request arrives, the supervisor rescans every root-owned,
+read-only tree, rehashes the runtime trees, and requires exact equality with
+that inventory. A late extra rack, removed or replaced keg, mutable tree,
+duplicate name, changed loader chain, changed runtime root, or missing planned
+direct tool fails closed.
 
 The manifest authenticates the complete transitive execution closure, while
 the earlier static plan still decides which tools are direct Formula inputs.

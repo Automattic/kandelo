@@ -1730,6 +1730,27 @@ class ServiceRootProjectionTests(unittest.TestCase):
             self.assertFalse((service_root / secret.relative_to("/")).exists())
             self.assertFalse((service_root / "run/systemd/private").exists())
 
+    def test_creates_exact_nested_native_runtime_mount_destination(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            host = Path(temporary).resolve()
+            clang = host / "native/etc/clang"
+            clang.mkdir(parents=True)
+            service_root = host / "service-root"
+            destination = Path("/home/linuxbrew/.linuxbrew/etc/clang")
+            with (
+                mock.patch.object(runner.os, "geteuid", return_value=0),
+                mock.patch.object(runner.os, "chown"),
+            ):
+                runner.prepare_service_root(
+                    service_root,
+                    [(clang, destination)],
+                    [],
+                )
+            projected = service_root / destination.relative_to("/")
+            self.assertTrue(projected.is_dir())
+            self.assertTrue(projected.parent.is_dir())
+            self.assertFalse((projected.parent / "ssl").exists())
+
     def test_rejects_two_sources_for_one_service_path(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             host = Path(temporary).resolve()
@@ -2236,19 +2257,23 @@ class NativeClosureAuthenticationTests(unittest.TestCase):
             cellar = prefix / "Cellar"
             runtime_lib = prefix / "lib"
             runtime_share = prefix / "share"
+            runtime_clang = prefix / "etc/clang"
             excluded_bin = prefix / "bin"
             cellar.mkdir(parents=True)
             runtime_lib.mkdir()
             runtime_share.mkdir()
+            runtime_clang.mkdir(parents=True)
             excluded_bin.mkdir()
             prefix.chmod(0o555)
             cellar.chmod(0o555)
             runtime_lib.chmod(0o555)
             runtime_share.chmod(0o555)
+            runtime_clang.chmod(0o555)
             excluded_bin.chmod(0o555)
             runtime_digests = {
                 runtime_lib: "a" * 64,
                 runtime_share: "b" * 64,
+                runtime_clang: "c" * 64,
             }
             document = runner.native_closure_document(
                 cellar, {}, runtime_digests
@@ -2270,6 +2295,10 @@ class NativeClosureAuthenticationTests(unittest.TestCase):
                     {
                         "root": str(runtime_share),
                         "tree_sha256": runtime_digests[runtime_share],
+                    },
+                    {
+                        "root": str(runtime_clang),
+                        "tree_sha256": runtime_digests[runtime_clang],
                     },
                 ]
                 with self.assertRaisesRegex(
@@ -2822,6 +2851,53 @@ class SealedDependencyPathTests(unittest.TestCase):
             share = prefix / "share"
             share.mkdir()
             (share / "escape").symlink_to(Path("/tmp"))
+
+            with (
+                mock.patch.object(
+                    runner, "host_runtime_directory_projections", return_value=[]
+                ),
+                self.assertRaisesRegex(
+                    runner.RunnerError,
+                    "symlink leaves the native execution closure",
+                ),
+            ):
+                runner.audit_native_projection_links(
+                    str(prefix),
+                    [],
+                    only_additional_trees=False,
+                )
+
+    def test_native_link_audit_accepts_llvm_system_config_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            prefix = Path(temporary).resolve() / "native"
+            keg = prefix / "Cellar/llvm/22.1.8"
+            config = prefix / "etc/clang"
+            keg_config = keg / "etc"
+            keg_config.mkdir(parents=True)
+            config.mkdir(parents=True)
+            (config / ".keepme").write_bytes(b"")
+            (keg_config / "clang").symlink_to("../../../../etc/clang")
+
+            with mock.patch.object(
+                runner, "host_runtime_directory_projections", return_value=[]
+            ):
+                runner.audit_native_projection_links(
+                    str(prefix),
+                    [],
+                    only_additional_trees=False,
+                )
+
+    def test_native_link_audit_rejects_adjacent_prefix_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            prefix = Path(temporary).resolve() / "native"
+            keg = prefix / "Cellar/llvm/22.1.8"
+            clang = prefix / "etc/clang"
+            adjacent = prefix / "etc/ssl"
+            keg_config = keg / "etc"
+            keg_config.mkdir(parents=True)
+            clang.mkdir(parents=True)
+            adjacent.mkdir()
+            (keg_config / "ssl").symlink_to("../../../../etc/ssl")
 
             with (
                 mock.patch.object(

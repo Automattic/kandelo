@@ -557,6 +557,12 @@ NATIVE_INTERPRETER_EOF
     ln -s \
       ../../../Cellar/automake/1.0/share/automake-1.18/Automake/Config.pm \
       "$automake_support_prefix/Config.pm"
+    # Homebrew LLVM intentionally keeps shared Clang configuration at the
+    # prefix and links its keg-local path back to that exact directory.
+    # Exercise the same nested fixed-root projection as the real bottle.
+    mkdir -p "$prefix/etc/clang" "$prefix/Cellar/llvm/1.0/etc"
+    : >"$prefix/etc/clang/.keepme"
+    ln -s ../../../../etc/clang "$prefix/Cellar/llvm/1.0/etc/clang"
     for native_child_tool in automake bison flex python; do
       native_child_script="$prefix/Cellar/$native_child_tool/1.0/bin/$native_child_tool"
       {
@@ -574,7 +580,7 @@ NATIVE_INTERPRETER_EOF
   create-native-runtime-link)
     [ "$#" -eq 4 ]
     case "$2" in
-      lib|share) ;;
+      etc/clang|lib|share) ;;
       *) exit 64 ;;
     esac
     mkdir -p "$prefix/$2"
@@ -591,7 +597,7 @@ NATIVE_INTERPRETER_EOF
   remove-native-runtime-entry)
     [ "$#" -eq 3 ]
     case "$2" in
-      lib|share) ;;
+      etc/clang|lib|share) ;;
       *) exit 64 ;;
     esac
     rm -f "$prefix/$2/$3"
@@ -3096,6 +3102,14 @@ EOF
   fi
   homebrew_patched_launcher_run_native \
     remove-native-runtime-entry share unsafe-link
+  homebrew_patched_launcher_run_native create-native-runtime-link \
+    etc/clang "$isolated_output" unsafe-link
+  if homebrew_patched_launcher_audit_native_projection_links \
+      >/dev/null 2>&1; then
+    fail "native Homebrew pre-seal audit ignored a prefix/etc/clang escape"
+  fi
+  homebrew_patched_launcher_run_native \
+    remove-native-runtime-entry etc/clang unsafe-link
   homebrew_patched_launcher_run_native create-native-fifo unsafe-fifo
   if homebrew_patched_launcher_seal_native_prefix >/dev/null 2>&1; then
     fail "native Homebrew accepted a special filesystem entry"
@@ -3103,6 +3117,7 @@ EOF
   homebrew_patched_launcher_run_native remove-native-entry unsafe-fifo
   homebrew_patched_launcher_run_native install-native-fixture cmake
   homebrew_patched_launcher_run_native install-native-fixture ninja
+  homebrew_patched_launcher_run_native install-native-fixture llvm
   homebrew_patched_launcher_run_native install-native-fixture openssl@3
   for native_child_tool in automake bison flex python; do
     homebrew_patched_launcher_run_native \
@@ -3121,6 +3136,7 @@ EOF
   # the exact prefix-level loader alias.
   homebrew_patched_launcher_run_native remove-native-version cmake 0.9
   homebrew_patched_launcher_run_native remove-native-version ninja 0.9
+  homebrew_patched_launcher_run_native remove-native-version llvm 0.9
   homebrew_patched_launcher_run_native remove-native-version openssl@3 0.9
   for native_child_tool in automake bison flex python perl; do
     homebrew_patched_launcher_run_native \
@@ -3148,18 +3164,20 @@ EOF
   done
   /usr/bin/sudo -n -- jq -e \
     --arg cellar "$isolated_native_prefix/Cellar" \
+    --arg runtime_clang "$isolated_native_prefix/etc/clang" \
     --arg runtime_lib "$isolated_native_prefix/lib" \
     --arg runtime_share "$isolated_native_prefix/share" '
       .schema == 2 and .cellar == $cellar and
-      (.runtime_roots | length) == 2 and
-      .runtime_roots[0].root == $runtime_lib and
-      .runtime_roots[1].root == $runtime_share and
+      (.runtime_roots | length) == 3 and
+      .runtime_roots[0].root == $runtime_clang and
+      .runtime_roots[1].root == $runtime_lib and
+      .runtime_roots[2].root == $runtime_share and
       (.runtime_roots | all(
         .tree_sha256 | test("^[0-9a-f]{64}$")
       )) and
       [.kegs[].formula] == [
-        "automake", "bison", "cmake", "flex", "ninja", "openssl@3",
-        "perl", "python"
+        "automake", "bison", "cmake", "flex", "llvm", "ninja",
+        "openssl@3", "perl", "python"
       ] and
       (.kegs | all(
         .root == ($cellar + "/" + .formula + "/1.0")
