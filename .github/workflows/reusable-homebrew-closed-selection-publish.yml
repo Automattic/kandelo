@@ -402,6 +402,8 @@ jobs:
             kandelo/scripts/publish-homebrew-closed-selection-release.sh \
             --prepared-release \
               "$RUNNER_TEMP/closed-selection-preparation" \
+            --campaign \
+              "$RUNNER_TEMP/closed-selection-verification/campaign.json" \
             --lock-root "$GITHUB_WORKSPACE/tap-authority" \
             --receipt \
               "$RUNNER_TEMP/closed-selection-publication/receipt.json" \
