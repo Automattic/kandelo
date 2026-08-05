@@ -3990,6 +3990,12 @@ runner loss can prevent cleanup, but cannot let later deployment steps consume
 that partial runner. Ordinary `prepare-browser` remains the independent
 bottle-backed path.
 
+Both the public lifecycle proof and the final Pages gate pin and forward the
+production CORS proxy while serving the built tree. Vite preview otherwise
+replaces the built service worker's external proxy with its development-only
+same-origin relay. The required Chromium runs therefore exercise the same
+external lazy-bottle transport that remains after deployment.
+
 Pages intentionally continues to run for every `main` push without a path
 filter. The canonical browser package projection and shared inputs can grow;
 filtering by a maintained list would allow a new input to change without

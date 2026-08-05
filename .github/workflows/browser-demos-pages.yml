@@ -203,6 +203,10 @@ jobs:
         working-directory: apps/browser-demos
         env:
           VITE_BASE: /kandelo/
+          # WHY: Vite preview defaults to its local same-origin relay. Pin the
+          # deployed proxy so this gate exercises the service-worker transport
+          # that will remain after the static tree reaches GitHub Pages.
+          VITE_CORS_PROXY_URL: https://wordpress-playground-cors-proxy.net/?
           KANDELO_BROWSER_DEMO_INPUTS: main
           KANDELO_HOMEBREW_MAIN_SHELL_STRICT: "1"
           KANDELO_HOMEBREW_MAIN_SHELL_SHA256: ${{ steps.shell_product.outputs.image_sha256 }}
@@ -216,6 +220,7 @@ jobs:
           set -euo pipefail
           bash ../../scripts/dev-shell.sh env \
             "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
+            "VITE_CORS_PROXY_URL=$VITE_CORS_PROXY_URL" \
             npx playwright test \
             test/kandelo-homebrew-main-shell.spec.ts \
             --project=chromium

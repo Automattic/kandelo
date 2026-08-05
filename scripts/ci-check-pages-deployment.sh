@@ -290,6 +290,9 @@ sealed_boot_block="$(
   step_block "$PAGES_WORKFLOW" "Boot the canonical bottled Pages shell in Chromium"
 )"
 grep -Fq 'VITE_BASE: /kandelo/' <<<"$sealed_boot_block" &&
+  grep -Fq \
+    'VITE_CORS_PROXY_URL: https://wordpress-playground-cors-proxy.net/?' \
+    <<<"$sealed_boot_block" &&
   grep -Fq 'KANDELO_BROWSER_DEMO_INPUTS: main' \
     <<<"$sealed_boot_block" &&
   grep -Fq 'KANDELO_HOMEBREW_MAIN_SHELL_STRICT: "1"' \
@@ -313,6 +316,8 @@ grep -Fq 'VITE_BASE: /kandelo/' <<<"$sealed_boot_block" &&
     <<<"$sealed_boot_block" &&
   grep -Fq 'bash ../../scripts/dev-shell.sh env \' <<<"$sealed_boot_block" &&
   grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
+    <<<"$sealed_boot_block" &&
+  grep -Fq '"VITE_CORS_PROXY_URL=$VITE_CORS_PROXY_URL" \' \
     <<<"$sealed_boot_block" &&
   grep -Fq 'test/kandelo-homebrew-main-shell.spec.ts' \
     <<<"$sealed_boot_block" ||

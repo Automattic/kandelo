@@ -247,6 +247,16 @@ expect_mutation_rejected \
   's/(      - name: Boot the canonical bottled Pages shell in Chromium\n        working-directory: apps\/browser-demos\n        env:\n)          VITE_BASE: \/kandelo\/\n/$1/'
 
 expect_mutation_rejected \
+  "bottled preview without deployed CORS proxy" \
+  "must prove the public bottled shell at the published base" \
+  's/(      - name: Boot the canonical bottled Pages shell in Chromium\n[\s\S]*?)^          VITE_CORS_PROXY_URL: https:\/\/wordpress-playground-cors-proxy\.net\/\?\n/$1/m'
+
+expect_mutation_rejected \
+  "bottled preview drops deployed CORS proxy in dev-shell" \
+  "must prove the public bottled shell at the published base" \
+  's/^            "VITE_CORS_PROXY_URL=\$VITE_CORS_PROXY_URL" \\\n//m'
+
+expect_mutation_rejected \
   "bottled preview loses package cache root" \
   "must prove the public bottled shell at the published base" \
   's/(      - name: Boot the canonical bottled Pages shell in Chromium[\s\S]*?)^            "WASM_POSIX_BINARY_CACHE_ROOT=\$WASM_POSIX_BINARY_CACHE_ROOT" \\\n/$1/m'
