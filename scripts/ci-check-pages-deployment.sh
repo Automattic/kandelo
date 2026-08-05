@@ -315,13 +315,32 @@ grep -Fq 'VITE_BASE: /kandelo/' <<<"$sealed_boot_block" &&
   grep -Fq 'KANDELO_TEST_BASE_URL: http://127.0.0.1:5401/kandelo/' \
     <<<"$sealed_boot_block" &&
   grep -Fq 'bash ../../scripts/dev-shell.sh env \' <<<"$sealed_boot_block" &&
-  grep -Fq '"WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \' \
-    <<<"$sealed_boot_block" &&
-  grep -Fq '"VITE_CORS_PROXY_URL=$VITE_CORS_PROXY_URL" \' \
-    <<<"$sealed_boot_block" &&
   grep -Fq 'test/kandelo-homebrew-main-shell.spec.ts' \
     <<<"$sealed_boot_block" ||
   fail "the Pages preview must prove the public bottled shell at the published base"
+
+# WHY: dev-shell deliberately removes ambient workflow variables. Merely
+# declaring an exact-product value in the step does not make it visible to
+# Playwright or its Vite child; every proof input must cross that boundary
+# exactly once or the strict acceptance case can skip while the step is green.
+for proof_variable in \
+  VITE_BASE \
+  VITE_CORS_PROXY_URL \
+  KANDELO_BROWSER_DEMO_INPUTS \
+  KANDELO_HOMEBREW_MAIN_SHELL_STRICT \
+  KANDELO_HOMEBREW_MAIN_SHELL_SHA256 \
+  KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256 \
+  KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES \
+  KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE \
+  KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL \
+  KANDELO_PLAYWRIGHT_SERVE_DIST \
+  KANDELO_TEST_BASE_URL \
+  WASM_POSIX_BINARY_CACHE_ROOT
+do
+  forwarded="\"${proof_variable}=\$${proof_variable}\" \\"
+  [ "$(grep -Fxc "            $forwarded" <<<"$sealed_boot_block")" -eq 1 ] ||
+    fail "the Pages preview must forward $proof_variable through dev-shell exactly once"
+done
 
 between_freshness_and_deploy="$(
   sed -n "${freshness_line},${deploy_line}p" "$PAGES_WORKFLOW" |

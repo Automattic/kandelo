@@ -251,15 +251,25 @@ expect_mutation_rejected \
   "must prove the public bottled shell at the published base" \
   's/(      - name: Boot the canonical bottled Pages shell in Chromium\n[\s\S]*?)^          VITE_CORS_PROXY_URL: https:\/\/wordpress-playground-cors-proxy\.net\/\?\n/$1/m'
 
-expect_mutation_rejected \
-  "bottled preview drops deployed CORS proxy in dev-shell" \
-  "must prove the public bottled shell at the published base" \
-  's/^            "VITE_CORS_PROXY_URL=\$VITE_CORS_PROXY_URL" \\\n//m'
-
-expect_mutation_rejected \
-  "bottled preview loses package cache root" \
-  "must prove the public bottled shell at the published base" \
-  's/(      - name: Boot the canonical bottled Pages shell in Chromium[\s\S]*?)^            "WASM_POSIX_BINARY_CACHE_ROOT=\$WASM_POSIX_BINARY_CACHE_ROOT" \\\n/$1/m'
+for proof_variable in \
+  VITE_BASE \
+  VITE_CORS_PROXY_URL \
+  KANDELO_BROWSER_DEMO_INPUTS \
+  KANDELO_HOMEBREW_MAIN_SHELL_STRICT \
+  KANDELO_HOMEBREW_MAIN_SHELL_SHA256 \
+  KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256 \
+  KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES \
+  KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE \
+  KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL \
+  KANDELO_PLAYWRIGHT_SERVE_DIST \
+  KANDELO_TEST_BASE_URL \
+  WASM_POSIX_BINARY_CACHE_ROOT
+do
+  expect_mutation_rejected \
+    "bottled preview drops $proof_variable at the dev-shell boundary" \
+    "must forward $proof_variable through dev-shell exactly once" \
+    "s/(      - name: Boot the canonical bottled Pages shell in Chromium\\n[\\s\\S]*?)^            \"${proof_variable}=\\\$${proof_variable}\" \\\\\\n/\$1/m"
+done
 
 expect_mutation_rejected \
   "bottled preview uses the retired source test" \
