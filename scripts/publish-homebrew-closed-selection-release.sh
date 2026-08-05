@@ -4,6 +4,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PREPARED_RELEASE=""
+CAMPAIGN=""
 LOCK_ROOT=""
 RECEIPT=""
 SELECTION_PLAN=""
@@ -16,6 +17,7 @@ TARGET_MAIN_CONTAINS_SHA=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --prepared-release) PREPARED_RELEASE="${2:-}"; shift 2 ;;
+    --campaign) CAMPAIGN="${2:-}"; shift 2 ;;
     --lock-root) LOCK_ROOT="${2:-}"; shift 2 ;;
     --receipt) RECEIPT="${2:-}"; shift 2 ;;
     --selection-plan) SELECTION_PLAN="${2:-}"; shift 2 ;;
@@ -47,7 +49,7 @@ while [ "$#" -gt 0 ]; do
 done
 
 for required in \
-  PREPARED_RELEASE LOCK_ROOT RECEIPT SELECTION_PLAN \
+  PREPARED_RELEASE CAMPAIGN LOCK_ROOT RECEIPT SELECTION_PLAN \
   SELECTION_PLAN_SHA256 EXACT_EXECUTION_KANDELO_MAIN_SHA \
   EXACT_EXECUTION_TARGET_MAIN_SHA KANDELO_MAIN_CONTAINS_SHA \
   TARGET_MAIN_CONTAINS_SHA
@@ -125,6 +127,7 @@ env -u GH_TOKEN -u GITHUB_TOKEN \
     --selection-plan "$SELECTION_PLAN" \
     --selection-plan-sha256 "$SELECTION_PLAN_SHA256" \
     --prepared-release "$PREPARED" \
+    --campaign "$CAMPAIGN" \
     --executor "$SCRIPT_DIR/homebrew-prefix-campaign-executor.py"
 
 selection_kandelo_sha="$(jq -er \

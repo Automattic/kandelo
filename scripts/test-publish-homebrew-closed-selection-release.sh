@@ -12,6 +12,7 @@ fail() {
 
 tool_root="$TEST_ROOT/tools"
 prepared="$TEST_ROOT/prepared"
+campaign="$TEST_ROOT/campaign.json"
 lock_root="$TEST_ROOT/lock"
 receipt="$TEST_ROOT/receipt.json"
 mkdir -p "$tool_root" "$prepared/assets" "$lock_root"
@@ -101,6 +102,7 @@ required = {
     "--selection-plan",
     "--selection-plan-sha256",
     "--prepared-release",
+    "--campaign",
     "--executor",
 }
 if sys.argv[1] != "verify" or not required.issubset(sys.argv):
@@ -140,6 +142,7 @@ run_wrapper() {
   GITHUB_REPOSITORY=Kandelo-dev/homebrew-tap-core \
     bash "$tool_root/publish-homebrew-closed-selection-release.sh" \
       --prepared-release "$prepared" \
+      --campaign "$campaign" \
       --lock-root "$lock_root" \
       --receipt "$receipt" \
       --selection-plan '{"fixture":true}' \

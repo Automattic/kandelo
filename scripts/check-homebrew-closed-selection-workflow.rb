@@ -12,7 +12,7 @@ WORKFLOW = ARGV.empty? ?
     ".github/workflows/reusable-homebrew-closed-selection-publish.yml"
   ) : File.expand_path(ARGV.fetch(0))
 WORKFLOW_DIGEST =
-  "1b34d7ffce36dfb97e96454d3c88e00bc2ac8996c9689f8e045a9fbf05e36041"
+  "dffd496b38bbebfe23157aa661a8f5cd9eb9bc83be5eb2c2d605631a93a808bc"
 PREPARATION_ARTIFACT = "homebrew-closed-selection-preparation"
 CHECKOUT_ACTION =
   "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
@@ -383,6 +383,7 @@ def check_workflow(workflow)
   %w[
     publish-homebrew-closed-selection-release.sh
     --prepared-release
+    --campaign
     --lock-root
     --receipt
     --selection-plan
