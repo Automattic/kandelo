@@ -100,6 +100,8 @@ CAMPAIGN_RETIREMENT_PATHS = (
 # catalog validator does not yet know to inspect.
 FINAL_TAP_ALLOWED_CONTROL_DRIFT_PATHS = frozenset(
     {
+        ".github/workflows/base-contract-checks.yml",
+        ".github/workflows/contract-checks.yml",
         ".github/workflows/prefix-campaign-bottles.yml",
         "Kandelo/README.md",
         "Kandelo/campaigns/prefix-v1/README.md",
