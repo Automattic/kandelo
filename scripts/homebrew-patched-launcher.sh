@@ -1313,6 +1313,146 @@ homebrew_patched_launcher_prepare_sysroot_projection() {
   HOMEBREW_PATCHED_SYSROOT_SHA256="$digest"
 }
 
+homebrew_patched_launcher_assert_target_cellar_links_safe() {
+  if [ "$#" -ne 2 ]; then
+    echo "homebrew_patched_launcher_assert_target_cellar_links_safe: expected BUILD-USER CELLAR" >&2
+    return 2
+  fi
+  local build_user="$1" cellar="$2"
+  local physical_cellar unsafe_entry formula seen_formulas=" "
+  local native_rack native_opt native_opt_target native_version
+  local target_rack target_keg target_opt_link expected_opt_target
+  local -a audited_bridge_kegs=()
+
+  [ -d "$cellar" ] && [ ! -L "$cellar" ] || {
+    echo "homebrew-patched-launcher: target Cellar is not one real directory" >&2
+    return 2
+  }
+  physical_cellar="$(cd "$cellar" && pwd -P)" || {
+    echo "homebrew-patched-launcher: could not resolve protected target Cellar tree" >&2
+    return 2
+  }
+  unsafe_entry="$(/usr/bin/find "$physical_cellar" -xdev \
+    ! \( -type d -o -type f -o -type l \) -print -quit)" || return 2
+  [ -z "$unsafe_entry" ] || {
+    echo "homebrew-patched-launcher: protected target Cellar contains a special entry: $unsafe_entry" >&2
+    return 1
+  }
+
+  # Native bridges are intentionally not ordinary target kegs. Their copied
+  # trees can retain links into the separately sealed native prefix (for
+  # example LLVM's prefix-level etc/clang directory). Derive every exception
+  # from the launcher's registered bridge transaction, prove its exact proxy
+  # shape is still immutable, and re-run the component-aware native projection
+  # audit before excluding only that selected keg from the ordinary Cellar
+  # containment rule.
+  for formula in "${HOMEBREW_PATCHED_NATIVE_BRIDGE_NAMES[@]}"; do
+    if ! [[ "$formula" =~ ^[a-z0-9][a-z0-9@+_.-]*$ ]] || \
+       [[ "$seen_formulas" == *" $formula "* ]]; then
+      echo "homebrew-patched-launcher: registered native Formula bridge is invalid: $formula" >&2
+      return 2
+    fi
+    seen_formulas+="$formula "
+    [ -n "$HOMEBREW_PATCHED_NATIVE_PREFIX" ] && \
+      [ "$HOMEBREW_PATCHED_NATIVE_SEALED" = "1" ] || {
+      echo "homebrew-patched-launcher: registered native Formula bridge has no sealed source" >&2
+      return 2
+    }
+    native_rack="$HOMEBREW_PATCHED_NATIVE_PREFIX/Cellar/$formula"
+    native_opt="$HOMEBREW_PATCHED_NATIVE_PREFIX/opt/$formula"
+    [ -d "$native_rack" ] && [ ! -L "$native_rack" ] && \
+      [ -L "$native_opt" ] || {
+      echo "homebrew-patched-launcher: registered native Formula source changed: $formula" >&2
+      return 1
+    }
+    native_opt_target="$(cd "$native_opt" && pwd -P)" || {
+      echo "homebrew-patched-launcher: registered native Formula opt link is unresolved: $formula" >&2
+      return 1
+    }
+    [ "${native_opt_target%/*}" = "$native_rack" ] || {
+      echo "homebrew-patched-launcher: registered native Formula opt link leaves its rack: $formula" >&2
+      return 1
+    }
+    native_version="${native_opt_target##*/}"
+    target_rack="$physical_cellar/$formula"
+    target_keg="$target_rack/$native_version"
+    target_opt_link="$HOMEBREW_PATCHED_PREFIX/opt/$formula"
+    expected_opt_target="../Cellar/$formula/$native_version"
+    [ -d "$target_rack" ] && [ ! -L "$target_rack" ] && \
+      [ -d "$target_keg" ] && [ ! -L "$target_keg" ] && \
+      [ "$(cd "$target_keg" && pwd -P)" = "$target_keg" ] && \
+      [ -L "$target_opt_link" ] && \
+      [ "$(/usr/bin/readlink "$target_opt_link")" = "$expected_opt_target" ] && \
+      [ "$(cd "$target_opt_link" && pwd -P)" = "$target_keg" ] && \
+      [ "$(/usr/bin/stat -c '%u:%g:%a' "$target_rack")" = "0:0:555" ] && \
+      [ "$(/usr/bin/stat -c '%u:%g:%a' "$target_keg")" = "0:0:555" ] && \
+      [ "$(/usr/bin/stat -c '%u:%g' "$target_opt_link")" = "0:0" ] || {
+      echo "homebrew-patched-launcher: registered native Formula proxy changed: $formula" >&2
+      return 1
+    }
+    homebrew_assert_tree_not_writable_by_user "$build_user" "$target_rack" || return
+    homebrew_assert_tree_not_replaceable_by_user "$build_user" "$target_rack" || return
+    if ! homebrew_patched_launcher_audit_native_projection_links \
+        --only-additional-trees "$target_keg"; then
+      echo "homebrew-patched-launcher: registered native Formula proxy has an unsafe projection: $formula" >&2
+      return 1
+    fi
+    audited_bridge_kegs+=("$target_keg")
+  done
+
+  if ! /usr/bin/find "$physical_cellar" -xdev -type l \
+       -exec /usr/bin/bash -c '
+         set -euo pipefail
+         root="$1"
+         audited_count="$2"
+         shift 2
+         audited_trees=("${@:1:audited_count}")
+         shift "$audited_count"
+         for link in "$@"; do
+           audited_source=0
+           for audited_tree in "${audited_trees[@]}"; do
+             case "$link" in
+               "$audited_tree"|"$audited_tree"/*)
+                 audited_source=1
+                 break
+                 ;;
+             esac
+           done
+           [ "$audited_source" -eq 0 ] || continue
+           raw_target="$(/usr/bin/readlink -- "$link")" || exit 1
+           case "$raw_target" in
+             /*) lexical_input="$raw_target" ;;
+             *) lexical_input="${link%/*}/$raw_target" ;;
+           esac
+           lexical_target="$(/usr/bin/realpath -m -s -- "$lexical_input")" || exit 1
+           case "$lexical_target" in
+             "$root"|"$root"/*) ;;
+             *)
+               printf "homebrew-patched-launcher: protected target Cellar symlink crosses its tree: %s\n" \
+                 "$link" >&2
+               exit 1
+               ;;
+           esac
+           resolved="$(/usr/bin/realpath -- "$link")" || {
+             printf "homebrew-patched-launcher: protected target Cellar symlink is unresolved: %s\n" \
+               "$link" >&2
+             exit 1
+           }
+           case "$resolved" in
+             "$root"|"$root"/*) ;;
+             *)
+               printf "homebrew-patched-launcher: protected target Cellar symlink escapes its tree: %s\n" \
+                 "$link" >&2
+               exit 1
+               ;;
+           esac
+         done
+       ' kandelo-target-cellar-links "$physical_cellar" \
+         "${#audited_bridge_kegs[@]}" "${audited_bridge_kegs[@]}" {} +; then
+    return 2
+  fi
+}
+
 homebrew_patched_launcher_seal_target_dependencies() {
   if [ "$#" -ne 2 ]; then
     echo "homebrew_patched_launcher_seal_target_dependencies: expected BUILD-USER SUDO" >&2
@@ -1323,7 +1463,8 @@ homebrew_patched_launcher_seal_target_dependencies() {
   local opt="$HOMEBREW_PATCHED_PREFIX/opt"
   local rack link resolved
 
-  homebrew_assert_tree_symlinks_contained "$cellar" "target Cellar" || return
+  homebrew_patched_launcher_assert_target_cellar_links_safe \
+    "$build_user" "$cellar" || return
   "$sudo_bin" -n -- /usr/bin/find "$cellar" -xdev -mindepth 1 \
     -exec /usr/bin/chown -h root:root {} + || return
   # WHY: dependency kegs are immutable inputs, but Cellar itself is the

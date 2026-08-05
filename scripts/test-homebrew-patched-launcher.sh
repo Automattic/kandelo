@@ -3214,8 +3214,13 @@ EOF
   ninja_proxy_rack="$isolated_prefix/Cellar/ninja"
   ninja_proxy_keg="$ninja_proxy_rack/1.0"
   ninja_proxy_opt="$isolated_prefix/opt/ninja"
+  llvm_proxy_rack="$isolated_prefix/Cellar/llvm"
+  llvm_proxy_keg="$llvm_proxy_rack/1.0"
+  llvm_proxy_opt="$isolated_prefix/opt/llvm"
+  llvm_proxy_clang="$llvm_proxy_keg/etc/clang"
   homebrew_patched_launcher_bridge_native_formula cmake
   homebrew_patched_launcher_bridge_native_formula ninja
+  homebrew_patched_launcher_bridge_native_formula llvm
   [ -L "$target_proxy_opt/bin/cmake-cross" ] && \
     [ -L "$target_proxy_opt/bin/cmake-cross-final" ] && \
     [ "$(readlink "$target_proxy_opt/bin/cmake-cross")" = \
@@ -3229,11 +3234,71 @@ EOF
     [ "$(readlink "$ninja_proxy_opt")" = "../Cellar/ninja/1.0" ] && \
     [ "$("$ninja_proxy_opt/bin/ninja")" = "native fixture" ] ||
     fail "isolated native Formula proxy omitted a declared direct tool"
+  [ -d "$llvm_proxy_rack" ] && [ ! -L "$llvm_proxy_rack" ] && \
+    [ -d "$llvm_proxy_keg" ] && [ ! -L "$llvm_proxy_keg" ] && \
+    [ -L "$llvm_proxy_clang" ] && \
+    [ "$(readlink "$llvm_proxy_clang")" = \
+      "$isolated_native_prefix/etc/clang" ] && \
+    [ "$(cd "$llvm_proxy_clang" && pwd -P)" = \
+      "$isolated_native_prefix/etc/clang" ] ||
+    fail "isolated LLVM proxy did not preserve its sealed prefix configuration"
   [ ! -e "$isolated_prefix/Cellar/openssl@3" ] && \
     [ ! -L "$isolated_prefix/Cellar/openssl@3" ] && \
     [ ! -e "$isolated_prefix/opt/openssl@3" ] && \
     [ ! -L "$isolated_prefix/opt/openssl@3" ] ||
     fail "isolated native Formula proxy exposed a transitive-only keg"
+
+  # The native projection policy and target-Cellar sealing policy must compose:
+  # LLVM intentionally retains a link to the already sealed native etc/clang
+  # runtime root. The same link has no authority when an ordinary target keg
+  # supplies it, and a registered proxy cannot redirect it elsewhere.
+  unregistered_proxy_keg="$isolated_prefix/Cellar/unregistered/1.0"
+  /usr/bin/sudo -n -- /usr/bin/install -d -o root -g root -m 0555 \
+    "$unregistered_proxy_keg/etc"
+  /usr/bin/sudo -n -- /usr/bin/ln -s \
+    "$isolated_native_prefix/etc/clang" "$unregistered_proxy_keg/etc/clang"
+  if homebrew_patched_launcher_seal_target_dependencies \
+      "$ISOLATION_BUILD_USER" /usr/bin/sudo >/dev/null 2>&1; then
+    fail "target dependency sealing admitted an unregistered native-prefix link"
+  fi
+  /usr/bin/sudo -n -- /usr/bin/rm -rf \
+    "$isolated_prefix/Cellar/unregistered"
+
+  /usr/bin/sudo -n -- /usr/bin/chmod 0755 "$llvm_proxy_keg/etc"
+  /usr/bin/sudo -n -- /usr/bin/rm -f "$llvm_proxy_clang"
+  /usr/bin/sudo -n -- /usr/bin/ln -s "$isolated_output" "$llvm_proxy_clang"
+  /usr/bin/sudo -n -- /usr/bin/chmod 0555 "$llvm_proxy_keg/etc"
+  if homebrew_patched_launcher_seal_target_dependencies \
+      "$ISOLATION_BUILD_USER" /usr/bin/sudo >/dev/null 2>&1; then
+    fail "target dependency sealing admitted a redirected native proxy link"
+  fi
+  /usr/bin/sudo -n -- /usr/bin/chmod 0755 "$llvm_proxy_keg/etc"
+  /usr/bin/sudo -n -- /usr/bin/rm -f "$llvm_proxy_clang"
+  /usr/bin/sudo -n -- /usr/bin/ln -s \
+    "$isolated_native_prefix/etc/clang" "$llvm_proxy_clang"
+  /usr/bin/sudo -n -- /usr/bin/chmod 0555 "$llvm_proxy_keg/etc"
+
+  contained_source_keg="$isolated_prefix/Cellar/target-contained-a/1.0"
+  contained_target_keg="$isolated_prefix/Cellar/target-contained-b/1.0"
+  /usr/bin/sudo -n -- /usr/bin/install -d -o root -g root -m 0555 \
+    "$contained_source_keg/bin" "$contained_target_keg/bin"
+  printf 'contained target dependency\n' | \
+    /usr/bin/sudo -n -- /usr/bin/tee \
+      "$contained_target_keg/bin/tool" >/dev/null
+  /usr/bin/sudo -n -- /usr/bin/chmod 0444 \
+    "$contained_target_keg/bin/tool"
+  /usr/bin/sudo -n -- /usr/bin/ln -s \
+    ../../../target-contained-b/1.0/bin/tool \
+    "$contained_source_keg/bin/tool"
+  homebrew_patched_launcher_seal_target_dependencies \
+    "$ISOLATION_BUILD_USER" /usr/bin/sudo
+  [ "$(/usr/bin/realpath "$contained_source_keg/bin/tool")" = \
+    "$contained_target_keg/bin/tool" ] ||
+    fail "target dependency sealing changed a contained cross-keg link"
+  /usr/bin/sudo -n -- /usr/bin/rm -rf \
+    "$isolated_prefix/Cellar/target-contained-a" \
+    "$isolated_prefix/Cellar/target-contained-b"
+
   "$HOMEBREW_PATCHED_BREW_BIN" assert-native-target-boundary \
     "$isolated_native_prefix" "$target_proxy_rack" "$target_proxy_keg" \
     "$target_proxy_opt" "../Cellar/cmake/1.0" "$native_runner" \
@@ -3560,6 +3625,9 @@ EOF
   [ ! -e "$ninja_proxy_rack" ] && [ ! -L "$ninja_proxy_rack" ] &&
     [ ! -e "$ninja_proxy_opt" ] && [ ! -L "$ninja_proxy_opt" ] ||
     fail "isolated cleanup left the second native Formula proxy"
+  [ ! -e "$llvm_proxy_rack" ] && [ ! -L "$llvm_proxy_rack" ] &&
+    [ ! -e "$llvm_proxy_opt" ] && [ ! -L "$llvm_proxy_opt" ] ||
+    fail "isolated cleanup left the LLVM native Formula proxy"
   [ ! -e "$isolated_prefix/.kandelo-publisher-build-dependencies.json" ] ||
     fail "isolated cleanup left the publisher dependency plan"
   [ ! -e "$isolated_prefix/.kandelo-publisher-tier2-attestation.json" ] ||

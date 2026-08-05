@@ -5873,6 +5873,45 @@ def check_publisher(workflow)
   ].each do |fragment|
     check(launcher.include?(fragment), "isolated Brew launcher lacks #{fragment}")
   end
+  target_cellar_link_contract = launcher[
+    /homebrew_patched_launcher_assert_target_cellar_links_safe\(\) \{\n(.*?)\n\}\n\nhomebrew_patched_launcher_seal_target_dependencies/m,
+    1
+  ]
+  check(target_cellar_link_contract,
+        "isolated Brew launcher lost its target-Cellar link contract")
+  [
+    'for formula in "${HOMEBREW_PATCHED_NATIVE_BRIDGE_NAMES[@]}"; do',
+    '[ "$HOMEBREW_PATCHED_NATIVE_SEALED" = "1" ]',
+    'native_opt="$HOMEBREW_PATCHED_NATIVE_PREFIX/opt/$formula"',
+    '[ "${native_opt_target%/*}" = "$native_rack" ]',
+    'target_keg="$target_rack/$native_version"',
+    '[ "$(cd "$target_keg" && pwd -P)" = "$target_keg" ]',
+    '[ "$(/usr/bin/readlink "$target_opt_link")" = "$expected_opt_target" ]',
+    'homebrew_assert_tree_not_writable_by_user "$build_user" "$target_rack"',
+    'homebrew_assert_tree_not_replaceable_by_user "$build_user" "$target_rack"',
+    'homebrew_patched_launcher_audit_native_projection_links',
+    '--only-additional-trees "$target_keg"',
+    'audited_bridge_kegs+=("$target_keg")',
+    '/usr/bin/find "$physical_cellar" -xdev -type l',
+    'audited_trees=("${@:1:audited_count}")',
+    '"$audited_tree"|"$audited_tree"/*)',
+    '/usr/bin/realpath -m -s -- "$lexical_input"',
+    '/usr/bin/realpath -- "$link"',
+  ].each do |fragment|
+    check(target_cellar_link_contract.include?(fragment),
+          "target-Cellar link contract lacks #{fragment}")
+  end
+  target_dependency_seal_contract = launcher[
+    /homebrew_patched_launcher_seal_target_dependencies\(\) \{\n(.*?)\n\}\n\nhomebrew_patched_launcher_snapshot_target_cellar_layout/m,
+    1
+  ]
+  check(
+    target_dependency_seal_contract&.include?(
+      "homebrew_patched_launcher_assert_target_cellar_links_safe"
+    ) && target_dependency_seal_contract.include?(
+      '"$build_user" "$cellar" || return'
+    ), "target dependency sealing bypasses its composed link contract"
+  )
   overlay_integrity_contract = launcher[
     /homebrew_patched_launcher_integrity\(\) \{\n(.*?)\n\}\n\nhomebrew_patched_launcher_verify_protected_xtask/m,
     1
