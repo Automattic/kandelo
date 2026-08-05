@@ -1568,6 +1568,15 @@ that inventory. A late extra rack, removed or replaced keg, mutable tree,
 duplicate name, changed loader chain, changed runtime root, or missing planned
 direct tool fails closed.
 
+Each native tool keg has a 4 GiB aggregate byte limit during staging,
+supervisor authentication, and validation of its exact target-Cellar proxy.
+This bound is separate because the admitted LLVM 22.1.8 bottle expands to
+2,624,809,107 bytes of regular archive members. The 1 GiB per-file limit and
+the existing entry and path limits still apply to every native keg and proxy.
+True target dependency trees and recipe source/output trees retain their
+existing 2 GiB aggregate limit; the larger bound does not grant a Formula more
+output or target-package capacity.
+
 The manifest authenticates the complete transitive execution closure, while
 the earlier static plan still decides which tools are direct Formula inputs.
 Those direct tools enter through their target-Cellar proxies. Executable

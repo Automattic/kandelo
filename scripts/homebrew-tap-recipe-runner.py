@@ -115,6 +115,14 @@ EXPECTED_LIMITS = {
     "max_file_bytes": 1_073_741_824,
     "max_path_bytes": 4_096,
 }
+# Native tool kegs are sealed host inputs, not target dependencies or recipe
+# outputs. The admitted LLVM 22.1.8 bottle expands to 2,624,809,107 bytes of
+# regular archive members, so bound native kegs and their exact target-Cellar
+# proxy copies with a larger aggregate ceiling.
+NATIVE_KEG_LIMITS = {
+    **EXPECTED_LIMITS,
+    "max_bytes": 4_294_967_296,
+}
 CONFIG_KEYS = {
     "allowed_request_root",
     "arch",
@@ -1556,6 +1564,7 @@ def authenticated_native_closure(
             root,
             f"native dependency {name}",
             symlink_projections=projections,
+            limits=NATIVE_KEG_LIMITS,
         )
     for root, expected_digest in runtime_roots.items():
         authenticate_native_runtime_root(
@@ -1672,6 +1681,20 @@ def native_execution_roots(
             fail(f"native closure omits direct Requirement tool {name}")
         requirements[name] = native
     return proxies, requirements
+
+
+def target_cellar_tree_policy(
+    name: str,
+    root: Path,
+    native_proxy_kegs: dict[str, Path],
+) -> tuple[str, dict[str, int]]:
+    """Select one target-Cellar tree's label and bound by provenance."""
+    proxy = native_proxy_kegs.get(name)
+    if proxy is not None and proxy != root:
+        fail("native proxy inventory differs from the sealed target Cellar")
+    if proxy is not None:
+        return f"native dependency proxy {name}", NATIVE_KEG_LIMITS
+    return f"target dependency {name}", EXPECTED_LIMITS
 
 
 def native_closure_path_roots(
@@ -1943,8 +1966,11 @@ def validate_sealed_dependency_tree(
     symlink_projections: ProjectionMap,
     require_symlink_targets: bool = False,
     hash_contents: bool = False,
+    limits: dict[str, int] | None = None,
 ) -> str | None:
     """Require a dependency tree to be sealed and optionally fingerprint it."""
+    if limits is None:
+        limits = EXPECTED_LIMITS
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
     if hasattr(os, "O_NOFOLLOW"):
         directory_flags |= os.O_NOFOLLOW
@@ -1968,11 +1994,11 @@ def validate_sealed_dependency_tree(
                 fail(f"{label} directory changed before inspection")
             names = sorted(os.listdir(current_fd))
             entries += len(names)
-            if entries > EXPECTED_LIMITS["max_entries"]:
+            if entries > limits["max_entries"]:
                 fail(f"{label} exceeds the entry limit")
             for name in names:
                 relative = f"{relative_dir}/{name}" if relative_dir else name
-                safe_relative_path(relative, EXPECTED_LIMITS["max_path_bytes"])
+                safe_relative_path(relative, limits["max_path_bytes"])
                 before = os.stat(name, dir_fd=current_fd, follow_symlinks=False)
                 mode = stat.S_IMODE(before.st_mode)
                 if before.st_dev != root_stat.st_dev:
@@ -1998,8 +2024,8 @@ def validate_sealed_dependency_tree(
                         fail(f"{label} file has a noncanonical mode: {relative}")
                     total_bytes += before.st_size
                     if (
-                        before.st_size > EXPECTED_LIMITS["max_file_bytes"]
-                        or total_bytes > EXPECTED_LIMITS["max_bytes"]
+                        before.st_size > limits["max_file_bytes"]
+                        or total_bytes > limits["max_bytes"]
                     ):
                         fail(f"{label} exceeds its byte limit")
                     digest = (
@@ -2007,7 +2033,7 @@ def validate_sealed_dependency_tree(
                             current_fd,
                             name,
                             before,
-                            max_bytes=EXPECTED_LIMITS["max_file_bytes"],
+                            max_bytes=limits["max_file_bytes"],
                             label=f"{label} file {relative}",
                         )
                         if hash_contents
@@ -2023,7 +2049,7 @@ def validate_sealed_dependency_tree(
                         not target
                         or not safe_tree_text(target)
                         or len(target.encode("utf-8", "strict"))
-                        > EXPECTED_LIMITS["max_path_bytes"]
+                        > limits["max_path_bytes"]
                     ):
                         fail(f"{label} has an unsafe symlink: {relative}")
                     resolution = projected_symlink_resolution(
@@ -2582,10 +2608,14 @@ def validate_request(
         native_runtime_roots,
     )
     for name, root in sorted(all_target_kegs.items()):
+        label, limits = target_cellar_tree_policy(
+            name, root, native_proxy_kegs
+        )
         validate_sealed_dependency_tree(
             root,
-            f"target dependency {name}",
+            label,
             symlink_projections=projected_dependencies,
+            limits=limits,
         )
     validate_environment(
         request, config, dependencies, native_roots, requirement_roots
@@ -5008,6 +5038,7 @@ def stage_native_closure(source_value: str, destination_value: str) -> int:
             root,
             f"native dependency {name}",
             symlink_projections=projections,
+            limits=NATIVE_KEG_LIMITS,
         )
     runtime_roots: dict[Path, str] = {}
     for root in selected_runtime_roots:
