@@ -1536,7 +1536,22 @@
         ],
         "head_dependencies": [
           "krb5",
-          "openssl@3"
+          "openssl@3",
+          {
+            "autoconf": ":build"
+          },
+          {
+            "automake": ":build"
+          },
+          {
+            "libtool": ":build"
+          }
+        ],
+        "head_url_args": [
+          "https://github.com/cyrusimap/cyrus-sasl.git",
+          {
+            ":branch": "master"
+          }
         ],
         "head_uses_from_macos": [
           [
@@ -1553,7 +1568,7 @@
           "libsasl2"
         ],
         "revision": 2,
-        "ruby_source_checksum": "f950eedf38a7c7c9608ae4276d5f409b85ed5419d2abb8ff14e87291e58a35d8",
+        "ruby_source_checksum": "998c3e5aad91a9d8245bf4d910fcd2d724aae09f2bc30c01d24b14eab14740b2",
         "stable_checksum": "7ccfc6abd01ed67c1a0924b353e526f1b766b21f42d4562ee635a8ebfc5bb38c",
         "stable_dependencies": [
           "krb5",
@@ -1582,7 +1597,22 @@
         ],
         "head_dependencies": [
           "krb5",
-          "openssl@3"
+          "openssl@3",
+          {
+            "autoconf": ":build"
+          },
+          {
+            "automake": ":build"
+          },
+          {
+            "libtool": ":build"
+          }
+        ],
+        "head_url_args": [
+          "https://github.com/cyrusimap/cyrus-sasl.git",
+          {
+            ":branch": "master"
+          }
         ],
         "head_uses_from_macos": [
           [
@@ -1599,7 +1629,7 @@
           "libsasl2"
         ],
         "revision": 2,
-        "ruby_source_checksum": "f950eedf38a7c7c9608ae4276d5f409b85ed5419d2abb8ff14e87291e58a35d8",
+        "ruby_source_checksum": "998c3e5aad91a9d8245bf4d910fcd2d724aae09f2bc30c01d24b14eab14740b2",
         "stable_checksum": "7ccfc6abd01ed67c1a0924b353e526f1b766b21f42d4562ee635a8ebfc5bb38c",
         "stable_dependencies": [
           "krb5",
@@ -12947,21 +12977,16 @@
         ],
         "homepage": "https://www.ruby-lang.org/",
         "license": "Ruby",
+        "link_overwrite_paths": [
+          "bin/bundle",
+          "bin/bundler"
+        ],
         "name": "ruby",
         "post_install_steps": [
           {
             "paths": [
               {
-                "base": "homebrew_prefix",
-                "path": "bin/bundle"
-              },
-              {
-                "base": "homebrew_prefix",
-                "path": "bin/bundler"
-              },
-              {
-                "base": "homebrew_prefix",
-                "path": "lib/ruby/gems/{{version.major_minor}}.0/gems/bundler-*"
+                "path": "{{HOMEBREW_PREFIX}}/lib/ruby/gems/{{version.major_minor}}.0/gems/bundler-*"
               }
             ],
             "recursive": true,
@@ -12990,7 +13015,7 @@
             "type": "change_dylib_id"
           }
         ],
-        "ruby_source_checksum": "d44a38fdbbae1be0b56d7b30ee818a2836d8199b9c8442e159a15e0cfd08ba75",
+        "ruby_source_checksum": "b033b1356fd077a326dbe300335382b00cc483316925bdff2e4ef6ad7fcfadda",
         "stable_checksum": "837d299e8f7ddf2be31a229a7a7e019d354979825117989acb3b32b1a9be262a",
         "stable_dependencies": [
           "libyaml",
@@ -13079,21 +13104,16 @@
         ],
         "homepage": "https://www.ruby-lang.org/",
         "license": "Ruby",
+        "link_overwrite_paths": [
+          "bin/bundle",
+          "bin/bundler"
+        ],
         "name": "ruby",
         "post_install_steps": [
           {
             "paths": [
               {
-                "base": "homebrew_prefix",
-                "path": "bin/bundle"
-              },
-              {
-                "base": "homebrew_prefix",
-                "path": "bin/bundler"
-              },
-              {
-                "base": "homebrew_prefix",
-                "path": "lib/ruby/gems/{{version.major_minor}}.0/gems/bundler-*"
+                "path": "{{HOMEBREW_PREFIX}}/lib/ruby/gems/{{version.major_minor}}.0/gems/bundler-*"
               }
             ],
             "recursive": true,
@@ -13122,7 +13142,7 @@
             "type": "change_dylib_id"
           }
         ],
-        "ruby_source_checksum": "d44a38fdbbae1be0b56d7b30ee818a2836d8199b9c8442e159a15e0cfd08ba75",
+        "ruby_source_checksum": "b033b1356fd077a326dbe300335382b00cc483316925bdff2e4ef6ad7fcfadda",
         "stable_checksum": "837d299e8f7ddf2be31a229a7a7e019d354979825117989acb3b32b1a9be262a",
         "stable_dependencies": [
           "libyaml",
