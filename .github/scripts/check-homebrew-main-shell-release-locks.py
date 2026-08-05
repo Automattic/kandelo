@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import pathlib
 import re
@@ -15,7 +16,27 @@ from typing import Any
 
 SHA = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
+FORMULA = re.compile(r"^[a-z0-9][a-z0-9._-]{0,254}$")
+SELECTION_TAG = re.compile(
+    r"^homebrew-prefix-selection-sha256-([0-9a-f]{64})$"
+)
 MAX_CONTRACT_BYTES = 4 * 1024 * 1024
+SELECTION_INPUTS = {
+    "brewfile": "homebrew/main-shell.Brewfile",
+    "guest_layout": "homebrew/kandelo-guest-layout.json",
+    "migration_lock": "homebrew/main-shell-migration-lock.json",
+    "runtime_support": "homebrew/main-shell-homebrew-runtime-support.json",
+}
+ARTIFACT_INPUTS = {
+    "bootstrap_tree_spec_sha256": "homebrew/main-shell-brew-package-tree.json",
+    "brewfile_sha256": "homebrew/main-shell.Brewfile",
+    "demo_config_sha256": "homebrew/main-shell-demo.json",
+    "materialization_policy_sha256": "homebrew/main-shell-materialization-policy.json",
+    "migration_lock_sha256": "homebrew/main-shell-migration-lock.json",
+    "runtime_support_sha256": "homebrew/main-shell-homebrew-runtime-support.json",
+    "selection_lock_sha256": "homebrew/main-shell-selection-lock.json",
+    "shell_config_sha256": "homebrew/main-shell-default.json",
+}
 
 
 class ContractError(RuntimeError):
@@ -53,6 +74,150 @@ def json_without_duplicate_keys(value: bytes, label: str) -> Any:
         raise ContractError(f"{label} is not valid JSON") from error
 
 
+def sha256(value: bytes) -> str:
+    return hashlib.sha256(value).hexdigest()
+
+
+def exact_object(value: Any, keys: set[str], label: str) -> dict[str, Any]:
+    if not isinstance(value, dict) or set(value) != keys:
+        raise ContractError(f"{label} has an unsupported shape")
+    return value
+
+
+def positive_integer(value: Any, label: str) -> int:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ContractError(f"{label} must be a positive integer")
+    return value
+
+
+def require_selection_inputs(source_root: pathlib.Path, value: Any) -> None:
+    records = exact_object(value, set(SELECTION_INPUTS), "selection lock inputs")
+    for key, relative in SELECTION_INPUTS.items():
+        record = exact_object(
+            records[key], {"path", "sha256"}, f"selection lock input {key}"
+        )
+        if (
+            record.get("path") != relative
+            or not isinstance(record.get("sha256"), str)
+            or not SHA256.fullmatch(record["sha256"])
+            or record["sha256"] != sha256(regular_bytes(source_root, relative))
+        ):
+            raise ContractError(f"selection lock input {key} is not exact")
+
+
+def require_selection(
+    source_root: pathlib.Path,
+    value: Any,
+    tap_catalog: str,
+) -> None:
+    selection = exact_object(
+        value,
+        {"arch", "inputs", "kind", "release", "schema", "state"},
+        "selection lock",
+    )
+    if (
+        selection.get("schema") != 1
+        or selection.get("kind")
+        != "kandelo-homebrew-main-shell-closed-selection-lock"
+        or selection.get("arch") != "wasm32"
+        or selection.get("state") != "sealed"
+    ):
+        raise ContractError("selection lock is not sealed for the main shell")
+    require_selection_inputs(source_root, selection.get("inputs"))
+
+    release = exact_object(
+        selection.get("release"),
+        {
+            "assets",
+            "formula_count",
+            "prepared_tree_git_oid",
+            "repository",
+            "roots",
+            "selection_manifest_sha256",
+            "tag",
+            "target_commitish",
+        },
+        "selection release",
+    )
+    assets = exact_object(
+        release.get("assets"),
+        {"closed-selection.json", "closed-selection.zip"},
+        "selection release assets",
+    )
+    for name, value in assets.items():
+        record = exact_object(
+            value, {"bytes", "sha256"}, f"selection release asset {name}"
+        )
+        positive_integer(record.get("bytes"), f"selection release asset {name} bytes")
+        if not isinstance(record.get("sha256"), str) or not SHA256.fullmatch(
+            record["sha256"]
+        ):
+            raise ContractError(f"selection release asset {name} digest is invalid")
+
+    roots = release.get("roots")
+    if (
+        not isinstance(roots, list)
+        or not roots
+        or any(
+            not isinstance(root, str) or not FORMULA.fullmatch(root)
+            for root in roots
+        )
+        or roots != sorted(set(roots))
+    ):
+        raise ContractError("selection release roots are invalid")
+    formula_count = positive_integer(
+        release.get("formula_count"), "selection release Formula count"
+    )
+    tag = release.get("tag")
+    tag_match = SELECTION_TAG.fullmatch(tag) if isinstance(tag, str) else None
+    if (
+        formula_count < len(roots)
+        or release.get("repository") != "kandelo-dev/homebrew-tap-core"
+        or release.get("target_commitish") != tap_catalog
+        or not isinstance(release.get("prepared_tree_git_oid"), str)
+        or not SHA.fullmatch(release["prepared_tree_git_oid"])
+        or not isinstance(release.get("selection_manifest_sha256"), str)
+        or not SHA256.fullmatch(release["selection_manifest_sha256"])
+        or tag_match is None
+        or tag_match.group(1) != assets["closed-selection.json"]["sha256"]
+    ):
+        raise ContractError("selection release identity is not exact")
+
+
+def require_artifact_inputs(source_root: pathlib.Path, value: Any) -> None:
+    records = exact_object(value, set(ARTIFACT_INPUTS), "artifact lock inputs")
+    for key, relative in ARTIFACT_INPUTS.items():
+        expected = records[key]
+        if (
+            not isinstance(expected, str)
+            or not SHA256.fullmatch(expected)
+            or expected != sha256(regular_bytes(source_root, relative))
+        ):
+            raise ContractError(f"artifact lock input {key} is not exact")
+
+
+def require_artifact(source_root: pathlib.Path, value: Any) -> None:
+    artifact = exact_object(
+        value,
+        {"image", "inputs", "kind", "schema", "source_date_epoch", "state"},
+        "lazy artifact lock",
+    )
+    require_artifact_inputs(source_root, artifact.get("inputs"))
+    image = exact_object(
+        artifact.get("image"), {"bytes", "sha256"}, "lazy artifact image"
+    )
+    if (
+        artifact.get("schema") != 3
+        or artifact.get("kind") != "kandelo-homebrew-lazy-shell-artifact-lock"
+        or artifact.get("source_date_epoch") != 0
+        or artifact.get("state") != "sealed"
+        or not isinstance(image.get("sha256"), str)
+        or not SHA256.fullmatch(image["sha256"])
+    ):
+        raise ContractError("lazy artifact lock is not sealed to exact image bytes")
+    positive_integer(image.get("bytes"), "lazy artifact image byte count")
+
+
 def require_catalog(value: Any, expected: str, label: str) -> None:
     if (
         not isinstance(value, dict)
@@ -63,9 +228,7 @@ def require_catalog(value: Any, expected: str, label: str) -> None:
 
 
 def positive_revision(value: Any, label: str) -> int:
-    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-        raise ContractError(f"{label} must be a positive integer")
-    return value
+    return positive_integer(value, label)
 
 
 def check(source_root: pathlib.Path, tap_catalog: str, canary: str) -> None:
@@ -85,17 +248,6 @@ def check(source_root: pathlib.Path, tap_catalog: str, canary: str) -> None:
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as error:
         raise ContractError("shell build.toml is not valid UTF-8 TOML") from error
 
-    # WHY: the top-level UNPUBLISHED marker names this source recipe, whereas
-    # the nested Git input names the detached tap catalog used to build it.
-    # Treating both `commit` fields as an unstructured grep can validate the
-    # wrong owner and silently publish against a different catalog.
-    expected_git_inputs = [
-        {
-            "name": "homebrew_tap_core",
-            "repository": "https://github.com/Kandelo-dev/homebrew-tap-core.git",
-            "commit": tap_catalog,
-        }
-    ]
     # WHY: kandelo-ref already binds this file to one reviewed source commit,
     # while the sealed artifact lock binds the bytes fetched for its package
     # identity. Validate the revision's package-schema shape here rather than
@@ -105,7 +257,10 @@ def check(source_root: pathlib.Path, tap_catalog: str, canary: str) -> None:
         build.get("repo_url") != "https://github.com/Automattic/kandelo.git"
         or build.get("commit") != "UNPUBLISHED"
         or build.get("publication_state") != "ready"
-        or build.get("git_inputs") != expected_git_inputs
+        # WHY: the immutable closed selection is the package's one Formula
+        # authority. A raw tap Git input beside it could compose different
+        # source-only bytes than the public selection used by runtime proofs.
+        or build.get("git_inputs") is not None
     ):
         raise ContractError("shell build.toml release identity is not exact")
 
@@ -119,12 +274,17 @@ def check(source_root: pathlib.Path, tap_catalog: str, canary: str) -> None:
         ),
         "runtime support",
     )
+    selection = json_without_duplicate_keys(
+        regular_bytes(source_root, "homebrew/main-shell-selection-lock.json"),
+        "selection lock",
+    )
     artifact = json_without_duplicate_keys(
         regular_bytes(source_root, "homebrew/main-shell-lazy-artifact-lock.json"),
         "lazy artifact lock",
     )
     require_catalog(migration, tap_catalog, "migration lock")
     require_catalog(support, tap_catalog, "runtime support")
+    require_selection(source_root, selection, tap_catalog)
 
     installs = support.get("lifecycle_installs") if isinstance(support, dict) else None
     if (
@@ -147,16 +307,7 @@ def check(source_root: pathlib.Path, tap_catalog: str, canary: str) -> None:
     ):
         raise ContractError("runtime support does not bind the exact canary lifecycle")
 
-    image = artifact.get("image") if isinstance(artifact, dict) else None
-    if (
-        artifact.get("state") != "sealed"
-        or not isinstance(image, dict)
-        or not SHA256.fullmatch(image.get("sha256", ""))
-        or not isinstance(image.get("bytes"), int)
-        or isinstance(image.get("bytes"), bool)
-        or image["bytes"] < 1
-    ):
-        raise ContractError("lazy artifact lock is not sealed to exact image bytes")
+    require_artifact(source_root, artifact)
 
 
 def parse_args() -> argparse.Namespace:

@@ -29,10 +29,6 @@ fixture="$TMP_ROOT/product"
 mkdir -p \
   "$fixture/homebrew" \
   "$fixture/packages/registry/shell"
-cp "$REPO_ROOT/homebrew/main-shell-selection-lock.json" \
-  "$fixture/homebrew/main-shell-selection-lock.json"
-cp "$REPO_ROOT/homebrew/main-shell-lazy-artifact-lock.json" \
-  "$fixture/homebrew/main-shell-lazy-artifact-lock.json"
 for input in \
   main-shell.Brewfile \
   kandelo-guest-layout.json \
@@ -45,10 +41,38 @@ for input in \
 do
   cp "$REPO_ROOT/homebrew/$input" "$fixture/homebrew/$input"
 done
-cp "$REPO_ROOT/packages/registry/shell/build.toml" \
-  "$fixture/packages/registry/shell/build.toml"
 cp "$REPO_ROOT/packages/registry/shell/package.toml" \
   "$fixture/packages/registry/shell/package.toml"
+
+# Construct the first phase explicitly. The repository may be checked out
+# before selection, after selection, or after the final image seal; this test
+# owns fixtures for all three states instead of treating one phase as eternal.
+pending_selection="$TMP_ROOT/pending-selection.json"
+jq '.state = "pending" | .release = null' \
+  "$REPO_ROOT/homebrew/main-shell-selection-lock.json" \
+  >"$pending_selection"
+cp "$pending_selection" \
+  "$fixture/homebrew/main-shell-selection-lock.json"
+selection_sha="$(sha256sum \
+  "$fixture/homebrew/main-shell-selection-lock.json")"
+selection_sha="${selection_sha%% *}"
+
+pending_artifact="$TMP_ROOT/pending-artifact.json"
+jq --arg sha "$selection_sha" '
+  .state = "pending" |
+  .image = null |
+  .inputs.selection_lock_sha256 = $sha
+' "$REPO_ROOT/homebrew/main-shell-lazy-artifact-lock.json" \
+  >"$pending_artifact"
+cp "$pending_artifact" \
+  "$fixture/homebrew/main-shell-lazy-artifact-lock.json"
+
+pending_build="$TMP_ROOT/pending-build.toml"
+sed -E \
+  's/publication_state = "(pending|ready)"/publication_state = "pending"/' \
+  "$REPO_ROOT/packages/registry/shell/build.toml" \
+  >"$pending_build"
+cp "$pending_build" "$fixture/packages/registry/shell/build.toml"
 
 [ "$(python3 "$STATE_TOOL" --root "$fixture")" = awaiting-selection ] ||
   fail "pending selection was not classified as awaiting-selection"
@@ -71,8 +95,7 @@ printf '%s\n' \
   >>"$fixture/packages/registry/shell/build.toml"
 expect_failure "unsupported publication inputs" \
   python3 "$STATE_TOOL" --root "$fixture"
-cp "$REPO_ROOT/packages/registry/shell/build.toml" \
-  "$fixture/packages/registry/shell/build.toml"
+cp "$pending_build" "$fixture/packages/registry/shell/build.toml"
 
 sed 's/depends_on = \[\]/depends_on = ["legacy@1"]/' \
   "$REPO_ROOT/packages/registry/shell/package.toml" \
@@ -83,11 +106,11 @@ cp "$REPO_ROOT/packages/registry/shell/package.toml" \
   "$fixture/packages/registry/shell/package.toml"
 
 sed 's/"state": "pending"/"state": "pending", "state": "pending"/' \
-  "$REPO_ROOT/homebrew/main-shell-selection-lock.json" \
+  "$pending_selection" \
   >"$fixture/homebrew/main-shell-selection-lock.json"
 expect_failure "JSON repeats key 'state'" \
   python3 "$STATE_TOOL" --root "$fixture"
-cp "$REPO_ROOT/homebrew/main-shell-selection-lock.json" \
+cp "$pending_selection" \
   "$fixture/homebrew/main-shell-selection-lock.json"
 
 jq '.state = "sealed" | .release = {

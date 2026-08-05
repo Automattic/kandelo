@@ -78,7 +78,6 @@ DEPENDENCIES = {
     "libcurl": ["openssl", "zlib"],
     "less": ["ncurses"],
     "vim": ["ncurses"],
-    "ruby": ["zlib"],
     "file-formula": ["libmagic"],
 }
 
@@ -178,11 +177,21 @@ def package_record(
     }
 
 
+def dependencies_for_support(support: dict) -> dict[str, list[str]]:
+    dependencies = dict(DEPENDENCIES)
+    libyaml = f"{TAP_NAME}/libyaml"
+    dependencies["ruby"] = (
+        ["libyaml", "zlib"]
+        if libyaml in support["formula_order"]
+        else ["zlib"]
+    )
+    return dependencies
+
+
 def create_tap(
     root: pathlib.Path,
     source: pathlib.Path,
     omit: str | None = None,
-    dependency_overrides: dict[str, list[str]] | None = None,
 ) -> pathlib.Path:
     tap = root / "tap"
     (tap / "Kandelo").mkdir(parents=True)
@@ -201,7 +210,7 @@ def create_tap(
     }
     if omit:
         names.remove(omit)
-    dependencies = {**DEPENDENCIES, **(dependency_overrides or {})}
+    dependencies = dependencies_for_support(support)
     metadata = {
         "schema": 1,
         "generated_at": "2026-07-28T00:00:00Z",
@@ -281,7 +290,7 @@ def create_closed_selection(
         entry["formula"]["name"]: entry["formula"]
         for entry in migration["packages"]
     }
-    dependencies = {**DEPENDENCIES, "ruby": ["zlib", "libyaml"]}
+    dependencies = {**DEPENDENCIES, "ruby": ["libyaml", "zlib"]}
     names = {
         identity.split("/")[-1]
         for identity in migration["formula_closure"]
@@ -423,17 +432,71 @@ def set_shell_revision(source: pathlib.Path, literal: str) -> None:
     path.write_text(updated)
 
 
-def add_future_libyaml_shape(source: pathlib.Path) -> None:
+def ensure_libyaml_shape(source: pathlib.Path) -> None:
     support_path = source / "homebrew/main-shell-homebrew-runtime-support.json"
     support = json.loads(support_path.read_text())
     libyaml = f"{TAP_NAME}/libyaml"
     ruby = f"{TAP_NAME}/ruby"
+    zlib = f"{TAP_NAME}/zlib"
     formula_order = support["formula_order"]
-    formula_order.insert(formula_order.index(ruby), libyaml)
-    support["additional_formula_order"].insert(0, libyaml)
+    if libyaml not in formula_order:
+        formula_order.insert(formula_order.index(zlib), libyaml)
+    additional = support["additional_formula_order"]
+    if libyaml not in additional:
+        additional.insert(additional.index(ruby), libyaml)
     reusable = support["availability"]["reusable_public_abi42"]
-    reusable.insert(reusable.index(ruby), libyaml)
+    if libyaml not in reusable:
+        reusable.insert(reusable.index(zlib), libyaml)
     write_json(support_path, support)
+
+
+def expected_release_shape(source: pathlib.Path) -> dict[str, int]:
+    migration = json.loads(
+        (source / "homebrew/main-shell-migration-lock.json").read_text()
+    )
+    support = json.loads(
+        (
+            source / "homebrew/main-shell-homebrew-runtime-support.json"
+        ).read_text()
+    )
+    policy = json.loads(
+        (
+            source / "homebrew/main-shell-materialization-policy.json"
+        ).read_text()
+    )
+    availability = support["availability"]
+    base = len(migration["formula_closure"])
+    embedded = len(policy["embedded_package_order"])
+    additional = len(support["additional_formula_order"])
+    audited = sum(
+        len(availability[key])
+        for key in [
+            "reusable_public_abi42",
+            "requires_rebuild",
+            "missing_metadata",
+            "can_be_deferred",
+        ]
+    )
+    return {
+        "roots": len(migration["packages"]),
+        "base_formulae": base,
+        "embedded": embedded,
+        "lazy": base - embedded,
+        "runtime_formulae": len(support["formula_order"]),
+        "audited_formulae": audited,
+        "runtime_extra": additional,
+        "total": base + additional,
+    }
+
+
+def expected_checker_summary(shape: dict[str, int]) -> str:
+    return (
+        f"{shape['base_formulae']} base Formulae, "
+        f"{shape['runtime_formulae']} runtime Formulae, and "
+        f"{shape['audited_formulae']} audited Formulae; the runtime adds "
+        f"{shape['runtime_extra']} beyond the base, yielding "
+        f"{shape['total']} total Formulae"
+    )
 
 
 def run_checker(
@@ -496,6 +559,15 @@ def misorder_embedded_formulae(policy: dict) -> None:
 with tempfile.TemporaryDirectory(prefix="kandelo-shell-finalizer-test.") as temporary:
     root = pathlib.Path(temporary)
     source = copy_source(root)
+    expected_shape = expected_release_shape(source)
+    initial_migration = json.loads(
+        (source / "homebrew/main-shell-migration-lock.json").read_text()
+    )
+    expected_rebuilds = {
+        entry["formula"]["name"]: entry["formula"]["bottle_rebuild"] + 1
+        for entry in initial_migration["packages"]
+        if entry["formula"]["name"] in {"file-formula", "zip"}
+    }
     tap = create_tap(root, source)
     paths = [source / relative for relative in COPIED]
     before = {path: digest(path) for path in paths}
@@ -511,14 +583,8 @@ with tempfile.TemporaryDirectory(prefix="kandelo-shell-finalizer-test.") as temp
     )
     applied_json = json.loads(applied.stdout)
     assert applied_json["applied"] is True
-    assert applied_json["roots"] == 32
-    assert applied_json["base_formulae"] == 38
-    assert applied_json["embedded"] == 3
-    assert applied_json["lazy"] == 35
-    assert applied_json["runtime_formulae"] == 21
-    assert applied_json["audited_formulae"] == 25
-    assert applied_json["runtime_extra"] == 1
-    assert applied_json["total"] == 39
+    for key, value in expected_shape.items():
+        assert applied_json[key] == value
     head = subprocess.run(
         ["git", "-C", str(tap), "rev-parse", "HEAD"],
         check=True,
@@ -565,8 +631,8 @@ with tempfile.TemporaryDirectory(prefix="kandelo-shell-finalizer-test.") as temp
         entry["formula"]["name"]: entry["formula"]["bottle_rebuild"]
         for entry in migration["packages"]
     }
-    assert rebuilt["file-formula"] == 4
-    assert rebuilt["zip"] == 2
+    assert rebuilt["file-formula"] == expected_rebuilds["file-formula"]
+    assert rebuilt["zip"] == expected_rebuilds["zip"]
 
     shell_config_path = source / "homebrew/main-shell-default.json"
     first_shell_config_sha = artifact_lock["inputs"]["shell_config_sha256"]
@@ -588,11 +654,7 @@ with tempfile.TemporaryDirectory(prefix="kandelo-shell-finalizer-test.") as temp
     assert artifact_lock["image"] is None
     assert_product_state(source, "awaiting-selection")
     checker = run_checker(source, tap)
-    assert (
-        "38 base Formulae, 21 runtime Formulae, and 25 audited Formulae; "
-        "the runtime adds 1 beyond the base, yielding 39 total Formulae"
-        in checker.stdout
-    )
+    assert expected_checker_summary(expected_shape) in checker.stdout
 
     artifact = root / "shell.vfs.zst"
     artifact.write_bytes(b"reviewed deterministic shell bytes\n")
@@ -642,13 +704,9 @@ with tempfile.TemporaryDirectory(
 ) as temporary:
     root = pathlib.Path(temporary)
     source = copy_source(root)
-    add_future_libyaml_shape(source)
+    ensure_libyaml_shape(source)
     set_shell_revision(source, "23")
-    tap = create_tap(
-        root,
-        source,
-        dependency_overrides={"ruby": ["zlib", "libyaml"]},
-    )
+    tap = create_tap(root, source)
     applied = run(
         "--source-root", str(source), "--tap-root", str(tap), "--apply"
     )
@@ -666,17 +724,23 @@ with tempfile.TemporaryDirectory(
         (source / "packages/registry/shell/build.toml").read_text(),
         re.MULTILINE,
     )
+    support_path = source / "homebrew/main-shell-homebrew-runtime-support.json"
+    baseline = json.loads(support_path.read_text())
+    libyaml = f"{TAP_NAME}/libyaml"
+    ruby = f"{TAP_NAME}/ruby"
+    zlib = f"{TAP_NAME}/zlib"
+    for order in [
+        baseline["formula_order"],
+        baseline["availability"]["reusable_public_abi42"],
+    ]:
+        assert order.index(libyaml) < order.index(zlib) < order.index(ruby)
+    assert baseline["additional_formula_order"] == [libyaml, ruby]
     checker = run_checker(source, tap)
     assert (
         "38 base Formulae, 22 runtime Formulae, and 26 audited Formulae; "
         "the runtime adds 2 beyond the base, yielding 40 total Formulae"
         in checker.stdout
     )
-
-    support_path = source / "homebrew/main-shell-homebrew-runtime-support.json"
-    baseline = json.loads(support_path.read_text())
-    libyaml = f"{TAP_NAME}/libyaml"
-    ruby = f"{TAP_NAME}/ruby"
 
     missing_runtime = json.loads(json.dumps(baseline))
     missing_runtime["formula_order"].remove(libyaml)
@@ -869,14 +933,18 @@ with tempfile.TemporaryDirectory(
     )
     libyaml = f"{TAP_NAME}/libyaml"
     ruby = f"{TAP_NAME}/ruby"
+    zlib = f"{TAP_NAME}/zlib"
     assert migration["catalog"]["tap_commit"] == source_commit
     assert support["catalog"]["tap_commit"] == source_commit
     assert support["availability"]["audited_catalog"][
         "checkout_commit"
     ] == source_commit
-    assert support["formula_order"].index(libyaml) < support[
-        "formula_order"
-    ].index(ruby)
+    formula_order = support["formula_order"]
+    assert (
+        formula_order.index(libyaml)
+        < formula_order.index(zlib)
+        < formula_order.index(ruby)
+    )
     assert support["additional_formula_order"] == [libyaml, ruby]
     assert libyaml in support["availability"]["reusable_public_abi42"]
     assert selection_lock["state"] == "sealed"

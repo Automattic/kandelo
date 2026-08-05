@@ -685,8 +685,13 @@ grep -Fq 'assertPackageClosure(' "$IMAGE_CONTRACT" ||
 bash "$LAZY_ARTIFACT_CHECKER" \
   --lock "$LAZY_ARTIFACT_LOCK" --expected-source-date-epoch 0 ||
   fail "lazy shell artifact lock is not an exact digest/size/timestamp contract"
-[ "$(jq -er '.state' "$SELECTION_LOCK")" = pending ] ||
-  fail "new shell selection authority must begin in review-only pending state"
+checked_in_product_state="$(
+  python3 "$PRODUCT_STATE_TOOL" --root "$REPO_ROOT"
+)" || fail "checked-in shell contracts do not form a valid product state"
+case "$checked_in_product_state" in
+  awaiting-selection | candidate | publishable) ;;
+  *) fail "unsupported checked-in shell product state: $checked_in_product_state" ;;
+esac
 # WHY: preparation runs without write credentials in the workflow's first
 # job. The publisher receives only that same-run deterministic archive, so a
 # token-bearing job never has to execute tap-controlled materialization code.
@@ -3058,10 +3063,9 @@ expect_failure "lock is invalid or uses a different timestamp epoch" \
   --work-dir "$TMP_ROOT/work-extra-lazy-lock-field" --migration-lock "$lock" \
   --lazy-artifact-lock "$extra_field_lock"
 sealed_fixture_lock="$TMP_ROOT/main-shell-sealed-artifact-lock.json"
-# WHY: source updates truthfully return the checked-in artifact lock to
-# pending. Build the opposite-state fixture explicitly so this rejection test
-# covers a sealed lock in both release phases instead of assuming repository
-# state happens to be sealed.
+# WHY: this rejection must not depend on which release phase is checked in.
+# Construct the sealed opposite-state fixture explicitly from the current
+# contract instead of treating transient repository state as test authority.
 jq '
   .state = "sealed" |
   .image = {
@@ -3258,7 +3262,13 @@ jq --slurpfile support "$RUNTIME_SUPPORT" '
       ["coreutils", "dash", "diffutils", "grep", "less", "libcurl", "openssl", "sed", "vim", "zlib"]
     elif . == "libcurl" then ["openssl", "zlib"]
     elif . == "less" or . == "vim" then ["ncurses"]
-    elif . == "ruby" then ["zlib"]
+    elif . == "ruby" then
+      if ($support[0].formula_order |
+          index("kandelo-dev/tap-core/libyaml")) == null then
+        ["zlib"]
+      else
+        ["libyaml", "zlib"]
+      end
     else []
     end;
   . as $lock |
