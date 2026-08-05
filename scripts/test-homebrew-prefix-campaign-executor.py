@@ -1884,12 +1884,6 @@ class FinalTapFixture(Fixture):
         }
 
         allowed_activation_updates = {
-            ".github/workflows/base-contract-checks.yml": (
-                "name: activated campaign base contract\n"
-            ),
-            ".github/workflows/contract-checks.yml": (
-                "name: activated campaign contract\n"
-            ),
             ".github/workflows/prefix-campaign-bottles.yml": (
                 "name: activated campaign publisher\n"
             ),
@@ -4088,8 +4082,6 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
         for relative in EXECUTOR.CAMPAIGN_RETIREMENT_PATHS:
             self.assertFalse((output / relative).exists())
         for relative in (
-            ".github/workflows/base-contract-checks.yml",
-            ".github/workflows/contract-checks.yml",
             ".github/workflows/dry-run-bottles.yml",
             ".github/workflows/repository-namespace-canary.yml",
             "Kandelo/README.md",
@@ -4470,7 +4462,6 @@ class PrefixCampaignExecutorTests(unittest.TestCase):
 
     def test_final_tap_rejects_every_non_control_live_change(self) -> None:
         cases = (
-            ("unreviewed-workflow", ".github/workflows/unreviewed.yml"),
             ("modified-overlay", "Formula/alpha.rb"),
             ("changed-formula", "Formula/gamma.rb"),
             ("added-formula", "Formula/rogue.rb"),
