@@ -124,8 +124,26 @@ fork instrumentation, VFS construction, and Node.js/browser execution.
 ### First-Shipment Rule
 
 Do not port the migration to `test-bot` or `pr-upload` before rebuilding Ruby.
-Use the already-exercised targeted Homebrew commands, remove campaign/trust
-requirements from their wrapper, publish Ruby, and build the experimental VFS.
+Use the already-exercised targeted Homebrew commands and the tap's existing
+ordinary one-Formula dispatch, publish Ruby, and build the experimental VFS.
+That dispatch must omit every prefix-campaign input and run with
+`prefix-campaign-mode=false`. Reusing it once is intentionally narrower and
+faster than modifying the frozen publisher or creating a second bottle
+implementation before Ruby ships.
+
+The ordinary publisher may still emit its existing historical sidecars while
+it is the only exercised path that owns public GHCR index publication. The
+active experimental selection projects only materialization facts from those
+outputs and does not consume their provenance or campaign fields. The
+post-shipment replacement and quarantine remove this temporary implementation
+dependency.
+
+When the Ruby browser-runtime fix advances Kandelo `main`, the publisher's
+existing rootfs generation no longer has the exact current-main identity it
+requires. Use the already-implemented package-cache projection promotion once
+to bind those unchanged package bytes to the new main commit. This is not a
+rootfs rebuild or campaign reseal. If the projection differs, rebuild instead
+of weakening the check or relabeling changed bytes.
 
 The fast lane must not add new implementations of generic Formula detection,
 audit/style policy, bottle merge, artifact ancestry, release promotion, or
@@ -228,7 +246,9 @@ merely because a descriptor listed them.
 
 ### Build And Publication
 
-One manual tap workflow accepts a Formula name and architecture. Its build job:
+After the first experimental image, the active per-bottle lane converges on one
+manual tap workflow that accepts a Formula name and architecture. Its build
+job:
 
 1. checks out an exact reviewed tap commit and an explicit ABI-compatible
    Kandelo revision;
@@ -292,6 +312,15 @@ Ruby descriptor. Existing campaign records may be used as input data for this
 one derivation, but no campaign identity or handoff is copied into the active
 selection contract.
 
+The selection alone does not make stock Homebrew able to install those
+bottles. Before the first image is built, the active tap must also receive the
+already-reviewed canonical-prefix Formula and helper sources plus the exact
+40 verified `wasm32_kandelo` bottle blocks. Bottle blocks are merged with the
+existing Homebrew bottle-JSON merger, not edited by hand. Ruby remains without
+a bottle block until its fresh ordinary publication succeeds. This is a
+functional tap cutover: the selection controls VFS composition, while the
+Formula blocks control later stock `brew install` resolution.
+
 ### VFS Construction
 
 The active VFS planner and builder fetch each public bottle by its descriptor,
@@ -320,23 +349,37 @@ package-tree quota, and they need no package-specific exception.
 The initial lane uses the bottle compression already supported end to end. It
 does not broaden archive-format support merely to complete the migration.
 
+`homebrew-bootstrap` is a support-data Formula, not an ordinary executable
+keg. Its bottle contains the upstream Homebrew source ZIP and a closed
+environment file. Its descriptor therefore selects one explicit
+`homebrew-runtime-support-v1` materialization policy: verify the two declared
+outputs, safely expand the ZIP at `/opt/kandelo/homebrew`, install
+`/usr/bin/brew`, and create the documented mutable cache/tap/link/lock paths.
+No package-name heuristic or demo fallback may activate this behavior. Reuse
+the repository's existing bounded ZIP, filesystem, and guest-layout helpers;
+the flat lane adds only the neutral adapter needed to remove campaign and
+catalog authority from this operation.
+
 ### Runtime Proof
 
 The exact public VFS bytes must pass:
 
 - Node.js boot;
 - `brew --version`;
-- one normal in-guest `brew install` of a small test Formula that is
-  intentionally absent from the base selection;
+- one genuine in-guest `brew install` of a public bottle after removing its
+  precomposed keg from that fresh guest;
 - execution of the installed command with an expected result;
 - Chromium boot using the same VFS digest; and
 - the same command behavior in Chromium.
 
-The 41-bottle base selection includes Ruby and the Brew runtime. The install
-proof uses a separate public bottle, initially `what`, so success cannot be a
-no-op caused by the target keg already being present. Node.js and Chromium each
-start from the unchanged published base VFS and perform the install in their
-own mutable guest state.
+The 41-bottle base selection includes Ruby, Bzip2, and the Brew runtime. Reuse
+the existing release-critical lifecycle: in each fresh guest, remove the
+precomposed Bzip2 keg, install `kandelo-dev/tap-core/bzip2` with stock
+`brew install --no-ask --force-bottle`, verify that Homebrew records a real
+pour, and execute a compression round-trip. The setup removal exists only to
+make the first install observable; this release does not claim general remove
+or upgrade coverage. Node.js and Chromium each start from the unchanged
+published base VFS and perform the proof in their own mutable guest state.
 
 The first release does not require upgrade, remove, reboot, Pages deployment,
 Firefox, or WebKit. Reports must state those omissions.
@@ -516,15 +559,22 @@ merged after the quarantine.
 ## Initial ABI-42 Delivery
 
 1. Create a clean worktree at the current protected Kandelo ABI-42 main.
-2. Add and locally validate the per-bottle workflow and descriptor schema.
+2. Add and locally validate the neutral descriptor, selection, VFS adapter,
+   and a Kandelo-owned manual experimental-VFS workflow. The first shipment
+   does not add a tap workflow or expand its exact campaign-era workflow
+   inventory.
 3. Derive and validate descriptors for the 40 existing public bottles.
-4. Add the explicit experimental Tier-2 helper path required by Ruby.
-5. After Actions recovers, build, test, and publish Ruby once.
-6. Produce the 41-bottle flat selection.
-7. Build the VFS from public URLs with fallback disabled.
-8. Publish the VFS, selection, and SHA-256 under an experimental ABI-42 name.
-9. Re-fetch and run the Node.js and Chromium proof.
-10. Land the separate campaign/trust quarantine changes in Kandelo and the tap.
+4. Activate the already-reviewed canonical tap sources and 40 verified bottle
+   blocks without changing workflow inventory.
+5. After Actions recovers, merge the Ruby browser prerequisite and use the
+   existing package-cache projection to bind the unchanged rootfs generation
+   to that exact main commit.
+6. Build, test, and publish Ruby once through the ordinary one-Formula lane.
+7. Merge the Kandelo flat lane, then produce the 41-bottle flat selection.
+8. Build the VFS from public URLs with fallback disabled.
+9. Publish the VFS, selection, and SHA-256 under an experimental ABI-42 name.
+10. Re-fetch and run the Node.js and Chromium proof.
+11. Land the separate campaign/trust quarantine changes in Kandelo and the tap.
 
 Ruby's previous failed workflow retained no artifact, so it cannot be recovered
 by weakening a publication check. It requires one real rebuild.
