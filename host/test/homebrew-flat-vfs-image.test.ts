@@ -13,7 +13,95 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+const fsFaults = vi.hoisted(() => ({
+  failOwnedDirectoryChmod: false,
+  failOwnedDirectoryCleanup: false,
+  identities: new Map<string, bigint>(),
+  simulateUnsafeNumericIdentity: false,
+}));
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  const stagingPath = (path: unknown): boolean =>
+    String(path).includes(".kandelo-homebrew-vfs-");
+  const withIdentity = <T extends object>(
+    stat: T,
+    dev: number | bigint,
+    ino: number | bigint,
+  ): T => Object.assign(
+    Object.create(Object.getPrototypeOf(stat)) as T,
+    stat,
+    { dev, ino },
+  );
+  const unsafeIdentity = (
+    stat: { dev: number | bigint; ino: number | bigint },
+  ): bigint => {
+    const key = `${stat.dev}:${stat.ino}`;
+    const known = fsFaults.identities.get(key);
+    if (known !== undefined) return known;
+    const identity = 9_007_199_254_740_992n +
+      BigInt(fsFaults.identities.size);
+    fsFaults.identities.set(key, identity);
+    return identity;
+  };
+
+  return {
+    ...actual,
+    chmodSync(path: Parameters<typeof actual.chmodSync>[0], mode: number) {
+      if (
+        fsFaults.failOwnedDirectoryChmod &&
+        stagingPath(path) &&
+        mode === 0o700
+      ) {
+        throw Object.assign(new Error("injected staging chmod failure"), {
+          code: "EPERM",
+        });
+      }
+      return actual.chmodSync(path, mode);
+    },
+    fstatSync(
+      descriptor: Parameters<typeof actual.fstatSync>[0],
+      options?: { bigint?: boolean },
+    ) {
+      const stat = options === undefined
+        ? actual.fstatSync(descriptor)
+        : actual.fstatSync(descriptor, options as { bigint: true });
+      if (!fsFaults.simulateUnsafeNumericIdentity) return stat;
+
+      const ino = unsafeIdentity(stat);
+      return options?.bigint === true
+        ? withIdentity(stat, 41n, ino)
+        : withIdentity(stat, 41, Number(ino));
+    },
+    lstatSync(
+      path: Parameters<typeof actual.lstatSync>[0],
+      options?: { bigint?: boolean },
+    ) {
+      const stat = options === undefined
+        ? actual.lstatSync(path)
+        : actual.lstatSync(path, options as { bigint: true });
+      if (!fsFaults.simulateUnsafeNumericIdentity) return stat;
+
+      const ino = unsafeIdentity(stat);
+      return options?.bigint === true
+        ? withIdentity(stat, 41n, ino)
+        : withIdentity(stat, 41, Number(ino));
+    },
+    rmSync(
+      path: Parameters<typeof actual.rmSync>[0],
+      options?: Parameters<typeof actual.rmSync>[1],
+    ) {
+      if (fsFaults.failOwnedDirectoryCleanup && stagingPath(path)) {
+        throw Object.assign(new Error("injected staging cleanup failure"), {
+          code: "EIO",
+        });
+      }
+      return actual.rmSync(path, options);
+    },
+  };
+});
 
 import {
   parseFlatHomebrewVfsArgs,
@@ -22,6 +110,13 @@ import {
 } from "../../images/vfs/scripts/build-homebrew-flat-vfs-image";
 
 describe("flat Homebrew VFS image filesystem boundary", () => {
+  afterEach(() => {
+    fsFaults.failOwnedDirectoryChmod = false;
+    fsFaults.failOwnedDirectoryCleanup = false;
+    fsFaults.identities.clear();
+    fsFaults.simulateUnsafeNumericIdentity = false;
+  });
+
   it("accepts exactly one value for each of the six CLI flags", () => {
     expect(parseFlatHomebrewVfsArgs(validArgs())).toEqual({
       selection: "selection.json",
@@ -155,6 +250,118 @@ try {
       expect(lstatSync(image).ino).not.toBe(lstatSync(report).ino);
       expect(stagingEntries(directory)).toEqual([]);
     } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("sets staged and published output permissions to exactly 0600", () => {
+    const directory = mkdtempSync(join(tmpdir(), "flat-homebrew-mode-"));
+    const previousUmask = process.umask(0o777);
+    try {
+      const image = join(directory, "image.vfs.zst");
+      const report = join(directory, "report.json");
+      publishFlatHomebrewVfsOutputs([
+        output(image, "image\n"),
+        output(report, "report\n"),
+      ]);
+
+      expect(lstatSync(image).mode & 0o777).toBe(0o600);
+      expect(lstatSync(report).mode & 0o777).toBe(0o600);
+    } finally {
+      process.umask(previousUmask);
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("hashes staged inode bytes after caller input can change", () => {
+    const directory = mkdtempSync(join(tmpdir(), "flat-homebrew-stage-hash-"));
+    try {
+      const image = join(directory, "image.vfs.zst");
+      const report = join(directory, "report.json");
+      const imageOutput = output(image, "image\n");
+      const reportOutput = output(report, "report\n");
+      const reportSha256 = reportOutput.expectedSha256;
+      Object.defineProperty(reportOutput, "expectedSha256", {
+        get() {
+          imageOutput.bytes[0] = "X".charCodeAt(0);
+          return reportSha256;
+        },
+      });
+
+      expect(() => publishFlatHomebrewVfsOutputs([
+        imageOutput,
+        reportOutput,
+      ])).toThrow(/staged output.*SHA-256/i);
+      expect(existsSync(image)).toBe(false);
+      expect(existsSync(report)).toBe(false);
+      expect(stagingEntries(directory)).toEqual([]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("compares staged inode identities without numeric precision loss", () => {
+    const directory = mkdtempSync(join(tmpdir(), "flat-homebrew-bigint-"));
+    try {
+      const image = join(directory, "image.vfs.zst");
+      const report = join(directory, "report.json");
+      fsFaults.identities.clear();
+      fsFaults.simulateUnsafeNumericIdentity = true;
+
+      expect(() => publishFlatHomebrewVfsOutputs([
+        output(image, "image\n"),
+        output(report, "report\n"),
+      ])).not.toThrow();
+      expect(readFileSync(image, "utf8")).toBe("image\n");
+      expect(readFileSync(report, "utf8")).toBe("report\n");
+    } finally {
+      fsFaults.simulateUnsafeNumericIdentity = false;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("cleans an owned staging directory when permission setup fails", () => {
+    const directory = mkdtempSync(join(tmpdir(), "flat-homebrew-chmod-"));
+    try {
+      const image = join(directory, "image.vfs.zst");
+      const report = join(directory, "report.json");
+      fsFaults.failOwnedDirectoryChmod = true;
+
+      expect(() => publishFlatHomebrewVfsOutputs([
+        output(image, "image\n"),
+        output(report, "report\n"),
+      ])).toThrow(/injected staging chmod failure/);
+      expect(existsSync(image)).toBe(false);
+      expect(existsSync(report)).toBe(false);
+      expect(stagingEntries(directory)).toEqual([]);
+    } finally {
+      fsFaults.failOwnedDirectoryChmod = false;
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("reports cleanup failure without turning publication into failure", () => {
+    const directory = mkdtempSync(join(tmpdir(), "flat-homebrew-cleanup-"));
+    try {
+      const image = join(directory, "image.vfs.zst");
+      const report = join(directory, "report.json");
+      fsFaults.failOwnedDirectoryCleanup = true;
+
+      const result = publishFlatHomebrewVfsOutputs([
+        output(image, "image\n"),
+        output(report, "report\n"),
+      ]);
+
+      expect(result).toEqual({
+        cleanupWarnings: [
+          expect.stringMatching(/injected staging cleanup failure/),
+        ],
+      });
+      expect(readFileSync(image, "utf8")).toBe("image\n");
+      expect(readFileSync(report, "utf8")).toBe("report\n");
+      expect(stagingEntries(directory)).toHaveLength(1);
+    } finally {
+      fsFaults.failOwnedDirectoryCleanup = false;
       rmSync(directory, { recursive: true, force: true });
     }
   });
