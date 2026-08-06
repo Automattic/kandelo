@@ -54,6 +54,7 @@ import {
 } from "../../../host/src/homebrew-runtime-support";
 import {
   MemoryFileSystem,
+  type VfsImageCapacity,
   type VfsImageMetadata,
 } from "../../../host/src/vfs/memory-fs";
 import {
@@ -166,6 +167,59 @@ export async function saveVerifiedHomebrewVfsImage(
     ...options,
     expectedMaxByteLength,
   });
+}
+
+export interface VerifiedHomebrewBaseImage {
+  fs: MemoryFileSystem;
+  metadata: VfsImageMetadata & { kernelAbi: number };
+  capacity: VfsImageCapacity;
+  sha256: string;
+  bytes: number;
+}
+
+/** Restore and authenticate one platform-only base without changing its capacity. */
+export async function restoreVerifiedHomebrewBaseImage(
+  image: Uint8Array,
+  label: string,
+  expectedAbi: number,
+): Promise<VerifiedHomebrewBaseImage> {
+  const restored = MemoryFileSystem.fromImagePreservingCapacity(image);
+  // WHY: later composition copies imported lazy metadata, so its atomic seals
+  // must be authenticated before callers can treat this filesystem as a base.
+  await restored.verifyImportedLazyAtomicGroupSeals();
+  const metadata = restored.getImageMetadata();
+  if (metadata?.kernelAbi === undefined) {
+    throw new Error(`${label} does not declare its required kernel ABI`);
+  }
+  if (metadata.kernelAbi !== expectedAbi) {
+    throw new Error(
+      `${label} declares kernel ABI ${metadata.kernelAbi}, ` +
+        `but bottle metadata requires ABI ${expectedAbi}`,
+    );
+  }
+  if (
+    metadata.homebrew !== undefined ||
+    vfsPathExists(restored, HOMEBREW_COMPOSITION_PATH)
+  ) {
+    throw new Error(
+      `${label} already contains a Homebrew composition; ` +
+        "use a platform-only base image",
+    );
+  }
+  const capacity = MemoryFileSystem.readImageCapacity(image);
+  if (
+    !Number.isSafeInteger(capacity.maxByteLength) ||
+    capacity.maxByteLength <= 0
+  ) {
+    throw new Error(`${label} declares an invalid filesystem capacity`);
+  }
+  return {
+    fs: restored,
+    metadata,
+    capacity,
+    sha256: createHash("sha256").update(image).digest("hex"),
+    bytes: image.byteLength,
+  };
 }
 
 const DEFAULT_MAX_BYTES = 128 * 1024 * 1024;
@@ -1582,47 +1636,22 @@ async function createFs(
 }> {
   if (baseImage) {
     const image = new Uint8Array(readFileSync(baseImage));
-    const restored = MemoryFileSystem.fromImagePreservingCapacity(image);
-    // WHY: capacity rebasing and composition copy lazy metadata, so imported
-    // atomic seals must be authenticated before either operation can trust it.
-    await restored.verifyImportedLazyAtomicGroupSeals();
-    const metadata = restored.getImageMetadata();
-    if (metadata?.kernelAbi === undefined) {
-      throw new Error(
-        `base image ${baseImage} does not declare its required kernel ABI`,
-      );
-    }
-    if (metadata.kernelAbi !== expectedAbi) {
-      throw new Error(
-        `base image ${baseImage} declares kernel ABI ${metadata.kernelAbi}, ` +
-          `but bottle metadata requires ABI ${expectedAbi}`,
-      );
-    }
-    if (
-      metadata.homebrew !== undefined ||
-      vfsPathExists(restored, HOMEBREW_COMPOSITION_PATH)
-    ) {
-      throw new Error(
-        `base image ${baseImage} already contains a Homebrew composition; ` +
-          "use a platform-only base image",
-      );
-    }
+    const verified = await restoreVerifiedHomebrewBaseImage(
+      image,
+      `base image ${baseImage}`,
+      expectedAbi,
+    );
+    const restored = verified.fs;
 
     const loadedBase: LoadedBaseImage = {
       binding: {
-        sha256: createHash("sha256").update(image).digest("hex"),
-        bytes: image.byteLength,
-        kernelAbi: metadata.kernelAbi,
+        sha256: verified.sha256,
+        bytes: verified.bytes,
+        kernelAbi: verified.metadata.kernelAbi,
       },
-      metadata,
+      metadata: verified.metadata,
     };
-    const recordedMaxBytes =
-      MemoryFileSystem.readImageCapacity(image).maxByteLength;
-    if (!Number.isSafeInteger(recordedMaxBytes) || recordedMaxBytes <= 0) {
-      throw new Error(
-        `base image ${baseImage} declares an invalid filesystem capacity`,
-      );
-    }
+    const recordedMaxBytes = verified.capacity.maxByteLength;
 
     const targetMaxBytes = maxBytes ?? recordedMaxBytes;
     if (targetMaxBytes !== recordedMaxBytes) {

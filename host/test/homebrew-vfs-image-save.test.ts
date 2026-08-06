@@ -8,6 +8,7 @@ import {
   installHomebrewBootstrapConsumerState,
   prepareHomebrewBootstrapConsumerNamespace,
   readHomebrewBootstrapEnvironment,
+  restoreVerifiedHomebrewBaseImage,
   saveVerifiedHomebrewVfsImage,
 } from "../../images/vfs/scripts/build-homebrew-vfs-image";
 import {
@@ -252,6 +253,65 @@ describe("Homebrew VFS image publication boundary", () => {
     expect(() => assertHomebrewBootstrapConsumerState(fs, consumer)).toThrow();
   });
 
+  it("restores a platform-only base image with exact ABI and capacity", async () => {
+    const fs = bootstrapConsumerFs();
+    fs.setImageMetadata({ version: 1, kernelAbi: 42, createdBy: "base fixture" });
+    const image = await fs.saveImage();
+
+    const restored = await restoreVerifiedHomebrewBaseImage(image, "base fixture", 42);
+
+    expect(restored.metadata).toEqual({
+      version: 1,
+      kernelAbi: 42,
+      createdBy: "base fixture",
+    });
+    expect(restored.capacity).toEqual(MemoryFileSystem.readImageCapacity(image));
+    expect(restored.bytes).toBe(image.byteLength);
+    expect(restored.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(
+      restored.fs.stat("/opt/kandelo/homebrew/Cellar/existing/1/bin/tool"),
+    ).toMatchObject({ size: encoder.encode("tool\n").byteLength });
+  });
+
+  it("rejects missing or wrong base ABI and an existing Homebrew composition", async () => {
+    const missingAbi = bootstrapConsumerFs();
+    missingAbi.setImageMetadata({ version: 1 });
+    await expect(
+      restoreVerifiedHomebrewBaseImage(
+        await missingAbi.saveImage(),
+        "missing ABI fixture",
+        42,
+      ),
+    ).rejects.toThrow(/does not declare its required kernel ABI/);
+
+    const wrongAbi = bootstrapConsumerFs();
+    wrongAbi.setImageMetadata({ version: 1, kernelAbi: 41 });
+    await expect(
+      restoreVerifiedHomebrewBaseImage(
+        await wrongAbi.saveImage(),
+        "wrong ABI fixture",
+        42,
+      ),
+    ).rejects.toThrow(/declares kernel ABI 41.*requires ABI 42/);
+
+    const composed = bootstrapConsumerFs();
+    composed.setImageMetadata({ version: 1, kernelAbi: 42 });
+    ensureVfsDirectory(composed, "/etc/kandelo");
+    writeVfsBinary(
+      composed,
+      "/etc/kandelo/homebrew-vfs.json",
+      encoder.encode("{}\n"),
+      0o644,
+    );
+    await expect(
+      restoreVerifiedHomebrewBaseImage(
+        await composed.saveImage(),
+        "composed fixture",
+        42,
+      ),
+    ).rejects.toThrow(/already contains a Homebrew composition/);
+  });
+
   it("writes an image whose encoded ceiling matches its consumer contract", async () => {
     const maxByteLength = 8 * MiB;
     const fs = MemoryFileSystem.create(
@@ -362,4 +422,17 @@ function bootstrapConsumerFs(): MemoryFileSystem {
     0o755,
   );
   return fs;
+}
+
+function ensureVfsDirectory(fs: MemoryFileSystem, path: string): void {
+  const components = path.split("/").filter(Boolean);
+  let current = "";
+  for (const component of components) {
+    current += `/${component}`;
+    try {
+      fs.mkdir(current, 0o755);
+    } catch {
+      // Fixture ancestors may already exist.
+    }
+  }
 }
