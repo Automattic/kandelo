@@ -196,17 +196,21 @@ Use synthetic, bounded fixtures representing:
 - one Homebrew-bootstrap support-data sidecar and bottle; and
 - one dependencyful Ruby sidecar.
 
-The projector takes already-verified bottle bytes plus one package entry from
-`composition.sidecars-input.json`. It must independently recompute bottle
-SHA-256/size, inspect the TAR, read the actual `INSTALL_RECEIPT.json`, and emit
-only the descriptor shape from Task 1.
+The projector takes already-verified bottle bytes, one package entry from
+`composition.sidecars-input.json`, and the canonical Task 1 descriptors for
+each direct dependency. It must independently recompute bottle SHA-256/size,
+inspect the TAR, read the actual `INSTALL_RECEIPT.json`, and emit only the
+descriptor shape from Task 1. Dependency descriptors are generated first in
+topological order; they are the authority for dependency revision, bottle
+rebuild, and bottle SHA-256 values that are absent from a per-Formula sidecar.
 
 For support data, inspect the two fixed keg members, recompute their digests
 and sizes, and emit the closed support-output list. Do not parse Formula Ruby
 to discover these members.
 
 Tests must prove all provenance fields in the source are absent recursively
-from output, and that receipt/sidecar dependency disagreement fails.
+from output, that receipt/sidecar/dependency-descriptor disagreement fails,
+and that missing, duplicate, or unused dependency descriptors fail.
 
 **Step 2: Run and confirm RED**
 
@@ -225,11 +229,15 @@ Supported arguments:
 --arch <wasm32|wasm64>
 --bottle <tar.gz>
 --public-url <https-url>
+--dependency-descriptor <descriptor.json>  # repeat once per direct dependency
 --out <descriptor.json>
 ```
 
 Use `projectHomebrewBottleDescriptor` for the final validation and canonical
-encoder. The CLI writes atomically and refuses an existing output path.
+encoder. Read dependency descriptors through the canonical Task 1 parser,
+sort the emitted dependency identities by canonical full name, and never use
+handoff-manifest digests as bottle digests. The CLI writes atomically and
+refuses an existing output path.
 
 **Step 4: Run focused tests and shell/type checks**
 
