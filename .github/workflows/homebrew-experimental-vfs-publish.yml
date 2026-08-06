@@ -63,6 +63,9 @@ jobs:
       - name: Install JavaScript dependencies
         run: npm ci
 
+      - name: Install locked Chromium runtime
+        run: ./node_modules/.bin/playwright install chromium --with-deps
+
       - name: Validate dispatch and canonical selection
         shell: bash
         env:
@@ -77,10 +80,6 @@ jobs:
             scripts/homebrew-validate-flat-selection.ts \
             --selection "$selection_file" --expected-abi 42
 
-      # Slice 7A is structural and is not merge-ready on its own. Slice 7C must
-      # populate the exact bottle cache, wire the landed Task 6 CLI and Node
-      # smoke interface, and serve this VFS same-origin to Chromium while
-      # writing its evidence file. Missing real interfaces fail this lane.
       - name: Build and prove the exact flat VFS
         shell: bash
         env:
@@ -97,12 +96,17 @@ jobs:
              "$vfs_filename" =~ ^[A-Za-z0-9._-]*abi42[A-Za-z0-9._-]*experimental[A-Za-z0-9._-]*\.vfs\.zst$ ]]
 
           scripts/dev-shell.sh bash build.sh
+          scripts/dev-shell.sh env \
+            ROOTFS_BINARIES_DIR=binaries \
+            ROOTFS_SKIP_PACKAGE_RESOLVE=1 \
+            ROOTFS_SEALED_BUILD=1 \
+            bash scripts/build-rootfs.sh --default-install eager
           scripts/dev-shell.sh npx tsx \
             images/vfs/scripts/build-homebrew-flat-vfs-image.ts \
             --selection "$selection_file" \
             --base-image host/wasm/rootfs.vfs \
             --bottle-cache "${RUNNER_TEMP}/homebrew-flat-bottle-cache" \
-            --shell-config homebrew/source-rootfs-shell-default.json \
+            --shell-config homebrew/main-shell-default.json \
             --out "$ASSET_ROOT/$vfs_filename" \
             --report "$ASSET_ROOT/homebrew-vfs-build-report.json"
           scripts/dev-shell.sh npx tsx \
@@ -110,7 +114,7 @@ jobs:
             --image "$ASSET_ROOT/$vfs_filename" \
             --selection "$ASSET_ROOT/homebrew-selection.json" \
             --report "$ASSET_ROOT/homebrew-vfs-build-report.json" \
-            --kernel local-binaries/kandelo-kernel.wasm \
+            --kernel local-binaries/kernel.wasm \
             --tap-root tap --tap-revision "$TAP_REVISION" \
             --evidence "$ASSET_ROOT/homebrew-node-evidence.json"
           scripts/dev-shell.sh bash -c \

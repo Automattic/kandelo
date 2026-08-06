@@ -261,6 +261,17 @@ def check_workflow(workflow)
   check(!validator_source.match?(/\bnpx\b/),
         "selection validation may not fetch an undeclared npx tool")
 
+  proof_index = build_steps.index do |step|
+    step["name"] == "Build and prove the exact flat VFS"
+  end
+  playwright_index = build_steps.index do |step|
+    step["run"].to_s.include?(
+      "./node_modules/.bin/playwright install chromium --with-deps"
+    )
+  end
+  check(playwright_index && proof_index && playwright_index < proof_index,
+        "locked Chromium installation must precede the browser proof")
+
   build_source = run_source(build)
   %w[
     images/vfs/scripts/build-homebrew-flat-vfs-image.ts
@@ -275,6 +286,17 @@ def check_workflow(workflow)
   end
   check(build_source.include?("--base-image host/wasm/rootfs.vfs"),
         "flat VFS does not consume build.sh's actual rootfs output")
+  check(build_source.include?("scripts/build-rootfs.sh --default-install eager") &&
+        build_source.include?("ROOTFS_SKIP_PACKAGE_RESOLVE=1") &&
+        build_source.include?("ROOTFS_SEALED_BUILD=1"),
+        "flat VFS base is not rebuilt as an explicit self-contained rootfs")
+  check(build_source.include?(
+          "--shell-config homebrew/main-shell-default.json"
+        ) && !build_source.include?("homebrew/source-rootfs-shell-default.json"),
+        "flat VFS does not select the tested Homebrew default shell")
+  check(build_source.include?("--kernel local-binaries/kernel.wasm") &&
+        !build_source.include?("local-binaries/kandelo-kernel.wasm"),
+        "runtime proof does not bind build.sh's exact kernel artifact")
   check(build_source !~ /\|\|\s*true|\btouch\b|\btruncate\b|status.{0,8}passed/i,
         "build/test seam fabricates or ignores runtime evidence")
 
@@ -472,7 +494,7 @@ def check_workflow(workflow)
         "public readback does not verify exact public bytes")
 
   contract_text = [*inputs.keys, *values_for_key(workflow, "run")].join("\n")
-  check(contract_text !~ /mirror|pages|default[-_ ]shell|main[-_ ]shell|shell[-_ ]activation/i,
+  check(contract_text !~ /mirror|pages|shell[-_ ]activation/i,
         "workflow reintroduces a mirror, Pages, or shell gate")
   check(all_run_source !~ /\bgit\s+(?:push|commit)\b|\bdocker\s+push\b|\boras\s+push\b|\bbrew\s+bottle\b|homebrew-merge-bottle|publish-bottles/i,
         "workflow can publish bottles or mutate another registry")
