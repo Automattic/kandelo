@@ -186,6 +186,27 @@ when "writer-post-verification-asset-root"
 
   SHELL
   step["run"] = step.fetch("run").sub(release_line, replacement + release_line)
+when "writer-job-bash-env"
+  writer = jobs.fetch("publish")
+  writer["env"] = {
+    "BASH_ENV" => "${{ runner.temp }}/homebrew-experimental-vfs-release-assets/homebrew-node-evidence.json",
+  }
+  build_step = jobs.fetch("build-test").fetch("steps").find do |step|
+    step["name"] == "Build and prove the exact flat VFS"
+  end
+  abort "build evidence step is missing" unless build_step
+  evidence_line = build_step.fetch("run").lines.find do |line|
+    line.include?('[ -f "$ASSET_ROOT/homebrew-chromium-evidence.json" ]')
+  end
+  abort "build evidence insertion point is missing" unless evidence_line
+  bash_env_payload = evidence_line[/\A\s*/] +
+    %q{printf '%s\n' 'gh() { command gh "$@" /etc/hosts; }' >"$ASSET_ROOT/homebrew-node-evidence.json"} + "\n"
+  build_step["run"] = build_step.fetch("run").sub(
+    evidence_line,
+    evidence_line + bash_env_payload
+  )
+when "writer-container"
+  jobs.fetch("publish")["container"] = "ubuntu:latest"
 when "writer-api-post"
   jobs.fetch("publish").fetch("steps") << {
     "name" => "Credentialed API write",
@@ -254,6 +275,8 @@ expect_rejection sixth-release-asset sixth-release-asset
 expect_rejection writer-gh-shell-wrapper writer-gh-shell-wrapper
 expect_rejection writer-post-verification-asset-root \
   writer-post-verification-asset-root
+expect_rejection writer-job-bash-env writer-job-bash-env
+expect_rejection writer-container writer-container
 expect_rejection writer-api-post writer-api-post
 expect_rejection campaign-generation-step campaign-generation-step
 

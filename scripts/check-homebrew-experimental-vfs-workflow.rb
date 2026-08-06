@@ -179,9 +179,18 @@ def check_workflow(workflow)
   expected_readback_keys = %w[
     if needs permissions runs-on steps timeout-minutes
   ]
+  expected_writer_keys = %w[
+    if needs permissions runs-on steps timeout-minutes
+  ]
+  check(writer.keys.map(&:to_s).sort == expected_writer_keys.sort,
+        "writer job contains an unsupported execution setting")
   check(readback.keys.map(&:to_s).sort == expected_readback_keys.sort,
         "readback job contains an unsupported execution setting")
   jobs.each do |name, job|
+    unsupported_context = %w[container defaults env services] &
+      job.keys.map(&:to_s)
+    check(unsupported_context.empty?,
+          "#{name} contains unsupported job-level execution context")
     check(guarded_to_default_branch?(job["if"]),
           "#{name} can run outside the default branch")
     check(job["timeout-minutes"].is_a?(Integer),
