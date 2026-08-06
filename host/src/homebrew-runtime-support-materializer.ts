@@ -361,13 +361,16 @@ function preflightStableBashInterpreter(
     assertEagerHomebrewBash(fs);
     return "none";
   }
-  if (
-    kind === S_IFLNK &&
-    fs.readlink(STABLE_BASH) === SOURCE_ROOTFS_BASH &&
-    fs.isPathDeferred(STABLE_BASH)
-  ) {
-    assertEagerHomebrewBash(fs);
-    return "replace-source-rootfs-alias";
+  if (kind === S_IFLNK && fs.readlink(STABLE_BASH) === SOURCE_ROOTFS_BASH) {
+    if (link.uid !== 0 || link.gid !== 0) {
+      fail(`${STABLE_BASH} source-rootfs Bash link must be root-owned`);
+    }
+    if (fs.isPathDeferred(STABLE_BASH)) {
+      assertEagerHomebrewBash(fs);
+      return "replace-source-rootfs-alias";
+    }
+    assertEagerExecutable(fs, STABLE_BASH, "existing source-rootfs /bin/bash");
+    return "none";
   }
   if (fs.isPathDeferred(STABLE_BASH)) {
     fail(`deferred ${STABLE_BASH} conflicts with the supported source-rootfs alias`);

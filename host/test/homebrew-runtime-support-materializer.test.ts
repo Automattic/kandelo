@@ -131,6 +131,33 @@ describe("flat Homebrew runtime support", () => {
     expect(result.fs.isPathDeferred("/usr/bin/bash")).toBe(true);
   });
 
+  it("preserves the exact eager source-rootfs /bin/bash alias", async () => {
+    const bootstrap = homebrewTestBootstrapFixture({
+      zip: homebrewRuntimeZipWithBash(),
+    });
+    const baseFs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+    ensureDirRecursive(baseFs, "/usr/bin");
+    baseFs.createFileWithOwner(
+      "/usr/bin/bash",
+      0o755,
+      0,
+      0,
+      new TextEncoder().encode("eager source-rootfs bash\n"),
+    );
+    ensureDirRecursive(baseFs, "/bin");
+    baseFs.symlinkWithOwner("/usr/bin/bash", "/bin/bash", 0, 0);
+
+    const result = await buildHomebrewVfsSelection(
+      planHomebrewVfsSelection(homebrewTestSelectionBytes([bootstrap.descriptor])),
+      { baseFs, loadBottleBytes: () => bootstrap.bottle },
+    );
+
+    expect(result.fs.readlink("/bin/bash")).toBe("/usr/bin/bash");
+    expect(result.fs.lstat("/bin/bash")).toMatchObject({ uid: 0, gid: 0 });
+    expect(result.fs.stat("/bin/bash").mode & 0o111).not.toBe(0);
+    expect(result.fs.isPathDeferred("/bin/bash")).toBe(false);
+  });
+
   it("accepts an already-correct root-owned /bin/bash link", async () => {
     const bootstrap = homebrewTestBootstrapFixture({
       zip: homebrewRuntimeZipWithBash(),
