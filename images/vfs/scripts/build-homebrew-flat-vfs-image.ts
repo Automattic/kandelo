@@ -17,8 +17,36 @@ import {
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+import type { HomebrewBottleDescriptor } from "../../../host/src/homebrew-bottle-descriptor";
+import {
+  buildHomebrewVfsSelection,
+  type HomebrewFlatVfsBuildReport,
+} from "../../../host/src/homebrew-vfs-builder";
+import { fetchHomebrewBottleBytes } from "../../../host/src/homebrew-vfs-fetch";
+import { planHomebrewVfsSelection } from "../../../host/src/homebrew-vfs-planner";
+import { resolveHomebrewVfsResourcePolicy } from "../../../host/src/homebrew-vfs-resource-policy";
+import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
+import {
+  ensureDirRecursive,
+  writeVfsBinary,
+} from "../../../host/src/vfs/image-helpers";
+import {
+  KANDELO_SHELL_CONFIG_PATH,
+  MAX_KANDELO_SHELL_CONFIG_BYTES,
+} from "../../../web-libs/kandelo-session/src/shell-config";
+import {
+  assertShellExecutable,
+  parseShellConfigBytes,
+  restoreVerifiedHomebrewBaseImage,
+  serializeVerifiedHomebrewVfsImage,
+} from "./build-homebrew-vfs-image";
+import { sourceDateEpochMilliseconds } from "./vfs-image-helpers";
 
 const SHA256_RE = /^[0-9a-f]{64}$/;
+const MAX_SELECTION_BYTES = 16 * 1024 * 1024;
+const MAX_BASE_IMAGE_BYTES = 1024 * 1024 * 1024;
 
 export interface FlatHomebrewVfsCliOptions {
   selection: string;
@@ -93,6 +121,7 @@ export function readFlatHomebrewBottleCacheEntry(
     label,
     bottle.bytes,
     bottle.bytes,
+    0o600,
   );
   const actualSha256 = createHash("sha256").update(bytes).digest("hex");
   if (actualSha256 !== bottle.sha256) {
@@ -108,6 +137,7 @@ export function readBoundedRegularFileNoFollow(
   label: string,
   maxBytes: number,
   expectedBytes?: number,
+  expectedMode?: number,
 ): Uint8Array {
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
     throw new Error(`${label} has an invalid byte limit`);
@@ -117,6 +147,14 @@ export function readBoundedRegularFileNoFollow(
     (!Number.isSafeInteger(expectedBytes) || expectedBytes < 0)
   ) {
     throw new Error(`${label} has an invalid expected byte count`);
+  }
+  if (
+    expectedMode !== undefined &&
+    (!Number.isSafeInteger(expectedMode) ||
+      expectedMode < 0 ||
+      expectedMode > 0o7777)
+  ) {
+    throw new Error(`${label} has an invalid expected mode`);
   }
   let descriptor: number;
   try {
@@ -142,6 +180,7 @@ export function readBoundedRegularFileNoFollow(
         `${label} expected ${expectedBytes} bytes, found ${stat.size}`,
       );
     }
+    assertExpectedFileMode(stat.mode, expectedMode, label);
     const buffer = Buffer.allocUnsafe(stat.size);
     let offset = 0;
     while (offset < buffer.byteLength) {
@@ -161,10 +200,494 @@ export function readBoundedRegularFileNoFollow(
     if (readSync(descriptor, extra, 0, 1, null) !== 0) {
       throw new Error(`${label} changed while it was being read`);
     }
+    const verified = fstatSync(descriptor);
+    if (
+      !verified.isFile() ||
+      verified.size !== stat.size ||
+      verified.mode !== stat.mode
+    ) {
+      throw new Error(`${label} changed while it was being read`);
+    }
+    assertExpectedFileMode(verified.mode, expectedMode, label);
     return Uint8Array.from(buffer);
   } finally {
     closeSync(descriptor);
   }
+}
+
+function assertExpectedFileMode(
+  mode: number,
+  expectedMode: number | undefined,
+  label: string,
+): void {
+  if (expectedMode === undefined || (mode & 0o7777) === expectedMode) return;
+  throw new Error(
+    `${label} must have mode ${expectedMode.toString(8).padStart(4, "0")}, ` +
+      `found ${(mode & 0o7777).toString(8).padStart(4, "0")}`,
+  );
+}
+
+export type FlatHomebrewBottleFetcher = (
+  url: string,
+  options: { expectedBytes: number },
+) => Promise<Uint8Array>;
+
+export interface FlatHomebrewVfsBuilderDependencies {
+  fetchBottleBytes?: FlatHomebrewBottleFetcher;
+  publishBottleCacheEntry?: typeof publishFlatHomebrewBottleCacheEntry;
+  publishOutputs?: typeof publishFlatHomebrewVfsOutputs;
+}
+
+export interface FlatHomebrewVfsArtifactReport {
+  schema: 1;
+  selection: {
+    sha256: string;
+    bytes: number;
+    name: string;
+  };
+  base_image: {
+    sha256: string;
+    bytes: number;
+    kernel_abi: number;
+  };
+  shell_config: {
+    path: string;
+    argv: string[];
+    sha256: string;
+    bytes: number;
+  };
+  bottle_cache: {
+    entries: Array<{
+      full_name: string;
+      sha256: string;
+      bytes: number;
+    }>;
+  };
+  image: {
+    filename: string;
+    sha256: string;
+    bytes: number;
+    capacity: {
+      byte_length: number;
+      max_byte_length: number;
+    };
+  };
+  build_report: HomebrewFlatVfsBuildReport;
+}
+
+export interface FlatHomebrewVfsBuilderResult {
+  report: FlatHomebrewVfsArtifactReport;
+  cleanupWarnings: readonly string[];
+}
+
+/** Build, restore-check, and no-clobber publish one self-contained flat VFS. */
+export async function runFlatHomebrewVfsImageBuilder(
+  args: readonly string[],
+  dependencies: FlatHomebrewVfsBuilderDependencies = {},
+): Promise<FlatHomebrewVfsBuilderResult> {
+  const options = parseFlatHomebrewVfsArgs(args);
+  const selectionBytes = readBoundedRegularFileNoFollow(
+    options.selection,
+    `flat Homebrew selection at ${options.selection}`,
+    MAX_SELECTION_BYTES,
+  );
+  const plan = planHomebrewVfsSelection(selectionBytes);
+  if (basename(resolve(options.out)) !== plan.requestedVfsFilename) {
+    throw new Error(
+      `flat Homebrew output filename must match selection request ` +
+        `${plan.requestedVfsFilename}`,
+    );
+  }
+
+  const baseBytes = readBoundedRegularFileNoFollow(
+    options.baseImage,
+    `flat Homebrew base image at ${options.baseImage}`,
+    MAX_BASE_IMAGE_BYTES,
+  );
+  const base = await restoreVerifiedHomebrewBaseImage(
+    baseBytes,
+    `flat Homebrew base image at ${options.baseImage}`,
+    plan.kandeloAbi,
+  );
+  // This is deliberately before cache reads and public fetches. A lazy base
+  // is the wrong product input, not an invitation for this builder to perform
+  // hidden network I/O or guess how to make the platform rootfs eager.
+  assertNoPendingLazyBacking(base.fs, "flat Homebrew base image");
+
+  const shell = parseShellConfigBytes(
+    readBoundedRegularFileNoFollow(
+      options.shellConfig,
+      `flat Homebrew shell config at ${options.shellConfig}`,
+      MAX_KANDELO_SHELL_CONFIG_BYTES,
+    ),
+    options.shellConfig,
+  );
+  const cacheRoot = resolveFlatHomebrewBottleCacheRoot(options.bottleCache);
+  const cleanupWarnings: string[] = [];
+  const fetchBottle = dependencies.fetchBottleBytes ??
+    ((url, fetchOptions) => fetchHomebrewBottleBytes(url, fetchOptions));
+  const publishBottle = dependencies.publishBottleCacheEntry ??
+    publishFlatHomebrewBottleCacheEntry;
+
+  const build = await buildHomebrewVfsSelection(plan, {
+    baseFs: base.fs,
+    async loadBottleBytes(descriptor) {
+      const loaded = await loadFlatHomebrewBottle(
+        cacheRoot,
+        descriptor,
+        fetchBottle,
+        publishBottle,
+      );
+      cleanupWarnings.push(...loaded.cleanupWarnings);
+      return Uint8Array.from(loaded.bytes);
+    },
+  });
+
+  installFlatHomebrewShellConfig(build.fs, shell);
+  assertNoPendingLazyBacking(build.fs, "composed flat Homebrew VFS");
+  // Defense in depth: even if a future materializer introduces lazy state
+  // after the explicit registry check, all-materialized serialization may not
+  // reach the network. It must fail instead.
+  build.fs.setLazyFetcher(async (url) => {
+    throw new Error(
+      `flat Homebrew VFS serialization refused lazy fetch: ${String(url)}`,
+    );
+  });
+
+  const policy = resolveHomebrewVfsResourcePolicy(plan.resourcePolicy);
+  const serialized = await serializeVerifiedHomebrewVfsImage(
+    build.fs,
+    plan.requestedVfsFilename,
+    {
+      materializeAll: true,
+      normalizeTimestampsMs: sourceDateEpochMilliseconds(
+        process.env.SOURCE_DATE_EPOCH,
+      ),
+      metadata: {
+        version: 1,
+        kernelAbi: plan.kandeloAbi,
+        createdBy: "images/vfs/scripts/build-homebrew-flat-vfs-image.ts",
+        capacity: { maxByteLength: policy.vfs.maxByteLength },
+        baseImage: {
+          sha256: base.sha256,
+          bytes: base.bytes,
+          kernelAbi: base.metadata.kernelAbi,
+        },
+        shellConfig: {
+          path: shell.config.path,
+          argv: [...shell.config.argv],
+          sha256: shell.sha256,
+          bytes: shell.bytes,
+        },
+        homebrewFlat: {
+          selectionSha256: plan.selectionSha256,
+          requestedVfsFilename: plan.requestedVfsFilename,
+          resourcePolicy: plan.resourcePolicy,
+        },
+      },
+    },
+    policy.vfs.maxByteLength,
+  );
+  assertNoPendingLazyBacking(build.fs, "serialized flat Homebrew VFS source");
+
+  const restored = MemoryFileSystem.fromImagePreservingCapacity(serialized.bytes);
+  await restored.verifyImportedLazyAtomicGroupSeals();
+  assertNoPendingLazyBacking(restored, "restored flat Homebrew VFS");
+  assertRestoredFlatHomebrewVfs(
+    restored,
+    build.report,
+    shell,
+    policy.vfs.maxByteLength,
+    serialized.bytes,
+  );
+
+  const capacity = MemoryFileSystem.readImageCapacity(serialized.bytes);
+  const imageSha256 = sha256(serialized.bytes);
+  const report: FlatHomebrewVfsArtifactReport = {
+    schema: 1,
+    selection: {
+      sha256: plan.selectionSha256,
+      bytes: selectionBytes.byteLength,
+      name: plan.name,
+    },
+    base_image: {
+      sha256: base.sha256,
+      bytes: base.bytes,
+      kernel_abi: base.metadata.kernelAbi,
+    },
+    shell_config: {
+      path: shell.config.path,
+      argv: [...shell.config.argv],
+      sha256: shell.sha256,
+      bytes: shell.bytes,
+    },
+    bottle_cache: {
+      entries: plan.packages.map((descriptor) => ({
+        full_name: descriptor.fullName,
+        sha256: descriptor.sha256,
+        bytes: descriptor.bytes,
+      })),
+    },
+    image: {
+      filename: plan.requestedVfsFilename,
+      sha256: imageSha256,
+      bytes: serialized.bytes.byteLength,
+      capacity: {
+        byte_length: capacity.byteLength,
+        max_byte_length: capacity.maxByteLength,
+      },
+    },
+    build_report: build.report,
+  };
+  const reportBytes = new TextEncoder().encode(
+    `${JSON.stringify(report, null, 2)}\n`,
+  );
+  const publishOutputs = dependencies.publishOutputs ??
+    publishFlatHomebrewVfsOutputs;
+  const publication = publishOutputs([
+    {
+      finalPath: options.out,
+      bytes: serialized.bytes,
+      expectedSha256: imageSha256,
+      expectedBytes: serialized.bytes.byteLength,
+    },
+    {
+      finalPath: options.report,
+      bytes: reportBytes,
+      expectedSha256: sha256(reportBytes),
+      expectedBytes: reportBytes.byteLength,
+    },
+  ]);
+  cleanupWarnings.push(...publication.cleanupWarnings);
+  return { report, cleanupWarnings };
+}
+
+interface LoadedFlatHomebrewBottle {
+  bytes: Uint8Array;
+  cleanupWarnings: readonly string[];
+}
+
+async function loadFlatHomebrewBottle(
+  cacheRoot: string,
+  descriptor: HomebrewBottleDescriptor,
+  fetchBottle: FlatHomebrewBottleFetcher,
+  publishBottle: typeof publishFlatHomebrewBottleCacheEntry,
+): Promise<LoadedFlatHomebrewBottle> {
+  const identity = {
+    fullName: descriptor.fullName,
+    sha256: descriptor.sha256,
+    bytes: descriptor.bytes,
+  };
+  const path = flatHomebrewBottleCachePath(cacheRoot, identity.sha256);
+  if (lstatOrNull(path) !== null) {
+    return {
+      bytes: readFlatHomebrewBottleCacheEntry(cacheRoot, identity),
+      cleanupWarnings: [],
+    };
+  }
+
+  const fetched = await fetchBottle(descriptor.url, {
+    expectedBytes: descriptor.bytes,
+  });
+  assertExactFlatHomebrewBottleBytes(fetched, identity, "fetched bottle");
+  const publication = publishBottle(cacheRoot, identity, fetched);
+  // Re-read the digest path as the sole cache authority. This also covers a
+  // same-digest publisher race without trusting the fetched buffer directly.
+  return {
+    bytes: readFlatHomebrewBottleCacheEntry(cacheRoot, identity),
+    cleanupWarnings: publication.cleanupWarnings,
+  };
+}
+
+function installFlatHomebrewShellConfig(
+  fs: MemoryFileSystem,
+  shell: ReturnType<typeof parseShellConfigBytes>,
+): void {
+  assertShellExecutable(fs, shell.config.path);
+  if (fs.isPathDeferred(shell.config.path)) {
+    throw new Error(
+      `flat Homebrew default shell must be eager: ${shell.config.path}`,
+    );
+  }
+  if (vfsPathExists(fs, KANDELO_SHELL_CONFIG_PATH)) {
+    throw new Error(
+      `refusing to overwrite existing default shell config: ` +
+        KANDELO_SHELL_CONFIG_PATH,
+    );
+  }
+  ensureDirRecursive(fs, dirname(KANDELO_SHELL_CONFIG_PATH));
+  writeVfsBinary(fs, KANDELO_SHELL_CONFIG_PATH, shell.source, 0o644);
+  assertShellExecutable(fs, shell.config.path);
+}
+
+function assertRestoredFlatHomebrewVfs(
+  fs: MemoryFileSystem,
+  buildReport: HomebrewFlatVfsBuildReport,
+  shell: ReturnType<typeof parseShellConfigBytes>,
+  expectedMaxByteLength: number,
+  imageBytes: Uint8Array,
+): void {
+  const capacity = MemoryFileSystem.readImageCapacity(imageBytes);
+  if (capacity.maxByteLength !== expectedMaxByteLength) {
+    throw new Error(
+      `restored flat Homebrew VFS capacity ${capacity.maxByteLength} ` +
+        `does not match ${expectedMaxByteLength}`,
+    );
+  }
+  if (fs.getImageMetadata()?.kernelAbi !== buildReport.kandelo_abi) {
+    throw new Error(
+      `restored flat Homebrew VFS does not declare ABI ` +
+        buildReport.kandelo_abi,
+    );
+  }
+  assertShellExecutable(fs, shell.config.path);
+  if (fs.isPathDeferred(shell.config.path)) {
+    throw new Error(
+      `restored flat Homebrew shell is deferred: ${shell.config.path}`,
+    );
+  }
+  const brewTarget = "/opt/kandelo/homebrew/bin/brew";
+  let target: string;
+  try {
+    target = fs.readlink("/usr/bin/brew");
+  } catch {
+    throw new Error("restored flat Homebrew VFS is missing /usr/bin/brew");
+  }
+  if (target !== brewTarget) {
+    throw new Error(
+      `restored flat Homebrew /usr/bin/brew targets ${target}, ` +
+        `expected ${brewTarget}`,
+    );
+  }
+  assertVfsExecutable(fs, brewTarget, "Homebrew entrypoint");
+  for (const pkg of buildReport.packages) {
+    for (const relativePath of pkg.links) {
+      const path = `${pkg.prefix}/${relativePath}`;
+      if (!vfsPathExists(fs, path)) {
+        throw new Error(
+          `restored flat Homebrew VFS is missing selected link ${path}`,
+        );
+      }
+    }
+  }
+  const expectedGuestReport = `${JSON.stringify(buildReport, null, 2)}\n`;
+  if (readVfsText(fs, "/etc/kandelo/homebrew-vfs.json") !== expectedGuestReport) {
+    throw new Error("restored flat Homebrew guest build report changed");
+  }
+  if (
+    readVfsText(fs, KANDELO_SHELL_CONFIG_PATH) !==
+      new TextDecoder("utf-8", { fatal: true }).decode(shell.source)
+  ) {
+    throw new Error("restored flat Homebrew shell config changed");
+  }
+}
+
+function assertVfsExecutable(
+  fs: MemoryFileSystem,
+  path: string,
+  label: string,
+): void {
+  let stat;
+  try {
+    stat = fs.stat(path);
+  } catch {
+    throw new Error(`${label} is missing from the restored VFS: ${path}`);
+  }
+  if ((stat.mode & 0xf000) !== 0x8000 || (stat.mode & 0o111) === 0) {
+    throw new Error(`${label} is not an executable regular file: ${path}`);
+  }
+}
+
+function assertNoPendingLazyBacking(fs: MemoryFileSystem, label: string): void {
+  const lazyFiles = fs.exportLazyEntries();
+  const lazyTrees = fs.exportLazyArchiveEntries();
+  if (lazyFiles.length !== 0 || lazyTrees.length !== 0) {
+    throw new Error(
+      `${label} must be self-contained; pending lazy backing remains ` +
+        `(${lazyFiles.length} files, ${lazyTrees.length} trees)`,
+    );
+  }
+}
+
+function vfsPathExists(fs: MemoryFileSystem, path: string): boolean {
+  try {
+    fs.lstat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readVfsText(fs: MemoryFileSystem, path: string): string {
+  const stat = fs.stat(path);
+  const descriptor = fs.open(path, constants.O_RDONLY, 0);
+  try {
+    const bytes = new Uint8Array(stat.size);
+    let offset = 0;
+    while (offset < bytes.byteLength) {
+      const count = fs.read(
+        descriptor,
+        bytes.subarray(offset),
+        null,
+        bytes.byteLength - offset,
+      );
+      if (!Number.isSafeInteger(count) || count <= 0) {
+        throw new Error(`incomplete VFS read for ${path}`);
+      }
+      offset += count;
+    }
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } finally {
+    fs.close(descriptor);
+  }
+}
+
+function resolveFlatHomebrewBottleCacheRoot(cacheRoot: string): string {
+  let resolved: string;
+  try {
+    resolved = realpathSync(cacheRoot);
+  } catch (error) {
+    throw new Error(
+      `flat Homebrew bottle cache must be an accessible directory: ` +
+        errorMessage(error),
+    );
+  }
+  const stat = lstatSync(resolved);
+  if (!stat.isDirectory()) {
+    throw new Error("flat Homebrew bottle cache must be a directory");
+  }
+  return resolved;
+}
+
+function flatHomebrewBottleCachePath(cacheRoot: string, digest: string): string {
+  return join(cacheRoot, `${digest}.tar.gz`);
+}
+
+function assertExactFlatHomebrewBottleBytes(
+  bytes: unknown,
+  bottle: FlatHomebrewBottleCacheIdentity,
+  label: string,
+): asserts bytes is Uint8Array {
+  if (!(bytes instanceof Uint8Array)) {
+    throw new Error(`${label} for ${bottle.fullName} is not bytes`);
+  }
+  if (bytes.byteLength !== bottle.bytes) {
+    throw new Error(
+      `${label} for ${bottle.fullName} expected ${bottle.bytes} bytes, ` +
+        `found ${bytes.byteLength}`,
+    );
+  }
+  const actualSha256 = sha256(bytes);
+  if (actualSha256 !== bottle.sha256) {
+    throw new Error(
+      `${label} for ${bottle.fullName} expected ${bottle.sha256}, ` +
+        `got ${actualSha256}`,
+    );
+  }
+}
+
+function sha256(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
 }
 
 export interface FlatHomebrewVfsOutput {
@@ -172,6 +695,100 @@ export interface FlatHomebrewVfsOutput {
   bytes: Uint8Array;
   expectedSha256: string;
   expectedBytes: number;
+}
+
+/** Publish one digest-addressed cache inode without replacing any path. */
+export function publishFlatHomebrewBottleCacheEntry(
+  cacheRoot: string,
+  bottle: FlatHomebrewBottleCacheIdentity,
+  bytes: Uint8Array,
+): FlatHomebrewVfsPublicationResult {
+  assertExactFlatHomebrewBottleBytes(bytes, bottle, "flat bottle cache input");
+  const resolvedRoot = resolveFlatHomebrewBottleCacheRoot(cacheRoot);
+  const finalPath = flatHomebrewBottleCachePath(resolvedRoot, bottle.sha256);
+  if (lstatOrNull(finalPath) !== null) {
+    readFlatHomebrewBottleCacheEntry(resolvedRoot, bottle);
+    return { cleanupWarnings: [] };
+  }
+
+  let stagingDirectory: string | null = null;
+  let published: { path: string; identity: FileIdentity } | null = null;
+  let publicationError: unknown = null;
+  try {
+    stagingDirectory = mkdtempSync(
+      join(resolvedRoot, ".kandelo-homebrew-bottle-"),
+    );
+    chmodSync(stagingDirectory, 0o700);
+    const stagedPath = join(stagingDirectory, "bottle.tar.gz");
+    const stagedStat = writeAndVerifyFlatHomebrewVfsStagedOutput(stagedPath, {
+      finalPath,
+      bytes,
+      expectedSha256: bottle.sha256,
+      expectedBytes: bottle.bytes,
+    });
+    const stagedIdentity = identityOf(stagedStat);
+    try {
+      linkSync(stagedPath, finalPath);
+    } catch (error) {
+      if (isNodeError(error) && error.code === "EEXIST") {
+        readFlatHomebrewBottleCacheEntry(resolvedRoot, bottle);
+        return cleanupCachePublication(stagingDirectory);
+      }
+      throw error;
+    }
+    published = { path: finalPath, identity: stagedIdentity };
+    const linked = lstatSync(finalPath, { bigint: true });
+    if (
+      !linked.isFile() ||
+      linked.size !== BigInt(bottle.bytes) ||
+      (linked.mode & 0o777n) !== 0o600n ||
+      !sameIdentity(identityOf(linked), stagedIdentity)
+    ) {
+      throw new Error(
+        `flat bottle cache output did not link its staged inode: ${finalPath}`,
+      );
+    }
+  } catch (error) {
+    publicationError = error;
+    if (published !== null) {
+      try {
+        rollbackFlatHomebrewVfsOutputs([published]);
+      } catch (rollbackError) {
+        publicationError = new Error(
+          `${errorMessage(error)}; rollback failed: ${errorMessage(rollbackError)}`,
+        );
+      }
+    }
+  }
+
+  const cleanup = cleanupCachePublication(stagingDirectory);
+  if (publicationError !== null) {
+    const cleanupDetail = cleanup.cleanupWarnings.length === 0
+      ? ""
+      : `; ${cleanup.cleanupWarnings.join("; ")}`;
+    throw new Error(
+      `flat Homebrew bottle cache publication failed: ` +
+        `${errorMessage(publicationError)}${cleanupDetail}`,
+    );
+  }
+  return cleanup;
+}
+
+function cleanupCachePublication(
+  stagingDirectory: string | null,
+): FlatHomebrewVfsPublicationResult {
+  const cleanupWarnings: string[] = [];
+  if (stagingDirectory !== null) {
+    try {
+      rmSync(stagingDirectory, { recursive: true, force: true });
+    } catch (error) {
+      cleanupWarnings.push(
+        `flat Homebrew bottle cache cleanup failed for ${stagingDirectory}: ` +
+          errorMessage(error),
+      );
+    }
+  }
+  return { cleanupWarnings };
 }
 
 interface FileIdentity {
@@ -458,4 +1075,24 @@ function isNodeError(error: unknown): error is NodeJS.ErrnoException {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+const invokedPath = process.argv[1];
+if (
+  invokedPath !== undefined &&
+  resolve(invokedPath) === resolve(fileURLToPath(import.meta.url))
+) {
+  void runFlatHomebrewVfsImageBuilder(process.argv.slice(2)).then(
+    ({ report, cleanupWarnings }) => {
+      console.log(
+        `Built ${report.image.filename} (${report.image.sha256}, ` +
+          `${report.image.bytes} bytes)`,
+      );
+      for (const warning of cleanupWarnings) console.warn(warning);
+    },
+    (error) => {
+      console.error(errorMessage(error));
+      process.exitCode = 1;
+    },
+  );
 }

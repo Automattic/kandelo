@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -151,6 +152,7 @@ describe("flat Homebrew VFS image filesystem boundary", () => {
       const sha256 = sha(bytes);
       const path = join(directory, `${sha256}.tar.gz`);
       writeFileSync(path, bytes);
+      chmodSync(path, 0o600);
       writeFileSync(join(directory, "unrelated.tar.gz"), "ignored\n");
 
       expect(readFlatHomebrewBottleCacheEntry(directory, {
@@ -158,6 +160,14 @@ describe("flat Homebrew VFS image filesystem boundary", () => {
         sha256,
         bytes: bytes.byteLength,
       })).toEqual(bytes);
+
+      chmodSync(path, 0o644);
+      expect(() => readFlatHomebrewBottleCacheEntry(directory, {
+        fullName: "kandelo-dev/tap-core/example",
+        sha256,
+        bytes: bytes.byteLength,
+      })).toThrow(/mode 0600/);
+      chmodSync(path, 0o600);
 
       rmSync(path);
       expect(() => readFlatHomebrewBottleCacheEntry(directory, {
@@ -183,7 +193,9 @@ describe("flat Homebrew VFS image filesystem boundary", () => {
       const actual = new TextEncoder().encode("actual\n");
       const actualSha = sha(actual);
       const expectedSha = "a".repeat(64);
-      writeFileSync(join(directory, `${expectedSha}.tar.gz`), actual);
+      const path = join(directory, `${expectedSha}.tar.gz`);
+      writeFileSync(path, actual);
+      chmodSync(path, 0o600);
 
       expect(() => readFlatHomebrewBottleCacheEntry(directory, {
         fullName: "kandelo-dev/tap-core/example",

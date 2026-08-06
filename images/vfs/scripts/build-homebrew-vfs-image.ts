@@ -81,8 +81,10 @@ import {
 import {
   ensureDirRecursive,
   saveImage,
+  serializeImage,
   sourceDateEpochMilliseconds,
   type SaveImageOptions,
+  type SerializedVfsImage,
   writeVfsBinary,
 } from "./vfs-image-helpers";
 
@@ -164,6 +166,19 @@ export async function saveVerifiedHomebrewVfsImage(
   expectedMaxByteLength: number,
 ): Promise<Uint8Array> {
   return saveImage(fs, outFile, {
+    ...options,
+    expectedMaxByteLength,
+  });
+}
+
+/** Serialize without publishing while preserving the exact capacity contract. */
+export async function serializeVerifiedHomebrewVfsImage(
+  fs: MemoryFileSystem,
+  artifactLabel: string,
+  options: Omit<SaveImageOptions, "expectedMaxByteLength">,
+  expectedMaxByteLength: number,
+): Promise<SerializedVfsImage> {
+  return serializeImage(fs, artifactLabel, {
     ...options,
     expectedMaxByteLength,
   });
@@ -276,7 +291,7 @@ interface LoadedBaseImage {
   metadata: VfsImageMetadata;
 }
 
-interface LoadedShellConfig {
+export interface LoadedShellConfig {
   config: KandeloShellConfig;
   source: Uint8Array;
   sha256: string;
@@ -1920,7 +1935,27 @@ function readShellConfig(path: string): LoadedShellConfig {
     MAX_KANDELO_SHELL_CONFIG_BYTES,
     "Kandelo default shell config",
   );
-  const source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  return parseShellConfigBytes(bytes, path);
+}
+
+/** Parse already-bounded exact bytes so alternate CLIs can own safe disk I/O. */
+export function parseShellConfigBytes(
+  input: Uint8Array,
+  path: string,
+): LoadedShellConfig {
+  if (input.byteLength > MAX_KANDELO_SHELL_CONFIG_BYTES) {
+    throw new Error(
+      `Kandelo default shell config exceeds ` +
+        `${MAX_KANDELO_SHELL_CONFIG_BYTES} bytes: ${path}`,
+    );
+  }
+  const bytes = Uint8Array.from(input);
+  let source: string;
+  try {
+    source = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error(`Kandelo default shell config is not valid UTF-8: ${path}`);
+  }
   const config = parseKandeloShellConfig(source);
   if (!config) {
     throw new Error(
@@ -1970,7 +2005,7 @@ function readDemoConfig(path: string): LoadedDemoConfig {
   };
 }
 
-function assertShellExecutable(fs: MemoryFileSystem, path: string): void {
+export function assertShellExecutable(fs: MemoryFileSystem, path: string): void {
   let stat;
   try {
     stat = fs.stat(path);

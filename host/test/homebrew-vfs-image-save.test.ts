@@ -11,6 +11,7 @@ import {
   readHomebrewBootstrapEnvironment,
   restoreVerifiedHomebrewBaseImage,
   saveVerifiedHomebrewVfsImage,
+  serializeVerifiedHomebrewVfsImage,
 } from "../../images/vfs/scripts/build-homebrew-vfs-image";
 import {
   assertPackageDeferredZipTreeState,
@@ -396,6 +397,49 @@ describe("Homebrew VFS image publication boundary", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("materializes pending bytes before validating a self-contained serialization", async () => {
+    const maxByteLength = 8 * MiB;
+    const fs = MemoryFileSystem.create(
+      new SharedArrayBuffer(1 * MiB, { maxByteLength }),
+      maxByteLength,
+    );
+    const payload = encoder.encode("eager\n");
+    fs.registerLazyFile(
+      "/usr/share/materialize-all.txt",
+      "https://example.invalid/materialize-all.txt",
+      payload.byteLength,
+      0o644,
+    );
+    let fetchCount = 0;
+    fs.setLazyFetcher(async () => {
+      fetchCount += 1;
+      return new Response(payload, {
+        headers: { "content-length": String(payload.byteLength) },
+      });
+    });
+
+    const serialized = await serializeVerifiedHomebrewVfsImage(
+      fs,
+      "self-contained.vfs.zst",
+      {
+        materializeAll: true,
+        metadata: { version: 1, kernelAbi: 42 },
+        normalizeTimestampsMs: 0,
+      },
+      maxByteLength,
+    );
+    const restored = MemoryFileSystem.fromImagePreservingCapacity(
+      serialized.bytes,
+    );
+
+    expect(fetchCount).toBe(1);
+    expect(restored.exportLazyEntries()).toEqual([]);
+    expect(restored.exportLazyArchiveEntries()).toEqual([]);
+    expect(restored.stat("/usr/share/materialize-all.txt").size).toBe(
+      payload.byteLength,
+    );
   });
 
   it("rejects a masked encoded ceiling before creating an output artifact", async () => {
