@@ -2018,6 +2018,26 @@ use the same exact source contract. Rollback does not consume `tap_sha`; it
 refreshes and mutates the current protected branch under the tap-wide state
 lock.
 
+### Deferred Single-Bottle Tap Finalization
+
+The ordinary publisher may stop after public bottle verification so a
+separate reviewed tap change can record that exact bottle without running the
+legacy aggregate-catalog finalizer. Only the exact
+`publish-bottles.yml@refs/heads/main` caller on the target tap's protected
+`main` branch may set `defer-tap-finalization: true`. The request must remain a
+non-dry-run publication of exactly one Formula and one architecture, with
+ordinary VFS acceptance disabled. It cannot carry campaign or cross-run
+revalidation authority.
+
+Build, GHCR child upload, version-index publication, anonymous readback,
+Node.js and browser Formula validation, and force-pour verification remain on
+the normal path. The verifier uploads the validated package-scoped
+`homebrew-publish-handoff-<formula>-<arch>-attempt-<attempt>` artifact with a
+two-day retention. That handoff contains the exact bottle, bottle JSON,
+dependency record, upload receipt, and sidecar-composition input needed for a
+reviewed follow-up tap change. `finalize-tap` and `publish-vfs-release` are the
+only publication jobs skipped by this input.
+
 ### Prefix Campaign Publisher Mode
 
 The guest-prefix campaign is a narrow mode of the same reusable
@@ -2034,8 +2054,9 @@ protected `main` branch may select it. Each call must:
 - provide one content-addressed campaign tag plus the exact, canonical
   dependency-handoff request.
 
-Ordinary, maintenance, dry-run, and third-party workflow names cannot
-pass campaign authority or defer tap finalization.
+Ordinary, maintenance, dry-run, and third-party workflow names cannot pass
+campaign authority. Only the protected ordinary publisher may use the
+separate deferred single-bottle boundary described above.
 
 Most campaign calls use write mode. A Formula whose destination was
 anonymously proven absent follows that ordinary path. A newly reviewed

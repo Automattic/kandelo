@@ -329,6 +329,7 @@ jobs:
           validated_campaign_dependencies=""
           validated_revalidation_mode=false
           validated_revalidation_source=""
+          ordinary_publish_caller="$CALLER_REPOSITORY/.github/workflows/publish-bottles.yml@refs/heads/main"
           campaign_caller="$CALLER_REPOSITORY/.github/workflows/prefix-campaign-bottles.yml@refs/heads/main"
           if [ "$CALLER_WORKFLOW_REF" = "$campaign_caller" ]; then
             [ "$DEFER_TAP_FINALIZATION" = "true" ] &&
@@ -403,14 +404,29 @@ jobs:
               }
             fi
           else
-            [ "$DEFER_TAP_FINALIZATION" = "false" ] &&
-              [ -z "$PREFIX_CAMPAIGN_TAG" ] &&
+            [ -z "$PREFIX_CAMPAIGN_TAG" ] &&
               [ -z "$PREFIX_CAMPAIGN_DEPENDENCIES" ] || {
-                echo "::error::only the reviewed prefix campaign caller may defer tap finalization or pass campaign authority"; exit 2;
+                echo "::error::only the reviewed prefix campaign caller may pass campaign authority"; exit 2;
               }
             [ -z "$REVALIDATION_SOURCE" ] || {
                 echo "::error::only the reviewed prefix campaign caller may import prior-run artifacts"; exit 2;
               }
+            if [ "$DEFER_TAP_FINALIZATION" = "true" ]; then
+              [ "$CALLER_WORKFLOW_REF" = "$ordinary_publish_caller" ] &&
+                [ "$CALLER_ACTION" = "publish-kandelo-bottles" ] || {
+                  echo "::error::ordinary deferred publication requires the exact protected publish caller"; exit 2;
+                }
+              [ "$DRY_RUN" = "false" ] &&
+                [ "$REQUIRE_VFS_ACCEPTANCE" = "false" ] || {
+                  echo "::error::ordinary deferred publication requires write mode and no VFS acceptance"; exit 2;
+                }
+              [[ "$FORMULAE" =~ ^[a-z0-9][a-z0-9._-]{0,254}$ ]] || {
+                echo "::error::ordinary deferred publication requires exactly one Formula"; exit 2;
+              }
+              [[ "$ARCHES" =~ ^wasm(32|64)$ ]] || {
+                echo "::error::ordinary deferred publication requires exactly one architecture"; exit 2;
+              }
+            fi
           fi
           if [ "$DRY_RUN" = "true" ] &&
              [ "$validated_campaign_mode" != "true" ]; then
