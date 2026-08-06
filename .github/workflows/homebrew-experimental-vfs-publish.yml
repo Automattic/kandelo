@@ -276,7 +276,7 @@ jobs:
             local asset="$1" expected_sha="$2" expected_bytes="$3"
             local output="$ASSET_ROOT/$asset"
             local url="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/${asset}"
-            env -u GH_TOKEN -u GITHUB_TOKEN curl \
+            env -i /usr/bin/curl \
               --fail --location --silent --show-error \
               --proto '=https' --tlsv1.2 \
               --output "$output" "$url"

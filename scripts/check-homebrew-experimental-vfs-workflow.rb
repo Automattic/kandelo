@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "shellwords"
 require "yaml"
 
 ROOT = File.expand_path("..", __dir__)
@@ -34,6 +35,30 @@ READBACK_SAFE_GITHUB_EXPRESSIONS = [
 
 def check(condition, message)
   raise message unless condition
+end
+
+def continued_command_tokens(source, prefix, label)
+  lines = source.lines
+  commands = []
+  lines.each_index do |index|
+    stripped = lines.fetch(index).lstrip
+    next unless stripped == prefix || stripped.start_with?("#{prefix} ")
+
+    command_lines = [lines.fetch(index)]
+    while command_lines.last.end_with?("\\\n")
+      index += 1
+      check(index < lines.length, "#{label} has an unfinished continuation")
+      command_lines << lines.fetch(index)
+    end
+    logical_command = command_lines.join.gsub("\\\n", " ")
+    commands << Shellwords.shellsplit(logical_command)
+  rescue ArgumentError => e
+    raise "#{label} cannot be parsed: #{e.message}"
+  end
+
+  check(commands.length == 1,
+        "expected one direct #{label}, found #{commands.length}")
+  commands.fetch(0)
 end
 
 def workflow_events(workflow)
@@ -121,6 +146,8 @@ def check_workflow(workflow)
     events.is_a?(Hash) && events.keys == ["workflow_dispatch"],
     "workflow_dispatch must be the only trigger"
   )
+  check(!workflow.key?("env"),
+        "workflow-level env can inject credentials into public readback")
   inputs = events.dig("workflow_dispatch", "inputs")
   check(inputs.is_a?(Hash), "workflow_dispatch inputs are missing")
   required_inputs = %w[selection-path selection-sha256 tap-revision]
@@ -144,6 +171,11 @@ def check_workflow(workflow)
   build = jobs.fetch(build_name)
   writer = jobs.fetch(writer_name)
   readback = jobs.fetch(readback_name)
+  expected_readback_keys = %w[
+    if needs permissions runs-on steps timeout-minutes
+  ]
+  check(readback.keys.map(&:to_s).sort == expected_readback_keys.sort,
+        "readback job contains an unsupported execution setting")
   jobs.each do |name, job|
     check(guarded_to_default_branch?(job["if"]),
           "#{name} can run outside the default branch")
@@ -298,15 +330,51 @@ def check_workflow(workflow)
   release_assets = ["$ASSET_ROOT/$VFS_FILENAME", *FIXED_ASSETS.map do |name|
     "$ASSET_ROOT/#{name}"
   end]
-  release_assets.each do |asset|
-    check(writer_source.include?(%Q{"#{asset}"}),
-          "release creation omits #{asset}")
+  # WHY: the ASSET_ROOT inventory does not constrain an additional path
+  # passed directly to gh, so validate the command's semantic arguments.
+  release_tokens = continued_command_tokens(
+    writer_source,
+    "gh release create",
+    "release creation command"
+  )
+  check(release_tokens.shift(3) == %w[gh release create] &&
+        release_tokens.shift == "$RELEASE_TAG",
+        "release creation must directly target the unique run tag")
+  expected_release_options = {
+    "--repo" => "$GITHUB_REPOSITORY",
+    "--target" => "$GITHUB_SHA",
+    "--title" => "Experimental ABI-42 Homebrew VFS",
+    "--notes" =>
+      "Experimental ABI-42 flat Homebrew VFS; not a stable release.",
+  }
+  expected_release_flags = %w[--prerelease --latest=false]
+  observed_release_options = {}
+  observed_release_flags = []
+  observed_release_assets = []
+  until release_tokens.empty?
+    token = release_tokens.shift
+    if expected_release_options.key?(token)
+      check(!observed_release_options.key?(token) && !release_tokens.empty?,
+            "release creation repeats #{token} or omits its value")
+      observed_release_options[token] = release_tokens.shift
+    elsif expected_release_flags.include?(token)
+      observed_release_flags << token
+    elsif token.start_with?("-")
+      raise "release creation uses unsupported option #{token}"
+    else
+      observed_release_assets << token
+    end
   end
-  check(writer_source.include?("--prerelease") &&
-        writer_source.include?("--latest=false") &&
-        writer_source.include?("sha256sum") &&
+  check(observed_release_options == expected_release_options &&
+        observed_release_flags.sort == expected_release_flags.sort &&
+        observed_release_flags.length == expected_release_flags.length,
+        "release creation must use only the fixed prerelease options")
+  check(observed_release_assets.length == release_assets.length &&
+        observed_release_assets.sort == release_assets.sort,
+        "release creation must upload exactly the tested five assets")
+  check(writer_source.include?("sha256sum") &&
         writer_source.include?("stat -c '%s'"),
-        "writer does not verify and prerelease the tested bytes")
+        "writer does not verify the tested bytes")
   check(writer_source !~ /\b(?:source|eval|chmod)\b|\b(?:bash|sh|ruby|python\d*|node|npx)\s+["'$]/,
         "writer can execute downloaded artifact content")
   check(all_run_source !~ /\bgh\s+(?:api|release\s+(?:upload|edit|delete))\b|--clobber/i,
@@ -317,16 +385,41 @@ def check_workflow(workflow)
   check(values_for_key(readback, "uses").empty?,
         "anonymous readback executes an action or checkout")
   readback_steps = readback.fetch("steps")
+  expected_readback_step_keys = %w[env name run shell]
   check(
     readback_steps.map { |step| step["name"] } == [
       "Read back every public asset without credentials",
-    ] && readback_steps.length == 1 && readback_steps.fetch(0).key?("run"),
+    ] && readback_steps.length == 1 &&
+      readback_steps.fetch(0).keys.map(&:to_s).sort ==
+        expected_readback_step_keys.sort,
     "readback must contain only the intended anonymous fetch step"
   )
+  readback_env = readback_step.fetch("env")
+  expected_readback_env_keys = [
+    "ASSET_ROOT",
+    "RELEASE_TAG",
+    *identity_outputs.map(&:upcase),
+  ]
+  check(readback_env.is_a?(Hash) &&
+        readback_env.keys.map(&:to_s).sort == expected_readback_env_keys.sort,
+        "readback step env must contain only public asset identities")
   readback_source = run_source(readback)
+  # WHY: unsetting named token variables still permits a differently named
+  # inherited credential to be expanded into an Authorization argument.
+  anonymous_curl_tokens = continued_command_tokens(
+    readback_source,
+    "env -i /usr/bin/curl",
+    "anonymous readback curl command"
+  )
+  expected_curl_tokens = %w[
+    env -i /usr/bin/curl
+    --fail --location --silent --show-error
+    --proto =https --tlsv1.2
+    --output $output $url
+  ]
   check(readback_source.include?("unset GH_TOKEN GITHUB_TOKEN") &&
-        readback_source.include?("env -u GH_TOKEN -u GITHUB_TOKEN curl"),
-        "public readback does not explicitly remove credentials")
+        anonymous_curl_tokens == expected_curl_tokens,
+        "public readback curl must have an empty environment and exact anonymous arguments")
   check(!readback_credential_expression?(readback),
         "public readback can observe a credential expression")
   ["$VFS_FILENAME", *FIXED_ASSETS].each do |asset|

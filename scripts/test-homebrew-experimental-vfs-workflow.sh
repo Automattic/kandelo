@@ -24,6 +24,38 @@ source, destination, mutation = ARGV
 workflow = YAML.safe_load(File.read(source), permitted_classes: [], aliases: false)
 jobs = workflow.fetch("jobs")
 
+def add_readback_authorization(jobs, variable)
+  step = jobs.fetch("public-readback").fetch("steps").fetch(0)
+  curl_line = step.fetch("run").lines.find do |line|
+    line.match?(%r{/usr/bin/curl \\$|\bcurl \\$})
+  end
+  abort "readback curl insertion point is missing" unless curl_line
+
+  header_line = "    --header \"Authorization: Bearer $#{variable}\" \\\n"
+  step["run"] = step.fetch("run").sub(curl_line, curl_line + header_line)
+end
+
+def add_sixth_release_asset(jobs)
+  step = jobs.fetch("publish").fetch("steps").fetch(1)
+  source = step.fetch("run")
+  backslash = "\\"
+  release_line = %q{gh release create "$RELEASE_TAG" } + backslash + "\n"
+  abort "release insertion point is missing" unless source.include?(release_line)
+  source = source.sub(
+    release_line,
+    %q{printf 'unexpected\n' >"${RUNNER_TEMP}/unexpected.txt"} + "\n" +
+      release_line
+  )
+
+  final_asset = %q{  "$ASSET_ROOT/homebrew-chromium-evidence.json"} + "\n"
+  final_asset_position = source.rindex(final_asset)
+  abort "final release asset is missing" unless final_asset_position
+  sixth_asset = %q{  "$ASSET_ROOT/homebrew-chromium-evidence.json" } +
+    backslash + "\n" + %q{  "${RUNNER_TEMP}/unexpected.txt"} + "\n"
+  source[final_asset_position, final_asset.length] = sixth_asset
+  step["run"] = source
+end
+
 case mutation
 when "extra-read-only-job"
   jobs["extra-read-only"] = {
@@ -71,6 +103,22 @@ when "readback-secret-spaced-dot"
 when "readback-secret-context"
   jobs.fetch("public-readback").fetch("steps").fetch(0)
     .fetch("env")["GH_TOKEN"] = "${{ toJSON(secrets) }}"
+when "readback-workflow-env-credential"
+  workflow["env"] = { "INHERITED_TOKEN" => "${{ github.token }}" }
+  add_readback_authorization(jobs, "INHERITED_TOKEN")
+when "readback-job-env-credential"
+  jobs.fetch("public-readback")["env"] = {
+    "INHERITED_TOKEN" => "opaque-job-credential",
+  }
+  add_readback_authorization(jobs, "INHERITED_TOKEN")
+when "readback-step-env-credential"
+  jobs.fetch("public-readback").fetch("steps").fetch(0)
+    .fetch("env")["INHERITED_TOKEN"] = "opaque-step-credential"
+  add_readback_authorization(jobs, "INHERITED_TOKEN")
+when "readback-ambient-env-credential"
+  add_readback_authorization(jobs, "ACTIONS_RUNTIME_TOKEN")
+when "sixth-release-asset"
+  add_sixth_release_asset(jobs)
 when "writer-api-post"
   jobs.fetch("publish").fetch("steps") << {
     "name" => "Credentialed API write",
@@ -119,6 +167,15 @@ expect_rejection readback-secret-spaced-case \
 expect_rejection readback-secret-spaced-dot \
   readback-secret-spaced-dot
 expect_rejection readback-secret-context readback-secret-context
+expect_rejection readback-workflow-env-credential \
+  readback-workflow-env-credential
+expect_rejection readback-job-env-credential \
+  readback-job-env-credential
+expect_rejection readback-step-env-credential \
+  readback-step-env-credential
+expect_rejection readback-ambient-env-credential \
+  readback-ambient-env-credential
+expect_rejection sixth-release-asset sixth-release-asset
 expect_rejection writer-api-post writer-api-post
 expect_rejection campaign-generation-step campaign-generation-step
 
