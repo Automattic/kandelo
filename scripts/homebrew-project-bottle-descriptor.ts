@@ -20,7 +20,11 @@ import {
 } from "../host/src/homebrew-bottle-descriptor";
 import { KANDELO_HOMEBREW_GUEST_LAYOUT } from "../host/src/homebrew-guest-layout";
 import { compareHomebrewCanonicalText } from "../host/src/homebrew-lazy-layer-descriptor";
-import type { HomebrewBottleArch, HomebrewLinkEntry } from "../host/src/homebrew-bottle-types";
+import {
+  assertHomebrewSafeRelativePath,
+  type HomebrewBottleArch,
+  type HomebrewLinkEntry,
+} from "../host/src/homebrew-bottle-types";
 import { parseTarGzip, type TarEntry } from "../host/src/vfs/tar";
 
 const BOOTSTRAP_FULL_NAME = "kandelo-dev/tap-core/homebrew-bootstrap";
@@ -31,7 +35,6 @@ const BOOTSTRAP_OUTPUTS = [
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const PACKAGE_NAME_RE = /^[a-z0-9][a-z0-9._-]*$/;
 const FULL_NAME_RE = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/;
-const SAFE_RELATIVE_PATH_RE = /^[A-Za-z0-9][A-Za-z0-9._+\-,:\[\]]*(?:\/[A-Za-z0-9][A-Za-z0-9._+\-,:\[\]]*)*$/;
 const CELLAR_RELATIVE_PATH = canonicalCellarRelativePath();
 
 export interface ProjectVerifiedHomebrewBottleOptions {
@@ -428,7 +431,11 @@ function fullNameValue(value: unknown, expectedName: string | undefined, label: 
 
 function safeRelativePath(value: unknown, label: string): string {
   const path = nonemptyString(value, label);
-  if (!SAFE_RELATIVE_PATH_RE.test(path)) fail(`${label} must be a safe relative path`);
+  try {
+    assertHomebrewSafeRelativePath(path);
+  } catch {
+    fail(`${label} must be a safe relative path`);
+  }
   return path;
 }
 
@@ -464,7 +471,12 @@ function ensureUniqueNames(values: readonly DependencyMetadata[], label: string)
 }
 
 function sameStringSet(value: unknown[], expected: readonly string[]): boolean {
-  return value.length === expected.length && value.every((item) => typeof item === "string" && expected.includes(item));
+  return value.length === expected.length &&
+    value.every((item) => typeof item === "string") &&
+    new Set(value).size === value.length &&
+    new Set(expected).size === expected.length &&
+    value.every((item) => expected.includes(item as string)) &&
+    expected.every((item) => value.includes(item));
 }
 
 function requireEqual(value: unknown, expected: string, label: string): void {

@@ -174,6 +174,42 @@ describe("Homebrew bottle descriptor", () => {
     ] as const) expectRejected(descriptor({ [key]: value }));
   });
 
+  it("accepts valid POSIX Homebrew basenames in canonical relative paths", () => {
+    for (const { source, target } of [
+      { source: "bin/[", target: "bin/[" },
+      { source: "bin/_ld", target: "bin/_ld" },
+      { source: ".editorconfig", target: "share/.editorconfig" },
+    ]) {
+      const value = descriptor({
+        links: [{
+          type: "symlink",
+          source: `Cellar/bzip2/1.0.8/${source}`,
+          target,
+        }],
+      });
+      expect(projectHomebrewBottleDescriptor(value).links[0]).toEqual({
+        type: "symlink",
+        source: `Cellar/bzip2/1.0.8/${source}`,
+        target,
+      });
+    }
+  });
+
+  it("rejects unsafe or noncanonical relative path boundaries", () => {
+    for (const path of [
+      "/bin/tool", "bin//tool", "bin/./tool", "bin/../tool",
+      "bin/\0tool", "bin/\u001ftool", "bin/\u007ftool", "bin/\ud800tool",
+    ]) {
+      expectRejected(descriptor({
+        links: [{
+          type: "symlink",
+          source: "Cellar/bzip2/1.0.8/bin/bzip2",
+          target: path,
+        }],
+      }));
+    }
+  });
+
   it("derives receipt and link-source roots from the authoritative cellar", async () => {
     vi.resetModules();
     vi.doMock("../src/homebrew-guest-layout", () => ({

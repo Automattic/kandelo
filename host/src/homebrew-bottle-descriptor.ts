@@ -3,12 +3,15 @@ import {
   compareHomebrewCanonicalText,
 } from "./homebrew-lazy-layer-descriptor";
 import { KANDELO_HOMEBREW_GUEST_LAYOUT } from "./homebrew-guest-layout";
-import type { HomebrewBottleArch, HomebrewLinkEntry } from "./homebrew-bottle-types";
+import {
+  assertHomebrewSafeRelativePath,
+  type HomebrewBottleArch,
+  type HomebrewLinkEntry,
+} from "./homebrew-bottle-types";
 
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const NAME_RE = /^[a-z0-9][a-z0-9._-]*$/;
 const VERSION_RE = /^[A-Za-z0-9][A-Za-z0-9._+\-,:\[\]]*$/;
-const RELATIVE_PATH_RE = /^[A-Za-z0-9][A-Za-z0-9._+\-,:\[\]]*(?:\/[A-Za-z0-9][A-Za-z0-9._+\-,:\[\]]*)*$/;
 const FULL_NAME_RE = /^([a-z0-9][a-z0-9._-]*)\/([a-z0-9][a-z0-9._-]*)\/([a-z0-9][a-z0-9._-]*)$/;
 const LINK_DESTINATION_ROOTS = new Set([
   "bin", "sbin", "include", "lib", "libexec", "share", "etc", "var", "Frameworks",
@@ -354,7 +357,11 @@ function versionString(value: unknown, label: string): string {
 
 function relativePath(value: unknown, label: string): string {
   const path = stringValue(value, label);
-  if (!RELATIVE_PATH_RE.test(path)) fail(`${label} must be a safe relative path`);
+  try {
+    assertHomebrewSafeRelativePath(path);
+  } catch {
+    fail(`${label} must be a safe relative path`);
+  }
   return path;
 }
 

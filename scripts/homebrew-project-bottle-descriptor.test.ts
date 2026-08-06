@@ -65,6 +65,32 @@ describe("verified Homebrew bottle descriptor projection", () => {
     );
   });
 
+  it("projects verified links with POSIX bracket, underscore, and dotfile basenames", () => {
+    for (const { source, target } of [
+      { source: "bin/[", target: "bin/[" },
+      { source: "bin/_ld", target: "bin/_ld" },
+      { source: ".editorconfig", target: "share/.editorconfig" },
+    ]) {
+      const fixture = bottleFixture({
+        name: "coreutils",
+        version: "9.6",
+        link: { source, target },
+      });
+      expect(projectVerifiedHomebrewBottle({
+        sidecarsInput: fixture.sidecarsInput,
+        packageEntry: fixture.packageEntry,
+        arch: "wasm32",
+        bottle: fixture.bottle,
+        publicUrl: fixture.publicUrl,
+        dependencyDescriptors: [],
+      }).links).toEqual([{
+        type: "symlink",
+        source: `Cellar/coreutils/9.6/${source}`,
+        target,
+      }]);
+    }
+  });
+
   it("derives the closed bootstrap support output list from bottle members", () => {
     const fixture = bottleFixture({
       name: "homebrew-bootstrap",
@@ -193,6 +219,26 @@ describe("verified Homebrew bottle descriptor projection", () => {
     })).toThrow(/SHA-256 does not match/);
   });
 
+  it("rejects duplicate, missing, and unexpected sidecar receipt sets", () => {
+    const fixture = bottleFixture({ name: "bzip2", version: "1.0.8_2" });
+    for (const receipts of [
+      [".brew/bzip2.rb", ".brew/bzip2.rb"],
+      [".brew/bzip2.rb"],
+      [".brew/bzip2.rb", "unexpected.json"],
+    ]) {
+      const pkg = structuredClone(fixture.packageEntry);
+      ((pkg.bottles as Array<Record<string, unknown>>)[0]!).receipts = receipts;
+      expect(() => projectVerifiedHomebrewBottle({
+        sidecarsInput: fixture.sidecarsInput,
+        packageEntry: pkg,
+        arch: "wasm32",
+        bottle: fixture.bottle,
+        publicUrl: fixture.publicUrl,
+        dependencyDescriptors: [],
+      })).toThrow(/receipts are not canonical/);
+    }
+  });
+
   it("refuses existing outputs and leaves no output when CLI projection fails", async () => {
     const fixture = bottleFixture({ name: "bzip2", version: "1.0.8_2" });
     const root = mkdtempSync(join(tmpdir(), "kandelo-projector-"));
@@ -262,6 +308,7 @@ function bottleFixture(options: {
   name: string;
   version: string;
   supportData?: boolean;
+  link?: { source: string; target: string };
   dependencies?: DependencyInput[];
   transitiveDependencies?: DependencyInput[];
 }): {
@@ -301,9 +348,10 @@ function bottleFixture(options: {
       { path: `${payloadRoot}/libexec/homebrew-brew.env`, data: "HOMEBREW_PREFIX=/opt/kandelo/homebrew\n" },
     );
   } else {
+    const link = options.link ?? { source: `bin/${options.name}`, target: `bin/${options.name}` };
     members.push(
       { path: `${payloadRoot}/bin/`, type: "directory" },
-      { path: `${payloadRoot}/bin/${options.name}`, data: "#!/bin/sh\n" },
+      { path: `${payloadRoot}/${link.source}`, data: "#!/bin/sh\n" },
     );
   }
   const bottle = gzipSync(tarBytes(members));
@@ -327,7 +375,7 @@ function bottleFixture(options: {
       payload_root: payloadRoot,
       cache_key_sha: bottleSha,
       receipts: [`.brew/${options.name}.rb`, "INSTALL_RECEIPT.json"],
-      links: options.supportData ? [] : [{ type: "symlink", source: `bin/${options.name}`, target: `bin/${options.name}` }],
+      links: options.supportData ? [] : [{ type: "symlink", ...(options.link ?? { source: `bin/${options.name}`, target: `bin/${options.name}` }) }],
       env: options.supportData ? {} : { PATH_prepend: ["bin"] },
       url: "https://campaign.example.invalid/publisher-provenance",
       built_from: { tap_commit: "a".repeat(40), kandelo_commit: "b".repeat(40) },
