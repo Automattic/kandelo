@@ -39,6 +39,72 @@ const SUPPORT_LIMITS = resolveHomebrewVfsResourcePolicy(
 ).supportZip;
 
 describe("flat Homebrew runtime support", () => {
+  it("accepts selected Homebrew Bash through its projected prefix symlink", async () => {
+    const bootstrap = homebrewTestBootstrapFixture();
+    const bash = homebrewTestBashFixture();
+    const baseFs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+    baseFs.registerLazyFile(
+      "/usr/bin/bash",
+      "https://invalid.example/binaries/programs/wasm32/bash.wasm",
+      1,
+      0o755,
+    );
+    ensureDirRecursive(baseFs, "/bin");
+    baseFs.symlink("/usr/bin/bash", "/bin/bash");
+
+    const result = await buildHomebrewVfsSelection(
+      planHomebrewVfsSelection(homebrewTestSelectionBytes([
+        bash.descriptor,
+        bootstrap.descriptor,
+      ])),
+      {
+        baseFs,
+        loadBottleBytes: (descriptor) =>
+          descriptor.name === "bash" ? bash.bottle : bootstrap.bottle,
+      },
+    );
+
+    const kegBash = `${HOMEBREW_TEST_PREFIX}/Cellar/bash/5.2.37_2/bin/bash`;
+    const prefixBash = `${HOMEBREW_TEST_PREFIX}/bin/bash`;
+    expect(result.fs.lstat(kegBash).mode & 0o170000).toBe(0o100000);
+    expect(result.fs.lstat(kegBash).mode & 0o777).toBe(0o755);
+    expect(result.fs.lstat(prefixBash).mode & 0o170000).toBe(0o120000);
+    expect(result.fs.readlink(prefixBash)).toBe(kegBash);
+    expect(result.fs.stat(prefixBash).mode & 0o170000).toBe(0o100000);
+    expect(result.fs.stat(prefixBash).mode & 0o777).toBe(0o755);
+    expect(result.fs.isPathDeferred(prefixBash)).toBe(false);
+    expect(result.fs.readlink("/bin/bash")).toBe(prefixBash);
+    expect(result.fs.stat("/bin/bash").mode & 0o777).toBe(0o755);
+    expect(result.fs.isPathDeferred("/bin/bash")).toBe(false);
+    expect(result.fs.isPathDeferred("/usr/bin/bash")).toBe(true);
+  });
+
+  it("rejects a non-executable selected Bash behind its projected prefix symlink", async () => {
+    const bootstrap = homebrewTestBootstrapFixture();
+    const bash = homebrewTestBashFixture(0o644);
+    const baseFs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+    baseFs.registerLazyFile(
+      "/usr/bin/bash",
+      "https://invalid.example/binaries/programs/wasm32/bash.wasm",
+      1,
+      0o755,
+    );
+    ensureDirRecursive(baseFs, "/bin");
+    baseFs.symlink("/usr/bin/bash", "/bin/bash");
+
+    await expect(buildHomebrewVfsSelection(
+      planHomebrewVfsSelection(homebrewTestSelectionBytes([
+        bash.descriptor,
+        bootstrap.descriptor,
+      ])),
+      {
+        baseFs,
+        loadBottleBytes: (descriptor) =>
+          descriptor.name === "bash" ? bash.bottle : bootstrap.bottle,
+      },
+    )).rejects.toThrow(/selected Homebrew Bash.*executable regular file/i);
+  });
+
   it("replaces the exact deferred base /bin/bash alias with eager Homebrew Bash", async () => {
     const bootstrap = homebrewTestBootstrapFixture({
       zip: homebrewRuntimeZipWithBash(),
@@ -688,6 +754,47 @@ function homebrewRuntimeZipWithBash(bashMode = 0o100755): Uint8Array {
     "bin/bash": { data: "#!/bin/bash\necho bash\n", mode: bashMode },
     "bin/brew": { data: "#!/bin/bash\necho brew\n", mode: 0o100755 },
   });
+}
+
+function homebrewTestBashFixture(mode = 0o755): {
+  descriptor: ReturnType<typeof homebrewTestBottleDescriptor>;
+  bottle: Uint8Array;
+} {
+  const bottle = homebrewTestBottleTar([
+    homebrewTestBottleEntry(
+      "bash",
+      "5.2.37_2",
+      ".brew/bash.rb",
+      "class Bash < Formula\nend\n",
+    ),
+    homebrewTestBottleEntry(
+      "bash",
+      "5.2.37_2",
+      "INSTALL_RECEIPT.json",
+      homebrewTestReceipt([]),
+    ),
+    homebrewTestBottleEntry(
+      "bash",
+      "5.2.37_2",
+      "bin/bash",
+      "selected Homebrew Bash\n",
+      mode,
+    ),
+  ]);
+  return {
+    bottle,
+    descriptor: homebrewTestBottleDescriptor({
+      name: "bash",
+      version: "5.2.37_2",
+      bottle,
+      links: [{
+        source: "Cellar/bash/5.2.37_2/bin/bash",
+        target: "bin/bash",
+        type: "symlink",
+      }],
+      pathPrepend: ["bin"],
+    }),
+  };
 }
 
 function duplicateBrewMemberZip(): Uint8Array {

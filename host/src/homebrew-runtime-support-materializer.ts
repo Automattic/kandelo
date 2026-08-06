@@ -383,10 +383,7 @@ function assertEagerHomebrewBash(fs: MemoryFileSystem): void {
   if (fs.isPathDeferred(HOMEBREW_BASH)) {
     fail("selected Homebrew Bash remains deferred");
   }
-  const bash = lstatOrNull(fs, HOMEBREW_BASH);
-  if (bash === null || (bash.mode & S_IFMT) !== S_IFREG || (bash.mode & 0o111) === 0) {
-    fail("selected Homebrew Bash is not an executable regular file");
-  }
+  assertEagerExecutable(fs, HOMEBREW_BASH, "selected Homebrew Bash");
 }
 
 function assertEagerExecutable(
