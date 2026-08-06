@@ -1,8 +1,9 @@
 import { ABI_VERSION } from "./generated/abi";
 import { assertHomebrewCanonicalText } from "./homebrew-lazy-layer-descriptor";
 import { HOMEBREW_RUNTIME_LAYER_LIMITS } from "./homebrew-runtime-layer-limits";
+import type { HomebrewBottleArch, HomebrewLinkEntry } from "./homebrew-bottle-types";
 
-export type HomebrewBottleArch = "wasm32" | "wasm64";
+export type { HomebrewBottleArch, HomebrewLinkEntry } from "./homebrew-bottle-types";
 export type HomebrewRuntime = "node" | "browser";
 export type HomebrewBottleStatus = "success" | "failed" | "pending" | "building";
 export type HomebrewBottleSourceStatus = "success" | "fallback";
@@ -67,13 +68,6 @@ export interface HomebrewTapMetadata {
   generated_at: string;
   generator: string;
   packages: HomebrewMetadataPackage[];
-}
-
-export interface HomebrewLinkEntry {
-  type: "symlink" | "directory" | "file";
-  source: string;
-  target: string;
-  mode?: string;
 }
 
 export interface HomebrewLinkManifest {

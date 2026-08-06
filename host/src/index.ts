@@ -60,14 +60,23 @@ export {
   planFederatedHomebrewVfs,
   planHomebrewVfs,
 } from "./homebrew-vfs-planner";
+export {
+  encodeHomebrewBottleDescriptor,
+  HomebrewBottleDescriptorError,
+  projectHomebrewBottleDescriptor,
+} from "./homebrew-bottle-descriptor";
 export type {
-  HomebrewBottleArch,
+  HomebrewBottleDependencyIdentity,
+  HomebrewBottleDescriptor,
+  HomebrewBottleSupportOutput,
+} from "./homebrew-bottle-descriptor";
+export type { HomebrewBottleArch, HomebrewLinkEntry } from "./homebrew-bottle-types";
+export type {
   HomebrewBottleSourceStatus,
   HomebrewBottleStatus,
   HomebrewDependency,
   HomebrewFederatedVfsPlan,
   HomebrewFederatedVfsPlanOptions,
-  HomebrewLinkEntry,
   HomebrewLinkManifest,
   HomebrewMetadataBottle,
   HomebrewMetadataPackage,
