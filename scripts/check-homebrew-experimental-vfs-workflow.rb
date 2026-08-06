@@ -246,6 +246,11 @@ def check_workflow(workflow)
   npm_index = build_steps.index do |step|
     step["run"].to_s.match?(/(?:^|\n)\s*npm ci(?:\s|$)/)
   end
+  browser_npm_index = build_steps.index do |step|
+    step["run"].to_s.include?(
+      "npm --prefix apps/browser-demos ci --no-audit --no-fund"
+    )
+  end
   validator_index = build_steps.index do |step|
     step["run"].to_s.include?("homebrew-validate-flat-selection.ts")
   end
@@ -271,6 +276,9 @@ def check_workflow(workflow)
   end
   check(playwright_index && proof_index && playwright_index < proof_index,
         "locked Chromium installation must precede the browser proof")
+  check(browser_npm_index && playwright_index &&
+        browser_npm_index < playwright_index,
+        "locked browser-demo dependencies must precede Chromium installation")
 
   build_source = run_source(build)
   %w[

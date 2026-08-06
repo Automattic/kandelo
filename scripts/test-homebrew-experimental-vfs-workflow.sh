@@ -238,6 +238,14 @@ when "browser-proof-env-stripped"
   elsif !source.include?(stripped.strip)
     abort "browser proof dev-shell invocation is missing"
   end
+when "browser-app-dependencies-omitted"
+  step = jobs.fetch("build-test").fetch("steps").find do |candidate|
+    candidate["name"] == "Install JavaScript dependencies"
+  end
+  abort "JavaScript dependency step is missing" unless step
+  install = "npm --prefix apps/browser-demos ci --no-audit --no-fund\n"
+  source = step.fetch("run")
+  step["run"] = source.sub(install, "") if source.include?(install)
 else
   abort "unknown mutation: #{mutation}"
 end
@@ -299,5 +307,7 @@ expect_rejection writer-container writer-container
 expect_rejection writer-api-post writer-api-post
 expect_rejection campaign-generation-step campaign-generation-step
 expect_rejection browser-proof-env-stripped browser-proof-env-stripped
+expect_rejection browser-app-dependencies-omitted \
+  browser-app-dependencies-omitted
 
 echo "test-homebrew-experimental-vfs-workflow: ok"

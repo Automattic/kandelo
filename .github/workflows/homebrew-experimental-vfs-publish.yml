@@ -61,7 +61,9 @@ jobs:
       - uses: ./.github/actions/setup-nix
 
       - name: Install JavaScript dependencies
-        run: npm ci
+        run: |
+          npm ci
+          npm --prefix apps/browser-demos ci --no-audit --no-fund
 
       - name: Install locked Chromium runtime
         run: ./node_modules/.bin/playwright install chromium --with-deps
