@@ -23,8 +23,8 @@ export function assertHomebrewSafeRelativePath(value: string): void {
   }
   for (let index = 0; index < value.length; index += 1) {
     const unit = value.charCodeAt(index);
-    if (unit <= 0x1f || unit === 0x7f) {
-      throw new Error("path must not contain ASCII control characters");
+    if (unit <= 0x1f || (unit >= 0x7f && unit <= 0x9f)) {
+      throw new Error("path must not contain control characters");
     }
   }
   for (const component of value.split("/")) {

@@ -198,7 +198,7 @@ describe("Homebrew bottle descriptor", () => {
   it("rejects unsafe or noncanonical relative path boundaries", () => {
     for (const path of [
       "/bin/tool", "bin//tool", "bin/./tool", "bin/../tool",
-      "bin/\0tool", "bin/\u001ftool", "bin/\u007ftool", "bin/\ud800tool",
+      "bin/\0tool", "bin/\u001ftool", "bin/\u007ftool", "bin/\u0085tool", "bin/\ud800tool",
     ]) {
       expectRejected(descriptor({
         links: [{
