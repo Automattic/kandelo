@@ -72,6 +72,97 @@ The immediate product requirement is smaller:
 - Compatibility wrappers for deferred workflow or script paths.
 - Deletion or rewriting of already public campaign, handoff, or bottle assets.
 
+## Upstream Homebrew Reuse Strategy
+
+The first shipment and the long-term workflow have different constraints.
+Replacing the already-exercised builder before Ruby ships would introduce a
+new cross-target integration project on the migration critical path. Keeping
+Kandelo's current generic workflow implementation indefinitely would continue
+the maintenance burden this migration is intended to remove.
+
+### Current Reuse
+
+The current path uses upstream Homebrew at the Formula and command layer:
+
+- Formula DSL, resources, dependencies, revisions, tests, and bottle blocks;
+- `brew deps --topological`;
+- `brew install --force-bottle` for dependencies;
+- `brew install --build-bottle` for the selected Formula;
+- `brew test`; and
+- `brew bottle --json --keep-old --root-url`.
+
+It does not currently use `Homebrew/actions`, `brew test-bot`, `brew pr-pull`,
+`brew pr-upload`, or upstream Homebrew workflow templates. Kandelo implements
+its own checkout, artifact exchange, bottle-block merge, OCI upload, and
+publication workflow.
+
+That control-plane duplication is not the desired end state.
+
+### Why Upstream Workflows Cannot Replace It Unchanged Today
+
+As of upstream `brew` commit `73720671`, Homebrew's core workflows do not expose
+`workflow_call`; third-party taps receive generated workflow files from
+`brew tap-new`. The reusable surface is the `Homebrew/actions` repository and
+Homebrew CLI commands.
+
+The generated tap workflow and `brew test-bot` assume a native macOS or Linux
+target. Upstream Homebrew currently:
+
+- has no `wasm32_kandelo` build-tag input;
+- does not include wasm32 in its known bottle architectures;
+- derives bottle tags from the native runner;
+- runs ELF/Mach-O linkage checks;
+- assumes host build dependencies and target runtime dependencies share
+  Homebrew's native installation model; and
+- maps GHCR platforms only for its supported native architectures and systems.
+
+Kandelo therefore needs a narrow Homebrew extension for its bottle tag,
+canonical prefix/cellar, host/target dependency separation, Wasm validation,
+and truthful OCI platform metadata. Kandelo also necessarily owns ABI checks,
+fork instrumentation, VFS construction, and Node.js/browser execution.
+
+### First-Shipment Rule
+
+Do not port the migration to `test-bot` or `pr-upload` before rebuilding Ruby.
+Use the already-exercised targeted Homebrew commands, remove campaign/trust
+requirements from their wrapper, publish Ruby, and build the experimental VFS.
+
+The fast lane must not add new implementations of generic Formula detection,
+audit/style policy, bottle merge, artifact ancestry, release promotion, or
+multi-run scheduling. Existing custom implementations needed for the first
+shipment are temporary and remain explicit convergence targets.
+
+### Post-Shipment Convergence
+
+After the experimental VFS ships:
+
+1. Generate a conventional third-party-tap workflow from
+   `brew tap-new --github-packages` and retain only a small Kandelo delta.
+2. Prove a dependency-light Formula such as `what` through
+   `Homebrew/actions/setup-homebrew`, `brew test-bot`, and the standard
+   `bottles_*` artifact contract.
+3. Isolate any native-linkage or host/target-dependency failure and implement
+   the smallest Homebrew extension or upstream contribution that resolves it;
+   do not restore a parallel test-bot implementation.
+4. Reuse `brew bottle --merge --write` for Formula bottle blocks.
+5. Extend or upstream Homebrew's GHCR platform mapping for Kandelo, then replace
+   the custom OCI uploader with `brew pr-upload` when it emits truthful wasm
+   metadata.
+6. Retire the corresponding fast-lane wrapper as each upstream path proves the
+   same behavior for Ruby and a dependencyful Formula.
+
+The intended steady-state ownership boundary is:
+
+- Homebrew owns Formula evaluation, dependency resolution, ordinary audit and
+  style checks, bottle creation, receipts, artifact transfer, bottle-block
+  merge, and package upload.
+- Kandelo owns only the wasm platform extension, cross-toolchain boundary,
+  Wasm ABI/instrumentation checks, VFS construction, and Node.js/browser
+  runtime proof.
+
+Upstream convergence is a committed follow-up, not a gate for the first
+experimental ABI-42 VFS.
+
 ## Active Architecture
 
 ### Per-Bottle Descriptor
