@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { MemoryFileSystem } from "../../host/src/vfs/memory-fs";
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const generator = join(
@@ -42,6 +43,39 @@ function runGenerator(args: string[], env: NodeJS.ProcessEnv = {}) {
     encoding: "utf8",
     env: { ...process.env, ...env },
   });
+}
+
+function makeRootfsBuildFixture() {
+  const scratch = makeScratch();
+  const selectedRoot = join(scratch, "selected-binaries");
+  const binaryRel = "programs/wasm32/fixture.wasm";
+  const binary = writeArtifact(selectedRoot, binaryRel, "fixture-bytes");
+  const packages = join(scratch, "PACKAGES.toml");
+  writeFileSync(
+    packages,
+    [
+      'default_install = "lazy"',
+      'lazy_url_prefix = "binaries/"',
+      "[[packages]]",
+      'name = "fixture"',
+      "[[packages.outputs]]",
+      `binary = "${binaryRel}"`,
+      'path = "/usr/bin/fixture"',
+      "",
+    ].join("\n"),
+  );
+  return {
+    scratch,
+    binary,
+    binaryRel,
+    commonEnv: {
+      ...process.env,
+      ROOTFS_PACKAGES_CONFIG: packages,
+      ROOTFS_BINARIES_DIR: selectedRoot,
+      ROOTFS_SKIP_PACKAGE_RESOLVE: "1",
+      ROOTFS_SEALED_BUILD: "1",
+    },
+  };
 }
 
 afterEach(() => {
@@ -485,16 +519,84 @@ describe("generate-rootfs-package-manifest artifact provenance", () => {
     expect(() => readFileSync(out, "utf8")).toThrow();
   });
 
-  it("rejects an invalid build default before package generation", () => {
-    const result = spawnSync(
+  it("keeps no-argument package builds canonical despite ambient release mode", () => {
+    const { scratch, binaryRel, commonEnv } = makeRootfsBuildFixture();
+    const canonicalManifest = join(scratch, "canonical.MANIFEST");
+    const canonicalImage = join(scratch, "canonical.vfs");
+
+    const canonical = spawnSync(
       "bash",
       [join(repoRoot, "scripts/build-rootfs.sh")],
       {
         cwd: repoRoot,
         encoding: "utf8",
         env: {
+          ...commonEnv,
+          ROOTFS_DEFAULT_INSTALL: "eager",
+          ROOTFS_PACKAGE_MANIFEST: canonicalManifest,
+          ROOTFS_OUT: canonicalImage,
+        },
+      },
+    );
+
+    expect(canonical.status, canonical.stderr).toBe(0);
+    expect(readFileSync(canonicalManifest, "utf8")).toContain(
+      `/usr/bin/fixture f 0755 0 0 lazy_url=binaries/${binaryRel} lazy_size=13`,
+    );
+    expect(
+      MemoryFileSystem.fromImage(
+        new Uint8Array(readFileSync(canonicalImage)),
+      ).isPathDeferred("/usr/bin/fixture"),
+    ).toBe(true);
+  });
+
+  it("makes only an explicit direct build eager despite ambient package mode", () => {
+    const { scratch, binary, commonEnv } = makeRootfsBuildFixture();
+    const eagerManifest = join(scratch, "eager.MANIFEST");
+    const eagerImage = join(scratch, "eager.vfs");
+    const eager = spawnSync(
+      "bash",
+      [
+        join(repoRoot, "scripts/build-rootfs.sh"),
+        "--default-install",
+        "eager",
+      ],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: {
+          ...commonEnv,
+          ROOTFS_DEFAULT_INSTALL: "lazy",
+          ROOTFS_PACKAGE_MANIFEST: eagerManifest,
+          ROOTFS_OUT: eagerImage,
+        },
+      },
+    );
+
+    expect(eager.status, eager.stderr).toBe(0);
+    expect(readFileSync(eagerManifest, "utf8")).toContain(
+      `/usr/bin/fixture f 0755 0 0 src=${relative(repoRoot, binary)}`,
+    );
+    expect(
+      MemoryFileSystem.fromImage(
+        new Uint8Array(readFileSync(eagerImage)),
+      ).isPathDeferred("/usr/bin/fixture"),
+    ).toBe(false);
+  });
+
+  it("rejects an invalid build argument before package generation", () => {
+    const result = spawnSync(
+      "bash",
+      [
+        join(repoRoot, "scripts/build-rootfs.sh"),
+        "--default-install",
+        "sometimes",
+      ],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: {
           ...process.env,
-          ROOTFS_DEFAULT_INSTALL: "sometimes",
           ROOTFS_SEALED_BUILD: "1",
           ROOTFS_SKIP_PACKAGE_RESOLVE: "1",
         },
@@ -503,7 +605,7 @@ describe("generate-rootfs-package-manifest artifact provenance", () => {
 
     expect(result.status).toBe(2);
     expect(result.stderr).toContain(
-      'build-rootfs: ROOTFS_DEFAULT_INSTALL must be either "lazy" or "eager"',
+      'build-rootfs: --default-install must be either "lazy" or "eager"',
     );
     expect(result.stdout).not.toContain("Generating rootfs package manifest");
   });
