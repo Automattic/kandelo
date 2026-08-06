@@ -16,6 +16,11 @@ fail() {
   exit 1
 }
 
+# WHY: awaiting-selection skips the sealed shell lifecycle that also runs this
+# scanner. Keep its native/guest boundary in the always-on publisher suite so
+# a host-only fixture cannot leave current main broken until final cutover.
+bash "$REPO_ROOT/scripts/test-homebrew-guest-layout.sh"
+
 # Emit the shared support loader contract around a fixture-specific module
 # body supplied on stdin. Keeping the versioned idempotence guard in one helper
 # lets security tests vary the module body without accidentally testing an
