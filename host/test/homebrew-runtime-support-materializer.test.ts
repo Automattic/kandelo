@@ -39,6 +39,152 @@ const SUPPORT_LIMITS = resolveHomebrewVfsResourcePolicy(
 ).supportZip;
 
 describe("flat Homebrew runtime support", () => {
+  it("replaces the exact deferred base /bin/bash alias with eager Homebrew Bash", async () => {
+    const bootstrap = homebrewTestBootstrapFixture({
+      zip: homebrewRuntimeZipWithBash(),
+    });
+    const baseFs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+    baseFs.registerLazyFile(
+      "/usr/bin/bash",
+      "https://invalid.example/binaries/programs/wasm32/bash.wasm",
+      1,
+      0o755,
+    );
+    ensureDirRecursive(baseFs, "/bin");
+    baseFs.symlink("/usr/bin/bash", "/bin/bash");
+
+    const result = await buildHomebrewVfsSelection(
+      planHomebrewVfsSelection(homebrewTestSelectionBytes([bootstrap.descriptor])),
+      { baseFs, loadBottleBytes: () => bootstrap.bottle },
+    );
+
+    expect(result.fs.readlink("/bin/bash")).toBe(`${HOMEBREW_TEST_PREFIX}/bin/bash`);
+    expect(result.fs.lstat("/bin/bash")).toMatchObject({ uid: 0, gid: 0 });
+    expect(result.fs.stat("/bin/bash").mode & 0o111).not.toBe(0);
+    expect(result.fs.isPathDeferred("/bin/bash")).toBe(false);
+    expect(result.fs.isPathDeferred("/usr/bin/bash")).toBe(true);
+  });
+
+  it("accepts an already-correct root-owned /bin/bash link", async () => {
+    const bootstrap = homebrewTestBootstrapFixture({
+      zip: homebrewRuntimeZipWithBash(),
+    });
+    const baseFs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+    ensureDirRecursive(baseFs, "/bin");
+    baseFs.symlinkWithOwner(`${HOMEBREW_TEST_PREFIX}/bin/bash`, "/bin/bash", 0, 0);
+
+    const result = await buildHomebrewVfsSelection(
+      planHomebrewVfsSelection(homebrewTestSelectionBytes([bootstrap.descriptor])),
+      { baseFs, loadBottleBytes: () => bootstrap.bottle },
+    );
+
+    expect(result.fs.readlink("/bin/bash")).toBe(`${HOMEBREW_TEST_PREFIX}/bin/bash`);
+    expect(result.fs.lstat("/bin/bash")).toMatchObject({ uid: 0, gid: 0 });
+    expect(result.fs.isPathDeferred("/bin/bash")).toBe(false);
+  });
+
+  it("rejects an already-correct /bin/bash link not owned by root", async () => {
+    const bootstrap = homebrewTestBootstrapFixture({
+      zip: homebrewRuntimeZipWithBash(),
+    });
+    const baseFs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+    ensureDirRecursive(baseFs, "/bin");
+    baseFs.symlinkWithOwner(
+      `${HOMEBREW_TEST_PREFIX}/bin/bash`,
+      "/bin/bash",
+      1000,
+      1000,
+    );
+
+    await expect(buildHomebrewVfsSelection(
+      planHomebrewVfsSelection(homebrewTestSelectionBytes([bootstrap.descriptor])),
+      { baseFs, loadBottleBytes: () => bootstrap.bottle },
+    )).rejects.toThrow(/\/bin\/bash.*root-owned/i);
+  });
+
+  it("rejects a deferred /bin/bash alias other than the source-rootfs base transition", async () => {
+    const bootstrap = homebrewTestBootstrapFixture({
+      zip: homebrewRuntimeZipWithBash(),
+    });
+    const baseFs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+    baseFs.registerLazyFile(
+      "/usr/bin/other-bash",
+      "https://invalid.example/binaries/programs/wasm32/other-bash.wasm",
+      1,
+      0o755,
+    );
+    ensureDirRecursive(baseFs, "/bin");
+    baseFs.symlink("/usr/bin/other-bash", "/bin/bash");
+
+    await expect(buildHomebrewVfsSelection(
+      planHomebrewVfsSelection(homebrewTestSelectionBytes([bootstrap.descriptor])),
+      { baseFs, loadBottleBytes: () => bootstrap.bottle },
+    )).rejects.toThrow(/deferred.*\/bin\/bash.*conflicts/i);
+  });
+
+  it("rejects an arbitrary eager /bin/bash symlink", async () => {
+    const bootstrap = homebrewTestBootstrapFixture();
+    const baseFs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+    ensureDirRecursive(baseFs, "/custom/bin");
+    baseFs.createFileWithOwner(
+      "/custom/bin/bash",
+      0o755,
+      0,
+      0,
+      new TextEncoder().encode("eager custom bash\n"),
+    );
+    ensureDirRecursive(baseFs, "/bin");
+    baseFs.symlinkWithOwner("/custom/bin/bash", "/bin/bash", 0, 0);
+
+    await expect(buildHomebrewVfsSelection(
+      planHomebrewVfsSelection(homebrewTestSelectionBytes([bootstrap.descriptor])),
+      { baseFs, loadBottleBytes: () => bootstrap.bottle },
+    )).rejects.toThrow(/\/bin\/bash.*symlink.*conflicts/i);
+  });
+
+  it("rejects replacement when selected Homebrew Bash is not executable", async () => {
+    const bootstrap = homebrewTestBootstrapFixture({
+      zip: homebrewRuntimeZipWithBash(0o100644),
+    });
+    const baseFs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+    baseFs.registerLazyFile(
+      "/usr/bin/bash",
+      "https://invalid.example/binaries/programs/wasm32/bash.wasm",
+      1,
+      0o755,
+    );
+    ensureDirRecursive(baseFs, "/bin");
+    baseFs.symlink("/usr/bin/bash", "/bin/bash");
+
+    await expect(buildHomebrewVfsSelection(
+      planHomebrewVfsSelection(homebrewTestSelectionBytes([bootstrap.descriptor])),
+      { baseFs, loadBottleBytes: () => bootstrap.bottle },
+    )).rejects.toThrow(/selected Homebrew Bash.*executable regular file/i);
+  });
+
+  it("preserves an existing eager /bin/bash executable", async () => {
+    const bootstrap = homebrewTestBootstrapFixture();
+    const baseFs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+    ensureDirRecursive(baseFs, "/bin");
+    baseFs.createFileWithOwner(
+      "/bin/bash",
+      0o755,
+      0,
+      0,
+      new TextEncoder().encode("eager base bash\n"),
+    );
+
+    const result = await buildHomebrewVfsSelection(
+      planHomebrewVfsSelection(homebrewTestSelectionBytes([bootstrap.descriptor])),
+      { baseFs, loadBottleBytes: () => bootstrap.bottle },
+    );
+
+    expect(readFile(result.fs, "/bin/bash")).toEqual(
+      new TextEncoder().encode("eager base bash\n"),
+    );
+    expect(result.fs.isPathDeferred("/bin/bash")).toBe(false);
+  });
+
   it("eagerly activates the authenticated bootstrap tree and final guest state", async () => {
     const bootstrap = homebrewTestBootstrapFixture();
     const result = await buildHomebrewVfsSelection(
@@ -535,6 +681,13 @@ function preparedBootstrap(
       requireExactKegContainment: true,
     },
   );
+}
+
+function homebrewRuntimeZipWithBash(bashMode = 0o100755): Uint8Array {
+  return homebrewTestRuntimeZip({
+    "bin/bash": { data: "#!/bin/bash\necho bash\n", mode: bashMode },
+    "bin/brew": { data: "#!/bin/bash\necho brew\n", mode: 0o100755 },
+  });
 }
 
 function duplicateBrewMemberZip(): Uint8Array {

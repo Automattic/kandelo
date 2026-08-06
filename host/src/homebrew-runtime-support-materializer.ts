@@ -27,6 +27,9 @@ const BOOTSTRAP_ENV_PATH = "libexec/homebrew-brew.env";
 const ENV_PATH = "/etc/homebrew/brew.env";
 const ENTRYPOINT = KANDELO_HOMEBREW_GUEST_LAYOUT.stableEntrypoint;
 const PREFIX = KANDELO_HOMEBREW_GUEST_LAYOUT.prefix;
+const STABLE_BASH = "/bin/bash";
+const SOURCE_ROOTFS_BASH = "/usr/bin/bash";
+const HOMEBREW_BASH = `${PREFIX}/bin/bash`;
 const USER_ID = 1000;
 const GROUP_ID = 1000;
 const S_IFMT = 0xf000;
@@ -147,12 +150,19 @@ export function finalizeHomebrewRuntimeSupport(
   prepared: PreparedHomebrewRuntimeSupport,
 ): void {
   try {
-    preflightFinalNamespace(fs);
+    const stableBashAction = preflightFinalNamespace(fs);
     for (const path of MUTABLE_DIRECTORIES) ensureDirRecursive(fs, path, 0o755);
     ensureDirRecursive(fs, dirname(ENV_PATH), 0o755);
     fs.createFileWithOwner(ENV_PATH, 0o644, 0, 0, prepared.environmentBytes);
     ensureDirRecursive(fs, dirname(ENTRYPOINT), 0o755);
     fs.symlinkWithOwner(`${PREFIX}/bin/brew`, ENTRYPOINT, 0, 0);
+    if (stableBashAction === "replace-source-rootfs-alias") {
+      // WHY: stock Homebrew's bootstrap bin/brew declares /bin/bash, while the
+      // source-rootfs alias resolves to a deferred program. Only replace that
+      // exact alias after proving the selected bottle supplies an eager Bash.
+      fs.unlink(STABLE_BASH);
+      fs.symlinkWithOwner(HOMEBREW_BASH, STABLE_BASH, 0, 0);
+    }
 
     recursivelyLchown(fs, PREFIX, USER_ID, GROUP_ID);
     recursivelyLchown(fs, "/home/user/.cache", USER_ID, GROUP_ID);
@@ -314,7 +324,9 @@ function assertRuntimeTreeInventory(tree: DerivedPackageDeferredZipTree): void {
   }
 }
 
-function preflightFinalNamespace(fs: MemoryFileSystem): void {
+function preflightFinalNamespace(
+  fs: MemoryFileSystem,
+): "none" | "replace-source-rootfs-alias" {
   const brewStat = lstatOrNull(fs, `${PREFIX}/bin/brew`);
   if (
     brewStat === null ||
@@ -331,6 +343,65 @@ function preflightFinalNamespace(fs: MemoryFileSystem): void {
   }
   for (const path of MUTABLE_DIRECTORIES) {
     assertExistingComponentsAreDirectories(fs, path);
+  }
+  return preflightStableBashInterpreter(fs);
+}
+
+function preflightStableBashInterpreter(
+  fs: MemoryFileSystem,
+): "none" | "replace-source-rootfs-alias" {
+  const link = lstatOrNull(fs, STABLE_BASH);
+  if (link === null) return "none";
+
+  const kind = link.mode & S_IFMT;
+  if (kind === S_IFLNK && fs.readlink(STABLE_BASH) === HOMEBREW_BASH) {
+    if (link.uid !== 0 || link.gid !== 0) {
+      fail(`${STABLE_BASH} Homebrew Bash link must be root-owned`);
+    }
+    assertEagerHomebrewBash(fs);
+    return "none";
+  }
+  if (
+    kind === S_IFLNK &&
+    fs.readlink(STABLE_BASH) === SOURCE_ROOTFS_BASH &&
+    fs.isPathDeferred(STABLE_BASH)
+  ) {
+    assertEagerHomebrewBash(fs);
+    return "replace-source-rootfs-alias";
+  }
+  if (fs.isPathDeferred(STABLE_BASH)) {
+    fail(`deferred ${STABLE_BASH} conflicts with the supported source-rootfs alias`);
+  }
+  if (kind === S_IFLNK) {
+    fail(`${STABLE_BASH} symlink conflicts with the supported Bash aliases`);
+  }
+  assertEagerExecutable(fs, STABLE_BASH, "existing /bin/bash");
+  return "none";
+}
+
+function assertEagerHomebrewBash(fs: MemoryFileSystem): void {
+  if (fs.isPathDeferred(HOMEBREW_BASH)) {
+    fail("selected Homebrew Bash remains deferred");
+  }
+  const bash = lstatOrNull(fs, HOMEBREW_BASH);
+  if (bash === null || (bash.mode & S_IFMT) !== S_IFREG || (bash.mode & 0o111) === 0) {
+    fail("selected Homebrew Bash is not an executable regular file");
+  }
+}
+
+function assertEagerExecutable(
+  fs: MemoryFileSystem,
+  path: string,
+  label: string,
+): void {
+  let stat;
+  try {
+    stat = fs.stat(path);
+  } catch (error) {
+    fail(`${label} does not resolve to an executable regular file: ${errorMessage(error)}`);
+  }
+  if ((stat.mode & S_IFMT) !== S_IFREG || (stat.mode & 0o111) === 0) {
+    fail(`${label} is not an executable regular file`);
   }
 }
 
