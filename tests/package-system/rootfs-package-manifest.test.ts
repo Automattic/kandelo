@@ -388,6 +388,126 @@ describe("generate-rootfs-package-manifest artifact provenance", () => {
     expect(defaultManifest).toContain(`src=local-binaries/${eagerRel}`);
   });
 
+  it("makes only otherwise-unspecified package outputs eager", () => {
+    const scratch = makeScratch();
+    const selectedRoot = join(scratch, "selected-binaries");
+    const implicitRel = "programs/wasm32/implicit.wasm";
+    const outputLazyRel = "programs/wasm32/output-lazy.wasm";
+    const outputEagerRel = "programs/wasm32/output-eager.wasm";
+    const packageLazyRel = "programs/wasm32/package-lazy.wasm";
+    const implicit = writeArtifact(selectedRoot, implicitRel, "implicit");
+    writeArtifact(selectedRoot, outputLazyRel, "output-lazy");
+    const outputEager = writeArtifact(
+      selectedRoot,
+      outputEagerRel,
+      "output-eager",
+    );
+    writeArtifact(selectedRoot, packageLazyRel, "package-lazy");
+    const packages = join(scratch, "PACKAGES.toml");
+    writeFileSync(
+      packages,
+      [
+        'default_install = "lazy"',
+        'lazy_url_prefix = "binaries/"',
+        "[[packages]]",
+        'name = "implicit-package"',
+        "[[packages.outputs]]",
+        `binary = "${implicitRel}"`,
+        'path = "/usr/bin/implicit"',
+        "[[packages.outputs]]",
+        `binary = "${outputLazyRel}"`,
+        'path = "/usr/bin/output-lazy"',
+        'install = "lazy"',
+        "[[packages.outputs]]",
+        `binary = "${outputEagerRel}"`,
+        'path = "/usr/bin/output-eager"',
+        'install = "eager"',
+        "[[packages]]",
+        'name = "explicit-lazy-package"',
+        'install = "lazy"',
+        "[[packages.outputs]]",
+        `binary = "${packageLazyRel}"`,
+        'path = "/usr/bin/package-lazy"',
+        "",
+      ].join("\n"),
+    );
+    const out = join(scratch, "eager-default.MANIFEST");
+
+    const result = runGenerator([
+      "--packages",
+      packages,
+      "--binaries-dir",
+      relative(repoRoot, selectedRoot),
+      "--default-install",
+      "eager",
+      "--out",
+      out,
+    ]);
+
+    expect(result.status, result.stderr).toBe(0);
+    const manifest = readFileSync(out, "utf8");
+    expect(manifest).toContain(
+      `/usr/bin/implicit f 0755 0 0 src=${relative(repoRoot, implicit)}`,
+    );
+    expect(manifest).toContain(
+      `/usr/bin/output-lazy f 0755 0 0 lazy_url=binaries/${outputLazyRel} lazy_size=11`,
+    );
+    expect(manifest).toContain(
+      `/usr/bin/output-eager f 0755 0 0 src=${relative(repoRoot, outputEager)}`,
+    );
+    expect(manifest).toContain(
+      `/usr/bin/package-lazy f 0755 0 0 lazy_url=binaries/${packageLazyRel} lazy_size=12`,
+    );
+    expect(manifest).not.toContain(
+      `/usr/bin/implicit f 0755 0 0 lazy_url=`,
+    );
+  });
+
+  it("rejects an unsupported default install mode before writing output", () => {
+    const scratch = makeScratch();
+    const packages = join(scratch, "PACKAGES.toml");
+    writeFileSync(packages, "");
+    const out = join(scratch, "invalid-default.MANIFEST");
+
+    const result = runGenerator([
+      "--packages",
+      packages,
+      "--default-install",
+      "sometimes",
+      "--out",
+      out,
+    ]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(
+      '--default-install must be either "lazy" or "eager"',
+    );
+    expect(() => readFileSync(out, "utf8")).toThrow();
+  });
+
+  it("rejects an invalid build default before package generation", () => {
+    const result = spawnSync(
+      "bash",
+      [join(repoRoot, "scripts/build-rootfs.sh")],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          ROOTFS_DEFAULT_INSTALL: "sometimes",
+          ROOTFS_SEALED_BUILD: "1",
+          ROOTFS_SKIP_PACKAGE_RESOLVE: "1",
+        },
+      },
+    );
+
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain(
+      'build-rootfs: ROOTFS_DEFAULT_INSTALL must be either "lazy" or "eager"',
+    );
+    expect(result.stdout).not.toContain("Generating rootfs package manifest");
+  });
+
   it("does not fall back to a local override when the selected tree is missing an output", () => {
     const scratch = makeScratch();
     const unique = `manifest-provenance-${process.pid}-${Date.now()}`;

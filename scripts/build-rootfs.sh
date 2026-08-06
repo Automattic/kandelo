@@ -12,6 +12,16 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# Release-specific callers can request a self-contained image without changing
+# the checked-in lazy default or any explicit package/output install mode.
+case "${ROOTFS_DEFAULT_INSTALL:-}" in
+    ""|lazy|eager) ;;
+    *)
+        echo 'build-rootfs: ROOTFS_DEFAULT_INSTALL must be either "lazy" or "eager"' >&2
+        exit 2
+        ;;
+esac
+
 # Resolver-owned package builds must be read-only with respect to the source
 # checkout. Their CI callers install the repository's locked JavaScript
 # dependencies before invoking the package resolver.
@@ -87,6 +97,9 @@ generator_args=(
     --packages "$ROOTFS_PACKAGES"
     --out "$PKG_MANIFEST"
 )
+if [ -n "${ROOTFS_DEFAULT_INSTALL:-}" ]; then
+    generator_args+=(--default-install "$ROOTFS_DEFAULT_INSTALL")
+fi
 if [ "${ROOTFS_STAGE_RESOLVER_BINARIES:-0}" = "1" ]; then
     [ -n "${ROOTFS_BINARIES_DIR:-}" ] || {
         echo "build-rootfs: ROOTFS_BINARIES_DIR is required for resolver staging" >&2
