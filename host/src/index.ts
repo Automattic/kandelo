@@ -59,6 +59,7 @@ export {
   HomebrewVfsPlanError,
   planFederatedHomebrewVfs,
   planHomebrewVfs,
+  planHomebrewVfsSelection,
 } from "./homebrew-vfs-planner";
 export {
   encodeHomebrewBottleDescriptor,
@@ -93,6 +94,8 @@ export type {
   HomebrewDependency,
   HomebrewFederatedVfsPlan,
   HomebrewFederatedVfsPlanOptions,
+  HomebrewFlatVfsPlan,
+  HomebrewFlatVfsPlanOptions,
   HomebrewLinkManifest,
   HomebrewMetadataBottle,
   HomebrewMetadataPackage,
@@ -180,9 +183,15 @@ export {
   HomebrewVfsBuildError,
   applyHomebrewVfsConsumerState,
   buildHomebrewVfs,
+  buildHomebrewVfsSelection,
   writeHomebrewVfsComposition,
 } from "./homebrew-vfs-builder";
 export type {
+  HomebrewFlatVfsBuildOptions,
+  HomebrewFlatVfsBuildReport,
+  HomebrewFlatVfsBuildResult,
+  HomebrewFlatVfsLinkOwnerReport,
+  HomebrewFlatVfsPackageReport,
   HomebrewVfsBuildOptions,
   HomebrewVfsBuildReport,
   HomebrewVfsBuildResult,

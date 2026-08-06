@@ -159,6 +159,7 @@ function selectionFixture() {
     }],
     requestedVfsFilename: "kandelo-homebrew-experimental-abi42-wasm32.vfs.zst",
     resourcePolicy: "kandelo-homebrew-vfs-generous-v1" as const,
+    linkPolicy: "kandelo-homebrew-link-ownership-v1" as const,
     runtimeSupport: "kandelo-homebrew-bootstrap-v1" as const,
   };
 }

@@ -1,29 +1,49 @@
 import { createHash } from "node:crypto";
+import { ABI_VERSION } from "./generated/abi";
 import type { StatResult } from "./types";
+import type { HomebrewBottleDescriptor } from "./homebrew-bottle-descriptor";
+import {
+  encodeHomebrewBottleSelection,
+  homebrewBottleSelectionSha256,
+  projectHomebrewBottleSelection,
+} from "./homebrew-bottle-selection";
 import type {
   HomebrewLinkEntry,
+  HomebrewFlatVfsPlan,
   HomebrewVfsPackagePlan,
   HomebrewVfsPlan,
 } from "./homebrew-vfs-planner";
+import {
+  applyHomebrewCanonicalOptLinks as applyMaterializedOptLinks,
+  applyHomebrewCanonicalOptLink as applyMaterializedOptLink,
+  applyPreparedHomebrewLinks,
+  descriptorMaterializationPackage,
+  homebrewCanonicalOptLink as materializedCanonicalOptLink,
+  homebrewManifestSourcePath as materializedManifestSourcePath,
+  mapHomebrewBottleEntryToGuestPath as mapMaterializedBottleEntry,
+  prepareHomebrewKeg,
+  prepareStagedHomebrewKegReceipts,
+  preflightHomebrewStagingDirectories,
+  preflightPreparedHomebrewLinksAndOpt,
+  releasePreparedHomebrewKegEntries,
+  relocatePreparedHomebrewKeg,
+  stagePreparedHomebrewKeg,
+  HomebrewVfsMaterializationError,
+  type HomebrewBottleMaterializationPackage,
+  type PreparedHomebrewKeg,
+} from "./homebrew-vfs-materializer";
+import { resolveHomebrewVfsResourcePolicy } from "./homebrew-vfs-resource-policy";
 import { MemoryFileSystem } from "./vfs/memory-fs";
 import {
   ensureDirRecursive,
-  writeVfsBinary,
   writeVfsFile,
 } from "./vfs/image-helpers";
-import { parseTarGzip, type TarEntry } from "./vfs/tar";
-import {
-  parseHomebrewInstallReceiptRelocation,
-  relocateHomebrewBottleFile,
-} from "./homebrew-bottle-relocation";
 import { KANDELO_HOMEBREW_GUEST_LAYOUT } from "./homebrew-guest-layout";
 
 const DEFAULT_IMAGE_BYTES = 128 * 1024 * 1024;
 const S_IFMT = 0xf000;
 const S_IFREG = 0x8000;
 const S_IFDIR = 0x4000;
-const S_IFLNK = 0xa000;
-const O_RDONLY = 0;
 const MODE_BITS = 0o7777;
 const TEXT_ENCODER = new TextEncoder();
 const SHA256_RE = /^[0-9a-f]{64}$/;
@@ -254,18 +274,102 @@ export interface HomebrewVfsBuildResult {
   report: HomebrewVfsBuildReport;
 }
 
-interface StagePackageResult {
-  files: number;
-  directories: number;
-  symlinks: number;
+export interface HomebrewFlatVfsBuildOptions {
+  loadBottleBytes: (
+    pkg: HomebrewBottleDescriptor,
+  ) => Uint8Array | Promise<Uint8Array>;
+  /** Optional source state is copied into a private filesystem before mutation. */
+  baseFs?: MemoryFileSystem;
 }
 
-interface PendingHardlink {
-  archivePath: string;
-  path: string;
-  targetArchivePath: string;
-  targetPath: string;
+export interface HomebrewFlatVfsLinkOwnerReport {
+  target: string;
+  selected_package: string;
+  claimants: string[];
 }
+
+export interface HomebrewFlatVfsPackageReport {
+  name: string;
+  full_name: string;
+  version: string;
+  revision: number;
+  bottle_rebuild: number;
+  arch: string;
+  kandelo_abi: number;
+  sha256: string;
+  bytes: number;
+  prefix: string;
+  keg: string;
+  staged_files: number;
+  staged_directories: number;
+  staged_symlinks: number;
+  expanded_bytes: number;
+  entries: number;
+  path_bytes: number;
+  link_bytes: number;
+  receipts: string[];
+  runtime_dependencies: Array<{
+    full_name: string;
+    version: string;
+    revision: number;
+  }>;
+  links: string[];
+  opt_link: HomebrewVfsOptLinkReport;
+}
+
+export interface HomebrewFlatVfsBuildReport {
+  schema: 1;
+  name: string;
+  arch: string;
+  kandelo_abi: number;
+  selection_sha256: string;
+  requested_vfs_filename: string;
+  resource_policy: "kandelo-homebrew-vfs-generous-v1";
+  link_policy: "kandelo-homebrew-link-ownership-v1";
+  runtime_support: "kandelo-homebrew-bootstrap-v1";
+  environment: { PATH: string };
+  link_owners: HomebrewFlatVfsLinkOwnerReport[];
+  totals: {
+    compressed_bytes: number;
+    expanded_bytes: number;
+    entries: number;
+    path_bytes: number;
+    link_bytes: number;
+  };
+  packages: HomebrewFlatVfsPackageReport[];
+}
+
+export interface HomebrewFlatVfsBuildResult {
+  fs: MemoryFileSystem;
+  report: HomebrewFlatVfsBuildReport;
+}
+
+const FLAT_LINK_OWNERSHIP_V1 = Object.freeze({
+  id: "kandelo-homebrew-link-ownership-v1" as const,
+  collisions: Object.freeze({
+    "bin/ed": Object.freeze({
+      owner: "kandelo-dev/tap-core/ed",
+      claimants: Object.freeze([
+        "kandelo-dev/tap-core/ed",
+        "kandelo-dev/tap-core/posix-utils-lite",
+      ]),
+    }),
+    "bin/ex": Object.freeze({
+      owner: "kandelo-dev/tap-core/vim",
+      claimants: Object.freeze([
+        "kandelo-dev/tap-core/posix-utils-lite",
+        "kandelo-dev/tap-core/vim",
+      ]),
+    }),
+    "bin/more": Object.freeze({
+      owner: "kandelo-dev/tap-core/less",
+      claimants: Object.freeze([
+        "kandelo-dev/tap-core/less",
+        "kandelo-dev/tap-core/posix-utils-lite",
+      ]),
+    }),
+  }),
+});
 
 interface HomebrewVfsLinkResolution {
   selectedPackageByPath: Map<string, string>;
@@ -295,6 +399,231 @@ export function applyHomebrewVfsConsumerState(
   );
 }
 
+/** Build a provenance-free flat bottle selection into a private VFS. */
+export async function buildHomebrewVfsSelection(
+  planValue: HomebrewFlatVfsPlan,
+  options: HomebrewFlatVfsBuildOptions,
+): Promise<HomebrewFlatVfsBuildResult> {
+  const plan = snapshotFlatPlan(planValue);
+  const policy = resolveHomebrewVfsResourcePolicy(plan.resourcePolicy);
+  const plannedCompressedBytes = plan.packages.reduce(
+    (total, descriptor) => addFlatResource(total, descriptor.bytes, "compressed bytes"),
+    0,
+  );
+  if (plannedCompressedBytes > policy.aggregate.maxCompressedBytes) {
+    throw new HomebrewVfsBuildError(
+      `flat Homebrew selection exceeds aggregate compressed-byte cap ` +
+        `${policy.aggregate.maxCompressedBytes}`,
+    );
+  }
+  const prepared: PreparedHomebrewKeg[] = [];
+  const totals = {
+    compressed_bytes: 0,
+    expanded_bytes: 0,
+    entries: 0,
+    path_bytes: 0,
+    link_bytes: 0,
+  };
+
+  // Authenticate and bound the entire closure before any namespace mutation.
+  for (const descriptor of plan.packages) {
+    const remainingExpandedBytes = policy.aggregate.maxExpandedBytes -
+      totals.expanded_bytes;
+    const remainingEntries = policy.aggregate.maxEntries - totals.entries;
+    if (remainingExpandedBytes <= 0) {
+      throw new HomebrewVfsBuildError(
+        `flat Homebrew selection exceeds aggregate expanded-byte cap ` +
+          `${policy.aggregate.maxExpandedBytes}`,
+      );
+    }
+    if (remainingEntries <= 0) {
+      throw new HomebrewVfsBuildError(
+        `flat Homebrew selection exceeds aggregate entry cap ${policy.aggregate.maxEntries}`,
+      );
+    }
+    const loaded = await options.loadBottleBytes(structuredClone(descriptor));
+    if (!(loaded instanceof Uint8Array)) {
+      throw new HomebrewVfsBuildError(
+        `flat bottle loader returned non-Uint8Array bytes for ${descriptor.fullName}`,
+      );
+    }
+    const item = runMaterializer(() => prepareHomebrewKeg(
+      descriptorMaterializationPackage(descriptor),
+      loaded,
+      {
+        tarLimits: {
+          maxCompressedBytes: policy.bottle.maxCompressedBytes,
+          maxUncompressedBytes: Math.min(
+            policy.bottle.maxExpandedBytes,
+            remainingExpandedBytes,
+          ),
+          maxEntries: Math.min(policy.bottle.maxEntries, remainingEntries),
+          maxPathBytes: policy.bottle.maxPathBytes,
+          maxLinkBytes: policy.bottle.maxLinkBytes,
+        },
+        expectedDependencies: descriptor.dependencies,
+        requireExactKegContainment: true,
+      },
+    ));
+    prepared.push(item);
+    totals.compressed_bytes = addFlatResource(
+      totals.compressed_bytes,
+      item.measurement.compressedBytes,
+      "compressed bytes",
+    );
+    totals.expanded_bytes = addFlatResource(
+      totals.expanded_bytes,
+      item.measurement.expandedBytes,
+      "expanded bytes",
+    );
+    totals.entries = addFlatResource(
+      totals.entries,
+      item.measurement.entries,
+      "entries",
+    );
+    totals.path_bytes = addFlatResource(
+      totals.path_bytes,
+      item.measurement.pathBytes,
+      "path bytes",
+    );
+    totals.link_bytes = addFlatResource(
+      totals.link_bytes,
+      item.measurement.linkBytes,
+      "link bytes",
+    );
+  }
+  if (totals.compressed_bytes > policy.aggregate.maxCompressedBytes) {
+    throw new HomebrewVfsBuildError(
+      `flat Homebrew selection exceeds aggregate compressed-byte cap ` +
+        `${policy.aggregate.maxCompressedBytes}`,
+    );
+  }
+  if (totals.expanded_bytes > policy.aggregate.maxExpandedBytes) {
+    throw new HomebrewVfsBuildError(
+      `flat Homebrew selection exceeds aggregate expanded-byte cap ` +
+        `${policy.aggregate.maxExpandedBytes}`,
+    );
+  }
+  if (totals.entries > policy.aggregate.maxEntries) {
+    throw new HomebrewVfsBuildError(
+      `flat Homebrew selection exceeds aggregate entry cap ${policy.aggregate.maxEntries}`,
+    );
+  }
+
+  const linkResolution = resolveFlatLinkOwnership(plan.packages, plan.linkPolicy);
+  preflightFlatOptIdentities(plan.packages);
+  const fs = options.baseFs === undefined
+    ? createFlatFs(policy.vfs.maxByteLength)
+    : options.baseFs.rebaseToNewFileSystem(policy.vfs.maxByteLength);
+  runMaterializer(() => preflightHomebrewStagingDirectories(
+    fs,
+    prepared,
+  ));
+
+  const staged: Array<ReturnType<typeof stagePreparedHomebrewKeg>> = [];
+  for (const item of prepared) {
+    staged.push(runMaterializer(() => stagePreparedHomebrewKeg(fs, item)));
+    runMaterializer(() => releasePreparedHomebrewKegEntries(item));
+  }
+  for (const item of prepared) {
+    runMaterializer(() => relocatePreparedHomebrewKeg(fs, item));
+  }
+
+  // Task 5 activates the descriptor selected by materialization identity here,
+  // after every keg is staged and before any ordinary prefix link is applied.
+  const bootstrapIndex = plan.packages.findIndex((pkg) =>
+    pkg.materialization === "homebrew-runtime-support-v1"
+  );
+  if (bootstrapIndex < 0) {
+    throw new HomebrewVfsBuildError("flat Homebrew plan has no runtime-support descriptor");
+  }
+  // Task 5 performs runtime-support activation here. Link preflight must see
+  // every path that activation installs before any ordinary/opt link exists.
+
+  runMaterializer(() => preflightPreparedHomebrewLinksAndOpt(
+    fs,
+    prepared,
+    ({ prepared: item, entry }) =>
+      linkResolution.selectedOwnerByTarget.get(entry.target) === item.input.fullName,
+  ));
+
+  const appliedLinks = prepared.map((item) =>
+    runMaterializer(() => applyPreparedHomebrewLinks(
+      fs,
+      item,
+      (entry) => linkResolution.selectedOwnerByTarget.get(entry.target) === item.input.fullName,
+    ))
+  );
+  runMaterializer(() => applyMaterializedOptLinks(fs, prepared.map((item) => item.input)));
+  // Task 5 performs final recursive runtime ownership adoption here, after
+  // ordinary and opt links have created every Homebrew-owned parent path.
+  const path = flatPath(plan.packages);
+  if (path.length > 0) {
+    ensureDirRecursive(fs, "/etc/profile.d");
+    writeVfsFile(
+      fs,
+      "/etc/profile.d/kandelo-homebrew.sh",
+      `export PATH="${path.join(":")}:$PATH"\n`,
+      0o644,
+    );
+  }
+
+  const report: HomebrewFlatVfsBuildReport = {
+    schema: 1,
+    name: plan.name,
+    arch: plan.arch,
+    kandelo_abi: plan.kandeloAbi,
+    selection_sha256: plan.selectionSha256,
+    requested_vfs_filename: plan.requestedVfsFilename,
+    resource_policy: plan.resourcePolicy,
+    link_policy: plan.linkPolicy,
+    runtime_support: plan.runtimeSupport,
+    environment: { PATH: path.join(":") },
+    link_owners: linkResolution.reports,
+    totals,
+    packages: plan.packages.map((descriptor, index) => {
+      const item = prepared[index]!;
+      const stage = staged[index]!;
+      return {
+        name: descriptor.name,
+        full_name: descriptor.fullName,
+        version: descriptor.version,
+        revision: descriptor.revision,
+        bottle_rebuild: descriptor.bottleRebuild,
+        arch: descriptor.arch,
+        kandelo_abi: descriptor.kandeloAbi,
+        sha256: descriptor.sha256,
+        bytes: item.measurement.compressedBytes,
+        prefix: descriptor.prefix,
+        keg: descriptor.keg,
+        staged_files: stage.stagedFiles,
+        staged_directories: stage.stagedDirectories,
+        staged_symlinks: stage.stagedSymlinks,
+        expanded_bytes: item.measurement.expandedBytes,
+        entries: item.measurement.entries,
+        path_bytes: item.measurement.pathBytes,
+        link_bytes: item.measurement.linkBytes,
+        receipts: [...descriptor.receipts],
+        runtime_dependencies: item.runtimeDependencies.map((dependency) => ({
+          full_name: dependency.fullName,
+          version: dependency.version,
+          revision: dependency.revision,
+        })),
+        links: appliedLinks[index]!,
+        opt_link: itemOptLink(item.input),
+      };
+    }),
+  };
+  ensureDirRecursive(fs, "/etc/kandelo");
+  writeVfsFile(
+    fs,
+    "/etc/kandelo/homebrew-vfs.json",
+    `${JSON.stringify(report, null, 2)}\n`,
+    0o644,
+  );
+  return { fs, report };
+}
+
 export async function buildHomebrewVfs(
   plan: HomebrewVfsPlan,
   options: HomebrewVfsBuildOptions,
@@ -321,15 +650,23 @@ export async function buildHomebrewVfs(
     : [];
 
   ensureDirRecursive(fs, "/etc/kandelo");
+  const materializationInputs: HomebrewBottleMaterializationPackage[] = [];
 
   for (const pkg of plan.packages) {
     const bottleBytes = await options.loadBottleBytes(pkg);
-    verifyBottleBytes(pkg, bottleBytes);
-    const tarEntries = parseBottleTarGz(pkg, bottleBytes);
-    const staged = stagePackage(fs, pkg, tarEntries);
-    validateReceipts(fs, pkg);
-    relocateBottlePlaceholders(fs, pkg);
-    const links = applyLinks(fs, pkg, linkResolution);
+    const input = legacyMaterializationPackage(pkg);
+    materializationInputs.push(input);
+    let prepared = runMaterializer(() => prepareHomebrewKeg(input, bottleBytes, {
+      receiptSource: "staged",
+    }));
+    const staged = runMaterializer(() => stagePreparedHomebrewKeg(fs, prepared));
+    runMaterializer(() => releasePreparedHomebrewKegEntries(prepared));
+    prepared = runMaterializer(() => prepareStagedHomebrewKegReceipts(fs, prepared));
+    runMaterializer(() => relocatePreparedHomebrewKeg(fs, prepared));
+    const links = runMaterializer(() => applyPreparedHomebrewLinks(fs, prepared, (_entry, targetPath) => {
+      const selectedPackage = linkResolution.selectedPackageByPath.get(targetPath);
+      return selectedPackage === undefined || selectedPackage === pkg.fullName;
+    }));
 
     packageReports.push({
       name: pkg.name,
@@ -348,12 +685,12 @@ export async function buildHomebrewVfs(
       link_manifest: pkg.linkManifestPath,
       prefix: pkg.prefix,
       keg: pkg.keg,
-      staged_files: staged.files,
-      staged_directories: staged.directories,
-      staged_symlinks: staged.symlinks,
+      staged_files: staged.stagedFiles,
+      staged_directories: staged.stagedDirectories,
+      staged_symlinks: staged.stagedSymlinks,
       receipts: [...pkg.linkManifest.receipts],
       links,
-      opt_link: homebrewCanonicalOptLink(pkg),
+      opt_link: itemOptLink(input),
       ...(pkg.builtFrom === undefined ? {} : {
         built_from: {
           tap_repository: pkg.builtFrom.tapRepository,
@@ -366,7 +703,9 @@ export async function buildHomebrewVfs(
     });
   }
 
-  applyCanonicalOptLinks(fs, plan.packages);
+  for (const input of materializationInputs) {
+    runMaterializer(() => applyMaterializedOptLink(fs, input));
+  }
   const { compatibilityLinks, runtimeState } = consumerState === "apply"
     ? applyHomebrewVfsConsumerStateWithResolution(
       plan,
@@ -601,6 +940,181 @@ function createSelectionReport(
   };
 }
 
+function snapshotFlatPlan(value: HomebrewFlatVfsPlan): HomebrewFlatVfsPlan {
+  const expectedKeys = [
+    "schema",
+    "name",
+    "arch",
+    "kandeloAbi",
+    "selectionSha256",
+    "requestedVfsFilename",
+    "resourcePolicy",
+    "linkPolicy",
+    "runtimeSupport",
+    "packages",
+  ];
+  if (typeof value !== "object" || value === null) {
+    throw new HomebrewVfsBuildError("flat Homebrew VFS plan must be an object");
+  }
+  const cloned = structuredClone(value) as HomebrewFlatVfsPlan;
+  const actualKeys = Object.keys(cloned);
+  if (
+    actualKeys.length !== expectedKeys.length ||
+    !actualKeys.every((key) => expectedKeys.includes(key))
+  ) {
+    throw new HomebrewVfsBuildError("flat Homebrew VFS plan has unknown or missing fields");
+  }
+  if (!SHA256_RE.test(cloned.selectionSha256)) {
+    throw new HomebrewVfsBuildError("flat Homebrew VFS plan selectionSha256 is invalid");
+  }
+  const selection = projectHomebrewBottleSelection({
+    schema: cloned.schema,
+    name: cloned.name,
+    arch: cloned.arch,
+    kandeloAbi: cloned.kandeloAbi,
+    bottles: cloned.packages,
+    requestedVfsFilename: cloned.requestedVfsFilename,
+    resourcePolicy: cloned.resourcePolicy,
+    linkPolicy: cloned.linkPolicy,
+    runtimeSupport: cloned.runtimeSupport,
+  }, { expectedAbi: ABI_VERSION });
+  const actualSelectionSha256 = homebrewBottleSelectionSha256(
+    encodeHomebrewBottleSelection(selection),
+  );
+  if (cloned.selectionSha256 !== actualSelectionSha256) {
+    throw new HomebrewVfsBuildError(
+      "flat Homebrew VFS plan selectionSha256 does not match its canonical selection",
+    );
+  }
+  return {
+    schema: 1,
+    name: selection.name,
+    arch: selection.arch,
+    kandeloAbi: selection.kandeloAbi,
+    selectionSha256: cloned.selectionSha256,
+    requestedVfsFilename: selection.requestedVfsFilename,
+    resourcePolicy: selection.resourcePolicy,
+    linkPolicy: selection.linkPolicy,
+    runtimeSupport: selection.runtimeSupport,
+    packages: selection.bottles,
+  };
+}
+
+function resolveFlatLinkOwnership(
+  packages: readonly HomebrewBottleDescriptor[],
+  policyId: HomebrewFlatVfsPlan["linkPolicy"],
+): {
+  selectedOwnerByTarget: Map<string, string>;
+  reports: HomebrewFlatVfsLinkOwnerReport[];
+} {
+  if (policyId !== FLAT_LINK_OWNERSHIP_V1.id) {
+    throw new HomebrewVfsBuildError(`unknown flat Homebrew link policy ${policyId}`);
+  }
+  const claimantsByTarget = new Map<string, string[]>();
+  for (const pkg of packages) {
+    for (const link of pkg.links) {
+      const claimants = claimantsByTarget.get(link.target) ?? [];
+      claimants.push(pkg.fullName);
+      claimantsByTarget.set(link.target, claimants);
+    }
+  }
+  const selectedOwnerByTarget = new Map<string, string>();
+  const reports: HomebrewFlatVfsLinkOwnerReport[] = [];
+  for (const [target, unsortedClaimants] of claimantsByTarget) {
+    const claimants = [...unsortedClaimants].sort();
+    if (claimants.length === 1) {
+      selectedOwnerByTarget.set(target, claimants[0]!);
+      continue;
+    }
+    const declaration = FLAT_LINK_OWNERSHIP_V1.collisions[
+      target as keyof typeof FLAT_LINK_OWNERSHIP_V1.collisions
+    ];
+    if (
+      declaration === undefined ||
+      claimants.length !== declaration.claimants.length ||
+      claimants.some((claimant, index) => claimant !== declaration.claimants[index])
+    ) {
+      throw new HomebrewVfsBuildError(
+        `flat Homebrew link target ${target} has undeclared claimants ${claimants.join(", ")}`,
+      );
+    }
+    selectedOwnerByTarget.set(target, declaration.owner);
+    reports.push({
+      target,
+      selected_package: declaration.owner,
+      claimants,
+    });
+  }
+  return { selectedOwnerByTarget, reports };
+}
+
+function preflightFlatOptIdentities(packages: readonly HomebrewBottleDescriptor[]): void {
+  const byPath = new Map<string, string>();
+  for (const pkg of packages) {
+    const path = `${pkg.prefix}/opt/${pkg.name}`;
+    const existing = byPath.get(path);
+    if (existing !== undefined) {
+      throw new HomebrewVfsBuildError(
+        `flat Homebrew opt path ${path} is shared by ${existing} and ${pkg.fullName}`,
+      );
+    }
+    byPath.set(path, pkg.fullName);
+  }
+}
+
+function flatPath(packages: readonly HomebrewBottleDescriptor[]): string[] {
+  const paths = new Set<string>();
+  for (const pkg of packages) {
+    for (const relative of pkg.pathPrepend) {
+      paths.add(joinGuestPath(pkg.prefix, relative));
+    }
+  }
+  return [...paths];
+}
+
+function itemOptLink(pkg: HomebrewBottleMaterializationPackage): HomebrewVfsOptLinkReport {
+  return materializedCanonicalOptLink(pkg);
+}
+
+function addFlatResource(current: number, amount: number, label: string): number {
+  const sum = current + amount;
+  if (!Number.isSafeInteger(sum)) {
+    throw new HomebrewVfsBuildError(`flat Homebrew aggregate ${label} is unsafe`);
+  }
+  return sum;
+}
+
+function createFlatFs(maxByteLength: number): MemoryFileSystem {
+  const SharedArrayBufferCtor = SharedArrayBuffer as new (
+    byteLength: number,
+    options?: { maxByteLength?: number },
+  ) => SharedArrayBuffer;
+  const initialByteLength = Math.min(DEFAULT_IMAGE_BYTES, maxByteLength);
+  const sab = new SharedArrayBufferCtor(initialByteLength, { maxByteLength });
+  return MemoryFileSystem.create(sab, maxByteLength);
+}
+
+function legacyMaterializationPackage(
+  pkg: HomebrewVfsPackagePlan,
+): HomebrewBottleMaterializationPackage {
+  return {
+    name: pkg.name,
+    fullName: pkg.fullName,
+    version: pkg.version,
+    arch: pkg.arch,
+    prefix: pkg.prefix,
+    cellar: pkg.cellar,
+    keg: pkg.keg,
+    payloadRoot: pkg.payloadRoot,
+    receipts: pkg.linkManifest.receipts,
+    links: pkg.linkManifest.links,
+    pathPrepend: pkg.linkManifest.env.PATH_prepend ?? [],
+    sha256: pkg.sha256,
+    bytes: pkg.bytes,
+    failureLabel: `${packageLabel(pkg)} ${pkg.sourceStatus} ${pkg.linkManifestPath} ${pkg.url}`,
+  };
+}
+
 function createDefaultFs(): MemoryFileSystem {
   const SharedArrayBufferCtor = SharedArrayBuffer as new (
     byteLength: number,
@@ -610,214 +1124,6 @@ function createDefaultFs(): MemoryFileSystem {
     maxByteLength: DEFAULT_IMAGE_BYTES,
   });
   return MemoryFileSystem.create(sab, DEFAULT_IMAGE_BYTES);
-}
-
-function verifyBottleBytes(pkg: HomebrewVfsPackagePlan, bytes: Uint8Array): void {
-  if (bytes.byteLength !== pkg.bytes) {
-    fail(pkg, `bottle byte count ${bytes.byteLength} does not match metadata bytes ${pkg.bytes}`);
-  }
-  const actualSha = sha256(bytes);
-  if (actualSha !== pkg.sha256) {
-    fail(pkg, `bottle sha256 ${actualSha} does not match metadata sha256 ${pkg.sha256}`);
-  }
-}
-
-function parseBottleTarGz(pkg: HomebrewVfsPackagePlan, bytes: Uint8Array): TarEntry[] {
-  try {
-    return parseTarGzip(bytes, { label: packageLabel(pkg) });
-  } catch (err) {
-    fail(pkg, err instanceof Error ? err.message : String(err));
-  }
-}
-
-function stagePackage(
-  fs: MemoryFileSystem,
-  pkg: HomebrewVfsPackagePlan,
-  entries: TarEntry[],
-): StagePackageResult {
-  ensureDirRecursive(fs, pkg.prefix);
-  ensureDirRecursive(fs, pkg.cellar);
-  ensureDirRecursive(fs, pkg.keg);
-
-  const stagedPaths = new Set<string>();
-  const pendingHardlinks: PendingHardlink[] = [];
-  let files = 0;
-  let directories = 0;
-  let symlinks = 0;
-
-  for (const entry of entries) {
-    const targetPath = mapHomebrewBottleEntryToGuestPath(pkg, entry.path);
-    if (targetPath === null) continue;
-
-    if (entry.type === "directory") {
-      const existing = tryLstat(fs, targetPath);
-      if (existing && kind(existing) !== S_IFDIR) {
-        fail(pkg, `bottle directory ${entry.path} conflicts with existing ${targetPath}`);
-      }
-      ensureDirRecursive(fs, targetPath);
-      fs.chmod(targetPath, entry.mode);
-      if (!stagedPaths.has(targetPath)) {
-        stagedPaths.add(targetPath);
-        directories += 1;
-      }
-      continue;
-    }
-
-    if (tryLstat(fs, targetPath) !== null || stagedPaths.has(targetPath)) {
-      fail(pkg, `bottle entry ${entry.path} maps to duplicate staged path ${targetPath}`);
-    }
-
-    ensureParentDir(fs, targetPath);
-    stagedPaths.add(targetPath);
-
-    if (entry.type === "file") {
-      writeVfsBinary(fs, targetPath, entry.data, entry.mode);
-      files += 1;
-    } else if (entry.type === "symlink") {
-      const linkName = entry.linkName ?? "";
-      validateArchiveSymlink(pkg, targetPath, linkName);
-      fs.symlink(linkName, targetPath);
-      symlinks += 1;
-    } else {
-      const targetArchivePath = entry.linkName ?? "";
-      const hardlinkTarget = mapHomebrewBottleEntryToGuestPath(pkg, targetArchivePath);
-      if (
-        !guestPathIsUnder(targetPath, pkg.keg) ||
-        hardlinkTarget === null ||
-        !guestPathIsUnder(hardlinkTarget, pkg.keg)
-      ) {
-        fail(
-          pkg,
-          `bottle hardlink ${entry.path} -> ${targetArchivePath} ` +
-            `is not contained in keg ${pkg.keg}`,
-        );
-      }
-      pendingHardlinks.push({
-        archivePath: entry.path,
-        path: targetPath,
-        targetArchivePath,
-        targetPath: hardlinkTarget,
-      });
-    }
-  }
-
-  files += stageHardlinks(fs, pkg, pendingHardlinks, stagedPaths);
-
-  return { files, directories, symlinks };
-}
-
-function stageHardlinks(
-  fs: MemoryFileSystem,
-  pkg: HomebrewVfsPackagePlan,
-  hardlinks: PendingHardlink[],
-  stagedPaths: Set<string>,
-): number {
-  for (const hardlink of hardlinks) {
-    if (!stagedPaths.has(hardlink.targetPath)) {
-      fail(
-        pkg,
-        `bottle hardlink ${hardlink.archivePath} target ` +
-          `${hardlink.targetArchivePath} is not staged by this bottle`,
-      );
-    }
-  }
-
-  let pending = hardlinks;
-  let linked = 0;
-
-  while (pending.length > 0) {
-    const unresolved: PendingHardlink[] = [];
-    let progressed = false;
-
-    for (const hardlink of pending) {
-      const target = tryLstat(fs, hardlink.targetPath);
-      if (target === null) {
-        unresolved.push(hardlink);
-        continue;
-      }
-      if (kind(target) !== S_IFREG) {
-        fail(
-          pkg,
-          `bottle hardlink ${hardlink.archivePath} target ` +
-            `${hardlink.targetArchivePath} is not a regular file`,
-        );
-      }
-      fs.link(hardlink.targetPath, hardlink.path);
-      linked += 1;
-      progressed = true;
-    }
-
-    if (!progressed) {
-      const details = unresolved
-        .map((entry) => `${entry.archivePath} -> ${entry.targetArchivePath}`)
-        .join(", ");
-      fail(pkg, `bottle hardlink target is missing or cyclic: ${details}`);
-    }
-    pending = unresolved;
-  }
-
-  return linked;
-}
-
-function validateReceipts(fs: MemoryFileSystem, pkg: HomebrewVfsPackagePlan): void {
-  for (const receipt of pkg.linkManifest.receipts) {
-    const path = homebrewManifestSourcePath(pkg, receipt);
-    if (tryLstat(fs, path) === null) {
-      fail(pkg, `receipt ${receipt} is missing after staging at ${path}`);
-    }
-  }
-}
-
-/**
- * Apply the same text-file relocation contract Homebrew records in a bottle's
- * INSTALL_RECEIPT.json. The receipt's changed_files list is authoritative: it
- * keeps arbitrary binary payloads out of string replacement while allowing
- * variable-length canonical Kandelo paths in scripts and runtime metadata.
- */
-function relocateBottlePlaceholders(
-  fs: MemoryFileSystem,
-  pkg: HomebrewVfsPackagePlan,
-): void {
-  const installReceipts = pkg.linkManifest.receipts.filter(
-    (receipt) => receipt === "INSTALL_RECEIPT.json" || receipt.endsWith("/INSTALL_RECEIPT.json"),
-  );
-  if (installReceipts.length === 0) return;
-  if (installReceipts.length > 1) {
-    fail(
-      pkg,
-      `link manifest declares ${installReceipts.length} INSTALL_RECEIPT.json files, expected one`,
-    );
-  }
-  const receiptPath = homebrewManifestSourcePath(pkg, installReceipts[0]!);
-  const receiptStat = fs.lstat(receiptPath);
-  if (kind(receiptStat) !== S_IFREG) {
-    fail(pkg, `INSTALL_RECEIPT.json is not a regular file at ${receiptPath}`);
-  }
-  let relocation: ReturnType<typeof parseHomebrewInstallReceiptRelocation>;
-  try {
-    relocation = parseHomebrewInstallReceiptRelocation(readVfsFile(fs, receiptPath));
-  } catch (error) {
-    fail(pkg, error instanceof Error ? error.message : String(error));
-  }
-  const changedPaths = new Set<string>();
-  for (const value of relocation.changedFiles) {
-    const path = joinGuestPath(pkg.keg, value);
-    changedPaths.add(path);
-  }
-
-  for (const path of changedPaths) {
-    const stat = tryLstat(fs, path);
-    if (stat === null || kind(stat) !== S_IFREG) {
-      fail(pkg, `Homebrew changed file is missing or not regular: ${path}`);
-    }
-    let bytes: Uint8Array;
-    try {
-      bytes = relocateHomebrewBottleFile(readVfsFile(fs, path), relocation, path);
-    } catch (error) {
-      fail(pkg, error instanceof Error ? error.message : String(error));
-    }
-    writeVfsBinary(fs, path, bytes, stat.mode & MODE_BITS);
-  }
 }
 
 function resolveLinkConflicts(
@@ -933,67 +1239,6 @@ function resolveLinkConflicts(
   }
 
   return { selectedPackageByPath, reports };
-}
-
-function applyLinks(
-  fs: MemoryFileSystem,
-  pkg: HomebrewVfsPackagePlan,
-  resolution: HomebrewVfsLinkResolution,
-): string[] {
-  const applied: string[] = [];
-  const seenTargets = new Set<string>();
-
-  for (const entry of pkg.linkManifest.links) {
-    if (seenTargets.has(entry.target)) {
-      fail(pkg, `link target ${entry.target} is duplicated`);
-    }
-    seenTargets.add(entry.target);
-
-    const sourcePath = homebrewManifestSourcePath(pkg, entry.source);
-    const targetPath = joinGuestPath(pkg.prefix, entry.target);
-    if (!guestPathIsUnder(targetPath, pkg.prefix)) {
-      fail(pkg, `link target ${entry.target} escapes prefix ${pkg.prefix}`);
-    }
-    const sourceStat = tryStat(fs, sourcePath);
-    if (sourceStat === null) {
-      fail(pkg, `link source ${entry.source} is missing at ${sourcePath}`);
-    }
-    validateLinkEntrySource(pkg, entry, sourceStat);
-    const selectedPackage = resolution.selectedPackageByPath.get(targetPath);
-    if (selectedPackage !== undefined && selectedPackage !== pkg.fullName) {
-      continue;
-    }
-    if (tryLstat(fs, targetPath) !== null) {
-      fail(pkg, `link target ${entry.target} already exists at ${targetPath}`);
-    }
-
-    ensureParentDir(fs, targetPath);
-    applyLinkEntry(fs, entry, sourcePath, sourceStat, targetPath);
-    applied.push(entry.target);
-  }
-
-  return applied;
-}
-
-function applyCanonicalOptLinks(
-  fs: MemoryFileSystem,
-  packages: readonly HomebrewVfsPackagePlan[],
-): void {
-  for (const pkg of packages) {
-    const link = homebrewCanonicalOptLink(pkg);
-    const optDirectory = joinGuestPath(pkg.prefix, "opt");
-    const optDirectoryStat = tryLstat(fs, optDirectory);
-    if (optDirectoryStat === null) {
-      ensureDirRecursive(fs, optDirectory);
-    } else if (kind(optDirectoryStat) !== S_IFDIR) {
-      fail(pkg, `canonical opt directory is not a real directory at ${optDirectory}`);
-    }
-    const targetPath = joinGuestPath(pkg.prefix, link.path);
-    if (tryLstat(fs, targetPath) !== null) {
-      fail(pkg, `canonical opt link ${link.path} already exists at ${targetPath}`);
-    }
-    fs.symlink(link.target, targetPath);
-  }
 }
 
 function applyCompatibilityLinks(
@@ -1374,52 +1619,7 @@ function pathDepth(path: string): number {
 export function homebrewCanonicalOptLink(
   pkg: HomebrewVfsPackagePlan,
 ): HomebrewVfsOptLinkReport {
-  const path = `opt/${pkg.name}`;
-  const targetPath = joinGuestPath(pkg.prefix, path);
-  const target = relativeGuestPath(dirnameGuestPath(targetPath), pkg.keg);
-  if (target.length === 0) {
-    fail(pkg, `canonical opt link ${path} cannot target its own parent directory`);
-  }
-  return {
-    path,
-    target,
-  };
-}
-
-function applyLinkEntry(
-  fs: MemoryFileSystem,
-  entry: HomebrewLinkEntry,
-  sourcePath: string,
-  sourceStat: StatResult,
-  targetPath: string,
-): void {
-  switch (entry.type) {
-    case "symlink":
-      fs.symlink(sourcePath, targetPath);
-      return;
-    case "file": {
-      writeVfsBinary(fs, targetPath, readVfsFile(fs, sourcePath), parseManifestMode(entry, sourceStat));
-      return;
-    }
-    case "directory": {
-      ensureDirRecursive(fs, targetPath);
-      fs.chmod(targetPath, parseManifestMode(entry, sourceStat));
-      return;
-    }
-  }
-}
-
-function validateLinkEntrySource(
-  pkg: HomebrewVfsPackagePlan,
-  entry: HomebrewLinkEntry,
-  sourceStat: StatResult,
-): void {
-  if (entry.type === "file" && kind(sourceStat) !== S_IFREG) {
-    fail(pkg, `file link source ${entry.source} is not a regular file`);
-  }
-  if (entry.type === "directory" && kind(sourceStat) !== S_IFDIR) {
-    fail(pkg, `directory link source ${entry.source} is not a directory`);
-  }
+  return materializedCanonicalOptLink(legacyMaterializationPackage(pkg));
 }
 
 function writeProfileFragment(fs: MemoryFileSystem, plan: HomebrewVfsPlan): void {
@@ -1443,60 +1643,14 @@ export function mapHomebrewBottleEntryToGuestPath(
   pkg: HomebrewVfsPackagePlan,
   entryPath: string,
 ): string | null {
-  const payloadRoot = trimSlashes(pkg.payloadRoot);
-  if (entryPath === payloadRoot) return null;
-  if (entryPath.startsWith(`${payloadRoot}/`)) {
-    const rel = entryPath.slice(payloadRoot.length + 1);
-    return rel.length === 0 ? null : joinGuestPath(pkg.keg, rel);
-  }
-  if (entryPath === "Cellar" || entryPath.startsWith("Cellar/")) {
-    return joinGuestPath(pkg.prefix, entryPath);
-  }
-  return joinGuestPath(pkg.keg, entryPath);
+  return mapMaterializedBottleEntry(legacyMaterializationPackage(pkg), entryPath);
 }
 
 export function homebrewManifestSourcePath(
   pkg: HomebrewVfsPackagePlan,
   source: string,
 ): string {
-  if (source === "Cellar" || source.startsWith("Cellar/")) {
-    return joinGuestPath(pkg.prefix, source);
-  }
-  return joinGuestPath(pkg.keg, source);
-}
-
-function validateArchiveSymlink(
-  pkg: HomebrewVfsPackagePlan,
-  linkPath: string,
-  linkTarget: string,
-): void {
-  if (linkTarget.length === 0) fail(pkg, `archive symlink ${linkPath} has an empty target`);
-  if (linkTarget.startsWith("/") || hasScheme(linkTarget)) {
-    fail(pkg, `archive symlink ${linkPath} has non-relative target ${linkTarget}`);
-  }
-  const normalized = normalizeRelativeFrom(dirnameGuestPath(linkPath), linkTarget);
-  if (!guestPathIsUnder(normalized, pkg.keg)) {
-    fail(pkg, `archive symlink ${linkPath} target ${linkTarget} escapes keg ${pkg.keg}`);
-  }
-}
-
-function parseManifestMode(entry: HomebrewLinkEntry, sourceStat: StatResult): number {
-  if (entry.mode === undefined) return sourceStat.mode & MODE_BITS;
-  const parsed = Number.parseInt(entry.mode, 8);
-  if (!Number.isFinite(parsed)) return sourceStat.mode & MODE_BITS;
-  return parsed & MODE_BITS;
-}
-
-function readVfsFile(fs: MemoryFileSystem, path: string): Uint8Array {
-  const st = fs.stat(path);
-  const fd = fs.open(path, O_RDONLY, 0);
-  try {
-    const out = new Uint8Array(st.size);
-    fs.read(fd, out, null, out.length);
-    return out;
-  } finally {
-    fs.close(fd);
-  }
+  return materializedManifestSourcePath(legacyMaterializationPackage(pkg), source);
 }
 
 function validateSafeRelativePath(path: string, label: string): void {
@@ -1514,19 +1668,6 @@ function validateSafeRelativePath(path: string, label: string): void {
   }
 }
 
-function normalizeRelativeFrom(base: string, rel: string): string {
-  const baseParts = base.split("/").filter(Boolean);
-  for (const segment of rel.split("/")) {
-    if (segment.length === 0 || segment === ".") continue;
-    if (segment === "..") {
-      baseParts.pop();
-    } else {
-      baseParts.push(segment);
-    }
-  }
-  return `/${baseParts.join("/")}`;
-}
-
 function joinGuestPath(base: string, rel: string): string {
   validateSafeRelativePath(rel, "guest path");
   return `${base.replace(/\/+$/g, "")}/${rel}`;
@@ -1537,29 +1678,8 @@ function dirnameGuestPath(path: string): string {
   return slash <= 0 ? "/" : path.slice(0, slash);
 }
 
-function relativeGuestPath(fromDirectory: string, targetPath: string): string {
-  const fromParts = fromDirectory.split("/").filter(Boolean);
-  const targetParts = targetPath.split("/").filter(Boolean);
-  let shared = 0;
-  while (
-    shared < fromParts.length &&
-    shared < targetParts.length &&
-    fromParts[shared] === targetParts[shared]
-  ) {
-    shared += 1;
-  }
-  return [
-    ...fromParts.slice(shared).map(() => ".."),
-    ...targetParts.slice(shared),
-  ].join("/");
-}
-
 function ensureParentDir(fs: MemoryFileSystem, path: string): void {
   ensureDirRecursive(fs, dirnameGuestPath(path));
-}
-
-function trimSlashes(path: string): string {
-  return path.replace(/^\/+/g, "").replace(/\/+$/g, "");
 }
 
 function guestPathIsUnder(child: string, parent: string): boolean {
@@ -1591,12 +1711,19 @@ function sha256(bytes: Uint8Array): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-function hasScheme(value: string): boolean {
-  return /^[a-z][a-z0-9+.-]*:/i.test(value);
-}
-
 function packageLabel(pkg: HomebrewVfsPackagePlan): string {
   return `package ${pkg.name}@${pkg.version} ${pkg.arch}`;
+}
+
+function runMaterializer<T>(operation: () => T): T {
+  try {
+    return operation();
+  } catch (error) {
+    if (error instanceof HomebrewVfsMaterializationError) {
+      throw new HomebrewVfsBuildError(error.message);
+    }
+    throw error;
+  }
 }
 
 function fail(pkg: HomebrewVfsPackagePlan, message: string): never {

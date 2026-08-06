@@ -1,7 +1,13 @@
 import { ABI_VERSION } from "./generated/abi";
 import { assertHomebrewCanonicalText } from "./homebrew-lazy-layer-descriptor";
 import { HOMEBREW_RUNTIME_LAYER_LIMITS } from "./homebrew-runtime-layer-limits";
+import {
+  homebrewBottleSelectionSha256,
+  parseCanonicalHomebrewBottleSelection,
+} from "./homebrew-bottle-selection";
+import type { HomebrewBottleDescriptor } from "./homebrew-bottle-descriptor";
 import type { HomebrewBottleArch, HomebrewLinkEntry } from "./homebrew-bottle-types";
+import type { HomebrewVfsResourcePolicyId } from "./homebrew-vfs-resource-policy";
 
 export type { HomebrewBottleArch, HomebrewLinkEntry } from "./homebrew-bottle-types";
 export type HomebrewRuntime = "node" | "browser";
@@ -181,6 +187,23 @@ export interface HomebrewVfsPlan {
   packages: HomebrewVfsPackagePlan[];
 }
 
+export interface HomebrewFlatVfsPlanOptions {
+  expectedAbi?: number;
+}
+
+export interface HomebrewFlatVfsPlan {
+  schema: 1;
+  name: string;
+  arch: HomebrewBottleArch;
+  kandeloAbi: number;
+  selectionSha256: string;
+  requestedVfsFilename: string;
+  resourcePolicy: HomebrewVfsResourcePolicyId;
+  linkPolicy: "kandelo-homebrew-link-ownership-v1";
+  runtimeSupport: "kandelo-homebrew-bootstrap-v1";
+  packages: HomebrewBottleDescriptor[];
+}
+
 export interface HomebrewFederatedVfsPlan extends HomebrewVfsPlan {
   requestedFullNames: string[];
   taps: HomebrewVfsTapIdentity[];
@@ -231,6 +254,29 @@ const MAX_RESOLVED_PACKAGES = HOMEBREW_RUNTIME_LAYER_LIMITS.maxRequestedPackages
 const MAX_METADATA_PACKAGES = 4096;
 const MAX_PACKAGE_DEPENDENCIES = 128;
 const MAX_FEDERATED_TAPS = 16;
+
+/** Bind exact canonical selection bytes into an immutable flat VFS plan. */
+export function planHomebrewVfsSelection(
+  canonicalSelectionBytes: Uint8Array,
+  options: HomebrewFlatVfsPlanOptions = {},
+): HomebrewFlatVfsPlan {
+  const selection = parseCanonicalHomebrewBottleSelection(
+    canonicalSelectionBytes,
+    { expectedAbi: options.expectedAbi ?? ABI_VERSION },
+  );
+  return deepFreeze({
+    schema: 1,
+    name: selection.name,
+    arch: selection.arch,
+    kandeloAbi: selection.kandeloAbi,
+    selectionSha256: homebrewBottleSelectionSha256(canonicalSelectionBytes),
+    requestedVfsFilename: selection.requestedVfsFilename,
+    resourcePolicy: selection.resourcePolicy,
+    linkPolicy: selection.linkPolicy,
+    runtimeSupport: selection.runtimeSupport,
+    packages: selection.bottles,
+  });
+}
 
 export async function planHomebrewVfs(
   metadataValue: unknown,
@@ -1367,6 +1413,12 @@ function requireBottleInteger(
 
 function quote(value: string): string {
   return JSON.stringify(value);
+}
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value !== "object" || value === null || Object.isFrozen(value)) return value;
+  for (const child of Object.values(value)) deepFreeze(child);
+  return Object.freeze(value);
 }
 
 function fail(message: string): never {

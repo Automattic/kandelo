@@ -279,6 +279,7 @@ export interface HomebrewBottleSelection {
   bottles: HomebrewBottleDescriptor[];
   requestedVfsFilename: string;
   resourcePolicy: "kandelo-homebrew-vfs-generous-v1";
+  linkPolicy: "kandelo-homebrew-link-ownership-v1";
   runtimeSupport: "kandelo-homebrew-bootstrap-v1";
 }
 ```
@@ -368,12 +369,22 @@ git commit -m "Validate flat Homebrew bottle selections"
 - Create: `host/test/homebrew-flat-vfs-builder.test.ts`
 - Modify: `host/src/homebrew-vfs-builder.ts`
 - Modify: `host/src/homebrew-vfs-planner.ts`
+- Modify: `host/src/homebrew-bottle-selection.ts`
+- Modify: `host/src/homebrew-bottle-relocation.ts`
+- Modify: `host/src/index.ts`
 - Modify: `host/test/homebrew-vfs-builder.test.ts`
 - Modify: `host/test/homebrew-vfs-planner.test.ts`
+- Modify: `host/test/homebrew-bottle-selection.test.ts`
+- Modify: `scripts/homebrew-project-bottle-descriptor.ts`
+- Modify: `scripts/homebrew-validate-flat-selection.test.ts`
 
 **Step 1: Write failing flat-builder tests**
 
 Add a provenance-free plan:
+
+This plan is a consumer closure over independently published bottle objects.
+It is not a campaign/batch authority and carries no all-bottles publication
+success assertion.
 
 ```ts
 export interface HomebrewFlatVfsPlan {
@@ -384,6 +395,7 @@ export interface HomebrewFlatVfsPlan {
   selectionSha256: string;
   requestedVfsFilename: string;
   resourcePolicy: HomebrewVfsResourcePolicyId;
+  linkPolicy: "kandelo-homebrew-link-ownership-v1";
   runtimeSupport: "kandelo-homebrew-bootstrap-v1";
   packages: HomebrewBottleDescriptor[];
 }
@@ -397,7 +409,18 @@ Add tests for:
   executable-mode, keg-containment, relocation, and opt-link behavior already
   covered by the legacy builder;
 - actual receipt runtime dependencies matching descriptor edges;
-- aggregate resource accounting across bottles;
+- per-bottle expanded/entry/path/link bounds and incremental aggregate
+  compressed/expanded/entry accounting across bottles;
+- exact plan-digest re-derivation before callbacks;
+- all-bottle preparation before filesystem allocation, prompt release of TAR
+  entry buffers after staging, and one post-runtime-support global preflight
+  of all declared sources, selected targets, and canonical opt links;
+- real-directory validation of every existing prefix/Cellar/intermediate keg
+  component and every mapped archive-destination parent before staging,
+  rejection of every pre-existing exact selected keg, plus fail-closed
+  rejection of nested selected-link targets;
+- exact legacy stage/receipt/relocation/link/opt phase ordering, diagnostics,
+  and failure-state compatibility;
 - a late failure returning no usable filesystem/result; and
 - `/etc/kandelo/homebrew-vfs.json` containing selection digest, ABI/arch,
   package identities, counts, receipts, links, and PATH, with none of the
@@ -422,8 +445,26 @@ Move only functional operations into `homebrew-vfs-materializer.ts`:
 - declared link application; and
 - canonical opt-link construction.
 
+The flat builder must precheck descriptor compressed totals before any loader,
+pass the remaining aggregate expanded-byte and entry allowance into each TAR
+parse, and retain no TAR entry backing buffer after that bottle has staged.
+Before the first staging write, it must `lstat` every existing component of
+each selected prefix, Cellar, intermediate keg, and mapped archive-destination
+parent path and require a real directory so a base-image symlink cannot
+redirect extraction. The exact selected keg path must be absent so pre-existing
+content inside a keg cannot redirect an otherwise lexically contained archive
+symlink. Selected ordinary-link target paths must be pairwise non-nested;
+reject every parent/child target pair even when the parent declaration is a
+directory.
+After all kegs stage and relocate, runtime support activates; only then may the
+builder globally preflight every declared source (including losing collision
+claimants), every selected target, and all canonical opt targets. Apply no
+ordinary or opt link until that preflight succeeds. Keep a separate post-link
+runtime-support finalization seam for ownership of link-created parents.
+
 Keep the existing `buildHomebrewVfs(HomebrewVfsPlan, ...)` API and report
-unchanged by adapting the legacy plan into that core.
+unchanged by adapting the legacy plan into that core. In particular, preserve
+the legacy stage-then-receipt checks and sequential opt-link failure semantics.
 
 Add:
 
@@ -448,9 +489,13 @@ scripts/dev-shell.sh bash -c 'cd host && npm run typecheck'
 ```bash
 git add host/src/homebrew-vfs-materializer.ts \
   host/src/homebrew-vfs-builder.ts host/src/homebrew-vfs-planner.ts \
+  host/src/homebrew-bottle-selection.ts host/src/homebrew-bottle-relocation.ts \
+  host/src/index.ts scripts/homebrew-project-bottle-descriptor.ts \
   host/test/homebrew-flat-vfs-builder.test.ts \
   host/test/homebrew-vfs-builder.test.ts \
-  host/test/homebrew-vfs-planner.test.ts
+  host/test/homebrew-vfs-planner.test.ts \
+  host/test/homebrew-bottle-selection.test.ts \
+  scripts/homebrew-validate-flat-selection.test.ts
 git commit -m "Share safe bottle materialization with flat VFS builds"
 ```
 

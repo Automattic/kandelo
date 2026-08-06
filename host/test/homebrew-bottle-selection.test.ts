@@ -27,6 +27,7 @@ describe("flat Homebrew bottle selection", () => {
       kandeloAbi: 42,
       requestedVfsFilename: "kandelo-homebrew-experimental-abi42-wasm32.vfs.zst",
       resourcePolicy: "kandelo-homebrew-vfs-generous-v1",
+      linkPolicy: "kandelo-homebrew-link-ownership-v1",
       runtimeSupport: "kandelo-homebrew-bootstrap-v1",
     });
     expect(selection.bottles.map(({ name }) => name)).toEqual([
@@ -47,6 +48,13 @@ describe("flat Homebrew bottle selection", () => {
       expect(() => projectHomebrewBottleSelection({ ...selectionFixture(), ...override }))
         .toThrow(/unknown or missing fields/);
     }
+  });
+
+  it("requires the versioned functional link-ownership policy", () => {
+    expect(() => projectHomebrewBottleSelection({
+      ...selectionFixture(),
+      linkPolicy: "first-selected-wins",
+    })).toThrow(/linkPolicy/);
   });
 
   it("rejects duplicate Formula identities and duplicate Cellar keg paths", () => {
@@ -254,6 +262,7 @@ export function selectionFixture() {
     bottles: [bootstrap, zlib, ruby],
     requestedVfsFilename: "kandelo-homebrew-experimental-abi42-wasm32.vfs.zst",
     resourcePolicy: "kandelo-homebrew-vfs-generous-v1" as const,
+    linkPolicy: "kandelo-homebrew-link-ownership-v1" as const,
     runtimeSupport: "kandelo-homebrew-bootstrap-v1" as const,
   };
 }

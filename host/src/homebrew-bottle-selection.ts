@@ -20,6 +20,7 @@ const SELECTION_KEYS = [
   "bottles",
   "requestedVfsFilename",
   "resourcePolicy",
+  "linkPolicy",
   "runtimeSupport",
 ] as const;
 const SELECTION_NAME_RE = /^[a-z0-9][a-z0-9._-]*$/;
@@ -34,6 +35,7 @@ export interface HomebrewBottleSelection {
   bottles: HomebrewBottleDescriptor[];
   requestedVfsFilename: string;
   resourcePolicy: "kandelo-homebrew-vfs-generous-v1";
+  linkPolicy: "kandelo-homebrew-link-ownership-v1";
   runtimeSupport: "kandelo-homebrew-bootstrap-v1";
 }
 
@@ -99,6 +101,9 @@ export function projectHomebrewBottleSelection(
   if (root.resourcePolicy !== "kandelo-homebrew-vfs-generous-v1") {
     fail("Homebrew bottle selection.resourcePolicy is invalid");
   }
+  if (root.linkPolicy !== "kandelo-homebrew-link-ownership-v1") {
+    fail("Homebrew bottle selection.linkPolicy is invalid");
+  }
   if (root.runtimeSupport !== "kandelo-homebrew-bootstrap-v1") {
     fail("Homebrew bottle selection.runtimeSupport is invalid");
   }
@@ -113,6 +118,7 @@ export function projectHomebrewBottleSelection(
     bottles,
     requestedVfsFilename,
     resourcePolicy: root.resourcePolicy,
+    linkPolicy: root.linkPolicy,
     runtimeSupport: root.runtimeSupport,
   };
 }

@@ -19,6 +19,8 @@ import {
   type HomebrewBottleDependencyIdentity,
 } from "../host/src/homebrew-bottle-descriptor";
 import { KANDELO_HOMEBREW_GUEST_LAYOUT } from "../host/src/homebrew-guest-layout";
+import { parseHomebrewInstallReceiptDirectDependencies } from
+  "../host/src/homebrew-bottle-relocation";
 import { compareHomebrewCanonicalText } from "../host/src/homebrew-lazy-layer-descriptor";
 import {
   assertHomebrewSafeRelativePath,
@@ -260,17 +262,11 @@ function directSidecarDependencies(value: unknown): DependencyMetadata[] {
 }
 
 function directReceiptDependencies(bytes: Uint8Array): DependencyMetadata[] {
-  const receipt = parseJson(bytes, "INSTALL_RECEIPT.json");
-  const dependencies = array(record(receipt, "INSTALL_RECEIPT.json").runtime_dependencies, "INSTALL_RECEIPT.json.runtime_dependencies")
-    .map((entry) => record(entry, "INSTALL_RECEIPT runtime dependency"))
-    .filter((dependency) => dependency.declared_directly === true)
-    .map((dependency) => ({
-      fullName: fullNameValue(dependency.full_name, undefined, "INSTALL_RECEIPT runtime dependency.full_name"),
-      version: nonemptyString(dependency.pkg_version, "INSTALL_RECEIPT runtime dependency.pkg_version"),
-      revision: nonnegativeInteger(dependency.revision, "INSTALL_RECEIPT runtime dependency.revision"),
-    }));
-  ensureUniqueNames(dependencies, "INSTALL_RECEIPT direct runtime_dependencies");
-  return dependencies;
+  try {
+    return parseHomebrewInstallReceiptDirectDependencies(bytes);
+  } catch (error) {
+    fail(error instanceof Error ? error.message : String(error));
+  }
 }
 
 function dependencyIdentities(

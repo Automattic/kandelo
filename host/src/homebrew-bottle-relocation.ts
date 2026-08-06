@@ -10,6 +10,8 @@ import { KANDELO_HOMEBREW_GUEST_LAYOUT } from "./homebrew-guest-layout";
 
 const MAX_BOTTLE_CHANGED_FILES = 100_000;
 const MAX_BOTTLE_PATH_BYTES = 4096;
+const MAX_BOTTLE_RUNTIME_DEPENDENCIES = 512;
+const FULL_NAME_RE = /^([a-z0-9][a-z0-9._-]*)\/([a-z0-9][a-z0-9._-]*)\/([a-z0-9][a-z0-9._-]*)$/;
 const HOMEBREW_PREFIX = KANDELO_HOMEBREW_GUEST_LAYOUT.prefix;
 const HOMEBREW_REPLACEMENTS = [
   ["@@HOMEBREW_PREFIX@@", HOMEBREW_PREFIX],
@@ -35,21 +37,16 @@ export interface HomebrewInstallReceiptRelocation {
   runtimeDependencies: unknown;
 }
 
+export interface HomebrewInstallReceiptDirectDependency {
+  fullName: string;
+  version: string;
+  revision: number;
+}
+
 export function parseHomebrewInstallReceiptRelocation(
   bytes: Uint8Array,
 ): HomebrewInstallReceiptRelocation {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
-  } catch (error) {
-    throw new Error(
-      "INSTALL_RECEIPT.json is not valid UTF-8 JSON: " + errorMessage(error),
-    );
-  }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    throw new Error("INSTALL_RECEIPT.json must contain an object");
-  }
-  const receipt = parsed as Record<string, unknown>;
+  const receipt = parseHomebrewInstallReceiptRecord(bytes);
   const changedValue = receipt.changed_files;
   if (
     changedValue !== undefined && changedValue !== null &&
@@ -83,6 +80,90 @@ export function parseHomebrewInstallReceiptRelocation(
     changedFiles,
     runtimeDependencies: receipt.runtime_dependencies,
   };
+}
+
+/**
+ * Parse the exact direct runtime-dependency identity Homebrew records in a
+ * bottle receipt. Transitive entries remain installation metadata but are not
+ * descriptor edges.
+ */
+export function parseHomebrewInstallReceiptDirectDependencies(
+  bytes: Uint8Array,
+): HomebrewInstallReceiptDirectDependency[] {
+  const receipt = parseHomebrewInstallReceiptRecord(bytes);
+  const value = receipt.runtime_dependencies;
+  if (!Array.isArray(value) || value.length > MAX_BOTTLE_RUNTIME_DEPENDENCIES) {
+    throw new Error("INSTALL_RECEIPT.json runtime_dependencies must be a bounded array");
+  }
+  const dependencies: HomebrewInstallReceiptDirectDependency[] = [];
+  const seen = new Set<string>();
+  for (const [index, item] of value.entries()) {
+    if (typeof item !== "object" || item === null || Array.isArray(item)) {
+      throw new Error(`INSTALL_RECEIPT.json runtime_dependencies[${index}] must be an object`);
+    }
+    const record = item as Record<string, unknown>;
+    if (typeof record.declared_directly !== "boolean") {
+      throw new Error(
+        `INSTALL_RECEIPT.json runtime_dependencies[${index}].declared_directly must be boolean`,
+      );
+    }
+    if (!record.declared_directly) continue;
+    const fullName = receiptString(record.full_name, index, "full_name");
+    if (!FULL_NAME_RE.test(fullName)) {
+      throw new Error(
+        `INSTALL_RECEIPT.json runtime_dependencies[${index}].full_name is invalid`,
+      );
+    }
+    const version = receiptString(record.pkg_version, index, "pkg_version");
+    const revision = record.revision;
+    if (typeof revision !== "number" || !Number.isSafeInteger(revision) || revision < 0) {
+      throw new Error(
+        `INSTALL_RECEIPT.json runtime_dependencies[${index}].revision must be a nonnegative integer`,
+      );
+    }
+    if (seen.has(fullName)) {
+      throw new Error(`INSTALL_RECEIPT.json repeats direct runtime dependency ${fullName}`);
+    }
+    seen.add(fullName);
+    dependencies.push({ fullName, version, revision });
+  }
+  dependencies.sort((left, right) => compareCanonicalText(left.fullName, right.fullName));
+  return dependencies;
+}
+
+function parseHomebrewInstallReceiptRecord(bytes: Uint8Array): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch (error) {
+    throw new Error(
+      "INSTALL_RECEIPT.json is not valid UTF-8 JSON: " + errorMessage(error),
+    );
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error("INSTALL_RECEIPT.json must contain an object");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function receiptString(value: unknown, index: number, field: string): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw new Error(
+      `INSTALL_RECEIPT.json runtime_dependencies[${index}].${field} must be a nonempty string`,
+    );
+  }
+  return value;
+}
+
+function compareCanonicalText(left: string, right: string): number {
+  const leftBytes = TEXT_ENCODER.encode(left);
+  const rightBytes = TEXT_ENCODER.encode(right);
+  const length = Math.min(leftBytes.length, rightBytes.length);
+  for (let index = 0; index < length; index += 1) {
+    const difference = leftBytes[index]! - rightBytes[index]!;
+    if (difference !== 0) return difference;
+  }
+  return leftBytes.length - rightBytes.length;
 }
 
 export function relocateHomebrewBottleFile(
