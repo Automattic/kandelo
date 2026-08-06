@@ -833,12 +833,12 @@ root-owned Formula-test runtime at the same `HOMEBREW_KANDELO_ROOT` alias. A
 privileged, admitted copy of the recipe runner constructs that runtime from a
 closed allowlist: the platform projection; `host/src`; the built
 `host/wasm` kernel inputs; the three `examples/run-example*.ts` entry files;
-the exact `tsx`, `esbuild`, `fflate`, `fzstd`, and Vite installations; the
-portable `binaries/` and `.ci-test-binary-cache/` pair; and the reviewed
-release `xtask`. Root `Cargo.toml` and `package.json` provide the resolver's
-Kandelo-root identity. The npm portion is not a fixed list of today's
+the exact `tsx`, `esbuild`, `fflate`, `fzstd`, Vite, and Playwright
+installations; the portable `binaries/` and `.ci-test-binary-cache/` pair; and
+the reviewed release `xtask`. Root `Cargo.toml` and `package.json` provide the
+resolver's Kandelo-root identity. The npm portion is not a fixed list of today's
 transitive package names. The privileged stager parses the committed
-package-lock v3 document, starts from those five runtime packages, and follows
+package-lock v3 document, starts from those six runtime packages, and follows
 each required dependency plus each installed optional dependency using Node's
 package-root lookup. Every selected package must be an ordinary canonical
 directory whose manifest name and version match a lock entry carrying SHA-512
@@ -854,9 +854,17 @@ the installed source bytes, rechecks their filesystem identities after
 copying, and seals only the resulting runtime closure. It does not copy
 `package-lock.json`; the lock is selection authority, not Formula-readable
 repository metadata. Vite is launched with the protected Node executable and
-the exact sealed `node_modules/vite/bin/vite.js` path, so browser Formula tests
-do not run `npx`, consult `PATH` for Vite, or fetch missing tooling from the
-network.
+the exact sealed Vite package and its authenticated `node_modules/.bin/vite`
+link. The unchanged tap runner starts `npx vite` from a real but empty
+`apps/browser-demos` compatibility directory. With no package manifest or
+application files there, npm's ancestor lookup selects only that sealed root
+link and package. Playwright likewise resolves from the root-lock-owned closure
+when the runner anchors `createRequire` at the absent browser-app manifest.
+Formula tests therefore receive neither browser-demo source nor an independent
+package tree. Before Formula execution, provisioning loads that root-owned
+Playwright against the fresh browser cache and requires it to resolve the exact
+Chromium executable installed through the browser-app lock. A Playwright
+browser-revision drift therefore fails before the isolated test begins.
 
 `host/wasm/program-packages.json` is generated from the exact source
 checkout for only `dash`, `coreutils`, `grep`, `sed`, and `rootfs`: the
@@ -2010,6 +2018,26 @@ use the same exact source contract. Rollback does not consume `tap_sha`; it
 refreshes and mutates the current protected branch under the tap-wide state
 lock.
 
+### Deferred Single-Bottle Tap Finalization
+
+The ordinary publisher may stop after public bottle verification so a
+separate reviewed tap change can record that exact bottle without running the
+legacy aggregate-catalog finalizer. Only the exact
+`publish-bottles.yml@refs/heads/main` caller on the target tap's protected
+`main` branch may set `defer-tap-finalization: true`. The request must remain a
+non-dry-run publication of exactly one Formula and one architecture, with
+ordinary VFS acceptance disabled. It cannot carry campaign or cross-run
+revalidation authority.
+
+Build, GHCR child upload, version-index publication, anonymous readback,
+Node.js and browser Formula validation, and force-pour verification remain on
+the normal path. The verifier uploads the validated package-scoped
+`homebrew-publish-handoff-<formula>-<arch>-attempt-<attempt>` artifact with a
+two-day retention. That handoff contains the exact bottle, bottle JSON,
+dependency record, upload receipt, and sidecar-composition input needed for a
+reviewed follow-up tap change. `finalize-tap` and `publish-vfs-release` are the
+only publication jobs skipped by this input.
+
 ### Prefix Campaign Publisher Mode
 
 The guest-prefix campaign is a narrow mode of the same reusable
@@ -2026,8 +2054,9 @@ protected `main` branch may select it. Each call must:
 - provide one content-addressed campaign tag plus the exact, canonical
   dependency-handoff request.
 
-Ordinary, maintenance, dry-run, and third-party workflow names cannot
-pass campaign authority or defer tap finalization.
+Ordinary, maintenance, dry-run, and third-party workflow names cannot pass
+campaign authority. Only the protected ordinary publisher may use the
+separate deferred single-bottle boundary described above.
 
 Most campaign calls use write mode. A Formula whose destination was
 anonymously proven absent follows that ordinary path. A newly reviewed

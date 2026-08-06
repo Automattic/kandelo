@@ -71,7 +71,7 @@ NATIVE_CA_PROOF_RUN_SHA256 =
   "c8192c2521864005b34e9eaa39d44d11d580997db39d6e64f2afe30fe447eb91"
 NATIVE_CA_VALIDATION_RUN_SHA256 =
   "7cb1417ec6df08daefa71c2ee6a364be76737b9d7f7ed4aa4022d3d7ca90a8b9"
-PUBLISHER_PLAN_DIGEST = "f88ab589738de04a43c98d77acdb957870a096b74af2cec728d4920ee4f4011c"
+PUBLISHER_PLAN_DIGEST = "2e6e726aafefaebe797b1aa988147eadf42be2d9d842b41c23dec24a52310663"
 PUBLISHER_BUILD_DIGEST = "4dabfbe8be3192f1b4d62ad72e2ec27b275d527d24a8c89c12d9822eb5430afc"
 PUBLISHER_UPLOAD_DIGEST = "861d649d73bb470fc37f99751733e8360f3f59f6245b80e2dd8d7eb4f40f3290"
 PUBLISHER_INDEX_DIGEST = "30531067dcd20c314ef8ae4b9d8584716a92fc803a194098913355ebb519754b"
@@ -365,6 +365,7 @@ def check_caller_validation_behavior(workflow)
   plan_steps = job_steps(workflow_jobs(workflow).fetch("plan"), "publisher plan")
   source = named_step(plan_steps, "Validate caller trust boundary").fetch("run")
   write_caller = {
+    "CALLER_ACTION" => "publish-kandelo-bottles",
     "CALLER_WORKFLOW_REF" =>
       "kandelo-dev/homebrew-tap-core/.github/workflows/publish-bottles.yml@refs/heads/main",
     "DRY_RUN" => "false",
@@ -433,6 +434,64 @@ def check_caller_validation_behavior(workflow)
           kind: "browser-inputs"
         ),
         "publisher write path does not accept an exact reviewed Kandelo commit")
+
+  deferred_write = write_caller.merge({
+    "DEFER_TAP_FINALIZATION" => "true",
+    "FORMULAE" => "ruby",
+    "ARCHES" => "wasm32",
+  })
+  deferred = caller_validation_result(source, deferred_write)
+  check(deferred["status"] == 0 && deferred["outputs"] ==
+        expected_caller_outputs(
+          SELF_TEST_KANDELO_MAIN_SHA,
+          SELF_TEST_TAP_SHA,
+          wasm32: SELF_TEST_PACKAGE_GENERATION_WASM32,
+          wasm64: SELF_TEST_PACKAGE_GENERATION_WASM64,
+          kind: "browser-inputs"
+        ),
+        "publisher rejects deferred finalization from the exact ordinary " \
+          "write caller")
+
+  {
+    "another write workflow" => [{
+      "CALLER_WORKFLOW_REF" =>
+        "kandelo-dev/homebrew-tap-core/.github/workflows/" \
+          "maintain-bottles.yml@refs/heads/main",
+    }, "ordinary deferred publication requires the exact protected " \
+      "publish caller"],
+    "another repository-dispatch action" => [{
+      "CALLER_ACTION" => "maintain-kandelo-bottles",
+    }, "ordinary deferred publication requires the exact protected " \
+      "publish caller"],
+    "dry-run mode" => [{
+      "DRY_RUN" => "true",
+    }, "ordinary deferred publication requires write mode and no VFS " \
+      "acceptance"],
+    "more than one Formula" => [{
+      "FORMULAE" => "ruby,zlib",
+    }, "ordinary deferred publication requires exactly one Formula"],
+    "all Formula selector" => [{
+      "FORMULAE" => "all",
+    }, "ordinary deferred publication requires exactly one Formula"],
+    "more than one architecture" => [{
+      "ARCHES" => "wasm32,wasm64",
+    }, "ordinary deferred publication requires exactly one architecture"],
+    "VFS acceptance" => [{
+      "REQUIRE_VFS_ACCEPTANCE" => "true",
+    }, "ordinary deferred publication requires write mode and no VFS " \
+      "acceptance"],
+    "campaign authority" => [{
+      "PREFIX_CAMPAIGN_DEPENDENCIES" => '{"dependencies":[],"schema":1}',
+      "PREFIX_CAMPAIGN_TAG" => "homebrew-prefix-campaign-sha256-#{"1" * 64}",
+    }, "only the reviewed prefix campaign caller may pass campaign authority"],
+    "prior-run revalidation" => [{
+      "REVALIDATION_SOURCE" => "{}",
+    }, "only the reviewed prefix campaign caller may import prior-run artifacts"],
+  }.each do |label, (override, error)|
+    rejected = caller_validation_result(source, deferred_write.merge(override))
+    check(rejected["status"] == 2 && rejected["stdout"].include?(error),
+          "publisher deferred ordinary caller accepts #{label}")
+  end
 
   dry_generations = caller_validation_result(source, {
     "PACKAGE_GENERATION_WASM32" => SELF_TEST_PACKAGE_GENERATION_WASM32,
@@ -627,8 +686,8 @@ def check_caller_validation_behavior(workflow)
   )
   check(ordinary_with_campaign_authority["status"] == 2 &&
         ordinary_with_campaign_authority["stdout"].include?(
-          "only the reviewed prefix campaign caller may defer tap " \
-          "finalization or pass campaign authority"
+          "only the reviewed prefix campaign caller may pass campaign " \
+          "authority"
         ), "ordinary publisher caller accepts campaign authority")
 
   {
@@ -969,6 +1028,8 @@ def check_tap_callers
     "dry-run" => false,
   }
   write_publish_inputs = common_publish_inputs.merge({
+    "defer-tap-finalization" =>
+      "${{ github.event.client_payload.defer_tap_finalization || false }}",
     # Required VFS acceptance needs bottles published by this invocation.
     # Keep the caller-selected gate out of the non-writing dry-run contract.
     "require-vfs-acceptance" =>
@@ -4161,9 +4222,16 @@ def check_publisher(workflow)
     "dependency_keg_binds(",
     "recipe output file has unsafe links, mode, or size",
     "FORMULA_TEST_RUNTIME_DIRECTORIES = (",
+    "FORMULA_TEST_RUNTIME_EMPTY_DIRECTORIES = (",
     "FORMULA_TEST_RUNTIME_NODE_MODULE_ROOTS = (",
+    'Path("apps/browser-demos")',
+    '"playwright"',
     '"vite"',
     'FORMULA_TEST_RUNTIME_VITE_CLI = Path("node_modules/vite/bin/vite.js")',
+    'FORMULA_TEST_RUNTIME_VITE_BIN = Path("node_modules/.bin/vite")',
+    'FORMULA_TEST_RUNTIME_VITE_BIN_TARGET = "../vite/bin/vite.js"',
+    "expected_target=FORMULA_TEST_RUNTIME_VITE_BIN_TARGET",
+    "Formula test empty compatibility directory is occupied",
     "formula_test_node_module_projection(",
     "Formula test npm closure changed during staging",
     "FORMULA_TEST_RUNTIME_PROGRAM_INDEX_DESTINATION = Path(",
@@ -6128,7 +6196,13 @@ def check_publisher(workflow)
     "host/wasm/kandelo-kernel.wasm",
     "node_modules/tsx/package.json",
     "node_modules/esbuild/package.json",
+    "apps/browser-demos",
+    "node_modules/playwright/package.json",
+    "node_modules/playwright-core/package.json",
+    "node_modules/.bin/vite",
+    "../vite/bin/vite.js",
     "node_modules/vite/bin/vite.js",
+    "Formula test runtime apps tree contains undeclared state",
     ".ci-test-binary-cache/programs",
     "package-lock.json packages local-binaries",
     "tools/xtask scripts/dev-shell.sh",
@@ -6845,6 +6919,11 @@ def check_publisher(workflow)
     'PATH="$PATH:$HOST_SYSTEM_PATH" PLAYWRIGHT_BROWSERS_PATH="$BROWSER_CACHE"',
     '"$NODE_BIN" "$PLAYWRIGHT_CLI" install chromium --with-deps',
     'requireFromBrowserApp("@playwright/test")',
+    'KANDELO_ROOT_PACKAGE="$KANDELO_ROOT/package.json"',
+    'const requireFromRuntime = createRequire(process.argv[2]);',
+    'const { chromium } = requireFromRuntime("playwright");',
+    '[ "$RUNTIME_BROWSER_EXECUTABLE" != "$BROWSER_EXECUTABLE" ]',
+    'Formula runtime Playwright resolved a different Chromium',
     '"$SUDO_BIN" -n -- chown -R root:root "$BROWSER_CACHE"',
     '"$SUDO_BIN" -n -- chmod -R a-w "$BROWSER_CACHE"',
     '"$SUDO_BIN" -n -H -u "$BUILD_USER" --',
