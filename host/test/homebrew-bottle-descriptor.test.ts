@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ABI_VERSION } from "../src/generated/abi";
 import {
   encodeHomebrewBottleDescriptor,
@@ -174,6 +174,42 @@ describe("Homebrew bottle descriptor", () => {
     ] as const) expectRejected(descriptor({ [key]: value }));
   });
 
+  it("derives receipt and link-source roots from the authoritative cellar", async () => {
+    vi.resetModules();
+    vi.doMock("../src/homebrew-guest-layout", () => ({
+      KANDELO_HOMEBREW_GUEST_LAYOUT: Object.freeze({
+        prefix: "/srv/kandelo/brew",
+        cellar: "/srv/kandelo/brew/Store",
+        repository: "/srv/kandelo/brew",
+        stableEntrypoint: "/usr/bin/brew",
+      }),
+    }));
+    try {
+      const { projectHomebrewBottleDescriptor: project } = await import(
+        "../src/homebrew-bottle-descriptor"
+      );
+      const shifted = descriptor({
+        prefix: "/srv/kandelo/brew",
+        cellar: "/srv/kandelo/brew/Store",
+        keg: "/srv/kandelo/brew/Store/bzip2/1.0.8",
+        receipts: [
+          "Store/bzip2/1.0.8/.brew/bzip2.rb",
+          "Store/bzip2/1.0.8/INSTALL_RECEIPT.json",
+        ],
+        links: [{
+          type: "symlink",
+          source: "Store/bzip2/1.0.8/bin/bzip2",
+          target: "bin/bzip2",
+        }],
+      });
+
+      expect(project(shifted)).toEqual(shifted);
+    } finally {
+      vi.doUnmock("../src/homebrew-guest-layout");
+      vi.resetModules();
+    }
+  });
+
   it("rejects duplicate materialization identities", () => {
     const dependency = (descriptor().dependencies as unknown[])[0]!;
     expectRejected(descriptor({ dependencies: [dependency, dependency] }));
@@ -199,6 +235,7 @@ describe("Homebrew bottle descriptor", () => {
       bytes: 456,
     }] }));
     expectRejected(descriptor({ materialization: "homebrew-runtime-support-v1" }));
+    expectRejected(bootstrapDescriptor({ materialization: "keg", supportOutputs: [] }));
     expectRejected(bootstrapDescriptor({ supportOutputs: [{
       name: "homebrew-bootstrap",
       kegRelativePath: "libexec/not-bootstrap.zip",
@@ -216,6 +253,23 @@ describe("Homebrew bottle descriptor", () => {
     const firstText = new TextDecoder().decode(firstBytes);
 
     expect(firstBytes).toEqual(secondBytes);
+    expect(firstText).toBe(
+      `{"arch":"wasm32","bottleRebuild":0,"bottleTag":"wasm32_kandelo",` +
+        `"bytes":123,"cellar":"/opt/kandelo/homebrew/Cellar","compression":"gzip",` +
+        `"dependencies":[{"bottleRebuild":1,"bottleSha256":"${SHA_B}",` +
+        `"fullName":"kandelo-dev/tap-core/zlib","revision":0,"version":"1.3.1"}],` +
+        `"fullName":"kandelo-dev/tap-core/bzip2","kandeloAbi":${ABI_VERSION},` +
+        `"keg":"/opt/kandelo/homebrew/Cellar/bzip2/1.0.8",` +
+        `"layout":"kandelo-homebrew-v1","links":[{"source":` +
+        `"Cellar/bzip2/1.0.8/bin/bzip2","target":"bin/bzip2","type":"symlink"}],` +
+        `"materialization":"keg","name":"bzip2","pathPrepend":["bin"],` +
+        `"payloadRoot":"bzip2/1.0.8","prefix":"/opt/kandelo/homebrew",` +
+        `"receipts":["Cellar/bzip2/1.0.8/.brew/bzip2.rb",` +
+        `"Cellar/bzip2/1.0.8/INSTALL_RECEIPT.json"],"revision":0,"schema":1,` +
+        `"sha256":"${SHA_A}","supportOutputs":[],` +
+        `"url":"https://ghcr.io/v2/kandelo-dev/homebrew-tap-core/bzip2/blobs/sha256:${SHA_A}",` +
+        `"version":"1.0.8"}\n`,
+    );
     expect(firstText.endsWith("\n")).toBe(true);
     expect(firstText.endsWith("\n\n")).toBe(false);
     expect(JSON.parse(firstText)).toEqual(first);

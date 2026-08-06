@@ -112,13 +112,14 @@ export function projectHomebrewBottleDescriptor(value: unknown): HomebrewBottleD
 
   const payloadRoot = `${name}/${version}`;
   const keg = `${KANDELO_HOMEBREW_GUEST_LAYOUT.cellar}/${payloadRoot}`;
+  const cellarRelativePath = canonicalCellarRelativePath();
   expectEqual(root.prefix, KANDELO_HOMEBREW_GUEST_LAYOUT.prefix, "prefix");
   expectEqual(root.cellar, KANDELO_HOMEBREW_GUEST_LAYOUT.cellar, "cellar");
   expectEqual(root.payloadRoot, payloadRoot, "payloadRoot");
   expectEqual(root.keg, keg, "keg");
 
-  const receipts = receiptPaths(root.receipts, name, payloadRoot);
-  const links = linkEntries(root.links, payloadRoot);
+  const receipts = receiptPaths(root.receipts, name, payloadRoot, cellarRelativePath);
+  const links = linkEntries(root.links, payloadRoot, cellarRelativePath);
   const pathPrepend = pathEntries(root.pathPrepend);
   const supportOutputs = supportOutputEntries(root.supportOutputs);
   const dependencies = dependencyEntries(root.dependencies);
@@ -166,11 +167,16 @@ export function encodeHomebrewBottleDescriptor(
   return new TextEncoder().encode(`${JSON.stringify(sortJson(canonical))}\n`);
 }
 
-function receiptPaths(value: unknown, name: string, payloadRoot: string): string[] {
+function receiptPaths(
+  value: unknown,
+  name: string,
+  payloadRoot: string,
+  cellarRelativePath: string,
+): string[] {
   const receipts = stringArray(value, "Homebrew bottle descriptor.receipts");
   const expected = [
-    `Cellar/${payloadRoot}/.brew/${name}.rb`,
-    `Cellar/${payloadRoot}/INSTALL_RECEIPT.json`,
+    `${cellarRelativePath}/${payloadRoot}/.brew/${name}.rb`,
+    `${cellarRelativePath}/${payloadRoot}/INSTALL_RECEIPT.json`,
   ];
   if (receipts.length !== expected.length || !sameSet(receipts, expected)) {
     fail("Homebrew bottle descriptor.receipts must be the canonical keg receipts");
@@ -178,9 +184,13 @@ function receiptPaths(value: unknown, name: string, payloadRoot: string): string
   return receipts;
 }
 
-function linkEntries(value: unknown, payloadRoot: string): HomebrewLinkEntry[] {
+function linkEntries(
+  value: unknown,
+  payloadRoot: string,
+  cellarRelativePath: string,
+): HomebrewLinkEntry[] {
   if (!Array.isArray(value)) fail("Homebrew bottle descriptor.links must be an array");
-  const sourcePrefix = `Cellar/${payloadRoot}/`;
+  const sourcePrefix = `${cellarRelativePath}/${payloadRoot}/`;
   const sources = new Set<string>();
   const targets = new Set<string>();
   return value.map((item, index) => {
@@ -270,22 +280,26 @@ function validateMaterialization(
   materialization: HomebrewBottleDescriptor["materialization"],
   supportOutputs: HomebrewBottleSupportOutput[],
 ): void {
+  if (fullName === BOOTSTRAP_FULL_NAME) {
+    if (materialization !== "homebrew-runtime-support-v1") {
+      fail("Homebrew bootstrap descriptors must use runtime support materialization");
+    }
+    if (
+      supportOutputs.length !== BOOTSTRAP_OUTPUTS.length ||
+      !supportOutputs.every((output, index) =>
+        output.name === BOOTSTRAP_OUTPUTS[index]![0] &&
+        output.kegRelativePath === BOOTSTRAP_OUTPUTS[index]![1]
+      )
+    ) {
+      fail("Homebrew bootstrap descriptors must declare the exact support outputs");
+    }
+    return;
+  }
   if (materialization === "keg") {
     if (supportOutputs.length !== 0) fail("ordinary keg descriptors cannot declare support outputs");
     return;
   }
-  if (fullName !== BOOTSTRAP_FULL_NAME) {
-    fail("Homebrew runtime support is reserved for the Homebrew bootstrap descriptor");
-  }
-  if (
-    supportOutputs.length !== BOOTSTRAP_OUTPUTS.length ||
-    !supportOutputs.every((output, index) =>
-      output.name === BOOTSTRAP_OUTPUTS[index]![0] &&
-      output.kegRelativePath === BOOTSTRAP_OUTPUTS[index]![1]
-    )
-  ) {
-    fail("Homebrew bootstrap descriptors must declare the exact support outputs");
-  }
+  fail("Homebrew runtime support is reserved for the Homebrew bootstrap descriptor");
 }
 
 function publicBottleUrl(value: unknown, sha256: string): string {
@@ -342,6 +356,18 @@ function relativePath(value: unknown, label: string): string {
   const path = stringValue(value, label);
   if (!RELATIVE_PATH_RE.test(path)) fail(`${label} must be a safe relative path`);
   return path;
+}
+
+function canonicalCellarRelativePath(): string {
+  const { prefix, cellar } = KANDELO_HOMEBREW_GUEST_LAYOUT;
+  const prefixWithSeparator = `${prefix}/`;
+  if (!cellar.startsWith(prefixWithSeparator)) {
+    fail("canonical Homebrew cellar must be under the canonical prefix");
+  }
+  return relativePath(
+    cellar.slice(prefixWithSeparator.length),
+    "canonical Homebrew cellar relative path",
+  );
 }
 
 function digest(value: unknown, label: string): string {
