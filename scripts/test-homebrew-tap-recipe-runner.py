@@ -1211,6 +1211,15 @@ class FormulaTestRuntimeProjectionTests(unittest.TestCase):
         )
         add_node_module("fflate")
         add_node_module("fzstd")
+        add_node_module(
+            "playwright-core",
+            files={"index.js": b"module.exports = { chromium: {} };\n"},
+        )
+        add_node_module(
+            "playwright",
+            dependencies={"playwright-core": "1.0.0"},
+            files={"index.js": b"module.exports = require('playwright-core');\n"},
+        )
         add_node_module("tsx", dependencies={"esbuild": "1.0.0"})
         add_node_module("detect-libc")
         add_node_module("lightningcss-linux-x64-gnu")
@@ -1258,8 +1267,11 @@ class FormulaTestRuntimeProjectionTests(unittest.TestCase):
             },
             files={"bin/vite.js": b"console.log('fixture vite');\n"},
         )
+        vite_bin = source / "node_modules/.bin/vite"
+        vite_bin.parent.mkdir(parents=True)
+        vite_bin.symlink_to("../vite/bin/vite.js")
         # A valid lock entry is not itself runtime authority. Only packages
-        # reachable from the five runner-owned roots belong in the projection.
+        # reachable from the six runner-owned roots belong in the projection.
         add_node_module("ambient-but-locked")
         (source / "package-lock.json").write_text(
             json.dumps(
@@ -1316,6 +1328,10 @@ class FormulaTestRuntimeProjectionTests(unittest.TestCase):
         (source / "packages/registry/poison/build.sh").write_text("poison\n")
         (source / "local-binaries").mkdir()
         (source / "local-binaries/poison.wasm").write_bytes(b"poison\n")
+        (source / "apps/browser-demos").mkdir(parents=True)
+        (source / "apps/browser-demos/package.json").write_text(
+            '{"name":"undeclared-browser-app"}\n'
+        )
         (source / "node_modules/undeclared").mkdir()
         (source / "node_modules/undeclared/index.js").write_text("poison\n")
         (source / "target/host/release").mkdir(parents=True)
@@ -1424,11 +1440,27 @@ class FormulaTestRuntimeProjectionTests(unittest.TestCase):
                 ).read_bytes(),
                 b"console.log('fixture vite');\n",
             )
+            projected_vite_bin = destination / "node_modules/.bin/vite"
+            self.assertTrue(projected_vite_bin.is_symlink())
+            self.assertEqual(
+                projected_vite_bin.readlink().as_posix(),
+                "../vite/bin/vite.js",
+            )
+            browser_cwd = destination / "apps/browser-demos"
+            self.assertTrue(browser_cwd.is_dir())
+            self.assertEqual(list(browser_cwd.iterdir()), [])
+            self.assertEqual(
+                (
+                    destination / "node_modules/playwright/index.js"
+                ).read_bytes(),
+                b"module.exports = require('playwright-core');\n",
+            )
             for dependency in (
                 "node_modules/postcss/package.json",
                 "node_modules/@rolldown/pluginutils/package.json",
                 "node_modules/@rolldown/binding-linux-x64-gnu/package.json",
                 "node_modules/lightningcss-linux-x64-gnu/package.json",
+                "node_modules/playwright-core/package.json",
             ):
                 self.assertTrue((destination / dependency).is_file())
             for forbidden in (
@@ -1465,6 +1497,35 @@ class FormulaTestRuntimeProjectionTests(unittest.TestCase):
             root = Path(temporary).resolve()
             source, platform, checker, protected = self.make_fixture(root)
             shutil.rmtree(source / "node_modules/postcss")
+
+            with self.assertRaisesRegex(
+                runner.RunnerError, "locked but not installed"
+            ):
+                self.stage(root, source, platform, checker, protected)
+
+            self.assertFalse((protected / "formula-test-runtime").exists())
+
+    def test_rejects_a_changed_vite_npm_executable_link(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source, platform, checker, protected = self.make_fixture(root)
+            vite_bin = source / "node_modules/.bin/vite"
+            vite_bin.unlink()
+            vite_bin.symlink_to("../tsx/dist/cli.mjs")
+
+            with self.assertRaisesRegex(
+                runner.RunnerError,
+                "Vite npm executable link has unexpected target",
+            ):
+                self.stage(root, source, platform, checker, protected)
+
+            self.assertFalse((protected / "formula-test-runtime").exists())
+
+    def test_rejects_a_missing_locked_playwright_dependency(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source, platform, checker, protected = self.make_fixture(root)
+            shutil.rmtree(source / "node_modules/playwright-core")
 
             with self.assertRaisesRegex(
                 runner.RunnerError, "locked but not installed"

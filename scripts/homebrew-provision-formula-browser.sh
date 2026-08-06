@@ -7,6 +7,7 @@ BUILD_USER=""
 SUDO_BIN=""
 NODE_BIN=""
 BROWSER_APP=""
+KANDELO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 
 usage() {
   cat >&2 <<'EOF'
@@ -71,6 +72,11 @@ fi
 
 SHARED_TEMP="$(cd "$SHARED_TEMP" && pwd -P)"
 BROWSER_APP="$(cd "$BROWSER_APP" && pwd -P)"
+KANDELO_ROOT_PACKAGE="$KANDELO_ROOT/package.json"
+if [ ! -f "$KANDELO_ROOT_PACKAGE" ] || [ -L "$KANDELO_ROOT_PACKAGE" ]; then
+  echo "homebrew-provision-formula-browser.sh: Kandelo runtime package is unavailable" >&2
+  exit 2
+fi
 PLAYWRIGHT_CLI="$BROWSER_APP/node_modules/playwright/cli.js"
 if [ ! -f "$PLAYWRIGHT_CLI" ] || [ -L "$PLAYWRIGHT_CLI" ]; then
   echo "homebrew-provision-formula-browser.sh: reviewed Playwright CLI is unavailable" >&2
@@ -113,6 +119,40 @@ case "$BROWSER_EXECUTABLE" in
     exit 2
     ;;
 esac
+
+RUNTIME_BROWSER_EXECUTABLE="$({
+  PLAYWRIGHT_BROWSERS_PATH="$BROWSER_CACHE" \
+    "$NODE_BIN" - "$KANDELO_ROOT_PACKAGE" <<'NODE'
+const { createRequire } = require("node:module");
+const requireFromRuntime = createRequire(process.argv[2]);
+const { chromium } = requireFromRuntime("playwright");
+process.stdout.write(chromium.executablePath());
+NODE
+} 2>/dev/null)"
+if [ -z "$RUNTIME_BROWSER_EXECUTABLE" ] || \
+   [ ! -f "$RUNTIME_BROWSER_EXECUTABLE" ] || \
+   [ -L "$RUNTIME_BROWSER_EXECUTABLE" ] || \
+   [ ! -x "$RUNTIME_BROWSER_EXECUTABLE" ]; then
+  echo "homebrew-provision-formula-browser.sh: Formula runtime Playwright cannot use provisioned Chromium" >&2
+  exit 2
+fi
+RUNTIME_BROWSER_EXECUTABLE_DIR="$(
+  cd "$(dirname "$RUNTIME_BROWSER_EXECUTABLE")" && pwd -P
+)"
+RUNTIME_BROWSER_EXECUTABLE="$RUNTIME_BROWSER_EXECUTABLE_DIR/$(
+  basename "$RUNTIME_BROWSER_EXECUTABLE"
+)"
+case "$RUNTIME_BROWSER_EXECUTABLE" in
+  "$BROWSER_CACHE"/*) ;;
+  *)
+    echo "homebrew-provision-formula-browser.sh: Formula runtime Playwright Chromium escaped its cache" >&2
+    exit 2
+    ;;
+esac
+if [ "$RUNTIME_BROWSER_EXECUTABLE" != "$BROWSER_EXECUTABLE" ]; then
+  echo "homebrew-provision-formula-browser.sh: Formula runtime Playwright resolved a different Chromium" >&2
+  exit 2
+fi
 
 "$SUDO_BIN" -n -- chown -R root:root "$BROWSER_CACHE"
 "$SUDO_BIN" -n -- chmod -R a-w "$BROWSER_CACHE"

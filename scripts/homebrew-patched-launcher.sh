@@ -436,11 +436,16 @@ homebrew_patched_launcher_formula_test_runtime_manifest() {
     node_modules/esbuild/package.json
     node_modules/fflate/package.json
     node_modules/fzstd/package.json
+    node_modules/playwright/index.js
+    node_modules/playwright/package.json
+    node_modules/playwright-core/package.json
     node_modules/vite/bin/vite.js
+    node_modules/vite/dist/node/index.js
     node_modules/vite/package.json
   )
   local -a required_directories=(
     .ci-test-binary-cache/programs
+    apps/browser-demos
     binaries
     host/src
     host/wasm
@@ -460,7 +465,7 @@ homebrew_patched_launcher_formula_test_runtime_manifest() {
     relative="${entry#"$root"/}"
     if [[ "$relative" != */* ]]; then
       case "$relative" in
-        .ci-test-binary-cache|Cargo.toml|binaries|crates|examples|host|libc|\
+        .ci-test-binary-cache|apps|Cargo.toml|binaries|crates|examples|host|libc|\
           node_modules|package.json|scripts|sdk|target|tools) ;;
         *)
           echo "homebrew-patched-launcher: Formula test runtime exposes an undeclared top-level input: $relative" >&2
@@ -481,6 +486,22 @@ homebrew_patched_launcher_formula_test_runtime_manifest() {
         return 2
       }
     fi
+  done
+  [ -L "$root/node_modules/.bin/vite" ] &&
+    [ "$(/usr/bin/readlink -- "$root/node_modules/.bin/vite")" = \
+      "../vite/bin/vite.js" ] || {
+    echo "homebrew-patched-launcher: Formula test runtime Vite npm link is invalid" >&2
+    return 2
+  }
+  for entry in "${entries[@]}"; do
+    relative="${entry#"$root"/}"
+    case "$relative" in
+      apps|apps/browser-demos) ;;
+      apps/*)
+        echo "homebrew-patched-launcher: Formula test runtime apps tree contains undeclared state: $relative" >&2
+        return 2
+        ;;
+    esac
   done
   for checker in "${required_files[@]}"; do
     [ -f "$root/$checker" ] && [ ! -L "$root/$checker" ] || {

@@ -37,15 +37,27 @@ set -euo pipefail
 printf '%s\n' "$*" >>"$FAKE_NODE_LOG"
 if [ "${1:-}" = "$FAKE_PLAYWRIGHT_CLI" ]; then
   [ "$*" = "$FAKE_PLAYWRIGHT_CLI install chromium --with-deps" ] || exit 41
-  executable="$PLAYWRIGHT_BROWSERS_PATH/chromium-fixture/chrome"
-  mkdir -p "$(dirname "$executable")"
-  printf '#!/usr/bin/env bash\nexit 0\n' >"$executable"
-  chmod 0755 "$executable"
+  for executable in \
+    "$PLAYWRIGHT_BROWSERS_PATH/chromium-fixture/chrome" \
+    "$PLAYWRIGHT_BROWSERS_PATH/chromium-other/chrome"; do
+    mkdir -p "$(dirname "$executable")"
+    printf '#!/usr/bin/env bash\nexit 0\n' >"$executable"
+    chmod 0755 "$executable"
+  done
   exit 0
 fi
 if [ "${1:-}" = "-" ]; then
-  printf '%s' "${FAKE_BROWSER_EXECUTABLE:-$PLAYWRIGHT_BROWSERS_PATH/chromium-fixture/chrome}"
-  exit 0
+  default_executable="$PLAYWRIGHT_BROWSERS_PATH/chromium-fixture/chrome"
+  case "${2:-}" in
+    "$FAKE_BROWSER_APP_PACKAGE")
+      printf '%s' "${FAKE_BROWSER_EXECUTABLE:-$default_executable}"
+      exit 0
+      ;;
+    "$FAKE_RUNTIME_PACKAGE")
+      printf '%s' "${FAKE_RUNTIME_BROWSER_EXECUTABLE:-${FAKE_BROWSER_EXECUTABLE:-$default_executable}}"
+      exit 0
+      ;;
+  esac
 fi
 exit 42
 EOF
@@ -77,7 +89,10 @@ run_provisioner() {
   FAKE_NODE_LOG="$NODE_LOG" \
     FAKE_SUDO_LOG="$SUDO_LOG" \
     FAKE_PLAYWRIGHT_CLI="$BROWSER_APP/node_modules/playwright/cli.js" \
+    FAKE_BROWSER_APP_PACKAGE="$BROWSER_APP/package.json" \
+    FAKE_RUNTIME_PACKAGE="$REPO_ROOT/package.json" \
     FAKE_BROWSER_EXECUTABLE="${FAKE_BROWSER_EXECUTABLE:-}" \
+    FAKE_RUNTIME_BROWSER_EXECUTABLE="${FAKE_RUNTIME_BROWSER_EXECUTABLE:-}" \
     bash "$REPO_ROOT/scripts/homebrew-provision-formula-browser.sh" \
       --shared-temp "$shared_temp" \
       --build-user kandelo-homebrew-build \
@@ -96,6 +111,10 @@ BROWSER_EXECUTABLE="$BROWSER_CACHE/chromium-fixture/chrome"
   fail "provisioned browser cache remained writable"
 grep -Fx "$BROWSER_APP/node_modules/playwright/cli.js install chromium --with-deps" \
   "$NODE_LOG" >/dev/null || fail "provisioner did not use the reviewed Playwright CLI"
+grep -Fx -- "- $BROWSER_APP/package.json" "$NODE_LOG" >/dev/null ||
+  fail "provisioner did not resolve the browser-app Playwright executable"
+grep -Fx -- "- $REPO_ROOT/package.json" "$NODE_LOG" >/dev/null ||
+  fail "provisioner did not resolve the Formula runtime Playwright executable"
 grep -Fx -- "-n -- chown -R root:root $BROWSER_CACHE" "$SUDO_LOG" >/dev/null ||
   fail "provisioner did not transfer the browser cache to the protected identity"
 grep -Fx -- "-n -H -u kandelo-homebrew-build -- test -w $BROWSER_CACHE -o -w $BROWSER_EXECUTABLE" \
@@ -118,5 +137,16 @@ if FAKE_BROWSER_EXECUTABLE="$ESCAPE_TARGET" run_provisioner "$ESCAPE_ROOT" \
 fi
 grep -F "Playwright Chromium escaped its cache" "$TMPDIR/escape.err" >/dev/null ||
   fail "provisioner did not explain an escaped browser executable"
+
+MISMATCH_ROOT="$TMPDIR/mismatch-root"
+mkdir "$MISMATCH_ROOT"
+MISMATCH_EXECUTABLE="$MISMATCH_ROOT/ms-playwright/chromium-other/chrome"
+if FAKE_RUNTIME_BROWSER_EXECUTABLE="$MISMATCH_EXECUTABLE" \
+  run_provisioner "$MISMATCH_ROOT" >/dev/null 2>"$TMPDIR/mismatch.err"; then
+  fail "provisioner accepted a different Formula runtime Chromium"
+fi
+grep -F "Formula runtime Playwright resolved a different Chromium" \
+  "$TMPDIR/mismatch.err" >/dev/null ||
+  fail "provisioner did not explain a Formula runtime Chromium mismatch"
 
 echo "test-homebrew-provision-formula-browser.sh: ok"
