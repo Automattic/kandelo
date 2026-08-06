@@ -71,7 +71,7 @@ NATIVE_CA_PROOF_RUN_SHA256 =
   "c8192c2521864005b34e9eaa39d44d11d580997db39d6e64f2afe30fe447eb91"
 NATIVE_CA_VALIDATION_RUN_SHA256 =
   "7cb1417ec6df08daefa71c2ee6a364be76737b9d7f7ed4aa4022d3d7ca90a8b9"
-PUBLISHER_PLAN_DIGEST = "9d9e4571ee955c357914a6fd0a9727c42c3d3613b4ee59d5c327598c44680afb"
+PUBLISHER_PLAN_DIGEST = "2e6e726aafefaebe797b1aa988147eadf42be2d9d842b41c23dec24a52310663"
 PUBLISHER_BUILD_DIGEST = "4dabfbe8be3192f1b4d62ad72e2ec27b275d527d24a8c89c12d9822eb5430afc"
 PUBLISHER_UPLOAD_DIGEST = "861d649d73bb470fc37f99751733e8360f3f59f6245b80e2dd8d7eb4f40f3290"
 PUBLISHER_INDEX_DIGEST = "30531067dcd20c314ef8ae4b9d8584716a92fc803a194098913355ebb519754b"
@@ -469,6 +469,9 @@ def check_caller_validation_behavior(workflow)
       "acceptance"],
     "more than one Formula" => [{
       "FORMULAE" => "ruby,zlib",
+    }, "ordinary deferred publication requires exactly one Formula"],
+    "all Formula selector" => [{
+      "FORMULAE" => "all",
     }, "ordinary deferred publication requires exactly one Formula"],
     "more than one architecture" => [{
       "ARCHES" => "wasm32,wasm64",

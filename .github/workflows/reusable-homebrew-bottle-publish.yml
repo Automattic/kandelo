@@ -420,7 +420,8 @@ jobs:
                 [ "$REQUIRE_VFS_ACCEPTANCE" = "false" ] || {
                   echo "::error::ordinary deferred publication requires write mode and no VFS acceptance"; exit 2;
                 }
-              [[ "$FORMULAE" =~ ^[a-z0-9][a-z0-9._-]{0,254}$ ]] || {
+              [ "$FORMULAE" != "all" ] &&
+                [[ "$FORMULAE" =~ ^[a-z0-9][a-z0-9._-]{0,254}$ ]] || {
                 echo "::error::ordinary deferred publication requires exactly one Formula"; exit 2;
               }
               [[ "$ARCHES" =~ ^wasm(32|64)$ ]] || {
