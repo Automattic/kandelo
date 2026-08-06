@@ -332,8 +332,12 @@ The policy is code-owned and must bound:
 
 Start with generous ceilings compatible with `vfs/tar.ts`,
 `vfs/deferred-tree-limits.ts`, and the browser VFS format. Measure the actual
-41-bottle selection before freezing the final values. Do not add a Ruby-only
-exception.
+40-bottle reuse set now and commit conservative pre-release ceilings on this
+unmerged shipment branch. These values are provisional, not a published
+contract. After Ruby exists, Task 13 must measure the actual 41-bottle set and
+candidate image, adjust the same unreleased policy if needed, and freeze it
+before the flat-lane PR merges. Do not add a Ruby-only exception; if a
+published policy ever needs incompatible changes, introduce a new policy ID.
 
 **Step 4: Run and confirm GREEN**
 
@@ -998,19 +1002,25 @@ receipt dependencies, ABI 42, fork instrumentation, and Formula revision 2.
 
 - Create: `Kandelo/selections/experimental-abi42-shell41-wasm32.json`
 
-**Step 1: Merge the Kandelo flat-lane PR**
+**Step 1: Finalize the 41-bottle policy and merge the Kandelo flat-lane PR**
 
 Merge Task 10's current `main` into the implementation branch without reset or
-clean, run the Task 14 local suites, then open and merge the packaging-only
-Kandelo PR containing Tasks 1-7. Record the exact protected-main merge SHA.
-This occurs after Ruby publication so advancing Kandelo main does not force a
-second rootfs-generation projection before the one required bottle build.
+clean. Project the verified Ruby descriptor, compose a local canonical
+41-bottle candidate selection, measure its actual bottle/archive/support
+resources, and build the candidate image. Adjust and freeze the still-unreleased
+`kandelo-homebrew-vfs-generous-v1` policy from Task 3 against that evidence,
+with no Formula-specific exception. Run the Task 14 local suites, then open and
+merge the packaging-only Kandelo PR containing Tasks 1-7. Record the exact
+protected-main merge SHA. This occurs after Ruby publication so advancing
+Kandelo main does not force a second rootfs-generation projection before the
+one required bottle build.
 
-**Step 2: Append the verified Ruby descriptor**
+**Step 2: Commit the exact verified 41-bottle selection**
 
-Project Ruby with Task 2's CLI, insert it dependency-first after libyaml/zlib,
-and validate the complete 41-descriptor closure. The active selection must not
-reference f826, a campaign tag, a handoff release, or a provenance report.
+Commit the exact candidate-selection bytes proven in Step 1 to the tap,
+inserting Ruby dependency-first after libyaml/zlib, and validate the complete
+41-descriptor closure with the merged Kandelo CLI. The active selection must
+not reference f826, a campaign tag, a handoff release, or a provenance report.
 
 **Step 3: Run tap and Kandelo workflow checks**
 
