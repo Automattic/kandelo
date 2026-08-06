@@ -1025,6 +1025,8 @@ def check_tap_callers
     "dry-run" => false,
   }
   write_publish_inputs = common_publish_inputs.merge({
+    "defer-tap-finalization" =>
+      "${{ github.event.client_payload.defer_tap_finalization || false }}",
     # Required VFS acceptance needs bottles published by this invocation.
     # Keep the caller-selected gate out of the non-writing dry-run contract.
     "require-vfs-acceptance" =>
