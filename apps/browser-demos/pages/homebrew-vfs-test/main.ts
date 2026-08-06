@@ -37,6 +37,10 @@ import {
   validateHomebrewVfsAcceptanceRequest,
   type HomebrewVfsAcceptanceRequest,
 } from "./acceptance-request";
+import {
+  validateHomebrewFlatVfsShippingProofRequest,
+  type HomebrewFlatVfsShippingProofRequest,
+} from "./flat-vfs-shipping-request";
 
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const corsProxyUrl = new URL(
@@ -62,15 +66,6 @@ interface HomebrewSystemCommandProofRequest {
   lazyUrlBase: string;
   bootstrapArchiveUrl: string;
   bootstrapArchiveBytes: number;
-  timeoutMs: number;
-}
-
-interface HomebrewFlatVfsShippingProofRequest {
-  allowLiveNetwork: true;
-  vfsUrl: string;
-  shellPath: string;
-  shellArgv0: string;
-  tapRevision: string;
   timeoutMs: number;
 }
 
@@ -363,43 +358,28 @@ async function init(): Promise<void> {
     });
 
   window.__runHomebrewFlatVfsShippingProof = async (request) => {
-    if (request.allowLiveNetwork !== true) {
+    const validated = validateHomebrewFlatVfsShippingProofRequest(request, {
+      locationHref: window.location.href,
+      actualKernelSha256: kernelSha256,
+    });
+    const imageBytes = new Uint8Array(
+      await fetchBytes(validated.vfsUrl.href, "flat Homebrew VFS image"),
+    );
+    const actualImageSha256 = await sha256(imageBytes);
+    if (actualImageSha256 !== validated.expectedImageSha256) {
       throw new Error(
-        "flat Homebrew VFS shipping proof requires explicit live-network opt-in",
+        "flat Homebrew VFS fetched image SHA-256 does not match the request",
       );
     }
-    if (
-      !Number.isSafeInteger(request.timeoutMs) ||
-      request.timeoutMs < 1_000 ||
-      request.timeoutMs > 30 * 60_000
-    ) {
-      throw new Error("flat Homebrew VFS shipping proof timeout is invalid");
-    }
-    if (!/^[0-9a-f]{40}$/.test(request.tapRevision)) {
-      throw new Error("flat Homebrew VFS tap revision is invalid");
-    }
-    const vfsUrl = new URL(request.vfsUrl, window.location.href);
-    if (
-      vfsUrl.origin !== window.location.origin ||
-      vfsUrl.username !== "" ||
-      vfsUrl.password !== "" ||
-      vfsUrl.hash !== "" ||
-      !vfsUrl.pathname.endsWith(".vfs.zst")
-    ) {
-      throw new Error("flat Homebrew VFS image URL is invalid");
-    }
-    const imageBytes = new Uint8Array(
-      await fetchBytes(vfsUrl.href, "flat Homebrew VFS image"),
-    );
     return runHomebrewFlatVfsShippingProofInBrowser({
       runtime: {
         imageBytes,
-        shellPath: request.shellPath,
-        shellArgv0: request.shellArgv0,
+        shellPath: validated.shellPath,
+        shellArgv0: validated.shellArgv0,
         takeImageOwnership: true,
       },
-      tapRevision: request.tapRevision,
-      deadlineMs: Date.now() + request.timeoutMs,
+      tapRevision: validated.tapRevision,
+      deadlineMs: Date.now() + validated.timeoutMs,
       kernelWasm: kernelBytes,
       corsProxyUrl,
       afterMachineDestroy: settleWebKitReclaim,

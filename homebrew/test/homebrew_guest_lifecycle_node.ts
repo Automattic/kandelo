@@ -399,7 +399,10 @@ function createCapturedHost(
 
 export function createNodeLifecycleMachine(
   runtime: HomebrewGuestLifecycleMachineRuntimeInputs,
-  options: { traceProcessesFromPid?: number } = {},
+  options: {
+    traceProcessesFromPid?: number;
+    kernelWasmBytes?: ArrayBuffer;
+  } = {},
 ): HomebrewGuestLifecycleMachine {
   const captured = createCapturedHost(runtime, options);
   return {
@@ -407,7 +410,7 @@ export function createNodeLifecycleMachine(
     diagnostics: captured.output.diagnostics,
     failureContext: () =>
       formatHomebrewGuestLifecycleFailureContext(captured.output),
-    start: () => captured.host.init(),
+    start: () => captured.host.init(options.kernelWasmBytes),
     readFile: (path) => captured.host.readFileFromVfs(path),
     runShellScript: (scriptOptions) =>
       runGuestScript({ captured, ...scriptOptions }).then(() => undefined),
@@ -431,6 +434,7 @@ export function runHomebrewFlatVfsShippingProofInNode(options: {
   runtime: HomebrewFlatVfsEmbeddedRuntimeInput;
   tapRevision: string;
   deadlineMs: number;
+  kernelWasmBytes?: ArrayBuffer;
   traceProcessesFromPid?: number;
 }): Promise<HomebrewFlatVfsShippingProofResult> {
   return runHomebrewFlatVfsShippingProof({
@@ -439,6 +443,9 @@ export function runHomebrewFlatVfsShippingProofInNode(options: {
     deadlineMs: options.deadlineMs,
     createMachine: (runtime) =>
       createNodeLifecycleMachine(runtime, {
+        ...(options.kernelWasmBytes === undefined
+          ? {}
+          : { kernelWasmBytes: options.kernelWasmBytes }),
         ...(options.traceProcessesFromPid === undefined
           ? {}
           : { traceProcessesFromPid: options.traceProcessesFromPid }),
