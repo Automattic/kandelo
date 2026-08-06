@@ -13,6 +13,10 @@ import { planHomebrewVfsSelection } from "../src/homebrew-vfs-planner";
 import { resolveHomebrewVfsResourcePolicy } from "../src/homebrew-vfs-resource-policy";
 import { ensureDirRecursive, writeVfsFile } from "../src/vfs/image-helpers";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import {
+  homebrewTestBootstrapEntries,
+  homebrewTestBootstrapFixture,
+} from "./fixtures/homebrew-flat-vfs";
 
 const PREFIX = "/opt/kandelo/homebrew";
 const CELLAR = `${PREFIX}/Cellar`;
@@ -28,18 +32,9 @@ interface TarSpec {
 
 describe("flat Homebrew VFS builder", () => {
   it("builds a canonical selection in dependency order without provenance fields", async () => {
-    const bootstrapBottle = bottleTar([
-      bottleEntry("homebrew-bootstrap", "6.0.12_1", ".brew/homebrew-bootstrap.rb", "class HomebrewBootstrap < Formula\nend\n"),
-      bottleEntry("homebrew-bootstrap", "6.0.12_1", "INSTALL_RECEIPT.json", receipt([])),
-      bottleEntry("homebrew-bootstrap", "6.0.12_1", "libexec/homebrew-bootstrap.zip", "bootstrap zip"),
-      bottleEntry("homebrew-bootstrap", "6.0.12_1", "libexec/homebrew-brew.env", "HOMEBREW_PREFIX=/opt/kandelo/homebrew\n"),
-    ]);
-    const bootstrap = descriptor({
-      name: "homebrew-bootstrap",
-      version: "6.0.12_1",
-      bottle: bootstrapBottle,
-      materialization: "homebrew-runtime-support-v1",
-    });
+    const bootstrapFixture = homebrewTestBootstrapFixture();
+    const bootstrapBottle = bootstrapFixture.bottle;
+    const bootstrap = bootstrapFixture.descriptor;
     const helloBottle = bottleTar([
       bottleEntry("hello", "2.12.1", ".brew/hello.rb", "class Hello < Formula\nend\n"),
       bottleEntry("hello", "2.12.1", "INSTALL_RECEIPT.json", receipt([
@@ -152,7 +147,7 @@ describe("flat Homebrew VFS builder", () => {
       ],
       totals: {
         compressed_bytes: bootstrapBottle.byteLength + helloBottle.byteLength,
-        expanded_bytes: 9216,
+        expanded_bytes: 9728,
         entries: 7,
         path_bytes: 296,
         link_bytes: 0,
@@ -876,40 +871,11 @@ function bootstrapFixture(): {
   descriptor: HomebrewBottleDescriptor;
   bottle: Uint8Array;
 } {
-  const bottle = bottleTar(bootstrapEntries());
-  return {
-    bottle,
-    descriptor: descriptor({
-      name: "homebrew-bootstrap",
-      version: "6.0.12_1",
-      bottle,
-      materialization: "homebrew-runtime-support-v1",
-    }),
-  };
+  return homebrewTestBootstrapFixture();
 }
 
 function bootstrapEntries(): TarSpec[] {
-  return [
-    bottleEntry(
-      "homebrew-bootstrap",
-      "6.0.12_1",
-      ".brew/homebrew-bootstrap.rb",
-      "class HomebrewBootstrap < Formula\nend\n",
-    ),
-    bottleEntry("homebrew-bootstrap", "6.0.12_1", "INSTALL_RECEIPT.json", receipt([])),
-    bottleEntry(
-      "homebrew-bootstrap",
-      "6.0.12_1",
-      "libexec/homebrew-bootstrap.zip",
-      "bootstrap zip",
-    ),
-    bottleEntry(
-      "homebrew-bootstrap",
-      "6.0.12_1",
-      "libexec/homebrew-brew.env",
-      "HOMEBREW_PREFIX=/opt/kandelo/homebrew\n",
-    ),
-  ];
+  return homebrewTestBootstrapEntries();
 }
 
 async function expectFlatBootstrapBottleRejected(

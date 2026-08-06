@@ -33,6 +33,12 @@ import {
   type PreparedHomebrewKeg,
 } from "./homebrew-vfs-materializer";
 import { resolveHomebrewVfsResourcePolicy } from "./homebrew-vfs-resource-policy";
+import {
+  finalizeHomebrewRuntimeSupport,
+  HomebrewRuntimeSupportMaterializationError,
+  overlayPreparedHomebrewRuntimeSupport,
+  prepareHomebrewRuntimeSupport,
+} from "./homebrew-runtime-support-materializer";
 import { MemoryFileSystem } from "./vfs/memory-fs";
 import {
   ensureDirRecursive,
@@ -510,6 +516,21 @@ export async function buildHomebrewVfsSelection(
     );
   }
 
+  const runtimeSupportIndexes = plan.packages.flatMap((descriptor, index) =>
+    descriptor.materialization === "homebrew-runtime-support-v1" ? [index] : []
+  );
+  if (runtimeSupportIndexes.length !== 1) {
+    throw new HomebrewVfsBuildError(
+      "flat Homebrew plan must contain exactly one runtime-support descriptor",
+    );
+  }
+  const runtimeSupportIndex = runtimeSupportIndexes[0]!;
+  const runtimeSupport = runRuntimeSupport(() => prepareHomebrewRuntimeSupport(
+    plan.packages[runtimeSupportIndex]!,
+    prepared[runtimeSupportIndex]!,
+    policy.supportZip,
+  ));
+
   const linkResolution = resolveFlatLinkOwnership(plan.packages, plan.linkPolicy);
   preflightFlatOptIdentities(plan.packages);
   const fs = options.baseFs === undefined
@@ -529,16 +550,10 @@ export async function buildHomebrewVfsSelection(
     runMaterializer(() => relocatePreparedHomebrewKeg(fs, item));
   }
 
-  // Task 5 activates the descriptor selected by materialization identity here,
-  // after every keg is staged and before any ordinary prefix link is applied.
-  const bootstrapIndex = plan.packages.findIndex((pkg) =>
-    pkg.materialization === "homebrew-runtime-support-v1"
-  );
-  if (bootstrapIndex < 0) {
-    throw new HomebrewVfsBuildError("flat Homebrew plan has no runtime-support descriptor");
-  }
-  // Task 5 performs runtime-support activation here. Link preflight must see
-  // every path that activation installs before any ordinary/opt link exists.
+  await runRuntimeSupportAsync(() => overlayPreparedHomebrewRuntimeSupport(
+    fs,
+    runtimeSupport,
+  ));
 
   runMaterializer(() => preflightPreparedHomebrewLinksAndOpt(
     fs,
@@ -555,8 +570,7 @@ export async function buildHomebrewVfsSelection(
     ))
   );
   runMaterializer(() => applyMaterializedOptLinks(fs, prepared.map((item) => item.input)));
-  // Task 5 performs final recursive runtime ownership adoption here, after
-  // ordinary and opt links have created every Homebrew-owned parent path.
+  runRuntimeSupport(() => finalizeHomebrewRuntimeSupport(fs, runtimeSupport));
   const path = flatPath(plan.packages);
   if (path.length > 0) {
     ensureDirRecursive(fs, "/etc/profile.d");
@@ -1720,6 +1734,28 @@ function runMaterializer<T>(operation: () => T): T {
     return operation();
   } catch (error) {
     if (error instanceof HomebrewVfsMaterializationError) {
+      throw new HomebrewVfsBuildError(error.message);
+    }
+    throw error;
+  }
+}
+
+function runRuntimeSupport<T>(operation: () => T): T {
+  try {
+    return operation();
+  } catch (error) {
+    if (error instanceof HomebrewRuntimeSupportMaterializationError) {
+      throw new HomebrewVfsBuildError(error.message);
+    }
+    throw error;
+  }
+}
+
+async function runRuntimeSupportAsync<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof HomebrewRuntimeSupportMaterializationError) {
       throw new HomebrewVfsBuildError(error.message);
     }
     throw error;

@@ -87,6 +87,15 @@ export type {
   HomebrewVfsResourcePolicy,
   HomebrewVfsResourcePolicyId,
 } from "./homebrew-vfs-resource-policy";
+export {
+  finalizeHomebrewRuntimeSupport,
+  HomebrewRuntimeSupportMaterializationError,
+  overlayPreparedHomebrewRuntimeSupport,
+  prepareHomebrewRuntimeSupport,
+} from "./homebrew-runtime-support-materializer";
+export type {
+  PreparedHomebrewRuntimeSupport,
+} from "./homebrew-runtime-support-materializer";
 export type { HomebrewBottleArch, HomebrewLinkEntry } from "./homebrew-bottle-types";
 export type {
   HomebrewBottleSourceStatus,
