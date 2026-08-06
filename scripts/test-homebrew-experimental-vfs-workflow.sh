@@ -219,6 +219,25 @@ when "campaign-generation-step"
     "shell" => "bash",
     "run" => "true",
   }
+when "browser-proof-env-stripped"
+  step = jobs.fetch("build-test").fetch("steps").find do |candidate|
+    candidate["name"] == "Build and prove the exact flat VFS"
+  end
+  abort "browser proof step is missing" unless step
+  source = step.fetch("run")
+  explicit = <<~'SHELL'.strip
+    scripts/dev-shell.sh env \
+      ASSET_ROOT="$ASSET_ROOT" \
+      TAP_REVISION="$TAP_REVISION" \
+      SELECTION_PATH="$SELECTION_PATH" \
+      bash -c \
+  SHELL
+  stripped = "scripts/dev-shell.sh bash -c \\\n"
+  if source.include?(explicit)
+    step["run"] = source.sub(explicit, stripped.strip)
+  elsif !source.include?(stripped.strip)
+    abort "browser proof dev-shell invocation is missing"
+  end
 else
   abort "unknown mutation: #{mutation}"
 end
@@ -279,5 +298,6 @@ expect_rejection writer-job-bash-env writer-job-bash-env
 expect_rejection writer-container writer-container
 expect_rejection writer-api-post writer-api-post
 expect_rejection campaign-generation-step campaign-generation-step
+expect_rejection browser-proof-env-stripped browser-proof-env-stripped
 
 echo "test-homebrew-experimental-vfs-workflow: ok"

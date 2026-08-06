@@ -297,6 +297,15 @@ def check_workflow(workflow)
   check(build_source.include?("--kernel local-binaries/kernel.wasm") &&
         !build_source.include?("local-binaries/kandelo-kernel.wasm"),
         "runtime proof does not bind build.sh's exact kernel artifact")
+  browser_proof_environment = <<~'SHELL'.strip
+    scripts/dev-shell.sh env \
+      ASSET_ROOT="$ASSET_ROOT" \
+      TAP_REVISION="$TAP_REVISION" \
+      SELECTION_PATH="$SELECTION_PATH" \
+      bash -c \
+  SHELL
+  check(build_source.include?(browser_proof_environment),
+        "browser proof inputs do not cross the clean dev-shell boundary")
   check(build_source !~ /\|\|\s*true|\btouch\b|\btruncate\b|status.{0,8}passed/i,
         "build/test seam fabricates or ignores runtime evidence")
 

@@ -117,7 +117,11 @@ jobs:
             --kernel local-binaries/kernel.wasm \
             --tap-root tap --tap-revision "$TAP_REVISION" \
             --evidence "$ASSET_ROOT/homebrew-node-evidence.json"
-          scripts/dev-shell.sh bash -c \
+          scripts/dev-shell.sh env \
+            ASSET_ROOT="$ASSET_ROOT" \
+            TAP_REVISION="$TAP_REVISION" \
+            SELECTION_PATH="$SELECTION_PATH" \
+            bash -c \
             'cd apps/browser-demos && npx playwright test \
               test/homebrew-flat-vfs-shipping.spec.ts --project=chromium'
           [ -f "$ASSET_ROOT/homebrew-chromium-evidence.json" ]
