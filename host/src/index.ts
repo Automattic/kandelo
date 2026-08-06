@@ -70,6 +70,22 @@ export type {
   HomebrewBottleDescriptor,
   HomebrewBottleSupportOutput,
 } from "./homebrew-bottle-descriptor";
+export {
+  encodeHomebrewBottleSelection,
+  HomebrewBottleSelectionError,
+  homebrewBottleSelectionSha256,
+  parseCanonicalHomebrewBottleSelection,
+  projectHomebrewBottleSelection,
+} from "./homebrew-bottle-selection";
+export type {
+  HomebrewBottleSelection,
+  ProjectHomebrewBottleSelectionOptions,
+} from "./homebrew-bottle-selection";
+export { resolveHomebrewVfsResourcePolicy } from "./homebrew-vfs-resource-policy";
+export type {
+  HomebrewVfsResourcePolicy,
+  HomebrewVfsResourcePolicyId,
+} from "./homebrew-vfs-resource-policy";
 export type { HomebrewBottleArch, HomebrewLinkEntry } from "./homebrew-bottle-types";
 export type {
   HomebrewBottleSourceStatus,
