@@ -11606,7 +11606,7 @@
     "pango": {
       "internal": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "a45a7d251e0076f3fcd40b4ce86b1d8a7100d0359d0cc3d0693218de2becfea1",
+        "bottle_checksum": "c650fcdbdb4653a2778caf71326b7c9709323057bf725172b00deec8e5da2d81",
         "desc": "Framework for layout and rendering of i18n text",
         "executables": [
           "pango-list",
@@ -11646,8 +11646,8 @@
         "homepage": "https://www.gtk.org/docs/architecture/pango",
         "license": "LGPL-2.0-or-later",
         "name": "pango",
-        "ruby_source_checksum": "9878558f09fdcaddeadf60bf4d7f5e908c11a81032a977bb87a1c0f65312a0a9",
-        "stable_checksum": "bc5bad6213ad4886a47d1e80292fd850b64159b50db67917a43d9ea80ee2298a",
+        "ruby_source_checksum": "684338954a415a8509fc17780b208dc55f1e0f9331c31642518e46ffa3ca4894",
+        "stable_checksum": "342385b6ca3b7c73455d7c80a13b7dbe4489e00bc3bd4c5bd6ed4dce421e374a",
         "stable_dependencies": [
           "cairo",
           "fontconfig",
@@ -11673,13 +11673,13 @@
           }
         ],
         "stable_url_args": [
-          "https://download.gnome.org/sources/pango/1.58/pango-1.58.0.tar.xz"
+          "https://download.gnome.org/sources/pango/1.58/pango-1.58.2.tar.xz"
         ],
-        "stable_version": "1.58.0"
+        "stable_version": "1.58.2"
       },
       "public": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "a45a7d251e0076f3fcd40b4ce86b1d8a7100d0359d0cc3d0693218de2becfea1",
+        "bottle_checksum": "c650fcdbdb4653a2778caf71326b7c9709323057bf725172b00deec8e5da2d81",
         "desc": "Framework for layout and rendering of i18n text",
         "executables": [
           "pango-list",
@@ -11719,8 +11719,8 @@
         "homepage": "https://www.gtk.org/docs/architecture/pango",
         "license": "LGPL-2.0-or-later",
         "name": "pango",
-        "ruby_source_checksum": "9878558f09fdcaddeadf60bf4d7f5e908c11a81032a977bb87a1c0f65312a0a9",
-        "stable_checksum": "bc5bad6213ad4886a47d1e80292fd850b64159b50db67917a43d9ea80ee2298a",
+        "ruby_source_checksum": "684338954a415a8509fc17780b208dc55f1e0f9331c31642518e46ffa3ca4894",
+        "stable_checksum": "342385b6ca3b7c73455d7c80a13b7dbe4489e00bc3bd4c5bd6ed4dce421e374a",
         "stable_dependencies": [
           "cairo",
           "fontconfig",
@@ -11746,9 +11746,9 @@
           }
         ],
         "stable_url_args": [
-          "https://download.gnome.org/sources/pango/1.58/pango-1.58.0.tar.xz"
+          "https://download.gnome.org/sources/pango/1.58/pango-1.58.2.tar.xz"
         ],
-        "stable_version": "1.58.0"
+        "stable_version": "1.58.2"
       }
     },
     "pcre2": {
@@ -12151,8 +12151,7 @@
     "python@3.13": {
       "internal": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "b4861c2c34fd473c24ceb734862f5b1691b46dc866017ce0a9c5e431c03ead45",
-        "bottle_rebuild": 1,
+        "bottle_checksum": "4cdbffcfe9e2b2d9a5c28597d8e00d2dc995962785c25a098b2e4d8298edec54",
         "caveats": "Python is installed as\n  $HOMEBREW_PREFIX/bin/python3.13\n\nUnversioned and major-versioned symlinks `python`, `python3`, `python-config`, `python3-config`, `pip`, `pip3`, etc. pointing to\n`python3.13`, `python3.13-config`, `pip3.13` etc., respectively, are installed into\n  $HOMEBREW_PREFIX/opt/python@3.13/libexec/bin\n\nIf you do not need a specific version of Python, and always want Homebrew's `python3` in your PATH:\n  brew install python3\n\n`idle3.13` requires tkinter, which is available separately:\n  brew install python-tk@3.13\n\n`dbm.gnu` and `dbm.ndbm` are available separately:\n  brew install python-gdbm@3.13\n\nFor more information about Homebrew and Python, see: https://docs.brew.sh/Homebrew-and-Python\n",
         "deprecate_args": {
           ":because": ":deprecated_upstream",
@@ -12246,9 +12245,8 @@
             "type": "set_permissions"
           }
         ],
-        "revision": 1,
-        "ruby_source_checksum": "fb5565f8206082e13e711cf13d7bf1cc4a13d8db1bcd5aec69ca82b74df81943",
-        "stable_checksum": "5ae535a36af0ebca6fca176ecb8197f5db9c1cb8c8f0cd12cdf1787046db1f41",
+        "ruby_source_checksum": "14e54ce88096edcb77adde895c358462a78290275ad00fad0802085c007ad23c",
+        "stable_checksum": "c28d9d213c09b5b5ab2c29812950e12f746999e099b82894231be954b26baed9",
         "stable_dependencies": [
           "mpdecimal",
           "openssl@3",
@@ -12273,7 +12271,7 @@
           }
         ],
         "stable_url_args": [
-          "https://www.python.org/ftp/python/3.13.14/Python-3.13.14.tgz"
+          "https://www.python.org/ftp/python/3.13.15/Python-3.13.15.tgz"
         ],
         "stable_uses_from_macos": [
           [
@@ -12295,7 +12293,7 @@
             "ncurses"
           ]
         ],
-        "stable_version": "3.13.14",
+        "stable_version": "3.13.15",
         "versioned_formulae": [
           "python@3.14",
           "python@3.12",
@@ -12306,8 +12304,7 @@
       },
       "public": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "b4861c2c34fd473c24ceb734862f5b1691b46dc866017ce0a9c5e431c03ead45",
-        "bottle_rebuild": 1,
+        "bottle_checksum": "4cdbffcfe9e2b2d9a5c28597d8e00d2dc995962785c25a098b2e4d8298edec54",
         "deprecate_args": {
           ":because": ":deprecated_upstream",
           ":date": "2029-11-01"
@@ -12400,9 +12397,8 @@
             "type": "set_permissions"
           }
         ],
-        "revision": 1,
-        "ruby_source_checksum": "fb5565f8206082e13e711cf13d7bf1cc4a13d8db1bcd5aec69ca82b74df81943",
-        "stable_checksum": "5ae535a36af0ebca6fca176ecb8197f5db9c1cb8c8f0cd12cdf1787046db1f41",
+        "ruby_source_checksum": "14e54ce88096edcb77adde895c358462a78290275ad00fad0802085c007ad23c",
+        "stable_checksum": "c28d9d213c09b5b5ab2c29812950e12f746999e099b82894231be954b26baed9",
         "stable_dependencies": [
           "mpdecimal",
           "openssl@3",
@@ -12427,7 +12423,7 @@
           }
         ],
         "stable_url_args": [
-          "https://www.python.org/ftp/python/3.13.14/Python-3.13.14.tgz"
+          "https://www.python.org/ftp/python/3.13.15/Python-3.13.15.tgz"
         ],
         "stable_uses_from_macos": [
           [
@@ -12449,7 +12445,7 @@
             "ncurses"
           ]
         ],
-        "stable_version": "3.13.14",
+        "stable_version": "3.13.15",
         "versioned_formulae": [
           "python@3.14",
           "python@3.12",
