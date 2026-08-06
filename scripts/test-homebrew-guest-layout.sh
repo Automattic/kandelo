@@ -4,12 +4,72 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 CONTRACT="$REPO_ROOT/homebrew/kandelo-guest-layout.json"
 NATIVE_COMPATIBILITY_LOCK="$REPO_ROOT/homebrew/homebrew-native-compatibility-lock.json"
+NATIVE_COMPATIBILITY_ROOTS="$REPO_ROOT/homebrew/homebrew-native-compatibility-roots.json"
 NATIVE_HOST_PREFIX="/home/linuxbrew/.linuxbrew"
 NATIVE_HOST_CELLAR="$NATIVE_HOST_PREFIX/Cellar"
 
 fail() {
   echo "test-homebrew-guest-layout: $*" >&2
   exit 1
+}
+
+append_declared_homebrew_source_exclusion() {
+  local declared_source="${KANDELO_HOMEBREW_SOURCE_REPOSITORY:-}"
+  local source_root source_top source_relative expected_commit actual_commit
+  local source_status
+
+  [ -n "$declared_source" ] || return 0
+  [ -d "$declared_source" ] ||
+    fail "declared Homebrew source is not a directory"
+  [ ! -L "$declared_source" ] ||
+    fail "declared Homebrew source must not be a symlink"
+  source_root="$(cd "$declared_source" && pwd -P)" ||
+    fail "cannot resolve declared Homebrew source"
+
+  # A source outside this tree is already outside the scanner's ownership.
+  # When staging places its exact source below REPO_ROOT, exempt only a clean,
+  # standalone checkout of the reviewed commit. This must not become a name-
+  # based hiding place for ordinary Kandelo-owned source.
+  case "$source_root" in
+    "$REPO_ROOT"/*) ;;
+    *) return 0 ;;
+  esac
+
+  [ -d "$source_root/.git" ] && [ ! -L "$source_root/.git" ] ||
+    fail "in-tree Homebrew source must own a standalone Git directory"
+  source_top="$(git -C "$source_root" rev-parse --show-toplevel 2>/dev/null)" ||
+    fail "in-tree Homebrew source is not a Git checkout"
+  source_top="$(cd "$source_top" && pwd -P)" ||
+    fail "cannot resolve in-tree Homebrew Git root"
+  [ "$source_top" = "$source_root" ] ||
+    fail "declared Homebrew source is not its Git top level"
+
+  expected_commit="$(
+    jq -er '
+      .homebrew_commit |
+      select(type == "string" and test("^[0-9a-f]{40}$"))
+    ' "$NATIVE_COMPATIBILITY_ROOTS"
+  )" || fail "native compatibility roots lack an exact Homebrew commit"
+  actual_commit="$(
+    git -C "$source_root" rev-parse --verify 'HEAD^{commit}' 2>/dev/null
+  )" || fail "cannot resolve declared Homebrew source commit"
+  [ "$actual_commit" = "$expected_commit" ] ||
+    fail "in-tree Homebrew source is not at the reviewed commit"
+
+  source_status="$(
+    git -C "$source_root" status \
+      --porcelain=v1 \
+      --untracked-files=all \
+      --ignored=matching \
+      --ignore-submodules=none
+  )" || fail "cannot inspect declared Homebrew source status"
+  [ -z "$source_status" ] ||
+    fail "in-tree Homebrew source contains unreviewed changes"
+
+  source_relative="${source_root#"$REPO_ROOT"/}"
+  guest_source_pathspecs+=(
+    ":(top,literal,exclude)$source_relative"
+  )
 }
 
 for tool in git jq; do
@@ -157,6 +217,12 @@ jq -e '
 # Check tracked and untracked source, then allow only narrowly described native,
 # documentation, and rejection-test occurrences. Whole-file exclusions would
 # let a mixed native/guest workflow accidentally reintroduce the old layout.
+guest_source_pathspecs=(
+  .
+  ':(exclude)docs/plans/**'
+  ':(exclude)scripts/test-homebrew-guest-layout.sh'
+)
+append_declared_homebrew_source_exclusion
 mapfile -t retired_prefixes < <(jq -er '.retired_prefixes[]' "$CONTRACT")
 for retired_prefix in "${retired_prefixes[@]}"; do
   retired_identity="$(basename "$(dirname "$retired_prefix")")"
@@ -179,6 +245,9 @@ for retired_prefix in "${retired_prefixes[@]}"; do
       scripts/test-homebrew-prefix-campaign-executor.py\|*"[\"$retired_prefix\"]"*) ;;
       scripts/test-homebrew-prefix-campaign-publisher.py\|*"\"$retired_prefix/Cellar\""*) ;;
       scripts/test-homebrew-formula-runtime-closure.sh\|*"$retired_prefix/Cellar"*) ;;
+      # WHY: this one fixture models LLVM's authenticated native host root;
+      # guest source and every adjacent native path remain rejected.
+      scripts/test-homebrew-tap-recipe-runner.py\|*"destination = Path(\"$retired_prefix/etc/clang\")") ;;
       scripts/homebrew-guest-layout.sh\|*"index(\"$retired_prefix\")"*) ;;
       scripts/homebrew-formula-runtime-closure.rb\|*"\"retired_prefixes\" => [\"$retired_prefix\"]"*) ;;
       scripts/homebrew-dependency-provenance.py\|*"$retired_prefix"*) ;;
@@ -215,10 +284,7 @@ for retired_prefix in "${retired_prefixes[@]}"; do
       --no-index \
       --exclude-standard \
       -niF \
-      -- "$retired_identity" -- \
-      . \
-      ':(exclude)docs/plans/**' \
-      ':(exclude)scripts/test-homebrew-guest-layout.sh' || true
+      -- "$retired_identity" -- "${guest_source_pathspecs[@]}" || true
   )
 done
 
