@@ -1,16 +1,21 @@
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
   closeSync,
   constants,
   fstatSync,
   linkSync,
   lstatSync,
+  mkdtempSync,
   openSync,
   readSync,
+  realpathSync,
+  rmSync,
   type Stats,
   unlinkSync,
+  writeFileSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 
 const SHA256_RE = /^[0-9a-f]{64}$/;
 
@@ -116,7 +121,7 @@ export function readBoundedRegularFileNoFollow(
   try {
     descriptor = openSync(
       path,
-      constants.O_RDONLY | constants.O_NOFOLLOW,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
     );
   } catch (error) {
     throw new Error(
@@ -161,54 +166,168 @@ export function readBoundedRegularFileNoFollow(
   }
 }
 
-export interface FlatHomebrewVfsStagedOutput {
-  stagedPath: string;
+export interface FlatHomebrewVfsOutput {
   finalPath: string;
+  bytes: Uint8Array;
+  expectedSha256: string;
+  expectedBytes: number;
 }
 
-/** Hard-link staged files into place, rolling back links from this attempt. */
-export function publishFlatHomebrewVfsOutputs(
-  outputs: readonly FlatHomebrewVfsStagedOutput[],
-): void {
-  if (outputs.length === 0) {
-    throw new Error("flat Homebrew VFS publication has no outputs");
-  }
-  const prepared = outputs.map((output) => {
-    const staged = lstatOrNull(output.stagedPath);
-    if (staged === null || !staged.isFile()) {
-      throw new Error(
-        `flat Homebrew staged output must be a regular file: ${output.stagedPath}`,
-      );
-    }
-    if (lstatOrNull(output.finalPath) !== null) {
-      throw new Error(
-        `flat Homebrew final output already exists: ${output.finalPath}`,
-      );
-    }
-    return { ...output, staged };
-  });
+interface FileIdentity {
+  dev: number;
+  ino: number;
+}
 
-  const published: typeof prepared = [];
+interface PreparedFlatHomebrewVfsOutput {
+  finalPath: string;
+  bytes: Uint8Array;
+  expectedBytes: number;
+}
+
+/**
+ * Publish the generated image and report through private same-parent staging.
+ * The helper owns and removes only its fresh staging directory. Final paths
+ * are never replaced, and a later failure rolls back only links made here.
+ */
+export function publishFlatHomebrewVfsOutputs(
+  outputs: readonly FlatHomebrewVfsOutput[],
+): void {
+  if (outputs.length !== 2) {
+    throw new Error(
+      "flat Homebrew VFS publication requires exactly an image and report",
+    );
+  }
+
+  const prepared = prepareFlatHomebrewVfsOutputs(outputs);
+  const stagingDirectory = mkdtempSync(
+    join(prepared.parentPath, ".kandelo-homebrew-vfs-"),
+  );
+  chmodSync(stagingDirectory, 0o700);
+  const published: Array<{ path: string; identity: FileIdentity }> = [];
   try {
-    for (const output of prepared) {
-      linkSync(output.stagedPath, output.finalPath);
-      published.push(output);
+    const staged = prepared.outputs.map((output, index) => {
+      const path = join(stagingDirectory, `output-${index}`);
+      writeFileSync(path, output.bytes, { flag: "wx", mode: 0o600 });
+      const stat = lstatSync(path) as Stats;
+      if (!stat.isFile() || stat.size !== output.expectedBytes) {
+        throw new Error(`flat Homebrew staged output is incomplete: ${path}`);
+      }
+      return { path, stat, output };
+    });
+    if (sameIdentity(identityOf(staged[0]!.stat), identityOf(staged[1]!.stat))) {
+      throw new Error("flat Homebrew image and report share one staged inode");
     }
-  } catch (error) {
-    for (const output of published.reverse()) {
-      const final = lstatOrNull(output.finalPath);
+
+    for (const candidate of staged) {
+      if (lstatOrNull(candidate.output.finalPath) !== null) {
+        throw new Error(
+          `flat Homebrew final output already exists: ` +
+            candidate.output.finalPath,
+        );
+      }
+      linkSync(candidate.path, candidate.output.finalPath);
+      const stagedIdentity = identityOf(candidate.stat);
+      published.push({
+        path: candidate.output.finalPath,
+        identity: stagedIdentity,
+      });
+      const linked = lstatSync(candidate.output.finalPath) as Stats;
+      const linkedIdentity = identityOf(linked);
       if (
-        final !== null &&
-        final.dev === output.staged.dev &&
-        final.ino === output.staged.ino
+        !linked.isFile() ||
+        linked.size !== candidate.output.expectedBytes ||
+        !sameIdentity(linkedIdentity, stagedIdentity)
       ) {
-        unlinkSync(output.finalPath);
+        throw new Error(
+          `flat Homebrew final output did not link its staged inode: ` +
+            candidate.output.finalPath,
+        );
       }
     }
+  } catch (error) {
+    rollbackFlatHomebrewVfsOutputs(published);
     throw new Error(
       `flat Homebrew VFS output publication failed: ${errorMessage(error)}`,
     );
+  } finally {
+    rmSync(stagingDirectory, { recursive: true, force: true });
   }
+}
+
+function prepareFlatHomebrewVfsOutputs(
+  outputs: readonly FlatHomebrewVfsOutput[],
+): { parentPath: string; outputs: PreparedFlatHomebrewVfsOutput[] } {
+  const parentPaths = outputs.map((output) =>
+    realpathSync(dirname(resolve(output.finalPath)))
+  );
+  if (parentPaths[0] !== parentPaths[1]) {
+    throw new Error(
+      "flat Homebrew image and report must share one final directory",
+    );
+  }
+  const finalPaths = outputs.map((output) =>
+    join(parentPaths[0]!, basename(resolve(output.finalPath)))
+  );
+  if (finalPaths[0] === finalPaths[1]) {
+    throw new Error("flat Homebrew image and report paths must be different");
+  }
+
+  return {
+    parentPath: parentPaths[0]!,
+    outputs: outputs.map((output, index) => {
+      if (!SHA256_RE.test(output.expectedSha256)) {
+        throw new Error("flat Homebrew output has an invalid SHA-256");
+      }
+      if (
+        !Number.isSafeInteger(output.expectedBytes) ||
+        output.expectedBytes < 0
+      ) {
+        throw new Error("flat Homebrew output has an invalid byte count");
+      }
+      if (output.bytes.byteLength !== output.expectedBytes) {
+        throw new Error(
+          `flat Homebrew output expected ${output.expectedBytes} bytes, ` +
+            `found ${output.bytes.byteLength}`,
+        );
+      }
+      const actualSha256 = createHash("sha256")
+        .update(output.bytes)
+        .digest("hex");
+      if (actualSha256 !== output.expectedSha256) {
+        throw new Error(
+          `flat Homebrew output expected ${output.expectedSha256}, ` +
+            `got ${actualSha256}`,
+        );
+      }
+      return {
+        finalPath: finalPaths[index]!,
+        bytes: output.bytes,
+        expectedBytes: output.expectedBytes,
+      };
+    }),
+  };
+}
+
+function rollbackFlatHomebrewVfsOutputs(
+  outputs: readonly { path: string; identity: FileIdentity }[],
+): void {
+  for (const output of [...outputs].reverse()) {
+    const current = lstatOrNull(output.path);
+    if (
+      current !== null &&
+      sameIdentity(identityOf(current), output.identity)
+    ) {
+      unlinkSync(output.path);
+    }
+  }
+}
+
+function identityOf(stat: Pick<Stats, "dev" | "ino">): FileIdentity {
+  return { dev: stat.dev, ino: stat.ino };
+}
+
+function sameIdentity(first: FileIdentity, second: FileIdentity): boolean {
+  return first.dev === second.dev && first.ino === second.ino;
 }
 
 function lstatOrNull(path: string): Stats | null {

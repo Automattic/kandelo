@@ -183,7 +183,11 @@ export async function restoreVerifiedHomebrewBaseImage(
   label: string,
   expectedAbi: number,
 ): Promise<VerifiedHomebrewBaseImage> {
-  const restored = MemoryFileSystem.fromImagePreservingCapacity(image);
+  // Keep one exact value across the asynchronous seal-verification boundary.
+  // The caller retains its input view and may mutate it after this function
+  // first yields; parsing and every returned identity must describe one image.
+  const snapshot = Uint8Array.from(image);
+  const restored = MemoryFileSystem.fromImagePreservingCapacity(snapshot);
   // WHY: later composition copies imported lazy metadata, so its atomic seals
   // must be authenticated before callers can treat this filesystem as a base.
   await restored.verifyImportedLazyAtomicGroupSeals();
@@ -206,7 +210,7 @@ export async function restoreVerifiedHomebrewBaseImage(
         "use a platform-only base image",
     );
   }
-  const capacity = MemoryFileSystem.readImageCapacity(image);
+  const capacity = MemoryFileSystem.readImageCapacity(snapshot);
   if (
     !Number.isSafeInteger(capacity.maxByteLength) ||
     capacity.maxByteLength <= 0
@@ -217,8 +221,8 @@ export async function restoreVerifiedHomebrewBaseImage(
     fs: restored,
     metadata,
     capacity,
-    sha256: createHash("sha256").update(image).digest("hex"),
-    bytes: image.byteLength,
+    sha256: createHash("sha256").update(snapshot).digest("hex"),
+    bytes: snapshot.byteLength,
   };
 }
 

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,6 +21,10 @@ import {
 } from "../src/vfs/package-deferred-tree";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { writeVfsBinary } from "../src/vfs/image-helpers";
+import {
+  addSealedLazyAtomicTestTree,
+  forgeLazyAtomicSeal,
+} from "./lazy-atomic-seal-fixture";
 
 const MiB = 1024 * 1024;
 const encoder = new TextEncoder();
@@ -273,6 +278,62 @@ describe("Homebrew VFS image publication boundary", () => {
     ).toMatchObject({ size: encoder.encode("tool\n").byteLength });
   });
 
+  it("snapshots caller-owned base bytes before asynchronous seal verification", async () => {
+    const fs = bootstrapConsumerFs();
+    fs.setImageMetadata({ version: 1, kernelAbi: 42 });
+    const originalPayload = encoder.encode("base-image-snapshot-A\n");
+    const replacementPayload = encoder.encode("base-image-snapshot-B\n");
+    writeVfsBinary(fs, "/snapshot-proof", originalPayload, 0o644);
+    const image = await fs.saveImage();
+    const original = Uint8Array.from(image);
+    const expectedSha256 = createHash("sha256").update(original).digest("hex");
+    const payloadOffset = Buffer.from(image).indexOf(Buffer.from(originalPayload));
+    expect(payloadOffset).toBeGreaterThanOrEqual(0);
+
+    const pending = restoreVerifiedHomebrewBaseImage(
+      image,
+      "mutable base fixture",
+      42,
+    );
+    image.set(replacementPayload, payloadOffset);
+    const restored = await pending;
+
+    expect(readVfsText(restored.fs, "/snapshot-proof")).toBe(
+      "base-image-snapshot-A\n",
+    );
+    expect(restored.sha256).toBe(expectedSha256);
+    expect(restored.bytes).toBe(original.byteLength);
+    expect(restored.capacity).toEqual(
+      MemoryFileSystem.readImageCapacity(original),
+    );
+  });
+
+  it.each(["member", "cohort"] as const)(
+    "rejects a forged imported lazy atomic %s seal",
+    async (forgery) => {
+      const fs = bootstrapConsumerFs();
+      fs.setImageMetadata({ version: 1, kernelAbi: 42 });
+      await addSealedLazyAtomicTestTree(fs, {
+        groupId: `test:homebrew-base-${forgery}`,
+        member: "runtime",
+        root: `/sealed-homebrew-base-${forgery}`,
+      });
+      const forged = forgeLazyAtomicSeal(await fs.saveImage(), forgery);
+
+      await expect(
+        restoreVerifiedHomebrewBaseImage(
+          forged,
+          `forged ${forgery} base fixture`,
+          42,
+        ),
+      ).rejects.toThrow(
+        forgery === "member"
+          ? /activation member .* changed after sealing/
+          : /activation group .* differs from its seal/,
+      );
+    },
+  );
+
   it("rejects missing or wrong base ABI and an existing Homebrew composition", async () => {
     const missingAbi = bootstrapConsumerFs();
     missingAbi.setImageMetadata({ version: 1 });
@@ -434,5 +495,20 @@ function ensureVfsDirectory(fs: MemoryFileSystem, path: string): void {
     } catch {
       // Fixture ancestors may already exist.
     }
+  }
+}
+
+function readVfsText(fs: MemoryFileSystem, path: string): string {
+  const size = fs.stat(path).size;
+  const bytes = new Uint8Array(size);
+  const descriptor = fs.open(path, 0, 0);
+  try {
+    const count = fs.read(descriptor, bytes, null, bytes.byteLength);
+    if (count !== bytes.byteLength) {
+      throw new Error(`incomplete VFS fixture read for ${path}`);
+    }
+    return new TextDecoder().decode(bytes);
+  } finally {
+    fs.close(descriptor);
   }
 }
