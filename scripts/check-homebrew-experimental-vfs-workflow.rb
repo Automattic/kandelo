@@ -1,6 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
+require "digest"
 require "shellwords"
 require "yaml"
 
@@ -32,6 +33,10 @@ READBACK_SAFE_GITHUB_EXPRESSIONS = [
   "github.run_id",
   "github.run_attempt",
 ].freeze
+WRITER_RUN_SHA256 =
+  "7d69743928cc27b891e2667db2655fc0da8d457effd01bc8bcb72f343952917a"
+READBACK_RUN_SHA256 =
+  "610fdf9db75774665259e2015294926dedee89a932c1b21cfd8cf79a4af45186"
 
 def check(condition, message)
   raise message unless condition
@@ -183,6 +188,8 @@ def check_workflow(workflow)
           "#{name} has no bounded timeout")
     check(job["steps"].is_a?(Array) && job["steps"].all?(Hash),
           "#{name} steps are malformed")
+    check(job["runs-on"] == "ubuntu-latest",
+          "#{name} must run on the GitHub-hosted Ubuntu runner")
     permission_keys = permissions_for(job).keys.map(&:to_s)
     check(permission_keys == ["contents"],
           "#{name} requests authority beyond repository contents")
@@ -313,6 +320,12 @@ def check_workflow(workflow)
   readback_step = find_one(readback.fetch("steps"), "public fetch step") do |step|
     step["run"].to_s.include?("/releases/download/")
   end
+  expected_run_step_keys = %w[env name run shell]
+  check(writer_step.keys.map(&:to_s).sort == expected_run_step_keys.sort &&
+        writer_step["shell"] == "bash",
+        "writer must use only the intended non-login Bash step")
+  check(readback_step["shell"] == "bash",
+        "readback must use non-login Bash")
   identity_outputs.each do |name|
     env_name = name.upcase
     expected = "${{ needs.#{build_name}.outputs.#{name} }}"
@@ -323,6 +336,20 @@ def check_workflow(workflow)
   end
   check(writer_step.dig("env", "GH_TOKEN") == "${{ github.token }}",
         "writer lacks the repository release token")
+  expected_writer_env_keys = [
+    "ASSET_ROOT",
+    "GH_TOKEN",
+    "RELEASE_TAG",
+    *identity_outputs.map(&:upcase),
+  ]
+  check(writer_step.fetch("env").keys.map(&:to_s).sort ==
+        expected_writer_env_keys.sort,
+        "writer step env must contain only the release token and tested identities")
+  # WHY: tokenizing the visible gh command cannot detect shell functions or
+  # path reassignment around it. Freeze the complete authority-bearing body.
+  check(Digest::SHA256.hexdigest(writer_step.fetch("run")) ==
+        WRITER_RUN_SHA256,
+        "writer run body differs from the reviewed release program")
   check(all_run_source.scan(/\bgh\s+release\s+create\b/).length == 1,
         "workflow must create one release exactly once")
   check(writer_source.scan(/\bgh\s+release\s+create\b/).length == 1,
@@ -403,6 +430,11 @@ def check_workflow(workflow)
   check(readback_env.is_a?(Hash) &&
         readback_env.keys.map(&:to_s).sort == expected_readback_env_keys.sort,
         "readback step env must contain only public asset identities")
+  # WHY: an approved curl command can still be preceded by credentialed curl,
+  # curlrc setup, or a parent-shell credential expansion. Freeze the whole body.
+  check(Digest::SHA256.hexdigest(readback_step.fetch("run")) ==
+        READBACK_RUN_SHA256,
+        "readback run body differs from the reviewed anonymous fetch program")
   readback_source = run_source(readback)
   # WHY: unsetting named token variables still permits a differently named
   # inherited credential to be expanded into an Authorization argument.
@@ -412,7 +444,7 @@ def check_workflow(workflow)
     "anonymous readback curl command"
   )
   expected_curl_tokens = %w[
-    env -i /usr/bin/curl
+    env -i /usr/bin/curl --disable
     --fail --location --silent --show-error
     --proto =https --tlsv1.2
     --output $output $url
