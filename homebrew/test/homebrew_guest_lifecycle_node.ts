@@ -28,6 +28,8 @@ import {
 import {
   formatHomebrewGuestLifecycleFailureContext,
   HOMEBREW_GUEST_LIFECYCLE_ENV,
+  HOMEBREW_GUEST_MAX_CAPTURED_DIAGNOSTICS,
+  HOMEBREW_GUEST_MAX_CAPTURED_OUTPUT_BYTES,
   type HomebrewGuestForkCountSample,
   type HomebrewGuestLifecycleMachine,
   type HomebrewGuestObservedProcessEvent,
@@ -44,8 +46,14 @@ import {
 } from "./homebrew_guest_lifecycle_runtime_contract";
 import {
   deriveHomebrewGuestLifecycleRuntimeInputs,
+  type HomebrewGuestLifecycleMachineRuntimeInputs,
   type HomebrewGuestLifecycleRuntimeInputs,
 } from "./homebrew_guest_lifecycle_runtime_inputs";
+import {
+  type HomebrewFlatVfsEmbeddedRuntimeInput,
+  type HomebrewFlatVfsShippingProofResult,
+  runHomebrewFlatVfsShippingProof,
+} from "./homebrew_flat_vfs_shipping_proof";
 
 interface Options extends HomebrewGuestLifecycleRevisions {
   imagePath: string;
@@ -89,9 +97,6 @@ interface ProcessObservation {
   >>;
   cancel(): void;
 }
-
-const MAX_CAPTURED_OUTPUT_BYTES = 8 * 1024 * 1024;
-const MAX_CAPTURED_DIAGNOSTICS = 1_000;
 
 async function main(): Promise<void> {
   const options = parseOptions(process.argv.slice(2));
@@ -221,7 +226,7 @@ async function loadRootfsRuntimeInputs(
 }
 
 function createCapturedHost(
-  runtime: HomebrewGuestLifecycleRuntimeInputs,
+  runtime: HomebrewGuestLifecycleMachineRuntimeInputs,
   options: { traceProcessesFromPid?: number },
 ): CapturedHost {
   const lazyDownloads: LazyDownloadEvent[] = [];
@@ -246,7 +251,7 @@ function createCapturedHost(
     // execute finally blocks or upload the buffered output.
     if (stream === "stdout") progress.push(bytes);
     outputBytes += bytes.byteLength;
-    if (outputBytes > MAX_CAPTURED_OUTPUT_BYTES) {
+    if (outputBytes > HOMEBREW_GUEST_MAX_CAPTURED_OUTPUT_BYTES) {
       output.limitExceeded = true;
       return;
     }
@@ -292,7 +297,7 @@ function createCapturedHost(
     onStdout: (_pid, bytes) => capture(bytes, "stdout"),
     onStderr: (_pid, bytes) => capture(bytes, "stderr"),
     onHostDiagnostic: (diagnostic) => {
-      if (output.diagnostics.length < MAX_CAPTURED_DIAGNOSTICS) {
+      if (output.diagnostics.length < HOMEBREW_GUEST_MAX_CAPTURED_DIAGNOSTICS) {
         // WHY: a Wasm trap names only module-local function indices. Preserve
         // the host-owned PID and source so the failing process can be matched
         // to its exact executable instead of misdiagnosed as a kernel trap.
@@ -393,8 +398,11 @@ function createCapturedHost(
 }
 
 export function createNodeLifecycleMachine(
-  runtime: HomebrewGuestLifecycleRuntimeInputs,
-  options: { traceProcessesFromPid?: number } = {},
+  runtime: HomebrewGuestLifecycleMachineRuntimeInputs,
+  options: {
+    traceProcessesFromPid?: number;
+    kernelWasmBytes?: ArrayBuffer;
+  } = {},
 ): HomebrewGuestLifecycleMachine {
   const captured = createCapturedHost(runtime, options);
   return {
@@ -402,7 +410,7 @@ export function createNodeLifecycleMachine(
     diagnostics: captured.output.diagnostics,
     failureContext: () =>
       formatHomebrewGuestLifecycleFailureContext(captured.output),
-    start: () => captured.host.init(),
+    start: () => captured.host.init(options.kernelWasmBytes),
     readFile: (path) => captured.host.readFileFromVfs(path),
     runShellScript: (scriptOptions) =>
       runGuestScript({ captured, ...scriptOptions }).then(() => undefined),
@@ -419,6 +427,30 @@ export function createNodeLifecycleMachine(
     exportRootfsImage: () => captured.host.exportRootfsImage(),
     destroy: () => captured.host.destroy(),
   };
+}
+
+/** Node supplies worker mechanics; the shared module owns every guest step. */
+export function runHomebrewFlatVfsShippingProofInNode(options: {
+  runtime: HomebrewFlatVfsEmbeddedRuntimeInput;
+  tapRevision: string;
+  deadlineMs: number;
+  kernelWasmBytes?: ArrayBuffer;
+  traceProcessesFromPid?: number;
+}): Promise<HomebrewFlatVfsShippingProofResult> {
+  return runHomebrewFlatVfsShippingProof({
+    runtime: options.runtime,
+    tapRevision: options.tapRevision,
+    deadlineMs: options.deadlineMs,
+    createMachine: (runtime) =>
+      createNodeLifecycleMachine(runtime, {
+        ...(options.kernelWasmBytes === undefined
+          ? {}
+          : { kernelWasmBytes: options.kernelWasmBytes }),
+        ...(options.traceProcessesFromPid === undefined
+          ? {}
+          : { traceProcessesFromPid: options.traceProcessesFromPid }),
+      }),
+  });
 }
 
 async function runGuestScript(options: {
@@ -488,7 +520,8 @@ async function runGuestScript(options: {
   );
   if (options.captured.output.limitExceeded) {
     throw new Error(
-      `${options.label} exceeded the ${MAX_CAPTURED_OUTPUT_BYTES}-byte output limit`,
+      `${options.label} exceeded the ` +
+        `${HOMEBREW_GUEST_MAX_CAPTURED_OUTPUT_BYTES}-byte output limit`,
     );
   }
   return { stdout, stderr };

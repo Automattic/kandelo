@@ -23,10 +23,9 @@ import {
 
 export type HomebrewGuestLifecycleTransportMode = "closed" | "public";
 
-export interface HomebrewGuestLifecycleRuntimeInputs {
+/** Host-worker inputs shared by comprehensive and fully embedded proofs. */
+export interface HomebrewGuestLifecycleMachineRuntimeInputs {
   imageBytes: Uint8Array;
-  shellPath: string;
-  shellArgv0: string;
   /**
    * The host may transfer `imageBytes.buffer` only when it is one whole
    * ordinary ArrayBuffer and this flag is true.
@@ -34,6 +33,12 @@ export interface HomebrewGuestLifecycleRuntimeInputs {
   takeImageOwnership?: boolean;
   lazyUrlBase: string;
   lazyAssets?: readonly ClosedLazyAsset[];
+}
+
+export interface HomebrewGuestLifecycleRuntimeInputs
+  extends HomebrewGuestLifecycleMachineRuntimeInputs {
+  shellPath: string;
+  shellArgv0: string;
   bootstrapTransportUrl: string;
   bootstrapBytes: number;
   /** Bottle trees committed by the same first-use transaction as bootstrap. */

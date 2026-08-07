@@ -59,15 +59,52 @@ export {
   HomebrewVfsPlanError,
   planFederatedHomebrewVfs,
   planHomebrewVfs,
+  planHomebrewVfsSelection,
 } from "./homebrew-vfs-planner";
+export {
+  encodeHomebrewBottleDescriptor,
+  HomebrewBottleDescriptorError,
+  projectHomebrewBottleDescriptor,
+} from "./homebrew-bottle-descriptor";
 export type {
-  HomebrewBottleArch,
+  HomebrewBottleDependencyIdentity,
+  HomebrewBottleDescriptor,
+  HomebrewBottleSupportOutput,
+} from "./homebrew-bottle-descriptor";
+export {
+  encodeHomebrewBottleSelection,
+  HomebrewBottleSelectionError,
+  homebrewBottleSelectionSha256,
+  parseCanonicalHomebrewBottleSelection,
+  projectHomebrewBottleSelection,
+} from "./homebrew-bottle-selection";
+export type {
+  HomebrewBottleSelection,
+  ProjectHomebrewBottleSelectionOptions,
+} from "./homebrew-bottle-selection";
+export { resolveHomebrewVfsResourcePolicy } from "./homebrew-vfs-resource-policy";
+export type {
+  HomebrewVfsResourcePolicy,
+  HomebrewVfsResourcePolicyId,
+} from "./homebrew-vfs-resource-policy";
+export {
+  finalizeHomebrewRuntimeSupport,
+  HomebrewRuntimeSupportMaterializationError,
+  overlayPreparedHomebrewRuntimeSupport,
+  prepareHomebrewRuntimeSupport,
+} from "./homebrew-runtime-support-materializer";
+export type {
+  PreparedHomebrewRuntimeSupport,
+} from "./homebrew-runtime-support-materializer";
+export type { HomebrewBottleArch, HomebrewLinkEntry } from "./homebrew-bottle-types";
+export type {
   HomebrewBottleSourceStatus,
   HomebrewBottleStatus,
   HomebrewDependency,
   HomebrewFederatedVfsPlan,
   HomebrewFederatedVfsPlanOptions,
-  HomebrewLinkEntry,
+  HomebrewFlatVfsPlan,
+  HomebrewFlatVfsPlanOptions,
   HomebrewLinkManifest,
   HomebrewMetadataBottle,
   HomebrewMetadataPackage,
@@ -155,9 +192,15 @@ export {
   HomebrewVfsBuildError,
   applyHomebrewVfsConsumerState,
   buildHomebrewVfs,
+  buildHomebrewVfsSelection,
   writeHomebrewVfsComposition,
 } from "./homebrew-vfs-builder";
 export type {
+  HomebrewFlatVfsBuildOptions,
+  HomebrewFlatVfsBuildReport,
+  HomebrewFlatVfsBuildResult,
+  HomebrewFlatVfsLinkOwnerReport,
+  HomebrewFlatVfsPackageReport,
   HomebrewVfsBuildOptions,
   HomebrewVfsBuildReport,
   HomebrewVfsBuildResult,

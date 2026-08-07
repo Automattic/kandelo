@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +9,9 @@ import {
   installHomebrewBootstrapConsumerState,
   prepareHomebrewBootstrapConsumerNamespace,
   readHomebrewBootstrapEnvironment,
+  restoreVerifiedHomebrewBaseImage,
   saveVerifiedHomebrewVfsImage,
+  serializeVerifiedHomebrewVfsImage,
 } from "../../images/vfs/scripts/build-homebrew-vfs-image";
 import {
   assertPackageDeferredZipTreeState,
@@ -19,6 +22,10 @@ import {
 } from "../src/vfs/package-deferred-tree";
 import { MemoryFileSystem } from "../src/vfs/memory-fs";
 import { writeVfsBinary } from "../src/vfs/image-helpers";
+import {
+  addSealedLazyAtomicTestTree,
+  forgeLazyAtomicSeal,
+} from "./lazy-atomic-seal-fixture";
 
 const MiB = 1024 * 1024;
 const encoder = new TextEncoder();
@@ -252,6 +259,121 @@ describe("Homebrew VFS image publication boundary", () => {
     expect(() => assertHomebrewBootstrapConsumerState(fs, consumer)).toThrow();
   });
 
+  it("restores a platform-only base image with exact ABI and capacity", async () => {
+    const fs = bootstrapConsumerFs();
+    fs.setImageMetadata({ version: 1, kernelAbi: 42, createdBy: "base fixture" });
+    const image = await fs.saveImage();
+
+    const restored = await restoreVerifiedHomebrewBaseImage(image, "base fixture", 42);
+
+    expect(restored.metadata).toEqual({
+      version: 1,
+      kernelAbi: 42,
+      createdBy: "base fixture",
+    });
+    expect(restored.capacity).toEqual(MemoryFileSystem.readImageCapacity(image));
+    expect(restored.bytes).toBe(image.byteLength);
+    expect(restored.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(
+      restored.fs.stat("/opt/kandelo/homebrew/Cellar/existing/1/bin/tool"),
+    ).toMatchObject({ size: encoder.encode("tool\n").byteLength });
+  });
+
+  it("snapshots caller-owned base bytes before asynchronous seal verification", async () => {
+    const fs = bootstrapConsumerFs();
+    fs.setImageMetadata({ version: 1, kernelAbi: 42 });
+    const originalPayload = encoder.encode("base-image-snapshot-A\n");
+    const replacementPayload = encoder.encode("base-image-snapshot-B\n");
+    writeVfsBinary(fs, "/snapshot-proof", originalPayload, 0o644);
+    const image = await fs.saveImage();
+    const original = Uint8Array.from(image);
+    const expectedSha256 = createHash("sha256").update(original).digest("hex");
+    const payloadOffset = Buffer.from(image).indexOf(Buffer.from(originalPayload));
+    expect(payloadOffset).toBeGreaterThanOrEqual(0);
+
+    const pending = restoreVerifiedHomebrewBaseImage(
+      image,
+      "mutable base fixture",
+      42,
+    );
+    image.set(replacementPayload, payloadOffset);
+    const restored = await pending;
+
+    expect(readVfsText(restored.fs, "/snapshot-proof")).toBe(
+      "base-image-snapshot-A\n",
+    );
+    expect(restored.sha256).toBe(expectedSha256);
+    expect(restored.bytes).toBe(original.byteLength);
+    expect(restored.capacity).toEqual(
+      MemoryFileSystem.readImageCapacity(original),
+    );
+  });
+
+  it.each(["member", "cohort"] as const)(
+    "rejects a forged imported lazy atomic %s seal",
+    async (forgery) => {
+      const fs = bootstrapConsumerFs();
+      fs.setImageMetadata({ version: 1, kernelAbi: 42 });
+      await addSealedLazyAtomicTestTree(fs, {
+        groupId: `test:homebrew-base-${forgery}`,
+        member: "runtime",
+        root: `/sealed-homebrew-base-${forgery}`,
+      });
+      const forged = forgeLazyAtomicSeal(await fs.saveImage(), forgery);
+
+      await expect(
+        restoreVerifiedHomebrewBaseImage(
+          forged,
+          `forged ${forgery} base fixture`,
+          42,
+        ),
+      ).rejects.toThrow(
+        forgery === "member"
+          ? /activation member .* changed after sealing/
+          : /activation group .* differs from its seal/,
+      );
+    },
+  );
+
+  it("rejects missing or wrong base ABI and an existing Homebrew composition", async () => {
+    const missingAbi = bootstrapConsumerFs();
+    missingAbi.setImageMetadata({ version: 1 });
+    await expect(
+      restoreVerifiedHomebrewBaseImage(
+        await missingAbi.saveImage(),
+        "missing ABI fixture",
+        42,
+      ),
+    ).rejects.toThrow(/does not declare its required kernel ABI/);
+
+    const wrongAbi = bootstrapConsumerFs();
+    wrongAbi.setImageMetadata({ version: 1, kernelAbi: 41 });
+    await expect(
+      restoreVerifiedHomebrewBaseImage(
+        await wrongAbi.saveImage(),
+        "wrong ABI fixture",
+        42,
+      ),
+    ).rejects.toThrow(/declares kernel ABI 41.*requires ABI 42/);
+
+    const composed = bootstrapConsumerFs();
+    composed.setImageMetadata({ version: 1, kernelAbi: 42 });
+    ensureVfsDirectory(composed, "/etc/kandelo");
+    writeVfsBinary(
+      composed,
+      "/etc/kandelo/homebrew-vfs.json",
+      encoder.encode("{}\n"),
+      0o644,
+    );
+    await expect(
+      restoreVerifiedHomebrewBaseImage(
+        await composed.saveImage(),
+        "composed fixture",
+        42,
+      ),
+    ).rejects.toThrow(/already contains a Homebrew composition/);
+  });
+
   it("writes an image whose encoded ceiling matches its consumer contract", async () => {
     const maxByteLength = 8 * MiB;
     const fs = MemoryFileSystem.create(
@@ -275,6 +397,49 @@ describe("Homebrew VFS image publication boundary", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("materializes pending bytes before validating a self-contained serialization", async () => {
+    const maxByteLength = 8 * MiB;
+    const fs = MemoryFileSystem.create(
+      new SharedArrayBuffer(1 * MiB, { maxByteLength }),
+      maxByteLength,
+    );
+    const payload = encoder.encode("eager\n");
+    fs.registerLazyFile(
+      "/usr/share/materialize-all.txt",
+      "https://example.invalid/materialize-all.txt",
+      payload.byteLength,
+      0o644,
+    );
+    let fetchCount = 0;
+    fs.setLazyFetcher(async () => {
+      fetchCount += 1;
+      return new Response(payload, {
+        headers: { "content-length": String(payload.byteLength) },
+      });
+    });
+
+    const serialized = await serializeVerifiedHomebrewVfsImage(
+      fs,
+      "self-contained.vfs.zst",
+      {
+        materializeAll: true,
+        metadata: { version: 1, kernelAbi: 42 },
+        normalizeTimestampsMs: 0,
+      },
+      maxByteLength,
+    );
+    const restored = MemoryFileSystem.fromImagePreservingCapacity(
+      serialized.bytes,
+    );
+
+    expect(fetchCount).toBe(1);
+    expect(restored.exportLazyEntries()).toEqual([]);
+    expect(restored.exportLazyArchiveEntries()).toEqual([]);
+    expect(restored.stat("/usr/share/materialize-all.txt").size).toBe(
+      payload.byteLength,
+    );
   });
 
   it("rejects a masked encoded ceiling before creating an output artifact", async () => {
@@ -362,4 +527,32 @@ function bootstrapConsumerFs(): MemoryFileSystem {
     0o755,
   );
   return fs;
+}
+
+function ensureVfsDirectory(fs: MemoryFileSystem, path: string): void {
+  const components = path.split("/").filter(Boolean);
+  let current = "";
+  for (const component of components) {
+    current += `/${component}`;
+    try {
+      fs.mkdir(current, 0o755);
+    } catch {
+      // Fixture ancestors may already exist.
+    }
+  }
+}
+
+function readVfsText(fs: MemoryFileSystem, path: string): string {
+  const size = fs.stat(path).size;
+  const bytes = new Uint8Array(size);
+  const descriptor = fs.open(path, 0, 0);
+  try {
+    const count = fs.read(descriptor, bytes, null, bytes.byteLength);
+    if (count !== bytes.byteLength) {
+      throw new Error(`incomplete VFS fixture read for ${path}`);
+    }
+    return new TextDecoder().decode(bytes);
+  } finally {
+    fs.close(descriptor);
+  }
 }

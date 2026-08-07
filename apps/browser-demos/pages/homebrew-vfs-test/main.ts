@@ -21,10 +21,14 @@ import type {
 } from "../../../../web-libs/kandelo-session/src/kernel-host";
 import {
   createBrowserLifecycleMachine,
+  runHomebrewFlatVfsShippingProofInBrowser,
   runHomebrewGuestLifecycleInBrowser,
   type HomebrewGuestLifecycleBrowserFixture,
   type HomebrewGuestLifecycleBrowserResult,
 } from "../../../../homebrew/test/homebrew_guest_lifecycle_browser";
+import type {
+  HomebrewFlatVfsShippingProofResult,
+} from "../../../../homebrew/test/homebrew_flat_vfs_shipping_proof";
 import {
   runHomebrewSystemCommandSpawnProof,
 } from "../../../../homebrew/test/homebrew_system_command_spawn_proof";
@@ -33,6 +37,10 @@ import {
   validateHomebrewVfsAcceptanceRequest,
   type HomebrewVfsAcceptanceRequest,
 } from "./acceptance-request";
+import {
+  validateHomebrewFlatVfsShippingProofRequest,
+  type HomebrewFlatVfsShippingProofRequest,
+} from "./flat-vfs-shipping-request";
 
 const MAX_OUTPUT_BYTES = 1024 * 1024;
 const corsProxyUrl = new URL(
@@ -190,6 +198,9 @@ declare global {
     __runHomebrewSystemCommandProof: (
       request: HomebrewSystemCommandProofRequest,
     ) => Promise<HomebrewSystemCommandProofResult>;
+    __runHomebrewFlatVfsShippingProof: (
+      request: HomebrewFlatVfsShippingProofRequest,
+    ) => Promise<HomebrewFlatVfsShippingProofResult>;
   }
 }
 
@@ -345,6 +356,35 @@ async function init(): Promise<void> {
         : { closedAssetRootUrl: closedLifecycleAssetRoot }),
       afterMachineDestroy: settleWebKitReclaim,
     });
+
+  window.__runHomebrewFlatVfsShippingProof = async (request) => {
+    const validated = validateHomebrewFlatVfsShippingProofRequest(request, {
+      locationHref: window.location.href,
+      actualKernelSha256: kernelSha256,
+    });
+    const imageBytes = new Uint8Array(
+      await fetchBytes(validated.vfsUrl.href, "flat Homebrew VFS image"),
+    );
+    const actualImageSha256 = await sha256(imageBytes);
+    if (actualImageSha256 !== validated.expectedImageSha256) {
+      throw new Error(
+        "flat Homebrew VFS fetched image SHA-256 does not match the request",
+      );
+    }
+    return runHomebrewFlatVfsShippingProofInBrowser({
+      runtime: {
+        imageBytes,
+        shellPath: validated.shellPath,
+        shellArgv0: validated.shellArgv0,
+        takeImageOwnership: true,
+      },
+      tapRevision: validated.tapRevision,
+      deadlineMs: Date.now() + validated.timeoutMs,
+      kernelWasm: kernelBytes,
+      corsProxyUrl,
+      afterMachineDestroy: settleWebKitReclaim,
+    });
+  };
 
   window.__runHomebrewSystemCommandProof = async (request) => {
     if (

@@ -40,6 +40,10 @@ export const HOMEBREW_GUEST_LIFECYCLE_ENV = [
   "GIT_TERMINAL_PROMPT=0",
 ] as const;
 
+/** Keep Node and browser evidence bounded by the same host-neutral contract. */
+export const HOMEBREW_GUEST_MAX_CAPTURED_OUTPUT_BYTES = 8 * 1024 * 1024;
+export const HOMEBREW_GUEST_MAX_CAPTURED_DIAGNOSTICS = 1_000;
+
 export type HomebrewGuestLifecyclePhase = "phase-one" | "phase-two";
 
 export interface HomebrewGuestLifecycleMachine {
@@ -685,3 +689,10 @@ function quoteShellWord(value: string): string {
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
 }
+
+export {
+  assertUsableDeadline as assertHomebrewGuestLifecycleDeadline,
+  beforeDeadline as runHomebrewGuestLifecycleOperationBeforeDeadline,
+  destroyBeforeDeadline as destroyHomebrewGuestLifecycleMachineBeforeDeadline,
+  runScriptBeforeDeadline as runHomebrewGuestLifecycleScriptBeforeDeadline,
+};

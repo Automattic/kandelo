@@ -13,6 +13,8 @@ import {
 import {
   formatHomebrewGuestLifecycleFailureContext,
   HOMEBREW_GUEST_LIFECYCLE_ENV,
+  HOMEBREW_GUEST_MAX_CAPTURED_DIAGNOSTICS,
+  HOMEBREW_GUEST_MAX_CAPTURED_OUTPUT_BYTES,
   type HomebrewGuestForkCountSample,
   type HomebrewGuestLifecycleMachine,
   type HomebrewGuestObservedProcessEvent,
@@ -22,8 +24,14 @@ import {
 } from "./homebrew_guest_lifecycle_runner";
 import {
   deriveHomebrewGuestLifecycleRuntimeInputs,
+  type HomebrewGuestLifecycleMachineRuntimeInputs,
   type HomebrewGuestLifecycleRuntimeInputs,
 } from "./homebrew_guest_lifecycle_runtime_inputs";
+import {
+  type HomebrewFlatVfsEmbeddedRuntimeInput,
+  type HomebrewFlatVfsShippingProofResult,
+  runHomebrewFlatVfsShippingProof,
+} from "./homebrew_flat_vfs_shipping_proof";
 import {
   assertNoUnexpectedHostDiagnostics,
   HOMEBREW_GUEST_LIFECYCLE_HOST_LIMITS,
@@ -46,9 +54,6 @@ type FetchLike = (
   input: string | URL,
   init?: RequestInit,
 ) => Promise<Response>;
-
-const MAX_CAPTURED_OUTPUT_BYTES = 8 * 1024 * 1024;
-const MAX_CAPTURED_DIAGNOSTICS = 1_000;
 
 /**
  * Run the same stock-Homebrew lifecycle used by the Node acceptance runner in
@@ -191,7 +196,7 @@ export function createCorsProxySourceUrl(
 }
 
 export function createBrowserLifecycleMachine(options: {
-  runtime: HomebrewGuestLifecycleRuntimeInputs;
+  runtime: HomebrewGuestLifecycleMachineRuntimeInputs;
   kernelWasm: ArrayBuffer;
   corsProxyUrl: string;
   afterDestroy?: () => Promise<void>;
@@ -216,7 +221,7 @@ export function createBrowserLifecycleMachine(options: {
   const stderrDecoder = new TextDecoder();
   const capture = (bytes: Uint8Array, stream: "stdout" | "stderr"): void => {
     outputBytes += bytes.byteLength;
-    if (outputBytes > MAX_CAPTURED_OUTPUT_BYTES) {
+    if (outputBytes > HOMEBREW_GUEST_MAX_CAPTURED_OUTPUT_BYTES) {
       outputLimitExceeded = true;
       return;
     }
@@ -233,7 +238,7 @@ export function createBrowserLifecycleMachine(options: {
     onStdout: (bytes) => capture(bytes, "stdout"),
     onStderr: (bytes) => capture(bytes, "stderr"),
     onHostDiagnostic: (diagnostic) => {
-      if (diagnostics.length < MAX_CAPTURED_DIAGNOSTICS) {
+      if (diagnostics.length < HOMEBREW_GUEST_MAX_CAPTURED_DIAGNOSTICS) {
         // Keep browser and Node failure evidence equivalent: function indices
         // become actionable only when they remain associated with a PID.
         diagnostics.push(
@@ -346,7 +351,7 @@ export function createBrowserLifecycleMachine(options: {
     if (outputLimitExceeded) {
       throw new Error(
         `${scriptOptions.label} exceeded the ` +
-          `${MAX_CAPTURED_OUTPUT_BYTES}-byte output limit`,
+          `${HOMEBREW_GUEST_MAX_CAPTURED_OUTPUT_BYTES}-byte output limit`,
       );
     }
     return { stdout: scriptStdout, stderr: scriptStderr };
@@ -434,6 +439,31 @@ export function createBrowserLifecycleMachine(options: {
       }
     },
   };
+}
+
+/** Chromium supplies worker mechanics; the shared module owns every guest step. */
+export function runHomebrewFlatVfsShippingProofInBrowser(options: {
+  runtime: HomebrewFlatVfsEmbeddedRuntimeInput;
+  tapRevision: string;
+  deadlineMs: number;
+  kernelWasm: ArrayBuffer;
+  corsProxyUrl: string;
+  afterMachineDestroy?: () => Promise<void>;
+}): Promise<HomebrewFlatVfsShippingProofResult> {
+  return runHomebrewFlatVfsShippingProof({
+    runtime: options.runtime,
+    tapRevision: options.tapRevision,
+    deadlineMs: options.deadlineMs,
+    createMachine: (runtime) =>
+      createBrowserLifecycleMachine({
+        runtime,
+        kernelWasm: options.kernelWasm,
+        corsProxyUrl: options.corsProxyUrl,
+        ...(options.afterMachineDestroy === undefined
+          ? {}
+          : { afterDestroy: options.afterMachineDestroy }),
+      }),
+  });
 }
 
 async function remainingObservedPids(

@@ -461,6 +461,7 @@ async function buildFixture(
     migrationLock?: { sha256: string; bytes: number };
     onLoadBottle?: () => void;
     mutatePlan?: (plan: HomebrewVfsPlan) => void;
+    fs?: MemoryFileSystem;
   } = {},
 ): Promise<HomebrewVfsBuildResult> {
   const manifest = linkManifest(bytes, opts.linkOverrides);
@@ -472,7 +473,7 @@ async function buildFixture(
     loadLinkManifest: () => manifest,
   });
   opts.mutatePlan?.(plan);
-  const fs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+  const fs = opts.fs ?? MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
   opts.seedFs?.(fs);
   return buildHomebrewVfs(plan, {
     fs,
@@ -5078,6 +5079,133 @@ describe("Homebrew VFS builder", () => {
     ]);
 
     await expect(buildFixture(bytes)).rejects.toThrow("not valid UTF-8 JSON");
+  });
+
+  it("preserves the legacy missing-receipt diagnostic after staging the bottle", async () => {
+    const bytes = bottleTar(standardEntries());
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+
+    await expect(buildFixture(bytes, {
+      fs,
+      linkOverrides: {
+        receipts: ["Cellar/hello/2.12.1/MISSING_RECEIPT.json"],
+      },
+    })).rejects.toThrow(
+      `receipt Cellar/hello/2.12.1/MISSING_RECEIPT.json is missing after staging at ` +
+        `${KEG}/MISSING_RECEIPT.json`,
+    );
+    expect(readVfsFile(fs, `${KEG}/bin/hello`)).toContain("echo hello");
+  });
+
+  it("preserves the legacy non-regular INSTALL_RECEIPT diagnostic after staging", async () => {
+    const bytes = bottleTar([
+      ...standardEntries().filter((entry) =>
+        entry.path !== "hello/2.12.1/INSTALL_RECEIPT.json"
+      ),
+      {
+        path: "hello/2.12.1/INSTALL_RECEIPT.json",
+        type: "symlink",
+        linkName: "bin/hello",
+      },
+    ]);
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+
+    await expect(buildFixture(bytes, { fs })).rejects.toThrow(
+      `INSTALL_RECEIPT.json is not a regular file at ${KEG}/INSTALL_RECEIPT.json`,
+    );
+    expect(fs.lstat(`${KEG}/INSTALL_RECEIPT.json`).mode & 0xf000).toBe(0xa000);
+  });
+
+  it("preserves the legacy duplicate INSTALL_RECEIPT diagnostic after staging", async () => {
+    const bytes = bottleTar(standardEntries());
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+
+    await expect(buildFixture(bytes, {
+      fs,
+      linkOverrides: {
+        receipts: [
+          "Cellar/hello/2.12.1/INSTALL_RECEIPT.json",
+          "Cellar/hello/2.12.1/INSTALL_RECEIPT.json",
+        ],
+      },
+    })).rejects.toThrow(
+      "link manifest declares 2 INSTALL_RECEIPT.json files, expected one",
+    );
+    expect(readVfsFile(fs, `${KEG}/INSTALL_RECEIPT.json`)).toBe("{}\n");
+  });
+
+  it("preserves the legacy duplicate TAR path diagnostic and partial staging state", async () => {
+    const bytes = bottleTar(standardEntries([{
+      path: "hello/2.12.1/bin/hello",
+      data: "duplicate\n",
+      mode: 0o755,
+    }]));
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+
+    await expect(buildFixture(bytes, { fs })).rejects.toThrow(
+      `bottle entry hello/2.12.1/bin/hello maps to duplicate staged path ${KEG}/bin/hello`,
+    );
+    expect(readVfsFile(fs, `${KEG}/bin/hello`)).toContain("echo hello");
+    expect(readVfsFile(fs, `${KEG}/INSTALL_RECEIPT.json`)).toBe("{}\n");
+  });
+
+  it("preserves the legacy invalid-receipt diagnostic after staging", async () => {
+    const bytes = bottleTar([
+      ...standardEntries().filter((entry) =>
+        entry.path !== "hello/2.12.1/INSTALL_RECEIPT.json"
+      ),
+      { path: "hello/2.12.1/INSTALL_RECEIPT.json", data: "not json\n" },
+    ]);
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+
+    await expect(buildFixture(bytes, { fs })).rejects.toThrow("not valid UTF-8 JSON");
+    expect(readVfsFile(fs, `${KEG}/INSTALL_RECEIPT.json`)).toBe("not json\n");
+  });
+
+  it("preserves legacy sequential opt-link failure state and diagnostics", async () => {
+    const bytes = bottleTar(standardEntries());
+    const basePlan = await planHomebrewVfs(metadataForBottle(bytes), {
+      packages: ["hello"],
+      arch: "wasm32",
+      runtime: "node",
+      loadLinkManifest: () => linkManifest(bytes),
+    });
+    const hello = {
+      ...basePlan.packages[0]!,
+      linkManifest: {
+        ...basePlan.packages[0]!.linkManifest,
+        links: [],
+        receipts: [],
+      },
+    };
+    const secondKeg = `${CELLAR}/second/2.12.1`;
+    const second = {
+      ...hello,
+      name: "second",
+      fullName: "kandelo-dev/tap-core/second",
+      keg: secondKeg,
+      linkManifest: {
+        ...hello.linkManifest,
+        package: "second",
+        keg: secondKeg,
+      },
+    };
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(16 * 1024 * 1024));
+    ensureDirRecursive(fs, `${PREFIX}/opt`);
+    writeVfsFile(fs, `${PREFIX}/opt/second`, "occupied\n", 0o644);
+
+    await expect(buildHomebrewVfs({
+      ...basePlan,
+      requestedPackages: ["hello", "second"],
+      packages: [hello, second],
+    }, {
+      fs,
+      loadBottleBytes: () => bytes,
+    })).rejects.toThrow(
+      `canonical opt link opt/second already exists at ${PREFIX}/opt/second`,
+    );
+    expect(fs.readlink(`${PREFIX}/opt/hello`)).toBe("../Cellar/hello/2.12.1");
+    expect(readVfsFile(fs, `${PREFIX}/opt/second`)).toBe("occupied\n");
   });
 
   it("records bounded Brewfile and requested-root provenance", async () => {
