@@ -243,6 +243,12 @@ def check_workflow(workflow)
         "tap checkout is not the exact credential-free input revision")
 
   build_steps = build.fetch("steps")
+  nix_index = build_steps.index do |step|
+    step["uses"] == "./.github/actions/setup-nix"
+  end
+  sysroot_index = build_steps.index do |step|
+    step["name"] == "Build worktree-local wasm32 sysroot"
+  end
   npm_index = build_steps.index do |step|
     step["run"].to_s.match?(/(?:^|\n)\s*npm ci(?:\s|$)/)
   end
@@ -269,6 +275,16 @@ def check_workflow(workflow)
   proof_index = build_steps.index do |step|
     step["name"] == "Build and prove the exact flat VFS"
   end
+  check(nix_index && sysroot_index && proof_index &&
+        nix_index < sysroot_index && sysroot_index < proof_index,
+        "builder must prepare the worktree-local libc sysroot before building")
+  expected_sysroot_build = <<~'SHELL'
+    set -euo pipefail
+    bash scripts/dev-shell.sh bash scripts/build-musl.sh
+    test -f sysroot/lib/libc.a
+  SHELL
+  check(build_steps.fetch(sysroot_index)["run"] == expected_sysroot_build,
+        "builder libc sysroot step is not the declared musl build")
   playwright_index = build_steps.index do |step|
     step["run"].to_s.include?(
       "./node_modules/.bin/playwright install chromium --with-deps"

@@ -60,6 +60,13 @@ jobs:
 
       - uses: ./.github/actions/setup-nix
 
+      - name: Build worktree-local wasm32 sysroot
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/dev-shell.sh bash scripts/build-musl.sh
+          test -f sysroot/lib/libc.a
+
       - name: Install JavaScript dependencies
         run: |
           npm ci

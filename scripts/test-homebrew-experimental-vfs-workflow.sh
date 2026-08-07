@@ -246,6 +246,12 @@ when "browser-app-dependencies-omitted"
   install = "npm --prefix apps/browser-demos ci --no-audit --no-fund\n"
   source = step.fetch("run")
   step["run"] = source.sub(install, "") if source.include?(install)
+when "libc-sysroot-build-omitted"
+  steps = jobs.fetch("build-test").fetch("steps")
+  removed = steps.reject! do |candidate|
+    candidate["name"] == "Build worktree-local wasm32 sysroot"
+  end
+  abort "libc sysroot build step is missing" unless removed
 else
   abort "unknown mutation: #{mutation}"
 end
@@ -309,5 +315,6 @@ expect_rejection campaign-generation-step campaign-generation-step
 expect_rejection browser-proof-env-stripped browser-proof-env-stripped
 expect_rejection browser-app-dependencies-omitted \
   browser-app-dependencies-omitted
+expect_rejection libc-sysroot-build-omitted libc-sysroot-build-omitted
 
 echo "test-homebrew-experimental-vfs-workflow: ok"
