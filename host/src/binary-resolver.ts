@@ -527,17 +527,31 @@ function configuredProgramRegistryRoots(): string[] | null {
   } catch {
     return null;
   }
+  let defaultRegistryCarriesPackagePolicy = false;
+  if (pathEntryExists(registryRoot)) {
+    if (!statSync(registryRoot).isDirectory()) return [registryRoot];
+    defaultRegistryCarriesPackagePolicy = readdirSync(
+      registryRoot,
+      { withFileTypes: true },
+    )
+      .filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
+      .some((entry) =>
+        pathEntryExists(join(registryRoot, entry.name, "package.toml"))
+      );
+  }
   if (
-    !pathEntryExists(registryRoot)
+    !defaultRegistryCarriesPackagePolicy
     && completeSourceCheckoutRoot() === null
     && pathEntryExists(bundledProgramPackageIndexPath())
   ) {
     // WHY: a sealed Formula-test runtime carries fetched program generations
-    // and the same bundled policy as the installed host package, but it
-    // deliberately omits the source/build registry. Treat that incomplete
-    // runtime as an installed-policy consumer; returning an absent source
-    // registry would discard package identity and make safe cache symlinks
-    // look like anonymous scalar files.
+    // and the same bundled policy as the installed host package, but it is not
+    // a complete source checkout. It may also carry implementation modules at
+    // historical packages/registry paths without carrying package recipes.
+    // Treat that incomplete runtime as an installed-policy consumer;
+    // returning a partial source registry would discard package identity and
+    // make safe cache symlinks look like anonymous scalar files. An explicit
+    // WASM_POSIX_DEPS_REGISTRY remains authoritative via the branch above.
     return null;
   }
   return [registryRoot];

@@ -837,17 +837,51 @@ NATIVE_INTERPRETER_EOF
       Cargo.toml package.json examples/run-example.ts \
       host/src/node-kernel-host.ts host/wasm/kandelo-kernel.wasm \
       host/wasm/program-packages.json \
+      packages/registry/openssl/src/tls/1_2/connection.ts \
+      packages/registry/openssl/src/tls/certificates.ts \
       node_modules/tsx/package.json node_modules/esbuild/package.json \
       node_modules/fflate/package.json node_modules/fzstd/package.json \
-      node_modules/vite/bin/vite.js node_modules/vite/package.json \
+      node_modules/playwright/index.js \
+      node_modules/playwright/package.json \
+      node_modules/playwright-core/package.json \
+      node_modules/vite/bin/vite.js node_modules/vite/dist/node/index.js \
+      node_modules/vite/package.json \
       .ci-test-binary-cache/programs \
       binaries/programs/wasm32/fixture.wasm; do
       [ -r "$runtime_root/$required" ]
     done
-    for forbidden in .git packages local-binaries tools/xtask source-marker; do
-      [ ! -e "$runtime_root/$forbidden" ] &&
-        [ ! -L "$runtime_root/$forbidden" ]
+    browser_cwd="$runtime_root/apps/browser-demos"
+    [ -d "$browser_cwd" ] && [ ! -L "$browser_cwd" ]
+    [ -z "$(/usr/bin/find "$browser_cwd" -mindepth 1 -print -quit)" ]
+    [ -L "$runtime_root/node_modules/.bin/vite" ]
+    [ "$(/usr/bin/readlink -- "$runtime_root/node_modules/.bin/vite")" = \
+      "../vite/bin/vite.js" ]
+    for forbidden in \
+      .git local-binaries tools/xtask source-marker \
+      packages/registry/program-packages.json \
+      packages/registry/openssl/package.toml \
+      packages/registry/openssl/build.sh; do
+      if [ -e "$runtime_root/$forbidden" ] || \
+         [ -L "$runtime_root/$forbidden" ]; then
+        echo "Formula test runtime exposed forbidden path: $forbidden" >&2
+        exit 1
+      fi
     done
+    resolver_output="$(
+      cd "$runtime_root" &&
+        "$HOMEBREW_KANDELO_NODE" --import tsx/esm --input-type=module -e '
+          const { programOutputClosureRelPaths } = await import(
+            "./host/src/binary-resolver.ts"
+          );
+          const paths = programOutputClosureRelPaths("programs/dash.wasm");
+          if (JSON.stringify(paths) !==
+              JSON.stringify(["programs/wasm32/dash.wasm"])) {
+            throw new Error(`unexpected Dash closure: ${JSON.stringify(paths)}`);
+          }
+          process.stdout.write("bundled-policy");
+        '
+    )"
+    [ "$resolver_output" = "bundled-policy" ]
     # WHY: this is the exact failure boundary from the seven-package canary:
     # Node must resolve both the tsx loader and every transitive host-source
     # import from the closed alias, without ambient NODE_PATH authority.
@@ -872,6 +906,51 @@ NATIVE_INTERPRETER_EOF
       vite/*) ;;
       *) printf '%s\n' "$vite_version" >&2; exit 1 ;;
     esac
+    mapfile -t browser_module_paths < <(
+      cd "$browser_cwd" &&
+        "$HOMEBREW_KANDELO_NODE" -e '
+          const { createRequire } = require("node:module");
+          const requireFromBrowserCwd = createRequire(process.argv[1]);
+          process.stdout.write(requireFromBrowserCwd.resolve("playwright") + "\n");
+          process.stdout.write(requireFromBrowserCwd.resolve("vite") + "\n");
+        ' "$browser_cwd/package.json"
+    )
+    [ "${#browser_module_paths[@]}" -eq 2 ]
+    [ "${browser_module_paths[0]}" = \
+      "$runtime_root/node_modules/playwright/index.js" ]
+    [ "${browser_module_paths[1]}" = \
+      "$runtime_root/node_modules/vite/dist/node/index.js" ]
+    npx_cache="$TMPDIR/formula-runtime-npx-cache"
+    [ ! -e "$npx_cache" ] && [ ! -L "$npx_cache" ]
+    mkdir "$npx_cache"
+    npx_vite="$({
+      cd "$browser_cwd" &&
+        NODE_PATH= npm_config_cache="$npx_cache" \
+          npm_config_offline=true npm_config_yes=false \
+          npx --no-install -c 'command -v vite'
+    })"
+    [ "$npx_vite" = "$runtime_root/node_modules/.bin/vite" ]
+    npx_vite_version="$({
+      cd "$browser_cwd" &&
+        NODE_PATH= npm_config_cache="$npx_cache" \
+          npm_config_offline=true npm_config_yes=false \
+          npx vite --version
+    })"
+    case "$npx_vite_version" in
+      vite/*) ;;
+      *) printf '%s\n' "$npx_vite_version" >&2; exit 1 ;;
+    esac
+    playwright_probe="$(
+      cd "$runtime_root" &&
+        "$HOMEBREW_KANDELO_NODE" -e '
+          const { createRequire } = require("node:module");
+          const requireFromRuntime = createRequire(process.argv[1]);
+          const { chromium } = requireFromRuntime("playwright");
+          if (typeof chromium.launch !== "function") process.exit(1);
+          process.stdout.write("playwright-runtime-ok");
+        ' "$runtime_root/package.json"
+    )"
+    [ "$playwright_probe" = "playwright-runtime-ok" ]
     ;;
   assert-primary-tap-root)
     [ "$#" -eq 2 ]
@@ -2090,7 +2169,8 @@ PY
   (
     cd "$REPO_ROOT"
     cp -a --parents -- \
-      "${formula_test_node_module_paths[@]}" "$isolated_kandelo"
+      "${formula_test_node_module_paths[@]}" \
+      node_modules/.bin/vite "$isolated_kandelo"
   ) || fail "could not copy the locked Formula-test npm closure"
   cp -- "$REPO_ROOT/Cargo.toml" "$REPO_ROOT/package.json" \
     "$REPO_ROOT/package-lock.json" \
@@ -2102,9 +2182,15 @@ PY
     "$isolated_kandelo/examples/"
   cp -- "$REPO_ROOT/package.json" \
     "$isolated_kandelo/host/wasm/kandelo-kernel.wasm"
-  mkdir -p "$isolated_kandelo/packages/registry"
+  mkdir -p "$isolated_kandelo/packages/registry/openssl/src"
+  cp -a -- "$REPO_ROOT/packages/registry/openssl/src/tls" \
+    "$isolated_kandelo/packages/registry/openssl/src/"
   printf '{"format":"unrelated-global-poison"}\n' \
     >"$isolated_kandelo/packages/registry/program-packages.json"
+  printf 'openssl recipe poison\n' \
+    >"$isolated_kandelo/packages/registry/openssl/package.toml"
+  printf 'openssl build poison\n' \
+    >"$isolated_kandelo/packages/registry/openssl/build.sh"
   cp -- "$REPO_ROOT/packages/registry/program-packages.json" \
     "$isolated_xtask_dir/formula-test-program-packages.json"
   cp -- "$REPO_ROOT/package.json" \
@@ -2751,9 +2837,21 @@ EOF
     [ "$(/usr/bin/sudo -n -- /usr/bin/stat -c '%u:%g:%a' \
       "$protected_formula_test_root")" = "0:0:555" ] &&
     [ -f "$protected_formula_test_root/node_modules/tsx/package.json" ] &&
+    [ -d "$protected_formula_test_root/apps/browser-demos" ] &&
+    [ -z "$(/usr/bin/find "$protected_formula_test_root/apps/browser-demos" \
+      -mindepth 1 -print -quit)" ] &&
+    [ -L "$protected_formula_test_root/node_modules/.bin/vite" ] &&
+    [ "$(/usr/bin/readlink -- \
+      "$protected_formula_test_root/node_modules/.bin/vite")" = \
+      "../vite/bin/vite.js" ] &&
     [ -f "$protected_formula_test_root/node_modules/vite/bin/vite.js" ] &&
+    [ -f "$protected_formula_test_root/packages/registry/openssl/src/tls/1_2/connection.ts" ] &&
+    [ -f "$protected_formula_test_root/packages/registry/openssl/src/tls/certificates.ts" ] &&
+    [ ! -e "$protected_formula_test_root/packages/registry/program-packages.json" ] &&
+    [ ! -L "$protected_formula_test_root/packages/registry/program-packages.json" ] &&
+    [ ! -e "$protected_formula_test_root/packages/registry/openssl/package.toml" ] &&
+    [ ! -e "$protected_formula_test_root/packages/registry/openssl/build.sh" ] &&
     [ ! -e "$protected_formula_test_root/package-lock.json" ] &&
-    [ ! -e "$protected_formula_test_root/packages" ] &&
     [ ! -e "$protected_formula_test_root/local-binaries" ] ||
     fail "isolated launcher did not stage the closed Formula test runtime"
   [ "${HOMEBREW_PATCHED_LAUNCHER%/*}" = "$isolated_prefix/bin" ] &&

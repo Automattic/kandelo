@@ -432,19 +432,27 @@ homebrew_patched_launcher_formula_test_runtime_manifest() {
     host/src/node-kernel-host.ts
     host/wasm/kandelo-kernel.wasm
     host/wasm/program-packages.json
+    packages/registry/openssl/src/tls/1_2/connection.ts
+    packages/registry/openssl/src/tls/certificates.ts
     node_modules/tsx/package.json
     node_modules/esbuild/package.json
     node_modules/fflate/package.json
     node_modules/fzstd/package.json
+    node_modules/playwright/index.js
+    node_modules/playwright/package.json
+    node_modules/playwright-core/package.json
     node_modules/vite/bin/vite.js
+    node_modules/vite/dist/node/index.js
     node_modules/vite/package.json
   )
   local -a required_directories=(
     .ci-test-binary-cache/programs
+    apps/browser-demos
     binaries
     host/src
     host/wasm
     node_modules/@esbuild
+    packages/registry/openssl/src/tls
   )
   [ "$root" = "$HOMEBREW_PATCHED_PROTECTED_DIR/formula-test-runtime" ] || {
     echo "homebrew-patched-launcher: Formula test runtime left its protected root" >&2
@@ -460,8 +468,8 @@ homebrew_patched_launcher_formula_test_runtime_manifest() {
     relative="${entry#"$root"/}"
     if [[ "$relative" != */* ]]; then
       case "$relative" in
-        .ci-test-binary-cache|Cargo.toml|binaries|crates|examples|host|libc|\
-          node_modules|package.json|scripts|sdk|target|tools) ;;
+        .ci-test-binary-cache|apps|Cargo.toml|binaries|crates|examples|host|libc|\
+          node_modules|package.json|packages|scripts|sdk|target|tools) ;;
         *)
           echo "homebrew-patched-launcher: Formula test runtime exposes an undeclared top-level input: $relative" >&2
           return 2
@@ -482,6 +490,30 @@ homebrew_patched_launcher_formula_test_runtime_manifest() {
       }
     fi
   done
+  [ -L "$root/node_modules/.bin/vite" ] &&
+    [ "$(/usr/bin/readlink -- "$root/node_modules/.bin/vite")" = \
+      "../vite/bin/vite.js" ] || {
+    echo "homebrew-patched-launcher: Formula test runtime Vite npm link is invalid" >&2
+    return 2
+  }
+  for entry in "${entries[@]}"; do
+    relative="${entry#"$root"/}"
+    case "$relative" in
+      apps|apps/browser-demos) ;;
+      apps/*)
+        echo "homebrew-patched-launcher: Formula test runtime apps tree contains undeclared state: $relative" >&2
+        return 2
+        ;;
+      packages|packages/registry|packages/registry/openssl|\
+        packages/registry/openssl/src|\
+        packages/registry/openssl/src/tls|\
+        packages/registry/openssl/src/tls/*) ;;
+      packages/*)
+        echo "homebrew-patched-launcher: Formula test runtime packages tree contains undeclared state: $relative" >&2
+        return 2
+        ;;
+    esac
+  done
   for checker in "${required_files[@]}"; do
     [ -f "$root/$checker" ] && [ ! -L "$root/$checker" ] || {
       echo "homebrew-patched-launcher: Formula test runtime lacks required file: $checker" >&2
@@ -494,7 +526,7 @@ homebrew_patched_launcher_formula_test_runtime_manifest() {
       return 2
     }
   done
-  for checker in .git Cargo.lock package-lock.json packages local-binaries \
+  for checker in .git Cargo.lock package-lock.json local-binaries \
     target/.rustc_info.json tools/xtask scripts/dev-shell.sh \
     scripts/install-local-binary.sh; do
     if [ -e "$root/$checker" ] || [ -L "$root/$checker" ]; then
