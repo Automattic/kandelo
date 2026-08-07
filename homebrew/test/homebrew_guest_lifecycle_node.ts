@@ -52,7 +52,9 @@ import {
 import {
   type HomebrewFlatVfsEmbeddedRuntimeInput,
   type HomebrewFlatVfsShippingProofResult,
+  type HomebrewFlatVfsStartupProofResult,
   runHomebrewFlatVfsShippingProof,
+  runHomebrewFlatVfsStartupProof,
 } from "./homebrew_flat_vfs_shipping_proof";
 
 interface Options extends HomebrewGuestLifecycleRevisions {
@@ -449,6 +451,26 @@ export function runHomebrewFlatVfsShippingProofInNode(options: {
         ...(options.traceProcessesFromPid === undefined
           ? {}
           : { traceProcessesFromPid: options.traceProcessesFromPid }),
+      }),
+  });
+}
+
+/** Node supplies worker mechanics; the shared module owns startup validation. */
+export function runHomebrewFlatVfsStartupProofInNode(options: {
+  runtime: HomebrewFlatVfsEmbeddedRuntimeInput;
+  tapRevision: string;
+  deadlineMs: number;
+  kernelWasmBytes?: ArrayBuffer;
+}): Promise<HomebrewFlatVfsStartupProofResult> {
+  return runHomebrewFlatVfsStartupProof({
+    runtime: options.runtime,
+    tapRevision: options.tapRevision,
+    deadlineMs: options.deadlineMs,
+    createMachine: (runtime) =>
+      createNodeLifecycleMachine(runtime, {
+        ...(options.kernelWasmBytes === undefined
+          ? {}
+          : { kernelWasmBytes: options.kernelWasmBytes }),
       }),
   });
 }

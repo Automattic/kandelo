@@ -11305,7 +11305,7 @@
     "openldap": {
       "internal": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "5a958deb06792794bc4ccbca62276d85998cdde566c517d55c127935927e0bf7",
+        "bottle_checksum": "f720a0f32095519560fe769c978a53d4f5b701bc6c9d06a1c013fc23c4087162",
         "desc": "Open source suite of directory software",
         "executables": [
           "ldapadd",
@@ -11350,8 +11350,8 @@
         ],
         "license": "OLDAP-2.8",
         "name": "openldap",
-        "ruby_source_checksum": "676dc8b0d62af86e23122102eb22d0856111f06a5809657b52a8c50f480355e8",
-        "stable_checksum": "d693b49517a42efb85a1a364a310aed16a53d428d1b46c0d31ef3fba78fcb656",
+        "ruby_source_checksum": "c4e96e04ef32465d11d4380cc5b59e4f05acd5107c729b107a93660a62b1205e",
+        "stable_checksum": "9e86f37da375aa948a1b478dd76fe87b02090e47c21facae19223588e3407922",
         "stable_dependencies": [
           "openssl@3",
           "util-linux"
@@ -11364,7 +11364,7 @@
           }
         ],
         "stable_url_args": [
-          "https://www.openldap.org/software/download/OpenLDAP/openldap-release/openldap-2.6.13.tgz"
+          "https://www.openldap.org/software/download/OpenLDAP/openldap-release/openldap-2.7.0.tgz"
         ],
         "stable_uses_from_macos": [
           [
@@ -11376,11 +11376,11 @@
             "cyrus-sasl"
           ]
         ],
-        "stable_version": "2.6.13"
+        "stable_version": "2.7.0"
       },
       "public": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "5a958deb06792794bc4ccbca62276d85998cdde566c517d55c127935927e0bf7",
+        "bottle_checksum": "f720a0f32095519560fe769c978a53d4f5b701bc6c9d06a1c013fc23c4087162",
         "desc": "Open source suite of directory software",
         "executables": [
           "ldapadd",
@@ -11425,8 +11425,8 @@
         ],
         "license": "OLDAP-2.8",
         "name": "openldap",
-        "ruby_source_checksum": "676dc8b0d62af86e23122102eb22d0856111f06a5809657b52a8c50f480355e8",
-        "stable_checksum": "d693b49517a42efb85a1a364a310aed16a53d428d1b46c0d31ef3fba78fcb656",
+        "ruby_source_checksum": "c4e96e04ef32465d11d4380cc5b59e4f05acd5107c729b107a93660a62b1205e",
+        "stable_checksum": "9e86f37da375aa948a1b478dd76fe87b02090e47c21facae19223588e3407922",
         "stable_dependencies": [
           "openssl@3",
           "util-linux"
@@ -11439,7 +11439,7 @@
           }
         ],
         "stable_url_args": [
-          "https://www.openldap.org/software/download/OpenLDAP/openldap-release/openldap-2.6.13.tgz"
+          "https://www.openldap.org/software/download/OpenLDAP/openldap-release/openldap-2.7.0.tgz"
         ],
         "stable_uses_from_macos": [
           [
@@ -11451,7 +11451,7 @@
             "cyrus-sasl"
           ]
         ],
-        "stable_version": "2.6.13"
+        "stable_version": "2.7.0"
       }
     },
     "openssl@3": {

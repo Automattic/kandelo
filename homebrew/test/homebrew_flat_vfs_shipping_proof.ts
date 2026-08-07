@@ -63,11 +63,23 @@ export interface ValidatedHomebrewFlatVfsEmbeddedRuntime
   selectionSha256: string;
 }
 
-export interface HomebrewFlatVfsShippingProofResult {
+export interface HomebrewFlatVfsStartupProofResult {
   tapRevision: string;
   kandeloAbi: number;
   selectionSha256: string;
   lazyDownloads: readonly LazyDownloadEvent[];
+}
+
+export type HomebrewFlatVfsShippingProofResult =
+  HomebrewFlatVfsStartupProofResult;
+
+interface HomebrewFlatVfsProofOptions {
+  runtime: HomebrewFlatVfsEmbeddedRuntimeInput;
+  tapRevision: string;
+  deadlineMs: number;
+  createMachine: (
+    runtime: HomebrewGuestLifecycleMachineRuntimeInputs,
+  ) => HomebrewGuestLifecycleMachine;
 }
 
 /**
@@ -121,15 +133,46 @@ export function validateHomebrewFlatVfsEmbeddedRuntime(
   };
 }
 
+/** Boot and start the exact embedded Homebrew runtime on either host adapter. */
+export function runHomebrewFlatVfsStartupProof(
+  options: HomebrewFlatVfsProofOptions,
+): Promise<HomebrewFlatVfsStartupProofResult> {
+  return runHomebrewFlatVfsEmbeddedProof(options);
+}
+
 /** Run the same fully embedded stock-Homebrew proof on either host adapter. */
-export async function runHomebrewFlatVfsShippingProof(options: {
-  runtime: HomebrewFlatVfsEmbeddedRuntimeInput;
-  tapRevision: string;
-  deadlineMs: number;
-  createMachine: (
-    runtime: HomebrewGuestLifecycleMachineRuntimeInputs,
-  ) => HomebrewGuestLifecycleMachine;
-}): Promise<HomebrewFlatVfsShippingProofResult> {
+export function runHomebrewFlatVfsShippingProof(
+  options: HomebrewFlatVfsProofOptions,
+): Promise<HomebrewFlatVfsShippingProofResult> {
+  return runHomebrewFlatVfsEmbeddedProof(options, async (machine) => {
+    await runHomebrewGuestLifecycleScriptBeforeDeadline(
+      machine,
+      options.deadlineMs,
+      {
+        shellPath: options.runtime.shellPath,
+        shellArgv0: options.runtime.shellArgv0,
+        // The core scope never reads canaryRevision. Supplying the same exact
+        // core SHA satisfies the existing shared script API without creating
+        // a second revision or a second guest contract for the flat lane.
+        script: createHomebrewGuestShippingProofScript(
+          {
+            coreRevision: options.tapRevision,
+            canaryRevision: options.tapRevision,
+          },
+          "core",
+        ),
+        marker: HOMEBREW_GUEST_CORE_SHIPPING_PROOF_MARKER,
+        label: "embedded stock Homebrew core bottle shipping proof",
+      },
+    );
+    assertNoLazyDownload(machine.lazyDownloads, "core bottle shipping proof");
+  });
+}
+
+async function runHomebrewFlatVfsEmbeddedProof(
+  options: HomebrewFlatVfsProofOptions,
+  afterStartup?: (machine: HomebrewGuestLifecycleMachine) => Promise<void>,
+): Promise<HomebrewFlatVfsStartupProofResult> {
   assertHomebrewGuestLifecycleDeadline(options.deadlineMs);
   assertHomebrewGuestLifecycleRevisions({
     coreRevision: options.tapRevision,
@@ -165,27 +208,7 @@ export async function runHomebrewFlatVfsShippingProof(options: {
       },
     );
     assertNoLazyDownload(machine.lazyDownloads, "brew --version");
-    await runHomebrewGuestLifecycleScriptBeforeDeadline(
-      machine,
-      options.deadlineMs,
-      {
-        shellPath: runtime.shellPath,
-        shellArgv0: runtime.shellArgv0,
-        // The core scope never reads canaryRevision. Supplying the same exact
-        // core SHA satisfies the existing shared script API without creating
-        // a second revision or a second guest contract for the flat lane.
-        script: createHomebrewGuestShippingProofScript(
-          {
-            coreRevision: options.tapRevision,
-            canaryRevision: options.tapRevision,
-          },
-          "core",
-        ),
-        marker: HOMEBREW_GUEST_CORE_SHIPPING_PROOF_MARKER,
-        label: "embedded stock Homebrew core bottle shipping proof",
-      },
-    );
-    assertNoLazyDownload(machine.lazyDownloads, "core bottle shipping proof");
+    await afterStartup?.(machine);
     succeeded = true;
   } finally {
     const destroy = destroyHomebrewGuestLifecycleMachineBeforeDeadline(
@@ -196,9 +219,16 @@ export async function runHomebrewFlatVfsShippingProof(options: {
     else await destroy.catch(() => {});
     assertNoUnexpectedHostDiagnostics(
       machine.diagnostics,
-      "embedded stock Homebrew shipping proof host",
+      afterStartup === undefined
+        ? "embedded stock Homebrew startup proof host"
+        : "embedded stock Homebrew shipping proof host",
     );
-    assertNoLazyDownload(machine.lazyDownloads, "complete shipping proof");
+    assertNoLazyDownload(
+      machine.lazyDownloads,
+      afterStartup === undefined
+        ? "complete startup proof"
+        : "complete shipping proof",
+    );
   }
   return {
     tapRevision: options.tapRevision,
