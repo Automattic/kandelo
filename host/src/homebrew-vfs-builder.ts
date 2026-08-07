@@ -38,6 +38,7 @@ import {
   HomebrewRuntimeSupportMaterializationError,
   overlayPreparedHomebrewRuntimeSupport,
   prepareHomebrewRuntimeSupport,
+  selectHomebrewExtractionCommands,
 } from "./homebrew-runtime-support-materializer";
 import { MemoryFileSystem } from "./vfs/memory-fs";
 import {
@@ -532,6 +533,12 @@ export async function buildHomebrewVfsSelection(
   ));
 
   const linkResolution = resolveFlatLinkOwnership(plan.packages, plan.linkPolicy);
+  const extractionCommands = runRuntimeSupport(() =>
+    selectHomebrewExtractionCommands(
+      plan.packages,
+      linkResolution.selectedOwnerByTarget,
+    )
+  );
   preflightFlatOptIdentities(plan.packages);
   const fs = options.baseFs === undefined
     ? createFlatFs(policy.vfs.maxByteLength)
@@ -570,7 +577,11 @@ export async function buildHomebrewVfsSelection(
     ))
   );
   runMaterializer(() => applyMaterializedOptLinks(fs, prepared.map((item) => item.input)));
-  runRuntimeSupport(() => finalizeHomebrewRuntimeSupport(fs, runtimeSupport));
+  runRuntimeSupport(() => finalizeHomebrewRuntimeSupport(
+    fs,
+    runtimeSupport,
+    extractionCommands,
+  ));
   const path = flatPath(plan.packages);
   if (path.length > 0) {
     ensureDirRecursive(fs, "/etc/profile.d");

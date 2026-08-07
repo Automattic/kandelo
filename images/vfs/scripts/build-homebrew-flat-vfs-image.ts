@@ -47,6 +47,18 @@ import { sourceDateEpochMilliseconds } from "./vfs-image-helpers";
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const MAX_SELECTION_BYTES = 16 * 1024 * 1024;
 const MAX_BASE_IMAGE_BYTES = 1024 * 1024 * 1024;
+const EXTRACTION_COMMANDS = Object.freeze([
+  {
+    formula: "kandelo-dev/tap-core/tar",
+    stablePath: "/usr/bin/tar",
+    selectedPath: "/opt/kandelo/homebrew/bin/tar",
+  },
+  {
+    formula: "kandelo-dev/tap-core/gzip",
+    stablePath: "/usr/bin/gzip",
+    selectedPath: "/opt/kandelo/homebrew/bin/gzip",
+  },
+]);
 
 export interface FlatHomebrewVfsCliOptions {
   selection: string;
@@ -560,6 +572,7 @@ function assertRestoredFlatHomebrewVfs(
     );
   }
   assertVfsExecutable(fs, brewTarget, "Homebrew entrypoint");
+  assertRestoredExtractionCommands(fs, buildReport);
   for (const pkg of buildReport.packages) {
     for (const relativePath of pkg.links) {
       const path = `${pkg.prefix}/${relativePath}`;
@@ -579,6 +592,46 @@ function assertRestoredFlatHomebrewVfs(
       new TextDecoder("utf-8", { fatal: true }).decode(shell.source)
   ) {
     throw new Error("restored flat Homebrew shell config changed");
+  }
+}
+
+function assertRestoredExtractionCommands(
+  fs: MemoryFileSystem,
+  buildReport: HomebrewFlatVfsBuildReport,
+): void {
+  const selected = EXTRACTION_COMMANDS.filter((command) =>
+    buildReport.packages.some((pkg) => pkg.full_name === command.formula)
+  );
+  if (selected.length === 0) return;
+  if (selected.length !== EXTRACTION_COMMANDS.length) {
+    throw new Error("restored flat Homebrew VFS has an incomplete tar/gzip pair");
+  }
+  for (const command of selected) {
+    let link;
+    try {
+      link = fs.lstat(command.stablePath);
+    } catch {
+      throw new Error(
+        `restored flat Homebrew VFS is missing ${command.stablePath}`,
+      );
+    }
+    if (
+      (link.mode & 0xf000) !== 0xa000 ||
+      link.uid !== 0 ||
+      link.gid !== 0 ||
+      fs.readlink(command.stablePath) !== command.selectedPath ||
+      fs.isPathDeferred(command.stablePath)
+    ) {
+      throw new Error(
+        `restored flat Homebrew ${command.stablePath} is not the ` +
+          `root-owned selected link to ${command.selectedPath}`,
+      );
+    }
+    assertVfsExecutable(
+      fs,
+      command.selectedPath,
+      `selected Homebrew ${command.formula}`,
+    );
   }
 }
 

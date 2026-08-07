@@ -30,6 +30,22 @@ const PREFIX = KANDELO_HOMEBREW_GUEST_LAYOUT.prefix;
 const STABLE_BASH = "/bin/bash";
 const SOURCE_ROOTFS_BASH = "/usr/bin/bash";
 const HOMEBREW_BASH = `${PREFIX}/bin/bash`;
+const STABLE_EXTRACTION_COMMANDS = Object.freeze([
+  Object.freeze({
+    name: "tar",
+    fullName: "kandelo-dev/tap-core/tar",
+    linkTarget: "bin/tar",
+    stablePath: "/usr/bin/tar",
+    selectedPath: `${PREFIX}/bin/tar`,
+  }),
+  Object.freeze({
+    name: "gzip",
+    fullName: "kandelo-dev/tap-core/gzip",
+    linkTarget: "bin/gzip",
+    stablePath: "/usr/bin/gzip",
+    selectedPath: `${PREFIX}/bin/gzip`,
+  }),
+] as const);
 const USER_ID = 1000;
 const GROUP_ID = 1000;
 const S_IFMT = 0xf000;
@@ -50,6 +66,14 @@ export interface PreparedHomebrewRuntimeSupport {
   readonly zipBytes: Uint8Array;
   readonly environmentBytes: Uint8Array;
   readonly tree: DerivedPackageDeferredZipTree;
+}
+
+export interface SelectedHomebrewExtractionCommand {
+  readonly name: "tar" | "gzip";
+  readonly fullName: string;
+  readonly linkTarget: string;
+  readonly stablePath: string;
+  readonly selectedPath: string;
 }
 
 interface HomebrewRuntimeSupportPreparedKeg {
@@ -148,14 +172,22 @@ export async function overlayPreparedHomebrewRuntimeSupport(
 export function finalizeHomebrewRuntimeSupport(
   fs: MemoryFileSystem,
   prepared: PreparedHomebrewRuntimeSupport,
+  extractionCommands: readonly SelectedHomebrewExtractionCommand[],
 ): void {
   try {
     const stableBashAction = preflightFinalNamespace(fs);
+    const verifiedExtractionCommands = preflightStableExtractionCommands(
+      fs,
+      extractionCommands,
+    );
     for (const path of MUTABLE_DIRECTORIES) ensureDirRecursive(fs, path, 0o755);
     ensureDirRecursive(fs, dirname(ENV_PATH), 0o755);
     fs.createFileWithOwner(ENV_PATH, 0o644, 0, 0, prepared.environmentBytes);
     ensureDirRecursive(fs, dirname(ENTRYPOINT), 0o755);
     fs.symlinkWithOwner(`${PREFIX}/bin/brew`, ENTRYPOINT, 0, 0);
+    for (const command of verifiedExtractionCommands) {
+      fs.symlinkWithOwner(command.selectedPath, command.stablePath, 0, 0);
+    }
     if (stableBashAction === "replace-source-rootfs-alias") {
       // WHY: stock Homebrew's bootstrap bin/brew declares /bin/bash, while the
       // source-rootfs alias resolves to a deferred program. Only replace that
@@ -166,11 +198,42 @@ export function finalizeHomebrewRuntimeSupport(
 
     recursivelyLchown(fs, PREFIX, USER_ID, GROUP_ID);
     recursivelyLchown(fs, "/home/user/.cache", USER_ID, GROUP_ID);
-    assertFinalRuntimeSupport(fs, prepared);
+    assertFinalRuntimeSupport(fs, prepared, verifiedExtractionCommands);
   } catch (error) {
     if (error instanceof HomebrewRuntimeSupportMaterializationError) throw error;
     fail(errorMessage(error));
   }
+}
+
+/**
+ * Bind the system-only bottle extraction bridge to the exact selected
+ * first-party Formulae and the winners of the ordinary prefix-link policy.
+ */
+export function selectHomebrewExtractionCommands(
+  descriptors: readonly HomebrewBottleDescriptor[],
+  selectedOwnerByTarget: ReadonlyMap<string, string>,
+): readonly SelectedHomebrewExtractionCommand[] {
+  const selectedDescriptors = STABLE_EXTRACTION_COMMANDS.map((command) =>
+    descriptors.filter((descriptor) => descriptor.fullName === command.fullName)
+  );
+  const selectedCount = selectedDescriptors.filter((matches) => matches.length > 0).length;
+  if (selectedCount === 0) return Object.freeze([]);
+  if (
+    selectedCount !== STABLE_EXTRACTION_COMMANDS.length ||
+    selectedDescriptors.some((matches) => matches.length !== 1)
+  ) {
+    fail("flat Homebrew runtime must select tar and gzip together exactly once");
+  }
+  for (const [index, command] of STABLE_EXTRACTION_COMMANDS.entries()) {
+    const descriptor = selectedDescriptors[index]![0]!;
+    if (!descriptor.links.some((link) => link.target === command.linkTarget)) {
+      fail(`${command.fullName} does not declare ${command.linkTarget}`);
+    }
+    if (selectedOwnerByTarget.get(command.linkTarget) !== command.fullName) {
+      fail(`${command.fullName} does not own selected link ${command.linkTarget}`);
+    }
+  }
+  return STABLE_EXTRACTION_COMMANDS;
 }
 
 function assertBootstrapIdentity(
@@ -382,6 +445,63 @@ function preflightStableBashInterpreter(
   return "none";
 }
 
+/**
+ * Upstream Homebrew invokes `tar` by name after narrowing PATH to system
+ * directories; GNU tar then launches gzip by name.
+ * Expose only this selected extraction pair. Git and curl have upstream path
+ * settings, and Ruby is invoked from the selected prefix by the lifecycle.
+ */
+function preflightStableExtractionCommands(
+  fs: MemoryFileSystem,
+  commands: readonly SelectedHomebrewExtractionCommand[],
+): SelectedHomebrewExtractionCommand[] {
+  const canonicalCommands = canonicalExtractionCommandPolicy(commands);
+  for (const command of canonicalCommands) {
+    if (fs.isPathDeferred(command.selectedPath)) {
+      fail(`selected Homebrew ${command.name} remains deferred`);
+    }
+    assertEagerExecutable(
+      fs,
+      command.selectedPath,
+      `selected Homebrew ${command.name}`,
+    );
+    assertExistingComponentsAreDirectories(fs, dirname(command.stablePath));
+    if (lstatOrNull(fs, command.stablePath) !== null) {
+      fail(
+        `system ${command.name} destination already exists at ` +
+          command.stablePath,
+      );
+    }
+  }
+  return [...canonicalCommands];
+}
+
+function canonicalExtractionCommandPolicy(
+  commands: readonly SelectedHomebrewExtractionCommand[],
+): readonly SelectedHomebrewExtractionCommand[] {
+  if (commands.length === 0) return Object.freeze([]);
+  const fields = [
+    "name",
+    "fullName",
+    "linkTarget",
+    "stablePath",
+    "selectedPath",
+  ] as const;
+  if (
+    commands.length !== STABLE_EXTRACTION_COMMANDS.length ||
+    commands.some((command, index) => {
+      const expected = STABLE_EXTRACTION_COMMANDS[index]!;
+      return fields.some((field) => command[field] !== expected[field]);
+    })
+  ) {
+    fail("runtime support requires the exact tar and gzip extraction policy");
+  }
+  // WHY: validation is a policy boundary. Never use caller objects after
+  // reading them; accessors or proxies must not be able to change a root path
+  // between validation and namespace mutation.
+  return STABLE_EXTRACTION_COMMANDS;
+}
+
 function assertEagerHomebrewBash(fs: MemoryFileSystem): void {
   if (fs.isPathDeferred(HOMEBREW_BASH)) {
     fail("selected Homebrew Bash remains deferred");
@@ -408,6 +528,7 @@ function assertEagerExecutable(
 function assertFinalRuntimeSupport(
   fs: MemoryFileSystem,
   prepared: PreparedHomebrewRuntimeSupport,
+  extractionCommands: readonly SelectedHomebrewExtractionCommand[],
 ): void {
   assertPackageDeferredZipTreeState(fs, prepared.tree, "materialized");
   const environment = fs.lstat(ENV_PATH);
@@ -431,6 +552,26 @@ function assertFinalRuntimeSupport(
     (resolved.mode & 0o111) === 0
   ) {
     fail("installed Homebrew entrypoint is not the root-owned executable bootstrap link");
+  }
+  for (const command of extractionCommands) {
+    const link = fs.lstat(command.stablePath);
+    if (
+      (link.mode & S_IFMT) !== S_IFLNK ||
+      link.uid !== 0 ||
+      link.gid !== 0 ||
+      fs.readlink(command.stablePath) !== command.selectedPath ||
+      fs.isPathDeferred(command.stablePath)
+    ) {
+      fail(
+        `installed system ${command.name} is not the root-owned selected ` +
+          "Homebrew link",
+      );
+    }
+    assertEagerExecutable(
+      fs,
+      command.stablePath,
+      `installed system ${command.name}`,
+    );
   }
   assertRecursiveOwnership(fs, PREFIX, USER_ID, GROUP_ID);
   assertRecursiveOwnership(fs, "/home/user/.cache", USER_ID, GROUP_ID);

@@ -40,7 +40,7 @@ def add_readback_authorization(jobs, variable)
   step["run"] = step.fetch("run").sub(curl_line, curl_line + header_line)
 end
 
-def add_sixth_release_asset(jobs)
+def add_fifth_release_asset(jobs)
   step = jobs.fetch("publish").fetch("steps").fetch(1)
   source = step.fetch("run")
   backslash = "\\"
@@ -52,12 +52,12 @@ def add_sixth_release_asset(jobs)
       release_line
   )
 
-  final_asset = %q{  "$ASSET_ROOT/homebrew-chromium-evidence.json"} + "\n"
+  final_asset = %q{  "$ASSET_ROOT/homebrew-node-evidence.json"} + "\n"
   final_asset_position = source.rindex(final_asset)
   abort "final release asset is missing" unless final_asset_position
-  sixth_asset = %q{  "$ASSET_ROOT/homebrew-chromium-evidence.json" } +
+  fifth_asset = %q{  "$ASSET_ROOT/homebrew-node-evidence.json" } +
     backslash + "\n" + %q{  "${RUNNER_TEMP}/unexpected.txt"} + "\n"
-  source[final_asset_position, final_asset.length] = sixth_asset
+  source[final_asset_position, final_asset.length] = fifth_asset
   step["run"] = source
 end
 
@@ -159,8 +159,8 @@ when "readback-self-hosted-runner"
 when "readback-login-shell"
   jobs.fetch("public-readback").fetch("steps").fetch(0)["shell"] =
     "bash -l {0}"
-when "sixth-release-asset"
-  add_sixth_release_asset(jobs)
+when "fifth-release-asset"
+  add_fifth_release_asset(jobs)
 when "writer-gh-shell-wrapper"
   step = jobs.fetch("publish").fetch("steps").fetch(1)
   release_line = "gh release create \"$RELEASE_TAG\" \\\n"
@@ -196,7 +196,7 @@ when "writer-job-bash-env"
   end
   abort "build evidence step is missing" unless build_step
   evidence_line = build_step.fetch("run").lines.find do |line|
-    line.include?('[ -f "$ASSET_ROOT/homebrew-chromium-evidence.json" ]')
+    line.include?('[ -f "$ASSET_ROOT/homebrew-node-evidence.json" ]')
   end
   abort "build evidence insertion point is missing" unless evidence_line
   bash_env_payload = evidence_line[/\A\s*/] +
@@ -223,7 +223,7 @@ when "browser-proof-env-stripped"
   step = jobs.fetch("build-test").fetch("steps").find do |candidate|
     candidate["name"] == "Build and prove the exact flat VFS"
   end
-  abort "browser proof step is missing" unless step
+  abort "browser smoke step is missing" unless step
   source = step.fetch("run")
   explicit = <<~'SHELL'.strip
     scripts/dev-shell.sh env \
@@ -236,8 +236,17 @@ when "browser-proof-env-stripped"
   if source.include?(explicit)
     step["run"] = source.sub(explicit, stripped.strip)
   elsif !source.include?(stripped.strip)
-    abort "browser proof dev-shell invocation is missing"
+    abort "browser smoke dev-shell invocation is missing"
   end
+when "browser-smoke-scope-expanded"
+  step = jobs.fetch("build-test").fetch("steps").find do |candidate|
+    candidate["name"] == "Build and prove the exact flat VFS"
+  end
+  abort "browser smoke step is missing" unless step
+  bounded = " --project=chromium \\\n    --grep 'starts.*Ruby'"
+  source = step.fetch("run")
+  abort "bounded browser smoke selector is missing" unless source.include?(bounded)
+  step["run"] = source.sub(bounded, " --project=chromium")
 when "browser-app-dependencies-omitted"
   step = jobs.fetch("build-test").fetch("steps").find do |candidate|
     candidate["name"] == "Install JavaScript dependencies"
@@ -246,6 +255,12 @@ when "browser-app-dependencies-omitted"
   install = "npm --prefix apps/browser-demos ci --no-audit --no-fund\n"
   source = step.fetch("run")
   step["run"] = source.sub(install, "") if source.include?(install)
+when "libc-sysroot-build-omitted"
+  steps = jobs.fetch("build-test").fetch("steps")
+  removed = steps.reject! do |candidate|
+    candidate["name"] == "Build worktree-local wasm32 sysroot"
+  end
+  abort "libc sysroot build step is missing" unless removed
 else
   abort "unknown mutation: #{mutation}"
 end
@@ -298,7 +313,7 @@ expect_rejection readback-curlrc-injection readback-curlrc-injection
 expect_rejection readback-curl-config-enabled readback-curl-config-enabled
 expect_rejection readback-self-hosted-runner readback-self-hosted-runner
 expect_rejection readback-login-shell readback-login-shell
-expect_rejection sixth-release-asset sixth-release-asset
+expect_rejection fifth-release-asset fifth-release-asset
 expect_rejection writer-gh-shell-wrapper writer-gh-shell-wrapper
 expect_rejection writer-post-verification-asset-root \
   writer-post-verification-asset-root
@@ -307,7 +322,9 @@ expect_rejection writer-container writer-container
 expect_rejection writer-api-post writer-api-post
 expect_rejection campaign-generation-step campaign-generation-step
 expect_rejection browser-proof-env-stripped browser-proof-env-stripped
+expect_rejection browser-smoke-scope-expanded browser-smoke-scope-expanded
 expect_rejection browser-app-dependencies-omitted \
   browser-app-dependencies-omitted
+expect_rejection libc-sysroot-build-omitted libc-sysroot-build-omitted
 
 echo "test-homebrew-experimental-vfs-workflow: ok"

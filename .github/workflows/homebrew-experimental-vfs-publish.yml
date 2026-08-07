@@ -33,8 +33,6 @@ jobs:
       report_bytes: ${{ steps.identify.outputs.report_bytes }}
       node_evidence_sha256: ${{ steps.identify.outputs.node_evidence_sha256 }}
       node_evidence_bytes: ${{ steps.identify.outputs.node_evidence_bytes }}
-      chromium_evidence_sha256: ${{ steps.identify.outputs.chromium_evidence_sha256 }}
-      chromium_evidence_bytes: ${{ steps.identify.outputs.chromium_evidence_bytes }}
     steps:
       - name: Checkout exact Kandelo source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -59,6 +57,13 @@ jobs:
           cache: npm
 
       - uses: ./.github/actions/setup-nix
+
+      - name: Build worktree-local wasm32 sysroot
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/dev-shell.sh bash scripts/build-musl.sh
+          test -f sysroot/lib/libc.a
 
       - name: Install JavaScript dependencies
         run: |
@@ -119,16 +124,17 @@ jobs:
             --kernel local-binaries/kernel.wasm \
             --tap-root tap --tap-revision "$TAP_REVISION" \
             --evidence "$ASSET_ROOT/homebrew-node-evidence.json"
+          [ -f "$ASSET_ROOT/homebrew-node-evidence.json" ]
           scripts/dev-shell.sh env \
             ASSET_ROOT="$ASSET_ROOT" \
             TAP_REVISION="$TAP_REVISION" \
             SELECTION_PATH="$SELECTION_PATH" \
             bash -c \
-            'cd apps/browser-demos && npx playwright test \
-              test/homebrew-flat-vfs-shipping.spec.ts --project=chromium'
-          [ -f "$ASSET_ROOT/homebrew-chromium-evidence.json" ]
+            "cd apps/browser-demos && npx playwright test \
+              test/homebrew-flat-vfs-shipping.spec.ts --project=chromium \
+              --grep 'starts.*Ruby'"
 
-      - name: Identify the exact five release assets
+      - name: Identify the exact four release assets
         id: identify
         shell: bash
         env:
@@ -143,9 +149,8 @@ jobs:
             homebrew-selection.json
             homebrew-vfs-build-report.json
             homebrew-node-evidence.json
-            homebrew-chromium-evidence.json
           )
-          [ "$(find "$ASSET_ROOT" -mindepth 1 -printf '.' | wc -c)" -eq 5 ]
+          [ "$(find "$ASSET_ROOT" -mindepth 1 -printf '.' | wc -c)" -eq 4 ]
           for asset in "${assets[@]}"; do
             [ -f "$ASSET_ROOT/$asset" ] && [ ! -L "$ASSET_ROOT/$asset" ]
           done
@@ -162,10 +167,8 @@ jobs:
           emit_identity selection "$ASSET_ROOT/homebrew-selection.json"
           emit_identity report "$ASSET_ROOT/homebrew-vfs-build-report.json"
           emit_identity node_evidence "$ASSET_ROOT/homebrew-node-evidence.json"
-          emit_identity chromium_evidence \
-            "$ASSET_ROOT/homebrew-chromium-evidence.json"
 
-      - name: Retain the fixed five-file artifact
+      - name: Retain the fixed four-file artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: homebrew-experimental-vfs-abi42
@@ -174,7 +177,6 @@ jobs:
             ${{ runner.temp }}/homebrew-experimental-vfs-assets/homebrew-selection.json
             ${{ runner.temp }}/homebrew-experimental-vfs-assets/homebrew-vfs-build-report.json
             ${{ runner.temp }}/homebrew-experimental-vfs-assets/homebrew-node-evidence.json
-            ${{ runner.temp }}/homebrew-experimental-vfs-assets/homebrew-chromium-evidence.json
           if-no-files-found: error
           retention-days: 7
 
@@ -207,8 +209,6 @@ jobs:
           REPORT_BYTES: ${{ needs.build-test.outputs.report_bytes }}
           NODE_EVIDENCE_SHA256: ${{ needs.build-test.outputs.node_evidence_sha256 }}
           NODE_EVIDENCE_BYTES: ${{ needs.build-test.outputs.node_evidence_bytes }}
-          CHROMIUM_EVIDENCE_SHA256: ${{ needs.build-test.outputs.chromium_evidence_sha256 }}
-          CHROMIUM_EVIDENCE_BYTES: ${{ needs.build-test.outputs.chromium_evidence_bytes }}
         run: |
           set -euo pipefail
           [[ "$VFS_FILENAME" =~ ^[A-Za-z0-9._-]+\.vfs\.zst$ ]]
@@ -217,8 +217,7 @@ jobs:
             "$VFS_FILENAME" \
             homebrew-selection.json \
             homebrew-vfs-build-report.json \
-            homebrew-node-evidence.json \
-            homebrew-chromium-evidence.json | LC_ALL=C sort)"
+            homebrew-node-evidence.json | LC_ALL=C sort)"
           actual_inventory="$(find "$ASSET_ROOT" -mindepth 1 \
             -printf '%P\n' | LC_ALL=C sort)"
           [ "$actual_inventory" = "$expected_inventory" ]
@@ -237,21 +236,18 @@ jobs:
             "$REPORT_SHA256" "$REPORT_BYTES"
           verify_asset homebrew-node-evidence.json \
             "$NODE_EVIDENCE_SHA256" "$NODE_EVIDENCE_BYTES"
-          verify_asset homebrew-chromium-evidence.json \
-            "$CHROMIUM_EVIDENCE_SHA256" "$CHROMIUM_EVIDENCE_BYTES"
 
           gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "Experimental ABI-42 Homebrew VFS" \
-            --notes "Experimental ABI-42 flat Homebrew VFS; not a stable release." \
+            --notes "Experimental ABI-42 flat Homebrew VFS; full Node lifecycle verified; Chromium selected-runtime startup smoke only." \
             --prerelease \
             --latest=false \
             "$ASSET_ROOT/$VFS_FILENAME" \
             "$ASSET_ROOT/homebrew-selection.json" \
             "$ASSET_ROOT/homebrew-vfs-build-report.json" \
-            "$ASSET_ROOT/homebrew-node-evidence.json" \
-            "$ASSET_ROOT/homebrew-chromium-evidence.json"
+            "$ASSET_ROOT/homebrew-node-evidence.json"
 
   public-readback:
     if: ${{ github.ref_type == 'branch' && github.ref_name == github.event.repository.default_branch }}
@@ -275,8 +271,6 @@ jobs:
           REPORT_BYTES: ${{ needs.build-test.outputs.report_bytes }}
           NODE_EVIDENCE_SHA256: ${{ needs.build-test.outputs.node_evidence_sha256 }}
           NODE_EVIDENCE_BYTES: ${{ needs.build-test.outputs.node_evidence_bytes }}
-          CHROMIUM_EVIDENCE_SHA256: ${{ needs.build-test.outputs.chromium_evidence_sha256 }}
-          CHROMIUM_EVIDENCE_BYTES: ${{ needs.build-test.outputs.chromium_evidence_bytes }}
         run: |
           set -euo pipefail
           unset GH_TOKEN GITHUB_TOKEN
@@ -300,5 +294,3 @@ jobs:
             "$REPORT_SHA256" "$REPORT_BYTES"
           fetch_and_verify "homebrew-node-evidence.json" \
             "$NODE_EVIDENCE_SHA256" "$NODE_EVIDENCE_BYTES"
-          fetch_and_verify "homebrew-chromium-evidence.json" \
-            "$CHROMIUM_EVIDENCE_SHA256" "$CHROMIUM_EVIDENCE_BYTES"

@@ -55,11 +55,11 @@ package_declared_build_input_changed_files() {
 
 homebrew_product_owned_package_input_changed_files() {
   # WHY: these inputs used to belong only to the conventional shell archive.
-  # They now define or validate the closed bottle selection used by the exact
-  # Homebrew product gate, which independently composes and boots that shell in
-  # Node and Chromium. Sending a change through both owners attempts to rebuild
-  # the unpublished, retiring shell archive and every derived VFS identity
-  # without adding evidence.
+  # They now define or validate the independent bottle-selection VFS used by
+  # the exact Homebrew product gate, which independently composes and boots the
+  # selected runtime in Node and Chromium. Sending a change through both owners
+  # attempts to rebuild the unpublished, retiring shell archive and every
+  # derived VFS identity without adding evidence.
   #
   # This is deliberately an exact reviewed ownership list, not a Homebrew path
   # wildcard. Add a path only when the exact product gate proves its complete
@@ -69,7 +69,10 @@ homebrew_product_owned_package_input_changed_files() {
     -e 'homebrew/main-shell-homebrew-runtime-support.json' \
     -e 'homebrew/main-shell-lazy-artifact-lock.json' \
     -e 'homebrew/main-shell-selection-lock.json' \
+    -e 'host/src/homebrew-runtime-support-materializer.ts' \
     -e 'host/src/homebrew-runtime-support.ts' \
+    -e 'host/src/homebrew-vfs-builder.ts' \
+    -e 'images/vfs/scripts/build-homebrew-flat-vfs-image.ts' \
     -e 'scripts/check-homebrew-main-shell-brewfile.mjs' \
     -e 'scripts/homebrew-prefix-campaign-executor.py' \
     || true

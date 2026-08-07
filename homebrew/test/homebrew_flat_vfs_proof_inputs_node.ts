@@ -69,6 +69,8 @@ export interface LoadedHomebrewFlatVfsProofInputIdentity {
   reportPath: string;
   kernelPath: string;
   requestedVfsFilename: string;
+  shellPath: string;
+  shellArgv0: string;
 }
 
 export interface LoadedHomebrewFlatVfsProofRuntimeInput
@@ -245,6 +247,8 @@ export function loadHomebrewFlatVfsProofInputs(
     reportPath,
     kernelPath,
     requestedVfsFilename: selection.requestedVfsFilename,
+    shellPath: runtime.shellPath,
+    shellArgv0: runtime.shellArgv0,
   };
   if (options.includeRuntimeBytes !== true) return identity;
   return {

@@ -333,6 +333,116 @@ describe("flat Homebrew runtime support", () => {
     expect(Object.keys(result.report)).not.toContain("runtime_support_state");
   });
 
+  it("exposes selected bottle extraction commands at stable system paths", async () => {
+    const bootstrap = homebrewTestBootstrapFixture();
+    const tar = homebrewTestTarFixture();
+    const gzip = homebrewTestGzipFixture();
+    const result = await buildHomebrewVfsSelection(
+      planHomebrewVfsSelection(homebrewTestSelectionBytes([
+        tar.descriptor,
+        gzip.descriptor,
+        bootstrap.descriptor,
+      ])),
+      {
+        loadBottleBytes: (descriptor) =>
+          descriptor.name === tar.descriptor.name
+            ? tar.bottle
+            : descriptor.name === gzip.descriptor.name
+            ? gzip.bottle
+            : bootstrap.bottle,
+      },
+    );
+
+    for (const command of ["tar", "gzip"]) {
+      const stablePath = `/usr/bin/${command}`;
+      expect(result.fs.readlink(stablePath)).toBe(
+        `${HOMEBREW_TEST_PREFIX}/bin/${command}`,
+      );
+      expect(result.fs.lstat(stablePath)).toMatchObject({ uid: 0, gid: 0 });
+      expect(result.fs.stat(stablePath).mode & 0o111).not.toBe(0);
+      expect(result.fs.isPathDeferred(stablePath)).toBe(false);
+    }
+  });
+
+  it("does not grant a stable extraction path to another Formula", async () => {
+    const bootstrap = homebrewTestBootstrapFixture();
+    const shadowTar = homebrewTestTarFixture("tar-shadow");
+    const result = await buildHomebrewVfsSelection(
+      planHomebrewVfsSelection(homebrewTestSelectionBytes([
+        shadowTar.descriptor,
+        bootstrap.descriptor,
+      ])),
+      {
+        loadBottleBytes: (descriptor) =>
+          descriptor.name === shadowTar.descriptor.name
+            ? shadowTar.bottle
+            : bootstrap.bottle,
+      },
+    );
+
+    expect(result.fs.readlink(`${HOMEBREW_TEST_PREFIX}/bin/tar`)).toBe(
+      shadowTar.descriptor.links[0]!.source.replace("Cellar", `${HOMEBREW_TEST_PREFIX}/Cellar`),
+    );
+    expect(() => result.fs.lstat("/usr/bin/tar")).toThrow();
+  });
+
+  it("requires selected tar and gzip as one extraction pair", async () => {
+    const bootstrap = homebrewTestBootstrapFixture();
+    const tar = homebrewTestTarFixture();
+
+    await expect(async () => {
+      await buildHomebrewVfsSelection(
+        planHomebrewVfsSelection(homebrewTestSelectionBytes([
+          tar.descriptor,
+          bootstrap.descriptor,
+        ])),
+        {
+          loadBottleBytes: (descriptor) =>
+            descriptor.name === tar.descriptor.name ? tar.bottle : bootstrap.bottle,
+        },
+      );
+    }).rejects.toThrow(/must select tar and gzip together/i);
+  });
+
+  it("refuses to replace either existing system extraction command", async () => {
+    for (const command of ["tar", "gzip"] as const) {
+      const bootstrap = homebrewTestBootstrapFixture();
+      const tar = homebrewTestTarFixture();
+      const gzip = homebrewTestGzipFixture();
+      const baseFs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+      ensureDirRecursive(baseFs, "/usr/bin");
+      baseFs.createFileWithOwner(
+        `/usr/bin/${command}`,
+        0o755,
+        0,
+        0,
+        new TextEncoder().encode(`base ${command}\n`),
+      );
+
+      await expect(buildHomebrewVfsSelection(
+        planHomebrewVfsSelection(homebrewTestSelectionBytes([
+          tar.descriptor,
+          gzip.descriptor,
+          bootstrap.descriptor,
+        ])),
+        {
+          baseFs,
+          loadBottleBytes: (descriptor) =>
+            descriptor.name === tar.descriptor.name
+              ? tar.bottle
+              : descriptor.name === gzip.descriptor.name
+              ? gzip.bottle
+              : bootstrap.bottle,
+        },
+      )).rejects.toThrow(
+        new RegExp(`system ${command} destination already exists.*\\/usr\\/bin\\/${command}`, "i"),
+      );
+      expect(readFile(baseFs, `/usr/bin/${command}`)).toEqual(
+        new TextEncoder().encode(`base ${command}\n`),
+      );
+    }
+  });
+
   it("authenticates both declared outputs before interpreting them", () => {
     const fixture = homebrewTestBootstrapFixture();
     const preparedKeg = preparedBootstrap(fixture);
@@ -720,8 +830,78 @@ describe("flat Homebrew runtime support", () => {
     expect(fs.exportLazyArchiveEntries()).toEqual([]);
     expect(() => fs.lstat("/usr/bin/brew")).toThrow();
 
-    finalizeHomebrewRuntimeSupport(fs, prepared);
+    finalizeHomebrewRuntimeSupport(fs, prepared, []);
     expect(fs.readlink("/usr/bin/brew")).toBe(`${HOMEBREW_TEST_PREFIX}/bin/brew`);
+  });
+
+  it("rejects a forged root extraction command policy", async () => {
+    const fixture = homebrewTestBootstrapFixture();
+    const prepared = prepareHomebrewRuntimeSupport(
+      fixture.descriptor,
+      preparedBootstrap(fixture),
+      SUPPORT_LIMITS,
+    );
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+    await overlayPreparedHomebrewRuntimeSupport(fs, prepared);
+
+    expect(() => finalizeHomebrewRuntimeSupport(fs, prepared, [{
+      name: "tar",
+      fullName: "kandelo-dev/tap-core/tar",
+      linkTarget: "bin/tar",
+      stablePath: "/usr/bin/forged-root-command",
+      selectedPath: `${HOMEBREW_TEST_PREFIX}/bin/brew`,
+    }])).toThrow(/exact tar and gzip extraction policy/i);
+    expect(() => fs.lstat("/usr/bin/forged-root-command")).toThrow();
+  });
+
+  it("does not reuse mutable caller policy objects after validation", async () => {
+    const fixture = homebrewTestBootstrapFixture();
+    const prepared = prepareHomebrewRuntimeSupport(
+      fixture.descriptor,
+      preparedBootstrap(fixture),
+      SUPPORT_LIMITS,
+    );
+    const fs = MemoryFileSystem.create(new SharedArrayBuffer(8 * 1024 * 1024));
+    await overlayPreparedHomebrewRuntimeSupport(fs, prepared);
+    for (const command of ["tar", "gzip"]) {
+      writeVfsFile(
+        fs,
+        `${HOMEBREW_TEST_PREFIX}/bin/${command}`,
+        `selected Homebrew ${command}\n`,
+        0o755,
+      );
+    }
+    let stablePathReads = 0;
+    const tarPolicy = new Proxy({
+      name: "tar",
+      fullName: "kandelo-dev/tap-core/tar",
+      linkTarget: "bin/tar",
+      stablePath: "/usr/bin/tar",
+      selectedPath: `${HOMEBREW_TEST_PREFIX}/bin/tar`,
+    } as const, {
+      get(target, property, receiver) {
+        if (property === "stablePath" && ++stablePathReads > 1) {
+          return "/usr/bin/forged-root-command";
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
+    const gzipPolicy = {
+      name: "gzip",
+      fullName: "kandelo-dev/tap-core/gzip",
+      linkTarget: "bin/gzip",
+      stablePath: "/usr/bin/gzip",
+      selectedPath: `${HOMEBREW_TEST_PREFIX}/bin/gzip`,
+    } as const;
+
+    finalizeHomebrewRuntimeSupport(fs, prepared, [tarPolicy, gzipPolicy]);
+    expect(fs.readlink("/usr/bin/tar")).toBe(
+      `${HOMEBREW_TEST_PREFIX}/bin/tar`,
+    );
+    expect(fs.readlink("/usr/bin/gzip")).toBe(
+      `${HOMEBREW_TEST_PREFIX}/bin/gzip`,
+    );
+    expect(() => fs.lstat("/usr/bin/forged-root-command")).toThrow();
   });
 
   it("asserts only this eager support tree while preserving unrelated deferred state", async () => {
@@ -756,7 +936,7 @@ describe("flat Homebrew runtime support", () => {
     assertPackageDeferredZipTreeState(fs, unrelated, "deferred");
 
     await overlayPreparedHomebrewRuntimeSupport(fs, prepared);
-    finalizeHomebrewRuntimeSupport(fs, prepared);
+    finalizeHomebrewRuntimeSupport(fs, prepared, []);
 
     assertPackageDeferredZipTreeState(fs, unrelated, "deferred");
     assertPackageDeferredZipTreeState(fs, prepared.tree, "materialized");
@@ -817,6 +997,88 @@ function homebrewTestBashFixture(mode = 0o755): {
       links: [{
         source: "Cellar/bash/5.2.37_2/bin/bash",
         target: "bin/bash",
+        type: "symlink",
+      }],
+      pathPrepend: ["bin"],
+    }),
+  };
+}
+
+function homebrewTestTarFixture(name = "tar"): {
+  descriptor: ReturnType<typeof homebrewTestBottleDescriptor>;
+  bottle: Uint8Array;
+} {
+  const bottle = homebrewTestBottleTar([
+    homebrewTestBottleEntry(
+      name,
+      "1.35",
+      `.brew/${name}.rb`,
+      "class Tar < Formula\nend\n",
+    ),
+    homebrewTestBottleEntry(
+      name,
+      "1.35",
+      "INSTALL_RECEIPT.json",
+      homebrewTestReceipt([]),
+    ),
+    homebrewTestBottleEntry(
+      name,
+      "1.35",
+      "bin/tar",
+      "selected Homebrew tar\n",
+      0o755,
+    ),
+  ]);
+  return {
+    bottle,
+    descriptor: homebrewTestBottleDescriptor({
+      name,
+      version: "1.35",
+      bottle,
+      links: [{
+        source: `Cellar/${name}/1.35/bin/tar`,
+        target: "bin/tar",
+        type: "symlink",
+      }],
+      pathPrepend: ["bin"],
+    }),
+  };
+}
+
+function homebrewTestGzipFixture(): {
+  descriptor: ReturnType<typeof homebrewTestBottleDescriptor>;
+  bottle: Uint8Array;
+} {
+  const bottle = homebrewTestBottleTar([
+    homebrewTestBottleEntry(
+      "gzip",
+      "1.13",
+      ".brew/gzip.rb",
+      "class Gzip < Formula\nend\n",
+    ),
+    homebrewTestBottleEntry(
+      "gzip",
+      "1.13",
+      "INSTALL_RECEIPT.json",
+      homebrewTestReceipt([]),
+    ),
+    homebrewTestBottleEntry(
+      "gzip",
+      "1.13",
+      "bin/gzip",
+      "selected Homebrew gzip\n",
+      0o755,
+    ),
+  ]);
+  return {
+    bottle,
+    descriptor: homebrewTestBottleDescriptor({
+      name: "gzip",
+      version: "1.13",
+      bottle,
+      links: [{
+        source: "Cellar/gzip/1.13/bin/gzip",
+        target: "bin/gzip",
         type: "symlink",
       }],
       pathPrepend: ["bin"],

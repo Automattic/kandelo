@@ -20,10 +20,9 @@ FIXED_ASSETS = %w[
   homebrew-selection.json
   homebrew-vfs-build-report.json
   homebrew-node-evidence.json
-  homebrew-chromium-evidence.json
 ].freeze
 IDENTITIES = %w[
-  vfs selection report node_evidence chromium_evidence
+  vfs selection report node_evidence
 ].freeze
 READBACK_SAFE_GITHUB_EXPRESSIONS = [
   "github.ref_type=='branch'&&" \
@@ -34,9 +33,9 @@ READBACK_SAFE_GITHUB_EXPRESSIONS = [
   "github.run_attempt",
 ].freeze
 WRITER_RUN_SHA256 =
-  "7d69743928cc27b891e2667db2655fc0da8d457effd01bc8bcb72f343952917a"
+  "1feaad1c77c67018fd16bb5c22b4b9180d69f13999f235b27cefd8f6bde4cc68"
 READBACK_RUN_SHA256 =
-  "610fdf9db75774665259e2015294926dedee89a932c1b21cfd8cf79a4af45186"
+  "cf4f8978c69e738aa710f228ecdf6df845ec231ba781e211827ada0743d66808"
 
 def check(condition, message)
   raise message unless condition
@@ -213,7 +212,7 @@ def check_workflow(workflow)
   check(permissions_for(readback) == { "contents" => "read" },
         "readback must be read-only")
   check(needs(writer).include?(build_name),
-        "writer does not depend on the tested five-file artifact")
+        "writer does not depend on the tested four-file artifact")
   check(needs(readback).include?(build_name) &&
         needs(readback).include?(writer_name),
         "readback does not wait for both build and publication")
@@ -243,6 +242,12 @@ def check_workflow(workflow)
         "tap checkout is not the exact credential-free input revision")
 
   build_steps = build.fetch("steps")
+  nix_index = build_steps.index do |step|
+    step["uses"] == "./.github/actions/setup-nix"
+  end
+  sysroot_index = build_steps.index do |step|
+    step["name"] == "Build worktree-local wasm32 sysroot"
+  end
   npm_index = build_steps.index do |step|
     step["run"].to_s.match?(/(?:^|\n)\s*npm ci(?:\s|$)/)
   end
@@ -269,13 +274,23 @@ def check_workflow(workflow)
   proof_index = build_steps.index do |step|
     step["name"] == "Build and prove the exact flat VFS"
   end
+  check(nix_index && sysroot_index && proof_index &&
+        nix_index < sysroot_index && sysroot_index < proof_index,
+        "builder must prepare the worktree-local libc sysroot before building")
+  expected_sysroot_build = <<~'SHELL'
+    set -euo pipefail
+    bash scripts/dev-shell.sh bash scripts/build-musl.sh
+    test -f sysroot/lib/libc.a
+  SHELL
+  check(build_steps.fetch(sysroot_index)["run"] == expected_sysroot_build,
+        "builder libc sysroot step is not the declared musl build")
   playwright_index = build_steps.index do |step|
     step["run"].to_s.include?(
       "./node_modules/.bin/playwright install chromium --with-deps"
     )
   end
   check(playwright_index && proof_index && playwright_index < proof_index,
-        "locked Chromium installation must precede the browser proof")
+        "locked Chromium installation must precede the browser smoke")
   check(browser_npm_index && playwright_index &&
         browser_npm_index < playwright_index,
         "locked browser-demo dependencies must precede Chromium installation")
@@ -287,7 +302,6 @@ def check_workflow(workflow)
     homebrew-flat-vfs-shipping.spec.ts
     homebrew-vfs-build-report.json
     homebrew-node-evidence.json
-    homebrew-chromium-evidence.json
   ].each do |fragment|
     check(build_source.include?(fragment),
           "build/test seam omits #{fragment}")
@@ -313,7 +327,10 @@ def check_workflow(workflow)
       bash -c \
   SHELL
   check(build_source.include?(browser_proof_environment),
-        "browser proof inputs do not cross the clean dev-shell boundary")
+        "browser smoke inputs do not cross the clean dev-shell boundary")
+  check(build_source.include?("--grep 'starts.*Ruby'") &&
+        !build_source.include?("homebrew-chromium-evidence.json"),
+        "browser gate must remain the bounded selected-runtime startup smoke")
   check(build_source !~ /\|\|\s*true|\btouch\b|\btruncate\b|status.{0,8}passed/i,
         "build/test seam fabricates or ignores runtime evidence")
 
@@ -328,7 +345,7 @@ def check_workflow(workflow)
     end,
   ]
   check(upload_paths.sort == expected_paths.sort,
-        "builder artifact is not exactly the VFS and four evidence files")
+        "builder artifact is not exactly the VFS and three metadata/evidence files")
   check(upload.dig("with", "if-no-files-found") == "error",
         "builder can silently omit a release asset")
 
@@ -420,7 +437,8 @@ def check_workflow(workflow)
     "--target" => "$GITHUB_SHA",
     "--title" => "Experimental ABI-42 Homebrew VFS",
     "--notes" =>
-      "Experimental ABI-42 flat Homebrew VFS; not a stable release.",
+      "Experimental ABI-42 flat Homebrew VFS; full Node lifecycle verified; " \
+      "Chromium selected-runtime startup smoke only.",
   }
   expected_release_flags = %w[--prerelease --latest=false]
   observed_release_options = {}
@@ -446,7 +464,7 @@ def check_workflow(workflow)
         "release creation must use only the fixed prerelease options")
   check(observed_release_assets.length == release_assets.length &&
         observed_release_assets.sort == release_assets.sort,
-        "release creation must upload exactly the tested five assets")
+        "release creation must upload exactly the tested four assets")
   check(writer_source.include?("sha256sum") &&
         writer_source.include?("stat -c '%s'"),
         "writer does not verify the tested bytes")
