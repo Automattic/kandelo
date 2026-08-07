@@ -19,7 +19,6 @@ DOWNLOAD_ACTION =
 FIXED_ASSETS = %w[
   homebrew-selection.json
   homebrew-vfs-build-report.json
-  homebrew-node-evidence.json
 ].freeze
 CANDIDATE_FIXED_ASSETS = %w[
   homebrew-selection.json
@@ -27,7 +26,7 @@ CANDIDATE_FIXED_ASSETS = %w[
   kernel.wasm
 ].freeze
 IDENTITIES = %w[
-  vfs selection report node_evidence
+  vfs selection report
 ].freeze
 CANDIDATE_IDENTITIES = %w[
   vfs selection report kernel
@@ -41,11 +40,13 @@ READBACK_SAFE_GITHUB_EXPRESSIONS = [
   "github.run_attempt",
 ].freeze
 WRITER_RUN_SHA256 =
-  "1feaad1c77c67018fd16bb5c22b4b9180d69f13999f235b27cefd8f6bde4cc68"
+  "ea210f54dd43a8d065e6c8ae1235556a7928901abe2e88ced7cec1b6fa652ac7"
 READBACK_RUN_SHA256 =
-  "cf4f8978c69e738aa710f228ecdf6df845ec231ba781e211827ada0743d66808"
+  "a8a073cc9cb7ab88f09fe52ec9305b5deee861fe0a0a208446a7e01d01fe1270"
 FINAL_IDENTIFY_RUN_SHA256 =
-  "439c35a1902ec112c7da01ddda57cc5b8b78446f0732c7cc76e6b5bf55da1885"
+  "bd092002d3852058e825fc14322f888d809d643ab369a543f60dbb0c201bfee4"
+STARTUP_RUN_SHA256 =
+  "080ce9da541b964a4d4a25626e47a10e1f4ad9649349b4a139123109f43852d3"
 
 def check(condition, message)
   raise message unless condition
@@ -242,7 +243,7 @@ def check_workflow(workflow)
   check(needs(build) == [image_name],
         "proof runner must consume only the same-run image candidate")
   check(needs(writer) == [build_name],
-        "writer does not depend on the tested four-file artifact")
+        "writer does not depend on the tested three-file artifact")
   check(needs(readback).sort == [build_name, writer_name].sort,
         "readback does not wait for both build and publication")
 
@@ -383,6 +384,7 @@ def check_workflow(workflow)
         ),
         "image candidate is not bound to the claimed package-owned kernel")
   check(!image_source.include?("scripts/homebrew-flat-vfs-node-smoke.ts") &&
+        !image_source.include?("scripts/homebrew-flat-vfs-node-startup.ts") &&
         !image_source.include?("homebrew-flat-vfs-shipping.spec.ts") &&
         !image_source.include?("homebrew-node-evidence.json"),
         "image builder performs proof work instead of yielding a fresh runner")
@@ -499,7 +501,7 @@ def check_workflow(workflow)
     step["name"] == "Verify and stage the exact build candidate"
   end
   proof_index = build_steps.index do |step|
-    step["name"] == "Prove the exact flat VFS on a fresh runner"
+    step["name"] == "Prove exact composition startup on a fresh runner"
   end
   check(build_nix_index && browser_npm_index && playwright_index &&
         candidate_download_index && candidate_verify_index && proof_index &&
@@ -509,6 +511,10 @@ def check_workflow(workflow)
         candidate_download_index < candidate_verify_index &&
         candidate_verify_index < proof_index,
         "locked browser-demo dependencies must precede Chromium installation")
+  proof_step = build_steps.fetch(proof_index)
+  check(Digest::SHA256.hexdigest(proof_step.fetch("run")) ==
+        STARTUP_RUN_SHA256,
+        "startup proof body differs from the reviewed program")
 
   candidate_verify = build_steps.fetch(candidate_verify_index)
   expected_candidate_env = {
@@ -563,10 +569,9 @@ def check_workflow(workflow)
 
   build_source = run_source(build)
   %w[
-    scripts/homebrew-flat-vfs-node-smoke.ts
+    scripts/homebrew-flat-vfs-node-startup.ts
     homebrew-flat-vfs-shipping.spec.ts
     homebrew-vfs-build-report.json
-    homebrew-node-evidence.json
   ].each do |fragment|
     check(build_source.include?(fragment),
           "build/test seam omits #{fragment}")
@@ -580,54 +585,27 @@ def check_workflow(workflow)
         !build_source.include?("scripts/build-musl.sh") &&
         !build_source.include?("scripts/resolve-binary.sh"),
         "proof runner rebuilds or resolves producer-owned image inputs")
-  expected_runner_heartbeat = <<~'SHELL'.strip
-    runner_heartbeat() {
-      local sample
-      for ((sample = 1; sample <= 180; sample += 1)); do
-        printf 'homebrew-flat-vfs-runner-heartbeat: %s sample=%d/180\n' \
-          "$(/usr/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" "$sample"
-        if ! /usr/bin/ps \
-          -eo pid=,ppid=,rss=,vsz=,nlwp=,stat=,comm= \
-          --sort=-rss | /usr/bin/sed -n '1,16p'; then
-          printf 'homebrew-flat-vfs-runner-telemetry-error: ps\n'
-        fi
-        if ! /usr/bin/free -b; then
-          printf 'homebrew-flat-vfs-runner-telemetry-error: free\n'
-        fi
-        if ! /usr/bin/df \
-          -B1 --output=source,size,used,avail,pcent,target \
-          / "$RUNNER_TEMP"; then
-          printf 'homebrew-flat-vfs-runner-telemetry-error: df\n'
-        fi
-        if ! /usr/bin/sleep 10; then
-          printf 'homebrew-flat-vfs-runner-telemetry-error: sleep\n'
-          return
-        fi
-      done
-    }
-    stop_runner_heartbeat() {
-      if jobs -pr | /usr/bin/grep -Fxq "$runner_heartbeat_pid"; then
-        kill "$runner_heartbeat_pid" 2>/dev/null || :
-      fi
-      wait "$runner_heartbeat_pid" 2>/dev/null || :
-    }
-    runner_heartbeat &
-    runner_heartbeat_pid=$!
-    trap stop_runner_heartbeat EXIT
-  SHELL
-  heartbeat_position = build_source.index(expected_runner_heartbeat)
-  node_proof_position = build_source.index(
-    "scripts/homebrew-flat-vfs-node-smoke.ts"
+  startup_tokens = continued_command_tokens(
+    build_source,
+    "scripts/dev-shell.sh npx tsx",
+    "Node startup command"
   )
-  heartbeat_cleanup = <<~'SHELL'.strip
-    stop_runner_heartbeat
-    trap - EXIT
-  SHELL
-  cleanup_position = build_source.index(heartbeat_cleanup)
-  check(heartbeat_position && node_proof_position && cleanup_position &&
-        heartbeat_position < node_proof_position &&
-        node_proof_position < cleanup_position,
-        "Node shipping proof lacks the bounded hosted-runner heartbeat")
+  expected_startup_tokens = [
+    "scripts/dev-shell.sh", "npx", "tsx",
+    "scripts/homebrew-flat-vfs-node-startup.ts",
+    "--image", "$ASSET_ROOT/$vfs_filename",
+    "--selection", "$ASSET_ROOT/homebrew-selection.json",
+    "--report", "$ASSET_ROOT/homebrew-vfs-build-report.json",
+    "--kernel", "local-binaries/kernel.wasm",
+    "--tap-root", "tap",
+    "--tap-revision", "$TAP_REVISION",
+  ]
+  check(startup_tokens == expected_startup_tokens,
+        "Node startup does not consume only the exact candidate inputs")
+  check(!build_source.include?("scripts/homebrew-flat-vfs-node-smoke.ts") &&
+        !build_source.include?("homebrew-node-evidence.json") &&
+        !build_source.include?("runner_heartbeat"),
+        "publication workflow reintroduces lifecycle proof or evidence")
   browser_proof_environment = <<~'SHELL'.strip
     scripts/dev-shell.sh env \
       ASSET_ROOT="$ASSET_ROOT" \
@@ -643,58 +621,48 @@ def check_workflow(workflow)
   check(build_source !~ /\|\|\s*true|\btouch\b|\btruncate\b|status.{0,8}passed/i,
         "build/test seam fabricates or ignores runtime evidence")
 
-  evidence_bind_index = build_steps.index do |step|
-    step["name"] == "Bind proof evidence to the exact build candidate"
+  candidate_bind_index = build_steps.index do |step|
+    step["name"] == "Bind startup-tested bytes to the exact build candidate"
   end
   final_identify_index = build_steps.index do |step|
-    step["name"] == "Identify the exact four release assets"
+    step["name"] == "Identify the exact three release assets"
   end
   final_upload_index = build_steps.index do |step|
     step["uses"] == UPLOAD_ACTION
   end
-  check(evidence_bind_index && final_identify_index &&
+  check(candidate_bind_index && final_identify_index &&
         final_upload_index && proof_index < final_identify_index &&
-        final_identify_index + 1 == evidence_bind_index &&
-        evidence_bind_index + 1 == final_upload_index,
+        final_identify_index + 1 == candidate_bind_index &&
+        candidate_bind_index + 1 == final_upload_index,
         "final identities are not immediately rebound before upload")
   final_identify = build_steps.fetch(final_identify_index)
   check(final_identify["id"] == "identify" &&
         Digest::SHA256.hexdigest(final_identify.fetch("run")) ==
           FINAL_IDENTIFY_RUN_SHA256,
         "final identity program differs from the reviewed program")
-  evidence_bind = build_steps.fetch(evidence_bind_index)
+  candidate_bind = build_steps.fetch(candidate_bind_index)
   expected_bind_env = expected_candidate_env.reject do |name, _value|
     %w[CANDIDATE_ROOT SELECTION_PATH].include?(name)
-  end.merge("TAP_REVISION" => "${{ inputs.tap-revision }}")
-  check(evidence_bind["env"] == expected_bind_env,
-        "proof evidence binding does not receive every candidate identity")
-  evidence_bind_source = evidence_bind.fetch("run")
-  evidence_bind_logical = evidence_bind_source.gsub(/\\\s*\n\s*/, " ")
-  %w[
-    .tap_revision
-    .selection_sha256
-    .image
-    .report
-    .kernel
-    homebrew-node-evidence.json
-  ].each do |fragment|
-    check(evidence_bind_source.include?(fragment),
-          "proof evidence binding omits #{fragment}")
   end
-  check(evidence_bind_source.include?("sha256sum") &&
-        evidence_bind_source.include?("stat -c '%s'") &&
-        evidence_bind_source.include?("jq -e") &&
-        evidence_bind_source.include?("-eq 4") &&
-        evidence_bind_logical.match?(
+  check(candidate_bind["env"] == expected_bind_env,
+        "candidate binding does not receive every producer identity")
+  candidate_bind_source = candidate_bind.fetch("run")
+  candidate_bind_logical = candidate_bind_source.gsub(/\\\s*\n\s*/, " ")
+  check(candidate_bind_source.include?("sha256sum") &&
+        candidate_bind_source.include?("stat -c '%s'") &&
+        candidate_bind_source.include?("-eq 3") &&
+        !candidate_bind_source.include?("homebrew-node-evidence.json") &&
+        !candidate_bind_source.include?("jq -e") &&
+        candidate_bind_logical.match?(
           /verify_input\s+"\$ASSET_ROOT\/\$VFS_FILENAME"\s+"\$VFS_SHA256"\s+"\$VFS_BYTES"/
-        ) && evidence_bind_logical.match?(
+        ) && candidate_bind_logical.match?(
           /verify_input\s+"\$ASSET_ROOT\/homebrew-selection\.json"\s+"\$SELECTION_SHA256"\s+"\$SELECTION_BYTES"/
-        ) && evidence_bind_logical.match?(
+        ) && candidate_bind_logical.match?(
           /verify_input\s+"\$ASSET_ROOT\/homebrew-vfs-build-report\.json"\s+"\$REPORT_SHA256"\s+"\$REPORT_BYTES"/
-        ) && evidence_bind_logical.match?(
+        ) && candidate_bind_logical.match?(
           /verify_input\s+local-binaries\/kernel\.wasm\s+"\$KERNEL_SHA256"\s+"\$KERNEL_BYTES"/
         ),
-        "proof evidence is not rebound to exact producer bytes")
+        "startup-tested bytes are not rebound to exact producer bytes")
 
   check(action_steps(build, UPLOAD_ACTION).length == 1,
         "proof runner has an unexpected final artifact upload")
@@ -709,7 +677,7 @@ def check_workflow(workflow)
     end,
   ]
   check(upload_paths.sort == expected_paths.sort,
-        "builder artifact is not exactly the VFS and three metadata/evidence files")
+        "proof artifact is not exactly the VFS, selection, and report")
   check(upload.fetch("with").keys.map(&:to_s).sort == %w[
     if-no-files-found name path retention-days
   ] && upload.dig("with", "name") ==
@@ -808,8 +776,9 @@ def check_workflow(workflow)
     "--target" => "$GITHUB_SHA",
     "--title" => "Experimental ABI-42 Homebrew VFS",
     "--notes" =>
-      "Experimental ABI-42 flat Homebrew VFS; full Node lifecycle verified; " \
-      "Chromium selected-runtime startup smoke only.",
+      "Experimental ABI-42 flat Homebrew VFS; exact composition plus bounded " \
+      "Node and Chromium selected-runtime startup verified; stock in-guest " \
+      "tap/install lifecycle is not a release gate.",
   }
   expected_release_flags = %w[--prerelease --latest=false]
   observed_release_options = {}
@@ -835,7 +804,7 @@ def check_workflow(workflow)
         "release creation must use only the fixed prerelease options")
   check(observed_release_assets.length == release_assets.length &&
         observed_release_assets.sort == release_assets.sort,
-        "release creation must upload exactly the tested four assets")
+        "release creation must upload exactly the tested three assets")
   check(writer_source.include?("sha256sum") &&
         writer_source.include?("stat -c '%s'"),
         "writer does not verify the tested bytes")

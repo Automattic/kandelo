@@ -40,7 +40,7 @@ def add_readback_authorization(jobs, variable)
   step["run"] = step.fetch("run").sub(curl_line, curl_line + header_line)
 end
 
-def add_fifth_release_asset(jobs)
+def add_fourth_release_asset(jobs)
   step = jobs.fetch("publish").fetch("steps").fetch(1)
   source = step.fetch("run")
   backslash = "\\"
@@ -52,12 +52,12 @@ def add_fifth_release_asset(jobs)
       release_line
   )
 
-  final_asset = %q{  "$ASSET_ROOT/homebrew-node-evidence.json"} + "\n"
+  final_asset = %q{  "$ASSET_ROOT/homebrew-vfs-build-report.json"} + "\n"
   final_asset_position = source.rindex(final_asset)
   abort "final release asset is missing" unless final_asset_position
-  fifth_asset = %q{  "$ASSET_ROOT/homebrew-node-evidence.json" } +
+  fourth_asset = %q{  "$ASSET_ROOT/homebrew-vfs-build-report.json" } +
     backslash + "\n" + %q{  "${RUNNER_TEMP}/unexpected.txt"} + "\n"
-  source[final_asset_position, final_asset.length] = fifth_asset
+  source[final_asset_position, final_asset.length] = fourth_asset
   step["run"] = source
 end
 
@@ -159,8 +159,8 @@ when "readback-self-hosted-runner"
 when "readback-login-shell"
   jobs.fetch("public-readback").fetch("steps").fetch(0)["shell"] =
     "bash -l {0}"
-when "fifth-release-asset"
-  add_fifth_release_asset(jobs)
+when "fourth-release-asset"
+  add_fourth_release_asset(jobs)
 when "writer-gh-shell-wrapper"
   step = jobs.fetch("publish").fetch("steps").fetch(1)
   release_line = "gh release create \"$RELEASE_TAG\" \\\n"
@@ -189,22 +189,8 @@ when "writer-post-verification-asset-root"
 when "writer-job-bash-env"
   writer = jobs.fetch("publish")
   writer["env"] = {
-    "BASH_ENV" => "${{ runner.temp }}/homebrew-experimental-vfs-release-assets/homebrew-node-evidence.json",
+    "BASH_ENV" => "${{ runner.temp }}/homebrew-experimental-vfs-release-assets/homebrew-selection.json",
   }
-  build_step = jobs.fetch("build-test").fetch("steps").find do |step|
-    step["name"] == "Prove the exact flat VFS on a fresh runner"
-  end
-  abort "build evidence step is missing" unless build_step
-  evidence_line = build_step.fetch("run").lines.find do |line|
-    line.include?('[ -f "$ASSET_ROOT/homebrew-node-evidence.json" ]')
-  end
-  abort "build evidence insertion point is missing" unless evidence_line
-  bash_env_payload = evidence_line[/\A\s*/] +
-    %q{printf '%s\n' 'gh() { command gh "$@" /etc/hosts; }' >"$ASSET_ROOT/homebrew-node-evidence.json"} + "\n"
-  build_step["run"] = build_step.fetch("run").sub(
-    evidence_line,
-    evidence_line + bash_env_payload
-  )
 when "writer-container"
   jobs.fetch("publish")["container"] = "ubuntu:latest"
 when "writer-api-post"
@@ -221,7 +207,7 @@ when "campaign-generation-step"
   }
 when "browser-proof-env-stripped"
   step = jobs.fetch("build-test").fetch("steps").find do |candidate|
-    candidate["name"] == "Prove the exact flat VFS on a fresh runner"
+    candidate["name"] == "Prove exact composition startup on a fresh runner"
   end
   abort "browser smoke step is missing" unless step
   source = step.fetch("run")
@@ -240,7 +226,7 @@ when "browser-proof-env-stripped"
   end
 when "browser-smoke-scope-expanded"
   step = jobs.fetch("build-test").fetch("steps").find do |candidate|
-    candidate["name"] == "Prove the exact flat VFS on a fresh runner"
+    candidate["name"] == "Prove exact composition startup on a fresh runner"
   end
   abort "browser smoke step is missing" unless step
   bounded = " --project=chromium \\\n    --grep 'starts.*Ruby'"
@@ -255,33 +241,38 @@ when "browser-app-dependencies-omitted"
   install = "npm --prefix apps/browser-demos ci --no-audit --no-fund\n"
   source = step.fetch("run")
   step["run"] = source.sub(install, "") if source.include?(install)
-when "node-proof-heartbeat-omitted"
+when "node-startup-omitted"
   step = jobs.fetch("build-test").fetch("steps").find do |candidate|
-    candidate["name"] == "Prove the exact flat VFS on a fresh runner"
+    candidate["name"] == "Prove exact composition startup on a fresh runner"
   end
-  abort "build/proof step is missing" unless step
-  heartbeat = "runner_heartbeat &\n"
-  source = step.fetch("run")
-  abort "hosted-runner heartbeat is missing" unless source.include?(heartbeat)
-  step["run"] = source.sub(heartbeat, "")
-when "node-proof-heartbeat-unbounded"
+  abort "startup step is missing" unless step
+  lines = step.fetch("run").lines
+  first = lines.index do |line|
+    line.include?("scripts/dev-shell.sh npx tsx")
+  end
+  abort "Node startup command is missing" unless first
+  last = (first...lines.length).find do |index|
+    lines.fetch(index).include?('--tap-root tap --tap-revision "$TAP_REVISION"')
+  end
+  abort "Node startup command terminator is missing" unless last
+  lines.slice!(first..last)
+  step["run"] = lines.join
+when "node-full-lifecycle-reintroduced"
   step = jobs.fetch("build-test").fetch("steps").find do |candidate|
-    candidate["name"] == "Prove the exact flat VFS on a fresh runner"
+    candidate["name"] == "Prove exact composition startup on a fresh runner"
   end
-  abort "build/proof step is missing" unless step
-  bound = "sample <= 180"
+  abort "startup step is missing" unless step
   source = step.fetch("run")
-  abort "hosted-runner heartbeat bound is missing" unless source.include?(bound)
-  step["run"] = source.sub(bound, "sample <= 1800")
-when "node-proof-heartbeat-cleanup-omitted"
+  startup = "scripts/homebrew-flat-vfs-node-startup.ts"
+  abort "Node startup CLI is missing" unless source.include?(startup)
+  step["run"] = source.sub(startup, "scripts/homebrew-flat-vfs-node-smoke.ts")
+when "node-startup-evidence-reintroduced"
   step = jobs.fetch("build-test").fetch("steps").find do |candidate|
-    candidate["name"] == "Prove the exact flat VFS on a fresh runner"
+    candidate["name"] == "Prove exact composition startup on a fresh runner"
   end
-  abort "build/proof step is missing" unless step
-  cleanup = 'wait "$runner_heartbeat_pid" 2>/dev/null || :' + "\n"
-  source = step.fetch("run")
-  abort "hosted-runner heartbeat cleanup is missing" unless source.include?(cleanup)
-  step["run"] = source.sub(cleanup, "")
+  abort "startup step is missing" unless step
+  step["run"] +=
+    %q{printf '{}\n' >"$ASSET_ROOT/homebrew-node-evidence.json"} + "\n"
 when "candidate-download-by-name"
   step = jobs.fetch("build-test").fetch("steps").find do |candidate|
     candidate["name"] == "Download the exact same-run build candidate"
@@ -360,15 +351,15 @@ when "candidate-kernel-mirror-rehash-omitted"
   lines.delete_at(index)
   lines.delete_at(index) if lines.fetch(index, "").include?("KERNEL_SHA256")
   step["run"] = lines.join
-when "candidate-evidence-binding-omitted"
+when "candidate-post-startup-binding-omitted"
   steps = jobs.fetch("build-test").fetch("steps")
   removed = steps.reject! do |candidate|
-    candidate["name"] == "Bind proof evidence to the exact build candidate"
+    candidate["name"] == "Bind startup-tested bytes to the exact build candidate"
   end
-  abort "candidate evidence binding is missing" unless removed
-when "post-proof-identify-mutates-selection"
+  abort "post-startup candidate binding is missing" unless removed
+when "post-startup-identify-mutates-selection"
   step = jobs.fetch("build-test").fetch("steps").find do |candidate|
-    candidate["name"] == "Identify the exact four release assets"
+    candidate["name"] == "Identify the exact three release assets"
   end
   abort "final identity step is missing" unless step
   step["run"] =
@@ -376,13 +367,13 @@ when "post-proof-identify-mutates-selection"
     step.fetch("run")
 when "candidate-kernel-added-to-final-artifact"
   step = jobs.fetch("build-test").fetch("steps").find do |candidate|
-    candidate["name"] == "Retain the fixed four-file artifact"
+    candidate["name"] == "Retain the fixed three-file artifact"
   end
   abort "final artifact upload is missing" unless step
   step.fetch("with")["path"] += "\nlocal-binaries/kernel.wasm\n"
 when "image-build-reintroduced-in-proof"
   step = jobs.fetch("build-test").fetch("steps").find do |candidate|
-    candidate["name"] == "Prove the exact flat VFS on a fresh runner"
+    candidate["name"] == "Prove exact composition startup on a fresh runner"
   end
   abort "proof step is missing" unless step
   step["run"] += "\nscripts/dev-shell.sh bash build.sh\n"
@@ -463,7 +454,7 @@ expect_rejection readback-curlrc-injection readback-curlrc-injection
 expect_rejection readback-curl-config-enabled readback-curl-config-enabled
 expect_rejection readback-self-hosted-runner readback-self-hosted-runner
 expect_rejection readback-login-shell readback-login-shell
-expect_rejection fifth-release-asset fifth-release-asset
+expect_rejection fourth-release-asset fourth-release-asset
 expect_rejection writer-gh-shell-wrapper writer-gh-shell-wrapper
 expect_rejection writer-post-verification-asset-root \
   writer-post-verification-asset-root
@@ -475,10 +466,11 @@ expect_rejection browser-proof-env-stripped browser-proof-env-stripped
 expect_rejection browser-smoke-scope-expanded browser-smoke-scope-expanded
 expect_rejection browser-app-dependencies-omitted \
   browser-app-dependencies-omitted
-expect_rejection node-proof-heartbeat-omitted node-proof-heartbeat-omitted
-expect_rejection node-proof-heartbeat-unbounded node-proof-heartbeat-unbounded
-expect_rejection node-proof-heartbeat-cleanup-omitted \
-  node-proof-heartbeat-cleanup-omitted
+expect_rejection node-startup-omitted node-startup-omitted
+expect_rejection node-full-lifecycle-reintroduced \
+  node-full-lifecycle-reintroduced
+expect_rejection node-startup-evidence-reintroduced \
+  node-startup-evidence-reintroduced
 expect_rejection candidate-download-by-name candidate-download-by-name
 expect_rejection candidate-cross-run-download candidate-cross-run-download
 expect_rejection candidate-artifact-id-output-omitted \
@@ -494,10 +486,10 @@ expect_rejection candidate-kernel-verification-omitted \
   candidate-kernel-verification-omitted
 expect_rejection candidate-kernel-mirror-rehash-omitted \
   candidate-kernel-mirror-rehash-omitted
-expect_rejection candidate-evidence-binding-omitted \
-  candidate-evidence-binding-omitted
-expect_rejection post-proof-identify-mutates-selection \
-  post-proof-identify-mutates-selection
+expect_rejection candidate-post-startup-binding-omitted \
+  candidate-post-startup-binding-omitted
+expect_rejection post-startup-identify-mutates-selection \
+  post-startup-identify-mutates-selection
 expect_rejection candidate-kernel-added-to-final-artifact \
   candidate-kernel-added-to-final-artifact
 expect_rejection image-build-reintroduced-in-proof \
