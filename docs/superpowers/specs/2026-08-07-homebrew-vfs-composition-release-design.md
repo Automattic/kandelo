@@ -2,13 +2,16 @@
 
 ## Status
 
-Approved and implemented on branch `fix/homebrew-vfs-proof-swap-qk044` for
-completing the experimental ABI-42 Homebrew migration. Shipment still requires
-the exact post-merge default-branch dispatch, publication, and anonymous
-readback. This replaces the proposed proof-runner swap accommodation. The
-release gate proves exact VFS composition and bounded selected-runtime startup;
-the complete stock Homebrew lifecycle remains a separate diagnostic until
-Kandelo can run it without exhausting the proof host.
+Approved and implemented for completing the experimental ABI-42 Homebrew
+migration. The first exact default-branch dispatch, Actions run `31204351365`,
+proved Node startup but exposed one omitted fresh-runner browser fixture: Vite
+must resolve the ordinary base `rootfs.vfs` while loading the acceptance module
+even though the focused cases boot only the composed Homebrew VFS. The
+intermediate proof relay therefore includes that exact report-bound base image.
+Shipment still requires a corrected default-branch dispatch, publication, and
+anonymous readback. The release gate proves exact VFS composition and bounded
+selected-runtime startup; the complete stock Homebrew lifecycle remains a
+separate diagnostic until Kandelo can run it without exhausting the proof host.
 
 ## Context
 
@@ -38,9 +41,10 @@ Publish the experimental ABI-42 VFS when all of these conditions succeed:
    inputs.
 2. Every selected bottle is validated and materialized through the existing
    flat-VFS builder, with public fallback disabled.
-3. The builder emits one exact VFS, selection, report, and claimed kernel, and
-   a fresh read-only runner downloads that same-run candidate by artifact ID
-   and verifies every SHA-256 and byte count.
+3. The builder emits one exact VFS, selection, report, claimed kernel, and the
+   report-bound base rootfs needed to load the browser fixture. A fresh
+   read-only runner downloads that same-run candidate by artifact ID and
+   verifies every SHA-256 and byte count.
 4. Node boots the exact VFS with the exact kernel, validates the embedded
    composition/runtime contract, and runs the selected `/usr/bin/brew
    --version` path without lazy downloads or unexpected host diagnostics.
@@ -86,19 +90,24 @@ bottle bytes, unsafe archive member, link ownership conflict, missing runtime
 support, unexpected lazy materialization, or a report that does not bind the
 exact selection and image.
 
-The build job continues to create an intermediate candidate containing exactly
-four regular, nonsymlink files:
+The build job creates an intermediate candidate containing exactly five
+regular, nonsymlink files:
 
 1. `kandelo-homebrew-experimental-abi42-wasm32.vfs.zst`;
 2. `homebrew-selection.json`;
 3. `homebrew-vfs-build-report.json`; and
-4. `kernel.wasm`.
+4. `kernel.wasm`; and
+5. `rootfs.vfs`.
 
-The kernel remains an intermediate proof input rather than a release asset.
-The fresh runner must download this candidate by the exact same-run artifact
-ID, verify its fixed inventory and all four identities, compare the selection
-bytes to the exact tap checkout, and copy the kernel only to the reviewed local
-proof path. No package, VFS, or kernel input may be rebuilt on the proof runner.
+The kernel and base rootfs remain intermediate proof inputs rather than release
+assets. The base rootfs must be the exact regular, nonsymlink builder input
+bound by the report's `base_image` SHA-256 and byte count. The fresh runner must
+download the candidate by the exact same-run artifact ID, verify its fixed
+inventory and all five identities, compare the selection bytes to the exact tap
+checkout, and copy the kernel and rootfs only to their reviewed local proof
+paths. It must reject any alternate browser rootfs resolver path that could
+shadow the relayed bytes. No package, VFS, kernel, or rootfs input may be
+rebuilt on the proof runner.
 
 ## Bounded Runtime Startup
 
@@ -144,8 +153,9 @@ proof ran. The successful GitHub jobs are the record of the bounded Node and
 Chromium startup gates.
 
 After startup succeeds, the workflow identifies the three asset identities,
-immediately revalidates the VFS, selection, report, and proof kernel against the
-builder outputs, and uploads only the three public assets. The publisher must
+immediately revalidates the VFS, selection, report, proof kernel, and proof-only
+base rootfs against the builder outputs, and uploads only the three public
+assets. The publisher must
 depend only on that final tested artifact, retain the existing unique run and
 attempt release tag, and keep publication credentials out of the build and
 test jobs.
@@ -220,15 +230,16 @@ must not edit, clean, reset, or include it.
 Update tests before implementation. The workflow checker and mutation suite
 must require:
 
-- the unchanged four-file, artifact-ID-addressed intermediate candidate;
-- fresh-runner verification of all four candidate identities and the exact tap
-  selection bytes;
+- the exact five-file, artifact-ID-addressed intermediate candidate;
+- fresh-runner verification of all five candidate identities, report-to-rootfs
+  binding, and the exact tap selection bytes;
 - the focused Node startup CLI and both exact Chromium Ruby startup cases;
 - absence of the full Node lifecycle CLI, lifecycle evidence file, and resource
   heartbeat from the publication workflow;
-- an exact three-file final inventory with no kernel or evidence file;
-- identification followed by immediate candidate/kernel rebinding and final
-  artifact upload;
+- an exact three-file final inventory with no kernel, base rootfs, or evidence
+  file;
+- identification followed by immediate candidate/kernel/rootfs rebinding and
+  final artifact upload;
 - publisher dependence only on the final tested artifact;
 - exact three-asset publication and anonymous SHA-256/size readback; and
 - unchanged job permissions, default-branch dispatch guard, action pins, and
