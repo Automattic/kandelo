@@ -224,14 +224,32 @@ def check_workflow(workflow)
   check(values_for_key(workflow, "secrets").empty?,
         "workflow accepts or forwards a secret")
 
+  build_steps = build.fetch("steps")
   kandelo_checkout = find_one(action_steps(build, CHECKOUT_ACTION),
                               "exact Kandelo checkout") do |step|
     step.dig("with", "ref") == "${{ github.sha }}" &&
       !step.dig("with")&.key?("repository")
   end
   check(kandelo_checkout.dig("with", "persist-credentials") == false &&
-        kandelo_checkout.dig("with", "submodules") == "libc/musl",
-        "Kandelo checkout retains credentials or omits musl")
+        !kandelo_checkout.fetch("with").key?("submodules"),
+        "Kandelo checkout retains credentials or delegates broad " \
+        "submodule initialization")
+  kandelo_checkout_index = build_steps.index(kandelo_checkout)
+  musl_init_index = build_steps.index do |step|
+    step["name"] == "Initialize exact musl submodule"
+  end
+  expected_musl_init = <<~'SHELL'
+    set -euo pipefail
+    git submodule update --init --depth 1 -- libc/musl
+    expected_musl_sha="$(git rev-parse HEAD:libc/musl)"
+    actual_musl_sha="$(git -C libc/musl rev-parse HEAD)"
+    test "$actual_musl_sha" = "$expected_musl_sha"
+    test -d libc/musl/src
+  SHELL
+  check(kandelo_checkout_index && musl_init_index &&
+        kandelo_checkout_index < musl_init_index &&
+        build_steps.fetch(musl_init_index)["run"] == expected_musl_init,
+        "builder does not initialize and bind the exact musl gitlink")
   tap_checkout = find_one(action_steps(build, CHECKOUT_ACTION),
                           "exact tap checkout") do |step|
     step.dig("with", "repository") == "kandelo-dev/homebrew-tap-core"
@@ -241,7 +259,6 @@ def check_workflow(workflow)
         tap_checkout.dig("with", "persist-credentials") == false,
         "tap checkout is not the exact credential-free input revision")
 
-  build_steps = build.fetch("steps")
   nix_index = build_steps.index do |step|
     step["uses"] == "./.github/actions/setup-nix"
   end
@@ -274,7 +291,8 @@ def check_workflow(workflow)
   proof_index = build_steps.index do |step|
     step["name"] == "Build and prove the exact flat VFS"
   end
-  check(nix_index && sysroot_index && proof_index &&
+  check(nix_index && sysroot_index && proof_index && musl_init_index &&
+        musl_init_index < sysroot_index &&
         nix_index < sysroot_index && sysroot_index < proof_index,
         "builder must prepare the worktree-local libc sysroot before building")
   expected_sysroot_build = <<~'SHELL'

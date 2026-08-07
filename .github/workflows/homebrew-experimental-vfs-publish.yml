@@ -39,8 +39,17 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 1
-          submodules: libc/musl
           persist-credentials: false
+
+      - name: Initialize exact musl submodule
+        shell: bash
+        run: |
+          set -euo pipefail
+          git submodule update --init --depth 1 -- libc/musl
+          expected_musl_sha="$(git rev-parse HEAD:libc/musl)"
+          actual_musl_sha="$(git -C libc/musl rev-parse HEAD)"
+          test "$actual_musl_sha" = "$expected_musl_sha"
+          test -d libc/musl/src
 
       - name: Checkout exact Homebrew tap source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
