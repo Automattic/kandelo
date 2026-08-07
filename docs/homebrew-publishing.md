@@ -593,27 +593,34 @@ different Formula claiming the same link target. Serialization and shipping
 validation recheck the exact links and eager executables before running a real
 bottle pour.
 
-The experimental ABI-42 flat-VFS release is temporarily Node-lifecycle
-validated. Its required Node proof performs the complete stock Homebrew tap,
-exact-revision checkout, uninstall, bottle download, extraction, pour,
-execution, and trust lifecycle. Chromium still boots the same exact image and
-must start both the selected Ruby directly and Ruby through the selected shell.
-It does not currently repeat the complete Homebrew lifecycle: stock Homebrew's
-short-lived helper churn creates hundreds of fresh process-memory generations,
-and current Chromium reaches a repeatable renderer virtual-address reservation
-ceiling while native guard-backed Wasm memory reservations remain unreclaimed
-after Kandelo retires the corresponding processes. The observed boundary is a
-renderer crash, not a bottle, VFS, Ruby, network, or physical-memory failure.
+The experimental ABI-42 flat-VFS release is composition and selected-runtime
+startup validated. The builder validates and materializes the exact canonical
+selection. A fresh read-only runner downloads the same-run candidate by exact
+artifact ID and rehashes its VFS, selection, report, and claimed kernel. Node
+boots that exact candidate and runs `/usr/bin/brew --version` without lazy
+materialization or unexpected host diagnostics. Chromium boots the same image
+and kernel identities and starts selected Ruby both directly and through the
+selected shell.
 
-Accordingly, this explicitly experimental release contains exactly four inert
-assets: the VFS, canonical selection, build report, and complete Node evidence.
-Its release notes say that Chromium coverage is selected-runtime startup only;
-no failed browser lifecycle is recorded or presented as success. Restore the
-complete Chromium lifecycle as a publication gate and evidence asset only
-after the general browser host can run the unchanged stock lifecycle without
-renderer loss. Package-specific process reuse, lower guest memory limits, and
-splitting one lifecycle across restarted kernels are not acceptable removal
-paths because they would hide the platform boundary instead of fixing it.
+The release contains exactly three inert assets: the VFS, canonical selection,
+and build report. It does not claim that hosted CI completed stock `brew tap`,
+download, extraction, pour, uninstall, upgrade, or reboot coverage. The
+complete stock Homebrew lifecycle and its existing evidence format remain a
+separate diagnostic. On a standard 16 GiB hosted runner, that lifecycle drove
+Node resident memory to about 15.2 GiB and exhausted almost 3 GiB of swap while
+`brew tap` was still active; the service then cancelled the step. The unchanged
+lifecycle completed on a 48 GiB local host, which is useful diagnostic evidence
+but is not required to prove how the VFS was composed.
+
+The ABI-43 integration branch contains a genuine vfork implementation that
+shares the parent's existing memory through eligible fork-then-exec paths and
+configures upstream Ruby to use working `vfork`. Restore the complete lifecycle
+as a publication gate only after ABI-43 Ruby and every selected bottle are
+rebuilt, an exact ABI-43 VFS is composed, and the unchanged lifecycle measures
+credible RSS headroom on every host for which lifecycle support is claimed.
+Swap, lower guest memory limits, native-tool substitution, pre-tapping, and
+splitting one lifecycle across restarted kernels are not acceptable substitutes
+for that platform result.
 
 Trusted CI applies this patch to a temporary Homebrew worktree. A short-lived
 root-owned launcher under the selected Homebrew prefix loads that worktree

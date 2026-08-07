@@ -2,13 +2,13 @@
 
 ## Status
 
-Proposed implementation design for completing the experimental ABI-42
-Homebrew migration. The direction is approved; this written contract awaits
-review before implementation. It replaces the proposed proof-runner swap
-accommodation. The release gate proves exact VFS composition and bounded
-selected-runtime startup; the complete stock Homebrew lifecycle remains a
-separate diagnostic until Kandelo can run it without exhausting the proof
-host.
+Approved and implemented on branch `fix/homebrew-vfs-proof-swap-qk044` for
+completing the experimental ABI-42 Homebrew migration. Shipment still requires
+the exact post-merge default-branch dispatch, publication, and anonymous
+readback. This replaces the proposed proof-runner swap accommodation. The
+release gate proves exact VFS composition and bounded selected-runtime startup;
+the complete stock Homebrew lifecycle remains a separate diagnostic until
+Kandelo can run it without exhausting the proof host.
 
 ## Context
 
