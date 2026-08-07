@@ -7797,16 +7797,13 @@ pub fn sys_mremap(
 }
 
 /// Check if a file descriptor refers to a terminal.
-/// Returns 1 if it's a terminal (CharDevice, PtyMaster, or PtySlave), Err(ENOTTY) otherwise.
+/// Returns 1 if it is a host terminal or PTY, Err(ENOTTY) otherwise.
 pub fn sys_isatty(proc: &Process, fd: i32) -> Result<i32, Errno> {
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
 
-    if matches!(
-        ofd.file_type,
-        FileType::CharDevice | FileType::PtyMaster | FileType::PtySlave
-    ) {
+    if ofd.is_terminal() {
         Ok(1)
     } else {
         Err(Errno::ENOTTY)
@@ -12343,10 +12340,7 @@ pub fn sys_tcgetattr(proc: &mut Process, fd: i32, buf: &mut [u8]) -> Result<(), 
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
-    if !matches!(
-        ofd.file_type,
-        FileType::CharDevice | FileType::PtyMaster | FileType::PtySlave
-    ) {
+    if !ofd.is_terminal() {
         return Err(Errno::ENOTTY);
     }
     if buf.len() < 48 {
@@ -12376,10 +12370,7 @@ pub fn sys_tcsetattr(proc: &mut Process, fd: i32, action: u32, buf: &[u8]) -> Re
     let entry = proc.fd_table.get(fd)?;
     let ofd_idx = entry.ofd_ref.0;
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
-    if !matches!(
-        ofd.file_type,
-        FileType::CharDevice | FileType::PtyMaster | FileType::PtySlave
-    ) {
+    if !ofd.is_terminal() {
         return Err(Errno::ENOTTY);
     }
     if buf.len() < 48 {
@@ -12419,9 +12410,17 @@ pub fn sys_tcsetattr(proc: &mut Process, fd: i32, action: u32, buf: &[u8]) -> Re
     Ok(())
 }
 
+fn is_terminal_ioctl_request(request: u32) -> bool {
+    // Linux reserves ioctl type 'T' for tty/termios and 'K' for VT keyboard
+    // controls. Classify the namespaces instead of duplicating today's
+    // request list, so a newly implemented terminal request cannot bypass
+    // non-terminal gating merely because this helper was not updated.
+    matches!((request >> 8) & 0xff, 0x54 | 0x4B)
+}
+
 /// ioctl -- device control.
 /// Supports generic ioctls (FIONREAD, FIONBIO, FIOCLEX, FIONCLEX) on any fd type,
-/// plus terminal ioctls (TIOCGWINSZ, TIOCSWINSZ) on CharDevice fds only.
+/// plus terminal ioctls (TIOCGWINSZ, TIOCSWINSZ) on host terminals and PTYs.
 pub fn sys_ioctl(
     proc: &mut Process,
     host: &mut dyn HostIO,
@@ -12452,6 +12451,7 @@ pub fn sys_ioctl(
     if ofd.is_path_only() {
         return Err(Errno::EBADF);
     }
+    let is_terminal = ofd.is_terminal();
 
     // FIONBIO — toggle O_NONBLOCK on the OFD status_flags
     if request == 0x5421 {
@@ -12560,6 +12560,14 @@ pub fn sys_ioctl(
         return Ok(());
     }
 
+    // Device-specific handlers intentionally own unknown-ioctl errno policy,
+    // but a terminal request on a non-terminal must consistently be ENOTTY.
+    // Gate that shared namespace before framebuffer/audio/DRM dispatch so a
+    // broad device handler cannot reinterpret TCGETS or a VT probe.
+    if is_terminal_ioctl_request(request) && !is_terminal {
+        return Err(Errno::ENOTTY);
+    }
+
     // --- PTY-specific ioctls (work on PtyMaster only) ---
     {
         let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
@@ -12645,6 +12653,9 @@ pub fn sys_ioctl(
     match request {
         // KDGKBTYPE — return KB_101 (0x02) as a single byte.
         0x4B33 => {
+            if !is_terminal {
+                return Err(Errno::ENOTTY);
+            }
             if buf.is_empty() {
                 return Err(Errno::EINVAL);
             }
@@ -12653,6 +12664,9 @@ pub fn sys_ioctl(
         }
         // KDGKBMODE — return K_XLATE (1) as i32.
         0x4B44 => {
+            if !is_terminal {
+                return Err(Errno::ENOTTY);
+            }
             if buf.len() < 4 {
                 return Err(Errno::EINVAL);
             }
@@ -12660,25 +12674,26 @@ pub fn sys_ioctl(
             return Ok(());
         }
         // KDSKBMODE — accept any mode, no-op success.
-        0x4B45 => return Ok(()),
+        0x4B45 => {
+            if !is_terminal {
+                return Err(Errno::ENOTTY);
+            }
+            return Ok(());
+        }
         _ => {}
     }
 
-    // --- Terminal ioctls (work on CharDevice, PtyMaster, PtySlave) ---
+    // --- Terminal ioctls (work on host terminals and PTYs) ---
     let ofd = proc.ofd_table.get(ofd_idx).ok_or(Errno::EBADF)?;
     let file_type = ofd.file_type;
     let host_handle = ofd.host_handle;
 
-    let is_terminal = matches!(
-        file_type,
-        FileType::CharDevice | FileType::PtyMaster | FileType::PtySlave
-    );
     if !is_terminal {
         return Err(Errno::ENOTTY);
     }
 
     // Helper: get mutable reference to the appropriate TerminalState.
-    // For PTY fds → PTY pair's terminal state; for CharDevice → process terminal state.
+    // For PTY fds → PTY pair's terminal state; for host stdio → process terminal state.
     // We handle this by dispatching per-request below.
 
     use crate::terminal::*;
@@ -13929,6 +13944,7 @@ pub fn sys_fpathconf(
     validate_pathconf_name(name)?;
     let entry = proc.fd_table.get(fd)?;
     let ofd = proc.ofd_table.get(entry.ofd_ref.0).ok_or(Errno::EBADF)?;
+    let is_terminal = ofd.is_terminal();
     let file_type = ofd.file_type;
     let host_handle = ofd.host_handle;
     let path = ofd.path.clone();
@@ -13966,9 +13982,7 @@ pub fn sys_fpathconf(
         }
         FileType::MemFd => filesystem_pathconf_value(name, false, None),
         FileType::Regular | FileType::Directory | FileType::CharDevice => {
-            if file_type == FileType::CharDevice
-                && matches!(path.as_slice(), b"/dev/stdin" | b"/dev/stdout" | b"/dev/stderr")
-            {
+            if is_terminal {
                 terminal_pathconf_value(name)
             } else if is_procfs_namespace_path(&path)
                 || (is_devfs_namespace_path(&path) && !is_host_backed_devfs_path(&path))
@@ -21513,9 +21527,149 @@ mod tests {
     }
 
     #[test]
-    fn test_isatty_stdin() {
-        let proc = terminal_process(1);
-        assert_eq!(sys_isatty(&proc, 0), Ok(1));
+    fn test_isatty_distinguishes_host_terminal_from_captured_stdio() {
+        let terminal = terminal_process(1);
+        let captured = Process::new(2);
+
+        for fd in 0..=2 {
+            assert_eq!(sys_isatty(&terminal, fd), Ok(1));
+            assert_eq!(sys_isatty(&captured, fd), Err(Errno::ENOTTY));
+        }
+    }
+
+    #[test]
+    fn test_host_terminal_and_both_pty_endpoints_accept_terminal_operations() {
+        fn assert_terminal_surface(proc: &mut Process, host: &mut MockHostIO, fd: i32) {
+            assert_eq!(sys_isatty(proc, fd), Ok(1));
+
+            let mut legacy_attrs = [0; 48];
+            assert_eq!(sys_tcgetattr(proc, fd, &mut legacy_attrs), Ok(()));
+            assert_eq!(
+                sys_tcsetattr(proc, fd, crate::terminal::TCSANOW, &legacy_attrs),
+                Ok(()),
+            );
+
+            let mut ioctl_attrs = [0; crate::terminal::TERMIOS_SIZE];
+            assert_eq!(
+                sys_ioctl(
+                    proc,
+                    host,
+                    fd,
+                    crate::terminal::TCGETS,
+                    &mut ioctl_attrs,
+                ),
+                Ok(()),
+            );
+            let mut keyboard_type = [0];
+            assert_eq!(
+                sys_ioctl(proc, host, fd, 0x4B33, &mut keyboard_type),
+                Ok(()),
+            );
+            assert_eq!(keyboard_type, [0x02]);
+        }
+
+        let mut terminal = terminal_process(1);
+        let mut terminal_host = MockHostIO::new();
+        for fd in 0..=2 {
+            assert_terminal_surface(&mut terminal, &mut terminal_host, fd);
+        }
+
+        let mut fixture = PtyFixture::new();
+        for fd in [fixture.master_fd, fixture.slave_fd] {
+            assert_terminal_surface(&mut fixture.proc, &mut fixture.host, fd);
+        }
+    }
+
+    #[test]
+    fn test_virtual_character_devices_reject_terminal_operations() {
+        let mut proc = Process::new(1);
+        let mut host = MockHostIO::new();
+        let devices: &[(&[u8], i64)] = &[
+            (b"/dev/null", VirtualDevice::Null.host_handle()),
+            (b"/dev/console", VirtualDevice::Null.host_handle()),
+            (b"/dev/zero", VirtualDevice::Zero.host_handle()),
+            (b"/dev/urandom", VirtualDevice::Urandom.host_handle()),
+            (b"/dev/random", VirtualDevice::Urandom.host_handle()),
+            (b"/dev/full", VirtualDevice::Full.host_handle()),
+            (b"/dev/fb0", VirtualDevice::Fb0.host_handle()),
+            (b"/dev/input/mice", VirtualDevice::Mice.host_handle()),
+            (b"/dev/dsp", VirtualDevice::Dsp.host_handle()),
+            (
+                b"/dev/dri/renderD128",
+                VirtualDevice::DriRenderD128.host_handle(),
+            ),
+            (b"/dev/dri/card0", VirtualDevice::DriCard0.host_handle()),
+            // Prime fds are kernel-owned CharDevices outside the named
+            // VirtualDevice range and obey the same non-terminal contract.
+            (b"/dev/dri/prime-test", -200),
+            // A future host-backed CharDevice must opt into terminal identity
+            // rather than inheriting it from a non-negative handle.
+            (b"/dev/other-char-device", 77),
+        ];
+
+        for &(path, host_handle) in devices {
+            let ofd_idx =
+                proc.ofd_table
+                    .create(FileType::CharDevice, O_RDWR, host_handle, path.to_vec());
+            let fd = proc
+                .fd_table
+                .alloc(crate::fd::OpenFileDescRef(ofd_idx), 0)
+                .unwrap();
+
+            assert_eq!(sys_isatty(&proc, fd), Err(Errno::ENOTTY), "{path:?}");
+            assert_eq!(
+                sys_tcgetattr(&mut proc, fd, &mut [0; 48]),
+                Err(Errno::ENOTTY),
+                "{path:?}",
+            );
+            assert_eq!(
+                sys_tcsetattr(&mut proc, fd, crate::terminal::TCSANOW, &[0; 48]),
+                Err(Errno::ENOTTY),
+                "{path:?}",
+            );
+            assert_eq!(
+                sys_ioctl(
+                    &mut proc,
+                    &mut host,
+                    fd,
+                    crate::terminal::TCGETS,
+                    &mut [0; crate::terminal::TERMIOS_SIZE],
+                ),
+                Err(Errno::ENOTTY),
+                "{path:?}",
+            );
+            // WHY: musl implements isatty() with TIOCGWINSZ rather than
+            // Kandelo's legacy direct isatty syscall. Keep the public libc
+            // path in this matrix so a future ioctl refactor cannot restore
+            // false terminal identity for character devices.
+            assert_eq!(
+                sys_ioctl(
+                    &mut proc,
+                    &mut host,
+                    fd,
+                    crate::terminal::TIOCGWINSZ,
+                    &mut [0; 8],
+                ),
+                Err(Errno::ENOTTY),
+                "{path:?}",
+            );
+            assert_eq!(
+                sys_ioctl(&mut proc, &mut host, fd, 0x4B33, &mut [0; 1]),
+                Err(Errno::ENOTTY),
+                "{path:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn test_redirecting_terminal_stdout_to_dev_null_clears_terminal_identity() {
+        let mut proc = terminal_process(1);
+        let mut host = MockHostIO::new();
+        let null_fd = sys_open(&mut proc, &mut host, b"/dev/null", O_WRONLY, 0).unwrap();
+
+        assert_eq!(sys_isatty(&proc, 1), Ok(1));
+        assert_eq!(sys_dup2(&mut proc, &mut host, null_fd, 1), Ok(1));
+        assert_eq!(sys_isatty(&proc, 1), Err(Errno::ENOTTY));
     }
 
     #[test]
