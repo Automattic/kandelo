@@ -4860,7 +4860,16 @@ export class CentralizedKernelWorker {
       // callers remain parked in the same host-owned retry loop as EAGAIN.
       // The sockaddr-family guard deliberately excludes AF_UNIX from this
       // transport-specific retry rule.
-      if (this.handlePendingInetConnect(channel, syscallNr, origArgs, retVal, errVal)) {
+      if (
+        this.handlePendingInetConnect(
+          channel,
+          syscallNr,
+          origArgs,
+          retVal,
+          errVal,
+          deliveredSignal,
+        )
+      ) {
         return;
       }
 
@@ -4978,19 +4987,30 @@ export class CentralizedKernelWorker {
    */
   private dequeueSignalForDelivery(channel: ChannelInfo): number {
     const preparedSignals = this.resumePreparedSignals;
-    if (preparedSignals?.has(channel)) {
-      const existingSignal = new DataView(
-        channel.memory.buffer,
-        channel.channelOffset,
-      ).getUint32(CH_SIG_SIGNUM, true);
-      if (existingSignal > 0) return existingSignal;
-      // The channel was retired or the guest consumed the record without a
-      // normal publication path. Do not suppress a genuinely new signal.
-      preparedSignals.delete(channel);
-    }
-
-    const dequeueSignal = this.kernelInstance!.exports.kernel_dequeue_signal as
+    const dequeueSignal = this.kernelInstance?.exports.kernel_dequeue_signal as
       ((pid: number, tid: number, outPtr: KernelPointer) => number) | undefined;
+    if (!dequeueSignal && !preparedSignals?.has(channel)) {
+      // A kernel without the dequeue export cannot have transferred a signal
+      // into this channel. This also keeps host-only retry harnesses from
+      // needing a full ABI-sized process memory when signals are out of scope.
+      return 0;
+    }
+    const existingSignal = new DataView(
+      channel.memory.buffer,
+      channel.channelOffset,
+    ).getUint32(CH_SIG_SIGNUM, true);
+    if (existingSignal > 0) {
+      // WHY: dequeuing transfers this signal from Rust into the channel. Until
+      // a completed mailbox wakes the guest and the libc glue clears signum,
+      // the channel is its only owner. A host-side EAGAIN retry must neither
+      // dequeue a second signal nor erase this still-undelivered record.
+      return existingSignal;
+    }
+    // The channel was retired or the guest consumed the resume-time record
+    // without a normal publication path. Do not suppress a genuinely new
+    // signal.
+    preparedSignals?.delete(channel);
+
     if (!dequeueSignal) return 0;
 
     // Use the signal area in kernel scratch as the output buffer
@@ -6957,6 +6977,7 @@ export class CentralizedKernelWorker {
     origArgs: number[],
     retVal: number,
     errVal: number,
+    deliveredSignal: number,
   ): boolean {
     if (
       syscallNr !== SYS_CONNECT ||
@@ -6991,6 +7012,15 @@ export class CentralizedKernelWorker {
         SYSCALL_ARGS[syscallNr],
         -1,
         errVal,
+      );
+    } else if (deliveredSignal > 0) {
+      this.completeChannel(
+        channel,
+        syscallNr,
+        origArgs,
+        undefined,
+        -1,
+        EINTR_ERRNO,
       );
     } else {
       this.handleBlockingRetry(channel, syscallNr, origArgs);
@@ -7066,6 +7096,32 @@ export class CentralizedKernelWorker {
     return true;
   }
 
+  /**
+   * Publish a caught signal before a host-owned blocking retry can re-park.
+   *
+   * Rust has already removed the signal from its pending queue and copied its
+   * handler record into CH_SIG. The guest cannot run that handler until this
+   * channel completes, so retaining the mailbox in an async wait would strand
+   * the signal and can leave SIGCHLD zombies unreaped indefinitely.
+   */
+  private interruptBlockingRetryForCaughtSignal(
+    channel: ChannelInfo,
+    syscallNr: number,
+    origArgs: number[],
+    deliveredSignal: number,
+  ): boolean {
+    if (deliveredSignal <= 0) return false;
+    this.completeChannel(
+      channel,
+      syscallNr,
+      origArgs,
+      undefined,
+      -1,
+      EINTR_ERRNO,
+    );
+    return true;
+  }
+
   private handleBlockingRetry(
     channel: ChannelInfo,
     syscallNr: number,
@@ -7079,10 +7135,28 @@ export class CentralizedKernelWorker {
     // parking a retry that no later cancellation dispatch can discover.
     if (this.interruptPendingFifoOpenCancellation(channel, syscallNr)) return;
 
+    // Every call site reaches this method only after the kernel reported its
+    // internal EAGAIN "would block" sentinel. Some marshalling paths already
+    // prepared a caught signal; others bypass the generic completion path and
+    // need to dequeue it here. dequeueSignalForDelivery is idempotent while a
+    // CH_SIG record remains owned by this uncompleted channel.
+    const deliveredSignal = this.dequeueSignalForDelivery(channel);
+    if (this.kernelInstance && this.finishSignalTermination(channel)) return;
+
     // Futex wait: use Atomics.waitAsync on the target address in process memory
     if (syscallNr === SYS_FUTEX) {
       const futexOp = origArgs[1] & 0x7f; // mask out FUTEX_PRIVATE_FLAG
       if (futexOp === 0) { // FUTEX_WAIT
+        if (
+          this.interruptBlockingRetryForCaughtSignal(
+            channel,
+            syscallNr,
+            origArgs,
+            deliveredSignal,
+          )
+        ) {
+          return;
+        }
         const addr = origArgs[0]; // address in process memory
         const expectedVal = origArgs[2];
         const i32View = new Int32Array(channel.memory.buffer);
@@ -7136,6 +7210,16 @@ export class CentralizedKernelWorker {
       }
       if (timeoutMs === 0) {
         this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], 0, 0);
+        return;
+      }
+      if (
+        this.interruptBlockingRetryForCaughtSignal(
+          channel,
+          syscallNr,
+          origArgs,
+          deliveredSignal,
+        )
+      ) {
         return;
       }
       const deadline = this.getReadinessDeadline(channel, timeoutMs);
@@ -7223,6 +7307,16 @@ export class CentralizedKernelWorker {
     if (syscallNr === SYS_RT_SIGTIMEDWAIT) {
       const timeoutPtr = origArgs[2]; // pointer to timespec in process memory
       if (timeoutPtr === 0) {
+        if (
+          this.interruptBlockingRetryForCaughtSignal(
+            channel,
+            syscallNr,
+            origArgs,
+            deliveredSignal,
+          )
+        ) {
+          return;
+        }
         // NULL timeout = wait indefinitely. Use long retry interval since
         // signals arrive via kernel_kill, not organically. In the browser,
         // short retries starve the event loop when multiple threads are active
@@ -7251,6 +7345,17 @@ export class CentralizedKernelWorker {
         this.signalWaitDeadlines.delete(key);
         this.completeChannel(channel, syscallNr, origArgs, SYSCALL_ARGS[syscallNr], -1, EAGAIN_ERRNO);
       } else {
+        if (
+          this.interruptBlockingRetryForCaughtSignal(
+            channel,
+            syscallNr,
+            origArgs,
+            deliveredSignal,
+          )
+        ) {
+          this.signalWaitDeadlines.delete(key);
+          return;
+        }
         const existingDeadline = this.signalWaitDeadlines.get(key);
         const deadline = existingDeadline?.deadline ?? performance.now() + timeoutMs;
         if (!existingDeadline) {
@@ -7344,6 +7449,17 @@ export class CentralizedKernelWorker {
         );
         return;
       }
+    }
+
+    if (
+      this.interruptBlockingRetryForCaughtSignal(
+        channel,
+        syscallNr,
+        origArgs,
+        deliveredSignal,
+      )
+    ) {
+      return;
     }
 
     // Socket timeout check: if a read/write-like syscall blocks on a socket
@@ -12083,15 +12199,12 @@ export class CentralizedKernelWorker {
 
     // 2. Pending ppoll/poll retry — wake ALL threads for this pid.
     //    Snapshot-and-skip-if-replaced: retrySyscall runs handleSyscall
-    //    synchronously, and a non-interruptible blocking wait (notably
-    //    accept(), which has no EINTR path) re-inserts the SAME
-    //    exact-channel key via pendingPollRetries.set when it re-parks on
-    //    EAGAIN. JS Map iterators are not snapshots — a deleted-then-
-    //    reinserted key reappears at the tail and the raw for..of would
-    //    revisit it forever, livelocking the whole kernel worker thread.
-    //    Mirror wakeBlockedPoll / wakeAllBlockedRetries. (Regression:
-    //    SIGCHLD to a forking daemon's master parked in accept() —
-    //    e.g. msmtpd delivering WordPress mail — wedged the kernel.)
+    //    synchronously, and a wait that remains blocked can reinsert the SAME
+    //    exact-channel key via pendingPollRetries.set. JS Map iterators are not
+    //    snapshots — a deleted-then-reinserted key reappears at the tail and
+    //    the raw for..of would revisit it forever, livelocking the whole
+    //    kernel worker thread. Mirror wakeBlockedPoll /
+    //    wakeAllBlockedRetries.
     const pollMatches = Array.from(this.pendingPollRetries.entries()).filter(
       ([, e]) => e.channel.pid === targetPid,
     );

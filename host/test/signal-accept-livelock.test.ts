@@ -1,7 +1,6 @@
 /**
  * Regression test for a kernel-worker deadlock: delivering a signal to a
- * process that is blocked in a non-interruptible re-parking syscall (notably
- * `accept()`, which has no EINTR path) must not livelock.
+ * process that is blocked in a re-parking syscall must not livelock.
  *
  * `sendSignalToProcess` / `notifyPipeReadable` iterate `pendingPollRetries`
  * and, for each matching entry, delete it and synchronously `retrySyscall`.
@@ -16,17 +15,30 @@
  * livelocked the kernel — the reset request (and every other request) hung
  * forever. Fix: snapshot the entries before iterating (mirrors the existing
  * `wakeBlockedPoll` / `wakeAllBlockedRetries` pattern).
+ *
+ * A second failure lived at the same boundary: retrying accept could dequeue
+ * SIGCHLD into CH_SIG and then re-park the mailbox. The guest could not run
+ * its handler, and a later retry erased the channel's only signal record.
+ * Forking daemons then accumulated zombies until their session limit was
+ * exhausted. The tests below protect both the retry iteration and signal
+ * ownership invariants.
  */
 import { describe, expect, it, vi } from "vitest";
 import { CentralizedKernelWorker } from "../src/kernel-worker";
 import {
+  ABI_SYSCALLS,
   CH_ARGS,
   CH_ARG_SIZE,
   CH_ERRNO,
   CH_RETURN,
+  CH_SIG_FLAGS,
+  CH_SIG_SIGNUM,
   CH_SYSCALL,
 } from "../src/generated/abi";
 
+const EAGAIN = 11;
+const EINTR = 4;
+const SA_RESTART = 0x10000000;
 const SIGCHLD = 17;
 const SIGTERM = 15;
 const SYS_TKILL = 204;
@@ -66,7 +78,165 @@ function createWorkerHarness(): any {
   return worker;
 }
 
+function createAcceptSignalHarness(options: { nonblock?: boolean } = {}) {
+  const kernelMemory = createSharedMemory();
+  const processMemory = createSharedMemory();
+  const channel = {
+    pid: 61,
+    memory: processMemory,
+    channelOffset: 0,
+    i32View: new Int32Array(processMemory.buffer),
+    consecutiveSyscalls: 0,
+  };
+  const args = [7, 0, 0, 0, 0, 0];
+  const processView = new DataView(processMemory.buffer);
+  processView.setUint32(CH_SYSCALL, ABI_SYSCALLS.Accept, true);
+  args.forEach((arg, index) => {
+    processView.setBigInt64(
+      CH_ARGS + index * CH_ARG_SIZE,
+      BigInt(arg),
+      true,
+    );
+  });
+
+  const handleChannel = vi.fn(() => {
+    const kernelView = new DataView(kernelMemory.buffer);
+    kernelView.setBigInt64(CH_RETURN, -1n, true);
+    kernelView.setUint32(CH_ERRNO, EAGAIN, true);
+    return 0;
+  });
+  const dequeueSignal = vi.fn(
+    (_pid: number, _tid: number, outPtr: number) => {
+      const view = new DataView(kernelMemory.buffer);
+      view.setUint32(outPtr, SIGCHLD, true);
+      view.setUint32(outPtr + 8, SA_RESTART, true);
+      return SIGCHLD;
+    },
+  );
+  const completeChannel = vi.fn();
+  const worker: any = Object.assign(
+    Object.create(CentralizedKernelWorker.prototype),
+    {
+      kernel: {
+        toKernelPtr: (value: number | bigint) => Number(value),
+        bos: { findBindingByAddr: vi.fn() },
+      },
+      kernelInstance: {
+        exports: {
+          kernel_dequeue_signal: dequeueSignal,
+          kernel_get_fd_accept_wake_idx: vi.fn(() => 8),
+          kernel_get_process_exit_signal: vi.fn(() => -1),
+          kernel_handle_channel: handleChannel,
+          kernel_is_fd_nonblock: vi.fn(() => options.nonblock ? 1 : 0),
+        },
+      },
+      kernelMemory,
+      scratchOffset: 0,
+      currentHandlePid: 0,
+      config: {},
+      syscallRing: new Map(),
+      channelTids: new Map(),
+      syscallTraceEnabled: false,
+      sharedMmapBackings: new Map(),
+      hostReaped: new Set(),
+      pendingCancels: new Set(),
+      pendingPollRetries: new Map(),
+      pendingSelectRetries: new Map(),
+      pendingSleeps: new Map(),
+      pendingPipeReaders: new Map(),
+      pendingPipeWriters: new Map(),
+      pendingSignalWaits: new Map(),
+      signalWaitDeadlines: new Map(),
+      socketTimeoutTimers: new Map(),
+      processes: new Map([
+        [
+          channel.pid,
+          {
+            pid: channel.pid,
+            memory: processMemory,
+            channels: [channel],
+            ptrWidth: 4,
+          },
+        ],
+      ]),
+      isRegisteredChannel: vi.fn(() => true),
+      deferChannelWhileStopped: vi.fn(() => false),
+      synchronizeSharedMemoryForBoundary: vi.fn(),
+      bindKernelTidForChannel: vi.fn(),
+      highControlFloorForProcess: vi.fn(() => null),
+      finishSignalTermination: vi.fn(() => false),
+      completeChannel,
+    },
+  );
+
+  return {
+    args,
+    channel,
+    completeChannel,
+    dequeueSignal,
+    processMemory,
+    worker,
+  };
+}
+
 describe("signal delivery to a process blocked in accept()", () => {
+  it("publishes EINTR instead of re-parking a caught signal", () => {
+    const harness = createAcceptSignalHarness();
+
+    harness.worker.handleSyscall(harness.channel);
+
+    expect(harness.completeChannel).toHaveBeenCalledWith(
+      harness.channel,
+      ABI_SYSCALLS.Accept,
+      harness.args,
+      undefined,
+      -1,
+      EINTR,
+    );
+    expect(harness.worker.pendingPollRetries.size).toBe(0);
+    const channelView = new DataView(harness.processMemory.buffer);
+    expect(channelView.getUint32(CH_SIG_SIGNUM, true)).toBe(SIGCHLD);
+    expect(channelView.getUint32(CH_SIG_FLAGS, true)).toBe(SA_RESTART);
+  });
+
+  it("retains the channel-owned signal record until the guest consumes it", () => {
+    const harness = createAcceptSignalHarness();
+
+    harness.worker.handleSyscall(harness.channel);
+    expect(harness.worker.dequeueSignalForDelivery(harness.channel))
+      .toBe(SIGCHLD);
+
+    expect(harness.dequeueSignal).toHaveBeenCalledOnce();
+    expect(
+      new DataView(harness.processMemory.buffer).getUint32(
+        CH_SIG_SIGNUM,
+        true,
+      ),
+    ).toBe(SIGCHLD);
+  });
+
+  it("preserves public EAGAIN for a non-blocking accept", () => {
+    const harness = createAcceptSignalHarness({ nonblock: true });
+
+    harness.worker.handleSyscall(harness.channel);
+
+    expect(harness.completeChannel).toHaveBeenCalledWith(
+      harness.channel,
+      ABI_SYSCALLS.Accept,
+      harness.args,
+      expect.anything(),
+      -1,
+      EAGAIN,
+    );
+    expect(harness.worker.pendingPollRetries.size).toBe(0);
+    expect(
+      new DataView(harness.processMemory.buffer).getUint32(
+        CH_SIG_SIGNUM,
+        true,
+      ),
+    ).toBe(SIGCHLD);
+  });
+
   it("does not livelock when retrySyscall re-parks the same poll key", () => {
     const worker = createWorkerHarness();
     const targetPid = 42;
