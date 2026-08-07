@@ -255,6 +255,18 @@ when "browser-app-dependencies-omitted"
   install = "npm --prefix apps/browser-demos ci --no-audit --no-fund\n"
   source = step.fetch("run")
   step["run"] = source.sub(install, "") if source.include?(install)
+when "musl-submodule-checkout-path"
+  checkout = jobs.fetch("build-test").fetch("steps").find do |candidate|
+    candidate["name"] == "Checkout exact Kandelo source"
+  end
+  abort "exact Kandelo checkout is missing" unless checkout
+  checkout.fetch("with")["submodules"] = "libc/musl"
+when "musl-submodule-init-omitted"
+  steps = jobs.fetch("build-test").fetch("steps")
+  removed = steps.reject! do |candidate|
+    candidate["name"] == "Initialize exact musl submodule"
+  end
+  abort "exact musl submodule initialization is missing" unless removed
 when "libc-sysroot-build-omitted"
   steps = jobs.fetch("build-test").fetch("steps")
   removed = steps.reject! do |candidate|
@@ -325,6 +337,8 @@ expect_rejection browser-proof-env-stripped browser-proof-env-stripped
 expect_rejection browser-smoke-scope-expanded browser-smoke-scope-expanded
 expect_rejection browser-app-dependencies-omitted \
   browser-app-dependencies-omitted
+expect_rejection musl-submodule-checkout-path musl-submodule-checkout-path
+expect_rejection musl-submodule-init-omitted musl-submodule-init-omitted
 expect_rejection libc-sysroot-build-omitted libc-sysroot-build-omitted
 
 echo "test-homebrew-experimental-vfs-workflow: ok"
