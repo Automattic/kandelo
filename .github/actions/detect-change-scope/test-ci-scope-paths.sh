@@ -81,7 +81,6 @@ assert_matches package_archive_changed_files \
 for shell_host_input in \
   host/src/constants.ts \
   host/src/generated/abi.ts \
-  host/src/homebrew-vfs-builder.ts \
   host/src/homebrew-vfs-fetch.ts \
   host/src/homebrew-vfs-planner.ts \
   host/src/pathconf.ts \
@@ -104,18 +103,26 @@ assert_matches package_archive_changed_files \
 # to the exact Homebrew product gate. Prove both halves of that route: the
 # build.toml matcher still sees each declared historical dependency, while the
 # final archive classifier removes only these reviewed product-owned paths.
-homebrew_product_inputs=(
+homebrew_declared_product_inputs=(
   homebrew/main-shell-homebrew-runtime-support.json
   homebrew/main-shell-lazy-artifact-lock.json
   homebrew/main-shell-selection-lock.json
+  host/src/homebrew-runtime-support-materializer.ts
   host/src/homebrew-runtime-support.ts
+  host/src/homebrew-vfs-builder.ts
   scripts/check-homebrew-main-shell-brewfile.mjs
   scripts/homebrew-prefix-campaign-executor.py
 )
-for homebrew_product_input in "${homebrew_product_inputs[@]}"; do
+homebrew_product_inputs=(
+  "${homebrew_declared_product_inputs[@]}"
+  images/vfs/scripts/build-homebrew-flat-vfs-image.ts
+)
+for homebrew_product_input in "${homebrew_declared_product_inputs[@]}"; do
   assert_matches package_declared_build_input_changed_files \
     "$homebrew_product_input" \
     "$homebrew_product_input"
+done
+for homebrew_product_input in "${homebrew_product_inputs[@]}"; do
   assert_matches homebrew_product_owned_package_input_changed_files \
     "$homebrew_product_input" \
     "$homebrew_product_input"

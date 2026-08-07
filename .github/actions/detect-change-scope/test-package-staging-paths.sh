@@ -77,12 +77,27 @@ assert_selected "images/rootfs/etc/profile" "images/rootfs/etc/profile"
 assert_not_selected \
   "scripts/homebrew-prefix-campaign-executor.py" \
   "scripts/homebrew-prefix-campaign-executor.py"
+for flat_homebrew_product_input in \
+  host/src/homebrew-runtime-support-materializer.ts \
+  host/src/homebrew-vfs-builder.ts \
+  images/vfs/scripts/build-homebrew-flat-vfs-image.ts
+do
+  assert_not_selected \
+    "$flat_homebrew_product_input" \
+    "$flat_homebrew_product_input"
+done
 # The exception is exact. Conventional shell recipe inputs still stage, even
 # when one product-owned path appears in the same pull request.
 assert_selected \
   "packages/registry/shell/build-shell.sh" \
   "scripts/homebrew-prefix-campaign-executor.py" \
   "packages/registry/shell/build-shell.sh"
+assert_selected \
+  "host/src/homebrew-vfs-composer.ts" \
+  "host/src/homebrew-vfs-composer.ts"
+assert_selected \
+  "images/vfs/scripts/build-homebrew-vfs-image.ts" \
+  "images/vfs/scripts/build-homebrew-vfs-image.ts"
 # WordPress and LAMP boot the host runtime to derive their VFS images, so a
 # host runtime change must invalidate package staging even when it is outside
 # the shell package's narrower host-side input closure.
