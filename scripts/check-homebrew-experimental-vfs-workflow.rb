@@ -21,8 +21,16 @@ FIXED_ASSETS = %w[
   homebrew-vfs-build-report.json
   homebrew-node-evidence.json
 ].freeze
+CANDIDATE_FIXED_ASSETS = %w[
+  homebrew-selection.json
+  homebrew-vfs-build-report.json
+  kernel.wasm
+].freeze
 IDENTITIES = %w[
   vfs selection report node_evidence
+].freeze
+CANDIDATE_IDENTITIES = %w[
+  vfs selection report kernel
 ].freeze
 READBACK_SAFE_GITHUB_EXPRESSIONS = [
   "github.ref_type=='branch'&&" \
@@ -36,6 +44,8 @@ WRITER_RUN_SHA256 =
   "1feaad1c77c67018fd16bb5c22b4b9180d69f13999f235b27cefd8f6bde4cc68"
 READBACK_RUN_SHA256 =
   "cf4f8978c69e738aa710f228ecdf6df845ec231ba781e211827ada0743d66808"
+FINAL_IDENTIFY_RUN_SHA256 =
+  "439c35a1902ec112c7da01ddda57cc5b8b78446f0732c7cc76e6b5bf55da1885"
 
 def check(condition, message)
   raise message unless condition
@@ -166,21 +176,35 @@ def check_workflow(workflow)
 
   jobs = workflow.fetch("jobs")
   check(
-    jobs.is_a?(Hash) && jobs.keys.sort == %w[build-test public-readback publish],
-    "workflow jobs must be exactly build-test, publish, and public-readback"
+    jobs.is_a?(Hash) &&
+      jobs.keys.sort == %w[build-image build-test public-readback publish],
+    "workflow jobs must be exactly build-image, build-test, publish, and " \
+      "public-readback"
   )
+  image_name = "build-image"
   build_name = "build-test"
   writer_name = "publish"
   readback_name = "public-readback"
+  image = jobs.fetch(image_name)
   build = jobs.fetch(build_name)
   writer = jobs.fetch(writer_name)
   readback = jobs.fetch(readback_name)
+  expected_image_keys = %w[
+    if outputs permissions runs-on steps timeout-minutes
+  ]
+  expected_build_keys = %w[
+    if needs outputs permissions runs-on steps timeout-minutes
+  ]
   expected_readback_keys = %w[
     if needs permissions runs-on steps timeout-minutes
   ]
   expected_writer_keys = %w[
     if needs permissions runs-on steps timeout-minutes
   ]
+  check(image.keys.map(&:to_s).sort == expected_image_keys.sort,
+        "image job contains an unsupported execution setting")
+  check(build.keys.map(&:to_s).sort == expected_build_keys.sort,
+        "test job contains an unsupported execution setting")
   check(writer.keys.map(&:to_s).sort == expected_writer_keys.sort,
         "writer job contains an unsupported execution setting")
   check(readback.keys.map(&:to_s).sort == expected_readback_keys.sort,
@@ -205,16 +229,21 @@ def check_workflow(workflow)
           "#{name} has an invalid contents permission")
   end
 
+  check(permissions_for(image) == { "contents" => "read" },
+        "image builder must be read-only")
   check(permissions_for(build) == { "contents" => "read" },
-        "builder must be read-only")
+        "proof runner must be read-only")
   check(permissions_for(writer) == { "contents" => "write" },
         "writer must have only contents write permission")
   check(permissions_for(readback) == { "contents" => "read" },
         "readback must be read-only")
-  check(needs(writer).include?(build_name),
+  check(needs(image).empty?,
+        "image builder must not consume another job")
+  check(needs(build) == [image_name],
+        "proof runner must consume only the same-run image candidate")
+  check(needs(writer) == [build_name],
         "writer does not depend on the tested four-file artifact")
-  check(needs(readback).include?(build_name) &&
-        needs(readback).include?(writer_name),
+  check(needs(readback).sort == [build_name, writer_name].sort,
         "readback does not wait for both build and publication")
 
   uses = values_for_key(workflow, "uses")
@@ -224,18 +253,29 @@ def check_workflow(workflow)
   check(values_for_key(workflow, "secrets").empty?,
         "workflow accepts or forwards a secret")
 
+  image_steps = image.fetch("steps")
   build_steps = build.fetch("steps")
-  kandelo_checkout = find_one(action_steps(build, CHECKOUT_ACTION),
-                              "exact Kandelo checkout") do |step|
+  check(action_steps(image, CHECKOUT_ACTION).length == 2 &&
+        action_steps(build, CHECKOUT_ACTION).length == 2,
+        "each read-only job must have only the exact Kandelo and tap checkouts")
+  image_kandelo_checkout = find_one(action_steps(image, CHECKOUT_ACTION),
+                                    "image Kandelo checkout") do |step|
     step.dig("with", "ref") == "${{ github.sha }}" &&
       !step.dig("with")&.key?("repository")
   end
-  check(kandelo_checkout.dig("with", "persist-credentials") == false &&
-        !kandelo_checkout.fetch("with").key?("submodules"),
-        "Kandelo checkout retains credentials or delegates broad " \
-        "submodule initialization")
-  kandelo_checkout_index = build_steps.index(kandelo_checkout)
-  musl_init_index = build_steps.index do |step|
+  build_kandelo_checkout = find_one(action_steps(build, CHECKOUT_ACTION),
+                                    "proof Kandelo checkout") do |step|
+    step.dig("with", "ref") == "${{ github.sha }}" &&
+      !step.dig("with")&.key?("repository")
+  end
+  [image_kandelo_checkout, build_kandelo_checkout].each do |checkout|
+    check(checkout.dig("with", "persist-credentials") == false &&
+          !checkout.fetch("with").key?("submodules"),
+          "Kandelo checkout retains credentials or delegates broad " \
+          "submodule initialization")
+  end
+  image_kandelo_checkout_index = image_steps.index(image_kandelo_checkout)
+  musl_init_index = image_steps.index do |step|
     step["name"] == "Initialize exact musl submodule"
   end
   expected_musl_init = <<~'SHELL'
@@ -246,26 +286,176 @@ def check_workflow(workflow)
     test "$actual_musl_sha" = "$expected_musl_sha"
     test -d libc/musl/src
   SHELL
-  check(kandelo_checkout_index && musl_init_index &&
-        kandelo_checkout_index < musl_init_index &&
-        build_steps.fetch(musl_init_index)["run"] == expected_musl_init,
-        "builder does not initialize and bind the exact musl gitlink")
-  tap_checkout = find_one(action_steps(build, CHECKOUT_ACTION),
-                          "exact tap checkout") do |step|
+  check(image_kandelo_checkout_index && musl_init_index &&
+        image_kandelo_checkout_index < musl_init_index &&
+        image_steps.fetch(musl_init_index)["run"] == expected_musl_init,
+        "image builder does not initialize and bind the exact musl gitlink")
+  image_tap_checkout = find_one(action_steps(image, CHECKOUT_ACTION),
+                                "image tap checkout") do |step|
     step.dig("with", "repository") == "kandelo-dev/homebrew-tap-core"
   end
-  check(tap_checkout.dig("with", "ref") == "${{ inputs.tap-revision }}" &&
-        tap_checkout.dig("with", "path") == "tap" &&
-        tap_checkout.dig("with", "persist-credentials") == false,
-        "tap checkout is not the exact credential-free input revision")
+  build_tap_checkout = find_one(action_steps(build, CHECKOUT_ACTION),
+                                "proof tap checkout") do |step|
+    step.dig("with", "repository") == "kandelo-dev/homebrew-tap-core"
+  end
+  [image_tap_checkout, build_tap_checkout].each do |checkout|
+    check(checkout.dig("with", "ref") == "${{ inputs.tap-revision }}" &&
+          checkout.dig("with", "path") == "tap" &&
+          checkout.dig("with", "persist-credentials") == false,
+          "tap checkout is not the exact credential-free input revision")
+  end
 
-  nix_index = build_steps.index do |step|
+  image_nix_index = image_steps.index do |step|
     step["uses"] == "./.github/actions/setup-nix"
   end
-  sysroot_index = build_steps.index do |step|
+  image_sysroot_index = image_steps.index do |step|
     step["name"] == "Build worktree-local wasm32 sysroot"
   end
-  npm_index = build_steps.index do |step|
+  image_npm_index = image_steps.index do |step|
+    step["run"].to_s.match?(/(?:^|\n)\s*npm ci(?:\s|$)/)
+  end
+  image_validator_index = image_steps.index do |step|
+    step["run"].to_s.include?("homebrew-validate-flat-selection.ts")
+  end
+  check(image_npm_index && image_validator_index &&
+        image_npm_index < image_validator_index,
+        "locked builder dependencies must precede selection validation")
+  image_validator_source = image_steps.fetch(image_validator_index).fetch("run")
+  image_admission_position = image_validator_source.index(
+    "scripts/validate-homebrew-experimental-vfs-selection.sh"
+  )
+  image_tsx_position = image_validator_source.index("./node_modules/.bin/tsx")
+  check(image_admission_position && image_tsx_position &&
+        image_admission_position < image_tsx_position &&
+        !image_validator_source.match?(/\bnpx\b/),
+        "image selection validation can bypass admission or fetch a tool")
+
+  image_build_index = image_steps.index do |step|
+    step["name"] == "Build the exact flat VFS candidate"
+  end
+  check(image_nix_index && image_sysroot_index && image_build_index &&
+        musl_init_index < image_sysroot_index &&
+        image_nix_index < image_sysroot_index &&
+        image_sysroot_index < image_build_index,
+        "image builder must prepare the exact worktree-local libc sysroot")
+  expected_sysroot_build = <<~'SHELL'
+    set -euo pipefail
+    bash scripts/dev-shell.sh bash scripts/build-musl.sh
+    test -f sysroot/lib/libc.a
+  SHELL
+  check(image_steps.fetch(image_sysroot_index)["run"] == expected_sysroot_build,
+        "image builder libc sysroot step is not the declared musl build")
+
+  image_source = run_source(image)
+  %w[
+    images/vfs/scripts/build-homebrew-flat-vfs-image.ts
+    homebrew-vfs-build-report.json
+    scripts/resolve-binary.sh
+    .kandelo-local-generations/wasm32/kernel
+    publication-claimed
+    kandelo-kernel.wasm
+  ].each do |fragment|
+    check(image_source.include?(fragment),
+          "image build seam omits #{fragment}")
+  end
+  check(image_source.include?("--base-image host/wasm/rootfs.vfs"),
+        "flat VFS does not consume build.sh's actual rootfs output")
+  check(image_source.include?("scripts/build-rootfs.sh --default-install eager") &&
+        image_source.include?("ROOTFS_SKIP_PACKAGE_RESOLVE=1") &&
+        image_source.include?("ROOTFS_SEALED_BUILD=1"),
+        "flat VFS base is not rebuilt as an explicit self-contained rootfs")
+  check(image_source.include?(
+          "--shell-config homebrew/main-shell-default.json"
+        ) && !image_source.include?("homebrew/source-rootfs-shell-default.json"),
+        "flat VFS does not select the tested Homebrew default shell")
+  check(image_source.include?(
+          '[ "$(realpath local-binaries/kernel.wasm)" = "$kernel" ]'
+        ) && image_source.include?(
+          'kernel="$(bash scripts/resolve-binary.sh kernel.wasm)"'
+        ) && image_source.include?(
+          '[ -f "$kernel_identity/.$kernel_session.publication-claimed" ]'
+        ) && image_source.include?(
+          '[ ! -L "$kernel_identity/.$kernel_session.publication-claimed" ]'
+        ) && image_source.include?(
+          'cp -- "$kernel" "$CANDIDATE_ROOT/kernel.wasm"'
+        ) && !image_source.include?(
+          'cp -- local-binaries/kernel.wasm "$CANDIDATE_ROOT/kernel.wasm"'
+        ),
+        "image candidate is not bound to the claimed package-owned kernel")
+  check(!image_source.include?("scripts/homebrew-flat-vfs-node-smoke.ts") &&
+        !image_source.include?("homebrew-flat-vfs-shipping.spec.ts") &&
+        !image_source.include?("homebrew-node-evidence.json"),
+        "image builder performs proof work instead of yielding a fresh runner")
+
+  candidate_identify = find_one(image_steps, "candidate identity step") do |step|
+    step["name"] == "Identify the exact build candidate"
+  end
+  check(candidate_identify["id"] == "identify_candidate",
+        "candidate identity step lacks its fixed output identity")
+  candidate_identify_source = candidate_identify.fetch("run")
+  CANDIDATE_FIXED_ASSETS.each do |asset|
+    check(candidate_identify_source.include?(asset),
+          "candidate identity step omits #{asset}")
+  end
+  check(candidate_identify_source.include?(
+          'find "$CANDIDATE_ROOT" -mindepth 1 -printf' \
+        ) && candidate_identify_source.include?("-eq 4") &&
+        candidate_identify_source.include?("sha256sum") &&
+        candidate_identify_source.include?("stat -c '%s'") &&
+        candidate_identify_source.include?('[ ! -L '),
+        "candidate identity step does not bind the exact four regular files")
+
+  check(action_steps(image, DOWNLOAD_ACTION).empty? &&
+        action_steps(image, UPLOAD_ACTION).length == 1,
+        "image builder has an unexpected artifact transfer")
+  candidate_upload = action_steps(image, UPLOAD_ACTION).fetch(0)
+  check(candidate_upload.keys.map(&:to_s).sort == %w[id name uses with] &&
+        candidate_upload["id"] == "upload_candidate",
+        "candidate upload lacks the fixed artifact identity")
+  candidate_upload_with = candidate_upload.fetch("with")
+  check(candidate_upload_with.keys.map(&:to_s).sort == %w[
+    compression-level if-no-files-found name path retention-days
+  ] &&
+        candidate_upload_with["name"] ==
+          "homebrew-experimental-vfs-abi42-candidate-attempt-" \
+          "${{ github.run_attempt }}" &&
+        candidate_upload_with["if-no-files-found"] == "error" &&
+        candidate_upload_with["compression-level"] == 0 &&
+        candidate_upload_with["retention-days"] == 1,
+        "candidate artifact is not the fixed short-lived same-run relay")
+  candidate_upload_paths = candidate_upload_with.fetch("path").lines
+    .map(&:strip).reject(&:empty?)
+  expected_candidate_paths = [
+    "${{ runner.temp }}/homebrew-experimental-vfs-candidate/" \
+      "${{ steps.identify_candidate.outputs.vfs_filename }}",
+    *CANDIDATE_FIXED_ASSETS.map do |name|
+      "${{ runner.temp }}/homebrew-experimental-vfs-candidate/#{name}"
+    end,
+  ]
+  check(candidate_upload_paths.sort == expected_candidate_paths.sort,
+        "candidate artifact is not exactly VFS, selection, report, and kernel")
+
+  candidate_identity_outputs = [
+    "vfs_filename",
+    *CANDIDATE_IDENTITIES.flat_map { |name| ["#{name}_sha256", "#{name}_bytes"] },
+  ]
+  expected_image_outputs = ["candidate_artifact_id", *candidate_identity_outputs]
+  check(image.fetch("outputs").keys.map(&:to_s).sort ==
+        expected_image_outputs.sort,
+        "image job exports an unsupported candidate output")
+  check(image.dig("outputs", "candidate_artifact_id") ==
+        "${{ steps.upload_candidate.outputs.artifact-id }}",
+        "image job does not export the exact uploaded artifact ID")
+  candidate_identity_outputs.each do |name|
+    check(image.dig("outputs", name) ==
+          "${{ steps.identify_candidate.outputs.#{name} }}",
+          "image job does not export candidate #{name}")
+  end
+
+  build_nix_index = build_steps.index do |step|
+    step["uses"] == "./.github/actions/setup-nix"
+  end
+  build_npm_index = build_steps.index do |step|
     step["run"].to_s.match?(/(?:^|\n)\s*npm ci(?:\s|$)/)
   end
   browser_npm_index = build_steps.index do |step|
@@ -273,49 +463,106 @@ def check_workflow(workflow)
       "npm --prefix apps/browser-demos ci --no-audit --no-fund"
     )
   end
-  validator_index = build_steps.index do |step|
+  build_validator_index = build_steps.index do |step|
     step["run"].to_s.include?("homebrew-validate-flat-selection.ts")
   end
-  check(npm_index && validator_index && npm_index < validator_index,
-        "locked JavaScript dependencies must precede selection validation")
-  validator_source = build_steps.fetch(validator_index).fetch("run")
-  admission_position = validator_source.index(
+  check(build_npm_index && build_validator_index &&
+        build_npm_index < build_validator_index,
+        "locked proof dependencies must precede selection validation")
+  build_validator_source = build_steps.fetch(build_validator_index).fetch("run")
+  build_admission_position = build_validator_source.index(
     "scripts/validate-homebrew-experimental-vfs-selection.sh"
   )
-  tsx_position = validator_source.index("./node_modules/.bin/tsx")
-  check(admission_position && tsx_position && admission_position < tsx_position,
-        "selection admission must precede the declared tsx validator")
-  check(!validator_source.match?(/\bnpx\b/),
-        "selection validation may not fetch an undeclared npx tool")
+  build_tsx_position = build_validator_source.index("./node_modules/.bin/tsx")
+  check(build_admission_position && build_tsx_position &&
+        build_admission_position < build_tsx_position &&
+        !build_validator_source.match?(/\bnpx\b/),
+        "proof selection validation can bypass admission or fetch a tool")
 
-  proof_index = build_steps.index do |step|
-    step["name"] == "Build and prove the exact flat VFS"
-  end
-  check(nix_index && sysroot_index && proof_index && musl_init_index &&
-        musl_init_index < sysroot_index &&
-        nix_index < sysroot_index && sysroot_index < proof_index,
-        "builder must prepare the worktree-local libc sysroot before building")
-  expected_sysroot_build = <<~'SHELL'
-    set -euo pipefail
-    bash scripts/dev-shell.sh bash scripts/build-musl.sh
-    test -f sysroot/lib/libc.a
-  SHELL
-  check(build_steps.fetch(sysroot_index)["run"] == expected_sysroot_build,
-        "builder libc sysroot step is not the declared musl build")
   playwright_index = build_steps.index do |step|
     step["run"].to_s.include?(
       "./node_modules/.bin/playwright install chromium --with-deps"
     )
   end
-  check(playwright_index && proof_index && playwright_index < proof_index,
-        "locked Chromium installation must precede the browser smoke")
-  check(browser_npm_index && playwright_index &&
-        browser_npm_index < playwright_index,
+  candidate_download = find_one(action_steps(build, DOWNLOAD_ACTION),
+                                "candidate artifact-ID download") { true }
+  check(action_steps(build, DOWNLOAD_ACTION).length == 1 &&
+        candidate_download.fetch("with") == {
+          "artifact-ids" =>
+            "${{ needs.build-image.outputs.candidate_artifact_id }}",
+          "path" =>
+            "${{ runner.temp }}/homebrew-experimental-vfs-candidate",
+        },
+        "proof runner does not download the exact same-run artifact ID")
+  candidate_download_index = build_steps.index(candidate_download)
+  candidate_verify_index = build_steps.index do |step|
+    step["name"] == "Verify and stage the exact build candidate"
+  end
+  proof_index = build_steps.index do |step|
+    step["name"] == "Prove the exact flat VFS on a fresh runner"
+  end
+  check(build_nix_index && browser_npm_index && playwright_index &&
+        candidate_download_index && candidate_verify_index && proof_index &&
+        build_validator_index < playwright_index &&
+        browser_npm_index < playwright_index &&
+        playwright_index < candidate_download_index &&
+        candidate_download_index < candidate_verify_index &&
+        candidate_verify_index < proof_index,
         "locked browser-demo dependencies must precede Chromium installation")
+
+  candidate_verify = build_steps.fetch(candidate_verify_index)
+  expected_candidate_env = {
+    "ASSET_ROOT" =>
+      "${{ runner.temp }}/homebrew-experimental-vfs-assets",
+    "CANDIDATE_ROOT" =>
+      "${{ runner.temp }}/homebrew-experimental-vfs-candidate",
+    "SELECTION_PATH" => "${{ inputs.selection-path }}",
+    "VFS_FILENAME" => "${{ needs.build-image.outputs.vfs_filename }}",
+    "VFS_SHA256" => "${{ needs.build-image.outputs.vfs_sha256 }}",
+    "VFS_BYTES" => "${{ needs.build-image.outputs.vfs_bytes }}",
+    "SELECTION_SHA256" =>
+      "${{ needs.build-image.outputs.selection_sha256 }}",
+    "SELECTION_BYTES" =>
+      "${{ needs.build-image.outputs.selection_bytes }}",
+    "REPORT_SHA256" => "${{ needs.build-image.outputs.report_sha256 }}",
+    "REPORT_BYTES" => "${{ needs.build-image.outputs.report_bytes }}",
+    "KERNEL_SHA256" => "${{ needs.build-image.outputs.kernel_sha256 }}",
+    "KERNEL_BYTES" => "${{ needs.build-image.outputs.kernel_bytes }}",
+  }
+  check(candidate_verify["env"] == expected_candidate_env,
+        "candidate verifier is not bound to every producer identity")
+  candidate_verify_source = candidate_verify.fetch("run")
+  candidate_verify_logical = candidate_verify_source.gsub(/\\\s*\n\s*/, " ")
+  CANDIDATE_FIXED_ASSETS.each do |asset|
+    check(candidate_verify_source.include?(asset),
+          "candidate verifier omits #{asset}")
+  end
+  check(candidate_verify_source.include?("expected_inventory=") &&
+        candidate_verify_source.include?('find "$CANDIDATE_ROOT" -mindepth 1') &&
+        candidate_verify_source.include?("sha256sum") &&
+        candidate_verify_source.include?("stat -c '%s'") &&
+        candidate_verify_source.include?("cmp --") &&
+        candidate_verify_source.include?(
+          'cp -- "$CANDIDATE_ROOT/kernel.wasm" local-binaries/kernel.wasm'
+        ) && candidate_verify_source.include?(
+          '[ ! -e local-binaries/kernel.wasm ]'
+        ) && candidate_verify_logical.match?(
+          /verify_candidate\s+"\$VFS_FILENAME"\s+"\$VFS_SHA256"\s+"\$VFS_BYTES"/
+        ) && candidate_verify_logical.match?(
+          /verify_candidate\s+homebrew-selection\.json\s+"\$SELECTION_SHA256"\s+"\$SELECTION_BYTES"/
+        ) && candidate_verify_logical.match?(
+          /verify_candidate\s+homebrew-vfs-build-report\.json\s+"\$REPORT_SHA256"\s+"\$REPORT_BYTES"/
+        ) && candidate_verify_logical.match?(
+          /verify_candidate\s+kernel\.wasm\s+"\$KERNEL_SHA256"\s+"\$KERNEL_BYTES"/
+        ) && candidate_verify_source.match?(
+          /sha256sum local-binaries\/kernel\.wasm.*KERNEL_SHA256/m
+        ) && candidate_verify_source.match?(
+          /stat -c '%s' local-binaries\/kernel\.wasm.*KERNEL_BYTES/m
+        ) && !candidate_verify_source.include?("$ASSET_ROOT/kernel.wasm"),
+        "candidate verifier weakens inventory, selection, or kernel binding")
 
   build_source = run_source(build)
   %w[
-    images/vfs/scripts/build-homebrew-flat-vfs-image.ts
     scripts/homebrew-flat-vfs-node-smoke.ts
     homebrew-flat-vfs-shipping.spec.ts
     homebrew-vfs-build-report.json
@@ -324,19 +571,63 @@ def check_workflow(workflow)
     check(build_source.include?(fragment),
           "build/test seam omits #{fragment}")
   end
-  check(build_source.include?("--base-image host/wasm/rootfs.vfs"),
-        "flat VFS does not consume build.sh's actual rootfs output")
-  check(build_source.include?("scripts/build-rootfs.sh --default-install eager") &&
-        build_source.include?("ROOTFS_SKIP_PACKAGE_RESOLVE=1") &&
-        build_source.include?("ROOTFS_SEALED_BUILD=1"),
-        "flat VFS base is not rebuilt as an explicit self-contained rootfs")
-  check(build_source.include?(
-          "--shell-config homebrew/main-shell-default.json"
-        ) && !build_source.include?("homebrew/source-rootfs-shell-default.json"),
-        "flat VFS does not select the tested Homebrew default shell")
   check(build_source.include?("--kernel local-binaries/kernel.wasm") &&
         !build_source.include?("local-binaries/kandelo-kernel.wasm"),
-        "runtime proof does not bind build.sh's exact kernel artifact")
+        "runtime proof does not consume the verified candidate kernel")
+  check(!build_source.include?("bash build.sh") &&
+        !build_source.include?("scripts/build-rootfs.sh") &&
+        !build_source.include?("build-homebrew-flat-vfs-image.ts") &&
+        !build_source.include?("scripts/build-musl.sh") &&
+        !build_source.include?("scripts/resolve-binary.sh"),
+        "proof runner rebuilds or resolves producer-owned image inputs")
+  expected_runner_heartbeat = <<~'SHELL'.strip
+    runner_heartbeat() {
+      local sample
+      for ((sample = 1; sample <= 180; sample += 1)); do
+        printf 'homebrew-flat-vfs-runner-heartbeat: %s sample=%d/180\n' \
+          "$(/usr/bin/date -u +%Y-%m-%dT%H:%M:%SZ)" "$sample"
+        if ! /usr/bin/ps \
+          -eo pid=,ppid=,rss=,vsz=,nlwp=,stat=,comm= \
+          --sort=-rss | /usr/bin/sed -n '1,16p'; then
+          printf 'homebrew-flat-vfs-runner-telemetry-error: ps\n'
+        fi
+        if ! /usr/bin/free -b; then
+          printf 'homebrew-flat-vfs-runner-telemetry-error: free\n'
+        fi
+        if ! /usr/bin/df \
+          -B1 --output=source,size,used,avail,pcent,target \
+          / "$RUNNER_TEMP"; then
+          printf 'homebrew-flat-vfs-runner-telemetry-error: df\n'
+        fi
+        if ! /usr/bin/sleep 10; then
+          printf 'homebrew-flat-vfs-runner-telemetry-error: sleep\n'
+          return
+        fi
+      done
+    }
+    stop_runner_heartbeat() {
+      if jobs -pr | /usr/bin/grep -Fxq "$runner_heartbeat_pid"; then
+        kill "$runner_heartbeat_pid" 2>/dev/null || :
+      fi
+      wait "$runner_heartbeat_pid" 2>/dev/null || :
+    }
+    runner_heartbeat &
+    runner_heartbeat_pid=$!
+    trap stop_runner_heartbeat EXIT
+  SHELL
+  heartbeat_position = build_source.index(expected_runner_heartbeat)
+  node_proof_position = build_source.index(
+    "scripts/homebrew-flat-vfs-node-smoke.ts"
+  )
+  heartbeat_cleanup = <<~'SHELL'.strip
+    stop_runner_heartbeat
+    trap - EXIT
+  SHELL
+  cleanup_position = build_source.index(heartbeat_cleanup)
+  check(heartbeat_position && node_proof_position && cleanup_position &&
+        heartbeat_position < node_proof_position &&
+        node_proof_position < cleanup_position,
+        "Node shipping proof lacks the bounded hosted-runner heartbeat")
   browser_proof_environment = <<~'SHELL'.strip
     scripts/dev-shell.sh env \
       ASSET_ROOT="$ASSET_ROOT" \
@@ -352,6 +643,61 @@ def check_workflow(workflow)
   check(build_source !~ /\|\|\s*true|\btouch\b|\btruncate\b|status.{0,8}passed/i,
         "build/test seam fabricates or ignores runtime evidence")
 
+  evidence_bind_index = build_steps.index do |step|
+    step["name"] == "Bind proof evidence to the exact build candidate"
+  end
+  final_identify_index = build_steps.index do |step|
+    step["name"] == "Identify the exact four release assets"
+  end
+  final_upload_index = build_steps.index do |step|
+    step["uses"] == UPLOAD_ACTION
+  end
+  check(evidence_bind_index && final_identify_index &&
+        final_upload_index && proof_index < final_identify_index &&
+        final_identify_index + 1 == evidence_bind_index &&
+        evidence_bind_index + 1 == final_upload_index,
+        "final identities are not immediately rebound before upload")
+  final_identify = build_steps.fetch(final_identify_index)
+  check(final_identify["id"] == "identify" &&
+        Digest::SHA256.hexdigest(final_identify.fetch("run")) ==
+          FINAL_IDENTIFY_RUN_SHA256,
+        "final identity program differs from the reviewed program")
+  evidence_bind = build_steps.fetch(evidence_bind_index)
+  expected_bind_env = expected_candidate_env.reject do |name, _value|
+    %w[CANDIDATE_ROOT SELECTION_PATH].include?(name)
+  end.merge("TAP_REVISION" => "${{ inputs.tap-revision }}")
+  check(evidence_bind["env"] == expected_bind_env,
+        "proof evidence binding does not receive every candidate identity")
+  evidence_bind_source = evidence_bind.fetch("run")
+  evidence_bind_logical = evidence_bind_source.gsub(/\\\s*\n\s*/, " ")
+  %w[
+    .tap_revision
+    .selection_sha256
+    .image
+    .report
+    .kernel
+    homebrew-node-evidence.json
+  ].each do |fragment|
+    check(evidence_bind_source.include?(fragment),
+          "proof evidence binding omits #{fragment}")
+  end
+  check(evidence_bind_source.include?("sha256sum") &&
+        evidence_bind_source.include?("stat -c '%s'") &&
+        evidence_bind_source.include?("jq -e") &&
+        evidence_bind_source.include?("-eq 4") &&
+        evidence_bind_logical.match?(
+          /verify_input\s+"\$ASSET_ROOT\/\$VFS_FILENAME"\s+"\$VFS_SHA256"\s+"\$VFS_BYTES"/
+        ) && evidence_bind_logical.match?(
+          /verify_input\s+"\$ASSET_ROOT\/homebrew-selection\.json"\s+"\$SELECTION_SHA256"\s+"\$SELECTION_BYTES"/
+        ) && evidence_bind_logical.match?(
+          /verify_input\s+"\$ASSET_ROOT\/homebrew-vfs-build-report\.json"\s+"\$REPORT_SHA256"\s+"\$REPORT_BYTES"/
+        ) && evidence_bind_logical.match?(
+          /verify_input\s+local-binaries\/kernel\.wasm\s+"\$KERNEL_SHA256"\s+"\$KERNEL_BYTES"/
+        ),
+        "proof evidence is not rebound to exact producer bytes")
+
+  check(action_steps(build, UPLOAD_ACTION).length == 1,
+        "proof runner has an unexpected final artifact upload")
   upload = action_steps(build, UPLOAD_ACTION).fetch(0)
   upload_paths = upload.dig("with", "path").to_s.lines.map(&:strip)
     .reject(&:empty?)
@@ -364,13 +710,20 @@ def check_workflow(workflow)
   ]
   check(upload_paths.sort == expected_paths.sort,
         "builder artifact is not exactly the VFS and three metadata/evidence files")
-  check(upload.dig("with", "if-no-files-found") == "error",
+  check(upload.fetch("with").keys.map(&:to_s).sort == %w[
+    if-no-files-found name path retention-days
+  ] && upload.dig("with", "name") ==
+        "homebrew-experimental-vfs-abi42" &&
+        upload.dig("with", "if-no-files-found") == "error" &&
+        upload.dig("with", "retention-days") == 7,
         "builder can silently omit a release asset")
 
   identity_outputs = [
     "vfs_filename",
     *IDENTITIES.flat_map { |name| ["#{name}_sha256", "#{name}_bytes"] },
   ]
+  check(build.fetch("outputs").keys.map(&:to_s).sort == identity_outputs.sort,
+        "proof job exports an unsupported release identity")
   identity_outputs.each do |name|
     check(build.dig("outputs", name) ==
           "${{ steps.identify.outputs.#{name} }}",

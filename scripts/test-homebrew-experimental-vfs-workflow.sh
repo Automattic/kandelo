@@ -192,7 +192,7 @@ when "writer-job-bash-env"
     "BASH_ENV" => "${{ runner.temp }}/homebrew-experimental-vfs-release-assets/homebrew-node-evidence.json",
   }
   build_step = jobs.fetch("build-test").fetch("steps").find do |step|
-    step["name"] == "Build and prove the exact flat VFS"
+    step["name"] == "Prove the exact flat VFS on a fresh runner"
   end
   abort "build evidence step is missing" unless build_step
   evidence_line = build_step.fetch("run").lines.find do |line|
@@ -221,7 +221,7 @@ when "campaign-generation-step"
   }
 when "browser-proof-env-stripped"
   step = jobs.fetch("build-test").fetch("steps").find do |candidate|
-    candidate["name"] == "Build and prove the exact flat VFS"
+    candidate["name"] == "Prove the exact flat VFS on a fresh runner"
   end
   abort "browser smoke step is missing" unless step
   source = step.fetch("run")
@@ -240,7 +240,7 @@ when "browser-proof-env-stripped"
   end
 when "browser-smoke-scope-expanded"
   step = jobs.fetch("build-test").fetch("steps").find do |candidate|
-    candidate["name"] == "Build and prove the exact flat VFS"
+    candidate["name"] == "Prove the exact flat VFS on a fresh runner"
   end
   abort "browser smoke step is missing" unless step
   bounded = " --project=chromium \\\n    --grep 'starts.*Ruby'"
@@ -249,26 +249,164 @@ when "browser-smoke-scope-expanded"
   step["run"] = source.sub(bounded, " --project=chromium")
 when "browser-app-dependencies-omitted"
   step = jobs.fetch("build-test").fetch("steps").find do |candidate|
-    candidate["name"] == "Install JavaScript dependencies"
+    candidate["name"] == "Install locked proof dependencies"
   end
   abort "JavaScript dependency step is missing" unless step
   install = "npm --prefix apps/browser-demos ci --no-audit --no-fund\n"
   source = step.fetch("run")
   step["run"] = source.sub(install, "") if source.include?(install)
+when "node-proof-heartbeat-omitted"
+  step = jobs.fetch("build-test").fetch("steps").find do |candidate|
+    candidate["name"] == "Prove the exact flat VFS on a fresh runner"
+  end
+  abort "build/proof step is missing" unless step
+  heartbeat = "runner_heartbeat &\n"
+  source = step.fetch("run")
+  abort "hosted-runner heartbeat is missing" unless source.include?(heartbeat)
+  step["run"] = source.sub(heartbeat, "")
+when "node-proof-heartbeat-unbounded"
+  step = jobs.fetch("build-test").fetch("steps").find do |candidate|
+    candidate["name"] == "Prove the exact flat VFS on a fresh runner"
+  end
+  abort "build/proof step is missing" unless step
+  bound = "sample <= 180"
+  source = step.fetch("run")
+  abort "hosted-runner heartbeat bound is missing" unless source.include?(bound)
+  step["run"] = source.sub(bound, "sample <= 1800")
+when "node-proof-heartbeat-cleanup-omitted"
+  step = jobs.fetch("build-test").fetch("steps").find do |candidate|
+    candidate["name"] == "Prove the exact flat VFS on a fresh runner"
+  end
+  abort "build/proof step is missing" unless step
+  cleanup = 'wait "$runner_heartbeat_pid" 2>/dev/null || :' + "\n"
+  source = step.fetch("run")
+  abort "hosted-runner heartbeat cleanup is missing" unless source.include?(cleanup)
+  step["run"] = source.sub(cleanup, "")
+when "candidate-download-by-name"
+  step = jobs.fetch("build-test").fetch("steps").find do |candidate|
+    candidate["name"] == "Download the exact same-run build candidate"
+  end
+  abort "candidate download step is missing" unless step
+  step["with"] = {
+    "name" => "homebrew-experimental-vfs-abi42-candidate-attempt-${{ github.run_attempt }}",
+    "path" => "${{ runner.temp }}/homebrew-experimental-vfs-candidate",
+  }
+when "candidate-cross-run-download"
+  step = jobs.fetch("build-test").fetch("steps").find do |candidate|
+    candidate["name"] == "Download the exact same-run build candidate"
+  end
+  abort "candidate download step is missing" unless step
+  step.fetch("with")["run-id"] = "123456789"
+when "candidate-artifact-id-output-omitted"
+  jobs.fetch("build-image").fetch("outputs").delete("candidate_artifact_id")
+when "candidate-selection-comparison-omitted"
+  step = jobs.fetch("build-test").fetch("steps").find do |candidate|
+    candidate["name"] == "Verify and stage the exact build candidate"
+  end
+  abort "candidate verifier is missing" unless step
+  lines = step.fetch("run").lines
+  index = lines.index do |line|
+    line.include?('cmp -- "$CANDIDATE_ROOT/homebrew-selection.json"')
+  end
+  abort "candidate selection comparison is missing" unless index
+  lines.delete_at(index)
+  lines.delete_at(index) if lines.fetch(index, "").include?("tap/$SELECTION_PATH")
+  step["run"] = lines.join
+when "candidate-kernel-claim-omitted"
+  step = jobs.fetch("build-image").fetch("steps").find do |candidate|
+    candidate["name"] == "Build the exact flat VFS candidate"
+  end
+  abort "candidate image build is missing" unless step
+  source = step.fetch("run")
+  abort "kernel claim checks are missing" unless source.include?("publication-claimed")
+  step["run"] = source.lines.reject do |line|
+    line.include?("publication-claimed")
+  end.join
+when "candidate-kernel-mirror-binding-omitted"
+  step = jobs.fetch("build-image").fetch("steps").find do |candidate|
+    candidate["name"] == "Build the exact flat VFS candidate"
+  end
+  abort "candidate image build is missing" unless step
+  binding = '[ "$(realpath local-binaries/kernel.wasm)" = "$kernel" ]'
+  source = step.fetch("run")
+  abort "kernel mirror binding is missing" unless source.include?(binding)
+  step["run"] = source.sub(binding, "true")
+when "candidate-fifth-file-uploaded"
+  step = jobs.fetch("build-image").fetch("steps").find do |candidate|
+    candidate["name"] == "Retain the exact same-run build candidate"
+  end
+  abort "candidate upload is missing" unless step
+  step.fetch("with")["path"] +=
+    "\n${{ runner.temp }}/homebrew-experimental-vfs-candidate/unexpected.txt\n"
+when "candidate-kernel-verification-omitted"
+  step = jobs.fetch("build-test").fetch("steps").find do |candidate|
+    candidate["name"] == "Verify and stage the exact build candidate"
+  end
+  abort "candidate verifier is missing" unless step
+  line = 'verify_candidate kernel.wasm "$KERNEL_SHA256" "$KERNEL_BYTES"'
+  source = step.fetch("run")
+  abort "candidate kernel verification is missing" unless source.include?(line)
+  step["run"] = source.sub(line, "true")
+when "candidate-kernel-mirror-rehash-omitted"
+  step = jobs.fetch("build-test").fetch("steps").find do |candidate|
+    candidate["name"] == "Verify and stage the exact build candidate"
+  end
+  abort "candidate verifier is missing" unless step
+  lines = step.fetch("run").lines
+  index = lines.index do |line|
+    line.include?("sha256sum local-binaries/kernel.wasm")
+  end
+  abort "candidate kernel mirror rehash is missing" unless index
+  lines.delete_at(index)
+  lines.delete_at(index) if lines.fetch(index, "").include?("KERNEL_SHA256")
+  step["run"] = lines.join
+when "candidate-evidence-binding-omitted"
+  steps = jobs.fetch("build-test").fetch("steps")
+  removed = steps.reject! do |candidate|
+    candidate["name"] == "Bind proof evidence to the exact build candidate"
+  end
+  abort "candidate evidence binding is missing" unless removed
+when "post-proof-identify-mutates-selection"
+  step = jobs.fetch("build-test").fetch("steps").find do |candidate|
+    candidate["name"] == "Identify the exact four release assets"
+  end
+  abort "final identity step is missing" unless step
+  step["run"] =
+    'printf x >>"$ASSET_ROOT/homebrew-selection.json"' + "\n" +
+    step.fetch("run")
+when "candidate-kernel-added-to-final-artifact"
+  step = jobs.fetch("build-test").fetch("steps").find do |candidate|
+    candidate["name"] == "Retain the fixed four-file artifact"
+  end
+  abort "final artifact upload is missing" unless step
+  step.fetch("with")["path"] += "\nlocal-binaries/kernel.wasm\n"
+when "image-build-reintroduced-in-proof"
+  step = jobs.fetch("build-test").fetch("steps").find do |candidate|
+    candidate["name"] == "Prove the exact flat VFS on a fresh runner"
+  end
+  abort "proof step is missing" unless step
+  step["run"] += "\nscripts/dev-shell.sh bash build.sh\n"
+when "publisher-consumes-image-output"
+  step = jobs.fetch("publish").fetch("steps").find do |candidate|
+    candidate["name"] == "Publish the exact inert assets once"
+  end
+  abort "publisher step is missing" unless step
+  step.fetch("env")["VFS_SHA256"] =
+    "${{ needs.build-image.outputs.vfs_sha256 }}"
 when "musl-submodule-checkout-path"
-  checkout = jobs.fetch("build-test").fetch("steps").find do |candidate|
+  checkout = jobs.fetch("build-image").fetch("steps").find do |candidate|
     candidate["name"] == "Checkout exact Kandelo source"
   end
   abort "exact Kandelo checkout is missing" unless checkout
   checkout.fetch("with")["submodules"] = "libc/musl"
 when "musl-submodule-init-omitted"
-  steps = jobs.fetch("build-test").fetch("steps")
+  steps = jobs.fetch("build-image").fetch("steps")
   removed = steps.reject! do |candidate|
     candidate["name"] == "Initialize exact musl submodule"
   end
   abort "exact musl submodule initialization is missing" unless removed
 when "libc-sysroot-build-omitted"
-  steps = jobs.fetch("build-test").fetch("steps")
+  steps = jobs.fetch("build-image").fetch("steps")
   removed = steps.reject! do |candidate|
     candidate["name"] == "Build worktree-local wasm32 sysroot"
   end
@@ -337,6 +475,35 @@ expect_rejection browser-proof-env-stripped browser-proof-env-stripped
 expect_rejection browser-smoke-scope-expanded browser-smoke-scope-expanded
 expect_rejection browser-app-dependencies-omitted \
   browser-app-dependencies-omitted
+expect_rejection node-proof-heartbeat-omitted node-proof-heartbeat-omitted
+expect_rejection node-proof-heartbeat-unbounded node-proof-heartbeat-unbounded
+expect_rejection node-proof-heartbeat-cleanup-omitted \
+  node-proof-heartbeat-cleanup-omitted
+expect_rejection candidate-download-by-name candidate-download-by-name
+expect_rejection candidate-cross-run-download candidate-cross-run-download
+expect_rejection candidate-artifact-id-output-omitted \
+  candidate-artifact-id-output-omitted
+expect_rejection candidate-selection-comparison-omitted \
+  candidate-selection-comparison-omitted
+expect_rejection candidate-kernel-claim-omitted \
+  candidate-kernel-claim-omitted
+expect_rejection candidate-kernel-mirror-binding-omitted \
+  candidate-kernel-mirror-binding-omitted
+expect_rejection candidate-fifth-file-uploaded candidate-fifth-file-uploaded
+expect_rejection candidate-kernel-verification-omitted \
+  candidate-kernel-verification-omitted
+expect_rejection candidate-kernel-mirror-rehash-omitted \
+  candidate-kernel-mirror-rehash-omitted
+expect_rejection candidate-evidence-binding-omitted \
+  candidate-evidence-binding-omitted
+expect_rejection post-proof-identify-mutates-selection \
+  post-proof-identify-mutates-selection
+expect_rejection candidate-kernel-added-to-final-artifact \
+  candidate-kernel-added-to-final-artifact
+expect_rejection image-build-reintroduced-in-proof \
+  image-build-reintroduced-in-proof
+expect_rejection publisher-consumes-image-output \
+  publisher-consumes-image-output
 expect_rejection musl-submodule-checkout-path musl-submodule-checkout-path
 expect_rejection musl-submodule-init-omitted musl-submodule-init-omitted
 expect_rejection libc-sysroot-build-omitted libc-sysroot-build-omitted
