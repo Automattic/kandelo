@@ -34,6 +34,8 @@ jobs:
       report_bytes: ${{ steps.identify_candidate.outputs.report_bytes }}
       kernel_sha256: ${{ steps.identify_candidate.outputs.kernel_sha256 }}
       kernel_bytes: ${{ steps.identify_candidate.outputs.kernel_bytes }}
+      rootfs_sha256: ${{ steps.identify_candidate.outputs.rootfs_sha256 }}
+      rootfs_bytes: ${{ steps.identify_candidate.outputs.rootfs_bytes }}
     steps:
       - name: Checkout exact Kandelo source
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -138,6 +140,12 @@ jobs:
           [ ! -L "$kernel_identity/.$kernel_session.publication-claimed" ]
           [ -f "$kernel" ] && [ ! -L "$kernel" ]
           cp -- "$kernel" "$CANDIDATE_ROOT/kernel.wasm"
+          # WHY: the browser acceptance module statically imports the ordinary
+          # rootfs even though these focused cases boot only the composed VFS.
+          # Relay the exact builder input instead of rebuilding or substituting
+          # that module dependency on the fresh proof runner.
+          [ -f host/wasm/rootfs.vfs ] && [ ! -L host/wasm/rootfs.vfs ]
+          cp -- host/wasm/rootfs.vfs "$CANDIDATE_ROOT/rootfs.vfs"
 
       - name: Identify the exact build candidate
         id: identify_candidate
@@ -154,12 +162,22 @@ jobs:
             homebrew-selection.json
             homebrew-vfs-build-report.json
             kernel.wasm
+            rootfs.vfs
           )
-          [ "$(find "$CANDIDATE_ROOT" -mindepth 1 -printf '.' | wc -c)" -eq 4 ]
+          [ "$(find "$CANDIDATE_ROOT" -mindepth 1 -printf '.' | wc -c)" -eq 5 ]
           for candidate_file in "${candidate_files[@]}"; do
             [ -f "$CANDIDATE_ROOT/$candidate_file" ] &&
               [ ! -L "$CANDIDATE_ROOT/$candidate_file" ]
           done
+
+          rootfs_sha256="$(sha256sum "$CANDIDATE_ROOT/rootfs.vfs" | awk '{print $1}')"
+          rootfs_bytes="$(stat -c '%s' "$CANDIDATE_ROOT/rootfs.vfs")"
+          [ "$(jq -er '.base_image.sha256 | strings' \
+            "$CANDIDATE_ROOT/homebrew-vfs-build-report.json")" = \
+            "$rootfs_sha256" ]
+          [ "$(jq -er '.base_image.bytes | numbers' \
+            "$CANDIDATE_ROOT/homebrew-vfs-build-report.json")" = \
+            "$rootfs_bytes" ]
 
           emit_identity() {
             local name="$1" path="$2"
@@ -173,6 +191,7 @@ jobs:
           emit_identity selection "$CANDIDATE_ROOT/homebrew-selection.json"
           emit_identity report "$CANDIDATE_ROOT/homebrew-vfs-build-report.json"
           emit_identity kernel "$CANDIDATE_ROOT/kernel.wasm"
+          emit_identity rootfs "$CANDIDATE_ROOT/rootfs.vfs"
 
       - name: Retain the exact same-run build candidate
         id: upload_candidate
@@ -184,6 +203,7 @@ jobs:
             ${{ runner.temp }}/homebrew-experimental-vfs-candidate/homebrew-selection.json
             ${{ runner.temp }}/homebrew-experimental-vfs-candidate/homebrew-vfs-build-report.json
             ${{ runner.temp }}/homebrew-experimental-vfs-candidate/kernel.wasm
+            ${{ runner.temp }}/homebrew-experimental-vfs-candidate/rootfs.vfs
           if-no-files-found: error
           compression-level: 0
           retention-days: 1
@@ -270,6 +290,8 @@ jobs:
           REPORT_BYTES: ${{ needs.build-image.outputs.report_bytes }}
           KERNEL_SHA256: ${{ needs.build-image.outputs.kernel_sha256 }}
           KERNEL_BYTES: ${{ needs.build-image.outputs.kernel_bytes }}
+          ROOTFS_SHA256: ${{ needs.build-image.outputs.rootfs_sha256 }}
+          ROOTFS_BYTES: ${{ needs.build-image.outputs.rootfs_bytes }}
         run: |
           set -euo pipefail
           [[ "$VFS_FILENAME" =~ ^[A-Za-z0-9._-]+\.vfs\.zst$ ]]
@@ -277,7 +299,8 @@ jobs:
             "$VFS_FILENAME" \
             homebrew-selection.json \
             homebrew-vfs-build-report.json \
-            kernel.wasm | LC_ALL=C sort)"
+            kernel.wasm \
+            rootfs.vfs | LC_ALL=C sort)"
           actual_inventory="$(find "$CANDIDATE_ROOT" -mindepth 1 \
             -printf '%P\n' | LC_ALL=C sort)"
           [ "$actual_inventory" = "$expected_inventory" ]
@@ -295,12 +318,31 @@ jobs:
           verify_candidate homebrew-vfs-build-report.json \
             "$REPORT_SHA256" "$REPORT_BYTES"
           verify_candidate kernel.wasm "$KERNEL_SHA256" "$KERNEL_BYTES"
+          verify_candidate rootfs.vfs "$ROOTFS_SHA256" "$ROOTFS_BYTES"
+          [ "$(jq -er '.base_image.sha256 | strings' \
+            "$CANDIDATE_ROOT/homebrew-vfs-build-report.json")" = \
+            "$ROOTFS_SHA256" ]
+          [ "$(jq -er '.base_image.bytes | numbers' \
+            "$CANDIDATE_ROOT/homebrew-vfs-build-report.json")" = \
+            "$ROOTFS_BYTES" ]
           cmp -- "$CANDIDATE_ROOT/homebrew-selection.json" \
             "$(realpath -e -- "tap/$SELECTION_PATH")"
 
           [ ! -e "$ASSET_ROOT" ] && [ ! -L "$ASSET_ROOT" ]
           [ ! -e local-binaries/kernel.wasm ] &&
             [ ! -L local-binaries/kernel.wasm ]
+          [ ! -e local-binaries/rootfs.vfs ] &&
+            [ ! -L local-binaries/rootfs.vfs ]
+          alternate_rootfs_paths=(
+            host/wasm/rootfs.vfs
+            binaries/rootfs.vfs
+            local-binaries/programs/wasm32/rootfs.vfs
+            binaries/programs/wasm32/rootfs.vfs
+          )
+          for alternate_rootfs_path in "${alternate_rootfs_paths[@]}"; do
+            [ ! -e "$alternate_rootfs_path" ] &&
+              [ ! -L "$alternate_rootfs_path" ]
+          done
           mkdir -p "$ASSET_ROOT" local-binaries
           cp -- "$CANDIDATE_ROOT/$VFS_FILENAME" "$ASSET_ROOT/$VFS_FILENAME"
           cp -- "$CANDIDATE_ROOT/homebrew-selection.json" \
@@ -308,9 +350,13 @@ jobs:
           cp -- "$CANDIDATE_ROOT/homebrew-vfs-build-report.json" \
             "$ASSET_ROOT/homebrew-vfs-build-report.json"
           cp -- "$CANDIDATE_ROOT/kernel.wasm" local-binaries/kernel.wasm
+          cp -- "$CANDIDATE_ROOT/rootfs.vfs" local-binaries/rootfs.vfs
           [ "$(sha256sum local-binaries/kernel.wasm | awk '{print $1}')" = \
             "$KERNEL_SHA256" ]
           [ "$(stat -c '%s' local-binaries/kernel.wasm)" = "$KERNEL_BYTES" ]
+          [ "$(sha256sum local-binaries/rootfs.vfs | awk '{print $1}')" = \
+            "$ROOTFS_SHA256" ]
+          [ "$(stat -c '%s' local-binaries/rootfs.vfs)" = "$ROOTFS_BYTES" ]
 
       - name: Prove exact composition startup on a fresh runner
         shell: bash
@@ -383,6 +429,8 @@ jobs:
           REPORT_BYTES: ${{ needs.build-image.outputs.report_bytes }}
           KERNEL_SHA256: ${{ needs.build-image.outputs.kernel_sha256 }}
           KERNEL_BYTES: ${{ needs.build-image.outputs.kernel_bytes }}
+          ROOTFS_SHA256: ${{ needs.build-image.outputs.rootfs_sha256 }}
+          ROOTFS_BYTES: ${{ needs.build-image.outputs.rootfs_bytes }}
         run: |
           set -euo pipefail
           verify_input() {
@@ -399,6 +447,7 @@ jobs:
             "$REPORT_SHA256" "$REPORT_BYTES"
           verify_input local-binaries/kernel.wasm \
             "$KERNEL_SHA256" "$KERNEL_BYTES"
+          verify_input local-binaries/rootfs.vfs "$ROOTFS_SHA256" "$ROOTFS_BYTES"
           [ "$(find "$ASSET_ROOT" -mindepth 1 -printf '.' | wc -c)" -eq 3 ]
 
       - name: Retain the fixed three-file artifact

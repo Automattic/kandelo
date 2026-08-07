@@ -290,6 +290,8 @@ when "candidate-cross-run-download"
   step.fetch("with")["run-id"] = "123456789"
 when "candidate-artifact-id-output-omitted"
   jobs.fetch("build-image").fetch("outputs").delete("candidate_artifact_id")
+when "candidate-rootfs-output-omitted"
+  jobs.fetch("build-image").fetch("outputs").delete("rootfs_sha256")
 when "candidate-selection-comparison-omitted"
   step = jobs.fetch("build-test").fetch("steps").find do |candidate|
     candidate["name"] == "Verify and stage the exact build candidate"
@@ -322,13 +324,43 @@ when "candidate-kernel-mirror-binding-omitted"
   source = step.fetch("run")
   abort "kernel mirror binding is missing" unless source.include?(binding)
   step["run"] = source.sub(binding, "true")
-when "candidate-fifth-file-uploaded"
+when "candidate-sixth-file-uploaded"
   step = jobs.fetch("build-image").fetch("steps").find do |candidate|
     candidate["name"] == "Retain the exact same-run build candidate"
   end
   abort "candidate upload is missing" unless step
   step.fetch("with")["path"] +=
     "\n${{ runner.temp }}/homebrew-experimental-vfs-candidate/unexpected.txt\n"
+when "candidate-rootfs-copy-omitted"
+  step = jobs.fetch("build-image").fetch("steps").find do |candidate|
+    candidate["name"] == "Build the exact flat VFS candidate"
+  end
+  abort "candidate image build is missing" unless step
+  line = 'cp -- host/wasm/rootfs.vfs "$CANDIDATE_ROOT/rootfs.vfs"'
+  source = step.fetch("run")
+  abort "base rootfs relay is missing" unless source.include?(line)
+  step["run"] = source.sub(line, "true")
+when "candidate-rootfs-source-guard-omitted"
+  step = jobs.fetch("build-image").fetch("steps").find do |candidate|
+    candidate["name"] == "Build the exact flat VFS candidate"
+  end
+  abort "candidate image build is missing" unless step
+  line = '[ -f host/wasm/rootfs.vfs ] && [ ! -L host/wasm/rootfs.vfs ]'
+  source = step.fetch("run")
+  abort "base rootfs source guard is missing" unless source.include?(line)
+  step["run"] = source.sub(line, "true")
+when "candidate-rootfs-report-binding-omitted"
+  step = jobs.fetch("build-image").fetch("steps").find do |candidate|
+    candidate["name"] == "Identify the exact build candidate"
+  end
+  abort "candidate identity step is missing" unless step
+  source = step.fetch("run")
+  abort "base rootfs report binding is missing" unless source.include?(
+    ".base_image.sha256"
+  )
+  step["run"] = source.lines.reject do |line|
+    line.include?(".base_image.")
+  end.join
 when "candidate-kernel-verification-omitted"
   step = jobs.fetch("build-test").fetch("steps").find do |candidate|
     candidate["name"] == "Verify and stage the exact build candidate"
@@ -338,6 +370,59 @@ when "candidate-kernel-verification-omitted"
   source = step.fetch("run")
   abort "candidate kernel verification is missing" unless source.include?(line)
   step["run"] = source.sub(line, "true")
+when "candidate-rootfs-verification-omitted"
+  step = jobs.fetch("build-test").fetch("steps").find do |candidate|
+    candidate["name"] == "Verify and stage the exact build candidate"
+  end
+  abort "candidate verifier is missing" unless step
+  line = 'verify_candidate rootfs.vfs "$ROOTFS_SHA256" "$ROOTFS_BYTES"'
+  source = step.fetch("run")
+  abort "candidate rootfs verification is missing" unless source.include?(line)
+  step["run"] = source.sub(line, "true")
+when "candidate-rootfs-proof-report-binding-omitted"
+  step = jobs.fetch("build-test").fetch("steps").find do |candidate|
+    candidate["name"] == "Verify and stage the exact build candidate"
+  end
+  abort "candidate verifier is missing" unless step
+  source = step.fetch("run")
+  abort "proof rootfs report binding is missing" unless source.include?(
+    ".base_image.sha256"
+  )
+  step["run"] = source.lines.reject do |line|
+    line.include?(".base_image.")
+  end.join
+when "candidate-rootfs-stage-omitted"
+  step = jobs.fetch("build-test").fetch("steps").find do |candidate|
+    candidate["name"] == "Verify and stage the exact build candidate"
+  end
+  abort "candidate verifier is missing" unless step
+  line = 'cp -- "$CANDIDATE_ROOT/rootfs.vfs" local-binaries/rootfs.vfs'
+  source = step.fetch("run")
+  abort "candidate rootfs stage is missing" unless source.include?(line)
+  step["run"] = source.sub(line, "true")
+when "candidate-rootfs-shadow-allowed"
+  step = jobs.fetch("build-test").fetch("steps").find do |candidate|
+    candidate["name"] == "Verify and stage the exact build candidate"
+  end
+  abort "candidate verifier is missing" unless step
+  lines = step.fetch("run").lines
+  index = lines.index { |line| line.strip == "host/wasm/rootfs.vfs" }
+  abort "rootfs shadow guard is missing" unless index
+  lines.delete_at(index)
+  step["run"] = lines.join
+when "candidate-rootfs-mirror-rehash-omitted"
+  step = jobs.fetch("build-test").fetch("steps").find do |candidate|
+    candidate["name"] == "Verify and stage the exact build candidate"
+  end
+  abort "candidate verifier is missing" unless step
+  lines = step.fetch("run").lines
+  index = lines.index do |line|
+    line.include?("sha256sum local-binaries/rootfs.vfs")
+  end
+  abort "candidate rootfs mirror rehash is missing" unless index
+  lines.delete_at(index)
+  lines.delete_at(index) if lines.fetch(index, "").include?("ROOTFS_SHA256")
+  step["run"] = lines.join
 when "candidate-kernel-mirror-rehash-omitted"
   step = jobs.fetch("build-test").fetch("steps").find do |candidate|
     candidate["name"] == "Verify and stage the exact build candidate"
@@ -357,6 +442,15 @@ when "candidate-post-startup-binding-omitted"
     candidate["name"] == "Bind startup-tested bytes to the exact build candidate"
   end
   abort "post-startup candidate binding is missing" unless removed
+when "candidate-rootfs-post-startup-binding-omitted"
+  step = jobs.fetch("build-test").fetch("steps").find do |candidate|
+    candidate["name"] == "Bind startup-tested bytes to the exact build candidate"
+  end
+  abort "post-startup candidate binding is missing" unless step
+  line = 'verify_input local-binaries/rootfs.vfs "$ROOTFS_SHA256" "$ROOTFS_BYTES"'
+  source = step.fetch("run")
+  abort "post-startup rootfs binding is missing" unless source.include?(line)
+  step["run"] = source.sub(line, "true")
 when "post-startup-identify-mutates-selection"
   step = jobs.fetch("build-test").fetch("steps").find do |candidate|
     candidate["name"] == "Identify the exact three release assets"
@@ -371,6 +465,12 @@ when "candidate-kernel-added-to-final-artifact"
   end
   abort "final artifact upload is missing" unless step
   step.fetch("with")["path"] += "\nlocal-binaries/kernel.wasm\n"
+when "candidate-rootfs-added-to-final-artifact"
+  step = jobs.fetch("build-test").fetch("steps").find do |candidate|
+    candidate["name"] == "Retain the fixed three-file artifact"
+  end
+  abort "final artifact upload is missing" unless step
+  step.fetch("with")["path"] += "\nlocal-binaries/rootfs.vfs\n"
 when "image-build-reintroduced-in-proof"
   step = jobs.fetch("build-test").fetch("steps").find do |candidate|
     candidate["name"] == "Prove exact composition startup on a fresh runner"
@@ -475,23 +575,43 @@ expect_rejection candidate-download-by-name candidate-download-by-name
 expect_rejection candidate-cross-run-download candidate-cross-run-download
 expect_rejection candidate-artifact-id-output-omitted \
   candidate-artifact-id-output-omitted
+expect_rejection candidate-rootfs-output-omitted candidate-rootfs-output-omitted
 expect_rejection candidate-selection-comparison-omitted \
   candidate-selection-comparison-omitted
 expect_rejection candidate-kernel-claim-omitted \
   candidate-kernel-claim-omitted
 expect_rejection candidate-kernel-mirror-binding-omitted \
   candidate-kernel-mirror-binding-omitted
-expect_rejection candidate-fifth-file-uploaded candidate-fifth-file-uploaded
+expect_rejection candidate-sixth-file-uploaded candidate-sixth-file-uploaded
+expect_rejection candidate-rootfs-copy-omitted \
+  candidate-rootfs-copy-omitted
+expect_rejection candidate-rootfs-source-guard-omitted \
+  candidate-rootfs-source-guard-omitted
+expect_rejection candidate-rootfs-report-binding-omitted \
+  candidate-rootfs-report-binding-omitted
 expect_rejection candidate-kernel-verification-omitted \
   candidate-kernel-verification-omitted
+expect_rejection candidate-rootfs-verification-omitted \
+  candidate-rootfs-verification-omitted
+expect_rejection candidate-rootfs-proof-report-binding-omitted \
+  candidate-rootfs-proof-report-binding-omitted
+expect_rejection candidate-rootfs-stage-omitted candidate-rootfs-stage-omitted
+expect_rejection candidate-rootfs-shadow-allowed \
+  candidate-rootfs-shadow-allowed
+expect_rejection candidate-rootfs-mirror-rehash-omitted \
+  candidate-rootfs-mirror-rehash-omitted
 expect_rejection candidate-kernel-mirror-rehash-omitted \
   candidate-kernel-mirror-rehash-omitted
 expect_rejection candidate-post-startup-binding-omitted \
   candidate-post-startup-binding-omitted
+expect_rejection candidate-rootfs-post-startup-binding-omitted \
+  candidate-rootfs-post-startup-binding-omitted
 expect_rejection post-startup-identify-mutates-selection \
   post-startup-identify-mutates-selection
 expect_rejection candidate-kernel-added-to-final-artifact \
   candidate-kernel-added-to-final-artifact
+expect_rejection candidate-rootfs-added-to-final-artifact \
+  candidate-rootfs-added-to-final-artifact
 expect_rejection image-build-reintroduced-in-proof \
   image-build-reintroduced-in-proof
 expect_rejection publisher-consumes-image-output \

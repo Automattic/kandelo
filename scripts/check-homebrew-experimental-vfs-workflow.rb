@@ -24,12 +24,13 @@ CANDIDATE_FIXED_ASSETS = %w[
   homebrew-selection.json
   homebrew-vfs-build-report.json
   kernel.wasm
+  rootfs.vfs
 ].freeze
 IDENTITIES = %w[
   vfs selection report
 ].freeze
 CANDIDATE_IDENTITIES = %w[
-  vfs selection report kernel
+  vfs selection report kernel rootfs
 ].freeze
 READBACK_SAFE_GITHUB_EXPRESSIONS = [
   "github.ref_type=='branch'&&" \
@@ -383,6 +384,12 @@ def check_workflow(workflow)
           'cp -- local-binaries/kernel.wasm "$CANDIDATE_ROOT/kernel.wasm"'
         ),
         "image candidate is not bound to the claimed package-owned kernel")
+  check(image_source.include?(
+          '[ -f host/wasm/rootfs.vfs ] && [ ! -L host/wasm/rootfs.vfs ]'
+        ) && image_source.include?(
+          'cp -- host/wasm/rootfs.vfs "$CANDIDATE_ROOT/rootfs.vfs"'
+        ),
+        "image candidate does not relay its exact base rootfs")
   check(!image_source.include?("scripts/homebrew-flat-vfs-node-smoke.ts") &&
         !image_source.include?("scripts/homebrew-flat-vfs-node-startup.ts") &&
         !image_source.include?("homebrew-flat-vfs-shipping.spec.ts") &&
@@ -401,11 +408,14 @@ def check_workflow(workflow)
   end
   check(candidate_identify_source.include?(
           'find "$CANDIDATE_ROOT" -mindepth 1 -printf' \
-        ) && candidate_identify_source.include?("-eq 4") &&
+        ) && candidate_identify_source.include?("-eq 5") &&
         candidate_identify_source.include?("sha256sum") &&
         candidate_identify_source.include?("stat -c '%s'") &&
-        candidate_identify_source.include?('[ ! -L '),
-        "candidate identity step does not bind the exact four regular files")
+        candidate_identify_source.include?('[ ! -L ') &&
+        candidate_identify_source.include?(".base_image.sha256") &&
+        candidate_identify_source.include?(".base_image.bytes"),
+        "candidate identity step does not bind the exact five regular files " \
+          "and report-owned base rootfs")
 
   check(action_steps(image, DOWNLOAD_ACTION).empty? &&
         action_steps(image, UPLOAD_ACTION).length == 1,
@@ -435,7 +445,8 @@ def check_workflow(workflow)
     end,
   ]
   check(candidate_upload_paths.sort == expected_candidate_paths.sort,
-        "candidate artifact is not exactly VFS, selection, report, and kernel")
+        "candidate artifact is not exactly VFS, selection, report, kernel, " \
+          "and base rootfs")
 
   candidate_identity_outputs = [
     "vfs_filename",
@@ -534,6 +545,8 @@ def check_workflow(workflow)
     "REPORT_BYTES" => "${{ needs.build-image.outputs.report_bytes }}",
     "KERNEL_SHA256" => "${{ needs.build-image.outputs.kernel_sha256 }}",
     "KERNEL_BYTES" => "${{ needs.build-image.outputs.kernel_bytes }}",
+    "ROOTFS_SHA256" => "${{ needs.build-image.outputs.rootfs_sha256 }}",
+    "ROOTFS_BYTES" => "${{ needs.build-image.outputs.rootfs_bytes }}",
   }
   check(candidate_verify["env"] == expected_candidate_env,
         "candidate verifier is not bound to every producer identity")
@@ -552,6 +565,18 @@ def check_workflow(workflow)
           'cp -- "$CANDIDATE_ROOT/kernel.wasm" local-binaries/kernel.wasm'
         ) && candidate_verify_source.include?(
           '[ ! -e local-binaries/kernel.wasm ]'
+        ) && candidate_verify_source.include?(
+          'cp -- "$CANDIDATE_ROOT/rootfs.vfs" local-binaries/rootfs.vfs'
+        ) && candidate_verify_source.include?(
+          '[ ! -e local-binaries/rootfs.vfs ]'
+        ) && candidate_verify_source.include?(
+          'host/wasm/rootfs.vfs'
+        ) && candidate_verify_source.include?(
+          'binaries/rootfs.vfs'
+        ) && candidate_verify_source.include?(
+          'local-binaries/programs/wasm32/rootfs.vfs'
+        ) && candidate_verify_source.include?(
+          'binaries/programs/wasm32/rootfs.vfs'
         ) && candidate_verify_logical.match?(
           /verify_candidate\s+"\$VFS_FILENAME"\s+"\$VFS_SHA256"\s+"\$VFS_BYTES"/
         ) && candidate_verify_logical.match?(
@@ -560,12 +585,22 @@ def check_workflow(workflow)
           /verify_candidate\s+homebrew-vfs-build-report\.json\s+"\$REPORT_SHA256"\s+"\$REPORT_BYTES"/
         ) && candidate_verify_logical.match?(
           /verify_candidate\s+kernel\.wasm\s+"\$KERNEL_SHA256"\s+"\$KERNEL_BYTES"/
+        ) && candidate_verify_logical.match?(
+          /verify_candidate\s+rootfs\.vfs\s+"\$ROOTFS_SHA256"\s+"\$ROOTFS_BYTES"/
+        ) && candidate_verify_source.include?(".base_image.sha256") &&
+        candidate_verify_source.include?(".base_image.bytes") &&
+        candidate_verify_source.match?(
+          /sha256sum local-binaries\/rootfs\.vfs.*ROOTFS_SHA256/m
+        ) && candidate_verify_source.match?(
+          /stat -c '%s' local-binaries\/rootfs\.vfs.*ROOTFS_BYTES/m
         ) && candidate_verify_source.match?(
           /sha256sum local-binaries\/kernel\.wasm.*KERNEL_SHA256/m
         ) && candidate_verify_source.match?(
           /stat -c '%s' local-binaries\/kernel\.wasm.*KERNEL_BYTES/m
-        ) && !candidate_verify_source.include?("$ASSET_ROOT/kernel.wasm"),
-        "candidate verifier weakens inventory, selection, or kernel binding")
+        ) && !candidate_verify_source.include?("$ASSET_ROOT/kernel.wasm") &&
+        !candidate_verify_source.include?("$ASSET_ROOT/rootfs.vfs"),
+        "candidate verifier weakens inventory, selection, kernel, or base " \
+          "rootfs binding")
 
   build_source = run_source(build)
   %w[
@@ -661,6 +696,8 @@ def check_workflow(workflow)
           /verify_input\s+"\$ASSET_ROOT\/homebrew-vfs-build-report\.json"\s+"\$REPORT_SHA256"\s+"\$REPORT_BYTES"/
         ) && candidate_bind_logical.match?(
           /verify_input\s+local-binaries\/kernel\.wasm\s+"\$KERNEL_SHA256"\s+"\$KERNEL_BYTES"/
+        ) && candidate_bind_logical.match?(
+          /verify_input\s+local-binaries\/rootfs\.vfs\s+"\$ROOTFS_SHA256"\s+"\$ROOTFS_BYTES"/
         ),
         "startup-tested bytes are not rebound to exact producer bytes")
 

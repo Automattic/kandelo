@@ -596,14 +596,18 @@ bottle pour.
 The experimental ABI-42 flat-VFS release is composition and selected-runtime
 startup validated. The builder validates and materializes the exact canonical
 selection. A fresh read-only runner downloads the same-run candidate by exact
-artifact ID and rehashes its VFS, selection, report, and claimed kernel. Node
-boots that exact candidate and runs `/usr/bin/brew --version` without lazy
-materialization or unexpected host diagnostics. Chromium boots the same image
-and kernel identities and starts selected Ruby both directly and through the
-selected shell.
+artifact ID and rehashes its VFS, selection, report, claimed kernel, and the
+exact base rootfs bound by the report. The base rootfs is staged only so Vite
+can resolve the browser acceptance module's ordinary `@rootfs-vfs` import; the
+focused cases still boot the composed Homebrew VFS, and alternate resolver
+paths are rejected. Node boots the exact candidate and runs `/usr/bin/brew
+--version` without lazy materialization or unexpected host diagnostics.
+Chromium boots the same image and kernel identities and starts selected Ruby
+both directly and through the selected shell.
 
 The release contains exactly three inert assets: the VFS, canonical selection,
-and build report. It does not claim that hosted CI completed stock `brew tap`,
+and build report. The claimed kernel and base rootfs remain proof-only and are
+not published. It does not claim that hosted CI completed stock `brew tap`,
 download, extraction, pour, uninstall, upgrade, or reboot coverage. The
 complete stock Homebrew lifecycle and its existing evidence format remain a
 separate diagnostic. On a standard 16 GiB hosted runner, that lifecycle drove

@@ -4,7 +4,7 @@
 
 **Goal:** Publish the experimental ABI-42 Homebrew VFS after exact composition verification and bounded Node/Chromium selected-runtime startup, without making the memory-intensive stock tap/install lifecycle a publication dependency.
 
-**Architecture:** Preserve the existing four-file builder-to-proof artifact boundary and exact byte binding. Add a shared lightweight startup proof and focused Node CLI, keep the complete lifecycle implementation unchanged for manual diagnostics, and narrow the final public artifact to the three inert composition files. The writer remains the only credentialed job; anonymous readback verifies only public availability and byte identity.
+**Architecture:** Preserve the builder-to-proof artifact boundary and exact byte binding. Relay the VFS, selection, report, claimed kernel, and report-bound base rootfs needed by the browser module graph as one five-file same-run candidate. Add a shared lightweight startup proof and focused Node CLI, keep the complete lifecycle implementation unchanged for manual diagnostics, and narrow the final public artifact to the three inert composition files. The writer remains the only credentialed job; anonymous readback verifies only public availability and byte identity.
 
 **Tech Stack:** TypeScript, Node test runner through `tsx`, Kandelo Node and browser kernel hosts, Playwright Chromium, GitHub Actions YAML, Ruby structural workflow checker, Bash mutation tests, `actionlint`.
 
@@ -13,7 +13,7 @@
 - Do not clean, reset, stage, or edit the ABI-43 worktree at `integration/abi43-batch-linear-20260801`.
 - Do not change ABI, kernel, libc, syscall, process-memory, bottle, selection, VFS composition, or package behavior.
 - Keep `scripts/homebrew-flat-vfs-node-smoke.ts` and the full lifecycle/evidence implementation semantically unchanged for manual diagnostics.
-- The intermediate candidate remains exactly `{VFS, selection, report, kernel}` and is downloaded on a fresh runner by exact same-run artifact ID.
+- The intermediate candidate is exactly `{VFS, selection, report, kernel, base rootfs}` and is downloaded on a fresh runner by exact same-run artifact ID. The base rootfs must match the report and remains proof-only.
 - The release contains exactly `{VFS, selection, report}`; it contains neither `kernel.wasm` nor a lifecycle evidence file.
 - Node startup must boot the exact candidate, run `/usr/bin/brew --version`, reject lazy downloads and host diagnostics, and tear down under a bounded deadline.
 - Chromium must retain exact image/kernel identity checks and both selected Ruby startup cases.
@@ -291,7 +291,8 @@ git commit -m "[Packaging/Homebrew] Add bounded flat VFS startup proof"
 
 - [ ] **Step 1: Change structural expectations before workflow code**
 
-Keep candidate constants unchanged and narrow public constants:
+Keep public constants narrow and include the exact browser fixture rootfs only
+in candidate constants:
 
 ```rb
 FIXED_ASSETS = %w[
@@ -303,8 +304,9 @@ CANDIDATE_FIXED_ASSETS = %w[
   homebrew-selection.json
   homebrew-vfs-build-report.json
   kernel.wasm
+  rootfs.vfs
 ].freeze
-CANDIDATE_IDENTITIES = %w[vfs selection report kernel].freeze
+CANDIDATE_IDENTITIES = %w[vfs selection report kernel rootfs].freeze
 ```
 
 Require the proof step to contain the new startup CLI, all six exact input
@@ -333,10 +335,10 @@ candidate-kernel-added-to-final-artifact
 fourth-release-asset
 ```
 
-Keep candidate artifact-ID, exact-selection, kernel-claim, post-identify,
-writer authority, permission, and anonymous-readback mutations. Adapt searched
-step names from “four”/“proof evidence” to “three”/“startup-tested bytes” while
-preserving what each mutation changes.
+Keep candidate artifact-ID, exact-selection, kernel-claim, base-rootfs report
+binding and no-shadow staging, post-identify, writer authority, permission, and
+anonymous-readback mutations. Adapt searched step names from “proof evidence”
+to “startup-tested bytes” while preserving what each mutation changes.
 
 - [ ] **Step 3: Run the structural suite and verify the old workflow is red**
 
@@ -372,9 +374,10 @@ only `vfs_filename`, `{vfs,selection,report}_sha256`, and
 `{vfs,selection,report}_bytes`.
 
 Rename the next step to `Bind startup-tested bytes to the exact build
-candidate`. Verify all three public files plus `local-binaries/kernel.wasm`
-against `needs.build-image.outputs`, require exactly three entries under
-`ASSET_ROOT`, and remove only the evidence `jq` check.
+candidate`. Verify all three public files plus `local-binaries/kernel.wasm` and
+the proof-only `local-binaries/rootfs.vfs` against
+`needs.build-image.outputs`, require exactly three entries under `ASSET_ROOT`,
+and remove only the evidence `jq` check.
 
 Rename upload to `Retain the fixed three-file artifact`, list only the three
 release paths, and remove node-evidence outputs from `build-test`.
