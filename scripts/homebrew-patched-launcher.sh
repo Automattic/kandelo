@@ -432,6 +432,8 @@ homebrew_patched_launcher_formula_test_runtime_manifest() {
     host/src/node-kernel-host.ts
     host/wasm/kandelo-kernel.wasm
     host/wasm/program-packages.json
+    packages/registry/openssl/src/tls/1_2/connection.ts
+    packages/registry/openssl/src/tls/certificates.ts
     node_modules/tsx/package.json
     node_modules/esbuild/package.json
     node_modules/fflate/package.json
@@ -450,6 +452,7 @@ homebrew_patched_launcher_formula_test_runtime_manifest() {
     host/src
     host/wasm
     node_modules/@esbuild
+    packages/registry/openssl/src/tls
   )
   [ "$root" = "$HOMEBREW_PATCHED_PROTECTED_DIR/formula-test-runtime" ] || {
     echo "homebrew-patched-launcher: Formula test runtime left its protected root" >&2
@@ -466,7 +469,7 @@ homebrew_patched_launcher_formula_test_runtime_manifest() {
     if [[ "$relative" != */* ]]; then
       case "$relative" in
         .ci-test-binary-cache|apps|Cargo.toml|binaries|crates|examples|host|libc|\
-          node_modules|package.json|scripts|sdk|target|tools) ;;
+          node_modules|package.json|packages|scripts|sdk|target|tools) ;;
         *)
           echo "homebrew-patched-launcher: Formula test runtime exposes an undeclared top-level input: $relative" >&2
           return 2
@@ -501,6 +504,14 @@ homebrew_patched_launcher_formula_test_runtime_manifest() {
         echo "homebrew-patched-launcher: Formula test runtime apps tree contains undeclared state: $relative" >&2
         return 2
         ;;
+      packages|packages/registry|packages/registry/openssl|\
+        packages/registry/openssl/src|\
+        packages/registry/openssl/src/tls|\
+        packages/registry/openssl/src/tls/*) ;;
+      packages/*)
+        echo "homebrew-patched-launcher: Formula test runtime packages tree contains undeclared state: $relative" >&2
+        return 2
+        ;;
     esac
   done
   for checker in "${required_files[@]}"; do
@@ -515,7 +526,7 @@ homebrew_patched_launcher_formula_test_runtime_manifest() {
       return 2
     }
   done
-  for checker in .git Cargo.lock package-lock.json packages local-binaries \
+  for checker in .git Cargo.lock package-lock.json local-binaries \
     target/.rustc_info.json tools/xtask scripts/dev-shell.sh \
     scripts/install-local-binary.sh; do
     if [ -e "$root/$checker" ] || [ -L "$root/$checker" ]; then

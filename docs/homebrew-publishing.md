@@ -833,7 +833,9 @@ root-owned Formula-test runtime at the same `HOMEBREW_KANDELO_ROOT` alias. A
 privileged, admitted copy of the recipe runner constructs that runtime from a
 closed allowlist: the platform projection; `host/src`; the built
 `host/wasm` kernel inputs; the three `examples/run-example*.ts` entry files;
-the exact `tsx`, `esbuild`, `fflate`, `fzstd`, Vite, and Playwright
+the vendored `packages/registry/openssl/src/tls` implementation imported by
+the browser network backend; the exact `tsx`, `esbuild`, `fflate`, `fzstd`,
+Vite, and Playwright
 installations; the portable `binaries/` and `.ci-test-binary-cache/` pair; and
 the reviewed release `xtask`. Root `Cargo.toml` and `package.json` provide the
 resolver's Kandelo-root identity. The npm portion is not a fixed list of today's
@@ -878,12 +880,20 @@ with the committed repository projection. A change to one of these selected
 inputs therefore fails, while a change to an unrelated retiring VFS recipe
 does not reject or rebuild a Homebrew bottle.
 
+Because the browser TLS module retains its repository-relative import path,
+its parent `packages/registry` directory exists in the sealed runtime. An
+incomplete runtime with a bundled index and no explicitly configured registry
+remains an installed-policy consumer, so this implementation-only path does
+not become package policy. An explicit `WASM_POSIX_DEPS_REGISTRY` remains
+authoritative. The global repository index, OpenSSL Formula metadata, and
+OpenSSL build scripts are not copied.
+
 The repository-wide index remains a separate conventional-package contract.
 Normal source-checkout resolution still requires that complete projection to
 be current. The smaller Formula-test file is a least-authority runtime input,
 not permission to use a stale conventional row. Workspace members, the
-source/build registry, local binaries, unrelated package identities, Cargo
-output, source-build helpers, and the mutable checkout remain absent.
+source/build registry recipes and helpers, local binaries, unrelated package
+identities, Cargo output, and the mutable checkout remain absent.
 
 The stager snapshots and hashes every selected source before copying, checks
 the source identities again after copying, validates symlinks against the
@@ -3067,10 +3077,13 @@ and all unrelated Formulae retain parallel throughput:
 
    The Formula-test runtime is intentionally not a complete Kandelo source
    checkout: it has no `tools/xtask` source, `scripts/dev-shell.sh`, Cargo
-   output, package registry, or local-binary tree. The host resolver therefore
-   consumes the already-generated, cache-keyed package projection without
-   running source-context regeneration. Source builds retain their separate
-   protected checker path and normal freshness contract before isolation.
+   output, package recipes, build scripts, or local-binary tree. It carries
+   only the vendored OpenSSL TLS implementation imported by the browser host
+   beneath that implementation's existing `packages/registry` source path.
+   The host resolver therefore consumes the already-generated, cache-keyed
+   package projection without running source-context regeneration. Source
+   builds retain their separate protected checker path and normal freshness
+   contract before isolation.
    Caller-selected checker paths, ambient repository-root overrides, and
    ambient Node module lookup are neither preserved nor trusted.
    The workflow also

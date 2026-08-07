@@ -1155,6 +1155,12 @@ class FormulaTestRuntimeProjectionTests(unittest.TestCase):
             "host/src/binary-resolver.ts": b"export const resolver = true;\n",
             "host/src/node-kernel-host.ts": b"export const host = true;\n",
             "host/wasm/kandelo-kernel.wasm": b"kernel\n",
+            "packages/registry/openssl/src/tls/1_2/connection.ts": (
+                b"export const connection = true;\n"
+            ),
+            "packages/registry/openssl/src/tls/certificates.ts": (
+                b"export const certificates = true;\n"
+            ),
         }
         for relative, data in directory_files.items():
             path = source / relative
@@ -1326,6 +1332,12 @@ class FormulaTestRuntimeProjectionTests(unittest.TestCase):
             "source-only poison\n"
         )
         (source / "packages/registry/poison/build.sh").write_text("poison\n")
+        (source / "packages/registry/openssl/package.toml").write_text(
+            "openssl recipe poison\n"
+        )
+        (source / "packages/registry/openssl/build.sh").write_text(
+            "openssl build poison\n"
+        )
         (source / "local-binaries").mkdir()
         (source / "local-binaries/poison.wasm").write_bytes(b"poison\n")
         (source / "apps/browser-demos").mkdir(parents=True)
@@ -1429,6 +1441,20 @@ class FormulaTestRuntimeProjectionTests(unittest.TestCase):
                     b'"identities":{},"packages":{}}\n'
                 ),
             )
+            self.assertEqual(
+                (
+                    destination
+                    / "packages/registry/openssl/src/tls/1_2/connection.ts"
+                ).read_bytes(),
+                b"export const connection = true;\n",
+            )
+            self.assertEqual(
+                (
+                    destination
+                    / "packages/registry/openssl/src/tls/certificates.ts"
+                ).read_bytes(),
+                b"export const certificates = true;\n",
+            )
             projected_esbuild = (
                 destination / "node_modules/esbuild/bin/esbuild"
             )
@@ -1465,7 +1491,10 @@ class FormulaTestRuntimeProjectionTests(unittest.TestCase):
                 self.assertTrue((destination / dependency).is_file())
             for forbidden in (
                 "package-lock.json",
-                "packages",
+                "packages/registry/poison",
+                "packages/registry/program-packages.json",
+                "packages/registry/openssl/package.toml",
+                "packages/registry/openssl/build.sh",
                 "local-binaries",
                 "node_modules/ambient-but-locked",
                 "node_modules/undeclared",

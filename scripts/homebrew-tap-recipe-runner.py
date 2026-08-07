@@ -81,6 +81,10 @@ FORMULA_TEST_RUNTIME_DIRECTORIES = (
     Path("binaries"),
     Path("host/src"),
     Path("host/wasm"),
+    # The browser network backend imports the vendored TLS engine directly.
+    # Keep that implementation subtree in the runtime closure without
+    # exposing OpenSSL's Formula recipe or build scripts.
+    Path("packages/registry/openssl/src/tls"),
 )
 # The unchanged tap browser runner uses this path only as its working
 # directory and as the nonexistent anchor passed to createRequire(). Keep the
