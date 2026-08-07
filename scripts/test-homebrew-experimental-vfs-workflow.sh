@@ -61,6 +61,23 @@ def add_fourth_release_asset(jobs)
   step["run"] = source
 end
 
+def replace_rootfs_report_checks_with_noop(step)
+  lines = step.fetch("run").lines
+  starts = lines.each_index.select do |index|
+    lines.fetch(index).include?(%q{[ "$(jq -er '.base_image.})
+  end
+  abort "expected two rootfs report comparisons" unless starts.length == 2
+
+  starts.reverse_each do |index|
+    block = lines[index, 3]
+    abort "rootfs report comparison is malformed" unless
+      block.length == 3 && block.fetch(2).rstrip.end_with?("]")
+    lines.slice!(index, 3)
+  end
+  lines << %q{: '.base_image.sha256 .base_image.bytes'} + "\n"
+  step["run"] = lines.join
+end
+
 case mutation
 when "extra-read-only-job"
   jobs["extra-read-only"] = {
@@ -354,13 +371,7 @@ when "candidate-rootfs-report-binding-omitted"
     candidate["name"] == "Identify the exact build candidate"
   end
   abort "candidate identity step is missing" unless step
-  source = step.fetch("run")
-  abort "base rootfs report binding is missing" unless source.include?(
-    ".base_image.sha256"
-  )
-  step["run"] = source.lines.reject do |line|
-    line.include?(".base_image.")
-  end.join
+  replace_rootfs_report_checks_with_noop(step)
 when "candidate-kernel-verification-omitted"
   step = jobs.fetch("build-test").fetch("steps").find do |candidate|
     candidate["name"] == "Verify and stage the exact build candidate"
@@ -384,13 +395,7 @@ when "candidate-rootfs-proof-report-binding-omitted"
     candidate["name"] == "Verify and stage the exact build candidate"
   end
   abort "candidate verifier is missing" unless step
-  source = step.fetch("run")
-  abort "proof rootfs report binding is missing" unless source.include?(
-    ".base_image.sha256"
-  )
-  step["run"] = source.lines.reject do |line|
-    line.include?(".base_image.")
-  end.join
+  replace_rootfs_report_checks_with_noop(step)
 when "candidate-rootfs-stage-omitted"
   step = jobs.fetch("build-test").fetch("steps").find do |candidate|
     candidate["name"] == "Verify and stage the exact build candidate"
@@ -406,9 +411,29 @@ when "candidate-rootfs-shadow-allowed"
   end
   abort "candidate verifier is missing" unless step
   lines = step.fetch("run").lines
-  index = lines.index { |line| line.strip == "host/wasm/rootfs.vfs" }
-  abort "rootfs shadow guard is missing" unless index
-  lines.delete_at(index)
+  first = lines.index do |line|
+    line.strip == 'for alternate_rootfs_path in "${alternate_rootfs_paths[@]}"; do'
+  end
+  abort "rootfs shadow loop is missing" unless first
+  last = (first + 1...lines.length).find do |index|
+    lines.fetch(index).strip == "done"
+  end
+  abort "rootfs shadow loop terminator is missing" unless last
+  indent = lines.fetch(first + 1)[/\A\s*/]
+  lines[(first + 1)...last] = ["#{indent}true\n"]
+  step["run"] = lines.join
+when "candidate-rootfs-dangling-symlink-allowed"
+  step = jobs.fetch("build-test").fetch("steps").find do |candidate|
+    candidate["name"] == "Verify and stage the exact build candidate"
+  end
+  abort "candidate verifier is missing" unless step
+  lines = step.fetch("run").lines
+  index = lines.index do |line|
+    line.include?("[ ! -L local-binaries/rootfs.vfs ]")
+  end
+  abort "rootfs symlink guard is missing" unless index
+  indent = lines.fetch(index)[/\A\s*/]
+  lines[index] = "#{indent}true\n"
   step["run"] = lines.join
 when "candidate-rootfs-mirror-rehash-omitted"
   step = jobs.fetch("build-test").fetch("steps").find do |candidate|
@@ -598,6 +623,8 @@ expect_rejection candidate-rootfs-proof-report-binding-omitted \
 expect_rejection candidate-rootfs-stage-omitted candidate-rootfs-stage-omitted
 expect_rejection candidate-rootfs-shadow-allowed \
   candidate-rootfs-shadow-allowed
+expect_rejection candidate-rootfs-dangling-symlink-allowed \
+  candidate-rootfs-dangling-symlink-allowed
 expect_rejection candidate-rootfs-mirror-rehash-omitted \
   candidate-rootfs-mirror-rehash-omitted
 expect_rejection candidate-kernel-mirror-rehash-omitted \

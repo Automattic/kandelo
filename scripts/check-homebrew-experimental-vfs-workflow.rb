@@ -48,6 +48,10 @@ FINAL_IDENTIFY_RUN_SHA256 =
   "bd092002d3852058e825fc14322f888d809d643ab369a543f60dbb0c201bfee4"
 STARTUP_RUN_SHA256 =
   "080ce9da541b964a4d4a25626e47a10e1f4ad9649349b4a139123109f43852d3"
+CANDIDATE_IDENTIFY_RUN_SHA256 =
+  "4d0a086b4f002341cd16ee29233a3860c43d6acbb9e835958b65cd210d1a7c27"
+CANDIDATE_VERIFY_RUN_SHA256 =
+  "7a71f703ac4545047fbeac6fc3a1db7acf2a9fb9672c5a3a5eda791ad62b287d"
 
 def check(condition, message)
   raise message unless condition
@@ -399,8 +403,10 @@ def check_workflow(workflow)
   candidate_identify = find_one(image_steps, "candidate identity step") do |step|
     step["name"] == "Identify the exact build candidate"
   end
-  check(candidate_identify["id"] == "identify_candidate",
-        "candidate identity step lacks its fixed output identity")
+  check(candidate_identify["id"] == "identify_candidate" &&
+        Digest::SHA256.hexdigest(candidate_identify.fetch("run")) ==
+          CANDIDATE_IDENTIFY_RUN_SHA256,
+        "candidate identity step differs from the reviewed program")
   candidate_identify_source = candidate_identify.fetch("run")
   CANDIDATE_FIXED_ASSETS.each do |asset|
     check(candidate_identify_source.include?(asset),
@@ -550,6 +556,9 @@ def check_workflow(workflow)
   }
   check(candidate_verify["env"] == expected_candidate_env,
         "candidate verifier is not bound to every producer identity")
+  check(Digest::SHA256.hexdigest(candidate_verify.fetch("run")) ==
+        CANDIDATE_VERIFY_RUN_SHA256,
+        "candidate verifier differs from the reviewed program")
   candidate_verify_source = candidate_verify.fetch("run")
   candidate_verify_logical = candidate_verify_source.gsub(/\\\s*\n\s*/, " ")
   CANDIDATE_FIXED_ASSETS.each do |asset|
