@@ -837,6 +837,8 @@ NATIVE_INTERPRETER_EOF
       Cargo.toml package.json examples/run-example.ts \
       host/src/node-kernel-host.ts host/wasm/kandelo-kernel.wasm \
       host/wasm/program-packages.json \
+      packages/registry/openssl/src/tls/1_2/connection.ts \
+      packages/registry/openssl/src/tls/certificates.ts \
       node_modules/tsx/package.json node_modules/esbuild/package.json \
       node_modules/fflate/package.json node_modules/fzstd/package.json \
       node_modules/playwright/index.js \
@@ -854,10 +856,32 @@ NATIVE_INTERPRETER_EOF
     [ -L "$runtime_root/node_modules/.bin/vite" ]
     [ "$(/usr/bin/readlink -- "$runtime_root/node_modules/.bin/vite")" = \
       "../vite/bin/vite.js" ]
-    for forbidden in .git packages local-binaries tools/xtask source-marker; do
-      [ ! -e "$runtime_root/$forbidden" ] &&
-        [ ! -L "$runtime_root/$forbidden" ]
+    for forbidden in \
+      .git local-binaries tools/xtask source-marker \
+      packages/registry/program-packages.json \
+      packages/registry/openssl/package.toml \
+      packages/registry/openssl/build.sh; do
+      if [ -e "$runtime_root/$forbidden" ] || \
+         [ -L "$runtime_root/$forbidden" ]; then
+        echo "Formula test runtime exposed forbidden path: $forbidden" >&2
+        exit 1
+      fi
     done
+    resolver_output="$(
+      cd "$runtime_root" &&
+        "$HOMEBREW_KANDELO_NODE" --import tsx/esm --input-type=module -e '
+          const { programOutputClosureRelPaths } = await import(
+            "./host/src/binary-resolver.ts"
+          );
+          const paths = programOutputClosureRelPaths("programs/dash.wasm");
+          if (JSON.stringify(paths) !==
+              JSON.stringify(["programs/wasm32/dash.wasm"])) {
+            throw new Error(`unexpected Dash closure: ${JSON.stringify(paths)}`);
+          }
+          process.stdout.write("bundled-policy");
+        '
+    )"
+    [ "$resolver_output" = "bundled-policy" ]
     # WHY: this is the exact failure boundary from the seven-package canary:
     # Node must resolve both the tsx loader and every transitive host-source
     # import from the closed alias, without ambient NODE_PATH authority.
@@ -2158,9 +2182,15 @@ PY
     "$isolated_kandelo/examples/"
   cp -- "$REPO_ROOT/package.json" \
     "$isolated_kandelo/host/wasm/kandelo-kernel.wasm"
-  mkdir -p "$isolated_kandelo/packages/registry"
+  mkdir -p "$isolated_kandelo/packages/registry/openssl/src"
+  cp -a -- "$REPO_ROOT/packages/registry/openssl/src/tls" \
+    "$isolated_kandelo/packages/registry/openssl/src/"
   printf '{"format":"unrelated-global-poison"}\n' \
     >"$isolated_kandelo/packages/registry/program-packages.json"
+  printf 'openssl recipe poison\n' \
+    >"$isolated_kandelo/packages/registry/openssl/package.toml"
+  printf 'openssl build poison\n' \
+    >"$isolated_kandelo/packages/registry/openssl/build.sh"
   cp -- "$REPO_ROOT/packages/registry/program-packages.json" \
     "$isolated_xtask_dir/formula-test-program-packages.json"
   cp -- "$REPO_ROOT/package.json" \
@@ -2815,8 +2845,13 @@ EOF
       "$protected_formula_test_root/node_modules/.bin/vite")" = \
       "../vite/bin/vite.js" ] &&
     [ -f "$protected_formula_test_root/node_modules/vite/bin/vite.js" ] &&
+    [ -f "$protected_formula_test_root/packages/registry/openssl/src/tls/1_2/connection.ts" ] &&
+    [ -f "$protected_formula_test_root/packages/registry/openssl/src/tls/certificates.ts" ] &&
+    [ ! -e "$protected_formula_test_root/packages/registry/program-packages.json" ] &&
+    [ ! -L "$protected_formula_test_root/packages/registry/program-packages.json" ] &&
+    [ ! -e "$protected_formula_test_root/packages/registry/openssl/package.toml" ] &&
+    [ ! -e "$protected_formula_test_root/packages/registry/openssl/build.sh" ] &&
     [ ! -e "$protected_formula_test_root/package-lock.json" ] &&
-    [ ! -e "$protected_formula_test_root/packages" ] &&
     [ ! -e "$protected_formula_test_root/local-binaries" ] ||
     fail "isolated launcher did not stage the closed Formula test runtime"
   [ "${HOMEBREW_PATCHED_LAUNCHER%/*}" = "$isolated_prefix/bin" ] &&
