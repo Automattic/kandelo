@@ -467,6 +467,21 @@ when "candidate-post-startup-binding-omitted"
     candidate["name"] == "Bind startup-tested bytes to the exact build candidate"
   end
   abort "post-startup candidate binding is missing" unless removed
+when "candidate-post-startup-binding-noop"
+  step = jobs.fetch("build-test").fetch("steps").find do |candidate|
+    candidate["name"] == "Bind startup-tested bytes to the exact build candidate"
+  end
+  abort "post-startup candidate binding is missing" unless step
+  lines = step.fetch("run").lines
+  first = lines.index { |line| line.strip == "verify_input() {" }
+  abort "post-startup verifier function is missing" unless first
+  last = (first + 1...lines.length).find do |index|
+    lines.fetch(index).strip == "}"
+  end
+  abort "post-startup verifier terminator is missing" unless last
+  indent = lines.fetch(first + 1)[/\A\s*/]
+  lines[(first + 1)...last] = ["#{indent}: \"sha256sum stat -c '%s'\"\n"]
+  step["run"] = lines.join
 when "candidate-rootfs-post-startup-binding-omitted"
   step = jobs.fetch("build-test").fetch("steps").find do |candidate|
     candidate["name"] == "Bind startup-tested bytes to the exact build candidate"
@@ -631,6 +646,8 @@ expect_rejection candidate-kernel-mirror-rehash-omitted \
   candidate-kernel-mirror-rehash-omitted
 expect_rejection candidate-post-startup-binding-omitted \
   candidate-post-startup-binding-omitted
+expect_rejection candidate-post-startup-binding-noop \
+  candidate-post-startup-binding-noop
 expect_rejection candidate-rootfs-post-startup-binding-omitted \
   candidate-rootfs-post-startup-binding-omitted
 expect_rejection post-startup-identify-mutates-selection \

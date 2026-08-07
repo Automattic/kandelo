@@ -52,6 +52,8 @@ CANDIDATE_IDENTIFY_RUN_SHA256 =
   "4d0a086b4f002341cd16ee29233a3860c43d6acbb9e835958b65cd210d1a7c27"
 CANDIDATE_VERIFY_RUN_SHA256 =
   "7a71f703ac4545047fbeac6fc3a1db7acf2a9fb9672c5a3a5eda791ad62b287d"
+CANDIDATE_BIND_RUN_SHA256 =
+  "60462bb54b0c5d74c6e6bdcca7863f487c4e922fb9cfb8c83241f8a33dd4cd50"
 
 def check(condition, message)
   raise message unless condition
@@ -690,6 +692,9 @@ def check_workflow(workflow)
   end
   check(candidate_bind["env"] == expected_bind_env,
         "candidate binding does not receive every producer identity")
+  check(Digest::SHA256.hexdigest(candidate_bind.fetch("run")) ==
+        CANDIDATE_BIND_RUN_SHA256,
+        "candidate binding differs from the reviewed program")
   candidate_bind_source = candidate_bind.fetch("run")
   candidate_bind_logical = candidate_bind_source.gsub(/\\\s*\n\s*/, " ")
   check(candidate_bind_source.include?("sha256sum") &&
