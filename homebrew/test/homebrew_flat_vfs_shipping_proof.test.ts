@@ -14,6 +14,7 @@ import type { HomebrewGuestLifecycleMachine } from
   "./homebrew_guest_lifecycle_runner";
 import {
   HOMEBREW_FLAT_VFS_BREW_VERSION_MARKER,
+  runHomebrewFlatVfsStartupProof,
   runHomebrewFlatVfsShippingProof,
   validateHomebrewFlatVfsEmbeddedRuntime,
 } from "./homebrew_flat_vfs_shipping_proof";
@@ -77,6 +78,175 @@ test("runs one fully embedded core proof without transport inputs", async () => 
   assert.match(scripts[1]!.script, /assert_poured/);
   assert.match(scripts[1]!.script, /assert_bzip2_roundtrip/);
   assert.doesNotMatch(scripts[1]!.script, /m4-canary/);
+});
+
+test("runs only bounded embedded startup without the stock lifecycle", async () => {
+  const scripts: Array<{ marker: string; script: string }> = [];
+  let started = false;
+  let destroyed = false;
+  const result = await runHomebrewFlatVfsStartupProof({
+    runtime: {
+      imageBytes: await createEmbeddedRuntimeImage(),
+      shellPath: "/bin/bash",
+      shellArgv0: "bash",
+    },
+    tapRevision: TAP_REVISION,
+    deadlineMs: Date.now() + 1_000,
+    createMachine: (runtime) => {
+      assert.equal(runtime.lazyAssets, undefined);
+      assert.match(runtime.lazyUrlBase, /^https:\/\/.*\.invalid\//);
+      return {
+        lazyDownloads: [],
+        diagnostics: [],
+        start: async () => {
+          started = true;
+        },
+        readFile: async () => null,
+        runShellScript: async ({ marker, script }) => {
+          scripts.push({ marker, script });
+        },
+        exportRootfsImage: async () => new Uint8Array(),
+        destroy: async () => {
+          destroyed = true;
+        },
+      };
+    },
+  });
+
+  assert.equal(started, true);
+  assert.equal(destroyed, true);
+  assert.deepEqual(result, {
+    tapRevision: TAP_REVISION,
+    kandeloAbi: ABI_VERSION,
+    selectionSha256: SELECTION_SHA256,
+    lazyDownloads: [],
+  });
+  assert.equal(scripts.length, 1);
+  assert.equal(scripts[0]!.marker, HOMEBREW_FLAT_VFS_BREW_VERSION_MARKER);
+  assert.match(scripts[0]!.script, /\/usr\/bin\/brew --version/);
+  assert.doesNotMatch(
+    scripts[0]!.script,
+    /brew tap|brew install|brew uninstall|assert_poured/,
+  );
+});
+
+test("bounds startup failures and always tears the machine down", async (t) => {
+  for (const scenario of [
+    {
+      name: "version failure",
+      runShellScript: async () => {
+        throw new Error("embedded startup version failed");
+      },
+      failure: /embedded startup version failed/,
+    },
+    {
+      name: "stalled version",
+      runShellScript: () => new Promise<void>(() => {}),
+      failure: /exceeded the Homebrew guest lifecycle total deadline/,
+    },
+  ]) {
+    await t.test(scenario.name, async () => {
+      let destroyed = false;
+      const imageBytes = await createEmbeddedRuntimeImage();
+      await assert.rejects(
+        () => runHomebrewFlatVfsStartupProof({
+          runtime: {
+            imageBytes,
+            shellPath: "/bin/bash",
+            shellArgv0: "bash",
+          },
+          tapRevision: TAP_REVISION,
+          deadlineMs: Date.now() + (scenario.name === "stalled version" ? 20 : 1_000),
+          createMachine: () => ({
+            lazyDownloads: [],
+            diagnostics: [],
+            start: async () => {},
+            readFile: async () => null,
+            runShellScript: scenario.runShellScript,
+            exportRootfsImage: async () => new Uint8Array(),
+            destroy: async () => {
+              destroyed = true;
+            },
+          }),
+        }),
+        scenario.failure,
+      );
+      assert.equal(destroyed, true);
+    });
+  }
+});
+
+test("rejects startup diagnostics and lazy downloads", async (t) => {
+  await t.test("host diagnostic", async () => {
+    const diagnostics: string[] = [];
+    let destroyed = false;
+    const imageBytes = await createEmbeddedRuntimeImage();
+    await assert.rejects(
+      () => runHomebrewFlatVfsStartupProof({
+        runtime: {
+          imageBytes,
+          shellPath: "/bin/bash",
+          shellArgv0: "bash",
+        },
+        tapRevision: TAP_REVISION,
+        deadlineMs: Date.now() + 1_000,
+        createMachine: () => ({
+          lazyDownloads: [],
+          diagnostics,
+          start: async () => {},
+          readFile: async () => null,
+          runShellScript: async () => {
+            diagnostics.push("pid=9 source=process-worker: trapped");
+          },
+          exportRootfsImage: async () => new Uint8Array(),
+          destroy: async () => {
+            destroyed = true;
+          },
+        }),
+      }),
+      /unexpected host diagnostics/,
+    );
+    assert.equal(destroyed, true);
+  });
+
+  await t.test("lazy download", async () => {
+    const lazyDownloads: LazyDownloadEvent[] = [];
+    let destroyed = false;
+    const imageBytes = await createEmbeddedRuntimeImage();
+    await assert.rejects(
+      () => runHomebrewFlatVfsStartupProof({
+        runtime: {
+          imageBytes,
+          shellPath: "/bin/bash",
+          shellArgv0: "bash",
+        },
+        tapRevision: TAP_REVISION,
+        deadlineMs: Date.now() + 1_000,
+        createMachine: () => ({
+          lazyDownloads,
+          diagnostics: [],
+          start: async () => {},
+          readFile: async () => null,
+          runShellScript: async () => {
+            lazyDownloads.push({
+              id: "unexpected-startup-fetch",
+              kind: "tree",
+              status: "started",
+              url: "https://example.test/startup.tar.gz",
+              loadedBytes: 0,
+              t: 0,
+            });
+          },
+          exportRootfsImage: async () => new Uint8Array(),
+          destroy: async () => {
+            destroyed = true;
+          },
+        }),
+      }),
+      /unexpectedly fetched https:\/\/example\.test\/startup\.tar\.gz/,
+    );
+    assert.equal(destroyed, true);
+  });
 });
 
 test("preserves bounded machine failures and always tears the machine down", async (t) => {
