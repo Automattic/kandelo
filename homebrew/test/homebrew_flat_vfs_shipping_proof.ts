@@ -32,6 +32,18 @@ const BREW_LINK_PATH = "/usr/bin/brew";
 const BREW_EXECUTABLE_PATH = "/opt/kandelo/homebrew/bin/brew";
 const BOOTSTRAP_FORMULA = "kandelo-dev/tap-core/homebrew-bootstrap";
 const BZIP2_FORMULA = "kandelo-dev/tap-core/bzip2";
+const EXTRACTION_COMMANDS = Object.freeze([
+  {
+    formula: "kandelo-dev/tap-core/tar",
+    stablePath: "/usr/bin/tar",
+    selectedPath: "/opt/kandelo/homebrew/bin/tar",
+  },
+  {
+    formula: "kandelo-dev/tap-core/gzip",
+    stablePath: "/usr/bin/gzip",
+    selectedPath: "/opt/kandelo/homebrew/bin/gzip",
+  },
+]);
 const SHA256_RE = /^[0-9a-f]{64}$/;
 const MAX_REPORT_BYTES = 1024 * 1024;
 const S_IFMT = 0xf000;
@@ -96,6 +108,7 @@ export function validateHomebrewFlatVfsEmbeddedRuntime(
   const report = parseFlatCompositionReport(
     readBoundedRegularFile(fs, COMPOSITION_REPORT_PATH, MAX_REPORT_BYTES),
   );
+  assertEmbeddedExtractionCommands(fs);
   return {
     imageBytes: input.imageBytes,
     shellPath: input.shellPath,
@@ -236,6 +249,40 @@ function assertEmbeddedBrew(fs: MemoryFileSystem): void {
   readBoundedRegularFile(fs, BREW_ENVIRONMENT_PATH, 64 * 1024);
 }
 
+function assertEmbeddedExtractionCommands(fs: MemoryFileSystem): void {
+  for (const command of EXTRACTION_COMMANDS) {
+    let link;
+    try {
+      link = fs.lstat(command.stablePath);
+    } catch {
+      throw new Error(
+        `${command.stablePath} must be a symlink to ${command.selectedPath}`,
+      );
+    }
+    if (
+      (link.mode & S_IFMT) !== S_IFLNK ||
+      link.uid !== 0 ||
+      link.gid !== 0 ||
+      fs.readlink(command.stablePath) !== command.selectedPath ||
+      fs.isPathDeferred(command.stablePath)
+    ) {
+      throw new Error(
+        `${command.stablePath} must be a symlink to ${command.selectedPath}`,
+      );
+    }
+    const executable = fs.stat(command.selectedPath);
+    if (
+      (executable.mode & S_IFMT) !== S_IFREG ||
+      (executable.mode & 0o111) === 0 ||
+      fs.isPathDeferred(command.selectedPath)
+    ) {
+      throw new Error(
+        `${command.selectedPath} is not image-owned and executable`,
+      );
+    }
+  }
+}
+
 function parseFlatCompositionReport(bytes: Uint8Array): {
   selectionSha256: string;
 } {
@@ -269,7 +316,11 @@ function parseFlatCompositionReport(bytes: Uint8Array): {
       ? (pkg as Record<string, unknown>).full_name
       : undefined
   );
-  for (const formula of [BOOTSTRAP_FORMULA, BZIP2_FORMULA]) {
+  for (const formula of [
+    BOOTSTRAP_FORMULA,
+    BZIP2_FORMULA,
+    ...EXTRACTION_COMMANDS.map((command) => command.formula),
+  ]) {
     if (fullNames.filter((fullName) => fullName === formula).length !== 1) {
       throw new Error(
         `flat Homebrew VFS report must select ${formula} exactly once`,

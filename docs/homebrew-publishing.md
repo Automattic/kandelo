@@ -579,6 +579,42 @@ intentional: some bottles marked `:any_skip_relocation` still contain
 functional compiled paths, so Homebrew's relocation metadata cannot by itself
 prove that an old-prefix bottle is safe to reuse.
 
+Flat bottle-selection VFS images keep selected Formula commands under that
+canonical prefix. The guest lifecycle invokes the selected Git and Ruby at
+`/opt/kandelo/homebrew/bin/git` and `.../ruby`; it does not assume that the
+base image provides `/usr/bin/git` or `/usr/bin/ruby`. Bottle extraction is the
+narrow exception because Homebrew invokes `tar` with a system-only `PATH`, and
+GNU tar resolves `gzip` the same way for `.tar.gz` bottles. When the exact
+first-party `tar` and `gzip` Formulae are selected together and win their
+ordinary prefix links, the flat composer exposes root-owned, no-clobber
+`/usr/bin/tar` and `/usr/bin/gzip` links to those selected commands. It neither
+mirrors the whole prefix into `/usr/bin` nor grants those stable paths to a
+different Formula claiming the same link target. Serialization and shipping
+validation recheck the exact links and eager executables before running a real
+bottle pour.
+
+The experimental ABI-42 flat-VFS release is temporarily Node-lifecycle
+validated. Its required Node proof performs the complete stock Homebrew tap,
+exact-revision checkout, uninstall, bottle download, extraction, pour,
+execution, and trust lifecycle. Chromium still boots the same exact image and
+must start both the selected Ruby directly and Ruby through the selected shell.
+It does not currently repeat the complete Homebrew lifecycle: stock Homebrew's
+short-lived helper churn creates hundreds of fresh process-memory generations,
+and current Chromium reaches a repeatable renderer virtual-address reservation
+ceiling while native guard-backed Wasm memory reservations remain unreclaimed
+after Kandelo retires the corresponding processes. The observed boundary is a
+renderer crash, not a bottle, VFS, Ruby, network, or physical-memory failure.
+
+Accordingly, this explicitly experimental release contains exactly four inert
+assets: the VFS, canonical selection, build report, and complete Node evidence.
+Its release notes say that Chromium coverage is selected-runtime startup only;
+no failed browser lifecycle is recorded or presented as success. Restore the
+complete Chromium lifecycle as a publication gate and evidence asset only
+after the general browser host can run the unchanged stock lifecycle without
+renderer loss. Package-specific process reuse, lower guest memory limits, and
+splitting one lifecycle across restarted kernels are not acceptable removal
+paths because they would hide the platform boundary instead of fixing it.
+
 Trusted CI applies this patch to a temporary Homebrew worktree. A short-lived
 root-owned launcher under the selected Homebrew prefix loads that worktree
 while preserving the selected Kandelo prefix and Cellar. Native host tools use

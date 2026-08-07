@@ -43,7 +43,11 @@ test("core shipping scope pours and runs only the first-party bottle", () => {
   for (const expected of [
     "starting bounded core bottle shipping proof",
     "brew tap kandelo-dev/tap-core https://github.com/Kandelo-dev/homebrew-tap-core.git",
+    "first-party tap command completed",
+    "fetching the exact first-party repository revision",
+    "first-party repository fetch completed",
     `checkout --detach ${revisions.coreRevision}`,
+    "first-party repository revision pinned and clean",
     "brew install --no-ask --force-bottle kandelo-dev/tap-core/bzip2",
     "assert_bzip2_roundtrip \"$bzip2_prefix\"",
     "first-party Bzip2 bottle installation is ready to ship",
@@ -118,6 +122,7 @@ function assertBoundedShippingScript(script: string, label: string): void {
   assertShellSyntax(script);
   assertPairedNoApiEnvironment(script, label);
   assertRequiresTapTrust(script, label);
+  assertSelectedHomebrewRuntimeCommands(script, label);
   for (const forbidden of [
     "brew reinstall",
     "brew upgrade",
@@ -140,6 +145,7 @@ test("phase one uses only stock Homebrew against clean canonical tap checkouts",
   assertShellSyntax(script);
   assertPairedNoApiEnvironment(script, "phase one");
   assertRequiresTapTrust(script, "phase one");
+  assertSelectedHomebrewRuntimeCommands(script, "phase one");
   for (const expected of [
     "brew tap kandelo-dev/tap-core https://github.com/Kandelo-dev/homebrew-tap-core.git",
     `checkout --detach ${revisions.coreRevision}`,
@@ -239,6 +245,7 @@ test("phase two proves durable state and labels the pinned upgrade as a no-op", 
   assertShellSyntax(script);
   assertPairedNoApiEnvironment(script, "phase two");
   assertRequiresTapTrust(script, "phase two");
+  assertSelectedHomebrewRuntimeCommands(script, "phase two");
   for (const expected of [
     "brew outdated --json=v2 kandelo-dev/tap-core/bzip2 brandonpayton/kandelo-canary/m4-canary",
     "snapshot_package_identity kandelo-dev/tap-core/bzip2 \"$before_bzip2\"",
@@ -369,4 +376,23 @@ function assertRequiresTapTrust(script: string, label: string): void {
     1,
     `${label} must require stock Homebrew tap trust exactly once`,
   );
+}
+
+function assertSelectedHomebrewRuntimeCommands(
+  script: string,
+  label: string,
+): void {
+  for (const expected of [
+    "homebrew_git=/opt/kandelo/homebrew/bin/git",
+    "homebrew_ruby=/opt/kandelo/homebrew/bin/ruby",
+    '[ -x "$homebrew_git" ]',
+    '[ -x "$homebrew_ruby" ]',
+    '"$homebrew_git" -C',
+    '"$homebrew_ruby" -rjson',
+  ]) {
+    assert.ok(script.includes(expected), `${label} omits ${expected}`);
+  }
+  for (const forbidden of ["/usr/bin/git", "/usr/bin/ruby"]) {
+    assert.ok(!script.includes(forbidden), `${label} still uses ${forbidden}`);
+  }
 }

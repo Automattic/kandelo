@@ -351,6 +351,16 @@ test("validates the serialized image-owned shell, brew runtime, ABI, and report"
       fixture: { includeBzip2: false },
       failure: /must select kandelo-dev\/tap-core\/bzip2 exactly once/,
     },
+    {
+      name: "tar selection",
+      fixture: { includeTar: false },
+      failure: /must select kandelo-dev\/tap-core\/tar exactly once/,
+    },
+    {
+      name: "stable gzip extraction link",
+      fixture: { omitExtractionCommand: "gzip" },
+      failure: /\/usr\/bin\/gzip must be a symlink to \/opt\/kandelo\/homebrew\/bin\/gzip/,
+    },
   ] as const) {
     await t.test(scenario.name, async () => {
       const imageBytes = await createEmbeddedRuntimeImage(scenario.fixture);
@@ -374,6 +384,8 @@ async function createEmbeddedRuntimeImage(options: {
   imageMetadata?: "missing" | "without-kernel-abi";
   selectionSha256?: string;
   includeBzip2?: boolean;
+  includeTar?: boolean;
+  omitExtractionCommand?: "tar" | "gzip";
 } = {}): Promise<Uint8Array> {
   const fs = MemoryFileSystem.create(new SharedArrayBuffer(4 * 1024 * 1024));
   for (const path of [
@@ -415,6 +427,20 @@ async function createEmbeddedRuntimeImage(options: {
     options.brewLinkTarget ?? "/opt/kandelo/homebrew/bin/brew",
     "/usr/bin/brew",
   );
+  for (const command of ["tar", "gzip"] as const) {
+    writeVfsFile(
+      fs,
+      `/opt/kandelo/homebrew/bin/${command}`,
+      textEncoder.encode(`selected Homebrew ${command}\n`),
+      0o755,
+    );
+    if (options.omitExtractionCommand !== command) {
+      fs.symlink(
+        `/opt/kandelo/homebrew/bin/${command}`,
+        `/usr/bin/${command}`,
+      );
+    }
+  }
   writeVfsFile(
     fs,
     "/etc/homebrew/brew.env",
@@ -449,6 +475,10 @@ async function createEmbeddedRuntimeImage(options: {
         ...(options.includeBzip2 === false
           ? []
           : [{ full_name: "kandelo-dev/tap-core/bzip2" }]),
+        ...(options.includeTar === false
+          ? []
+          : [{ full_name: "kandelo-dev/tap-core/tar" }]),
+        { full_name: "kandelo-dev/tap-core/gzip" },
       ],
     }),
     0o644,

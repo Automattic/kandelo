@@ -21,6 +21,18 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 declare global {
   interface Window {
     __homebrewVfsTestReady: boolean;
+    __runHomebrewVfsAcceptance: (request: {
+      vfsUrl: string;
+      executable: string;
+      argv: string[];
+      timeoutMs: number;
+    }) => Promise<{
+      exitCode: number;
+      stdout: string;
+      stderr: string;
+      imageSha256: string;
+      kernelSha256: string;
+    }>;
     __runHomebrewFlatVfsShippingProof: (
       request: HomebrewFlatVfsShippingProofRequest,
     ) => Promise<HomebrewFlatVfsShippingProofResult>;
@@ -108,6 +120,83 @@ test(
   },
 );
 
+for (const throughShell of [false, true]) {
+  test(
+    throughShell
+      ? "the exact flat VFS starts Ruby through its selected shell in Chromium"
+      : "the exact flat VFS starts its selected Ruby directly in Chromium",
+    async ({ page, baseURL, browserName }) => {
+      test.skip(
+        browserName !== "chromium",
+        "the first flat-VFS shipping proof targets Chromium",
+      );
+      const config = resolveHomebrewFlatVfsChromiumConfig(
+        process.env,
+        repoRoot,
+      );
+      if (config === null) {
+        test.skip(true, "the exact flat Homebrew VFS is not configured");
+        return;
+      }
+      if (!baseURL) throw new Error("Playwright baseURL is required");
+      test.setTimeout(180_000);
+
+      const inputs = loadHomebrewFlatVfsProofInputs({
+        imagePath: resolve(
+          config.assetRoot,
+          readHomebrewFlatVfsRequestedImageFilename(config.selectionPath),
+        ),
+        selectionPath: config.selectionPath,
+        selectionSourcePath: config.selectionSourcePath,
+        reportPath: config.reportPath,
+        kernelPath: config.kernelPath,
+        tapRoot: config.tapRoot,
+        tapRevision: config.tapRevision,
+      });
+      const vfsUrl = new URL(
+        `/__kandelo_homebrew_flat_vfs__/${inputs.requestedVfsFilename}`,
+        baseURL,
+      );
+      await page.route(vfsUrl.href, (route) => route.fulfill({
+        path: inputs.imagePath,
+        contentType: "application/octet-stream",
+      }));
+      await page.goto(new URL("/pages/homebrew-vfs-test/", baseURL).href);
+      await expect.poll(
+        () => page.evaluate(() => window.__homebrewVfsTestReady),
+        { timeout: 120_000 },
+      ).toBe(true);
+
+      const result = await page.evaluate(
+        ({ url, executable, argv }) => window.__runHomebrewVfsAcceptance({
+          vfsUrl: url,
+          executable,
+          argv,
+          timeoutMs: 60_000,
+        }),
+        {
+          url: vfsUrl.href,
+          executable: throughShell
+            ? inputs.shellPath
+            : "/opt/kandelo/homebrew/bin/ruby",
+          argv: throughShell
+            ? [
+                inputs.shellArgv0,
+                "-c",
+                "/opt/kandelo/homebrew/bin/ruby --version",
+              ]
+            : ["ruby", "--version"],
+        },
+      );
+      expect(result.imageSha256).toBe(inputs.image.sha256);
+      expect(result.kernelSha256).toBe(inputs.kernel.sha256);
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toMatch(/^ruby 4\.0\.5\b/);
+    },
+  );
+}
+
 test(
   "the exact flat VFS installs and executes Bzip2 through stock Homebrew in Chromium",
   async ({ page, baseURL, browserName }) => {
@@ -169,8 +258,8 @@ test(
             vfsUrl: vfsUrl.href,
             expectedImageSha256: inputs.image.sha256,
             expectedKernelSha256: inputs.kernel.sha256,
-            shellPath: "/bin/bash",
-            shellArgv0: "bash",
+            shellPath: inputs.shellPath,
+            shellArgv0: inputs.shellArgv0,
             tapRevision: inputs.tapRevision,
             timeoutMs: config.timeoutMs,
           } satisfies HomebrewFlatVfsShippingProofRequest,

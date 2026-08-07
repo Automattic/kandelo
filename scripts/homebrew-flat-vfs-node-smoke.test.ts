@@ -372,8 +372,46 @@ async function createFixture(): Promise<{
       homebrewTestReceipt([]),
     ),
   ]);
+  const extractionDescriptors = [
+    { name: "gzip", version: "1.14" },
+    { name: "tar", version: "1.35" },
+  ].map(({ name, version }) => {
+    const bottle = homebrewTestBottleTar([
+      homebrewTestBottleEntry(
+        name,
+        version,
+        `.brew/${name}.rb`,
+        `class ${name[0]!.toUpperCase()}${name.slice(1)} < Formula\nend\n`,
+      ),
+      homebrewTestBottleEntry(
+        name,
+        version,
+        "INSTALL_RECEIPT.json",
+        homebrewTestReceipt([]),
+      ),
+      homebrewTestBottleEntry(
+        name,
+        version,
+        `bin/${name}`,
+        `selected Homebrew ${name}\n`,
+        0o755,
+      ),
+    ]);
+    return homebrewTestBottleDescriptor({
+      name,
+      version,
+      bottle,
+      links: [{
+        source: `Cellar/${name}/${version}/bin/${name}`,
+        target: `bin/${name}`,
+        type: "symlink",
+      }],
+      pathPrepend: ["bin"],
+    });
+  });
   const selectionBytes = homebrewTestSelectionBytes([
     bootstrap.descriptor,
+    ...extractionDescriptors,
     homebrewTestBottleDescriptor({
       name: "bzip2",
       version: "1.0.8",
@@ -530,6 +568,18 @@ async function createImage(options: {
     0o755,
   );
   fs.symlink("/opt/kandelo/homebrew/bin/brew", "/usr/bin/brew");
+  for (const command of ["tar", "gzip"]) {
+    writeVfsFile(
+      fs,
+      `/opt/kandelo/homebrew/bin/${command}`,
+      `selected Homebrew ${command}\n`,
+      0o755,
+    );
+    fs.symlink(
+      `/opt/kandelo/homebrew/bin/${command}`,
+      `/usr/bin/${command}`,
+    );
+  }
   writeVfsFile(fs, "/etc/homebrew/brew.env", "HOMEBREW_NO_ANALYTICS=1\n", 0o644);
   writeVfsBinary(
     fs,

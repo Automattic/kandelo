@@ -147,8 +147,8 @@ assert_untrusted_tap_discovery ${CORE_TAP} "$core_untrusted"
 progress "tapping the exact independent third-party repository"
 /usr/bin/brew tap ${CANARY_TAP} ${CANARY_ORIGIN}
 canary_tap="$(/usr/bin/brew --repository ${CANARY_TAP})"
-/usr/bin/git -C "$canary_tap" fetch --no-tags origin ${revisions.canaryRevision}
-/usr/bin/git -C "$canary_tap" checkout --detach ${revisions.canaryRevision}
+"$homebrew_git" -C "$canary_tap" fetch --no-tags origin ${revisions.canaryRevision}
+"$homebrew_git" -C "$canary_tap" checkout --detach ${revisions.canaryRevision}
 assert_clean_tap "$canary_tap" ${CANARY_ORIGIN} ${revisions.canaryRevision}
 [ ! -e "$core_repository" ] || fail "third-party tap created homebrew/core"
 
@@ -230,8 +230,12 @@ state="$repository/var/homebrew/kandelo-guest-lifecycle-state"
 set -euo pipefail
 fail() { printf 'homebrew-guest-lifecycle: %s\n' "$*" >&2; exit 1; }
 progress() { printf 'homebrew-guest-lifecycle: %s\n' "$*"; }
+homebrew_git=/opt/kandelo/homebrew/bin/git
+homebrew_ruby=/opt/kandelo/homebrew/bin/ruby
+[ -x "$homebrew_git" ] || fail "selected Homebrew Git is not executable"
+[ -x "$homebrew_ruby" ] || fail "selected Homebrew Ruby is not executable"
 assert_precomposed_bottle() {
-  /usr/bin/ruby -rjson -e '
+  "$homebrew_ruby" -rjson -e '
     receipt = JSON.parse(File.binread(File.join(ARGV.fetch(0), "INSTALL_RECEIPT.json")))
     abort "precomposed package was not built as a bottle" unless
       receipt.fetch("built_as_bottle") == true
@@ -240,13 +244,13 @@ assert_precomposed_bottle() {
   ' "$1"
 }
 assert_poured() {
-  /usr/bin/ruby -rjson -e '
+  "$homebrew_ruby" -rjson -e '
     receipt = JSON.parse(File.binread(File.join(ARGV.fetch(0), "INSTALL_RECEIPT.json")))
     abort "bottle was not poured" unless receipt.fetch("poured_from_bottle") == true
   ' "$1"
 }
 assert_runtime_dependency() {
-  /usr/bin/ruby -rjson -e '
+  "$homebrew_ruby" -rjson -e '
     receipt = JSON.parse(File.binread(File.join(ARGV.fetch(0), "INSTALL_RECEIPT.json")))
     dependencies = receipt.fetch("runtime_dependencies")
     abort "receipt does not bind expected runtime dependency" unless
@@ -257,7 +261,7 @@ snapshot_trust() {
   /usr/bin/brew trust --json=v1 >"$1"
 }
 assert_formula_trust() {
-  /usr/bin/ruby -rjson -e '
+  "$homebrew_ruby" -rjson -e '
     document = JSON.parse(File.binread(ARGV.fetch(0)))
     tap = ARGV.fetch(1)
     formula = ARGV.fetch(2)
@@ -281,11 +285,11 @@ assert_clean_tap() {
   tap_root="$1"
   expected_origin="$2"
   expected_revision="$3"
-  [ "$(/usr/bin/git -C "$tap_root" remote get-url origin)" = "$expected_origin" ] ||
+  [ "$("$homebrew_git" -C "$tap_root" remote get-url origin)" = "$expected_origin" ] ||
     fail "tap origin differs from the canonical public repository"
-  [ "$(/usr/bin/git -C "$tap_root" rev-parse HEAD)" = "$expected_revision" ] ||
+  [ "$("$homebrew_git" -C "$tap_root" rev-parse HEAD)" = "$expected_revision" ] ||
     fail "tap checkout differs from the reviewed revision"
-  [ -z "$(/usr/bin/git -C "$tap_root" status --porcelain=v1 --untracked-files=all)" ] ||
+  [ -z "$("$homebrew_git" -C "$tap_root" status --porcelain=v1 --untracked-files=all)" ] ||
     fail "tap checkout is dirty"
 }
 assert_bzip2_roundtrip() {
@@ -328,10 +332,14 @@ core_repository="$repository/Library/Taps/homebrew/homebrew-core"
 
 progress "tapping the exact first-party repository"
 /usr/bin/brew tap ${CORE_TAP} ${CORE_ORIGIN}
+progress "first-party tap command completed"
 core_tap="$(/usr/bin/brew --repository ${CORE_TAP})"
-/usr/bin/git -C "$core_tap" fetch --no-tags origin ${revisions.coreRevision}
-/usr/bin/git -C "$core_tap" checkout --detach ${revisions.coreRevision}
+progress "fetching the exact first-party repository revision"
+"$homebrew_git" -C "$core_tap" fetch --no-tags origin ${revisions.coreRevision}
+progress "first-party repository fetch completed"
+"$homebrew_git" -C "$core_tap" checkout --detach ${revisions.coreRevision}
 assert_clean_tap "$core_tap" ${CORE_ORIGIN} ${revisions.coreRevision}
+progress "first-party repository revision pinned and clean"
 [ ! -e "$core_repository" ] || fail "first-party tap created homebrew/core"
 
 # WHY: cloning a tap must not grant authority to all of its current and future
@@ -384,8 +392,12 @@ export function createHomebrewGuestLifecyclePhaseTwoScript(
 set -euo pipefail
 fail() { printf 'homebrew-guest-lifecycle-reboot: %s\n' "$*" >&2; exit 1; }
 progress() { printf 'homebrew-guest-lifecycle-reboot: %s\n' "$*"; }
+homebrew_git=/opt/kandelo/homebrew/bin/git
+homebrew_ruby=/opt/kandelo/homebrew/bin/ruby
+[ -x "$homebrew_git" ] || fail "selected Homebrew Git is not executable"
+[ -x "$homebrew_ruby" ] || fail "selected Homebrew Ruby is not executable"
 assert_precomposed_bottle() {
-  /usr/bin/ruby -rjson -e '
+  "$homebrew_ruby" -rjson -e '
     receipt = JSON.parse(File.binread(File.join(ARGV.fetch(0), "INSTALL_RECEIPT.json")))
     abort "precomposed package was not built as a bottle" unless
       receipt.fetch("built_as_bottle") == true
@@ -394,7 +406,7 @@ assert_precomposed_bottle() {
   ' "$1"
 }
 assert_poured() {
-  /usr/bin/ruby -rjson -e '
+  "$homebrew_ruby" -rjson -e '
     receipt = JSON.parse(File.binread(File.join(ARGV.fetch(0), "INSTALL_RECEIPT.json")))
     abort "bottle was not poured" unless receipt.fetch("poured_from_bottle") == true
   ' "$1"
@@ -403,7 +415,7 @@ snapshot_trust() {
   /usr/bin/brew trust --json=v1 >"$1"
 }
 assert_formula_trust() {
-  /usr/bin/ruby -rjson -e '
+  "$homebrew_ruby" -rjson -e '
     document = JSON.parse(File.binread(ARGV.fetch(0)))
     tap = ARGV.fetch(1)
     formula = ARGV.fetch(2)
@@ -418,7 +430,7 @@ assert_formula_trust() {
   ' "$1" "$2" "$3" "$4"
 }
 assert_no_tap_trust() {
-  /usr/bin/ruby -rjson -e '
+  "$homebrew_ruby" -rjson -e '
     document = JSON.parse(File.binread(ARGV.fetch(0)))
     tap = ARGV.fetch(1)
     prefix = "#{tap}/"
@@ -434,11 +446,11 @@ assert_clean_tap() {
   tap_root="$1"
   expected_origin="$2"
   expected_revision="$3"
-  [ "$(/usr/bin/git -C "$tap_root" remote get-url origin)" = "$expected_origin" ] ||
+  [ "$("$homebrew_git" -C "$tap_root" remote get-url origin)" = "$expected_origin" ] ||
     fail "tap origin changed across reboot"
-  [ "$(/usr/bin/git -C "$tap_root" rev-parse HEAD)" = "$expected_revision" ] ||
+  [ "$("$homebrew_git" -C "$tap_root" rev-parse HEAD)" = "$expected_revision" ] ||
     fail "tap revision changed across reboot"
-  [ -z "$(/usr/bin/git -C "$tap_root" status --porcelain=v1 --untracked-files=all)" ] ||
+  [ -z "$("$homebrew_git" -C "$tap_root" status --porcelain=v1 --untracked-files=all)" ] ||
     fail "tap checkout became dirty"
 }
 assert_bzip2_roundtrip() {
@@ -461,7 +473,7 @@ snapshot_package_identity() {
   # WHY: a successful brew upgrade does not prove it was a no-op. Bind the
   # exact Cellar path, reported version, receipt bytes, and complete keg tree
   # so replacement, relinking, or receipt mutation cannot masquerade as one.
-  /usr/bin/ruby -rdigest -rjson -e '
+  "$homebrew_ruby" -rdigest -rjson -e '
     root = ARGV.fetch(0)
     formula = ARGV.fetch(1)
     versions = ARGV.fetch(2)
@@ -566,7 +578,7 @@ after_bzip2=/tmp/kandelo-homebrew-bzip2.after.json
 before_m4=/tmp/kandelo-homebrew-m4.before.json
 after_m4=/tmp/kandelo-homebrew-m4.after.json
 /usr/bin/brew outdated --json=v2 ${CORE_BZIP2} ${CANARY_M4_FORMULA} >"$outdated"
-/usr/bin/ruby -rjson -e '
+"$homebrew_ruby" -rjson -e '
   document = JSON.parse(File.binread(ARGV.fetch(0)))
   abort "brew outdated omitted formulae" unless document["formulae"].is_a?(Array)
   selected = document["formulae"].filter_map { |entry| entry["name"] }
