@@ -1486,9 +1486,9 @@ A stale receipt, different source commit, unrelated Formula, missing
 dependency, or unavailable bottle fails before any file is replaced.
 
 The default preview is read-only. `--apply` without an artifact advances the
-catalog, Formula identities, metadata/provenance digests, selection lock, Git
-input, and bound artifact inputs together while changing the shell to
-`publication_state = "pending"`.
+catalog, Formula identities, metadata/provenance digests, selection lock,
+source-catalog authority, and bound artifact inputs together while changing
+the shell to `publication_state = "pending"`.
 The review-only `--review-pending-artifact` composer option can then
 measure the deterministic candidate. The exact pull-request and
 protected-main checks may also use that option to run a candidate while
@@ -1499,13 +1499,12 @@ still require a sealed identity. Rerun the finalizer with
 the ordinary sealed path, and only then return the recipe to
 `publication_state = "ready"`.
 
-The checked-in `6ad0e3dbc60e5572c4288c86919238f71c1bc110` tap value is a
-reviewed pre-selection catalog reference, not final shell authority. The
-selection lock is pending and names no release, the artifact lock is pending
-and names no image, and the shell recipe has
-`publication_state = "pending"`. A fetched immutable selection must bind the
-catalog and move the product to candidate state before independently
-reproduced image bytes can be sealed and the recipe can become ready.
+The checked-in `6ad0e3dbc60e5572c4288c86919238f71c1bc110` tap value is the
+source-catalog coordinate bound by the migration, runtime-support, and
+selection-lock contracts. It is not sufficient release authority by itself.
+`scripts/homebrew-main-shell-product-state.py` jointly validates the
+selection lock, artifact lock, and shell recipe: only `publishable` admits
+shipping, while `awaiting-selection` and `candidate` remain review-only.
 
 The shell recipe remains `UNPUBLISHED` so archive staging can substitute the
 exact landed Kandelo commit after that seal exists. The lazy artifact lock
@@ -4075,6 +4074,12 @@ recursively roll back or reinterpret canonical package state. `SIGKILL` or
 runner loss can prevent cleanup, but cannot let later deployment steps consume
 that partial runner. Ordinary `prepare-browser` remains the independent
 bottle-backed path.
+
+Both the public lifecycle proof and the final Pages gate pin and forward the
+production CORS proxy while serving the built tree. Vite preview otherwise
+replaces the built service worker's external proxy with its development-only
+same-origin relay. The required Chromium runs therefore exercise the same
+external lazy-bottle transport that remains after deployment.
 
 Pages intentionally continues to run for every `main` push without a path
 filter. The canonical browser package projection and shared inputs can grow;

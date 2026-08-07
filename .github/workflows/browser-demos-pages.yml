@@ -203,6 +203,10 @@ jobs:
         working-directory: apps/browser-demos
         env:
           VITE_BASE: /kandelo/
+          # WHY: Vite preview defaults to its local same-origin relay. Pin the
+          # deployed proxy so this gate exercises the service-worker transport
+          # that will remain after the static tree reaches GitHub Pages.
+          VITE_CORS_PROXY_URL: https://wordpress-playground-cors-proxy.net/?
           KANDELO_BROWSER_DEMO_INPUTS: main
           KANDELO_HOMEBREW_MAIN_SHELL_STRICT: "1"
           KANDELO_HOMEBREW_MAIN_SHELL_SHA256: ${{ steps.shell_product.outputs.image_sha256 }}
@@ -214,7 +218,21 @@ jobs:
           KANDELO_TEST_BASE_URL: http://127.0.0.1:5401/kandelo/
         run: |
           set -euo pipefail
+          # WHY: dev-shell removes ambient workflow variables. Forward the
+          # complete exact-product contract so Playwright cannot silently skip
+          # strict acceptance or preview different bytes, base, or transport.
           bash ../../scripts/dev-shell.sh env \
+            "VITE_BASE=$VITE_BASE" \
+            "VITE_CORS_PROXY_URL=$VITE_CORS_PROXY_URL" \
+            "KANDELO_BROWSER_DEMO_INPUTS=$KANDELO_BROWSER_DEMO_INPUTS" \
+            "KANDELO_HOMEBREW_MAIN_SHELL_STRICT=$KANDELO_HOMEBREW_MAIN_SHELL_STRICT" \
+            "KANDELO_HOMEBREW_MAIN_SHELL_SHA256=$KANDELO_HOMEBREW_MAIN_SHELL_SHA256" \
+            "KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256=$KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_SHA256" \
+            "KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES=$KANDELO_HOMEBREW_MAIN_SHELL_BOOTSTRAP_BYTES" \
+            "KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE=$KANDELO_HOMEBREW_MAIN_SHELL_TRANSPORT_MODE" \
+            "KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL=$KANDELO_HOMEBREW_MAIN_SHELL_MIRROR_PLAN_URL" \
+            "KANDELO_PLAYWRIGHT_SERVE_DIST=$KANDELO_PLAYWRIGHT_SERVE_DIST" \
+            "KANDELO_TEST_BASE_URL=$KANDELO_TEST_BASE_URL" \
             "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
             npx playwright test \
             test/kandelo-homebrew-main-shell.spec.ts \
