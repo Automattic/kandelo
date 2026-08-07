@@ -65,6 +65,23 @@ describe("verified Homebrew bottle descriptor projection", () => {
     );
   });
 
+  it("derives the canonical keg when the publisher omits its redundant path", () => {
+    const fixture = bottleFixture({ name: "ruby", version: "4.0.5_2" });
+    const publisherPackage = structuredClone(fixture.packageEntry);
+    delete ((publisherPackage.bottles as Array<Record<string, unknown>>)[0]!).keg;
+
+    const descriptor = projectVerifiedHomebrewBottle({
+      sidecarsInput: fixture.sidecarsInput,
+      packageEntry: publisherPackage,
+      arch: "wasm32",
+      bottle: fixture.bottle,
+      publicUrl: fixture.publicUrl,
+      dependencyDescriptors: [],
+    });
+
+    expect(descriptor.keg).toBe(`${PREFIX}/Cellar/ruby/4.0.5_2`);
+  });
+
   it("projects verified links with POSIX bracket, underscore, and dotfile basenames", () => {
     for (const { source, target } of [
       { source: "bin/[", target: "bin/[" },

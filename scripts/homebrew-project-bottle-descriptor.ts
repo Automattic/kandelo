@@ -71,7 +71,9 @@ export function projectVerifiedHomebrewBottle(
   requireEqual(selectedBottle.payload_root, payloadRoot, "sidecar bottle.payload_root");
   requireEqual(selectedBottle.prefix, KANDELO_HOMEBREW_GUEST_LAYOUT.prefix, "sidecar bottle.prefix");
   requireEqual(selectedBottle.cellar, KANDELO_HOMEBREW_GUEST_LAYOUT.cellar, "sidecar bottle.cellar");
-  requireEqual(selectedBottle.keg, `${KANDELO_HOMEBREW_GUEST_LAYOUT.cellar}/${payloadRoot}`, "sidecar bottle.keg");
+  if (selectedBottle.keg !== undefined) {
+    requireEqual(selectedBottle.keg, `${KANDELO_HOMEBREW_GUEST_LAYOUT.cellar}/${payloadRoot}`, "sidecar bottle.keg");
+  }
 
   const bottleSha256 = sha256(options.bottle);
   if (bottleSha256 !== digest(selectedBottle.cache_key_sha, "sidecar bottle.cache_key_sha")) {
