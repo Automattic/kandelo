@@ -83,6 +83,10 @@ import { buildPythonVfsImage } from "./build-python-vfs-image";
 import { buildPerlVfsImage } from "./build-perl-vfs-image";
 import { buildRedisVfsImage } from "./build-redis-vfs-image";
 import { buildErlangVfsImage } from "./build-erlang-vfs-image";
+import { buildKandeloSdkVfsImage } from "./build-kandelo-sdk-vfs-image";
+import { buildMariadbTestVfsImage } from "./build-mariadb-test-vfs-image";
+import { buildPhpTestVfsImage } from "./build-php-test-vfs-image";
+import { buildSqliteTestVfsImage } from "./build-sqlite-test-vfs-image";
 
 const REPOSITORY_ROOT = resolve(import.meta.dirname, "../../..");
 
@@ -1080,6 +1084,273 @@ export async function buildStagedStandaloneProduct(
   }
 }
 
+const SDK_TEST_PRODUCT_BUILDERS = new Map([
+  ["developer-kandelo-sdk", "images/vfs/scripts/build-kandelo-sdk-vfs-image.sh"],
+  ["test-mariadb", "images/vfs/scripts/build-mariadb-test-vfs-image.sh"],
+  ["test-php", "images/vfs/scripts/build-php-test-vfs-image.sh"],
+  ["test-sqlite", "images/vfs/scripts/build-sqlite-test-vfs-image.sh"],
+] as const);
+
+type SdkTestProductId =
+  (typeof SDK_TEST_PRODUCT_BUILDERS extends Map<infer K, string> ? K : never);
+
+/** Build an SDK or upstream-test product only from its resolved manifest inputs. */
+export async function buildStagedSdkOrTestProduct(
+  productId: SdkTestProductId,
+  invocation: StagedProductInvocation,
+): Promise<void> {
+  assertStagedProductEnvironment(process.env);
+  const build = await openVfsProductBuild(
+    invocation.resolvedInputsPath,
+    invocation.builderReportPath,
+  );
+  const manifest = validateSelectedProductManifest(invocation.manifestPath, build);
+  if (
+    build.product.id !== productId ||
+    manifest.id !== productId ||
+    manifest.builder !== SDK_TEST_PRODUCT_BUILDERS.get(productId)
+  ) {
+    throw new Error(`${productId} staging selected a different product or builder`);
+  }
+  if (
+    manifest.software.homebrew.length !== 0 ||
+    manifest.software.archive.length !== 0
+  ) {
+    throw new Error(`${productId} staging does not accept Homebrew or external archives`);
+  }
+  const expected = expectedManifestInputs(manifest);
+  assertExactInputInventory(build, expected, productId);
+  const temporaryRoot = realDirectory(
+    process.env.TMPDIR ?? "",
+    "staged product temporary root",
+  );
+  const work = mkdtempSync(join(temporaryRoot, `kandelo-${productId}-`));
+  try {
+    const required = (id: string, kind: VfsProductInputKind) =>
+      requireExpectedInput(build, expected, id, kind);
+    const packageBytes = (name: string, output: string) => exactInputBytes(
+      required(
+        resolvedInputId("package-output", name, "output", output),
+        "package-output",
+      ),
+      `${productId} ${name}/${output}`,
+    );
+    const materializeRole = (
+      name: string,
+      role: string,
+      destination: string,
+      archiveRoot: string,
+    ) => materializeNamedSingleRootArchive(
+      exactInputBytes(
+        required(
+          resolvedInputId("package-output", name, "source-role", role),
+          "package-output",
+        ),
+        `${productId} ${name} source role ${role}`,
+      ),
+      destination,
+      `${productId} ${name} source role ${role}`,
+      archiveRoot,
+    );
+    const materializeRepository = (
+      id: string,
+      paths: readonly string[],
+      destination: string,
+    ) => {
+      const input = required(
+        resolvedInputId("repository-path", id),
+        "repository-path",
+      );
+      if (input.placement === "lazy-reference") {
+        throw new Error(`${productId} repository ${id} must be embedded`);
+      }
+      const bundle = readRepositoryPathBundle(input.path, build.source);
+      if (canonicalJson(bundle.paths) !== canonicalJson(paths)) {
+        throw new Error(`${productId} repository ${id} differs from canonical paths`);
+      }
+      materializeRepositoryPathBundle(bundle, destination);
+    };
+    const targetAbi = {
+      version: build.targetAbi.version,
+      snapshotSha256: build.targetAbi.snapshot_sha256,
+    };
+
+    switch (productId) {
+      case "developer-kandelo-sdk": {
+        const wrappersRoot = join(work, "sdk-wrappers");
+        const glueRoot = join(work, "sdk-glue");
+        const licensesRoot = join(work, "sdk-licenses");
+        materializeRepository(
+          "sdk-wrappers",
+          ["sdk/config.site", "sdk/kandelo/bin"],
+          wrappersRoot,
+        );
+        materializeRepository("sdk-glue", ["libc/glue"], glueRoot);
+        materializeRepository(
+          "sdk-licenses",
+          ["COPYING.runtime", "LICENSE", "libc/musl/COPYRIGHT", "sdk/kandelo/licenses"],
+          licensesRoot,
+        );
+        const sysroot = join(work, "wasm32-sysroot");
+        const clangResources = join(work, "clang-resource-headers");
+        const libcxx = join(work, "libcxx");
+        materializeNamedSingleRootArchive(
+          exactInputBytes(
+            required("toolchain-wasm32-sysroot", "toolchain-output"),
+            "developer-kandelo-sdk wasm32 sysroot",
+          ),
+          sysroot,
+          "developer-kandelo-sdk wasm32 sysroot",
+          "wasm32-sysroot",
+        );
+        materializeNamedSingleRootArchive(
+          exactInputBytes(
+            required("toolchain-clang-resource-headers", "toolchain-output"),
+            "developer-kandelo-sdk Clang resource headers",
+          ),
+          clangResources,
+          "developer-kandelo-sdk Clang resource headers",
+          "clang-resource-headers",
+        );
+        materializeNamedSingleRootArchive(
+          packageBytes("libcxx", "libcxx"),
+          libcxx,
+          "developer-kandelo-sdk libc++",
+          "libcxx",
+        );
+        const glueDirectory = join(glueRoot, "libc/glue");
+        const glueObjects = join(work, "glue-objects");
+        mkdirSync(glueObjects, { mode: 0o700 });
+        const compiler = join(wrappersRoot, "sdk/kandelo/bin/wasm32posix-cc");
+        for (const name of ["channel_syscall", "compiler_rt", "cxxrt", "dlopen"]) {
+          const result = spawnSync(
+            compiler,
+            ["-O2", "-c", join(glueDirectory, `${name}.c`), "-o", join(glueObjects, `${name}.o`)],
+            {
+              cwd: work,
+              encoding: "utf8",
+              env: {
+                ...process.env,
+                WASM_POSIX_CLANG_RESOURCE_DIR: clangResources,
+                WASM_POSIX_CXX_DRIVER: "0",
+                WASM_POSIX_GLUE_DIR: glueDirectory,
+                WASM_POSIX_GLUE_OBJ_DIR: glueObjects,
+                WASM_POSIX_SYSROOT: sysroot,
+              },
+              maxBuffer: 4 * 1024 * 1024,
+            },
+          );
+          if (result.error) throw result.error;
+          if (result.status !== 0) {
+            throw new Error(
+              `developer-kandelo-sdk glue compilation failed for ${name}:\n` +
+                boundedDiagnostics(result.stdout, result.stderr),
+            );
+          }
+        }
+        await buildKandeloSdkVfsImage({
+          sysrootDirectory: sysroot,
+          glueDirectory,
+          glueObjectsDirectory: glueObjects,
+          sdkBinDirectory: join(wrappersRoot, "sdk/kandelo/bin"),
+          configSitePath: join(wrappersRoot, "sdk/config.site"),
+          clangResourceDirectory: clangResources,
+          libcxxDirectory: libcxx,
+          licenseFiles: [
+            { hostPath: join(licensesRoot, "LICENSE"), guestPath: "/usr/share/licenses/kandelo/LICENSE" },
+            { hostPath: join(licensesRoot, "COPYING.runtime"), guestPath: "/usr/share/licenses/kandelo/COPYING.runtime" },
+            { hostPath: join(licensesRoot, "libc/musl/COPYRIGHT"), guestPath: "/usr/share/licenses/musl/COPYRIGHT" },
+            { hostPath: join(licensesRoot, "sdk/kandelo/licenses/LLVM-LICENSE.TXT"), guestPath: "/usr/share/licenses/llvm/LICENSE.TXT" },
+          ],
+          outputPath: invocation.outputPath,
+          targetAbi,
+        });
+        break;
+      }
+      case "test-mariadb": {
+        const systemTables = join(work, "mariadb-system-tables");
+        const testSuite = join(work, "mariadb-test-suite");
+        const repository = join(work, "mariadb-repository");
+        materializeRole("mariadb", "system-tables", systemTables, "system-tables");
+        materializeRole("mariadb", "test-suite", testSuite, "test-suite");
+        materializeRepository(
+          "services-database",
+          ["images/rootfs/etc/services"],
+          repository,
+        );
+        await buildMariadbTestVfsImage({
+          mariadbd: packageBytes("mariadb", "mariadbd"),
+          dash: packageBytes("dash", "dash"),
+          coreutils: packageBytes("coreutils", "coreutils"),
+          dinit: {
+            dinit: packageBytes("dinit", "dinit"),
+            dinitctl: packageBytes("dinit", "dinitctl"),
+          },
+          services: new Uint8Array(
+            readFileSync(join(repository, "images/rootfs/etc/services")),
+          ),
+          systemTablesDirectory: systemTables,
+          testSuiteDirectory: testSuite,
+          includeAll: false,
+          outputPath: invocation.outputPath,
+          targetAbi,
+        });
+        break;
+      }
+      case "test-php": {
+        const source = join(work, "php-test-suite");
+        const repository = join(work, "php-repository");
+        materializeRole("php", "test-suite", source, "test-suite");
+        materializeRepository(
+          "php-test-fixtures",
+          ["tests/php-fixtures"],
+          repository,
+        );
+        const base = exactInputBytes(
+          required("product-platform-rootfs", "product-image"),
+          "test-php platform rootfs",
+        );
+        const extensionOutputs = ["opcache", "curl", "phar", "zend_test", "zip", "intl"];
+        const extensions = Object.fromEntries(
+          extensionOutputs.map((name) => [`${name}.so`, packageBytes("php", name)]),
+        );
+        await buildPhpTestVfsImage({
+          baseImage: base,
+          php: packageBytes("php", "php"),
+          phpFpm: packageBytes("php", "php-fpm"),
+          extensions,
+          icuData: packageBytes("php", "icu-data"),
+          sourceDirectory: source,
+          fixtureDirectory: join(repository, "tests/php-fixtures"),
+          outputPath: invocation.outputPath,
+          targetAbi,
+        });
+        break;
+      }
+      case "test-sqlite": {
+        const sqliteSource = join(work, "sqlite-full-source");
+        const tclLibrary = join(work, "tcl-runtime-library");
+        materializeRole("sqlite", "full-source", sqliteSource, "full-source");
+        materializeRole("tcl", "runtime-library", tclLibrary, "runtime-library");
+        await buildSqliteTestVfsImage({
+          sqlite3: packageBytes("sqlite", "sqlite3"),
+          testfixture: packageBytes("sqlite", "testfixture"),
+          dash: packageBytes("dash", "dash"),
+          coreutils: packageBytes("coreutils", "coreutils"),
+          sqliteSourceDirectory: sqliteSource,
+          tclLibraryDirectory: tclLibrary,
+          outputPath: invocation.outputPath,
+          targetAbi,
+        });
+        break;
+      }
+    }
+    await build.finish(invocation.outputPath);
+  } finally {
+    rmSync(work, { force: true, recursive: true });
+  }
+}
+
 function expectedManifestInputs(
   manifest: SelectedProductManifest,
 ): Map<string, ExpectedServiceInput> {
@@ -1135,7 +1406,7 @@ function expectedManifestInputs(
     add(
       resolvedInputId("toolchain-output", toolchain.id),
       "toolchain-output",
-      "build-only",
+      claimPlacement(toolchain.role, toolchain.materialization),
     );
   }
   return expected;
@@ -1248,6 +1519,15 @@ function materializeSingleRootArchive(
   materializeExactArchive(bytes, destination, label, true);
 }
 
+function materializeNamedSingleRootArchive(
+  bytes: Uint8Array,
+  destination: string,
+  label: string,
+  expectedRoot: string,
+): void {
+  materializeExactArchive(bytes, destination, label, true, expectedRoot);
+}
+
 function materializeArchiveContents(
   bytes: Uint8Array,
   destination: string,
@@ -1261,6 +1541,7 @@ function materializeExactArchive(
   destination: string,
   label: string,
   stripSingleRoot: boolean,
+  expectedRoot?: string,
 ): void {
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_BUNDLE_BYTES) {
     throw new Error(`${label} archive size is outside the accepted bound`);
@@ -1279,6 +1560,7 @@ function materializeExactArchive(
       destination,
       label,
       stripSingleRoot,
+      expectedRoot,
     );
     return;
   }
@@ -1302,6 +1584,7 @@ function materializeExactArchive(
       destination,
       label,
       stripSingleRoot,
+      expectedRoot,
     );
     return;
   }
@@ -1311,6 +1594,7 @@ function materializeExactArchive(
       destination,
       label,
       stripSingleRoot,
+      expectedRoot,
     );
     return;
   }
@@ -1322,10 +1606,14 @@ function materializeTarEntries(
   destination: string,
   label: string,
   stripSingleRoot: boolean,
+  expectedRoot?: string,
 ): void {
   const root = stripSingleRoot
     ? commonArchiveRoot(entries.map((entry) => entry.path), label)
     : null;
+  if (expectedRoot !== undefined && root !== expectedRoot) {
+    throw new Error(`${label} has top-level directory ${root}, expected ${expectedRoot}`);
+  }
   for (const entry of entries) {
     if (entry.type === "symlink" || entry.type === "hardlink") {
       throw new Error(`${label} contains unsupported ${entry.type} ${entry.path}`);
@@ -1353,6 +1641,7 @@ function materializeZipSource(
   destination: string,
   label: string,
   stripSingleRoot: boolean,
+  expectedRoot?: string,
 ): void {
   const entries = parseZipCentralDirectory(bytes);
   if (entries.length === 0 || entries.length > MAX_BUNDLE_ENTRIES) {
@@ -1370,6 +1659,9 @@ function materializeZipSource(
   const root = stripSingleRoot
     ? commonArchiveRoot(entries.map((entry) => entry.fileName), label)
     : null;
+  if (expectedRoot !== undefined && root !== expectedRoot) {
+    throw new Error(`${label} has top-level directory ${root}, expected ${expectedRoot}`);
+  }
   for (const entry of entries) {
     if (entry.isSymlink) {
       throw new Error(`${label} contains unsupported symlink ${entry.fileName}`);
@@ -2439,7 +2731,8 @@ interface SelectedProductManifest {
       id: string;
       component: string;
       provider: string;
-      role: "build";
+      role: "runtime" | "build";
+      materialization?: "embedded" | "lazy";
     }>;
   };
 }
@@ -2489,7 +2782,8 @@ if (import.meta.url === invokedPath) {
       command !== "platform-rootfs" &&
       command !== "browser-main-shell" &&
       !SERVICE_PRODUCT_BUILDERS.has(command as ServiceProductId) &&
-      !STANDALONE_COMMAND_PRODUCTS.has(command as StandaloneProductCommand)
+      !STANDALONE_COMMAND_PRODUCTS.has(command as StandaloneProductCommand) &&
+      !SDK_TEST_PRODUCT_BUILDERS.has(command as SdkTestProductId)
     ) {
       throw new Error(
         "expected a supported staged VFS product command",
@@ -2508,6 +2802,11 @@ if (import.meta.url === invokedPath) {
     ) {
       await buildStagedStandaloneProduct(
         command as StandaloneProductCommand,
+        invocation,
+      );
+    } else if (SDK_TEST_PRODUCT_BUILDERS.has(command as SdkTestProductId)) {
+      await buildStagedSdkOrTestProduct(
+        command as SdkTestProductId,
         invocation,
       );
     } else {

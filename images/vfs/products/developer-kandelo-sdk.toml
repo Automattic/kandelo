@@ -6,7 +6,7 @@ builder = "images/vfs/scripts/build-kandelo-sdk-vfs-image.sh"
 
 [[composition.repository]]
 id = "sdk-wrappers"
-paths = ["sdk/kandelo/bin", "sdk/config.site"]
+paths = ["sdk/config.site", "sdk/kandelo/bin"]
 role = "runtime"
 materialization = "embedded"
 
@@ -19,8 +19,8 @@ materialization = "embedded"
 [[composition.repository]]
 id = "sdk-licenses"
 paths = [
-  "LICENSE",
   "COPYING.runtime",
+  "LICENSE",
   "libc/musl/COPYRIGHT",
   "sdk/kandelo/licenses",
 ]

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -549,6 +550,155 @@ describe("ABI staging product builders", () => {
     );
     expect(existsSync(erlang.outputPath)).toBe(false);
   });
+
+  it("builds SDK and upstream-test products from every exact declared input", async () => {
+    for (const productId of [
+      "developer-kandelo-sdk",
+      "test-mariadb",
+      "test-php",
+      "test-sqlite",
+    ]) {
+      const fixture = await sdkTestProductFixture(productId);
+      const result = runBuilder(productBuilder(productId), fixture);
+      expect(result.status, `${productId}\n${result.stdout}\n${result.stderr}`).toBe(0);
+
+      const report = JSON.parse(readFileSync(fixture.reportPath, "utf8"));
+      expect(report.capture).toEqual({ complete: true, unreported_reads: [] });
+      expect(report.inputs.map((input: { id: string }) => input.id)).toEqual(
+        fixture.inputIds,
+      );
+      expect(report.output.abi).toEqual(TARGET_ABI);
+      const bytes = new Uint8Array(readFileSync(fixture.outputPath));
+      expect(MemoryFileSystem.readImageMetadata(bytes)).toMatchObject({
+        kernelAbi: TARGET_ABI.version,
+        abiSnapshotSha256: TARGET_ABI.snapshot_sha256,
+      });
+      const fs = MemoryFileSystem.fromImage(bytes);
+      if (productId === "developer-kandelo-sdk") {
+        expect(readVfsFile(fs, "/usr/wasm32posix/sysroot/lib/libc.a")).toBe(
+          "fixture libc\n",
+        );
+        expect(readVfsFile(fs, "/usr/wasm32posix/sysroot/lib/libc++.a")).toBe(
+          "fixture libc++\n",
+        );
+        expect(readVfsFile(fs, "/usr/lib/llvm/lib/clang/21/include/stddef.h"))
+          .toBe("/* fixture clang header */\n");
+        expect(fs.stat("/usr/wasm32posix/glue-objects/channel_syscall.o").size)
+          .toBeGreaterThan(0);
+      } else if (productId === "test-mariadb") {
+        expect(readVfsFile(fs, "/mysql-test/main/1st.test")).toContain("1st");
+        expect(readVfsFile(fs, "/etc/services")).toContain("mysql");
+      } else if (productId === "test-php") {
+        expect(fs.stat("/usr/local/bin/php").size).toBeGreaterThan(0);
+        expect(fs.stat("/usr/local/sbin/php-fpm").size).toBeGreaterThan(0);
+        for (const extension of [
+          "opcache", "curl", "phar", "zend_test", "zip", "intl",
+        ]) {
+          expect(fs.stat(`/usr/lib/php/extensions/${extension}.so`).size)
+            .toBeGreaterThan(0);
+        }
+        expect(fs.stat("/usr/lib/php/icu.dat").size).toBeGreaterThan(0);
+        expect(readVfsFile(fs, "/php-src/ext/example/tests/basic.phpt"))
+          .toContain("--TEST--");
+        expect(existsSync(`${fixture.outputPath}.meta.json`)).toBe(false);
+      } else {
+        expect(fs.stat("/usr/bin/testfixture").size).toBeGreaterThan(0);
+        expect(readVfsFile(fs, "/sqlite/test/basic.test")).toContain("fixture");
+        expect(readVfsFile(fs, "/usr/lib/tcl8.6/init.tcl")).toContain("fixture");
+      }
+    }
+  });
+
+  it("rejects missing, ambient, substituted, or out-of-root SDK/test inputs", async () => {
+    const missingToolchain = await sdkTestProductFixture("developer-kandelo-sdk");
+    mutateResolvedInputs(missingToolchain, (document) => {
+      document.inputs = document.inputs.filter(
+        (input: { id: string }) => input.id !== "toolchain-clang-resource-headers",
+      );
+    });
+    let result = runBuilder(productBuilder("developer-kandelo-sdk"), missingToolchain);
+    expect(result.status).not.toBe(0);
+    expect(existsSync(missingToolchain.outputPath)).toBe(false);
+    expect(existsSync(missingToolchain.reportPath)).toBe(false);
+
+    const ambientHeaders = await sdkTestProductFixture("developer-kandelo-sdk");
+    mutateResolvedInputs(ambientHeaders, (document) => {
+      const input = document.inputs.find(
+        (item: { id: string }) => item.id === "toolchain-clang-resource-headers",
+      );
+      input.path = "/usr/include";
+    });
+    result = runBuilder(productBuilder("developer-kandelo-sdk"), ambientHeaders);
+    expect(result.status).not.toBe(0);
+    expect(existsSync(ambientHeaders.outputPath)).toBe(false);
+
+    const missingMariaRole = await sdkTestProductFixture("test-mariadb");
+    mutateResolvedInputs(missingMariaRole, (document) => {
+      document.inputs = document.inputs.filter(
+        (input: { id: string }) =>
+          input.id !== "package-mariadb-source-role-test-suite",
+      );
+    });
+    result = runBuilder(productBuilder("test-mariadb"), missingMariaRole);
+    expect(result.status).not.toBe(0);
+    expect(existsSync(missingMariaRole.outputPath)).toBe(false);
+
+    const extraPhpFixture = await sdkTestProductFixture("test-php");
+    const extraPath = join(extraPhpFixture.sourceRoot!, "tests/php-extra/extra.pem");
+    mkdirSync(dirname(extraPath), { recursive: true });
+    writeFileSync(extraPath, "undeclared fixture\n");
+    mutateResolvedInputs(extraPhpFixture, (document) => {
+      const input = document.inputs.find(
+        (item: { id: string }) => item.id === "repository-php-test-fixtures",
+      );
+      const bundlePath = join(extraPhpFixture.directory, "files/php-extra-bundle.json");
+      createRepositoryPathBundle({
+        repositoryRoot: extraPhpFixture.sourceRoot!,
+        paths: ["tests/php-extra", "tests/php-fixtures"],
+        source: SOURCE,
+        outputPath: bundlePath,
+      });
+      const bytes = readFileSync(bundlePath);
+      input.path = relative(extraPhpFixture.directory, bundlePath);
+      input.bytes = bytes.byteLength;
+      input.sha256 = sha256(bytes);
+    });
+    result = runBuilder(productBuilder("test-php"), extraPhpFixture);
+    expect(result.status).not.toBe(0);
+    expect(existsSync(extraPhpFixture.outputPath)).toBe(false);
+
+    const swappedSqlite = await sdkTestProductFixture("test-sqlite");
+    const sqliteDocument = JSON.parse(readFileSync(swappedSqlite.inputsPath, "utf8"));
+    const sqlite = sqliteDocument.inputs.find(
+      (input: { id: string }) => input.id === "package-sqlite-source-role-full-source",
+    );
+    const tcl = sqliteDocument.inputs.find(
+      (input: { id: string }) => input.id === "package-tcl-source-role-runtime-library",
+    );
+    const sqliteBytes = readFileSync(join(swappedSqlite.directory, sqlite.path));
+    const tclBytes = readFileSync(join(swappedSqlite.directory, tcl.path));
+    writeFileSync(join(swappedSqlite.directory, sqlite.path), tclBytes);
+    writeFileSync(join(swappedSqlite.directory, tcl.path), sqliteBytes);
+    sqlite.bytes = tclBytes.byteLength;
+    sqlite.sha256 = sha256(tclBytes);
+    tcl.bytes = sqliteBytes.byteLength;
+    tcl.sha256 = sha256(sqliteBytes);
+    writeFileSync(swappedSqlite.inputsPath, canonicalJson(sqliteDocument));
+    result = runBuilder(productBuilder("test-sqlite"), swappedSqlite);
+    expect(result.status).not.toBe(0);
+    expect(existsSync(swappedSqlite.outputPath)).toBe(false);
+
+    const escapedExecutable = await sdkTestProductFixture("test-sqlite");
+    mutateResolvedInputs(escapedExecutable, (document) => {
+      const input = document.inputs.find(
+        (item: { id: string }) => item.id === "package-sqlite-output-testfixture",
+      );
+      input.path = "../ambient-testfixture.wasm";
+    });
+    result = runBuilder(productBuilder("test-sqlite"), escapedExecutable);
+    expect(result.status).not.toBe(0);
+    expect(existsSync(escapedExecutable.outputPath)).toBe(false);
+  });
 });
 
 interface BuilderFixture {
@@ -558,6 +708,7 @@ interface BuilderFixture {
   reportPath: string;
   outputPath: string;
   inputIds: string[];
+  sourceRoot?: string;
 }
 
 function platformRootfsFixture(): BuilderFixture {
@@ -1111,6 +1262,311 @@ function standaloneProductFixture(productId: string): BuilderFixture {
     outputPath: join(directory, product.manifest.output),
     inputIds: inputs.map((input) => String(input.id)),
   };
+}
+
+async function sdkTestProductFixture(productId: string): Promise<BuilderFixture> {
+  const directory = mkdtempSync(join(tmpdir(), `kandelo-${productId}-stage-`));
+  cleanupDirectories.add(directory);
+  const files = join(directory, "files");
+  const sourceRoot = join(directory, "source");
+  mkdirSync(files);
+  mkdirSync(sourceRoot);
+  mkdirSync(join(directory, "tmp"));
+  writeSdkTestRepositoryFixtures(sourceRoot);
+
+  const catalog = JSON.parse(readFileSync(catalogPath, "utf8"));
+  const product = catalog.products.find(
+    (entry: { manifest: { id: string } }) => entry.manifest.id === productId,
+  );
+  if (!product) throw new Error(`${productId} is missing from the product catalog`);
+
+  const inputs: Array<Record<string, unknown>> = [];
+  for (const base of product.manifest.composition.product) {
+    const path = join(files, `product-${base.id}.vfs`);
+    const fs = MemoryFileSystem.create(
+      new SharedArrayBuffer(8 * 1024 * 1024),
+    );
+    for (const guestPath of [
+      "/bin", "/usr", "/usr/bin", "/usr/local", "/usr/local/bin",
+      "/etc", "/root", "/tmp",
+    ]) {
+      fs.mkdir(guestPath, guestPath === "/tmp" ? 0o1777 : 0o755);
+    }
+    writeFileSync(path, await fs.saveImage({
+      normalizeTimestampsMs: 0,
+      metadata: {
+        version: 1,
+        kernelAbi: TARGET_ABI.version,
+        abiSnapshotSha256: TARGET_ABI.snapshot_sha256,
+        createdBy: "abi-staging-product-builders.test.ts",
+      },
+    }));
+    inputs.push(resolvedFileInput({
+      id: `product-${base.id}`,
+      kind: "product-image",
+      path,
+      root: directory,
+      role: "runtime",
+      declared: base.materialization,
+      architecture: product.manifest.architecture,
+    }));
+  }
+  for (const repository of product.manifest.composition.repository) {
+    const id = `repository-${repository.id}`;
+    const path = join(files, `${id}.json`);
+    createRepositoryPathBundle({
+      repositoryRoot: sourceRoot,
+      paths: repository.paths,
+      source: SOURCE,
+      outputPath: path,
+    });
+    inputs.push(resolvedFileInput({
+      id,
+      kind: "repository-path",
+      path,
+      root: directory,
+      role: repository.role,
+      declared: repository.role === "build"
+        ? "build-only"
+        : repository.materialization,
+      architecture: product.manifest.architecture,
+    }));
+  }
+  for (const claim of product.manifest.software.package) {
+    for (const output of claim.outputs) {
+      const id = `package-${claim.name}-output-${output}`;
+      const path = join(files, id);
+      writeFileSync(path, sdkTestOutputFixture(claim.name, output));
+      inputs.push(resolvedFileInput({
+        id,
+        kind: "package-output",
+        path,
+        root: directory,
+        role: claim.role,
+        declared: claim.role === "build"
+          ? "build-only"
+          : claim.materialization,
+        architecture: product.manifest.architecture,
+      }));
+    }
+    for (const sourceRole of claim.source_roles) {
+      const id = `package-${claim.name}-source-role-${sourceRole}`;
+      const path = join(files, `${id}.tar.gz`);
+      writeFileSync(path, sdkTestSourceRoleArchive(claim.name, sourceRole));
+      inputs.push(resolvedFileInput({
+        id,
+        kind: "package-output",
+        path,
+        root: directory,
+        role: claim.role,
+        declared: claim.role === "build"
+          ? "build-only"
+          : claim.materialization,
+        architecture: product.manifest.architecture,
+      }));
+    }
+  }
+  for (const toolchain of product.manifest.software.toolchain) {
+    const id = `toolchain-${toolchain.id}`;
+    const path = join(files, `${id}.tar.gz`);
+    writeFileSync(path, sdkToolchainFixture(toolchain.id));
+    inputs.push(resolvedFileInput({
+      id,
+      kind: "toolchain-output",
+      path,
+      root: directory,
+      role: toolchain.role,
+      declared: toolchain.role === "build"
+        ? "build-only"
+        : toolchain.materialization,
+      architecture: product.manifest.architecture,
+    }));
+  }
+  inputs.sort((left, right) => String(left.id).localeCompare(String(right.id)));
+  const inputsPath = join(directory, "resolved-inputs.json");
+  writeFileSync(inputsPath, canonicalJson({
+    build_environment: {
+      dev_shell_lock_sha256: "d".repeat(64),
+      policy_sha256: "e".repeat(64),
+    },
+    inputs,
+    kind: "kandelo-resolved-vfs-product-inputs",
+    product: {
+      architecture: product.manifest.architecture,
+      id: productId,
+      manifest_path: product.path,
+      manifest_sha256: product.sha256,
+      output: product.manifest.output,
+    },
+    reference_class: "candidate",
+    schema: 1,
+    source: SOURCE,
+    target_abi: TARGET_ABI,
+  }));
+  return {
+    directory,
+    manifestPath: join(repoRoot, product.path),
+    inputsPath,
+    reportPath: join(directory, "builder-report.json"),
+    outputPath: join(directory, product.manifest.output),
+    inputIds: inputs.map((input) => String(input.id)),
+    sourceRoot,
+  };
+}
+
+function writeSdkTestRepositoryFixtures(sourceRoot: string): void {
+  const write = (path: string, contents: string, mode = 0o644) => {
+    const target = join(sourceRoot, path);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, contents);
+    chmodSync(target, mode);
+  };
+  write(
+    "sdk/kandelo/bin/wasm32posix-cc",
+    [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      "output=",
+      "while (($#)); do",
+      "  if [[ $1 == -o ]]; then shift; output=$1; fi",
+      "  shift || true",
+      "done",
+      "[[ -n $output ]]",
+      "printf '\\x00asm\\x01\\x00\\x00\\x00' > \"$output\"",
+      "",
+    ].join("\n"),
+    0o755,
+  );
+  write("sdk/kandelo/bin/wasm32posix-c++", "#!/usr/bin/env bash\nexit 0\n", 0o755);
+  write("sdk/config.site", "# fixture config.site\n");
+  for (const source of ["channel_syscall", "compiler_rt", "cxxrt", "dlopen"]) {
+    write(`libc/glue/${source}.c`, `int ${source}(void) { return 0; }\n`);
+  }
+  write("LICENSE", "fixture Kandelo license\n");
+  write("COPYING.runtime", "fixture runtime notices\n");
+  write("libc/musl/COPYRIGHT", "fixture musl license\n");
+  write("sdk/kandelo/licenses/LLVM-LICENSE.TXT", "fixture LLVM license\n");
+  write("tests/php-fixtures/README.md", "fixture maintenance inputs\n");
+  write("images/rootfs/etc/services", "mysql 3306/tcp\nhttp 80/tcp\n");
+}
+
+function sdkTestOutputFixture(packageName: string, output: string): Uint8Array {
+  if (packageName === "libcxx" && output === "libcxx") {
+    return gzipSync(tarBytes([
+      {
+        path: "libcxx/lib/libc++.a",
+        contents: new TextEncoder().encode("fixture libc++\n"),
+        mode: 0o644,
+      },
+      {
+        path: "libcxx/lib/libc++abi.a",
+        contents: new TextEncoder().encode("fixture libc++abi\n"),
+        mode: 0o644,
+      },
+      {
+        path: "libcxx/include/c++/v1/vector",
+        contents: new TextEncoder().encode("// fixture vector\n"),
+        mode: 0o644,
+      },
+    ]), { level: 9 });
+  }
+  if (packageName === "php" && output === "icu-data") {
+    return new TextEncoder().encode("fixture ICU data\n");
+  }
+  return minimalWasm();
+}
+
+function sdkTestSourceRoleArchive(
+  packageName: string,
+  sourceRole: string,
+): Uint8Array {
+  if (packageName === "mariadb" && sourceRole === "system-tables") {
+    return sourceRoleArchive(packageName, sourceRole);
+  }
+  if (packageName === "mariadb" && sourceRole === "test-suite") {
+    const builder = readFileSync(
+      join(repoRoot, "images/vfs/scripts/build-mariadb-test-vfs-image.ts"),
+      "utf8",
+    );
+    const body = builder.match(/const CURATED_TESTS = \[([\s\S]*?)\];/)?.[1];
+    if (body === undefined) throw new Error("MariaDB curated fixture list missing");
+    const tests = Array.from(body.matchAll(/"([^"]+)"/g), (match) => match[1]);
+    return gzipSync(tarBytes([
+      ...tests.map((test) => ({
+        path: `test-suite/main/${test}.test`,
+        contents: new TextEncoder().encode(`# fixture ${test}\n`),
+        mode: 0o644,
+      })),
+      {
+        path: "test-suite/include/helper.inc",
+        contents: new TextEncoder().encode("# fixture include\n"),
+        mode: 0o644,
+      },
+      {
+        path: "test-suite/std_data/fixture.dat",
+        contents: new TextEncoder().encode("fixture data\n"),
+        mode: 0o644,
+      },
+    ]), { level: 9 });
+  }
+  if (packageName === "php" && sourceRole === "test-suite") {
+    return gzipSync(tarBytes([{
+      path: "test-suite/ext/example/tests/basic.phpt",
+      contents: new TextEncoder().encode(
+        "--TEST--\nfixture\n--FILE--\n<?php echo 'ok'; ?>\n--EXPECT--\nok\n",
+      ),
+      mode: 0o644,
+    }]), { level: 9 });
+  }
+  if (packageName === "sqlite" && sourceRole === "full-source") {
+    return gzipSync(tarBytes([{
+      path: "full-source/test/basic.test",
+      contents: new TextEncoder().encode("# fixture sqlite test\n"),
+      mode: 0o644,
+    }]), { level: 9 });
+  }
+  if (packageName === "tcl" && sourceRole === "runtime-library") {
+    return gzipSync(tarBytes([{
+      path: "runtime-library/init.tcl",
+      contents: new TextEncoder().encode("# fixture Tcl runtime\n"),
+      mode: 0o644,
+    }]), { level: 9 });
+  }
+  throw new Error(`no SDK/test source fixture for ${packageName}/${sourceRole}`);
+}
+
+function sdkToolchainFixture(id: string): Uint8Array {
+  if (id === "wasm32-sysroot") {
+    return gzipSync(tarBytes([
+      {
+        path: "wasm32-sysroot/lib/libc.a",
+        contents: new TextEncoder().encode("fixture libc\n"),
+        mode: 0o644,
+      },
+      {
+        path: "wasm32-sysroot/include/stdio.h",
+        contents: new TextEncoder().encode("/* fixture stdio */\n"),
+        mode: 0o644,
+      },
+    ]), { level: 9 });
+  }
+  if (id === "clang-resource-headers") {
+    return gzipSync(tarBytes([{
+      path: "clang-resource-headers/include/stddef.h",
+      contents: new TextEncoder().encode("/* fixture clang header */\n"),
+      mode: 0o644,
+    }]), { level: 9 });
+  }
+  throw new Error(`unknown SDK toolchain fixture ${id}`);
+}
+
+function mutateResolvedInputs(
+  fixture: BuilderFixture,
+  mutate: (document: any) => void,
+): void {
+  const document = JSON.parse(readFileSync(fixture.inputsPath, "utf8"));
+  mutate(document);
+  writeFileSync(fixture.inputsPath, canonicalJson(document));
 }
 
 function productBuilder(productId: string): string {

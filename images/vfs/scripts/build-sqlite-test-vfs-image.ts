@@ -1,35 +1,21 @@
-/**
- * Build a VFS image for the SQLite upstream Tcl testfixture suite.
- *
- * The browser runner restores this image, writes no additional suite files,
- * and spawns /usr/bin/testfixture with cwd=/sqlite and argv test/<name>.test.
- *
- * Produces: $SQLITE_TEST_VFS_OUT (default:
- * apps/browser-demos/public/sqlite-test.vfs.zst).
- */
+/** Build the SQLite upstream Tcl test VFS from explicit or legacy inputs. */
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   ensureDir,
   ensureDirRecursive,
-  writeVfsBinary,
   symlink,
+  writeVfsBinary,
 } from "../../../host/src/vfs/image-helpers";
 import { findRepoRoot, tryResolveBinary } from "../../../host/src/binary-resolver";
-import { saveImage, walkAndWrite } from "./vfs-image-helpers";
-
-const REPO_ROOT = findRepoRoot();
-const SQLITE_DIR = join(REPO_ROOT, "packages/registry/sqlite");
-const TCL_DIR = join(REPO_ROOT, "packages/registry/tcl");
-const SQLITE_FULL = join(SQLITE_DIR, "sqlite-full-src");
-const TCL_LIBRARY = join(TCL_DIR, "tcl-install/lib/tcl8.6");
-const TESTFIXTURE = join(SQLITE_DIR, "bin/testfixture.wasm");
-const SQLITE3 = join(SQLITE_DIR, "sqlite-install/bin/sqlite3.wasm");
-const DASH_PATH = tryResolveBinary("programs/dash.wasm");
-const COREUTILS_PATH = tryResolveBinary("programs/coreutils.wasm");
-const OUT_FILE = process.env.SQLITE_TEST_VFS_OUT
-  ?? join(REPO_ROOT, "apps/browser-demos/public/sqlite-test.vfs.zst");
+import {
+  exactVfsImageMetadata,
+  saveImage,
+  type ExactVfsImageAbi,
+  walkAndWrite,
+} from "./vfs-image-helpers";
 
 const COREUTILS_SYMLINK_NAMES = [
   "cat", "chmod", "cp", "date", "dirname", "echo", "env", "expr", "false",
@@ -37,79 +23,118 @@ const COREUTILS_SYMLINK_NAMES = [
   "sort", "tail", "tee", "test", "touch", "tr", "true", "uname", "wc", "[",
 ];
 
-function checkPrereqs(): void {
-  const missing: string[] = [];
-  if (!existsSync(TESTFIXTURE)) missing.push(`testfixture.wasm missing at ${TESTFIXTURE}`);
-  if (!existsSync(SQLITE3)) missing.push(`sqlite3.wasm missing at ${SQLITE3}`);
-  if (!existsSync(join(SQLITE_FULL, "test"))) missing.push(`SQLite full source missing at ${SQLITE_FULL}`);
-  if (!existsSync(TCL_LIBRARY)) missing.push(`Tcl runtime library missing at ${TCL_LIBRARY}`);
-  if (missing.length > 0) {
-    throw new Error(
-      `${missing.join("\n")}\n\nRun:\n` +
-      "  bash packages/registry/tcl/build-tcl.sh\n" +
-      "  bash packages/registry/sqlite/build-sqlite.sh\n" +
-      "  bash packages/registry/sqlite/build-testfixture.sh",
-    );
-  }
+export interface SqliteTestVfsInputs {
+  sqlite3: Uint8Array;
+  testfixture: Uint8Array;
+  dash?: Uint8Array;
+  coreutils?: Uint8Array;
+  sqliteSourceDirectory: string;
+  tclLibraryDirectory: string;
+  outputPath: string;
+  targetAbi?: ExactVfsImageAbi;
 }
 
-async function main() {
-  checkPrereqs();
+export async function buildSqliteTestVfsImage(
+  inputs: SqliteTestVfsInputs,
+): Promise<void> {
+  if (!existsSync(join(inputs.sqliteSourceDirectory, "test"))) {
+    throw new Error("SQLite staged full-source input omits test/");
+  }
+  if (!existsSync(join(inputs.tclLibraryDirectory, "init.tcl"))) {
+    throw new Error("SQLite staged Tcl runtime-library input omits init.tcl");
+  }
+  for (const [label, bytes] of [
+    ["sqlite3", inputs.sqlite3],
+    ["testfixture", inputs.testfixture],
+  ] as const) {
+    if (bytes.byteLength === 0) throw new Error(`SQLite staged ${label} is empty`);
+  }
 
-  console.log("==> Building SQLite upstream-test VFS image");
-  const sab = new SharedArrayBuffer(64 * 1024 * 1024, { maxByteLength: 512 * 1024 * 1024 });
-  const fs = MemoryFileSystem.create(sab, 512 * 1024 * 1024);
-
+  const fs = MemoryFileSystem.create(
+    new SharedArrayBuffer(64 * 1024 * 1024, { maxByteLength: 512 * 1024 * 1024 }),
+    512 * 1024 * 1024,
+  );
   for (const dir of [
     "/tmp", "/home", "/root", "/dev", "/etc", "/bin", "/usr", "/usr/bin",
     "/usr/lib", "/sqlite",
-  ]) {
-    ensureDir(fs, dir);
-  }
+  ]) ensureDir(fs, dir);
   fs.chmod("/tmp", 0o777);
 
-  writeVfsBinary(fs, "/usr/bin/testfixture", new Uint8Array(readFileSync(TESTFIXTURE)));
+  writeVfsBinary(fs, "/usr/bin/testfixture", inputs.testfixture);
   symlink(fs, "/usr/bin/testfixture", "/bin/testfixture");
-  writeVfsBinary(fs, "/usr/bin/sqlite3", new Uint8Array(readFileSync(SQLITE3)));
+  writeVfsBinary(fs, "/usr/bin/sqlite3", inputs.sqlite3);
   symlink(fs, "/usr/bin/sqlite3", "/bin/sqlite3");
-
-  if (DASH_PATH && existsSync(DASH_PATH)) {
-    writeVfsBinary(fs, "/bin/dash", new Uint8Array(readFileSync(DASH_PATH)));
+  if (inputs.dash !== undefined) {
+    if (inputs.dash.byteLength === 0) throw new Error("SQLite staged dash is empty");
+    writeVfsBinary(fs, "/bin/dash", inputs.dash);
     symlink(fs, "/bin/dash", "/bin/sh");
     symlink(fs, "/bin/dash", "/usr/bin/sh");
   }
-  if (COREUTILS_PATH && existsSync(COREUTILS_PATH)) {
-    writeVfsBinary(fs, "/bin/coreutils", new Uint8Array(readFileSync(COREUTILS_PATH)));
+  if (inputs.coreutils !== undefined) {
+    if (inputs.coreutils.byteLength === 0) {
+      throw new Error("SQLite staged coreutils is empty");
+    }
+    writeVfsBinary(fs, "/bin/coreutils", inputs.coreutils);
     for (const name of COREUTILS_SYMLINK_NAMES) {
       symlink(fs, "/bin/coreutils", `/bin/${name}`);
       symlink(fs, "/bin/coreutils", `/usr/bin/${name}`);
     }
   }
-
-  console.log("  Writing Tcl runtime...");
-  walkAndWrite(fs, TCL_LIBRARY, "/usr/lib/tcl8.6");
-
-  console.log("  Writing SQLite full source/test tree...");
+  walkAndWrite(fs, inputs.tclLibraryDirectory, "/usr/lib/tcl8.6");
   ensureDirRecursive(fs, "/sqlite");
-  const count = walkAndWrite(fs, SQLITE_FULL, "/sqlite", {
+  walkAndWrite(fs, inputs.sqliteSourceDirectory, "/sqlite", {
     exclude: (rel) =>
-      rel === ".fossil-settings" ||
-      rel.startsWith(".fossil-settings/") ||
-      rel.startsWith(".git/") ||
-      rel.startsWith("testfixture-build/") ||
-      rel.endsWith(".o") ||
-      rel.endsWith(".a"),
+      rel === ".fossil-settings" || rel.startsWith(".fossil-settings/") ||
+      rel.startsWith(".git/") || rel.startsWith("testfixture-build/") ||
+      rel.endsWith(".o") || rel.endsWith(".a"),
   });
-  console.log(`    ${count} source/test files`);
-
   symlink(fs, "/usr/bin/testfixture", "/sqlite/testfixture");
   symlink(fs, "/usr/bin/testfixture", "/sqlite/testfixture.wasm");
   symlink(fs, "/usr/bin/sqlite3", "/sqlite/sqlite3");
-
-  await saveImage(fs, OUT_FILE);
+  await saveImage(fs, inputs.outputPath, inputs.targetAbi === undefined
+    ? {}
+    : {
+        kernelAbi: inputs.targetAbi.version,
+        metadata: exactVfsImageMetadata(
+          inputs.targetAbi,
+          "images/vfs/scripts/build-sqlite-test-vfs-image.ts",
+        ),
+      });
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+async function main(): Promise<void> {
+  const repositoryRoot = findRepoRoot();
+  const sqliteDirectory = join(repositoryRoot, "packages/registry/sqlite");
+  const tclLibrary = join(repositoryRoot, "packages/registry/tcl/tcl-install/lib/tcl8.6");
+  const testfixture = join(sqliteDirectory, "bin/testfixture.wasm");
+  const sqlite3 = join(sqliteDirectory, "sqlite-install/bin/sqlite3.wasm");
+  const dash = tryResolveBinary("programs/dash.wasm");
+  const coreutils = tryResolveBinary("programs/coreutils.wasm");
+  const missing = [
+    testfixture,
+    sqlite3,
+    join(sqliteDirectory, "sqlite-full-src"),
+    tclLibrary,
+  ].filter((path) => !existsSync(path));
+  if (missing.length > 0) throw new Error(`SQLite test VFS inputs missing:\n${missing.join("\n")}`);
+  await buildSqliteTestVfsImage({
+    sqlite3: new Uint8Array(readFileSync(sqlite3)),
+    testfixture: new Uint8Array(readFileSync(testfixture)),
+    ...(dash === null ? {} : { dash: new Uint8Array(readFileSync(dash!)) }),
+    ...(coreutils === null
+      ? {}
+      : { coreutils: new Uint8Array(readFileSync(coreutils!)) }),
+    sqliteSourceDirectory: join(sqliteDirectory, "sqlite-full-src"),
+    tclLibraryDirectory: tclLibrary,
+    outputPath: process.env.SQLITE_TEST_VFS_OUT ??
+      join(repositoryRoot, "apps/browser-demos/public/sqlite-test.vfs.zst"),
+  });
+}
+
+const invokedPath = process.argv[1] ? pathToFileURL(resolve(process.argv[1])).href : "";
+if (import.meta.url === invokedPath) {
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}

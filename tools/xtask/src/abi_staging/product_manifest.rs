@@ -1235,6 +1235,12 @@ readonly = false
                 ]),
             ),
             (
+                "test-mariadb",
+                set(&[
+                    "services-database|images/rootfs/etc/services|Runtime|embedded",
+                ]),
+            ),
+            (
                 "test-php",
                 set(&["php-test-fixtures|tests/php-fixtures|Runtime|embedded"]),
             ),
