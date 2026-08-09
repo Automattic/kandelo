@@ -23,6 +23,8 @@ Options:
   --sab-size <bytes>     backing SharedArrayBuffer size (default: 16777216)
   --max-size <bytes>     maximum growable filesystem size
   --kernel-abi <n>       declare exact kernel ABI required by this VFS image
+  --abi-snapshot-sha256 <digest>
+                        bind the image to the exact structural ABI snapshot
   --quiet                suppress non-fatal override warnings
   --help                 print this message
 
@@ -39,6 +41,7 @@ interface ParsedArgs {
   sabSize?: number;
   maxSizeBytes?: number;
   kernelAbi?: number;
+  abiSnapshotSha256?: string;
   quiet: boolean;
 }
 
@@ -52,6 +55,7 @@ function parseArgs(args: string[]): ParsedArgs | "help" {
   let sabSize: number | undefined;
   let maxSizeBytes: number | undefined;
   let kernelAbi: number | undefined;
+  let abiSnapshotSha256: string | undefined;
   let quiet = false;
 
   const parseKernelAbi = (value: string): number => {
@@ -59,6 +63,15 @@ function parseArgs(args: string[]): ParsedArgs | "help" {
       throw new UsageError(`--kernel-abi must be a non-negative integer, got "${value}"`);
     }
     return parseInt(value, 10);
+  };
+
+  const parseAbiSnapshotSha256 = (value: string): string => {
+    if (!/^[0-9a-f]{64}$/.test(value)) {
+      throw new UsageError(
+        `--abi-snapshot-sha256 must be 64 lowercase hexadecimal characters, got "${value}"`,
+      );
+    }
+    return value;
   };
 
   for (let i = 0; i < args.length; i++) {
@@ -120,6 +133,10 @@ function parseArgs(args: string[]): ParsedArgs | "help" {
         kernelAbi = parseKernelAbi(value);
         continue;
       }
+      if (key === "--abi-snapshot-sha256") {
+        abiSnapshotSha256 = parseAbiSnapshotSha256(value);
+        continue;
+      }
       throw new UsageError(`unknown flag "${key}"`);
     }
     if (a === "--repo-root") {
@@ -132,6 +149,12 @@ function parseArgs(args: string[]): ParsedArgs | "help" {
       const v = args[++i];
       if (v === undefined) throw new UsageError(`flag "${a}" requires a value`);
       kernelAbi = parseKernelAbi(v);
+      continue;
+    }
+    if (a === "--abi-snapshot-sha256") {
+      const v = args[++i];
+      if (v === undefined) throw new UsageError(`flag "${a}" requires a value`);
+      abiSnapshotSha256 = parseAbiSnapshotSha256(v);
       continue;
     }
     if (a.startsWith("-")) {
@@ -148,6 +171,9 @@ function parseArgs(args: string[]): ParsedArgs | "help" {
   if (!output) {
     throw new UsageError(`missing required -o/--output <path>`);
   }
+  if (abiSnapshotSha256 !== undefined && kernelAbi === undefined) {
+    throw new UsageError("--abi-snapshot-sha256 requires --kernel-abi");
+  }
   return {
     manifest: positional[0],
     sourceTree: positional[1],
@@ -157,6 +183,7 @@ function parseArgs(args: string[]): ParsedArgs | "help" {
     sabSize,
     maxSizeBytes,
     kernelAbi,
+    abiSnapshotSha256,
     quiet,
   };
 }
@@ -229,6 +256,9 @@ export async function runBuild(args: string[]): Promise<number> {
         : {
             version: 1,
             kernelAbi: parsed.kernelAbi,
+            ...(parsed.abiSnapshotSha256 === undefined
+              ? {}
+              : { abiSnapshotSha256: parsed.abiSnapshotSha256 }),
             createdBy: "mkrootfs build",
           },
       onWarn,

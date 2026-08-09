@@ -5,6 +5,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 
+if [ "$#" -ne 0 ]; then
+    exec node "$REPO_ROOT/node_modules/tsx/dist/cli.mjs" \
+        "$REPO_ROOT/images/vfs/scripts/staged-product-inputs.ts" \
+        platform-rootfs "$@"
+fi
+
 if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
     require_resolver_root() {
         local env_name="$1" value="$2"

@@ -29,7 +29,7 @@ const INPUT_KINDS = [
   "repository-path",
 ] as const;
 
-type VfsProductInputKind = (typeof INPUT_KINDS)[number];
+export type VfsProductInputKind = (typeof INPUT_KINDS)[number];
 type InputRole = "runtime" | "build";
 type InputPlacement = "embedded" | "lazy-reference" | "build-only";
 type ReferenceClass = "candidate" | "canonical" | "local-fixture";
@@ -45,6 +45,12 @@ export interface ProductIdentity {
 export interface TargetAbi {
   version: number;
   snapshot_sha256: string;
+}
+
+export interface ExactProductSource {
+  repository: string;
+  commit: string;
+  tree: string;
 }
 
 interface ResolvedInput {
@@ -80,7 +86,7 @@ interface ResolvedInputs {
     dev_shell_lock_sha256: string;
   };
   reference_class: ReferenceClass;
-  source: { repository: string; commit: string; tree: string };
+  source: ExactProductSource;
   inputs: ResolvedInput[];
 }
 
@@ -112,6 +118,8 @@ export interface VfsProductInputDescriptor {
 export interface VfsProductBuild {
   readonly product: Readonly<ProductIdentity>;
   readonly targetAbi: Readonly<TargetAbi>;
+  readonly source: Readonly<ExactProductSource>;
+  inputIds(kind?: VfsProductInputKind): readonly string[];
   requireProductImage(id: string): VfsProductInputHandle;
   requireHomebrewBottle(id: string): VfsProductInputHandle;
   requirePackageOutput(id: string): VfsProductInputHandle;
@@ -168,6 +176,17 @@ async function openVfsProductBuildWithPolicy(
   );
   const byId = new Map(inputs.inputs.map((input) => [input.id, input]));
   const consumed = new Map<string, ResolvedInput>();
+  const allInputIds = Object.freeze(inputs.inputs.map((input) => input.id));
+  const inputIdsByKind = new Map<VfsProductInputKind, readonly string[]>(
+    INPUT_KINDS.map((kind) => [
+      kind,
+      Object.freeze(
+        inputs.inputs
+          .filter((input) => input.kind === kind)
+          .map((input) => input.id),
+      ),
+    ]),
+  );
   let finished = false;
 
   const requireInput = (
@@ -210,6 +229,9 @@ async function openVfsProductBuildWithPolicy(
   return Object.freeze({
     product: Object.freeze({ ...inputs.product }),
     targetAbi: Object.freeze({ ...inputs.target_abi }),
+    source: Object.freeze({ ...inputs.source }),
+    inputIds: (kind?: VfsProductInputKind) =>
+      kind === undefined ? allInputIds : inputIdsByKind.get(kind)!,
     requireProductImage: (id: string) => requireInput(id, "product-image"),
     requireHomebrewBottle: (id: string) => requireInput(id, "homebrew-bottle"),
     requirePackageOutput: (id: string) => requireInput(id, "package-output"),

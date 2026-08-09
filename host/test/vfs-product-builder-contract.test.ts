@@ -30,6 +30,25 @@ describe("VFS product builder contract", () => {
       fixture.reportPath,
     );
 
+    expect(build.inputIds()).toEqual([
+      "candidate-base",
+      "package-runtime",
+      "repository-config",
+      "shell-bottle",
+      "source-code",
+      "toolchain-sdk",
+    ]);
+    expect(build.inputIds("homebrew-bottle")).toEqual(["shell-bottle"]);
+    expect(build.inputIds("package-output")).toEqual(["package-runtime"]);
+    expect(build.inputIds("repository-path")).toEqual(["repository-config"]);
+    expect(build.inputIds()).toBe(build.inputIds());
+    expect(build.source).toEqual({
+      commit: "f".repeat(40),
+      repository: "kandelo-dev/kandelo",
+      tree: "1".repeat(40),
+    });
+    expect(Object.isFrozen(build.source)).toBe(true);
+
     expect(() => build.requireProductImage("missing")).toThrow(/not declared/);
     expect(() => build.requirePackageOutput("candidate-base")).toThrow(
       /declared as product-image/,
