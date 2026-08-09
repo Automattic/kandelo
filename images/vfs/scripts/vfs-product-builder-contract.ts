@@ -435,9 +435,6 @@ function parseResolvedInput(
   if (architecture !== productArchitecture) {
     fail(`${label} architecture does not match product architecture`);
   }
-  if (kind === "toolchain-output" && role !== "build") {
-    fail(`${label} toolchain output must have build role`);
-  }
   const declared = oneOf(
     record.declared_materialization,
     ["embedded", "lazy", "build-only"] as const,

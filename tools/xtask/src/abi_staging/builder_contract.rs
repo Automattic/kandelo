@@ -500,14 +500,6 @@ fn validate_exact_source(source: &ExactSourceV1) -> Result<(), String> {
 }
 
 fn validate_materialization(input: &ResolvedVfsInputV1) -> Result<(), String> {
-    if input.kind == ResolvedVfsInputKindV1::ToolchainOutput
-        && input.role != SoftwareRoleV1::Build
-    {
-        return Err(format!(
-            "toolchain input {:?} must have build role",
-            input.id
-        ));
-    }
     match (input.role, input.declared_materialization, input.effective_materialization) {
         (
             SoftwareRoleV1::Runtime,
@@ -1086,6 +1078,21 @@ mod tests {
         )
         .unwrap_err()
         .contains("exact namespace and bytes"));
+    }
+
+    #[test]
+    fn accepts_declared_runtime_toolchain_outputs() {
+        let root = tempfile::tempdir().unwrap();
+        let mut inputs = fixture_inputs(root.path());
+        let toolchain = &mut inputs.inputs[0];
+        toolchain.role = SoftwareRoleV1::Runtime;
+        toolchain.declared_materialization = DeclaredInputMaterializationV1::Embedded;
+        toolchain.effective_materialization = ConsumedInputPlacementV1::Embedded;
+
+        assert_eq!(
+            validate_resolved_inputs(&canonical_json_bytes(&inputs).unwrap(), root.path()).unwrap(),
+            inputs
+        );
     }
 
     #[cfg(unix)]

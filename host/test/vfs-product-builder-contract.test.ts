@@ -112,6 +112,27 @@ describe("VFS product builder contract", () => {
     );
   });
 
+  it("accepts toolchain outputs declared as embedded runtime bytes", async () => {
+    const fixture = await createFixture();
+    const inputs = JSON.parse(readFileSync(fixture.inputsPath, "utf8"));
+    const toolchain = inputs.inputs.find(
+      (input: { id: string }) => input.id === "toolchain-sdk",
+    );
+    toolchain.role = "runtime";
+    toolchain.declared_materialization = "embedded";
+    toolchain.effective_materialization = "embedded";
+    writeFileSync(fixture.inputsPath, canonicalJson(inputs));
+
+    const build = await openVfsProductBuild(
+      fixture.inputsPath,
+      fixture.reportPath,
+    );
+    expect(build.requireToolchainOutput("toolchain-sdk")).toMatchObject({
+      placement: "embedded",
+      path: join(fixture.directory, "files/sdk"),
+    });
+  });
+
   it("writes no report when output ABI validation fails", async () => {
     for (const [options, expected] of [
       [{ outputSnapshotSha256: "c".repeat(64) }, /ABI snapshot SHA-256/],
