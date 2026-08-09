@@ -20,7 +20,7 @@ pub enum VfsArchitectureV1 {
     Wasm64,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MaterializationV1 {
     Embedded,
@@ -739,7 +739,7 @@ fn repository_relative_path(repository_root: &Path, path: &Path) -> Result<Strin
     Ok(parts.join("/"))
 }
 
-fn read_bounded_regular_file(path: &Path, maximum: usize) -> Result<Vec<u8>, String> {
+pub(crate) fn read_bounded_regular_file(path: &Path, maximum: usize) -> Result<Vec<u8>, String> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
     if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -753,7 +753,7 @@ fn read_bounded_regular_file(path: &Path, maximum: usize) -> Result<Vec<u8>, Str
     fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))
 }
 
-fn atomic_write_regular(output: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn atomic_write_regular(output: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = output
         .parent()
         .ok_or_else(|| format!("output {} has no parent directory", output.display()))?;

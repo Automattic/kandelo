@@ -1,0 +1,1 @@
+{"kind":"kandelo-test-vfs-products","registrations":[{"applicability":{"abi":"required","host":"not-applicable","kernel":"informational"},"node":["fixture-shell-startup"],"product":"fixture-shell"}],"schema":1}

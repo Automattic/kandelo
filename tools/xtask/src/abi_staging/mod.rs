@@ -1,5 +1,7 @@
 pub mod canonical_json;
+pub mod consumer_registry;
 pub mod product_manifest;
+pub mod selection;
 
 use std::process::ExitCode;
 
@@ -26,6 +28,28 @@ pub fn run(args: Vec<String>) -> ExitCode {
             eprintln!("xtask abi-staging: products requires generate or check");
             ExitCode::from(2)
         }
+        [group, action, rest @ ..] if group == "registries" => {
+            match consumer_registry::run_cli(action, rest) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("xtask abi-staging registries {action}: {error}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        [group, ..] if group == "registries" => {
+            eprintln!("xtask abi-staging: registries requires generate or check");
+            ExitCode::from(2)
+        }
+        [subcommand, rest @ ..] if subcommand == "requirements" => {
+            match selection::run_cli(rest) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("xtask abi-staging requirements: {error}");
+                    ExitCode::from(1)
+                }
+            }
+        }
         [subcommand, ..] => {
             eprintln!("xtask abi-staging: unknown subcommand {subcommand:?}");
             ExitCode::from(2)
@@ -35,5 +59,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
 
 fn print_help() {
     println!("usage: xtask abi-staging <subcommand> [args...]");
-    println!("subcommands: help, products <generate|check>");
+    println!(
+        "subcommands: help, products <generate|check>, registries <generate|check>, requirements"
+    );
 }

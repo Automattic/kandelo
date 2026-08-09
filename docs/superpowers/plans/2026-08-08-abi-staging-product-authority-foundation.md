@@ -847,6 +847,9 @@ class without the corresponding identity, or promotion without admission.
 **Files:**
 
 - Modify: `tools/xtask/src/abi_staging/mod.rs`
+- Modify: `tools/xtask/src/abi_staging/product_manifest.rs` (share bounded
+  regular-file and atomic-output helpers; give materialization values a stable
+  ordering for canonical requirement uses)
 - Create: `tools/xtask/src/abi_staging/consumer_registry.rs`
 - Create: `tools/xtask/src/abi_staging/selection.rs`
 - Create: `tools/xtask/tests/fixtures/abi-staging/canonical/pages.toml`
@@ -943,6 +946,7 @@ class without the corresponding identity, or promotion without admission.
 
   ```bash
   git add tools/xtask/src/abi_staging/mod.rs \
+    tools/xtask/src/abi_staging/product_manifest.rs \
     tools/xtask/src/abi_staging/consumer_registry.rs \
     tools/xtask/src/abi_staging/selection.rs \
     tools/xtask/tests/fixtures/abi-staging/canonical/pages.toml \

@@ -1,0 +1,11 @@
+schema = 1
+kind = "kandelo-test-vfs-products"
+
+[[registrations]]
+product = "fixture-shell"
+node = ["fixture-shell-startup"]
+
+[registrations.applicability]
+abi = "required"
+kernel = "informational"
+host = "not-applicable"
