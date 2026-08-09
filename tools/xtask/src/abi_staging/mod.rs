@@ -6,6 +6,7 @@ pub mod local_transport;
 pub mod mini_lifecycle;
 pub mod product_manifest;
 pub mod records;
+pub mod request_derivation;
 pub mod request_policy;
 pub mod selection;
 
@@ -86,6 +87,32 @@ pub fn run(args: Vec<String>) -> ExitCode {
             eprintln!("xtask abi-staging: request-policy requires generate or check");
             ExitCode::from(2)
         }
+        [group, action, rest @ ..] if group == "structural-report" => {
+            match request_derivation::run_structural_report_cli(action, rest) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("xtask abi-staging structural-report {action}: {error}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        [group, ..] if group == "structural-report" => {
+            eprintln!("xtask abi-staging: structural-report requires validate");
+            ExitCode::from(2)
+        }
+        [group, action, rest @ ..] if group == "request" => {
+            match request_derivation::run_request_cli(action, rest) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("xtask abi-staging request {action}: {error}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        [group, ..] if group == "request" => {
+            eprintln!("xtask abi-staging: request requires derive or fixture-check");
+            ExitCode::from(2)
+        }
         [group, action, rest @ ..] if group == "mini" => {
             match mini_lifecycle::run_cli(action, rest) {
                 Ok(()) => ExitCode::SUCCESS,
@@ -118,6 +145,6 @@ pub fn run(args: Vec<String>) -> ExitCode {
 fn print_help() {
     println!("usage: xtask abi-staging <subcommand> [args...]");
     println!(
-        "subcommands: help, products <generate|check>, registries <generate|check>, builder <validate-inputs|validate-report|compare-report>, guard-codes <generate|check>, request-policy <generate|check>, mini run, requirements"
+        "subcommands: help, products <generate|check>, registries <generate|check>, builder <validate-inputs|validate-report|compare-report>, guard-codes <generate|check>, request-policy <generate|check>, structural-report validate, request <derive|fixture-check>, mini run, requirements"
     );
 }

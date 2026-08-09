@@ -19,6 +19,7 @@ implementation_paths = [
   "tools/xtask/src/abi_staging/consumer_registry.rs",
   "tools/xtask/src/abi_staging/product_manifest.rs",
   "tools/xtask/src/abi_staging/records.rs",
+  "tools/xtask/src/abi_staging/request_derivation.rs",
   "tools/xtask/src/abi_staging/request_policy.rs",
   "tools/xtask/src/abi_staging/selection.rs",
 ]
