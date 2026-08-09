@@ -63,6 +63,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::rc::Rc;
 
+mod abi_staging;
 mod archive_extract_member;
 mod archive_stage;
 mod archive_stage_cli;
@@ -106,12 +107,15 @@ fn main() -> ExitCode {
         None => {
             eprintln!("usage: xtask <subcommand> [args...]");
             eprintln!(
-                "subcommands: dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, materialize-package-output, staging-reuse, archive-stage, archive-extract-member, build-index, set-build-commit, set-package-binary, index-update, index-candidate, homebrew-sidecars, homebrew-tier2-preflight, homebrew-validate"
+                "subcommands: abi-staging, dump-abi, bundle-program, build-deps, compute-cache-key-sha, sort-package-matrix, partition-package-matrix, package-dependency-artifacts, materialize-package-output, staging-reuse, archive-stage, archive-extract-member, build-index, set-build-commit, set-package-binary, index-update, index-candidate, homebrew-sidecars, homebrew-tier2-preflight, homebrew-validate"
             );
             return ExitCode::from(2);
         }
     };
     let rest: Vec<String> = args.collect();
+    if sub == "abi-staging" {
+        return abi_staging::run(rest);
+    }
     let result = match sub.as_str() {
         "dump-abi" => dump_abi::run(rest),
         "bundle-program" => bundle_program::run(rest),
