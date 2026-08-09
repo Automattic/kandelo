@@ -44,6 +44,14 @@ jq -ncS '{
   workflow_ref: ".github/workflows/abi-staging-reconcile.yml@refs/heads/main"
 }' >"$FIXTURE/run.json"
 jq -ncS '{
+  request_sha256: ("f" * 64),
+  source: {
+    commit: ("8" * 40),
+    repository: "Automattic/kandelo",
+    tree: ("9" * 40)
+  }
+}' >"$FIXTURE/request-binding.json"
+jq -ncS '{
   hosts: ["build"],
   id: "bottle-structure",
   kandelo_paths: [
@@ -399,6 +407,7 @@ run_verifier() {
     --host build \
     --attempt-ordinal 0 \
     --run "$FIXTURE/run.json" \
+    --request-binding "$FIXTURE/request-binding.json" \
     --tap-root "$TAP_ROOT" \
     --tap-commit "$TAP_COMMIT" \
     --dependency-provenance "$FIXTURE/dependencies.json" \
@@ -412,6 +421,7 @@ run_verifier "$SUCCESS"
 jq -e --arg digest "$FAKE_BOTTLE_SHA256" --arg test "$TEST_DEFINITION_SHA256" '
   .schema == 1 and .outcome == "success" and .exit_code == 0 and
   .attempt_ordinal == 0 and .candidate_layer.sha256 == $digest and
+  .request_sha256 == ("f" * 64) and .source.commit == ("8" * 40) and
   .test_definition == {host: "build", id: "bottle-structure", sha256: $test}
 ' "$SUCCESS/result.json" >/dev/null || fail "success result differs"
 jq -e '

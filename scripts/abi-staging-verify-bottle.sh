@@ -8,6 +8,7 @@ TEST_DEFINITION_SHA256=""
 HOST=""
 ATTEMPT_ORDINAL=""
 RUN=""
+REQUEST_BINDING=""
 TAP_ROOT=""
 TAP_COMMIT=""
 TAP_CHECKOUT_COMMIT=""
@@ -18,7 +19,7 @@ FORBIDDEN_ROOTS=()
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/abi-staging-verify-bottle.sh --candidate-locator <json> --test-definition <json> --test-definition-sha256 <sha256> --host <build|node|browser> --attempt-ordinal <number> --run <json> --tap-root <dir> --tap-commit <sha> [--tap-checkout-commit <sha>] --dependency-provenance <json> --sysroot-build-root <dir> --forbidden-root <absolute-path> [--forbidden-root ...] --out <dir>
+usage: scripts/abi-staging-verify-bottle.sh --candidate-locator <json> --test-definition <json> --test-definition-sha256 <sha256> --host <build|node|browser> --attempt-ordinal <number> --run <json> --request-binding <json> --tap-root <dir> --tap-commit <sha> [--tap-checkout-commit <sha>] --dependency-provenance <json> --sysroot-build-root <dir> --forbidden-root <absolute-path> [--forbidden-root ...] --out <dir>
 
 The locator must be an immutable public GHCR @sha256 reference. The verifier
 downloads the exact candidate manifest, record, metadata, and bottle layer,
@@ -35,6 +36,7 @@ while [ "$#" -gt 0 ]; do
     --host) HOST="${2:-}"; shift 2 ;;
     --attempt-ordinal) ATTEMPT_ORDINAL="${2:-}"; shift 2 ;;
     --run) RUN="${2:-}"; shift 2 ;;
+    --request-binding) REQUEST_BINDING="${2:-}"; shift 2 ;;
     --tap-root) TAP_ROOT="${2:-}"; shift 2 ;;
     --tap-commit) TAP_COMMIT="${2:-}"; shift 2 ;;
     --tap-checkout-commit) TAP_CHECKOUT_COMMIT="${2:-}"; shift 2 ;;
@@ -58,6 +60,7 @@ for requirement in \
   "host:$HOST" \
   "attempt-ordinal:$ATTEMPT_ORDINAL" \
   "run:$RUN" \
+  "request-binding:$REQUEST_BINDING" \
   "tap-root:$TAP_ROOT" \
   "tap-commit:$TAP_COMMIT" \
   "dependency-provenance:$DEPENDENCY_PROVENANCE" \
@@ -107,13 +110,25 @@ TAP_CHECKOUT_COMMIT="${TAP_CHECKOUT_COMMIT:-$TAP_COMMIT}"
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 : "${KANDELO_DEV_SHELL_TOOL_PATH:?run through scripts/dev-shell.sh}"
-for file in "$CANDIDATE_LOCATOR" "$TEST_DEFINITION" "$RUN" \
+for file in "$CANDIDATE_LOCATOR" "$TEST_DEFINITION" "$RUN" "$REQUEST_BINDING" \
   "$DEPENDENCY_PROVENANCE"; do
   [ -f "$file" ] && [ ! -L "$file" ] || {
     echo "abi-staging-verify-bottle.sh: required input is not a regular file: $file" >&2
     exit 2
   }
 done
+
+jq -e '
+  (keys == ["request_sha256", "source"]) and
+  (.request_sha256 | type == "string" and test("^[0-9a-f]{64}$")) and
+  (.source | keys == ["commit", "repository", "tree"]) and
+  (.source.repository | type == "string" and test("^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")) and
+  (.source.commit | type == "string" and test("^[0-9a-f]{40}$")) and
+  (.source.tree | type == "string" and test("^[0-9a-f]{40}$"))
+' "$REQUEST_BINDING" >/dev/null || {
+  echo "abi-staging-verify-bottle.sh: request binding is invalid" >&2
+  exit 2
+}
 for directory in "$TAP_ROOT" "$SYSROOT_BUILD_ROOT"; do
   [ -d "$directory" ] && [ ! -L "$directory" ] || {
     echo "abi-staging-verify-bottle.sh: required input is not a real directory: $directory" >&2
@@ -634,6 +649,7 @@ jq -ncS \
   --slurpfile locator "$CANDIDATE_LOCATOR" \
   --slurpfile candidate "$CONFIG" \
   --slurpfile run "$RUN" \
+  --slurpfile request "$REQUEST_BINDING" \
   --arg test_id "$TEST_ID" --arg test_sha "$TEST_DEFINITION_SHA256" \
   --arg host "$HOST" --arg outcome "$OUTCOME" \
   --argjson exit_code "$VERIFY_STATUS" --argjson ordinal "$ATTEMPT_ORDINAL" \
@@ -642,9 +658,9 @@ jq -ncS \
       candidate_layer: $candidate[0].candidate.bottle_layer,
       candidate_record: $locator[0], diagnostics: $diagnostics,
       exit_code: $exit_code, kind: "kandelo-abi-staging-verification-result",
-      outcome: $outcome, request_sha256: $candidate[0].common.request_sha256,
+      outcome: $outcome, request_sha256: $request[0].request_sha256,
       run: $run[0], runtime_artifacts: {host_runtime: null, kernel: null, vfs: null},
-      schema: 1, source: $candidate[0].common.source,
+      schema: 1, source: $request[0].source,
       test_definition: {host: $host, id: $test_id, sha256: $test_sha}}
   ' >"$OUT/result.json"
 
