@@ -12,9 +12,10 @@ max_evidence_bindings = 512
 
 addressed_taps = ["kandelo-dev/homebrew-tap-core"]
 
-# This list expands as protected request behavior is introduced. Publication
-# remains observe-only until the final workflow itself is included and checked.
+# This is the approved MVP implementation identity. Publication remains
+# observe-only until protected hosted canaries have supplied activation evidence.
 implementation_paths = [
+  ".github/workflows/abi-staging-request-feed.yml",
   "tools/xtask/src/abi_staging/canonical_json.rs",
   "tools/xtask/src/abi_staging/consumer_registry.rs",
   "tools/xtask/src/abi_staging/product_manifest.rs",

@@ -248,6 +248,28 @@ pub fn plan_request_feed_write(
     })
 }
 
+pub fn validate_request_feed_plan(
+    policy: &RequestPolicyV1,
+    request_bytes: &[u8],
+    plan_bytes: &[u8],
+) -> Result<RequestFeedPlanV1, String> {
+    let plan: RequestFeedPlanV1 = serde_json::from_slice(plan_bytes)
+        .map_err(|error| format!("request feed plan is invalid JSON: {error}"))?;
+    if canonical_json_bytes(&plan)? != plan_bytes {
+        return Err("request feed plan is not canonical JSON".to_string());
+    }
+    if plan.action == RequestFeedActionV1::RejectNameCollision {
+        return Err("request feed plan rejects an immutable name collision".to_string());
+    }
+    let expected = plan_request_feed_write(policy, &"0".repeat(40), request_bytes, None)?;
+    let mut normalized = plan.clone();
+    normalized.action = RequestFeedActionV1::CreatePrerelease;
+    if normalized != expected {
+        return Err("request feed plan does not match its canonical request".to_string());
+    }
+    Ok(plan)
+}
+
 pub fn run_cli(action: &str, args: &[String]) -> Result<(), String> {
     match action {
         "select-current" => {
@@ -295,6 +317,21 @@ pub fn run_cli(action: &str, args: &[String]) -> Result<(), String> {
                 existing.as_ref(),
             )?;
             atomic_write_regular(Path::new(&flags["--out"]), &canonical_json_bytes(&plan)?)
+        }
+        "validate-feed-plan" => {
+            let flags = parse_flags(args)?;
+            require_exact_flags(&flags, &["--policy", "--request", "--plan"])?;
+            let policy_path = Path::new(&flags["--policy"]);
+            let policy = parse_request_policy(
+                policy_path,
+                &read_bounded_regular_file(policy_path, 1024 * 1024)?,
+            )?;
+            let request = read_bounded_regular_file(
+                Path::new(&flags["--request"]),
+                policy.request_asset_max_bytes as usize,
+            )?;
+            let plan = read_bounded_regular_file(Path::new(&flags["--plan"]), 1024 * 1024)?;
+            validate_request_feed_plan(&policy, &request, &plan).map(|_| ())
         }
         _ => Err(format!("unknown request feed subcommand {action:?}")),
     }
@@ -598,5 +635,17 @@ mod tests {
                 .action,
             RequestFeedActionV1::RejectNameCollision
         );
+
+        let plan = plan_request_feed_write(&policy(), &"3".repeat(40), &bytes, None).unwrap();
+        let plan_bytes = canonical_json_bytes(&plan).unwrap();
+        validate_request_feed_plan(&policy(), &bytes, &plan_bytes).unwrap();
+        let mut changed = plan;
+        changed.public_download_url.push_str("-mutable");
+        assert!(validate_request_feed_plan(
+            &policy(),
+            &bytes,
+            &canonical_json_bytes(&changed).unwrap(),
+        )
+        .is_err());
     }
 }

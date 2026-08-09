@@ -259,6 +259,23 @@ pub fn run_cli(action: &str, args: &[String]) -> Result<(), String> {
                 &flags["--generated"],
             )
         }
+        "activation-mode" => {
+            let flags = parse_path_flags(args, &["--source"])?;
+            let source = resolve_repository_argument(
+                &repository_root,
+                &flags["--source"],
+                false,
+            )?;
+            let activation = parse_request_feed_activation(
+                &source,
+                &read_bounded_regular_file(&source, MAX_POLICY_BYTES)?,
+            )?;
+            match activation.mode {
+                RequestFeedModeV1::Observe => println!("observe"),
+                RequestFeedModeV1::Active => println!("active"),
+            }
+            Ok(())
+        }
         _ => Err(format!("unknown request-policy subcommand {action:?}")),
     }
 }

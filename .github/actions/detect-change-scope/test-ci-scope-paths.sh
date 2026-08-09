@@ -461,6 +461,28 @@ assert_not_matches package_publish_flow_changed_files \
   "tools/xtask/src/remote_fetch.rs" \
   "tools/xtask/src/remote_fetch.rs"
 
+# The protected request feed is publication and CI control machinery. Changes
+# must exercise those focused gates without rebuilding unrelated package
+# archives.
+abi_staging_request_control_paths=(
+  .github/workflows/abi-staging-request-feed.yml
+  .github/scripts/publish-abi-staging-request.sh
+  .github/scripts/test-publish-abi-staging-request.sh
+  scripts/check-abi-staging-request-workflow.rb
+  scripts/test-abi-staging-request-feed.sh
+)
+for abi_staging_request_control_path in "${abi_staging_request_control_paths[@]}"; do
+  assert_matches package_publish_flow_changed_files \
+    "$abi_staging_request_control_path" \
+    "$abi_staging_request_control_path"
+  assert_matches ci_control_changed_files \
+    "$abi_staging_request_control_path" \
+    "$abi_staging_request_control_path"
+  assert_not_matches package_archive_changed_files \
+    "$abi_staging_request_control_path" \
+    "$abi_staging_request_control_path"
+done
+
 assert_matches kernel_runtime_changed_files \
   "host/src/process.ts" \
   "host/src/process.ts"

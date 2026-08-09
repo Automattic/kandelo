@@ -85,7 +85,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
             }
         }
         [group, ..] if group == "request-policy" => {
-            eprintln!("xtask abi-staging: request-policy requires generate or check");
+            eprintln!("xtask abi-staging: request-policy requires generate, check, or activation-mode");
             ExitCode::from(2)
         }
         [group, action, rest @ ..] if group == "structural-report" => {
@@ -111,7 +111,7 @@ pub fn run(args: Vec<String>) -> ExitCode {
             }
         }
         [group, ..] if group == "request" => {
-            eprintln!("xtask abi-staging: request requires derive or fixture-check");
+            eprintln!("xtask abi-staging: request requires derive, fixture-check, select-current, plan-feed-write, or validate-feed-plan");
             ExitCode::from(2)
         }
         [group, action, rest @ ..] if group == "mini" => {
@@ -146,6 +146,6 @@ pub fn run(args: Vec<String>) -> ExitCode {
 fn print_help() {
     println!("usage: xtask abi-staging <subcommand> [args...]");
     println!(
-        "subcommands: help, products <generate|check>, registries <generate|check>, builder <validate-inputs|validate-report|compare-report>, guard-codes <generate|check>, request-policy <generate|check>, structural-report validate, request <derive|fixture-check>, mini run, requirements"
+        "subcommands: help, products <generate|check>, registries <generate|check>, builder <validate-inputs|validate-report|compare-report>, guard-codes <generate|check>, request-policy <generate|check|activation-mode>, structural-report validate, request <derive|fixture-check|select-current|plan-feed-write|validate-feed-plan>, mini run, requirements"
     );
 }
