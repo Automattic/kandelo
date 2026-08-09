@@ -1376,7 +1376,9 @@ pub fn deterministic_retry_delay_ms(
         return Err("retry base and cap must be positive bounded milliseconds".to_string());
     }
     let exponent = u32::from(retry_number - 1);
-    let exponential = base_ms.checked_mul(1_u64 << exponent).unwrap_or(u64::MAX);
+    let exponential = base_ms
+        .checked_mul(1_u64 << exponent)
+        .ok_or_else(|| "retry window arithmetic overflow".to_string())?;
     let window_ms = cap_ms.min(exponential);
     let mut hasher = Sha256::new();
     hasher.update(request_digest.as_bytes());
@@ -1922,6 +1924,28 @@ pub fn run_cli(action: &str, args: &[String]) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct RetryVectorsV1 {
+        schema: u64,
+        kind: String,
+        vectors: Vec<RetryVectorV1>,
+    }
+
+    #[derive(Debug, Deserialize, Serialize)]
+    #[serde(deny_unknown_fields)]
+    struct RetryVectorV1 {
+        name: String,
+        request_sha256: String,
+        subject: String,
+        retry_number: u8,
+        base_ms: u64,
+        cap_ms: u64,
+        window_ms: Option<u64>,
+        delay_ms: Option<u64>,
+        error: Option<String>,
+    }
+
     const REQUEST: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     fn fixture_path() -> PathBuf {
@@ -1973,6 +1997,43 @@ mod tests {
         assert_eq!([first, second, third], [159, 1_196, 1_036]);
         assert!(deterministic_retry_delay_ms(REQUEST, "formula:base:wasm32", 4, 1_000, 8_000)
             .is_err());
+    }
+
+    #[test]
+    fn deterministic_full_jitter_matches_shared_cross_language_vectors() {
+        let path = crate::repo_root()
+            .join("tools/xtask/tests/fixtures/abi-staging/retry-vectors.json");
+        let bytes = fs::read(path).unwrap();
+        let fixture: RetryVectorsV1 = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(fixture.schema, 1);
+        assert_eq!(fixture.kind, "kandelo-abi-staging-retry-vectors");
+        assert_eq!(canonical_json_bytes(&fixture).unwrap(), bytes);
+        for vector in fixture.vectors {
+            let result = deterministic_retry_delay_ms(
+                &vector.request_sha256,
+                &vector.subject,
+                vector.retry_number,
+                vector.base_ms,
+                vector.cap_ms,
+            );
+            match (vector.delay_ms, vector.error) {
+                (Some(delay), None) => {
+                    assert_eq!(result.unwrap(), delay, "{}", vector.name);
+                    let exponent = u32::from(vector.retry_number - 1);
+                    let window = vector
+                        .base_ms
+                        .checked_mul(1_u64 << exponent)
+                        .map(|value| vector.cap_ms.min(value))
+                        .unwrap();
+                    assert_eq!(Some(window), vector.window_ms, "{}", vector.name);
+                }
+                (None, Some(error)) => {
+                    assert_eq!(result.unwrap_err(), error, "{}", vector.name);
+                    assert_eq!(vector.window_ms, None, "{}", vector.name);
+                }
+                _ => panic!("retry vector {} has contradictory output", vector.name),
+            }
+        }
     }
 
     #[test]
