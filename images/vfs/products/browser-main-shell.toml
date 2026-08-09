@@ -11,10 +11,25 @@ materialization = "embedded"
 [[composition.repository]]
 id = "main-shell-config"
 paths = [
+  "homebrew/main-shell-brew-package-tree.json",
+  "homebrew/main-shell-compatibility.json",
   "homebrew/main-shell-default.json",
   "homebrew/main-shell-demo.json",
-  "homebrew/main-shell-brew-package-tree.json",
 ]
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "homebrew-bootstrap"
+outputs = ["homebrew-bootstrap"]
+source_roles = []
+role = "runtime"
+materialization = "lazy"
+
+[[software.package]]
+name = "homebrew-bootstrap"
+outputs = ["homebrew-brew"]
+source_roles = []
 role = "runtime"
 materialization = "embedded"
 

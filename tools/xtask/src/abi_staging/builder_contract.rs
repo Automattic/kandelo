@@ -269,7 +269,11 @@ fn validate_resolved_inputs_with_mode(
         }
 
         match (&input.kind, &input.descriptor) {
-            (ResolvedVfsInputKindV1::HomebrewBottle, Some(descriptor)) => {
+            (
+                ResolvedVfsInputKindV1::HomebrewBottle
+                | ResolvedVfsInputKindV1::PackageOutput,
+                Some(descriptor),
+            ) => {
                 validate_sha256(&descriptor.sha256)?;
                 validate_immutable_reference(&descriptor.reference, &descriptor.sha256)?;
                 validate_reference_class_fields(
@@ -319,7 +323,7 @@ fn validate_resolved_inputs_with_mode(
             }
             (_, Some(_)) => {
                 return Err(format!(
-                    "resolved input {:?} descriptor is only valid for Homebrew bottles",
+                    "resolved input {:?} descriptor is only valid for Homebrew bottles and package outputs",
                     input.id
                 ));
             }
@@ -1064,6 +1068,41 @@ mod tests {
 
         let validated = validate_resolved_inputs(&canonical_value(&value), root.path()).unwrap();
         assert_eq!(validated.inputs[2].id, "lazy-bottle");
+    }
+
+    #[test]
+    fn accepts_exact_package_descriptor_for_lazy_composition() {
+        let root = tempfile::tempdir().unwrap();
+        let mut inputs = fixture_inputs(root.path());
+        let descriptor = b"{\"kind\":\"kandelo-package-deferred-zip-tree\"}\n";
+        write(
+            root.path(),
+            "inputs/lazy-package-descriptor.json",
+            descriptor,
+        );
+        inputs.inputs[1].declared_materialization = DeclaredInputMaterializationV1::Lazy;
+        inputs.inputs[1].effective_materialization = ConsumedInputPlacementV1::LazyReference;
+        inputs.inputs[1].path = None;
+        inputs.inputs[1].reference = Some(format!(
+            "https://artifacts.example.test/package?sha256={}",
+            inputs.inputs[1].sha256,
+        ));
+        inputs.inputs[1].descriptor = Some(ResolvedVfsInputDescriptorV1 {
+            sha256: sha(descriptor),
+            bytes: descriptor.len() as u64,
+            reference: format!(
+                "https://artifacts.example.test/package-descriptor?sha256={}",
+                sha(descriptor),
+            ),
+            path: "inputs/lazy-package-descriptor.json".to_string(),
+        });
+
+        let validated = validate_resolved_inputs(
+            &canonical_json_bytes(&inputs).unwrap(),
+            root.path(),
+        )
+        .unwrap();
+        assert_eq!(validated.inputs[1].kind, ResolvedVfsInputKindV1::PackageOutput);
     }
 
     #[test]

@@ -593,12 +593,17 @@ function parseInputDescriptor(
   inputRoot: string,
   label: string,
 ): ResolvedInputDescriptor | undefined {
-  if (kind !== "homebrew-bottle") {
-    if (value !== undefined) fail(`${label} descriptor is only valid for Homebrew bottles`);
+  if (kind !== "homebrew-bottle" && kind !== "package-output") {
+    if (value !== undefined) {
+      fail(`${label} descriptor is only valid for Homebrew bottles and package outputs`);
+    }
     return undefined;
   }
   if (value === undefined) {
-    fail(`${label} Homebrew bottle requires authenticated composition metadata`);
+    if (kind === "homebrew-bottle") {
+      fail(`${label} Homebrew bottle requires authenticated composition metadata`);
+    }
+    return undefined;
   }
   const descriptor = exactRecord(
     value,
@@ -617,7 +622,7 @@ function parseInputDescriptor(
     descriptor.reference,
     descriptorSha256,
     bytes,
-    "homebrew-bottle",
+    kind,
     referenceClass,
     `${label} descriptor`,
   );

@@ -1112,7 +1112,10 @@ readonly = false
                 ),
                 "sed|sed||Runtime|lazy",
             ])),
-            ("browser-main-shell", set(&[])),
+            ("browser-main-shell", set(&[
+                "homebrew-bootstrap|homebrew-bootstrap||Runtime|lazy",
+                "homebrew-bootstrap|homebrew-brew||Runtime|embedded",
+            ])),
             ("browser-node", set(&["node|node||Runtime|embedded"])),
             ("browser-nginx", set(&[
                 "dinit|dinit,dinitctl||Runtime|embedded",
@@ -1197,6 +1200,7 @@ readonly = false
                 "browser-main-shell",
                 set(&[concat!(
                     "main-shell-config|homebrew/main-shell-brew-package-tree.json,",
+                    "homebrew/main-shell-compatibility.json,",
                     "homebrew/main-shell-default.json,homebrew/main-shell-demo.json|",
                     "Runtime|embedded",
                 )]),
