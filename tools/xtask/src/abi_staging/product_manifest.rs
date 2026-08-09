@@ -1126,6 +1126,7 @@ readonly = false
                 "kernel|kernel||Build|none",
                 "nginx|nginx||Runtime|embedded",
                 "php|opcache,php-fpm||Runtime|embedded",
+                "php|php||Build|none",
             ])),
             ("browser-wordpress", set(&[
                 "dinit|dinit,dinitctl||Runtime|embedded",
@@ -1133,6 +1134,7 @@ readonly = false
                 "msmtpd|msmtpd||Runtime|embedded",
                 "nginx|nginx||Runtime|embedded",
                 "php|opcache,php-fpm||Runtime|embedded",
+                "php|php||Build|none",
             ])),
             ("browser-lamp", set(&[
                 "dinit|dinit,dinitctl||Runtime|embedded",
@@ -1141,6 +1143,7 @@ readonly = false
                 "msmtpd|msmtpd||Runtime|embedded",
                 "nginx|nginx||Runtime|embedded",
                 "php|opcache,php-fpm||Runtime|embedded",
+                "php|php||Build|none",
             ])),
             ("browser-mariadb-wasm32", set(&[
                 "coreutils|coreutils||Runtime|embedded",

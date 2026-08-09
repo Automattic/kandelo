@@ -59,6 +59,26 @@ function resolveDinitBinaries(): { dinit: string; dinitctl: string } {
 
 const DINIT_GUEST_BINARIES = ["/sbin/dinit", "/sbin/dinitctl"] as const;
 
+function residentRegularFile(
+  fs: MemoryFileSystem,
+  path: string,
+): "missing" | "resident" {
+  if (fs.getLazyEntry(path) !== null || fs.isPathDeferred(path)) {
+    throw new Error(`${path} must be resident before service-image composition`);
+  }
+  let stat;
+  try {
+    stat = fs.stat(path);
+  } catch (error) {
+    if (error instanceof SFSError && error.code === ENOENT) return "missing";
+    throw error;
+  }
+  if ((stat.mode & S_IFMT) !== S_IFREG) {
+    throw new Error(`${path} exists but is not a regular file`);
+  }
+  return "resident";
+}
+
 function residentDinitBinaryState(
   fs: MemoryFileSystem,
   path: (typeof DINIT_GUEST_BINARIES)[number],
@@ -88,7 +108,15 @@ function residentDinitBinaryState(
   return "resident";
 }
 
-function installLegacyDinitBinariesUnlessInherited(fs: MemoryFileSystem): void {
+export interface DinitBinaryInputs {
+  dinit: Uint8Array;
+  dinitctl: Uint8Array;
+}
+
+function installDinitBinariesUnlessInherited(
+  fs: MemoryFileSystem,
+  binaries?: DinitBinaryInputs,
+): void {
   const states = DINIT_GUEST_BINARIES.map((path) =>
     residentDinitBinaryState(fs, path),
   );
@@ -97,6 +125,20 @@ function installLegacyDinitBinariesUnlessInherited(fs: MemoryFileSystem): void {
     throw new Error(
       "the shell base contains an incomplete resident Dinit binary set",
     );
+  }
+
+  if (binaries !== undefined) {
+    if (
+      !(binaries.dinit instanceof Uint8Array) ||
+      binaries.dinit.byteLength === 0 ||
+      !(binaries.dinitctl instanceof Uint8Array) ||
+      binaries.dinitctl.byteLength === 0
+    ) {
+      throw new Error("exact Dinit inputs must contain both nonempty binaries");
+    }
+    writeVfsBinary(fs, "/sbin/dinit", binaries.dinit);
+    writeVfsBinary(fs, "/sbin/dinitctl", binaries.dinitctl);
+    return;
   }
 
   // WHY: service images are layered on the canonical shell. Once that shell
@@ -208,22 +250,35 @@ const ETC_GROUP = [
 
 const ETC_HOSTS = ["127.0.0.1\tlocalhost", "::1\tlocalhost", ""].join("\n");
 
-const ETC_SERVICES = readFileSync(
-  join(REPO_ROOT, "images", "rootfs", "etc", "services"),
-  "utf8",
-);
-
 /**
  * Install the account and network databases shared by dinit-based images.
  * `/etc/services` comes from the rootfs source so derived images cannot drift
  * into a second, smaller service-name contract.
  */
-export function addDinitBaseSystemFiles(fs: MemoryFileSystem): void {
+export function addDinitBaseSystemFiles(
+  fs: MemoryFileSystem,
+  preserveExistingServices = false,
+): void {
   ensureDirRecursive(fs, "/etc");
   writeVfsFile(fs, "/etc/passwd", ETC_PASSWD);
   writeVfsFile(fs, "/etc/group", ETC_GROUP);
   writeVfsFile(fs, "/etc/hosts", ETC_HOSTS);
-  writeVfsFile(fs, "/etc/services", ETC_SERVICES);
+  if (preserveExistingServices) {
+    if (residentRegularFile(fs, "/etc/services") === "missing") {
+      throw new Error(
+        "exact service-image composition requires /etc/services from its base product",
+      );
+    }
+    return;
+  }
+  writeVfsFile(
+    fs,
+    "/etc/services",
+    readFileSync(
+      join(REPO_ROOT, "images", "rootfs", "etc", "services"),
+      "utf8",
+    ),
+  );
 }
 
 /**
@@ -243,6 +298,8 @@ export interface AddDinitInitOptions {
    * the name (rare).
    */
   boot?: boolean | string;
+  /** Exact staged package bytes; forbids ambient Dinit resolution when set. */
+  binaries?: DinitBinaryInputs;
 }
 
 export interface PathReadinessServiceOptions {
@@ -335,12 +392,12 @@ export function addDinitInit(
 ): void {
   // Binaries
   ensureDirRecursive(fs, "/sbin");
-  installLegacyDinitBinariesUnlessInherited(fs);
+  installDinitBinariesUnlessInherited(fs, opts.binaries);
 
   // Basic rootfs files. Most Unix daemons expect these to exist at
   // startup; missing them is the usual cause of "started but exits 1
   // silently" failures.
-  addDinitBaseSystemFiles(fs);
+  addDinitBaseSystemFiles(fs, opts.binaries !== undefined);
 
   // Standard runtime/log dirs
   ensureDirRecursive(fs, "/var/log");

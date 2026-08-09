@@ -242,6 +242,134 @@ describe("ABI staging product builders", () => {
     expect(existsSync(fixture.outputPath)).toBe(false);
     expect(existsSync(fixture.reportPath)).toBe(false);
   }, 30_000);
+
+  it("builds browser service products from their complete declared inputs", async () => {
+    const shellFixture = await browserMainShellFixture();
+    const shellResult = runBuilder(
+      "scripts/build-homebrew-main-shell-product.sh",
+      shellFixture,
+    );
+    expect(
+      shellResult.status,
+      `${shellResult.stdout}\n${shellResult.stderr}`,
+    ).toBe(0);
+    const shellImage = new Uint8Array(readFileSync(shellFixture.outputPath));
+
+    for (const productId of [
+      "browser-node",
+      "browser-nginx",
+      "browser-nginx-php",
+    ]) {
+      const fixture = serviceProductFixture(productId, shellImage);
+      const result = runBuilder(productBuilder(productId), fixture);
+      expect(
+        result.status,
+        `${productId}\n${result.stdout}\n${result.stderr}`,
+      ).toBe(0);
+      const report = JSON.parse(readFileSync(fixture.reportPath, "utf8"));
+      expect(report.capture).toEqual({ complete: true, unreported_reads: [] });
+      expect(report.inputs.map((input: { id: string }) => input.id)).toEqual(
+        fixture.inputIds,
+      );
+      expect(report.output.abi).toEqual(TARGET_ABI);
+      const fs = MemoryFileSystem.fromImage(
+        new Uint8Array(readFileSync(fixture.outputPath)),
+      );
+      const principal = productId === "browser-node"
+        ? "/usr/bin/node"
+        : "/usr/sbin/nginx";
+      expect(fs.stat(principal).size).toBeGreaterThan(0);
+      if (productId !== "browser-node") {
+        expect(fs.stat("/sbin/dinit").size).toBeGreaterThan(0);
+        expect(readVfsFile(fs, "/etc/services")).toContain("http 80/tcp");
+      }
+    }
+  }, 90_000);
+
+  it.each([
+    "browser-node",
+    "browser-nginx",
+    "browser-nginx-php",
+    "browser-wordpress",
+    "browser-lamp",
+  ])("rejects an undeclared input before building %s", (productId) => {
+    const fixture = serviceProductFixture(
+      productId,
+      new TextEncoder().encode("unread invalid shell fixture"),
+    );
+    const document = JSON.parse(readFileSync(fixture.inputsPath, "utf8"));
+    const contents = new TextEncoder().encode("undeclared input");
+    const path = join(fixture.directory, "files", "undeclared-input");
+    writeFileSync(path, contents);
+    document.inputs.push({
+      architecture: "wasm32",
+      bytes: contents.byteLength,
+      declared_materialization: "build-only",
+      effective_materialization: "build-only",
+      id: "package-undeclared-output-extra",
+      kind: "package-output",
+      path: relative(fixture.directory, path),
+      role: "build",
+      sha256: sha256(contents),
+    });
+    document.inputs.sort(
+      (left: { id: string }, right: { id: string }) =>
+        left.id.localeCompare(right.id),
+    );
+    writeFileSync(fixture.inputsPath, canonicalJson(document));
+
+    const result = runBuilder(productBuilder(productId), fixture);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("resolved input IDs differ");
+    expect(existsSync(fixture.outputPath)).toBe(false);
+    expect(existsSync(fixture.reportPath)).toBe(false);
+  }, 30_000);
+
+  it("rejects a missing exact PHP build program before ambient resolution", () => {
+    const fixture = serviceProductFixture(
+      "browser-nginx-php",
+      new TextEncoder().encode("unread invalid shell fixture"),
+    );
+    const document = JSON.parse(readFileSync(fixture.inputsPath, "utf8"));
+    document.inputs = document.inputs.filter(
+      (input: { id: string }) =>
+        input.id !== "package-php-output-php",
+    );
+    writeFileSync(fixture.inputsPath, canonicalJson(document));
+
+    const result = runBuilder(productBuilder("browser-nginx-php"), fixture);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("package-php-output-php");
+    expect(existsSync(fixture.outputPath)).toBe(false);
+    expect(existsSync(fixture.reportPath)).toBe(false);
+  });
+
+  it("rejects an exact source archive that escapes its single root", () => {
+    const fixture = serviceProductFixture(
+      "browser-node",
+      new TextEncoder().encode("unread invalid shell fixture"),
+    );
+    const document = JSON.parse(readFileSync(fixture.inputsPath, "utf8"));
+    const input = document.inputs.find(
+      (item: { id: string }) => item.id === "archive-npm-runtime",
+    );
+    const path = join(fixture.directory, input.path);
+    const unsafe = gzipSync(tarBytes([{
+      path: "package/../escape.js",
+      contents: new TextEncoder().encode("escape\n"),
+      mode: 0o644,
+    }]), { level: 9 });
+    writeFileSync(path, unsafe);
+    input.bytes = unsafe.byteLength;
+    input.sha256 = sha256(unsafe);
+    writeFileSync(fixture.inputsPath, canonicalJson(document));
+
+    const result = runBuilder(productBuilder("browser-node"), fixture);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/unsafe|canonical relative path/);
+    expect(existsSync(fixture.outputPath)).toBe(false);
+    expect(existsSync(fixture.reportPath)).toBe(false);
+  });
 });
 
 interface BuilderFixture {
@@ -399,6 +527,13 @@ async function browserMainShellFixture(): Promise<BuilderFixture> {
       "f".repeat(64),
     8,
     0o755,
+  );
+  baseFs.createFileWithOwner(
+    "/etc/services",
+    0o644,
+    0,
+    0,
+    new TextEncoder().encode("http 80/tcp\nhttps 443/tcp\n"),
   );
   const baseBytes = await baseFs.saveImage({
     normalizeTimestampsMs: 0,
@@ -581,6 +716,224 @@ async function browserMainShellFixture(): Promise<BuilderFixture> {
     outputPath: join(directory, product.manifest.output),
     inputIds: inputs.map((input) => String(input.id)),
   };
+}
+
+function serviceProductFixture(
+  productId: string,
+  shellImage: Uint8Array,
+): BuilderFixture {
+  const directory = mkdtempSync(join(tmpdir(), `kandelo-${productId}-stage-`));
+  cleanupDirectories.add(directory);
+  const files = join(directory, "files");
+  const temporary = join(directory, "tmp");
+  mkdirSync(files);
+  mkdirSync(temporary);
+
+  const catalog = JSON.parse(readFileSync(catalogPath, "utf8"));
+  const product = catalog.products.find(
+    (entry: { manifest: { id: string } }) => entry.manifest.id === productId,
+  );
+  if (!product) throw new Error(`${productId} is missing from the product catalog`);
+
+  const inputs: Array<Record<string, unknown>> = [];
+  for (const composition of product.manifest.composition.product) {
+    const id = `product-${composition.id}`;
+    const path = join(files, `${id}.vfs.zst`);
+    writeFileSync(path, shellImage);
+    inputs.push(resolvedFileInput({
+      id,
+      kind: "product-image",
+      path,
+      root: directory,
+      role: "runtime",
+      declared: composition.materialization,
+    }));
+  }
+  for (const claim of product.manifest.software.package) {
+    for (const output of claim.outputs) {
+      const id = `package-${claim.name}-output-${output}`;
+      const path = join(files, id);
+      writeFileSync(path, minimalWasm());
+      inputs.push(resolvedFileInput({
+        id,
+        kind: "package-output",
+        path,
+        root: directory,
+        role: claim.role,
+        declared: claim.role === "build"
+          ? "build-only"
+          : claim.materialization,
+      }));
+    }
+    for (const sourceRole of claim.source_roles) {
+      const id = `package-${claim.name}-source-role-${sourceRole}`;
+      const path = join(files, `${id}.tar.gz`);
+      writeFileSync(path, sourceRoleArchive(claim.name, sourceRole));
+      inputs.push(resolvedFileInput({
+        id,
+        kind: "package-output",
+        path,
+        root: directory,
+        role: claim.role,
+        declared: claim.role === "build"
+          ? "build-only"
+          : claim.materialization,
+      }));
+    }
+  }
+  for (const archive of product.manifest.software.archive) {
+    const id = `archive-${archive.id}`;
+    const path = join(files, `${id}.archive`);
+    writeFileSync(path, sourceArchiveFixture(archive.id));
+    inputs.push(resolvedFileInput({
+      id,
+      kind: "source-archive",
+      path,
+      root: directory,
+      role: archive.role,
+      declared: archive.role === "build"
+        ? "build-only"
+        : archive.materialization,
+    }));
+  }
+  inputs.sort((left, right) =>
+    String(left.id).localeCompare(String(right.id))
+  );
+
+  const inputsPath = join(directory, "resolved-inputs.json");
+  writeFileSync(inputsPath, canonicalJson({
+    build_environment: {
+      dev_shell_lock_sha256: "d".repeat(64),
+      policy_sha256: "e".repeat(64),
+    },
+    inputs,
+    kind: "kandelo-resolved-vfs-product-inputs",
+    product: {
+      architecture: product.manifest.architecture,
+      id: productId,
+      manifest_path: product.path,
+      manifest_sha256: product.sha256,
+      output: product.manifest.output,
+    },
+    reference_class: "candidate",
+    schema: 1,
+    source: SOURCE,
+    target_abi: TARGET_ABI,
+  }));
+  return {
+    directory,
+    manifestPath: join(repoRoot, product.path),
+    inputsPath,
+    reportPath: join(directory, "builder-report.json"),
+    outputPath: join(directory, product.manifest.output),
+    inputIds: inputs.map((input) => String(input.id)),
+  };
+}
+
+function productBuilder(productId: string): string {
+  const catalog = JSON.parse(readFileSync(catalogPath, "utf8"));
+  const product = catalog.products.find(
+    (entry: { manifest: { id: string } }) => entry.manifest.id === productId,
+  );
+  if (!product) throw new Error(`${productId} is missing from the product catalog`);
+  return product.manifest.builder;
+}
+
+function resolvedFileInput(options: {
+  id: string;
+  kind: string;
+  path: string;
+  root: string;
+  role: "runtime" | "build";
+  declared: "embedded" | "lazy" | "build-only";
+}): Record<string, unknown> {
+  const bytes = readFileSync(options.path);
+  const effective = options.declared === "build-only"
+    ? "build-only"
+    : options.declared === "embedded"
+      ? "embedded"
+      : "lazy-reference";
+  if (effective === "lazy-reference") {
+    return {
+      architecture: "wasm32",
+      bytes: bytes.byteLength,
+      declared_materialization: options.declared,
+      effective_materialization: effective,
+      id: options.id,
+      kind: options.kind,
+      reference:
+        `https://artifacts.example.test/${options.id}?sha256=${sha256(bytes)}`,
+      role: options.role,
+      sha256: sha256(bytes),
+    };
+  }
+  return {
+    architecture: "wasm32",
+    bytes: bytes.byteLength,
+    declared_materialization: options.declared,
+    effective_materialization: effective,
+    id: options.id,
+    kind: options.kind,
+    path: relative(options.root, options.path),
+    role: options.role,
+    sha256: sha256(bytes),
+  };
+}
+
+function minimalWasm(): Uint8Array {
+  return new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
+}
+
+function sourceRoleArchive(packageName: string, sourceRole: string): Uint8Array {
+  const entries = packageName === "mariadb" && sourceRole === "system-tables"
+    ? [
+        {
+          path: "system-tables/mysql_system_tables.sql",
+          contents: new TextEncoder().encode("CREATE TABLE user (id INT);\n"),
+          mode: 0o644,
+        },
+        {
+          path: "system-tables/mysql_system_tables_data.sql",
+          contents: new TextEncoder().encode("INSERT INTO user VALUES (1);\n"),
+          mode: 0o644,
+        },
+      ]
+    : [{
+        path: `${sourceRole}/fixture.txt`,
+        contents: new TextEncoder().encode(`${packageName}/${sourceRole}\n`),
+        mode: 0o644,
+      }];
+  return gzipSync(tarBytes(entries), { level: 9 });
+}
+
+function sourceArchiveFixture(id: string): Uint8Array {
+  if (id === "wordpress-sqlite-integration") {
+    return zipSync({
+      "sqlite-database-integration/": new Uint8Array(),
+      "sqlite-database-integration/db.copy":
+        new TextEncoder().encode("<?php // fixture\n"),
+    }, { level: 9 });
+  }
+  if (id === "npm-runtime") {
+    const files = [
+      "bin/npm-cli.js",
+      "lib/cli.js",
+      "lib/utils/display.js",
+      "lib/commands/token.js",
+      "node_modules/cacache/lib/entry-index.js",
+      "node_modules/cacache/lib/verify.js",
+    ];
+    return gzipSync(tarBytes(files.map((path) => ({
+      path: `package/${path}`,
+      contents: new TextEncoder().encode("module.exports = {};\n"),
+      mode: path.startsWith("bin/") ? 0o755 : 0o644,
+    }))), { level: 9 });
+  }
+  return gzipSync(tarBytes([{
+    path: "wordpress/index.php",
+    contents: new TextEncoder().encode("<?php echo 'fixture';\n"),
+    mode: 0o644,
+  }]), { level: 9 });
 }
 
 function embeddedInput(

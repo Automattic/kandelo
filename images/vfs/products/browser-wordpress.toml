@@ -23,6 +23,12 @@ role = "runtime"
 materialization = "embedded"
 
 [[software.package]]
+name = "php"
+outputs = ["php"]
+source_roles = []
+role = "build"
+
+[[software.package]]
 name = "dinit"
 outputs = ["dinit", "dinitctl"]
 source_roles = []

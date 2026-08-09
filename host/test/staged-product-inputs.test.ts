@@ -106,6 +106,8 @@ describe("staged VFS product inputs", () => {
 
     for (const name of [
       "BOTTLE_CACHE",
+      "KANDELO_NO_OPCACHE_PREWARM",
+      "KANDELO_OPCACHE_PREWARM_STRICT",
       "KANDELO_VFS_INPUT_ROOT",
       "ROOTFS_BINARIES_DIR",
       "WASM_POSIX_BINARY_CACHE_ROOT",

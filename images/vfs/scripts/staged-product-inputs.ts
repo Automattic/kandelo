@@ -37,6 +37,11 @@ import {
   registerPackageDeferredZipTree,
 } from "../../../host/src/vfs/package-deferred-tree";
 import { ENOENT, SFSError } from "../../../host/src/vfs/sharedfs-vendor";
+import { parseTarGzip } from "../../../host/src/vfs/tar";
+import {
+  extractZipEntryBounded,
+  parseZipCentralDirectory,
+} from "../../../host/src/vfs/zip";
 import {
   KANDELO_DEMO_CONFIG_PATH,
   parseKandeloDemoConfig,
@@ -58,6 +63,16 @@ import {
   writeVfsBinary,
 } from "./vfs-image-helpers";
 import { openVfsProductBuild } from "./vfs-product-builder-contract";
+import type {
+  VfsProductBuild,
+  VfsProductInputHandle,
+  VfsProductInputKind,
+} from "./vfs-product-builder-contract";
+import { buildNodeVfsImage } from "./build-node-vfs-image";
+import { buildNginxVfsImage } from "./build-nginx-vfs-image";
+import { buildNginxPhpVfsImage } from "./build-nginx-php-vfs-image";
+import { buildWordPressVfsImage } from "./build-wp-vfs-image";
+import { buildLampVfsImage } from "./build-lamp-vfs-image";
 
 const REPOSITORY_ROOT = resolve(import.meta.dirname, "../../..");
 
@@ -552,14 +567,607 @@ export async function buildStagedBrowserMainShell(
         baseImage: {
           sha256: base.sha256,
           bytes: base.bytes,
+          kernelAbi: build.targetAbi.version,
         },
+        packageDeferredTrees: [
+          stagedPackageTreeBinding(bootstrapTree, "deferred"),
+        ],
         homebrewBootstrap: bootstrapState,
+        homebrew: {
+          tapRepository: "kandelo-dev/homebrew-tap-core",
+          tapName: "kandelo-dev/tap-core",
+          candidateNamespace,
+          selection: {
+            kind: "vfs-product-manifest",
+            requestedPackageCount: directRoots.size,
+            requestedPackagesSha256: digest(
+              Buffer.from(canonicalJson([...directRoots].sort(compareText))),
+            ),
+          },
+          products: bottleTrees.map((item) => ({
+            formula: item.formula,
+            package: item.descriptor.tree.package,
+            descriptorSha256: digest(
+              Buffer.from(canonicalJson(item.descriptor)),
+            ),
+            archiveSha256: item.descriptor.tree.content.sha256,
+            materialization: item.placement,
+          })),
+        },
       },
     });
     await build.finish(invocation.outputPath);
   } finally {
     rmSync(work, { force: true, recursive: true });
   }
+}
+
+function stagedPackageTreeBinding(
+  tree: ReturnType<typeof parsePackageDeferredZipTreeDescriptor>,
+  state: "deferred" | "materialized",
+): Record<string, unknown> {
+  const descriptor = tree.descriptor;
+  return {
+    schema: descriptor.schema,
+    kind: descriptor.kind,
+    id: descriptor.id,
+    content_role: descriptor.content_role,
+    package: descriptor.package,
+    descriptor: {
+      sha256: tree.descriptorSha256,
+      bytes: tree.descriptorBytes.byteLength,
+    },
+    archive: {
+      output: descriptor.package.output,
+      url: descriptor.archive.url,
+      sha256: descriptor.archive.sha256,
+      bytes: descriptor.archive.bytes,
+      expanded_bytes: descriptor.archive.expanded_bytes,
+      source_entry_count: descriptor.archive.source_entry_count,
+    },
+    mount_prefix: descriptor.mount_prefix,
+    owner: descriptor.owner,
+    activation: descriptor.activation,
+    state,
+  };
+}
+
+const SERVICE_PRODUCT_BUILDERS = new Map([
+  ["browser-node", "images/vfs/scripts/build-node-vfs-image.sh"],
+  ["browser-nginx", "images/vfs/scripts/build-nginx-vfs-image.sh"],
+  ["browser-nginx-php", "images/vfs/scripts/build-nginx-php-vfs-image.sh"],
+  ["browser-wordpress", "images/vfs/scripts/build-wp-vfs-image.sh"],
+  ["browser-lamp", "images/vfs/scripts/build-lamp-vfs-image.sh"],
+] as const);
+
+type ServiceProductId = (typeof SERVICE_PRODUCT_BUILDERS extends Map<infer K, string>
+  ? K
+  : never);
+
+interface ExpectedServiceInput {
+  kind: VfsProductInputKind;
+  placement: "embedded" | "lazy-reference" | "build-only";
+}
+
+/**
+ * Build one browser service product exclusively from the exact resolved input
+ * handles selected by its canonical product manifest.
+ */
+export async function buildStagedBrowserService(
+  productId: ServiceProductId,
+  invocation: StagedProductInvocation,
+): Promise<void> {
+  assertStagedProductEnvironment(process.env);
+  const build = await openVfsProductBuild(
+    invocation.resolvedInputsPath,
+    invocation.builderReportPath,
+  );
+  const manifest = validateSelectedProductManifest(invocation.manifestPath, build);
+  const expectedBuilder = SERVICE_PRODUCT_BUILDERS.get(productId);
+  if (
+    build.product.id !== productId ||
+    manifest.id !== productId ||
+    manifest.builder !== expectedBuilder
+  ) {
+    throw new Error(
+      `${productId} staging selected a different product or builder`,
+    );
+  }
+  if (manifest.software.homebrew.length !== 0) {
+    throw new Error(`${productId} service staging cannot consume Homebrew roots`);
+  }
+  const expected = expectedManifestInputs(manifest);
+  assertExactInputInventory(build, expected, productId);
+
+  const temporaryRoot = realDirectory(
+    process.env.TMPDIR ?? "",
+    "staged product temporary root",
+  );
+  const work = mkdtempSync(join(temporaryRoot, `kandelo-${productId}-`));
+  try {
+    const shellImage = exactInputBytes(
+      requireExpectedInput(
+        build,
+        expected,
+        "product-browser-main-shell",
+        "product-image",
+      ),
+      `${productId} shell base`,
+    );
+    const packageBytes = (name: string, selector: string): Uint8Array =>
+      exactInputBytes(
+        requireExpectedInput(
+          build,
+          expected,
+          resolvedInputId("package-output", name, "output", selector),
+          "package-output",
+        ),
+        `${productId} ${name}/${selector}`,
+      );
+    const sourceRole = (name: string, role: string): Uint8Array =>
+      exactInputBytes(
+        requireExpectedInput(
+          build,
+          expected,
+          resolvedInputId("package-output", name, "source-role", role),
+          "package-output",
+        ),
+        `${productId} ${name} source role ${role}`,
+      );
+    const sourceArchive = (id: string): Uint8Array =>
+      exactInputBytes(
+        requireExpectedInput(
+          build,
+          expected,
+          resolvedInputId("source-archive", id),
+          "source-archive",
+        ),
+        `${productId} archive ${id}`,
+      );
+    const dinit = () => ({
+      dinit: packageBytes("dinit", "dinit"),
+      dinitctl: packageBytes("dinit", "dinitctl"),
+    });
+
+    switch (productId) {
+      case "browser-node": {
+        const npmDirectory = join(work, "npm-runtime");
+        materializeSingleRootArchive(
+          sourceArchive("npm-runtime"),
+          npmDirectory,
+          "browser-node npm runtime",
+        );
+        await buildNodeVfsImage({
+          shellImage,
+          node: packageBytes("node", "node"),
+          npmDirectory,
+          outputPath: invocation.outputPath,
+        });
+        break;
+      }
+      case "browser-nginx":
+        await buildNginxVfsImage({
+          shellImage,
+          nginx: packageBytes("nginx", "nginx"),
+          dinit: dinit(),
+          outputPath: invocation.outputPath,
+        });
+        break;
+      case "browser-nginx-php":
+        await buildNginxPhpVfsImage({
+          shellImage,
+          nginx: packageBytes("nginx", "nginx"),
+          phpFpm: packageBytes("php", "php-fpm"),
+          opcache: packageBytes("php", "opcache"),
+          dinit: dinit(),
+          buildPrograms: {
+            php: packageBytes("php", "php"),
+            kernel: packageBytes("kernel", "kernel"),
+          },
+          outputPath: invocation.outputPath,
+        });
+        break;
+      case "browser-wordpress": {
+        const wordpressDirectory = join(work, "wordpress-core");
+        const sqliteDirectory = join(work, "wordpress-sqlite-integration");
+        materializeSingleRootArchive(
+          sourceArchive("wordpress-core"),
+          wordpressDirectory,
+          "browser-wordpress core",
+        );
+        materializeSingleRootArchive(
+          sourceArchive("wordpress-sqlite-integration"),
+          sqliteDirectory,
+          "browser-wordpress SQLite integration",
+        );
+        await buildWordPressVfsImage({
+          shellImage,
+          wordpressDirectory,
+          sqliteDirectory,
+          nginx: packageBytes("nginx", "nginx"),
+          phpFpm: packageBytes("php", "php-fpm"),
+          opcache: packageBytes("php", "opcache"),
+          msmtpd: packageBytes("msmtpd", "msmtpd"),
+          dinit: dinit(),
+          buildPrograms: {
+            php: packageBytes("php", "php"),
+            kernel: packageBytes("kernel", "kernel"),
+          },
+          outputPath: invocation.outputPath,
+        });
+        break;
+      }
+      case "browser-lamp": {
+        const wordpressDirectory = join(work, "wordpress-core");
+        const mariadbSystemTablesDirectory = join(work, "mariadb-system-tables");
+        materializeSingleRootArchive(
+          sourceArchive("wordpress-core"),
+          wordpressDirectory,
+          "browser-lamp WordPress core",
+        );
+        materializeSingleRootArchive(
+          sourceRole("mariadb", "system-tables"),
+          mariadbSystemTablesDirectory,
+          "browser-lamp MariaDB system tables",
+        );
+        const mariadbd = packageBytes("mariadb", "mariadbd");
+        await buildLampVfsImage({
+          shellImage,
+          wordpressDirectory,
+          mariadbSystemTablesDirectory,
+          mariadbd,
+          nginx: packageBytes("nginx", "nginx"),
+          phpFpm: packageBytes("php", "php-fpm"),
+          opcache: packageBytes("php", "opcache"),
+          msmtpd: packageBytes("msmtpd", "msmtpd"),
+          dinit: dinit(),
+          buildPrograms: {
+            php: packageBytes("php", "php"),
+            kernel: packageBytes("kernel", "kernel"),
+            mariadb: mariadbd,
+          },
+          outputPath: invocation.outputPath,
+        });
+        break;
+      }
+    }
+    await build.finish(invocation.outputPath);
+  } finally {
+    rmSync(work, { force: true, recursive: true });
+  }
+}
+
+function expectedManifestInputs(
+  manifest: SelectedProductManifest,
+): Map<string, ExpectedServiceInput> {
+  const expected = new Map<string, ExpectedServiceInput>();
+  const add = (
+    id: string,
+    kind: VfsProductInputKind,
+    placement: ExpectedServiceInput["placement"],
+  ) => {
+    if (expected.has(id)) {
+      throw new Error(`${manifest.id} manifest repeats staged input ${id}`);
+    }
+    expected.set(id, { kind, placement });
+  };
+  for (const product of manifest.composition.product) {
+    add(
+      resolvedInputId("product-image", product.id),
+      "product-image",
+      runtimePlacement(product.materialization),
+    );
+  }
+  for (const repository of manifest.composition.repository) {
+    add(
+      resolvedInputId("repository-path", repository.id),
+      "repository-path",
+      claimPlacement(repository.role, repository.materialization),
+    );
+  }
+  for (const claim of manifest.software.package) {
+    for (const output of claim.outputs) {
+      add(
+        resolvedInputId("package-output", claim.name, "output", output),
+        "package-output",
+        claimPlacement(claim.role, claim.materialization),
+      );
+    }
+    for (const role of claim.source_roles) {
+      add(
+        resolvedInputId("package-output", claim.name, "source-role", role),
+        "package-output",
+        claimPlacement(claim.role, claim.materialization),
+      );
+    }
+  }
+  for (const archive of manifest.software.archive) {
+    add(
+      resolvedInputId("source-archive", archive.id),
+      "source-archive",
+      claimPlacement(archive.role, archive.materialization),
+    );
+  }
+  for (const toolchain of manifest.software.toolchain) {
+    add(
+      resolvedInputId("toolchain-output", toolchain.id),
+      "toolchain-output",
+      "build-only",
+    );
+  }
+  return expected;
+}
+
+function runtimePlacement(
+  materialization: "embedded" | "lazy",
+): "embedded" | "lazy-reference" {
+  return materialization === "embedded" ? "embedded" : "lazy-reference";
+}
+
+function claimPlacement(
+  role: "runtime" | "build",
+  materialization?: "embedded" | "lazy",
+): ExpectedServiceInput["placement"] {
+  if (role === "build") return "build-only";
+  if (materialization === undefined) {
+    throw new Error("runtime staged input omits materialization");
+  }
+  return runtimePlacement(materialization);
+}
+
+function resolvedInputId(
+  kind: VfsProductInputKind,
+  ...parts: string[]
+): string {
+  const prefix: Record<VfsProductInputKind, string> = {
+    "product-image": "product",
+    "homebrew-bottle": "homebrew",
+    "package-output": "package",
+    "source-archive": "archive",
+    "toolchain-output": "toolchain",
+    "repository-path": "repository",
+  };
+  const stem = [prefix[kind], ...parts].join("-");
+  if (Buffer.byteLength(stem, "utf8") <= 128) return stem;
+  const suffix = digest(Buffer.from(canonicalJson({ kind, parts }))).slice(0, 16);
+  return `${stem.slice(0, 128 - suffix.length - 1).replace(/[-._]+$/, "")}-${suffix}`;
+}
+
+function assertExactInputInventory(
+  build: VfsProductBuild,
+  expected: ReadonlyMap<string, ExpectedServiceInput>,
+  productId: string,
+): void {
+  const actual = [...build.inputIds()].sort(compareText);
+  const wanted = [...expected.keys()].sort(compareText);
+  if (canonicalJson(actual) !== canonicalJson(wanted)) {
+    throw new Error(
+      `${productId} resolved input IDs differ from its canonical manifest: ` +
+        `expected ${wanted.join(", ")}; received ${actual.join(", ")}`,
+    );
+  }
+  for (const [id, item] of expected) {
+    if (!build.inputIds(item.kind).includes(id)) {
+      throw new Error(`${productId} input ${id} has the wrong input kind`);
+    }
+  }
+}
+
+function requireExpectedInput(
+  build: VfsProductBuild,
+  expected: ReadonlyMap<string, ExpectedServiceInput>,
+  id: string,
+  kind: VfsProductInputKind,
+): VfsProductInputHandle {
+  const declaration = expected.get(id);
+  if (declaration?.kind !== kind) {
+    throw new Error(`${build.product.id} does not canonically declare ${id}`);
+  }
+  const handle = kind === "product-image"
+    ? build.requireProductImage(id)
+    : kind === "package-output"
+      ? build.requirePackageOutput(id)
+      : kind === "source-archive"
+        ? build.requireSourceArchive(id)
+        : kind === "toolchain-output"
+          ? build.requireToolchainOutput(id)
+          : kind === "repository-path"
+            ? build.requireRepositoryPath(id)
+            : build.requireHomebrewBottle(id);
+  if (handle.placement !== declaration.placement) {
+    throw new Error(
+      `${build.product.id} input ${id} materialized as ${handle.placement}, ` +
+        `expected ${declaration.placement}`,
+    );
+  }
+  return handle;
+}
+
+function exactInputBytes(
+  handle: VfsProductInputHandle,
+  label: string,
+): Uint8Array {
+  if (handle.placement === "lazy-reference") {
+    throw new Error(`${label} must be materialized for this build`);
+  }
+  const bytes = new Uint8Array(readFileSync(handle.path));
+  if (bytes.byteLength === 0) throw new Error(`${label} is empty`);
+  return bytes;
+}
+
+const MAX_SOURCE_TREE_BYTES = 512 * 1024 * 1024;
+
+function materializeSingleRootArchive(
+  bytes: Uint8Array,
+  destination: string,
+  label: string,
+): void {
+  if (bytes.byteLength === 0 || bytes.byteLength > MAX_BUNDLE_BYTES) {
+    throw new Error(`${label} archive size is outside the accepted bound`);
+  }
+  mkdirSync(destination, { mode: 0o700 });
+  if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
+    materializeTarSource(bytes, destination, label);
+    return;
+  }
+  if (bytes[0] === 0x50 && bytes[1] === 0x4b) {
+    materializeZipSource(bytes, destination, label);
+    return;
+  }
+  throw new Error(`${label} is not a supported gzip TAR or ZIP archive`);
+}
+
+function materializeTarSource(
+  bytes: Uint8Array,
+  destination: string,
+  label: string,
+): void {
+  const entries = parseTarGzip(bytes, {
+    label,
+    limits: {
+      maxCompressedBytes: MAX_BUNDLE_BYTES,
+      maxUncompressedBytes: MAX_SOURCE_TREE_BYTES,
+      maxEntries: MAX_BUNDLE_ENTRIES,
+    },
+  });
+  const root = commonArchiveRoot(entries.map((entry) => entry.path), label);
+  for (const entry of entries) {
+    if (entry.type === "symlink" || entry.type === "hardlink") {
+      throw new Error(`${label} contains unsupported ${entry.type} ${entry.path}`);
+    }
+    const relativePath = stripArchiveRoot(entry.path, root, label);
+    if (relativePath === null) continue;
+    if (entry.type === "directory") {
+      materializeArchiveDirectory(destination, relativePath, entry.mode);
+    } else {
+      materializeArchiveFile(
+        destination,
+        relativePath,
+        entry.data,
+        entry.mode,
+        label,
+      );
+    }
+  }
+}
+
+function materializeZipSource(
+  bytes: Uint8Array,
+  destination: string,
+  label: string,
+): void {
+  const entries = parseZipCentralDirectory(bytes);
+  if (entries.length === 0 || entries.length > MAX_BUNDLE_ENTRIES) {
+    throw new Error(`${label} ZIP entry count is outside the accepted bound`);
+  }
+  const totalBytes = entries.reduce((sum, entry) => {
+    if (!Number.isSafeInteger(entry.uncompressedSize)) {
+      throw new Error(`${label} ZIP entry has an invalid size`);
+    }
+    return sum + entry.uncompressedSize;
+  }, 0);
+  if (!Number.isSafeInteger(totalBytes) || totalBytes > MAX_SOURCE_TREE_BYTES) {
+    throw new Error(`${label} ZIP expands beyond the accepted bound`);
+  }
+  const root = commonArchiveRoot(entries.map((entry) => entry.fileName), label);
+  for (const entry of entries) {
+    if (entry.isSymlink) {
+      throw new Error(`${label} contains unsupported symlink ${entry.fileName}`);
+    }
+    const relativePath = stripArchiveRoot(entry.fileName, root, label);
+    if (relativePath === null) continue;
+    if (entry.isDirectory) {
+      materializeArchiveDirectory(destination, relativePath, entry.mode);
+    } else {
+      materializeArchiveFile(
+        destination,
+        relativePath,
+        extractZipEntryBounded(bytes, entry, entry.uncompressedSize),
+        entry.mode,
+        label,
+      );
+    }
+  }
+}
+
+function commonArchiveRoot(paths: readonly string[], label: string): string {
+  let root: string | undefined;
+  let hasChild = false;
+  for (const path of paths) {
+    const components = normalizedArchiveComponents(path, label);
+    if (components.length > 1) hasChild = true;
+    if (root === undefined) root = components[0];
+    if (root !== components[0]) {
+      throw new Error(`${label} does not have one exact top-level directory`);
+    }
+  }
+  if (root === undefined || !hasChild) {
+    throw new Error(`${label} has no files below its top-level directory`);
+  }
+  return root;
+}
+
+function stripArchiveRoot(
+  path: string,
+  root: string,
+  label: string,
+): string | null {
+  const components = normalizedArchiveComponents(path, label);
+  if (components[0] !== root) {
+    throw new Error(`${label} entry moved outside its top-level directory`);
+  }
+  return components.length === 1 ? null : components.slice(1).join("/");
+}
+
+function normalizedArchiveComponents(path: string, label: string): string[] {
+  const normalized = path.endsWith("/") ? path.slice(0, -1) : path;
+  const components = normalized.split("/");
+  if (
+    normalized.length === 0 ||
+    normalized.startsWith("/") ||
+    normalized.includes("\\") ||
+    normalized.includes("\0") ||
+    components.some((item) => item.length === 0 || item === "." || item === "..")
+  ) {
+    throw new Error(`${label} contains unsafe archive path ${JSON.stringify(path)}`);
+  }
+  return components;
+}
+
+function materializeArchiveDirectory(
+  root: string,
+  relativePath: string,
+  mode: number,
+): void {
+  const path = join(root, ...relativePath.split("/"));
+  mkdirSync(path, { mode: archiveMode(mode, 0o755), recursive: true });
+  chmodSync(path, archiveMode(mode, 0o755));
+}
+
+function materializeArchiveFile(
+  root: string,
+  relativePath: string,
+  bytes: Uint8Array,
+  mode: number,
+  label: string,
+): void {
+  const path = join(root, ...relativePath.split("/"));
+  mkdirSync(dirname(path), { mode: 0o755, recursive: true });
+  try {
+    writeFileSync(path, bytes, {
+      flag: "wx",
+      mode: archiveMode(mode, 0o644),
+    });
+  } catch (error) {
+    throw new Error(`${label} has a duplicate or conflicting entry ${relativePath}`, {
+      cause: error,
+    });
+  }
+}
+
+function archiveMode(mode: number, fallback: number): number {
+  const permissions = mode & 0o777;
+  return permissions === 0 ? fallback : permissions;
 }
 
 export function parseStagedProductInvocation(
@@ -615,6 +1223,8 @@ export function assertStagedProductEnvironment(
       if (value === undefined || value === "") return false;
       return (
         name === "BOTTLE_CACHE" ||
+        name === "KANDELO_NO_OPCACHE_PREWARM" ||
+        name === "KANDELO_OPCACHE_PREWARM_STRICT" ||
         name === "KANDELO_VFS_INPUT_ROOT" ||
         name === "ROOTFS_BINARIES_DIR" ||
         name === "ROOTFS_PACKAGE_MANIFEST" ||
@@ -1491,11 +2101,43 @@ interface SelectedProductManifest {
   architecture: "wasm32" | "wasm64";
   output: string;
   builder: string;
+  composition: {
+    product: Array<{
+      id: string;
+      materialization: "embedded" | "lazy";
+    }>;
+    repository: Array<{
+      id: string;
+      paths: string[];
+      role: "runtime" | "build";
+      materialization?: "embedded" | "lazy";
+    }>;
+  };
   software: {
     homebrew: Array<{
       tap: string;
       formulae: string[];
       materialization: "embedded" | "lazy";
+    }>;
+    package: Array<{
+      name: string;
+      outputs: string[];
+      source_roles: string[];
+      role: "runtime" | "build";
+      materialization?: "embedded" | "lazy";
+    }>;
+    archive: Array<{
+      id: string;
+      url: string;
+      sha256: string;
+      role: "runtime" | "build";
+      materialization?: "embedded" | "lazy";
+    }>;
+    toolchain: Array<{
+      id: string;
+      component: string;
+      provider: string;
+      role: "build";
     }>;
   };
 }
@@ -1541,9 +2183,13 @@ const invokedPath = process.argv[1]
 if (import.meta.url === invokedPath) {
   const command = process.argv[2];
   Promise.resolve().then(async () => {
-    if (command !== "platform-rootfs" && command !== "browser-main-shell") {
+    if (
+      command !== "platform-rootfs" &&
+      command !== "browser-main-shell" &&
+      !SERVICE_PRODUCT_BUILDERS.has(command as ServiceProductId)
+    ) {
       throw new Error(
-        "expected staged product command platform-rootfs or browser-main-shell",
+        "expected a supported staged VFS product command",
       );
     }
     const invocation = parseStagedProductInvocation(process.argv.slice(3));
@@ -1552,8 +2198,10 @@ if (import.meta.url === invokedPath) {
     }
     if (command === "platform-rootfs") {
       await buildStagedPlatformRootfs(invocation);
-    } else {
+    } else if (command === "browser-main-shell") {
       await buildStagedBrowserMainShell(invocation);
+    } else {
+      await buildStagedBrowserService(command as ServiceProductId, invocation);
     }
   }).catch((error) => {
     process.stderr.write(`${describeError(error)}\n`);

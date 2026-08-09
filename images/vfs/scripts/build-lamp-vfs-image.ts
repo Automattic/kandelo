@@ -13,8 +13,9 @@
  *
  * Produces: apps/browser-demos/public/lamp.vfs
  */
-import { readFileSync, lstatSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync, existsSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import { resolveBinary, findRepoRoot } from "../../../host/src/binary-resolver";
 import {
@@ -25,6 +26,7 @@ import {
 import {
   addDinitInit,
   addPathReadinessService,
+  type DinitBinaryInputs,
   type DinitService,
 } from "./dinit-image-helpers";
 import { ensureSourceExtract } from "./source-extract-helper";
@@ -47,6 +49,7 @@ import {
 import { MYSQL_BENCHMARK_PHP } from "../../../apps/browser-demos/lib/init/mysql-benchmark";
 import {
   loadShellBaseFileSystem,
+  loadShellBaseFileSystemFromImage,
   saveShellDerivedVfsImage,
 } from "./shell-vfs-build";
 import {
@@ -66,20 +69,7 @@ const BROWSER_DIR = join(REPO_ROOT, "apps", "browser-demos");
 // the system_tables SQL files are shipped only in the upstream MariaDB
 // source tarball, so we extract them on demand the same way
 // build-mariadb-vfs-image.ts does.
-const WP_DIR = resolveWordPressCoreSource(REPO_ROOT);
 const MARIADB_LEGACY_INSTALL = join(REPO_ROOT, "packages", "registry", "mariadb", "mariadb-install");
-const MARIADB_SOURCE = ensureSourceExtract("mariadb", REPO_ROOT);
-const MARIADB_PATH = resolveBinary("programs/mariadb/mariadbd.wasm");
-const SYSTEM_TABLES_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables.sql"))
-  ? join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables.sql")
-  : join(MARIADB_SOURCE, "scripts/mysql_system_tables.sql");
-const SYSTEM_DATA_PATH = existsSync(join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables_data.sql"))
-  ? join(MARIADB_LEGACY_INSTALL, "share/mysql/mysql_system_tables_data.sql")
-  : join(MARIADB_SOURCE, "scripts/mysql_system_tables_data.sql");
-const NGINX_PATH = resolveBinary("programs/nginx.wasm");
-const PHP_FPM_PATH = resolveBinary("programs/php/php-fpm.wasm");
-const OPCACHE_SO_PATH = resolveBinary("programs/php/opcache.so");
-const MSMTPD_PATH = resolveBinary("programs/msmtpd.wasm");
 const OUT_FILE = join(BROWSER_DIR, "public", "lamp.vfs.zst");
 const PHP_FPM_WORKERS = 6;
 const MARIADB_SOCKET_PATH = "/tmp/mysql.sock";
@@ -90,12 +80,22 @@ const MARIADB_INNODB_LOG_FILE_SIZE = 16 * 1024 * 1024;
 const MARIADB_INNODB_LOG_BUFFER_SIZE = 1024 * 1024;
 const MARIADB_INNODB_BUFFER_POOL_SIZE = 8 * 1024 * 1024;
 
-function populateMariadb(fs: MemoryFileSystem): void {
+function populateMariadb(
+  fs: MemoryFileSystem,
+  mariadbd: Uint8Array,
+  systemTablesDirectory: string,
+): void {
   ensureDirRecursive(fs, "/usr/sbin");
-  writeVfsBinary(fs, "/usr/sbin/mariadbd", new Uint8Array(readFileSync(MARIADB_PATH)));
+  writeVfsBinary(fs, "/usr/sbin/mariadbd", mariadbd);
   ensureDirRecursive(fs, "/etc/mariadb");
-  const systemTablesSql = readFileSync(SYSTEM_TABLES_PATH, "utf-8");
-  const systemDataSql = readFileSync(SYSTEM_DATA_PATH, "utf-8");
+  const systemTablesSql = readFileSync(
+    join(systemTablesDirectory, "mysql_system_tables.sql"),
+    "utf-8",
+  );
+  const systemDataSql = readFileSync(
+    join(systemTablesDirectory, "mysql_system_tables_data.sql"),
+    "utf-8",
+  );
   const bootstrapSql = `use mysql;\n${systemTablesSql}\n${systemDataSql}\nCREATE DATABASE IF NOT EXISTS wordpress;\n`;
   writeVfsFile(fs, "/etc/mariadb/bootstrap.sql", bootstrapSql);
 }
@@ -186,7 +186,10 @@ http {
   writeVfsFile(fs, "/etc/nginx/nginx.conf", nginxConf);
 }
 
-function populatePhpFpmConfig(fs: MemoryFileSystem): void {
+function populatePhpFpmConfig(
+  fs: MemoryFileSystem,
+  opcache: Uint8Array,
+): void {
   ensureDirRecursive(fs, "/etc/php-fpm.d");
   ensureDirRecursive(fs, "/var/log");
 
@@ -214,7 +217,7 @@ request_slowlog_trace_depth = 0
   writeVfsBinary(
     fs,
     "/usr/lib/php/extensions/opcache.so",
-    new Uint8Array(readFileSync(OPCACHE_SO_PATH)),
+    opcache,
   );
   const phpIni = `zend_extension=/usr/lib/php/extensions/opcache.so
 
@@ -412,28 +415,47 @@ function readOptionalVfsText(fs: MemoryFileSystem, path: string): string | null 
   }
 }
 
-async function main() {
-  try { lstatSync(MARIADB_PATH); }
-  catch {
-    console.error("mariadbd.wasm not found. Run scripts/fetch-binaries.sh or bash packages/registry/mariadb/build-mariadb.sh");
-    process.exit(1);
-  }
+export interface LampVfsImageBuildInputs {
+  shellImage?: Uint8Array;
+  wordpressDirectory: string;
+  mariadbSystemTablesDirectory: string;
+  mariadbd: Uint8Array;
+  nginx: Uint8Array;
+  phpFpm: Uint8Array;
+  opcache: Uint8Array;
+  msmtpd: Uint8Array;
+  dinit?: DinitBinaryInputs;
+  buildPrograms?: {
+    kernel: Uint8Array;
+    php: Uint8Array;
+    mariadb: Uint8Array;
+  };
+  outputPath: string;
+}
 
+export async function buildLampVfsImage(
+  inputs: LampVfsImageBuildInputs,
+): Promise<void> {
   console.log("Loading shell base image...");
-  const fs = await loadShellBaseFileSystem(LAMP_IMAGE_MAX_BYTES);
+  const fs = inputs.shellImage === undefined
+    ? await loadShellBaseFileSystem(LAMP_IMAGE_MAX_BYTES)
+    : await loadShellBaseFileSystemFromImage(
+        inputs.shellImage,
+        LAMP_IMAGE_MAX_BYTES,
+      );
   prepareMariadbWritableDirectories(fs);
 
   console.log("Writing nginx + php-fpm + msmtpd binaries...");
   ensureDirRecursive(fs, "/usr/sbin");
-  writeVfsBinary(fs, "/usr/sbin/nginx", new Uint8Array(readFileSync(NGINX_PATH)));
-  writeVfsBinary(fs, "/usr/sbin/php-fpm", new Uint8Array(readFileSync(PHP_FPM_PATH)));
-  writeVfsBinary(fs, "/usr/sbin/msmtpd", new Uint8Array(readFileSync(MSMTPD_PATH)));
+  writeVfsBinary(fs, "/usr/sbin/nginx", inputs.nginx);
+  writeVfsBinary(fs, "/usr/sbin/php-fpm", inputs.phpFpm);
+  writeVfsBinary(fs, "/usr/sbin/msmtpd", inputs.msmtpd);
 
   console.log("Writing MariaDB binary + bootstrap SQL...");
-  populateMariadb(fs);
+  populateMariadb(fs, inputs.mariadbd, inputs.mariadbSystemTablesDirectory);
 
   populateNginxConfig(fs);
-  populatePhpFpmConfig(fs);
+  populatePhpFpmConfig(fs, inputs.opcache);
   populateSmtpCaptureConfig(fs);
 
   // Build-time MariaDB bootstrap script + default wp-config. The browser host
@@ -454,19 +476,20 @@ async function main() {
   );
 
   console.log("Writing WordPress core files...");
-  const wpCount = copyWordPressCoreSource(fs, WP_DIR);
+  const wpCount = copyWordPressCoreSource(fs, inputs.wordpressDirectory);
   patchWordPressPersistentMysqli(fs);
   console.log(`  WordPress core: ${wpCount} files`);
 
   // Service tree
-  addDinitInit(fs, buildServices(fs));
+  addDinitInit(fs, buildServices(fs), { binaries: inputs.dinit });
 
-  await preinstallWordPressMariaDb(fs);
+  await preinstallWordPressMariaDb(fs, inputs.buildPrograms);
 
   // Prewarm opcache: see build-wp-vfs-image.ts for context.
   await prewarmOpcache(fs, {
     sourceRoots: ["/var/www"],
     label: "lamp",
+    programs: inputs.buildPrograms,
     excludePaths: [
       "/var/www/html/wp-config.php",
       "/var/www/html/wp-includes/SimplePie/autoloader.php",
@@ -480,8 +503,47 @@ async function main() {
     },
   });
 
-  await saveShellDerivedVfsImage(fs, OUT_FILE);
+  await saveShellDerivedVfsImage(fs, inputs.outputPath);
   console.log(`${wpCount} WordPress files total`);
 }
 
-main().catch((err) => { console.error(err); process.exit(1); });
+function resolveLegacySystemTablesDirectory(): string {
+  const installed = join(MARIADB_LEGACY_INSTALL, "share", "mysql");
+  if (
+    existsSync(join(installed, "mysql_system_tables.sql")) &&
+    existsSync(join(installed, "mysql_system_tables_data.sql"))
+  ) {
+    return installed;
+  }
+  return join(ensureSourceExtract("mariadb", REPO_ROOT), "scripts");
+}
+
+async function main(): Promise<void> {
+  const mariadbd = new Uint8Array(
+    readFileSync(resolveBinary("programs/mariadb/mariadbd.wasm")),
+  );
+  await buildLampVfsImage({
+    wordpressDirectory: resolveWordPressCoreSource(REPO_ROOT),
+    mariadbSystemTablesDirectory: resolveLegacySystemTablesDirectory(),
+    mariadbd,
+    nginx: new Uint8Array(readFileSync(resolveBinary("programs/nginx.wasm"))),
+    phpFpm: new Uint8Array(
+      readFileSync(resolveBinary("programs/php/php-fpm.wasm")),
+    ),
+    opcache: new Uint8Array(
+      readFileSync(resolveBinary("programs/php/opcache.so")),
+    ),
+    msmtpd: new Uint8Array(readFileSync(resolveBinary("programs/msmtpd.wasm"))),
+    outputPath: OUT_FILE,
+  });
+}
+
+const invokedPath = process.argv[1]
+  ? pathToFileURL(resolve(process.argv[1])).href
+  : "";
+if (import.meta.url === invokedPath) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

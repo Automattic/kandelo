@@ -18,7 +18,8 @@
  * Usage: npx tsx images/vfs/scripts/build-node-vfs-image.ts
  */
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   ensureDirRecursive,
@@ -28,7 +29,8 @@ import {
 } from "./vfs-image-helpers";
 import { symlinkWithParentDirectories } from "./derived-vfs-symlink";
 import {
-  loadShellBaseFileSystem,
+  loadShellBaseFileSystemFromImage,
+  resolveVfsArtifact,
   resolvePolicyBoundVfsWasmArtifact,
   saveShellDerivedVfsImage,
 } from "./shell-vfs-build";
@@ -61,16 +63,28 @@ const NODE_WASM_ARTIFACT_POLICY = {
   forkInstrumentation: "disabled",
 } as const satisfies VfsWasmArtifactPolicy;
 
-async function main() {
-  if (!existsSync(join(NPM_DIST, "bin", "npm-cli.js"))) {
-    console.error(`npm dist not found at ${NPM_DIST}/bin/npm-cli.js`);
-    console.error("Run: bash packages/registry/npm/build-npm.sh (or whatever populates packages/registry/npm/dist)");
-    process.exit(1);
+export interface NodeVfsImageBuildInputs {
+  shellImage: Uint8Array;
+  node: Uint8Array;
+  npmDirectory: string;
+  outputPath: string;
+}
+
+export async function buildNodeVfsImage(
+  inputs: NodeVfsImageBuildInputs,
+): Promise<void> {
+  if (!existsSync(join(inputs.npmDirectory, "bin", "npm-cli.js"))) {
+    throw new Error(
+      `npm dist not found at ${inputs.npmDirectory}/bin/npm-cli.js`,
+    );
   }
 
   console.log("Loading shell base image...");
-  const fs = await loadShellBaseFileSystem(NODE_IMAGE_MAX_BYTES);
-  populateNodeBinary(fs);
+  const fs = await loadShellBaseFileSystemFromImage(
+    inputs.shellImage,
+    NODE_IMAGE_MAX_BYTES,
+  );
+  populateNodeBinary(fs, inputs.node);
 
   // Node/npm workspace additions.
   ensureDirRecursive(fs, "/usr/local/lib");
@@ -82,7 +96,7 @@ async function main() {
 
   // npm dist — skip man/ and docs/ (not used at install time)
   console.log(`Mounting npm dist at ${NPM_MOUNT}...`);
-  const written = walkAndWrite(fs, NPM_DIST, NPM_MOUNT, {
+  const written = walkAndWrite(fs, inputs.npmDirectory, NPM_MOUNT, {
     exclude: (rel) => rel === "man" || rel.startsWith("man/")
                    || rel === "docs" || rel.startsWith("docs/"),
   });
@@ -109,24 +123,19 @@ async function main() {
     },
   });
 
-  await saveShellDerivedVfsImage(fs, OUT_FILE, {
+  await saveShellDerivedVfsImage(fs, inputs.outputPath, {
     wasmArtifactPolicies: [NODE_WASM_ARTIFACT_POLICY],
   });
 }
 
-function populateNodeBinary(fs: MemoryFileSystem): void {
-  const resolved = resolvePolicyBoundVfsWasmArtifact(
-    NODE_BINARY_SPEC.resolverPath,
-    NODE_BINARY_SPEC.id,
-    NODE_WASM_ARTIFACT_POLICY.forkInstrumentation,
-  );
+function populateNodeBinary(fs: MemoryFileSystem, node: Uint8Array): void {
   // WHY: the dedicated Node demo always executes Node. Embedding its package-
   // resolved bytes avoids a second browser transport whose authority was not
   // part of the image's closed lazy-bottle plan.
   writeVfsBinary(
     fs,
     NODE_BINARY_SPEC.vfsPath,
-    new Uint8Array(readFileSync(resolved)),
+    node,
     0o755,
   );
   for (const link of NODE_BINARY_SPEC.symlinks) {
@@ -137,7 +146,32 @@ function populateNodeBinary(fs: MemoryFileSystem): void {
   }
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+async function main(): Promise<void> {
+  if (!existsSync(join(NPM_DIST, "bin", "npm-cli.js"))) {
+    console.error(`npm dist not found at ${NPM_DIST}/bin/npm-cli.js`);
+    console.error("Run: bash packages/registry/npm/build-npm.sh (or whatever populates packages/registry/npm/dist)");
+    process.exit(1);
+  }
+  const resolved = resolvePolicyBoundVfsWasmArtifact(
+    NODE_BINARY_SPEC.resolverPath,
+    NODE_BINARY_SPEC.id,
+    NODE_WASM_ARTIFACT_POLICY.forkInstrumentation,
+  );
+  const shellImagePath = resolveVfsArtifact("programs/shell.vfs.zst", "shell");
+  await buildNodeVfsImage({
+    shellImage: new Uint8Array(readFileSync(shellImagePath)),
+    node: new Uint8Array(readFileSync(resolved)),
+    npmDirectory: NPM_DIST,
+    outputPath: OUT_FILE,
+  });
+}
+
+const invokedPath = process.argv[1]
+  ? pathToFileURL(resolve(process.argv[1])).href
+  : "";
+if (import.meta.url === invokedPath) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

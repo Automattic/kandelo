@@ -47,6 +47,11 @@ export interface OpcachePrewarmOptions {
   label: string;
   /** Absolute VFS paths that must not be compiled into the file cache. */
   excludePaths?: string[];
+  /** Exact staged build inputs. Omit only for the legacy interactive path. */
+  programs?: {
+    php: Uint8Array;
+    kernel: Uint8Array;
+  };
 }
 
 // Must match the `opcache.file_cache=` setting in each demo's runtime
@@ -113,13 +118,15 @@ export async function prewarmOpcache(
 
     let dumpBytes: Uint8Array;
     try {
-      await host.init();
-      const phpPath = resolveBinary("programs/php/php.wasm");
-      const phpBytes = readFileSync(phpPath);
-      const programBytes = phpBytes.buffer.slice(
-        phpBytes.byteOffset,
-        phpBytes.byteOffset + phpBytes.byteLength,
-      ) as ArrayBuffer;
+      await host.init(options.programs === undefined
+        ? undefined
+        : exactProgramBuffer(options.programs.kernel, "opcache kernel"));
+      const programBytes = options.programs === undefined
+        ? exactProgramBuffer(
+          new Uint8Array(readFileSync(resolveBinary("programs/php/php.wasm"))),
+          "legacy opcache PHP",
+        )
+        : exactProgramBuffer(options.programs.php, "opcache PHP");
 
       const runPhase = async (phase: string, job: PhpJob): Promise<Uint8Array> => {
         const chunks: Uint8Array[] = [];
@@ -187,6 +194,16 @@ export async function prewarmOpcache(
     );
     return 0;
   }
+}
+
+function exactProgramBuffer(bytes: Uint8Array, label: string): ArrayBuffer {
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0) {
+    throw new Error(`${label} input is empty`);
+  }
+  return bytes.buffer.slice(
+    bytes.byteOffset,
+    bytes.byteOffset + bytes.byteLength,
+  ) as ArrayBuffer;
 }
 
 type PhpJob =
