@@ -867,10 +867,27 @@ fn validate_capture_authorization(
     validate_maintainer(&payload.maintainer)?;
     validate_bounded_text(&payload.justification, "override justification", 2_048)?;
     validate_policy_identity(&payload.policy)?;
+    if record.common.subject.kind != SubjectKindV1::Formula
+        || record.common.subject.identity
+            != format!("{}/{}", payload.formula.tap, payload.formula.formula)
+        || record.common.subject.architecture != Some(payload.formula.architecture)
+    {
+        return Err(
+            "capture authorization common subject differs from its exact Formula".to_string(),
+        );
+    }
     if record.common.artifact_class != ArtifactClassV1::None
         || record.common.artifact.is_some()
     {
         return Err("pre-build capture authorization cannot guess an artifact identity".to_string());
+    }
+    if record.common.work_state != WorkStateV1::Complete
+        || record.common.outcome != Some(TerminalOutcomeV1::Success)
+        || record.common.promotion_state != PromotionStateV1::Unknown
+    {
+        return Err(
+            "capture authorization must be a successful non-eligibility record".to_string(),
+        );
     }
     Ok(())
 }
@@ -913,6 +930,18 @@ fn validate_override(record: &OverrideReceiptV1) -> Result<(), String> {
         || record.common.artifact.as_ref() != Some(&payload.bottle_layer)
     {
         return Err("override receipt must bind the exact candidate bottle layer".to_string());
+    }
+    if record.common.subject.kind != SubjectKindV1::Candidate
+        || record.common.subject.identity != payload.candidate_record_sha256
+        || record.common.subject.architecture.is_some()
+    {
+        return Err("override receipt common subject differs from its exact candidate".to_string());
+    }
+    if record.common.work_state != WorkStateV1::Complete
+        || record.common.outcome != Some(TerminalOutcomeV1::Success)
+        || record.common.promotion_state != PromotionStateV1::AcceptedWithOverride
+    {
+        return Err("override receipt must retain accepted-with-override state".to_string());
     }
     Ok(())
 }
@@ -1828,6 +1857,7 @@ mod tests {
     fn capture_authorization_is_exact_separate_and_immutable_by_digest() {
         let mut common = common(SubjectKindV1::Formula, ArtifactClassV1::None, None);
         common.guard_codes = vec![GuardCodeV1::BuildInputCaptureIncomplete];
+        common.promotion_state = PromotionStateV1::Unknown;
         let record = AbiStagingRecordV1::CaptureOverrideAuthorization(
             CaptureOverrideAuthorizationV1 {
                 schema: 1,
@@ -1843,6 +1873,17 @@ mod tests {
         );
         validate_record(&record).unwrap();
         let original = canonical_sha256(&record).unwrap();
+        let mut wrong_subject = record.clone();
+        {
+            let AbiStagingRecordV1::CaptureOverrideAuthorization(record) = &mut wrong_subject else {
+                unreachable!()
+            };
+            record.common.subject.identity =
+                "kandelo-dev/homebrew-tap-core/coreutils".to_string();
+        }
+        assert!(validate_record(&wrong_subject)
+            .unwrap_err()
+            .contains("exact Formula"));
         let mut mutated = record.clone();
         let AbiStagingRecordV1::CaptureOverrideAuthorization(record) = &mut mutated else {
             unreachable!()
@@ -1861,15 +1902,15 @@ mod tests {
     #[test]
     fn overrides_reject_never_guards_and_require_exact_post_build_candidate_identity() {
         let candidate = artifact(SHA_B, ArtifactClassV1::Candidate);
-        let mut common = common(
+        let mut never_common = common(
             SubjectKindV1::Candidate,
             ArtifactClassV1::Candidate,
             Some(candidate.clone()),
         );
-        common.guard_codes = vec![GuardCodeV1::RequestInvalid];
+        never_common.guard_codes = vec![GuardCodeV1::RequestInvalid];
         let mut record = AbiStagingRecordV1::Override(OverrideReceiptV1 {
             schema: 1,
-            common,
+            common: never_common,
             override_receipt: OverridePayloadV1 {
                 accepted_guard_codes: vec![GuardCodeV1::RequestInvalid],
                 maintainer: maintainer(),
@@ -1902,6 +1943,37 @@ mod tests {
         assert!(validate_record(&record)
             .unwrap_err()
             .contains("authorization digest"));
+
+        let candidate = artifact(SHA_B, ArtifactClassV1::Candidate);
+        let mut valid_common = common(
+            SubjectKindV1::Candidate,
+            ArtifactClassV1::Candidate,
+            Some(candidate.clone()),
+        );
+        valid_common.guard_codes = vec![GuardCodeV1::VerificationFailed];
+        valid_common.promotion_state = PromotionStateV1::AcceptedWithOverride;
+        valid_common.subject.identity = SHA_C.to_string();
+        let mut valid = AbiStagingRecordV1::Override(OverrideReceiptV1 {
+            schema: 1,
+            common: valid_common,
+            override_receipt: OverridePayloadV1 {
+                accepted_guard_codes: vec![GuardCodeV1::VerificationFailed],
+                maintainer: maintainer(),
+                justification: "Reviewed exact artifact risk.".to_string(),
+                policy: policy(),
+                candidate_record_sha256: SHA_C.to_string(),
+                bottle_layer: candidate,
+                capture_authorization_sha256: None,
+            },
+        });
+        validate_record(&valid).unwrap();
+        let AbiStagingRecordV1::Override(override_record) = &mut valid else {
+            unreachable!()
+        };
+        override_record.common.subject.identity = SHA_A.to_string();
+        assert!(validate_record(&valid)
+            .unwrap_err()
+            .contains("exact candidate"));
     }
 
     #[test]
@@ -2029,6 +2101,7 @@ mod tests {
 
         let mut capture_common = common(SubjectKindV1::Formula, ArtifactClassV1::None, None);
         capture_common.guard_codes = vec![GuardCodeV1::BuildInputCaptureIncomplete];
+        capture_common.promotion_state = PromotionStateV1::Unknown;
         let capture = AbiStagingRecordV1::CaptureOverrideAuthorization(
             CaptureOverrideAuthorizationV1 {
                 schema: 1,
@@ -2050,6 +2123,7 @@ mod tests {
         );
         override_common.guard_codes = vec![GuardCodeV1::VerificationFailed];
         override_common.promotion_state = PromotionStateV1::AcceptedWithOverride;
+        override_common.subject.identity = SHA_C.to_string();
         let override_receipt = AbiStagingRecordV1::Override(OverrideReceiptV1 {
             schema: 1,
             common: override_common,
