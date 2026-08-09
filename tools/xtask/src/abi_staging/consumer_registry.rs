@@ -298,6 +298,14 @@ pub fn run_cli(action: &str, args: &[String]) -> Result<(), String> {
             &read_bounded_regular_file(&flags["--tests"], MAX_REGISTRY_BYTES)?,
         )?;
         validate_consumer_registries(&catalog, &pages, &tests)?;
+        let evidence_path = crate::repo_root().join("abi/staging/evidence-definitions.toml");
+        let evidence = crate::abi_staging::evidence_policy::parse_evidence_registry(
+            &evidence_path,
+            &read_bounded_regular_file(&evidence_path, MAX_REGISTRY_BYTES)?,
+        )?;
+        crate::abi_staging::evidence_policy::validate_evidence_inventory(
+            &catalog, &pages, &tests, &evidence,
+        )?;
     }
     write_or_check_consumer_registries(
         mode,

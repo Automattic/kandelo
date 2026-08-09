@@ -1,6 +1,7 @@
 pub mod builder_contract;
 pub mod canonical_json;
 pub mod consumer_registry;
+pub mod evidence_policy;
 pub mod guard_registry;
 pub mod local_transport;
 pub mod mini_lifecycle;
@@ -47,6 +48,32 @@ pub fn run(args: Vec<String>) -> ExitCode {
         }
         [group, ..] if group == "registries" => {
             eprintln!("xtask abi-staging: registries requires generate or check");
+            ExitCode::from(2)
+        }
+        [group, action, rest @ ..] if group == "evidence-definitions" => {
+            match evidence_policy::run_evidence_cli(action, rest) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("xtask abi-staging evidence-definitions {action}: {error}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        [group, ..] if group == "evidence-definitions" => {
+            eprintln!("xtask abi-staging: evidence-definitions requires generate or check");
+            ExitCode::from(2)
+        }
+        [group, action, rest @ ..] if group == "runtime-bundle" => {
+            match evidence_policy::run_runtime_cli(action, rest) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("xtask abi-staging runtime-bundle {action}: {error}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        [group, ..] if group == "runtime-bundle" => {
+            eprintln!("xtask abi-staging: runtime-bundle requires validate");
             ExitCode::from(2)
         }
         [group, action, rest @ ..] if group == "builder" => {
@@ -159,6 +186,6 @@ pub fn run(args: Vec<String>) -> ExitCode {
 fn print_help() {
     println!("usage: xtask abi-staging <subcommand> [args...]");
     println!(
-        "subcommands: help, products <generate|check>, registries <generate|check>, builder <validate-inputs|validate-report|compare-report>, guard-codes <generate|check>, request-policy <generate|check|activation-mode>, structural-report validate, request <derive|fixture-check|select-current|plan-feed-write|validate-feed-plan>, records validate, mini run, requirements"
+        "subcommands: help, products <generate|check>, registries <generate|check>, evidence-definitions <generate|check>, runtime-bundle validate, builder <validate-inputs|validate-report|compare-report>, guard-codes <generate|check>, request-policy <generate|check|activation-mode>, structural-report validate, request <derive|fixture-check|select-current|plan-feed-write|validate-feed-plan>, records validate, mini run, requirements"
     );
 }

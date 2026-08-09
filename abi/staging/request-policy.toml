@@ -1,6 +1,6 @@
 schema = 1
 kind = "kandelo-abi-staging-request-policy"
-version = 1
+version = 2
 issuer_repository = "Automattic/kandelo"
 issuer_workflow = ".github/workflows/abi-staging-request-feed.yml"
 automatic_same_repository = true
@@ -16,8 +16,12 @@ addressed_taps = ["kandelo-dev/homebrew-tap-core"]
 # observe-only until protected hosted canaries have supplied activation evidence.
 implementation_paths = [
   ".github/workflows/abi-staging-request-feed.yml",
+  "abi/staging/evidence-definitions.toml",
+  "scripts/abi-staging-prepare-runtime.sh",
   "tools/xtask/src/abi_staging/canonical_json.rs",
   "tools/xtask/src/abi_staging/consumer_registry.rs",
+  "tools/xtask/src/abi_staging/evidence_policy.rs",
+  "tools/xtask/src/abi_staging/mod.rs",
   "tools/xtask/src/abi_staging/product_manifest.rs",
   "tools/xtask/src/abi_staging/records.rs",
   "tools/xtask/src/abi_staging/request_derivation.rs",
