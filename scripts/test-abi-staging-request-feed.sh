@@ -22,4 +22,8 @@ activation=$(cargo run -p xtask --target "$host_target" --quiet -- \
   exit 1
 }
 
+if [[ -n ${KANDELO_TAP_ROOT:-} ]]; then
+  bash scripts/test-abi-staging-cross-repo-fixtures.sh
+fi
+
 echo "test-abi-staging-request-feed: PASS"
