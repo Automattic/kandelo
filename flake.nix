@@ -112,6 +112,13 @@
             pkgs.bzip2
             pkgs.gnupatch
             pkgs.gh
+            # GitHub workflow syntax and expression validation. ABI staging
+            # plans invoke actionlint through scripts/dev-shell.sh so the
+            # validation tool must be part of the pinned repository shell.
+            pkgs.actionlint
+            # Plans and repository audits use ripgrep for exact bounded path
+            # and placeholder checks; do not fall back to an ambient host rg.
+            pkgs.ripgrep
             # oras - used by the trusted Homebrew bottle publish workflow
             # to push bottle bytes to GitHub Packages / GHCR while keeping
             # the actual `brew` executable outside PATH leakage.

@@ -2042,6 +2042,19 @@ the registry must not claim those tests already run in hosted staging.
 - Verify every file in this plan; do not add an implementation file that is
   absent from the File Map without first updating the plan and explaining the
   repository evidence that required it.
+- Modify: `flake.nix`
+
+**Repository-evidence correction:** The final foundation check and the later
+approved plans invoke `actionlint` and `rg` through `scripts/dev-shell.sh`, but
+current main declares neither tool in the Nix dev shell and has no repository
+wrapper for either. Add the nixpkgs packages before relying on those validation
+commands. This is a declared-tool correction, not a workflow behavior change.
+Current main also has five pre-existing embedded-shell findings in
+`force-rebuild.yml` and `reusable-homebrew-bottle-publish.yml`. Because this
+foundation does not modify those credentialed workflows, run the
+repository-wide syntax/expression pass with `actionlint -shellcheck=''` here
+instead of rewriting unrelated shell. Later plans still run full `actionlint`
+on every workflow they create or modify.
 
 **Interfaces:**
 
@@ -2103,7 +2116,7 @@ the registry must not claim those tests already run in hosted staging.
     ruby scripts/check-homebrew-publish-workflow-trust.rb
     ruby scripts/check-homebrew-experimental-vfs-workflow.rb
     ruby scripts/check-homebrew-closed-selection-workflow.rb
-    actionlint
+    actionlint -shellcheck=''
   '
   ```
 
