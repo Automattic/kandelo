@@ -181,14 +181,11 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 [ -n "$OUT" ]
-mkdir -p "$OUT/source-custody/submodules" "$OUT/bottles" "$OUT/tar-root/mini/bin"
+mkdir -p "$OUT/bottles" "$OUT/tar-root/mini/bin"
 printf 'tool\n' >"$OUT/tar-root/mini/bin/tool"
-tar -cf "$OUT/source-custody/kandelo-tree.tar" -C "$OUT/tar-root" mini
-tar -cf "$OUT/source-custody/tap-tree.tar" -C "$OUT/tar-root" mini
-printf 'kandelo bundle\n' >"$OUT/source-custody/kandelo.bundle"
-printf 'tap bundle\n' >"$OUT/source-custody/tap.bundle"
-printf '{"kind":"fixture-source-custody","schema":1}\n' \
-  >"$OUT/source-custody/manifest.json"
+if [ "${FAKE_BUILDER_MUTATE_CUSTODY:-0}" = "1" ]; then
+  printf 'candidate mutation\n' >>"$(dirname "$OUT")/source-custody/kandelo.bundle"
+fi
 if [ "${FAKE_BUILDER_FAIL:-0}" = "1" ]; then
   echo "fixture deterministic failure"
   exit 7
@@ -254,6 +251,12 @@ if run_adapter "$PREPOPULATED" >/dev/null 2>&1; then
 fi
 [ ! -e "$FAKE_BUILDER_LOG" ] || fail "invalid output reached the normal builder"
 [ "$(cat "$PREPOPULATED/user-file")" = "keep" ] || fail "adapter changed existing output"
+
+export FAKE_BUILDER_MUTATE_CUSTODY=1
+if run_adapter "$TMP_ROOT/mutated-custody-handoff" >/dev/null 2>&1; then
+  fail "adapter accepted source custody changed by candidate execution"
+fi
+unset FAKE_BUILDER_MUTATE_CUSTODY
 
 BAD_REQUEST="$TMP_ROOT/bad-request.json"
 BAD_PLAN="$TMP_ROOT/bad-plan.json"

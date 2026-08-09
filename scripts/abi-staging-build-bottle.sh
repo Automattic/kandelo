@@ -93,6 +93,7 @@ chmod 0700 "$BUILD_ROOT"
 CONTEXT="$BUILD_ROOT/build-context.json"
 RAW_OUTPUT="$BUILD_ROOT/raw-output"
 SELECTED_DEPENDENCIES="$BUILD_ROOT/declared-dependencies"
+SOURCE_CUSTODY="$BUILD_ROOT/source-custody"
 mkdir -p "$RAW_OUTPUT/diagnostics"
 
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$TAP_ROOT" \
@@ -108,6 +109,12 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$TAP_ROOT" \
   python3 -m scripts.abi_staging.handoff materialize-dependencies \
     --context "$CONTEXT" \
     --out "$SELECTED_DEPENDENCIES"
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$TAP_ROOT" \
+  python3 -m scripts.abi_staging.handoff create-custody \
+    --context "$CONTEXT" \
+    --kandelo-root "$KANDELO_ROOT" \
+    --tap-root "$TAP_ROOT" \
+    --out "$SOURCE_CUSTODY"
 
 FORMULA="$(jq -er '.formula' "$CONTEXT")"
 ARCHITECTURE="$(jq -er '.architecture' "$CONTEXT")"
@@ -155,6 +162,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$TAP_ROOT" \
   python3 -m scripts.abi_staging.handoff assemble \
     --context "$CONTEXT" \
     --raw-output "$RAW_OUTPUT" \
+    --source-custody "$SOURCE_CUSTODY" \
     --handoff "$HANDOFF" \
     --exit-code "$BUILD_STATUS"
 
