@@ -1,0 +1,73 @@
+schema = 1
+id = "browser-main-shell"
+architecture = "wasm32"
+output = "shell.vfs.zst"
+builder = "scripts/build-homebrew-main-shell-product.sh"
+
+[[composition.product]]
+id = "platform-rootfs"
+materialization = "embedded"
+
+[[composition.repository]]
+id = "main-shell-config"
+paths = [
+  "homebrew/main-shell-default.json",
+  "homebrew/main-shell-demo.json",
+  "homebrew/main-shell-brew-package-tree.json",
+]
+role = "runtime"
+materialization = "embedded"
+
+[[software.homebrew]]
+tap = "kandelo-dev/homebrew-tap-core"
+formulae = ["bash"]
+materialization = "embedded"
+
+[[software.homebrew]]
+tap = "kandelo-dev/homebrew-tap-core"
+formulae = [
+  "dash", "ncurses", "coreutils", "gawk", "grep", "sed", "bc",
+  "file-formula", "m4", "make", "findutils", "diffutils",
+  "posix-utils-lite", "fbdoom", "modeset", "less", "tar", "curl",
+  "netcat", "wget", "git", "gzip", "bzip2", "xz", "zstd", "zip",
+  "unzip", "lsof", "nano", "vim", "nethack",
+]
+materialization = "lazy"
+
+[[mounts]]
+path = "/"
+source = "built-image"
+readonly = false
+
+[[mounts]]
+path = "/tmp"
+source = "scratch"
+mode = "1777"
+uid = 0
+gid = 0
+ephemeral = true
+
+[boot]
+argv = ["bash", "-l", "-i"]
+cwd = "/home/user"
+uid = 1000
+gid = 1000
+
+[boot.env]
+HOME = "/home/user"
+HISTFILE = "/home/user/.bash_history"
+LANG = "en_US.UTF-8"
+LOGNAME = "user"
+PATH = "/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
+PS1 = "kandelo$ "
+SSL_CERT_DIR = "/etc/ssl/certs"
+SSL_CERT_FILE = "/etc/ssl/certs/ca-certificates.crt"
+TERM = "xterm-256color"
+TMPDIR = "/tmp"
+USER = "user"
+
+[evidence.node]
+test = "main-shell-startup"
+
+[evidence.browser]
+test = "main-shell-basic-e2e"

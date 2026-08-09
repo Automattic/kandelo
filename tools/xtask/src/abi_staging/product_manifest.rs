@@ -423,12 +423,9 @@ fn validate_manifest(
     }
     enforce_limit("Homebrew Formula roots", formula_count, 256)?;
 
-    let mut package_names = BTreeSet::new();
+    let mut package_claims = BTreeSet::new();
     for package in &manifest.software.package {
         validate_stable_id(&package.name, "package name")?;
-        if !package_names.insert(package.name.as_str()) {
-            return Err(format!("{} has duplicate package input {:?}", context(), package.name));
-        }
         if package.outputs.is_empty() && package.source_roles.is_empty() {
             return Err(format!(
                 "{} package {:?} must name an output or source role",
@@ -437,6 +434,30 @@ fn validate_manifest(
         }
         validate_unique_ids(&package.outputs, "package output")?;
         validate_unique_ids(&package.source_roles, "package source role")?;
+        for output in &package.outputs {
+            if !package_claims.insert((package.name.as_str(), "output", output.as_str())) {
+                return Err(format!(
+                    "{} has duplicate package output claim {:?}/{:?}",
+                    context(),
+                    package.name,
+                    output,
+                ));
+            }
+        }
+        for source_role in &package.source_roles {
+            if !package_claims.insert((
+                package.name.as_str(),
+                "source role",
+                source_role.as_str(),
+            )) {
+                return Err(format!(
+                    "{} has duplicate package source-role claim {:?}/{:?}",
+                    context(),
+                    package.name,
+                    source_role,
+                ));
+            }
+        }
         let package_manifest = format!("packages/registry/{}/package.toml", package.name);
         validate_repo_path(repository_root, &package_manifest).map_err(|error| {
             format!("{} package {:?}: {error}", context(), package.name)
@@ -826,6 +847,8 @@ mod tests {
         CatalogWriteMode,
     };
     use crate::abi_staging::canonical_json::canonical_json_bytes;
+    use serde::Deserialize;
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
     use std::path::{Path, PathBuf};
 
@@ -871,6 +894,448 @@ readonly = false
 
     fn write_product(repository: &Path, filename: &str, contents: &str) {
         fs::write(repository.join("products").join(filename), contents).unwrap();
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct LegacyAdapterRegistry {
+        schema: u64,
+        kind: String,
+        adapters: Vec<LegacyAdapter>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(untagged)]
+    enum LegacyAdapter {
+        Package(LegacyPackageAdapter),
+        Script(LegacyScriptAdapter),
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct LegacyPackageAdapter {
+        product: String,
+        package: String,
+        output: String,
+        build_target: String,
+        mirror_filename: String,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct LegacyScriptAdapter {
+        product: String,
+        build_target: String,
+    }
+
+    fn materialization_name(value: Option<super::MaterializationV1>) -> &'static str {
+        match value {
+            Some(super::MaterializationV1::Embedded) => "embedded",
+            Some(super::MaterializationV1::Lazy) => "lazy",
+            None => "none",
+        }
+    }
+
+    fn package_root_signatures(manifest: &super::VfsProductManifestV1) -> BTreeSet<String> {
+        manifest
+            .software
+            .package
+            .iter()
+            .map(|package| {
+                let mut outputs = package.outputs.clone();
+                outputs.sort();
+                let mut sources = package.source_roles.clone();
+                sources.sort();
+                format!(
+                    "{}|{}|{}|{:?}|{}",
+                    package.name,
+                    outputs.join(","),
+                    sources.join(","),
+                    package.role,
+                    materialization_name(package.materialization),
+                )
+            })
+            .collect()
+    }
+
+    fn product_input_signatures(manifest: &super::VfsProductManifestV1) -> BTreeSet<String> {
+        manifest
+            .composition
+            .product
+            .iter()
+            .map(|input| {
+                format!(
+                    "{}|{}",
+                    input.id,
+                    materialization_name(Some(input.materialization)),
+                )
+            })
+            .collect()
+    }
+
+    fn repository_input_signatures(
+        manifest: &super::VfsProductManifestV1,
+    ) -> BTreeSet<String> {
+        manifest
+            .composition
+            .repository
+            .iter()
+            .map(|input| {
+                let mut paths = input.paths.clone();
+                paths.sort();
+                format!(
+                    "{}|{}|{:?}|{}",
+                    input.id,
+                    paths.join(","),
+                    input.role,
+                    materialization_name(input.materialization),
+                )
+            })
+            .collect()
+    }
+
+    fn archive_signatures(manifest: &super::VfsProductManifestV1) -> BTreeSet<String> {
+        manifest
+            .software
+            .archive
+            .iter()
+            .map(|input| {
+                format!(
+                    "{}|{}|{}|{:?}|{}",
+                    input.id,
+                    input.url,
+                    input.sha256,
+                    input.role,
+                    materialization_name(input.materialization),
+                )
+            })
+            .collect()
+    }
+
+    fn toolchain_signatures(manifest: &super::VfsProductManifestV1) -> BTreeSet<String> {
+        manifest
+            .software
+            .toolchain
+            .iter()
+            .map(|input| {
+                format!(
+                    "{}|{:?}|{}|{:?}|{}",
+                    input.id,
+                    input.provider,
+                    input.component,
+                    input.role,
+                    materialization_name(input.materialization),
+                )
+            })
+            .collect()
+    }
+
+    fn set(values: &[&str]) -> BTreeSet<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn repository_inventory() {
+        let repository = crate::repo_root();
+        let catalog = load_product_catalog(
+            &repository,
+            &repository.join("images/vfs/products"),
+        )
+        .unwrap();
+        let products = catalog
+            .products
+            .iter()
+            .map(|entry| (entry.manifest.id.as_str(), &entry.manifest))
+            .collect::<BTreeMap<_, _>>();
+        let expected_ids = set(&[
+            "platform-rootfs",
+            "browser-main-shell",
+            "browser-node",
+            "browser-nginx",
+            "browser-nginx-php",
+            "browser-wordpress",
+            "browser-lamp",
+            "browser-mariadb-wasm32",
+            "browser-mariadb-wasm64",
+            "browser-python",
+            "browser-perl",
+            "browser-redis",
+            "browser-erlang",
+            "developer-kandelo-sdk",
+            "test-mariadb",
+            "test-php",
+            "test-sqlite",
+        ]);
+        assert_eq!(
+            products.keys().map(|id| (*id).to_string()).collect::<BTreeSet<_>>(),
+            expected_ids,
+        );
+
+        let expected_product_inputs = BTreeMap::from([
+            ("platform-rootfs", set(&[])),
+            ("browser-main-shell", set(&["platform-rootfs|embedded"])),
+            ("browser-node", set(&["browser-main-shell|embedded"])),
+            ("browser-nginx", set(&["browser-main-shell|embedded"])),
+            ("browser-nginx-php", set(&["browser-main-shell|embedded"])),
+            ("browser-wordpress", set(&["browser-main-shell|embedded"])),
+            ("browser-lamp", set(&["browser-main-shell|embedded"])),
+            ("browser-mariadb-wasm32", set(&[])),
+            ("browser-mariadb-wasm64", set(&[])),
+            ("browser-python", set(&[])),
+            ("browser-perl", set(&[])),
+            ("browser-redis", set(&[])),
+            ("browser-erlang", set(&[])),
+            ("developer-kandelo-sdk", set(&[])),
+            ("test-mariadb", set(&[])),
+            ("test-php", set(&["platform-rootfs|embedded"])),
+            ("test-sqlite", set(&[])),
+        ]);
+        for (id, expected) in expected_product_inputs {
+            assert_eq!(product_input_signatures(products[id]), expected, "{id}");
+        }
+
+        let expected_package_roots = BTreeMap::from([
+            ("platform-rootfs", set(&[
+                "bash|bash||Runtime|lazy", "bc|bc||Runtime|lazy",
+                "coreutils|coreutils||Runtime|lazy", "dash|dash||Runtime|lazy",
+                "diffutils|cmp,diff,diff3,sdiff||Runtime|lazy",
+                "file|file,file-magic||Runtime|lazy",
+                "findutils|find,xargs||Runtime|lazy", "gawk|gawk||Runtime|lazy",
+                "grep|grep||Runtime|lazy", "m4|m4||Runtime|lazy",
+                "make|make||Runtime|lazy",
+                "ncurses|captoinfo,clear,infocmp,infotocap,reset,tabs,tic,toe,tput,tset||Runtime|lazy",
+                concat!(
+                    "posix-utils-lite|ar,asa,cal,cflow,compress,ctags,cxref,ed,ex,",
+                    "fuser,gencat,getconf,gettext,iconv,ipcrm,ipcs,lex,locale,logger,",
+                    "man,more,msgfmt,ngettext,nm,patch,pax,pgrep,ps,renice,strings,",
+                    "strip,uncompress,uudecode,uuencode,what,xgettext,yacc||Runtime|lazy",
+                ),
+                "sed|sed||Runtime|lazy",
+            ])),
+            ("browser-main-shell", set(&[])),
+            ("browser-node", set(&["node|node||Runtime|embedded"])),
+            ("browser-nginx", set(&[
+                "dinit|dinit,dinitctl||Runtime|embedded",
+                "nginx|nginx||Runtime|embedded",
+            ])),
+            ("browser-nginx-php", set(&[
+                "dinit|dinit,dinitctl||Runtime|embedded",
+                "kernel|kernel||Build|none",
+                "nginx|nginx||Runtime|embedded",
+                "php|opcache,php-fpm||Runtime|embedded",
+            ])),
+            ("browser-wordpress", set(&[
+                "dinit|dinit,dinitctl||Runtime|embedded",
+                "kernel|kernel||Build|none",
+                "msmtpd|msmtpd||Runtime|embedded",
+                "nginx|nginx||Runtime|embedded",
+                "php|opcache,php-fpm||Runtime|embedded",
+            ])),
+            ("browser-lamp", set(&[
+                "dinit|dinit,dinitctl||Runtime|embedded",
+                "kernel|kernel||Build|none",
+                "mariadb|mariadbd|system-tables|Runtime|embedded",
+                "msmtpd|msmtpd||Runtime|embedded",
+                "nginx|nginx||Runtime|embedded",
+                "php|opcache,php-fpm||Runtime|embedded",
+            ])),
+            ("browser-mariadb-wasm32", set(&[
+                "coreutils|coreutils||Runtime|embedded",
+                "dash|dash||Runtime|embedded",
+                "dinit|dinit,dinitctl||Runtime|embedded",
+                "mariadb|mariadbd|system-tables|Runtime|embedded",
+            ])),
+            ("browser-mariadb-wasm64", set(&[
+                "coreutils|coreutils||Runtime|embedded",
+                "dash|dash||Runtime|embedded",
+                "dinit|dinit,dinitctl||Runtime|embedded",
+                "mariadb|mariadbd|system-tables|Runtime|embedded",
+            ])),
+            ("browser-python", set(&[
+                "cpython|cpython,python-runtime||Runtime|embedded",
+            ])),
+            ("browser-perl", set(&[
+                "perl||standard-library|Runtime|embedded",
+                "perl|perl||Runtime|lazy",
+            ])),
+            ("browser-redis", set(&[
+                "dinit|dinit,dinitctl||Runtime|embedded",
+                "redis|redis-server||Runtime|embedded",
+            ])),
+            ("browser-erlang", set(&[
+                "erlang|erlang,erlang-otp||Runtime|embedded",
+            ])),
+            ("developer-kandelo-sdk", set(&[
+                "libcxx|libcxx||Runtime|embedded",
+            ])),
+            ("test-mariadb", set(&[
+                "coreutils|coreutils||Runtime|embedded",
+                "dash|dash||Runtime|embedded",
+                "dinit|dinit,dinitctl||Runtime|embedded",
+                "mariadb|mariadbd|system-tables,test-suite|Runtime|embedded",
+            ])),
+            ("test-php", set(&[
+                "php|curl,icu-data,intl,opcache,phar,php,php-fpm,zend_test,zip|test-suite|Runtime|embedded",
+            ])),
+            ("test-sqlite", set(&[
+                "coreutils|coreutils||Runtime|embedded",
+                "dash|dash||Runtime|embedded",
+                "sqlite|sqlite3,testfixture|full-source|Runtime|embedded",
+                "tcl||runtime-library|Runtime|embedded",
+            ])),
+        ]);
+        for (id, expected) in expected_package_roots {
+            assert_eq!(package_root_signatures(products[id]), expected, "{id}");
+        }
+
+        let expected_repository_inputs = BTreeMap::from([
+            (
+                "platform-rootfs",
+                set(&["rootfs-source|MANIFEST,images/rootfs|Runtime|embedded"]),
+            ),
+            (
+                "browser-main-shell",
+                set(&[concat!(
+                    "main-shell-config|homebrew/main-shell-brew-package-tree.json,",
+                    "homebrew/main-shell-default.json,homebrew/main-shell-demo.json|",
+                    "Runtime|embedded",
+                )]),
+            ),
+            (
+                "developer-kandelo-sdk",
+                set(&[
+                    "sdk-glue|libc/glue|Runtime|embedded",
+                    "sdk-licenses|COPYING.runtime,LICENSE,libc/musl/COPYRIGHT,sdk/kandelo/licenses|Runtime|embedded",
+                    "sdk-wrappers|sdk/config.site,sdk/kandelo/bin|Runtime|embedded",
+                ]),
+            ),
+            (
+                "test-php",
+                set(&["php-test-fixtures|tests/php-fixtures|Runtime|embedded"]),
+            ),
+        ]);
+        for id in products.keys() {
+            let expected = expected_repository_inputs
+                .get(id)
+                .cloned()
+                .unwrap_or_default();
+            assert_eq!(repository_input_signatures(products[id]), expected, "{id}");
+        }
+
+        let expected_archives = BTreeMap::from([
+            (
+                "browser-node",
+                set(&[concat!(
+                    "npm-runtime|https://registry.npmjs.org/npm/-/npm-10.9.2.tgz|",
+                    "5cd1e5ab971ea6333f910bc2d50700167c5ef4e66da279b2a3efc874c6b116e4|",
+                    "Runtime|embedded",
+                )]),
+            ),
+            (
+                "browser-wordpress",
+                set(&[
+                    concat!(
+                        "wordpress-core|https://wordpress.org/wordpress-7.0.tar.gz|",
+                        "530c8fdeb16fb0affdb53eb727b6a04bb8d166621c20029e389cabb01a0fa921|",
+                        "Runtime|embedded",
+                    ),
+                    concat!(
+                        "wordpress-sqlite-integration|https://downloads.wordpress.org/",
+                        "plugin/sqlite-database-integration.2.1.16.zip|",
+                        "ccc69cada05983e6c2dac8c0962b548c437b4c96c00ea41b0e130fc128671391|",
+                        "Runtime|embedded",
+                    ),
+                ]),
+            ),
+            (
+                "browser-lamp",
+                set(&[concat!(
+                    "wordpress-core|https://wordpress.org/wordpress-7.0.tar.gz|",
+                    "530c8fdeb16fb0affdb53eb727b6a04bb8d166621c20029e389cabb01a0fa921|",
+                    "Runtime|embedded",
+                )]),
+            ),
+        ]);
+        for id in products.keys() {
+            let expected = expected_archives.get(id).cloned().unwrap_or_default();
+            assert_eq!(archive_signatures(products[id]), expected, "{id}");
+        }
+
+        for id in products.keys() {
+            let expected = if *id == "developer-kandelo-sdk" {
+                set(&[
+                    "clang-resource-headers|RepositoryDevShell|clang-resource-headers|Runtime|embedded",
+                    "wasm32-sysroot|RepositoryDevShell|wasm32-sysroot|Runtime|embedded",
+                ])
+            } else {
+                BTreeSet::new()
+            };
+            assert_eq!(toolchain_signatures(products[id]), expected, "{id}");
+        }
+
+        let shell = products["browser-main-shell"];
+        let formulae = shell
+            .software
+            .homebrew
+            .iter()
+            .flat_map(|group| {
+                group.formulae.iter().map(|formula| {
+                    format!(
+                        "{}|{}",
+                        formula,
+                        materialization_name(Some(group.materialization)),
+                    )
+                })
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(formulae, set(&[
+            "bash|embedded", "bc|lazy", "bzip2|lazy", "coreutils|lazy",
+            "curl|lazy", "dash|lazy", "diffutils|lazy", "fbdoom|lazy",
+            "file-formula|lazy", "findutils|lazy", "gawk|lazy", "git|lazy",
+            "grep|lazy", "gzip|lazy", "less|lazy", "lsof|lazy", "m4|lazy",
+            "make|lazy", "modeset|lazy", "nano|lazy", "ncurses|lazy",
+            "netcat|lazy", "nethack|lazy", "posix-utils-lite|lazy",
+            "sed|lazy", "tar|lazy", "unzip|lazy", "vim|lazy", "wget|lazy",
+            "xz|lazy", "zip|lazy", "zstd|lazy",
+        ]));
+
+        let adapter_bytes = fs::read(repository.join("abi/staging/legacy-vfs-adapters.toml"))
+            .unwrap();
+        let adapter_text = std::str::from_utf8(&adapter_bytes).unwrap();
+        let adapters: LegacyAdapterRegistry = toml::from_str(adapter_text).unwrap();
+        assert_eq!(adapters.schema, 1);
+        assert_eq!(adapters.kind, "kandelo-legacy-vfs-adapters");
+        assert_eq!(adapters.adapters.len(), expected_ids.len());
+        let mut adapter_products = BTreeSet::new();
+        for adapter in adapters.adapters {
+            let (product, build_target) = match &adapter {
+                LegacyAdapter::Package(adapter) => {
+                    let package_path = repository
+                        .join("packages/registry")
+                        .join(&adapter.package)
+                        .join("package.toml");
+                    let package: toml::Value = toml::from_str(
+                        &fs::read_to_string(&package_path).unwrap(),
+                    )
+                    .unwrap();
+                    let outputs = package
+                        .get("outputs")
+                        .and_then(toml::Value::as_array)
+                        .unwrap();
+                    assert!(outputs.iter().any(|output| {
+                        output.get("name").and_then(toml::Value::as_str)
+                            == Some(adapter.output.as_str())
+                            && output.get("wasm").and_then(toml::Value::as_str)
+                                == Some(adapter.mirror_filename.as_str())
+                    }));
+                    (&adapter.product, &adapter.build_target)
+                }
+                LegacyAdapter::Script(adapter) => (&adapter.product, &adapter.build_target),
+            };
+            assert!(adapter_products.insert(product.clone()));
+            assert_eq!(products[product.as_str()].builder, *build_target);
+        }
+        assert_eq!(adapter_products, expected_ids);
     }
 
     #[test]
@@ -949,6 +1414,48 @@ materialization = "embedded"
         )
         .unwrap_err();
         assert!(error.contains("build input forbids materialization"), "{error}");
+    }
+
+    #[test]
+    fn package_outputs_and_source_roles_can_have_distinct_materialization() {
+        let repository = create_test_repository();
+        let split_materialization = minimal_manifest(
+            "product",
+            "wasm32",
+            "product.vfs",
+            r#"[[software.package]]
+name = "dash"
+outputs = ["dash"]
+source_roles = []
+role = "runtime"
+materialization = "lazy"
+
+[[software.package]]
+name = "dash"
+outputs = []
+source_roles = ["standard-library"]
+role = "runtime"
+materialization = "embedded"
+"#,
+        );
+        parse_product_manifest(
+            repository.path(),
+            &repository.path().join("products/product.toml"),
+            split_materialization.as_bytes(),
+        )
+        .unwrap();
+
+        let duplicate_claim = split_materialization.replace(
+            "outputs = []\nsource_roles = [\"standard-library\"]",
+            "outputs = [\"dash\"]\nsource_roles = []",
+        );
+        assert!(parse_product_manifest(
+            repository.path(),
+            &repository.path().join("products/product.toml"),
+            duplicate_claim.as_bytes(),
+        )
+        .unwrap_err()
+        .contains("duplicate package output claim"));
     }
 
     #[test]

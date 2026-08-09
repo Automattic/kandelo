@@ -1,0 +1,44 @@
+schema = 1
+id = "browser-python"
+architecture = "wasm32"
+output = "python.vfs.zst"
+builder = "images/vfs/scripts/build-python-vfs-image.sh"
+
+[[software.package]]
+name = "cpython"
+outputs = ["cpython", "python-runtime"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[mounts]]
+path = "/"
+source = "built-image"
+readonly = false
+
+[[mounts]]
+path = "/tmp"
+source = "scratch"
+mode = "1777"
+uid = 0
+gid = 0
+ephemeral = true
+
+[boot]
+argv = ["/usr/bin/python3"]
+cwd = "/home"
+uid = 1000
+gid = 1000
+
+[boot.env]
+HOME = "/home"
+PATH = "/usr/local/bin:/usr/bin:/bin"
+PYTHONDONTWRITEBYTECODE = "1"
+PYTHONHOME = "/usr"
+TMPDIR = "/tmp"
+
+[evidence.node]
+test = "python-vfs-node-smoke"
+
+[evidence.browser]
+test = "python-vfs-browser-smoke"

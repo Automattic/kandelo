@@ -267,17 +267,38 @@ pub fn write_or_check_consumer_registries(
 }
 
 pub fn run_cli(action: &str, args: &[String]) -> Result<(), String> {
-    let (pages_output_flag, tests_output_flag, mode) = match action {
-        "generate" => ("--pages-out", "--tests-out", RegistryWriteMode::Generate),
+    let (pages_output_flag, tests_output_flag, mode, include_catalog) = match action {
+        "generate" => (
+            "--pages-out",
+            "--tests-out",
+            RegistryWriteMode::Generate,
+            false,
+        ),
         "check" => (
             "--pages-generated",
             "--tests-generated",
             RegistryWriteMode::Check,
+            true,
         ),
         _ => return Err(format!("unknown registries subcommand {action:?}")),
     };
-    let expected = ["--pages", pages_output_flag, "--tests", tests_output_flag];
+    let mut expected = vec!["--pages", pages_output_flag, "--tests", tests_output_flag];
+    if include_catalog {
+        expected.push("--catalog");
+    }
     let flags = parse_path_flags(args, &expected)?;
+    if include_catalog {
+        let catalog = crate::abi_staging::selection::read_canonical_catalog(&flags["--catalog"])?;
+        let pages = parse_pages_registry(
+            &flags["--pages"],
+            &read_bounded_regular_file(&flags["--pages"], MAX_REGISTRY_BYTES)?,
+        )?;
+        let tests = parse_test_registry(
+            &flags["--tests"],
+            &read_bounded_regular_file(&flags["--tests"], MAX_REGISTRY_BYTES)?,
+        )?;
+        validate_consumer_registries(&catalog, &pages, &tests)?;
+    }
     write_or_check_consumer_registries(
         mode,
         &flags["--pages"],

@@ -373,7 +373,7 @@ fn product_map<'a>(
     Ok(products)
 }
 
-fn read_canonical_catalog(path: &Path) -> Result<VfsProductCatalogV1, String> {
+pub(crate) fn read_canonical_catalog(path: &Path) -> Result<VfsProductCatalogV1, String> {
     let bytes = read_bounded_regular_file(path, MAX_CATALOG_BYTES)?;
     let catalog: VfsProductCatalogV1 = serde_json::from_slice(&bytes)
         .map_err(|error| format!("catalog {} is invalid JSON: {error}", path.display()))?;

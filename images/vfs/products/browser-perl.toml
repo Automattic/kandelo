@@ -1,0 +1,50 @@
+schema = 1
+id = "browser-perl"
+architecture = "wasm32"
+output = "perl.vfs.zst"
+builder = "images/vfs/scripts/build-perl-vfs-image.sh"
+
+[[software.package]]
+name = "perl"
+outputs = ["perl"]
+source_roles = []
+role = "runtime"
+materialization = "lazy"
+
+[[software.package]]
+name = "perl"
+outputs = []
+source_roles = ["standard-library"]
+role = "runtime"
+materialization = "embedded"
+
+[[mounts]]
+path = "/"
+source = "built-image"
+readonly = false
+
+[[mounts]]
+path = "/tmp"
+source = "scratch"
+mode = "1777"
+uid = 0
+gid = 0
+ephemeral = true
+
+[boot]
+argv = ["/usr/bin/perl", "-e", "print qq(Perl on Kandelo\\n)"]
+cwd = "/home"
+uid = 1000
+gid = 1000
+
+[boot.env]
+HOME = "/home"
+PATH = "/usr/local/bin:/usr/bin:/bin"
+PERL5LIB = "/usr/lib/perl5"
+TMPDIR = "/tmp"
+
+[evidence.node]
+test = "perl-vfs-node-smoke"
+
+[evidence.browser]
+test = "perl-vfs-browser-smoke"

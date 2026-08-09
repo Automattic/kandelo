@@ -1,0 +1,1 @@
+{"kind":"kandelo-pages-vfs-products","products":[{"id":"browser-lamp","load":"lazy"},{"id":"browser-main-shell","load":"eager"},{"id":"browser-nginx","load":"lazy"},{"id":"browser-nginx-php","load":"lazy"},{"id":"browser-node","load":"lazy"},{"id":"browser-wordpress","load":"lazy"},{"id":"platform-rootfs","load":"eager"}],"schema":1}

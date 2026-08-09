@@ -1,0 +1,91 @@
+schema = 1
+id = "browser-wordpress"
+architecture = "wasm32"
+output = "wordpress.vfs.zst"
+builder = "images/vfs/scripts/build-wp-vfs-image.sh"
+
+[[composition.product]]
+id = "browser-main-shell"
+materialization = "embedded"
+
+[[software.package]]
+name = "nginx"
+outputs = ["nginx"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "php"
+outputs = ["php-fpm", "opcache"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "dinit"
+outputs = ["dinit", "dinitctl"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "msmtpd"
+outputs = ["msmtpd"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "kernel"
+outputs = ["kernel"]
+source_roles = []
+role = "build"
+
+[[software.archive]]
+id = "wordpress-core"
+url = "https://wordpress.org/wordpress-7.0.tar.gz"
+sha256 = "530c8fdeb16fb0affdb53eb727b6a04bb8d166621c20029e389cabb01a0fa921"
+role = "runtime"
+materialization = "embedded"
+
+[[software.archive]]
+id = "wordpress-sqlite-integration"
+url = "https://downloads.wordpress.org/plugin/sqlite-database-integration.2.1.16.zip"
+sha256 = "ccc69cada05983e6c2dac8c0962b548c437b4c96c00ea41b0e130fc128671391"
+role = "runtime"
+materialization = "embedded"
+
+[[mounts]]
+path = "/"
+source = "built-image"
+readonly = false
+
+[[mounts]]
+path = "/tmp"
+source = "scratch"
+mode = "1777"
+uid = 0
+gid = 0
+ephemeral = true
+
+[boot]
+argv = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "nginx"]
+cwd = "/root"
+uid = 0
+gid = 0
+
+[boot.env]
+HOME = "/root"
+LOGNAME = "root"
+PATH = "/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"
+TMPDIR = "/tmp"
+USER = "root"
+WP_APP_PATH = "/app"
+WP_PROTO = "http"
+
+[evidence.node]
+test = "wordpress-sqlite-node-startup"
+
+[evidence.browser]
+test = "wordpress-sqlite-browser-e2e"

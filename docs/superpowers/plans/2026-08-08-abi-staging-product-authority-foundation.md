@@ -998,6 +998,23 @@ The manifest inventory is exact and contains these stable identities:
 | `test-php` | `wasm32` | `php-test.vfs.zst` | `images/vfs/scripts/build-php-test-vfs-image.sh` | embedded `platform-rootfs`, PHP executable/runtime outputs, PHP source role, and repository test fixtures |
 | `test-sqlite` | `wasm32` | `sqlite-test.vfs.zst` | `images/vfs/scripts/build-sqlite-test-vfs-image.sh` | SQLite/Tcl source roles, generated test executables, `dash`, and `coreutils` |
 
+Repository evidence found during execution requires these explicit, bounded
+corrections to the table rather than an unsupported behavior change:
+
+- `homebrew/main-shell.Brewfile` currently selects 32 roots and does not
+  select `ruby`. The checked-in `browser-main-shell` manifest therefore
+  captures those exact 32 roots. Adding Ruby remains follow-up work that must
+  first update and prove the real shell selection and hosted product evidence.
+- A clean checkout has no `sysroot/` directory, although the SDK builder
+  consumes the generated sysroot. The SDK manifest records it as the explicit
+  `repository-dev-shell` toolchain output `wasm32-sysroot`; checked-in SDK,
+  glue, and license paths remain repository inputs. Validation continues to
+  reject missing repository paths.
+- Perl's executable is lazy while its standard-library source role is
+  embedded. Multiple `software.package` entries for the same package are
+  accepted only when their output and source-role claims are disjoint, so
+  those two materialization decisions remain independently visible.
+
 Use exact URLs and digests already owned by the corresponding package or
 source helper. Moving those facts into the product manifest must not silently
 change bytes or versions. Before authoring a manifest, freeze the builder's
