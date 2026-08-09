@@ -1,163 +1,107 @@
-# Exact-Head ABI Staging Request Feed and Reconciliation Implementation Plan
+# Exact-Head ABI Request Feed and Reconciliation Implementation Plan
+
+> **Junior-review edition:** The complete command-level version is preserved
+> in docs-only commit `0153a8863`. This edition explains the same interfaces,
+> tests, trust boundaries, and commit sequence in plainer language. During
+> implementation, use the preserved task details together with any review
+> changes approved against this edition.
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Issue immutable, canonical ABI-staging requests for exact Kandelo
-pull-request heads and let protected tap automation discover and reconcile all
-valid current and historical requests through equivalent scheduled and manual
-read-only paths.
+**Goal:** Publish an immutable request for an exact Kandelo pull-request head
+and let protected tap code discover and reconcile current and historical
+requests without building anything yet.
 
-**Architecture:** Protected Kandelo code applies the current protected request
-policy and parser to inert files from the exact pull-request head. An
-uncredentialed job supplies structural ABI evidence; a separate write-capable
-job validates that bounded artifact, derives `AbiStagingRequestV1`, and appends
-it to one public prerelease per pull request without executing candidate code.
-Protected tap code independently validates the public URL, release, filename,
-canonical bytes, issuer, addressed tap, exact source, ABI, and policy
-identities. A pure lifecycle reconciler emits deterministic decisions keyed by
-request digest. The first deployment is observe-only; scheduling builds and
-writing tap records begin in Plan 3.
+**Architecture:** An uncredentialed Kandelo job inspects the exact head and
+produces structural ABI evidence. Protected Kandelo code validates that inert
+evidence, applies current protected policy, and appends one canonical request
+asset to a public prerelease. Protected tap code independently downloads,
+validates, and classifies requests. Both hosted paths begin in observe mode.
 
-**Tech Stack:** Existing Rust `xtask abi-staging` models and canonical JSON,
-TOML protected policy, Bash and `gh` for the narrow Kandelo Release adapter,
-Python standard library for protected tap HTTP/reconciliation logic, Ruby/YAML
-workflow mutation checks, GitHub Actions with full-SHA action pins, and all
-local validation through Kandelo's `scripts/dev-shell.sh`.
+**Tech Stack:** Plan 1 Rust `xtask` models, TOML policy, Bash and `gh`, Python
+standard library, Ruby workflow checkers, GitHub Actions pinned to full commit
+SHAs, and local validation through `scripts/dev-shell.sh`.
 
 ## Global Constraints
 
-- Consume Plan 1 exactly. Do not rename `AbiStagingRequestV1`,
-  `VfsProductCatalogV1`, `PagesProductRegistryV1`,
-  `TestProductRegistryV1`, `SelectedVfsProductV1`, or
-  `FormulaRequirementV1`.
-- Reusable code is generic in source ABI `N` and target ABI `N + 1`. Local
-  fixtures use arbitrary small values. Acceptance-branch values appear only in
-  Plan 5's hosted fixture file.
-- The authoritative build source is the exact pull-request head commit and
-  tree. Never fetch, create, name, or accept a synthetic merge as
-  `build_source`.
-- Protected policy comes from the exact protected Kandelo `main` revision
-  captured by the writer. Product manifests and consumer registries come from
-  the exact head and are parsed as inert data by that protected implementation.
-- `requirements.digest` is recomputed from exact-head normalized selection;
-  `policy_sha256` is recomputed from protected policy plus its declared
-  implementation-file digests; guard identity is separate.
-- A later current-main policy implementation change re-evaluates open exact
-  heads. It does not change an old request, invalidate historical work, or turn
-  current-main bytes into the build source.
-- The public feed has no timestamp ordering, upload ordering, lexical SHA
-  ordering, mutable latest asset, lifecycle asset, merged asset, or mutable
-  request body.
-- The exact asset name is
+- Keep the Plan 1 type and field names unchanged.
+- Reusable code models ABI `N` to `N + 1`; concrete successor values belong
+  only in Plan 5 fixture data.
+- `build_source` is always the exact PR head commit and tree, never a synthetic
+  merge.
+- Protected policy and parsing code come from protected current main.
+- Exact-head product and registry files are treated as inert data.
+- Recompute requirements, policy, and guard digests; do not trust supplied
+  digest claims.
+- Never choose a current request by time, upload order, asset ID, Git SHA
+  ordering, or a mutable latest pointer.
+- Asset names are exactly
   `candidate-request-<full-head-sha>-sha256-<request-digest>.json`.
-- Same-repository pull requests are automatic. Fork authorization remains
-  disabled in this plan; do not add a label or automatic fallback. The strict
-  exact-SHA parser remains represented by the Plan 1 request model for a later
-  extension.
-- More than one request digest may name the same head. The current request must
-  match exact current head, requirements digest, policy version/digest, and
-  guard-registry version/digest.
-- Previously issued heads remain discoverable and buildable after a pull
-  request advances. Only the current exact head can satisfy the current Check.
-- Candidate-controlled code runs only in a job with `contents: read`, no
-  secrets, and no persisted credentials. The Release writer uses protected
-  code and treats downloaded artifacts and exact-head files as bounded inert
-  inputs.
-- The tap reconciler has `contents: read` only in this plan. It does not
-  dispatch builds, publish packages, mutate branches, update Kandelo Checks, or
-  persist mutable coordinator state.
-- Scheduled and manual reconciliation call the same command with the same
-  validation and decision functions. Manual input accepts exactly one
-  `request_asset_url`.
-- All GitHub Actions are full 40-character SHA pins with version comments.
-- Preserve all legacy workflows and current supported behavior. Both new
-  workflows start in observe mode and are documented as non-gating.
-- Preserve the unrelated dirty `tests/sortix/os-test` and `.serena/` paths.
-- Run every build and validation command through `scripts/dev-shell.sh`.
+- Automatic issuance covers same-repository PRs only. Fork issuance remains
+  disabled in this plan.
+- More than one immutable request may exist for one head after policy changes.
+- Old exact heads stay discoverable and buildable after the PR advances.
+- Candidate-controlled code gets `contents: read`, no secrets, and no
+  persisted credentials.
+- The Release writer executes protected code only and treats artifacts as
+  bounded inert data.
+- Tap reconciliation is read-only in this plan: no builds, package writes,
+  branch writes, Check writes, or mutable coordinator database.
+- Scheduled and manual tap runs call the same validator/reconciler.
+- Every third-party action is pinned to a full SHA with a version comment.
+- New workflows start observe-only and do not replace legacy behavior.
+- Use a separate tap implementation worktree. Do not edit the audit worktree.
+- Keep unrelated Kandelo worktree state out of commits.
+- Run all local commands through `scripts/dev-shell.sh`.
 
 ---
 
-## Plan 1 Interfaces Consumed
-
-`AbiStagingRequestV1` retains exactly seven logical sections:
+## Plain-language data flow
 
 ```text
-schema + kind
-pull_request
-build_source
-target_abi
-requirements
-issuance
-informational_context
+exact PR head (untrusted code)
+        |
+        v
+uncredentialed structural ABI report
+        |
+        v
+protected current-main validator
+        |
+        +--> reads exact-head product/registry TOML as data
+        |
+        v
+canonical request bytes + exact immutable filename
+        |
+        v
+append-only public prerelease asset
+        |
+        v
+protected tap downloader and validator
+        |
+        v
+observe-only lifecycle decision
 ```
 
-This plan does not add a tap revision, dependency closure, background
-inventory, matrix, runner, retry, timeout, candidate, custody, lifecycle, or
-status field to the request.
+An older request is not stale merely because a new head exists. It is
+historical work. “Current” is a separate calculation for the PR Check.
 
-`request_is_current` remains the only applicability predicate:
+## Exact interfaces
 
-```rust
-pub fn request_is_current(
-    request: &AbiStagingRequestV1,
-    exact_head: &str,
-    requirements_sha256: &str,
-    policy_version: u64,
-    policy_sha256: &str,
-    guard_registry_version: u64,
-    guard_registry_sha256: &str,
-) -> bool;
-```
+### `RequestPolicyV1`
 
-The request filename parser must continue to validate the filename head and
-digest against canonical request bytes. Discovery metadata never replaces
-that validation.
+`abi/staging/request-policy.toml` contains exact issuer/tap identities,
+same-repository/fork policy, release prefix, 4 MiB request limit, product and
+evidence limits, and sorted protected implementation paths. Unknown fields,
+unsafe paths, missing files, symlinks, and mutable workflow refs fail.
 
-## New Interfaces
+Generated `request-policy.generated.json` adds
+`implementation = [{ path, sha256 }]`. Its canonical digest becomes
+`issuance.policy_sha256`. A policy meaning change increments `version`; an
+implementation-only change may keep the version while changing the digest.
 
-### Protected request policy
+Activation has exactly `schema`, `kind`, and `mode = "observe" | "active"`.
 
-`abi/staging/request-policy.toml` is parsed as `RequestPolicyV1`:
-
-```toml
-schema = 1
-kind = "kandelo-abi-staging-request-policy"
-version = 1
-issuer_repository = "Automattic/kandelo"
-issuer_workflow = ".github/workflows/abi-staging-request-feed.yml"
-automatic_same_repository = true
-fork_authorization = "disabled"
-request_release_tag_prefix = "abi-staging-pr-"
-request_asset_max_bytes = 4194304
-max_products = 256
-max_evidence_bindings = 512
-
-addressed_taps = ["kandelo-dev/homebrew-tap-core"]
-
-implementation_paths = [
-  "tools/xtask/src/abi_staging/canonical_json.rs",
-  "tools/xtask/src/abi_staging/product_manifest.rs",
-  "tools/xtask/src/abi_staging/consumer_registry.rs",
-  "tools/xtask/src/abi_staging/selection.rs",
-  "tools/xtask/src/abi_staging/records.rs",
-  "tools/xtask/src/abi_staging/request_policy.rs",
-  "tools/xtask/src/abi_staging/request_derivation.rs",
-  ".github/workflows/abi-staging-request-feed.yml",
-]
-```
-
-Unknown fields fail. `implementation_paths` is sorted, duplicate-free,
-repository-relative, regular, nonsymlinked, and nonempty. Generated
-`abi/staging/request-policy.generated.json` contains the normalized policy plus
-`implementation = [{ path, sha256 }]`. Its canonical digest is the issuance
-`policy_sha256`; changing protected request behavior without changing that
-digest fails freshness checks. `version` must increase if a field meaning
-changes; content-only implementation changes may retain the version while
-changing the digest.
-
-### Structural ABI artifact
-
-The uncredentialed exact-head job emits `StructuralAbiReportV1`:
+### Structural ABI evidence
 
 ```rust
 pub struct ExactGitSourceV1 {
@@ -186,38 +130,13 @@ pub enum StructuralAbiOutcomeV1 {
 }
 ```
 
-The report contains no timestamp or base authority. The protected writer
-requires `Compatible` or `BumpedWithSnapshot`, verifies exact commit/tree,
-re-hashes `abi/snapshot.json`, reads `ABI_VERSION` from inert exact-head source,
-and rejects `ChangedWithoutBump` with
-`abi_structure_changed_without_bump`. It never trusts the report to supply a
-different source or target.
+The protected writer accepts only `Compatible` or `BumpedWithSnapshot`,
+rechecks source/tree, hashes `abi/snapshot.json`, reads `ABI_VERSION` from inert
+source, and rejects an incompatible unbumped change with the registered guard.
 
 ### Request derivation and current selection
 
 ```rust
-pub struct PullRequestIdentityV1 {
-    pub repository: String,
-    pub number: u64,
-    pub exact_head_repository: String,
-    pub exact_head: String,
-    pub exact_tree: String,
-    pub base_commit: Option<String>,
-    pub base_tree: Option<String>,
-    pub ref_hint: Option<String>,
-}
-
-pub struct ProtectedRequestContextV1 {
-    pub protected_repository: String,
-    pub protected_commit: String,
-    pub protected_tree: String,
-    pub issuer_workflow_ref: String,
-    pub policy: RequestPolicyV1,
-    pub policy_sha256: String,
-    pub guard_registry_version: u64,
-    pub guard_registry_sha256: String,
-}
-
 pub fn derive_abi_staging_request(
     exact_head_root: &Path,
     pull_request: &PullRequestIdentityV1,
@@ -225,24 +144,6 @@ pub fn derive_abi_staging_request(
     structural: &StructuralAbiReportV1,
     change_classes: &[ChangeClass],
 ) -> Result<AbiStagingRequestV1, String>;
-
-pub struct RequestAssetV1 {
-    pub name: String,
-    pub browser_download_url: String,
-    pub canonical_bytes: Vec<u8>,
-}
-
-pub enum CurrentRequestSelectionV1 {
-    NotApplicable,
-    Missing { expected_head: String },
-    Selected {
-        request_digest: String,
-        asset_name: String,
-        asset_url: String,
-        request: AbiStagingRequestV1,
-    },
-    Invalid { errors: Vec<String> },
-}
 
 pub fn select_current_request(
     assets: &[RequestAssetV1],
@@ -255,45 +156,18 @@ pub fn select_current_request(
 ) -> CurrentRequestSelectionV1;
 ```
 
-Selection filters by full filename head only as an index, validates every
-matching asset, and then applies `request_is_current`. Two distinct valid
-canonical assets matching the same complete current identity are an error;
-canonical determinism should make them byte-identical and therefore one
-digest. Assets for other heads are returned separately as historical valid
-work, never considered “newer” or “older” by string comparison.
+`CurrentRequestSelectionV1` is `NotApplicable`, `Missing`, `Selected`, or
+`Invalid`. A matching-head malformed asset makes the result invalid; it is not
+silently skipped. Other valid heads are returned as historical inventory.
 
-### Append-only feed plan
+### Append-only Release plan
 
-```rust
-pub enum RequestFeedActionV1 {
-    CreatePrerelease,
-    AppendAsset,
-    AssetAlreadyIdentical,
-    RejectNameCollision,
-}
+`RequestFeedActionV1` is `CreatePrerelease`, `AppendAsset`,
+`AssetAlreadyIdentical`, or `RejectNameCollision`. The publisher may create a
+prerelease or append one asset. It never clobbers/deletes an asset, moves a
+tag, creates a latest alias, or stores lifecycle authority in the description.
 
-pub struct RequestFeedPlanV1 {
-    pub repository: String,
-    pub pull_request_number: u64,
-    pub tag: String,
-    pub asset_name: String,
-    pub asset_sha256: String,
-    pub asset_bytes: u64,
-    pub public_download_url: String,
-    pub action: RequestFeedActionV1,
-}
-```
-
-The shell adapter receives a canonical plan and request file. It may create
-the prerelease or append one asset. It never passes `--clobber`, deletes an
-asset, retags a Release, uses a mutable latest name, or appends lifecycle
-assets. An existing identical asset is a successful no-op; different bytes at
-the same name fail.
-
-### Tap discovery and lifecycle decision
-
-Protected tap Python mirrors the canonical request validator. Cross-repository
-fixtures prove byte-for-byte agreement with Rust.
+### Tap discovery and lifecycle
 
 ```python
 @dataclass(frozen=True)
@@ -317,81 +191,45 @@ class ReconciliationDecisionV1:
     lifecycle: PullRequestLifecycleV1
     current_for_pull_request: bool
     action: Literal[
-        "observe-open",
-        "observe-merged",
-        "stop-new-work",
-        "resume-same-head",
-        "await-new-request",
+        "observe-open", "observe-merged", "stop-new-work",
+        "resume-same-head", "await-new-request",
     ]
     permitted_work: tuple[str, ...]
     blockers: tuple[Mapping[str, object], ...]
 ```
 
-In Plan 2, `permitted_work` is always empty because build scheduling is not yet
-active. The decision still distinguishes current versus historical heads and
-all close/reopen/merge states so Plan 3 can add ready work without changing
-lifecycle meaning.
+`permitted_work` is always empty in Plan 2. Build scheduling starts in Plan 3.
 
-The public client accepts only HTTPS URLs under:
+The manual client accepts only HTTPS GitHub Release URLs for the expected
+repository, `abi-staging-pr-<positive-number>` tag, and exact asset grammar.
+There are at most five HTTPS redirects to configured GitHub-owned asset hosts.
+Userinfo/fragments fail, and the final body is at most 4 MiB with an exact
+digest.
 
-```text
-https://github.com/Automattic/kandelo/releases/download/
-  abi-staging-pr-<positive-pr-number>/
-  candidate-request-<full-head>-sha256-<digest>.json
-```
+## File map
 
-Redirects may terminate only on GitHub-owned release asset hosts explicitly
-listed in `Kandelo/staging/request-issuers.toml`; every hop remains HTTPS,
-contains no userinfo or fragment, and is bounded to five redirects. A final
-body is at most 4 MiB and must have the requested canonical digest. The allowlist
-is a transport boundary, not an issuer substitute.
-
-## File Map
-
-### Kandelo repository
+### Kandelo
 
 - Modify: `tools/xtask/src/abi_staging/mod.rs`
 - Modify: `tools/xtask/src/abi_staging/records.rs`
 - Create: `tools/xtask/src/abi_staging/request_policy.rs`
 - Create: `tools/xtask/src/abi_staging/request_derivation.rs`
 - Create: `tools/xtask/src/abi_staging/request_feed.rs`
-- Create: `abi/staging/request-policy.toml`
-- Create: `abi/staging/request-policy.generated.json`
-- Create: `abi/staging/request-feed-activation.toml`
-- Create: `tools/xtask/tests/fixtures/abi-staging/request/structural-report.json`
-- Create: `tools/xtask/tests/fixtures/abi-staging/request/current-request.json`
-- Create: `tools/xtask/tests/fixtures/abi-staging/request/same-head-reissued-request.json`
-- Create: `tools/xtask/tests/fixtures/abi-staging/request/historical-request.json`
+- Create request policy, activation, and fixtures under `abi/staging/` and
+  `tools/xtask/tests/fixtures/abi-staging/request/`.
 - Create: `.github/scripts/publish-abi-staging-request.sh`
 - Create: `.github/scripts/test-publish-abi-staging-request.sh`
 - Create: `.github/workflows/abi-staging-request-feed.yml`
 - Create: `scripts/check-abi-staging-request-workflow.rb`
 - Create: `scripts/test-abi-staging-request-feed.sh`
 - Create: `scripts/test-abi-staging-cross-repo-fixtures.sh`
-- Modify: `.github/actions/detect-change-scope/ci-scope-paths.sh`
-- Modify: `.github/actions/detect-change-scope/test-ci-scope-paths.sh`
-- Modify: `docs/abi-versioning.md`
-- Modify: `docs/repository-organization.md`
-- Modify: `docs/superpowers/plans/2026-08-08-abi-staging-product-authority-foundation.md`
+- Modify change-scope tests and ABI/repository documentation.
 
-### Tap repository
+### Tap
 
-- Create: `Kandelo/staging/request-issuers.toml`
-- Create: `Kandelo/staging/reconciliation-activation.toml`
-- Create: `Kandelo/staging/fixtures/request/current-request.json`
-- Create: `Kandelo/staging/fixtures/request/same-head-reissued-request.json`
-- Create: `Kandelo/staging/fixtures/request/historical-request.json`
-- Create: `scripts/abi_staging/__init__.py`
-- Create: `scripts/abi_staging/canonical.py`
-- Create: `scripts/abi_staging/request.py`
-- Create: `scripts/abi_staging/github_public.py`
-- Create: `scripts/abi_staging/reconcile.py`
-- Create: `scripts/abi_staging/cli.py`
-- Create: `scripts/abi_staging/tests/__init__.py`
-- Create: `scripts/abi_staging/tests/test_canonical.py`
-- Create: `scripts/abi_staging/tests/test_request.py`
-- Create: `scripts/abi_staging/tests/test_github_public.py`
-- Create: `scripts/abi_staging/tests/test_reconcile.py`
+- Create request issuer/activation/fixtures under `Kandelo/staging/`.
+- Create `scripts/abi_staging/{canonical,request,github_public,reconcile,cli}.py`
+  plus package files and unit tests.
 - Create: `scripts/check_abi_staging_workflows.rb`
 - Create: `scripts/test_check_abi_staging_workflows.rb`
 - Create: `.github/workflows/abi-staging-reconcile.yml`
@@ -400,7 +238,7 @@ is a transport boundary, not an issuer substitute.
 
 ---
 
-### Task 1: Freeze protected request policy and implementation identity
+### Task 1: Bind request policy to protected implementation bytes
 
 **Files:**
 
@@ -410,65 +248,25 @@ is a transport boundary, not an issuer substitute.
 - Create: `abi/staging/request-policy.generated.json`
 - Create: `abi/staging/request-feed-activation.toml`
 
-**Interfaces:**
+**Interfaces:** Produces `RequestPolicyV1`, `RequestFeedActivationV1`, and
+`abi-staging request-policy generate|check`.
 
-- Consumes: Plan 1 canonical JSON, path, digest, guard registry, and product
-  limits.
-- Produces: strict `RequestPolicyV1`, generated protected implementation
-  identity, `RequestFeedActivationV1`, and CLI commands:
-  `abi-staging request-policy generate` and
-  `abi-staging request-policy check`.
-- `request-feed-activation.toml` has exactly `schema`, `kind`, and
-  `mode = "observe" | "active"`; it begins as `observe`.
-
-- [ ] **Step 1: Write failing policy tests**
-
-  Add unit tests for exact parsing, unknown fields, a mutable workflow ref,
-  duplicate/unsafe implementation paths, a symlink, missing implementation
-  file, changed implementation bytes, stale generated JSON, and a policy
-  meaning change without a version increment. Assert no ABI number, branch,
-  candidate URL, retry, or runner appears in the policy.
-
-- [ ] **Step 2: Run the focused tests and verify red**
+- [ ] Write failing tests for exact parsing, unknown/mutable fields, unsafe or
+  missing implementation files, symlinks, digest drift, stale generated JSON,
+  and a meaning change without a version bump.
+- [ ] Run and confirm red:
 
   ```bash
   scripts/dev-shell.sh bash -c '
     host_target="$(rustc -vV | awk "/^host/ {print \$2}")"
-    cargo test -p xtask --target "$host_target" \
-      abi_staging::request_policy
+    cargo test -p xtask --target "$host_target" abi_staging::request_policy
   '
   ```
 
-  Expected: FAIL because the policy model and commands do not exist.
-
-- [ ] **Step 3: Implement strict policy generation**
-
-  Hash exact bytes of every sorted `implementation_paths` entry. Refuse
-  directories, symlinks, missing files, duplicate normalized paths, or paths
-  outside the repository root. Generate atomically and make `check` compare
-  exact canonical bytes.
-
-- [ ] **Step 4: Run focused tests and generate the checked projection**
-
-  ```bash
-  scripts/dev-shell.sh bash -c '
-    host_target="$(rustc -vV | awk "/^host/ {print \$2}")"
-    cargo test -p xtask --target "$host_target" \
-      abi_staging::request_policy
-    cargo run -p xtask --target "$host_target" --quiet -- \
-      abi-staging request-policy generate \
-      --source abi/staging/request-policy.toml \
-      --out abi/staging/request-policy.generated.json
-    cargo run -p xtask --target "$host_target" --quiet -- \
-      abi-staging request-policy check \
-      --source abi/staging/request-policy.toml \
-      --generated abi/staging/request-policy.generated.json
-  '
-  ```
-
-  Expected: PASS; activation remains `observe`.
-
-- [ ] **Step 5: Commit**
+- [ ] Implement strict sorted path hashing and atomic generation/checking.
+- [ ] Run tests, generate, and check the projection; expect PASS and
+  `mode = "observe"`.
+- [ ] Commit:
 
   ```bash
   git add tools/xtask/src/abi_staging/mod.rs \
@@ -481,238 +279,103 @@ is a transport boundary, not an issuer substitute.
 
 ---
 
-### Task 2: Derive one canonical request from an exact head
+### Task 2: Derive a canonical request from one exact head
 
 **Files:**
 
 - Modify: `tools/xtask/src/abi_staging/mod.rs`
 - Modify: `tools/xtask/src/abi_staging/records.rs`
 - Create: `tools/xtask/src/abi_staging/request_derivation.rs`
-- Create: `tools/xtask/tests/fixtures/abi-staging/request/structural-report.json`
-- Create: `tools/xtask/tests/fixtures/abi-staging/request/current-request.json`
+- Create structural-report and current-request fixtures.
 
-**Interfaces:**
+**Interfaces:** Produces `StructuralAbiReportV1`, `PullRequestIdentityV1`,
+`ProtectedRequestContextV1`, `derive_abi_staging_request`, and the
+`structural-report validate`/`request derive` commands.
 
-- Consumes: Plan 1 product/registry selection and request model plus Task 1
-  protected policy.
-- Produces: `StructuralAbiReportV1`, `PullRequestIdentityV1`,
-  `ProtectedRequestContextV1`, `derive_abi_staging_request`, and commands:
-  `abi-staging structural-report validate` and
-  `abi-staging request derive`.
-- The fixture models a local source ABI `7` and target ABI `8`; these are test
-  inputs, not defaults or policy.
-
-- [ ] **Step 1: Write failing exact-source tests**
-
-  Build temporary Git repositories whose head and tree differ from a synthetic
-  merge. Assert the request always names the supplied exact head/tree, and
-  reject a report, checkout, authorization head, filename head, or tree that
-  disagrees. Assert base commit/tree/ref remain informational and changing
-  them alone cannot change Formula requirements or bottle-facing source
-  identity.
-
-- [ ] **Step 2: Write failing requirements tests**
-
-  Derive exact-head selection for ABI, kernel, and host cases. Assert every
-  product and registry path/digest is bound, every evidence ID and
-  applicability is retained, Formula roots derive only from products, and no
-  tap revision, transitive dependency, background Formula, matrix, timeout,
-  or mutable status enters the request.
-
-- [ ] **Step 3: Write failing ABI-report tests**
-
-  Cover compatible same-ABI work, a correct successor bump, changed structure
-  without bump, stale snapshot bytes, target mismatch, report source mismatch,
-  an uppercase Git SHA, and a report that attempts to supply a second source.
-  The protected comparison must produce the registered guard code rather than
-  a free-form replacement.
-
-- [ ] **Step 4: Run focused tests and verify red**
+- [ ] Write failing exact-source tests using temporary repositories where the
+  head differs from a synthetic merge.
+- [ ] Write failing requirements tests for all change classes and prove all
+  Formula roots come from products.
+- [ ] Write failing structural ABI cases for compatible, correctly bumped,
+  unbumped, stale snapshot, wrong target/source, and uppercase identities.
+- [ ] Run and confirm red:
 
   ```bash
   scripts/dev-shell.sh bash -c '
     host_target="$(rustc -vV | awk "/^host/ {print \$2}")"
-    cargo test -p xtask --target "$host_target" \
-      abi_staging::request_derivation
+    cargo test -p xtask --target "$host_target" abi_staging::request_derivation
   '
   ```
 
-  Expected: FAIL because derivation is absent.
-
-- [ ] **Step 5: Implement minimal pure derivation**
-
-  Load exact-head product TOML and registries through Plan 1 parsers, select by
-  explicit change classes, canonicalize the requirements section without its
-  own digest, insert that digest, then validate the complete request before
-  returning it. Do not invoke GitHub, a Formula parser, or a builder.
-
-- [ ] **Step 6: Generate and check the canonical fixture**
-
-  ```bash
-  scripts/dev-shell.sh bash -c '
-    host_target="$(rustc -vV | awk "/^host/ {print \$2}")"
-    cargo test -p xtask --target "$host_target" \
-      abi_staging::request_derivation
-    cargo run -p xtask --target "$host_target" --quiet -- \
-      abi-staging request fixture-check \
-      --fixture tools/xtask/tests/fixtures/abi-staging/request
-  '
-  ```
-
-  Expected: PASS and byte-stable output on two runs.
-
-- [ ] **Step 7: Commit**
+- [ ] Implement pure derivation from exact-head product/registry data. Compute
+  the requirements digest without its own digest field, insert it, then
+  validate the complete request. Do not call GitHub, Formula code, or builders.
+- [ ] Run tests and `abi-staging request fixture-check`; expect byte-stable
+  output from the local miniature ABI fixture.
+- [ ] Commit:
 
   ```bash
   git add tools/xtask/src/abi_staging/mod.rs \
     tools/xtask/src/abi_staging/records.rs \
     tools/xtask/src/abi_staging/request_derivation.rs \
-    tools/xtask/tests/fixtures/abi-staging/request/structural-report.json \
-    tools/xtask/tests/fixtures/abi-staging/request/current-request.json
+    tools/xtask/tests/fixtures/abi-staging/request
   git commit -m "[ABI] Derive staging requests from exact heads"
   ```
 
 ---
 
-### Task 3: Select the current request without discarding history
+### Task 3: Select the current request without losing history
 
 **Files:**
 
 - Modify: `tools/xtask/src/abi_staging/mod.rs`
 - Create: `tools/xtask/src/abi_staging/request_feed.rs`
-- Create: `tools/xtask/tests/fixtures/abi-staging/request/same-head-reissued-request.json`
-- Create: `tools/xtask/tests/fixtures/abi-staging/request/historical-request.json`
+- Create same-head-reissued and historical request fixtures.
 
-**Interfaces:**
+**Interfaces:** Produces `RequestAssetV1`, `CurrentRequestSelectionV1`,
+`RequestFeedPlanV1`, `select_current_request`, `request select-current`, and
+`request plan-feed-write`.
 
-- Consumes: Plan 1 filename/parser/current predicate and Task 2 canonical
-  requests.
-- Produces: `RequestAssetV1`, `CurrentRequestSelectionV1`,
-  `RequestFeedPlanV1`, `select_current_request`, and commands:
-  `abi-staging request select-current` and
-  `abi-staging request plan-feed-write`.
-
-- [ ] **Step 1: Write failing current-selection tests**
-
-  Cover one current request, same-head policy reissuance, old-head assets,
-  same-head stale requirements, stale guard registry, malformed matching-head
-  asset, duplicate canonical current assets, nonmatching filenames, and no
-  current request. Randomize input order and assert identical output.
-
-- [ ] **Step 2: Write explicit anti-ordering tests**
-
-  Add values whose lexical SHA order, upload order, synthetic timestamp, and
-  release asset ID imply the wrong result. Assert none appears in the selector
-  inputs or changes selection. Reject names such as `latest.json`,
-  `current.json`, abbreviated heads, uppercase heads, and timestamp suffixes.
-
-- [ ] **Step 3: Run focused tests and verify red**
-
-  ```bash
-  scripts/dev-shell.sh bash -c '
-    host_target="$(rustc -vV | awk "/^host/ {print \$2}")"
-    cargo test -p xtask --target "$host_target" \
-      abi_staging::request_feed
-  '
-  ```
-
-  Expected: FAIL because feed planning is absent.
-
-- [ ] **Step 4: Implement deterministic selection and write planning**
-
-  Validate all assets matching the exact filename head. Treat an invalid
-  matching asset as an explicit invalid result, not something silently skipped
-  in favor of another. Return other fully valid assets as historical inventory
-  for reconciliation. Make feed planning a pure comparison of desired bytes
-  and bounded existing Release metadata.
-
-- [ ] **Step 5: Run focused tests and verify green**
-
-  ```bash
-  scripts/dev-shell.sh bash -c '
-    host_target="$(rustc -vV | awk "/^host/ {print \$2}")"
-    cargo test -p xtask --target "$host_target" \
-      abi_staging::request_feed
-  '
-  ```
-
-  Expected: PASS; fixture shuffling cannot change selection.
-
-- [ ] **Step 6: Commit**
+- [ ] Write failing selection tests for current, reissued, historical, stale,
+  malformed, duplicate, missing, and shuffled asset inputs.
+- [ ] Add anti-ordering cases for lexical SHA, upload order, timestamps, asset
+  IDs, `latest.json`, short/uppercase heads, and timestamp suffixes.
+- [ ] Run `cargo test ... abi_staging::request_feed`; confirm red.
+- [ ] Implement deterministic validation/selection and a pure append plan.
+  Never skip a malformed matching-head asset.
+- [ ] Rerun focused tests; expect identical results for shuffled input.
+- [ ] Commit:
 
   ```bash
   git add tools/xtask/src/abi_staging/mod.rs \
     tools/xtask/src/abi_staging/request_feed.rs \
-    tools/xtask/tests/fixtures/abi-staging/request/same-head-reissued-request.json \
-    tools/xtask/tests/fixtures/abi-staging/request/historical-request.json
+    tools/xtask/tests/fixtures/abi-staging/request
   git commit -m "[ABI] Select current requests by exact policy identity"
   ```
 
 ---
 
-### Task 4: Implement the append-only Kandelo prerelease adapter
+### Task 4: Add the append-only prerelease adapter
 
 **Files:**
 
 - Create: `.github/scripts/publish-abi-staging-request.sh`
 - Create: `.github/scripts/test-publish-abi-staging-request.sh`
 
-**Interfaces:**
+**Interfaces:** Consumes a canonical feed plan/request plus `GH_TOKEN`; writes
+bounded Release/asset IDs, URL, and action to `$GITHUB_OUTPUT`.
 
-- Consumes: Task 3 canonical `RequestFeedPlanV1`, canonical request bytes,
-  `GH_TOKEN`, and GitHub's Release API through `gh`.
-- Produces: one created/updated prerelease UI and one exact immutable asset;
-  writes `release_id`, `asset_id`, `asset_url`, and `action` to
-  `$GITHUB_OUTPUT`.
-- Usage is exact:
-
-  ```text
-  publish-abi-staging-request.sh
-    --repository Automattic/kandelo
-    --protected-target <full-main-sha>
-    --plan <canonical-plan-json>
-    --request <canonical-request-json>
-  ```
-
-  The angle-bracket values above describe positional contracts; the workflow
-  supplies concrete files and a full SHA.
-
-- [ ] **Step 1: Write a fake-`gh` failing test harness**
-
-  Model absent Release, existing correct prerelease, identical existing asset,
-  name collision, wrong tag target, wrong prerelease flag, pagination, upload
-  failure, and interrupted description update. Record every fake API call and
-  assert no delete, clobber, tag move, lifecycle asset, or candidate checkout
-  occurs.
-
-- [ ] **Step 2: Run the adapter tests and verify red**
-
-  ```bash
-  scripts/dev-shell.sh bash \
-    .github/scripts/test-publish-abi-staging-request.sh
-  ```
-
-  Expected: FAIL because the publisher script is absent.
-
-- [ ] **Step 3: Implement bounded append/no-clobber behavior**
-
-  Parse the plan with `jq`, verify request size/digest/name before any API
-  call, create a prerelease anchored to the captured protected-main commit when
-  absent, inspect every paginated asset, and upload only when the exact name is
-  absent. If present, download to a new temporary directory and byte-compare.
-  Update descriptive prose only after the asset is known good; description
-  state is never read as authority.
-
-- [ ] **Step 4: Run the adapter tests and verify green**
-
-  ```bash
-  scripts/dev-shell.sh bash \
-    .github/scripts/test-publish-abi-staging-request.sh
-  ```
-
-  Expected: PASS for idempotence and every mutation.
-
-- [ ] **Step 5: Commit**
+- [ ] Build a failing fake-`gh` harness covering absent/existing Releases,
+  identical asset, name collision, wrong tag/prerelease, pagination, upload
+  failure, and interrupted description update. Assert no delete/clobber/tag
+  move/candidate checkout.
+- [ ] Run `scripts/dev-shell.sh bash
+  .github/scripts/test-publish-abi-staging-request.sh`; confirm red.
+- [ ] Implement size/digest/name checks before API access, anchored prerelease
+  creation, paginated inspection, append-only upload, and byte comparison of an
+  existing asset. Description prose is never authority.
+- [ ] Rerun the harness; expect PASS.
+- [ ] Commit:
 
   ```bash
   git add .github/scripts/publish-abi-staging-request.sh \
@@ -729,85 +392,29 @@ is a transport boundary, not an issuer substitute.
 - Create: `.github/workflows/abi-staging-request-feed.yml`
 - Create: `scripts/check-abi-staging-request-workflow.rb`
 - Create: `scripts/test-abi-staging-request-feed.sh`
-- Modify: `.github/actions/detect-change-scope/ci-scope-paths.sh`
-- Modify: `.github/actions/detect-change-scope/test-ci-scope-paths.sh`
+- Modify both detect-change-scope scripts.
 
-**Interfaces:**
+**Interfaces:** Produces observe/active behavior for same-repository PR events,
+protected policy pushes, daily repair, and manual PR-number dispatch.
 
-- Consumes: Tasks 1–4 commands and adapter plus existing
-  `scripts/check-abi-version.sh` and protected change-scope logic.
-- Produces: observe/active workflow behavior for same-repository PR events,
-  protected-policy `push`, daily repair scan, and explicit `workflow_dispatch`
-  by pull-request number.
-- Job permission map is exact:
+| Job | Exact permissions | May execute exact-head code? |
+|---|---|---|
+| `classify-exact-head` | `contents: read` | Yes |
+| `derive-request` | `contents: read` | No; reads inert files |
+| `publish-request` | `contents: write`, `actions: read` | No |
 
-  | Job | Permissions | Candidate execution |
-  |---|---|---|
-  | `classify-exact-head` | `contents: read` | Yes, exact head only |
-  | `derive-request` | `contents: read` | No; exact-head files are inert data |
-  | `publish-request` | `contents: write`, `actions: read` | No; protected code only |
-
-  Workflow-level permissions are `{}`. No job has a secret. Checkout always
-  sets `persist-credentials: false`.
-
-- [ ] **Step 1: Write failing structural workflow assertions**
-
-  Check exact triggers, permission maps, full-SHA actions, current protected
-  main capture, exact PR head/tree capture, same-repository predicate,
-  observe-mode write suppression, artifact inventory, and separation between
-  the candidate-executing and write jobs.
-
-- [ ] **Step 2: Write failing workflow mutations**
-
-  Mutate exact head to `refs/pull/.../merge`, add a merge command, grant write
-  to classification, pass `GH_TOKEN` into classification, persist checkout
-  credentials, execute a head script in the writer, trust the artifact's ABI
-  without inert revalidation, use `--clobber`, select by timestamp, enable
-  forks, or swallow publication failure. Every mutation must fail with a
-  specific diagnostic.
-
-- [ ] **Step 3: Run workflow and routing tests and verify red**
-
-  ```bash
-  scripts/dev-shell.sh ruby scripts/check-abi-staging-request-workflow.rb
-  scripts/dev-shell.sh bash scripts/test-abi-staging-request-feed.sh
-  scripts/dev-shell.sh bash \
-    .github/actions/detect-change-scope/test-ci-scope-paths.sh
-  ```
-
-  Expected: FAIL because the workflow and routing are absent.
-
-- [ ] **Step 4: Implement observe-mode workflow**
-
-  The classification job checks out the exact head and emits only the bounded
-  structural report. The derivation job captures current protected `main`,
-  compiles protected `xtask`, reads exact-head product/registry files as data,
-  and emits the canonical request and feed plan. The publisher downloads only
-  named artifacts from the same run, revalidates them with protected `xtask`,
-  and writes only when activation is `active`; in `observe`, it prints the
-  exact intended public URL and digest.
-
-- [ ] **Step 5: Add policy-change and repair enumeration**
-
-  On protected policy/product-rule path changes and the daily repair scan,
-  enumerate open same-repository PRs with bounded pagination and derive each
-  exact current head independently. Do not batch source checkouts into one
-  mutable worktree and do not drop older already-issued requests.
-
-- [ ] **Step 6: Run workflow, routing, and local feed tests**
-
-  ```bash
-  scripts/dev-shell.sh ruby scripts/check-abi-staging-request-workflow.rb
-  scripts/dev-shell.sh bash scripts/test-abi-staging-request-feed.sh
-  scripts/dev-shell.sh bash \
-    .github/actions/detect-change-scope/test-ci-scope-paths.sh
-  scripts/dev-shell.sh actionlint \
-    .github/workflows/abi-staging-request-feed.yml
-  ```
-
-  Expected: PASS while activation remains observe-only.
-
-- [ ] **Step 7: Commit**
+- [ ] Write failing structural and mutation tests for triggers, permissions,
+  action pins, exact head/tree, same-repository predicate, artifact bounds,
+  observe suppression, job separation, synthetic merges, leaked tokens,
+  persisted credentials, candidate execution in writer, `--clobber`, ordering,
+  forks, and swallowed errors.
+- [ ] Run workflow, feed, and scope tests; confirm red.
+- [ ] Implement three separated jobs. The writer downloads only same-run named
+  artifacts, revalidates with protected `xtask`, and writes only in `active`.
+- [ ] Add bounded enumeration of open same-repository PRs for policy changes
+  and daily repair. Derive each head independently and retain old requests.
+- [ ] Run checker, feed, scope, and `actionlint`; expect PASS in observe mode.
+- [ ] Commit:
 
   ```bash
   git add .github/workflows/abi-staging-request-feed.yml \
@@ -820,90 +427,32 @@ is a transport boundary, not an issuer substitute.
 
 ---
 
-### Task 6: Mirror request validation in protected tap code
+### Task 6: Implement the same request validator in protected tap code
 
-**Repository:** `kandelo-dev/homebrew-tap-core`
+**Repository:** Tap
 
 **Files:**
 
-- Create: `Kandelo/staging/request-issuers.toml`
-- Create: `Kandelo/staging/fixtures/request/current-request.json`
-- Create: `Kandelo/staging/fixtures/request/same-head-reissued-request.json`
-- Create: `Kandelo/staging/fixtures/request/historical-request.json`
+- Create request issuer policy and three copied fixtures under
+  `Kandelo/staging/`.
 - Create: `scripts/abi_staging/__init__.py`
 - Create: `scripts/abi_staging/canonical.py`
 - Create: `scripts/abi_staging/request.py`
-- Create: `scripts/abi_staging/tests/__init__.py`
-- Create: `scripts/abi_staging/tests/test_canonical.py`
-- Create: `scripts/abi_staging/tests/test_request.py`
+- Create matching unit-test package/files.
 
-**Interfaces:**
+**Interfaces:** Produces strict Python `canonical_bytes`, `canonical_sha256`,
+`parse_request_asset_name`, and `validate_request`.
 
-- Consumes: Kandelo Task 3 canonical fixtures and Plan 1 request contract.
-- Produces: strict Python `canonical_bytes`, `canonical_sha256`,
-  `parse_request_asset_name`, and `validate_request` functions.
-- `request-issuers.toml` contains the exact Kandelo repository, request tag
-  prefix, addressed tap identity, allowed GitHub Release hosts, body/field
-  bounds, and accepted schema/kind. It contains no ABI or mutable workflow ref.
-
-- [ ] **Step 1: Create the tap implementation worktree safely**
-
-  At implementation time, use `superpowers:using-git-worktrees` to create a
-  dedicated tap worktree from current `origin/main`. Set
-  `KANDELO_TAP_ROOT` to its absolute path. Do not edit the read-only audit
-  worktree used while this plan was written.
-
-- [ ] **Step 2: Copy exact canonical fixtures and write failing parity tests**
-
-  Copy the three request fixture bytes without reserialization. Assert Python
-  reproduces their SHA-256 and rejects every Rust negative vector: unknown
-  fields, noncanonical whitespace/key order, wrong filename head/digest,
-  unauthorized issuer, unaddressed tap, malformed Git identities, and an
-  informational field used as authority.
-
-- [ ] **Step 3: Run tap parity tests through the Kandelo dev shell**
-
-  ```bash
-  scripts/dev-shell.sh env \
-    KANDELO_TAP_ROOT="$KANDELO_TAP_ROOT" \
-    python3 -m unittest discover \
-      -s "$KANDELO_TAP_ROOT/scripts/abi_staging/tests" \
-      -p 'test_canonical.py'
-  scripts/dev-shell.sh env \
-    KANDELO_TAP_ROOT="$KANDELO_TAP_ROOT" \
-    python3 -m unittest discover \
-      -s "$KANDELO_TAP_ROOT/scripts/abi_staging/tests" \
-      -p 'test_request.py'
-  ```
-
-  Expected: FAIL because tap validators are absent.
-
-- [ ] **Step 4: Implement strict bounded Python validation**
-
-  Use only the standard library. Reject floats, duplicate JSON keys, invalid
-  UTF-8, extra fields, oversized arrays/strings, and noncanonical bytes.
-  Validate the filename against canonical bytes after the complete typed shape
-  passes. Preserve request fields as immutable mappings; never execute or
-  source a value.
-
-- [ ] **Step 5: Run parity tests and compare fixture bytes**
-
-  ```bash
-  scripts/dev-shell.sh env \
-    KANDELO_TAP_ROOT="$KANDELO_TAP_ROOT" \
-    python3 -m unittest discover \
-      -s "$KANDELO_TAP_ROOT/scripts/abi_staging/tests" \
-      -p 'test_canonical.py' -v
-  scripts/dev-shell.sh env \
-    KANDELO_TAP_ROOT="$KANDELO_TAP_ROOT" \
-    python3 -m unittest discover \
-      -s "$KANDELO_TAP_ROOT/scripts/abi_staging/tests" \
-      -p 'test_request.py' -v
-  ```
-
-  Expected: PASS with identical digests in Rust and Python.
-
-- [ ] **Step 6: Commit in the tap repository**
+- [ ] Use `superpowers:using-git-worktrees` to create a separate tap worktree
+  from current `origin/main`; set its absolute path as `KANDELO_TAP_ROOT`.
+- [ ] Copy fixture bytes without reserializing and write failing parity tests
+  for every Rust positive/negative case.
+- [ ] Run Python tests through the Kandelo dev shell; confirm red.
+- [ ] Implement standard-library-only bounded parsing. Reject floats,
+  duplicate JSON keys, invalid UTF-8, extra fields, oversized data, and
+  noncanonical bytes. Never execute a supplied value.
+- [ ] Rerun parity tests; expect identical Rust/Python digests.
+- [ ] Commit in the tap:
 
   ```bash
   git -C "$KANDELO_TAP_ROOT" add Kandelo/staging/request-issuers.toml \
@@ -911,18 +460,16 @@ is a transport boundary, not an issuer substitute.
     scripts/abi_staging/__init__.py \
     scripts/abi_staging/canonical.py \
     scripts/abi_staging/request.py \
-    scripts/abi_staging/tests/__init__.py \
-    scripts/abi_staging/tests/test_canonical.py \
-    scripts/abi_staging/tests/test_request.py
+    scripts/abi_staging/tests
   git -C "$KANDELO_TAP_ROOT" commit -m \
     "[ABI] Validate public staging requests in the tap"
   ```
 
 ---
 
-### Task 7: Discover public assets and reconcile pull-request lifecycle
+### Task 7: Discover assets and reconcile PR lifecycle
 
-**Repository:** `kandelo-dev/homebrew-tap-core`
+**Repository:** Tap
 
 **Files:**
 
@@ -933,76 +480,26 @@ is a transport boundary, not an issuer substitute.
 - Create: `scripts/abi_staging/tests/test_github_public.py`
 - Create: `scripts/abi_staging/tests/test_reconcile.py`
 
-**Interfaces:**
+**Interfaces:** Produces a bounded `GitHubPublicClient`, discovery/lifecycle
+types, and `scan` plus `reconcile --request-asset-url URL` commands.
 
-- Consumes: Task 6 validated requests and public GitHub REST responses.
-- Produces: bounded `GitHubPublicClient`, `DiscoveredRequestV1`,
-  `PullRequestLifecycleV1`, `ReconciliationDecisionV1`, and commands:
-  `python3 -m scripts.abi_staging.cli scan` and
-  `python3 -m scripts.abi_staging.cli reconcile --request-asset-url URL`.
-- `reconciliation-activation.toml` begins with `mode = "observe"` and rejects
-  other fields.
-
-- [ ] **Step 1: Write failing HTTP-boundary tests**
-
-  Use an in-process fake HTTP opener, not the internet. Cover release and asset
-  pagination, duplicate pages, response/body limits, five-hop redirect limit,
-  wrong repository/tag/asset grammar, cross-host redirect, downgrade to HTTP,
-  userinfo, fragment, wrong content length, truncated body, and digest drift.
-  Prove manual and scan paths return identical `DiscoveredRequestV1`.
-
-- [ ] **Step 2: Write failing lifecycle-table tests**
-
-  Cover open current head, new head with old request, merged exact request,
-  closed unmerged, reopened same head, reopened different head, a historical
-  explicitly issued head, duplicate discovery, and shuffled API order. Assert
-  deterministic claim key `sha256:<request-digest>` and no timestamp- or
-  commit-order decision.
-
-- [ ] **Step 3: Run tests and verify red**
-
-  ```bash
-  scripts/dev-shell.sh env \
-    KANDELO_TAP_ROOT="$KANDELO_TAP_ROOT" \
-    python3 -m unittest discover \
-      -s "$KANDELO_TAP_ROOT/scripts/abi_staging/tests" \
-      -p 'test_github_public.py' -v
-  scripts/dev-shell.sh env \
-    KANDELO_TAP_ROOT="$KANDELO_TAP_ROOT" \
-    python3 -m unittest discover \
-      -s "$KANDELO_TAP_ROOT/scripts/abi_staging/tests" \
-      -p 'test_reconcile.py' -v
-  ```
-
-  Expected: FAIL because discovery/reconciliation is absent.
-
-- [ ] **Step 4: Implement bounded public discovery**
-
-  Fetch every prerelease whose tag matches the exact prefix and positive PR
-  number, then every request asset with bounded pagination. Validate each body
-  before returning it. The manual URL path first applies the exact URL grammar
-  and then uses the same downloader/validator. Numeric Release/asset IDs remain
-  audit metadata only.
-
-- [ ] **Step 5: Implement pure lifecycle reconciliation**
-
-  Read current PR state separately for every claimed request. Closing permits
-  no new work, merge selects only the request associated with that PR, and
-  reopening preserves attempt/retry history to be supplied by Plan 3. In this
-  plan all decisions are observe-only and schedule no work.
-
-- [ ] **Step 6: Run the complete tap unit suite**
-
-  ```bash
-  scripts/dev-shell.sh env \
-    KANDELO_TAP_ROOT="$KANDELO_TAP_ROOT" \
-    python3 -m unittest discover \
-      -s "$KANDELO_TAP_ROOT/scripts/abi_staging/tests" -v
-  ```
-
-  Expected: PASS with no network or mutable local state.
-
-- [ ] **Step 7: Commit in the tap repository**
+- [ ] Write failing fake-HTTP tests for pagination, duplicates, body/response
+  limits, five redirects, repository/tag/name grammar, cross-host/HTTP/userinfo/
+  fragment rejection, truncation, and digest drift. Manual and scan paths must
+  return identical discovery objects.
+- [ ] Write a failing lifecycle table for open/current, new head/old request,
+  merged, closed, reopen same/different head, historical work, duplicate
+  discovery, and shuffled API order. Claim key is
+  `sha256:<request-digest>`.
+- [ ] Run the tap unit tests through `scripts/dev-shell.sh`; confirm red.
+- [ ] Implement bounded discovery and validate every body before returning it.
+  Numeric API IDs are audit facts only.
+- [ ] Implement pure observe-only lifecycle reconciliation. Closed PRs stop new
+  work; reopen preserves prior history; merge applies only to that PR's exact
+  request.
+- [ ] Run the full tap unit suite; expect PASS without network or mutable
+  coordinator state.
+- [ ] Commit:
 
   ```bash
   git -C "$KANDELO_TAP_ROOT" add \
@@ -1020,7 +517,7 @@ is a transport boundary, not an issuer substitute.
 
 ### Task 8: Add equivalent scheduled and manual tap workflows
 
-**Repository:** `kandelo-dev/homebrew-tap-core`
+**Repository:** Tap
 
 **Files:**
 
@@ -1028,54 +525,19 @@ is a transport boundary, not an issuer substitute.
 - Create: `scripts/check_abi_staging_workflows.rb`
 - Create: `scripts/test_check_abi_staging_workflows.rb`
 
-**Interfaces:**
+**Interfaces:** A five-minute schedule and optional manual
+`request_asset_url` call the same protected CLI. Workflow permissions are `{}`;
+the job has only `contents: read`.
 
-- Consumes: Task 7 CLI and activation policy.
-- Produces: a five-minute schedule and one manual `request_asset_url` input,
-  both invoking the exact protected `reconcile` command in observe mode.
-- Exact permission map is workflow `{}` and job `{ contents: read }`.
-
-- [ ] **Step 1: Write failing workflow contract and mutation tests**
-
-  Assert `cron: "*/5 * * * *"`, one optional manual URL, no PR event, no
-  `repository_dispatch`, protected tap-main checkout, `persist-credentials:
-  false`, full-SHA actions, bounded timeout, and identical CLI path. Mutations
-  granting write, adding secrets, executing request content, checking out a
-  request-supplied ref, using a different manual coordinator, or dispatching a
-  build must fail.
-
-- [ ] **Step 2: Run checker tests and verify red**
-
-  ```bash
-  scripts/dev-shell.sh env \
-    KANDELO_TAP_ROOT="$KANDELO_TAP_ROOT" \
-    ruby "$KANDELO_TAP_ROOT/scripts/test_check_abi_staging_workflows.rb"
-  ```
-
-  Expected: FAIL because the workflow/checker is absent.
-
-- [ ] **Step 3: Implement the thin workflow**
-
-  Pin checkout and setup-python actions. Scheduled mode invokes `scan`;
-  workflow dispatch with a nonempty URL invokes `reconcile`. Both write a
-  bounded job summary containing request digest, exact head, current/historical
-  classification, lifecycle, blockers, and the public asset URL. No output is
-  treated as a Check or datastore.
-
-- [ ] **Step 4: Run actionlint and mutation tests**
-
-  ```bash
-  scripts/dev-shell.sh env \
-    KANDELO_TAP_ROOT="$KANDELO_TAP_ROOT" \
-    actionlint "$KANDELO_TAP_ROOT/.github/workflows/abi-staging-reconcile.yml"
-  scripts/dev-shell.sh env \
-    KANDELO_TAP_ROOT="$KANDELO_TAP_ROOT" \
-    ruby "$KANDELO_TAP_ROOT/scripts/test_check_abi_staging_workflows.rb"
-  ```
-
-  Expected: PASS; workflow has no write capability.
-
-- [ ] **Step 5: Commit in the tap repository**
+- [ ] Write failing workflow/mutation tests for cron, one URL input, protected
+  main checkout, no persisted credentials, full action pins, bounded timeout,
+  identical coordinator path, and rejection of writes/secrets/request code/
+  request refs/different manual logic/build dispatch.
+- [ ] Run the Ruby checker tests through the dev shell; confirm red.
+- [ ] Implement a thin workflow: schedule calls `scan`; a nonempty manual URL
+  calls `reconcile`. Write only a bounded human summary.
+- [ ] Run `actionlint` and mutation tests; expect PASS with no write ability.
+- [ ] Commit:
 
   ```bash
   git -C "$KANDELO_TAP_ROOT" add \
@@ -1088,65 +550,27 @@ is a transport boundary, not an issuer substitute.
 
 ---
 
-### Task 9: Prove the cross-repository protocol locally
+### Task 9: Prove the two repositories agree locally
 
 **Files:**
 
 - Create: `scripts/test-abi-staging-cross-repo-fixtures.sh`
 - Modify: `scripts/test-abi-staging-request-feed.sh`
 
-**Interfaces:**
+**Interfaces:** Produces a no-network harness that derives requests in Kandelo,
+uses a fake append-only Release directory, validates them with tap code, and
+compares deterministic decisions.
 
-- Consumes: all Kandelo and tap work from Tasks 1–8.
-- Produces: one deterministic no-network test that derives requests in
-  Kandelo, publishes them into a fake Release directory, discovers them with
-  protected tap code, and compares decisions.
-
-- [ ] **Step 1: Write the failing cross-repository harness**
-
-  Require a validated absolute `KANDELO_TAP_ROOT`, confirm its remote URL names
-  `kandelo-dev/homebrew-tap-core`, create fresh temporary repositories, and run
-  these cases: initial head, same-head policy reissue, PR advance, old-head
-  completion, close, reopen same head, reopen different head, and merge.
-
-- [ ] **Step 2: Add authority-negative cases**
-
-  Reject synthetic build source, wrong Release repository, wrong tag PR,
-  request filename/body mismatch, unaddressed tap, stale current policy, a
-  timestamped latest alias, redirect escape, and a candidate-supplied
-  reconciler path.
-
-- [ ] **Step 3: Run the harness and verify red**
-
-  ```bash
-  scripts/dev-shell.sh env \
-    KANDELO_TAP_ROOT="$KANDELO_TAP_ROOT" \
-    bash scripts/test-abi-staging-cross-repo-fixtures.sh
-  ```
-
-  Expected: FAIL until the fake feed adapter and tap CLI are wired together.
-
-- [ ] **Step 4: Complete only fixture adapters**
-
-  Add no production fallback. The fake Release transport implements the same
-  append/no-clobber and URL grammar, while the fake PR client supplies explicit
-  lifecycle facts. Compare canonical request and decision bytes from two clean
-  runs.
-
-- [ ] **Step 5: Run the full local Plan 2 suite**
-
-  ```bash
-  scripts/dev-shell.sh env \
-    KANDELO_TAP_ROOT="$KANDELO_TAP_ROOT" \
-    bash scripts/test-abi-staging-request-feed.sh
-  scripts/dev-shell.sh env \
-    KANDELO_TAP_ROOT="$KANDELO_TAP_ROOT" \
-    bash scripts/test-abi-staging-cross-repo-fixtures.sh
-  ```
-
-  Expected: PASS twice from fresh temporary directories.
-
-- [ ] **Step 6: Commit in Kandelo**
+- [ ] Write failing cases for initial head, same-head policy reissue, advance,
+  old-head completion, close, reopen same/different head, and merge.
+- [ ] Add negative authority cases for synthetic source, wrong repo/tag/name,
+  filename/body mismatch, unaddressed tap, stale policy, latest alias, redirect
+  escape, and candidate-supplied coordinator path.
+- [ ] Run with a validated absolute `KANDELO_TAP_ROOT`; confirm red.
+- [ ] Complete only fake transport/PR adapters. Do not add a production
+  fallback. Compare bytes from two clean runs.
+- [ ] Run both local Plan 2 harnesses twice; expect PASS.
+- [ ] Commit:
 
   ```bash
   git add scripts/test-abi-staging-cross-repo-fixtures.sh \
@@ -1156,195 +580,64 @@ is a transport boundary, not an issuer substitute.
 
 ---
 
-### Task 10: Run observe-mode hosted canaries before activation
+### Task 10: Run observe-mode hosted canaries, then narrowly activate issuance
 
 **Files:**
 
-- Modify: `docs/abi-versioning.md`
-- Modify: `docs/repository-organization.md`
-- Modify: `Kandelo/README.md` in the tap repository
-- Modify: `README.md` in the tap repository
+- Modify Kandelo ABI/repository documentation.
+- Modify tap `Kandelo/README.md` and `README.md`.
 
-**Interfaces:**
+**Interfaces:** Produces exact hosted run/asset evidence and, only after it
+passes, one activation commit for same-repository issuance.
 
-- Consumes: merged protected workflow revisions from Tasks 5 and 8.
-- Produces: hosted run URLs/digests for exact-head derivation and tap discovery,
-  then narrow activation commits if and only if canaries pass.
-
-- [ ] **Step 1: Land observe-only workflow revisions on protected main**
-
-  This is a hosted gate, not a local command. Record exact Kandelo and tap main
-  SHAs. If either revision is not on protected main, complete documentation and
-  local verification, report the gate, and do not simulate hosted success.
-
-- [ ] **Step 2: Run a Kandelo manual dry-run canary**
-
-  Select a same-repository PR head, run `abi-staging-request-feed.yml` in
-  observe mode, and retain the run URL plus canonical request digest. Confirm
-  workflow/job permission views, exact head/tree, and absence of a Release
+- [ ] Land observe-only workflow revisions on protected main in both repos.
+  If unavailable, record the gate and do not simulate hosted success.
+- [ ] Run a Kandelo manual observe canary for a same-repository exact head;
+  retain run URL/digest and confirm no Release write.
+- [ ] With explicit publication authority, append a canary asset and run tap
+  manual URL reconciliation; verify same digest and no build/package/branch
   write.
-
-- [ ] **Step 3: Run a tap manual URL canary against fixture bytes**
-
-  After an append/no-clobber publication canary is explicitly authorized,
-  supply its ordinary browser download URL to the tap workflow. Retain the run
-  URL and verify the same request digest, lifecycle decision, no build
-  dispatch, and no package or branch write.
-
-- [ ] **Step 4: Prove append idempotence and same-head reissuance**
-
-  Invoke the Kandelo writer twice for identical bytes and once after a protected
-  policy digest change in a canary branch. The first rerun must no-op; the
-  policy change must append a second correctly named same-head asset. Restore
-  no Release state because the feed is intentionally historical.
-
-- [ ] **Step 5: Activate automatic same-repository issuance narrowly**
-
-  Change only `abi/staging/request-feed-activation.toml` from `observe` to
-  `active`, run the complete local suite, and commit. Do not activate fork
-  issuance or tap build scheduling.
-
-  ```bash
-  scripts/dev-shell.sh env \
-    KANDELO_TAP_ROOT="$KANDELO_TAP_ROOT" \
-    bash scripts/test-abi-staging-request-feed.sh
-  git add abi/staging/request-feed-activation.toml
-  git commit -m "[ABI] Activate exact-head request issuance"
-  ```
-
-- [ ] **Step 6: Update documentation to the exact deployed claim**
-
-  State that same-repository exact-head requests are public and tap
-  reconciliation is observe-only. State that fork authorization, bottle
-  execution, candidate publication, verification, product evidence, Check
-  gating, promotion, ABI history, and Pages integration are not operational.
-
-- [ ] **Step 7: Commit documentation in each repository**
-
-  ```bash
-  git add docs/abi-versioning.md docs/repository-organization.md
-  git commit -m "[Docs] Describe the exact-head request feed"
-  git -C "$KANDELO_TAP_ROOT" add Kandelo/README.md README.md
-  git -C "$KANDELO_TAP_ROOT" commit -m \
-    "[Docs] Describe observe-only ABI reconciliation"
-  ```
+- [ ] Prove identical rerun is a no-op and protected same-head policy change
+  appends a second correct asset.
+- [ ] Change only Kandelo request activation from `observe` to `active`, rerun
+  the complete local suite, and commit. Do not enable forks or tap builds.
+- [ ] Document exactly: same-repository request issuance is active; tap
+  reconciliation is observe-only; all later stages remain unavailable.
+- [ ] Commit docs separately in each repository.
 
 ---
 
-### Task 11: Final Plan 2 verification and handoff audit
+### Task 11: Run the final Plan 2 audit and stop
 
-**Files:**
+**Files:** Verify every Plan 2 file in both repositories. Add no candidate
+build, package write, Check write, promotion, branch mutation, or Pages change.
 
-- Verify every Plan 2 file in both repositories. Add no candidate build,
-  packages write, Check write, promotion, branch mutation, or Pages change.
+**Interfaces:** Produces evidence only for request issuance and read-only
+reconciliation.
 
-**Interfaces:**
+- [ ] Run Kandelo `xtask` tests, feed harness, workflow checker, ABI checker,
+  and `actionlint` through `scripts/dev-shell.sh`.
+- [ ] Run all tap Python tests, workflow mutation tests, and `actionlint`
+  through the Kandelo dev shell with `KANDELO_TAP_ROOT`.
+- [ ] Run the cross-repository harness and docs build.
+- [ ] Audit permissions, secrets, persisted credentials, synthetic merge
+  strings, clobber operations, and concrete successor ABI leakage. Confirm
+  only Kandelo's protected publisher has `contents: write`.
+- [ ] Audit both worktrees and commit histories, then stop before bottle work.
 
-- Consumes: completed Tasks 1–10 and fresh protected-main/hosted evidence where
-  available.
-- Produces: evidence for request feed and read-only reconciliation only.
+## Exit criteria
 
-- [ ] **Step 1: Run Kandelo tests**
+- Protected Kandelo code derives canonical requests from exact heads under
+  current protected policy.
+- Structural ABI code has no write credential and its output is revalidated.
+- The public feed is append-only, exact-name, and idempotent.
+- Same-head reissuance and older heads remain valid with no ordering heuristic.
+- Scheduled and manual tap paths share one validator/reconciler.
+- Lifecycle behavior covers open, advance, merge, close, and reopen cases.
+- No tap build, package/branch/Check write, promotion, or Pages behavior exists.
+- Local cross-repository tests pass; hosted claims have exact retained evidence.
+- Documentation clearly separates active issuance, observe-only reconciliation,
+  and unimplemented later stages.
 
-  ```bash
-  scripts/dev-shell.sh bash -c '
-    host_target="$(rustc -vV | awk "/^host/ {print \$2}")"
-    cargo test -p xtask --target "$host_target" abi_staging
-  '
-  scripts/dev-shell.sh bash scripts/test-abi-staging-request-feed.sh
-  scripts/dev-shell.sh ruby scripts/check-abi-staging-request-workflow.rb
-  scripts/dev-shell.sh bash scripts/check-abi-version.sh
-  scripts/dev-shell.sh actionlint \
-    .github/workflows/abi-staging-request-feed.yml
-  ```
-
-  Expected: PASS.
-
-- [ ] **Step 2: Run tap tests through the declared environment**
-
-  ```bash
-  scripts/dev-shell.sh env \
-    KANDELO_TAP_ROOT="$KANDELO_TAP_ROOT" \
-    python3 -m unittest discover \
-      -s "$KANDELO_TAP_ROOT/scripts/abi_staging/tests" -v
-  scripts/dev-shell.sh env \
-    KANDELO_TAP_ROOT="$KANDELO_TAP_ROOT" \
-    ruby "$KANDELO_TAP_ROOT/scripts/test_check_abi_staging_workflows.rb"
-  scripts/dev-shell.sh env \
-    KANDELO_TAP_ROOT="$KANDELO_TAP_ROOT" \
-    actionlint "$KANDELO_TAP_ROOT/.github/workflows/abi-staging-reconcile.yml"
-  ```
-
-  Expected: PASS.
-
-- [ ] **Step 3: Run cross-repository and documentation checks**
-
-  ```bash
-  scripts/dev-shell.sh env \
-    KANDELO_TAP_ROOT="$KANDELO_TAP_ROOT" \
-    bash scripts/test-abi-staging-cross-repo-fixtures.sh
-  scripts/dev-shell.sh npm run docs:build
-  ```
-
-  Expected: PASS.
-
-- [ ] **Step 4: Audit workflow capabilities and genericity**
-
-  ```bash
-  scripts/dev-shell.sh bash -c '
-    rg -n "permissions:|secrets:|persist-credentials|refs/pull/.*/merge|clobber" \
-      .github/workflows/abi-staging-request-feed.yml \
-      "$KANDELO_TAP_ROOT/.github/workflows/abi-staging-reconcile.yml"
-    if rg -n -i "abi[-_ ]?4[23]|integration/abi4[23]" \
-      tools/xtask/src/abi_staging \
-      abi/staging \
-      .github/workflows/abi-staging-request-feed.yml \
-      "$KANDELO_TAP_ROOT/scripts/abi_staging" \
-      "$KANDELO_TAP_ROOT/Kandelo/staging"; then
-      echo "acceptance ABI leaked into generic request infrastructure" >&2
-      exit 1
-    fi
-  '
-  ```
-
-  Manually verify that only Kandelo's publisher has `contents: write`, no
-  candidate-executing job has write permission, and tap reconciliation has no
-  write or dispatch path.
-
-- [ ] **Step 5: Audit both worktrees and stop**
-
-  ```bash
-  scripts/dev-shell.sh bash -c '
-    git status --short --branch
-    git diff --check origin/main...HEAD
-    git log --format=fuller --stat origin/main..HEAD
-    git -C "$KANDELO_TAP_ROOT" status --short --branch
-    git -C "$KANDELO_TAP_ROOT" diff --check origin/main...HEAD
-    git -C "$KANDELO_TAP_ROOT" log --format=fuller --stat origin/main..HEAD
-  '
-  ```
-
-  Do not start bottle planning or publication in this plan.
-
-## Exit Criteria
-
-- Protected code derives a canonical request from the exact head and inert
-  exact-head product/consumer files under current protected policy.
-- Structural ABI evidence runs without write credentials and is revalidated
-  before Release writes.
-- The feed is one prerelease per PR, append-only by exact asset name, and
-  idempotent for identical bytes.
-- Same-head policy reissuance and historical older heads remain valid without a
-  latest pointer or ordering heuristic.
-- Manual and scheduled tap paths use one validator and reconciler.
-- Pull-request lifecycle decisions match the approved open/new-head/merged/
-  closed/reopened table.
-- No tap build, package write, branch write, Check write, promotion, or Pages
-  behavior exists yet.
-- Local cross-repository fixtures pass; any claimed hosted behavior has exact
-  retained run/asset evidence.
-- Documentation distinguishes active same-repository request issuance from
-  observe-only tap reconciliation and all later unimplemented stages.
-
-After these criteria are met, execute Plan 3. Do not infer permission to
-publish candidate packages from a successful request-feed canary.
+After these criteria pass, execute Plan 3. A successful request canary does not
+grant permission to publish candidate packages.
