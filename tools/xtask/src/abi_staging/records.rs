@@ -463,6 +463,26 @@ pub struct CandidateRecordV1 {
     pub candidate: CandidatePayloadV1,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateReusePayloadV1 {
+    pub formula: FormulaBuildSubjectV1,
+    pub existing_candidate: RecordLinkV1,
+    pub bottle_layer: ArtifactIdentityV1,
+    pub source_custody: RecordLinkV1,
+    pub qualifying_receipts: Vec<RecordLinkV1>,
+    pub original_producer: CandidateProducerV1,
+    pub nonendorsed: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateReuseRecordV1 {
+    pub schema: u64,
+    pub common: RecordCommonV1,
+    pub candidate_reuse: CandidateReusePayloadV1,
+}
+
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum VerificationHostV1 {
@@ -632,6 +652,8 @@ pub enum AbiStagingRecordV1 {
     Attempt(AttemptRecordV1),
     #[serde(rename = "kandelo-abi-staging-candidate")]
     Candidate(CandidateRecordV1),
+    #[serde(rename = "kandelo-abi-staging-candidate-reuse")]
+    CandidateReuse(CandidateReuseRecordV1),
     #[serde(rename = "kandelo-abi-staging-verification")]
     Verification(VerificationReceiptV1),
     #[serde(rename = "kandelo-abi-staging-product-evidence")]
@@ -659,10 +681,37 @@ pub fn parse_record(canonical_bytes: &[u8]) -> Result<AbiStagingRecordV1, String
     Ok(record)
 }
 
+pub fn run_cli(action: &str, args: &[String]) -> Result<(), String> {
+    if action != "validate" {
+        return Err(format!(
+            "unknown records action {action:?}; expected validate"
+        ));
+    }
+    if args.len() != 2 || args[0] != "--record" {
+        return Err("records validate requires exactly --record <path>".to_string());
+    }
+    let path = Path::new(&args[1]);
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("cannot inspect ABI staging record {path:?}: {error}"))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(format!(
+            "ABI staging record must be a regular non-symlink file: {path:?}"
+        ));
+    }
+    if metadata.len() > MAX_REQUEST_BYTES as u64 {
+        return Err("ABI staging record exceeds the 4 MiB limit".to_string());
+    }
+    let bytes = std::fs::read(path)
+        .map_err(|error| format!("cannot read ABI staging record {path:?}: {error}"))?;
+    parse_record(&bytes)?;
+    Ok(())
+}
+
 pub fn validate_record(record: &AbiStagingRecordV1) -> Result<(), String> {
     match record {
         AbiStagingRecordV1::Attempt(record) => validate_attempt(record),
         AbiStagingRecordV1::Candidate(record) => validate_candidate(record),
+        AbiStagingRecordV1::CandidateReuse(record) => validate_candidate_reuse(record),
         AbiStagingRecordV1::Verification(record) => validate_verification(record),
         AbiStagingRecordV1::ProductEvidence(record) => validate_product_evidence(record),
         AbiStagingRecordV1::CaptureOverrideAuthorization(record) => {
@@ -713,6 +762,44 @@ fn validate_candidate(record: &CandidateRecordV1) -> Result<(), String> {
         || record.common.artifact.as_ref() != Some(&payload.bottle_layer)
     {
         return Err("candidate record common artifact must be its exact bottle layer".to_string());
+    }
+    Ok(())
+}
+
+fn validate_candidate_reuse(record: &CandidateReuseRecordV1) -> Result<(), String> {
+    validate_record_header(record.schema, &record.common, false)?;
+    let payload = &record.candidate_reuse;
+    validate_formula_subject(&payload.formula)?;
+    validate_record_link(&payload.existing_candidate)?;
+    validate_artifact(&payload.bottle_layer, ArtifactClassV1::Candidate)?;
+    validate_record_link(&payload.source_custody)?;
+    validate_sorted_record_links(&payload.qualifying_receipts, "qualifying receipt records")?;
+    validate_candidate_producer(&payload.original_producer)?;
+    if !payload.nonendorsed {
+        return Err("reused public candidate must retain nonendorsed = true".to_string());
+    }
+    if record.common.subject.kind != SubjectKindV1::Formula
+        || record.common.subject.identity
+            != format!("{}/{}", payload.formula.tap, payload.formula.formula)
+        || record.common.subject.architecture != Some(payload.formula.architecture)
+    {
+        return Err("candidate reuse common subject differs from its exact Formula".to_string());
+    }
+    if record.common.request_sha256 == payload.original_producer.request_sha256 {
+        return Err("candidate reuse must bind a new request identity".to_string());
+    }
+    if record.common.artifact_class != ArtifactClassV1::Candidate
+        || record.common.artifact.as_ref() != Some(&payload.bottle_layer)
+    {
+        return Err(
+            "candidate reuse common artifact must be the exact existing bottle layer".to_string(),
+        );
+    }
+    if record.common.outcome != Some(TerminalOutcomeV1::Success)
+        || record.common.work_state != WorkStateV1::Complete
+        || record.common.promotion_state != PromotionStateV1::Eligible
+    {
+        return Err("candidate reuse must be a successful eligible record".to_string());
     }
     Ok(())
 }
@@ -1194,6 +1281,21 @@ fn validate_record_links(links: &[RecordLinkV1]) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_sorted_record_links(links: &[RecordLinkV1], field: &str) -> Result<(), String> {
+    if links.is_empty() || links.len() > MAX_BINDINGS {
+        return Err(format!("{field} must contain a bounded qualifying receipt"));
+    }
+    let mut previous: Option<&str> = None;
+    for link in links {
+        validate_record_link(link)?;
+        if previous.is_some_and(|old| old >= link.record_sha256.as_str()) {
+            return Err(format!("{field} must be sorted and duplicate-free"));
+        }
+        previous = Some(&link.record_sha256);
+    }
+    Ok(())
+}
+
 fn validate_record_link(link: &RecordLinkV1) -> Result<(), String> {
     validate_sha256(&link.record_sha256)?;
     validate_bounded_text(&link.immutable_reference, "record immutable reference", 4_096)?;
@@ -1431,6 +1533,99 @@ mod tests {
                 },
                 retry_ordinal: 0,
                 candidate: Some(candidate),
+            },
+        })
+    }
+
+    fn candidate_reuse_vector() -> AbiStagingRecordV1 {
+        let bottle_contract =
+            "c749b0e5861571ad605600e2dcf26029243649a43b410245a1c7542f3cd07f7c";
+        let bottle_layer = ArtifactIdentityV1 {
+            sha256: SHA_C.to_string(),
+            bytes: 4567,
+            immutable_reference: Some(format!(
+                "ghcr.io/kandelo-dev/homebrew-tap-core-abi-8-candidates/curl@sha256:{SHA_C}"
+            )),
+        };
+        AbiStagingRecordV1::CandidateReuse(CandidateReuseRecordV1 {
+            schema: 1,
+            common: RecordCommonV1 {
+                request_sha256:
+                    "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                        .to_string(),
+                subject: ExactSubjectV1 {
+                    kind: SubjectKindV1::Formula,
+                    identity: "kandelo-dev/homebrew-tap-core/curl".to_string(),
+                    architecture: Some(VfsArchitectureV1::Wasm32),
+                },
+                source: ExactGitSourceV1 {
+                    repository: "automattic/kandelo".to_string(),
+                    commit: "4444444444444444444444444444444444444444".to_string(),
+                    tree: "5555555555555555555555555555555555555555".to_string(),
+                },
+                run: RecordRunProvenanceV1 {
+                    repository: "kandelo-dev/homebrew-tap-core".to_string(),
+                    workflow_ref: ".github/workflows/staging.yml@refs/heads/main".to_string(),
+                    run_id: 88,
+                    run_attempt: 1,
+                    job: "reuse".to_string(),
+                },
+                guard_codes: Vec::new(),
+                work_state: WorkStateV1::Complete,
+                outcome: Some(TerminalOutcomeV1::Success),
+                artifact_class: ArtifactClassV1::Candidate,
+                artifact: Some(bottle_layer.clone()),
+                promotion_state: PromotionStateV1::Eligible,
+                admission_sha256: None,
+                retry_state: RetryStateV1 {
+                    attempts: 0,
+                    eligible: false,
+                    exhausted: false,
+                    next_action: RetryNextActionV1::None,
+                    next_eligible_at: None,
+                },
+                blockers: Vec::new(),
+            },
+            candidate_reuse: CandidateReusePayloadV1 {
+                formula: FormulaBuildSubjectV1 {
+                    tap: "kandelo-dev/homebrew-tap-core".to_string(),
+                    formula: "curl".to_string(),
+                    architecture: VfsArchitectureV1::Wasm32,
+                    target_abi: 8,
+                    bottle_contract_sha256: bottle_contract.to_string(),
+                },
+                existing_candidate: RecordLinkV1 {
+                    record_sha256: SHA_A.to_string(),
+                    immutable_reference: format!(
+                        "ghcr.io/kandelo-dev/homebrew-tap-core-abi-8-candidates/record@sha256:{SHA_A}"
+                    ),
+                },
+                bottle_layer,
+                source_custody: RecordLinkV1 {
+                    record_sha256: SHA_B.to_string(),
+                    immutable_reference: format!(
+                        "ghcr.io/kandelo-dev/homebrew-tap-core-abi-8-source-custody/record@sha256:{SHA_B}"
+                    ),
+                },
+                qualifying_receipts: vec![RecordLinkV1 {
+                    record_sha256:
+                        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                            .to_string(),
+                    immutable_reference: concat!(
+                        "ghcr.io/kandelo-dev/homebrew-tap-core-abi-8-candidates/",
+                        "receipt@sha256:",
+                        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+                    )
+                    .to_string(),
+                }],
+                original_producer: CandidateProducerV1 {
+                    request_sha256:
+                        "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+                            .to_string(),
+                    head: "3333333333333333333333333333333333333333".to_string(),
+                    run_id: 77,
+                },
+                nonendorsed: true,
             },
         })
     }
@@ -1710,7 +1905,49 @@ mod tests {
     }
 
     #[test]
-    fn closed_record_enum_validates_all_eight_durable_record_kinds() {
+    fn candidate_reuse_preserves_existing_artifacts_and_original_producer() {
+        let record = candidate_reuse_vector();
+        validate_record(&record).unwrap();
+        let bytes = canonical_json_bytes(&record).unwrap();
+        assert_eq!(parse_record(&bytes).unwrap(), record);
+        assert_eq!(
+            canonical_sha256(&record).unwrap(),
+            "db70ec2851481d96c4fd88a4a659de77537afc3afd146bda2a44f93b9fb23b6e"
+        );
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("candidate-reuse.json");
+        std::fs::write(&path, &bytes).unwrap();
+        run_cli(
+            "validate",
+            &["--record".to_string(), path.display().to_string()],
+        )
+        .unwrap();
+
+        let mut mismatched = record.clone();
+        let AbiStagingRecordV1::CandidateReuse(reuse) = &mut mismatched else {
+            unreachable!()
+        };
+        reuse.candidate_reuse.bottle_layer.sha256 = SHA_C.to_string();
+        reuse.candidate_reuse.bottle_layer.immutable_reference = Some(format!(
+            "ghcr.io/kandelo-dev/homebrew-tap-core-abi-7-candidates/item@sha256:{SHA_C}"
+        ));
+        assert!(validate_record(&mismatched)
+            .unwrap_err()
+            .contains("exact existing bottle layer"));
+
+        let mut incomplete = record;
+        let AbiStagingRecordV1::CandidateReuse(reuse) = &mut incomplete else {
+            unreachable!()
+        };
+        reuse.candidate_reuse.qualifying_receipts.clear();
+        assert!(validate_record(&incomplete)
+            .unwrap_err()
+            .contains("qualifying receipt"));
+    }
+
+    #[test]
+    fn closed_record_enum_validates_all_nine_durable_record_kinds() {
         let candidate_layer = artifact(SHA_B, ArtifactClassV1::Candidate);
         let canonical = artifact(SHA_C, ArtifactClassV1::Canonical);
         let mut candidate_common = common(
@@ -1870,6 +2107,7 @@ mod tests {
         for record in [
             attempt_record(),
             candidate,
+            candidate_reuse_vector(),
             verification,
             product,
             capture,
