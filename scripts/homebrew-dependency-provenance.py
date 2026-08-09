@@ -268,6 +268,23 @@ def normalized_tap_name(name: str) -> str:
     return f"{owner}/{name}"
 
 
+def selected_bottle_root_url(
+    repository: str, staging_candidate_abi: int | None
+) -> str:
+    normalized = normalized_tap_name(repository)
+    base = f"https://ghcr.io/v2/{normalized}"
+    if staging_candidate_abi is None:
+        return base
+    if (
+        isinstance(staging_candidate_abi, bool)
+        or not isinstance(staging_candidate_abi, int)
+        or staging_candidate_abi <= 0
+        or staging_candidate_abi > 2**32 - 1
+    ):
+        fail("staging candidate ABI must be a positive bounded integer")
+    return f"{base}-abi-{staging_candidate_abi}-candidates"
+
+
 def selected_tap_name(args: argparse.Namespace) -> str:
     repository = normalized_tap_name(args.tap_repository)
     owner, repository_name = repository.split("/", 1)
@@ -304,7 +321,9 @@ def resolved_tap_contexts(args: argparse.Namespace) -> dict[str, dict[str, Any]]
             "tap_commit": args.tap_commit,
             "checkout_commit": selected_checkout,
             "root": primary_root,
-            "bottle_root_url": f"https://ghcr.io/v2/{primary_repository}",
+            "bottle_root_url": selected_bottle_root_url(
+                primary_repository, getattr(args, "staging_candidate_abi", None)
+            ),
         }
     }
     resolved_path_value = os.environ.get("KANDELO_HOMEBREW_RESOLVED_TAPS_FILE", "")
@@ -427,7 +446,13 @@ def resolved_tap_contexts(args: argparse.Namespace) -> dict[str, dict[str, Any]]
             "tap_commit": commit,
             "checkout_commit": checkout_commit,
             "root": context_root,
-            "bottle_root_url": f"https://ghcr.io/v2/{repository}",
+            "bottle_root_url": (
+                selected_bottle_root_url(
+                    repository, getattr(args, "staging_candidate_abi", None)
+                )
+                if index == 0
+                else selected_bottle_root_url(repository, None)
+            ),
         }
     if primary_name not in parsed:
         fail("resolved dependency tap map omits the selected primary tap")
@@ -614,7 +639,9 @@ def capture_cache(args: argparse.Namespace) -> None:
 
     normalized_repository = normalized_tap_name(args.tap_repository)
     normalized_tap = selected_tap_name(args)
-    expected_root = f"https://ghcr.io/v2/{normalized_repository}"
+    expected_root = selected_bottle_root_url(
+        normalized_repository, args.staging_candidate_abi
+    )
     if args.bottle_root_url != expected_root:
         fail(f"bottle root URL must be {expected_root}")
     brew_input = pathlib.Path(args.brew_bin)
@@ -913,7 +940,9 @@ def capture(args: argparse.Namespace) -> None:
     require_string(args.formula, "formula", FORMULA_NAME)
     if args.arch not in ("wasm32", "wasm64"):
         fail(f"unsupported architecture: {args.arch}")
-    expected_root = f"https://ghcr.io/v2/{normalized_repository}"
+    expected_root = selected_bottle_root_url(
+        normalized_repository, args.staging_candidate_abi
+    )
     if args.bottle_root_url != expected_root:
         fail(f"bottle root URL must be {expected_root}")
 
@@ -1213,7 +1242,9 @@ def validate_document(document: Any, args: argparse.Namespace) -> None:
     elif root["tap_checkout_commit"] != expected_checkout_commit:
         fail("dependency provenance tap checkout identity does not match")
     bottle_cellars = selected_bottle_cellars(args)
-    expected_root = f"https://ghcr.io/v2/{normalized_repository}"
+    expected_root = selected_bottle_root_url(
+        normalized_repository, args.staging_candidate_abi
+    )
     if args.bottle_root_url != expected_root:
         fail(f"bottle root URL must be {expected_root}")
     if (
@@ -1489,6 +1520,214 @@ def validate(args: argparse.Namespace) -> None:
     validate_document(document, args)
 
 
+def _staging_tap_name(repository: str) -> str:
+    normalized = normalized_tap_name(repository)
+    owner, repository_name = normalized.split("/", 1)
+    if not repository_name.startswith("homebrew-") or repository_name == "homebrew-":
+        fail("staged tap repository must use owner/homebrew-name")
+    return f"{owner}/{repository_name.removeprefix('homebrew-')}"
+
+
+def _expected_staging_layers(document: Any) -> tuple[dict[str, Any], ...]:
+    root = exact_keys(
+        document,
+        {
+            "architecture",
+            "dependency_layers",
+            "kind",
+            "schema",
+            "tap_repository",
+            "target_abi",
+        },
+        "staged dependency layer contract",
+    )
+    if root["schema"] != 1 or root["kind"] != "kandelo-abi-staging-dependency-layers":
+        fail("staged dependency layer contract has an unsupported protocol")
+    architecture = root["architecture"]
+    if architecture not in ("wasm32", "wasm64"):
+        fail("staged dependency layer architecture is unsupported")
+    target_abi = root["target_abi"]
+    if (
+        isinstance(target_abi, bool)
+        or not isinstance(target_abi, int)
+        or target_abi <= 0
+        or target_abi > 2**32 - 1
+    ):
+        fail("staged dependency layer ABI must be a positive bounded integer")
+    repository = require_string(
+        root["tap_repository"], "staged dependency tap repository", TAP_REPOSITORY
+    )
+    normalized_repository = normalized_tap_name(repository)
+    if repository != normalized_repository:
+        fail("staged dependency tap repository must be normalized lowercase")
+    candidate_root = selected_bottle_root_url(normalized_repository, target_abi)
+    registry_root = candidate_root.removeprefix("https://ghcr.io/v2/")
+    raw_layers = root["dependency_layers"]
+    if not isinstance(raw_layers, list) or len(raw_layers) > MAX_DEPENDENCIES:
+        fail(f"staged dependency layers must contain at most {MAX_DEPENDENCIES} entries")
+    layers: list[dict[str, Any]] = []
+    previous = ""
+    for index, raw in enumerate(raw_layers):
+        layer = exact_keys(
+            raw, {"artifact", "formula"}, f"staged dependency layers[{index}]"
+        )
+        formula = require_string(
+            layer["formula"], f"staged dependency layers[{index}].formula", FORMULA_NAME
+        )
+        if formula <= previous:
+            fail("staged dependency layers must be uniquely sorted by Formula")
+        previous = formula
+        artifact = exact_keys(
+            layer["artifact"],
+            {"bytes", "immutable_reference", "sha256"},
+            f"staged dependency layers[{index}].artifact",
+        )
+        digest = require_string(
+            artifact["sha256"],
+            f"staged dependency layers[{index}].artifact.sha256",
+            SHA256,
+        )
+        byte_count = artifact["bytes"]
+        if (
+            isinstance(byte_count, bool)
+            or not isinstance(byte_count, int)
+            or byte_count <= 0
+            or byte_count > MAX_BOTTLE_BYTES
+        ):
+            fail(f"staged dependency layers[{index}] has an invalid byte count")
+        reference = require_string(
+            artifact["immutable_reference"],
+            f"staged dependency layers[{index}].artifact.immutable reference",
+        )
+        expected_reference = (
+            f"ghcr.io/{registry_root}/{formula}@sha256:{digest}"
+        )
+        if reference != expected_reference:
+            fail(
+                f"staged dependency layers[{index}] immutable reference must be "
+                f"{expected_reference}"
+            )
+        layers.append(
+            {
+                "artifact": {
+                    "bytes": byte_count,
+                    "immutable_reference": reference,
+                    "sha256": digest,
+                },
+                "formula": formula,
+            }
+        )
+    return tuple(layers)
+
+
+def _poured_staging_layers(
+    document: Any, expected_contract: Any
+) -> tuple[dict[str, Any], ...]:
+    if not isinstance(document, dict):
+        fail("poured dependency provenance must be an object")
+    if document.get("schema") not in (6, 7):
+        fail("poured dependency provenance must include exact archive evidence")
+    contract = exact_keys(
+        expected_contract,
+        {
+            "architecture",
+            "dependency_layers",
+            "kind",
+            "schema",
+            "tap_repository",
+            "target_abi",
+        },
+        "staged dependency layer contract",
+    )
+    repository = normalized_tap_name(contract["tap_repository"])
+    architecture = contract["architecture"]
+    target_abi = contract["target_abi"]
+    tap_name = _staging_tap_name(repository)
+    root_url = selected_bottle_root_url(repository, target_abi)
+    if (
+        document.get("tap_repository") != repository
+        or document.get("tap_name") != tap_name
+        or document.get("arch") != architecture
+        or document.get("bottle_tag") != f"{architecture}_kandelo"
+        or document.get("bottle_root_url") != root_url
+    ):
+        fail("poured dependency provenance differs from staged authority")
+    raw_dependencies = document.get("dependencies")
+    if not isinstance(raw_dependencies, list) or len(raw_dependencies) > MAX_DEPENDENCIES:
+        fail("poured dependency provenance has an invalid dependency array")
+    registry_root = root_url.removeprefix("https://ghcr.io/v2/")
+    selected: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, raw in enumerate(raw_dependencies):
+        if not isinstance(raw, dict):
+            fail(f"poured dependencies[{index}] must be an object")
+        name = require_string(
+            raw.get("name"), f"poured dependencies[{index}].name", FORMULA_NAME
+        )
+        full_name = require_string(
+            raw.get("full_name"), f"poured dependencies[{index}].full_name"
+        )
+        dependency_tap, full_name_formula = split_full_name(
+            full_name, f"poured dependencies[{index}].full_name"
+        )
+        if full_name_formula != name:
+            fail(f"poured dependencies[{index}] name differs from full_name")
+        if document["schema"] == 7:
+            origin = raw.get("origin")
+            if not isinstance(origin, dict):
+                fail(f"poured dependencies[{index}] lacks origin")
+            same_tap = origin.get("tap_repository") == repository
+        else:
+            same_tap = dependency_tap == tap_name
+        if not same_tap:
+            continue
+        if dependency_tap != tap_name or name in seen:
+            fail("poured dependency provenance repeats or misnames a staged Formula")
+        seen.add(name)
+        bottle = raw.get("bottle")
+        archive = raw.get("archive")
+        if not isinstance(bottle, dict) or not isinstance(archive, dict):
+            fail(f"poured dependencies[{index}] lacks exact bottle archive evidence")
+        digest = require_string(
+            bottle.get("sha256"), f"poured dependencies[{index}].bottle.sha256", SHA256
+        )
+        byte_count = archive.get("bytes")
+        if (
+            archive.get("sha256") != digest
+            or isinstance(byte_count, bool)
+            or not isinstance(byte_count, int)
+            or byte_count <= 0
+            or byte_count > MAX_BOTTLE_BYTES
+            or bottle.get("tag") != f"{architecture}_kandelo"
+            or bottle.get("url")
+            != f"{root_url}/{name}/blobs/sha256:{digest}"
+        ):
+            fail(f"poured dependencies[{index}] bottle archive identity is invalid")
+        selected.append(
+            {
+                "artifact": {
+                    "bytes": byte_count,
+                    "immutable_reference": (
+                        f"ghcr.io/{registry_root}/{name}@sha256:{digest}"
+                    ),
+                    "sha256": digest,
+                },
+                "formula": name,
+            }
+        )
+    selected.sort(key=lambda item: item["formula"])
+    return tuple(selected)
+
+
+def validate_staging(args: argparse.Namespace) -> None:
+    expected = load_json(pathlib.Path(args.expected), "staged dependency layer contract")
+    actual = load_json(pathlib.Path(args.actual), "poured dependency provenance")
+    expected_layers = _expected_staging_layers(expected)
+    poured_layers = _poured_staging_layers(actual, expected)
+    if poured_layers != expected_layers:
+        fail("staged dependency layers differ from the exact poured bottle closure")
+
+
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(description=__doc__)
     subparsers = root.add_subparsers(dest="command", required=True)
@@ -1501,6 +1740,7 @@ def parser() -> argparse.ArgumentParser:
     common.add_argument("--tap-checkout-commit")
     common.add_argument("--bottle-root-url", required=True)
     common.add_argument("--prefix-campaign-layout-sha256")
+    common.add_argument("--staging-candidate-abi", type=int)
 
     capture_parser = subparsers.add_parser("capture", parents=[common])
     capture_parser.add_argument("--brew-bin", required=True)
@@ -1525,6 +1765,11 @@ def parser() -> argparse.ArgumentParser:
     validate_parser.add_argument("--tap-root")
     validate_parser.add_argument("--planned-tap-root")
     validate_parser.set_defaults(handler=validate)
+
+    staging_parser = subparsers.add_parser("validate-staging")
+    staging_parser.add_argument("--expected", required=True)
+    staging_parser.add_argument("--actual", required=True)
+    staging_parser.set_defaults(handler=validate_staging)
     return root
 
 

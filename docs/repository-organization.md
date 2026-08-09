@@ -22,6 +22,10 @@ Kandelo is organized as a kernel-first monorepo. The kernel and host runtimes ar
 | `sdk/` | Cross-compilation wrapper CLI and SDK support code | Runtime host implementation |
 | `libc/` | musl submodule, musl overlay, syscall glue | General package registry |
 
+Hosted ABI staging is not operational in this foundation. The paths above
+define local product, policy, and validation authority only until protected
+workflows and hosted evidence prove the corresponding remote capabilities.
+
 ## Host Runtime Layout
 
 Node.js and browser hosts are peers and live beside each other under `host/src/`:

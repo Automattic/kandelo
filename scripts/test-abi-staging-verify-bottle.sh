@@ -28,14 +28,14 @@ SYSROOT="$TMP_ROOT/sysroot"
 MOCK_BIN="$TMP_ROOT/mock-bin"
 mkdir -p "$FIXTURE" "$TAP_ROOT/Formula" "$SYSROOT" "$MOCK_BIN"
 printf 'class MiniTool < Formula\nend\n' >"$TAP_ROOT/Formula/mini-tool.rb"
+printf 'class MiniBase < Formula\nend\n' >"$TAP_ROOT/Formula/mini-base.rb"
 git -C "$TAP_ROOT" init -q
-git -C "$TAP_ROOT" add Formula/mini-tool.rb
+git -C "$TAP_ROOT" add Formula/mini-base.rb Formula/mini-tool.rb
 git -C "$TAP_ROOT" -c user.name=Fixture -c user.email=fixture.invalid \
   commit -qm 'fixture Formula'
 TAP_COMMIT="$(git -C "$TAP_ROOT" rev-parse HEAD)"
 
 printf 'miniature bottle layer\n' >"$FIXTURE/bottle.tar.gz"
-jq -ncS '{dependency_layers: [], schema: 1}' >"$FIXTURE/dependencies.json"
 jq -ncS '{
   job: "verify-candidate",
   repository: "kandelo-dev/homebrew-tap-core",
@@ -88,6 +88,25 @@ bottle_identity = {
     "immutable_reference": f"{repository}@sha256:{digest(bottle)}",
     "sha256": digest(bottle),
 }
+dependency_digest = "f" * 64
+dependency_artifact = {
+    "bytes": 128,
+    "immutable_reference": (
+        "ghcr.io/kandelo-dev/homebrew-tap-core-abi-8-candidates/"
+        f"mini-base@sha256:{dependency_digest}"
+    ),
+    "sha256": dependency_digest,
+}
+(root / "dependencies.json").write_bytes(canonical({
+    "architecture": "wasm32",
+    "dependency_layers": [
+        {"artifact": dependency_artifact, "formula": "mini-base"}
+    ],
+    "kind": "kandelo-abi-staging-dependency-layers",
+    "schema": 1,
+    "tap_repository": "kandelo-dev/homebrew-tap-core",
+    "target_abi": 8,
+}))
 metadata = canonical({
     "mini-tool": {
         "bottle": {
@@ -107,7 +126,9 @@ metadata_identity = {
 record = {
     "candidate": {
         "bottle_layer": bottle_identity,
-        "direct_dependency_layers": [],
+        "direct_dependency_layers": [
+            {"artifact": dependency_artifact, "id": "mini-base-wasm32"}
+        ],
         "formula": {
             "architecture": "wasm32",
             "bottle_contract_sha256": "d" * 64,
@@ -318,18 +339,22 @@ printf '\n' >>"$FAKE_NORMAL_LOG"
 [ -d "$HOME" ] && [ -z "$(find "$HOME" -mindepth 1 -print -quit)" ]
 [ -d "$HOMEBREW_CACHE" ] && [ -z "$(find "$HOMEBREW_CACHE" -mindepth 1 -print -quit)" ]
 [ -d "$HOMEBREW_TEMP" ] && [ -z "$(find "$HOMEBREW_TEMP" -mindepth 1 -print -quit)" ]
-out=""; abi=""; arch=""; root=""
+out=""; abi=""; arch=""; root=""; staging_abi=""; staged_dependencies=()
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --out) out="$2"; shift 2 ;;
     --abi) abi="$2"; shift 2 ;;
     --arch) arch="$2"; shift 2 ;;
     --bottle-root-url) root="$2"; shift 2 ;;
+    --staging-candidate-abi) staging_abi="$2"; shift 2 ;;
+    --staged-dependency-formula) staged_dependencies+=("$2"); shift 2 ;;
     *) shift 2 ;;
   esac
 done
 [ "$abi" = 8 ] && [ "$arch" = wasm32 ]
-[ "$root" = "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-8-candidates/mini-tool" ]
+[ "$staging_abi" = 8 ]
+[ "$root" = "https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-8-candidates" ]
+[ "${staged_dependencies[*]}" = "mini-base" ]
 if [ "${FAKE_NORMAL_STATUS:-0}" != 0 ]; then
   echo 'deterministic verification failure'
   exit "$FAKE_NORMAL_STATUS"
@@ -408,6 +433,10 @@ grep -F -- '--abi 8' "$FAKE_NORMAL_LOG" >/dev/null || \
   fail "normal verifier did not receive exact ABI"
 grep -F -- '--arch wasm32' "$FAKE_NORMAL_LOG" >/dev/null || \
   fail "normal verifier did not receive exact architecture"
+grep -F -- '--staging-candidate-abi 8' "$FAKE_NORMAL_LOG" >/dev/null || \
+  fail "normal verifier did not receive candidate namespace authority"
+grep -F -- '--staged-dependency-formula mini-base' "$FAKE_NORMAL_LOG" >/dev/null || \
+  fail "normal verifier did not receive the exact staged dependency Formula"
 [ "$(cat "$FAKE_TIMEOUT_LOG")" = 21600s ] || fail "timeout changed"
 if rg -n 'homebrew-bottle-build|source build|brew bottle' \
   "$FAKE_INSPECTOR_LOG" "$FAKE_NORMAL_LOG" "$VERIFIER"; then
@@ -432,6 +461,19 @@ fi
 grep -F 'not an immutable GHCR digest' "$TMP_ROOT/mutable.stderr" >/dev/null || \
   fail "mutable locator rejection was not explicit"
 mv "$FIXTURE/exact-locator.json" "$FIXTURE/candidate-locator.json"
+
+cp "$FIXTURE/dependencies.json" "$FIXTURE/exact-dependencies.json"
+jq -cS '.dependency_layers = []' "$FIXTURE/exact-dependencies.json" \
+  >"$FIXTURE/dependencies.json"
+if run_verifier "$TMP_ROOT/missing-dependency" \
+  >"$TMP_ROOT/missing-dependency.stdout" \
+  2>"$TMP_ROOT/missing-dependency.stderr"; then
+  fail "candidate verification accepted a missing staged dependency layer"
+fi
+grep -F 'dependency layer contract differs from candidate dependencies' \
+  "$TMP_ROOT/missing-dependency.stderr" >/dev/null || \
+  fail "missing staged dependency rejection was not explicit"
+mv "$FIXTURE/exact-dependencies.json" "$FIXTURE/dependencies.json"
 
 if FAKE_CHANGED_BOTTLE=1 run_verifier "$TMP_ROOT/changed" \
   >"$TMP_ROOT/changed.stdout" 2>"$TMP_ROOT/changed.stderr"; then

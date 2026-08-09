@@ -18,7 +18,7 @@ convention — CI enforces it.
 
 ## ABI staging rollout status
 
-The checked-in ABI staging work is local and inert. It defines strict,
+The checked-in ABI staging foundation is local and inert. It defines strict,
 canonical data contracts for VFS products, consumer selection, staging
 requests and records, guard policy, builder inputs and reports, and legacy
 retirement conditions. The miniature fixture exercises those contracts with

@@ -200,6 +200,7 @@ canonical_json() {
 canonical_json "$CANDIDATE_LOCATOR" "candidate locator"
 canonical_json "$TEST_DEFINITION" "test definition"
 canonical_json "$RUN" "verification run"
+canonical_json "$DEPENDENCY_PROVENANCE" "staged dependency layer contract"
 [ "$(sha256sum "$TEST_DEFINITION" | awk '{print $1}')" = \
   "$TEST_DEFINITION_SHA256" ] || {
   echo "abi-staging-verify-bottle.sh: test definition digest differs" >&2
@@ -381,6 +382,54 @@ EXPECTED_REMOTE="${TAP_REPOSITORY,,}-abi-${TARGET_ABI}-candidates/$FORMULA"
   echo "abi-staging-verify-bottle.sh: selected Formula source is unavailable" >&2
   exit 2
 }
+STAGED_DEPENDENCY_FORMULAE="$WORK_ROOT/staged-dependency-formulae.txt"
+jq -e \
+  --slurpfile candidate "$CONFIG" \
+  --arg formula "$FORMULA" \
+  --arg architecture "$ARCHITECTURE" \
+  --arg tap_repository "${TAP_REPOSITORY,,}" \
+  --argjson target_abi "$TARGET_ABI" \
+  --arg candidate_base "ghcr.io/${TAP_REPOSITORY,,}-abi-${TARGET_ABI}-candidates" '
+    type == "object" and
+    keys == ["architecture", "dependency_layers", "kind", "schema",
+      "tap_repository", "target_abi"] and
+    .schema == 1 and
+    .kind == "kandelo-abi-staging-dependency-layers" and
+    .architecture == $architecture and
+    .tap_repository == $tap_repository and
+    .target_abi == $target_abi and
+    (.dependency_layers | type == "array" and length <= 128 and
+      . == (sort_by(.formula)) and
+      ([.[].formula] | length == (unique | length)) and
+      all(.[];
+        keys == ["artifact", "formula"] and
+        (.formula | type == "string" and
+          test("^[a-z0-9][a-z0-9._-]*$") and . != $formula) and
+        (.artifact | keys == ["bytes", "immutable_reference", "sha256"]) and
+        (.artifact.bytes | type == "number" and . >= 1 and floor == .) and
+        (.artifact.sha256 | type == "string" and
+          test("^[0-9a-f]{64}$")) and
+        .artifact.immutable_reference ==
+          ($candidate_base + "/" + .formula + "@sha256:" +
+            .artifact.sha256))) and
+    ([ $candidate[0].candidate.direct_dependency_layers[] as $direct |
+       .dependency_layers[] |
+       select($direct.id == (.formula + "-" + $architecture) and
+         $direct.artifact == .artifact) ] | length) ==
+      ($candidate[0].candidate.direct_dependency_layers | length)
+  ' "$DEPENDENCY_PROVENANCE" >/dev/null || {
+  echo "abi-staging-verify-bottle.sh: dependency layer contract differs from candidate dependencies" >&2
+  exit 1
+}
+jq -r '.dependency_layers[].formula' "$DEPENDENCY_PROVENANCE" \
+  >"$STAGED_DEPENDENCY_FORMULAE"
+while IFS= read -r dependency; do
+  [ -f "$TAP_ROOT/Formula/$dependency.rb" ] && \
+    [ ! -L "$TAP_ROOT/Formula/$dependency.rb" ] || {
+    echo "abi-staging-verify-bottle.sh: staged dependency Formula is unavailable: $dependency" >&2
+    exit 2
+  }
+done <"$STAGED_DEPENDENCY_FORMULAE"
 
 PKG_VERSION="$VERSION"
 if [ "$REVISION" != "0" ]; then
@@ -393,7 +442,14 @@ if [ "$REBUILD" != "0" ]; then
 fi
 BOTTLE_FILENAME="${FORMULA}--${PKG_VERSION}.${BOTTLE_TAG}.bottle${REBUILD_SUFFIX}.tar.gz"
 BOTTLE="$BOTTLE_DIR/$BOTTLE_FILENAME"
-BOTTLE_URL="https://ghcr.io/v2/$REMOTE/blobs/$BOTTLE_DIGEST"
+CANDIDATE_BASE="${REMOTE%/$FORMULA}"
+[ "$CANDIDATE_BASE/$FORMULA" = "$REMOTE" ] || {
+  echo "abi-staging-verify-bottle.sh: candidate repository lacks Formula suffix" >&2
+  exit 1
+}
+BOTTLE_ROOT_URL="https://ghcr.io/v2/$CANDIDATE_BASE"
+FORMULA_BOTTLE_ROOT_URL="$BOTTLE_ROOT_URL/$FORMULA"
+BOTTLE_URL="$FORMULA_BOTTLE_ROOT_URL/blobs/$BOTTLE_DIGEST"
 "$NODE_BIN" --experimental-strip-types \
   "$REPO_ROOT/scripts/homebrew-verify-public-bottle.ts" \
   --url "$BOTTLE_URL" --sha256 "$LAYER_SHA256" --bytes "$BOTTLE_BYTES" \
@@ -404,10 +460,9 @@ BOTTLE_URL="https://ghcr.io/v2/$REMOTE/blobs/$BOTTLE_DIGEST"
   exit 1
 }
 
-BOTTLE_ROOT_URL="https://ghcr.io/v2/$REMOTE"
 jq -e \
   --arg formula "$FORMULA" --arg pkg_version "$PKG_VERSION" \
-  --arg root "$BOTTLE_ROOT_URL" --arg tag "$BOTTLE_TAG" \
+  --arg root "$FORMULA_BOTTLE_ROOT_URL" --arg tag "$BOTTLE_TAG" \
   --arg sha256 "$LAYER_SHA256" --argjson rebuild "$REBUILD" '
     type == "object" and keys == [$formula] and
     .[$formula].formula.name == $formula and
@@ -450,10 +505,7 @@ while IFS= read -r forbidden_root; do
   inspector_args+=(--forbidden-root "$forbidden_root")
 done <"$ABI_VERIFY_FORBIDDEN_ROOTS"
 "$ABI_VERIFY_INSPECTOR" "${inspector_args[@]}"
-HOME="$ABI_VERIFY_HOME" \
-HOMEBREW_CACHE="$ABI_VERIFY_CACHE" \
-HOMEBREW_TEMP="$ABI_VERIFY_TEMP" \
-"$ABI_VERIFY_NORMAL_VERIFIER" \
+normal_verifier_args=(
   --tap-root "$ABI_VERIFY_TAP_ROOT" \
   --tap-repository "$ABI_VERIFY_TAP_REPOSITORY" \
   --tap-commit "$ABI_VERIFY_TAP_COMMIT" \
@@ -467,10 +519,19 @@ HOMEBREW_TEMP="$ABI_VERIFY_TEMP" \
   --bottle-sha256 "$ABI_VERIFY_LAYER_SHA256" \
   --bottle-bytes "$ABI_VERIFY_BOTTLE_BYTES" \
   --bottle-root-url "$ABI_VERIFY_BOTTLE_ROOT_URL" \
+  --staging-candidate-abi "$ABI_VERIFY_TARGET_ABI" \
   --dependency-provenance "$ABI_VERIFY_DEPENDENCY_PROVENANCE" \
   --selection-receipt "$ABI_VERIFY_SELECTION_RECEIPT" \
   --sysroot-build-root "$ABI_VERIFY_SYSROOT_BUILD_ROOT" \
   --out "$ABI_VERIFY_RUNTIME_EVIDENCE"
+)
+while IFS= read -r dependency; do
+  normal_verifier_args+=(--staged-dependency-formula "$dependency")
+done <"$ABI_VERIFY_STAGED_DEPENDENCY_FORMULAE"
+HOME="$ABI_VERIFY_HOME" \
+HOMEBREW_CACHE="$ABI_VERIFY_CACHE" \
+HOMEBREW_TEMP="$ABI_VERIFY_TEMP" \
+"$ABI_VERIFY_NORMAL_VERIFIER" "${normal_verifier_args[@]}"
 case "$ABI_VERIFY_TEST_POLICY" in
   kandelo-bottle-structure-v1) ;;
   kandelo-public-candidate-node-v1)
@@ -508,6 +569,7 @@ export ABI_VERIFY_LAYER_SHA256="$LAYER_SHA256"
 export ABI_VERIFY_BOTTLE_BYTES="$BOTTLE_BYTES"
 export ABI_VERIFY_BOTTLE_ROOT_URL="$BOTTLE_ROOT_URL"
 export ABI_VERIFY_DEPENDENCY_PROVENANCE="$DEPENDENCY_PROVENANCE"
+export ABI_VERIFY_STAGED_DEPENDENCY_FORMULAE="$STAGED_DEPENDENCY_FORMULAE"
 export ABI_VERIFY_SELECTION_RECEIPT="$SELECTION_RECEIPT"
 export ABI_VERIFY_SYSROOT_BUILD_ROOT="$SYSROOT_BUILD_ROOT"
 export ABI_VERIFY_RUNTIME_EVIDENCE="$RUNTIME_EVIDENCE"

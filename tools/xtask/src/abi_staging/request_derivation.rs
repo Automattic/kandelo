@@ -16,11 +16,13 @@ use crate::abi_staging::records::{
     RequestRegistryBindingV1, RequestRegistryKindV1, RequestRequirementsV1,
 };
 use crate::abi_staging::request_policy::{parse_request_policy, RequestPolicyV1};
-use crate::abi_staging::selection::{derive_formula_requirements, select_vfs_products};
+use crate::abi_staging::selection::{
+    derive_formula_requirements, select_vfs_products_for_change_classes,
+};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -206,17 +208,8 @@ pub fn derive_abi_staging_request(
         &read_bounded_regular_file(&tests_path, 1024 * 1024)?,
     )?;
 
-    let mut selected = BTreeMap::new();
-    for change_class in change_classes {
-        for candidate in select_vfs_products(&catalog, &pages, &tests, *change_class)? {
-            if let Some(existing) = selected.get_mut(&candidate.product_id) {
-                merge_selection(existing, &candidate)?;
-            } else {
-                selected.insert(candidate.product_id.clone(), candidate);
-            }
-        }
-    }
-    let selection = selected.into_values().collect::<Vec<_>>();
+    let selection =
+        select_vfs_products_for_change_classes(&catalog, &pages, &tests, change_classes)?;
     // Formula roots are intentionally derived only from selected product
     // manifests. The request does not carry a parallel Formula allowlist.
     derive_formula_requirements(&catalog, &selection)?;
@@ -496,47 +489,6 @@ fn validate_sorted_change_classes(change_classes: &[ChangeClass]) -> Result<(), 
     if change_classes.windows(2).any(|pair| pair[0] >= pair[1]) {
         return Err("request change classes must be sorted and duplicate-free".to_string());
     }
-    Ok(())
-}
-
-fn merge_selection(
-    existing: &mut crate::abi_staging::selection::SelectedVfsProductV1,
-    candidate: &crate::abi_staging::selection::SelectedVfsProductV1,
-) -> Result<(), String> {
-    if existing.manifest_path != candidate.manifest_path
-        || existing.manifest_sha256 != candidate.manifest_sha256
-        || existing.product_inputs != candidate.product_inputs
-    {
-        return Err(format!(
-            "selected product {:?} has conflicting exact-head identities",
-            existing.product_id
-        ));
-    }
-    existing.applicability = existing.applicability.max(candidate.applicability);
-    existing.node_evidence = existing
-        .node_evidence
-        .iter()
-        .chain(&candidate.node_evidence)
-        .cloned()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    existing.browser_evidence = existing
-        .browser_evidence
-        .iter()
-        .chain(&candidate.browser_evidence)
-        .cloned()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    existing.consumer_reasons = existing
-        .consumer_reasons
-        .iter()
-        .chain(&candidate.consumer_reasons)
-        .cloned()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
     Ok(())
 }
 

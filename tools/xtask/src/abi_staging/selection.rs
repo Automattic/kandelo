@@ -158,6 +158,72 @@ pub fn select_vfs_products(
     Ok(result)
 }
 
+pub fn select_vfs_products_for_change_classes(
+    catalog: &VfsProductCatalogV1,
+    pages: &PagesProductRegistryV1,
+    tests: &TestProductRegistryV1,
+    change_classes: &[ChangeClass],
+) -> Result<Vec<SelectedVfsProductV1>, String> {
+    if change_classes.is_empty() {
+        return Err("request change classes must not be empty".to_string());
+    }
+    if change_classes.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err("request change classes must be sorted and duplicate-free".to_string());
+    }
+    let mut selected = BTreeMap::new();
+    for change_class in change_classes {
+        for candidate in select_vfs_products(catalog, pages, tests, *change_class)? {
+            if let Some(existing) = selected.get_mut(&candidate.product_id) {
+                merge_selected_product(existing, &candidate)?;
+            } else {
+                selected.insert(candidate.product_id.clone(), candidate);
+            }
+        }
+    }
+    Ok(selected.into_values().collect())
+}
+
+fn merge_selected_product(
+    existing: &mut SelectedVfsProductV1,
+    candidate: &SelectedVfsProductV1,
+) -> Result<(), String> {
+    if existing.manifest_path != candidate.manifest_path
+        || existing.manifest_sha256 != candidate.manifest_sha256
+        || existing.product_inputs != candidate.product_inputs
+    {
+        return Err(format!(
+            "selected product {:?} has conflicting exact-head identities",
+            existing.product_id
+        ));
+    }
+    existing.applicability = existing.applicability.max(candidate.applicability);
+    existing.node_evidence = existing
+        .node_evidence
+        .iter()
+        .chain(&candidate.node_evidence)
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    existing.browser_evidence = existing
+        .browser_evidence
+        .iter()
+        .chain(&candidate.browser_evidence)
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    existing.consumer_reasons = existing
+        .consumer_reasons
+        .iter()
+        .chain(&candidate.consumer_reasons)
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    Ok(())
+}
+
 pub fn derive_formula_requirements(
     catalog: &VfsProductCatalogV1,
     selection: &[SelectedVfsProductV1],
@@ -224,6 +290,21 @@ pub fn derive_formula_requirements(
         .collect())
 }
 
+fn parse_change_classes_bytes(bytes: &[u8]) -> Result<Vec<ChangeClass>, String> {
+    let change_classes: Vec<ChangeClass> = serde_json::from_slice(bytes)
+        .map_err(|error| format!("change classes are invalid JSON: {error}"))?;
+    if canonical_json_bytes(&change_classes)? != bytes {
+        return Err("change classes are not canonical JSON".to_string());
+    }
+    if change_classes.is_empty() {
+        return Err("request change classes must not be empty".to_string());
+    }
+    if change_classes.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err("request change classes must be sorted and duplicate-free".to_string());
+    }
+    Ok(change_classes)
+}
+
 pub fn run_cli(args: &[String]) -> Result<(), String> {
     let flags = parse_flags(args)?;
     let catalog = read_canonical_catalog(&flags["--catalog"])?;
@@ -237,13 +318,17 @@ pub fn run_cli(args: &[String]) -> Result<(), String> {
         tests_path,
         &read_bounded_regular_file(tests_path, 1024 * 1024)?,
     )?;
-    let change_class = match flags["--change-class"].to_string_lossy().as_ref() {
-        "abi" => ChangeClass::Abi,
-        "kernel" => ChangeClass::Kernel,
-        "host" => ChangeClass::Host,
-        value => return Err(format!("unsupported change class {value:?}")),
-    };
-    let selection = select_vfs_products(&catalog, &pages, &tests, change_class)?;
+    let change_classes_path = &flags["--change-classes"];
+    let change_classes = parse_change_classes_bytes(&read_bounded_regular_file(
+        change_classes_path,
+        4096,
+    )?)?;
+    let selection = select_vfs_products_for_change_classes(
+        &catalog,
+        &pages,
+        &tests,
+        &change_classes,
+    )?;
     let requirements = derive_formula_requirements(&catalog, &selection)?;
     atomic_write_regular(
         &flags["--products-out"],
@@ -392,7 +477,7 @@ fn parse_flags(args: &[String]) -> Result<BTreeMap<String, PathBuf>, String> {
         "--catalog",
         "--pages",
         "--tests",
-        "--change-class",
+        "--change-classes",
         "--products-out",
         "--formulae-out",
     ];
@@ -423,7 +508,10 @@ fn parse_flags(args: &[String]) -> Result<BTreeMap<String, PathBuf>, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{derive_formula_requirements, select_vfs_products};
+    use super::{
+        derive_formula_requirements, select_vfs_products,
+        select_vfs_products_for_change_classes, parse_change_classes_bytes,
+    };
     use crate::abi_staging::consumer_registry::{
         parse_pages_registry, parse_test_registry, ApplicabilityV1, ChangeClass,
     };
@@ -653,5 +741,62 @@ host = "not-applicable"
         assert!(!unrelated_package_manifest.is_empty());
         assert!(!unrelated_builder.is_empty());
         assert_eq!(derive_formula_requirements(&catalog, &selected).unwrap(), requirements);
+    }
+
+    #[test]
+    fn multiple_change_classes_form_one_merged_product_selection() {
+        let repository = tempfile::tempdir().unwrap();
+        write_graph(repository.path());
+        let catalog = load_product_catalog(repository.path(), &repository.path().join("products"))
+            .unwrap();
+        let pages = parse_pages_registry(Path::new("pages.toml"), pages_registry().as_bytes()).unwrap();
+        let tests = parse_test_registry(Path::new("tests.toml"), test_registry().as_bytes()).unwrap();
+
+        let selected = select_vfs_products_for_change_classes(
+            &catalog,
+            &pages,
+            &tests,
+            &[ChangeClass::Abi, ChangeClass::Host],
+        )
+        .unwrap();
+        assert_eq!(
+            selected
+                .iter()
+                .map(|product| product.product_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["app", "base", "test-only", "tools"]
+        );
+        assert_eq!(
+            selected
+                .iter()
+                .find(|product| product.product_id == "test-only")
+                .unwrap()
+                .applicability,
+            ApplicabilityV1::Required
+        );
+        assert!(select_vfs_products_for_change_classes(
+            &catalog,
+            &pages,
+            &tests,
+            &[]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn change_class_file_is_canonical_sorted_and_closed() {
+        assert_eq!(
+            parse_change_classes_bytes(b"[\"abi\",\"host\"]\n").unwrap(),
+            vec![ChangeClass::Abi, ChangeClass::Host]
+        );
+        for body in [
+            b"[]\n".as_slice(),
+            b"[\"host\",\"abi\"]\n".as_slice(),
+            b"[\"abi\",\"abi\"]\n".as_slice(),
+            b"[\"abi\",\"packages\"]\n".as_slice(),
+            b"[ \"abi\" ]\n".as_slice(),
+        ] {
+            assert!(parse_change_classes_bytes(body).is_err(), "{body:?}");
+        }
     }
 }
