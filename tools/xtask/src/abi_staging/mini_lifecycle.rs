@@ -1063,6 +1063,67 @@ fn write_product_evidence(
         .map(|state| state.verification_receipt_sha256.clone())
         .collect::<Vec<_>>();
     verification_receipt_sha256s.sort();
+    let vfs_identity = artifact_from_local(&vfs.image);
+    let builder_report_identity = artifact_from_local(&vfs.report_object);
+    let kernel_identity = artifact_from_local(&kernel);
+    let host_identity = artifact_from_local(&host);
+    let candidate_manifest_sha256 = canonical_sha256(&serde_json::json!({
+        "builder_report": builder_report_identity,
+        "product": product_identity(product),
+        "resolved_inputs_sha256": vfs.inputs_sha256,
+        "vfs_image": vfs_identity,
+    }))?;
+    let candidate_reference = format!("local-fixture:sha256:{candidate_manifest_sha256}");
+    let runtime_bundle_sha256 = canonical_sha256(&serde_json::json!({
+        "host_runtime": host_identity,
+        "kernel": kernel_identity,
+    }))?;
+    let mut receipt_outcomes = selected
+        .node_evidence
+        .iter()
+        .map(|id| ("node", id))
+        .chain(selected.browser_evidence.iter().map(|id| ("browser", id)))
+        .map(|(host, id)| {
+            serde_json::json!({
+                "accepted_with_override": false,
+                "applicability": "required",
+                "definition_sha256": sha256_bytes(id.as_bytes()),
+                "guard_codes": [],
+                "host": host,
+                "id": id,
+                "outcome": "success",
+            })
+        })
+        .collect::<Vec<_>>();
+    receipt_outcomes.sort_by(|left, right| {
+        left["host"]
+            .as_str()
+            .unwrap_or_default()
+            .cmp(right["host"].as_str().unwrap_or_default())
+            .then_with(|| {
+                left["id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .cmp(right["id"].as_str().unwrap_or_default())
+            })
+    });
+    let runtime_evidence_sha256 = canonical_sha256(&serde_json::json!({
+        "candidate_product": {
+            "builder_report_sha256": vfs.report_object.sha256,
+            "immutable_reference": candidate_reference,
+            "manifest_digest": format!("sha256:{candidate_manifest_sha256}"),
+            "product_id": product.manifest.id,
+            "repository": "local-fixture/candidate-products/mini-shell",
+            "vfs_layer_bytes": vfs.image.bytes,
+            "vfs_layer_sha256": vfs.image.sha256,
+        },
+        "evidence_definition_sha256s": evidence_definition_sha256s,
+        "kind": "kandelo-vfs-runtime-evidence-identity",
+        "receipt_outcomes": receipt_outcomes,
+        "resolved_inputs_sha256": vfs.inputs_sha256,
+        "runtime_bundle_sha256": runtime_bundle_sha256,
+        "schema": 1,
+    }))?;
     let record = AbiStagingRecordV1::ProductEvidence(ProductEvidenceRecordV1 {
         schema: 1,
         common: successful_common(
@@ -1083,10 +1144,11 @@ fn write_product_evidence(
             selecting_registries: request.requirements.registries.clone(),
             resolved_formula_layers: layers,
             resolved_inputs_sha256: vfs.inputs_sha256.clone(),
-            vfs_image: artifact_from_local(&vfs.image),
-            builder_report: artifact_from_local(&vfs.report_object),
-            kernel: artifact_from_local(&kernel),
-            host_runtime: artifact_from_local(&host),
+            runtime_evidence_sha256,
+            vfs_image: vfs_identity,
+            builder_report: builder_report_identity,
+            kernel: kernel_identity,
+            host_runtime: host_identity,
             evidence_definition_sha256s,
             verification_receipt_sha256s,
         },

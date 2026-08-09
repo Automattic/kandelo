@@ -523,6 +523,7 @@ pub struct ProductEvidencePayloadV1 {
     pub selecting_registries: Vec<RequestRegistryBindingV1>,
     pub resolved_formula_layers: Vec<NamedArtifactIdentityV1>,
     pub resolved_inputs_sha256: String,
+    pub runtime_evidence_sha256: String,
     pub vfs_image: ArtifactIdentityV1,
     pub builder_report: ArtifactIdentityV1,
     pub kernel: ArtifactIdentityV1,
@@ -827,6 +828,7 @@ fn validate_product_evidence(record: &ProductEvidenceRecordV1) -> Result<(), Str
     validate_registry_bindings(&payload.selecting_registries)?;
     validate_named_artifacts(&payload.resolved_formula_layers)?;
     validate_sha256(&payload.resolved_inputs_sha256)?;
+    validate_sha256(&payload.runtime_evidence_sha256)?;
     for artifact in [
         &payload.vfs_image,
         &payload.builder_report,
@@ -2090,6 +2092,7 @@ mod tests {
                 }],
                 resolved_formula_layers: Vec::new(),
                 resolved_inputs_sha256: SHA_A.to_string(),
+                runtime_evidence_sha256: SHA_C.to_string(),
                 vfs_image: vfs,
                 builder_report: artifact(SHA_B, ArtifactClassV1::Candidate),
                 kernel: artifact(SHA_B, ArtifactClassV1::Candidate),
