@@ -6,11 +6,13 @@ REQUEST=""
 TAP_PLAN=""
 FORMULA_PLAN=""
 DEPENDENCY_ROOT=""
+RUN=""
+RETRY_ORDINAL=""
 HANDOFF=""
 
 usage() {
   cat >&2 <<'EOF'
-usage: scripts/abi-staging-build-bottle.sh --request request.json --tap-plan tap-plan.json --formula-plan formula-plan.json --dependency-root dependency-inputs --handoff handoff
+usage: scripts/abi-staging-build-bottle.sh --request request.json --tap-plan tap-plan.json --formula-plan formula-plan.json --dependency-root dependency-inputs --run run.json --retry-ordinal number --handoff handoff
 
 Run from the exact tap checkout. The dependency root is content addressed:
 contracts/sha256-<contract>.json contains the exact bottle contract and
@@ -26,6 +28,8 @@ while [ "$#" -gt 0 ]; do
     --tap-plan) TAP_PLAN="${2:-}"; shift 2 ;;
     --formula-plan) FORMULA_PLAN="${2:-}"; shift 2 ;;
     --dependency-root) DEPENDENCY_ROOT="${2:-}"; shift 2 ;;
+    --run) RUN="${2:-}"; shift 2 ;;
+    --retry-ordinal) RETRY_ORDINAL="${2:-}"; shift 2 ;;
     --handoff) HANDOFF="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *)
@@ -41,6 +45,8 @@ for requirement in \
   "tap-plan:$TAP_PLAN" \
   "formula-plan:$FORMULA_PLAN" \
   "dependency-root:$DEPENDENCY_ROOT" \
+  "run:$RUN" \
+  "retry-ordinal:$RETRY_ORDINAL" \
   "handoff:$HANDOFF"; do
   if [ -z "${requirement#*:}" ]; then
     echo "abi-staging-build-bottle.sh: --${requirement%%:*} is required" >&2
@@ -104,6 +110,8 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$TAP_ROOT" \
     --tap-plan "$TAP_PLAN" \
     --formula-plan "$FORMULA_PLAN" \
     --dependency-root "$DEPENDENCY_ROOT" \
+    --run "$RUN" \
+    --retry-ordinal "$RETRY_ORDINAL" \
     --out "$CONTEXT"
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$TAP_ROOT" \
   python3 -m scripts.abi_staging.handoff materialize-dependencies \
@@ -120,6 +128,7 @@ FORMULA="$(jq -er '.formula' "$CONTEXT")"
 ARCHITECTURE="$(jq -er '.architecture' "$CONTEXT")"
 TAP_REPOSITORY="$(jq -er '.tap_source.repository' "$CONTEXT")"
 BOTTLE_ROOT_URL="$(jq -er '.bottle_root_url' "$CONTEXT")"
+TARGET_ABI="$(jq -er '.target_abi' "$CONTEXT")"
 
 # Preserve only non-secret build configuration. Candidate execution has no
 # write authority, but stripping credentials prevents accidental disclosure in
@@ -150,6 +159,7 @@ set +e
   --arch "$ARCHITECTURE" \
   --out "$RAW_OUTPUT" \
   --bottle-root-url "$BOTTLE_ROOT_URL" \
+  --staging-candidate-abi "$TARGET_ABI" \
   >"$RAW_OUTPUT/diagnostics/summary.txt" 2>&1
 BUILD_STATUS="$?"
 set -e

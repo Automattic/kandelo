@@ -141,6 +141,14 @@ validate_tap_plan(plan)
 )
 PY
 
+jq -ncS '{
+  job: "build-candidate",
+  repository: "kandelo-dev/homebrew-tap-core",
+  run_attempt: 2,
+  run_id: 808,
+  workflow_ref: ".github/workflows/abi-staging-reconcile.yml@refs/heads/main"
+}' >"$INPUT_ROOT/run.json"
+
 MOCK_BIN="$TMP_ROOT/mock-bin"
 mkdir -p "$MOCK_BIN"
 cat >"$MOCK_BIN/timeout" <<'EOF'
@@ -172,15 +180,28 @@ find "$KANDELO_ABI_STAGING_DEPENDENCY_ROOT" -type f -name 'sha256-*.tar.gz' -pri
   | sort >"$FAKE_BUILDER_LOG.dependencies"
 
 OUT=""
+ROOT=""
+STAGING_ABI=""
+FORMULA=""
+TAP_REPOSITORY=""
 printf '%q ' "$@" >"$FAKE_BUILDER_LOG"
 printf '\n' >>"$FAKE_BUILDER_LOG"
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --out) OUT="$2"; shift 2 ;;
-    *) shift 2 ;;
+    --bottle-root-url) ROOT="$2"; shift 2 ;;
+    --staging-candidate-abi) STAGING_ABI="$2"; shift 2 ;;
+    --formula) FORMULA="$2"; shift 2 ;;
+    --tap-repository) TAP_REPOSITORY="$2"; shift 2 ;;
+    --tap-root|--arch) shift 2 ;;
+    *) echo "unexpected builder flag: $1" >&2; exit 91 ;;
   esac
 done
 [ -n "$OUT" ]
+[ "$TAP_REPOSITORY" = "kandelo-dev/homebrew-tap-core" ]
+[[ "$STAGING_ABI" =~ ^[1-9][0-9]*$ ]]
+[[ "$FORMULA" =~ ^[a-z0-9][a-z0-9._-]*$ ]]
+[ "$ROOT" = "https://ghcr.io/v2/${TAP_REPOSITORY}-abi-${STAGING_ABI}-candidates/${FORMULA}" ]
 mkdir -p "$OUT/bottles" "$OUT/tar-root/mini/bin"
 printf 'tool\n' >"$OUT/tar-root/mini/bin/tool"
 if [ "${FAKE_BUILDER_MUTATE_CUSTODY:-0}" = "1" ]; then
@@ -214,7 +235,8 @@ export AWS_SECRET_ACCESS_KEY="secret"
 export ACTIONS_ID_TOKEN_REQUEST_TOKEN="secret"
 
 run_adapter() {
-  local handoff="$1"
+  local handoff="$1" run="${2:-$INPUT_ROOT/run.json}"
+  local retry_ordinal="${3:-2}"
   (
     cd "$TAP_ROOT"
     bash "$REPO_ROOT/scripts/abi-staging-build-bottle.sh" \
@@ -222,6 +244,8 @@ run_adapter() {
       --tap-plan "$INPUT_ROOT/tap-plan.json" \
       --formula-plan "$INPUT_ROOT/formula-plan.json" \
       --dependency-root "$INPUT_ROOT/dependency-inputs" \
+      --run "$run" \
+      --retry-ordinal "$retry_ordinal" \
       --handoff "$handoff"
   )
 }
@@ -235,6 +259,8 @@ FORMULA="$(jq -r '.identity.name' "$INPUT_ROOT/formula-plan.json")"
 EXPECTED_CANDIDATE_ROOT="https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-${TARGET_ABI}-candidates/${FORMULA}"
 grep -Fq -- "--bottle-root-url $EXPECTED_CANDIDATE_ROOT" "$FAKE_BUILDER_LOG" ||
   fail "normal builder did not receive the visibly nonendorsed ABI-qualified candidate root"
+grep -Fq -- "--staging-candidate-abi $TARGET_ABI" "$FAKE_BUILDER_LOG" ||
+  fail "normal builder did not receive the exact target ABI candidate authority"
 EXPECTED_DEPENDENCIES="$(jq '.dependency_sha256s | length' "$INPUT_ROOT/fixture.json")"
 ACTUAL_DEPENDENCIES="$(wc -l <"$FAKE_BUILDER_LOG.dependencies" | tr -d '[:space:]')"
 [ "$ACTUAL_DEPENDENCIES" = "$EXPECTED_DEPENDENCIES" ] ||
@@ -242,6 +268,12 @@ ACTUAL_DEPENDENCIES="$(wc -l <"$FAKE_BUILDER_LOG.dependencies" | tr -d '[:space:
 [ -f "$SUCCESS_HANDOFF/bottle.tar.gz" ] || fail "successful handoff omitted bottle"
 [ -f "$SUCCESS_HANDOFF/attempt-record.json" ] || fail "successful handoff omitted attempt"
 [ -f "$SUCCESS_HANDOFF/build-result.json" ] || fail "successful handoff omitted result"
+jq -e --slurpfile run "$INPUT_ROOT/run.json" '
+  .common.run == $run[0] and
+  .common.retry_state.attempts == 3 and
+  .attempt.retry_ordinal == 2
+' "$SUCCESS_HANDOFF/attempt-record.json" >/dev/null ||
+  fail "attempt record did not bind the exact run and retry ordinal"
 HOST_TARGET="$(rustc -vV | awk '/^host/ {print $2}')"
 cargo run --quiet -p xtask --target "$HOST_TARGET" -- \
   abi-staging records validate \
@@ -256,6 +288,19 @@ if run_adapter "$PREPOPULATED" >/dev/null 2>&1; then
 fi
 [ ! -e "$FAKE_BUILDER_LOG" ] || fail "invalid output reached the normal builder"
 [ "$(cat "$PREPOPULATED/user-file")" = "keep" ] || fail "adapter changed existing output"
+
+BAD_RUN="$TMP_ROOT/bad-run.json"
+jq -cS '.run_id = 0' "$INPUT_ROOT/run.json" >"$BAD_RUN"
+rm -f "$FAKE_BUILDER_LOG"
+if run_adapter "$TMP_ROOT/bad-run-handoff" "$BAD_RUN" >/dev/null 2>&1; then
+  fail "adapter accepted a malformed protected run identity"
+fi
+[ ! -e "$FAKE_BUILDER_LOG" ] || fail "malformed run identity reached the normal builder"
+if run_adapter "$TMP_ROOT/bad-ordinal-handoff" "$INPUT_ROOT/run.json" -1 \
+    >/dev/null 2>&1; then
+  fail "adapter accepted a negative retry ordinal"
+fi
+[ ! -e "$FAKE_BUILDER_LOG" ] || fail "invalid retry ordinal reached the normal builder"
 
 export FAKE_BUILDER_MUTATE_CUSTODY=1
 if run_adapter "$TMP_ROOT/mutated-custody-handoff" >/dev/null 2>&1; then
