@@ -230,6 +230,11 @@ SUCCESS_HANDOFF="$TMP_ROOT/success-handoff"
 run_adapter "$SUCCESS_HANDOFF"
 [ "$(cat "$FAKE_TIMEOUT_LOG")" = "21600s" ] || fail "external timeout is not six hours"
 [ -s "$FAKE_BUILDER_LOG" ] || fail "normal builder was not invoked"
+TARGET_ABI="$(jq -r '.target_abi.version' "$INPUT_ROOT/tap-plan.json")"
+FORMULA="$(jq -r '.identity.name' "$INPUT_ROOT/formula-plan.json")"
+EXPECTED_CANDIDATE_ROOT="https://ghcr.io/v2/kandelo-dev/homebrew-tap-core-abi-${TARGET_ABI}-candidates/${FORMULA}"
+grep -Fq -- "--bottle-root-url $EXPECTED_CANDIDATE_ROOT" "$FAKE_BUILDER_LOG" ||
+  fail "normal builder did not receive the visibly nonendorsed ABI-qualified candidate root"
 EXPECTED_DEPENDENCIES="$(jq '.dependency_sha256s | length' "$INPUT_ROOT/fixture.json")"
 ACTUAL_DEPENDENCIES="$(wc -l <"$FAKE_BUILDER_LOG.dependencies" | tr -d '[:space:]')"
 [ "$ACTUAL_DEPENDENCIES" = "$EXPECTED_DEPENDENCIES" ] ||
