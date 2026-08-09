@@ -7,6 +7,7 @@ pub mod mini_lifecycle;
 pub mod product_manifest;
 pub mod records;
 pub mod request_derivation;
+pub mod request_feed;
 pub mod request_policy;
 pub mod selection;
 

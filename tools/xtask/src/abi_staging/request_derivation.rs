@@ -339,7 +339,7 @@ pub fn run_request_cli(action: &str, args: &[String]) -> Result<(), String> {
             let flags = parse_path_flags(args, &["--fixture"])?;
             check_fixture(&flags["--fixture"])
         }
-        _ => Err(format!("unknown request subcommand {action:?}")),
+        _ => crate::abi_staging::request_feed::run_cli(action, args),
     }
 }
 
