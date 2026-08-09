@@ -21,21 +21,6 @@ package recipes for Bash, PHP, zlib, and other software continue to own their
 portable source, license, dependency, output, and build facts unless a separate
 package-system design replaces that contract.
 
-### Decide and prove Ruby placement in the browser shell
-
-The approved ABI-staging inventory included Ruby as a lazy
-`browser-main-shell` Formula root, but the current authoritative
-`homebrew/main-shell.Brewfile` does not select it. The canonical product
-manifest intentionally reflects the builder's current 32-root selection
-instead of advertising unavailable behavior. If Ruby belongs in the default
-browser shell, add it through the normal reviewed Brewfile/selection path,
-rebuild the exact product, and retain Node and browser evidence before updating
-the manifest. Otherwise remove it from the intended inventory in a reviewed
-design revision.
-
-**Related design:**
-`docs/superpowers/specs/2026-08-08-abi-bottle-staging-design.md`
-
 ## Kernel
 
 ### Per-process ordinary OFD metadata still breaks POSIX fork sharing

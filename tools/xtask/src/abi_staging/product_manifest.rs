@@ -1295,7 +1295,8 @@ readonly = false
             "grep|lazy", "gzip|lazy", "less|lazy", "lsof|lazy", "m4|lazy",
             "make|lazy", "modeset|lazy", "nano|lazy", "ncurses|lazy",
             "netcat|lazy", "nethack|lazy", "posix-utils-lite|lazy",
-            "sed|lazy", "tar|lazy", "unzip|lazy", "vim|lazy", "wget|lazy",
+            "ruby|lazy", "sed|lazy", "tar|lazy", "unzip|lazy", "vim|lazy",
+            "wget|lazy",
             "xz|lazy", "zip|lazy", "zstd|lazy",
         ]));
 

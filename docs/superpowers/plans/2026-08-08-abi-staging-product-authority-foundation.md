@@ -1001,10 +1001,11 @@ The manifest inventory is exact and contains these stable identities:
 Repository evidence found during execution requires these explicit, bounded
 corrections to the table rather than an unsupported behavior change:
 
-- `homebrew/main-shell.Brewfile` currently selects 32 roots and does not
-  select `ruby`. The checked-in `browser-main-shell` manifest therefore
-  captures those exact 32 roots. Adding Ruby remains follow-up work that must
-  first update and prove the real shell selection and hosted product evidence.
+- `homebrew/main-shell.Brewfile` selects the eager and base-image roots while
+  `homebrew/main-shell-homebrew-runtime-support.json` selects seven deferred
+  Homebrew runtime roots. Their union adds `ruby`, so the checked-in
+  `browser-main-shell` manifest captures 33 distinct Formula roots without
+  forcing Ruby into the eager Brewfile projection.
 - A clean checkout has no `sysroot/` directory, although the SDK builder
   consumes the generated sysroot. The SDK manifest records it as the explicit
   `repository-dev-shell` toolchain output `wasm32-sysroot`; checked-in SDK,
