@@ -1,7 +1,7 @@
 use crate::abi_staging::builder_contract::{
     compare_builder_report, validate_builder_report, validate_resolved_inputs_for_miniature,
     ConsumedInputPlacementV1, DeclaredInputMaterializationV1, ExactSourceV1,
-    ResolvedVfsInputKindV1, ResolvedVfsInputV1,
+    ResolvedVfsInputDescriptorV1, ResolvedVfsInputKindV1, ResolvedVfsInputV1,
     ResolvedVfsProductInputsV1, TargetAbiV1, VfsBuildEnvironmentV1, VfsBuilderReportV1,
     VfsProductIdentityV1, VfsReferenceClassV1,
 };
@@ -882,6 +882,20 @@ fn build_mini_vfs(
         return Err("miniature lazy reference did not open exact transport bytes".to_string());
     }
     write_new_file(&inputs_directory.join("base.bottle"), &base_bytes)?;
+    let base_metadata = b"{\"formula\":\"base\"}\n";
+    let tool_metadata = b"{\"formula\":\"tool\"}\n";
+    write_new_file(&inputs_directory.join("base-metadata.json"), base_metadata)?;
+    write_new_file(&inputs_directory.join("tool-metadata.json"), tool_metadata)?;
+    let descriptor = |name: &str, bytes: &[u8]| ResolvedVfsInputDescriptorV1 {
+        sha256: sha256_bytes(bytes),
+        bytes: bytes.len() as u64,
+        reference: format!(
+            "local-fixture:sha256:{}?namespace={namespace_name}&bytes={}",
+            sha256_bytes(bytes),
+            bytes.len(),
+        ),
+        path: format!("inputs/{name}-metadata.json"),
+    };
     let product = fixture
         .catalog
         .products
@@ -919,6 +933,7 @@ fn build_mini_vfs(
                 bytes: base.candidate.bytes,
                 reference: Some(base.candidate.immutable_reference.clone()),
                 path: Some("inputs/base.bottle".to_string()),
+                descriptor: Some(descriptor("base", base_metadata)),
             },
             ResolvedVfsInputV1 {
                 id: "tool-bottle".to_string(),
@@ -931,6 +946,7 @@ fn build_mini_vfs(
                 bytes: tool.candidate.bytes,
                 reference: Some(tool.candidate.immutable_reference.clone()),
                 path: None,
+                descriptor: Some(descriptor("tool", tool_metadata)),
             },
         ],
     };

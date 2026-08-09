@@ -59,6 +59,15 @@ interface ResolvedInput {
   reference?: string;
   path?: string;
   resolvedPath?: string;
+  descriptor?: ResolvedInputDescriptor;
+}
+
+interface ResolvedInputDescriptor {
+  sha256: string;
+  bytes: number;
+  reference: string;
+  path: string;
+  resolvedPath: string;
 }
 
 interface ResolvedInputs {
@@ -82,6 +91,7 @@ export type VfsProductInputHandle =
       bytes: number;
       placement: "embedded" | "build-only";
       path: string;
+      descriptor?: Readonly<VfsProductInputDescriptor>;
     }>
   | Readonly<{
       id: string;
@@ -89,7 +99,15 @@ export type VfsProductInputHandle =
       bytes: number;
       placement: "lazy-reference";
       reference: string;
+      descriptor?: Readonly<VfsProductInputDescriptor>;
     }>;
+
+export interface VfsProductInputDescriptor {
+  sha256: string;
+  bytes: number;
+  reference: string;
+  path: string;
+}
 
 export interface VfsProductBuild {
   readonly product: Readonly<ProductIdentity>;
@@ -172,6 +190,9 @@ async function openVfsProductBuildWithPolicy(
         bytes: input.bytes,
         placement: input.effective_materialization,
         reference: input.reference!,
+        ...(input.descriptor === undefined
+          ? {}
+          : { descriptor: publicDescriptor(input.descriptor) }),
       });
     }
     return Object.freeze({
@@ -180,6 +201,9 @@ async function openVfsProductBuildWithPolicy(
       bytes: input.bytes,
       placement: input.effective_materialization,
       path: input.resolvedPath!,
+      ...(input.descriptor === undefined
+        ? {}
+        : { descriptor: publicDescriptor(input.descriptor) }),
     });
   };
 
@@ -246,6 +270,14 @@ async function openVfsProductBuildWithPolicy(
           placement: input.effective_materialization,
           role: input.role,
           sha256: input.sha256,
+          ...(input.descriptor === undefined
+            ? {}
+            : {
+                descriptor: {
+                  bytes: input.descriptor.bytes,
+                  sha256: input.descriptor.sha256,
+                },
+              }),
         })),
         kind: "kandelo-vfs-builder-report",
         output: {
@@ -369,6 +401,12 @@ function parseResolvedInputs(
       fail(`resolved input ${JSON.stringify(input.id)} duplicates a local file`);
     }
     if (input.resolvedPath) localPaths.add(input.resolvedPath);
+    if (input.descriptor) {
+      if (localPaths.has(input.descriptor.resolvedPath)) {
+        fail(`resolved input ${JSON.stringify(input.id)} duplicates a local descriptor file`);
+      }
+      localPaths.add(input.descriptor.resolvedPath);
+    }
   }
   return {
     schema: 1,
@@ -408,6 +446,7 @@ function parseResolvedInput(
     "architecture",
     "bytes",
     "declared_materialization",
+    "descriptor",
     "effective_materialization",
     "id",
     "kind",
@@ -420,7 +459,12 @@ function parseResolvedInput(
     if (!permitted.has(key)) fail(`${label} has unknown field ${JSON.stringify(key)}`);
   }
   for (const key of permitted) {
-    if (key !== "path" && key !== "reference" && !(key in record)) {
+    if (
+      key !== "descriptor" &&
+      key !== "path" &&
+      key !== "reference" &&
+      !(key in record)
+    ) {
       fail(`${label} is missing required field ${JSON.stringify(key)}`);
     }
   }
@@ -469,6 +513,13 @@ function parseResolvedInput(
     record.path === undefined
       ? undefined
       : normalizedRelativePath(record.path, `${label} path`);
+  const descriptor = parseInputDescriptor(
+    record.descriptor,
+    kind,
+    referenceClass,
+    inputRoot,
+    label,
+  );
   if (effective === "lazy-reference") {
     if (!reference || path !== undefined) {
       fail(`${label} lazy input requires a reference and forbids a local path`);
@@ -483,6 +534,7 @@ function parseResolvedInput(
       sha256: inputSha256,
       bytes,
       reference,
+      ...(descriptor === undefined ? {} : { descriptor }),
     };
   }
   if (!path) fail(`${label} materialized input requires a local path`);
@@ -508,7 +560,73 @@ function parseResolvedInput(
     ...(reference === undefined ? {} : { reference }),
     path,
     resolvedPath,
+    ...(descriptor === undefined ? {} : { descriptor }),
   };
+}
+
+function parseInputDescriptor(
+  value: unknown,
+  kind: VfsProductInputKind,
+  referenceClass: ReferenceClass,
+  inputRoot: string,
+  label: string,
+): ResolvedInputDescriptor | undefined {
+  if (kind !== "homebrew-bottle") {
+    if (value !== undefined) fail(`${label} descriptor is only valid for Homebrew bottles`);
+    return undefined;
+  }
+  if (value === undefined) {
+    fail(`${label} Homebrew bottle requires authenticated composition metadata`);
+  }
+  const descriptor = exactRecord(
+    value,
+    ["bytes", "path", "reference", "sha256"],
+    `${label} descriptor`,
+  );
+  const descriptorSha256 = sha256(
+    descriptor.sha256,
+    `${label} descriptor SHA-256`,
+  );
+  const bytes = nonnegativeInteger(
+    descriptor.bytes,
+    `${label} descriptor byte count`,
+  );
+  const reference = immutableReference(
+    descriptor.reference,
+    descriptorSha256,
+    bytes,
+    "homebrew-bottle",
+    referenceClass,
+    `${label} descriptor`,
+  );
+  const path = normalizedRelativePath(
+    descriptor.path,
+    `${label} descriptor path`,
+  );
+  const resolvedPath = assertRegularNonsymlinkBelow(
+    inputRoot,
+    path,
+    `${label} descriptor`,
+  );
+  const contents = readFileSync(resolvedPath);
+  if (contents.byteLength !== bytes) {
+    fail(`${label} descriptor byte count does not match`);
+  }
+  if (digest(contents) !== descriptorSha256) {
+    fail(`${label} descriptor SHA-256 does not match`);
+  }
+  return { sha256: descriptorSha256, bytes, reference, path, resolvedPath };
+}
+
+function publicDescriptor(
+  descriptor: ResolvedInputDescriptor,
+): Readonly<VfsProductInputDescriptor> {
+  return Object.freeze({
+    sha256: descriptor.sha256,
+    bytes: descriptor.bytes,
+    reference: descriptor.reference,
+    path: descriptor.resolvedPath,
+  });
 }
 
 function immutableReference(

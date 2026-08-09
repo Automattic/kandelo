@@ -100,7 +100,11 @@ function fixture(root: string, namespace: "candidate" | "canonical") {
   mkdirSync(join(directory, "inputs"), { recursive: true });
   const base = new TextEncoder().encode("base bottle\n");
   const tool = new TextEncoder().encode("tool bottle\n");
+  const baseMetadata = new TextEncoder().encode('{"formula":"base"}\n');
+  const toolMetadata = new TextEncoder().encode('{"formula":"tool"}\n');
   writeFileSync(join(directory, "inputs/base.bottle"), base);
+  writeFileSync(join(directory, "inputs/base-metadata.json"), baseMetadata);
+  writeFileSync(join(directory, "inputs/tool-metadata.json"), toolMetadata);
   const manifestPath = join(directory, "mini-shell.toml");
   writeFileSync(
     manifestPath,
@@ -119,6 +123,12 @@ function fixture(root: string, namespace: "candidate" | "canonical") {
         effective_materialization: "embedded",
         id: "base-bottle",
         kind: "homebrew-bottle",
+        descriptor: {
+          bytes: baseMetadata.byteLength,
+          path: "inputs/base-metadata.json",
+          reference: localReference(baseMetadata, namespace),
+          sha256: sha256(baseMetadata),
+        },
         path: "inputs/base.bottle",
         reference: localReference(base, namespace),
         role: "runtime",
@@ -131,6 +141,12 @@ function fixture(root: string, namespace: "candidate" | "canonical") {
         effective_materialization: "lazy-reference",
         id: "tool-bottle",
         kind: "homebrew-bottle",
+        descriptor: {
+          bytes: toolMetadata.byteLength,
+          path: "inputs/tool-metadata.json",
+          reference: localReference(toolMetadata, namespace),
+          sha256: sha256(toolMetadata),
+        },
         reference: localReference(tool, namespace),
         role: "runtime",
         sha256: sha256(tool),

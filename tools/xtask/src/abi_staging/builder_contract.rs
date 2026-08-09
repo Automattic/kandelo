@@ -94,6 +94,15 @@ pub enum ConsumedInputPlacementV1 {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct ResolvedVfsInputDescriptorV1 {
+    pub sha256: String,
+    pub bytes: u64,
+    pub reference: String,
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct ResolvedVfsInputV1 {
     pub id: String,
     pub kind: ResolvedVfsInputKindV1,
@@ -107,6 +116,15 @@ pub struct ResolvedVfsInputV1 {
     pub reference: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub descriptor: Option<ResolvedVfsInputDescriptorV1>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ConsumedVfsInputDescriptorV1 {
+    pub sha256: String,
+    pub bytes: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -131,6 +149,8 @@ pub struct ConsumedVfsInputV1 {
     pub placement: ConsumedInputPlacementV1,
     pub sha256: String,
     pub bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub descriptor: Option<ConsumedVfsInputDescriptorV1>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -246,6 +266,64 @@ fn validate_resolved_inputs_with_mode(
         if let Some(reference) = &input.reference {
             validate_immutable_reference(reference, &input.sha256)?;
             validate_reference_class(inputs.reference_class, input, reference)?;
+        }
+
+        match (&input.kind, &input.descriptor) {
+            (ResolvedVfsInputKindV1::HomebrewBottle, Some(descriptor)) => {
+                validate_sha256(&descriptor.sha256)?;
+                validate_immutable_reference(&descriptor.reference, &descriptor.sha256)?;
+                validate_reference_class_fields(
+                    inputs.reference_class,
+                    &input.id,
+                    input.kind,
+                    &descriptor.sha256,
+                    descriptor.bytes,
+                    &descriptor.reference,
+                )?;
+                let path = resolve_regular_below(
+                    allowed_input_root,
+                    &descriptor.path,
+                    "input descriptor",
+                )?;
+                if !local_paths.insert(path.clone()) {
+                    return Err(format!(
+                        "resolved input {:?} duplicates an underlying local descriptor file",
+                        input.id
+                    ));
+                }
+                let metadata = fs::metadata(&path).map_err(|error| {
+                    format!("cannot inspect input descriptor {}: {error}", path.display())
+                })?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::MetadataExt;
+                    if !local_file_ids.insert((metadata.dev(), metadata.ino())) {
+                        return Err(format!(
+                            "resolved input {:?} duplicates an underlying local descriptor file",
+                            input.id
+                        ));
+                    }
+                }
+                verify_file_identity(
+                    &path,
+                    descriptor.bytes,
+                    &descriptor.sha256,
+                    "input descriptor",
+                )?;
+            }
+            (ResolvedVfsInputKindV1::HomebrewBottle, None) => {
+                return Err(format!(
+                    "resolved input {:?} Homebrew bottle requires authenticated composition metadata",
+                    input.id
+                ));
+            }
+            (_, Some(_)) => {
+                return Err(format!(
+                    "resolved input {:?} descriptor is only valid for Homebrew bottles",
+                    input.id
+                ));
+            }
+            (_, None) => {}
         }
 
         match input.effective_materialization {
@@ -407,6 +485,12 @@ pub fn compare_builder_report(
             placement: resolved.effective_materialization,
             sha256: resolved.sha256.clone(),
             bytes: resolved.bytes,
+            descriptor: resolved.descriptor.as_ref().map(|descriptor| {
+                ConsumedVfsInputDescriptorV1 {
+                    sha256: descriptor.sha256.clone(),
+                    bytes: descriptor.bytes,
+                }
+            }),
         };
         if expected != *consumed {
             let guard = if expected.id == consumed.id {
@@ -540,6 +624,24 @@ fn validate_reference_class(
     input: &ResolvedVfsInputV1,
     reference: &str,
 ) -> Result<(), String> {
+    validate_reference_class_fields(
+        class,
+        &input.id,
+        input.kind,
+        &input.sha256,
+        input.bytes,
+        reference,
+    )
+}
+
+fn validate_reference_class_fields(
+    class: VfsReferenceClassV1,
+    input_id: &str,
+    kind: ResolvedVfsInputKindV1,
+    sha256: &str,
+    byte_count: u64,
+    reference: &str,
+) -> Result<(), String> {
     let candidate = Regex::new(r"homebrew-tap-core-abi-[0-9]+-candidates/")
         .map_err(|error| format!("invalid candidate namespace validator: {error}"))?;
     let canonical = Regex::new(r"homebrew-tap-core-abi-[0-9]+/")
@@ -549,44 +651,44 @@ fn validate_reference_class(
     match class {
         VfsReferenceClassV1::Candidate if is_canonical => Err(format!(
             "candidate input {:?} references the canonical namespace",
-            input.id
+            input_id
         )),
         VfsReferenceClassV1::Canonical if is_candidate => Err(format!(
             "canonical input {:?} references the candidate namespace",
-            input.id
+            input_id
         )),
         VfsReferenceClassV1::LocalFixture => {
-            let prefix = format!("local-fixture:sha256:{}?namespace=", input.sha256);
+            let prefix = format!("local-fixture:sha256:{sha256}?namespace=");
             let suffix = reference.strip_prefix(&prefix).ok_or_else(|| {
                 format!(
                     "local fixture input {:?} reference does not bind its exact digest",
-                    input.id
+                    input_id
                 )
             })?;
             let (namespace, bytes) = suffix.split_once("&bytes=").ok_or_else(|| {
                 format!(
                     "local fixture input {:?} reference lacks namespace or byte identity",
-                    input.id
+                    input_id
                 )
             })?;
             if !matches!(namespace, "candidate" | "canonical" | "source")
                 || matches!(
-                    input.kind,
+                    kind,
                     ResolvedVfsInputKindV1::HomebrewBottle
                         | ResolvedVfsInputKindV1::ProductImage
                 ) && !matches!(namespace, "candidate" | "canonical")
-                || bytes.parse::<u64>().ok() != Some(input.bytes)
+                || bytes.parse::<u64>().ok() != Some(byte_count)
             {
                 return Err(format!(
                     "local fixture input {:?} reference does not bind exact namespace and bytes",
-                    input.id
+                    input_id
                 ));
             }
             Ok(())
         }
         VfsReferenceClassV1::Candidate | VfsReferenceClassV1::Canonical
             if matches!(
-                input.kind,
+                kind,
                 ResolvedVfsInputKindV1::HomebrewBottle
                     | ResolvedVfsInputKindV1::ProductImage
             ) && !is_candidate
@@ -594,7 +696,7 @@ fn validate_reference_class(
         {
             Err(format!(
                 "managed input {:?} does not use a versioned candidate or canonical namespace",
-                input.id
+                input_id
             ))
         }
         _ => Ok(()),
@@ -801,8 +903,10 @@ mod tests {
     fn fixture_inputs(root: &Path) -> ResolvedVfsProductInputsV1 {
         let embedded = b"embedded package";
         let compiler = b"compiler output";
+        let bottle_metadata = b"{\"formula\":\"lazy-bottle\"}\n";
         write(root, "inputs/embedded.bin", embedded);
         write(root, "inputs/compiler.bin", compiler);
+        write(root, "inputs/lazy-bottle-metadata.json", bottle_metadata);
         let lazy_sha = sha(b"lazy bottle");
         ResolvedVfsProductInputsV1 {
             schema: CONTRACT_SCHEMA,
@@ -834,6 +938,7 @@ mod tests {
                     bytes: compiler.len() as u64,
                     reference: None,
                     path: Some("inputs/compiler.bin".to_string()),
+                    descriptor: None,
                 },
                 ResolvedVfsInputV1 {
                     id: "embedded-package".to_string(),
@@ -846,6 +951,7 @@ mod tests {
                     bytes: embedded.len() as u64,
                     reference: None,
                     path: Some("inputs/embedded.bin".to_string()),
+                    descriptor: None,
                 },
                 ResolvedVfsInputV1 {
                     id: "lazy-bottle".to_string(),
@@ -860,6 +966,15 @@ mod tests {
                         "ghcr.io/kandelo-dev/homebrew-tap-core-abi-7-candidates/lazy@sha256:{lazy_sha}"
                     )),
                     path: None,
+                    descriptor: Some(ResolvedVfsInputDescriptorV1 {
+                        sha256: sha(bottle_metadata),
+                        bytes: bottle_metadata.len() as u64,
+                        reference: format!(
+                            "ghcr.io/kandelo-dev/homebrew-tap-core-abi-7-candidates/lazy@sha256:{}",
+                            sha(bottle_metadata),
+                        ),
+                        path: "inputs/lazy-bottle-metadata.json".to_string(),
+                    }),
                 },
             ],
         }
@@ -893,6 +1008,12 @@ mod tests {
                     placement: input.effective_materialization,
                     sha256: input.sha256.clone(),
                     bytes: input.bytes,
+                    descriptor: input.descriptor.as_ref().map(|descriptor| {
+                        ConsumedVfsInputDescriptorV1 {
+                            sha256: descriptor.sha256.clone(),
+                            bytes: descriptor.bytes,
+                        }
+                    }),
                 })
                 .collect(),
             capture: VfsBuilderCaptureV1 {
@@ -922,6 +1043,47 @@ mod tests {
         assert!(validation.accepted);
         assert_eq!(validation.product_id, "mini-shell");
         assert_eq!(validation.input_count, 3);
+    }
+
+    #[test]
+    fn accepts_exact_homebrew_descriptor_for_lazy_composition() {
+        let root = tempfile::tempdir().unwrap();
+        let inputs = fixture_inputs(root.path());
+        let metadata = b"{\"formula\":\"lazy-bottle\"}\n";
+        write(root.path(), "inputs/lazy-bottle-metadata.json", metadata);
+        let mut value = serde_json::to_value(inputs).unwrap();
+        value["inputs"][2]["descriptor"] = json!({
+            "bytes": metadata.len(),
+            "path": "inputs/lazy-bottle-metadata.json",
+            "reference": format!(
+                "ghcr.io/kandelo-dev/homebrew-tap-core-abi-7-candidates/lazy@sha256:{}",
+                sha(metadata),
+            ),
+            "sha256": sha(metadata),
+        });
+
+        let validated = validate_resolved_inputs(&canonical_value(&value), root.path()).unwrap();
+        assert_eq!(validated.inputs[2].id, "lazy-bottle");
+    }
+
+    #[test]
+    fn rejects_missing_or_unreported_homebrew_descriptor() {
+        let input_root = tempfile::tempdir().unwrap();
+        let inputs = fixture_inputs(input_root.path());
+        let mut missing = inputs.clone();
+        missing.inputs[2].descriptor = None;
+        assert!(validate_resolved_inputs(
+            &canonical_json_bytes(&missing).unwrap(),
+            input_root.path(),
+        )
+        .unwrap_err()
+        .contains("requires authenticated composition metadata"));
+
+        let report_root = tempfile::tempdir().unwrap();
+        let mut report = fixture_report(report_root.path(), &inputs);
+        report.inputs[2].descriptor = None;
+        let error = compare_builder_report(&inputs, &report).unwrap_err();
+        assert!(error.contains(BUILD_INPUT_CAPTURE_INCOMPLETE) || error.contains(SOURCE_IDENTITY_MISMATCH));
     }
 
     #[test]
@@ -1032,6 +1194,11 @@ mod tests {
             "local-fixture:sha256:{}?namespace=candidate&bytes={}",
             lazy.sha256, lazy.bytes
         ));
+        let descriptor = lazy.descriptor.as_mut().unwrap();
+        descriptor.reference = format!(
+            "local-fixture:sha256:{}?namespace=candidate&bytes={}",
+            descriptor.sha256, descriptor.bytes
+        );
         let bytes = canonical_json_bytes(&inputs).unwrap();
 
         assert!(validate_resolved_inputs(&bytes, root.path())

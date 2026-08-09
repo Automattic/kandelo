@@ -46,6 +46,11 @@ describe("VFS product builder contract", () => {
       id: "shell-bottle",
       placement: "embedded",
       path: join(fixture.directory, "files/shell.bottle"),
+      descriptor: {
+        path: join(fixture.directory, "files/shell-bottle-metadata.json"),
+        sha256: fixture.bottleMetadataSha256,
+        bytes: fixture.bottleMetadataBytes,
+      },
     });
 
     await expect(build.finish(fixture.outputPath)).rejects.toThrow(
@@ -159,6 +164,27 @@ describe("VFS product builder contract", () => {
     ).rejects.toThrow(/toolchain-sdk.*(byte count|SHA-256)/);
     expect(existsSync(fixture.reportPath)).toBe(false);
   });
+
+  it("requires and authenticates bottle composition metadata", async () => {
+    const missing = await createFixture();
+    const missingInputs = JSON.parse(readFileSync(missing.inputsPath, "utf8"));
+    delete missingInputs.inputs.find(
+      (input: { id: string }) => input.id === "shell-bottle",
+    ).descriptor;
+    writeFileSync(missing.inputsPath, canonicalJson(missingInputs));
+    await expect(
+      openVfsProductBuild(missing.inputsPath, missing.reportPath),
+    ).rejects.toThrow(/requires authenticated composition metadata/);
+
+    const tampered = await createFixture();
+    writeFileSync(
+      join(tampered.directory, "files/shell-bottle-metadata.json"),
+      '{"formula":"other"}\n',
+    );
+    await expect(
+      openVfsProductBuild(tampered.inputsPath, tampered.reportPath),
+    ).rejects.toThrow(/descriptor (byte count|SHA-256)/);
+  });
 });
 
 function consumeAll(build: Awaited<ReturnType<typeof openVfsProductBuild>>): void {
@@ -192,6 +218,11 @@ async function createFixture(
     mkdirSync(parent, { recursive: true });
     writeFileSync(output, contents);
   }
+  const bottleMetadata = '{"formula":"shell-bottle"}\n';
+  writeFileSync(
+    join(directory, "files/shell-bottle-metadata.json"),
+    bottleMetadata,
+  );
 
   const lazySha256 = sha256("lazy candidate");
   const makeInput = (
@@ -232,7 +263,15 @@ async function createFixture(
       },
       makeInput("package-runtime", "package-output", "runtime", "embedded"),
       makeInput("repository-config", "repository-path", "runtime", "embedded"),
-      makeInput("shell-bottle", "homebrew-bottle", "runtime", "embedded"),
+      {
+        ...makeInput("shell-bottle", "homebrew-bottle", "runtime", "embedded"),
+        descriptor: {
+          bytes: Buffer.byteLength(bottleMetadata),
+          path: "files/shell-bottle-metadata.json",
+          reference: `ghcr.io/kandelo-dev/homebrew-tap-core-abi-7-candidates/shell@sha256:${sha256(bottleMetadata)}`,
+          sha256: sha256(bottleMetadata),
+        },
+      },
       makeInput("source-code", "source-archive", "build", "build-only"),
       makeInput("toolchain-sdk", "toolchain-output", "build", "build-only"),
     ],
@@ -273,6 +312,8 @@ async function createFixture(
     reportPath: join(directory, "builder-report.json"),
     outputPath,
     lazySha256,
+    bottleMetadataSha256: sha256(bottleMetadata),
+    bottleMetadataBytes: Buffer.byteLength(bottleMetadata),
   };
 }
 
