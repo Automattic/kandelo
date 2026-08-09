@@ -12,7 +12,8 @@ paths.
 intent. A Rust `xtask abi-staging` command validates those files, emits
 canonical compact JSON, selects products by change applicability, and derives
 Homebrew Formula roots solely from the selected product graph. Existing
-package metadata and custom image builders remain transitional adapters: a
+package metadata and product-specific image builders remain transitional build
+adapters: a
 separate adapter inventory may describe mechanical package/output mappings,
 but it cannot name software dependencies. A resolved-input envelope and exact
 builder report form a fail-closed boundary for future candidate composition.
@@ -56,6 +57,10 @@ through `scripts/dev-shell.sh`.
   operational during this foundation. Mark them for retirement; do not remove,
   disable, or claim replacement before hosted acceptance and the checked-in
   retirement conditions are satisfied.
+- Treat obsolete VFS-wrapper package entries and
+  `homebrew/main-shell.Brewfile` as explicit retirement targets. Do not treat
+  ordinary software recipe entries as legacy: they continue to own portable
+  source, license, dependency, output, and build facts.
 - Do not update user-facing reference documentation to call ABI staging
   operational. Foundation documentation must say that remote request,
   candidate, Check, promotion, and Pages integration remain unimplemented.
@@ -328,6 +333,12 @@ includes the normalized repository-relative TOML path, digest, and manifest.
 Duplicate IDs, duplicate outputs for an architecture, noncanonical generated
 bytes, and stale generated files fail.
 
+The compact form minimizes byte-level choices so independent implementations
+hash the same logical value. It is generated interchange, not the human
+editing surface: TOML remains the readable authority, and generated JSON may
+be inspected through a formatter such as `jq` without changing its stored
+canonical bytes.
+
 ### Consumer registries
 
 The Pages-owned file is
@@ -364,7 +375,11 @@ kind = "kandelo-test-vfs-products"
 [[registrations]]
 product = "browser-main-shell"
 node = ["main-shell-startup"]
-browser = ["main-shell-basic-e2e"]
+browser = [
+  "main-shell-basic-e2e",
+  "main-shell-fbdoom-e2e",
+  "main-shell-modeset-e2e",
+]
 
 [registrations.applicability]
 abi = "required"
@@ -1005,7 +1020,7 @@ test registry uses these exact stable evidence IDs:
 | Product ID | Node evidence | Browser evidence |
 |---|---|---|
 | `platform-rootfs` | `rootfs-node-startup` | `rootfs-browser-startup` |
-| `browser-main-shell` | `main-shell-startup` | `main-shell-basic-e2e` |
+| `browser-main-shell` | `main-shell-startup` | `main-shell-basic-e2e`, `main-shell-fbdoom-e2e`, `main-shell-modeset-e2e` |
 | `browser-node` | `node-vfs-node-startup` | `node-vfs-browser-startup` |
 | `browser-nginx` | `nginx-vfs-node-startup` | `nginx-vfs-browser-startup` |
 | `browser-nginx-php` | `nginx-php-vfs-node-startup` | `nginx-php-vfs-browser-startup` |
@@ -1587,6 +1602,14 @@ the registry must not claim those tests already run in hosted staging.
   `.github/workflows/publish-main-shell-mirror.yml` in
   `kandelo-dev/homebrew-tap-core`.
 
+  The ledger also inventories every package-registry entry whose primary
+  product is a VFS image, including the current rootfs, shell, service,
+  language-runtime, SDK, and VFS test wrappers. Each wrapper remains present
+  and usable during rollout, but its removal condition requires all consumers
+  to use the canonical product manifest and product-specific build adapter
+  directly. Ordinary software recipes consumed by those products are not
+  retirement entries.
+
 - [ ] **Step 1: Write failing guard-registry tests**
 
   Assert the exact initial code set, unknown-code rejection, unique meanings,
@@ -2123,6 +2146,9 @@ the registry must not claim those tests already run in hosted staging.
 - Existing hosted workflows and supported user behavior are unchanged.
 - Every legacy component remains present and nonremovable in the retirement
   ledger.
+- Every obsolete VFS-wrapper package entry and the main-shell Brewfile has an
+  explicit future removal condition, while ordinary software recipes remain
+  outside that retirement set.
 - Documentation describes only the implemented local foundation and keeps
   semantic ABI modeling, complete external-source custody, and man pages as
   explicit future work.

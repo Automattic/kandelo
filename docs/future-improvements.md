@@ -4,6 +4,26 @@ Technical debt, deferred enhancements, and explicitly documented conformance
 gaps. Listing an item here does not imply that the current behavior is fully
 supported.
 
+## ABI staging product retirement
+
+### Retire obsolete VFS-wrapper package entries after acceptance
+
+Canonical VFS product manifests will replace package-registry entries whose
+primary purpose is to wrap a rootfs, shell, browser service image, language
+runtime image, SDK image, or VFS test image. Keep those wrappers and the
+main-shell Brewfile operational during rollout, but inventory them in the ABI
+staging retirement ledger and remove them after every consumer uses canonical
+product authority and the required transition, source-custody, repair,
+failure-recovery, and Pages evidence is retained.
+
+This retirement does not apply to ordinary software recipes. Formula and
+package recipes for Bash, PHP, zlib, and other software continue to own their
+portable source, license, dependency, output, and build facts unless a separate
+package-system design replaces that contract.
+
+**Related design:**
+`docs/superpowers/specs/2026-08-08-abi-bottle-staging-design.md`
+
 ## Kernel
 
 ### Per-process ordinary OFD metadata still breaks POSIX fork sharing

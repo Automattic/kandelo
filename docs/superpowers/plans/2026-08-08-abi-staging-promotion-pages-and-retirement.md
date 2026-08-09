@@ -7,7 +7,9 @@ namespaces without changing bottle-layer bytes, preserve protected prior-ABI
 tap history before activation, continue independent background convergence,
 recompose and test canonical VFS products, publish one complete Pages site or
 retain the last complete site, execute the approved real successor transition,
-and remove only legacy components whose full retirement evidence is proven.
+and assess exactly which legacy components have proven retirement evidence.
+Production Pages deployment and legacy deletion remain unapplied during the
+2026-08-09 autonomous execution.
 
 **Architecture:** A protected tap reconciler treats GitHub's merged
 pull-request fact as the trigger. Before the first successor promotion, a
@@ -103,6 +105,10 @@ workflow mutation tests, and all local commands through
   if an old Homebrew workflow shared it.
 - Semantic ABI modeling, complete external-source custody, and man pages remain
   future work; do not claim or implement them as hidden cleanup prerequisites.
+- During the 2026-08-09 autonomous execution, do not deploy production Pages,
+  delete or purge artifacts, or delete legacy infrastructure. Implement and
+  test inactive or observe-mode machinery and produce readiness or retirement
+  assessments, but leave those external mutations unapplied.
 - All action references are full 40-character SHA pins. Preserve unrelated
   dirty state and run local build/validation commands through
   `scripts/dev-shell.sh`.
@@ -1315,7 +1321,7 @@ entries nonremovable and performs no broad deletion.
 
 ---
 
-### Task 10: Switch production Pages to atomic admitted products
+### Task 10: Prepare the atomic admitted-product Pages switch without deploying
 
 **Files:**
 
@@ -1328,8 +1334,9 @@ entries nonremovable and performs no broad deletion.
 
 - Consumes: successful hosted Task 9 artifact/readiness canary and externally
   configured GitHub Actions Pages source.
-- Produces: native two-job atomic deployment using admitted canonical products,
-  with last-complete site retention on failure.
+- Produces: fully tested native two-job atomic deployment code using admitted
+  canonical products, with last-complete site retention on failure, while the
+  checked-in activation remains non-production for this execution.
 
 - [ ] **Step 1: Run hosted canary before production edits**
 
@@ -1365,12 +1372,13 @@ entries nonremovable and performs no broad deletion.
   new tree is complete and any intentional locator differences are canonical
   recomposition, not missing content.
 
-- [ ] **Step 6: Activate one native production writer**
+- [ ] **Step 6: Prove the single-writer activation mutation without applying it**
 
-  Change activation to `active`, remove the legacy `peaceiris` writer from the
-  workflow, and make the native deploy job the sole production writer. Build
-  job uses contents read; deploy job uses only pages/id-token writes and does
-  not execute source.
+  Exercise a temporary fixture mutation that changes activation to `active`,
+  removes the legacy `peaceiris` writer, and makes the native deploy job the
+  sole production writer. Prove the build job uses contents read and the
+  deploy job uses only Pages and identity-token writes without executing
+  source. Do not apply that mutation to the checked-in production workflow.
 
 - [ ] **Step 7: Run local workflow/security tests**
 
@@ -1382,24 +1390,24 @@ entries nonremovable and performs no broad deletion.
     .github/workflows/browser-demos-pages.yml
   ```
 
-  Expected: PASS with exactly one Pages deploy action.
+  Expected: PASS for the activation fixture. The checked-in production
+  workflow remains in its pre-deployment state.
 
-- [ ] **Step 8: Prove last-complete behavior hosted**
+- [ ] **Step 8: Retain hosted canary evidence without production deployment**
 
-  Retain a successful deployment ID/site manifest, then run the protected
-  hold-only missing-product path. Confirm readiness records
-  `pages_product_incomplete`, deploy is absent, and the public site still serves
-  the prior exact manifest. Then run a complete revision and confirm one atomic
-  replacement.
+  Retain the canary site manifest, then run the protected hold-only
+  missing-product path. Confirm readiness records `pages_product_incomplete`
+  and the deploy job is absent. Do not run a production replacement; record
+  that proof as the remaining activation gate.
 
-- [ ] **Step 9: Commit production activation**
+- [ ] **Step 9: Commit inactive production readiness**
 
   ```bash
   git add .github/workflows/browser-demos-pages.yml \
     abi/staging/pages-activation.toml \
     scripts/ci-check-pages-deployment.sh \
     scripts/test-pages-deployment-contract.sh
-  git commit -m "[Pages] Deploy one complete admitted product site"
+  git commit -m "[Pages] Prepare atomic admitted product deployment"
   ```
 
 ---
@@ -1721,22 +1729,23 @@ entries nonremovable and performs no broad deletion.
 
 ---
 
-### Task 14: Remove only individually proven legacy entries
+### Task 14: Assess individually proven legacy entries without deleting them
 
 **Repositories:** Kandelo and tap
 
 **Files:**
 
-- Delete only paths whose Task 13 assessment has `removable = true` and whose
-  exact repository/path set is supplied by the generated assessment.
+- Create or update the assessment that names paths whose Task 13 result has
+  `removable = true`; do not delete those paths during this execution.
 - Modify: `abi/staging/legacy-retirement.toml`
-- Modify affected focused validation/docs after each individual removal.
+- Modify focused validation/docs only to record the assessment and remaining
+  activation gate.
 
 **Interfaces:**
 
 - Consumes: Task 13 exact assessment.
-- Produces: small per-component cleanup commits or, when no entries qualify, a
-  no-deletion report and unchanged legacy files.
+- Produces: a no-deletion assessment naming any individually qualified
+  components and unchanged legacy files.
 
 - [ ] **Step 1: Generate exact removable path set**
 
@@ -1765,30 +1774,29 @@ entries nonremovable and performs no broad deletion.
   to documentation/final verification. Do not treat this as incomplete
   promotion/Pages functionality.
 
-- [ ] **Step 3: For each qualifying entry, verify scope before deletion**
+- [ ] **Step 3: For each qualifying entry, verify and record exact scope**
 
-  Re-run consumer/custody/evidence checks immediately, compare exact path with
-  the ledger, and verify it is not a directory/glob/shared non-Homebrew
-  component. Remove one logical component per commit with `apply_patch` or
-  another reviewable version-control edit; never use recursive broad deletion.
+  Re-run consumer/custody/evidence checks immediately, compare each exact path
+  with the ledger, and verify it is not a directory, glob, or shared
+  non-Homebrew component. Record the exact future cleanup set; do not remove
+  any component during this execution.
 
-- [ ] **Step 4: Run focused tests after each removal**
+- [ ] **Step 4: Run focused tests for the no-deletion assessment**
 
-  Use the entry's checked-in validation list plus workflow trust, product
+  Use each entry's checked-in validation list plus workflow trust, product
   authority, Pages, ABI, docs, and cross-repository tests as applicable. If any
-  consumer/test remains, restore by a new patch and mark the entry blocked;
-  never force the assessment.
+  consumer or test remains, mark the entry blocked; never force the assessment.
 
-- [ ] **Step 5: Commit each proven removal separately**
+- [ ] **Step 5: Commit the retained assessment without removals**
 
-  Commit messages lead with the replacement contract, for example:
+  The commit message leads with the retained retirement contract:
 
   ```text
-  [Homebrew] Retire replaced candidate publisher adapter
+  [Homebrew] Record qualified legacy cleanup without deleting it
   ```
 
-  Preserve authorship for materially derived history and verify the exact
-  removed path list in each commit.
+  Verify that the commit contains no deleted path and that every qualified
+  future cleanup target is named by exact repository and path.
 
 ---
 
@@ -2011,8 +2019,8 @@ entries nonremovable and performs no broad deletion.
   ```
 
   Confirm unrelated dirty paths were never committed, contributor attribution
-  is preserved, every deletion exactly matches a proven ledger entry, and every
-  blocked legacy component remains present.
+  is preserved, no path was deleted, every qualified future deletion is named
+  by a proven ledger entry, and every legacy component remains present.
 
 ## Exit Criteria
 
@@ -2029,14 +2037,15 @@ entries nonremovable and performs no broad deletion.
   purge boundaries, and deletion tombstones.
 - Every Pages registry product is recomposed from admissions with canonical
   references, required evidence reruns, and one complete site manifest.
-- Pages deploys one inert complete artifact through separated permissions; an
-  incomplete revision retains the last complete public site.
+- Pages deployment code and canaries prove one inert complete artifact through
+  separated permissions and hold on an incomplete revision; production
+  activation remains deliberately unapplied.
 - The exact approved successor fixture demonstrates all supported acceptance
   criteria, or missing remote/protection/permission evidence is reported as a
   hard hosted gate without substitution.
-- Legacy removal occurs only per proven ledger entry. Expected source-custody
-  blockers remain visible and prevent broad cleanup while complete external
-  custody is deferred.
+- Legacy assessment qualifies removal only per proven ledger entry, but no
+  deletion occurs. Expected source-custody blockers remain visible and prevent
+  broad cleanup while complete external custody is deferred.
 - Documentation matches what is operational and retains all explicit future
   work and narrower evidence claims.
 

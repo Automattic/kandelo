@@ -1,7 +1,8 @@
 # Generic ABI Bottle Staging Implementation Roadmap
 
-**Status:** Proposed execution roadmap for the approved design; no production
-implementation has begun.
+**Status:** Approved for autonomous execution on 2026-08-09. Production Pages
+deployment and artifact or legacy-infrastructure deletion remain explicitly
+out of scope for this execution.
 
 **Approved design:**
 `docs/superpowers/specs/2026-08-08-abi-bottle-staging-design.md` from final
@@ -62,6 +63,10 @@ It must not replace that gate with a weaker mechanism.
   new-site failure.
 - Legacy infrastructure stays present until complete transition, repair,
   Pages, custody, consumer-audit, and failure-recovery evidence is retained.
+- Obsolete VFS-wrapper entries in `packages/registry/` and the legacy
+  `homebrew/main-shell.Brewfile` are explicit retirement targets. Ordinary
+  software recipes remain package authority and are not legacy merely because
+  a VFS product consumes them.
 - Semantic ABI modeling, complete external-source custody, and man pages remain
   explicit future work.
 
@@ -192,6 +197,10 @@ No plan introduces a shared broad token.
    protected workflow has emitted the exact immutable authorization/receipt.
 7. If a hosted prerequisite is absent, complete all remaining local work,
    report the exact gate, and stop before the prohibited external mutation.
+8. Limit repository mutations to `Automattic/kandelo` and
+   `kandelo-dev/homebrew-tap-core`. Do not deploy production Pages, delete or
+   purge artifacts, or delete legacy infrastructure. Code and dry-run tooling
+   for those operations may be implemented and validated only while inactive.
 
 ## Activation states
 

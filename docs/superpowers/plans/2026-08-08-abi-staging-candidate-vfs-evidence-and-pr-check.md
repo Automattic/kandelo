@@ -144,7 +144,7 @@ The initial definitions bind the Plan 1 IDs to these principal behaviors:
 | Product | Node evidence | Browser evidence | Principal proof |
 |---|---|---|---|
 | `platform-rootfs` | `rootfs-node-startup` | `rootfs-browser-startup` | Boot rootfs and execute the declared shell. |
-| `browser-main-shell` | `main-shell-startup` | `main-shell-basic-e2e` | Boot interactive Bash and execute a terminal command. |
+| `browser-main-shell` | `main-shell-startup` | `main-shell-basic-e2e`, `main-shell-fbdoom-e2e`, `main-shell-modeset-e2e` | Boot interactive Bash, execute a terminal command, launch fbDOOM through its normal framebuffer path, and run the modeset demo. |
 | `browser-node` | `node-vfs-node-startup` | `node-vfs-browser-startup` | Execute Node and print an exact JavaScript result. |
 | `browser-nginx` | `nginx-vfs-node-startup` | `nginx-vfs-browser-startup` | Start nginx and fetch its normal HTTP page. |
 | `browser-nginx-php` | `nginx-php-vfs-node-startup` | `nginx-php-vfs-browser-startup` | Start nginx/PHP-FPM and fetch dynamic PHP output. |
@@ -1247,7 +1247,10 @@ known sibling result, retries, timeouts, override links, and background status.
   Required Pages products must execute normal boot/principal UI/service paths,
   including interactive shell, HTTP service, and WordPress login. Suite product
   IDs invoke exact registered suite adapters. Failure/timeout produce bounded
-  inert results rather than a swallowed/skipped pass.
+  inert results rather than a swallowed/skipped pass. The main-shell evidence
+  matrix includes separate `main-shell-fbdoom-e2e` and
+  `main-shell-modeset-e2e` definitions, both bound to the exact candidate
+  `browser-main-shell` image rather than the default imported image.
 
 - [ ] **Step 3: Run browser unit/Playwright tests and verify red**
 
@@ -1281,6 +1284,7 @@ known sibling result, retries, timeouts, override links, and background status.
       test/abi-staging-product-evidence.spec.ts \
       test/kandelo-homebrew-main-shell.spec.ts \
       test/kandelo-merge-gate.spec.ts \
+      test/kandelo-modeset.spec.ts \
       --project=chromium
   '
   scripts/dev-shell.sh bash -c '
@@ -1289,7 +1293,8 @@ known sibling result, retries, timeouts, override links, and background status.
   '
   ```
 
-  Expected: PASS with real Chromium evidence.
+  Expected: PASS with real Chromium evidence, including the fbDOOM case in
+  `kandelo-merge-gate.spec.ts` and the dedicated modeset suite.
 
 - [ ] **Step 6: Manually verify the candidate product route**
 
