@@ -135,14 +135,14 @@ max_evidence_bindings = 512
 addressed_taps = ["kandelo-dev/homebrew-tap-core"]
 
 implementation_paths = [
-  "tools/xtask/src/abi_staging/canonical_json.rs",
-  "tools/xtask/src/abi_staging/product_manifest.rs",
-  "tools/xtask/src/abi_staging/consumer_registry.rs",
-  "tools/xtask/src/abi_staging/selection.rs",
-  "tools/xtask/src/abi_staging/records.rs",
-  "tools/xtask/src/abi_staging/request_policy.rs",
-  "tools/xtask/src/abi_staging/request_derivation.rs",
   ".github/workflows/abi-staging-request-feed.yml",
+  "tools/xtask/src/abi_staging/canonical_json.rs",
+  "tools/xtask/src/abi_staging/consumer_registry.rs",
+  "tools/xtask/src/abi_staging/product_manifest.rs",
+  "tools/xtask/src/abi_staging/records.rs",
+  "tools/xtask/src/abi_staging/request_derivation.rs",
+  "tools/xtask/src/abi_staging/request_policy.rs",
+  "tools/xtask/src/abi_staging/selection.rs",
 ]
 ```
 
@@ -402,6 +402,18 @@ is a transport boundary, not an issuer substitute.
 
 ### Task 1: Freeze protected request policy and implementation identity
 
+**Repository-evidence sequencing correction:** The approved final policy list
+names `request_derivation.rs`, created in Task 2, and
+`abi-staging-request-feed.yml`, created in Task 5. Task 1 also requires every
+listed path to exist and rejects placeholders. Therefore Task 1 begins with
+the six protected implementation paths that exist after this task. Task 2
+adds `request_derivation.rs` and regenerates the projection; Task 5 adds the
+workflow and regenerates it again. The final policy still has the exact eight
+approved paths before publication can be active, and every intermediate
+projection binds all protected request implementation that exists then.
+The final list above is ordered lexicographically, as the policy invariant
+requires; the earlier prose ordering was illustrative rather than canonical.
+
 **Files:**
 
 - Modify: `tools/xtask/src/abi_staging/mod.rs`
@@ -490,6 +502,8 @@ is a transport boundary, not an issuer substitute.
 - Create: `tools/xtask/src/abi_staging/request_derivation.rs`
 - Create: `tools/xtask/tests/fixtures/abi-staging/request/structural-report.json`
 - Create: `tools/xtask/tests/fixtures/abi-staging/request/current-request.json`
+- Modify: `abi/staging/request-policy.toml`
+- Modify: `abi/staging/request-policy.generated.json`
 
 **Interfaces:**
 
@@ -731,6 +745,8 @@ is a transport boundary, not an issuer substitute.
 - Create: `scripts/test-abi-staging-request-feed.sh`
 - Modify: `.github/actions/detect-change-scope/ci-scope-paths.sh`
 - Modify: `.github/actions/detect-change-scope/test-ci-scope-paths.sh`
+- Modify: `abi/staging/request-policy.toml`
+- Modify: `abi/staging/request-policy.generated.json`
 
 **Interfaces:**
 

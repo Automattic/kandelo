@@ -6,6 +6,7 @@ pub mod local_transport;
 pub mod mini_lifecycle;
 pub mod product_manifest;
 pub mod records;
+pub mod request_policy;
 pub mod selection;
 
 use std::process::ExitCode;
@@ -72,6 +73,19 @@ pub fn run(args: Vec<String>) -> ExitCode {
             eprintln!("xtask abi-staging: guard-codes requires generate or check");
             ExitCode::from(2)
         }
+        [group, action, rest @ ..] if group == "request-policy" => {
+            match request_policy::run_cli(action, rest) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("xtask abi-staging request-policy {action}: {error}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        [group, ..] if group == "request-policy" => {
+            eprintln!("xtask abi-staging: request-policy requires generate or check");
+            ExitCode::from(2)
+        }
         [group, action, rest @ ..] if group == "mini" => {
             match mini_lifecycle::run_cli(action, rest) {
                 Ok(()) => ExitCode::SUCCESS,
@@ -104,6 +118,6 @@ pub fn run(args: Vec<String>) -> ExitCode {
 fn print_help() {
     println!("usage: xtask abi-staging <subcommand> [args...]");
     println!(
-        "subcommands: help, products <generate|check>, registries <generate|check>, builder <validate-inputs|validate-report|compare-report>, guard-codes <generate|check>, mini run, requirements"
+        "subcommands: help, products <generate|check>, registries <generate|check>, builder <validate-inputs|validate-report|compare-report>, guard-codes <generate|check>, request-policy <generate|check>, mini run, requirements"
     );
 }
