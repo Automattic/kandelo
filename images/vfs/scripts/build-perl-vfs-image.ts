@@ -6,13 +6,16 @@
  *
  * Usage: npx tsx images/vfs/scripts/build-perl-vfs-image.ts
  */
-import { readFileSync, readdirSync, lstatSync, statSync, existsSync } from "fs";
-import { join } from "path";
+import { readFileSync, readdirSync, lstatSync, statSync, existsSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { MemoryFileSystem } from "../../../host/src/vfs/memory-fs";
 import {
   writeVfsBinary,
   ensureDir,
+  exactVfsImageMetadata,
   saveImage,
+  type ExactVfsImageAbi,
 } from "./vfs-image-helpers";
 import { ensureSourceExtract } from "./source-extract-helper";
 
@@ -22,7 +25,6 @@ const REPO_ROOT = join(SCRIPT_DIR, "..", "..", "..");
 // + extract the upstream tarball. The directory layout matches:
 // `bash packages/registry/perl/build-perl.sh` extracts into perl-src/.
 const LEGACY_SRC = join(REPO_ROOT, "packages", "registry", "perl", "perl-src");
-const PERL_SRC = ensureSourceExtract("perl", REPO_ROOT, LEGACY_SRC);
 const OUT_FILE = join(REPO_ROOT, "apps", "browser-demos", "public", "perl.vfs.zst");
 
 // Target prefix in the VFS (matches Perl's compiled-in privlib)
@@ -62,10 +64,11 @@ function shouldInclude(name: string): boolean {
   return /\.(pm|pl|ph)$/.test(name) || /^Config_/.test(name);
 }
 
-// Deduplication map: VFS path -> file data. Later sources override earlier.
-const fileMap = new Map<string, Uint8Array>();
-
-function scanDir(dir: string, prefix: string): void {
+function scanDir(
+  fileMap: Map<string, Uint8Array>,
+  dir: string,
+  prefix: string,
+): void {
   let entries: string[];
   try {
     entries = readdirSync(dir);
@@ -82,7 +85,7 @@ function scanDir(dir: string, prefix: string): void {
     const stat = statSync(fullPath);
     if (stat.isDirectory()) {
       if (EXCLUDE_DIRS.has(entry)) continue;
-      scanDir(fullPath, prefix ? `${prefix}/${entry}` : entry);
+      scanDir(fileMap, fullPath, prefix ? `${prefix}/${entry}` : entry);
     } else if (stat.isFile() && shouldInclude(entry)) {
       let data: Buffer | Uint8Array = readFileSync(fullPath);
 
@@ -108,35 +111,50 @@ function scanDir(dir: string, prefix: string): void {
   }
 }
 
-async function main() {
+export interface PerlVfsImageBuildInputs {
+  sourceDirectory: string;
+  perl?: {
+    reference: string;
+    sha256: string;
+    bytes: number;
+  };
+  outputPath: string;
+  targetAbi?: ExactVfsImageAbi;
+}
+
+export async function buildPerlVfsImage(
+  inputs: PerlVfsImageBuildInputs,
+): Promise<void> {
+  // Deduplication map: VFS path -> file data. Later sources override earlier.
+  const fileMap = new Map<string, Uint8Array>();
   // 1. Core lib/ directory -- strict.pm, warnings.pm, Config.pm, etc.
   console.log("  Scanning lib/...");
-  scanDir(join(PERL_SRC, "lib"), "");
+  scanDir(fileMap, join(inputs.sourceDirectory, "lib"), "");
 
   // 2. cpan/*/lib/ -- bundled CPAN modules (Carp, Scalar::Util, List::Util, etc.)
   console.log("  Scanning cpan/*/lib/...");
-  for (const mod of readdirSync(join(PERL_SRC, "cpan"))) {
-    const libDir = join(PERL_SRC, "cpan", mod, "lib");
+  for (const mod of readdirSync(join(inputs.sourceDirectory, "cpan"))) {
+    const libDir = join(inputs.sourceDirectory, "cpan", mod, "lib");
     if (existsSync(libDir)) {
-      scanDir(libDir, "");
+      scanDir(fileMap, libDir, "");
     }
   }
 
   // 3. dist/*/lib/ -- core distributions (Cwd, Storable, Data::Dumper, etc.)
   console.log("  Scanning dist/*/lib/...");
-  for (const mod of readdirSync(join(PERL_SRC, "dist"))) {
-    const libDir = join(PERL_SRC, "dist", mod, "lib");
+  for (const mod of readdirSync(join(inputs.sourceDirectory, "dist"))) {
+    const libDir = join(inputs.sourceDirectory, "dist", mod, "lib");
     if (existsSync(libDir)) {
-      scanDir(libDir, "");
+      scanDir(fileMap, libDir, "");
     }
   }
 
   // 4. ext/*/lib/ -- core extensions (POSIX, File::Find, Fcntl, etc.)
   console.log("  Scanning ext/*/lib/...");
-  for (const mod of readdirSync(join(PERL_SRC, "ext"))) {
-    const libDir = join(PERL_SRC, "ext", mod, "lib");
+  for (const mod of readdirSync(join(inputs.sourceDirectory, "ext"))) {
+    const libDir = join(inputs.sourceDirectory, "ext", mod, "lib");
     if (existsSync(libDir)) {
-      scanDir(libDir, "");
+      scanDir(fileMap, libDir, "");
     }
   }
 
@@ -149,6 +167,7 @@ async function main() {
   fs.chmod("/tmp", 0o777);
   ensureDir(fs, "/home");
   ensureDir(fs, "/usr");
+  ensureDir(fs, "/usr/bin");
   ensureDir(fs, "/usr/lib");
   ensureDir(fs, "/usr/lib/perl5");
   ensureDir(fs, "/usr/lib/perl5/5.40.3");
@@ -166,12 +185,41 @@ async function main() {
     writeVfsBinary(fs, vfsPath, data, 0o644);
   }
 
+  if (inputs.perl !== undefined) {
+    fs.registerLazyFile(
+      "/usr/bin/perl",
+      inputs.perl.reference,
+      inputs.perl.bytes,
+      0o755,
+    );
+  }
+
   // Save image
-  await saveImage(fs, OUT_FILE);
+  await saveImage(fs, inputs.outputPath, inputs.targetAbi === undefined
+    ? {}
+    : {
+        kernelAbi: inputs.targetAbi.version,
+        metadata: exactVfsImageMetadata(
+          inputs.targetAbi,
+          "images/vfs/scripts/build-perl-vfs-image.ts",
+        ),
+      });
   console.log(`${fileMap.size} Perl stdlib files total`);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+async function main(): Promise<void> {
+  await buildPerlVfsImage({
+    sourceDirectory: ensureSourceExtract("perl", REPO_ROOT, LEGACY_SRC),
+    outputPath: OUT_FILE,
+  });
+}
+
+const invokedPath = process.argv[1]
+  ? pathToFileURL(resolve(process.argv[1])).href
+  : "";
+if (import.meta.url === invokedPath) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

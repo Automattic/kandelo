@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { zstdCompressSync } from "node:zlib";
 import { gzipSync, zipSync, type Zippable } from "fflate";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -281,7 +282,7 @@ describe("ABI staging product builders", () => {
       expect(fs.stat(principal).size).toBeGreaterThan(0);
       if (productId !== "browser-node") {
         expect(fs.stat("/sbin/dinit").size).toBeGreaterThan(0);
-        expect(readVfsFile(fs, "/etc/services")).toContain("http 80/tcp");
+        expect(readVfsFile(fs, "/etc/services")).toMatch(/http\s+80\/tcp/);
       }
     }
   }, 90_000);
@@ -369,6 +370,184 @@ describe("ABI staging product builders", () => {
     expect(result.stderr).toMatch(/unsafe|canonical relative path/);
     expect(existsSync(fixture.outputPath)).toBe(false);
     expect(existsSync(fixture.reportPath)).toBe(false);
+  });
+
+  it("builds standalone products from exact embedded and lazy inputs", () => {
+    const principals = new Map([
+      ["browser-mariadb-wasm32", "/usr/sbin/mariadbd"],
+      ["browser-mariadb-wasm64", "/usr/sbin/mariadbd"],
+      ["browser-python", "/usr/bin/python3"],
+      ["browser-perl", "/usr/bin/perl"],
+      ["browser-redis", "/usr/local/bin/redis-server"],
+      [
+        "browser-erlang",
+        "/usr/local/lib/erlang/erts-16.1.2/bin/beam.smp",
+      ],
+    ]);
+
+    for (const [productId, principal] of principals) {
+      const fixture = standaloneProductFixture(productId);
+      const result = runBuilder(productBuilder(productId), fixture);
+      expect(
+        result.status,
+        `${productId}\n${result.stdout}\n${result.stderr}`,
+      ).toBe(0);
+      const report = JSON.parse(readFileSync(fixture.reportPath, "utf8"));
+      expect(report.capture).toEqual({ complete: true, unreported_reads: [] });
+      expect(report.inputs.map((input: { id: string }) => input.id)).toEqual(
+        fixture.inputIds,
+      );
+      expect(report.output.abi).toEqual(TARGET_ABI);
+
+      const image = new Uint8Array(readFileSync(fixture.outputPath));
+      expect(MemoryFileSystem.readImageMetadata(image)).toMatchObject({
+        kernelAbi: TARGET_ABI.version,
+        abiSnapshotSha256: TARGET_ABI.snapshot_sha256,
+      });
+      const fs = MemoryFileSystem.fromImage(image);
+      expect(fs.stat(principal).size).toBeGreaterThan(0);
+      if (productId === "browser-perl") {
+        expect(fs.isPathDeferred(principal)).toBe(true);
+        expect(readVfsFile(fs, "/usr/lib/perl5/5.40.3/strict.pm")).toContain(
+          "strict",
+        );
+      } else {
+        expect(fs.isPathDeferred(principal)).toBe(false);
+      }
+      if (productId === "browser-python") {
+        expect(readVfsFile(fs, "/usr/lib/python3.13/os.py")).toContain(
+          "fixture",
+        );
+      }
+      if (productId.startsWith("browser-mariadb") || productId === "browser-redis") {
+        expect(fs.stat("/sbin/dinit").size).toBeGreaterThan(0);
+        expect(readVfsFile(fs, "/etc/services")).toMatch(/http\s+80\/tcp/);
+      }
+    }
+  }, 90_000);
+
+  it.each([
+    ["browser-mariadb-wasm32", "package-mariadb-source-role-system-tables"],
+    ["browser-redis", "package-dinit-output-dinit"],
+    ["browser-erlang", "package-erlang-output-erlang-otp"],
+  ])("rejects a missing exact standalone input for %s", (productId, inputId) => {
+    const fixture = standaloneProductFixture(productId);
+    if (productId === "browser-redis") {
+      const undeclaredCache = join(
+        fixture.directory,
+        ".cache",
+        "kandelo",
+        "dinit.wasm",
+      );
+      mkdirSync(dirname(undeclaredCache), { recursive: true });
+      writeFileSync(undeclaredCache, minimalWasm());
+    }
+    const document = JSON.parse(readFileSync(fixture.inputsPath, "utf8"));
+    document.inputs = document.inputs.filter(
+      (input: { id: string }) => input.id !== inputId,
+    );
+    writeFileSync(fixture.inputsPath, canonicalJson(document));
+
+    const result = runBuilder(productBuilder(productId), fixture);
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(inputId);
+    expect(existsSync(fixture.outputPath)).toBe(false);
+    expect(existsSync(fixture.reportPath)).toBe(false);
+  });
+
+  it("rejects an extra MariaDB source role before building", () => {
+    const fixture = standaloneProductFixture("browser-mariadb-wasm32");
+    const document = JSON.parse(readFileSync(fixture.inputsPath, "utf8"));
+    const id = "package-mariadb-source-role-undeclared";
+    const path = join(fixture.directory, "files", `${id}.tar.gz`);
+    const bytes = sourceRoleArchive("mariadb", "undeclared");
+    writeFileSync(path, bytes);
+    document.inputs.push({
+      architecture: "wasm32",
+      bytes: bytes.byteLength,
+      declared_materialization: "embedded",
+      effective_materialization: "embedded",
+      id,
+      kind: "package-output",
+      path: relative(fixture.directory, path),
+      role: "runtime",
+      sha256: sha256(bytes),
+    });
+    document.inputs.sort(
+      (left: { id: string }, right: { id: string }) =>
+        left.id.localeCompare(right.id),
+    );
+    writeFileSync(fixture.inputsPath, canonicalJson(document));
+
+    const result = runBuilder(
+      productBuilder("browser-mariadb-wasm32"),
+      fixture,
+    );
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("resolved input IDs differ");
+    expect(existsSync(fixture.outputPath)).toBe(false);
+    expect(existsSync(fixture.reportPath)).toBe(false);
+  });
+
+  it("rejects eager Perl bytes and a cross-architecture MariaDB input", () => {
+    const perl = standaloneProductFixture("browser-perl");
+    const perlDocument = JSON.parse(readFileSync(perl.inputsPath, "utf8"));
+    const perlInput = perlDocument.inputs.find(
+      (input: { id: string }) => input.id === "package-perl-output-perl",
+    );
+    const perlPath = join(perl.directory, "files", perlInput.id);
+    perlInput.effective_materialization = "embedded";
+    perlInput.path = relative(perl.directory, perlPath);
+    delete perlInput.reference;
+    writeFileSync(perl.inputsPath, canonicalJson(perlDocument));
+    const perlResult = runBuilder(productBuilder("browser-perl"), perl);
+    expect(perlResult.status).not.toBe(0);
+    expect(perlResult.stderr).toMatch(/materialization|lazy/);
+    expect(existsSync(perl.outputPath)).toBe(false);
+
+    const mariadb = standaloneProductFixture("browser-mariadb-wasm64");
+    const mariadbDocument = JSON.parse(
+      readFileSync(mariadb.inputsPath, "utf8"),
+    );
+    mariadbDocument.inputs[0].architecture = "wasm32";
+    writeFileSync(mariadb.inputsPath, canonicalJson(mariadbDocument));
+    const mariadbResult = runBuilder(
+      productBuilder("browser-mariadb-wasm64"),
+      mariadb,
+    );
+    expect(mariadbResult.status).not.toBe(0);
+    expect(mariadbResult.stderr).toMatch(/architecture/);
+    expect(existsSync(mariadb.outputPath)).toBe(false);
+  });
+
+  it("rejects incomplete Perl source and mismatched Erlang executables", () => {
+    const perl = standaloneProductFixture("browser-perl");
+    replaceResolvedInputBytes(
+      perl,
+      "package-perl-source-role-standard-library",
+      gzipSync(tarBytes([{
+        path: "standard-library/lib/strict.pm",
+        contents: new TextEncoder().encode("package strict;\n"),
+        mode: 0o644,
+      }]), { level: 9 }),
+    );
+    const perlResult = runBuilder(productBuilder("browser-perl"), perl);
+    expect(perlResult.status).not.toBe(0);
+    expect(perlResult.stderr).toMatch(/cpan|ENOENT|no such file/i);
+    expect(existsSync(perl.outputPath)).toBe(false);
+
+    const erlang = standaloneProductFixture("browser-erlang");
+    replaceResolvedInputBytes(
+      erlang,
+      "package-erlang-output-erlang",
+      new TextEncoder().encode("different executable"),
+    );
+    const erlangResult = runBuilder(productBuilder("browser-erlang"), erlang);
+    expect(erlangResult.status).not.toBe(0);
+    expect(erlangResult.stderr).toContain(
+      "differs from the OTP runtime boot executable",
+    );
+    expect(existsSync(erlang.outputPath)).toBe(false);
   });
 });
 
@@ -747,6 +926,7 @@ function serviceProductFixture(
       root: directory,
       role: "runtime",
       declared: composition.materialization,
+      architecture: product.manifest.architecture,
     }));
   }
   for (const claim of product.manifest.software.package) {
@@ -763,6 +943,7 @@ function serviceProductFixture(
         declared: claim.role === "build"
           ? "build-only"
           : claim.materialization,
+        architecture: product.manifest.architecture,
       }));
     }
     for (const sourceRole of claim.source_roles) {
@@ -778,6 +959,7 @@ function serviceProductFixture(
         declared: claim.role === "build"
           ? "build-only"
           : claim.materialization,
+        architecture: product.manifest.architecture,
       }));
     }
   }
@@ -794,12 +976,113 @@ function serviceProductFixture(
       declared: archive.role === "build"
         ? "build-only"
         : archive.materialization,
+      architecture: product.manifest.architecture,
     }));
   }
   inputs.sort((left, right) =>
     String(left.id).localeCompare(String(right.id))
   );
 
+  const inputsPath = join(directory, "resolved-inputs.json");
+  writeFileSync(inputsPath, canonicalJson({
+    build_environment: {
+      dev_shell_lock_sha256: "d".repeat(64),
+      policy_sha256: "e".repeat(64),
+    },
+    inputs,
+    kind: "kandelo-resolved-vfs-product-inputs",
+    product: {
+      architecture: product.manifest.architecture,
+      id: productId,
+      manifest_path: product.path,
+      manifest_sha256: product.sha256,
+      output: product.manifest.output,
+    },
+    reference_class: "candidate",
+    schema: 1,
+    source: SOURCE,
+    target_abi: TARGET_ABI,
+  }));
+  return {
+    directory,
+    manifestPath: join(repoRoot, product.path),
+    inputsPath,
+    reportPath: join(directory, "builder-report.json"),
+    outputPath: join(directory, product.manifest.output),
+    inputIds: inputs.map((input) => String(input.id)),
+  };
+}
+
+function standaloneProductFixture(productId: string): BuilderFixture {
+  const directory = mkdtempSync(join(tmpdir(), `kandelo-${productId}-stage-`));
+  cleanupDirectories.add(directory);
+  const files = join(directory, "files");
+  mkdirSync(files);
+  mkdirSync(join(directory, "tmp"));
+
+  const catalog = JSON.parse(readFileSync(catalogPath, "utf8"));
+  const product = catalog.products.find(
+    (entry: { manifest: { id: string } }) => entry.manifest.id === productId,
+  );
+  if (!product) throw new Error(`${productId} is missing from the product catalog`);
+
+  const inputs: Array<Record<string, unknown>> = [];
+  for (const repository of product.manifest.composition.repository) {
+    const id = `repository-${repository.id}`;
+    const path = join(files, `${id}.json`);
+    createRepositoryPathBundle({
+      repositoryRoot: repoRoot,
+      paths: repository.paths,
+      source: SOURCE,
+      outputPath: path,
+    });
+    inputs.push(resolvedFileInput({
+      id,
+      kind: "repository-path",
+      path,
+      root: directory,
+      role: repository.role,
+      declared: repository.materialization,
+      architecture: product.manifest.architecture,
+    }));
+  }
+  for (const claim of product.manifest.software.package) {
+    for (const output of claim.outputs) {
+      const id = `package-${claim.name}-output-${output}`;
+      const path = join(files, id);
+      writeFileSync(path, standaloneOutputFixture(claim.name, output));
+      inputs.push(resolvedFileInput({
+        id,
+        kind: "package-output",
+        path,
+        root: directory,
+        role: claim.role,
+        declared: claim.role === "build"
+          ? "build-only"
+          : claim.materialization,
+        architecture: product.manifest.architecture,
+      }));
+    }
+    for (const sourceRole of claim.source_roles) {
+      const id = `package-${claim.name}-source-role-${sourceRole}`;
+      const path = join(files, `${id}.tar.gz`);
+      writeFileSync(path, sourceRoleArchive(claim.name, sourceRole));
+      inputs.push(resolvedFileInput({
+        id,
+        kind: "package-output",
+        path,
+        root: directory,
+        role: claim.role,
+        declared: claim.role === "build"
+          ? "build-only"
+          : claim.materialization,
+        architecture: product.manifest.architecture,
+      }));
+    }
+  }
+  inputs.sort((left, right) =>
+    String(left.id).localeCompare(String(right.id))
+  );
   const inputsPath = join(directory, "resolved-inputs.json");
   writeFileSync(inputsPath, canonicalJson({
     build_environment: {
@@ -846,6 +1129,7 @@ function resolvedFileInput(options: {
   root: string;
   role: "runtime" | "build";
   declared: "embedded" | "lazy" | "build-only";
+  architecture: "wasm32" | "wasm64";
 }): Record<string, unknown> {
   const bytes = readFileSync(options.path);
   const effective = options.declared === "build-only"
@@ -855,7 +1139,7 @@ function resolvedFileInput(options: {
       : "lazy-reference";
   if (effective === "lazy-reference") {
     return {
-      architecture: "wasm32",
+      architecture: options.architecture,
       bytes: bytes.byteLength,
       declared_materialization: options.declared,
       effective_materialization: effective,
@@ -868,7 +1152,7 @@ function resolvedFileInput(options: {
     };
   }
   return {
-    architecture: "wasm32",
+    architecture: options.architecture,
     bytes: bytes.byteLength,
     declared_materialization: options.declared,
     effective_materialization: effective,
@@ -898,12 +1182,97 @@ function sourceRoleArchive(packageName: string, sourceRole: string): Uint8Array 
           mode: 0o644,
         },
       ]
+    : packageName === "perl" && sourceRole === "standard-library"
+    ? [
+        {
+          path: "standard-library/lib/strict.pm",
+          contents: new TextEncoder().encode("package strict; # fixture\n"),
+          mode: 0o644,
+        },
+        {
+          path: "standard-library/cpan/Carp/lib/Carp.pm",
+          contents: new TextEncoder().encode("package Carp;\n"),
+          mode: 0o644,
+        },
+        {
+          path: "standard-library/dist/Cwd/lib/Cwd.pm",
+          contents: new TextEncoder().encode("package Cwd;\n"),
+          mode: 0o644,
+        },
+        {
+          path: "standard-library/ext/POSIX/lib/POSIX.pm",
+          contents: new TextEncoder().encode("package POSIX;\n"),
+          mode: 0o644,
+        },
+      ]
     : [{
         path: `${sourceRole}/fixture.txt`,
         contents: new TextEncoder().encode(`${packageName}/${sourceRole}\n`),
         mode: 0o644,
       }];
   return gzipSync(tarBytes(entries), { level: 9 });
+}
+
+function standaloneOutputFixture(
+  packageName: string,
+  output: string,
+): Uint8Array {
+  if (packageName === "cpython" && output === "python-runtime") {
+    return zipSync({
+      "lib/python3.13/os.py": new TextEncoder().encode("# fixture os\n"),
+      "share/licenses/cpython/LICENSE": new TextEncoder().encode(
+        "fixture license\n",
+      ),
+    }, { level: 9 });
+  }
+  if (packageName === "erlang" && output === "erlang-otp") {
+    const beam = minimalWasm();
+    return new Uint8Array(zstdCompressSync(tarBytes([
+      {
+        path: "bin/start.boot",
+        contents: new TextEncoder().encode("fixture boot\n"),
+        mode: 0o644,
+      },
+      { path: "erts-16.1.2/bin/beam.smp", contents: beam, mode: 0o755 },
+      {
+        path: "erts-16.1.2/bin/erl_child_setup",
+        contents: minimalWasm(),
+        mode: 0o755,
+      },
+      {
+        path: "lib/kernel-10.4.2/ebin/kernel.app",
+        contents: new TextEncoder().encode("{application,kernel,[]}.\n"),
+        mode: 0o644,
+      },
+      {
+        path: "lib/stdlib-7.1/ebin/stdlib.app",
+        contents: new TextEncoder().encode("{application,stdlib,[]}.\n"),
+        mode: 0o644,
+      },
+      {
+        path: "releases/28/start_clean.boot",
+        contents: new TextEncoder().encode("fixture release\n"),
+        mode: 0o644,
+      },
+    ])));
+  }
+  return minimalWasm();
+}
+
+function replaceResolvedInputBytes(
+  fixture: BuilderFixture,
+  inputId: string,
+  bytes: Uint8Array,
+): void {
+  const document = JSON.parse(readFileSync(fixture.inputsPath, "utf8"));
+  const input = document.inputs.find(
+    (item: { id: string }) => item.id === inputId,
+  );
+  if (!input?.path) throw new Error(`fixture input ${inputId} is not embedded`);
+  writeFileSync(join(fixture.directory, input.path), bytes);
+  input.bytes = bytes.byteLength;
+  input.sha256 = sha256(bytes);
+  writeFileSync(fixture.inputsPath, canonicalJson(document));
 }
 
 function sourceArchiveFixture(id: string): Uint8Array {

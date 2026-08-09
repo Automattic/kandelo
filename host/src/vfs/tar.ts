@@ -126,6 +126,25 @@ export function parseTarGzip(
   return parseTar(tarBytes, label, limits);
 }
 
+/** Parse an already-decompressed bounded TAR payload. */
+export function parseTarBytes(
+  bytes: Uint8Array,
+  options: ParseTarGzipOptions = {},
+): TarEntry[] {
+  const label = options.label ?? "TAR archive";
+  const limits = resolveLimits(options.limits, label);
+  if (
+    bytes.byteLength === 0 ||
+    bytes.byteLength > limits.maxUncompressedBytes
+  ) {
+    throw new TarParseError(
+      `${label}: byte count ${bytes.byteLength} is outside 1..` +
+        `${limits.maxUncompressedBytes}`,
+    );
+  }
+  return parseTar(bytes, label, limits);
+}
+
 function parseTar(
   bytes: Uint8Array,
   label: string,
@@ -217,6 +236,16 @@ function parseTar(
       limits.maxPathBytes,
     );
     const linkName = pax.linkpath ?? rawLinkName;
+
+    // GNU tar commonly emits a leading `./` directory when packing `-C DIR .`.
+    // It represents the extraction root itself, not an archive member.
+    if (path === ".") {
+      if (typeflag !== "5") {
+        throw new TarParseError(`${label}: TAR root marker is not a directory`);
+      }
+      requireEmptyPayload(size, label, "directory", path);
+      continue;
+    }
 
     switch (typeflag) {
       case "0":
@@ -499,6 +528,7 @@ function normalizeTarEntryPath(
   label: string,
   maxPathBytes: number,
 ): string {
+  if (path === "." || path === "./") return ".";
   let normalized = path;
   while (normalized.startsWith("./")) normalized = normalized.slice(2);
   normalized = normalized.replace(/\/+$/g, "");

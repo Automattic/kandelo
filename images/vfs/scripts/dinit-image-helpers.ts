@@ -258,11 +258,19 @@ const ETC_HOSTS = ["127.0.0.1\tlocalhost", "::1\tlocalhost", ""].join("\n");
 export function addDinitBaseSystemFiles(
   fs: MemoryFileSystem,
   preserveExistingServices = false,
+  exactServices?: Uint8Array,
 ): void {
   ensureDirRecursive(fs, "/etc");
   writeVfsFile(fs, "/etc/passwd", ETC_PASSWD);
   writeVfsFile(fs, "/etc/group", ETC_GROUP);
   writeVfsFile(fs, "/etc/hosts", ETC_HOSTS);
+  if (exactServices !== undefined) {
+    if (!(exactServices instanceof Uint8Array) || exactServices.byteLength === 0) {
+      throw new Error("exact /etc/services input must be nonempty");
+    }
+    writeVfsBinary(fs, "/etc/services", exactServices, 0o644);
+    return;
+  }
   if (preserveExistingServices) {
     if (residentRegularFile(fs, "/etc/services") === "missing") {
       throw new Error(
@@ -300,6 +308,8 @@ export interface AddDinitInitOptions {
   boot?: boolean | string;
   /** Exact staged package bytes; forbids ambient Dinit resolution when set. */
   binaries?: DinitBinaryInputs;
+  /** Exact services database for standalone staged products without a base. */
+  services?: Uint8Array;
 }
 
 export interface PathReadinessServiceOptions {
@@ -397,7 +407,11 @@ export function addDinitInit(
   // Basic rootfs files. Most Unix daemons expect these to exist at
   // startup; missing them is the usual cause of "started but exits 1
   // silently" failures.
-  addDinitBaseSystemFiles(fs, opts.binaries !== undefined);
+  addDinitBaseSystemFiles(
+    fs,
+    opts.binaries !== undefined && opts.services === undefined,
+    opts.services,
+  );
 
   // Standard runtime/log dirs
   ensureDirRecursive(fs, "/var/log");

@@ -4,6 +4,12 @@ architecture = "wasm64"
 output = "mariadb-64.vfs.zst"
 builder = "images/vfs/scripts/build-mariadb-vfs-image.sh"
 
+[[composition.repository]]
+id = "services-database"
+paths = ["images/rootfs/etc/services"]
+role = "runtime"
+materialization = "embedded"
+
 [[software.package]]
 name = "mariadb"
 outputs = ["mariadbd"]

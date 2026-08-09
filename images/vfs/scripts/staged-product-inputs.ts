@@ -22,6 +22,7 @@ import {
   sep,
 } from "node:path";
 import { pathToFileURL } from "node:url";
+import { zstdDecompressSync } from "node:zlib";
 import { loadVfsProductCatalog } from "../../../scripts/vfs-product-catalog.mjs";
 import {
   parseHomebrewOriginalBottleTreeDescriptor,
@@ -37,7 +38,11 @@ import {
   registerPackageDeferredZipTree,
 } from "../../../host/src/vfs/package-deferred-tree";
 import { ENOENT, SFSError } from "../../../host/src/vfs/sharedfs-vendor";
-import { parseTarGzip } from "../../../host/src/vfs/tar";
+import {
+  parseTarBytes,
+  parseTarGzip,
+  type TarEntry,
+} from "../../../host/src/vfs/tar";
 import {
   extractZipEntryBounded,
   parseZipCentralDirectory,
@@ -73,6 +78,11 @@ import { buildNginxVfsImage } from "./build-nginx-vfs-image";
 import { buildNginxPhpVfsImage } from "./build-nginx-php-vfs-image";
 import { buildWordPressVfsImage } from "./build-wp-vfs-image";
 import { buildLampVfsImage } from "./build-lamp-vfs-image";
+import { buildMariadbVfsImage } from "./build-mariadb-vfs-image";
+import { buildPythonVfsImage } from "./build-python-vfs-image";
+import { buildPerlVfsImage } from "./build-perl-vfs-image";
+import { buildRedisVfsImage } from "./build-redis-vfs-image";
+import { buildErlangVfsImage } from "./build-erlang-vfs-image";
 
 const REPOSITORY_ROOT = resolve(import.meta.dirname, "../../..");
 
@@ -837,6 +847,239 @@ export async function buildStagedBrowserService(
   }
 }
 
+const STANDALONE_PRODUCT_BUILDERS = new Map([
+  [
+    "browser-mariadb-wasm32",
+    "images/vfs/scripts/build-mariadb-vfs-image.sh",
+  ],
+  [
+    "browser-mariadb-wasm64",
+    "images/vfs/scripts/build-mariadb-vfs-image.sh",
+  ],
+  ["browser-python", "images/vfs/scripts/build-python-vfs-image.sh"],
+  ["browser-perl", "images/vfs/scripts/build-perl-vfs-image.sh"],
+  ["browser-redis", "images/vfs/scripts/build-redis-vfs-image.sh"],
+  ["browser-erlang", "images/vfs/scripts/build-erlang-vfs-image.sh"],
+] as const);
+
+const STANDALONE_COMMAND_PRODUCTS = new Map([
+  [
+    "browser-mariadb",
+    new Set(["browser-mariadb-wasm32", "browser-mariadb-wasm64"]),
+  ],
+  ["browser-python", new Set(["browser-python"])],
+  ["browser-perl", new Set(["browser-perl"])],
+  ["browser-redis", new Set(["browser-redis"])],
+  ["browser-erlang", new Set(["browser-erlang"])],
+] as const);
+
+type StandaloneProductId =
+  (typeof STANDALONE_PRODUCT_BUILDERS extends Map<infer K, string>
+    ? K
+    : never);
+type StandaloneProductCommand =
+  (typeof STANDALONE_COMMAND_PRODUCTS extends Map<infer K, Set<string>>
+    ? K
+    : never);
+
+/** Build a standalone browser product solely from its resolved manifest inputs. */
+export async function buildStagedStandaloneProduct(
+  command: StandaloneProductCommand,
+  invocation: StagedProductInvocation,
+): Promise<void> {
+  assertStagedProductEnvironment(process.env);
+  const build = await openVfsProductBuild(
+    invocation.resolvedInputsPath,
+    invocation.builderReportPath,
+  );
+  const manifest = validateSelectedProductManifest(invocation.manifestPath, build);
+  const productId = build.product.id as StandaloneProductId;
+  const acceptedProducts = STANDALONE_COMMAND_PRODUCTS.get(command);
+  const expectedBuilder = STANDALONE_PRODUCT_BUILDERS.get(productId);
+  if (
+    acceptedProducts === undefined ||
+    !acceptedProducts.has(productId) ||
+    manifest.id !== productId ||
+    manifest.builder !== expectedBuilder
+  ) {
+    throw new Error(
+      `${command} staging selected a different product or builder`,
+    );
+  }
+  if (
+    manifest.composition.product.length !== 0 ||
+    manifest.software.homebrew.length !== 0 ||
+    manifest.software.archive.length !== 0 ||
+    manifest.software.toolchain.length !== 0
+  ) {
+    throw new Error(
+      `${productId} standalone staging accepts only package and repository inputs`,
+    );
+  }
+  const expected = expectedManifestInputs(manifest);
+  assertExactInputInventory(build, expected, productId);
+
+  const temporaryRoot = realDirectory(
+    process.env.TMPDIR ?? "",
+    "staged product temporary root",
+  );
+  const work = mkdtempSync(join(temporaryRoot, `kandelo-${productId}-`));
+  try {
+    const packageInput = (name: string, selector: string) =>
+      requireExpectedInput(
+        build,
+        expected,
+        resolvedInputId("package-output", name, "output", selector),
+        "package-output",
+      );
+    const packageBytes = (name: string, selector: string): Uint8Array =>
+      exactInputBytes(
+        packageInput(name, selector),
+        `${productId} ${name}/${selector}`,
+      );
+    const sourceRole = (name: string, role: string): Uint8Array =>
+      exactInputBytes(
+        requireExpectedInput(
+          build,
+          expected,
+          resolvedInputId("package-output", name, "source-role", role),
+          "package-output",
+        ),
+        `${productId} ${name} source role ${role}`,
+      );
+    const dinit = () => ({
+      dinit: packageBytes("dinit", "dinit"),
+      dinitctl: packageBytes("dinit", "dinitctl"),
+    });
+    const targetAbi = {
+      version: build.targetAbi.version,
+      snapshotSha256: build.targetAbi.snapshot_sha256,
+    };
+    const repositoryFile = (
+      id: string,
+      selectedPath: string,
+    ): Uint8Array => {
+      const repository = requireExpectedInput(
+        build,
+        expected,
+        resolvedInputId("repository-path", id),
+        "repository-path",
+      );
+      if (repository.placement === "lazy-reference") {
+        throw new Error(`${productId} repository ${id} must be embedded`);
+      }
+      const bundle = readRepositoryPathBundle(repository.path, build.source);
+      if (canonicalJson(bundle.paths) !== canonicalJson([selectedPath])) {
+        throw new Error(
+          `${productId} repository ${id} differs from its canonical paths`,
+        );
+      }
+      const destination = join(work, `repository-${id}`);
+      materializeRepositoryPathBundle(bundle, destination);
+      const bytes = new Uint8Array(readFileSync(join(destination, selectedPath)));
+      if (bytes.byteLength === 0) {
+        throw new Error(`${productId} repository file ${selectedPath} is empty`);
+      }
+      return bytes;
+    };
+
+    switch (productId) {
+      case "browser-mariadb-wasm32":
+      case "browser-mariadb-wasm64": {
+        const systemTablesDirectory = join(work, "mariadb-system-tables");
+        materializeSingleRootArchive(
+          sourceRole("mariadb", "system-tables"),
+          systemTablesDirectory,
+          `${productId} MariaDB system tables`,
+        );
+        await buildMariadbVfsImage({
+          architecture: build.product.architecture,
+          mariadbd: packageBytes("mariadb", "mariadbd"),
+          systemTablesDirectory,
+          dash: packageBytes("dash", "dash"),
+          coreutils: packageBytes("coreutils", "coreutils"),
+          dinit: dinit(),
+          services: repositoryFile(
+            "services-database",
+            "images/rootfs/etc/services",
+          ),
+          outputPath: invocation.outputPath,
+          targetAbi,
+        });
+        break;
+      }
+      case "browser-python": {
+        const runtimeRoot = join(work, "python-runtime");
+        materializeArchiveContents(
+          packageBytes("cpython", "python-runtime"),
+          runtimeRoot,
+          "browser-python runtime",
+        );
+        await buildPythonVfsImage({
+          python: packageBytes("cpython", "cpython"),
+          runtimeRoot,
+          outputPath: invocation.outputPath,
+          targetAbi,
+        });
+        break;
+      }
+      case "browser-perl": {
+        const sourceDirectory = join(work, "perl-standard-library");
+        materializeSingleRootArchive(
+          sourceRole("perl", "standard-library"),
+          sourceDirectory,
+          "browser-perl standard library",
+        );
+        const perl = packageInput("perl", "perl");
+        if (perl.placement !== "lazy-reference") {
+          throw new Error("browser-perl executable must remain lazy");
+        }
+        await buildPerlVfsImage({
+          sourceDirectory,
+          perl: {
+            reference: perl.reference,
+            sha256: perl.sha256,
+            bytes: perl.bytes,
+          },
+          outputPath: invocation.outputPath,
+          targetAbi,
+        });
+        break;
+      }
+      case "browser-redis":
+        await buildRedisVfsImage({
+          redis: packageBytes("redis", "redis-server"),
+          dinit: dinit(),
+          services: repositoryFile(
+            "services-database",
+            "images/rootfs/etc/services",
+          ),
+          outputPath: invocation.outputPath,
+          targetAbi,
+        });
+        break;
+      case "browser-erlang": {
+        const otpDirectory = join(work, "erlang-otp");
+        materializeArchiveContents(
+          packageBytes("erlang", "erlang-otp"),
+          otpDirectory,
+          "browser-erlang OTP runtime",
+        );
+        await buildErlangVfsImage({
+          erlang: packageBytes("erlang", "erlang"),
+          otpDirectory,
+          outputPath: invocation.outputPath,
+          targetAbi,
+        });
+        break;
+      }
+    }
+    await build.finish(invocation.outputPath);
+  } finally {
+    rmSync(work, { force: true, recursive: true });
+  }
+}
+
 function expectedManifestInputs(
   manifest: SelectedProductManifest,
 ): Map<string, ExpectedServiceInput> {
@@ -1002,40 +1245,94 @@ function materializeSingleRootArchive(
   destination: string,
   label: string,
 ): void {
+  materializeExactArchive(bytes, destination, label, true);
+}
+
+function materializeArchiveContents(
+  bytes: Uint8Array,
+  destination: string,
+  label: string,
+): void {
+  materializeExactArchive(bytes, destination, label, false);
+}
+
+function materializeExactArchive(
+  bytes: Uint8Array,
+  destination: string,
+  label: string,
+  stripSingleRoot: boolean,
+): void {
   if (bytes.byteLength === 0 || bytes.byteLength > MAX_BUNDLE_BYTES) {
     throw new Error(`${label} archive size is outside the accepted bound`);
   }
   mkdirSync(destination, { mode: 0o700 });
   if (bytes[0] === 0x1f && bytes[1] === 0x8b) {
-    materializeTarSource(bytes, destination, label);
+    materializeTarEntries(
+      parseTarGzip(bytes, {
+        label,
+        limits: {
+          maxCompressedBytes: MAX_BUNDLE_BYTES,
+          maxUncompressedBytes: MAX_SOURCE_TREE_BYTES,
+          maxEntries: MAX_BUNDLE_ENTRIES,
+        },
+      }),
+      destination,
+      label,
+      stripSingleRoot,
+    );
+    return;
+  }
+  if (
+    bytes[0] === 0x28 &&
+    bytes[1] === 0xb5 &&
+    bytes[2] === 0x2f &&
+    bytes[3] === 0xfd
+  ) {
+    const decompressed = new Uint8Array(zstdDecompressSync(bytes, {
+      maxOutputLength: MAX_SOURCE_TREE_BYTES,
+    }));
+    materializeTarEntries(
+      parseTarBytes(decompressed, {
+        label,
+        limits: {
+          maxUncompressedBytes: MAX_SOURCE_TREE_BYTES,
+          maxEntries: MAX_BUNDLE_ENTRIES,
+        },
+      }),
+      destination,
+      label,
+      stripSingleRoot,
+    );
     return;
   }
   if (bytes[0] === 0x50 && bytes[1] === 0x4b) {
-    materializeZipSource(bytes, destination, label);
+    materializeZipSource(
+      bytes,
+      destination,
+      label,
+      stripSingleRoot,
+    );
     return;
   }
-  throw new Error(`${label} is not a supported gzip TAR or ZIP archive`);
+  throw new Error(`${label} is not a supported gzip/zstd TAR or ZIP archive`);
 }
 
-function materializeTarSource(
-  bytes: Uint8Array,
+function materializeTarEntries(
+  entries: readonly TarEntry[],
   destination: string,
   label: string,
+  stripSingleRoot: boolean,
 ): void {
-  const entries = parseTarGzip(bytes, {
-    label,
-    limits: {
-      maxCompressedBytes: MAX_BUNDLE_BYTES,
-      maxUncompressedBytes: MAX_SOURCE_TREE_BYTES,
-      maxEntries: MAX_BUNDLE_ENTRIES,
-    },
-  });
-  const root = commonArchiveRoot(entries.map((entry) => entry.path), label);
+  const root = stripSingleRoot
+    ? commonArchiveRoot(entries.map((entry) => entry.path), label)
+    : null;
   for (const entry of entries) {
     if (entry.type === "symlink" || entry.type === "hardlink") {
       throw new Error(`${label} contains unsupported ${entry.type} ${entry.path}`);
     }
-    const relativePath = stripArchiveRoot(entry.path, root, label);
+    const relativePath = root === null
+      ? normalizedArchiveComponents(entry.path, label).join("/")
+      : stripArchiveRoot(entry.path, root, label);
     if (relativePath === null) continue;
     if (entry.type === "directory") {
       materializeArchiveDirectory(destination, relativePath, entry.mode);
@@ -1055,6 +1352,7 @@ function materializeZipSource(
   bytes: Uint8Array,
   destination: string,
   label: string,
+  stripSingleRoot: boolean,
 ): void {
   const entries = parseZipCentralDirectory(bytes);
   if (entries.length === 0 || entries.length > MAX_BUNDLE_ENTRIES) {
@@ -1069,12 +1367,16 @@ function materializeZipSource(
   if (!Number.isSafeInteger(totalBytes) || totalBytes > MAX_SOURCE_TREE_BYTES) {
     throw new Error(`${label} ZIP expands beyond the accepted bound`);
   }
-  const root = commonArchiveRoot(entries.map((entry) => entry.fileName), label);
+  const root = stripSingleRoot
+    ? commonArchiveRoot(entries.map((entry) => entry.fileName), label)
+    : null;
   for (const entry of entries) {
     if (entry.isSymlink) {
       throw new Error(`${label} contains unsupported symlink ${entry.fileName}`);
     }
-    const relativePath = stripArchiveRoot(entry.fileName, root, label);
+    const relativePath = root === null
+      ? normalizedArchiveComponents(entry.fileName, label).join("/")
+      : stripArchiveRoot(entry.fileName, root, label);
     if (relativePath === null) continue;
     if (entry.isDirectory) {
       materializeArchiveDirectory(destination, relativePath, entry.mode);
@@ -2186,7 +2488,8 @@ if (import.meta.url === invokedPath) {
     if (
       command !== "platform-rootfs" &&
       command !== "browser-main-shell" &&
-      !SERVICE_PRODUCT_BUILDERS.has(command as ServiceProductId)
+      !SERVICE_PRODUCT_BUILDERS.has(command as ServiceProductId) &&
+      !STANDALONE_COMMAND_PRODUCTS.has(command as StandaloneProductCommand)
     ) {
       throw new Error(
         "expected a supported staged VFS product command",
@@ -2200,6 +2503,13 @@ if (import.meta.url === invokedPath) {
       await buildStagedPlatformRootfs(invocation);
     } else if (command === "browser-main-shell") {
       await buildStagedBrowserMainShell(invocation);
+    } else if (
+      STANDALONE_COMMAND_PRODUCTS.has(command as StandaloneProductCommand)
+    ) {
+      await buildStagedStandaloneProduct(
+        command as StandaloneProductCommand,
+        invocation,
+      );
     } else {
       await buildStagedBrowserService(command as ServiceProductId, invocation);
     }

@@ -1209,6 +1209,24 @@ readonly = false
                 )]),
             ),
             (
+                "browser-mariadb-wasm32",
+                set(&[
+                    "services-database|images/rootfs/etc/services|Runtime|embedded",
+                ]),
+            ),
+            (
+                "browser-mariadb-wasm64",
+                set(&[
+                    "services-database|images/rootfs/etc/services|Runtime|embedded",
+                ]),
+            ),
+            (
+                "browser-redis",
+                set(&[
+                    "services-database|images/rootfs/etc/services|Runtime|embedded",
+                ]),
+            ),
+            (
                 "developer-kandelo-sdk",
                 set(&[
                     "sdk-glue|libc/glue|Runtime|embedded",

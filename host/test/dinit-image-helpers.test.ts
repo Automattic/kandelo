@@ -119,6 +119,21 @@ describe("dinit-derived image system databases", () => {
 });
 
 describe("dinit-derived image binary ownership", () => {
+  it("installs the exact declared services database for a standalone image", () => {
+    const fs = createFs();
+    addDinitInit(fs, [], {
+      binaries: {
+        dinit: encoder.encode("exact dinit"),
+        dinitctl: encoder.encode("exact dinitctl"),
+      },
+      services: encoder.encode("exact standalone services\n"),
+    });
+
+    expect(readGuestFile(fs, "/etc/services")).toBe(
+      "exact standalone services\n",
+    );
+  });
+
   it("installs exact staged Dinit bytes and preserves the base services database", () => {
     const fs = createFs();
     ensureDirRecursive(fs, "/etc");
