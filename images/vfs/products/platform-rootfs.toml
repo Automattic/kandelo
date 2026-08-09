@@ -68,10 +68,17 @@ materialization = "lazy"
 
 [[software.package]]
 name = "file"
-outputs = ["file", "file-magic"]
+outputs = ["file"]
 source_roles = []
 role = "runtime"
 materialization = "lazy"
+
+[[software.package]]
+name = "file"
+outputs = ["file-magic"]
+source_roles = []
+role = "runtime"
+materialization = "embedded"
 
 [[software.package]]
 name = "m4"

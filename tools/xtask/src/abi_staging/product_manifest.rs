@@ -1099,7 +1099,7 @@ readonly = false
                 "bash|bash||Runtime|lazy", "bc|bc||Runtime|lazy",
                 "coreutils|coreutils||Runtime|lazy", "dash|dash||Runtime|lazy",
                 "diffutils|cmp,diff,diff3,sdiff||Runtime|lazy",
-                "file|file,file-magic||Runtime|lazy",
+                "file|file-magic||Runtime|embedded", "file|file||Runtime|lazy",
                 "findutils|find,xargs||Runtime|lazy", "gawk|gawk||Runtime|lazy",
                 "grep|grep||Runtime|lazy", "m4|m4||Runtime|lazy",
                 "make|make||Runtime|lazy",
