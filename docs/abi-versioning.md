@@ -16,15 +16,14 @@ state. To prevent this, the project maintains:
 without bumping `ABI_VERSION`.** The check is structural, not a
 convention — CI enforces it.
 
-## Local ABI staging product-authority foundation
+## ABI staging rollout status
 
-The checked-in ABI staging foundation is local and inert. It defines strict,
+The checked-in ABI staging work is local and inert. It defines strict,
 canonical data contracts for VFS products, consumer selection, staging
 requests and records, guard policy, builder inputs and reports, and legacy
 retirement conditions. The miniature fixture exercises those contracts with
-ABI values read from fixture data and requires an exact generic `N` to
-`N + 1` transition; the reusable implementation contains no concrete ABI
-number.
+ABI values read from fixture data and requires an exact generic `N` to `N + 1`
+transition; the reusable implementation contains no concrete ABI number.
 
 The local proof builds from the exact declared PR-head identity, derives
 Formula roots from selected VFS products, preserves embedded and lazy
@@ -35,11 +34,28 @@ that prior-ABI history must be protected and verified before successor
 promotion and that incomplete Pages inventory retains the last complete
 local site.
 
-This foundation does not issue hosted requests, execute the tap, publish
-candidate or canonical artifacts, update a GitHub Check, create or protect an
-ABI branch, or deploy Pages. Those remote operations require the later
-staging plans and hosted evidence. Existing ABI release and VFS behavior is
-unchanged.
+The next checked-in layer derives a request only from an exact same-repository
+pull-request head. Its current identity is the complete tuple of head,
+requirements digest, request-policy version and digest, and guard-registry
+version and digest. A later policy issuance for the same head appends a new
+content-addressed request; it does not overwrite or invalidate the earlier
+request. Request assets use
+`candidate-request-<full-head-sha>-sha256-<request-digest>.json`.
+
+Request publication and tap reconciliation both remain in `observe` mode.
+The Kandelo workflow has no Release write while that mode is active. The tap
+workflow anonymously validates public GitHub data and reports deterministic
+pull-request lifecycle decisions, but cannot dispatch builds or write package,
+branch, or Check state. The local cross-repository fixture proves derivation,
+append/no-clobber behavior, policy reissuance, pull-request advance, historical
+head completion, close, reopen, and merge handling without using the network.
+
+Neither workflow revision has reached protected `main`, and there is no hosted
+canary evidence for this layer. It therefore does not currently issue hosted
+requests, execute candidate code, publish candidate or canonical artifacts,
+update a GitHub Check, create or protect an ABI branch, or deploy Pages. Those
+operations require the later staging layers and their hosted evidence.
+Existing ABI release and VFS behavior is unchanged.
 
 ## What counts as an ABI change
 

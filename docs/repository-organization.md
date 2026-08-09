@@ -17,7 +17,7 @@ Kandelo is organized as a kernel-first monorepo. The kernel and host runtimes ar
 | `images/vfs/products/` | Canonical VFS product manifests and generated catalog | Pages/test placement and software recipe facts |
 | `apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.toml` | Pages-owned VFS product selection | VFS product definitions |
 | `tests/vfs-products.toml` | Test-owned VFS product selection and applicability | VFS product definitions |
-| `abi/staging/` | ABI staging guard policy and legacy transition ledgers | Hosted artifact storage or mutable current state |
+| `abi/staging/` | ABI staging request/guard policy, activation, and transition ledgers | Hosted artifact storage or mutable current state |
 | `tools/` | Repo automation such as `xtask` and `mkrootfs` | Product runtime code |
 | `sdk/` | Cross-compilation wrapper CLI and SDK support code | Runtime host implementation |
 | `libc/` | musl submodule, musl overlay, syscall glue | General package registry |
@@ -80,13 +80,19 @@ The layout is designed so later CI path filters can make conservative, explainab
 | `apps/browser-demos/**`, `web-libs/**` | Browser app build/tests and relevant package browser specs |
 | `images/**`, `tools/mkrootfs/**` | Rootfs/VFS image checks and consumers of those images |
 
-The canonical VFS catalog and both consumer registries currently support
-checked-in validation and a deterministic local transition miniature.
-Hosted ABI staging is not operational in this foundation.
-Remote request issuance,
-tap execution, candidate publication, GitHub Check updates, promotion,
-protected ABI-history mutation, and production Pages deployment belong to the
-later staging plans.
+The canonical VFS catalog and both consumer registries support checked-in
+validation and a deterministic local transition miniature. The protected
+request workflow is owned by
+`.github/workflows/abi-staging-request-feed.yml`; its source policy and
+activation are owned by `abi/staging/request-policy.toml` and
+`abi/staging/request-feed-activation.toml`. Activation remains `observe`, so
+the workflow derives inert exact-head request data but cannot publish a
+Release asset. The companion tap workflow is also observe-only and read-only.
+
+Neither workflow revision is deployed on protected `main`, so hosted ABI
+staging is not operational. Candidate execution and publication, GitHub Check
+updates, promotion, protected ABI-history mutation, and production Pages
+deployment belong to later staging layers and require hosted evidence.
 
 The change-scope classifier implements these categories conservatively. VFS
 authority and staging-contract paths reach the non-package runtime gate;
