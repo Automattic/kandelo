@@ -2,6 +2,8 @@ pub mod builder_contract;
 pub mod canonical_json;
 pub mod consumer_registry;
 pub mod guard_registry;
+pub mod local_transport;
+pub mod mini_lifecycle;
 pub mod product_manifest;
 pub mod records;
 pub mod selection;
@@ -70,6 +72,19 @@ pub fn run(args: Vec<String>) -> ExitCode {
             eprintln!("xtask abi-staging: guard-codes requires generate or check");
             ExitCode::from(2)
         }
+        [group, action, rest @ ..] if group == "mini" => {
+            match mini_lifecycle::run_cli(action, rest) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("xtask abi-staging mini {action}: {error}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        [group, ..] if group == "mini" => {
+            eprintln!("xtask abi-staging: mini requires run");
+            ExitCode::from(2)
+        }
         [subcommand, rest @ ..] if subcommand == "requirements" => {
             match selection::run_cli(rest) {
                 Ok(()) => ExitCode::SUCCESS,
@@ -89,6 +104,6 @@ pub fn run(args: Vec<String>) -> ExitCode {
 fn print_help() {
     println!("usage: xtask abi-staging <subcommand> [args...]");
     println!(
-        "subcommands: help, products <generate|check>, registries <generate|check>, builder <validate-inputs|validate-report|compare-report>, guard-codes <generate|check>, requirements"
+        "subcommands: help, products <generate|check>, registries <generate|check>, builder <validate-inputs|validate-report|compare-report>, guard-codes <generate|check>, mini run, requirements"
     );
 }

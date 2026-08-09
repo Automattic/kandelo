@@ -563,13 +563,34 @@ fn validate_reference_class(
             "canonical input {:?} references the candidate namespace",
             input.id
         )),
-        VfsReferenceClassV1::LocalFixture
-            if !reference.starts_with("local-fixture:sha256:") =>
-        {
-            Err(format!(
-                "local fixture input {:?} requires a local-fixture reference",
-                input.id
-            ))
+        VfsReferenceClassV1::LocalFixture => {
+            let prefix = format!("local-fixture:sha256:{}?namespace=", input.sha256);
+            let suffix = reference.strip_prefix(&prefix).ok_or_else(|| {
+                format!(
+                    "local fixture input {:?} reference does not bind its exact digest",
+                    input.id
+                )
+            })?;
+            let (namespace, bytes) = suffix.split_once("&bytes=").ok_or_else(|| {
+                format!(
+                    "local fixture input {:?} reference lacks namespace or byte identity",
+                    input.id
+                )
+            })?;
+            if !matches!(namespace, "candidate" | "canonical" | "source")
+                || matches!(
+                    input.kind,
+                    ResolvedVfsInputKindV1::HomebrewBottle
+                        | ResolvedVfsInputKindV1::ProductImage
+                ) && !matches!(namespace, "candidate" | "canonical")
+                || bytes.parse::<u64>().ok() != Some(input.bytes)
+            {
+                return Err(format!(
+                    "local fixture input {:?} reference does not bind exact namespace and bytes",
+                    input.id
+                ));
+            }
+            Ok(())
         }
         VfsReferenceClassV1::Candidate | VfsReferenceClassV1::Canonical
             if matches!(
@@ -1007,6 +1028,64 @@ mod tests {
         assert!(validate_resolved_inputs(&canonical_json_bytes(&local).unwrap(), root.path())
             .unwrap_err()
             .contains("miniature"));
+    }
+
+    #[test]
+    fn miniature_accepts_only_exact_local_fixture_references() {
+        let root = tempfile::tempdir().unwrap();
+        let mut inputs = fixture_inputs(root.path());
+        inputs.reference_class = VfsReferenceClassV1::LocalFixture;
+        let lazy = &mut inputs.inputs[2];
+        lazy.reference = Some(format!(
+            "local-fixture:sha256:{}?namespace=candidate&bytes={}",
+            lazy.sha256, lazy.bytes
+        ));
+        let bytes = canonical_json_bytes(&inputs).unwrap();
+
+        assert!(validate_resolved_inputs(&bytes, root.path())
+            .unwrap_err()
+            .contains("miniature"));
+        assert_eq!(
+            validate_resolved_inputs_for_miniature(&bytes, root.path()).unwrap(),
+            inputs
+        );
+
+        let mut wrong_digest = inputs.clone();
+        wrong_digest.inputs[2].reference = Some(format!(
+            "local-fixture:sha256:{DIGEST_A}?namespace=candidate&bytes={}",
+            wrong_digest.inputs[2].bytes
+        ));
+        assert!(validate_resolved_inputs_for_miniature(
+            &canonical_json_bytes(&wrong_digest).unwrap(),
+            root.path(),
+        )
+        .unwrap_err()
+        .contains("bind the input SHA-256"));
+
+        let mut source_namespace = inputs.clone();
+        source_namespace.inputs[2].reference = Some(format!(
+            "local-fixture:sha256:{}?namespace=source&bytes={}",
+            source_namespace.inputs[2].sha256, source_namespace.inputs[2].bytes
+        ));
+        assert!(validate_resolved_inputs_for_miniature(
+            &canonical_json_bytes(&source_namespace).unwrap(),
+            root.path(),
+        )
+        .unwrap_err()
+        .contains("exact namespace and bytes"));
+
+        let mut wrong_bytes = inputs;
+        wrong_bytes.inputs[2].reference = Some(format!(
+            "local-fixture:sha256:{}?namespace=candidate&bytes={}",
+            wrong_bytes.inputs[2].sha256,
+            wrong_bytes.inputs[2].bytes + 1
+        ));
+        assert!(validate_resolved_inputs_for_miniature(
+            &canonical_json_bytes(&wrong_bytes).unwrap(),
+            root.path(),
+        )
+        .unwrap_err()
+        .contains("exact namespace and bytes"));
     }
 
     #[cfg(unix)]

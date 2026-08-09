@@ -32,8 +32,9 @@ const INPUT_KINDS = [
 type VfsProductInputKind = (typeof INPUT_KINDS)[number];
 type InputRole = "runtime" | "build";
 type InputPlacement = "embedded" | "lazy-reference" | "build-only";
+type ReferenceClass = "candidate" | "canonical" | "local-fixture";
 
-interface ProductIdentity {
+export interface ProductIdentity {
   id: string;
   manifest_path: string;
   manifest_sha256: string;
@@ -41,7 +42,7 @@ interface ProductIdentity {
   output: string;
 }
 
-interface TargetAbi {
+export interface TargetAbi {
   version: number;
   snapshot_sha256: string;
 }
@@ -69,7 +70,7 @@ interface ResolvedInputs {
     policy_sha256: string;
     dev_shell_lock_sha256: string;
   };
-  reference_class: "candidate" | "canonical";
+  reference_class: ReferenceClass;
   source: { repository: string; commit: string; tree: string };
   inputs: ResolvedInput[];
 }
@@ -91,6 +92,8 @@ export type VfsProductInputHandle =
     }>;
 
 export interface VfsProductBuild {
+  readonly product: Readonly<ProductIdentity>;
+  readonly targetAbi: Readonly<TargetAbi>;
   requireProductImage(id: string): VfsProductInputHandle;
   requireHomebrewBottle(id: string): VfsProductInputHandle;
   requirePackageOutput(id: string): VfsProductInputHandle;
@@ -103,6 +106,22 @@ export interface VfsProductBuild {
 export async function openVfsProductBuild(
   inputsPath: string,
   reportPath: string,
+): Promise<VfsProductBuild> {
+  return openVfsProductBuildWithPolicy(inputsPath, reportPath, false);
+}
+
+/** Local content references are accepted only by the inert transition proof. */
+export async function openMiniatureVfsProductBuild(
+  inputsPath: string,
+  reportPath: string,
+): Promise<VfsProductBuild> {
+  return openVfsProductBuildWithPolicy(inputsPath, reportPath, true);
+}
+
+async function openVfsProductBuildWithPolicy(
+  inputsPath: string,
+  reportPath: string,
+  allowLocalFixture: boolean,
 ): Promise<VfsProductBuild> {
   const absoluteInputsPath = resolve(inputsPath);
   const absoluteReportPath = resolve(reportPath);
@@ -124,7 +143,11 @@ export async function openVfsProductBuild(
   if (canonicalJson(parsed) !== inputText) {
     fail("resolved input document is not canonical JSON");
   }
-  const inputs = parseResolvedInputs(parsed, dirname(absoluteInputsPath));
+  const inputs = parseResolvedInputs(
+    parsed,
+    dirname(absoluteInputsPath),
+    allowLocalFixture,
+  );
   const byId = new Map(inputs.inputs.map((input) => [input.id, input]));
   const consumed = new Map<string, ResolvedInput>();
   let finished = false;
@@ -161,6 +184,8 @@ export async function openVfsProductBuild(
   };
 
   return Object.freeze({
+    product: Object.freeze({ ...inputs.product }),
+    targetAbi: Object.freeze({ ...inputs.target_abi }),
     requireProductImage: (id: string) => requireInput(id, "product-image"),
     requireHomebrewBottle: (id: string) => requireInput(id, "homebrew-bottle"),
     requirePackageOutput: (id: string) => requireInput(id, "package-output"),
@@ -243,7 +268,11 @@ export async function openVfsProductBuild(
   });
 }
 
-function parseResolvedInputs(value: unknown, inputRoot: string): ResolvedInputs {
+function parseResolvedInputs(
+  value: unknown,
+  inputRoot: string,
+  allowLocalFixture: boolean,
+): ResolvedInputs {
   const root = exactRecord(
     value,
     [
@@ -307,9 +336,14 @@ function parseResolvedInputs(value: unknown, inputRoot: string): ResolvedInputs 
   if (!/^[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+$/.test(repository)) {
     fail("source repository must be an exact owner/name identity");
   }
+  if (root.reference_class === "local-fixture" && !allowLocalFixture) {
+    fail("local-fixture references are accepted only by the miniature builder");
+  }
   const referenceClass = oneOf(
     root.reference_class,
-    ["candidate", "canonical"] as const,
+    allowLocalFixture
+      ? (["candidate", "canonical", "local-fixture"] as const)
+      : (["candidate", "canonical"] as const),
     "reference class",
   );
   if (!Array.isArray(root.inputs) || root.inputs.length > MAX_INPUTS) {
@@ -365,7 +399,7 @@ function parseResolvedInput(
   value: unknown,
   index: number,
   productArchitecture: "wasm32" | "wasm64",
-  referenceClass: "candidate" | "canonical",
+  referenceClass: ReferenceClass,
   inputRoot: string,
 ): ResolvedInput {
   const label = `resolved input ${index}`;
@@ -429,6 +463,7 @@ function parseResolvedInput(
       : immutableReference(
           record.reference,
           inputSha256,
+          bytes,
           kind,
           referenceClass,
           label,
@@ -482,8 +517,9 @@ function parseResolvedInput(
 function immutableReference(
   value: unknown,
   inputSha256: string,
+  inputBytes: number,
   kind: VfsProductInputKind,
-  referenceClass: "candidate" | "canonical",
+  referenceClass: ReferenceClass,
   label: string,
 ): string {
   const reference = string(value, `${label} reference`);
@@ -497,11 +533,27 @@ function immutableReference(
   }
   const candidate = CANDIDATE_NAMESPACE.test(reference);
   const canonical = CANONICAL_NAMESPACE.test(reference);
+  const local = reference.match(
+    /^local-fixture:sha256:([0-9a-f]{64})\?namespace=(candidate|canonical|source)&bytes=([1-9][0-9]*)$/,
+  );
   if (referenceClass === "candidate" && canonical) {
     fail(`${label} candidate input references the canonical namespace`);
   }
   if (referenceClass === "canonical" && candidate) {
     fail(`${label} canonical input references the candidate namespace`);
+  }
+  if (referenceClass === "local-fixture") {
+    if (
+      !local ||
+      local[1] !== inputSha256 ||
+      Number(local[3]) !== inputBytes ||
+      !Number.isSafeInteger(Number(local[3])) ||
+      ((kind === "homebrew-bottle" || kind === "product-image") &&
+        local[2] === "source")
+    ) {
+      fail(`${label} local-fixture reference does not bind exact namespace and bytes`);
+    }
+    return reference;
   }
   if (
     (kind === "homebrew-bottle" || kind === "product-image") &&
