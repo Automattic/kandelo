@@ -5,6 +5,8 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { checkMainShellProjection } from "./vfs-product-catalog.mjs";
+
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const tapRepository = "kandelo-dev/homebrew-tap-core";
 const tapName = "kandelo-dev/tap-core";
@@ -13,15 +15,6 @@ const formulaIdentityPattern = /^kandelo-dev\/tap-core\/[a-z0-9][a-z0-9._-]*$/;
 const provenanceDigestFlag = "--print-runtime-bottle-provenance-sha256";
 const provenanceDigestDomain =
   "kandelo-homebrew-runtime-bottle-provenance-v1\u0000";
-const runtimeSupportRootOrder = [
-  `${tapName}/ruby`,
-  `${tapName}/git`,
-  `${tapName}/curl`,
-  `${tapName}/findutils`,
-  `${tapName}/gawk`,
-  `${tapName}/tar`,
-  `${tapName}/posix-utils-lite`,
-];
 
 if (process.argv[2] === provenanceDigestFlag) {
   if (process.argv.length !== 5) {
@@ -49,6 +42,13 @@ const metadataPath = process.argv[4] ? resolve(process.argv[4]) : undefined;
 const runtimeSupportPath = resolve(
   process.argv[5] ??
     `${repoRoot}/homebrew/main-shell-homebrew-runtime-support.json`,
+);
+const productCatalogPath = resolve(
+  process.argv[6] ?? `${repoRoot}/images/vfs/products/generated/catalog.json`,
+);
+const materializationPath = resolve(
+  process.argv[7] ??
+    `${repoRoot}/homebrew/main-shell-materialization-policy.json`,
 );
 const lock = readMigrationLock(lockPath);
 const runtimeSupport = readRuntimeSupport(runtimeSupportPath, lock);
@@ -80,6 +80,12 @@ assertExactSequence(
   "main-shell Brewfile does not match the migration lock",
   (value) => value,
 );
+checkMainShellProjection({
+  catalogPath: productCatalogPath,
+  brewfilePath: brewfile,
+  runtimeSupportPath,
+  materializationPath,
+});
 validateReviewedSubstitutions(lock);
 validateCompatibilityPolicy(lock, runtimeSupport);
 if (metadataPath !== undefined) {
@@ -687,12 +693,6 @@ function readRuntimeSupport(path, lock) {
   assertUnique(
     formulaRoots.map(({ package: packageName }) => packageName),
     "Homebrew runtime-support roots",
-  );
-  assertExactSequence(
-    formulaRoots.map(({ package: packageName }) => packageName),
-    runtimeSupportRootOrder,
-    "Homebrew runtime-support roots differ from the reviewed guest lifecycle",
-    (entry) => entry,
   );
   const formulaOrder = value.formula_order.map((entry, index) =>
     readFormulaIdentity(entry, `formula_order[${index}]`),
