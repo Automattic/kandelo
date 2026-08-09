@@ -321,6 +321,28 @@ applies to all app demos, not just WordPress.
 
 ## VFS Images
 
+### Consumer-owned product selection
+
+VFS product definitions live under `images/vfs/products/` and describe what
+an image is. They do not decide where that image appears.
+Pages placement is owned only by the Pages VFS product registry.
+The Pages registry is
+`apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.toml`; test
+selection is independently owned by `tests/vfs-products.toml`. Their generated
+JSON files are canonical checked projections.
+
+Selection preserves both lazy boundaries. A consumer may lazily compose a
+whole VFS product, and a selected product may in turn retain lazy bottle or
+package layers. Product-derived Formula roots are not copied into either
+consumer registry. This prevents a product from placing itself on Pages and
+prevents Pages or tests from becoming competing software dependency
+authorities.
+
+The checked-in miniature validates this model locally with a real serialized
+and restored VFS image. Hosted candidate publication, browser evidence for a
+real pull request, canonical promotion, and atomic production Pages deployment
+are not operational in this foundation.
+
 Browser demos use pre-built **VFS images** — binary snapshots of a `MemoryFileSystem` containing all runtime files, directory structure, configs, and symlinks needed by a demo. At runtime, restoring a VFS image is a single buffer copy, replacing what would otherwise be hundreds or thousands of individual file creation operations.
 
 ### How it works

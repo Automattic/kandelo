@@ -108,8 +108,14 @@ binary_materialization_changed_files() {
 kernel_runtime_changed_files() {
   grep -E \
     -e '^(crates|libc|tests/libc|tests/posix|tests/sortix|host|programs|abi)/' \
+    -e '^images/vfs/products/' \
+    -e '^images/vfs/scripts/(build-abi-staging-mini-vfs|vfs-product-builder-contract)\.ts$' \
+    -e '^apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products\.(toml|generated\.json)$' \
+    -e '^tests/vfs-products\.(toml|generated\.json)$' \
+    -e '^tools/xtask/src/abi_staging/' \
     -e '^(Cargo\.(lock|toml)|flake\.(nix|lock)|rust-toolchain\.toml|\.gitmodules)$' \
     -e '^scripts/(build-musl|build-libcxx|build-programs|check-abi-version|check-libcxx-toolchain-version|ci-run-test-suite|dev-shell|run-libc-tests|run-posix-tests|run-sortix-tests)\.sh$' \
+    -e '^scripts/(check-pages-vfs-product-registry(\.test)?\.mjs|run-vfs-product-builder(\.test)?\.ts|test-abi-staging-(mini-lifecycle|product-authority)\.sh|vfs-product-catalog(\.test)?\.mjs)$' \
     -e '^examples/run-example\.ts$' \
     || true
 }

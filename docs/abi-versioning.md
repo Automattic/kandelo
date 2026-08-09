@@ -16,6 +16,31 @@ state. To prevent this, the project maintains:
 without bumping `ABI_VERSION`.** The check is structural, not a
 convention — CI enforces it.
 
+## Local ABI staging product-authority foundation
+
+The checked-in ABI staging foundation is local and inert. It defines strict,
+canonical data contracts for VFS products, consumer selection, staging
+requests and records, guard policy, builder inputs and reports, and legacy
+retirement conditions. The miniature fixture exercises those contracts with
+ABI values read from fixture data and requires an exact generic `N` to
+`N + 1` transition; the reusable implementation contains no concrete ABI
+number.
+
+The local proof builds from the exact declared PR-head identity, derives
+Formula roots from selected VFS products, preserves embedded and lazy
+materialization, publishes into isolated content-addressed fixture
+namespaces, verifies through an anonymous reader, promotes unchanged layer
+bytes, and recomposes the final VFS with canonical references. It also proves
+that prior-ABI history must be protected and verified before successor
+promotion and that incomplete Pages inventory retains the last complete
+local site.
+
+This foundation does not issue hosted requests, execute the tap, publish
+candidate or canonical artifacts, update a GitHub Check, create or protect an
+ABI branch, or deploy Pages. Those remote operations require the later
+staging plans and hosted evidence. Existing ABI release and VFS behavior is
+unchanged.
+
 ## What counts as an ABI change
 
 Anything that could make an old compiled binary misbehave against a new

@@ -161,6 +161,35 @@ Remove this transition route when the conventional shell recipe is deleted.
 At that point the executor will no longer appear in a registry `build.toml`,
 so no exception will be necessary.
 
+### Canonical VFS product authority
+
+Canonical VFS product manifests are the lasting product authority. The TOML
+files under `images/vfs/products/` own stable product identity, architecture,
+output filename, the builder adapter, product composition, declared software
+roots and roles, embedded-versus-lazy intent, filesystem and boot intent, and
+evidence definitions. Their generated catalog is a canonical projection, not
+a second place to edit product intent.
+
+Pages and tests select products through registries owned by those consumers.
+Formula requirements are derived from the selected product manifests and tap
+dependency planning; ABI staging has no parallel Formula root list. Ordinary
+software recipes in `packages/registry/` continue to own portable source,
+license, dependency, output, and build facts. Obsolete package entries whose
+primary product is a VFS wrapper are checked transitional adapters only: they
+remain usable during rollout, cannot independently add software inputs, and
+are listed for eventual removal in `abi/staging/legacy-retirement.toml`.
+
+The staging builder boundary resolves every permitted software input before a
+builder starts. A builder can request inputs only by declared stable ID and
+must report every consumed digest, byte count, role, and placement. Missing,
+extra, mismatched, or incompletely captured inputs fail closed. A declared
+lazy product or package layer may stay lazy; resolving an input does not imply
+embedding it.
+
+This is currently a checked-in authority and local validation foundation. It
+does not yet issue remote requests, run Homebrew builds, publish candidates,
+verify hosted artifacts, or promote canonical bottles.
+
 ## Schema: `package.toml` (recipe) + `build.toml` (project view)
 
 Every package ships TWO TOML files in `packages/registry/<name>/`:
