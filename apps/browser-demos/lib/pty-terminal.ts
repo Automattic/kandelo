@@ -7,7 +7,7 @@
  */
 import { Terminal, type ITerminalOptions } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import type { BrowserKernel, BrowserKernelBootOptions } from "@host/browser-kernel-host";
+import type { BrowserKernel, BrowserKernelBootOptions } from "@kandelo/web";
 
 const encoder = new TextEncoder();
 
