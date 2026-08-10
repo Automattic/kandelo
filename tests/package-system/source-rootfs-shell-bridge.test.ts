@@ -15,7 +15,10 @@ import { zipSync } from "fflate";
 import { afterEach, describe, expect, it } from "vitest";
 import { ABI_VERSION } from "../../host/src/generated/abi";
 import { MemoryFileSystem } from "../../host/src/vfs/memory-fs";
-import { ensureDirRecursive } from "../../host/src/vfs/image-helpers";
+import {
+  ensureDirRecursive,
+  writeVfsFile,
+} from "../../host/src/vfs/image-helpers";
 import type { ZipEntry } from "../../host/src/vfs/zip";
 import {
   buildSourceRootfsShellImage,
@@ -117,6 +120,17 @@ async function writeRootfs(path: string, kernelAbi = ABI_VERSION) {
   );
   ensureDirRecursive(fs, "/bin");
   fs.symlink("/usr/bin/bash", "/bin/bash");
+  ensureDirRecursive(fs, "/etc/profile.d");
+  writeVfsFile(fs, "/etc/hostname", "kandelo\n", 0o644);
+  writeVfsFile(
+    fs,
+    "/etc/profile.d/kandelo-prompt.sh",
+    readFileSync(
+      join(repoRoot, "images/rootfs/etc/profile.d/kandelo-prompt.sh"),
+      "utf8",
+    ),
+    0o644,
+  );
   for (const spec of SHELL_LAZY_BINARY_SPECS) {
     if (!ROOTFS_LAZY_IDS.has(spec.id)) continue;
     fs.registerLazyFile(
@@ -326,7 +340,7 @@ describe("source-rootfs shell bridge", () => {
       'name = "node"',
     ]);
     expect(buildToml).toMatch(/^commit\s*=\s*"UNPUBLISHED"$/m);
-    expect(buildToml).toMatch(/^revision\s*=\s*3$/m);
+    expect(buildToml).toMatch(/^revision\s*=\s*4$/m);
     expect(buildToml).not.toContain("[[git_inputs]]");
     for (const input of [
       "homebrew/source-rootfs-shell-default.json",
@@ -448,6 +462,14 @@ describe("source-rootfs shell bridge", () => {
     );
 
     const fs = MemoryFileSystem.fromImagePreservingCapacity(first);
+    expect(text(readVfsFile(fs, "/etc/hostname"))).toBe("kandelo\n");
+    expect(text(readVfsFile(
+      fs,
+      "/etc/profile.d/kandelo-prompt.sh",
+    ))).toBe(readFileSync(
+      join(repoRoot, "images/rootfs/etc/profile.d/kandelo-prompt.sh"),
+      "utf8",
+    ));
     for (const entry of sourceLazy) {
       expect(fs.exportLazyEntries()).toContainEqual(entry);
     }

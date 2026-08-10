@@ -66,6 +66,15 @@ test("the exact source-rootfs product shell runs Bash, Vim, and NetHack", async 
   await expect(page.locator(".xterm-rows").first()).toBeVisible({
     timeout: 120_000,
   });
+  await expect.poll(() => terminalText(page), { timeout: 120_000 })
+    .toMatch(/user@kandelo ~ ❯\s*$/);
+  await runGuideScript(
+    page,
+    "cd /tmp\nprintf 'KANDELO_PROMPT_CWD_OK:%s\\n' \"$PWD\"",
+    "KANDELO_PROMPT_CWD_OK:/tmp",
+  );
+  await expect.poll(() => terminalText(page), { timeout: 120_000 })
+    .toMatch(/user@kandelo \/tmp ❯\s*$/);
 
   await runGuideScript(
     page,
@@ -75,7 +84,7 @@ test("the exact source-rootfs product shell runs Bash, Vim, and NetHack", async 
       "else\n" +
       "  printf 'SOURCE_ROOTFS_BASH_FAIL:%s\\n' \"$PWD\"\n" +
       "fi",
-    /SOURCE_ROOTFS_BASH_OK:[0-9][^\r\n]*:\/home\/user/,
+    /SOURCE_ROOTFS_BASH_OK:[0-9][^\r\n]*:\/tmp/,
   );
   await runGuideScript(
     page,

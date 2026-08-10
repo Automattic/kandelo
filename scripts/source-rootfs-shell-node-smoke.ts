@@ -66,6 +66,25 @@ if (metadata?.kernelAbi !== ABI_VERSION) {
 const fs = MemoryFileSystem.fromImagePreservingCapacity(imageBytes);
 // WHY: the acceptance assertions below trust deferred-tree metadata.
 await fs.verifyImportedLazyAtomicGroupSeals();
+const utf8 = new TextDecoder("utf-8", { fatal: true });
+const hostname = utf8.decode(readVfsFile(fs, "/etc/hostname"));
+if (hostname !== "kandelo\n") {
+  throw new Error(`source-rootfs shell hostname is ${JSON.stringify(hostname)}`);
+}
+const promptProfile = utf8.decode(
+  readVfsFile(fs, "/etc/profile.d/kandelo-prompt.sh"),
+);
+for (const required of [
+  "PS1='\\u@\\h \\w \\$ '",
+  "\\[\\e]133;A\\a\\]",
+  "\\[\\e]133;B\\a\\]",
+  "\\u@\\h",
+  "\\w",
+]) {
+  if (!promptProfile.includes(required)) {
+    throw new Error(`source-rootfs shell prompt omits ${JSON.stringify(required)}`);
+  }
+}
 const shellConfigBytes = readVfsFile(fs, KANDELO_SHELL_CONFIG_PATH);
 expectExactBytes(
   shellConfigBytes,
@@ -73,7 +92,7 @@ expectExactBytes(
   KANDELO_SHELL_CONFIG_PATH,
 );
 const shellConfig = parseKandeloShellConfig(
-  new TextDecoder("utf-8", { fatal: true }).decode(shellConfigBytes),
+  utf8.decode(shellConfigBytes),
 );
 if (
   shellConfig === null ||
@@ -163,8 +182,9 @@ try {
     );
   }
   console.log(
-    "Source-rootfs shell Node smoke: exact ABI/capacity/config, eager Bash " +
-      "alias identity, and offline Bash execution passed.",
+    "Source-rootfs shell Node smoke: exact ABI/capacity/config, hostname and " +
+      "prompt-profile preservation, eager Bash alias identity, and offline " +
+      "Bash execution passed.",
   );
 } finally {
   await host.destroy().catch(() => {});

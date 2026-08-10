@@ -26,7 +26,7 @@ async function waitForReady(page: Page, timeout = 180_000) {
 async function waitForPrompt(page: Page, timeout = 120_000) {
   await expect
     .poll(() => terminalText(page), { timeout })
-    .toContain("kandelo$");
+    .toMatch(/user@kandelo ~ ❯\s*$/);
 }
 
 async function runTerminalLine(page: Page, command: string) {

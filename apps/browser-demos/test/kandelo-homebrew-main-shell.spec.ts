@@ -546,7 +546,7 @@ async function bootExactShellPage(page: Page): Promise<ExactShellPage> {
   await expect(page.locator(".xterm-rows").first()).toBeVisible({
     timeout: 180_000,
   });
-  await waitForTerminalContent(page, /kandelo\$\s*$/, 240_000);
+  await waitForTerminalContent(page, /user@kandelo ~ ❯\s*$/, 240_000);
   const mirrorPlan = await page.evaluate(async (url) => {
     const response = await fetch(url, {
       cache: "no-store",

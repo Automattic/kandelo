@@ -235,6 +235,13 @@ test("Kandelo shell demo runs bash, vim, and NetHack", async ({ page }) => {
   await gotoOrSkip(page, "/?demo=shell");
   await waitForReady(page);
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
+  await waitForTerminalContent(page, /user@kandelo ~ ❯\s*$/, 120_000);
+  await runGuideScript(
+    page,
+    "cd /tmp\nprintf 'KANDELO_PROMPT_CWD_OK:%s\\n' \"$PWD\"",
+    "KANDELO_PROMPT_CWD_OK:/tmp",
+  );
+  await waitForTerminalContent(page, /user@kandelo \/tmp ❯\s*$/, 120_000);
 
   await runGuideScript(
     page,
@@ -244,7 +251,7 @@ test("Kandelo shell demo runs bash, vim, and NetHack", async ({ page }) => {
       "else\n" +
       "  printf 'KANDELO_BASH_FAIL:%s\\n' \"$PWD\"\n" +
       "fi",
-    /KANDELO_BASH_OK:[0-9][^\r\n]*:\/home\/user/,
+    /KANDELO_BASH_OK:[0-9][^\r\n]*:\/tmp/,
   );
   await runGuideScript(
     page,
@@ -352,7 +359,7 @@ test("Kandelo nginx demo serves its web preview", async ({ page }) => {
   );
 
   await openTerminalDrawer(page);
-  await waitForTerminalContent(page, /kandelo\$ ?/, 120_000);
+  await waitForTerminalContent(page, /user@kandelo ~ ❯\s*$/, 120_000);
   await runTerminalCommand(
     page,
     "set -eu; test \"$(id -u):$HOME:$(pwd)\" = '1000:/home/user:/home/user'; " +
@@ -385,7 +392,7 @@ test("Kandelo nginx + PHP demo serves dynamic PHP through the web preview", asyn
   );
 
   await openTerminalDrawer(page);
-  await waitForTerminalContent(page, /kandelo\$ ?/, 120_000);
+  await waitForTerminalContent(page, /user@kandelo ~ ❯\s*$/, 120_000);
   await runTerminalCommand(
     page,
     "set -eu; test \"$(id -u):$HOME:$(pwd)\" = '1000:/home/user:/home/user'; " +
