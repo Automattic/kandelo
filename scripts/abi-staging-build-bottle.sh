@@ -168,6 +168,45 @@ if [ ! -s "$RAW_OUTPUT/diagnostics/summary.txt" ]; then
     >"$RAW_OUTPUT/diagnostics/summary.txt"
 fi
 
+if [ "$BUILD_STATUS" -eq 0 ]; then
+  mapfile -t composition_bottles < <(
+    find "$RAW_OUTPUT/bottles" -maxdepth 1 -type f -name '*.tar.gz' -print | sort
+  )
+  mapfile -t composition_metadata < <(
+    find "$RAW_OUTPUT/bottles" -maxdepth 1 -type f -name '*.bottle.json' -print | sort
+  )
+  if [ "${#composition_bottles[@]}" -ne 1 ] || \
+     [ "${#composition_metadata[@]}" -ne 1 ]; then
+    printf '%s\n' \
+      'ABI staging composition requires one exact bottle and metadata file' \
+      >>"$RAW_OUTPUT/diagnostics/summary.txt"
+    BUILD_STATUS=1
+  else
+    COMPOSITION_INPUT="$BUILD_ROOT/composition-input.json"
+    COMPOSITION_DESCRIPTOR="$RAW_OUTPUT/bottles/${FORMULA}.vfs-composition.json"
+    set +e
+    {
+      PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$TAP_ROOT" \
+        python3 -m scripts.abi_staging.handoff prepare-composition \
+          --context "$CONTEXT" \
+          --bottle "${composition_bottles[0]}" \
+          --metadata "${composition_metadata[0]}" \
+          --guest-layout "$KANDELO_ROOT/homebrew/kandelo-guest-layout.json" \
+          --out "$COMPOSITION_INPUT" &&
+      node "$KANDELO_ROOT/node_modules/tsx/dist/cli.mjs" \
+        "$KANDELO_ROOT/scripts/abi-staging-homebrew-composition-descriptor.ts" \
+        --input "$COMPOSITION_INPUT" \
+        --bottle "${composition_bottles[0]}" \
+        --out "$COMPOSITION_DESCRIPTOR"
+    } >>"$RAW_OUTPUT/diagnostics/summary.txt" 2>&1
+    COMPOSITION_STATUS="$?"
+    set -e
+    if [ "$COMPOSITION_STATUS" -ne 0 ]; then
+      BUILD_STATUS="$COMPOSITION_STATUS"
+    fi
+  fi
+fi
+
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$TAP_ROOT" \
   python3 -m scripts.abi_staging.handoff assemble \
     --context "$CONTEXT" \

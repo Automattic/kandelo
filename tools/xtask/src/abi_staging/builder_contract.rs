@@ -657,6 +657,16 @@ fn validate_reference_class_fields(
     byte_count: u64,
     reference: &str,
 ) -> Result<(), String> {
+    let exact_pages_product = validate_pages_product_reference(
+        class,
+        target_abi,
+        input_id,
+        kind,
+        placement,
+        sha256,
+        byte_count,
+        reference,
+    )?;
     let normalized = reference.strip_prefix("https://").unwrap_or(reference);
     let namespace = "ghcr.io/kandelo-dev/homebrew-tap-core-abi-";
     let namespace_component = normalized.strip_prefix(namespace).and_then(|suffix| {
@@ -735,12 +745,55 @@ fn validate_reference_class_fields(
                 input_id
             ))
         }
-        VfsReferenceClassV1::Canonical if managed && !exact_canonical => Err(format!(
+        VfsReferenceClassV1::Canonical
+            if managed && !exact_canonical && !exact_pages_product => Err(format!(
             "managed input {:?} does not use its target ABI canonical namespace",
             input_id
         )),
         _ => Ok(()),
     }
+}
+
+fn validate_pages_product_reference(
+    class: VfsReferenceClassV1,
+    target_abi: u64,
+    input_id: &str,
+    kind: ResolvedVfsInputKindV1,
+    placement: ConsumedInputPlacementV1,
+    sha256: &str,
+    byte_count: u64,
+    reference: &str,
+) -> Result<bool, String> {
+    let prefix = "https://automattic.github.io/kandelo/products/";
+    let Some(suffix) = reference.strip_prefix(prefix) else {
+        return Ok(false);
+    };
+    let Some((product_id, remainder)) = suffix.split_once('/') else {
+        return Err(format!(
+            "input {:?} Pages product reference does not bind exact identity",
+            input_id
+        ));
+    };
+    validate_stable_id(product_id, "Pages product reference ID")?;
+    let expected = format!(
+        "sha256-{sha256}/{product_id}-{target_abi}.vfs.zst?sha256={sha256}&bytes={byte_count}"
+    );
+    if class != VfsReferenceClassV1::Canonical
+        || kind != ResolvedVfsInputKindV1::ProductImage
+        || remainder != expected
+    {
+        return Err(format!(
+            "input {:?} Pages product reference does not bind exact identity",
+            input_id
+        ));
+    }
+    if placement != ConsumedInputPlacementV1::Embedded {
+        return Err(format!(
+            "input {:?} Pages product reference requires embedded placement",
+            input_id
+        ));
+    }
+    Ok(true)
 }
 
 fn validate_immutable_reference(reference: &str, sha256: &str) -> Result<(), String> {
@@ -1083,6 +1136,50 @@ mod tests {
         assert!(validation.accepted);
         assert_eq!(validation.product_id, "mini-shell");
         assert_eq!(validation.input_count, 3);
+    }
+
+    #[test]
+    fn accepts_pages_identity_only_for_embedded_canonical_product_input() {
+        let root = tempfile::tempdir().unwrap();
+        let mut inputs = fixture_inputs(root.path());
+        let bytes = b"lazy bottle";
+        let digest = sha(bytes);
+        write(root.path(), "inputs/base.vfs", bytes);
+        inputs.reference_class = VfsReferenceClassV1::Canonical;
+        let product = &mut inputs.inputs[2];
+        product.kind = ResolvedVfsInputKindV1::ProductImage;
+        product.declared_materialization = DeclaredInputMaterializationV1::Embedded;
+        product.effective_materialization = ConsumedInputPlacementV1::Embedded;
+        product.path = Some("inputs/base.vfs".to_string());
+        product.descriptor = None;
+        product.reference = Some(format!(
+            "https://automattic.github.io/kandelo/products/base/sha256-{digest}/base-7.vfs.zst?sha256={digest}&bytes={}",
+            bytes.len(),
+        ));
+        validate_resolved_inputs(&canonical_json_bytes(&inputs).unwrap(), root.path()).unwrap();
+
+        let mut lazy = inputs.clone();
+        lazy.inputs[2].declared_materialization = DeclaredInputMaterializationV1::Lazy;
+        lazy.inputs[2].effective_materialization = ConsumedInputPlacementV1::LazyReference;
+        lazy.inputs[2].path = None;
+        assert!(validate_resolved_inputs(
+            &canonical_json_bytes(&lazy).unwrap(),
+            root.path(),
+        )
+        .unwrap_err()
+        .contains("Pages product reference requires embedded placement"));
+
+        let mut hostile = inputs;
+        hostile.inputs[2].reference = Some(format!(
+            "https://attacker.invalid/kandelo/products/base/sha256-{digest}/base-7.vfs.zst?sha256={digest}&bytes={}",
+            bytes.len(),
+        ));
+        assert!(validate_resolved_inputs(
+            &canonical_json_bytes(&hostile).unwrap(),
+            root.path(),
+        )
+        .unwrap_err()
+        .contains("canonical namespace"));
     }
 
     #[test]

@@ -933,9 +933,12 @@ dependants wait only if the resulting dependency bottle layer changes.
 Unrelated Formulae continue.
 
 Promotion creates the canonical OCI manifest and top-level index around the
-unchanged candidate bottle layer. Candidate and canonical manifest digests may
-differ because annotations and references differ; the bottle-layer digest and
-bytes must be exact. Anonymous readback is mandatory before admission.
+unchanged candidate bottle layer. It also copies the exact candidate bottle
+metadata blob so later canonical VFS composition has a real endorsed descriptor
+reference rather than an invented locator. Candidate and canonical manifest
+digests may differ because annotations and references differ; both copied-layer
+digests and bytes must be exact. Anonymous readback is mandatory before
+admission.
 
 Each Formula then receives a narrow generated metadata update on tap main,
 guarded by compare-and-swap against the reviewed Formula source. The write

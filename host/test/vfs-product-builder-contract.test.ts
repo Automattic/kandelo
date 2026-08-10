@@ -119,6 +119,62 @@ describe("VFS product builder contract", () => {
     expect(report.output.name).toBe("mini-shell.vfs");
   });
 
+  it("accepts a content-addressed Pages URL only for an embedded canonical product", async () => {
+    const fixture = await createFixture();
+    const inputs = JSON.parse(readFileSync(fixture.inputsPath, "utf8"));
+    const product = inputs.inputs.find((input: any) => input.id === "candidate-base");
+    const bottle = inputs.inputs.find((input: any) => input.id === "shell-bottle");
+    const productBytes = "lazy candidate";
+    writeFileSync(join(fixture.directory, "files/base.vfs"), productBytes);
+    inputs.reference_class = "canonical";
+    Object.assign(product, {
+      declared_materialization: "embedded",
+      effective_materialization: "embedded",
+      path: "files/base.vfs",
+      reference:
+        `https://automattic.github.io/kandelo/products/base/sha256-${fixture.lazySha256}/` +
+        `base-7.vfs.zst?sha256=${fixture.lazySha256}&bytes=14`,
+    });
+    bottle.descriptor.reference = bottle.descriptor.reference.replace("-candidates/", "/");
+    writeFileSync(fixture.inputsPath, canonicalJson(inputs));
+
+    const build = await openVfsProductBuild(fixture.inputsPath, fixture.reportPath);
+    expect(build.requireProductImage("candidate-base")).toMatchObject({
+      bytes: 14,
+      path: join(fixture.directory, "files/base.vfs"),
+      placement: "embedded",
+      sha256: fixture.lazySha256,
+    });
+
+    const lazyFixture = await createFixture();
+    const lazy = JSON.parse(readFileSync(lazyFixture.inputsPath, "utf8"));
+    lazy.reference_class = "canonical";
+    lazy.inputs[0].reference =
+      `https://automattic.github.io/kandelo/products/base/sha256-${lazyFixture.lazySha256}/` +
+      `base-7.vfs.zst?sha256=${lazyFixture.lazySha256}&bytes=14`;
+    lazy.inputs.find((input: any) => input.id === "shell-bottle").descriptor.reference =
+      lazy.inputs.find((input: any) => input.id === "shell-bottle").descriptor.reference
+        .replace("-candidates/", "/");
+    writeFileSync(lazyFixture.inputsPath, canonicalJson(lazy));
+    await expect(
+      openVfsProductBuild(lazyFixture.inputsPath, lazyFixture.reportPath),
+    ).rejects.toThrow(/Pages product reference requires embedded placement/);
+
+    const hostileFixture = await createFixture();
+    const hostile = JSON.parse(readFileSync(hostileFixture.inputsPath, "utf8"));
+    hostile.reference_class = "canonical";
+    hostile.inputs[0].reference =
+      `https://attacker.invalid/kandelo/products/base/sha256-${hostileFixture.lazySha256}/` +
+      `base-7.vfs.zst?sha256=${hostileFixture.lazySha256}&bytes=14`;
+    hostile.inputs.find((input: any) => input.id === "shell-bottle").descriptor.reference =
+      hostile.inputs.find((input: any) => input.id === "shell-bottle").descriptor.reference
+        .replace("-candidates/", "/");
+    writeFileSync(hostileFixture.inputsPath, canonicalJson(hostile));
+    await expect(
+      openVfsProductBuild(hostileFixture.inputsPath, hostileFixture.reportPath),
+    ).rejects.toThrow(/managed input does not use a versioned namespace/);
+  });
+
   it("does not read lazy bytes and refuses undeclared toolchain outputs", async () => {
     const fixture = await createFixture();
     const build = await openVfsProductBuild(

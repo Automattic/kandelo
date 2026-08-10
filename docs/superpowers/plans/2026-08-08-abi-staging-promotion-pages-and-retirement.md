@@ -768,7 +768,8 @@ entries nonremovable and performs no broad deletion.
   override, valid Task 2 history record, current tap source, and canonical OCI
   namespace.
 - Produces: `PromotionDecisionV1`, canonical manifest locator with unchanged
-  layer, and prepared `AdmissionRecordV1` awaiting exact metadata commit.
+  bottle and bottle-metadata layers, and prepared `AdmissionRecordV1` awaiting
+  exact metadata commit.
 
 - [ ] **Step 1: Write failing eligibility tests**
 
@@ -780,8 +781,10 @@ entries nonremovable and performs no broad deletion.
 - [ ] **Step 2: Write exact-layer promotion tests**
 
   Fake registry must show candidate/canonical manifests differ while bottle
-  descriptor digest/size/bytes are identical. Reject download/rebuild output,
-  changed layer, candidate repository used as canonical, mutable tag authority,
+  descriptor digest/size/bytes are identical. The exact candidate bottle
+  metadata blob is also copied unchanged so canonical product composition has
+  an admitted descriptor locator. Reject download/rebuild output, changed
+  layer, candidate repository used as canonical, mutable tag authority,
   private readback, and admission before readback/metadata.
 
 - [ ] **Step 3: Write tap-source drift tests**
@@ -807,9 +810,10 @@ entries nonremovable and performs no broad deletion.
 
   Fetch GitHub PR state directly, validate exact request relationship, recheck
   every immutable record, require valid history, compare current normalized tap
-  source, and produce one Formula decision. Copy/mount the exact bottle blob
-  into ABI-qualified canonical repository as needed, push canonical manifest,
-  and anonymously verify manifest/layer.
+  source, and produce one Formula decision. Copy/mount the exact bottle and
+  bottle-metadata blobs into the ABI-qualified canonical repository as needed,
+  push the canonical manifest, and anonymously verify the manifest and both
+  unchanged layers.
 
 - [ ] **Step 6: Implement admission finalization contract**
 

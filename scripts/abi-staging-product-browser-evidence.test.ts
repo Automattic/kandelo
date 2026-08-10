@@ -1072,6 +1072,21 @@ test("rejects a canonical product reference and an unregistered product pairing"
   );
 });
 
+test("selects an exact canonical Pages product for final browser evidence", () => {
+  const canonical = selectionInput(
+    "browser-node",
+    "node-vfs-browser-startup",
+  );
+  canonical.referenceClass = "canonical";
+  canonical.candidateReference =
+    `https://automattic.github.io/kandelo/products/browser-node/` +
+    `sha256-${digest}/browser-node-${targetAbi}.vfs.zst?` +
+    `sha256=${digest}&bytes=${canonical.servedVfs.bytes}`;
+
+  const selected = buildBrowserEvidenceSelection(canonical);
+  assert.equal(selected.candidateReference, canonical.candidateReference);
+});
+
 test("accepts candidate boot only through the closed injected object", () => {
   const selected = buildBrowserEvidenceSelection(
     selectionInput("browser-node", "node-vfs-browser-startup"),

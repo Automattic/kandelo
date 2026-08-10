@@ -322,8 +322,9 @@ export async function buildStagedBrowserMainShell(
   const directRoots = new Set(
     manifest.software.homebrew.flatMap((group) => group.formulae),
   );
-  const candidateNamespace =
-    `homebrew-tap-core-abi-${build.targetAbi.version}-candidates/`;
+  const managedNamespace = build.referenceClass === "candidate"
+    ? `homebrew-tap-core-abi-${build.targetAbi.version}-candidates/`
+    : `homebrew-tap-core-abi-${build.targetAbi.version}/`;
   if (directRoots.size === 0 || !directRoots.has("bash")) {
     throw new Error("browser-main-shell must declare its Homebrew roots including bash");
   }
@@ -424,9 +425,9 @@ export async function buildStagedBrowserMainShell(
       if (input.descriptor === undefined) {
         throw new Error(`browser-main-shell ${inputId} has no composition descriptor`);
       }
-      if (!input.descriptor.reference.includes(candidateNamespace)) {
+      if (!input.descriptor.reference.includes(managedNamespace)) {
         throw new Error(
-          `browser-main-shell ${inputId} descriptor is not in the exact target ABI candidate namespace`,
+          `browser-main-shell ${inputId} descriptor is not in its exact target ABI namespace`,
         );
       }
       const descriptor = parseHomebrewOriginalBottleTreeDescriptor(
@@ -443,10 +444,10 @@ export async function buildStagedBrowserMainShell(
       const transport = descriptor.tree.transports[0]?.url;
       if (
         transport === undefined ||
-        !transport.includes(candidateNamespace)
+        !transport.includes(managedNamespace)
       ) {
         throw new Error(
-          `browser-main-shell ${inputId} lazy transport leaves its candidate namespace`,
+          `browser-main-shell ${inputId} lazy transport leaves its exact target ABI namespace`,
         );
       }
       bottleTrees.push({
@@ -604,7 +605,7 @@ export async function buildStagedBrowserMainShell(
         homebrew: {
           tapRepository: "kandelo-dev/homebrew-tap-core",
           tapName: "kandelo-dev/tap-core",
-          candidateNamespace,
+          artifactNamespace: managedNamespace,
           selection: {
             kind: "vfs-product-manifest",
             requestedPackageCount: directRoots.size,

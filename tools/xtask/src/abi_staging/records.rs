@@ -7,7 +7,7 @@ use crate::abi_staging::canonical_json::{
     canonical_json_bytes, canonical_sha256, validate_git_sha, validate_sha256,
     validate_stable_id,
 };
-use crate::abi_staging::consumer_registry::{ApplicabilityV1, ChangeClass};
+use crate::abi_staging::consumer_registry::{ApplicabilityV1, ChangeClass, PagesLoadV1};
 use crate::abi_staging::evidence_policy::{
     RuntimeBrowserIdentityV1, RuntimeHostIdentityV1, RuntimeKernelIdentityV1,
     RuntimeSourceIdentityV1, RuntimeTargetAbiV1,
@@ -51,6 +51,123 @@ pub struct ExactGitSourceV1 {
     pub repository: String,
     pub commit: String,
     pub tree: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PagesRegistryProductIdentityV1 {
+    pub id: String,
+    pub load: PagesLoadV1,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PagesRegistryIdentityV1 {
+    pub path: String,
+    pub sha256: String,
+    pub products: Vec<PagesRegistryProductIdentityV1>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PagesRecordLinkV1 {
+    pub record_sha256: String,
+    pub immutable_reference: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PagesEvidenceReceiptLinkV1 {
+    pub id: String,
+    pub sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PagesReadyProductV1 {
+    pub id: String,
+    pub load: PagesLoadV1,
+    pub manifest_sha256: String,
+    pub admissions: Vec<PagesRecordLinkV1>,
+    pub resolved_inputs_sha256: String,
+    pub vfs_sha256: String,
+    pub vfs_bytes: u64,
+    pub builder_report_sha256: String,
+    pub runtime_evidence_sha256: String,
+    pub node_receipts: Vec<PagesEvidenceReceiptLinkV1>,
+    pub browser_receipts: Vec<PagesEvidenceReceiptLinkV1>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PagesReadinessBlockerV1 {
+    pub kind: String,
+    pub guard_code: GuardCodeV1,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub product_id: Option<String>,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PagesReadinessRecordV1 {
+    pub schema: u64,
+    pub kind: String,
+    pub source: ExactGitSourceV1,
+    pub target_abi: TargetAbiV1,
+    pub pages_registry: PagesRegistryIdentityV1,
+    pub site_metadata_sha256: String,
+    pub products: Vec<PagesReadyProductV1>,
+    pub blockers: Vec<PagesReadinessBlockerV1>,
+    pub ready: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PagesFileIdentityV1 {
+    pub path: String,
+    pub sha256: String,
+    pub bytes: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PagesSiteProductV1 {
+    pub id: String,
+    pub load: PagesLoadV1,
+    pub manifest_sha256: String,
+    pub admissions: Vec<PagesRecordLinkV1>,
+    pub resolved_inputs_sha256: String,
+    pub vfs_sha256: String,
+    pub vfs_bytes: u64,
+    pub builder_report_sha256: String,
+    pub runtime_evidence_sha256: String,
+    pub node_receipts: Vec<PagesEvidenceReceiptLinkV1>,
+    pub browser_receipts: Vec<PagesEvidenceReceiptLinkV1>,
+    pub path: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PagesBuildSetV1 {
+    pub api: PagesFileIdentityV1,
+    pub browser: PagesFileIdentityV1,
+    pub documentation: PagesFileIdentityV1,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PagesSiteManifestV1 {
+    pub schema: u64,
+    pub kind: String,
+    pub source: ExactGitSourceV1,
+    pub target_abi: TargetAbiV1,
+    pub pages_registry: PagesRegistryIdentityV1,
+    pub site_metadata_sha256: String,
+    pub products: Vec<PagesSiteProductV1>,
+    pub builds: PagesBuildSetV1,
+    pub files: Vec<PagesFileIdentityV1>,
+    pub readiness_record_sha256: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

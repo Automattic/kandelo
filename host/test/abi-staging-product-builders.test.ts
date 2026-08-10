@@ -179,6 +179,28 @@ describe("ABI staging product builders", () => {
     ).toBe(true);
   }, 30_000);
 
+  it("rebuilds browser-main-shell from canonical bottle and product references", async () => {
+    const fixture = await browserMainShellFixture("canonical");
+    const result = runBuilder(
+      "scripts/build-homebrew-main-shell-product.sh",
+      fixture,
+    );
+
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    const image = new Uint8Array(readFileSync(fixture.outputPath));
+    const fs = MemoryFileSystem.fromImage(image);
+    await fs.verifyImportedLazyAtomicGroupSeals();
+    const transports = fs.exportLazyArchiveEntries().flatMap(
+      (entry) => entry.content?.transports ?? [],
+    );
+    expect(transports.some((url) =>
+      url.includes(`homebrew-tap-core-abi-${TARGET_ABI.version}-candidates/`)
+    )).toBe(false);
+    expect(transports.some((url) =>
+      url.includes(`homebrew-tap-core-abi-${TARGET_ABI.version}/`)
+    )).toBe(true);
+  }, 30_000);
+
   it("rejects a main-shell bottle whose closure proof names an undeclared root", async () => {
     const fixture = await browserMainShellFixture();
     const inputs = JSON.parse(readFileSync(fixture.inputsPath, "utf8"));
@@ -240,7 +262,7 @@ describe("ABI staging product builders", () => {
       fixture,
     );
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toMatch(/exact target ABI candidate namespace/);
+    expect(result.stderr).toMatch(/exact target ABI namespace/);
     expect(existsSync(fixture.outputPath)).toBe(false);
     expect(existsSync(fixture.reportPath)).toBe(false);
   }, 30_000);
@@ -830,7 +852,9 @@ function platformRootfsFixture(): BuilderFixture {
   };
 }
 
-async function browserMainShellFixture(): Promise<BuilderFixture> {
+async function browserMainShellFixture(
+  referenceClass: "candidate" | "canonical" = "candidate",
+): Promise<BuilderFixture> {
   const directory = mkdtempSync(join(tmpdir(), "kandelo-main-shell-stage-"));
   cleanupDirectories.add(directory);
   const files = join(directory, "files");
@@ -904,6 +928,10 @@ async function browserMainShellFixture(): Promise<BuilderFixture> {
     outputPath: repositoryBundle,
   });
 
+  const baseSha256 = sha256(baseBytes);
+  const baseReference = referenceClass === "canonical"
+    ? `https://automattic.github.io/kandelo/products/platform-rootfs/sha256-${baseSha256}/platform-rootfs-${TARGET_ABI.version}.vfs.zst?sha256=${baseSha256}&bytes=${baseBytes.byteLength}`
+    : `https://artifacts.example.test/homebrew-tap-core-abi-${TARGET_ABI.version}-candidates/products/platform-rootfs?sha256=${baseSha256}`;
   const inputs: Array<Record<string, any>> = [
     embeddedInput(
       "product-platform-rootfs",
@@ -911,7 +939,7 @@ async function browserMainShellFixture(): Promise<BuilderFixture> {
       basePath,
       directory,
       "embedded",
-      `https://artifacts.example.test/homebrew-tap-core-abi-${TARGET_ABI.version}-candidates/products/platform-rootfs?sha256=${sha256(baseBytes)}`,
+      baseReference,
     ),
     embeddedInput(
       "repository-main-shell-config",
@@ -956,8 +984,11 @@ async function browserMainShellFixture(): Promise<BuilderFixture> {
           archiveSha256: sha256(`lazy bottle ${formula}\n`),
           expandedBytes: 8,
         };
+    const namespace = referenceClass === "candidate"
+      ? `homebrew-tap-core-abi-${TARGET_ABI.version}-candidates`
+      : `homebrew-tap-core-abi-${TARGET_ABI.version}`;
     const reference =
-      `https://artifacts.example.test/homebrew-tap-core-abi-${TARGET_ABI.version}-candidates/${formula}?sha256=${bottle.archiveSha256}`;
+      `https://artifacts.example.test/${namespace}/${formula}?sha256=${bottle.archiveSha256}`;
     const descriptor = originalBottleDescriptor({
       formula,
       archiveSha256: bottle.archiveSha256,
@@ -977,7 +1008,7 @@ async function browserMainShellFixture(): Promise<BuilderFixture> {
         bytes: Buffer.byteLength(descriptorText),
         path: relative(directory, descriptorPath),
         reference:
-          `https://artifacts.example.test/homebrew-tap-core-abi-${TARGET_ABI.version}-candidates/${formula}-metadata?sha256=${descriptorSha}`,
+          `https://artifacts.example.test/${namespace}/${formula}-metadata?sha256=${descriptorSha}`,
         sha256: descriptorSha,
       },
       effective_materialization:
@@ -1063,7 +1094,7 @@ async function browserMainShellFixture(): Promise<BuilderFixture> {
       manifest_sha256: product.sha256,
       output: product.manifest.output,
     },
-    reference_class: "candidate",
+    reference_class: referenceClass,
     schema: 1,
     source: SOURCE,
     target_abi: TARGET_ABI,

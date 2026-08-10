@@ -43,6 +43,7 @@ import {
   runtimeIdentityFromBundle,
   sha256Hex,
   validateNodeEvidenceContext,
+  validateCandidateLocator,
   validateCandidateVfsLazyInventory,
   validateExactSdkCompilerSourceRoot,
   validateExactRuntimeArtifactRoot,
@@ -1483,6 +1484,33 @@ test("binds exact candidate VFS, runtime bundle, kernel, definition, and host", 
     ),
     /dev-shell lock.*runtime/i,
   );
+});
+
+test("accepts an exact canonical Pages product locator for final evidence", () => {
+  const definition = generatedDefinitions.definitions.find(
+    (candidate) => candidate.id === "rootfs-node-startup",
+  )!;
+  const context = contextFor(definition);
+  context.candidate_product.manifest_digest =
+    `sha256:${context.candidate_product.vfs_layer_sha256}`;
+  const repository =
+    `https://automattic.github.io/kandelo/products/${context.product.id}`;
+  const immutableReference =
+    `${repository}/sha256-${context.candidate_product.vfs_layer_sha256}/` +
+    `${context.product.id}-${context.runtime.target_abi.version}.vfs.zst?` +
+    `sha256=${context.candidate_product.vfs_layer_sha256}&` +
+    `bytes=${context.candidate_product.vfs_layer_bytes}`;
+
+  assert.doesNotThrow(() => validateCandidateLocator(context, {
+    reference_class: "canonical",
+    product_id: context.product.id,
+    repository,
+    manifest_digest: context.candidate_product.manifest_digest,
+    immutable_reference: immutableReference,
+    vfs_layer_sha256: context.candidate_product.vfs_layer_sha256,
+    vfs_layer_bytes: context.candidate_product.vfs_layer_bytes,
+    builder_report_sha256: context.candidate_product.builder_report_sha256,
+  }));
 });
 
 test("executes the Node host from the complete exact runtime artifact root", async () => {

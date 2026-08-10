@@ -20,6 +20,8 @@ const GIT_SHA = /^[0-9a-f]{40}$/;
 const STABLE_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 const CANDIDATE_NAMESPACE = /homebrew-tap-core-abi-[0-9]+-candidates\//;
 const CANONICAL_NAMESPACE = /homebrew-tap-core-abi-[0-9]+\//;
+const CANONICAL_PAGES_PRODUCT =
+  /^https:\/\/automattic\.github\.io\/kandelo\/products\/([a-z0-9][a-z0-9._-]{0,127})\/sha256-([0-9a-f]{64})\/([a-z0-9][a-z0-9._-]{0,127})-([0-9]+)\.vfs\.zst\?sha256=([0-9a-f]{64})&bytes=([1-9][0-9]*)$/;
 const INPUT_KINDS = [
   "product-image",
   "homebrew-bottle",
@@ -117,6 +119,7 @@ export interface VfsProductInputDescriptor {
 
 export interface VfsProductBuild {
   readonly product: Readonly<ProductIdentity>;
+  readonly referenceClass: ReferenceClass;
   readonly targetAbi: Readonly<TargetAbi>;
   readonly source: Readonly<ExactProductSource>;
   inputIds(kind?: VfsProductInputKind): readonly string[];
@@ -228,6 +231,7 @@ async function openVfsProductBuildWithPolicy(
 
   return Object.freeze({
     product: Object.freeze({ ...inputs.product }),
+    referenceClass: inputs.reference_class,
     targetAbi: Object.freeze({ ...inputs.target_abi }),
     source: Object.freeze({ ...inputs.source }),
     inputIds: (kind?: VfsProductInputKind) =>
@@ -409,6 +413,7 @@ function parseResolvedInputs(
       index,
       architecture,
       referenceClass,
+      targetAbi.version,
       inputRoot,
     ),
   );
@@ -460,6 +465,7 @@ function parseResolvedInput(
   index: number,
   productArchitecture: "wasm32" | "wasm64",
   referenceClass: ReferenceClass,
+  targetAbiVersion: number,
   inputRoot: string,
 ): ResolvedInput {
   const label = `resolved input ${index}`;
@@ -529,6 +535,8 @@ function parseResolvedInput(
           bytes,
           kind,
           referenceClass,
+          effective,
+          targetAbiVersion,
           label,
         );
   const path =
@@ -539,6 +547,8 @@ function parseResolvedInput(
     record.descriptor,
     kind,
     referenceClass,
+    effective,
+    targetAbiVersion,
     inputRoot,
     label,
   );
@@ -590,6 +600,8 @@ function parseInputDescriptor(
   value: unknown,
   kind: VfsProductInputKind,
   referenceClass: ReferenceClass,
+  placement: InputPlacement,
+  targetAbiVersion: number,
   inputRoot: string,
   label: string,
 ): ResolvedInputDescriptor | undefined {
@@ -624,6 +636,8 @@ function parseInputDescriptor(
     bytes,
     kind,
     referenceClass,
+    placement,
+    targetAbiVersion,
     `${label} descriptor`,
   );
   const path = normalizedRelativePath(
@@ -662,6 +676,8 @@ function immutableReference(
   inputBytes: number,
   kind: VfsProductInputKind,
   referenceClass: ReferenceClass,
+  placement: InputPlacement,
+  targetAbiVersion: number,
   label: string,
 ): string {
   const reference = string(value, `${label} reference`);
@@ -675,6 +691,7 @@ function immutableReference(
   }
   const candidate = CANDIDATE_NAMESPACE.test(reference);
   const canonical = CANONICAL_NAMESPACE.test(reference);
+  const pagesProduct = CANONICAL_PAGES_PRODUCT.exec(reference);
   const local = reference.match(
     /^local-fixture:sha256:([0-9a-f]{64})\?namespace=(candidate|canonical|source)&bytes=([1-9][0-9]*)$/,
   );
@@ -683,6 +700,21 @@ function immutableReference(
   }
   if (referenceClass === "canonical" && candidate) {
     fail(`${label} canonical input references the candidate namespace`);
+  }
+  if (reference.startsWith("https://automattic.github.io/kandelo/products/")) {
+    if (
+      referenceClass !== "canonical" || kind !== "product-image" ||
+      pagesProduct === null || pagesProduct[1] !== pagesProduct[3] ||
+      pagesProduct[2] !== inputSha256 || pagesProduct[5] !== inputSha256 ||
+      Number(pagesProduct[4]) !== targetAbiVersion ||
+      Number(pagesProduct[6]) !== inputBytes
+    ) {
+      fail(`${label} Pages product reference does not bind exact identity`);
+    }
+    if (placement !== "embedded") {
+      fail(`${label} Pages product reference requires embedded placement`);
+    }
+    return reference;
   }
   if (referenceClass === "local-fixture") {
     if (

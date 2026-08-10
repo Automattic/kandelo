@@ -74,6 +74,18 @@ describe("Homebrew original-bottle tree descriptors", () => {
       parseHomebrewOriginalBottleTreeDescriptor(foreignPackage, expected())
     ).toThrow(/exact bottle input/);
   });
+
+  it("accepts a global root attribution when this product selects one root", () => {
+    const shared = descriptor();
+    shared.required_by = ["bash", "other-shell"];
+    expect(
+      parseHomebrewOriginalBottleTreeDescriptor(shared, expected()).required_by,
+    ).toEqual(["bash", "other-shell"]);
+
+    shared.required_by = ["other-shell"];
+    expect(() => parseHomebrewOriginalBottleTreeDescriptor(shared, expected()))
+      .toThrow(/dependency roots.*product-declared/);
+  });
 });
 
 function expected() {

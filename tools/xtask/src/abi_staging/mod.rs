@@ -6,6 +6,7 @@ pub mod evidence_policy;
 pub mod guard_registry;
 pub mod local_transport;
 pub mod mini_lifecycle;
+pub mod pages_readiness;
 pub mod product_manifest;
 pub mod product_evidence;
 pub mod records;
@@ -91,6 +92,19 @@ pub fn run(args: Vec<String>) -> ExitCode {
             eprintln!(
                 "xtask abi-staging: product-evidence requires validate-context or validate-result"
             );
+            ExitCode::from(2)
+        }
+        [group, action, rest @ ..] if group == "pages-readiness" => {
+            match pages_readiness::run_cli(action, rest) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("xtask abi-staging pages-readiness {action}: {error}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        [group, ..] if group == "pages-readiness" => {
+            eprintln!("xtask abi-staging: pages-readiness requires validate-readiness, validate-site, or activation-mode");
             ExitCode::from(2)
         }
         [group, action, rest @ ..] if group == "check-projection" => {
@@ -216,6 +230,6 @@ pub fn run(args: Vec<String>) -> ExitCode {
 fn print_help() {
     println!("usage: xtask abi-staging <subcommand> [args...]");
     println!(
-        "subcommands: help, products <generate|check>, registries <generate|check>, evidence-definitions <generate|check>, runtime-bundle validate, product-evidence <validate-context|validate-result>, check-projection project, builder <validate-inputs|validate-report|compare-report>, guard-codes <generate|check>, request-policy <generate|check|activation-mode>, structural-report validate, request <classify|derive|fixture-check|requirements|select-current|plan-feed-write|validate-feed-plan>, records validate, mini run, requirements"
+        "subcommands: help, products <generate|check>, registries <generate|check>, evidence-definitions <generate|check>, runtime-bundle validate, product-evidence <validate-context|validate-result>, pages-readiness <validate-readiness|validate-site|activation-mode>, check-projection project, builder <validate-inputs|validate-report|compare-report>, guard-codes <generate|check>, request-policy <generate|check|activation-mode>, structural-report validate, request <classify|derive|fixture-check|requirements|select-current|plan-feed-write|validate-feed-plan>, records validate, mini run, requirements"
     );
 }

@@ -251,6 +251,7 @@ export type CandidateProductEvidenceDocumentContextV1 = Pick<
 >;
 
 export interface CandidateProductLocatorV1 {
+  reference_class?: "candidate" | "canonical";
   product_id: string;
   repository: string;
   manifest_digest: string;
@@ -907,19 +908,27 @@ export function validateCandidateLocator(
   context: CandidateProductEvidenceDocumentContextV1,
   value: unknown,
 ): void {
-  const locator = exactRecord(value, [
+  const locator = exactRecordWithOptional(value, [
     "builder_report_sha256", "immutable_reference", "manifest_digest",
     "product_id", "repository", "vfs_layer_bytes", "vfs_layer_sha256",
-  ], "candidate product locator");
+  ], ["reference_class"], "candidate product locator");
   const productId = stableId(locator.product_id, "candidate product locator ID");
+  const referenceClass = locator.reference_class === undefined
+    ? "candidate"
+    : oneOf(
+      locator.reference_class,
+      ["candidate", "canonical"],
+      "product locator reference class",
+    );
   const repositoryValue = text(
     locator.repository,
     "candidate product locator repository",
     520,
   );
-  const expectedRepository =
-    `ghcr.io/kandelo-dev/homebrew-tap-core-abi-${context.runtime.target_abi.version}` +
-    `-candidates/products/${productId}`;
+  const expectedRepository = referenceClass === "candidate"
+    ? `ghcr.io/kandelo-dev/homebrew-tap-core-abi-${context.runtime.target_abi.version}` +
+      `-candidates/products/${productId}`
+    : `https://automattic.github.io/kandelo/products/${productId}`;
   if (repositoryValue !== expectedRepository) {
     throw new Error("candidate product locator is outside its exact candidate repository");
   }
@@ -931,16 +940,29 @@ export function validateCandidateLocator(
     throw new Error("candidate product locator manifest is not an OCI digest");
   }
   digest(manifestDigest.slice(7), "candidate product locator manifest");
-  if (locator.immutable_reference !== `${repositoryValue}@${manifestDigest}`) {
+  const vfsLayerSha256 = digest(
+    locator.vfs_layer_sha256,
+    "candidate product locator VFS",
+  );
+  const vfsLayerBytes = positiveInteger(
+    locator.vfs_layer_bytes,
+    "candidate product locator VFS bytes",
+  );
+  const expectedImmutableReference = referenceClass === "candidate"
+    ? `${repositoryValue}@${manifestDigest}`
+    : `${repositoryValue}/sha256-${vfsLayerSha256}/${productId}-` +
+      `${context.runtime.target_abi.version}.vfs.zst?sha256=${vfsLayerSha256}&` +
+      `bytes=${vfsLayerBytes}`;
+  if (
+    locator.immutable_reference !== expectedImmutableReference ||
+    (referenceClass === "canonical" && manifestDigest !== `sha256:${vfsLayerSha256}`)
+  ) {
     throw new Error("candidate product locator is not immutable");
   }
   const candidate = {
     manifest_digest: manifestDigest,
-    vfs_layer_sha256: digest(locator.vfs_layer_sha256, "candidate product locator VFS"),
-    vfs_layer_bytes: positiveInteger(
-      locator.vfs_layer_bytes,
-      "candidate product locator VFS bytes",
-    ),
+    vfs_layer_sha256: vfsLayerSha256,
+    vfs_layer_bytes: vfsLayerBytes,
     builder_report_sha256: digest(
       locator.builder_report_sha256,
       "candidate product locator builder report",
@@ -998,9 +1020,9 @@ export function validateCandidateProductInputDocuments(
   );
   if (
     resolved.schema !== 1 || resolved.kind !== "kandelo-resolved-vfs-product-inputs" ||
-    resolved.reference_class !== "candidate"
+    resolved.reference_class !== (locatorValue.reference_class ?? "candidate")
   ) {
-    throw new Error("resolved product inputs lack candidate protocol identity");
+    throw new Error("resolved product inputs lack their exact product reference identity");
   }
   const selected = productsValue.products.find(
     (entry) => entry.manifest.id === context.product.id,
@@ -1144,6 +1166,7 @@ export function validateCandidateProductInputDocuments(
         `resolved product input ${id}`,
         kind === "homebrew-bottle" || kind === "product-image" ||
           placement === "lazy-reference",
+        locatorValue.reference_class ?? "candidate",
       );
     }
     if (placement === "lazy-reference") {
@@ -1187,6 +1210,7 @@ export function validateCandidateProductInputDocuments(
         context.runtime.target_abi.version,
         `resolved product input ${id} descriptor`,
         kind === "homebrew-bottle" || placement === "lazy-reference",
+        locatorValue.reference_class ?? "candidate",
       );
       reportDescriptor = { bytes: descriptorBytes, sha256: descriptorSha };
     } else if (kind === "homebrew-bottle") {
@@ -1250,6 +1274,7 @@ function validateCandidateReferenceClass(
   targetAbi: number,
   label: string,
   requireCandidateNamespace: boolean,
+  referenceClass: "candidate" | "canonical",
 ): void {
   const namespace = "ghcr.io/kandelo-dev/homebrew-tap-core-abi-";
   const candidate = `${namespace}${targetAbi}-candidates/`;
@@ -1262,14 +1287,29 @@ function validateCandidateReferenceClass(
   const managed = anyCanonical ||
     /^ghcr\.io\/kandelo-dev\/homebrew-tap-core-abi-[0-9]+-candidates\//u
       .test(normalized);
-  if (normalized.startsWith(canonical) || anyCanonical) {
-    throw new Error(`${label} enters the canonical ABI namespace`);
+  if (referenceClass === "candidate") {
+    if (normalized.startsWith(canonical) || anyCanonical) {
+      throw new Error(`${label} enters the canonical ABI namespace`);
+    }
+    if (
+      (requireCandidateNamespace || managed) &&
+      !normalized.startsWith(candidate)
+    ) {
+      throw new Error(`${label} is outside its visibly nonendorsed candidate namespace`);
+    }
+    return;
   }
+  if (normalized.startsWith(candidate)) {
+    throw new Error(`${label} retains the visibly nonendorsed candidate namespace`);
+  }
+  const pagesProduct = normalized.startsWith(
+    "automattic.github.io/kandelo/products/",
+  );
   if (
     (requireCandidateNamespace || managed) &&
-    !normalized.startsWith(candidate)
+    !normalized.startsWith(canonical) && !pagesProduct
   ) {
-    throw new Error(`${label} is outside its visibly nonendorsed candidate namespace`);
+    throw new Error(`${label} is outside its exact canonical namespace`);
   }
 }
 

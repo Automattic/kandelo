@@ -290,6 +290,7 @@ REMOTE="${LOCATOR_REPOSITORY#ghcr.io/}"
 MANIFEST="$WORK_ROOT/candidate-manifest.json"
 CONFIG="$WORK_ROOT/candidate-record.json"
 METADATA="$WORK_ROOT/bottle-metadata.json"
+COMPOSITION_DESCRIPTOR="$WORK_ROOT/vfs-composition-descriptor.json"
 BOTTLE_DIR="$WORK_ROOT/bottle-cache"
 mkdir -p "$BOTTLE_DIR" "$WORK_ROOT/home" "$WORK_ROOT/homebrew-cache" \
   "$WORK_ROOT/homebrew-temp" "$WORK_ROOT/diagnostics"
@@ -312,7 +313,8 @@ jq -e '
   .artifactType == "application/vnd.kandelo.abi-staging.candidate.record.v1+json" and
   (.config.annotations["dev.kandelo.abi-staging.role"] == "candidate-record") and
   ([.layers[].annotations["dev.kandelo.abi-staging.role"]] == [
-    "bottle-layer", "bottle-metadata", "bottle-contract",
+    "bottle-layer", "bottle-metadata", "vfs-composition-descriptor",
+    "bottle-contract",
     "attempt-record", "source-custody-record"
   ]) and
   ([.config, .layers[]] | all(.[];
@@ -332,10 +334,13 @@ CONFIG_DIGEST="$(jq -er '.config.digest' "$MANIFEST")"
 CONFIG_BYTES="$(jq -er '.config.size' "$MANIFEST")"
 METADATA_DIGEST="$(jq -er '.layers[] | select(.annotations["dev.kandelo.abi-staging.role"] == "bottle-metadata") | .digest' "$MANIFEST")"
 METADATA_BYTES="$(jq -er '.layers[] | select(.annotations["dev.kandelo.abi-staging.role"] == "bottle-metadata") | .size' "$MANIFEST")"
+COMPOSITION_DIGEST="$(jq -er '.layers[] | select(.annotations["dev.kandelo.abi-staging.role"] == "vfs-composition-descriptor") | .digest' "$MANIFEST")"
+COMPOSITION_BYTES="$(jq -er '.layers[] | select(.annotations["dev.kandelo.abi-staging.role"] == "vfs-composition-descriptor") | .size' "$MANIFEST")"
 BOTTLE_DIGEST="$(jq -er '.layers[] | select(.annotations["dev.kandelo.abi-staging.role"] == "bottle-layer") | .digest' "$MANIFEST")"
 BOTTLE_BYTES="$(jq -er '.layers[] | select(.annotations["dev.kandelo.abi-staging.role"] == "bottle-layer") | .size' "$MANIFEST")"
 for item in "config:$CONFIG_DIGEST:$CONFIG_BYTES:$CONFIG" \
-  "metadata:$METADATA_DIGEST:$METADATA_BYTES:$METADATA"; do
+  "metadata:$METADATA_DIGEST:$METADATA_BYTES:$METADATA" \
+  "composition:$COMPOSITION_DIGEST:$COMPOSITION_BYTES:$COMPOSITION_DESCRIPTOR"; do
   IFS=: read -r label algorithm digest bytes destination <<<"$item"
   [ "$algorithm" = "sha256" ] || exit 2
   env -u GH_TOKEN -u GITHUB_TOKEN -u HOMEBREW_GITHUB_API_TOKEN \
@@ -350,6 +355,7 @@ for item in "config:$CONFIG_DIGEST:$CONFIG_BYTES:$CONFIG" \
 done
 canonical_json "$CONFIG" "candidate record"
 canonical_json "$METADATA" "candidate bottle metadata"
+canonical_json "$COMPOSITION_DESCRIPTOR" "candidate VFS composition descriptor"
 if [ -n "$RECORD_VALIDATOR" ]; then
   "$RECORD_VALIDATOR" "$CONFIG"
 else
@@ -371,6 +377,8 @@ jq -e \
   --argjson bytes "$BOTTLE_BYTES" \
   --arg metadata_sha "${METADATA_DIGEST#sha256:}" \
   --argjson metadata_bytes "$METADATA_BYTES" \
+  --arg composition_sha "${COMPOSITION_DIGEST#sha256:}" \
+  --argjson composition_bytes "$COMPOSITION_BYTES" \
   --arg reference "$LOCATOR_REPOSITORY@$BOTTLE_DIGEST" '
     .candidate.nonendorsed == true and
     .common.outcome == "success" and
@@ -381,7 +389,11 @@ jq -e \
     .common.artifact == .candidate.bottle_layer and
     ([.candidate.normalized_components[] | select(.id == "bottle-metadata") |
       select(.artifact.sha256 == $metadata_sha and .artifact.bytes == $metadata_bytes)] |
-      length) == 1
+      length) == 1 and
+    ([.candidate.normalized_components[] |
+      select(.id == "vfs-composition-descriptor") |
+      select(.artifact.sha256 == $composition_sha and
+        .artifact.bytes == $composition_bytes)] | length) == 1
   ' "$CONFIG" >/dev/null || {
   echo "abi-staging-verify-bottle.sh: candidate record differs from manifest layers" >&2
   exit 1

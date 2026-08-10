@@ -73,6 +73,7 @@ export type BrowserEvidenceSurface =
 
 export interface BrowserEvidenceSelectionInputV1 {
   candidateReference: string;
+  referenceClass?: "candidate" | "canonical";
   definitionId: string;
   definitions: unknown;
   pages: unknown;
@@ -984,6 +985,7 @@ export async function superviseBrowserEvidenceCli(
     );
     const selection = buildBrowserEvidenceSelection({
       candidateReference: prepared.candidateLocator.immutable_reference,
+      referenceClass: prepared.candidateLocator.reference_class ?? "candidate",
       definitionId: context.definition.id,
       definitions: prepared.definitions,
       pages: prepared.pages,
@@ -1474,20 +1476,21 @@ function validateBrowserEvidenceSession(
   ) {
     throw new Error("browser evidence context differs from protected selection");
   }
+  const productReference = productReferenceIdentity(
+    selection.candidateReference,
+    context.product.id,
+  );
   if (
     context.candidate_product.manifest_digest !==
-      `sha256:${selection.candidateReference.split("@sha256:")[1] ?? ""}` ||
+      `sha256:${productReference.digest}` ||
     context.candidate_product.vfs_layer_sha256 !== selection.vfs.sha256 ||
     context.candidate_product.vfs_layer_bytes !== selection.vfs.bytes ||
     !SHA256.test(context.candidate_product.builder_report_sha256)
   ) {
     throw new Error("browser evidence candidate differs from its immutable selection");
   }
-  const abi = /-abi-([0-9]+)-candidates\//u.exec(
-    selection.candidateReference,
-  );
   if (
-    abi === null || Number(abi[1]) !== context.runtime.target_abi.version ||
+    productReference.abi !== context.runtime.target_abi.version ||
     !canonicalEqual(context.boot, selection.boot) ||
     !canonicalEqual(context.mounts, selection.mounts)
   ) {
@@ -1658,10 +1661,12 @@ export function buildBrowserEvidenceSelection(
   const product = selectedProtectedProduct(input.products, productId);
   assertTestRegistrySelection(input.tests, productId, definitionId);
   const pagesLoad = pagesLoadForProduct(input.pages, productId);
+  const referenceClass = input.referenceClass ?? "candidate";
   const candidateReference = candidateProductReference(
     input.candidateReference,
     productId,
     targetAbi,
+    referenceClass,
   );
   const surface = DEFINITION_SURFACES[definitionId];
   if (surface === undefined) {
@@ -1688,6 +1693,7 @@ export function buildBrowserEvidenceSelection(
     expectedLazyInputIds(definition as unknown as GeneratedEvidenceDefinitionV1),
     vfs,
     targetAbi,
+    referenceClass,
   );
   const kernelAsset = validateServedKernelAsset(input.servedKernelAsset, vfs);
   const browserHarness = validateServedBrowserHarness(
@@ -1803,6 +1809,7 @@ function validateServedLazyAssets(
   expectedIds: readonly string[],
   vfs: ProtectedCandidateVfsSource,
   targetAbi: number,
+  referenceClass: "candidate" | "canonical",
 ): ProtectedBrowserEvidenceLazySelectionV1[] {
   const values = array(value, "protected browser lazy assets");
   if (values.length !== expectedIds.length) {
@@ -1824,10 +1831,11 @@ function validateServedLazyAssets(
       `protected browser lazy asset ${index} reference`,
       8_192,
     );
-    const candidatePrefix =
-      `ghcr.io/kandelo-dev/homebrew-tap-core-abi-${targetAbi}-candidates/`;
-    if (!reference.startsWith(candidatePrefix) || !reference.includes("@sha256:")) {
-      throw new Error("served lazy asset leaves the exact candidate namespace");
+    const requiredPrefix = referenceClass === "candidate"
+      ? `ghcr.io/kandelo-dev/homebrew-tap-core-abi-${targetAbi}-candidates/`
+      : `ghcr.io/kandelo-dev/homebrew-tap-core-abi-${targetAbi}/`;
+    if (!reference.startsWith(requiredPrefix) || !reference.includes("@sha256:")) {
+      throw new Error("served lazy asset leaves its exact ABI namespace");
     }
     const sha256 = digest(
       item.sha256,
@@ -2043,17 +2051,59 @@ function candidateProductReference(
   value: unknown,
   productId: string,
   targetAbi: number,
+  referenceClass: "candidate" | "canonical",
 ): string {
   const reference = text(value, "candidate product reference", 1024);
-  const expected =
+  const candidatePrefix =
     `ghcr.io/kandelo-dev/homebrew-tap-core-abi-${targetAbi}-candidates/` +
     `products/${productId}@sha256:`;
-  if (!reference.startsWith(expected) || !SHA256.test(reference.slice(expected.length))) {
+  if (referenceClass === "candidate") {
+    if (
+      !reference.startsWith(candidatePrefix) ||
+      !SHA256.test(reference.slice(candidatePrefix.length))
+    ) {
+      throw new Error(
+        "browser evidence product reference is outside the exact candidate namespace",
+      );
+    }
+    return reference;
+  }
+  const match = reference.match(new RegExp(
+    `^https://automattic\\.github\\.io/kandelo/products/${productId}/` +
+      `sha256-([0-9a-f]{64})/${productId}-${targetAbi}\\.vfs\\.zst\\?` +
+      `sha256=([0-9a-f]{64})&bytes=([1-9][0-9]*)$`,
+    "u",
+  ));
+  if (match === null || match[1] !== match[2] || !Number.isSafeInteger(Number(match[3]))) {
     throw new Error(
-      "browser evidence product reference is outside the exact candidate namespace",
+      "browser evidence product reference is outside the exact canonical Pages namespace",
     );
   }
   return reference;
+}
+
+function productReferenceIdentity(
+  reference: string,
+  productId: string,
+): { abi: number; digest: string } {
+  const candidate = reference.match(new RegExp(
+    `^ghcr\\.io/kandelo-dev/homebrew-tap-core-abi-([0-9]+)-candidates/` +
+      `products/${productId}@sha256:([0-9a-f]{64})$`,
+    "u",
+  ));
+  if (candidate !== null) {
+    return { abi: Number(candidate[1]), digest: candidate[2]! };
+  }
+  const canonical = reference.match(new RegExp(
+    `^https://automattic\\.github\\.io/kandelo/products/${productId}/` +
+      `sha256-([0-9a-f]{64})/${productId}-([0-9]+)\\.vfs\\.zst\\?` +
+      `sha256=([0-9a-f]{64})&bytes=([1-9][0-9]*)$`,
+    "u",
+  ));
+  if (canonical === null || canonical[1] !== canonical[3]) {
+    throw new Error("browser evidence product reference has unsupported identity");
+  }
+  return { abi: Number(canonical[2]), digest: canonical[1]! };
 }
 
 function validateServedVfs(

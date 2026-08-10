@@ -131,6 +131,34 @@ metadata_identity = {
     "immutable_reference": f"{repository}@sha256:{digest(metadata)}",
     "sha256": digest(metadata),
 }
+composition = canonical({
+    "architecture": "wasm32",
+    "formula": "mini-tool",
+    "kind": "kandelo-homebrew-original-bottle-tree",
+    "required_by": ["mini-tool"],
+    "schema": 1,
+    "tap": "kandelo-dev/homebrew-tap-core",
+    "tree": {
+        "content": {
+            "bytes": len(bottle),
+            "sha256": digest(bottle),
+        },
+        "transports": [{
+            "kind": "external-https",
+            "url": (
+                "https://ghcr.io/v2/kandelo-dev/"
+                "homebrew-tap-core-abi-8-candidates/mini-tool/blobs/"
+                f"sha256:{digest(bottle)}"
+            ),
+        }],
+    },
+})
+(root / "vfs-composition-descriptor.json").write_bytes(composition)
+composition_identity = {
+    "bytes": len(composition),
+    "immutable_reference": f"{repository}@sha256:{digest(composition)}",
+    "sha256": digest(composition),
+}
 record = {
     "candidate": {
         "bottle_layer": bottle_identity,
@@ -149,7 +177,6 @@ record = {
         },
         "nonendorsed": True,
         "normalized_components": [
-            {"artifact": metadata_identity, "id": "bottle-metadata"},
             {
                 "artifact": {
                     "bytes": 1,
@@ -158,6 +185,7 @@ record = {
                 },
                 "id": "bottle-contract",
             },
+            {"artifact": metadata_identity, "id": "bottle-metadata"},
             {
                 "artifact": {
                     "bytes": 1,
@@ -165,6 +193,10 @@ record = {
                     "sha256": "e" * 64,
                 },
                 "id": "source-custody",
+            },
+            {
+                "artifact": composition_identity,
+                "id": "vfs-composition-descriptor",
             },
         ],
         "producer": {"head": "b" * 40, "request_sha256": "a" * 64, "run_id": 707},
@@ -210,6 +242,12 @@ manifest = {
     "layers": [
         descriptor("bottle-layer", "mini-tool.tar.gz", "application/vnd.oci.image.layer.v1.tar+gzip", bottle),
         descriptor("bottle-metadata", "bottle-metadata.json", "application/json", metadata),
+        descriptor(
+            "vfs-composition-descriptor",
+            "vfs-composition-descriptor.json",
+            "application/vnd.kandelo.homebrew.vfs-composition-descriptor.v1+json",
+            composition,
+        ),
         descriptor("bottle-contract", "bottle-contract.json", "application/json", contract),
         descriptor("attempt-record", "attempt-record.json", "application/json", attempt),
         descriptor("source-custody-record", "source-custody-record.json", "application/json", custody),
@@ -230,6 +268,7 @@ locator = {
     "bottle_sha256": digest(bottle),
     "config_sha256": digest(record_body),
     "metadata_sha256": digest(metadata),
+    "composition_sha256": digest(composition),
 }))
 PY
 
@@ -260,6 +299,7 @@ case "$kind" in
     case "$reference" in
       *@sha256:"$FAKE_CONFIG_SHA256") source="$FAKE_CANDIDATE_RECORD" ;;
       *@sha256:"$FAKE_METADATA_SHA256") source="$FAKE_BOTTLE_METADATA" ;;
+      *@sha256:"$FAKE_COMPOSITION_SHA256") source="$FAKE_COMPOSITION_DESCRIPTOR" ;;
       *) echo "unexpected blob $reference" >&2; exit 91 ;;
     esac
     ;;
@@ -386,9 +426,11 @@ export KANDELO_ABI_STAGING_NORMAL_VERIFIER="$MOCK_BIN/normal-verifier"
 export FAKE_CANDIDATE_MANIFEST="$FIXTURE/candidate-manifest.json"
 export FAKE_CANDIDATE_RECORD="$FIXTURE/candidate-record.json"
 export FAKE_BOTTLE_METADATA="$FIXTURE/bottle-metadata.json"
+export FAKE_COMPOSITION_DESCRIPTOR="$FIXTURE/vfs-composition-descriptor.json"
 export FAKE_BOTTLE="$FIXTURE/bottle.tar.gz"
 export FAKE_CONFIG_SHA256="$(jq -r .config_sha256 "$FIXTURE/fixture.json")"
 export FAKE_METADATA_SHA256="$(jq -r .metadata_sha256 "$FIXTURE/fixture.json")"
+export FAKE_COMPOSITION_SHA256="$(jq -r .composition_sha256 "$FIXTURE/fixture.json")"
 export FAKE_BOTTLE_SHA256="$(jq -r .bottle_sha256 "$FIXTURE/fixture.json")"
 export FAKE_BOTTLE_BYTES="$(jq -r .bottle_bytes "$FIXTURE/fixture.json")"
 export FAKE_ORAS_LOG="$TMP_ROOT/oras.log"

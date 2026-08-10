@@ -293,7 +293,7 @@ export function parseHomebrewOriginalBottleTreeDescriptor(
   if (
     new Set(requiredBy).size !== requiredBy.length ||
     !arraysEqual(requiredBy, [...requiredBy].sort(compareHomebrewCanonicalText)) ||
-    requiredBy.some((root) => !expected.allowedRoots.has(root))
+    !requiredBy.some((root) => expected.allowedRoots.has(root))
   ) {
     throw new Error("Homebrew original-bottle dependency roots are not product-declared");
   }
