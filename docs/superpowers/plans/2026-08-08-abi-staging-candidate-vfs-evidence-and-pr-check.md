@@ -1805,15 +1805,16 @@ known sibling result, retries, timeouts, override links, and background status.
 
 - [ ] **Step 2: Run Node and browser evidence tests**
 
+  The Playwright spec is an internal protected-runner entry point and fails
+  closed when invoked without its exact session and observation paths. The
+  browser evidence unit command below creates those inputs and includes real
+  Chromium supervisor fixtures for lazy execution and Pages eager/lazy
+  placement; do not substitute a bare, sessionless Playwright invocation.
+
   ```bash
   scripts/dev-shell.sh npx tsx --test \
     scripts/abi-staging-product-node-evidence.test.ts \
     scripts/abi-staging-product-browser-evidence.test.ts
-  scripts/dev-shell.sh bash -c '
-    cd apps/browser-demos
-    npx playwright test test/abi-staging-product-evidence.spec.ts \
-      --project=chromium
-  '
   ```
 
   Expected: PASS; this is actual browser evidence, not Node-only inference.
