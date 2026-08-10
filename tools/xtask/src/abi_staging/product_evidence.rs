@@ -610,7 +610,7 @@ fn validate_runtime_bundle_identity(bundle: &ExactRuntimeBundleV1) -> Result<(),
         }
         previous = Some(&entry.path);
         validate_sha256(&entry.sha256)?;
-        if entry.bytes == 0 {
+        if entry.bytes == 0 && !entry.path.starts_with("toolchain/") {
             return Err("runtime inventory entries must have positive byte counts".to_string());
         }
         let file_limit = if matches!(
@@ -1519,6 +1519,22 @@ mod tests {
                 .unwrap_err()
                 .contains("flake.lock")
         );
+    }
+
+    #[test]
+    fn runtime_identity_accepts_inventory_bound_empty_toolchain_files() {
+        let (bundle, _) = bundle();
+        let mut parsed: ExactRuntimeBundleV1 = serde_json::from_slice(&bundle).unwrap();
+        parsed.inventory.push(RuntimeInventoryEntryV1 {
+            path: "toolchain/wasm32-sysroot/include/bits/ioctl_fix.h".to_string(),
+            sha256: sha256_bytes(b""),
+            bytes: 0,
+        });
+        parsed
+            .inventory
+            .sort_by(|left, right| left.path.cmp(&right.path));
+
+        runtime_identity_from_bundle(&canonical_json_bytes(&parsed).unwrap()).unwrap();
     }
 
     #[test]

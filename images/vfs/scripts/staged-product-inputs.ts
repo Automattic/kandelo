@@ -87,6 +87,7 @@ import { buildKandeloSdkVfsImage } from "./build-kandelo-sdk-vfs-image";
 import { buildMariadbTestVfsImage } from "./build-mariadb-test-vfs-image";
 import { buildPhpTestVfsImage } from "./build-php-test-vfs-image";
 import { buildSqliteTestVfsImage } from "./build-sqlite-test-vfs-image";
+export { createRepositoryPathBundle } from "./repository-path-bundle";
 
 const REPOSITORY_ROOT = resolve(import.meta.dirname, "../../..");
 
@@ -1127,9 +1128,13 @@ export async function buildStagedSdkOrTestProduct(
   }
   if (
     manifest.software.homebrew.length !== 0 ||
-    manifest.software.archive.length !== 0
+    (productId !== "test-sqlite" && manifest.software.archive.length !== 0) ||
+    (productId === "test-sqlite" && (
+      manifest.software.archive.length !== 1 ||
+      manifest.software.archive[0]?.id !== "sqlite-full-source"
+    ))
   ) {
-    throw new Error(`${productId} staging does not accept Homebrew or external archives`);
+    throw new Error(`${productId} staging has unsupported Homebrew or external archives`);
   }
   const expected = expectedManifestInputs(manifest);
   assertExactInputInventory(build, expected, productId);
@@ -1147,6 +1152,13 @@ export async function buildStagedSdkOrTestProduct(
         "package-output",
       ),
       `${productId} ${name}/${output}`,
+    );
+    const archiveBytes = (id: string) => exactInputBytes(
+      required(
+        resolvedInputId("source-archive", id),
+        "source-archive",
+      ),
+      `${productId} source archive ${id}`,
     );
     const materializeRole = (
       name: string,
@@ -1344,7 +1356,23 @@ export async function buildStagedSdkOrTestProduct(
       case "test-sqlite": {
         const sqliteSource = join(work, "sqlite-full-source");
         const tclLibrary = join(work, "tcl-runtime-library");
-        materializeRole("sqlite", "full-source", sqliteSource, "full-source");
+        // These build-only objects are inputs to the transitional package
+        // adapter that produced sqlite3/testfixture. The final VFS composer
+        // authenticates their exact captured bytes as part of the product
+        // report even though it embeds only the resulting programs/runtime.
+        for (const [name, output] of [
+          ["sqlite", "development-files"],
+          ["tcl", "development-files"],
+          ["zlib", "zlib"],
+        ] as const) {
+          packageBytes(name, output);
+        }
+        materializeNamedSingleRootArchive(
+          archiveBytes("sqlite-full-source"),
+          sqliteSource,
+          "test-sqlite full source",
+          "sqlite-src-3490100",
+        );
         materializeRole("tcl", "runtime-library", tclLibrary, "runtime-library");
         await buildSqliteTestVfsImage({
           sqlite3: packageBytes("sqlite", "sqlite3"),
@@ -1848,82 +1876,6 @@ export function assertStagedProductEnvironment(
       `staged VFS product rejects ambient input authority: ${forbidden.join(", ")}`,
     );
   }
-}
-
-export function createRepositoryPathBundle(options: {
-  repositoryRoot: string;
-  paths: readonly string[];
-  source: Readonly<ExactSourceIdentity>;
-  outputPath: string;
-}): void {
-  const repositoryRoot = realDirectory(options.repositoryRoot, "repository root");
-  const source = sourceIdentity(options.source, "repository bundle source");
-  const paths = normalizedRoots(options.paths);
-  const entries: RepositoryPathBundleEntry[] = [];
-  const seen = new Set<string>();
-
-  const visit = (relativePath: string): void => {
-    if (seen.has(relativePath)) return;
-    const absolutePath = within(repositoryRoot, relativePath, "repository path");
-    let metadata: ReturnType<typeof lstatSync>;
-    try {
-      metadata = lstatSync(absolutePath);
-    } catch (error) {
-      throw new Error(
-        `repository path ${JSON.stringify(relativePath)} is missing: ${describeError(error)}`,
-      );
-    }
-    seen.add(relativePath);
-    const mode = metadata.mode & 0o7777;
-    if (metadata.isDirectory()) {
-      entries.push({ kind: "directory", mode, path: relativePath });
-      const children = readdirSync(absolutePath).sort(compareText);
-      for (const child of children) {
-        visit(`${relativePath}/${child}`);
-      }
-      return;
-    }
-    if (metadata.isSymbolicLink()) {
-      const target = readlinkSync(absolutePath);
-      validateSymlinkTarget(relativePath, target);
-      const resolvedTarget = resolve(dirname(absolutePath), target);
-      assertBelow(repositoryRoot, resolvedTarget, `repository symlink ${relativePath}`);
-      entries.push({ kind: "symlink", mode, path: relativePath, target });
-      return;
-    }
-    if (!metadata.isFile()) {
-      throw new Error(
-        `repository path ${JSON.stringify(relativePath)} is not a regular file, directory, or symlink`,
-      );
-    }
-    const contents = readFileSync(absolutePath);
-    entries.push({
-      bytes: contents.byteLength,
-      content_base64: contents.toString("base64"),
-      kind: "file",
-      mode,
-      path: relativePath,
-      sha256: digest(contents),
-    });
-  };
-
-  for (const path of paths) visit(path);
-  entries.sort((left, right) => compareText(left.path, right.path));
-  if (entries.length > MAX_BUNDLE_ENTRIES) {
-    throw new Error(`repository bundle exceeds ${MAX_BUNDLE_ENTRIES} entries`);
-  }
-  const body = canonicalJson({
-    entries,
-    kind: "kandelo-vfs-repository-path-bundle",
-    paths,
-    schema: 1,
-    source,
-  });
-  if (Buffer.byteLength(body) > MAX_BUNDLE_BYTES) {
-    throw new Error(`repository bundle exceeds ${MAX_BUNDLE_BYTES} bytes`);
-  }
-  assertNewRegularParent(options.outputPath, "repository bundle output");
-  writeFileSync(options.outputPath, body, { flag: "wx", mode: 0o600 });
 }
 
 export function readRepositoryPathBundle(

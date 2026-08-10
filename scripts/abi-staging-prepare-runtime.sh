@@ -146,12 +146,18 @@ trap cleanup_candidate_environment EXIT
 
 TESTING="${KANDELO_ABI_STAGING_TESTING:-0}"
 TEST_BUILDER="${KANDELO_ABI_STAGING_RUNTIME_BUILDER:-}"
+TEST_TOOLCHAIN_BUILDER="${KANDELO_ABI_STAGING_TOOLCHAIN_BUILDER:-}"
 if [ "$TESTING" != 0 ] && [ "$TESTING" != 1 ]; then
   echo "abi-staging-prepare-runtime.sh: invalid test mode" >&2
   exit 2
 fi
 if [ -n "$TEST_BUILDER" ] && { [ "$TESTING" != 1 ] || [ "${GITHUB_ACTIONS:-}" = true ]; }; then
   echo "abi-staging-prepare-runtime.sh: runtime builder replacement is local-test-only" >&2
+  exit 2
+fi
+if [ -n "$TEST_TOOLCHAIN_BUILDER" ] &&
+   { [ "$TESTING" != 1 ] || [ "${GITHUB_ACTIONS:-}" = true ]; }; then
+  echo "abi-staging-prepare-runtime.sh: toolchain builder replacement is local-test-only" >&2
   exit 2
 fi
 
@@ -180,7 +186,8 @@ run_without_credentials() {
     for safe_name in \
       FAKE_RUNTIME_EMPTY_DIRECTORY FAKE_RUNTIME_EMPTY_FILE \
       FAKE_RUNTIME_HOME_MARKER \
-      FAKE_RUNTIME_STARTED_MARKER FAKE_RUNTIME_SYMLINK; do
+      FAKE_RUNTIME_STARTED_MARKER FAKE_RUNTIME_SYMLINK \
+      FAKE_TOOLCHAIN_STARTED_MARKER; do
       if [ -n "${!safe_name:-}" ]; then
         clean_environment+=("$safe_name=${!safe_name}")
       fi
@@ -217,6 +224,96 @@ run_in_exact_source_dev_shell() {
   )
 }
 
+TOOLCHAIN_ROOT="$RUNTIME_ROOT/toolchain"
+if [ -n "$TEST_TOOLCHAIN_BUILDER" ]; then
+  if [ ! -f "$TEST_TOOLCHAIN_BUILDER" ] || [ -L "$TEST_TOOLCHAIN_BUILDER" ] ||
+     [ ! -x "$TEST_TOOLCHAIN_BUILDER" ]; then
+    echo "abi-staging-prepare-runtime.sh: test toolchain builder is unavailable" >&2
+    exit 2
+  fi
+  run_without_credentials \
+    "$TEST_TOOLCHAIN_BUILDER" "$SOURCE_ROOT" "$TOOLCHAIN_ROOT"
+else
+  TOOLCHAIN_BUILDER="$REPO_ROOT/scripts/abi-staging-build-toolchain.sh"
+  if [ ! -f "$TOOLCHAIN_BUILDER" ] || [ -L "$TOOLCHAIN_BUILDER" ] ||
+     [ ! -x "$TOOLCHAIN_BUILDER" ]; then
+    echo "abi-staging-prepare-runtime.sh: protected toolchain builder is unavailable" >&2
+    exit 1
+  fi
+  run_in_exact_source_dev_shell \
+    "$TOOLCHAIN_BUILDER" --source-root "$SOURCE_ROOT" --out "$TOOLCHAIN_ROOT"
+fi
+
+for required_toolchain_file in \
+  "$TOOLCHAIN_ROOT/wasm32-sysroot/lib/libc.a" \
+  "$TOOLCHAIN_ROOT/wasm64-sysroot/lib/libc.a" \
+  "$TOOLCHAIN_ROOT/clang-resource-headers/include/stddef.h"; do
+  if [ ! -s "$required_toolchain_file" ] || [ -L "$required_toolchain_file" ]; then
+    echo "abi-staging-prepare-runtime.sh: exact toolchain output is unavailable: $required_toolchain_file" >&2
+    exit 1
+  fi
+done
+
+snapshot_toolchain() {
+  python3 - "$TOOLCHAIN_ROOT" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import stat
+import sys
+
+root = Path(sys.argv[1])
+inventory: list[dict[str, object]] = []
+entry_count = 0
+directory_count = 0
+total = 0
+for directory, directories, files in os.walk(root, followlinks=False):
+    directories.sort()
+    files.sort()
+    relative_directory = Path(directory).relative_to(root)
+    if len(relative_directory.parts) > 64:
+        raise SystemExit("toolchain snapshot exceeds its directory depth bound")
+    for name in directories:
+        entry_count += 1
+        directory_count += 1
+        path = Path(directory, name)
+        if entry_count > 65536 or directory_count > 4096:
+            raise SystemExit("toolchain snapshot exceeds its entry bound")
+        if stat.S_ISLNK(path.lstat().st_mode):
+            raise SystemExit(f"toolchain snapshot contains a symbolic link: {path}")
+    for name in files:
+        entry_count += 1
+        path = Path(directory, name)
+        if entry_count > 65536:
+            raise SystemExit("toolchain snapshot exceeds its entry bound")
+        mode = path.lstat().st_mode
+        if stat.S_ISLNK(mode) or not stat.S_ISREG(mode):
+            raise SystemExit(f"toolchain snapshot contains a nonregular file: {path}")
+        size = path.stat().st_size
+        if size > 256 * 1024 * 1024 or size > 1024 * 1024 * 1024 - total:
+            raise SystemExit("toolchain snapshot exceeds its byte bound")
+        total += size
+        hasher = hashlib.sha256()
+        with path.open("rb") as source:
+            while chunk := source.read(64 * 1024):
+                hasher.update(chunk)
+        inventory.append({
+            "bytes": size,
+            "path": path.relative_to(root).as_posix(),
+            "sha256": hasher.hexdigest(),
+        })
+inventory.sort(key=lambda item: item["path"])
+if not inventory:
+    raise SystemExit("toolchain snapshot is empty")
+print(json.dumps(inventory, ensure_ascii=False, separators=(",", ":"), sort_keys=True))
+PY
+}
+
+TOOLCHAIN_INVENTORY_BEFORE="$(snapshot_toolchain)"
+
 if [ -n "$TEST_BUILDER" ]; then
   if [ ! -f "$TEST_BUILDER" ] || [ -L "$TEST_BUILDER" ] || [ ! -x "$TEST_BUILDER" ]; then
     echo "abi-staging-prepare-runtime.sh: test runtime builder is unavailable" >&2
@@ -224,6 +321,17 @@ if [ -n "$TEST_BUILDER" ]; then
   fi
   run_without_credentials "$TEST_BUILDER" "$SOURCE_ROOT" "$RUNTIME_ROOT"
 else
+  for source_sysroot in "$SOURCE_ROOT/sysroot" "$SOURCE_ROOT/sysroot64"; do
+    if [ -e "$source_sysroot" ] || [ -L "$source_sysroot" ]; then
+      echo "abi-staging-prepare-runtime.sh: exact source contains an ambient build sysroot: $source_sysroot" >&2
+      exit 1
+    fi
+  done
+  # `build.sh` is the normal candidate runtime path. Give it private copies so
+  # its ordinary program/package steps may add resolved libraries without
+  # mutating the pristine toolchain artifact consumed by product jobs.
+  cp -R "$TOOLCHAIN_ROOT/wasm32-sysroot" "$SOURCE_ROOT/sysroot"
+  cp -R "$TOOLCHAIN_ROOT/wasm64-sysroot" "$SOURCE_ROOT/sysroot64"
   run_in_exact_source_dev_shell bash -c '
     set -euo pipefail
     bash build.sh
@@ -276,6 +384,12 @@ else
       --config "$REPO_ROOT/apps/browser-demos/abi-staging-browser-harness.config.ts" \
       --outDir "$RUNTIME_ROOT/browser/dist/abi-staging-harness" \
       --emptyOutDir
+fi
+
+TOOLCHAIN_INVENTORY_AFTER="$(snapshot_toolchain)"
+if [ "$TOOLCHAIN_INVENTORY_AFTER" != "$TOOLCHAIN_INVENTORY_BEFORE" ]; then
+  echo "abi-staging-prepare-runtime.sh: exact toolchain changed during runtime build" >&2
+  exit 1
 fi
 
 # The tap resolves every build/toolchain claim against the exact head's
@@ -391,7 +505,7 @@ for directory, directories, files in os.walk(runtime, followlinks=False):
             file_limit = 512 * 1024 * 1024
         else:
             file_limit = 256 * 1024 * 1024
-        if size == 0:
+        if size == 0 and not relative.startswith("toolchain/"):
             raise SystemExit(f"runtime inventory contains an empty file: {relative}")
         if size > file_limit:
             raise SystemExit(f"runtime inventory file exceeds its bound: {relative}")

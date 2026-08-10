@@ -7,14 +7,39 @@ builder = "images/vfs/scripts/build-sqlite-test-vfs-image.sh"
 [[software.package]]
 name = "sqlite"
 outputs = ["sqlite3", "testfixture"]
-source_roles = ["full-source"]
+source_roles = []
 role = "runtime"
 materialization = "embedded"
+
+[[software.package]]
+name = "sqlite"
+outputs = ["development-files"]
+source_roles = []
+role = "build"
 
 [[software.package]]
 name = "tcl"
 outputs = []
 source_roles = ["runtime-library"]
+role = "runtime"
+materialization = "embedded"
+
+[[software.package]]
+name = "tcl"
+outputs = ["development-files"]
+source_roles = []
+role = "build"
+
+[[software.package]]
+name = "zlib"
+outputs = ["zlib"]
+source_roles = []
+role = "build"
+
+[[software.archive]]
+id = "sqlite-full-source"
+url = "https://www.sqlite.org/2025/sqlite-src-3490100.zip"
+sha256 = "4404d93cbce818b1b98ca7259d0ba9b45db76f2fdd9373e56f2d29b519f4d43b"
 role = "runtime"
 materialization = "embedded"
 

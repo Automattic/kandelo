@@ -41,8 +41,14 @@ cat >"$FAKE_BUILDER" <<'EOF'
 set -euo pipefail
 source_root="$1"
 artifact_root="$2"
+[ -s "$artifact_root/toolchain/wasm32-sysroot/lib/libc.a" ] || exit 93
+[ -s "$artifact_root/toolchain/wasm64-sysroot/lib/libc.a" ] || exit 94
 if [ -n "${FAKE_RUNTIME_STARTED_MARKER:-}" ]; then
   printf 'started\n' >"$FAKE_RUNTIME_STARTED_MARKER"
+fi
+if [[ "${FAKE_RUNTIME_STARTED_MARKER:-}" == */mutate-toolchain.started ]]; then
+  printf 'candidate-mutated toolchain\n' \
+    >"$artifact_root/toolchain/wasm32-sysroot/lib/libc.a"
 fi
 for secret in GITHUB_TOKEN GH_TOKEN GHCR_PAT ACTIONS_ID_TOKEN_REQUEST_TOKEN \
   ACTIONS_RUNTIME_TOKEN; do
@@ -90,11 +96,41 @@ fi
 EOF
 chmod 0755 "$FAKE_BUILDER"
 
+FAKE_TOOLCHAIN_BUILDER="$TMP_ROOT/fake-toolchain-builder"
+cat >"$FAKE_TOOLCHAIN_BUILDER" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+source_root="$1"
+toolchain_root="$2"
+[ -d "$source_root" ]
+for secret in GITHUB_TOKEN GH_TOKEN GHCR_PAT ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+  ACTIONS_RUNTIME_TOKEN SUPER_SECRET; do
+  [ -z "${!secret:-}" ] || exit 92
+done
+if [ -n "${FAKE_TOOLCHAIN_STARTED_MARKER:-}" ]; then
+  printf 'started\n' >"$FAKE_TOOLCHAIN_STARTED_MARKER"
+fi
+mkdir -p \
+  "$toolchain_root/wasm32-sysroot/include/bits" \
+  "$toolchain_root/wasm32-sysroot/lib" \
+  "$toolchain_root/wasm64-sysroot/lib" \
+  "$toolchain_root/clang-resource-headers/include"
+printf 'wasm32 libc archive\n' >"$toolchain_root/wasm32-sysroot/lib/libc.a"
+# musl deliberately installs several empty architecture headers. They are
+# compiler inputs whose existence matters even though their byte length is 0.
+: >"$toolchain_root/wasm32-sysroot/include/bits/ioctl_fix.h"
+printf 'wasm64 libc archive\n' >"$toolchain_root/wasm64-sysroot/lib/libc.a"
+printf 'clang stddef fixture\n' \
+  >"$toolchain_root/clang-resource-headers/include/stddef.h"
+EOF
+chmod 0755 "$FAKE_TOOLCHAIN_BUILDER"
+
 run_preparer() {
   local out="$1"
   env \
     KANDELO_ABI_STAGING_TESTING=1 \
     KANDELO_ABI_STAGING_RUNTIME_BUILDER="$FAKE_BUILDER" \
+    KANDELO_ABI_STAGING_TOOLCHAIN_BUILDER="$FAKE_TOOLCHAIN_BUILDER" \
     "$PREPARER" \
       --source-root "$SOURCE" \
       --source-repository example/kandelo \
@@ -107,14 +143,16 @@ run_preparer() {
 }
 
 OUT="$TMP_ROOT/out"
-run_preparer "$OUT"
+FAKE_TOOLCHAIN_STARTED_MARKER="$TMP_ROOT/toolchain.started" run_preparer "$OUT"
+[ "$(cat "$TMP_ROOT/toolchain.started")" = started ] ||
+  fail "runtime preparation did not invoke its isolated toolchain builder"
 [ -s "$OUT/runtime-bundle.json" ] || fail "runtime bundle was not emitted"
 [ -s "$OUT/runtime/kernel.wasm" ] || fail "kernel artifact was not emitted"
 [ "$(jq -r '.source.commit' "$OUT/runtime-bundle.json")" = "$SOURCE_COMMIT" ] ||
   fail "runtime bundle did not bind the exact source head"
 [ "$(jq -r '.target_abi.version' "$OUT/runtime-bundle.json")" = 8 ] ||
   fail "runtime bundle did not bind the target ABI"
-[ "$(jq -r '.inventory | length' "$OUT/runtime-bundle.json")" = 12 ] ||
+[ "$(jq -r '.inventory | length' "$OUT/runtime-bundle.json")" = 16 ] ||
   fail "runtime bundle inventory is incomplete"
 [ "$(jq -r '.inventory[] | select(.path == "flake.lock") | .sha256' \
     "$OUT/runtime-bundle.json")" = \
@@ -135,6 +173,23 @@ cmp -s "$SOURCE/flake.lock" "$OUT/runtime/flake.lock" ||
 [ "$(jq -r '.browser.harness_entry_path' "$OUT/runtime-bundle.json")" = \
     "browser/dist/abi-staging-harness/index.html" ] ||
   fail "runtime bundle did not bind the protected browser evidence harness"
+[ -s "$OUT/runtime/toolchain/wasm32-sysroot/lib/libc.a" ] ||
+  fail "runtime bundle lacks its exact wasm32 sysroot"
+[ -s "$OUT/runtime/toolchain/wasm64-sysroot/lib/libc.a" ] ||
+  fail "runtime bundle lacks its exact wasm64 sysroot"
+[ -s "$OUT/runtime/toolchain/clang-resource-headers/include/stddef.h" ] ||
+  fail "runtime bundle lacks its exact Clang resource headers"
+[ -f "$OUT/runtime/toolchain/wasm32-sysroot/include/bits/ioctl_fix.h" ] ||
+  fail "runtime bundle dropped an intentional empty musl header"
+
+if FAKE_RUNTIME_STARTED_MARKER="$TMP_ROOT/mutate-toolchain.started" \
+    run_preparer "$TMP_ROOT/mutated-toolchain" \
+      >"$TMP_ROOT/mutated-toolchain.out" 2>&1; then
+  fail "runtime preparation accepted candidate-mutated toolchain bytes"
+fi
+grep -F 'toolchain changed during runtime build' \
+  "$TMP_ROOT/mutated-toolchain.out" >/dev/null ||
+  fail "candidate toolchain mutation rejection was not explicit"
 
 PRIVATE_ENV_OUT="$TMP_ROOT/private-environment"
 SUPER_SECRET=must-not-cross \

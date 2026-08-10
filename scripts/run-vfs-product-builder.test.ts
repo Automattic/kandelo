@@ -12,6 +12,7 @@ import test from "node:test";
 
 import {
   runVfsProductBuilder,
+  runVfsProductBuilderCli,
   type VfsProductBuilderDependencies,
   type VfsProductBuilderOptions,
 } from "./run-vfs-product-builder";
@@ -61,6 +62,28 @@ test("runs the manifest builder in a fresh work directory with no credentials", 
     assert.equal(calls.env?.HOME, join(options.workDir, "home"));
     assert.equal(calls.env?.TMPDIR, join(options.workDir, "tmp"));
     assert.equal(calls.env?.CI, "true");
+  });
+});
+
+test("production CLI maps one exact argv scope into the protected runner", async () => {
+  await withFixture(async ({ options, calls }) => {
+    await runVfsProductBuilderCli([
+      "--inputs",
+      options.inputsPath,
+      "--manifest",
+      options.manifestPath,
+      "--output",
+      options.outputPath,
+      "--report",
+      options.reportPath,
+      "--work-dir",
+      options.workDir,
+    ], successfulDependencies(options, calls));
+    assert.deepEqual(calls.events, [
+      "validate-inputs",
+      "launch",
+      "compare-report",
+    ]);
   });
 });
 

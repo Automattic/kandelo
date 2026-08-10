@@ -9,13 +9,25 @@ set -euo pipefail
 #   tcl-install/lib/tcl8.6/        — runtime library (init.tcl, encoding/, etc.)
 #   bin/tclsh.wasm                 — standalone interpreter (optional validation)
 
-TCL_VERSION="${TCL_VERSION:-8.6.16}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/tcl-src"
-BUILD_DIR="$SCRIPT_DIR/tcl-build"
-INSTALL_DIR="$SCRIPT_DIR/tcl-install"
-SYSROOT="$REPO_ROOT/sysroot"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+kandelo_package_prepare_build_roots "$SCRIPT_DIR/tcl-work" wasm32
+
+TCL_VERSION="${WASM_POSIX_DEP_VERSION:-${TCL_VERSION:-8.6.16}}"
+SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://prdownloads.sourceforge.net/tcl/tcl${TCL_VERSION}-src.tar.gz}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-91cb8fa61771c63c262efb553059b7c7ad6757afa5857af6265e4b0bdc2a14a5}"
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/source"
+    BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/build"
+    INSTALL_DIR="$KANDELO_PACKAGE_WORK_DIR/install"
+else
+    SRC_DIR="$SCRIPT_DIR/tcl-src"
+    BUILD_DIR="$SCRIPT_DIR/tcl-build"
+    INSTALL_DIR="$SCRIPT_DIR/tcl-install"
+fi
+SYSROOT="${WASM_POSIX_SYSROOT:-$REPO_ROOT/sysroot}"
 
 # --- Prerequisites ---
 if ! command -v wasm32posix-cc &>/dev/null; then
@@ -30,15 +42,12 @@ fi
 
 export WASM_POSIX_SYSROOT="$SYSROOT"
 
-# --- Download TCL source ---
+# --- Stage verified TCL source ---
 if [ ! -d "$SRC_DIR" ]; then
-    echo "==> Downloading TCL $TCL_VERSION..."
-    TARBALL="tcl${TCL_VERSION}-src.tar.gz"
-    URL="https://prdownloads.sourceforge.net/tcl/${TARBALL}"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$URL" -o "/tmp/$TARBALL"
-    mkdir -p "$SRC_DIR"
-    tar xzf "/tmp/$TARBALL" -C "$SRC_DIR" --strip-components=1
-    rm "/tmp/$TARBALL"
+    echo "==> Staging verified TCL $TCL_VERSION source..."
+    kandelo_package_stage_verified_source tcl "$SRC_DIR" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+        "$KANDELO_PACKAGE_WORK_DIR"
     echo "==> Source extracted to $SRC_DIR"
 fi
 
@@ -170,9 +179,12 @@ if [ -f "$TCLSH" ]; then
     "$FORK_INSTRUMENT" "$TCLSH" -o "$TCLSH.instr"
     mv "$TCLSH.instr" "$TCLSH"
 
-    # Copy to bin/ with .wasm extension
-    mkdir -p "$SCRIPT_DIR/bin"
-    cp "$TCLSH" "$SCRIPT_DIR/bin/tclsh.wasm"
+    # Preserve the direct-build compatibility path. Resolver builds publish
+    # through install_local_binary below and never mutate the checkout.
+    if [ -z "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+        mkdir -p "$SCRIPT_DIR/bin"
+        cp "$TCLSH" "$SCRIPT_DIR/bin/tclsh.wasm"
+    fi
     echo "==> tclsh.wasm built:"
     ls -lh "$SCRIPT_DIR/bin/tclsh.wasm"
 fi
@@ -193,12 +205,17 @@ fi
 # Install into local-binaries/ so the resolver picks the freshly-built
 # binary over the fetched release.
 source "$REPO_ROOT/scripts/install-local-binary.sh"
-install_local_binary tcl "$SCRIPT_DIR/bin/tclsh.wasm"
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    WASM_POSIX_INSTALL_LOCAL_MIRROR=0 \
+        install_local_binary tcl "$TCLSH" tclsh.wasm
+    kandelo_package_project_requested_vfs_directory_output development-files \
+        "$INSTALL_DIR"
+    kandelo_package_project_requested_vfs_source_role runtime-library \
+        "$INSTALL_DIR/lib/tcl8.6"
+else
+    install_local_binary tcl "$SCRIPT_DIR/bin/tclsh.wasm"
+fi
 
 # Manifest declares `wasm = "tclsh.wasm"` (not tcl.wasm), so the
 # resolver's $WASM_POSIX_DEP_OUT_DIR scratch needs the file under that
 # exact name. The helper's default-fallback uses <program>.<ext>.
-if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
-    cp "$SCRIPT_DIR/bin/tclsh.wasm" "$WASM_POSIX_DEP_OUT_DIR/tclsh.wasm"
-    echo "  installed $WASM_POSIX_DEP_OUT_DIR/tclsh.wasm (manifest output name)"
-fi

@@ -683,7 +683,7 @@ describe("ABI staging product builders", () => {
     const swappedSqlite = await sdkTestProductFixture("test-sqlite");
     const sqliteDocument = JSON.parse(readFileSync(swappedSqlite.inputsPath, "utf8"));
     const sqlite = sqliteDocument.inputs.find(
-      (input: { id: string }) => input.id === "package-sqlite-source-role-full-source",
+      (input: { id: string }) => input.id === "archive-sqlite-full-source",
     );
     const tcl = sqliteDocument.inputs.find(
       (input: { id: string }) => input.id === "package-tcl-source-role-runtime-library",
@@ -922,6 +922,23 @@ async function browserMainShellFixture(): Promise<BuilderFixture> {
       `https://artifacts.example.test/repository?sha256=${sha256(readFileSync(repositoryBundle))}`,
     ),
   ];
+
+  for (const archive of product.manifest.software.archive) {
+    const id = `archive-${archive.id}`;
+    const path = join(files, `${id}.archive`);
+    writeFileSync(path, sourceArchiveFixture(archive.id));
+    inputs.push(resolvedFileInput({
+      id,
+      kind: "source-archive",
+      path,
+      root: directory,
+      role: archive.role,
+      declared: archive.role === "build"
+        ? "build-only"
+        : archive.materialization,
+      architecture: product.manifest.architecture,
+    }));
+  }
 
   const formulaMaterialization = new Map<string, "embedded" | "lazy">();
   for (const group of product.manifest.software.homebrew) {
@@ -1379,6 +1396,22 @@ async function sdkTestProductFixture(productId: string): Promise<BuilderFixture>
       }));
     }
   }
+  for (const archive of product.manifest.software.archive) {
+    const id = `archive-${archive.id}`;
+    const path = join(files, `${id}.archive`);
+    writeFileSync(path, sourceArchiveFixture(archive.id));
+    inputs.push(resolvedFileInput({
+      id,
+      kind: "source-archive",
+      path,
+      root: directory,
+      role: archive.role,
+      declared: archive.role === "build"
+        ? "build-only"
+        : archive.materialization,
+      architecture: product.manifest.architecture,
+    }));
+  }
   for (const toolchain of product.manifest.software.toolchain) {
     const id = `toolchain-${toolchain.id}`;
     const path = join(files, `${id}.tar.gz`);
@@ -1745,6 +1778,13 @@ function replaceResolvedInputBytes(
 }
 
 function sourceArchiveFixture(id: string): Uint8Array {
+  if (id === "sqlite-full-source") {
+    return zipSync({
+      "sqlite-src-3490100/": new Uint8Array(),
+      "sqlite-src-3490100/test/basic.test":
+        new TextEncoder().encode("# fixture sqlite test\n"),
+    }, { level: 9 });
+  }
   if (id === "wordpress-sqlite-integration") {
     return zipSync({
       "sqlite-database-integration/": new Uint8Array(),

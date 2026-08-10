@@ -1,6 +1,6 @@
 schema = 1
 kind = "kandelo-abi-staging-request-policy"
-version = 4
+version = 5
 issuer_repository = "Automattic/kandelo"
 issuer_workflow = ".github/workflows/abi-staging-request-feed.yml"
 automatic_same_repository = true
@@ -55,14 +55,19 @@ implementation_paths = [
   "host/src/vfs/product-mount-contract.ts",
   "host/src/vfs/sharedfs-vendor.ts",
   "host/tsup.config.ts",
+  "images/vfs/scripts/repository-path-bundle.ts",
   "package-lock.json",
   "package.json",
+  "scripts/abi-staging-build-toolchain.sh",
+  "scripts/abi-staging-collect-product-inputs.ts",
   "scripts/abi-staging-prepare-runtime.sh",
   "scripts/abi-staging-product-browser-evidence.ts",
+  "scripts/abi-staging-product-input-sources.ts",
   "scripts/abi-staging-product-node-evidence.ts",
   "scripts/abi-staging-protected-browser-operation.ts",
   "scripts/check-dev-shell-tools.sh",
   "scripts/dev-shell.sh",
+  "scripts/vfs-product-catalog.mjs",
   "tools/xtask/Cargo.toml",
   "tools/xtask/src/abi_staging/builder_contract.rs",
   "tools/xtask/src/abi_staging/canonical_json.rs",

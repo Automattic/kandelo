@@ -1534,7 +1534,7 @@ fn collect_inventory(root: &Path) -> Result<Vec<RuntimeInventoryEntryV1>, String
                 } else {
                     MAX_RUNTIME_FILE_BYTES
                 };
-                if metadata.len() == 0 {
+                if metadata.len() == 0 && !relative.starts_with("toolchain/") {
                     return Err(format!(
                         "runtime inventory file {relative:?} is an empty file"
                     ));
@@ -2144,6 +2144,19 @@ suite = "sqlite-product-node"
         fs::copy(
             artifacts.path().join("kernel.wasm"),
             artifacts.path().join("browser/dist/kernel.wasm"),
+        )
+        .unwrap();
+        fs::create_dir_all(
+            artifacts
+                .path()
+                .join("toolchain/wasm32-sysroot/include/bits"),
+        )
+        .unwrap();
+        fs::write(
+            artifacts
+                .path()
+                .join("toolchain/wasm32-sysroot/include/bits/ioctl_fix.h"),
+            b"",
         )
         .unwrap();
         let entries = inventory(artifacts.path());

@@ -14,14 +14,23 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-SRC_DIR="$SCRIPT_DIR/sqlite-src"
+# shellcheck source=/dev/null
+source "$REPO_ROOT/scripts/package-build-roots.sh"
+TARGET_ARCH="${WASM_POSIX_DEP_TARGET_ARCH:-wasm32}"
+case "$TARGET_ARCH" in
+    wasm32|wasm64) ;;
+    *) echo "ERROR: unsupported SQLite architecture: $TARGET_ARCH" >&2; exit 2 ;;
+esac
+kandelo_package_prepare_build_roots "$SCRIPT_DIR/sqlite-work" "$TARGET_ARCH"
 
 # --- Resolver contract (with legacy fallbacks) ---
 SQLITE_VERSION="${WASM_POSIX_DEP_VERSION:-${SQLITE_VERSION:-3.49.1}}"
+SRC_DIR="$KANDELO_PACKAGE_WORK_DIR/source"
+BUILD_DIR="$KANDELO_PACKAGE_WORK_DIR/build"
 INSTALL_DIR="${WASM_POSIX_DEP_OUT_DIR:-$SCRIPT_DIR/sqlite-install}"
 # Legacy default URL uses the packed version form (3.49.1 → 3490100).
 SOURCE_URL="${WASM_POSIX_DEP_SOURCE_URL:-https://www.sqlite.org/2025/sqlite-amalgamation-3490100.zip}"
-SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-}"
+SOURCE_SHA256="${WASM_POSIX_DEP_SOURCE_SHA256:-6cebd1d8403fc58c30e93939b246f3e6e58d0765a5cd50546f16c00fd805d2c3}"
 SQLITE_MAX_COMPOUND_SELECT="${SQLITE_MAX_COMPOUND_SELECT:-50}"
 SQLITE_MAX_EXPR_DEPTH="${SQLITE_MAX_EXPR_DEPTH:-100}"
 SQLITE_JSON_MAX_DEPTH="${SQLITE_JSON_MAX_DEPTH:-100}"
@@ -31,32 +40,37 @@ SQLITE_MAX_TRIGGER_DEPTH="${SQLITE_MAX_TRIGGER_DEPTH:-50}"
 # the resolver — it would waste cache space and the consumer-side
 # tooling will build it independently.
 BUILD_CLI=1
-[ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ] && BUILD_CLI=0
+if [ -n "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+    BUILD_CLI=0
+    requested_status=0
+    kandelo_package_vfs_output_requested sqlite3 || requested_status=$?
+    case "$requested_status" in
+        0) BUILD_CLI=1 ;;
+        1) ;;
+        *) exit "$requested_status" ;;
+    esac
+fi
 
-if ! command -v wasm32posix-cc &>/dev/null; then
-    echo "ERROR: wasm32posix-cc not found. Run 'npm link' in sdk/ first." >&2
+CC="${TARGET_ARCH}posix-cc"
+AR="${TARGET_ARCH}posix-ar"
+if ! command -v "$CC" &>/dev/null || ! command -v "$AR" &>/dev/null; then
+    echo "ERROR: $TARGET_ARCH Kandelo SDK tools are unavailable." >&2
     exit 1
 fi
 
-# --- Fetch + verify source ---
-if [ ! -d "$SRC_DIR/sqlite3.c" ] && [ ! -f "$SRC_DIR/sqlite3.c" ]; then
-    echo "==> Downloading SQLite $SQLITE_VERSION..."
-    TARBALL="/tmp/sqlite-amalgamation.zip"
-    curl --retry 10 --retry-delay 5 --retry-max-time 300 --retry-all-errors -fsSL "$SOURCE_URL" -o "$TARBALL"
-    if [ -n "$SOURCE_SHA256" ]; then
-        echo "==> Verifying source sha256..."
-        echo "$SOURCE_SHA256  $TARBALL" | shasum -a 256 -c -
-    fi
-    mkdir -p "$SRC_DIR"
-    unzip -o "$TARBALL" -d "$SRC_DIR"
-    # Flatten the single-directory zip.
-    inner=$(find "$SRC_DIR" -mindepth 1 -maxdepth 1 -type d -name 'sqlite-amalgamation-*' | head -1)
-    if [ -n "$inner" ]; then
-        mv "$inner"/* "$SRC_DIR/"
-        rmdir "$inner"
-    fi
-    rm "$TARBALL"
+# --- Stage the resolver-verified source without mutating it. ---
+if [ ! -d "$SRC_DIR" ]; then
+    echo "==> Staging verified SQLite $SQLITE_VERSION source..."
+    kandelo_package_stage_verified_source sqlite "$SRC_DIR" \
+        "${WASM_POSIX_DEP_SOURCE_DIR:-}" "$SOURCE_URL" "$SOURCE_SHA256" \
+        "$KANDELO_PACKAGE_WORK_DIR"
 fi
+for required_source in sqlite3.c sqlite3.h sqlite3ext.h shell.c; do
+    [ -s "$SRC_DIR/$required_source" ] || {
+        echo "ERROR: verified SQLite source omits $required_source" >&2
+        exit 1
+    }
+done
 
 # Browser and Node Wasm engines exhaust their host stacks before SQLite's
 # default recursive SQL limits are reached. Keep the shipped library and the
@@ -79,11 +93,12 @@ SQLITE_CFLAGS="-O2 \
 
 # --- Compile library ---
 echo "==> Compiling SQLite for Wasm..."
+mkdir -p "$BUILD_DIR"
 # shellcheck disable=SC2086
-wasm32posix-cc -c $SQLITE_CFLAGS \
-    "$SRC_DIR/sqlite3.c" -o "$SRC_DIR/sqlite3.o"
+"$CC" -c $SQLITE_CFLAGS \
+    "$SRC_DIR/sqlite3.c" -o "$BUILD_DIR/sqlite3.o"
 
-wasm32posix-ar rcs "$SRC_DIR/libsqlite3.a" "$SRC_DIR/sqlite3.o"
+"$AR" rcs "$BUILD_DIR/libsqlite3.a" "$BUILD_DIR/sqlite3.o"
 
 # --- Install library into INSTALL_DIR ---
 echo "==> Installing to $INSTALL_DIR..."
@@ -91,7 +106,7 @@ rm -rf "$INSTALL_DIR"
 mkdir -p "$INSTALL_DIR/lib" "$INSTALL_DIR/include" "$INSTALL_DIR/lib/pkgconfig"
 
 cp "$SRC_DIR/sqlite3.h" "$SRC_DIR/sqlite3ext.h" "$INSTALL_DIR/include/"
-cp "$SRC_DIR/libsqlite3.a" "$INSTALL_DIR/lib/"
+cp "$BUILD_DIR/libsqlite3.a" "$INSTALL_DIR/lib/"
 
 cat > "$INSTALL_DIR/lib/pkgconfig/sqlite3.pc" <<PCEOF
 prefix=$INSTALL_DIR
@@ -110,13 +125,20 @@ if [ "$BUILD_CLI" = "1" ]; then
     echo "==> Building sqlite3 CLI..."
     mkdir -p "$INSTALL_DIR/bin"
     # shellcheck disable=SC2086
-    wasm32posix-cc $SQLITE_CFLAGS \
+    "$CC" $SQLITE_CFLAGS \
         "$SRC_DIR/shell.c" "$SRC_DIR/sqlite3.c" \
         -o "$INSTALL_DIR/bin/sqlite3.wasm" -lm
 
-    source "$REPO_ROOT/scripts/install-local-binary.sh"
-    install_local_binary sqlite "$INSTALL_DIR/bin/sqlite3.wasm"
+    if [ -z "${WASM_POSIX_DEP_OUT_DIR:-}" ]; then
+        source "$REPO_ROOT/scripts/install-local-binary.sh"
+        install_local_binary sqlite "$INSTALL_DIR/bin/sqlite3.wasm"
+    fi
 fi
+
+kandelo_package_project_requested_vfs_output \
+    sqlite3 "$INSTALL_DIR/bin/sqlite3.wasm"
+kandelo_package_project_requested_vfs_directory_output \
+    development-files "$SRC_DIR"
 
 if [ -f "$INSTALL_DIR/lib/libsqlite3.a" ]; then
     echo "==> SQLite build complete!"

@@ -2190,7 +2190,9 @@ function validateRuntimeBundle(value: unknown): ExactRuntimeBundleV1 {
     const entry = {
       path,
       sha256: digest(item.sha256, `runtime inventory ${path} digest`),
-      bytes: positiveInteger(item.bytes, `runtime inventory ${path} bytes`),
+      bytes: path.startsWith("toolchain/")
+        ? nonnegativeInteger(item.bytes, `runtime inventory ${path} bytes`)
+        : positiveInteger(item.bytes, `runtime inventory ${path} bytes`),
     };
     if (entry.bytes > runtimeArtifactByteLimit(path)) {
       throw new Error(`runtime inventory ${path} exceeds its per-file byte bound`);

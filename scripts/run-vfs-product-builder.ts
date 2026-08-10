@@ -5,6 +5,8 @@ import {
   readdirSync,
 } from "node:fs";
 import { dirname, relative, resolve, sep } from "node:path";
+import { spawn, spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 export interface VfsProductBuilderOptions {
   manifestPath: string;
@@ -93,6 +95,149 @@ export async function runVfsProductBuilder(
     "builder report",
   );
   await dependencies.compareReport(normalized.inputsPath, normalized.reportPath);
+}
+
+export async function runVfsProductBuilderCli(
+  args: readonly string[],
+  dependencies: VfsProductBuilderDependencies = productionDependencies(),
+): Promise<void> {
+  const flags = parseRunnerFlags(args);
+  await runVfsProductBuilder({
+    inputsPath: requiredRunnerFlag(flags, "--inputs"),
+    manifestPath: requiredRunnerFlag(flags, "--manifest"),
+    outputPath: requiredRunnerFlag(flags, "--output"),
+    reportPath: requiredRunnerFlag(flags, "--report"),
+    workDir: requiredRunnerFlag(flags, "--work-dir"),
+  }, dependencies);
+}
+
+function productionDependencies(): VfsProductBuilderDependencies {
+  const protectedRoot = resolve(import.meta.dirname, "..");
+  const hostTarget = protectedHostTarget(protectedRoot);
+  const validate = async (arguments_: readonly string[]): Promise<void> => {
+    const exitCode = await spawnStatus(
+      "cargo",
+      [
+        "run",
+        "-p",
+        "xtask",
+        "--target",
+        hostTarget,
+        "--quiet",
+        "--",
+        "abi-staging",
+        "builder",
+        ...arguments_,
+      ],
+      process.env,
+      protectedRoot,
+    );
+    if (exitCode !== 0) {
+      throw new Error(`protected VFS product contract validator exited with status ${exitCode}`);
+    }
+  };
+  return {
+    compareReport: async (inputsPath, reportPath) => validate([
+      "compare-report",
+      "--input-root",
+      dirname(inputsPath),
+      "--inputs",
+      inputsPath,
+      "--report",
+      reportPath,
+      "--report-root",
+      dirname(reportPath),
+    ]),
+    launch: async (builderPath, args, env, cwd) => ({
+      exitCode: await spawnStatus(builderPath, args, env, cwd),
+    }),
+    validateInputs: async (inputsPath) => validate([
+      "validate-inputs",
+      "--input-root",
+      dirname(inputsPath),
+      "--inputs",
+      inputsPath,
+    ]),
+  };
+}
+
+function protectedHostTarget(protectedRoot: string): string {
+  if (!process.env.KANDELO_DEV_SHELL_TOOL_PATH) {
+    throw new Error("VFS product runner must execute inside scripts/dev-shell.sh");
+  }
+  const result = spawnSync("rustc", ["-vV"], {
+    cwd: protectedRoot,
+    encoding: "utf8",
+    env: process.env,
+    maxBuffer: 1024 * 1024,
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`cannot resolve protected host target: rustc exited ${String(result.status)}`);
+  }
+  const matches = result.stdout.match(/^host: ([A-Za-z0-9_.-]+)$/m);
+  if (matches === null) throw new Error("rustc did not report one protected host target");
+  return matches[1]!;
+}
+
+function spawnStatus(
+  command: string,
+  args: readonly string[],
+  env: NodeJS.ProcessEnv | Readonly<Record<string, string>>,
+  cwd: string,
+): Promise<number> {
+  return new Promise((resolveStatus, reject) => {
+    const child = spawn(command, [...args], {
+      cwd,
+      env: { ...env },
+      stdio: ["ignore", "inherit", "inherit"],
+    });
+    child.once("error", reject);
+    child.once("close", (code, signal) => {
+      if (signal !== null) {
+        reject(new Error(`${command} was terminated by signal ${signal}`));
+        return;
+      }
+      resolveStatus(code ?? 1);
+    });
+  });
+}
+
+const RUNNER_FLAGS = [
+  "--inputs",
+  "--manifest",
+  "--output",
+  "--report",
+  "--work-dir",
+] as const;
+
+function parseRunnerFlags(args: readonly string[]): Map<string, string> {
+  if (args.length !== RUNNER_FLAGS.length * 2) {
+    throw new Error(
+      "usage: run-vfs-product-builder.ts " +
+        RUNNER_FLAGS.map((flag) => `${flag} <path>`).join(" "),
+    );
+  }
+  const allowed = new Set<string>(RUNNER_FLAGS);
+  const flags = new Map<string, string>();
+  for (let index = 0; index < args.length; index += 2) {
+    const flag = args[index]!;
+    const value = args[index + 1]!;
+    if (!allowed.has(flag) || flags.has(flag) || value.length === 0) {
+      throw new Error(`VFS product runner flag is invalid: ${flag}`);
+    }
+    flags.set(flag, value);
+  }
+  return flags;
+}
+
+function requiredRunnerFlag(
+  flags: ReadonlyMap<string, string>,
+  name: typeof RUNNER_FLAGS[number],
+): string {
+  const value = flags.get(name);
+  if (value === undefined) throw new Error(`missing required flag ${name}`);
+  return value;
 }
 
 function validateOptions(options: VfsProductBuilderOptions): VfsProductBuilderOptions {
@@ -284,4 +429,16 @@ function isErrno(error: unknown, code: string): boolean {
     "code" in error &&
     (error as { code?: unknown }).code === code
   );
+}
+
+if (
+  process.argv[1] !== undefined &&
+  resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+) {
+  void runVfsProductBuilderCli(process.argv.slice(2)).catch((error) => {
+    process.stderr.write(
+      `${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    process.exitCode = 1;
+  });
 }

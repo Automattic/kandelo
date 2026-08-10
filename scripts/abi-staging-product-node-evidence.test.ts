@@ -1530,6 +1530,27 @@ test("executes the Node host from the complete exact runtime artifact root", asy
   }
 });
 
+test("accepts bounded empty files inside an exact toolchain component", () => {
+  const root = writeExactRuntimeFixture();
+  try {
+    const relativePath = "toolchain/wasm32-sysroot/include/bits/ioctl_fix.h";
+    const path = join(root, relativePath);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, new Uint8Array());
+    const bundle = JSON.parse(JSON.stringify(RUNTIME_BUNDLE)) as typeof RUNTIME_BUNDLE;
+    bundle.inventory = [
+      ...bundle.inventory,
+      { bytes: 0, path: relativePath, sha256: sha256Hex(new Uint8Array()) },
+    ].sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+
+    assert.doesNotThrow(() =>
+      validateExactRuntimeArtifactRoot(canonicalJsonBytes(bundle), root)
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("caps the exact Node evidence host process-memory budget", () => {
   const definition = generatedDefinitions.definitions.find(
     (candidate) => candidate.id === "node-vfs-node-startup",
