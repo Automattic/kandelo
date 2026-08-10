@@ -176,11 +176,18 @@ int main(int argc, char **argv) {
                     };
                     ioctl(master, TIOCSWINSZ, &nws);
                     if (pid > 0) kill(pid, SIGWINCH);
-                    vt100_render(term, s, font, 0, 0);
-                    kwl_window_commit(win);
-                    printf("WLTERM_RESIZE cols=%d rows=%d\n", cols, rows);
-                    fflush(stdout);
                 }
+                /* Commit even when the grid kept its size: the resize
+                 * rebuilt both buffers, so the compositor holds no buffer
+                 * for this surface until the next commit — a tile that
+                 * shifts by less than a cell (a theme's gap change) would
+                 * otherwise leave the window invisible until the shell
+                 * prints again. */
+                vt100_mark_dirty_all(term);
+                vt100_render(term, s, font, 0, 0);
+                kwl_window_commit(win);
+                printf("WLTERM_RESIZE cols=%d rows=%d\n", cols, rows);
+                fflush(stdout);
             }
         }
 

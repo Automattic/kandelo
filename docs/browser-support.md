@@ -506,10 +506,13 @@ binary with its own `/etc/kandelo/wlcompositor.conf`, an app registry under
   instead of reaching the terminal underneath. Type to narrow, `Up`/`Down` to
   move, `Enter` to launch (the compositor spawns it and it tiles in), `Esc` to
   dismiss. Entries come from `/usr/share/kandelo/apps`, one file per app.
-- **Themes.** `Ctrl+Shift+Space` cycles Tokyo Night → Catppuccin → Gruvbox.
-  One palette file drives the whole desktop at once: the compositor's window
-  borders, gaps and wallpaper, and the bar's and launcher's own colours, which
-  they reload when the compositor broadcasts the switch.
+- **Themes.** `Ctrl+Shift+Space` cycles Tokyo Night, Catppuccin, Gruvbox,
+  Nord, Everforest and Rosé Pine. One palette file drives the whole desktop at
+  once: the compositor's window borders, gaps and wallpaper, and the bar's and
+  launcher's own colours, which they reload when the compositor broadcasts the
+  switch. Each theme ships an aurora wallpaper the page renders to raw pixels
+  at staging time (`renderWallpaperKwlp`); the compositor scales it to the
+  output and falls back to a gradient for themes without one.
 - **The rest of the keybinds** are the Hyprland demo's: `Ctrl+Return` a
   terminal, `Ctrl+K` a clock, `Ctrl+P` a paint canvas, `Ctrl+W` closes the
   focused window, `Ctrl+1..9` switch workspaces, `Ctrl+J` cycles focus. Every

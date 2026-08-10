@@ -79,6 +79,8 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
     .toMatch(/BINDS_LOADED n=\d+ source=\/etc\/kandelo\/wlcompositor\.conf/);
   expect(await syslogStream(page), "the configured theme was not loaded")
     .toMatch(/THEME tokyo-night/);
+  expect(await syslogStream(page), "the theme's image wallpaper was not rendered")
+    .toMatch(/WALLPAPER image w=960 h=540/);
 
   // Gate 2: the bar is a real layer-shell surface — anchored across the top at
   // the size it asked for, and reading the compositor's live theme.
@@ -168,10 +170,10 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   await pressCtrl(page, "Space", true);
   await expect
     .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/THEME (catppuccin|gruvbox)/);
+    .toMatch(/THEME (catppuccin|everforest|gruvbox|nord|rose-pine)/);
   await expect
     .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/KBAR_THEME name=(catppuccin|gruvbox)/);
+    .toMatch(/KBAR_THEME name=(catppuccin|everforest|gruvbox|nord|rose-pine)/);
 
   // Gate 7: the bar tracks the desktop. CTRL+2 switches workspace and the bar
   // moves its active pill — the kwlctl event feed reaching a shell client.

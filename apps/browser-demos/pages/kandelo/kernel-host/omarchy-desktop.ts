@@ -9,7 +9,11 @@
  * runtime exactly as they would read an installed desktop.
  *
  * Palettes are the well-known upstream colour schemes Omarchy ships
- * (Tokyo Night, Catppuccin Mocha, Gruvbox); the keys are ours.
+ * (Tokyo Night, Catppuccin Mocha, Gruvbox, Nord, Everforest, Rosé Pine); the
+ * keys are ours. Each theme also carries a wallpaper spec: the page renders it
+ * to raw pixels at staging time (renderWallpaperKwlp) because nothing in the
+ * compositor decodes PNG/JPEG — it reads the KWLP raw format and scales it to
+ * the output.
  */
 
 /** Where the desktop's files live in the VFS. */
@@ -90,15 +94,27 @@ export const OMARCHY_APPS: Record<string, string> = {
 };
 
 /**
- * The themes. Each is one palette file read by the compositor (border, gaps,
- * wallpaper) and by the shell clients (bar, foreground, accent) — one file,
- * both sides, which is what makes a switch atomic across the desktop.
+ * One radial glow of a wallpaper: center and radius as fractions of the
+ * output, colour as #rrggbb, alpha at the center fading to zero at the edge.
  */
-export const OMARCHY_THEMES: Record<string, string> = {
-  "tokyo-night": `# Tokyo Night
+export type WallpaperGlow = [x: number, y: number, r: number, color: string, alpha: number];
+
+export interface OmarchyTheme {
+  /** theme.conf body: one palette file read by the compositor (border, gaps,
+   * wallpaper) and by the shell clients (bar, foreground, accent) — one file,
+   * both sides, which is what makes a switch atomic across the desktop. */
+  conf: string;
+  /** Aurora wallpaper spec rendered by renderWallpaperKwlp. */
+  wallpaper: { base: string; glows: WallpaperGlow[] };
+}
+
+export const OMARCHY_THEMES: Record<string, OmarchyTheme> = {
+  "tokyo-night": {
+    conf: `# Tokyo Night
 border_active = 0x7aa2f7
 wallpaper_top = 0x1a1b26
 wallpaper_bottom = 0x24283b
+wallpaper = background.kwlp
 bar = 0x16161e
 foreground = 0xc0caf5
 muted = 0x565f89
@@ -108,10 +124,22 @@ background = 0x1a1b26
 gaps_in = 8
 gaps_out = 12
 `,
-  "catppuccin": `# Catppuccin Mocha
+    wallpaper: {
+      base: "#16161e",
+      glows: [
+        [0.22, 0.85, 0.75, "#7aa2f7", 0.32],
+        [0.85, 0.15, 0.65, "#bb9af7", 0.26],
+        [0.62, 0.72, 0.5, "#7dcfff", 0.18],
+        [0.1, 0.1, 0.45, "#3d59a1", 0.3],
+      ],
+    },
+  },
+  "catppuccin": {
+    conf: `# Catppuccin Mocha
 border_active = 0xcba6f7
 wallpaper_top = 0x1e1e2e
 wallpaper_bottom = 0x313244
+wallpaper = background.kwlp
 bar = 0x181825
 foreground = 0xcdd6f4
 muted = 0x6c7086
@@ -121,10 +149,22 @@ background = 0x1e1e2e
 gaps_in = 10
 gaps_out = 16
 `,
-  "gruvbox": `# Gruvbox Dark
+    wallpaper: {
+      base: "#181825",
+      glows: [
+        [0.8, 0.8, 0.7, "#cba6f7", 0.3],
+        [0.15, 0.2, 0.6, "#f5c2e7", 0.22],
+        [0.5, 0.45, 0.5, "#89b4fa", 0.18],
+        [0.9, 0.1, 0.4, "#f38ba8", 0.16],
+      ],
+    },
+  },
+  "gruvbox": {
+    conf: `# Gruvbox Dark
 border_active = 0xd79921
 wallpaper_top = 0x282828
 wallpaper_bottom = 0x3c3836
+wallpaper = background.kwlp
 bar = 0x1d2021
 foreground = 0xebdbb2
 muted = 0x928374
@@ -134,4 +174,133 @@ background = 0x282828
 gaps_in = 6
 gaps_out = 8
 `,
+    wallpaper: {
+      base: "#1d2021",
+      glows: [
+        [0.5, 0.95, 0.8, "#d79921", 0.28],
+        [0.12, 0.25, 0.55, "#cc241d", 0.14],
+        [0.88, 0.3, 0.5, "#98971a", 0.16],
+        [0.7, 0.6, 0.45, "#d65d0e", 0.18],
+      ],
+    },
+  },
+  "nord": {
+    conf: `# Nord
+border_active = 0x88c0d0
+wallpaper_top = 0x2e3440
+wallpaper_bottom = 0x3b4252
+wallpaper = background.kwlp
+bar = 0x272c36
+foreground = 0xd8dee9
+muted = 0x4c566a
+accent = 0x88c0d0
+occupied = 0x3b4252
+background = 0x2e3440
+gaps_in = 8
+gaps_out = 12
+`,
+    wallpaper: {
+      base: "#272c36",
+      glows: [
+        [0.3, 0.1, 0.7, "#88c0d0", 0.24],
+        [0.85, 0.75, 0.65, "#5e81ac", 0.3],
+        [0.1, 0.8, 0.5, "#b48ead", 0.16],
+        [0.6, 0.4, 0.45, "#81a1c1", 0.18],
+      ],
+    },
+  },
+  "everforest": {
+    conf: `# Everforest Dark
+border_active = 0xa7c080
+wallpaper_top = 0x2d353b
+wallpaper_bottom = 0x3d484d
+wallpaper = background.kwlp
+bar = 0x232a2e
+foreground = 0xd3c6aa
+muted = 0x859289
+accent = 0xa7c080
+occupied = 0x3d484d
+background = 0x2d353b
+gaps_in = 8
+gaps_out = 12
+`,
+    wallpaper: {
+      base: "#232a2e",
+      glows: [
+        [0.2, 0.9, 0.75, "#a7c080", 0.24],
+        [0.8, 0.2, 0.6, "#7fbbb3", 0.22],
+        [0.55, 0.6, 0.5, "#dbbc7f", 0.14],
+        [0.05, 0.15, 0.45, "#425047", 0.4],
+      ],
+    },
+  },
+  "rose-pine": {
+    conf: `# Rosé Pine
+border_active = 0xebbcba
+wallpaper_top = 0x191724
+wallpaper_bottom = 0x26233a
+wallpaper = background.kwlp
+bar = 0x12101a
+foreground = 0xe0def4
+muted = 0x6e6a86
+accent = 0xebbcba
+occupied = 0x26233a
+background = 0x191724
+gaps_in = 10
+gaps_out = 14
+`,
+    wallpaper: {
+      base: "#12101a",
+      glows: [
+        [0.75, 0.85, 0.7, "#ebbcba", 0.24],
+        [0.2, 0.15, 0.6, "#c4a7e7", 0.22],
+        [0.5, 0.55, 0.5, "#31748f", 0.2],
+        [0.95, 0.25, 0.4, "#eb6f92", 0.12],
+      ],
+    },
+  },
 };
+
+function hexToRgba(hex: string, alpha: number): string {
+  const v = parseInt(hex.slice(1), 16);
+  return `rgba(${(v >> 16) & 0xff}, ${(v >> 8) & 0xff}, ${v & 0xff}, ${alpha})`;
+}
+
+/**
+ * Render a theme's aurora wallpaper to KWLP raw pixels: "KWLP", u32le width,
+ * u32le height, then width*height u32le XRGB pixels. Rendered smaller than the
+ * output — the compositor bilinear-upscales, and the content is soft
+ * gradients, so the stretch is invisible while the staged file stays ~2 MB.
+ */
+export function renderWallpaperKwlp(
+  theme: OmarchyTheme,
+  w = 960,
+  h = 540,
+): Uint8Array {
+  const canvas = new OffscreenCanvas(w, h);
+  const ctx = canvas.getContext("2d")!;
+  ctx.fillStyle = theme.wallpaper.base;
+  ctx.fillRect(0, 0, w, h);
+  for (const [fx, fy, fr, color, alpha] of theme.wallpaper.glows) {
+    const grad = ctx.createRadialGradient(
+      fx * w, fy * h, 0, fx * w, fy * h, fr * w);
+    grad.addColorStop(0, hexToRgba(color, alpha));
+    grad.addColorStop(1, hexToRgba(color, 0));
+    ctx.fillStyle = grad;
+    ctx.fillRect(0, 0, w, h);
+  }
+
+  const img = ctx.getImageData(0, 0, w, h).data;
+  const out = new Uint8Array(12 + w * h * 4);
+  out.set([0x4b, 0x57, 0x4c, 0x50]);   // "KWLP"
+  const view = new DataView(out.buffer);
+  view.setUint32(4, w, true);
+  view.setUint32(8, h, true);
+  for (let i = 0; i < w * h; i++) {
+    out[12 + i * 4] = img[i * 4 + 2];
+    out[12 + i * 4 + 1] = img[i * 4 + 1];
+    out[12 + i * 4 + 2] = img[i * 4];
+    out[12 + i * 4 + 3] = 0xff;
+  }
+  return out;
+}

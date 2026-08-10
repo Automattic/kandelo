@@ -2505,9 +2505,14 @@ two clients consume it. This is the **O1** milestone of
 - **Themes.** A theme is a directory holding one `theme.conf` under
   `/usr/share/kandelo/themes` (`WLC_THEME_DIR` / `KANDELO_THEME_DIR` override
   the root) — the same file-based design Omarchy uses. The compositor reads the
-  border colour, gaps and wallpaper colours; the shell clients read the bar,
+  border colour, gaps and wallpaper; the shell clients read the bar,
   foreground, muted and accent colours; unknown keys are skipped, so one file
-  serves both sides. `theme = <name>` in the compositor config selects the
+  serves both sides. A theme's wallpaper is either the two gradient colours or
+  a `wallpaper = <file>` image in the KWLP raw-pixel format (`"KWLP"`, u32le
+  width/height, XRGB pixels) that the compositor bilinear-scales to the
+  output — raw pixels because nothing in the compositor decodes PNG/JPEG;
+  whoever stages the theme renders the image. `theme = <name>` in the
+  compositor config selects the
   startup theme, and `kwlctl dispatch theme <name|next|prev>` (or a `theme`
   bind) switches live: gaps re-tile, the wallpaper is re-rendered and
   re-uploaded to its GL texture, and `theme>>name` on the event stream tells

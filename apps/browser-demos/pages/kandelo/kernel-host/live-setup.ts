@@ -116,6 +116,7 @@ import {
   OMARCHY_THEME_DIR,
   OMARCHY_THEMES,
   OMARCHY_WLCOMPOSITOR_CONF,
+  renderWallpaperKwlp,
 } from "./omarchy-desktop";
 import {
   descriptorWithVfsImageUrl,
@@ -2320,10 +2321,13 @@ async function bootProfile(
             for (const [name, body] of Object.entries(OMARCHY_APPS))
               writeVfsFile(kernelForHyprland.fs, `${OMARCHY_APPS_DIR}/${name}`,
                 body, 0o644);
-            for (const [name, body] of Object.entries(OMARCHY_THEMES)) {
+            for (const [name, theme] of Object.entries(OMARCHY_THEMES)) {
               ensureDirRecursive(kernelForHyprland.fs, `${OMARCHY_THEME_DIR}/${name}`);
               writeVfsFile(kernelForHyprland.fs,
-                `${OMARCHY_THEME_DIR}/${name}/theme.conf`, body, 0o644);
+                `${OMARCHY_THEME_DIR}/${name}/theme.conf`, theme.conf, 0o644);
+              writeVfsBinary(kernelForHyprland.fs,
+                `${OMARCHY_THEME_DIR}/${name}/background.kwlp`,
+                renderWallpaperKwlp(theme), 0o644);
             }
           }
 

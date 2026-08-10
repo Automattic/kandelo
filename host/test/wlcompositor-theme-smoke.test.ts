@@ -14,7 +14,9 @@
  * Skips if the binaries aren't built (bare checkout).
  */
 import { describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { NodeKernelHost } from "../src/node-kernel-host";
@@ -25,6 +27,10 @@ const clientBin = tryResolveBinary("programs/wlclient-test.wasm");
 const kbarBin = tryResolveBinary("programs/kbar.wasm");
 const kwlctlBin = tryResolveBinary("programs/kwlctl.wasm");
 const hasBinaries = !!compositorBin && !!clientBin && !!kbarBin && !!kwlctlBin;
+const wltermBin = tryResolveBinary("programs/wlterm.wasm");
+const dashBin = tryResolveBinary("programs/dash.wasm");
+const hasWlterm =
+  hasBinaries && !!wltermBin && !!dashBin && existsSync(dashBin!);
 
 const CANVAS_W = 1920;
 const CANVAS_H = 1080;
@@ -244,6 +250,138 @@ describe("wlcompositor — theme system", () => {
           name: "aaa-wide",
           themes: ["aaa-wide", "bbb-tight"],
         });
+      } finally {
+        await host.destroy().catch(() => {});
+      }
+    },
+    60_000,
+  );
+
+  it.skipIf(!hasBinaries)(
+    "renders a theme's image wallpaper and falls back to the gradient",
+    async () => {
+      const compositorBytes = loadBytes(compositorBin!);
+      const kwlctlBytes = loadBytes(kwlctlBin!);
+
+      // Three themes: an image wallpaper, a plain gradient, and a wallpaper
+      // key pointing at a file that does not exist.
+      const root = mkdtempSync(join(tmpdir(), "kandelo-wallpaper-"));
+      const kwlp = Buffer.alloc(12 + 16 * 16 * 4);
+      kwlp.write("KWLP", 0, "ascii");
+      kwlp.writeUInt32LE(16, 4);
+      kwlp.writeUInt32LE(16, 8);
+      for (let i = 0; i < 16 * 16; i++)
+        kwlp.writeUInt32LE(0xff3366cc, 12 + i * 4);
+      for (const [name, lines] of Object.entries({
+        "aaa-image": ["wallpaper = background.kwlp"],
+        "bbb-gradient": ["wallpaper_top = 0x101010", "wallpaper_bottom = 0x202020"],
+        "ccc-broken": ["wallpaper = missing.kwlp"],
+      })) {
+        mkdirSync(join(root, name), { recursive: true });
+        writeFileSync(join(root, name, "theme.conf"), lines.join("\n") + "\n");
+      }
+      writeFileSync(join(root, "aaa-image", "background.kwlp"), kwlp);
+      const confPath = join(root, "wlcompositor.conf");
+      writeFileSync(confPath, "theme = aaa-image\n");
+
+      const out = { value: "" };
+      const err = { value: "" };
+      const host = new NodeKernelHost({
+        onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
+        onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
+      });
+      const dump = () => `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
+
+      try {
+        await host.init();
+        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
+
+        host.spawn(compositorBytes, ["wlcompositor"], {
+          env: [`WLC_CONFIG=${confPath}`, `WLC_THEME_DIR=${root}`],
+        });
+        await waitFor(out, "COMPOSITOR_UP", 20_000, dump);
+        await waitFor(out, "WALLPAPER image w=16 h=16", 10_000, dump);
+
+        out.value = "";
+        await host.spawn(kwlctlBytes,
+          ["kwlctl", "dispatch", "theme", "bbb-gradient"], {});
+        await waitFor(out, "WALLPAPER gradient", 10_000, dump);
+
+        // A wallpaper file that fails to load degrades to the gradient
+        // instead of keeping the previous theme's image.
+        out.value = "";
+        await host.spawn(kwlctlBytes,
+          ["kwlctl", "dispatch", "theme", "ccc-broken"], {});
+        await waitFor(out, "WALLPAPER gradient", 10_000, dump);
+      } finally {
+        await host.destroy().catch(() => {});
+      }
+    },
+    60_000,
+  );
+
+  it.skipIf(!hasWlterm)(
+    "a gap change smaller than a terminal cell still recommits the window",
+    async () => {
+      // kwl_apply_resize destroys the buffer the compositor holds before the
+      // client redraws, so a resize the terminal considers a no-op (cols and
+      // rows unchanged) must still commit — or the window stays invisible
+      // until the shell prints again. Three 1px gap steps guarantee at least
+      // one step that keeps the cell grid: each shrinks the tile by 2px, so
+      // across three steps the width crosses at most one cell boundary and
+      // the height at most one.
+      const compositorBytes = loadBytes(compositorBin!);
+      const wltermBytes = loadBytes(wltermBin!);
+      const dashBytes = loadBytes(dashBin!);
+      const kwlctlBytes = loadBytes(kwlctlBin!);
+
+      const gapsOut = [8, 9, 10, 11];
+      const root = mkdtempSync(join(tmpdir(), "kandelo-smallgap-"));
+      for (const out_ of gapsOut) {
+        mkdirSync(join(root, `g${out_}`), { recursive: true });
+        writeFileSync(join(root, `g${out_}`, "theme.conf"),
+          `gaps_in = 8\ngaps_out = ${out_}\n`);
+      }
+      const confPath = join(root, "wlcompositor.conf");
+      writeFileSync(confPath, `theme = g${gapsOut[0]}\n`);
+
+      const out = { value: "" };
+      const err = { value: "" };
+      const host = new NodeKernelHost({
+        onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
+        onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
+        onResolveExec: (path) =>
+          path === "dash" || path.endsWith("/dash") ? dashBytes : null,
+      });
+      const dump = () => `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
+
+      try {
+        await host.init();
+        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
+
+        host.spawn(compositorBytes, ["wlcompositor"], {
+          env: [
+            "WLC_LAYOUT=dwindle",
+            `WLC_CONFIG=${confPath}`,
+            `WLC_THEME_DIR=${root}`,
+          ],
+        });
+        await waitFor(out, "COMPOSITOR_UP", 20_000, dump);
+
+        host.spawn(
+          wltermBytes,
+          ["wlterm", "dash", "-c", "printf 'READY\\n'; read x"],
+          { env: ["PATH=/usr/bin:/bin", "HOME=/root", "TERM=vt100"] },
+        );
+        await waitFor(out, "WLTERM_READY", 20_000, dump);
+        await waitFor(out, /WLTERM_RESIZE cols=\d+ rows=\d+/, 20_000, dump);
+
+        for (const out_ of gapsOut.slice(1)) {
+          out.value = "";
+          await host.spawn(kwlctlBytes,
+            ["kwlctl", "dispatch", "theme", `g${out_}`], {});
+          await waitFor(out, /WLTERM_RESIZE cols=\d+ rows=\d+/, 10_000, dump);
+        }
       } finally {
         await host.destroy().catch(() => {});
       }
