@@ -959,7 +959,12 @@ describe("LiveKernelHost: shell command queue", () => {
     await Promise.resolve();
     expect(completed).toBe(false);
 
-    onOutput?.(encoder.encode(commandStart));
+    onOutput?.(encoder.encode("\x1b]133;"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(completed).toBe(false);
+
+    onOutput?.(encoder.encode("B\x07"));
     await command;
     expect(completed).toBe(true);
   });

@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest";
-import {
-  OSC_133_COMMAND_START,
-  ptyBufferEndsWithPrompt,
-} from "../src/pty-readiness";
+import { ptyBufferEndsWithPrompt } from "../src/pty-readiness";
 
 const OSC_133_PROMPT_START = "\x1b]133;A\x07";
+const OSC_133_COMMAND_START = "\x1b]133;B\x07";
 
 describe("PTY prompt readiness", () => {
   it("requires the OSC 133 command-start boundary for a dynamic Bash prompt", () => {
@@ -22,6 +20,12 @@ describe("PTY prompt readiness", () => {
     expect(ptyBufferEndsWithPrompt("command output ending in ❯ ")).toBe(false);
     expect(
       ptyBufferEndsWithPrompt(`${OSC_133_PROMPT_START}user@kandelo ~ ❯ `),
+    ).toBe(false);
+  });
+
+  it("requires command-start to be the trailing boundary", () => {
+    expect(
+      ptyBufferEndsWithPrompt(`${OSC_133_COMMAND_START}later output`),
     ).toBe(false);
   });
 
