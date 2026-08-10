@@ -712,7 +712,12 @@ function waitForPtyReadiness(
     let replayingHistory = true;
     const timer = setTimeout(fail, timeoutMs);
     off = pty.onData((bytes) => {
-      if (!includeHistory && replayingHistory) return;
+      if (replayingHistory) {
+        if (includeHistory) {
+          buffer += decoder.decode(bytes, { stream: true });
+        }
+        return;
+      }
       buffer += decoder.decode(bytes, { stream: true });
       finishIfReady();
     });

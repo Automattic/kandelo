@@ -703,6 +703,13 @@ describe("LiveKernelHost: process listing", () => {
   });
 });
 
+function ptyDataListenerCount(host: LiveKernelHost): number {
+  const sessions = (host as unknown as {
+    ptySessions: Map<string, { dataListeners: { size(): number } }>;
+  }).ptySessions;
+  return sessions.get("/dev/pts/0")?.dataListeners.size() ?? 0;
+}
+
 describe("LiveKernelHost: shell command queue", () => {
   it("uses the worker-returned pid for a transferred shell binary", async () => {
     const outputPids: number[] = [];
@@ -979,6 +986,125 @@ describe("LiveKernelHost: shell command queue", () => {
     onOutput?.(encoder.encode("B\x07"));
     await command;
     expect(completed).toBe(true);
+  });
+
+  it("uses the current marker after replaying an older fallback prompt", async () => {
+    const encoder = new TextEncoder();
+    const marker = "\x1b]133;B\x07";
+    let onOutput: ((data: Uint8Array) => void) | null = null;
+    let writes = 0;
+    let observeSecondWrite!: () => void;
+    const secondWrite = new Promise<void>((resolve) => {
+      observeSecondWrite = resolve;
+    });
+
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        spawnFromVfs: async () => ({
+          pid: 100,
+          exit: new Promise<number>(() => {}),
+        }),
+        onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
+          onOutput = callback;
+          callback(encoder.encode("legacy$ "));
+        },
+        ptyResize() {},
+        ptyWrite(_pid: number, _data: Uint8Array) {
+          writes += 1;
+          if (writes === 1) {
+            onOutput?.(encoder.encode(`first complete\r\n${marker}`));
+          } else {
+            onOutput?.(encoder.encode("status: $ "));
+            observeSecondWrite();
+          }
+        },
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/bin/bash",
+      programBytes: new ArrayBuffer(0),
+      argv: ["bash", "-l", "-i"],
+      env: [],
+      cwd: "/home/user",
+    });
+
+    await host.runShellCommand("first");
+    const listenersAfterFirst = ptyDataListenerCount(host);
+
+    let secondDone = false;
+    const second = host.runShellCommand("second");
+    void second.then(() => {
+      secondDone = true;
+    });
+    await secondWrite;
+    await Promise.resolve();
+    await Promise.resolve();
+    const completedBeforeMarker = secondDone;
+    const listenersBeforeMarker = ptyDataListenerCount(host);
+
+    if (!secondDone) onOutput?.(encoder.encode(marker));
+    await second;
+
+    expect(completedBeforeMarker).toBe(false);
+    expect(listenersAfterFirst).toBe(0);
+    expect(listenersBeforeMarker).toBe(1);
+    expect(ptyDataListenerCount(host)).toBe(0);
+  });
+
+  it("uses the current fallback after replaying an older marker prompt", async () => {
+    const encoder = new TextEncoder();
+    const marker = "\x1b]133;B\x07";
+    let onOutput: ((data: Uint8Array) => void) | null = null;
+    let observeWrite!: () => void;
+    const commandWritten = new Promise<void>((resolve) => {
+      observeWrite = resolve;
+    });
+
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        spawnFromVfs: async () => ({
+          pid: 100,
+          exit: new Promise<number>(() => {}),
+        }),
+        onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
+          onOutput = callback;
+          callback(encoder.encode(marker));
+        },
+        ptyResize() {},
+        ptyWrite(_pid: number, _data: Uint8Array) {
+          onOutput?.(encoder.encode("done\r\ncustom$ "));
+          observeWrite();
+        },
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/bin/bash",
+      programBytes: new ArrayBuffer(0),
+      argv: ["bash", "-l", "-i"],
+      env: [],
+      cwd: "/home/user",
+    });
+
+    await host.attachPty("/dev/pts/0", { cols: 100, rows: 30 });
+    onOutput?.(encoder.encode("custom$ "));
+
+    let completed = false;
+    const command = host.runShellCommand("printf done");
+    void command.then(() => {
+      completed = true;
+    });
+    await commandWritten;
+    await Promise.resolve();
+    await Promise.resolve();
+    const completedOnFallback = completed;
+
+    if (!completed) onOutput?.(encoder.encode(marker));
+    await command;
+
+    expect(completedOnFallback).toBe(true);
+    expect(ptyDataListenerCount(host)).toBe(0);
   });
 
   it("serializes concurrent PTY attaches for the same terminal session", async () => {
