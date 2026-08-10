@@ -1684,8 +1684,9 @@ concrete files rather than copying aliases into independent inodes. A rebase
 walks one quiescent source snapshot, so a peer rename cannot mix lazy paths
 from one namespace state with bytes from another.
 
-`registerLazyTree` is the format-neutral grouped form used by schema-4 package
-layers. Its serialized metadata adds a closed decoder/media type, immutable
+`registerLazyTree` is the format-neutral grouped form used by package layers
+and other archive-backed consumers. Its serialized metadata adds a closed
+decoder/media type, immutable
 digest and byte count, transport locations, activation policy, complete source
 and guest inventory, and regular-inode groups. Existing
 `registerLazyArchiveFromEntries` ZIP consumers remain supported. Registration
@@ -1696,6 +1697,15 @@ the POSIX result. Every member is decoded and checked before an
 identity-guarded batch replacement, so failure leaves all pending regular
 inodes unchanged. Hard-link aliases use one SharedFS inode and retain that
 identity when the lazy metadata is transferred or saved in an image.
+
+Generic TAR+gzip trees use the closed `tar-gzip-v1` decoder. A tree may carry
+a bounded `archive-byte-transforms-v1` plan containing exact source-byte
+assertions, ordered literal byte-replacement recipes, and declared input and
+output SHA-256/length identities. The VFS interprets no producer callbacks,
+regular expressions, scripts, or package policy. It applies the same plan to
+eager and lazy decoding, verifies both identities, and publishes only after
+the complete transformed tree passes validation. Plan fields participate in
+atomic-tree identity and survive image restore and filesystem rebase.
 
 Several first-use trees can opt into one fail-closed activation cohort. Each
 tree registers a producer-stable member name, and the producer must explicitly
@@ -1738,7 +1748,7 @@ Content, activation, mount prefix, inventory, and pending inode metadata reject
 unknown fields, unsafe or oversized strings, count/size disagreement, and
 missing, cyclic, or cross-inode hard-link targets before a group is installed.
 Serialized groups carry an explicit `kandelo-deferred-tree-v1` (derived ZIP),
-`kandelo-deferred-tree-v2` (original bottle), or
+`kandelo-deferred-tree-v2` (complete source inventory), or
 `kandelo-legacy-zip-v1` kind. A sealed multi-tree cohort uses
 `kandelo-deferred-tree-v3`, regardless of decoder, because its atomic membership
 is an additional closed wire contract; v1/v2 records cannot quietly acquire

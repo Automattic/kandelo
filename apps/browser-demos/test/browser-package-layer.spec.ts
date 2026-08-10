@@ -818,7 +818,7 @@ async function createDirectBottleFixture(): Promise<DirectBottleFixture> {
   ].sort((left, right) => compareHomebrewCanonicalText(left.id, right.id));
   const packageOrder = [dependencyPackage.full_name, rootPackage.full_name];
   const draft: HomebrewLazyLayerDraftDescriptor = {
-    schema: 5,
+    schema: 6,
     kind: "kandelo-homebrew-deferred-layer-draft",
     arch: "wasm32",
     mount_prefix: "/",
@@ -1336,13 +1336,12 @@ test("browser discards each private package-layer stage after repeated boot-pref
       )).toBe(initialDiscards + attempt);
     }
 
-    expect(descriptorFetches).toBe(bootAttempts);
-    expect(directArchiveFetches).toBe(
-      bootAttempts * transientTransportAttempts,
-    );
-    expect(mirrorArchiveFetches).toBe(
-      bootAttempts * transientTransportAttempts,
-    );
+    expect(descriptorFetches).toBe(3);
+    // Each private stage owns a fresh lazy-transport attempt. HTTP 503 is
+    // retryable, so each transport receives its bounded three GETs before the
+    // stage is discarded and the next boot creates another private stage.
+    expect(directArchiveFetches).toBe(9);
+    expect(mirrorArchiveFetches).toBe(9);
     await expect(page.evaluate(async (path) => {
       try {
         await window.__readPackageLayerAcceptance(path);
