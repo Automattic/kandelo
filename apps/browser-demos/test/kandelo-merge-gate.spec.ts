@@ -83,12 +83,13 @@ async function waitForTerminalContent(
 }
 
 async function runTerminalLine(page: Page, command: string) {
-  await page.locator(".kshell-host").first().click();
   const terminalInput = page
     .getByRole("textbox", { name: "Terminal input" })
     .first();
   if (await terminalInput.count()) {
     await terminalInput.focus();
+  } else {
+    await page.locator(".kshell-host").first().click();
   }
   await page.keyboard.insertText(command);
   await page.waitForTimeout(250);
