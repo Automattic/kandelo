@@ -1186,8 +1186,11 @@ readonly = false
             ("test-sqlite", set(&[
                 "coreutils|coreutils||Runtime|embedded",
                 "dash|dash||Runtime|embedded",
-                "sqlite|sqlite3,testfixture|full-source|Runtime|embedded",
+                "sqlite|development-files||Build|none",
+                "sqlite|sqlite3,testfixture||Runtime|embedded",
+                "tcl|development-files||Build|none",
                 "tcl||runtime-library|Runtime|embedded",
+                "zlib|zlib||Build|none",
             ])),
         ]);
         for (id, expected) in expected_package_roots {
@@ -1293,6 +1296,15 @@ readonly = false
                 set(&[concat!(
                     "wordpress-core|https://wordpress.org/wordpress-7.0.tar.gz|",
                     "530c8fdeb16fb0affdb53eb727b6a04bb8d166621c20029e389cabb01a0fa921|",
+                    "Runtime|embedded",
+                )]),
+            ),
+            (
+                "test-sqlite",
+                set(&[concat!(
+                    "sqlite-full-source|https://www.sqlite.org/2025/",
+                    "sqlite-src-3490100.zip|",
+                    "4404d93cbce818b1b98ca7259d0ba9b45db76f2fdd9373e56f2d29b519f4d43b|",
                     "Runtime|embedded",
                 )]),
             ),
