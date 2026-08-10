@@ -43,6 +43,10 @@ bind = CTRL, P, exec, /usr/local/bin/wlpaint
 bind = SUPER, space, exec, /usr/local/bin/klauncher
 bind = CTRL, space, exec, /usr/local/bin/klauncher
 
+# The Omarchy menu, on Omarchy's SUPER+ALT+Space.
+bind = SUPER ALT, space, exec, /usr/local/bin/klauncher --menu
+bind = CTRL ALT, space, exec, /usr/local/bin/klauncher --menu
+
 # Window management.
 bind = SUPER, W, killactive
 bind = CTRL, W, killactive
@@ -91,6 +95,10 @@ export const OMARCHY_APPS: Record<string, string> = {
   "terminal.conf": "name = Terminal\nexec = /usr/local/bin/wlterm\n",
   "clock.conf": "name = Clock\nexec = /usr/local/bin/wlclock\n",
   "paint.conf": "name = Paint\nexec = /usr/local/bin/wlpaint\n",
+  "vim.conf": "name = Vim\nexec = /usr/local/bin/wlterm /usr/bin/vim\n",
+  "nethack.conf": "name = NetHack\nexec = /usr/local/bin/wlterm /usr/bin/nethack\n",
+  "nano.conf": "name = Nano\nexec = /usr/local/bin/wlterm /usr/bin/nano\n",
+  "bash.conf": "name = Bash\nexec = /usr/local/bin/wlterm /usr/bin/bash -i\n",
 };
 
 /**

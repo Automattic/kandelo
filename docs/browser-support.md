@@ -493,7 +493,7 @@ and in the browser by `apps/browser-demos/test/kandelo-hyprland.spec.ts`.
 desktop: a status bar, a launcher, and themes. Omarchy is not a program but a
 set of files layered over Hyprland, so this demo is the same `wlcompositor`
 binary with its own `/etc/kandelo/wlcompositor.conf`, an app registry under
-`/usr/share/kandelo/apps`, and three themes under `/usr/share/kandelo/themes`
+`/usr/share/kandelo/apps`, and six themes under `/usr/share/kandelo/themes`
 — all staged into the VFS at boot from
 `apps/browser-demos/pages/kandelo/kernel-host/omarchy-desktop.ts`.
 
@@ -505,7 +505,15 @@ binary with its own `/etc/kandelo/wlcompositor.conf`, an app registry under
   that takes the keyboard exclusively — so what you type filters its list
   instead of reaching the terminal underneath. Type to narrow, `Up`/`Down` to
   move, `Enter` to launch (the compositor spawns it and it tiles in), `Esc` to
-  dismiss. Entries come from `/usr/share/kandelo/apps`, one file per app.
+  dismiss. Entries come from `/usr/share/kandelo/apps`, one file per app. The
+  registry offers real software from the shell image alongside the demo
+  clients: Vim, NetHack and Nano run unmodified inside a `wlterm` (their
+  binaries lazy-fetch from the image's archives on first launch), plus a Bash
+  terminal.
+- **The menu.** `Ctrl+Alt+Space` opens the Omarchy menu — the same launcher
+  at its root level (Apps, Theme). `Enter` descends; the Theme submenu lists
+  the installed themes and `Enter` switches live. `Esc` in a submenu goes
+  back to the root; `Esc` at the root dismisses.
 - **Themes.** `Ctrl+Shift+Space` cycles Tokyo Night, Catppuccin, Gruvbox,
   Nord, Everforest and Rosé Pine. One palette file drives the whole desktop at
   once: the compositor's window borders, gaps and wallpaper, and the bar's and

@@ -148,6 +148,7 @@ extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
 #define MOD_SHIFT 2
 #define MOD_CTRL  4   /* the browser reserves SUPER (Cmd/Win), so CTRL is the
                          usable modifier for the in-browser demo */
+#define MOD_ALT   8
 
 enum bind_action {
     ACT_EXEC, ACT_WORKSPACE, ACT_MOVE_TO_WS, ACT_KILL,
@@ -2454,6 +2455,8 @@ static uint32_t active_mod_mask(void) {
                                      XKB_STATE_MODS_EFFECTIVE) > 0) m |= MOD_SHIFT;
     if (xkb_state_mod_name_is_active(g.xkb_state, XKB_MOD_NAME_CTRL,
                                      XKB_STATE_MODS_EFFECTIVE) > 0) m |= MOD_CTRL;
+    if (xkb_state_mod_name_is_active(g.xkb_state, XKB_MOD_NAME_ALT,
+                                     XKB_STATE_MODS_EFFECTIVE) > 0) m |= MOD_ALT;
     return m;
 }
 
@@ -2668,6 +2671,8 @@ static int parse_mods(char *s, uint32_t *out) {
         else if (!strcasecmp(tok, "SHIFT")) m |= MOD_SHIFT;
         else if (!strcasecmp(tok, "CTRL") || !strcasecmp(tok, "CONTROL"))
             m |= MOD_CTRL;
+        else if (!strcasecmp(tok, "ALT") || !strcasecmp(tok, "MOD1"))
+            m |= MOD_ALT;
         else return -1;
     }
     *out = m;
@@ -2984,6 +2989,8 @@ static int setup_keymap(void) {
         "    <AB05> = 56;  <AB06> = 57;  <AB07> = 58;  <AB08> = 59;\n"
         "    <AB09> = 60;  <AB10> = 61;  <RTSH> = 62;  <SPCE> = 65;\n"
         "    <LWIN> = 133;\n"   /* evdev KEY_LEFTMETA (125) + 8: the SUPER key */
+        "    <LALT> = 64;\n"    /* evdev KEY_LEFTALT (56) + 8 */
+        "    <UP> = 111;  <LEFT> = 113;  <RGHT> = 114;  <DOWN> = 116;\n"
         "  };\n"
         "  xkb_types \"kandelo\" {\n"
         "    virtual_modifiers NumLock;\n"
@@ -3011,6 +3018,9 @@ static int setup_keymap(void) {
         "    interpret Super_L+AnyOfOrNone(all) {\n"
         "      action = SetMods(modifiers=Mod4);\n"
         "    };\n"
+        "    interpret Alt_L+AnyOfOrNone(all) {\n"
+        "      action = SetMods(modifiers=Mod1);\n"
+        "    };\n"
         "  };\n"
         "  xkb_symbols \"kandelo\" {\n"
         "    key <ESC>  { [ Escape ] };\n"
@@ -3022,6 +3032,11 @@ static int setup_keymap(void) {
         "    key <LFSH> { [ Shift_L ] };\n"
         "    key <RTSH> { [ Shift_R ] };\n"
         "    key <LWIN> { [ Super_L ] };\n"
+        "    key <LALT> { [ Alt_L ] };\n"
+        "    key <UP>   { [ Up ] };\n"
+        "    key <DOWN> { [ Down ] };\n"
+        "    key <LEFT> { [ Left ] };\n"
+        "    key <RGHT> { [ Right ] };\n"
         "    key <AE01> { type=\"TWO_LEVEL\", [ 1, exclam ] };\n"
         "    key <AE02> { type=\"TWO_LEVEL\", [ 2, at ] };\n"
         "    key <AE03> { type=\"TWO_LEVEL\", [ 3, numbersign ] };\n"
@@ -3072,6 +3087,7 @@ static int setup_keymap(void) {
         "    modifier_map Shift { <LFSH>, <RTSH> };\n"
         "    modifier_map Control { <LCTL> };\n"
         "    modifier_map Mod4 { <LWIN> };\n"
+        "    modifier_map Mod1 { <LALT> };\n"
         "  };\n"
         "};\n";
 

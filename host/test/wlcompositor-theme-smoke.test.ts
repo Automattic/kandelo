@@ -31,6 +31,14 @@ const wltermBin = tryResolveBinary("programs/wlterm.wasm");
 const dashBin = tryResolveBinary("programs/dash.wasm");
 const hasWlterm =
   hasBinaries && !!wltermBin && !!dashBin && existsSync(dashBin!);
+const launcherBin = tryResolveBinary("programs/klauncher.wasm");
+
+// evdev keycodes (linux/input-event-codes.h).
+const EV_KEY = 0x01;
+const EV_SYN = 0x00;
+const SYN_REPORT = 0x00;
+const KEY_ENTER = 28;
+const KEY_DOWN = 108;
 
 const CANVAS_W = 1920;
 const CANVAS_H = 1080;
@@ -382,6 +390,62 @@ describe("wlcompositor — theme system", () => {
             ["kwlctl", "dispatch", "theme", `g${out_}`], {});
           await waitFor(out, /WLTERM_RESIZE cols=\d+ rows=\d+/, 10_000, dump);
         }
+      } finally {
+        await host.destroy().catch(() => {});
+      }
+    },
+    60_000,
+  );
+
+  it.skipIf(!hasBinaries || !launcherBin)(
+    "the Omarchy menu descends into the theme list and dispatches a switch",
+    async () => {
+      const compositorBytes = loadBytes(compositorBin!);
+      const launcherBytes = loadBytes(launcherBin!);
+      const { themeDir, confPath } = stageThemes();
+
+      const out = { value: "" };
+      const err = { value: "" };
+      const host = new NodeKernelHost({
+        onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
+        onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
+      });
+      const dump = () => `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
+      const tap = (code: number) => {
+        host.injectInputEvent(0, EV_KEY, code, 1);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+        host.injectInputEvent(0, EV_KEY, code, 0);
+        host.injectInputEvent(0, EV_SYN, SYN_REPORT, 0);
+      };
+
+      try {
+        await host.init();
+        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
+
+        host.spawn(compositorBytes, ["wlcompositor"], {
+          env: [`WLC_CONFIG=${confPath}`, `WLC_THEME_DIR=${themeDir}`],
+        });
+        await waitFor(out, "COMPOSITOR_UP", 20_000, dump);
+
+        // --menu opens at the root (Apps, Theme) with the keyboard held
+        // exclusively, so the taps below go to the menu, not a window.
+        host.spawn(launcherBytes, ["klauncher", "--menu"], {
+          env: [`KANDELO_THEME_DIR=${themeDir}`],
+        });
+        await waitFor(out, "KLAUNCHER_LEVEL root", 20_000, dump);
+        await waitFor(out, "KLAUNCHER_READY n=2", 20_000, dump);
+
+        // Down + Enter selects "Theme"; the submenu lists the installed set
+        // read from `kwlctl theme`.
+        tap(KEY_DOWN);
+        tap(KEY_ENTER);
+        await waitFor(out, "KLAUNCHER_LEVEL themes", 10_000, dump);
+
+        // Enter on the first entry dispatches the switch and dismisses.
+        tap(KEY_ENTER);
+        await waitFor(out, "KLAUNCHER_THEME name=aaa-wide", 10_000, dump);
+        await waitFor(out, "THEME aaa-wide", 10_000, dump);
+        await waitFor(out, "KLAUNCHER_EXIT", 10_000, dump);
       } finally {
         await host.destroy().catch(() => {});
       }

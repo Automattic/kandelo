@@ -37,14 +37,24 @@ const canvasLocator = (page: Page) =>
 
 // Press a CTRL combo at the page level. A browser reserves SUPER (Cmd/Win), so
 // the demo mirrors every Omarchy bind on CTRL; that is the path a user takes.
-async function pressCtrl(page: Page, key: string, shift = false) {
+async function pressCtrl(page: Page, key: string, shift = false, alt = false) {
   await openSurface(page, "Demo");
   await page.locator("body").click({ position: { x: 5, y: 5 } });
   await page.keyboard.down("Control");
   if (shift) await page.keyboard.down("Shift");
+  if (alt) await page.keyboard.down("Alt");
   await page.keyboard.press(key);
+  if (alt) await page.keyboard.up("Alt");
   if (shift) await page.keyboard.up("Shift");
   await page.keyboard.up("Control");
+  await openSurface(page, "Internals");
+}
+
+// Press bare keys with the Demo surface focused, then return to Internals.
+async function pressKeys(page: Page, keys: string[]) {
+  await openSurface(page, "Demo");
+  await page.locator("body").click({ position: { x: 5, y: 5 } });
+  for (const key of keys) await page.keyboard.press(key);
   await openSurface(page, "Internals");
 }
 
@@ -132,10 +142,10 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
     .toMatch(/LAYER ns=launcher layer=3 /);
   await expect
     .poll(() => syslogStream(page), { timeout: 60_000 })
-    .toMatch(/KLAUNCHER_READY n=3/);
+    .toMatch(/KLAUNCHER_READY n=7/);
 
-  // "te" narrows the three entries (Terminal, Clock, Paint) to Terminal alone
-  // — "t" alone still matches Paint.
+  // "te" narrows the seven entries (Bash, Clock, Nano, NetHack, Paint,
+  // Terminal, Vim) to Terminal alone — "t" alone still matches Paint.
   await openSurface(page, "Demo");
   await page.locator("body").click({ position: { x: 5, y: 5 } });
   await page.keyboard.press("KeyT");
@@ -164,6 +174,21 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
     .poll(() => syslogStream(page), { timeout: 60_000 })
     .toMatch(/TILE n=4 i=3 /);
 
+  // Gate 5b: a real application through the same path. "vi" narrows to Vim;
+  // its entry runs unmodified vim inside a wlterm, fetched lazily from
+  // vim.zip on first exec — the fifth tile only appears if the whole chain
+  // (launcher → kwlctl exec → wlterm → lazy fetch → vim) held.
+  await pressCtrl(page, "Space");
+  await pressKeys(page, ["KeyV", "KeyI", "Enter"]);
+  await expect
+    .poll(() => syslogStream(page), { timeout: 60_000 })
+    .toMatch(/KLAUNCHER_EXEC cmd=\/usr\/local\/bin\/wlterm \/usr\/bin\/vim/);
+  await expect
+    .poll(() => syslogStream(page), { timeout: 120_000 })
+    .toMatch(/TILE n=5 i=4 /);
+  expect(await syslogText(page), "vim binary does not match the kernel ABI")
+    .not.toMatch(/ABI version mismatch/);
+
   // Gate 6: CTRL+SHIFT+Space cycles the theme. One palette file repaints the
   // whole desktop — the compositor's borders, gaps and wallpaper, and the
   // bar's own colours, which it reloads off the broadcast.
@@ -174,6 +199,22 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   await expect
     .poll(() => syslogStream(page), { timeout: 60_000 })
     .toMatch(/KBAR_THEME name=(catppuccin|everforest|gruvbox|nord|rose-pine)/);
+
+  // Gate 6b: CTRL+ALT+Space opens the Omarchy menu — the same launcher binary
+  // at its root level. Down+Enter descends into the theme list, and Enter on
+  // an entry dispatches the switch through kwlctl.
+  await pressCtrl(page, "Space", false, true);
+  await expect
+    .poll(() => syslogStream(page), { timeout: 60_000 })
+    .toMatch(/KLAUNCHER_LEVEL root/);
+  await pressKeys(page, ["ArrowDown", "Enter"]);
+  await expect
+    .poll(() => syslogStream(page), { timeout: 60_000 })
+    .toMatch(/KLAUNCHER_LEVEL themes/);
+  await pressKeys(page, ["Enter"]);
+  await expect
+    .poll(() => syslogStream(page), { timeout: 60_000 })
+    .toMatch(/KLAUNCHER_THEME name=[a-z-]+/);
 
   // Gate 7: the bar tracks the desktop. CTRL+2 switches workspace and the bar
   // moves its active pill — the kwlctl event feed reaching a shell client.

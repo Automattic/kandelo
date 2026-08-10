@@ -107,7 +107,11 @@ int main(int argc, char **argv) {
     pid_t pid = forkpty(&master, NULL, NULL, &ws);
     if (pid < 0) { perror("forkpty"); return 1; }
     if (pid == 0) {
-        /* Child: exec argv[ai..], defaulting to an interactive dash. */
+        /* Child: exec argv[ai..], defaulting to an interactive dash. The
+         * inherited TERM describes the launcher's terminal, not this one:
+         * curses apps (vim, nethack, nano) must see the type this terminal
+         * actually implements. */
+        setenv("TERM", "vt100", 1);
         if (ai < argc) {
             execvp(argv[ai], &argv[ai]);
         } else {
