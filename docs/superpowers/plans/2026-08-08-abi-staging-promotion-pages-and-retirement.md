@@ -230,15 +230,30 @@ class FormulaMetadataUpdateV1:
     expected_normalized_formula_sha256: str
     expected_generated_metadata_sha256: str
     allowed_paths: tuple[str, ...]
+    link_manifest_path: str
+    link_manifest_sha256: str
     canonical_manifest_digest: str
     bottle_layer_sha256: str
     bottle_layer_bytes: int
     target_abi: int
 ```
 
-`allowed_paths` is exactly the Formula file, its one sidecar, the top-level
-metadata index, and ABI state only when performing the one-time activation
-commit. Per-Formula promotion cannot touch ABI state or another Formula.
+`FormulaMetadataUpdateV1.allowed_paths` is exactly the Formula file, its one
+sidecar, the top-level metadata index, and the one versioned link manifest
+named by `link_manifest_path`. The separate one-time activation patch may also
+touch ABI state. Per-Formula promotion cannot touch ABI state or another
+Formula.
+
+Repository discovery found one concrete contradiction with the original
+three-path wording: the existing Homebrew VFS planner consumes
+`Kandelo/link/<formula>-<pkg-version>-rebuild<rebuild>-<arch>.json`, and each
+sidecar names that file. Promotion therefore writes that deterministic fourth
+path. Protected code derives it only from the authenticated bottle archive and
+the exact captured `homebrew/kandelo-guest-layout.json`; candidate metadata
+does not own its file inventory, prefix, cellar, or links.
+`link_manifest_sha256` is the digest of the exact sorted, indented JSON file
+bytes (including its trailing line feed), matching the existing Homebrew
+provenance contract rather than a second logical-object digest.
 
 The promotion sequence is:
 
@@ -775,17 +790,34 @@ entries nonremovable and performs no broad deletion.
 
 **Files:**
 
+- Modify: `Kandelo/staging/fixtures/admission-record.json`
+- Modify: `Kandelo/staging/fixtures/formula-inventory.json`
+- Modify: `Kandelo/staging/fixtures/tap-plan.json`
+- Modify: `Kandelo/staging/formula-build-inputs.toml`
+- Modify: `Kandelo/staging/generated/formula-build-inputs.json`
+- Create: `scripts/abi_staging/bottle_link.py`
+- Modify: `scripts/abi_staging/formula_inventory.py`
+- Modify: `scripts/abi_staging/records.py`
 - Modify: `scripts/abi_staging/tap_metadata.py`
 - Create: `scripts/abi_staging/tests/test_tap_metadata.py` if not already
   present; extend the Task 1 file rather than creating another test module.
 - Modify: `scripts/abi_staging/promotion.py`
+- Modify: `scripts/abi_staging/tests/test_promotion.py`
+- Modify: `scripts/abi_staging/tests/test_records.py`
+
+**Cross-repository record parity in Kandelo:**
+
+- Modify: `tools/xtask/src/abi_staging/records.rs`
+- Modify: `tools/xtask/src/abi_staging/mini_lifecycle.rs`
 
 **Interfaces:**
 
 - Consumes: valid history, canonical readback, current tap main ref, normalized
-  Formula identity, and `FormulaMetadataUpdateV1`.
+  Formula identity, authenticated bottle-contract/archive bytes, the exact
+  captured guest layout, and `FormulaMetadataUpdateV1`.
 - Produces: one successor activation patch and independent per-Formula
-  generated metadata patches, each compare-and-swap and path-bounded.
+  generated metadata patches, including one mechanical link manifest, each
+  compare-and-swap and path-bounded.
 
 - [ ] **Step 1: Write failing activation tests**
 
@@ -800,7 +832,11 @@ entries nonremovable and performs no broad deletion.
   Cover one architecture, dual architecture independent updates, exact
   canonical root/layer, sidecar/top-index consistency, current ABI binding,
   source CAS, generated metadata CAS, another Formula changed, unexpected path,
-  non-fast-forward push, and idempotent already-landed update.
+  non-fast-forward push, and idempotent already-landed update. Prove the
+  normalized Formula digest comes from the authenticated bottle contract,
+  revision/rebuild transitions cannot rewrite a successful sibling
+  architecture, link inventory rejects archive traversal/escape links, and the
+  link manifest uses only the captured guest prefix/cellar and promoted bytes.
 
 - [ ] **Step 3: Run tests and verify red**
 
@@ -822,10 +858,11 @@ entries nonremovable and performs no broad deletion.
 
 - [ ] **Step 5: Implement independent Formula patching**
 
-  Update only the exact Formula bottle block and generated sidecars/index row.
-  Bind canonical manifest and layer. Re-read main immediately before push and
-  use a normal non-force push; on conflict return `tap_source_drift` or CAS
-  conflict for reconciliation.
+  Update only the exact Formula bottle block, generated sidecar/index row, and
+  one versioned mechanical link manifest. Bind canonical manifest/layer,
+  authenticated Formula source, bottle inventory, and captured guest layout.
+  Re-read main immediately before push and use a normal non-force push; on
+  conflict return `tap_source_drift` or CAS conflict for reconciliation.
 
 - [ ] **Step 6: Run tests and current metadata regressions**
 
@@ -847,11 +884,25 @@ entries nonremovable and performs no broad deletion.
 
   ```bash
   git -C "$KANDELO_TAP_ROOT" add \
+    Kandelo/staging/fixtures/admission-record.json \
+    Kandelo/staging/fixtures/formula-inventory.json \
+    Kandelo/staging/fixtures/tap-plan.json \
+    Kandelo/staging/formula-build-inputs.toml \
+    Kandelo/staging/generated/formula-build-inputs.json \
+    scripts/abi_staging/bottle_link.py \
+    scripts/abi_staging/formula_inventory.py \
+    scripts/abi_staging/records.py \
     scripts/abi_staging/tap_metadata.py \
     scripts/abi_staging/promotion.py \
-    scripts/abi_staging/tests/test_tap_metadata.py
+    scripts/abi_staging/tests/test_tap_metadata.py \
+    scripts/abi_staging/tests/test_promotion.py \
+    scripts/abi_staging/tests/test_records.py
   git -C "$KANDELO_TAP_ROOT" commit -m \
     "[Homebrew] Apply ABI-safe Formula metadata updates"
+  git add tools/xtask/src/abi_staging/records.rs \
+    tools/xtask/src/abi_staging/mini_lifecycle.rs \
+    docs/superpowers/plans/2026-08-08-abi-staging-promotion-pages-and-retirement.md
+  git commit -m "[ABI] Bind admission records to bottle link metadata"
   ```
 
 ---

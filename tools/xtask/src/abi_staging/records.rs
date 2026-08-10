@@ -694,6 +694,8 @@ pub struct FormulaMetadataUpdateV1 {
     pub expected_normalized_formula_sha256: String,
     pub expected_generated_metadata_sha256: String,
     pub allowed_paths: Vec<String>,
+    pub link_manifest_path: String,
+    pub link_manifest_sha256: String,
     pub canonical_manifest_digest: String,
     pub bottle_layer_sha256: String,
     pub bottle_layer_bytes: u64,
@@ -1279,15 +1281,22 @@ fn validate_formula_metadata_update(
     validate_git_sha(&update.expected_main_commit)?;
     validate_sha256(&update.expected_normalized_formula_sha256)?;
     validate_sha256(&update.expected_generated_metadata_sha256)?;
+    validate_sha256(&update.link_manifest_sha256)?;
     validate_sha256(&update.canonical_manifest_digest)?;
     validate_sha256(&update.bottle_layer_sha256)?;
     if update.expected_main_commit != tap_source.commit {
         return Err("Formula metadata update expected main differs from tap source".to_string());
     }
+    validate_link_manifest_path(
+        &update.link_manifest_path,
+        &update.formula,
+        update.architecture,
+    )?;
     let expected_paths = vec![
         format!("Formula/{}.rb", update.formula),
         format!("Kandelo/formula/{}.json", update.formula),
         "Kandelo/metadata.json".to_string(),
+        update.link_manifest_path.clone(),
     ];
     for path in &update.allowed_paths {
         validate_normalized_relative_path(path, "Formula metadata allowed path")?;
@@ -1305,6 +1314,43 @@ fn validate_formula_metadata_update(
         return Err(
             "Formula metadata target ABI does not fit an unsigned 32-bit integer".to_string(),
         );
+    }
+    Ok(())
+}
+
+fn validate_link_manifest_path(
+    path: &str,
+    formula: &str,
+    architecture: VfsArchitectureV1,
+) -> Result<(), String> {
+    validate_normalized_relative_path(path, "Formula metadata link manifest path")?;
+    let architecture = match architecture {
+        VfsArchitectureV1::Wasm32 => "wasm32",
+        VfsArchitectureV1::Wasm64 => "wasm64",
+    };
+    let prefix = format!("Kandelo/link/{formula}-");
+    let suffix = format!("-{architecture}.json");
+    let Some(version_and_rebuild) = path
+        .strip_prefix(&prefix)
+        .and_then(|value| value.strip_suffix(&suffix))
+    else {
+        return Err("Formula metadata link manifest path is not exact".to_string());
+    };
+    let Some((version, rebuild)) = version_and_rebuild.rsplit_once("-rebuild") else {
+        return Err("Formula metadata link manifest path is not exact".to_string());
+    };
+    let valid_version = !version.is_empty()
+        && version.len() <= 256
+        && version.as_bytes()[0].is_ascii_alphanumeric()
+        && version.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'+' | b',' | b'-')
+        });
+    let valid_rebuild = rebuild == "0"
+        || (!rebuild.starts_with('0')
+            && rebuild.len() <= 10
+            && rebuild.bytes().all(|byte| byte.is_ascii_digit()));
+    if !valid_version || !valid_rebuild {
+        return Err("Formula metadata link manifest path is not exact".to_string());
     }
     Ok(())
 }
@@ -2645,7 +2691,11 @@ mod tests {
                         "Formula/bash.rb".to_string(),
                         "Kandelo/formula/bash.json".to_string(),
                         "Kandelo/metadata.json".to_string(),
+                        "Kandelo/link/bash-1.0-rebuild1-wasm32.json".to_string(),
                     ],
+                    link_manifest_path:
+                        "Kandelo/link/bash-1.0-rebuild1-wasm32.json".to_string(),
+                    link_manifest_sha256: SHA_C.to_string(),
                     canonical_manifest_digest: SHA_C.to_string(),
                     bottle_layer_sha256: SHA_B.to_string(),
                     bottle_layer_bytes: candidate_layer.bytes,
@@ -2672,6 +2722,16 @@ mod tests {
         assert!(validate_record(&layer_drift)
             .unwrap_err()
             .contains("promoted layer"));
+
+        let mut link_drift = admission.clone();
+        let AbiStagingRecordV1::Admission(link) = &mut link_drift else {
+            unreachable!()
+        };
+        link.admission.formula_metadata_update.link_manifest_path =
+            "../outside.json".to_string();
+        assert!(validate_record(&link_drift)
+            .unwrap_err()
+            .contains("link manifest path"));
 
         let mut rewritten_producer = admission.clone();
         let AbiStagingRecordV1::Admission(rewritten) = &mut rewritten_producer else {

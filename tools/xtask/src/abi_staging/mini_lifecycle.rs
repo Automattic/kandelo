@@ -1224,7 +1224,42 @@ fn promote_formula_layers(
                         format!("Formula/{}.rb", candidate.formula.name),
                         format!("Kandelo/formula/{}.json", candidate.formula.name),
                         "Kandelo/metadata.json".to_string(),
+                        format!(
+                            "Kandelo/link/{}-{}-rebuild{}-{}.json",
+                            candidate.formula.name,
+                            if candidate.formula.revision == 0 {
+                                candidate.formula.version.clone()
+                            } else {
+                                format!(
+                                    "{}_{}",
+                                    candidate.formula.version, candidate.formula.revision
+                                )
+                            },
+                            candidate.formula.bottle_rebuild,
+                            match candidate.formula.architecture {
+                                VfsArchitectureV1::Wasm32 => "wasm32",
+                                VfsArchitectureV1::Wasm64 => "wasm64",
+                            }
+                        ),
                     ],
+                    link_manifest_path: format!(
+                        "Kandelo/link/{}-{}-rebuild{}-{}.json",
+                        candidate.formula.name,
+                        if candidate.formula.revision == 0 {
+                            candidate.formula.version.clone()
+                        } else {
+                            format!(
+                                "{}_{}",
+                                candidate.formula.version, candidate.formula.revision
+                            )
+                        },
+                        candidate.formula.bottle_rebuild,
+                        match candidate.formula.architecture {
+                            VfsArchitectureV1::Wasm32 => "wasm32",
+                            VfsArchitectureV1::Wasm64 => "wasm64",
+                        }
+                    ),
+                    link_manifest_sha256: fixture.transition.policy_sha256.clone(),
                     canonical_manifest_digest: canonical.sha256.clone(),
                     bottle_layer_sha256: candidate.candidate.sha256.clone(),
                     bottle_layer_bytes: candidate.candidate.bytes,
