@@ -705,10 +705,13 @@ pub struct FormulaMetadataUpdateV1 {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct AdmissionPayloadV1 {
+    pub abi_history_record_sha256: String,
+    pub candidate_binding_sha256: String,
     pub candidate_record_sha256: String,
     pub promoted_layer: ArtifactIdentityV1,
     pub qualifying_receipt_sha256s: Vec<String>,
     pub merged_pull_request: MergedPullRequestV1,
+    pub preactivation_tap_source: ExactGitSourceV1,
     pub tap_source: ExactGitSourceV1,
     pub canonical: ArtifactIdentityV1,
     pub canonical_public_readback_sha256: String,
@@ -1180,6 +1183,8 @@ fn validate_override(record: &OverrideReceiptV1) -> Result<(), String> {
 fn validate_admission(record: &AdmissionRecordV1) -> Result<(), String> {
     validate_record_header(record.schema, &record.common, true)?;
     let payload = &record.admission;
+    validate_sha256(&payload.abi_history_record_sha256)?;
+    validate_sha256(&payload.candidate_binding_sha256)?;
     validate_sha256(&payload.candidate_record_sha256)?;
     validate_artifact(&payload.promoted_layer, ArtifactClassV1::Candidate)?;
     validate_sorted_sha256s(
@@ -1196,6 +1201,7 @@ fn validate_admission(record: &AdmissionRecordV1) -> Result<(), String> {
     }
     validate_git_sha(&payload.merged_pull_request.head)?;
     validate_git_sha(&payload.merged_pull_request.merge_commit)?;
+    validate_exact_git_source(&payload.preactivation_tap_source)?;
     validate_exact_git_source(&payload.tap_source)?;
     validate_artifact(&payload.canonical, ArtifactClassV1::Canonical)?;
     validate_sha256(&payload.canonical_public_readback_sha256)?;
@@ -1216,9 +1222,14 @@ fn validate_admission(record: &AdmissionRecordV1) -> Result<(), String> {
         return Err("admission source differs from exact merged PR head".to_string());
     }
     if !payload
-        .tap_source
+        .preactivation_tap_source
         .repository
-        .eq_ignore_ascii_case(&payload.formula_metadata_source.repository)
+        .eq_ignore_ascii_case(&payload.tap_source.repository)
+        || payload.preactivation_tap_source.commit == payload.tap_source.commit
+        || !payload
+            .tap_source
+            .repository
+            .eq_ignore_ascii_case(&payload.formula_metadata_source.repository)
         || payload
             .tap_source
             .repository
@@ -1960,6 +1971,7 @@ mod tests {
     const SHA_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const SHA_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const SHA_C: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    const SHA_D: &str = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
     const COMMIT_A: &str = "1111111111111111111111111111111111111111";
     const TREE_A: &str = "2222222222222222222222222222222222222222";
 
@@ -2038,6 +2050,14 @@ mod tests {
             repository: "kandelo-dev/homebrew-tap-core".to_string(),
             commit: COMMIT_A.to_string(),
             tree: TREE_A.to_string(),
+        }
+    }
+
+    fn preactivation_tap_source() -> ExactGitSourceV1 {
+        ExactGitSourceV1 {
+            repository: "kandelo-dev/homebrew-tap-core".to_string(),
+            commit: "0000000000000000000000000000000000000000".to_string(),
+            tree: "3333333333333333333333333333333333333333".to_string(),
         }
     }
 
@@ -2668,6 +2688,8 @@ mod tests {
             schema: 1,
             common: admission_common,
             admission: AdmissionPayloadV1 {
+                abi_history_record_sha256: SHA_D.to_string(),
+                candidate_binding_sha256: SHA_A.to_string(),
                 candidate_record_sha256: SHA_A.to_string(),
                 promoted_layer: candidate_layer.clone(),
                 qualifying_receipt_sha256s: vec![SHA_B.to_string()],
@@ -2677,6 +2699,7 @@ mod tests {
                     head: COMMIT_A.to_string(),
                     merge_commit: "3333333333333333333333333333333333333333".to_string(),
                 },
+                preactivation_tap_source: preactivation_tap_source(),
                 tap_source: tap_source(),
                 canonical: canonical,
                 canonical_public_readback_sha256: SHA_C.to_string(),
@@ -2713,6 +2736,33 @@ mod tests {
         assert!(validate_record(&readback_drift)
             .unwrap_err()
             .contains("canonical readback"));
+
+        let mut binding_drift = admission.clone();
+        let AbiStagingRecordV1::Admission(binding) = &mut binding_drift else {
+            unreachable!()
+        };
+        binding.admission.candidate_binding_sha256 = "not-a-digest".to_string();
+        assert!(validate_record(&binding_drift)
+            .unwrap_err()
+            .contains("SHA-256"));
+
+        let mut history_drift = admission.clone();
+        let AbiStagingRecordV1::Admission(history) = &mut history_drift else {
+            unreachable!()
+        };
+        history.admission.abi_history_record_sha256 = "not-a-digest".to_string();
+        assert!(validate_record(&history_drift)
+            .unwrap_err()
+            .contains("SHA-256"));
+
+        let mut epoch_drift = admission.clone();
+        let AbiStagingRecordV1::Admission(epoch) = &mut epoch_drift else {
+            unreachable!()
+        };
+        epoch.admission.preactivation_tap_source = epoch.admission.tap_source.clone();
+        assert!(validate_record(&epoch_drift)
+            .unwrap_err()
+            .contains("metadata update source"));
 
         let mut layer_drift = admission.clone();
         let AbiStagingRecordV1::Admission(layer) = &mut layer_drift else {

@@ -214,6 +214,7 @@ class PromotionDecisionV1:
     formula_subject: str
     tap_plan_digest: str
     candidate_record_digest: str
+    candidate_binding_digest: str
     bottle_layer_sha256: str
     bottle_layer_bytes: int
     source_custody_digest: str
@@ -236,6 +237,22 @@ class FormulaMetadataUpdateV1:
     bottle_layer_sha256: str
     bottle_layer_bytes: int
     target_abi: int
+
+@dataclass(frozen=True)
+class AdmissionPayloadV1:
+    abi_history_record_sha256: str
+    candidate_binding_sha256: str
+    candidate_record_sha256: str
+    promoted_layer: Mapping[str, object]
+    qualifying_receipt_sha256s: tuple[str, ...]
+    merged_pull_request: Mapping[str, object]
+    preactivation_tap_source: Mapping[str, str]
+    tap_source: Mapping[str, str]
+    canonical: Mapping[str, object]
+    canonical_public_readback_sha256: str
+    formula_metadata_source: Mapping[str, str]
+    formula_metadata_update: FormulaMetadataUpdateV1
+    original_producer: Mapping[str, object]
 ```
 
 `FormulaMetadataUpdateV1.allowed_paths` is exactly the Formula file, its one
@@ -254,6 +271,51 @@ does not own its file inventory, prefix, cellar, or links.
 `link_manifest_sha256` is the digest of the exact sorted, indented JSON file
 bytes (including its trailing line feed), matching the existing Homebrew
 provenance contract rather than a second logical-object digest.
+
+Implementation of merge-triggered promotion found a second concrete interface
+contradiction. Plan 3 already permits a later exact request to reuse an earlier
+candidate when the complete bottle contract is unchanged, but the original
+`PromotionDecisionV1` had no field that could bind the required immutable
+candidate-reuse record. It also implicitly treated the original producer as the
+new merged head, which would make valid historical reuse unpromotable.
+`candidate_binding_digest` closes that gap: for a candidate built by the current
+request it equals `candidate_record_digest`; for cross-request reuse it is the
+exact candidate-reuse record digest. `AdmissionRecordV1` carries the same value
+as `candidate_binding_sha256`, records the current merged head as admission
+provenance, and preserves the original candidate producer/source as the facts
+that actually built the bottle. Protected planning and every separated writer
+re-fetch and validate that binding. This is an interface correction for the
+already approved reuse semantics, not a new reuse policy.
+
+The three tap sources in `AdmissionPayloadV1` have distinct authority. The
+`preactivation_tap_source` is epoch source A, pinned by
+`abi_history_record_sha256`. `tap_source` is Formula compare-and-swap base B.
+`formula_metadata_source` is the single-parent landed Formula commit C. The
+admission validator requires A and B to differ, B and C to differ, all three to
+name the protected tap, the Formula update to expect B, and the landed commit to
+contain exactly the four authorized paths and bytes. One field cannot stand for
+both the immutable preactivation epoch and mutable current-main Formula state.
+
+Canonical publications may proceed independently, but Formula metadata commits
+are serialized to one compare-and-swap owner per reconciliation wave. This is
+required because every Formula patch is based on one exact current-main commit;
+parallel commits would race the same base. A later wave replans the remaining
+Formulae against the newly landed main. Every canonical, metadata, and admission
+writer independently re-fetches the exact history record, `abi/N` ref/tree, and
+fresh protection snapshot immediately before its mutation.
+
+If metadata commit C lands but admission publication fails, the next protected
+planner finds the unique first-parent commit that changed the exact four paths
+and produced the authenticated link-manifest digest. It reconstructs the
+original B-to-C patch from Git objects, validates C as an ancestor of current
+main, revalidates the current four-path projection, and schedules admission
+without rewriting metadata. An admission counts as durable progress only while
+current main still retains that exact Formula/layer/link projection.
+
+These fields correct the unpublished schema-1 admission interface while
+promotion activation remains disabled. No production admission record using
+the earlier incomplete shape may exist when this task is enabled; the protected
+fixture and both Python and Rust readers enforce the final shape before rollout.
 
 The promotion sequence is:
 
@@ -914,10 +976,19 @@ entries nonremovable and performs no broad deletion.
 **Files:**
 
 - Modify: `.github/workflows/abi-staging-reconcile.yml`
+- Modify: `scripts/abi_staging/cli.py`
 - Modify: `scripts/abi_staging/reconcile.py`
 - Modify: `scripts/abi_staging/promotion.py`
+- Modify: `scripts/abi_staging/records.py`
+- Modify: `scripts/abi_staging/tests/test_promotion.py`
+- Modify: `scripts/abi_staging/tests/test_reconcile.py`
+- Modify: `scripts/abi_staging/tests/test_tap_metadata.py`
 - Modify: `scripts/check_abi_staging_workflows.rb`
 - Modify: `scripts/test_check_abi_staging_workflows.rb`
+- Modify: `Kandelo/staging/fixtures/promotion-decision.json`
+- Modify: `Kandelo/staging/fixtures/admission-record.json`
+- Modify in Kandelo: `tools/xtask/src/abi_staging/records.rs`
+- Modify in Kandelo: `tools/xtask/src/abi_staging/mini_lifecycle.rs`
 
 **Interfaces:**
 
@@ -948,8 +1019,10 @@ entries nonremovable and performs no broad deletion.
 
   Simulate required candidates immediately ready, background pending, one
   Formula drift/rebuild, one failed dependency, independent sibling, duplicate
-  reconciliations, metadata CAS conflict, publisher retry, and admission retry.
-  Assert exact idempotence and independent progress.
+  reconciliations, metadata CAS conflict, publisher retry, admission retry, and
+  metadata success followed by admission failure and a later current-main
+  commit. Assert exact idempotence, Git-object recovery, and independent
+  progress.
 
 - [ ] **Step 3: Run tests and verify red**
 
@@ -970,7 +1043,10 @@ entries nonremovable and performs no broad deletion.
   promotion plans without writes. Active first requires/rechecks history,
   applies one activation if needed, then schedules dependency-ready Formulae
   independently. Required subjects sort first; background continues after
-  merge.
+  merge. Canonical publication may fan out, but exactly one Formula metadata
+  CAS owner is selected per wave. A reused historical candidate is selected only through its exact
+  current-request reuse record; original candidate, custody, and verification
+  facts remain unchanged and separately bound.
 
 - [ ] **Step 5: Wire exact artifacts between separated writers**
 
@@ -999,11 +1075,22 @@ entries nonremovable and performs no broad deletion.
   git -C "$KANDELO_TAP_ROOT" add \
     .github/workflows/abi-staging-reconcile.yml \
     scripts/abi_staging/reconcile.py \
+    scripts/abi_staging/cli.py \
     scripts/abi_staging/promotion.py \
+    scripts/abi_staging/records.py \
+    scripts/abi_staging/tests/test_promotion.py \
+    scripts/abi_staging/tests/test_reconcile.py \
+    scripts/abi_staging/tests/test_tap_metadata.py \
+    Kandelo/staging/fixtures/promotion-decision.json \
+    Kandelo/staging/fixtures/admission-record.json \
     scripts/check_abi_staging_workflows.rb \
     scripts/test_check_abi_staging_workflows.rb
   git -C "$KANDELO_TAP_ROOT" commit -m \
     "[ABI] Reconcile independent merged Formula promotion"
+  git add tools/xtask/src/abi_staging/records.rs \
+    tools/xtask/src/abi_staging/mini_lifecycle.rs \
+    docs/superpowers/plans/2026-08-08-abi-staging-promotion-pages-and-retirement.md
+  git commit -m "[ABI] Bind reused candidates through admission"
   ```
 
 ---

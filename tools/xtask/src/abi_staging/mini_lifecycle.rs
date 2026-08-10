@@ -398,6 +398,7 @@ pub fn run_mini_lifecycle(
     let canonical_layers = promote_formula_layers(
         &fixture,
         &request_sha256,
+        &source_history_sha256,
         &formula_states,
         &transport,
         &mut records,
@@ -1159,6 +1160,7 @@ fn write_product_evidence(
 fn promote_formula_layers(
     fixture: &MiniFixtureV1,
     request_sha256: &str,
+    abi_history_record_sha256: &str,
     candidates: &[MiniFormulaStateV1],
     transport: &LocalContentAddressedTransport,
     records: &mut RecordLedgerV1,
@@ -1192,6 +1194,8 @@ fn promote_formula_layers(
                 PromotionStateV1::Promoted,
             ),
             admission: AdmissionPayloadV1 {
+                abi_history_record_sha256: abi_history_record_sha256.to_string(),
+                candidate_binding_sha256: candidate.candidate_record_sha256.clone(),
                 candidate_record_sha256: candidate.candidate_record_sha256.clone(),
                 promoted_layer: artifact_from_local(&candidate.candidate),
                 qualifying_receipt_sha256s: vec![
@@ -1203,7 +1207,12 @@ fn promote_formula_layers(
                     head: fixture.transition.head.clone(),
                     merge_commit: fixture.transition.synthetic_merge_commit.clone(),
                 },
-                tap_source: fixture.tap.source.clone(),
+                preactivation_tap_source: fixture.tap.source.clone(),
+                tap_source: ExactGitSourceV1 {
+                    repository: fixture.tap.source.repository.clone(),
+                    commit: "6666666666666666666666666666666666666666".to_string(),
+                    tree: "7777777777777777777777777777777777777777".to_string(),
+                },
                 canonical: artifact_from_local(&canonical),
                 canonical_public_readback_sha256: canonical.sha256.clone(),
                 formula_metadata_source: ExactGitSourceV1 {
@@ -1214,7 +1223,8 @@ fn promote_formula_layers(
                 formula_metadata_update: FormulaMetadataUpdateV1 {
                     formula: candidate.formula.name.clone(),
                     architecture: candidate.formula.architecture,
-                    expected_main_commit: fixture.tap.source.commit.clone(),
+                    expected_main_commit: "6666666666666666666666666666666666666666"
+                        .to_string(),
                     expected_normalized_formula_sha256: fixture.transition.policy_sha256.clone(),
                     expected_generated_metadata_sha256: fixture
                         .transition
