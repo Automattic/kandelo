@@ -905,7 +905,7 @@ describe("LiveKernelHost: shell command queue", () => {
     expect(completed).toBe(true);
   });
 
-  it("waits for OSC 133 command-start after a dynamic Bash prompt", async () => {
+  it("uses only OSC 133 command-start after a dynamic Bash prompt", async () => {
     const encoder = new TextEncoder();
     const promptStart = "\x1b]133;A\x07";
     const commandStart = "\x1b]133;B\x07";
@@ -931,7 +931,10 @@ describe("LiveKernelHost: shell command queue", () => {
         },
         ptyResize() {},
         ptyWrite(_pid: number, _data: Uint8Array) {
-          onOutput?.(encoder.encode("cd /tmp\r\nprompt-looking output ❯ "));
+          onOutput?.(encoder.encode(
+            "cd /tmp\r\nprompt-looking output ❯ \r\n" +
+              "command output ending in $ ",
+          ));
           observeWrite();
         },
       } as any,
@@ -951,6 +954,15 @@ describe("LiveKernelHost: shell command queue", () => {
     });
 
     await commandWritten;
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(completed).toBe(false);
+
+    onOutput?.(encoder.encode("\r\ncommand output ending in # "));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(completed).toBe(false);
+
     onOutput?.(encoder.encode(
       `${promptStart}\x1b[36muser@kandelo ` +
         "\x1b[34m/tmp \x1b[32m❯\x1b[0m ",

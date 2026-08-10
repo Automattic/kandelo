@@ -1,6 +1,9 @@
 import type { DemoGuideConfig } from "./demo-config";
 import { advanceLazyDownloadSummary } from "./lazy-download";
-import { ptyBufferEndsWithPrompt } from "./pty-readiness";
+import {
+  OSC_133_COMMAND_START,
+  ptyBufferEndsWithPrompt,
+} from "./pty-readiness";
 
 // KernelHost — the contract between Kandelo session UI and the kernel/host runtime.
 //
@@ -664,23 +667,33 @@ function shellPrompt(shell: NonNullable<LiveKernelHostOptions["shell"]>): string
   return ps1 ? ps1.slice("PS1=".length) : null;
 }
 
+type PtyReadinessBoundary = "osc133" | "prompt";
+
+interface PtyReadinessOptions {
+  includeHistory?: boolean;
+  timeoutMs?: number;
+  prompt?: string | null;
+  requireOsc133?: boolean;
+}
+
 function waitForPtyReadiness(
   pty: PtyHandle,
-  opts: { includeHistory?: boolean; timeoutMs?: number; prompt?: string | null } = {},
-): Promise<void> {
+  opts: PtyReadinessOptions = {},
+): Promise<PtyReadinessBoundary> {
   const includeHistory = opts.includeHistory ?? true;
   const timeoutMs = opts.timeoutMs ?? 1200;
   const prompt = opts.prompt ?? null;
+  const requireOsc133 = opts.requireOsc133 ?? false;
   return new Promise((resolve, reject) => {
     let done = false;
     let buffer = "";
     let off = () => {};
-    const finish = () => {
+    const finish = (boundary: PtyReadinessBoundary) => {
       if (done) return;
       done = true;
       clearTimeout(timer);
       off();
-      resolve();
+      resolve(boundary);
     };
     const fail = () => {
       if (done) return;
@@ -688,16 +701,23 @@ function waitForPtyReadiness(
       off();
       reject(new Error("timed out waiting for PTY prompt"));
     };
+    const finishIfReady = () => {
+      if (buffer.endsWith(OSC_133_COMMAND_START)) {
+        finish("osc133");
+      } else if (!requireOsc133 && ptyBufferEndsWithPrompt(buffer, prompt)) {
+        finish("prompt");
+      }
+    };
     const decoder = new TextDecoder();
     let replayingHistory = true;
     const timer = setTimeout(fail, timeoutMs);
     off = pty.onData((bytes) => {
       if (!includeHistory && replayingHistory) return;
       buffer += decoder.decode(bytes, { stream: true });
-      if (ptyBufferEndsWithPrompt(buffer, prompt)) finish();
+      finishIfReady();
     });
     replayingHistory = false;
-    if (includeHistory && ptyBufferEndsWithPrompt(buffer, prompt)) finish();
+    if (includeHistory) finishIfReady();
   });
 }
 
@@ -966,11 +986,18 @@ export class LiveKernelHost implements KernelHost {
       await previousCommandDone.catch(() => {});
       const pty = await this.attachPty(sessionKey, { cols: 100, rows: 30 });
       const prompt = this.shell ? shellPrompt(this.shell) : null;
-      await waitForPtyReadiness(pty, { includeHistory: true, timeoutMs: 1200, prompt }).catch(() => {});
+      const initialBoundary = await waitForPtyReadiness(pty, {
+        includeHistory: true,
+        timeoutMs: 1200,
+        prompt,
+      }).catch(() => null);
       const completion = waitForPtyReadiness(pty, {
         includeHistory: false,
         timeoutMs: 300_000,
         prompt,
+        // WHY: Once this prompt proves it emits OSC 133, `$ ` or `# ` can be
+        // ordinary command output and must not complete the queued command.
+        requireOsc133: initialBoundary === "osc133",
       });
       void completion.then(resolveCommandDone, rejectCommandDone);
       pty.write(command.endsWith("\n") ? command : `${command}\n`);
