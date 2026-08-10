@@ -124,16 +124,13 @@ describe("wlcompositor — libkwl clients resize to the dictated tile", () => {
         host.spawn(clockBytes, ["wlclock"], {});
         const two = computeTiling({ x: 0, y: 0, w: CANVAS_W, h: CANVAS_H }, 2);
         expect(two[0].w, "expected an x-axis split").toBe(two[1].w);
-        await waitFor(out, `WLCLOCK_RESIZE w=${two[0].w} h=${two[0].h}`, 20_000, dump);
 
-        // Both clients ended up at the two-way tile size — the first shrank
-        // from the solo tile and the second mapped straight into its half.
-        const resizes = [...out.value.matchAll(/WLCLOCK_RESIZE w=(\d+) h=(\d+)/g)]
-          .map((m) => `${m[1]}x${m[2]}`);
-        const halved = resizes.filter((r) => r === `${two[0].w}x${two[0].h}`);
-        expect(halved.length,
-          `expected both windows at the two-way tile.\n${dump()}`)
-          .toBeGreaterThanOrEqual(2);
+        // Both clients end up at the two-way tile size — the first shrinks
+        // from the solo tile and the second maps straight into its half. The
+        // two markers race, so wait for both.
+        const halvedClock = `WLCLOCK_RESIZE w=${two[0].w} h=${two[0].h}`;
+        await waitFor(out, new RegExp(`${halvedClock}[\\s\\S]*${halvedClock}`),
+          20_000, dump);
 
         void compExit;
       } finally {
@@ -185,14 +182,12 @@ describe("wlcompositor — libkwl clients resize to the dictated tile", () => {
         host.spawn(paintBytes, ["wlpaint"], {});
         const two = computeTiling({ x: 0, y: 0, w: CANVAS_W, h: CANVAS_H }, 2);
         expect(two[0].w, "expected an x-axis split").toBe(two[1].w);
-        await waitFor(out, `WLPAINT_RESIZE w=${two[0].w} h=${two[0].h}`, 20_000, dump);
 
-        const halved = [...out.value.matchAll(/WLPAINT_RESIZE w=(\d+) h=(\d+)/g)]
-          .map((m) => `${m[1]}x${m[2]}`)
-          .filter((r) => r === `${two[0].w}x${two[0].h}`);
-        expect(halved.length,
-          `expected both wlpaint windows at the two-way tile.\n${dump()}`)
-          .toBeGreaterThanOrEqual(2);
+        // Both wlpaint windows reconfigure to the half-width slot; the two
+        // markers race, so wait for both.
+        const halvedPaint = `WLPAINT_RESIZE w=${two[0].w} h=${two[0].h}`;
+        await waitFor(out, new RegExp(`${halvedPaint}[\\s\\S]*${halvedPaint}`),
+          20_000, dump);
 
         void compExit;
       } finally {

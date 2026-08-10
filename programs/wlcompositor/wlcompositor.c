@@ -67,6 +67,7 @@
  * gates (host/test/wlcompositor-smoke.test.ts and friends) can spawn
  * compositor + client(s) and observe a clean shutdown.
  */
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <signal.h>
@@ -88,6 +89,7 @@
 #include "xdg-shell-server-protocol.h"
 #include "linux-dmabuf-v1-server-protocol.h"
 #include "xdg-decoration-v1-server-protocol.h"
+#include "wlr-layer-shell-v1-server-protocol.h"
 
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-names.h>
@@ -126,13 +128,20 @@ extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
 #define MAX_INPUT_RES  16     /* keyboard/pointer resources we track */
 #define MAX_FRAME_CB   32     /* pending frame callbacks per surface */
 #define MAX_SURFACES   16     /* mapped toplevels in the z-order list */
-#define FOCUS_COLOR    0xff4f8fdfu  /* accent ring, GPU and CPU paths */
+#define MAX_LAYERS     8      /* mapped wlr-layer-shell surfaces (bar, launcher) */
+#define FOCUS_COLOR    0xff4f8fdfu  /* default accent ring; themes override */
 #define N_WORKSPACES   9      /* SUPER+1..9, Hyprland's 1-based workspaces */
 
 /* The config path, hyprland.conf-shaped subset. Absent = generic defaults
  * (install_default_binds); WLC_CONFIG overrides for tests. */
 #define WLC_CONFIG_PATH "/etc/kandelo/wlcompositor.conf"
 #define MAX_BINDS 64
+
+/* Themes are just files, the way Omarchy does it: one directory per theme
+ * holding a palette the compositor and every shell client read. WLC_THEME_DIR
+ * overrides the root for tests. */
+#define THEME_DIR "/usr/share/kandelo/themes"
+#define MAX_THEMES 16
 
 /* Modifier bits used by the keybind engine (mapped from xkb mod state). */
 #define MOD_SUPER 1
@@ -142,7 +151,7 @@ extern void wpkEglCloseBoHandle(EGLDisplay dpy, unsigned bo_handle);
 
 enum bind_action {
     ACT_EXEC, ACT_WORKSPACE, ACT_MOVE_TO_WS, ACT_KILL,
-    ACT_CYCLE_NEXT, ACT_CYCLE_PREV,
+    ACT_CYCLE_NEXT, ACT_CYCLE_PREV, ACT_THEME,
 };
 
 /* One `bind = MODS, KEY, DISPATCHER, ARGS` rule. sym is the BASE-level keysym
@@ -168,6 +177,17 @@ struct surface {
     struct wl_resource *buffer;         /* committed, retained for repaints */
     struct wl_resource *xdg_surface;    /* xdg_surface wrapping this surface */
     struct wl_resource *xdg_toplevel;
+    /* wlr-layer-shell role: set instead of the xdg pair for a shell
+     * component (the bar, the launcher). A layer surface is anchored by the
+     * compositor, never tiled, and lives above or below every toplevel. */
+    struct wl_resource *layer_surface;
+    uint32_t layer;                     /* ZWLR_LAYER_SHELL_V1_LAYER_* */
+    uint32_t anchor;                    /* ZWLR_LAYER_SURFACE_V1_ANCHOR_* mask */
+    int32_t exclusive_zone;             /* px reserved from the anchored edge */
+    int32_t margin_top, margin_right, margin_bottom, margin_left;
+    uint32_t kb_interactive;            /* ZWLR_LAYER_SURFACE_V1_KEYBOARD_* */
+    int32_t req_w, req_h;               /* set_size; 0 = compositor decides */
+    int layer_configured;               /* first configure sent */
     char app_id[32];
     int32_t x, y;                       /* top-left on the output */
     int32_t w, h;                       /* committed buffer dims */
@@ -212,6 +232,10 @@ struct shm_buffer {
 
 struct kwlctl_conn;   /* one control-socket connection (defined with the IPC) */
 
+/* An output-space rectangle: a tile, or the work area left over once the
+ * anchored layer surfaces have taken their exclusive zones. */
+struct geom { int x, y, w, h; };
+
 struct compositor {
     struct wl_display *display;
     struct wl_event_loop *loop;
@@ -252,6 +276,13 @@ struct compositor {
     struct surface *kbd_focus;
     struct surface *ptr_focus;
 
+    /* Mapped layer surfaces, in map order; composited by layer, not by
+     * z-order, and never tiled. `usable` is the output minus their
+     * exclusive zones — the area retile() partitions. */
+    struct surface *layers[MAX_LAYERS];
+    int n_layers;
+    struct geom usable;
+
     /* Interactive move grab (xdg_toplevel.move). */
     struct surface *grab;
     double grab_dx, grab_dy;
@@ -283,6 +314,30 @@ struct compositor {
 };
 
 static struct compositor g;
+
+/* ---- theme ------------------------------------------------------------- */
+
+/* The live palette plus the list of installed themes, so `kwlctl dispatch
+ * theme next` can cycle them the way Omarchy's theme-next binding does. The
+ * defaults are the look the desktop had before themes existed, which is what
+ * an install with no theme directory keeps. */
+static struct {
+    char name[32];
+    uint32_t border_active;
+    uint32_t wallpaper_top, wallpaper_bottom;
+    int gaps_in, gaps_out;
+    char installed[MAX_THEMES][32];
+    int n_installed;
+    int current;                 /* index into installed, -1 when unthemed */
+} th = {
+    .name = "default",
+    .border_active = FOCUS_COLOR,
+    .wallpaper_top = 0xff10121au,
+    .wallpaper_bottom = 0xff1b2233u,
+    .gaps_in = 8,
+    .gaps_out = 12,
+    .current = -1,
+};
 
 /* ---- GPU compositing state (GLES via renderD128) ----------------------- */
 
@@ -318,12 +373,16 @@ static void slot_remove(struct wl_resource **slots, struct wl_resource *r) {
 static void schedule_repaint(void);
 static void kbd_set_focus(struct surface *s);
 static void ptr_refresh_focus(void);
+static int layer_in_band(const struct surface *s, int above);
+static int theme_switch(const char *arg);
 static void kwlctl_emit(const char *fmt, ...);
 static void kwlctl_exec(char *args);
 
 /* A surface participates in compositing, input, and tiling only when it is
- * mapped AND on the active workspace. */
+ * mapped AND on the active workspace. A layer surface is a shell component,
+ * so it shows on every workspace. */
 static int surface_visible(const struct surface *s) {
+    if (s->layer_surface) return s->mapped;
     return s->mapped && s->workspace == g.active_ws;
 }
 
@@ -356,14 +415,24 @@ static void zorder_raise(struct surface *s) {
     schedule_repaint();
 }
 
-/* Topmost mapped surface containing the output-space point, or NULL. */
+static int surface_contains(const struct surface *s, double x, double y) {
+    return x >= s->x && x < s->x + s->w && y >= s->y && y < s->y + s->h;
+}
+
+/* Topmost mapped surface containing the output-space point, or NULL. The
+ * compositing order decides: overlay/top layer surfaces first, then windows,
+ * then the background/bottom layers. */
 static struct surface *surface_at(double x, double y) {
+    for (int i = g.n_layers - 1; i >= 0; i--)
+        if (layer_in_band(g.layers[i], 1) && surface_contains(g.layers[i], x, y))
+            return g.layers[i];
     for (int i = g.n_surfaces - 1; i >= 0; i--) {
         struct surface *s = g.zorder[i];
-        if (!surface_visible(s)) continue;
-        if (x >= s->x && x < s->x + s->w && y >= s->y && y < s->y + s->h)
-            return s;
+        if (surface_visible(s) && surface_contains(s, x, y)) return s;
     }
+    for (int i = g.n_layers - 1; i >= 0; i--)
+        if (layer_in_band(g.layers[i], 0) && surface_contains(g.layers[i], x, y))
+            return g.layers[i];
     return NULL;
 }
 
@@ -404,13 +473,141 @@ static void place_surface(struct surface *s) {
         y = 120 + (cascade % 5) * 56;
         cascade++;
     }
-    if (x + s->w > (int)g.width) x = (int)g.width - s->w - 16;
-    if (y + s->h > (int)g.height) y = (int)g.height - s->h - 16;
-    if (x < 0) x = 0;
-    if (y < 0) y = 0;
+    /* Clamp into the work area, so a floating window never opens under an
+     * anchored bar (with no layer surfaces the work area IS the output). */
+    if (x + s->w > g.usable.x + g.usable.w) x = g.usable.x + g.usable.w - s->w - 16;
+    if (y + s->h > g.usable.y + g.usable.h) y = g.usable.y + g.usable.h - s->h - 16;
+    if (x < g.usable.x) x = g.usable.x;
+    if (y < g.usable.y) y = g.usable.y;
     s->x = x;
     s->y = y;
     s->placed = 1;
+}
+
+/* ---- wlr-layer-shell arrangement ---------------------------------------- */
+
+/* Layer surfaces are shell components (bar, launcher, wallpaper), not windows:
+ * the compositor anchors each one to output edges and lets it reserve an
+ * exclusive strip that windows must not cover. Everything below computes that
+ * from the double-buffered state the client set, in the protocol's order —
+ * background first, overlay last — so an earlier layer's exclusive zone
+ * shrinks the area a later one anchors against. */
+
+static void layer_add(struct surface *s) {
+    if (g.n_layers < MAX_LAYERS) g.layers[g.n_layers++] = s;
+}
+
+static void layer_remove(struct surface *s) {
+    int i = 0;
+    while (i < g.n_layers && g.layers[i] != s) i++;
+    if (i == g.n_layers) return;
+    for (; i + 1 < g.n_layers; i++) g.layers[i] = g.layers[i + 1];
+    g.n_layers--;
+}
+
+/* The topmost mapped layer surface that asked for exclusive keyboard focus
+ * (the launcher), or NULL. Overlay wins over top, then map order. */
+static struct surface *layer_kb_grab(void) {
+    struct surface *best = NULL;
+    for (int i = 0; i < g.n_layers; i++) {
+        struct surface *s = g.layers[i];
+        if (!s->mapped ||
+            s->kb_interactive != ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE)
+            continue;
+        if (!best || s->layer >= best->layer) best = s;
+    }
+    return best;
+}
+
+/* Anchor one layer surface inside `area` and, when it reserves an exclusive
+ * zone on a single edge, shrink `area` by that strip for the surfaces
+ * arranged after it and for the window layout. */
+static void layer_place(struct surface *s, struct geom *area) {
+    const uint32_t top = ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP;
+    const uint32_t bottom = ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM;
+    const uint32_t left = ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT;
+    const uint32_t right = ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT;
+
+    int span_x = (s->anchor & left) && (s->anchor & right);
+    int span_y = (s->anchor & top) && (s->anchor & bottom);
+
+    /* A 0 dimension means "you decide", which the protocol only allows when
+     * the surface spans that axis: it then fills the area minus its margins. */
+    int w = s->req_w > 0 ? s->req_w
+                         : area->w - s->margin_left - s->margin_right;
+    int h = s->req_h > 0 ? s->req_h
+                         : area->h - s->margin_top - s->margin_bottom;
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    if (w > area->w) w = area->w;
+    if (h > area->h) h = area->h;
+
+    int x, y;
+    if ((s->anchor & left) && !span_x)       x = area->x + s->margin_left;
+    else if ((s->anchor & right) && !span_x) x = area->x + area->w - w - s->margin_right;
+    else                                     x = area->x + (area->w - w) / 2;
+    if ((s->anchor & top) && !span_y)        y = area->y + s->margin_top;
+    else if ((s->anchor & bottom) && !span_y) y = area->y + area->h - h - s->margin_bottom;
+    else                                     y = area->y + (area->h - h) / 2;
+
+    s->x = x;
+    s->y = y;
+    s->w = w;
+    s->h = h;
+    s->placed = 1;
+
+    /* Only an edge-anchored strip of a MAPPED surface reserves space; a corner
+     * or a full-screen anchor is treated as zero, per the protocol. A surface
+     * that has a role but has never committed a buffer holds nothing back, so
+     * a client that dies mid-handshake cannot strand a strip of the desktop. */
+    if (s->exclusive_zone <= 0 || !s->mapped) return;
+    if (span_x && !span_y && (s->anchor & top)) {
+        int cut = s->exclusive_zone + s->margin_top;
+        area->y += cut;
+        area->h -= cut;
+    } else if (span_x && !span_y && (s->anchor & bottom)) {
+        area->h -= s->exclusive_zone + s->margin_bottom;
+    } else if (span_y && !span_x && (s->anchor & left)) {
+        int cut = s->exclusive_zone + s->margin_left;
+        area->x += cut;
+        area->w -= cut;
+    } else if (span_y && !span_x && (s->anchor & right)) {
+        area->w -= s->exclusive_zone + s->margin_right;
+    }
+    if (area->w < 1) area->w = 1;
+    if (area->h < 1) area->h = 1;
+}
+
+static void retile(void);
+
+/* Re-anchor every layer surface, recompute the window work area, and send each
+ * client the size it must render at. Runs whenever a layer surface appears,
+ * changes state, or goes away. */
+static void layers_arrange(void) {
+    struct geom area = { 0, 0, (int)g.width, (int)g.height };
+
+    for (uint32_t layer = ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND;
+         layer <= ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY; layer++) {
+        for (int i = 0; i < g.n_layers; i++) {
+            struct surface *s = g.layers[i];
+            if (s->layer != layer) continue;
+            int32_t prev_w = s->w, prev_h = s->h;
+            layer_place(s, &area);
+            if (s->layer_configured && s->w == prev_w && s->h == prev_h)
+                continue;
+            zwlr_layer_surface_v1_send_configure(
+                s->layer_surface, wl_display_next_serial(g.display),
+                (uint32_t)s->w, (uint32_t)s->h);
+            s->layer_configured = 1;
+            printf("LAYER ns=%s layer=%u x=%d y=%d w=%d h=%d\n", s->app_id,
+                   s->layer, s->x, s->y, s->w, s->h);
+            fflush(stdout);
+        }
+    }
+
+    g.usable = area;
+    retile();
+    schedule_repaint();
 }
 
 /* ---- tiling layout ------------------------------------------------------ */
@@ -420,23 +617,21 @@ static void place_surface(struct surface *s) {
  * becomes the tiling mode of the same compositor. Selected by WLC_LAYOUT. */
 enum layout_mode { LAYOUT_FLOATING = 0, LAYOUT_DWINDLE };
 
-struct geom { int x, y, w, h; };
-
 /* Gaps in output pixels. OUTER insets the whole tiling area from the screen
- * edge; INNER separates adjacent windows. Hardcoded for v1 — PR17 makes them
- * theme-driven. */
-#define TILE_GAP_OUTER 12
-#define TILE_GAP_INNER 8
+ * edge; INNER separates adjacent windows. Theme-driven (theme_apply). */
+static int tile_gap_outer = 12;
+static int tile_gap_inner = 8;
 
-/* Pure dwindle tiler: at each step split the remaining region along its LONGER
- * side (Hyprland's default). Pure — reads only its arguments — so the smoke
- * gate predicts the exact partition and checks it against the emitted geometry. */
+/* Dwindle tiler: at each step split the remaining region along its LONGER
+ * side (Hyprland's default). Its only inputs are the arguments and the two
+ * gap sizes, so the smoke gate predicts the exact partition and checks it
+ * against the emitted geometry. */
 static void compute_tiling(struct geom area, int n, struct geom *out) {
     if (n <= 0) return;
-    area.x += TILE_GAP_OUTER;
-    area.y += TILE_GAP_OUTER;
-    area.w -= 2 * TILE_GAP_OUTER;
-    area.h -= 2 * TILE_GAP_OUTER;
+    area.x += tile_gap_outer;
+    area.y += tile_gap_outer;
+    area.w -= 2 * tile_gap_outer;
+    area.h -= 2 * tile_gap_outer;
     if (area.w < 1) area.w = 1;
     if (area.h < 1) area.h = 1;
 
@@ -445,17 +640,17 @@ static void compute_tiling(struct geom area, int n, struct geom *out) {
         if (i == n - 1) { out[i] = region; break; }
         struct geom near = region, rest = region;
         if (region.w >= region.h) {          /* wider than tall: split L|R */
-            int half = (region.w - TILE_GAP_INNER) / 2;
+            int half = (region.w - tile_gap_inner) / 2;
             if (half < 1) half = 1;
             near.w = half;
-            rest.x = region.x + half + TILE_GAP_INNER;
-            rest.w = region.w - half - TILE_GAP_INNER;
+            rest.x = region.x + half + tile_gap_inner;
+            rest.w = region.w - half - tile_gap_inner;
         } else {                             /* taller than wide: split T/B */
-            int half = (region.h - TILE_GAP_INNER) / 2;
+            int half = (region.h - tile_gap_inner) / 2;
             if (half < 1) half = 1;
             near.h = half;
-            rest.y = region.y + half + TILE_GAP_INNER;
-            rest.h = region.h - half - TILE_GAP_INNER;
+            rest.y = region.y + half + tile_gap_inner;
+            rest.h = region.h - half - tile_gap_inner;
         }
         out[i] = near;
         region = rest;
@@ -476,8 +671,7 @@ static void retile(void) {
     if (n == 0) return;
 
     struct geom geoms[MAX_SURFACES];
-    struct geom area = { 0, 0, (int)g.width, (int)g.height };
-    compute_tiling(area, n, geoms);
+    compute_tiling(g.usable, n, geoms);
 
     for (int i = 0; i < n; i++) {
         struct surface *s = tiled[i];
@@ -538,6 +732,10 @@ static void surface_set_input_region(struct wl_client *c, struct wl_resource *r,
                                      struct wl_resource *reg) {}
 static void surface_commit(struct wl_client *c, struct wl_resource *r) {
     struct surface *s = wl_resource_get_user_data(r);
+    /* A layer surface's first commit carries no buffer: it exists to apply the
+     * anchor/size/zone state the client just set, and asks for the configure
+     * that tells it what size to render. */
+    if (s->layer_surface && !s->layer_configured) { layers_arrange(); return; }
     if (!s->pending_buffer) { schedule_repaint(); return; }
 
     /* Apply double-buffered state: the pending attach becomes current. The
@@ -551,9 +749,30 @@ static void surface_commit(struct wl_client *c, struct wl_resource *r) {
 
     struct shm_buffer *b = wl_resource_get_user_data(s->buffer);
     if (b) {
-        s->w = b->width;
-        s->h = b->height;
+        /* The compositor dictates a layer surface's box, so its geometry comes
+         * from the arrangement, not from whatever the client attached. */
+        if (!s->layer_surface) {
+            s->w = b->width;
+            s->h = b->height;
+        }
         b->gl_dirty = 1;   /* GPU path re-uploads this buffer's texture */
+    }
+
+    if (s->layer_surface) {
+        if (!s->mapped) {
+            s->mapped = 1;
+            /* Now that it is mapped its exclusive zone counts, so the windows
+             * below re-tile around it. */
+            layers_arrange();
+            /* A launcher-style surface asks for the keyboard and gets it for
+             * as long as it lives. */
+            if (s->kb_interactive ==
+                ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE)
+                kbd_set_focus(s);
+            ptr_refresh_focus();
+        }
+        schedule_repaint();
+        return;
     }
 
     if (!s->mapped) {
@@ -602,10 +821,19 @@ static void surface_resource_destroy(struct wl_resource *r) {
         break;
     }
     zorder_remove(s);
+    /* A client may destroy the wl_surface before its layer_surface; drop the
+     * back-reference so that resource's destroy handler doesn't touch freed
+     * memory. */
+    int was_layer = s->layer_surface != NULL;
+    if (was_layer) {
+        wl_resource_set_user_data(s->layer_surface, NULL);
+        layer_remove(s);
+    }
     if (g.kbd_focus == s) {
         g.kbd_focus = NULL;
         /* Hand focus to the new top window on the visible workspace, if any. */
-        kbd_set_focus(topmost_on_ws(g.active_ws));
+        struct surface *grab = layer_kb_grab();
+        kbd_set_focus(grab ? grab : topmost_on_ws(g.active_ws));
     }
     if (g.ptr_focus == s) g.ptr_focus = NULL;
     if (g.grab == s) g.grab = NULL;
@@ -613,8 +841,10 @@ static void surface_resource_destroy(struct wl_resource *r) {
      * callbacks themselves are owned by the client and freed with it. */
     s->n_frame_cbs = 0;
     free(s);
-    /* A closed window frees its slice back to the remaining tiles. */
-    retile();   /* no-op when floating */
+    /* A closed window frees its slice back to the remaining tiles; a closed
+     * layer surface additionally frees its exclusive strip. */
+    if (was_layer) layers_arrange();
+    else retile();   /* no-op when floating */
     schedule_repaint();
 }
 
@@ -1282,6 +1512,136 @@ static void decoration_mgr_bind(struct wl_client *client, void *data,
 }
 
 /* ====================================================================== */
+/* zwlr_layer_shell_v1 — the shell-component protocol (PR15)              */
+/* ====================================================================== */
+
+/* This is the protocol every desktop shell piece speaks: our kbar and
+ * klauncher, and upstream Waybar / mako when they land. State set through the
+ * requests below is applied on the next wl_surface.commit (surface_commit
+ * calls layers_arrange), matching the protocol's double-buffering rule. */
+
+static void layer_surface_set_size(struct wl_client *c, struct wl_resource *r,
+                                   uint32_t w, uint32_t h) {
+    struct surface *s = wl_resource_get_user_data(r);
+    s->req_w = (int32_t)w;
+    s->req_h = (int32_t)h;
+}
+static void layer_surface_set_anchor(struct wl_client *c, struct wl_resource *r,
+                                     uint32_t anchor) {
+    struct surface *s = wl_resource_get_user_data(r);
+    s->anchor = anchor;
+}
+static void layer_surface_set_exclusive_zone(struct wl_client *c,
+                                             struct wl_resource *r,
+                                             int32_t zone) {
+    struct surface *s = wl_resource_get_user_data(r);
+    s->exclusive_zone = zone;
+}
+static void layer_surface_set_margin(struct wl_client *c, struct wl_resource *r,
+                                     int32_t top, int32_t right,
+                                     int32_t bottom, int32_t left) {
+    struct surface *s = wl_resource_get_user_data(r);
+    s->margin_top = top;
+    s->margin_right = right;
+    s->margin_bottom = bottom;
+    s->margin_left = left;
+}
+static void layer_surface_set_keyboard_interactivity(struct wl_client *c,
+                                                     struct wl_resource *r,
+                                                     uint32_t interactivity) {
+    struct surface *s = wl_resource_get_user_data(r);
+    s->kb_interactive = interactivity;
+}
+/* Popups need xdg_popup, which the compositor does not implement yet (PR16). */
+static void layer_surface_get_popup(struct wl_client *c, struct wl_resource *r,
+                                    struct wl_resource *popup) {}
+static void layer_surface_ack_configure(struct wl_client *c,
+                                        struct wl_resource *r,
+                                        uint32_t serial) {}
+static void layer_surface_destroy(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static void layer_surface_set_layer(struct wl_client *c, struct wl_resource *r,
+                                    uint32_t layer) {
+    struct surface *s = wl_resource_get_user_data(r);
+    s->layer = layer;
+}
+static const struct zwlr_layer_surface_v1_interface layer_surface_impl = {
+    .set_size = layer_surface_set_size,
+    .set_anchor = layer_surface_set_anchor,
+    .set_exclusive_zone = layer_surface_set_exclusive_zone,
+    .set_margin = layer_surface_set_margin,
+    .set_keyboard_interactivity = layer_surface_set_keyboard_interactivity,
+    .get_popup = layer_surface_get_popup,
+    .ack_configure = layer_surface_ack_configure,
+    .destroy = layer_surface_destroy,
+    .set_layer = layer_surface_set_layer,
+};
+
+/* The wl_surface keeps its own resource; dropping the layer role unmaps it
+ * and hands the reserved strip back to the windows. */
+static void layer_surface_resource_destroy(struct wl_resource *r) {
+    struct surface *s = wl_resource_get_user_data(r);
+    if (!s) return;
+    s->layer_surface = NULL;
+    s->mapped = 0;
+    layer_remove(s);
+    if (g.kbd_focus == s) {
+        g.kbd_focus = NULL;
+        struct surface *grab = layer_kb_grab();
+        kbd_set_focus(grab ? grab : topmost_on_ws(g.active_ws));
+    }
+    if (g.ptr_focus == s) g.ptr_focus = NULL;
+    s->n_frame_cbs = 0;
+    layers_arrange();
+}
+
+static void layer_shell_get_layer_surface(struct wl_client *client,
+                                          struct wl_resource *resource,
+                                          uint32_t id,
+                                          struct wl_resource *surface,
+                                          struct wl_resource *output,
+                                          uint32_t layer,
+                                          const char *ns) {
+    struct surface *s = wl_resource_get_user_data(surface);
+    if (layer > ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY) {
+        wl_resource_post_error(resource, ZWLR_LAYER_SHELL_V1_ERROR_INVALID_LAYER,
+                               "invalid layer %u", layer);
+        return;
+    }
+    struct wl_resource *r = wl_resource_create(
+        client, &zwlr_layer_surface_v1_interface,
+        wl_resource_get_version(resource), id);
+    if (!r) { wl_client_post_no_memory(client); return; }
+    wl_resource_set_implementation(r, &layer_surface_impl, s,
+                                   layer_surface_resource_destroy);
+    s->layer_surface = r;
+    s->layer = layer;
+    /* Joins the arrangement now, not at map time: the client's first commit
+     * carries no buffer and exists only to fetch the configure that tells it
+     * what size to render, so it must already be in the list. */
+    layer_add(s);
+    /* The namespace names the component ("bar", "launcher"); reuse app_id so
+     * kwlctl output and the LAYER marker identify it like any other client. */
+    snprintf(s->app_id, sizeof(s->app_id), "%s", ns ? ns : "layer");
+}
+
+static void layer_shell_destroy(struct wl_client *c, struct wl_resource *r) {
+    wl_resource_destroy(r);
+}
+static const struct zwlr_layer_shell_v1_interface layer_shell_impl = {
+    .get_layer_surface = layer_shell_get_layer_surface,
+    .destroy = layer_shell_destroy,
+};
+static void layer_shell_bind(struct wl_client *client, void *data,
+                             uint32_t version, uint32_t id) {
+    struct wl_resource *r = wl_resource_create(
+        client, &zwlr_layer_shell_v1_interface, version, id);
+    if (!r) { wl_client_post_no_memory(client); return; }
+    wl_resource_set_implementation(r, &layer_shell_impl, NULL, NULL);
+}
+
+/* ====================================================================== */
 /* wl_seat / wl_keyboard / wl_pointer                                     */
 /* ====================================================================== */
 
@@ -1371,6 +1731,9 @@ static void kbd_set_focus(struct surface *s) {
                                        g.kbd_focus->resource);
     }
     g.kbd_focus = s;
+    /* Nothing focused, or a shell component took the keyboard: either way no
+     * window is active, and the bar clears its title. */
+    if (!s || s->layer_surface) kwlctl_emit("activewindow>>");
     if (!s) return;
     struct wl_array keys;
     wl_array_init(&keys);
@@ -1383,6 +1746,7 @@ static void kbd_set_focus(struct surface *s) {
     }
     wl_array_release(&keys);
     schedule_repaint();   /* focus border moved */
+    if (s->layer_surface) return;
     kwlctl_emit("activewindow>>%s", s->app_id);
     /* Observable focus marker: keyboard focus only moves to a window once its
      * first commit maps it (surface_commit), so this is the authoritative
@@ -1593,7 +1957,7 @@ static void blit_surface(struct surface *s, uint32_t *dst, uint32_t dst_stride_p
  * window is visible even though decoration is client-side. */
 static void draw_focus_border(struct surface *s, uint32_t *dst,
                               uint32_t stride_px) {
-    const uint32_t color = FOCUS_COLOR;
+    const uint32_t color = th.border_active;
     for (int e = 1; e <= 2; e++) {
         int32_t x0 = s->x - e, y0 = s->y - e;
         int32_t x1 = s->x + s->w + e - 1, y1 = s->y + s->h + e - 1;
@@ -1614,6 +1978,15 @@ static void draw_focus_border(struct surface *s, uint32_t *dst,
     }
 }
 
+/* Layer surfaces composite outside the window z-order: background/bottom under
+ * every window, top/overlay over them. Both compositing paths walk the layer
+ * list twice through this predicate. */
+static int layer_in_band(const struct surface *s, int above) {
+    if (!surface_visible(s)) return 0;
+    int over = s->layer >= ZWLR_LAYER_SHELL_V1_LAYER_TOP;
+    return above ? over : !over;
+}
+
 static void send_frame_callbacks(struct surface *s) {
     uint32_t t = now_ms();
     for (int i = 0; i < s->n_frame_cbs; i++) {
@@ -1625,6 +1998,8 @@ static void send_frame_callbacks(struct surface *s) {
 static void send_all_frame_callbacks(void) {
     for (int i = 0; i < g.n_surfaces; i++)
         send_frame_callbacks(g.zorder[i]);
+    for (int i = 0; i < g.n_layers; i++)
+        send_frame_callbacks(g.layers[i]);
 }
 
 /* ====================================================================== */
@@ -1731,35 +2106,48 @@ static unsigned shm_buffer_gl_texture(struct shm_buffer *b) {
     return b->gl_tex;
 }
 
+/* The staging bo behind the wallpaper texture. Held for the process lifetime:
+ * it owns the texture's pixels, and a theme switch rewrites it in place. */
+static struct gbm_bo *wallpaper_bo;
+static unsigned wallpaper_bo_handle;
+
+/* Copy g.wallpaper into the staging bo and (re)bind it as the texture. A
+ * rebind re-reads the bo, which is how a theme switch reaches the GPU path. */
+static int gl_wallpaper_upload(void) {
+    uint32_t stride = 0;
+    void *map_data = NULL;
+    uint32_t *px = gbm_bo_map(wallpaper_bo, 0, 0, g.width, g.height, 0, &stride,
+                              &map_data);
+    if (!px) return -1;
+    for (uint32_t y = 0; y < g.height; y++)
+        memcpy(px + (size_t)y * (stride / 4), g.wallpaper + (size_t)y * g.width,
+               (size_t)g.width * 4);
+    gbm_bo_unmap(wallpaper_bo, map_data);   /* flushes the bytes into host storage */
+
+    unsigned tex = wpkEglBindBoTexture(glc.dpy, wallpaper_bo_handle,
+                                       GL_TEXTURE_2D);
+    if (!tex) return -1;
+    glc.wallpaper_tex = tex;
+    return 0;
+}
+
 /* Stage the pre-rendered wallpaper through a dumb bo so the host uploads
  * it as a texture from shared storage — cmdbuf TLV records cap at 64 KB,
  * far below a framebuffer-sized glTexImage2D payload. */
 static int setup_gl_wallpaper(void) {
-    struct gbm_bo *bo = gbm_bo_create(g.gbm, g.width, g.height,
-                                      GBM_FORMAT_XRGB8888, GBM_BO_USE_LINEAR);
-    if (!bo) return -1;
-    uint32_t stride = 0;
-    void *map_data = NULL;
-    uint32_t *px = gbm_bo_map(bo, 0, 0, g.width, g.height, 0, &stride,
-                              &map_data);
-    if (!px) { gbm_bo_destroy(bo); return -1; }
-    for (uint32_t y = 0; y < g.height; y++)
-        memcpy(px + (size_t)y * (stride / 4), g.wallpaper + (size_t)y * g.width,
-               (size_t)g.width * 4);
-    gbm_bo_unmap(bo, map_data);   /* flushes the bytes into host storage */
-
-    int prime = gbm_bo_get_fd(bo);
-    if (prime < 0) { gbm_bo_destroy(bo); return -1; }
-    unsigned handle = wpkEglImportDmabufHandle(glc.dpy, prime);
+    wallpaper_bo = gbm_bo_create(g.gbm, g.width, g.height,
+                                 GBM_FORMAT_XRGB8888, GBM_BO_USE_LINEAR);
+    if (!wallpaper_bo) return -1;
+    int prime = gbm_bo_get_fd(wallpaper_bo);
+    if (prime < 0) { gbm_bo_destroy(wallpaper_bo); return -1; }
+    wallpaper_bo_handle = wpkEglImportDmabufHandle(glc.dpy, prime);
     close(prime);
-    if (!handle) { gbm_bo_destroy(bo); return -1; }
-    glc.wallpaper_tex = wpkEglBindBoTexture(glc.dpy, handle, GL_TEXTURE_2D);
-    if (!glc.wallpaper_tex) {
-        wpkEglCloseBoHandle(glc.dpy, handle);
-        gbm_bo_destroy(bo);
+    if (!wallpaper_bo_handle) { gbm_bo_destroy(wallpaper_bo); return -1; }
+    if (gl_wallpaper_upload() != 0) {
+        wpkEglCloseBoHandle(glc.dpy, wallpaper_bo_handle);
+        gbm_bo_destroy(wallpaper_bo);
         return -1;
     }
-    /* bo is intentionally never destroyed: it owns the texture's pixels. */
     return 0;
 }
 
@@ -1825,6 +2213,7 @@ static void setup_gl(void) {
  * repaint() can fall back to the CPU blit. */
 static int repaint_gl(void) {
     unsigned texs[MAX_SURFACES] = {0};
+    unsigned layer_texs[MAX_LAYERS] = {0};
     struct surface *top = NULL;
     for (int i = 0; i < g.n_surfaces; i++) {
         struct surface *s = g.zorder[i];
@@ -1834,21 +2223,37 @@ static int repaint_gl(void) {
         texs[i] = shm_buffer_gl_texture(b);
         if (!texs[i]) return 0;
     }
+    for (int i = 0; i < g.n_layers; i++) {
+        struct surface *s = g.layers[i];
+        if (!surface_visible(s) || !s->buffer) continue;
+        struct shm_buffer *b = wl_resource_get_user_data(s->buffer);
+        if (!b) continue;
+        layer_texs[i] = shm_buffer_gl_texture(b);
+        if (!layer_texs[i]) return 0;
+    }
 
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
     glc_draw_tex(glc.wallpaper_tex, 0, 0, (int32_t)g.width, (int32_t)g.height);
+    for (int i = 0; i < g.n_layers; i++)
+        if (layer_texs[i] && layer_in_band(g.layers[i], 0))
+            glc_draw_tex(layer_texs[i], g.layers[i]->x, g.layers[i]->y,
+                         g.layers[i]->w, g.layers[i]->h);
     for (int i = 0; i < g.n_surfaces; i++) {
         struct surface *s = g.zorder[i];
         if (!surface_visible(s) || !s->buffer || !texs[i]) continue;
         struct shm_buffer *b = wl_resource_get_user_data(s->buffer);
         if (!b) continue;
         if (g.kbd_focus == s)   /* 2px accent ring behind the window */
-            glc_draw_solid(FOCUS_COLOR, s->x - 2, s->y - 2,
+            glc_draw_solid(th.border_active, s->x - 2, s->y - 2,
                            b->width + 4, b->height + 4);
         glc_draw_tex(texs[i], s->x, s->y, b->width, b->height);
         top = s;
     }
+    for (int i = 0; i < g.n_layers; i++)
+        if (layer_texs[i] && layer_in_band(g.layers[i], 1))
+            glc_draw_tex(layer_texs[i], g.layers[i]->x, g.layers[i]->y,
+                         g.layers[i]->w, g.layers[i]->h);
     /* A failed present (context loss) must degrade like a failed texture
      * bind — returning 1 here would keep glc.active set and freeze the
      * canvas on the last GL frame, the exact failure the CPU fallback
@@ -1925,6 +2330,9 @@ static void repaint(void) {
                    g.wallpaper + (size_t)y * g.width, (size_t)g.width * 4);
 
         struct surface *top = NULL;
+        for (int i = 0; i < g.n_layers; i++)
+            if (layer_in_band(g.layers[i], 0))
+                blit_surface(g.layers[i], dst, stride_px);
         for (int i = 0; i < g.n_surfaces; i++) {
             struct surface *s = g.zorder[i];
             if (!surface_visible(s)) continue;
@@ -1932,6 +2340,9 @@ static void repaint(void) {
             blit_surface(s, dst, stride_px);
             top = s;
         }
+        for (int i = 0; i < g.n_layers; i++)
+            if (layer_in_band(g.layers[i], 1))
+                blit_surface(g.layers[i], dst, stride_px);
         /* One-shot proof that a client's pixels crossed the process
          * boundary: sample a pixel inside the topmost surface. If the
          * gbm_bo_import path (§8.1) worked, this is the client's color; if
@@ -2077,6 +2488,7 @@ static void run_dispatch(const struct keybind *b) {
         break;
     case ACT_CYCLE_NEXT:   focus_cycle(+1); break;
     case ACT_CYCLE_PREV:   focus_cycle(-1); break;
+    case ACT_THEME:        theme_switch(b->param); break;
     }
 }
 
@@ -2131,6 +2543,112 @@ static char *trim(char *s) {
     return s;
 }
 
+/* ---- theme loading ------------------------------------------------------ */
+
+static void render_wallpaper(void);
+static int gl_wallpaper_upload(void);
+
+/* Parse `0xRRGGBB` / `#RRGGBB` / a decimal integer. Returns the ARGB color
+ * with a forced-opaque alpha, or `fallback` when the text is not a number. */
+static uint32_t parse_color(const char *s, uint32_t fallback) {
+    if (*s == '#') s++;
+    char *end = NULL;
+    unsigned long v = strtoul(s, &end, 16);
+    if (end == s) return fallback;
+    return 0xff000000u | (uint32_t)(v & 0xffffffu);
+}
+
+/* Read one theme's palette. Unknown keys are ignored, so the same file can
+ * carry the client-side colors (bar, foreground, accent) that kbar and
+ * klauncher read for themselves. */
+static int theme_load(const char *name) {
+    const char *root = getenv("WLC_THEME_DIR");
+    char path[256];
+    snprintf(path, sizeof(path), "%s/%s/theme.conf", root ? root : THEME_DIR,
+             name);
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+
+    char line[256];
+    while (fgets(line, sizeof(line), f)) {
+        char *s = trim(line);
+        if (*s == '\0' || *s == '#') continue;
+        char *eq = strchr(s, '=');
+        if (!eq) continue;
+        *eq = '\0';
+        char *key = trim(s);
+        char *val = trim(eq + 1);
+        if (!strcmp(key, "border_active"))
+            th.border_active = parse_color(val, th.border_active);
+        else if (!strcmp(key, "wallpaper_top"))
+            th.wallpaper_top = parse_color(val, th.wallpaper_top);
+        else if (!strcmp(key, "wallpaper_bottom"))
+            th.wallpaper_bottom = parse_color(val, th.wallpaper_bottom);
+        else if (!strcmp(key, "gaps_in"))  th.gaps_in = atoi(val);
+        else if (!strcmp(key, "gaps_out")) th.gaps_out = atoi(val);
+    }
+    fclose(f);
+    snprintf(th.name, sizeof(th.name), "%s", name);
+    for (int i = 0; i < th.n_installed; i++)
+        if (!strcmp(th.installed[i], name)) { th.current = i; break; }
+    return 0;
+}
+
+/* List the installed themes, sorted, so cycling has a stable order. A theme is
+ * a directory holding a theme.conf; anything else in the root is skipped. */
+static void theme_scan(void) {
+    const char *root = getenv("WLC_THEME_DIR");
+    if (!root) root = THEME_DIR;
+    DIR *d = opendir(root);
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d)) && th.n_installed < MAX_THEMES) {
+        if (e->d_name[0] == '.') continue;
+        char probe[512];
+        snprintf(probe, sizeof(probe), "%s/%s/theme.conf", root, e->d_name);
+        if (access(probe, R_OK) != 0) continue;
+        int at = th.n_installed;
+        while (at > 0 && strcmp(th.installed[at - 1], e->d_name) > 0) {
+            memcpy(th.installed[at], th.installed[at - 1],
+                   sizeof(th.installed[0]));
+            at--;
+        }
+        snprintf(th.installed[at], sizeof(th.installed[0]), "%s", e->d_name);
+        th.n_installed++;
+    }
+    closedir(d);
+}
+
+/* Push the loaded palette into the live desktop: border color, gaps, and the
+ * wallpaper (re-uploaded when the GPU path owns it). Clients re-read the theme
+ * themselves when they see the event. */
+static void theme_apply(void) {
+    tile_gap_inner = th.gaps_in;
+    tile_gap_outer = th.gaps_out;
+    render_wallpaper();
+    if (glc.active && gl_wallpaper_upload() != 0)
+        fprintf(stderr, "wlcompositor: theme wallpaper upload failed\n");
+    retile();
+    schedule_repaint();
+    printf("THEME %s\n", th.name);
+    fflush(stdout);
+    kwlctl_emit("theme>>%s", th.name);
+}
+
+/* `theme <name>`, or `next`/`prev` to cycle the installed set. */
+static int theme_switch(const char *arg) {
+    if (!strcmp(arg, "next") || !strcmp(arg, "prev")) {
+        if (th.n_installed == 0) return -1;
+        int step = arg[0] == 'n' ? 1 : th.n_installed - 1;
+        int next = (th.current < 0 ? 0 : (th.current + step) % th.n_installed);
+        if (theme_load(th.installed[next]) != 0) return -1;
+    } else if (theme_load(arg) != 0) {
+        return -1;
+    }
+    theme_apply();
+    return 0;
+}
+
 /* Parse a MODS token ("SUPER SHIFT" or "SUPER+SHIFT") into a MOD_* mask.
  * Returns -1 on an unknown modifier name. */
 static int parse_mods(char *s, uint32_t *out) {
@@ -2171,6 +2689,7 @@ static void parse_bind_line(char *rhs) {
     else if (!strcmp(disp, "killactive")) add_bind(mods, sym, ACT_KILL, 0, NULL);
     else if (!strcmp(disp, "cyclenext"))  add_bind(mods, sym, ACT_CYCLE_NEXT, 0, NULL);
     else if (!strcmp(disp, "cycleprev"))  add_bind(mods, sym, ACT_CYCLE_PREV, 0, NULL);
+    else if (!strcmp(disp, "theme"))      add_bind(mods, sym, ACT_THEME, 0, arg);
 }
 
 /* Load keybinds: parse WLC_CONFIG / WLC_CONFIG_PATH if present, else install
@@ -2188,16 +2707,19 @@ static void load_config(void) {
         while (fgets(line, sizeof(line), f)) {
             char *s = trim(line);
             if (*s == '\0' || *s == '#') continue;
-            if (strncmp(s, "bind", 4) == 0) {
-                char *eq = strchr(s, '=');
-                if (eq) parse_bind_line(trim(eq + 1));
-            }
+            char *eq = strchr(s, '=');
+            if (!eq) continue;
+            if (strncmp(s, "bind", 4) == 0) parse_bind_line(trim(eq + 1));
+            else if (strncmp(s, "theme", 5) == 0) theme_load(trim(eq + 1));
         }
         fclose(f);
         src = path;
     }
     printf("BINDS_LOADED n=%d source=%s\n", g.n_binds, src);
+    printf("THEME %s\n", th.name);
     fflush(stdout);
+    tile_gap_inner = th.gaps_in;
+    tile_gap_outer = th.gaps_out;
 }
 
 static void handle_keyboard(struct libinput_event_keyboard *k) {
@@ -2605,18 +3127,19 @@ static int setup_drm(void) {
     return 0;
 }
 
-/* Pre-render the desktop background once: a vertical gradient with a faint
- * grid and a wordmark. Painted per-frame with row memcpys. */
-static int setup_wallpaper(void) {
-    g.wallpaper = malloc((size_t)g.width * g.height * 4);
-    if (!g.wallpaper) return -1;
-
+/* Paint the desktop background into g.wallpaper: a vertical gradient between
+ * the theme's two wallpaper colors, a faint grid, and the wordmark. Re-run on
+ * every theme switch, so it must not allocate. */
+static void render_wallpaper(void) {
+    const uint32_t top = th.wallpaper_top, bot = th.wallpaper_bottom;
     for (uint32_t y = 0; y < g.height; y++) {
-        /* #10121a (top) → #1b2233 (bottom). */
         uint32_t t = g.height > 1 ? (y * 256u) / (g.height - 1) : 0;
-        uint32_t rr = 0x10 + ((0x1b - 0x10) * t) / 256;
-        uint32_t gg = 0x12 + ((0x22 - 0x12) * t) / 256;
-        uint32_t bb = 0x1a + ((0x33 - 0x1a) * t) / 256;
+        uint32_t rr = ((top >> 16) & 0xff) +
+                      ((int)((bot >> 16) & 0xff) - (int)((top >> 16) & 0xff)) * (int)t / 256;
+        uint32_t gg = ((top >> 8) & 0xff) +
+                      ((int)((bot >> 8) & 0xff) - (int)((top >> 8) & 0xff)) * (int)t / 256;
+        uint32_t bb = (top & 0xff) +
+                      ((int)(bot & 0xff) - (int)(top & 0xff)) * (int)t / 256;
         uint32_t px = 0xff000000u | (rr << 16) | (gg << 8) | bb;
         uint32_t *row = g.wallpaper + (size_t)y * g.width;
         for (uint32_t x = 0; x < g.width; x++) row[x] = px;
@@ -2647,6 +3170,13 @@ static int setup_wallpaper(void) {
                  WPK_RGB(0x2e, 0x37, 0x4c));
         wpk_font_destroy(small);
     }
+}
+
+/* Allocate the background once the mode is known, then paint it. */
+static int setup_wallpaper(void) {
+    g.wallpaper = malloc((size_t)g.width * g.height * 4);
+    if (!g.wallpaper) return -1;
+    render_wallpaper();
     return 0;
 }
 
@@ -2762,6 +3292,17 @@ static int kwlctl_workspaces_json(char *buf, size_t cap) {
     return n;
 }
 
+/* The live theme + what is installed, so a shell client that starts after a
+ * switch can pick up the current palette without watching the event stream. */
+static int kwlctl_theme_json(char *buf, size_t cap) {
+    int n = snprintf(buf, cap, "{\"name\":\"%s\",\"themes\":[", th.name);
+    for (int i = 0; i < th.n_installed && n < (int)cap; i++)
+        n += snprintf(buf + n, cap - n, "%s\"%s\"", i ? "," : "",
+                      th.installed[i]);
+    n += snprintf(buf + n, cap - n, "]}\n");
+    return n;
+}
+
 static int kwlctl_activewindow_json(char *buf, size_t cap) {
     if (!g.kbd_focus) return snprintf(buf, cap, "{}\n");
     int n = kwlctl_window_json(buf, cap, g.kbd_focus);
@@ -2786,7 +3327,11 @@ static void kwlctl_exec(char *args) {
     pid_t pid = 0;
     int rc = posix_spawnp(&pid, argv[0], NULL, NULL, argv, environ);
     if (rc != 0) {
+        /* A failed launch is reported on stdout too: a keybind or launcher
+         * entry pointing at a missing binary is otherwise a silent no-op. */
         fprintf(stderr, "posix_spawnp %s: %s\n", argv[0], strerror(rc));
+        printf("KWLCTL_EXEC_FAILED \"%s\" err=%d\n", argv[0], rc);
+        fflush(stdout);
         return;
     }
     printf("KWLCTL_EXEC \"%s\" pid=%d\n", argv[0], (int)pid);
@@ -2818,6 +3363,10 @@ static int kwlctl_handle(struct kwlctl_conn *c, char *line) {
         kwlctl_send(c->fd, buf, kwlctl_activewindow_json(buf, sizeof(buf)));
         return 0;
     }
+    if (strcmp(line, "theme") == 0) {
+        kwlctl_send(c->fd, buf, kwlctl_theme_json(buf, sizeof(buf)));
+        return 0;
+    }
     if (strncmp(line, "dispatch ", 9) == 0) {
         char *op = line + 9;
         if (strncmp(op, "workspace ", 10) == 0)
@@ -2829,7 +3378,12 @@ static int kwlctl_handle(struct kwlctl_conn *c, char *line) {
                 xdg_toplevel_send_close(g.kbd_focus->xdg_toplevel);
         } else if (strncmp(op, "exec ", 5) == 0)
             kwlctl_exec(op + 5);
-        else {
+        else if (strncmp(op, "theme ", 6) == 0) {
+            if (theme_switch(op + 6) != 0) {
+                kwlctl_send(c->fd, "err no such theme\n", 18);
+                return 0;
+            }
+        } else {
             kwlctl_send(c->fd, "err unknown dispatch\n", 21);
             return 0;
         }
@@ -2928,9 +3482,13 @@ int main(void) {
     printf("WLC_LAYOUT %s\n",
            g.layout == LAYOUT_DWINDLE ? "dwindle" : "floating");
     fflush(stdout);
+    theme_scan();
     load_config();
 
     if (setup_drm() != 0) return 1;
+    /* No layer surface has claimed anything yet, so the window work area is
+     * the whole output. */
+    g.usable = (struct geom){ 0, 0, (int)g.width, (int)g.height };
     if (setup_wallpaper() != 0) return 1;
     /* GPU compositing is best-effort: on hosts without WebGL2 (Node
      * smokes, degraded headless) the probe fails and we CPU-composite. */
@@ -2950,6 +3508,8 @@ int main(void) {
                           wm_base_bind) ||
         !wl_global_create(g.display, &zxdg_decoration_manager_v1_interface, 1,
                           NULL, decoration_mgr_bind) ||
+        !wl_global_create(g.display, &zwlr_layer_shell_v1_interface, 4, NULL,
+                          layer_shell_bind) ||
         !wl_global_create(g.display, &wl_seat_interface, 1, NULL, seat_bind) ||
         !wl_global_create(g.display, &wl_output_interface, 2, NULL,
                           output_bind)) {
@@ -2973,6 +3533,11 @@ int main(void) {
 
     /* Auto-reap `dispatch exec` children so they don't linger as zombies. */
     signal(SIGCHLD, SIG_IGN);
+    /* A control client is free to fire a command and exit without reading the
+     * reply — klauncher does exactly that when it launches an entry. Writing
+     * that reply into the closed socket must not take the desktop down with
+     * it; kwlctl_send already handles the short write. */
+    signal(SIGPIPE, SIG_IGN);
     if (setup_kwlctl() != 0) return 1;
 
     printf("COMPOSITOR_UP w=%u h=%u\n", g.width, g.height);
