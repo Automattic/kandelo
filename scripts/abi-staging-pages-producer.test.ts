@@ -22,13 +22,18 @@ import {
   discoverAdmissions,
   discoverCandidateProductAuthority,
   heldPagesReadinessRecord,
+  immutableRecordReferencesFromTags,
   isExpectedCurrentInputUnavailable,
+  producePagesArtifacts,
   readCandidateProductAuthority,
   rebuildCurrentResolvedInputs,
   validateCandidateProductReference,
   validatePagesProductionHandoff,
   writeAtomicHoldOnlyOutput,
 } from "./abi-staging-pages-producer.ts";
+import {
+  createMiniaturePagesProducerFixture,
+} from "./abi-staging-pages-producer-fixture.ts";
 
 const sha256 = (bytes: Uint8Array): string =>
   createHash("sha256").update(bytes).digest("hex");
@@ -474,8 +479,10 @@ test("selects a deterministic equivalent candidate when same-tree history coexis
 
 test("preserves the authenticated admission manifest locator independently of record bytes", async () => {
   const manifestSha256 = "a".repeat(64);
-  const reference =
-    `ghcr.io/kandelo-dev/homebrew-tap-core-abi-18/dash/admissions@sha256:${manifestSha256}`;
+  const repository = "ghcr.io/kandelo-dev/homebrew-tap-core-abi-18/dash/admissions";
+  const [reference] = immutableRecordReferencesFromTags(repository, [
+    `record-sha256-${manifestSha256}`,
+  ]);
   const record = {
     admission: {
       formula_metadata_update: { formula: "dash", target_abi: 18 },
@@ -576,16 +583,119 @@ test("derives site and gallery identities from protected current outputs", () =>
       kind: "kandelo-pages-vfs-product-gallery",
       products: [{ gallery_entries: ["shell"], id: "mini", vfs_image: "shell" }],
       schema: 1,
-    });
-    assert.deepEqual(metadata.products, [{ gallery_entries: ["shell"], id: "mini" }]);
+    }, `export const PRESET_LIBRARY = [\n    id: "shell",\n];\n`,
+    `const LIVE_DEMO_SPECS = {\n  shell: {\n    image: "shell",\n  },\n};\n`);
+    assert.deepEqual(metadata.products, [{
+      gallery_entries: ["shell"], id: "mini", vfs_image: "shell",
+    }]);
     assert.deepEqual(metadata.files.map((file: any) => file.path), [
       "api/index.html", "guide/index.html", "index.html",
     ]);
     assert.deepEqual(metadata.browser, metadata.files[2]);
     assert.deepEqual(metadata.documentation, metadata.files[1]);
     assert.deepEqual(metadata.api, metadata.files[0]);
+
+    assert.throws(
+      () => derivePagesSiteMetadata(root, {
+        kind: "kandelo-pages-vfs-products",
+        products: [{ id: "mini", load: "eager" }],
+        schema: 1,
+      }, {
+        kind: "kandelo-pages-vfs-product-gallery",
+        products: [{ gallery_entries: ["shell"], id: "mini", vfs_image: "node" }],
+        schema: 1,
+      }, `export const PRESET_LIBRARY = [\n    id: "shell",\n];\n`,
+      `const LIVE_DEMO_SPECS = {\n  shell: {\n    image: "shell",\n  },\n};\n`),
+      /reviewed VFS image/i,
+    );
   } finally {
     rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("runs production orchestration through ready and atomic hold-only outcomes", async (t) => {
+  for (const scenario of [
+    "ready",
+    "missing-product",
+    "missing-admission",
+    "builder-failure",
+    "evidence-failure",
+    "evidence-timeout",
+    "postflight-failure",
+  ] as const) {
+    await t.test(scenario, async () => {
+      const root = mkdtempSync(join(tmpdir(), `kandelo-pages-producer-${scenario}-`));
+      try {
+        const fixture = await createMiniaturePagesProducerFixture(root, scenario);
+        if (scenario === "postflight-failure") {
+          await assert.rejects(
+            () => producePagesArtifacts(
+              fixture.handoffPath,
+              fixture.outputRoot,
+              fixture.oci,
+              fixture.dependencies,
+            ),
+            /final source re-observation failure/i,
+          );
+          assert.equal(existsSync(fixture.outputRoot), false);
+          assert.deepEqual(
+            readdirSync(root).filter((name) => name.includes(".staging-")),
+            [],
+          );
+          return;
+        }
+        await producePagesArtifacts(
+          fixture.handoffPath,
+          fixture.outputRoot,
+          fixture.oci,
+          fixture.dependencies,
+        );
+        const readiness = JSON.parse(readFileSync(
+          join(fixture.outputRoot, "readiness.json"),
+          "utf8",
+        ));
+        if (scenario === "ready") {
+          assert.equal(readiness.ready, true, JSON.stringify(readiness.blockers));
+          assert.ok(existsSync(join(fixture.outputRoot, "site-manifest.json")));
+          assert.ok(existsSync(join(fixture.outputRoot, "source-tree")));
+          const resolved = JSON.parse(readFileSync(
+            join(
+              fixture.outputRoot,
+              "artifacts/products/base/resolved-inputs.json",
+            ),
+            "utf8",
+          ));
+          assert.equal(resolved.inputs[0].reference, undefined);
+          assert.match(resolved.inputs[1].reference, /\/products\/inputs\//u);
+          const childResolved = JSON.parse(readFileSync(
+            join(
+              fixture.outputRoot,
+              "artifacts/products/mini/resolved-inputs.json",
+            ),
+            "utf8",
+          ));
+          assert.match(
+            childResolved.inputs[0].reference,
+            /\/products\/base\/sha256-[0-9a-f]{64}\/base-18\.vfs\.zst\?sha256=/u,
+          );
+          assert.equal(childResolved.inputs[0].effective_materialization, "embedded");
+          assert.deepEqual(
+            readiness.products.map(({ id }: { id: string }) => id),
+            ["base", "mini"],
+          );
+        } else {
+          assert.equal(readiness.ready, false);
+          assert.deepEqual(readdirSync(fixture.outputRoot), ["readiness.json"]);
+          assert.ok(readiness.blockers.length >= 1);
+        }
+        assert.deepEqual(
+          readdirSync(root).filter((name) => name.includes(".staging-")),
+          [],
+        );
+      } finally {
+        rmSync(root, { force: true, recursive: true });
+      }
+    });
   }
 });
 

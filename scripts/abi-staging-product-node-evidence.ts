@@ -1176,7 +1176,7 @@ export function validateCandidateProductInputDocuments(
         kind === "homebrew-bottle" || kind === "product-image" ||
           placement === "lazy-reference",
         locatorValue.reference_class ?? "candidate",
-        { bytes, id, sha256 },
+        { bytes, id, kind, placement, sha256 },
       );
     }
     if (placement === "lazy-reference") {
@@ -1221,7 +1221,7 @@ export function validateCandidateProductInputDocuments(
         `resolved product input ${id} descriptor`,
         kind === "homebrew-bottle" || placement === "lazy-reference",
         locatorValue.reference_class ?? "candidate",
-        { bytes: descriptorBytes, id, sha256: descriptorSha },
+        { bytes: descriptorBytes, id, kind, placement, sha256: descriptorSha },
       );
       reportDescriptor = { bytes: descriptorBytes, sha256: descriptorSha };
     } else if (kind === "homebrew-bottle") {
@@ -1286,7 +1286,7 @@ function validateCandidateReferenceClass(
   label: string,
   requireCandidateNamespace: boolean,
   referenceClass: "candidate" | "canonical",
-  identity: { bytes: number; id: string; sha256: string },
+  identity: { bytes: number; id: string; kind: string; placement: string; sha256: string },
 ): void {
   const namespace = "ghcr.io/kandelo-dev/homebrew-tap-core-abi-";
   const candidate = `${namespace}${targetAbi}-candidates/`;
@@ -1314,10 +1314,13 @@ function validateCandidateReferenceClass(
   if (normalized.startsWith(candidate)) {
     throw new Error(`${label} retains the visibly nonendorsed candidate namespace`);
   }
-  const pagesProduct = normalized.startsWith(
+  const pagesInput = normalized.startsWith(
+    "automattic.github.io/kandelo/products/inputs/",
+  );
+  const pagesProduct = !pagesInput && normalized.startsWith(
     "automattic.github.io/kandelo/products/",
   );
-  if (pagesProduct) {
+  if (pagesInput) {
     validateCanonicalPagesInputReference(
       reference,
       identity.id,
@@ -1325,12 +1328,55 @@ function validateCandidateReferenceClass(
       identity.bytes,
       label,
     );
+    if (
+      identity.placement !== "lazy-reference" ||
+      identity.kind === "homebrew-bottle" || identity.kind === "product-image"
+    ) throw new Error(`${label} canonical Pages input URL requires lazy non-product placement`);
+  } else if (pagesProduct) {
+    const productId = identity.id.startsWith("product-")
+      ? identity.id.slice("product-".length)
+      : "";
+    validateCanonicalPagesProductReference(
+      reference,
+      identity.id,
+      productId,
+      targetAbi,
+      identity.sha256,
+      identity.bytes,
+      identity.placement,
+      label,
+    );
+    if (identity.kind !== "product-image") {
+      throw new Error(`${label} canonical Pages product URL requires a product-image input`);
+    }
   }
   if (
     (requireCandidateNamespace || managed) &&
-    !normalized.startsWith(canonical) && !pagesProduct
+    !normalized.startsWith(canonical) && !pagesInput && !pagesProduct
   ) {
     throw new Error(`${label} is outside its exact canonical namespace`);
+  }
+}
+
+export function validateCanonicalPagesProductReference(
+  reference: string,
+  inputId: string,
+  productId: string,
+  targetAbi: number,
+  sha256: string,
+  bytes: number,
+  placement: string,
+  label = "canonical Pages product",
+): void {
+  const exact =
+    `https://automattic.github.io/kandelo/products/${productId}/` +
+    `sha256-${sha256}/${productId}-${targetAbi}.vfs.zst?` +
+    `sha256=${sha256}&bytes=${bytes}`;
+  if (inputId !== `product-${productId}` || reference !== exact) {
+    throw new Error(`${label} lacks its exact canonical Pages product URL`);
+  }
+  if (placement !== "embedded") {
+    throw new Error(`${label} canonical Pages product URL requires embedded placement`);
   }
 }
 

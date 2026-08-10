@@ -541,6 +541,7 @@ for abi_staging_foundation_path in "${abi_staging_foundation_paths[@]}"; do
 done
 pages_production_paths=(
   apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-gallery.json
+  scripts/abi-staging-pages-producer-fixture.ts
   scripts/abi-staging-pages-producer.ts
   scripts/abi-staging-product-browser-evidence.ts
   scripts/abi-staging-product-node-evidence.ts

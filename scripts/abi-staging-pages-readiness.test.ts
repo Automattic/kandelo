@@ -33,6 +33,7 @@ test("recomposes admitted layers without changing bytes or placement", () => {
     admissions,
     candidateResolvedInputs: base.candidate_resolved_inputs,
     canonicalProducts: new Map(),
+    currentResolvedInputs: base.current_resolved_inputs,
     targetAbi: input.target_abi,
   });
   const candidateInputs = base.candidate_resolved_inputs.inputs;
@@ -78,6 +79,7 @@ test("requires the exact canonical VFS composition descriptor", () => {
       admissions,
       candidateResolvedInputs: base.candidate_resolved_inputs,
       canonicalProducts: new Map(),
+      currentResolvedInputs: base.current_resolved_inputs,
       targetAbi: input.target_abi,
     }),
     /canonical VFS composition descriptor/u,
@@ -183,6 +185,73 @@ test("builds from current-main recaptured material instead of candidate paths", 
   await assertBlocked(changed, "current-input-invalid", "mini-base");
 });
 
+test("requires current-main recapture for every Pages product", async () => {
+  const input = fixture();
+  delete (input.products[0] as any).current_resolved_inputs;
+
+  await assertBlocked(input, "current-input-invalid", "mini-base");
+});
+
+test("keeps embedded recaptures path-only and publishes only lazy inputs", () => {
+  const input = fixture();
+  const product = input.products[0]!;
+  const candidate = structuredClone(product.candidate_resolved_inputs);
+  candidate.inputs = [
+    {
+      architecture: "wasm32",
+      bytes: 11,
+      declared_materialization: "embedded",
+      effective_materialization: "embedded",
+      id: "package-embedded-output-runtime",
+      kind: "package-output",
+      path: "candidate/embedded",
+      reference: candidateReference("embedded", "a".repeat(64)),
+      role: "runtime",
+      sha256: "a".repeat(64),
+    },
+    {
+      architecture: "wasm32",
+      bytes: 12,
+      declared_materialization: "lazy",
+      effective_materialization: "lazy-reference",
+      id: "package-lazy-output-runtime",
+      kind: "package-output",
+      reference: candidateReference("lazy", "b".repeat(64)),
+      role: "runtime",
+      sha256: "b".repeat(64),
+    },
+  ];
+  const current = structuredClone(candidate);
+  current.source = structuredClone(input.source);
+  current.inputs[0]!.path = "current/embedded";
+  delete current.inputs[0]!.reference;
+  delete current.inputs[1]!.reference;
+  const lazyReference = canonicalPagesInputReference(
+    current.inputs[1]!.id,
+    current.inputs[1]!.sha256,
+    current.inputs[1]!.bytes,
+  );
+
+  const canonical = recomposeCanonicalResolvedInputs({
+    admissions: [],
+    candidateResolvedInputs: candidate,
+    canonicalArtifacts: [{
+      bytes: current.inputs[1]!.bytes,
+      input_id: current.inputs[1]!.id,
+      reference: lazyReference,
+      sha256: current.inputs[1]!.sha256,
+    }],
+    canonicalProducts: new Map(),
+    currentResolvedInputs: current,
+    targetAbi: input.target_abi,
+  });
+
+  assert.equal(canonical.inputs[0]!.path, "current/embedded");
+  assert.equal(canonical.inputs[0]!.reference, undefined);
+  assert.equal(canonical.inputs[1]!.path, undefined);
+  assert.equal(canonical.inputs[1]!.reference, lazyReference);
+});
+
 test("recomposes same-tree repository paths from their current commit bytes", () => {
   const input = fixture();
   const base = input.products.find((product) => product.id === "mini-base")!;
@@ -209,20 +278,9 @@ test("recomposes same-tree repository paths from their current commit bytes", ()
   current.inputs[0]!.sha256 = "b".repeat(64);
   current.inputs[0]!.path = "current/repository-rootfs-source";
   delete current.inputs[0]!.reference;
-  const reference = canonicalPagesInputReference(
-    current.inputs[0]!.id,
-    current.inputs[0]!.sha256,
-    current.inputs[0]!.bytes,
-  );
   const recomposed = recomposeCanonicalResolvedInputs({
     admissions: [],
     candidateResolvedInputs: candidate,
-    canonicalArtifacts: [{
-      bytes: current.inputs[0]!.bytes,
-      input_id: current.inputs[0]!.id,
-      reference,
-      sha256: current.inputs[0]!.sha256,
-    }],
     canonicalProducts: new Map(),
     currentResolvedInputs: current,
     currentSource: current.source,
@@ -230,7 +288,7 @@ test("recomposes same-tree repository paths from their current commit bytes", ()
   });
   assert.equal(recomposed.inputs[0]!.sha256, "b".repeat(64));
   assert.equal(recomposed.inputs[0]!.bytes, 102);
-  assert.equal(recomposed.inputs[0]!.reference, reference);
+  assert.equal(recomposed.inputs[0]!.reference, undefined);
   assert.equal(recomposed.inputs[0]!.path, "current/repository-rootfs-source");
 });
 
@@ -241,6 +299,8 @@ test("requires an exact canonical public layer for non-Formula lazy inputs", () 
   const packageInput = base.candidate_resolved_inputs.inputs[1]!;
   packageInput.id = "package-tool-output-tool";
   packageInput.kind = "package-output";
+  base.current_resolved_inputs = structuredClone(base.candidate_resolved_inputs);
+  delete base.current_resolved_inputs.inputs[1]!.reference;
   const reference = canonicalPagesInputReference(
     packageInput.id,
     packageInput.sha256,
@@ -257,6 +317,7 @@ test("requires an exact canonical public layer for non-Formula lazy inputs", () 
       admissions,
       candidateResolvedInputs: base.candidate_resolved_inputs,
       canonicalProducts: new Map(),
+      currentResolvedInputs: base.current_resolved_inputs,
       targetAbi: input.target_abi,
     }),
     /exact canonical public layer/u,
@@ -274,6 +335,7 @@ test("requires an exact canonical public layer for non-Formula lazy inputs", () 
     candidateResolvedInputs: base.candidate_resolved_inputs,
     canonicalArtifacts,
     canonicalProducts: new Map(),
+    currentResolvedInputs: base.current_resolved_inputs,
     targetAbi: input.target_abi,
   });
   assert.deepEqual(inputIdentity(canonical.inputs[1]!), inputIdentity(packageInput));
@@ -290,6 +352,7 @@ test("requires an exact canonical public layer for non-Formula lazy inputs", () 
       candidateResolvedInputs: base.candidate_resolved_inputs,
       canonicalArtifacts,
       canonicalProducts: new Map(),
+      currentResolvedInputs: base.current_resolved_inputs,
       targetAbi: input.target_abi,
     }),
     /exact canonical public layer/u,
@@ -306,6 +369,7 @@ test("requires an exact canonical public layer for non-Formula lazy inputs", () 
       candidateResolvedInputs: base.candidate_resolved_inputs,
       canonicalArtifacts,
       canonicalProducts: new Map(),
+      currentResolvedInputs: base.current_resolved_inputs,
       targetAbi: input.target_abi,
     }),
     /exact canonical public layer/u,
@@ -318,6 +382,8 @@ test("requires every Pages-hosted lazy input in the complete site inventory", as
   const packageInput = base.candidate_resolved_inputs.inputs[1]!;
   packageInput.id = "package-tool-output-tool";
   packageInput.kind = "package-output";
+  base.current_resolved_inputs = structuredClone(base.candidate_resolved_inputs);
+  delete base.current_resolved_inputs.inputs[1]!.reference;
   const reference = canonicalPagesInputReference(
     packageInput.id,
     packageInput.sha256,
@@ -689,6 +755,7 @@ test("requires site metadata to cover exactly the Pages registry", async (t) => 
     input.site_metadata.products.push({
       gallery_entries: [],
       id: "not-on-pages",
+      vfs_image: "not-on-pages",
     });
     await assertBlocked(input, "gallery-product-extra");
   });
@@ -788,8 +855,8 @@ function fixture(): PagesReadinessInputV1 {
     documentation: artifact("documentation"),
     kind: "kandelo-pages-site-metadata" as const,
     products: [
-      { gallery_entries: [], id: "mini-base" },
-      { gallery_entries: ["shell"], id: "mini-shell" },
+      { gallery_entries: [], id: "mini-base", vfs_image: "base" },
+      { gallery_entries: ["shell"], id: "mini-shell", vfs_image: "shell" },
     ],
     schema: 1 as const,
   };
@@ -877,6 +944,7 @@ function candidateProduct(
     admissions: formulae.map((formula) => admission(formula, inputs)),
     candidate_builder_report: report,
     candidate_resolved_inputs: resolved,
+    current_resolved_inputs: structuredClone(resolved),
     id,
   };
 }

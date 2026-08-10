@@ -808,6 +808,7 @@ fn validate_pages_product_reference(
     );
     if class != VfsReferenceClassV1::Canonical
         || kind != ResolvedVfsInputKindV1::ProductImage
+        || input_id.strip_prefix("product-") != Some(product_id)
         || remainder != expected
     {
         return Err(format!(
@@ -1175,6 +1176,7 @@ mod tests {
         write(root.path(), "inputs/base.vfs", bytes);
         inputs.reference_class = VfsReferenceClassV1::Canonical;
         let product = &mut inputs.inputs[2];
+        product.id = "product-base".to_string();
         product.kind = ResolvedVfsInputKindV1::ProductImage;
         product.declared_materialization = DeclaredInputMaterializationV1::Embedded;
         product.effective_materialization = ConsumedInputPlacementV1::Embedded;
@@ -1185,6 +1187,18 @@ mod tests {
             bytes.len(),
         ));
         validate_resolved_inputs(&canonical_json_bytes(&inputs).unwrap(), root.path()).unwrap();
+
+        let mut wrong_product = inputs.clone();
+        wrong_product.inputs[2].reference = Some(format!(
+            "https://automattic.github.io/kandelo/products/other/sha256-{digest}/other-7.vfs.zst?sha256={digest}&bytes={}",
+            bytes.len(),
+        ));
+        assert!(validate_resolved_inputs(
+            &canonical_json_bytes(&wrong_product).unwrap(),
+            root.path(),
+        )
+        .unwrap_err()
+        .contains("Pages product reference does not bind exact identity"));
 
         let mut lazy = inputs.clone();
         lazy.inputs[2].declared_materialization = DeclaredInputMaterializationV1::Lazy;

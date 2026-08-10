@@ -46,6 +46,7 @@ import {
   validateNodeEvidenceContext,
   validateCandidateLocator,
   validateCanonicalPagesInputReference,
+  validateCanonicalPagesProductReference,
   validateCandidateVfsLazyInventory,
   validateExactSdkCompilerSourceRoot,
   validateExactRuntimeArtifactRoot,
@@ -138,6 +139,73 @@ test("requires the exact canonical Pages input URL identity", () => {
       /exact canonical Pages input URL/i,
     );
   }
+});
+
+test("requires the exact embedded canonical Pages product URL identity", () => {
+  const inputId = "product-platform-rootfs";
+  const productId = "platform-rootfs";
+  const sha256 = "a".repeat(64);
+  const bytes = 91;
+  const abi = 18;
+  const exact =
+    `https://automattic.github.io/kandelo/products/${productId}/` +
+    `sha256-${sha256}/${productId}-${abi}.vfs.zst?sha256=${sha256}&bytes=${bytes}`;
+  assert.doesNotThrow(() => validateCanonicalPagesProductReference(
+    exact,
+    inputId,
+    productId,
+    abi,
+    sha256,
+    bytes,
+    "embedded",
+  ));
+  for (const hostile of [
+    exact.replace("automattic.github.io", "attacker.invalid"),
+    exact.replace(`/products/${productId}/`, "/products/browser-node/"),
+    exact.replace(`/${productId}-${abi}.vfs.zst`, `/browser-node-${abi}.vfs.zst`),
+    exact.replace(`-${abi}.vfs.zst`, `-${abi + 1}.vfs.zst`),
+    exact.replace(`sha256-${sha256}`, `sha256-${"b".repeat(64)}`),
+    exact.replace(`sha256=${sha256}`, `sha256=${"b".repeat(64)}`),
+    exact.replace(`bytes=${bytes}`, `bytes=${bytes + 1}`),
+    `${exact}&extra=1`,
+  ]) {
+    assert.throws(
+      () => validateCanonicalPagesProductReference(
+        hostile,
+        inputId,
+        productId,
+        abi,
+        sha256,
+        bytes,
+        "embedded",
+      ),
+      /exact canonical Pages product URL/i,
+    );
+  }
+  assert.throws(
+    () => validateCanonicalPagesProductReference(
+      exact,
+      inputId,
+      productId,
+      abi,
+      sha256,
+      bytes,
+      "lazy-reference",
+    ),
+    /embedded placement/i,
+  );
+  assert.throws(
+    () => validateCanonicalPagesProductReference(
+      exact,
+      "product-browser-node",
+      productId,
+      abi,
+      sha256,
+      bytes,
+      "embedded",
+    ),
+    /exact canonical Pages product URL/i,
+  );
 });
 
 function lazyFixtureIdentity(id: string) {

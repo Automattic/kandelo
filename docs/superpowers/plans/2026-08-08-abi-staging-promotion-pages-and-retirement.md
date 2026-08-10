@@ -510,6 +510,7 @@ entries nonremovable and performs no broad deletion.
 - Create: `scripts/test-abi-staging-pages-atomic.sh`
 - Create: `scripts/abi-staging-pages-producer.ts`
 - Create: `scripts/abi-staging-pages-producer.test.ts`
+- Create: `scripts/abi-staging-pages-producer-fixture.ts`
 - Create: `apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-gallery.json`
 - Modify: `scripts/abi-staging-product-node-evidence.ts`
 - Modify: `scripts/abi-staging-product-node-evidence.test.ts`
@@ -1310,6 +1311,7 @@ entries nonremovable and performs no broad deletion.
 - Create: `scripts/test-abi-staging-pages-atomic.sh`
 - Create: `scripts/abi-staging-pages-producer.ts`
 - Create: `scripts/abi-staging-pages-producer.test.ts`
+- Create: `scripts/abi-staging-pages-producer-fixture.ts`
 - Create: `apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-gallery.json`
 - Modify: `scripts/abi-staging-product-node-evidence.ts`
 - Modify: `scripts/abi-staging-product-node-evidence.test.ts`
@@ -1336,6 +1338,10 @@ entries nonremovable and performs no broad deletion.
   from a clean current-main checkout, invokes the protected builders and
   Node/browser supervisors, and emits an inert complete source tree. Candidate
   VFS and lazy bytes are never fetched or relabeled.
+- Every product requires exact current-main resolved inputs. Embedded
+  recaptures remain staged path-only inputs; only lazy recaptures receive
+  Pages input URLs, while embedded product dependencies use the distinct
+  canonical Pages product URL bound to product ID, ABI, digest, and bytes.
 - Final lazy evidence retains canonical public URLs as VFS authority while a
   closed local transport supplies only exact current recaptures, authenticated
   bottle layers, and previously rebuilt product VFS bytes. It never depends on
@@ -1439,6 +1445,7 @@ entries nonremovable and performs no broad deletion.
     scripts/test-abi-staging-pages-atomic.sh \
     scripts/abi-staging-pages-producer.ts \
     scripts/abi-staging-pages-producer.test.ts \
+    scripts/abi-staging-pages-producer-fixture.ts \
     scripts/abi-staging-product-node-evidence.ts \
     scripts/abi-staging-product-node-evidence.test.ts \
     scripts/abi-staging-product-browser-evidence.ts \

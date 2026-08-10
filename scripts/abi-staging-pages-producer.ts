@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 import {
   collectProductInputObjectsFromResolvedSources,
   verifyExactProductSourceIdentity,
+  type ResolvedProductInputCollectionOptions,
 } from "./abi-staging-collect-product-inputs.ts";
 import {
   canonicalPagesInputReference,
@@ -432,6 +433,8 @@ export function derivePagesSiteMetadata(
   siteSourceRoot: string,
   pagesRegistry: unknown,
   galleryAuthority: unknown,
+  presetSource: string,
+  liveSetupSource: string,
 ): JsonObject {
   const root = exactDirectory(siteSourceRoot, "Pages site source root");
   const pages = record(pagesRegistry, "Pages registry");
@@ -462,12 +465,17 @@ export function derivePagesSiteMetadata(
       if (!jsonEqual(entries, [...new Set(entries)].sort(ordinal))) {
         throw new Error("Pages gallery entries are not sorted and unique");
       }
-      return { gallery_entries: entries, id: stableId(entry.id, `Pages gallery product ${index} ID`) };
+      return {
+        gallery_entries: entries,
+        id: stableId(entry.id, `Pages gallery product ${index} ID`),
+        vfs_image: stableId(entry.vfs_image, `Pages gallery product ${index} VFS image`),
+      };
     });
   if (
     !jsonEqual(pageIds, [...new Set(pageIds)].sort(ordinal)) ||
     !jsonEqual(galleryProducts.map(({ id }) => id), pageIds)
   ) throw new Error("Pages gallery authority differs from the exact Pages product set");
+  validateReviewedGalleryMappings(galleryProducts, presetSource, liveSetupSource);
   const files = inventoryTree(root, MAX_SITE_BYTES);
   const identity = (path: string, label: string): PagesFileIdentityV1 => {
     const selected = files.find((file) => file.path === path);
@@ -490,10 +498,48 @@ export interface ProductionOciAuthority extends CandidateProductDiscovery {
   readAdmissionRecord(reference: string): Promise<JsonObject>;
 }
 
+interface ProtectedDocumentV1 {
+  bytes: Uint8Array;
+  path: string;
+  source_bytes: Uint8Array;
+  value: JsonObject;
+}
+
+export interface ProtectedPagesAuthoritiesV1 {
+  catalog: ProtectedDocumentV1;
+  definitions: ProtectedDocumentV1;
+  gallery: JsonObject;
+  liveSetupSource: string;
+  pages: ProtectedDocumentV1;
+  presentationSource: string;
+  tests: ProtectedDocumentV1;
+}
+
+/** Test-only seam for bounded local authorities; the production CLI never exposes it. */
+export interface PagesProducerTestDependenciesV1 {
+  buildProduct?(request: CanonicalProductBuildRequestV1): Promise<{
+    builder_report: JsonObject;
+    vfs: Uint8Array;
+  }>;
+  collectCurrentInputs?(
+    options: ResolvedProductInputCollectionOptions,
+  ): JsonObject;
+  createSourceReobserver?(expected: ExactSourceObservation): () => void;
+  loadProtectedAuthorities?(sourceRoot: string): ProtectedPagesAuthoritiesV1;
+  observeRuntime?(runtimeBundleBytes: Uint8Array, runtimeRoot: string): {
+    devShellLockSha256: string;
+    source: PagesProductionHandoffV1["source"];
+    targetAbi: PagesProductionHandoffV1["target_abi"];
+  };
+  runEvidence?(request: PagesEvidenceRequestV1): Promise<JsonObject>;
+  validateAdmissionRecord?(bytes: Uint8Array): Promise<void>;
+}
+
 export async function producePagesArtifacts(
   handoffPath: string,
   outputRoot: string,
   oci: ProductionOciAuthority = createAnonymousOciAuthority(),
+  testDependencies?: PagesProducerTestDependenciesV1,
 ): Promise<void> {
   assertUncredentialedEnvironment(process.env);
   const handoff = validatePagesProductionHandoff(
@@ -508,21 +554,33 @@ export async function producePagesArtifacts(
     MAX_RUNTIME_BUNDLE_BYTES,
   );
   const runtimeBundle = canonicalDocument(runtimeBundleBytes, "exact runtime bundle");
-  const runtimeIdentity = runtimeIdentityFromBundle(runtimeBundleBytes);
+  const observedRuntime = testDependencies?.observeRuntime?.(
+    runtimeBundleBytes,
+    runtimeRoot,
+  );
+  const runtimeIdentity = observedRuntime === undefined
+    ? runtimeIdentityFromBundle(runtimeBundleBytes)
+    : { source: observedRuntime.source, target_abi: observedRuntime.targetAbi };
   if (
     !jsonEqual(runtimeIdentity.source, handoff.source) ||
     !jsonEqual(runtimeIdentity.target_abi, handoff.target_abi)
   ) throw new Error("exact runtime bundle differs from the protected current-main handoff");
-  validateExactRuntimeArtifactRoot(runtimeBundleBytes, runtimeRoot);
-  const lockSha256 = exactRuntimeDevShellLockSha256(runtimeBundleBytes);
-  const reobserveSource = createExactSourceReobserver({
+  if (observedRuntime === undefined) {
+    validateExactRuntimeArtifactRoot(runtimeBundleBytes, runtimeRoot);
+  }
+  const lockSha256 = observedRuntime?.devShellLockSha256 ??
+    exactRuntimeDevShellLockSha256(runtimeBundleBytes);
+  const sourceObservation = {
     commit: handoff.source.commit,
     devShellLockSha256: lockSha256,
     root: sourceRoot,
     tree: handoff.source.tree,
-  });
+  };
+  const reobserveSource = testDependencies?.createSourceReobserver?.(sourceObservation) ??
+    createExactSourceReobserver(sourceObservation);
 
-  const fixed = loadProtectedAuthorities(sourceRoot);
+  const fixed = testDependencies?.loadProtectedAuthorities?.(sourceRoot) ??
+    loadProtectedAuthorities(sourceRoot);
   const expectedProductIds = fixed.pages.value.products.map(({ id }: { id: string }) => id);
   if (!jsonEqual(handoff.products.map(({ id }) => id), expectedProductIds)) {
     throw new Error("production handoff products differ from the exact Pages registry");
@@ -531,6 +589,8 @@ export async function producePagesArtifacts(
     siteSourceRoot,
     fixed.pages.value,
     fixed.gallery,
+    fixed.presentationSource,
+    fixed.liveSetupSource,
   );
   const output = absolutePath(outputRoot, "Pages producer output root");
   if (existsSync(output)) throw new Error("Pages producer output root already exists");
@@ -568,7 +628,9 @@ export async function producePagesArtifacts(
       let currentResolved: JsonObject;
       let canonicalArtifacts: PagesReadinessInputV1["products"][number]["canonical_artifacts"];
       try {
-        const inventory = collectProductInputObjectsFromResolvedSources({
+        const collectCurrentInputs = testDependencies?.collectCurrentInputs ??
+          collectProductInputObjectsFromResolvedSources;
+        const inventory = collectCurrentInputs({
           archiveFiles: readStringMap(
             handoffProduct.current_inputs.archive_files,
             `${handoffProduct.id} source archives`,
@@ -600,43 +662,44 @@ export async function producePagesArtifacts(
         currentResolved = rebuildCurrentResolvedInputs(candidateResolved, inventory);
         canonicalArtifacts = [];
         for (const input of currentResolved.inputs) {
-        if (
-          input.kind === "homebrew-bottle" || input.kind === "product-image"
-        ) continue;
-        const object = inventory.objects.find(({ id }) => id === input.id);
-        if (object === undefined) {
-          throw new Error(`${handoffProduct.id} lacks current bytes for ${input.id}`);
-        }
-        if (input.descriptor !== undefined) {
-          throw new Error(`${input.id} requires a current-main recaptured descriptor body`);
-        }
-        const body = readBoundedFile(
-          join(currentInputRoot, object.path),
-          `${input.id} current-main input body`,
-          MAX_LAZY_INPUT_BYTES,
-          input.bytes,
-        );
-        if (sha256(body) !== input.sha256) {
-          throw new Error(`${input.id} current-main input body differs from its identity`);
-        }
-        const path = canonicalPagesInputSitePath(input.id, input.sha256);
-        const identity = { bytes: input.bytes, path, sha256: input.sha256 };
-        const prior = inputBodies.get(path);
-        if (prior !== undefined && !jsonEqual(prior.identity, identity)) {
-          throw new Error(`canonical Pages input path ${path} has conflicting identities`);
-        }
-        inputBodies.set(path, { body, identity });
-        const reference = canonicalPagesInputReference(input.id, input.sha256, input.bytes);
-        registerLocalLazyBody(localLazyBodies, reference, {
-          body,
-          bytes: input.bytes,
-          sha256: input.sha256,
-        });
+          if (
+            input.kind === "homebrew-bottle" || input.kind === "product-image" ||
+            input.effective_materialization !== "lazy-reference"
+          ) continue;
+          const object = inventory.objects.find((value: JsonObject) => value.id === input.id);
+          if (object === undefined) {
+            throw new Error(`${handoffProduct.id} lacks current bytes for ${input.id}`);
+          }
+          if (input.descriptor !== undefined) {
+            throw new Error(`${input.id} requires a current-main recaptured descriptor body`);
+          }
+          const body = readBoundedFile(
+            join(currentInputRoot, object.path),
+            `${input.id} current-main input body`,
+            MAX_LAZY_INPUT_BYTES,
+            input.bytes,
+          );
+          if (sha256(body) !== input.sha256) {
+            throw new Error(`${input.id} current-main input body differs from its identity`);
+          }
+          const path = canonicalPagesInputSitePath(input.id, input.sha256);
+          const identity = { bytes: input.bytes, path, sha256: input.sha256 };
+          const prior = inputBodies.get(path);
+          if (prior !== undefined && !jsonEqual(prior.identity, identity)) {
+            throw new Error(`canonical Pages input path ${path} has conflicting identities`);
+          }
+          inputBodies.set(path, { body, identity });
+          const reference = canonicalPagesInputReference(input.id, input.sha256, input.bytes);
+          registerLocalLazyBody(localLazyBodies, reference, {
+            body,
+            bytes: input.bytes,
+            sha256: input.sha256,
+          });
           canonicalArtifacts.push({
-          bytes: input.bytes,
-          input_id: input.id,
-          reference,
-          sha256: input.sha256,
+            bytes: input.bytes,
+            input_id: input.id,
+            reference,
+            sha256: input.sha256,
           });
         }
       } catch (error) {
@@ -654,7 +717,8 @@ export async function producePagesArtifacts(
           candidateResolved,
           handoff.target_abi.version,
           oci,
-          (recordBytes) => validateAdmissionRecord(recordBytes, sourceRoot, staging),
+          (recordBytes) => testDependencies?.validateAdmissionRecord?.(recordBytes) ??
+            validateAdmissionRecord(recordBytes, sourceRoot, staging),
         );
       } catch (error) {
         if (!(error instanceof PagesProductUnavailableError)) throw error;
@@ -720,25 +784,28 @@ export async function producePagesArtifacts(
       return;
     }
     const result = await computePagesReadiness(readinessInput, {
-      buildProduct: (request) => buildCanonicalProduct(
-        request,
-        sourceRoot,
-        productRoots.get(request.product.id)!,
-        staging,
-        localLazyBodies,
-      ),
+      buildProduct: (request) => testDependencies?.buildProduct?.(request) ??
+        buildCanonicalProduct(
+          request,
+          sourceRoot,
+          productRoots.get(request.product.id)!,
+          staging,
+          localLazyBodies,
+        ),
       fetchCanonicalOci: (reference) => oci.fetchCanonicalOci(reference),
-      runEvidence: (request) => runCanonicalEvidence(
-        request,
-        fixed,
-        handoff,
-        runtimeBundleBytes,
-        runtimeRoot,
-        sourceRoot,
-        staging,
-        localLazyBodies,
-      ),
-      validateAdmissionRecord: (bytes) => validateAdmissionRecord(bytes, sourceRoot, staging),
+      runEvidence: (request) => testDependencies?.runEvidence?.(request) ??
+        runCanonicalEvidence(
+          request,
+          fixed,
+          handoff,
+          runtimeBundleBytes,
+          runtimeRoot,
+          sourceRoot,
+          staging,
+          localLazyBodies,
+        ),
+      validateAdmissionRecord: (bytes) => testDependencies?.validateAdmissionRecord?.(bytes) ??
+        validateAdmissionRecord(bytes, sourceRoot, staging),
     });
     writeCanonical(join(staging, "readiness.json"), result.readiness);
     if (!result.readiness.ready) {
@@ -768,9 +835,9 @@ export async function producePagesArtifacts(
   }
 }
 
-type ProtectedAuthorities = ReturnType<typeof loadProtectedAuthorities>;
+type ProtectedAuthorities = ProtectedPagesAuthoritiesV1;
 
-function loadProtectedAuthorities(sourceRoot: string) {
+function loadProtectedAuthorities(sourceRoot: string): ProtectedPagesAuthoritiesV1 {
   const load = (repositoryPath: string, label: string) => {
     const path = join(sourceRoot, repositoryPath);
     const bytes = readBoundedFile(path, label, MAX_DOCUMENT_BYTES);
@@ -791,7 +858,61 @@ function loadProtectedAuthorities(sourceRoot: string) {
       "Pages product registry",
     ),
     tests: load("tests/vfs-products.generated.json", "test product registry"),
+    presentationSource: new TextDecoder("utf-8", { fatal: true }).decode(readBoundedFile(
+      join(sourceRoot, "apps/browser-demos/pages/kandelo/presets.ts"),
+      "reviewed preset authority",
+      MAX_DOCUMENT_BYTES,
+    )),
+    liveSetupSource: new TextDecoder("utf-8", { fatal: true }).decode(readBoundedFile(
+      join(sourceRoot, "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts"),
+      "reviewed live-demo authority",
+      MAX_DOCUMENT_BYTES,
+    )),
   };
+}
+
+function validateReviewedGalleryMappings(
+  products: Array<{ gallery_entries: string[]; id: string; vfs_image: string }>,
+  presetSource: string,
+  liveSetupSource: string,
+): void {
+  if (typeof presetSource !== "string" || typeof liveSetupSource !== "string") {
+    throw new Error("Pages gallery lacks reviewed presentation authorities");
+  }
+  const presetStart = presetSource.indexOf("export const PRESET_LIBRARY");
+  const presetEnd = presetSource.indexOf("\n];", presetStart);
+  if (presetStart < 0 || presetEnd < 0) {
+    throw new Error("reviewed preset authority is not static");
+  }
+  const presetIds = [...presetSource.slice(presetStart, presetEnd).matchAll(
+    /^\s{4}id: "([a-z0-9-]+)",$/gmu,
+  )].map((match) => match[1]!);
+  if (!jsonEqual(presetIds, [...new Set(presetIds)])) {
+    throw new Error("reviewed preset authority contains duplicate IDs");
+  }
+  const liveStart = liveSetupSource.indexOf("const LIVE_DEMO_SPECS");
+  const liveEnd = liveSetupSource.indexOf("\n};", liveStart);
+  if (liveStart < 0 || liveEnd < 0) {
+    throw new Error("reviewed live-demo authority is not static");
+  }
+  const imageByEntry = new Map(
+    [...liveSetupSource.slice(liveStart, liveEnd).matchAll(
+      /^\s{2}(?:"([a-z0-9-]+)"|([a-z0-9-]+)): \{\n\s{4}image: "([a-z0-9-]+)",$/gmu,
+    )].map((match) => [match[1] ?? match[2]!, match[3]!]),
+  );
+  const declaredEntries = products.flatMap(({ gallery_entries }) => gallery_entries).sort(ordinal);
+  if (!jsonEqual(declaredEntries, [...presetIds].sort(ordinal))) {
+    throw new Error("Pages gallery entries differ from the reviewed preset authority");
+  }
+  for (const product of products) {
+    for (const entry of product.gallery_entries) {
+      if (imageByEntry.get(entry) !== product.vfs_image) {
+        throw new Error(
+          `Pages gallery entry ${entry} does not use its reviewed VFS image ${product.vfs_image}`,
+        );
+      }
+    }
+  }
 }
 
 function readStringMap(path: string, label: string): Record<string, string> {
@@ -1257,11 +1378,7 @@ function createAnonymousOciAuthority(): ProductionOciAuthority {
       const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(output));
       const tags = array(record(value, "OCI tag inventory").tags, "OCI tags");
       if (tags.length > MAX_OCI_TAGS) throw new Error("OCI tag inventory exceeds its bound");
-      return tags.flatMap((value, index) => {
-        const tag = text(value, `OCI tag ${index}`);
-        const match = tag.match(/^record-sha256-([0-9a-f]{64})$/u);
-        return match === null ? [] : [`${repository}@sha256:${match[1]}`];
-      }).sort(ordinal);
+      return immutableRecordReferencesFromTags(repository, tags);
     },
     async readAdmissionRecord(reference) {
       const { repository, digest: manifestDigest } = immutableOciReference(
@@ -1332,6 +1449,24 @@ function createAnonymousOciAuthority(): ProductionOciAuthority {
       };
     },
   };
+}
+
+export function immutableRecordReferencesFromTags(
+  repository: string,
+  tags: readonly unknown[],
+): string[] {
+  if (
+    typeof repository !== "string" || repository.length > 4_096 ||
+    !/^ghcr\.io\/[a-z0-9._-]+\/[a-z0-9._/-]+$/u.test(repository)
+  ) throw new Error("immutable OCI record repository is invalid");
+  if (!Array.isArray(tags) || tags.length > MAX_OCI_TAGS) {
+    throw new Error("OCI tag inventory exceeds its bound");
+  }
+  return tags.flatMap((value, index) => {
+    const tag = text(value, `OCI tag ${index}`);
+    const match = tag.match(/^record-sha256-([0-9a-f]{64})$/u);
+    return match === null ? [] : [`${repository}@sha256:${match[1]}`];
+  }).sort(ordinal);
 }
 
 export function canonicalJsonBytes(value: unknown): Uint8Array {

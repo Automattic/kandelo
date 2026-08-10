@@ -110,7 +110,7 @@ export interface PagesReadinessInputV1 {
     api: PagesFileIdentityV1;
     browser: PagesFileIdentityV1;
     documentation: PagesFileIdentityV1;
-    products: Array<{ id: string; gallery_entries: string[] }>;
+    products: Array<{ id: string; gallery_entries: string[]; vfs_image: string }>;
     files?: PagesFileIdentityV1[];
   };
   source: ExactSourceV1;
@@ -121,7 +121,7 @@ export interface PagesReadinessInputV1 {
     candidate_resolved_inputs: ResolvedVfsProductInputsV1;
     candidate_builder_report: JsonObject;
     canonical_artifacts?: CanonicalInputArtifactV1[];
-    current_resolved_inputs?: ResolvedVfsProductInputsV1;
+    current_resolved_inputs: ResolvedVfsProductInputsV1;
   }>;
 }
 
@@ -335,7 +335,7 @@ interface RecomposeOptionsV1 {
   admissions: AuthenticatedAdmissionEnvelopeV1[];
   candidateResolvedInputs: ResolvedVfsProductInputsV1;
   canonicalProducts: Map<string, CanonicalProductIdentityV1>;
-  currentResolvedInputs?: ResolvedVfsProductInputsV1;
+  currentResolvedInputs: ResolvedVfsProductInputsV1;
   currentSource?: ExactSourceV1;
   targetAbi: TargetAbiV1;
   canonicalArtifacts?: CanonicalInputArtifactV1[];
@@ -389,7 +389,7 @@ export function recomposeCanonicalResolvedInputs(
   if (!jsonEqual(candidate.target_abi, options.targetAbi)) {
     throw new ReadinessError("abi-mismatch", "candidate resolved inputs name another target ABI");
   }
-  const recaptured = structuredClone(options.currentResolvedInputs ?? candidate);
+  const recaptured = structuredClone(options.currentResolvedInputs);
   if (
     recaptured.schema !== 1 ||
     recaptured.kind !== "kandelo-resolved-vfs-product-inputs" ||
@@ -440,7 +440,8 @@ export function recomposeCanonicalResolvedInputs(
       next.bytes = product.bytes;
       next.reference = product.reference;
     } else if (
-      canonicalArtifacts.has(input.id) || containsCandidateNamespace(next)
+      input.effective_materialization === "lazy-reference" &&
+      (canonicalArtifacts.has(input.id) || containsCandidateNamespace(next))
     ) {
       const artifact = canonicalArtifacts.get(input.id);
       if (
@@ -476,6 +477,11 @@ export function recomposeCanonicalResolvedInputs(
         );
         next.descriptor.reference = artifact.descriptor_reference;
       }
+    } else if (canonicalArtifacts.has(input.id)) {
+      throw new ReadinessError(
+        "candidate-reference",
+        `non-lazy input ${input.id} cannot claim a canonical Pages artifact`,
+      );
     }
     if (containsCandidateNamespace(next)) {
       throw new ReadinessError(
@@ -658,7 +664,7 @@ export async function computePagesReadiness(
       }
       const currentResolved = candidate.current_resolved_inputs;
       if (
-        currentResolved !== undefined &&
+        currentResolved === undefined ||
         (
           !jsonEqual(currentResolved.source, input.source) ||
           !jsonEqual(currentResolved.product, expectedCandidateProduct) ||
