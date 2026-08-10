@@ -5,6 +5,10 @@ import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { MemoryFileSystem } from "../../host/src/vfs/memory-fs";
 import { buildImage } from "../../tools/mkrootfs/src/builder";
+import type {
+  LiveKernelHost,
+  MachineStatus,
+} from "../../web-libs/kandelo-session/src/kernel-host";
 
 const repoRoot = resolve(import.meta.dirname, "..", "..");
 const verifiedArchivePackages = [
@@ -49,6 +53,29 @@ function readVfsText(fs: MemoryFileSystem, path: string): string {
   } finally {
     fs.close(fd);
   }
+}
+
+function waitForHostStatus(
+  host: LiveKernelHost,
+  expected: MachineStatus,
+): Promise<void> {
+  if (host.getStatus() === expected) return Promise.resolve();
+  return new Promise((resolveDone) => {
+    const unsubscribe = host.subscribeStatus((status) => {
+      if (status !== expected) return;
+      unsubscribe();
+      resolveDone();
+    });
+  });
+}
+
+function waitForGalleryRefresh(host: LiveKernelHost): Promise<void> {
+  return new Promise((resolveDone) => {
+    const unsubscribe = host.subscribeGallery(() => {
+      unsubscribe();
+      resolveDone();
+    });
+  });
 }
 
 describe("source-rootfs verified archive contract", () => {
@@ -234,16 +261,29 @@ describe("source-rootfs verified archive contract", () => {
         "-c",
         `
 forced_privilege=$2
+expected_euid=$EUID
+intercepted_euid_checks=0
 if [[ $forced_privilege != actual ]]; then
   function [ {
-    if [[ $# -eq 4 && $2 == -eq && $3 == 0 && $4 == "]" ]]; then
+    if [[ $# -eq 4 && $1 == "$expected_euid" && $2 == -eq && $3 == 0 && $4 == "]" ]]; then
+      intercepted_euid_checks=$((intercepted_euid_checks + 1))
       [[ $forced_privilege == root ]]
       return
     fi
     builtin [ "$@"
   }
+  if [ "$((EUID + 1))" -eq 0 ]; then
+    printf "unrelated numeric comparison was forced\n" >&2
+    exit 96
+  fi
 fi
-${printPrompt}
+PS1=sentinel
+. "$1"
+if [[ $forced_privilege != actual && $intercepted_euid_checks -ne 1 ]]; then
+  printf "expected exactly one EUID predicate, intercepted %s\n" "$intercepted_euid_checks" >&2
+  exit 97
+fi
+printf "%s" "$PS1"
 `,
         "bash",
         promptPath,
@@ -313,26 +353,56 @@ ${printPrompt}
       setItem: (key: string, value: string) => sessionValues.set(key, value),
       removeItem: (key: string) => sessionValues.delete(key),
     });
+    const responseFor = (url: string): Response => {
+      if (url.endsWith("/gallery.json")) {
+        return new Response(JSON.stringify({ entries: [] }), {
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (url.endsWith("/index.toml")) return new Response("");
+      return new Response("controlled boot failure", {
+        status: 503,
+        statusText: "Service Unavailable",
+      });
+    };
+    const pendingFetches: Array<{
+      url: string;
+      resolveResponse: (response: Response) => void;
+    }> = [];
+    let fetchesReleased = false;
     vi.stubGlobal(
       "fetch",
-      vi.fn((input: string | URL | Request) =>
-        String(input).endsWith("/gallery.json")
-          ? Promise.resolve(
-              new Response(JSON.stringify({ entries: [] }), {
-                headers: { "content-type": "application/json" },
-              }),
-            )
-          : new Promise<Response>(() => {}),
-      ),
+      vi.fn((input: string | URL | Request) => {
+        const url = input instanceof Request ? input.url : String(input);
+        if (fetchesReleased) return Promise.resolve(responseFor(url));
+        return new Promise<Response>((resolveResponse) => {
+          pendingFetches.push({ url, resolveResponse });
+        });
+      }),
     );
+    const releaseFetches = () => {
+      fetchesReleased = true;
+      for (const { url, resolveResponse } of pendingFetches.splice(0)) {
+        resolveResponse(responseFor(url));
+      }
+    };
 
-    let shellHost: { halt(): Promise<void> } | undefined;
-    let nodeHost: { halt(): Promise<void> } | undefined;
+    let shellHost: LiveKernelHost | undefined;
+    let nodeHost: LiveKernelHost | undefined;
     try {
       const { createLiveHost } =
         await import("../../apps/browser-demos/pages/kandelo/kernel-host/live-setup");
       shellHost = await createLiveHost({ demo: "shell" });
       nodeHost = await createLiveHost({ demo: "node" });
+      const shellGalleryRefresh = waitForGalleryRefresh(shellHost);
+      const nodeGalleryRefresh = waitForGalleryRefresh(nodeHost);
+      releaseFetches();
+      await Promise.all([
+        waitForHostStatus(shellHost, "error"),
+        waitForHostStatus(nodeHost, "error"),
+        shellGalleryRefresh,
+        nodeGalleryRefresh,
+      ]);
       const shellEnv = shellHost.getBootDescriptor().boot.env;
       const nodeEnv = nodeHost.getBootDescriptor().boot.env;
 
@@ -356,10 +426,16 @@ ${printPrompt}
       expect.soft(shellEnv).not.toHaveProperty("PS1");
       expect.soft(nodeEnv).not.toHaveProperty("PS1");
     } finally {
-      await shellHost?.halt();
-      await nodeHost?.halt();
-      await new Promise<void>((resolveDone) => setTimeout(resolveDone, 20));
-      vi.unstubAllGlobals();
+      releaseFetches();
+      try {
+        await Promise.allSettled(
+          [shellHost, nodeHost]
+            .filter((host): host is LiveKernelHost => host !== undefined)
+            .map((host) => host.halt()),
+        );
+      } finally {
+        vi.unstubAllGlobals();
+      }
     }
   });
 });
