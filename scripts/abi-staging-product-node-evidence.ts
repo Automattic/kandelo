@@ -38,6 +38,7 @@ import type {
 } from "../host/src/node-kernel-host";
 import type { KernelPipeTransport } from "../host/src/kernel-pipe-transport";
 import type {
+  ClosedLazyAsset,
   ClosedLazyAssetSource,
 } from "../host/src/vfs/closed-lazy-assets";
 import {
@@ -519,6 +520,7 @@ export interface NodeEvidenceExecutionInputs {
   resolvedInputsBytes: Uint8Array;
   builderReportBytes: Uint8Array;
   lazyAssetSources: readonly ClosedLazyAssetSource[];
+  lazyAssets?: readonly ClosedLazyAsset[];
 }
 
 export interface NodeEvidenceRunnerDependencies {
@@ -802,6 +804,13 @@ export function validateNodeEvidenceContext(
     inputs.lazyAssetSources,
     expectedLazyInputIds(context.definition),
   );
+  if (inputs.lazyAssets !== undefined) {
+    validateProtectedNodeLazyAssets(
+      lazyRequirements,
+      inputs.lazyAssets,
+      expectedLazyInputIds(context.definition),
+    );
+  }
   const exactRuntime = runtimeIdentityFromBundle(inputs.runtimeBundleBytes);
   if (!jsonEqual(context.runtime, exactRuntime)) {
     throw new Error("Node evidence runtime differs from the exact runtime bundle");
@@ -1167,6 +1176,7 @@ export function validateCandidateProductInputDocuments(
         kind === "homebrew-bottle" || kind === "product-image" ||
           placement === "lazy-reference",
         locatorValue.reference_class ?? "candidate",
+        { bytes, id, sha256 },
       );
     }
     if (placement === "lazy-reference") {
@@ -1211,6 +1221,7 @@ export function validateCandidateProductInputDocuments(
         `resolved product input ${id} descriptor`,
         kind === "homebrew-bottle" || placement === "lazy-reference",
         locatorValue.reference_class ?? "candidate",
+        { bytes: descriptorBytes, id, sha256: descriptorSha },
       );
       reportDescriptor = { bytes: descriptorBytes, sha256: descriptorSha };
     } else if (kind === "homebrew-bottle") {
@@ -1275,6 +1286,7 @@ function validateCandidateReferenceClass(
   label: string,
   requireCandidateNamespace: boolean,
   referenceClass: "candidate" | "canonical",
+  identity: { bytes: number; id: string; sha256: string },
 ): void {
   const namespace = "ghcr.io/kandelo-dev/homebrew-tap-core-abi-";
   const candidate = `${namespace}${targetAbi}-candidates/`;
@@ -1305,11 +1317,35 @@ function validateCandidateReferenceClass(
   const pagesProduct = normalized.startsWith(
     "automattic.github.io/kandelo/products/",
   );
+  if (pagesProduct) {
+    validateCanonicalPagesInputReference(
+      reference,
+      identity.id,
+      identity.sha256,
+      identity.bytes,
+      label,
+    );
+  }
   if (
     (requireCandidateNamespace || managed) &&
     !normalized.startsWith(canonical) && !pagesProduct
   ) {
     throw new Error(`${label} is outside its exact canonical namespace`);
+  }
+}
+
+export function validateCanonicalPagesInputReference(
+  reference: string,
+  id: string,
+  sha256: string,
+  bytes: number,
+  label = "canonical Pages input",
+): void {
+  const exact =
+    `https://automattic.github.io/kandelo/products/inputs/${id}/` +
+    `sha256-${sha256}/${id}?sha256=${sha256}&bytes=${bytes}`;
+  if (reference !== exact) {
+    throw new Error(`${label} lacks its exact canonical Pages input URL`);
   }
 }
 
@@ -1480,6 +1516,32 @@ function validateCandidateLazyAssetSources(
   const expected = candidateLazyAssetSources(requirements, expectedIds);
   if (!jsonEqual(sources, expected)) {
     throw new Error("closed candidate lazy sources differ from protected product inputs");
+  }
+}
+
+function validateProtectedNodeLazyAssets(
+  requirements: readonly CandidateLazyRequirementV1[],
+  assets: readonly ClosedLazyAsset[],
+  expectedIds: readonly string[],
+): void {
+  const byUrl = new Map(assets.map((asset) => [asset.url, asset]));
+  if (byUrl.size !== assets.length || assets.length !== expectedIds.length) {
+    throw new Error("protected Node lazy bytes differ from the selected lazy input set");
+  }
+  const requirementsById = new Map(
+    requirements.map((requirement) => [requirement.id, requirement]),
+  );
+  for (const id of expectedIds) {
+    const requirement = requirementsById.get(id);
+    const asset = requirement === undefined ? undefined : byUrl.get(requirement.url);
+    if (
+      requirement === undefined || asset === undefined ||
+      asset.size !== requirement.size || asset.sha256 !== requirement.sha256 ||
+      asset.bytes.byteLength !== requirement.size ||
+      sha256Hex(asset.bytes) !== requirement.sha256
+    ) {
+      throw new Error(`protected Node lazy bytes differ for input ${id}`);
+    }
   }
 }
 
@@ -3254,7 +3316,9 @@ export function nodeEvidenceHostOptions(
     maxWorkers: EVIDENCE_MAX_WORKERS,
     maxProcessMemoryBytes: EVIDENCE_MAX_PROCESS_MEMORY_BYTES,
     rootfsImage: inputs.vfsBytes,
-    rootfsLazyAssetSources: inputs.lazyAssetSources,
+    ...(inputs.lazyAssets === undefined
+      ? { rootfsLazyAssetSources: inputs.lazyAssetSources }
+      : { rootfsLazyAssets: inputs.lazyAssets }),
     rootfsMountSpec: hostMountSpecFromProductMounts(inputs.context.mounts),
     onStdout,
     onStderr,
@@ -3715,6 +3779,7 @@ interface CliInputOptions {
   resolvedInputs: string;
   runtimeBundle: string;
   runtimeRoot: string;
+  lazyInputs?: string;
   sourceRoot?: string;
   vfs: string;
 }
@@ -3740,12 +3805,13 @@ function parseArgs(args: readonly string[]): CliOptions {
     ["--resolved-inputs", "resolvedInputs"],
     ["--runtime-bundle", "runtimeBundle"],
     ["--runtime-root", "runtimeRoot"],
+    ["--lazy-inputs", "lazyInputs"],
     ["--source-root", "sourceRoot"],
     ["--vfs", "vfs"],
     ["--output", "output"],
   ] as const);
   const parsed: Partial<CliOptions> = {};
-  if (args.length % 2 !== 0 || args.length < (flags.size - 1) * 2) return usage();
+  if (args.length % 2 !== 0 || args.length < (flags.size - 2) * 2) return usage();
   for (let index = 0; index < args.length; index += 2) {
     const flag = args[index];
     const raw = args[index + 1];
@@ -3756,7 +3822,7 @@ function parseArgs(args: readonly string[]): CliOptions {
     parsed[key] = resolve(raw);
   }
   for (const key of flags.values()) {
-    if (key !== "sourceRoot" && parsed[key] === undefined) return usage();
+    if (key !== "sourceRoot" && key !== "lazyInputs" && parsed[key] === undefined) return usage();
   }
   return parsed as CliOptions;
 }
@@ -3771,11 +3837,12 @@ function parseInputArgs(args: readonly string[]): CliInputOptions {
     ["--resolved-inputs", "resolvedInputs"],
     ["--runtime-bundle", "runtimeBundle"],
     ["--runtime-root", "runtimeRoot"],
+    ["--lazy-inputs", "lazyInputs"],
     ["--source-root", "sourceRoot"],
     ["--vfs", "vfs"],
   ] as const);
   const parsed: Partial<CliInputOptions> = {};
-  if (args.length % 2 !== 0 || args.length < (flags.size - 1) * 2) {
+  if (args.length % 2 !== 0 || args.length < (flags.size - 2) * 2) {
     throw new Error("candidate evidence child received invalid protected inputs");
   }
   for (let index = 0; index < args.length; index += 2) {
@@ -3788,7 +3855,7 @@ function parseInputArgs(args: readonly string[]): CliInputOptions {
     parsed[key] = resolve(raw);
   }
   for (const key of flags.values()) {
-    if (key !== "sourceRoot" && parsed[key] === undefined) {
+    if (key !== "sourceRoot" && key !== "lazyInputs" && parsed[key] === undefined) {
       throw new Error("candidate evidence child lacks a protected input");
     }
   }
@@ -3829,6 +3896,75 @@ function loadCanonicalJson(path: string, label: string, maximum: number): unknow
     throw new Error(`${label} is not canonical JSON`);
   }
   return value;
+}
+
+export function loadProtectedNodeLazyInputs(
+  manifestPath: string,
+  requirements: readonly CandidateLazyRequirementV1[],
+  expectedIds: readonly string[],
+): ClosedLazyAsset[] {
+  const manifest = exactRecord(
+    loadCanonicalJson(manifestPath, "protected Node lazy input manifest", MAX_DOCUMENT_BYTES),
+    ["inputs", "kind", "schema"],
+    "protected Node lazy input manifest",
+  );
+  if (manifest.schema !== 1 || manifest.kind !== "kandelo-protected-node-lazy-inputs") {
+    throw new Error("protected Node lazy input manifest has unsupported identity");
+  }
+  if (!Array.isArray(manifest.inputs) || manifest.inputs.length > 128) {
+    throw new Error("protected Node lazy input manifest exceeds its item bound");
+  }
+  const records = manifest.inputs.map((value, index) => exactRecord(
+    value,
+    ["bytes", "id", "path", "reference", "sha256"],
+    `protected Node lazy input ${index}`,
+  ));
+  const ids = records.map((item, index) =>
+    stableId(item.id, `protected Node lazy input ${index} ID`));
+  if (!jsonEqual(ids, expectedIds)) {
+    throw new Error("protected Node lazy input IDs differ from protected evidence policy");
+  }
+  const byId = new Map(requirements.map((requirement) => [requirement.id, requirement]));
+  let aggregate = 0;
+  const assets = records.map((item, index): ClosedLazyAsset => {
+    const id = ids[index]!;
+    const requirement = byId.get(id);
+    const bytes = positiveInteger(item.bytes, `protected Node lazy input ${id} bytes`);
+    const sha256 = digest(item.sha256, `protected Node lazy input ${id} digest`);
+    const reference = text(
+      item.reference,
+      `protected Node lazy input ${id} reference`,
+      8_192,
+    );
+    const path = text(item.path, `protected Node lazy input ${id} path`, 16_384);
+    if (resolve(path) !== path) {
+      throw new Error(`protected Node lazy input ${id} path is not absolute and normalized`);
+    }
+    if (
+      requirement === undefined || reference !== requirement.url ||
+      sha256 !== requirement.sha256 || bytes !== requirement.size
+    ) {
+      throw new Error(`protected Node lazy input ${id} differs from its resolved identity`);
+    }
+    if (bytes > 512 * 1024 * 1024) {
+      throw new Error(`protected Node lazy input ${id} exceeds its byte bound`);
+    }
+    aggregate += bytes;
+    if (aggregate > 1024 * 1024 * 1024) {
+      throw new Error("protected Node lazy inputs exceed their aggregate byte bound");
+    }
+    const metadata = lstatSync(path);
+    if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1) {
+      throw new Error(`protected Node lazy input ${id} must be a private regular file`);
+    }
+    const body = readRegular(path, `protected Node lazy input ${id}`, bytes, bytes);
+    if (sha256Hex(body) !== sha256) {
+      throw new Error(`protected Node lazy input ${id} differs from its digest`);
+    }
+    return { bytes: body, sha256, size: bytes, url: reference };
+  });
+  validateProtectedNodeLazyAssets(requirements, assets, expectedIds);
+  return assets;
 }
 
 async function prepareCliEvidence(
@@ -3912,6 +4048,15 @@ async function prepareCliEvidence(
       lazyRequirements,
       expectedLazyInputIds(context.definition),
     ),
+    ...(options.lazyInputs === undefined
+      ? {}
+      : {
+        lazyAssets: loadProtectedNodeLazyInputs(
+          options.lazyInputs,
+          lazyRequirements,
+          expectedLazyInputIds(context.definition),
+        ),
+      }),
     vfsBytes,
     kernelWasmBytes: readRegular(
       artifacts.kernelPath,
@@ -3934,6 +4079,9 @@ function inputCliArgs(options: CliInputOptions): string[] {
     "--resolved-inputs", options.resolvedInputs,
     "--runtime-bundle", options.runtimeBundle,
     "--runtime-root", options.runtimeRoot,
+    ...(options.lazyInputs === undefined
+      ? []
+      : ["--lazy-inputs", options.lazyInputs]),
     ...(options.sourceRoot === undefined
       ? []
       : ["--source-root", options.sourceRoot]),

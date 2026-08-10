@@ -22,6 +22,35 @@ type PagesLoadV1 = "eager" | "lazy";
 type EvidenceHostV1 = "node" | "browser";
 const CANONICAL_PAGES_ORIGIN = "https://automattic.github.io/kandelo/";
 
+export function canonicalPagesInputReference(
+  inputId: string,
+  sha256Value: string,
+  bytes: number,
+): string {
+  if (
+    !/^[a-z0-9][a-z0-9._-]{0,127}$/u.test(inputId) ||
+    !/^[0-9a-f]{64}$/u.test(sha256Value) ||
+    !Number.isSafeInteger(bytes) || bytes <= 0
+  ) {
+    throw new Error("canonical Pages input identity is invalid");
+  }
+  return `${CANONICAL_PAGES_ORIGIN}${canonicalPagesInputSitePath(inputId, sha256Value)}` +
+    `?sha256=${sha256Value}&bytes=${bytes}`;
+}
+
+export function canonicalPagesInputSitePath(
+  inputId: string,
+  sha256Value: string,
+): string {
+  if (
+    !/^[a-z0-9][a-z0-9._-]{0,127}$/u.test(inputId) ||
+    !/^[0-9a-f]{64}$/u.test(sha256Value)
+  ) {
+    throw new Error("canonical Pages input identity is invalid");
+  }
+  return `products/inputs/${inputId}/sha256-${sha256Value}/${inputId}`;
+}
+
 export interface PagesReadinessInputV1 {
   authority: {
     catalog_sha256: string;
@@ -92,27 +121,33 @@ export interface PagesReadinessInputV1 {
     candidate_resolved_inputs: ResolvedVfsProductInputsV1;
     candidate_builder_report: JsonObject;
     canonical_artifacts?: CanonicalInputArtifactV1[];
+    current_resolved_inputs?: ResolvedVfsProductInputsV1;
   }>;
 }
 
-interface ExactSourceV1 {
+export interface ExactSourceV1 {
   repository: string;
   commit: string;
   tree: string;
 }
 
-interface TargetAbiV1 {
+export interface TargetAbiV1 {
   version: number;
   snapshot_sha256: string;
 }
 
-interface AdmissionEnvelopeV1 {
+export interface AdmissionEnvelopeV1 {
   immutable_reference: string;
   record_sha256: string;
   record: JsonObject;
 }
 
 interface AuthenticatedAdmissionEnvelopeV1 extends AdmissionEnvelopeV1 {
+  canonical_bottle_layer: {
+    body: Uint8Array;
+    bytes: number;
+    sha256: string;
+  };
   canonical_vfs_composition_descriptor: {
     body: Uint8Array;
     bytes: number;
@@ -122,13 +157,14 @@ interface AuthenticatedAdmissionEnvelopeV1 extends AdmissionEnvelopeV1 {
 }
 
 export interface CanonicalOciReadbackV1 {
+  bottle_layer: Uint8Array;
   bottle_metadata: Uint8Array;
   config: Uint8Array;
   manifest: Uint8Array;
   vfs_composition_descriptor: Uint8Array;
 }
 
-interface CanonicalInputArtifactV1 {
+export interface CanonicalInputArtifactV1 {
   input_id: string;
   sha256: string;
   bytes: number;
@@ -136,7 +172,7 @@ interface CanonicalInputArtifactV1 {
   descriptor_reference?: string;
 }
 
-interface ResolvedVfsProductInputsV1 extends JsonObject {
+export interface ResolvedVfsProductInputsV1 extends JsonObject {
   schema: 1;
   kind: "kandelo-resolved-vfs-product-inputs";
   reference_class: "candidate" | "canonical";
@@ -175,6 +211,12 @@ export interface CanonicalProductIdentityV1 {
 }
 
 export interface CanonicalProductBuildRequestV1 {
+  canonical_homebrew_layers: Array<{
+    body: Uint8Array;
+    bytes: number;
+    input_id: string;
+    sha256: string;
+  }>;
   canonical_homebrew_descriptors: Array<{
     body: Uint8Array;
     bytes: number;
@@ -293,6 +335,8 @@ interface RecomposeOptionsV1 {
   admissions: AuthenticatedAdmissionEnvelopeV1[];
   candidateResolvedInputs: ResolvedVfsProductInputsV1;
   canonicalProducts: Map<string, CanonicalProductIdentityV1>;
+  currentResolvedInputs?: ResolvedVfsProductInputsV1;
+  currentSource?: ExactSourceV1;
   targetAbi: TargetAbiV1;
   canonicalArtifacts?: CanonicalInputArtifactV1[];
 }
@@ -345,10 +389,28 @@ export function recomposeCanonicalResolvedInputs(
   if (!jsonEqual(candidate.target_abi, options.targetAbi)) {
     throw new ReadinessError("abi-mismatch", "candidate resolved inputs name another target ABI");
   }
+  const recaptured = structuredClone(options.currentResolvedInputs ?? candidate);
+  if (
+    recaptured.schema !== 1 ||
+    recaptured.kind !== "kandelo-resolved-vfs-product-inputs" ||
+    recaptured.reference_class !== "candidate" ||
+    !jsonEqual(recaptured.target_abi, options.targetAbi)
+  ) {
+    throw new ReadinessError(
+      "current-input-invalid",
+      "current-main recaptured inputs have unsupported identity",
+    );
+  }
+  if (!jsonEqual(recapturedInputIdentity(candidate), recapturedInputIdentity(recaptured))) {
+    throw new ReadinessError(
+      "current-input-invalid",
+      "current-main recaptured inputs differ from the candidate-proven input identity",
+    );
+  }
   const canonicalArtifacts = new Map(
     (options.canonicalArtifacts ?? []).map((artifact) => [artifact.input_id, artifact]),
   );
-  const inputs = candidate.inputs.map((input) => {
+  const inputs = recaptured.inputs.map((input) => {
     const next = structuredClone(input);
     if (input.kind === "homebrew-bottle") {
       const formula = input.id.replace(/^homebrew-/u, "");
@@ -377,7 +439,9 @@ export function recomposeCanonicalResolvedInputs(
       next.sha256 = product.sha256;
       next.bytes = product.bytes;
       next.reference = product.reference;
-    } else if (containsCandidateNamespace(next)) {
+    } else if (
+      canonicalArtifacts.has(input.id) || containsCandidateNamespace(next)
+    ) {
       const artifact = canonicalArtifacts.get(input.id);
       if (
         artifact === undefined || artifact.sha256 !== input.sha256 ||
@@ -388,7 +452,13 @@ export function recomposeCanonicalResolvedInputs(
           `input ${input.id} lacks an exact canonical public layer`,
         );
       }
-      requireCanonicalReference(artifact.reference, input.sha256, `input ${input.id}`);
+      requireCanonicalInputReference(
+        artifact.reference,
+        input.id,
+        input.sha256,
+        input.bytes,
+        `input ${input.id}`,
+      );
       next.reference = artifact.reference;
       if (next.descriptor !== undefined) {
         if (artifact.descriptor_reference === undefined) {
@@ -397,9 +467,11 @@ export function recomposeCanonicalResolvedInputs(
             `input ${input.id} lacks a canonical descriptor reference`,
           );
         }
-        requireCanonicalReference(
+        requireCanonicalInputReference(
           artifact.descriptor_reference,
+          input.id,
           next.descriptor.sha256,
+          next.descriptor.bytes,
           `input ${input.id} descriptor`,
         );
         next.descriptor.reference = artifact.descriptor_reference;
@@ -414,14 +486,35 @@ export function recomposeCanonicalResolvedInputs(
     return next;
   });
   const result = {
-    ...candidate,
+    ...recaptured,
     inputs,
     reference_class: "canonical" as const,
+    ...(options.currentSource === undefined
+      ? {}
+      : { source: structuredClone(options.currentSource) }),
   };
   if (containsCandidateNamespace(result)) {
     throw new ReadinessError("candidate-reference", "canonical inputs retain the candidate namespace");
   }
   return result;
+}
+
+function recapturedInputIdentity(resolved: ResolvedVfsProductInputsV1): unknown {
+  return resolved.inputs.map((input) => {
+    const { path: _path, reference: _reference, descriptor, ...identity } = input;
+    const stableIdentity = input.kind === "repository-path"
+      ? Object.fromEntries(Object.entries(identity).filter(
+        ([key]) => key !== "bytes" && key !== "sha256",
+      ))
+      : identity;
+    if (descriptor === undefined) return stableIdentity;
+    const {
+      path: _descriptorPath,
+      reference: _descriptorReference,
+      ...descriptorIdentity
+    } = descriptor;
+    return { ...stableIdentity, descriptor: descriptorIdentity };
+  });
 }
 
 export async function computePagesReadiness(
@@ -528,10 +621,14 @@ export async function computePagesReadiness(
     let resolved: ResolvedVfsProductInputsV1;
     let authenticatedAdmissions: AuthenticatedAdmissionEnvelopeV1[];
     try {
-      if (!jsonEqual(candidate.candidate_resolved_inputs.source, input.source)) {
+      const candidateSource = candidate.candidate_resolved_inputs.source;
+      if (
+        candidateSource.repository !== input.source.repository ||
+        candidateSource.tree !== input.source.tree
+      ) {
         throw new ReadinessError(
           "candidate-input-invalid",
-          `${id} candidate inputs name another exact source`,
+          `${id} candidate inputs name another exact source tree`,
         );
       }
       const expectedCandidateProduct = {
@@ -559,6 +656,23 @@ export async function computePagesReadiness(
           `${id} candidate inputs use another build policy or dev-shell lock`,
         );
       }
+      const currentResolved = candidate.current_resolved_inputs;
+      if (
+        currentResolved !== undefined &&
+        (
+          !jsonEqual(currentResolved.source, input.source) ||
+          !jsonEqual(currentResolved.product, expectedCandidateProduct) ||
+          currentResolved.build_environment?.policy_sha256 !==
+            input.runtime_bundle.build_policy_sha256 ||
+          currentResolved.build_environment?.dev_shell_lock_sha256 !==
+            expectedDevShellLock
+        )
+      ) {
+        throw new ReadinessError(
+          "current-input-invalid",
+          `${id} current-main recapture differs from the exact source, product, or runtime`,
+        );
+      }
       validateCandidateBuilderReport(
         candidate.candidate_builder_report,
         candidate.candidate_resolved_inputs,
@@ -574,8 +688,15 @@ export async function computePagesReadiness(
         candidateResolvedInputs: candidate.candidate_resolved_inputs,
         canonicalArtifacts: candidate.canonical_artifacts,
         canonicalProducts: finalProducts,
+        currentResolvedInputs: candidate.current_resolved_inputs,
+        currentSource: input.source,
         targetAbi: input.target_abi,
       });
+      validatePagesInputSiteInventory(resolved.inputs, input.site_metadata.files ?? [
+        input.site_metadata.api,
+        input.site_metadata.browser,
+        input.site_metadata.documentation,
+      ]);
     } catch (error) {
       const failure = asReadinessError(error, "canonical-recomposition-failure");
       blockers.push(blocker(failure.kind, failure.message, id));
@@ -585,6 +706,18 @@ export async function computePagesReadiness(
     let built: { builder_report: JsonObject; vfs: Uint8Array };
     try {
       built = await dependencies.buildProduct({
+        canonical_homebrew_layers: authenticatedAdmissions.map((admission) => {
+          const formula = String(
+            admission.record.admission.formula_metadata_update.formula,
+          );
+          const layer = admission.canonical_bottle_layer;
+          return {
+            body: new Uint8Array(layer.body),
+            bytes: layer.bytes,
+            input_id: `homebrew-${formula}`,
+            sha256: layer.sha256,
+          };
+        }),
         canonical_homebrew_descriptors: authenticatedAdmissions.map((admission) => {
           const formula = String(
             admission.record.admission.formula_metadata_update.formula,
@@ -882,12 +1015,17 @@ function validateAdmission(
       `Formula ${formula} canonical VFS descriptor uses another repository`,
     );
   }
-  const expectedAdmissionReference =
-    `ghcr.io/kandelo-dev/homebrew-tap-core-abi-${targetAbi.version}/${formula}/admissions@sha256:${envelope.record_sha256}`;
-  if (envelope.immutable_reference !== expectedAdmissionReference) {
+  const expectedAdmissionPrefix =
+    `ghcr.io/kandelo-dev/homebrew-tap-core-abi-${targetAbi.version}/${formula}/admissions@sha256:`;
+  if (
+    !envelope.immutable_reference.startsWith(expectedAdmissionPrefix) ||
+    !/^[0-9a-f]{64}$/u.test(envelope.immutable_reference.slice(expectedAdmissionPrefix.length)) ||
+    envelope.immutable_reference !==
+      `${expectedAdmissionPrefix}${envelope.immutable_reference.slice(expectedAdmissionPrefix.length)}`
+  ) {
     throw new ReadinessError(
       "admission-invalid",
-      `Formula ${formula} admission envelope differs from its canonical record`,
+      `Formula ${formula} admission envelope is not one immutable manifest locator`,
     );
   }
 }
@@ -919,7 +1057,7 @@ async function authenticateAdmissions(
         throw new Error("admission lacks a canonical immutable reference");
       }
       const readback = await dependencies.fetchCanonicalOci(canonical.immutable_reference);
-      const descriptor = validateCanonicalBottleReadback(
+      const canonicalLayers = validateCanonicalBottleReadback(
         readback,
         envelope,
         input,
@@ -928,7 +1066,7 @@ async function authenticateAdmissions(
       );
       authenticated.push({
         ...structuredClone(envelope),
-        canonical_vfs_composition_descriptor: descriptor,
+        ...canonicalLayers,
       });
     } catch (error) {
       throw new ReadinessError(
@@ -952,7 +1090,10 @@ function validateCanonicalBottleReadback(
   input: ResolvedVfsInputV1,
   formula: string,
   targetAbi: TargetAbiV1,
-): AuthenticatedAdmissionEnvelopeV1["canonical_vfs_composition_descriptor"] {
+): Pick<
+  AuthenticatedAdmissionEnvelopeV1,
+  "canonical_bottle_layer" | "canonical_vfs_composition_descriptor"
+> {
   const record = envelope.record;
   const canonical = record.admission?.canonical;
   if (
@@ -1002,6 +1143,11 @@ function validateCanonicalBottleReadback(
     "vfs-composition-descriptor",
     "application/vnd.kandelo.homebrew.vfs-composition-descriptor.v1+json",
     "canonical VFS composition descriptor",
+  );
+  validateDescriptorBody(
+    bottleDescriptor,
+    readback.bottle_layer,
+    "canonical bottle layer",
   );
   validateDescriptorBody(
     metadataDescriptor,
@@ -1068,10 +1214,17 @@ function validateCanonicalBottleReadback(
   }
   const repository = canonicalRepository(canonical.immutable_reference);
   return {
-    body: new Uint8Array(readback.vfs_composition_descriptor),
-    bytes: compositionDescriptor.bytes,
-    immutable_reference: `${repository}@sha256:${compositionDescriptor.sha256}`,
-    sha256: compositionDescriptor.sha256,
+    canonical_bottle_layer: {
+      body: new Uint8Array(readback.bottle_layer),
+      bytes: bottleDescriptor.bytes,
+      sha256: bottleDescriptor.sha256,
+    },
+    canonical_vfs_composition_descriptor: {
+      body: new Uint8Array(readback.vfs_composition_descriptor),
+      bytes: compositionDescriptor.bytes,
+      immutable_reference: `${repository}@sha256:${compositionDescriptor.sha256}`,
+      sha256: compositionDescriptor.sha256,
+    },
   };
 }
 
@@ -1198,6 +1351,73 @@ function requireCanonicalReference(reference: string, digestValue: string, label
   requireCanonicalReferenceShape(reference);
   if (!reference.endsWith(`@sha256:${digestValue}`)) {
     throw new ReadinessError("layer-mismatch", `${label} reference differs from its digest`);
+  }
+}
+
+function requireCanonicalInputReference(
+  reference: string,
+  inputId: string,
+  digestValue: string,
+  bytes: number,
+  label: string,
+): void {
+  if (reference === canonicalPagesInputReference(inputId, digestValue, bytes)) return;
+  if (reference.startsWith(`${CANONICAL_PAGES_ORIGIN}products/inputs/`)) {
+    throw new ReadinessError(
+      "layer-mismatch",
+      `${label} lacks an exact canonical public layer`,
+    );
+  }
+  requireCanonicalReference(reference, digestValue, label);
+}
+
+function validatePagesInputSiteInventory(
+  inputs: ResolvedVfsInputV1[],
+  files: PagesFileIdentityV1[],
+): void {
+  const inventory = new Map(files.map((file) => [file.path, file]));
+  for (const input of inputs) {
+    requirePagesInputSiteFile(
+      input.reference,
+      input.id,
+      input.sha256,
+      input.bytes,
+      `input ${input.id}`,
+      inventory,
+    );
+    if (input.descriptor !== undefined) {
+      requirePagesInputSiteFile(
+        input.descriptor.reference,
+        input.id,
+        input.descriptor.sha256,
+        input.descriptor.bytes,
+        `input ${input.id} descriptor`,
+        inventory,
+      );
+    }
+  }
+}
+
+function requirePagesInputSiteFile(
+  reference: string | undefined,
+  inputId: string,
+  digestValue: string,
+  bytes: number,
+  label: string,
+  inventory: Map<string, PagesFileIdentityV1>,
+): void {
+  if (reference === undefined || !reference.startsWith(
+    `${CANONICAL_PAGES_ORIGIN}products/inputs/`,
+  )) return;
+  requireCanonicalInputReference(reference, inputId, digestValue, bytes, label);
+  const path = canonicalPagesInputSitePath(inputId, digestValue);
+  const expected = { bytes, path, sha256: digestValue };
+  const actual = inventory.get(path);
+  if (actual === undefined || !jsonEqual(actual, expected)) {
+    throw new ReadinessError(
+      "site-input-missing",
+      `${label} is absent from the exact Pages site inventory`,
+    );
   }
 }
 

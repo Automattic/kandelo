@@ -1087,6 +1087,63 @@ test("selects an exact canonical Pages product for final browser evidence", () =
   assert.equal(selected.candidateReference, canonical.candidateReference);
 });
 
+test("selects canonical Pages lazy inputs through the protected same-origin server", () => {
+  const canonical = selectionInput(
+    "browser-perl",
+    "perl-vfs-browser-smoke",
+  );
+  canonical.referenceClass = "canonical";
+  canonical.candidateReference =
+    `https://automattic.github.io/kandelo/products/browser-perl/` +
+    `sha256-${digest}/browser-perl-${targetAbi}.vfs.zst?` +
+    `sha256=${digest}&bytes=${canonical.servedVfs.bytes}`;
+  const input = canonical.servedLazyAssets[0]!;
+  input.reference =
+    `https://automattic.github.io/kandelo/products/inputs/${input.id}/` +
+    `sha256-${input.sha256}/${input.id}?sha256=${input.sha256}&bytes=${input.bytes}`;
+  const parsed = new URL(input.reference);
+  input.url = new URL(`${parsed.pathname}${parsed.search}`, canonical.servedVfs.url).href;
+
+  const selected = buildBrowserEvidenceSelection(canonical);
+  assert.deepEqual(selected.lazyAssets, canonical.servedLazyAssets);
+
+  const candidateNamespace = structuredClone(canonical);
+  candidateNamespace.servedLazyAssets[0]!.reference =
+    `ghcr.io/kandelo-dev/homebrew-tap-core-abi-${targetAbi}-candidates/` +
+    `packages/${input.id}@sha256:${input.sha256}`;
+  candidateNamespace.servedLazyAssets[0]!.url = new URL(
+    candidateNamespace.servedLazyAssets[0]!.reference,
+    candidateNamespace.servedVfs.url,
+  ).href;
+  assert.throws(
+    () => buildBrowserEvidenceSelection(candidateNamespace),
+    /exact ABI namespace/,
+  );
+
+  const mutations = [
+    input.reference.replace("automattic.github.io", "automattic.github.invalid"),
+    input.reference.replace(`/${input.id}/sha256-`, "/wrong-id/sha256-"),
+    input.reference.replace(`/${input.id}?`, "/%2e%2e?"),
+    input.reference.replace(`sha256-${input.sha256}`, `sha256-${"c".repeat(64)}`),
+    input.reference.replace(`sha256=${input.sha256}`, `sha256=${"b".repeat(64)}`),
+    input.reference.replace(`bytes=${input.bytes}`, `bytes=${input.bytes + 1}`),
+    `${input.reference}&duplicate=1`,
+  ];
+  for (const reference of mutations) {
+    const confused = structuredClone(canonical);
+    confused.servedLazyAssets[0]!.reference = reference;
+    const parsedReference = new URL(reference);
+    confused.servedLazyAssets[0]!.url = new URL(
+      `${parsedReference.pathname}${parsedReference.search}`,
+      confused.servedVfs.url,
+    ).href;
+    assert.throws(
+      () => buildBrowserEvidenceSelection(confused),
+      /exact ABI namespace|supported immutable source/,
+    );
+  }
+});
+
 test("accepts candidate boot only through the closed injected object", () => {
   const selected = buildBrowserEvidenceSelection(
     selectionInput("browser-node", "node-vfs-browser-startup"),
@@ -1933,6 +1990,95 @@ test("serves exact runtime, VFS, and lazy bytes from a closed on-demand local se
     await server.close();
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("serves a canonical Pages lazy input only through its same-origin protected URL", async () => {
+  const root = mkdtempSync(join(tmpdir(), "kandelo-browser-pages-input-server-"));
+  const distRoot = join(root, "dist");
+  const lazyPath = join(root, "lazy.blob");
+  const vfsPath = join(root, "product.vfs.zst");
+  mkdirSync(distRoot);
+  writeFileSync(join(distRoot, "index.html"), "<h1>runtime</h1>\n");
+  writeFileSync(vfsPath, "canonical-vfs\n");
+  const lazy = new TextEncoder().encode("canonical Pages lazy input\n");
+  writeFileSync(lazyPath, lazy);
+  const sha256 = createHash("sha256").update(lazy).digest("hex");
+  const id = "package-perl-output-perl";
+  const reference =
+    `https://automattic.github.io/kandelo/products/inputs/${id}/` +
+    `sha256-${sha256}/${id}?sha256=${sha256}&bytes=${lazy.byteLength}`;
+  const server = await startProtectedBrowserEvidenceServer({
+    distRoot,
+    runtimeBytes: Buffer.byteLength("<h1>runtime</h1>\n"),
+    productId: "browser-perl",
+    vfs: {
+      path: vfsPath,
+      bytes: 14,
+      sha256: createHash("sha256").update("canonical-vfs\n").digest("hex"),
+    },
+    lazyAssets: [{
+      reference,
+      path: lazyPath,
+      bytes: lazy.byteLength,
+      sha256,
+    }],
+  });
+  try {
+    const parsed = new URL(reference);
+    const localUrl = new URL(`${parsed.pathname}${parsed.search}`, server.baseUrl);
+    assert.equal(localUrl.origin, new URL(server.baseUrl).origin);
+    const response = await fetch(localUrl);
+    assert.equal(response.status, 200);
+    assert.deepEqual(new Uint8Array(await response.arrayBuffer()), lazy);
+  } finally {
+    await server.close();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("serves canonical descriptor-shaped Pages paths once and rejects duplicate routes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "kandelo-browser-pages-descriptor-server-"));
+  const distRoot = join(root, "dist");
+  const descriptorPath = join(root, "descriptor.json");
+  const vfsPath = join(root, "product.vfs.zst");
+  mkdirSync(distRoot);
+  writeFileSync(join(distRoot, "index.html"), "<h1>runtime</h1>\n");
+  writeFileSync(vfsPath, "canonical-vfs\n");
+  const body = new TextEncoder().encode('{"kind":"descriptor"}\n');
+  writeFileSync(descriptorPath, body);
+  const sha256 = createHash("sha256").update(body).digest("hex");
+  const id = "homebrew-dash";
+  const reference =
+    `https://automattic.github.io/kandelo/products/inputs/${id}/` +
+    `sha256-${sha256}/${id}?sha256=${sha256}&bytes=${body.byteLength}`;
+  const options = {
+    distRoot,
+    runtimeBytes: Buffer.byteLength("<h1>runtime</h1>\n"),
+    productId: "platform-rootfs",
+    vfs: {
+      path: vfsPath,
+      bytes: 14,
+      sha256: createHash("sha256").update("canonical-vfs\n").digest("hex"),
+    },
+    lazyAssets: [{ reference, path: descriptorPath, bytes: body.byteLength, sha256 }],
+  };
+  const server = await startProtectedBrowserEvidenceServer(options);
+  try {
+    const parsed = new URL(reference);
+    const response = await fetch(new URL(`${parsed.pathname}${parsed.search}`, server.baseUrl));
+    assert.equal(response.status, 200);
+    assert.deepEqual(new Uint8Array(await response.arrayBuffer()), body);
+  } finally {
+    await server.close();
+  }
+  await assert.rejects(
+    () => startProtectedBrowserEvidenceServer({
+      ...options,
+      lazyAssets: [options.lazyAssets[0]!, { ...options.lazyAssets[0]! }],
+    }),
+    /routes are duplicated/,
+  );
+  rmSync(root, { recursive: true, force: true });
 });
 
 async function requestStatusWithHost(url: string, host: string): Promise<number> {

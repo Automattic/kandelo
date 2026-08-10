@@ -331,6 +331,26 @@ The Pages registry is
 selection is independently owned by `tests/vfs-products.toml`. Their generated
 JSON files are canonical checked projections.
 
+Pages presentation membership is a separate reviewed authority at
+`apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-gallery.json`.
+It maps every selected Pages product to the preset IDs that present that image.
+The Pages registry check requires exact product-ID parity, requires every
+declared preset to exist in `presets.ts`, and verifies the preset's VFS-image
+mapping in `live-setup.ts`. The production Pages composer derives site metadata
+from this checked-in authority and the built site tree; workflows do not supply
+self-authorizing gallery or file inventories.
+
+Protected main workflows invoke `scripts/abi-staging-pages-producer.ts produce`
+with a bounded handoff naming the exact clean checkout, runtime bundle/root,
+built site root, run identity, and current package/archive/program-index roots.
+The producer discovers immutable candidate and admission records anonymously,
+recaptures non-Homebrew inputs, and executes the normal VFS builders plus both
+host evidence supervisors. During pre-deployment evidence, canonical Pages,
+Homebrew, and prior-product lazy URLs remain the image authority while their
+authenticated current bytes are supplied through a closed local transport.
+An incomplete product set emits only `readiness.json`; a complete set emits the
+canonical artifacts, site manifest, and inert source tree for the Pages job.
+
 Selection preserves both lazy boundaries. A consumer may lazily compose a
 whole VFS product, and a selected product may in turn retain lazy bottle or
 package layers. Product-derived Formula roots are not copied into either

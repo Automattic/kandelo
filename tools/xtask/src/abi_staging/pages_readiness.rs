@@ -434,18 +434,25 @@ fn validate_relative_path(value: &str, label: &str) -> Result<(), String> {
 
 fn validate_admission_reference(
     reference: &str,
-    record_sha256: &str,
+    _record_sha256: &str,
     target_abi: u64,
 ) -> Result<(), String> {
     let prefix = format!("ghcr.io/kandelo-dev/homebrew-tap-core-abi-{target_abi}/");
-    let suffix = format!("/admissions@sha256:{record_sha256}");
-    if reference.len() > 4_096 || !reference.starts_with(&prefix) || !reference.ends_with(&suffix) {
+    if reference.len() > 4_096 || !reference.starts_with(&prefix) {
         return Err(
-            "Pages admission reference must match its canonical ABI record digest".to_string(),
+            "Pages admission reference must name one canonical ABI manifest".to_string(),
         );
     }
-    let formula = &reference[prefix.len()..reference.len() - suffix.len()];
-    validate_stable_id(formula, "Pages admission reference Formula")
+    let rest = &reference[prefix.len()..];
+    let marker = "/admissions@sha256:";
+    let Some((formula, manifest_sha256)) = rest.split_once(marker) else {
+        return Err("Pages admission reference must name one canonical ABI manifest".to_string());
+    };
+    if rest.matches(marker).count() != 1 {
+        return Err("Pages admission reference must name one canonical ABI manifest".to_string());
+    }
+    validate_stable_id(formula, "Pages admission reference Formula")?;
+    validate_sha256(manifest_sha256)
 }
 
 fn reject_candidate_namespace<T: Serialize>(value: &T, label: &str) -> Result<(), String> {
@@ -553,18 +560,20 @@ mod tests {
     }
 
     #[test]
-    fn rejects_an_admission_locator_detached_from_its_record_digest() {
+    fn accepts_distinct_admission_manifest_and_record_digests() {
         let mut record = ready_record();
         record["products"][0]["admissions"][0]["immutable_reference"] = json!(format!(
             "ghcr.io/kandelo-dev/homebrew-tap-core-abi-{ABI}/base/admissions@sha256:{}",
             digest('f')
         ));
+        validate_pages_readiness_bytes(&canonical_json_bytes(&record).unwrap()).unwrap();
 
-        assert!(
-            validate_pages_readiness_bytes(&canonical_json_bytes(&record).unwrap())
-                .unwrap_err()
-                .contains("admission reference")
-        );
+        record["products"][0]["admissions"][0]["immutable_reference"] = json!(format!(
+            "ghcr.io/kandelo-dev/homebrew-tap-core-abi-{ABI}/base/admissions@sha256:{}?query=1",
+            digest('f')
+        ));
+        assert!(validate_pages_readiness_bytes(&canonical_json_bytes(&record).unwrap())
+            .unwrap_err().contains("SHA-256"));
     }
 
     #[test]

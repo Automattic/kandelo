@@ -499,6 +499,7 @@ entries nonremovable and performs no broad deletion.
 
 - Modify: `tools/xtask/src/abi_staging/mod.rs`
 - Modify: `tools/xtask/src/abi_staging/records.rs`
+- Modify: `tools/xtask/src/abi_staging/builder_contract.rs`
 - Create: `tools/xtask/src/abi_staging/pages_readiness.rs`
 - Create: `tools/xtask/src/abi_staging/retirement.rs`
 - Create: `abi/staging/pages-activation.toml`
@@ -507,6 +508,21 @@ entries nonremovable and performs no broad deletion.
 - Create: `scripts/abi-staging-pages-readiness.ts`
 - Create: `scripts/abi-staging-pages-readiness.test.ts`
 - Create: `scripts/test-abi-staging-pages-atomic.sh`
+- Create: `scripts/abi-staging-pages-producer.ts`
+- Create: `scripts/abi-staging-pages-producer.test.ts`
+- Create: `apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-gallery.json`
+- Modify: `scripts/abi-staging-product-node-evidence.ts`
+- Modify: `scripts/abi-staging-product-node-evidence.test.ts`
+- Modify: `scripts/abi-staging-product-browser-evidence.ts`
+- Modify: `scripts/abi-staging-product-browser-evidence.test.ts`
+- Modify: `scripts/abi-staging-product-input-sources.ts`
+- Modify: `scripts/check-pages-vfs-product-registry.mjs`
+- Modify: `scripts/check-pages-vfs-product-registry.test.mjs`
+- Modify: `abi/staging/evidence-definitions.generated.json`
+- Modify: `abi/staging/request-policy.generated.json`
+- Modify: `.github/actions/detect-change-scope/ci-scope-paths.sh`
+- Modify: `.github/actions/detect-change-scope/test-ci-scope-paths.sh`
+- Modify: `docs/browser-support.md`
 - Create: `scripts/abi-staging-hosted-acceptance.py`
 - Create: `scripts/test-abi-staging-hosted-acceptance.py`
 - Create: `.github/workflows/abi-staging-pages-canary.yml`
@@ -1286,11 +1302,27 @@ entries nonremovable and performs no broad deletion.
 
 - Modify: `tools/xtask/src/abi_staging/mod.rs`
 - Modify: `tools/xtask/src/abi_staging/records.rs`
+- Modify: `tools/xtask/src/abi_staging/builder_contract.rs`
 - Create: `tools/xtask/src/abi_staging/pages_readiness.rs`
 - Create: `abi/staging/pages-activation.toml`
 - Create: `scripts/abi-staging-pages-readiness.ts`
 - Create: `scripts/abi-staging-pages-readiness.test.ts`
 - Create: `scripts/test-abi-staging-pages-atomic.sh`
+- Create: `scripts/abi-staging-pages-producer.ts`
+- Create: `scripts/abi-staging-pages-producer.test.ts`
+- Create: `apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-gallery.json`
+- Modify: `scripts/abi-staging-product-node-evidence.ts`
+- Modify: `scripts/abi-staging-product-node-evidence.test.ts`
+- Modify: `scripts/abi-staging-product-browser-evidence.ts`
+- Modify: `scripts/abi-staging-product-browser-evidence.test.ts`
+- Modify: `scripts/abi-staging-product-input-sources.ts`
+- Modify: `scripts/check-pages-vfs-product-registry.mjs`
+- Modify: `scripts/check-pages-vfs-product-registry.test.mjs`
+- Modify: `abi/staging/evidence-definitions.generated.json`
+- Modify: `abi/staging/request-policy.generated.json`
+- Modify: `.github/actions/detect-change-scope/ci-scope-paths.sh`
+- Modify: `.github/actions/detect-change-scope/test-ci-scope-paths.sh`
+- Modify: `docs/browser-support.md`
 
 **Interfaces:**
 
@@ -1299,6 +1331,25 @@ entries nonremovable and performs no broad deletion.
   metadata.
 - Produces: canonical `ResolvedVfsProductInputsV1`, final VFS/report/host
   receipts, `PagesReadinessRecordV1`, and `PagesSiteManifestV1`.
+- A bounded production command discovers and anonymously authenticates
+  immutable candidate/admission OCI records, recaptures non-Homebrew inputs
+  from a clean current-main checkout, invokes the protected builders and
+  Node/browser supervisors, and emits an inert complete source tree. Candidate
+  VFS and lazy bytes are never fetched or relabeled.
+- Final lazy evidence retains canonical public URLs as VFS authority while a
+  closed local transport supplies only exact current recaptures, authenticated
+  bottle layers, and previously rebuilt product VFS bytes. It never depends on
+  a prior Pages deployment or ambient network fallback.
+- Expected product incompleteness produces an atomic hold-only directory
+  containing exactly `readiness.json`. Malformed authority, schema, source,
+  or identity input remains a hard failure; the clean current-main HEAD, tree,
+  lock, and status are re-observed after builders/evidence and before rename.
+- Multiple immutable historical records converge only when their
+  product-relevant identities agree; selection is deterministic and conflicting
+  history fails closed.
+- Gallery metadata is derived from a checked-in Pages presentation registry
+  validated against both the exact Pages product registry and the reviewed
+  browser preset/VFS-image mapping; it is not caller-authored input.
 - Pages activation begins `mode = "legacy"`; other modes are `observe` and
   `active`.
 
@@ -1378,11 +1429,27 @@ entries nonremovable and performs no broad deletion.
   ```bash
   git add tools/xtask/src/abi_staging/mod.rs \
     tools/xtask/src/abi_staging/records.rs \
+    tools/xtask/src/abi_staging/builder_contract.rs \
     tools/xtask/src/abi_staging/pages_readiness.rs \
     abi/staging/pages-activation.toml \
+    abi/staging/evidence-definitions.generated.json \
+    abi/staging/request-policy.generated.json \
     scripts/abi-staging-pages-readiness.ts \
     scripts/abi-staging-pages-readiness.test.ts \
-    scripts/test-abi-staging-pages-atomic.sh
+    scripts/test-abi-staging-pages-atomic.sh \
+    scripts/abi-staging-pages-producer.ts \
+    scripts/abi-staging-pages-producer.test.ts \
+    scripts/abi-staging-product-node-evidence.ts \
+    scripts/abi-staging-product-node-evidence.test.ts \
+    scripts/abi-staging-product-browser-evidence.ts \
+    scripts/abi-staging-product-browser-evidence.test.ts \
+    scripts/abi-staging-product-input-sources.ts \
+    apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-gallery.json \
+    scripts/check-pages-vfs-product-registry.mjs \
+    scripts/check-pages-vfs-product-registry.test.mjs \
+    .github/actions/detect-change-scope/ci-scope-paths.sh \
+    .github/actions/detect-change-scope/test-ci-scope-paths.sh \
+    docs/browser-support.md
   git commit -m "[Pages] Require complete admitted VFS products"
   ```
 

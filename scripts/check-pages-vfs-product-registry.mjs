@@ -12,6 +12,12 @@ const rootfsAlias = "@rootfs-vfs";
 export function checkPagesVfsProductRegistry(options) {
   const catalog = loadVfsProductCatalog(options.catalogPath);
   const registry = readPagesRegistry(options.registryPath);
+  checkPagesGallery({
+    galleryPath: options.galleryPath,
+    pagesProducts: registry.products,
+    presentationPath: options.presentationPath,
+    liveSetupPath: options.browserSources.find((path) => basename(path) === "live-setup.ts"),
+  });
   const adapters = readAdapterRegistry(options.adapterPath);
   const adapterByProduct = new Map(adapters.map((adapter) => [adapter.product, adapter]));
   const selected = new Map();
@@ -261,6 +267,88 @@ function readPagesRegistry(path) {
   return { products };
 }
 
+function checkPagesGallery({ galleryPath, pagesProducts, presentationPath, liveSetupPath }) {
+  if (typeof galleryPath !== "string" || typeof presentationPath !== "string" ||
+      typeof liveSetupPath !== "string") {
+    throw new Error("Pages gallery check lacks its reviewed presentation authorities");
+  }
+  const bytes = readFileSync(galleryPath, "utf8");
+  const value = JSON.parse(bytes);
+  if (bytes !== canonicalJson(value)) throw new Error("Pages gallery registry is not canonical JSON");
+  exactObjectKeys(value, ["kind", "products", "schema"], "Pages gallery registry");
+  if (value.schema !== 1 || value.kind !== "kandelo-pages-vfs-product-gallery" ||
+      !Array.isArray(value.products)) {
+    throw new Error("Pages gallery registry has unsupported identity");
+  }
+  const products = value.products.map((entry, index) => {
+    exactObjectKeys(entry, ["gallery_entries", "id", "vfs_image"], `Pages gallery product ${index}`);
+    requireTomlString(entry.id, `Pages gallery product ${index}.id`);
+    requireTomlString(entry.vfs_image, `Pages gallery product ${index}.vfs_image`);
+    if (!Array.isArray(entry.gallery_entries) ||
+        entry.gallery_entries.some((id) => typeof id !== "string" || id.length === 0)) {
+      throw new Error(`Pages gallery product ${entry.id} has invalid gallery entries`);
+    }
+    requireUnique(entry.gallery_entries, `Pages gallery product ${entry.id}`);
+    if (JSON.stringify(entry.gallery_entries) !== JSON.stringify([...entry.gallery_entries].sort())) {
+      throw new Error(`Pages gallery product ${entry.id} entries are not sorted`);
+    }
+    return entry;
+  });
+  const pagesIds = pagesProducts.map(({ id }) => id).sort();
+  const galleryIds = products.map(({ id }) => id).sort();
+  if (JSON.stringify(galleryIds) !== JSON.stringify(pagesIds)) {
+    throw new Error("Pages gallery registry differs from the exact Pages product set");
+  }
+  requireUnique(galleryIds, "Pages gallery product IDs");
+
+  const presetSource = readFileSync(presentationPath, "utf8");
+  const presetStart = presetSource.indexOf("export const PRESET_LIBRARY");
+  const presetEnd = presetSource.indexOf("\n];", presetStart);
+  if (presetStart < 0 || presetEnd < 0) throw new Error("reviewed preset authority is not static");
+  const presetIds = [...presetSource.slice(presetStart, presetEnd).matchAll(/^\s{4}id: "([a-z0-9-]+)",$/gmu)]
+    .map((match) => match[1]);
+  requireUnique(presetIds, "reviewed preset IDs");
+
+  const liveSource = readFileSync(liveSetupPath, "utf8");
+  const specStart = liveSource.indexOf("const LIVE_DEMO_SPECS");
+  const specEnd = liveSource.indexOf("\n};", specStart);
+  if (specStart < 0 || specEnd < 0) throw new Error("reviewed live-demo authority is not static");
+  const imageByEntry = new Map(
+    [...liveSource.slice(specStart, specEnd).matchAll(
+      /^\s{2}(?:"([a-z0-9-]+)"|([a-z0-9-]+)): \{\n\s{4}image: "([a-z0-9-]+)",$/gmu,
+    )].map((match) => [match[1] ?? match[2], match[3]]),
+  );
+  const declaredEntries = products.flatMap(({ gallery_entries }) => gallery_entries).sort();
+  if (JSON.stringify(declaredEntries) !== JSON.stringify([...presetIds].sort())) {
+    throw new Error("Pages gallery entries differ from the reviewed preset authority");
+  }
+  for (const product of products) {
+    for (const entry of product.gallery_entries) {
+      if (!presetIds.includes(entry)) {
+        throw new Error(`Pages gallery entry ${entry} is absent from the reviewed preset authority`);
+      }
+      const image = imageByEntry.get(entry);
+      if (image !== product.vfs_image) {
+        throw new Error(
+          `Pages gallery entry ${entry} uses reviewed VFS image ${String(image)}, not ${product.vfs_image}`,
+        );
+      }
+    }
+  }
+}
+
+function canonicalJson(value) {
+  const normalize = (candidate) => {
+    if (Array.isArray(candidate)) return candidate.map(normalize);
+    if (candidate !== null && typeof candidate === "object") {
+      return Object.fromEntries(Object.entries(candidate).sort(([left], [right]) =>
+        left < right ? -1 : left > right ? 1 : 0).map(([key, child]) => [key, normalize(child)]));
+    }
+    return candidate;
+  };
+  return `${JSON.stringify(normalize(value))}\n`;
+}
+
 function readAdapterRegistry(path) {
   const parsed = parseArrayTableToml(path, "adapters");
   exactObjectKeys(parsed.root, ["kind", "schema"], "legacy adapter registry");
@@ -383,6 +471,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       repoRoot,
       "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.toml",
     ),
+    galleryPath: resolve(
+      repoRoot,
+      "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-gallery.json",
+    ),
+    presentationPath: resolve(repoRoot, "apps/browser-demos/pages/kandelo/presets.ts"),
     adapterPath: resolve(repoRoot, "abi/staging/legacy-vfs-adapters.toml"),
     browserDepsPath: resolve(repoRoot, "run.sh"),
     browserSources: [

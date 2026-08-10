@@ -539,6 +539,21 @@ for abi_staging_foundation_path in "${abi_staging_foundation_paths[@]}"; do
     "$abi_staging_foundation_path" \
     "$abi_staging_foundation_path"
 done
+pages_production_paths=(
+  apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-gallery.json
+  scripts/abi-staging-pages-producer.ts
+  scripts/abi-staging-product-browser-evidence.ts
+  scripts/abi-staging-product-node-evidence.ts
+  scripts/abi-staging-product-input-sources.ts
+)
+for pages_production_path in "${pages_production_paths[@]}"; do
+  assert_matches kernel_runtime_changed_files \
+    "$pages_production_path" \
+    "$pages_production_path"
+  assert_not_matches homebrew_product_owned_package_input_changed_files \
+    "$pages_production_path" \
+    "$pages_production_path"
+done
 assert_matches package_archive_changed_files \
   "images/vfs/products/browser-main-shell.toml" \
   "images/vfs/products/browser-main-shell.toml"

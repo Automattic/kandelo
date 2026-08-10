@@ -657,7 +657,7 @@ fn validate_reference_class_fields(
     byte_count: u64,
     reference: &str,
 ) -> Result<(), String> {
-    let exact_pages_product = validate_pages_product_reference(
+    let exact_pages_reference = validate_pages_product_reference(
         class,
         target_abi,
         input_id,
@@ -746,7 +746,7 @@ fn validate_reference_class_fields(
             ))
         }
         VfsReferenceClassV1::Canonical
-            if managed && !exact_canonical && !exact_pages_product => Err(format!(
+            if managed && !exact_canonical && !exact_pages_reference => Err(format!(
             "managed input {:?} does not use its target ABI canonical namespace",
             input_id
         )),
@@ -768,6 +768,34 @@ fn validate_pages_product_reference(
     let Some(suffix) = reference.strip_prefix(prefix) else {
         return Ok(false);
     };
+    if let Some(input_suffix) = suffix.strip_prefix("inputs/") {
+        let Some((reference_input_id, remainder)) = input_suffix.split_once('/') else {
+            return Err(format!(
+                "input {:?} Pages input reference does not bind exact identity",
+                input_id
+            ));
+        };
+        validate_stable_id(reference_input_id, "Pages input reference ID")?;
+        let expected = format!(
+            "sha256-{sha256}/{input_id}?sha256={sha256}&bytes={byte_count}"
+        );
+        if class != VfsReferenceClassV1::Canonical
+            || reference_input_id != input_id
+            || matches!(
+                kind,
+                ResolvedVfsInputKindV1::HomebrewBottle
+                    | ResolvedVfsInputKindV1::ProductImage
+            )
+            || placement != ConsumedInputPlacementV1::LazyReference
+            || remainder != expected
+        {
+            return Err(format!(
+                "input {:?} Pages input reference does not bind exact identity",
+                input_id
+            ));
+        }
+        return Ok(true);
+    }
     let Some((product_id, remainder)) = suffix.split_once('/') else {
         return Err(format!(
             "input {:?} Pages product reference does not bind exact identity",
@@ -1180,6 +1208,38 @@ mod tests {
         )
         .unwrap_err()
         .contains("canonical namespace"));
+    }
+
+    #[test]
+    fn accepts_exact_pages_identity_for_canonical_lazy_package_input() {
+        let root = tempfile::tempdir().unwrap();
+        let mut inputs = fixture_inputs(root.path());
+        inputs.reference_class = VfsReferenceClassV1::Canonical;
+        let package = &mut inputs.inputs[1];
+        package.declared_materialization = DeclaredInputMaterializationV1::Lazy;
+        package.effective_materialization = ConsumedInputPlacementV1::LazyReference;
+        package.path = None;
+        package.reference = Some(format!(
+            "https://automattic.github.io/kandelo/products/inputs/{}/sha256-{}/{0}?sha256={1}&bytes={}",
+            package.id,
+            package.sha256,
+            package.bytes,
+        ));
+        inputs.inputs.truncate(2);
+
+        validate_resolved_inputs(&canonical_json_bytes(&inputs).unwrap(), root.path()).unwrap();
+
+        let mut wrong_bytes = inputs;
+        wrong_bytes.inputs[1].reference = wrong_bytes.inputs[1]
+            .reference
+            .as_ref()
+            .map(|reference| reference.replace("&bytes=16", "&bytes=17"));
+        assert!(validate_resolved_inputs(
+            &canonical_json_bytes(&wrong_bytes).unwrap(),
+            root.path(),
+        )
+        .unwrap_err()
+        .contains("Pages input reference does not bind exact identity"));
     }
 
     #[test]

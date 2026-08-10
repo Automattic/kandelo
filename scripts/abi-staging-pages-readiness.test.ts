@@ -5,6 +5,7 @@ import { test } from "node:test";
 import { MemoryFileSystem } from "../host/src/vfs/memory-fs.ts";
 import {
   canonicalJsonBytes,
+  canonicalPagesInputReference,
   computePagesReadiness,
   recomposeCanonicalResolvedInputs,
   type CanonicalProductBuildRequestV1,
@@ -103,6 +104,136 @@ test("derives canonical bottle metadata from the admitted public manifest", asyn
   );
 });
 
+test("keeps the authenticated admission manifest locator distinct from record bytes", async () => {
+  const input = fixture();
+  const envelope = input.products[0]!.admissions[0]!;
+  const manifestSha256 = envelope.immutable_reference.split("@sha256:")[1];
+  assert.notEqual(manifestSha256, envelope.record_sha256);
+  const result = await computePagesReadiness(input, successfulDependencies());
+  assert.equal(result.readiness.ready, true);
+  assert.ok(result.readiness.products[0]!.admissions.some(
+    ({ immutable_reference }) => immutable_reference === envelope.immutable_reference,
+  ));
+});
+
+test("hands authenticated canonical bottle bytes to every final builder", async () => {
+  const input = fixture();
+  const inner = successfulDependencies();
+  let observed = 0;
+  const result = await computePagesReadiness(input, {
+    ...inner,
+    async buildProduct(request) {
+      for (const layer of request.canonical_homebrew_layers) {
+        const resolved = request.resolved_inputs.inputs.find(
+          (candidate) => candidate.id === layer.input_id,
+        )!;
+        assert.equal(layer.bytes, resolved.bytes);
+        assert.equal(layer.sha256, resolved.sha256);
+        assert.equal(sha256(layer.body), resolved.sha256);
+        observed += 1;
+      }
+      return inner.buildProduct(request);
+    },
+  });
+
+  assert.equal(result.readiness.ready, true);
+  assert.equal(observed, 2);
+  await assertBlocked(
+    fixture(),
+    "admission-invalid",
+    "mini-base",
+    successfulDependencies({ canonicalOciMutation: "layer" }),
+  );
+});
+
+test("builds from current-main recaptured material instead of candidate paths", async () => {
+  const input = fixture();
+  const base = input.products.find((product) => product.id === "mini-base")!;
+  base.current_resolved_inputs = structuredClone(base.candidate_resolved_inputs);
+  base.current_resolved_inputs.source = structuredClone(input.source);
+  base.current_resolved_inputs.inputs[0]!.path = "current/objects/homebrew-base";
+  base.current_resolved_inputs.inputs[0]!.descriptor!.path =
+    "current/descriptors/homebrew-base.json";
+  const inner = successfulDependencies();
+  const result = await computePagesReadiness(input, {
+    ...inner,
+    async buildProduct(request) {
+      if (request.product.id === "mini-base") {
+        assert.equal(
+          request.resolved_inputs.inputs[0]!.path,
+          "current/objects/homebrew-base",
+        );
+        assert.equal(
+          request.resolved_inputs.inputs[0]!.descriptor!.path,
+          "current/descriptors/homebrew-base.json",
+        );
+      }
+      return inner.buildProduct(request);
+    },
+  });
+
+  assert.equal(result.readiness.ready, true);
+
+  const changed = fixture();
+  const changedBase = changed.products.find((product) => product.id === "mini-base")!;
+  changedBase.current_resolved_inputs = structuredClone(
+    changedBase.candidate_resolved_inputs,
+  );
+  changedBase.current_resolved_inputs.inputs[0]!.sha256 = "f".repeat(64);
+  await assertBlocked(changed, "current-input-invalid", "mini-base");
+});
+
+test("recomposes same-tree repository paths from their current commit bytes", () => {
+  const input = fixture();
+  const base = input.products.find((product) => product.id === "mini-base")!;
+  const candidate = structuredClone(base.candidate_resolved_inputs);
+  candidate.inputs = [{
+    architecture: "wasm32",
+    bytes: 101,
+    declared_materialization: "embedded",
+    effective_materialization: "embedded",
+    id: "repository-rootfs-source",
+    kind: "repository-path",
+    path: "candidate/repository-rootfs-source",
+    paths: ["MANIFEST", "images/rootfs"],
+    reference:
+      `ghcr.io/kandelo-dev/homebrew-tap-core-abi-${TARGET_ABI}-candidates/` +
+      `products/mini-base@sha256:${"a".repeat(64)}`,
+    repository_id: "rootfs-source",
+    role: "runtime",
+    sha256: "a".repeat(64),
+  }];
+  const current = structuredClone(candidate);
+  current.source = { ...candidate.source, commit: "9".repeat(40) };
+  current.inputs[0]!.bytes = 102;
+  current.inputs[0]!.sha256 = "b".repeat(64);
+  current.inputs[0]!.path = "current/repository-rootfs-source";
+  delete current.inputs[0]!.reference;
+  const reference = canonicalPagesInputReference(
+    current.inputs[0]!.id,
+    current.inputs[0]!.sha256,
+    current.inputs[0]!.bytes,
+  );
+  const recomposed = recomposeCanonicalResolvedInputs({
+    admissions: [],
+    candidateResolvedInputs: candidate,
+    canonicalArtifacts: [{
+      bytes: current.inputs[0]!.bytes,
+      input_id: current.inputs[0]!.id,
+      reference,
+      sha256: current.inputs[0]!.sha256,
+    }],
+    canonicalProducts: new Map(),
+    currentResolvedInputs: current,
+    currentSource: current.source,
+    targetAbi: input.target_abi,
+  });
+  assert.equal(recomposed.inputs[0]!.sha256, "b".repeat(64));
+  assert.equal(recomposed.inputs[0]!.bytes, 102);
+  assert.equal(recomposed.inputs[0]!.reference, reference);
+  assert.equal(recomposed.inputs[0]!.path, "current/repository-rootfs-source");
+});
+
 test("requires an exact canonical public layer for non-Formula lazy inputs", () => {
   const input = fixture();
   const base = input.products.find((product) => product.id === "mini-base")!;
@@ -110,8 +241,16 @@ test("requires an exact canonical public layer for non-Formula lazy inputs", () 
   const packageInput = base.candidate_resolved_inputs.inputs[1]!;
   packageInput.id = "package-tool-output-tool";
   packageInput.kind = "package-output";
-  delete packageInput.descriptor;
-  const reference = canonicalReference("packages/tool", packageInput.sha256);
+  const reference = canonicalPagesInputReference(
+    packageInput.id,
+    packageInput.sha256,
+    packageInput.bytes,
+  );
+  const descriptorReference = canonicalPagesInputReference(
+    packageInput.id,
+    packageInput.descriptor!.sha256,
+    packageInput.descriptor!.bytes,
+  );
 
   assert.throws(
     () => recomposeCanonicalResolvedInputs({
@@ -123,20 +262,114 @@ test("requires an exact canonical public layer for non-Formula lazy inputs", () 
     /exact canonical public layer/u,
   );
 
+  const canonicalArtifacts = [{
+    bytes: packageInput.bytes,
+    input_id: packageInput.id,
+    reference,
+    sha256: packageInput.sha256,
+    descriptor_reference: descriptorReference,
+  }];
   const canonical = recomposeCanonicalResolvedInputs({
     admissions,
     candidateResolvedInputs: base.candidate_resolved_inputs,
-    canonicalArtifacts: [{
-      bytes: packageInput.bytes,
-      input_id: packageInput.id,
-      reference,
-      sha256: packageInput.sha256,
-    }],
+    canonicalArtifacts,
     canonicalProducts: new Map(),
     targetAbi: input.target_abi,
   });
   assert.deepEqual(inputIdentity(canonical.inputs[1]!), inputIdentity(packageInput));
   assert.equal(canonical.inputs[1]!.reference, reference);
+  assert.equal(canonical.inputs[1]!.descriptor!.reference, descriptorReference);
+
+  canonicalArtifacts[0]!.reference = reference.replace(
+    `bytes=${packageInput.bytes}`,
+    `bytes=${packageInput.bytes + 1}`,
+  );
+  assert.throws(
+    () => recomposeCanonicalResolvedInputs({
+      admissions,
+      candidateResolvedInputs: base.candidate_resolved_inputs,
+      canonicalArtifacts,
+      canonicalProducts: new Map(),
+      targetAbi: input.target_abi,
+    }),
+    /exact canonical public layer/u,
+  );
+
+  canonicalArtifacts[0]!.reference = reference;
+  canonicalArtifacts[0]!.descriptor_reference = descriptorReference.replace(
+    `bytes=${packageInput.descriptor!.bytes}`,
+    `bytes=${packageInput.descriptor!.bytes + 1}`,
+  );
+  assert.throws(
+    () => recomposeCanonicalResolvedInputs({
+      admissions,
+      candidateResolvedInputs: base.candidate_resolved_inputs,
+      canonicalArtifacts,
+      canonicalProducts: new Map(),
+      targetAbi: input.target_abi,
+    }),
+    /exact canonical public layer/u,
+  );
+});
+
+test("requires every Pages-hosted lazy input in the complete site inventory", async () => {
+  const input = fixture();
+  const base = input.products.find((product) => product.id === "mini-base")!;
+  const packageInput = base.candidate_resolved_inputs.inputs[1]!;
+  packageInput.id = "package-tool-output-tool";
+  packageInput.kind = "package-output";
+  const reference = canonicalPagesInputReference(
+    packageInput.id,
+    packageInput.sha256,
+    packageInput.bytes,
+  );
+  const descriptorReference = canonicalPagesInputReference(
+    packageInput.id,
+    packageInput.descriptor!.sha256,
+    packageInput.descriptor!.bytes,
+  );
+  base.admissions = base.admissions.filter(
+    ({ record }) => record.admission.formula_metadata_update.formula === "base",
+  );
+  base.canonical_artifacts = [{
+    bytes: packageInput.bytes,
+    descriptor_reference: descriptorReference,
+    input_id: packageInput.id,
+    reference,
+    sha256: packageInput.sha256,
+  }];
+  base.candidate_builder_report = builderReport(
+    base.candidate_resolved_inputs,
+    new TextEncoder().encode("candidate mini-base with package output\n"),
+  );
+
+  await assertBlocked(input, "site-input-missing", "mini-base");
+
+  input.site_metadata.files = [
+    input.site_metadata.api,
+    input.site_metadata.browser,
+    input.site_metadata.documentation,
+    {
+      bytes: packageInput.bytes,
+      path: `products/inputs/${packageInput.id}/sha256-${packageInput.sha256}/${packageInput.id}`,
+      sha256: packageInput.sha256,
+    },
+    {
+      bytes: packageInput.descriptor!.bytes,
+      path: `products/inputs/${packageInput.id}/sha256-${packageInput.descriptor!.sha256}/${packageInput.id}`,
+      sha256: packageInput.descriptor!.sha256,
+    },
+  ];
+  input.authority.site_metadata_sha256 = digest(input.site_metadata);
+  const result = await computePagesReadiness(input, successfulDependencies());
+
+  assert.equal(result.readiness.ready, true);
+  assert.deepEqual(
+    result.site_manifest!.files.filter(({ path }) => path.startsWith("products/inputs/")),
+    input.site_metadata.files.slice(3).sort((left, right) =>
+      left.path < right.path ? -1 : left.path > right.path ? 1 : 0
+    ),
+  );
 });
 
 test("produces the exact complete Pages product set", async () => {
@@ -247,11 +480,42 @@ test("holds readiness when one exact admission is missing", async () => {
   await assertBlocked(input, "missing-admission", "mini-base");
 });
 
-test("rejects candidate product inputs attributed to another exact source", async () => {
+test("accepts a merge commit only when the candidate plan has the exact current tree", async () => {
+  const input = fixture();
+  const candidateHead = "8".repeat(40);
+  for (const product of input.products) {
+    product.candidate_resolved_inputs.source = {
+      ...SOURCE,
+      commit: candidateHead,
+    };
+    product.candidate_builder_report = builderReport(
+      product.candidate_resolved_inputs,
+      new TextEncoder().encode(`${product.id} candidate VFS\n`),
+    );
+  }
+  const inner = successfulDependencies();
+  let observed = 0;
+  const result = await computePagesReadiness(input, {
+    ...inner,
+    async buildProduct(request) {
+      assert.deepEqual(request.resolved_inputs.source, SOURCE);
+      observed += 1;
+      return inner.buildProduct(request);
+    },
+  });
+
+  assert.equal(result.readiness.ready, true);
+  assert.equal(observed, input.pages_registry.value.products.length);
+  for (const artifact of result.artifacts!) {
+    assert.deepEqual(artifact.resolved_inputs.source, SOURCE);
+  }
+});
+
+test("rejects candidate product inputs attributed to another exact source tree", async () => {
   const input = fixture();
   input.products[0]!.candidate_resolved_inputs.source = {
     ...SOURCE,
-    commit: "8".repeat(40),
+    tree: "8".repeat(40),
   };
 
   await assertBlocked(input, "candidate-input-invalid", "mini-base");
@@ -623,7 +887,7 @@ function successfulDependencies(options: {
   finalCandidateReference?: boolean;
   informationalFailure?: boolean;
   wrongDefinitionDigest?: boolean;
-  canonicalOciMutation?: "metadata";
+  canonicalOciMutation?: "layer" | "metadata";
 } = {}): PagesReadinessDependencies {
   return {
     async validateAdmissionRecord(recordBytes: Uint8Array) {
@@ -641,6 +905,8 @@ function successfulDependencies(options: {
       const readback = canonicalBottleOci(formula);
       if (options.canonicalOciMutation === "metadata") {
         readback.bottle_metadata = new TextEncoder().encode("forged metadata\n");
+      } else if (options.canonicalOciMutation === "layer") {
+        readback.bottle_layer = new TextEncoder().encode("forged bottle layer\n");
       }
       return readback;
     },
@@ -908,8 +1174,8 @@ function bottleInput(formula: string, placement: "embedded" | "lazy-reference") 
 function admission(formula: string, inputs: Array<Record<string, any>>) {
   const input = inputs.find((value) => value.id === `homebrew-${formula}`)!;
   const readback = canonicalBottleOci(formula);
-  assert.equal(input.sha256, readback.bottle_layer.sha256);
-  assert.equal(input.bytes, readback.bottle_layer.bytes);
+  assert.equal(input.sha256, readback.bottle_layer_identity.sha256);
+  assert.equal(input.bytes, readback.bottle_layer_identity.bytes);
   assert.notEqual(
     input.descriptor.sha256,
     sha256(readback.vfs_composition_descriptor),
@@ -1011,9 +1277,13 @@ function admission(formula: string, inputs: Array<Record<string, any>>) {
     schema: 1,
   };
   const recordSha256 = digest(record);
+  const admissionManifestSha256 = sha256(
+    new TextEncoder().encode(`admission manifest ${formula}\n`),
+  );
+  assert.notEqual(admissionManifestSha256, recordSha256);
   return {
     immutable_reference:
-      `ghcr.io/kandelo-dev/homebrew-tap-core-abi-${TARGET_ABI}/${formula}/admissions@sha256:${recordSha256}`,
+      `ghcr.io/kandelo-dev/homebrew-tap-core-abi-${TARGET_ABI}/${formula}/admissions@sha256:${admissionManifestSha256}`,
     record,
     record_sha256: recordSha256,
   };
@@ -1031,6 +1301,11 @@ function authenticatedAdmissions(
     )!;
     return {
       ...structuredClone(envelope),
+      canonical_bottle_layer: {
+        body: new Uint8Array(canonicalBottleOci(formula).bottle_layer),
+        bytes: canonicalBottleOci(formula).bottle_layer.byteLength,
+        sha256: sha256(canonicalBottleOci(formula).bottle_layer),
+      },
       canonical_vfs_composition_descriptor: {
         body: new Uint8Array(
           canonicalBottleOci(formula).vfs_composition_descriptor,
@@ -1139,7 +1414,8 @@ function canonicalBottleOci(formula: string) {
     schemaVersion: 2,
   });
   return {
-    bottle_layer: {
+    bottle_layer: bottleLayer,
+    bottle_layer_identity: {
       bytes: bottleLayer.byteLength,
       sha256: bottleSha,
     },

@@ -40,8 +40,8 @@ export function deriveProductInputObjectSources(
   stableId(options.productId, "product ID");
   const catalog = loadVfsProductCatalog(options.catalogPath);
   const manifest = catalog.productById(options.productId) as any;
-  const packageNames = [...new Set(
-    manifest.software.package.map((claim: any) => claim.name as string),
+  const packageNames = [...new Set<string>(
+    manifest.software.package.map((claim: any) => claim.name as string) as string[],
   )].sort(compareText);
   exactKeys(options.packageRoots, packageNames, "resolved package roots");
   if (packageNames.length > MAX_PACKAGES) {
@@ -256,12 +256,12 @@ function detectedContent(root: string, path: string, label: string): ProductInpu
   throw new Error(`${label} is not one supported package artifact`);
 }
 
-function exactContent(
+function exactContent<K extends "file" | "directory">(
   root: string,
   path: string,
-  kind: "file" | "directory",
+  kind: K,
   label: string,
-): ProductInputContent {
+): Readonly<{ kind: K; path: string }> {
   const absolute = resolve(path);
   let metadata: ReturnType<typeof lstatSync>;
   try {

@@ -19,6 +19,11 @@ const registryPath = join(
   repoRoot,
   "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.toml",
 );
+const galleryPath = join(
+  repoRoot,
+  "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-gallery.json",
+);
+const presentationPath = join(repoRoot, "apps/browser-demos/pages/kandelo/presets.ts");
 const adapterPath = join(repoRoot, "abi/staging/legacy-vfs-adapters.toml");
 const browserDepsPath = join(repoRoot, "run.sh");
 const browserSources = [
@@ -30,6 +35,8 @@ const browserSources = [
 const paths = {
   catalogPath,
   registryPath,
+  galleryPath,
+  presentationPath,
   adapterPath,
   browserDepsPath,
   browserSources,
@@ -84,6 +91,43 @@ function writeCatalog(directory, mutate) {
 
 test("the repository Pages sources exactly project the Pages-owned registry", () => {
   checkPagesVfsProductRegistry(paths);
+});
+
+test("rejects gallery product, preset, and VFS-image mapping drift", () => {
+  withTempDir((directory) => {
+    const mutateGallery = (name, mutate) => {
+      const gallery = JSON.parse(readFileSync(galleryPath, "utf8"));
+      mutate(gallery);
+      const path = join(directory, name);
+      writeFileSync(path, canonicalBytes(gallery));
+      return path;
+    };
+    assert.throws(
+      () => checkPagesVfsProductRegistry({
+        ...paths,
+        galleryPath: mutateGallery("missing.json", (gallery) => gallery.products.pop()),
+      }),
+      /gallery.*Pages product set/i,
+    );
+    assert.throws(
+      () => checkPagesVfsProductRegistry({
+        ...paths,
+        galleryPath: mutateGallery("unknown.json", (gallery) => {
+          gallery.products.find(({ id }) => id === "browser-node").gallery_entries = ["rogue"];
+        }),
+      }),
+      /gallery entries differ.*preset/i,
+    );
+    assert.throws(
+      () => checkPagesVfsProductRegistry({
+        ...paths,
+        galleryPath: mutateGallery("wrong-image.json", (gallery) => {
+          gallery.products.find(({ id }) => id === "browser-node").vfs_image = "shell";
+        }),
+      }),
+      /gallery entry node.*VFS image node/i,
+    );
+  });
 });
 
 test("rejects product-owned Pages intent and a missing product output", () => {

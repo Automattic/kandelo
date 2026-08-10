@@ -36,6 +36,7 @@ import {
   classifySupervisorLifecycleError,
   hostMountSpecFromProductMounts,
   loadExactNodeKernelHostConstructor,
+  loadProtectedNodeLazyInputs,
   nodeEvidenceHostOptions,
   protectedNodeSuiteDefinition,
   runNodeProductEvidence,
@@ -44,6 +45,7 @@ import {
   sha256Hex,
   validateNodeEvidenceContext,
   validateCandidateLocator,
+  validateCanonicalPagesInputReference,
   validateCandidateVfsLazyInventory,
   validateExactSdkCompilerSourceRoot,
   validateExactRuntimeArtifactRoot,
@@ -79,6 +81,64 @@ const FIXTURE_TARGET_ABI = {
   version: 8,
   snapshot_sha256: "3".repeat(64),
 } as const;
+
+test("loads exact local bytes while preserving canonical lazy URL authority", () => {
+  const root = mkdtempSync(join(tmpdir(), "kandelo-node-local-lazy-"));
+  try {
+    const bytes = encoder.encode("not-yet-deployed Pages input\n");
+    const path = join(root, "input.bin");
+    writeFileSync(path, bytes);
+    const sha256 = sha256Hex(bytes);
+    const url =
+      `https://automattic.github.io/kandelo/products/inputs/package-dash/` +
+      `sha256-${sha256}/package-dash?sha256=${sha256}&bytes=${bytes.byteLength}`;
+    const manifest = join(root, "lazy-inputs.json");
+    writeFileSync(manifest, canonicalJsonBytes({
+      inputs: [{ bytes: bytes.byteLength, id: "package-dash", path, reference: url, sha256 }],
+      kind: "kandelo-protected-node-lazy-inputs",
+      schema: 1,
+    }));
+    const loaded = loadProtectedNodeLazyInputs(manifest, [{
+      id: "package-dash", size: bytes.byteLength, sha256, url,
+    }], ["package-dash"]);
+    assert.equal(loaded[0]!.url, url);
+    assert.deepEqual(loaded[0]!.bytes, bytes);
+    const hostOptions = nodeEvidenceHostOptions({
+      context: { mounts: [] } as unknown as NodeEvidenceContextV1,
+      lazyAssets: loaded,
+      vfsBytes: bytes,
+    } as unknown as NodeEvidenceExecutionInputs, () => {}, () => {});
+    assert.deepEqual(hostOptions.rootfsLazyAssets, loaded);
+    assert.equal(hostOptions.rootfsLazyAssetSources, undefined);
+  } finally {
+    rmSync(root, { force: true, recursive: true });
+  }
+});
+
+test("requires the exact canonical Pages input URL identity", () => {
+  const id = "package-dash";
+  const sha256 = "a".repeat(64);
+  const bytes = 91;
+  const exact =
+    `https://automattic.github.io/kandelo/products/inputs/${id}/` +
+    `sha256-${sha256}/${id}?sha256=${sha256}&bytes=${bytes}`;
+  assert.doesNotThrow(() =>
+    validateCanonicalPagesInputReference(exact, id, sha256, bytes));
+  for (const hostile of [
+    exact.replace("automattic.github.io", "attacker.invalid"),
+    exact.replace(`/inputs/${id}/`, "/inputs/package-node/"),
+    exact.replace(`/${id}?`, "/package-node?"),
+    exact.replace(`sha256-${sha256}`, `sha256-${"b".repeat(64)}`),
+    exact.replace(`sha256=${sha256}`, `sha256=${"b".repeat(64)}`),
+    exact.replace(`bytes=${bytes}`, `bytes=${bytes + 1}`),
+    `${exact}&extra=1`,
+  ]) {
+    assert.throws(
+      () => validateCanonicalPagesInputReference(hostile, id, sha256, bytes),
+      /exact canonical Pages input URL/i,
+    );
+  }
+});
 
 function lazyFixtureIdentity(id: string) {
   const bytes = encoder.encode(`lazy fixture ${id}`);

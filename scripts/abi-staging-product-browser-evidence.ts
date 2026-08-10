@@ -253,10 +253,11 @@ export async function startProtectedBrowserEvidenceServer(
         8_192,
       ),
     };
-    if (lazyAssets.has(asset.reference)) {
-      throw new Error("candidate lazy asset references are duplicated");
+    const route = protectedLazyAssetPath(asset.reference);
+    if (lazyAssets.has(route)) {
+      throw new Error("candidate lazy asset protected routes are duplicated");
     }
-    lazyAssets.set(asset.reference, asset);
+    lazyAssets.set(route, asset);
   }
   const fetchLazySource = (dependencies.createLazyFetcher ??
     createClosedLazyAssetSourceFetcher)(
@@ -344,9 +345,7 @@ export async function startProtectedBrowserEvidenceServer(
         );
         return;
       }
-      const lazy = pathname.startsWith("/")
-        ? lazyAssets.get(pathname.slice(1))
-        : undefined;
+      const lazy = lazyAssets.get(`${pathname}${url.search}`);
       if (lazy !== undefined) {
         if (request.method === "GET") {
           const count = lazyGetsStarted.get(lazy.reference) ?? 0;
@@ -1003,7 +1002,7 @@ export async function superviseBrowserEvidenceCli(
       servedLazyAssets: lazySources.map((source, index) => ({
         id: expectedLazyIds[index]!,
         reference: source.url,
-        url: new URL(source.url, server!.baseUrl).href,
+        url: new URL(protectedLazyAssetPath(source.url), server!.baseUrl).href,
         sha256: source.sha256,
         bytes: source.size,
       })),
@@ -1831,19 +1830,10 @@ function validateServedLazyAssets(
       `protected browser lazy asset ${index} reference`,
       8_192,
     );
-    const requiredPrefix = referenceClass === "candidate"
-      ? `ghcr.io/kandelo-dev/homebrew-tap-core-abi-${targetAbi}-candidates/`
-      : `ghcr.io/kandelo-dev/homebrew-tap-core-abi-${targetAbi}/`;
-    if (!reference.startsWith(requiredPrefix) || !reference.includes("@sha256:")) {
-      throw new Error("served lazy asset leaves its exact ABI namespace");
-    }
     const sha256 = digest(
       item.sha256,
       `protected browser lazy asset ${index} digest`,
     );
-    if (!reference.endsWith(`@sha256:${sha256}`)) {
-      throw new Error("served lazy asset reference differs from its exact digest");
-    }
     const bytes = positiveInteger(
       item.bytes,
       `protected browser lazy asset ${index} bytes`,
@@ -1851,12 +1841,43 @@ function validateServedLazyAssets(
     if (bytes > MAX_BROWSER_VFS_BYTES) {
       throw new Error("served lazy asset exceeds its protected byte bound");
     }
+    const requiredPrefix = referenceClass === "candidate"
+      ? `ghcr.io/kandelo-dev/homebrew-tap-core-abi-${targetAbi}-candidates/`
+      : `ghcr.io/kandelo-dev/homebrew-tap-core-abi-${targetAbi}/`;
+    const canonicalPagesReference =
+      `https://automattic.github.io/kandelo/products/inputs/${id}/` +
+      `sha256-${sha256}/${id}?sha256=${sha256}&bytes=${bytes}`;
+    const exactOciReference = reference.startsWith(requiredPrefix) &&
+      reference.includes("@sha256:") && reference.endsWith(`@sha256:${sha256}`);
+    if (
+      !exactOciReference &&
+      (referenceClass !== "canonical" || reference !== canonicalPagesReference)
+    ) {
+      throw new Error("served lazy asset leaves its exact ABI namespace");
+    }
     const url = text(item.url, `protected browser lazy asset ${index} URL`, 8_192);
-    if (url !== new URL(reference, root).href) {
+    if (url !== new URL(protectedLazyAssetPath(reference), root).href) {
       throw new Error("served lazy asset does not use its exact protected local URL");
     }
     return { id, reference, url, sha256, bytes };
   });
+}
+
+function protectedLazyAssetPath(reference: string): string {
+  if (/^ghcr\.io\/[a-z0-9._\/-]+@sha256:[0-9a-f]{64}$/u.test(reference)) {
+    return `/${reference}`;
+  }
+  const parsed = new URL(reference);
+  if (
+    parsed.protocol !== "https:" ||
+    parsed.origin !== "https://automattic.github.io" ||
+    !parsed.pathname.startsWith("/kandelo/products/inputs/") ||
+    parsed.username !== "" || parsed.password !== "" || parsed.hash !== "" ||
+    parsed.href !== reference
+  ) {
+    throw new Error("protected lazy asset reference is not a supported immutable source");
+  }
+  return `${parsed.pathname}${parsed.search}`;
 }
 
 function selectedProtectedProduct(
