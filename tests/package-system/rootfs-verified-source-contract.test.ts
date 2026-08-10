@@ -238,6 +238,15 @@ describe("source-rootfs verified archive contract", () => {
       .toMatch(/^revision\s*=\s*4$/m);
   });
 
+  it("advances the kernel cache identity for the uname hostname change", () => {
+    const kernelBuild = readFileSync(
+      resolve(repoRoot, "packages/registry/kernel/build.toml"),
+      "utf8",
+    );
+
+    expect(kernelBuild).toMatch(/^revision\s*=\s*2$/m);
+  });
+
   const promptPath = resolve(
     repoRoot,
     "images/rootfs/etc/profile.d/kandelo-prompt.sh",

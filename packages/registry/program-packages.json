@@ -151,8 +151,8 @@
     "kernel": {
       "manifestSha256": "db1d66db8575562ac7b3e720dbaa06d7dd5eef577d80220ea4167dc2d69b863b",
       "cacheKeys": {
-        "wasm32": "7c99137ecc1ba603403044403f0c9ac40fd92b6313414cf44e9eb0f1aca9015b",
-        "wasm64": "c0af24ad2a86912c4bc1981e1cb1427c207caf81db2bfacd700a9b012cdab003"
+        "wasm32": "2f7c69bfb11b08933258b7ebc5020f36b439c89bb36e139cc24e65f37bcc662b",
+        "wasm64": "d92bca27cc016a4231d13639d3f03c5ca8adbd2b9a9c25bd845b5b7637ae9afa"
       }
     },
     "lamp": {
@@ -312,8 +312,8 @@
     "nginx-php-vfs": {
       "manifestSha256": "97976410cb02f8ba710d856b4ac904bcf976d677b50eefdee39fb64176070d4b",
       "cacheKeys": {
-        "wasm32": "d6f868451a4e3d9b95c00bfc08f1ac03e23d39b098ad184f1ca3d15e724644fd",
-        "wasm64": "757d90dfde99642082943ec13020d31e2eae8cc9c9575c2eae80f14fdff68130"
+        "wasm32": "34aaf0875c0ce29ac531a8bfaa3323e153787569e7fc70dbc106e183c3e3bf17",
+        "wasm64": "f9bdd5c956158eaea8c079e876feb63390154fe1751602b1c085b83b0dce2287"
       }
     },
     "nginx-vfs": {
@@ -1718,7 +1718,7 @@
         "wasm32"
       ],
       "cacheKeys": {
-        "wasm32": "d6f868451a4e3d9b95c00bfc08f1ac03e23d39b098ad184f1ca3d15e724644fd"
+        "wasm32": "34aaf0875c0ce29ac531a8bfaa3323e153787569e7fc70dbc106e183c3e3bf17"
       },
       "dependencyClosures": {
         "wasm32": [
@@ -1735,7 +1735,7 @@
           {
             "packageName": "kernel",
             "manifestSha256": "db1d66db8575562ac7b3e720dbaa06d7dd5eef577d80220ea4167dc2d69b863b",
-            "cacheKey": "7c99137ecc1ba603403044403f0c9ac40fd92b6313414cf44e9eb0f1aca9015b"
+            "cacheKey": "2f7c69bfb11b08933258b7ebc5020f36b439c89bb36e139cc24e65f37bcc662b"
           },
           {
             "packageName": "libcurl",
