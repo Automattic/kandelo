@@ -17,12 +17,12 @@ use crate::abi_staging::records::{
 };
 use crate::abi_staging::request_policy::{parse_request_policy, RequestPolicyV1};
 use crate::abi_staging::selection::{
-    derive_formula_requirements, select_vfs_products_for_change_classes,
+    derive_formula_requirements, select_vfs_products_for_change_classes, FormulaRequirementV1,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -30,6 +30,8 @@ use std::process::Command;
 const STRUCTURAL_REPORT_SCHEMA: u64 = 1;
 const STRUCTURAL_REPORT_KIND: &str = "kandelo-structural-abi-report";
 const PRODUCT_DIRECTORY: &str = "images/vfs/products";
+const MAX_CHANGED_PATH_BYTES: usize = 16 * 1024 * 1024;
+const MAX_CHANGED_PATH_LENGTH: usize = 4096;
 const PAGES_REGISTRY: &str = "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-products.toml";
 const TEST_REGISTRY: &str = "tests/vfs-products.toml";
 const SNAPSHOT_PATH: &str = "abi/snapshot.json";
@@ -196,6 +198,48 @@ pub fn derive_abi_staging_request(
     validate_sorted_change_classes(change_classes)?;
     validate_structural_abi_report(exact_head_root, pull_request, structural)?;
 
+    let (requirements, _) = derive_request_requirements(exact_head_root, change_classes)?;
+
+    let request = AbiStagingRequestV1 {
+        schema: 1,
+        kind: "kandelo-abi-staging-request".to_string(),
+        pull_request: PullRequestRequestIdentityV1 {
+            repository: pull_request.repository.clone(),
+            number: pull_request.number,
+        },
+        build_source: structural.source.clone(),
+        target_abi: TargetAbiV1 {
+            version: structural.target_abi,
+            snapshot_sha256: structural.snapshot_sha256.clone(),
+        },
+        requirements,
+        issuance: RequestIssuanceV1 {
+            issuer_repository: protected.protected_repository.clone(),
+            issuer_workflow_ref: protected.issuer_workflow_ref.clone(),
+            policy_version: protected.policy.version,
+            policy_sha256: protected.policy_sha256.clone(),
+            guard_registry_version: protected.guard_registry_version,
+            guard_registry_sha256: protected.guard_registry_sha256.clone(),
+            authorization: RequestAuthorizationV1::SameRepository {
+                head: pull_request.exact_head.clone(),
+            },
+        },
+        informational_context: RequestInformationalContextV1 {
+            base_commit: pull_request.base_commit.clone(),
+            base_tree: pull_request.base_tree.clone(),
+            previous_abi: structural.observed_previous_abi,
+            ref_hint: pull_request.ref_hint.clone(),
+        },
+    };
+    validate_request(&request)?;
+    Ok(request)
+}
+
+pub fn derive_request_requirements(
+    exact_head_root: &Path,
+    change_classes: &[ChangeClass],
+) -> Result<(RequestRequirementsV1, Vec<FormulaRequirementV1>), String> {
+    validate_sorted_change_classes(change_classes)?;
     let catalog = load_product_catalog(exact_head_root, Path::new(PRODUCT_DIRECTORY))?;
     let pages_path = exact_head_root.join(PAGES_REGISTRY);
     let tests_path = exact_head_root.join(TEST_REGISTRY);
@@ -207,13 +251,11 @@ pub fn derive_abi_staging_request(
         &tests_path,
         &read_bounded_regular_file(&tests_path, 1024 * 1024)?,
     )?;
-
     let selection =
         select_vfs_products_for_change_classes(&catalog, &pages, &tests, change_classes)?;
     // Formula roots are intentionally derived only from selected product
     // manifests. The request does not carry a parallel Formula allowlist.
-    derive_formula_requirements(&catalog, &selection)?;
-
+    let formulae = derive_formula_requirements(&catalog, &selection)?;
     let products = selection
         .iter()
         .map(|product| RequestProductBindingV1 {
@@ -252,40 +294,57 @@ pub fn derive_abi_staging_request(
         evidence,
     };
     requirements.digest = request_requirements_digest(&requirements)?;
+    Ok((requirements, formulae))
+}
 
-    let request = AbiStagingRequestV1 {
-        schema: 1,
-        kind: "kandelo-abi-staging-request".to_string(),
-        pull_request: PullRequestRequestIdentityV1 {
-            repository: pull_request.repository.clone(),
-            number: pull_request.number,
-        },
-        build_source: structural.source.clone(),
-        target_abi: TargetAbiV1 {
-            version: structural.target_abi,
-            snapshot_sha256: structural.snapshot_sha256.clone(),
-        },
-        requirements,
-        issuance: RequestIssuanceV1 {
-            issuer_repository: protected.protected_repository.clone(),
-            issuer_workflow_ref: protected.issuer_workflow_ref.clone(),
-            policy_version: protected.policy.version,
-            policy_sha256: protected.policy_sha256.clone(),
-            guard_registry_version: protected.guard_registry_version,
-            guard_registry_sha256: protected.guard_registry_sha256.clone(),
-            authorization: RequestAuthorizationV1::SameRepository {
-                head: pull_request.exact_head.clone(),
-            },
-        },
-        informational_context: RequestInformationalContextV1 {
-            base_commit: pull_request.base_commit.clone(),
-            base_tree: pull_request.base_tree.clone(),
-            previous_abi: structural.observed_previous_abi,
-            ref_hint: pull_request.ref_hint.clone(),
-        },
-    };
-    validate_request(&request)?;
-    Ok(request)
+pub fn classify_changed_paths(bytes: &[u8]) -> Result<Vec<ChangeClass>, String> {
+    if bytes.len() > MAX_CHANGED_PATH_BYTES {
+        return Err("changed-path inventory exceeds its byte bound".to_string());
+    }
+    if bytes.is_empty() {
+        return Ok(vec![]);
+    }
+    if bytes.last() != Some(&0) {
+        return Err("changed-path inventory is not NUL terminated".to_string());
+    }
+    let mut paths = BTreeSet::new();
+    let mut classes = BTreeSet::new();
+    for raw in bytes[..bytes.len() - 1].split(|byte| *byte == 0) {
+        let path = std::str::from_utf8(raw)
+            .map_err(|error| format!("changed path is not UTF-8: {error}"))?;
+        if path.is_empty()
+            || path.len() > MAX_CHANGED_PATH_LENGTH
+            || path.starts_with('/')
+            || path.contains('\\')
+            || path
+                .split('/')
+                .any(|component| component.is_empty() || component == "." || component == "..")
+            || path.chars().any(char::is_control)
+        {
+            return Err(format!("changed path {path:?} is not a canonical repository path"));
+        }
+        if !paths.insert(path) {
+            return Err(format!("changed path inventory repeats {path:?}"));
+        }
+        if path.starts_with("abi/") || path.starts_with("crates/shared/") {
+            classes.insert(ChangeClass::Abi);
+        }
+        if path.starts_with("crates/kernel/")
+            || path.starts_with("crates/fork-instrument/")
+            || path.starts_with("libc/")
+        {
+            classes.insert(ChangeClass::Kernel);
+        }
+        if path.starts_with("host/")
+            || path.starts_with("web-libs/")
+            || path.starts_with("apps/browser-demos/")
+            || path.starts_with("images/vfs/products/")
+            || path == TEST_REGISTRY
+        {
+            classes.insert(ChangeClass::Host);
+        }
+    }
+    Ok(classes.into_iter().collect())
 }
 
 pub fn run_structural_report_cli(action: &str, args: &[String]) -> Result<(), String> {
@@ -301,6 +360,13 @@ pub fn run_structural_report_cli(action: &str, args: &[String]) -> Result<(), St
 
 pub fn run_request_cli(action: &str, args: &[String]) -> Result<(), String> {
     match action {
+        "classify" => {
+            let flags = parse_path_flags(args, &["--changed-paths", "--out"])?;
+            let changed_paths =
+                read_bounded_regular_file(&flags["--changed-paths"], MAX_CHANGED_PATH_BYTES)?;
+            let change_classes = classify_changed_paths(&changed_paths)?;
+            atomic_write_regular(&flags["--out"], &canonical_json_bytes(&change_classes)?)
+        }
         "derive" => {
             let flags = parse_path_flags(
                 args,
@@ -327,6 +393,28 @@ pub fn run_request_cli(action: &str, args: &[String]) -> Result<(), String> {
                 &change_classes,
             )?;
             atomic_write_regular(&flags["--out"], &canonical_json_bytes(&request)?)
+        }
+        "requirements" => {
+            let flags = parse_path_flags(
+                args,
+                &[
+                    "--exact-head-root",
+                    "--change-classes",
+                    "--requirements-out",
+                    "--formulae-out",
+                ],
+            )?;
+            let change_classes = parse_change_classes(&flags["--change-classes"])?;
+            let (requirements, formulae) =
+                derive_request_requirements(&flags["--exact-head-root"], &change_classes)?;
+            atomic_write_regular(
+                &flags["--requirements-out"],
+                &canonical_json_bytes(&requirements)?,
+            )?;
+            atomic_write_regular(
+                &flags["--formulae-out"],
+                &canonical_json_bytes(&formulae)?,
+            )
         }
         "fixture-check" => {
             let flags = parse_path_flags(args, &["--fixture"])?;
@@ -932,5 +1020,46 @@ host = "not-applicable"
             &[ChangeClass::Kernel, ChangeClass::Abi],
         )
         .is_err());
+    }
+
+    #[test]
+    fn derives_current_requirements_without_executing_exact_head_code() {
+        let fixture = fixture();
+        let request = derive_abi_staging_request(
+            fixture.root.path(),
+            &fixture.pull_request,
+            &fixture.protected,
+            &fixture.structural,
+            &[ChangeClass::Abi],
+        )
+        .unwrap();
+
+        let (requirements, formulae) =
+            derive_request_requirements(fixture.root.path(), &[ChangeClass::Abi]).unwrap();
+
+        assert_eq!(requirements, request.requirements);
+        assert_eq!(formulae.len(), 1);
+        assert_eq!(formulae[0].formula, "selected-root");
+    }
+
+    #[test]
+    fn classifies_nul_terminated_paths_without_line_or_prefix_confusion() {
+        assert_eq!(
+            classify_changed_paths(
+                b"abi/snapshot.json\0apps/browser-demos/main.ts\0crates/kernel/src/lib.rs\0docs/readme.md\0"
+            )
+            .unwrap(),
+            vec![ChangeClass::Abi, ChangeClass::Kernel, ChangeClass::Host]
+        );
+        assert_eq!(classify_changed_paths(b"docs/readme.md\0").unwrap(), vec![]);
+        for body in [
+            b"host/good.ts\nabi/injected\0".as_slice(),
+            b"host/good.ts".as_slice(),
+            b"../host/escape.ts\0".as_slice(),
+            b"host/good.ts\0host/good.ts\0".as_slice(),
+            b"host/\xff.ts\0".as_slice(),
+        ] {
+            assert!(classify_changed_paths(body).is_err(), "{body:?}");
+        }
     }
 }

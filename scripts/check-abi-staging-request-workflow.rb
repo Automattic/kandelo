@@ -114,7 +114,7 @@ def check_workflow(workflow)
   check_actions(workflow)
   flattened = values(workflow).join("\n")
   check(!flattened.match?(/\bsecrets\b/i), "request workflow may not use secrets")
-  check(!flattened.include?("refs/pull/") || !flattened.include?("/merge"),
+  check(!flattened.include?("refs/pull/") && !flattened.include?("/merge"),
         "request workflow may not select a synthetic merge ref")
   check(!flattened.match?(/git\s+merge\b/), "request workflow may not synthesize a merge")
   check(!flattened.include?("--clobber"), "request workflow may not clobber an asset")
@@ -144,6 +144,9 @@ def check_workflow(workflow)
   derive_source = run_source(derive)
   check(derive_source.include?("request-policy check") &&
         derive_source.include?("structural-report validate") &&
+        derive_source.include?("git -C \"$exact_head_data\" diff --name-only -z") &&
+        derive_source.include?("request classify") &&
+        derive_source.include?("--changed-paths") &&
         derive_source.include?("request derive") &&
         derive_source.include?("request plan-feed-write") &&
         derive_source.include?("env -u GH_TOKEN -u GITHUB_TOKEN git") &&
@@ -236,6 +239,14 @@ begin
     "missing inert revalidation" => lambda { |copy|
       step = copy.dig("jobs", "derive-request", "steps").find { |item| item["run"]&.include?("structural-report validate") }
       step["run"] = step.fetch("run").gsub("structural-report validate", "echo trust-report")
+    },
+    "line-delimited path classification" => lambda { |copy|
+      step = copy.dig("jobs", "derive-request", "steps").find do |item|
+        item["run"]&.include?("request classify")
+      end
+      step["run"] = step.fetch("run")
+        .gsub("diff --name-only -z", "diff --name-only")
+        .gsub("request classify", "echo classify")
     },
     "unbound subject inventory" => lambda { |copy|
       copy.dig("jobs", "classify-exact-head", "outputs").delete("subjects-sha256")

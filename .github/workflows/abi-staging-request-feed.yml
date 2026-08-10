@@ -337,16 +337,16 @@ jobs:
               --pull-request "$pull_request_file" \
               --report "$report"
 
-            changed=$(git -C "$exact_head_data" diff --name-only "$PROTECTED_SHA" "$head")
-            classes=()
-            if grep -Eq '^(abi/|crates/shared/)' <<<"$changed"; then classes+=(abi); fi
-            if grep -Eq '^(crates/kernel/|crates/fork-instrument/|libc/)' <<<"$changed"; then classes+=(kernel); fi
-            if grep -Eq '^(host/|web-libs/|apps/browser-demos/|images/vfs/products/|tests/vfs-products.toml)' <<<"$changed"; then classes+=(host); fi
-            if ((${#classes[@]} == 0)); then
+            changed_paths="$derived/requests/$pr-changed-paths.bin"
+            git -C "$exact_head_data" diff --name-only -z \
+              "$PROTECTED_SHA" "$head" >"$changed_paths"
+            "$authority_xtask" abi-staging request classify \
+              --changed-paths "$changed_paths" \
+              --out "$derived/requests/$pr-change-classes.json"
+            if [[ $(jq 'length' "$derived/requests/$pr-change-classes.json") == 0 ]]; then
               echo "PR #$pr is not applicable to ABI staging"
               continue
             fi
-            jq -cn '$ARGS.positional' --args "${classes[@]}" >"$derived/requests/$pr-change-classes.json"
 
             python3 - "$GITHUB_WORKSPACE/authority" "$PROTECTED_SHA" "$protected_tree" \
               "$policy_sha" "$guard_version" "$guard_sha" \

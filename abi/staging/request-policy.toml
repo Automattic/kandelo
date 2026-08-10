@@ -1,6 +1,6 @@
 schema = 1
 kind = "kandelo-abi-staging-request-policy"
-version = 5
+version = 6
 issuer_repository = "Automattic/kandelo"
 issuer_workflow = ".github/workflows/abi-staging-request-feed.yml"
 automatic_same_repository = true
@@ -15,6 +15,8 @@ addressed_taps = ["kandelo-dev/homebrew-tap-core"]
 # This is the approved MVP implementation identity. Publication remains
 # observe-only until protected hosted canaries have supplied activation evidence.
 implementation_paths = [
+  ".github/scripts/update-abi-staging-check.sh",
+  ".github/workflows/abi-staging-pr-check.yml",
   ".github/workflows/abi-staging-request-feed.yml",
   "Cargo.lock",
   "Cargo.toml",
@@ -71,6 +73,7 @@ implementation_paths = [
   "tools/xtask/Cargo.toml",
   "tools/xtask/src/abi_staging/builder_contract.rs",
   "tools/xtask/src/abi_staging/canonical_json.rs",
+  "tools/xtask/src/abi_staging/check_projection.rs",
   "tools/xtask/src/abi_staging/consumer_registry.rs",
   "tools/xtask/src/abi_staging/evidence_policy.rs",
   "tools/xtask/src/abi_staging/guard_registry.rs",

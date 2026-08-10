@@ -1,5 +1,6 @@
 pub mod builder_contract;
 pub mod canonical_json;
+pub mod check_projection;
 pub mod consumer_registry;
 pub mod evidence_policy;
 pub mod guard_registry;
@@ -90,6 +91,19 @@ pub fn run(args: Vec<String>) -> ExitCode {
             eprintln!(
                 "xtask abi-staging: product-evidence requires validate-context or validate-result"
             );
+            ExitCode::from(2)
+        }
+        [group, action, rest @ ..] if group == "check-projection" => {
+            match check_projection::run_cli(action, rest) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("xtask abi-staging check-projection {action}: {error}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        [group, ..] if group == "check-projection" => {
+            eprintln!("xtask abi-staging: check-projection requires project");
             ExitCode::from(2)
         }
         [group, action, rest @ ..] if group == "builder" => {
@@ -202,6 +216,6 @@ pub fn run(args: Vec<String>) -> ExitCode {
 fn print_help() {
     println!("usage: xtask abi-staging <subcommand> [args...]");
     println!(
-        "subcommands: help, products <generate|check>, registries <generate|check>, evidence-definitions <generate|check>, runtime-bundle validate, product-evidence <validate-context|validate-result>, builder <validate-inputs|validate-report|compare-report>, guard-codes <generate|check>, request-policy <generate|check|activation-mode>, structural-report validate, request <derive|fixture-check|select-current|plan-feed-write|validate-feed-plan>, records validate, mini run, requirements"
+        "subcommands: help, products <generate|check>, registries <generate|check>, evidence-definitions <generate|check>, runtime-bundle validate, product-evidence <validate-context|validate-result>, check-projection project, builder <validate-inputs|validate-report|compare-report>, guard-codes <generate|check>, request-policy <generate|check|activation-mode>, structural-report validate, request <classify|derive|fixture-check|requirements|select-current|plan-feed-write|validate-feed-plan>, records validate, mini run, requirements"
     );
 }
