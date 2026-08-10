@@ -52,7 +52,11 @@ done
 if [ -n "${FAKE_RUNTIME_HOME_MARKER:-}" ]; then
   printf '%s\n' "$HOME" >"$FAKE_RUNTIME_HOME_MARKER"
 fi
-mkdir -p "$artifact_root/host/dist" "$artifact_root/browser/dist"
+mkdir -p \
+  "$artifact_root/host/dist" \
+  "$artifact_root/browser/dist/abi-staging" \
+  "$artifact_root/browser/dist/abi-staging-harness" \
+  "$artifact_root/browser/dist/assets"
 if [ "${FAKE_RUNTIME_EMPTY_DIRECTORY:-0}" = 1 ]; then
   mkdir -p "$artifact_root/unrepresented-empty-directory"
 fi
@@ -66,6 +70,7 @@ body = bytearray(b"\0asm\x01\0\0\0\x01\x05\x01\x60\0\x01\x7f\x03\x02\x01\0\x07\x
 body.extend((8, 0x0b))
 Path(sys.argv[1]).write_bytes(body)
 PY
+cp "$artifact_root/kernel.wasm" "$artifact_root/browser/dist/assets/kernel.wasm"
 cp "$source_root/host/src/generated/abi.ts" \
   "$artifact_root/host/generated-abi.ts"
 cp "$source_root/host/src/worker-protocol.ts" \
@@ -73,6 +78,10 @@ cp "$source_root/host/src/worker-protocol.ts" \
 printf 'host bundle\n' >"$artifact_root/host/dist/index.js"
 printf 'node worker bundle\n' >"$artifact_root/host/dist/node-kernel-worker-entry.js"
 printf 'browser bundle\n' >"$artifact_root/browser/dist/index.js"
+printf 'export class BrowserKernel {}\n' \
+  >"$artifact_root/browser/dist/abi-staging/browser-host.js"
+printf '<!doctype html><title>protected evidence harness</title>\n' \
+  >"$artifact_root/browser/dist/abi-staging-harness/index.html"
 printf 'service worker\n' >"$artifact_root/browser/dist/service-worker.js"
 if [ "${FAKE_RUNTIME_SYMLINK:-0}" = 1 ]; then
   rm "$artifact_root/browser/dist/service-worker.js"
@@ -105,7 +114,7 @@ run_preparer "$OUT"
   fail "runtime bundle did not bind the exact source head"
 [ "$(jq -r '.target_abi.version' "$OUT/runtime-bundle.json")" = 8 ] ||
   fail "runtime bundle did not bind the target ABI"
-[ "$(jq -r '.inventory | length' "$OUT/runtime-bundle.json")" = 9 ] ||
+[ "$(jq -r '.inventory | length' "$OUT/runtime-bundle.json")" = 12 ] ||
   fail "runtime bundle inventory is incomplete"
 [ "$(jq -r '.inventory[] | select(.path == "flake.lock") | .sha256' \
     "$OUT/runtime-bundle.json")" = \
@@ -117,6 +126,15 @@ cmp -s "$SOURCE/flake.lock" "$OUT/runtime/flake.lock" ||
   fail "runtime bundle lacks protected Node module identity"
 [ -s "$OUT/runtime/host/dist/node-kernel-worker-entry.js" ] ||
   fail "runtime bundle lacks the exact Node worker entry"
+[ "$(jq -r '.browser.kernel_asset_path' "$OUT/runtime-bundle.json")" = \
+    "browser/dist/assets/kernel.wasm" ] ||
+  fail "runtime bundle did not bind the emitted browser kernel asset"
+[ "$(jq -r '.browser.host_entry_path' "$OUT/runtime-bundle.json")" = \
+    "browser/dist/abi-staging/browser-host.js" ] ||
+  fail "runtime bundle did not bind the exact browser host entry"
+[ "$(jq -r '.browser.harness_entry_path' "$OUT/runtime-bundle.json")" = \
+    "browser/dist/abi-staging-harness/index.html" ] ||
+  fail "runtime bundle did not bind the protected browser evidence harness"
 
 PRIVATE_ENV_OUT="$TMP_ROOT/private-environment"
 SUPER_SECRET=must-not-cross \

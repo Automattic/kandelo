@@ -228,7 +228,8 @@ else
     set -euo pipefail
     bash build.sh
     npm --prefix apps/browser-demos install --prefer-offline
-    npm --prefix apps/browser-demos run build
+    KANDELO_BROWSER_DEMO_INPUTS=main,kandelo,network \
+      npm --prefix apps/browser-demos run build
   '
 
   KERNEL_SOURCE="$SOURCE_ROOT/target/wasm32-unknown-unknown/release/kandelo_kernel.wasm"
@@ -258,6 +259,23 @@ else
     "$RUNTIME_ROOT/host/worker-protocol.ts"
   cp -R "$HOST_SOURCE" "$RUNTIME_ROOT/host/dist"
   cp -R "$BROWSER_SOURCE" "$RUNTIME_ROOT/browser/dist"
+
+  PROTECTED_VITE="$REPO_ROOT/apps/browser-demos/node_modules/.bin/vite"
+  if [ ! -x "$PROTECTED_VITE" ]; then
+    echo "abi-staging-prepare-runtime.sh: protected browser host bundler is unavailable" >&2
+    exit 1
+  fi
+  run_without_credentials env \
+    KANDELO_ABI_STAGING_EXACT_SOURCE_ROOT="$SOURCE_ROOT" \
+    "$PROTECTED_VITE" build \
+      --config "$REPO_ROOT/apps/browser-demos/abi-staging-browser-host.config.ts" \
+      --outDir "$RUNTIME_ROOT/browser/dist/abi-staging" \
+      --emptyOutDir
+  run_without_credentials \
+    "$PROTECTED_VITE" build \
+      --config "$REPO_ROOT/apps/browser-demos/abi-staging-browser-harness.config.ts" \
+      --outDir "$RUNTIME_ROOT/browser/dist/abi-staging-harness" \
+      --emptyOutDir
 fi
 
 # The tap resolves every build/toolchain claim against the exact head's
@@ -401,12 +419,32 @@ kernel = entry("kernel.wasm")
 generated_abi = entry("host/generated-abi.ts")
 worker_protocol = entry("host/worker-protocol.ts")
 service_worker = entry("browser/dist/service-worker.js")
+browser_host = entry("browser/dist/abi-staging/browser-host.js")
+browser_harness = entry("browser/dist/abi-staging-harness/index.html")
 host_sha256, host_bytes = subset("host/")
 browser_sha256, browser_bytes = subset("browser/")
+browser_kernel_assets = [
+    item for item in inventory
+    if str(item["path"]).startswith("browser/dist/")
+    and str(item["path"]).endswith(".wasm")
+    and item["sha256"] == kernel["sha256"]
+    and item["bytes"] == kernel["bytes"]
+]
+if len(browser_kernel_assets) != 1:
+    raise SystemExit("runtime browser dist lacks one exact emitted kernel Wasm asset")
+browser_kernel = browser_kernel_assets[0]
 bundle = {
     "browser": {
         "bundle_sha256": browser_sha256,
         "bytes": browser_bytes,
+        "harness_entry_bytes": browser_harness["bytes"],
+        "harness_entry_path": browser_harness["path"],
+        "harness_entry_sha256": browser_harness["sha256"],
+        "host_entry_bytes": browser_host["bytes"],
+        "host_entry_path": browser_host["path"],
+        "host_entry_sha256": browser_host["sha256"],
+        "kernel_asset_path": browser_kernel["path"],
+        "kernel_asset_sha256": browser_kernel["sha256"],
         "service_worker_sha256": service_worker["sha256"],
     },
     "build_policy_sha256": build_policy_sha256,

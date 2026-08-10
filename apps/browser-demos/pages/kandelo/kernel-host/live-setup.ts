@@ -97,6 +97,19 @@ import {
 } from "../url-state";
 import { verifyImportedSealsForCurrentBoot } from "./boot-current-boundary";
 import {
+  candidateEvidenceBootDescriptor,
+  candidateEvidenceKernelInitOptions,
+  candidateEvidenceLiveDemoId,
+  createProtectedCandidatePagesVfsPlacement,
+  installProtectedCandidatePagesActivation,
+  resolveCandidateEvidenceBootExecutable,
+  fetchProtectedCandidateVfs,
+  PROTECTED_BROWSER_EVIDENCE_MAX_PROCESS_MEMORY_BYTES,
+  readInjectedProtectedBrowserEvidence,
+  type InjectedProtectedCandidateVfsV1,
+  type ProtectedCandidatePagesVfsPlacement,
+} from "./candidate-evidence-vfs";
+import {
   resolveOptionalDemoVfsUrl,
   type OptionalDemoVfsImage,
 } from "./optional-demo-vfs";
@@ -450,6 +463,8 @@ interface LiveProfile {
   image: LiveVfsImage | null;
   vfsUrl: string;
   vfsSource?: LiveVfsSource;
+  candidateEvidence?: InjectedProtectedCandidateVfsV1;
+  candidateVfsPlacement?: ProtectedCandidatePagesVfsPlacement;
   software?: SoftwareProfile;
   descriptor: BootDescriptor;
   shell: ShellProfile;
@@ -589,17 +604,58 @@ export async function createLiveHost(
   let currentKernel: BrowserKernel | null = null;
   let bootSeq = 0;
   let serviceWorkerReady: Promise<ServiceWorker> | null = null;
-  const localGalleryItems = liveGalleryItems();
-
-  const initialDescriptor = await descriptorForBootQuery(
-    opts.vfsUrl,
-    opts.demo,
+  const candidateEvidence = readInjectedProtectedBrowserEvidence(
+    window.__KANDELO_ABI_STAGING_BROWSER_EVIDENCE__,
   );
-  const host = new LiveKernelHost({
+  const candidateVfsPlacement = candidateEvidence === undefined
+    ? undefined
+    : createProtectedCandidatePagesVfsPlacement(
+      candidateEvidence.vfs,
+      async (source) => {
+        if (source.pagesLoad === "lazy" && source.optionalImage !== undefined) {
+          const resolved = await resolveOptionalDemoVfsUrl(
+            source.optionalImage,
+            undefined,
+            source,
+          );
+          if (resolved !== source.url) {
+            throw new Error("candidate Pages VFS resolver changed its protected URL");
+          }
+        }
+        return fetchProtectedCandidateVfs(source);
+      },
+    );
+  const protectedProfile = candidateEvidence === undefined
+    ? undefined
+    : profileForCandidateEvidence(candidateEvidence, candidateVfsPlacement!);
+  const localGalleryItems = protectedProfile === undefined
+    ? liveGalleryItems()
+    : [];
+
+  const initialDescriptor = protectedProfile?.descriptor ??
+    await descriptorForBootQuery(opts.vfsUrl, opts.demo);
+  let host: LiveKernelHost;
+  let protectedBoot: Promise<void> | undefined;
+  const activateProtectedProfile = (): Promise<void> => {
+    if (protectedProfile === undefined || candidateVfsPlacement === undefined) {
+      return Promise.reject(new Error("protected candidate profile is unavailable"));
+    }
+    protectedBoot ??= (async () => {
+      await candidateVfsPlacement.activate();
+      await startBoot(host, protectedProfile, protectedProfile.descriptor);
+    })();
+    return protectedBoot;
+  };
+  host = new LiveKernelHost({
     status: "booting",
     descriptor: initialDescriptor,
     galleryItems: localGalleryItems,
     applyBootDescriptor: async (desc, h) => {
+      if (protectedProfile !== undefined) {
+        assertProtectedCandidateDescriptor(desc, protectedProfile.descriptor);
+        await activateProtectedProfile();
+        return;
+      }
       await startBoot(h, profileForDescriptor(desc, "none"), desc);
     },
   });
@@ -653,17 +709,27 @@ export async function createLiveHost(
     return ready;
   };
 
-  void startBoot(
-    host,
-    profileForDescriptor(initialDescriptor, opts.fb),
-    initialDescriptor,
-  );
-  void requireServiceWorker()
-    .then(() => refreshSoftwareGallery(host, localGalleryItems))
-    .catch((err) => {
-      console.warn("Service worker gate failed before gallery refresh:", err);
-      host.setGalleryItems(localGalleryItems);
-    });
+  if (protectedProfile === undefined) {
+    void startBoot(
+      host,
+      profileForDescriptor(initialDescriptor, opts.fb),
+      initialDescriptor,
+    );
+    void requireServiceWorker()
+      .then(() => refreshSoftwareGallery(host, localGalleryItems))
+      .catch((err) => {
+        console.warn("Service worker gate failed before gallery refresh:", err);
+        host.setGalleryItems(localGalleryItems);
+      });
+  } else if (candidateVfsPlacement!.pagesLoad === null) {
+    void activateProtectedProfile();
+  } else {
+    installProtectedCandidatePagesActivation(
+      window,
+      candidateVfsPlacement!,
+      activateProtectedProfile,
+    );
+  }
   return host;
 
   async function startBoot(
@@ -709,6 +775,17 @@ export async function createLiveHost(
       h.detachKernel();
       showBootError(h, descriptor, err, bootStartedAt);
     }
+  }
+}
+
+function assertProtectedCandidateDescriptor(
+  actual: BootDescriptor,
+  expected: BootDescriptor,
+): void {
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(
+      "protected browser candidate evidence cannot switch boot descriptors",
+    );
   }
 }
 
@@ -797,6 +874,38 @@ function profileForDescriptor(desc: BootDescriptor, fb?: FbDemo): LiveProfile {
     vfsUrl,
     software: undefined,
     descriptor: desc,
+  };
+}
+
+function profileForCandidateEvidence(
+  evidence: InjectedProtectedCandidateVfsV1,
+  placement: ProtectedCandidatePagesVfsPlacement,
+): LiveProfile {
+  const liveDemoId = candidateEvidenceLiveDemoId(evidence.vfs.profile);
+  const base = profileFor(liveDemoId, "none");
+  const descriptor = candidateEvidenceBootDescriptor(base.descriptor, evidence);
+  return {
+    ...base,
+    vfsUrl: evidence.vfs.url,
+    vfsSource: undefined,
+    software: undefined,
+    descriptor,
+    candidateEvidence: evidence,
+    candidateVfsPlacement: placement,
+    init: base.init === undefined
+      ? undefined
+      : {
+        ...base.init,
+        argv: evidence.boot.argv.slice(),
+        env: envArray(evidence.boot.env),
+        cwd: evidence.boot.cwd,
+        uid: evidence.boot.uid,
+        gid: evidence.boot.gid,
+        // Candidate products own their complete executable closure. Pulling
+        // dinit or another program from the default Vite graph would make
+        // evidence pass with an incomplete candidate image.
+        programUrl: undefined,
+      },
   };
 }
 
@@ -1301,38 +1410,60 @@ async function bootProfile(
   // can take ownership before this boot resumes mutating its staged image.
   assertCurrent();
   const shellConfig = readImageShellConfig(buildFs);
-  if (
-    profile.id === "nginx-php" ||
-    profile.id === "wordpress-sqlite" ||
-    profile.id === "wordpress-mariadb"
-  ) {
-    writeVfsFile(buildFs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
-    ensureDirRecursive(buildFs, "/var/cache/opcache");
+  if (profile.candidateEvidence === undefined) {
+    if (
+      profile.id === "nginx-php" ||
+      profile.id === "wordpress-sqlite" ||
+      profile.id === "wordpress-mariadb"
+    ) {
+      writeVfsFile(buildFs, "/etc/php-fpm.conf", PATCHED_PHP_FPM_CONF);
+      ensureDirRecursive(buildFs, "/var/cache/opcache");
+    }
+    if (profile.id === "wordpress-sqlite") {
+      patchWordPressRuntimeConfig(buildFs, "sqlite");
+    } else if (profile.id === "wordpress-mariadb") {
+      patchMariaDbUnixSocketConfig(buildFs);
+      patchWordPressRuntimeConfig(buildFs, "mariadb");
+    }
+    bindImageOwnedRuntimeUrls(buildFs);
+    if (profile.init?.programUrl) {
+      tick(`staging ${profile.init.argv[0]}...`);
+      const bytes = await fetch(profile.init.programUrl)
+        .then(failOn(profile.init.argv[0]))
+        .then((r) => r.arrayBuffer());
+      assertCurrent();
+      ensureDirRecursive(buildFs, dirname(profile.init.argv[0]));
+      writeVfsBinary(buildFs, profile.init.argv[0], new Uint8Array(bytes), 0o755);
+    }
+    ensureDemoHomes(buildFs);
   }
-  if (profile.id === "wordpress-sqlite") {
-    patchWordPressRuntimeConfig(buildFs, "sqlite");
-  } else if (profile.id === "wordpress-mariadb") {
-    patchMariaDbUnixSocketConfig(buildFs);
-    patchWordPressRuntimeConfig(buildFs, "mariadb");
-  }
-  bindImageOwnedRuntimeUrls(buildFs);
-  if (profile.init?.programUrl) {
-    tick(`staging ${profile.init.argv[0]}...`);
-    const bytes = await fetch(profile.init.programUrl)
-      .then(failOn(profile.init.argv[0]))
-      .then((r) => r.arrayBuffer());
-    assertCurrent();
-    ensureDirRecursive(buildFs, dirname(profile.init.argv[0]));
-    writeVfsBinary(buildFs, profile.init.argv[0], new Uint8Array(bytes), 0o755);
-  }
-  ensureDemoHomes(buildFs);
   // Bake the shell + gallery-software binaries into the image before the
   // worker takes ownership. In the legacy path these were written into a
   // main-thread-shared memfs *after* boot via `kernel.fs`; the kernel-owned FS
   // has no main-thread handle, so they must be part of the image bytes.
   let shellProgramBytes: ArrayBuffer | undefined;
-  if (shellConfig) {
+  let candidateShell: { path: string; argv: string[] } | undefined;
+  if (
+    profile.candidateEvidence !== undefined &&
+    profile.init === undefined
+  ) {
+    // The candidate evidence VFS does not import fallback binaries. A missing
+    // normal shell is an incomplete product, not permission to stage the
+    // protected checkout's Bash or Dash into candidate bytes.
+    const programPath = resolveCandidateEvidenceBootExecutable(
+      buildFs,
+      profile.candidateEvidence.boot,
+    );
+    candidateShell = {
+      path: programPath,
+      argv: profile.candidateEvidence.boot.argv.slice(),
+    };
+  } else if (shellConfig) {
     assertImageShellExecutable(buildFs, shellConfig.path);
+  } else if (profile.candidateEvidence !== undefined) {
+    throw new Error(
+      "candidate service product lacks its image-owned shell configuration",
+    );
   } else {
     const [bashBytes, dashBytes] = await Promise.all([
       fetch(bashWasmUrl)
@@ -1346,7 +1477,9 @@ async function bootProfile(
     stageShellUtilities(buildFs, dashBytes, bashBytes);
     shellProgramBytes = bashBytes;
   }
-  stageSoftwareBinaries(buildFs, softwareBinaries);
+  if (profile.candidateEvidence === undefined) {
+    stageSoftwareBinaries(buildFs, softwareBinaries);
+  }
   const hasDinitctl = vfsPathExists(buildFs, DINITCTL_PATH);
   const imageConfig = readImageConfig(buildFs);
   const rawPresentation =
@@ -1364,8 +1497,10 @@ async function bootProfile(
     : [];
   const assets =
     imageAssets.length > 0 ? imageAssets : builtinDemoAssets(profile.id);
-  await stageConfiguredAssets(buildFs, assets, tick, assertCurrent);
-  assertCurrent();
+  if (profile.candidateEvidence === undefined) {
+    await stageConfiguredAssets(buildFs, assets, tick, assertCurrent);
+    assertCurrent();
+  }
 
   const closedLazyAssets = await loadProfileClosedLazyAssets(
     buildFs,
@@ -1405,6 +1540,12 @@ async function bootProfile(
   try {
     kernel = new BrowserKernel({
       kernelOwnedFs: true,
+      ...(profile.candidateEvidence === undefined
+        ? {}
+        : {
+          maxProcessMemoryBytes:
+            PROTECTED_BROWSER_EVIDENCE_MAX_PROCESS_MEMORY_BYTES,
+        }),
       // WHY: the service worker, guest sockets, and lazy VFS are separate
       // transports. The live shell must explicitly give its kernel the same
       // deployment proxy or release-hosted lazy bottles bypass it under COEP.
@@ -1439,11 +1580,18 @@ async function bootProfile(
         );
       },
     });
-    await kernel.initFromImage({
-      kernelWasm: kernelBytes,
-      vfsImage: vfsImageBytes,
-      ...(closedLazyAssets === undefined ? {} : { closedLazyAssets }),
-    });
+    await kernel.initFromImage(profile.candidateEvidence === undefined
+      ? {
+        kernelWasm: kernelBytes,
+        vfsImage: vfsImageBytes,
+        ...(closedLazyAssets === undefined ? {} : { closedLazyAssets }),
+      }
+      : candidateEvidenceKernelInitOptions(
+        profile.candidateEvidence,
+        kernelBytes,
+        vfsImageBytes,
+        closedLazyAssets,
+      ));
     assertCurrent();
     host.attachKernel(kernel);
     const shellIdentity = shellIdentityForProfile(
@@ -1451,9 +1599,9 @@ async function bootProfile(
       profile.init ? undefined : effectiveBoot,
     );
     host.setDefaultShell({
-      programPath: shellConfig?.path ?? "/bin/bash",
+      programPath: candidateShell?.path ?? shellConfig?.path ?? "/bin/bash",
       ...(shellProgramBytes ? { programBytes: shellProgramBytes } : {}),
-      argv: shellConfig?.argv ?? ["bash", "-l", "-i"],
+      argv: candidateShell?.argv ?? shellConfig?.argv ?? ["bash", "-l", "-i"],
       env: shellIdentity.env,
       cwd: shellIdentity.cwd,
       uid: shellIdentity.uid,
@@ -1826,6 +1974,12 @@ function patchWordPressPersistentMysqli(fs: MemoryFileSystem): void {
 }
 
 async function loadVfsImageBytes(profile: LiveProfile): Promise<ArrayBuffer> {
+  if (profile.candidateEvidence !== undefined) {
+    if (profile.candidateVfsPlacement === undefined) {
+      throw new Error("candidate evidence VFS lacks its Pages placement boundary");
+    }
+    return profile.candidateVfsPlacement.bytes();
+  }
   if (!profile.software) {
     const vfsUrl = await resolveProfileVfsUrl(profile);
     return fetch(vfsUrl)

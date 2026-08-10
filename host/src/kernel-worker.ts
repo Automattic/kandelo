@@ -15093,6 +15093,7 @@ export class CentralizedKernelWorker {
       pipeCloseWrite,
       timeoutMs,
       maxResponseBytes,
+      request.method,
       label,
     );
     const retryBudget = opts.emptyResponseRetries ?? 1;
@@ -15171,6 +15172,7 @@ export class CentralizedKernelWorker {
     pipeCloseWrite: (pid: number, pipeIdx: number) => number,
     timeoutMs: number,
     maxResponseBytes: number,
+    requestMethod: string,
     label: string,
   ): Promise<HttpResponse> {
     return new Promise<HttpResponse>((resolve, reject) => {
@@ -15232,7 +15234,7 @@ export class CentralizedKernelWorker {
         if (sawWriteOpen && !writeOpen && !gotData) {
           // Server closed its end and we drained all bytes.
           const raw = chunks.concat();
-          finish(parseRawHttpResponse(raw));
+          finish(parseRawHttpResponse(raw, requestMethod));
           return;
         }
 

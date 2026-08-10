@@ -1255,6 +1255,16 @@ readonly = false
 
         let expected_archives = BTreeMap::from([
             (
+                "browser-main-shell",
+                set(&[concat!(
+                    "doom-shareware-wad|https://cdn.jsdelivr.net/gh/gaborbata/",
+                    "vanilla-mocha-doom@15825a07a48806bcfb242a42afd5ee7cb3c9a3a4/",
+                    "wads/doom1.wad|",
+                    "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771|",
+                    "Runtime|embedded",
+                )]),
+            ),
+            (
                 "browser-node",
                 set(&[concat!(
                     "npm-runtime|https://registry.npmjs.org/npm/-/npm-10.9.2.tgz|",

@@ -39,9 +39,10 @@ tools through `scripts/dev-shell.sh`.
   Kandelo revision bound by the request policy. Neither source is a synthetic
   merge.
 - Product manifests own identity, composition, software roots,
-  materialization, mounts, boot, and evidence IDs. Evidence policy maps stable
-  IDs to bounded typed probes; it cannot change product software inputs or
-  Pages placement.
+  materialization, mounts, boot, and basic product evidence IDs. The test
+  registry owns supplemental reviewed evidence IDs and applicability. Evidence
+  policy maps those stable IDs to bounded typed probes; it cannot change
+  product software inputs or Pages placement.
 - Pages and test registries remain the only selection authorities. Every Pages
   product is required for ABI/kernel/host changes. Test applicability retains
   required, informational, or not-applicable semantics.
@@ -176,15 +177,23 @@ target_abi = { version, snapshot_sha256 }
 kernel = { wasm_sha256, bytes, abi_version, snapshot_sha256 }
 host = { bundle_sha256, bytes, generated_abi_sha256,
          worker_protocol_sha256 }
-browser = { bundle_sha256, bytes, service_worker_sha256 }
+browser = { bundle_sha256, bytes,
+            harness_entry_path, harness_entry_sha256, harness_entry_bytes,
+            host_entry_path, host_entry_sha256, host_entry_bytes,
+            kernel_asset_path, kernel_asset_sha256,
+            service_worker_sha256 }
 build_policy_sha256
 inventory = [{ path, sha256, bytes }]
 ```
 
-An uncredentialed exact-head job builds it. Protected code verifies regular
-file inventory, source/ABI bindings, and Wasm metadata without executing the
-bundle. Node/browser evidence downloads exact runtime artifacts from the same
-run; final product evidence binds all digests.
+An uncredentialed exact-head job builds it. The browser host entry is exact
+candidate runtime-under-test. The bundle's harness entry is an inert expected
+copy only: a later protected evidence job rebuilds that harness from its fresh
+protected checkout, requires file-for-file byte equality, and serves only the
+fresh rebuild. Protected code verifies regular-file inventory, source/ABI
+bindings, and Wasm metadata without executing candidate build code. Node and
+browser evidence download exact runtime artifacts from the same run; final
+product evidence binds all digests.
 
 ### Resolved product plan and handoff
 
@@ -1233,6 +1242,11 @@ known sibling result, retries, timeouts, override links, and background status.
 - Consumes: same exact runtime/VFS/definition as Task 8, delivered to a local
   browser server with candidate reference mode.
 - Produces: canonical bounded `ProductEvidenceResultV1` for host `browser`.
+- Pages placement remains registry-owned and observable: an eager candidate
+  begins resolving its whole-VFS bytes before protected product activation,
+  while a lazy candidate makes no whole-VFS request until that activation.
+  Guest boot stays behind the activation boundary in both modes, so inner lazy
+  materialization is measured separately from whole-VFS placement.
 
 - [ ] **Step 1: Write failing browser fixture/selection tests**
 

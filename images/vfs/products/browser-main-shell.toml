@@ -49,6 +49,13 @@ formulae = [
 ]
 materialization = "lazy"
 
+[[software.archive]]
+id = "doom-shareware-wad"
+url = "https://cdn.jsdelivr.net/gh/gaborbata/vanilla-mocha-doom@15825a07a48806bcfb242a42afd5ee7cb3c9a3a4/wads/doom1.wad"
+sha256 = "1d7d43be501e67d927e415e0b8f3e29c3bf33075e859721816f652a526cac771"
+role = "runtime"
+materialization = "embedded"
+
 [[mounts]]
 path = "/"
 source = "built-image"

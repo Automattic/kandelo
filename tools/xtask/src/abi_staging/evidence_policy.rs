@@ -53,6 +53,7 @@ pub(crate) const NODE_EVIDENCE_IMPLEMENTATION_PATHS: &[&str] = &[
     "host/src/vfs/hardlink-graph.ts",
     "host/src/vfs/load-image.ts",
     "host/src/vfs/memory-fs.ts",
+    "host/src/vfs/product-mount-contract.ts",
     "host/src/vfs/sharedfs-vendor.ts",
     "package-lock.json",
     "package.json",
@@ -61,6 +62,34 @@ pub(crate) const NODE_EVIDENCE_IMPLEMENTATION_PATHS: &[&str] = &[
     "scripts/dev-shell.sh",
     "tools/xtask/src/abi_staging/evidence_policy.rs",
 ];
+
+pub(crate) fn browser_evidence_implementation_paths() -> Vec<&'static str> {
+    let mut paths = NODE_EVIDENCE_IMPLEMENTATION_PATHS.to_vec();
+    paths.extend([
+        "apps/browser-demos/abi-staging-browser-harness.config.ts",
+        "apps/browser-demos/abi-staging-browser-host.config.ts",
+        "apps/browser-demos/abi-staging-browser-host.ts",
+        "apps/browser-demos/abi-staging-browser-no-default-artifacts.ts",
+        "apps/browser-demos/lib/homebrew-closed-acceptance.ts",
+        "apps/browser-demos/package-lock.json",
+        "apps/browser-demos/package.json",
+        "apps/browser-demos/pages/abi-staging-product-evidence/index.html",
+        "apps/browser-demos/pages/abi-staging-product-evidence/main.ts",
+        "apps/browser-demos/pages/abi-staging-product-evidence/pty-command.ts",
+        "apps/browser-demos/pages/kandelo/kernel-host/candidate-evidence-vfs.ts",
+        "apps/browser-demos/playwright-closed-acceptance.ts",
+        "apps/browser-demos/playwright-server-policy.ts",
+        "apps/browser-demos/playwright.config.ts",
+        "apps/browser-demos/test/abi-staging-product-evidence.spec.ts",
+        "apps/browser-demos/test/support/terminal-command.ts",
+        "host/src/vfs/closed-lazy-assets.ts",
+        "scripts/abi-staging-product-browser-evidence.ts",
+        "scripts/abi-staging-protected-browser-operation.ts",
+    ]);
+    paths.sort_unstable();
+    paths.dedup();
+    paths
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -246,6 +275,14 @@ pub struct RuntimeHostIdentityV1 {
 pub struct RuntimeBrowserIdentityV1 {
     pub bundle_sha256: String,
     pub bytes: u64,
+    pub harness_entry_bytes: u64,
+    pub harness_entry_path: String,
+    pub harness_entry_sha256: String,
+    pub host_entry_bytes: u64,
+    pub host_entry_path: String,
+    pub host_entry_sha256: String,
+    pub kernel_asset_path: String,
+    pub kernel_asset_sha256: String,
     pub service_worker_sha256: String,
 }
 
@@ -595,6 +632,53 @@ pub fn validate_runtime_bundle(
     )?;
     if sha256(&service_worker) != bundle.browser.service_worker_sha256 {
         return Err("runtime browser service worker identity differs".to_string());
+    }
+    validate_relative_path(&bundle.browser.harness_entry_path)?;
+    if bundle.browser.harness_entry_path
+        != "browser/dist/abi-staging-harness/index.html"
+    {
+        return Err("runtime browser harness entry path is invalid".to_string());
+    }
+    let browser_harness = read_required_regular_bounded(
+        &artifact_root.join(&bundle.browser.harness_entry_path),
+        "browser evidence harness entry",
+        MAX_RUNTIME_NODE_ENTRY_BYTES,
+    )?;
+    if browser_harness.len() as u64 != bundle.browser.harness_entry_bytes
+        || sha256(&browser_harness) != bundle.browser.harness_entry_sha256
+    {
+        return Err("runtime browser harness entry identity differs".to_string());
+    }
+    validate_relative_path(&bundle.browser.host_entry_path)?;
+    if bundle.browser.host_entry_path != "browser/dist/abi-staging/browser-host.js" {
+        return Err("runtime browser host entry path is invalid".to_string());
+    }
+    let browser_host = read_required_regular_bounded(
+        &artifact_root.join(&bundle.browser.host_entry_path),
+        "browser host entry",
+        MAX_RUNTIME_NODE_ENTRY_BYTES,
+    )?;
+    if browser_host.len() as u64 != bundle.browser.host_entry_bytes
+        || sha256(&browser_host) != bundle.browser.host_entry_sha256
+    {
+        return Err("runtime browser host entry identity differs".to_string());
+    }
+    validate_relative_path(&bundle.browser.kernel_asset_path)?;
+    if !bundle.browser.kernel_asset_path.starts_with("browser/dist/")
+        || !bundle.browser.kernel_asset_path.ends_with(".wasm")
+    {
+        return Err("runtime browser kernel asset path is invalid".to_string());
+    }
+    let browser_kernel = read_required_regular_bounded(
+        &artifact_root.join(&bundle.browser.kernel_asset_path),
+        "browser kernel Wasm asset",
+        MAX_KERNEL_BYTES,
+    )?;
+    if browser_kernel != kernel
+        || bundle.browser.kernel_asset_sha256 != bundle.kernel.wasm_sha256
+        || sha256(&browser_kernel) != bundle.browser.kernel_asset_sha256
+    {
+        return Err("runtime browser kernel asset differs from exact kernel Wasm".to_string());
     }
 
     validate_runtime_artifact_inventory(artifact_root, bundle)
@@ -996,10 +1080,7 @@ fn resolve_evidence_registry(
                 paths = NODE_EVIDENCE_IMPLEMENTATION_PATHS.to_vec();
             }
             EvidenceHostV1::Browser => {
-                let runner_path = "scripts/abi-staging-product-browser-evidence.ts";
-                if repository_root.join(runner_path).is_file() {
-                    paths.push(runner_path);
-                }
+                paths = browser_evidence_implementation_paths();
             }
         }
         let mut implementation = Vec::with_capacity(paths.len());
@@ -1812,6 +1893,7 @@ suite = "sqlite-product-node"
             "host/src/vfs/hardlink-graph.ts",
             "host/src/vfs/load-image.ts",
             "host/src/vfs/memory-fs.ts",
+            "host/src/vfs/product-mount-contract.ts",
             "host/src/vfs/sharedfs-vendor.ts",
             "package-lock.json",
             "package.json",
@@ -1826,11 +1908,14 @@ suite = "sqlite-product-node"
             fs::create_dir_all(destination.parent().unwrap()).unwrap();
             fs::copy(source, destination).unwrap();
         }
-        let registry = parse_evidence_registry(
+        let mut registry = parse_evidence_registry(
             Path::new("evidence.toml"),
             all_runner_registry().as_bytes(),
         )
         .unwrap();
+        registry
+            .definitions
+            .retain(|definition| definition.host == super::EvidenceHostV1::Node);
         let initial = super::resolve_evidence_registry(fixture.path(), &registry).unwrap();
         for definition in initial
             .definitions
@@ -1865,6 +1950,35 @@ suite = "sqlite-product-node"
                 .definition_sha256,
             "changing the protected VFS inspector must rotate Node evidence identity",
         );
+    }
+
+    #[test]
+    fn browser_definition_identity_covers_the_protected_playwright_runner() {
+        let repository = crate::repo_root();
+        let registry_path = repository.join("abi/staging/evidence-definitions.toml");
+        let registry = parse_evidence_registry(
+            &registry_path,
+            &fs::read(&registry_path).unwrap(),
+        )
+        .unwrap();
+        let resolved = super::resolve_evidence_registry(&repository, &registry).unwrap();
+        let expected = super::browser_evidence_implementation_paths();
+        let browser = resolved
+            .definitions
+            .iter()
+            .filter(|definition| definition.host == super::EvidenceHostV1::Browser)
+            .collect::<Vec<_>>();
+        assert!(!browser.is_empty());
+        for definition in browser {
+            assert_eq!(
+                definition
+                    .implementation
+                    .iter()
+                    .map(|implementation| implementation.path.as_str())
+                    .collect::<Vec<_>>(),
+                expected,
+            );
+        }
     }
 
     fn git(root: &Path, args: &[&str]) -> String {
@@ -2005,9 +2119,31 @@ suite = "sqlite-product-node"
         )
         .unwrap();
         fs::write(artifacts.path().join("browser/dist/index.js"), b"browser\n").unwrap();
+        fs::create_dir_all(artifacts.path().join("browser/dist/abi-staging")).unwrap();
+        fs::create_dir_all(artifacts.path().join("browser/dist/abi-staging-harness"))
+            .unwrap();
+        fs::write(
+            artifacts
+                .path()
+                .join("browser/dist/abi-staging/browser-host.js"),
+            b"export class BrowserKernel {}\n",
+        )
+        .unwrap();
+        fs::write(
+            artifacts
+                .path()
+                .join("browser/dist/abi-staging-harness/index.html"),
+            b"<!doctype html><title>protected evidence harness</title>\n",
+        )
+        .unwrap();
         fs::write(
             artifacts.path().join("browser/dist/service-worker.js"),
             b"service worker\n",
+        )
+        .unwrap();
+        fs::copy(
+            artifacts.path().join("kernel.wasm"),
+            artifacts.path().join("browser/dist/kernel.wasm"),
         )
         .unwrap();
         let entries = inventory(artifacts.path());
@@ -2049,6 +2185,39 @@ suite = "sqlite-product-node"
             browser: RuntimeBrowserIdentityV1 {
                 bundle_sha256: browser_sha,
                 bytes: browser_bytes,
+                harness_entry_bytes: fs::metadata(
+                    artifacts
+                        .path()
+                        .join("browser/dist/abi-staging-harness/index.html"),
+                )
+                .unwrap()
+                .len(),
+                harness_entry_path: "browser/dist/abi-staging-harness/index.html".to_string(),
+                harness_entry_sha256: sha(&fs::read(
+                    artifacts
+                        .path()
+                        .join("browser/dist/abi-staging-harness/index.html"),
+                )
+                .unwrap()),
+                host_entry_bytes: fs::metadata(
+                    artifacts
+                        .path()
+                        .join("browser/dist/abi-staging/browser-host.js"),
+                )
+                .unwrap()
+                .len(),
+                host_entry_path: "browser/dist/abi-staging/browser-host.js".to_string(),
+                host_entry_sha256: sha(&fs::read(
+                    artifacts
+                        .path()
+                        .join("browser/dist/abi-staging/browser-host.js"),
+                )
+                .unwrap()),
+                kernel_asset_path: "browser/dist/kernel.wasm".to_string(),
+                kernel_asset_sha256: sha(&fs::read(
+                    artifacts.path().join("browser/dist/kernel.wasm"),
+                )
+                .unwrap()),
                 service_worker_sha256: sha(&fs::read(
                     artifacts.path().join("browser/dist/service-worker.js"),
                 )

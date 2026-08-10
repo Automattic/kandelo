@@ -129,7 +129,14 @@ function fixtureVfsForDefinition(definition: GeneratedEvidenceDefinitionV1): Uin
 }
 const RUNTIME_FILES = {
   "flake.lock": encoder.encode('{"nodes":{},"root":"root","version":7}\n'),
+  "browser/dist/abi-staging-harness/index.html": encoder.encode(
+    "<!doctype html><title>protected evidence harness</title>\n",
+  ),
+  "browser/dist/abi-staging/browser-host.js": encoder.encode(
+    "export class BrowserKernel {}\n",
+  ),
   "browser/dist/index.js": encoder.encode("export const browser = true;\n"),
+  "browser/dist/kernel.wasm": encoder.encode("miniature kernel"),
   "browser/dist/service-worker.js": encoder.encode("service worker"),
   "host/dist/a-b.js": encoder.encode("export const dash = true;\n"),
   "host/dist/a_b.js": encoder.encode("export const underscore = true;\n"),
@@ -175,6 +182,20 @@ const RUNTIME_BUNDLE = {
   browser: {
     bundle_sha256: sha256Hex(canonicalJsonBytes(browserInventory)),
     bytes: browserInventory.reduce((total, entry) => total + entry.bytes, 0),
+    harness_entry_bytes:
+      RUNTIME_FILES["browser/dist/abi-staging-harness/index.html"].byteLength,
+    harness_entry_path: "browser/dist/abi-staging-harness/index.html",
+    harness_entry_sha256: sha256Hex(
+      RUNTIME_FILES["browser/dist/abi-staging-harness/index.html"],
+    ),
+    host_entry_bytes:
+      RUNTIME_FILES["browser/dist/abi-staging/browser-host.js"].byteLength,
+    host_entry_path: "browser/dist/abi-staging/browser-host.js",
+    host_entry_sha256: sha256Hex(
+      RUNTIME_FILES["browser/dist/abi-staging/browser-host.js"],
+    ),
+    kernel_asset_path: "browser/dist/kernel.wasm",
+    kernel_asset_sha256: sha256Hex(RUNTIME_FILES["browser/dist/kernel.wasm"]),
     service_worker_sha256: sha256Hex(RUNTIME_FILES["browser/dist/service-worker.js"]),
   },
   build_policy_sha256: "4".repeat(64),
@@ -266,14 +287,30 @@ async function realSdkFixtureVfs(
   const snapshot = JSON.parse(decoder.decode(snapshotBytes)) as {
     abi_version: number;
   };
+  // Model the staged product builder: the sysroot and libc++ are separate
+  // declared inputs. The developer sysroot may point at a machine-local
+  // libc++ cache, which must never be preserved in candidate VFS bytes.
+  const stagedSysroot = join(root, "staged-sysroot");
+  cpSync(join(repositoryRoot, "sysroot"), stagedSysroot, { recursive: true });
+  rmSync(join(stagedSysroot, "include/c++/v1"), {
+    recursive: true,
+    force: true,
+  });
+  rmSync(join(stagedSysroot, "lib/libc++.a"), { force: true });
+  rmSync(join(stagedSysroot, "lib/libc++abi.a"), { force: true });
+  const libcxxHeaders = realpathSync(
+    join(repositoryRoot, "sysroot/include/c++/v1"),
+  );
+  const libcxxDirectory = resolve(libcxxHeaders, "../../..");
   const outputPath = join(root, "developer-kandelo-sdk.vfs.zst");
   await buildKandeloSdkVfsImage({
-    sysrootDirectory: join(repositoryRoot, "sysroot"),
+    sysrootDirectory: stagedSysroot,
     glueDirectory: join(repositoryRoot, "libc/glue"),
     glueObjectsDirectory: glueObjects,
     sdkBinDirectory: join(repositoryRoot, "sdk/kandelo/bin"),
     configSitePath: join(repositoryRoot, "sdk/config.site"),
     clangResourceDirectory: resourceDirectory,
+    libcxxDirectory,
     licenseFiles: [
       {
         hostPath: join(repositoryRoot, "LICENSE"),
@@ -347,6 +384,10 @@ function exactBuiltHostRuntimeFixture(
     join(repositoryRoot, "host/src/worker-protocol.ts"),
   ));
   const browserBundleBytes = encoder.encode("exact browser fixture\n");
+  const browserHarnessBytes = encoder.encode(
+    "<!doctype html><title>protected evidence harness</title>\n",
+  );
+  const browserHostBytes = encoder.encode("export class BrowserKernel {}\n");
   const serviceWorkerBytes = encoder.encode("exact service worker fixture\n");
   const files: Array<[string, Uint8Array]> = [
     ["kernel.wasm", kernelWasmBytes],
@@ -355,6 +396,9 @@ function exactBuiltHostRuntimeFixture(
     ["host/worker-protocol.ts", workerProtocolBytes],
     ["host/package.json", canonicalJsonBytes({ type: "module" })],
     ["browser/dist/index.js", browserBundleBytes],
+    ["browser/dist/abi-staging-harness/index.html", browserHarnessBytes],
+    ["browser/dist/abi-staging/browser-host.js", browserHostBytes],
+    ["browser/dist/kernel.wasm", kernelWasmBytes],
     ["browser/dist/service-worker.js", serviceWorkerBytes],
   ];
   for (const [path, bytes] of files) {
@@ -408,6 +452,14 @@ function exactBuiltHostRuntimeFixture(
     browser: {
       bundle_sha256: sha256Hex(canonicalJsonBytes(browserInventory)),
       bytes: browserInventory.reduce((total, entry) => total + entry.bytes, 0),
+      harness_entry_bytes: browserHarnessBytes.byteLength,
+      harness_entry_path: "browser/dist/abi-staging-harness/index.html",
+      harness_entry_sha256: sha256Hex(browserHarnessBytes),
+      host_entry_bytes: browserHostBytes.byteLength,
+      host_entry_path: "browser/dist/abi-staging/browser-host.js",
+      host_entry_sha256: sha256Hex(browserHostBytes),
+      kernel_asset_path: "browser/dist/kernel.wasm",
+      kernel_asset_sha256: sha256Hex(kernelWasmBytes),
       service_worker_sha256: sha256Hex(serviceWorkerBytes),
     },
     build_policy_sha256: "8".repeat(64),

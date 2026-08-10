@@ -122,40 +122,107 @@ export function buildRawHttpRequest(req: HttpRequest): Uint8Array {
  * {@link HttpResponse}. Decodes chunked transfer encoding when present and
  * removes the `Transfer-Encoding` header so callers see a flat body.
  */
-export function parseRawHttpResponse(data: Uint8Array): HttpResponse {
+export function parseRawHttpResponse(
+  data: Uint8Array,
+  requestMethod = "GET",
+): HttpResponse {
+  if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u.test(requestMethod)) {
+    throw new Error("in-kernel HTTP request method is malformed");
+  }
   const headerEnd = findHeaderEnd(data);
   if (headerEnd < 0) {
-    return { status: 200, headers: {}, body: data };
+    throw new Error("in-kernel HTTP response lacks a header terminator");
   }
 
   const headerText = decoder.decode(data.subarray(0, headerEnd));
   const lines = headerText.split("\r\n");
-  const statusMatch = lines[0]?.match(/^HTTP\/[\d.]+ (\d+)/);
-  const status = statusMatch ? parseInt(statusMatch[1]!, 10) : 200;
+  const statusMatch = lines[0]?.match(
+    /^HTTP\/(?:1\.0|1\.1) ([1-5][0-9]{2})(?: [^\r\n]*)?$/u,
+  );
+  if (statusMatch === undefined || statusMatch === null) {
+    throw new Error("in-kernel HTTP response has a malformed status line");
+  }
+  const status = parseInt(statusMatch[1]!, 10);
 
   const headers: Record<string, string> = {};
+  const valuesByLowerName = new Map<string, string[]>();
   for (let i = 1; i < lines.length; i++) {
-    const line = lines[i]!;
-    const colon = line.indexOf(": ");
-    if (colon < 0) continue;
-    const key = line.slice(0, colon);
-    const value = line.slice(colon + 2);
-    if (key.toLowerCase() === "set-cookie" && headers[key]) {
-      headers[key] += "\n" + value;
+    const { key, value } = parseHttpFieldLine(lines[i]!, "header");
+    const lowerName = key.toLowerCase();
+    const values = valuesByLowerName.get(lowerName) ?? [];
+    values.push(value);
+    valuesByLowerName.set(lowerName, values);
+    const existingKey = Object.keys(headers).find(
+      (candidate) => candidate.toLowerCase() === lowerName,
+    );
+    if (lowerName === "set-cookie" && existingKey !== undefined) {
+      headers[existingKey] += "\n" + value;
     } else {
       headers[key] = value;
     }
   }
 
   let body = data.subarray(headerEnd + 4);
-  const te = headers["Transfer-Encoding"] ?? headers["transfer-encoding"];
-  if (te && te.toLowerCase().includes("chunked")) {
-    body = decodeChunked(body);
-    delete headers["Transfer-Encoding"];
-    delete headers["transfer-encoding"];
+  const bodyForbidden = requestMethod.toUpperCase() === "HEAD" ||
+    status >= 100 && status < 200 || status === 204 || status === 304;
+  if (bodyForbidden && body.byteLength !== 0) {
+    throw new Error("in-kernel HTTP response must not contain a body");
+  }
+  const transferEncodings = valuesByLowerName.get("transfer-encoding") ?? [];
+  const contentLengths = valuesByLowerName.get("content-length") ?? [];
+  if (transferEncodings.length > 0 && contentLengths.length > 0) {
+    throw new Error("in-kernel HTTP response has conflicting body framing");
+  }
+  if (transferEncodings.length > 0) {
+    if (
+      transferEncodings.length !== 1 ||
+      transferEncodings[0]!.trim().toLowerCase() !== "chunked"
+    ) {
+      throw new Error("in-kernel HTTP response has unsupported transfer encoding");
+    }
+    if (!bodyForbidden) body = decodeChunked(body);
+    for (const key of Object.keys(headers)) {
+      if (key.toLowerCase() === "transfer-encoding") delete headers[key];
+    }
+  } else if (contentLengths.length > 0) {
+    if (
+      !contentLengths.every((value) => value === contentLengths[0]) ||
+      !/^(?:0|[1-9][0-9]*)$/u.test(contentLengths[0]!)
+    ) {
+      throw new Error("in-kernel HTTP response has an invalid Content-Length");
+    }
+    const expected = Number(contentLengths[0]);
+    if (
+      !Number.isSafeInteger(expected) ||
+      (!bodyForbidden && body.byteLength !== expected)
+    ) {
+      throw new Error("in-kernel HTTP response differs from its Content-Length");
+    }
   }
 
   return { status, headers, body: new Uint8Array(body) };
+}
+
+function parseHttpFieldLine(
+  line: string,
+  kind: "header" | "trailer",
+): { key: string; value: string } {
+  const colon = line.indexOf(":");
+  if (colon < 1) {
+    throw new Error(`in-kernel HTTP response has a malformed ${kind} line`);
+  }
+  const key = line.slice(0, colon);
+  if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u.test(key)) {
+    throw new Error(`in-kernel HTTP response has a malformed ${kind} name`);
+  }
+  const rawValue = line.slice(colon + 1);
+  if (/[^\t\x20-\x7e\x80-\xff]/u.test(rawValue)) {
+    throw new Error(`in-kernel HTTP response has a malformed ${kind} value`);
+  }
+  return {
+    key,
+    value: rawValue.replace(/^[\t ]*/u, "").replace(/[\t ]*$/u, ""),
+  };
 }
 
 /** Byte offset of the `\r\n\r\n` at the end of headers, or -1. */
@@ -171,30 +238,63 @@ function findHeaderEnd(data: Uint8Array): number {
   return -1;
 }
 
-/** Decode HTTP/1.1 chunked transfer encoding. Stops on a 0-sized chunk or
- *  malformed input — trailing trailers are ignored. */
+/** Decode a complete HTTP/1.1 chunked body, including its terminal trailers. */
 function decodeChunked(data: Uint8Array): Uint8Array {
   const chunks: Uint8Array[] = [];
   let pos = 0;
-  while (pos < data.length) {
-    let lineEnd = -1;
-    for (let i = pos; i + 1 < data.length; i++) {
-      if (data[i] === 0x0d && data[i + 1] === 0x0a) {
-        lineEnd = i;
-        break;
+  for (;;) {
+    const lineEnd = findCrlf(data, pos);
+    if (lineEnd < 0) {
+      throw new Error("in-kernel HTTP chunk size line is truncated");
+    }
+    const sizeLine = decoder.decode(data.subarray(pos, lineEnd));
+    const sizeMatch = /^([0-9A-Fa-f]+)(?:;[^\r\n]*)?$/u.exec(sizeLine);
+    if (sizeMatch === null) {
+      throw new Error("in-kernel HTTP response has a malformed chunk size");
+    }
+    const chunkSize = Number.parseInt(sizeMatch[1]!, 16);
+    if (!Number.isSafeInteger(chunkSize)) {
+      throw new Error("in-kernel HTTP response chunk size exceeds its bound");
+    }
+    const chunkStart = lineEnd + 2;
+    if (chunkSize === 0) {
+      pos = chunkStart;
+      for (;;) {
+        const trailerEnd = findCrlf(data, pos);
+        if (trailerEnd < 0) {
+          throw new Error("in-kernel HTTP response lacks its terminating chunk");
+        }
+        if (trailerEnd === pos) {
+          if (trailerEnd + 2 !== data.byteLength) {
+            throw new Error("in-kernel HTTP response has bytes after its chunked body");
+          }
+          return concatChunks(chunks);
+        }
+        const trailer = decoder.decode(data.subarray(pos, trailerEnd));
+        parseHttpFieldLine(trailer, "trailer");
+        pos = trailerEnd + 2;
       }
     }
-    if (lineEnd < 0) break;
-    const sizeLine = decoder.decode(data.subarray(pos, lineEnd)).trim();
-    const chunkSize = parseInt(sizeLine, 16);
-    if (Number.isNaN(chunkSize) || chunkSize === 0) break;
-    const chunkStart = lineEnd + 2;
     const chunkEnd = chunkStart + chunkSize;
-    if (chunkEnd > data.length) break;
+    if (chunkEnd > data.length) {
+      throw new Error("in-kernel HTTP response chunk is truncated");
+    }
+    if (
+      chunkEnd + 2 > data.length ||
+      data[chunkEnd] !== 0x0d || data[chunkEnd + 1] !== 0x0a
+    ) {
+      throw new Error("in-kernel HTTP response chunk lacks its terminator");
+    }
     chunks.push(data.subarray(chunkStart, chunkEnd));
     pos = chunkEnd + 2;
   }
-  return concatChunks(chunks);
+}
+
+function findCrlf(data: Uint8Array, start: number): number {
+  for (let index = start; index + 1 < data.length; index++) {
+    if (data[index] === 0x0d && data[index + 1] === 0x0a) return index;
+  }
+  return -1;
 }
 
 function concatChunks(chunks: Uint8Array[]): Uint8Array {

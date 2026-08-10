@@ -16,10 +16,12 @@
  *   mysqltest (transient, one per __runMariadbTest call)
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
-import type { MountSpec } from "@host/vfs/default-mounts";
 import kernelWasmUrl from "@kernel-wasm?url";
-import VFS_IMAGE_URL from "@binaries/programs/wasm32/mariadb-test.vfs.zst?url";
 import productCatalog from "../../../../images/vfs/products/generated/catalog.json";
+import {
+  hostMountSpecFromProductMounts,
+  type VfsMountIntentV1,
+} from "../../../../host/src/vfs/product-mount-contract";
 
 const MYSQL_PORT = 3306;
 const MARIADB_PRODUCT = productCatalog.products.find(
@@ -29,28 +31,29 @@ if (MARIADB_PRODUCT === undefined) {
   throw new Error("test-mariadb is absent from the canonical VFS product catalog");
 }
 const MARIADB_BOOT = MARIADB_PRODUCT.manifest.boot;
-const MARIADB_MOUNTS: MountSpec[] = MARIADB_PRODUCT.manifest.mounts.map(
-  (mount) => {
-    if (mount.source === "built-image") {
-      return {
-      path: mount.path,
-      source: "image",
-      readonly: mount.readonly,
-      };
-    }
-    if (mount.source !== "scratch" || mount.mode === undefined) {
-      throw new Error(`test-mariadb has an unsupported mount at ${mount.path}`);
-    }
-    return {
-      path: mount.path,
-      source: "scratch",
-      mode: Number.parseInt(mount.mode, 8),
-      uid: mount.uid,
-      gid: mount.gid,
-      ephemeral: mount.ephemeral,
-    };
-  },
+const MARIADB_MOUNTS = hostMountSpecFromProductMounts(
+  MARIADB_PRODUCT.manifest.mounts as VfsMountIntentV1[],
 );
+
+const MARIADB_TEST_VFS_IMPORTERS = {
+  ...import.meta.glob("../../../../local-binaries/programs/wasm32/mariadb-test.vfs.zst", {
+    query: "?url",
+    import: "default",
+  }),
+  ...import.meta.glob("../../../../binaries/programs/wasm32/mariadb-test.vfs.zst", {
+    query: "?url",
+    import: "default",
+  }),
+} as Record<string, () => Promise<string>>;
+
+async function normalMariadbTestVfsUrl(): Promise<string> {
+  for (const importer of Object.values(MARIADB_TEST_VFS_IMPORTERS)) {
+    return importer();
+  }
+  throw new Error(
+    "mariadb-test.vfs.zst is not built. Run: bash images/vfs/scripts/build-mariadb-test-vfs-image.sh",
+  );
+}
 
 interface TestResult {
   exitCode: number;
@@ -139,16 +142,19 @@ async function init() {
   statusEl.textContent = "Loading resources...";
 
   const [kernelBytes, vfsImageBuf] = await Promise.all([
-    fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
-    fetch(VFS_IMAGE_URL).then((r) => {
+    fetch(kernelWasmUrl, { cache: "no-store", credentials: "omit" }).then((r) => {
+      if (!r.ok) throw new Error(`kernel fetch failed: ${r.status}`);
+      return r.arrayBuffer();
+    }),
+    normalMariadbTestVfsUrl().then((url) => fetch(url).then((r) => {
       if (!r.ok) {
         throw new Error(
-          `Failed to load VFS image from ${VFS_IMAGE_URL} (${r.status}). ` +
+          `Failed to load VFS image from ${url} (${r.status}). ` +
           `Run: bash packages/registry/mariadb-test/build-mariadb-test.sh`,
         );
       }
       return r.arrayBuffer();
-    }),
+    })),
   ]);
 
   const vfsImage = new Uint8Array(vfsImageBuf);
@@ -183,9 +189,12 @@ async function init() {
   const { exit } = await kernel.boot({
     kernelWasm: kernelBytes,
     vfsImage,
+    lazyUrlBase: import.meta.env.BASE_URL,
     rootfsMountSpec: MARIADB_MOUNTS,
     argv: [...MARIADB_BOOT.argv],
-    env: Object.entries(MARIADB_BOOT.env).map(([name, value]) => `${name}=${value}`),
+    env: Object.entries(MARIADB_BOOT.env).map(
+      ([name, value]) => `${name}=${value}`,
+    ),
     cwd: MARIADB_BOOT.cwd,
     uid: MARIADB_BOOT.uid,
     gid: MARIADB_BOOT.gid,
@@ -211,15 +220,17 @@ async function init() {
     await new Promise((r) => setTimeout(r, 1000));
   }
   if (!setupResult || setupResult.exitCode !== 0) {
-    appendLog(`Warning: setup SQL exited with code ${setupResult?.exitCode}\n`, "error");
+    throw new Error(
+      `MariaDB setup failed: ${setupResult?.stderr ?? "no result"}`,
+    );
   } else {
     appendLog("Setup SQL complete.\n", "info");
   }
 
   window.__runMariadbTest = async (testName: string, timeoutMs = 60000): Promise<TestResult> => {
     const resetResult = await runMysqlTestCommand("__reset", "/mysql-test/main/__reset.test", 15000);
-    if (resetResult.exitCode !== 0 && resetResult.stderr !== "TIMEOUT") {
-      // Non-fatal — continue anyway.
+    if (resetResult.exitCode !== 0) {
+      throw new Error(`MariaDB reset failed: ${resetResult.stderr}`);
     }
     const testFile = `/mysql-test/main/${testName}.test`;
     return runMysqlTestCommand(testName, testFile, timeoutMs);

@@ -52,6 +52,7 @@ timeout_seconds = 600
 
 [definitions.probe]
 suite = "main-shell-fbdoom-browser"
+lazy_inputs = ["homebrew-fbdoom"]
 
 [[definitions]]
 id = "main-shell-modeset-e2e"
@@ -61,6 +62,7 @@ timeout_seconds = 600
 
 [definitions.probe]
 suite = "main-shell-modeset-browser"
+lazy_inputs = ["homebrew-modeset"]
 
 [[definitions]]
 id = "node-vfs-node-startup"

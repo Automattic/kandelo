@@ -1107,7 +1107,7 @@ mod tests {
     }
 
     #[test]
-    fn accepts_exact_package_descriptor_for_lazy_composition() {
+    fn accepts_exact_candidate_package_descriptor_for_lazy_composition() {
         let root = tempfile::tempdir().unwrap();
         let mut inputs = fixture_inputs(root.path());
         let descriptor = b"{\"kind\":\"kandelo-package-deferred-zip-tree\"}\n";
@@ -1120,14 +1120,14 @@ mod tests {
         inputs.inputs[1].effective_materialization = ConsumedInputPlacementV1::LazyReference;
         inputs.inputs[1].path = None;
         inputs.inputs[1].reference = Some(format!(
-            "https://artifacts.example.test/package?sha256={}",
+            "ghcr.io/kandelo-dev/homebrew-tap-core-abi-7-candidates/packages/embedded-package@sha256:{}",
             inputs.inputs[1].sha256,
         ));
         inputs.inputs[1].descriptor = Some(ResolvedVfsInputDescriptorV1 {
             sha256: sha(descriptor),
             bytes: descriptor.len() as u64,
             reference: format!(
-                "https://artifacts.example.test/package-descriptor?sha256={}",
+                "ghcr.io/kandelo-dev/homebrew-tap-core-abi-7-candidates/packages/embedded-package-descriptor@sha256:{}",
                 sha(descriptor),
             ),
             path: "inputs/lazy-package-descriptor.json".to_string(),
@@ -1139,6 +1139,38 @@ mod tests {
         )
         .unwrap();
         assert_eq!(validated.inputs[1].kind, ResolvedVfsInputKindV1::PackageOutput);
+    }
+
+    #[test]
+    fn permits_external_package_references_only_before_lazy_composition() {
+        let root = tempfile::tempdir().unwrap();
+        let mut inputs = fixture_inputs(root.path());
+        let package = &mut inputs.inputs[1];
+        package.reference = Some(format!(
+            "https://artifacts.example.test/package?sha256={}",
+            package.sha256,
+        ));
+
+        let validated = validate_resolved_inputs(
+            &canonical_json_bytes(&inputs).unwrap(),
+            root.path(),
+        )
+        .unwrap();
+        assert_eq!(
+            validated.inputs[1].effective_materialization,
+            ConsumedInputPlacementV1::Embedded,
+        );
+
+        let package = &mut inputs.inputs[1];
+        package.declared_materialization = DeclaredInputMaterializationV1::Lazy;
+        package.effective_materialization = ConsumedInputPlacementV1::LazyReference;
+        package.path = None;
+        assert!(validate_resolved_inputs(
+            &canonical_json_bytes(&inputs).unwrap(),
+            root.path(),
+        )
+        .unwrap_err()
+        .contains("target ABI candidate namespace"));
     }
 
     #[test]

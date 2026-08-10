@@ -36,11 +36,14 @@ import type {
   NodeKernelHost,
   NodeKernelHostOptions,
 } from "../host/src/node-kernel-host";
-import type { MountSpec } from "../host/src/vfs/default-mounts";
 import type { KernelPipeTransport } from "../host/src/kernel-pipe-transport";
 import type {
   ClosedLazyAssetSource,
 } from "../host/src/vfs/closed-lazy-assets";
+import {
+  hostMountSpecFromProductMounts,
+  type VfsMountIntentV1,
+} from "../host/src/vfs/product-mount-contract";
 import {
   MemoryFileSystem,
   type LazyDownloadEvent,
@@ -101,7 +104,9 @@ function compareOrdinal(left: string, right: string): number {
 function runtimeArtifactByteLimit(path: string): number {
   if (
     path === "host/dist/index.js" ||
-    path === "host/dist/node-kernel-worker-entry.js"
+    path === "host/dist/node-kernel-worker-entry.js" ||
+    path === "browser/dist/abi-staging-harness/index.html" ||
+    path === "browser/dist/abi-staging/browser-host.js"
   ) return MAX_RUNTIME_NODE_ENTRY_BYTES;
   if (path === "kernel.wasm") return MAX_RUNTIME_KERNEL_BYTES;
   return MAX_RUNTIME_FILE_BYTES;
@@ -176,6 +181,14 @@ export interface ExactRuntimeBundleV1 {
   browser: {
     bundle_sha256: string;
     bytes: number;
+    harness_entry_bytes: number;
+    harness_entry_path: string;
+    harness_entry_sha256: string;
+    host_entry_bytes: number;
+    host_entry_path: string;
+    host_entry_sha256: string;
+    kernel_asset_path: string;
+    kernel_asset_sha256: string;
     service_worker_sha256: string;
   };
   build_policy_sha256: string;
@@ -200,16 +213,10 @@ export interface VfsBootContractV1 {
   env: Record<string, string>;
 }
 
-export type VfsMountIntentV1 =
-  | { source: "built-image"; path: string; readonly: boolean }
-  | {
-    source: "scratch";
-    path: string;
-    mode: string;
-    uid: number;
-    gid: number;
-    ephemeral: boolean;
-  };
+export {
+  hostMountSpecFromProductMounts,
+  type VfsMountIntentV1,
+} from "../host/src/vfs/product-mount-contract";
 
 export interface ProductEvidenceRunV1 {
   repository: string;
@@ -231,12 +238,17 @@ export interface NodeEvidenceContextV1 {
     builder_report_sha256: string;
   };
   runtime: RuntimeEvidenceIdentityV1;
-  host: "node";
+  host: "node" | "browser";
   definition: GeneratedEvidenceDefinitionV1;
   boot: VfsBootContractV1;
   mounts: VfsMountIntentV1[];
   run: ProductEvidenceRunV1;
 }
+
+export type CandidateProductEvidenceDocumentContextV1 = Pick<
+  NodeEvidenceContextV1,
+  "boot" | "candidate_product" | "definition" | "mounts" | "product" | "runtime"
+>;
 
 export interface CandidateProductLocatorV1 {
   product_id: string;
@@ -269,7 +281,7 @@ export interface ProductEvidenceResultV1 {
   product: NodeEvidenceContextV1["product"];
   candidate_product: NodeEvidenceContextV1["candidate_product"];
   runtime: RuntimeEvidenceIdentityV1;
-  host: "node";
+  host: "node" | "browser";
   definition: { id: string; definition_sha256: string };
   outcome: "success" | "failure" | "timeout";
   guard_codes: Array<"verification_failed" | "verification_timeout">;
@@ -386,25 +398,6 @@ export function formatRedisEvidenceResult(result: RedisResult): string {
   }
   if (result.type === "null") return "";
   throw new Error("Redis evidence requires one scalar protocol response");
-}
-
-export function hostMountSpecFromProductMounts(
-  mounts: readonly VfsMountIntentV1[],
-): MountSpec[] {
-  return mounts.map((mount) => mount.source === "built-image"
-    ? {
-      source: "image",
-      path: mount.path,
-      readonly: mount.readonly,
-    }
-    : {
-      source: "scratch",
-      path: mount.path,
-      mode: Number.parseInt(mount.mode, 8),
-      uid: mount.uid,
-      gid: mount.gid,
-      ephemeral: mount.ephemeral,
-    });
 }
 
 export class BoundedEvidenceOutput {
@@ -539,6 +532,9 @@ type NodeKernelHostConstructor = new (
 export interface ExactRuntimeArtifactRootV1 {
   root: string;
   kernelPath: string;
+  browserHarnessEntryPath: string;
+  browserKernelAssetPath: string;
+  browserHostEntryPath: string;
   hostModulePath: string;
 }
 
@@ -633,7 +629,7 @@ function parseExactRuntimeBundle(
   return bundle;
 }
 
-function exactRuntimeDevShellLockSha256(runtimeBundleBytes: Uint8Array): string {
+export function exactRuntimeDevShellLockSha256(runtimeBundleBytes: Uint8Array): string {
   const bundle = parseExactRuntimeBundle(runtimeBundleBytes);
   const lock = bundle.inventory.find((entry) => entry.path === "flake.lock");
   if (lock === undefined) throw new Error("exact runtime inventory lacks flake.lock");
@@ -743,6 +739,9 @@ export function validateExactRuntimeArtifactRoot(
   return {
     root,
     kernelPath: join(root, "kernel.wasm"),
+    browserHarnessEntryPath: join(root, bundle.browser.harness_entry_path),
+    browserKernelAssetPath: join(root, bundle.browser.kernel_asset_path),
+    browserHostEntryPath: join(root, bundle.browser.host_entry_path),
     hostModulePath: join(root, "host/dist/index.js"),
   };
 }
@@ -904,8 +903,8 @@ function validateProtectedProductSelection(
   }
 }
 
-function validateCandidateLocator(
-  context: NodeEvidenceContextV1,
+export function validateCandidateLocator(
+  context: CandidateProductEvidenceDocumentContextV1,
   value: unknown,
 ): void {
   const locator = exactRecord(value, [
@@ -981,8 +980,8 @@ function oneOf(
   return value;
 }
 
-function validateCandidateProductInputDocuments(
-  context: NodeEvidenceContextV1,
+export function validateCandidateProductInputDocuments(
+  context: CandidateProductEvidenceDocumentContextV1,
   locatorValue: CandidateProductLocatorV1,
   productsValue: ProtectedVfsProductCatalogV1,
   runtimeDevShellLockSha256: string,
@@ -1355,7 +1354,7 @@ export async function validateCandidateVfsLazyInventory(
   }
 }
 
-function expectedLazyInputIds(
+export function expectedLazyInputIds(
   definition: GeneratedEvidenceDefinitionV1,
 ): string[] {
   if (definition.probe.lazy_inputs === undefined) return [];
@@ -1419,7 +1418,7 @@ function candidateLazySource(
   };
 }
 
-function candidateLazyAssetSources(
+export function candidateLazyAssetSources(
   requirements: readonly CandidateLazyRequirementV1[],
   expectedIds: readonly string[],
 ): ClosedLazyAssetSource[] {
@@ -1519,7 +1518,7 @@ export async function runNodeProductEvidence(
     }
   }
 
-  return terminalEvidenceResult(context, outcome, {
+  return terminalProductEvidenceResult(context, "node", outcome, {
     runner: runnerDiagnostic,
     stderr,
     stdout,
@@ -1631,8 +1630,15 @@ function assertLazyMaterialization(
   }
 }
 
-function terminalEvidenceResult(
-  context: NodeEvidenceContextV1,
+export type ProductEvidenceIdentityContextV1 = Pick<
+  NodeEvidenceContextV1,
+  "candidate_product" | "definition" | "product" | "request_digest" | "run" |
+    "runtime"
+>;
+
+export function terminalProductEvidenceResult(
+  context: ProductEvidenceIdentityContextV1,
+  host: ProductEvidenceResultV1["host"],
   outcome: ProductEvidenceResultV1["outcome"],
   streams: Record<"runner" | "stderr" | "stdout", string>,
 ): ProductEvidenceResultV1 {
@@ -1643,7 +1649,7 @@ function terminalEvidenceResult(
     product: context.product,
     candidate_product: context.candidate_product,
     runtime: context.runtime,
-    host: "node",
+    host,
     definition: {
       id: context.definition.id,
       definition_sha256: context.definition.definition_sha256,
@@ -1965,6 +1971,7 @@ function validateGeneratedDefinition(value: unknown): void {
     "host/src/vfs/hardlink-graph.ts",
     "host/src/vfs/load-image.ts",
     "host/src/vfs/memory-fs.ts",
+    "host/src/vfs/product-mount-contract.ts",
     "host/src/vfs/sharedfs-vendor.ts",
     "package-lock.json",
     "package.json",
@@ -2109,16 +2116,65 @@ function validateRuntimeBundle(value: unknown): ExactRuntimeBundleV1 {
     worker_protocol_sha256: digest(host.worker_protocol_sha256, "runtime worker protocol"),
   };
   const browser = exactRecord(bundle.browser, [
-    "bundle_sha256", "bytes", "service_worker_sha256",
+    "bundle_sha256", "bytes", "harness_entry_bytes", "harness_entry_path",
+    "harness_entry_sha256", "host_entry_bytes", "host_entry_path",
+    "host_entry_sha256", "kernel_asset_path", "kernel_asset_sha256",
+    "service_worker_sha256",
   ], "runtime browser");
+  const browserHarnessPath = relativePath(
+    browser.harness_entry_path,
+    "runtime browser harness entry path",
+  );
+  const browserHostPath = relativePath(
+    browser.host_entry_path,
+    "runtime browser host entry path",
+  );
+  const browserKernelPath = relativePath(
+    browser.kernel_asset_path,
+    "runtime browser kernel asset path",
+  );
   const browserIdentity = {
     bundle_sha256: digest(browser.bundle_sha256, "runtime browser bundle"),
     bytes: positiveInteger(browser.bytes, "runtime browser bytes"),
+    harness_entry_bytes: positiveInteger(
+      browser.harness_entry_bytes,
+      "runtime browser harness entry bytes",
+    ),
+    harness_entry_path: browserHarnessPath,
+    harness_entry_sha256: digest(
+      browser.harness_entry_sha256,
+      "runtime browser harness entry",
+    ),
+    host_entry_bytes: positiveInteger(
+      browser.host_entry_bytes,
+      "runtime browser host entry bytes",
+    ),
+    host_entry_path: browserHostPath,
+    host_entry_sha256: digest(
+      browser.host_entry_sha256,
+      "runtime browser host entry",
+    ),
+    kernel_asset_path: browserKernelPath,
+    kernel_asset_sha256: digest(
+      browser.kernel_asset_sha256,
+      "runtime browser kernel asset",
+    ),
     service_worker_sha256: digest(
       browser.service_worker_sha256,
       "runtime service worker",
     ),
   };
+  if (
+    browserHarnessPath !== "browser/dist/abi-staging-harness/index.html" ||
+    browserIdentity.harness_entry_bytes > MAX_RUNTIME_NODE_ENTRY_BYTES ||
+    browserHostPath !== "browser/dist/abi-staging/browser-host.js" ||
+    browserIdentity.host_entry_bytes > MAX_RUNTIME_NODE_ENTRY_BYTES ||
+    !browserKernelPath.startsWith("browser/dist/") ||
+    !browserKernelPath.endsWith(".wasm") ||
+    browserIdentity.kernel_asset_sha256 !== kernelIdentity.wasm_sha256
+  ) {
+    throw new Error("runtime browser kernel asset differs from exact kernel identity");
+  }
   const inventory = array(bundle.inventory, "runtime inventory");
   if (inventory.length === 0 || inventory.length > MAX_RUNTIME_FILES) {
     throw new Error("runtime inventory is empty or exceeds its item bound");
@@ -2155,6 +2211,21 @@ function validateRuntimeBundle(value: unknown): ExactRuntimeBundleV1 {
   exactFile("host/generated-abi.ts", hostIdentity.generated_abi_sha256);
   exactFile("host/worker-protocol.ts", hostIdentity.worker_protocol_sha256);
   exactFile("browser/dist/service-worker.js", browserIdentity.service_worker_sha256);
+  exactFile(
+    browserIdentity.harness_entry_path,
+    browserIdentity.harness_entry_sha256,
+    browserIdentity.harness_entry_bytes,
+  );
+  exactFile(
+    browserIdentity.host_entry_path,
+    browserIdentity.host_entry_sha256,
+    browserIdentity.host_entry_bytes,
+  );
+  exactFile(
+    browserIdentity.kernel_asset_path,
+    browserIdentity.kernel_asset_sha256,
+    kernelIdentity.bytes,
+  );
   for (const path of [
     "flake.lock",
     "host/dist/index.js",
@@ -2226,16 +2297,65 @@ function validateRuntimeIdentity(value: unknown): RuntimeEvidenceIdentityV1 {
     worker_protocol_sha256: digest(host.worker_protocol_sha256, "runtime worker protocol"),
   };
   const browser = exactRecord(runtime.browser, [
-    "bundle_sha256", "bytes", "service_worker_sha256",
+    "bundle_sha256", "bytes", "harness_entry_bytes", "harness_entry_path",
+    "harness_entry_sha256", "host_entry_bytes", "host_entry_path",
+    "host_entry_sha256", "kernel_asset_path", "kernel_asset_sha256",
+    "service_worker_sha256",
   ], "runtime browser identity");
+  const browserHarnessPath = relativePath(
+    browser.harness_entry_path,
+    "runtime browser harness entry path",
+  );
+  const browserHostPath = relativePath(
+    browser.host_entry_path,
+    "runtime browser host entry path",
+  );
+  const browserKernelPath = relativePath(
+    browser.kernel_asset_path,
+    "runtime browser kernel asset path",
+  );
   const browserIdentity = {
     bundle_sha256: digest(browser.bundle_sha256, "runtime browser bundle"),
     bytes: positiveInteger(browser.bytes, "runtime browser bytes"),
+    harness_entry_bytes: positiveInteger(
+      browser.harness_entry_bytes,
+      "runtime browser harness entry bytes",
+    ),
+    harness_entry_path: browserHarnessPath,
+    harness_entry_sha256: digest(
+      browser.harness_entry_sha256,
+      "runtime browser harness entry",
+    ),
+    host_entry_bytes: positiveInteger(
+      browser.host_entry_bytes,
+      "runtime browser host entry bytes",
+    ),
+    host_entry_path: browserHostPath,
+    host_entry_sha256: digest(
+      browser.host_entry_sha256,
+      "runtime browser host entry",
+    ),
+    kernel_asset_path: browserKernelPath,
+    kernel_asset_sha256: digest(
+      browser.kernel_asset_sha256,
+      "runtime browser kernel asset",
+    ),
     service_worker_sha256: digest(
       browser.service_worker_sha256,
       "runtime service worker",
     ),
   };
+  if (
+    browserHarnessPath !== "browser/dist/abi-staging-harness/index.html" ||
+    browserIdentity.harness_entry_bytes > MAX_RUNTIME_NODE_ENTRY_BYTES ||
+    browserHostPath !== "browser/dist/abi-staging/browser-host.js" ||
+    browserIdentity.host_entry_bytes > MAX_RUNTIME_NODE_ENTRY_BYTES ||
+    !browserKernelPath.startsWith("browser/dist/") ||
+    !browserKernelPath.endsWith(".wasm") ||
+    browserIdentity.kernel_asset_sha256 !== kernelIdentity.wasm_sha256
+  ) {
+    throw new Error("runtime browser kernel asset differs from exact kernel identity");
+  }
   return {
     bundle_sha256: digest(runtime.bundle_sha256, "runtime bundle digest"),
     source,
@@ -4272,7 +4392,7 @@ function supervisorTerminalResult(
   stdout: string,
   stderr: string,
 ): ProductEvidenceResultV1 {
-  return terminalEvidenceResult(context, outcome, {
+  return terminalProductEvidenceResult(context, "node", outcome, {
     runner: message,
     stderr,
     stdout,

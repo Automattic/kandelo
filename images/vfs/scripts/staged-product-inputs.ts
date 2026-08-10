@@ -326,10 +326,14 @@ export async function buildStagedBrowserMainShell(
   if (directRoots.size === 0 || !directRoots.has("bash")) {
     throw new Error("browser-main-shell must declare its Homebrew roots including bash");
   }
-  for (const kind of ["source-archive", "toolchain-output"] as const) {
-    if (build.inputIds(kind).length !== 0) {
-      throw new Error(`browser-main-shell does not declare ${kind} inputs`);
-    }
+  if (
+    build.inputIds("source-archive").length !== 1 ||
+    build.inputIds("source-archive")[0] !== "archive-doom-shareware-wad"
+  ) {
+    throw new Error("browser-main-shell requires its exact Doom shareware WAD");
+  }
+  if (build.inputIds("toolchain-output").length !== 0) {
+    throw new Error("browser-main-shell does not declare toolchain inputs");
   }
   if (
     build.inputIds("product-image").length !== 1 ||
@@ -369,6 +373,14 @@ export async function buildStagedBrowserMainShell(
   ) {
     throw new Error("browser-main-shell base product ABI differs from its target");
   }
+  const doomWad = build.requireSourceArchive("archive-doom-shareware-wad");
+  if (doomWad.placement !== "embedded") {
+    throw new Error("browser-main-shell Doom shareware WAD must be embedded");
+  }
+  const doomWadBytes = exactInputBytes(
+    doomWad,
+    "browser-main-shell Doom shareware WAD",
+  );
 
   const repository = build.requireRepositoryPath("repository-main-shell-config");
   if (repository.placement !== "embedded") {
@@ -545,6 +557,7 @@ export async function buildStagedBrowserMainShell(
       configPath("main-shell-default.json"),
       configPath("main-shell-demo.json"),
     );
+    writeVfsBinary(fs, "/doom1.wad", doomWadBytes, 0o644);
     writeVfsBinary(
       fs,
       HOMEBREW_COMPOSITION_PATH,

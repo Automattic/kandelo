@@ -6,9 +6,11 @@ use super::canonical_json::{
     canonical_json_bytes, canonical_sha256, validate_absolute_posix_path, validate_git_sha,
     validate_sha256, validate_stable_id,
 };
+use super::consumer_registry::TestProductRegistryV1;
 use super::evidence_policy::{
     EvidenceHostV1, ExactRuntimeBundleV1, GeneratedEvidenceDefinitionRegistryV1,
     GeneratedEvidenceDefinitionV1, NODE_EVIDENCE_IMPLEMENTATION_PATHS,
+    browser_evidence_implementation_paths,
     validate_generated_evidence_definition, validate_runtime_artifact_inventory,
 };
 use super::guard_registry::GuardCodeV1;
@@ -24,7 +26,8 @@ use std::collections::BTreeSet;
 use std::path::{Component, Path};
 
 const CONTEXT_SCHEMA: u64 = 1;
-const CONTEXT_KIND: &str = "kandelo-vfs-product-node-evidence-context";
+const NODE_CONTEXT_KIND: &str = "kandelo-vfs-product-node-evidence-context";
+const BROWSER_CONTEXT_KIND: &str = "kandelo-vfs-product-browser-evidence-context";
 const RESULT_SCHEMA: u64 = 1;
 const RESULT_KIND: &str = "kandelo-vfs-product-evidence-result";
 const MAX_DOCUMENT_BYTES: usize = 4 * 1024 * 1024;
@@ -84,6 +87,7 @@ pub fn validate_node_context(
     candidate_locator: &CandidateProductLocatorV1,
     protected_definitions: &GeneratedEvidenceDefinitionRegistryV1,
     protected_products: &VfsProductCatalogV1,
+    protected_tests: &TestProductRegistryV1,
     runtime_bundle_bytes: &[u8],
     candidate_vfs_bytes: &[u8],
     kernel_wasm_bytes: &[u8],
@@ -91,7 +95,7 @@ pub fn validate_node_context(
     validate_node_context_shape(context)?;
     validate_candidate_locator(context, candidate_locator)?;
     validate_protected_definition(context, protected_definitions)?;
-    validate_protected_product(context, protected_products)?;
+    validate_protected_product(context, protected_products, protected_tests)?;
     let runtime = runtime_identity_from_bundle(runtime_bundle_bytes)?;
     if context.runtime != runtime {
         return Err("Node evidence runtime differs from the exact runtime bundle".to_string());
@@ -218,6 +222,7 @@ fn validate_protected_definition(
 fn validate_protected_product(
     context: &NodeProductEvidenceContextV1,
     catalog: &VfsProductCatalogV1,
+    tests: &TestProductRegistryV1,
 ) -> Result<(), String> {
     if catalog.schema != 1 || catalog.kind != "kandelo-vfs-product-catalog" {
         return Err("protected VFS product catalog has unsupported identity".to_string());
@@ -261,16 +266,53 @@ fn validate_protected_product(
                 .to_string(),
         );
     }
-    if entry
-        .manifest
-        .evidence
-        .node
-        .as_ref()
-        .map(|value| value.test.as_str())
-        != Some(context.definition.id.as_str())
+    let declared = match context.host {
+        EvidenceHostV1::Node => entry.manifest.evidence.node.as_ref(),
+        EvidenceHostV1::Browser => entry.manifest.evidence.browser.as_ref(),
+    };
+    if declared.is_none() {
+        return Err("product does not declare evidence for the selected host".to_string());
+    }
+    if tests.schema != 1 || tests.kind != "kandelo-test-vfs-products" {
+        return Err("protected test VFS registry has unsupported identity".to_string());
+    }
+    if tests
+        .registrations
+        .windows(2)
+        .any(|pair| pair[0].product >= pair[1].product)
     {
         return Err(
-            "Node evidence definition differs from the protected product registration".to_string(),
+            "protected test VFS registrations must be sorted and duplicate-free".to_string(),
+        );
+    }
+    let registration = tests
+        .registrations
+        .iter()
+        .find(|registration| registration.product == context.product.id)
+        .ok_or_else(|| "product is absent from the protected test VFS registry".to_string())?;
+    let selected = match context.host {
+        EvidenceHostV1::Node => registration.node.as_ref(),
+        EvidenceHostV1::Browser => registration.browser.as_ref(),
+    };
+    let selected = selected.ok_or_else(|| {
+        "product is not selected for the requested host by the protected test registry"
+            .to_string()
+    })?;
+    let mut previous = "";
+    for definition_id in selected {
+        validate_stable_id(definition_id, "protected test evidence definition")?;
+        if definition_id.as_str() <= previous {
+            return Err(
+                "protected test evidence definitions must be sorted and duplicate-free"
+                    .to_string(),
+            );
+        }
+        previous = definition_id;
+    }
+    if !selected.contains(&context.definition.id) {
+        return Err(
+            "product evidence definition differs from the protected test-owned registration"
+                .to_string(),
         );
     }
     Ok(())
@@ -387,15 +429,19 @@ pub fn validate_product_evidence_result(
 }
 
 fn validate_node_context_shape(context: &NodeProductEvidenceContextV1) -> Result<(), String> {
-    if context.schema != CONTEXT_SCHEMA || context.kind != CONTEXT_KIND {
-        return Err("Node product evidence context has unsupported identity".to_string());
+    let expected_kind = match context.host {
+        EvidenceHostV1::Node => NODE_CONTEXT_KIND,
+        EvidenceHostV1::Browser => BROWSER_CONTEXT_KIND,
+    };
+    if context.schema != CONTEXT_SCHEMA || context.kind != expected_kind {
+        return Err("product evidence context has unsupported host identity".to_string());
     }
     validate_sha256(&context.request_digest)?;
     validate_product(&context.product)?;
     validate_candidate(&context.candidate_product)?;
     validate_runtime_identity(&context.runtime)?;
-    if context.host != EvidenceHostV1::Node || context.definition.host != EvidenceHostV1::Node {
-        return Err("Node product evidence context has a non-Node host".to_string());
+    if context.host != context.definition.host {
+        return Err("product evidence context and definition hosts differ".to_string());
     }
     validate_generated_evidence_definition(&context.definition)?;
     let implementation_paths = context
@@ -404,9 +450,13 @@ fn validate_node_context_shape(context: &NodeProductEvidenceContextV1) -> Result
         .iter()
         .map(|item| item.path.as_str())
         .collect::<Vec<_>>();
-    if implementation_paths != NODE_EVIDENCE_IMPLEMENTATION_PATHS {
+    let expected_implementation_paths = match context.host {
+        EvidenceHostV1::Node => NODE_EVIDENCE_IMPLEMENTATION_PATHS.to_vec(),
+        EvidenceHostV1::Browser => browser_evidence_implementation_paths(),
+    };
+    if implementation_paths != expected_implementation_paths {
         return Err(
-            "Node evidence definition is not bound to the protected Node runner".to_string(),
+            "product evidence definition is not bound to its protected host runner".to_string(),
         );
     }
     validate_boot(&context.boot)?;
@@ -489,13 +539,46 @@ fn validate_runtime_identity(runtime: &ProductRuntimeEvidenceIdentityV1) -> Resu
     validate_sha256(&runtime.host_runtime.generated_abi_sha256)?;
     validate_sha256(&runtime.host_runtime.worker_protocol_sha256)?;
     validate_sha256(&runtime.browser.bundle_sha256)?;
+    validate_relative_path(
+        &runtime.browser.harness_entry_path,
+        "runtime browser harness entry path",
+    )?;
+    if runtime.browser.harness_entry_path
+        != "browser/dist/abi-staging-harness/index.html"
+    {
+        return Err("runtime browser harness entry path is invalid".to_string());
+    }
+    validate_sha256(&runtime.browser.harness_entry_sha256)?;
+    validate_relative_path(
+        &runtime.browser.host_entry_path,
+        "runtime browser host entry path",
+    )?;
+    if runtime.browser.host_entry_path != "browser/dist/abi-staging/browser-host.js" {
+        return Err("runtime browser host entry path is invalid".to_string());
+    }
+    validate_sha256(&runtime.browser.host_entry_sha256)?;
+    validate_relative_path(
+        &runtime.browser.kernel_asset_path,
+        "runtime browser kernel asset path",
+    )?;
+    if !runtime.browser.kernel_asset_path.starts_with("browser/dist/")
+        || !runtime.browser.kernel_asset_path.ends_with(".wasm")
+    {
+        return Err("runtime browser kernel asset path is invalid".to_string());
+    }
+    validate_sha256(&runtime.browser.kernel_asset_sha256)?;
     validate_sha256(&runtime.browser.service_worker_sha256)?;
     validate_sha256(&runtime.build_policy_sha256)?;
     if runtime.kernel.bytes == 0
         || runtime.host_runtime.bytes == 0
         || runtime.browser.bytes == 0
+        || runtime.browser.harness_entry_bytes == 0
+        || runtime.browser.harness_entry_bytes > MAX_RUNTIME_NODE_ENTRY_BYTES
+        || runtime.browser.host_entry_bytes == 0
+        || runtime.browser.host_entry_bytes > MAX_RUNTIME_NODE_ENTRY_BYTES
         || runtime.kernel.abi_version != runtime.target_abi.version
         || runtime.kernel.snapshot_sha256 != runtime.target_abi.snapshot_sha256
+        || runtime.browser.kernel_asset_sha256 != runtime.kernel.wasm_sha256
     {
         return Err("runtime evidence identity is internally inconsistent".to_string());
     }
@@ -532,7 +615,10 @@ fn validate_runtime_bundle_identity(bundle: &ExactRuntimeBundleV1) -> Result<(),
         }
         let file_limit = if matches!(
             entry.path.as_str(),
-            "host/dist/index.js" | "host/dist/node-kernel-worker-entry.js"
+            "host/dist/index.js"
+                | "host/dist/node-kernel-worker-entry.js"
+                | "browser/dist/abi-staging-harness/index.html"
+                | "browser/dist/abi-staging/browser-host.js"
         ) {
             MAX_RUNTIME_NODE_ENTRY_BYTES
         } else if entry.path == "kernel.wasm" {
@@ -564,6 +650,9 @@ fn validate_runtime_bundle_identity(bundle: &ExactRuntimeBundleV1) -> Result<(),
     let generated = exact("host/generated-abi.ts")?;
     let protocol = exact("host/worker-protocol.ts")?;
     let service_worker = exact("browser/dist/service-worker.js")?;
+    let browser_harness = exact(&bundle.browser.harness_entry_path)?;
+    let browser_host = exact(&bundle.browser.host_entry_path)?;
+    let browser_kernel = exact(&bundle.browser.kernel_asset_path)?;
     exact("flake.lock")?;
     exact("host/dist/index.js")?;
     exact("host/dist/node-kernel-worker-entry.js")?;
@@ -573,6 +662,13 @@ fn validate_runtime_bundle_identity(bundle: &ExactRuntimeBundleV1) -> Result<(),
         || generated.sha256 != bundle.host.generated_abi_sha256
         || protocol.sha256 != bundle.host.worker_protocol_sha256
         || service_worker.sha256 != bundle.browser.service_worker_sha256
+        || browser_harness.sha256 != bundle.browser.harness_entry_sha256
+        || browser_harness.bytes != bundle.browser.harness_entry_bytes
+        || browser_host.sha256 != bundle.browser.host_entry_sha256
+        || browser_host.bytes != bundle.browser.host_entry_bytes
+        || browser_kernel.sha256 != bundle.browser.kernel_asset_sha256
+        || browser_kernel.sha256 != kernel.sha256
+        || browser_kernel.bytes != kernel.bytes
     {
         return Err("runtime inventory differs from its exact component identities".to_string());
     }
@@ -773,21 +869,22 @@ pub fn run_cli(action: &str, args: &[String]) -> Result<(), String> {
             Ok(())
         }
         "validate-context" => {
-            if args.len() != 22
+            if args.len() != 24
                 || args[0] != "--context"
                 || args[2] != "--candidate-locator"
                 || args[4] != "--definitions"
                 || args[6] != "--products"
-                || args[8] != "--runtime-bundle"
-                || args[10] != "--runtime-root"
-                || args[12] != "--resolved-inputs"
-                || args[14] != "--input-root"
-                || args[16] != "--builder-report"
-                || args[18] != "--report-root"
-                || args[20] != "--vfs"
+                || args[8] != "--tests"
+                || args[10] != "--runtime-bundle"
+                || args[12] != "--runtime-root"
+                || args[14] != "--resolved-inputs"
+                || args[16] != "--input-root"
+                || args[18] != "--builder-report"
+                || args[20] != "--report-root"
+                || args[22] != "--vfs"
             {
                 return Err(
-                    "product-evidence validate-context requires --context <path> --candidate-locator <path> --definitions <path> --products <path> --runtime-bundle <path> --runtime-root <dir> --resolved-inputs <path> --input-root <dir> --builder-report <path> --report-root <dir> --vfs <path>"
+                    "product-evidence validate-context requires --context <path> --candidate-locator <path> --definitions <path> --products <path> --tests <path> --runtime-bundle <path> --runtime-root <dir> --resolved-inputs <path> --input-root <dir> --builder-report <path> --report-root <dir> --vfs <path>"
                         .to_string(),
                 );
             }
@@ -834,38 +931,50 @@ pub fn run_cli(action: &str, args: &[String]) -> Result<(), String> {
             if canonical_json_bytes(&protected_products)? != products_bytes {
                 return Err("protected VFS product catalog is not canonical JSON".to_string());
             }
-            let runtime_bytes = read_regular_bounded(
+            let tests_bytes = read_regular_bounded(
                 Path::new(&args[9]),
+                "protected test VFS registry",
+                MAX_DOCUMENT_BYTES,
+            )?;
+            let protected_tests: TestProductRegistryV1 = serde_json::from_slice(&tests_bytes)
+                .map_err(|error| {
+                    format!("protected test VFS registry is invalid JSON: {error}")
+                })?;
+            if canonical_json_bytes(&protected_tests)? != tests_bytes {
+                return Err("protected test VFS registry is not canonical JSON".to_string());
+            }
+            let runtime_bytes = read_regular_bounded(
+                Path::new(&args[11]),
                 "exact runtime bundle",
                 MAX_RUNTIME_BUNDLE_BYTES,
             )?;
             let runtime_bundle: ExactRuntimeBundleV1 = serde_json::from_slice(&runtime_bytes)
                 .map_err(|error| format!("exact runtime bundle is invalid JSON: {error}"))?;
-            validate_runtime_artifact_inventory(Path::new(&args[11]), &runtime_bundle)?;
+            validate_runtime_artifact_inventory(Path::new(&args[13]), &runtime_bundle)?;
             let resolved_input_bytes = read_regular_bounded(
-                Path::new(&args[13]),
+                Path::new(&args[15]),
                 "resolved product inputs",
                 MAX_DOCUMENT_BYTES,
             )?;
             let resolved_inputs =
-                validate_resolved_inputs(&resolved_input_bytes, Path::new(&args[15]))?;
+                validate_resolved_inputs(&resolved_input_bytes, Path::new(&args[17]))?;
             let builder_report_bytes = read_regular_bounded(
-                Path::new(&args[17]),
+                Path::new(&args[19]),
                 "candidate builder report",
                 MAX_DOCUMENT_BYTES,
             )?;
             let builder_report =
-                validate_builder_report(&builder_report_bytes, Path::new(&args[19]))?;
+                validate_builder_report(&builder_report_bytes, Path::new(&args[21]))?;
             let context = parse_node_context(&context_bytes)?;
             let vfs_bytes = read_regular_bounded(
-                Path::new(&args[21]),
+                Path::new(&args[23]),
                 "candidate VFS",
                 usize::try_from(context.candidate_product.vfs_layer_bytes)
                     .unwrap_or(MAX_VFS_BYTES as usize)
                     .min(MAX_VFS_BYTES as usize),
             )?;
             let kernel_bytes = read_regular_bounded(
-                &Path::new(&args[11]).join("kernel.wasm"),
+                &Path::new(&args[13]).join("kernel.wasm"),
                 "runtime kernel",
                 512 * 1024 * 1024,
             )?;
@@ -884,6 +993,7 @@ pub fn run_cli(action: &str, args: &[String]) -> Result<(), String> {
                 &candidate_locator,
                 &protected_definitions,
                 &protected_products,
+                &protected_tests,
                 &runtime_bytes,
                 &vfs_bytes,
                 &kernel_bytes,
@@ -901,6 +1011,9 @@ mod tests {
         ExactSourceV1, ResolvedVfsProductInputsV1, TargetAbiV1, VfsBuildEnvironmentV1,
         VfsBuilderCaptureV1, VfsBuilderOutputV1, VfsBuilderReportV1, VfsProductIdentityV1,
         VfsReferenceClassV1,
+    };
+    use super::super::consumer_registry::{
+        ApplicabilityV1, TestApplicabilityV1, TestProductRegistrationV1,
     };
     use super::super::evidence_policy::{
         EvidenceImplementationV1, EvidenceRunnerV1, RuntimeBrowserIdentityV1,
@@ -924,6 +1037,23 @@ mod tests {
     fn bundle() -> (Vec<u8>, Vec<u8>) {
         let kernel = b"mini-kernel".to_vec();
         let mut inventory = vec![
+            RuntimeInventoryEntryV1 {
+                path: "browser/dist/abi-staging-harness/index.html".to_string(),
+                sha256: sha256_bytes(
+                    b"<!doctype html><title>protected evidence harness</title>\n",
+                ),
+                bytes: 55,
+            },
+            RuntimeInventoryEntryV1 {
+                path: "browser/dist/abi-staging/browser-host.js".to_string(),
+                sha256: sha256_bytes(b"export class BrowserKernel {}\n"),
+                bytes: 30,
+            },
+            RuntimeInventoryEntryV1 {
+                path: "browser/dist/kernel.wasm".to_string(),
+                sha256: sha256_bytes(&kernel),
+                bytes: kernel.len() as u64,
+            },
             RuntimeInventoryEntryV1 {
                 path: "browser/dist/service-worker.js".to_string(),
                 sha256: sha256_bytes(b"worker"),
@@ -1003,6 +1133,16 @@ mod tests {
             browser: RuntimeBrowserIdentityV1 {
                 bundle_sha256: canonical_sha256(&browser).unwrap(),
                 bytes: browser.iter().map(|entry| entry.bytes).sum(),
+                harness_entry_bytes: 55,
+                harness_entry_path: "browser/dist/abi-staging-harness/index.html".to_string(),
+                harness_entry_sha256: sha256_bytes(
+                    b"<!doctype html><title>protected evidence harness</title>\n",
+                ),
+                host_entry_bytes: 30,
+                host_entry_path: "browser/dist/abi-staging/browser-host.js".to_string(),
+                host_entry_sha256: sha256_bytes(b"export class BrowserKernel {}\n"),
+                kernel_asset_path: "browser/dist/kernel.wasm".to_string(),
+                kernel_asset_sha256: sha256_bytes(&kernel),
                 service_worker_sha256: sha256_bytes(b"worker"),
             },
             build_policy_sha256: SHA_B.to_string(),
@@ -1043,6 +1183,7 @@ mod tests {
                 "host/src/vfs/hardlink-graph.ts",
                 "host/src/vfs/load-image.ts",
                 "host/src/vfs/memory-fs.ts",
+                "host/src/vfs/product-mount-contract.ts",
                 "host/src/vfs/sharedfs-vendor.ts",
                 "package-lock.json",
                 "package.json",
@@ -1068,7 +1209,7 @@ mod tests {
         let (bundle, kernel) = bundle();
         let mut context = NodeProductEvidenceContextV1 {
             schema: 1,
-            kind: CONTEXT_KIND.to_string(),
+            kind: NODE_CONTEXT_KIND.to_string(),
             request_digest: SHA_A.to_string(),
             product: ProductEvidenceResultProductV1 {
                 id: "mini-product".to_string(),
@@ -1116,7 +1257,10 @@ mod tests {
             product: context.product.clone(),
             candidate_product: context.candidate_product.clone(),
             runtime: context.runtime.clone(),
-            host: VerificationHostV1::Node,
+            host: match context.host {
+                EvidenceHostV1::Node => VerificationHostV1::Node,
+                EvidenceHostV1::Browser => VerificationHostV1::Browser,
+            },
             definition: ProductEvidenceDefinitionIdentityV1 {
                 id: context.definition.id.clone(),
                 definition_sha256: context.definition.definition_sha256.clone(),
@@ -1219,17 +1363,27 @@ mod tests {
             mounts: context.mounts.clone(),
             boot: Some(context.boot.clone()),
             evidence: VfsEvidenceV1 {
-                node: Some(VfsEvidenceReferenceV1 {
-                    test: context.definition.id.clone(),
+                node: (context.host == EvidenceHostV1::Node).then(|| {
+                    VfsEvidenceReferenceV1 {
+                        test: context.definition.id.clone(),
+                    }
                 }),
-                browser: None,
+                browser: (context.host == EvidenceHostV1::Browser).then(|| {
+                    VfsEvidenceReferenceV1 {
+                        test: context.definition.id.clone(),
+                    }
+                }),
             },
         }
     }
 
     fn authorities(
         context: &NodeProductEvidenceContextV1,
-    ) -> (GeneratedEvidenceDefinitionRegistryV1, VfsProductCatalogV1) {
+    ) -> (
+        GeneratedEvidenceDefinitionRegistryV1,
+        VfsProductCatalogV1,
+        TestProductRegistryV1,
+    ) {
         let definitions = GeneratedEvidenceDefinitionRegistryV1 {
             schema: 1,
             kind: "kandelo-vfs-evidence-definitions".to_string(),
@@ -1246,19 +1400,36 @@ mod tests {
                 manifest,
             }],
         };
-        (definitions, products)
+        let tests = TestProductRegistryV1 {
+            schema: 1,
+            kind: "kandelo-test-vfs-products".to_string(),
+            registrations: vec![TestProductRegistrationV1 {
+                product: context.product.id.clone(),
+                node: (context.host == EvidenceHostV1::Node)
+                    .then(|| vec![context.definition.id.clone()]),
+                browser: (context.host == EvidenceHostV1::Browser)
+                    .then(|| vec![context.definition.id.clone()]),
+                applicability: TestApplicabilityV1 {
+                    abi: ApplicabilityV1::Required,
+                    kernel: ApplicabilityV1::Required,
+                    host: ApplicabilityV1::Required,
+                },
+            }],
+        };
+        (definitions, products, tests)
     }
 
     #[test]
     fn validates_exact_generic_node_context_and_result() {
         let vfs = b"mini-vfs";
         let (context, bundle, kernel) = context(vfs);
-        let (definitions, products) = authorities(&context);
+        let (definitions, products, tests) = authorities(&context);
         validate_node_context(
             &context,
             &locator(&context),
             &definitions,
             &products,
+            &tests,
             &bundle,
             vfs,
             &kernel,
@@ -1281,6 +1452,7 @@ mod tests {
                 &locator(&substituted_context),
                 &definitions,
                 &substituted_products,
+                &tests,
                 &bundle,
                 vfs,
                 &kernel,
@@ -1288,6 +1460,52 @@ mod tests {
             .unwrap_err()
             .contains("catalog manifest digest")
         );
+    }
+
+    #[test]
+    fn validates_exact_generic_browser_context_and_result() {
+        let vfs = b"mini-browser-vfs";
+        let (mut context, bundle, kernel) = context(vfs);
+        context.kind = BROWSER_CONTEXT_KIND.to_string();
+        context.host = EvidenceHostV1::Browser;
+        context.definition.host = EvidenceHostV1::Browser;
+        context.definition.id = "mini-browser".to_string();
+        context.definition.implementation = browser_evidence_implementation_paths()
+            .into_iter()
+            .enumerate()
+            .map(|(index, path)| EvidenceImplementationV1 {
+                path: path.to_string(),
+                sha256: if index % 2 == 0 { SHA_A } else { SHA_B }.to_string(),
+            })
+            .collect();
+        context.definition.definition_sha256 =
+            generated_definition_sha256(&context.definition).unwrap();
+        context.run.job_id = "browser-evidence".to_string();
+        context.product.manifest_sha256 =
+            canonical_sha256(&mini_product_manifest(&context)).unwrap();
+        let (definitions, mut products, tests) = authorities(&context);
+        products.products[0]
+            .manifest
+            .evidence
+            .browser
+            .as_mut()
+            .unwrap()
+            .test = "mini-browser-primary".to_string();
+        products.products[0].sha256 =
+            canonical_sha256(&products.products[0].manifest).unwrap();
+        context.product.manifest_sha256 = products.products[0].sha256.clone();
+        validate_node_context(
+            &context,
+            &locator(&context),
+            &definitions,
+            &products,
+            &tests,
+            &bundle,
+            vfs,
+            &kernel,
+        )
+        .unwrap();
+        validate_product_evidence_result(&result(&context), Some(&context)).unwrap();
     }
 
     #[test]
@@ -1308,7 +1526,7 @@ mod tests {
         let vfs = b"mini-vfs";
         let (mut context, bundle_bytes, _) = context(vfs);
         let (resolved, resolved_bytes, report, report_bytes) = candidate_documents(&mut context);
-        let (_, products) = authorities(&context);
+        let (_, products, _) = authorities(&context);
         let runtime_bundle: ExactRuntimeBundleV1 = serde_json::from_slice(&bundle_bytes).unwrap();
         validate_candidate_product_documents(
             &context,
@@ -1363,13 +1581,14 @@ mod tests {
     fn rejects_candidate_runtime_kernel_and_definition_drift() {
         let vfs = b"mini-vfs";
         let (mut context, bundle, kernel) = context(vfs);
-        let (definitions, products) = authorities(&context);
+        let (definitions, products, tests) = authorities(&context);
         assert!(
             validate_node_context(
                 &context,
                 &locator(&context),
                 &definitions,
                 &products,
+                &tests,
                 &bundle,
                 b"other",
                 &kernel,
@@ -1382,6 +1601,7 @@ mod tests {
                 &locator(&context),
                 &definitions,
                 &products,
+                &tests,
                 b"{}\n",
                 vfs,
                 &kernel,
@@ -1394,6 +1614,7 @@ mod tests {
                 &locator(&context),
                 &definitions,
                 &products,
+                &tests,
                 &bundle,
                 vfs,
                 b"other",
@@ -1407,6 +1628,7 @@ mod tests {
                 &locator(&context),
                 &definitions,
                 &products,
+                &tests,
                 &bundle,
                 vfs,
                 &kernel,
