@@ -345,6 +345,12 @@ export interface VfsImageRestoreOptions {
    * without raising the filesystem ceiling encoded in the image superblock.
    */
   maxByteLength?: number;
+  /**
+   * Reject an image before decompression when its zstd frame bound, or its
+   * uncompressed input length, exceeds this caller-owned lifecycle limit.
+   * The limit may narrow but never raise the format-wide safety ceiling.
+   */
+  maxDecompressedBytes?: number;
 }
 
 /** Versioned, image-level declarations carried outside the guest file tree. */
@@ -372,6 +378,10 @@ export interface VfsImageCapacity {
 // fromImage() auto-detects this and decompresses transparently so callers
 // don't have to know whether the bytes came from a `.vfs` or `.vfs.zst`.
 const ZSTD_MAGIC_BYTES = [0x28, 0xb5, 0x2f, 0xfd];
+const ZSTD_FRAME_MAGIC = 0xfd2fb528;
+const ZSTD_SKIPPABLE_MAGIC_MIN = 0x184d2a50;
+const ZSTD_SKIPPABLE_MAGIC_MAX = 0x184d2a5f;
+const ZSTD_MAX_BLOCK_BYTES = 128 * 1024;
 
 // VFS image binary format constants
 const VFS_IMAGE_MAGIC = 0x56465349; // "VFSI"
@@ -392,6 +402,13 @@ const MIN_REBASE_INITIAL_BYTES = 16 * 1024 * 1024;
 const VFS_IMAGE_MAX_METADATA_BYTES = 64 * 1024;
 const VFS_IMAGE_MAX_LAZY_METADATA_BYTES = 16 * 1024 * 1024;
 const VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES = 16 * 1024 * 1024;
+const VFS_IMAGE_MAX_DECOMPRESSED_BYTES =
+  1024 * 1024 * 1024
+  + VFS_IMAGE_MAX_LAZY_METADATA_BYTES
+  + VFS_IMAGE_MAX_LAZY_ARCHIVE_METADATA_BYTES
+  + VFS_IMAGE_MAX_METADATA_BYTES
+  + VFS_IMAGE_HEADER_SIZE
+  + 12;
 const MAX_LAZY_ARCHIVE_BYTES = VFS_DEFERRED_TREE_LIMITS.maxArchiveBytes;
 const MAX_LAZY_EXPANDED_BYTES = VFS_DEFERRED_TREE_LIMITS.maxExpandedBytes;
 const MAX_LAZY_PAYLOAD_BYTES = VFS_DEFERRED_TREE_LIMITS.maxPayloadBytes;
@@ -614,7 +631,16 @@ function encodeMetadata(metadata: VfsImageMetadata | null): Uint8Array {
   return bytes;
 }
 
-function maybeDecompressImage(image: Uint8Array): Uint8Array {
+function maybeDecompressImage(
+  image: Uint8Array,
+  maximum = VFS_IMAGE_MAX_DECOMPRESSED_BYTES,
+): Uint8Array {
+  if (
+    !Number.isSafeInteger(maximum) || maximum < VFS_IMAGE_HEADER_SIZE ||
+    maximum > VFS_IMAGE_MAX_DECOMPRESSED_BYTES
+  ) {
+    throw new Error("VFS image decompressed byte bound is invalid");
+  }
   if (
     image.byteLength >= ZSTD_MAGIC_BYTES.length &&
     image[0] === ZSTD_MAGIC_BYTES[0] &&
@@ -622,9 +648,134 @@ function maybeDecompressImage(image: Uint8Array): Uint8Array {
     image[2] === ZSTD_MAGIC_BYTES[2] &&
     image[3] === ZSTD_MAGIC_BYTES[3]
   ) {
-    return decompressZstd(image);
+    assertBoundedZstdFrames(image, maximum);
+    const decompressed = decompressZstd(image);
+    if (decompressed.byteLength > maximum) {
+      throw new Error("zstd VFS image exceeds its decompressed byte bound");
+    }
+    return decompressed;
+  }
+  if (image.byteLength > maximum) {
+    throw new Error("VFS image exceeds its decompressed byte bound");
   }
   return image;
+}
+
+function assertBoundedZstdFrames(image: Uint8Array, maximum: number): void {
+  const view = new DataView(image.buffer, image.byteOffset, image.byteLength);
+  let offset = 0;
+  let totalBound = 0;
+  let frames = 0;
+  const requireBytes = (count: number, label: string) => {
+    if (count < 0 || offset + count > image.byteLength) {
+      throw new Error(`zstd VFS image has a truncated ${label}`);
+    }
+  };
+  const addBound = (count: number) => {
+    totalBound += count;
+    if (!Number.isSafeInteger(totalBound) || totalBound > maximum) {
+      throw new Error("zstd VFS image exceeds its decompressed byte bound");
+    }
+  };
+  const readLittleEndian = (count: number): bigint => {
+    requireBytes(count, "frame header");
+    let result = 0n;
+    for (let index = 0; index < count; index++) {
+      result |= BigInt(image[offset + index]!) << BigInt(index * 8);
+    }
+    offset += count;
+    return result;
+  };
+
+  while (offset < image.byteLength) {
+    requireBytes(4, "frame magic");
+    const magic = view.getUint32(offset, true);
+    offset += 4;
+    if (magic >= ZSTD_SKIPPABLE_MAGIC_MIN && magic <= ZSTD_SKIPPABLE_MAGIC_MAX) {
+      requireBytes(4, "skippable frame size");
+      const bytes = view.getUint32(offset, true);
+      offset += 4;
+      requireBytes(bytes, "skippable frame");
+      offset += bytes;
+      continue;
+    }
+    if (magic !== ZSTD_FRAME_MAGIC) {
+      throw new Error("zstd VFS image contains an invalid frame magic");
+    }
+    frames++;
+    requireBytes(1, "frame descriptor");
+    const descriptor = image[offset++]!;
+    if ((descriptor & 0x08) !== 0) {
+      throw new Error("zstd VFS image uses a reserved frame descriptor bit");
+    }
+    const singleSegment = (descriptor & 0x20) !== 0;
+    const hasChecksum = (descriptor & 0x04) !== 0;
+    const dictionaryBytes = [0, 1, 2, 4][descriptor & 0x03]!;
+    const contentSizeFlag = descriptor >>> 6;
+    let windowBytes: bigint | undefined;
+    if (!singleSegment) {
+      requireBytes(1, "window descriptor");
+      const windowDescriptor = image[offset++]!;
+      const exponent = 10 + (windowDescriptor >>> 3);
+      const base = 1n << BigInt(exponent);
+      windowBytes = base + (base >> 3n) * BigInt(windowDescriptor & 0x07);
+    }
+    requireBytes(dictionaryBytes, "dictionary identity");
+    offset += dictionaryBytes;
+    const contentSizeBytes = contentSizeFlag === 0
+      ? (singleSegment ? 1 : 0)
+      : contentSizeFlag === 1
+      ? 2
+      : contentSizeFlag === 2
+      ? 4
+      : 8;
+    let contentBytes: bigint | undefined;
+    if (contentSizeBytes > 0) {
+      contentBytes = readLittleEndian(contentSizeBytes);
+      if (contentSizeFlag === 1) contentBytes += 256n;
+      if (singleSegment) windowBytes = contentBytes;
+    }
+    if (windowBytes !== undefined && windowBytes > BigInt(maximum)) {
+      throw new Error("zstd VFS image exceeds its decompressed window bound");
+    }
+    if (contentBytes !== undefined && contentBytes > BigInt(maximum)) {
+      throw new Error("zstd VFS image exceeds its decompressed byte bound");
+    }
+
+    let frameBound = 0;
+    for (;;) {
+      requireBytes(3, "block header");
+      const header = image[offset]!
+        | (image[offset + 1]! << 8)
+        | (image[offset + 2]! << 16);
+      offset += 3;
+      const last = (header & 1) !== 0;
+      const type = (header >>> 1) & 0x03;
+      const blockBytes = header >>> 3;
+      if (type === 3 || blockBytes > ZSTD_MAX_BLOCK_BYTES) {
+        throw new Error("zstd VFS image contains an invalid block header");
+      }
+      frameBound += type === 2 ? ZSTD_MAX_BLOCK_BYTES : blockBytes;
+      if (!Number.isSafeInteger(frameBound) || frameBound > maximum) {
+        throw new Error("zstd VFS image exceeds its decompressed byte bound");
+      }
+      const encodedBytes = type === 1 ? 1 : blockBytes;
+      requireBytes(encodedBytes, "block payload");
+      offset += encodedBytes;
+      if (last) break;
+    }
+    if (hasChecksum) {
+      requireBytes(4, "content checksum");
+      offset += 4;
+    }
+    if (contentBytes !== undefined && contentBytes > BigInt(frameBound)) {
+      throw new Error("zstd VFS image frame content exceeds its block bound");
+    }
+    addBound(frameBound);
+  }
+  if (frames === 0) {
+    throw new Error("zstd VFS image contains no data frame");
+  }
 }
 
 interface ParsedImageHeader {
@@ -634,8 +785,11 @@ interface ParsedImageHeader {
   sabLen: number;
 }
 
-function parseImageHeader(input: Uint8Array): ParsedImageHeader {
-  const image = maybeDecompressImage(input);
+function parseImageHeader(
+  input: Uint8Array,
+  maxDecompressedBytes?: number,
+): ParsedImageHeader {
+  const image = maybeDecompressImage(input, maxDecompressedBytes);
 
   if (image.byteLength < VFS_IMAGE_HEADER_SIZE) {
     throw new Error("VFS image too small");
@@ -6474,7 +6628,7 @@ export class MemoryFileSystem implements FileSystemBackend {
     image: Uint8Array,
     options?: VfsImageRestoreOptions,
   ): MemoryFileSystem {
-    const parsed = parseImageHeader(image);
+    const parsed = parseImageHeader(image, options?.maxDecompressedBytes);
     return MemoryFileSystem.restoreParsedImage(parsed, options);
   }
 

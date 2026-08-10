@@ -586,6 +586,19 @@ describe("ABI staging product builders", () => {
         expect(fs.stat("/usr/wasm32posix/glue-objects/channel_syscall.o").size)
           .toBeGreaterThan(0);
       } else if (productId === "test-mariadb") {
+        const catalog = JSON.parse(readFileSync(catalogPath, "utf8"));
+        const product = catalog.products.find(
+          (entry: { manifest: { id: string } }) =>
+            entry.manifest.id === "test-mariadb",
+        );
+        expect(product?.manifest.boot.argv).toEqual([
+          "/sbin/dinit",
+          "--container",
+          "-p",
+          "/tmp/dinitctl",
+          "mariadb",
+        ]);
+        expect(fs.stat("/usr/bin/mysqltest").size).toBeGreaterThan(0);
         expect(readVfsFile(fs, "/mysql-test/main/1st.test")).toContain("1st");
         expect(readVfsFile(fs, "/etc/services")).toContain("mysql");
       } else if (productId === "test-php") {

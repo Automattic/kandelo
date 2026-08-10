@@ -48,10 +48,43 @@ export interface SendHttpRequestOptions {
   debugLabel?: string;
   /** Internal retry budget for a server-side close before any HTTP bytes. */
   emptyResponseRetries?: number;
+  /** Maximum raw response bytes retained before parsing. */
+  maxResponseBytes?: number;
 }
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+
+export class BoundedHttpResponseChunks {
+  private readonly chunks: Uint8Array[] = [];
+  private bytes = 0;
+
+  constructor(private readonly maximumBytes: number) {
+    if (!Number.isSafeInteger(maximumBytes) || maximumBytes < 1) {
+      throw new Error("HTTP response byte bound must be a positive safe integer");
+    }
+  }
+
+  push(chunk: Uint8Array): void {
+    if (chunk.byteLength > this.maximumBytes - this.bytes) {
+      throw new Error(
+        `in-kernel HTTP response exceeds its ${this.maximumBytes}-byte bound`,
+      );
+    }
+    this.chunks.push(chunk);
+    this.bytes += chunk.byteLength;
+  }
+
+  concat(): Uint8Array {
+    const result = new Uint8Array(this.bytes);
+    let offset = 0;
+    for (const chunk of this.chunks) {
+      result.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return result;
+  }
+}
 
 /**
  * Serialize an {@link HttpRequest} to raw HTTP/1.1 bytes ready to write into

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import {
   createClosedLazyAssetFetcher,
+  createClosedLazyAssetSourceFetcher,
   loadClosedLazyAssetSources,
   MAX_CLOSED_LAZY_ASSET_BYTES,
   MAX_CLOSED_LAZY_ASSETS,
@@ -12,6 +13,10 @@ import {
 
 const URL_A = "https://github.com/example/project/releases/download/v1/a.tar.gz";
 const URL_B = "https://github.com/example/project/releases/download/v1/b.tar.gz";
+const OCI_REFERENCE =
+  `ghcr.io/kandelo-dev/homebrew-tap-core-abi-7-candidates/lazy@sha256:${"a".repeat(64)}`;
+const CLOSED_REFERENCE_ERROR =
+  "canonical HTTPS URL or immutable OCI reference without userinfo or a fragment";
 
 function asset(
   url = URL_A,
@@ -39,6 +44,87 @@ function sourceBinding(
 }
 
 describe("closed lazy assets", () => {
+  it("keeps a closed source inert until its exact lazy URL is requested", async () => {
+    const bytes = new Uint8Array([9, 8, 7]);
+    const source = sourceBinding(OCI_REFERENCE, "/assets/perl", bytes);
+    const fetchImpl = vi.fn(async () => new Response(bytes));
+    const fetcher = createClosedLazyAssetSourceFetcher([source], { fetchImpl });
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    await expect(fetcher("https://example.test/unbound"))
+      .rejects.toThrow("do not bind URL");
+    expect(fetchImpl).not.toHaveBeenCalled();
+
+    const response = await fetcher(OCI_REFERENCE);
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("supports an explicitly empty closed source transport", async () => {
+    const fetchImpl = vi.fn();
+    const fetcher = createClosedLazyAssetSourceFetcher([], { fetchImpl });
+
+    await expect(fetcher(URL_A)).rejects.toThrow("do not bind URL");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("uses only an anonymous GHCR pull token for an immutable blob source", async () => {
+    const bytes = new Uint8Array([6, 5, 4]);
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    const repository =
+      "kandelo-dev/homebrew-tap-core-abi-7-candidates/perl";
+    const reference = `ghcr.io/${repository}@sha256:${digest}`;
+    const sourceUrl = `https://ghcr.io/v2/${repository}/blobs/sha256:${digest}`;
+    const scope = `repository:${repository}:pull`;
+    const fetchImpl = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === sourceUrl && init?.headers === undefined) {
+        return new Response(null, {
+          status: 401,
+          headers: {
+            "www-authenticate":
+              `Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="${scope}"`,
+          },
+        });
+      }
+      if (url === `https://ghcr.io/token?service=ghcr.io&scope=${encodeURIComponent(scope)}`) {
+        return Response.json({ token: "anonymous-pull-token" });
+      }
+      if (
+        url === sourceUrl &&
+        (init?.headers as Record<string, string>)?.authorization ===
+          "Bearer anonymous-pull-token"
+      ) {
+        return new Response(bytes);
+      }
+      return new Response(null, { status: 500 });
+    });
+    const fetcher = createClosedLazyAssetSourceFetcher([{
+      url: reference,
+      sourceUrl,
+      sha256: digest,
+      size: bytes.byteLength,
+    }], { fetchImpl });
+
+    const response = await fetcher(reference);
+    expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    for (const [, init] of fetchImpl.mock.calls) {
+      expect((init?.headers as Record<string, string> | undefined)?.cookie)
+        .toBeUndefined();
+    }
+  });
+
+  it("keys a closed candidate transport by its exact immutable OCI reference", async () => {
+    const bytes = new Uint8Array([7, 8, 9]);
+    const fetcher = createClosedLazyAssetFetcher([asset(OCI_REFERENCE, bytes)]);
+    expect(new Uint8Array(await (await fetcher(OCI_REFERENCE)).arrayBuffer()))
+      .toEqual(bytes);
+    await expect(fetcher(OCI_REFERENCE.replace("-candidates", ""))).rejects.toThrow(
+      "do not bind URL",
+    );
+  });
+
   it("loads a verified transport source under its canonical deferred-tree URL", async () => {
     const source = new Uint8Array([4, 5, 6, 7]);
     const fetchImpl = vi.fn(async () => new Response(source, {
@@ -150,9 +236,7 @@ describe("closed lazy assets", () => {
     await expect(loadClosedLazyAssetSources([{
       ...identity,
       url: "http://example.test/not-https",
-    }], { fetchImpl })).rejects.toThrow(
-      "canonical HTTPS URL without userinfo or a fragment",
-    );
+    }], { fetchImpl })).rejects.toThrow(CLOSED_REFERENCE_ERROR);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -604,6 +688,11 @@ describe("closed lazy assets", () => {
     await expect(fetcher(URL_B)).rejects.toThrow("do not bind URL");
   });
 
+  it("keeps an explicitly empty closed transport closed", async () => {
+    const fetcher = createClosedLazyAssetFetcher([]);
+    await expect(fetcher(URL_A)).rejects.toThrow("do not bind URL");
+  });
+
   it("verifies SHA-256 before creating a successful response", async () => {
     const binding = asset();
     binding.sha256 = "0".repeat(64);
@@ -612,32 +701,31 @@ describe("closed lazy assets", () => {
   });
 
   it.each([
-    ["empty set", [], "at least one"],
     ["duplicate URL", [asset(), asset()], "duplicate URL"],
     [
       "non-HTTPS URL",
       [asset("http://example.test/a")],
-      "canonical HTTPS URL without userinfo or a fragment",
+      CLOSED_REFERENCE_ERROR,
     ],
     [
       "credentialed URL",
       [asset("https://user@example.test/a")],
-      "canonical HTTPS URL without userinfo or a fragment",
+      CLOSED_REFERENCE_ERROR,
     ],
     [
       "fragment URL",
       [asset("https://example.test/a#fragment")],
-      "canonical HTTPS URL without userinfo or a fragment",
+      CLOSED_REFERENCE_ERROR,
     ],
     [
       "empty-fragment URL",
       [asset("https://example.test/a#")],
-      "canonical HTTPS URL without userinfo or a fragment",
+      CLOSED_REFERENCE_ERROR,
     ],
     [
       "noncanonical URL",
       [asset("https://EXAMPLE.test/a")],
-      "canonical HTTPS URL without userinfo or a fragment",
+      CLOSED_REFERENCE_ERROR,
     ],
     [
       "wrong size",

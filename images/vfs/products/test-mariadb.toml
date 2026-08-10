@@ -12,7 +12,7 @@ materialization = "embedded"
 
 [[software.package]]
 name = "mariadb"
-outputs = ["mariadbd"]
+outputs = ["mariadbd", "mysqltest"]
 source_roles = ["system-tables", "test-suite"]
 role = "runtime"
 materialization = "embedded"
@@ -52,7 +52,7 @@ gid = 0
 ephemeral = true
 
 [boot]
-argv = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl"]
+argv = ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl", "mariadb"]
 cwd = "/root"
 uid = 0
 gid = 0

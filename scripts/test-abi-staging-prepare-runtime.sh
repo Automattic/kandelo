@@ -25,6 +25,7 @@ printf '%s\n' 'export const ABI_VERSION = 8 as const;' \
   >"$SOURCE/host/src/generated/abi.ts"
 printf '%s\n' "export type WorkerMessage = { kind: 'fixture' };" \
   >"$SOURCE/host/src/worker-protocol.ts"
+printf '%s\n' '{"nodes":{},"root":"root","version":7}' >"$SOURCE/flake.lock"
 git -C "$SOURCE" init -q
 git -C "$SOURCE" add .
 git -C "$SOURCE" -c user.name=Fixture -c user.email=fixture.invalid \
@@ -43,10 +44,21 @@ artifact_root="$2"
 if [ -n "${FAKE_RUNTIME_STARTED_MARKER:-}" ]; then
   printf 'started\n' >"$FAKE_RUNTIME_STARTED_MARKER"
 fi
-for secret in GITHUB_TOKEN GH_TOKEN GHCR_PAT ACTIONS_ID_TOKEN_REQUEST_TOKEN; do
+for secret in GITHUB_TOKEN GH_TOKEN GHCR_PAT ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+  ACTIONS_RUNTIME_TOKEN; do
   [ -z "${!secret:-}" ] || exit 90
 done
+[ -z "${SUPER_SECRET:-}" ] || exit 91
+if [ -n "${FAKE_RUNTIME_HOME_MARKER:-}" ]; then
+  printf '%s\n' "$HOME" >"$FAKE_RUNTIME_HOME_MARKER"
+fi
 mkdir -p "$artifact_root/host/dist" "$artifact_root/browser/dist"
+if [ "${FAKE_RUNTIME_EMPTY_DIRECTORY:-0}" = 1 ]; then
+  mkdir -p "$artifact_root/unrepresented-empty-directory"
+fi
+if [ "${FAKE_RUNTIME_EMPTY_FILE:-0}" = 1 ]; then
+  : >"$artifact_root/unrepresented-empty-file"
+fi
 python3 - "$artifact_root/kernel.wasm" <<'PY'
 from pathlib import Path
 import sys
@@ -59,6 +71,7 @@ cp "$source_root/host/src/generated/abi.ts" \
 cp "$source_root/host/src/worker-protocol.ts" \
   "$artifact_root/host/worker-protocol.ts"
 printf 'host bundle\n' >"$artifact_root/host/dist/index.js"
+printf 'node worker bundle\n' >"$artifact_root/host/dist/node-kernel-worker-entry.js"
 printf 'browser bundle\n' >"$artifact_root/browser/dist/index.js"
 printf 'service worker\n' >"$artifact_root/browser/dist/service-worker.js"
 if [ "${FAKE_RUNTIME_SYMLINK:-0}" = 1 ]; then
@@ -92,8 +105,31 @@ run_preparer "$OUT"
   fail "runtime bundle did not bind the exact source head"
 [ "$(jq -r '.target_abi.version' "$OUT/runtime-bundle.json")" = 8 ] ||
   fail "runtime bundle did not bind the target ABI"
-[ "$(jq -r '.inventory | length' "$OUT/runtime-bundle.json")" = 6 ] ||
+[ "$(jq -r '.inventory | length' "$OUT/runtime-bundle.json")" = 9 ] ||
   fail "runtime bundle inventory is incomplete"
+[ "$(jq -r '.inventory[] | select(.path == "flake.lock") | .sha256' \
+    "$OUT/runtime-bundle.json")" = \
+  "$(sha256sum "$SOURCE/flake.lock" | awk '{print $1}')" ] ||
+  fail "runtime bundle did not bind the exact dev-shell lock"
+cmp -s "$SOURCE/flake.lock" "$OUT/runtime/flake.lock" ||
+  fail "runtime bundle did not carry the exact dev-shell lock"
+[ "$(cat "$OUT/runtime/host/package.json")" = '{"type":"module"}' ] ||
+  fail "runtime bundle lacks protected Node module identity"
+[ -s "$OUT/runtime/host/dist/node-kernel-worker-entry.js" ] ||
+  fail "runtime bundle lacks the exact Node worker entry"
+
+PRIVATE_ENV_OUT="$TMP_ROOT/private-environment"
+SUPER_SECRET=must-not-cross \
+  FAKE_RUNTIME_HOME_MARKER="$TMP_ROOT/candidate-home" \
+  run_preparer "$PRIVATE_ENV_OUT"
+[ -s "$TMP_ROOT/candidate-home" ] || fail "candidate builder did not report its HOME"
+[ "$(cat "$TMP_ROOT/candidate-home")" != "$HOME" ] ||
+  fail "candidate runtime inherited the ambient HOME"
+PRIVATE_ENV_OUT_REAL="$(python3 -c 'from pathlib import Path; import sys; print(Path(sys.argv[1]).resolve())' "$PRIVATE_ENV_OUT")"
+case "$(cat "$TMP_ROOT/candidate-home")" in
+  "$PRIVATE_ENV_OUT_REAL"/.candidate-environment/home) ;;
+  *) fail "candidate runtime did not receive its private HOME" ;;
+esac
 
 printf 'ambient\n' >"$SOURCE/ambient-untracked-input"
 if FAKE_RUNTIME_STARTED_MARKER="$TMP_ROOT/untracked.started" \
@@ -134,6 +170,24 @@ grep -F 'credential' "$TMP_ROOT/credentialed.out" >/dev/null ||
   fail "credential rejection was not explicit"
 
 if env \
+    ACTIONS_RUNTIME_TOKEN=artifact_service_fixture_secret \
+    KANDELO_ABI_STAGING_TESTING=1 \
+    KANDELO_ABI_STAGING_RUNTIME_BUILDER="$FAKE_BUILDER" \
+    "$PREPARER" \
+      --source-root "$SOURCE" \
+      --source-repository example/kandelo \
+      --source-commit "$SOURCE_COMMIT" \
+      --source-tree "$SOURCE_TREE" \
+      --target-abi 8 \
+      --snapshot-sha256 "$SNAPSHOT_SHA256" \
+      --build-policy-sha256 "$POLICY_SHA256" \
+      --out "$TMP_ROOT/runtime-token" >"$TMP_ROOT/runtime-token.out" 2>&1; then
+  fail "runtime preparation accepted the Actions runtime credential"
+fi
+grep -F 'ACTIONS_RUNTIME_TOKEN' "$TMP_ROOT/runtime-token.out" >/dev/null ||
+  fail "Actions runtime credential rejection was not explicit"
+
+if env \
     KANDELO_ABI_STAGING_TESTING=1 \
     KANDELO_ABI_STAGING_RUNTIME_BUILDER="$FAKE_BUILDER" \
     "$PREPARER" \
@@ -156,6 +210,20 @@ if FAKE_RUNTIME_SYMLINK=1 run_preparer "$TMP_ROOT/symlink" \
 fi
 grep -F 'symbolic link' "$TMP_ROOT/symlink.out" >/dev/null ||
   fail "symlink rejection was not explicit"
+
+if FAKE_RUNTIME_EMPTY_DIRECTORY=1 run_preparer "$TMP_ROOT/empty-directory" \
+    >"$TMP_ROOT/empty-directory.out" 2>&1; then
+  fail "runtime preparation accepted an unrepresented empty directory"
+fi
+grep -F 'empty directory' "$TMP_ROOT/empty-directory.out" >/dev/null ||
+  fail "empty-directory rejection was not explicit"
+
+if FAKE_RUNTIME_EMPTY_FILE=1 run_preparer "$TMP_ROOT/empty-file" \
+    >"$TMP_ROOT/empty-file.out" 2>&1; then
+  fail "runtime preparation accepted an unrepresented empty file"
+fi
+grep -F 'empty file' "$TMP_ROOT/empty-file.out" >/dev/null ||
+  fail "empty-file rejection was not explicit"
 
 cp "$OUT/runtime-bundle.json" "$TMP_ROOT/tampered.json"
 jq -cS '.source.tree = "cccccccccccccccccccccccccccccccccccccccc"' \

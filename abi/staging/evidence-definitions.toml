@@ -10,6 +10,7 @@ timeout_seconds = 120
 
 [definitions.probe]
 argv = ["/bin/sh", "-c", "printf 'rootfs-ready\\n'"]
+lazy_inputs = ["package-dash-output-dash"]
 stdout_exact = "rootfs-ready\n"
 
 [[definitions]]
@@ -20,6 +21,7 @@ timeout_seconds = 120
 
 [definitions.probe]
 argv = ["/bin/sh", "-c", "printf 'rootfs-ready\\n'"]
+lazy_inputs = ["package-dash-output-dash"]
 stdout_exact = "rootfs-ready\n"
 
 [[definitions]]
@@ -87,7 +89,6 @@ runner = "http"
 timeout_seconds = 180
 
 [definitions.probe]
-service_argv = ["/usr/sbin/nginx", "-g", "daemon off;"]
 path = "/"
 status = 200
 body_contains = "Welcome to nginx"
@@ -99,7 +100,6 @@ runner = "http"
 timeout_seconds = 180
 
 [definitions.probe]
-service_argv = ["/usr/sbin/nginx", "-g", "daemon off;"]
 path = "/"
 status = 200
 body_contains = "Welcome to nginx"
@@ -111,7 +111,6 @@ runner = "http"
 timeout_seconds = 240
 
 [definitions.probe]
-service_argv = ["/sbin/dinit", "--system"]
 path = "/index.php"
 status = 200
 body_contains = "PHP"
@@ -123,7 +122,6 @@ runner = "http"
 timeout_seconds = 240
 
 [definitions.probe]
-service_argv = ["/sbin/dinit", "--system"]
 path = "/index.php"
 status = 200
 body_contains = "PHP"
@@ -135,7 +133,6 @@ runner = "http"
 timeout_seconds = 300
 
 [definitions.probe]
-service_argv = ["/sbin/dinit", "--system"]
 path = "/wp-login.php"
 status = 200
 body_contains = "Log In"
@@ -156,7 +153,6 @@ runner = "http"
 timeout_seconds = 360
 
 [definitions.probe]
-service_argv = ["/sbin/dinit", "--system"]
 path = "/wp-login.php"
 status = 200
 body_contains = "Log In"
@@ -177,7 +173,6 @@ runner = "sql"
 timeout_seconds = 300
 
 [definitions.probe]
-service_argv = ["/usr/bin/mariadbd", "--skip-networking"]
 statements = ["SELECT 1"]
 results_exact = ["1"]
 
@@ -188,7 +183,6 @@ runner = "sql"
 timeout_seconds = 300
 
 [definitions.probe]
-service_argv = ["/usr/bin/mariadbd", "--skip-networking"]
 statements = ["SELECT 1"]
 results_exact = ["1"]
 
@@ -199,7 +193,6 @@ runner = "sql"
 timeout_seconds = 300
 
 [definitions.probe]
-service_argv = ["/usr/bin/mariadbd", "--skip-networking"]
 statements = ["SELECT 1"]
 results_exact = ["1"]
 
@@ -210,7 +203,6 @@ runner = "sql"
 timeout_seconds = 300
 
 [definitions.probe]
-service_argv = ["/usr/bin/mariadbd", "--skip-networking"]
 statements = ["SELECT 1"]
 results_exact = ["1"]
 
@@ -242,6 +234,7 @@ timeout_seconds = 180
 
 [definitions.probe]
 argv = ["/usr/bin/perl", "-MFile::Spec", "-e", "print qq(perl-ready\\n)"]
+lazy_inputs = ["package-perl-output-perl"]
 stdout_exact = "perl-ready\n"
 
 [[definitions]]
@@ -252,6 +245,7 @@ timeout_seconds = 180
 
 [definitions.probe]
 argv = ["/usr/bin/perl", "-MFile::Spec", "-e", "print qq(perl-ready\\n)"]
+lazy_inputs = ["package-perl-output-perl"]
 stdout_exact = "perl-ready\n"
 
 [[definitions]]
@@ -261,7 +255,6 @@ runner = "service-protocol"
 timeout_seconds = 180
 
 [definitions.probe]
-service_argv = ["/usr/bin/redis-server", "--save", ""]
 protocol = "redis"
 request = "PING"
 response_exact = "PONG"
@@ -273,7 +266,6 @@ runner = "service-protocol"
 timeout_seconds = 180
 
 [definitions.probe]
-service_argv = ["/usr/bin/redis-server", "--save", ""]
 protocol = "redis"
 request = "PING"
 response_exact = "PONG"

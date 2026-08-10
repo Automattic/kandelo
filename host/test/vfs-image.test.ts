@@ -687,6 +687,36 @@ describe("VFS image save/restore", () => {
   });
 
   describe("zstd-compressed images", () => {
+    it("rejects an oversized frame before attempting decompression", () => {
+      const frame = new Uint8Array(13);
+      frame.set([0x28, 0xb5, 0x2f, 0xfd], 0);
+      // Single-segment frame with an eight-byte declared content size.
+      frame[4] = 0xe0;
+      new DataView(frame.buffer).setBigUint64(
+        5,
+        2n * 1024n * 1024n * 1024n,
+        true,
+      );
+
+      expect(() => MemoryFileSystem.fromImage(frame)).toThrow(
+        /zstd.*decompressed.*bound/i,
+      );
+    });
+
+    it("honors a narrower caller-owned decompressed lifecycle bound", async () => {
+      const mfs = createMemfs();
+      writeFile(mfs, "/bounded", new TextEncoder().encode("candidate"));
+      const image = await mfs.saveImage();
+      const compressed = new Uint8Array(zstdCompressSync(image));
+
+      expect(() => MemoryFileSystem.fromImage(compressed, {
+        maxDecompressedBytes: image.byteLength - 1,
+      })).toThrow(/zstd.*decompressed.*bound/i);
+      expect(() => MemoryFileSystem.fromImage(compressed, {
+        maxDecompressedBytes: image.byteLength,
+      })).not.toThrow();
+    });
+
     it("normalizes timestamps for reproducible compressed build images", async () => {
       const dir = mkdtempSync(join(tmpdir(), "vfs-zst-deterministic-"));
       const build = async (runtimeNow: number, name: string): Promise<Buffer> => {

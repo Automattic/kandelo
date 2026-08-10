@@ -5,7 +5,6 @@ use crate::abi_staging::canonical_json::{
 use crate::abi_staging::product_manifest::{
     read_bounded_regular_file, SoftwareRoleV1, VfsArchitectureV1,
 };
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -265,7 +264,12 @@ fn validate_resolved_inputs_with_mode(
 
         if let Some(reference) = &input.reference {
             validate_immutable_reference(reference, &input.sha256)?;
-            validate_reference_class(inputs.reference_class, input, reference)?;
+            validate_reference_class(
+                inputs.reference_class,
+                inputs.target_abi.version,
+                input,
+                reference,
+            )?;
         }
 
         match (&input.kind, &input.descriptor) {
@@ -278,8 +282,10 @@ fn validate_resolved_inputs_with_mode(
                 validate_immutable_reference(&descriptor.reference, &descriptor.sha256)?;
                 validate_reference_class_fields(
                     inputs.reference_class,
+                    inputs.target_abi.version,
                     &input.id,
                     input.kind,
+                    input.effective_materialization,
                     &descriptor.sha256,
                     descriptor.bytes,
                     &descriptor.reference,
@@ -625,13 +631,16 @@ fn validate_report_role_placement(input: &ConsumedVfsInputV1) -> Result<(), Stri
 
 fn validate_reference_class(
     class: VfsReferenceClassV1,
+    target_abi: u64,
     input: &ResolvedVfsInputV1,
     reference: &str,
 ) -> Result<(), String> {
     validate_reference_class_fields(
         class,
+        target_abi,
         &input.id,
         input.kind,
+        input.effective_materialization,
         &input.sha256,
         input.bytes,
         reference,
@@ -640,25 +649,54 @@ fn validate_reference_class(
 
 fn validate_reference_class_fields(
     class: VfsReferenceClassV1,
+    target_abi: u64,
     input_id: &str,
     kind: ResolvedVfsInputKindV1,
+    placement: ConsumedInputPlacementV1,
     sha256: &str,
     byte_count: u64,
     reference: &str,
 ) -> Result<(), String> {
-    let candidate = Regex::new(r"homebrew-tap-core-abi-[0-9]+-candidates/")
-        .map_err(|error| format!("invalid candidate namespace validator: {error}"))?;
-    let canonical = Regex::new(r"homebrew-tap-core-abi-[0-9]+/")
-        .map_err(|error| format!("invalid canonical namespace validator: {error}"))?;
-    let is_candidate = candidate.is_match(reference);
-    let is_canonical = canonical.is_match(reference);
+    let normalized = reference.strip_prefix("https://").unwrap_or(reference);
+    let namespace = "ghcr.io/kandelo-dev/homebrew-tap-core-abi-";
+    let namespace_component = normalized.strip_prefix(namespace).and_then(|suffix| {
+        let (component, _) = suffix.split_once('/')?;
+        Some(component)
+    });
+    let is_candidate = namespace_component.is_some_and(|component| {
+        component
+            .strip_suffix("-candidates")
+            .is_some_and(|abi| !abi.is_empty() && abi.bytes().all(|byte| byte.is_ascii_digit()))
+    });
+    let is_canonical = namespace_component.is_some_and(|component| {
+        !component.is_empty() && component.bytes().all(|byte| byte.is_ascii_digit())
+    });
+    let exact_candidate = normalized.starts_with(&format!(
+        "{namespace}{target_abi}-candidates/"
+    ));
+    let exact_canonical = normalized.starts_with(&format!(
+        "{namespace}{target_abi}/"
+    ));
+    let managed = matches!(
+        kind,
+        ResolvedVfsInputKindV1::HomebrewBottle
+            | ResolvedVfsInputKindV1::ProductImage
+    ) || placement == ConsumedInputPlacementV1::LazyReference;
     match class {
         VfsReferenceClassV1::Candidate if is_canonical => Err(format!(
             "candidate input {:?} references the canonical namespace",
             input_id
         )),
+        VfsReferenceClassV1::Candidate if is_candidate && !exact_candidate => Err(format!(
+            "candidate input {:?} is outside its target ABI candidate namespace",
+            input_id
+        )),
         VfsReferenceClassV1::Canonical if is_candidate => Err(format!(
             "canonical input {:?} references the candidate namespace",
+            input_id
+        )),
+        VfsReferenceClassV1::Canonical if is_canonical && !exact_canonical => Err(format!(
+            "canonical input {:?} is outside its target ABI canonical namespace",
             input_id
         )),
         VfsReferenceClassV1::LocalFixture => {
@@ -690,19 +728,17 @@ fn validate_reference_class_fields(
             }
             Ok(())
         }
-        VfsReferenceClassV1::Candidate | VfsReferenceClassV1::Canonical
-            if matches!(
-                kind,
-                ResolvedVfsInputKindV1::HomebrewBottle
-                    | ResolvedVfsInputKindV1::ProductImage
-            ) && !is_candidate
-                && !is_canonical =>
+        VfsReferenceClassV1::Candidate if managed && !exact_candidate =>
         {
             Err(format!(
-                "managed input {:?} does not use a versioned candidate or canonical namespace",
+                "managed input {:?} does not use its target ABI candidate namespace",
                 input_id
             ))
         }
+        VfsReferenceClassV1::Canonical if managed && !exact_canonical => Err(format!(
+            "managed input {:?} does not use its target ABI canonical namespace",
+            input_id
+        )),
         _ => Ok(()),
     }
 }
@@ -1200,6 +1236,41 @@ mod tests {
         )
         .unwrap_err()
         .contains("canonical namespace"));
+
+        let mut wrong_abi_candidate = inputs.clone();
+        wrong_abi_candidate.inputs[2].reference = Some(format!(
+            "ghcr.io/kandelo-dev/homebrew-tap-core-abi-8-candidates/lazy@sha256:{lazy_sha}"
+        ));
+        assert!(validate_resolved_inputs(
+            &canonical_json_bytes(&wrong_abi_candidate).unwrap(),
+            root.path(),
+        )
+        .unwrap_err()
+        .contains("target ABI candidate namespace"));
+
+        let mut hostile_host = inputs.clone();
+        hostile_host.inputs[2].reference = Some(format!(
+            "https://attacker.invalid/homebrew-tap-core-abi-7-candidates/lazy@sha256:{lazy_sha}"
+        ));
+        assert!(validate_resolved_inputs(
+            &canonical_json_bytes(&hostile_host).unwrap(),
+            root.path(),
+        )
+        .unwrap_err()
+        .contains("target ABI candidate namespace"));
+
+        let mut external_lazy_archive = inputs.clone();
+        external_lazy_archive.inputs[2].kind = ResolvedVfsInputKindV1::SourceArchive;
+        external_lazy_archive.inputs[2].descriptor = None;
+        external_lazy_archive.inputs[2].reference = Some(format!(
+            "https://artifacts.example.invalid/archive?sha256={lazy_sha}"
+        ));
+        assert!(validate_resolved_inputs(
+            &canonical_json_bytes(&external_lazy_archive).unwrap(),
+            root.path(),
+        )
+        .unwrap_err()
+        .contains("target ABI candidate namespace"));
 
         let mut candidate_in_canonical = inputs.clone();
         candidate_in_canonical.reference_class = VfsReferenceClassV1::Canonical;

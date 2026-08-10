@@ -1178,7 +1178,7 @@ readonly = false
                 "coreutils|coreutils||Runtime|embedded",
                 "dash|dash||Runtime|embedded",
                 "dinit|dinit,dinitctl||Runtime|embedded",
-                "mariadb|mariadbd|system-tables,test-suite|Runtime|embedded",
+                "mariadb|mariadbd,mysqltest|system-tables,test-suite|Runtime|embedded",
             ])),
             ("test-php", set(&[
                 "php|curl,icu-data,intl,opcache,phar,php,php-fpm,zend_test,zip|test-suite|Runtime|embedded",

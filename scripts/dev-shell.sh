@@ -43,6 +43,30 @@ if [ $# -eq 0 ]; then
     exit 2
 fi
 
+# Keep the exact outer Nix executable available to protected tooling that must
+# realize a second, exact-head dev environment. Nix itself is intentionally not
+# a package in Kandelo's development shell, so resolving it from the inner PATH
+# would either fail or leak an ambient substitute.
+if [ -n "${KANDELO_NIX_BIN:-}" ]; then
+    case "$KANDELO_NIX_BIN" in
+        /*) [ -x "$KANDELO_NIX_BIN" ] ;;
+        *) false ;;
+    esac || {
+        echo "dev-shell.sh: KANDELO_NIX_BIN must be an executable absolute path" >&2
+        exit 2
+    }
+else
+    KANDELO_NIX_BIN="$(command -v nix)"
+    case "$KANDELO_NIX_BIN" in
+        /*) [ -x "$KANDELO_NIX_BIN" ] ;;
+        *) false ;;
+    esac || {
+        echo "dev-shell.sh: Nix is unavailable" >&2
+        exit 2
+    }
+fi
+export KANDELO_NIX_BIN
+
 dev_command=("$@")
 # A top-level non-interactive login Bash reads /etc/profile after Nix's
 # shellHook and can replace the declared PATH with Darwin host defaults. Keep
@@ -56,7 +80,7 @@ if [ "${dev_command[0]##*/}" = "bash" ] \
 fi
 
 nix_develop=(
-    nix develop
+    "$KANDELO_NIX_BIN" develop
     --ignore-environment \
     --keep HOME \
     --keep TERM \
@@ -87,6 +111,7 @@ nix_develop=(
     --keep GITHUB_WORKSPACE \
     --keep GITHUB_EVENT_NAME \
     --keep GITHUB_EVENT_PATH \
+    --keep KANDELO_NIX_BIN \
     --keep SYNTH_BASE_SHA \
     --keep SYNTH_HEAD_SHA \
     --keep SYNTHETIC_MERGE_SHA \

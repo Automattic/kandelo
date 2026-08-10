@@ -4,9 +4,10 @@
  *
  *   mariadb-bootstrap (scripted, oneshot) → mariadb (process)
  *
- * Once port 3306 is listening the page runs setup SQL and exposes
- * window.__runMariadbTest() for Playwright. Each test invocation
- * spawns mysqltest via kernel.spawn() (transient binary, no service).
+ * Once port 3306 is listening, protected evidence and the browser page run
+ * setup SQL followed by selected mysql-test cases. mysqltest is an explicit
+ * product input installed in the VFS and remains a transient process rather
+ * than a service.
  *
  * Produces: $MARIADB_TEST_VFS_OUT (default:
  * apps/browser-demos/public/mariadb-test.vfs.zst).
@@ -191,6 +192,7 @@ function buildServices(): DinitService[] {
 
 export interface MariadbTestVfsInputs {
   mariadbd: Uint8Array;
+  mysqltest: Uint8Array;
   dash: Uint8Array;
   coreutils: Uint8Array;
   dinit: DinitBinaryInputs;
@@ -221,6 +223,7 @@ export async function buildMariadbTestVfsImage(
   }
   for (const [label, bytes] of [
     ["mariadbd", inputs.mariadbd],
+    ["mysqltest", inputs.mysqltest],
     ["dash", inputs.dash],
     ["coreutils", inputs.coreutils],
     ["services", inputs.services],
@@ -255,6 +258,9 @@ export async function buildMariadbTestVfsImage(
 
   console.log("  Writing mariadbd binary...");
   writeVfsBinary(fs, "/usr/sbin/mariadbd", inputs.mariadbd);
+  console.log("  Writing mysqltest binary...");
+  writeVfsBinary(fs, "/usr/bin/mysqltest", inputs.mysqltest);
+  symlink(fs, "/usr/bin/mysqltest", "/bin/mysqltest");
 
   console.log("  Writing bootstrap SQL...");
   ensureDirRecursive(fs, "/etc/mariadb");
@@ -295,9 +301,8 @@ exit 0
   writeVfsFile(fs, "/mysql-test/main/__setup.test", SETUP_SQL);
   writeVfsFile(fs, "/mysql-test/main/__reset.test", RESET_SQL);
 
-  // dinit service tree (no auto-boot — page passes target service as argv).
-  // We use the default boot:true here because the page only ever wants
-  // the mariadb tree up; no engine selection like the mariadb demo.
+  // dinit service tree. The canonical product boot contract selects the
+  // mariadb leaf so container mode keeps the database tree running.
   addDinitInit(fs, buildServices(), {
     binaries: inputs.dinit,
     services: inputs.services,
@@ -330,6 +335,7 @@ async function main(): Promise<void> {
     join(REPO_ROOT, "packages/registry/dinit/bin/dinitctl.wasm");
   await buildMariadbTestVfsImage({
     mariadbd: new Uint8Array(readFileSync(resolveBinary("programs/mariadb/mariadbd.wasm"))),
+    mysqltest: new Uint8Array(readFileSync(resolveBinary("programs/mariadb/mysqltest.wasm"))),
     dash: new Uint8Array(readFileSync(resolveBinary("programs/dash.wasm"))),
     coreutils: new Uint8Array(readFileSync(resolveBinary("programs/coreutils.wasm"))),
     dinit: {

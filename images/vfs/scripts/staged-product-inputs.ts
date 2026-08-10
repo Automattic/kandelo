@@ -1280,6 +1280,7 @@ export async function buildStagedSdkOrTestProduct(
         );
         await buildMariadbTestVfsImage({
           mariadbd: packageBytes("mariadb", "mariadbd"),
+          mysqltest: packageBytes("mariadb", "mysqltest"),
           dash: packageBytes("dash", "dash"),
           coreutils: packageBytes("coreutils", "coreutils"),
           dinit: {

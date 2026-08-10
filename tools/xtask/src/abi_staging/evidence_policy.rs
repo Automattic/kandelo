@@ -28,10 +28,39 @@ const MAX_ARGUMENT_BYTES: usize = 4096;
 const MAX_TEXT_BYTES: usize = 64 * 1024;
 const MAX_LIST_ITEMS: usize = 128;
 const MAX_INVENTORY_FILES: usize = 32_768;
-const MAX_RUNTIME_BYTES: u64 = 8 * 1024 * 1024 * 1024;
+const MAX_INVENTORY_ENTRIES: usize = 65_536;
+const MAX_INVENTORY_DIRECTORIES: usize = 4_096;
+const MAX_INVENTORY_DEPTH: usize = 64;
+const MAX_RUNTIME_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_RUNTIME_FILE_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_RUNTIME_NODE_ENTRY_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_KERNEL_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_RUNTIME_METADATA_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_SERVICE_WORKER_BYTES: u64 = 128 * 1024 * 1024;
+pub(crate) const NODE_EVIDENCE_IMPLEMENTATION_PATHS: &[&str] = &[
+    "apps/browser-demos/lib/mysql-client.ts",
+    "apps/browser-demos/lib/redis-client.ts",
+    "flake.lock",
+    "flake.nix",
+    "host/package-lock.json",
+    "host/package.json",
+    "host/src/generated/abi.ts",
+    "host/src/homebrew-bottle-relocation.ts",
+    "host/src/homebrew-guest-layout.ts",
+    "host/src/pathconf.ts",
+    "host/src/statfs.ts",
+    "host/src/vfs/deferred-tree-limits.ts",
+    "host/src/vfs/hardlink-graph.ts",
+    "host/src/vfs/load-image.ts",
+    "host/src/vfs/memory-fs.ts",
+    "host/src/vfs/sharedfs-vendor.ts",
+    "package-lock.json",
+    "package.json",
+    "scripts/abi-staging-product-node-evidence.ts",
+    "scripts/check-dev-shell-tools.sh",
+    "scripts/dev-shell.sh",
+    "tools/xtask/src/abi_staging/evidence_policy.rs",
+];
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -77,6 +106,8 @@ pub struct EvidenceDefinitionV1 {
 struct ExecProbeV1 {
     argv: Vec<String>,
     #[serde(default)]
+    lazy_inputs: Vec<String>,
+    #[serde(default)]
     stdin: Option<String>,
     #[serde(default)]
     env: BTreeMap<String, String>,
@@ -93,9 +124,10 @@ struct ExecProbeV1 {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct HttpProbeV1 {
-    service_argv: Vec<String>,
     path: String,
     status: u16,
+    #[serde(default)]
+    lazy_inputs: Vec<String>,
     #[serde(default)]
     body_exact: Option<String>,
     #[serde(default)]
@@ -109,35 +141,43 @@ struct HttpProbeV1 {
 struct InteractiveTerminalProbeV1 {
     input: Vec<String>,
     output_contains: Vec<String>,
+    #[serde(default)]
+    lazy_inputs: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CompileProbeV1 {
     fixture: String,
+    #[serde(default)]
+    lazy_inputs: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SqlProbeV1 {
-    service_argv: Vec<String>,
     statements: Vec<String>,
     results_exact: Vec<String>,
+    #[serde(default)]
+    lazy_inputs: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ServiceProtocolProbeV1 {
-    service_argv: Vec<String>,
     protocol: String,
     request: String,
     response_exact: String,
+    #[serde(default)]
+    lazy_inputs: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RepositorySuiteProbeV1 {
     suite: String,
+    #[serde(default)]
+    lazy_inputs: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -487,6 +527,19 @@ pub fn validate_runtime_bundle(
     if sha256(&snapshot) != expected.snapshot_sha256 {
         return Err("runtime source ABI snapshot differs from the request".to_string());
     }
+    let dev_shell_lock_source = read_required_regular_bounded(
+        &source_root.join("flake.lock"),
+        "exact source dev-shell lock",
+        MAX_RUNTIME_METADATA_BYTES,
+    )?;
+    let dev_shell_lock_artifact = read_required_regular_bounded(
+        &artifact_root.join("flake.lock"),
+        "runtime dev-shell lock artifact",
+        MAX_RUNTIME_METADATA_BYTES,
+    )?;
+    if dev_shell_lock_artifact != dev_shell_lock_source {
+        return Err("runtime dev-shell lock artifact differs from exact source".to_string());
+    }
     let generated_source = read_required_regular_bounded(
         &source_root.join("host/src/generated/abi.ts"),
         "generated ABI source",
@@ -542,6 +595,33 @@ pub fn validate_runtime_bundle(
     )?;
     if sha256(&service_worker) != bundle.browser.service_worker_sha256 {
         return Err("runtime browser service worker identity differs".to_string());
+    }
+
+    validate_runtime_artifact_inventory(artifact_root, bundle)
+}
+
+pub fn validate_runtime_artifact_inventory(
+    artifact_root: &Path,
+    bundle: &ExactRuntimeBundleV1,
+) -> Result<(), String> {
+    validate_real_directory(artifact_root, "runtime artifact root")?;
+    for relative in [
+        "host/dist/index.js",
+        "host/dist/node-kernel-worker-entry.js",
+    ] {
+        read_required_regular_bounded(
+            &artifact_root.join(relative),
+            "exact Node runtime entry",
+            MAX_RUNTIME_NODE_ENTRY_BYTES,
+        )?;
+    }
+    let package = read_required_regular_bounded(
+        &artifact_root.join("host/package.json"),
+        "runtime Node package identity",
+        MAX_RUNTIME_METADATA_BYTES,
+    )?;
+    if package != b"{\"type\":\"module\"}\n" {
+        return Err("runtime Node package identity is not the protected ESM contract".to_string());
     }
 
     let actual_inventory = collect_inventory(artifact_root)?;
@@ -658,6 +738,7 @@ fn validate_probe(definition: &EvidenceDefinitionV1) -> Result<(), String> {
                 .try_into()
                 .map_err(|parse| error(format!("{parse}")))?;
             validate_argv(&probe.argv, "exec argv").map_err(error)?;
+            validate_lazy_inputs(&probe.lazy_inputs).map_err(error)?;
             if let Some(stdin) = &probe.stdin {
                 validate_text(stdin, "exec stdin").map_err(error)?;
             }
@@ -691,7 +772,7 @@ fn validate_probe(definition: &EvidenceDefinitionV1) -> Result<(), String> {
                 .clone()
                 .try_into()
                 .map_err(|parse| error(format!("{parse}")))?;
-            validate_argv(&probe.service_argv, "HTTP service argv").map_err(error)?;
+            validate_lazy_inputs(&probe.lazy_inputs).map_err(error)?;
             validate_http_path(&probe.path).map_err(error)?;
             if !(100..=599).contains(&probe.status) {
                 return Err(error("HTTP status is outside 100 through 599".to_string()));
@@ -711,6 +792,7 @@ fn validate_probe(definition: &EvidenceDefinitionV1) -> Result<(), String> {
                 .try_into()
                 .map_err(|parse| error(format!("{parse}")))?;
             validate_text_list(&probe.input, "terminal input").map_err(error)?;
+            validate_lazy_inputs(&probe.lazy_inputs).map_err(error)?;
             validate_text_list(&probe.output_contains, "terminal output").map_err(error)
         }
         EvidenceRunnerV1::Compile => {
@@ -725,6 +807,7 @@ fn validate_probe(definition: &EvidenceDefinitionV1) -> Result<(), String> {
                     probe.fixture
                 )));
             }
+            validate_lazy_inputs(&probe.lazy_inputs).map_err(error)?;
             Ok(())
         }
         EvidenceRunnerV1::Sql => {
@@ -733,7 +816,7 @@ fn validate_probe(definition: &EvidenceDefinitionV1) -> Result<(), String> {
                 .clone()
                 .try_into()
                 .map_err(|parse| error(format!("{parse}")))?;
-            validate_argv(&probe.service_argv, "SQL service argv").map_err(error)?;
+            validate_lazy_inputs(&probe.lazy_inputs).map_err(error)?;
             validate_text_list(&probe.statements, "SQL statements").map_err(error)?;
             validate_text_list(&probe.results_exact, "SQL results").map_err(error)?;
             if probe.statements.len() != probe.results_exact.len() {
@@ -749,7 +832,7 @@ fn validate_probe(definition: &EvidenceDefinitionV1) -> Result<(), String> {
                 .clone()
                 .try_into()
                 .map_err(|parse| error(format!("{parse}")))?;
-            validate_argv(&probe.service_argv, "service protocol argv").map_err(error)?;
+            validate_lazy_inputs(&probe.lazy_inputs).map_err(error)?;
             if probe.protocol != "redis" {
                 return Err(error(format!(
                     "unsupported service protocol {:?}",
@@ -765,6 +848,7 @@ fn validate_probe(definition: &EvidenceDefinitionV1) -> Result<(), String> {
                 .clone()
                 .try_into()
                 .map_err(|parse| error(format!("{parse}")))?;
+            validate_lazy_inputs(&probe.lazy_inputs).map_err(error)?;
             const SUITES: &[&str] = &[
                 "main-shell-fbdoom-browser",
                 "main-shell-modeset-browser",
@@ -840,6 +924,21 @@ fn validate_text_list(values: &[String], label: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_lazy_inputs(values: &[String]) -> Result<(), String> {
+    if values.len() > 32 {
+        return Err("lazy input policy exceeds 32 entries".to_string());
+    }
+    let mut previous = "";
+    for value in values {
+        validate_stable_id(value, "evidence lazy input id")?;
+        if value.as_str() <= previous {
+            return Err("lazy input policy must be sorted and duplicate-free".to_string());
+        }
+        previous = value;
+    }
+    Ok(())
+}
+
 fn validate_predicate(
     exact: Option<&str>,
     contains: Option<&str>,
@@ -892,12 +991,16 @@ fn resolve_evidence_registry(
     let mut definitions = Vec::with_capacity(registry.definitions.len());
     for definition in &registry.definitions {
         let mut paths = vec!["tools/xtask/src/abi_staging/evidence_policy.rs"];
-        let runner_path = match definition.host {
-            EvidenceHostV1::Node => "scripts/abi-staging-product-node-evidence.ts",
-            EvidenceHostV1::Browser => "scripts/abi-staging-product-browser-evidence.ts",
-        };
-        if repository_root.join(runner_path).is_file() {
-            paths.push(runner_path);
+        match definition.host {
+            EvidenceHostV1::Node => {
+                paths = NODE_EVIDENCE_IMPLEMENTATION_PATHS.to_vec();
+            }
+            EvidenceHostV1::Browser => {
+                let runner_path = "scripts/abi-staging-product-browser-evidence.ts";
+                if repository_root.join(runner_path).is_file() {
+                    paths.push(runner_path);
+                }
+            }
         }
         let mut implementation = Vec::with_capacity(paths.len());
         for relative in paths {
@@ -939,6 +1042,55 @@ fn resolve_evidence_registry(
         version: registry.version,
         definitions,
     })
+}
+
+pub fn generated_definition_sha256(
+    definition: &GeneratedEvidenceDefinitionV1,
+) -> Result<String, String> {
+    let identity = serde_json::json!({
+        "host": definition.host,
+        "id": definition.id,
+        "implementation": definition.implementation,
+        "probe": definition.probe,
+        "runner": definition.runner,
+        "timeout_seconds": definition.timeout_seconds,
+    });
+    Ok(sha256(&canonical_json_bytes(&identity)?))
+}
+
+pub fn validate_generated_evidence_definition(
+    definition: &GeneratedEvidenceDefinitionV1,
+) -> Result<(), String> {
+    validate_stable_id(&definition.id, "evidence definition id")?;
+    if definition.timeout_seconds == 0 || definition.timeout_seconds > MAX_TIMEOUT_SECONDS {
+        return Err(format!(
+            "evidence definition {:?} timeout must be 1 through {MAX_TIMEOUT_SECONDS} seconds",
+            definition.id
+        ));
+    }
+    validate_probe(&EvidenceDefinitionV1 {
+        id: definition.id.clone(),
+        host: definition.host,
+        runner: definition.runner,
+        timeout_seconds: definition.timeout_seconds,
+        probe: definition.probe.clone(),
+    })?;
+    if definition.implementation.is_empty()
+        || definition
+            .implementation
+            .windows(2)
+            .any(|pair| pair[0].path >= pair[1].path)
+    {
+        return Err("evidence implementation must be sorted and duplicate-free".to_string());
+    }
+    for implementation in &definition.implementation {
+        validate_relative_path(&implementation.path)?;
+        validate_sha256(&implementation.sha256)?;
+    }
+    if generated_definition_sha256(definition)? != definition.definition_sha256 {
+        return Err("evidence definition digest differs from its protected identity".to_string());
+    }
+    Ok(())
 }
 
 fn validate_checked_in_inventory(
@@ -1215,13 +1367,26 @@ fn collect_inventory(root: &Path) -> Result<Vec<RuntimeInventoryEntryV1>, String
     fn walk(
         root: &Path,
         directory: &Path,
+        depth: usize,
         entries: &mut Vec<RuntimeInventoryEntryV1>,
         total: &mut u64,
-    ) -> Result<(), String> {
+        entry_count: &mut usize,
+        directory_count: &mut usize,
+    ) -> Result<usize, String> {
+        if depth > MAX_INVENTORY_DEPTH {
+            return Err("runtime inventory exceeds its directory depth bound".to_string());
+        }
+        let mut file_count = 0_usize;
         for entry in fs::read_dir(directory)
             .map_err(|error| format!("cannot read runtime inventory: {error}"))?
         {
             let entry = entry.map_err(|error| format!("cannot read runtime inventory: {error}"))?;
+            *entry_count = entry_count
+                .checked_add(1)
+                .ok_or_else(|| "runtime inventory entry count overflowed".to_string())?;
+            if *entry_count > MAX_INVENTORY_ENTRIES {
+                return Err("runtime inventory exceeds its total entry bound".to_string());
+            }
             let path = entry.path();
             let metadata = fs::symlink_metadata(&path)
                 .map_err(|error| format!("cannot inspect runtime inventory: {error}"))?;
@@ -1232,11 +1397,70 @@ fn collect_inventory(root: &Path) -> Result<Vec<RuntimeInventoryEntryV1>, String
                 ));
             }
             if metadata.is_dir() {
-                walk(root, &path, entries, total)?;
+                *directory_count = directory_count
+                    .checked_add(1)
+                    .ok_or_else(|| "runtime inventory directory count overflowed".to_string())?;
+                if *directory_count > MAX_INVENTORY_DIRECTORIES {
+                    return Err("runtime inventory exceeds its directory bound".to_string());
+                }
+                let relative = path
+                    .strip_prefix(root)
+                    .map_err(|_| "runtime inventory escaped its root".to_string())?;
+                let relative = relative
+                    .to_str()
+                    .ok_or_else(|| "runtime inventory path is not UTF-8".to_string())?
+                    .replace('\\', "/");
+                validate_relative_path(&relative)?;
+                let nested_files = walk(
+                    root,
+                    &path,
+                    depth + 1,
+                    entries,
+                    total,
+                    entry_count,
+                    directory_count,
+                )?;
+                if nested_files == 0 {
+                    return Err(format!(
+                        "runtime inventory {} is an empty directory",
+                        path.display()
+                    ));
+                }
+                file_count = file_count
+                    .checked_add(nested_files)
+                    .ok_or_else(|| "runtime inventory file count overflowed".to_string())?;
             } else if metadata.is_file() {
                 if entries.len() >= MAX_INVENTORY_FILES {
                     return Err(format!(
                         "runtime inventory exceeds {MAX_INVENTORY_FILES} files"
+                    ));
+                }
+                let relative = path
+                    .strip_prefix(root)
+                    .map_err(|_| "runtime inventory escaped its root".to_string())?;
+                let relative = relative
+                    .to_str()
+                    .ok_or_else(|| "runtime inventory path is not UTF-8".to_string())?
+                    .replace('\\', "/");
+                validate_relative_path(&relative)?;
+                let file_limit = if matches!(
+                    relative.as_str(),
+                    "host/dist/index.js" | "host/dist/node-kernel-worker-entry.js"
+                ) {
+                    MAX_RUNTIME_NODE_ENTRY_BYTES
+                } else if relative == "kernel.wasm" {
+                    MAX_KERNEL_BYTES
+                } else {
+                    MAX_RUNTIME_FILE_BYTES
+                };
+                if metadata.len() == 0 {
+                    return Err(format!(
+                        "runtime inventory file {relative:?} is an empty file"
+                    ));
+                }
+                if metadata.len() > file_limit {
+                    return Err(format!(
+                        "runtime inventory file {relative:?} exceeds its byte bound"
                     ));
                 }
                 if metadata.len() > MAX_RUNTIME_BYTES.saturating_sub(*total) {
@@ -1254,19 +1478,14 @@ fn collect_inventory(root: &Path) -> Result<Vec<RuntimeInventoryEntryV1>, String
                         "runtime inventory exceeds {MAX_RUNTIME_BYTES} bytes"
                     ));
                 }
-                let relative = path
-                    .strip_prefix(root)
-                    .map_err(|_| "runtime inventory escaped its root".to_string())?;
-                let relative = relative
-                    .to_str()
-                    .ok_or_else(|| "runtime inventory path is not UTF-8".to_string())?
-                    .replace('\\', "/");
-                validate_relative_path(&relative)?;
                 entries.push(RuntimeInventoryEntryV1 {
                     path: relative,
                     sha256: digest,
                     bytes,
                 });
+                file_count = file_count
+                    .checked_add(1)
+                    .ok_or_else(|| "runtime inventory file count overflowed".to_string())?;
             } else {
                 return Err(format!(
                     "runtime inventory {} is not a regular file or directory",
@@ -1274,11 +1493,21 @@ fn collect_inventory(root: &Path) -> Result<Vec<RuntimeInventoryEntryV1>, String
                 ));
             }
         }
-        Ok(())
+        Ok(file_count)
     }
     let mut entries = Vec::new();
     let mut total = 0;
-    walk(root, root, &mut entries, &mut total)?;
+    let mut entry_count = 0;
+    let mut directory_count = 0;
+    walk(
+        root,
+        root,
+        0,
+        &mut entries,
+        &mut total,
+        &mut entry_count,
+        &mut directory_count,
+    )?;
     entries.sort_by(|left, right| left.path.cmp(&right.path));
     if entries.is_empty() {
         return Err("runtime inventory is empty".to_string());
@@ -1423,7 +1652,6 @@ host = "browser"
 runner = "http"
 timeout_seconds = 60
 [definitions.probe]
-service_argv = ["nginx", "-g", "daemon off;"]
 path = "/"
 status = 200
 body_contains = "ready"
@@ -1451,7 +1679,6 @@ host = "node"
 runner = "sql"
 timeout_seconds = 120
 [definitions.probe]
-service_argv = ["mariadbd", "--skip-networking"]
 statements = ["SELECT 1"]
 results_exact = ["1"]
 
@@ -1461,7 +1688,6 @@ host = "browser"
 runner = "service-protocol"
 timeout_seconds = 120
 [definitions.probe]
-service_argv = ["redis-server"]
 protocol = "redis"
 request = "PING"
 response_exact = "PONG"
@@ -1566,6 +1792,81 @@ suite = "sqlite-product-node"
         }
     }
 
+    #[test]
+    fn node_definition_identity_covers_the_protected_vfs_inspector_closure() {
+        let source_root = crate::repo_root();
+        let fixture = tempfile::tempdir().unwrap();
+        let expected = [
+            "apps/browser-demos/lib/mysql-client.ts",
+            "apps/browser-demos/lib/redis-client.ts",
+            "flake.lock",
+            "flake.nix",
+            "host/package-lock.json",
+            "host/package.json",
+            "host/src/generated/abi.ts",
+            "host/src/homebrew-bottle-relocation.ts",
+            "host/src/homebrew-guest-layout.ts",
+            "host/src/pathconf.ts",
+            "host/src/statfs.ts",
+            "host/src/vfs/deferred-tree-limits.ts",
+            "host/src/vfs/hardlink-graph.ts",
+            "host/src/vfs/load-image.ts",
+            "host/src/vfs/memory-fs.ts",
+            "host/src/vfs/sharedfs-vendor.ts",
+            "package-lock.json",
+            "package.json",
+            "scripts/abi-staging-product-node-evidence.ts",
+            "scripts/check-dev-shell-tools.sh",
+            "scripts/dev-shell.sh",
+            "tools/xtask/src/abi_staging/evidence_policy.rs",
+        ];
+        for relative in expected {
+            let source = source_root.join(relative);
+            let destination = fixture.path().join(relative);
+            fs::create_dir_all(destination.parent().unwrap()).unwrap();
+            fs::copy(source, destination).unwrap();
+        }
+        let registry = parse_evidence_registry(
+            Path::new("evidence.toml"),
+            all_runner_registry().as_bytes(),
+        )
+        .unwrap();
+        let initial = super::resolve_evidence_registry(fixture.path(), &registry).unwrap();
+        for definition in initial
+            .definitions
+            .iter()
+            .filter(|definition| definition.host == super::EvidenceHostV1::Node)
+        {
+            assert_eq!(
+                definition
+                    .implementation
+                    .iter()
+                    .map(|implementation| implementation.path.as_str())
+                    .collect::<Vec<_>>(),
+                expected,
+            );
+        }
+
+        let inspector = fixture.path().join("host/src/vfs/memory-fs.ts");
+        fs::write(&inspector, b"changed protected VFS inspector\n").unwrap();
+        let changed = super::resolve_evidence_registry(fixture.path(), &registry).unwrap();
+        assert_ne!(
+            initial
+                .definitions
+                .iter()
+                .find(|definition| definition.id == "exec-proof")
+                .unwrap()
+                .definition_sha256,
+            changed
+                .definitions
+                .iter()
+                .find(|definition| definition.id == "exec-proof")
+                .unwrap()
+                .definition_sha256,
+            "changing the protected VFS inspector must rotate Node evidence identity",
+        );
+    }
+
     fn git(root: &Path, args: &[&str]) -> String {
         let output = Command::new("git")
             .arg("-C")
@@ -1649,6 +1950,11 @@ suite = "sqlite-product-node"
             b"export type WorkerMessage = { kind: 'fixture' };\n",
         )
         .unwrap();
+        fs::write(
+            source.path().join("flake.lock"),
+            b"{\"nodes\":{},\"root\":\"root\",\"version\":7}\n",
+        )
+        .unwrap();
         git(source.path(), &["init", "-q"]);
         git(source.path(), &["add", "."]);
         git(
@@ -1681,6 +1987,23 @@ suite = "sqlite-product-node"
         )
         .unwrap();
         fs::write(artifacts.path().join("host/dist/index.js"), b"host\n").unwrap();
+        fs::write(
+            artifacts
+                .path()
+                .join("host/dist/node-kernel-worker-entry.js"),
+            b"worker\n",
+        )
+        .unwrap();
+        fs::write(
+            artifacts.path().join("host/package.json"),
+            b"{\"type\":\"module\"}\n",
+        )
+        .unwrap();
+        fs::copy(
+            source.path().join("flake.lock"),
+            artifacts.path().join("flake.lock"),
+        )
+        .unwrap();
         fs::write(artifacts.path().join("browser/dist/index.js"), b"browser\n").unwrap();
         fs::write(
             artifacts.path().join("browser/dist/service-worker.js"),
@@ -1755,6 +2078,22 @@ suite = "sqlite-product-node"
         expected.snapshot_sha256 = &bundle.target_abi.snapshot_sha256;
         validate_runtime_bundle(source.path(), artifacts.path(), &bundle, &expected).unwrap();
 
+        fs::create_dir(artifacts.path().join("unrepresented-empty-directory")).unwrap();
+        assert!(
+            validate_runtime_bundle(source.path(), artifacts.path(), &bundle, &expected)
+                .unwrap_err()
+                .contains("empty directory")
+        );
+        fs::remove_dir(artifacts.path().join("unrepresented-empty-directory")).unwrap();
+
+        fs::write(artifacts.path().join("unrepresented-empty-file"), b"").unwrap();
+        assert!(
+            validate_runtime_bundle(source.path(), artifacts.path(), &bundle, &expected)
+                .unwrap_err()
+                .contains("empty file")
+        );
+        fs::remove_file(artifacts.path().join("unrepresented-empty-file")).unwrap();
+
         fs::write(source.path().join("ambient-untracked-input"), b"ambient\n").unwrap();
         assert!(
             validate_runtime_bundle(source.path(), artifacts.path(), &bundle, &expected)
@@ -1778,6 +2117,29 @@ suite = "sqlite-product-node"
                 .unwrap_err()
                 .contains("ABI")
         );
+
+        fs::write(
+            artifacts.path().join("flake.lock"),
+            b"{\"nodes\":{\"substituted\":{}},\"root\":\"root\",\"version\":7}\n",
+        )
+        .unwrap();
+        let mut substituted_lock = bundle.clone();
+        substituted_lock.inventory = inventory(artifacts.path());
+        assert!(
+            validate_runtime_bundle(
+                source.path(),
+                artifacts.path(),
+                &substituted_lock,
+                &expected,
+            )
+            .unwrap_err()
+            .contains("dev-shell lock")
+        );
+        fs::copy(
+            source.path().join("flake.lock"),
+            artifacts.path().join("flake.lock"),
+        )
+        .unwrap();
 
         fs::write(artifacts.path().join("unlisted"), b"extra\n").unwrap();
         assert!(

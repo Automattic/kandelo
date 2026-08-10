@@ -40,6 +40,18 @@ test("generated mariadb launchers start threaded servers by default", () => {
   }
 });
 
+test("mariadb test page consumes the canonical VFS executable and mounts", () => {
+  const source = readFileSync(
+    new URL("../pages/mariadb-test/main.ts", import.meta.url),
+    "utf8",
+  );
+
+  expect(source).toContain('spawnFromVfs("/usr/bin/mysqltest"');
+  expect(source).toContain("rootfsMountSpec: MARIADB_MOUNTS");
+  expect(source).not.toContain("mysqltest.wasm?url");
+  expect(source).not.toContain("kernel.spawn(mysqlTestBytes");
+});
+
 test("browser mysqli benchmark keeps persistent variants opt-in", () => {
   const defaultVariants = MYSQL_BENCHMARK_PHP.match(/\$variants = array\(([\s\S]*?)\);/);
 

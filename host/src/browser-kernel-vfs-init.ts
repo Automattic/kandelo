@@ -2,6 +2,7 @@ import type { MountConfig } from "./vfs/types";
 import {
   DEFAULT_MOUNT_SPEC,
   resolveForBrowser,
+  type MountSpec,
 } from "./vfs/default-mounts";
 
 /**
@@ -13,9 +14,10 @@ import {
  */
 export function restoreBrowserKernelInitMounts(
   vfsImage: Uint8Array,
+  rootfsMountSpec: readonly MountSpec[] = DEFAULT_MOUNT_SPEC,
 ): Promise<MountConfig[]> {
   // WHY: keep one callable boundary shared by production worker init and the
   // three-engine trust test. Reimplementing only the seal check in a fixture
   // could pass while the real worker accidentally bypassed it.
-  return resolveForBrowser(DEFAULT_MOUNT_SPEC, vfsImage);
+  return resolveForBrowser([...rootfsMountSpec], vfsImage);
 }

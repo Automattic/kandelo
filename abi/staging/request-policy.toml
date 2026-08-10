@@ -1,6 +1,6 @@
 schema = 1
 kind = "kandelo-abi-staging-request-policy"
-version = 2
+version = 4
 issuer_repository = "Automattic/kandelo"
 issuer_workflow = ".github/workflows/abi-staging-request-feed.yml"
 automatic_same_repository = true
@@ -16,12 +16,41 @@ addressed_taps = ["kandelo-dev/homebrew-tap-core"]
 # observe-only until protected hosted canaries have supplied activation evidence.
 implementation_paths = [
   ".github/workflows/abi-staging-request-feed.yml",
+  "Cargo.lock",
+  "Cargo.toml",
+  "abi/staging/evidence-definitions.generated.json",
   "abi/staging/evidence-definitions.toml",
+  "apps/browser-demos/lib/mysql-client.ts",
+  "apps/browser-demos/lib/redis-client.ts",
+  "flake.lock",
+  "flake.nix",
+  "host/package-lock.json",
+  "host/package.json",
+  "host/src/generated/abi.ts",
+  "host/src/homebrew-bottle-relocation.ts",
+  "host/src/homebrew-guest-layout.ts",
+  "host/src/pathconf.ts",
+  "host/src/statfs.ts",
+  "host/src/vfs/deferred-tree-limits.ts",
+  "host/src/vfs/hardlink-graph.ts",
+  "host/src/vfs/load-image.ts",
+  "host/src/vfs/memory-fs.ts",
+  "host/src/vfs/sharedfs-vendor.ts",
+  "host/tsup.config.ts",
+  "package-lock.json",
+  "package.json",
   "scripts/abi-staging-prepare-runtime.sh",
+  "scripts/abi-staging-product-node-evidence.ts",
+  "scripts/check-dev-shell-tools.sh",
+  "scripts/dev-shell.sh",
+  "tools/xtask/Cargo.toml",
+  "tools/xtask/src/abi_staging/builder_contract.rs",
   "tools/xtask/src/abi_staging/canonical_json.rs",
   "tools/xtask/src/abi_staging/consumer_registry.rs",
   "tools/xtask/src/abi_staging/evidence_policy.rs",
+  "tools/xtask/src/abi_staging/guard_registry.rs",
   "tools/xtask/src/abi_staging/mod.rs",
+  "tools/xtask/src/abi_staging/product_evidence.rs",
   "tools/xtask/src/abi_staging/product_manifest.rs",
   "tools/xtask/src/abi_staging/records.rs",
   "tools/xtask/src/abi_staging/request_derivation.rs",

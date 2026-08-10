@@ -6,6 +6,7 @@ pub mod guard_registry;
 pub mod local_transport;
 pub mod mini_lifecycle;
 pub mod product_manifest;
+pub mod product_evidence;
 pub mod records;
 pub mod request_derivation;
 pub mod request_feed;
@@ -74,6 +75,21 @@ pub fn run(args: Vec<String>) -> ExitCode {
         }
         [group, ..] if group == "runtime-bundle" => {
             eprintln!("xtask abi-staging: runtime-bundle requires validate");
+            ExitCode::from(2)
+        }
+        [group, action, rest @ ..] if group == "product-evidence" => {
+            match product_evidence::run_cli(action, rest) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("xtask abi-staging product-evidence {action}: {error}");
+                    ExitCode::from(1)
+                }
+            }
+        }
+        [group, ..] if group == "product-evidence" => {
+            eprintln!(
+                "xtask abi-staging: product-evidence requires validate-context or validate-result"
+            );
             ExitCode::from(2)
         }
         [group, action, rest @ ..] if group == "builder" => {
@@ -186,6 +202,6 @@ pub fn run(args: Vec<String>) -> ExitCode {
 fn print_help() {
     println!("usage: xtask abi-staging <subcommand> [args...]");
     println!(
-        "subcommands: help, products <generate|check>, registries <generate|check>, evidence-definitions <generate|check>, runtime-bundle validate, builder <validate-inputs|validate-report|compare-report>, guard-codes <generate|check>, request-policy <generate|check|activation-mode>, structural-report validate, request <derive|fixture-check|select-current|plan-feed-write|validate-feed-plan>, records validate, mini run, requirements"
+        "subcommands: help, products <generate|check>, registries <generate|check>, evidence-definitions <generate|check>, runtime-bundle validate, product-evidence <validate-context|validate-result>, builder <validate-inputs|validate-report|compare-report>, guard-codes <generate|check>, request-policy <generate|check|activation-mode>, structural-report validate, request <derive|fixture-check|select-current|plan-feed-write|validate-feed-plan>, records validate, mini run, requirements"
     );
 }

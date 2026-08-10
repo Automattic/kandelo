@@ -16,6 +16,7 @@ import type {
   HostDiagnosticMessage,
 } from "./host-diagnostic";
 import type { ClosedLazyAsset } from "./vfs/closed-lazy-assets";
+import type { MountSpec } from "./vfs/default-mounts";
 
 export type { HttpRequest, HttpResponse };
 export type { HostDiagnostic } from "./host-diagnostic";
@@ -33,6 +34,8 @@ export interface InitMessage {
    * apps/browser-demos/lib/kernel-owned-boot.ts::overlayEtcFromRootfs).
    */
   vfsImage: Uint8Array;
+  /** Exact image/scratch mount contract. Absent preserves the host default. */
+  rootfsMountSpec?: MountSpec[];
   /** Base URL for relative lazy file/archive URLs stored in vfsImage. */
   lazyUrlBase?: string;
   /** Exhaustive exact-byte lazy transport for this image; no network fallback. */
@@ -327,6 +330,7 @@ export interface HttpRequestMessage {
   port: number;
   request: HttpRequest;
   timeoutMs?: number;
+  maxResponseBytes?: number;
 }
 
 /** Register an `OffscreenCanvas` as the scanout target for a KMS CRTC.

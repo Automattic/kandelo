@@ -34,6 +34,7 @@ import {
   type ClosedLazyAsset,
 } from "./vfs/closed-lazy-assets";
 import { awaitGracefulKernelRealmDestroy } from "./kernel-realm-destroy";
+import type { MountSpec } from "./vfs/default-mounts";
 
 const DESTROY_REQUEST_TIMEOUT_MS = 2_000;
 
@@ -124,6 +125,8 @@ export interface BrowserKernelBootOptions {
    * When set, an unbound URL fails instead of using ambient browser fetch.
    */
   closedLazyAssets?: readonly ClosedLazyAsset[];
+  /** Exact image/scratch mount contract for this boot. */
+  rootfsMountSpec?: readonly MountSpec[];
   /** Argv for the first (and currently only "init") process. argv[0] should
    *  be a path inside the VFS image. */
   argv: string[];
@@ -162,6 +165,8 @@ export interface BrowserKernelOwnedImageInitOptions {
   vfsImage: ArrayBuffer;
   lazyUrlBase?: string;
   closedLazyAssets?: readonly ClosedLazyAsset[];
+  /** Exact image/scratch mount contract for this boot. */
+  rootfsMountSpec?: readonly MountSpec[];
 }
 
 async function fetchDefaultBrowserKernelArtifact(
@@ -288,6 +293,7 @@ export class BrowserKernel {
     vfsImage: Uint8Array | "default";
     lazyUrlBase?: string;
     closedLazyAssets?: readonly ClosedLazyAsset[];
+    rootfsMountSpec?: readonly MountSpec[];
   }): Promise<void> {
     const [wasmBytes, vfsImage] = await Promise.all([
       options.kernelWasm
@@ -304,6 +310,7 @@ export class BrowserKernel {
       vfsImage,
       lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL,
       closedLazyAssets: options.closedLazyAssets,
+      rootfsMountSpec: options.rootfsMountSpec,
       takeVfsImageOwnership: false,
     });
   }
@@ -331,6 +338,7 @@ export class BrowserKernel {
       vfsImage: new Uint8Array(options.vfsImage),
       lazyUrlBase: options.lazyUrlBase ?? import.meta.env.BASE_URL,
       closedLazyAssets: options.closedLazyAssets,
+      rootfsMountSpec: options.rootfsMountSpec,
       takeVfsImageOwnership: true,
     });
   }
@@ -344,6 +352,7 @@ export class BrowserKernel {
     vfsImage: Uint8Array;
     lazyUrlBase?: string;
     closedLazyAssets?: readonly ClosedLazyAsset[];
+    rootfsMountSpec?: readonly MountSpec[];
     takeVfsImageOwnership: boolean;
   }): Promise<void> {
     if (
@@ -436,6 +445,9 @@ export class BrowserKernel {
           vfsImage: opts.vfsImage,
           lazyUrlBase: opts.lazyUrlBase,
           closedLazyAssets,
+          rootfsMountSpec: opts.rootfsMountSpec === undefined
+            ? undefined
+            : opts.rootfsMountSpec.map((mount) => ({ ...mount })),
           shmSab: this.shmSab,
           workerEntryUrl,
           config: {
@@ -870,7 +882,7 @@ export class BrowserKernel {
   async fetchInKernel(
     port: number,
     request: HttpRequest,
-    options?: { timeoutMs?: number },
+    options?: { timeoutMs?: number; maxResponseBytes?: number },
   ): Promise<HttpResponse> {
     const requestId = this.nextRequestId++;
     return this.request(requestId, {
@@ -879,6 +891,7 @@ export class BrowserKernel {
       port,
       request,
       timeoutMs: options?.timeoutMs,
+      maxResponseBytes: options?.maxResponseBytes,
     }) as Promise<HttpResponse>;
   }
 

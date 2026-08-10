@@ -45,6 +45,7 @@ for required in SOURCE_ROOT SOURCE_REPOSITORY SOURCE_COMMIT SOURCE_TREE \
   fi
 done
 : "${KANDELO_DEV_SHELL_TOOL_PATH:?run through scripts/dev-shell.sh}"
+: "${KANDELO_NIX_BIN:?run through scripts/dev-shell.sh}"
 
 if ! [[ "$SOURCE_REPOSITORY" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
   echo "abi-staging-prepare-runtime.sh: invalid source repository" >&2
@@ -69,7 +70,8 @@ for secret_name in \
   GITHUB_TOKEN GH_TOKEN GHCR_PAT HOMEBREW_GITHUB_API_TOKEN \
   HOMEBREW_GITHUB_PACKAGES_TOKEN HOMEBREW_DOCKER_REGISTRY_TOKEN \
   NPM_TOKEN NODE_AUTH_TOKEN SSH_AUTH_SOCK AWS_ACCESS_KEY_ID \
-  AWS_SECRET_ACCESS_KEY ACTIONS_ID_TOKEN_REQUEST_TOKEN; do
+  AWS_SECRET_ACCESS_KEY ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+  ACTIONS_RUNTIME_TOKEN; do
   if [ -n "${!secret_name:-}" ]; then
     echo "abi-staging-prepare-runtime.sh: candidate runtime received credential $secret_name" >&2
     exit 2
@@ -98,6 +100,10 @@ if [ ! -f "$SOURCE_ROOT/abi/snapshot.json" ] || \
   echo "abi-staging-prepare-runtime.sh: exact source snapshot differs" >&2
   exit 1
 fi
+if [ ! -f "$SOURCE_ROOT/flake.lock" ] || [ -L "$SOURCE_ROOT/flake.lock" ]; then
+  echo "abi-staging-prepare-runtime.sh: exact source dev-shell lock is unavailable" >&2
+  exit 1
+fi
 
 OUT="$(python3 - "$OUT" <<'PY'
 from pathlib import Path
@@ -124,6 +130,19 @@ fi
 OUT="$(cd "$OUT" && pwd -P)"
 RUNTIME_ROOT="$OUT/runtime"
 mkdir "$RUNTIME_ROOT"
+CANDIDATE_ENV_ROOT="$OUT/.candidate-environment"
+CANDIDATE_HOME="$CANDIDATE_ENV_ROOT/home"
+CANDIDATE_TMP="$CANDIDATE_ENV_ROOT/tmp"
+mkdir -p "$CANDIDATE_HOME" "$CANDIDATE_TMP"
+chmod 0700 "$CANDIDATE_ENV_ROOT" "$CANDIDATE_HOME" "$CANDIDATE_TMP"
+
+cleanup_candidate_environment() {
+  if [ -n "${CANDIDATE_ENV_ROOT:-}" ] && \
+     [ "$CANDIDATE_ENV_ROOT" = "$OUT/.candidate-environment" ]; then
+    rm -rf -- "$CANDIDATE_ENV_ROOT"
+  fi
+}
+trap cleanup_candidate_environment EXIT
 
 TESTING="${KANDELO_ABI_STAGING_TESTING:-0}"
 TEST_BUILDER="${KANDELO_ABI_STAGING_RUNTIME_BUILDER:-}"
@@ -137,13 +156,65 @@ if [ -n "$TEST_BUILDER" ] && { [ "$TESTING" != 1 ] || [ "${GITHUB_ACTIONS:-}" = 
 fi
 
 run_without_credentials() {
-  env \
-    -u GITHUB_TOKEN -u GH_TOKEN -u GHCR_PAT \
-    -u HOMEBREW_GITHUB_API_TOKEN -u HOMEBREW_GITHUB_PACKAGES_TOKEN \
-    -u HOMEBREW_DOCKER_REGISTRY_TOKEN -u NPM_TOKEN -u NODE_AUTH_TOKEN \
-    -u SSH_AUTH_SOCK -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY \
-    -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
-    "$@"
+  local candidate_path="$KANDELO_DEV_SHELL_TOOL_PATH"
+  if [ "$TESTING" = 1 ]; then
+    # The fake local fixture uses platform mkdir/cp; production commands enter
+    # the exact source's declared Nix shell before executing candidate code.
+    candidate_path="$candidate_path:/usr/bin:/bin"
+  fi
+  local -a clean_environment=(
+    "HOME=$CANDIDATE_HOME"
+    "TMPDIR=$CANDIDATE_TMP"
+    "PATH=$candidate_path"
+    "KANDELO_DEV_SHELL_TOOL_PATH=$KANDELO_DEV_SHELL_TOOL_PATH"
+  )
+  local safe_name
+  for safe_name in \
+    CI LANG LC_ALL LC_CTYPE LOGNAME NO_COLOR SOURCE_DATE_EPOCH TERM TZ USER \
+    SSL_CERT_FILE NIX_SSL_CERT_FILE GIT_SSL_CAINFO; do
+    if [ -n "${!safe_name:-}" ]; then
+      clean_environment+=("$safe_name=${!safe_name}")
+    fi
+  done
+  if [ "$TESTING" = 1 ]; then
+    for safe_name in \
+      FAKE_RUNTIME_EMPTY_DIRECTORY FAKE_RUNTIME_EMPTY_FILE \
+      FAKE_RUNTIME_HOME_MARKER \
+      FAKE_RUNTIME_STARTED_MARKER FAKE_RUNTIME_SYMLINK; do
+      if [ -n "${!safe_name:-}" ]; then
+        clean_environment+=("$safe_name=${!safe_name}")
+      fi
+    done
+  fi
+  env -i "${clean_environment[@]}" "$@"
+}
+
+run_in_exact_source_dev_shell() {
+  local nix_bin="$KANDELO_NIX_BIN"
+  if [[ "$nix_bin" != /* ]] || [ ! -x "$nix_bin" ]; then
+    echo "abi-staging-prepare-runtime.sh: Nix is unavailable for the exact source dev shell" >&2
+    exit 1
+  fi
+  (
+    cd "$SOURCE_ROOT"
+    run_without_credentials \
+      "$nix_bin" develop "path:$SOURCE_ROOT" \
+        --ignore-environment \
+        --keep HOME \
+        --keep TMPDIR \
+        --keep CI \
+        --keep LANG \
+        --keep LC_ALL \
+        --keep LC_CTYPE \
+        --keep LOGNAME \
+        --keep NO_COLOR \
+        --keep SOURCE_DATE_EPOCH \
+        --keep TERM \
+        --keep TZ \
+        --keep USER \
+        --accept-flake-config \
+        --command "$@"
+  )
 }
 
 if [ -n "$TEST_BUILDER" ]; then
@@ -153,12 +224,12 @@ if [ -n "$TEST_BUILDER" ]; then
   fi
   run_without_credentials "$TEST_BUILDER" "$SOURCE_ROOT" "$RUNTIME_ROOT"
 else
-  (
-    cd "$SOURCE_ROOT"
-    run_without_credentials bash build.sh
-    run_without_credentials npm --prefix apps/browser-demos install --prefer-offline
-    run_without_credentials npm --prefix apps/browser-demos run build
-  )
+  run_in_exact_source_dev_shell bash -c '
+    set -euo pipefail
+    bash build.sh
+    npm --prefix apps/browser-demos install --prefer-offline
+    npm --prefix apps/browser-demos run build
+  '
 
   KERNEL_SOURCE="$SOURCE_ROOT/target/wasm32-unknown-unknown/release/kandelo_kernel.wasm"
   HOST_SOURCE="$SOURCE_ROOT/host/dist"
@@ -189,12 +260,33 @@ else
   cp -R "$BROWSER_SOURCE" "$RUNTIME_ROOT/browser/dist"
 fi
 
+# The tap resolves every build/toolchain claim against the exact head's
+# declared dev shell. Carry that lock as an ordinary inventory-bound artifact
+# so protected consumers never infer toolchain identity from ambient tools.
+cp "$SOURCE_ROOT/flake.lock" "$RUNTIME_ROOT/flake.lock"
+
+# Keep the downloaded host bundle self-describing when it is extracted outside
+# the repository. Protected evidence imports this exact ESM bundle; it must not
+# inherit module semantics from an ambient parent package.json.
+printf '%s\n' '{"type":"module"}' >"$RUNTIME_ROOT/host/package.json"
+for node_entry in \
+  "$RUNTIME_ROOT/host/dist/index.js" \
+  "$RUNTIME_ROOT/host/dist/node-kernel-worker-entry.js"; do
+  if [ ! -f "$node_entry" ] || [ -L "$node_entry" ]; then
+    echo "abi-staging-prepare-runtime.sh: exact Node runtime entry is unavailable: $node_entry" >&2
+    exit 1
+  fi
+done
+
 if [ "$ACTUAL_COMMIT" != "$(git -C "$SOURCE_ROOT" rev-parse --verify HEAD)" ] || \
    [ "$ACTUAL_TREE" != "$(git -C "$SOURCE_ROOT" rev-parse --verify HEAD^{tree})" ] || \
    [ -n "$(git -C "$SOURCE_ROOT" status --porcelain=v1 --untracked-files=all)" ]; then
   echo "abi-staging-prepare-runtime.sh: exact source changed during runtime build" >&2
   exit 1
 fi
+
+cleanup_candidate_environment
+trap - EXIT
 
 python3 - \
   "$RUNTIME_ROOT" "$OUT/runtime-bundle.json" \
@@ -240,12 +332,30 @@ def digest_file(path: Path) -> str:
 
 inventory: list[dict[str, object]] = []
 total = 0
+entry_count = 0
+directory_count = 0
 for directory, directories, files in os.walk(runtime, followlinks=False):
+    directories.sort()
+    files.sort()
+    relative_directory = Path(directory).relative_to(runtime)
+    if len(relative_directory.parts) > 64:
+        raise SystemExit("runtime inventory exceeds its directory depth bound")
+    if relative_directory != Path() and not directories and not files:
+        raise SystemExit(f"runtime inventory contains an empty directory: {directory}")
     for name in directories:
+        entry_count += 1
+        directory_count += 1
+        if entry_count > 65536:
+            raise SystemExit("runtime inventory exceeds its total entry bound")
+        if directory_count > 4096:
+            raise SystemExit("runtime inventory exceeds its directory bound")
         path = Path(directory, name)
         if stat.S_ISLNK(path.lstat().st_mode):
             raise SystemExit(f"runtime inventory contains a symbolic link: {path}")
     for name in files:
+        entry_count += 1
+        if entry_count > 65536:
+            raise SystemExit("runtime inventory exceeds its total entry bound")
         path = Path(directory, name)
         mode = path.lstat().st_mode
         if stat.S_ISLNK(mode):
@@ -254,7 +364,20 @@ for directory, directories, files in os.walk(runtime, followlinks=False):
             raise SystemExit(f"runtime inventory contains a nonregular file: {path}")
         relative = path.relative_to(runtime).as_posix()
         size = path.stat().st_size
-        if size < 0 or size > 8 * 1024 * 1024 * 1024 - total:
+        if relative in {
+            "host/dist/index.js",
+            "host/dist/node-kernel-worker-entry.js",
+        }:
+            file_limit = 64 * 1024 * 1024
+        elif relative == "kernel.wasm":
+            file_limit = 512 * 1024 * 1024
+        else:
+            file_limit = 256 * 1024 * 1024
+        if size == 0:
+            raise SystemExit(f"runtime inventory contains an empty file: {relative}")
+        if size > file_limit:
+            raise SystemExit(f"runtime inventory file exceeds its bound: {relative}")
+        if size > 1024 * 1024 * 1024 - total:
             raise SystemExit("runtime inventory exceeds its bounded limits")
         total += size
         if len(inventory) >= 32768:

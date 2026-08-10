@@ -305,15 +305,20 @@ describe("BrowserKernel", () => {
     await expect(exit).resolves.toBe(0);
   });
 
-  it("rejects an invalid closed binding before spawning a worker", async () => {
+  it("keeps an explicitly empty lazy transport closed in the worker", async () => {
     const BrowserKernel = await loadBrowserKernel();
     const kernel = new BrowserKernel({ kernelOwnedFs: true });
-    await expect(kernel.initFromImage({
+    const initPromise = kernel.initFromImage({
       kernelWasm: new ArrayBuffer(8),
       vfsImage: new Uint8Array(0),
       closedLazyAssets: [],
-    })).rejects.toThrow("at least one binding");
-    expect(MockWorker.instances).toHaveLength(0);
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const worker = MockWorker.instances[0]!;
+    expect(worker.lastMessage("init").closedLazyAssets).toEqual([]);
+    worker.simulateMessage({ type: "ready" });
+    await initPromise;
   });
 
   it("boot() spawns a worker, sends init, and resolves on `ready`", async () => {

@@ -6,8 +6,8 @@
  *
  * Once port 3306 is listening, the page runs setup SQL via mysqltest
  * and exposes window.__runMariadbTest() for Playwright. Each test
- * invocation is a transient kernel.spawn() of mysqltest.wasm — those
- * processes are not part of the dinit service tree.
+ * invocation is a transient spawn of the product-owned `/usr/bin/mysqltest`;
+ * those processes are not part of the dinit service tree.
  *
  * Process layout once boot completes (all IDs are kernel-assigned):
  *   dinit (--container)
@@ -16,11 +16,41 @@
  *   mysqltest (transient, one per __runMariadbTest call)
  */
 import { BrowserKernel } from "@host/browser-kernel-host";
+import type { MountSpec } from "@host/vfs/default-mounts";
 import kernelWasmUrl from "@kernel-wasm?url";
-import mysqlTestWasmUrl from "@binaries/programs/wasm32/mariadb/mysqltest.wasm?url";
 import VFS_IMAGE_URL from "@binaries/programs/wasm32/mariadb-test.vfs.zst?url";
+import productCatalog from "../../../../images/vfs/products/generated/catalog.json";
 
 const MYSQL_PORT = 3306;
+const MARIADB_PRODUCT = productCatalog.products.find(
+  ({ manifest }) => manifest.id === "test-mariadb",
+);
+if (MARIADB_PRODUCT === undefined) {
+  throw new Error("test-mariadb is absent from the canonical VFS product catalog");
+}
+const MARIADB_BOOT = MARIADB_PRODUCT.manifest.boot;
+const MARIADB_MOUNTS: MountSpec[] = MARIADB_PRODUCT.manifest.mounts.map(
+  (mount) => {
+    if (mount.source === "built-image") {
+      return {
+      path: mount.path,
+      source: "image",
+      readonly: mount.readonly,
+      };
+    }
+    if (mount.source !== "scratch" || mount.mode === undefined) {
+      throw new Error(`test-mariadb has an unsupported mount at ${mount.path}`);
+    }
+    return {
+      path: mount.path,
+      source: "scratch",
+      mode: Number.parseInt(mount.mode, 8),
+      uid: mount.uid,
+      gid: mount.gid,
+      ephemeral: mount.ephemeral,
+    };
+  },
+);
 
 interface TestResult {
   exitCode: number;
@@ -48,7 +78,6 @@ function appendLog(text: string, cls?: string) {
 }
 
 let kernel: BrowserKernel | null = null;
-let mysqlTestBytes: ArrayBuffer | null = null;
 let testStderr = "";
 
 async function runMysqlTestCommand(
@@ -56,8 +85,8 @@ async function runMysqlTestCommand(
   testFile: string,
   timeoutMs: number,
 ): Promise<TestResult> {
-  if (!kernel || !mysqlTestBytes) {
-    throw new Error("Kernel or mysqltest not initialized");
+  if (!kernel) {
+    throw new Error("Kernel is not initialized");
   }
 
   const start = performance.now();
@@ -83,7 +112,10 @@ async function runMysqlTestCommand(
 
   try {
     const exitCode = await Promise.race([
-      kernel.spawn(mysqlTestBytes, argv, { env, cwd: "/mysql-test" }),
+      kernel.spawnFromVfs("/usr/bin/mysqltest", argv, {
+        env,
+        cwd: "/mysql-test",
+      }).then(({ exit }) => exit),
       new Promise<number>((_, reject) =>
         setTimeout(() => reject(new Error("TIMEOUT")), timeoutMs),
       ),
@@ -106,7 +138,7 @@ async function runMysqlTestCommand(
 async function init() {
   statusEl.textContent = "Loading resources...";
 
-  const [kernelBytes, vfsImageBuf, mysqlTestBytesResult] = await Promise.all([
+  const [kernelBytes, vfsImageBuf] = await Promise.all([
     fetch(kernelWasmUrl).then((r) => r.arrayBuffer()),
     fetch(VFS_IMAGE_URL).then((r) => {
       if (!r.ok) {
@@ -117,16 +149,13 @@ async function init() {
       }
       return r.arrayBuffer();
     }),
-    fetch(mysqlTestWasmUrl).then((r) => r.arrayBuffer()),
   ]);
 
-  mysqlTestBytes = mysqlTestBytesResult;
   const vfsImage = new Uint8Array(vfsImageBuf);
 
   appendLog(
     `Loaded: kernel ${(kernelBytes.byteLength / 1024).toFixed(0)}KB, ` +
-    `VFS image ${(vfsImage.byteLength / (1024 * 1024)).toFixed(1)}MB, ` +
-    `mysqltest ${(mysqlTestBytesResult.byteLength / (1024 * 1024)).toFixed(1)}MB\n`,
+    `VFS image ${(vfsImage.byteLength / (1024 * 1024)).toFixed(1)}MB\n`,
     "info",
   );
 
@@ -154,11 +183,12 @@ async function init() {
   const { exit } = await kernel.boot({
     kernelWasm: kernelBytes,
     vfsImage,
-    argv: ["/sbin/dinit", "--container", "-p", "/tmp/dinitctl"],
-    env: ["HOME=/root", "TERM=xterm-256color", "USER=root", "LOGNAME=root", "PATH=/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin"],
-    cwd: "/root",
-    uid: 0,
-    gid: 0,
+    rootfsMountSpec: MARIADB_MOUNTS,
+    argv: [...MARIADB_BOOT.argv],
+    env: Object.entries(MARIADB_BOOT.env).map(([name, value]) => `${name}=${value}`),
+    cwd: MARIADB_BOOT.cwd,
+    uid: MARIADB_BOOT.uid,
+    gid: MARIADB_BOOT.gid,
   });
 
   // Surface dinit exit if it ever happens — should not while tests run.

@@ -8,6 +8,10 @@ use crate::abi_staging::canonical_json::{
     validate_stable_id,
 };
 use crate::abi_staging::consumer_registry::{ApplicabilityV1, ChangeClass};
+use crate::abi_staging::evidence_policy::{
+    RuntimeBrowserIdentityV1, RuntimeHostIdentityV1, RuntimeKernelIdentityV1,
+    RuntimeSourceIdentityV1, RuntimeTargetAbiV1,
+};
 use crate::abi_staging::guard_registry::{
     guard_override_policy, GuardCodeV1, GuardOverridePolicyV1,
 };
@@ -538,6 +542,85 @@ pub struct ProductEvidenceRecordV1 {
     pub schema: u64,
     pub common: RecordCommonV1,
     pub product_evidence: ProductEvidencePayloadV1,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProductEvidenceResultProductV1 {
+    pub id: String,
+    pub manifest_sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CandidateProductEvidenceIdentityV1 {
+    pub manifest_digest: String,
+    pub vfs_layer_sha256: String,
+    pub vfs_layer_bytes: u64,
+    pub builder_report_sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProductRuntimeEvidenceIdentityV1 {
+    pub bundle_sha256: String,
+    pub source: RuntimeSourceIdentityV1,
+    pub target_abi: RuntimeTargetAbiV1,
+    pub kernel: RuntimeKernelIdentityV1,
+    pub host_runtime: RuntimeHostIdentityV1,
+    pub browser: RuntimeBrowserIdentityV1,
+    pub build_policy_sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProductEvidenceDefinitionIdentityV1 {
+    pub id: String,
+    pub definition_sha256: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProductEvidenceOutcomeV1 {
+    Success,
+    Failure,
+    Timeout,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProductEvidenceDiagnosticV1 {
+    pub id: String,
+    pub sha256: String,
+    pub bytes: u64,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProductEvidenceRunV1 {
+    pub repository: String,
+    pub workflow_ref: String,
+    pub run_id: u64,
+    pub job_id: String,
+    pub attempt: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProductEvidenceResultV1 {
+    pub schema: u64,
+    pub kind: String,
+    pub request_digest: String,
+    pub product: ProductEvidenceResultProductV1,
+    pub candidate_product: CandidateProductEvidenceIdentityV1,
+    pub runtime: ProductRuntimeEvidenceIdentityV1,
+    pub host: VerificationHostV1,
+    pub definition: ProductEvidenceDefinitionIdentityV1,
+    pub outcome: ProductEvidenceOutcomeV1,
+    pub guard_codes: Vec<GuardCodeV1>,
+    pub bounded_diagnostics: Vec<ProductEvidenceDiagnosticV1>,
+    pub run: ProductEvidenceRunV1,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
