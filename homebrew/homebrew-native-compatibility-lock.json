@@ -6481,7 +6481,7 @@
     "libffi": {
       "internal": {
         "bottle_cellar": ":any",
-        "bottle_checksum": "d38ed5eba118dc170bede46cf32fe5aae43f3ce919daef0de0181af0cf0a000f",
+        "bottle_checksum": "250d5150db65018e524595cae9de93f8d72ebe8a078bfde968eae51bdc1787fc",
         "desc": "Portable Foreign Function Interface library",
         "head_dependencies": [
           {
@@ -6506,16 +6506,16 @@
         ],
         "license": "MIT",
         "name": "libffi",
-        "ruby_source_checksum": "778b9095a9afbfbf1e125018a3c4ba50e5d14c964c68e2bdadba6301d96f446e",
-        "stable_checksum": "d5e9a6638ddbd2513ddb54518eb67e4bbe6fa707bcc01c10f6212f0a088d819d",
+        "ruby_source_checksum": "95875e70caa6b4f888d631522f8694db62c3e1fddfbf216873749a2dc74032b3",
+        "stable_checksum": "7da3e2d9a171eb0a038f592ecad3ff2bb2550f3496d87b3b29ad0cf4430c0db4",
         "stable_url_args": [
-          "https://github.com/libffi/libffi/releases/download/v3.7.1/libffi-3.7.1.tar.gz"
+          "https://github.com/libffi/libffi/releases/download/v3.8.0/libffi-3.8.0.tar.gz"
         ],
-        "stable_version": "3.7.1"
+        "stable_version": "3.8.0"
       },
       "public": {
         "bottle_cellar": ":any",
-        "bottle_checksum": "d38ed5eba118dc170bede46cf32fe5aae43f3ce919daef0de0181af0cf0a000f",
+        "bottle_checksum": "250d5150db65018e524595cae9de93f8d72ebe8a078bfde968eae51bdc1787fc",
         "desc": "Portable Foreign Function Interface library",
         "head_dependencies": [
           {
@@ -6540,12 +6540,12 @@
         ],
         "license": "MIT",
         "name": "libffi",
-        "ruby_source_checksum": "778b9095a9afbfbf1e125018a3c4ba50e5d14c964c68e2bdadba6301d96f446e",
-        "stable_checksum": "d5e9a6638ddbd2513ddb54518eb67e4bbe6fa707bcc01c10f6212f0a088d819d",
+        "ruby_source_checksum": "95875e70caa6b4f888d631522f8694db62c3e1fddfbf216873749a2dc74032b3",
+        "stable_checksum": "7da3e2d9a171eb0a038f592ecad3ff2bb2550f3496d87b3b29ad0cf4430c0db4",
         "stable_url_args": [
-          "https://github.com/libffi/libffi/releases/download/v3.7.1/libffi-3.7.1.tar.gz"
+          "https://github.com/libffi/libffi/releases/download/v3.8.0/libffi-3.8.0.tar.gz"
         ],
-        "stable_version": "3.7.1"
+        "stable_version": "3.8.0"
       }
     },
     "libgit2": {
@@ -10387,17 +10387,15 @@
     "mesa": {
       "internal": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "7ac1e5d8cb9dbb02a736ed806898dded45203771c369c0d621f5510616024afe",
-        "bottle_rebuild": 1,
+        "bottle_checksum": "12f08e162e90bf2c897b184a55ff684f41a65a753f6e967c75a8bd71e278bdbc",
         "desc": "Graphics Library",
         "executables": [
           "aubinator",
           "aubinator_error_decode",
-          "brw_asm",
-          "brw_disasm",
           "computerator",
           "elk_asm",
           "elk_disasm",
+          "gentool",
           "glsl_compiler",
           "intel_dev_info",
           "intel_dump_gpu",
@@ -10413,6 +10411,7 @@
           "mesa-overlay-control.py",
           "mesa-screenshot-control.py",
           "nv_mme_dump",
+          "nv_mme_method_dumper",
           "nv_push_dump",
           "panfrost_texfeatures",
           "panfrostdump",
@@ -10548,8 +10547,8 @@
           ]
         },
         "name": "mesa",
-        "ruby_source_checksum": "161639df34a4d861c7277085b3826a056d4d73369c50ce2600d4122d60aeec69",
-        "stable_checksum": "072705caa9adf4740f1489194b13e278ad959166863b5271fe423a86353c9ab6",
+        "ruby_source_checksum": "a2d9afa6af5e9d519e0cc5e92b7432cc2a61dd2562c76452d1b025c0ff6e5b48",
+        "stable_checksum": "efd4bb08cdb7c365a812cd4e6c9202ab55b2f22cdcd13c7d6c4f9647b799a4ef",
         "stable_dependencies": [
           "libclc",
           "libpng",
@@ -10635,7 +10634,7 @@
           }
         ],
         "stable_url_args": [
-          "https://archive.mesa3d.org/mesa-26.1.4.tar.xz"
+          "https://archive.mesa3d.org/mesa-26.2.0.tar.xz"
         ],
         "stable_uses_from_macos": [
           [
@@ -10647,21 +10646,19 @@
             "expat"
           ]
         ],
-        "stable_version": "26.1.4"
+        "stable_version": "26.2.0"
       },
       "public": {
         "bottle_cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-        "bottle_checksum": "7ac1e5d8cb9dbb02a736ed806898dded45203771c369c0d621f5510616024afe",
-        "bottle_rebuild": 1,
+        "bottle_checksum": "12f08e162e90bf2c897b184a55ff684f41a65a753f6e967c75a8bd71e278bdbc",
         "desc": "Graphics Library",
         "executables": [
           "aubinator",
           "aubinator_error_decode",
-          "brw_asm",
-          "brw_disasm",
           "computerator",
           "elk_asm",
           "elk_disasm",
+          "gentool",
           "glsl_compiler",
           "intel_dev_info",
           "intel_dump_gpu",
@@ -10677,6 +10674,7 @@
           "mesa-overlay-control.py",
           "mesa-screenshot-control.py",
           "nv_mme_dump",
+          "nv_mme_method_dumper",
           "nv_push_dump",
           "panfrost_texfeatures",
           "panfrostdump",
@@ -10812,8 +10810,8 @@
           ]
         },
         "name": "mesa",
-        "ruby_source_checksum": "161639df34a4d861c7277085b3826a056d4d73369c50ce2600d4122d60aeec69",
-        "stable_checksum": "072705caa9adf4740f1489194b13e278ad959166863b5271fe423a86353c9ab6",
+        "ruby_source_checksum": "a2d9afa6af5e9d519e0cc5e92b7432cc2a61dd2562c76452d1b025c0ff6e5b48",
+        "stable_checksum": "efd4bb08cdb7c365a812cd4e6c9202ab55b2f22cdcd13c7d6c4f9647b799a4ef",
         "stable_dependencies": [
           "libclc",
           "libpng",
@@ -10899,7 +10897,7 @@
           }
         ],
         "stable_url_args": [
-          "https://archive.mesa3d.org/mesa-26.1.4.tar.xz"
+          "https://archive.mesa3d.org/mesa-26.2.0.tar.xz"
         ],
         "stable_uses_from_macos": [
           [
@@ -10911,7 +10909,7 @@
             "expat"
           ]
         ],
-        "stable_version": "26.1.4"
+        "stable_version": "26.2.0"
       }
     },
     "mesa-glu": {
@@ -11350,7 +11348,7 @@
         ],
         "license": "OLDAP-2.8",
         "name": "openldap",
-        "ruby_source_checksum": "c4e96e04ef32465d11d4380cc5b59e4f05acd5107c729b107a93660a62b1205e",
+        "ruby_source_checksum": "b6d1b10f09b64a633f8ec43b0b83fba08e2d8f9d34138759a9637fb35588e9f3",
         "stable_checksum": "9e86f37da375aa948a1b478dd76fe87b02090e47c21facae19223588e3407922",
         "stable_dependencies": [
           "openssl@3",
@@ -11425,7 +11423,7 @@
         ],
         "license": "OLDAP-2.8",
         "name": "openldap",
-        "ruby_source_checksum": "c4e96e04ef32465d11d4380cc5b59e4f05acd5107c729b107a93660a62b1205e",
+        "ruby_source_checksum": "b6d1b10f09b64a633f8ec43b0b83fba08e2d8f9d34138759a9637fb35588e9f3",
         "stable_checksum": "9e86f37da375aa948a1b478dd76fe87b02090e47c21facae19223588e3407922",
         "stable_dependencies": [
           "openssl@3",
