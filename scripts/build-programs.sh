@@ -497,7 +497,7 @@ for src in "$REPO_ROOT/programs/"*.c; do
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libwpkdraw.a"
             ;;
-        kwldemo.c|wlclock.c|wlpaint.c)
+        kwldemo.c|wlclock.c|wlpaint.c|kbar.c|klauncher.c)
             # Link libkwl — built in a dedicated pass after the
             # wlcompositor block (which resolves the wayland/xkb archives and
             # generates the xdg-shell client header libkwl needs). Skip here.
@@ -658,6 +658,14 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
     wayland-scanner server-header "$DECOR_XML" "$WLC_GEN/xdg-decoration-v1-server-protocol.h"
     wayland-scanner client-header "$DECOR_XML" "$WLC_GEN/xdg-decoration-v1-client-protocol.h"
 
+    # Same for zwlr_layer_shell_v1 (PR15): the shell-component protocol. The
+    # compositor anchors bars/launchers with it; kbar + klauncher are its
+    # clients, and it is what upstream Waybar/mako speak too.
+    LAYER_XML="$REPO_ROOT/packages/registry/wayland-protocols/xml/wlr-layer-shell-unstable-v1.xml"
+    wayland-scanner private-code  "$LAYER_XML" "$WLC_GEN/wlr-layer-shell-v1-protocol.c"
+    wayland-scanner server-header "$LAYER_XML" "$WLC_GEN/wlr-layer-shell-v1-server-protocol.h"
+    wayland-scanner client-header "$LAYER_XML" "$WLC_GEN/wlr-layer-shell-v1-client-protocol.h"
+
     # libwayland-egl (step 12a): the wl_egl_window shim that SDL2's upstream
     # Wayland+GLES backend uses as its EGLNativeWindowType. It allocates the
     # GPU-tier bo the window renders into and wraps it as a zwp_linux_dmabuf_v1
@@ -690,6 +698,7 @@ if ls "$REPO_ROOT"/programs/wlcompositor/*.c >/dev/null 2>&1; then
         "$WLC_GEN/xdg-shell-protocol.c" \
         "$WLC_GEN/linux-dmabuf-v1-protocol.c" \
         "$WLC_GEN/xdg-decoration-v1-protocol.c" \
+        "$WLC_GEN/wlr-layer-shell-v1-protocol.c" \
         "${LINK_PRE_LIBS[@]}" \
         "$SYSROOT/lib/libwayland-server.a" \
         "$SYSROOT/lib/libwpkdraw.a" \
@@ -779,11 +788,12 @@ if [ -d "$LIBKWL_DIR/src" ]; then
         bash "$LIBKWL_DIR/build.sh" "$SYSROOT"
 
     # libkwl clients: kwldemo (PR7 Phase 2 gate), wlclock (animated analog
-    # clock), wlpaint (palette + pointer-drag painting). Link order:
+    # clock), wlpaint (palette + pointer-drag painting), kbar (the layer-shell
+    # status bar) and klauncher (the layer-shell app launcher). Link order:
     # dependents before deps — app + xdg glue, then libkwl (calls
     # wpk_*/wl_*/xkb_*), then libwpkdraw, then the wayland stack, libffi
     # last so wl_closure_invoke's ffi_call resolves.
-    for kwl_app in kwldemo wlclock wlpaint; do
+    for kwl_app in kwldemo wlclock wlpaint kbar klauncher; do
         [ -f "$REPO_ROOT/programs/$kwl_app.c" ] || continue
         kwl_app_wasm="$OUT_DIR_32/$kwl_app.wasm"
         echo "  Compiling $kwl_app (libkwl client)..."
@@ -791,6 +801,7 @@ if [ -d "$LIBKWL_DIR/src" ]; then
             "$REPO_ROOT/programs/$kwl_app.c" \
             "$KWL_GEN/xdg-shell-protocol.c" \
             "$KWL_GEN/xdg-decoration-v1-protocol.c" \
+            "$KWL_GEN/wlr-layer-shell-v1-protocol.c" \
             "${LINK_PRE_LIBS[@]}" \
             "$SYSROOT/lib/libkwl.a" \
             "$SYSROOT/lib/libwpkdraw.a" \
@@ -824,6 +835,7 @@ if ls "$REPO_ROOT"/programs/wlterm/*.c >/dev/null 2>&1; then
         "$REPO_ROOT/programs/wlterm/vt100.c" \
         "$KWL_GEN/xdg-shell-protocol.c" \
         "$KWL_GEN/xdg-decoration-v1-protocol.c" \
+        "$KWL_GEN/wlr-layer-shell-v1-protocol.c" \
         "${LINK_PRE_LIBS[@]}" \
         "$SYSROOT/lib/libkwl.a" \
         "$SYSROOT/lib/libwpkdraw.a" \
