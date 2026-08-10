@@ -222,6 +222,7 @@ pub fn derive_abi_staging_request(
     exact_head_root: &Path,
     pull_request: &PullRequestIdentityV1,
     protected: &ProtectedRequestContextV1,
+    protected_previous_abi: u64,
     structural: &StructuralAbiReportV1,
     change_classes: &[ChangeClass],
 ) -> Result<AbiStagingRequestV1, String>;
@@ -513,6 +514,10 @@ requires; the earlier prose ordering was illustrative rather than canonical.
   `ProtectedRequestContextV1`, `derive_abi_staging_request`, and commands:
   `abi-staging structural-report validate` and
   `abi-staging request derive`.
+- Both protected commands receive the protected checkout's current previous
+  ABI explicitly. They reject a report whose `observed_previous_abi` differs
+  or whose `check_command_sha256` does not match the exact-head
+  `scripts/check-abi-version.sh` bytes.
 - The fixture models a local source ABI `7` and target ABI `8`; these are test
   inputs, not defaults or policy.
 

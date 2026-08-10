@@ -7,6 +7,7 @@ ROOT = File.expand_path("..", __dir__)
 WORKFLOW = ARGV.empty? ?
   File.join(ROOT, ".github/workflows/abi-staging-pr-check.yml") :
   File.expand_path(ARGV.fetch(0))
+MERGE_GATE = File.join(ROOT, ".github/workflows/abi-staging-merge-gate.yml")
 
 CHECKOUT = "actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0"
 UPLOAD = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
@@ -66,7 +67,7 @@ def check_workflow(workflow)
   trigger = events(workflow)
   check(trigger.keys.sort == %w[pull_request_target schedule workflow_dispatch],
         "PR Check triggers changed")
-  check(trigger.dig("pull_request_target", "types") == %w[opened synchronize reopened],
+  check(trigger.dig("pull_request_target", "types") == %w[opened synchronize reopened labeled],
         "pull_request_target events changed")
   check(trigger.fetch("schedule") == [{"cron" => "*/5 * * * *"}],
         "PR Check must reconcile every five minutes")
@@ -147,16 +148,205 @@ def check_workflow(workflow)
   check(publish_source.include?("check-projection project") &&
         publish_source.include?("cmp -s") &&
         publish_source.include?("update-abi-staging-check.sh") &&
+        publish_source.include?("--details-url") &&
+        publish_source.include?("github.run_id") &&
         publish_source.include?("required-check-activation.toml") &&
         publish_source.include?("artifact-ids") == false,
         "publisher does not reproject and use the narrow update adapter")
   check(!publish_source.match?(%r{(?:bash|source|\.)\s+[^\n]*exact-head}),
         "publisher executes candidate-head code")
+  locate = named_step(publish, "Locate exact projection artifact")
+  check(locate.fetch("run").include?("[.[].artifacts[]][0]"),
+        "publisher selects an artifact from only the first API page")
   download = named_step(publish, "Download exact projection artifact")
   check(download.fetch("uses").start_with?(DOWNLOAD) &&
         download.dig("with", "artifact-ids") == "${{ steps.locate.outputs.artifact-id }}" &&
         download.dig("with", "merge-multiple") == true,
         "publisher does not download the exact located artifact ID")
+end
+
+def check_merge_gate(workflow)
+  check(workflow.fetch("permissions") == {},
+        "protected merge-evidence workflow permissions must be empty")
+  trigger = events(workflow)
+  check(trigger.keys == ["pull_request_target"],
+        "protected merge evidence must use only pull_request_target")
+  check(trigger.dig("pull_request_target", "types") == ["labeled"],
+        "protected merge evidence must run only for a label event")
+
+  jobs = workflow.fetch("jobs")
+  check(jobs.keys == %w[
+          capture-current-subject abi-staging-exact-head-structure
+          validate-current-evidence
+        ], "protected merge evidence must retain the reviewed three-job split")
+  capture = jobs.fetch("capture-current-subject")
+  structure = jobs.fetch("abi-staging-exact-head-structure")
+  validate = jobs.fetch("validate-current-evidence")
+  check(capture.fetch("permissions") == {"contents" => "read"},
+        "subject capture must remain read-only")
+  check(structure.fetch("permissions") == {"contents" => "read"},
+        "exact-head structure must remain read-only")
+  check(validate.fetch("permissions") == {
+          "actions" => "read", "checks" => "read", "contents" => "read"
+        }, "protected evidence validation permissions changed")
+  check(Array(structure.fetch("needs")) == ["capture-current-subject"],
+        "structural job dependency changed")
+  check(Array(validate.fetch("needs")) == %w[
+          capture-current-subject abi-staging-exact-head-structure
+        ], "evidence validator dependency changed")
+
+  [capture, structure, validate].each do |job|
+    check(job.fetch("timeout-minutes").between?(1, 120),
+          "protected merge-evidence timeout is invalid")
+    check(job.fetch("steps").none? { |step| step["continue-on-error"] == true },
+          "protected merge evidence may not swallow a trust-boundary failure")
+  end
+  check_actions(workflow)
+  jobs.each_value do |job|
+    job.fetch("steps").each do |step|
+      next unless step.fetch("uses", "").start_with?("./")
+
+      check(step.fetch("uses").start_with?("./abi-staging-authority/"),
+            "protected merge evidence uses a candidate-controlled local action")
+    end
+  end
+  flattened = values(workflow).join("\n")
+  check(!flattened.match?(/\bsecrets\b/i),
+        "protected merge evidence may not use secrets")
+  check(!flattened.include?("refs/pull/") && !flattened.include?("/merge"),
+        "protected merge evidence may not use a synthetic merge")
+  check(!flattened.match?(/git\s+merge\b/),
+        "protected merge evidence may not synthesize a merge")
+  check(!flattened.match?(/\bsleep\s+[0-9]/),
+        "protected merge evidence may not sleep a runner")
+
+  capture_source = run_source(capture)
+  check(capture.fetch("if").include?("ready-to-ship") &&
+        capture.fetch("if").include?("head.repo.full_name == github.repository") &&
+        capture_source.include?("git/ref/heads/main") &&
+        capture_source.include?("/pulls/$PR_NUMBER") &&
+        capture_source.include?("head.repo.full_name") &&
+        capture_source.include?("labels") &&
+        capture_source.include?("protected-sha") &&
+        capture_source.include?("exact-head"),
+        "subject capture does not bind the current protected and exact heads")
+
+  authority = named_step(structure, "Checkout captured protected ABI authority")
+  check(authority.fetch("uses").start_with?(CHECKOUT) &&
+        authority.dig("with", "ref") ==
+          "${{ needs.capture-current-subject.outputs.protected-sha }}" &&
+        authority.dig("with", "path") == "abi-staging-authority",
+        "structural authority checkout is not the captured protected revision")
+  exact = named_step(structure, "Checkout exact PR head for structural ABI check")
+  check(exact.fetch("uses").start_with?(CHECKOUT) &&
+        exact.dig("with", "ref") ==
+          "${{ needs.capture-current-subject.outputs.exact-head }}" &&
+        exact.dig("with", "path") == "abi-staging-exact-head",
+        "structural job does not execute the exact PR head")
+  structure_step = named_step(
+    structure, "Run uncredentialed exact-head structural ABI check"
+  )
+  structure_source = structure_step.fetch("run")
+  check(structure_source.include?(
+          "env -u GH_TOKEN -u GITHUB_TOKEN -u ACTIONS_RUNTIME_TOKEN"
+        ) &&
+        structure_source.include?("env -i") &&
+        structure_source.include?('HOME="$candidate_home"') &&
+        structure_source.include?("ABI_CHECK_BASE_REF=\"$PROTECTED_SHA\"") &&
+        structure_source.include?("scripts/dev-shell.sh") &&
+        structure_source.include?("bash scripts/check-abi-version.sh") &&
+        structure_source.include?("kandelo-structural-abi-report") &&
+        !structure_source.include?("SYNTHETIC_MERGE_SHA"),
+        "structural job does not emit bounded uncredentialed exact-head evidence")
+  structure.fetch("steps").each do |step|
+    next if step.equal?(structure_step)
+
+    check(!step.fetch("run", "").match?(
+            %r{(?:bash|source|\.)\s+[^\n]*abi-staging-exact-head}
+          ), "candidate execution escaped the reviewed structural step")
+  end
+  upload = named_step(structure, "Transfer exact-head structural ABI evidence")
+  check(upload.fetch("uses").start_with?(UPLOAD) &&
+        upload.dig("with", "name").to_s.include?("exact-head") &&
+        upload.dig("with", "path").to_s.include?("structural-report.json") &&
+        upload.dig("with", "path").to_s.include?("structural-failure.json") &&
+        upload.dig("with", "if-no-files-found") == "error",
+        "structural artifact is not exact-head and bounded")
+
+  gate_authority = named_step(validate, "Checkout captured protected ABI gate authority")
+  check(gate_authority.fetch("uses").start_with?(CHECKOUT) &&
+        gate_authority.dig("with", "ref") ==
+          "${{ needs.capture-current-subject.outputs.protected-sha }}" &&
+        gate_authority.dig("with", "path") == "abi-staging-authority",
+        "gate authority checkout is not protected")
+  gate_exact = named_step(validate, "Checkout inert exact PR head for ABI gate")
+  check(gate_exact.fetch("uses").start_with?(CHECKOUT) &&
+        gate_exact.dig("with", "ref") ==
+          "${{ needs.capture-current-subject.outputs.exact-head }}" &&
+        gate_exact.dig("with", "path") == "abi-staging-exact-head",
+        "gate does not inspect the exact PR head as inert data")
+  download_structure = named_step(
+    validate, "Download exact-head structural ABI evidence"
+  )
+  check(download_structure.fetch("uses").start_with?(DOWNLOAD) &&
+        download_structure.dig("with", "name").to_s.include?("exact-head") &&
+        download_structure.dig("with", "merge-multiple") == true,
+        "gate does not download the exact current-run structural artifact")
+
+  provenance = named_step(
+    validate, "Validate current request and locate protected Check provenance"
+  )
+  check(!provenance.key?("if") && provenance["continue-on-error"] != true,
+        "current evidence validation must be unconditional and non-swallowing")
+  provenance_source = provenance.fetch("run")
+  required_fragments = [
+    "--previous-abi", "structural-report validate", "request classify",
+    "request derive", "filter=all", "EXPECTED_EXTERNAL_ID",
+    ".external_id == $external", ".head_sha == $head",
+    ".status == \"completed\"", ".conclusion == \"success\"",
+    ".details_url", ".app.slug == \"github-actions\"",
+    "/actions/runs/$run_id",
+    ".path == \".github/workflows/abi-staging-pr-check.yml@main\"",
+    ".head_sha == $protected", ".html_url == $details",
+    "abi-staging-pr-check-$run_id-$PR_NUMBER-$PR_HEAD_SHA",
+    "/actions/runs/$run_id/artifacts", ".workflow_run.id == $run_id",
+    ".workflow_run.head_sha == $protected", "[.[].artifacts[]][0]",
+    "artifact-id", "run-id",
+    "mode == \"observe\"", "mode == \"enforce\""
+  ]
+  check(required_fragments.all? { |fragment| provenance_source.include?(fragment) },
+        "gate does not bind current request and protected Check-run provenance")
+
+  projection_download = named_step(validate, "Download protected Check projection")
+  check(projection_download.fetch("uses").start_with?(DOWNLOAD) &&
+        projection_download.dig("with", "artifact-ids") ==
+          "${{ steps.provenance.outputs.artifact-id }}" &&
+        projection_download.dig("with", "run-id") ==
+          "${{ steps.provenance.outputs.run-id }}" &&
+        projection_download.dig("with", "github-token") == "${{ github.token }}" &&
+        projection_download.dig("with", "merge-multiple") == true,
+        "gate does not download the exact protected-run projection artifact")
+  final = named_step(validate, "Reproject and validate protected Check provenance")
+  check(!final.key?("if") && final["continue-on-error"] != true,
+        "final protected evidence validation must be unconditional")
+  final_source = final.fetch("run")
+  check(final_source.include?("check-projection project") &&
+        final_source.include?("cmp -s") &&
+        final_source.include?("published_conclusion == \"success\"") &&
+        final_source.include?("computed_conclusion == \"success\"") &&
+        final_source.include?("staging_problem") &&
+        !final_source.include?("SYNTHETIC_MERGE_SHA"),
+        "final gate does not reproject exact protected success")
+
+  validate.fetch("steps").each do |step|
+    if step.fetch("uses", "").start_with?("./")
+      check(step.fetch("uses").start_with?("./abi-staging-authority/"),
+            "gate uses candidate-controlled local action")
+    end
+    source = step.fetch("run", "")
+    check(!source.match?(%r{(?:bash|source|\.)\s+[^\n]*abi-staging-exact-head}),
+          "gate executes candidate-head code outside the read-only structural job")
+  end
 end
 
 def deep_copy(value)
@@ -209,6 +399,14 @@ begin
       step = copy.dig("jobs", "collect-project", "steps").find { |item| item["uses"]&.start_with?(UPLOAD) }
       step.fetch("with")["name"] = "abi-staging-pr-check-latest"
     },
+    "first-page artifact selection" => lambda { |copy|
+      step = copy.dig("jobs", "publish-check", "steps").find do |item|
+        item["name"] == "Locate exact projection artifact"
+      end
+      step["run"] = step.fetch("run").gsub(
+        "[.[].artifacts[]][0]", ".[0].artifacts[0]"
+      )
+    },
     "persisted candidate credential" => lambda { |copy|
       step = copy.dig("jobs", "collect-project", "steps").find do |item|
         item["name"] == "Checkout inert exact PR head"
@@ -217,6 +415,90 @@ begin
     }
   }
   mutations.each { |label, mutation| rejected_mutation(workflow, label, &mutation) }
+
+  merge_gate = YAML.safe_load(
+    File.read(MERGE_GATE), permitted_classes: [], aliases: false
+  )
+  check_merge_gate(merge_gate)
+  merge_mutations = {
+    "PR-controlled trigger" => lambda { |copy|
+      copy["on"] = {"pull_request" => {"types" => ["labeled"]}}
+    },
+    "write-capable gate" => lambda { |copy|
+      copy.dig("jobs", "validate-current-evidence", "permissions")["checks"] = "write"
+    },
+    "synthetic structural head" => lambda { |copy|
+      step = copy.dig("jobs", "abi-staging-exact-head-structure", "steps").find do |item|
+        item["name"] == "Checkout exact PR head for structural ABI check"
+      end
+      step.fetch("with")["ref"] = "refs/pull/19/merge"
+    },
+    "latest-only Check inventory" => lambda { |copy|
+      step = copy.dig("jobs", "validate-current-evidence", "steps").find do |item|
+        item["name"] == "Validate current request and locate protected Check provenance"
+      end
+      step["run"] = step.fetch("run").gsub("&filter=all", "")
+    },
+    "unbound publisher run" => lambda { |copy|
+      step = copy.dig("jobs", "validate-current-evidence", "steps").find do |item|
+        item["name"] == "Validate current request and locate protected Check provenance"
+      end
+      step["run"] = step.fetch("run").gsub(
+        '.path == ".github/workflows/abi-staging-pr-check.yml@main"', "true"
+      )
+    },
+    "first-page protected artifact" => lambda { |copy|
+      step = copy.dig("jobs", "validate-current-evidence", "steps").find do |item|
+        item["name"] == "Validate current request and locate protected Check provenance"
+      end
+      step["run"] = step.fetch("run").gsub(
+        "[.[].artifacts[]][0]", ".[0].artifacts[0]"
+      )
+    },
+    "candidate local action" => lambda { |copy|
+      copy.dig("jobs", "validate-current-evidence", "steps") << {
+        "name" => "Candidate action", "uses" => "./abi-staging-exact-head/.github/action"
+      }
+    },
+    "candidate local action in structural job" => lambda { |copy|
+      copy.dig("jobs", "abi-staging-exact-head-structure", "steps") << {
+        "name" => "Candidate action", "uses" => "./abi-staging-exact-head/.github/action"
+      }
+    },
+    "second candidate structural execution" => lambda { |copy|
+      copy.dig("jobs", "abi-staging-exact-head-structure", "steps") << {
+        "name" => "Second candidate execution",
+        "run" => "bash abi-staging-exact-head/scripts/check-abi-version.sh"
+      }
+    },
+    "separate candidate execution" => lambda { |copy|
+      copy.dig("jobs", "validate-current-evidence", "steps") << {
+        "name" => "Candidate execution", "run" => "bash abi-staging-exact-head/build.sh"
+      }
+    },
+    "conditional final validation" => lambda { |copy|
+      step = copy.dig("jobs", "validate-current-evidence", "steps").find do |item|
+        item["name"] == "Reproject and validate protected Check provenance"
+      end
+      step["if"] = "${{ success() }}"
+    },
+    "swallowed provenance validation" => lambda { |copy|
+      step = copy.dig("jobs", "validate-current-evidence", "steps").find do |item|
+        item["name"] == "Validate current request and locate protected Check provenance"
+      end
+      step["continue-on-error"] = true
+    }
+  }
+  merge_mutations.each do |label, mutation|
+    mutated = deep_copy(merge_gate)
+    mutation.call(mutated)
+    begin
+      check_merge_gate(mutated)
+    rescue RuntimeError, KeyError, NoMethodError
+      next
+    end
+    raise "merge-gate mutation escaped checker: #{label}"
+  end
   puts "check-abi-staging-pr-check-workflow: PASS"
 rescue Errno::ENOENT, KeyError, NoMethodError, Psych::Exception, RuntimeError => e
   warn "check-abi-staging-pr-check-workflow: #{e.message}"

@@ -183,12 +183,31 @@ jobs:
             snapshot_sha=$(shasum -a 256 "$head_root/abi/snapshot.json" | awk '{print $1}')
             check_sha=$(shasum -a 256 "$head_root/scripts/check-abi-version.sh" | awk '{print $1}')
             check_log="$evidence/reports/$pr-check.log"
-            if (
+            set +e
+            (
               cd "$head_root"
-              env -u GH_TOKEN -u GITHUB_TOKEN \
-                ABI_CHECK_BASE_REF="$PROTECTED_SHA" \
-                bash scripts/dev-shell.sh bash scripts/check-abi-version.sh
-            ) >"$check_log" 2>&1; then
+              candidate_home="$evidence/candidate-homes/$pr"
+              mkdir -p "$candidate_home/tmp"
+              chmod 700 "$candidate_home" "$candidate_home/tmp"
+              nix_bin=$(command -v nix)
+              bash_bin=$(command -v bash)
+              env -u GH_TOKEN -u GITHUB_TOKEN -u ACTIONS_RUNTIME_TOKEN \
+                -u ACTIONS_ID_TOKEN_REQUEST_TOKEN -u ACTIONS_ID_TOKEN_REQUEST_URL \
+                env -i \
+                  HOME="$candidate_home" \
+                  TMPDIR="$candidate_home/tmp" \
+                  CI=true \
+                  LOGNAME=kandelo \
+                  USER=kandelo \
+                  KANDELO_NIX_BIN="$nix_bin" \
+                  PATH=/usr/bin:/bin \
+                  "$bash_bin" scripts/dev-shell.sh \
+                    env ABI_CHECK_BASE_REF="$PROTECTED_SHA" \
+                    bash scripts/check-abi-version.sh
+            ) 2>&1 | head -c 1048576 >"$check_log"
+            check_status=${PIPESTATUS[0]}
+            set -e
+            if ((check_status == 0)); then
               if [[ $target_abi -eq $previous_abi ]]; then
                 outcome=compatible
               elif [[ $target_abi -eq $((previous_abi + 1)) ]]; then
@@ -317,6 +336,10 @@ jobs:
           guard_sha=$(shasum -a 256 authority/abi/staging/guard-codes.generated.json | awk '{print $1}')
           guard_version=$(jq -r '.version' authority/abi/staging/guard-codes.generated.json)
           protected_tree=$(git -C authority rev-parse 'HEAD^{tree}')
+          previous_abi=$(sed -nE \
+            's/^pub const ABI_VERSION: u32 = ([0-9]+);$/\1/p' \
+            authority/crates/shared/src/lib.rs)
+          [[ $previous_abi =~ ^[1-9][0-9]*$ ]]
 
           while IFS= read -r subject; do
             pr=$(jq -r '.number' <<<"$subject")
@@ -334,6 +357,7 @@ jobs:
             report="$evidence/reports/$pr-structural-report.json"
             "$authority_xtask" abi-staging structural-report validate \
               --exact-head-root "$exact_head_data" \
+              --previous-abi "$previous_abi" \
               --pull-request "$pull_request_file" \
               --report "$report"
 
@@ -373,6 +397,7 @@ jobs:
 
             "$authority_xtask" abi-staging request derive \
               --exact-head-root "$exact_head_data" \
+              --previous-abi "$previous_abi" \
               --pull-request "$pull_request_file" \
               --protected-context "$derived/requests/$pr-protected-context.json" \
               --structural-report "$report" \

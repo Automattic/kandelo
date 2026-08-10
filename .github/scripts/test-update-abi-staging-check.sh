@@ -43,6 +43,10 @@ printf '\n' >>"$FAKE_STATE/api.log"
 
 case "$method:$endpoint" in
   GET:*/commits/*/check-runs\?*)
+    [[ $endpoint == *'filter=all'* ]] || {
+      echo "fake gh: Check inventory query did not request filter=all" >&2
+      exit 2
+    }
     case "$FAKE_CHECK_MODE" in
       none) printf '[{"total_count":0,"check_runs":[]}]\n' ;;
       same)
@@ -95,6 +99,7 @@ HEAD_SHA=$(printf '1%.0s' {1..40})
 REQUEST_DIGEST=$(printf '2%.0s' {1..64})
 REPOSITORY=Automattic/kandelo
 EXTERNAL_ID="abi-staging:19:${HEAD_SHA}:${REQUEST_DIGEST}"
+DETAILS_URL="https://github.com/${REPOSITORY}/actions/runs/777"
 
 write_projection() {
   local conclusion=$1 output=$2
@@ -135,7 +140,7 @@ run_case() {
     EXPECT_EXTERNAL="$EXTERNAL_ID" EXPECT_HEAD="$HEAD_SHA" \
     EXPECT_REPOSITORY="$REPOSITORY" \
     "$UPDATER" --repository "$REPOSITORY" --pull-request 19 \
-      --projection "$state/projection.json"; then
+      --projection "$state/projection.json" --details-url "$DETAILS_URL"; then
     [[ $expected == success ]] || fail "$name unexpectedly succeeded"
   else
     [[ $expected == failure ]] || fail "$name unexpectedly failed"
@@ -145,6 +150,8 @@ run_case() {
       fail "$name did not use expected write method"
     grep -Fq "GET /repos/$REPOSITORY/pulls/19" "$state/api.log" ||
       fail "$name omitted the immediate head recheck"
+    grep -Fq "details_url=$DETAILS_URL" "$state/api.log" ||
+      fail "$name did not bind the protected workflow run URL"
     local head_line write_line
     head_line=$(grep -nF "GET /repos/$REPOSITORY/pulls/19" "$state/api.log" | tail -1 | cut -d: -f1)
     write_line=$(grep -nE '^(POST|PATCH) .*/check-runs' "$state/api.log" | tail -1 | cut -d: -f1)
@@ -174,7 +181,7 @@ if env PATH="$TMP_ROOT/bin:$PATH" GH_TOKEN=test-token FAKE_STATE="$state" \
   FAKE_CHECK_MODE=none FAKE_STALE_HEAD=1 EXPECT_EXTERNAL="$EXTERNAL_ID" \
   EXPECT_HEAD="$HEAD_SHA" EXPECT_REPOSITORY="$REPOSITORY" \
   "$UPDATER" --repository "$REPOSITORY" --pull-request 19 \
-    --projection "$state/projection.json"; then
+    --projection "$state/projection.json" --details-url "$DETAILS_URL"; then
   fail "stale head unexpectedly wrote a Check"
 fi
 ! grep -Eq '^(POST|PATCH) .*/check-runs' "$state/api.log" ||
@@ -187,9 +194,26 @@ if env PATH="$TMP_ROOT/bin:$PATH" GH_TOKEN=test-token FAKE_STATE="$state" \
   FAKE_CHECK_MODE=none FAKE_WRITE_FAILURE=1 EXPECT_EXTERNAL="$EXTERNAL_ID" \
   EXPECT_HEAD="$HEAD_SHA" EXPECT_REPOSITORY="$REPOSITORY" \
   "$UPDATER" --repository "$REPOSITORY" --pull-request 19 \
-    --projection "$state/projection.json"; then
+    --projection "$state/projection.json" --details-url "$DETAILS_URL"; then
   fail "failed GitHub write was swallowed"
 fi
+
+for bad_details_url in \
+  "https://github.com/attacker/kandelo/actions/runs/777" \
+  "https://github.com/$REPOSITORY/actions/runs/latest" \
+  "https://github.com/$REPOSITORY/actions/runs/777?attempt=1"
+do
+  state="$TMP_ROOT/bad-details-$(printf '%s' "$bad_details_url" | shasum | cut -c1-8)"
+  mkdir -p "$state"
+  write_projection success "$state/projection.json"
+  if env PATH="$TMP_ROOT/bin:$PATH" GH_TOKEN=test-token FAKE_STATE="$state" \
+    FAKE_CHECK_MODE=none EXPECT_EXTERNAL="$EXTERNAL_ID" \
+    EXPECT_HEAD="$HEAD_SHA" EXPECT_REPOSITORY="$REPOSITORY" \
+    "$UPDATER" --repository "$REPOSITORY" --pull-request 19 \
+      --projection "$state/projection.json" --details-url "$bad_details_url"; then
+    fail "untrusted protected-run URL unexpectedly reached a Check write"
+  fi
+done
 
 if grep -ERq -- '--clobber|/latest|method DELETE|refs/tags' "$TMP_ROOT"/*/calls.log; then
   fail "updater used a mutable or destructive API"

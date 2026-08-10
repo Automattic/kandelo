@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 WORKFLOWS_DIR="$REPO_ROOT/.github/workflows"
 PREPARE="$REPO_ROOT/.github/workflows/prepare-merge.yml"
+ABI_STAGING_MERGE_GATE="$REPO_ROOT/.github/workflows/abi-staging-merge-gate.yml"
 ACTIVATE_WORKFLOW="$REPO_ROOT/.github/workflows/activate-merge-candidate.yml"
 REJECTED_RECOVERY_WORKFLOW="$REPO_ROOT/.github/workflows/recover-rejected-merge-candidate.yml"
 ACTIVATE_SCRIPT="$SCRIPT_DIR/activate-merge-candidate.sh"
@@ -129,6 +130,71 @@ assert_job_needs "$PREPARE" promote-staging preflight
 assert_job_needs "$PREPARE" lib-matrix-build preflight
 assert_job_needs "$PREPARE" matrix-build preflight
 assert_job_needs "$PREPARE" merge-gate-post test-gate
+
+[[ -f $ABI_STAGING_MERGE_GATE ]] ||
+  fail "protected exact-head ABI staging merge-evidence workflow is absent"
+grep -Fq 'pull_request_target:' "$ABI_STAGING_MERGE_GATE" ||
+  fail "ABI staging merge evidence is not loaded from the protected branch"
+if grep -Eq '^  pull_request:' "$ABI_STAGING_MERGE_GATE"; then
+  fail "ABI staging merge evidence must not use a PR-controlled workflow definition"
+fi
+protected_structure_job=$(job_block \
+  "$ABI_STAGING_MERGE_GATE" abi-staging-exact-head-structure)
+protected_structure_step=$(step_run_block \
+  "$ABI_STAGING_MERGE_GATE" "Run uncredentialed exact-head structural ABI check")
+protected_provenance_step=$(step_run_block \
+  "$ABI_STAGING_MERGE_GATE" \
+  "Validate current request and locate protected Check provenance")
+protected_final_step=$(step_run_block \
+  "$ABI_STAGING_MERGE_GATE" \
+  "Reproject and validate protected Check provenance")
+assert_job_needs "$ABI_STAGING_MERGE_GATE" \
+  abi-staging-exact-head-structure capture-current-subject
+assert_job_needs "$ABI_STAGING_MERGE_GATE" \
+  validate-current-evidence abi-staging-exact-head-structure
+grep -Fq 'contents: read' <<<"$protected_structure_job" ||
+  fail "candidate structural ABI job must remain read-only"
+grep -Fq 'env -u GH_TOKEN -u GITHUB_TOKEN -u ACTIONS_RUNTIME_TOKEN' \
+  <<<"$protected_structure_step" ||
+  fail "candidate structural ABI code must not receive workflow credentials"
+grep -Fq 'kandelo-structural-abi-report' <<<"$protected_structure_step" ||
+  fail "candidate structural ABI job must emit the canonical bounded report"
+for exact_gate_contract in \
+  '--previous-abi' \
+  'structural-report validate' \
+  'request derive' \
+  'filter=all' \
+  '.details_url' \
+  '.app.slug == "github-actions"' \
+  '.path == ".github/workflows/abi-staging-pr-check.yml@main"' \
+  '/actions/runs/$run_id/artifacts' \
+  '.workflow_run.id == $run_id' \
+  '.workflow_run.head_sha == $protected' \
+  '[.[].artifacts[]][0]' \
+  'abi-staging-pr-check-$run_id-$PR_NUMBER-$PR_HEAD_SHA'
+do
+  grep -Fq -- "$exact_gate_contract" <<<"$protected_provenance_step" ||
+    fail "protected ABI gate lacks exact provenance contract: $exact_gate_contract"
+done
+for exact_projection_contract in \
+  'check-projection project' \
+  'cmp -s' \
+  'published_conclusion == "success"' \
+  'computed_conclusion == "success"'
+do
+  grep -Fq "$exact_projection_contract" <<<"$protected_final_step" ||
+    fail "protected ABI gate lacks projection contract: $exact_projection_contract"
+done
+if grep -Fq 'SYNTHETIC_MERGE_SHA' "$ABI_STAGING_MERGE_GATE" ||
+   grep -Fq 'needs.synthesize-merge.outputs.merge_sha' "$ABI_STAGING_MERGE_GATE"
+then
+  fail "synthetic merge identity must not satisfy protected ABI staging evidence"
+fi
+if grep -Eq '(bash|source|\.)[[:space:]]+[^[:space:]]*abi-staging-exact-head' \
+    <<<"$protected_provenance_step$protected_final_step"
+then
+  fail "protected gate must treat the exact head as inert input"
+fi
 
 # A published fixed PR tag cannot be repaired after repository release
 # immutability is enabled. Every full rerun therefore owns a new tag, while a

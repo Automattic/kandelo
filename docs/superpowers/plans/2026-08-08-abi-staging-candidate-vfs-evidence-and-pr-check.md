@@ -1543,33 +1543,60 @@ known sibling result, retries, timeouts, override links, and background status.
 
 ### Task 12: Bind protected merge preparation to current exact-head evidence
 
+> **Repository-evidence correction (2026-08-10):** the existing
+> `prepare-merge.yml` is a `pull_request` workflow, so GitHub loads its
+> definition from the pull request's merge ref. Its legacy jobs also execute
+> candidate/local actions while holding write-capable tokens. It therefore
+> cannot safely own the new protected ABI gate, and changing the whole workflow
+> to `pull_request_target` would expose those tokens to candidate code. Keep the
+> transitional workflow behavior unchanged. Put exact-head structural checking
+> and merge-evidence validation in a separate, default-branch
+> `pull_request_target` workflow with read-only permissions. Task 13's
+> branch-protected `Kandelo PR Check` remains the actual merge authority.
+
 **Files:**
 
-- Modify: `.github/workflows/prepare-merge.yml`
+- Create: `.github/workflows/abi-staging-merge-gate.yml`
+- Modify: `.github/workflows/abi-staging-pr-check.yml`
+- Modify: `.github/workflows/abi-staging-request-feed.yml`
+- Modify: `.github/scripts/update-abi-staging-check.sh`
+- Modify: `.github/scripts/test-update-abi-staging-check.sh`
 - Modify: `.github/scripts/test-merge-candidate-workflows.sh`
 - Modify: `.github/actions/detect-change-scope/ci-scope-paths.sh`
 - Modify: `.github/actions/detect-change-scope/test-ci-scope-paths.sh`
+- Modify: `abi/staging/request-policy.toml`
+- Modify: `abi/staging/request-policy.generated.json`
+- Modify: `tools/xtask/src/abi_staging/request_derivation.rs`
+- Modify: `scripts/check-abi-staging-pr-check-workflow.rb`
+- Modify: `scripts/check-abi-staging-request-workflow.rb`
+- Modify: `scripts/test-abi-staging-cross-repo-fixtures.sh`
+- Modify: `docs/superpowers/plans/2026-08-08-abi-staging-exact-head-request-feed-and-reconciliation.md`
+- Modify: `docs/superpowers/plans/2026-08-08-abi-staging-candidate-vfs-evidence-and-pr-check.md`
 
 **Interfaces:**
 
 - Consumes: Task 11 Check, exact-head structural ABI check, existing
   ready-to-ship gate, and change scope.
-- Produces: enforce-mode merge gating for applicable changes while retaining
-  unrelated legacy package staging behavior.
+- Produces: protected ready-to-ship evidence validation for applicable changes
+  plus exact-head Check provenance that Task 13 can enforce through branch
+  protection, while retaining unrelated legacy package staging behavior.
 
 - [ ] **Step 1: Add failing exact-head gate assertions**
 
-  Require a separate read-only `abi-staging-exact-head-structure` job for the
-  PR head and require the gate to validate `Kandelo PR Check` success on that
-  exact SHA/current context when activation is enforce. Assert legacy synthetic
-  merge outputs cannot satisfy either condition.
+  Require a separate protected workflow with a read-only
+  `abi-staging-exact-head-structure` job for the PR head. Require it to validate
+  `Kandelo PR Check` success on that exact SHA/current context when activation
+  is enforce. Assert legacy synthetic merge outputs cannot satisfy either
+  condition.
 
 - [ ] **Step 2: Add mutation tests**
 
   Reject using synthetic merge SHA, accepting a Check on base/old head,
-  trusting name without external/current identity, ignoring policy digest,
-  treating neutral observe Check as enforce success, bypassing on background
-  failure, or running candidate structural code in a write-capable gate job.
+  latest-only Check enumeration, trusting name without external/current
+  identity, accepting a copied Check without a protected workflow-run artifact,
+  ignoring policy digest, treating neutral observe Check as enforce success,
+  bypassing on background failure, or running candidate structural code in a
+  write-capable gate job.
 
 - [ ] **Step 3: Run prepare-merge tests and verify red**
 
@@ -1582,22 +1609,33 @@ known sibling result, retries, timeouts, override links, and background status.
 
 - [ ] **Step 4: Implement gated coexistence**
 
-  Add the no-write structural job and validate its bounded result in the
-  existing gate. In observe mode, report computed staging state without
-  blocking. In enforce mode, block applicable ABI/kernel/host changes unless
-  current exact-head structure and Check succeed. Preserve synthetic package
-  preparation for still-active non-Homebrew consumers and explain the two
-  source identities beside the workflow.
+  Add a protected three-job workflow: capture the live protected base and exact
+  same-repository head; run candidate structural code only in an uncredentialed
+  read-only job; then rederive the request with protected code and reproject the
+  exact artifact from the protected Check publisher run. Enumerate all Check
+  runs, reject duplicates, and bind the Check's details URL, workflow path,
+  protected head, artifact ID/digest, projection bytes, and current PR head. In
+  observe mode, report computed staging state without blocking. In enforce
+  mode, fail applicable changes unless current structure and protected Check
+  provenance succeed. Preserve synthetic package preparation for still-active
+  non-Homebrew consumers; it is transitional behavior, not gate authority.
 
 - [ ] **Step 5: Run prepare-merge, ABI, and actionlint checks**
 
   ```bash
   scripts/dev-shell.sh bash .github/scripts/test-merge-candidate-workflows.sh
+  scripts/dev-shell.sh bash .github/scripts/test-update-abi-staging-check.sh
   scripts/dev-shell.sh bash scripts/check-abi-version.sh
   scripts/dev-shell.sh ruby scripts/check-abi-staging-pr-check-workflow.rb
+  scripts/dev-shell.sh ruby scripts/check-abi-staging-request-workflow.rb
+  scripts/dev-shell.sh bash scripts/test-abi-staging-request-feed.sh
+  scripts/dev-shell.sh env KANDELO_TAP_ROOT="$KANDELO_TAP_ROOT" \
+    bash scripts/test-abi-staging-cross-repo-fixtures.sh
   scripts/dev-shell.sh actionlint \
+    .github/workflows/abi-staging-merge-gate.yml \
     .github/workflows/prepare-merge.yml \
-    .github/workflows/abi-staging-pr-check.yml
+    .github/workflows/abi-staging-pr-check.yml \
+    .github/workflows/abi-staging-request-feed.yml
   ```
 
   Expected: PASS while activation remains observe.
@@ -1605,10 +1643,22 @@ known sibling result, retries, timeouts, override links, and background status.
 - [ ] **Step 6: Commit**
 
   ```bash
-  git add .github/workflows/prepare-merge.yml \
+  git add .github/workflows/abi-staging-merge-gate.yml \
+    .github/workflows/abi-staging-pr-check.yml \
+    .github/workflows/abi-staging-request-feed.yml \
+    .github/scripts/update-abi-staging-check.sh \
+    .github/scripts/test-update-abi-staging-check.sh \
     .github/scripts/test-merge-candidate-workflows.sh \
     .github/actions/detect-change-scope/ci-scope-paths.sh \
-    .github/actions/detect-change-scope/test-ci-scope-paths.sh
+    .github/actions/detect-change-scope/test-ci-scope-paths.sh \
+    abi/staging/request-policy.toml \
+    abi/staging/request-policy.generated.json \
+    tools/xtask/src/abi_staging/request_derivation.rs \
+    scripts/check-abi-staging-pr-check-workflow.rb \
+    scripts/check-abi-staging-request-workflow.rb \
+    scripts/test-abi-staging-cross-repo-fixtures.sh \
+    docs/superpowers/plans/2026-08-08-abi-staging-exact-head-request-feed-and-reconciliation.md \
+    docs/superpowers/plans/2026-08-08-abi-staging-candidate-vfs-evidence-and-pr-check.md
   git commit -m "[ABI] Prepare merge gating on exact product evidence"
   ```
 
@@ -1777,6 +1827,7 @@ known sibling result, retries, timeouts, override links, and background status.
   scripts/dev-shell.sh env KANDELO_TAP_ROOT="$KANDELO_TAP_ROOT" \
     ruby "$KANDELO_TAP_ROOT/scripts/test_check_abi_staging_workflows.rb"
   scripts/dev-shell.sh actionlint \
+    .github/workflows/abi-staging-merge-gate.yml \
     .github/workflows/abi-staging-pr-check.yml \
     .github/workflows/prepare-merge.yml
   ```

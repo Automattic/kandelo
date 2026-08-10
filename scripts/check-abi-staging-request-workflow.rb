@@ -132,6 +132,10 @@ def check_workflow(workflow)
         classify_source.include?("head.repo.full_name") &&
         classify_source.include?("same-repository-only") &&
         classify_source.include?("env -u GH_TOKEN -u GITHUB_TOKEN") &&
+        classify_source.include?("env -i") &&
+        classify_source.include?('HOME="$candidate_home"') &&
+        classify_source.include?('env ABI_CHECK_BASE_REF="$PROTECTED_SHA"') &&
+        classify_source.include?("head -c 1048576") &&
         classify_source.include?("scripts/check-abi-version.sh") &&
         classify_source.include?("structural-report.json") &&
         classify_source.include?("HEAD^{tree}"),
@@ -144,6 +148,8 @@ def check_workflow(workflow)
   derive_source = run_source(derive)
   check(derive_source.include?("request-policy check") &&
         derive_source.include?("structural-report validate") &&
+        derive_source.include?("previous_abi=$(sed -nE") &&
+        derive_source.include?("--previous-abi \"$previous_abi\"") &&
         derive_source.include?("git -C \"$exact_head_data\" diff --name-only -z") &&
         derive_source.include?("request classify") &&
         derive_source.include?("--changed-paths") &&

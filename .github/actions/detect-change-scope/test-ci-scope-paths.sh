@@ -483,6 +483,29 @@ for abi_staging_request_control_path in "${abi_staging_request_control_paths[@]}
     "$abi_staging_request_control_path"
 done
 
+# Exact-head Check publication and merge enforcement are protected CI control
+# surfaces. They must rerun publication/control validation without pretending
+# that their source files are portable package archives.
+abi_staging_check_control_paths=(
+  .github/workflows/abi-staging-merge-gate.yml
+  .github/workflows/abi-staging-pr-check.yml
+  .github/scripts/update-abi-staging-check.sh
+  .github/scripts/test-update-abi-staging-check.sh
+  abi/staging/required-check-activation.toml
+  scripts/check-abi-staging-pr-check-workflow.rb
+)
+for abi_staging_check_control_path in "${abi_staging_check_control_paths[@]}"; do
+  assert_matches package_publish_flow_changed_files \
+    "$abi_staging_check_control_path" \
+    "$abi_staging_check_control_path"
+  assert_matches ci_control_changed_files \
+    "$abi_staging_check_control_path" \
+    "$abi_staging_check_control_path"
+  assert_not_matches package_archive_changed_files \
+    "$abi_staging_check_control_path" \
+    "$abi_staging_check_control_path"
+done
+
 assert_matches kernel_runtime_changed_files \
   "host/src/process.ts" \
   "host/src/process.ts"

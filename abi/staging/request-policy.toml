@@ -1,6 +1,6 @@
 schema = 1
 kind = "kandelo-abi-staging-request-policy"
-version = 6
+version = 7
 issuer_repository = "Automattic/kandelo"
 issuer_workflow = ".github/workflows/abi-staging-request-feed.yml"
 automatic_same_repository = true
@@ -16,6 +16,7 @@ addressed_taps = ["kandelo-dev/homebrew-tap-core"]
 # observe-only until protected hosted canaries have supplied activation evidence.
 implementation_paths = [
   ".github/scripts/update-abi-staging-check.sh",
+  ".github/workflows/abi-staging-merge-gate.yml",
   ".github/workflows/abi-staging-pr-check.yml",
   ".github/workflows/abi-staging-request-feed.yml",
   "Cargo.lock",

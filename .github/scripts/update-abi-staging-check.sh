@@ -6,7 +6,8 @@ usage() {
 usage: update-abi-staging-check.sh \
   --repository OWNER/REPOSITORY \
   --pull-request NUMBER \
-  --projection CANONICAL_PROJECTION_JSON
+  --projection CANONICAL_PROJECTION_JSON \
+  --details-url PROTECTED_ACTIONS_RUN_URL
 USAGE
   exit 2
 }
@@ -14,11 +15,13 @@ USAGE
 REPOSITORY=
 PULL_REQUEST=
 PROJECTION=
+DETAILS_URL=
 while (($#)); do
   case "$1" in
     --repository) REPOSITORY=${2:-}; shift 2 ;;
     --pull-request) PULL_REQUEST=${2:-}; shift 2 ;;
     --projection) PROJECTION=${2:-}; shift 2 ;;
+    --details-url) DETAILS_URL=${2:-}; shift 2 ;;
     *) usage ;;
   esac
 done
@@ -26,6 +29,10 @@ done
 [[ $REPOSITORY =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || usage
 [[ $PULL_REQUEST =~ ^[1-9][0-9]*$ ]] || usage
 [[ -n $PROJECTION && -f $PROJECTION && ! -L $PROJECTION ]] || usage
+DETAILS_PREFIX="https://github.com/${REPOSITORY}/actions/runs/"
+[[ $DETAILS_URL == "$DETAILS_PREFIX"* ]] || usage
+DETAILS_RUN_ID=${DETAILS_URL#"$DETAILS_PREFIX"}
+[[ $DETAILS_RUN_ID =~ ^[1-9][0-9]*$ && $DETAILS_URL == "$DETAILS_PREFIX$DETAILS_RUN_ID" ]] || usage
 [[ -n ${GH_TOKEN:-} ]] || {
   echo "update-abi-staging-check: GH_TOKEN is required" >&2
   exit 2
@@ -107,7 +114,7 @@ DETAILS=$(<"$TMP_ROOT/details.md")
 CHECK_PAGES="$TMP_ROOT/check-runs.json"
 gh api --paginate --slurp \
   -H 'Accept: application/vnd.github+json' \
-  "/repos/${REPOSITORY}/commits/${HEAD_SHA}/check-runs?check_name=Kandelo%20PR%20Check&per_page=100" \
+  "/repos/${REPOSITORY}/commits/${HEAD_SHA}/check-runs?check_name=Kandelo%20PR%20Check&per_page=100&filter=all" \
   >"$CHECK_PAGES"
 jq -e '
   type == "array" and length <= 64 and all(.[];
@@ -176,6 +183,7 @@ jq -e \
 }
 
 WRITE_ARGS=(
+  -f "details_url=$DETAILS_URL"
   -f "external_id=$EXTERNAL_ID"
   -f "status=$STATUS"
   -f 'output[title]=Kandelo PR Check'

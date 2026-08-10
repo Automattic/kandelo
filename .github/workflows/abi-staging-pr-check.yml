@@ -2,7 +2,7 @@ name: Kandelo ABI staging PR Check
 
 on:
   pull_request_target:
-    types: [opened, synchronize, reopened]
+    types: [opened, synchronize, reopened, labeled]
   schedule:
     - cron: "*/5 * * * *"
   workflow_dispatch:
@@ -342,8 +342,9 @@ jobs:
               (.digest | type == "string" and test("^sha256:[0-9a-f]{64}$"))
             )
           ' "$pages" >/dev/null
-          artifact_id=$(jq -r '.[0].artifacts[0].id' "$pages")
-          artifact_digest=$(jq -r '.[0].artifacts[0].digest' "$pages")
+          artifact_row=$(jq -c '[.[].artifacts[]][0]' "$pages")
+          artifact_id=$(jq -r '.id' <<<"$artifact_row")
+          artifact_digest=$(jq -r '.digest' <<<"$artifact_row")
           printf 'artifact-id=%s\n' "$artifact_id" >>"$GITHUB_OUTPUT"
           printf 'artifact-digest=%s\n' "$artifact_digest" >>"$GITHUB_OUTPUT"
 
@@ -389,4 +390,6 @@ jobs:
           bash authority/.github/scripts/update-abi-staging-check.sh \
             --repository "$GITHUB_REPOSITORY" \
             --pull-request "$EXPECTED_PR" \
-            --projection "$RUNNER_TEMP/reprojected.json"
+            --projection "$RUNNER_TEMP/reprojected.json" \
+            --details-url \
+              "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

@@ -3,21 +3,21 @@ use crate::abi_staging::canonical_json::{
     canonical_json_bytes, canonical_sha256, validate_git_sha, validate_sha256,
 };
 use crate::abi_staging::consumer_registry::{
-    parse_pages_registry, parse_test_registry, ChangeClass,
+    ChangeClass, parse_pages_registry, parse_test_registry,
 };
 use crate::abi_staging::guard_registry::GuardCodeV1;
 use crate::abi_staging::product_manifest::{
     atomic_write_regular, load_product_catalog, read_bounded_regular_file,
 };
 use crate::abi_staging::records::{
-    request_requirements_digest, validate_request, AbiStagingRequestV1, ExactGitSourceV1,
-    PullRequestRequestIdentityV1, RequestAuthorizationV1, RequestEvidenceBindingV1,
-    RequestInformationalContextV1, RequestIssuanceV1, RequestProductBindingV1,
-    RequestRegistryBindingV1, RequestRegistryKindV1, RequestRequirementsV1,
+    AbiStagingRequestV1, ExactGitSourceV1, PullRequestRequestIdentityV1, RequestAuthorizationV1,
+    RequestEvidenceBindingV1, RequestInformationalContextV1, RequestIssuanceV1,
+    RequestProductBindingV1, RequestRegistryBindingV1, RequestRegistryKindV1,
+    RequestRequirementsV1, request_requirements_digest, validate_request,
 };
-use crate::abi_staging::request_policy::{parse_request_policy, RequestPolicyV1};
+use crate::abi_staging::request_policy::{RequestPolicyV1, parse_request_policy};
 use crate::abi_staging::selection::{
-    derive_formula_requirements, select_vfs_products_for_change_classes, FormulaRequirementV1,
+    FormulaRequirementV1, derive_formula_requirements, select_vfs_products_for_change_classes,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -36,6 +36,7 @@ const PAGES_REGISTRY: &str = "apps/browser-demos/pages/kandelo/kernel-host/pages
 const TEST_REGISTRY: &str = "tests/vfs-products.toml";
 const SNAPSHOT_PATH: &str = "abi/snapshot.json";
 const SHARED_ABI_PATH: &str = "crates/shared/src/lib.rs";
+const ABI_CHECK_COMMAND_PATH: &str = "scripts/check-abi-version.sh";
 const MAX_DOCUMENT_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -113,9 +114,10 @@ pub fn parse_structural_abi_report(
     Ok(report)
 }
 
-pub fn validate_structural_abi_report(
+pub fn validate_structural_abi_report_against_previous_abi(
     exact_head_root: &Path,
     pull_request: &PullRequestIdentityV1,
+    protected_previous_abi: u64,
     report: &StructuralAbiReportV1,
 ) -> Result<(), String> {
     validate_pull_request_identity(pull_request)?;
@@ -127,6 +129,24 @@ pub fn validate_structural_abi_report(
         return Err("structural ABI report source does not match the exact PR head".to_string());
     }
     validate_exact_checkout(exact_head_root, pull_request)?;
+
+    if protected_previous_abi == 0 {
+        return Err("protected previous ABI must be positive".to_string());
+    }
+    if report.observed_previous_abi != Some(protected_previous_abi) {
+        return Err(format!(
+            "structural ABI report does not match protected previous ABI {protected_previous_abi}"
+        ));
+    }
+
+    let check_path = exact_head_root.join(ABI_CHECK_COMMAND_PATH);
+    let check_command = read_bounded_regular_file(&check_path, MAX_DOCUMENT_BYTES)?;
+    let check_command_sha256 = format!("{:x}", Sha256::digest(&check_command));
+    if report.check_command_sha256 != check_command_sha256 {
+        return Err(
+            "structural ABI report checker identity does not match exact-head bytes".to_string(),
+        );
+    }
 
     let snapshot_path = exact_head_root.join(SNAPSHOT_PATH);
     let snapshot = read_bounded_regular_file(&snapshot_path, MAX_DOCUMENT_BYTES)?;
@@ -146,10 +166,7 @@ pub fn validate_structural_abi_report(
 
     match report.outcome {
         StructuralAbiOutcomeV1::Compatible => {
-            if report
-                .observed_previous_abi
-                .is_some_and(|previous| previous != report.target_abi)
-            {
+            if protected_previous_abi != report.target_abi {
                 return Err(
                     "compatible structural report cannot change the observed ABI version"
                         .to_string(),
@@ -157,10 +174,7 @@ pub fn validate_structural_abi_report(
             }
         }
         StructuralAbiOutcomeV1::BumpedWithSnapshot => {
-            let previous = report.observed_previous_abi.ok_or_else(|| {
-                "successor structural report must name the observed previous ABI".to_string()
-            })?;
-            if previous.checked_add(1) != Some(report.target_abi) {
+            if protected_previous_abi.checked_add(1) != Some(report.target_abi) {
                 return Err(
                     "successor structural report must model generic ABI N to N+1".to_string(),
                 );
@@ -182,6 +196,7 @@ pub fn derive_abi_staging_request(
     exact_head_root: &Path,
     pull_request: &PullRequestIdentityV1,
     protected: &ProtectedRequestContextV1,
+    protected_previous_abi: u64,
     structural: &StructuralAbiReportV1,
     change_classes: &[ChangeClass],
 ) -> Result<AbiStagingRequestV1, String> {
@@ -196,7 +211,12 @@ pub fn derive_abi_staging_request(
         return Err("automatic request derivation is disabled for fork heads".to_string());
     }
     validate_sorted_change_classes(change_classes)?;
-    validate_structural_abi_report(exact_head_root, pull_request, structural)?;
+    validate_structural_abi_report_against_previous_abi(
+        exact_head_root,
+        pull_request,
+        protected_previous_abi,
+        structural,
+    )?;
 
     let (requirements, _) = derive_request_requirements(exact_head_root, change_classes)?;
 
@@ -321,7 +341,9 @@ pub fn classify_changed_paths(bytes: &[u8]) -> Result<Vec<ChangeClass>, String> 
                 .any(|component| component.is_empty() || component == "." || component == "..")
             || path.chars().any(char::is_control)
         {
-            return Err(format!("changed path {path:?} is not a canonical repository path"));
+            return Err(format!(
+                "changed path {path:?} is not a canonical repository path"
+            ));
         }
         if !paths.insert(path) {
             return Err(format!("changed path inventory repeats {path:?}"));
@@ -351,11 +373,25 @@ pub fn run_structural_report_cli(action: &str, args: &[String]) -> Result<(), St
     if action != "validate" {
         return Err(format!("unknown structural-report subcommand {action:?}"));
     }
-    let flags = parse_path_flags(args, &["--exact-head-root", "--pull-request", "--report"])?;
+    let flags = parse_path_flags(
+        args,
+        &[
+            "--exact-head-root",
+            "--previous-abi",
+            "--pull-request",
+            "--report",
+        ],
+    )?;
     let pull_request: PullRequestIdentityV1 = read_canonical_json(&flags["--pull-request"])?;
     let report_bytes = read_bounded_regular_file(&flags["--report"], MAX_DOCUMENT_BYTES)?;
     let report = parse_structural_abi_report(&flags["--report"], &report_bytes)?;
-    validate_structural_abi_report(&flags["--exact-head-root"], &pull_request, &report)
+    let previous_abi = parse_positive_u64_flag(&flags["--previous-abi"], "--previous-abi")?;
+    validate_structural_abi_report_against_previous_abi(
+        &flags["--exact-head-root"],
+        &pull_request,
+        previous_abi,
+        &report,
+    )
 }
 
 pub fn run_request_cli(action: &str, args: &[String]) -> Result<(), String> {
@@ -372,6 +408,7 @@ pub fn run_request_cli(action: &str, args: &[String]) -> Result<(), String> {
                 args,
                 &[
                     "--exact-head-root",
+                    "--previous-abi",
                     "--pull-request",
                     "--protected-context",
                     "--structural-report",
@@ -385,10 +422,12 @@ pub fn run_request_cli(action: &str, args: &[String]) -> Result<(), String> {
                 read_bounded_regular_file(&flags["--structural-report"], MAX_DOCUMENT_BYTES)?;
             let report = parse_structural_abi_report(&flags["--structural-report"], &report_bytes)?;
             let change_classes = parse_change_classes(&flags["--change-classes"])?;
+            let previous_abi = parse_positive_u64_flag(&flags["--previous-abi"], "--previous-abi")?;
             let request = derive_abi_staging_request(
                 &flags["--exact-head-root"],
                 &pull_request,
                 &protected,
+                previous_abi,
                 &report,
                 &change_classes,
             )?;
@@ -411,10 +450,7 @@ pub fn run_request_cli(action: &str, args: &[String]) -> Result<(), String> {
                 &flags["--requirements-out"],
                 &canonical_json_bytes(&requirements)?,
             )?;
-            atomic_write_regular(
-                &flags["--formulae-out"],
-                &canonical_json_bytes(&formulae)?,
-            )
+            atomic_write_regular(&flags["--formulae-out"], &canonical_json_bytes(&formulae)?)
         }
         "fixture-check" => {
             let flags = parse_path_flags(args, &["--fixture"])?;
@@ -660,6 +696,19 @@ fn parse_path_flags(
     Ok(flags)
 }
 
+fn parse_positive_u64_flag(path: &Path, flag: &str) -> Result<u64, String> {
+    let value = path
+        .to_str()
+        .ok_or_else(|| format!("{flag} is not valid UTF-8"))?;
+    let parsed = value
+        .parse::<u64>()
+        .map_err(|_| format!("{flag} must be a positive integer"))?;
+    if parsed == 0 {
+        return Err(format!("{flag} must be a positive integer"));
+    }
+    Ok(parsed)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -699,6 +748,7 @@ mod tests {
             "images/vfs/products",
             "images/vfs/scripts",
             "apps/browser-demos/pages/kandelo/kernel-host",
+            "scripts",
             "tests",
         ] {
             fs::create_dir_all(root.path().join(directory)).unwrap();
@@ -795,6 +845,12 @@ host = "not-applicable"
             b"pub const ABI_VERSION: u32 = 8;\n",
         )
         .unwrap();
+        let check_command = b"#!/usr/bin/env bash\nset -euo pipefail\n";
+        fs::write(
+            root.path().join("scripts/check-abi-version.sh"),
+            check_command,
+        )
+        .unwrap();
 
         git(root.path(), &["init", "-q"]);
         git(root.path(), &["config", "user.name", "Fixture"]);
@@ -807,6 +863,7 @@ host = "not-applicable"
         let head = git(root.path(), &["rev-parse", "HEAD"]);
         let tree = git(root.path(), &["rev-parse", "HEAD^{tree}"]);
         let snapshot_sha256 = format!("{:x}", Sha256::digest(snapshot));
+        let check_command_sha256 = format!("{:x}", Sha256::digest(check_command));
 
         let policy = RequestPolicyV1 {
             schema: 1,
@@ -858,7 +915,7 @@ host = "not-applicable"
             target_abi: 8,
             snapshot_sha256: snapshot_sha256.clone(),
             snapshot_file_sha256: snapshot_sha256,
-            check_command_sha256: "1".repeat(64),
+            check_command_sha256,
             outcome: StructuralAbiOutcomeV1::BumpedWithSnapshot,
         };
         Fixture {
@@ -876,6 +933,7 @@ host = "not-applicable"
             fixture.root.path(),
             &fixture.pull_request,
             &fixture.protected,
+            7,
             &fixture.structural,
             &[ChangeClass::Abi],
         )
@@ -885,9 +943,11 @@ host = "not-applicable"
         assert_eq!(request.requirements.products.len(), 1);
         assert_eq!(request.requirements.products[0].id, "selected");
         assert_eq!(request.requirements.evidence[0].node, ["selected-node"]);
-        assert!(!String::from_utf8(canonical_json_bytes(&request).unwrap())
-            .unwrap()
-            .contains("unrelated-root"));
+        assert!(
+            !String::from_utf8(canonical_json_bytes(&request).unwrap())
+                .unwrap()
+                .contains("unrelated-root")
+        );
     }
 
     #[test]
@@ -897,6 +957,7 @@ host = "not-applicable"
             fixture.root.path(),
             &fixture.pull_request,
             &fixture.protected,
+            7,
             &fixture.structural,
             &[ChangeClass::Abi],
         )
@@ -909,6 +970,7 @@ host = "not-applicable"
             fixture.root.path(),
             &changed,
             &fixture.protected,
+            7,
             &fixture.structural,
             &[ChangeClass::Abi],
         )
@@ -922,35 +984,82 @@ host = "not-applicable"
         let fixture = fixture();
         let mut report = fixture.structural.clone();
         report.source.commit = "4".repeat(40);
-        assert!(derive_abi_staging_request(
-            fixture.root.path(),
-            &fixture.pull_request,
-            &fixture.protected,
-            &report,
-            &[ChangeClass::Abi],
-        )
-        .unwrap_err()
-        .contains("source"));
+        assert!(
+            derive_abi_staging_request(
+                fixture.root.path(),
+                &fixture.pull_request,
+                &fixture.protected,
+                7,
+                &report,
+                &[ChangeClass::Abi],
+            )
+            .unwrap_err()
+            .contains("source")
+        );
 
         let mut report = fixture.structural.clone();
         report.target_abi += 1;
-        assert!(validate_structural_abi_report(
-            fixture.root.path(),
-            &fixture.pull_request,
-            &report,
-        )
-        .unwrap_err()
-        .contains("ABI_VERSION"));
+        assert!(
+            validate_structural_abi_report_against_previous_abi(
+                fixture.root.path(),
+                &fixture.pull_request,
+                7,
+                &report,
+            )
+            .unwrap_err()
+            .contains("ABI_VERSION")
+        );
 
         let mut report = fixture.structural.clone();
         report.snapshot_file_sha256 = "5".repeat(64);
-        assert!(validate_structural_abi_report(
+        assert!(
+            validate_structural_abi_report_against_previous_abi(
+                fixture.root.path(),
+                &fixture.pull_request,
+                7,
+                &report,
+            )
+            .unwrap_err()
+            .contains("snapshot")
+        );
+    }
+
+    #[test]
+    fn protected_previous_abi_and_exact_checker_bytes_are_authoritative() {
+        let fixture = fixture();
+        validate_structural_abi_report_against_previous_abi(
             fixture.root.path(),
             &fixture.pull_request,
-            &report,
+            7,
+            &fixture.structural,
         )
-        .unwrap_err()
-        .contains("snapshot"));
+        .unwrap();
+
+        let mut wrong_previous = fixture.structural.clone();
+        wrong_previous.observed_previous_abi = Some(6);
+        assert!(
+            validate_structural_abi_report_against_previous_abi(
+                fixture.root.path(),
+                &fixture.pull_request,
+                7,
+                &wrong_previous,
+            )
+            .unwrap_err()
+            .contains("protected previous ABI")
+        );
+
+        let mut wrong_checker = fixture.structural.clone();
+        wrong_checker.check_command_sha256 = "9".repeat(64);
+        assert!(
+            validate_structural_abi_report_against_previous_abi(
+                fixture.root.path(),
+                &fixture.pull_request,
+                7,
+                &wrong_checker,
+            )
+            .unwrap_err()
+            .contains("checker identity")
+        );
     }
 
     #[test]
@@ -958,21 +1067,27 @@ host = "not-applicable"
         let fixture = fixture();
         let mut report = fixture.structural.clone();
         report.outcome = StructuralAbiOutcomeV1::ChangedWithoutBump;
-        assert!(validate_structural_abi_report(
-            fixture.root.path(),
-            &fixture.pull_request,
-            &report,
-        )
-        .unwrap_err()
-        .contains("abi_structure_changed_without_bump"));
+        assert!(
+            validate_structural_abi_report_against_previous_abi(
+                fixture.root.path(),
+                &fixture.pull_request,
+                7,
+                &report,
+            )
+            .unwrap_err()
+            .contains("abi_structure_changed_without_bump")
+        );
 
         report.outcome = StructuralAbiOutcomeV1::Invalid;
-        assert!(validate_structural_abi_report(
-            fixture.root.path(),
-            &fixture.pull_request,
-            &report,
-        )
-        .is_err());
+        assert!(
+            validate_structural_abi_report_against_previous_abi(
+                fixture.root.path(),
+                &fixture.pull_request,
+                7,
+                &report,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -985,18 +1100,22 @@ host = "not-applicable"
         );
         let mut value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         value["alternate_source"] = serde_json::json!({"commit": "untrusted"});
-        assert!(parse_structural_abi_report(
-            Path::new("report.json"),
-            &serde_json::to_vec(&value).unwrap(),
-        )
-        .is_err());
+        assert!(
+            parse_structural_abi_report(
+                Path::new("report.json"),
+                &serde_json::to_vec(&value).unwrap(),
+            )
+            .is_err()
+        );
         let mut uppercase = fixture.structural.clone();
         uppercase.source.commit = uppercase.source.commit.to_uppercase();
-        assert!(parse_structural_abi_report(
-            Path::new("report.json"),
-            &canonical_json_bytes(&uppercase).unwrap(),
-        )
-        .is_err());
+        assert!(
+            parse_structural_abi_report(
+                Path::new("report.json"),
+                &canonical_json_bytes(&uppercase).unwrap(),
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1004,22 +1123,28 @@ host = "not-applicable"
         let fixture = fixture();
         let mut fork = fixture.pull_request.clone();
         fork.exact_head_repository = "someone/kandelo".to_string();
-        assert!(derive_abi_staging_request(
-            fixture.root.path(),
-            &fork,
-            &fixture.protected,
-            &fixture.structural,
-            &[ChangeClass::Abi],
-        )
-        .is_err());
-        assert!(derive_abi_staging_request(
-            fixture.root.path(),
-            &fixture.pull_request,
-            &fixture.protected,
-            &fixture.structural,
-            &[ChangeClass::Kernel, ChangeClass::Abi],
-        )
-        .is_err());
+        assert!(
+            derive_abi_staging_request(
+                fixture.root.path(),
+                &fork,
+                &fixture.protected,
+                7,
+                &fixture.structural,
+                &[ChangeClass::Abi],
+            )
+            .is_err()
+        );
+        assert!(
+            derive_abi_staging_request(
+                fixture.root.path(),
+                &fixture.pull_request,
+                &fixture.protected,
+                7,
+                &fixture.structural,
+                &[ChangeClass::Kernel, ChangeClass::Abi],
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1029,6 +1154,7 @@ host = "not-applicable"
             fixture.root.path(),
             &fixture.pull_request,
             &fixture.protected,
+            7,
             &fixture.structural,
             &[ChangeClass::Abi],
         )

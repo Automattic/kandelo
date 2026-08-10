@@ -114,6 +114,7 @@ PY
 
   "$XTASK" abi-staging request derive \
     --exact-head-root "$REPO_ROOT" \
+    --previous-abi "$target_abi" \
     --pull-request "$destination/pull-request.json" \
     --protected-context "$destination/protected-context.json" \
     --structural-report "$destination/structural-report.json" \
@@ -242,7 +243,12 @@ def client_for(order: list[pathlib.Path]) -> GitHubPublicClient:
     assets = []
     for asset_id, path in enumerate(order, start=100):
         public_url = f"https://github.com/Automattic/kandelo/releases/download/{tag}/{path.name}"
-        assets.append({"browser_download_url": public_url, "id": asset_id, "name": path.name})
+        assets.append({
+            "browser_download_url": public_url,
+            "created_at": "2026-08-09T10:00:00Z",
+            "id": asset_id,
+            "name": path.name,
+        })
         body = path.read_bytes()
         final_url = f"https://release-assets.githubusercontent.com/fixture/{asset_id}"
         routes[public_url].append(Response(302, headers={"Location": final_url}))
@@ -308,13 +314,13 @@ cases = {
 assert cases == {
     "initial-head": "observe-open",
     "same-head-policy-reissue": "observe-open",
-    "pr-advance": "await-new-request",
-    "old-head-completion": "await-new-request",
+    "pr-advance": "observe-historical",
+    "old-head-completion": "observe-historical",
     "close": "stop-new-work",
     "reopen-same": "resume-same-head",
-    "reopen-different": "await-new-request",
+    "reopen-different": "observe-historical",
     "merge": "observe-merged",
-}
+}, cases
 
 # Authority-negative cases use exact public and typed validators; none may
 # become a production fallback or a candidate-supplied coordinator path.

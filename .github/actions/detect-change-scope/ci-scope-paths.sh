@@ -82,14 +82,15 @@ package_publish_flow_changed_files() {
   grep -E \
     -e '^\.github/scripts/verify-package-generation-ancestry\.sh$' \
     -e '^\.github/actions/detect-change-scope/(ci-scope-paths|test-ci-scope-paths)\.sh$' \
-    -e '^\.github/workflows/(abi-staging-request-feed|staging-build|prepare-merge|activate-merge-candidate|recover-rejected-merge-candidate|staging-cleanup|force-rebuild|reusable-package-source-publish|promote-package-generation|preserve-pr-package-generation)\.yml$' \
+    -e '^\.github/workflows/(abi-staging-merge-gate|abi-staging-pr-check|abi-staging-request-feed|staging-build|prepare-merge|activate-merge-candidate|recover-rejected-merge-candidate|staging-cleanup|force-rebuild|reusable-package-source-publish|promote-package-generation|preserve-pr-package-generation)\.yml$' \
     -e '^\.github/actions/exact-main-package-rebuild/' \
-    -e '^\.github/scripts/(publish-abi-staging-request|test-publish-abi-staging-request)\.sh$' \
+    -e '^\.github/scripts/(publish-abi-staging-request|test-publish-abi-staging-request|test-update-abi-staging-check|update-abi-staging-check)\.sh$' \
     -e '^\.github/scripts/(activate-merge-candidate|classify-pr-staging|cleanup-merge-candidates|clone-rejected-merge-candidate|compose-staging-release-snapshots|delete-writable-release|download-verified-release-asset|fetch-canonical-index|find-release-by-tag|github-api-get|init-merge-candidate|latest-merge-gate-status|mark-merge-candidate-ready|materialize-durable-package-generation|materialize-exact-package-generations|package-release-lifecycle|prepare-current-authority-validator|prepare-durable-package-generation|prepare-preserved-pr-package-generation|publish-durable-package-generation|reconcile-merge-candidates|recover-canonical-indexes|require-exact-head-approval|require-exact-kandelo-main|select-package-archive-source|split-staging-package-ledger|state-lock|test-activate-merge-candidate|test-classify-pr-staging|test-cleanup-merge-candidates|test-clone-rejected-merge-candidate|test-delete-writable-release|test-download-verified-release-asset|test-exact-main-package-publication|test-fetch-canonical-index|test-find-release-by-tag|test-init-merge-candidate|test-latest-merge-gate-status|test-materialize-exact-package-generations|test-merge-candidate-workflows|test-package-generation|test-package-release-lifecycle|test-prepare-current-authority-validator|test-publish-durable-package-generation|test-reconcile-merge-candidates|test-recover-canonical-indexes|test-require-exact-head-approval|test-require-exact-kandelo-main|test-select-package-archive-source|test-split-staging-package-ledger|test-state-lock|test-validate-staging-release|test-verify-merge-candidate|validate-staging-release|verify-merge-candidate|verify-preserved-package-source)\.sh$' \
     -e '^\.github/scripts/package-generation\.py$' \
     -e '^tools/xtask/src/(build_deps|build_index|bundle_program|index_candidate|index_toml|index_update|package_archive_name|package_matrix|pkg_manifest|publication_policy|staging_reuse|update_pkg_manifest)\.rs$' \
     -e '^scripts/(compose-initial-index|homebrew-rootfs-publication-selection|index-has-current-entry|index-update|prepare-sdk-package|publish-package-source|release-index-state|sync-package-source|test-homebrew-rootfs-publication-selection)\.sh$' \
-    -e '^scripts/(check-abi-staging-request-workflow\.rb|test-abi-staging-request-feed\.sh)$' \
+    -e '^scripts/(check-abi-staging-pr-check-workflow\.rb|check-abi-staging-request-workflow\.rb|test-abi-staging-request-feed\.sh)$' \
+    -e '^abi/staging/required-check-activation\.toml$' \
     -e '^tests/scripts/(index-update|package-publish-flow|release-index-state)\.sh$' \
     || true
 }
@@ -125,14 +126,15 @@ kernel_runtime_changed_files() {
 ci_control_changed_files() {
   grep -E \
     -e '^\.github/scripts/verify-package-generation-ancestry\.sh$' \
-    -e '^\.github/workflows/(abi-staging-request-feed|staging-build|prepare-merge|activate-merge-candidate|recover-rejected-merge-candidate|staging-cleanup|force-rebuild|reusable-package-source-publish|promote-package-generation|preserve-pr-package-generation)\.yml$' \
+    -e '^\.github/workflows/(abi-staging-merge-gate|abi-staging-pr-check|abi-staging-request-feed|staging-build|prepare-merge|activate-merge-candidate|recover-rejected-merge-candidate|staging-cleanup|force-rebuild|reusable-package-source-publish|promote-package-generation|preserve-pr-package-generation)\.yml$' \
     -e '^\.github/actions/exact-main-package-rebuild/' \
-    -e '^\.github/scripts/(publish-abi-staging-request|test-publish-abi-staging-request)\.sh$' \
+    -e '^\.github/scripts/(publish-abi-staging-request|test-publish-abi-staging-request|test-update-abi-staging-check|update-abi-staging-check)\.sh$' \
     -e '^\.github/scripts/(activate-merge-candidate|classify-pr-staging|cleanup-merge-candidates|clone-rejected-merge-candidate|compose-staging-release-snapshots|delete-writable-release|download-verified-release-asset|fetch-canonical-index|find-release-by-tag|github-api-get|init-merge-candidate|latest-merge-gate-status|mark-merge-candidate-ready|materialize-durable-package-generation|materialize-exact-package-generations|package-release-lifecycle|prepare-current-authority-validator|prepare-durable-package-generation|prepare-preserved-pr-package-generation|publish-durable-package-generation|reconcile-merge-candidates|recover-canonical-indexes|require-exact-head-approval|require-exact-kandelo-main|select-package-archive-source|split-staging-package-ledger|state-lock|test-activate-merge-candidate|test-classify-pr-staging|test-cleanup-merge-candidates|test-clone-rejected-merge-candidate|test-delete-writable-release|test-download-verified-release-asset|test-exact-main-package-publication|test-fetch-canonical-index|test-find-release-by-tag|test-init-merge-candidate|test-latest-merge-gate-status|test-materialize-exact-package-generations|test-merge-candidate-workflows|test-package-generation|test-package-release-lifecycle|test-prepare-current-authority-validator|test-publish-durable-package-generation|test-reconcile-merge-candidates|test-recover-canonical-indexes|test-require-exact-head-approval|test-require-exact-kandelo-main|test-select-package-archive-source|test-split-staging-package-ledger|test-state-lock|test-validate-staging-release|test-verify-merge-candidate|validate-staging-release|verify-merge-candidate|verify-preserved-package-source)\.sh$' \
     -e '^\.github/scripts/package-generation\.py$' \
     -e '^tools/xtask/src/(index_candidate|index_toml|package_archive_name|package_matrix)\.rs$' \
     -e '^scripts/(activate-local-shell-build-override|ci-homebrew-browser-mirror-state|compose-initial-index|index-update|install-local-shell-artifact|materialize-ci-canonical-package-index|materialize-ci-publication-blockers|release-index-state|validate-publication-blocker-report)\.sh$' \
-    -e '^scripts/(check-abi-staging-request-workflow\.rb|test-abi-staging-request-feed\.sh)$' \
+    -e '^scripts/(check-abi-staging-pr-check-workflow\.rb|check-abi-staging-request-workflow\.rb|test-abi-staging-request-feed\.sh)$' \
+    -e '^abi/staging/required-check-activation\.toml$' \
     -e '^tests/scripts/(index-update|package-publish-flow|release-index-state)\.sh$' \
     -e '^tests/scripts/ci-run-test-suite-groups\.test\.sh$' \
     -e '^\.github/actions/detect-change-scope/' \
