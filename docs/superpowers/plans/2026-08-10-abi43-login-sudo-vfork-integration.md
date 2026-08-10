@@ -607,7 +607,10 @@ symbolic link, and hard link. Test eager and lazy materialization with an
 exact byte replacement. Reject unknown keys, duplicate recipes, duplicate
 transforms, odd/non-hex byte strings, unbounded replacement counts, missing
 source inventory entries, input/output digest drift, unsafe paths, and a
-replacement whose byte length differs.
+transformed output whose actual length or digest differs from its declaration.
+Match and replacement lengths may differ because authenticated Homebrew
+prefixes require bounded expansion; reject arithmetic overflow or expansion
+past the named global VFS limit before allocating the output.
 
 The success fixture uses this complete shape:
 

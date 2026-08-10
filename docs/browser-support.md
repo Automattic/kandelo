@@ -764,7 +764,7 @@ requested root equal to its layer ID. The wider 128-name descriptor/parser
 bound is shared with planning and leaves room for collection artifacts, but it
 does not turn this boot mount into a multi-root layer. Phase 3 composes the
 multi-root main shell through the bottle-collection primitive instead.
-Schema-5 direct-bottle `deferred_trees` carry a complete source inventory and guest
+Schema-6 direct-bottle `deferred_trees` carry a complete source inventory and guest
 projection: paths, types, modes, links, regular-inode groups, materialization
 provenance, immutable content identity, a closed decoder/media-type pair, and
 one to eight byte-identical immutable HTTPS transports. Exactly one
@@ -870,18 +870,24 @@ layers and non-Homebrew deferred archives, but is not produced as a substitute
 for an original Homebrew bottle.
 
 The source inventory and materialization provenance are additive deferred-tree
-metadata. Existing schema-4 ZIP descriptors and serialized legacy deferred
-trees remain valid on the new host. An older host rejects a direct-bottle
+metadata. Homebrew owns receipt parsing, changed-file and keg policy, prefix
+authentication, and the legacy `homebrew-bottle-tar-gzip-v1` vocabulary. Its
+adapter validates that policy and erases it into the generic `tar-gzip-v1`
+source inventory and byte-transform plan before calling the VFS. Schema-5
+bottles remain readable only when they need no receipt relocation; a schema-5
+receipt-relocation marker or schema-6 plan fails closed. Existing schema-4 ZIP
+descriptors and serialized legacy deferred trees remain valid on the new host.
+An older host rejects a direct-bottle
 descriptor because the closed object contains fields it does not understand;
 it does not reinterpret the bottle as the older one-source-per-guest-entry
 shape. These metadata additions do not change the kernel/process ABI or the
-ABI binding carried by a VFS image.
+ABI binding carried by a VFS image; the kernel/process ABI remains 43.
 
 Boot accepts at most eight package layers and 16 MiB of descriptor bytes in
 aggregate. The shared consumer additionally caps aggregate compressed payload
 bytes, expanded bytes, and entry count. Boot-prefetch downloads use at most two
 workers. Each package's declared keg and `opt` link must match its indexed
-paths. Every schema-5 ancestor at or below `/opt/kandelo/homebrew` must be
+paths. Every schema-6 ancestor at or below the authenticated Homebrew prefix must be
 declared in the aggregate guest projection. Equal-mode `mergeable-directory`
 claims can create an absent directory once or reuse an equal-mode lower-image
 directory; undeclared ancestors, unequal modes, and non-directory collisions

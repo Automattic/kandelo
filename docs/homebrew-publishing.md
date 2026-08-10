@@ -3898,20 +3898,24 @@ same browser-safe relocation implementation.
 
 First use still fetches and verifies the complete unmodified `.tar.gz`; the
 content digest and byte count never describe relocated or recompressed bytes.
-After decoding and complete source-inventory validation, the runtime requires
-its relocation markers to equal the exact receipt list, relocates the shared
-regular inode once, preserves every hardlink alias, and only then atomically
-commits the group. A missing changed file, unsafe or duplicate receipt path,
-retained supported placeholder, unresolved Java dependency, marker mismatch,
-or final-size mismatch leaves the whole group pending and retryable. Upstream
-receipts may represent an empty `changed_files` list as either `null` or `[]`;
-both mean that no archive member is relocated.
+Before registration, the Homebrew adapter requires its relocation markers and
+generic transform plan to equal the exact receipt list and authenticated
+destination prefix. It then erases Homebrew policy into the generic
+`tar-gzip-v1` VFS contract. After decoding and complete source-inventory
+validation, the VFS verifies each transform input, applies its bounded literal
+replacements, verifies the declared output digest and length, preserves every
+hardlink alias, and only then atomically commits the group. A missing changed
+file, unsafe or duplicate receipt path, retained supported placeholder,
+unresolved Java dependency, marker mismatch, output identity mismatch, or
+expansion past the global VFS cap leaves the whole group pending and retryable.
+Upstream receipts may represent an empty `changed_files` list as either `null`
+or `[]`; both mean that no archive member is relocated.
 
-The image builder emits an inert schema-5 draft because exact Node and Chromium
+The image builder emits an inert schema-6 draft because exact Node and Chromium
 evidence does not exist until the eager image has run. The credential-free
 release preparer validates that draft, every exact bottle payload, the eager
 descriptor, report, and both host evidence files, then closes the public
-schema-5 descriptor. Its `deferred_trees[]` contract names a Formula identity,
+schema-6 descriptor. Its `deferred_trees[]` contract names a Formula identity,
 immutable SHA-256 and byte count, decoder and media type, ordered transport
 locations, activation policy, complete source inventory, and complete guest
 projection. The closed descriptor also binds
@@ -4583,7 +4587,7 @@ path:
 ?vfs=https://github.com/<owner>/homebrew-<tap>/releases/download/homebrew-vfs-sha256-<sha256>/kandelo-homebrew.vfs.zst
 ```
 
-`kandelo-homebrew-<runtime-id>-layer.json` is a separate closed schema-5 entry
+`kandelo-homebrew-<runtime-id>-layer.json` is a separate closed schema-6 entry
 point for direct bottle content. Keeping it separate preserves the stable
 whole-image descriptor contract and gives the runtime layer an identity that
 cannot alias a changed base, payload, or inventory merely because the eager VFS
@@ -4630,7 +4634,7 @@ descriptor and VFS path. A `package-layer` mount targets `/` and carries a
 bounded descriptor URL, exact descriptor byte count, and lowercase SHA-256
 reference. Boot eagerly fetches and validates only those descriptor bytes. It
 then restores the exact compressed shell package output into a private
-filesystem, binds the schema-5 descriptor to that base, its ABI, and
+filesystem, binds the schema-6 descriptor to that base, its ABI, and
 `/etc/kandelo/homebrew-vfs.json` composition, and rejects base or pairwise
 package/path collisions. Only a completely registered selection whose required
 boot-prefetch trees have succeeded is returned to boot, so a failed composition
@@ -4846,7 +4850,7 @@ is the only legacy exception: reconciliation verifies all seven current handoff
 files byte-for-byte. A partial legacy set, an unknown name, or a mismatched
 legacy payload fails; the publisher never fills or rewrites an immutable legacy
 release. New acceptance releases always use five assets, and every new closed
-schema-5 direct layer uses an independent runtime release containing its
+schema-6 direct layer uses an independent runtime release containing its
 descriptor and exactly one payload per deferred bottle. Historical schema-4
 one-tree layers retain their two-asset release shape. The Actions receipt is
 only a receipt; release assets are the durable public product.

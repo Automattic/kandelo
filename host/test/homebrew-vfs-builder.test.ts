@@ -48,6 +48,8 @@ import {
   canonicalHomebrewRuntimeLayerBundleIdentityBytes,
   canonicalHomebrewRuntimeLayerDescriptorBytes,
 } from "../src/homebrew-lazy-layer-descriptor";
+import { adaptHomebrewDeferredTree } from
+  "../src/homebrew-deferred-tree-adapter";
 import {
   HOMEBREW_RUNTIME_LAYER_LIMITS,
   parseHomebrewRuntimeLayerDescriptor,
@@ -63,7 +65,11 @@ import {
 } from "../src/homebrew-vfs-planner";
 import type { HomebrewRuntimeSupportContract } from
   "../src/homebrew-runtime-support";
-import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import {
+  MemoryFileSystem,
+  type LazyArchiveFileEntry,
+  type LazyTreeGroup,
+} from "../src/vfs/memory-fs";
 import {
   derivePackageDeferredZipTree,
   registerPackageDeferredZipTree,
@@ -554,6 +560,7 @@ function readVfsFile(fs: MemoryFileSystem, path: string): string {
 }
 
 async function lazyLayerFixture(options: {
+  destinationPrefix?: string;
   mutateBase?: (fs: MemoryFileSystem) => void;
   mutatePlan?: (plan: HomebrewVfsPlan) => void;
   mutateBaseSource?: (source: HomebrewLazyLayerBasePackageSource) => void;
@@ -565,6 +572,8 @@ async function lazyLayerFixture(options: {
   runtimeReceipt?: string;
   runtimeExtraEntries?: TarSpec[];
 } = {}) {
+  const destinationPrefix = options.destinationPrefix ?? PREFIX;
+  const destinationCellar = `${destinationPrefix}/Cellar`;
   const baseBytes = bottleTar(standardEntries());
   const baseManifest = linkManifest(baseBytes);
   const basePlan = await planHomebrewVfs(metadataForBottle(baseBytes), {
@@ -582,6 +591,15 @@ async function lazyLayerFixture(options: {
     kandeloCommit: basePlan.packages[0].kandeloCommit,
     formulaSha256: "6".repeat(64),
   };
+  if (destinationPrefix !== PREFIX) {
+    const basePackage = basePlan.packages[0];
+    basePackage.prefix = destinationPrefix;
+    basePackage.cellar = destinationCellar;
+    basePackage.keg = `${destinationCellar}/hello/${basePackage.version}`;
+    basePackage.linkManifest.prefix = destinationPrefix;
+    basePackage.linkManifest.cellar = destinationCellar;
+    basePackage.linkManifest.keg = basePackage.keg;
+  }
   const baseFs = MemoryFileSystem.create(new SharedArrayBuffer(16 * 1024 * 1024));
   await buildHomebrewVfs(basePlan, {
     fs: baseFs,
@@ -597,7 +615,7 @@ async function lazyLayerFixture(options: {
   options.mutateBase?.(baseFs);
 
   const runtimeVersion = "3.0";
-  const runtimeKeg = `${CELLAR}/runtime/${runtimeVersion}`;
+  const runtimeKeg = `${destinationCellar}/runtime/${runtimeVersion}`;
   const runtimeBytes = bottleTar([
     ...(options.overlappingDirectoryModes === undefined ? [] : [{
       path: "Cellar/shared-runtime-state",
@@ -676,7 +694,7 @@ async function lazyLayerFixture(options: {
     },
   };
   const dependencyVersion = "1.0";
-  const dependencyKeg = `${CELLAR}/runtime-dep/${dependencyVersion}`;
+  const dependencyKeg = `${destinationCellar}/runtime-dep/${dependencyVersion}`;
   const dependencyBytes = bottleTar([
     ...(options.overlappingDirectoryModes === undefined ? [] : [{
       path: "Cellar/shared-runtime-state",
@@ -852,12 +870,14 @@ async function lazyLayerFixture(options: {
 
 async function runtimeLayerConsumerFixture(
   options: {
+    destinationPrefix?: string;
     includeLayerDependency?: boolean;
     runtimeReceipt?: string;
     runtimeExtraEntries?: TarSpec[];
   } = {},
 ) {
   const fixture = await lazyLayerFixture({
+    destinationPrefix: options.destinationPrefix,
     includeLayerDependency: options.includeLayerDependency,
     runtimeReceipt: options.runtimeReceipt,
     runtimeExtraEntries: options.runtimeExtraEntries,
@@ -960,7 +980,7 @@ function refreshInventory(descriptor: HomebrewLazyLayerDescriptor): void {
     inventory.layer_entry_count = entries.filter(
       (entry) => entry.ownership === "layer",
     ).length;
-    if (descriptor.schema === 5) {
+    if (descriptor.schema !== 4) {
       inventory.mergeable_directory_count = entries.filter(
         (entry) => entry.ownership === "mergeable-directory",
       ).length;
@@ -1039,6 +1059,16 @@ function runtimeLayerVariant(
     tree.inventory.source.entries.sort((left, right) =>
       left.path < right.path ? -1 : left.path > right.path ? 1 : 0
     );
+  }
+  if (tree.inventory.relocation !== undefined) {
+    const relocation = tree.inventory.relocation;
+    relocation.receipt_source_path = replaceName(relocation.receipt_source_path);
+    for (const assertion of relocation.materialization.assertions) {
+      assertion.sourcePath = replaceName(assertion.sourcePath);
+    }
+    for (const transform of relocation.materialization.transforms) {
+      transform.sourcePath = replaceName(transform.sourcePath);
+    }
   }
   for (const entry of tree.inventory.entries) {
     entry.path = replaceName(entry.path);
@@ -1162,6 +1192,7 @@ function asLegacySharedDirectoryLayer(
   const tree = descriptorTree(descriptor);
   delete tree.package;
   delete tree.inventory.source;
+  delete tree.inventory.relocation;
   for (const entry of tree.inventory.entries) {
     delete entry.materialization;
     if (entry.path === sharedPath.slice(1)) {
@@ -1512,6 +1543,23 @@ describe("Homebrew runtime layer consumer", () => {
       }],
     });
     const tree = descriptorTree(fixture.descriptor);
+    expect(fixture.descriptor.schema).toBe(6);
+    expect(tree.inventory.relocation).toMatchObject({
+      schema: 1,
+      kind: "homebrew-bottle-relocation-v1",
+      receipt_source_path: "runtime/3.0/INSTALL_RECEIPT.json",
+      materialization: {
+        schema: 1,
+        kind: "archive-byte-transforms-v1",
+      },
+    });
+    const adapted = adaptHomebrewDeferredTree(tree);
+    expect(adapted.decoder).toBe("tar-gzip-v1");
+    expect(adapted.source?.kind).toBe("archive-source-inventory-v1");
+    expect(adapted.materialization?.kind).toBe("archive-byte-transforms-v1");
+    expect(adapted.entries.some((entry) =>
+      (entry.materialization as string) === "archive-homebrew-relocate"
+    )).toBe(false);
     expect(tree.content.sha256).toBe(sha256(fixture.runtimeBytes));
     expect(tree.content.bytes).toBe(fixture.runtimeBytes.byteLength);
     expect(tree.inventory.entries.filter((entry) =>
@@ -1530,6 +1578,13 @@ describe("Homebrew runtime layer consumer", () => {
       fetch: async () => new Response(runtime.bytes),
       archiveFetch: async () => new Response(fixture.runtimeBytes),
     });
+    const exposed = composed.layers[0]!.deferredTrees.find((group) =>
+      group.content?.materialization !== undefined
+    )!;
+    // WHY: the runtime returns these groups for status/diagnostics. They must
+    // never remain the authority for bytes after registration validates them.
+    (exposed.content!.materialization!.assertions[0] as { bytesHex: string })
+      .bytesHex = "00";
     await expect(
       composed.fs.ensureMaterialized(`${fixture.runtimeKeg}/lib/runtime.conf`),
     ).resolves.toBe(true);
@@ -1543,6 +1598,220 @@ describe("Homebrew runtime layer consumer", () => {
     });
     expect(composed.fs.stat(`${fixture.runtimeKeg}/lib/runtime.conf`).mode & 0o7777)
       .toBe(0o640);
+  });
+
+  const homebrewEntryAuthorityMutations: readonly (readonly [
+    label: string,
+    mutate: (
+      group: LazyTreeGroup,
+      a: LazyArchiveFileEntry,
+      b: LazyArchiveFileEntry,
+      aPath: string,
+    ) => void,
+  ])[] = [
+    ["archivePath", (_group, a, b) => a.archivePath = b.archivePath],
+    ["destination path", (group, a, _b, aPath) => {
+      group.entries.delete(aPath);
+      group.entries.set(`${aPath}.redirected`, a);
+    }],
+    ["entry presence", (group, _a, _b, aPath) => group.entries.delete(aPath)],
+    ["inode number", (_group, a, b) => a.ino = b.ino],
+    ["inode generation", (_group, a) => a.generation = 999_999],
+    ["data sequence", (_group, a) => {
+      a.dataSequence = (a.dataSequence ?? 0) + 1;
+    }],
+    ["size", (_group, a) => a.size = 0],
+    ["symlink kind", (_group, a) => a.isSymlink = true],
+    ["deletion state", (_group, a) => a.deleted = true],
+    ["materialization state", (_group, a) => a.materialized = true],
+    ["sourcePath", (_group, a, b) => a.sourcePath = b.sourcePath],
+    ["entry type", (_group, a) => a.type = "hardlink"],
+    ["inode group", (_group, a, b) => a.inodeGroup = b.inodeGroup],
+    ["link target", (_group, a, b) => a.target = b.sourcePath],
+    ["tree materialization state", (group) => group.materialized = true],
+    ["inventory mode", (group, _a, _b, aPath) => {
+      group.inventory!.find((entry) => entry.vfsPath === aPath)!.mode = 0;
+    }],
+  ];
+
+  it.each(homebrewEntryAuthorityMutations)(
+    "keeps Homebrew deferredTrees %s mutation out of authority",
+    async (_label, mutate) => {
+      const fixture = await runtimeLayerConsumerFixture({
+        runtimeReceipt: JSON.stringify({ changed_files: [] }) + "\n",
+        runtimeExtraEntries: [{
+          path: "runtime/3.0/lib/a",
+          data: "alpha",
+          mode: 0o640,
+        }, {
+          path: "runtime/3.0/lib/b",
+          data: "bravo",
+          mode: 0o640,
+        }],
+      });
+      const runtime = runtimeLayerReference("runtime", fixture.descriptor);
+      const composed = await composeHomebrewRuntimeLayers({
+        baseImageBytes: fixture.baseImageBytes,
+        arch: "wasm32",
+        kernelAbi: ABI_VERSION,
+        layers: [runtime.reference],
+        fetch: async () => new Response(runtime.bytes),
+        archiveFetch: async () => new Response(fixture.runtimeBytes),
+      });
+      const aPath = `${fixture.runtimeKeg}/lib/a`;
+      const bPath = `${fixture.runtimeKeg}/lib/b`;
+      const exposed = composed.layers[0]!.deferredTrees.find((group) =>
+        group.entries.has(aPath)
+      )!;
+      const a = exposed.entries.get(aPath)!;
+      const b = exposed.entries.get(bPath)!;
+      mutate(exposed, a, b, aPath);
+
+      await expect(composed.fs.ensureMaterialized(aPath)).resolves.toBe(true);
+      expect(readVfsFile(composed.fs, aPath)).toBe("alpha");
+      expect(readVfsFile(composed.fs, bPath)).toBe("bravo");
+      expect(composed.fs.stat(aPath).mode & 0o7777).toBe(0o640);
+    },
+  );
+
+  it("keeps Python Unicode-scalar order through the adapter and runtime", async () => {
+    const bmp = "\ue000";
+    const nonBmp = "\u{10000}";
+    const fixture = await runtimeLayerConsumerFixture({
+      runtimeReceipt: JSON.stringify({
+        changed_files: [`lib/${bmp}`, `lib/${nonBmp}`],
+      }) + "\n",
+      runtimeExtraEntries: [{
+        path: `runtime/3.0/lib/${bmp}`,
+        data: "prefix=@@HOMEBREW_PREFIX@@\n",
+        mode: 0o640,
+      }, {
+        path: `runtime/3.0/lib/${nonBmp}`,
+        data: "cellar=@@HOMEBREW_CELLAR@@\n",
+        mode: 0o640,
+      }],
+    });
+    const transforms = descriptorTree(fixture.descriptor).inventory.relocation!
+      .materialization.transforms;
+    expect(transforms.map((transform) => transform.sourcePath)).toEqual([
+      `runtime/3.0/lib/${bmp}`,
+      `runtime/3.0/lib/${nonBmp}`,
+    ]);
+
+    const runtime = runtimeLayerReference("runtime", fixture.descriptor);
+    const composed = await composeHomebrewRuntimeLayers({
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [runtime.reference],
+      fetch: async () => new Response(runtime.bytes),
+      archiveFetch: async () => new Response(fixture.runtimeBytes),
+    });
+    await expect(
+      composed.fs.ensureMaterialized(`${fixture.runtimeKeg}/lib/${bmp}`),
+    ).resolves.toBe(true);
+    expect(readVfsFile(composed.fs, `${fixture.runtimeKeg}/lib/${bmp}`)).toBe(
+      `prefix=${PREFIX}\n`,
+    );
+    expect(readVfsFile(composed.fs, `${fixture.runtimeKeg}/lib/${nonBmp}`)).toBe(
+      `cellar=${CELLAR}\n`,
+    );
+  });
+
+  it("materializes a historical receipt under its authenticated Linuxbrew destination", async () => {
+    const destinationPrefix = "/home/linuxbrew/.linuxbrew";
+    const fixture = await runtimeLayerConsumerFixture({
+      destinationPrefix,
+      runtimeReceipt: JSON.stringify({
+        changed_files: ["INSTALL_RECEIPT.json", "lib/runtime.conf"],
+        runtime_dependencies: [{ full_name: "openjdk@21" }],
+        source: { path: "@@HOMEBREW_LIBRARY@@/Formula/runtime.rb" },
+      }) + "\n",
+      runtimeExtraEntries: [{
+        path: "runtime/3.0/lib/runtime.conf",
+        data: "prefix=@@HOMEBREW_PREFIX@@\njava=@@HOMEBREW_JAVA@@\n",
+        mode: 0o640,
+      }],
+    });
+    expect([
+      ...fixture.descriptor.packages.base,
+      ...fixture.descriptor.packages.layer,
+    ].every((pkg) => pkg.prefix === destinationPrefix)).toBe(true);
+    expect(descriptorTree(fixture.descriptor).activation.roots).toEqual([
+      fixture.runtimeKeg,
+    ]);
+    expect(descriptorTree(fixture.descriptor).inventory.entries.every((entry) =>
+      entry.path === destinationPrefix.slice(1) ||
+      entry.path.startsWith(`${destinationPrefix.slice(1)}/`)
+    )).toBe(true);
+
+    const runtime = runtimeLayerReference("runtime", fixture.descriptor);
+    const composed = await composeHomebrewRuntimeLayers({
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [runtime.reference],
+      fetch: async () => new Response(runtime.bytes),
+      archiveFetch: async () => new Response(fixture.runtimeBytes),
+    });
+    await expect(
+      composed.fs.ensureMaterialized(`${fixture.runtimeKeg}/lib/runtime.conf`),
+    ).resolves.toBe(true);
+    expect(readVfsFile(composed.fs, `${fixture.runtimeKeg}/lib/runtime.conf`)).toBe(
+      `prefix=${destinationPrefix}\njava=${destinationPrefix}/opt/openjdk@21/libexec\n`,
+    );
+    expect(JSON.parse(
+      readVfsFile(composed.fs, `${fixture.runtimeKeg}/INSTALL_RECEIPT.json`),
+    )).toMatchObject({
+      source: { path: `${destinationPrefix}/Library/Formula/runtime.rb` },
+    });
+  });
+
+  it("rejects a receipt-relocated destination that drifts from its authenticated keg", async () => {
+    const fixture = await runtimeLayerConsumerFixture({
+      runtimeReceipt: JSON.stringify({
+        changed_files: ["INSTALL_RECEIPT.json"],
+        source: { path: "@@HOMEBREW_LIBRARY@@/Formula/runtime.rb" },
+      }) + "\n",
+    });
+    const tree = descriptorTree(fixture.descriptor);
+    const receipt = tree.inventory.entries.find((entry) =>
+      entry.source_path === "runtime/3.0/INSTALL_RECEIPT.json"
+    )!;
+    receipt.path = `${PREFIX.slice(1)}/Cellar/runtime/3.0/drifted-receipt.json`;
+    receipt.source_path = "runtime/3.0/INSTALL_RECEIPT.json";
+    tree.inventory.entries.sort((left, right) =>
+      left.path < right.path ? -1 : left.path > right.path ? 1 : 0
+    );
+    recloseRuntimeLayerDescriptor(fixture.descriptor);
+    const { reference, bytes } = runtimeLayerReference("runtime", fixture.descriptor);
+
+    await expect(composeHomebrewRuntimeLayers({
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [reference],
+      fetch: async () => new Response(bytes),
+    })).rejects.toThrow(/receipt|destination|prefix/i);
+  });
+
+  it("rejects runtime layers that mix authenticated base and layer destinations", async () => {
+    const fixture = await runtimeLayerConsumerFixture();
+    const legacyPrefix = "/home/linuxbrew/.linuxbrew";
+    const base = fixture.descriptor.packages.base[0]!;
+    base.prefix = legacyPrefix;
+    base.keg = `${legacyPrefix}/Cellar/${base.name}/${base.version}`;
+    base.opt_link.target = `../Cellar/${base.name}/${base.version}`;
+    recloseRuntimeLayerDescriptor(fixture.descriptor);
+    const { reference, bytes } = runtimeLayerReference("runtime", fixture.descriptor);
+
+    await expect(composeHomebrewRuntimeLayers({
+      baseImageBytes: fixture.baseImageBytes,
+      arch: "wasm32",
+      kernelAbi: ABI_VERSION,
+      layers: [reference],
+      fetch: async () => new Response(bytes),
+    })).rejects.toThrow(/package destinations are inconsistent/);
   });
 
   it("accepts upstream null changed_files as an empty relocation set", async () => {
@@ -1618,17 +1887,14 @@ describe("Homebrew runtime layer consumer", () => {
     executable.materialization = "archive-homebrew-relocate";
     recloseRuntimeLayerDescriptor(fixture.descriptor);
     const runtime = runtimeLayerReference("runtime", fixture.descriptor);
-    const composed = await composeHomebrewRuntimeLayers({
+    await expect(composeHomebrewRuntimeLayers({
       baseImageBytes: fixture.baseImageBytes,
       arch: "wasm32",
       kernelAbi: ABI_VERSION,
       layers: [runtime.reference],
       fetch: async () => new Response(runtime.bytes),
       archiveFetch: async () => new Response(fixture.runtimeBytes),
-    });
-    await expect(
-      composed.fs.ensureMaterialized(`${fixture.runtimeKeg}/bin/runtime`),
-    ).rejects.toThrow(/relocation markers differ from INSTALL_RECEIPT.json/);
+    })).rejects.toThrow(/relocation markers differ from INSTALL_RECEIPT.json/);
   });
 
   it("rejects a descriptor that hides every relocation named by its bottle receipt", async () => {
@@ -1655,18 +1921,14 @@ describe("Homebrew runtime layer consumer", () => {
     refreshInventory(fixture.descriptor);
     recloseRuntimeLayerDescriptor(fixture.descriptor);
     const runtime = runtimeLayerReference("runtime", fixture.descriptor);
-    const composed = await composeHomebrewRuntimeLayers({
+    await expect(composeHomebrewRuntimeLayers({
       baseImageBytes: fixture.baseImageBytes,
       arch: "wasm32",
       kernelAbi: ABI_VERSION,
       layers: [runtime.reference],
       fetch: async () => new Response(runtime.bytes),
       archiveFetch: async () => new Response(fixture.runtimeBytes),
-    });
-
-    await expect(
-      composed.fs.ensureMaterialized(`${fixture.runtimeKeg}/lib/runtime.conf`),
-    ).rejects.toThrow(/relocation markers differ from INSTALL_RECEIPT.json/);
+    })).rejects.toThrow(/relocation markers differ from INSTALL_RECEIPT.json/);
   });
 
   it("composes disjoint selected layers while leaving both archives lazy", async () => {
@@ -1724,7 +1986,7 @@ describe("Homebrew runtime layer consumer", () => {
     }
   });
 
-  it("reuses an existing real base directory for a schema-5 mergeable claim", async () => {
+  it("reuses an existing real base directory for a schema-6 mergeable claim", async () => {
     const fixture = await runtimeLayerConsumerFixture();
     const sharedPath = `${PREFIX}/shared-prefix`;
     const base = MemoryFileSystem.fromImage(fixture.baseImageBytes);
@@ -1913,13 +2175,27 @@ describe("Homebrew runtime layer consumer", () => {
     const missingSource = structuredClone(fixture.descriptor);
     delete descriptorTree(missingSource).inventory.source;
     expect(() => recloseRuntimeLayerDescriptor(missingSource)).toThrow(
-      /schema 5 tree .* is not a complete original bottle/,
+      /schema 6 tree .* is not a complete original bottle/,
     );
 
     const missingBinding = structuredClone(fixture.descriptor);
     delete descriptorTree(missingBinding).package;
     expect(() => recloseRuntimeLayerDescriptor(missingBinding)).toThrow(
-      /schema 5 tree .* is not a complete original bottle/,
+      /schema 6 tree .* is not a complete original bottle/,
+    );
+
+    const planUnderSchemaFive = structuredClone(fixture.descriptor);
+    planUnderSchemaFive.schema = 5;
+    expect(() => recloseRuntimeLayerDescriptor(planUnderSchemaFive)).toThrow(
+      /schema 5 tree .* cannot carry a schema-6 relocation plan/,
+    );
+
+    const staleRelocation = structuredClone(fixture.descriptor);
+    staleRelocation.schema = 5;
+    delete descriptorTree(staleRelocation).inventory.relocation;
+    recloseRuntimeLayerDescriptor(staleRelocation);
+    expect(() => parseHomebrewRuntimeLayerDescriptor(staleRelocation)).toThrow(
+      /receipt relocation requires a schema-6 adapter plan/,
     );
 
     const legacy = asLegacySharedDirectoryLayer(
@@ -1929,7 +2205,7 @@ describe("Homebrew runtime layer consumer", () => {
     expect(() => parseHomebrewRuntimeLayerDescriptor(legacy)).not.toThrow();
 
     const legacyUnderDirectSchema = structuredClone(legacy);
-    legacyUnderDirectSchema.schema = 5;
+    legacyUnderDirectSchema.schema = 6;
     expect(() => parseHomebrewRuntimeLayerDescriptor(legacyUnderDirectSchema))
       .toThrow(/deferred tree 0 has unexpected or missing fields/);
   });
@@ -3255,7 +3531,7 @@ describe("Homebrew VFS builder", () => {
       base_package_order: ["kandelo-dev/tap-core/hello"],
       layer_package_order: ["kandelo-dev/tap-core/runtime"],
     });
-    expect(first.descriptor.schema).toBe(5);
+    expect(first.descriptor.schema).toBe(6);
     expect(first.descriptor.kind).toBe("kandelo-homebrew-deferred-layer-draft");
     expect(first.descriptor.base_vfs).toMatchObject({
       sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -3480,6 +3756,89 @@ describe("Homebrew VFS builder", () => {
     expect(collection.deferredTrees.some((tree) => tree.id === "runtime")).toBe(false);
     expect(collection.payloads.map((payload) => payload.id)).toEqual(
       collection.deferredTrees.map((tree) => tree.id),
+    );
+  });
+
+  it("publishes a legacy-prefix bottle collection from its authenticated destination", async () => {
+    const legacyPrefix = "/home/linuxbrew/.linuxbrew";
+    const fixture = await lazyLayerFixture({
+      runtimeReceipt: JSON.stringify({
+        changed_files: ["INSTALL_RECEIPT.json", "lib/runtime.conf"],
+        source: { path: "@@HOMEBREW_LIBRARY@@/Formula/runtime.rb" },
+      }) + "\n",
+      runtimeExtraEntries: [{
+        path: "runtime/3.0/lib/runtime.conf",
+        data: "prefix=@@HOMEBREW_PREFIX@@\n",
+      }],
+    });
+    const runtime = structuredClone(
+      fixture.plan.packages.find((pkg) => pkg.name === "runtime")!,
+    );
+    runtime.prefix = legacyPrefix;
+    runtime.cellar = `${legacyPrefix}/Cellar`;
+    runtime.keg = `${runtime.cellar}/runtime/${runtime.version}`;
+    runtime.linkManifest.prefix = runtime.prefix;
+    runtime.linkManifest.cellar = runtime.cellar;
+    runtime.linkManifest.keg = runtime.keg;
+
+    const collection = await buildHomebrewOriginalBottleCollection({
+      ...fixture.plan,
+      packages: [runtime],
+    }, {
+      fs: MemoryFileSystem.create(new SharedArrayBuffer(16 * 1024 * 1024)),
+      baseFs: fixture.baseFs,
+      loadBottleBytes: () => fixture.runtimeBytes,
+    });
+
+    expect(collection.packages[0]?.prefix).toBe(legacyPrefix);
+    expect(collection.deferredTrees[0]?.activation.roots).toEqual([runtime.keg]);
+    expect(collection.deferredTrees[0]?.inventory.entries).toContainEqual(
+      expect.objectContaining({
+        path: `${legacyPrefix.slice(1)}/Cellar/runtime/3.0/lib/runtime.conf`,
+        materialization: "archive-homebrew-relocate",
+      }),
+    );
+  });
+
+  it("rejects a bottle collection with inconsistent authenticated destinations", async () => {
+    const fixture = await lazyLayerFixture({ includeLayerDependency: true });
+    const runtime = structuredClone(
+      fixture.plan.packages.find((pkg) => pkg.name === "runtime")!,
+    );
+    runtime.prefix = "/home/linuxbrew/.linuxbrew";
+    runtime.cellar = `${runtime.prefix}/Cellar`;
+    runtime.keg = `${runtime.cellar}/runtime/${runtime.version}`;
+    runtime.linkManifest.prefix = runtime.prefix;
+    runtime.linkManifest.cellar = runtime.cellar;
+    runtime.linkManifest.keg = runtime.keg;
+    const dependency = fixture.plan.packages.find((pkg) => pkg.name === "runtime-dep")!;
+
+    await expect(buildHomebrewOriginalBottleCollection({
+      ...fixture.plan,
+      packages: [dependency, runtime],
+    }, {
+      fs: MemoryFileSystem.create(new SharedArrayBuffer(16 * 1024 * 1024)),
+      baseFs: fixture.baseFs,
+      loadBottleBytes: () => fixture.runtimeBytes,
+    })).rejects.toThrow(/inconsistent bottle destinations/);
+  });
+
+  it("rejects a mixed authenticated base and lazy-layer partition before publication", async () => {
+    const legacyPrefix = "/home/linuxbrew/.linuxbrew";
+    const fixture = await lazyLayerFixture({
+      mutatePlan(plan) {
+        const runtime = plan.packages.find((pkg) => pkg.name === "runtime")!;
+        runtime.prefix = legacyPrefix;
+        runtime.cellar = `${legacyPrefix}/Cellar`;
+        runtime.keg = `${runtime.cellar}/runtime/${runtime.version}`;
+        runtime.linkManifest.prefix = runtime.prefix;
+        runtime.linkManifest.cellar = runtime.cellar;
+        runtime.linkManifest.keg = runtime.keg;
+      },
+    });
+
+    await expect(fixture.build()).rejects.toThrow(
+      /inconsistent bottle destinations/,
     );
   });
 

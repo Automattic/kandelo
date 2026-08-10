@@ -204,7 +204,7 @@ export async function buildHomebrewMaterializedVfs(
   const registered = registerHomebrewDeferredTreeCollection({
     fs: options.fs,
     id: "main-shell",
-    schema: 5,
+    schema: 6,
     trees: closedTrees,
   });
   const registeredByPackage = bindRegisteredTrees(registered, bindings);
@@ -334,7 +334,7 @@ export async function buildHomebrewMaterializedVfs(
     registerHomebrewDeferredTreeCollection({
       fs: options.fs,
       id: runtimeSupport.contract.id,
-      schema: 5,
+      schema: 6,
       trees: supportTrees,
       atomicActivationGroup:
         runtimeSupport.contract.activation.atomicGroup,

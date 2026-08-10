@@ -11,6 +11,13 @@ export const VFS_DEFERRED_TREE_LIMITS = {
   maxActivationCapabilities: 32,
   maxActivationRoots: 64,
   maxActivationCapabilityBytes: 255,
+  maxMaterializationAssertions: 32,
+  maxMaterializationAssertionBytes: 1024 * 1024,
+  maxMaterializationRecipes: 32,
+  maxMaterializationTransforms: 100_000,
+  maxMaterializationDecodedBytes: 8 * 1024 * 1024,
+  maxTransformReplacements: 32,
+  maxTransformPatternBytes: 8192,
 } as const;
 
 /**
