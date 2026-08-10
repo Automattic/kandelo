@@ -211,43 +211,84 @@ describe("source-rootfs verified archive contract", () => {
       .toMatch(/^revision\s*=\s*4$/m);
   });
 
-  it("applies the image prompt only to interactive Bash shells", () => {
-    const promptPath = resolve(
-      repoRoot,
-      "images/rootfs/etc/profile.d/kandelo-prompt.sh",
-    );
-    const printPrompt = 'PS1=sentinel; . "$1"; printf "%s" "$PS1"';
-    const runBash = (interactive: boolean, term: string): string =>
-      execFileSync(
+  const promptPath = resolve(
+    repoRoot,
+    "images/rootfs/etc/profile.d/kandelo-prompt.sh",
+  );
+  const printPrompt = 'PS1=sentinel; . "$1"; printf "%s" "$PS1"';
+  const styledRootPrompt =
+    "\\[\\e]133;A\\a\\]\\[\\e[36m\\]\\u@\\h \\[\\e[34m\\]\\w \\[\\e[31m\\]❯\\[\\e[0m\\] \\[\\e]133;B\\a\\]";
+  const styledUserPrompt =
+    "\\[\\e]133;A\\a\\]\\[\\e[36m\\]\\u@\\h \\[\\e[34m\\]\\w \\[\\e[32m\\]❯\\[\\e[0m\\] \\[\\e]133;B\\a\\]";
+  const runBash = (
+    interactive: boolean,
+    term: string,
+    forcedPrivilege: "actual" | "root" | "user" = "actual",
+  ): string =>
+    execFileSync(
+      "bash",
+      [
+        "--noprofile",
+        "--norc",
+        ...(interactive ? ["-i"] : []),
+        "-c",
+        `
+forced_privilege=$2
+if [[ $forced_privilege != actual ]]; then
+  function [ {
+    if [[ $# -eq 4 && $2 == -eq && $3 == 0 && $4 == "]" ]]; then
+      [[ $forced_privilege == root ]]
+      return
+    fi
+    builtin [ "$@"
+  }
+fi
+${printPrompt}
+`,
         "bash",
-        [
-          "--noprofile",
-          "--norc",
-          ...(interactive ? ["-i"] : []),
-          "-c",
-          printPrompt,
-          "bash",
-          promptPath,
-        ],
-        {
-          encoding: "utf8",
-          env: { ...process.env, TERM: term },
-          stdio: ["ignore", "pipe", "pipe"],
-        },
-      );
-
-    expect(runBash(false, "xterm-256color")).toBe("sentinel");
-    expect(
-      execFileSync("dash", ["-c", printPrompt, "dash", promptPath], {
+        promptPath,
+        forcedPrivilege,
+      ],
+      {
         encoding: "utf8",
-        env: { ...process.env, TERM: "xterm-256color" },
-      }),
-    ).toBe("sentinel");
-    expect(runBash(true, "dumb")).toBe("\\u@\\h \\w \\$ ");
+        env: { ...process.env, TERM: term },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
 
-    const accent = process.geteuid?.() === 0 ? 31 : 32;
+  it("leaves the image prompt unchanged outside interactive Bash", () => {
+    expect(runBash(false, "xterm-256color")).toBe("sentinel");
+    for (const interactive of [false, true]) {
+      expect(
+        execFileSync(
+          "dash",
+          [
+            ...(interactive ? ["-i"] : []),
+            "-c",
+            printPrompt,
+            "dash",
+            promptPath,
+          ],
+          {
+            encoding: "utf8",
+            env: { ...process.env, TERM: "xterm-256color" },
+            stdio: ["ignore", "pipe", "pipe"],
+          },
+        ),
+      ).toBe("sentinel");
+    }
+  });
+
+  it("uses the plain prompt for dumb interactive terminals", () => {
+    expect(runBash(true, "dumb")).toBe("\\u@\\h \\w \\$ ");
+  });
+
+  it("selects exact styled prompts for root and ordinary users", () => {
+    expect(runBash(true, "xterm-256color", "root")).toBe(styledRootPrompt);
+    expect(runBash(true, "xterm-256color", "user")).toBe(styledUserPrompt);
+
     expect(runBash(true, "xterm-256color")).toBe(
-      `\\[\\e]133;A\\a\\]\\[\\e[36m\\]\\u@\\h \\[\\e[34m\\]\\w \\[\\e[${accent}m\\]❯\\[\\e[0m\\] \\[\\e]133;B\\a\\]`,
+      process.geteuid?.() === 0 ? styledRootPrompt : styledUserPrompt,
     );
   });
 
