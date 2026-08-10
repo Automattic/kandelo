@@ -8,6 +8,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <stddef.h>
+#include <string.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -104,7 +105,7 @@ static int successful_exec_cycle(void) {
     return 0;
 }
 
-int main(void) {
+int main(int argc, char **argv) {
     MARKER("VFORK_LIFECYCLE_BEGIN\n");
     if (exit_cycle(
             "CHILD_EXIT_ONE\n", sizeof("CHILD_EXIT_ONE\n") - 1,
@@ -118,6 +119,11 @@ int main(void) {
     }
     if (failed_exec_cycle() != 0) return 3;
     if (rejected_ownership_cycle() != 0) return 4;
+    if (argc == 2 && strcmp(argv[1], "no-successful-exec") == 0) {
+        MARKER("PARENT_SKIPPED_EXEC_UNDER_NO_COPY_CEILING\n");
+        MARKER("PASS: VFORK_LIFECYCLE\n");
+        return 0;
+    }
     if (successful_exec_cycle() != 0) return 5;
     MARKER("PASS: VFORK_LIFECYCLE\n");
     return 0;

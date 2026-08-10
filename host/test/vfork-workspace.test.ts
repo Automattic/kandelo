@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { BorrowedVforkWorkspace } from "../src/vfork-workspace";
+import { ThreadPageAllocator } from "../src/thread-allocator";
 
 const PAGE = 65_536;
 
@@ -12,6 +13,46 @@ function memory(): WebAssembly.Memory {
 }
 
 describe("borrowed vfork workspace", () => {
+  it("gives the child a private syscall channel, replay prefix, and scratch page", () => {
+    const shared = new WebAssembly.Memory({
+      initial: 10,
+      maximum: 10,
+      shared: true,
+    });
+    const parentChannelOffset = 2 * PAGE;
+    const allocator = new ThreadPageAllocator({
+      firstSlotStartPage: 6,
+      maxPageExclusive: 10,
+      reservedSlots: 0,
+    });
+    const childControl = allocator.allocateHostControl(shared);
+    const workspace = new BorrowedVforkWorkspace(
+      shared,
+      4,
+      {
+        prefixAddress: childControl.forkSaveOffset,
+        prefixBytes: 64,
+        scratchAddress: childControl.tlsOffset,
+        scratchBytes: PAGE,
+      },
+      "private child control",
+    );
+
+    expect(childControl.channelOffset).not.toBe(parentChannelOffset);
+    expect(childControl.channelOffset).not.toBe(childControl.forkSaveOffset);
+    expect(childControl.channelOffset).not.toBe(childControl.tlsOffset);
+    expect(childControl.forkSaveOffset).not.toBe(childControl.tlsOffset);
+    expect(workspace.reservePrefix({
+      activationId: 0,
+      byteLength: 64,
+      alignment: 16,
+    })).toBe(childControl.forkSaveOffset);
+    const scratch = workspace.allocateScratch(16);
+    expect(scratch).toBe(childControl.tlsOffset);
+    workspace.deallocateScratch(scratch, 16);
+    workspace.assertAttachComplete();
+  });
+
   it.each([4, 8] as const)(
     "allocates exact wasm%s prefixes and LIFO scratch without overlap",
     (ptrWidth) => {

@@ -9,6 +9,15 @@ import {
   WASM_PAGE_SIZE,
 } from "../../../host/src/constants";
 import { computeProcessMemoryLayout } from "../../../host/src/process-memory";
+import { buildVforkSideModuleFixture } from "../../../host/test/vfork-side-module-fixture";
+import {
+  parseMechanismTraceLine,
+  partitionForkDispatches,
+  requireCompleteVforkSequence,
+  requireVforkStartFailureSequence,
+  type MechanismTrace,
+  type MechanismTraceRun,
+} from "../../../host/test/vfork-mechanism-trace";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const browserKernelModulePath = resolve(
@@ -27,6 +36,10 @@ const externalSignalProgramPath = resolveBinary(
 );
 const stateProgramPath = resolveBinary("programs/vfork-posix-state.wasm");
 const execChildPath = resolveBinary("programs/exec-child.wasm");
+const ordinaryForkProgramPath = resolve(
+  __dirname,
+  "../../../host/test/fixtures/fork-memory-clone.wasm",
+);
 
 function initialAddressSpaceBytes(programPath: string): number {
   const file = readFileSync(programPath);
@@ -88,6 +101,10 @@ async function runBrowserVforkFixture(
   fixturePath: string,
   execChildFixturePath?: string,
   maxProcessMemoryBytes?: number,
+  fixtureArguments: string[] = ["vfork-browser-fixture"],
+  sideModuleFixturePath?: string,
+  enableMechanismTrace = false,
+  injectWorkerStartFailure = false,
 ): Promise<BrowserVforkResult> {
   const asViteFsUrl = (path: string) => new URL(`/@fs/${path}`, baseURL).href;
 
@@ -103,7 +120,11 @@ async function runBrowserVforkFixture(
       memoryFsModuleUrl,
       fixtureUrl,
       execChildFixtureUrl,
+      sideModuleFixtureUrl,
       maxProcessMemoryBytes,
+      fixtureArguments,
+      enableMechanismTrace,
+      injectWorkerStartFailure,
     }) => {
       // WHY: loading BrowserKernel first avoids racing two cold Vite imports
       // through the same host-runtime dependency graph.
@@ -125,6 +146,10 @@ async function runBrowserVforkFixture(
       const processEvents: string[] = [];
       const kernel = new BrowserKernel({
         maxWorkers: 4,
+        enableSyscallLog: enableMechanismTrace,
+        ...(injectWorkerStartFailure
+          ? { env: ["KANDELO_TEST_VFORK_WORKER_START_FAILURE=once"] }
+          : {}),
         ...(maxProcessMemoryBytes === undefined
           ? {}
           : { maxProcessMemoryBytes }),
@@ -167,6 +192,22 @@ async function runBrowserVforkFixture(
             new Uint8Array(await childResponse.arrayBuffer()),
           );
         }
+        if (sideModuleFixtureUrl) {
+          const sideResponse = await fetch(sideModuleFixtureUrl);
+          if (!sideResponse.ok) {
+            throw new Error(
+              `side module fetch failed: ${sideResponse.status} ${sideModuleFixtureUrl}`,
+            );
+          }
+          imageOwner.mkdir("/lib", 0o755);
+          imageOwner.createFileWithOwner(
+            "/lib/libvfork-side.so",
+            0o755,
+            0,
+            0,
+            new Uint8Array(await sideResponse.arrayBuffer()),
+          );
+        }
         await kernel.initFromImage({
           vfsImage: await imageOwner.saveImage(),
         });
@@ -180,7 +221,7 @@ async function runBrowserVforkFixture(
         }
         const exitCode = await kernel.spawn(
           await fixtureResponse.arrayBuffer(),
-          ["vfork-browser-fixture"],
+          fixtureArguments,
         );
         return {
           exitCode,
@@ -200,10 +241,214 @@ async function runBrowserVforkFixture(
       execChildFixtureUrl: execChildFixturePath
         ? asViteFsUrl(execChildFixturePath)
         : undefined,
+      sideModuleFixtureUrl: sideModuleFixturePath
+        ? asViteFsUrl(sideModuleFixturePath)
+        : undefined,
       maxProcessMemoryBytes,
+      fixtureArguments,
+      enableMechanismTrace,
+      injectWorkerStartFailure,
     },
   );
 }
+
+function captureMechanismTraces(page: Page): MechanismTrace[] {
+  const traces: MechanismTrace[] = [];
+  page.on("console", (message) => {
+    const trace = parseMechanismTraceLine(message.text());
+    if (trace) traces.push(trace);
+  });
+  return traces;
+}
+
+function browserTraceRun(
+  name: string,
+  traces: readonly MechanismTrace[],
+  start: number,
+  end: number,
+): MechanismTraceRun {
+  return { name, traces: traces.slice(start, end) };
+}
+
+function expectPrivatePreparationEvidence(preparation: MechanismTrace): void {
+  expect(preparation.fields.get("mode"), preparation.line).toBe("1");
+  expect(preparation.fields.get("memory_identity"), preparation.line).toBe("same");
+  expect(preparation.fields.get("live_memory_delta"), preparation.line).toBe("0");
+  expect(preparation.fields.get("alias_delta"), preparation.line).toBe("1");
+  expect(preparation.fields.get("parent_channel"), preparation.line)
+    .not.toBe(preparation.fields.get("child_channel"));
+  expect(preparation.fields.get("owner_control"), preparation.line)
+    .not.toBe(preparation.fields.get("child_prefix"));
+  expect(preparation.fields.get("scratch"), preparation.line)
+    .not.toBe(preparation.fields.get("owner_control"));
+  expect(preparation.fields.get("scratch"), preparation.line)
+    .not.toBe(preparation.fields.get("child_prefix"));
+  expect(preparation.fields.get("externref_parent"), preparation.line)
+    .not.toBe(preparation.fields.get("externref_child"));
+}
+
+test("observes real browser mode 1 quiescence and mode 0 copy dispatch", async ({
+  page,
+  baseURL,
+}) => {
+  test.setTimeout(180_000);
+  expect(baseURL).toBeTruthy();
+  const runtimeErrors = captureRuntimeErrors(page);
+  const traces = captureMechanismTraces(page);
+
+  const borrowedTraceStart = traces.length;
+  const borrowed = await runBrowserVforkFixture(
+    page,
+    baseURL!,
+    lifecycleProgramPath,
+    undefined,
+    initialAddressSpaceBytes(lifecycleProgramPath),
+    ["vfork-browser-trace", "no-successful-exec"],
+    undefined,
+    true,
+  );
+  const borrowedTraceEnd = traces.length;
+  const ordinaryTraceStart = traces.length;
+  const ordinary = await runBrowserVforkFixture(
+    page,
+    baseURL!,
+    ordinaryForkProgramPath,
+    undefined,
+    undefined,
+    ["fork-browser-trace"],
+    undefined,
+    true,
+  );
+  const ordinaryTraceEnd = traces.length;
+
+  expect(borrowed.exitCode, JSON.stringify(borrowed, null, 2)).toBe(0);
+  expect(ordinary.exitCode, JSON.stringify(ordinary, null, 2)).toBe(0);
+  expect(ordinary.stdout).toContain("FORK_MEMORY_CLONE_PASS");
+  expect(
+    runtimeErrors.filter((message) => !/^console: \[\d+\] /.test(message)),
+  ).toEqual([]);
+
+  const borrowedDispatches = partitionForkDispatches(browserTraceRun(
+    "browser-lifecycle",
+    traces,
+    borrowedTraceStart,
+    borrowedTraceEnd,
+  ));
+  expect(borrowedDispatches.length).toBeGreaterThan(0);
+  for (const dispatch of borrowedDispatches) {
+    const sequence = requireCompleteVforkSequence(dispatch);
+    expectPrivatePreparationEvidence(sequence.preparation);
+  }
+
+  const ordinaryDispatches = partitionForkDispatches(browserTraceRun(
+    "browser-ordinary-fork",
+    traces,
+    ordinaryTraceStart,
+    ordinaryTraceEnd,
+  ));
+  expect(ordinaryDispatches).toHaveLength(1);
+  expect(ordinaryDispatches[0].mode).toBe("0");
+  const ordinaryPreparations = ordinaryDispatches[0].traces.filter(
+    (trace) => trace.event === "fork_prepared",
+  );
+  expect(ordinaryPreparations).toHaveLength(1);
+  expect(ordinaryPreparations[0].fields.get("memory_identity")).toBe("distinct");
+  expect(ordinaryPreparations[0].fields.get("live_memory_delta")).toBe("1");
+});
+
+test("contains a browser Worker factory failure after the borrow boundary", async ({
+  page,
+  baseURL,
+}) => {
+  test.setTimeout(180_000);
+  expect(baseURL).toBeTruthy();
+  const traces = captureMechanismTraces(page);
+
+  const failureTraceStart = traces.length;
+  const result = await runBrowserVforkFixture(
+    page,
+    baseURL!,
+    lifecycleProgramPath,
+    undefined,
+    initialAddressSpaceBytes(lifecycleProgramPath),
+    ["vfork-browser-start-failure", "no-successful-exec"],
+    undefined,
+    true,
+    true,
+  );
+  const failureTraceEnd = traces.length;
+  const failureDispatches = partitionForkDispatches(browserTraceRun(
+    "browser-start-failure",
+    traces,
+    failureTraceStart,
+    failureTraceEnd,
+  ));
+  expect(failureDispatches).toHaveLength(1);
+  const failureSequence = requireVforkStartFailureSequence(
+    failureDispatches[0],
+  );
+  expectPrivatePreparationEvidence(failureSequence.preparation);
+  expect(result.exitCode, JSON.stringify(result, null, 2)).toBe(139);
+  expect(result.stdout).not.toContain("PARENT_RESUME_ONE");
+  expect(result.diagnostics).toHaveLength(1);
+  const containment = result.diagnostics.filter((diagnostic) =>
+    diagnostic.source === "vfork address-space containment"
+  );
+  expect(containment).toHaveLength(1);
+  expect(containment[0]).toMatchObject({
+    status: 139,
+    source: "vfork address-space containment",
+  });
+});
+
+test("vfork replays an actual side module through browser mode 1", async ({
+  page,
+  baseURL,
+}) => {
+  test.setTimeout(180_000);
+  expect(baseURL).toBeTruthy();
+  const runtimeErrors = captureRuntimeErrors(page);
+  const traces = captureMechanismTraces(page);
+  const fixture = buildVforkSideModuleFixture();
+
+  try {
+    const sideTraceStart = traces.length;
+    const result = await runBrowserVforkFixture(
+      page,
+      baseURL!,
+      fixture.programPath,
+      undefined,
+      initialAddressSpaceBytes(fixture.programPath),
+      ["vfork-side-main", "/lib/libvfork-side.so"],
+      fixture.libraryPath,
+      true,
+    );
+    const sideTraceEnd = traces.length;
+
+    expect(result.exitCode, JSON.stringify(result, null, 2)).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.diagnostics).toEqual([]);
+    expect(
+      runtimeErrors.filter((message) => !/^console: \[\d+\] /.test(message)),
+    ).toEqual([]);
+    expect(result.stdout.match(/PRODUCTION_SIDE_VFORK_ROUND_TRIP/g))
+      .toHaveLength(2);
+    expect(result.stdout).toContain("PRODUCTION_SIDE_VFORK_PASS");
+    const sideDispatches = partitionForkDispatches(browserTraceRun(
+      "browser-side-module",
+      traces,
+      sideTraceStart,
+      sideTraceEnd,
+    ));
+    expect(sideDispatches).toHaveLength(2);
+    for (const dispatch of sideDispatches) {
+      const sequence = requireCompleteVforkSequence(dispatch);
+      expectPrivatePreparationEvidence(sequence.preparation);
+    }
+  } finally {
+    fixture.cleanup();
+  }
+});
 
 test("vfork keeps its browser parent parked through exit and exec", async ({
   page,
@@ -240,6 +485,43 @@ test("vfork keeps its browser parent parked through exit and exec", async ({
     "PASS: VFORK_LIFECYCLE",
   ]);
   expect(result.processEvents).toContain("exec");
+});
+
+test("vfork repeats on the browser main thread without a second full Memory", async ({
+  page,
+  baseURL,
+}) => {
+  test.setTimeout(180_000);
+  expect(baseURL).toBeTruthy();
+  const runtimeErrors = captureRuntimeErrors(page);
+
+  const result = await runBrowserVforkFixture(
+    page,
+    baseURL!,
+    lifecycleProgramPath,
+    undefined,
+    initialAddressSpaceBytes(lifecycleProgramPath),
+    ["vfork-browser-fixture", "no-successful-exec"],
+  );
+
+  expect(result.exitCode, JSON.stringify(result, null, 2)).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(result.diagnostics).toEqual([]);
+  expect(runtimeErrors).toEqual([]);
+  expectOrdered(result.stdout, [
+    "CHILD_EXIT_ONE",
+    "PARENT_RESUME_ONE",
+    "CHILD_EXIT_TWO",
+    "PARENT_RESUME_TWO",
+    "CHILD_FAILED_EXEC",
+    "PARENT_AFTER_FAILED_EXEC_EXIT",
+    "CHILD_NESTED_FORK_EAGAIN",
+    "CHILD_NESTED_VFORK_EAGAIN",
+    "CHILD_PTHREAD_EAGAIN",
+    "PARENT_AFTER_REJECTED_OWNERSHIP",
+    "PARENT_SKIPPED_EXEC_UNDER_NO_COPY_CEILING",
+    "PASS: VFORK_LIFECYCLE",
+  ]);
 });
 
 test("vfork parks only its calling browser pthread", async ({
@@ -289,6 +571,8 @@ test("vfork releases its browser parent after trap and signal", async ({
     page,
     baseURL!,
     fatalProgramPath,
+    undefined,
+    initialAddressSpaceBytes(fatalProgramPath),
   );
 
   expect(result.exitCode, JSON.stringify(result, null, 2)).toBe(0);
@@ -329,6 +613,8 @@ test("vfork contains a compute-running browser borrower", async ({
     page,
     baseURL!,
     externalSignalProgramPath,
+    undefined,
+    initialAddressSpaceBytes(externalSignalProgramPath),
   );
 
   expect(result.exitCode, JSON.stringify(result, null, 2)).toBe(139);
@@ -364,6 +650,8 @@ test("vfork preserves browser-visible POSIX process state", async ({
     page,
     baseURL!,
     stateProgramPath,
+    undefined,
+    initialAddressSpaceBytes(stateProgramPath),
   );
 
   expect(result.exitCode, JSON.stringify(result, null, 2)).toBe(0);
@@ -371,8 +659,13 @@ test("vfork preserves browser-visible POSIX process state", async ({
   expect(result.diagnostics).toEqual([]);
   expect(runtimeErrors).toEqual([]);
   expectOrdered(result.stdout, [
+    "CHILD_INHERITED_POSIX_STATE",
+    "CHILD_MUTATED_PRIVATE_POSIX_STATE",
+    "CHILD_CONFIRMED_PRIVATE_POSIX_MUTATIONS",
     "PARENT_AFTER_STATE_CHILD",
+    "PARENT_POSIX_STATE_UNCHANGED",
     "PARENT_REAPED_STATE_CHILD",
+    "PARENT_CONFIRMED_EXACT_REAP",
     "PASS: VFORK_POSIX_STATE",
   ]);
 });

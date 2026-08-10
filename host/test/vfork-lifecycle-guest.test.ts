@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 
-import { tryResolveBinary } from "../src/binary-resolver";
+import { resolveBinary } from "../src/binary-resolver";
 import {
   detectPtrWidth,
   extractHeapBase,
@@ -10,14 +10,14 @@ import {
 import { computeProcessMemoryLayout } from "../src/process-memory";
 import { runCentralizedProgram } from "./centralized-test-helper";
 
-const lifecycleProgram = tryResolveBinary("programs/vfork-lifecycle.wasm");
-const threadProgram = tryResolveBinary("programs/vfork-from-thread.wasm");
-const fatalProgram = tryResolveBinary("programs/vfork-fatal-lifecycle.wasm");
-const externalSignalProgram = tryResolveBinary(
+const lifecycleProgram = resolveBinary("programs/vfork-lifecycle.wasm");
+const threadProgram = resolveBinary("programs/vfork-from-thread.wasm");
+const fatalProgram = resolveBinary("programs/vfork-fatal-lifecycle.wasm");
+const externalSignalProgram = resolveBinary(
   "programs/vfork-external-signal.wasm",
 );
-const stateProgram = tryResolveBinary("programs/vfork-posix-state.wasm");
-const execChild = tryResolveBinary("programs/exec-child.wasm");
+const stateProgram = resolveBinary("programs/vfork-posix-state.wasm");
+const execChild = resolveBinary("programs/exec-child.wasm");
 
 function initialAddressSpaceBytes(programPath: string): number {
   const file = readFileSync(programPath);
@@ -43,15 +43,15 @@ function expectOrdered(output: string, markers: readonly string[]): void {
 }
 
 describe("production vfork lifecycle", () => {
-  it.skipIf(!lifecycleProgram || !execChild)(
+  it(
     "keeps the parent parked through exit and failed exec, then releases on exec",
     async () => {
       const events: string[] = [];
       const result = await runCentralizedProgram({
-        programPath: lifecycleProgram!,
+        programPath: lifecycleProgram,
         argv: ["vfork-lifecycle"],
         execPrograms: new Map([
-          ["/bin/vfork-exec-child", execChild!],
+          ["/bin/vfork-exec-child", execChild],
         ]),
         useDefaultRootfs: false,
         timeout: 15_000,
@@ -80,11 +80,42 @@ describe("production vfork lifecycle", () => {
     },
   );
 
-  it.skipIf(!threadProgram)(
+  it(
+    "repeats main-thread vfork without admitting a second full Memory",
+    async () => {
+      const result = await runCentralizedProgram({
+        programPath: lifecycleProgram,
+        argv: ["vfork-lifecycle", "no-successful-exec"],
+        useDefaultRootfs: false,
+        timeout: 15_000,
+        maxProcessMemoryBytes: initialAddressSpaceBytes(lifecycleProgram),
+      });
+
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.hostDiagnostics).toEqual([]);
+      expectOrdered(result.stdout, [
+        "CHILD_EXIT_ONE",
+        "PARENT_RESUME_ONE",
+        "CHILD_EXIT_TWO",
+        "PARENT_RESUME_TWO",
+        "CHILD_FAILED_EXEC",
+        "PARENT_AFTER_FAILED_EXEC_EXIT",
+        "CHILD_NESTED_FORK_EAGAIN",
+        "CHILD_NESTED_VFORK_EAGAIN",
+        "CHILD_PTHREAD_EAGAIN",
+        "PARENT_AFTER_REJECTED_OWNERSHIP",
+        "PARENT_SKIPPED_EXEC_UNDER_NO_COPY_CEILING",
+        "PASS: VFORK_LIFECYCLE",
+      ]);
+    },
+  );
+
+  it(
     "parks a pthread caller while its sibling and child use independent channels",
     async () => {
       const result = await runCentralizedProgram({
-        programPath: threadProgram!,
+        programPath: threadProgram,
         argv: ["vfork-from-thread"],
         useDefaultRootfs: false,
         timeout: 15_000,
@@ -92,7 +123,7 @@ describe("production vfork lifecycle", () => {
         // pthread creation grows it before vfork, so any attempted child
         // allocation would sample an already-exhausted budget and fail. A
         // passing child therefore used the parent's existing Memory alias.
-        maxProcessMemoryBytes: initialAddressSpaceBytes(threadProgram!),
+        maxProcessMemoryBytes: initialAddressSpaceBytes(threadProgram),
       });
 
       expect(result.exitCode, result.stderr).toBe(0);
@@ -111,14 +142,15 @@ describe("production vfork lifecycle", () => {
     },
   );
 
-  it.skipIf(!fatalProgram)(
+  it(
     "releases the parent after exact trap and signal teardown",
     async () => {
       const result = await runCentralizedProgram({
-        programPath: fatalProgram!,
+        programPath: fatalProgram,
         argv: ["vfork-fatal-lifecycle"],
         useDefaultRootfs: false,
         timeout: 15_000,
+        maxProcessMemoryBytes: initialAddressSpaceBytes(fatalProgram),
       });
 
       expect(result.exitCode, result.stderr).toBe(0);
@@ -141,14 +173,15 @@ describe("production vfork lifecycle", () => {
     },
   );
 
-  it.skipIf(!externalSignalProgram)(
+  it(
     "contains a compute-running borrower after an external fatal signal",
     async () => {
       const result = await runCentralizedProgram({
-        programPath: externalSignalProgram!,
+        programPath: externalSignalProgram,
         argv: ["vfork-external-signal"],
         useDefaultRootfs: false,
         timeout: 15_000,
+        maxProcessMemoryBytes: initialAddressSpaceBytes(externalSignalProgram),
       });
 
       expect(result.exitCode, result.stderr).toBe(139);
@@ -172,21 +205,27 @@ describe("production vfork lifecycle", () => {
     20_000,
   );
 
-  it.skipIf(!stateProgram)(
+  it(
     "preserves independent POSIX state and shared open-file descriptions",
     async () => {
       const result = await runCentralizedProgram({
-        programPath: stateProgram!,
+        programPath: stateProgram,
         argv: ["vfork-posix-state"],
         timeout: 15_000,
+        maxProcessMemoryBytes: initialAddressSpaceBytes(stateProgram),
       });
 
       expect(result.exitCode, result.stderr).toBe(0);
       expect(result.stderr).toBe("");
       expect(result.hostDiagnostics).toEqual([]);
       expectOrdered(result.stdout, [
+        "CHILD_INHERITED_POSIX_STATE",
+        "CHILD_MUTATED_PRIVATE_POSIX_STATE",
+        "CHILD_CONFIRMED_PRIVATE_POSIX_MUTATIONS",
         "PARENT_AFTER_STATE_CHILD",
+        "PARENT_POSIX_STATE_UNCHANGED",
         "PARENT_REAPED_STATE_CHILD",
+        "PARENT_CONFIRMED_EXACT_REAP",
         "PASS: VFORK_POSIX_STATE",
       ]);
     },
