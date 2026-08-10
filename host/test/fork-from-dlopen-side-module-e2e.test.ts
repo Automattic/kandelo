@@ -18,6 +18,8 @@ import {
   readForkInstrumentCapabilities,
 } from "../src/dylink";
 import { runCentralizedProgram } from "./centralized-test-helper";
+import { MemoryFileSystem } from "../src/vfs/memory-fs";
+import { buildVforkSideModuleFixture } from "./vfork-side-module-fixture";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(__dirname, "../..");
@@ -211,6 +213,38 @@ describe.skipIf(!hasPrerequisites)("fork from a dlopened side module", () => {
     });
     expect(result.exitCode, `stderr:\n${result.stderr}`).toBe(0);
     expect(result.stdout).toContain("side fork ok");
+  }, 30_000);
+
+  it("runs mode-1 vfork from a real side-module frame in the production worker path", async () => {
+    const fixture = buildVforkSideModuleFixture();
+    try {
+      const libraryBytes = new Uint8Array(readFileSync(fixture.libraryPath));
+      const imageOwner = MemoryFileSystem.create(
+        new SharedArrayBuffer(Math.max(2 * 1024 * 1024, libraryBytes.length * 4)),
+      );
+      imageOwner.mkdir("/lib", 0o755);
+      imageOwner.createFileWithOwner(
+        "/lib/libvforkinside.so",
+        0o755,
+        0,
+        0,
+        libraryBytes,
+      );
+
+      const result = await runCentralizedProgram({
+        programPath: fixture.programPath,
+        argv: ["vfork-from-side-main", "/lib/libvforkinside.so"],
+        timeout: 30_000,
+        rootfsImage: await imageOwner.saveImage(),
+      });
+      expect(result.exitCode, `stderr:\n${result.stderr}`).toBe(0);
+      expect(result.stderr).toBe("");
+      expect(result.stdout.match(/PRODUCTION_SIDE_VFORK_ROUND_TRIP/g))
+        .toHaveLength(2);
+      expect(result.stdout).toContain("PRODUCTION_SIDE_VFORK_PASS");
+    } finally {
+      fixture.cleanup();
+    }
   }, 30_000);
 
   it("replays a fork issued while dlopen runs a side-module constructor", async () => {

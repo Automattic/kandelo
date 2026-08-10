@@ -4,6 +4,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 ARCH=""
 OUTPUT=""
+WAT_OUTPUT="${KANDELO_FORK_FIXTURE_WAT_OUTPUT:-}"
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -52,23 +53,27 @@ INPUT_WASM="$WORK_ROOT/input.wasm"
 if [ "$ARCH" = "wasm64" ]; then
   cat >"$INPUT_WAT" <<WAT
 (module
-  (import "kernel" "kernel_fork" (func \$kernel_fork (result i32)))
+  (import "kernel" "kernel_fork" (func \$kernel_fork (param i32) (result i32)))
   (memory i64 1)
   (func (export "__abi_version") (result i32) (i32.const $ABI_VERSION))
   (func (export "_start")
-    (drop (call \$kernel_fork))))
+    (drop (call \$kernel_fork (i32.const 0)))))
 WAT
   wat2wasm --enable-memory64 "$INPUT_WAT" -o "$INPUT_WASM"
 else
   cat >"$INPUT_WAT" <<WAT
 (module
-  (import "kernel" "kernel_fork" (func \$kernel_fork (result i32)))
+  (import "kernel" "kernel_fork" (func \$kernel_fork (param i32) (result i32)))
   (memory 1)
   (func (export "__abi_version") (result i32) (i32.const $ABI_VERSION))
   (func (export "_start")
-    (drop (call \$kernel_fork))))
+    (drop (call \$kernel_fork (i32.const 0)))))
 WAT
   wat2wasm "$INPUT_WAT" -o "$INPUT_WASM"
+fi
+
+if [ -n "$WAT_OUTPUT" ]; then
+  cp "$INPUT_WAT" "$WAT_OUTPUT"
 fi
 
 bash "$REPO_ROOT/scripts/run-wasm-fork-instrument.sh" \

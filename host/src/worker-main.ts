@@ -2822,6 +2822,13 @@ function createProcessTableReplicationOwner(options: {
   readonly newArena: () => ForkModuleStateArena;
   readonly materializeModules: (snapshot: DylinkForkArchiveSnapshot) => void;
   readonly restoreSnapshots: boolean;
+  /**
+   * The vfork parent holds the archive reader from capture until its parked
+   * fork syscall returns, so the borrowed child's already-materialized
+   * snapshot cannot change. Generation guards may observe that local
+   * generation without mutating the parent's reader/writer lock words.
+   */
+  readonly borrowedImmutableSnapshot?: boolean;
   readonly label: string;
 }): ProcessTableReplicationOwner {
   const generationAddress = new WebAssembly.Global(
@@ -2870,6 +2877,13 @@ function createProcessTableReplicationOwner(options: {
     },
     `${options.label}: table replica`,
   );
+  if (options.borrowedImmutableSnapshot) {
+    // Capture holds the parent's process-archive reader until the parked
+    // syscall returns. Adopt the exact immutable generation the child has
+    // already materialized so side-module guards report truthful state
+    // without attempting to mutate either archive lock word.
+    replica.adoptPublishedGeneration(options.dlopen.archive.generation());
+  }
 
   const reconcileLocked = (): number => {
     replicaMaterializing = true;
@@ -2951,7 +2965,9 @@ function createProcessTableReplicationOwner(options: {
   });
 
   const reconcileNow = (): number =>
-    options.dlopen.withArchiveWriter(reconcileLocked);
+    options.borrowedImmutableSnapshot
+      ? replica.generation()
+      : options.dlopen.withArchiveWriter(reconcileLocked);
   const abortActiveMutations = (): void => {
     while (mutationContexts.length > 0) {
       mutationContexts.pop();
@@ -3828,6 +3844,7 @@ export async function centralizedWorkerMain(
         // The process table journal is for separately instantiated pthread
         // Workers and later generations, not a second initial child restore.
         restoreSnapshots: !initData.isForkChild,
+        borrowedImmutableSnapshot: borrowedForkChild,
         label: `pid=${pid}`,
       });
       if (initData.isForkChild) {

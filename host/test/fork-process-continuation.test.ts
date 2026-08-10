@@ -284,6 +284,16 @@ describe("ForkProcessContinuationCoordinator", () => {
       "borrowed child",
       "read-only",
     );
+    expect(child.coordinator).not.toBe(parent.coordinator);
+    expect(child.arena).not.toBe(parent.arena);
+    for (const activationId of [0, 4, 9]) {
+      expect(child.continuations.get(activationId)).not.toBe(
+        parent.continuations.get(activationId),
+      );
+    }
+    for (const [activationId, privatePrefix] of privatePrefixes) {
+      expect(privatePrefix).not.toBe(parent.coordinator.rootFor(activationId));
+    }
     child.arena.attachBorrowed(arenaRoot);
     const prefixRequests: number[] = [];
     child.coordinator.attachBorrowedChild(child.arena, (request) => {

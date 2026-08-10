@@ -114,6 +114,7 @@ import {
   type ExactProcessGenerationDetachResult,
 } from "./process-generation-detach";
 import { ProcessMemoryCreatorGate } from "./process-memory-creator-gate";
+import { sampleProcessMemoryStats } from "./fork-mechanism-trace";
 import type {
   HostDiagnostic,
   MainToKernelMessage,
@@ -152,6 +153,14 @@ const pendingLazyRegistrationMessages: LazyRegistrationMessage[] = [];
 let lazyRegistrationTail: Promise<void> = Promise.resolve();
 const rootfsSnapshotGate = new RootfsSnapshotGate();
 const processMemoryCreators = new ProcessMemoryCreatorGate();
+let vforkMechanismTraceEnabled = false;
+let injectVforkWorkerStartFailure = false;
+let injectedVforkWorkerStartFailure = false;
+
+function traceVforkMechanism(event: string, fields: string): void {
+  if (!vforkMechanismTraceEnabled) return;
+  console.log(`[vfork-mechanism] event=${event} ${fields}`);
+}
 
 // Process tracking
 interface ForkReplayContext {
@@ -983,6 +992,11 @@ async function handleInit(msg: Extract<MainToKernelMessage, { type: "init" }>) {
   maxPages = msg.config.maxMemoryPages;
   defaultThreadSlots = msg.config.defaultThreadSlots ?? DEFAULT_PROCESS_THREAD_SLOTS;
   defaultEnv = msg.config.env;
+  vforkMechanismTraceEnabled = msg.config.enableSyscallLog === true;
+  injectVforkWorkerStartFailure = defaultEnv.includes(
+    "KANDELO_TEST_VFORK_WORKER_START_FAILURE=once",
+  );
+  injectedVforkWorkerStartFailure = false;
   processMemoryAllocator = new ProcessMemoryAllocator({
     // The sampled byte budget is the concurrency authority. Keep the count
     // ceiling high enough that small address spaces do not inherit the
@@ -1582,6 +1596,13 @@ function installProcessWorkerListeners(
   //   m.status — worker-main posted {type:"exit"}, normal exit path.
   worker.on("error", (err: Error) => {
     if (intentionallyTerminated.has(worker as object)) return;
+    const active = processes.get(pid);
+    if (
+      active?.worker === worker
+      && vforkLifetimes.phaseForChild(active) !== undefined
+    ) {
+      traceVforkMechanism("worker_crashed", `child=${pid}`);
+    }
     const signum = classifiedSignalOrFallback(err);
     const status = signalExitStatus(signum);
     finalize(
@@ -1626,6 +1647,9 @@ function installProcessWorkerListeners(
       // The browser entry emits this only after worker-main returns. Unlike
       // Browser Worker.terminate(), this is an exact-generation ownership
       // fence and can authorize dropping the allocator's strong reference.
+      if (vforkLifetimes.phaseForChild(process) !== undefined) {
+        traceVforkMechanism("memory_quiescent", `child=${pid}`);
+      }
       process.workerQuiescence.settle();
     }
     if (m.type === "exec_retired" && m.tid === undefined) {
@@ -1664,6 +1688,10 @@ async function handleFork(
   borrowedReplay?: ForkBorrowedReplayWorkspace,
   releaseCreatorAdmission?: () => void,
 ): Promise<number[]> {
+  traceVforkMechanism(
+    "dispatch",
+    `mode=${mode} parent=${parentPid} child=${childPid}`,
+  );
   if (mode === PROCESS_FORK_MODE_VFORK) {
     if (!borrowedReplay) {
       throw new VforkAddressSpaceBusyError(
@@ -1716,6 +1744,10 @@ function completeVforkGenerationTeardown(
     );
     return;
   }
+  traceVforkMechanism(
+    "exact_teardown",
+    `child_channel=${info.channelOffset} reason=${reason}`,
+  );
   releaseVforkWorkspace(info);
   if (phase === "starting") {
     vforkLifetimes.completeWithoutBorrow(
@@ -1798,6 +1830,10 @@ async function finishVforkDisposition(
   if (disposition.kind === "contain-address-space") {
     return containVforkAddressSpace(disposition, childGeneration, parentPid);
   }
+  traceVforkMechanism(
+    "parent_released",
+    `parent=${parentPid} child=${disposition.childPid}`,
+  );
   return [childGeneration.channelOffset];
 }
 
@@ -1833,7 +1869,15 @@ async function handleVfork(
     parentInfo.programModule = new WebAssembly.Module(parentInfo.programBytes);
   }
 
+  const memoryStatsBefore = sampleProcessMemoryStats(
+    vforkMechanismTraceEnabled,
+    processMemoryAllocator,
+  );
   const childMemoryLease = parentInfo.memoryLease.retainAlias();
+  const memoryStatsAfterAlias = sampleProcessMemoryStats(
+    vforkMechanismTraceEnabled,
+    processMemoryAllocator,
+  );
   let childMemoryLeaseConsumed = false;
   let workspaceAllocation: ReturnType<ThreadPageAllocator["allocate"]>;
   try {
@@ -1945,9 +1989,16 @@ async function handleVfork(
       kernelAbiVersion: kernelWorker.getKernelAbiVersion(),
     };
 
-    childWorker = new DeferredWorkerHandle(
-      () => workerAdapter.createWorker(childInitData),
-    );
+    childWorker = new DeferredWorkerHandle(() => {
+      if (
+        injectVforkWorkerStartFailure
+        && !injectedVforkWorkerStartFailure
+      ) {
+        injectedVforkWorkerStartFailure = true;
+        throw new Error("injected vfork Worker constructor failure");
+      }
+      return workerAdapter.createWorker(childInitData);
+    });
     launchedWorker = childWorker;
     bindForkHostImports(childWorker, forkHostImports);
     childGeneration = {
@@ -1970,6 +2021,23 @@ async function handleVfork(
       externrefGeneration: externrefGrant.generation,
       vforkWorkspace: workspaceOwnership,
     };
+    if (memoryStatsBefore && memoryStatsAfterAlias) {
+      traceVforkMechanism(
+        "vfork_prepared",
+        `mode=1 parent=${parentPid} child=${childPid} memory_identity=${
+          childGeneration.memory === parentMemory ? "same" : "distinct"
+        } live_memory_delta=${
+          memoryStatsAfterAlias.liveMemories - memoryStatsBefore.liveMemories
+        } alias_delta=${
+          memoryStatsAfterAlias.liveAliases - memoryStatsBefore.liveAliases
+        } parent_channel=${parentInfo.channelOffset} child_channel=${childChannelOffset} `
+          + `owner_control=${childInitData.forkOwnerControlAddr} `
+          + `child_prefix=${childInitData.forkPrivatePrefixAddr} `
+          + `scratch=${childInitData.forkScratchAddr} `
+          + `externref_parent=${parentInfo.externrefGeneration.id} `
+          + `externref_child=${childGeneration.externrefGeneration.id}`,
+      );
+    }
     lifetime = vforkLifetimes.begin(
       parentPid,
       childPid,
@@ -1995,6 +2063,10 @@ async function handleVfork(
       parentMemory,
       () => {
         vforkLifetimes.markChildMayAccessMemory(childGeneration!);
+        traceVforkMechanism(
+          "child_may_access_memory",
+          `parent=${parentPid} child=${childPid}`,
+        );
         try {
           launchedWorker.start();
         } catch (error) {
@@ -2003,6 +2075,10 @@ async function handleVfork(
           vforkLifetimes.requireAddressSpaceContainment(
             childGeneration!,
             error,
+          );
+          traceVforkMechanism(
+            "worker_start_failed",
+            `parent=${parentPid} child=${childPid}`,
           );
         }
       },
@@ -2151,6 +2227,10 @@ async function handleOrdinaryFork(
   // WHY: teardown and compilation below yield. A sibling exec may then retire
   // the parent's exact generation, so the committed fork must pass
   // retired-memory admission and own its clone before the first await.
+  const memoryStatsBeforeClone = sampleProcessMemoryStats(
+    vforkMechanismTraceEnabled,
+    processMemoryAllocator,
+  );
   const childMemoryLease = acquireForkMemoryClone(
     processMemoryAllocator,
     parentMemory,
@@ -2158,6 +2238,20 @@ async function handleOrdinaryFork(
     childLayout.maximumPages,
   );
   const childMemory = childMemoryLease.memory;
+  const memoryStatsAfterClone = sampleProcessMemoryStats(
+    vforkMechanismTraceEnabled,
+    processMemoryAllocator,
+  );
+  if (memoryStatsBeforeClone && memoryStatsAfterClone) {
+    traceVforkMechanism(
+      "fork_prepared",
+      `mode=${mode} parent=${parentPid} child=${childPid} memory_identity=${
+        childMemory === parentMemory ? "same" : "distinct"
+      } live_memory_delta=${
+        memoryStatsAfterClone.liveMemories - memoryStatsBeforeClone.liveMemories
+      }`,
+    );
+  }
   const childChannelOffset = childLayout.channelOffset;
   let childWorker: DeferredWorkerHandle | undefined;
   let registered = false;

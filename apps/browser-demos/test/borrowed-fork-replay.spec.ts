@@ -387,20 +387,28 @@ test("borrowed side-module reconstruction does not write parent memory", async (
           maximum: 100,
           shared: true,
         });
+        const parentTable = new WebAssembly.Table({
+          initial: 1,
+          element: "anyfunc",
+        });
+        const parentStackPointer = new WebAssembly.Global(
+          { value: "i32", mutable: true },
+          65_536,
+        );
+        const parentGlobalSymbols = new Map<string, number>();
+        const parentGot = new Map<string, WebAssembly.Global>();
+        const parentLoadedLibraries = new Map<string, unknown>();
         const parent = loadSharedLibrarySync(
           "libborrowed-browser-side.so",
           new Uint8Array(bytes),
           {
             memory,
-            table: new WebAssembly.Table({ initial: 1, element: "anyfunc" }),
-            stackPointer: new WebAssembly.Global(
-              { value: "i32", mutable: true },
-              65_536,
-            ),
+            table: parentTable,
+            stackPointer: parentStackPointer,
             heapPointer: { value: 4_096 },
-            globalSymbols: new Map(),
-            got: new Map(),
-            loadedLibraries: new Map(),
+            globalSymbols: parentGlobalSymbols,
+            got: parentGot,
+            loadedLibraries: parentLoadedLibraries,
           },
         );
         (parent.exports.inc_counter as () => void)();
@@ -410,9 +418,27 @@ test("borrowed side-module reconstruction does not write parent memory", async (
           parent.memoryBase,
           parent.metadata.memorySize,
         ).slice();
+        const parentLoaderState = {
+          stackPointer: Number(parentStackPointer.value),
+          tableLength: parentTable.length,
+          globalSymbols: parentGlobalSymbols.size,
+          got: parentGot.size,
+          loadedLibraries: parentLoadedLibraries.size,
+        };
 
         const childWorker = new Worker(childWorkerUrl, { type: "module" });
-        let childResult: { value?: number; error?: string };
+        let childResult: {
+          value?: number;
+          privateLoaderState?: {
+            stackPointer: number;
+            tableLengthBeforeMutation: number;
+            tableLengthAfterMutation: number;
+            hasGlobalSymbol: boolean;
+            hasGotEntry: boolean;
+            hasLoadedLibrary: boolean;
+          };
+          error?: string;
+        };
         try {
           childResult = await new Promise((resolve, reject) => {
             childWorker.onmessage = (event) => resolve(event.data);
@@ -440,8 +466,18 @@ test("borrowed side-module reconstruction does not write parent memory", async (
         return {
           parentBefore,
           childValue: childResult.value,
+          childLoaderState: childResult.privateLoaderState,
           dataUnchanged,
           parentAfter: (parent.exports.get_counter as () => number)(),
+          parentLoaderStateUnchanged:
+            Number(parentStackPointer.value) === parentLoaderState.stackPointer
+            && parentTable.length === parentLoaderState.tableLength
+            && parentGlobalSymbols.size === parentLoaderState.globalSymbols
+            && parentGot.size === parentLoaderState.got
+            && parentLoadedLibraries.size === parentLoaderState.loadedLibraries
+            && !parentGlobalSymbols.has("__borrowed_child_only")
+            && !parentGot.has("__borrowed_child_only")
+            && !parentLoadedLibraries.has("__borrowed_child_only"),
         };
       },
       {
@@ -454,8 +490,17 @@ test("borrowed side-module reconstruction does not write parent memory", async (
     expect(result, browserName).toEqual({
       parentBefore: 42,
       childValue: 42,
+      childLoaderState: {
+        stackPointer: 77_777,
+        tableLengthBeforeMutation: 3,
+        tableLengthAfterMutation: 4,
+        hasGlobalSymbol: true,
+        hasGotEntry: true,
+        hasLoadedLibrary: true,
+      },
       dataUnchanged: true,
       parentAfter: 42,
+      parentLoaderStateUnchanged: true,
     });
   } finally {
     fixture.cleanup();
