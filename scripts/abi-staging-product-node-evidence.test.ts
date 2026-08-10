@@ -1537,11 +1537,15 @@ test("accepts bounded empty files inside an exact toolchain component", () => {
     const path = join(root, relativePath);
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, new Uint8Array());
-    const bundle = JSON.parse(JSON.stringify(RUNTIME_BUNDLE)) as typeof RUNTIME_BUNDLE;
-    bundle.inventory = [
-      ...bundle.inventory,
-      { bytes: 0, path: relativePath, sha256: sha256Hex(new Uint8Array()) },
-    ].sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+    const bundle = {
+      ...RUNTIME_BUNDLE,
+      inventory: [
+        ...RUNTIME_BUNDLE.inventory,
+        { bytes: 0, path: relativePath, sha256: sha256Hex(new Uint8Array()) },
+      ].sort((left, right) =>
+        left.path < right.path ? -1 : left.path > right.path ? 1 : 0
+      ),
+    };
 
     assert.doesNotThrow(() =>
       validateExactRuntimeArtifactRoot(canonicalJsonBytes(bundle), root)
