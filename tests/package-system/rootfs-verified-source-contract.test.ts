@@ -247,6 +247,28 @@ describe("source-rootfs verified archive contract", () => {
     "\\[\\e]133;A\\a\\]\\[\\e[36m\\]\\u@\\h \\[\\e[34m\\]\\w \\[\\e[31m\\]❯\\[\\e[0m\\] \\[\\e]133;B\\a\\]";
   const styledUserPrompt =
     "\\[\\e]133;A\\a\\]\\[\\e[36m\\]\\u@\\h \\[\\e[34m\\]\\w \\[\\e[32m\\]❯\\[\\e[0m\\] \\[\\e]133;B\\a\\]";
+  const runDash = (interactive: boolean): string =>
+    execFileSync(
+      "nix",
+      [
+        "shell",
+        "--inputs-from",
+        repoRoot,
+        "nixpkgs#dash",
+        "--command",
+        "dash",
+        ...(interactive ? ["-i"] : []),
+        "-c",
+        printPrompt,
+        "dash",
+        promptPath,
+      ],
+      {
+        encoding: "utf8",
+        env: { ...process.env, TERM: "xterm-256color" },
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
   const runBash = (
     interactive: boolean,
     term: string,
@@ -299,23 +321,7 @@ printf "%s" "$PS1"
   it("leaves the image prompt unchanged outside interactive Bash", () => {
     expect(runBash(false, "xterm-256color")).toBe("sentinel");
     for (const interactive of [false, true]) {
-      expect(
-        execFileSync(
-          "dash",
-          [
-            ...(interactive ? ["-i"] : []),
-            "-c",
-            printPrompt,
-            "dash",
-            promptPath,
-          ],
-          {
-            encoding: "utf8",
-            env: { ...process.env, TERM: "xterm-256color" },
-            stdio: ["ignore", "pipe", "pipe"],
-          },
-        ),
-      ).toBe("sentinel");
+      expect(runDash(interactive)).toBe("sentinel");
     }
   });
 
