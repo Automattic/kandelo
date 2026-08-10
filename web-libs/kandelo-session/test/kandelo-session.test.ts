@@ -905,6 +905,65 @@ describe("LiveKernelHost: shell command queue", () => {
     expect(completed).toBe(true);
   });
 
+  it("waits for OSC 133 command-start after a dynamic Bash prompt", async () => {
+    const encoder = new TextEncoder();
+    const promptStart = "\x1b]133;A\x07";
+    const commandStart = "\x1b]133;B\x07";
+    let onOutput: ((data: Uint8Array) => void) | null = null;
+    let observeWrite!: () => void;
+    const commandWritten = new Promise<void>((resolve) => {
+      observeWrite = resolve;
+    });
+
+    const host = new LiveKernelHost({
+      kernel: {
+        fs: makeFs({ "/etc/passwd": "" }),
+        spawnFromVfs: async () => ({
+          pid: 100,
+          exit: new Promise<number>(() => {}),
+        }),
+        onPtyOutput(_pid: number, callback: (data: Uint8Array) => void) {
+          onOutput = callback;
+          callback(encoder.encode(
+            `${promptStart}\x1b[36muser@kandelo ` +
+              `\x1b[34m/home/user \x1b[32m❯\x1b[0m ${commandStart}`,
+          ));
+        },
+        ptyResize() {},
+        ptyWrite(_pid: number, _data: Uint8Array) {
+          onOutput?.(encoder.encode("cd /tmp\r\nprompt-looking output ❯ "));
+          observeWrite();
+        },
+      } as any,
+    });
+    host.setDefaultShell({
+      programPath: "/bin/bash",
+      programBytes: new ArrayBuffer(0),
+      argv: ["bash", "-l", "-i"],
+      env: [],
+      cwd: "/home/user",
+    });
+
+    let completed = false;
+    const command = host.runShellCommand("cd /tmp");
+    void command.then(() => {
+      completed = true;
+    });
+
+    await commandWritten;
+    onOutput?.(encoder.encode(
+      `${promptStart}\x1b[36muser@kandelo ` +
+        "\x1b[34m/tmp \x1b[32m❯\x1b[0m ",
+    ));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(completed).toBe(false);
+
+    onOutput?.(encoder.encode(commandStart));
+    await command;
+    expect(completed).toBe(true);
+  });
+
   it("serializes concurrent PTY attaches for the same terminal session", async () => {
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();

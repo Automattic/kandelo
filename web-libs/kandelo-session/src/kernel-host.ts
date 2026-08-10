@@ -1,5 +1,6 @@
 import type { DemoGuideConfig } from "./demo-config";
 import { advanceLazyDownloadSummary } from "./lazy-download";
+import { ptyBufferEndsWithPrompt } from "./pty-readiness";
 
 // KernelHost — the contract between Kandelo session UI and the kernel/host runtime.
 //
@@ -656,17 +657,6 @@ interface LivePtySession {
 
 function clampPendingRequestCount(count: number): number {
   return Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
-}
-
-function ptyBufferEndsWithPrompt(buffer: string, prompt: string | null = null): boolean {
-  const plain = buffer
-    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, "")
-    .replace(/\r/g, "\n");
-  if (prompt) return plain.endsWith(prompt);
-  // Do not treat the shell continuation prompt (`> `) as ready. The demo
-  // guide sends heredocs through this path, and PS2 appears before the command
-  // has finished.
-  return /(?:^|\n)[^\n]*[$#] $/.test(plain);
 }
 
 function shellPrompt(shell: NonNullable<LiveKernelHostOptions["shell"]>): string | null {
