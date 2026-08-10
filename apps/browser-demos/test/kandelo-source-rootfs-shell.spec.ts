@@ -10,6 +10,19 @@ async function terminalText(page: Page): Promise<string> {
   );
 }
 
+async function runTerminalLine(page: Page, command: string) {
+  await page.locator(".kshell-host").first().click();
+  const terminalInput = page
+    .getByRole("textbox", { name: "Terminal input" })
+    .first();
+  if (await terminalInput.count()) {
+    await terminalInput.focus();
+  }
+  await page.keyboard.insertText(command);
+  await page.waitForTimeout(250);
+  await page.keyboard.press("Enter");
+}
+
 async function runGuideScript(
   page: Page,
   script: string,
@@ -68,13 +81,14 @@ test("the exact source-rootfs product shell runs Bash, Vim, and NetHack", async 
   });
   await expect.poll(() => terminalText(page), { timeout: 120_000 })
     .toMatch(/user@kandelo ~ ❯\s*$/);
-  await runGuideScript(
-    page,
-    "cd /tmp\nprintf 'KANDELO_PROMPT_CWD_OK:%s\\n' \"$PWD\"",
-    "KANDELO_PROMPT_CWD_OK:/tmp",
-  );
+  await runTerminalLine(page, "cd /tmp");
   await expect.poll(() => terminalText(page), { timeout: 120_000 })
     .toMatch(/user@kandelo \/tmp ❯\s*$/);
+  await runGuideScript(
+    page,
+    "printf 'KANDELO_PROMPT_CWD_OK:%s\\n' \"$PWD\"",
+    "KANDELO_PROMPT_CWD_OK:/tmp",
+  );
 
   await runGuideScript(
     page,

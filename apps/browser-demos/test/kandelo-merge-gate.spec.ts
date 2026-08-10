@@ -82,6 +82,19 @@ async function waitForTerminalContent(
   }
 }
 
+async function runTerminalLine(page: Page, command: string) {
+  await page.locator(".kshell-host").first().click();
+  const terminalInput = page
+    .getByRole("textbox", { name: "Terminal input" })
+    .first();
+  if (await terminalInput.count()) {
+    await terminalInput.focus();
+  }
+  await page.keyboard.insertText(command);
+  await page.waitForTimeout(250);
+  await page.keyboard.press("Enter");
+}
+
 async function runGuideScript(
   page: Page,
   script: string,
@@ -236,12 +249,13 @@ test("Kandelo shell demo runs bash, vim, and NetHack", async ({ page }) => {
   await waitForReady(page);
   await expect(page.locator(".xterm-rows").first()).toBeVisible({ timeout: 120_000 });
   await waitForTerminalContent(page, /user@kandelo ~ ❯\s*$/, 120_000);
+  await runTerminalLine(page, "cd /tmp");
+  await waitForTerminalContent(page, /user@kandelo \/tmp ❯\s*$/, 120_000);
   await runGuideScript(
     page,
-    "cd /tmp\nprintf 'KANDELO_PROMPT_CWD_OK:%s\\n' \"$PWD\"",
+    "printf 'KANDELO_PROMPT_CWD_OK:%s\\n' \"$PWD\"",
     "KANDELO_PROMPT_CWD_OK:/tmp",
   );
-  await waitForTerminalContent(page, /user@kandelo \/tmp ❯\s*$/, 120_000);
 
   await runGuideScript(
     page,
