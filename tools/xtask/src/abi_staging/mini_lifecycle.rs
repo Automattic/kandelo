@@ -1182,12 +1182,7 @@ fn promote_formula_layers(
                 request_sha256,
                 ExactSubjectV1 {
                     kind: SubjectKindV1::Candidate,
-                    identity: format!(
-                        "{}/{}@sha256:{}",
-                        fixture.tap.source.repository,
-                        candidate.formula.name,
-                        candidate.candidate.sha256
-                    ),
+                    identity: candidate.candidate_record_sha256.clone(),
                     architecture: None,
                 },
                 fixture,
@@ -1211,7 +1206,30 @@ fn promote_formula_layers(
                 tap_source: fixture.tap.source.clone(),
                 canonical: artifact_from_local(&canonical),
                 canonical_public_readback_sha256: canonical.sha256.clone(),
-                formula_metadata_source: fixture.tap.source.clone(),
+                formula_metadata_source: ExactGitSourceV1 {
+                    repository: fixture.tap.source.repository.clone(),
+                    commit: "dddddddddddddddddddddddddddddddddddddddd".to_string(),
+                    tree: "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string(),
+                },
+                formula_metadata_update: FormulaMetadataUpdateV1 {
+                    formula: candidate.formula.name.clone(),
+                    architecture: candidate.formula.architecture,
+                    expected_main_commit: fixture.tap.source.commit.clone(),
+                    expected_normalized_formula_sha256: fixture.transition.policy_sha256.clone(),
+                    expected_generated_metadata_sha256: fixture
+                        .transition
+                        .target_snapshot_sha256
+                        .clone(),
+                    allowed_paths: vec![
+                        format!("Formula/{}.rb", candidate.formula.name),
+                        format!("Kandelo/formula/{}.json", candidate.formula.name),
+                        "Kandelo/metadata.json".to_string(),
+                    ],
+                    canonical_manifest_digest: canonical.sha256.clone(),
+                    bottle_layer_sha256: candidate.candidate.sha256.clone(),
+                    bottle_layer_bytes: candidate.candidate.bytes,
+                    target_abi: fixture.transition.target_abi,
+                },
                 original_producer: candidate.producer.clone(),
             },
         });

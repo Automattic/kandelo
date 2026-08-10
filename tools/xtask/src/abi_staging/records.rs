@@ -110,7 +110,9 @@ pub struct RequestIssuanceV1 {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "mode", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum RequestAuthorizationV1 {
-    SameRepository { head: String },
+    SameRepository {
+        head: String,
+    },
     ForkExactSha {
         head: String,
         authorizing_comment_id: u64,
@@ -146,9 +148,7 @@ struct RequestRequirementsIdentityV1<'a> {
     evidence: &'a [RequestEvidenceBindingV1],
 }
 
-pub fn request_requirements_digest(
-    requirements: &RequestRequirementsV1,
-) -> Result<String, String> {
+pub fn request_requirements_digest(requirements: &RequestRequirementsV1) -> Result<String, String> {
     canonical_sha256(&RequestRequirementsIdentityV1 {
         change_classes: &requirements.change_classes,
         products: &requirements.products,
@@ -210,10 +210,7 @@ pub fn request_is_current(
         && request.issuance.guard_registry_sha256 == guard_registry_sha256
 }
 
-pub fn candidate_request_asset_name(
-    head: &str,
-    request_digest: &str,
-) -> Result<String, String> {
+pub fn candidate_request_asset_name(head: &str, request_digest: &str) -> Result<String, String> {
     validate_git_sha(head)?;
     validate_sha256(request_digest)?;
     Ok(format!(
@@ -690,6 +687,21 @@ pub struct MergedPullRequestV1 {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
+pub struct FormulaMetadataUpdateV1 {
+    pub formula: String,
+    pub architecture: VfsArchitectureV1,
+    pub expected_main_commit: String,
+    pub expected_normalized_formula_sha256: String,
+    pub expected_generated_metadata_sha256: String,
+    pub allowed_paths: Vec<String>,
+    pub canonical_manifest_digest: String,
+    pub bottle_layer_sha256: String,
+    pub bottle_layer_bytes: u64,
+    pub target_abi: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct AdmissionPayloadV1 {
     pub candidate_record_sha256: String,
     pub promoted_layer: ArtifactIdentityV1,
@@ -699,6 +711,7 @@ pub struct AdmissionPayloadV1 {
     pub canonical: ArtifactIdentityV1,
     pub canonical_public_readback_sha256: String,
     pub formula_metadata_source: ExactGitSourceV1,
+    pub formula_metadata_update: FormulaMetadataUpdateV1,
     pub original_producer: CandidateProducerV1,
 }
 
@@ -730,6 +743,117 @@ pub struct DeletionRecordV1 {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AbiHistoryPlanV1 {
+    pub source_abi: u64,
+    pub successor_abi: u64,
+    pub preactivation_tap_commit: String,
+    pub preactivation_tap_tree: String,
+    pub branch: String,
+    pub expected_current_metadata_sha256: String,
+    pub protection_requirement_sha256: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProtectionEvidenceSourceV1 {
+    BranchProtection,
+    Ruleset,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProtectionEvidenceV1 {
+    pub branch: String,
+    pub covered: bool,
+    pub observed_protection_sha256: String,
+    pub protection_requirement_sha256: String,
+    pub ref_object: String,
+    pub ref_tree: String,
+    pub source: ProtectionEvidenceSourceV1,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AbiHistoryRecordV1 {
+    pub schema: u64,
+    pub kind: String,
+    pub plan: AbiHistoryPlanV1,
+    pub created_ref_object: String,
+    pub protection_evidence: ProtectionEvidenceV1,
+    pub metadata_verification_sha256: String,
+    pub public_readback_sha256: String,
+    pub run: RecordRunProvenanceV1,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HistoricalFormulaV1 {
+    pub tap: String,
+    pub formula: String,
+    pub architecture: VfsArchitectureV1,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum HistoricalMaintenanceReasonV1 {
+    FailedPackageRepair,
+    SecurityRebuild,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct HistoricalMaintenanceAuthorizationV1 {
+    pub schema: u64,
+    pub kind: String,
+    pub abi: u64,
+    pub branch: String,
+    pub source: ExactGitSourceV1,
+    pub formula: HistoricalFormulaV1,
+    pub reason: HistoricalMaintenanceReasonV1,
+    pub maintainer: MaintainerAuthorizationV1,
+    pub policy: PolicyIdentityV1,
+    pub history_record: RecordLinkV1,
+    pub run: RecordRunProvenanceV1,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AbiEpochSubjectV1 {
+    pub formula: String,
+    pub architecture: VfsArchitectureV1,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AbiEpochTerminalOutcomeV1 {
+    pub subject: AbiEpochSubjectV1,
+    pub outcome: TerminalOutcomeV1,
+    pub record: RecordLinkV1,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AbiEpochStateV1 {
+    Active,
+    Retiring,
+    Retired,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AbiEpochStatusV1 {
+    pub schema: u64,
+    pub kind: String,
+    pub abi: u64,
+    pub scheduled_subjects: Vec<AbiEpochSubjectV1>,
+    pub terminal_outcomes: Vec<AbiEpochTerminalOutcomeV1>,
+    pub state: AbiEpochStateV1,
+    pub repair_links: Vec<RecordLinkV1>,
+    pub run: RecordRunProvenanceV1,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind")]
 pub enum AbiStagingRecordV1 {
     #[serde(rename = "kandelo-abi-staging-attempt")]
@@ -752,17 +876,37 @@ pub enum AbiStagingRecordV1 {
     Deletion(DeletionRecordV1),
 }
 
-pub fn parse_record(canonical_bytes: &[u8]) -> Result<AbiStagingRecordV1, String> {
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum AbiDurableRecordV1 {
+    Staging(AbiStagingRecordV1),
+    History(AbiHistoryRecordV1),
+    HistoricalMaintenance(HistoricalMaintenanceAuthorizationV1),
+    EpochStatus(AbiEpochStatusV1),
+}
+
+pub fn parse_record(canonical_bytes: &[u8]) -> Result<AbiDurableRecordV1, String> {
     if canonical_bytes.len() > MAX_REQUEST_BYTES {
         return Err("ABI staging record exceeds the 4 MiB limit".to_string());
     }
-    let record: AbiStagingRecordV1 = serde_json::from_slice(canonical_bytes)
+    let record: AbiDurableRecordV1 = serde_json::from_slice(canonical_bytes)
         .map_err(|error| format!("ABI staging record is invalid JSON: {error}"))?;
     if canonical_json_bytes(&record)? != canonical_bytes {
         return Err("ABI staging record is not canonical JSON".to_string());
     }
-    validate_record(&record)?;
+    validate_durable_record(&record)?;
     Ok(record)
+}
+
+pub fn validate_durable_record(record: &AbiDurableRecordV1) -> Result<(), String> {
+    match record {
+        AbiDurableRecordV1::Staging(record) => validate_record(record),
+        AbiDurableRecordV1::History(record) => validate_history(record),
+        AbiDurableRecordV1::HistoricalMaintenance(record) => {
+            validate_historical_maintenance(record)
+        }
+        AbiDurableRecordV1::EpochStatus(record) => validate_epoch_status(record),
+    }
 }
 
 pub fn run_cli(action: &str, args: &[String]) -> Result<(), String> {
@@ -817,7 +961,9 @@ fn validate_attempt(record: &AttemptRecordV1) -> Result<(), String> {
         if record.common.artifact_class != ArtifactClassV1::Candidate
             || record.common.artifact.as_ref() != Some(candidate)
         {
-            return Err("attempt candidate identity does not match common artifact state".to_string());
+            return Err(
+                "attempt candidate identity does not match common artifact state".to_string(),
+            );
         }
     } else if record.common.artifact_class == ArtifactClassV1::Candidate {
         return Err("attempt claims candidate artifact class without candidate bytes".to_string());
@@ -936,9 +1082,7 @@ fn validate_product_evidence(record: &ProductEvidenceRecordV1) -> Result<(), Str
     Ok(())
 }
 
-fn validate_capture_authorization(
-    record: &CaptureOverrideAuthorizationV1,
-) -> Result<(), String> {
+fn validate_capture_authorization(record: &CaptureOverrideAuthorizationV1) -> Result<(), String> {
     validate_record_header(record.schema, &record.common, false)?;
     let payload = &record.capture_authorization;
     validate_formula_subject(&payload.formula)?;
@@ -961,10 +1105,10 @@ fn validate_capture_authorization(
             "capture authorization common subject differs from its exact Formula".to_string(),
         );
     }
-    if record.common.artifact_class != ArtifactClassV1::None
-        || record.common.artifact.is_some()
-    {
-        return Err("pre-build capture authorization cannot guess an artifact identity".to_string());
+    if record.common.artifact_class != ArtifactClassV1::None || record.common.artifact.is_some() {
+        return Err(
+            "pre-build capture authorization cannot guess an artifact identity".to_string(),
+        );
     }
     if record.common.work_state != WorkStateV1::Complete
         || record.common.outcome != Some(TerminalOutcomeV1::Success)
@@ -1041,7 +1185,10 @@ fn validate_admission(record: &AdmissionRecordV1) -> Result<(), String> {
         "qualifying receipt digests",
         false,
     )?;
-    validate_repository(&payload.merged_pull_request.repository, "merged PR repository")?;
+    validate_repository(
+        &payload.merged_pull_request.repository,
+        "merged PR repository",
+    )?;
     if payload.merged_pull_request.number == 0 {
         return Err("merged PR number must be positive".to_string());
     }
@@ -1052,6 +1199,44 @@ fn validate_admission(record: &AdmissionRecordV1) -> Result<(), String> {
     validate_sha256(&payload.canonical_public_readback_sha256)?;
     validate_exact_git_source(&payload.formula_metadata_source)?;
     validate_candidate_producer(&payload.original_producer)?;
+    if record.common.subject.kind != SubjectKindV1::Candidate
+        || record.common.subject.identity != payload.candidate_record_sha256
+        || record.common.subject.architecture.is_some()
+    {
+        return Err("admission subject differs from candidate record".to_string());
+    }
+    if !payload
+        .merged_pull_request
+        .repository
+        .eq_ignore_ascii_case(&record.common.source.repository)
+        || payload.merged_pull_request.head != record.common.source.commit
+    {
+        return Err("admission source differs from exact merged PR head".to_string());
+    }
+    if !payload
+        .tap_source
+        .repository
+        .eq_ignore_ascii_case(&payload.formula_metadata_source.repository)
+        || payload
+            .tap_source
+            .repository
+            .eq_ignore_ascii_case(&payload.merged_pull_request.repository)
+        || payload.tap_source.commit == payload.formula_metadata_source.commit
+    {
+        return Err("Formula metadata update source is absent or wrong".to_string());
+    }
+    if payload.canonical_public_readback_sha256 != payload.canonical.sha256 {
+        return Err("canonical readback differs from admitted manifest".to_string());
+    }
+    if payload.original_producer.head == payload.merged_pull_request.merge_commit {
+        return Err("admission rewrote original producer to the merge commit".to_string());
+    }
+    validate_formula_metadata_update(
+        &payload.formula_metadata_update,
+        &payload.tap_source,
+        &payload.canonical,
+        &payload.promoted_layer,
+    )?;
     if record.common.outcome != Some(TerminalOutcomeV1::Success)
         || record.common.promotion_state != PromotionStateV1::Promoted
         || record.common.artifact_class != ArtifactClassV1::Canonical
@@ -1082,6 +1267,162 @@ fn validate_deletion(record: &DeletionRecordV1) -> Result<(), String> {
         return Err("deletion record cannot delete or claim a canonical artifact".to_string());
     }
     Ok(())
+}
+
+fn validate_formula_metadata_update(
+    update: &FormulaMetadataUpdateV1,
+    tap_source: &ExactGitSourceV1,
+    canonical: &ArtifactIdentityV1,
+    promoted_layer: &ArtifactIdentityV1,
+) -> Result<(), String> {
+    validate_stable_id(&update.formula, "metadata Formula")?;
+    validate_git_sha(&update.expected_main_commit)?;
+    validate_sha256(&update.expected_normalized_formula_sha256)?;
+    validate_sha256(&update.expected_generated_metadata_sha256)?;
+    validate_sha256(&update.canonical_manifest_digest)?;
+    validate_sha256(&update.bottle_layer_sha256)?;
+    if update.expected_main_commit != tap_source.commit {
+        return Err("Formula metadata update expected main differs from tap source".to_string());
+    }
+    let expected_paths = vec![
+        format!("Formula/{}.rb", update.formula),
+        format!("Kandelo/formula/{}.json", update.formula),
+        "Kandelo/metadata.json".to_string(),
+    ];
+    for path in &update.allowed_paths {
+        validate_normalized_relative_path(path, "Formula metadata allowed path")?;
+    }
+    if update.allowed_paths != expected_paths {
+        return Err("Formula metadata update path set is not exact".to_string());
+    }
+    if update.canonical_manifest_digest != canonical.sha256
+        || update.bottle_layer_sha256 != promoted_layer.sha256
+        || update.bottle_layer_bytes != promoted_layer.bytes
+    {
+        return Err("Formula metadata update differs from promoted layer/readback".to_string());
+    }
+    if update.target_abi > u64::from(u32::MAX) {
+        return Err(
+            "Formula metadata target ABI does not fit an unsigned 32-bit integer".to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn validate_history(record: &AbiHistoryRecordV1) -> Result<(), String> {
+    if record.schema != RECORD_SCHEMA || record.kind != "kandelo-abi-history-record" {
+        return Err("ABI history record protocol is unsupported".to_string());
+    }
+    let plan = &record.plan;
+    if plan.source_abi.checked_add(1) != Some(plan.successor_abi) {
+        return Err("ABI history transition must be exactly N to N+1".to_string());
+    }
+    if plan.branch != format!("abi/{}", plan.source_abi) {
+        return Err("ABI history branch is not exact".to_string());
+    }
+    validate_git_sha(&plan.preactivation_tap_commit)?;
+    validate_git_sha(&plan.preactivation_tap_tree)?;
+    validate_sha256(&plan.expected_current_metadata_sha256)?;
+    validate_sha256(&plan.protection_requirement_sha256)?;
+    validate_git_sha(&record.created_ref_object)?;
+    if record.created_ref_object != plan.preactivation_tap_commit {
+        return Err("created history ref differs from preactivation commit".to_string());
+    }
+    let evidence = &record.protection_evidence;
+    if !evidence.covered {
+        return Err("ABI history branch is not protected".to_string());
+    }
+    validate_sha256(&evidence.observed_protection_sha256)?;
+    validate_sha256(&evidence.protection_requirement_sha256)?;
+    validate_git_sha(&evidence.ref_object)?;
+    validate_git_sha(&evidence.ref_tree)?;
+    if evidence.branch != plan.branch
+        || evidence.ref_object != plan.preactivation_tap_commit
+        || evidence.ref_tree != plan.preactivation_tap_tree
+        || evidence.protection_requirement_sha256 != plan.protection_requirement_sha256
+    {
+        return Err("ABI history ref/tree/protection evidence differs from its plan".to_string());
+    }
+    validate_sha256(&record.metadata_verification_sha256)?;
+    validate_sha256(&record.public_readback_sha256)?;
+    validate_run(&record.run)
+}
+
+fn validate_historical_maintenance(
+    record: &HistoricalMaintenanceAuthorizationV1,
+) -> Result<(), String> {
+    if record.schema != RECORD_SCHEMA
+        || record.kind != "kandelo-abi-historical-maintenance-authorization"
+    {
+        return Err("historical maintenance protocol is unsupported".to_string());
+    }
+    if record.branch != format!("abi/{}", record.abi) {
+        return Err("historical maintenance must target exact abi/N".to_string());
+    }
+    validate_exact_git_source(&record.source)?;
+    validate_repository(&record.formula.tap, "historical Formula tap")?;
+    validate_stable_id(&record.formula.formula, "historical Formula name")?;
+    if record.formula.tap != record.source.repository {
+        return Err("historical Formula tap differs from protected source".to_string());
+    }
+    validate_maintainer(&record.maintainer)?;
+    if !matches!(record.maintainer.permission.as_str(), "maintain" | "admin") {
+        return Err("historical maintenance authorization lacks maintain permission".to_string());
+    }
+    validate_policy_identity(&record.policy)?;
+    validate_record_link(&record.history_record)?;
+    validate_run(&record.run)
+}
+
+fn validate_epoch_subject(subject: &AbiEpochSubjectV1) -> Result<(), String> {
+    validate_stable_id(&subject.formula, "epoch Formula")
+}
+
+fn validate_epoch_status(record: &AbiEpochStatusV1) -> Result<(), String> {
+    if record.schema != RECORD_SCHEMA || record.kind != "kandelo-abi-epoch-status" {
+        return Err("ABI epoch status protocol is unsupported".to_string());
+    }
+    if record.scheduled_subjects.is_empty() || record.scheduled_subjects.len() > MAX_BINDINGS {
+        return Err("scheduled epoch subjects must be bounded and nonempty".to_string());
+    }
+    for subject in &record.scheduled_subjects {
+        validate_epoch_subject(subject)?;
+    }
+    validate_sorted_unique(
+        &record.scheduled_subjects,
+        "scheduled epoch subjects",
+        false,
+    )?;
+    if record.terminal_outcomes.len() > MAX_BINDINGS {
+        return Err("epoch contains too many terminal outcomes".to_string());
+    }
+    let mut terminal_subjects = Vec::with_capacity(record.terminal_outcomes.len());
+    for outcome in &record.terminal_outcomes {
+        validate_epoch_subject(&outcome.subject)?;
+        if outcome.outcome == TerminalOutcomeV1::Skipped {
+            return Err("epoch terminal outcome is not terminal for retirement".to_string());
+        }
+        validate_record_link(&outcome.record)?;
+        terminal_subjects.push(outcome.subject.clone());
+    }
+    validate_sorted_unique(&terminal_subjects, "epoch terminal subjects", true)?;
+    if terminal_subjects
+        .iter()
+        .any(|subject| record.scheduled_subjects.binary_search(subject).is_err())
+    {
+        return Err("epoch terminal subjects differ from its schedule".to_string());
+    }
+    match record.state {
+        AbiEpochStateV1::Retired if terminal_subjects != record.scheduled_subjects => {
+            return Err("retired ABI epoch still has nonterminal scheduled subjects".to_string())
+        }
+        AbiEpochStateV1::Retiring if terminal_subjects == record.scheduled_subjects => {
+            return Err("fully terminal ABI epoch must be retired".to_string())
+        }
+        _ => {}
+    }
+    validate_sorted_record_links_allow_empty(&record.repair_links, "repair links")?;
+    validate_run(&record.run)
 }
 
 fn validate_record_header(
@@ -1133,9 +1474,15 @@ fn validate_record_header(
 fn validate_request_requirements(requirements: &RequestRequirementsV1) -> Result<(), String> {
     validate_sha256(&requirements.digest)?;
     if requirements.digest != request_requirements_digest(requirements)? {
-        return Err("request requirements digest does not match normalized requirements".to_string());
+        return Err(
+            "request requirements digest does not match normalized requirements".to_string(),
+        );
     }
-    validate_sorted_unique(&requirements.change_classes, "request change classes", false)?;
+    validate_sorted_unique(
+        &requirements.change_classes,
+        "request change classes",
+        false,
+    )?;
     if requirements.products.is_empty() || requirements.products.len() > MAX_BINDINGS {
         return Err("request must bind a bounded nonempty product selection".to_string());
     }
@@ -1303,7 +1650,11 @@ fn validate_blockers(
         if let Some(record) = &blocker.record {
             validate_record_link(record)?;
         }
-        let key = (blocker.guard_code, blocker.subject_kind, blocker.subject.as_str());
+        let key = (
+            blocker.guard_code,
+            blocker.subject_kind,
+            blocker.subject.as_str(),
+        );
         if previous.is_some_and(|old| old >= key) {
             return Err("record blockers must be sorted and duplicate-free".to_string());
         }
@@ -1316,10 +1667,7 @@ fn validate_guard_codes(codes: &[GuardCodeV1]) -> Result<(), String> {
     validate_sorted_unique(codes, "guard codes", true)
 }
 
-fn validate_artifact(
-    artifact: &ArtifactIdentityV1,
-    class: ArtifactClassV1,
-) -> Result<(), String> {
+fn validate_artifact(artifact: &ArtifactIdentityV1, class: ArtifactClassV1) -> Result<(), String> {
     validate_sha256(&artifact.sha256)?;
     if artifact.bytes == 0 {
         return Err("artifact identity must contain a positive byte count".to_string());
@@ -1410,9 +1758,31 @@ fn validate_sorted_record_links(links: &[RecordLinkV1], field: &str) -> Result<(
     Ok(())
 }
 
+fn validate_sorted_record_links_allow_empty(
+    links: &[RecordLinkV1],
+    field: &str,
+) -> Result<(), String> {
+    if links.len() > MAX_BINDINGS {
+        return Err(format!("{field} contains too many records"));
+    }
+    let mut previous: Option<&str> = None;
+    for link in links {
+        validate_record_link(link)?;
+        if previous.is_some_and(|old| old >= link.record_sha256.as_str()) {
+            return Err(format!("{field} must be sorted and duplicate-free"));
+        }
+        previous = Some(&link.record_sha256);
+    }
+    Ok(())
+}
+
 fn validate_record_link(link: &RecordLinkV1) -> Result<(), String> {
     validate_sha256(&link.record_sha256)?;
-    validate_bounded_text(&link.immutable_reference, "record immutable reference", 4_096)?;
+    validate_bounded_text(
+        &link.immutable_reference,
+        "record immutable reference",
+        4_096,
+    )?;
     if !link
         .immutable_reference
         .contains(&format!("sha256:{}", link.record_sha256))
@@ -1614,6 +1984,22 @@ mod tests {
             repository: "automattic/kandelo".to_string(),
             commit: COMMIT_A.to_string(),
             tree: TREE_A.to_string(),
+        }
+    }
+
+    fn tap_source() -> ExactGitSourceV1 {
+        ExactGitSourceV1 {
+            repository: "kandelo-dev/homebrew-tap-core".to_string(),
+            commit: COMMIT_A.to_string(),
+            tree: TREE_A.to_string(),
+        }
+    }
+
+    fn formula_metadata_source() -> ExactGitSourceV1 {
+        ExactGitSourceV1 {
+            repository: "kandelo-dev/homebrew-tap-core".to_string(),
+            commit: "4444444444444444444444444444444444444444".to_string(),
+            tree: "5555555555555555555555555555555555555555".to_string(),
         }
     }
 
@@ -1954,8 +2340,7 @@ mod tests {
                     justification: "Exact source capture cannot observe one declared host tool.".to_string(),
                     policy: policy(),
                 },
-            },
-        );
+            });
         validate_record(&record).unwrap();
         let original = canonical_sha256(&record).unwrap();
         let mut wrong_subject = record.clone();
@@ -2066,7 +2451,10 @@ mod tests {
         let record = candidate_reuse_vector();
         validate_record(&record).unwrap();
         let bytes = canonical_json_bytes(&record).unwrap();
-        assert_eq!(parse_record(&bytes).unwrap(), record);
+        assert_eq!(
+            parse_record(&bytes).unwrap(),
+            AbiDurableRecordV1::Staging(record.clone())
+        );
         assert_eq!(
             canonical_sha256(&record).unwrap(),
             "db70ec2851481d96c4fd88a4a659de77537afc3afd146bda2a44f93b9fb23b6e"
@@ -2104,7 +2492,7 @@ mod tests {
     }
 
     #[test]
-    fn closed_record_enum_validates_all_nine_durable_record_kinds() {
+    fn closed_staging_record_enum_validates_all_nine_common_record_kinds() {
         let candidate_layer = artifact(SHA_B, ArtifactClassV1::Candidate);
         let canonical = artifact(SHA_C, ArtifactClassV1::Canonical);
         let mut candidate_common = common(
@@ -2199,8 +2587,7 @@ mod tests {
                     justification: "Accept exact captured build risk.".to_string(),
                     policy: policy(),
                 },
-            },
-        );
+            });
 
         let mut override_common = common(
             SubjectKindV1::Candidate,
@@ -2230,6 +2617,7 @@ mod tests {
             Some(canonical.clone()),
         );
         admission_common.promotion_state = PromotionStateV1::Promoted;
+        admission_common.subject.identity = SHA_A.to_string();
         let admission = AbiStagingRecordV1::Admission(AdmissionRecordV1 {
             schema: 1,
             common: admission_common,
@@ -2243,13 +2631,66 @@ mod tests {
                     head: COMMIT_A.to_string(),
                     merge_commit: "3333333333333333333333333333333333333333".to_string(),
                 },
-                tap_source: source(),
+                tap_source: tap_source(),
                 canonical: canonical,
                 canonical_public_readback_sha256: SHA_C.to_string(),
-                formula_metadata_source: source(),
+                formula_metadata_source: formula_metadata_source(),
+                formula_metadata_update: FormulaMetadataUpdateV1 {
+                    formula: "bash".to_string(),
+                    architecture: VfsArchitectureV1::Wasm32,
+                    expected_main_commit: COMMIT_A.to_string(),
+                    expected_normalized_formula_sha256: SHA_A.to_string(),
+                    expected_generated_metadata_sha256: SHA_B.to_string(),
+                    allowed_paths: vec![
+                        "Formula/bash.rb".to_string(),
+                        "Kandelo/formula/bash.json".to_string(),
+                        "Kandelo/metadata.json".to_string(),
+                    ],
+                    canonical_manifest_digest: SHA_C.to_string(),
+                    bottle_layer_sha256: SHA_B.to_string(),
+                    bottle_layer_bytes: candidate_layer.bytes,
+                    target_abi: 7,
+                },
                 original_producer: producer(),
             },
         });
+
+        let mut readback_drift = admission.clone();
+        let AbiStagingRecordV1::Admission(readback) = &mut readback_drift else {
+            unreachable!()
+        };
+        readback.admission.canonical_public_readback_sha256 = SHA_A.to_string();
+        assert!(validate_record(&readback_drift)
+            .unwrap_err()
+            .contains("canonical readback"));
+
+        let mut layer_drift = admission.clone();
+        let AbiStagingRecordV1::Admission(layer) = &mut layer_drift else {
+            unreachable!()
+        };
+        layer.admission.formula_metadata_update.bottle_layer_sha256 = SHA_C.to_string();
+        assert!(validate_record(&layer_drift)
+            .unwrap_err()
+            .contains("promoted layer"));
+
+        let mut rewritten_producer = admission.clone();
+        let AbiStagingRecordV1::Admission(rewritten) = &mut rewritten_producer else {
+            unreachable!()
+        };
+        rewritten.admission.original_producer.head =
+            rewritten.admission.merged_pull_request.merge_commit.clone();
+        assert!(validate_record(&rewritten_producer)
+            .unwrap_err()
+            .contains("original producer"));
+
+        let mut absent_metadata = admission.clone();
+        let AbiStagingRecordV1::Admission(metadata) = &mut absent_metadata else {
+            unreachable!()
+        };
+        metadata.admission.formula_metadata_source = metadata.admission.tap_source.clone();
+        assert!(validate_record(&absent_metadata)
+            .unwrap_err()
+            .contains("metadata update source"));
 
         let deletion = AbiStagingRecordV1::Deletion(DeletionRecordV1 {
             schema: 1,
@@ -2277,8 +2718,132 @@ mod tests {
         ] {
             validate_record(&record).unwrap();
             let bytes = canonical_json_bytes(&record).unwrap();
-            assert_eq!(parse_record(&bytes).unwrap(), record);
+            assert_eq!(
+                parse_record(&bytes).unwrap(),
+                AbiDurableRecordV1::Staging(record)
+            );
         }
+    }
+
+    #[test]
+    fn history_maintenance_and_epoch_record_vectors_are_closed_and_strict() {
+        let run = json!({
+            "repository": "kandelo-dev/homebrew-tap-core",
+            "workflow_ref": ".github/workflows/abi-history.yml@refs/heads/main",
+            "run_id": 9,
+            "run_attempt": 1,
+            "job": "verify-history",
+        });
+        let record_link = json!({
+            "record_sha256": SHA_A,
+            "immutable_reference": format!(
+                "ghcr.io/kandelo-dev/homebrew-tap-core-abi-7-records/history@sha256:{SHA_A}"
+            ),
+        });
+        let history = json!({
+            "schema": 1,
+            "kind": "kandelo-abi-history-record",
+            "plan": {
+                "source_abi": 7,
+                "successor_abi": 8,
+                "preactivation_tap_commit": COMMIT_A,
+                "preactivation_tap_tree": TREE_A,
+                "branch": "abi/7",
+                "expected_current_metadata_sha256": SHA_A,
+                "protection_requirement_sha256": SHA_B,
+            },
+            "created_ref_object": COMMIT_A,
+            "protection_evidence": {
+                "branch": "abi/7",
+                "covered": true,
+                "observed_protection_sha256": SHA_C,
+                "protection_requirement_sha256": SHA_B,
+                "ref_object": COMMIT_A,
+                "ref_tree": TREE_A,
+                "source": "ruleset",
+            },
+            "metadata_verification_sha256": SHA_B,
+            "public_readback_sha256": SHA_C,
+            "run": run.clone(),
+        });
+        let maintenance = json!({
+            "schema": 1,
+            "kind": "kandelo-abi-historical-maintenance-authorization",
+            "abi": 7,
+            "branch": "abi/7",
+            "source": {
+                "repository": "kandelo-dev/homebrew-tap-core",
+                "commit": COMMIT_A,
+                "tree": TREE_A,
+            },
+            "formula": {
+                "tap": "kandelo-dev/homebrew-tap-core",
+                "formula": "bash",
+                "architecture": "wasm32",
+            },
+            "reason": "failed-package-repair",
+            "maintainer": {
+                "login": "maintainer",
+                "permission": "maintain",
+                "authorization_reference": "https://github.com/kandelo-dev/homebrew-tap-core/issues/9#issuecomment-1",
+            },
+            "policy": {
+                "policy_version": 1,
+                "policy_sha256": SHA_A,
+                "guard_registry_version": 1,
+                "guard_registry_sha256": SHA_B,
+            },
+            "history_record": record_link.clone(),
+            "run": run.clone(),
+        });
+        let epoch = json!({
+            "schema": 1,
+            "kind": "kandelo-abi-epoch-status",
+            "abi": 7,
+            "scheduled_subjects": [{"formula": "bash", "architecture": "wasm32"}],
+            "terminal_outcomes": [{
+                "subject": {"formula": "bash", "architecture": "wasm32"},
+                "outcome": "failure",
+                "record": record_link,
+            }],
+            "state": "retired",
+            "repair_links": [],
+            "run": run,
+        });
+
+        assert_eq!(
+            canonical_sha256(&history).unwrap(),
+            "c804a1d25a868967caacb74fe3316f1066c9e95f1214c1518197fe6359410219"
+        );
+        assert_eq!(
+            canonical_sha256(&maintenance).unwrap(),
+            "b9e3f502307e79990ea51650b6e4f3f9a50a598b1260439aedd3c9c1a6651781"
+        );
+        assert_eq!(
+            canonical_sha256(&epoch).unwrap(),
+            "8d5aad3c929647e5c3bb51c1eabf688c804a9c722999ba5ce1069023de359df9"
+        );
+
+        for value in [history.clone(), maintenance.clone(), epoch.clone()] {
+            let bytes = canonical_json_bytes(&value).unwrap();
+            parse_record(&bytes).unwrap();
+        }
+
+        let mut unprotected = history;
+        unprotected["protection_evidence"]["covered"] = json!(false);
+        assert!(parse_record(&canonical_json_bytes(&unprotected).unwrap())
+            .unwrap_err()
+            .contains("protected"));
+
+        let mut mislabeled = maintenance;
+        mislabeled["reason"] = json!("override");
+        assert!(parse_record(&canonical_json_bytes(&mislabeled).unwrap()).is_err());
+
+        let mut incomplete = epoch;
+        incomplete["terminal_outcomes"] = json!([]);
+        assert!(parse_record(&canonical_json_bytes(&incomplete).unwrap())
+            .unwrap_err()
+            .contains("retired"));
     }
 
     fn maintainer() -> MaintainerAuthorizationV1 {
