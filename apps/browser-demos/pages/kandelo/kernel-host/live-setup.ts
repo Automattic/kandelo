@@ -56,6 +56,14 @@ import {
 } from "../../../../../web-libs/kandelo-session/src/demo-guides";
 import { PRESET_LIBRARY } from "../presets";
 import {
+  OMARCHY_APPS,
+  OMARCHY_APPS_DIR,
+  OMARCHY_CONF_PATH,
+  OMARCHY_THEME_DIR,
+  OMARCHY_THEMES,
+  OMARCHY_WLCOMPOSITOR_CONF,
+} from "./omarchy-desktop";
+import {
   descriptorWithVfsImageUrl,
   demoIdFromVfsImageUrl,
   normalizeVfsImageUrl,
@@ -128,6 +136,18 @@ const OPTIONAL_BINARY_URLS = {
     query: "?url", import: "default",
   }),
   ...import.meta.glob("../../../../../binaries/programs/wasm32/wlpaint.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/kbar.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/kbar.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/klauncher.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/klauncher.wasm", {
     query: "?url", import: "default",
   }),
 } as Record<string, () => Promise<string>>;
@@ -286,6 +306,7 @@ const LIVE_DEMO_IDS = [
   "sdl2",
   "wayland",
   "hyprland",
+  "omarchy",
 ] as const;
 
 type LiveDemoId = typeof LIVE_DEMO_IDS[number];
@@ -385,6 +406,10 @@ const LIVE_PROFILE_SPECS: Record<LiveDemoId, LiveProfileSpec> = {
     image: "shell",
     features: ["kms"],
   },
+  omarchy: {
+    image: "shell",
+    features: ["kms"],
+  },
 };
 
 const DEMO_ALIASES: Record<string, LiveDemoId> = {
@@ -460,6 +485,14 @@ interface LiveProfile {
    * to fill them. Browser-only page wiring; runs until the shell exits.
    */
   hyprlandDemo: boolean;
+  /**
+   * Like hyprlandDemo, plus the desktop shell Omarchy is made of: `kbar` on a
+   * wlr-layer-shell surface reserving the top strip, `klauncher` on
+   * SUPER/CTRL+Space, and the theme directory the compositor and both clients
+   * read. This is the O1 milestone of
+   * docs/plans/2026-07-14-build-hyprland-class-compositor-plan.md.
+   */
+  omarchyDemo: boolean;
 }
 
 interface WebReadinessState {
@@ -683,7 +716,7 @@ export async function createLiveHost(opts: CreateLiveHostOptions = {}): Promise<
     // sdl2) keep the webgl2 default — the GL bridge claims their canvas on
     // eglCreateContext, and the pump never touches it.
     h.setKmsDisplayMode(
-      profile.waylandDemo || profile.hyprlandDemo
+      profile.waylandDemo || profile.hyprlandDemo || profile.omarchyDemo
         ? "webgl2-scanout"
         : null,
     );
@@ -813,6 +846,7 @@ function customVfsProfile(
     sdl2Demo: false,
     waylandDemo: false,
     hyprlandDemo: false,
+    omarchyDemo: false,
   };
 }
 
@@ -836,6 +870,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
       sdl2Demo: false,
       waylandDemo: false,
       hyprlandDemo: false,
+      omarchyDemo: false,
     };
   }
 
@@ -871,6 +906,7 @@ function profileFor(id: string, fb?: FbDemo): LiveProfile {
     sdl2Demo: normalized === "sdl2",
     waylandDemo: normalized === "wayland",
     hyprlandDemo: normalized === "hyprland",
+    omarchyDemo: normalized === "omarchy",
   };
 }
 
@@ -1672,12 +1708,19 @@ async function bootProfile(
           tick(`wayland failed: ${msg}`);
         }
       })();
-    } else if (profile.hyprlandDemo) {
+    } else if (profile.hyprlandDemo || profile.omarchyDemo) {
       // Like waylandDemo but with WLC_LAYOUT=dwindle: the compositor tiles its
       // clients and dictates each one's size via xdg configure, which the
       // libkwl/vt100 clients honor by rebuilding at the tile size (KWL_RESIZE).
       // That client-side resize is the crux — floating clients never resize.
+      //
+      // The omarchy demo is the same desktop with its shell on top: kbar on a
+      // layer-shell surface, klauncher on SUPER+Space, and the theme set. Only
+      // the extra staging and the two extra binaries differ, so it shares this
+      // path rather than duplicating the KMS sizing and spawn ordering.
+      const omarchy = profile.omarchyDemo;
       const kernelForHyprland = kernel;
+      let omarchyBarBytes: ArrayBuffer | null = null;
       void (async () => {
         try {
           const compositorUrl = await optionalBinaryUrl([
@@ -1699,7 +1742,19 @@ async function bootProfile(
             "../../../../../local-binaries/programs/wasm32/wlpaint.wasm",
             "../../../../../binaries/programs/wasm32/wlpaint.wasm",
           ], "wlpaint.wasm");
-          tick("staging hyprland binaries...");
+          const kbarUrl = omarchy
+            ? await optionalBinaryUrl([
+              "../../../../../local-binaries/programs/wasm32/kbar.wasm",
+              "../../../../../binaries/programs/wasm32/kbar.wasm",
+            ], "kbar.wasm")
+            : null;
+          const klauncherUrl = omarchy
+            ? await optionalBinaryUrl([
+              "../../../../../local-binaries/programs/wasm32/klauncher.wasm",
+              "../../../../../binaries/programs/wasm32/klauncher.wasm",
+            ], "klauncher.wasm")
+            : null;
+          tick(omarchy ? "staging omarchy binaries..." : "staging hyprland binaries...");
           const [compBytes, termBytes, clockBytes, paintBytes] = await Promise.all([
             fetch(compositorUrl).then(failOn("wlcompositor.wasm")).then((r) => r.arrayBuffer()),
             fetch(wltermUrl).then(failOn("wlterm.wasm")).then((r) => r.arrayBuffer()),
@@ -1732,11 +1787,37 @@ async function bootProfile(
             0o755,
           );
 
+          // The Omarchy desktop adds its shell: the bar and the launcher, plus
+          // the files they and the compositor read — one config, one app
+          // registry, one theme directory.
+          if (omarchy) {
+            const [barBytes, launcherBytes] = await Promise.all([
+              fetch(kbarUrl!).then(failOn("kbar.wasm")).then((r) => r.arrayBuffer()),
+              fetch(klauncherUrl!).then(failOn("klauncher.wasm"))
+                .then((r) => r.arrayBuffer()),
+            ]);
+            writeVfsBinary(kernelForHyprland.fs, "/usr/local/bin/kbar",
+              new Uint8Array(barBytes), 0o755);
+            writeVfsBinary(kernelForHyprland.fs, "/usr/local/bin/klauncher",
+              new Uint8Array(launcherBytes), 0o755);
+            omarchyBarBytes = barBytes;
+
+            ensureDirRecursive(kernelForHyprland.fs, OMARCHY_APPS_DIR);
+            for (const [name, body] of Object.entries(OMARCHY_APPS))
+              writeVfsFile(kernelForHyprland.fs, `${OMARCHY_APPS_DIR}/${name}`,
+                body, 0o644);
+            for (const [name, body] of Object.entries(OMARCHY_THEMES)) {
+              ensureDirRecursive(kernelForHyprland.fs, `${OMARCHY_THEME_DIR}/${name}`);
+              writeVfsFile(kernelForHyprland.fs,
+                `${OMARCHY_THEME_DIR}/${name}/theme.conf`, body, 0o644);
+            }
+          }
+
           ensureDirRecursive(kernelForHyprland.fs, "/etc/kandelo");
           writeVfsFile(
             kernelForHyprland.fs,
-            "/etc/kandelo/wlcompositor.conf",
-            HYPRLAND_WLCOMPOSITOR_CONF,
+            OMARCHY_CONF_PATH,
+            omarchy ? OMARCHY_WLCOMPOSITOR_CONF : HYPRLAND_WLCOMPOSITOR_CONF,
             0o644,
           );
 
@@ -1792,6 +1873,14 @@ async function bootProfile(
             "WLC_CONFIG=/etc/kandelo/wlcompositor.conf",
           ]);
 
+          // The bar first: its exclusive zone must be reserved before the
+          // windows tile, or they would lay out over the full output and be
+          // re-configured a frame later.
+          if (omarchyBarBytes) {
+            tick("running kbar...");
+            spawnBg(omarchyBarBytes, "kbar");
+          }
+
           // The clock + first terminal run in the background; the foreground
           // terminal's shell keeps the demo alive (as waylandDemo does).
           tick("running wlclock + wlterm...");
@@ -1820,7 +1909,7 @@ async function bootProfile(
           );
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          tick(`hyprland failed: ${msg}`);
+          tick(`${omarchy ? "omarchy" : "hyprland"} failed: ${msg}`);
         }
       })();
     } else if (presentation?.autoCommand) {
