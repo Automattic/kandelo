@@ -30,6 +30,7 @@ export const OMARCHY_APPS_DIR = "/usr/share/kandelo/apps";
  */
 export const OMARCHY_WLCOMPOSITOR_CONF = `# Kandelo wlcompositor — the Omarchy-shaped desktop.
 theme = tokyo-night
+notify = /usr/local/bin/knotify
 
 # Applications.
 bind = SUPER, Return, exec, /usr/local/bin/wlterm

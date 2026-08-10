@@ -15,7 +15,8 @@
  */
 import { describe, expect, it } from "vitest";
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync,
+  appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,6 +38,7 @@ const launcherBin = tryResolveBinary("programs/klauncher.wasm");
 const EV_KEY = 0x01;
 const EV_SYN = 0x00;
 const SYN_REPORT = 0x00;
+const KEY_ESC = 1;
 const KEY_ENTER = 28;
 const KEY_DOWN = 108;
 
@@ -397,6 +399,46 @@ describe("wlcompositor — theme system", () => {
     60_000,
   );
 
+  it.skipIf(!hasBinaries)(
+    "a theme switch spawns the configured notifier",
+    async () => {
+      const compositorBytes = loadBytes(compositorBin!);
+      const kwlctlBytes = loadBytes(kwlctlBin!);
+      const { themeDir, confPath } = stageThemes();
+      appendFileSync(confPath, "notify = /usr/local/bin/knotify\n");
+
+      const out = { value: "" };
+      const err = { value: "" };
+      const host = new NodeKernelHost({
+        onStdout: (_pid, data) => { out.value += new TextDecoder().decode(data); },
+        onStderr: (_pid, data) => { err.value += new TextDecoder().decode(data); },
+      });
+      const dump = () => `--- stdout ---\n${out.value}\n--- stderr ---\n${err.value}`;
+
+      try {
+        await host.init();
+        host.setInputCanvasDims(CANVAS_W, CANVAS_H);
+
+        host.spawn(compositorBytes, ["wlcompositor"], {
+          env: [`WLC_CONFIG=${confPath}`, `WLC_THEME_DIR=${themeDir}`],
+        });
+        await waitFor(out, "COMPOSITOR_UP", 20_000, dump);
+
+        // The switch spawns `<notify> Theme <name>`. This VFS stages no
+        // knotify binary, so what is asserted is that the hook fired with
+        // the right program — the launch itself is the browser gate's job.
+        await host.spawn(kwlctlBytes,
+          ["kwlctl", "dispatch", "theme", "bbb-tight"], {});
+        await waitFor(out, "THEME bbb-tight", 10_000, dump);
+        await waitFor(out, /KWLCTL_EXEC(_FAILED)? "\/usr\/local\/bin\/knotify"/,
+          10_000, dump);
+      } finally {
+        await host.destroy().catch(() => {});
+      }
+    },
+    60_000,
+  );
+
   it.skipIf(!hasBinaries || !launcherBin)(
     "the Omarchy menu descends into the theme list and dispatches a switch",
     async () => {
@@ -437,6 +479,14 @@ describe("wlcompositor — theme system", () => {
 
         // Down + Enter selects "Theme"; the submenu lists the installed set
         // read from `kwlctl theme`.
+        tap(KEY_DOWN);
+        tap(KEY_ENTER);
+        await waitFor(out, "KLAUNCHER_LEVEL themes", 10_000, dump);
+
+        // ESC in a submenu goes back to the root, not out of the menu.
+        out.value = "";
+        tap(KEY_ESC);
+        await waitFor(out, "KLAUNCHER_LEVEL root", 10_000, dump);
         tap(KEY_DOWN);
         tap(KEY_ENTER);
         await waitFor(out, "KLAUNCHER_LEVEL themes", 10_000, dump);

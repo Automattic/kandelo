@@ -8,7 +8,9 @@
  *   left   workspace pills 1..N, the occupied ones filled, the active one
  *          in the theme's accent
  *   centre the focused window's app id
- *   right  a HH:MM:SS clock
+ *   right  the kernel's monotonic uptime and a HH:MM:SS clock (the kernel
+ *          exposes no /proc/meminfo, so there is no memory module — real
+ *          stats or none)
  *
  * State comes from the compositor's kwlctl socket — the same feed Waybar's
  * hyprland modules consume from hyprctl: one `workspaces` / `activewindow` /
@@ -49,10 +51,11 @@
 /* The palette, read from the live theme's theme.conf. The defaults match the
  * compositor's unthemed look, so kbar renders sanely with no theme installed. */
 static struct {
-    wpk_color bar, foreground, accent, occupied;
+    wpk_color bar, foreground, muted, accent, occupied;
 } palette = {
     .bar = WPK_RGB(0x16, 0x18, 0x22),
     .foreground = WPK_RGB(0xc8, 0xce, 0xdc),
+    .muted = WPK_RGB(0x6a, 0x72, 0x8a),
     .accent = WPK_RGB(0x4f, 0x8f, 0xdf),
     .occupied = WPK_RGB(0x2a, 0x31, 0x44),
 };
@@ -96,6 +99,8 @@ static void theme_load(const char *name) {
         if (!strcmp(key, "bar")) palette.bar = parse_color(val, palette.bar);
         else if (!strcmp(key, "foreground"))
             palette.foreground = parse_color(val, palette.foreground);
+        else if (!strcmp(key, "muted"))
+            palette.muted = parse_color(val, palette.muted);
         else if (!strcmp(key, "accent"))
             palette.accent = parse_color(val, palette.accent);
         else if (!strcmp(key, "occupied"))
@@ -243,6 +248,14 @@ static void render(struct wpk_surface *s, struct wpk_font *font) {
              tm.tm_sec);
     int cw = wpk_text_width(font, clock);
     wpk_text(s, font, s->w - cw - 12, baseline, clock, palette.foreground);
+
+    struct timespec up;
+    clock_gettime(CLOCK_MONOTONIC, &up);
+    char uptime[24];
+    snprintf(uptime, sizeof(uptime), "up %ld:%02ld",
+             (long)(up.tv_sec / 3600), (long)(up.tv_sec / 60 % 60));
+    int uw = wpk_text_width(font, uptime);
+    wpk_text(s, font, s->w - cw - uw - 32, baseline, uptime, palette.muted);
 }
 
 int main(void) {

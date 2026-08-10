@@ -497,7 +497,7 @@ for src in "$REPO_ROOT/programs/"*.c; do
             build_program "$src" "$OUT_DIR_32" \
                 "$SYSROOT/lib/libwpkdraw.a"
             ;;
-        kwldemo.c|wlclock.c|wlpaint.c|kbar.c|klauncher.c)
+        kwldemo.c|wlclock.c|wlpaint.c|kbar.c|klauncher.c|knotify.c)
             # Link libkwl — built in a dedicated pass after the
             # wlcompositor block (which resolves the wayland/xkb archives and
             # generates the xdg-shell client header libkwl needs). Skip here.
@@ -793,7 +793,7 @@ if [ -d "$LIBKWL_DIR/src" ]; then
     # dependents before deps — app + xdg glue, then libkwl (calls
     # wpk_*/wl_*/xkb_*), then libwpkdraw, then the wayland stack, libffi
     # last so wl_closure_invoke's ffi_call resolves.
-    for kwl_app in kwldemo wlclock wlpaint kbar klauncher; do
+    for kwl_app in kwldemo wlclock wlpaint kbar klauncher knotify; do
         [ -f "$REPO_ROOT/programs/$kwl_app.c" ] || continue
         kwl_app_wasm="$OUT_DIR_32/$kwl_app.wasm"
         echo "  Compiling $kwl_app (libkwl client)..."

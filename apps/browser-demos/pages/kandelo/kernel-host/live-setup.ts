@@ -252,6 +252,12 @@ const OPTIONAL_BINARY_URLS = {
   ...import.meta.glob("../../../../../binaries/programs/wasm32/klauncher.wasm", {
     query: "?url", import: "default",
   }),
+  ...import.meta.glob("../../../../../local-binaries/programs/wasm32/knotify.wasm", {
+    query: "?url", import: "default",
+  }),
+  ...import.meta.glob("../../../../../binaries/programs/wasm32/knotify.wasm", {
+    query: "?url", import: "default",
+  }),
 } as Record<string, () => Promise<string>>;
 
 async function optionalBinaryUrl(
@@ -2269,6 +2275,12 @@ async function bootProfile(
               "../../../../../binaries/programs/wasm32/klauncher.wasm",
             ], "klauncher.wasm")
             : null;
+          const knotifyUrl = omarchy
+            ? await optionalBinaryUrl([
+              "../../../../../local-binaries/programs/wasm32/knotify.wasm",
+              "../../../../../binaries/programs/wasm32/knotify.wasm",
+            ], "knotify.wasm")
+            : null;
           tick(omarchy ? "staging omarchy binaries..." : "staging hyprland binaries...");
           const [compBytes, termBytes, clockBytes, paintBytes] = await Promise.all([
             fetch(compositorUrl).then(failOn("wlcompositor.wasm")).then((r) => r.arrayBuffer()),
@@ -2306,15 +2318,19 @@ async function bootProfile(
           // the files they and the compositor read — one config, one app
           // registry, one theme directory.
           if (omarchy) {
-            const [barBytes, launcherBytes] = await Promise.all([
+            const [barBytes, launcherBytes, notifyBytes] = await Promise.all([
               fetch(kbarUrl!).then(failOn("kbar.wasm")).then((r) => r.arrayBuffer()),
               fetch(klauncherUrl!).then(failOn("klauncher.wasm"))
+                .then((r) => r.arrayBuffer()),
+              fetch(knotifyUrl!).then(failOn("knotify.wasm"))
                 .then((r) => r.arrayBuffer()),
             ]);
             writeVfsBinary(kernelForHyprland.fs, "/usr/local/bin/kbar",
               new Uint8Array(barBytes), 0o755);
             writeVfsBinary(kernelForHyprland.fs, "/usr/local/bin/klauncher",
               new Uint8Array(launcherBytes), 0o755);
+            writeVfsBinary(kernelForHyprland.fs, "/usr/local/bin/knotify",
+              new Uint8Array(notifyBytes), 0o755);
             omarchyBarBytes = barBytes;
 
             ensureDirRecursive(kernelForHyprland.fs, OMARCHY_APPS_DIR);

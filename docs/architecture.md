@@ -2493,10 +2493,17 @@ two clients consume it. This is the **O1** milestone of
   surface lives, and focus falls back to the topmost window when it goes away.
 - **`kbar`** (`programs/kbar.c`) — the status bar, Omarchy's Waybar slot: a
   30 px top-anchored layer surface with a matching exclusive zone, rendering
-  workspace pills, the focused window's app id, and a clock. Its state comes
+  workspace pills, the focused window's app id, the kernel's monotonic uptime,
+  and a clock. Its state comes
   from `kwlctl` — a `workspaces` / `activewindow` / `theme` query at startup,
   then the `--listen` event stream — polled alongside the Wayland fd, which is
   the same feed Waybar's hyprland modules take from hyprctl.
+- **`knotify`** (`programs/knotify.c`) — the notification toast, the
+  notify-send slot: one toast per process, a corner-anchored overlay surface
+  (margins via `zwlr_layer_surface_v1.set_margin`) that shows
+  `knotify <title> <body…>` for a moment and exits — the surface teardown is
+  the dismissal. The compositor's `notify = <path>` config key spawns it on
+  every theme switch.
 - **`klauncher`** (`programs/klauncher.c`) — the launcher, Walker's slot: a
   centred overlay-layer surface with exclusive keyboard interactivity, filtering
   a registry of `/usr/share/kandelo/apps/*.conf` entries (`name` + `exec`) as

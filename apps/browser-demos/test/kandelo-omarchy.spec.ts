@@ -199,6 +199,14 @@ test("Kandelo omarchy boots a themed tiling desktop with a bar, a launcher, and 
   await expect
     .poll(() => syslogStream(page), { timeout: 60_000 })
     .toMatch(/KBAR_THEME name=(catppuccin|everforest|gruvbox|nord|rose-pine)/);
+  // The switch also spawns the configured notifier: a knotify toast maps on
+  // the overlay layer, lives its moment, and exits.
+  await expect
+    .poll(() => syslogStream(page), { timeout: 60_000 })
+    .toMatch(/KNOTIFY_READY title=Theme/);
+  await expect
+    .poll(() => syslogStream(page), { timeout: 60_000 })
+    .toMatch(/KNOTIFY_EXIT/);
 
   // Gate 6b: CTRL+ALT+Space opens the Omarchy menu — the same launcher binary
   // at its root level. Down+Enter descends into the theme list, and Enter on

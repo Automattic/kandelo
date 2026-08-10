@@ -671,6 +671,9 @@ struct kwl_window *kwl_layer_create(const char *ns,
     zwlr_layer_surface_v1_set_anchor(win->layer_surface, opts->anchor);
     zwlr_layer_surface_v1_set_exclusive_zone(win->layer_surface,
                                              opts->exclusive_zone);
+    zwlr_layer_surface_v1_set_margin(win->layer_surface, opts->margin_top,
+                                     opts->margin_right, opts->margin_bottom,
+                                     opts->margin_left);
     zwlr_layer_surface_v1_set_keyboard_interactivity(
         win->layer_surface,
         opts->keyboard ? ZWLR_LAYER_SURFACE_V1_KEYBOARD_INTERACTIVITY_EXCLUSIVE

@@ -499,8 +499,12 @@ binary with its own `/etc/kandelo/wlcompositor.conf`, an app registry under
 
 - **The bar.** `kbar` anchors a 30 px `zwlr_layer_shell_v1` surface across the
   top with a matching exclusive zone, so the windows tile *under* it rather
-  than behind it. It shows workspace pills, the focused window, and a clock,
-  fed by the compositor's `kwlctl` event stream.
+  than behind it. It shows workspace pills, the focused window, the kernel's
+  monotonic uptime, and a clock, fed by the compositor's `kwlctl` event
+  stream.
+- **Notifications.** A theme switch spawns `knotify` through the config's
+  `notify =` hook — a transient overlay toast in the top-right corner, themed
+  like the rest of the desktop, that dismisses itself.
 - **The launcher.** `Ctrl+Space` opens `klauncher`, an overlay-layer surface
   that takes the keyboard exclusively — so what you type filters its list
   instead of reaching the terminal underneath. Type to narrow, `Up`/`Down` to

@@ -331,6 +331,7 @@ static struct {
     char installed[MAX_THEMES][32];
     int n_installed;
     int current;                 /* index into installed, -1 when unthemed */
+    char notify[256];            /* `notify =` config: spawned on a switch */
 } th = {
     .name = "default",
     .border_active = FOCUS_COLOR,
@@ -2646,6 +2647,13 @@ static void theme_apply(void) {
     printf("THEME %s\n", th.name);
     fflush(stdout);
     kwlctl_emit("theme>>%s", th.name);
+    /* The `notify =` hook is how Omarchy surfaces a switch (its scripts call
+     * notify-send); ours spawns the configured notifier with the new name. */
+    if (th.notify[0]) {
+        char cmd[sizeof(th.notify) + 48];
+        snprintf(cmd, sizeof(cmd), "%s Theme %s", th.notify, th.name);
+        kwlctl_exec(cmd);
+    }
 }
 
 /* `theme <name>`, or `next`/`prev` to cycle the installed set. */
@@ -2726,6 +2734,8 @@ static void load_config(void) {
             if (!eq) continue;
             if (strncmp(s, "bind", 4) == 0) parse_bind_line(trim(eq + 1));
             else if (strncmp(s, "theme", 5) == 0) theme_load(trim(eq + 1));
+            else if (strncmp(s, "notify", 6) == 0)
+                snprintf(th.notify, sizeof(th.notify), "%s", trim(eq + 1));
         }
         fclose(f);
         src = path;
