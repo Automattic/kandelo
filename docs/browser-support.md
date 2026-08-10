@@ -153,6 +153,7 @@ Located in `apps/browser-demos/pages/`:
 | modeset | modeset.c | `kernel.boot` + spawn | Minimal KMS client: opens `/dev/dri/card0`, becomes DRM master, allocates dumb buffers, draws an animated gradient, and commits real `drmModePageFlip` ioctls. The Modeset pane bridges the CRTC to an OffscreenCanvas and shows a live PAGE_FLIP counter chip. |
 | wayland | wlcompositor + wlclock + wlpaint + wlterm | `kernel.boot` + spawn | Full Wayland desktop — see [Wayland desktop demo](#wayland-desktop-demo) below. |
 | hyprland | wlcompositor (dwindle) + wlclock + 2× wlterm (+ wlpaint via keybind) | `kernel.boot` + spawn | Hyprland-class tiling desktop; `Ctrl+Return`/`Ctrl+K`/`Ctrl+P` open new terminal/clock/paint panes — see [Hyprland tiling demo](#hyprland-tiling-demo) below. |
+| omarchy | the hyprland set + kbar + klauncher + themes | `kernel.boot` + spawn | The tiling desktop with its shell: a layer-shell status bar, `Ctrl+Space` launcher, `Ctrl+Shift+Space` theme cycling — see [Omarchy desktop demo](#omarchy-desktop-demo) below. |
 
 The "Boot pattern" column reflects how the demo enters the kernel:
 - **`kernel.boot`** — `kernelOwnedFs: true`, exec the language interpreter as the first process.
@@ -316,6 +317,41 @@ See
 The tiling paths are gated node-side by
 `host/test/wlcompositor-{tiling,resize,kwlctl,keybind,decoration}-smoke.test.ts`
 and in the browser by `apps/browser-demos/test/kandelo-hyprland.spec.ts`.
+
+### Omarchy desktop demo
+
+`/?demo=omarchy` is the tiling desktop above plus the shell that makes it a
+desktop: a status bar, a launcher, and themes. Omarchy is not a program but a
+set of files layered over Hyprland, so this demo is the same `wlcompositor`
+binary with its own `/etc/kandelo/wlcompositor.conf`, an app registry under
+`/usr/share/kandelo/apps`, and three themes under `/usr/share/kandelo/themes`
+— all staged into the VFS at boot from
+`apps/browser-demos/pages/kandelo/kernel-host/omarchy-desktop.ts`.
+
+- **The bar.** `kbar` anchors a 30 px `zwlr_layer_shell_v1` surface across the
+  top with a matching exclusive zone, so the windows tile *under* it rather
+  than behind it. It shows workspace pills, the focused window, and a clock,
+  fed by the compositor's `kwlctl` event stream.
+- **The launcher.** `Ctrl+Space` opens `klauncher`, an overlay-layer surface
+  that takes the keyboard exclusively — so what you type filters its list
+  instead of reaching the terminal underneath. Type to narrow, `Up`/`Down` to
+  move, `Enter` to launch (the compositor spawns it and it tiles in), `Esc` to
+  dismiss. Entries come from `/usr/share/kandelo/apps`, one file per app.
+- **Themes.** `Ctrl+Shift+Space` cycles Tokyo Night → Catppuccin → Gruvbox.
+  One palette file drives the whole desktop at once: the compositor's window
+  borders, gaps and wallpaper, and the bar's and launcher's own colours, which
+  they reload when the compositor broadcasts the switch.
+- **The rest of the keybinds** are the Hyprland demo's: `Ctrl+Return` a
+  terminal, `Ctrl+K` a clock, `Ctrl+P` a paint canvas, `Ctrl+W` closes the
+  focused window, `Ctrl+1..9` switch workspaces, `Ctrl+J` cycles focus. Every
+  bind is mirrored on `SUPER` for a real Hyprland session; use `CTRL` in the
+  browser, which reserves `SUPER` (see the caveat above).
+
+See
+[architecture.md](architecture.md#desktop-shell-zwlr_layer_shell_v1-kbar-klauncher-themes).
+Gated node-side by
+`host/test/wlcompositor-{layer-shell,theme}-smoke.test.ts` and in the browser by
+`apps/browser-demos/test/kandelo-omarchy.spec.ts`.
 
 Run the browser app: `cd apps/browser-demos && npm run dev`, then open
 `http://127.0.0.1:5401/`.

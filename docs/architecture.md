@@ -641,6 +641,60 @@ The same `wlcompositor` binary is also a Hyprland-class tiling WM (PR14); the fl
 
 These are entirely in-kernel (client↔compositor over the wayland + `/tmp/kwlctl-0` sockets) — no host-runtime change — and gated by `host/test/wlcompositor-{tiling,resize,kwlctl,keybind,decoration}-smoke.test.ts`. The browser demo (`/?demo=hyprland`, staged by `live-setup.ts` with `WLC_LAYOUT=dwindle` + a staged `/etc/kandelo/wlcompositor.conf`, gated by `apps/browser-demos/test/kandelo-hyprland.spec.ts`) boots the same compositor plus a `wlclock` and two `wlterm` terminals, which tile into gapped borderless frames and resize into their tiles — the first end-to-end Hyprland-class desktop. `wlpaint` is also staged (not auto-spawned) so the `Ctrl+P` launch bind can summon it on demand. See [browser-support.md](browser-support.md#hyprland-tiling-demo).
 
+### Desktop shell (`zwlr_layer_shell_v1`, `kbar`, `klauncher`, themes)
+
+A tiling WM is not yet a desktop: a desktop also has a bar, a launcher, and a
+theme. Those are ordinary Wayland clients, but they need a protocol that lets a
+surface anchor to an output edge and reserve space from the windows — which is
+what `zwlr_layer_shell_v1` is, and what Waybar, mako and every other shell
+component speak. The compositor implements it (protocol XML vendored at
+`packages/registry/wayland-protocols/xml/wlr-layer-shell-unstable-v1.xml`), and
+two clients consume it. This is the **O1** milestone of
+[docs/plans/2026-07-14-build-hyprland-class-compositor-plan.md](plans/2026-07-14-build-hyprland-class-compositor-plan.md).
+
+- **Layer shell.** A `wl_surface` given the layer role carries a layer
+  (background/bottom/top/overlay), an anchor mask, margins, an exclusive zone
+  and a keyboard-interactivity mode; the surface joins `g.layers` at role
+  creation, because the protocol's initial commit carries no buffer and exists
+  only to fetch the configure that tells the client its size.
+  `layers_arrange()` walks the layers background→overlay, anchors each surface
+  inside the area left by the ones before it, and sends
+  `zwlr_layer_surface_v1.configure` when the box changes. What remains after
+  every **mapped** surface's exclusive zone is `g.usable`, the work area
+  `retile()` partitions — so a bar shrinks the tiling area rather than covering
+  a window. A surface with a role but no buffer reserves nothing, so a client
+  that dies mid-handshake cannot strand a strip of the desktop. Compositing and
+  hit-testing put background/bottom under the windows and top/overlay over
+  them, on both the GPU and CPU paths; a layer surface shows on every workspace.
+  `EXCLUSIVE` keyboard interactivity takes the keyboard for as long as the
+  surface lives, and focus falls back to the topmost window when it goes away.
+- **`kbar`** (`programs/kbar.c`) — the status bar, Omarchy's Waybar slot: a
+  30 px top-anchored layer surface with a matching exclusive zone, rendering
+  workspace pills, the focused window's app id, and a clock. Its state comes
+  from `kwlctl` — a `workspaces` / `activewindow` / `theme` query at startup,
+  then the `--listen` event stream — polled alongside the Wayland fd, which is
+  the same feed Waybar's hyprland modules take from hyprctl.
+- **`klauncher`** (`programs/klauncher.c`) — the launcher, Walker's slot: a
+  centred overlay-layer surface with exclusive keyboard interactivity, filtering
+  a registry of `/usr/share/kandelo/apps/*.conf` entries (`name` + `exec`) as
+  you type. Enter hands the command to the compositor over `kwlctl dispatch
+  exec` and dismisses; the launcher itself never forks.
+- **Themes.** A theme is a directory holding one `theme.conf` under
+  `/usr/share/kandelo/themes` (`WLC_THEME_DIR` / `KANDELO_THEME_DIR` override
+  the root) — the same file-based design Omarchy uses. The compositor reads the
+  border colour, gaps and wallpaper colours; the shell clients read the bar,
+  foreground, muted and accent colours; unknown keys are skipped, so one file
+  serves both sides. `theme = <name>` in the compositor config selects the
+  startup theme, and `kwlctl dispatch theme <name|next|prev>` (or a `theme`
+  bind) switches live: gaps re-tile, the wallpaper is re-rendered and
+  re-uploaded to its GL texture, and `theme>>name` on the event stream tells
+  every shell client to reload its own palette. `kwlctl theme` reports the live
+  name plus the installed set, so a client that starts later still matches.
+
+Gated by `host/test/wlcompositor-{layer-shell,theme}-smoke.test.ts` and, in the
+browser, by `apps/browser-demos/test/kandelo-omarchy.spec.ts` (`/?demo=omarchy`).
+See [browser-support.md](browser-support.md#omarchy-desktop-demo).
+
 ## Signal Subsystem
 
 Signals are delivered at syscall boundaries. When a process has a pending signal:
