@@ -552,6 +552,7 @@ function forceFreshDevWorkerResponses(): Plugin {
 function injectCorsProxyUrl(): Plugin {
   let servedCorsProxyUrl = "";
   let outputCorsProxyUrl = "";
+  let outputRoot = path.resolve(__dirname, "dist");
   let base = "/";
   const sourceSwPath = path.resolve(__dirname, "public", "service-worker.js");
 
@@ -589,6 +590,7 @@ function injectCorsProxyUrl(): Plugin {
     name: "inject-cors-proxy-url",
     configResolved(config) {
       base = config.base;
+      outputRoot = path.resolve(config.root, config.build.outDir);
       servedCorsProxyUrl =
         configuredCorsProxyUrl() || devCorsProxyFetchUrlForBase(base);
       outputCorsProxyUrl = buildCorsProxyUrl();
@@ -600,8 +602,8 @@ function injectCorsProxyUrl(): Plugin {
       attachMiddleware(server.middlewares);
     },
     writeBundle() {
-      // service-worker.js is in public/ and gets copied as-is to dist/
-      const swPath = path.resolve(__dirname, "dist", "service-worker.js");
+      // service-worker.js is in public/ and Vite copies it to the resolved outDir.
+      const swPath = path.resolve(outputRoot, "service-worker.js");
       if (fs.existsSync(swPath)) {
         let content = fs.readFileSync(swPath, "utf-8");
         content = injectCorsProxyUrlPlaceholder(content, outputCorsProxyUrl);

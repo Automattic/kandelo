@@ -409,6 +409,7 @@ jobs:
             -u KANDELO_STAGING_BOT_TOKEN -u NPM_TOKEN \
             -u NODE_AUTH_TOKEN -u SSH_AUTH_SOCK \
             bash scripts/dev-shell.sh env \
+              "WASM_POSIX_BINARY_CACHE_ROOT=$WASM_POSIX_BINARY_CACHE_ROOT" \
               "PLAYWRIGHT_BROWSERS_PATH=$PLAYWRIGHT_BROWSERS_PATH" \
               npx tsx \
               scripts/abi-staging-pages-producer.ts produce \

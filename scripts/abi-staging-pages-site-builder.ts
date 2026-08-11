@@ -277,6 +277,7 @@ export function buildFinalPagesSite(
   const map = loadCanonicalPagesProductMap({ mapPath: productMapPath, sourceRoot });
   const authority = mapAuthorities.get(map)!;
   const execute = options.execute ?? executeBuildCommand;
+  const binaryCacheRoot = isolatedBinaryCacheRoot(options.execute === undefined);
   mkdirSync(dirname(outputRoot), { recursive: true, mode: 0o700 });
   const buildRoot = mkdtempSync(join(dirname(outputRoot), ".kandelo-pages-site-build-"));
   const home = join(buildRoot, "home");
@@ -302,6 +303,9 @@ export function buildFinalPagesSite(
     execute({
       arguments: [
         "env", ...childEnvironment,
+        ...(binaryCacheRoot === undefined
+          ? []
+          : [`WASM_POSIX_BINARY_CACHE_ROOT=${binaryCacheRoot}`]),
         `KANDELO_PAGES_PRODUCT_MAP=${productMapPath}`,
         "VITE_BASE=/kandelo/",
         "VITE_CORS_PROXY_URL=https://wordpress-playground-cors-proxy.net/?",
@@ -602,6 +606,17 @@ function exactDirectory(value: string, label: string): string {
     throw new Error(`${label} is not a direct directory`);
   }
   return value;
+}
+
+function isolatedBinaryCacheRoot(required: boolean): string | undefined {
+  const value = process.env.WASM_POSIX_BINARY_CACHE_ROOT;
+  if (value === undefined || value === "") {
+    if (required) {
+      throw new Error("isolated Pages binary cache root must be supplied");
+    }
+    return undefined;
+  }
+  return exactDirectory(value, "isolated Pages binary cache root");
 }
 
 function exactAbsentAbsolutePath(value: string, label: string): string {

@@ -1,6 +1,6 @@
 schema = 1
 kind = "kandelo-abi-staging-request-policy"
-version = 9
+version = 10
 issuer_repository = "Automattic/kandelo"
 issuer_workflow = ".github/workflows/abi-staging-request-feed.yml"
 automatic_same_repository = true
@@ -40,6 +40,7 @@ implementation_paths = [
   "apps/browser-demos/pages/kandelo/kernel-host/live-setup.ts",
   "apps/browser-demos/pages/kandelo/kernel-host/optional-demo-vfs.ts",
   "apps/browser-demos/pages/kandelo/kernel-host/pages-vfs-product-loader.ts",
+  "apps/browser-demos/pages/network/network-demo-worker.ts",
   "apps/browser-demos/playwright-closed-acceptance.ts",
   "apps/browser-demos/playwright-server-policy.ts",
   "apps/browser-demos/playwright.config.ts",

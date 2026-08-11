@@ -187,7 +187,7 @@ export function projectedArtifact(product, adapter) {
 }
 
 function matchesProductSpecifier(specifier, entry) {
-  const clean = specifier.replace(/\?.*$/, "");
+  const clean = specifier.replace(/[?#].*$/, "");
   if (entry.id === "platform-rootfs" && clean === rootfsAlias) return true;
   const prefix = `/programs/${entry.product.architecture}/`;
   return (
@@ -197,9 +197,9 @@ function matchesProductSpecifier(specifier, entry) {
 }
 
 export function isVfsSpecifier(specifier) {
-  const clean = specifier.replace(/\?.*$/, "");
+  const clean = specifier.replace(/[?#].*$/, "");
   return clean === rootfsAlias ||
-    /(?:^|\/)[^/]+\.vfs(?:\.zst)?(?:-[A-Za-z0-9_-]+)?(?:\.zst)?$/.test(clean);
+    /(?:^|\/)[^/]*\.vfs(?:\.zst)?(?:-[A-Za-z0-9_-]+)?(?:\.zst)?$/.test(clean);
 }
 
 function checkRootfsAliasProjection(selected, sources) {

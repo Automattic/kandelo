@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   mkdirSync,
@@ -272,6 +273,37 @@ test("canonical Vite mode fails closed for an unknown VFS request", async () => 
   });
 });
 
+test("canonical Vite mode rejects a fragmented VFS request before fallback", async () => {
+  await withTempDirAsync(async (root) => {
+    const fixture = productMap(root);
+    const loaded = loadCanonicalPagesProductMap(authorityOptions(fixture.path));
+    const project = join(root, "fragment-project");
+    mkdirSync(project);
+    writeFileSync(join(project, "rogue.vfs.zst"), "rogue\n");
+    writeFileSync(
+      join(project, "entry.ts"),
+      'import rogue from "./rogue.vfs.zst#fragment"; export default rogue;\n',
+    );
+    let fallbackCalls = 0;
+    await assert.rejects(viteBuild({
+      base: "/kandelo/",
+      build: {
+        lib: { entry: join(project, "entry.ts"), formats: ["es"] },
+        outDir: join(root, "fragment-out"),
+      },
+      configFile: false,
+      plugins: [
+        createCanonicalPagesVfsProductsPlugin({
+          base: "/kandelo/", map: loaded, mirrorRoots: [project],
+        }),
+        { name: "forbidden-fragment-fallback", resolveId() { fallbackCalls += 1; return null; } },
+      ],
+      root: project,
+    }), /unknown canonical Pages VFS/i);
+    assert.equal(fallbackCalls, 0);
+  });
+});
+
 test("normal Vite mode preserves the ordinary VFS fallback", async () => {
   await withTempDirAsync(async (root) => {
     const project = join(root, "normal-project");
@@ -370,10 +402,67 @@ test("assembles browser, documentation, API, and exactly seven canonical VFS fil
   });
 });
 
+test("propagates one isolated binary cache root through the Phase B dev shell", () => {
+  withTempDir((root) => {
+    const workflow = readFileSync(
+      join(repoRoot, ".github/workflows/abi-staging-pages-canary.yml"),
+      "utf8",
+    );
+    const produceStart = workflow.indexOf("- name: Produce admitted canonical Pages products");
+    const produceEnd = workflow.indexOf("- name: Validate the complete canonical Pages tree");
+    assert.notEqual(produceStart, -1);
+    assert.ok(produceEnd > produceStart);
+    assert.match(
+      workflow.slice(produceStart, produceEnd),
+      /bash scripts\/dev-shell\.sh env \\\n+\s+"WASM_POSIX_BINARY_CACHE_ROOT=\$WASM_POSIX_BINARY_CACHE_ROOT"/u,
+    );
+
+    const fixture = productMap(root);
+    const cacheRoot = join(root, "isolated-program-cache");
+    mkdirSync(cacheRoot);
+    const savedCacheRoot = process.env.WASM_POSIX_BINARY_CACHE_ROOT;
+    process.env.WASM_POSIX_BINARY_CACHE_ROOT = cacheRoot;
+    try {
+      buildFinalPagesSite({
+        execute(command) {
+          if (command.name === "browser") {
+            const npmIndex = command.arguments.indexOf("npm");
+            assert.notEqual(npmIndex, -1);
+            const probe = spawnSync(command.command, [
+              ...command.arguments.slice(0, npmIndex),
+              "node", "--import", "tsx", "--input-type=module", "-e",
+              'import { binaryCacheRoot } from "./host/src/binary-resolver.ts"; process.stdout.write(binaryCacheRoot());',
+            ], {
+              cwd: command.workingDirectory,
+              encoding: "utf8",
+              env: command.environment,
+            });
+            assert.equal(probe.status, 0, probe.stderr);
+            assert.equal(probe.stdout.trim().split(/\r?\n/u).at(-1), cacheRoot);
+          }
+          mkdirSync(command.output, { recursive: true });
+          writeFileSync(join(command.output, "index.html"), `${command.name}\n`);
+        },
+        outputRoot: join(root, "site"),
+        productMapPath: fixture.path,
+        sourceRoot: repoRoot,
+      });
+    } finally {
+      if (savedCacheRoot === undefined) {
+        delete process.env.WASM_POSIX_BINARY_CACHE_ROOT;
+      } else {
+        process.env.WASM_POSIX_BINARY_CACHE_ROOT = savedCacheRoot;
+      }
+    }
+  });
+});
+
 test("rejects VFS emitted by Vite and symlinks from every build", () => {
   withTempDir((root) => {
     const fixture = productMap(root);
-    const run = (mutation: "vite-vfs" | "vite-hashed-vfs" | "symlink") => buildFinalPagesSite({
+    const run = (
+      mutation: "vite-vfs" | "vite-hashed-vfs" | "vite-hidden-vfs" | "symlink",
+    ) => buildFinalPagesSite({
       execute(command) {
         mkdirSync(command.output, { recursive: true });
         writeFileSync(join(command.output, "index.html"), `${command.name}\n`);
@@ -381,7 +470,7 @@ test("rejects VFS emitted by Vite and symlinks from every build", () => {
           mkdirSync(join(command.output, "assets"));
           const filename = mutation === "vite-hashed-vfs"
             ? "shell.vfs-BrtFEJTw.zst"
-            : "legacy.vfs.zst";
+            : mutation === "vite-hidden-vfs" ? ".vfs.zst" : "legacy.vfs.zst";
           writeFileSync(join(command.output, "assets", filename), "legacy\n");
         }
         if (command.name === "documentation" && mutation === "symlink") {
@@ -394,6 +483,7 @@ test("rejects VFS emitted by Vite and symlinks from every build", () => {
     });
     assert.throws(() => run("vite-vfs"), /Vite output contains VFS/i);
     assert.throws(() => run("vite-hashed-vfs"), /Vite output contains VFS/i);
+    assert.throws(() => run("vite-hidden-vfs"), /Vite output contains VFS/i);
     assert.throws(() => run("symlink"), /symbolic link/i);
   });
 });

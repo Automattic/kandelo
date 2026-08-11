@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   checkPagesVfsProductRegistry,
+  isVfsSpecifier,
   readPagesRegistry,
 } from "./check-pages-vfs-product-registry.mjs";
 
@@ -49,6 +50,21 @@ const paths = {
   browserDepsPath,
   browserSources,
 };
+
+test("classifies empty-basename and fragmented VFS requests", () => {
+  for (const request of [
+    ".vfs",
+    ".vfs.zst",
+    "assets/.vfs.zst",
+    "rogue.vfs.zst#fragment",
+    "rogue.vfs.zst?url#fragment",
+  ]) {
+    assert.equal(isVfsSpecifier(request), true, request);
+  }
+  for (const request of ["assets/vfs.zst", "asset.vfs.js", "guide/vfs-format.html"]) {
+    assert.equal(isVfsSpecifier(request), false, request);
+  }
+});
 
 function normalize(value) {
   if (Array.isArray(value)) return value.map(normalize);

@@ -226,7 +226,12 @@ test("finalization accepts only in-process preparation state", async () => {
 });
 
 test("finalization rejects candidate strings and unsealed VFS paths", async (t) => {
-  for (const mutation of ["candidate", "unsealed-vfs", "vite-hashed-vfs"] as const) {
+  for (const mutation of [
+    "candidate",
+    "unsealed-vfs",
+    "vite-hashed-vfs",
+    "hidden-vfs",
+  ] as const) {
     await t.test(mutation, async () => {
       const root = mkdtempSync(join(tmpdir(), `kandelo-pages-final-site-${mutation}-`));
       try {
@@ -245,12 +250,19 @@ test("finalization rejects candidate strings and unsealed VFS paths", async (t) 
             siteMetadata.documentation,
             artifact("legacy/mini-base.vfs.zst"),
           ];
-        } else {
+        } else if (mutation === "vite-hashed-vfs") {
           siteMetadata.files = [
             siteMetadata.api,
             siteMetadata.browser,
             siteMetadata.documentation,
             artifact("assets/shell.vfs-BrtFEJTw.zst"),
+          ];
+        } else {
+          siteMetadata.files = [
+            siteMetadata.api,
+            siteMetadata.browser,
+            siteMetadata.documentation,
+            artifact("assets/.vfs.zst"),
           ];
         }
         assert.throws(
