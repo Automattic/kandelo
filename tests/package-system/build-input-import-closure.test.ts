@@ -127,7 +127,9 @@ describe("package build input import closure", () => {
     ]) {
       const source = readFileSync(join(repoRoot, imageBuilder), "utf8");
       expect(source).toContain("resolveWordPressCoreSource(REPO_ROOT)");
-      expect(source).toContain("copyWordPressCoreSource(fs, WP_DIR)");
+      expect(source).toContain(
+        "copyWordPressCoreSource(fs, inputs.wordpressDirectory)",
+      );
     }
 
     const sqliteImageBuilder = readFileSync(
@@ -137,8 +139,8 @@ describe("package build input import closure", () => {
     expect(sqliteImageBuilder).toContain(
       "resolveWordPressSqlitePluginSource()",
     );
-    expect(sqliteImageBuilder).toContain(
-      "materializeWordPressSqlitePlugin(fs, SQLITE_DIR)",
+    expect(sqliteImageBuilder).toMatch(
+      /materializeWordPressSqlitePlugin\(\s*fs,\s*inputs\.sqliteDirectory,\s*\)/,
     );
 
     for (const localDemoScript of [
@@ -233,7 +235,10 @@ describe("package build input import closure", () => {
         }
       }
 
-      expect([...missing].sort()).toEqual([]);
+      expect(
+        [...missing].sort(),
+        `${packageName} omits repository-local inputs:\n${[...missing].sort().join("\n")}`,
+      ).toEqual([]);
     });
   }
 
@@ -259,8 +264,12 @@ describe("package build input import closure", () => {
         /^depends_on\s*=\s*\[[\s\S]*?"coreutils@9\.6"[\s\S]*?\]/m,
       );
       expect(revision).toBeGreaterThanOrEqual(minimumRevision);
+      expect(builder).toContain("coreutils: Uint8Array;");
       expect(builder).toContain(
-        'const COREUTILS_PATH = resolveBinary("programs/coreutils.wasm")',
+        'writeVfsBinary(fs, "/bin/coreutils", inputs.coreutils)',
+      );
+      expect(builder).toMatch(
+        /coreutils:\s*new Uint8Array\(\s*readFileSync\(resolveBinary\("programs\/coreutils\.wasm"\)\)/,
       );
       expect(builder).not.toContain(
         'tryResolveBinary("programs/coreutils.wasm")',

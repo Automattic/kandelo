@@ -393,8 +393,9 @@ describe("browser binary dependencies", () => {
         join(browserRoot, "entry.ts"),
         [
           'import kernel from "@kernel-wasm?url";',
+          'import products from "virtual:kandelo-pages-vfs-products";',
           'import rootfs from "@rootfs-vfs?url";',
-          "void kernel; void rootfs;",
+          "void kernel; void products; void rootfs;",
         ].join("\n"),
       );
 
@@ -402,7 +403,7 @@ describe("browser binary dependencies", () => {
         entryFiles: ["entry.ts"],
       })).toEqual({
         imports: [],
-        capabilities: ["kernel-wasm", "rootfs-vfs"],
+        capabilities: ["kernel-wasm", "pages-vfs-products", "rootfs-vfs"],
       });
     } finally {
       rmSync(fixtureRoot, { recursive: true, force: true });
@@ -1360,7 +1361,7 @@ guest_path = "/usr/share/data"
         "index.html",
         "pages/homebrew-vfs-test/index.html",
       ],
-      localCapabilities: ["kernel-wasm"],
+      localCapabilities: ["kernel-wasm", "pages-vfs-products"],
       packageCapabilities: { "rootfs-vfs": "rootfs" },
       excludePackages: ["shell"],
     });
@@ -1395,10 +1396,18 @@ guest_path = "/usr/share/data"
     expect(() => browserBinaryPackageRoots(repoRoot, {
       ...options,
       localCapabilities: ["kernel-wasm"],
+    })).toThrow(/required browser capability has no binding: pages-vfs-products/);
+    expect(() => browserBinaryPackageRoots(repoRoot, {
+      ...options,
+      localCapabilities: ["kernel-wasm", "pages-vfs-products"],
     })).toThrow(/required browser capability has no binding: rootfs-vfs/);
     expect(() => browserBinaryPackageRoots(repoRoot, {
       ...options,
-      localCapabilities: ["kernel-wasm", "rootfs-vfs"],
+      localCapabilities: [
+        "kernel-wasm",
+        "pages-vfs-products",
+        "rootfs-vfs",
+      ],
       packageCapabilities: { "rootfs-vfs": "rootfs" },
     })).toThrow(/browser capability has two bindings: rootfs-vfs/);
   });

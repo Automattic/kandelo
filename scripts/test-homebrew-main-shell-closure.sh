@@ -650,6 +650,7 @@ for browser_graph_binding in \
   '--html-entry index.html' \
   '--html-entry pages/homebrew-vfs-test/index.html' \
   '--local-capability kernel-wasm' \
+  '--local-capability pages-vfs-products' \
   '--package-capability rootfs-vfs=rootfs'
 do
   grep -Fq -- "$browser_graph_binding" <<<"$browser_support_block" ||
@@ -1602,9 +1603,11 @@ grep -Fq -- '--exclude-package shell \' "$WORKFLOW" ||
   fail "browser package derivation must reserve shell for the exact bottle archive"
 grep -Fq -- '--local-capability kernel-wasm \' \
   <<<"$browser_fetch_block" &&
+  grep -Fq -- '--local-capability pages-vfs-products \' \
+    <<<"$browser_fetch_block" &&
   grep -Fq -- '--package-capability rootfs-vfs=rootfs \' \
     <<<"$browser_fetch_block" ||
-  fail "browser package derivation must bind both virtual artifact capabilities"
+  fail "browser package derivation must bind every virtual artifact capability"
 grep -Fq -- '--include-package rootfs' <<<"$browser_fetch_block" &&
   fail "browser package derivation must not hand-maintain the rootfs alias"
 grep -Fq 'mapfile -t browser_input_packages < "$browser_package_file"' "$WORKFLOW" ||
